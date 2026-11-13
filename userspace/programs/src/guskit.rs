@@ -9,9 +9,16 @@ use std::path::{Path, PathBuf};
 #[path = "guskit/collab.rs"] mod collab;
 use libcollab::wire::DrawOp;
 #[path = "guskit/node.rs"] mod node;
+#[path = "guskit/session_dialog.rs"] mod session_dialog;
 #[path = "guskit/files.rs"] mod files;
 #[path = "guskit/save_barrier.rs"] mod save_barrier;
 use canvas::{Canvas, History, Point, Radius};
+
+fn session_title(name: &str) -> String {
+    let mut end = name.len().min(libbreenix::window::abi::limits::MAX_TITLE - "Gus Kit ()".len());
+    while !name.is_char_boundary(end) { end -= 1; }
+    format!("Gus Kit ({})", &name[..end])
+}
 
 const TOP: i32 = 176;
 const NAMES: [&str; 7] = ["pencil", "brush", "line", "rectangle", "circle", "fill", "eraser"];
@@ -23,7 +30,38 @@ const REDO: u16 = 4;
 const OPEN: u16 = 5;
 const SAVE: u16 = 6;
 const SAVE_AS: u16 = 7;
+const HOST_SESSION: u16 = 8;
+const JOIN_SESSION: u16 = 9;
 
+struct SessionDialog {
+    model: session_dialog::Dialog, mode: session_dialog::Mode,
+    address: libbui::widget::text_field::TextField,
+    name: libbui::widget::text_field::TextField,
+}
+impl SessionDialog {
+    fn new(mode: session_dialog::Mode) -> Self {
+        let mut address = libbui::widget::text_field::TextField::new(Rect::new(270, 250, 300, 24), 64);
+        let mut name = libbui::widget::text_field::TextField::new(Rect::new(270, 300, 300, 24), 64);
+        address.set_focused(mode == session_dialog::Mode::Join);
+        name.set_focused(mode == session_dialog::Mode::Host);
+        Self { model: session_dialog::Dialog::new(mode), mode, address, name }
+    }
+    fn key(&mut self, input: &libbui::KeyInput<'_>) -> Option<session_dialog::Outcome> {
+        match input.key {
+            libbui::Key::Escape => Some(self.model.cancel()),
+            libbui::Key::Enter => Some(self.model.submit(self.address.text(), self.name.text())),
+            libbui::Key::Tab if self.mode == session_dialog::Mode::Join => {
+                let address = !self.address.is_focused();
+                self.address.set_focused(address); self.name.set_focused(!address); None
+            }
+            _ => { if self.address.is_focused() { self.address.key(input); } else { self.name.key(input); } None }
+        }
+    }
+    fn update(&mut self, input: &InputState) {
+        if self.mode == session_dialog::Mode::Join { self.address.update(input); }
+        self.name.update(input);
+    }
+}
 struct App {
     width: usize, height: usize, history: History, clean: [u8; 32],
     tool: usize, size: usize, hue: u16, sat: u8, val: u8,
@@ -32,6 +70,7 @@ struct App {
     palette: Option<(u16, Surface)>,
     canvas_surface: Option<(Canvas, Surface)>,
     session: Option<collab::Session>,
+    session_dialog: Option<SessionDialog>,
 }
 impl App {
     fn color(&self) -> [u8; 3] { self.selected_color.unwrap_or_else(|| node::hsv_to_rgb(self.hue, self.sat, self.val)) }
@@ -39,10 +78,15 @@ impl App {
     fn undo_depth(&self) -> usize { self.session.as_ref().map_or_else(||self.history.undo_depth(),|s|s.core.model.undo_depth()) }
     fn redo_depth(&self) -> usize { if self.session.is_some() {0} else {self.history.redo_depth()} }
     fn status(&self) -> &str { if !self.message.is_empty() { &self.message } else { self.session.as_ref().map_or("",|s|s.core.model.status.as_str()) } }
+    // Keep the ended session’s drawing and status available until another starts.
+    fn can_start_session(&self) -> bool {
+        self.session.as_ref().is_none_or(|session| session.core.model.state == "disconnected")
+    }
     fn dirty(&self) -> bool { self.canvas().digest() != self.clean }
     fn request_quit(&mut self) { if self.dirty() { self.confirm = true; } else { self.quit = true; } }
     fn action(&mut self, action: u16) {
         match action {
+            HOST_SESSION | JOIN_SESSION if self.can_start_session() => { self.session_dialog = Some(SessionDialog::new(if action == HOST_SESSION { session_dialog::Mode::Host } else { session_dialog::Mode::Join })); },
             OPEN => { if self.session.is_none() { self.open_picker(false); } else { self.message="Open an image before starting a session".into(); } },
             SAVE_AS => self.open_picker(true),
             SAVE => self.save(),
@@ -50,6 +94,16 @@ impl App {
             QUIT => self.request_quit(),
             UNDO => { if let Some(session)=&mut self.session { session.core.submit(DrawOp::Undo); } else { self.history.undo(); } },
             REDO => { if self.session.is_none() { self.history.redo(); } },
+            _ => {}
+        }
+    }
+    fn dialog_result(&mut self, result: Option<session_dialog::Outcome>) {
+        match result {
+            Some(session_dialog::Outcome::Cancelled) => self.session_dialog = None,
+            Some(session_dialog::Outcome::Start(host, address, port, name)) => {
+                let result = if host { collab::Session::host(address, port, &name, self.canvas().clone(), self.width, self.height) } else { collab::Session::join(address, port, &name) };
+                match result { Ok(session) => { self.session = Some(session); self.session_dialog = None; self.message.clear(); }, Err(e) => self.message = format!("Session: {e}") }
+            }
             _ => {}
         }
     }
@@ -176,6 +230,7 @@ impl App {
 fn menu() -> MenuBar {
     let mut menu = MenuBar::new(Rect::new(0, 0, 800, MENU_BAR_HEIGHT), vec![
         Menu { label: b"File", items: vec![MenuItem::new(b"New", NEW, Shortcut::ctrl(b'N')), MenuItem::new(b"Open", OPEN, Shortcut::ctrl(b'O')), MenuItem::new(b"Save", SAVE, Shortcut::ctrl(b'S')), MenuItem::new(b"Save As", SAVE_AS, Shortcut::ctrl_shift(b'S')), MenuItem::new(b"Quit", QUIT, Shortcut::ctrl(b'Q'))] },
+        Menu { label: b"Session", items: vec![MenuItem::new(b"Host Session...", HOST_SESSION, Shortcut::NONE), MenuItem::new(b"Join Session...", JOIN_SESSION, Shortcut::NONE)] },
         Menu { label: b"Edit", items: vec![MenuItem::disabled(b"Undo", UNDO, Shortcut::ctrl(b'Z')), MenuItem::disabled(b"Redo", REDO, Shortcut::ctrl_shift(b'Z'))] },
     ]);
     menu.layout(&Theme::dark()); menu
@@ -242,18 +297,31 @@ fn render(fb: &mut Surface, app: &mut App, menu: &MenuBar, font: &mut Option<Cac
     menu.draw(fb, &Theme::dark());
     if !app.status().is_empty() { draw_label(fb, font.as_mut(), font_size, app.status(), 110, 150, Clip::new(110, 150, 690, 26)); }
     if let Some(picker) = &app.picker { picker.draw(fb, &Theme::dark()); }
+    if let Some(dialog) = &app.session_dialog {
+        shapes::fill_rect(fb, 220, 200, 360, 180, Theme::dark().panel_bg);
+        let title = if dialog.mode == session_dialog::Mode::Host { "Host Session" } else { "Join Session" };
+        draw_label(fb, font.as_mut(), font_size, title, 230, 210, Clip::new(220,200,360,180));
+        if dialog.mode == session_dialog::Mode::Join { draw_label(fb, font.as_mut(), font_size, "Address", 230, 230, Clip::new(220,200,360,180)); dialog.address.draw(fb, &Theme::dark()); }
+        draw_label(fb, font.as_mut(), font_size, "Name", 230, 280, Clip::new(220,200,360,180));
+        dialog.name.draw(fb, &Theme::dark());
+        let status = if dialog.model.status().is_empty() { app.message.as_str() } else { dialog.model.status() };
+        draw_label(fb, font.as_mut(), font_size, status, 230, 340, Clip::new(220,200,360,180));
+    }
     if app.confirm { shapes::fill_rect(fb, 180, 220, 440, 64, Color::rgb(30,30,30)); draw_label(fb, font.as_mut(), font_size, "Discard changes? D: discard  Esc: cancel", 190, 242, Clip::new(180, 220, 440, 64)); }
     });
 }
-fn publish(win: &mut Window, app: &App, font_size: f32) {
+fn publish(win: &mut Window, app: &App, menu: &MenuBar, font_size: f32) {
+    use libbui::widget::Widget;
     use breengel::tree::{Flag, Node, Role, Tree};
     let bounds = [0, 0, i64::from(win.width()), i64::from(win.height())];
     let canvas_bounds = [0, TOP as i64, app.width as i64, app.height as i64];
     let mut children = vec![node::canvas(canvas_bounds, app.width, app.height, app.canvas().digest()), node::status(bounds, &node::Status { tool: NAMES[app.tool], size: ["small", "medium", "large"][app.size], color: app.color(), undo: app.undo_depth(), redo: app.redo_depth(), dirty: app.dirty(), file: app.file.as_ref().and_then(|p| p.to_str()), message: app.status(), font_path: win.display_path(), font_size })];
     if let Some(session)=&app.session { children.push(node::collab(bounds,&session.core.model)); }
+    children.extend(menu.tree_nodes("menu", Some("root"), Rect::new(0, 0, win.width() as i32, win.height() as i32), &Theme::dark()));
     children.extend(node::tools(core::array::from_fn(|i| [(2 + i * 38) as i64, 23, 36, 16]), NAMES[app.tool]));
     children.push(node::hue([0,58,780,18])); children.push(node::sv([0,76,100,100]));
     if app.picker.is_some() { children.push(Node { key: if app.save_as { "save-as" } else { "open" }.into(), parent: Some("root".into()), role: Role::Dialog, name: if app.save_as { "Save As" } else { "Open" }.into(), value: serde_json::json!({"directory":app.directory.to_string_lossy()}), bounds: [150,100,500,400], clip: bounds, flags: vec![Flag::Enabled, Flag::Visible] }); }
+    if let Some(dialog) = &app.session_dialog { children.extend(node::session_dialog(dialog.mode == session_dialog::Mode::Host, dialog.address.text(), dialog.name.text(), if dialog.model.status().is_empty() { &app.message } else { dialog.model.status() }, dialog.address.is_focused(), dialog.name.is_focused())); }
     if app.confirm { children.push(Node { key: "confirm".into(), parent: Some("root".into()), role: Role::Dialog, name: "Discard changes?".into(), value: serde_json::json!({"message":"D discards, Escape cancels"}), bounds: [180,220,440,64], clip: bounds, flags: vec![Flag::Enabled, Flag::Visible] }); }
     win.set_tree(Tree { root: Node { key: "root".into(), parent: None, role: Role::Window, name: app.session.as_ref().map_or_else(||"Gus Kit".into(),|s|format!("Gus Kit ({})",s.core.model.name)), value: serde_json::Value::Null, bounds, clip: bounds, flags: vec![Flag::Enabled, Flag::Visible] }, children });
 }
@@ -264,7 +332,12 @@ fn handle(app: &mut App, menu: &mut MenuBar, delivered: &breengel::Delivered) ->
             if matches!(keycode, 29 | 42 | 54 | 56 | 97 | 100 | 125 | 126) {
                 return Handled::NoChange;
             }
-            if app.picker.is_some() {
+            if app.session_dialog.is_some() {
+                let key = match keycode { 1 => libbui::Key::Escape, 15 => libbui::Key::Tab, 28 => libbui::Key::Enter, 14 => libbui::Key::Backspace, 111 => libbui::Key::Delete, 105 => libbui::Key::Left, 106 => libbui::Key::Right, 102 => libbui::Key::Home, 107 => libbui::Key::End, _ => libbui::Key::Char };
+                // Printable input arrives separately as Event::Text.
+                let input = libbui::KeyInput { key, shift: modifiers.shift, ctrl: modifiers.ctrl, alt: modifiers.alt, text: "" };
+                let result = app.session_dialog.as_mut().unwrap().key(&input); app.dialog_result(result);
+            } else if app.picker.is_some() {
                 use libbui::{Key, KeyInput};
                 let key = match keycode { 1 => Key::Escape, 15 => Key::Tab, 28 => Key::Enter, 14 => Key::Backspace, 103 => Key::Up, 108 => Key::Down, 104 => Key::PageUp, 109 => Key::PageDown, 102 => Key::Home, 107 => Key::End, _ => Key::Char };
                 let text = if ascii.is_ascii_graphic() || ascii == b' ' { (ascii as char).to_string() } else { String::new() };
@@ -274,6 +347,12 @@ fn handle(app: &mut App, menu: &mut MenuBar, delivered: &breengel::Delivered) ->
             else if let Some(action) = menu.match_shortcut(if modifiers.ctrl && ascii == 0 { match keycode { 49 => b'N', 16 => b'Q', 44 => b'Z', 24 => b'O', 31 => b'S', _ => ascii } } else { ascii }, modifiers.ctrl, modifiers.shift, modifiers.alt) { app.action(action); }
             else if !modifiers.ctrl && !modifiers.alt { match ascii.to_ascii_lowercase() { b'p' => app.tool=0, b'b' => app.tool=1, b'l' => app.tool=2, b'r' => app.tool=3, b'c' => app.tool=4, b'f' => app.tool=5, b'e' => app.tool=6, b'1'..=b'3' => app.size=(ascii-b'1') as usize, _ => {} } }
         },
+        Event::Text { ref text } if app.session_dialog.is_some() => {
+            // bwm also emits control text after Tab/Enter key actions.
+            if text.chars().all(char::is_control) { return Handled::NoChange; }
+            let input = libbui::KeyInput { key: libbui::Key::Char, shift: false, ctrl: false, alt: false, text };
+            let result = app.session_dialog.as_mut().unwrap().key(&input); app.dialog_result(result);
+        },
         Event::Text { ref text } if app.picker.is_some() => {
             let input = libbui::KeyInput { key: libbui::Key::Char, shift: false, ctrl: false, alt: false, text };
             let result = app.picker.as_mut().unwrap().key(&input);
@@ -281,12 +360,14 @@ fn handle(app: &mut App, menu: &mut MenuBar, delivered: &breengel::Delivered) ->
         },
         Event::MouseButton { button: breengel::buttons::LEFT, pressed, x, y } if !app.confirm => {
             let input = InputState::from_raw(x,y, u32::from(pressed), u32::from(!pressed), delivered.time_ns / 1_000_000);
+            if let Some(dialog) = &mut app.session_dialog { dialog.update(&input); return Handled::Redraw; }
             if let Some(picker) = &mut app.picker { let result = picker.update(&input); app.picker_result(result); return Handled::Redraw; }
             let was_open = menu.is_open();
             if let MenuEvent::Activated(action) = menu.update(&input, &Theme::dark()) { app.action(action); }
             if !was_open && !menu.is_open() { if pressed { app.press(x,y); } else { if let Some(point) = app.point(x,y) { if let Some(stroke) = &mut app.stroke { stroke.push(point); } } app.finish_stroke(); } }
         },
         Event::MouseMove { x,y } if !app.confirm => {
+            if app.session_dialog.is_some() { return Handled::NoChange; }
             if let Some(picker) = &mut app.picker { let input = InputState::from_raw(x,y,0,0,delivered.time_ns / 1_000_000); let result = picker.update(&input); app.picker_result(result); }
             else if menu.is_open() { let input = InputState::from_raw(x, y, 0, 0, delivered.time_ns / 1_000_000); menu.update(&input, &Theme::dark()); }
             else if let (Some(point), Some(stroke)) = (app.point(x,y), &mut app.stroke) { stroke.push(point); }
@@ -295,71 +376,42 @@ fn handle(app: &mut App, menu: &mut MenuBar, delivered: &breengel::Delivered) ->
         Event::PointerCancel => { if app.stroke.take().is_none() { return Handled::NoChange; } },
         _ => return Handled::NoChange,
     }
+    menu.set_enabled(HOST_SESSION, app.can_start_session()); menu.set_enabled(JOIN_SESSION, app.can_start_session());
     menu.set_enabled(UNDO, app.session.is_some() || app.undo_depth() > 0);
     menu.set_enabled(REDO, app.redo_depth() > 0);
     Handled::Redraw
 }
-struct Options {
-    width:usize, height:usize, file:Option<String>, session:Option<(bool,u16,String)>,
-}
-impl Options {
-    fn parse(args:impl Iterator<Item=String>)->Result<Self,&'static str> {
-        let mut options=Self {width:800,height:424,file:None,session:None};
-        let mut mode=None; let mut name=None; let mut args=args;
-        let usage="usage: guskit [--canvas WxH] [--host PORT | --join PORT] [--name NAME] [FILE]";
-        while let Some(arg)=args.next() {
-            match arg.as_str() {
-                "--canvas"=>{
-                    let value=args.next().ok_or(usage)?;
-                    let (w,h)=value.split_once('x').ok_or(usage)?;
-                    options.width=w.parse().map_err(|_|usage)?;options.height=h.parse().map_err(|_|usage)?;
-                    if options.width==0||options.width>800||options.height==0||options.height>424 {return Err(usage);}
-                }
-                "--host"|"--join"=>{
-                    if mode.is_some(){return Err(usage);}
-                    let port=args.next().ok_or(usage)?.parse::<u16>().map_err(|_|usage)?;
-                    if port==0{return Err(usage);}
-                    mode=Some((arg=="--host",port));
-                }
-                "--name"=>{if name.is_some(){return Err(usage);} let value=args.next().ok_or(usage)?;
-                    if value.is_empty()||value.len()>64||value.chars().any(char::is_control){return Err(usage);}
-                    name=Some(value);
-                }
-                _=>{if arg.starts_with('-')||options.file.is_some(){return Err(usage);} options.file=Some(arg);}
-            }
-        }
-        options.session=match (mode,name) { (Some((host,port)),Some(name))=>Some((host,port,name)),(None,None)=>None,_=>return Err(usage) };
-        Ok(options)
-    }
-}
+#[path = "guskit/options.rs"] mod options;
+use options::Options;
 fn main() {
     let options=Options::parse(std::env::args().skip(1)).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(2) });
     let (width,height)=(options.width,options.height);
     let next=options.file;
     let image = Canvas::new(width,height); let clean = image.digest();
-    let mut app = App { width,height,history: History::new(image),clean,tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0,0,0],[255,0,0],[0,255,0],[0,0,255],[255,255,0],[255,0,255],[0,255,255],[128,128,128]],confirm:false,quit:false,file:next.map(PathBuf::from),message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None };
+    let mut app = App { width,height,history: History::new(image),clean,tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0,0,0],[255,0,0],[0,255,0],[0,0,255],[255,255,0],[255,0,255],[0,255,255],[128,128,128]],confirm:false,quit:false,file:next.map(PathBuf::from),message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
     if let Some(path) = app.file.clone() { if path.exists() { app.open_file(path); } }
-    if let Some((host,port,name))=options.session {
-        let result=if host {collab::Session::host(port,&name,app.canvas().clone(),width,height)} else {collab::Session::join(port,&name)};
+    if let Some((host,address,port,name))=options.session {
+        let result=if host {collab::Session::host(address,port,&name,app.canvas().clone(),width,height)} else {collab::Session::join(address,port,&name)};
         app.session=Some(result.unwrap_or_else(|e| {eprintln!("Gus Kit session: {e}");std::process::exit(1)}));
     }
-    let title=app.session.as_ref().map_or_else(||"Gus Kit".into(),|s|format!("Gus Kit ({})",s.core.model.name));
+    let mut title=app.session.as_ref().map_or_else(||"Gus Kit".into(),|s|session_title(&s.core.model.name));
     let mut win = Window::new(title.as_bytes(), 800, 600).unwrap_or_else(|e| { eprintln!("Gus Kit: {e}"); std::process::exit(1) });
     let mut menu = menu();
     let mut font = win.take_display_font();
     let mut font_size = win.display_size();
     let mut redraw = true;
     loop {
+        menu.set_enabled(HOST_SESSION, app.can_start_session()); menu.set_enabled(JOIN_SESSION, app.can_start_session());
         menu.set_enabled(UNDO, app.session.is_some() || app.undo_depth() > 0); menu.set_enabled(REDO, app.redo_depth() > 0);
         if redraw {
             if let Ok(surface) = win.surface() { render(surface, &mut app, &menu, &mut font, font_size); }
-            publish(&mut win, &app, font_size); let _ = win.present();
+            publish(&mut win, &app, &menu, font_size); let _ = win.present();
         }
         if app.quit { break; }
         redraw = false;
         let mut pointer_motion = false;
         let mut reload_font = false;
-        let collaborating=app.session.is_some();
+        let collaborating=!app.can_start_session();
         let mut dispatch = |delivered: &breengel::Delivered| {
             pointer_motion |= matches!(delivered.event, Event::MouseMove { .. });
             if matches!(delivered.event, Event::FontChanged) { reload_font = true; redraw = true; return Handled::Redraw; }
@@ -369,6 +421,17 @@ fn main() {
         };
         let result=if collaborating { win.dispatch(&mut dispatch) } else { win.wait_dispatch(100_000_000,&mut dispatch) };
         let count=result.unwrap_or_else(|e| { if matches!(e, libbreenix::error::Error::Os(libbreenix::errno::Errno::ETIMEDOUT)) { 0 } else { eprintln!("Gus Kit dispatch: {e}"); std::process::exit(1) } });
+        if !collaborating {
+            if let Some(session) = &app.session {
+                let next_title = session_title(&session.core.model.name);
+                if next_title != title {
+                    libbreenix::window::set_title(win.id(), next_title.as_bytes()).unwrap_or_else(|e| {
+                        eprintln!("Gus Kit title: {e}"); std::process::exit(1)
+                    });
+                    title = next_title;
+                }
+            }
+        }
         if reload_font {
             win.put_display_font(font.take());
             font = win.take_display_font();
@@ -393,6 +456,99 @@ mod tests {
     use breengel::{Delivered, Modifiers};
 
     #[test]
+    fn failed_and_ended_joins_allow_another_session_without_losing_the_canvas() {
+        for end in [None, Some(libcollab::wire::Message::JoinRefused { reason: b"full".to_vec() }), Some(libcollab::wire::Message::Bye)] {
+            let image = Canvas::new(20, 20);
+            let mut app = App { width:20,height:20,clean:image.digest(),history:History::new(image),
+                tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
+                confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,
+                session:Some(collab::session_fixture(collab::Core::join("Peer"))),session_dialog:None };
+            app.action(JOIN_SESSION);
+            assert!(app.session_dialog.is_none(), "a pending join still owns its session");
+            let core = &mut app.session.as_mut().unwrap().core;
+            core.model.canvas.pencil(&[(1, 1)], [3, 4, 5]);
+            let digest = core.model.canvas.digest();
+            match end {
+                None => core.closed(1, "send"),
+                Some(message) => core.receive(1, &libcollab::wire::encode(&message).unwrap()),
+            }
+            assert_eq!(core.model.state, "disconnected");
+            for action in [HOST_SESSION, JOIN_SESSION] {
+                app.action(action);
+                assert!(app.session_dialog.is_some(), "ended joins must allow Host and Join");
+                assert_eq!(app.canvas().digest(), digest, "keep the drawing available for saving");
+                app.session_dialog = None;
+            }
+        }
+    }
+
+    #[test]
+    fn session_dialog_inserts_physical_printable_keys_once() {
+        let image = Canvas::new(200, 120);
+        let mut app = App { width:200,height:120,clean:image.digest(),history:History::new(image),
+            tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
+            confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
+        let mut menu = menu();
+        app.action(JOIN_SESSION);
+        // bwm sends KeyPress, Text and KeyRelease for a physical printable key.
+        for (keycode, ascii) in [(2, b'1'), (11, b'0'), (52, b'.'), (11, b'0'),
+            (52, b'.'), (3, b'2'), (52, b'.'), (3, b'2'), (15, b'\t'),
+            (25, b'P'), (18, b'e'), (18, b'e'), (19, b'r')]
+        {
+            let modifiers = Modifiers { shift: ascii.is_ascii_uppercase(), ..Modifiers::default() };
+            for event in [
+                Event::KeyPress { keycode, ascii, text:(ascii as char).to_string(), modifiers, repeat:false },
+                Event::Text { text:(ascii as char).to_string() },
+                Event::KeyRelease { keycode, modifiers },
+            ] {
+                handle(&mut app, &mut menu, &Delivered { serial:1,time_ns:1,clicks:0,event });
+            }
+        }
+        let dialog = app.session_dialog.as_mut().unwrap();
+        assert_eq!(dialog.address.text(), "10.0.2.2");
+        assert_eq!(dialog.name.text(), "Peer");
+        assert_eq!(dialog.model.submit(dialog.address.text(), dialog.name.text()),
+            session_dialog::Outcome::Start(false, [10, 0, 2, 2], 7890, "Peer".into()));
+    }
+
+    #[test]
+    fn session_dialog_rejects_bad_address_after_tab_and_enter_text() {
+        let image = Canvas::new(200, 120);
+        let mut app = App { width:200,height:120,clean:image.digest(),history:History::new(image),
+            tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
+            confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
+        let mut menu = menu();
+        app.action(JOIN_SESSION);
+        // App::type_text sends one TEXT source (libuitest app.rs/pointer_live.rs).
+        // bwm/input_keys.rs emits Key, Text, then KeyRelease for key(15/28).
+        // breengel/event.rs decodes CR's KeyPress ascii as 0, keeping its text.
+        let events = [
+            Event::Text { text: "bad address".into() },
+            Event::KeyPress { keycode:15,ascii:b'\t',text:"\t".into(),modifiers:Modifiers::default(),repeat:false },
+            Event::Text { text: "\t".into() },
+            Event::KeyRelease { keycode:15,modifiers:Modifiers::default() },
+            Event::Text { text: "Peer".into() },
+            Event::KeyPress { keycode:28,ascii:0,text:"\r".into(),modifiers:Modifiers::default(),repeat:false },
+            Event::Text { text: "\r".into() },
+            Event::KeyRelease { keycode:28,modifiers:Modifiers::default() },
+        ];
+        for (index, event) in events.into_iter().enumerate() {
+            handle(&mut app, &mut menu, &Delivered { serial:index as u64 + 1,time_ns:1,clicks:0,event });
+        }
+        let dialog = app.session_dialog.as_ref().unwrap();
+        let nodes = node::session_dialog(false, dialog.address.text(), dialog.name.text(),
+            dialog.model.status(), dialog.address.is_focused(), dialog.name.is_focused());
+        let published = nodes.iter().find(|n| n.key == "session-dialog").unwrap();
+        assert_eq!(published.value["status"], "Enter a valid IPv4 address",
+            "address={:?}, name={:?}, name_focused={}",
+            dialog.address.text(), dialog.name.text(), dialog.name.is_focused());
+        assert_eq!(dialog.address.text(), "bad address");
+        assert_eq!(dialog.name.text(), "Peer");
+        assert!(dialog.name.is_focused());
+        assert!(app.session.is_none());
+    }
+
+    #[test]
     fn save_as_navigates_and_rejects_unsupported_names() {
         let dir = std::env::temp_dir().join(format!("guskit-save-as-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -400,7 +556,7 @@ mod tests {
         let image = Canvas::new(8, 8);
         let mut app = App { width:8,height:8,clean:image.digest(),history:History::new(image),
             tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
-            confirm:false,quit:false,file:Some(dir.join("a.png")),message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None };
+            confirm:false,quit:false,file:Some(dir.join("a.png")),message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
         let mut menu = menu();
         let key = |app: &mut App, menu: &mut MenuBar, keycode, ascii, modifiers| {
             let event = Delivered { serial:1,time_ns:1,clicks:0, event:Event::KeyPress {
@@ -444,7 +600,7 @@ mod tests {
         let image = Canvas::new(200, 120);
         let mut app = App { width:200,height:120,clean:image.digest(),history:History::new(image),
             tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
-            confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None };
+            confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
         let mut menu = menu();
         let mut event = Delivered { serial:1,time_ns:1,clicks:0,
             event:Event::KeyRelease { keycode:25,modifiers:Modifiers::default() } };

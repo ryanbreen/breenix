@@ -14,7 +14,9 @@ import subprocess
 import time
 
 ROOT = Path(__file__).resolve().parent
-GUI_REQUEST = runpy.run_path(str(ROOT / 'metal/smb-restart'))['GUI_REQUEST']
+patterns = runpy.run_path(str(ROOT / 'metal/smb-restart'))
+GUI_REQUEST = patterns['GUI_REQUEST']
+REQUEST = patterns['REQUEST']
 # This is the same admission lock claim_lease takes before inspecting lease.json.
 # Hold it until the QEMU process and SMB recovery have both finished. Do not
 # create a machine lease: QEMU is not a powered metal boot or a reaper client.
@@ -59,11 +61,24 @@ try:
         if not line:
             break
         action = line.strip()
-        if action not in ('start', 'stop') or lock.poll() is not None:
-            raise SystemExit('invalid request or lost admission')
-        if action == 'stop': stopped = True
-        status = execute(action)
-        if action == 'start' and status == 0: stopped = False
+        if lock.poll() is not None:
+            raise SystemExit('lost admission')
+        if action.startswith('restart '):
+            seq = action[8:]
+            if not seq.isdecimal() or len(seq) > 20:
+                raise SystemExit('invalid sequence')
+            status = execute('restart')
+            if status == 0:
+                status = subprocess.run(['sudo', '-n', 'incus', 'exec', os.environ['SMB_TEST_INSTANCE'],
+                                         '--', 'install', '-m', '0644', '/dev/null', '/srv/smb/rw/.restarted-' + seq],
+                                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL, timeout=30).returncode
+        elif action in ('start', 'stop'):
+            if action == 'stop': stopped = True
+            status = execute(action)
+            if action == 'start' and status == 0: stopped = False
+        else:
+            raise SystemExit('invalid request')
         print(status, flush=True)
 finally:
     if stopped and lock.poll() is None:
@@ -162,19 +177,24 @@ def watch(serial, instance, admission, process=None):
                 lines = pending.split(b'\n')
                 pending = lines.pop()
                 for raw in lines:
-                    match = GUI_REQUEST.fullmatch(raw.decode('utf-8', errors='replace'))
-                    if not match:
+                    line = raw.decode('utf-8', errors='replace')
+                    match = GUI_REQUEST.fullmatch(line)
+                    request = REQUEST.fullmatch(line)
+                    if not match and not request:
                         continue
-                    action, seq = match.group(1).lower(), int(match.group(2))
-                    if seq in answered:
+                    action = match.group(1).lower() if match else 'restart'
+                    seq = int(match.group(2) if match else request.group(1))
+                    case = 'guskit/smb-share-gone' if match else 'smb/server-restart'
+                    key = (case, seq)
+                    if key in answered:
                         continue
-                    answered.add(seq)
-                    record = dict(case='guskit/smb-share-gone', seq=seq, action=action, ok=False)
+                    answered.add(key)
+                    record = dict(case=case, seq=seq, action=action, ok=False)
                     records['requests'].append(record)
                     save()
                     if action == 'stop':
                         stopped = True
-                    record['exit'] = execute(action)
+                    record['exit'] = execute(f'restart {seq}' if action == 'restart' else action)
                     record['ok'] = record['exit'] == 0
                     if action == 'start' and record['ok']:
                         stopped = False

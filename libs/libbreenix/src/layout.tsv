@@ -62,6 +62,8 @@ bin userdel usr/sbin 0755 0
 bin usermod usr/sbin 0755 0
 bin groupadd usr/sbin 0755 0
 bin groupdel usr/sbin 0755 0
+bin collab-lan-host usr/libexec/breenix 0755 0
+bin collab-lan-join usr/libexec/breenix 0755 0
 bin *_test usr/libexec/breenix 0755 0
 bin test_* usr/libexec/breenix 0755 0
 bin mount sbin 0755 0

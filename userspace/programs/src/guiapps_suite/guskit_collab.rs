@@ -1,4 +1,4 @@
-//! Six collaboration paths, with pixels replayed from the submitted script.
+//! Collaboration paths, with pixels replayed from the submitted script.
 use breenix_suite::suite::CaseResult;
 use libuitest::{App, input::Modifier};
 use serde_json::Value;
@@ -147,6 +147,47 @@ pub fn join_sync() -> CaseResult {
 pub fn stroke_both_ways() -> CaseResult {
     let mut t = host(23702)?;
     join(&mut t, 23702, PEER)?;
+    let mut script = Script::new();
+    script.stroke(&mut t, HOST, 10, false)?;
+    script.converge(&mut t, &[HOST, PEER])?;
+    script.stroke(&mut t, PEER, 20, true)?;
+    script.converge(&mut t, &[HOST, PEER])?;
+    Ok(t.finish()?)
+}
+pub fn session_dialog() -> CaseResult {
+    let argv: &[&[u8]] = &[b"/usr/bin/guskit", b"--canvas", b"200x120"];
+    let mut t = App::launch(argv, "Gus Kit")?;
+    t.drag("menu/1", (4, 4), &[])?;
+    t.drag("menu/1/0", (30, 10), &[])?;
+    t.wait_node("session-name", |v| v == "")?;
+    t.type_text(HOST)?;
+    t.key(28, &[])?;
+    // The owner's title update makes the next plain Gus Kit unambiguous.
+    attach(&mut t, HOST)?;
+    t.wait_node("collab", |v| v["role"] == "host" && v["state"] == "connected" && v["peers"] == serde_json::json!([]))?;
+
+    t.launch_next(argv, "Gus Kit")?;
+    t.drag("menu/1", (4, 4), &[])?;
+    t.drag("menu/1/1", (30, 10), &[])?;
+    t.wait_node("session-address", |v| v == "")?;
+    t.type_text("bad address")?;
+    t.key(15, &[])?;
+    t.type_text(PEER)?;
+    t.key(28, &[])?;
+    t.wait_tree(|tree| {
+        tree.children.iter().any(|n| n.key == "session-dialog" && n.value["status"] == "Enter a valid IPv4 address")
+            && !tree.children.iter().any(|n| n.key == "collab")
+    })?;
+    attach(&mut t, HOST)?;
+    t.expect_node("collab", |v| v["peers"] == serde_json::json!([]) && v["applied"] == serde_json::json!([]))?;
+    t.attach("Gus Kit")?;
+    t.key(15, &[])?;
+    t.key(102, &[])?; // Home then Shift-End selects the malformed address.
+    t.key(107, &[Modifier::Shift])?;
+    t.type_text("127.0.0.1:7890")?;
+    t.key(28, &[])?;
+    attach(&mut t, PEER)?;
+    t.wait_node("collab", |v| v["state"] == "connected" && v["name"] == PEER)?;
     let mut script = Script::new();
     script.stroke(&mut t, HOST, 10, false)?;
     script.converge(&mut t, &[HOST, PEER])?;

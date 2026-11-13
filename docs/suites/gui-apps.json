@@ -261,7 +261,8 @@
         { "id": "global-order", "title": "Overlapping strokes follow global order" },
         { "id": "three-peers", "title": "Three peers converge" },
         { "id": "undo-ownership", "title": "Undo affects only its owner" },
-        { "id": "peer-leaves", "title": "Peer and host departures are reported" }
+        { "id": "peer-leaves", "title": "Peer and host departures are reported" },
+        { "id": "session-dialog", "title": "Host and join through session dialogs" }
       ]
     },
     {

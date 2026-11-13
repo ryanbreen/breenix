@@ -16,7 +16,7 @@ import socket
 import sys
 from metal.metal_root import smb_gui_selection
 from vm_site import load_site
-if smb_gui_selection(sys.argv[1], sys.argv[2], sys.argv[3] or None):
+if smb_gui_selection(sys.argv[1], sys.argv[2], sys.argv[3] or None) or (sys.argv[1] == 'suite' and 'network-shares' in sys.argv[2].split(',')):
     site = load_site()
     host, port = site['SMB_TEST_HOST'], site['SMB_TEST_PORT']
     import re
