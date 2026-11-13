@@ -1,5 +1,6 @@
 """QEMU GUI staging matches the corresponding metal root files."""
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -44,9 +45,27 @@ class DesktopStageTest(unittest.TestCase):
                         self.assertEqual(read(qemu, 'cat ' + path).stdout, read(metal, 'cat ' + path).stdout)
                         def metadata(image):
                             stat = read(image, 'stat ' + path).stdout.decode()
-                            return re.search(r'Mode:\s+(\d+).*User:\s+(\d+)\s+Group:\s+(\d+)', stat).groups()
+                            return re.search(r'Mode:\s+(\d+).*User:\s+(\d+)\s+Group:\s+(\d+)', stat, re.S).groups()
                         self.assertEqual(metadata(qemu), metadata(metal))
                 self.assertEqual(hashlib.sha256(base.read_bytes()).digest(), original)
+
+
+    def test_gui_evidence_route(self):
+        debugfs, = metal_root.require_e2fsprogs('debugfs')
+        with metal_smb_test.SmbStagingTest().gui_root() as (image, _, _):
+            directory = image.parent / 'evidence'
+            directory.mkdir()
+            (directory / 'route.json').write_text(json.dumps({'port': 12345, 'token': 'a' * 64}))
+            subprocess.run(['bash', str(ROOT / 'scripts/write-boot-target.sh'), str(image), 'gui-apps'], check=True)
+            subprocess.run(['python3', str(ROOT / 'scripts/qemu-evidence.py'), 'stage', str(image),
+                            str(directory), '--suite', 'gui-apps'], check=True)
+            def read(command):
+                return subprocess.run([debugfs, '-R', command, str(image)], check=True, capture_output=True).stdout
+            self.assertEqual(read('cat /etc/breenix/evidence-route'),
+                             ('http://10.0.2.2:12345/gt710-upload/' + 'a' * 64 + '\n').encode())
+            stat = read('stat /etc/breenix/evidence-route').decode()
+            self.assertIn('Mode:  0400', stat)
+            self.assertRegex(stat, r'User:\s+0\s+Group:\s+0')
 
 
 if __name__ == '__main__':

@@ -362,7 +362,10 @@ if [[ "$SUITE" == *,* ]]; then
     "$ROOT/scripts/write-boot-target.sh" "$WRITABLE" "${SUITE%%,*}" \
         "$ROOT/userspace/programs/aarch64/suite-${SUITE%%,*}.elf" "$SUITE"
 fi
-# Only a standalone ui-testing launch has an evidence receiver and route.
+if [ "$MODE" = suite ] && [[ ",$SUITE," == *,gui-apps,* ]]; then
+    python3 "$ROOT/scripts/qemu-desktop-stage.py" "$WRITABLE" "$SUITE" "$ONLY"
+fi
+# Standalone UI suites have an evidence receiver and route.
 EVIDENCE_PID=
 cleanup_evidence() {
     if [ -n "$EVIDENCE_PID" ]; then
@@ -372,12 +375,12 @@ cleanup_evidence() {
     fi
 }
 trap cleanup_evidence EXIT
-if [ "$MODE" = suite ] && [ "$SUITE" = ui-testing ]; then
-    "$ROOT/scripts/write-boot-target.sh" "$WRITABLE" ui-testing
+if [ "$MODE" = suite ] && { [ "$SUITE" = ui-testing ] || [ "$SUITE" = gui-apps ]; }; then
+    "$ROOT/scripts/write-boot-target.sh" "$WRITABLE" "$SUITE"
     EVIDENCE_DIR="$SERIAL_LOG.evidence"
     mkdir -p "$EVIDENCE_DIR"
     rm -f "$EVIDENCE_DIR/route.json"
-    python3 "$ROOT/scripts/qemu-evidence.py" serve --dir "$EVIDENCE_DIR" --parent "$$" &
+    python3 "$ROOT/scripts/qemu-evidence.py" serve --dir "$EVIDENCE_DIR" --parent "$$" --suite "$SUITE" &
     EVIDENCE_PID=$!
     for ((attempt=0; attempt<100; attempt++)); do
         [ ! -f "$EVIDENCE_DIR/route.json" ] || break
@@ -385,7 +388,7 @@ if [ "$MODE" = suite ] && [ "$SUITE" = ui-testing ]; then
         sleep 0.1
     done
     [ -f "$EVIDENCE_DIR/route.json" ] || { echo "evidence receiver did not become ready" >&2; exit 1; }
-    python3 "$ROOT/scripts/qemu-evidence.py" stage "$WRITABLE" "$EVIDENCE_DIR"
+    python3 "$ROOT/scripts/qemu-evidence.py" stage "$WRITABLE" "$EVIDENCE_DIR" --suite "$SUITE"
 fi
 # The users suite's external-client cases need the boot host's real OpenSSH.
 NETDEV="user,id=net0"
