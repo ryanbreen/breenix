@@ -365,9 +365,29 @@ fi
 if [ "$MODE" = suite ] && [[ ",$SUITE," == *,gui-apps,* ]]; then
     python3 "$ROOT/scripts/qemu-desktop-stage.py" "$WRITABLE" "$SUITE" "$ONLY"
 fi
+SMB_INSTANCE=
+if [ "$MODE" = suite ] && [[ ",$SUITE," == *,gui-apps,* ]]; then
+    SMB_INSTANCE=$(PYTHONPATH="$ROOT/scripts" python3 - "$SUITE" "$ONLY" <<'PYSMB'
+import sys
+from metal.metal_root import smb_gui_selection
+from vm_site import load_site
+if smb_gui_selection('suite', sys.argv[1], sys.argv[2] or None):
+    print(load_site()['SMB_TEST_INSTANCE'])
+PYSMB
+)
+    if [ -n "$SMB_INSTANCE" ]; then
+        python3 "$ROOT/scripts/qemu-smb-restart.py" check
+    fi
+fi
 # Standalone UI suites have an evidence receiver and route.
 EVIDENCE_PID=
+SMB_PID=
 cleanup_evidence() {
+    if [ -n "$SMB_PID" ]; then
+        kill "$SMB_PID" 2>/dev/null || true
+        wait "$SMB_PID" 2>/dev/null || true
+        SMB_PID=
+    fi
     if [ -n "$EVIDENCE_PID" ]; then
         kill "$EVIDENCE_PID" 2>/dev/null || true
         wait "$EVIDENCE_PID" 2>/dev/null || true
@@ -548,6 +568,10 @@ python3 "$ROOT/scripts/watch-qemu.py" ${WATCH_READY_ARGS[@]+"${WATCH_READY_ARGS[
     -serial chardev:con -mon chardev=con,mode=readline <&3 &
 WATCHER_PID=$!
 qemu_host_lock_track_pid "$WATCHER_PID"
+if [ -n "$SMB_INSTANCE" ]; then
+    python3 "$ROOT/scripts/qemu-smb-restart.py" watch --serial "$SERIAL_LOG" --instance "$SMB_INSTANCE" &
+    SMB_PID=$!
+fi
 USERS_SSH_PID=
 if [ -n "$USERS_SSH_STATE" ]; then
     python3 "$ROOT/scripts/users-hostssh.py" watch --state "$USERS_SSH_STATE" --serial "$SERIAL_LOG" \
@@ -561,6 +585,13 @@ if [ -n "$USERS_SSH_PID" ]; then
     wait "$USERS_SSH_PID"
     ssh_code=$?
     [ "$code" -ne 0 ] || code=$ssh_code
+fi
+if [ -n "$SMB_PID" ]; then
+    kill "$SMB_PID" 2>/dev/null || true
+    wait "$SMB_PID"
+    smb_code=$?
+    SMB_PID=
+    [ "$code" -ne 0 ] || code=$smb_code
 fi
 set -e
 cleanup_evidence
