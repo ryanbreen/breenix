@@ -1,6 +1,7 @@
 #![no_std]
 
 //! Pure collaboration protocol types and framing.
+pub mod endpoint;
 pub mod host;
 pub mod queue;
 #[cfg(feature = "net")]

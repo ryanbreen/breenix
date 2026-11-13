@@ -550,6 +550,7 @@ pub struct Session {
 #[cfg(target_os = "breenix")]
 impl Session {
     pub fn host(
+        address: [u8; 4],
         port: u16,
         name: &str,
         canvas: Canvas,
@@ -558,12 +559,12 @@ impl Session {
     ) -> Result<Self, libbreenix::error::Error> {
         Ok(Self {
             core: Core::host(name, canvas, width, height),
-            transport: libcollab::net::TcpTransport::bind(port)?,
+            transport: libcollab::net::TcpTransport::bind(address, port)?,
         })
     }
-    pub fn join(port: u16, name: &str) -> Result<Self, libbreenix::error::Error> {
+    pub fn join(address: [u8; 4], port: u16, name: &str) -> Result<Self, libbreenix::error::Error> {
         let mut transport = libcollab::net::TcpTransport::client();
-        transport.connect(port)?;
+        transport.connect(address, port)?;
         Ok(Self {
             core: Core::join(name),
             transport,

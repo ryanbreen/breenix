@@ -299,39 +299,8 @@ fn handle(app: &mut App, menu: &mut MenuBar, delivered: &breengel::Delivered) ->
     menu.set_enabled(REDO, app.redo_depth() > 0);
     Handled::Redraw
 }
-struct Options {
-    width:usize, height:usize, file:Option<String>, session:Option<(bool,u16,String)>,
-}
-impl Options {
-    fn parse(args:impl Iterator<Item=String>)->Result<Self,&'static str> {
-        let mut options=Self {width:800,height:424,file:None,session:None};
-        let mut mode=None; let mut name=None; let mut args=args;
-        let usage="usage: guskit [--canvas WxH] [--host PORT | --join PORT] [--name NAME] [FILE]";
-        while let Some(arg)=args.next() {
-            match arg.as_str() {
-                "--canvas"=>{
-                    let value=args.next().ok_or(usage)?;
-                    let (w,h)=value.split_once('x').ok_or(usage)?;
-                    options.width=w.parse().map_err(|_|usage)?;options.height=h.parse().map_err(|_|usage)?;
-                    if options.width==0||options.width>800||options.height==0||options.height>424 {return Err(usage);}
-                }
-                "--host"|"--join"=>{
-                    if mode.is_some(){return Err(usage);}
-                    let port=args.next().ok_or(usage)?.parse::<u16>().map_err(|_|usage)?;
-                    if port==0{return Err(usage);}
-                    mode=Some((arg=="--host",port));
-                }
-                "--name"=>{if name.is_some(){return Err(usage);} let value=args.next().ok_or(usage)?;
-                    if value.is_empty()||value.len()>64||value.chars().any(char::is_control){return Err(usage);}
-                    name=Some(value);
-                }
-                _=>{if arg.starts_with('-')||options.file.is_some(){return Err(usage);} options.file=Some(arg);}
-            }
-        }
-        options.session=match (mode,name) { (Some((host,port)),Some(name))=>Some((host,port,name)),(None,None)=>None,_=>return Err(usage) };
-        Ok(options)
-    }
-}
+#[path = "guskit/options.rs"] mod options;
+use options::Options;
 fn main() {
     let options=Options::parse(std::env::args().skip(1)).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(2) });
     let (width,height)=(options.width,options.height);
@@ -339,8 +308,8 @@ fn main() {
     let image = Canvas::new(width,height); let clean = image.digest();
     let mut app = App { width,height,history: History::new(image),clean,tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0,0,0],[255,0,0],[0,255,0],[0,0,255],[255,255,0],[255,0,255],[0,255,255],[128,128,128]],confirm:false,quit:false,file:next.map(PathBuf::from),message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None };
     if let Some(path) = app.file.clone() { if path.exists() { app.open_file(path); } }
-    if let Some((host,port,name))=options.session {
-        let result=if host {collab::Session::host(port,&name,app.canvas().clone(),width,height)} else {collab::Session::join(port,&name)};
+    if let Some((host,address,port,name))=options.session {
+        let result=if host {collab::Session::host(address,port,&name,app.canvas().clone(),width,height)} else {collab::Session::join(address,port,&name)};
         app.session=Some(result.unwrap_or_else(|e| {eprintln!("Gus Kit session: {e}");std::process::exit(1)}));
     }
     let title=app.session.as_ref().map_or_else(||"Gus Kit".into(),|s|format!("Gus Kit ({})",s.core.model.name));
