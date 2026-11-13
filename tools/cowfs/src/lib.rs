@@ -1,5 +1,10 @@
 #![no_std]
 
+extern crate alloc;
+
+#[path = "../../../kernel/src/fs/cowfs/format.rs"]
+pub mod format;
+
 #[path = "../../../kernel/src/fs/cowfs/crc32c.rs"]
 pub mod crc32c;
 #[path = "../../../kernel/src/fs/cowfs/siphash.rs"]
