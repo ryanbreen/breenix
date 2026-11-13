@@ -462,7 +462,8 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
         Ok(cred) => cred,
         Err(errno) => return SyscallResult::Err(errno),
     };
-    loop {
+    // Bound namespace contention so the syscall returns to signal delivery.
+    for _ in 0..16 {
         let resolved = match super::metadata::resolve_at(dirfd, &raw, follow, &cred) {
             Ok(r) => r,
             Err(e) => return SyscallResult::Err(e),
@@ -595,6 +596,7 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
         }
         return sys_open_install(reserved, entry);
     }
+    SyscallResult::Err(super::errno::EAGAIN as u64)
 }
 
 /// A modifying open holds its descriptor slot before entering the filesystem.
@@ -1447,7 +1449,8 @@ fn remove_entry(
     cred: &FileCredentials,
 ) -> Result<(), crate::fs::errno::Errno> {
     use crate::fs::{errno::Errno, vfs::{names, Remove}};
-    loop {
+    // Bound namespace contention so the syscall returns to signal delivery.
+    for _ in 0..16 {
         let (fs, parent, attrs) = names::entry_dir(resolved)?;
         let expected = fs.lookup(parent.ino, resolved.final_name())?;
         let victim = fs.getattr(expected)?;
@@ -1463,6 +1466,7 @@ fn remove_entry(
             result => return result,
         }
     }
+    Err(Errno(super::errno::EAGAIN))
 }
 
 /// sys_rename - Rename/move a file or directory
@@ -4095,7 +4099,8 @@ fn update_inode_timestamps(
     access: crate::fs::vfs::attributes::TimesAccess,
 ) -> SyscallResult {
     use crate::fs::vfs::attributes::timestamp_change;
-    loop {
+    // Bound namespace contention so the syscall returns to signal delivery.
+    for _ in 0..16 {
         let attrs = match fs.getattr(ino) {
             Ok(attrs) => attrs.attrs,
             Err(error) => return SyscallResult::Err(error.into()),
@@ -4110,6 +4115,7 @@ fn update_inode_timestamps(
             Err(error) => return SyscallResult::Err(error.into()),
         }
     }
+    SyscallResult::Err(super::errno::EAGAIN as u64)
 }
 
 /// Flush the open inode's data and metadata through its filesystem.

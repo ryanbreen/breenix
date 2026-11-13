@@ -548,8 +548,12 @@ impl FileSystem for Ext2Adapter {
         let fs = guard.as_mut().ok_or(Errno(EIO))?;
         let dir = parent.verify(fs).map_err(errno)?;
         let (_, parent_inode) = directory(fs, dir.into())?;
-        let victim = fs.lookup_in_dir_bytes(&parent_inode, name).map_err(errno)?
-            .ok_or(Errno(ENOENT))?;
+        let victim = self.lookup_in(fs, dir.into(), name)?.ok_or(Errno(ENOENT))?;
+        // The visible entry may be a generation bind rather than its raw
+        // placeholder. Reject directory unlink before comparing retry inputs.
+        if !which.directory && fs.read_inode(victim).map_err(errno)?.is_dir() {
+            return Err(Errno(EISDIR));
+        }
         if u64::from(victim) != which.expected
             || parent_inode.attrs() != which.parent
             || fs.read_inode(victim).map_err(errno)?.uid() != which.owner

@@ -67,7 +67,8 @@ pub(crate) fn resolve_create_at(fd: i32, path: &[u8], cred: &Credentials) -> Res
 }
 
 fn update(fs: &dyn FileSystem, ino: u64, change: Change, cred: &Credentials) -> SyscallResult {
-    loop {
+    // Bound metadata contention so the syscall returns to signal delivery.
+    for _ in 0..16 {
         let attrs = match fs.getattr(ino) {
             Ok(attrs) => attrs.attrs,
             Err(error) => return SyscallResult::Err(error.into()),
@@ -82,6 +83,7 @@ fn update(fs: &dyn FileSystem, ino: u64, change: Change, cred: &Credentials) -> 
             Err(error) => return SyscallResult::Err(error.into()),
         }
     }
+    SyscallResult::Err(EAGAIN as u64)
 }
 
 fn fifo(
