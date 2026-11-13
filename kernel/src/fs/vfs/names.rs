@@ -21,3 +21,17 @@ pub fn entry_dir(
     let attrs = fs.getattr(parent.ino)?;
     Ok((fs, parent, attrs))
 }
+
+/// Retain the resolved target through the trait, checking its saved incarnation.
+pub fn target(
+    resolved: &Resolved<Vec<u8>>,
+) -> Result<(Arc<dyn FileSystem>, Arc<VNode>), Errno> {
+    let mount = resolved.mount().ok_or(Errno(EIO))?;
+    let held = resolved.handle().ok_or(Errno(ENOENT))?;
+    let fs = super::mount::filesystem(mount.0)?;
+    let node = fs.open(held.object.key.inode.into())?;
+    if node.mount != held.object.mount.mount_id || node.incarnation != held.object.key.incarnation {
+        return Err(Errno(ENOENT));
+    }
+    Ok((fs, node))
+}

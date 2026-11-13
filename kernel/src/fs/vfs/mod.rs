@@ -137,6 +137,11 @@ pub enum RenameMode {
     NoReplace,
     Exchange,
 }
+/// Pure VFS policy, called under backend mutation exclusion on fresh attributes.
+/// These callbacks must not acquire filesystem or process-manager locks.
+pub type LinkCheck<'a> = dyn Fn(NodeAttrs, NodeAttrs) -> Result<(), Errno> + 'a;
+pub type RenameCheck<'a> =
+    dyn Fn(NodeAttrs, NodeAttrs, NodeAttrs, Option<NodeAttrs>) -> Result<(), Errno> + 'a;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WriteAt {
     Offset(u64),
@@ -244,8 +249,11 @@ pub trait FileSystem: core::any::Any + Send + Sync {
         sink: &mut dyn FnMut(DirEnt, u64) -> Result<bool, Errno>,
     ) -> Result<u64, Errno>;
     fn create(&self, dir: u64, name: &[u8], node: NewNode<'_>) -> Result<u64, Errno>;
-    fn link(&self, ino: u64, dir: u64, name: &[u8]) -> Result<(), Errno>;
+    /// Refuse directory hard links with EPERM. Check VFS policy before mutation.
+    fn link(&self, ino: u64, dir: u64, name: &[u8], check: &LinkCheck<'_>) -> Result<(), Errno>;
     fn remove(&self, dir: u64, name: &[u8], which: Remove) -> Result<(), Errno>;
+    /// Refuse a directory moved into itself or a descendant with EINVAL.
+    /// Check VFS policy after waits and before changing either entry.
     fn rename(
         &self,
         from_dir: u64,
@@ -253,6 +261,7 @@ pub trait FileSystem: core::any::Any + Send + Sync {
         to_dir: u64,
         to: &[u8],
         mode: RenameMode,
+        check: &RenameCheck<'_>,
     ) -> Result<(), Errno>;
     fn readlink(&self, ino: u64) -> Result<Vec<u8>, Errno>;
     // Data

@@ -1891,11 +1891,8 @@ pub fn sys_rename(oldpath: u64, newpath: u64) -> SyscallResult {
     sys_rename_from(AT_FDCWD, oldpath, AT_FDCWD, newpath)
 }
 fn sys_rename_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> SyscallResult {
-    use super::errno::{
-        EBUSY, EINVAL, EIO, EISDIR, EMLINK, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY, EXDEV,
-    };
-    use crate::fs::ext2::RenameError;
-    use crate::fs::namei::{Last, Target};
+    use super::errno::{EBUSY, EINVAL, ENOENT, EXDEV};
+    use crate::fs::{errno::Errno, namei::{Last, Target}, vfs::{names, NodeKind, RenameMode}};
 
     // rename acts on the names themselves: neither final symlink is followed.
     let old = match resolve_user_rename_at(olddirfd, oldpath) {
@@ -1946,89 +1943,31 @@ fn sys_rename_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> 
     if new.mount() != Some(mount) {
         return SyscallResult::Err(EXDEV as u64);
     }
-    let (Some(old_dir), Some(new_dir)) = (old.entry_dir(), new.entry_dir()) else {
-        return SyscallResult::Err(EIO as u64);
-    };
-    // A pathname ending in `/` names a directory.
-    let want_dir = old.trailing_slash || new.trailing_slash;
-
     let cred = match current_file_credentials() {
         Ok(cred) => cred,
         Err(errno) => return SyscallResult::Err(errno),
     };
-    let result = {
-        let mut fs_guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
-        match fs_guard.as_mut() {
-            Some(fs) => {
-                let (Ok(old_parent), Ok(new_parent)) = (old_dir.verify(fs), new_dir.verify(fs))
-                else {
-                    return SyscallResult::Err(ENOENT as u64);
-                };
-                for (parent, name, required) in [
-                    (old_parent, old.final_name(), true),
-                    (new_parent, new.final_name(), false),
-                ] {
-                    let inode = match fs.read_inode(parent).map_err(ext2_errno) {
-                        Ok(inode) => inode,
-                        Err(e) => return SyscallResult::Err(e.into()),
-                    };
-                    let target = match fs.lookup_in_dir(&inode, name).map_err(ext2_errno) {
-                        Ok(ino) => ino,
-                        Err(e) => return SyscallResult::Err(e.into()),
-                    };
-                    if required && target.is_none() {
-                        return SyscallResult::Err(ENOENT as u64);
-                    }
-                    let owner = match target {
-                        Some(ino) => match fs.read_inode(ino).map_err(ext2_errno) {
-                            Ok(inode) => {
-                                if required
-                                    && old_parent != new_parent
-                                    && inode.is_dir()
-                                    && !cred.may(inode.attrs(), 2)
-                                {
-                                    return SyscallResult::Err(13);
-                                }
-                                Some(inode.uid())
-                            }
-                            Err(e) => return SyscallResult::Err(e.into()),
-                        },
-                        None => None,
-                    };
-                    if let Err(e) = super::fifo_policy::check_parent_access(inode.attrs(), inode.i_links_count.into(), &cred, owner) {
-                        return SyscallResult::Err(e);
-                    }
+    let result = (|| {
+        let (fs, old_dir, _) = names::entry_dir(&old)?;
+        let (_, new_dir, _) = names::entry_dir(&new)?;
+        fs.rename(old_dir.ino, old.final_name(), new_dir.ino, new.final_name(), RenameMode::Replace,
+            &|parent, dest_parent, source, victim| {
+                super::fifo_policy::check_parent_access(parent.attrs, parent.nlink, &cred, Some(source.attrs.uid))
+                    .map_err(|errno| Errno(errno as i32))?;
+                super::fifo_policy::check_parent_access(dest_parent.attrs, dest_parent.nlink, &cred, victim.map(|v| v.attrs.uid))
+                    .map_err(|errno| Errno(errno as i32))?;
+                if old_dir.ino != new_dir.ino && source.kind == NodeKind::Directory && !cred.may(source.attrs, 2) {
+                    return Err(Errno(super::errno::EACCES));
                 }
-                fs.rename(
-                    old_dir,
-                    old.final_name(),
-                    new_dir,
-                    new.final_name(),
-                    want_dir,
-                )
-            }
-            None => return SyscallResult::Err(EIO as u64),
-        }
-    };
-
+                if (old.trailing_slash || new.trailing_slash) && source.kind != NodeKind::Directory {
+                    return Err(Errno(super::errno::ENOTDIR));
+                }
+                Ok(())
+            })
+    })();
     match result {
         Ok(()) => SyscallResult::Ok(0),
-        Err(e) => {
-            log::debug!("sys_rename: failed: {:?}", e);
-            let errno = match e {
-                RenameError::NotFound => ENOENT,
-                RenameError::NotDirectory => ENOTDIR,
-                RenameError::IsDirectory => EISDIR,
-                RenameError::NotEmpty => ENOTEMPTY,
-                RenameError::Invalid => EINVAL,
-                RenameError::Busy => EBUSY,
-                RenameError::NoSpace => ENOSPC,
-                RenameError::TooManyLinks => EMLINK,
-                RenameError::Io => EIO,
-                RenameError::NoMemory => super::errno::ENOMEM,
-            };
-            SyscallResult::Err(errno as u64)
-        }
+        Err(errno) => SyscallResult::Err(errno.into()),
     }
 }
 
@@ -2129,11 +2068,9 @@ pub fn sys_link(oldpath: u64, newpath: u64) -> SyscallResult {
     sys_link_from(AT_FDCWD, oldpath, AT_FDCWD, newpath)
 }
 fn sys_link_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> SyscallResult {
-    use super::errno::{EEXIST, EIO, ENOENT, EPERM, EXDEV};
-    use crate::fs::ext2::FileType;
-    use crate::fs::namei::{Last, Target};
+    use super::errno::{EEXIST, ENOENT, EPERM, EXDEV};
+    use crate::fs::{errno::Errno, namei::{Last, Target}, vfs::names};
 
-    // As on Linux, link() names a final symlink in oldpath itself.
     let old = match resolve_user_at(olddirfd, oldpath, false) {
         Ok(r) => r,
         Err(e) => return e,
@@ -2148,19 +2085,18 @@ fn sys_link_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> Sy
     }
     log::debug!("sys_link: oldpath={}, newpath={}", String::from_utf8_lossy(&old.path), String::from_utf8_lossy(&new.path));
 
-    if matches!(old.target, Target::User { .. }) || matches!(new.target, Target::User { .. }) {
-        return SyscallResult::Err(super::errno::EPERM as u64);
-    }
     let mount = match old.target {
-        Target::User { .. } => return SyscallResult::Err(super::errno::EPERM as u64),
-        Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
+        Target::Absent { .. } | Target::User { node: 0, .. } => return SyscallResult::Err(ENOENT as u64),
+        Target::User { mount, .. } => return SyscallResult::Err(match new.target {
+            Target::User { mount: dest, .. } if mount == dest => EPERM,
+            _ => EXDEV,
+        } as u64),
         Target::Virtual => return SyscallResult::Err(EXDEV as u64),
-        Target::Inode {
-            file_type: FileType::Directory,
-            ..
-        } => return SyscallResult::Err(EPERM as u64),
         Target::Inode { mount, .. } => mount,
     };
+    if new.mount() != Some(mount) {
+        return SyscallResult::Err(EXDEV as u64);
+    }
     match new.target {
         Target::Inode { .. } => return SyscallResult::Err(EEXIST as u64),
         _ if new.last != Last::Name => return SyscallResult::Err(EEXIST as u64),
@@ -2177,36 +2113,18 @@ fn sys_link_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> Sy
         Ok(cred) => cred,
         Err(errno) => return SyscallResult::Err(errno),
     };
-    let link_result = {
-        let (Some(source), Some(parent)) = (old.handle(), new.entry_dir()) else {
-            return SyscallResult::Err(EIO as u64);
-        };
-        let mut guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
-        let Some(fs) = guard.as_mut() else {
-            return SyscallResult::Err(EIO as u64);
-        };
-        let source = match source.verify(fs) {
-            Ok(ino) => ino,
-            Err(_) => return SyscallResult::Err(ENOENT as u64),
-        };
-        let parent = match parent.verify(fs) {
-            Ok(ino) => ino,
-            Err(_) => return SyscallResult::Err(ENOENT as u64),
-        };
-        let inode = match fs.read_inode(parent).map_err(ext2_errno) {
-            Ok(inode) => inode,
-            Err(e) => return SyscallResult::Err(e.into()),
-        };
-        if let Err(e) = super::fifo_policy::check_parent_access(inode.attrs(), inode.i_links_count.into(), &cred, None) {
-            return SyscallResult::Err(e);
-        }
-        match fs.read_inode(source).map_err(ext2_errno) {
-            Ok(target) if !may_link(&cred, target.attrs()) => return SyscallResult::Err(EPERM as u64),
-            Ok(_) => {}
-            Err(e) => return SyscallResult::Err(e.into()),
-        }
-        fs.link_in_dir(source, parent, new.final_name()).map_err(ext2_errno)
-    };
+    let link_result = (|| {
+        let (fs, source) = names::target(&old)?;
+        let (_, parent, _) = names::entry_dir(&new)?;
+        fs.link(source.ino, parent.ino, new.final_name(), &|parent, target| {
+            super::fifo_policy::check_parent_access(parent.attrs, parent.nlink, &cred, None)
+                .map_err(|errno| Errno(errno as i32))?;
+            if !may_link(&cred, target.attrs) {
+                return Err(Errno(EPERM));
+            }
+            Ok(())
+        })
+    })();
 
     match link_result {
         Ok(()) => {

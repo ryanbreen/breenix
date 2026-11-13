@@ -42,18 +42,39 @@ fn directory_links_and_descendant_renames_are_refused() {
     let parent = fs.create(root, b"parent", NewNode::Directory { attrs: attrs(0o755) }).unwrap();
     let child = fs.create(parent, b"child", NewNode::Directory { attrs: attrs(0o755) }).unwrap();
     let before = fs.getattr(parent).unwrap();
-    assert_eq!(fs.link(parent, root, b"alias"), Err(Errno(EPERM)));
+    assert_eq!(fs.link(parent, root, b"alias", &|_, _| Ok(())), Err(Errno(EPERM)));
     assert_eq!(fs.lookup(root, b"alias"), Err(Errno(ENOENT)));
     for destination in [parent, child] {
-        assert_eq!(fs.rename(root, b"parent", destination, b"cycle", RenameMode::Replace), Err(Errno(EINVAL)));
+        assert_eq!(fs.rename(root, b"parent", destination, b"cycle", RenameMode::Replace, &|_, _, _, _| Ok(())), Err(Errno(EINVAL)));
         assert_eq!(fs.lookup(root, b"parent"), Ok(parent));
         assert_eq!(fs.lookup(parent, b"child"), Ok(child));
         assert_eq!(fs.lookup(destination, b"cycle"), Err(Errno(ENOENT)));
         assert_eq!(fs.getattr(parent).unwrap(), before);
     }
     let file = regular(fs, parent, b"file");
-    fs.link(file, root, b"alias").unwrap();
-    fs.rename(parent, b"child", root, b"moved", RenameMode::Replace).unwrap();
+    // Policy sees current attributes and can refuse before a name changes.
+    fs.setattr(parent, SetAttr { mode: Some(0o1777), ..SetAttr::default() }).unwrap();
+    fs.setattr(file, SetAttr { uid: Some(90001), ..SetAttr::default() }).unwrap();
+    assert_eq!(fs.link(file, parent, b"denied", &|dir, source| {
+        assert_eq!(dir.attrs.mode & 0o7777, 0o1777);
+        assert_eq!(source.attrs.uid, 90001);
+        Err(Errno(EPERM))
+    }), Err(Errno(EPERM)));
+    assert_eq!(fs.lookup(parent, b"denied"), Err(Errno(ENOENT)));
+    assert_eq!(fs.getattr(file).unwrap().nlink, 1);
+    let victim = regular(fs, root, b"victim");
+    assert_eq!(fs.rename(parent, b"file", root, b"victim", RenameMode::Replace,
+        &|from, to, source, dest| {
+            assert_eq!(from.attrs.mode & 0o7777, 0o1777);
+            assert_eq!(to.ino, root);
+            assert_eq!(source.attrs.uid, 90001);
+            assert_eq!(dest.unwrap().ino, victim);
+            Err(Errno(EPERM))
+        }), Err(Errno(EPERM)));
+    assert_eq!(fs.lookup(parent, b"file"), Ok(file));
+    assert_eq!(fs.lookup(root, b"victim"), Ok(victim));
+    fs.link(file, root, b"alias", &|_, _| Ok(())).unwrap();
+    fs.rename(parent, b"child", root, b"moved", RenameMode::Replace, &|_, _, _, _| Ok(())).unwrap();
     assert_eq!(fs.lookup(root, b"alias"), Ok(file));
     assert_eq!(fs.lookup(root, b"moved"), Ok(child));
 }
@@ -67,7 +88,7 @@ fn rename_noreplace_refuses_existing() {
     let source = regular(fs, root, b"source");
     let target = regular(fs, root, b"target");
     assert_eq!(
-        fs.rename(root, b"source", root, b"target", RenameMode::NoReplace),
+        fs.rename(root, b"source", root, b"target", RenameMode::NoReplace, &|_, _, _, _| Ok(())),
         Err(Errno(EEXIST))
     );
     assert_eq!(fs.lookup(root, b"source"), Ok(source));
@@ -75,18 +96,18 @@ fn rename_noreplace_refuses_existing() {
     assert_eq!(fs.getattr(source).unwrap().nlink, 1);
     assert_eq!(fs.getattr(target).unwrap().nlink, 1);
     assert_eq!(
-        fs.rename(root, b"source", root, b"source", RenameMode::NoReplace),
+        fs.rename(root, b"source", root, b"source", RenameMode::NoReplace, &|_, _, _, _| Ok(())),
         Err(Errno(EEXIST))
     );
     assert_eq!(
-        fs.rename(root, b"source", root, b"target", RenameMode::Exchange),
+        fs.rename(root, b"source", root, b"target", RenameMode::Exchange, &|_, _, _, _| Ok(())),
         Err(Errno(EINVAL))
     );
-    fs.rename(root, b"source", root, b"fresh", RenameMode::NoReplace)
+    fs.rename(root, b"source", root, b"fresh", RenameMode::NoReplace, &|_, _, _, _| Ok(()))
         .unwrap();
     assert_eq!(fs.lookup(root, b"source"), Err(Errno(ENOENT)));
     assert_eq!(fs.lookup(root, b"fresh"), Ok(source));
-    fs.rename(root, b"fresh", root, b"target", RenameMode::Replace)
+    fs.rename(root, b"fresh", root, b"target", RenameMode::Replace, &|_, _, _, _| Ok(()))
         .unwrap();
     assert_eq!(fs.lookup(root, b"fresh"), Err(Errno(ENOENT)));
     assert_eq!(fs.lookup(root, b"target"), Ok(source));
@@ -239,7 +260,7 @@ fn names_link_counts_and_typed_removal() {
         fs.remove(file, b"child", removal(fs, file, file, false)),
         Err(Errno(ENOTDIR))
     );
-    fs.link(file, root, b"alias").unwrap();
+    fs.link(file, root, b"alias", &|_, _| Ok(())).unwrap();
     assert_eq!(fs.getattr(file).unwrap().nlink, 2);
     fs.remove(dir, b"file", removal(fs, dir, file, false)).unwrap();
     assert_eq!(fs.getattr(file).unwrap().nlink, 1);
@@ -939,7 +960,7 @@ fn removal_rechecks_identity_owner_and_parent_policy() {
         let parent = fs.getattr(root).unwrap().attrs;
         let owner = fs.getattr(victim).unwrap().attrs.uid;
         let request = Remove { directory, expected: victim, owner, parent };
-        fs.rename(root, b"victim", root, b"moved", RenameMode::Replace).unwrap();
+        fs.rename(root, b"victim", root, b"moved", RenameMode::Replace, &|_, _, _, _| Ok(())).unwrap();
         let replacement = fs.create(root, b"victim", if directory {
             NewNode::Directory { attrs: attrs(0o755) }
         } else {

@@ -59,7 +59,7 @@ fn cover_enters_by_inode_after_parent_rename() {
         Some((native, covered)),
         Some((native, ancestor)),
     );
-    fs.rename(root, b"old", root, b"new", RenameMode::Replace)
+    fs.rename(root, b"old", root, b"new", RenameMode::Replace, &|_, _, _, _| Ok(()))
         .unwrap();
     let moved = fs
         .lookup(fs.lookup(root, b"new").unwrap(), b"mount")

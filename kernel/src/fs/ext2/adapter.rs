@@ -486,11 +486,13 @@ impl FileSystem for Ext2Adapter {
         .map_err(errno)
     }
 
-    fn link(&self, ino: u64, dir: u64, name: &[u8]) -> Result<(), Errno> {
+    fn link(&self, ino: u64, dir: u64, name: &[u8], check: &crate::fs::vfs::LinkCheck<'_>) -> Result<(), Errno> {
         component(name)?;
         let mut guard = write_mount(self.mount).map_err(errno)?;
         let fs = guard.as_mut().ok_or(Errno(EIO))?;
-        let (dir, _) = directory(fs, dir)?;
+        let (dir, parent) = directory(fs, dir)?;
+        let source = fs.read_inode(ext2::ino32(ino)?).map_err(errno)?;
+        check(attributes(dir.into(), &parent)?, attributes(ino, &source)?)?;
         fs.link_in_dir(ext2::ino32(ino)?, dir, name).map_err(errno)
     }
 
@@ -531,6 +533,7 @@ impl FileSystem for Ext2Adapter {
         to_dir: u64,
         to: &[u8],
         mode: RenameMode,
+        check: &crate::fs::vfs::RenameCheck<'_>,
     ) -> Result<(), Errno> {
         if mode == RenameMode::Exchange {
             return Err(Errno(EINVAL));
@@ -551,6 +554,13 @@ impl FileSystem for Ext2Adapter {
         guard = guard.wait_for_entry_data(&new, to).map_err(errno)?;
         let fs = guard.as_mut().ok_or(Errno(EIO))?;
         fs.ensure_writable().map_err(errno)?;
+        let (from_dir, parent) = directory(fs, old.verify(fs).map_err(errno)?.into())?;
+        let (to_dir, dest_parent) = directory(fs, new.verify(fs).map_err(errno)?.into())?;
+        let source = fs.lookup_in_dir_bytes(&parent, from).map_err(errno)?.ok_or(Errno(ENOENT))?;
+        let source_attrs = attributes(source.into(), &fs.read_inode(source).map_err(errno)?)?;
+        let victim = fs.lookup_in_dir_bytes(&dest_parent, to).map_err(errno)?
+            .map(|ino| attributes(ino.into(), &fs.read_inode(ino).map_err(errno)?)).transpose()?;
+        check(attributes(from_dir.into(), &parent)?, attributes(to_dir.into(), &dest_parent)?, source_attrs, victim)?;
         if mode == RenameMode::NoReplace {
             let dest = fs
                 .read_inode(new.verify(fs).map_err(errno)?)
