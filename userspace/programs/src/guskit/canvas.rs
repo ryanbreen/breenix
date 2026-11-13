@@ -44,7 +44,7 @@ impl Canvas {
         }
     }
     /// Extend the image with white pixels, preserving the original coordinates.
-    fn grow(&mut self, width: usize, height: usize) {
+    pub(crate) fn grow(&mut self, width: usize, height: usize) {
         let width = width.max(self.width);
         let height = height.max(self.height);
         if width == self.width && height == self.height { return; }
@@ -56,6 +56,7 @@ impl Canvas {
         }
         *self = grown;
     }
+    pub fn dimensions(&self) -> (usize, usize) { (self.width, self.height) }
     pub(crate) fn pixels_mut(&mut self) -> &mut [u8] { &mut self.pixels }
     pub fn pixels(&self) -> &[u8] {
         &self.pixels

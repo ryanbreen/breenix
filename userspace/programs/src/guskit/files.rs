@@ -20,6 +20,7 @@ pub fn encode(name: &str, canvas: &Canvas, width: usize, height: usize) -> Resul
     }
 }
 
+/// A zero extent preserves the corresponding native image dimension.
 pub fn decode(name: &str, bytes: &[u8], width: usize, height: usize) -> Result<(Canvas, Option<String>), String> {
     let (w, h, rgb) = match format(name)? {
         "bmp" => { let image = libimg::bmp::decode_bmp(bytes).map_err(|e| format!("BMP decode: {e:?}"))?; (image.width, image.height, image.rgb) },
@@ -30,6 +31,8 @@ pub fn decode(name: &str, bytes: &[u8], width: usize, height: usize) -> Result<(
             (image.width, image.height, rgb)
         }
     };
+    let width = if width == 0 { w as usize } else { width };
+    let height = if height == 0 { h as usize } else { height };
     let mut canvas = Canvas::new(width, height);
     let copy_width = width.min(w as usize) * 3;
     for y in 0..height.min(h as usize) {

@@ -120,9 +120,16 @@ impl App {
         }
     }
     fn open_file(&mut self, path: PathBuf) {
-        let result = std::fs::read(&path).map_err(|e| e.to_string()).and_then(|bytes| files::decode(&path.to_string_lossy(), &bytes, self.width, self.height));
+        let result = std::fs::read(&path).map_err(|e| e.to_string()).and_then(|bytes| files::decode(&path.to_string_lossy(), &bytes, 0, 0));
         match result {
-            Ok((image, message)) => { self.clean = image.digest(); self.history.push(image); self.file = Some(path); self.message = message.unwrap_or_default(); },
+            Ok((mut image, message)) => {
+                let (width, height) = image.dimensions();
+                self.width = self.width.max(width); self.height = self.height.max(height);
+                image.grow(self.width, self.height);
+                self.history.grow(self.width, self.height);
+                self.clean = image.digest(); self.history.push(image);
+                self.file = Some(path); self.message = message.unwrap_or_default();
+            },
             Err(e) => self.message = e,
         }
     }
@@ -496,7 +503,7 @@ fn main() {
     let mut app = App { damage: None, layout, width,height,history: History::new(image),clean,tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0,0,0],[255,0,0],[0,255,0],[0,0,255],[255,255,0],[255,0,255],[0,255,255],[128,128,128]],confirm:false,quit:false,file:next.map(PathBuf::from),message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
     if let Some(path) = app.file.clone() { if path.exists() { app.open_file(path); } }
     if let Some((host,address,port,name))=options.session {
-        let result=if host {collab::Session::host(address,port,&name,app.canvas().clone(),width,height)} else {collab::Session::join(address,port,&name)};
+        let result=if host {collab::Session::host(address,port,&name,app.canvas().clone(),app.width,app.height)} else {collab::Session::join(address,port,&name)};
         app.session=Some(result.unwrap_or_else(|e| {eprintln!("Gus Kit session: {e}");std::process::exit(1)}));
     }
     let mut title=app.session.as_ref().map_or_else(||"Gus Kit".into(),|s|session_title(&s.core.model.name));
