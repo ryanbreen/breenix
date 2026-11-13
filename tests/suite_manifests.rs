@@ -1042,6 +1042,24 @@ fn sdk_host_records_match_the_manifest_and_the_guest() {
 }
 
 #[test]
+fn filesystem_host_records_match_the_manifest_and_the_guest() {
+    let root = repo_root();
+    let manifest: Value = serde_json::from_str(&fs::read_to_string(root.join("docs/suites/filesystem.json")).unwrap()).unwrap();
+    let ids: Vec<String> = manifest["categories"].as_array().unwrap().iter().flat_map(|category| {
+        category["cases"].as_array().unwrap().iter().map(move |case| {
+            format!("{}/{}", category["id"].as_str().unwrap(), case["id"].as_str().unwrap())
+        })
+    }).collect();
+    let expected = ["format/mkfs-empty-clean", "format/mkfs-populate-clean", "format/reproducible-image", "format/violations-refused"];
+    assert_eq!(ids, expected);
+    let mut written = sdk_harness_cases(&fs::read_to_string(root.join("scripts/filesystem-suite.py")).unwrap());
+    assert_eq!(written, ids, "host records differ from manifest order");
+    written.sort();
+    let read = sdk_guest_reads(&fs::read_to_string(root.join("userspace/programs/src/suite_filesystem.rs")).unwrap());
+    assert_eq!(read, written, "guest records differ from host records");
+}
+
+#[test]
 fn sdk_record_tables_are_read_exactly() {
     let harness = "X = 1\nHOST_CASES = (\n    'a/b', 'c/d',\n    'e/f',\n)\nY = ('g/h',)\n";
     assert_eq!(sdk_harness_cases(harness), ["a/b", "c/d", "e/f"]);
