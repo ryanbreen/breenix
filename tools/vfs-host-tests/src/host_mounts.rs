@@ -6,7 +6,10 @@ use crate::{
 use std::{
     collections::BTreeMap,
     ops::{Deref, DerefMut},
-    sync::{Mutex, MutexGuard},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, MutexGuard,
+    },
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,8 +61,11 @@ pub fn write_mount(pin: MountPin) -> Result<Guard, &'static str> {
     read_mount(pin)
 }
 
-struct Disk(Mutex<Vec<u8>>);
+struct Disk(Mutex<Vec<u8>>, Arc<AtomicBool>);
 impl block::BlockDevice for Disk {
+    fn is_read_only(&self) -> bool {
+        self.1.load(Ordering::Acquire)
+    }
     fn read_block(&self, sector: u64, out: &mut [u8]) -> Result<(), block::BlockError> {
         let start = sector as usize * 512;
         let bytes = self.0.lock().unwrap();
@@ -70,6 +76,9 @@ impl block::BlockDevice for Disk {
         Ok(())
     }
     fn write_block(&self, sector: u64, input: &[u8]) -> Result<(), block::BlockError> {
+        if self.is_read_only() {
+            return Err(block::BlockError::IoError);
+        }
         let start = sector as usize * 512;
         let mut bytes = self.0.lock().unwrap();
         let data = bytes
@@ -89,7 +98,7 @@ impl block::BlockDevice for Disk {
     }
 }
 
-pub struct Fixture(MountPin);
+pub struct Fixture(MountPin, Arc<AtomicBool>);
 impl Fixture {
     pub fn new() -> Self {
         let mut bytes = vec![0; 512 * 4096];
@@ -111,7 +120,12 @@ impl Fixture {
         group.bg_inode_bitmap = 4;
         group.bg_free_blocks_count = 490;
         group.bg_free_inodes_count = 126;
-        let mut fs = Ext2Fs::host_new(Box::new(Disk(Mutex::new(bytes))), sb, vec![group]);
+        let read_only = Arc::new(AtomicBool::new(false));
+        let mut fs = Ext2Fs::host_new(
+            Box::new(Disk(Mutex::new(bytes), read_only.clone())),
+            sb,
+            vec![group],
+        );
         let mut root = Ext2Inode::new_directory(0o755);
         root.i_size = 4096;
         root.i_blocks = 8;
@@ -122,10 +136,16 @@ impl Fixture {
             .unwrap();
         let id = NEXT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         MOUNTS.lock().unwrap().insert(id, Some(fs));
-        Self(MountPin {
-            mount_id: id,
-            instance: id as u64,
-        })
+        Self(
+            MountPin {
+                mount_id: id,
+                instance: id as u64,
+            },
+            read_only,
+        )
+    }
+    pub fn remount_read_only(&self) {
+        self.1.store(true, Ordering::Release);
     }
     pub fn pin(&self) -> MountPin {
         self.0
