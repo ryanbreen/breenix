@@ -1032,7 +1032,7 @@ pub extern "C" fn handle_sync_exception(frame: *mut Aarch64ExceptionFrame, esr: 
                     return;
                 }
             }
-            let el0_status = -(el0_sig as i32);
+            let el0_status = crate::signal::delivery::fault_death_exit_code(el0_sig);
             let fatal_uart_guard = if from_el0 {
                 None
             } else {
