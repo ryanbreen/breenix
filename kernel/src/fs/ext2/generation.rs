@@ -24,7 +24,7 @@ pub struct Namespace {
 impl Namespace {
     pub const RAW: Self = Self { root: 2, etc: 0, data: 0, shared: 0, mutable: [0; 6] };
 
-    pub fn shared(self, directory: u32, name: &[u8]) -> Option<u32> {
+    pub(crate) fn shared(self, directory: u32, name: &[u8]) -> Option<u32> {
         if directory != self.root || self.root == 2 { return None; }
         for (index, part) in SHARED_DIRS.iter().enumerate() {
             if name == part.as_bytes() && self.mutable[index] != 0 { return Some(self.mutable[index]); }
@@ -37,13 +37,13 @@ impl Namespace {
         }
     }
 
-    pub fn hidden(self, directory: u32, name: &[u8]) -> bool {
+    pub(crate) fn hidden(self, directory: u32, name: &[u8]) -> bool {
         self.root != 2 && directory == self.root && name == READY.as_bytes()
     }
 
     /// Protect the names of bind mount placeholders, whose physical inode can
     /// differ from the inode lookup exposes (notably the shared /root).
-    pub fn mount_entry(self, directory: u32, name: &[u8]) -> bool {
+    pub(crate) fn mount_entry(self, directory: u32, name: &[u8]) -> bool {
         self.root != 2 && directory == self.root
             && (matches!(name, b"etc" | b"root" | b"home" | b"dev" | b"proc" | b"sys")
                 || SHARED_DIRS.iter().enumerate().any(|(i, part)| self.mutable[i] != 0 && name == part.as_bytes())
@@ -56,24 +56,13 @@ impl Namespace {
         Some(self.shared(directory, name).unwrap_or(inode))
     }
 
-    pub fn is_mount(self, ino: u32) -> bool {
+    pub(crate) fn is_mount(self, ino: u32) -> bool {
         ino == self.root
             || (self.root != 2 && (ino == self.etc || ino == self.data || self.shared != 0 && ino == self.shared
                 || ino != 0 && self.mutable.contains(&ino)))
     }
 
-    /// The name directly below the selected root, even when its physical
-    /// parent is the machine store rather than the generation directory.
-    pub fn mount_name(self, ino: u32) -> Option<&'static [u8]> {
-        if self.root == 2 { return None; }
-        if ino == self.etc { return Some(b"etc"); }
-        if ino == self.data { return Some(b"root"); }
-        if self.shared != 0 && ino == self.shared { return Some(SHARED.as_bytes()); }
-        for (i, name) in SHARED_DIRS.iter().enumerate() {
-            if ino != 0 && ino == self.mutable[i] { return Some(name.as_bytes()); }
-        }
-        None
-    }
+
 }
 
 /// Raw partition access, before the selected namespace is published.

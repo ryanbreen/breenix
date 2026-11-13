@@ -168,8 +168,7 @@ impl<P: AsRef<[u8]>> Resolved<P> {
     /// or `/proc`.
     pub fn is_mount_point(&self) -> bool {
         match self.target {
-            Target::Inode { mount, ino, .. } => mounts::is_mount_root(mount.0, ino)
-                || (mount == Mount::root() && ino32(ino).is_ok_and(|ino| ext2::root_namespace().is_mount(ino))),
+            Target::Inode { mount, ino, .. } => mounts::is_mount_root(mount.0, ino),
             Target::Virtual => mounts::path_is_mount(self.path.as_ref()),
             Target::Absent { .. } => false,
             Target::User { node, .. } => node == ufs_abi::payload::ROOT,
@@ -646,16 +645,7 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
                 }
                 let fs = held.fs(mount)?;
                 let dir_inode = searched_inode.ok_or(ENOTDIR as u64)?;
-                if mount == Mount::root() && ext2::root_namespace().hidden(ino32(dir)?, &name) {
-                    return Err(ENOENT as u64);
-                }
-                let found = if mount == Mount::root() {
-                    ext2::root_namespace().shared(ino32(dir)?, &name)
-                } else { None };
-                let found = match found {
-                    Some(ino) => Some(ino),
-                    None => fs.lookup_in_dir_bytes(&dir_inode, &name).map_err(ext2_errno)?,
-                };
+                let found = mounts::ext2_adapter(mount.0)?.lookup_in(fs, dir, &name)?;
                 let Some(ino) = found else {
                     if !is_final {
                         return Err(ENOENT as u64);
@@ -1145,19 +1135,6 @@ fn ancestry(held: &mut Held, mount: Mount, mut ino: u64) -> Result<Vec<Frame>, u
     let mut frames = Vec::new();
     let root = mount.root_inode();
     while ino != root {
-        // Shared data directories have a physical parent at the partition
-        // root, but appear directly under the selected namespace's root.
-        if mount == Mount::root() {
-            let namespace = ext2::root_namespace();
-            if let Some(name) = namespace.mount_name(ino32(ino)?) {
-                frames.try_reserve(1).map_err(|_| 12u64)?;
-                frames.push(Frame {
-                    name: copy_bytes(name)?,
-                    node: Node::Ext2(mount, ino),
-                });
-                break;
-            }
-        }
         let fs = held.fs(mount)?;
         let inode = read_dir_inode(fs, ino)?;
         let data = fs.read_directory(&inode).map_err(ext2_errno)?;
@@ -1182,13 +1159,12 @@ fn ancestry(held: &mut Held, mount: Mount, mut ino: u64) -> Result<Vec<Frame>, u
         ino = parent.into();
     }
     if mount != Mount::root() {
-        // Attach the mounted root to the current name of its covered directory.
-        // Bind roots may be ordinary directories in the same storage backend.
-        let (native, cover) = mounts::covered_directory(mount.0).ok_or(ENOENT as u64)?;
-        let native = Mount(native);
-        let mut prefix = ancestry(held, native, cover)?;
-        let point = prefix.last_mut().ok_or(EIO as u64)?;
-        point.node = Node::Ext2(mount, root);
+        // A bind target can live outside the selected root's physical tree.
+        // Its table parent and final component give its namespace ancestry.
+        let ((native, parent), name) = mounts::attachment(mount.0).ok_or(ENOENT as u64)?;
+        let mut prefix = ancestry(held, Mount(native), parent)?;
+        prefix.try_reserve(1).map_err(|_| 12u64)?;
+        prefix.push(Frame { name, node: Node::Ext2(mount, root) });
         prefix.try_reserve(frames.len()).map_err(|_| 12u64)?;
         prefix.extend(frames.into_iter().rev());
         return Ok(prefix);

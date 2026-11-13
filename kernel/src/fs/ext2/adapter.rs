@@ -25,6 +25,66 @@ impl Ext2Adapter {
         Self { mount }
     }
 
+    /// Register the selected root and its generation binds without taking a
+    /// backend lock under the mount table. The mounting caller already owns fs.
+    pub fn register_root<B>(
+        &self,
+        fs: &Ext2Fs,
+        flags: MountFlags,
+        table: &mut crate::fs::vfs::mount_table::MountTable<B>,
+        backend: impl Fn() -> B,
+    ) -> Result<(), Errno> {
+        use crate::fs::vfs::mount_table::Entry;
+        let ns = fs.namespace();
+        let native = self.mount.mount_id;
+        table.insert(Entry::new(
+            native,
+            b"/".to_vec(),
+            "ext2",
+            flags,
+            backend(),
+            ns.root.into(),
+            None,
+            None,
+        ))?;
+        for (name, target) in generation_binds(ns) {
+            let id = table.allocate_id()?;
+            let mut path = Vec::new();
+            path.try_reserve_exact(name.len() + 1)
+                .map_err(|_| Errno(ENOMEM))?;
+            path.push(b'/');
+            path.extend_from_slice(name);
+            let mut entry = Entry::new(
+                id,
+                path,
+                "ext2",
+                flags,
+                backend(),
+                target.into(),
+                Some((native, target.into())),
+                Some((native, ns.root.into())),
+            );
+            entry.bind = Some((native, target.into()));
+            table.insert(entry)?;
+        }
+        Ok(())
+    }
+
+    /// Lookup while a legacy namei caller already holds this storage guard.
+    /// Keep the namespace translation here until those callers use the trait.
+    pub fn lookup_in(&self, fs: &Ext2Fs, dir: u64, name: &[u8]) -> Result<Option<u32>, Errno> {
+        component(name)?;
+        let (dir, inode) = directory(fs, dir)?;
+        let ns = fs.namespace();
+        if ns.hidden(dir, name) {
+            return Err(Errno(ENOENT));
+        }
+        match ns.shared(dir, name) {
+            Some(ino) => Ok(Some(ino)),
+            None => fs.lookup_in_dir_bytes(&inode, name).map_err(errno),
+        }
+    }
+
     fn pin_node(&self, fs: &Ext2Fs, node: &VNode) -> Result<FileHandle, Errno> {
         if node.mount != self.mount.mount_id {
             return Err(Errno(EXDEV));
@@ -51,6 +111,31 @@ impl Ext2Adapter {
     pub fn exclusive(&self) -> Result<ext2::Ext2WriteGuard, Errno> {
         sync_mount_guard(self.mount).map_err(errno)
     }
+}
+
+/// Bind targets exposed directly below the selected root. Raw partitions
+/// retain their own directory tree and need no generation binds.
+fn generation_binds(ns: ext2::generation::Namespace) -> impl Iterator<Item = (&'static [u8], u32)> {
+    ext2::generation::SHARED_DIRS
+        .into_iter()
+        .enumerate()
+        .map(move |(i, name)| {
+            (
+                name.as_bytes(),
+                if ns.mutable[i] != 0 {
+                    ns.mutable[i]
+                } else if i == 0 {
+                    ns.etc
+                } else {
+                    0
+                },
+            )
+        })
+        .chain([
+            (b"root".as_slice(), ns.data),
+            (ext2::generation::SHARED.as_bytes(), ns.shared),
+        ])
+        .filter(move |(_, ino)| ns.root != 2 && *ino != 0)
 }
 
 fn component(name: &[u8]) -> Result<(), Errno> {
@@ -262,9 +347,7 @@ impl FileSystem for Ext2Adapter {
         component(name)?;
         let guard = read_mount(self.mount).map_err(errno)?;
         let fs = guard.as_ref().ok_or(Errno(EIO))?;
-        let (_, inode) = directory(fs, dir)?;
-        fs.lookup_in_dir_bytes(&inode, name)
-            .map_err(errno)?
+        self.lookup_in(fs, dir, name)?
             .map(u64::from)
             .ok_or(Errno(ENOENT))
     }
@@ -277,7 +360,8 @@ impl FileSystem for Ext2Adapter {
     ) -> Result<u64, Errno> {
         let guard = read_mount(self.mount).map_err(errno)?;
         let fs = guard.as_ref().ok_or(Errno(EIO))?;
-        let (_, inode) = directory(fs, dir)?;
+        let (dir, inode) = directory(fs, dir)?;
+        let ns = fs.namespace();
         let data = fs.read_directory(&inode).map_err(errno)?;
         let mut next = cookie;
         for record in ext2::DirReader::new(&data).positioned() {
@@ -294,15 +378,45 @@ impl FileSystem for Ext2Adapter {
             let mut name = Vec::new();
             name.try_reserve_exact(len).map_err(|_| Errno(ENOMEM))?;
             name.extend_from_slice(&data[start..start + len]);
-            let child = fs.read_inode(record.entry.inode).map_err(errno)?;
+            let Some(ino) = ns.entry(dir, &name, record.entry.inode) else {
+                next = record.next as u64;
+                continue;
+            };
+            let child = fs.read_inode(ino).map_err(errno)?;
             if !sink(DirEnt {
-                ino: record.entry.inode.into(),
+                ino: ino.into(),
                 kind: kind(&child)?,
                 name,
             })? {
-                break;
+                return Ok(next);
             }
             next = record.next as u64;
+        }
+        // A shared store has no placeholder in older generation directories.
+        // Synthetic entries follow the physical record range with stable cookies.
+        if dir == ns.root {
+            for (index, (name, ino)) in generation_binds(ns).enumerate() {
+                let position = data.len() as u64 + index as u64;
+                if position < cookie {
+                    continue;
+                }
+                if fs
+                    .lookup_in_dir_bytes(&inode, name)
+                    .map_err(errno)?
+                    .is_some()
+                {
+                    continue;
+                }
+                let child = fs.read_inode(ino).map_err(errno)?;
+                if !sink(DirEnt {
+                    ino: ino.into(),
+                    kind: kind(&child)?,
+                    name: name.to_vec(),
+                })? {
+                    return Ok(next);
+                }
+                next = position + 1;
+            }
         }
         Ok(next)
     }
