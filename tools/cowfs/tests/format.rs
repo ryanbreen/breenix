@@ -1,4 +1,9 @@
+extern crate alloc;
+
 use cowfs::format::*;
+
+#[path = "support/kernel_layout.rs"]
+pub mod kernel_layout;
 
 #[test]
 fn superblock_offsets_match_doc() {

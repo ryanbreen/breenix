@@ -1,5 +1,5 @@
 //! Packed cowfs v1 disk structures, with structure-relative offsets.
-use crate::crc32c;
+use super::crc32c;
 use alloc::vec::Vec;
 
 pub const BLOCK_SIZE: usize = 4096;
