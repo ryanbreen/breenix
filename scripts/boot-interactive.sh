@@ -362,9 +362,33 @@ if [[ "$SUITE" == *,* ]]; then
     "$ROOT/scripts/write-boot-target.sh" "$WRITABLE" "${SUITE%%,*}" \
         "$ROOT/userspace/programs/aarch64/suite-${SUITE%%,*}.elf" "$SUITE"
 fi
-# Only a standalone ui-testing launch has an evidence receiver and route.
+SMB_INSTANCE=
+if [ "$MODE" = suite ] && [[ ",$SUITE," == *,gui-apps,* ]]; then
+    SMB_INSTANCE=$(PYTHONPATH="$ROOT/scripts:$ROOT/scripts/metal" python3 - "$SUITE" "$ONLY" <<'PYSMB'
+import sys
+from metal.metal_root import smb_gui_selection
+from vm_site import load_site
+if smb_gui_selection('suite', sys.argv[1], sys.argv[2] or None):
+    print(load_site()['SMB_TEST_INSTANCE'])
+PYSMB
+)
+    if [ -n "$SMB_INSTANCE" ]; then
+        if [ "${BREENIX_QEMU_SMB_GUARDED:-}" != 1 ]; then
+            exec python3 "$ROOT/scripts/qemu-smb-restart.py" run --serial "$SERIAL_LOG" --instance "$SMB_INSTANCE" -- \
+                "$ROOT/scripts/boot-interactive.sh" "${BOOT_ARGS[@]}" --no-build --serial-log "$SERIAL_LOG"
+        fi
+    fi
+fi
+source "$ROOT/scripts/qemu-smb-forward.sh"
+trap qemu_smb_forward_stop EXIT
+if [ "$MODE" = suite ] && [[ ",$SUITE," == *,gui-apps,* ]]; then
+    qemu_smb_forward_start "$MODE" "$SUITE" "$ONLY"
+    python3 "$ROOT/scripts/qemu-desktop-stage.py" "$WRITABLE" "$SUITE" "$ONLY" --forward-port "$SMB_FORWARD_PORT"
+fi
+# Standalone UI suites have an evidence receiver and route.
 EVIDENCE_PID=
 cleanup_evidence() {
+    qemu_smb_forward_stop
     if [ -n "$EVIDENCE_PID" ]; then
         kill "$EVIDENCE_PID" 2>/dev/null || true
         wait "$EVIDENCE_PID" 2>/dev/null || true
@@ -372,12 +396,12 @@ cleanup_evidence() {
     fi
 }
 trap cleanup_evidence EXIT
-if [ "$MODE" = suite ] && [ "$SUITE" = ui-testing ]; then
-    "$ROOT/scripts/write-boot-target.sh" "$WRITABLE" ui-testing
+if [ "$MODE" = suite ] && { [ "$SUITE" = ui-testing ] || [ "$SUITE" = gui-apps ]; }; then
+    "$ROOT/scripts/write-boot-target.sh" "$WRITABLE" "$SUITE"
     EVIDENCE_DIR="$SERIAL_LOG.evidence"
     mkdir -p "$EVIDENCE_DIR"
     rm -f "$EVIDENCE_DIR/route.json"
-    python3 "$ROOT/scripts/qemu-evidence.py" serve --dir "$EVIDENCE_DIR" --parent "$$" &
+    python3 "$ROOT/scripts/qemu-evidence.py" serve --dir "$EVIDENCE_DIR" --parent "$$" --suite "$SUITE" &
     EVIDENCE_PID=$!
     for ((attempt=0; attempt<100; attempt++)); do
         [ ! -f "$EVIDENCE_DIR/route.json" ] || break
@@ -385,7 +409,7 @@ if [ "$MODE" = suite ] && [ "$SUITE" = ui-testing ]; then
         sleep 0.1
     done
     [ -f "$EVIDENCE_DIR/route.json" ] || { echo "evidence receiver did not become ready" >&2; exit 1; }
-    python3 "$ROOT/scripts/qemu-evidence.py" stage "$WRITABLE" "$EVIDENCE_DIR"
+    python3 "$ROOT/scripts/qemu-evidence.py" stage "$WRITABLE" "$EVIDENCE_DIR" --suite "$SUITE"
 fi
 # The users suite's external-client cases need the boot host's real OpenSSH.
 NETDEV="user,id=net0"

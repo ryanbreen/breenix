@@ -46,7 +46,7 @@ class Backend:
     write_json = staticmethod(metal_lib.write_json)
 
 
-def serve(directory, parent):
+def serve(directory, parent, suite="ui-testing"):
     directory.mkdir(parents=True, exist_ok=True)
     boot_id = secrets.token_hex(16)
     token = secrets.token_hex(32)
@@ -68,13 +68,13 @@ def serve(directory, parent):
     with HTTPServer(('127.0.0.1', 0), Handler) as server:
         server.timeout = 0.2
         metal_lib.write_json(directory / 'gt710-upload.json',
-                             {'id': boot_id, 'route': '/gt710-upload/' + token, 'suite': 'ui-testing'})
+                             {'id': boot_id, 'route': '/gt710-upload/' + token, 'suite': suite})
         metal_lib.write_json(directory / 'route.json', {'port': server.server_port, 'token': token})
         while backend.alive():
             server.handle_request()
 
 
-def stage(image, directory):
+def stage(image, directory, suite="ui-testing"):
     debugfs, = require_e2fsprogs('debugfs')
     image = Path(image).resolve()
     route = json.loads((directory / 'route.json').read_text())
@@ -83,8 +83,8 @@ def stage(image, directory):
         raise ValueError('invalid evidence route')
     def read(command):
         return subprocess.run([debugfs, '-R', command, str(image)], check=True, capture_output=True)
-    if read('cat /etc/breenix/boot-target').stdout != b'suite ui-testing\n':
-        raise ValueError('evidence route requires standalone ui-testing')
+    if read('cat /etc/breenix/boot-target').stdout != f'suite {suite}\n'.encode():
+        raise ValueError('evidence route requires the standalone selected suite')
     if b'Inode:' in read('stat /etc/breenix/suite-sequence').stdout:
         raise ValueError('evidence route refuses suite sequences')
     content = f'http://10.0.2.2:{port}/gt710-upload/{token}\n'
@@ -110,17 +110,19 @@ def main():
     receiver = sub.add_parser('serve')
     receiver.add_argument('--dir', type=Path, required=True)
     receiver.add_argument('--parent', type=int, required=True)
+    receiver.add_argument('--suite', choices=('ui-testing', 'gui-apps'), default='ui-testing')
     staging = sub.add_parser('stage')
     staging.add_argument('image', type=Path)
     staging.add_argument('directory', type=Path)
+    staging.add_argument('--suite', choices=('ui-testing', 'gui-apps'), default='ui-testing')
     args = parser.parse_args()
     try:
         if args.command == 'serve':
             if args.parent <= 0:
                 raise ValueError('invalid parent PID')
-            serve(args.dir, args.parent)
+            serve(args.dir, args.parent, args.suite)
         else:
-            stage(args.image, args.directory)
+            stage(args.image, args.directory, args.suite)
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
         parser.exit(1, f'qemu-evidence: {error}\n')
 

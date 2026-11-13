@@ -17,6 +17,7 @@ fn run_boot_checks() {}
 fn reconcile_machine_state() {}
 fn run_boot_script() {}
 fn finish_boot_checks() {}
+pub fn start_bounce() {}
 mod std {
     pub mod process {
         pub fn id() -> u32 { if ::std::env::args().nth(1).as_deref() == Some("system") { 1 } else { 2 } }

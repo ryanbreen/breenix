@@ -202,6 +202,8 @@ fn main() {
     };
     let mut supervisor = init_services::Supervisor::load(scope, pid == 1);
     supervisor.tick();
+    #[cfg(target_arch = "aarch64")]
+    start_bounce();
     finish_boot_checks();
     supervisor.run()
 }
@@ -253,10 +255,8 @@ fn run_boot_checks() {
     detach_console();
 }
 
-/// ARM startup that follows the supervisor's first pass.
+/// Machine checks that follow the ARM supervisor's first pass.
 fn finish_boot_checks() {
-    #[cfg(target_arch = "aarch64")]
-    start_bounce();
     #[cfg(target_arch = "aarch64")]
     run_bssh_autorun_if_enabled();
     #[cfg(target_arch = "aarch64")]
@@ -362,6 +362,9 @@ fn run_desktop_mode() -> ! {
     let mut supervisor = init_services::Supervisor::load(init_services::Scope::Desktop, system);
     supervisor.tick();
     if system {
+        // Desktop clients belong here, outside the checks shared with service-only startup.
+        #[cfg(target_arch = "aarch64")]
+        start_bounce();
         finish_boot_checks();
     }
     let terminal = desktop_gpu_ready() && spawn(b"/usr/bin/bterm\0").is_ok();

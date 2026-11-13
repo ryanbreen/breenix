@@ -119,6 +119,7 @@ fn run_boot_checks() { event("checks"); }
 fn reconcile_machine_state() { event("state"); }
 fn run_boot_script() { event("script"); }
 fn finish_boot_checks() { event("finish"); }
+pub fn start_bounce() { panic!("suite must not launch an ambient desktop app") }
 fn check_test_controls(_: u64) { event("controls"); }
 fn run_shell_mode() -> ! { panic!("unexpected shell") }
 fn run_console_mode() -> ! { panic!("unexpected console") }
