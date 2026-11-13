@@ -207,7 +207,7 @@ pub trait FileSystem: Send + Sync {
         mode: RenameMode,
     ) -> Result<(), Errno>;
     fn readlink(&self, ino: u64) -> Result<Vec<u8>, Errno>;
-    // Data (the ext2 adapter migrates these with open descriptors in 24.4).
+    // Data
     fn read(&self, _node: &VNode, _off: u64, _buf: &mut [u8]) -> Result<usize, Errno> {
         Err(Errno(EOPNOTSUPP))
     }

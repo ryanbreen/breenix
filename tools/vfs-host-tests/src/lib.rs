@@ -28,9 +28,18 @@ pub mod host_mounts;
 #[path = "../../../kernel/src/fs/vfs/mod.rs"]
 pub mod vfs;
 pub mod ext2 {
-    pub use crate::host_mounts::{read_mount, write_mount};
+    pub use crate::host_mounts::{read_mount, read_mount as sync_mount_guard, write_mount};
     pub use crate::storage::rename::RenameError;
     pub use crate::storage::*;
+    pub mod mapped_io {
+        pub fn write_mapped_range(
+            _handle: &super::live_inode::FileHandle,
+            _offset: u64,
+            _bytes: &[u8],
+        ) -> Result<usize, &'static str> {
+            Err("Host harness has no mapped pages")
+        }
+    }
     pub mod live_inode {
         pub use crate::host_mounts::MountPin;
         pub use crate::storage::live_inode::*;
@@ -52,3 +61,16 @@ pub mod time {
 // own unit tests, which are run separately by ext2-host-tests.
 #[path = "../tests/vfs_host_tests.rs"]
 mod vfs_host_tests;
+
+// Mapped-page sync is kernel-only; storage::FileMap::has_dirty returns false here.
+pub mod memory {
+    pub mod file_map {
+        pub fn sync_range(
+            _handle: &crate::ext2::live_inode::FileHandle,
+            _first: u64,
+            _last: u64,
+        ) -> Result<(), &'static str> {
+            Err("Host harness has no mapped pages")
+        }
+    }
+}
