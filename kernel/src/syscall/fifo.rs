@@ -66,7 +66,7 @@ pub(crate) fn mknodat_path(dirfd: i32, raw: impl AsRef<[u8]>, mode: u32, dev: u6
         Ok(inode) => inode,
         Err(e) => return SyscallResult::Err(e.into()),
     };
-    let gid = match super::fifo_policy::check_parent_access(&inode, &cred, None) {
+    let gid = match super::fifo_policy::check_parent_access(inode.attrs(), inode.i_links_count.into(), &cred, None) {
         Ok(gid) => gid,
         Err(e) => return SyscallResult::Err(e),
     };

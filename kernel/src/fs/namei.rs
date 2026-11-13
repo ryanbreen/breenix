@@ -75,10 +75,7 @@ impl Mount {
     pub fn write(self) -> Result<ext2::Ext2WriteGuard, Errno> {
         mounts::ext2_adapter(self.0)?.write()
     }
-    /// Removal retains mutation exclusion without allocation reclamation waits.
-    pub fn write_removal(self) -> Result<ext2::Ext2WriteGuard, Errno> {
-        mounts::ext2_adapter(self.0)?.exclusive()
-    }
+
 }
 
 /// What a resolved pathname names.

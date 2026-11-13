@@ -496,7 +496,8 @@ impl FileSystem for Ext2Adapter {
 
     fn remove(&self, dir: u64, name: &[u8], which: Remove) -> Result<(), Errno> {
         component(name)?;
-        let mut guard = write_mount(self.mount).map_err(errno)?;
+        // Removal must remain possible without waiting for free allocations.
+        let mut guard = sync_mount_guard(self.mount).map_err(errno)?;
         let parent = {
             let fs = guard.as_ref().ok_or(Errno(EIO))?;
             let (ino, _) = directory(fs, dir)?;
@@ -505,9 +506,20 @@ impl FileSystem for Ext2Adapter {
         guard = guard.wait_for_entry_data(&parent, name).map_err(errno)?;
         let fs = guard.as_mut().ok_or(Errno(EIO))?;
         let dir = parent.verify(fs).map_err(errno)?;
-        match which {
-            Remove::Dir => fs.remove_directory_in(dir, name),
-            Remove::NonDir => fs.unlink_in_dir(dir, name),
+        let (_, parent_inode) = directory(fs, dir.into())?;
+        let victim = fs.lookup_in_dir_bytes(&parent_inode, name).map_err(errno)?
+            .ok_or(Errno(ENOENT))?;
+        if u64::from(victim) != which.expected
+            || parent_inode.attrs() != which.parent
+            || fs.read_inode(victim).map_err(errno)?.uid() != which.owner
+        {
+            return Err(Errno(EAGAIN));
+        }
+        // No guard release between the precondition and the namespace writes.
+        if which.directory {
+            fs.remove_directory_in(dir, name)
+        } else {
+            fs.unlink_in_dir(dir, name)
         }
         .map_err(errno)
     }

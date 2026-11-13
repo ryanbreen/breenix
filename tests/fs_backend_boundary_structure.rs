@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 /// The staged migration in docs/fs/cowfs-design.md section 1.1 lowers this
 /// ext2-only ceiling at each stage and never raises it.
 /// claim-lint:ok: Staged migration requirement in docs/fs/cowfs-design.md section 1.1.
-const CEILING: usize = 128;
+const CEILING: usize = 125;
 
 fn visit(directory: &Path, ext2_dir: &Path, tally: &mut Vec<(PathBuf, usize)>) {
     for entry in fs::read_dir(directory)
@@ -604,7 +604,7 @@ fn remove_syscalls_use_the_trait() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("kernel/src/syscall");
     let parsed = syn::parse_file(&fs::read_to_string(root.join("fs.rs")).unwrap()).unwrap();
     let mut violations = Vec::new();
-    for name in ["sys_unlink_from", "sys_rmdir_from", "sys_unlinkat"] {
+    for name in ["sys_unlink_from", "sys_rmdir_from", "sys_unlinkat", "remove_entry"] {
         let function = parsed.items.iter().find_map(|item| match item {
             syn::Item::Fn(function) if function.sig.ident == name => Some(function),
             _ => None,

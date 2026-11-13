@@ -168,7 +168,7 @@ fn create_path(bytes: &[u8]) -> Result<Key, i32> {
     let inode = fs
         .read_inode(parent)
         .map_err(ext2_errno).map_err(|e| e.0)?;
-    let gid = crate::syscall::fifo_policy::check_parent_access(&inode, &cred, None)
+    let gid = crate::syscall::fifo_policy::check_parent_access(inode.attrs(), inode.i_links_count.into(), &cred, None)
         .map_err(|e| e as i32)?;
     let mode = 0o140000 | crate::syscall::fifo_policy::creation_mode(0o777, &cred, gid, false);
     fs.create_node_prepared(parent, name, mode, cred.euid, gid, 0, |fs, ino| {

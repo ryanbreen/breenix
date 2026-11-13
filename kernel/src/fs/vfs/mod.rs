@@ -12,6 +12,8 @@ pub use crate::fs::attrs::MountFlags;
 pub mod file;
 pub mod mount_table;
 #[cfg(not(test))]
+pub mod names;
+#[cfg(not(test))]
 pub mod mount;
 #[cfg(not(test))]
 pub use mount::*;
@@ -117,10 +119,17 @@ pub enum NewNode<'a> {
     Socket { attrs: InodeAttrs },
 }
 
+/// The VFS checked access using this victim and parent policy snapshot.
+/// A backend rechecks it under mutation exclusion, after any wait, and returns
+/// EAGAIN without mutation if it changed. The caller then repeats lookup and
+/// its credential checks. Only the parent is held: pinning the victim would
+/// itself make an otherwise empty directory busy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Remove {
-    Dir,
-    NonDir,
+pub struct Remove {
+    pub directory: bool,
+    pub expected: u64,
+    pub owner: u32,
+    pub parent: InodeAttrs,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RenameMode {

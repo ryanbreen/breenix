@@ -24,6 +24,15 @@ fn regular(fs: &dyn FileSystem, dir: u64, name: &[u8]) -> u64 {
     .unwrap()
 }
 
+fn removal(fs: &dyn FileSystem, dir: u64, expected: u64, directory: bool) -> Remove {
+    Remove {
+        directory,
+        expected,
+        owner: fs.getattr(expected).unwrap().attrs.uid,
+        parent: fs.getattr(dir).unwrap().attrs,
+    }
+}
+
 #[test]
 fn rename_noreplace_refuses_existing() {
     let disk = Fixture::new();
@@ -198,22 +207,22 @@ fn names_link_counts_and_typed_removal() {
         .unwrap();
     let file = regular(fs, dir, b"file");
     assert_eq!(fs.getattr(root).unwrap().nlink, 3);
-    assert_eq!(fs.remove(root, b"work", Remove::NonDir), Err(Errno(EISDIR)));
-    assert_eq!(fs.remove(root, b"work", Remove::Dir), Err(Errno(ENOTEMPTY)));
-    assert_eq!(fs.remove(dir, b"file", Remove::Dir), Err(Errno(ENOTDIR)));
+    assert_eq!(fs.remove(root, b"work", removal(fs, root, dir, false)), Err(Errno(EISDIR)));
+    assert_eq!(fs.remove(root, b"work", removal(fs, root, dir, true)), Err(Errno(ENOTEMPTY)));
+    assert_eq!(fs.remove(dir, b"file", removal(fs, dir, file, true)), Err(Errno(ENOTDIR)));
     assert_eq!(
-        fs.remove(file, b"child", Remove::NonDir),
+        fs.remove(file, b"child", removal(fs, file, file, false)),
         Err(Errno(ENOTDIR))
     );
     fs.link(file, root, b"alias").unwrap();
     assert_eq!(fs.getattr(file).unwrap().nlink, 2);
-    fs.remove(dir, b"file", Remove::NonDir).unwrap();
+    fs.remove(dir, b"file", removal(fs, dir, file, false)).unwrap();
     assert_eq!(fs.getattr(file).unwrap().nlink, 1);
     assert_eq!(fs.lookup(root, b"alias"), Ok(file));
-    fs.remove(root, b"work", Remove::Dir).unwrap();
+    fs.remove(root, b"work", removal(fs, root, dir, true)).unwrap();
     assert_eq!(fs.getattr(root).unwrap().nlink, 2);
     assert_eq!(fs.lookup(root, b"work"), Err(Errno(ENOENT)));
-    fs.remove(root, b"alias", Remove::NonDir).unwrap();
+    fs.remove(root, b"alias", removal(fs, root, file, false)).unwrap();
     assert_eq!(fs.lookup(root, b"alias"), Err(Errno(ENOENT)));
 }
 
@@ -605,8 +614,8 @@ fn getdents_cookie_survives_concurrent_unlink() {
     );
     let returned = seen[2].name.clone();
     assert_ne!(returned, b"pending");
-    fs.remove(generation, &returned, Remove::NonDir).unwrap();
-    fs.remove(generation, b"pending", Remove::NonDir).unwrap();
+    fs.remove(generation, &returned, removal(fs.as_ref(), generation, seen[2].ino, false)).unwrap();
+    fs.remove(generation, b"pending", removal(fs.as_ref(), generation, expected[b"pending".as_slice()].0, false)).unwrap();
     expected.remove(b"pending".as_slice());
     // Larger than either freed slot, so ext2 inserts it beyond the saved cookie.
     let created = b"created-with-a-long-name-that-does-not-fit-unlinked-slots";

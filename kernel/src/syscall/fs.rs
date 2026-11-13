@@ -394,7 +394,7 @@ fn sys_open_write_path(
                     log::debug!("sys_open: creating new file {}", String::from_utf8_lossy(&resolved.path));
                     // The requested mode is used as given, less the umask: mode 0
                     // creates a file nobody but root may open.
-                    let gid = super::fifo_policy::check_parent_access(&parent_inode, &cred, None)
+                    let gid = super::fifo_policy::check_parent_access(parent_inode.attrs(), parent_inode.i_links_count.into(), &cred, None)
                         .map_err(SyscallResult::Err)?;
                     let file_mode = super::fifo_policy::creation_mode(mode, &cred, gid, false);
                     // The new file belongs to its creator (Linux: the effective
@@ -1781,7 +1781,7 @@ pub fn sys_unlink(pathname: u64) -> SyscallResult {
     sys_unlink_from(AT_FDCWD, pathname)
 }
 fn sys_unlink_from(dirfd: i32, pathname: u64) -> SyscallResult {
-    use super::errno::{EIO, EISDIR, ENOENT, EPERM};
+    use super::errno::{EISDIR, ENOENT, EPERM};
     use crate::fs::namei::{Last, Target};
 
     let resolved = match resolve_user_entry_at(dirfd, pathname) {
@@ -1802,55 +1802,21 @@ fn sys_unlink_from(dirfd: i32, pathname: u64) -> SyscallResult {
     if resolved.last != Last::Name {
         return SyscallResult::Err(EISDIR as u64);
     }
-    let mount = match resolved.target {
+    match resolved.target {
         Target::User { mount, node, parent } => {
             let cred = match current_file_credentials() { Ok(c) => c, Err(e) => return SyscallResult::Err(e) };
             return ufs_status(crate::fs::ufs::path::remove(mount, node, parent, resolved.final_name(), false, &cred));
         }
         Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
         Target::Virtual => return SyscallResult::Err(EPERM as u64),
-        Target::Inode { mount, .. } => mount,
-    };
+        Target::Inode { .. } => {},
+    }
 
     let cred = match current_file_credentials() {
         Ok(cred) => cred,
         Err(errno) => return SyscallResult::Err(errno),
     };
-    let unlink_result = {
-        let Some(parent) = resolved.entry_dir() else {
-            return SyscallResult::Err(EIO as u64);
-        };
-        let mut guard = match mount.write_removal() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
-        let Some(fs) = guard.as_mut() else {
-            return SyscallResult::Err(EIO as u64);
-        };
-        let parent = match parent.verify(fs) {
-            Ok(ino) => ino,
-            Err(_) => return SyscallResult::Err(ENOENT as u64),
-        };
-        let parent_inode = match fs.read_inode(parent).map_err(ext2_errno) {
-            Ok(inode) => inode,
-            Err(e) => return SyscallResult::Err(e.into()),
-        };
-        let target = match fs.lookup_in_dir_bytes(&parent_inode, resolved.final_name()).map_err(ext2_errno) {
-            Ok(Some(ino)) => ino,
-            Ok(None) => return SyscallResult::Err(ENOENT as u64),
-            Err(e) => return SyscallResult::Err(e.into()),
-        };
-        let inode = match fs.read_inode(target).map_err(ext2_errno) {
-            Ok(inode) => inode,
-            Err(e) => return SyscallResult::Err(e.into()),
-        };
-        if let Err(e) =
-            super::fifo_policy::check_parent_access(&parent_inode, &cred, Some(inode.uid()))
-        {
-            return SyscallResult::Err(e);
-        }
-        if inode.is_dir() {
-            return SyscallResult::Err(EISDIR as u64);
-        }
-        fs.unlink_in_dir(parent, resolved.final_name()).map_err(ext2_errno)
-    };
+    let unlink_result = remove_entry(&resolved, false, &cred);
 
     match unlink_result {
         Ok(()) => {
@@ -1860,6 +1826,33 @@ fn sys_unlink_from(dirfd: i32, pathname: u64) -> SyscallResult {
         Err(e) => {
             log::debug!("sys_unlink: failed: {:?}", e);
             SyscallResult::Err(e.into())
+        }
+    }
+}
+
+/// Check the current entry, then let the backend validate the policy snapshot
+/// while holding mutation exclusion. A competing rename/chown/chmod retries
+/// the VFS policy; it cannot authorize removal of a different owner's entry.
+fn remove_entry(
+    resolved: &crate::fs::namei::Resolved<alloc::vec::Vec<u8>>,
+    directory: bool,
+    cred: &FileCredentials,
+) -> Result<(), crate::fs::errno::Errno> {
+    use crate::fs::{errno::Errno, vfs::{names, Remove}};
+    loop {
+        let (fs, parent, attrs) = names::entry_dir(resolved)?;
+        let expected = fs.lookup(parent.ino, resolved.final_name())?;
+        let victim = fs.getattr(expected)?;
+        super::fifo_policy::check_parent_access(attrs.attrs, attrs.nlink, cred, Some(victim.attrs.uid))
+            .map_err(|errno| Errno(errno as i32))?;
+        match fs.remove(parent.ino, resolved.final_name(), Remove {
+            directory,
+            expected,
+            owner: victim.attrs.uid,
+            parent: attrs.attrs,
+        }) {
+            Err(Errno(super::errno::EAGAIN)) => continue,
+            result => return result,
         }
     }
 }
@@ -2002,7 +1995,7 @@ fn sys_rename_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> 
                         },
                         None => None,
                     };
-                    if let Err(e) = super::fifo_policy::check_parent_access(&inode, &cred, owner) {
+                    if let Err(e) = super::fifo_policy::check_parent_access(inode.attrs(), inode.i_links_count.into(), &cred, owner) {
                         return SyscallResult::Err(e);
                     }
                 }
@@ -2061,7 +2054,7 @@ pub fn sys_rmdir(pathname: u64) -> SyscallResult {
     sys_rmdir_from(AT_FDCWD, pathname)
 }
 fn sys_rmdir_from(dirfd: i32, pathname: u64) -> SyscallResult {
-    use super::errno::{EBUSY, EINVAL, EIO, ENOENT, ENOTDIR, ENOTEMPTY};
+    use super::errno::{EBUSY, EINVAL, ENOENT, ENOTDIR, ENOTEMPTY};
     use crate::fs::namei::{Last, Target};
 
     // rmdir removes the name itself: a final symlink is not followed.
@@ -2081,55 +2074,21 @@ fn sys_rmdir_from(dirfd: i32, pathname: u64) -> SyscallResult {
     if resolved.is_mount_point() {
         return SyscallResult::Err(EBUSY as u64);
     }
-    let mount = match resolved.target {
+    match resolved.target {
         Target::User { mount, node, parent } => {
             let cred = match current_file_credentials() { Ok(c) => c, Err(e) => return SyscallResult::Err(e) };
             return ufs_status(crate::fs::ufs::path::remove(mount, node, parent, resolved.final_name(), true, &cred));
         }
         Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
         Target::Virtual => return SyscallResult::Err(ENOTDIR as u64),
-        Target::Inode { mount, .. } => mount,
-    };
+        Target::Inode { .. } => {},
+    }
 
     let cred = match current_file_credentials() {
         Ok(cred) => cred,
         Err(errno) => return SyscallResult::Err(errno),
     };
-    let rmdir_result = {
-        let Some(parent) = resolved.entry_dir() else {
-            return SyscallResult::Err(EIO as u64);
-        };
-        let mut guard = match mount.write_removal() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
-        let Some(fs) = guard.as_mut() else {
-            return SyscallResult::Err(EIO as u64);
-        };
-        let parent = match parent.verify(fs) {
-            Ok(ino) => ino,
-            Err(_) => return SyscallResult::Err(ENOENT as u64),
-        };
-        let parent_inode = match fs.read_inode(parent).map_err(ext2_errno) {
-            Ok(inode) => inode,
-            Err(e) => return SyscallResult::Err(e.into()),
-        };
-        let target = match fs.lookup_in_dir_bytes(&parent_inode, resolved.final_name()).map_err(ext2_errno) {
-            Ok(Some(ino)) => ino,
-            Ok(None) => return SyscallResult::Err(ENOENT as u64),
-            Err(e) => return SyscallResult::Err(e.into()),
-        };
-        let inode = match fs.read_inode(target).map_err(ext2_errno) {
-            Ok(inode) => inode,
-            Err(e) => return SyscallResult::Err(e.into()),
-        };
-        if let Err(e) =
-            super::fifo_policy::check_parent_access(&parent_inode, &cred, Some(inode.uid()))
-        {
-            return SyscallResult::Err(e);
-        }
-        if !inode.is_dir() {
-            return SyscallResult::Err(ENOTDIR as u64);
-        }
-        fs.remove_directory_in(parent, resolved.final_name()).map_err(ext2_errno)
-    };
+    let rmdir_result = remove_entry(&resolved, true, &cred);
 
     match rmdir_result {
         Ok(()) => {
@@ -2238,7 +2197,7 @@ fn sys_link_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> Sy
             Ok(inode) => inode,
             Err(e) => return SyscallResult::Err(e.into()),
         };
-        if let Err(e) = super::fifo_policy::check_parent_access(&inode, &cred, None) {
+        if let Err(e) = super::fifo_policy::check_parent_access(inode.attrs(), inode.i_links_count.into(), &cred, None) {
             return SyscallResult::Err(e);
         }
         match fs.read_inode(source).map_err(ext2_errno) {
@@ -2287,7 +2246,7 @@ fn creation_parent(
         .read_inode(parent)
        .map_err(ext2_errno).map_err(|e| SyscallResult::Err(e.into()))?;
     let gid =
-        super::fifo_policy::check_parent_access(&inode, cred, None).map_err(SyscallResult::Err)?;
+        super::fifo_policy::check_parent_access(inode.attrs(), inode.i_links_count.into(), cred, None).map_err(SyscallResult::Err)?;
     Ok((parent, gid, inode.permissions() & 0o2000 != 0))
 }
 
