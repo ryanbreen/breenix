@@ -267,7 +267,8 @@ impl FileSystem for Ext2Adapter {
             block_size: stats.block_size,
             blocks: stats.blocks,
             free_blocks: stats.free_blocks,
-            available_blocks: stats.free_blocks.saturating_sub(stats.reserved_blocks),
+            // The allocator does not enforce the image's reserved-block count.
+            available_blocks: stats.free_blocks,
             inodes: stats.inodes,
             free_inodes: stats.free_inodes,
             max_name_len: 255,
@@ -321,8 +322,13 @@ impl FileSystem for Ext2Adapter {
             .map_err(errno)?;
         let fs = guard.as_mut().ok_or(Errno(EIO))?;
         fs.ensure_writable().map_err(errno)?;
-        fs.flush_inode_times(ino).map_err(errno)?;
         let mut inode = fs.read_inode(ino).map_err(errno)?;
+        if attrs.expected.is_some_and(|expected| expected != inode.attrs()) {
+            return Err(Errno(EAGAIN));
+        }
+        fs.flush_inode_times(ino).map_err(errno)?;
+        // Flushing pending times can update the inode's stored timestamps.
+        inode = fs.read_inode(ino).map_err(errno)?;
         if let Some(mode) = attrs.mode {
             inode.i_mode = (inode.i_mode & 0o170000) | (mode & 0o7777);
         }

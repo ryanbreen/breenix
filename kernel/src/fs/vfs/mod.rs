@@ -9,6 +9,7 @@ use core::{any::Any, sync::atomic::AtomicU64};
 use spin::Mutex;
 
 pub use crate::fs::attrs::MountFlags;
+pub mod attributes;
 pub mod file;
 pub mod mount_table;
 #[cfg(not(test))]
@@ -100,6 +101,9 @@ pub struct NodeAttrs {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SetAttr {
+    /// Recheck permission inputs after acquiring mutation exclusion or waiting.
+    /// A mismatch returns EAGAIN without changing the inode.
+    pub expected: Option<InodeAttrs>,
     pub mode: Option<u16>,
     pub uid: Option<u32>,
     pub gid: Option<u32>,

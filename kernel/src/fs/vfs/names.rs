@@ -51,3 +51,16 @@ pub fn lookup_parent(
     }
     Ok((fs, parent))
 }
+
+/// Bridge a retained legacy descriptor or working-directory pin until those
+/// objects carry VNodes directly. Check the incarnation before using the node.
+pub fn held(
+    held: &crate::fs::ext2::live_inode::FileHandle,
+) -> Result<(Arc<dyn FileSystem>, Arc<VNode>), Errno> {
+    let fs = super::mount::filesystem(held.object.mount.mount_id)?;
+    let node = fs.open(held.object.key.inode.into())?;
+    if node.mount != held.object.mount.mount_id || node.incarnation != held.object.key.incarnation {
+        return Err(Errno(ENOENT));
+    }
+    Ok((fs, node))
+}

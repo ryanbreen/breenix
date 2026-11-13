@@ -122,6 +122,32 @@ fn failed_create_open_leaves_no_name_and_exclusive_retry_succeeds() {
 }
 
 #[test]
+fn timestamp_policy_checks_owner_and_write_access() {
+    use crate::vfs::attributes::{timestamp_change, TimesAccess};
+    use crate::permissions::Credentials;
+    let disk = Fixture::new();
+    let fs = Ext2Adapter::new(disk.pin());
+    let ino = regular(&fs, fs.root().unwrap(), b"times-policy");
+    let mut writer = Credentials::kernel();
+    writer.euid = 70001;
+    writer.egid = 80000;
+    fs.setattr(ino, SetAttr { mode: Some(0o660), ..SetAttr::default() }).unwrap();
+    let before = fs.getattr(ino).unwrap();
+    let time = Some(Timestamp { sec: 123, nsec: 456 });
+    assert_eq!(timestamp_change(before.attrs, time, None, &writer, TimesAccess::Owner), Err(Errno(EPERM)));
+    let request = timestamp_change(before.attrs, time, None, &writer, TimesAccess::OwnerOrWrite).unwrap();
+    fs.setattr(ino, request).unwrap();
+    let after = fs.getattr(ino).unwrap();
+    assert_eq!(after.times.atime, Timestamp { sec: 123, nsec: 0 });
+    assert_eq!(after.times.mtime, before.times.mtime);
+    writer.egid = 80001;
+    assert_eq!(timestamp_change(after.attrs, time, time, &writer, TimesAccess::OwnerOrWrite), Err(Errno(EACCES)));
+    writer.euid = 70000;
+    assert!(timestamp_change(after.attrs, time, time, &writer, TimesAccess::Owner).is_ok());
+    assert_eq!(fs.getattr(ino).unwrap(), after);
+}
+
+#[test]
 fn directory_links_and_descendant_renames_are_refused() {
     let disk = Fixture::new();
     let adapter = Ext2Adapter::new(disk.pin());
@@ -368,11 +394,15 @@ fn mount_inode_attributes_and_open() {
     assert_eq!(fs.kind(), Ok("ext2"));
     assert_eq!(fs.read_only(), Ok(false));
     assert!(fs.max_file_size().unwrap() > 0);
+    // The image reserve is not enforced by the ext2 allocator.
+    crate::host_mounts::write_mount(disk.pin()).unwrap().as_mut().unwrap()
+        .superblock.s_r_blocks_count = 9;
     let stat = fs.statfs().unwrap();
     assert_eq!(
         (stat.block_size, stat.blocks, stat.free_blocks),
         (4096, 512, 490)
     );
+    assert_eq!(stat.available_blocks, stat.free_blocks);
     let root = fs.root().unwrap();
     let ino = regular(fs, root, b"file");
     fs.setattr(
@@ -383,6 +413,7 @@ fn mount_inode_attributes_and_open() {
             gid: Some(100000),
             atime: Some(Timestamp { sec: 123, nsec: 0 }),
             mtime: Some(Timestamp { sec: 456, nsec: 0 }),
+            ..SetAttr::default()
         },
     )
     .unwrap();

@@ -3960,7 +3960,9 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
     if flags & !AT_SYMLINK_NOFOLLOW != 0 {
         return SyscallResult::Err(super::errno::EINVAL as u64);
     }
-    let now = crate::time::current_unix_time() as u32;
+    use crate::fs::vfs::{Timestamp, attributes::TimesAccess};
+    let now = crate::time::current_unix_time() as i64;
+    let current = Timestamp { sec: now, nsec: 0 };
     let mut user_times = Ok(ufs_abi::payload::SetTimes { atime_ns: Some(now as u64 * 1_000_000_000), mtime_ns: Some(now as u64 * 1_000_000_000) });
     // Who may change the times (POSIX utimensat): setting both to the current
     // time needs ownership, write permission or privilege; any other change
@@ -3970,7 +3972,7 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
     // Determine what atime/mtime to set
     let (set_atime, set_mtime) = if times_ptr == 0 {
         // NULL times = set both to current time
-        (Some(now), Some(now))
+        (Some(current), Some(current))
     } else {
         // Read two Timespec structs from userspace
         let times: [UtimeTimespec; 2] =
@@ -3998,22 +4000,22 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
             u64::try_from(t.tv_sec).ok().and_then(|sec| sec.checked_mul(1_000_000_000))
                 .and_then(|v| v.checked_add(t.tv_nsec as u64)).map(Some).ok_or(super::errno::EOVERFLOW as u64)
         };
-        // Keep conversion errors for UFS; ext2's established seconds ABI is unchanged.
+        // The daemon bridge represents timestamps as unsigned nanoseconds.
         user_times = ns(&times[0]).and_then(|atime_ns| ns(&times[1]).map(|mtime_ns| ufs_abi::payload::SetTimes { atime_ns, mtime_ns }));
         let atime = if times[0].tv_nsec == UTIME_NOW {
-            Some(now)
+            Some(current)
         } else if times[0].tv_nsec == UTIME_OMIT {
             None
         } else {
-            Some(times[0].tv_sec as u32)
+            Some(Timestamp { sec: times[0].tv_sec, nsec: times[0].tv_nsec as u32 })
         };
 
         let mtime = if times[1].tv_nsec == UTIME_NOW {
-            Some(now)
+            Some(current)
         } else if times[1].tv_nsec == UTIME_OMIT {
             None
         } else {
-            Some(times[1].tv_sec as u32)
+            Some(Timestamp { sec: times[1].tv_sec, nsec: times[1].tv_nsec as u32 })
         };
 
         (atime, mtime)
@@ -4035,35 +4037,29 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
             return SyscallResult::Err(super::errno::EBADF as u64);
         }
 
-        let thread_id = match crate::task::scheduler::current_thread_id() {
-            Some(id) => id,
-            None => return SyscallResult::Err(super::errno::EBADF as u64),
-        };
-
-        let fd_info = crate::arch_without_interrupts(|| {
-            let manager_guard = crate::process::manager();
-            if let Some(ref manager) = *manager_guard {
-                if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
-                    if let Some(fd_entry) = process.fd_table.get(dirfd) {
-                        if let Some(handle) = &fd_entry.native_inode {
-                            return Ok(handle.clone());
-                        }
-                        if let FdKind::RegularFile(file_ref) = &fd_entry.kind {
-                            let file = file_ref.lock();
-                            return file.open.ext2_handle().ok_or(super::errno::EIO as u64);
-                        }
-                    }
-                }
-            }
-            Err(super::errno::EBADF as u64)
-        });
-
-        let handle = match fd_info {
-            Ok(handle) => handle,
+        let entry = match super::metadata::descriptor_entry(dirfd) {
+            Ok(entry) => entry,
             Err(error) => return SyscallResult::Err(error),
         };
-
-        return update_inode_timestamps(&handle, set_atime, set_mtime, &cred, access);
+        let target = if let Some(handle) = &entry.native_inode {
+            crate::fs::vfs::names::held(handle)
+        } else {
+            match &entry.kind {
+                FdKind::RegularFile(file) => {
+                    let file = file.lock();
+                    Ok((file.open.fs.clone(), file.open.node.clone()))
+                }
+                FdKind::Directory(dir) => {
+                    let dir = dir.lock();
+                    Ok((dir.open.fs.clone(), dir.open.node.clone()))
+                }
+                _ => return SyscallResult::Err(super::errno::EBADF as u64),
+            }
+        };
+        return match target {
+            Ok((fs, node)) => update_inode_timestamps(fs.as_ref(), node.ino, set_atime, set_mtime, &cred, access),
+            Err(error) => SyscallResult::Err(error.into()),
+        };
     }
 
     // Path-based: resolve path
@@ -4081,77 +4077,38 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
         let times = match user_times { Ok(times) => times, Err(e) => return SyscallResult::Err(e) };
         return ufs_status(crate::fs::ufs::path::utimens(mount, node, times, access == TimesAccess::Owner, &cred));
     }
-    // The resolution holds the inode it found; the update acts on that one.
-    match resolved.handle() {
-        Some(handle) => update_inode_timestamps(handle, set_atime, set_mtime, &cred, access),
-        None => SyscallResult::Err(super::errno::ENOENT as u64),
+    if !matches!(resolved.target, crate::fs::namei::Target::Inode { .. }) {
+        return SyscallResult::Err(super::errno::ENOENT as u64);
+    }
+    match crate::fs::vfs::names::target(&resolved) {
+        Ok((fs, node)) => update_inode_timestamps(fs.as_ref(), node.ino, set_atime, set_mtime, &cred, access),
+        Err(error) => SyscallResult::Err(error.into()),
     }
 }
 
-/// Who may change a file's times, by the change asked for.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum TimesAccess {
-    /// Both times to the current time: the owner, a caller with write
-    /// permission, or root; otherwise EACCES.
-    OwnerOrWrite,
-    /// Any explicit time: the owner or root; otherwise EPERM.
-    Owner,
-}
-
-/// Helper: update an inode's atime/mtime on the ext2 filesystem, once the
-/// caller is found to be allowed to (`TimesAccess`).
 fn update_inode_timestamps(
-    handle: &crate::fs::ext2::live_inode::FileHandle,
-    set_atime: Option<u32>,
-    set_mtime: Option<u32>,
+    fs: &dyn crate::fs::vfs::FileSystem,
+    ino: u64,
+    set_atime: Option<crate::fs::vfs::Timestamp>,
+    set_mtime: Option<crate::fs::vfs::Timestamp>,
     cred: &FileCredentials,
-    access: TimesAccess,
+    access: crate::fs::vfs::attributes::TimesAccess,
 ) -> SyscallResult {
-
-    let do_update = |fs: &mut ext2::Ext2Fs| -> SyscallResult {
-        let inode_num = match handle.verify(fs) {
-            Ok(ino) => ino,
-            Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
+    use crate::fs::vfs::attributes::timestamp_change;
+    loop {
+        let attrs = match fs.getattr(ino) {
+            Ok(attrs) => attrs.attrs,
+            Err(error) => return SyscallResult::Err(error.into()),
         };
-        if fs.flush_inode_times(inode_num).is_err() {
-            return SyscallResult::Err(5);
-        }
-        let mut inode = match fs.read_inode(inode_num) {
-            Ok(i) => i,
-            Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
+        let request = match timestamp_change(attrs, set_atime, set_mtime, cred, access) {
+            Ok(request) => request,
+            Err(error) => return SyscallResult::Err(error.into()),
         };
-        if !cred.privileged() && cred.euid != inode.uid() {
-            match access {
-                TimesAccess::Owner => return SyscallResult::Err(super::errno::EPERM as u64),
-                TimesAccess::OwnerOrWrite if !cred.may(inode.attrs(), 2) => {
-                    return SyscallResult::Err(super::errno::EACCES as u64)
-                }
-                TimesAccess::OwnerOrWrite => {}
-            }
+        match fs.setattr(ino, request) {
+            Err(error) if error.0 == super::errno::EAGAIN => continue,
+            Ok(()) => return SyscallResult::Ok(0),
+            Err(error) => return SyscallResult::Err(error.into()),
         }
-
-        if let Some(atime) = set_atime {
-            inode.i_atime = atime;
-        }
-        if let Some(mtime) = set_mtime {
-            inode.i_mtime = mtime;
-        }
-        // Always update ctime when timestamps change
-        inode.i_ctime = crate::time::current_unix_time() as u32;
-
-        match fs.write_inode(inode_num, &inode) {
-            Ok(()) => SyscallResult::Ok(0),
-            Err(_) => SyscallResult::Err(super::errno::EIO as u64),
-        }
-    };
-
-    let mut fs_guard = match ext2::write_mount(handle.object.mount).map_err(ext2_errno) {
-        Ok(guard) => guard,
-        Err(error) => return SyscallResult::Err(error.into()),
-    };
-    match fs_guard.as_mut() {
-        Some(fs) => do_update(fs),
-        None => SyscallResult::Err(super::errno::EIO as u64),
     }
 }
 
@@ -4205,25 +4162,23 @@ struct Statfs {
     spare: [u64; 4],
 }
 
-fn ext2_statfs(mount: crate::fs::namei::Mount) -> Result<Statfs, u64> {
-    let guard = mount.read()?;
-    let fs = guard.as_ref().ok_or(super::errno::EIO as u64)?;
-    let stats = fs.statfs();
+fn filesystem_statfs(
+    fs: &dyn crate::fs::vfs::FileSystem,
+    flags: crate::fs::attrs::MountFlags,
+) -> Result<Statfs, u64> {
+    let stats = fs.statfs().map_err(u64::from)?;
     Ok(Statfs {
-        kind: 0xef53,
+        kind: stats.magic,
         bsize: stats.block_size,
         blocks: stats.blocks,
         bfree: stats.free_blocks,
-        // Allocation is controlled by the group bitmaps, not the disk image's
-        // reserved-block policy: Breenix does not enforce s_r_blocks_count.
-        bavail: stats.free_blocks,
+        bavail: stats.available_blocks,
         files: stats.inodes,
         ffree: stats.free_inodes,
-        // A mount identity is stable for the mounted filesystem's lifetime.
-        fsid: [fs.mount_id as i32, 0],
-        namelen: crate::fs::namei::NAME_MAX as u64,
+        fsid: [stats.fsid as i32, (stats.fsid >> 32) as i32],
+        namelen: stats.max_name_len,
         frsize: stats.block_size,
-        flags: 0x20 | u64::from(fs.is_read_only()), // ST_VALID and ST_RDONLY.
+        flags: 0x20 | stats.flags.statvfs_bits() | flags.statvfs_bits(),
         spare: [0; 4],
     })
 }
@@ -4246,10 +4201,10 @@ fn resolved_statfs(resolved: &crate::fs::namei::Resolved<alloc::vec::Vec<u8>>) -
     match resolved.target {
         Target::User { mount, node, .. } => user_statfs(mount, node),
         // The mount's options join the filesystem's own read-only flag.
-        Target::Inode { mount, .. } => ext2_statfs(mount).map(|mut stat| {
-            stat.flags |= crate::fs::vfs::mount::flags_at(&resolved.path).statvfs_bits();
-            stat
-        }),
+        Target::Inode { mount, .. } => {
+            let fs = crate::fs::vfs::mount::filesystem(mount.0).map_err(u64::from)?;
+            filesystem_statfs(fs.as_ref(), crate::fs::vfs::mount::flags_at(&resolved.path))
+        },
         Target::Absent { .. } => Err(super::errno::ENOENT as u64),
         Target::Virtual if resolved.virtual_absent => Err(super::errno::ENOENT as u64),
         Target::Virtual => Ok(virtual_statfs(
@@ -4302,15 +4257,10 @@ pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
             None => return SyscallResult::Err(9),
         }
     };
-    // A mounted file's statistics carry its mount's options, as statvfs's do.
-    let mounted = |pin: &crate::fs::ext2::live_inode::FileHandle| {
-        statfs_pin(pin).map(|mut stat| {
-            stat.flags |= mount_flags.statvfs_bits();
-            stat
-        })
-    };
+    // Descriptor options retain the selected bind mount even after rename.
     let stat = if let Some(handle) = native {
-        mounted(&handle)
+        crate::fs::vfs::names::held(&handle).map_err(u64::from)
+            .and_then(|(fs, _node)| filesystem_statfs(fs.as_ref(), mount_flags))
     } else {
         match kind {
             FdKind::Ipc(object) => {
@@ -4319,18 +4269,20 @@ pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
                 } else { Ok(virtual_statfs(object.statfs_magic())) }
             },
             FdKind::RegularFile(file) => {
-                let pin = file.lock().open.ext2_handle();
-                pin.as_ref().ok_or(super::errno::EIO as u64).and_then(mounted)
+                let fs = file.lock().open.fs.clone();
+                filesystem_statfs(fs.as_ref(), mount_flags)
             }
             FdKind::Directory(dir) => {
-                let pin = dir.lock().open.ext2_handle();
-                pin.as_ref().ok_or(super::errno::EIO as u64).and_then(mounted)
+                let fs = dir.lock().open.fs.clone();
+                filesystem_statfs(fs.as_ref(), mount_flags)
             }
             FdKind::FifoRead(_, _, entry)
             | FdKind::FifoWrite(_, _, entry)
             | FdKind::FifoReadWrite(_, _, entry) => {
-                let pin = entry.lock().handle.clone();
-                pin.as_ref().ok_or(5u64).and_then(mounted)
+                let handle = entry.lock().handle.clone();
+                handle.as_ref().ok_or(5u64)
+                    .and_then(|handle| crate::fs::vfs::names::held(handle).map_err(u64::from))
+                    .and_then(|(fs, _node)| filesystem_statfs(fs.as_ref(), mount_flags))
             }
             FdKind::ProcfsFile { .. } | FdKind::ProcfsDirectory { .. } => {
                 Ok(virtual_statfs(0x9fa0))
@@ -4350,16 +4302,6 @@ pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
         Ok(()) => SyscallResult::Ok(0),
         Err(e) => SyscallResult::Err(e),
     }
-}
-
-fn statfs_pin(pin: &crate::fs::ext2::live_inode::FileHandle) -> Result<Statfs, u64> {
-    use crate::fs::namei::Mount;
-    let mount = Mount(pin.object.mount.mount_id);
-    {
-        let guard = mount.read()?;
-        pin.verify(guard.as_ref().ok_or(5u64)?).map_err(|_| 5u64)?;
-    }
-    ext2_statfs(mount)
 }
 
 /// Write back dirty shared mappings and flush mounted devices. Like Linux
