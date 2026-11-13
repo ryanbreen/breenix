@@ -1,3 +1,6 @@
+mod metrics;
+pub use metrics::ScaledText;
+
 use libgfx::{bitmap_font, color::Color, surface::Surface, ttf_font::{self, CachedFont, Font}};
 use crate::{rect::Rect, theme::Theme};
 use core::cell::UnsafeCell;

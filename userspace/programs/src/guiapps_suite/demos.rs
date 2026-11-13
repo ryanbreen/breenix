@@ -37,9 +37,17 @@ pub fn close_each() -> CaseResult { each(|t| t.close_exit()) }
 
 pub fn resize() -> CaseResult {
     each(|t| {
-        t.resize(300, 200)?;
+        let tree = t.tree()?;
+        let scale = if tree.root.value["demo"] == "biconkit" {
+            match tree.root.value["uiScale"].as_u64() {
+                Some(s @ (1 | 2)) => s as u32,
+                _ => return Err("invalid icon kit UI scale".into()),
+            }
+        } else { 1 };
+        let (width, height) = (300 * scale, 200 * scale);
+        t.resize(width, height)?;
         t.step(16)?;
-        t.wait_node("status", |v| v["width"] == 300 && v["height"] == 200 && v["inBounds"] == true)
+        t.wait_node("status", |v| v["width"] == width && v["height"] == height && v["inBounds"] == true)
     })
 }
 
@@ -82,12 +90,15 @@ pub fn bounded() -> CaseResult {
 
 pub fn biconkit_interact() -> CaseResult {
     let mut t = App::launch(&[DEMOS[5].0], DEMOS[5].1)?;
-    t.hover("icon-1", (30, 30))?;
+    let tree = t.tree()?;
+    let icon = tree.children.iter().find(|n| n.key == "icon-1").ok_or("missing icon-1")?;
+    let center = ((icon.bounds[2] / 2) as i32, (icon.bounds[3] / 2) as i32);
+    t.hover("icon-1", center)?;
     t.wait_node("icon-1", |v| v["state"] == "HoverIn")?;
     t.step(16)?;
     t.step(300)?;
     t.wait_node("icon-1", |v| v["state"] == "Hovering")?;
-    t.drag("icon-1", (30, 30), &[])?;
+    t.drag("icon-1", center, &[])?;
     t.wait_node("icon-1", |v| v["state"] == "Clicked")?;
     t.expect_node("icons", |v| v["selected"] == 1)?;
     t.key(51, &[])?;
