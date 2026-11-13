@@ -46,18 +46,23 @@ impl Layout {
             name_label: r(230, 280, 340, 20), name: r(270, 300, 300, 24),
             session_status: r(230, 340, 340, 30),
             confirm: r(180, 220, 440, 64), confirm_label: r(190, 242, 420, 20),
-            canvas_y: 176 * scale,
+            canvas_y: super::dimensions::CANVAS_TOP as i32 * scale,
         }
     }
     pub fn logical(&self, r: Rect) -> Rect {
         Rect::new(r.x / self.scale, r.y / self.scale, r.w / self.scale, r.h / self.scale)
     }
     pub fn canvas(&self, width: usize, height: usize) -> Rect {
-        Rect::new(0, self.canvas_y, width as i32, height as i32)
+        Rect::new(0, self.canvas_y, width as i32 * self.scale, height as i32 * self.scale)
+    }
+    pub fn content_size(&self, width: u32, height: u32) -> (usize, usize) {
+        let scale = self.scale as u32;
+        (width.div_ceil(scale) as usize,
+         height.saturating_sub(self.canvas_y as u32).div_ceil(scale) as usize)
     }
     pub fn point(&self, x: i32, y: i32, width: usize, height: usize) -> Option<(i32, i32)> {
         let r = self.canvas(width, height);
-        r.contains(x, y).then_some((x - r.x, y - r.y))
+        r.contains(x, y).then_some(((x - r.x) / self.scale, (y - r.y) / self.scale))
     }
     pub fn hue_at(&self, x: i32) -> u16 {
         super::node::hue_at(((x - self.hue.x) / self.scale) as usize, (self.hue.w / self.scale) as usize)

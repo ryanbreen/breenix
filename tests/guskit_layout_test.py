@@ -26,7 +26,7 @@ class GusKitLayout(unittest.TestCase):
         app = source('userspace/programs/src/guskit.rs')
         code = (ROOT / 'tests/fixtures/guskit_layout.rs').read_text()
         layout = source('userspace/programs/src/guskit/layout.rs') if 'mod layout;' in app else ''
-        code = code.replace('// LAYOUT_MODULE', 'mod layout {\n' + layout + '\n}\nuse layout::Layout;' if layout else '')
+        code = code.replace('// LAYOUT_MODULE', 'mod dimensions {\n' + source('userspace/programs/src/guskit/dimensions.rs') + '\n}\n' + 'mod layout {\n' + layout + '\n}\nuse layout::Layout;' if layout else '')
         code = code.replace('// APP_LAYOUT_FIELD', 'layout: Layout, damage: Option<Clip>,' if layout else '')
         code = code.replace('// APP_LAYOUT_INIT', 'layout: Layout::new(scale), damage: None,' if layout else '')
         code = code.replace('// APP_METHODS', '\n'.join(item(app, f'    fn {name}(') for name in (['point', 'press', 'stroke_bounds'] if 'fn stroke_bounds(' in app else ['point', 'press'])))
@@ -45,6 +45,7 @@ edition = "2021"
 [dependencies]
 libbui = {{ path = "{ROOT / 'libs/libbui'}" }}
 libgfx = {{ path = "{ROOT / 'libs/libgfx'}" }}
+libbreenix = {{ path = "{ROOT / 'libs/libbreenix'}" }}
 serde_json = "=1.0.154"
 ''')
             env = dict(os.environ, CARGO_BUILD_JOBS='4',

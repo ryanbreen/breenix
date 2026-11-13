@@ -27,7 +27,7 @@ class MotionWork(unittest.TestCase):
         code = code.replace('fn draw_stroke(&self,_:&mut Canvas,_:&[Point]) {}', item(app, '    fn draw_stroke('))
         code = code.replace('// APP_LAYOUT_FIELD', 'layout: Layout, image: Canvas, damage: Option<Clip>,')
         code = code.replace('// APP_METHODS', item(app, '    fn stroke_bounds(') if 'fn stroke_bounds(' in app else '')
-        code = code.replace('// LAYOUT_MODULE', 'mod layout {\n' + source('userspace/programs/src/guskit/layout.rs') + '\n}\nuse layout::Layout;')
+        code = code.replace('// LAYOUT_MODULE', 'mod dimensions {\n' + source('userspace/programs/src/guskit/dimensions.rs') + '\n}\n' + 'mod layout {\n' + source('userspace/programs/src/guskit/layout.rs') + '\n}\nuse layout::Layout;')
         code = code.replace('// NODE_MODULE', source('userspace/programs/src/guskit/node.rs'))
         code = code.replace('// CONSTANTS', '\n'.join(line for line in app.splitlines() if line.startswith(('const NAMES:', 'const LABELS:'))))
         code = code.replace('// PRODUCTION', '\n'.join(item(app, f'fn {name}(') for name in ['draw_label', 'render']))
@@ -67,20 +67,20 @@ unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
         let mut total=0;
         for motion in 1..=59 {
             app.stroke.as_mut().unwrap().push((10+motion,40));
-            app.damage=Some(Clip::new(8,app.layout.canvas_y+38,motion+5,5));
+            app.damage=Some(Clip::new(8*scale as i32,app.layout.canvas_y+38*scale as i32,(motion+5)*scale as i32,5*scale as i32));
             WRITES.store(0,Ordering::Relaxed); CANVAS_ALLOCS.store(0,Ordering::Relaxed); COUNT.store(true,Ordering::Relaxed);
             render(&mut fb,&mut app,&MenuBar,&mut None,14.0);
             COUNT.store(false,Ordering::Relaxed);
             let writes=WRITES.load(Ordering::Relaxed);let copies=CANVAS_ALLOCS.load(Ordering::Relaxed);
             println!("scale={scale} motion={motion} pixel_writes={writes} full_canvas_allocations={copies}");
-            assert!(writes<=3*(motion as usize+5)*5 && copies==0,
+            assert!(writes<=3*(motion as usize+5)*5*(scale*scale) as usize && copies==0,
                 "motion {motion}: {writes} pixel writes, {copies} full canvas allocations; work must follow the brush bounds");
             total+=writes;
         }
         let mut expected=app.image.clone();expected.brush(app.stroke.as_ref().unwrap(),Radius::Small,[0;3]);
         for y in 0..fb.height {for x in 0..fb.width {
-            let want=if x<200 && y>=app.layout.canvas_y as usize && y<app.layout.canvas_y as usize+120 {
-                let i=((y-app.layout.canvas_y as usize)*200+x)*3;
+            let want=if x<200*scale as usize && y>=app.layout.canvas_y as usize && y<app.layout.canvas_y as usize+120*scale as usize {
+                let i=(((y-app.layout.canvas_y as usize)/scale as usize)*200+x/scale as usize)*3;
                 Color::rgb(expected.pixels()[i],expected.pixels()[i+1],expected.pixels()[i+2])
             } else {original[y*fb.width+x]};
             assert_eq!(fb.pixels[y*fb.width+x],want,"scale={scale} pixel={x},{y}");
@@ -106,6 +106,7 @@ edition="2021"
 libbui={{path="{ROOT / 'libs/libbui'}"}}
 libgfx={{path="{ROOT / 'libs/libgfx'}"}}
 libpixcheck={{path="{ROOT / 'libs/libpixcheck'}"}}
+libbreenix={{path="{ROOT / 'libs/libbreenix'}"}}
 serde_json="=1.0.154"
 ''')
             env = dict(os.environ, CARGO_BUILD_JOBS='4', RUSTFLAGS='-Dwarnings',

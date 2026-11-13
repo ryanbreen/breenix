@@ -20,6 +20,7 @@ fn session_title(name: &str) -> String {
     format!("Gus Kit ({})", &name[..end])
 }
 
+#[path = "guskit/dimensions.rs"] mod dimensions;
 #[path = "guskit/layout.rs"] mod layout;
 use layout::Layout;
 const NAMES: [&str; 7] = ["pencil", "brush", "line", "rectangle", "circle", "fill", "eraser"];
@@ -78,8 +79,9 @@ struct App {
 impl App {
     fn resize_view(&mut self, width: u32, height: u32) {
         if self.session.is_some() { return; }
-        self.width = self.width.max(width as usize);
-        self.height = self.height.max((height as usize).saturating_sub(self.layout.canvas_y as usize));
+        let (width, height) = self.layout.content_size(width, height);
+        self.width = self.width.max(width);
+        self.height = self.height.max(height);
         if let Some(clean) = self.history.clean_after_grow(self.width, self.height, self.clean) { self.clean = clean; }
         self.history.grow(self.width, self.height);
     }
@@ -330,14 +332,14 @@ fn render(fb: &mut Surface, app: &mut App, menu: &MenuBar, font: &mut Option<Cac
     draw_label(fb, font.as_mut(), font_size, "Recent:", l.recent_text.0, l.recent_text.1, Clip::new(r.x,r.y,r.w,r.h));
     for (r, c) in l.recent.iter().zip(&app.recent) { shapes::fill_rect(fb, r.x, r.y, r.w, r.h, Color::rgb(c[0], c[1], c[2])); }
     let r = l.canvas(app.width, app.height);
-    libgfx::blit::blit(fb, &app.canvas_surface.as_ref().expect("canvas rendered above").1, r.x, r.y);
+    libgfx::blit::blit_scaled(fb, &app.canvas_surface.as_ref().expect("canvas rendered above").1, r.x, r.y, l.scale);
     if let Some(bounds) = app.stroke_bounds() {
         let mut patch = app.canvas().region(bounds.x as usize, bounds.y as usize, bounds.w as usize, bounds.h as usize);
         let points: Vec<_> = app.stroke.as_ref().expect("preview bounds require a stroke").iter()
             .map(|&(x,y)| (x-bounds.x,y-bounds.y)).collect();
         app.draw_stroke(&mut patch, &points);
         patch.render_runs(|x,y,width,c| shapes::fill_rect(fb,
-            r.x+bounds.x+x as i32,r.y+bounds.y+y as i32,width as i32,1,Color::rgb(c[0],c[1],c[2])));
+            r.x+(bounds.x+x as i32)*l.scale,r.y+(bounds.y+y as i32)*l.scale,width as i32*l.scale,l.scale,Color::rgb(c[0],c[1],c[2])));
     }
     menu.draw(fb, &Theme::dark());
     let r = l.status;
@@ -377,6 +379,8 @@ fn publish(win: &mut Window, app: &App, menu: &MenuBar, font_size: f32) {
     let l = app.layout;
     let canvas_bounds = l.canvas(app.width, app.height).as_tree_rect();
     let mut children = vec![node::canvas(canvas_bounds, app.width, app.height, app.canvas().digest()), node::status(l.status.as_tree_rect(), &node::Status { tool: NAMES[app.tool], size: ["small", "medium", "large"][app.size], color: app.color(), undo: app.undo_depth(), redo: app.redo_depth(), dirty: app.dirty(), file: app.file.as_ref().and_then(|p| p.to_str()), message: app.status(), font_path: win.display_path(), font_size })];
+    children[0].clip = [canvas_bounds[0], canvas_bounds[1],
+        canvas_bounds[2].min(bounds[2]), canvas_bounds[3].min((bounds[3]-canvas_bounds[1]).max(0))];
     if let Some(session)=&app.session { children.push(node::collab(bounds,&session.core.model)); }
     children.extend(menu.tree_nodes("menu", Some("root"), Rect::new(0, 0, win.width() as i32 / l.scale, win.height() as i32 / l.scale), &Theme::dark()).into_iter().map(|mut n| { n.bounds = n.bounds.map(|v| v * i64::from(l.scale)); n.clip = n.clip.map(|v| v * i64::from(l.scale)); n }));
     children.extend(node::tools(l.tools.map(|r| r.as_tree_rect()), NAMES[app.tool]));
@@ -450,7 +454,8 @@ fn dispatch_input(app: &mut App, menu: &mut MenuBar, delivered: &breengel::Deliv
     let handled = handle(app, menu, delivered);
     if handled == Handled::Redraw {
         let delta = before.zip(app.stroke_bounds()).map(|(a,b)| {
-            let r = union(a,b); Clip::new(r.x,r.y+app.layout.canvas_y,r.w,r.h)
+            let r = union(a,b); let l = app.layout;
+            Clip::new(r.x*l.scale,r.y*l.scale+l.canvas_y,r.w*l.scale,r.h*l.scale)
         });
         app.damage = if *redraw { app.damage.zip(delta).map(|(a,b)| union(a,b)) } else { delta };
         *redraw = true;
@@ -461,25 +466,26 @@ fn dispatch_input(app: &mut App, menu: &mut MenuBar, delivered: &breengel::Deliv
 use options::Options;
 fn main() {
     let options=Options::parse(std::env::args().skip(1)).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(2) });
-    let (width,height)=(options.width,options.height);
+    let mode = libbreenix::gpu::current_mode().expect("Gus Kit display mode");
+    let scale = mode.scale.max(1);
+    let layout = Layout::new(scale);
+    let (window_width, window_height) = dimensions::initial_window(mode.width, mode.height, scale);
+    let (width,height) = if options.explicit_canvas { (options.width,options.height) }
+        else { layout.content_size(window_width,window_height) };
     let next=options.file;
     let image = Canvas::new(width,height); let clean = image.digest();
-    let mut app = App { damage: None, layout: Layout::new(1), width,height,history: History::new(image),clean,tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0,0,0],[255,0,0],[0,255,0],[0,0,255],[255,255,0],[255,0,255],[0,255,255],[128,128,128]],confirm:false,quit:false,file:next.map(PathBuf::from),message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
+    let mut app = App { damage: None, layout, width,height,history: History::new(image),clean,tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0,0,0],[255,0,0],[0,255,0],[0,0,255],[255,255,0],[255,0,255],[0,255,255],[128,128,128]],confirm:false,quit:false,file:next.map(PathBuf::from),message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
     if let Some(path) = app.file.clone() { if path.exists() { app.open_file(path); } }
     if let Some((host,address,port,name))=options.session {
         let result=if host {collab::Session::host(address,port,&name,app.canvas().clone(),width,height)} else {collab::Session::join(address,port,&name)};
         app.session=Some(result.unwrap_or_else(|e| {eprintln!("Gus Kit session: {e}");std::process::exit(1)}));
     }
     let mut title=app.session.as_ref().map_or_else(||"Gus Kit".into(),|s|session_title(&s.core.model.name));
-    let mut win = Window::new(title.as_bytes(), 800, 600).unwrap_or_else(|e| { eprintln!("Gus Kit: {e}"); std::process::exit(1) });
-    let scale = win.surface().expect("Gus Kit surface").ui_scale();
-    app.layout = Layout::new(scale);
-    if scale != 1 { win.apply_resize(800 * scale, 600 * scale).expect("scaled Gus Kit window"); }
+    let mut win = Window::new(title.as_bytes(), window_width, window_height).unwrap_or_else(|e| { eprintln!("Gus Kit: {e}"); std::process::exit(1) });
     let mut menu = menu();
     let mut font = win.take_display_font();
     let mut font_size = win.display_size();
     let mut redraw = true;
-    let mut initial_resize = (scale != 1).then_some((800 * scale, 600 * scale));
     loop {
         menu.set_enabled(HOST_SESSION, app.can_start_session()); menu.set_enabled(JOIN_SESSION, app.can_start_session());
         menu.set_enabled(UNDO, app.session.is_some() || app.undo_depth() > 0); menu.set_enabled(REDO, app.redo_depth() > 0);
@@ -513,7 +519,7 @@ fn main() {
             match delivered.event {
                 Event::ResizeRequested { width, height } => { resize = Some((width, height)); app.damage = None; redraw = true; return Handled::Redraw; }
                 Event::Resized { width, height } => {
-                    if initial_resize.take() != Some((width, height)) { app.resize_view(width, height); }
+                    app.resize_view(width, height);
                     app.damage = None; redraw = true; return Handled::Redraw;
                 }
                 _ => {}
@@ -586,6 +592,23 @@ mod tests {
         app.resize_view(1600,1200);
         assert_eq!((app.width,app.height),(900,524),"a smaller view never crops the image");
         assert_eq!(app.canvas().digest(),digest);
+    }
+
+    #[test]
+    fn canvas_area_startup_fills_the_large_view_and_session_resize_keeps_the_document() {
+        for scale in [1,2] {
+            let mut app=canvas_area_app(scale);
+            let (w,h)=dimensions::initial_window(2560,1600,scale);
+            app.resize_view(w,h);
+            let r=app.layout.canvas(app.width,app.height);
+            assert_eq!((r.w,r.h),(w as i32,h as i32-app.layout.canvas_y));
+            let mut core=collab::Core::host("Host",app.canvas().clone(),app.width,app.height);
+            core.submit(DrawOp::Pencil {x0:17,y0:19,x1:17,y1:19,color:[0;3]});
+            app.session=Some(collab::session_fixture(core));
+            let before=(app.width,app.height,app.canvas().digest());
+            app.resize_view(w+100,h+100);
+            assert_eq!((app.width,app.height,app.canvas().digest()),before);
+        }
     }
 
     #[test]

@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 extern crate alloc;
+#[path = "../userspace/programs/src/guskit/dimensions.rs"] mod dimensions;
 extern crate self as libbui;
 #[path = "../libs/libbui/src/tree.rs"] pub mod tree;
 #[path = "../userspace/programs/src/guskit/canvas.rs"] mod canvas;
@@ -216,4 +217,12 @@ fn lan_script_converges_through_two_cores() {
             assert!(matches!(core.model.peer.response(*id), Some(libcollab::peer::Response::Ack { .. })));
         }
     }
+}
+
+#[test]
+fn join_adopts_a_document_larger_than_the_old_view_limit() {
+    let mut peer=Core::join("Guest");
+    peer.receive(1,&encode(&Message::Welcome {peer:1,width:1148,height:454}).unwrap());
+    assert_eq!((peer.model.width(),peer.model.height()),(1148,454));
+    assert_eq!(peer.model.state,"syncing");
 }

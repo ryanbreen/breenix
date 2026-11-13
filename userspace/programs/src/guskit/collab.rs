@@ -56,7 +56,7 @@ impl Model {
                 width,
                 height,
             } => {
-                if *width == 0 || *height == 0 || *width > 800 || *height > 424 {
+                if *width == 0 || *height == 0 || *width as usize > super::dimensions::MAX_WIDTH || *height as usize > super::dimensions::MAX_HEIGHT {
                     return Err("canvas-size");
                 }
                 self.id = Some(*peer);

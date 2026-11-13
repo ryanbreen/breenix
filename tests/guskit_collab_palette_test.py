@@ -26,7 +26,7 @@ class CollabPalette(unittest.TestCase):
     def test_stroke_selects_the_expected_colour_at_both_scales(self):
         app = source('userspace/programs/src/guskit.rs')
         code = (ROOT / 'tests/fixtures/guskit_layout.rs').read_text()
-        code = code.replace('// LAYOUT_MODULE', 'mod layout {\n' + source('userspace/programs/src/guskit/layout.rs') + '\n}\nuse layout::Layout;')
+        code = code.replace('// LAYOUT_MODULE', 'mod dimensions {\n' + source('userspace/programs/src/guskit/dimensions.rs') + '\n}\n' + 'mod layout {\n' + source('userspace/programs/src/guskit/layout.rs') + '\n}\nuse layout::Layout;')
         code = code.replace('// APP_LAYOUT_FIELD', 'layout: Layout, damage: Option<Clip>,')
         code = code.replace('// APP_LAYOUT_INIT', 'layout: Layout::new(scale), damage: None,')
         code = code.replace('// APP_METHODS', '\n'.join(item(app, f'    fn {name}(') for name in (['point', 'press', 'stroke_bounds'] if 'fn stroke_bounds(' in app else ['point', 'press'])))
@@ -47,7 +47,11 @@ mod collab_palette {
             let node=self.published.children.iter().find(|n|n.key==key).ok_or("missing node")?;
             let (x,y)=drag_start(node,from)?;
             self.model.press(x,y);
-            if key=="canvas" { self.stroke=Some((from,steps.to_vec())); }
+            if key=="canvas" {
+                let scale=self.model.layout.scale;
+                let point=self.model.point(x,y).ok_or("canvas point outside image")?;
+                self.stroke=Some((point,steps.iter().map(|&(x,y)| (x/scale,y/scale)).collect()));
+            }
             Ok(())
         }
         fn wait_node(&mut self,key:&str,predicate:impl FnOnce(&serde_json::Value)->bool)->Result<(),String> {
@@ -56,6 +60,7 @@ mod collab_palette {
             if predicate(&value) { Ok(()) } else { Err(format!("status wait cannot pass: {value}")) }
         }
     }
+    CANVAS_DRAG
     DRAG_START
     fn attach(t:&mut App,name:&str)->Result<(),String> { t.attach(&format!("Gus Kit ({name})")) }
     enum Op { Stroke { y:usize, color:[u8;3] } }
@@ -81,6 +86,7 @@ mod collab_palette {
     }
 }
 '''
+        scenario = scenario.replace('CANVAS_DRAG', item(source('userspace/programs/src/guiapps_suite/guskit.rs'), 'pub(super) fn canvas_drag(').replace('pub(super) ', ''))
         scenario = scenario.replace('DRAG_START', item(source('libs/libuitest/src/app.rs'), 'pub fn drag_start('))
         scenario = scenario.replace('STROKE', item(source('userspace/programs/src/guiapps_suite/guskit_collab.rs'), '    fn stroke('))
         code += scenario
@@ -96,6 +102,7 @@ edition = "2021"
 [dependencies]
 libbui = {{ path = "{ROOT / 'libs/libbui'}" }}
 libgfx = {{ path = "{ROOT / 'libs/libgfx'}" }}
+libbreenix = {{ path = "{ROOT / 'libs/libbreenix'}" }}
 serde_json = "=1.0.154"
 ''')
             env = dict(os.environ, CARGO_BUILD_JOBS='4', RUSTFLAGS='-Dwarnings',

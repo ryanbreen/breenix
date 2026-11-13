@@ -12,6 +12,13 @@ mod breengel { pub mod tree { pub use libbui::tree::*; } }
 mod libgfx {
     pub use libgfx_real::surface;
     pub mod blit {
+        pub fn blit_scaled(dst: &mut super::super::Surface, src: &super::super::Surface, x:i32, y:i32, n:i32) {
+            dst.rects.push([x as i64,y as i64,src.width as i64*n as i64,src.height as i64*n as i64]);
+            for sy in 0..src.height { for sx in 0..src.width { for dy in 0..n { for dx in 0..n {
+                dst.put_pixel((x+sx as i32*n+dx) as usize,(y+sy as i32*n+dy) as usize,src.pixels[sy*src.width+sx]);
+            }}}}
+        }
+
         pub fn blit(dst: &mut super::super::Surface, src: &super::super::Surface, x: i32, y: i32) {
             dst.rects.push([x as i64, y as i64, src.width as i64, src.height as i64]);
             for sy in 0..src.height { for sx in 0..src.width {
@@ -149,8 +156,7 @@ fn scaled_drawing_publication_and_tool_centres() {
         let (_,one,t1)=sample(1,ttf);let (mut app,two,t2)=sample(2,ttf);
         assert_eq!(one.rects.len(),two.rects.len());
         for (a,b) in one.rects.iter().zip(&two.rects) {
-            // Canvas size stays in image pixels, only its origin scales.
-            let expected=if a[2..]==[200,120] {[a[0]*2,a[1]*2,200,120]} else {a.map(|v|v*2)};
+            let expected=a.map(|v|v*2);
             assert_eq!(*b,expected,"drawn rectangle must follow UI scale");
         }
         for (a,b) in one.labels.iter().zip(&two.labels) {
@@ -158,7 +164,7 @@ fn scaled_drawing_publication_and_tool_centres() {
         }
         for n in &t2.children {
             let original=t1.children.iter().find(|a|a.key==n.key).unwrap();
-            let expected=if n.key=="canvas" {[0,352,200,120]} else {original.bounds.map(|v|v*2)};
+            let expected=original.bounds.map(|v|v*2);
             assert_eq!(n.bounds,expected,"{} semantic scale",n.key);
             if n.key!="hue" && n.key!="sv" {
                 assert!(two.rects.contains(&n.bounds) || two.labels.iter().any(|l|[l.4.x as i64,l.4.y as i64,l.4.w as i64,l.4.h as i64]==n.bounds),"{} publication {:?} must equal drawn bounds",n.key,n.bounds);
@@ -179,7 +185,7 @@ fn scaled_drawing_publication_and_tool_centres() {
             app.tool=(i+1)%7;app.press((n.bounds[0]+n.bounds[2]/2) as i32,(n.bounds[1]+n.bounds[3]/2) as i32);
             assert_eq!(app.tool,i,"scaled tool centre selects {name}");
         }
-        assert_eq!(app.point(17,352+19),Some((17,19)));
+        assert_eq!(app.point(35,352+39),Some((17,19)));
         assert_eq!(app.point(17,351),None);
         app.press(520,124);app.press(160,152+39);
         assert_eq!(app.color(),[40,204,40],"scaled colour target keeps the same HSV colour");
