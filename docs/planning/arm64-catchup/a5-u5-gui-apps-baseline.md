@@ -56,3 +56,40 @@ results: **not produced**. The R240 comparison above therefore cannot classify
 any guest failure. No fix or second launch was made; the blocker was filed in
 the ARM effort ledger. The branch-tools lock was released after the failed
 preflight.
+
+## Resumed prediction
+
+The resumed unit keeps the runtime tree unchanged. The earlier launch did not
+start a VM, so the authorized single guest boot remains unspent. The import
+failure reproduces with `env -u PYTHONPATH python3 scripts/qemu-desktop-stage.py
+--help`. Supplying `PYTHONPATH="$PWD/scripts/metal:$PWD/scripts"` permits that
+command and the launcher's inline SMB selection/site import to exit with status 0.
+The dependency is the sibling import at `scripts/metal/metal_root.py:21`;
+`scripts/qemu-evidence.py:14` already establishes that directory for its own
+imports. Both QEMU callers need the environment (`scripts/boot-interactive.sh:366`,
+`:369`). Choose an explicit launch environment for this no-fixes baseline;
+leave an actual launcher repair to a later unit. No checks or expectations change.
+No GPU source or generated asset changes, so no MIT-source interpretation is
+needed. The 73-case manifest remains this unit's existing check (U29).
+
+The category predictions above stand. The unresolved integration question is
+whether ARM's init route actually reaches the shared case sessions with mounted
+shares, synchronized time and the evidence receiver, then recovers the SMB
+server and completes DONE/MEMORY/READY. The existing per-case diagnostics,
+UI_CONTROL records, evidence receipts and SMB helper transcript distinguish
+those outcomes. Predict 73 PASS, MEMORY PASS, both SMB actions successful and
+ANGLE/Metal renderer accepted. A failing capture ends the unit without a fix
+or another boot. Compare with main's latest R240 gui-apps capture
+`20261112T190204Z-metal` (E23 ledger line 457, 73/73, MEMORY 27/48 pages).
+Fetched `origin/main` remains `d3041e9e`; the branch's differences from it are
+ARM routing, QEMU host staging/helpers, host checks and this report.
+
+Validation before the resumed boot: import preflight with explicit search path
+exited with status 0; no source or check changed, so no repeated Rust build is required
+outside the launcher's own ARM artifact preparation. Builds use
+`CARGO_BUILD_JOBS=4` and the launcher's taskpolicy background wrapper.
+
+Claim checks for this prediction: `scripts/claim-lint.py --base HEAD` initially
+exited 1 on two unquantified prose claims; after naming exit status 0, it
+exited 0. Commit-message lint exited 1 twice on unquantified claims; the amended
+message exited 0.
