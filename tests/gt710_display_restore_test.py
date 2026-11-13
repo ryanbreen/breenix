@@ -23,7 +23,7 @@ class DisplayRestore(unittest.TestCase):
         linear = (ROOT / 'kernel/src/console/display/linear.rs').read_text()
         native = (ROOT / 'kernel/src/gpu/gk208/ce/readback.rs').read_text()
         fixture = (ROOT / 'tests/fixtures/gt710_display_restore.rs').read_text()
-        definitions = display[display.index('pub(super) const MODES:'):display.index('#[derive(Clone, Copy)]')]
+        definitions = display[display.index('pub(super) const PANEL_MODES:'):display.index('#[derive(Clone, Copy)]')]
         definitions += '\n#[derive(Clone, Copy)]\n' + item(display, 'pub(super) struct Binding')
         definitions += '\n' + item(display, 'pub(super) struct Owner')
         definitions += '\n' + item(display, 'pub(super) struct State')
@@ -49,8 +49,9 @@ class DisplayRestore(unittest.TestCase):
         present = present[present.index('    if !owner(tgid)'):present.index('    // Wait for')]
         mode = item(display, 'pub(super) fn set_mode(')
         mode = mode[mode.index('    let tgid = caller()?;'):mode.index('    let a: abi::SetMode')]
-        readback = item(source, 'fn read_back(')
-        readback = readback[readback.index('    let window ='):readback.index('    let _scanout =')]
+        readback = item(source, 'fn read_back_impl(')
+        readback = (readback[readback.index('    let window ='):readback.index('    let deadline =')]
+            + readback[readback.index('    let _presentation ='):readback.index('    let _scanout =')])
         replacements = {
             '// DEFINITIONS': definitions, '// CORE_METHODS': methods.replace('pub(super)', 'pub(crate)'),
             '// DISPLAY_FUNCTIONS': functions, '// SCREEN_METHODS': screen_methods,
