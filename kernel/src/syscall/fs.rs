@@ -1231,7 +1231,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
         },
         Epoll,
         Ipc(alloc::sync::Arc<dyn crate::ipc::object::IpcFile>),
-        Native(crate::fs::ext2::live_inode::FileHandle),
+        Native(crate::ipc::fd::FileDescriptor),
     }
 
     let kind = {
@@ -1255,8 +1255,8 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             None => return SyscallResult::Err(EBADF as u64),
         };
 
-        if let Some(handle) = &fd_entry.native_inode {
-            FstatKind::Native(handle.clone())
+        if fd_entry.native_inode.is_some() {
+            FstatKind::Native(fd_entry.clone())
         } else {
             match &fd_entry.kind {
                 FdKind::Ipc(object) => FstatKind::Ipc(object.clone()),
@@ -1333,7 +1333,8 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
                 if let Err(e) = fill_user_stat(file.mount, file.node, &mut stat) { return SyscallResult::Err(e); }
             } else { object.fill_stat(&mut stat); }
         },
-        FstatKind::Native(handle) => {
+        FstatKind::Native(entry) => {
+            let Some(handle) = entry.native_inode else { return SyscallResult::Err(EBADF as u64); };
             if let Err(e) = fill_handle_stat(&mut stat, &handle) {
                 return SyscallResult::Err(e);
             }
