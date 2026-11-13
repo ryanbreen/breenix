@@ -319,12 +319,16 @@ mod reclaim_checks {
         use crate::{fs::errno::Errno, syscall::errno::ENOSPC};
         // Exercise the production allocator, disk-write publication and errno
         // boundary used by write and pwrite, at direct and indirect offsets.
-        for offset in [0, 12 * 4096] {
+        for (offset, free) in [(0, 0), (12 * 4096, 0), (12 * 4096, 1)] {
             let (mut fs, data, _, _) = two_orphans();
             fs.write_inode(1, &Ext2Inode::new_regular_file(0o600, 0, 0)).unwrap();
             data.lock().unwrap()[3 * 4096..4 * 4096].fill(0xff);
-            fs.block_groups[0].bg_free_blocks_count = 0;
-            fs.superblock.s_free_blocks_count = 0;
+            if free == 1 {
+                // Enough for the data block, but not its indirect pointer block.
+                data.lock().unwrap()[3 * 4096 + 5] &= !1;
+            }
+            fs.block_groups[0].bg_free_blocks_count = free;
+            fs.superblock.s_free_blocks_count = free as u32;
             let error = fs.write_file_range_disk(1, offset, &[0x5a], false, false).unwrap_err();
             assert_eq!(errno::errno(error), Errno(ENOSPC), "offset {offset}: {error}");
             assert_eq!(fs.read_inode(1).unwrap().size(), 0);

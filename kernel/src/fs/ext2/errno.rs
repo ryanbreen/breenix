@@ -151,6 +151,7 @@ pub(crate) fn classified(error: &str) -> Option<Errno> {
         | "No memory for ext2 accounting"
         | "No memory for ext2 inode index"
         | "No memory for ext2 inode object"
+        | "No memory for file write"
         | "No memory for mapped transfer"
         | "No memory for namespace image"
         | "No memory for new block"

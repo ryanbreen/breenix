@@ -109,7 +109,11 @@ impl Ext2Fs {
                 &self.block_groups,
             )
             .map_err(|_| "Failed to write inode");
-        let changed = written.map_err(|_| "Failed to write file data")?;
+        let changed = written.map_err(|error| match error {
+            crate::block::BlockError::NoSpace => "No free blocks available",
+            crate::block::BlockError::OutOfMemory => "No memory for file write",
+            _ => "Failed to write file data",
+        })?;
         persisted?;
         linked?;
 
