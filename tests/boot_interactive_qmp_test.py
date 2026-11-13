@@ -56,7 +56,7 @@ class BootInteractiveQmpTest(unittest.TestCase):
             ' (d / "route.json").write_text(json.dumps({"pid": os.getpid()}))\n'
             ' while True: time.sleep(1)\n'
             'else:\n'
-            ' image, d = map(pathlib.Path, args[1:]); route = json.loads((d / "route.json").read_text())\n'
+            ' image, d = map(pathlib.Path, args[1:3]); route = json.loads((d / "route.json").read_text())\n'
             ' os.kill(route["pid"], 0); image.write_text("route=" + str(route["pid"]))\n')
         self.executable(scripts / "check-host-renderer.py", '#!/bin/sh\nexit 0\n')
         (scripts / "check-host-renderer.py").write_text('')
