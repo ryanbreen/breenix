@@ -76,7 +76,9 @@ fn invariant_images_name_only_the_target() {
             .map(|line| line.split_whitespace().next().expect("error ID"))
             .collect();
         if code != 4 || ids != BTreeSet::from([id]) {
-            failures.push(format!("{name}: expected exit 4 and only error {id}; exit {code}, IDs {ids:?}:\n{output}"));
+            failures.push(format!(
+                "{name}: expected exit 4 and only error {id}; exit {code}, IDs {ids:?}:\n{output}"
+            ));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
