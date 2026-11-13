@@ -1,9 +1,10 @@
-//! Named FIFO creation through Linux mknod/mknodat on ext2.
+//! Filesystem node creation through mknod/mknodat.
 use super::{errno::*, SyscallResult};
 use crate::fs::{
-    ext2::errno::errno as ext2_errno,
+    attrs::InodeAttrs,
     namei::{Last, Target},
     permissions::Credentials,
+    vfs::{names, NewNode},
 };
 
 pub fn sys_mkfifo(pathname: u64, mode: u32) -> SyscallResult {
@@ -45,34 +46,23 @@ pub(crate) fn mknodat_path(dirfd: i32, raw: impl AsRef<[u8]>, mode: u32, dev: u6
     if resolved.last != Last::Name || matches!(resolved.target, Target::Inode { .. }) {
         return SyscallResult::Err(EEXIST as u64);
     }
-    let Target::Absent { mount, .. } = resolved.target else {
+    let Target::Absent { .. } = resolved.target else {
         return SyscallResult::Err(EPERM as u64);
     };
     if resolved.trailing_slash {
         return SyscallResult::Err(ENOENT as u64);
     }
-    let Some(parent) = resolved.entry_dir() else {
-        return SyscallResult::Err(EIO as u64);
+    let (fs, parent, attrs) = match names::entry_dir(&resolved) {
+        Ok(parent) => parent,
+        Err(errno) => return SyscallResult::Err(errno.into()),
     };
-    let mut guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
-    let Some(fs) = guard.as_mut() else {
-        return SyscallResult::Err(EIO as u64);
-    };
-    let parent = match parent.verify(fs) {
-        Ok(ino) => ino,
-        Err(_) => return SyscallResult::Err(ENOENT as u64),
-    };
-    let inode = match fs.read_inode(parent).map_err(ext2_errno) {
-        Ok(inode) => inode,
-        Err(e) => return SyscallResult::Err(e.into()),
-    };
-    let gid = match super::fifo_policy::check_parent_access(inode.attrs(), inode.i_links_count.into(), &cred, None) {
+    let gid = match super::fifo_policy::check_parent_access(attrs.attrs, attrs.nlink, &cred, None) {
         Ok(gid) => gid,
         Err(e) => return SyscallResult::Err(e),
     };
-    match fs.lookup_in_dir_bytes(&inode, resolved.final_name()).map_err(ext2_errno) {
-        Ok(Some(_)) => return SyscallResult::Err(EEXIST as u64),
-        Ok(None) => {}
+    match fs.lookup(parent.ino, resolved.final_name()) {
+        Ok(_) => return SyscallResult::Err(EEXIST as u64),
+        Err(crate::fs::errno::Errno(ENOENT)) => {}
         Err(e) => return SyscallResult::Err(e.into()),
     }
     // Linux's zero-device character whiteout is exempt from CAP_MKNOD.
@@ -83,15 +73,19 @@ pub(crate) fn mknodat_path(dirfd: i32, raw: impl AsRef<[u8]>, mode: u32, dev: u6
     {
         return SyscallResult::Err(device_node.errno());
     }
-    let mode = kind | super::fifo_policy::creation_mode(mode, &cred, gid, false);
-    match fs.create_node(
-        parent,
-        resolved.final_name(),
-        mode,
-        cred.euid,
-        gid,
-        dev as u32,
-    ).map_err(ext2_errno) {
+    let mode = super::fifo_policy::creation_mode(mode, &cred, gid, false);
+    let attrs = InodeAttrs::new(mode.into(), cred.euid, gid);
+    // Keep the syscall's existing device-number truncation at its ABI boundary.
+    let rdev = u64::from(dev as u32);
+    let node = match kind {
+        0o100000 => NewNode::Regular { attrs },
+        0o010000 => NewNode::Fifo { attrs },
+        0o020000 => NewNode::CharDevice { attrs, rdev },
+        0o060000 => NewNode::BlockDevice { attrs, rdev },
+        0o140000 => NewNode::Socket { attrs },
+        _ => return SyscallResult::Err(EINVAL as u64),
+    };
+    match fs.create(parent.ino, resolved.final_name(), node) {
         Ok(_) => SyscallResult::Ok(0),
         Err(error) => SyscallResult::Err(error.into()),
     }

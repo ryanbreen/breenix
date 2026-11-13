@@ -2232,24 +2232,6 @@ fn may_link(cred: &FileCredentials, target: crate::fs::attrs::InodeAttrs) -> boo
     cred.privileged() || cred.euid == target.uid || cred.may(target, 6)
 }
 
-fn creation_parent(
-    fs: &crate::fs::ext2::Ext2Fs,
-    resolved: &crate::fs::namei::Resolved<alloc::vec::Vec<u8>>,
-    cred: &FileCredentials,
-) -> Result<(u32, u32, bool), SyscallResult> {
-    let parent = resolved
-        .entry_dir()
-        .ok_or(SyscallResult::Err(5))?
-        .verify(fs)
-        .map_err(|_| SyscallResult::Err(2))?;
-    let inode = fs
-        .read_inode(parent)
-       .map_err(ext2_errno).map_err(|e| SyscallResult::Err(e.into()))?;
-    let gid =
-        super::fifo_policy::check_parent_access(inode.attrs(), inode.i_links_count.into(), cred, None).map_err(SyscallResult::Err)?;
-    Ok((parent, gid, inode.permissions() & 0o2000 != 0))
-}
-
 /// sys_mkdir - Create a directory
 ///
 /// Creates a new directory with the specified pathname and mode.
@@ -2272,7 +2254,8 @@ pub fn sys_mkdir(pathname: u64, mode: u32) -> SyscallResult {
     sys_mkdir_from(AT_FDCWD, pathname, mode)
 }
 fn sys_mkdir_from(dirfd: i32, pathname: u64, mode: u32) -> SyscallResult {
-    use super::errno::{EEXIST, EIO, EPERM};
+    use super::errno::{EEXIST, EPERM};
+    use crate::fs::{attrs::InodeAttrs, vfs::{names, NewNode}};
     use crate::fs::namei::{Last, Target};
 
     // A final symlink, even a dangling one, is an existing name.
@@ -2287,7 +2270,7 @@ fn sys_mkdir_from(dirfd: i32, pathname: u64, mode: u32) -> SyscallResult {
     if resolved.last != Last::Name {
         return SyscallResult::Err(EEXIST as u64);
     }
-    let mount = match resolved.target {
+    match resolved.target {
         Target::User { mount, node, parent } => {
             let cred = match current_file_credentials() { Ok(c) => c, Err(e) => return SyscallResult::Err(e) };
             return ufs_status(crate::fs::ufs::path::mkdir(mount, node, parent, resolved.final_name(), mode, &cred));
@@ -2295,7 +2278,7 @@ fn sys_mkdir_from(dirfd: i32, pathname: u64, mode: u32) -> SyscallResult {
         Target::Inode { .. } => return SyscallResult::Err(EEXIST as u64),
         Target::Virtual if resolved.is_mount_point() => return SyscallResult::Err(EEXIST as u64),
         Target::Virtual => return SyscallResult::Err(EPERM as u64),
-        Target::Absent { mount, .. } => mount,
+        Target::Absent { .. } => {},
     };
 
     // Create the directory on the correct filesystem
@@ -2303,31 +2286,21 @@ fn sys_mkdir_from(dirfd: i32, pathname: u64, mode: u32) -> SyscallResult {
         Ok(cred) => cred,
         Err(errno) => return SyscallResult::Err(errno),
     };
-    let mkdir_result = {
-        let mut fs_guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
-        match fs_guard.as_mut() {
-            Some(fs) => {
-                let parent = match creation_parent(fs, &resolved, &cred) {
-                    Ok(p) => p,
-                    Err(e) => return e,
-                };
-                // The caller's mode gives the permission and sticky bits; a new
-                // directory is set-group-ID only when its parent is.
-                let dir_mode = super::fifo_policy::creation_mode(mode & 0o1777, &cred, parent.1, parent.2);
-                fs.create_directory_in(
-                    parent.0,
-                    resolved.final_name(),
-                    dir_mode,
-                    cred.euid,
-                    parent.1,
-                ).map_err(ext2_errno)
-            }
-            None => {
-                log::error!("sys_mkdir: ext2 filesystem not mounted");
-                return SyscallResult::Err(EIO as u64);
-            }
-        }
+    let (fs, parent, attrs) = match names::entry_dir(&resolved) {
+        Ok(parent) => parent,
+        Err(errno) => return SyscallResult::Err(errno.into()),
     };
+    let gid = match super::fifo_policy::check_parent_access(attrs.attrs, attrs.nlink, &cred, None) {
+        Ok(gid) => gid,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
+    // The caller supplies permission and sticky bits; directories inherit setgid.
+    let mode = super::fifo_policy::creation_mode(
+        mode & 0o1777, &cred, gid, attrs.attrs.permissions() & 0o2000 != 0,
+    );
+    let mkdir_result = fs.create(parent.ino, resolved.final_name(), NewNode::Directory {
+        attrs: InodeAttrs::new(mode.into(), cred.euid, gid),
+    });
 
     match mkdir_result {
         Ok(inode_num) => {
@@ -2368,7 +2341,8 @@ pub fn sys_symlink(target: u64, linkpath: u64) -> SyscallResult {
     sys_symlink_from(target, AT_FDCWD, linkpath)
 }
 fn sys_symlink_from(target: u64, dirfd: i32, linkpath: u64) -> SyscallResult {
-    use super::errno::{EEXIST, EINVAL, EIO, ENOENT, EPERM};
+    use super::errno::{EEXIST, EINVAL, ENOENT, EPERM};
+    use crate::fs::{attrs::InodeAttrs, vfs::{names, NewNode}};
     use super::userptr::copy_path_bytes_from_user;
     use crate::fs::namei::{Last, Target};
 
@@ -2395,46 +2369,36 @@ fn sys_symlink_from(target: u64, dirfd: i32, linkpath: u64) -> SyscallResult {
     if link.last != Last::Name {
         return SyscallResult::Err(EEXIST as u64);
     }
-    let mount = match link.target {
+    match link.target {
         Target::User { .. } => return SyscallResult::Err(EPERM as u64),
         Target::Inode { .. } => return SyscallResult::Err(EEXIST as u64),
         Target::Virtual if link.is_mount_point() => return SyscallResult::Err(EEXIST as u64),
         Target::Virtual => return SyscallResult::Err(EPERM as u64),
         // Only a directory is created at a name ending in `/`.
         Target::Absent { .. } if link.trailing_slash => return SyscallResult::Err(ENOENT as u64),
-        Target::Absent { mount, .. } => mount,
+        Target::Absent { .. } => {},
     };
 
     let cred = match current_file_credentials() {
         Ok(cred) => cred,
         Err(errno) => return SyscallResult::Err(errno),
     };
-    // Create the symbolic link on the correct filesystem
-    let symlink_result = {
-        let mut fs_guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
-        match fs_guard.as_mut() {
-            Some(fs) => {
-                let parent = match creation_parent(fs, &link, &cred) {
-                    Ok(p) => p,
-                    Err(e) => return e,
-                };
-                fs.create_symlink_in(
-                    &target_str,
-                    parent.0,
-                    link.final_name(),
-                    cred.euid,
-                    parent.1,
-                ).map_err(ext2_errno)
-            }
-            None => {
-                log::error!("sys_symlink: ext2 filesystem not mounted");
-                return SyscallResult::Err(EIO as u64);
-            }
-        }
+    let (fs, parent, attrs) = match names::entry_dir(&link) {
+        Ok(parent) => parent,
+        Err(errno) => return SyscallResult::Err(errno.into()),
     };
+    let gid = match super::fifo_policy::check_parent_access(attrs.attrs, attrs.nlink, &cred, None) {
+        Ok(gid) => gid,
+        Err(errno) => return SyscallResult::Err(errno),
+    };
+    // Symlink permissions stay 0777, independent of the caller's umask.
+    let symlink_result = fs.create(parent.ino, link.final_name(), NewNode::Symlink {
+        attrs: InodeAttrs::new(0o777, cred.euid, gid),
+        target: &target_str,
+    });
 
     match symlink_result {
-        Ok(()) => {
+        Ok(_) => {
             log::debug!(
                 "sys_symlink: successfully created symlink {} -> {}",
                 String::from_utf8_lossy(&link.path),
