@@ -12,6 +12,7 @@ use libcollab::wire::DrawOp;
 #[path = "guskit/session_dialog.rs"] mod session_dialog;
 #[path = "guskit/files.rs"] mod files;
 #[path = "guskit/save_barrier.rs"] mod save_barrier;
+#[path = "guskit/file_io.rs"] mod file_io;
 use canvas::{Canvas, History, Point, Radius};
 
 fn session_title(name: &str) -> String {
@@ -71,6 +72,7 @@ struct App {
     tool: usize, size: usize, hue: u16, sat: u8, val: u8,
     stroke: Option<Vec<Point>>, selected_color: Option<[u8; 3]>, recent: [[u8; 3]; 8], confirm: bool, quit: bool,
     file: Option<PathBuf>, message: String, picker: Option<FilePicker>, directory: PathBuf, save_as: bool,
+    file_io: file_io::State,
     palette: Option<(u16, Surface)>,
     canvas_surface: Option<(Canvas, Surface)>,
     session: Option<collab::Session>,
@@ -145,58 +147,36 @@ impl App {
             _ => {}
         }
     }
-    fn open_file(&mut self, path: PathBuf) {
-        let result = std::fs::read(&path).map_err(|e| e.to_string()).and_then(|bytes| files::decode(&path.to_string_lossy(), &bytes, 0, 0));
+    fn file_busy(&self) -> bool { self.file_io.busy() }
+    fn request_file(&mut self, request: file_io::Request) {
+        self.message = match self.file_io.queue(request) { Ok(status) => status.into(), Err(e) => e };
+    }
+    fn open_file(&mut self, path: PathBuf) { self.request_file(file_io::Request::Open(path)); }
+    fn save_to(&mut self, path: PathBuf) {
+        self.request_file(file_io::Request::SaveTo { path, image: self.canvas().clone(), width: self.width, height: self.height });
+    }
+    fn save(&mut self) {
+        self.request_file(file_io::Request::Save { path: self.file.clone(), image: self.canvas().clone(), width: self.width, height: self.height });
+    }
+    fn start_file_io(&mut self) -> bool {
+        if let Err(e) = self.file_io.start() { self.message = e; true } else { false }
+    }
+    fn apply_file_result(&mut self, result: Result<file_io::Completion, String>) {
         match result {
-            Ok((mut image, message)) => {
+            Ok(file_io::Completion::Saved { path, clean }) => { self.clean = clean; self.file = Some(path); self.message = "Saved".into(); }
+            Ok(file_io::Completion::Opened { path, mut image, message }) => {
                 let (width, height) = image.dimensions();
                 self.width = self.width.max(width); self.height = self.height.max(height);
                 image.grow(self.width, self.height);
                 self.history.grow(self.width, self.height);
                 self.clean = image.digest(); self.history.push(image);
-                self.file = Some(path); self.message = message.unwrap_or_default();
-            },
+                self.file = Some(path); self.message = message;
+            }
             Err(e) => self.message = e,
         }
     }
-    fn save_to(&mut self, path: PathBuf) {
-        let result = files::encode(&path.to_string_lossy(), self.canvas(), self.width, self.height)
-            .and_then(|bytes| match save_barrier::save(&path, &bytes) {
-                libbreenix::atomic_file::SaveResult::Saved => Ok(()),
-                libbreenix::atomic_file::SaveResult::Failed(e) | libbreenix::atomic_file::SaveResult::Unconfirmed(e) => Err(e.to_string()),
-            });
-        match result { Ok(()) => { self.clean = self.canvas().digest(); self.file = Some(path); self.message = "Saved".into(); }, Err(e) => self.message = e }
-    }
-    fn save(&mut self) {
-        let mut path = self.file.clone().unwrap_or_default();
-        let result = if self.file.is_some() {
-            files::encode(&path.to_string_lossy(), self.canvas(), self.width, self.height)
-                .and_then(|bytes| match save_barrier::save(&path, &bytes) {
-                    libbreenix::atomic_file::SaveResult::Saved => Ok(()),
-                    libbreenix::atomic_file::SaveResult::Failed(e) | libbreenix::atomic_file::SaveResult::Unconfirmed(e) => Err(e.to_string()),
-                })
-        } else {
-            // Reserve the first free name atomically; another drawing cannot be
-            // replaced even if it appears between choosing a name and saving.
-            files::encode("untitled.png", self.canvas(), self.width, self.height).and_then(|bytes| {
-                use std::io::Write;
-                let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-                for n in 1u64.. {
-                    path = home.join(format!("untitled-{n}.png"));
-                    let mut file = match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
-                        Ok(file) => file,
-                        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                        Err(e) => return Err(e.to_string()),
-                    };
-                    let result = file.write_all(&bytes).and_then(|()| file.sync_all());
-                    drop(file);
-                    if let Err(e) = result { let _ = std::fs::remove_file(&path); return Err(e.to_string()); }
-                    return std::fs::File::open(&home).and_then(|dir| dir.sync_all()).map_err(|e| e.to_string());
-                }
-                Err("no free untitled filename".into())
-            })
-        };
-        match result { Ok(()) => { self.clean = self.canvas().digest(); self.file = Some(path); self.message = "Saved".into(); }, Err(e) => self.message = e }
+    fn poll_file_io(&mut self) -> bool {
+        if let Some(result) = self.file_io.poll() { self.apply_file_result(result); true } else { false }
     }
     fn entries(path: &Path) -> Result<Vec<FileEntry>, String> {
         let mut result = Vec::new();
@@ -425,6 +405,17 @@ fn publish(win: &mut Window, app: &App, menu: &MenuBar, font_size: f32) {
     win.set_tree(Tree { root: Node { key: "root".into(), parent: None, role: Role::Window, name: app.session.as_ref().map_or_else(||"Gus Kit".into(),|s|format!("Gus Kit ({})",s.core.model.name)), value: serde_json::Value::Null, bounds, clip: bounds, flags: vec![Flag::Enabled, Flag::Visible] }, children });
 }
 fn handle(app: &mut App, menu: &mut MenuBar, delivered: &breengel::Delivered) -> Handled {
+    if app.file_busy() {
+        return match delivered.event {
+            Event::CloseRequested | Event::KeyPress { .. } | Event::MouseButton { pressed: true, .. } => {
+                app.message = format!("{}: file operation already in progress", app.file_io.status().unwrap_or("File operation")); Handled::Redraw
+            }
+            Event::PointerCancel | Event::MouseButton { pressed: false, .. } => {
+                if app.stroke.take().is_some() { Handled::Redraw } else { Handled::NoChange }
+            }
+            _ => Handled::NoChange,
+        };
+    }
     match delivered.event {
         Event::CloseRequested => app.request_quit(),
         Event::KeyPress { ascii, keycode, modifiers, .. } => {
@@ -542,8 +533,8 @@ fn main() {
         else { layout.content_size(window_width,window_height) };
     let next=options.file;
     let image = Canvas::new(width,height); let clean = image.digest();
-    let mut app = App { damage: None, layout, width,height,history: History::new(image),clean,tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0,0,0],[255,0,0],[0,255,0],[0,0,255],[255,255,0],[255,0,255],[0,255,255],[128,128,128]],confirm:false,quit:false,file:next.map(PathBuf::from),message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
-    if let Some(path) = app.file.clone() { if path.exists() { app.open_file(path); } }
+    let mut app = App { damage: None, layout, width,height,history: History::new(image),clean,tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0,0,0],[255,0,0],[0,255,0],[0,0,255],[255,255,0],[255,0,255],[0,255,255],[128,128,128]],confirm:false,quit:false,file:next.map(PathBuf::from),message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None,file_io:file_io::State::default() };
+    if let Some(path) = app.file.clone() { if path.exists() { app.apply_file_result(file_io::Request::Open(path).run()); } }
     if let Some((host,address,port,name))=options.session {
         let result=if host {collab::Session::host(address,port,&name,app.canvas().clone(),app.width,app.height)} else {collab::Session::join(address,port,&name)};
         app.session=Some(result.unwrap_or_else(|e| {eprintln!("Gus Kit session: {e}");std::process::exit(1)}));
@@ -555,11 +546,12 @@ fn main() {
     let mut font_size = win.display_size();
     let mut redraw = true;
     loop {
+        if app.poll_file_io() { invalidate(&mut app, &mut redraw, None); }
         menu.set_enabled(HOST_SESSION, app.can_start_session()); menu.set_enabled(JOIN_SESSION, app.can_start_session());
         menu.set_enabled(UNDO, app.session.is_some() || app.undo_depth() > 0); menu.set_enabled(REDO, app.redo_depth() > 0);
         let presentation_failed = if redraw {
             match present_frame(&mut win, &mut app, &menu, &mut font, font_size) {
-                Ok(()) => false,
+                Ok(()) => app.start_file_io(),
                 Err(e) => { eprintln!("Gus Kit presentation refused: {e}"); true }
             }
         } else { false };
@@ -640,7 +632,7 @@ mod tests {
             clean:image.digest(),history:History::new(image),tool:0,size:0,hue:0,sat:0,val:0,
             stroke:None,selected_color:None,recent:[[0;3];8],confirm:false,quit:false,file:None,
             message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,
-            palette:None,canvas_surface:None,session:None,session_dialog:None }
+            palette:None,canvas_surface:None,session:None,session_dialog:None,file_io:file_io::State::default() }
     }
 
     #[test]
@@ -695,7 +687,7 @@ mod tests {
             let mut app = App { damage: None, layout: Layout::new(1), width:20,height:20,clean:image.digest(),history:History::new(image),
                 tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
                 confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,
-                session:Some(collab::session_fixture(collab::Core::join("Peer"))),session_dialog:None };
+                session:Some(collab::session_fixture(collab::Core::join("Peer"))),session_dialog:None,file_io:file_io::State::default() };
             app.action(JOIN_SESSION);
             assert!(app.session_dialog.is_none(), "a pending join still owns its session");
             let core = &mut app.session.as_mut().unwrap().core;
@@ -720,7 +712,7 @@ mod tests {
         let image = Canvas::new(200, 120);
         let mut app = App { damage: None, layout: Layout::new(2), width:200,height:120,clean:image.digest(),history:History::new(image),
             tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
-            confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
+            confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None,file_io:file_io::State::default() };
         let mut menu = menu();
         app.action(JOIN_SESSION);
         for (r, address) in [(app.layout.name, false), (app.layout.address, true)] {
@@ -740,7 +732,7 @@ mod tests {
         let image = Canvas::new(200, 120);
         let mut app = App { damage: None, layout: Layout::new(1), width:200,height:120,clean:image.digest(),history:History::new(image),
             tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
-            confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
+            confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None,file_io:file_io::State::default() };
         let mut menu = menu();
         app.action(JOIN_SESSION);
         // bwm sends KeyPress, Text and KeyRelease for a physical printable key.
@@ -769,7 +761,7 @@ mod tests {
         let image = Canvas::new(200, 120);
         let mut app = App { damage: None, layout: Layout::new(1), width:200,height:120,clean:image.digest(),history:History::new(image),
             tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
-            confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
+            confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None,file_io:file_io::State::default() };
         let mut menu = menu();
         app.action(JOIN_SESSION);
         // App::type_text sends one TEXT source (libuitest app.rs/pointer_live.rs).
@@ -810,12 +802,15 @@ mod tests {
         let image = Canvas::new(8, 8);
         let mut app = App { damage: None, layout: Layout::new(1), width:8,height:8,clean:image.digest(),history:History::new(image),
             tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
-            confirm:false,quit:false,file:Some(dir.join("a.png")),message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
+            confirm:false,quit:false,file:Some(dir.join("a.png")),message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None,file_io:file_io::State::default() };
         let mut menu = menu();
         let key = |app: &mut App, menu: &mut MenuBar, keycode, ascii, modifiers| {
             let event = Delivered { serial:1,time_ns:1,clicks:0, event:Event::KeyPress {
                 ascii, keycode, modifiers, text:String::new(), repeat:false } };
             handle(app, menu, &event);
+            // The host fixture drives the post-frame worker and completion poll.
+            app.start_file_io();
+            while app.file_busy() { app.poll_file_io(); std::thread::yield_now(); }
         };
         let shortcut = Modifiers { ctrl:true, shift:true, ..Modifiers::default() };
         key(&mut app, &mut menu, 31, 0, shortcut);
@@ -854,7 +849,7 @@ mod tests {
         let image = Canvas::new(200, 120);
         let mut app = App { damage: None, layout: Layout::new(1), width:200,height:120,clean:image.digest(),history:History::new(image),
             tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
-            confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
+            confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None,file_io:file_io::State::default() };
         let mut menu = menu();
         let mut redraw = false;
         let mut event = Delivered { serial:1,time_ns:1,clicks:0,

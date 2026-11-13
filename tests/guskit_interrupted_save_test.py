@@ -11,6 +11,9 @@ class InterruptedSave(unittest.TestCase):
         rel = 'userspace/programs/src/guskit.rs'
         old = os.environ.get('GUSKIT_OLD_COMMIT')
         app = subprocess.check_output(['git', 'show', f'{old}:{rel}'], text=True) if old else (ROOT / rel).read_text()
+        if 'mod file_io;' in app:
+            rel = 'userspace/programs/src/guskit/file_io.rs'
+            app = subprocess.check_output(['git', 'show', f'{old}:{rel}'], text=True) if old else (ROOT / rel).read_text()
         self.assertEqual(app.count('save_barrier::save(&path, &bytes)'), 2)
         source = (ROOT / 'userspace/programs/src/guskit/save_barrier.rs').read_text()
         source = source.replace('//! Deterministic interruption of an app save in a suite-mode boot.', '')

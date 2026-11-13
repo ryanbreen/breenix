@@ -73,6 +73,7 @@ fn frame(win:&mut Window,app:&mut App) {
 fn complete(app:&mut App) {
     assert!(app.width>0);
     // POLL
+    // BUSY_CHECK
 }
 fn scenario(open:bool,save_as:bool) {
     let _guard=TEST.lock().unwrap_or_else(|e|e.into_inner());
@@ -97,14 +98,16 @@ fn scenario(open:bool,save_as:bool) {
         frame(&mut win,&mut app);
         // A second save during I/O must be refused visibly, not replace the job.
         if !open {app.save();assert!(app.message.contains("progress"),"second save was silently lost: {}",app.message);}
-        loop {complete(&mut app);if app.message!="Saving"&&app.message!="Loading"&&!app.message.contains("progress") {break} std::thread::yield_now();}
+        let deadline=std::time::Instant::now()+std::time::Duration::from_secs(10);
+        loop {assert!(std::time::Instant::now()<deadline,"file completion did not reach the UI");complete(&mut app);if app.message!="Saving"&&app.message!="Loading"&&!app.message.contains("progress") {break} std::thread::yield_now();}
         assert!(!app.dirty());assert_eq!(app.canvas().digest(),expected);
         if !open {assert_eq!(app.message,"Saved");assert_eq!(std::fs::read(&path).unwrap(),encoded)}
         else {assert!(app.message.is_empty())}
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     });
     let mut obs=OBS.lock().unwrap();
-    while !obs.entered {obs=WAKE.wait(obs).unwrap();}
+    let (next,timeout)=WAKE.wait_timeout_while(obs,std::time::Duration::from_secs(10),|s|!s.entered).unwrap();
+    obs=next;assert!(!timeout.timed_out(),"file operation never reached its I/O boundary");
     let committed=obs.commits.clone();obs.release=true;WAKE.notify_all();drop(obs);
     let joined=ui.join();
     assert!(committed.iter().any(|(serial,status)|*serial==41&&status==if open {"Loading"}else{"Saving"}),

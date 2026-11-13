@@ -17,7 +17,7 @@ class AsyncFiles(unittest.TestCase):
             return subprocess.check_output(['git', 'show', f'{revision}:{path}'], cwd=ROOT, text=True) if revision else (ROOT / path).read_text()
         app = source('userspace/programs/src/guskit.rs')
         window = source('libs/breengel/src/window.rs')
-        names = ['save', 'save_to', 'open_file', 'file_busy', 'request_file', 'start_file_io', 'poll_file_io']
+        names = ['save', 'save_to', 'open_file', 'file_busy', 'request_file', 'start_file_io', 'poll_file_io', 'apply_file_result']
         methods = '\n'.join(item(app, f'    fn {name}(') for name in names if f'    fn {name}(' in app)
         io_module = source('userspace/programs/src/guskit/file_io.rs') if 'mod file_io;' in app else ''
         # These are the I/O boundary replacements, including baseline synchronous I/O.
@@ -26,13 +26,14 @@ class AsyncFiles(unittest.TestCase):
         frame = item(app[app.index('fn main()'):], '        let presentation_failed = if redraw {') + ' else { false };'
         frame = frame.replace('&mut win', 'win').replace('&mut app', 'app')
         code = (ROOT / 'tests/fixtures/guskit_async_file.rs').read_text()
-        code = code.replace('// FILE_IO_MODULE', 'mod file_io {\n' + io_module.replace('//!', '//') + '\n}' if io_module else '')
+        code = code.replace('// FILE_IO_MODULE', 'mod file_io { use super::libbreenix;\n' + io_module.replace('//!', '//') + '\n}' if io_module else '')
         code = code.replace('// FILE_IO_FIELD', 'file_io: file_io::State,' if io_module else '')
         code = code.replace('// FILE_IO_INIT', 'file_io: file_io::State::default(),' if io_module else '')
         code = code.replace('// FILE_METHODS', methods)
         code = code.replace('// DELIVER', item(window, '    fn deliver('))
         code = code.replace('// PRESENT_FRAME', item(app, 'fn present_frame(') + '\n' + item(app, 'fn union('))
         code = code.replace('// FRAME', frame)
+        code = code.replace('// BUSY_CHECK', 'if app.file_busy() { std::thread::yield_now(); }' if io_module else '')
         code = code.replace('// POLL', 'app.poll_file_io();' if 'fn poll_file_io(' in app else '')
         run_host(self, code.replace('CANVAS_PATH', str(ROOT / 'userspace/programs/src/guskit/canvas.rs'))
                  .replace('FILES_PATH', str(ROOT / 'userspace/programs/src/guskit/files.rs'))
