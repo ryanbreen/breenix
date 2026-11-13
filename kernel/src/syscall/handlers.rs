@@ -695,7 +695,10 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
             let (handle, position, file_mount_id) = {
                 let file_guard = file.lock();
                 (
-                    file_guard.handle.clone(),
+                    match file_guard.open.ext2_handle() {
+                        Some(handle) => handle,
+                        None => return SyscallResult::Err(super::errno::EIO as u64),
+                    },
                     file_guard.position,
                     file_guard.mount_id,
                 )
@@ -1384,7 +1387,11 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             let file_ref_owned = file_ref.clone();
             let (handle, position, file_mount_id) = {
                 let file = file_ref.lock();
-                (file.handle.clone(), file.position, file.mount_id)
+                let handle = match file.open.ext2_handle() {
+                    Some(handle) => handle,
+                    None => return SyscallResult::Err(super::errno::EIO as u64),
+                };
+                (handle, file.position, file.mount_id)
             };
             let inode_num = u64::from(handle.object.key.inode);
             let ext2_ino = match ino32(inode_num) { Ok(ino) => ino, Err(error) => return SyscallResult::Err(error.into()) };
@@ -3172,7 +3179,10 @@ fn fcntl_record_lock(thread_id: u64, fd: i32, cmd: i32, flock_ptr: u64) -> Sysca
                     },
                     entry.status_flags() & crate::ipc::fd::status_flags::O_ACCMODE,
                     file.position,
-                    file.handle.clone(),
+                    match file.open.ext2_handle() {
+                        Some(handle) => handle,
+                        None => return SyscallResult::Err(super::errno::EIO as u64),
+                    },
                 )
             }
             // A descriptor for anything but a regular file does not support locking.
@@ -4058,7 +4068,7 @@ pub fn sys_pread64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRes
                             }
                             FdKind::RegularFile(file_ref) => {
                                 let file = file_ref.lock();
-                                return Ok(file.handle.clone());
+                                return file.open.ext2_handle().ok_or(super::errno::EIO as u64);
                             }
                             FdKind::PipeRead(_) | FdKind::PipeWrite(_) => {
                                 return Err(super::errno::ESPIPE as u64);
@@ -4176,7 +4186,10 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
                             }
                             FdKind::RegularFile(file_ref) => {
                                 let file = file_ref.lock();
-                                return Ok((file.handle.clone(), !process.cred.privileged()));
+                                return Ok((
+                                    file.open.ext2_handle().ok_or(super::errno::EIO as u64)?,
+                                    !process.cred.privileged(),
+                                ));
                             }
                             FdKind::PipeRead(_) | FdKind::PipeWrite(_) => {
                                 return Err(super::errno::ESPIPE as u64);

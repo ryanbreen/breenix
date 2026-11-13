@@ -824,9 +824,17 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
             // permission check relies on that.
             // Create DirectoryFile structure
             let dir_file = DirectoryFile {
-                handle: match handle {
-                    Some(handle) => handle,
-                    None => return SyscallResult::Err(super::errno::EIO as u64),
+                open: {
+                    let fs = match crate::fs::vfs::mount::filesystem(mount.0) {
+                        Ok(fs) => fs,
+                        Err(error) => return SyscallResult::Err(error.into()),
+                    };
+                    let node = match fs.open(inode_num) {
+                        Ok(node) => node,
+                        Err(error) => return SyscallResult::Err(error.into()),
+                    };
+                    drop(handle);
+                    crate::fs::vfs::file::OpenFile { fs, node }
                 },
                 inode_num,
                 mount_id,
@@ -929,7 +937,18 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
         // Regular file
         // Create RegularFile structure
         let regular_file = RegularFile {
-            handle: handle.expect("regular inode pinned during open"),
+            open: {
+                let fs = match crate::fs::vfs::mount::filesystem(mount.0) {
+                    Ok(fs) => fs,
+                    Err(error) => return SyscallResult::Err(error.into()),
+                };
+                let node = match fs.open(inode_num) {
+                    Ok(node) => node,
+                    Err(error) => return SyscallResult::Err(error.into()),
+                };
+                drop(handle);
+                crate::fs::vfs::file::OpenFile { fs, node }
+            },
             inode_num,
             mount_id,
             position: 0,
@@ -1057,7 +1076,11 @@ pub fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
             match &fd_entry.kind {
                 FdKind::RegularFile(file) => {
                     let f = file.lock();
-                    (f.handle.clone(), f.position)
+                    let handle = match f.open.ext2_handle() {
+                        Some(handle) => handle,
+                        None => return SyscallResult::Err(super::errno::EIO as u64),
+                    };
+                    (handle, f.position)
                 }
                 // A directory position is a record offset, not a byte count
                 // that SEEK_END can be relative to.
@@ -1261,7 +1284,10 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
                     FstatKind::RegularFile {
                         inode_num: file_guard.inode_num,
                         mount_id: file_guard.mount_id,
-                        handle: file_guard.handle.clone(),
+                        handle: match file_guard.open.ext2_handle() {
+                            Some(handle) => handle,
+                            None => return SyscallResult::Err(super::errno::EIO as u64),
+                        },
                     }
                 }
                 FdKind::Directory(dir) => {
@@ -1709,7 +1735,10 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
 
     // Get directory info
     let dir_guard = dir_file.lock();
-    let handle = dir_guard.handle.clone();
+    let handle = match dir_guard.open.ext2_handle() {
+        Some(handle) => handle,
+        None => return SyscallResult::Err(super::errno::EIO as u64),
+    };
     let start_position = dir_guard.position;
     drop(dir_guard);
 
@@ -4679,21 +4708,21 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
                 if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
                     if let Some(fd_entry) = process.fd_table.get(dirfd) {
                         if let Some(handle) = &fd_entry.native_inode {
-                            return Some(handle.clone());
+                            return Ok(handle.clone());
                         }
                         if let FdKind::RegularFile(file_ref) = &fd_entry.kind {
                             let file = file_ref.lock();
-                            return Some(file.handle.clone());
+                            return file.open.ext2_handle().ok_or(super::errno::EIO as u64);
                         }
                     }
                 }
             }
-            None
+            Err(super::errno::EBADF as u64)
         });
 
         let handle = match fd_info {
-            Some(handle) => handle,
-            None => return SyscallResult::Err(super::errno::EBADF as u64),
+            Ok(handle) => handle,
+            Err(error) => return SyscallResult::Err(error),
         };
 
         return update_inode_timestamps(&handle, set_atime, set_mtime, &cred, access);
@@ -4810,7 +4839,7 @@ fn ext2_fd_info(
                 Ok((
                     file.inode_num,
                     file.mount_id,
-                    Some(file.handle.clone()),
+                    Some(file.open.ext2_handle().ok_or(super::errno::EIO as u64)?),
                 ))
             }
             FdKind::Directory(dir) if !writable => {
@@ -5001,12 +5030,12 @@ pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
                 } else { Ok(virtual_statfs(object.statfs_magic())) }
             },
             FdKind::RegularFile(file) => {
-                let pin = file.lock().handle.clone();
-                mounted(&pin)
+                let pin = file.lock().open.ext2_handle();
+                pin.as_ref().ok_or(super::errno::EIO as u64).and_then(mounted)
             }
             FdKind::Directory(dir) => {
-                let pin = dir.lock().handle.clone();
-                mounted(&pin)
+                let pin = dir.lock().open.ext2_handle();
+                pin.as_ref().ok_or(super::errno::EIO as u64).and_then(mounted)
             }
             FdKind::FifoRead(_, _, entry)
             | FdKind::FifoWrite(_, _, entry)
