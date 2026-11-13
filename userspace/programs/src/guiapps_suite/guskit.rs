@@ -15,14 +15,20 @@ fn tool(t: &mut App, name: &str) -> Result<(), String> {
     t.drag(&format!("tool-{name}"), (4, 4), &[])?;
     t.wait_node("status", |v| v["tool"] == name)
 }
-fn capture(t: &App, expected: &Expected) -> Result<(), String> {
-    let mut bgra = vec![0; 800 * 600 * 4];
+fn capture(t: &mut App, expected: &Expected) -> Result<(), String> {
+    let tree = t.tree()?;
+    let bounds = tree.children.iter().find(|n| n.key == "canvas").ok_or("missing canvas")?.bounds;
+    if bounds[2..] != [200, 120] { return Err("unexpected canvas dimensions".into()); }
+    let mut bgra = vec![0; tree.root.bounds[2] as usize * tree.root.bounds[3] as usize * 4];
     let frame = libbreenix::window::capture(t.window(), &mut bgra, None).map_err(|e| e.to_string())?;
-    if frame.width < 200 || frame.height < 296 { return Err("capture too small for canvas".into()); }
+    let [left, top, width, height] = bounds;
+    if left < 0 || top < 0 || left + width > i64::from(frame.width) || top + height > i64::from(frame.height) {
+        return Err("capture too small for canvas".into());
+    }
     let mut rgb = Vec::with_capacity(200 * 120 * 3);
-    for y in 176..296 {
-        for x in 0..200 {
-            let i = (y * frame.width as usize + x) * 4;
+    for y in top..top + height {
+        for x in left..left + width {
+            let i = (y as usize * frame.width as usize + x as usize) * 4;
             rgb.extend_from_slice(&[bgra[i + 2], bgra[i + 1], bgra[i]]);
         }
     }
@@ -34,7 +40,7 @@ pub fn pencil() -> CaseResult {
     let mut t = launch()?;
     t.drag("canvas", (10, 10), &[(30, 0), (0, 20)])?;
     let mut image = Expected::white(); image.horizontal(10, 40, 10); image.vertical(40, 10, 30);
-    expect(&mut t, &image)?; capture(&t, &image)?;
+    expect(&mut t, &image)?; capture(&mut t, &image)?;
     Ok(t.finish()?)
 }
 pub fn shapes() -> CaseResult {
@@ -71,9 +77,12 @@ fn redo(t: &mut App) -> Result<(), String> { t.key(44, &[Modifier::Ctrl, Modifie
 
 pub fn eraser_color() -> CaseResult {
     let mut t = launch()?;
-    // x=260 gives hue 120; (80,19) gives saturation and value 204.
-    t.drag("hue", (260, 4), &[])?;
-    t.drag("sv", (80, 19), &[])?;
+    // guskit/eraser-color keeps hue 120 and saturation/value 204 at UI scale 2.
+    let tree = t.tree()?;
+    let hue = tree.children.iter().find(|n| n.key == "hue").ok_or("missing hue")?.bounds;
+    let sv = tree.children.iter().find(|n| n.key == "sv").ok_or("missing sv")?.bounds;
+    t.drag("hue", ((hue[2] / 3) as i32, (hue[3] * 4 / 18) as i32), &[])?;
+    t.drag("sv", ((sv[2] * 80 / 100) as i32, (sv[3] * 19 / 100) as i32), &[])?;
     t.wait_node("status", |v| v["color"] == serde_json::json!([40, 204, 40]))?;
     stroke(&mut t, 10)?;
     let mut image = Expected::white();

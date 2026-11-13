@@ -20,7 +20,8 @@ fn session_title(name: &str) -> String {
     format!("Gus Kit ({})", &name[..end])
 }
 
-const TOP: i32 = 176;
+#[path = "guskit/layout.rs"] mod layout;
+use layout::Layout;
 const NAMES: [&str; 7] = ["pencil", "brush", "line", "rectangle", "circle", "fill", "eraser"];
 const LABELS: [&[u8]; 7] = [b"Pen", b"Brsh", b"Line", b"Rect", b"Circ", b"Fill", b"Ers"];
 const NEW: u16 = 1;
@@ -39,9 +40,9 @@ struct SessionDialog {
     name: libbui::widget::text_field::TextField,
 }
 impl SessionDialog {
-    fn new(mode: session_dialog::Mode) -> Self {
-        let mut address = libbui::widget::text_field::TextField::new(Rect::new(270, 250, 300, 24), 64);
-        let mut name = libbui::widget::text_field::TextField::new(Rect::new(270, 300, 300, 24), 64);
+    fn new(mode: session_dialog::Mode, layout: &Layout) -> Self {
+        let mut address = libbui::widget::text_field::TextField::new(layout.logical(layout.address), 64);
+        let mut name = libbui::widget::text_field::TextField::new(layout.logical(layout.name), 64);
         address.set_focused(mode == session_dialog::Mode::Join);
         name.set_focused(mode == session_dialog::Mode::Host);
         Self { model: session_dialog::Dialog::new(mode), mode, address, name }
@@ -63,6 +64,7 @@ impl SessionDialog {
     }
 }
 struct App {
+    layout: Layout,
     width: usize, height: usize, history: History, clean: [u8; 32],
     tool: usize, size: usize, hue: u16, sat: u8, val: u8,
     stroke: Option<Vec<Point>>, selected_color: Option<[u8; 3]>, recent: [[u8; 3]; 8], confirm: bool, quit: bool,
@@ -86,7 +88,7 @@ impl App {
     fn request_quit(&mut self) { if self.dirty() { self.confirm = true; } else { self.quit = true; } }
     fn action(&mut self, action: u16) {
         match action {
-            HOST_SESSION | JOIN_SESSION if self.can_start_session() => { self.session_dialog = Some(SessionDialog::new(if action == HOST_SESSION { session_dialog::Mode::Host } else { session_dialog::Mode::Join })); },
+            HOST_SESSION | JOIN_SESSION if self.can_start_session() => { self.session_dialog = Some(SessionDialog::new(if action == HOST_SESSION { session_dialog::Mode::Host } else { session_dialog::Mode::Join }, &self.layout)); },
             OPEN => { if self.session.is_none() { self.open_picker(false); } else { self.message="Open an image before starting a session".into(); } },
             SAVE_AS => self.open_picker(true),
             SAVE => self.save(),
@@ -171,7 +173,7 @@ impl App {
     fn open_picker(&mut self, save_as: bool) {
         let dir = self.file.as_ref().and_then(|p| p.parent()).filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("." )).to_path_buf();
         match Self::entries(&dir) {
-            Ok(entries) => { self.save_as = save_as; self.directory = dir; self.picker = Some(FilePicker::new(Rect::new(150, 100, 500, 400), self.directory.to_string_lossy().as_bytes().to_vec(), entries, &Theme::dark())); },
+            Ok(entries) => { self.save_as = save_as; self.directory = dir; self.picker = Some(FilePicker::new(self.layout.logical(self.layout.picker), self.directory.to_string_lossy().as_bytes().to_vec(), entries, &Theme::dark())); },
             Err(e) => self.message = e,
         }
     }
@@ -191,7 +193,7 @@ impl App {
         }
     }
     fn point(&self, x: i32, y: i32) -> Option<Point> {
-        if x >= 0 && y >= TOP && (x as usize) < self.width && ((y - TOP) as usize) < self.height { Some((x, y - TOP)) } else { None }
+        self.layout.point(x, y, self.width, self.height)
     }
     fn draw_stroke(&self, image: &mut Canvas, points: &[Point]) {
         let Some(&last) = points.last() else { return };
@@ -219,11 +221,12 @@ impl App {
         }
     }
     fn press(&mut self, x: i32, y: i32) {
-        if y >= 23 && y < 39 && x >= 2 { let i = ((x - 2) / 38) as usize; if i < 7 && (x - 2) % 38 < 36 { self.tool = i; return; } }
-        if y >= 41 && y < 57 && x >= 2 { let i = ((x - 2) / 22) as usize; if i < 3 && (x - 2) % 22 < 20 { self.size = i; return; } }
-        if (58..76).contains(&y) && (0..780).contains(&x) { self.hue = node::hue_at(x as usize, 780); self.selected_color = None; return; }
-        if (76..176).contains(&y) && (0..100).contains(&x) { (self.sat, self.val) = node::sv_at(x as usize, (y - 76) as usize, 100); self.selected_color = None; return; }
-        if (90..108).contains(&y) && (108..252).contains(&x) { let i = ((x - 108) / 18) as usize; self.selected_color = Some(self.recent[i]); return; }
+        let l = &self.layout;
+        if let Some(i) = l.tools.iter().position(|r| r.contains(x, y)) { self.tool = i; return; }
+        if let Some(i) = l.sizes.iter().position(|r| r.contains(x, y)) { self.size = i; return; }
+        if l.hue.contains(x, y) { self.hue = l.hue_at(x); self.selected_color = None; return; }
+        if l.sv.contains(x, y) { (self.sat, self.val) = l.sv_at(x, y); self.selected_color = None; return; }
+        if let Some(i) = l.recent.iter().position(|r| r.contains(x, y)) { self.selected_color = Some(self.recent[i]); return; }
         if self.session.as_ref().is_none_or(|s|s.core.model.state == "connected") { if let Some(point) = self.point(x, y) { self.stroke = Some(vec![point]); } }
     }
 }
@@ -236,24 +239,26 @@ fn menu() -> MenuBar {
     menu.layout(&Theme::dark()); menu
 }
 fn draw_label(fb: &mut Surface, font: Option<&mut CachedFont>, size: f32, text: &str, x: i32, y: i32, clip: Clip) {
+    let (size, raster) = libbui::text::scaled_font(size, fb.ui_scale());
     fb.push_clip(clip);
     if let Some(font) = font {
         ttf_font::draw_text(fb, font, text, x, y, size, Color::WHITE);
     } else {
-        bitmap_font::draw_text(fb, text.as_bytes(), x as usize, y as usize, Color::WHITE);
+        bitmap_font::draw_text_at(fb, text.as_bytes(), x as usize, y as usize, Color::WHITE, raster);
     }
     fb.pop_clip();
 }
 fn render(fb: &mut Surface, app: &mut App, menu: &MenuBar, font: &mut Option<CachedFont>, font_size: f32) {
+    let l = app.layout;
     // Input acknowledgments wait for this frame. Retain the hue-dependent picker
     // on the GPU so unchanged input redraws only copy its pixels.
-    if app.palette.as_ref().is_none_or(|(hue, _)| *hue != app.hue) {
-        let mut palette = Surface::new(780, 118, libgfx::surface::Format::BGRX)
+    if app.palette.as_ref().is_none_or(|(hue, surface)| *hue != app.hue || surface.width() != l.palette.w as usize || surface.height() != l.palette.h as usize) {
+        let mut palette = Surface::new(l.palette.w as usize, l.palette.h as usize, libgfx::surface::Format::BGRX)
             .expect("Gus Kit picker surface");
         palette.batch(|fb| {
             fb.clear(Color::rgb(45, 45, 45));
-            for x in 0..780 { let c = node::hsv_to_rgb(node::hue_at(x, 780), 255, 255); shapes::fill_rect(fb, x as i32, 0, 1, 18, Color::rgb(c[0], c[1], c[2])); }
-            for y in 0..100 { for x in 0..100 { let (s,v) = node::sv_at(x,y,100); let c = node::hsv_to_rgb(app.hue,s,v); fb.put_pixel(x, y+18, Color::rgb(c[0],c[1],c[2])); } }
+            for x in 0..l.hue.w { let c = node::hsv_to_rgb(l.hue_at(l.hue.x + x), 255, 255); shapes::fill_rect(fb, x, l.hue.y - l.palette.y, 1, l.hue.h, Color::rgb(c[0], c[1], c[2])); }
+            for y in 0..l.sv.h { for x in 0..l.sv.w { let (s,v) = l.sv_at(l.sv.x + x, l.sv.y + y); let c = node::hsv_to_rgb(app.hue,s,v); fb.put_pixel(x as usize, (y + l.sv.y - l.palette.y) as usize, Color::rgb(c[0],c[1],c[2])); } }
         });
         palette.wait().expect("Gus Kit picker rendering");
         app.palette = Some((app.hue, palette));
@@ -281,48 +286,65 @@ fn render(fb: &mut Surface, app: &mut App, menu: &MenuBar, font: &mut Option<Cac
     fb.batch(|fb| {
     fb.clear(Color::rgb(45, 45, 45));
     for (i, label) in LABELS.iter().enumerate() {
-        let x = 2 + i * 38;
-        shapes::fill_rect(fb, x as i32, 23, 36, 16, if i == app.tool { Color::rgb(100,140,220) } else { Color::rgb(60,60,60) });
-        draw_label(fb, font.as_mut(), font_size, core::str::from_utf8(label).unwrap(), (x + 2) as i32, 25, Clip::new(x as i32, 23, 36, 16));
+        let r = l.tools[i];
+        shapes::fill_rect(fb, r.x, r.y, r.w, r.h, if i == app.tool { Color::rgb(100,140,220) } else { Color::rgb(60,60,60) });
+        draw_label(fb, font.as_mut(), font_size, core::str::from_utf8(label).unwrap(), l.tool_text[i].0, l.tool_text[i].1, Clip::new(r.x,r.y,r.w,r.h));
     }
     for (i, label) in [b"S", b"M", b"L"].iter().enumerate() {
-        let x = 2 + i * 22;
-        shapes::fill_rect(fb, x as i32, 41, 20, 16, if i == app.size { Color::rgb(100,140,220) } else { Color::rgb(60,60,60) });
-        draw_label(fb, font.as_mut(), font_size, core::str::from_utf8(*label).unwrap(), (x + 3) as i32, 42, Clip::new(x as i32, 41, 20, 16));
+        let r = l.sizes[i];
+        shapes::fill_rect(fb, r.x, r.y, r.w, r.h, if i == app.size { Color::rgb(100,140,220) } else { Color::rgb(60,60,60) });
+        draw_label(fb, font.as_mut(), font_size, core::str::from_utf8(*label).unwrap(), l.size_text[i].0, l.size_text[i].1, Clip::new(r.x,r.y,r.w,r.h));
     }
-    libgfx::blit::blit(fb, &app.palette.as_ref().expect("picker rendered above").1, 0, 58);
-    draw_label(fb, font.as_mut(), font_size, "Recent:", 108, 78, Clip::new(108, 76, 144, 14));
-    for (i, c) in app.recent.iter().enumerate() { shapes::fill_rect(fb, 108 + i as i32 * 18, 90, 16, 16, Color::rgb(c[0], c[1], c[2])); }
-    libgfx::blit::blit(fb, &app.canvas_surface.as_ref().expect("canvas rendered above").1, 0, TOP);
+    libgfx::blit::blit(fb, &app.palette.as_ref().expect("picker rendered above").1, l.palette.x, l.palette.y);
+    let r = l.recent_label;
+    draw_label(fb, font.as_mut(), font_size, "Recent:", l.recent_text.0, l.recent_text.1, Clip::new(r.x,r.y,r.w,r.h));
+    for (r, c) in l.recent.iter().zip(&app.recent) { shapes::fill_rect(fb, r.x, r.y, r.w, r.h, Color::rgb(c[0], c[1], c[2])); }
+    let r = l.canvas(app.width, app.height);
+    libgfx::blit::blit(fb, &app.canvas_surface.as_ref().expect("canvas rendered above").1, r.x, r.y);
     menu.draw(fb, &Theme::dark());
-    if !app.status().is_empty() { draw_label(fb, font.as_mut(), font_size, app.status(), 110, 150, Clip::new(110, 150, 690, 26)); }
+    let r = l.status;
+    if !app.status().is_empty() { draw_label(fb, font.as_mut(), font_size, app.status(), r.x, r.y, Clip::new(r.x,r.y,r.w,r.h)); }
     if let Some(picker) = &app.picker { picker.draw(fb, &Theme::dark()); }
     if let Some(dialog) = &app.session_dialog {
-        shapes::fill_rect(fb, 220, 200, 360, 180, Theme::dark().panel_bg);
+        let r = l.session;
+        shapes::fill_rect(fb, r.x, r.y, r.w, r.h, Theme::dark().panel_bg);
         let title = if dialog.mode == session_dialog::Mode::Host { "Host Session" } else { "Join Session" };
-        draw_label(fb, font.as_mut(), font_size, title, 230, 210, Clip::new(220,200,360,180));
-        if dialog.mode == session_dialog::Mode::Join { draw_label(fb, font.as_mut(), font_size, "Address", 230, 230, Clip::new(220,200,360,180)); dialog.address.draw(fb, &Theme::dark()); }
-        draw_label(fb, font.as_mut(), font_size, "Name", 230, 280, Clip::new(220,200,360,180));
+        let r = l.session_title;
+        draw_label(fb, font.as_mut(), font_size, title, r.x, r.y, Clip::new(r.x,r.y,r.w,r.h));
+        if dialog.mode == session_dialog::Mode::Join {
+            let r = l.address_label;
+            draw_label(fb, font.as_mut(), font_size, "Address", r.x, r.y, Clip::new(r.x,r.y,r.w,r.h));
+            dialog.address.draw(fb, &Theme::dark());
+        }
+        let r = l.name_label;
+        draw_label(fb, font.as_mut(), font_size, "Name", r.x, r.y, Clip::new(r.x,r.y,r.w,r.h));
         dialog.name.draw(fb, &Theme::dark());
         let status = if dialog.model.status().is_empty() { app.message.as_str() } else { dialog.model.status() };
-        draw_label(fb, font.as_mut(), font_size, status, 230, 340, Clip::new(220,200,360,180));
+        let r = l.session_status;
+        draw_label(fb, font.as_mut(), font_size, status, r.x, r.y, Clip::new(r.x,r.y,r.w,r.h));
     }
-    if app.confirm { shapes::fill_rect(fb, 180, 220, 440, 64, Color::rgb(30,30,30)); draw_label(fb, font.as_mut(), font_size, "Discard changes? D: discard  Esc: cancel", 190, 242, Clip::new(180, 220, 440, 64)); }
+    if app.confirm {
+        let r = l.confirm;
+        shapes::fill_rect(fb, r.x, r.y, r.w, r.h, Color::rgb(30,30,30));
+        let r = l.confirm_label;
+        draw_label(fb, font.as_mut(), font_size, "Discard changes? D: discard  Esc: cancel", r.x, r.y, Clip::new(r.x,r.y,r.w,r.h));
+    }
     });
 }
 fn publish(win: &mut Window, app: &App, menu: &MenuBar, font_size: f32) {
     use libbui::widget::Widget;
     use breengel::tree::{Flag, Node, Role, Tree};
     let bounds = [0, 0, i64::from(win.width()), i64::from(win.height())];
-    let canvas_bounds = [0, TOP as i64, app.width as i64, app.height as i64];
-    let mut children = vec![node::canvas(canvas_bounds, app.width, app.height, app.canvas().digest()), node::status(bounds, &node::Status { tool: NAMES[app.tool], size: ["small", "medium", "large"][app.size], color: app.color(), undo: app.undo_depth(), redo: app.redo_depth(), dirty: app.dirty(), file: app.file.as_ref().and_then(|p| p.to_str()), message: app.status(), font_path: win.display_path(), font_size })];
+    let l = app.layout;
+    let canvas_bounds = l.canvas(app.width, app.height).as_tree_rect();
+    let mut children = vec![node::canvas(canvas_bounds, app.width, app.height, app.canvas().digest()), node::status(l.status.as_tree_rect(), &node::Status { tool: NAMES[app.tool], size: ["small", "medium", "large"][app.size], color: app.color(), undo: app.undo_depth(), redo: app.redo_depth(), dirty: app.dirty(), file: app.file.as_ref().and_then(|p| p.to_str()), message: app.status(), font_path: win.display_path(), font_size })];
     if let Some(session)=&app.session { children.push(node::collab(bounds,&session.core.model)); }
-    children.extend(menu.tree_nodes("menu", Some("root"), Rect::new(0, 0, win.width() as i32, win.height() as i32), &Theme::dark()));
-    children.extend(node::tools(core::array::from_fn(|i| [(2 + i * 38) as i64, 23, 36, 16]), NAMES[app.tool]));
-    children.push(node::hue([0,58,780,18])); children.push(node::sv([0,76,100,100]));
-    if app.picker.is_some() { children.push(Node { key: if app.save_as { "save-as" } else { "open" }.into(), parent: Some("root".into()), role: Role::Dialog, name: if app.save_as { "Save As" } else { "Open" }.into(), value: serde_json::json!({"directory":app.directory.to_string_lossy()}), bounds: [150,100,500,400], clip: bounds, flags: vec![Flag::Enabled, Flag::Visible] }); }
-    if let Some(dialog) = &app.session_dialog { children.extend(node::session_dialog(dialog.mode == session_dialog::Mode::Host, dialog.address.text(), dialog.name.text(), if dialog.model.status().is_empty() { &app.message } else { dialog.model.status() }, dialog.address.is_focused(), dialog.name.is_focused())); }
-    if app.confirm { children.push(Node { key: "confirm".into(), parent: Some("root".into()), role: Role::Dialog, name: "Discard changes?".into(), value: serde_json::json!({"message":"D discards, Escape cancels"}), bounds: [180,220,440,64], clip: bounds, flags: vec![Flag::Enabled, Flag::Visible] }); }
+    children.extend(menu.tree_nodes("menu", Some("root"), Rect::new(0, 0, win.width() as i32 / l.scale, win.height() as i32 / l.scale), &Theme::dark()).into_iter().map(|mut n| { n.bounds = n.bounds.map(|v| v * i64::from(l.scale)); n.clip = n.clip.map(|v| v * i64::from(l.scale)); n }));
+    children.extend(node::tools(l.tools.map(|r| r.as_tree_rect()), NAMES[app.tool]));
+    children.push(node::hue(l.hue.as_tree_rect())); children.push(node::sv(l.sv.as_tree_rect()));
+    if app.picker.is_some() { children.push(Node { key: if app.save_as { "save-as" } else { "open" }.into(), parent: Some("root".into()), role: Role::Dialog, name: if app.save_as { "Save As" } else { "Open" }.into(), value: serde_json::json!({"directory":app.directory.to_string_lossy()}), bounds: l.picker.as_tree_rect(), clip: l.picker.as_tree_rect(), flags: vec![Flag::Enabled, Flag::Visible] }); }
+    if let Some(dialog) = &app.session_dialog { children.extend(node::session_dialog(dialog.mode == session_dialog::Mode::Host, dialog.address.text(), dialog.name.text(), if dialog.model.status().is_empty() { &app.message } else { dialog.model.status() }, dialog.address.is_focused(), dialog.name.is_focused(), [l.session.as_tree_rect(), l.address.as_tree_rect(), l.name.as_tree_rect()])); }
+    if app.confirm { children.push(Node { key: "confirm".into(), parent: Some("root".into()), role: Role::Dialog, name: "Discard changes?".into(), value: serde_json::json!({"message":"D discards, Escape cancels"}), bounds: l.confirm.as_tree_rect(), clip: l.confirm.as_tree_rect(), flags: vec![Flag::Enabled, Flag::Visible] }); }
     win.set_tree(Tree { root: Node { key: "root".into(), parent: None, role: Role::Window, name: app.session.as_ref().map_or_else(||"Gus Kit".into(),|s|format!("Gus Kit ({})",s.core.model.name)), value: serde_json::Value::Null, bounds, clip: bounds, flags: vec![Flag::Enabled, Flag::Visible] }, children });
 }
 fn handle(app: &mut App, menu: &mut MenuBar, delivered: &breengel::Delivered) -> Handled {
@@ -359,7 +381,7 @@ fn handle(app: &mut App, menu: &mut MenuBar, delivered: &breengel::Delivered) ->
             app.picker_result(result);
         },
         Event::MouseButton { button: breengel::buttons::LEFT, pressed, x, y } if !app.confirm => {
-            let input = InputState::from_raw(x,y, u32::from(pressed), u32::from(!pressed), delivered.time_ns / 1_000_000);
+            let input = InputState::from_raw(x / app.layout.scale,y / app.layout.scale, u32::from(pressed), u32::from(!pressed), delivered.time_ns / 1_000_000);
             if let Some(dialog) = &mut app.session_dialog { dialog.update(&input); return Handled::Redraw; }
             if let Some(picker) = &mut app.picker { let result = picker.update(&input); app.picker_result(result); return Handled::Redraw; }
             let was_open = menu.is_open();
@@ -368,8 +390,8 @@ fn handle(app: &mut App, menu: &mut MenuBar, delivered: &breengel::Delivered) ->
         },
         Event::MouseMove { x,y } if !app.confirm => {
             if app.session_dialog.is_some() { return Handled::NoChange; }
-            if let Some(picker) = &mut app.picker { let input = InputState::from_raw(x,y,0,0,delivered.time_ns / 1_000_000); let result = picker.update(&input); app.picker_result(result); }
-            else if menu.is_open() { let input = InputState::from_raw(x, y, 0, 0, delivered.time_ns / 1_000_000); menu.update(&input, &Theme::dark()); }
+            if let Some(picker) = &mut app.picker { let input = InputState::from_raw(x / app.layout.scale,y / app.layout.scale,0,0,delivered.time_ns / 1_000_000); let result = picker.update(&input); app.picker_result(result); }
+            else if menu.is_open() { let input = InputState::from_raw(x / app.layout.scale, y / app.layout.scale, 0, 0, delivered.time_ns / 1_000_000); menu.update(&input, &Theme::dark()); }
             else if let (Some(point), Some(stroke)) = (app.point(x,y), &mut app.stroke) { stroke.push(point); }
             else { return Handled::NoChange; }
         },
@@ -388,7 +410,7 @@ fn main() {
     let (width,height)=(options.width,options.height);
     let next=options.file;
     let image = Canvas::new(width,height); let clean = image.digest();
-    let mut app = App { width,height,history: History::new(image),clean,tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0,0,0],[255,0,0],[0,255,0],[0,0,255],[255,255,0],[255,0,255],[0,255,255],[128,128,128]],confirm:false,quit:false,file:next.map(PathBuf::from),message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
+    let mut app = App { layout: Layout::new(1), width,height,history: History::new(image),clean,tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0,0,0],[255,0,0],[0,255,0],[0,0,255],[255,255,0],[255,0,255],[0,255,255],[128,128,128]],confirm:false,quit:false,file:next.map(PathBuf::from),message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
     if let Some(path) = app.file.clone() { if path.exists() { app.open_file(path); } }
     if let Some((host,address,port,name))=options.session {
         let result=if host {collab::Session::host(address,port,&name,app.canvas().clone(),width,height)} else {collab::Session::join(address,port,&name)};
@@ -396,6 +418,9 @@ fn main() {
     }
     let mut title=app.session.as_ref().map_or_else(||"Gus Kit".into(),|s|session_title(&s.core.model.name));
     let mut win = Window::new(title.as_bytes(), 800, 600).unwrap_or_else(|e| { eprintln!("Gus Kit: {e}"); std::process::exit(1) });
+    let scale = win.surface().expect("Gus Kit surface").ui_scale();
+    app.layout = Layout::new(scale);
+    if scale != 1 { win.apply_resize(800 * scale, 600 * scale).expect("scaled Gus Kit window"); }
     let mut menu = menu();
     let mut font = win.take_display_font();
     let mut font_size = win.display_size();
@@ -459,7 +484,7 @@ mod tests {
     fn failed_and_ended_joins_allow_another_session_without_losing_the_canvas() {
         for end in [None, Some(libcollab::wire::Message::JoinRefused { reason: b"full".to_vec() }), Some(libcollab::wire::Message::Bye)] {
             let image = Canvas::new(20, 20);
-            let mut app = App { width:20,height:20,clean:image.digest(),history:History::new(image),
+            let mut app = App { layout: Layout::new(1), width:20,height:20,clean:image.digest(),history:History::new(image),
                 tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
                 confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,
                 session:Some(collab::session_fixture(collab::Core::join("Peer"))),session_dialog:None };
@@ -483,9 +508,29 @@ mod tests {
     }
 
     #[test]
+    fn session_dialog_scaled_centres_focus_the_drawn_fields() {
+        let image = Canvas::new(200, 120);
+        let mut app = App { layout: Layout::new(2), width:200,height:120,clean:image.digest(),history:History::new(image),
+            tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
+            confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
+        let mut menu = menu();
+        app.action(JOIN_SESSION);
+        for (r, address) in [(app.layout.name, false), (app.layout.address, true)] {
+            let event = Delivered { serial:1, time_ns:1, clicks:1, event:Event::MouseButton {
+                button:breengel::buttons::LEFT, pressed:true, x:r.x+r.w/2, y:r.y+r.h/2 } };
+            handle(&mut app, &mut menu, &event);
+            let dialog = app.session_dialog.as_ref().unwrap();
+            assert_eq!(dialog.address.rect, app.layout.logical(app.layout.address));
+            assert_eq!(dialog.name.rect, app.layout.logical(app.layout.name));
+            assert_eq!(dialog.address.is_focused(), address);
+            assert_eq!(dialog.name.is_focused(), !address);
+        }
+    }
+
+    #[test]
     fn session_dialog_inserts_physical_printable_keys_once() {
         let image = Canvas::new(200, 120);
-        let mut app = App { width:200,height:120,clean:image.digest(),history:History::new(image),
+        let mut app = App { layout: Layout::new(1), width:200,height:120,clean:image.digest(),history:History::new(image),
             tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
             confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
         let mut menu = menu();
@@ -514,7 +559,7 @@ mod tests {
     #[test]
     fn session_dialog_rejects_bad_address_after_tab_and_enter_text() {
         let image = Canvas::new(200, 120);
-        let mut app = App { width:200,height:120,clean:image.digest(),history:History::new(image),
+        let mut app = App { layout: Layout::new(1), width:200,height:120,clean:image.digest(),history:History::new(image),
             tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
             confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
         let mut menu = menu();
@@ -537,7 +582,8 @@ mod tests {
         }
         let dialog = app.session_dialog.as_ref().unwrap();
         let nodes = node::session_dialog(false, dialog.address.text(), dialog.name.text(),
-            dialog.model.status(), dialog.address.is_focused(), dialog.name.is_focused());
+            dialog.model.status(), dialog.address.is_focused(), dialog.name.is_focused(),
+            [app.layout.session.as_tree_rect(), app.layout.address.as_tree_rect(), app.layout.name.as_tree_rect()]);
         let published = nodes.iter().find(|n| n.key == "session-dialog").unwrap();
         assert_eq!(published.value["status"], "Enter a valid IPv4 address",
             "address={:?}, name={:?}, name_focused={}",
@@ -554,7 +600,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         let image = Canvas::new(8, 8);
-        let mut app = App { width:8,height:8,clean:image.digest(),history:History::new(image),
+        let mut app = App { layout: Layout::new(1), width:8,height:8,clean:image.digest(),history:History::new(image),
             tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
             confirm:false,quit:false,file:Some(dir.join("a.png")),message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
         let mut menu = menu();
@@ -598,7 +644,7 @@ mod tests {
     #[test]
     fn passive_events_acknowledge_without_repainting_and_strokes_still_preview() {
         let image = Canvas::new(200, 120);
-        let mut app = App { width:200,height:120,clean:image.digest(),history:History::new(image),
+        let mut app = App { layout: Layout::new(1), width:200,height:120,clean:image.digest(),history:History::new(image),
             tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
             confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
         let mut menu = menu();

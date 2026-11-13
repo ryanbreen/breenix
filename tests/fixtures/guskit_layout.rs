@@ -23,18 +23,18 @@ mod libgfx {
 use libgfx_real::color::Color;
 struct Surface {
     width:usize, height:usize, scale:u32, pixels:Vec<Color>, rects:Vec<[i64;4]>,
-    clips:Vec<Clip>, labels:Vec<(String,i32,i32,f32,Clip)>,
+    points:Vec<(usize,usize)>, clips:Vec<Clip>, labels:Vec<(String,i32,i32,f32,Clip)>,
 }
 impl Surface {
     fn new(width:usize,height:usize,_:libgfx::surface::Format)->Result<Self,String> {
-        Ok(Self { width,height,scale:1,pixels:vec![Color::WHITE;width*height],rects:vec![],clips:vec![],labels:vec![] })
+        Ok(Self { width,height,scale:1,pixels:vec![Color::WHITE;width*height],rects:vec![],points:vec![],clips:vec![],labels:vec![] })
     }
     fn ui_scale(&self)->u32 {self.scale}
     fn width(&self)->usize {self.width}
     fn height(&self)->usize {self.height}
     fn batch<R>(&mut self,f:impl FnOnce(&mut Self)->R)->R {f(self)}
     fn clear(&mut self,c:Color) {self.pixels.fill(c)}
-    fn put_pixel(&mut self,x:usize,y:usize,c:Color) {if x<self.width && y<self.height {self.pixels[y*self.width+x]=c}}
+    fn put_pixel(&mut self,x:usize,y:usize,c:Color) {self.points.push((x,y));if x<self.width && y<self.height {self.pixels[y*self.width+x]=c}}
     fn wait(&self)->Result<(),String> {Ok(())}
     fn push_clip(&mut self,r:Clip) {self.clips.push(r)}
     fn pop_clip(&mut self) {self.clips.pop();}
@@ -42,7 +42,7 @@ impl Surface {
 mod shapes {
     pub fn fill_rect(f:&mut super::Surface,x:i32,y:i32,w:i32,h:i32,c:super::Color) {
         f.rects.push([x as i64,y as i64,w as i64,h as i64]);
-        for py in y.max(0)..(y+h).min(f.height as i32) {for px in x.max(0)..(x+w).min(f.width as i32) {f.put_pixel(px as usize,py as usize,c)}}
+        for py in y.max(0)..(y+h).min(f.height as i32) {for px in x.max(0)..(x+w).min(f.width as i32) {f.pixels[py as usize*f.width+px as usize]=c}}
     }
 }
 struct CachedFont;
@@ -163,6 +163,16 @@ fn scaled_drawing_publication_and_tool_centres() {
                 assert!(two.rects.contains(&n.bounds) || two.labels.iter().any(|l|[l.4.x as i64,l.4.y as i64,l.4.w as i64,l.4.h as i64]==n.bounds),"{} publication {:?} must equal drawn bounds",n.key,n.bounds);
             }
         }
+        let palette=&app.palette.as_ref().unwrap().1;
+        let bar=[0,0,palette.rects.iter().map(|r|r[0]+r[2]).max().unwrap(),palette.rects.iter().map(|r|r[1]+r[3]).max().unwrap()];
+        let square=[palette.points.iter().map(|p|p.0).min().unwrap() as i64,
+            palette.points.iter().map(|p|p.1).min().unwrap() as i64,
+            (palette.points.iter().map(|p|p.0).max().unwrap()+1) as i64,
+            (palette.points.iter().map(|p|p.1).max().unwrap()+1) as i64];
+        let hue=t2.children.iter().find(|n|n.key=="hue").unwrap();
+        let sv=t2.children.iter().find(|n|n.key=="sv").unwrap();
+        assert_eq!(hue.bounds,[bar[0],116+bar[1],bar[2]-bar[0],bar[3]-bar[1]],"hue publishes drawn stripe extent");
+        assert_eq!(sv.bounds,[square[0],116+square[1],square[2]-square[0],square[3]-square[1]],"SV publishes written pixel extent");
         for (i,name) in NAMES.iter().enumerate() {
             let n=t2.children.iter().find(|n|n.key==format!("tool-{name}")).unwrap();
             app.tool=(i+1)%7;app.press((n.bounds[0]+n.bounds[2]/2) as i32,(n.bounds[1]+n.bounds[3]/2) as i32);
