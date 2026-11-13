@@ -2,6 +2,9 @@
 
 extern crate alloc;
 
+#[path = "../../../kernel/src/fs/cowfs/btree.rs"]
+pub mod btree;
+
 #[path = "../../../kernel/src/fs/cowfs/format.rs"]
 pub mod format;
 

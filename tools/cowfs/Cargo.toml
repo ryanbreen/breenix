@@ -7,3 +7,9 @@ edition = "2021"
 
 [lib]
 name = "cowfs"
+
+# The property check walks encoded 16 KiB nodes after each operation.
+[profile.test]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true
