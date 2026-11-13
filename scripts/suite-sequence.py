@@ -243,9 +243,15 @@ def windows(ids, records):
     return [records[start:max(start, end)] for start, end in zip(starts, ends)]
 
 
-def score(ids, records_log, logs, disk=None, repo=REPO):
+def score(ids, records_log, logs, disk=None, repo=REPO, milestones=None):
     """(ok, rows): each row is (suite, status, detail)."""
     scorer = runpy.run_path(str(repo / "scripts/suite-verdict.py"))
+    milestones = milestones or {}
+    for suite, milestone in milestones.items():
+        path = json.loads((repo / "docs/efforts/path.json").read_text())
+        scorer["milestone_categories"](path, milestone, suite)
+        if suite not in ids:
+            raise ValueError(f"{milestone} does not measure categories of a listed suite {suite}")
     text = Path(records_log).read_bytes().decode("utf-8", errors="replace")
     rows = []
     with tempfile.TemporaryDirectory(prefix="suite-sequence-") as scratch:
@@ -254,11 +260,11 @@ def score(ids, records_log, logs, disk=None, repo=REPO):
             window.write_text("\n".join(records) + "\n")
             rows.append(score_one(scorer, repo, suite, suite == ids[-1], records, window,
                                   [window] + [Path(log) for log in logs[1:]], disk, index > 0,
-                                  Path(str(records_log) + ".evidence")))
+                                  Path(str(records_log) + ".evidence"), milestones.get(suite)))
     return all(status == "PASS" for _, status, _ in rows), rows
 
 
-def score_one(scorer, repo, suite, last, records, window, logs, disk, needs_reset=False, uploads=None):
+def score_one(scorer, repo, suite, last, records, window, logs, disk, needs_reset=False, uploads=None, milestone=None):
     manifest = json.loads((repo / "docs/suites" / f"{suite}.json").read_text())
     started = any(re.fullmatch(rf"SUITE {suite} START cases=\d+", line) for line in records)
     done = any(line.startswith(f"SUITE {suite} DONE ") for line in records)
@@ -290,6 +296,9 @@ def score_one(scorer, repo, suite, last, records, window, logs, disk, needs_rese
     bundle_disk = {'disk': disk} if suite == 'ui-testing' else {}
     if suite == 'ui-testing' and uploads and (uploads / 'route.json').is_file():
         bundle_disk['uploads'] = uploads
+    if milestone:
+        path = json.loads((repo / "docs/efforts/path.json").read_text())
+        bundle_disk["categories"] = scorer["milestone_categories"](path, milestone, suite)
     ok, detail = scorer["verdict"](manifest, window, logs, **bundle_disk)
     if stalled:
         status, detail = "STALLED", f"the runner's watchdog stopped it after {stalled[1]} of {stalled[2]} cases"
@@ -318,6 +327,7 @@ def main():
     p.add_argument("suites")
     p.add_argument("logs", nargs="+")
     p.add_argument("--disk")
+    p.add_argument("--milestone", action="append", default=[], metavar="SUITE=EFFORT/ID")
     p = sub.add_parser("run")
     p.add_argument("suites")
     p.add_argument("serial")
@@ -336,7 +346,17 @@ def main():
         print(",".join(ids))
         return 0
     ids = args.suites.split(",")
-    ok, rows = score(ids, args.logs[0], args.logs, args.disk)
+    try:
+        milestones = {}
+        for selector in args.milestone:
+            suite, milestone = selector.split("=", 1)
+            if not suite or not milestone or suite in milestones:
+                raise ValueError(f"invalid or duplicate milestone selector: {selector}")
+            milestones[suite] = milestone
+        ok, rows = score(ids, args.logs[0], args.logs, args.disk, milestones=milestones)
+    except ValueError as error:
+        print(f"suite-sequence: {error}", file=sys.stderr)
+        return 2
     for suite, status, detail in rows:
         print(f"{status} {suite}: {detail}")
     passed = sum(status == "PASS" for _, status, _ in rows)
