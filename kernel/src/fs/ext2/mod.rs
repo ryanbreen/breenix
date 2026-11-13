@@ -2438,31 +2438,6 @@ fn content_privilege(mode: u16) -> u16 {
     0o4000 | if mode & 0o0010 != 0 { 0o2000 } else { 0 }
 }
 
-/// Strip the /home prefix from a path, returning the path within the home filesystem.
-///
-/// "/home/foo.bmp" → "/foo.bmp"
-/// "/home" → "/"
-/// "/home/" → "/"
-pub fn strip_home_prefix(path: &str) -> &str {
-    if path == "/home" || path == "/home/" {
-        "/"
-    } else if path.starts_with("/home/") {
-        // rest is "foo.bmp" — we need to return "/foo.bmp"
-        // Since we can't allocate, we return the slice starting at the '/' before the rest
-        // path = "/home/foo.bmp"
-        //         01234567...
-        // We want &path[5..] = "/foo.bmp"
-        &path[5..]
-    } else {
-        path
-    }
-}
-
-/// Check if a resolved path should be routed to the home filesystem.
-pub fn is_home_path(path: &str) -> bool {
-    (path == "/home" || path.starts_with("/home/")) && is_home_mounted()
-}
-
 /// Select bounded pinned identities, then leave the namespace for data I/O.
 pub(super) fn service_mapped_writeback(home: bool) -> Result<bool, &'static str> {
     let handles = {

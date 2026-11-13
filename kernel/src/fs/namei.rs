@@ -35,6 +35,7 @@
 //! symlinks are.
 
 use crate::fs::errno::Errno;
+use crate::fs::vfs::mount as mounts;
 use crate::fs::ext2::{self, ino32, errno::errno as ext2_errno, live_inode::FileHandle, FileType, EXT2_ROOT_INO};
 use crate::syscall::errno::{EINVAL, EIO, ELOOP, ENAMETOOLONG, ENOENT, ENOTDIR};
 use alloc::string::String;
@@ -53,41 +54,30 @@ pub const NAME_MAX: usize = 255;
 /// Symlinks one resolution may expand before it fails with ELOOP (Linux).
 pub const MAX_SYMLINKS: u32 = 40;
 
-/// An ext2 filesystem in the namespace.
+/// A filesystem entry in the unified mount table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Mount {
-    /// The root filesystem, at `/`.
-    Root,
-    /// The home filesystem, at `/home`.
-    Home,
-}
+pub struct Mount(pub usize);
 
 impl Mount {
+    pub fn root() -> Self {
+        Self(mounts::find_mount("/").unwrap_or(usize::MAX))
+    }
+    pub fn root_inode(self) -> u64 {
+        mounts::root_inode(self.0).unwrap_or(u64::from(EXT2_ROOT_INO))
+    }
     pub fn read(self) -> Result<ext2::Ext2ReadGuard, Errno> {
-        match self {
-            Mount::Root => ext2::root_fs_read(),
-            Mount::Home => ext2::home_fs_read(),
-        }.map_err(ext2_errno)
+        mounts::ext2_adapter(self.0)?.read()
     }
-
-    /// Exclude mapping creation and inode mutation while copying an exec image.
-    /// This reads the filesystem, so a read-only or write-failed mount is valid.
+    /// Exclude mapping creation and mutation while copying an exec image.
     pub fn read_exclusive(self) -> Result<ext2::Ext2WriteGuard, Errno> {
-        ext2::fs_sync_guard(matches!(self, Mount::Home)).map_err(ext2_errno)
+        mounts::ext2_adapter(self.0)?.exclusive()
     }
-
     pub fn write(self) -> Result<ext2::Ext2WriteGuard, Errno> {
-        match self {
-            Mount::Root => ext2::root_fs_write(),
-            Mount::Home => ext2::home_fs_write(),
-        }.map_err(ext2_errno)
+        mounts::ext2_adapter(self.0)?.write()
     }
-
-    /// Removing names reuses their existing directory blocks. Keep mutation
-    /// exclusion and shrink custody, without waiting for unrelated allocation
-    /// reclamation merely because the device has little free space.
+    /// Removal retains mutation exclusion without allocation reclamation waits.
     pub fn write_removal(self) -> Result<ext2::Ext2WriteGuard, Errno> {
-        ext2::fs_sync_guard(matches!(self, Mount::Home)).map_err(ext2_errno)
+        mounts::ext2_adapter(self.0)?.exclusive()
     }
 }
 
@@ -147,19 +137,6 @@ pub struct Resolved<P = String> {
 }
 
 impl Resolved {
-    /// The pathname within the ext2 filesystem that holds the target.
-    pub fn fs_path(&self) -> &str {
-        match self.target {
-            Target::Inode {
-                mount: Mount::Home, ..
-            }
-            | Target::Absent {
-                mount: Mount::Home, ..
-            } => ext2::strip_home_prefix(&self.path),
-            _ => &self.path,
-        }
-    }
-
     /// The final component of the physical pathname.
     pub fn final_name(&self) -> &str {
         self.path.rsplit('/').next().unwrap_or("")
@@ -191,9 +168,9 @@ impl<P: AsRef<[u8]>> Resolved<P> {
     /// or `/proc`.
     pub fn is_mount_point(&self) -> bool {
         match self.target {
-            Target::Inode { mount: Mount::Root, ino, .. } => ino32(ino).is_ok_and(|ino| ext2::root_namespace().is_mount(ino)) || super::ufs::covering(Mount::Root, ino).is_some(),
-            Target::Inode { mount: Mount::Home, ino, .. } => ino == u64::from(EXT2_ROOT_INO) || super::ufs::covering(Mount::Home, ino).is_some(),
-            Target::Virtual => self.path.as_ref() == b"/dev" || self.path.as_ref() == b"/proc",
+            Target::Inode { mount, ino, .. } => mounts::is_mount_root(mount.0, ino)
+                || (mount == Mount::root() && ino32(ino).is_ok_and(|ino| ext2::root_namespace().is_mount(ino))),
+            Target::Virtual => mounts::path_is_mount(self.path.as_ref()),
             Target::Absent { .. } => false,
             Target::User { node, .. } => node == ufs_abi::payload::ROOT,
         }
@@ -238,7 +215,17 @@ struct Frame {
     node: Node,
 }
 
-fn namespace_root() -> Node { Node::Ext2(Mount::Root, ext2::root_inode().into()) }
+fn namespace_root() -> Node {
+    let mount = Mount::root();
+    Node::Ext2(mount, mount.root_inode())
+}
+fn entered_node(entered: mounts::Entered) -> Node {
+    match entered {
+        mounts::Entered::Fs(id, ino) => Node::Ext2(Mount(id), ino),
+        mounts::Entered::User(id, ino) => Node::User(id, ino),
+        mounts::Entered::Virtual => Node::Virtual,
+    }
+}
 
 fn top(stack: &[Frame]) -> Node {
     stack.last().map_or(namespace_root(), |frame| frame.node)
@@ -496,8 +483,6 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
     if path.len() >= PATH_MAX {
         return Err(ENAMETOOLONG as u64);
     }
-    // Both read state no filesystem guard is held across.
-    let home_mounted = ext2::is_home_mounted();
     let absolute = path.starts_with(b"/");
     let (cwd, root) = if ROOT_CHANGED.load(Ordering::Acquire) {
         try_current_dirs()?
@@ -543,8 +528,11 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
         // the whole root filesystem lock here makes even /proc/net/pnp wait
         // behind unrelated file writes. Other callers still check the real
         // directory's search permissions below.
-        let entering_virtual_mount = top(&stack) == namespace_root()
-            && matches!(name.as_slice(), b"dev" | b"proc");
+        let virtual_cover = match top(&stack) {
+            Node::Ext2(mount, dir) => mounts::virtual_cover((mount.0, dir), &name),
+            _ => None,
+        };
+        let entering_virtual_mount = virtual_cover.is_some();
         let searched_inode = if entering_virtual_mount && cred.euid == 0 {
             None
         } else if let Node::Ext2(mount, dir) = top(&stack) {
@@ -573,7 +561,7 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
                 last = Last::DotDot;
                 if !is_root(&stack, &root) {
                     let parent = match top(&stack) {
-                        Node::User(mount, ufs_abi::payload::ROOT) => Some(super::ufs::covered_parent(mount).ok_or(ENOENT as u64)?),
+                        Node::User(mount, ufs_abi::payload::ROOT) => Some(mounts::covered_parent(mount as usize).map(|(id, ino)| (Mount(id), ino)).ok_or(ENOENT as u64)?),
                         _ => None,
                     };
                     stack.pop();
@@ -650,24 +638,18 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
                 }
             }
             Node::Ext2(mount, dir) => {
-                if mount == Mount::Root && dir == u64::from(ext2::root_inode()) {
-                    let entered = match name.as_slice() {
-                        b"dev" | b"proc" => Some(Node::Virtual),
-                        b"home" if home_mounted => Some(Node::Ext2(Mount::Home, EXT2_ROOT_INO.into())),
-                        _ => None,
-                    };
-                    if let Some(node) = entered {
-                        stack.try_reserve(1).map_err(|_| 12u64)?;
-                        stack.push(Frame { name, node });
-                        continue;
-                    }
+                if let Some(entered) = virtual_cover {
+                    held.release();
+                    stack.try_reserve(1).map_err(|_| 12u64)?;
+                    stack.push(Frame { name, node: entered_node(entered) });
+                    continue;
                 }
                 let fs = held.fs(mount)?;
                 let dir_inode = searched_inode.ok_or(ENOTDIR as u64)?;
-                if mount == Mount::Root && ext2::root_namespace().hidden(ino32(dir)?, &name) {
+                if mount == Mount::root() && ext2::root_namespace().hidden(ino32(dir)?, &name) {
                     return Err(ENOENT as u64);
                 }
-                let found = if mount == Mount::Root {
+                let found = if mount == Mount::root() {
                     ext2::root_namespace().shared(ino32(dir)?, &name)
                 } else { None };
                 let found = match found {
@@ -704,10 +686,10 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
                 let ino = u64::from(ino);
                 let inode = fs.read_inode(ino32(ino)?).map_err(ext2_errno)?;
                 if inode.is_dir() {
-                    if let Some(user_mount) = super::ufs::covering(mount, ino) {
+                    if let Some(entered) = mounts::enter((mount.0, ino)) {
                         held.release();
                         stack.try_reserve(1).map_err(|_| 12u64)?;
-                        stack.push(Frame { name, node: Node::User(user_mount, ufs_abi::payload::ROOT) });
+                        stack.push(Frame { name, node: entered_node(entered) });
                         continue;
                     }
                 }
@@ -1036,10 +1018,8 @@ pub fn working_dir<P: AsRef<[u8]>>(resolved: &Resolved<P>) -> Result<WorkingDir,
         },
         Target::Inode { file_type, .. } if file_type != FileType::Directory => Err(ENOTDIR as u64),
         Target::Inode {
-            mount: Mount::Root,
-            ino,
-            ..
-        } if ino == u64::from(ext2::root_inode()) => Ok(WorkingDir::Root),
+            mount, ino, ..
+        } if mount == Mount::root() && ino == mount.root_inode() => Ok(WorkingDir::Root),
         Target::Inode { mount, .. } => {
             let dir = resolved.pin.clone().ok_or(ENOENT as u64)?;
             Ok(WorkingDir::Ext2 { mount, dir })
@@ -1061,14 +1041,14 @@ pub(crate) fn may_search(
             return if cred.may(super::ufs::path::attrs(attr), 1) { Ok(()) }
                 else { Err(crate::syscall::errno::EACCES as u64) };
         },
-        WorkingDir::Root => (Mount::Root, None),
+        WorkingDir::Root => (Mount::root(), None),
         WorkingDir::Ext2 { mount, dir } => (*mount, Some(dir)),
     };
     let mut held = Held(None);
     let fs = held.fs(mount)?;
     let ino = match handle {
         Some(handle) => handle.verify(fs).map_err(|_| ENOENT as u64)?,
-        None => ext2::root_inode(),
+        None => ino32(mount.root_inode())?,
     };
     let inode = fs.read_inode(ino).map_err(ext2_errno)?;
     if !inode.is_dir() {
@@ -1129,7 +1109,7 @@ fn frames(dir: &WorkingDir, held: &mut Held) -> Result<Vec<Frame>, u64> {
         WorkingDir::Ext2 { mount, dir } => {
             let fs = held.fs(*mount)?;
             let ino = dir.verify(fs).map_err(|_| ENOENT as u64)?;
-            ancestry(fs, *mount, ino.into())
+            ancestry(held, *mount, ino.into())
         }
     }
 }
@@ -1147,8 +1127,9 @@ fn user_frames(mount: u64, mut node: u64, held: &mut Held) -> Result<Vec<Frame>,
         children.push(Frame { name, node: Node::User(mount, node) });
         node = parent;
     }
-    let (native, ino) = super::ufs::covered_directory(mount)?;
-    let mut stack = ancestry(held.fs(native)?, native, ino)?;
+    let (id, ino) = mounts::covered_directory(mount as usize).ok_or(ENOENT as u64)?;
+    let native = Mount(id);
+    let mut stack = ancestry(held, native, ino)?;
     let point = stack.last_mut().ok_or(EIO as u64)?;
     point.node = Node::User(mount, ufs_abi::payload::ROOT);
     stack.try_reserve(children.len()).map_err(|_| 12u64)?;
@@ -1160,13 +1141,13 @@ fn user_frames(mount: u64, mut node: u64, held: &mut Held) -> Result<Vec<Frame>,
 /// naming each directory by the entry its parent holds for it. The whole
 /// walk is one read of the filesystem, so a concurrent rename cannot leave
 /// it with a pathname the directory never had.
-fn ancestry(fs: &ext2::Ext2Fs, mount: Mount, mut ino: u64) -> Result<Vec<Frame>, u64> {
+fn ancestry(held: &mut Held, mount: Mount, mut ino: u64) -> Result<Vec<Frame>, u64> {
     let mut frames = Vec::new();
-    let root = if mount == Mount::Root { ext2::root_inode() } else { EXT2_ROOT_INO };
-    while ino != u64::from(root) {
+    let root = mount.root_inode();
+    while ino != root {
         // Shared data directories have a physical parent at the partition
         // root, but appear directly under the selected namespace's root.
-        if mount == Mount::Root {
+        if mount == Mount::root() {
             let namespace = ext2::root_namespace();
             if let Some(name) = namespace.mount_name(ino32(ino)?) {
                 frames.try_reserve(1).map_err(|_| 12u64)?;
@@ -1177,6 +1158,7 @@ fn ancestry(fs: &ext2::Ext2Fs, mount: Mount, mut ino: u64) -> Result<Vec<Frame>,
                 break;
             }
         }
+        let fs = held.fs(mount)?;
         let inode = read_dir_inode(fs, ino)?;
         let data = fs.read_directory(&inode).map_err(ext2_errno)?;
         let parent = ext2::dir::find_inode(&data, "..").ok_or(ENOENT as u64)?;
@@ -1199,12 +1181,17 @@ fn ancestry(fs: &ext2::Ext2Fs, mount: Mount, mut ino: u64) -> Result<Vec<Frame>,
         });
         ino = parent.into();
     }
-    if mount == Mount::Home {
-        frames.try_reserve(1).map_err(|_| 12u64)?;
-        frames.push(Frame {
-            name: copy_bytes(b"home")?,
-            node: Node::Ext2(Mount::Home, EXT2_ROOT_INO.into()),
-        });
+    if mount != Mount::root() {
+        // Attach the mounted root to the current name of its covered directory.
+        // Bind roots may be ordinary directories in the same storage backend.
+        let (native, cover) = mounts::covered_directory(mount.0).ok_or(ENOENT as u64)?;
+        let native = Mount(native);
+        let mut prefix = ancestry(held, native, cover)?;
+        let point = prefix.last_mut().ok_or(EIO as u64)?;
+        point.node = Node::Ext2(mount, root);
+        prefix.try_reserve(frames.len()).map_err(|_| 12u64)?;
+        prefix.extend(frames.into_iter().rev());
+        return Ok(prefix);
     }
     frames.reverse();
     Ok(frames)

@@ -105,6 +105,8 @@ pub(crate) fn classified(error: &str) -> Option<Errno> {
         | "Missing ext2 mount"
         | "Missing ext2 shrink"
         | "Missing mount"
+        | "Missing root mount"
+        | "Mount registration failed"
         | "No block device with ext2 filesystem (tried VirtIO and all AHCI devices)"
         | "No home block device available"
         | "No mountable 512-byte-sector ext2 block device"
@@ -133,7 +135,8 @@ pub(crate) fn classified(error: &str) -> Option<Errno> {
         "Too many levels of symbolic links" => ELOOP,
         "Too many links" => EMLINK,
         "Symlink target too long" => ENAMETOOLONG,
-        "Directory not found"
+        "Missing home directory"
+        | "Directory not found"
         | "Entry not found"
         | "File not found"
         | "Inode already unlinked"
@@ -164,7 +167,8 @@ pub(crate) fn classified(error: &str) -> Option<Errno> {
         | "Out of memory for file page"
         | "Out of memory for writeback"
         | "Out of memory for sync handles" => ENOMEM,
-        "No free blocks available"
+        "Mount id exhausted"
+        | "No free blocks available"
         | "No free inodes available"
         | "No space for another directory block"
         | "No space for directory addressing"

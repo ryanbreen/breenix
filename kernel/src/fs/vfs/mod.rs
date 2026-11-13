@@ -168,7 +168,7 @@ pub struct StatFs {
 
 /// Object-safe filesystem interface. Unsupported groups refuse operations
 /// explicitly while an adapter's staged migration is in progress.
-pub trait FileSystem: Send + Sync {
+pub trait FileSystem: core::any::Any + Send + Sync {
     // Mount
     fn kind(&self) -> Result<&'static str, Errno>;
     fn root(&self) -> Result<u64, Errno>;

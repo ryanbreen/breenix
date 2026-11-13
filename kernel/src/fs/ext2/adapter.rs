@@ -38,6 +38,21 @@ impl Ext2Adapter {
     }
 }
 
+// Temporary guard boundary for callers migrated in 24.4-24.6. The adapter's
+// instance pin, rather than a pathname or a root/home choice, selects storage.
+#[cfg(not(test))]
+impl Ext2Adapter {
+    pub fn read(&self) -> Result<ext2::Ext2ReadGuard, Errno> {
+        read_mount(self.mount).map_err(errno)
+    }
+    pub fn write(&self) -> Result<ext2::Ext2WriteGuard, Errno> {
+        write_mount(self.mount).map_err(errno)
+    }
+    pub fn exclusive(&self) -> Result<ext2::Ext2WriteGuard, Errno> {
+        sync_mount_guard(self.mount).map_err(errno)
+    }
+}
+
 fn component(name: &[u8]) -> Result<(), Errno> {
     if name.len() > 255 {
         return Err(Errno(ENAMETOOLONG));
