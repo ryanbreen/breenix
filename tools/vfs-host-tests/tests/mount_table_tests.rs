@@ -1,11 +1,34 @@
-use crate::{adapter::Ext2Adapter, attrs::{InodeAttrs, MountFlags}, errno::Errno,
-    host_mounts::Fixture, mount_table::{Entry, MountTable}, syscall_errno::EBUSY,
-    vfs::{FileSystem, NewNode, RenameMode}};
+use crate::{
+    adapter::Ext2Adapter,
+    attrs::{InodeAttrs, MountFlags},
+    errno::Errno,
+    host_mounts::Fixture,
+    mount_table::{Entry, MountTable},
+    syscall_errno::EBUSY,
+    vfs::{FileSystem, NewNode, RenameMode},
+};
 
-fn add(table: &mut MountTable<()>, path: &[u8], flags: MountFlags,
-    root: u64, cover: Option<(usize, u64)>, parent: Option<(usize, u64)>) -> usize {
+fn add(
+    table: &mut MountTable<()>,
+    path: &[u8],
+    flags: MountFlags,
+    root: u64,
+    cover: Option<(usize, u64)>,
+    parent: Option<(usize, u64)>,
+) -> usize {
     let id = table.allocate_id().unwrap();
-    table.insert(Entry::new(id, path.to_vec(), "fixture", flags, (), root, cover, parent)).unwrap();
+    table
+        .insert(Entry::new(
+            id,
+            path.to_vec(),
+            "fixture",
+            flags,
+            (),
+            root,
+            cover,
+            parent,
+        ))
+        .unwrap();
     id
 }
 
@@ -14,16 +37,33 @@ fn cover_enters_by_inode_after_parent_rename() {
     let disk = Fixture::new();
     let fs = Ext2Adapter::new(disk.pin());
     let root = fs.root().unwrap();
-    let dir = |parent, name| fs.create(parent, name, NewNode::Directory {
-        attrs: InodeAttrs::new(0o755, 0, 0) }).unwrap();
+    let dir = |parent, name| {
+        fs.create(
+            parent,
+            name,
+            NewNode::Directory {
+                attrs: InodeAttrs::new(0o755, 0, 0),
+            },
+        )
+        .unwrap()
+    };
     let ancestor = dir(root, b"old");
     let covered = dir(ancestor, b"mount");
     let mut table = MountTable::new();
     let native = add(&mut table, b"/", MountFlags::default(), root, None, None);
-    let user = add(&mut table, b"/old/mount", MountFlags::default(), 1,
-        Some((native, covered)), Some((native, ancestor)));
-    fs.rename(root, b"old", root, b"new", RenameMode::Replace).unwrap();
-    let moved = fs.lookup(fs.lookup(root, b"new").unwrap(), b"mount").unwrap();
+    let user = add(
+        &mut table,
+        b"/old/mount",
+        MountFlags::default(),
+        1,
+        Some((native, covered)),
+        Some((native, ancestor)),
+    );
+    fs.rename(root, b"old", root, b"new", RenameMode::Replace)
+        .unwrap();
+    let moved = fs
+        .lookup(fs.lookup(root, b"new").unwrap(), b"mount")
+        .unwrap();
     assert_eq!(table.enter((native, moved)), Some((user, 1)));
     assert_eq!(table.get(user).unwrap().parent, Some((native, ancestor)));
 }
@@ -32,8 +72,15 @@ fn cover_enters_by_inode_after_parent_rename() {
 fn flags_at_takes_longest_whole_component() {
     let mut table = MountTable::new();
     let base = MountFlags::default();
-    let home = MountFlags { nosuid: true, nodev: true, ..base };
-    let nested = MountFlags { read_only: true, ..home };
+    let home = MountFlags {
+        nosuid: true,
+        nodev: true,
+        ..base
+    };
+    let nested = MountFlags {
+        read_only: true,
+        ..home
+    };
     add(&mut table, b"/", base, 2, None, None);
     let home_id = add(&mut table, b"/home", home, 2, None, None);
     add(&mut table, b"/home/shared", nested, 2, None, None);
@@ -61,16 +108,37 @@ fn bind_enters_target_directory() {
     let disk = Fixture::new();
     let fs = Ext2Adapter::new(disk.pin());
     let root = fs.root().unwrap();
-    let directory = |name| fs.create(root, name, NewNode::Directory {
-        attrs: InodeAttrs::new(0o755, 0, 0) }).unwrap();
+    let directory = |name| {
+        fs.create(
+            root,
+            name,
+            NewNode::Directory {
+                attrs: InodeAttrs::new(0o755, 0, 0),
+            },
+        )
+        .unwrap()
+    };
     let target = directory(b"shared");
     let cover = directory(b"home");
-    let child = fs.create(target, b"visible", NewNode::Regular {
-        attrs: InodeAttrs::new(0o644, 0, 0) }).unwrap();
+    let child = fs
+        .create(
+            target,
+            b"visible",
+            NewNode::Regular {
+                attrs: InodeAttrs::new(0o644, 0, 0),
+            },
+        )
+        .unwrap();
     let mut table = MountTable::new();
     let native = add(&mut table, b"/", MountFlags::default(), root, None, None);
-    let bind = add(&mut table, b"/home", MountFlags::default(), target,
-        Some((native, cover)), Some((native, root)));
+    let bind = add(
+        &mut table,
+        b"/home",
+        MountFlags::default(),
+        target,
+        Some((native, cover)),
+        Some((native, root)),
+    );
     table.set_bind(bind, (native, target)).unwrap();
     let (entered, ino) = table.enter((native, cover)).unwrap();
     assert_eq!(entered, bind);

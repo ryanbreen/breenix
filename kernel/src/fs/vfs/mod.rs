@@ -8,17 +8,12 @@ use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::AtomicU64;
 use spin::Mutex;
 
+pub use crate::fs::attrs::MountFlags;
+pub mod mount_table;
+#[cfg(not(test))]
 pub mod mount;
+#[cfg(not(test))]
 pub use mount::*;
-
-// mount.rs remains the legacy table until the mount/path-resolution unit.
-// Its only error is private to that table; FileSystem uses Errno throughout.
-mod error {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum VfsError {
-        NotMounted,
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NodeKind {
