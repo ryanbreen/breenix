@@ -7,6 +7,42 @@ use std::path::{Path, PathBuf};
 const CEILING: usize = 122;
 
 #[test]
+fn link_and_rename_use_the_trait() {
+    use syn::visit::{self, Visit};
+
+    #[derive(Default)]
+    struct Boundary { backend: Vec<String>, link: bool, rename: bool }
+    impl<'ast> Visit<'ast> for Boundary {
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            if matches!(ident.to_string().as_str(), "ext2" | "ext2_errno" | "RenameError"
+                | "FileType" | "read_inode" | "lookup_in_dir" | "link_in_dir" | "verify") {
+                self.backend.push(ident.to_string());
+            }
+        }
+        fn visit_expr_method_call(&mut self, expr: &'ast syn::ExprMethodCall) {
+            self.link |= expr.method == "link";
+            self.rename |= expr.method == "rename";
+            visit::visit_expr_method_call(self, expr);
+        }
+    }
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("kernel/src/syscall/fs.rs");
+    let parsed = syn::parse_file(&fs::read_to_string(path).unwrap()).unwrap();
+    let mut boundary = Boundary::default();
+    for name in ["sys_link_from", "sys_rename_from", "sys_linkat", "sys_renameat", "sys_renameat2"] {
+        let function = parsed.items.iter().find_map(|item| match item {
+            syn::Item::Fn(f) if f.sig.ident == name => Some(f), _ => None,
+        });
+        if let Some(function) = function {
+            boundary.visit_item_fn(function);
+        } else {
+            assert_eq!(name, "sys_renameat2", "missing fs.rs::{name}");
+        }
+    }
+    assert!(boundary.backend.is_empty(), "backend names: {}", boundary.backend.join(", "));
+    assert!(boundary.link && boundary.rename, "link and rename must call the filesystem trait");
+}
+
+#[test]
 fn unix_socket_names_use_the_trait() {
     use syn::visit::Visit;
 

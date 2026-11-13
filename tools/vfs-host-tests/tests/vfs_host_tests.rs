@@ -34,6 +34,31 @@ fn removal(fs: &dyn FileSystem, dir: u64, expected: u64, directory: bool) -> Rem
 }
 
 #[test]
+fn directory_links_and_descendant_renames_are_refused() {
+    let disk = Fixture::new();
+    let adapter = Ext2Adapter::new(disk.pin());
+    let fs: &dyn FileSystem = &adapter;
+    let root = fs.root().unwrap();
+    let parent = fs.create(root, b"parent", NewNode::Directory { attrs: attrs(0o755) }).unwrap();
+    let child = fs.create(parent, b"child", NewNode::Directory { attrs: attrs(0o755) }).unwrap();
+    let before = fs.getattr(parent).unwrap();
+    assert_eq!(fs.link(parent, root, b"alias"), Err(Errno(EPERM)));
+    assert_eq!(fs.lookup(root, b"alias"), Err(Errno(ENOENT)));
+    for destination in [parent, child] {
+        assert_eq!(fs.rename(root, b"parent", destination, b"cycle", RenameMode::Replace), Err(Errno(EINVAL)));
+        assert_eq!(fs.lookup(root, b"parent"), Ok(parent));
+        assert_eq!(fs.lookup(parent, b"child"), Ok(child));
+        assert_eq!(fs.lookup(destination, b"cycle"), Err(Errno(ENOENT)));
+        assert_eq!(fs.getattr(parent).unwrap(), before);
+    }
+    let file = regular(fs, parent, b"file");
+    fs.link(file, root, b"alias").unwrap();
+    fs.rename(parent, b"child", root, b"moved", RenameMode::Replace).unwrap();
+    assert_eq!(fs.lookup(root, b"alias"), Ok(file));
+    assert_eq!(fs.lookup(root, b"moved"), Ok(child));
+}
+
+#[test]
 fn rename_noreplace_refuses_existing() {
     let disk = Fixture::new();
     let adapter = Ext2Adapter::new(disk.pin());
