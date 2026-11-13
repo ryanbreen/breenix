@@ -51,7 +51,11 @@ impl LiveInodes {
         None
     }
 }
+pub struct FileKey {
+    pub incarnation: u64,
+}
 pub struct LiveInode {
+    pub key: FileKey,
     pub map: FileMap,
     pub orphan: core::sync::atomic::AtomicBool,
 }
@@ -73,6 +77,14 @@ impl FileMap {
         0
     }
 }
+pub struct FsStats {
+    pub block_size: u64,
+    pub blocks: u64,
+    pub reserved_blocks: u64,
+    pub free_blocks: u64,
+    pub inodes: u64,
+    pub free_inodes: u64,
+}
 pub struct Ext2Fs {
     pub device: Box<dyn crate::block::BlockDevice>,
     pub superblock: Ext2Superblock,
@@ -82,6 +94,17 @@ pub struct Ext2Fs {
     namespace: generation::Namespace,
 }
 impl Ext2Fs {
+    pub fn namespace(&self) -> generation::Namespace { self.namespace }
+    pub fn is_read_only(&self) -> bool { self.device.is_read_only() }
+    pub fn flush_inode_times(&mut self, _ino: u32) -> Result<(), &'static str> { Ok(()) }
+    pub fn statfs(&self) -> FsStats {
+        let (free_blocks, free_inodes) = self.block_groups.iter().fold((0u64, 0u64), |(b, i), g| {
+            (b + u64::from(g.bg_free_blocks_count), i + u64::from(g.bg_free_inodes_count))
+        });
+        FsStats { block_size: self.superblock.block_size() as u64,
+            blocks: self.superblock.s_blocks_count.into(), reserved_blocks: self.superblock.s_r_blocks_count.into(),
+            free_blocks, inodes: self.superblock.s_inodes_count.into(), free_inodes }
+    }
     // This fixture device is writable and has no kernel mount lifecycle.
     pub fn ensure_writable(&self) -> Result<(), &'static str> { Ok(()) }
 
@@ -93,12 +116,12 @@ impl Ext2Fs {
     fn pin_loaded_inode(&self, ino: u32, _size: u64) -> Result<live_inode::FileHandle, &'static str> {
         Ok(live_inode::FileHandle {
             ino,
-            object: LiveInode { map: FileMap, orphan: core::sync::atomic::AtomicBool::new(false) },
+            object: LiveInode { key: FileKey { incarnation: ino.into() }, map: FileMap, orphan: core::sync::atomic::AtomicBool::new(false) },
         })
     }
     // The host fixture has no pending shrink or file-size limit.
     fn check_shrink(&self, _inode: u32) -> Result<(), &'static str> { Ok(()) }
-    fn max_file_size(&self) -> u64 { u64::MAX }
+    pub fn max_file_size(&self) -> u64 { u64::MAX }
 
     pub fn host_new(device: Box<dyn crate::block::BlockDevice>, superblock: Ext2Superblock, block_groups: Vec<Ext2BlockGroupDesc>) -> Self {
         Self { device, superblock, block_groups, durable_epoch: core::sync::atomic::AtomicU64::new(0), live_inodes: LiveInodes, namespace: generation::Namespace::RAW }

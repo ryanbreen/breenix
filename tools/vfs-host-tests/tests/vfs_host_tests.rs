@@ -1,4 +1,4 @@
-use vfs_host_tests::{
+use crate::{
     adapter::Ext2Adapter,
     attrs::InodeAttrs,
     errno::Errno,
