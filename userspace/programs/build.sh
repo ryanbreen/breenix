@@ -499,6 +499,8 @@ STD_BINARIES=(
     "clip-set_test"
     "blog"
     "bfontpicker"
+    "collab-lan-host"
+    "collab-lan-join"
     "guskit"
     "blauncher"
     "bsshd"

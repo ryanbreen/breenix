@@ -954,3 +954,11 @@ path = "src/rectangles.rs"
 [[bin]]
 name = "biconkit"
 path = "src/biconkit.rs"
+
+[[bin]]
+name = "collab-lan-host"
+path = "src/collab_lan_host.rs"
+
+[[bin]]
+name = "collab-lan-join"
+path = "src/collab_lan_join.rs"
