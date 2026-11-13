@@ -63,6 +63,8 @@ impl Work {
 static WORK:Work=Work;
 fn now()->u64 { NOW.load(Ordering::Relaxed) }
 fn interrupt_count()->u64 { 17 }
+mod wait_evidence { pub fn report() {} }
+fn report_wait_hardware() {}
 pub mod log_notice {
     pub static LINES:std::sync::Mutex<Vec<String>>=std::sync::Mutex::new(Vec::new());
     pub struct Record;
