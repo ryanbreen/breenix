@@ -222,3 +222,15 @@ fn generation_root_hides_record_and_registers_shared_binds() {
         assert_eq!(fs.lookup(target, b"visible"), Ok(child));
     }
 }
+
+#[test]
+fn device_id_comes_from_the_entry() {
+    let mut table = MountTable::new();
+    let id = table.allocate_id().unwrap();
+    let mut entry = Entry::new(id, b"/dev".to_vec(), "devfs", MountFlags::default(), (), 0, None, None);
+    entry.device_id = 0xffff0002;
+    table.insert(entry).unwrap();
+    assert_eq!(table.device_id(id), Some(0xffff0002));
+    assert_eq!(table.find_mount(b"/dev/mqueue").and_then(|id| table.device_id(id)), Some(0xffff0002));
+    assert_eq!(table.device_id(id + 1), None);
+}
