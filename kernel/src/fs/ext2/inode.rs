@@ -6,6 +6,11 @@
 use crate::block::{BlockDevice, BlockError};
 use crate::fs::ext2::file::{read_ext2_block, write_ext2_block};
 
+/// Convert a namespace inode number to ext2's on-disk width.
+pub fn ino32(ino: u64) -> Result<u32, crate::fs::errno::Errno> {
+    u32::try_from(ino).map_err(|_| crate::fs::errno::Errno(crate::syscall::errno::ENOENT))
+}
+
 /// File type constants (from i_mode upper bits)
 pub const EXT2_S_IFSOCK: u16 = 0xC000; // Socket
 pub const EXT2_S_IFLNK: u16 = 0xA000; // Symbolic link

@@ -1633,12 +1633,13 @@ fn load_elf_from_ext2(
         super::trace::trace_exec(b'!');
         errno as i32
     })?;
-    let mut fs_guard = mount.read_exclusive().map_err(|errno| errno as i32)?;
+    let mut fs_guard = mount.read_exclusive().map_err(|errno| errno.0)?;
     super::trace::trace_exec(b'2');
     let fs = fs_guard.as_mut().ok_or(EIO)?;
     super::trace::trace_exec(b'3');
     super::trace::trace_exec(b'4');
 
+    let inode_num = crate::fs::ext2::ino32(inode_num).map_err(|error| error.0)?;
     let inode = fs.read_inode(inode_num).map_err(|_| {
         super::trace::trace_exec(b'@');
         EIO

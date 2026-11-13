@@ -82,6 +82,7 @@ fn power_token() -> Result<Option<alloc::vec::Vec<u8>>, u64> {
         let (mount, ino, _pin, _) = crate::fs::namei::resolve_file(path)?;
         let guard = mount.read()?;
         let fs = guard.as_ref().ok_or(super::errno::EIO as u64)?;
+        let ino = crate::fs::ext2::ino32(ino)?;
         let inode = fs.read_inode(ino).map_err(|_| super::errno::EIO as u64)?;
         // Reject untrusted metadata before reading its contents.
         let metadata = File { regular: inode.is_file(), uid: inode.uid() as u32,

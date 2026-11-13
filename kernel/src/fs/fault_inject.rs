@@ -284,7 +284,7 @@ fn open_ext2_device() -> Option<Box<dyn BlockDevice>> {
 /// Sector arithmetic for one inode record, mirroring `Ext2Inode::read_from`.
 ///
 /// Returns `(device_sector, byte_offset_within_that_sector)`.
-fn inode_record_location(fs: &super::ext2::Ext2Fs, inode_num: u32, device_block_size: usize) -> (u64, u64) {
+fn inode_record_location(fs: &super::ext2::Ext2Fs, inode_num: u64, device_block_size: usize) -> (u64, u64) {
     let sb = &fs.superblock;
     let inodes_per_group =
         unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(sb.s_inodes_per_group)) };
@@ -294,8 +294,8 @@ fn inode_record_location(fs: &super::ext2::Ext2Fs, inode_num: u32, device_block_
         unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(sb.s_log_block_size)) };
 
     let inode_index = inode_num - 1;
-    let group = (inode_index / inodes_per_group) as usize;
-    let local_index = inode_index % inodes_per_group;
+    let group = (inode_index / u64::from(inodes_per_group)) as usize;
+    let local_index = inode_index % u64::from(inodes_per_group);
     let inode_table_block = unsafe {
         core::ptr::read_unaligned(core::ptr::addr_of!(fs.block_groups[group].bg_inode_table))
     };
@@ -305,12 +305,12 @@ fn inode_record_location(fs: &super::ext2::Ext2Fs, inode_num: u32, device_block_
         s_inode_size as u32
     };
     let ext2_block_size = 1024u32 << s_log_block_size;
-    let byte_offset = local_index * inode_size;
-    let target_ext2_block = inode_table_block + byte_offset / ext2_block_size;
-    let offset_in_ext2_block = byte_offset % ext2_block_size;
+    let byte_offset = local_index * u64::from(inode_size);
+    let target_ext2_block = u64::from(inode_table_block) + byte_offset / u64::from(ext2_block_size);
+    let offset_in_ext2_block = byte_offset % u64::from(ext2_block_size);
 
     let sectors_per_ext2_block = (ext2_block_size as usize / device_block_size) as u64;
-    let sector = target_ext2_block as u64 * sectors_per_ext2_block
+    let sector = target_ext2_block * sectors_per_ext2_block
         + (offset_in_ext2_block as usize / device_block_size) as u64;
     let offset_in_sector = (offset_in_ext2_block as usize % device_block_size) as u64;
     (sector, offset_in_sector)
@@ -521,7 +521,7 @@ pub fn run_fs_fault_leg() {
     // pointers that name blocks the device does not have.
     {
         let (inode_sector, offset_in_sector) =
-            inode_record_location(&fs, EXT2_ROOT_INO, device_block_size);
+            inode_record_location(&fs, EXT2_ROOT_INO.into(), device_block_size);
 
         for (which, arm_name) in [(CORRUPT_SIZE, "size"), (CORRUPT_BLOCKS, "blocks")] {
             arm_corrupt_inode(inode_sector, offset_in_sector, which);

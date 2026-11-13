@@ -6,6 +6,7 @@
 //! This module is architecture-independent - it uses conditional imports to support
 //! both x86_64 and ARM64.
 
+use crate::fs::ext2::{errno::errno as ext2_errno, live_inode::FileHandle};
 use crate::memory::vma::{MmapFlags, Protection, Vma};
 use crate::syscall::{ErrorCode, SyscallResult};
 
@@ -477,7 +478,7 @@ fn file_mapping(
     prot: Protection,
     flags: MmapFlags,
     offset: u64,
-) -> Result<(crate::fs::ext2::live_inode::FileHandle, bool), u64> {
+) -> Result<(FileHandle, bool), u64> {
     use crate::syscall::errno::{EACCES, EINVAL, ENODEV, ENOMEM, EOVERFLOW};
     let kind = flags.bits() & 3;
     if kind == 0 || !is_page_aligned(offset) {
@@ -526,7 +527,7 @@ fn file_mapping(
 /// faults, not here. If registration fails, the pages population read are
 /// left for the ext2 service to retire.
 fn map_file(
-    handle: crate::fs::ext2::live_inode::FileHandle,
+    handle: FileHandle,
     thread_id: u64,
     root: u64,
     mut vma: Vma,
@@ -549,12 +550,13 @@ fn map_file(
         },
     )?;
     let guard =
-        crate::fs::ext2::read_mount(handle.object.mount).map_err(|_| abandon(ErrorCode::IoError as u64))?;
+        crate::fs::ext2::read_mount(handle.object.mount).map_err(ext2_errno).map_err(|error| abandon(error.into()))?;
     let fs = guard.as_ref().ok_or_else(|| abandon(ErrorCode::IoError as u64))?;
-    let ino = handle.verify(fs).map_err(|_| abandon(ErrorCode::IoError as u64))?;
+    let ino = handle.verify(fs).map_err(ext2_errno).map_err(|error| abandon(error.into()))?;
     let append_only = fs
         .read_inode(ino)
-        .map_err(|_| abandon(ErrorCode::IoError as u64))?
+        .map_err(ext2_errno)
+        .map_err(|error| abandon(error.into()))?
         .i_flags
         & 0x20
         != 0;
@@ -604,17 +606,17 @@ fn map_file(
 
 /// A non-root caller's shared writable mapping of a file clears its set-ID
 /// bits as that caller's write would (K4), before any store can reach it.
-fn drop_writer_privilege(handle: &crate::fs::ext2::live_inode::FileHandle) -> Result<(), u64> {
+fn drop_writer_privilege(handle: &FileHandle) -> Result<(), u64> {
     let cred = crate::fs::permissions::Credentials::current(false)?;
     if cred.privileged() {
         return Ok(());
     }
     let mut guard = crate::fs::ext2::write_mount(handle.object.mount)
-        .map_err(crate::fs::namei::fs_errno)?;
+        .map_err(ext2_errno)?;
     let fs = guard.as_mut().ok_or(ErrorCode::IoError as u64)?;
-    let ino = handle.verify(fs).map_err(|_| ErrorCode::IoError as u64)?;
+    let ino = handle.verify(fs).map_err(ext2_errno)?;
     fs.drop_content_privilege(ino)
-        .map_err(crate::fs::namei::fs_errno)
+        .map_err(ext2_errno).map_err(Into::into)
 }
 
 /// errno for a failed munmap or mprotect of a file VMA: a range that does not

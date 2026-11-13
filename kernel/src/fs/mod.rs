@@ -12,6 +12,7 @@
 pub mod attrs;
 pub mod devfs;
 pub mod devptsfs;
+pub mod errno;
 pub mod ext2;
 pub mod locks;
 pub mod namei;

@@ -57,9 +57,10 @@ pub fn read_program_image(
     // Existing shared write authority is checked by exec_attrs.
     let (mount, inode_num, _held, resolved) =
         crate::fs::namei::resolve_file_bytes(path.as_ref()).map_err(|errno| errno as i32)?;
-    let mut fs_guard = mount.read_exclusive().map_err(|errno| errno as i32)?;
+    let mut fs_guard = mount.read_exclusive().map_err(|errno| errno.0)?;
     let fs = fs_guard.as_mut().ok_or(EIO)?;
 
+    let inode_num = crate::fs::ext2::ino32(inode_num).map_err(|error| error.0)?;
     let inode = fs.read_inode(inode_num).map_err(|_| EIO)?;
 
     if inode.is_dir() {
