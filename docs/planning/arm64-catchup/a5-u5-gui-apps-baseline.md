@@ -35,3 +35,24 @@ counts. No failure mechanism is asserted without capture evidence.
 Comparison baseline: R240 `20261112T190204Z-metal`, 73/73 and MEMORY PASS,
 as recorded in the E23 ledger at line 457; later records will be checked
 before attributing failures. This is a comparison, not an ARM result.
+
+## Result: blocked before boot
+
+The one launch attempt at `d46f079c` exited 1 before QEMU started. ARM
+userspace and the production kernel built successfully; the kernel build
+printed the existing Rust `core` future-incompatibility notice. The ext2
+image was created and the kernel SIMD guard passed. No guest case ran.
+
+The launcher invokes `scripts/qemu-desktop-stage.py` at
+`scripts/boot-interactive.sh:366`. Its import at
+`scripts/qemu-desktop-stage.py:9` loads `scripts/metal/metal_root.py`, whose
+line 21 imports `metal_probe` as a top-level module. The staging invocation
+does not put `scripts/metal` on Python's import path. It failed with
+`ModuleNotFoundError: No module named 'metal_probe'`. This is an ARM launcher
+staging failure; no claim is made about the shared guest cases.
+
+Vigil ID, renderer result, MEMORY, SMB restart receipt and all 73 per-case
+results: **not produced**. The R240 comparison above therefore cannot classify
+any guest failure. No fix or second launch was made; the blocker was filed in
+the ARM effort ledger. The branch-tools lock was released after the failed
+preflight.
