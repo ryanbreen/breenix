@@ -67,7 +67,7 @@ pub fn write_mount(pin: MountPin) -> Result<Guard, &'static str> {
     read_mount(pin)
 }
 
-struct Disk(Mutex<Vec<u8>>, Arc<AtomicBool>);
+struct Disk(Mutex<Vec<u8>>, Arc<AtomicBool>, Arc<AtomicBool>);
 impl block::BlockDevice for Disk {
     fn is_read_only(&self) -> bool {
         self.1.load(Ordering::Acquire)
@@ -82,7 +82,7 @@ impl block::BlockDevice for Disk {
         Ok(())
     }
     fn write_block(&self, sector: u64, input: &[u8]) -> Result<(), block::BlockError> {
-        if self.is_read_only() {
+        if self.is_read_only() || self.2.swap(false, Ordering::AcqRel) {
             return Err(block::BlockError::IoError);
         }
         let start = sector as usize * 512;
@@ -104,7 +104,7 @@ impl block::BlockDevice for Disk {
     }
 }
 
-pub struct Fixture(MountPin, Arc<AtomicBool>);
+pub struct Fixture(MountPin, Arc<AtomicBool>, Arc<AtomicBool>);
 impl Fixture {
     pub fn new() -> Self {
         let mut bytes = vec![0; 512 * 4096];
@@ -127,8 +127,13 @@ impl Fixture {
         group.bg_free_blocks_count = 490;
         group.bg_free_inodes_count = 126;
         let read_only = Arc::new(AtomicBool::new(false));
+        let fail_write = Arc::new(AtomicBool::new(false));
         let mut fs = Ext2Fs::host_new(
-            Box::new(Disk(Mutex::new(bytes), read_only.clone())),
+            Box::new(Disk(
+                Mutex::new(bytes),
+                read_only.clone(),
+                fail_write.clone(),
+            )),
             sb,
             vec![group],
         );
@@ -148,7 +153,11 @@ impl Fixture {
                 instance: id as u64,
             },
             read_only,
+            fail_write,
         )
+    }
+    pub fn fail_next_write(&self) {
+        self.2.store(true, Ordering::Release);
     }
     pub fn remount_read_only(&self) {
         self.1.store(true, Ordering::Release);

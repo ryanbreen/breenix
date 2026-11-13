@@ -5,8 +5,8 @@ use crate::{
     host_mounts::Fixture,
     syscall_errno::*,
     vfs::{
-        FileSystem, NewNode, NodeKind, Remove, RenameMode, SetAttr, Timestamp, WriteAt, Xattr,
-        XattrSet,
+        FileSystem, NewNode, NodeKind, Remove, RenameMode, SetAttr, Timestamp, WriteAt, WriteReq,
+        WriteResult, Xattr, XattrSet,
     },
 };
 
@@ -574,4 +574,178 @@ fn getdents_cookie_survives_concurrent_unlink() {
         .unwrap();
     assert!(after_parent >= 2);
     assert_eq!(parent_only, dots[1..]);
+}
+
+#[test]
+fn append_reports_offset_and_clears_setid() {
+    let disk = Fixture::new();
+    let adapter = Ext2Adapter::new(disk.pin());
+    let fs: &dyn FileSystem = &adapter;
+    let ino = regular(fs, fs.root().unwrap(), b"append-mode");
+    let node = fs.open(ino).unwrap();
+    let other = fs.open(ino).unwrap();
+    let req = |clear_setid| WriteReq {
+        at: WriteAt::Append,
+        limit: u64::MAX,
+        clear_setid,
+    };
+    fs.setattr(
+        ino,
+        SetAttr {
+            mode: Some(0o6750),
+            ..SetAttr::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        fs.write(&other, req(false), b"first"),
+        Ok(WriteResult {
+            offset: 0,
+            bytes: 5,
+            limited: false
+        })
+    );
+    assert_eq!(fs.getattr(ino).unwrap().attrs.mode & 0o7777, 0o6750);
+    // node caches its opening size: append must choose the current inode's EOF.
+    assert_eq!(
+        fs.write(&node, req(true), b"!"),
+        Ok(WriteResult {
+            offset: 5,
+            bytes: 1,
+            limited: false
+        })
+    );
+    assert_eq!(fs.getattr(ino).unwrap().attrs.mode & 0o7777, 0o750);
+    let mut bytes = [0; 6];
+    assert_eq!(fs.read(&other, 0, &mut bytes), Ok(6));
+    assert_eq!(&bytes, b"first!");
+    fs.setattr(
+        ino,
+        SetAttr {
+            mode: Some(0o6750),
+            ..SetAttr::default()
+        },
+    )
+    .unwrap();
+    fs.resize(&node, 3, false).unwrap();
+    assert_eq!(fs.getattr(ino).unwrap().attrs.mode & 0o7777, 0o6750);
+    fs.resize(&node, 8, true).unwrap();
+    assert_eq!(fs.getattr(ino).unwrap().attrs.mode & 0o7777, 0o750);
+}
+
+#[test]
+fn write_limit_clamps_and_reports_limited() {
+    let disk = Fixture::new();
+    let adapter = Ext2Adapter::new(disk.pin());
+    let fs: &dyn FileSystem = &adapter;
+    let ino = regular(fs, fs.root().unwrap(), b"write-limit");
+    let node = fs.open(ino).unwrap();
+    let other = fs.open(ino).unwrap();
+    let req = |at, limit| WriteReq {
+        at,
+        limit,
+        clear_setid: true,
+    };
+    assert_eq!(
+        fs.write(&other, req(WriteAt::Offset(0), 8), b"abcdef"),
+        Ok(WriteResult {
+            offset: 0,
+            bytes: 6,
+            limited: false
+        })
+    );
+    assert_eq!(
+        fs.write(&node, req(WriteAt::Append, 8), b"ghij"),
+        Ok(WriteResult {
+            offset: 6,
+            bytes: 2,
+            limited: true
+        })
+    );
+    fs.setattr(
+        ino,
+        SetAttr {
+            mode: Some(0o6750),
+            ..SetAttr::default()
+        },
+    )
+    .unwrap();
+    let before = fs.getattr(ino).unwrap();
+    let free = fs.statfs().unwrap().free_blocks;
+    for at in [WriteAt::Append, WriteAt::Offset(8), WriteAt::Offset(9)] {
+        assert_eq!(fs.write(&node, req(at, 8), b"x"), Err(Errno(EFBIG)));
+    }
+    assert_eq!(
+        fs.write(&node, req(WriteAt::Offset(9), 8), b""),
+        Ok(WriteResult {
+            offset: 9,
+            bytes: 0,
+            limited: false
+        })
+    );
+    assert_eq!(fs.getattr(ino).unwrap(), before);
+    assert_eq!(fs.statfs().unwrap().free_blocks, free);
+    // Explicit-offset writes use the same clamp and preserve the tail.
+    assert_eq!(
+        fs.write(&node, req(WriteAt::Offset(2), 4), b"XYZ"),
+        Ok(WriteResult {
+            offset: 2,
+            bytes: 2,
+            limited: true
+        })
+    );
+    let mut bytes = [0; 8];
+    assert_eq!(fs.read(&node, 0, &mut bytes), Ok(8));
+    assert_eq!(&bytes, b"abXYefgh");
+}
+
+#[test]
+fn read_moves_stale_atime_only() {
+    let disk = Fixture::new();
+    let adapter = Ext2Adapter::new(disk.pin());
+    let fs: &dyn FileSystem = &adapter;
+    let ino = regular(fs, fs.root().unwrap(), b"read-atime");
+    let node = fs.open(ino).unwrap();
+    fs.write(
+        &node,
+        WriteReq {
+            at: WriteAt::Offset(0),
+            limit: u64::MAX,
+            clear_setid: false,
+        },
+        b"data",
+    )
+    .unwrap();
+    // The host clock is 1. Write exact times without setattr changing ctime.
+    let set_times = |atime, mtime, ctime| {
+        let mut guard = crate::host_mounts::write_mount(disk.pin()).unwrap();
+        let storage = guard.as_mut().unwrap();
+        let mut inode = storage.read_inode(ino as u32).unwrap();
+        inode.i_atime = atime;
+        inode.i_mtime = mtime;
+        inode.i_ctime = ctime;
+        storage.write_inode(ino as u32, &inode).unwrap();
+    };
+    let mut bytes = [0; 4];
+    set_times(0, 0, 0);
+    let before = fs.getattr(ino).unwrap();
+    assert_eq!(fs.read(&node, 0, &mut bytes), Ok(4));
+    assert_eq!(&bytes, b"data");
+    let after = fs.getattr(ino).unwrap();
+    assert_eq!(after.times.atime.sec, 1);
+    assert_eq!(after.times.mtime, before.times.mtime);
+    assert_eq!(after.times.ctime, before.times.ctime);
+    assert_eq!(after.attrs, before.attrs);
+    assert_eq!(node.times.lock().atime.sec, 1);
+    set_times(2, 0, 0);
+    assert_eq!(fs.read(&node, 0, &mut bytes), Ok(4));
+    assert_eq!(fs.getattr(ino).unwrap().times.atime.sec, 2);
+    set_times(0, 0, 0);
+    disk.fail_next_write();
+    assert_eq!(fs.read(&node, 0, &mut bytes), Ok(4));
+    assert_eq!(&bytes, b"data");
+    assert_eq!(fs.getattr(ino).unwrap().times.atime.sec, 0);
+    disk.remount_read_only();
+    assert_eq!(fs.read(&node, 0, &mut bytes), Ok(4));
+    assert_eq!(fs.getattr(ino).unwrap().times.atime.sec, 0);
 }
