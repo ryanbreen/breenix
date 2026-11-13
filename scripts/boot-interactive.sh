@@ -362,12 +362,6 @@ if [[ "$SUITE" == *,* ]]; then
     "$ROOT/scripts/write-boot-target.sh" "$WRITABLE" "${SUITE%%,*}" \
         "$ROOT/userspace/programs/aarch64/suite-${SUITE%%,*}.elf" "$SUITE"
 fi
-source "$ROOT/scripts/qemu-smb-forward.sh"
-trap qemu_smb_forward_stop EXIT
-if [ "$MODE" = suite ] && [[ ",$SUITE," == *,gui-apps,* ]]; then
-    qemu_smb_forward_start "$MODE" "$SUITE" "$ONLY"
-    python3 "$ROOT/scripts/qemu-desktop-stage.py" "$WRITABLE" "$SUITE" "$ONLY" --forward-port "$SMB_FORWARD_PORT"
-fi
 SMB_INSTANCE=
 if [ "$MODE" = suite ] && [[ ",$SUITE," == *,gui-apps,* ]]; then
     SMB_INSTANCE=$(PYTHONPATH="$ROOT/scripts:$ROOT/scripts/metal" python3 - "$SUITE" "$ONLY" <<'PYSMB'
@@ -379,19 +373,22 @@ if smb_gui_selection('suite', sys.argv[1], sys.argv[2] or None):
 PYSMB
 )
     if [ -n "$SMB_INSTANCE" ]; then
-        python3 "$ROOT/scripts/qemu-smb-restart.py" check
+        if [ "${BREENIX_QEMU_SMB_GUARDED:-}" != 1 ]; then
+            exec python3 "$ROOT/scripts/qemu-smb-restart.py" run --serial "$SERIAL_LOG" --instance "$SMB_INSTANCE" -- \
+                "$ROOT/scripts/boot-interactive.sh" "${BOOT_ARGS[@]}" --no-build --serial-log "$SERIAL_LOG"
+        fi
     fi
+fi
+source "$ROOT/scripts/qemu-smb-forward.sh"
+trap qemu_smb_forward_stop EXIT
+if [ "$MODE" = suite ] && [[ ",$SUITE," == *,gui-apps,* ]]; then
+    qemu_smb_forward_start "$MODE" "$SUITE" "$ONLY"
+    python3 "$ROOT/scripts/qemu-desktop-stage.py" "$WRITABLE" "$SUITE" "$ONLY" --forward-port "$SMB_FORWARD_PORT"
 fi
 # Standalone UI suites have an evidence receiver and route.
 EVIDENCE_PID=
-SMB_PID=
 cleanup_evidence() {
     qemu_smb_forward_stop
-    if [ -n "$SMB_PID" ]; then
-        kill "$SMB_PID" 2>/dev/null || true
-        wait "$SMB_PID" 2>/dev/null || true
-        SMB_PID=
-    fi
     if [ -n "$EVIDENCE_PID" ]; then
         kill "$EVIDENCE_PID" 2>/dev/null || true
         wait "$EVIDENCE_PID" 2>/dev/null || true
@@ -572,10 +569,6 @@ python3 "$ROOT/scripts/watch-qemu.py" ${WATCH_READY_ARGS[@]+"${WATCH_READY_ARGS[
     -serial chardev:con -mon chardev=con,mode=readline <&3 &
 WATCHER_PID=$!
 qemu_host_lock_track_pid "$WATCHER_PID"
-if [ -n "$SMB_INSTANCE" ]; then
-    python3 "$ROOT/scripts/qemu-smb-restart.py" watch --serial "$SERIAL_LOG" --instance "$SMB_INSTANCE" &
-    SMB_PID=$!
-fi
 USERS_SSH_PID=
 if [ -n "$USERS_SSH_STATE" ]; then
     python3 "$ROOT/scripts/users-hostssh.py" watch --state "$USERS_SSH_STATE" --serial "$SERIAL_LOG" \
@@ -589,13 +582,6 @@ if [ -n "$USERS_SSH_PID" ]; then
     wait "$USERS_SSH_PID"
     ssh_code=$?
     [ "$code" -ne 0 ] || code=$ssh_code
-fi
-if [ -n "$SMB_PID" ]; then
-    kill "$SMB_PID" 2>/dev/null || true
-    wait "$SMB_PID"
-    smb_code=$?
-    SMB_PID=
-    [ "$code" -ne 0 ] || code=$smb_code
 fi
 set -e
 cleanup_evidence

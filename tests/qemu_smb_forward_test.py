@@ -24,7 +24,7 @@ class ForwardTest(unittest.TestCase):
                 tmp = Path(directory)
                 site = tmp / 'site'
                 values = {key: 'fixture' for key in vm_site.REQUIRED}
-                values.update(config, SMB_TEST_HOST='fixture.invalid', SMB_TEST_PORT='445', SMB_TEST_INSTANCE='fixture')
+                values.update(config, SMB_TEST_HOST='fixture.invalid', SMB_TEST_PORT='445', SMB_TEST_INSTANCE='fixture', SMB_TEST_SSH_HOST='ssh-fixture')
                 site.write_text(''.join(f'{key}={value}\n' for key, value in values.items()))
                 site.chmod(0o600)
                 ssh = tmp / 'ssh'
@@ -64,6 +64,7 @@ fi
                     host, port = subprocess.check_output([debugfs, '-R', 'cat /etc/breenix/smb-test-server', str(image)], stderr=subprocess.DEVNULL, text=True).split()
                     self.assertEqual(host, '10.0.2.2')
                     self.assertIn(f'127.0.0.1:{port}:fixture.invalid:445', (tmp / 'args').read_text())
+                    self.assertIn('ssh-fixture', (tmp / 'args').read_text().splitlines())
                     self.assertTrue((tmp / 'stopped').exists())
                 else:
                     self.assertFalse((tmp / 'args').exists())
