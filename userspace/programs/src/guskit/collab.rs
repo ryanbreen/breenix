@@ -542,12 +542,12 @@ impl Core {
     }
 }
 
-#[cfg(target_os = "breenix")]
+#[cfg(any(test, target_os = "breenix"))]
 pub struct Session {
     pub core: Core,
     transport: libcollab::net::TcpTransport,
 }
-#[cfg(target_os = "breenix")]
+#[cfg(any(test, target_os = "breenix"))]
 impl Session {
     pub fn host(
         address: [u8; 4],

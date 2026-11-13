@@ -447,6 +447,43 @@ mod tests {
     use breengel::{Delivered, Modifiers};
 
     #[test]
+    fn session_dialog_rejects_bad_address_after_tab_and_enter_text() {
+        let image = Canvas::new(200, 120);
+        let mut app = App { width:200,height:120,clean:image.digest(),history:History::new(image),
+            tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
+            confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
+        let mut menu = menu();
+        app.action(JOIN_SESSION);
+        // App::type_text sends one TEXT source (libuitest app.rs/pointer_live.rs).
+        // bwm/input_keys.rs emits Key, Text, then KeyRelease for key(15/28).
+        // breengel/event.rs decodes CR's KeyPress ascii as 0, keeping its text.
+        let events = [
+            Event::Text { text: "bad address".into() },
+            Event::KeyPress { keycode:15,ascii:b'\t',text:"\t".into(),modifiers:Modifiers::default(),repeat:false },
+            Event::Text { text: "\t".into() },
+            Event::KeyRelease { keycode:15,modifiers:Modifiers::default() },
+            Event::Text { text: "Peer".into() },
+            Event::KeyPress { keycode:28,ascii:0,text:"\r".into(),modifiers:Modifiers::default(),repeat:false },
+            Event::Text { text: "\r".into() },
+            Event::KeyRelease { keycode:28,modifiers:Modifiers::default() },
+        ];
+        for (index, event) in events.into_iter().enumerate() {
+            handle(&mut app, &mut menu, &Delivered { serial:index as u64 + 1,time_ns:1,clicks:0,event });
+        }
+        let dialog = app.session_dialog.as_ref().unwrap();
+        let nodes = node::session_dialog(false, dialog.address.text(), dialog.name.text(),
+            dialog.model.status(), dialog.address.is_focused(), dialog.name.is_focused());
+        let published = nodes.iter().find(|n| n.key == "session-dialog").unwrap();
+        assert_eq!(published.value["status"], "Enter a valid IPv4 address",
+            "address={:?}, name={:?}, name_focused={}",
+            dialog.address.text(), dialog.name.text(), dialog.name.is_focused());
+        assert_eq!(dialog.address.text(), "bad address");
+        assert_eq!(dialog.name.text(), "Peer");
+        assert!(dialog.name.is_focused());
+        assert!(app.session.is_none());
+    }
+
+    #[test]
     fn save_as_navigates_and_rejects_unsupported_names() {
         let dir = std::env::temp_dir().join(format!("guskit-save-as-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
