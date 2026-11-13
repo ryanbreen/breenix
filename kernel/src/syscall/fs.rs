@@ -690,7 +690,7 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
             return SyscallResult::Err(ENOTDIR as u64);
         }
         let handle = {
-            let guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
+            let guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
             let Some(fs) = guard.as_ref() else {
                 return SyscallResult::Err(5);
             };
@@ -769,7 +769,7 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
 
     let result = if needs_write {
         // === WRITE PATH: O_CREAT or O_TRUNC requires exclusive filesystem access ===
-        let mut fs_guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
+        let mut fs_guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
         if let Target::Inode { ino, .. } = &resolved.target {
             fs_guard = match fs_guard.wait_for_inode(*ino) {
                 Ok(guard) => guard,
@@ -800,7 +800,7 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
         })
     } else {
         // === READ PATH: No filesystem modification needed, use shared read lock ===
-        let fs_guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
+        let fs_guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
         match fs_guard.as_ref() {
             Some(fs) => sys_open_read_path(fs, &resolved, flags, &cred),
             None => {
@@ -895,7 +895,7 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
         file_type,
         Ext2FileType::CharDevice | Ext2FileType::BlockDevice | Ext2FileType::Socket
     ) {
-        let guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
+        let guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
         let Some(fs) = guard.as_ref() else {
             return SyscallResult::Err(5);
         };
@@ -1915,7 +1915,7 @@ fn sys_unlink_from(dirfd: i32, pathname: u64) -> SyscallResult {
         let Some(parent) = resolved.entry_dir() else {
             return SyscallResult::Err(EIO as u64);
         };
-        let mut guard = match mount.write_removal() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
+        let mut guard = match mount.write_removal() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
         let Some(fs) = guard.as_mut() else {
             return SyscallResult::Err(EIO as u64);
         };
@@ -2071,7 +2071,7 @@ fn sys_rename_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> 
         Err(errno) => return SyscallResult::Err(errno),
     };
     let result = {
-        let mut fs_guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
+        let mut fs_guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
         match fs_guard.as_mut() {
             Some(fs) => {
                 let (Ok(old_parent), Ok(new_parent)) = (old_dir.verify(fs), new_dir.verify(fs))
@@ -2206,7 +2206,7 @@ fn sys_rmdir_from(dirfd: i32, pathname: u64) -> SyscallResult {
         let Some(parent) = resolved.entry_dir() else {
             return SyscallResult::Err(EIO as u64);
         };
-        let mut guard = match mount.write_removal() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
+        let mut guard = match mount.write_removal() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
         let Some(fs) = guard.as_mut() else {
             return SyscallResult::Err(EIO as u64);
         };
@@ -2350,7 +2350,7 @@ fn sys_link_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> Sy
         let (Some(source), Some(parent)) = (old.handle(), new.entry_dir()) else {
             return SyscallResult::Err(EIO as u64);
         };
-        let mut guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
+        let mut guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
         let Some(fs) = guard.as_mut() else {
             return SyscallResult::Err(EIO as u64);
         };
@@ -2493,7 +2493,7 @@ fn sys_mkdir_from(dirfd: i32, pathname: u64, mode: u32) -> SyscallResult {
         Err(errno) => return SyscallResult::Err(errno),
     };
     let mkdir_result = {
-        let mut fs_guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
+        let mut fs_guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
         match fs_guard.as_mut() {
             Some(fs) => {
                 let parent = match creation_parent(fs, &resolved, &cred) {
@@ -2619,7 +2619,7 @@ fn sys_symlink_from(target: u64, dirfd: i32, linkpath: u64) -> SyscallResult {
     };
     // Create the symbolic link on the correct filesystem
     let symlink_result = {
-        let mut fs_guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
+        let mut fs_guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
         match fs_guard.as_mut() {
             Some(fs) => {
                 let parent = match creation_parent(fs, &link, &cred) {
@@ -2747,7 +2747,7 @@ fn sys_readlink_from(dirfd: i32, pathname: u64, buf: u64, bufsize: u64) -> Sysca
         Target::User { .. } | Target::Inode { .. } | Target::Virtual => return SyscallResult::Err(EINVAL as u64),
     };
     let target = {
-        let fs_guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
+        let fs_guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
         let fs = match fs_guard.as_ref() {
             Some(fs) => fs,
             None => {
@@ -2848,7 +2848,7 @@ fn access_resolved(
             };
         }
     };
-    let guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
+    let guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
     let Some(fs) = guard.as_ref() else {
         return SyscallResult::Err(EIO as u64);
     };
@@ -4535,7 +4535,7 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, flags: u32) -> Sy
             Some(fs) => fs.mount_id,
             None => return SyscallResult::Err(ENOENT as u64),
         },
-        Err(errno) => return SyscallResult::Err(errno),
+        Err(errno) => return SyscallResult::Err(errno.into()),
     };
 
     // Build stat from inode
@@ -5169,7 +5169,7 @@ pub fn sys_sync() -> SyscallResult {
     let mut bytes = crate::memory::file_map::writeback_buffer().ok();
     for mount in [Mount::Root, Mount::Home] {
         let handles = {
-            let guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
+            let guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
             guard.as_ref().filter(|fs| !fs.is_read_only()).map(|fs| fs.dirty_handles()).transpose()
         };
         let _sync = handles
@@ -5345,7 +5345,7 @@ pub fn sys_truncate(pathname: u64, length: i64) -> SyscallResult {
     };
     let size_limit = super::resource::current_fsize();
     let mut exceeded = false;
-    let mut guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
+    let mut guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
     guard = match guard.wait_for_inode(ino) {
         Ok(guard) => guard,
         Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)),

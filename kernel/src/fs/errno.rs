@@ -4,3 +4,9 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(transparent)]
 pub struct Errno(pub i32);
+
+impl From<Errno> for u64 {
+    fn from(errno: Errno) -> Self {
+        errno.0 as u64
+    }
+}

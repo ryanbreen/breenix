@@ -34,7 +34,8 @@
 //! hold. procfs's links (`/proc/self`, `/proc/<pid>/exe`) are expanded as
 //! symlinks are.
 
-use crate::fs::ext2::{self, live_inode::FileHandle, FileType, EXT2_ROOT_INO};
+use crate::fs::errno::Errno;
+use crate::fs::ext2::{self, errno::errno as ext2_errno, live_inode::FileHandle, FileType, EXT2_ROOT_INO};
 use crate::syscall::errno::{EINVAL, EIO, ELOOP, ENAMETOOLONG, ENOENT, ENOTDIR};
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -62,31 +63,31 @@ pub enum Mount {
 }
 
 impl Mount {
-    pub fn read(self) -> Result<ext2::Ext2ReadGuard, u64> {
+    pub fn read(self) -> Result<ext2::Ext2ReadGuard, Errno> {
         match self {
             Mount::Root => ext2::root_fs_read(),
             Mount::Home => ext2::home_fs_read(),
-        }.map_err(fs_errno)
+        }.map_err(ext2_errno)
     }
 
     /// Exclude mapping creation and inode mutation while copying an exec image.
     /// This reads the filesystem, so a read-only or write-failed mount is valid.
-    pub fn read_exclusive(self) -> Result<ext2::Ext2WriteGuard, u64> {
-        ext2::fs_sync_guard(matches!(self, Mount::Home)).map_err(fs_errno)
+    pub fn read_exclusive(self) -> Result<ext2::Ext2WriteGuard, Errno> {
+        ext2::fs_sync_guard(matches!(self, Mount::Home)).map_err(ext2_errno)
     }
 
-    pub fn write(self) -> Result<ext2::Ext2WriteGuard, u64> {
+    pub fn write(self) -> Result<ext2::Ext2WriteGuard, Errno> {
         match self {
             Mount::Root => ext2::root_fs_write(),
             Mount::Home => ext2::home_fs_write(),
-        }.map_err(fs_errno)
+        }.map_err(ext2_errno)
     }
 
     /// Removing names reuses their existing directory blocks. Keep mutation
     /// exclusion and shrink custody, without waiting for unrelated allocation
     /// reclamation merely because the device has little free space.
-    pub fn write_removal(self) -> Result<ext2::Ext2WriteGuard, u64> {
-        ext2::fs_sync_guard(matches!(self, Mount::Home)).map_err(fs_errno)
+    pub fn write_removal(self) -> Result<ext2::Ext2WriteGuard, Errno> {
+        ext2::fs_sync_guard(matches!(self, Mount::Home)).map_err(ext2_errno)
     }
 }
 
@@ -316,7 +317,7 @@ impl Held {
 }
 
 fn read_dir_inode(fs: &ext2::Ext2Fs, ino: u32) -> Result<ext2::Ext2Inode, u64> {
-    let inode = fs.read_inode(ino).map_err(fs_errno)?;
+    let inode = fs.read_inode(ino).map_err(ext2_errno)?;
     if !inode.is_dir() {
         return Err(ENOTDIR as u64);
     }
@@ -675,13 +676,13 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
                 } else { None };
                 let found = match found {
                     Some(ino) => Some(ino),
-                    None => fs.lookup_in_dir_bytes(&dir_inode, &name).map_err(fs_errno)?,
+                    None => fs.lookup_in_dir_bytes(&dir_inode, &name).map_err(ext2_errno)?,
                 };
                 let Some(ino) = found else {
                     if !is_final {
                         return Err(ENOENT as u64);
                     }
-                    let dir_pin = || fs.pin_loaded_inode(dir, dir_inode.size()).map_err(fs_errno);
+                    let dir_pin = || fs.pin_loaded_inode(dir, dir_inode.size()).map_err(ext2_errno);
                     let (pin, entry_dir) = match mode {
                         Mode::Lookup { .. } => (Some(dir_pin()?), None),
                         Mode::Rename => (None, Some(dir_pin()?)),
@@ -704,7 +705,7 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
                         entry_dir,
                     });
                 };
-                let inode = fs.read_inode(ino).map_err(fs_errno)?;
+                let inode = fs.read_inode(ino).map_err(ext2_errno)?;
                 if inode.is_dir() {
                     if let Some(user_mount) = super::ufs::covering(mount, ino) {
                         held.release();
@@ -719,7 +720,7 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
                     if links > MAX_SYMLINKS {
                         return Err(ELOOP as u64);
                     }
-                    let target = fs.read_symlink_bytes(ino).map_err(fs_errno)?;
+                    let target = fs.read_symlink_bytes(ino).map_err(ext2_errno)?;
                     if target.is_empty() {
                         return Err(ENOENT as u64);
                     }
@@ -758,10 +759,10 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
     let (target, pin, entry_dir) = match top(&stack) {
         Node::Ext2(mount, ino) => {
             let fs = held.fs(mount)?;
-            let inode = fs.read_inode(ino).map_err(fs_errno)?;
+            let inode = fs.read_inode(ino).map_err(ext2_errno)?;
             let pin = match mode {
                 Mode::Lookup { .. } => {
-                    Some(fs.pin_loaded_inode(ino, inode.size()).map_err(fs_errno)?)
+                    Some(fs.pin_loaded_inode(ino, inode.size()).map_err(ext2_errno)?)
                 }
                 Mode::Entry | Mode::Rename | Mode::Create => None,
             };
@@ -772,10 +773,10 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
                 (Mode::Rename | Mode::Entry, Last::Name, Node::Ext2(dir_mount, dir))
                     if dir_mount == mount =>
                 {
-                    let dir_inode = fs.read_inode(dir).map_err(fs_errno)?;
+                    let dir_inode = fs.read_inode(dir).map_err(ext2_errno)?;
                     Some(
                         fs.pin_loaded_inode(dir, dir_inode.size())
-                            .map_err(fs_errno)?,
+                            .map_err(ext2_errno)?,
                     )
                 }
                 _ => None,
@@ -1072,7 +1073,7 @@ pub(crate) fn may_search(
         Some(handle) => handle.verify(fs).map_err(|_| ENOENT as u64)?,
         None => ext2::root_inode(),
     };
-    let inode = fs.read_inode(ino).map_err(fs_errno)?;
+    let inode = fs.read_inode(ino).map_err(ext2_errno)?;
     if !inode.is_dir() {
         return Err(ENOTDIR as u64);
     }
@@ -1180,10 +1181,10 @@ fn ancestry(fs: &ext2::Ext2Fs, mount: Mount, mut ino: u32) -> Result<Vec<Frame>,
             }
         }
         let inode = read_dir_inode(fs, ino)?;
-        let data = fs.read_directory(&inode).map_err(fs_errno)?;
+        let data = fs.read_directory(&inode).map_err(ext2_errno)?;
         let parent = ext2::dir::find_inode(&data, "..").ok_or(ENOENT as u64)?;
         let parent_inode = read_dir_inode(fs, parent)?;
-        let parent_data = fs.read_directory(&parent_inode).map_err(fs_errno)?;
+        let parent_data = fs.read_directory(&parent_inode).map_err(ext2_errno)?;
         // Only an exact name can have been looked up, so a directory is
         // never entered through one that is not.
         let entry = ext2::dir::raw_entries(&parent_data)

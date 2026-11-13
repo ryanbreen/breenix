@@ -135,7 +135,7 @@ fn path_key(bytes: &[u8]) -> Result<Key, i32> {
         return Err(ECONNREFUSED);
     };
     let handle = resolved.handle().ok_or(EIO)?.clone();
-    let guard = mount.read().map_err(|e| e as i32)?;
+    let guard = mount.read().map_err(|e| e.0)?;
     let fs = guard.as_ref().ok_or(EIO)?;
     let inode = fs
         .read_inode(handle.verify(fs).map_err(|_| ENOENT)?)
@@ -163,7 +163,7 @@ fn create_path(bytes: &[u8]) -> Result<Key, i32> {
     }
     let parent = resolved.entry_dir().ok_or(EIO)?;
     let name = resolved.path.rsplit(|b| *b == b'/').next().ok_or(EINVAL)?;
-    let mut guard = mount.write().map_err(|e| e as i32)?;
+    let mut guard = mount.write().map_err(|e| e.0)?;
     let fs = guard.as_mut().ok_or(EIO)?;
     let parent = parent.verify(fs).map_err(|_| ENOENT)?;
     let inode = fs
