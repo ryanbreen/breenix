@@ -44,9 +44,9 @@ class TerminalScale(unittest.TestCase):
         self.assertIn('pub fn scaled_font(', text, 'libbui must expose the draw_text size rule')
         code = item(text, 'pub fn scaled_font(') + '\n' + item(text, 'pub fn draw_text(')
         self.run_rust(r'''
-#[derive(Clone, Copy)] struct Color;
-struct Theme { use_bitmap_font: bool }
-struct Surface { scale: u32, size: f32, raster: Option<bitmap_font::RasterHeight> }
+#[derive(Clone, Copy)] pub struct Color;
+pub struct Theme { use_bitmap_font: bool }
+pub struct Surface { scale: u32, size: f32, raster: Option<bitmap_font::RasterHeight> }
 impl Surface { fn ui_scale(&self) -> u32 { self.scale } }
 mod bitmap_font {
     use super::*;
@@ -81,7 +81,7 @@ fn main() {
         if 'mod cells;' in terminal:
             cells = source('userspace/programs/src/bterm/cells.rs')
             cells = '\n'.join(line for line in cells.splitlines() if not line.startswith('//!'))
-            code = 'mod libbui { pub mod text { use crate::bitmap_font;\n' + item(text, 'pub fn scaled_font(') + '\n}}\n' + cells
+            code = 'mod libbui { pub mod text { use crate::bitmap_font;\n' + item(text, 'pub fn scaled_font(') + '\n}}\nmod cells { use crate::libbui;\n' + cells.replace('use libgfx::', 'use crate::') + '\n}\nuse cells::cell_dims;'
         else:
             # Execute the original startup calculation, rather than a model of its defect.
             begin = terminal.index('let (mut cell_w, mut cell_h) =')
