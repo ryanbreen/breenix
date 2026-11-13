@@ -11,14 +11,14 @@ use std::io;
 
 use super::image::Image;
 use super::node::{self, Expect, Node, HEADER, INTERNAL_ENTRY, LEAF_ITEM, MAX_INTERNAL_ENTRIES};
-use super::raw::{all_zero, tree_name, u64_at, BlockPtr, Key, NODE, TREE_FS, TREE_SPACE};
+use super::raw::{all_zero, tree_name, u32_at, u64_at, BlockPtr, Key, NODE, TREE_FS, TREE_SPACE};
 use super::recovery::{ROOT_OBJECT, ROOT_TYPE};
 use super::report::Report;
 use super::slots::Slot;
 
 const MAX_LEVEL: u8 = 7;
 const MAX_PAYLOAD: usize = 6144;
-const ORPHAN_OBJECT: u64 = 0xFFFF_FFFF_FFFF_FF00;
+pub const ORPHAN_OBJECT: u64 = 0xFFFF_FFFF_FFFF_FF00;
 const FREE_OBJECT: u64 = 0xFFFF_FFFF_FFFF_FF20;
 const PENDING_OBJECT: u64 = 0xFFFF_FFFF_FFFF_FF30;
 
@@ -28,10 +28,35 @@ pub struct DataRef {
     pub crcs: Vec<u32>,
 }
 
-#[derive(Clone, Copy)]
+/// A REF item (format 2.4): blocks `start .. start + length`, its kind and refcount.
+pub struct RefItem {
+    pub start: u64,
+    pub length: u64,
+    pub kind: u8,
+    pub refcount: u32,
+}
+
+/// An EXTENT item in a leaf in L, as A3 and A4 read it.
+pub struct ExtentItem {
+    pub key: Key,
+    pub phys_start: u64,
+    pub phys_len: u64,
+}
+
+/// What the per-root F checks need of a trusted FS node.
+pub enum FsNode {
+    /// The leaf's items whose payloads lie inside the node.
+    Leaf(Vec<(Key, Vec<u8>)>),
+    /// The child addresses, in entry order.
+    Internal(Vec<u64>),
+}
+
+#[derive(Clone)]
 pub struct RootItem {
     pub id: u64,
     pub ptr: BlockPtr,
+    pub next_inode: u64,
+    pub name: Vec<u8>,
 }
 
 /// What the first visit to an address learned, for comparing later pointers to it.
@@ -59,12 +84,26 @@ struct Visit {
 }
 
 pub struct Walk<'i> {
-    image: &'i Image,
+    pub image: &'i Image,
     uuid: [u8; 16],
-    total_blocks: u64,
-    m: u64,
+    pub total_blocks: u64,
+    /// M's generation.
+    pub m: u64,
+    pub dirhash_key: [u8; 16],
     seen: BTreeMap<u64, Seen>,
-    dead: Vec<u64>,
+    /// L: each node address reached, once, with the tree the pointer to it names.
+    pub nodes: BTreeMap<u64, u8>,
+    /// References to each address from `space_root`, ROOT items, internal entries of nodes
+    /// in L and EXTENT items in leaves in L, one per pointer or item (A4).
+    pub refs: BTreeMap<u64, u64>,
+    pub dead: Vec<u64>,
+    pub ref_items: Vec<RefItem>,
+    /// FREE extents as (start, length).
+    pub free: Vec<(u64, u64)>,
+    /// PENDING extents as (start, length, released_generation).
+    pub pending: Vec<(u64, u64, u64)>,
+    pub extents: Vec<ExtentItem>,
+    pub fs_nodes: BTreeMap<u64, FsNode>,
     /// The sum of FREE lengths; absent when the sum overflows 64 bits.
     pub free_total: Option<u64>,
     pub roots: Vec<RootItem>,
@@ -77,16 +116,26 @@ pub fn run<'i>(image: &'i Image, m: &Slot, report: &mut Report) -> io::Result<Wa
         uuid: m.uuid,
         total_blocks: m.total_blocks,
         m: m.generation,
+        dirhash_key: m.dirhash_key,
         seen: BTreeMap::new(),
+        nodes: BTreeMap::new(),
+        refs: BTreeMap::new(),
         dead: Vec::new(),
+        ref_items: Vec::new(),
+        free: Vec::new(),
+        pending: Vec::new(),
+        extents: Vec::new(),
+        fs_nodes: BTreeMap::new(),
         free_total: Some(0),
         roots: Vec::new(),
         data_refs: Vec::new(),
     };
     let ptr = m.space_root;
+    walk.reference(ptr.addr);
     walk.visit(report, root_visit(ptr, TREE_SPACE, m.generation, "space_root".into()))?;
     let roots = walk.roots.clone();
     for root in roots {
+        walk.reference(root.ptr.addr);
         walk.visit(report, root_visit(root.ptr, TREE_FS, m.generation, format!("ROOT item {}", root.id)))?;
     }
     let dead = walk.dead.clone();
@@ -124,6 +173,10 @@ fn root_visit(ptr: BlockPtr, tree: u8, m: u64, from: String) -> Visit {
 }
 
 impl Walk<'_> {
+    fn reference(&mut self, addr: u64) {
+        *self.refs.entry(addr).or_default() += 1;
+    }
+
     fn visit(&mut self, report: &mut Report, v: Visit) -> io::Result<()> {
         let at = format!("node {} ({} tree, from {})", v.addr, tree_name(v.tree), v.from);
         if !node::in_node_area(v.addr, self.total_blocks) {
@@ -134,6 +187,7 @@ impl Walk<'_> {
             revisit(seen, &v, &at, report);
             return Ok(());
         }
+        self.nodes.insert(v.addr, v.tree);
         let n = node::read(self.image, v.addr)?;
         let uuid = self.uuid;
         let expect = Expect {
@@ -184,6 +238,9 @@ impl Walk<'_> {
             seen.first = entries.first().map(|e| e.key);
             seen.last = entries.last().map(|e| e.key);
             self.seen.insert(v.addr, seen);
+            if n.tree == TREE_FS {
+                self.fs_nodes.insert(v.addr, FsNode::Internal(entries.iter().map(|e| e.child).collect()));
+            }
             self.internal(report, &n, &entries, &v, &at)?;
         }
         Ok(())
@@ -219,10 +276,17 @@ impl Walk<'_> {
         if !v.is_root && used_bytes < NODE / 4 {
             report.warning(format!("{at}: leaf under a quarter full ({used_bytes} of {NODE} bytes)"));
         }
+        let mut fs_items = Vec::new();
         for (i, item) in items.iter().enumerate() {
             if let Some(payload) = item.payload(n).filter(|_| in_bounds[i]) {
                 self.item(report, at, n.tree, item.key, payload);
+                if n.tree == TREE_FS {
+                    fs_items.push((item.key, payload.to_vec()));
+                }
             }
+        }
+        if n.tree == TREE_FS {
+            self.fs_nodes.insert(v.addr, FsNode::Leaf(fs_items));
         }
         keys
     }
@@ -238,6 +302,7 @@ impl Walk<'_> {
             report.warning(format!("{at}: internal node under a quarter full ({used_bytes} of {NODE} bytes)"));
         }
         for (i, entry) in entries.iter().enumerate() {
+            self.reference(entry.child);
             let child = Visit {
                 addr: entry.child,
                 tree: v.tree,
@@ -275,6 +340,7 @@ impl Walk<'_> {
                 if !all_zero(&p[5..8]) {
                     bad.push("REF padding not zero".into());
                 }
+                self.ref_items.push(RefItem { start: key.object, length: key.offset, kind: p[4], refcount: u32_at(p, 0) });
                 match p[4] {
                     1 | 2 => {
                         size(16, &mut bad);
@@ -299,13 +365,14 @@ impl Walk<'_> {
                     bad.push("FREE item outside the FREE object".into());
                 } else if size(8, &mut bad) {
                     self.free_total = self.free_total.and_then(|t| t.checked_add(u64_at(p, 0)));
+                    self.free.push((key.offset, u64_at(p, 0)));
                 }
             }
             (TREE_SPACE, 0x82) => {
                 if key.object != PENDING_OBJECT {
                     bad.push("PENDING item outside the PENDING object".into());
-                } else {
-                    size(16, &mut bad);
+                } else if size(16, &mut bad) {
+                    self.pending.push((key.offset, u64_at(p, 0), u64_at(p, 8)));
                 }
             }
             (TREE_SPACE, 0x83) => {
@@ -325,17 +392,24 @@ impl Walk<'_> {
                     if !ptr.pad_zero {
                         bad.push("ROOT pointer padding not zero".into());
                     }
-                    self.roots.push(RootItem { id: key.offset, ptr });
+                    let (next_inode, name) = (u64_at(p, 24), p[65..].to_vec());
+                    self.roots.push(RootItem { id: key.offset, ptr, next_inode, name });
                 }
             }
             (TREE_FS, 0x01) => {
                 if key.offset != 0 {
                     bad.push("INODE offset is not 0".into());
                 }
-                size(128, &mut bad);
+                if size(128, &mut bad) && !all_zero(&p[112..128]) {
+                    bad.push("INODE bytes 112..127 not zero".into());
+                }
             }
             (TREE_FS, 0x20) => {
-                size(24, &mut bad);
+                if size(24, &mut bad) {
+                    let (phys_start, phys_len) = (u64_at(p, 0), u32_at(p, 8) as u64);
+                    self.extents.push(ExtentItem { key, phys_start, phys_len });
+                    self.reference(phys_start);
+                }
             }
             (TREE_FS, 0x21) => {
                 if key.offset != 0 {

@@ -2,8 +2,9 @@
 //! SipHash primitives with the writer.
 //!
 //! Order: the eight slots (S1, S2), recovery's choice of M (S3), the walk of M's trees
-//! (N1-N6, C1's CRC counts), S4, then in full mode the data CRCs (C1). A1-A6 and F1-F10 are
-//! stubs in this unit.
+//! (N1-N6, C1's CRC counts), S4, in full mode the data CRCs (C1), the space accounting
+//! (A1-A6), then each root's filesystem tree (F1-F10, with F7's zero tails in full mode).
+//! claim-lint:ok: docs/fs/cowfs-format.md sections 3 and 5.
 
 mod data;
 mod files;
@@ -62,9 +63,10 @@ fn run(path: &Path, full: bool, report: &mut Report) -> io::Result<bool> {
     if full {
         data::verify(&image, &walk, report)?;
     }
-    for (id, detail) in walk.space_findings().into_iter().chain(walk.file_findings()) {
+    for (id, detail) in walk.space_findings() {
         report.error(id, detail);
     }
+    walk.check_files(full, report)?;
     Ok(true)
 }
 

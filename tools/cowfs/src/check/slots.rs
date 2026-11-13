@@ -28,6 +28,7 @@ pub struct Slot {
     pub free_blocks: u64,
     pub global_reserve: u64,
     pub next_root_id: u64,
+    pub dirhash_key: [u8; 16],
 }
 
 impl Slot {
@@ -131,6 +132,7 @@ fn validate(raw: Vec<u8>, ring: u8, index: u8, block: u64, partition_blocks: u64
         free_blocks: u64_at(&raw, 112),
         global_reserve: u64_at(&raw, 120),
         next_root_id: u64_at(&raw, 128),
+        dirhash_key: bytes(&raw, 136),
         raw,
     })
 }
