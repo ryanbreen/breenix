@@ -1,19 +1,21 @@
-//! Ext2's Mount, Inode and Names groups at the filesystem boundary.
-//! Data and xattrs are explicitly unsupported until their migration units.
+//! Ext2 operations at the filesystem boundary. Credential policy stays in VFS.
 use crate::fs::{
     attrs::MountFlags,
     errno::Errno,
     ext2::{
-        self, errno::errno, live_inode::MountPin, read_mount, write_mount, Ext2Fs, Ext2Inode,
-        RenameError,
+        self,
+        errno::errno,
+        live_inode::{FileHandle, MountPin},
+        read_mount, sync_mount_guard, write_mount, Ext2Fs, Ext2Inode, RenameError,
     },
     vfs::{
         DirEnt, FileSystem, NewNode, NodeAttrs, NodeKind, NodeTimes, Remove, RenameMode, SetAttr,
-        StatFs, Timestamp, VNode,
+        StatFs, Timestamp, VNode, WriteAt, Xattr,
     },
 };
 use crate::syscall::errno::*;
 use alloc::{sync::Arc, vec::Vec};
+use core::sync::atomic::Ordering;
 
 pub struct Ext2Adapter {
     mount: MountPin,
@@ -21,6 +23,18 @@ pub struct Ext2Adapter {
 impl Ext2Adapter {
     pub fn new(mount: MountPin) -> Self {
         Self { mount }
+    }
+
+    fn pin_node(&self, fs: &Ext2Fs, node: &VNode) -> Result<FileHandle, Errno> {
+        if node.mount != self.mount.mount_id {
+            return Err(Errno(EXDEV));
+        }
+        let handle = fs.pin_inode(ext2::ino32(node.ino)?).map_err(errno)?;
+        if handle.object.key.incarnation != node.incarnation {
+            return Err(Errno(EIO));
+        }
+        handle.verify(fs).map_err(errno)?;
+        Ok(handle)
     }
 }
 
@@ -82,6 +96,23 @@ fn attributes(ino: u64, inode: &Ext2Inode) -> Result<NodeAttrs, Errno> {
     })
 }
 
+fn regular_inode(fs: &Ext2Fs, ino: u32) -> Result<Ext2Inode, Errno> {
+    let inode = fs.read_inode(ino).map_err(errno)?;
+    if inode.is_dir() {
+        return Err(Errno(EISDIR));
+    }
+    if !inode.is_file() {
+        return Err(Errno(EINVAL));
+    }
+    Ok(inode)
+}
+
+fn refresh(node: &VNode, inode: &Ext2Inode) -> Result<(), Errno> {
+    node.size.store(inode.size(), Ordering::Release);
+    *node.times.lock() = attributes(node.ino, inode)?.times;
+    Ok(())
+}
+
 fn seconds(time: Timestamp) -> Result<u32, Errno> {
     if time.nsec >= 1_000_000_000 {
         return Err(Errno(EINVAL));
@@ -136,7 +167,18 @@ impl FileSystem for Ext2Adapter {
     }
 
     fn sync(&self) -> Result<(), Errno> {
-        let guard = read_mount(self.mount).map_err(errno)?;
+        let handles = {
+            let guard = sync_mount_guard(self.mount).map_err(errno)?;
+            guard
+                .as_ref()
+                .ok_or(Errno(EIO))?
+                .dirty_handles()
+                .map_err(errno)?
+        };
+        for handle in &handles {
+            crate::memory::file_map::sync_range(handle, 0, u64::MAX).map_err(errno)?;
+        }
+        let guard = sync_mount_guard(self.mount).map_err(errno)?;
         guard.as_ref().ok_or(Errno(EIO))?.sync().map_err(errno)
     }
 
@@ -376,5 +418,108 @@ impl FileSystem for Ext2Adapter {
             .ok_or(Errno(EIO))?
             .read_symlink_bytes(ext2::ino32(ino)?)
             .map_err(errno)
+    }
+
+    fn read(&self, node: &VNode, off: u64, buf: &mut [u8]) -> Result<usize, Errno> {
+        let guard = read_mount(self.mount).map_err(errno)?;
+        let fs = guard.as_ref().ok_or(Errno(EIO))?;
+        let handle = self.pin_node(fs, node)?;
+        let ino = handle.verify(fs).map_err(errno)?;
+        let inode = regular_inode(fs, ino)?;
+        let bytes = fs
+            .read_file_range_coherent(ino, &inode, off, buf.len())
+            .map_err(errno)?;
+        buf[..bytes.len()].copy_from_slice(&bytes);
+        refresh(node, &inode)?;
+        Ok(bytes.len())
+    }
+
+    fn write(&self, node: &VNode, at: WriteAt, buf: &[u8]) -> Result<usize, Errno> {
+        let ino = ext2::ino32(node.ino)?;
+        let mut guard = write_mount(self.mount)
+            .map_err(errno)?
+            .wait_for_inode(ino)
+            .map_err(errno)?;
+        let fs = guard.as_mut().ok_or(Errno(EIO))?;
+        let handle = self.pin_node(fs, node)?;
+        fs.ensure_writable().map_err(errno)?;
+        let inode = regular_inode(fs, handle.verify(fs).map_err(errno)?)?;
+        // Append uses the on-disk size under the same write guard as the write,
+        // including when another open VNode extended the file.
+        let offset = match at {
+            WriteAt::Offset(off) => off,
+            WriteAt::Append => inode.size(),
+        };
+        if !buf.is_empty()
+            && offset
+                .checked_add(buf.len() as u64)
+                .is_none_or(|end| end > fs.max_file_size())
+        {
+            return Err(Errno(EFBIG));
+        }
+        let result = fs.write_file_range(ino, offset, buf).map_err(errno);
+        if let Ok(inode) = fs.read_inode(ino) {
+            refresh(node, &inode)?;
+        }
+        result
+    }
+
+    fn resize(&self, node: &VNode, size: u64) -> Result<(), Errno> {
+        let ino = ext2::ino32(node.ino)?;
+        let mut guard = write_mount(self.mount)
+            .map_err(errno)?
+            .wait_for_inode(ino)
+            .map_err(errno)?;
+        let fs = guard.as_mut().ok_or(Errno(EIO))?;
+        let handle = self.pin_node(fs, node)?;
+        fs.ensure_writable().map_err(errno)?;
+        regular_inode(fs, handle.verify(fs).map_err(errno)?)?;
+        if size > fs.max_file_size() {
+            return Err(Errno(EFBIG));
+        }
+        // Credential decisions and any set-ID clearing belong to the caller.
+        let ticket = fs.begin_resize_file_as(ino, size, false).map_err(errno)?;
+        if let Some(ticket) = ticket {
+            guard = guard.finish_shrink(ticket).map_err(errno)?;
+        }
+        let fs = guard.as_ref().ok_or(Errno(EIO))?;
+        refresh(
+            node,
+            &fs.read_inode(handle.verify(fs).map_err(errno)?)
+                .map_err(errno)?,
+        )
+    }
+
+    fn fsync(&self, node: &VNode, _data_only: bool) -> Result<(), Errno> {
+        let guard = sync_mount_guard(self.mount).map_err(errno)?;
+        let fs = guard.as_ref().ok_or(Errno(EIO))?;
+        let handle = self.pin_node(fs, node)?;
+        if handle.object.map.has_dirty() {
+            // Keep ext2's existing fsync/fdatasync behavior: write dirty shared
+            // pages, then flush data and metadata through the pinned transfer.
+            drop(guard);
+            return crate::memory::file_map::sync_range(&handle, 0, u64::MAX).map_err(errno);
+        }
+        fs.check_shrink(handle.verify(fs).map_err(errno)?)
+            .map_err(errno)?;
+        fs.sync().map_err(errno)
+    }
+
+    fn writeback_pages(&self, node: &VNode, page: u64, bytes: &[u8]) -> Result<(), Errno> {
+        let offset = page.checked_mul(4096).ok_or(Errno(EFBIG))?;
+        let handle = {
+            let guard = read_mount(self.mount).map_err(errno)?;
+            let fs = guard.as_ref().ok_or(Errno(EIO))?;
+            self.pin_node(fs, node)?
+        };
+        let written = ext2::mapped_io::write_mapped_range(&handle, offset, bytes).map_err(errno)?;
+        if written != bytes.len() {
+            return Err(Errno(EIO));
+        }
+        Ok(())
+    }
+
+    fn xattr(&self, _ino: u64, _op: Xattr<'_>) -> Result<usize, Errno> {
+        Err(Errno(EOPNOTSUPP))
     }
 }

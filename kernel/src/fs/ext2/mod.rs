@@ -9,6 +9,7 @@ pub mod create_node;
 pub mod dir;
 pub mod errno;
 mod directory_io;
+mod data_ops;
 mod directory_extension;
 mod fifo_times;
 pub mod file;
@@ -598,23 +599,6 @@ impl Ext2Fs {
             .map_err(|_| "Failed to read file content")
     }
 
-    /// Read a range of file content from an inode
-    pub(crate) fn read_file_range(
-        &self,
-        inode: &Ext2Inode,
-        offset: u64,
-        length: usize,
-    ) -> Result<Vec<u8>, &'static str> {
-        read_file_range(
-            self.device.as_ref(),
-            inode,
-            &self.superblock,
-            offset,
-            length,
-        )
-        .map_err(|_| "Failed to read file range")
-    }
-
     /// External readers, including exec, use the resident inode cache while
     /// holding the same mount guard that protects the disk read.
     pub fn read_file_range_coherent(
@@ -862,22 +846,6 @@ impl Ext2Fs {
         self.live_inodes.durable_epoch()
     }
 
-    /// Bound addressing by the sector counter and LARGE_FILE feature.
-    pub fn max_file_size(&self) -> u64 {
-        let block_size = self.superblock.block_size() as u64;
-        let fanout = block_size / 4;
-        let addressable = 12 + fanout + fanout.pow(2) + fanout.pow(3);
-        // Reserve room for pointer blocks and an external ACL block.
-        let sector_limit = u32::MAX as u64 / (block_size / 512);
-        let pointer_blocks = 3 + 2 * fanout + fanout.pow(2);
-        let limit = addressable.min(sector_limit.saturating_sub(pointer_blocks + 1)) * block_size;
-        if self.superblock.s_rev_level == 0 || self.superblock.s_feature_ro_compat & 0x2 == 0 {
-            limit.min(i32::MAX as u64)
-        } else {
-            limit
-        }
-    }
-
     /// Publish the new size and queue suffix reclamation. The caller must
     /// complete the returned ShrinkTicket before reporting success.
     pub fn begin_resize_file_as(
@@ -921,44 +889,6 @@ impl Ext2Fs {
             object.map.repair(self, inode_num.into());
         }
         result
-    }
-
-    fn resize_file_disk(
-        &mut self,
-        inode_num: u32,
-        length: u64,
-        unprivileged: bool,
-    ) -> Result<Option<reclaim::Reclaim>, &'static str> {
-        self.check_shrink(inode_num)?;
-        let mut inode = self.read_inode(inode_num)?;
-        if !inode.is_file() || length > self.max_file_size() {
-            return Err("Invalid file size or type");
-        }
-        if unprivileged {
-            inode.i_mode &= !content_privilege(inode.i_mode);
-        }
-        if length < inode.size() {
-            // Publish EOF before modifying any content that used to be visible.
-            let mut smaller = inode;
-            smaller.i_size = length as u32;
-            smaller.i_dir_acl = (length >> 32) as u32;
-            smaller.update_timestamps(false, true, true);
-            self.write_inode(inode_num, &smaller)?;
-            self.live_inodes.publish_size(inode_num, length);
-        }
-        let shrinking = length < inode.size();
-        file::resize_file(self.device.as_ref(), &mut inode, &self.superblock, length)
-            .map_err(|_| "Failed to resize file")?;
-        self.write_inode(inode_num, &inode)?;
-        self.live_inodes.publish_size(inode_num, length);
-        if shrinking {
-            let progress = reclaim::Reclaim::shrink(
-                inode,
-                length.div_ceil(self.superblock.block_size() as u64),
-            );
-            return Ok(Some(progress));
-        }
-        Ok(None)
     }
 
     /// Relatime: update after modification/change or once a day. Reload under
@@ -2021,6 +1951,13 @@ pub fn write_mount(pin: live_inode::MountPin) -> Result<Ext2WriteGuard, &'static
     } else {
         root_fs_write()
     }?;
+    pin.verify(guard.as_ref().ok_or("ext2 mount unavailable")?)?;
+    Ok(guard)
+}
+
+/// Take ext2's synchronization guard without requiring a writable mount.
+pub(super) fn sync_mount_guard(pin: live_inode::MountPin) -> Result<Ext2WriteGuard, &'static str> {
+    let guard = fs_sync_guard(pin_is_home(pin)?)?;
     pin.verify(guard.as_ref().ok_or("ext2 mount unavailable")?)?;
     Ok(guard)
 }

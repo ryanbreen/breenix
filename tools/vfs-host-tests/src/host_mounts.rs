@@ -36,6 +36,12 @@ impl DerefMut for Guard {
     }
 }
 impl Guard {
+    pub fn finish_shrink(mut self, ticket: storage::ShrinkTicket) -> Result<Self, &'static str> {
+        self.as_mut()
+            .ok_or("Missing mount")?
+            .finish_host_shrink(ticket)?;
+        Ok(self)
+    }
     pub fn wait_for_inode(self, _ino: u32) -> Result<Self, &'static str> {
         Ok(self)
     }

@@ -334,3 +334,8 @@ impl Drop for DataFile {
         }
     }
 }
+
+/// Transfer a VFS writeback batch through the existing pinned mapped-I/O path.
+pub(crate) fn write_mapped_range(handle: &FileHandle, offset: u64, bytes: &[u8]) -> Result<usize, &'static str> {
+    DataFile::open(handle)?.write(offset, bytes)
+}
