@@ -17,6 +17,8 @@ static DIAGNOSTICS: [crate::log_notice::Record; 4] =
     [const { crate::log_notice::Record::new() }; 4];
 
 fn report_killed(state: &str, posted_at: u64) {
+    super::wait_evidence::report();
+    super::report_wait_hardware();
     let age_ns = super::now().saturating_sub(posted_at);
     let worker_tid = super::WORKER_TID.load(Ordering::Acquire);
     let snapshot = crate::task::scheduler::try_thread_wait(worker_tid);
