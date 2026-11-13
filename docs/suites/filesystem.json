@@ -18,7 +18,24 @@
     {
       "id": "format",
       "title": "Formatter images pass the independent checker and violating images are refused",
-      "cases": []
+      "cases": [
+        {
+          "id": "mkfs-empty-clean",
+          "title": "Empty formatted images pass the full checker"
+        },
+        {
+          "id": "mkfs-populate-clean",
+          "title": "Populated formatted images pass the full checker"
+        },
+        {
+          "id": "reproducible-image",
+          "title": "Fixed inputs produce byte-identical images"
+        },
+        {
+          "id": "violations-refused",
+          "title": "Images violating format invariants are refused"
+        }
+      ]
     },
     {
       "id": "read",

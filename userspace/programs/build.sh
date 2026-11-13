@@ -448,6 +448,7 @@ STD_BINARIES=(
     "suite-libc"
     "suite-utilities"
     "suite-sdk"
+    "suite-filesystem"
     "suite-breengel"
     "kiosk_test"
     "uitest-app_test"
