@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+from unittest.mock import patch
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -10,6 +11,59 @@ PAIR = ROOT / 'scripts/collab-pair.py'
 
 
 class CollabPairTest(unittest.TestCase):
+    def test_counted_forward_binds_loopback(self):
+        from qemu_collab_host_test import CollabHostTest
+        fixture = CollabHostTest()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        with patch.dict(os.environ, BREENIX_COLLAB_HOST_BIND='127.0.0.1'):
+            result = fixture.run_launcher('--mode', 'program', '--program',
+                                          '/usr/libexec/breenix/collab-lan-host', '--collab-host')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        argv = json.loads((fixture.root / 'args.json').read_text())
+        self.assertEqual(argv[argv.index('-netdev') + 1],
+                         'user,id=net0,hostfwd=tcp:127.0.0.1:7890-:7890')
+
+    def test_pair_holds_lease_after_one_child_releases(self):
+        import importlib.util
+        import socket
+        import threading
+        spec = importlib.util.spec_from_file_location('collab_pair', PAIR)
+        pair = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pair)
+        requests = []
+        with tempfile.TemporaryDirectory(dir='/tmp') as tmp, socket.socket(socket.AF_UNIX) as upstream:
+            address = str(Path(tmp) / 'upstream.sock')
+            upstream.bind(address)
+            upstream.listen()
+
+            def supervise():
+                for _ in range(2):
+                    client, _ = upstream.accept()
+                    with client, client.makefile('rb') as stream:
+                        requests.append(json.loads(stream.readline()))
+                        client.sendall(b'{}\n')
+
+            worker = threading.Thread(target=supervise, daemon=True)
+            worker.start()
+            with pair.PairSlots(address) as session:
+                def request(operation, **values):
+                    with socket.socket(socket.AF_UNIX) as client:
+                        client.settimeout(3)
+                        client.connect(session)
+                        client.sendall(json.dumps(dict(operation=operation, **values)).encode() + b'\n')
+                        with client.makefile('rb') as stream:
+                            self.assertEqual(json.loads(stream.readline()), {})
+
+                for role in ('host', 'join'):
+                    request('acquire', resource='mac-boot')
+                    request('serial', serial=role)
+                    request('release', resource='mac-boot')
+            worker.join(timeout=3)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(requests, [{'operation': 'serial', 'serial': role}
+                                        for role in ('host', 'join')])
+
     def test_pair_verdict_and_lock(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -18,8 +72,19 @@ class CollabPairTest(unittest.TestCase):
 import json, os, pathlib, sys, time
 args = sys.argv[1:]
 role = 'host' if '--collab-host' in args else 'join'
+assert args[args.index('--mode') + 1] == 'program'
+assert args[args.index('--program') + 1] == '/usr/libexec/breenix/collab-lan-' + role
+assert '--no-display' in args and '--no-build' in args
+assert os.environ['BREENIX_COLLAB_HOST_BIND'] == '127.0.0.1'
+if role == 'host': assert args[args.index('--collab-host') + 1] == '7890'
 serial = pathlib.Path(args[args.index('--serial-log') + 1])
 serial.parent.mkdir(parents=True, exist_ok=True)
+ready = pathlib.Path(os.environ['TEST_DIR'])
+(ready / (role + '.ready')).touch()
+deadline = time.monotonic() + 3
+while not (ready / (('join' if role == 'host' else 'host') + '.ready')).exists():
+    assert time.monotonic() < deadline, 'guests were serialized'
+    time.sleep(0.01)
 locks = pathlib.Path(os.environ['TEST_DIR']) / 'children'
 with locks.open('a') as f: f.write(role + ' ' + os.environ['BREENIX_QEMU_LOCK'] + '\\n')
 if os.environ['SCENARIO'] == 'missing' and role == 'join': sys.exit(1)
