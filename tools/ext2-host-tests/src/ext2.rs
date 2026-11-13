@@ -126,7 +126,7 @@ impl Ext2Fs {
     }
 }
 #[cfg(test)]
-mod reclaim_checks {
+pub(crate) mod reclaim_checks {
     use super::*;
     use crate::block;
     use std::sync::{Arc, Mutex};
@@ -563,7 +563,7 @@ mod reclaim_checks {
     }
     /// A directory (inode 2, block 21) with room, on a disk whose writes can
     /// be made to fail after they land.
-    fn directory_fixture() -> (Ext2Fs, Arc<Mutex<Vec<u8>>>, Arc<Mutex<Option<u64>>>) {
+    pub(crate) fn directory_fixture() -> (Ext2Fs, Arc<Mutex<Vec<u8>>>, Arc<Mutex<Option<u64>>>) {
         let data = Arc::new(Mutex::new(vec![0; 512 * 4096]));
         let fail = Arc::new(Mutex::new(None));
         let mut sb = Ext2Superblock::from_bytes(&[0; 1024]).unwrap();
