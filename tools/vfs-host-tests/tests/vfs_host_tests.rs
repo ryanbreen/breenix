@@ -24,6 +24,205 @@ fn regular(fs: &dyn FileSystem, dir: u64, name: &[u8]) -> u64 {
     .unwrap()
 }
 
+fn removal(fs: &dyn FileSystem, dir: u64, expected: u64, directory: bool) -> Remove {
+    Remove {
+        directory,
+        expected,
+        owner: fs.getattr(expected).unwrap().attrs.uid,
+        parent: fs.getattr(dir).unwrap().attrs,
+    }
+}
+
+#[test]
+fn chown_clears_setid_through_setattr() {
+    use crate::vfs::attributes::{attribute_change, AttributeChange};
+    use crate::permissions::Credentials;
+    let disk = Fixture::new();
+    let adapter = Ext2Adapter::new(disk.pin());
+    let fs: &dyn FileSystem = &adapter;
+    let root = fs.root().unwrap();
+    let file = regular(fs, root, b"setid");
+    fs.setattr(file, SetAttr { mode: Some(0o6755), ..SetAttr::default() }).unwrap();
+    let before = fs.getattr(file).unwrap();
+    let request = attribute_change(before.attrs, AttributeChange::Owner(90000, 90001),
+        &Credentials::kernel()).unwrap();
+    fs.setattr(file, request).unwrap();
+    let after = fs.getattr(file).unwrap();
+    assert_eq!((after.attrs.uid, after.attrs.gid), (90000, 90001));
+    assert_eq!(after.attrs.mode, 0o100755);
+    assert_eq!(after.times.ctime.sec, 1);
+
+    let mut owner = Credentials::kernel();
+    owner.euid = 90000;
+    owner.egid = 90001;
+    assert_eq!(attribute_change(after.attrs, AttributeChange::Owner(42, u32::MAX), &owner), Err(Errno(EPERM)));
+    assert_eq!(attribute_change(after.attrs, AttributeChange::Owner(u32::MAX, 42), &owner), Err(Errno(EPERM)));
+    let mode = attribute_change(after.attrs, AttributeChange::Mode(0o6755), &owner).unwrap();
+    fs.setattr(file, mode).unwrap();
+    // Changing ownership invalidates a previously checked request. It must
+    // refuse rather than apply permission bits based on the previous owner.
+    assert_eq!(fs.setattr(file, request), Err(Errno(EAGAIN)));
+    let fresh = fs.getattr(file).unwrap();
+    let keep = attribute_change(fresh.attrs, AttributeChange::Owner(u32::MAX, u32::MAX), &owner).unwrap();
+    fs.setattr(file, keep).unwrap();
+    assert_eq!(fs.getattr(file).unwrap().attrs.mode, 0o100755);
+
+    let dir = fs.create(root, b"inherit", NewNode::Directory { attrs: attrs(0o2775) }).unwrap();
+    let change = attribute_change(fs.getattr(dir).unwrap().attrs,
+        AttributeChange::Owner(90000, 90001), &Credentials::kernel()).unwrap();
+    fs.setattr(dir, change).unwrap();
+    assert_eq!(fs.getattr(dir).unwrap().attrs.mode, 0o042775);
+    owner.egid = 42;
+    let mode = attribute_change(fs.getattr(dir).unwrap().attrs, AttributeChange::Mode(0o2775), &owner).unwrap();
+    fs.setattr(dir, mode).unwrap();
+    assert_eq!(fs.getattr(dir).unwrap().attrs.mode, 0o040775);
+}
+
+#[test]
+fn failed_create_open_leaves_no_name_and_exclusive_retry_succeeds() {
+    let disk = Fixture::new();
+    let adapter = Ext2Adapter::new(disk.pin());
+    let fs: &dyn FileSystem = &adapter;
+    let root = fs.root().unwrap();
+    let before = fs.statfs().unwrap();
+    let policy = |parent: crate::vfs::NodeAttrs| {
+        assert_eq!(parent.ino, root);
+        Ok(attrs(0)) // The creating open works despite its restrictive mode.
+    };
+    // The caller receives the prepared VNode before publication and may still
+    // fail allocation of its descriptor. No name or inode allocation survives.
+    let mut calls = 0;
+    assert_eq!(fs.create_open(root, b"exclusive", NodeKind::Regular, &policy, &mut |node| {
+        calls += 1;
+        assert_eq!(node.mount, disk.pin().mount_id);
+        assert_eq!(node.size.load(core::sync::atomic::Ordering::Acquire), 0);
+        Err(Errno(ENOMEM))
+    }), Err(Errno(ENOMEM)));
+    assert_eq!(calls, 1);
+    assert_eq!(fs.lookup(root, b"exclusive"), Err(Errno(ENOENT)));
+    assert_eq!(fs.statfs().unwrap(), before);
+
+    // A publication I/O failure also leaves the exclusive retry possible.
+    disk.fail_next_write();
+    assert_eq!(fs.create_open(root, b"exclusive", NodeKind::Regular, &policy, &mut |_| Ok(())), Err(Errno(EIO)));
+    assert_eq!(fs.lookup(root, b"exclusive"), Err(Errno(ENOENT)));
+    let mut opened = None;
+    fs.create_open(root, b"exclusive", NodeKind::Regular, &policy, &mut |node| {
+        opened = Some(node);
+        Ok(())
+    }).unwrap();
+    let node = opened.unwrap();
+    assert_eq!(fs.lookup(root, b"exclusive"), Ok(node.ino));
+    assert_eq!(fs.getattr(node.ino).unwrap().attrs.mode & 0o7777, 0);
+    fs.write(&node, WriteReq { at: WriteAt::Offset(0), limit: u64::MAX, clear_setid: false }, b"prepared").unwrap();
+    let mut bytes = [0; 8];
+    assert_eq!(fs.read(&node, 0, &mut bytes), Ok(8));
+    assert_eq!(&bytes, b"prepared");
+    assert_eq!(fs.create_open(root, b"exclusive", NodeKind::Regular, &policy, &mut |_| panic!("existing name must not prepare")), Err(Errno(EEXIST)));
+}
+
+#[test]
+fn socket_create_open_prepares_before_publication_and_pins_unlinked_inode() {
+    let disk = Fixture::new();
+    let fs = Ext2Adapter::new(disk.pin());
+    let root = fs.root().unwrap();
+    let before = fs.statfs().unwrap();
+    let policy = |_: crate::vfs::NodeAttrs| Ok(attrs(0o600));
+    assert_eq!(fs.create_open(root, b"socket", NodeKind::Socket, &policy,
+        &mut |_| Err(Errno(ENOMEM))), Err(Errno(ENOMEM)));
+    assert_eq!(fs.lookup(root, b"socket"), Err(Errno(ENOENT)));
+    assert_eq!(fs.statfs().unwrap(), before);
+    let mut held = None;
+    fs.create_open(root, b"socket", NodeKind::Socket, &policy, &mut |node| {
+        held = Some(node);
+        Ok(())
+    }).unwrap();
+    let held = held.unwrap();
+    assert_eq!(fs.lookup(root, b"socket"), Ok(held.ino));
+    assert_eq!(fs.getattr(held.ino).unwrap().kind, NodeKind::Socket);
+    fs.remove(root, b"socket", removal(&fs, root, held.ino, false)).unwrap();
+    let mut replacement = None;
+    fs.create_open(root, b"socket", NodeKind::Socket, &policy, &mut |node| {
+        replacement = Some(node);
+        Ok(())
+    }).unwrap();
+    let replacement = replacement.unwrap();
+    assert_ne!((held.ino, held.incarnation), (replacement.ino, replacement.incarnation));
+    assert_eq!(fs.getattr(held.ino).unwrap().nlink, 0);
+}
+
+#[test]
+fn timestamp_policy_checks_owner_and_write_access() {
+    use crate::vfs::attributes::{timestamp_change, TimesAccess};
+    use crate::permissions::Credentials;
+    let disk = Fixture::new();
+    let fs = Ext2Adapter::new(disk.pin());
+    let ino = regular(&fs, fs.root().unwrap(), b"times-policy");
+    let mut writer = Credentials::kernel();
+    writer.euid = 70001;
+    writer.egid = 80000;
+    fs.setattr(ino, SetAttr { mode: Some(0o660), ..SetAttr::default() }).unwrap();
+    let before = fs.getattr(ino).unwrap();
+    let time = Some(Timestamp { sec: 123, nsec: 456 });
+    assert_eq!(timestamp_change(before.attrs, time, None, &writer, TimesAccess::Owner), Err(Errno(EPERM)));
+    let request = timestamp_change(before.attrs, time, None, &writer, TimesAccess::OwnerOrWrite).unwrap();
+    fs.setattr(ino, request).unwrap();
+    let after = fs.getattr(ino).unwrap();
+    assert_eq!(after.times.atime, Timestamp { sec: 123, nsec: 0 });
+    assert_eq!(after.times.mtime, before.times.mtime);
+    writer.egid = 80001;
+    assert_eq!(timestamp_change(after.attrs, time, time, &writer, TimesAccess::OwnerOrWrite), Err(Errno(EACCES)));
+    writer.euid = 70000;
+    assert!(timestamp_change(after.attrs, time, time, &writer, TimesAccess::Owner).is_ok());
+    assert_eq!(fs.getattr(ino).unwrap(), after);
+}
+
+#[test]
+fn directory_links_and_descendant_renames_are_refused() {
+    let disk = Fixture::new();
+    let adapter = Ext2Adapter::new(disk.pin());
+    let fs: &dyn FileSystem = &adapter;
+    let root = fs.root().unwrap();
+    let parent = fs.create(root, b"parent", NewNode::Directory { attrs: attrs(0o755) }).unwrap();
+    let child = fs.create(parent, b"child", NewNode::Directory { attrs: attrs(0o755) }).unwrap();
+    let before = fs.getattr(parent).unwrap();
+    assert_eq!(fs.link(parent, root, b"alias", &|_, _| Ok(())), Err(Errno(EPERM)));
+    assert_eq!(fs.lookup(root, b"alias"), Err(Errno(ENOENT)));
+    for destination in [parent, child] {
+        assert_eq!(fs.rename(root, b"parent", destination, b"cycle", RenameMode::Replace, &|_, _, _, _| Ok(())), Err(Errno(EINVAL)));
+        assert_eq!(fs.lookup(root, b"parent"), Ok(parent));
+        assert_eq!(fs.lookup(parent, b"child"), Ok(child));
+        assert_eq!(fs.lookup(destination, b"cycle"), Err(Errno(ENOENT)));
+        assert_eq!(fs.getattr(parent).unwrap(), before);
+    }
+    let file = regular(fs, parent, b"file");
+    // Policy sees current attributes and can refuse before a name changes.
+    fs.setattr(parent, SetAttr { mode: Some(0o1777), ..SetAttr::default() }).unwrap();
+    fs.setattr(file, SetAttr { uid: Some(90001), ..SetAttr::default() }).unwrap();
+    assert_eq!(fs.link(file, parent, b"denied", &|dir, source| {
+        assert_eq!(dir.attrs.mode & 0o7777, 0o1777);
+        assert_eq!(source.attrs.uid, 90001);
+        Err(Errno(EPERM))
+    }), Err(Errno(EPERM)));
+    assert_eq!(fs.lookup(parent, b"denied"), Err(Errno(ENOENT)));
+    assert_eq!(fs.getattr(file).unwrap().nlink, 1);
+    let victim = regular(fs, root, b"victim");
+    assert_eq!(fs.rename(parent, b"file", root, b"victim", RenameMode::Replace,
+        &|from, to, source, dest| {
+            assert_eq!(from.attrs.mode & 0o7777, 0o1777);
+            assert_eq!(to.ino, root);
+            assert_eq!(source.attrs.uid, 90001);
+            assert_eq!(dest.unwrap().ino, victim);
+            Err(Errno(EPERM))
+        }), Err(Errno(EPERM)));
+    assert_eq!(fs.lookup(parent, b"file"), Ok(file));
+    assert_eq!(fs.lookup(root, b"victim"), Ok(victim));
+    fs.link(file, root, b"alias", &|_, _| Ok(())).unwrap();
+    fs.rename(parent, b"child", root, b"moved", RenameMode::Replace, &|_, _, _, _| Ok(())).unwrap();
+    assert_eq!(fs.lookup(root, b"alias"), Ok(file));
+    assert_eq!(fs.lookup(root, b"moved"), Ok(child));
+}
+
 #[test]
 fn rename_noreplace_refuses_existing() {
     let disk = Fixture::new();
@@ -33,7 +232,7 @@ fn rename_noreplace_refuses_existing() {
     let source = regular(fs, root, b"source");
     let target = regular(fs, root, b"target");
     assert_eq!(
-        fs.rename(root, b"source", root, b"target", RenameMode::NoReplace),
+        fs.rename(root, b"source", root, b"target", RenameMode::NoReplace, &|_, _, _, _| Ok(())),
         Err(Errno(EEXIST))
     );
     assert_eq!(fs.lookup(root, b"source"), Ok(source));
@@ -41,18 +240,18 @@ fn rename_noreplace_refuses_existing() {
     assert_eq!(fs.getattr(source).unwrap().nlink, 1);
     assert_eq!(fs.getattr(target).unwrap().nlink, 1);
     assert_eq!(
-        fs.rename(root, b"source", root, b"source", RenameMode::NoReplace),
+        fs.rename(root, b"source", root, b"source", RenameMode::NoReplace, &|_, _, _, _| Ok(())),
         Err(Errno(EEXIST))
     );
     assert_eq!(
-        fs.rename(root, b"source", root, b"target", RenameMode::Exchange),
+        fs.rename(root, b"source", root, b"target", RenameMode::Exchange, &|_, _, _, _| Ok(())),
         Err(Errno(EINVAL))
     );
-    fs.rename(root, b"source", root, b"fresh", RenameMode::NoReplace)
+    fs.rename(root, b"source", root, b"fresh", RenameMode::NoReplace, &|_, _, _, _| Ok(()))
         .unwrap();
     assert_eq!(fs.lookup(root, b"source"), Err(Errno(ENOENT)));
     assert_eq!(fs.lookup(root, b"fresh"), Ok(source));
-    fs.rename(root, b"fresh", root, b"target", RenameMode::Replace)
+    fs.rename(root, b"fresh", root, b"target", RenameMode::Replace, &|_, _, _, _| Ok(()))
         .unwrap();
     assert_eq!(fs.lookup(root, b"fresh"), Err(Errno(ENOENT)));
     assert_eq!(fs.lookup(root, b"target"), Ok(source));
@@ -198,22 +397,22 @@ fn names_link_counts_and_typed_removal() {
         .unwrap();
     let file = regular(fs, dir, b"file");
     assert_eq!(fs.getattr(root).unwrap().nlink, 3);
-    assert_eq!(fs.remove(root, b"work", Remove::NonDir), Err(Errno(EISDIR)));
-    assert_eq!(fs.remove(root, b"work", Remove::Dir), Err(Errno(ENOTEMPTY)));
-    assert_eq!(fs.remove(dir, b"file", Remove::Dir), Err(Errno(ENOTDIR)));
+    assert_eq!(fs.remove(root, b"work", removal(fs, root, dir, false)), Err(Errno(EISDIR)));
+    assert_eq!(fs.remove(root, b"work", removal(fs, root, dir, true)), Err(Errno(ENOTEMPTY)));
+    assert_eq!(fs.remove(dir, b"file", removal(fs, dir, file, true)), Err(Errno(ENOTDIR)));
     assert_eq!(
-        fs.remove(file, b"child", Remove::NonDir),
+        fs.remove(file, b"child", removal(fs, file, file, false)),
         Err(Errno(ENOTDIR))
     );
-    fs.link(file, root, b"alias").unwrap();
+    fs.link(file, root, b"alias", &|_, _| Ok(())).unwrap();
     assert_eq!(fs.getattr(file).unwrap().nlink, 2);
-    fs.remove(dir, b"file", Remove::NonDir).unwrap();
+    fs.remove(dir, b"file", removal(fs, dir, file, false)).unwrap();
     assert_eq!(fs.getattr(file).unwrap().nlink, 1);
     assert_eq!(fs.lookup(root, b"alias"), Ok(file));
-    fs.remove(root, b"work", Remove::Dir).unwrap();
+    fs.remove(root, b"work", removal(fs, root, dir, true)).unwrap();
     assert_eq!(fs.getattr(root).unwrap().nlink, 2);
     assert_eq!(fs.lookup(root, b"work"), Err(Errno(ENOENT)));
-    fs.remove(root, b"alias", Remove::NonDir).unwrap();
+    fs.remove(root, b"alias", removal(fs, root, file, false)).unwrap();
     assert_eq!(fs.lookup(root, b"alias"), Err(Errno(ENOENT)));
 }
 
@@ -225,11 +424,15 @@ fn mount_inode_attributes_and_open() {
     assert_eq!(fs.kind(), Ok("ext2"));
     assert_eq!(fs.read_only(), Ok(false));
     assert!(fs.max_file_size().unwrap() > 0);
+    // The image reserve is not enforced by the ext2 allocator.
+    crate::host_mounts::write_mount(disk.pin()).unwrap().as_mut().unwrap()
+        .superblock.s_r_blocks_count = 9;
     let stat = fs.statfs().unwrap();
     assert_eq!(
         (stat.block_size, stat.blocks, stat.free_blocks),
         (4096, 512, 490)
     );
+    assert_eq!(stat.available_blocks, stat.free_blocks);
     let root = fs.root().unwrap();
     let ino = regular(fs, root, b"file");
     fs.setattr(
@@ -240,6 +443,7 @@ fn mount_inode_attributes_and_open() {
             gid: Some(100000),
             atime: Some(Timestamp { sec: 123, nsec: 0 }),
             mtime: Some(Timestamp { sec: 456, nsec: 0 }),
+            ..SetAttr::default()
         },
     )
     .unwrap();
@@ -605,8 +809,8 @@ fn getdents_cookie_survives_concurrent_unlink() {
     );
     let returned = seen[2].name.clone();
     assert_ne!(returned, b"pending");
-    fs.remove(generation, &returned, Remove::NonDir).unwrap();
-    fs.remove(generation, b"pending", Remove::NonDir).unwrap();
+    fs.remove(generation, &returned, removal(fs.as_ref(), generation, seen[2].ino, false)).unwrap();
+    fs.remove(generation, b"pending", removal(fs.as_ref(), generation, expected[b"pending".as_slice()].0, false)).unwrap();
     expected.remove(b"pending".as_slice());
     // Larger than either freed slot, so ext2 inserts it beyond the saved cookie.
     let created = b"created-with-a-long-name-that-does-not-fit-unlinked-slots";
@@ -887,5 +1091,45 @@ fn batched_dirents_supply_resumable_cookies() {
         let mut resumed = Vec::new();
         open.dirents(*cookie, &mut |entry, next| { resumed.push((entry, next)); Ok(true) }).unwrap();
         assert_eq!(resumed, batch[index + 1..]);
+    }
+}
+
+#[test]
+fn removal_rechecks_identity_owner_and_parent_policy() {
+    let disk = Fixture::new();
+    let adapter = Ext2Adapter::new(disk.pin());
+    let fs: &dyn FileSystem = &adapter;
+    let root = fs.root().unwrap();
+    for directory in [false, true] {
+        let victim = fs.create(root, b"victim", if directory {
+            NewNode::Directory { attrs: attrs(0o755) }
+        } else {
+            NewNode::Regular { attrs: attrs(0o644) }
+        }).unwrap();
+        let parent = fs.getattr(root).unwrap().attrs;
+        let owner = fs.getattr(victim).unwrap().attrs.uid;
+        let request = Remove { directory, expected: victim, owner, parent };
+        fs.rename(root, b"victim", root, b"moved", RenameMode::Replace, &|_, _, _, _| Ok(())).unwrap();
+        let replacement = fs.create(root, b"victim", if directory {
+            NewNode::Directory { attrs: attrs(0o755) }
+        } else {
+            NewNode::Regular { attrs: attrs(0o644) }
+        }).unwrap();
+        assert_eq!(fs.remove(root, b"victim", request), Err(Errno(EAGAIN)));
+        assert_eq!(fs.lookup(root, b"victim"), Ok(replacement));
+        assert_eq!(fs.getattr(replacement).unwrap().nlink, if directory { 2 } else { 1 });
+
+        fs.setattr(victim, SetAttr { uid: Some(owner + 1), ..SetAttr::default() }).unwrap();
+        assert_eq!(fs.remove(root, b"moved", request), Err(Errno(EAGAIN)));
+        assert_eq!(fs.lookup(root, b"moved"), Ok(victim));
+        let request = Remove { owner: owner + 1, ..request };
+        fs.setattr(root, SetAttr { mode: Some(0o1777), ..SetAttr::default() }).unwrap();
+        assert_eq!(fs.remove(root, b"moved", request), Err(Errno(EAGAIN)));
+        assert_eq!(fs.lookup(root, b"moved"), Ok(victim));
+        let request = Remove { parent: fs.getattr(root).unwrap().attrs, ..request };
+        fs.remove(root, b"moved", request).unwrap();
+        assert_eq!(fs.lookup(root, b"moved"), Err(Errno(ENOENT)));
+        fs.remove(root, b"victim", Remove { expected: replacement, owner, ..request }).unwrap();
+        fs.setattr(root, SetAttr { mode: Some(0o755), ..SetAttr::default() }).unwrap();
     }
 }

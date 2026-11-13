@@ -7,6 +7,7 @@ pub type InodeKey = (usize, u64);
 
 pub struct Entry<B> {
     pub id: usize,
+    pub device_id: u64,
     pub path: Vec<u8>,
     pub kind: &'static str,
     pub flags: MountFlags,
@@ -34,6 +35,7 @@ impl<B> Entry<B> {
     ) -> Self {
         Self {
             id,
+            device_id: id as u64,
             path,
             kind,
             flags,
@@ -87,6 +89,9 @@ impl<B> MountTable<B> {
     }
     pub fn get(&self, id: usize) -> Option<&Entry<B>> {
         self.entries.iter().find(|m| m.id == id)
+    }
+    pub fn device_id(&self, id: usize) -> Option<u64> {
+        self.get(id).map(|entry| entry.device_id)
     }
     pub fn get_mut(&mut self, id: usize) -> Option<&mut Entry<B>> {
         self.entries.iter_mut().find(|m| m.id == id)

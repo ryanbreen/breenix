@@ -58,17 +58,21 @@ pub fn mount(path: &str, kind: &'static str) -> usize {
     let mut table = MOUNT_TABLE.lock();
     let id = table.allocate_id().expect("mount id exhausted");
     let parent = None;
+    let mut entry = Entry::new(
+        id,
+        path.as_bytes().to_vec(),
+        kind,
+        MountFlags::default(),
+        Backend::Virtual,
+        0,
+        None,
+        parent,
+    );
+    if path == "/dev" && kind == "devfs" {
+        entry.device_id = 0xffff0002;
+    }
     table
-        .insert(Entry::new(
-            id,
-            path.as_bytes().to_vec(),
-            kind,
-            MountFlags::default(),
-            Backend::Virtual,
-            0,
-            None,
-            parent,
-        ))
+        .insert(entry)
         .expect("virtual mount registration");
     attach_virtual_parents(&mut table);
     id
@@ -204,6 +208,9 @@ pub fn flags_at(path: &[u8]) -> MountFlags {
 }
 pub fn find_mount(path: &str) -> Option<usize> {
     MOUNT_TABLE.lock().find_mount(path.as_bytes())
+}
+pub fn device_id(id: usize) -> Option<u64> {
+    MOUNT_TABLE.lock().device_id(id)
 }
 pub fn get_mount_info(id: usize) -> Option<(String, &'static str)> {
     MOUNT_TABLE

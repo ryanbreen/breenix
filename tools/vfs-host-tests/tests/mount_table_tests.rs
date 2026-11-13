@@ -59,7 +59,7 @@ fn cover_enters_by_inode_after_parent_rename() {
         Some((native, covered)),
         Some((native, ancestor)),
     );
-    fs.rename(root, b"old", root, b"new", RenameMode::Replace)
+    fs.rename(root, b"old", root, b"new", RenameMode::Replace, &|_, _, _, _| Ok(()))
         .unwrap();
     let moved = fs
         .lookup(fs.lookup(root, b"new").unwrap(), b"mount")
@@ -217,8 +217,37 @@ fn generation_root_hides_record_and_registers_shared_binds() {
             assert_eq!(entry.parent, Some((native, generation)));
             assert_eq!(table.enter((native, target)), Some((bind, target)));
         }
+        // Unlink sees the same translated inode as lookup, including the
+        // synthetic shared-store bind that has no raw directory entry.
+        let mut names = vec![b"root".as_slice(), b".breenix-shared"];
+        if shared_layout {
+            names.extend([b"etc".as_slice(), b"var", b"opt", b"srv", b"tmp", b"run"]);
+        }
+        for name in names {
+            let expected = fs.lookup(generation, name).unwrap();
+            let request = crate::vfs::Remove {
+                directory: false,
+                expected,
+                owner: fs.getattr(expected).unwrap().attrs.uid,
+                parent: fs.getattr(generation).unwrap().attrs,
+            };
+            assert_eq!(fs.remove(generation, name, request), Err(Errno(crate::syscall_errno::EISDIR)));
+            assert_eq!(fs.lookup(generation, name), Ok(expected));
+        }
         let (bind, target) = table.enter((native, fs.lookup(generation, b"root").unwrap())).unwrap();
         assert_ne!(bind, native);
         assert_eq!(fs.lookup(target, b"visible"), Ok(child));
     }
+}
+
+#[test]
+fn device_id_comes_from_the_entry() {
+    let mut table = MountTable::new();
+    let id = table.allocate_id().unwrap();
+    let mut entry = Entry::new(id, b"/dev".to_vec(), "devfs", MountFlags::default(), (), 0, None, None);
+    entry.device_id = 0xffff0002;
+    table.insert(entry).unwrap();
+    assert_eq!(table.device_id(id), Some(0xffff0002));
+    assert_eq!(table.find_mount(b"/dev/mqueue").and_then(|id| table.device_id(id)), Some(0xffff0002));
+    assert_eq!(table.device_id(id + 1), None);
 }

@@ -111,6 +111,7 @@ pub mod fs {
 pub struct Node {
     pub handle: fs::ext2::live_inode::FileHandle,
     pub mode: u32,
+    pub i_links_count: u16,
 }
 impl Node { pub fn attrs(&self) -> &Self { self } }
 pub struct HostFs {
@@ -132,6 +133,7 @@ impl HostFs {
             return Ok(Node {
                 handle: make_handle(0),
                 mode: 0o40777,
+                i_links_count: 2,
             });
         }
         self.paths
@@ -177,6 +179,7 @@ impl HostFs {
             Node {
                 handle: make_handle(ino),
                 mode: mode as u32,
+                i_links_count: 1,
             },
         );
         match prepare(self, ino) {
@@ -231,6 +234,7 @@ pub mod metadata {
 pub mod fifo_policy {
     pub fn check_parent_access(
         _inode: &super::Node,
+        _nlink: u64,
         _cred: &super::fs::permissions::Credentials,
         _extra: Option<()>,
     ) -> Result<u32, u64> {
@@ -271,7 +275,7 @@ pub mod fifo {
                 .next()
                 .unwrap()
                 .to_vec(),
-            Node { handle, mode },
+            Node { handle, mode, i_links_count: 1 },
         );
         crate::syscall::SyscallResult::Ok(0)
     }
