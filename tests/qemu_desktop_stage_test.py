@@ -34,7 +34,7 @@ class DesktopStageTest(unittest.TestCase):
                 site_file.chmod(0o600)
                 metal_root.stage_root(metal, 'suite', 'gui-apps', site, smb_config=config, case=case)
                 result = subprocess.run(['python3', str(ROOT / 'scripts/qemu-desktop-stage.py'), str(qemu),
-                                         'gui-apps', case or ''], capture_output=True,
+                                         'gui-apps', case or '', '--forward-port', '23456'], capture_output=True,
                                         env=dict(os.environ, BREENIX_VM_SITE=str(site_file)))
                 launcher_log = base.with_name('launcher.log')
                 launcher_log.write_bytes(result.stdout + result.stderr)
@@ -63,7 +63,13 @@ class DesktopStageTest(unittest.TestCase):
                         pattern = r'Type:\s+(\w+).*Mode:\s+(\d+).*User:\s+(\d+)\s+Group:\s+(\d+)'
                         self.assertEqual(re.search(pattern, qstat, re.S).groups(),
                                          re.search(pattern, mstat, re.S).groups())
-                        if not path.startswith('/mnt/'):
+                        if path == '/etc/breenix/smb-test-server':
+                            self.assertEqual(read(qemu, 'cat ' + path).stdout, b'10.0.2.2 23456\n')
+                        elif path == '/etc/shares':
+                            self.assertEqual(read(qemu, 'cat ' + path).stdout, b''.join(
+                                f'//10.0.2.2/{share} /mnt/guskit-{share} smb credfile=/etc/breenix/smb-test.cred,port=23456\n'.encode()
+                                for share in ('rw', 'ro')))
+                        elif not path.startswith('/mnt/'):
                             self.assertEqual(read(qemu, 'cat ' + path).stdout, read(metal, 'cat ' + path).stdout)
                 self.assertEqual(hashlib.sha256(base.read_bytes()).digest(), original)
 

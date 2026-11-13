@@ -362,8 +362,11 @@ if [[ "$SUITE" == *,* ]]; then
     "$ROOT/scripts/write-boot-target.sh" "$WRITABLE" "${SUITE%%,*}" \
         "$ROOT/userspace/programs/aarch64/suite-${SUITE%%,*}.elf" "$SUITE"
 fi
+source "$ROOT/scripts/qemu-smb-forward.sh"
+trap qemu_smb_forward_stop EXIT
 if [ "$MODE" = suite ] && [[ ",$SUITE," == *,gui-apps,* ]]; then
-    python3 "$ROOT/scripts/qemu-desktop-stage.py" "$WRITABLE" "$SUITE" "$ONLY"
+    qemu_smb_forward_start "$MODE" "$SUITE" "$ONLY"
+    python3 "$ROOT/scripts/qemu-desktop-stage.py" "$WRITABLE" "$SUITE" "$ONLY" --forward-port "$SMB_FORWARD_PORT"
 fi
 SMB_INSTANCE=
 if [ "$MODE" = suite ] && [[ ",$SUITE," == *,gui-apps,* ]]; then
@@ -383,6 +386,7 @@ fi
 EVIDENCE_PID=
 SMB_PID=
 cleanup_evidence() {
+    qemu_smb_forward_stop
     if [ -n "$SMB_PID" ]; then
         kill "$SMB_PID" 2>/dev/null || true
         wait "$SMB_PID" 2>/dev/null || true
