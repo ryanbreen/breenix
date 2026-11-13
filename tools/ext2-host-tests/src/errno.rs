@@ -116,3 +116,11 @@ fn every_ext2_error_literal_is_classified() {
     }
     assert!(missing.is_empty(), "unclassified ext2 errors: {missing:#?}");
 }
+
+#[test]
+fn mapped_allocation_errors_are_enomem() {
+    for message in ["Out of memory for file mapping", "Out of memory for writeback", "Out of memory for file page"] {
+        assert_eq!(errno(message), Errno(ENOMEM), "{message}");
+    }
+    assert_eq!(errno("Short mapped writeback"), Errno(EIO));
+}

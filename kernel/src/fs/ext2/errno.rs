@@ -110,6 +110,8 @@ pub(crate) fn classified(error: &str) -> Option<Errno> {
         | "No mountable 512-byte-sector ext2 block device"
         | "Stale ext2 inode mount identity"
         | "Stale ext2 mount identity"
+        | "Short mapped writeback"
+        | "Unknown mapped file bytes"
         | "Symlink has no data block"
         | "Unfinished ext2 shrink after I/O failure"
         | "Unknown ext2 mount"
@@ -157,6 +159,9 @@ pub(crate) fn classified(error: &str) -> Option<Errno> {
         | "No memory for sync sequences"
         | "No memory for writeback handles"
         | "No memory to publish mapped transfer"
+        | "Out of memory for file mapping"
+        | "Out of memory for file page"
+        | "Out of memory for writeback"
         | "Out of memory for sync handles" => ENOMEM,
         "No free blocks available"
         | "No free inodes available"

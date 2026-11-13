@@ -742,7 +742,7 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
                 ) {
                     Ok(n) => n,
                     Err(error) => {
-                        return SyscallResult::Err(crate::memory::file_map::mutation_errno(error))
+                        return SyscallResult::Err(ext2_errno(error).into())
                     }
                 };
                 (wo, bw)
@@ -782,7 +782,7 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
                 ) {
                     Ok(n) => n,
                     Err(error) => {
-                        return SyscallResult::Err(crate::memory::file_map::mutation_errno(error))
+                        return SyscallResult::Err(ext2_errno(error).into())
                     }
                 };
                 (wo, bw)
@@ -4225,7 +4225,7 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
         }
         match fs.write_file_range_as(ext2_ino, file_offset, &data, unprivileged) {
             Ok(written) => SyscallResult::Ok(written as u64),
-            Err(error) => SyscallResult::Err(crate::memory::file_map::mutation_errno(error)),
+            Err(error) => SyscallResult::Err(ext2_errno(error).into()),
         }
     };
 
