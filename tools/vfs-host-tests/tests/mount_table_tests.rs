@@ -151,7 +151,7 @@ fn bind_enters_target_directory() {
 }
 
 #[test]
-fn generation_root_hides_record_and_binds_etc_and_root() {
+fn generation_root_hides_record_and_registers_shared_binds() {
     use crate::{ext2::generation::Namespace, host_mounts::{read_mount, write_mount}};
     use crate::syscall_errno::ENOENT;
     for shared_layout in [false, true] {
@@ -200,9 +200,19 @@ fn generation_root_hides_record_and_binds_etc_and_root() {
             fs.register_root(guard.as_ref().unwrap(), MountFlags::default(), &mut table, || ()).unwrap();
         }
         let native = disk.pin().mount_id;
-        for (path, target) in [(b"/etc".as_slice(), etc), (b"/root", data)] {
-            let bind = table.find_mount(path).unwrap();
+        let mut binds = vec![(b"etc".as_slice(), etc), (b"root", data),
+            (b".breenix-shared", store)];
+        if shared_layout {
+            for (name, target) in [b"var".as_slice(), b"opt", b"srv", b"tmp", b"run"]
+                .into_iter().zip(mutable[1..].iter()) {
+                binds.push((name, u64::from(*target)));
+            }
+        }
+        for (name, target) in binds {
+            let path = [b"/".as_slice(), name].concat();
+            let bind = table.find_mount(&path).unwrap();
             let entry = table.get(bind).unwrap();
+            assert_eq!(entry.path, path);
             assert_eq!(entry.bind, Some((native, target)));
             assert_eq!(entry.parent, Some((native, generation)));
             assert_eq!(table.enter((native, target)), Some((bind, target)));
