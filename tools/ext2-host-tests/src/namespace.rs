@@ -40,6 +40,8 @@ fn link_rename_unlink_rmdir_on_fixture() {
     let dir_handle = fs.pin_inode(dir).unwrap();
     fs.rename(&root_handle, "alias", &dir_handle, "renamed", false)
         .unwrap();
+    drop(dir_handle);
+    drop(root_handle);
     assert_eq!(links(&fs, file), 2);
     assert_eq!(
         fs.lookup_in_dir(&fs.read_inode(root).unwrap(), "alias")
@@ -92,8 +94,6 @@ fn link_rename_unlink_rmdir_on_fixture() {
         entries(&fs, dir),
         vec![(b".".to_vec(), dir), (b"..".to_vec(), root)]
     );
-    drop(dir_handle);
-    drop(root_handle);
     fs.remove_directory_in(root, "work").unwrap();
     assert_eq!(links(&fs, root), 2);
     assert_eq!(links(&fs, dir), 0);
