@@ -1,179 +1,189 @@
-//! VFS Mount Point Management
-//!
-//! Manages filesystem mount points and the global mount table.
-
-use super::error::VfsError;
+//! Kernel mount registry. Backends and covers share one identity space.
+use super::{
+    mount_table::{Entry, InodeKey, MountTable},
+    FileSystem,
+};
 pub use crate::fs::attrs::MountFlags;
-use alloc::string::String;
-use alloc::vec::Vec;
+use crate::fs::errno::Errno;
+use alloc::{string::String, sync::Arc, vec::Vec};
 use spin::Mutex;
 
-/// A mounted filesystem
-#[derive(Debug)]
-pub struct MountPoint {
-    /// Path where this filesystem is mounted (e.g., "/", "/mnt/data")
-    pub mount_path: String,
-    /// Unique mount ID
-    pub mount_id: usize,
-    /// Filesystem type (e.g., "ext2", "tmpfs")
-    pub fs_type: &'static str,
-    /// The mount's options.
-    pub flags: MountFlags,
-    // Future: Will hold Arc<dyn Filesystem> for actual filesystem operations
+pub enum Backend {
+    Fs(Arc<dyn FileSystem>),
+    User(u64),
+    Virtual,
+}
+pub type MountPoint = Entry<Backend>;
+static MOUNT_TABLE: Mutex<MountTable<Backend>> = Mutex::new(MountTable::new());
+
+pub const HOME_FLAGS: MountFlags = MountFlags {
+    read_only: false,
+    nosuid: true,
+    nodev: true,
+    noexec: false,
+};
+
+pub fn allocate_id() -> Result<usize, Errno> {
+    MOUNT_TABLE.lock().allocate_id()
+}
+pub fn register(entry: MountPoint) -> Result<(), Errno> {
+    MOUNT_TABLE.lock().insert(entry)
 }
 
-/// `/home`'s options: users' files there confer no identity at exec and open
-/// no device (`docs/users/design.md`, section 2).
-pub const HOME_FLAGS: MountFlags = MountFlags { read_only: false, nosuid: true, nodev: true, noexec: false };
-
-/// Global mount table
-static MOUNT_TABLE: Mutex<Vec<MountPoint>> = Mutex::new(Vec::new());
-
-/// Next available mount ID
-static NEXT_MOUNT_ID: Mutex<usize> = Mutex::new(0);
-
-/// Register a mount point
-///
-/// # Arguments
-/// * `path` - The path to mount at (e.g., "/", "/mnt/data")
-/// * `fs_type` - The filesystem type (e.g., "ext2", "tmpfs")
-///
-/// # Returns
-/// The mount ID for this mount point
-#[allow(dead_code)] // Called from ext2::init_root_fs which may not be invoked in all configs
-pub fn mount(path: &str, fs_type: &'static str) -> usize {
-    mount_with(path, fs_type, MountFlags::default())
-}
-
-/// Register a mount point with options.
-pub fn mount_with(path: &str, fs_type: &'static str, flags: MountFlags) -> usize {
+/// Virtual filesystems retain their boot registration order and ids.
+pub fn mount(path: &str, kind: &'static str) -> usize {
     let mut table = MOUNT_TABLE.lock();
-    let mut next_id = NEXT_MOUNT_ID.lock();
-
-    let mount_id = *next_id;
-    *next_id += 1;
-
-    table.push(MountPoint {
-        mount_path: String::from(path),
-        mount_id,
-        fs_type,
-        flags,
-    });
-
-    mount_id
+    let id = table.allocate_id().expect("mount id exhausted");
+    let parent = table.find_mount(path.as_bytes()).map(|id| (id, 0));
+    table
+        .insert(Entry::new(
+            id,
+            path.as_bytes().to_vec(),
+            kind,
+            MountFlags::default(),
+            Backend::Virtual,
+            0,
+            None,
+            parent,
+        ))
+        .expect("virtual mount registration");
+    id
 }
 
-/// Mount `/home` with `HOME_FLAGS` over the root filesystem's own `/home`
-/// directory when no home filesystem was mounted there, so the options hold
-/// for `/home` whichever filesystem holds it.
 pub fn bind_home_if_unmounted() {
-    if !MOUNT_TABLE.lock().iter().any(|m| m.mount_path == "/home") {
-        mount_with("/home", "ext2", HOME_FLAGS);
+    if find_mount("/home").is_some_and(|id| get_mount_info(id).is_some_and(|m| m.0 == "/home")) {
+        return;
     }
-}
-
-/// The options of the mount a physical absolute pathname lies on: the mount
-/// whose path is the pathname or its longest leading run of whole components.
-pub fn flags_at(path: &[u8]) -> MountFlags {
-    let table = MOUNT_TABLE.lock();
-    let mut best: Option<&MountPoint> = None;
-    for mount in table.iter() {
-        let prefix = mount.mount_path.as_bytes();
-        let within = prefix == b"/"
-            || (path.starts_with(prefix) && matches!(path.get(prefix.len()), None | Some(b'/')));
-        if within && best.is_none_or(|b| prefix.len() > b.mount_path.len()) {
-            best = Some(mount);
-        }
-    }
-    best.map(|m| m.flags).unwrap_or_default()
-}
-
-/// Unmount a filesystem
-///
-/// # Arguments
-/// * `mount_id` - The mount ID to unmount
-///
-/// # Returns
-/// Ok(()) if successful, VfsError if the mount point doesn't exist
-#[allow(dead_code)] // Part of VFS mount API
-pub fn unmount(mount_id: usize) -> Result<(), VfsError> {
+    // Resolve and retain the root filesystem's directory before taking the
+    // table lock. No backend operation is called while that lock is held.
+    let Some((native, backend)) = ({
+        let table = MOUNT_TABLE.lock();
+        table
+            .find_mount(b"/")
+            .and_then(|id| table.get(id))
+            .and_then(|m| match &m.backend {
+                Backend::Fs(fs) => Some((m.id, fs.clone())),
+                _ => None,
+            })
+    }) else {
+        return;
+    };
+    let Ok(root) = backend.root() else { return };
+    let Ok(home) = backend.lookup(root, b"home") else {
+        return;
+    };
+    let Ok(pin) = backend.open(home) else { return };
     let mut table = MOUNT_TABLE.lock();
-
-    if let Some(pos) = table.iter().position(|m| m.mount_id == mount_id) {
-        table.remove(pos);
-        Ok(())
-    } else {
-        Err(VfsError::NotMounted)
+    if table.iter().any(|m| m.path == b"/home") {
+        return;
     }
+    let id = table.allocate_id().expect("mount id exhausted");
+    let mut entry = Entry::new(
+        id,
+        b"/home".to_vec(),
+        "ext2",
+        HOME_FLAGS,
+        Backend::Fs(backend),
+        home,
+        Some((native, home)),
+        Some((native, root)),
+    );
+    entry.custody = Some(pin);
+    table.insert(entry).expect("home bind registration");
+    table
+        .set_bind(id, (native, home))
+        .expect("home bind target");
 }
 
-/// Find the mount point for a given path
-///
-/// Finds the most specific (longest matching) mount point for a path.
-/// For example, if "/" and "/mnt/data" are mounted, the path "/mnt/data/file.txt"
-/// will match "/mnt/data".
-///
-/// # Arguments
-/// * `path` - The path to lookup
-///
-/// # Returns
-/// The mount ID if found, None otherwise
-#[allow(dead_code)] // Part of VFS mount API
+pub fn flags_at(path: &[u8]) -> MountFlags {
+    MOUNT_TABLE.lock().flags_at(path)
+}
 pub fn find_mount(path: &str) -> Option<usize> {
-    let table = MOUNT_TABLE.lock();
-
-    // Find the longest matching mount path
-    let mut best_match: Option<(usize, usize)> = None; // (mount_id, path_len)
-
-    for mount in table.iter() {
-        if path.starts_with(&mount.mount_path) {
-            let path_len = mount.mount_path.len();
-            if let Some((_, current_len)) = best_match {
-                if path_len > current_len {
-                    best_match = Some((mount.mount_id, path_len));
-                }
-            } else {
-                best_match = Some((mount.mount_id, path_len));
-            }
-        }
-    }
-
-    best_match.map(|(mount_id, _)| mount_id)
+    MOUNT_TABLE.lock().find_mount(path.as_bytes())
 }
-
-/// Get information about a mount point
-///
-/// # Arguments
-/// * `mount_id` - The mount ID to query
-///
-/// # Returns
-/// A tuple of (mount_path, fs_type) if found, None otherwise
-#[allow(dead_code)] // Part of VFS mount API
-pub fn get_mount_info(mount_id: usize) -> Option<(String, &'static str)> {
-    let table = MOUNT_TABLE.lock();
-    table
-        .iter()
-        .find(|m| m.mount_id == mount_id)
-        .map(|m| (m.mount_path.clone(), m.fs_type))
+pub fn get_mount_info(id: usize) -> Option<(String, &'static str)> {
+    MOUNT_TABLE
+        .lock()
+        .get(id)
+        .map(|m| (String::from_utf8_lossy(&m.path).into_owned(), m.kind))
 }
-
-/// List all mount points
-///
-/// # Returns
-/// A vector of (mount_id, mount_path, fs_type, options) tuples
-#[allow(dead_code)] // Part of VFS mount API
 pub fn list_mounts() -> Vec<(usize, String, &'static str, MountFlags)> {
-    let table = MOUNT_TABLE.lock();
-    table
+    MOUNT_TABLE
+        .lock()
         .iter()
-        .map(|m| (m.mount_id, m.mount_path.clone(), m.fs_type, m.flags))
+        .map(|m| {
+            (
+                m.id,
+                String::from_utf8_lossy(&m.path).into_owned(),
+                m.kind,
+                m.flags,
+            )
+        })
         .collect()
 }
+pub fn pin(id: usize) -> Result<Arc<()>, Errno> {
+    MOUNT_TABLE.lock().pin(id)
+}
+pub fn unmount(id: usize, force: bool) -> Result<(), Errno> {
+    let removed = MOUNT_TABLE.lock().remove(id, force)?;
+    drop(removed);
+    Ok(())
+}
+pub fn covering(key: InodeKey) -> Option<u64> {
+    let table = MOUNT_TABLE.lock();
+    let (id, _) = table.enter(key)?;
+    match table.get(id)?.backend {
+        Backend::User(id) => Some(id),
+        _ => None,
+    }
+}
+pub fn covered_directory(id: usize) -> Option<InodeKey> {
+    MOUNT_TABLE.lock().get(id)?.cover
+}
+pub fn covered_parent(id: usize) -> Option<InodeKey> {
+    MOUNT_TABLE.lock().get(id)?.parent
+}
+pub fn register_user(mut entry: MountPoint) -> Result<(), Errno> {
+    // The bridge id is the table id, assigned before publication.
+    entry.backend = Backend::User(entry.id as u64);
+    register(entry)
+}
 
-/// Final shutdown fence, also visible through /proc/mounts and statvfs.
+/// Preserve the existing proc text, including byte escaping for daemon mounts.
+pub fn mounts_text() -> Vec<u8> {
+    use alloc::format;
+    let table = MOUNT_TABLE.lock();
+    let mut out = Vec::new();
+    for m in table
+        .iter()
+        .filter(|m| !matches!(m.backend, Backend::User(_)))
+    {
+        out.extend_from_slice(
+            format!(
+                "none {} {} {} 0 0\n",
+                String::from_utf8_lossy(&m.path),
+                m.kind,
+                m.flags.options()
+            )
+            .as_bytes(),
+        );
+    }
+    for m in table
+        .iter()
+        .filter(|m| matches!(m.backend, Backend::User(_)))
+    {
+        out.extend_from_slice(&crate::fs::ufs::mounts_line::format_mount_line(
+            &m.source, &m.path,
+        ));
+    }
+    out
+}
 pub fn remount_read_only(id: usize) -> Result<(), &'static str> {
     let mut table = MOUNT_TABLE.lock();
-    let mount = table.iter_mut().find(|m| m.mount_id == id).ok_or("Mount disappeared")?;
-    mount.flags.read_only = true;
+    table
+        .get_mut(id)
+        .ok_or("Mount disappeared")?
+        .flags
+        .read_only = true;
     Ok(())
 }

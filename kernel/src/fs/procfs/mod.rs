@@ -1570,18 +1570,7 @@ fn generate_cowinfo() -> String {
 
 /// Generate /proc/mounts content (mounted filesystems)
 fn generate_mounts() -> Vec<u8> {
-    use alloc::format;
-
-    let mounts = crate::fs::vfs::mount::list_mounts();
-    let mut out = String::new();
-
-    for (_mount_id, mount_path, fs_type, flags) in &mounts {
-        out.push_str(&format!("none {} {} {} 0 0\n", mount_path, fs_type, flags.options()));
-    }
-
-    let mut out = out.into_bytes();
-    crate::fs::ufs::append_mounts(&mut out);
-    out
+    crate::fs::vfs::mount::mounts_text()
 }
 
 /// Generate /proc/pids content (newline-separated PID list)

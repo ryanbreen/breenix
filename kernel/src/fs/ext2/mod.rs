@@ -2030,7 +2030,7 @@ pub fn init_root_fs() -> Result<(), &'static str> {
     };
 
     // Register with VFS mount system
-    let mount_id = crate::fs::vfs::mount("/", "ext2");
+    let mount_id = crate::fs::vfs::mount::allocate_id().map_err(|_| "Mount id exhausted")?;
 
     // Create the ext2 filesystem instance
     #[cfg(target_arch = "aarch64")]
@@ -2104,6 +2104,13 @@ pub fn init_root_fs() -> Result<(), &'static str> {
     }
     let mut fs = fs;
     fs.activate("root")?;
+    let flags = crate::fs::attrs::MountFlags::default();
+    let backend = alloc::sync::Arc::new(adapter::Ext2Adapter::new(fs.mount_pin));
+    let root = u64::from(fs.namespace.root);
+    let (cover, parent) = (None, None);
+    crate::fs::vfs::mount::register(crate::fs::vfs::mount::MountPoint::new(
+        mount_id, b"/".to_vec(), "ext2", flags, crate::fs::vfs::mount::Backend::Fs(backend),
+        root, cover, parent)).map_err(|_| "Mount registration failed")?;
     ROOT_MOUNT_ID.store(fs.mount_id, Ordering::Release);
     *installed = Some(fs);
 
@@ -2342,7 +2349,7 @@ pub fn init_home_fs() -> Result<(), &'static str> {
     let device = device.ok_or("No home block device available")?;
 
     // Register with VFS mount system
-    let mount_id = crate::fs::vfs::mount::mount_with("/home", "ext2", crate::fs::vfs::mount::HOME_FLAGS);
+    let mount_id = crate::fs::vfs::mount::allocate_id().map_err(|_| "Mount id exhausted")?;
 
     // Create the ext2 filesystem instance
     let fs = Ext2Fs::new(device, mount_id)?;
@@ -2366,6 +2373,20 @@ pub fn init_home_fs() -> Result<(), &'static str> {
     }
     let mut fs = fs;
     fs.activate("home")?;
+    let flags = crate::fs::vfs::mount::HOME_FLAGS;
+    let backend = alloc::sync::Arc::new(adapter::Ext2Adapter::new(fs.mount_pin));
+    let root = u64::from(fs.namespace.root);
+    let (cover, parent) = {
+        let guard = root_fs_read()?;
+        let native = guard.as_ref().ok_or("Missing root mount")?;
+        let directory = native.read_inode(native.namespace.root)?;
+        let ino = native.lookup_in_dir(&directory, "home")?.ok_or("Missing home directory")?;
+        (Some((native.mount_id, u64::from(ino))),
+            Some((native.mount_id, u64::from(native.namespace.root))))
+    };
+    crate::fs::vfs::mount::register(crate::fs::vfs::mount::MountPoint::new(
+        mount_id, b"/home".to_vec(), "ext2", flags, crate::fs::vfs::mount::Backend::Fs(backend),
+        root, cover, parent)).map_err(|_| "Mount registration failed")?;
     HOME_MOUNT_ID.store(fs.mount_id, Ordering::Release);
     *installed = Some(fs);
 

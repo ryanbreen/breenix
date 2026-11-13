@@ -173,7 +173,7 @@ impl UfsFile {
         if !created && !cred.may(path::attrs(attr), access) {
             return Err(EACCES as u64);
         }
-        let mutation = lease.0.mutation_gate(attr.node)?;
+        let mutation = lease.mount.mutation_gate(attr.node)?;
         // Allocate the close record before acquiring the daemon handle.
         let pending = Arc::try_new(Pending {
             answer: Mutex::new(None),
@@ -494,7 +494,7 @@ impl Drop for UfsFile {
         let Some(mut release) = self.release.take() else {
             return;
         };
-        let mount = &self.lease.0;
+        let mount = &self.lease.mount;
         {
             let mut state = mount.state.lock();
             if state.dead || state.detached {
