@@ -122,6 +122,36 @@ fn failed_create_open_leaves_no_name_and_exclusive_retry_succeeds() {
 }
 
 #[test]
+fn socket_create_open_prepares_before_publication_and_pins_unlinked_inode() {
+    let disk = Fixture::new();
+    let fs = Ext2Adapter::new(disk.pin());
+    let root = fs.root().unwrap();
+    let before = fs.statfs().unwrap();
+    let policy = |_: crate::vfs::NodeAttrs| Ok(attrs(0o600));
+    assert_eq!(fs.create_open(root, b"socket", NodeKind::Socket, &policy,
+        &mut |_| Err(Errno(ENOMEM))), Err(Errno(ENOMEM)));
+    assert_eq!(fs.lookup(root, b"socket"), Err(Errno(ENOENT)));
+    assert_eq!(fs.statfs().unwrap(), before);
+    let mut held = None;
+    fs.create_open(root, b"socket", NodeKind::Socket, &policy, &mut |node| {
+        held = Some(node);
+        Ok(())
+    }).unwrap();
+    let held = held.unwrap();
+    assert_eq!(fs.lookup(root, b"socket"), Ok(held.ino));
+    assert_eq!(fs.getattr(held.ino).unwrap().kind, NodeKind::Socket);
+    fs.remove(root, b"socket", removal(&fs, root, held.ino, false)).unwrap();
+    let mut replacement = None;
+    fs.create_open(root, b"socket", NodeKind::Socket, &policy, &mut |node| {
+        replacement = Some(node);
+        Ok(())
+    }).unwrap();
+    let replacement = replacement.unwrap();
+    assert_ne!((held.ino, held.incarnation), (replacement.ino, replacement.incarnation));
+    assert_eq!(fs.getattr(held.ino).unwrap().nlink, 0);
+}
+
+#[test]
 fn timestamp_policy_checks_owner_and_write_access() {
     use crate::vfs::attributes::{timestamp_change, TimesAccess};
     use crate::permissions::Credentials;
