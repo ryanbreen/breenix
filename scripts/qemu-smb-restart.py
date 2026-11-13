@@ -15,19 +15,17 @@ ROOT = Path(__file__).resolve().parent
 GUI_REQUEST = runpy.run_path(str(ROOT / 'metal/smb-restart'))['GUI_REQUEST']
 LEASE_CHECK = '''import json
 from pathlib import Path
-boots = Path('/var/lib/breenix-metal/boots')
-if not boots.is_dir():
-    raise SystemExit('boot store unavailable')
-for claim in boots.glob('*/claim.json'):
-    if not (claim.parent / 'ended').exists():
-        try:
-            status = json.loads(claim.read_text())['status']
-        except (OSError, ValueError, KeyError):
-            print('unknown'); break
-        if status == 'claimed':
-            print('claimed'); break
-else:
+state = Path('/var/lib/breenix-metal')
+if not state.is_dir():
+    raise SystemExit('boot state unavailable')
+try:
+    json.loads((state / 'lease.json').read_text())
+except FileNotFoundError:
     print('clear')
+except (OSError, ValueError):
+    print('unknown')
+else:
+    print('claimed')
 '''
 
 

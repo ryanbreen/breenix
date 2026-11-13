@@ -117,3 +117,26 @@ stands, with the one guest boot still unspent. Guest fixes remain out of scope.
 
 Claim checks: `scripts/claim-lint.py --base HEAD` and commit-message lint exited
 0 for the check commit. For this host repair they also exited 0.
+
+## Authoritative lease preflight repair
+
+The `27a07a27` launch passed the imports and staging, then timed out before
+QEMU in the SMB lease preflight. Capture:
+`/tmp/a5-u5-baseline-27a07a27/launch.log`. Its helper scanned historical
+`boots/*/claim.json` records, and the remote command exceeded 30 seconds.
+Read-only inspection found 1,967 historical directories and an absent current
+lease. The current machine lease is `lease.json`, read by
+`scripts/metal/metal_lib.py:146` and documented in `docs/metal/README.md:357`.
+
+Check `5c6b30f2` adds one fixture test for the actual remote check body: absent
+lease, active lease, malformed lease. It failed before the repair (three
+subcases). Replace the historical scan with a direct authoritative lease read;
+absence permits the launch, a present lease refuses it, and unreadable or
+malformed state refuses it. The four SMB helper tests passed, including the
+existing active-lease rejection and stop/start/cleanup checks. The live
+read-only preflight then exited 0. The 30-second timeout and server safety
+condition are unchanged. No shared metal code, guest code or checks change.
+The one guest boot remains unspent. Reuse the same ARM artifacts.
+
+Claim checks: diff and commit-message lint exited 0 for `5c6b30f2`; diff and
+commit-message lint also exited 0 for the authoritative-lease repair.
