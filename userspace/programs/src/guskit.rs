@@ -563,6 +563,44 @@ mod tests {
     use super::*;
     use breengel::{Delivered, Modifiers};
 
+    fn canvas_area_app(scale: u32) -> App {
+        let options = Options::parse(std::iter::empty()).unwrap();
+        let image = Canvas::new(options.width, options.height);
+        App { damage: None, layout: Layout::new(scale), width:options.width,height:options.height,
+            clean:image.digest(),history:History::new(image),tool:0,size:0,hue:0,sat:0,val:0,
+            stroke:None,selected_color:None,recent:[[0;3];8],confirm:false,quit:false,file:None,
+            message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,
+            palette:None,canvas_surface:None,session:None,session_dialog:None }
+    }
+
+    #[test]
+    fn canvas_area_default_and_resize_cover_the_content_in_logical_pixels() {
+        let mut app = canvas_area_app(2);
+        assert_eq!(app.layout.canvas(app.width,app.height), Rect::new(0,352,1600,848),
+            "the default 800x424 image fills the initial 800x600 logical window");
+        app.resize_view(1800,1400);
+        assert_eq!((app.width,app.height),(900,524));
+        assert_eq!(app.layout.canvas(app.width,app.height),Rect::new(0,352,1800,1048));
+        app.history.push({ let mut c=app.canvas().clone(); c.pencil(&[(899,523)],[3,4,5]); c });
+        let digest=app.canvas().digest();
+        app.resize_view(1600,1200);
+        assert_eq!((app.width,app.height),(900,524),"a smaller view never crops the image");
+        assert_eq!(app.canvas().digest(),digest);
+    }
+
+    #[test]
+    fn canvas_area_pointer_paints_the_logical_pixel_at_scale_two() {
+        let mut app=canvas_area_app(2);
+        let mut menu=menu();
+        for pressed in [true,false] {
+            handle(&mut app,&mut menu,&Delivered {serial:1,time_ns:1,clicks:1,
+                event:Event::MouseButton {button:breengel::buttons::LEFT,pressed,x:35,y:391}});
+        }
+        let mut expected=Canvas::new(800,424);
+        expected.pencil(&[(17,19)],[0;3]);
+        assert_eq!(app.canvas().digest(),expected.digest(),"device (35,391) maps to canvas (17,19)");
+    }
+
     #[test]
     fn failed_and_ended_joins_allow_another_session_without_losing_the_canvas() {
         for end in [None, Some(libcollab::wire::Message::JoinRefused { reason: b"full".to_vec() }), Some(libcollab::wire::Message::Bye)] {
