@@ -150,6 +150,24 @@ pub struct WriteResult {
     pub limited: bool,
 }
 
+/// A resource-limit refusal is distinct from a backend's maximum-file-size error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteError {
+    FileSizeLimit,
+    Filesystem(Errno),
+}
+impl WriteError {
+    pub fn errno(self) -> Errno {
+        match self {
+            Self::FileSizeLimit => Errno(crate::syscall::errno::EFBIG),
+            Self::Filesystem(errno) => errno,
+        }
+    }
+}
+impl From<Errno> for WriteError {
+    fn from(errno: Errno) -> Self { Self::Filesystem(errno) }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum XattrSet {
     Upsert,
@@ -231,8 +249,8 @@ pub trait FileSystem: core::any::Any + Send + Sync {
     fn read(&self, _node: &VNode, _off: u64, _buf: &mut [u8]) -> Result<usize, Errno> {
         Err(Errno(EOPNOTSUPP))
     }
-    fn write(&self, _node: &VNode, _req: WriteReq, _buf: &[u8]) -> Result<WriteResult, Errno> {
-        Err(Errno(EOPNOTSUPP))
+    fn write(&self, _node: &VNode, _req: WriteReq, _buf: &[u8]) -> Result<WriteResult, WriteError> {
+        Err(Errno(EOPNOTSUPP).into())
     }
     fn resize(&self, _node: &VNode, _size: u64, _clear_setid: bool) -> Result<(), Errno> {
         Err(Errno(EOPNOTSUPP))

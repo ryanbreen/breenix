@@ -269,7 +269,7 @@ fn append_write_extends_and_reads_back() {
                 clear_setid: false
             },
             b"hello"
-        )
+        ).map_err(|error| error.errno())
         .map(|r| r.bytes),
         Ok(5)
     );
@@ -282,7 +282,7 @@ fn append_write_extends_and_reads_back() {
                 clear_setid: false
             },
             b" world"
-        )
+        ).map_err(|error| error.errno())
         .map(|r| r.bytes),
         Ok(6)
     );
@@ -295,7 +295,7 @@ fn append_write_extends_and_reads_back() {
                 clear_setid: false
             },
             b"!"
-        )
+        ).map_err(|error| error.errno())
         .map(|r| r.bytes),
         Ok(1)
     );
@@ -357,7 +357,7 @@ fn resize_shrink_then_grow_reads_zeros() {
                 clear_setid: false
             },
             &data
-        )
+        ).map_err(|error| error.errno())
         .map(|r| r.bytes),
         Ok(data.len())
     );
@@ -388,7 +388,7 @@ fn write_beyond_max_file_size_is_efbig() {
                 clear_setid: false
             },
             b"x"
-        )
+        ).map_err(|error| error.errno())
         .map(|r| r.bytes),
         Err(Errno(EFBIG))
     );
@@ -401,7 +401,7 @@ fn write_beyond_max_file_size_is_efbig() {
                 clear_setid: false
             },
             b"x"
-        )
+        ).map_err(|error| error.errno())
         .map(|r| r.bytes),
         Err(Errno(EFBIG))
     );
@@ -425,7 +425,7 @@ fn statfs_free_blocks_fall_after_write() {
                 clear_setid: false
             },
             &vec![1; 8192]
-        )
+        ).map_err(|error| error.errno())
         .map(|r| r.bytes),
         Ok(8192)
     );
@@ -508,7 +508,7 @@ fn read_only_mount_write_is_erofs() {
                 clear_setid: false
             },
             b"x"
-        )
+        ).map_err(|error| error.errno())
         .map(|r| r.bytes),
         Err(Errno(EROFS))
     );
@@ -521,7 +521,7 @@ fn read_only_mount_write_is_erofs() {
                 clear_setid: false
             },
             b"x"
-        )
+        ).map_err(|error| error.errno())
         .map(|r| r.bytes),
         Err(Errno(EROFS))
     );
@@ -697,7 +697,7 @@ fn append_reports_offset_and_clears_setid() {
     )
     .unwrap();
     assert_eq!(
-        fs.write(&other, req(false), b"first"),
+        fs.write(&other, req(false), b"first").map_err(|error| error.errno()),
         Ok(WriteResult {
             offset: 0,
             bytes: 5,
@@ -707,7 +707,7 @@ fn append_reports_offset_and_clears_setid() {
     assert_eq!(fs.getattr(ino).unwrap().attrs.mode & 0o7777, 0o6750);
     // node caches its opening size: append must choose the current inode's EOF.
     assert_eq!(
-        fs.write(&node, req(true), b"!"),
+        fs.write(&node, req(true), b"!").map_err(|error| error.errno()),
         Ok(WriteResult {
             offset: 5,
             bytes: 1,
@@ -746,7 +746,7 @@ fn write_limit_clamps_and_reports_limited() {
         clear_setid: true,
     };
     assert_eq!(
-        fs.write(&other, req(WriteAt::Offset(0), 8), b"abcdef"),
+        fs.write(&other, req(WriteAt::Offset(0), 8), b"abcdef").map_err(|error| error.errno()),
         Ok(WriteResult {
             offset: 0,
             bytes: 6,
@@ -754,7 +754,7 @@ fn write_limit_clamps_and_reports_limited() {
         })
     );
     assert_eq!(
-        fs.write(&node, req(WriteAt::Append, 8), b"ghij"),
+        fs.write(&node, req(WriteAt::Append, 8), b"ghij").map_err(|error| error.errno()),
         Ok(WriteResult {
             offset: 6,
             bytes: 2,
@@ -772,10 +772,10 @@ fn write_limit_clamps_and_reports_limited() {
     let before = fs.getattr(ino).unwrap();
     let free = fs.statfs().unwrap().free_blocks;
     for at in [WriteAt::Append, WriteAt::Offset(8), WriteAt::Offset(9)] {
-        assert_eq!(fs.write(&node, req(at, 8), b"x"), Err(Errno(EFBIG)));
+        assert_eq!(fs.write(&node, req(at, 8), b"x").map_err(|error| error.errno()), Err(Errno(EFBIG)));
     }
     assert_eq!(
-        fs.write(&node, req(WriteAt::Offset(9), 8), b""),
+        fs.write(&node, req(WriteAt::Offset(9), 8), b"").map_err(|error| error.errno()),
         Ok(WriteResult {
             offset: 9,
             bytes: 0,
@@ -786,7 +786,7 @@ fn write_limit_clamps_and_reports_limited() {
     assert_eq!(fs.statfs().unwrap().free_blocks, free);
     // Explicit-offset writes use the same clamp and preserve the tail.
     assert_eq!(
-        fs.write(&node, req(WriteAt::Offset(2), 4), b"XYZ"),
+        fs.write(&node, req(WriteAt::Offset(2), 4), b"XYZ").map_err(|error| error.errno()),
         Ok(WriteResult {
             offset: 2,
             bytes: 2,
@@ -813,7 +813,7 @@ fn read_moves_stale_atime_only() {
             clear_setid: false,
         },
         b"data",
-    )
+    ).map_err(|error| error.errno())
     .unwrap();
     // The host clock is 1. Write exact times without setattr changing ctime.
     let set_times = |atime, mtime, ctime| {
@@ -851,4 +851,21 @@ fn read_moves_stale_atime_only() {
     disk.remount_read_only();
     assert_eq!(fs.read(&node, 0, &mut bytes), Ok(4));
     assert_eq!(fs.getattr(ino).unwrap().times.atime.sec, 0);
+}
+
+#[test]
+fn fsize_refusal_is_distinct_from_filesystem_efbig() {
+    use crate::vfs::WriteError;
+    let disk = Fixture::new();
+    let fs = Ext2Adapter::new(disk.pin());
+    let ino = regular(&fs, fs.root().unwrap(), b"fsize-signal");
+    let node = fs.open(ino).unwrap();
+    let req = |at, limit| WriteReq { at, limit, clear_setid: false };
+    let short = fs.write(&node, req(WriteAt::Offset(0), 2), b"abcd").unwrap();
+    assert_eq!(short.bytes, 2);
+    for at in [WriteAt::Append, WriteAt::Offset(2)] {
+        assert_eq!(fs.write(&node, req(at, 2), b"x"), Err(WriteError::FileSizeLimit));
+    }
+    assert_eq!(fs.write(&node, req(WriteAt::Offset(fs.max_file_size().unwrap()), u64::MAX), b"x"),
+        Err(WriteError::Filesystem(Errno(EFBIG))));
 }

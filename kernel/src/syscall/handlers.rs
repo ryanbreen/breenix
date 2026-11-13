@@ -714,16 +714,13 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
             match fs.write(&node, req, &buffer) {
                 Ok(written) => {
                     file.lock().position = written.offset + written.bytes as u64;
-                    if written.limited && signal_limit {
-                        super::resource::signal_fsize();
-                    }
                     SyscallResult::Ok(written.bytes as u64)
                 }
                 Err(error) => {
-                    if error.0 == super::errno::EFBIG && signal_limit {
+                    if matches!(error, crate::fs::vfs::WriteError::FileSizeLimit) && signal_limit {
                         super::resource::signal_fsize();
                     }
-                    SyscallResult::Err(error.into())
+                    SyscallResult::Err(error.errno().into())
                 }
             }
         }
@@ -4045,8 +4042,15 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
         Err(e) => return SyscallResult::Err(e),
     };
 
-    // Read user data after releasing the process lock.
-    let data = match copy_from_user(buf_ptr, count as usize) {
+    let length = match super::resource::write_length(offset as u64, count as usize, size_limit) {
+        Ok(length) => length,
+        Err(error) => {
+            super::resource::signal_fsize();
+            return SyscallResult::Err(error);
+        }
+    };
+    // Read only the bytes the resource limit permits after releasing PM.
+    let data = match copy_from_user(buf_ptr, length) {
         Ok(d) => d,
         Err(_) => return SyscallResult::Err(super::errno::EFAULT as u64),
     };
@@ -4060,16 +4064,13 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
     };
     match fs.write(&node, req, &data) {
         Ok(written) => {
-            if written.limited {
-                super::resource::signal_fsize();
-            }
             SyscallResult::Ok(written.bytes as u64)
         }
         Err(error) => {
-            if error.0 == super::errno::EFBIG {
+            if matches!(error, crate::fs::vfs::WriteError::FileSizeLimit) {
                 super::resource::signal_fsize();
             }
-            SyscallResult::Err(error.into())
+            SyscallResult::Err(error.errno().into())
         }
     }
 }

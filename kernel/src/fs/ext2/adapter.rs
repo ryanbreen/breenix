@@ -10,7 +10,7 @@ use crate::fs::{
     },
     vfs::{
         DirEnt, FileSystem, NewNode, NodeAttrs, NodeKind, NodeTimes, Remove, RenameMode, SetAttr,
-        StatFs, Timestamp, VNode, WriteAt, WriteReq, WriteResult, Xattr,
+        StatFs, Timestamp, VNode, WriteAt, WriteError, WriteReq, WriteResult, Xattr,
     },
 };
 use crate::syscall::errno::*;
@@ -591,7 +591,7 @@ impl FileSystem for Ext2Adapter {
         Ok(bytes.len())
     }
 
-    fn write(&self, node: &VNode, req: WriteReq, buf: &[u8]) -> Result<WriteResult, Errno> {
+    fn write(&self, node: &VNode, req: WriteReq, buf: &[u8]) -> Result<WriteResult, WriteError> {
         let ino = ext2::ino32(node.ino)?;
         let mut guard = write_mount(self.mount)
             .map_err(errno)?
@@ -609,16 +609,20 @@ impl FileSystem for Ext2Adapter {
         };
         // Match resource::write_length, with the append EOF protected by this
         // guard too. Empty writes leave the inode's privilege bits alone.
-        if !buf.is_empty() && offset >= req.limit {
-            return Err(Errno(EFBIG));
+        if !buf.is_empty() && req.limit != u64::MAX && offset >= req.limit {
+            return Err(WriteError::FileSizeLimit);
         }
-        let length = (buf.len() as u64).min(req.limit.saturating_sub(offset)) as usize;
+        let length = if req.limit == u64::MAX {
+            buf.len()
+        } else {
+            (buf.len() as u64).min(req.limit.saturating_sub(offset)) as usize
+        };
         if length != 0
             && offset
                 .checked_add(length as u64)
                 .is_none_or(|end| end > fs.max_file_size())
         {
-            return Err(Errno(EFBIG));
+            return Err(Errno(EFBIG).into());
         }
         let result = fs
             .write_file_range_as(ino, offset, &buf[..length], req.clear_setid)
@@ -627,7 +631,7 @@ impl FileSystem for Ext2Adapter {
                 bytes,
                 limited: length < buf.len(),
             })
-            .map_err(errno);
+            .map_err(errno).map_err(WriteError::from);
         if let Ok(inode) = fs.read_inode(ino) {
             refresh(node, &inode)?;
         }
