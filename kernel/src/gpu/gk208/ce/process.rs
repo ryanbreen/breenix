@@ -24,7 +24,7 @@ pub(crate) fn retain(mut layout:memory::Layout,regs:usize,bar:usize,console:supe
     let device=crate::drivers::pci::find_device(0x10de,0x128b).ok_or("native PCI device absent")?;
     super::super::display_evidence::baseline(console.firmware_baseline);
     let console=super::super::native::logical_console(&mut Registers(regs),&mut layout,
-        &mut evo,console,bar,device.bars[1].size)?;
+        &mut evo,console,bar,device.bars[1].size,modes)?;
     let native=layout.objects[4].range.start;
     let table=layout.objects.iter().find(|o|o.name=="bar1-table")
         .ok_or("logical console BAR table absent")?.range.start;
@@ -267,8 +267,7 @@ pub(crate) fn console_state() -> Option<(gpu_abi::Mode, u64, bool, u64)> {
     let s = &session.console;
     let bound = super::super::console_binding(s).is_ok();
     let writes = crate::firmware_writes::count().checked_sub(s.firmware_baseline)?;
-    let (width,height,scale)=if session.mode==0 {(1280,800,1)} else {(2560,1600,2)};
-    Some((gpu_abi::Mode { width, height, scale, reserved: 0 }, u64::from(u32::MAX), bound, writes))
+    Some((session.modes[session.mode as usize], u64::from(u32::MAX), bound, writes))
 }
 
 pub(in crate::gk208) fn console_allocation() -> Option<(super::super::ConsoleSurface, Allocation)> {
@@ -375,15 +374,15 @@ pub(crate) fn set_mode(index:u32)->Result<(), &'static str> {
                 super::super::native::wait_present(&mut s.evo,&mut Registers(s.registers),pending)?;
             }
         }
-        let surface=if index==1 {
-            let c=s.console;
-            super::super::present::Surface{resource:u32::MAX,address:c.vram,
-                width:2560,height:1600,pitch:10240,block_height:0,format:0,dma:1}
-        } else {
-            let range=s.layout.objects.iter().find(|o|o.name=="logical-low")
-                .ok_or("logical low-mode allocation absent")?.range;
-            super::super::present::Surface{resource:u32::MAX,address:range.start,
-                width:1280,height:800,pitch:5120,block_height:0,format:0,dma:1}
+        let surface={
+            let mode=s.modes[index as usize];
+            let pitch=(mode.width*4+255)&!255;
+            let address=if index==1 {s.console.vram} else {
+                s.layout.objects.iter().find(|o|o.name=="logical-low")
+                    .ok_or("logical low-mode allocation absent")?.range.start
+            };
+            super::super::present::Surface{resource:u32::MAX,address,
+                width:mode.width,height:mode.height,pitch,block_height:0,format:0,dma:1}
         };
         let receipt=super::super::native::present(&mut s.evo,&mut Registers(s.registers),surface)?;
         diagnostics=Some(super::super::presentation_trace::snapshot());

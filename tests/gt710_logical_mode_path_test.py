@@ -97,7 +97,8 @@ fn complete(r:&mut Registers,_:u64,_:u64,_:&(),_:&(),_:(u32,u32,bool,bool),_:&[V
 // CONSOLE
 // BINDING
 struct Session {console:ConsoleSurface,layout:memory::Layout,modes:[Mode;2]}
-struct Mode {width:u32,height:u32,scale:u32,reserved:u32}
+mod gpu_abi {#[derive(Clone,Copy)]pub struct Mode {pub width:u32,pub height:u32,pub scale:u32,pub reserved:u32}}
+use gpu_abi::Mode;
 fn selected(index:u32,s:&Session)->Result<present::Surface,&'static str>{
 // SELECTION
  Ok(surface)
@@ -120,7 +121,8 @@ fn main(){
  let old=ConsoleSurface{pointer:0x10010000,phys:0x20010000,bytes:1280*1024*4,width:1280,height:1024,pitch:5120,vram:layout.objects[0].range.start,regs:0,head:0,firmware_baseline:9};
  let instance=layout.objects[4].range.start;
  let slot=instance+0x4000+(((8<<20)-4096)/4096)*8;r.vram.insert(slot,0x1234);
- let high=logical_console(&mut r,&mut layout,&mut e,old,0x10000000,128<<20).unwrap();
+ let modes=[Mode{width:1024,height:768,scale:1,reserved:0},Mode{width:1280,height:1024,scale:1,reserved:0}];
+ let high=logical_console(&mut r,&mut layout,&mut e,old,0x10000000,128<<20,modes).unwrap();
  assert_eq!((high.width,high.height,high.pitch,high.bytes),(1280,1024,5120,5242880));
  let low=layout.objects.iter().find(|o|o.name=="logical-low").unwrap().range;
  assert_eq!(low.size,1024*768*4);assert_ne!(low.start,layout.objects[1].range.start);
@@ -141,8 +143,8 @@ fn main(){
  }
  assert_eq!(r.vram[&(table.start+((32<<20)/4096-1)*8)],0);
  unsafe {assert_eq!(*(high.pointer as *const u32),0xff000000);assert_eq!(*((high.pointer+high.bytes-4) as *const u32),0xff000000);}
- assert!(logical_console(&mut r,&mut layout,&mut e,old,0x10000000,16<<20).is_err());
- let session=Session{console:high,layout,modes:[Mode{width:1024,height:768,scale:1,reserved:0},Mode{width:1280,height:1024,scale:1,reserved:0}]};
+ assert!(logical_console(&mut r,&mut layout,&mut e,old,0x10000000,16<<20,modes).is_err());
+ let session=Session{console:high,layout,modes};
  for (index,w,h,pitch) in [(0,1024,768,4096),(1,1280,1024,5120)] {
   let surface=selected(index,&session).unwrap();
   assert_eq!((surface.width,surface.height,surface.pitch),(w,h,pitch));

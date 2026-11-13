@@ -1662,12 +1662,15 @@ pub fn takeover(
 /// USERD page. A GK208 SPT covers 128 MiB (MIT vmmgk104.c; vm::TABLE_BYTES).
 /// Preserve the first 8 MiB PTEs and map the high surface at BAR1 offset 16 MiB.
 pub(super) fn logical_console(regs:&mut Registers,layout:&mut memory::Layout,
-    evo:&mut Evo,old:ConsoleSurface,bar:usize,bar_bytes:u64)
+    evo:&mut Evo,old:ConsoleSurface,bar:usize,bar_bytes:u64,modes:[gpu_abi::Mode;2])
     ->Result<ConsoleSurface, &'static str> {
     const OFFSET:u64=16<<20;
-    const BYTES:u64=2560*1600*4;
+    let mode=modes[1];
+    let pitch=(u64::from(mode.width)*4+255)&!255;
+    let bytes=pitch.checked_mul(u64::from(mode.height)).ok_or("logical console size overflow")?;
+    if bytes>16<<20 {return Err("logical console exceeds BAR1 alias");}
     if bar_bytes<32<<20 {return Err("native logical console needs 32 MiB BAR1");}
-    let allocation=layout.allocator.allocate(BYTES,65536,memory::allocator::Kind::Display)?;
+    let allocation=layout.allocator.allocate(bytes,65536,memory::allocator::Kind::Display)?;
     // Permanent display allocations stay charged after a partial publication.
     layout.objects.push(memory::Object{name:"logical-console",range:allocation.range,
         align:65536,allocation});
@@ -1683,7 +1686,7 @@ pub(super) fn logical_console(regs:&mut Registers,layout:&mut memory::Layout,
         for (i,word) in words[..modeset::BAR1_WINDOW/4096*2].iter_mut().enumerate() {
             *word=p.read(instance+0x4000+i as u64*4)?;
         }
-        for i in 0..BYTES/4096 {
+        for i in 0..allocation.range.size/4096 {
             let entry=((allocation.range.start+i*4096)>>8)|1;
             let at=((OFFSET/4096+i)*2) as usize;
             words[at]=entry as u32;words[at+1]=(entry>>32) as u32;
@@ -1700,18 +1703,21 @@ pub(super) fn logical_console(regs:&mut Registers,layout:&mut memory::Layout,
     crate::console::display::linear::map_native_write_combining(
         old.phys-(old.pointer-bar) as u64,bar_bytes)?;
     // Clear through the owned CPU aperture before making this surface visible.
-    for n in 0..BYTES as usize/4 {unsafe {((pointer+n*4) as *mut u32).write_volatile(0xff000000);}}
+    for n in 0..bytes as usize/4 {unsafe {((pointer+n*4) as *mut u32).write_volatile(0xff000000);}}
     modeset::bar_flush(regs)?;
     let surface=super::present::Surface{resource:u32::MAX,address:allocation.range.start,
-        width:2560,height:1600,pitch:10240,block_height:0,format:0,dma:1};
+        width:mode.width,height:mode.height,pitch:pitch as u32,block_height:0,format:0,dma:1};
     let receipt=present(evo,regs,surface)?;
     let latch=super::display_evidence::transition(regs,evo.head,surface,&receipt,
         [allocation.range.start,allocation.range.size],[allocation.range.start,allocation.range.size],"handoff")?;
     crate::serial_println!("GT710_NATIVE_HANDOFF latch={}",latch);
     layout.objects.try_reserve(1).map_err(|_| "logical low-mode object allocation")?;
-    let low=layout.allocator.allocate(1280*800*4,65536,memory::allocator::Kind::Display)?;
+    let low_mode=modes[0];
+    let low_pitch=(u64::from(low_mode.width)*4+255)&!255;
+    let low_bytes=low_pitch.checked_mul(u64::from(low_mode.height)).ok_or("logical low-mode size overflow")?;
+    let low=layout.allocator.allocate(low_bytes,65536,memory::allocator::Kind::Display)?;
     layout.objects.push(memory::Object{name:"logical-low",range:low.range,align:65536,allocation:low});
-    Ok(ConsoleSurface{pointer,bytes:BYTES as usize,width:2560,height:1600,pitch:10240,
+    Ok(ConsoleSurface{pointer,bytes:bytes as usize,width:mode.width as usize,height:mode.height as usize,pitch:pitch as usize,
         vram:allocation.range.start,phys:old.phys-(old.pointer-bar) as u64+OFFSET,..old})
 }
 
@@ -1739,7 +1745,8 @@ pub(super) fn console_receipt(evo: &Evo, regs: &mut Registers, console: ConsoleS
         armed:methods.map(|m|regs.read(0x660000+m+h)),
     };
     let surface=super::present::Surface {resource:u32::MAX,address:console.vram,
-        width:2560,height:1600,pitch:10240,block_height:0,format:0,dma:1};
+        width:console.width as u32,height:console.height as u32,pitch:console.pitch as u32,
+        block_height:0,format:0,dma:1};
     super::display_evidence::transition(regs,evo.head,surface,&receipt,
         [allocation.start,allocation.size],[allocation.start,allocation.size],"receipt")
 }
