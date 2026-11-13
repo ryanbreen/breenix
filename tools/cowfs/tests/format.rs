@@ -255,6 +255,16 @@ fn codecs_round_trip() {
 }
 
 #[test]
+fn root_payload_has_exact_length() {
+    let mut bytes = vec![0; 66];
+    bytes[64] = 1;
+    bytes[65] = b'r';
+    assert!(Root::decode(&bytes).is_ok());
+    bytes.push(0);
+    assert_eq!(Root::decode(&bytes), Err(Error::Invalid));
+}
+
+#[test]
 fn truncated_input_is_an_error() {
     for n in 0..4096 {
         assert!(Superblock::decode(&vec![0; n]).is_err());

@@ -534,7 +534,7 @@ impl Root {
         need(b, 65)?;
         let n = b[64] as usize;
         need(b, 65 + n)?;
-        if n == 0 {
+        if n == 0 || b.len() != 65 + n {
             return Err(Error::Invalid);
         }
         Ok(Self {
