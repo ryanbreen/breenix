@@ -195,3 +195,13 @@ fn init_desktop_case_uses_the_real_init_session() {
     assert!(case.contains("App::init_desktop(\"Terminal\")"));
     assert!(!case.contains("App::launch("));
 }
+
+#[test]
+fn collaboration_session_dialog_is_registered() {
+    let manifest = include_str!("../docs/suites/gui-apps.json");
+    let category = manifest.split("\"id\": \"guskit-collab\"").nth(1).expect("collaboration category")
+        .split("\"id\": \"desktop\"").next().unwrap();
+    assert!(category.contains("\"id\": \"session-dialog\""), "manifest missing session-dialog");
+    let source = include_str!("../userspace/programs/src/suite_gui_apps.rs");
+    assert!(source.contains("case(\"session-dialog\", \"Host and join through session dialogs\", guskit_collab::session_dialog).session(libuitest::supervisor::serve)"), "dispatcher missing session-dialog");
+}
