@@ -490,9 +490,7 @@ pub fn submit(caller: &Caller, a: &mut Composite, out: u64) -> Result<u64, i32> 
     {
         let reg = REGISTRY.lock();
         for s in &reservation.sources {
-            // The reservation predates a client close: compose must resnapshot,
-            // rather than treat the vanished source as a failed GPU frame.
-            let w = reg.windows.get(&s.key.id).ok_or(EAGAIN)?;
+            let w = reg.windows.get(&s.key.id).ok_or(ENOENT)?;
             let t = w.front.map(|f| w.buffers[f].mem.clone());
             identities.push(t);
         }
