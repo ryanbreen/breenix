@@ -131,6 +131,17 @@ with open(os.environ['SSH_LOG'], 'a') as log:
         calls = self.log.read_text().splitlines()
         self.assertEqual(calls, ['action stop locked', 'action start locked'])
 
+    def test_network_shares_restart_request_is_answered_once(self):
+        proc = self.watch()
+        self.serial.write_text('SUITE network-shares SMBRESTART smb/server-restart seq=7\n' * 2)
+        try:
+            record = self.wait_requests(1)
+        finally:
+            proc.send_signal(signal.SIGTERM)
+            self.assertEqual(proc.wait(timeout=5), 0)
+        self.assertTrue(record['requests'][0]['ok'])
+        self.assertEqual(self.log.read_text().splitlines(), ['action restart locked', 'action -m locked'])
+
     def test_lone_stop_is_restored(self):
         proc = self.watch()
         self.serial.write_text('SUITE gui-apps SMBSTOP guskit/smb-share-gone seq=3\n')
