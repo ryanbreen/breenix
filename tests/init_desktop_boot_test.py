@@ -17,10 +17,11 @@ class DesktopBoot(unittest.TestCase):
 use ::std::sync::Mutex;
 static EVENTS: Mutex<Vec<&str>> = Mutex::new(Vec::new());
 static PID: ::std::sync::atomic::AtomicU32 = ::std::sync::atomic::AtomicU32::new(1);
-mod std { pub mod process { pub fn id() -> u32 { crate::PID.load(::std::sync::atomic::Ordering::Relaxed) } } }
+mod std { pub mod process { pub fn exit(code: i32) -> ! { panic!("unexpected exit {code}") } pub fn id() -> u32 { crate::PID.load(::std::sync::atomic::Ordering::Relaxed) } } }
 fn record(event: &'static str) { EVENTS.lock().unwrap().push(event); }
 fn run_boot_checks() { record("checks"); }
 fn finish_boot_checks() { record("finish"); }
+pub fn start_bounce() { record("bounce"); }
 fn reconcile_machine_state() { record("state"); }
 fn run_boot_script() { record("script"); }
 fn desktop_gpu_ready() -> bool { true }
@@ -39,8 +40,11 @@ mod init_services {
 // FUNCTION
 #[test]
 fn desktop_boot_order() {
+    let mut system = vec!["checks", "state", "script", "load", "tick"];
+    if cfg!(target_arch = "aarch64") { system.push("bounce"); }
+    system.extend(["finish", "terminal"]);
     for (pid, expected) in [
-        (1, vec!["checks", "state", "script", "load", "tick", "finish", "terminal"]),
+        (1, system),
         (2, vec!["load", "tick", "terminal"]),
     ] {
         PID.store(pid, ::std::sync::atomic::Ordering::Relaxed);

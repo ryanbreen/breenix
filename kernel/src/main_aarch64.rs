@@ -341,7 +341,7 @@ impl InitLaunch {
                     }
                 });
                 if kernel::input::host::declares_channel(hostkeys.as_deref()) { kernel::input::host::init().expect("host input devices"); }
-                let through_init = arg == Some("users");
+                let through_init = arg == Some("users") || arg == Some("gui-apps");
                 let mut argv: alloc::vec::Vec<&[u8]> = if through_init {
                     alloc::vec![b"/sbin/init", b"suite", path.as_bytes()]
                 } else { alloc::vec![path.as_bytes()] };

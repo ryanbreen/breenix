@@ -12,17 +12,22 @@ ROOT = Path(__file__).resolve().parents[1]
 class DesktopClock(unittest.TestCase):
     def test_initial_clock_step_precedes_cases_or_launch_is_refused(self):
         source = (ROOT / 'userspace/programs/src/init.rs').read_text()
-        functions = item(source, 'fn desktop_suite_ready(') + item(source, 'fn run_desktop_suite(')
+        functions = (item(source, 'fn finish_boot_checks(').replace('#[cfg(target_arch = "aarch64")]', '')
+                     + item(source, 'fn desktop_suite_ready(') + item(source, 'fn run_desktop_suite('))
         harness = r'''
 use ::std::sync::atomic::{AtomicU64, Ordering};
 static NOW: AtomicU64 = AtomicU64::new(0);
 static CLOCK_AT: AtomicU64 = AtomicU64::new(200);
 static SPAWN_AT: AtomicU64 = AtomicU64::new(0);
+static AMBIENT_APPS: AtomicU64 = AtomicU64::new(0);
 fn publish_log_boot_id(_: bool) { panic!("standalone log identity already prepared") }
 fn run_boot_checks() {}
 fn reconcile_machine_state() {}
 fn run_boot_script() {}
-fn finish_boot_checks() {}
+// Public so the fake process boundary is also valid when startup no longer calls it.
+pub fn start_bounce() { AMBIENT_APPS.fetch_add(1, Ordering::Relaxed); }
+fn run_bssh_autorun_if_enabled() {}
+fn run_init_group_refusal_probe(stage: &str) { assert_eq!(stage, "quiesce"); }
 pub fn reap_forever() -> ! { panic!("teardown failed") }
 pub mod std {
  pub use ::std::env;
@@ -51,6 +56,8 @@ pub mod std {
    pub fn args(&mut self, _: Vec<String>) -> &mut Self { self }
    pub fn env(&mut self, _: &str, _: &str) -> &mut Self { panic!("standalone member") }
    pub fn spawn(&mut self) -> Result<Child, String> {
+    assert_eq!(crate::AMBIENT_APPS.load(crate::Ordering::Relaxed), 0,
+     "suite startup launched an ambient Bounce; title lookup can attach to it while waiting for the session child's exit");
     crate::SPAWN_AT.store(crate::NOW.load(crate::Ordering::Relaxed), crate::Ordering::Relaxed);
     Ok(Child)
    }
@@ -63,6 +70,7 @@ pub mod libbreenix {
  pub mod suite { pub mod sequence {
   pub fn read(_: &str) -> Option<(Vec<String>, usize)> { None }
   pub fn prepare_owner(_: &[String], _: usize) { panic!("standalone owner") }
+  pub fn activate_desktop_shares() -> Result<(), String> { panic!("standalone shares") }
   pub fn finish() { panic!("standalone handoff") }
  } }
  pub mod time { pub fn sleep_ms(_: u64) -> Result<(), ()> { Ok(()) } }
@@ -92,6 +100,7 @@ fn main() {
  for clock_at in [200, u64::MAX] {
   NOW.store(0, Ordering::Relaxed);
   SPAWN_AT.store(0, Ordering::Relaxed);
+  AMBIENT_APPS.store(0, Ordering::Relaxed);
   CLOCK_AT.store(clock_at, Ordering::Relaxed);
   let _ = ::std::panic::catch_unwind(|| run_desktop_suite(1, "/sbin/suite-gui-apps", vec![]));
   let spawned = SPAWN_AT.load(Ordering::Relaxed);

@@ -125,6 +125,20 @@ def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clo
     result = DONE["completion"](text, mode, suite, only) if mode in COMPLETING_MODES else None
     if process.returncode >= 0 and result and result[1].startswith("fatal kernel output:"):
         return "fatal"
+    if process.returncode == 0 and mode == "suite":
+        # Standalone init powers off after its final READY, following DONE and
+        # MEMORY. A sequence ends with its own DONE instead.
+        lines = [line.rstrip("\r") for line in text.split("\n")[:-1]]
+        ready = f"SUITE_SEQUENCE READY {suite}"
+        done = next((i for i, line in enumerate(lines) if line.startswith(f"SUITE {suite} DONE ")), -1)
+        memory = next((i for i, line in enumerate(lines) if line.startswith(
+            (f"SUITE {suite} MEMORY reclaimed=", f"SUITE {suite} ERROR "))), -1)
+        error = next((i for i, line in enumerate(lines) if line.startswith(f"SUITE {suite} ERROR ")), -1)
+        if (("," in suite and result) or
+                (ready in lines and ((result and 0 <= done < memory < lines.index(ready)) or
+                                     0 <= error < lines.index(ready)))):
+            clock.observe(text)
+            return "done"
     return "cancelled"
 
 
