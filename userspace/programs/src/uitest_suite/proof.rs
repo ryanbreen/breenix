@@ -778,7 +778,7 @@ fn wm_checkpoint(
                 wm_front_matches(commit, generation, after.pixel_gen,
                     observed.iter().find(|row| row.0 == id).map(|row| row.1), entry)
             }) {
-                if std::time::Instant::now() < deadline {
+                if after.pixel_gen != generation && std::time::Instant::now() < deadline {
                     phases::reacquire();
                     continue 'snapshot;
                 }

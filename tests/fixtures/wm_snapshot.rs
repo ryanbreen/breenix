@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 #[derive(Default)]
-struct State { tick: u64, generation: u64, screens: u64, clients: u64, stale: bool }
+struct State { tick: u64, generation: u64, screens: u64, clients: u64, stale: bool, catches_up: bool }
 thread_local! { static STATE: RefCell<State> = RefCell::new(State::default()); }
 #[derive(Clone, Copy, PartialEq, PartialOrd)]
 struct Clock(u64);
@@ -56,7 +56,7 @@ struct Window { pixel_gen:u64 }
 fn generation(id:u64)->u64 { STATE.with(|s| if id==143 {s.borrow().generation} else {5}) }
 fn wm_window(id:u64)->Result<Window,String> { Ok(Window { pixel_gen:generation(id) }) }
 fn wm_composite(_:u64)->Result<Vec<libbreenix::window::abi::CompositeEntry>,String> {
-    Ok([143,144].map(|id| { let g=if id==143 && STATE.with(|s|s.borrow().stale) {8} else {generation(id)};
+    Ok([143,144].map(|id| { let g=if id==143 && STATE.with(|s| { let s=s.borrow(); s.stale || s.catches_up && s.screens == 2 }) {8} else {generation(id)};
         libbreenix::window::abi::CompositeEntry { id, commit_id:g, pixel_gen:g }
     }).into())
 }
@@ -81,10 +81,13 @@ fn main() {
     // Exercise the incomplete-slot variant too, without entering that error path.
     assert!(matches!(SlotRead::Incomplete, SlotRead::Incomplete));
     let mut session=Session;
-    for stale in [false,true] {
-        STATE.with(|s|*s.borrow_mut()=State { generation:8,stale,..State::default() });
+    for (stale,catches_up) in [(false,false),(false,true),(true,false)] {
+        STATE.with(|s|*s.borrow_mut()=State { generation:8,stale,catches_up,..State::default() });
         let result=wm_checkpoint(&mut LivePointer(&mut session),[143,144],[1,2],1,[1280,800],1,["",""]);
-        if stale { assert!(result.is_err(), "permanently stale composite must fail"); }
+        if stale || catches_up {
+            assert!(result.is_err(), "stable stale composite must fail even when a later sample catches up");
+            STATE.with(|s| assert_eq!(s.borrow().screens,2, "only the superseded first sample may retry"));
+        }
         else {
             assert_eq!(result,Ok(()), "publication 8 -> 9 must reacquire the complete snapshot");
             STATE.with(|s| { let s=s.borrow(); assert_eq!(s.screens,2); assert_eq!(s.clients,4); });
