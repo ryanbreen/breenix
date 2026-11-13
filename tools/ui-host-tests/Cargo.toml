@@ -53,3 +53,7 @@ path = "../../tests/gui_apps_wiring.rs"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("breenix"))'] }
+
+[[test]]
+name = "guskit_argv"
+path = "../../tests/guskit_argv.rs"
