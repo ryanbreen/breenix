@@ -474,7 +474,15 @@ pub(in crate::gk208) fn console_bar_offset(console: &ConsoleSurface, displacemen
 }
 
 /// Retain the owned EVO channel and its post-takeover command cursor.
+#[derive(Clone)]
+struct RasterMode {
+    timing: edid::Timing,
+    pll: modeset::Pll,
+    scripts: [Vec<modeset::Op>; 4],
+}
 pub struct Evo {
+    rasters: Vec<RasterMode>,
+    protocol: u32,
     frame_pixels: u64,
     pixel_hz: u64,
     clock: Option<super::vblank_clock::VblankClock>,
@@ -550,6 +558,60 @@ fn presentation_sample(regs: &Registers, head: u32)
 }
 
 impl Evo {
+    fn submit_mode(&mut self, regs:&mut Registers, methods:&[(u32,u32)])
+        -> Result<(), &'static str> {
+        modeset::wait(regs,0x640004,u32::MAX,self.put)?;
+        if self.put as usize+(methods.len()+1)*8>2044 {
+            write_words(regs,self.total,self.push+u64::from(self.put),&[0x20000000])?;
+            modeset::publish(regs,0)?;
+            modeset::wait(regs,0x640004,u32::MAX,0)?;
+            self.put=0;
+        }
+        submit(regs,self.total,self.push,&mut self.put,methods)
+    }
+    fn select_raster(&mut self, regs: &mut Registers, width:u32, height:u32)
+        -> Result<(), &'static str> {
+        let preferred=self.rasters.first().ok_or("preferred runtime raster absent")?.timing;
+        let selected=if (Some(width),Some(height))==
+            (preferred.width.checked_mul(2),preferred.height.checked_mul(2)) { preferred }
+        else { self.rasters.iter().find(|r| (r.timing.width,r.timing.height)==(width,height))
+            .ok_or("surface has no advertised native raster")?.timing };
+        let h=self.head as usize*0x300;
+        let blank=regs.read(0x64041c+h);let end=regs.read(0x640420+h);
+        if (end&0xffff).checked_sub(blank&0xffff)==Some(selected.width)
+            && (end>>16).checked_sub(blank>>16)==Some(selected.height) {return Ok(());}
+        let next=self.rasters.iter().find(|r|r.timing==selected)
+            .ok_or("runtime raster recipe absent")?.clone();
+        let pitch=(u64::from(selected.width)*4+255)&!255;
+        if pitch*u64::from(selected.height)>self.surfaces[0].size {
+            return Err("runtime native timing exceeds retained surface");
+        }
+        modeset::pause_underflow(regs,self.head)?;
+        write_words(regs,self.total,self.notifier,&[0,0,0,0])?;
+        let mut detach=modeset::detach_methods(self.head,self.sor)?.to_vec();
+        detach.extend([(0x84,0x80000000),(0x80,0)]);
+        self.submit_mode(regs,&detach)?;
+        complete(regs,self.total,self.notifier,&self.limits,&self.coefficients,
+            (self.head,self.sor,true,false),&self.scripts)?;
+        modeset::wait(regs,0x640004,u32::MAX,self.put)?;
+        write_words(regs,self.total,self.notifier,&[0,0,0,0])?;
+        // The selected scanout is installed by the following PRESENT. During
+        // the timing attach, retain a bounded, display-owned native surface.
+        let mut attach=modeset::head_methods(&selected,self.head,self.sor,self.protocol,
+            self.surfaces[0].start,pitch)?;
+        attach.extend([(0x84,0x80000000),(0x80,0)]);
+        self.submit_mode(regs,&attach)?;
+        complete(regs,self.total,self.notifier,&self.limits,&next.pll,
+            (self.head,self.sor,false,true),&next.scripts)?;
+        modeset::wait(regs,0x640004,u32::MAX,self.put)?;
+        modeset::arm_underflow(regs,self.head)?;
+        self.coefficients=next.pll;self.scripts=next.scripts;
+        self.frame_pixels=u64::from(selected.htotal)*u64::from(selected.vtotal);
+        self.pixel_hz=u64::from(selected.clock_khz)*1000;
+        self.clock=None;self.latch_phase=None;self.last_presentation=None;
+        Ok(())
+    }
+
     // W20 can select +2. Allow another period of dispatch margin at any mode.
     fn presentation_attempts(&self) -> u64 {
         let period = (u128::from(self.frame_pixels) * 1_000_000_000)
@@ -949,6 +1011,7 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
     surface: super::present::Surface, wait: bool, mode: u32,
 ) -> Result<Option<super::present::Receipt>, &'static str> {
         let result = (|| {
+    evo.select_raster(regs,surface.width,surface.height)?;
     evo.start_clock(regs)?;
     let _cost = super::cost::phase(super::cost::Slot::Evo);
     let phase=MEMX_PRESENT_PHASE.load(core::sync::atomic::Ordering::Acquire);
@@ -1101,6 +1164,13 @@ pub fn takeover(
             );
             e.reason
         })?;
+    // Decode runtime timing changes before owning the display. Scale 2 uses
+    // the preferred raster; other advertised modes use their own 1:1 timing.
+    let rasters = modes.iter().map(|&timing| {
+        Ok(RasterMode { timing, pll: modeset::pll(&limits,timing.clock_khz)?,
+            scripts: modeset::board_scripts(rom,head,u32::from(route.sor),protocol,timing.clock_khz)
+                .map_err(|e|e.reason)? })
+    }).collect::<Result<Vec<_>, &'static str>>()?;
     let surface = layout.objects[0].range;
     let evo = layout.objects[2].range.start;
     let notifier = layout.objects[3].range.start;
@@ -1352,7 +1422,7 @@ pub fn takeover(
             clock: None, vblank_line: 0, latch_phase: None, last_presentation: None, pending_presentation: None,
             head, sor: u32::from(route.sor), total, push: evo, put, notifier,
             surfaces: [layout.objects[0].range, layout.objects[1].range],
-            limits, coefficients, scripts,
+            limits, coefficients, scripts, rasters, protocol,
         }));
     }
     let mut digest = crate::block::install::sha256::Sha256::new();
@@ -1664,7 +1734,7 @@ pub fn takeover(
             clock: None, vblank_line: 0, latch_phase: None, last_presentation: None, pending_presentation: None,
             head, sor: u32::from(route.sor), total, push: evo, put, notifier,
             surfaces: [layout.objects[0].range, layout.objects[1].range],
-            limits, coefficients, scripts,
+            limits, coefficients, scripts, rasters, protocol,
         }))
 }
 
@@ -1672,7 +1742,7 @@ pub fn takeover(
 /// USERD page. A GK208 SPT covers 128 MiB (MIT vmmgk104.c; vm::TABLE_BYTES).
 /// Preserve the first 8 MiB PTEs and map the high surface at BAR1 offset 16 MiB.
 pub(super) fn logical_console(regs:&mut Registers,layout:&mut memory::Layout,
-    evo:&mut Evo,old:ConsoleSurface,bar:usize,bar_bytes:u64,modes:[gpu_abi::Mode;2])
+    evo:&mut Evo,old:ConsoleSurface,bar:usize,bar_bytes:u64,modes:&[gpu_abi::Mode])
     ->Result<ConsoleSurface, &'static str> {
     const OFFSET:u64=16<<20;
     let mode=modes[1];
@@ -1721,12 +1791,13 @@ pub(super) fn logical_console(regs:&mut Registers,layout:&mut memory::Layout,
     let latch=super::display_evidence::transition(regs,evo.head,surface,&receipt,
         [allocation.range.start,allocation.range.size],[allocation.range.start,allocation.range.size],"handoff",1)?;
     crate::serial_println!("GT710_NATIVE_HANDOFF latch={}",latch);
-    layout.objects.try_reserve(1).map_err(|_| "logical low-mode object allocation")?;
-    let low_mode=modes[0];
-    let low_pitch=(u64::from(low_mode.width)*4+255)&!255;
-    let low_bytes=low_pitch.checked_mul(u64::from(low_mode.height)).ok_or("logical low-mode size overflow")?;
-    let low=layout.allocator.allocate(low_bytes,65536,memory::allocator::Kind::Display)?;
-    layout.objects.push(memory::Object{name:"logical-low",range:low.range,align:65536,allocation:low});
+    for (index,mode) in modes.iter().enumerate() {
+        if index==1 {continue;}
+        let pitch=(u64::from(mode.width)*4+255)&!255;
+        let bytes=pitch.checked_mul(u64::from(mode.height)).ok_or("logical mode size overflow")?;
+        let allocation=layout.allocator.allocate(bytes,65536,memory::allocator::Kind::Display)?;
+        layout.objects.push(memory::Object{name:"logical-mode",range:allocation.range,align:65536,allocation});
+    }
     Ok(ConsoleSurface{pointer,bytes:bytes as usize,width:mode.width as usize,height:mode.height as usize,pitch:pitch as usize,
         logical:true,vram:allocation.range.start,phys:old.phys-(old.pointer-bar) as u64+OFFSET,..old})
 }

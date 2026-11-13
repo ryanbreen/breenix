@@ -10,7 +10,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 class SuiteModesTest(unittest.TestCase):
     def test_native_expectations_match_recorded_edid(self):
         source = (ROOT / 'userspace/programs/src/suite_gpu/present.rs').read_text()
-        match = re.search(r'fn expected_modes\(native: bool\) -> \[\(u32, u32, u32\); 2\] \{', source)
+        match = re.search(r'fn expected_modes\(native: bool\) -> Vec<\(u32, u32, u32\)> \{', source)
         if match:
             start = match.start()
             pos = match.end()

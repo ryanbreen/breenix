@@ -361,8 +361,9 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
             route.entry,route.conf,route.i2c_entry,route.connector,route.kind,route.drive,route.sor,state,head,
             regs.read(0x640414+head as usize*0x300),regs.read(0x640450+head as usize*0x300),hex(&data),hash(&data),timings);
         crate::serial_println!("GT710_NATIVE {}", evidence);
-        let display_modes = modeset::display_modes(&data)?.map(|(width, height, scale)|
-            gpu_abi::Mode { width, height, scale, reserved: 0 });
+        let display_modes = modeset::display_modes(&data)?.into_iter().map(|(width, height, scale)|
+            gpu_abi::Mode { width, height, scale, reserved: 0 }).collect::<Vec<_>>();
+        if display_modes.len()>10 {return Err("EDID modes exceed MODES wire capacity");}
         let preferred = modes.first().ok_or("no preferred sink timing")?;
         let mut layout=display_memory(
             &mut regs,

@@ -1,4 +1,4 @@
-//! Bounded post-update EVO snapshots for the two G20 logical modes.
+//! Bounded post-update EVO snapshots for published logical modes.
 //! Register semantics are the in-tree native/modeset encodings; no new hardware
 //! methods are introduced. Formatting and digest output run at upload time.
 use super::{present::{Receipt, Surface}, Registers};
@@ -7,8 +7,8 @@ use core::fmt::Write;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 static BASELINE: AtomicU64 = AtomicU64::new(u64::MAX);
-static STATE: spin::Mutex<State> = spin::Mutex::new(State { sequence: 0, modes: [None, None], samples: [None, None], sampled: [false; 2], dropped: 0, transitions: VecDeque::new() });
-struct State { sequence: u64, modes: [Option<Snapshot>; 2], samples: [Option<Sample>; 2], sampled: [bool; 2], dropped: u64, transitions: VecDeque<Transition> }
+static STATE: spin::Mutex<State> = spin::Mutex::new(State { sequence: 0, modes: [None; 10], samples: [None; 2], sampled: [false; 2], dropped: 0, transitions: VecDeque::new() });
+struct State { sequence: u64, modes: [Option<Snapshot>; 10], samples: [Option<Sample>; 2], sampled: [bool; 2], dropped: u64, transitions: VecDeque<Transition> }
 struct Transition { snapshot: Snapshot, allocation: [u64; 2], console: [u64; 2], event: &'static str }
 #[derive(Clone, Copy)]
 struct Sample { offset: usize, expected: u32, actual: u32 }
@@ -23,7 +23,7 @@ struct Snapshot {
 pub(super) fn baseline(value: u64) { BASELINE.store(value, Ordering::Release); }
 
 fn mode_index(mode: u32) -> Option<usize> {
-    (mode < 2).then_some(mode as usize)
+    (mode < 10).then_some(mode as usize)
 }
 
 /// Called after native::present confirmed completion, both banks and output health.

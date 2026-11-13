@@ -117,9 +117,10 @@ pub(crate) fn compose(k: &mut Helper) -> Result<(u64, u64), breenix_suite::suite
 /// The active physical mode owns every screen allocation and row index (B8).
 pub(crate) fn screen_size() -> Result<(usize,usize), breenix_suite::suite::CaseError> {
     let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r))).cite("18")?;
-    ensure((modes.current as usize)<modes.modes.len(),"18","gpu-display: invalid current mode")?;
-    let mode=&modes.modes[modes.current as usize];
-    ensure((mode.width,mode.height,mode.scale)==(2560,1600,2),"18","gpu-display: required scale-2 mode is absent")?;
+    ensure(modes.current<modes.count,"18","gpu-display: invalid current mode")?;
+    let mode=&modes.current_mode().expect("MODES current index is listed");
+    let (_,expected)=modes.scale2_mode().ok_or("scale-2 mode absent")?;
+    ensure(*mode==expected,"18","gpu-display: required scale-2 mode is absent")?;
     Ok((mode.width as usize,mode.height as usize))
 }
 
@@ -865,7 +866,7 @@ pub(crate) fn give_back() -> i64 {
 /// Draw and present a solid GPU target in the caller's display-owner context.
 pub(crate) fn paint(colour: [u8; 4]) -> Result<(), String> {
     let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r)))?;
-    let mode=modes.modes[modes.current as usize];
+    let mode=modes.current_mode().expect("MODES current index is listed");
     let mut context=bgl::Context::new().map_err(|r|format!("gpu-display: context {}",outcome(r)))?;
     let target=libbreenix::gpu::scanout_target_create(0,mode.width,mode.height).map_err(|r|format!("gpu-display: scanout target {}",outcome(r)))?;
     context.begin(target,mode.width,mode.height);context.clear(u32::from_le_bytes([colour[0],colour[1],colour[2],255]));
@@ -1028,18 +1029,20 @@ pub(crate) fn gpu_observe(k:&mut Helper)->Result<(i64,u32,GpuSnapshot),breenix_s
     ensure(bytes.len()>=1032,"20","gpu-display: truncated GPU snapshot")?;
     let width=u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;
     let height=u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
-    ensure(matches!((width,height),(1280,800)|(2560,1600)) && bytes.len()==1032+width*height*4,"20","gpu-display: snapshot does not cover its entire mode")?;
+    let expected=screen_size()?;
+    ensure((width,height)==expected && bytes.len()==1032+width*height*4,"20","gpu-display: snapshot does not cover its entire mode")?;
     let record=bytes[8..1032].try_into().unwrap();
     let snapshot=GpuSnapshot{width,height,record,pixels:bytes[1032..].to_vec()};
     Ok((status,reason,snapshot))
 }
 // gpu-display: R4 applies logical scale to placement and compares the entire device destination with §18's formula.
 fn composition_scale_2()->CaseResult {
+    let mode=crate::show::scale2_mode()?;
     interface()?;let mut k=compositor()?;
     // Unlike the legacy physical-pixel scenes, this fixture has logical geometry.
     // Clients allocate physical targets; SET_GEOMETRY also takes physical positions.
     let scene=[Placed::new(40,60,128,96,0,11),Placed::new(100,100,160,80,1,12),
-        Placed::new(-20,780,100,40,2,13)];
+        Placed::new(-20,(mode.height/2) as i32-20,100,40,2,13)];
     let wins:Vec<_>=scene.iter().map(|p|W::new(p.w*2,p.h*2,2)).collect::<Result<_,_>>()?;
     let mut context=bgl::Context::new().map_err(|r|format!("gpu-display: context {}",outcome(r))).cite("18")?;
     for (w,p) in wins.iter().zip(&scene){
@@ -1069,7 +1072,7 @@ fn composition_scale_2()->CaseResult {
     }
     compose(&mut k)?;
     let s=gpu_snapshot(&mut k)?;
-    ensure((s.width,s.height)==(2560,1600),"18","gpu-display: scale-2 composition has the wrong destination size")?;
+    ensure((s.width,s.height)==(mode.width as usize,mode.height as usize),"18","gpu-display: scale-2 composition has the wrong destination size")?;
     same(&s.pixels,s.width as u32,s.height as u32,true,"scaled GPU composition","18",|x,y|formula(&scene)(x/2,y/2))
 }
 
@@ -1125,7 +1128,7 @@ fn composition_target_lifetime()->CaseResult {
     // A scanout binding retains its resource independently of its destroyed user handle.
     ensure(take_over()>=0,"18","gpu-display: take display for scanout lifetime")?;
     let result=(||->CaseResult{
-        let mode=bgl::modes().map_err(|r|format!("MODES {}",outcome(r))).cite("18")?;let m=mode.modes[mode.current as usize];
+        let mode=bgl::modes().map_err(|r|format!("MODES {}",outcome(r))).cite("18")?;let m=mode.current_mode().expect("MODES current index is listed");
         let mut c=bgl::Context::new().map_err(|r|format!("context {}",outcome(r))).cite("18")?;
         let target=libbreenix::gpu::scanout_target_create(0,m.width,m.height).map_err(|r|format!("scanout target {}",outcome(r))).cite("18")?;
         c.begin(target,m.width,m.height);c.clear(0xff112233);c.submit().and_then(|f|f.wait(2_000_000_000)).and_then(|_|c.present(target)).map_err(|r|format!("PRESENT {}",outcome(r))).cite("18")?;

@@ -35,7 +35,7 @@ pub(super) struct Owner {
 pub(super) struct State {
     pub stack: Vec<Owner>,
     pub mode: u32,
-    pub modes: [abi::Mode; 2],
+    pub modes: Vec<abi::Mode>,
     pub changing: bool,
     pub owner_sequence: u64,
     /// Latest completed binding, or latest GET-accepted binding on native G26.
@@ -56,11 +56,11 @@ pub(super) struct State {
     pub latest_ok: bool,
 }
 impl State {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             stack: Vec::new(),
             mode: KERNEL_MODE as u32,
-            modes: PANEL_MODES,
+            modes: PANEL_MODES.to_vec(),
             changing: false,
             owner_sequence: 0,
             binding: None,
@@ -572,13 +572,16 @@ pub(super) fn modes(arg: u64, len: u64) -> Result<u64, i64> {
         let mut a = abi::Modes::ZERO;
         a.version = 1;
         a.size = 256;
-        a.count = 2;
+        a.count = c.display.modes.len() as u32;
         a.current = c.display.mode;
         a.max_width = c.caps.max_width;
         a.max_height = c.caps.max_height;
         a.owner_depth = c.display.stack.len() as u32;
         a.binding_known = c.display.known as u32;
-        a.modes = c.display.modes;
+        for (i, &mode) in c.display.modes.iter().enumerate() {
+            if i < a.modes.len() { a.modes[i] = mode; }
+            else { a.extra_modes[i - a.modes.len()] = mode; }
+        }
         a.scanout_resource = c
             .display
             .binding
@@ -598,7 +601,7 @@ pub(super) fn set_mode(arg: u64, len: u64) -> Result<u64, i64> {
         return Err(EPERM);
     }
     let a: abi::SetMode = read_arg(arg, len)?;
-    if a.index > 1 || a.reserved != [0; 3] {
+    if a.reserved != [0; 3] || !with_core(|c| (a.index as usize) < c.display.modes.len()).unwrap_or(false) {
         return Err(EINVAL);
     }
     #[cfg(target_arch = "x86_64")]

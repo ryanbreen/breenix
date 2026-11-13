@@ -674,7 +674,31 @@ pub struct Modes {
     pub firmware_hash_at_handoff: u64, pub firmware_hash_now: u64,
     /// Kernel write operations to the firmware framebuffer since handoff (ruling 50).
     pub firmware_writes_after_handoff: u64,
-    pub reserved: [u64; 16],
+    /// Modes beyond the first pair occupy the former reserved tail (offset 128).
+    pub extra_modes: [Mode; 8],
+}
+impl Modes {
+    /// The wire catalogue has two legacy entries and eight extension entries.
+    pub fn mode_list(&self) -> impl Iterator<Item = (u32, Mode)> + '_ {
+        self.modes.iter().chain(self.extra_modes.iter()).copied()
+            .take(self.count as usize).enumerate().map(|(i,m)| (i as u32,m))
+    }
+    pub fn current_mode(&self) -> Option<Mode> {
+        self.mode_list().find(|(i,_)| *i == self.current).map(|(_,m)|m)
+    }
+    pub fn native_mode(&self) -> Option<(u32, Mode)> {
+        self.mode_list().filter(|(_,m)|m.scale==1 && self.mode_list().any(|(_,high)|
+            high.scale==2 && m.width.checked_mul(2)==Some(high.width)
+                && m.height.checked_mul(2)==Some(high.height)))
+            .max_by_key(|(_,m)|u64::from(m.width)*u64::from(m.height))
+    }
+    pub fn scale2_mode(&self) -> Option<(u32, Mode)> {
+        self.mode_list().filter(|(_,m)|m.scale==2)
+            .max_by_key(|(_,m)|u64::from(m.width)*u64::from(m.height))
+    }
+    pub fn smallest_mode(&self) -> Option<(u32, Mode)> {
+        self.mode_list().min_by_key(|(_,m)|u64::from(m.width)*u64::from(m.height))
+    }
 }
 /// SET_MODE input.
 #[repr(C)]

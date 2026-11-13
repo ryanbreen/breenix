@@ -13,6 +13,7 @@ class LogicalModePath(unittest.TestCase):
         native=(ROOT/'kernel/src/gpu/gk208/native.rs').read_text()
         present=item(native,'pub(in crate::gk208) fn present(').replace('pub(in crate::gk208)','').replace('super::present::','present::').replace('super::display_evidence::','display_evidence::').replace('super::cost::','cost::')
         inner=item(native,'fn present_inner(').replace('super::present::','present::').replace('super::cost::','cost::').replace('super::memx_display::','memx_display::').replace('super::display_evidence::','display_evidence::')
+        raster=item(native,'    fn submit_mode(')+'\n'+item(native,'    fn select_raster(')
         present += '\n' + inner
         console=item(native,'pub(super) fn logical_console(').replace('pub(super)','').replace('crate::memory::map_mmio','host_map').replace('crate::console::display::linear::map_native_write_combining','host_wc').replace('super::present::','present::').replace('super::vm::TABLE_BYTES','vm::TABLE_BYTES').replace('super::display_evidence::','display_evidence::')
         binding=item(native,'pub fn console_binding(').replace('pub fn','fn').replace('surface: &ConsoleSurface','surface: &ConsoleSurface, regs: &mut Registers').replace('    let mut regs = Registers(surface.regs);','').replace('view.verify(&mut regs,','view.verify(regs,')
@@ -38,7 +39,7 @@ impl Registers {
  fn delay_us(&mut self,_:u32){}
  fn write(&mut self,r:usize,v:u32) {if (0x700000..0x800000).contains(&r) {
   self.vram.insert((u64::from(self.read(0x1700))<<16)+(r-0x700000) as u64,v);
- } else {self.r.insert(r,v);}}
+ } else {self.r.insert(r,v);if r==0x640000 {self.r.insert(0x640004,v);}}}
 }
 impl modeset::Io for Registers {
  fn read(&mut self,r:usize)->u32 {Registers::read(self,r)}
@@ -63,9 +64,11 @@ mod display_evidence {
   assert_eq!(r.active,r.armed);Ok(1)
  }
 }
-struct Evo {head:u32,sor:u32,total:u64,push:u64,put:u32,notifier:u64,limits:(),coefficients:(),scripts:[Vec<modeset::Op>;4],pending_presentation:Option<PendingPresentation>}
+#[derive(Clone)] struct RasterMode {timing:edid::Timing,pll:modeset::Pll,scripts:[Vec<modeset::Op>;4]}
+struct Evo {surfaces:[memory::Range;2],rasters:Vec<RasterMode>,protocol:u32,clock:Option<()>,latch_phase:Option<()>,last_presentation:Option<()>,frame_pixels:u64,pixel_hz:u64,head:u32,sor:u32,total:u64,push:u64,put:u32,notifier:u64,limits:(),coefficients:modeset::Pll,scripts:[Vec<modeset::Op>;4],pending_presentation:Option<PendingPresentation>}
 #[derive(Clone,Copy)] struct PendingPresentation {resource:u32,acknowledged:Option<u32>}
 impl Evo {
+ // RASTER
  fn start_clock(&mut self,_:&Registers)->Result<(),&'static str>{Ok(())}
  fn arm_presentation(&mut self,_:&Registers,resource:u32)->Result<(),&'static str>{self.pending_presentation=Some(PendingPresentation{resource,acknowledged:None});Ok(())}
  fn finish_presentation(&mut self,_:&Registers,_:u32)->Result<bool,&'static str>{self.pending_presentation=None;Ok(true)}
@@ -87,16 +90,21 @@ fn write_words(r:&mut Registers,_:u64,a:u64,words:&[u32])->Result<(),&'static st
 fn read_word(r:&mut Registers,_:u64,a:u64)->Result<u32,&'static str>{Ok(*r.vram.get(&a).unwrap_or(&0))}
 fn submit(r:&mut Registers,_:u64,_:u64,put:&mut u32,m:&[(u32,u32)])->Result<(),&'static str>{
  assert_eq!(&m[m.len()-2..],&[(0x84,0x80000000),(0x80,0)]);
- assert!(m.iter().any(|&(a,_)|a==0x4b8));assert!(m.iter().any(|&(a,_)|a==0x4c0));
- r.staged=m.to_vec();*put+=m.len() as u32*8;r.r.insert(0x640004,*put);Ok(())
+ if m.iter().any(|&(a,_)|a==0x468) {
+ let input=m.iter().find(|&&(a,_)|a==0x468).unwrap().1;
+ assert!(m.iter().any(|&(a,_)|a==0x4b8) ||
+  (r.read(0x6404b8)==input && r.read(0x6604b8)==input));
+ assert!(m.iter().any(|&(a,_)|a==0x4c0) || r.read(0x6404c0)==r.read(0x6604c0));
+ }
+ r.staged=m.to_vec();*put+=(m.len()+usize::from(m.last().is_some_and(|&(method,_)|method==0x80))) as u32*8;r.r.insert(0x640004,*put);Ok(())
 }
-fn complete(r:&mut Registers,_:u64,_:u64,_:&(),_:&(),_:(u32,u32,bool,bool),_:&[Vec<modeset::Op>;4])->Result<u32,&'static str>{
+fn complete(r:&mut Registers,_:u64,_:u64,_:&(),_:&modeset::Pll,_:(u32,u32,bool,bool),_:&[Vec<modeset::Op>;4])->Result<u32,&'static str>{
  r.updates+=1;for &(m,v) in &r.staged {r.r.insert(0x640000+m as usize,v);if !(r.stale && m==0x4b8) {r.r.insert(0x660000+m as usize,v);}} Ok(1)
 }
 // PRESENT
 // CONSOLE
 // BINDING
-struct Session {console:ConsoleSurface,layout:memory::Layout,modes:[Mode;2]}
+struct Session {console:ConsoleSurface,layout:memory::Layout,modes:[Mode;3]}
 mod gpu_abi {#[derive(Clone,Copy)]pub struct Mode {pub width:u32,pub height:u32,pub scale:u32,pub reserved:u32}}
 use gpu_abi::Mode;
 fn selected(index:u32,s:&Session)->Result<present::Surface,&'static str>{
@@ -105,26 +113,44 @@ fn selected(index:u32,s:&Session)->Result<present::Surface,&'static str>{
 }
 fn hardware()->(Registers,Evo){
  let mut r=Registers::default();for (a,v) in [(0x64041c,359|40<<16),(0x640420,1639|1064<<16),(0x616308,1),(0x61c004,1),(0x100c80,0x10000|0x8000)]{r.r.insert(a,v);}
- (r,Evo{head:0,sor:0,total:1<<30,push:0x10000,put:0,notifier:0x11000,limits:(),coefficients:(),scripts:std::array::from_fn(|_|vec![]),pending_presentation:None})
+ let hex=include_str!("@ROOT@/tests/fixtures/gt710-edid/lcd17-19.hex").trim();
+ let bytes:Vec<_>=(0..hex.len()).step_by(2).map(|i|u8::from_str_radix(&hex[i..i+2],16).unwrap()).collect();
+ let rasters=edid::parse(&bytes).unwrap().into_iter().map(|timing|RasterMode{timing,
+ pll:modeset::Pll{n:1,fraction:0,m:1,p:1},scripts:std::array::from_fn(|_|vec![])}).collect();
+ (r,Evo{rasters,protocol:1,clock:None,latch_phase:None,last_presentation:None,frame_pixels:0,pixel_hz:0,surfaces:[memory::Range{start:0x8000000,size:1280*1024*4};2],head:0,sor:0,total:1<<30,push:0x10000,put:0,notifier:0x11000,limits:(),coefficients:modeset::Pll{n:1,fraction:0,m:1,p:1},scripts:std::array::from_fn(|_|vec![]),pending_presentation:None})
 }
 fn main(){
- for (w,h) in [(1024,768),(1280,1024),(1280,800),(2560,1600),(640,480)] {
+ for (w,h) in [(1024,768),(1280,1024),(2560,2048)] {
   let (mut r,mut e)=hardware();let s=present::Surface{resource:1,address:0x1000000,width:w,height:h,pitch:w*4,block_height:0,format:0,dma:1};
-  present(&mut e,&mut r,s,1).unwrap();assert_eq!(r.updates,1);
+  present(&mut e,&mut r,s,1).unwrap();assert_eq!(r.updates,if w==1024 {3}else{1});
   assert_eq!(r.read(0x6604b8),w|h<<16);
-  let out=if (w,h)==(1280,800)||(w,h)==(2560,1600) {1280|800<<16}else{w|h<<16};
-  assert_eq!(r.read(0x6604c0),out);
-  assert_eq!(r.read(0x640420),1639|1064<<16); // raster untouched
+  let (rw,rh)=if w==2560 {(1280,1024)}else{(w,h)};
+  assert_eq!(r.read(0x6604c0),rw|rh<<16);
+  let blank=r.read(0x64041c);let end=r.read(0x640420);
+  assert_eq!(((end&0xffff)-(blank&0xffff),(end>>16)-(blank>>16)),(rw,rh));
   let (mut r,mut e)=hardware();r.stale=true;assert!(present(&mut e,&mut r,s,1).is_err());
+ }
+ let (mut r,mut e)=hardware();e.put=1900;r.r.insert(0x640004,1900);
+ let low=present::Surface{resource:9,address:0x1000000,width:1024,height:768,pitch:4096,block_height:0,format:0,dma:1};
+ present(&mut e,&mut r,low,0).unwrap();
+ assert_eq!(r.vram[&(e.push+1900+(modeset::detach_methods(0,0).unwrap().len() as u64+3)*8)],0x20000000,"mode switch failed to wrap owned push page");
+ assert!(e.put<1900);
+ let high=present::Surface{width:2560,height:2048,pitch:10240,..low};
+ present(&mut e,&mut r,high,2).unwrap();
+ assert_eq!(r.read(0x6604b8),2560|2048<<16);
+ assert_eq!(r.read(0x6604c0),1280|1024<<16);
+ for (w,h) in [(1280,800),(2560,1600),(640,480)] {
+  let (mut r,mut e)=hardware();let s=present::Surface{resource:1,address:0x1000000,width:w,height:h,pitch:w*4,block_height:0,format:0,dma:1};
+  assert!(present(&mut e,&mut r,s,1).is_err());
  }
  let (mut r,mut e)=hardware();let mut layout=memory::Layout::new(1<<30,&[],1280,1024).unwrap();
  let old=ConsoleSurface{pointer:0x10010000,phys:0x20010000,bytes:1280*1024*4,width:1280,height:1024,pitch:5120,vram:layout.objects[0].range.start,regs:0,head:0,firmware_baseline:9,logical:false};
  let instance=layout.objects[4].range.start;
  let slot=instance+0x4000+(((8<<20)-4096)/4096)*8;r.vram.insert(slot,0x1234);
- let modes=[Mode{width:1024,height:768,scale:1,reserved:0},Mode{width:1280,height:1024,scale:1,reserved:0}];
- let high=logical_console(&mut r,&mut layout,&mut e,old,0x10000000,128<<20,modes).unwrap();
+ let modes=[Mode{width:1024,height:768,scale:1,reserved:0},Mode{width:1280,height:1024,scale:1,reserved:0},Mode{width:2560,height:2048,scale:2,reserved:0}];
+ let high=logical_console(&mut r,&mut layout,&mut e,old,0x10000000,128<<20,&modes).unwrap();
  assert_eq!((high.width,high.height,high.pitch,high.bytes),(1280,1024,5120,5242880));
- let low=layout.objects.iter().find(|o|o.name=="logical-low").unwrap().range;
+ let low=layout.objects.iter().find(|o|o.name=="logical-mode").unwrap().range;
  assert_eq!(low.size,1024*768*4);assert_ne!(low.start,layout.objects[1].range.start);
  assert!(!old.logical);assert!(high.logical);assert_eq!(high.phys,0x21000000);assert_eq!(high.firmware_baseline,9);
  console_binding(&high,&mut r).unwrap();
@@ -143,9 +169,9 @@ fn main(){
  }
  assert_eq!(r.vram[&(table.start+((32<<20)/4096-1)*8)],0);
  unsafe {assert_eq!(*(high.pointer as *const u32),0xff000000);assert_eq!(*((high.pointer+high.bytes-4) as *const u32),0xff000000);}
- assert!(logical_console(&mut r,&mut layout,&mut e,old,0x10000000,16<<20,modes).is_err());
+ assert!(logical_console(&mut r,&mut layout,&mut e,old,0x10000000,16<<20,&modes).is_err());
  let session=Session{console:high,layout,modes};
- for (index,w,h,pitch) in [(0,1024,768,4096),(1,1280,1024,5120)] {
+ for (index,w,h,pitch) in [(0,1024,768,4096),(1,1280,1024,5120),(2,2560,2048,10240)] {
   let surface=selected(index,&session).unwrap();
   assert_eq!((surface.width,surface.height,surface.pitch),(w,h,pitch));
   let allocation=session.layout.objects.iter().find(|o|o.range.start==surface.address).unwrap().range;
@@ -153,7 +179,7 @@ fn main(){
  }
 
 }
-'''.replace('@ROOT@',str(ROOT)).replace('// PRESENT',present).replace('// CONSOLE',console).replace('// BINDING',binding).replace('// SELECTION',selection)
+'''.replace('@ROOT@',str(ROOT)).replace('// PRESENT',present).replace('// RASTER',raster).replace('// CONSOLE',console).replace('// BINDING',binding).replace('// SELECTION',selection)
         priority=['taskpolicy','-b'] if sys.platform=='darwin' else []
         with tempfile.TemporaryDirectory() as tmp:
             p=Path(tmp);(p/'modes.rs').write_text(fixture)
@@ -168,10 +194,10 @@ const EINVAL:i64=-22;const EPERM:i64=-1;const ENODEV:i64=-19;const EIO:i64=-5;
 mod abi {pub struct SetMode {pub index:u32,pub reserved:[u32;3]}}
 static INPUT:AtomicU32=AtomicU32::new(0);static FAIL:AtomicBool=AtomicBool::new(false);
 static CALLED:AtomicU32=AtomicU32::new(0);static ENABLED:AtomicBool=AtomicBool::new(false);
-struct Owner{mode:u32} struct Display{mode:u32,stack:Vec<Owner>,known:bool}
+struct Owner{mode:u32} struct Display{modes:[();3],mode:u32,stack:Vec<Owner>,known:bool}
 struct Core{display:Display,retired:u32}
 impl Core {fn native_console_restored(&mut self){self.retired+=1;self.display.known=true;}}
-thread_local!{static CORE:RefCell<Core>=RefCell::new(Core{display:Display{mode:1,stack:vec![Owner{mode:1}],known:true},retired:0});}
+thread_local!{static CORE:RefCell<Core>=RefCell::new(Core{display:Display{modes:[();3],mode:1,stack:vec![Owner{mode:1}],known:true},retired:0});}
 fn with_core<R>(f:impl FnOnce(&mut Core)->R)->Option<R>{Some(CORE.with(|c|f(&mut c.borrow_mut())))}
 fn caller()->Result<u64,i64>{Ok(7)}fn owner(_:u64)->bool{true}
 fn read_arg(_:u64,_:u64)->Result<abi::SetMode,i64>{Ok(abi::SetMode{index:INPUT.load(Ordering::Acquire),reserved:[0;3]})}
@@ -186,7 +212,7 @@ mod gk208 {pub fn set_mode(index:u32)->Result<(), &'static str>{
 }}
 // FUNCTION
 fn main(){
- INPUT.store(2,Ordering::Release);assert_eq!(set_mode(0,16),Err(EINVAL));assert_eq!(CALLED.load(Ordering::Acquire),0);
+ INPUT.store(3,Ordering::Release);assert_eq!(set_mode(0,16),Err(EINVAL));assert_eq!(CALLED.load(Ordering::Acquire),0);
  INPUT.store(0,Ordering::Release);FAIL.store(true,Ordering::Release);
  assert_eq!(set_mode(0,16),Err(EIO));
  with_core(|c|{assert_eq!(c.display.mode,1);assert_eq!(c.display.stack[0].mode,1);assert_eq!(c.retired,0);assert!(!c.display.known,"uncertain native latch left old binding known");});

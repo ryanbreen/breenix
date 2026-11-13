@@ -272,24 +272,18 @@ pub fn switch_sequence(modes: &[Timing]) -> Result<[Timing; 3], &'static str> {
     Ok([*low,high,*low])
 }
 
-/// Derive the low and preferred logical modes from the sink's EDID.
-pub fn display_modes(edid: &[u8]) -> Result<[(u32, u32, u32); 2], &'static str> {
+/// Advertised scale-1 modes, with preferred at index 1, plus its exact scale-2 mode.
+pub fn display_modes(edid: &[u8]) -> Result<Vec<(u32, u32, u32)>, &'static str> {
     let timings = super::edid::parse(edid)?;
     let [low, high, _] = switch_sequence(&timings)?;
-    // E-EDID detailed timing bytes 12-14 encode image dimensions in mm.
-    let d = &edid[54..72];
-    let mut width_mm = u32::from(d[12]) | (u32::from(d[14] & 0xf0) << 4);
-    let mut height_mm = u32::from(d[13]) | (u32::from(d[14] & 0x0f) << 8);
-    if width_mm == 0 || height_mm == 0 {
-        width_mm = u32::from(edid[21]) * 10;
-        height_mm = u32::from(edid[22]) * 10;
+    let mut modes = vec![(low.width, low.height, 1), (high.width, high.height, 1)];
+    for t in &timings {
+        let mode = (t.width, t.height, 1);
+        if !modes.contains(&mode) { modes.push(mode); }
     }
-    // Compare diagonal density without floating point: 25.4 mm per inch.
-    let pixels_squared = u64::from(high.width).pow(2) + u64::from(high.height).pow(2);
-    let mm_squared = u64::from(width_mm).pow(2) + u64::from(height_mm).pow(2);
-    let scale = if width_mm != 0 && height_mm != 0
-        && pixels_squared * 254 * 254 >= mm_squared * 1800 * 1800 { 2 } else { 1 };
-    Ok([(low.width, low.height, 1), (high.width, high.height, scale)])
+    modes.push((high.width.checked_mul(2).ok_or("scale-2 width overflow")?,
+        high.height.checked_mul(2).ok_or("scale-2 height overflow")?, 2));
+    Ok(modes)
 }
 
 pub fn detach_methods(head: u32, sor: u32) -> Result<[(u32,u32);2], &'static str> {
@@ -387,11 +381,10 @@ pub fn head_methods(
     Ok(m)
 }
 /// NV927D viewport fields are 15 bits (cl927d.h:1417-1434). The two
-/// logical modes use only unity and exact 2:1 reduction; fitting client targets
-/// use unity. This is a deliberate
-/// admission subset, not a claim about an undocumented general ratio limit.
-/// MIT nouveau head.c:180-218 permits input larger than output and centres
-/// aspect-preserving output; head907d.c:378-409 selects one-tap/no-bias scaling.
+/// native raster admits only the full extent at 1:1 or exact 2:1 reduction.
+/// Other EDID modes select their own raster; partial client targets are composed
+/// into a full-mode target before native presentation. No centring is needed.
+/// MIT head907d.c:378-409 selects one-tap/no-bias scaling.
 #[derive(Clone, Copy)]
 pub struct Viewport { input: (u32,u32), output: (u32,u32) }
 impl Viewport {
@@ -399,12 +392,10 @@ impl Viewport {
         Self::for_raster(t.width,t.height,width,height)
     }
     pub fn for_raster(rw:u32,rh:u32,width:u32,height:u32) -> Result<Self, &'static str> {
-        let output = match (width,height) {
-            (1280,800) | (2560,1600) if rw>=1280 && rh>=800 => (1280,800),
-            // Smaller client targets need no new scaler ratio: centre at 1:1.
-            _ if width<=rw && height<=rh => (width,height),
-            _ => return Err("unadmitted native scaler ratio"),
-        };
+        let output = if (width,height)==(rw,rh)
+            || (Some(width),Some(height))==(rw.checked_mul(2),rh.checked_mul(2)) {
+            (rw,rh)
+        } else { return Err("unadmitted native scaler ratio"); };
         if [rw,rh,width,height].iter().any(|&v|v==0 || v>0x7fff) {
             return Err("native viewport exceeds 15-bit fields");
         }
@@ -490,6 +481,7 @@ pub struct PllLimits {
     pub min_p: u8,
     pub max_p: u8,
 }
+#[derive(Clone)]
 pub struct Pll {
     pub n: u32,
     pub fraction: u16,

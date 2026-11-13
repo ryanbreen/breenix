@@ -23,14 +23,23 @@ pub(crate) const PANEL: &[Case] = &[
     case("stage-hidpi", "The full HiDPI stage has scaled geometry and independently rasterized text", panel_stage_hidpi),
 ];
 
+pub(crate) fn scale2_mode() -> Result<libbreenix::gpu::abi::Mode,breenix_suite::suite::CaseError> {
+    let list=bgl::modes().map_err(|r|format!("MODES {}",outcome(r)))?;
+    let (index,mode)=list.scale2_mode().ok_or("scale-2 mode absent")?;
+    libbreenix::graphics::take_over_display().map_err(|e|format!("take display: {e:?}"))?;
+    bgl::set_mode(index).map_err(|r|format!("SET_MODE {}",outcome(r)))?;
+    Ok(mode)
+}
+
 // gpu-display: §2.2 replaces fb_info with GPU MODES, including R4 physical scale; capacity checks remain.
 fn composition_fbinfo_geometry() -> CaseResult {
+    let expected=scale2_mode()?;
     crate::display_regressions::many_windows()?;
     let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r))).cite("18")?;
-    ensure(modes.current<modes.count && modes.count==2,"18","gpu-display: mode catalogue is incomplete")?;
-    let mode=modes.modes[modes.current as usize];
-    ensure((mode.width,mode.height,mode.scale)==(2560,1600,2),"18",
-        format!("gpu-display: active mode is {}x{} scale {}; expected 2560x1600 scale 2",mode.width,mode.height,mode.scale))?;
+    ensure(modes.current<modes.count && modes.count as usize==modes.mode_list().count(),"18","gpu-display: mode catalogue is incomplete")?;
+    let mode=modes.current_mode().expect("MODES current index is listed");
+    ensure(mode==expected,"18",
+        format!("gpu-display: active mode {mode:?}; expected {expected:?}"))?;
     ensure(modes.binding_known==1 && modes.scanout_resource!=0,"18","gpu-display: the current mode has no completed scanout binding")
 }
 
@@ -110,7 +119,7 @@ fn panel_quiet_window() -> CaseResult { breenix_suite::suite::showcase_check("qu
 fn panel_boot_ribbon() -> CaseResult {
     let (width,height)=crate::window_cases::composition::screen_size()?;
     let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r))).cite("23.7")?;
-    let scale=modes.modes[modes.current as usize].scale as usize;
+    let scale=modes.current_mode().expect("MODES current index is listed").scale as usize;
     // B36: independent contract geometry, including native rasters outside the stage aspect.
     let (left,top,span,thickness,units)=if scale>0 && width==1280*scale && height==800*scale {
         (112,772,1152,6,scale)
@@ -172,9 +181,10 @@ fn stage_fixture(name:&str)->CaseResult {
 }
 
 fn scaled_stage(name:&str)->CaseResult {
+    let expected=scale2_mode()?;
     let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r))).cite("23")?;
-    let mode=modes.modes[modes.current as usize];
-    ensure((mode.width,mode.height,mode.scale)==(2560,1600,2),"23","gpu-display: stage is not in the required scale-2 GPU mode")?;
+    let mode=modes.current_mode().expect("MODES current index is listed");
+    ensure(mode==expected,"23","gpu-display: stage is not in the required scale-2 GPU mode")?;
     stage_fixture(name)
 }
 

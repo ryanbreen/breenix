@@ -3066,8 +3066,9 @@ fn raster_cpu_render_planted() -> CaseResult { crate::gpu_checks::cpu_render_pla
 // claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
 // gpu-text: R4 rasterizes at 2x size; certified coverage is the oracle, never a nearest-neighbour bitmap upscale.
 fn text_hidpi_sizes() -> CaseResult {
+    crate::show::scale2_mode()?;
     let modes=bgl::modes().map_err(|e|format!("gpu-display: MODES {}",outcome(e))).cite("8.3")?;
-    let scale=modes.modes[modes.current as usize].scale;
+    let scale=modes.current_mode().expect("MODES current index is listed").scale;
     ensure(scale==2,"8.3","gpu-display: HiDPI text requires scale 2")?;
     let file=read_file(SANS_PATH).cite("8.3")?;let font=libgfx_ref::ttf_font::Font::parse(&file).cite("8.3")?;
     let glyph=font.glyph_index('H');

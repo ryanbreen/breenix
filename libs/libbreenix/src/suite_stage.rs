@@ -1088,9 +1088,9 @@ pub(super) fn prepare() -> Result<(), String> {
 /// The current mode, which must be the stage's logical layout at a whole display scale.
 fn stage_mode() -> Result<gpu::abi::Mode, String> {
     let m = mode()?;
-    if m.scale == 0 || (m.width, m.height) != (1280 * m.scale, 800 * m.scale) {
+    if m.scale == 0 || m.width != 1280 * m.scale || m.height < 800 * m.scale {
         return Err(std::format!(
-            "the {}x{} mode is not the stage's 1280x800 layout at scale {}",
+            "the {}x{} mode cannot contain the stage layout at scale {}",
             m.width, m.height, m.scale
         ));
     }

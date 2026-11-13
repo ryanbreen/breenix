@@ -277,8 +277,8 @@ pub fn present_view(ctx: u64, source: u64) -> Result<Option<abi::Present>, CaseE
     let mut modes = abi::Modes::ZERO;
     let result = gpu::call_with(abi::op::MODES, &mut modes);
     ensure(result == 0, || format!("MODES: {}", errno(result)))?;
-    ensure((modes.current as usize) < modes.modes.len() && modes.current < modes.count, || "MODES: invalid current mode".to_string())?;
-    let mode = modes.modes[modes.current as usize];
+    ensure((modes.current as usize) < modes.modes.len()+modes.extra_modes.len() && modes.current < modes.count, || "MODES: invalid current mode".to_string())?;
+    let mode = modes.current_mode().expect("MODES current index is listed");
     let (_, source_record) = read(source, 1, 1)?;
     let w = u32_at(&source_record, record::TARGET_WIDTH);
     let h = u32_at(&source_record, record::TARGET_HEIGHT);

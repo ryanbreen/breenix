@@ -19,8 +19,9 @@ class CoreModes(unittest.TestCase):
         screen = (gpu / 'screen.rs').read_text()
         self.assertIn('c.display.modes[display::KERNEL_MODE]', screen)
         self.assertNotRegex(screen, r'const (?:WIDTH|HEIGHT|PITCH)\b')
-        self.assertRegex(display, r'pub\s+modes:\s*\[abi::Mode;\s*2\]')
-        self.assertIn('a.modes = c.display.modes;', display)
+        self.assertRegex(display, r'pub\s+modes:\s*Vec<abi::Mode>')
+        self.assertIn('c.display.modes.iter().enumerate()', display)
+        self.assertIn('a.extra_modes[i - a.modes.len()] = mode;', display)
         self.assertIn('c.display.modes[c.display.mode as usize]', display)
         self.assertIn('c.display.modes.iter()', display)
         self.assertIn('c.display.modes[c.display.mode as usize]', core)
@@ -33,7 +34,7 @@ class CoreModes(unittest.TestCase):
         values = re.findall(r'abi::Mode\s*\{\s*width:\s*(\d+),\s*height:\s*(\d+),\s*scale:\s*(\d+),\s*reserved:\s*(\d+)\s*\}', panel.group(1))
         self.assertEqual(values, [('1280', '800', '1', '0'), ('2560', '1600', '2', '0')])
         self.assertRegex(display, r'const KERNEL_MODE:\s*usize\s*=\s*1;')
-        self.assertIn('modes: PANEL_MODES', display)
+        self.assertIn('modes: PANEL_MODES.to_vec()', display)
 
 
 if __name__ == '__main__':

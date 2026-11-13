@@ -272,7 +272,7 @@ impl Kiosk {
             Some("gpu-private-scanout") => {
                 custody();
                 let fixture=(||->Result<(bgl::Context,u64,u64),i64>{
-                    let m=bgl::modes()?;let mode=m.modes[m.current as usize];let mut c=bgl::Context::new()?;
+                    let m=bgl::modes()?;let mode=m.current_mode().expect("MODES current index is listed");let mut c=bgl::Context::new()?;
                     let target=libbreenix::gpu::scanout_target_create(0,mode.width,mode.height)?;
                     c.begin(target,mode.width,mode.height);c.clear(0xff112233);
                     if let Err(e)=c.submit().and_then(|f|f.wait(2_000_000_000)).and_then(|_|c.present(target)) {libbreenix::gpu::resource_destroy(target);return Err(e);}
@@ -323,7 +323,7 @@ impl Kiosk {
                 let result=(||->Result<(),String>{
                     let path=*words.get(1).ok_or("missing output file")?;
                     let (ret,m)=libbreenix::gpu::modes();if ret!=0{return Err(format!("MODES {ret}"));}
-                    let mode=m.modes[m.current as usize];
+                    let mode=m.current_mode().expect("MODES current index is listed");
                     let mut pixels=vec![0xA5u8;mode.width as usize*mode.height as usize*4];
                     let mut record=[0xA5u8;libbreenix::gpu::abi::record::SIZE];
                     let mut rb=abi::Readback::ZERO;

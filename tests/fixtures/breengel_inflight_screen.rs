@@ -71,6 +71,7 @@ mod gpu {
     }
     pub fn modes() -> (i64, abi::Modes) {
         let mut modes = abi::Modes::ZERO;
+        modes.count = 1;
         modes.modes[0] = abi::Mode { width: super::WIDTH, height: super::HEIGHT, scale: 2, reserved: 0 };
         (0, modes)
     }

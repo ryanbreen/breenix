@@ -657,7 +657,7 @@ pub fn init() {
             DOORBELL.store(dev.doorbell(), Ordering::Release);
             arch::configure_irq(&dev);
             core.queue_size = dev.queue_size();
-            core.display.modes = display::PANEL_MODES;
+            core.display.modes = display::PANEL_MODES.to_vec();
             core.dev = Some(Device::Virgl(dev));
         }
         Err(e) => {
@@ -677,7 +677,7 @@ pub fn init() {
 
 /// Install the native owner only after hardware startup and channel receipts.
 #[cfg(target_arch = "x86_64")]
-pub(crate) fn install_native(device: crate::gk208::adapter::Device, modes: [abi::Mode; 2]) -> Result<(), &'static str> {
+pub(crate) fn install_native(device: crate::gk208::adapter::Device, modes: Vec<abi::Mode>) -> Result<(), &'static str> {
     let mut retained = Some(device);
     let result = (|| {
         let device = retained.as_ref().unwrap();
@@ -763,7 +763,7 @@ pub fn init_vmware() {
                 device.profile.contexts, device.profile.surfaces, core.status, core.reason
             );
             core.queue_size = device.queue_size();
-            core.display.modes = display::PANEL_MODES;
+            core.display.modes = display::PANEL_MODES.to_vec();
             core.dev = Some(Device::Svga(device));
         }
         Err(error) => {

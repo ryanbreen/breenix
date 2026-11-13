@@ -151,7 +151,7 @@ pub fn record_fields() -> CaseResult {
         || "display record lost completed present".to_string())?;
     let mut modes = abi::Modes::ZERO;
     ensure(gpu::call_with(abi::op::MODES, &mut modes) == 0, || "MODES failed".to_string())?;
-    let display = modes.modes[modes.current as usize];
+    let display = modes.current_mode().expect("MODES current index is listed");
     ensure(u32_at(&scanout, 48) == display.width && u32_at(&scanout, 52) == display.height
         && u64_at(&scanout, 80) != u64_at(&rec, 80)
         && u64_at(&scanout, 80) == modes.scanout_resource,
@@ -401,9 +401,9 @@ pub fn large_target() -> CaseResult {
     let mut modes = abi::Modes::ZERO;
     let result = gpu::call_with(abi::op::MODES, &mut modes);
     ensure(result == 0, || format!("MODES: {}", errno(result)))?;
-    ensure(modes.current < modes.count && (modes.current as usize) < modes.modes.len(),
+    ensure(modes.current < modes.count && modes.current < modes.count,
         || "MODES: invalid current mode".to_string())?;
-    let mode = modes.modes[modes.current as usize];
+    let mode = modes.current_mode().expect("MODES current index is listed");
     // R53 (#1956), G11: oversized sources remain offscreen. When it fits,
     // the viewing path must still return its completed present fence.
     if 2560 > mode.width || 1600 > mode.height {

@@ -14,17 +14,17 @@ static RECOVERY_WAITERS:WaitQueueHead=WaitQueueHead::new();
 static WAITING:AtomicBool=AtomicBool::new(false);
 static WAITERS:WaitQueueHead=WaitQueueHead::new();
 struct Work {a:Channel,b:Channel,ticket:Option<Ticket>,request:Request,seed:u32,baseline:memory::allocator::Stats,old:[u32;3],userd:Allocation,engine:Engine}
-pub(super) struct Session {pub(super) layout:memory::Layout,pub(super) registers:usize,pub(super) bar:usize,pub(super) bi:u64,pub(super) bd:u64,pub(super) pte:u64,pub(super) total:u64,console:super::super::ConsoleSurface,modes:[gpu_abi::Mode;2],mode:u32,output_perturbation:super::super::display_crc::Perturbation,evo:super::super::native::Evo,pending_present:Option<super::super::present::Surface>,ready_present:Option<super::super::present::Receipt>,scanout:Vec<super::super::resource::Hold>,work:Option<Work>,resources:super::super::resource::Resources<crate::gpu::dma::Pages>}
+pub(super) struct Session {pub(super) layout:memory::Layout,pub(super) registers:usize,pub(super) bar:usize,pub(super) bi:u64,pub(super) bd:u64,pub(super) pte:u64,pub(super) total:u64,console:super::super::ConsoleSurface,modes:Vec<gpu_abi::Mode>,mode:u32,output_perturbation:super::super::display_crc::Perturbation,evo:super::super::native::Evo,pending_present:Option<super::super::present::Surface>,ready_present:Option<super::super::present::Receipt>,scanout:Vec<super::super::resource::Hold>,work:Option<Work>,resources:super::super::resource::Resources<crate::gpu::dma::Pages>}
 pub(in crate::gk208) fn test_ownership()->Result<(),&'static str> {
     if CORE_STARTED.load(Ordering::Acquire) {return Err("native GPU core owns FIFO");}
     Ok(())
 }
-pub(crate) fn retain(mut layout:memory::Layout,regs:usize,bar:usize,console:super::super::ConsoleSurface,mut evo:super::super::native::Evo,modes:[gpu_abi::Mode;2])->Result<super::super::ConsoleSurface,&'static str> {
+pub(crate) fn retain(mut layout:memory::Layout,regs:usize,bar:usize,console:super::super::ConsoleSurface,mut evo:super::super::native::Evo,modes:Vec<gpu_abi::Mode>)->Result<super::super::ConsoleSurface,&'static str> {
     test_ownership()?;
     let device=crate::drivers::pci::find_device(0x10de,0x128b).ok_or("native PCI device absent")?;
     super::super::display_evidence::baseline(console.firmware_baseline);
     let console=super::super::native::logical_console(&mut Registers(regs),&mut layout,
-        &mut evo,console,bar,device.bars[1].size,modes)?;
+        &mut evo,console,bar,device.bars[1].size,&modes)?;
     let native=layout.objects[4].range.start;
     let table=layout.objects.iter().find(|o|o.name=="bar1-table")
         .ok_or("logical console BAR table absent")?.range.start;
@@ -48,7 +48,7 @@ pub(in crate::gk208) fn initialize_core()->Result<(),&'static str> {
     })();
     // Builders borrow SESSION. Restore it before probing, without holding its
     // lock across device submission/reaping or storage retirement.
-    let modes = s.modes;
+    let modes = s.modes.clone();
     *SESSION.lock()=Some(s);
     let mut native = result?;
     crate::gpu::dev::select_gk208();
@@ -364,7 +364,6 @@ pub(crate) fn observed_scanout() -> Result<u32, &'static str> {
 /// Serialize a logical mode switch with client display readers through the
 /// shared ownership transition. No core spin lock is held across EVO waits.
 pub(crate) fn set_mode(index:u32)->Result<(), &'static str> {
-    if index>1 {return Err("invalid native logical mode");}
     let mut owner=SESSION.lock();
     let mut diagnostics=None;
     let result=(|| {
@@ -375,11 +374,11 @@ pub(crate) fn set_mode(index:u32)->Result<(), &'static str> {
             }
         }
         let surface={
-            let mode=s.modes[index as usize];
+            let mode=*s.modes.get(index as usize).ok_or("invalid native logical mode")?;
             let pitch=(mode.width*4+255)&!255;
             let address=if index==1 {s.console.vram} else {
-                s.layout.objects.iter().find(|o|o.name=="logical-low")
-                    .ok_or("logical low-mode allocation absent")?.range.start
+                s.layout.objects.iter().filter(|o|o.name=="logical-mode").nth(if index<1 {index as usize} else {index as usize-1})
+                    .ok_or("logical mode allocation absent")?.range.start
             };
             super::super::present::Surface{resource:u32::MAX,address,
                 width:mode.width,height:mode.height,pitch,block_height:0,format:0,dma:1}

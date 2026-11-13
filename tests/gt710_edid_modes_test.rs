@@ -33,7 +33,7 @@ fn dense_panel() -> [u8; 128] {
 
 #[test]
 fn recorded_monitor_modes_and_native_viewport() {
-    assert_eq!(modeset::display_modes(&R240_EDID).unwrap(), [(1024,768,1),(1280,1024,1)]);
+    assert_eq!(modeset::display_modes(&R240_EDID).unwrap(), [(1024,768,1),(1280,1024,1),(2560,2048,2)]);
     let methods = modeset::Viewport::for_raster(1280,1024,1280,1024).unwrap().methods(0).unwrap();
     for reg in [0x4b8, 0x4c0, 0x4c4, 0x4c8] {
         assert_eq!(methods.iter().find(|(r,_)| *r == reg).unwrap().1, 1280 | 1024 << 16);
@@ -43,8 +43,8 @@ fn recorded_monitor_modes_and_native_viewport() {
 #[test]
 fn density_and_missing_size() {
     let mut e = dense_panel();
-    assert_eq!(modeset::display_modes(&e).unwrap(), [(1280,800,1),(2560,1600,2)]);
+    assert_eq!(modeset::display_modes(&e).unwrap(), [(1280,800,1),(2560,1600,1),(5120,3200,2)]);
     e[66..69].fill(0);
     checksum(&mut e);
-    assert_eq!(modeset::display_modes(&e).unwrap(), [(1280,800,1),(2560,1600,1)]);
+    assert_eq!(modeset::display_modes(&e).unwrap(), [(1280,800,1),(2560,1600,1),(5120,3200,2)]);
 }
