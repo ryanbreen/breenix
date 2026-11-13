@@ -1099,7 +1099,7 @@ impl MapState {
     /// Runs under the filesystem write guard, after a mutation. A page that
     /// still cannot be read, or for which no memory is left, stays poisoned
     /// and faults on it raise SIGBUS.
-    pub(crate) fn repair(&self, fs: &Ext2Fs, ino: u32) {
+    pub(crate) fn repair(&self, fs: &Ext2Fs, ino: u64) {
         {
             let mut inner = self.inner.lock();
             if inner.poisoned.is_empty() {
@@ -1113,6 +1113,7 @@ impl MapState {
                 return;
             }
         }
+        let Ok(ino) = crate::fs::ext2::ino32(ino) else { return; };
         let Ok(inode) = fs.read_inode(ino) else {
             return;
         };
@@ -1972,15 +1973,3 @@ pub(crate) fn handle_fault(
     outcome
 }
 
-/// errno for a failed file write: one that could not allocate cache pages for
-/// the mapped holes it fills is ENOMEM, with the file unchanged. A read-only
-/// mount reports EROFS; other storage failures report EIO.
-pub(crate) fn mutation_errno(error: &'static str) -> u64 {
-    if error == crate::fs::ext2::EXT2_READ_ONLY {
-        crate::syscall::errno::EROFS as u64
-    } else if error.starts_with("Out of memory") {
-        crate::syscall::errno::ENOMEM as u64
-    } else {
-        crate::syscall::errno::EIO as u64
-    }
-}

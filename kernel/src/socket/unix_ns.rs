@@ -3,8 +3,7 @@
 use super::addr::UnixName;
 use super::object::Socket;
 use crate::fs::{
-    ext2::live_inode::FileHandle,
-    ext2::FileType,
+    ext2::{errno::errno as ext2_errno, live_inode::FileHandle, FileType},
     namei::{Last, Target},
     permissions::Credentials,
 };
@@ -135,11 +134,11 @@ fn path_key(bytes: &[u8]) -> Result<Key, i32> {
         return Err(ECONNREFUSED);
     };
     let handle = resolved.handle().ok_or(EIO)?.clone();
-    let guard = mount.read().map_err(|e| e as i32)?;
+    let guard = mount.read().map_err(|e| e.0)?;
     let fs = guard.as_ref().ok_or(EIO)?;
     let inode = fs
         .read_inode(handle.verify(fs).map_err(|_| ENOENT)?)
-        .map_err(|e| crate::fs::namei::fs_errno(e) as i32)?;
+        .map_err(ext2_errno).map_err(|e| e.0)?;
     if !cred.may(inode.attrs(), 2) {
         return Err(EACCES);
     }
@@ -163,30 +162,21 @@ fn create_path(bytes: &[u8]) -> Result<Key, i32> {
     }
     let parent = resolved.entry_dir().ok_or(EIO)?;
     let name = resolved.path.rsplit(|b| *b == b'/').next().ok_or(EINVAL)?;
-    let mut guard = mount.write().map_err(|e| e as i32)?;
+    let mut guard = mount.write().map_err(|e| e.0)?;
     let fs = guard.as_mut().ok_or(EIO)?;
     let parent = parent.verify(fs).map_err(|_| ENOENT)?;
     let inode = fs
         .read_inode(parent)
-        .map_err(|e| crate::fs::namei::fs_errno(e) as i32)?;
+        .map_err(ext2_errno).map_err(|e| e.0)?;
     let gid = crate::syscall::fifo_policy::check_parent_access(&inode, &cred, None)
         .map_err(|e| e as i32)?;
     let mode = 0o140000 | crate::syscall::fifo_policy::creation_mode(0o777, &cred, gid, false);
     fs.create_node_prepared(parent, name, mode, cred.euid, gid, 0, |fs, ino| {
         fs.pin_loaded_inode(ino, 0)
     })
+    .map_err(ext2_errno)
     .map(Key::Path)
-    .map_err(|error| {
-        if error.contains("already exists") {
-            EADDRINUSE
-        } else if error.contains("not found") {
-            ENOENT
-        } else if error.contains("No free") || error.contains("No space") {
-            ENOSPC
-        } else {
-            crate::fs::namei::fs_errno(error) as i32
-        }
-    })
+    .map_err(|error| if error.0 == EEXIST { EADDRINUSE } else { error.0 })
 }
 pub fn bind_name(name: &UnixName, socket: Weak<Socket>) -> Result<(), i32> {
     // Allocate the complete binding before creating any on-disk node. Publication

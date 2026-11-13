@@ -891,9 +891,8 @@ fn write_file_range_impl<B: BlockDevice + ?Sized, D: BlockDevice + ?Sized>(
                 let new_block =
                     match super::block_group::allocate_data_block(device, superblock, block_groups) {
                         Ok(b) => b,
-                        Err(_) => {
-                            return Err(BlockError::IoError);
-                        }
+                        Err("No free blocks available") => return Err(BlockError::NoSpace),
+                        Err(_) => return Err(BlockError::IoError),
                     };
 
                 allocated = true;

@@ -12,3 +12,6 @@ log = "0.4"
 [lib]
 name = "kernel"
 doctest = false
+
+[dev-dependencies]
+syn = { version = "2", features = ["full", "visit"] }

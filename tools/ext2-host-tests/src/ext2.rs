@@ -1,3 +1,7 @@
+#[path = "../../../kernel/src/fs/ext2/write.rs"]
+mod write;
+#[path = "../../../kernel/src/fs/ext2/errno.rs"]
+pub mod errno;
 #[path = "../../../kernel/src/fs/ext2/block_group.rs"]
 pub mod block_group;
 #[path = "../../../kernel/src/fs/ext2/file.rs"]
@@ -32,6 +36,8 @@ pub use superblock::*;
 /// opens no files, so no inode has a live page-cache object to mark.
 pub struct LiveInodes;
 impl LiveInodes {
+    pub fn publish_size(&self, _inode: u32, _size: u64) {}
+
     pub fn get(&self, _inode: u32) -> Option<&LiveInode> {
         None
     }
@@ -40,7 +46,12 @@ pub struct LiveInode {
     pub map: FileMap,
 }
 pub struct FileMap;
+fn content_privilege(mode: u16) -> u16 {
+    0o4000 | if mode & 0o0010 != 0 { 0o2000 } else { 0 }
+}
 impl FileMap {
+    pub fn restore_disk_epoch(&self, _epoch: u64) {}
+
     pub fn note_disk_write(&self, _epoch: u64) -> u64 {
         0
     }
@@ -54,6 +65,10 @@ pub struct Ext2Fs {
     namespace: generation::Namespace,
 }
 impl Ext2Fs {
+    // The host fixture has no pending shrink or file-size limit.
+    fn check_shrink(&self, _inode: u32) -> Result<(), &'static str> { Ok(()) }
+    fn max_file_size(&self) -> u64 { u64::MAX }
+
     pub fn host_new(device: Box<dyn crate::block::BlockDevice>, superblock: Ext2Superblock, block_groups: Vec<Ext2BlockGroupDesc>) -> Self {
         Self { device, superblock, block_groups, durable_epoch: core::sync::atomic::AtomicU64::new(0), live_inodes: LiveInodes, namespace: generation::Namespace::RAW }
     }
@@ -297,6 +312,27 @@ mod reclaim_checks {
         assert!(b.finish(&mut fs, 2, &mut 128).ok().unwrap());
         let free = fs.block_groups[0].bg_free_blocks_count;
         assert_eq!(free, 512);
+    }
+
+    #[test]
+    fn full_disk_write_returns_enospc() {
+        use crate::{fs::errno::Errno, syscall::errno::ENOSPC};
+        // Exercise the production allocator, disk-write publication and errno
+        // boundary used by write and pwrite, at direct and indirect offsets.
+        for (offset, free) in [(0, 0), (12 * 4096, 0), (12 * 4096, 1)] {
+            let (mut fs, data, _, _) = two_orphans();
+            fs.write_inode(1, &Ext2Inode::new_regular_file(0o600, 0, 0)).unwrap();
+            data.lock().unwrap()[3 * 4096..4 * 4096].fill(0xff);
+            if free == 1 {
+                // Enough for the data block, but not its indirect pointer block.
+                data.lock().unwrap()[3 * 4096 + 5] &= !1;
+            }
+            fs.block_groups[0].bg_free_blocks_count = free;
+            fs.superblock.s_free_blocks_count = free as u32;
+            let error = fs.write_file_range_disk(1, offset, &[0x5a], false, false).unwrap_err();
+            assert_eq!(errno::errno(error), Errno(ENOSPC), "offset {offset}: {error}");
+            assert_eq!(fs.read_inode(1).unwrap().size(), 0);
+        }
     }
 
     #[test]
@@ -582,7 +618,7 @@ mod reclaim_checks {
                 // namespace branch is exercised using real ext2 records.
                 let root = fs.read_inode(2).unwrap();
                 fs.write_inode(100, &root).unwrap();
-                fs.namespace = generation::Namespace { root: 100, etc: 101, data: 102, shared: 0 };
+                fs.namespace = generation::Namespace { root: 100, etc: 101, data: 102, shared: 0, mutable: [0; 6] };
             }
             assert_eq!(fs.resolve_path("/file/."), Err("Not a directory in path"));
             assert_eq!(fs.resolve_path_no_follow("/file/."), Err("Not a directory in path"));
@@ -602,7 +638,7 @@ mod reclaim_checks {
         let store = fs.create_node(2, generation::SHARED, 0o40700, 0, 0, 0).unwrap();
         let store_etc = fs.create_node(store, "etc", 0o40755, 0, 0, 0).unwrap();
         let key = fs.create_node(store_etc, "ssh_host_ed25519_key", 0o100600, 0, 0, 0).unwrap();
-        fs.namespace = generation::Namespace { root: generation, etc, data, shared: store };
+        fs.namespace = generation::Namespace { root: generation, etc, data, shared: store, mutable: [0; 6] };
         assert_eq!(fs.resolve_path("/.breenix-shared"), Ok(store));
         assert_eq!(fs.resolve_path("/.breenix-shared/etc/ssh_host_ed25519_key"), Ok(key));
         assert_eq!(fs.resolve_path("/.breenix-shared/.."), Ok(generation));

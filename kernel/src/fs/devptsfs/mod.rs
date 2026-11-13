@@ -112,7 +112,7 @@ pub fn lookup_by_inode(inode: u64) -> Option<u32> {
         return None;
     }
 
-    let pty_num = (inode - PTY_INODE_BASE) as u32;
+    let pty_num = u32::try_from(inode - PTY_INODE_BASE).ok()?;
     visible(pty_num).then_some(pty_num)
 }
 

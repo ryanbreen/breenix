@@ -1,6 +1,7 @@
 //! Named FIFO creation through Linux mknod/mknodat on ext2.
 use super::{errno::*, SyscallResult};
 use crate::fs::{
+    ext2::errno::errno as ext2_errno,
     namei::{Last, Target},
     permissions::Credentials,
 };
@@ -53,7 +54,7 @@ pub(crate) fn mknodat_path(dirfd: i32, raw: impl AsRef<[u8]>, mode: u32, dev: u6
     let Some(parent) = resolved.entry_dir() else {
         return SyscallResult::Err(EIO as u64);
     };
-    let mut guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
+    let mut guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
     let Some(fs) = guard.as_mut() else {
         return SyscallResult::Err(EIO as u64);
     };
@@ -61,18 +62,18 @@ pub(crate) fn mknodat_path(dirfd: i32, raw: impl AsRef<[u8]>, mode: u32, dev: u6
         Ok(ino) => ino,
         Err(_) => return SyscallResult::Err(ENOENT as u64),
     };
-    let inode = match fs.read_inode(parent) {
+    let inode = match fs.read_inode(parent).map_err(ext2_errno) {
         Ok(inode) => inode,
-        Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)),
+        Err(e) => return SyscallResult::Err(e.into()),
     };
     let gid = match super::fifo_policy::check_parent_access(&inode, &cred, None) {
         Ok(gid) => gid,
         Err(e) => return SyscallResult::Err(e),
     };
-    match fs.lookup_in_dir_bytes(&inode, resolved.final_name()) {
+    match fs.lookup_in_dir_bytes(&inode, resolved.final_name()).map_err(ext2_errno) {
         Ok(Some(_)) => return SyscallResult::Err(EEXIST as u64),
         Ok(None) => {}
-        Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)),
+        Err(e) => return SyscallResult::Err(e.into()),
     }
     // Linux's zero-device character whiteout is exempt from CAP_MKNOD.
     let device_node = crate::process::privilege::Operation::DeviceNode;
@@ -90,18 +91,8 @@ pub(crate) fn mknodat_path(dirfd: i32, raw: impl AsRef<[u8]>, mode: u32, dev: u6
         cred.euid,
         gid,
         dev as u32,
-    ) {
+    ).map_err(ext2_errno) {
         Ok(_) => SyscallResult::Ok(0),
-        Err(error) => SyscallResult::Err(if error.contains("already exists") {
-            EEXIST
-        } else if error.contains("not found") {
-            ENOENT
-        } else if error.contains("No free") || error.contains("No space") {
-            ENOSPC
-        } else if error.contains("memory") {
-            ENOMEM
-        } else {
-            EIO
-        } as u64),
+        Err(error) => SyscallResult::Err(error.into()),
     }
 }
