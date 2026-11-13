@@ -4,7 +4,10 @@ use crate::{
     errno::Errno,
     host_mounts::Fixture,
     syscall_errno::*,
-    vfs::{FileSystem, NewNode, NodeKind, Remove, RenameMode, SetAttr, Timestamp},
+    vfs::{
+        FileSystem, NewNode, NodeKind, Remove, RenameMode, SetAttr, Timestamp, WriteAt, Xattr,
+        XattrSet,
+    },
 };
 
 fn attrs(mode: u32) -> InodeAttrs {
@@ -248,4 +251,191 @@ fn mount_inode_attributes_and_open() {
     assert!(node.incarnation > 0);
     assert_eq!(fs.getattr(u32::MAX as u64 + 1), Err(Errno(ENOENT)));
     fs.sync().unwrap();
+}
+
+#[test]
+fn append_write_extends_and_reads_back() {
+    let disk = Fixture::new();
+    let fs = Ext2Adapter::new(disk.pin());
+    let ino = regular(&fs, fs.root().unwrap(), b"append");
+    let node = fs.open(ino).unwrap();
+    let other = fs.open(ino).unwrap();
+    assert_eq!(fs.write(&node, WriteAt::Offset(0), b"hello"), Ok(5));
+    assert_eq!(fs.write(&other, WriteAt::Append, b" world"), Ok(6));
+    assert_eq!(fs.write(&node, WriteAt::Append, b"!"), Ok(1));
+    let mut bytes = [0xa5; 20];
+    assert_eq!(fs.read(&other, 0, &mut bytes), Ok(12));
+    assert_eq!(&bytes[..12], b"hello world!");
+    assert_eq!(&bytes[12..], &[0xa5; 8]);
+    assert_eq!(fs.read(&node, 12, &mut bytes), Ok(0));
+    assert_eq!(fs.read(&node, 6, &mut bytes[..5]), Ok(5));
+    assert_eq!(&bytes[..5], b"world");
+    assert_eq!(fs.getattr(ino).unwrap().size, 12);
+    fs.fsync(&node, false).unwrap();
+    fs.fsync(&other, true).unwrap();
+    let mut value = [0; 8];
+    assert_eq!(
+        fs.xattr(
+            ino,
+            Xattr::Get {
+                name: b"user.test",
+                value: &mut value
+            }
+        ),
+        Err(Errno(EOPNOTSUPP))
+    );
+    assert_eq!(
+        fs.xattr(ino, Xattr::List { names: &mut value }),
+        Err(Errno(EOPNOTSUPP))
+    );
+    assert_eq!(
+        fs.xattr(
+            ino,
+            Xattr::Set {
+                name: b"user.test",
+                value: b"value",
+                mode: XattrSet::Upsert
+            }
+        ),
+        Err(Errno(EOPNOTSUPP))
+    );
+    assert_eq!(
+        fs.xattr(ino, Xattr::Remove { name: b"user.test" }),
+        Err(Errno(EOPNOTSUPP))
+    );
+}
+
+#[test]
+fn resize_shrink_then_grow_reads_zeros() {
+    let disk = Fixture::new();
+    let fs = Ext2Adapter::new(disk.pin());
+    let ino = regular(&fs, fs.root().unwrap(), b"resize");
+    let node = fs.open(ino).unwrap();
+    let data = vec![0x5a; 3 * 4096];
+    assert_eq!(fs.write(&node, WriteAt::Offset(0), &data), Ok(data.len()));
+    fs.resize(&node, 37).unwrap();
+    fs.resize(&node, data.len() as u64).unwrap();
+    let mut bytes = vec![0xa5; data.len()];
+    assert_eq!(fs.read(&node, 0, &mut bytes), Ok(bytes.len()));
+    assert_eq!(&bytes[..37], &[0x5a; 37]);
+    assert!(bytes[37..].iter().all(|b| *b == 0));
+    assert_eq!(fs.getattr(ino).unwrap().size, data.len() as u64);
+}
+
+#[test]
+fn write_beyond_max_file_size_is_efbig() {
+    let disk = Fixture::new();
+    let fs = Ext2Adapter::new(disk.pin());
+    let ino = regular(&fs, fs.root().unwrap(), b"limit");
+    let node = fs.open(ino).unwrap();
+    let before = fs.getattr(ino).unwrap();
+    let free = fs.statfs().unwrap().free_blocks;
+    let limit = fs.max_file_size().unwrap();
+    assert_eq!(
+        fs.write(&node, WriteAt::Offset(limit), b"x"),
+        Err(Errno(EFBIG))
+    );
+    assert_eq!(
+        fs.write(&node, WriteAt::Offset(u64::MAX), b"x"),
+        Err(Errno(EFBIG))
+    );
+    assert_eq!(fs.getattr(ino).unwrap(), before);
+    assert_eq!(fs.statfs().unwrap().free_blocks, free);
+}
+
+#[test]
+fn statfs_free_blocks_fall_after_write() {
+    let disk = Fixture::new();
+    let fs = Ext2Adapter::new(disk.pin());
+    let ino = regular(&fs, fs.root().unwrap(), b"space");
+    let node = fs.open(ino).unwrap();
+    let before = fs.statfs().unwrap();
+    assert_eq!(
+        fs.write(&node, WriteAt::Offset(0), &vec![1; 8192]),
+        Ok(8192)
+    );
+    let after = fs.statfs().unwrap();
+    assert_eq!(after.blocks, before.blocks);
+    assert_eq!(after.free_blocks, before.free_blocks - 2);
+    assert_eq!(after.available_blocks, before.available_blocks - 2);
+    fs.sync().unwrap();
+}
+
+#[test]
+fn setattr_times_round_trip() {
+    let disk = Fixture::new();
+    let fs = Ext2Adapter::new(disk.pin());
+    let ino = regular(&fs, fs.root().unwrap(), b"times");
+    let before = fs.getattr(ino).unwrap();
+    fs.setattr(
+        ino,
+        SetAttr {
+            atime: Some(Timestamp {
+                sec: 123456789,
+                nsec: 123456789,
+            }),
+            mtime: Some(Timestamp {
+                sec: 234567890,
+                nsec: 999999999,
+            }),
+            ..SetAttr::default()
+        },
+    )
+    .unwrap();
+    let after = fs.getattr(ino).unwrap();
+    assert_eq!(
+        after.times.atime,
+        Timestamp {
+            sec: 123456789,
+            nsec: 0
+        }
+    );
+    assert_eq!(
+        after.times.mtime,
+        Timestamp {
+            sec: 234567890,
+            nsec: 0
+        }
+    );
+    assert_eq!(after.attrs, before.attrs);
+    assert_eq!(
+        fs.setattr(
+            ino,
+            SetAttr {
+                mode: Some(0o777),
+                mtime: Some(Timestamp {
+                    sec: 1,
+                    nsec: 1_000_000_000
+                }),
+                ..SetAttr::default()
+            }
+        ),
+        Err(Errno(EINVAL))
+    );
+    assert_eq!(fs.getattr(ino).unwrap(), after);
+}
+
+#[test]
+fn read_only_mount_write_is_erofs() {
+    let disk = Fixture::new();
+    let fs = Ext2Adapter::new(disk.pin());
+    let ino = regular(&fs, fs.root().unwrap(), b"readonly");
+    let node = fs.open(ino).unwrap();
+    disk.remount_read_only();
+    assert_eq!(fs.read_only(), Ok(true));
+    assert!(fs.statfs().unwrap().flags.read_only);
+    assert_eq!(fs.write(&node, WriteAt::Offset(0), b"x"), Err(Errno(EROFS)));
+    assert_eq!(fs.write(&node, WriteAt::Append, b"x"), Err(Errno(EROFS)));
+    assert_eq!(fs.resize(&node, 1), Err(Errno(EROFS)));
+    assert_eq!(
+        fs.setattr(
+            ino,
+            SetAttr {
+                mode: Some(0o777),
+                ..SetAttr::default()
+            }
+        ),
+        Err(Errno(EROFS))
+    );
+    assert_eq!(fs.getattr(ino).unwrap().size, 0);
 }
