@@ -136,8 +136,22 @@ impl Ext2Fs {
         self.read_file_range(inode, offset, length)
     }
     pub fn write_file_range(&mut self, ino: u32, offset: u64, bytes: &[u8]) -> Result<usize, &'static str> {
+        self.write_file_range_as(ino, offset, bytes, false)
+    }
+    pub fn write_file_range_as(&mut self, ino: u32, offset: u64, bytes: &[u8], unprivileged: bool) -> Result<usize, &'static str> {
         self.ensure_writable()?;
-        self.write_file_range_disk(ino, offset, bytes, false, false)
+        self.write_file_range_disk(ino, offset, bytes, unprivileged, false)
+    }
+    // Disk-only counterpart of Ext2Fs::update_atime; the relatime predicate is
+    // the production Ext2Inode::needs_atime_update shared by this harness.
+    pub fn update_atime(&mut self, ino: u32) -> Result<(), &'static str> {
+        if self.is_read_only() { return Ok(()); }
+        let mut inode = self.read_inode(ino)?;
+        if inode.needs_atime_update() {
+            inode.i_atime = crate::time::current_unix_time() as u32;
+            self.write_inode_disk(ino, &inode)?;
+        }
+        Ok(())
     }
     pub fn begin_resize_file_as(&mut self, ino: u32, size: u64, unprivileged: bool) -> Result<Option<ShrinkTicket>, &'static str> {
         self.ensure_writable()?;

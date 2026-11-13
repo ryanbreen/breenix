@@ -260,9 +260,45 @@ fn append_write_extends_and_reads_back() {
     let ino = regular(&fs, fs.root().unwrap(), b"append");
     let node = fs.open(ino).unwrap();
     let other = fs.open(ino).unwrap();
-    assert_eq!(fs.write(&node, WriteAt::Offset(0), b"hello"), Ok(5));
-    assert_eq!(fs.write(&other, WriteAt::Append, b" world"), Ok(6));
-    assert_eq!(fs.write(&node, WriteAt::Append, b"!"), Ok(1));
+    assert_eq!(
+        fs.write(
+            &node,
+            WriteReq {
+                at: WriteAt::Offset(0),
+                limit: u64::MAX,
+                clear_setid: false
+            },
+            b"hello"
+        )
+        .map(|r| r.bytes),
+        Ok(5)
+    );
+    assert_eq!(
+        fs.write(
+            &other,
+            WriteReq {
+                at: WriteAt::Append,
+                limit: u64::MAX,
+                clear_setid: false
+            },
+            b" world"
+        )
+        .map(|r| r.bytes),
+        Ok(6)
+    );
+    assert_eq!(
+        fs.write(
+            &node,
+            WriteReq {
+                at: WriteAt::Append,
+                limit: u64::MAX,
+                clear_setid: false
+            },
+            b"!"
+        )
+        .map(|r| r.bytes),
+        Ok(1)
+    );
     let mut bytes = [0xa5; 20];
     assert_eq!(fs.read(&other, 0, &mut bytes), Ok(12));
     assert_eq!(&bytes[..12], b"hello world!");
@@ -312,9 +348,21 @@ fn resize_shrink_then_grow_reads_zeros() {
     let ino = regular(&fs, fs.root().unwrap(), b"resize");
     let node = fs.open(ino).unwrap();
     let data = vec![0x5a; 3 * 4096];
-    assert_eq!(fs.write(&node, WriteAt::Offset(0), &data), Ok(data.len()));
-    fs.resize(&node, 37).unwrap();
-    fs.resize(&node, data.len() as u64).unwrap();
+    assert_eq!(
+        fs.write(
+            &node,
+            WriteReq {
+                at: WriteAt::Offset(0),
+                limit: u64::MAX,
+                clear_setid: false
+            },
+            &data
+        )
+        .map(|r| r.bytes),
+        Ok(data.len())
+    );
+    fs.resize(&node, 37, false).unwrap();
+    fs.resize(&node, data.len() as u64, false).unwrap();
     let mut bytes = vec![0xa5; data.len()];
     assert_eq!(fs.read(&node, 0, &mut bytes), Ok(bytes.len()));
     assert_eq!(&bytes[..37], &[0x5a; 37]);
@@ -332,11 +380,29 @@ fn write_beyond_max_file_size_is_efbig() {
     let free = fs.statfs().unwrap().free_blocks;
     let limit = fs.max_file_size().unwrap();
     assert_eq!(
-        fs.write(&node, WriteAt::Offset(limit), b"x"),
+        fs.write(
+            &node,
+            WriteReq {
+                at: WriteAt::Offset(limit),
+                limit: u64::MAX,
+                clear_setid: false
+            },
+            b"x"
+        )
+        .map(|r| r.bytes),
         Err(Errno(EFBIG))
     );
     assert_eq!(
-        fs.write(&node, WriteAt::Offset(u64::MAX), b"x"),
+        fs.write(
+            &node,
+            WriteReq {
+                at: WriteAt::Offset(u64::MAX),
+                limit: u64::MAX,
+                clear_setid: false
+            },
+            b"x"
+        )
+        .map(|r| r.bytes),
         Err(Errno(EFBIG))
     );
     assert_eq!(fs.getattr(ino).unwrap(), before);
@@ -351,7 +417,16 @@ fn statfs_free_blocks_fall_after_write() {
     let node = fs.open(ino).unwrap();
     let before = fs.statfs().unwrap();
     assert_eq!(
-        fs.write(&node, WriteAt::Offset(0), &vec![1; 8192]),
+        fs.write(
+            &node,
+            WriteReq {
+                at: WriteAt::Offset(0),
+                limit: u64::MAX,
+                clear_setid: false
+            },
+            &vec![1; 8192]
+        )
+        .map(|r| r.bytes),
         Ok(8192)
     );
     let after = fs.statfs().unwrap();
@@ -424,9 +499,33 @@ fn read_only_mount_write_is_erofs() {
     disk.remount_read_only();
     assert_eq!(fs.read_only(), Ok(true));
     assert!(fs.statfs().unwrap().flags.read_only);
-    assert_eq!(fs.write(&node, WriteAt::Offset(0), b"x"), Err(Errno(EROFS)));
-    assert_eq!(fs.write(&node, WriteAt::Append, b"x"), Err(Errno(EROFS)));
-    assert_eq!(fs.resize(&node, 1), Err(Errno(EROFS)));
+    assert_eq!(
+        fs.write(
+            &node,
+            WriteReq {
+                at: WriteAt::Offset(0),
+                limit: u64::MAX,
+                clear_setid: false
+            },
+            b"x"
+        )
+        .map(|r| r.bytes),
+        Err(Errno(EROFS))
+    );
+    assert_eq!(
+        fs.write(
+            &node,
+            WriteReq {
+                at: WriteAt::Append,
+                limit: u64::MAX,
+                clear_setid: false
+            },
+            b"x"
+        )
+        .map(|r| r.bytes),
+        Err(Errno(EROFS))
+    );
+    assert_eq!(fs.resize(&node, 1, false), Err(Errno(EROFS)));
     assert_eq!(
         fs.setattr(
             ino,
@@ -728,6 +827,10 @@ fn read_moves_stale_atime_only() {
     };
     let mut bytes = [0; 4];
     set_times(0, 0, 0);
+    assert_eq!(fs.read(&node, 4, &mut bytes), Ok(0));
+    assert_eq!(fs.getattr(ino).unwrap().times.atime.sec, 0);
+    assert_eq!(fs.read(&node, 0, &mut bytes[..0]), Ok(0));
+    assert_eq!(fs.getattr(ino).unwrap().times.atime.sec, 0);
     let before = fs.getattr(ino).unwrap();
     assert_eq!(fs.read(&node, 0, &mut bytes), Ok(4));
     assert_eq!(&bytes, b"data");

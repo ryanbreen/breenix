@@ -133,6 +133,23 @@ pub enum WriteAt {
     Offset(u64),
     Append,
 }
+/// The caller snapshots its resource limit and credential decision before locking.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WriteReq {
+    pub at: WriteAt,
+    pub limit: u64,
+    pub clear_setid: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WriteResult {
+    /// Offset selected under the backend's write guard, including for append.
+    pub offset: u64,
+    pub bytes: usize,
+    /// The request was shortened by the caller's file-size limit.
+    pub limited: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum XattrSet {
     Upsert,
@@ -214,10 +231,10 @@ pub trait FileSystem: core::any::Any + Send + Sync {
     fn read(&self, _node: &VNode, _off: u64, _buf: &mut [u8]) -> Result<usize, Errno> {
         Err(Errno(EOPNOTSUPP))
     }
-    fn write(&self, _node: &VNode, _at: WriteAt, _buf: &[u8]) -> Result<usize, Errno> {
+    fn write(&self, _node: &VNode, _req: WriteReq, _buf: &[u8]) -> Result<WriteResult, Errno> {
         Err(Errno(EOPNOTSUPP))
     }
-    fn resize(&self, _node: &VNode, _size: u64) -> Result<(), Errno> {
+    fn resize(&self, _node: &VNode, _size: u64, _clear_setid: bool) -> Result<(), Errno> {
         Err(Errno(EOPNOTSUPP))
     }
     fn fsync(&self, _node: &VNode, _data_only: bool) -> Result<(), Errno> {
