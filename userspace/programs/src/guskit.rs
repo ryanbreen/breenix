@@ -14,6 +14,12 @@ use libcollab::wire::DrawOp;
 #[path = "guskit/save_barrier.rs"] mod save_barrier;
 use canvas::{Canvas, History, Point, Radius};
 
+fn session_title(name: &str) -> String {
+    let mut end = name.len().min(libbreenix::window::abi::limits::MAX_TITLE - "Gus Kit ()".len());
+    while !name.is_char_boundary(end) { end -= 1; }
+    format!("Gus Kit ({})", &name[..end])
+}
+
 const TOP: i32 = 176;
 const NAMES: [&str; 7] = ["pencil", "brush", "line", "rectangle", "circle", "fill", "eraser"];
 const LABELS: [&[u8]; 7] = [b"Pen", b"Brsh", b"Line", b"Rect", b"Circ", b"Fill", b"Ers"];
@@ -300,12 +306,14 @@ fn render(fb: &mut Surface, app: &mut App, menu: &MenuBar, font: &mut Option<Cac
     if app.confirm { shapes::fill_rect(fb, 180, 220, 440, 64, Color::rgb(30,30,30)); draw_label(fb, font.as_mut(), font_size, "Discard changes? D: discard  Esc: cancel", 190, 242, Clip::new(180, 220, 440, 64)); }
     });
 }
-fn publish(win: &mut Window, app: &App, font_size: f32) {
+fn publish(win: &mut Window, app: &App, menu: &MenuBar, font_size: f32) {
+    use libbui::widget::Widget;
     use breengel::tree::{Flag, Node, Role, Tree};
     let bounds = [0, 0, i64::from(win.width()), i64::from(win.height())];
     let canvas_bounds = [0, TOP as i64, app.width as i64, app.height as i64];
     let mut children = vec![node::canvas(canvas_bounds, app.width, app.height, app.canvas().digest()), node::status(bounds, &node::Status { tool: NAMES[app.tool], size: ["small", "medium", "large"][app.size], color: app.color(), undo: app.undo_depth(), redo: app.redo_depth(), dirty: app.dirty(), file: app.file.as_ref().and_then(|p| p.to_str()), message: app.status(), font_path: win.display_path(), font_size })];
     if let Some(session)=&app.session { children.push(node::collab(bounds,&session.core.model)); }
+    children.extend(menu.tree_nodes("menu", Some("root"), Rect::new(0, 0, win.width() as i32, win.height() as i32), &Theme::dark()));
     children.extend(node::tools(core::array::from_fn(|i| [(2 + i * 38) as i64, 23, 36, 16]), NAMES[app.tool]));
     children.push(node::hue([0,58,780,18])); children.push(node::sv([0,76,100,100]));
     if app.picker.is_some() { children.push(Node { key: if app.save_as { "save-as" } else { "open" }.into(), parent: Some("root".into()), role: Role::Dialog, name: if app.save_as { "Save As" } else { "Open" }.into(), value: serde_json::json!({"directory":app.directory.to_string_lossy()}), bounds: [150,100,500,400], clip: bounds, flags: vec![Flag::Enabled, Flag::Visible] }); }
@@ -380,7 +388,7 @@ fn main() {
         let result=if host {collab::Session::host(address,port,&name,app.canvas().clone(),width,height)} else {collab::Session::join(address,port,&name)};
         app.session=Some(result.unwrap_or_else(|e| {eprintln!("Gus Kit session: {e}");std::process::exit(1)}));
     }
-    let title=app.session.as_ref().map_or_else(||"Gus Kit".into(),|s|format!("Gus Kit ({})",s.core.model.name));
+    let title=app.session.as_ref().map_or_else(||"Gus Kit".into(),|s|session_title(&s.core.model.name));
     let mut win = Window::new(title.as_bytes(), 800, 600).unwrap_or_else(|e| { eprintln!("Gus Kit: {e}"); std::process::exit(1) });
     let mut menu = menu();
     let mut font = win.take_display_font();
@@ -391,7 +399,7 @@ fn main() {
         menu.set_enabled(UNDO, app.session.is_some() || app.undo_depth() > 0); menu.set_enabled(REDO, app.redo_depth() > 0);
         if redraw {
             if let Ok(surface) = win.surface() { render(surface, &mut app, &menu, &mut font, font_size); }
-            publish(&mut win, &app, font_size); let _ = win.present();
+            publish(&mut win, &app, &menu, font_size); let _ = win.present();
         }
         if app.quit { break; }
         redraw = false;
@@ -407,6 +415,14 @@ fn main() {
         };
         let result=if collaborating { win.dispatch(&mut dispatch) } else { win.wait_dispatch(100_000_000,&mut dispatch) };
         let count=result.unwrap_or_else(|e| { if matches!(e, libbreenix::error::Error::Os(libbreenix::errno::Errno::ETIMEDOUT)) { 0 } else { eprintln!("Gus Kit dispatch: {e}"); std::process::exit(1) } });
+        if !collaborating {
+            if let Some(session) = &app.session {
+                let title = session_title(&session.core.model.name);
+                libbreenix::window::set_title(win.id(), title.as_bytes()).unwrap_or_else(|e| {
+                    eprintln!("Gus Kit title: {e}"); std::process::exit(1)
+                });
+            }
+        }
         if reload_font {
             win.put_display_font(font.take());
             font = win.take_display_font();
