@@ -733,6 +733,7 @@ fn wm_checkpoint(
         let mut commits = [(0, 0, 0); 2];
         for (index, id) in ids.into_iter().enumerate() {
             let before = wm_window(id)?;
+            let diagnostic_start = std::time::Instant::now();
             let phase = Phase::new("arena");
             live.session().next_checkpoint()?;
             phase.finish();
@@ -742,6 +743,19 @@ fn wm_checkpoint(
             let after = wm_window(id)?;
             if before.pixel_gen != after.pixel_gen {
                 if std::time::Instant::now() >= deadline {
+                    println!("OPEN_FRONT_DIAG window={} before_gen={} after_gen={} before_commit={} after_commit={} elapsed_ns={}",
+                        id, before.pixel_gen, after.pixel_gen, before.commit_id, after.commit_id,
+                        diagnostic_start.elapsed().as_nanos());
+                    if let Ok(trace) = std::fs::read_to_string("/proc/breenix/window-pipeline-full") {
+                        let rows: Vec<_> = trace.lines().filter(|line| {
+                            let mut fields = line.split_whitespace();
+                            matches!(fields.next(), Some("3" | "4" | "14" | "47" | "48"))
+                                && fields.next().and_then(|s| s.parse::<u64>().ok()) == Some(id)
+                        }).collect();
+                        for row in rows.iter().skip(rows.len().saturating_sub(128)) {
+                            println!("OPEN_FRONT_EVENT {row}");
+                        }
+                    }
                     return Err(format!("WM client front did not stabilize window={id}"));
                 }
                 phases::reacquire();

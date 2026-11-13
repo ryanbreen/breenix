@@ -1936,6 +1936,7 @@ fn pin_is_home(pin: live_inode::MountPin) -> Result<bool, &'static str> {
 /// Route only to an installed mount whose VFS ID and lifetime token match.
 /// Only the selected guard is taken, and it stays held for the caller.
 pub fn read_mount(pin: live_inode::MountPin) -> Result<Ext2ReadGuard, &'static str> {
+    let _guard_probe = crate::fs::open_wait::stage(crate::fs::open_wait::Metric::ReadGuard);
     let guard = if pin_is_home(pin)? {
         home_fs_read()
     } else {
@@ -1946,6 +1947,7 @@ pub fn read_mount(pin: live_inode::MountPin) -> Result<Ext2ReadGuard, &'static s
 }
 
 pub fn write_mount(pin: live_inode::MountPin) -> Result<Ext2WriteGuard, &'static str> {
+    let _guard_probe = crate::fs::open_wait::stage(crate::fs::open_wait::Metric::WriteGuard);
     let guard = if pin_is_home(pin)? {
         home_fs_write()
     } else {

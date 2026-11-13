@@ -756,6 +756,7 @@ pub fn publish_ready() {
                 w.pixel_gen = pending.pixel_gen;
                 w.meta = pending.meta;
                 super::pipeline::record(14, w.id, w.commit_id, w.meta.processed_serial);
+                super::pipeline::record(47, w.id, w.pixel_gen, w.meta.processed_serial);
                 if w.log.len() == limits::DAMAGE_LOG {
                     if let Some((evicted, _)) = w.log.pop_front() { w.log_floor = evicted; }
                 }
@@ -1125,7 +1126,10 @@ pub fn read_events(caller: &Caller, r: &mut ReadEvents, out_arg: u64) -> Result<
                 }
                 return Err(e);
             }
-            for event in &out { super::pipeline::record(4, r.id, 0, event.serial); }
+            for event in &out {
+                super::pipeline::record(4, r.id, 0, event.serial);
+                super::pipeline::record(48, r.id, u64::from(event.kind), event.serial);
+            }
             return Ok(out.len() as u64);
         }
         if r.flags & READ_EVENTS_BLOCK == 0 {

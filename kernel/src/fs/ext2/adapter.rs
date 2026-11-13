@@ -329,6 +329,7 @@ impl FileSystem for Ext2Adapter {
     }
 
     fn open(&self, ino: u64) -> Result<Arc<VNode>, Errno> {
+        let _vfs_probe = crate::fs::open_wait::stage(crate::fs::open_wait::Metric::Vfs);
         let guard = read_mount(self.mount).map_err(errno)?;
         let fs = guard.as_ref().ok_or(Errno(EIO))?;
         let handle = fs.pin_inode(ext2::ino32(ino)?).map_err(errno)?;

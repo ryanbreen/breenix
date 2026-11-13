@@ -408,13 +408,22 @@ impl BlockMmioCompletion {
         state: &BlockDeviceState,
         request: u32,
     ) -> Result<(), &'static str> {
+        let _mmio_probe = crate::fs::open_wait::stage(crate::fs::open_wait::Metric::Mmio);
+        crate::fs::open_wait::add(crate::fs::open_wait::Metric::Requests, 1);
         let started_ns = monotonic_now_ns();
         let sleeps = crate::task::completion::wait_sleeps();
         loop {
-            if let Ok(true) = self
-                .completion
-                .wait_timeout_uninterruptible(token, BLOCK_MMIO_WAIT_SLICE_NS)
-            {
+            let slice_start = monotonic_now_ns();
+            let result = self.completion.wait_timeout_uninterruptible(token, BLOCK_MMIO_WAIT_SLICE_NS);
+            // Count elapsed deadlines even if the wake observes done and returns
+            // true: a late wake would otherwise disappear from the diagnostic.
+            if result == Ok(false) || monotonic_now_ns().saturating_sub(slice_start) >= BLOCK_MMIO_WAIT_SLICE_NS {
+                crate::fs::open_wait::add(crate::fs::open_wait::Metric::Expired, 1);
+                if self.completed_desc.load(Ordering::Acquire) != NO_COMPLETED_DESC {
+                    crate::fs::open_wait::add(crate::fs::open_wait::Metric::ExpiredDone, 1);
+                }
+            }
+            if result == Ok(true) {
                 return Ok(());
             }
             if device_has_failed(state) {

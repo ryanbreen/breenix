@@ -521,7 +521,10 @@ impl Completion {
 
                     #[cfg(target_arch = "aarch64")]
                     {
-                        crate::arch_impl::aarch64::context_switch::run_deferred_reclamation();
+                        {
+                            let _reclaim_probe = crate::fs::open_wait::stage(crate::fs::open_wait::Metric::Reclaim);
+                            crate::arch_impl::aarch64::context_switch::run_deferred_reclamation();
+                        }
                         crate::arch_impl::aarch64::context_switch::schedule_from_kernel();
                     }
                     // Published before the done check that precedes the halt,

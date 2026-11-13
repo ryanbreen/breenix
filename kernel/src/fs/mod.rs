@@ -16,6 +16,7 @@ pub mod errno;
 pub mod ext2;
 pub mod locks;
 pub mod namei;
+pub mod open_wait;
 pub(crate) mod permissions;
 // The ext2/VFS fault-injection leg. Test profile only: every byte of it is
 // behind this feature, and `scripts/check-fs-fault-production-clean.sh` proves

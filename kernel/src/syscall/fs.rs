@@ -613,14 +613,17 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
         Ok(path) => path,
         Err(e) => return SyscallResult::Err(e),
     };
+    let _open_probe = crate::fs::open_wait::begin(&raw);
     let cred = match current_file_credentials() {
         Ok(cred) => cred,
         Err(errno) => return SyscallResult::Err(errno),
     };
+    let namei_probe = crate::fs::open_wait::stage(crate::fs::open_wait::Metric::Namei);
     let resolved = match super::metadata::resolve_at(dirfd, &raw, follow, &cred) {
         Ok(r) => r,
         Err(e) => return SyscallResult::Err(e),
     };
+    drop(namei_probe);
     let path = resolved.virtual_path().unwrap_or("");
     let mount_flags = crate::fs::vfs::mount::flags_at(&resolved.path);
 
@@ -785,7 +788,10 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
             }
         }
         match fs_guard.as_mut() {
-            Some(fs) => sys_open_write_path(fs, &resolved, flags, mode, &cred),
+            Some(fs) => {
+                let _create_probe = crate::fs::open_wait::stage(crate::fs::open_wait::Metric::Create);
+                sys_open_write_path(fs, &resolved, flags, mode, &cred)
+            },
             None => {
                 log::error!("sys_open: ext2 filesystem not mounted");
                 return SyscallResult::Err(ENOENT as u64);
