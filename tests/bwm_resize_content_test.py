@@ -15,7 +15,6 @@ class ResizeContent(unittest.TestCase):
         self.assertRegex(config, r"const RESIZE_GRAB: usize = 8;")
         self.assertRegex(item(desk, "pub(super) fn hit_resize_edge("), r"px\(RESIZE_GRAB\)")
         self.assertRegex(item(config, "pub(super) fn px("), r"n\s*\*\s*ui\(\)\.scale")
-        self.assertEqual(8 * 2, 16)
 
     def test_content_edges_deliver_to_client_and_frame_still_resizes(self):
         source = (ROOT / "userspace/programs/src/bwm/desk.rs").read_text()
