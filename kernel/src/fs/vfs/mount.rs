@@ -33,6 +33,21 @@ pub fn register(entry: MountPoint) -> Result<(), Errno> {
     Ok(())
 }
 
+/// Batch registration from a mounting backend's already selected namespace.
+/// The callback may only build entries; it must not lock or access storage.
+pub fn register_with(register: impl FnOnce(&mut MountTable<Backend>) -> Result<(), Errno>) -> Result<(), Errno> {
+    let mut table = MOUNT_TABLE.lock();
+    register(&mut table)?;
+    attach_virtual_parents(&mut table);
+    Ok(())
+}
+
+pub fn attachment(id: usize) -> Option<(InodeKey, Vec<u8>)> {
+    let table = MOUNT_TABLE.lock();
+    let entry = table.get(id)?;
+    Some((entry.parent?, entry.path.rsplit(|b| *b == b'/').next()?.to_vec()))
+}
+
 /// Virtual filesystems retain their boot registration order and ids.
 pub fn mount(path: &str, kind: &'static str) -> usize {
     let mut table = MOUNT_TABLE.lock();

@@ -2106,11 +2106,10 @@ pub fn init_root_fs() -> Result<(), &'static str> {
     fs.activate("root")?;
     let flags = crate::fs::attrs::MountFlags::default();
     let backend = alloc::sync::Arc::new(adapter::Ext2Adapter::new(fs.mount_pin));
-    let root = u64::from(fs.namespace.root);
-    let (cover, parent) = (None, None);
-    crate::fs::vfs::mount::register(crate::fs::vfs::mount::MountPoint::new(
-        mount_id, b"/".to_vec(), "ext2", flags, crate::fs::vfs::mount::Backend::Fs(backend),
-        root, cover, parent)).map_err(|_| "Mount registration failed")?;
+    crate::fs::vfs::mount::register_with(|table| {
+        backend.register_root(&fs, flags, table,
+            || crate::fs::vfs::mount::Backend::Fs(backend.clone()))
+    }).map_err(|_| "Mount registration failed")?;
     ROOT_MOUNT_ID.store(fs.mount_id, Ordering::Release);
     *installed = Some(fs);
 

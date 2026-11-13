@@ -27,7 +27,6 @@ production += '\nimpl Resolved {\n' + source[start:end] + '\n}\n'
 harness = r'''
 extern crate alloc;
 use std::collections::BTreeMap;
-const EIO: i32 = 5;
 const ENOENT: i32 = 2;
 const ENOTDIR: i32 = 20;
 const ENAMETOOLONG: i32 = 36;
@@ -36,18 +35,23 @@ const PATH_MAX: usize = 4096;
 pub struct Mount(usize);
 impl Mount {
     fn root() -> Self { Self(0) }
-    fn root_inode(self) -> u64 { if self.0 == 0 { 100 } else { 2 } }
+    fn root_inode(self) -> u64 { match self.0 {
+        0 => 100, 1 => 2, 2 => 10, 3 => 11, 4 => 20, 5 => 21, _ => unreachable!()
+    } }
 }
 struct Held(ext2::Ext2Fs);
 impl Held {
     fn fs(&mut self, _: Mount) -> Result<&ext2::Ext2Fs, u64> { Ok(&self.0) }
 }
 mod mounts {
-    pub fn covered_directory(id: usize) -> Option<(usize, u64)> {
-        (id == 1).then_some((0, 22))
+    pub fn attachment(id: usize) -> Option<((usize, u64), Vec<u8>)> {
+        let name = match id { 1 => b"home".as_slice(), 2 => b"etc", 3 => b"root",
+            4 => b"var", 5 => b"run", _ => return None };
+        Some(((0, 100), name.to_vec()))
     }
     pub fn is_mount_root(id: usize, ino: u64) -> bool {
-        [(0, 100), (0, 22), (1, 2)].contains(&(id, ino))
+        [(0, 100), (0, 22), (0, 10), (0, 11), (0, 20), (0, 21),
+            (1, 2), (2, 10), (3, 11), (4, 20), (5, 21)].contains(&(id, ino))
     }
     pub fn path_is_mount(path: &[u8]) -> bool { path == b"/proc" || path == b"/dev" }
 }
@@ -61,7 +65,6 @@ pub struct Resolved { target: Target, path: alloc::boxed::Box<[u8]> }
 fn ext2_errno(_: &'static str) -> u64 { 5 }
 mod ext2 {
     use super::*;
-    pub fn root_namespace() -> generation::Namespace { generation::Namespace { root: 100, etc: 10, data: 11, shared: 90, mutable: [10, 20, 0, 0, 0, 21] } }
     pub struct Ext2Inode { pub ino: u32, pub i_links_count: u16 }
     impl Ext2Inode { pub fn is_dir(&self) -> bool { true } }
     pub struct Ext2Fs(pub BTreeMap<u32, Vec<u8>>);
@@ -120,10 +123,10 @@ fn generation_and_shared_directory_ancestry_stay_in_the_selected_namespace() {
     assert_eq!(top(&[]), Node::Ext2(Mount(0), 100));
     assert_eq!(join(&ancestry(&mut held, Mount(0), 100).unwrap()).unwrap(), b"/");
     assert_eq!(join(&ancestry(&mut held, Mount(0), 201).unwrap()).unwrap(), b"/bin/deep");
-    assert_eq!(join(&ancestry(&mut held, Mount(0), 12).unwrap()).unwrap(), b"/etc/config");
-    assert_eq!(join(&ancestry(&mut held, Mount(0), 13).unwrap()).unwrap(), b"/root/data");
-    assert_eq!(join(&ancestry(&mut held, Mount(0), 20).unwrap()).unwrap(), b"/var");
-    assert_eq!(join(&ancestry(&mut held, Mount(0), 21).unwrap()).unwrap(), b"/run");
+    assert_eq!(join(&ancestry(&mut held, Mount(2), 12).unwrap()).unwrap(), b"/etc/config");
+    assert_eq!(join(&ancestry(&mut held, Mount(3), 13).unwrap()).unwrap(), b"/root/data");
+    assert_eq!(join(&ancestry(&mut held, Mount(4), 20).unwrap()).unwrap(), b"/var");
+    assert_eq!(join(&ancestry(&mut held, Mount(5), 21).unwrap()).unwrap(), b"/run");
     assert_eq!(join(&ancestry(&mut held, Mount(1), 2).unwrap()).unwrap(), b"/home");
 }
 #[test]

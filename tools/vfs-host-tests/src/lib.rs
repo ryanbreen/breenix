@@ -75,7 +75,6 @@ pub mod memory {
     }
 }
 
-#[path = "../../../kernel/src/fs/vfs/mount_table.rs"]
-pub mod mount_table;
+pub use vfs::mount_table;
 #[path = "../tests/mount_table_tests.rs"]
 mod mount_table_tests;

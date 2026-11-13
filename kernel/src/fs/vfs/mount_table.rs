@@ -77,6 +77,7 @@ impl<B> MountTable<B> {
             return Err(Errno(EBUSY));
         }
         self.entries.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
+        self.next_id = self.next_id.max(entry.id.checked_add(1).ok_or(Errno(ENOSPC))?);
         self.entries.push(entry);
         Ok(())
     }
