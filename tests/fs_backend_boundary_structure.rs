@@ -623,3 +623,43 @@ fn remove_syscalls_use_the_trait() {
     }
     assert!(violations.is_empty(), "{}", violations.join("\n"));
 }
+
+#[test]
+fn create_syscalls_use_the_trait() {
+    use syn::visit::Visit;
+
+    #[derive(Default)]
+    struct BackendNames(Vec<String>);
+    impl<'ast> Visit<'ast> for BackendNames {
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            let name = ident.to_string();
+            if matches!(name.as_str(),
+                "ext2" | "ext2_errno" | "read_inode" | "lookup_in_dir_bytes" | "create_node")
+                || name.starts_with("create_directory") || name.starts_with("create_symlink")
+            {
+                self.0.push(name);
+            }
+        }
+    }
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("kernel/src/syscall");
+    let mut violations = Vec::new();
+    for (file, functions) in [
+        ("fs.rs", &["sys_mkdir_from", "sys_symlink_from"][..]),
+        ("fifo.rs", &["mknodat_path"][..]),
+    ] {
+        let parsed = syn::parse_file(&fs::read_to_string(root.join(file)).unwrap()).unwrap();
+        for name in functions {
+            let function = parsed.items.iter().find_map(|item| match item {
+                syn::Item::Fn(function) if function.sig.ident == *name => Some(function),
+                _ => None,
+            }).unwrap_or_else(|| panic!("missing {file}::{name}"));
+            let mut names = BackendNames::default();
+            names.visit_item_fn(function);
+            for backend in names.0 {
+                violations.push(format!("{file}::{name} names {backend}"));
+            }
+        }
+    }
+    assert!(violations.is_empty(), "{}", violations.join("\n"));
+}
