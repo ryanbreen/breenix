@@ -3,6 +3,7 @@
 //! The Second Extended Filesystem (ext2) is a classic Linux filesystem.
 //! This module provides structures and functions for parsing ext2 filesystems.
 
+pub mod adapter;
 pub mod block_group;
 pub mod create_node;
 pub mod dir;

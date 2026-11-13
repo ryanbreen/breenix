@@ -1,6 +1,8 @@
+//! Run `cargo test --manifest-path tools/vfs-host-tests/Cargo.toml vfs_host_tests::`.
 //! VFS conformance runner over the production ext2 namespace modules.
 //! The shared ext2 shim supplies a disk-only mount, with no page mappings or
 //! asynchronous finalizer. Kernel lifetime and transfer waits need guest coverage.
+#![cfg(test)]
 extern crate alloc;
 #[path = "../../ext2-host-tests/src/block.rs"]
 pub mod block;
@@ -27,6 +29,7 @@ pub mod host_mounts;
 pub mod vfs;
 pub mod ext2 {
     pub use crate::host_mounts::{read_mount, write_mount};
+    pub use crate::storage::rename::RenameError;
     pub use crate::storage::*;
     pub mod live_inode {
         pub use crate::host_mounts::MountPin;
@@ -44,3 +47,8 @@ pub mod time {
         1
     }
 }
+
+// Scope execution to the conformance module: storage modules also carry their
+// own unit tests, which are run separately by ext2-host-tests.
+#[path = "../tests/vfs_host_tests.rs"]
+mod vfs_host_tests;

@@ -2,6 +2,7 @@
 name = "vfs-host-tests"
 version = "0.1.0"
 edition = "2021"
+autotests = false
 
 [workspace]
 
@@ -10,5 +11,5 @@ spin = "0.9"
 log = "0.4"
 
 [lib]
-test = false
+test = true
 doctest = false

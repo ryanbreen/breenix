@@ -404,8 +404,20 @@ impl Ext2Fs {
         uid: u32,
         gid: u32,
     ) -> Result<(), &'static str> {
-        let target = target.as_ref();
-        let link_name = link_name.as_ref();
+        self.create_symlink_node_in(target.as_ref(), parent_inode_num, link_name.as_ref(), 0o777, uid, gid)
+            .map(|_| ())
+    }
+
+    /// Create a symlink with VFS-selected attributes in the namespace plan.
+    pub fn create_symlink_node_in(
+        &mut self,
+        target: &[u8],
+        parent_inode_num: u32,
+        link_name: &[u8],
+        mode: u16,
+        uid: u32,
+        gid: u32,
+    ) -> Result<u32, &'static str> {
         self.ensure_writable()?;
         // Validate the link name
         if link_name.is_empty() || link_name.len() > 255 {
@@ -443,23 +455,24 @@ impl Ext2Fs {
         // A target of more than 60 bytes is stored in a data block; a shorter
         // one in the inode itself (a fast symlink).
         let mut new_inode = Ext2Inode::new_symlink(target);
+        new_inode.i_mode = super::EXT2_S_IFLNK | (mode & 0o7777);
         new_inode.set_owner(uid, gid);
         let target_block = |_: u32, block: &mut [u8]| {
             block[..target.len()].copy_from_slice(target);
         };
         let block: Option<&dyn Fn(u32, &mut [u8])> =
             if target.len() > 60 { Some(&target_block) } else { None };
-        self.create_entry(
+        let ino = self.create_entry(
             parent_inode_num,
             &parent_inode,
             &dir_data,
             link_name,
             new_inode,
             block,
-            |_, _| Ok(()),
+            |_, ino| Ok(ino),
         )?;
 
         log::debug!("ext2: created symlink '{:?}' -> '{:?}'", link_name, target);
-        Ok(())
+        Ok(ino)
     }
 }
