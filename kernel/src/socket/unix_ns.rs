@@ -1,11 +1,12 @@
 //! Hash-bucketed Unix names. Bind allocates before filesystem mutation and
-//! retains the inode created under the mount write guard; names are raw bytes.
+//! retains the socket's VNode; names are raw bytes.
 use super::addr::UnixName;
 use super::object::Socket;
 use crate::fs::{
-    ext2::{errno::errno as ext2_errno, live_inode::FileHandle, FileType},
+    attrs::InodeAttrs,
     namei::{Last, Target},
     permissions::Credentials,
+    vfs::{mount, names, NewNode, NodeKind, VNode},
 };
 use crate::irq_safe_mutex::IrqSafeMutex;
 use crate::syscall::errno::*;
@@ -17,7 +18,7 @@ const BUCKETS: usize = 256;
 const NAME_BYTES: usize = 108;
 enum Key {
     Abstract { bytes: [u8; NAME_BYTES], len: usize },
-    Path(FileHandle),
+    Path(Arc<VNode>),
 }
 impl Key {
     fn matches(&self, other: &Self) -> bool {
@@ -26,7 +27,7 @@ impl Key {
                 al == bl && a[..*al] == b[..*bl]
             }
             (Self::Path(a), Self::Path(b)) => {
-                a.object.mount == b.object.mount && a.object.key == b.object.key
+                a.mount == b.mount && a.ino == b.ino && a.incarnation == b.incarnation
             }
             _ => false,
         }
@@ -43,15 +44,14 @@ impl Key {
                     feed(*b);
                 }
             }
-            Self::Path(handle) => {
+            Self::Path(node) => {
                 feed(1);
-                for b in handle
-                    .object
+                for b in node
                     .mount
-                    .mount_id
                     .to_ne_bytes()
                     .into_iter()
-                    .chain(handle.object.key.inode.to_ne_bytes())
+                    .chain(node.ino.to_ne_bytes())
+                    .chain(node.incarnation.to_ne_bytes())
                 {
                     feed(b);
                 }
@@ -125,24 +125,19 @@ fn path_key(bytes: &[u8]) -> Result<Key, i32> {
     if matches!(resolved.target, Target::Absent { .. }) || resolved.virtual_absent {
         return Err(ENOENT);
     }
-    let Target::Inode {
-        mount,
-        file_type: FileType::Socket,
-        ..
-    } = resolved.target
-    else {
+    let Target::Inode { mount, ino, .. } = resolved.target else {
         return Err(ECONNREFUSED);
     };
-    let handle = resolved.handle().ok_or(EIO)?.clone();
-    let guard = mount.read().map_err(|e| e.0)?;
-    let fs = guard.as_ref().ok_or(EIO)?;
-    let inode = fs
-        .read_inode(handle.verify(fs).map_err(|_| ENOENT)?)
-        .map_err(ext2_errno).map_err(|e| e.0)?;
-    if !cred.may(inode.attrs(), 2) {
+    let fs = mount::filesystem(mount.0).map_err(|e| e.0)?;
+    let node = fs.open(ino).map_err(|e| e.0)?;
+    let attrs = fs.getattr(node.ino).map_err(|e| e.0)?;
+    if attrs.kind != NodeKind::Socket {
+        return Err(ECONNREFUSED);
+    }
+    if !cred.may(attrs.attrs, 2) {
         return Err(EACCES);
     }
-    Ok(Key::Path(handle))
+    Ok(Key::Path(node))
 }
 fn create_path(bytes: &[u8]) -> Result<Key, i32> {
     if bytes.is_empty() || bytes.len() > NAME_BYTES {
@@ -154,33 +149,31 @@ fn create_path(bytes: &[u8]) -> Result<Key, i32> {
     if resolved.last != Last::Name || matches!(resolved.target, Target::Inode { .. }) {
         return Err(EADDRINUSE);
     }
-    let Target::Absent { mount, .. } = resolved.target else {
+    let Target::Absent { .. } = resolved.target else {
         return Err(EPERM);
     };
     if resolved.trailing_slash {
         return Err(ENOENT);
     }
-    let parent = resolved.entry_dir().ok_or(EIO)?;
-    let name = resolved.path.rsplit(|b| *b == b'/').next().ok_or(EINVAL)?;
-    let mut guard = mount.write().map_err(|e| e.0)?;
-    let fs = guard.as_mut().ok_or(EIO)?;
-    let parent = parent.verify(fs).map_err(|_| ENOENT)?;
-    let inode = fs
-        .read_inode(parent)
-        .map_err(ext2_errno).map_err(|e| e.0)?;
-    let gid = crate::syscall::fifo_policy::check_parent_access(inode.attrs(), inode.i_links_count.into(), &cred, None)
-        .map_err(|e| e as i32)?;
+    let (fs, parent, attrs) = names::entry_dir(&resolved).map_err(|e| e.0)?;
+    let gid =
+        crate::syscall::fifo_policy::check_parent_access(attrs.attrs, attrs.nlink, &cred, None)
+            .map_err(|e| e as i32)?;
     let mode = 0o140000 | crate::syscall::fifo_policy::creation_mode(0o777, &cred, gid, false);
-    fs.create_node_prepared(parent, name, mode, cred.euid, gid, 0, |fs, ino| {
-        fs.pin_loaded_inode(ino, 0)
-    })
-    .map_err(ext2_errno)
-    .map(Key::Path)
-    .map_err(|error| if error.0 == EEXIST { EADDRINUSE } else { error.0 })
+    let ino = fs
+        .create(
+            parent.ino,
+            resolved.final_name(),
+            NewNode::Socket {
+                attrs: InodeAttrs::new(mode.into(), cred.euid, gid),
+            },
+        )
+        .map_err(|error| if error.0 == EEXIST { EADDRINUSE } else { error.0 })?;
+    fs.open(ino).map(Key::Path).map_err(|e| e.0)
 }
 pub fn bind_name(name: &UnixName, socket: Weak<Socket>) -> Result<(), i32> {
-    // Allocate the complete binding before creating any on-disk node. Publication
-    // cannot fail for a freshly created inode and does not allocate.
+    // Allocate the registry entry before creating the on-disk node. Publishing
+    // the entry in its bucket does not allocate.
     let mut binding = Box::try_new(Binding {
         _owner: OwnerLease::reserve(Credentials::current(false).map_err(|errno| errno as i32)?.euid)?,
         key: abstract_key(&[])?,
