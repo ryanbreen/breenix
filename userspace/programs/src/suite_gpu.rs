@@ -213,9 +213,9 @@ static SUITE: Suite = native_heap(suite("gpu", "GPU rendering", &[
         case("irq-masked-bound", "The longest IRQ-masked interval in the GPU paths stays within 500 us under a full-screen workload", isolation::irq_masked_bound),
     ]),
     category("present", "display modes, HiDPI & present", &[
-        case("modes-listed", "MODES lists 1280x800 at scale 1 and 2560x1600 at scale 2, with the device's maximum", present::modes_listed),
-        case("mode-1280x800", "At 1280x800 a full-screen target presents and reads back exactly", present::mode_1280x800),
-        case("mode-2560x1600", "At 2560x1600 a full-screen target presents and reads back exactly", present::mode_2560x1600),
+        case("modes-listed", "MODES lists the target monitor modes and scales, with the device's maximum", present::modes_listed),
+        case("mode-1280x800", "At the low mode a full-screen target presents and reads back exactly", present::mode_1280x800),
+        case("mode-2560x1600", "At the preferred mode a full-screen target presents and reads back exactly", present::mode_2560x1600),
         case("scale-reported", "The scale factor is published with the mode", present::scale_reported),
         case("scanout-bind", "PRESENT binds the drawn target to the scanout, and the record names it", present::scanout_bind),
         case("flip", "Two targets alternate on the scanout, each reading back exactly while presented", present::flip),

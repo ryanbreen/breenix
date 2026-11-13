@@ -77,23 +77,35 @@ fn shown(t: u64, want: &Canvas, fence: u64) -> R<u64> {
     ensure(u64_at(&m, 64) == id, || "MODES binding differs from actual scanout".to_string())?;
     Ok(id)
 }
+// The native pair is the recorded GT710 monitor fixture; virtual panels retain their pair.
+fn expected_modes(native: bool) -> [(u32, u32, u32); 2] {
+    if native {
+        [(1024, 768, 1), (1280, 1024, 1)]
+    } else {
+        [(1280, 800, 1), (2560, 1600, 2)]
+    }
+}
+fn target_modes() -> R<[(u32, u32, u32); 2]> {
+    Ok(expected_modes(caps()?.backend == abi::backend::GK208))
+}
 pub fn modes_listed() -> CaseResult {
     let _case = begin()?;
     let m = modes()?;
     let c = caps()?;
+    let [(w0, h0, s0), (w1, h1, s1)] = expected_modes(c.backend == abi::backend::GK208);
     for (at, want) in [
         (0, 1),
         (4, 256),
         (8, 2),
         (16, c.max_width),
         (20, c.max_height),
-        (32, 1280),
-        (36, 800),
-        (40, 1),
+        (32, w0),
+        (36, h0),
+        (40, s0),
         (44, 0),
-        (48, 2560),
-        (52, 1600),
-        (56, 2),
+        (48, w1),
+        (52, h1),
+        (56, s1),
         (60, 0),
     ] {
         ensure(u32_at(&m, at) == want, || {
@@ -117,15 +129,18 @@ fn full(index: u32, w: u32, h: u32) -> CaseResult {
     Ok(())
 }
 pub fn mode_1280x800() -> CaseResult {
-    full(0, 1280, 800)
+    let (w, h, _) = target_modes()?[0];
+    full(0, w, h)
 }
 pub fn mode_2560x1600() -> CaseResult {
-    full(1, 2560, 1600)
+    let (w, h, _) = target_modes()?[1];
+    full(1, w, h)
 }
 pub fn scale_reported() -> CaseResult {
     let _case = begin()?;
     take()?;
-    for (i, s) in [(0, 1), (1, 2)] {
+    for (i, (_, _, s)) in target_modes()?.into_iter().enumerate() {
+        let i = i as u32;
         mode(i)?;
         let m = modes()?;
         let n = u32_at(&m, 12) as usize;
