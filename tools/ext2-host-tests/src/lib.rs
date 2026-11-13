@@ -12,6 +12,7 @@ pub mod ext2;
 #[path = "../../../kernel/src/fs/attrs.rs"]
 pub mod attrs;
 pub mod fs {
+    pub use crate::fs_errno as errno;
     pub use crate::ext2;
     pub use crate::attrs;
 }
@@ -24,3 +25,12 @@ pub mod time {
         1
     }
 }
+
+#[path = "../../../kernel/src/fs/errno.rs"]
+pub mod fs_errno;
+#[path = "../../../kernel/src/syscall/errno.rs"]
+pub mod syscall_errno;
+pub mod syscall {
+    pub use crate::syscall_errno as errno;
+}
+mod errno;
