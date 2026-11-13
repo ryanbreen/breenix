@@ -14,8 +14,11 @@ class CoreModes(unittest.TestCase):
         targets = (gpu / 'window_targets.rs').read_text()
         native = (gpu / 'gk208/mod.rs').read_text()
         process = (gpu / 'gk208/ce/process.rs').read_text()
-        for source in (display, core, targets):
-            self.assertNotRegex(source, r'\bMODES\s*(?:\[|\.iter\s*\()')
+        for path in gpu.rglob('*.rs'):
+            self.assertNotRegex(path.read_text(), r'\bMODES\s*(?:\[|\.iter\s*\()')
+        screen = (gpu / 'screen.rs').read_text()
+        self.assertIn('c.display.modes[display::KERNEL_MODE]', screen)
+        self.assertNotRegex(screen, r'const (?:WIDTH|HEIGHT|PITCH)\b')
         self.assertRegex(display, r'pub\s+modes:\s*\[abi::Mode;\s*2\]')
         self.assertIn('a.modes = c.display.modes;', display)
         self.assertIn('c.display.modes[c.display.mode as usize]', display)
