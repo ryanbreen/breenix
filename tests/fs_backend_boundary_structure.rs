@@ -6,6 +6,31 @@ use std::path::{Path, PathBuf};
 /// claim-lint:ok: Staged migration requirement in docs/fs/cowfs-design.md section 1.1.
 const CEILING: usize = 123;
 
+#[test]
+fn unix_socket_names_use_the_trait() {
+    use syn::visit::Visit;
+
+    #[derive(Default)]
+    struct BackendNames(Vec<String>);
+    impl<'ast> Visit<'ast> for BackendNames {
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            if matches!(ident.to_string().as_str(),
+                "ext2" | "FileHandle" | "read_inode"
+                | "create_node_prepared" | "pin_loaded_inode")
+            {
+                self.0.push(ident.to_string());
+            }
+        }
+    }
+
+    let source = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("kernel/src/socket/unix_ns.rs")).unwrap();
+    let parsed = syn::parse_file(&source).unwrap();
+    let mut names = BackendNames::default();
+    names.visit_file(&parsed);
+    assert!(names.0.is_empty(), "unix_ns.rs names {}", names.0.join(", "));
+}
+
 fn visit(directory: &Path, ext2_dir: &Path, tally: &mut Vec<(PathBuf, usize)>) {
     for entry in fs::read_dir(directory)
         .unwrap_or_else(|error| panic!("read directory {}: {error}", directory.display()))
