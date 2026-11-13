@@ -78,11 +78,15 @@ impl App {
     fn undo_depth(&self) -> usize { self.session.as_ref().map_or_else(||self.history.undo_depth(),|s|s.core.model.undo_depth()) }
     fn redo_depth(&self) -> usize { if self.session.is_some() {0} else {self.history.redo_depth()} }
     fn status(&self) -> &str { if !self.message.is_empty() { &self.message } else { self.session.as_ref().map_or("",|s|s.core.model.status.as_str()) } }
+    // Keep the ended session’s drawing and status available until another starts.
+    fn can_start_session(&self) -> bool {
+        self.session.as_ref().is_none_or(|session| session.core.model.state == "disconnected")
+    }
     fn dirty(&self) -> bool { self.canvas().digest() != self.clean }
     fn request_quit(&mut self) { if self.dirty() { self.confirm = true; } else { self.quit = true; } }
     fn action(&mut self, action: u16) {
         match action {
-            HOST_SESSION | JOIN_SESSION if self.session.is_none() => { self.session_dialog = Some(SessionDialog::new(if action == HOST_SESSION { session_dialog::Mode::Host } else { session_dialog::Mode::Join })); },
+            HOST_SESSION | JOIN_SESSION if self.can_start_session() => { self.session_dialog = Some(SessionDialog::new(if action == HOST_SESSION { session_dialog::Mode::Host } else { session_dialog::Mode::Join })); },
             OPEN => { if self.session.is_none() { self.open_picker(false); } else { self.message="Open an image before starting a session".into(); } },
             SAVE_AS => self.open_picker(true),
             SAVE => self.save(),
@@ -372,7 +376,7 @@ fn handle(app: &mut App, menu: &mut MenuBar, delivered: &breengel::Delivered) ->
         Event::PointerCancel => { if app.stroke.take().is_none() { return Handled::NoChange; } },
         _ => return Handled::NoChange,
     }
-    menu.set_enabled(HOST_SESSION, app.session.is_none()); menu.set_enabled(JOIN_SESSION, app.session.is_none());
+    menu.set_enabled(HOST_SESSION, app.can_start_session()); menu.set_enabled(JOIN_SESSION, app.can_start_session());
     menu.set_enabled(UNDO, app.session.is_some() || app.undo_depth() > 0);
     menu.set_enabled(REDO, app.redo_depth() > 0);
     Handled::Redraw
@@ -390,14 +394,14 @@ fn main() {
         let result=if host {collab::Session::host(address,port,&name,app.canvas().clone(),width,height)} else {collab::Session::join(address,port,&name)};
         app.session=Some(result.unwrap_or_else(|e| {eprintln!("Gus Kit session: {e}");std::process::exit(1)}));
     }
-    let title=app.session.as_ref().map_or_else(||"Gus Kit".into(),|s|session_title(&s.core.model.name));
+    let mut title=app.session.as_ref().map_or_else(||"Gus Kit".into(),|s|session_title(&s.core.model.name));
     let mut win = Window::new(title.as_bytes(), 800, 600).unwrap_or_else(|e| { eprintln!("Gus Kit: {e}"); std::process::exit(1) });
     let mut menu = menu();
     let mut font = win.take_display_font();
     let mut font_size = win.display_size();
     let mut redraw = true;
     loop {
-        menu.set_enabled(HOST_SESSION, app.session.is_none()); menu.set_enabled(JOIN_SESSION, app.session.is_none());
+        menu.set_enabled(HOST_SESSION, app.can_start_session()); menu.set_enabled(JOIN_SESSION, app.can_start_session());
         menu.set_enabled(UNDO, app.session.is_some() || app.undo_depth() > 0); menu.set_enabled(REDO, app.redo_depth() > 0);
         if redraw {
             if let Ok(surface) = win.surface() { render(surface, &mut app, &menu, &mut font, font_size); }
@@ -407,7 +411,7 @@ fn main() {
         redraw = false;
         let mut pointer_motion = false;
         let mut reload_font = false;
-        let collaborating=app.session.is_some();
+        let collaborating=!app.can_start_session();
         let mut dispatch = |delivered: &breengel::Delivered| {
             pointer_motion |= matches!(delivered.event, Event::MouseMove { .. });
             if matches!(delivered.event, Event::FontChanged) { reload_font = true; redraw = true; return Handled::Redraw; }
@@ -419,10 +423,13 @@ fn main() {
         let count=result.unwrap_or_else(|e| { if matches!(e, libbreenix::error::Error::Os(libbreenix::errno::Errno::ETIMEDOUT)) { 0 } else { eprintln!("Gus Kit dispatch: {e}"); std::process::exit(1) } });
         if !collaborating {
             if let Some(session) = &app.session {
-                let title = session_title(&session.core.model.name);
-                libbreenix::window::set_title(win.id(), title.as_bytes()).unwrap_or_else(|e| {
-                    eprintln!("Gus Kit title: {e}"); std::process::exit(1)
-                });
+                let next_title = session_title(&session.core.model.name);
+                if next_title != title {
+                    libbreenix::window::set_title(win.id(), next_title.as_bytes()).unwrap_or_else(|e| {
+                        eprintln!("Gus Kit title: {e}"); std::process::exit(1)
+                    });
+                    title = next_title;
+                }
             }
         }
         if reload_font {
@@ -447,6 +454,33 @@ fn main() {
 mod tests {
     use super::*;
     use breengel::{Delivered, Modifiers};
+
+    #[test]
+    fn failed_and_ended_joins_allow_another_session_without_losing_the_canvas() {
+        for end in [None, Some(libcollab::wire::Message::JoinRefused { reason: b"full".to_vec() }), Some(libcollab::wire::Message::Bye)] {
+            let image = Canvas::new(20, 20);
+            let mut app = App { width:20,height:20,clean:image.digest(),history:History::new(image),
+                tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
+                confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,
+                session:Some(collab::session_fixture(collab::Core::join("Peer"))),session_dialog:None };
+            app.action(JOIN_SESSION);
+            assert!(app.session_dialog.is_none(), "a pending join still owns its session");
+            let core = &mut app.session.as_mut().unwrap().core;
+            core.model.canvas.pencil(&[(1, 1)], [3, 4, 5]);
+            let digest = core.model.canvas.digest();
+            match end {
+                None => core.closed(1, "send"),
+                Some(message) => core.receive(1, &libcollab::wire::encode(&message).unwrap()),
+            }
+            assert_eq!(core.model.state, "disconnected");
+            for action in [HOST_SESSION, JOIN_SESSION] {
+                app.action(action);
+                assert!(app.session_dialog.is_some(), "ended joins must allow Host and Join");
+                assert_eq!(app.canvas().digest(), digest, "keep the drawing available for saving");
+                app.session_dialog = None;
+            }
+        }
+    }
 
     #[test]
     fn session_dialog_inserts_physical_printable_keys_once() {

@@ -667,6 +667,11 @@ impl Session {
     }
 }
 
+#[cfg(test)]
+pub(super) fn session_fixture(core: Core) -> Session {
+    Session { core, transport: libcollab::net::TcpTransport::client() }
+}
+
 impl super::node::Collaboration for Model {
     fn collab_value(&self) -> serde_json::Value {
         use serde_json::json;
