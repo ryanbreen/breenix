@@ -130,6 +130,14 @@ fn generation_and_shared_directory_ancestry_stay_in_the_selected_namespace() {
     assert_eq!(join(&ancestry(&mut held, Mount(1), 2).unwrap()).unwrap(), b"/home");
 }
 #[test]
+fn directory_descriptor_storage_identity_recovers_the_bind_ancestry() {
+    // DirectoryFile retains the storage mount id until the open-file migration.
+    // fchdir/openat must recover the namespace bind from that inode identity.
+    let mut held = Held(fixture());
+    assert_eq!(join(&ancestry(&mut held, Mount(0), 12).unwrap()).unwrap(), b"/etc/config");
+    assert_eq!(join(&ancestry(&mut held, Mount(0), 13).unwrap()).unwrap(), b"/root/data");
+}
+#[test]
 fn shared_roots_are_mount_points_and_cannot_be_renamed_as_placeholders() {
     for (mount, ino, expected) in [(Mount(0), 100, true), (Mount(0), 10, true),
         (Mount(0), 11, true), (Mount(0), 20, true), (Mount(0), 21, true), (Mount(0), 200, false), (Mount(1), 2, true), (Mount(1), 10, false)] {
