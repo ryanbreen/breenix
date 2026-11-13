@@ -120,6 +120,9 @@ fn main() {
                 SYNC
             }
             COUNTS
+            pub fn check_counts(fs: &mut Ext2Fs, before: &[super::Ext2BlockGroupDesc]) {
+                persist_counts(fs, before).unwrap();
+            }
         }
         fn content_privilege(_mode: u16) -> u16 { 0 }
         '''.replace('WRITE', item(mapped, '    pub(crate) fn write(')) \
@@ -178,6 +181,13 @@ static MOUNT: std::sync::Mutex<Option<Ext2Fs>> = std::sync::Mutex::new(None);
 static FLUSH_MAP: std::sync::Mutex<Option<Arc<fs::ext2::mapped_io::Map>>> = std::sync::Mutex::new(None);
 static CREATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static IN_CALLBACK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+fn check_disk_counts(fs: &Ext2Fs) {
+    let disk=Ext2BlockGroupDesc::read_table(fs.device.as_ref(), &fs.superblock).unwrap();
+    for (disk,memory) in disk.iter().zip(&fs.block_groups) {
+        let actual=disk.bg_free_blocks_count; let expected=memory.bg_free_blocks_count;
+        assert_eq!(actual,expected,"on-disk group free count differs after mapped transfer");
+    }
+}
 fn main() {
     let (mut fs,state)=fixture(1);
     // The fixture reserves inodes 1..11, so create inode 12 for the mapping.
@@ -196,6 +206,7 @@ fn main() {
     let bytes=file::read_file_range(fs.device.as_ref(),&inode,&fs.superblock,0,16384).unwrap();
     assert_eq!(bytes, [0x5a;16384]);
     let blocks=inode.i_blocks; assert_eq!(blocks,34); // 16 data blocks and one indirect block.
+    check_disk_counts(fs);
     assert!(fs.read_directory(&fs.read_inode(2).unwrap()).unwrap().windows(17).any(|s|s==b"concurrent-create"));
     assert!(!state.lock().unwrap().writes.is_empty());
     drop(guard);
@@ -238,8 +249,18 @@ fn main() {
     let inode=fs.read_inode(ino).unwrap(); let pointers=inode.i_block; let count=inode.i_blocks;
     assert_eq!(pointers,[0;15]); assert_eq!(count,0);
     let after=fs.block_groups[0].bg_free_blocks_count; assert_eq!(after,free);
+    check_disk_counts(fs);
     drop(guard);
     assert_eq!(failed.write(0,&[0x5a;4096]).unwrap(),4096);
+    // Movement between groups changes both descriptors even with no net
+    // change in the superblock's free total.
+    let (mut fs,_)=fixture(2);
+    fs.superblock.s_free_blocks_count=14000;
+    let before=fs.block_groups.clone();
+    fs.block_groups[0].bg_free_blocks_count-=1;
+    fs.block_groups[1].bg_free_blocks_count+=1;
+    fs::ext2::mapped_io::check_counts(&mut fs,&before);
+    check_disk_counts(&fs);
 }
 ''')
         self.assertEqual(result.returncode, 0, result.stderr)

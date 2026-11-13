@@ -304,18 +304,16 @@ fn persist_counts(
         .iter()
         .map(|g| u32::from(g.bg_free_blocks_count))
         .sum();
-    if fs.superblock.s_free_blocks_count == total {
-        return Ok(());
-    }
+    let total_changed = fs.superblock.s_free_blocks_count != total;
     fs.superblock.s_free_blocks_count = total;
     if super::Ext2BlockGroupDesc::write_table_changed(
         fs.device.as_ref(),
         &fs.superblock,
-        before,
         &fs.block_groups,
+        before,
     )
     .is_err()
-        || fs.superblock.write_to(fs.device.as_ref()).is_err()
+        || (total_changed && fs.superblock.write_to(fs.device.as_ref()).is_err())
     {
         fs.fail_writes();
         return Err("Failed to persist mapped allocation counts");
