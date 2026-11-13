@@ -41,12 +41,12 @@ def stage(image, suite, case, forward_port):
             '/etc/breenix/sntp-servers': (''.join(name + '\n' for name in servers), '0644'),
             '/etc/breenix/smb-test.cred': (f'username={user}\npassword={password}\n', '0600'),
             '/etc/breenix/smb-test-server': (f'{host} {port}\n', '0600'),
-            '/etc/shares': (''.join(
-                f'//{host}/{share} /mnt/guskit-{share} smb credfile=/etc/breenix/smb-test.cred,port={port}\n'
-                for share in ('rw', 'ro')), '0644'),
         }
         if gui:
             files['/etc/breenix/desktop-suite'] = ('gui-apps\n', '0644')
+            files['/etc/shares'] = (''.join(
+                f'//{host}/{share} /mnt/guskit-{share} smb credfile=/etc/breenix/smb-test.cred,port={port}\n'
+                for share in ('rw', 'ro')), '0644')
         commands = ['mkdir /mnt']
         for path in ('/mnt/guskit-rw', '/mnt/guskit-ro'):
             commands.extend([f'mkdir {path}', f'set_inode_field {path} mode 040755',
