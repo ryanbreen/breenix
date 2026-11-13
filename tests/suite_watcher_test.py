@@ -86,6 +86,21 @@ class SuiteWatcherTest(unittest.TestCase):
                 else:
                     self.assertIn('operator cancellation', result.stdout)
 
+    def test_poweroff_scores_error_before_done(self):
+        serial_text = (RECORDING.replace(b'SUITE directories DONE ',
+            b'SUITE directories ERROR initial clock synchronization incomplete\nSUITE directories DONE ')
+            + b'SUITE_SEQUENCE READY directories\n')
+        # A startup ERROR may instead end in READY without starting the runner.
+        for text in (serial_text, b'SUITE directories ERROR runner launch failed\n'
+                                  b'SUITE_SEQUENCE READY directories\n'):
+            with self.subTest(text=text[:80]), tempfile.TemporaryDirectory() as tmp:
+                serial = Path(tmp) / 'serial'
+                serial.write_bytes(text)
+                module = runpy.run_path(str(ROOT / 'scripts/watch-qemu.py'))
+                self.assertEqual(module['watch'](Mock(poll=lambda: 0, returncode=0), serial,
+                                 'suite', 'directories', 0, 1, 0, Mock()), 'done')
+                self.assertFalse(module['VERDICT']['verdict'](MANIFEST, serial, [serial])[0])
+
     def test_case_progress_cannot_extend_suite_done_deadlines(self):
         for monitor in ('watch-qemu.py', 'wait-boot-done.py'):
             with self.subTest(monitor=monitor), tempfile.TemporaryDirectory() as tmp:
