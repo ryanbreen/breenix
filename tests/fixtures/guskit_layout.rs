@@ -139,11 +139,11 @@ fn sample(scale:u32,ttf:bool)->(App,Surface,libbui::tree::Tree) {
     };
     let mut fb=Surface::new((800*scale) as usize,(600*scale) as usize,libgfx::surface::Format::BGRX).unwrap();fb.scale=scale;
     let mut font=ttf.then_some(CachedFont);
-    render(&mut fb,&mut app,&MenuBar,&mut font,14.0);
+    render(&mut fb,&mut app,&MenuBar,&mut font,14.0).unwrap();
     let mut win=Window{scale,tree:None};publish(&mut win,&app,&MenuBar,14.0);
     // File picker is modal, but must share the same scaling contract.
     app.session_dialog=None;app.confirm=false;app.picker=Some(Picker{rect:Rect::new(150,100,500,400)});
-    render(&mut fb,&mut app,&MenuBar,&mut font,14.0);publish(&mut win,&app,&MenuBar,14.0);
+    render(&mut fb,&mut app,&MenuBar,&mut font,14.0).unwrap();publish(&mut win,&app,&MenuBar,14.0);
     let picker=win.tree.take().unwrap().children.into_iter().find(|n|n.key=="open").unwrap();
     app.picker=None;app.confirm=true;
     app.session_dialog=Some(SessionDialog{mode:session_dialog::Mode::Join,address:Field{rect:Rect::new(270,250,300,24)},name:Field{rect:Rect::new(270,300,300,24)},model:DialogModel});

@@ -61,7 +61,7 @@ unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
             palette:None,canvas_surface:None,picker:None,confirm:false,session:None,session_dialog:None,message:String::new(),
             file:None,directory:PathBuf::from("."),save_as:false,layout:Layout::new(scale),image:Canvas::new(200,120),damage:None};
         let mut fb=Surface::new(800*scale as usize,600*scale as usize,libgfx::surface::Format::BGRX).unwrap();fb.scale=scale;
-        render(&mut fb,&mut app,&MenuBar,&mut None,14.0);
+        render(&mut fb,&mut app,&MenuBar,&mut None,14.0).unwrap();
         let original=fb.pixels.clone();
         app.stroke=Some(vec![(10,40)]);
         // This is the damage supplied for each actual growing brush prefix. The
@@ -71,7 +71,7 @@ unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
             app.stroke.as_mut().unwrap().push((10+motion,40));
             app.damage=Some(Clip::new(8*scale as i32,app.layout.canvas_y+38*scale as i32,(motion+5)*scale as i32,5*scale as i32));
             WRITES.store(0,Ordering::Relaxed); CANVAS_ALLOCS.store(0,Ordering::Relaxed); COUNT.store(true,Ordering::Relaxed);
-            render(&mut fb,&mut app,&MenuBar,&mut None,14.0);
+            render(&mut fb,&mut app,&MenuBar,&mut None,14.0).unwrap();
             COUNT.store(false,Ordering::Relaxed);
             let writes=WRITES.load(Ordering::Relaxed);let copies=CANVAS_ALLOCS.load(Ordering::Relaxed);
             println!("scale={scale} motion={motion} pixel_writes={writes} full_canvas_allocations={copies}");
@@ -89,7 +89,7 @@ unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
         }}
         // Full redraw after cancellation restores the committed image, including
         // every pixel covered by the temporary preview.
-        app.stroke=None;app.damage=None;render(&mut fb,&mut app,&MenuBar,&mut None,14.0);
+        app.stroke=None;app.damage=None;render(&mut fb,&mut app,&MenuBar,&mut None,14.0).unwrap();
         assert_eq!(fb.pixels,original,"cancelled preview must leave no pixels behind");
         println!("scale={scale} motions=59 total_pixel_writes={total}");
     }
@@ -102,13 +102,13 @@ unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
         palette:None,canvas_surface:None,picker:None,confirm:false,session:None,session_dialog:None,message:String::new(),
         file:None,directory:PathBuf::from("."),save_as:false,layout:Layout::new(2),image:Canvas::new(1148,454),damage:None};
     let mut fb=Surface::new(2296,1260,libgfx::surface::Format::BGRX).unwrap();fb.scale=2;
-    render(&mut fb,&mut app,&MenuBar,&mut None,14.0);
+    render(&mut fb,&mut app,&MenuBar,&mut None,14.0).unwrap();
     let original=fb.pixels.clone();
     for undo in [false,true] {
         if undo {app.image=Canvas::new(1148,454)} else {app.image.pencil(&[(10,80),(70,80)],[40,204,40])}
         EVENT_DAMAGE
         WRITES.store(0,Ordering::Relaxed);
-        render(&mut fb,&mut app,&MenuBar,&mut None,14.0);
+        render(&mut fb,&mut app,&MenuBar,&mut None,14.0).unwrap();
         let writes=WRITES.load(Ordering::Relaxed);
         println!("native completed gesture undo={undo} pixel_writes={writes} full_window_pixels={}",2296*1260);
         assert!(writes<=3*800_000,"completed gesture still draws the whole window: {writes} writes");

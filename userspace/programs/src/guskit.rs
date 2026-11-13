@@ -306,19 +306,19 @@ fn union(a: Clip, b: Clip) -> Clip {
     let x = a.x.min(b.x); let y = a.y.min(b.y);
     Clip::new(x,y,(a.x+a.w).max(b.x+b.w)-x,(a.y+a.h).max(b.y+b.h)-y)
 }
-fn render(fb: &mut Surface, app: &mut App, menu: &MenuBar, font: &mut Option<CachedFont>, font_size: f32) {
+fn render(fb: &mut Surface, app: &mut App, menu: &MenuBar, font: &mut Option<CachedFont>, font_size: f32) -> Result<(), String> {
     let l = app.layout;
     // Input acknowledgments wait for this frame. Retain the hue-dependent picker
     // on the GPU so unchanged input redraws only copy its pixels.
     if app.palette.as_ref().is_none_or(|(hue, surface)| *hue != app.hue || surface.width() != l.palette.w as usize || surface.height() != l.palette.h as usize) {
         let mut palette = Surface::new(l.palette.w as usize, l.palette.h as usize, libgfx::surface::Format::BGRX)
-            .expect("Gus Kit picker surface");
+            .map_err(|e| format!("picker surface: {e}"))?;
         palette.batch(|fb| {
             fb.clear(Color::rgb(45, 45, 45));
             for x in 0..l.hue.w { let c = node::hsv_to_rgb(l.hue_at(l.hue.x + x), 255, 255); shapes::fill_rect(fb, x, l.hue.y - l.palette.y, 1, l.hue.h, Color::rgb(c[0], c[1], c[2])); }
             for y in 0..l.sv.h { for x in 0..l.sv.w { let (s,v) = l.sv_at(l.sv.x + x, l.sv.y + y); let c = node::hsv_to_rgb(app.hue,s,v); fb.put_pixel(x as usize, (y + l.sv.y - l.palette.y) as usize, Color::rgb(c[0],c[1],c[2])); } }
         });
-        palette.wait().expect("Gus Kit picker rendering");
+        palette.wait().map_err(|e| format!("picker rendering: {e}"))?;
         app.palette = Some((app.hue, palette));
     }
     let mut cached = app.canvas_surface.take();
@@ -328,15 +328,15 @@ fn render(fb: &mut Surface, app: &mut App, menu: &MenuBar, font: &mut Option<Cac
         let changed = surface.batch(|fb| canvas.render_changes(previous, |x, y, width, c|
             shapes::fill_rect(fb, x as i32, y as i32, width as i32, 1, Color::rgb(c[0], c[1], c[2]))));
         if changed {
-            surface.wait().expect("Gus Kit canvas rendering");
+            surface.wait().map_err(|e| format!("canvas rendering: {e}"))?;
             previous.clone_from(canvas);
         }
     } else {
         let mut surface = Surface::new(app.width, app.height, libgfx::surface::Format::BGRX)
-            .expect("Gus Kit canvas surface");
+            .map_err(|e| format!("canvas surface: {e}"))?;
         surface.batch(|fb| canvas.render_runs(|x, y, width, c|
             shapes::fill_rect(fb, x as i32, y as i32, width as i32, 1, Color::rgb(c[0], c[1], c[2]))));
-        surface.wait().expect("Gus Kit canvas rendering");
+        surface.wait().map_err(|e| format!("canvas rendering: {e}"))?;
         cached = Some((canvas.clone(), surface));
     }
     app.canvas_surface=cached;
@@ -397,6 +397,7 @@ fn render(fb: &mut Surface, app: &mut App, menu: &MenuBar, font: &mut Option<Cac
     }
     });
     if app.damage.is_some() { fb.pop_clip(); }
+    Ok(())
 }
 fn publish(win: &mut Window, app: &App, menu: &MenuBar, font_size: f32) {
     use libbui::widget::Widget;
@@ -504,7 +505,7 @@ fn dispatch_input(app: &mut App, menu: &mut MenuBar, delivered: &breengel::Deliv
     handled
 }
 fn present_frame(win: &mut Window, app: &mut App, menu: &MenuBar,
-    font: &mut Option<CachedFont>, font_size: f32) -> Result<(), libbreenix::error::Error> {
+    font: &mut Option<CachedFont>, font_size: f32) -> Result<(), String> {
     let whole = Clip::new(0,0,win.width() as i32,win.height() as i32);
     let r = app.damage.unwrap_or(whole);
     let mut damage = Clip::new(r.x.min(whole.w),r.y.min(whole.h),
@@ -513,13 +514,13 @@ fn present_frame(win: &mut Window, app: &mut App, menu: &MenuBar,
     if damage.is_empty() { damage = whole; }
     // ACQUIRE's replay is repair of this back buffer, not new frame
     // damage. Include it when drawing, but commit only this input's delta.
-    let acquired = win.acquire(u64::MAX)?;
+    let acquired = win.acquire(u64::MAX).map_err(|e| e.to_string())?;
     app.damage = Some(if acquired.replay_full { whole } else {
         acquired.replay.iter().fold(damage, |r,b| union(r,Clip::new(b.x,b.y,b.w,b.h)))
     });
-    render(win.surface()?, app, menu, font, font_size);
+    render(win.surface().map_err(|e| e.to_string())?, app, menu, font, font_size)?;
     publish(win, app, menu, font_size);
-    win.commit(&[libbreenix::window::abi::Rect::new(damage.x,damage.y,damage.w,damage.h)])?;
+    win.commit(&[libbreenix::window::abi::Rect::new(damage.x,damage.y,damage.w,damage.h)]).map_err(|e| e.to_string())?;
     Ok(())
 }
 #[path = "guskit/options.rs"] mod options;

@@ -21,24 +21,25 @@ class PresentError(unittest.TestCase):
 impl Clip {fn new(x:i32,y:i32,w:i32,h:i32)->Self {Self{x,y,w,h}} fn is_empty(&self)->bool {self.w<=0||self.h<=0}}
 mod libbreenix {pub mod error {#[derive(Debug,PartialEq)] pub struct Error;} pub mod window {pub mod abi {pub type Rect=crate::Clip;}}}
 use libbreenix::error::Error;
+impl std::fmt::Display for Error {fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result {f.write_str("refused")}}
 struct App {damage:Option<Clip>, drawing:Vec<u8>, session:bool}
-struct MenuBar; struct CachedFont; struct Surface;
+struct MenuBar; struct CachedFont; struct Surface {fail:bool}
 struct Acquired {replay_full:bool,replay:Vec<Clip>}
 struct Window {fail:u8,commits:usize}
 impl Window {
  fn width(&self)->u32 {2296} fn height(&self)->u32 {1260}
  fn acquire(&mut self,_:u64)->Result<Acquired,Error> {if self.fail==1 {Err(Error)} else {Ok(Acquired{replay_full:false,replay:vec![]})}}
- fn surface(&mut self)->Result<&mut Surface,Error> {Ok(Box::leak(Box::new(Surface)))}
+ fn surface(&mut self)->Result<&mut Surface,Error> {Ok(Box::leak(Box::new(Surface{fail:self.fail==3})))}
  fn commit(&mut self,_:&[Clip])->Result<(),Error> {if self.fail==2 {Err(Error)} else {self.commits+=1;Ok(())}}
 }
-fn render(_: &mut Surface,_:&mut App,_:&MenuBar,_:&mut Option<CachedFont>,_:f32) {}
+fn render(surface: &mut Surface,_:&mut App,_:&MenuBar,_:&mut Option<CachedFont>,_:f32)->Result<(),String> {if surface.fail {Err("refused".into())} else {Ok(())}}
 fn publish(_:&mut Window,_:&App,_:&MenuBar,_:f32) {}
 UNION
 FUNCTION
 fn main() {
- for failure in [1,2] {
+ for failure in [1,2,3] {
   let mut app=App{damage:None,drawing:vec![7,8,9],session:true};let mut win=Window{fail:failure,commits:0};
-  assert_eq!(present_frame(&mut win,&mut app,&MenuBar,&mut None,14.0),Err(Error));
+  assert_eq!(present_frame(&mut win,&mut app,&MenuBar,&mut None,14.0),Err("refused".into()));
   assert_eq!(app.drawing,[7,8,9]);assert!(app.session);
   win.fail=0;assert!(present_frame(&mut win,&mut app,&MenuBar,&mut None,14.0).is_ok());assert_eq!(win.commits,1);
  }
