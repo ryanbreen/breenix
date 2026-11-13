@@ -249,6 +249,17 @@ pub trait FileSystem: core::any::Any + Send + Sync {
         sink: &mut dyn FnMut(DirEnt, u64) -> Result<bool, Errno>,
     ) -> Result<u64, Errno>;
     fn create(&self, dir: u64, name: &[u8], node: NewNode<'_>) -> Result<u64, Errno>;
+    /// Create a regular file at an absent name. Check VFS policy on the current
+    /// parent, then prepare the VNode and caller's open state before publishing
+    /// the name. An existing name returns EEXIST; any failure leaves it absent.
+    /// Callbacks must not acquire filesystem or process-manager locks.
+    fn create_open(
+        &self,
+        dir: u64,
+        name: &[u8],
+        check: &dyn Fn(NodeAttrs) -> Result<InodeAttrs, Errno>,
+        prepare: &mut dyn FnMut(Arc<VNode>) -> Result<(), Errno>,
+    ) -> Result<(), Errno>;
     /// Refuse directory hard links with EPERM. Check VFS policy before mutation.
     fn link(&self, ino: u64, dir: u64, name: &[u8], check: &LinkCheck<'_>) -> Result<(), Errno>;
     fn remove(&self, dir: u64, name: &[u8], which: Remove) -> Result<(), Errno>;

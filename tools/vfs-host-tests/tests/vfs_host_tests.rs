@@ -34,6 +34,49 @@ fn removal(fs: &dyn FileSystem, dir: u64, expected: u64, directory: bool) -> Rem
 }
 
 #[test]
+fn failed_create_open_leaves_no_name_and_exclusive_retry_succeeds() {
+    let disk = Fixture::new();
+    let adapter = Ext2Adapter::new(disk.pin());
+    let fs: &dyn FileSystem = &adapter;
+    let root = fs.root().unwrap();
+    let before = fs.statfs().unwrap();
+    let policy = |parent: crate::vfs::NodeAttrs| {
+        assert_eq!(parent.ino, root);
+        Ok(attrs(0)) // The creating open works despite its restrictive mode.
+    };
+    // The caller receives the prepared VNode before publication and may still
+    // fail allocation of its descriptor. No name or inode allocation survives.
+    let mut calls = 0;
+    assert_eq!(fs.create_open(root, b"exclusive", &policy, &mut |node| {
+        calls += 1;
+        assert_eq!(node.mount, disk.pin().mount_id);
+        assert_eq!(node.size.load(core::sync::atomic::Ordering::Acquire), 0);
+        Err(Errno(ENOMEM))
+    }), Err(Errno(ENOMEM)));
+    assert_eq!(calls, 1);
+    assert_eq!(fs.lookup(root, b"exclusive"), Err(Errno(ENOENT)));
+    assert_eq!(fs.statfs().unwrap(), before);
+
+    // A publication I/O failure also leaves the exclusive retry possible.
+    disk.fail_next_write();
+    assert_eq!(fs.create_open(root, b"exclusive", &policy, &mut |_| Ok(())), Err(Errno(EIO)));
+    assert_eq!(fs.lookup(root, b"exclusive"), Err(Errno(ENOENT)));
+    let mut opened = None;
+    fs.create_open(root, b"exclusive", &policy, &mut |node| {
+        opened = Some(node);
+        Ok(())
+    }).unwrap();
+    let node = opened.unwrap();
+    assert_eq!(fs.lookup(root, b"exclusive"), Ok(node.ino));
+    assert_eq!(fs.getattr(node.ino).unwrap().attrs.mode & 0o7777, 0);
+    fs.write(&node, WriteReq { at: WriteAt::Offset(0), limit: u64::MAX, clear_setid: false }, b"prepared").unwrap();
+    let mut bytes = [0; 8];
+    assert_eq!(fs.read(&node, 0, &mut bytes), Ok(8));
+    assert_eq!(&bytes, b"prepared");
+    assert_eq!(fs.create_open(root, b"exclusive", &policy, &mut |_| panic!("existing name must not prepare")), Err(Errno(EEXIST)));
+}
+
+#[test]
 fn directory_links_and_descendant_renames_are_refused() {
     let disk = Fixture::new();
     let adapter = Ext2Adapter::new(disk.pin());

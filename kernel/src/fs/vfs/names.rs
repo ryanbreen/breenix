@@ -35,3 +35,19 @@ pub fn target(
     }
     Ok((fs, node))
 }
+
+/// Lookup resolution holds an absent final name's parent in a distinct pin.
+pub fn lookup_parent(
+    resolved: &Resolved<Vec<u8>>,
+) -> Result<(Arc<dyn FileSystem>, Arc<VNode>), Errno> {
+    let mount = resolved.mount().ok_or(Errno(EIO))?;
+    let held = resolved.lookup_parent().ok_or(Errno(ENOENT))?;
+    let fs = super::mount::filesystem(mount.0)?;
+    let parent = fs.open(held.object.key.inode.into())?;
+    if parent.mount != held.object.mount.mount_id
+        || parent.incarnation != held.object.key.incarnation
+    {
+        return Err(Errno(ENOENT));
+    }
+    Ok((fs, parent))
+}

@@ -3,6 +3,7 @@
 //! The shared ext2 shim supplies a disk-only mount, with no page mappings or
 //! asynchronous finalizer. Kernel lifetime and transfer waits need guest coverage.
 #![cfg(test)]
+#![feature(allocator_api)]
 extern crate alloc;
 #[path = "../../ext2-host-tests/src/block.rs"]
 pub mod block;

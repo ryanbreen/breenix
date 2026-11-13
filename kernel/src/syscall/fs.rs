@@ -236,7 +236,7 @@ fn fill_device_stat(stat: &mut Stat, inode: u64, rdev: u64, attrs: crate::fs::at
 /// the owner, group or other permission bits that apply to the caller. Root
 /// is granted read and write regardless of the mode bits.
 fn check_open_access(
-    inode: &crate::fs::ext2::Ext2Inode,
+    attrs: crate::fs::attrs::InodeAttrs,
     flags: u32,
     cred: &FileCredentials,
 ) -> Result<(), SyscallResult> {
@@ -253,18 +253,11 @@ fn check_open_access(
     if flags & O_TRUNC != 0 {
         wanted |= 0o2;
     }
-    if cred.may(inode.attrs(), wanted) {
+    if cred.may(attrs, wanted) {
         Ok(())
     } else {
         Err(SyscallResult::Err(EACCES as u64))
     }
-}
-
-/// Whether an open of this file type reaches the permission check. A
-/// directory opened for writing fails with EISDIR, and other non-regular
-/// types fail later in sys_open, so only these opens are checked here.
-fn open_is_access_checked(is_reg: bool, is_dir: bool, flags: u32) -> bool {
-    is_reg || (is_dir && flags & 0x3 == O_RDONLY)
 }
 
 /// Copy a pathname from userspace and resolve it; `follow` says whether a
@@ -322,153 +315,62 @@ fn resolve_user_create_at(
         .map_err(SyscallResult::Err)
 }
 
-/// sys_open - Open a file or directory
-///
-/// Helper: sys_open write path (O_CREAT/O_TRUNC) — works on any Ext2Fs instance.
-/// Returns (inode_num, file_type, is_directory, is_regular, mount_id) or Err.
-fn sys_open_write_path(
-    fs: &mut crate::fs::ext2::Ext2Fs,
+/// Create an absent final name with its VNode and descriptor prepared before
+/// publication. A competing creator causes the caller to resolve the path again,
+/// including any symlink the other creator installed.
+fn sys_open_create(
     resolved: &crate::fs::namei::Resolved<alloc::vec::Vec<u8>>,
     flags: u32,
     mode: u32,
     cred: &FileCredentials,
-) -> Result<
-    (
-        u64,
-        crate::fs::ext2::FileType,
-        bool,
-        bool,
-        usize,
-        Option<crate::fs::ext2::live_inode::FileHandle>,
-        Option<crate::fs::ext2::ShrinkTicket>,
-    ),
-    SyscallResult,
-> {
-    use super::errno::{EEXIST, EISDIR, ENOENT, ENOTDIR};
-    use crate::fs::ext2::FileType as Ext2FileType;
-    use crate::fs::namei::Target;
-
-    let want_creat = (flags & O_CREAT) != 0;
-    let want_excl = (flags & O_EXCL) != 0;
-    let want_trunc = (flags & O_TRUNC) != 0;
-    let mut shrink = None;
-
-    let (ino, file_created) = match resolved.target {
-        Target::Inode { ino, .. } => {
-            if want_creat && want_excl {
-                log::debug!("sys_open: file exists and O_EXCL set");
-                return Err(SyscallResult::Err(EEXIST as u64));
-            }
-            (ino, false)
-        }
-        Target::Absent { .. } => {
-            if !want_creat {
-                return Err(SyscallResult::Err(ENOENT as u64));
-            }
-            if resolved.trailing_slash {
-                return Err(SyscallResult::Err(EISDIR as u64));
-            }
-            // Lookup mode holds an absent name's parent in pin; entry_dir
-            // belongs to entry/create resolution instead.
-            let parent = resolved
-                .lookup_parent()
-                .ok_or(SyscallResult::Err(5))?
-                .verify(fs)
-                .map_err(|_| SyscallResult::Err(2))?;
-            let filename = resolved.final_name();
-            let parent_inode = match fs.read_inode(parent) {
-                Ok(ino) => ino,
-                Err(_) => {
-                    log::error!("sys_open: failed to read parent inode");
-                    return Err(SyscallResult::Err(5)); // EIO
-                }
-            };
-            if !parent_inode.is_dir() {
-                return Err(SyscallResult::Err(ENOTDIR as u64));
-            }
-            // Another creator may have won since the pathname was resolved.
-            match fs.lookup_in_dir_bytes(&parent_inode, filename) {
-                Ok(Some(_)) if want_excl => return Err(SyscallResult::Err(EEXIST as u64)),
-                Ok(Some(ino)) => (u64::from(ino), false),
-                Ok(None) => {
-                    log::debug!("sys_open: creating new file {}", String::from_utf8_lossy(&resolved.path));
-                    // The requested mode is used as given, less the umask: mode 0
-                    // creates a file nobody but root may open.
-                    let gid = super::fifo_policy::check_parent_access(parent_inode.attrs(), parent_inode.i_links_count.into(), &cred, None)
-                        .map_err(SyscallResult::Err)?;
-                    let file_mode = super::fifo_policy::creation_mode(mode, &cred, gid, false);
-                    // The new file belongs to its creator (Linux: the effective
-                    // uid and gid), so a restrictive mode still lets it reopen it.
-                    match fs.create_file(parent, filename, file_mode, cred.euid, gid).map_err(ext2_errno) {
-                        Ok(new_inode) => {
-                            log::debug!(
-                                "sys_open: created file {} with inode {}",
-                                String::from_utf8_lossy(&resolved.path),
-                                new_inode
-                            );
-                            (u64::from(new_inode), true)
-                        }
-                        Err(e) => {
-                            log::error!("sys_open: failed to create file: {:?}", e);
-                            return Err(SyscallResult::Err(e.into()));
-                        }
-                    }
-                }
-                Err(_) => return Err(SyscallResult::Err(5)), // EIO
-            }
-        }
-        Target::User { .. } => return Err(SyscallResult::Err(super::errno::EOPNOTSUPP as u64)),
-        Target::Virtual => return Err(SyscallResult::Err(ENOENT as u64)),
-    };
-
-    let ext2_ino = ino32(ino).map_err(|error| SyscallResult::Err(error.into()))?;
-    let inode = match fs.read_inode(ext2_ino) {
-        Ok(i) => i,
-        Err(_) => {
-            log::error!("sys_open: failed to read inode {}", ino);
-            return Err(SyscallResult::Err(5)); // EIO
-        }
-    };
-
-    let ft = inode.file_type();
-    let is_dir = matches!(ft, Ext2FileType::Directory);
-    let is_reg = matches!(ft, Ext2FileType::Regular);
-    if is_reg && flags & 3 != 0 {
-        fs.ensure_writable().map_err(ext2_errno).map_err(|e| SyscallResult::Err(e.into()))?;
+    mount_flags: crate::fs::attrs::MountFlags,
+) -> Result<crate::ipc::fd::FileDescriptor, crate::fs::errno::Errno> {
+    use crate::fs::{attrs::InodeAttrs, errno::Errno, vfs::{names, file::OpenFile}};
+    use super::errno::{EEXIST, ENOENT};
+    let (fs, parent) = names::lookup_parent(resolved)?;
+    match fs.lookup(parent.ino, resolved.final_name()) {
+        Err(Errno(ENOENT)) => {},
+        Ok(_) => return Err(Errno(EEXIST)),
+        Err(error) => return Err(error),
     }
+    let mut entry = None;
+    fs.create_open(parent.ino, resolved.final_name(), &|parent| {
+        let gid = super::fifo_policy::check_parent_access(parent.attrs, parent.nlink, cred, None)
+            .map_err(|e| Errno(e as i32))?;
+        let mode = super::fifo_policy::creation_mode(mode, cred, gid, false);
+        Ok(InodeAttrs::new(mode.into(), cred.euid, gid))
+    }, &mut |node| {
+        entry = Some(prepare_open_descriptor(OpenFile { fs: fs.clone(), node }, false, flags, mount_flags)?);
+        Ok(())
+    })?;
+    // create_open's successful contract calls prepare exactly once.
+    Ok(entry.expect("create_open did not prepare its descriptor"))
+}
 
-    // A file this open created is opened with the requested access whatever
-    // its new mode; an existing one must grant that access first.
-    if !file_created && open_is_access_checked(is_reg, is_dir, flags) {
-        check_open_access(&inode, flags, &cred)?;
-    }
-
-    if want_trunc && is_reg && !file_created {
-        log::debug!("sys_open: truncating file inode {}", ino);
-        let result = fs.begin_resize_file_as(ext2_ino, 0, cred.euid != 0);
-        shrink = match result.map_err(ext2_errno) {
-            Ok(ticket) => ticket,
-            Err(e) => return Err(SyscallResult::Err(e.into())),
-        };
-    }
-
-    let mid = fs.mount_id;
-    let handle = if is_reg || is_dir {
-        Some(
-            fs.pin_loaded_inode(
-                ext2_ino,
-                if want_trunc && !file_created {
-                    0
-                } else {
-                    inode.size()
-                },
-            )
-            .map_err(|_| SyscallResult::Err(super::errno::EIO as u64))?,
-        )
+/// Allocate the open description before any namespace or size mutation.
+fn prepare_open_descriptor(
+    open: crate::fs::vfs::file::OpenFile,
+    directory: bool,
+    flags: u32,
+    mount_flags: crate::fs::attrs::MountFlags,
+) -> Result<crate::ipc::fd::FileDescriptor, crate::fs::errno::Errno> {
+    use crate::fs::errno::Errno;
+    use crate::ipc::fd::{DirectoryFile, FileDescriptor, RegularFile};
+    use alloc::sync::Arc;
+    use spin::Mutex;
+    let inode_num = open.node.ino;
+    let mount_id = open.node.mount;
+    let kind = if directory {
+        FdKind::Directory(Arc::try_new(Mutex::new(DirectoryFile {
+            open, inode_num, mount_id, position: 0,
+        })).map_err(|_| Errno(super::errno::ENOMEM))?)
     } else {
-        None
+        FdKind::RegularFile(Arc::try_new(Mutex::new(RegularFile {
+            open, inode_num, mount_id, position: 0,
+        })).map_err(|_| Errno(super::errno::ENOMEM))?)
     };
-    Ok((ino, ft, is_dir, is_reg, mid, handle, shrink))
+    FileDescriptor::try_opened(kind, flags).map(|entry| entry.on_mount(mount_flags))
+        .map_err(|e| Errno(e as i32))
 }
 
 /// A descriptor slot held in the calling thread's table for an open that
@@ -532,61 +434,6 @@ fn install_descriptor(
     }
 }
 
-/// Helper: sys_open read path — works on any Ext2Fs instance.
-fn sys_open_read_path(
-    fs: &crate::fs::ext2::Ext2Fs,
-    resolved: &crate::fs::namei::Resolved<alloc::vec::Vec<u8>>,
-    flags: u32,
-    cred: &FileCredentials,
-) -> Result<
-    (
-        u64,
-        crate::fs::ext2::FileType,
-        bool,
-        bool,
-        usize,
-        Option<crate::fs::ext2::live_inode::FileHandle>,
-    ),
-    SyscallResult,
-> {
-    use crate::fs::ext2::FileType as Ext2FileType;
-    use crate::fs::namei::Target;
-
-    let ino = match resolved.target {
-        Target::Inode { ino, .. } => ino,
-        _ => return Err(SyscallResult::Err(super::errno::ENOENT as u64)),
-    };
-
-    let ext2_ino = ino32(ino).map_err(|error| SyscallResult::Err(error.into()))?;
-    let inode = match fs.read_inode(ext2_ino) {
-        Ok(i) => i,
-        Err(_) => {
-            log::error!("sys_open: failed to read inode {}", ino);
-            return Err(SyscallResult::Err(5)); // EIO
-        }
-    };
-
-    let ft = inode.file_type();
-    let is_dir = matches!(ft, Ext2FileType::Directory);
-    let is_reg = matches!(ft, Ext2FileType::Regular);
-    if is_reg && flags & 3 != 0 {
-        fs.ensure_writable().map_err(ext2_errno).map_err(|e| SyscallResult::Err(e.into()))?;
-    }
-    if open_is_access_checked(is_reg, is_dir, flags) {
-        check_open_access(&inode, flags, &cred)?;
-    }
-    let mid = fs.mount_id;
-    let handle = if is_reg || is_dir {
-        Some(
-            fs.pin_loaded_inode(ext2_ino, inode.size())
-                .map_err(|_| SyscallResult::Err(super::errno::EIO as u64))?,
-        )
-    } else {
-        None
-    };
-    Ok((ino, ft, is_dir, is_reg, mid, handle))
-}
-
 /// # Arguments
 /// * `pathname` - Path to the file (userspace pointer)
 /// * `flags` - Open flags (O_RDONLY, O_WRONLY, O_RDWR, O_DIRECTORY, etc.)
@@ -599,11 +446,9 @@ pub fn sys_open(pathname: u64, flags: u32, mode: u32) -> SyscallResult {
 }
 fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallResult {
     use super::errno::{EACCES, EEXIST, EISDIR, ELOOP, EMFILE, ENOENT, ENOTDIR};
-    use crate::fs::ext2::FileType as Ext2FileType;
     use crate::fs::namei::Target;
-    use crate::ipc::fd::{DirectoryFile, FileDescriptor, RegularFile};
-    use alloc::sync::Arc;
-    use spin::Mutex;
+    use crate::ipc::fd::FileDescriptor;
+    use crate::fs::{errno::Errno, vfs::{names, NodeKind, file::OpenFile}};
 
     let want_creat = (flags & O_CREAT) != 0;
     let want_excl = (flags & O_EXCL) != 0;
@@ -617,392 +462,155 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
         Ok(cred) => cred,
         Err(errno) => return SyscallResult::Err(errno),
     };
-    let resolved = match super::metadata::resolve_at(dirfd, &raw, follow, &cred) {
-        Ok(r) => r,
-        Err(e) => return SyscallResult::Err(e),
-    };
-    let path = resolved.virtual_path().unwrap_or("");
-    let mount_flags = crate::fs::vfs::mount::flags_at(&resolved.path);
-
-    log::debug!(
-        "sys_open: path={}, flags={:#x}, mode={:#o}",
-        path,
-        flags,
-        mode
-    );
-
-    if resolved.target == Target::Virtual {
-        if let Some(result) = crate::ipc::mqueue::dev::open_path(path, flags, mode) {
-            return result;
-        }
-        if let Some(result) = crate::ipc::shmem::open_path(path, flags, mode) {
-            return result;
-        }
-        if path == "/dev" {
-            return handle_devfs_directory_open(flags);
-        }
-        if let Some(device_name) = path.strip_prefix("/dev/") {
-            return handle_devfs_open(device_name, flags, None, None);
-        }
-        return handle_procfs_open(path, flags);
-    }
-
-    if let Target::User { mount, node, parent } = resolved.target {
-        // Reserve before creating/truncating, with no PM guard across daemon I/O.
-        let reserved = match ReservedSlot::take() {
-            Some(slot) => slot,
-            None => return SyscallResult::Err(EMFILE as u64),
-        };
-        if node == 0 && resolved.trailing_slash { return SyscallResult::Err(ENOENT as u64); }
-        let name = resolved.path.rsplit(|b| *b == b'/').find(|n| !n.is_empty()).unwrap_or(&[]);
-        let file = match crate::fs::ufs::file::UfsFile::open(mount, node, parent, name, flags, mode, &cred) {
-            Ok(file) => file,
+    loop {
+        let resolved = match super::metadata::resolve_at(dirfd, &raw, follow, &cred) {
+            Ok(r) => r,
             Err(e) => return SyscallResult::Err(e),
         };
-        let entry = match FileDescriptor::try_opened(FdKind::Ipc(file), flags) {
-            Ok(entry) => entry,
-            Err(_) => return SyscallResult::Err(super::errno::ENOMEM as u64),
-        };
-        let tid = reserved.thread_id;
-        let mut reserved = Some(reserved);
-        let result = crate::process::with_process_manager(|manager| {
-            manager.find_process_by_thread_mut(tid)
-                .map(|(_, process)| install_descriptor(&mut process.fd_table, reserved.take(), entry))
-        }).flatten();
-        return match result {
-            Some(Ok(fd)) => SyscallResult::Ok(fd as u64),
-            _ => SyscallResult::Err(EMFILE as u64),
-        };
-    }
+        let path = resolved.virtual_path().unwrap_or("");
+        let mount_flags = crate::fs::vfs::mount::flags_at(&resolved.path);
 
-    if let Target::Inode {
-        mount,
-        ino,
-        file_type: Ext2FileType::Fifo,
-    } = resolved.target
-    {
-        if want_creat && want_excl {
+        log::debug!(
+            "sys_open: path={}, flags={:#x}, mode={:#o}",
+            path,
+            flags,
+            mode
+        );
+
+        if resolved.target == Target::Virtual {
+            if let Some(result) = crate::ipc::mqueue::dev::open_path(path, flags, mode) {
+                return result;
+            }
+            if let Some(result) = crate::ipc::shmem::open_path(path, flags, mode) {
+                return result;
+            }
+            if path == "/dev" {
+                return handle_devfs_directory_open(flags);
+            }
+            if let Some(device_name) = path.strip_prefix("/dev/") {
+                return handle_devfs_open(device_name, flags, None, None);
+            }
+            return handle_procfs_open(path, flags);
+        }
+
+        if let Target::User { mount, node, parent } = resolved.target {
+            // Reserve before creating/truncating, with no PM guard across daemon I/O.
+            let reserved = match ReservedSlot::take() {
+                Some(slot) => slot,
+                None => return SyscallResult::Err(EMFILE as u64),
+            };
+            if node == 0 && resolved.trailing_slash { return SyscallResult::Err(ENOENT as u64); }
+            let name = resolved.path.rsplit(|b| *b == b'/').find(|n| !n.is_empty()).unwrap_or(&[]);
+            let file = match crate::fs::ufs::file::UfsFile::open(mount, node, parent, name, flags, mode, &cred) {
+                Ok(file) => file,
+                Err(e) => return SyscallResult::Err(e),
+            };
+            let entry = match FileDescriptor::try_opened(FdKind::Ipc(file), flags) {
+                Ok(entry) => entry,
+                Err(_) => return SyscallResult::Err(super::errno::ENOMEM as u64),
+            };
+            let tid = reserved.thread_id;
+            let mut reserved = Some(reserved);
+            let result = crate::process::with_process_manager(|manager| {
+                manager.find_process_by_thread_mut(tid)
+                    .map(|(_, process)| install_descriptor(&mut process.fd_table, reserved.take(), entry))
+            }).flatten();
+            return match result {
+                Some(Ok(fd)) => SyscallResult::Ok(fd as u64),
+                _ => SyscallResult::Err(EMFILE as u64),
+            };
+        }
+
+        if want_creat && want_excl && matches!(resolved.target, Target::Inode { .. }) {
             return SyscallResult::Err(EEXIST as u64);
         }
-        if flags & O_DIRECTORY != 0 {
-            return SyscallResult::Err(ENOTDIR as u64);
-        }
-        let handle = {
-            let guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
-            let Some(fs) = guard.as_ref() else {
-                return SyscallResult::Err(5);
-            };
-            let Some(handle) = resolved.handle().cloned() else {
-                return SyscallResult::Err(5);
-            };
-            let ino = match ino32(ino) { Ok(ino) => ino, Err(error) => return SyscallResult::Err(error.into()) };
-            if handle.verify(fs) != Ok(ino) {
-                return SyscallResult::Err(5);
+        let needs_write = matches!(resolved.target, Target::Absent { .. }) && want_creat
+            || flags & O_TRUNC != 0;
+        let reserved = if needs_write {
+            match ReservedSlot::take() {
+                Some(slot) => Some(slot),
+                None => return SyscallResult::Err(EMFILE as u64),
             }
-            let inode = match fs.read_inode(ino).map_err(ext2_errno) {
-                Ok(inode) => inode,
-                Err(e) => return SyscallResult::Err(e.into()),
-            };
-            if let Err(error) = check_open_access(&inode, flags, &cred) {
-                return error;
-            }
-            handle
-        };
-        let entry = match crate::ipc::fifo::FIFO_REGISTRY.get_or_create(handle) {
-            Ok(entry) => entry,
-            Err(e) => return SyscallResult::Err(e as u64),
-        };
-        return handle_fifo_open(path, flags, entry, mount_flags);
-    }
+        } else { None };
 
-    let mount = match resolved.target {
-        // Only an unfollowed final symlink resolves to one.
-        Target::Inode {
-            file_type: Ext2FileType::SymLink,
-            ..
-        } => {
-            let errno = if want_creat && want_excl {
-                EEXIST
-            } else {
-                ELOOP
-            };
-            return SyscallResult::Err(errno as u64);
-        }
-        Target::Inode { mount, .. } | Target::Absent { mount, .. } => mount,
-        Target::User { .. } => return SyscallResult::Err(super::errno::EOPNOTSUPP as u64),
-        Target::Virtual => return SyscallResult::Err(ENOENT as u64),
-    };
-
-    // Parse flags
-    let want_trunc = (flags & O_TRUNC) != 0;
-    let wants_directory = (flags & O_DIRECTORY) != 0;
-
-    // Use read lock for non-modifying opens, write lock only for O_CREAT/O_TRUNC.
-    // This allows concurrent exec, file reads, and directory listings without
-    // being blocked by another process creating or writing files.
-    if want_creat && want_excl && matches!(resolved.target, Target::Inode { .. }) {
-        return SyscallResult::Err(EEXIST as u64);
-    }
-    let needs_write = (want_creat && matches!(resolved.target, Target::Absent { .. })) || want_trunc;
-    // Read before taking a filesystem lock; the process manager is not
-    // acquired under one.
-    let cred = match current_file_credentials() {
-        Ok(cred) => cred,
-        Err(errno) => return SyscallResult::Err(errno),
-    };
-
-    // An open that creates or truncates must not change the disk and then
-    // fail with EMFILE. A slot is held now, growing the table if need be, so
-    // installing the descriptor below cannot fail on a full table or a failed
-    // grow, and no thread sharing the table can take the slot first (#1307).
-    // Declared before every PROCESS_MANAGER guard below, it is dropped after
-    // them on each early return.
-    let reserved = if needs_write {
-        match ReservedSlot::take() {
-            Some(slot) => Some(slot),
-            None => return SyscallResult::Err(EMFILE as u64),
-        }
-    } else {
-        None
-    };
-
-    let result = if needs_write {
-        // === WRITE PATH: O_CREAT or O_TRUNC requires exclusive filesystem access ===
-        let mut fs_guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
-        if let Target::Inode { ino, .. } = &resolved.target {
-            let ext2_ino = match ino32(*ino) { Ok(ino) => ino, Err(error) => return SyscallResult::Err(error.into()) };
-            fs_guard = match fs_guard.wait_for_inode(ext2_ino).map_err(ext2_errno) {
-                Ok(guard) => guard,
+        if matches!(resolved.target, Target::Absent { .. }) {
+            if !want_creat { return SyscallResult::Err(ENOENT as u64); }
+            if resolved.trailing_slash { return SyscallResult::Err(EISDIR as u64); }
+            if flags & O_DIRECTORY != 0 { return SyscallResult::Err(ENOTDIR as u64); }
+            let entry = match sys_open_create(&resolved, flags, mode, &cred, mount_flags) {
+                Ok(entry) => entry,
+                Err(Errno(EEXIST)) if !want_excl => continue,
                 Err(error) => return SyscallResult::Err(error.into()),
             };
+            return sys_open_install(reserved, entry);
         }
-        if want_trunc && matches!(resolved.target, Target::Absent { .. }) {
-            if let Some(parent) = resolved.lookup_parent() {
-                fs_guard = match fs_guard.wait_for_entry_data(parent, resolved.final_name()).map_err(ext2_errno) {
-                    Ok(guard) => guard,
-                    Err(error) => return SyscallResult::Err(error.into()),
-                };
+
+        let (fs, node) = match names::target(&resolved) {
+            Ok(open) => open,
+            Err(error) => return SyscallResult::Err(error.into()),
+        };
+        let attrs = match fs.getattr(node.ino) {
+            Ok(attrs) => attrs,
+            Err(error) => return SyscallResult::Err(error.into()),
+        };
+        let is_dir = attrs.kind == NodeKind::Directory;
+        let is_reg = attrs.kind == NodeKind::Regular;
+        if attrs.kind == NodeKind::Symlink { return SyscallResult::Err(ELOOP as u64); }
+        if is_dir && flags & 3 != O_RDONLY { return SyscallResult::Err(EISDIR as u64); }
+        if !is_dir && flags & O_DIRECTORY != 0 { return SyscallResult::Err(ENOTDIR as u64); }
+        if is_reg && (flags & 3 != O_RDONLY || flags & O_TRUNC != 0) {
+            match fs.read_only() {
+                Ok(false) => {},
+                Ok(true) => return SyscallResult::Err(super::errno::EROFS as u64),
+                Err(error) => return SyscallResult::Err(error.into()),
             }
         }
-        match fs_guard.as_mut() {
-            Some(fs) => sys_open_write_path(fs, &resolved, flags, mode, &cred),
-            None => {
-                log::error!("sys_open: ext2 filesystem not mounted");
-                return SyscallResult::Err(ENOENT as u64);
+        if let Err(error) = check_open_access(attrs.attrs, flags, &cred) { return error; }
+
+        if attrs.kind == NodeKind::Fifo {
+            let Some(handle) = resolved.handle().cloned() else { return SyscallResult::Err(super::errno::EIO as u64); };
+            let entry = match crate::ipc::fifo::FIFO_REGISTRY.get_or_create(handle) {
+                Ok(entry) => entry,
+                Err(error) => return SyscallResult::Err(error as u64),
+            };
+            return handle_fifo_open(path, flags, entry, mount_flags);
+        }
+        if matches!(attrs.kind, NodeKind::CharDevice | NodeKind::BlockDevice | NodeKind::Socket) {
+            if attrs.kind != NodeKind::CharDevice { return SyscallResult::Err(6); }
+            if mount_flags.nodev { return SyscallResult::Err(EACCES as u64); }
+            return match crate::fs::devfs::lookup_by_rdev(attrs.rdev) {
+                Some(device) => handle_devfs_open(device.device_type.name(), flags,
+                    resolved.handle().cloned().map(|h| (h, mount_flags)), reserved),
+                None => SyscallResult::Err(6),
+            };
+        }
+        let entry = match prepare_open_descriptor(OpenFile { fs: fs.clone(), node: node.clone() }, is_dir, flags, mount_flags) {
+            Ok(entry) => entry,
+            Err(error) => return SyscallResult::Err(error.into()),
+        };
+        if is_reg && flags & O_TRUNC != 0 {
+            if let Err(error) = fs.resize(&node, 0, cred.euid != 0) {
+                return SyscallResult::Err(error.into());
             }
         }
-        .and_then(|(ino, ft, is_dir, is_reg, mid, handle, ticket)| {
-            if let Some(ticket) = ticket {
-                fs_guard.finish_shrink(ticket)
-                   .map_err(ext2_errno).map_err(|e| SyscallResult::Err(e.into()))?;
-            }
-            Ok((ino, ft, is_dir, is_reg, mid, handle))
+        return sys_open_install(reserved, entry);
+    }
+}
+
+/// A modifying open holds its descriptor slot before entering the filesystem.
+fn sys_open_install(reserved: Option<ReservedSlot>, entry: crate::ipc::fd::FileDescriptor) -> SyscallResult {
+    let Some(tid) = crate::task::scheduler::current_thread_id() else {
+        return SyscallResult::Err(3);
+    };
+    let mut reserved = reserved;
+    let result = crate::process::with_process_manager(|manager| {
+        manager.find_process_by_thread_mut(tid).map(|(_, process)| {
+            install_descriptor(&mut process.fd_table, reserved.take(), entry)
         })
-    } else {
-        // === READ PATH: No filesystem modification needed, use shared read lock ===
-        let fs_guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
-        match fs_guard.as_ref() {
-            Some(fs) => sys_open_read_path(fs, &resolved, flags, &cred),
-            None => {
-                log::error!("sys_open: ext2 filesystem not mounted");
-                return SyscallResult::Err(ENOENT as u64);
-            }
-        }
-    };
-    let (inode_num, file_type, is_directory, _, mount_id, handle) = match result {
-        Ok(v) => v,
-        Err(e) => return e,
-    };
-
-    // Handle directory vs file cases
-    if is_directory {
-        if (flags & 0x3) == O_RDONLY {
-            // Read-only, for getdents. A directory opened for writing fails with
-            // EISDIR below whether or not O_DIRECTORY is given, as on Linux; the
-            // permission check relies on that.
-            // Create DirectoryFile structure
-            let dir_file = DirectoryFile {
-                open: {
-                    let fs = match crate::fs::vfs::mount::filesystem(mount.0) {
-                        Ok(fs) => fs,
-                        Err(error) => return SyscallResult::Err(error.into()),
-                    };
-                    let node = match fs.open(inode_num) {
-                        Ok(node) => node,
-                        Err(error) => return SyscallResult::Err(error.into()),
-                    };
-                    drop(handle);
-                    crate::fs::vfs::file::OpenFile { fs, node }
-                },
-                inode_num,
-                mount_id,
-                position: 0,
-            };
-
-            // Get current process and allocate fd
-            let thread_id = match crate::task::scheduler::current_thread_id() {
-                Some(id) => id,
-                None => {
-                    log::error!("sys_open: No current thread");
-                    return SyscallResult::Err(3); // ESRCH
-                }
-            };
-
-            let mut manager_guard = crate::process::manager();
-            let process = match &mut *manager_guard {
-                Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
-                    Some((_, p)) => p,
-                    None => {
-                        log::error!("sys_open: Process not found for thread {}", thread_id);
-                        return SyscallResult::Err(3); // ESRCH
-                    }
-                },
-                None => {
-                    log::error!("sys_open: Process manager not initialized");
-                    return SyscallResult::Err(3); // ESRCH
-                }
-            };
-
-            // Allocate file descriptor for directory
-            let file = match Arc::try_new(Mutex::new(dir_file)) {
-                Ok(file) => file,
-                Err(_) => return SyscallResult::Err(12),
-            };
-            let fd_entry = match FileDescriptor::try_opened(FdKind::Directory(file), flags) {
-                Ok(entry) => entry.on_mount(mount_flags),
-                Err(_) => return SyscallResult::Err(12),
-            };
-            match install_descriptor(&mut process.fd_table, reserved, fd_entry) {
-                Ok(fd) => {
-                    log::debug!(
-                        "sys_open: opened directory {} as fd {} (inode {})",
-                        path,
-                        fd,
-                        inode_num
-                    );
-                    SyscallResult::Ok(fd as u64)
-                }
-                Err(_) => {
-                    log::error!("sys_open: too many open files");
-                    SyscallResult::Err(EMFILE as u64)
-                }
-            }
-        } else {
-            // Trying to open directory for writing or similar
-            log::debug!("sys_open: {} is a directory (cannot write)", path);
-            return SyscallResult::Err(EISDIR as u64);
-        }
-    } else if wants_directory {
-        // O_DIRECTORY was specified but path is not a directory
-        log::debug!(
-            "sys_open: {} is not a directory (O_DIRECTORY specified)",
-            path
-        );
-        return SyscallResult::Err(ENOTDIR as u64);
-    } else if matches!(
-        file_type,
-        Ext2FileType::CharDevice | Ext2FileType::BlockDevice | Ext2FileType::Socket
-    ) {
-        let guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
-        let Some(fs) = guard.as_ref() else {
-            return SyscallResult::Err(5);
-        };
-        let inode_num = match ino32(inode_num) { Ok(ino) => ino, Err(error) => return SyscallResult::Err(error.into()) };
-        let inode = match fs.read_inode(inode_num) {
-            Ok(inode) => inode,
-            Err(_) => return SyscallResult::Err(5),
-        };
-        if let Err(e) = check_open_access(&inode, flags, &cred) {
-            return e;
-        }
-        if matches!(file_type, Ext2FileType::Socket | Ext2FileType::BlockDevice) {
-            return SyscallResult::Err(6);
-        }
-        // A device node on a nodev mount opens no device.
-        if mount_flags.nodev {
-            return SyscallResult::Err(EACCES as u64);
-        }
-        let rdev = crate::fs::ext2::create_node::node_device(&inode);
-        let device = crate::fs::devfs::lookup_by_rdev(rdev).map(|device| device.device_type.name());
-        drop(guard);
-        match device {
-            Some(name) => handle_devfs_open(name, flags, resolved.handle().cloned().map(|h| (h, mount_flags)), reserved),
-            None => SyscallResult::Err(6),
-        }
-    } else if !matches!(file_type, Ext2FileType::Regular) {
-        return SyscallResult::Err(EACCES as u64);
-    } else {
-        // Regular file
-        // Create RegularFile structure
-        let regular_file = RegularFile {
-            open: {
-                let fs = match crate::fs::vfs::mount::filesystem(mount.0) {
-                    Ok(fs) => fs,
-                    Err(error) => return SyscallResult::Err(error.into()),
-                };
-                let node = match fs.open(inode_num) {
-                    Ok(node) => node,
-                    Err(error) => return SyscallResult::Err(error.into()),
-                };
-                drop(handle);
-                crate::fs::vfs::file::OpenFile { fs, node }
-            },
-            inode_num,
-            mount_id,
-            position: 0,
-        };
-
-        // Get current process and allocate fd
-        let thread_id = match crate::task::scheduler::current_thread_id() {
-            Some(id) => id,
-            None => {
-                log::error!("sys_open: No current thread");
-                return SyscallResult::Err(3); // ESRCH
-            }
-        };
-
-        let mut manager_guard = crate::process::manager();
-        let process = match &mut *manager_guard {
-            Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
-                Some((_, p)) => p,
-                None => {
-                    log::error!("sys_open: Process not found for thread {}", thread_id);
-                    return SyscallResult::Err(3); // ESRCH
-                }
-            },
-            None => {
-                log::error!("sys_open: Process manager not initialized");
-                return SyscallResult::Err(3); // ESRCH
-            }
-        };
-
-        // Allocate a descriptor for the new open file description, carrying
-        // its access mode, status flags and O_CLOEXEC from the open flags.
-        let file = match Arc::try_new(Mutex::new(regular_file)) {
-            Ok(file) => file,
-            Err(_) => return SyscallResult::Err(12),
-        };
-        let fd_entry = match FileDescriptor::try_opened(FdKind::RegularFile(file), flags) {
-            Ok(entry) => entry.on_mount(mount_flags),
-            Err(_) => return SyscallResult::Err(12),
-        };
-        match install_descriptor(&mut process.fd_table, reserved, fd_entry) {
-            Ok(fd) => {
-                // Debug level: this runs under the process manager, which
-                // every other CPU waits for while a serial line is written.
-                log::debug!(
-                    "sys_open: opened {} as fd {} (inode {})",
-                    path,
-                    fd,
-                    inode_num
-                );
-                SyscallResult::Ok(fd as u64)
-            }
-            Err(_) => {
-                log::error!("sys_open: too many open files");
-                SyscallResult::Err(EMFILE as u64)
-            }
-        }
+    }).flatten();
+    match result {
+        Some(Ok(fd)) => SyscallResult::Ok(fd as u64),
+        _ => SyscallResult::Err(super::errno::EMFILE as u64),
     }
 }
 
@@ -2458,15 +2066,15 @@ fn access_resolved(
     mode: u32,
     cred: &FileCredentials,
 ) -> SyscallResult {
-    use super::errno::{EACCES, EIO, ENOENT};
+    use super::errno::{EACCES, ENOENT};
     use crate::fs::namei::Target;
-    let (mount, ino) = match resolved.target {
+    match resolved.target {
         Target::User { mount, node, .. } => return match crate::fs::ufs::path::getattr(mount, node) {
             Ok(attr) if cred.may(crate::fs::ufs::path::attrs(attr), mode) => SyscallResult::Ok(0),
             Ok(_) => SyscallResult::Err(EACCES as u64),
             Err(e) => SyscallResult::Err(e),
         },
-        Target::Inode { mount, ino, .. } => (mount, ino),
+        Target::Inode { .. } => {},
         Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
         Target::Virtual => {
             if let Some(result) = crate::ipc::mqueue::dev::access_path(resolved.virtual_path().unwrap_or(""), mode, cred) {
@@ -2495,16 +2103,15 @@ fn access_resolved(
             };
         }
     };
-    let guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
-    let Some(fs) = guard.as_ref() else {
-        return SyscallResult::Err(EIO as u64);
+    let (fs, node) = match crate::fs::vfs::names::target(resolved) {
+        Ok(open) => open,
+        Err(error) => return SyscallResult::Err(error.into()),
     };
-    let ino = match ino32(ino) { Ok(ino) => ino, Err(error) => return SyscallResult::Err(error.into()) };
-    let inode = match fs.read_inode(ino) {
-        Ok(inode) => inode,
-        Err(_) => return SyscallResult::Err(EIO as u64),
+    let attrs = match fs.getattr(node.ino) {
+        Ok(attrs) => attrs,
+        Err(error) => return SyscallResult::Err(error.into()),
     };
-    if cred.may(inode.attrs(), mode) {
+    if cred.may(attrs.attrs, mode) {
         SyscallResult::Ok(0)
     } else {
         SyscallResult::Err(EACCES as u64)
@@ -4928,7 +4535,7 @@ pub fn sys_truncate(pathname: u64, length: i64) -> SyscallResult {
         Err(_) => return SyscallResult::Err(EIO as u64),
     };
     if inode.is_file() {
-        if let Err(error) = check_open_access(&inode, O_WRONLY, &cred) {
+        if let Err(error) = check_open_access(inode.attrs(), O_WRONLY, &cred) {
             return error;
         }
     }

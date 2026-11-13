@@ -85,6 +85,18 @@ impl Ext2Adapter {
         }
     }
 
+    /// Construct an open from the inode already loaded or being created under
+    /// this guard. No second inode lookup may fail after a name is published.
+    fn open_loaded(&self, fs: &Ext2Fs, ino: u32, inode: &Ext2Inode) -> Result<Arc<VNode>, Errno> {
+        let handle = fs.pin_loaded_inode(ino, inode.size()).map_err(errno)?;
+        let attrs = attributes(ino.into(), inode)?;
+        let incarnation = handle.object.key.incarnation;
+        let pin = Arc::try_new(handle).map_err(|_| Errno(ENOMEM))?;
+        Arc::try_new(VNode::new(
+            self.mount.mount_id, ino.into(), incarnation, attrs.size, attrs.times, pin,
+        )).map_err(|_| Errno(ENOMEM))
+    }
+
     fn pin_node(&self, fs: &Ext2Fs, node: &VNode) -> Result<FileHandle, Errno> {
         if node.mount != self.mount.mount_id {
             return Err(Errno(EXDEV));
@@ -331,16 +343,8 @@ impl FileSystem for Ext2Adapter {
     fn open(&self, ino: u64) -> Result<Arc<VNode>, Errno> {
         let guard = read_mount(self.mount).map_err(errno)?;
         let fs = guard.as_ref().ok_or(Errno(EIO))?;
-        let handle = fs.pin_inode(ext2::ino32(ino)?).map_err(errno)?;
-        let attrs = attributes(ino, &fs.read_inode(ext2::ino32(ino)?).map_err(errno)?)?;
-        Ok(Arc::new(VNode::new(
-            self.mount.mount_id,
-            ino,
-            handle.object.key.incarnation,
-            attrs.size,
-            attrs.times,
-            Arc::new(handle),
-        )))
+        let ino = ext2::ino32(ino)?;
+        self.open_loaded(fs, ino, &fs.read_inode(ino).map_err(errno)?)
     }
 
     fn lookup(&self, dir: u64, name: &[u8]) -> Result<u64, Errno> {
@@ -484,6 +488,35 @@ impl FileSystem for Ext2Adapter {
         )
         .map(u64::from)
         .map_err(errno)
+    }
+
+    fn create_open(
+        &self,
+        dir: u64,
+        name: &[u8],
+        check: &dyn Fn(NodeAttrs) -> Result<crate::fs::attrs::InodeAttrs, Errno>,
+        prepare: &mut dyn FnMut(Arc<VNode>) -> Result<(), Errno>,
+    ) -> Result<(), Errno> {
+        component(name)?;
+        let mut guard = write_mount(self.mount).map_err(errno)?;
+        let fs = guard.as_mut().ok_or(Errno(EIO))?;
+        fs.ensure_writable().map_err(errno)?;
+        let (dir, parent) = directory(fs, dir)?;
+        if self.lookup_in(fs, dir.into(), name)?.is_some() {
+            return Err(Errno(EEXIST));
+        }
+        let attrs = check(attributes(dir.into(), &parent)?)?;
+        let mode = ext2::EXT2_S_IFREG | (attrs.mode & 0o7777) as u16;
+        let inode = ext2::create_node::node_inode(mode, attrs.uid, attrs.gid, 0);
+        let mut preparation_error = None;
+        fs.create_node_prepared(dir, name, mode, attrs.uid, attrs.gid, 0, |fs, ino| {
+            self.open_loaded(fs, ino, &inode).and_then(prepare).map_err(|error| {
+                preparation_error = Some(error);
+                // Transport the original typed callback error through ext2's
+                // internal string API; it is restored at this boundary below.
+                "No memory for ext2 inode object"
+            })
+        }).map_err(|error| preparation_error.unwrap_or_else(|| errno(error)))
     }
 
     fn link(&self, ino: u64, dir: u64, name: &[u8], check: &crate::fs::vfs::LinkCheck<'_>) -> Result<(), Errno> {
