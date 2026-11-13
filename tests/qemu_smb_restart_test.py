@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import runpy
 import subprocess
 import tempfile
 import time
@@ -68,6 +69,21 @@ if 'python3' in sys.argv: print(os.environ.get('LEASE', 'clear'))
         self.assertEqual(proc.wait(timeout=5), 0)
         self.assertEqual([line.split('systemctl ')[1] for line in self.log.read_text().splitlines()], ['stop smbd', 'start smbd'])
         self.assertEqual(json.loads(Path(str(self.serial) + '.smb-restart.json').read_text())['cleanupStartExit'], 0)
+
+    def test_authoritative_machine_lease(self):
+        code = runpy.run_path(str(HELPER))['LEASE_CHECK']
+        code = code.replace('/var/lib/breenix-metal', str(self.path))
+        lease = self.path / 'lease.json'
+        for contents, expected in ((None, 'clear'), ('{"id":"fixture","state":"powered"}', 'claimed'),
+                                   ('broken-json', 'unknown')):
+            with self.subTest(lease=contents):
+                if contents is None:
+                    lease.unlink(missing_ok=True)
+                else:
+                    lease.write_text(contents)
+                result = subprocess.run(['python3', '-c', code], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), expected)
 
     def test_live_lease_refused(self):
         self.env['LEASE'] = 'claimed'
