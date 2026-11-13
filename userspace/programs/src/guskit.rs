@@ -462,6 +462,25 @@ fn dispatch_input(app: &mut App, menu: &mut MenuBar, delivered: &breengel::Deliv
     }
     handled
 }
+fn present_frame(win: &mut Window, app: &mut App, menu: &MenuBar,
+    font: &mut Option<CachedFont>, font_size: f32) -> Result<(), libbreenix::error::Error> {
+    let whole = Clip::new(0,0,win.width() as i32,win.height() as i32);
+    let r = app.damage.unwrap_or(whole);
+    let mut damage = Clip::new(r.x.min(whole.w),r.y.min(whole.h),
+        (r.x+r.w).min(whole.w)-r.x.min(whole.w),
+        (r.y+r.h).min(whole.h)-r.y.min(whole.h));
+    if damage.is_empty() { damage = whole; }
+    // ACQUIRE's replay is repair of this back buffer, not new frame
+    // damage. Include it when drawing, but commit only this input's delta.
+    let acquired = win.acquire(u64::MAX)?;
+    app.damage = Some(if acquired.replay_full { whole } else {
+        acquired.replay.iter().fold(damage, |r,b| union(r,Clip::new(b.x,b.y,b.w,b.h)))
+    });
+    render(win.surface()?, app, menu, font, font_size);
+    publish(win, app, menu, font_size);
+    win.commit(&[libbreenix::window::abi::Rect::new(damage.x,damage.y,damage.w,damage.h)])?;
+    Ok(())
+}
 #[path = "guskit/options.rs"] mod options;
 use options::Options;
 fn main() {
@@ -489,26 +508,14 @@ fn main() {
     loop {
         menu.set_enabled(HOST_SESSION, app.can_start_session()); menu.set_enabled(JOIN_SESSION, app.can_start_session());
         menu.set_enabled(UNDO, app.session.is_some() || app.undo_depth() > 0); menu.set_enabled(REDO, app.redo_depth() > 0);
-        if redraw {
-            let whole = Clip::new(0,0,win.width() as i32,win.height() as i32);
-            let r = app.damage.unwrap_or(whole);
-            let mut damage = Clip::new(r.x.min(whole.w),r.y.min(whole.h),
-                (r.x+r.w).min(whole.w)-r.x.min(whole.w),
-                (r.y+r.h).min(whole.h)-r.y.min(whole.h));
-            if damage.is_empty() { damage = whole; }
-            // ACQUIRE's replay is repair of this back buffer, not new frame
-            // damage. Include it when drawing, but commit only this input's delta.
-            let acquired = win.acquire(u64::MAX).expect("Gus Kit acquire");
-            app.damage = Some(if acquired.replay_full { whole } else {
-                acquired.replay.iter().fold(damage, |r,b| union(r,Clip::new(b.x,b.y,b.w,b.h)))
-            });
-            if let Ok(surface) = win.surface() { render(surface, &mut app, &menu, &mut font, font_size); }
-            publish(&mut win, &app, &menu, font_size);
-            win.commit(&[libbreenix::window::abi::Rect::new(damage.x,damage.y,damage.w,damage.h)])
-                .expect("Gus Kit present");
-        }
+        let presentation_failed = if redraw {
+            match present_frame(&mut win, &mut app, &menu, &mut font, font_size) {
+                Ok(()) => false,
+                Err(e) => { eprintln!("Gus Kit presentation refused: {e}"); true }
+            }
+        } else { false };
         if app.quit { break; }
-        redraw = false;
+        redraw = presentation_failed;
         app.damage = None;
         let mut pointer_motion = false;
         let mut reload_font = false;
