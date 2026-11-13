@@ -2848,6 +2848,24 @@ fn limits_fsize() -> CaseResult {
 
 fn limits_fsize_signal() -> CaseResult {
     let tmp = Tmp::new()?;
+    // A successful short write must survive SIGXFSZ's default disposition.
+    for positional in [false, true] {
+        let short_path = tmp.path(if positional { "short-pwrite" } else { "short-write" });
+        let mut short = Child::start(|| {
+            let Ok(fd) = fs::open_with_mode(&short_path, fs::O_CREAT | fs::O_EXCL | fs::O_WRONLY, 0o600) else { return 1 };
+            if setrlimit(RLIMIT_FSIZE, 4096, RLIM_INFINITY) != 0 { return 2; }
+            let data = [0x42u8; 8192];
+            let result = if positional {
+                sc(libbreenix::syscall::nr::PWRITE64, &[fd.raw(), data.as_ptr() as u64, 8192, 0])
+            } else {
+                sc(nr::WRITE, &[fd.raw(), data.as_ptr() as u64, 8192])
+            };
+            if result == 4096 { 0 } else { 3 }
+        })?;
+        let status = short.wait()?;
+        check(exited(status) && exit_code(status) == 0,
+            &format!("a successful short write (positional={positional}) ended with {}", status_text(status)))?;
+    }
     let path = tmp.path("big");
     let mut child = Child::start(|| {
         let Ok(fd) = fs::open_with_mode(&path, fs::O_CREAT | fs::O_EXCL | fs::O_WRONLY, 0o600) else { return 1 };

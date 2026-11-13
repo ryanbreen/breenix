@@ -69,21 +69,26 @@ pub mod fcntl_cmd {
 ///
 /// The access mode and status flags (O_APPEND) of the open file description
 /// live on the `FileDescriptor`'s shared description word, not here.
-#[derive(Clone, Debug)]
 pub struct RegularFile {
-    pub handle: crate::fs::ext2::live_inode::FileHandle,
+    pub open: crate::fs::vfs::file::OpenFile,
     pub inode_num: u64,
     pub mount_id: usize,
     pub position: u64,
 }
 
 /// Directory file descriptor (for getdents)
-#[derive(Clone, Debug)]
 pub struct DirectoryFile {
-    pub handle: crate::fs::ext2::live_inode::FileHandle,
+    pub open: crate::fs::vfs::file::OpenFile,
     pub inode_num: u64,
     pub mount_id: usize,
     pub position: u64, // getdents64 cookie: byte offset of the next record
+}
+
+// Legacy consumers retain the backend pin until their trait migration.
+impl crate::fs::vfs::file::OpenFile {
+    pub fn ext2_handle(&self) -> Option<crate::fs::ext2::live_inode::FileHandle> {
+        self.node.pin().cloned()
+    }
 }
 
 /// Types of file descriptors

@@ -56,8 +56,6 @@ pub struct LinuxDirent64 {
 const DIRENT64_HEADER_SIZE: usize = 19; // 8 + 8 + 2 + 1 = 19 bytes
 
 // File type constants for d_type field (Linux values)
-/// Unknown file type
-pub const DT_UNKNOWN: u8 = 0;
 /// FIFO (named pipe)
 #[allow(dead_code)] // Part of dirent API
 pub const DT_FIFO: u8 = 1;
@@ -824,9 +822,17 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
             // permission check relies on that.
             // Create DirectoryFile structure
             let dir_file = DirectoryFile {
-                handle: match handle {
-                    Some(handle) => handle,
-                    None => return SyscallResult::Err(super::errno::EIO as u64),
+                open: {
+                    let fs = match crate::fs::vfs::mount::filesystem(mount.0) {
+                        Ok(fs) => fs,
+                        Err(error) => return SyscallResult::Err(error.into()),
+                    };
+                    let node = match fs.open(inode_num) {
+                        Ok(node) => node,
+                        Err(error) => return SyscallResult::Err(error.into()),
+                    };
+                    drop(handle);
+                    crate::fs::vfs::file::OpenFile { fs, node }
                 },
                 inode_num,
                 mount_id,
@@ -929,7 +935,18 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
         // Regular file
         // Create RegularFile structure
         let regular_file = RegularFile {
-            handle: handle.expect("regular inode pinned during open"),
+            open: {
+                let fs = match crate::fs::vfs::mount::filesystem(mount.0) {
+                    Ok(fs) => fs,
+                    Err(error) => return SyscallResult::Err(error.into()),
+                };
+                let node = match fs.open(inode_num) {
+                    Ok(node) => node,
+                    Err(error) => return SyscallResult::Err(error.into()),
+                };
+                drop(handle);
+                crate::fs::vfs::file::OpenFile { fs, node }
+            },
             inode_num,
             mount_id,
             position: 0,
@@ -1037,11 +1054,11 @@ pub fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
     // to acquire the PM lock.  If we are holding it while blocked on I/O, every
     // attempt to re-dispatch us returns PmLockBusy and we spin forever.
     //
-    // Strategy: extract the inode/mount info under the lock, drop all locks,
-    // do the disk read unlocked, then re-acquire to update the position.
+    // Retain the filesystem and node, release PM and the file lock for the
+    // backend call, then re-acquire to update the position.
     if whence == SEEK_END {
         // Phase 1: extract file metadata under PM lock
-        let (handle, current_position) = {
+        let (fs, node) = {
             let mut manager_guard = crate::process::manager();
             let process = match &mut *manager_guard {
                 Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
@@ -1057,7 +1074,7 @@ pub fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
             match &fd_entry.kind {
                 FdKind::RegularFile(file) => {
                     let f = file.lock();
-                    (f.handle.clone(), f.position)
+                    (f.open.fs.clone(), f.open.node.clone())
                 }
                 // A directory position is a record offset, not a byte count
                 // that SEEK_END can be relative to.
@@ -1068,19 +1085,15 @@ pub fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
         };
 
         // Phase 2: disk read WITHOUT any lock held
-        let file_size = match get_ext2_file_size_for_handle(&handle) {
-            Some(size) => size as i64,
-            None => {
-                log::error!("sys_lseek: cannot get pinned inode size");
-                return SyscallResult::Err(5); // EIO
-            }
+        let file_size = match fs.getattr(node.ino) {
+            Ok(attrs) => attrs.size as i64,
+            Err(error) => return SyscallResult::Err(error.into()),
         };
         let new_position = match file_size.checked_add(offset) {
             Some(position) if position >= 0 => position,
             _ => return SyscallResult::Err(22), // EINVAL
         };
         let new_pos = new_position as u64;
-        let _ = current_position; // not needed, position updated below
 
         // Phase 3: update position under PM lock
         let mut manager_guard = crate::process::manager();
@@ -1189,20 +1202,14 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
     };
 
     // Describe what kind of fstat this is, extracting only the data we need
-    // under the PM lock.  We must NOT hold the PM lock while doing ext2 disk
-    // I/O: on ARM64 the PM lock disables ALL IRQs, and AHCI completions arrive
-    // as interrupts — holding the lock during disk I/O deadlocks the system.
+    // under the PM lock. Release PM before filesystem I/O so IRQ-driven disk
+    // completions can run.
     enum FstatKind {
         StdIo(i32),
         Pipe(alloc::sync::Arc<spin::Mutex<crate::ipc::pipe::PipeBuffer>>),
         Socket(u64),
-        RegularFile {
-            inode_num: u64,
-            mount_id: usize,
-            handle: crate::fs::ext2::live_inode::FileHandle,
-        },
-        Directory {
-            inode_num: u64,
+        File {
+            open: crate::fs::vfs::file::OpenFile,
             mount_id: usize,
         },
         Device {
@@ -1224,7 +1231,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
         },
         Epoll,
         Ipc(alloc::sync::Arc<dyn crate::ipc::object::IpcFile>),
-        Native(crate::fs::ext2::live_inode::FileHandle),
+        Native(crate::ipc::fd::FileDescriptor),
     }
 
     let kind = {
@@ -1248,8 +1255,8 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             None => return SyscallResult::Err(EBADF as u64),
         };
 
-        if let Some(handle) = &fd_entry.native_inode {
-            FstatKind::Native(handle.clone())
+        if fd_entry.native_inode.is_some() {
+            FstatKind::Native(fd_entry.clone())
         } else {
             match &fd_entry.kind {
                 FdKind::Ipc(object) => FstatKind::Ipc(object.clone()),
@@ -1258,16 +1265,21 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
                 FdKind::Socket(socket) => FstatKind::Socket(socket.common.ino()),
                 FdKind::RegularFile(file) => {
                     let file_guard = file.lock();
-                    FstatKind::RegularFile {
-                        inode_num: file_guard.inode_num,
+                    FstatKind::File {
+                        open: crate::fs::vfs::file::OpenFile {
+                            fs: file_guard.open.fs.clone(),
+                            node: file_guard.open.node.clone(),
+                        },
                         mount_id: file_guard.mount_id,
-                        handle: file_guard.handle.clone(),
                     }
                 }
                 FdKind::Directory(dir) => {
                     let dir_guard = dir.lock();
-                    FstatKind::Directory {
-                        inode_num: dir_guard.inode_num,
+                    FstatKind::File {
+                        open: crate::fs::vfs::file::OpenFile {
+                            fs: dir_guard.open.fs.clone(),
+                            node: dir_guard.open.node.clone(),
+                        },
                         mount_id: dir_guard.mount_id,
                     }
                 }
@@ -1310,8 +1322,8 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
         // manager_guard drops here — PM lock released, IRQs restored
     };
 
-    // Now build the stat structure.  For ext2 files/directories, disk I/O
-    // happens here with the PM lock fully released and IRQs enabled.
+    // Build file and directory attributes through the backend after releasing
+    // the PM lock and restoring IRQs.
     let mut stat = Stat::zeroed();
     stat.st_blksize = 4096; // Standard block size
 
@@ -1321,7 +1333,8 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
                 if let Err(e) = fill_user_stat(file.mount, file.node, &mut stat) { return SyscallResult::Err(e); }
             } else { object.fill_stat(&mut stat); }
         },
-        FstatKind::Native(handle) => {
+        FstatKind::Native(entry) => {
+            let Some(handle) = entry.native_inode else { return SyscallResult::Err(EBADF as u64); };
             if let Err(e) = fill_handle_stat(&mut stat, &handle) {
                 return SyscallResult::Err(e);
             }
@@ -1348,54 +1361,27 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             stat.st_mode = S_IFSOCK | 0o777;
             stat.st_nlink = 1;
         }
-        FstatKind::RegularFile {
-            inode_num,
-            mount_id,
-            handle,
-        } => {
-            // Disk I/O happens here — PM lock is NOT held.
-            stat.st_dev = (mount_id as u64) + 1;
-            stat.st_ino = inode_num;
-            stat.st_mode = S_IFREG | 0o644;
-            stat.st_nlink = 1;
-            let inode_stat = match load_ext2_inode_stat_for_handle(&handle) {
-                Some(stat) => stat,
-                None => return SyscallResult::Err(super::errno::EIO as u64),
+        FstatKind::File { open, mount_id } => {
+            // Backend I/O happens here with the PM lock released.
+            let attrs = match open.fs.getattr(open.node.ino) {
+                Ok(attrs) => attrs,
+                Err(error) => return SyscallResult::Err(error.into()),
             };
-            {
-                stat.st_mode = inode_stat.mode;
-                stat.st_uid = inode_stat.uid;
-                stat.st_gid = inode_stat.gid;
-                stat.st_size = inode_stat.size;
-                stat.st_nlink = inode_stat.nlink as _;
-                stat.st_atime = inode_stat.atime;
-                stat.st_mtime = inode_stat.mtime;
-                stat.st_ctime = inode_stat.ctime;
-                stat.st_blocks = inode_stat.blocks;
-                stat.st_rdev = inode_stat.rdev;
-            }
-        }
-        FstatKind::Directory {
-            inode_num,
-            mount_id,
-        } => {
-            // Disk I/O happens here — PM lock is NOT held.
             stat.st_dev = (mount_id as u64) + 1;
-            stat.st_ino = inode_num;
-            stat.st_mode = S_IFDIR | 0o755;
-            stat.st_nlink = 2;
-            if let Some(inode_stat) = load_ext2_inode_stat_for_mount(inode_num, mount_id) {
-                stat.st_mode = inode_stat.mode;
-                stat.st_uid = inode_stat.uid;
-                stat.st_gid = inode_stat.gid;
-                stat.st_size = inode_stat.size;
-                stat.st_nlink = inode_stat.nlink as _;
-                stat.st_atime = inode_stat.atime;
-                stat.st_mtime = inode_stat.mtime;
-                stat.st_ctime = inode_stat.ctime;
-                stat.st_blocks = inode_stat.blocks;
-                stat.st_rdev = inode_stat.rdev;
-            }
+            stat.st_ino = attrs.ino;
+            stat.st_mode = attrs.attrs.mode;
+            stat.st_uid = attrs.attrs.uid;
+            stat.st_gid = attrs.attrs.gid;
+            stat.st_size = attrs.size as i64;
+            stat.st_nlink = attrs.nlink as _;
+            stat.st_atime = attrs.times.atime.sec;
+            stat.st_atime_nsec = attrs.times.atime.nsec.into();
+            stat.st_mtime = attrs.times.mtime.sec;
+            stat.st_mtime_nsec = attrs.times.mtime.nsec.into();
+            stat.st_ctime = attrs.times.ctime.sec;
+            stat.st_ctime_nsec = attrs.times.ctime.nsec.into();
+            stat.st_blocks = attrs.blocks as i64;
+            stat.st_rdev = attrs.rdev;
         }
         FstatKind::Device { inode, rdev, attrs } => fill_device_stat(&mut stat, inode, rdev, attrs),
         FstatKind::DevfsDirectory => {
@@ -1559,18 +1545,17 @@ pub(crate) fn get_ext2_file_size_for_handle(
     Some(fs.read_inode(handle.verify(fs).ok()?).ok()?.size())
 }
 
-/// Convert ext2 file type to Linux dirent d_type
-fn ext2_file_type_to_dt(ext2_type: u8) -> u8 {
-    use crate::fs::ext2::dir;
-    match ext2_type {
-        dir::EXT2_FT_REG_FILE => DT_REG,
-        dir::EXT2_FT_DIR => DT_DIR,
-        dir::EXT2_FT_CHRDEV => DT_CHR,
-        dir::EXT2_FT_BLKDEV => DT_BLK,
-        dir::EXT2_FT_FIFO => DT_FIFO,
-        dir::EXT2_FT_SOCK => DT_SOCK,
-        dir::EXT2_FT_SYMLINK => DT_LNK,
-        _ => DT_UNKNOWN,
+/// Convert the VFS node kind to the directory record's ABI type.
+fn node_kind_to_dt(kind: crate::fs::vfs::NodeKind) -> u8 {
+    use crate::fs::vfs::NodeKind;
+    match kind {
+        NodeKind::Regular => DT_REG,
+        NodeKind::Directory => DT_DIR,
+        NodeKind::CharDevice => DT_CHR,
+        NodeKind::BlockDevice => DT_BLK,
+        NodeKind::Fifo => DT_FIFO,
+        NodeKind::Socket => DT_SOCK,
+        NodeKind::Symlink => DT_LNK,
     }
 }
 
@@ -1614,7 +1599,7 @@ fn copy_dirents_to_user(dirp: u64, records: &[u8]) -> Result<(), u64> {
 /// * On success with no more entries: 0
 /// * On error: Negative errno
 pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
-    use super::errno::{EBADF, EFAULT, EINVAL, EIO, ENOTDIR};
+    use super::errno::{EBADF, EFAULT, EINVAL, ENOTDIR};
 
     log::debug!(
         "sys_getdents64: fd={}, dirp={:#x}, count={}",
@@ -1707,116 +1692,48 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
         _ => return SyscallResult::Err(ENOTDIR as u64),
     };
 
-    // Get directory info
-    let dir_guard = dir_file.lock();
-    let handle = dir_guard.handle.clone();
-    let start_position = dir_guard.position;
-    drop(dir_guard);
-
-    // Drop process manager lock before acquiring filesystem lock
+    let (open, start_position) = {
+        let dir = dir_file.lock();
+        (
+            crate::fs::vfs::file::OpenFile {
+                fs: dir.open.fs.clone(),
+                node: dir.open.node.clone(),
+            },
+            dir.position,
+        )
+    };
     drop(manager_guard);
 
-    // Read the records of the directory this descriptor holds, through the
-    // mount and inode its handle pins: a position is never applied to any
-    // other directory's data.
-    let (dir_data, namespace, directory_inode) = {
-        let fs_guard = match ext2::read_mount(handle.object.mount) {
-            Ok(guard) => guard,
-            Err(e) => {
-                log::error!("sys_getdents64: directory mount unavailable: {}", e);
-                return SyscallResult::Err(EIO as u64);
-            }
-        };
-        let fs = match fs_guard.as_ref() {
-            Some(fs) => fs,
-            None => return SyscallResult::Err(EIO as u64),
-        };
-        let inode_num = match handle.verify(fs) {
-            Ok(ino) => ino,
-            Err(_) => return SyscallResult::Err(EIO as u64),
-        };
-        let inode = match fs.read_inode(inode_num) {
-            Ok(ino) => ino,
-            Err(_) => {
-                log::error!("sys_getdents64: failed to read inode {}", inode_num);
-                return SyscallResult::Err(EIO as u64);
-            }
-        };
-        match fs.read_directory(&inode).map_err(ext2_errno) {
-            Ok(data) => (data, fs.namespace(), inode_num),
-            Err(e) => {
-                log::error!("sys_getdents64: failed to read directory: {:?}", e);
-                return SyscallResult::Err(e.into());
-            }
-        }
-    };
-
-    // Parse directory entries and write to user buffer.
-    //
-    // A directory position (the getdents64 d_off, and what lseek reports
-    // and accepts) is the byte offset of a record within the directory's
-    // data: block index times block size plus the offset in the block. ext2
-    // never moves a record that stays: a new name splits free space after a
-    // record or reuses an empty one, and a removed name is absorbed into the
-    // record before it. So a saved position still lies at or before every
-    // entry that followed it, however many names were created or removed
-    // around it, and reading resumes at the first live record starting at or
-    // after it. Records are found only by walking each block's record chain
-    // from its start, so a position that falls inside a record (because the
-    // record it named was removed, or because the position was never one this
-    // directory returned) never selects partial bytes. A position is not tied
-    // to the open that returned it: one from an earlier open of the same
-    // directory resumes the same way, and one from another directory is only a
-    // byte offset into this directory's own records, so it can never read
-    // another directory's bytes. Position 0 is the first record, `.`, so a
-    // rewind replays `.` and `..`.
     let mut records = alloc::vec::Vec::new();
     let buffer_size = count as usize;
-    if records
-        .try_reserve(buffer_size.min(dir_data.len().saturating_mul(3)))
-        .is_err()
-    {
-        return SyscallResult::Err(12);
-    }
-    let mut bytes_written = 0usize;
     let mut new_position = start_position;
-
-    for positioned in ext2::dir::raw_entries(&dir_data) {
-        if (positioned.offset as u64) < start_position {
-            continue;
+    let traversal = open.dirents(start_position, &mut |entry, next_cookie| {
+        let reclen = align_up_8(DIRENT64_HEADER_SIZE + entry.name.len() + 1);
+        if reclen > buffer_size - records.len() {
+            return if records.is_empty() {
+                Err(crate::fs::errno::Errno(EINVAL))
+            } else {
+                Ok(false)
+            };
         }
-        let entry = &positioned;
-
-        let Some(visible_inode) = namespace.entry(directory_inode, entry.name, entry.inode) else {
-            new_position = positioned.next as u64;
-            continue;
-        };
-
-        let name_len = entry.name.len();
-        // d_reclen = header + name + null terminator, aligned to 8 bytes
-        let reclen = align_up_8(DIRENT64_HEADER_SIZE + name_len + 1);
-
-        // Check if this entry fits in remaining buffer
-        if bytes_written + reclen > buffer_size {
-            // A buffer too small for even the next entry is EINVAL, as on
-            // Linux; returning 0 would read as the end of the directory.
-            if bytes_written == 0 {
-                return SyscallResult::Err(EINVAL as u64);
-            }
-            break;
-        }
-
+        records.try_reserve(reclen).map_err(|_| crate::fs::errno::Errno(super::errno::ENOMEM))?;
         push_dirent64(
             &mut records,
-            visible_inode as u64,
-            positioned.next as i64,
-            ext2_file_type_to_dt(entry.file_type),
-            entry.name,
+            entry.ino,
+            next_cookie as i64,
+            node_kind_to_dt(entry.kind),
+            &entry.name,
         );
-
-        bytes_written += reclen;
-        new_position = positioned.next as u64;
+        new_position = next_cookie;
+        Ok(true)
+    });
+    match traversal {
+        Ok(position) => new_position = position,
+        // Once records are available, return those bytes and resume after them.
+        Err(_) if !records.is_empty() => {},
+        Err(errno) => return SyscallResult::Err(errno.into()),
     }
+    let bytes_written = records.len();
 
     if let Err(errno) = copy_dirents_to_user(dirp, &records) {
         return SyscallResult::Err(errno);
@@ -1828,7 +1745,9 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
         if let Some((_, process)) = manager.find_process_by_thread_mut(thread_id) {
             if let Some(fd_entry) = process.fd_table.get(fd) {
                 if let FdKind::Directory(dir) = &fd_entry.kind {
-                    dir.lock().position = new_position;
+                    if alloc::sync::Arc::ptr_eq(dir, &dir_file) {
+                        dir.lock().position = new_position;
+                    }
                 }
             }
         }
@@ -4679,21 +4598,21 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
                 if let Some((_pid, process)) = manager.find_process_by_thread(thread_id) {
                     if let Some(fd_entry) = process.fd_table.get(dirfd) {
                         if let Some(handle) = &fd_entry.native_inode {
-                            return Some(handle.clone());
+                            return Ok(handle.clone());
                         }
                         if let FdKind::RegularFile(file_ref) = &fd_entry.kind {
                             let file = file_ref.lock();
-                            return Some(file.handle.clone());
+                            return file.open.ext2_handle().ok_or(super::errno::EIO as u64);
                         }
                     }
                 }
             }
-            None
+            Err(super::errno::EBADF as u64)
         });
 
         let handle = match fd_info {
-            Some(handle) => handle,
-            None => return SyscallResult::Err(super::errno::EBADF as u64),
+            Ok(handle) => handle,
+            Err(error) => return SyscallResult::Err(error),
         };
 
         return update_inode_timestamps(&handle, set_atime, set_mtime, &cred, access);
@@ -4788,83 +4707,34 @@ fn update_inode_timestamps(
     }
 }
 
-/// Snapshot an ext2 file or directory descriptor before disk I/O, releasing the process
-/// lock (which masks IRQs) before waiting for device completion.
-fn ext2_fd_info(
-    fd: i32,
-    writable: bool,
-) -> Result<(u64, usize, Option<crate::fs::ext2::live_inode::FileHandle>), u64> {
-    use super::errno::{EBADF, EINVAL};
-    crate::arch_without_interrupts(|| {
-        let thread = crate::task::scheduler::current_thread_id().ok_or(EBADF as u64)?;
-        let manager_guard = crate::process::manager();
-        let manager = manager_guard.as_ref().ok_or(EBADF as u64)?;
-        let (_, process) = manager.find_process_by_thread(thread).ok_or(EBADF as u64)?;
-        let entry = process.fd_table.get(fd).ok_or(EBADF as u64)?;
-        match &entry.kind {
-            FdKind::RegularFile(file) => {
-                let file = file.lock();
-                if writable && !entry.writable() {
-                    return Err(EINVAL as u64);
-                }
-                Ok((
-                    file.inode_num,
-                    file.mount_id,
-                    Some(file.handle.clone()),
-                ))
-            }
-            FdKind::Directory(dir) if !writable => {
-                let dir = dir.lock();
-                Ok((dir.inode_num, dir.mount_id, None))
-            }
-            _ => Err(EINVAL as u64),
-        }
-    })
-}
-
-/// fsync/fdatasync write back all dirty shared pages of the pinned inode,
-/// then flush data and metadata to the device. Without dirty mapped pages,
-/// ext2 already wrote both synchronously and only the device flush remains.
+/// Flush the open inode's data and metadata through its filesystem.
 pub fn sys_fsync(fd: i32) -> SyscallResult {
-    let entry = match super::metadata::descriptor_entry(fd) { Ok(e) => e, Err(e) => return SyscallResult::Err(e) };
-    if let FdKind::Ipc(object) = &entry.kind {
-        if let Some(file) = object.as_any().downcast_ref::<crate::fs::ufs::file::UfsFile>() {
-            return match file.sync() { Ok(()) => SyscallResult::Ok(0), Err(e) => SyscallResult::Err(e) };
-        }
-    }
-    drop(entry);
-    let (inode_num, mount_id, handle) = match ext2_fd_info(fd, false) {
-        Ok(info) => info,
+    let entry = match super::metadata::descriptor_entry(fd) {
+        Ok(entry) => entry,
         Err(errno) => return SyscallResult::Err(errno),
     };
-    if let Some(handle) = handle
-        .as_ref()
-        .filter(|handle| handle.object.map.has_dirty())
-    {
-        let result = crate::memory::file_map::sync_range(handle, 0, u64::MAX);
-        return match result {
-            Ok(()) => SyscallResult::Ok(0),
-            Err(_) => SyscallResult::Err(super::errno::EIO as u64),
-        };
-    }
-    let inode_num = match ino32(inode_num) { Ok(ino) => ino, Err(error) => return SyscallResult::Err(error.into()) };
-    // Wait for a live shrink without requiring write permission on the mount.
-    let guard = crate::fs::namei::Mount(mount_id).read_exclusive();
-    let guard = match guard { Ok(guard) => guard, Err(_) => return SyscallResult::Err(super::errno::EINTR as u64) };
-    if guard.as_ref().is_none_or(|fs| fs.mount_id != mount_id) {
-        return SyscallResult::Err(super::errno::EIO as u64);
-    }
-    if let Some(handle) = handle {
-        if guard.as_ref().is_none_or(|fs| handle.verify(fs).is_err()) {
-            return SyscallResult::Err(super::errno::EIO as u64);
+    if let FdKind::Ipc(object) = &entry.kind {
+        if let Some(file) = object.as_any().downcast_ref::<crate::fs::ufs::file::UfsFile>() {
+            return match file.sync() {
+                Ok(()) => SyscallResult::Ok(0),
+                Err(errno) => SyscallResult::Err(errno),
+            };
         }
     }
-    match guard
-        .as_ref()
-        .map(|fs| fs.check_shrink(inode_num).and_then(|()| fs.sync()))
-    {
-        Some(Ok(())) => SyscallResult::Ok(0),
-        _ => SyscallResult::Err(super::errno::EIO as u64),
+    let (fs, node) = match &entry.kind {
+        FdKind::RegularFile(file) => {
+            let file = file.lock();
+            (file.open.fs.clone(), file.open.node.clone())
+        }
+        FdKind::Directory(dir) => {
+            let dir = dir.lock();
+            (dir.open.fs.clone(), dir.open.node.clone())
+        }
+        _ => return SyscallResult::Err(super::errno::EINVAL as u64),
+    };
+    match fs.fsync(&node, false) {
+        Ok(()) => SyscallResult::Ok(0),
+        Err(errno) => SyscallResult::Err(errno.into()),
     }
 }
 
@@ -5001,12 +4871,12 @@ pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
                 } else { Ok(virtual_statfs(object.statfs_magic())) }
             },
             FdKind::RegularFile(file) => {
-                let pin = file.lock().handle.clone();
-                mounted(&pin)
+                let pin = file.lock().open.ext2_handle();
+                pin.as_ref().ok_or(super::errno::EIO as u64).and_then(mounted)
             }
             FdKind::Directory(dir) => {
-                let pin = dir.lock().handle.clone();
-                mounted(&pin)
+                let pin = dir.lock().open.ext2_handle();
+                pin.as_ref().ok_or(super::errno::EIO as u64).and_then(mounted)
             }
             FdKind::FifoRead(_, _, entry)
             | FdKind::FifoWrite(_, _, entry)
@@ -5118,71 +4988,44 @@ pub fn sys_ftruncate(fd: i32, length: i64) -> SyscallResult {
     if length < 0 {
         return SyscallResult::Err(super::errno::EINVAL as u64);
     }
-    let ipc = {
-        let Some(tid) = crate::task::scheduler::current_thread_id() else {
-            return SyscallResult::Err(super::errno::ESRCH as u64);
-        };
-        let guard = crate::process::manager();
-        let Some((_, process)) = guard.as_ref().and_then(|m| m.find_process_by_thread(tid)) else {
-            return SyscallResult::Err(super::errno::ESRCH as u64);
-        };
-        let Some(entry) = process.fd_table.get(fd) else {
-            return SyscallResult::Err(super::errno::EBADF as u64);
-        };
-        match &entry.kind {
-            FdKind::Ipc(object) => {
-                if !entry.writable() {
-                    return SyscallResult::Err(super::errno::EINVAL as u64);
-                }
-                Some(object.clone())
-            }
-            _ => None,
-        }
+    let entry = match super::metadata::descriptor_entry(fd) {
+        Ok(entry) => entry,
+        Err(errno) => return SyscallResult::Err(errno),
     };
-    if let Some(object) = ipc {
+    if let FdKind::Ipc(object) = &entry.kind {
+        if !entry.writable() {
+            return SyscallResult::Err(super::errno::EINVAL as u64);
+        }
         return match object.truncate(length as u64) {
             Ok(()) => SyscallResult::Ok(0),
             Err(errno) => SyscallResult::Err(errno),
         };
     }
-    let (ino, _, handle) = match ext2_fd_info(fd, true) {
-        Ok(info) => info,
-        Err(errno) => return SyscallResult::Err(errno),
-    };
-    let Some(handle) = handle else {
-        return SyscallResult::Err(super::errno::EINVAL as u64);
+    let (fs, node) = match &entry.kind {
+        FdKind::RegularFile(file) if entry.writable() => {
+            let file = file.lock();
+            (file.open.fs.clone(), file.open.node.clone())
+        }
+        _ => return SyscallResult::Err(super::errno::EINVAL as u64),
     };
     let size_limit = super::resource::current_fsize();
-    let mut exceeded = false;
-    let unprivileged = match current_file_credentials() {
+    let clear_setid = match current_file_credentials() {
         Ok(cred) => !cred.privileged(),
         Err(errno) => return SyscallResult::Err(errno),
     };
-    let mut guard = match ext2::write_mount(handle.object.mount).map_err(ext2_errno) {
-        Ok(guard) => guard,
-        Err(error) => return SyscallResult::Err(error.into()),
+    let attrs = match fs.getattr(node.ino) {
+        Ok(attrs) => attrs,
+        Err(errno) => return SyscallResult::Err(errno.into()),
     };
-    let ext2_ino = match ino32(ino) { Ok(ino) => ino, Err(error) => return SyscallResult::Err(error.into()) };
-    guard = match guard.wait_for_inode(ext2_ino).map_err(ext2_errno) {
-        Ok(guard) => guard,
-        Err(error) => return SyscallResult::Err(error.into()),
-    };
-    let result = match guard.as_mut() {
-        Some(fs) if handle.verify(fs).is_ok() => resize_inode(
-            fs,
-            ino,
-            length as u64,
-            unprivileged,
-            size_limit,
-            &mut exceeded,
-        ),
-        _ => Err(super::errno::EIO as u64),
-    };
-    let result = finish_resize(guard, result);
-    if exceeded {
+    let len = length as u64;
+    if len > attrs.size && len > size_limit {
         super::resource::signal_fsize();
+        return SyscallResult::Err(super::errno::EFBIG as u64);
     }
-    result
+    match fs.resize(&node, len, clear_setid) {
+        Ok(()) => SyscallResult::Ok(0),
+        Err(errno) => SyscallResult::Err(errno.into()),
+    }
 }
 
 /// truncate resolves the final symlink and resizes the same inode open FDs use.
@@ -5262,13 +5105,6 @@ pub fn sys_truncate(pathname: u64, length: i64) -> SyscallResult {
     }
     result
 }
-
-/// Record a successful nonempty read after releasing the read-side FS lock.
-pub(super) fn update_read_atime(ino: u64, mount_id: usize) -> Result<(), u64> {
-    let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
-    ext2::update_read_atime(ino32(ino)?, is_home).map_err(ext2_errno).map_err(u64::from)
-}
-
 
 fn ufs_status(result: Result<(), u64>) -> SyscallResult {
     match result { Ok(()) => SyscallResult::Ok(0), Err(e) => SyscallResult::Err(e) }

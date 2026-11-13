@@ -189,7 +189,7 @@ fn generation_root_hides_record_and_registers_shared_binds() {
         assert_ne!(own_root, data);
         assert_eq!(fs.lookup(generation, b".breenix-shared"), Ok(store));
         let mut entries = Vec::new();
-        fs.readdir(generation, 0, &mut |entry| { entries.push(entry); Ok(true) }).unwrap();
+        fs.readdir(generation, 0, &mut |entry, _cookie| { entries.push(entry); Ok(true) }).unwrap();
         assert!(!entries.iter().any(|e| e.ino == record || e.name == b".complete"));
         for (name, ino) in [(b"etc".as_slice(), etc), (b"root", data), (b".breenix-shared", store)] {
             assert_eq!(entries.iter().filter(|e| e.name == name).map(|e| e.ino).collect::<Vec<_>>(), vec![ino]);

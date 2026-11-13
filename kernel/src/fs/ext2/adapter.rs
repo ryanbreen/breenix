@@ -10,7 +10,7 @@ use crate::fs::{
     },
     vfs::{
         DirEnt, FileSystem, NewNode, NodeAttrs, NodeKind, NodeTimes, Remove, RenameMode, SetAttr,
-        StatFs, Timestamp, VNode, WriteAt, Xattr,
+        StatFs, Timestamp, VNode, WriteAt, WriteError, WriteReq, WriteResult, Xattr,
     },
 };
 use crate::syscall::errno::*;
@@ -352,11 +352,21 @@ impl FileSystem for Ext2Adapter {
             .ok_or(Errno(ENOENT))
     }
 
+    fn parent(&self, dir: u64) -> Result<u64, Errno> {
+        let guard = read_mount(self.mount).map_err(errno)?;
+        let fs = guard.as_ref().ok_or(Errno(EIO))?;
+        let (dir, inode) = directory(fs, dir)?;
+        let record = fs.lookup_in_dir_bytes(&inode, b"..").map_err(errno)?
+            .ok_or(Errno(EIO))?;
+        fs.namespace().entry(dir, b"..", record)
+            .map(u64::from).ok_or(Errno(EIO))
+    }
+
     fn readdir(
         &self,
         dir: u64,
         cookie: u64,
-        sink: &mut dyn FnMut(DirEnt) -> Result<bool, Errno>,
+        sink: &mut dyn FnMut(DirEnt, u64) -> Result<bool, Errno>,
     ) -> Result<u64, Errno> {
         let guard = read_mount(self.mount).map_err(errno)?;
         let fs = guard.as_ref().ok_or(Errno(EIO))?;
@@ -387,16 +397,17 @@ impl FileSystem for Ext2Adapter {
                 ino: ino.into(),
                 kind: kind(&child)?,
                 name,
-            })? {
+            }, record.next as u64)? {
                 return Ok(next);
             }
             next = record.next as u64;
         }
         // A shared store has no placeholder in older generation directories.
-        // Synthetic entries follow the physical record range with stable cookies.
+        // Synthetic cookies occupy a separate range so physical growth cannot
+        // repeat a previously accepted bind entry.
         if dir == ns.root {
             for (index, (name, ino)) in generation_binds(ns).enumerate() {
-                let position = data.len() as u64 + index as u64;
+                let position = (1u64 << 62) + index as u64;
                 if position < cookie {
                     continue;
                 }
@@ -412,7 +423,7 @@ impl FileSystem for Ext2Adapter {
                     ino: ino.into(),
                     kind: kind(&child)?,
                     name: name.to_vec(),
-                })? {
+                }, position + 1)? {
                     return Ok(next);
                 }
                 next = position + 1;
@@ -558,12 +569,30 @@ impl FileSystem for Ext2Adapter {
         let bytes = fs
             .read_file_range_coherent(ino, &inode, off, buf.len())
             .map_err(errno)?;
-        buf[..bytes.len()].copy_from_slice(&bytes);
         refresh(node, &inode)?;
+        let update_atime = !bytes.is_empty() && !fs.is_read_only() && inode.needs_atime_update();
+        buf[..bytes.len()].copy_from_slice(&bytes);
+        drop(guard);
+        if update_atime {
+            // Reload under the raw write guard:
+            // a timestamp update need not finish another inode's suffix work.
+            // A completed read keeps its result if metadata I/O fails.
+            let _ = (|| -> Result<(), Errno> {
+                #[cfg(not(test))]
+                let mut guard = ext2::fs_write_raw(ext2::pin_is_home(self.mount).map_err(errno)?)
+                    .map_err(errno)?;
+                #[cfg(test)]
+                let mut guard = write_mount(self.mount).map_err(errno)?;
+                let fs = guard.as_mut().ok_or(Errno(EIO))?;
+                let ino = handle.verify(fs).map_err(errno)?;
+                fs.update_atime(ino).map_err(errno)?;
+                refresh(node, &fs.read_inode(ino).map_err(errno)?)
+            })();
+        }
         Ok(bytes.len())
     }
 
-    fn write(&self, node: &VNode, at: WriteAt, buf: &[u8]) -> Result<usize, Errno> {
+    fn write(&self, node: &VNode, req: WriteReq, buf: &[u8]) -> Result<WriteResult, WriteError> {
         let ino = ext2::ino32(node.ino)?;
         let mut guard = write_mount(self.mount)
             .map_err(errno)?
@@ -575,25 +604,42 @@ impl FileSystem for Ext2Adapter {
         let inode = regular_inode(fs, handle.verify(fs).map_err(errno)?)?;
         // Append uses the on-disk size under the same write guard as the write,
         // including when another open VNode extended the file.
-        let offset = match at {
+        let offset = match req.at {
             WriteAt::Offset(off) => off,
             WriteAt::Append => inode.size(),
         };
-        if !buf.is_empty()
+        // Match resource::write_length, with the append EOF protected by this
+        // guard too. Empty writes leave the inode's privilege bits alone.
+        if !buf.is_empty() && req.limit != u64::MAX && offset >= req.limit {
+            return Err(WriteError::FileSizeLimit);
+        }
+        let length = if req.limit == u64::MAX {
+            buf.len()
+        } else {
+            (buf.len() as u64).min(req.limit.saturating_sub(offset)) as usize
+        };
+        if length != 0
             && offset
-                .checked_add(buf.len() as u64)
+                .checked_add(length as u64)
                 .is_none_or(|end| end > fs.max_file_size())
         {
-            return Err(Errno(EFBIG));
+            return Err(Errno(EFBIG).into());
         }
-        let result = fs.write_file_range(ino, offset, buf).map_err(errno);
+        let result = fs
+            .write_file_range_as(ino, offset, &buf[..length], req.clear_setid)
+            .map(|bytes| WriteResult {
+                offset,
+                bytes,
+                limited: length < buf.len(),
+            })
+            .map_err(errno).map_err(WriteError::from);
         if let Ok(inode) = fs.read_inode(ino) {
             refresh(node, &inode)?;
         }
         result
     }
 
-    fn resize(&self, node: &VNode, size: u64) -> Result<(), Errno> {
+    fn resize(&self, node: &VNode, size: u64, clear_setid: bool) -> Result<(), Errno> {
         let ino = ext2::ino32(node.ino)?;
         let mut guard = write_mount(self.mount)
             .map_err(errno)?
@@ -606,8 +652,7 @@ impl FileSystem for Ext2Adapter {
         if size > fs.max_file_size() {
             return Err(Errno(EFBIG));
         }
-        // Credential decisions and any set-ID clearing belong to the caller.
-        let ticket = fs.begin_resize_file_as(ino, size, false).map_err(errno)?;
+        let ticket = fs.begin_resize_file_as(ino, size, clear_setid).map_err(errno)?;
         if let Some(ticket) = ticket {
             guard = guard.finish_shrink(ticket).map_err(errno)?;
         }

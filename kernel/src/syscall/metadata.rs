@@ -39,7 +39,7 @@ pub(crate) fn directory_of(kind: FdKind) -> Result<namei::WorkingDir, u64> {
     let FdKind::Directory(dir) = kind else {
         return Err(ENOTDIR as u64);
     };
-    let handle = dir.lock().handle.clone();
+    let handle = dir.lock().open.ext2_handle().ok_or(EIO as u64)?;
     let mount = namei::Mount(handle.object.mount.mount_id);
     let guard = mount.read()?;
     let fs = guard.as_ref().ok_or(EIO as u64)?;
@@ -232,7 +232,10 @@ fn by_fd(fd: i32, change: Change) -> SyscallResult {
             match result { Ok(()) => SyscallResult::Ok(0), Err(e) => SyscallResult::Err(e) }
         }
         FdKind::RegularFile(file) => {
-            let handle = file.lock().handle.clone();
+            let handle = match file.lock().open.ext2_handle() {
+                Some(handle) => handle,
+                None => return SyscallResult::Err(EIO as u64),
+            };
             let mut guard = match ext2::write_mount(handle.object.mount).map_err(ext2_errno) {
                 Ok(g) => g,
                 Err(error) => return SyscallResult::Err(error.into()),
@@ -247,7 +250,10 @@ fn by_fd(fd: i32, change: Change) -> SyscallResult {
             update(fs, ino.into(), change, &cred)
         }
         FdKind::Directory(dir) => {
-            let handle = dir.lock().handle.clone();
+            let handle = match dir.lock().open.ext2_handle() {
+                Some(handle) => handle,
+                None => return SyscallResult::Err(EIO as u64),
+            };
             let mut guard = match ext2::write_mount(handle.object.mount).map_err(ext2_errno) {
                 Ok(g) => g,
                 Err(error) => return SyscallResult::Err(error.into()),

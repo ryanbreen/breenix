@@ -5,8 +5,8 @@ use crate::{
     host_mounts::Fixture,
     syscall_errno::*,
     vfs::{
-        FileSystem, NewNode, NodeKind, Remove, RenameMode, SetAttr, Timestamp, WriteAt, Xattr,
-        XattrSet,
+        FileSystem, NewNode, NodeKind, Remove, RenameMode, SetAttr, Timestamp, WriteAt, WriteReq,
+        WriteResult, Xattr, XattrSet,
     },
 };
 
@@ -159,7 +159,7 @@ fn names_create_lookup_readdir_and_readlink() {
     for _ in 0..expected.len() + 1 {
         let mut accepted = false;
         let next = fs
-            .readdir(root, cookie, &mut |entry| {
+            .readdir(root, cookie, &mut |entry, _cookie| {
                 if accepted {
                     return Ok(false);
                 }
@@ -260,9 +260,45 @@ fn append_write_extends_and_reads_back() {
     let ino = regular(&fs, fs.root().unwrap(), b"append");
     let node = fs.open(ino).unwrap();
     let other = fs.open(ino).unwrap();
-    assert_eq!(fs.write(&node, WriteAt::Offset(0), b"hello"), Ok(5));
-    assert_eq!(fs.write(&other, WriteAt::Append, b" world"), Ok(6));
-    assert_eq!(fs.write(&node, WriteAt::Append, b"!"), Ok(1));
+    assert_eq!(
+        fs.write(
+            &node,
+            WriteReq {
+                at: WriteAt::Offset(0),
+                limit: u64::MAX,
+                clear_setid: false
+            },
+            b"hello"
+        ).map_err(|error| error.errno())
+        .map(|r| r.bytes),
+        Ok(5)
+    );
+    assert_eq!(
+        fs.write(
+            &other,
+            WriteReq {
+                at: WriteAt::Append,
+                limit: u64::MAX,
+                clear_setid: false
+            },
+            b" world"
+        ).map_err(|error| error.errno())
+        .map(|r| r.bytes),
+        Ok(6)
+    );
+    assert_eq!(
+        fs.write(
+            &node,
+            WriteReq {
+                at: WriteAt::Append,
+                limit: u64::MAX,
+                clear_setid: false
+            },
+            b"!"
+        ).map_err(|error| error.errno())
+        .map(|r| r.bytes),
+        Ok(1)
+    );
     let mut bytes = [0xa5; 20];
     assert_eq!(fs.read(&other, 0, &mut bytes), Ok(12));
     assert_eq!(&bytes[..12], b"hello world!");
@@ -312,9 +348,21 @@ fn resize_shrink_then_grow_reads_zeros() {
     let ino = regular(&fs, fs.root().unwrap(), b"resize");
     let node = fs.open(ino).unwrap();
     let data = vec![0x5a; 3 * 4096];
-    assert_eq!(fs.write(&node, WriteAt::Offset(0), &data), Ok(data.len()));
-    fs.resize(&node, 37).unwrap();
-    fs.resize(&node, data.len() as u64).unwrap();
+    assert_eq!(
+        fs.write(
+            &node,
+            WriteReq {
+                at: WriteAt::Offset(0),
+                limit: u64::MAX,
+                clear_setid: false
+            },
+            &data
+        ).map_err(|error| error.errno())
+        .map(|r| r.bytes),
+        Ok(data.len())
+    );
+    fs.resize(&node, 37, false).unwrap();
+    fs.resize(&node, data.len() as u64, false).unwrap();
     let mut bytes = vec![0xa5; data.len()];
     assert_eq!(fs.read(&node, 0, &mut bytes), Ok(bytes.len()));
     assert_eq!(&bytes[..37], &[0x5a; 37]);
@@ -332,11 +380,29 @@ fn write_beyond_max_file_size_is_efbig() {
     let free = fs.statfs().unwrap().free_blocks;
     let limit = fs.max_file_size().unwrap();
     assert_eq!(
-        fs.write(&node, WriteAt::Offset(limit), b"x"),
+        fs.write(
+            &node,
+            WriteReq {
+                at: WriteAt::Offset(limit),
+                limit: u64::MAX,
+                clear_setid: false
+            },
+            b"x"
+        ).map_err(|error| error.errno())
+        .map(|r| r.bytes),
         Err(Errno(EFBIG))
     );
     assert_eq!(
-        fs.write(&node, WriteAt::Offset(u64::MAX), b"x"),
+        fs.write(
+            &node,
+            WriteReq {
+                at: WriteAt::Offset(u64::MAX),
+                limit: u64::MAX,
+                clear_setid: false
+            },
+            b"x"
+        ).map_err(|error| error.errno())
+        .map(|r| r.bytes),
         Err(Errno(EFBIG))
     );
     assert_eq!(fs.getattr(ino).unwrap(), before);
@@ -351,7 +417,16 @@ fn statfs_free_blocks_fall_after_write() {
     let node = fs.open(ino).unwrap();
     let before = fs.statfs().unwrap();
     assert_eq!(
-        fs.write(&node, WriteAt::Offset(0), &vec![1; 8192]),
+        fs.write(
+            &node,
+            WriteReq {
+                at: WriteAt::Offset(0),
+                limit: u64::MAX,
+                clear_setid: false
+            },
+            &vec![1; 8192]
+        ).map_err(|error| error.errno())
+        .map(|r| r.bytes),
         Ok(8192)
     );
     let after = fs.statfs().unwrap();
@@ -424,9 +499,33 @@ fn read_only_mount_write_is_erofs() {
     disk.remount_read_only();
     assert_eq!(fs.read_only(), Ok(true));
     assert!(fs.statfs().unwrap().flags.read_only);
-    assert_eq!(fs.write(&node, WriteAt::Offset(0), b"x"), Err(Errno(EROFS)));
-    assert_eq!(fs.write(&node, WriteAt::Append, b"x"), Err(Errno(EROFS)));
-    assert_eq!(fs.resize(&node, 1), Err(Errno(EROFS)));
+    assert_eq!(
+        fs.write(
+            &node,
+            WriteReq {
+                at: WriteAt::Offset(0),
+                limit: u64::MAX,
+                clear_setid: false
+            },
+            b"x"
+        ).map_err(|error| error.errno())
+        .map(|r| r.bytes),
+        Err(Errno(EROFS))
+    );
+    assert_eq!(
+        fs.write(
+            &node,
+            WriteReq {
+                at: WriteAt::Append,
+                limit: u64::MAX,
+                clear_setid: false
+            },
+            b"x"
+        ).map_err(|error| error.errno())
+        .map(|r| r.bytes),
+        Err(Errno(EROFS))
+    );
+    assert_eq!(fs.resize(&node, 1, false), Err(Errno(EROFS)));
     assert_eq!(
         fs.setattr(
             ino,
@@ -438,4 +537,355 @@ fn read_only_mount_write_is_erofs() {
         Err(Errno(EROFS))
     );
     assert_eq!(fs.getattr(ino).unwrap().size, 0);
+}
+
+#[test]
+fn getdents_cookie_survives_concurrent_unlink() {
+    use crate::{
+        ext2::{generation::Namespace, live_inode::FileHandle},
+        host_mounts::write_mount,
+        vfs::file::OpenFile,
+    };
+    use std::{collections::BTreeMap, sync::Arc};
+
+    let disk = Fixture::new();
+    let fs: Arc<dyn FileSystem> = Arc::new(Ext2Adapter::new(disk.pin()));
+    let generation = fs
+        .create(
+            2,
+            b"generation",
+            NewNode::Directory {
+                attrs: attrs(0o755),
+            },
+        )
+        .unwrap();
+    // The physical parent is inode 2; the selected namespace's parent is itself.
+    let ns = Namespace {
+        root: generation as u32,
+        ..Namespace::RAW
+    };
+    write_mount(disk.pin())
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .host_set_namespace(ns);
+    let mut expected = BTreeMap::new();
+    for name in [b"a".as_slice(), b"b", b"pending", b"c", b"d"] {
+        expected.insert(
+            name.to_vec(),
+            (regular(fs.as_ref(), generation, name), NodeKind::Regular),
+        );
+    }
+    expected.insert(b".".to_vec(), (generation, NodeKind::Directory));
+    expected.insert(b"..".to_vec(), (u64::from(ns.root), NodeKind::Directory));
+    let node = fs.open(generation).unwrap();
+    let pin = node.pin::<FileHandle>().expect("ext2 inode pin");
+    assert_eq!(pin.object.key.incarnation, node.incarnation);
+    assert!(node.pin::<u64>().is_none());
+    let file = OpenFile {
+        fs: fs.clone(),
+        node,
+    };
+    assert_eq!(file.dirents(0, &mut |_, _| Ok(false)), Ok(0));
+    let mut seen = Vec::new();
+    let cookie = file
+        .dirents(0, &mut |entry, _cookie| {
+            if seen.len() == 4 {
+                return Ok(false);
+            }
+            seen.push(entry);
+            Ok(true)
+        })
+        .unwrap();
+    assert_eq!(seen.len(), 4);
+    assert_eq!(seen[0].name, b".");
+    assert_eq!(
+        (seen[1].name.as_slice(), seen[1].ino),
+        (b"..".as_slice(), u64::from(ns.root))
+    );
+    let returned = seen[2].name.clone();
+    assert_ne!(returned, b"pending");
+    fs.remove(generation, &returned, Remove::NonDir).unwrap();
+    fs.remove(generation, b"pending", Remove::NonDir).unwrap();
+    expected.remove(b"pending".as_slice());
+    // Larger than either freed slot, so ext2 inserts it beyond the saved cookie.
+    let created = b"created-with-a-long-name-that-does-not-fit-unlinked-slots";
+    expected.insert(
+        created.to_vec(),
+        (regular(fs.as_ref(), generation, created), NodeKind::Regular),
+    );
+    let mut pos = cookie;
+    for _ in 0..expected.len() + 1 {
+        let mut count = 0;
+        let next = file
+            .dirents(pos, &mut |entry, _cookie| {
+                if count == 2 {
+                    return Ok(false);
+                }
+                count += 1;
+                seen.push(entry);
+                Ok(true)
+            })
+            .unwrap();
+        assert!(next >= pos);
+        pos = next;
+        if count == 0 {
+            break;
+        }
+    }
+    let mut actual = BTreeMap::new();
+    for entry in seen {
+        assert!(
+            actual.insert(entry.name, (entry.ino, entry.kind)).is_none(),
+            "repeated name after cookie resume"
+        );
+    }
+    assert_eq!(actual, expected);
+    let mut dots = Vec::new();
+    let after_dots = file
+        .dirents(0, &mut |entry, _cookie| {
+            if dots.len() == 2 {
+                return Ok(false);
+            }
+            dots.push(entry);
+            Ok(true)
+        })
+        .unwrap();
+    assert!(after_dots >= 2);
+    assert_eq!(
+        dots.iter()
+            .map(|e| (e.name.as_slice(), e.ino))
+            .collect::<Vec<_>>(),
+        vec![
+            (b".".as_slice(), generation),
+            (b"..".as_slice(), generation)
+        ]
+    );
+    let mut parent_only = Vec::new();
+    let after_parent = file
+        .dirents(1, &mut |entry, _cookie| {
+            if !parent_only.is_empty() {
+                return Ok(false);
+            }
+            parent_only.push(entry);
+            Ok(true)
+        })
+        .unwrap();
+    assert!(after_parent >= 2);
+    assert_eq!(parent_only, dots[1..]);
+}
+
+#[test]
+fn append_reports_offset_and_clears_setid() {
+    let disk = Fixture::new();
+    let adapter = Ext2Adapter::new(disk.pin());
+    let fs: &dyn FileSystem = &adapter;
+    let ino = regular(fs, fs.root().unwrap(), b"append-mode");
+    let node = fs.open(ino).unwrap();
+    let other = fs.open(ino).unwrap();
+    let req = |clear_setid| WriteReq {
+        at: WriteAt::Append,
+        limit: u64::MAX,
+        clear_setid,
+    };
+    fs.setattr(
+        ino,
+        SetAttr {
+            mode: Some(0o6750),
+            ..SetAttr::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        fs.write(&other, req(false), b"first").map_err(|error| error.errno()),
+        Ok(WriteResult {
+            offset: 0,
+            bytes: 5,
+            limited: false
+        })
+    );
+    assert_eq!(fs.getattr(ino).unwrap().attrs.mode & 0o7777, 0o6750);
+    // node caches its opening size: append must choose the current inode's EOF.
+    assert_eq!(
+        fs.write(&node, req(true), b"!").map_err(|error| error.errno()),
+        Ok(WriteResult {
+            offset: 5,
+            bytes: 1,
+            limited: false
+        })
+    );
+    assert_eq!(fs.getattr(ino).unwrap().attrs.mode & 0o7777, 0o750);
+    let mut bytes = [0; 6];
+    assert_eq!(fs.read(&other, 0, &mut bytes), Ok(6));
+    assert_eq!(&bytes, b"first!");
+    fs.setattr(
+        ino,
+        SetAttr {
+            mode: Some(0o6750),
+            ..SetAttr::default()
+        },
+    )
+    .unwrap();
+    fs.resize(&node, 3, false).unwrap();
+    assert_eq!(fs.getattr(ino).unwrap().attrs.mode & 0o7777, 0o6750);
+    fs.resize(&node, 8, true).unwrap();
+    assert_eq!(fs.getattr(ino).unwrap().attrs.mode & 0o7777, 0o750);
+}
+
+#[test]
+fn write_limit_clamps_and_reports_limited() {
+    let disk = Fixture::new();
+    let adapter = Ext2Adapter::new(disk.pin());
+    let fs: &dyn FileSystem = &adapter;
+    let ino = regular(fs, fs.root().unwrap(), b"write-limit");
+    let node = fs.open(ino).unwrap();
+    let other = fs.open(ino).unwrap();
+    let req = |at, limit| WriteReq {
+        at,
+        limit,
+        clear_setid: true,
+    };
+    assert_eq!(
+        fs.write(&other, req(WriteAt::Offset(0), 8), b"abcdef").map_err(|error| error.errno()),
+        Ok(WriteResult {
+            offset: 0,
+            bytes: 6,
+            limited: false
+        })
+    );
+    assert_eq!(
+        fs.write(&node, req(WriteAt::Append, 8), b"ghij").map_err(|error| error.errno()),
+        Ok(WriteResult {
+            offset: 6,
+            bytes: 2,
+            limited: true
+        })
+    );
+    fs.setattr(
+        ino,
+        SetAttr {
+            mode: Some(0o6750),
+            ..SetAttr::default()
+        },
+    )
+    .unwrap();
+    let before = fs.getattr(ino).unwrap();
+    let free = fs.statfs().unwrap().free_blocks;
+    for at in [WriteAt::Append, WriteAt::Offset(8), WriteAt::Offset(9)] {
+        assert_eq!(fs.write(&node, req(at, 8), b"x").map_err(|error| error.errno()), Err(Errno(EFBIG)));
+    }
+    assert_eq!(
+        fs.write(&node, req(WriteAt::Offset(9), 8), b"").map_err(|error| error.errno()),
+        Ok(WriteResult {
+            offset: 9,
+            bytes: 0,
+            limited: false
+        })
+    );
+    assert_eq!(fs.getattr(ino).unwrap(), before);
+    assert_eq!(fs.statfs().unwrap().free_blocks, free);
+    // Explicit-offset writes use the same clamp and preserve the tail.
+    assert_eq!(
+        fs.write(&node, req(WriteAt::Offset(2), 4), b"XYZ").map_err(|error| error.errno()),
+        Ok(WriteResult {
+            offset: 2,
+            bytes: 2,
+            limited: true
+        })
+    );
+    let mut bytes = [0; 8];
+    assert_eq!(fs.read(&node, 0, &mut bytes), Ok(8));
+    assert_eq!(&bytes, b"abXYefgh");
+}
+
+#[test]
+fn read_moves_stale_atime_only() {
+    let disk = Fixture::new();
+    let adapter = Ext2Adapter::new(disk.pin());
+    let fs: &dyn FileSystem = &adapter;
+    let ino = regular(fs, fs.root().unwrap(), b"read-atime");
+    let node = fs.open(ino).unwrap();
+    fs.write(
+        &node,
+        WriteReq {
+            at: WriteAt::Offset(0),
+            limit: u64::MAX,
+            clear_setid: false,
+        },
+        b"data",
+    ).map_err(|error| error.errno())
+    .unwrap();
+    // The host clock is 1. Write exact times without setattr changing ctime.
+    let set_times = |atime, mtime, ctime| {
+        let mut guard = crate::host_mounts::write_mount(disk.pin()).unwrap();
+        let storage = guard.as_mut().unwrap();
+        let mut inode = storage.read_inode(ino as u32).unwrap();
+        inode.i_atime = atime;
+        inode.i_mtime = mtime;
+        inode.i_ctime = ctime;
+        storage.write_inode(ino as u32, &inode).unwrap();
+    };
+    let mut bytes = [0; 4];
+    set_times(0, 0, 0);
+    assert_eq!(fs.read(&node, 4, &mut bytes), Ok(0));
+    assert_eq!(fs.getattr(ino).unwrap().times.atime.sec, 0);
+    assert_eq!(fs.read(&node, 0, &mut bytes[..0]), Ok(0));
+    assert_eq!(fs.getattr(ino).unwrap().times.atime.sec, 0);
+    let before = fs.getattr(ino).unwrap();
+    assert_eq!(fs.read(&node, 0, &mut bytes), Ok(4));
+    assert_eq!(&bytes, b"data");
+    let after = fs.getattr(ino).unwrap();
+    assert_eq!(after.times.atime.sec, 1);
+    assert_eq!(after.times.mtime, before.times.mtime);
+    assert_eq!(after.times.ctime, before.times.ctime);
+    assert_eq!(after.attrs, before.attrs);
+    assert_eq!(node.times.lock().atime.sec, 1);
+    set_times(2, 0, 0);
+    assert_eq!(fs.read(&node, 0, &mut bytes), Ok(4));
+    assert_eq!(fs.getattr(ino).unwrap().times.atime.sec, 2);
+    set_times(0, 0, 0);
+    disk.fail_next_write();
+    assert_eq!(fs.read(&node, 0, &mut bytes), Ok(4));
+    assert_eq!(&bytes, b"data");
+    assert_eq!(fs.getattr(ino).unwrap().times.atime.sec, 0);
+    disk.remount_read_only();
+    assert_eq!(fs.read(&node, 0, &mut bytes), Ok(4));
+    assert_eq!(fs.getattr(ino).unwrap().times.atime.sec, 0);
+}
+
+#[test]
+fn fsize_refusal_is_distinct_from_filesystem_efbig() {
+    use crate::vfs::WriteError;
+    let disk = Fixture::new();
+    let fs = Ext2Adapter::new(disk.pin());
+    let ino = regular(&fs, fs.root().unwrap(), b"fsize-signal");
+    let node = fs.open(ino).unwrap();
+    let req = |at, limit| WriteReq { at, limit, clear_setid: false };
+    let short = fs.write(&node, req(WriteAt::Offset(0), 2), b"abcd").unwrap();
+    assert_eq!(short.bytes, 2);
+    for at in [WriteAt::Append, WriteAt::Offset(2)] {
+        assert_eq!(fs.write(&node, req(at, 2), b"x"), Err(WriteError::FileSizeLimit));
+    }
+    assert_eq!(fs.write(&node, req(WriteAt::Offset(fs.max_file_size().unwrap()), u64::MAX), b"x"),
+        Err(WriteError::Filesystem(Errno(EFBIG))));
+}
+
+#[test]
+fn batched_dirents_supply_resumable_cookies() {
+    use std::sync::Arc;
+    use crate::vfs::file::OpenFile;
+    let disk = Fixture::new();
+    let fs = Arc::new(Ext2Adapter::new(disk.pin()));
+    let root = fs.create(fs.root().unwrap(), b"batch", NewNode::Directory { attrs: attrs(0o755) }).unwrap();
+    for name in [b"a", b"b", b"c"] { regular(fs.as_ref(), root, name); }
+    let open = OpenFile { node: fs.open(root).unwrap(), fs };
+    let mut batch = Vec::new();
+    let end = open.dirents(0, &mut |entry, cookie| { batch.push((entry, cookie)); Ok(true) }).unwrap();
+    assert_eq!(batch.len(), 5);
+    assert_eq!(end, batch.last().unwrap().1);
+    for (index, (_, cookie)) in batch.iter().enumerate() {
+        let mut resumed = Vec::new();
+        open.dirents(*cookie, &mut |entry, next| { resumed.push((entry, next)); Ok(true) }).unwrap();
+        assert_eq!(resumed, batch[index + 1..]);
+    }
 }
