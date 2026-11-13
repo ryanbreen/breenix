@@ -7,6 +7,60 @@ use std::path::{Path, PathBuf};
 const CEILING: usize = 120;
 
 #[test]
+fn open_and_access_use_the_trait() {
+    use syn::visit::{self, Visit};
+
+    #[derive(Default)]
+    struct Boundary { backend: Vec<String>, calls: Vec<String> }
+    impl<'ast> Visit<'ast> for Boundary {
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            if matches!(ident.to_string().as_str(), "ext2" | "ext2_errno" | "Ext2Fs"
+                | "Ext2Inode" | "Ext2FileType" | "FileHandle" | "ShrinkTicket"
+                | "ino32" | "read_inode" | "lookup_in_dir_bytes" | "create_file"
+                | "pin_loaded_inode" | "begin_resize_file_as" | "verify") {
+                self.backend.push(ident.to_string());
+            }
+        }
+        fn visit_expr_method_call(&mut self, expr: &'ast syn::ExprMethodCall) {
+            self.calls.push(expr.method.to_string());
+            visit::visit_expr_method_call(self, expr);
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("kernel/src");
+    let parsed = syn::parse_file(&fs::read_to_string(root.join("syscall/fs.rs")).unwrap()).unwrap();
+    let mut boundary = Boundary::default();
+    for item in &parsed.items {
+        if let syn::Item::Fn(f) = item {
+            let name = f.sig.ident.to_string();
+            if name.starts_with("sys_open") || matches!(name.as_str(),
+                "check_open_access" | "open_is_access_checked" | "access_resolved"
+                | "sys_access" | "sys_faccessat" | "prepare_open_descriptor") {
+                boundary.visit_item_fn(f);
+            }
+        }
+    }
+    assert!(boundary.backend.is_empty(), "backend names: {}", boundary.backend.join(", "));
+    for operation in ["lookup", "getattr", "create_open", "resize"] {
+        assert!(boundary.calls.iter().any(|name| name == operation), "open/access must use {operation}");
+    }
+    // The create-open primitive must prepare the VNode before publication,
+    // rather than compose create followed by a fallible open of the new name.
+    let adapter = syn::parse_file(&fs::read_to_string(root.join("fs/ext2/adapter.rs")).unwrap()).unwrap();
+    let method = adapter.items.iter().find_map(|item| {
+        let syn::Item::Impl(i) = item else { return None; };
+        i.items.iter().find_map(|item| match item {
+            syn::ImplItem::Fn(f) if f.sig.ident == "create_open" => Some(f), _ => None,
+        })
+    }).expect("adapter must provide atomic create_open");
+    let mut prepare = Boundary::default();
+    prepare.visit_block(&method.block);
+    assert!(prepare.calls.iter().any(|name| name == "create_node_prepared"),
+        "create_open must prepare its open state before publishing the name");
+    assert!(!prepare.calls.iter().any(|name| name == "open"),
+        "create_open must use the inode it prepares, without a second open");
+}
+
+#[test]
 fn link_and_rename_use_the_trait() {
     use syn::visit::{self, Visit};
 
