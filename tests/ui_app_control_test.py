@@ -137,7 +137,7 @@ impl Live {fn info(&self,_:u64)->Result<Info,String>{Ok(Info{width:7,height:5})}
 #[derive(Default)] pub struct Record {check:String,window:u64,commit:u64,width:u32,height:u32}
 pub struct Arena;impl Arena {fn write_frame_tree(&mut self,f:impl FnOnce(&mut [u8],&mut [u8])->Result<(Record,usize),String>)->Result<Record,String>{let mut p=vec![0;7*5*4];let mut t=vec![0;1024];let (r,n)=f(&mut p,&mut t)?;assert_eq!(n,140);Ok(r)}}
 #[derive(Debug)] pub struct WindowError {syscall:Option<Error>,detail:String}
-""" + function('libs/libuitest/src/capture.rs', 'byte_len') + function('libs/libuitest/src/capture.rs', 'window_result').replace('libbreenix::error::Error','Error') + r"""
+""" + '\npub mod phases {\n' + (ROOT / 'libs/libuitest/src/phases.rs').read_text().replace('//!', '//') + '\n}\n' + function('libs/libuitest/src/capture.rs', 'byte_len') + function('libs/libuitest/src/capture.rs', 'window_result').replace('libbreenix::error::Error','Error') + r"""
 #[test] fn requests() {
     let (_,commit)=Live.capture(9).unwrap();assert_eq!(commit,42);
     let record=window_result(&mut Arena,"frame",9).unwrap();assert_eq!(record.commit,42);

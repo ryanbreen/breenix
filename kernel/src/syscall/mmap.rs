@@ -537,30 +537,30 @@ fn map_file(
     if vma.flags.bits() & 3 != 2 && vma.prot.contains(Protection::WRITE) {
         drop_writer_privilege(&handle)?;
     }
-    let guard =
-        crate::fs::ext2::read_mount(handle.object.mount).map_err(|_| ErrorCode::IoError as u64)?;
-    let fs = guard.as_ref().ok_or(ErrorCode::IoError as u64)?;
-    let ino = handle.verify(fs).map_err(|_| ErrorCode::IoError as u64)?;
-    let append_only = fs
-        .read_inode(ino)
-        .map_err(|_| ErrorCode::IoError as u64)?
-        .i_flags
-        & 0x20
-        != 0;
-    if vma.flags.bits() & 3 != 2 && vma.prot.contains(Protection::WRITE) && append_only {
-        return Err(crate::syscall::errno::EACCES as u64);
-    }
-    file_map::populate(&handle, fs, pgoff, vma.size() / PAGE_SIZE).map_err(
-        |error| match error {
-            MapError::NoMemory => ErrorCode::OutOfMemory as u64,
-            MapError::Io => ErrorCode::IoError as u64,
-        },
-    )?;
     let object = handle.object.clone();
     let abandon = |errno: u64| {
         object.map.abandon_population();
         errno
     };
+    let _population = file_map::populate(&handle, pgoff, vma.size() / PAGE_SIZE).map_err(
+        |error| match error {
+            MapError::NoMemory => ErrorCode::OutOfMemory as u64,
+            MapError::Io => ErrorCode::IoError as u64,
+        },
+    )?;
+    let guard =
+        crate::fs::ext2::read_mount(handle.object.mount).map_err(|_| abandon(ErrorCode::IoError as u64))?;
+    let fs = guard.as_ref().ok_or_else(|| abandon(ErrorCode::IoError as u64))?;
+    let ino = handle.verify(fs).map_err(|_| abandon(ErrorCode::IoError as u64))?;
+    let append_only = fs
+        .read_inode(ino)
+        .map_err(|_| abandon(ErrorCode::IoError as u64))?
+        .i_flags
+        & 0x20
+        != 0;
+    if vma.flags.bits() & 3 != 2 && vma.prot.contains(Protection::WRITE) && append_only {
+        return Err(abandon(crate::syscall::errno::EACCES as u64));
+    }
     let mut manager_guard = crate::process::manager_for_address_space(thread_id);
     let Some((pid, process)) = manager_guard
         .as_mut()

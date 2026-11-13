@@ -653,7 +653,7 @@ pub fn write_file<B: BlockDevice + ?Sized>(
 /// Private to one write under the filesystem's exclusive mount guard.
 /// Publish writes the staged sectors before returning successfully, without
 /// issuing a FLUSH. The enclosing sync supplies device-cache durability.
-struct MetadataBatch<'a, B: BlockDevice + ?Sized> {
+pub(super) struct MetadataBatch<'a, B: BlockDevice + ?Sized> {
     device: &'a B,
     sectors: spin::Mutex<Vec<(u64, [u8; 512])>>,
     bitmaps: Vec<(u64, u64)>,
@@ -663,7 +663,7 @@ struct MetadataBatch<'a, B: BlockDevice + ?Sized> {
 impl<'a, B: BlockDevice + ?Sized> MetadataBatch<'a, B> {
     const LIMIT: usize = 128;
 
-    fn new(device: &'a B, superblock: &Ext2Superblock, groups: &[super::Ext2BlockGroupDesc]) -> Result<Self, BlockError> {
+    pub(super) fn new(device: &'a B, superblock: &Ext2Superblock, groups: &[super::Ext2BlockGroupDesc]) -> Result<Self, BlockError> {
         let mut bitmaps = Vec::new();
         bitmaps.try_reserve_exact(groups.len()).map_err(|_| BlockError::IoError)?;
         let sectors_per_block = superblock.block_size() as u64 / 512;
@@ -680,7 +680,7 @@ impl<'a, B: BlockDevice + ?Sized> MetadataBatch<'a, B> {
         self.bitmaps.iter().any(|(first, last)| sector >= *first && sector < *last)
     }
 
-    fn publish(&self) -> Result<(), BlockError> {
+    pub(super) fn publish(&self) -> Result<(), BlockError> {
         if self.failed.load(core::sync::atomic::Ordering::Acquire) {
             return Err(BlockError::MetadataPublishFailed);
         }

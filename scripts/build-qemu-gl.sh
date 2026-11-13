@@ -38,7 +38,7 @@ set -euo pipefail
 
 UTM_COMMIT=4d73aaf0d284f1c22e3e1c1072e729988e134268
 QEMU_REPO=https://github.com/ryanbreen/breenix-qemu.git
-QEMU_COMMIT=160f45890824de1270a2f1e84b9d02a12b2219d2
+QEMU_COMMIT=83b9fbdd8032308b66b0f8221142feab5d960669
 SPICE_PROTOCOL_URL=https://www.spice-space.org/download/releases/spice-protocol-0.14.4.tar.xz
 SPICE_PROTOCOL_SHA256=04ffba610d9fd441cfc47dfaa135d70096e60b1046d2119d8db2f8ea0d17d912
 SPICE_SERVER_URL=https://www.spice-space.org/download/releases/spice-server/spice-0.14.3.tar.bz2
@@ -53,7 +53,7 @@ VIRGL_COMMIT=451505ad0aa449290f2c0672da6877d57ee770e5
 DTC_REPO=https://gitlab.com/qemu-project/dtc.git
 DTC_COMMIT=b6910bec11614980a21e46fbccc35934b671bd81
 # Bump the suffix whenever the recipe or pinned source changes, so a stale build is not reused.
-PIN=10.0.12-utm-4d73aaf0-b6
+PIN=10.0.12-utm-4d73aaf0-b7
 
 CACHE="${BREENIX_QEMU_GL_DIR:-$HOME/Library/Caches/breenix/qemu-gl}"
 DEST="$CACHE/$PIN/QEMU-GL.app"

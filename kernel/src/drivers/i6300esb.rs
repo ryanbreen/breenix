@@ -306,6 +306,9 @@ mod feeder {
         let mut guard = crate::fs::ext2::root_fs_write()?;
         let fs = guard.as_mut().ok_or("fault root absent")?;
         let number = fs.resolve_path("/etc/breenix/watchdog-fault")?;
+        let pin = fs.pin_inode(number)?;
+        guard = guard.wait_for_inode(pin.object.key.inode)?;
+        let fs = guard.as_mut().ok_or("fault root absent")?;
         let inode = fs.read_inode(number)?;
         if inode.size() > 32 { return Err("fault intent too long"); }
         let bytes = fs.read_file_content_coherent(number, &inode)?;

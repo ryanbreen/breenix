@@ -84,8 +84,8 @@ pub(crate) fn sync_range_with_buffer(
     write_range_with_buffer(handle, first, last, bytes, true)
 }
 
-/// Global sync stages each inode, then flushes once under the mount write guard
-/// before completing their clean candidates. Per-file sync retains its barrier.
+/// Global sync stages each inode, then leases those identities across its
+/// detached device barrier before completing their clean candidates.
 pub(crate) fn stage_range_with_buffer(
     handle: &FileHandle,
     first: u64,
@@ -105,24 +105,13 @@ fn write_range_with_buffer(
     let _sync = SyncMaps::new(core::slice::from_ref(handle));
     let range_first = first;
     loop {
-        let next = {
-            let mut guard = crate::fs::ext2::write_mount(handle.object.mount)?;
-            let fs = guard.as_mut().ok_or("Missing mount")?;
-            let ino = handle.verify(fs)?;
-            fs.check_shrink(ino)?;
-            let next =
-                handle
-                    .object
-                    .map
-                    .writeback(fs, ino, first, last, WRITEBACK_PAGES, bytes)?;
-            if flush && (next.is_none() || next.is_some_and(|next| next >= last)) {
-                let result = fs.sync();
-                if result.is_err() { handle.object.map.request_writeback(); }
-                result?;
-                handle.object.map.complete_writeback(range_first, last);
-            }
-            next
-        };
+        let next = handle.object.map.writeback(handle, first, last, WRITEBACK_PAGES, bytes)?;
+        if flush && (next.is_none() || next.is_some_and(|next| next >= last)) {
+            let file = crate::fs::ext2::mapped_io::DataFile::open(handle)?;
+            let result = file.sync(range_first, last);
+            if result.is_err() { handle.object.map.request_writeback(); }
+            result?;
+        }
         let Some(next) = next else {
             return Ok(());
         };
@@ -177,6 +166,7 @@ pub struct MapState {
     writeback_pending: AtomicBool,
     writeback_requests: AtomicU64,
     disk_epoch: AtomicU64,
+    disk_write_seq: AtomicU64,
     syncers: AtomicUsize,
 }
 
@@ -583,17 +573,31 @@ impl MapState {
             writeback_pending: AtomicBool::new(false),
             writeback_requests: AtomicU64::new(0),
             disk_epoch: AtomicU64::new(durable_epoch),
+            disk_write_seq: AtomicU64::new(0),
             syncers: AtomicUsize::new(0),
         }
     }
 
     /// Called under the mount write guard before I/O; failures retain custody.
     pub(crate) fn note_disk_write(&self, epoch: u64) -> u64 {
+        self.disk_write_seq.fetch_add(1, Ordering::AcqRel);
         self.disk_epoch.swap(epoch, Ordering::AcqRel)
     }
 
     pub(crate) fn restore_disk_epoch(&self, epoch: u64) {
         self.disk_epoch.store(epoch, Ordering::Release);
+    }
+
+    pub(crate) fn disk_epoch(&self) -> u64 { self.disk_epoch.load(Ordering::Acquire) }
+
+    pub(crate) fn disk_write_seq(&self) -> u64 { self.disk_write_seq.load(Ordering::Acquire) }
+
+    /// Caller holds the mount guard. Metadata changes during the detached
+    /// barrier keep their own pending durability requirement.
+    pub(crate) fn record_data_durable(&self, before: u64) {
+        if self.disk_write_seq() == before {
+            self.disk_epoch.store(u64::MAX, Ordering::Release);
+        }
     }
 
     fn refresh(&self, inner: &MapInner) {
@@ -671,8 +675,7 @@ impl MapState {
     /// before clearing dirty custody. No PTEs are changed here.
     pub(crate) fn writeback(
         &self,
-        fs: &mut Ext2Fs,
-        ino: u32,
+        handle: &FileHandle,
         first: u64,
         last: u64,
         limit: usize,
@@ -681,7 +684,7 @@ impl MapState {
         let limit = limit
             .min(WRITEBACK_PAGES)
             .min(bytes.len() / PAGE_SIZE as usize);
-        let result = self.writeback_snapshot(fs, ino, first, last, limit, bytes);
+        let result = self.writeback_snapshot(handle, first, last, limit, bytes);
         if result.is_err() {
             self.request_writeback();
         }
@@ -690,13 +693,13 @@ impl MapState {
 
     fn writeback_snapshot(
         &self,
-        fs: &mut Ext2Fs,
-        ino: u32,
+        handle: &FileHandle,
         first: u64,
         last: u64,
         limit: usize,
         bytes: &mut [u8],
     ) -> Result<Option<u64>, &'static str> {
+        let file = crate::fs::ext2::mapped_io::DataFile::open(handle)?;
         let (snapshot, writable) = {
             let inner = self.inner.lock();
             let count = inner
@@ -730,8 +733,7 @@ impl MapState {
                 if let Some(page) = inner.pages.get_mut(*index) { page.written_gen = None; }
             }
         }
-        fs.check_shrink(ino)?;
-        let size = fs.read_inode(ino)?.size();
+        let size = file.size();
         let mut cursor = 0;
         while cursor < snapshot.len() {
             let start = cursor;
@@ -745,6 +747,7 @@ impl MapState {
             if length == 0 {
                 continue;
             }
+            let inner = self.inner.lock();
             for (slot, (_, frame, _)) in snapshot[start..cursor].iter().enumerate() {
                 let at = slot * PAGE_SIZE as usize;
                 if at >= length {
@@ -752,7 +755,7 @@ impl MapState {
                 }
                 let ptr = (super::physical_memory_offset().as_u64()
                     + frame.start_address().as_u64()) as *const u8;
-                // SAFETY: the filesystem write guard excludes frame removal.
+                // SAFETY: the map lock pins the snapshot frames during the copy.
                 unsafe {
                     core::ptr::copy_nonoverlapping(
                         ptr,
@@ -761,7 +764,8 @@ impl MapState {
                     );
                 }
             }
-            let written = fs.write_mapped_range(ino, offset, &bytes[..length])?;
+            drop(inner);
+            let written = file.write(offset, &bytes[..length])?;
             if written != length {
                 return Err("Short mapped writeback");
             }
@@ -800,8 +804,7 @@ impl MapState {
     /// passed, so the traversal that ends under it is followed by a full one.
     pub(crate) fn service_writeback(
         &self,
-        fs: &mut Ext2Fs,
-        ino: u32,
+        handle: &FileHandle,
         budget: &mut usize,
     ) -> Result<bool, &'static str> {
         if !self.writeback_pending() || self.syncers.load(Ordering::Acquire) != 0 {
@@ -827,15 +830,17 @@ impl MapState {
             (first, count)
         };
         let mut bytes = writeback_buffer()?;
-        let next = self.writeback(fs, ino, first, u64::MAX, *budget, &mut bytes)?;
+        let next = self.writeback(handle, first, u64::MAX, *budget, &mut bytes)?;
         if let Some(end) = next {
             // An identical snapshot of already durable bytes must not flush
-            // pending writes belonging to another inode. Mount guards serialize
-            // the epoch check with writes and successful barriers.
-            if self.disk_epoch.load(Ordering::Acquire) == fs.durable_epoch() {
-                fs.sync()?;
+            // pending writes belonging to another inode. Its transfer lease
+            // serializes the epoch check with data writes and barriers.
+            let file = crate::fs::ext2::mapped_io::DataFile::open(handle)?;
+            if file.needs_flush() {
+                file.sync(first, end)?;
+            } else {
+                self.complete_writeback(first, end);
             }
-            self.complete_writeback(first, end);
         }
         *budget -= count;
         let mut inner = self.inner.lock();
@@ -1278,15 +1283,14 @@ pub(crate) enum MapError {
     Io,
 }
 
-/// Read the pages of `[first, first + count)` below EOF that the cache does
-/// not hold. Runs under the mount's read guard, with no other lock held.
+/// Populate absent pages through a stable per-inode transfer lease. File
+/// bytes are read without a mount guard; the map lock publishes the cache.
 pub(crate) fn populate(
     handle: &FileHandle,
-    fs: &Ext2Fs,
     first: u64,
     count: u64,
-) -> Result<(), MapError> {
-    let ino = handle.verify(fs).map_err(|_| MapError::Io)?;
+) -> Result<crate::fs::ext2::mapped_io::DataFile, MapError> {
+    let file = crate::fs::ext2::mapped_io::DataFile::open(handle).map_err(|_| MapError::Io)?;
     let map = &handle.object.map;
     let size = handle.object.size.load(Ordering::Acquire);
     let last = first.saturating_add(count).min(pages(size));
@@ -1297,9 +1301,8 @@ pub(crate) fn populate(
             .count()
     };
     if wanted == 0 {
-        return Ok(());
+        return Ok(file);
     }
-    let inode = fs.read_inode(ino).map_err(|_| MapError::Io)?;
     let mut read = Vec::new();
     read.try_reserve(wanted).map_err(|_| MapError::NoMemory)?;
     for index in first..last {
@@ -1310,8 +1313,8 @@ pub(crate) fn populate(
             read.try_reserve(1).map_err(|_| MapError::NoMemory)?;
         }
         let page = CachePage::allocate().map_err(|_| MapError::NoMemory)?;
-        let bytes = fs
-            .read_file_range(&inode, index * PAGE_SIZE, PAGE_SIZE as usize)
+        let bytes = file
+            .read(index * PAGE_SIZE, PAGE_SIZE as usize)
             .map_err(|_| MapError::Io)?;
         // SAFETY: a fresh cache frame; `bytes` is at most one page.
         unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), page.ptr(), bytes.len()) };
@@ -1330,11 +1333,12 @@ pub(crate) fn populate(
         !inner.pages.is_empty() || !inner.poisoned.is_empty(),
         Ordering::Release,
     );
-    Ok(())
+    Ok(file)
 }
 
 /// Register a binding for a new file VMA. PROCESS_MANAGER held, and the
-/// mount's read guard still held from `populate`, so no mutation has run since.
+/// population lease and the mount read guard held through publication, so
+/// no content mutation or eviction has removed the populated pages.
 pub(crate) fn bind(
     handle: FileHandle,
     pid: ProcessId,

@@ -56,6 +56,7 @@ pub struct LiveInode {
     pub ctime_pending: AtomicU64,
     /// Cached pages and reverse map for file mappings.
     pub map: crate::memory::file_map::MapState,
+    pub(super) data_io: AtomicBool,
     external_handles: AtomicUsize,
     pending: AtomicBool,
     pub(super) orphan: AtomicBool,
@@ -252,6 +253,7 @@ impl LiveInodes {
                 mtime_pending: AtomicU64::new(0),
                 ctime_pending: AtomicU64::new(0),
                 map: crate::memory::file_map::MapState::new(size, self.durable_epoch()),
+                data_io: AtomicBool::new(false),
                 external_handles: AtomicUsize::new(0),
                 pending: AtomicBool::new(false),
                 orphan: AtomicBool::new(false),
@@ -308,6 +310,12 @@ impl LiveInodes {
             !object.orphan.load(Ordering::Acquire)
                 && (object.map.eviction_pending() || object.map.writeback_pending())
         })
+    }
+
+    pub(super) fn active_data_inode(&self) -> Option<u32> {
+        self.table.lock().objects.values()
+            .find(|object| object.data_io.load(Ordering::Acquire))
+            .map(|object| object.key.inode)
     }
 
     pub fn publish_size(&self, inode: u32, size: u64) {

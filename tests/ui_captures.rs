@@ -5,6 +5,7 @@ extern crate self as libgfx;
 #[path = "../libs/libuitest/src/capture_marker.rs"] pub mod capture_marker;
 #[path = "../libs/libuitest/src/capture_race.rs"] pub mod capture_race;
 #[path = "../libs/libuitest/src/capture.rs"] pub mod capture;
+#[path = "../libs/libuitest/src/phases.rs"] pub mod phases;
 #[path = "../libs/libuitest/src/compare.rs"] pub mod compare;
 #[path = "../libs/libuitest/src/schema.rs"] pub mod schema;
 #[path = "../libs/libuitest/src/outcome.rs"] pub mod outcome;

@@ -202,7 +202,9 @@ def main():
             print(f"FAIL: {result[1]}", flush=True)
             return 1
         manifest = json.loads((ROOT / f"docs/suites/{args.suite}.json").read_text())
-        ok, detail = VERDICT["verdict"](manifest, args.serial, [args.serial], only=args.only, disk=args.disk)
+        uploads = Path(str(args.serial) + ".evidence") if args.suite == "ui-testing" else None
+        ok, detail = VERDICT["verdict"](manifest, args.serial, [args.serial], only=args.only,
+                                        disk=args.disk, uploads=uploads)
         if ok and not args.only:
             ok, disk_detail = VERDICT["disk_verdict"](manifest.get("diskChecks", []), args.disk)
             if disk_detail:

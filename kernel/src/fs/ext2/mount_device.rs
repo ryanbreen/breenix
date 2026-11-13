@@ -18,7 +18,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 pub struct MountDevice {
     inner: Box<dyn BlockDevice>,
     failed: Arc<AtomicBool>,
-    read_only: bool,
+    read_only: AtomicBool,
     cache: Option<SectorCache>,
 }
 
@@ -29,7 +29,7 @@ impl MountDevice {
     pub(super) fn new(inner: Box<dyn BlockDevice>, failed: Arc<AtomicBool>, cached: bool) -> Self {
         let cache = if cached { SectorCache::new(inner.block_size()) } else { None };
         let read_only = inner.is_read_only();
-        Self { inner, failed, read_only, cache }
+        Self { inner, failed, read_only: AtomicBool::new(read_only), cache }
     }
 
     /// The device itself, past the copy: for checks of what reached the disk.
@@ -37,8 +37,8 @@ impl MountDevice {
         self.inner.as_ref()
     }
 
-    pub(super) fn remount_read_only(&mut self) {
-        self.read_only = true;
+    pub(super) fn remount_read_only(&self) {
+        self.read_only.store(true, Ordering::Release);
     }
 
     fn write(&self, start_block: u64, buf: &[u8], write: impl FnOnce() -> Result<(), BlockError>) -> Result<(), BlockError> {
@@ -55,7 +55,7 @@ impl MountDevice {
 }
 
 impl BlockDevice for MountDevice {
-    fn is_read_only(&self) -> bool { self.read_only }
+    fn is_read_only(&self) -> bool { self.read_only.load(Ordering::Acquire) }
 
     fn read_block(&self, block_num: u64, buf: &mut [u8]) -> Result<(), BlockError> {
         let size = self.inner.block_size();

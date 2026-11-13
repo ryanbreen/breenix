@@ -41,19 +41,31 @@ fn rendered() -> Vec<u8> {
 #[test]
 fn canonical_scene_matches_committed_host_pin_and_detects_cursor_pixels() {
     let pixels = rendered();
-    let pin = include_str!("../docs/suites/frames/ui-testing/canonical-x86-metal.sha256").trim();
-    assert_eq!(fixtures::digest(&pixels), pin);
+    let digest = fixtures::digest(&pixels);
     let mut planted = pixels.clone();
     planted[(100*scene::WIDTH+160)*4..][..4].copy_from_slice(&[255;4]);
-    assert_ne!(fixtures::digest(&planted), pin);
     let provenance: serde_json::Value = serde_json::from_str(include_str!("../docs/suites/frames/PROVENANCE.json")).unwrap();
-    let row = provenance["references"].as_array().unwrap().iter().find(|r| r["case"] == "frames/cross-target").unwrap();
-    assert_eq!(row["pixel_sha256"], pin);
-    assert_eq!(row["target"], "x86-metal");
-    assert!(row["arm_gap"].as_str().unwrap().contains("pin"));
-    assert_eq!(row["generator"], "tools/gfx-refgen --bin ui-canonical");
-    let path = Path::new(file!()).parent().unwrap().join("../docs/suites/frames").join(row["path"].as_str().unwrap());
-    assert_eq!(fixtures::digest(&std::fs::read(path).unwrap()), row["sha256"]);
+    let rows: Vec<_> = provenance["references"].as_array().unwrap().iter()
+        .filter(|r| r["case"] == "frames/cross-target").collect();
+    assert_eq!(rows.len(), 2);
+    let root = Path::new(file!()).parent().unwrap().join("../docs/suites/frames");
+    for (arch, target, pin_path) in [
+        ("x86_64", "x86-metal", "ui-testing/canonical-x86-metal.sha256"),
+        ("aarch64", "arm64-qemu", "ui-testing/canonical-arm64-qemu.sha256"),
+    ] {
+        let matching: Vec<_> = rows.iter().filter(|r| r["architecture"] == arch).collect();
+        assert_eq!(matching.len(), 1, "expected one row for {arch}");
+        let row = matching[0];
+        assert_eq!(row["target"], target);
+        assert_eq!(row["pin_path"], pin_path);
+        assert_eq!(row["pixel_sha256"], digest);
+        assert_eq!(std::fs::read_to_string(root.join(pin_path)).unwrap().trim(), digest);
+        assert_ne!(fixtures::digest(&planted), digest);
+        assert_eq!(row["generator"], "tools/gfx-refgen --bin ui-canonical");
+        assert_eq!(fixtures::digest(&std::fs::read(root.join(row["path"].as_str().unwrap())).unwrap()), row["sha256"]);
+        assert!(row.get("arm_gap").is_none());
+    }
+    assert_eq!(rows[0]["generator_sources"], rows[1]["generator_sources"]);
     assert!(app::parse(&["canonical", "--canonical"]).unwrap().canonical);
     assert!(app::parse(&["canonical", "--canonical", "--canonical"]).is_err());
     assert!(!app::parse(&["markers"]).unwrap().canonical);

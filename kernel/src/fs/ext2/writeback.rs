@@ -71,11 +71,17 @@ fn service() {
             for home in [false, true] {
                 let Ok(mut guard) = super::fs_write_raw(home) else { retry = true; continue; };
                 if let Some(fs) = guard.as_mut() {
-                    match fs.finalize_writeback() {
+                    match fs.finalize_metadata() {
                         super::Finalize::Idle => {}
                         super::Finalize::More => more = true,
                         super::Finalize::Retry => retry = true,
                     }
+                }
+            }
+            for home in [false, true] {
+                match super::service_mapped_writeback(home) {
+                    Ok(pending) => more |= pending,
+                    Err(_) => retry = true,
                 }
             }
             if ORPHANS.swap(false, Ordering::AcqRel) {

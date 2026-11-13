@@ -29,15 +29,15 @@ def prepare(directory,boot_id,site,suite=None):
     url=urlsplit(site['BOOT_URL'])
     return urlunsplit((url.scheme,url.netloc,route,'',''))
 
-def ready(handler):
+def ready(handler, backend=m):
     """Check the staged route without consuming an artifact slot."""
-    with m.locked('gt710-upload'):
-        intent = m.read_json(m.STATE / 'gt710-upload.json', {})
-        lease = m.read_lease() or {}
+    with backend.locked('gt710-upload'):
+        intent = backend.read_json(backend.STATE / 'gt710-upload.json', {})
+        lease = backend.read_lease() or {}
         if (not intent or urlsplit(handler.path).path != intent.get('route')
                 or lease.get('id') != intent.get('id')
                 or lease.get('state') not in ('claimed', 'powered')
-                or (m.boot_dir(intent['id']) / 'ended').exists()):
+                or (backend.boot_dir(intent['id']) / 'ended').exists()):
             handler.send_error(404)
             return
         handler.send_response(204)
@@ -74,10 +74,10 @@ def check_ready(directory, boot_id, site):
         finally:
             connection.close()
 
-def receive(handler):
-    with m.locked('gt710-upload'):
-        intent=m.read_json(m.STATE/'gt710-upload.json',{})
-        lease=m.read_lease() or {}
+def receive(handler, backend=m):
+    with backend.locked('gt710-upload'):
+        intent=backend.read_json(backend.STATE/'gt710-upload.json',{})
+        lease=backend.read_lease() or {}
         route=urlsplit(handler.path).path
         root_intent = intent
         sequence = (intent.get('suite') or '').split(',')
@@ -90,8 +90,8 @@ def receive(handler):
             intent = root_intent.setdefault('suiteSlots', {}).setdefault(suite, dict(
                 id=root_intent['id'], route=root_intent['route'] + '/suites/' + suite, suite=suite))
             suite_directory = suite
-        boot_directory=m.boot_dir(intent['id']) if intent else None
-        proof = bool(boot_directory) and m.read_json(boot_directory / 'run.json', {}).get('screenProof') is True
+        boot_directory=backend.boot_dir(intent['id']) if intent else None
+        proof = bool(boot_directory) and backend.read_json(boot_directory / 'run.json', {}).get('screenProof') is True
         screen = re.fullmatch(re.escape(intent.get('route', '')) + r'/screens/pictures/(0|[1-9]\d*)', route) if intent else None
         screen_index = int(screen[1]) if screen else None
         is_screen = screen_index is not None
@@ -118,7 +118,7 @@ def receive(handler):
                 or (final and not intent.get('complete'))
                 or lease.get('id')!=intent.get('id') or lease.get('state')!='powered'):
             handler.send_error(404);return
-        boot_directory=m.boot_dir(intent['id'])
+        boot_directory=backend.boot_dir(intent['id'])
         directory = boot_directory / 'native-suites' / suite_directory if suite_directory else boot_directory
         directory.mkdir(parents=True, exist_ok=True)
         filename = f'screen-part-{screen_index:04}.bin' if is_screen else f'diagnostic-{diagnostic_label}.bin' if is_diagnostic else f'gt710-breengel-{picture_index:04}.rle' if is_picture else ('gt710-final.rle' if final else 'gt710-pixels.rle')
@@ -156,7 +156,7 @@ def receive(handler):
                 source_index, payload_length = int(match[1]), int(match[2])
                 payload_digest = match[3].decode('ascii')
                 source = directory / f'gt710-breengel-{source_index:04}.rle'
-                source_receipt = m.read_json(directory / f'native-picture-upload-{source_index:04}.json', {})
+                source_receipt = backend.read_json(directory / f'native-picture-upload-{source_index:04}.json', {})
                 if (source_index >= picture_index or not 0 < payload_length <= MAX_BYTES
                         or source.is_symlink() or not source.is_file()
                         or source_receipt.get('id') != intent['id'] or source_receipt.get('complete') is not True
@@ -196,7 +196,7 @@ def receive(handler):
             handler.send_header('Connection','close');handler.end_headers();handler.close_connection=True
         except (OSError,ValueError) as error:
             temporary.unlink(missing_ok=True);handler.close_connection=True
-            m.write_json(directory/'native-upload-refused.json', dict(route=route, reason=str(error), at=m.now()))
+            backend.write_json(directory/'native-upload-refused.json', dict(route=route, reason=str(error), at=m.now()))
             handler.send_error(400,'display artifact upload failed')
             return
         # The payload is synced and digest-checked before HTTP acceptance.
@@ -205,7 +205,7 @@ def receive(handler):
         # propagates to the service instead of attempting a second HTTP status
         # after the 200 already sent.
         receipt_name = f'screen-part-upload-{screen_index:04}.json' if is_screen else f'native-diagnostic-{diagnostic_label}.json' if is_diagnostic else f'native-picture-upload-{picture_index:04}.json' if is_picture else ('native-final-upload.json' if final else 'native-upload.json')
-        m.write_json(directory/receipt_name,receipt)
+        backend.write_json(directory/receipt_name,receipt)
         if suite_directory:
             root_intent['aggregateBytes'] = total + length
-        m.write_json(m.STATE/'gt710-upload.json',root_intent)
+        backend.write_json(backend.STATE/'gt710-upload.json',root_intent)

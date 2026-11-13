@@ -141,12 +141,12 @@ impl Ext2Fs {
             }
             .map_err(|_| ()),
             Write::Counts { superblock, groups } => {
-                let (superblock, groups) = if undo {
-                    (&self.superblock, &self.block_groups[..])
+                let (superblock, groups, previous) = if undo {
+                    (&self.superblock, &self.block_groups[..], *groups)
                 } else {
-                    (*superblock, *groups)
+                    (*superblock, *groups, &self.block_groups[..])
                 };
-                Ext2BlockGroupDesc::write_table(self.device.as_ref(), superblock, groups)
+                Ext2BlockGroupDesc::write_table_changed(self.device.as_ref(), superblock, groups, previous)
                     .map_err(|_| ())?;
                 superblock.write_to(self.device.as_ref()).map_err(|_| ())
             }

@@ -67,6 +67,7 @@ fn main() {
         fixture = fixture.replace('DISPATCH', item(control, 'pub fn sys_test_control('))
         fixture = fixture.replace('DEFINED', item(control, 'fn defined('))
         fixture = fixture.replace('SUPPORTED', item(dev, 'pub fn output_perturb_supported('))
+        fixture = fixture.replace('ARM_RESTORE', item(dev, 'pub fn restore_output_perturbation('))
         fixture = fixture.replace('DRIVER', str(ROOT / 'kernel/src/gpu/gk208'))
         fixture = fixture.replace('POINT"', str(ROOT / 'kernel/src/test_control/point.rs') + '"')
         fixture = fixture.replace('CHECKPOINT', item(crc, 'pub fn perturb_checkpoint('))

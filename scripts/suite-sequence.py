@@ -253,11 +253,12 @@ def score(ids, records_log, logs, disk=None, repo=REPO):
             window = Path(scratch) / f"{suite}.txt"
             window.write_text("\n".join(records) + "\n")
             rows.append(score_one(scorer, repo, suite, suite == ids[-1], records, window,
-                                  [window] + [Path(log) for log in logs[1:]], disk, index > 0))
+                                  [window] + [Path(log) for log in logs[1:]], disk, index > 0,
+                                  Path(str(records_log) + ".evidence")))
     return all(status == "PASS" for _, status, _ in rows), rows
 
 
-def score_one(scorer, repo, suite, last, records, window, logs, disk, needs_reset=False):
+def score_one(scorer, repo, suite, last, records, window, logs, disk, needs_reset=False, uploads=None):
     manifest = json.loads((repo / "docs/suites" / f"{suite}.json").read_text())
     started = any(re.fullmatch(rf"SUITE {suite} START cases=\d+", line) for line in records)
     done = any(line.startswith(f"SUITE {suite} DONE ") for line in records)
@@ -287,6 +288,8 @@ def score_one(scorer, repo, suite, last, records, window, logs, disk, needs_rese
         failed_exec = any(line == f"SUITE_SEQUENCE FAIL exec {suite}" for line in records)
         return suite, "NOT-RUN", "its binary could not be started" if failed_exec else "it never printed START"
     bundle_disk = {'disk': disk} if suite == 'ui-testing' else {}
+    if suite == 'ui-testing' and uploads and (uploads / 'route.json').is_file():
+        bundle_disk['uploads'] = uploads
     ok, detail = scorer["verdict"](manifest, window, logs, **bundle_disk)
     if stalled:
         status, detail = "STALLED", f"the runner's watchdog stopped it after {stalled[1]} of {stalled[2]} cases"

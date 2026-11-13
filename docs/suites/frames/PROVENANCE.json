@@ -100,9 +100,31 @@
       "date": "2026-11-08",
       "reviewer": "GPT-6.1 Sol",
       "checked": "Host-authored by the same scene function called by uitest-app_test. The host check compares the render to the committed pixel pin and the PNG to its file hash; no guest capture is used.",
-      "arm_gap": "ARM canonical-scene pin is unrecorded; shared code builds there, runtime attestation waits for ARM release (#2770).",
       "license": "Original in-tree scene; no third-party implementation copied or adapted.",
       "architecture": "x86_64"
+    },
+    {
+      "path": "ui-testing/canonical-scene.png",
+      "case": "frames/cross-target",
+      "target": "arm64-qemu",
+      "scene": "Canonical v1: 320x200 opaque integer rectangles; blue header, three swatches, progress bar and two checkerboard rows. Literal geometry and RGB in userspace/programs/src/uitest_canonical.rs.",
+      "generator": "tools/gfx-refgen --bin ui-canonical",
+      "command": "cargo run --release --manifest-path tools/gfx-refgen/Cargo.toml --bin ui-canonical -- docs/suites/frames/ui-testing",
+      "generator_sources": {
+        "userspace/programs/src/uitest_canonical.rs": "6ef213557fcf8f21168c4b74f79408124d8a3fc8ac941ef3b30630f11c75514c",
+        "tools/gfx-refgen/src/bin/ui-canonical.rs": "7d93433bb85c763e43288232b5bc8c615bc0999d38fb518a5717fbd3ae36dac0",
+        "tools/gfx-refgen/src/png.rs": "17f8b746840e4a0f7f101138d4cf8422e74479566ba52b8983386f5215b328e2",
+        "tools/gfx-refgen/src/sha256.rs": "1b4f0cc5d36a6972cf920aec784d2a441ada999369d20009e5883c9990383871"
+      },
+      "sha256": "72768d6a53dae659d5936b76a900bd4e4897b6ccf9e7644f91677265c0783745",
+      "pixel_sha256": "edf9969c42ca7aecf9992c9a47a2ee058c374b521efa3184c420a1e18b90cc56",
+      "pixel_format": "row-major B,G,R,255 with no geometry header or stride padding",
+      "pin_path": "ui-testing/canonical-arm64-qemu.sha256",
+      "date": "2026-11-08",
+      "reviewer": "GPT-6.1 Sol",
+      "checked": "Host-authored by the same scene function called by uitest-app_test. The host check compares the render to the committed pixel pin and the PNG to its file hash; no guest capture is used.",
+      "license": "Original in-tree scene; no third-party implementation copied or adapted.",
+      "architecture": "aarch64"
     },
     {
       "path": "ui-testing/form-checked-s1.png",

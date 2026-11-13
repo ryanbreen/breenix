@@ -23,17 +23,24 @@ impl core::fmt::Display for WindowError {
 }
 pub fn window_result(arena: &mut Arena, check: &str, id: u64) -> Result<Record, WindowError> {
     let mut syscall = None;
+    let mapping = crate::phases::Phase::new("client-map");
+    let mut publication = None;
     let result = arena.write_frame_tree(|pixels, tree| {
+        mapping.finish();
+        let phase = crate::phases::Phase::new("client-read");
         let captured = window::capture(id, pixels, Some(tree)).map_err(|e| {
             let detail = format!("window capture {id}: {e}");
             syscall = Some(e);
             detail
         })?;
+        phase.finish();
         let len = byte_len(captured.width, captured.height)?;
         if len > pixels.len() { return Err("captured extent exceeds arena".into()); }
+        publication = Some(crate::phases::Phase::new("client-publish"));
         Ok((Record { check: check.into(), window: id, commit: captured.commit_id,
             width: captured.width, height: captured.height, ..Default::default() }, len))
     });
+    if let Some(phase) = publication { phase.finish(); }
     result.map_err(|detail| WindowError { syscall, detail })
 }
 pub use libbreenix::window::readback_until;
@@ -44,13 +51,17 @@ pub fn screen(arena: &mut Arena, check: &str, kind: ObservationKind) -> Result<R
         .as_nanos() as u64 + crate::settle::BOUND_NS;
     let mode = gpu::current_mode().map_err(|e| format!("capture CURRENT_MODE: {e}"))?;
     let len = byte_len(mode.width, mode.height)?;
+    let phase = crate::phases::Phase::new("screen-map");
     let mut writer = arena.begin(Slot::Screen)?;
+    phase.finish();
     let pixels = writer.bytes_mut();
     if len > pixels.len() { return Err("screen exceeds arena".into()); }
     let mut observation = [0; 1024];
     let mut rb = abi::Readback { dst: pixels.as_mut_ptr() as u64, dst_len: len as u64,
         record: observation.as_mut_ptr() as u64, record_len: 1024, ..Default::default() };
+    let phase = crate::phases::Phase::new("screen-read");
     readback_until(&mut rb, deadline).map_err(|e| format!("screen capture: {e}"))?;
+    phase.finish();
     if !window::validate_scanout_observation(&observation, mode.width, mode.height, kind) {
         return Err("screen capture: invalid scanout observation".into());
     }
@@ -61,7 +72,9 @@ pub fn screen(arena: &mut Arena, check: &str, kind: ObservationKind) -> Result<R
         composite: quad(off::COMPOSITE_SERIAL), commit: quad(off::COMMIT),
         observation: observation.to_vec(), ..Default::default() };
     screen_windows(&record)?;
+    let phase = crate::phases::Phase::new("screen-hash");
     writer.publish(record.clone(), len)?;
+    phase.finish();
     Ok(record)
 }
 /// Take a temporary observation without consuming the case's evidence slot.

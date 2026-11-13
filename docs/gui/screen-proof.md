@@ -116,7 +116,15 @@ It returns ENOSYS outside suite boots and ENODEV on backends 4 and 5. A checkpoi
 A native CRC row is derived only from a native run where the checkpoint digest matched an operator-approved entry, with stable entries and no overflow. It is keyed by that digest and output configuration, including raster, mode, viewport, scaler methods, output and source. It judges display output after memory: it cannot admit a picture or override a digest mismatch. Mode 0 covers the 1:1 raster; mode 1 covers the scaled output, with source-pixel sensitivity characterized separately. The CRC does not establish the behavior of the link after the SOR, cable or panel.
 
 One-shot test-control point 35, `display-output-perturb`, enables dithering for the next backend 6 checkpoint. Its native case requires the memory digest to stay unchanged while the SOR CRC changes in phase 3, then disarms and requires the approved
-SOR CRC again in phase 4. A secondary-only change cannot satisfy phase 3. On ARM the point returns EINVAL.
+SOR CRC again in phase 4. A secondary-only change cannot satisfy phase 3. On ARM,
+`kernel/src/gpu/dev.rs:26` rejects support for the point and
+`kernel/src/test_control.rs:186` returns EINVAL before arming it. The ARM subtest
+in `tests/gt710_output_perturb_test.py:60`, using the assertions in
+`tests/fixtures/gt710_output_perturb.rs:105`, executes the production dispatch,
+support predicate and restore function: arming is refused and DISARM_ALL returns
+Ok. The screen runner enters the perturbation sequence only when native CRC is
+enabled (`libs/libbreenix/src/suite_screen.rs:468`); that predicate requires the
+GK208 backend (`libs/libbreenix/src/suite_screen.rs:642`).
 
 <!-- claim-lint:ok: Proposed host-surface experiment and observation boundary in docs/gui/screen-proof.md, not an acceptance result. -->
 ARM64 QEMU has no equivalent display CRC. A proof-mode host-surface capture spike may compare QEMU's displayed surface with serial during the held intent frame. If it cannot produce a valid current surface, the stated ARM boundary is the latched-binding readback and host-renderer attestation, not proof of the host window.
