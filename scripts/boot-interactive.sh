@@ -367,7 +367,7 @@ if [ "$MODE" = suite ] && [[ ",$SUITE," == *,gui-apps,* ]]; then
 fi
 SMB_INSTANCE=
 if [ "$MODE" = suite ] && [[ ",$SUITE," == *,gui-apps,* ]]; then
-    SMB_INSTANCE=$(PYTHONPATH="$ROOT/scripts" python3 - "$SUITE" "$ONLY" <<'PYSMB'
+    SMB_INSTANCE=$(PYTHONPATH="$ROOT/scripts:$ROOT/scripts/metal" python3 - "$SUITE" "$ONLY" <<'PYSMB'
 import sys
 from metal.metal_root import smb_gui_selection
 from vm_site import load_site

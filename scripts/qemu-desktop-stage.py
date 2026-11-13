@@ -4,9 +4,11 @@ import argparse
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 
-from metal.metal_root import require_e2fsprogs, smb_gui_selection
+sys.path.insert(0, str(Path(__file__).resolve().parent / 'metal'))
+from metal_root import require_e2fsprogs, smb_gui_selection
 from vm_site import load_site
 
 

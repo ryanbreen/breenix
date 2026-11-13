@@ -93,3 +93,27 @@ Claim checks for this prediction: `scripts/claim-lint.py --base HEAD` initially
 exited 1 on two unquantified prose claims; after naming exit status 0, it
 exited 0. Commit-message lint exited 1 twice on unquantified claims; the amended
 message exited 0.
+
+## Host staging repair before the guest boot
+
+The explicit environment passed the first staging command, but the inline SMB
+command replaced PYTHONPATH with scripts alone and failed before QEMU again.
+The resumed launch log is `/tmp/a5-u5-resumed-a8bb2637/launch.log`.
+The ARM builds and SIMD guard completed; there was no guest or Vigil id.
+The only build warning was the previously recorded pinned Rust core
+future-incompatibility notice. The earlier environment-only choice is superseded.
+
+The focused check in `tests/qemu_desktop_import_test.py:12` exercises staging
+help and the launcher's actual inline selection without inherited PYTHONPATH;
+both failed on `a8bb2637` with the same missing sibling import. It was committed
+alone as `65f27dfd`. Repair only the QEMU host consumers: staging establishes
+scripts/metal just as qemu-evidence does, and the inline query supplies both
+scripts and scripts/metal. The check then passed (1 test, 2 entry points), and
+`bash -n scripts/boot-interactive.sh` exited 0. There is no changed guest or
+shared metal code; this repair reaches no x86 suite, and no R240 boot is needed.
+The Python launcher consumes the same ARM artifacts, so the next launch uses
+`--no-build` to avoid rebuilding the unchanged artifacts. The 73-case prediction
+stands, with the one guest boot still unspent. Guest fixes remain out of scope.
+
+Claim checks: `scripts/claim-lint.py --base HEAD` and commit-message lint exited
+0 for the check commit. For this host repair they also exited 0.
