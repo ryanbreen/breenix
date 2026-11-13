@@ -27,7 +27,7 @@ Path(os.environ['CAPTURE']).write_text(json.dumps(sys.argv[1:]))
 if '--print-profile' in sys.argv:
  print('default')
 else:
- os.execv(sys.argv[1], sys.argv[1:])
+ os.execvp(sys.argv[1], sys.argv[1:])
 ''')
         (scripts / 'watch-qemu.py').write_text('''import os, sys
 args = sys.argv[sys.argv.index('--') + 1:]
