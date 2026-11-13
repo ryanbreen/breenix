@@ -273,7 +273,20 @@ fn render(
     // matching inner corner radius) over its inner side.
     draw_sinuous_border(fb, w as i32, h as i32, state.frame_count);
     let bw = px(BORDER_WIDTH as i32);
-    shapes::rounded_rect(fb, bw, bw, w as i32 - 2 * bw, h as i32 - 2 * bw, px(INNER_RADIUS as i32), PANEL_BG);
+    // Only the border's edge strips need covering: clear() already painted the
+    // interior. A whole scaled body exceeds one rounded-rectangle draw's work
+    // budget. Keep the same body geometry and clip it to the border's footprint.
+    let depth = px(CORNER_RADIUS as i32);
+    for clip in [
+        Clip::new(0, 0, w as i32, depth),
+        Clip::new(0, h as i32 - depth, w as i32, depth),
+        Clip::new(0, depth, depth, h as i32 - 2 * depth),
+        Clip::new(w as i32 - depth, depth, depth, h as i32 - 2 * depth),
+    ] {
+        fb.push_clip(clip);
+        shapes::rounded_rect(fb, bw, bw, w as i32 - 2 * bw, h as i32 - 2 * bw, px(INNER_RADIUS as i32), PANEL_BG);
+        fb.pop_clip();
+    }
 
     // Search field border (1px) and background
     shapes::rounded_rect(fb, layout.search_x - px(1), layout.search_y - px(1),
