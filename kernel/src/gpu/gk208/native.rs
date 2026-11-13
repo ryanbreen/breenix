@@ -463,6 +463,15 @@ pub struct ConsoleSurface {
     pub firmware_baseline: u64,
 }
 
+/// BAR1 displacement of the console within its CPU aperture.
+pub(in crate::gk208) fn console_bar_offset(console: &ConsoleSurface, displacement: usize) -> usize {
+    if (console.width, console.height) == (2560, 1600) {
+        16 << 20
+    } else {
+        displacement
+    }
+}
+
 /// Retain the owned EVO channel and its post-takeover command cursor.
 pub struct Evo {
     frame_pixels: u64,

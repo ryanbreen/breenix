@@ -602,9 +602,7 @@ mod native {
                 h.device.bars[1].size,
                 17,
             )?;
-            let console_offset=if (h.console.width,h.console.height)==(2560,1600) {
-                16<<20
-            } else {displacement};
+            let console_offset=crate::gk208::native::console_bar_offset(h.console, displacement);
             if console_offset < SLOT as usize+4096
                 && console_offset+h.console.bytes > SLOT as usize {
                 return Err("GR USERD overlaps console");

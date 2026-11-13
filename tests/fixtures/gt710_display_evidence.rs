@@ -47,7 +47,7 @@ mod native {
  for bank in [0x640000,0x660000]{for m in [0x42c,0x494,0x4b0,0x4b8,0x4bc,0x4c0,0x4c4,0x4c8]{regs.0.insert(bank+m,m as u32);}}
  regs.0.insert(0x64041c,123);regs.0.insert(0x640420,456);
  for n in 0..500 {
-  let (w,h)=if n%2==0{(1280,800)}else{(2560,1600)};
+  let (w,h)=if n%2==0{(1024,768)}else{(1280,1024)};
   let surface=present::Surface{resource:n+1,address:0x1000000,width:w,height:h,pitch:w*4,block_height:0,format:0,dma:1};
   // Keep the latch distinct from the requested surface in this transport
   // check: the observer must report the raw receipt, not reconstruct it.
@@ -62,6 +62,7 @@ mod native {
  assert!(exported[3].0.contains("\"stage\":1,\"offset\":256,\"expected\":2864434397,\"actual\":287454020"));
  for ((text,anchor),seq) in exported.iter().zip([499,500]) {
   assert!(text.contains(&format!("\"sequence\":{seq}")));
+  assert!(text.contains(&format!("\"mode\":{}",seq-499)));
   assert!(text.contains("\"requested\":16777216"));assert!(text.contains("\"active\":[131072, 2, 3, 4, 5]"));
   assert!(text.contains("\"viewport_active\":[1068, 1172, 1200, 1208, 1212, 1216, 1220, 1224]"));
   assert!(text.contains("\"raster\":[123, 456]"));assert!(text.contains("\"firmware_writes\":1"));
@@ -69,7 +70,7 @@ mod native {
  }
  display_evidence::sample(0,999,0,0);display_evidence::sample(1,999,0,0);
  assert!(display_evidence::export().is_empty(),"sample repeated in the final upload slot");
- let surface=present::Surface{resource:u32::MAX,address:0x30000000,width:2560,height:1600,pitch:10240,block_height:0,format:0,dma:1};
+ let surface=present::Surface{resource:u32::MAX,address:0x30000000,width:1280,height:1024,pitch:5120,block_height:0,format:0,dma:1};
  let receipt=present::Receipt{notifier:1,active:[0x300000,2,3,4,5],armed:[0x400000,2,3,4,5]};
  for event in ["handoff","mode","flip","receipt"] {
   assert!(display_evidence::transition(&mut regs,0,surface,&receipt,[0x30000000,16384000],[0x30000000,16384000],event).is_ok());
