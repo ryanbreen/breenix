@@ -9,8 +9,8 @@ ROOT = Path(__file__).resolve().parents[1]
 source = (ROOT / 'kernel/src/fs/namei.rs').read_text()
 
 
-def function(name):
-    start = source.index('fn ' + name + '(')
+def function(name, source=source):
+    start = source.index('fn ' + name)
     body = source.index('{', start)
     depth = 0
     for end in range(body, len(source)):
@@ -24,30 +24,88 @@ production = '\n'.join(function(name) for name in ('namespace_root', 'top', 'cop
 start = source.index('    pub fn is_mount_point(')
 end = source.index('\n    }', start) + len('\n    }')
 production += '\nimpl Resolved {\n' + source[start:end] + '\n}\n'
+adapter = (ROOT / 'kernel/src/fs/ext2/adapter.rs').read_text()
+mounts = (ROOT / 'kernel/src/fs/vfs/mount.rs').read_text()
+production += '\nimpl Ext2Adapter {\n' + function('register_root', adapter) + '\n}\n'
+production += function('generation_binds', adapter)
+mount_root = 'pub ' + function('is_mount_root', mounts)
 harness = r'''
 extern crate alloc;
 use std::collections::BTreeMap;
-const EXT2_ROOT_INO: u32 = 2;
+use attrs::MountFlags;
+use errno::Errno;
+use syscall::errno::*;
+use ext2::Ext2Fs;
+struct MountPin { mount_id: usize }
+struct Ext2Adapter { mount: MountPin }
+mod fs {
+    pub use crate::{attrs, errno};
+    pub mod vfs { pub use crate::mount_table; }
+}
 const ENOENT: i32 = 2;
 const ENOTDIR: i32 = 20;
 const ENAMETOOLONG: i32 = 36;
 const PATH_MAX: usize = 4096;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Mount { Root, Home }
+pub struct Mount(usize);
+impl Mount {
+    fn root() -> Self { Self(0) }
+    fn root_inode(self) -> u64 { match self.0 {
+        0 => 100, 1 => 2, 2 => 10, 3 => 11, 4 => 20, 5 => 21, _ => unreachable!()
+    } }
+}
+struct Held(ext2::Ext2Fs);
+impl Held {
+    fn fs(&mut self, _: Mount) -> Result<&ext2::Ext2Fs, u64> { Ok(&self.0) }
+}
+mod mounts {
+    pub fn bind_cover(key: (usize, u64)) -> Option<usize> {
+        if key.0 != 0 { return None; }
+        match key.1 { 10 => Some(2), 11 => Some(3), 20 => Some(4),
+            21 => Some(5), _ => None }
+    }
+    pub fn attachment(id: usize) -> Option<((usize, u64), Vec<u8>)> {
+        let name = match id { 1 => b"home".as_slice(), 2 => b"etc", 3 => b"root",
+            4 => b"var", 5 => b"run", _ => return None };
+        Some(((0, 100), name.to_vec()))
+    }
+    struct Registry(std::sync::Mutex<crate::mount_table::MountTable<()>>);
+    impl Registry {
+        fn lock(&self) -> std::sync::MutexGuard<'_, crate::mount_table::MountTable<()>> {
+            self.0.lock().unwrap()
+        }
+    }
+    static MOUNT_TABLE: std::sync::LazyLock<Registry> = std::sync::LazyLock::new(|| {
+        use crate::{attrs::MountFlags, mount_table::{Entry, MountTable}};
+        let mut table = MountTable::new();
+        table.insert(Entry::new(1, b"/home".to_vec(), "ext2", MountFlags::default(),
+            (), 2, Some((0, 22)), Some((0, 100)))).unwrap();
+        crate::Ext2Adapter { mount: crate::MountPin { mount_id: 0 } }
+            .register_root(&crate::fixture(), MountFlags::default(), &mut table, || ()).unwrap();
+        Registry(std::sync::Mutex::new(table))
+    });
+    MOUNT_ROOT_FUNCTION
+    pub fn path_is_mount(path: &[u8]) -> bool { path == b"/proc" || path == b"/dev" }
+}
+mod ufs_abi { pub mod payload { pub const ROOT: u64 = 1; } }
+fn ino32(ino: u64) -> Result<u32, u64> { ino.try_into().map_err(|_| 75u64) }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Node { Ext2(Mount, u32) }
+pub enum Node { Ext2(Mount, u64), Virtual }
 pub struct Frame { name: Vec<u8>, node: Node }
-pub enum Target { Inode { mount: Mount, ino: u32 }, Virtual, Absent {} }
+pub enum Target { Inode { mount: Mount, ino: u64 }, Virtual, Absent {}, User { node: u64 } }
 pub struct Resolved { target: Target, path: alloc::boxed::Box<[u8]> }
-fn fs_errno(_: &'static str) -> u64 { 5 }
+fn ext2_errno(_: &'static str) -> u64 { 5 }
 mod ext2 {
     use super::*;
-    pub fn root_inode() -> u32 { root_namespace().root }
-    pub fn root_namespace() -> generation::Namespace { generation::Namespace { root: 100, etc: 10, data: 11, shared: 90, mutable: [10, 20, 0, 0, 0, 21] } }
+    pub use crate::generation;
     pub struct Ext2Inode { pub ino: u32, pub i_links_count: u16 }
     impl Ext2Inode { pub fn is_dir(&self) -> bool { true } }
     pub struct Ext2Fs(pub BTreeMap<u32, Vec<u8>>);
     impl Ext2Fs {
+        pub fn namespace(&self) -> generation::Namespace {
+            generation::Namespace { root: 100, etc: 10, data: 11, shared: 90,
+                mutable: [10, 20, 0, 0, 0, 21] }
+        }
         pub fn read_inode(&self, ino: u32) -> Result<Ext2Inode, &'static str> {
             self.0.get(&ino).ok_or("inode")?;
             Ok(Ext2Inode { ino, i_links_count: 2 })
@@ -76,7 +134,8 @@ mod ext2 {
 fn fixture() -> ext2::Ext2Fs {
     let directories = [
         (2, vec![(2, ".."), (10, "etc"), (11, "root"), (100, "physical-generation")]),
-        (100, vec![(2, ".."), (200, "bin")]),
+        (100, vec![(2, ".."), (200, "bin"), (22, "home")]),
+        (22, vec![(100, "..")]),
         (20, vec![(90, "..")]),
         (21, vec![(90, "..")]),
         (200, vec![(100, ".."), (201, "deep")]),
@@ -97,20 +156,28 @@ fn fixture() -> ext2::Ext2Fs {
 }
 #[test]
 fn generation_and_shared_directory_ancestry_stay_in_the_selected_namespace() {
-    let fs = fixture();
-    assert_eq!(top(&[]), Node::Ext2(Mount::Root, 100));
-    assert_eq!(join(&ancestry(&fs, Mount::Root, 100).unwrap()).unwrap(), b"/");
-    assert_eq!(join(&ancestry(&fs, Mount::Root, 201).unwrap()).unwrap(), b"/bin/deep");
-    assert_eq!(join(&ancestry(&fs, Mount::Root, 12).unwrap()).unwrap(), b"/etc/config");
-    assert_eq!(join(&ancestry(&fs, Mount::Root, 13).unwrap()).unwrap(), b"/root/data");
-    assert_eq!(join(&ancestry(&fs, Mount::Root, 20).unwrap()).unwrap(), b"/var");
-    assert_eq!(join(&ancestry(&fs, Mount::Root, 21).unwrap()).unwrap(), b"/run");
-    assert_eq!(join(&ancestry(&fs, Mount::Home, 2).unwrap()).unwrap(), b"/home");
+    let mut held = Held(fixture());
+    assert_eq!(top(&[]), Node::Ext2(Mount(0), 100));
+    assert_eq!(join(&ancestry(&mut held, Mount(0), 100).unwrap()).unwrap(), b"/");
+    assert_eq!(join(&ancestry(&mut held, Mount(0), 201).unwrap()).unwrap(), b"/bin/deep");
+    assert_eq!(join(&ancestry(&mut held, Mount(2), 12).unwrap()).unwrap(), b"/etc/config");
+    assert_eq!(join(&ancestry(&mut held, Mount(3), 13).unwrap()).unwrap(), b"/root/data");
+    assert_eq!(join(&ancestry(&mut held, Mount(4), 20).unwrap()).unwrap(), b"/var");
+    assert_eq!(join(&ancestry(&mut held, Mount(5), 21).unwrap()).unwrap(), b"/run");
+    assert_eq!(join(&ancestry(&mut held, Mount(1), 2).unwrap()).unwrap(), b"/home");
+}
+#[test]
+fn directory_descriptor_storage_identity_recovers_the_bind_ancestry() {
+    // DirectoryFile retains the storage mount id until the open-file migration.
+    // fchdir/openat must recover the namespace bind from that inode identity.
+    let mut held = Held(fixture());
+    assert_eq!(join(&ancestry(&mut held, Mount(0), 12).unwrap()).unwrap(), b"/etc/config");
+    assert_eq!(join(&ancestry(&mut held, Mount(0), 13).unwrap()).unwrap(), b"/root/data");
 }
 #[test]
 fn shared_roots_are_mount_points_and_cannot_be_renamed_as_placeholders() {
-    for (mount, ino, expected) in [(Mount::Root, 100, true), (Mount::Root, 10, true),
-        (Mount::Root, 11, true), (Mount::Root, 20, true), (Mount::Root, 21, true), (Mount::Root, 200, false), (Mount::Home, 2, true), (Mount::Home, 10, false)] {
+    for (mount, ino, expected) in [(Mount(0), 100, true), (Mount(0), 10, true),
+        (Mount(0), 11, true), (Mount(0), 20, true), (Mount(0), 21, true), (Mount(0), 90, true), (Mount(0), 200, false), (Mount(1), 2, true), (Mount(1), 10, false)] {
         assert_eq!(Resolved { target: Target::Inode { mount, ino }, path: Box::new([]) }.is_mount_point(), expected);
     }
     assert!(Resolved { target: Target::Virtual, path: b"/proc".as_slice().into() }.is_mount_point());
@@ -121,8 +188,13 @@ fn shared_roots_are_mount_points_and_cannot_be_renamed_as_placeholders() {
 with tempfile.TemporaryDirectory(prefix='breenix-persistent-namespace-') as directory:
     directory = Path(directory)
     test = directory / 'tests.rs'
-    test.write_text('#[path = "' + str(ROOT / 'kernel/src/fs/ext2/generation.rs') + '"]\n'
-                    + 'pub mod generation;\n' + harness + production)
+    modules = ''.join('#[path = "' + str(ROOT / path) + '"]\npub mod ' + name + ';\n'
+                      for name, path in [('generation', 'kernel/src/fs/ext2/generation.rs'),
+                                         ('attrs', 'kernel/src/fs/attrs.rs'),
+                                         ('errno', 'kernel/src/fs/errno.rs'),
+                                         ('mount_table', 'kernel/src/fs/vfs/mount_table.rs')])
+    modules += 'pub mod syscall { #[path = "' + str(ROOT / 'kernel/src/syscall/errno.rs') + '"] pub mod errno; }\n'
+    test.write_text(modules + harness.replace('MOUNT_ROOT_FUNCTION', mount_root) + production)
     binary = directory / 'tests'
     environment = dict(os.environ, CARGO_BUILD_JOBS='4')
     subprocess.run([str(ROOT / 'scripts/build-background.sh'), 'rustc', '--edition=2021', '--test', str(test),

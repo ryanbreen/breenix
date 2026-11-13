@@ -18,6 +18,16 @@ reply_start = daemon.index("        let written = loop {")
 reply_end = daemon.index("        if written != n", reply_start)
 reply = daemon[reply_start:reply_end]
 harness = r'''
+extern crate alloc;
+#[path = "@ROOT@/kernel/src/fs/attrs.rs"]
+pub mod attrs;
+#[path = "@ROOT@/kernel/src/fs/errno.rs"]
+pub mod errno;
+#[path = "@ROOT@/kernel/src/syscall/errno.rs"]
+pub mod syscall_errno;
+pub mod syscall { pub use crate::syscall_errno as errno; }
+#[path = "@ROOT@/kernel/src/fs/vfs/mount_table.rs"]
+pub mod mount_table;
 use std::io;
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,6 +37,16 @@ impl<T> Mutex<T> {
 }
 mod ufs_abi { pub mod payload { pub const ROOT: u64 = 1; } }
 mod crate_fs {
+    pub use crate::{attrs, errno};
+    pub mod vfs { pub mod mount {
+        use crate::{mount_table::MountTable, errno::Errno, Mutex, StdMutex};
+        pub static TABLE: Mutex<MountTable<()>> = Mutex(StdMutex::new(MountTable::new()));
+        pub fn unmount(id: usize, force: bool) -> Result<(), Errno> {
+            let removed = TABLE.lock().remove(id, force)?;
+            drop(removed);
+            Ok(())
+        }
+    } }
     pub mod namei {
         pub enum Target { User { mount: u64, node: u64 } }
     }
@@ -38,7 +58,7 @@ struct State { dead: bool, detached: bool, open_files: usize }
 impl State { fn disconnect(&mut self) { self.dead = true; } }
 struct Pin(Arc<AtomicBool>);
 impl Drop for Pin { fn drop(&mut self) { self.0.store(true, Ordering::SeqCst); } }
-struct Mount { id: u64, state: Mutex<State>, woken: AtomicBool, point: Mutex<Option<Pin>> }
+struct Mount { id: u64, state: Mutex<State>, woken: AtomicBool }
 impl Mount { fn wake(&self) { self.woken.store(true, Ordering::SeqCst); } }
 struct Point { target: fs::namei::Target }
 static MOUNTS: Mutex<Vec<Arc<Mount>>> = Mutex(StdMutex::new(Vec::new()));
@@ -69,9 +89,14 @@ fn detach_succeeds_with_a_live_open_file_and_wakes_the_daemon() {
     let mount = Arc::new(Mount {
         id: 9, state: Mutex(StdMutex::new(State {
             dead: false, detached: false, open_files: 1,
-        })), woken: AtomicBool::new(false), point: Mutex(StdMutex::new(Some(Pin(unpinned.clone())))),
+        })), woken: AtomicBool::new(false),
     });
     MOUNTS.lock().push(mount.clone());
+    let mut entry = mount_table::Entry::new(9, b"/mnt".to_vec(), "ufs", attrs::MountFlags::default(),
+        (), 1, Some((0, 42)), Some((0, 2)));
+    entry.custody = Some(Arc::new(Pin(unpinned.clone())));
+    fs::vfs::mount::TABLE.lock().insert(entry).unwrap();
+    let held = fs::vfs::mount::TABLE.lock().pin(9).unwrap();
     let point = || Point { target: fs::namei::Target::User { mount: 9, node: 1 } };
     assert_eq!(unmount(point(), 0), Err(EBUSY as u64));
     assert_eq!(unmount(point(), 4), Err(EINVAL as u64));
@@ -82,10 +107,12 @@ fn detach_succeeds_with_a_live_open_file_and_wakes_the_daemon() {
         assert_eq!(state.open_files, 1);
     }
     assert!(!mount.woken.load(Ordering::SeqCst));
-    assert!(mount.point.lock().is_some());
+    assert!(fs::vfs::mount::TABLE.lock().get(9).unwrap().custody.is_some());
     assert!(!unpinned.load(Ordering::SeqCst));
     assert_eq!(unmount(point(), flags), Ok(()));
     assert!(unpinned.load(Ordering::SeqCst), "detach must release the covered directory even while the daemon or an open file retains the mount");
+    assert!(fs::vfs::mount::TABLE.lock().get(9).is_none());
+    drop(held);
     assert!(MOUNTS.lock().is_empty(), "later fd calls cannot find the detached mount");
     let state = mount.state.lock();
     assert!(state.dead && state.detached, "endpoint must observe detached EOF");
@@ -93,7 +120,7 @@ fn detach_succeeds_with_a_live_open_file_and_wakes_the_daemon() {
     assert!(mount.woken.load(Ordering::SeqCst));
     }
 }
-'''.replace("BODY", body).replace("REPLY", reply).replace("FLAGS_CHECK", flags_check)
+'''.replace("@ROOT@", str(ROOT)).replace("BODY", body).replace("REPLY", reply).replace("FLAGS_CHECK", flags_check)
 with tempfile.TemporaryDirectory(prefix="breenix-ufs-unmount-") as temporary:
     path = Path(temporary)
     test = path / "check.rs"

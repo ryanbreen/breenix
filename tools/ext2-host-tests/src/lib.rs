@@ -42,3 +42,5 @@ mod errno {
         }
     }
 }
+
+mod namespace;

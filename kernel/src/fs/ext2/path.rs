@@ -1,23 +1,8 @@
 //! Path lookup shared by kernel consumers and the ext2 host tests.
-use super::{dir, file::read_ext2_block, Ext2Fs, Ext2Inode};
+use super::{file::read_ext2_block, Ext2Fs};
 use alloc::vec::Vec;
 
 impl Ext2Fs {
-    /// Look up a path component in a directory
-    ///
-    /// Returns the inode number of the matching entry, or None if not found.
-    pub fn lookup_in_dir(
-        &self,
-        dir_inode: &Ext2Inode,
-        name: impl AsRef<[u8]>,
-    ) -> Result<Option<u32>, &'static str> {
-        self.lookup_in_dir_bytes(dir_inode, name.as_ref())
-    }
-    pub fn lookup_in_dir_bytes(&self, dir_inode: &Ext2Inode, name: &[u8]) -> Result<Option<u32>, &'static str> {
-        let dir_data = self.read_directory(dir_inode)?;
-        Ok(dir::find_inode_bytes(&dir_data, name))
-    }
-
     /// Resolve a path to an inode number, following symlinks
     ///
     /// Walks the directory tree from root, looking up each path component.

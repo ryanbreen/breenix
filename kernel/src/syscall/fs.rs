@@ -1545,23 +1545,8 @@ fn load_ext2_inode_stat_for_handle(
 /// Returns None if the ext2 filesystem is not available or inode cannot be read.
 fn load_ext2_inode_stat_for_mount(inode_num: u64, mount_id: usize) -> Option<InodeStat> {
 
-    // Dispatch to home or root filesystem based on mount_id
-    let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
-    if is_home {
-        let fs_guard = ext2::home_fs_read().ok()?;
-        let fs = fs_guard.as_ref()?;
-        if fs.mount_id != mount_id {
-            return None;
-        }
-        let inode = fs.read_inode(ino32(inode_num).ok()?).ok()?;
-        return load_inode_stat_from_inode(&inode);
-    }
-
-    let fs_guard = ext2::root_fs_read().ok()?;
+    let fs_guard = crate::fs::namei::Mount(mount_id).read().ok()?;
     let fs = fs_guard.as_ref()?;
-    if fs.mount_id != mount_id {
-        return None;
-    }
     let inode = fs.read_inode(ino32(inode_num).ok()?).ok()?;
     load_inode_stat_from_inode(&inode)
 }
@@ -4863,9 +4848,8 @@ pub fn sys_fsync(fd: i32) -> SyscallResult {
         };
     }
     let inode_num = match ino32(inode_num) { Ok(ino) => ino, Err(error) => return SyscallResult::Err(error.into()) };
-    let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
     // Wait for a live shrink without requiring write permission on the mount.
-    let guard = ext2::fs_sync_guard(is_home);
+    let guard = crate::fs::namei::Mount(mount_id).read_exclusive();
     let guard = match guard { Ok(guard) => guard, Err(_) => return SyscallResult::Err(super::errno::EINTR as u64) };
     if guard.as_ref().is_none_or(|fs| fs.mount_id != mount_id) {
         return SyscallResult::Err(super::errno::EIO as u64);
@@ -5051,12 +5035,8 @@ pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
 }
 
 fn statfs_pin(pin: &crate::fs::ext2::live_inode::FileHandle) -> Result<Statfs, u64> {
-    use crate::fs::{ext2, namei::Mount};
-    let mount = if ext2::home_mount_id() == Some(pin.object.mount.mount_id) {
-        Mount::Home
-    } else {
-        Mount::Root
-    };
+    use crate::fs::namei::Mount;
+    let mount = Mount(pin.object.mount.mount_id);
     {
         let guard = mount.read()?;
         pin.verify(guard.as_ref().ok_or(5u64)?).map_err(|_| 5u64)?;
@@ -5069,7 +5049,8 @@ fn statfs_pin(pin: &crate::fs::ext2::live_inode::FileHandle) -> Result<Statfs, u
 pub fn sys_sync() -> SyscallResult {
     use crate::fs::namei::Mount;
     let mut bytes = crate::memory::file_map::writeback_buffer().ok();
-    for mount in [Mount::Root, Mount::Home] {
+    for id in crate::fs::vfs::mount::storage_mounts() {
+        let mount = Mount(id);
         let handles = {
             let guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
             guard.as_ref().filter(|fs| !fs.is_read_only()).map(|fs| fs.dirty_handles()).transpose()
@@ -5087,7 +5068,7 @@ pub fn sys_sync() -> SyscallResult {
         }
         if matches!(handles, Ok(None)) { continue; }
         let staged = handles.as_ref().ok().and_then(|h| h.as_deref()).unwrap_or(&[]);
-        let _ = crate::fs::ext2::mapped_io::sync_mount(matches!(mount, Mount::Home), staged);
+        let _ = crate::fs::ext2::mapped_io::sync_mount(ext2::home_mount_id() == Some(mount.0), staged);
     }
     SyscallResult::Ok(0)
 }

@@ -7,9 +7,8 @@
 mod args;
 pub mod file;
 mod io_split;
-mod mounts_line;
+pub(crate) mod mounts_line;
 mod node_gates;
-pub mod cover;
 pub mod path;
 pub mod table;
 
@@ -19,7 +18,7 @@ use crate::syscall::{errno::*, userptr, SyscallResult};
 use crate::task::waitqueue::WaitQueueHead;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 use table::{Error, RequestTable};
 
@@ -45,9 +44,6 @@ struct Release {
 /// The id is stable for the mount's lifetime, including daemon death.
 pub struct Mount {
     pub id: u64,
-    source: Vec<u8>,
-    cover: cover::Cover<(crate::fs::namei::Mount, u64)>,
-    point: Mutex<Option<crate::fs::namei::Resolved<Vec<u8>>>>,
     state: Mutex<State>,
     readers: Arc<WaitQueueHead>,
     callers: WaitQueueHead,
@@ -57,7 +53,6 @@ pub struct Mount {
 }
 
 static MOUNTS: Mutex<Vec<Arc<Mount>>> = Mutex::new(Vec::new());
-static NEXT_MOUNT: AtomicU64 = AtomicU64::new(1);
 // Enqueueing a wake on this owned list needs no allocation or scheduler access.
 static DEFERRED: Mutex<Option<Arc<Mount>>> = Mutex::new(None);
 
@@ -111,19 +106,6 @@ impl Mount {
     }
 }
 
-/// Enter a mount by the covered inode, even after an ancestor is renamed.
-pub fn covering(mount: crate::fs::namei::Mount, ino: u64) -> Option<u64> {
-    cover::enter(MOUNTS.lock().iter().map(|m| &m.cover), (mount, ino))
-}
-
-pub fn covered_directory(id: u64) -> Result<(crate::fs::namei::Mount, u64), u64> {
-    Ok(get(id)?.cover.covered)
-}
-
-pub fn covered_parent(id: u64) -> Option<(crate::fs::namei::Mount, u64)> {
-    cover::leave(MOUNTS.lock().iter().map(|m| &m.cover), id)
-}
-
 pub fn get(id: u64) -> Result<Arc<Mount>, u64> {
     MOUNTS
         .lock()
@@ -134,23 +116,25 @@ pub fn get(id: u64) -> Result<Arc<Mount>, u64> {
 }
 
 /// One open user file description, shared by dup/fork with its IpcFile.
-pub struct FileLease(Arc<Mount>);
+pub struct FileLease { mount: Arc<Mount>, _reference: Arc<()> }
 
 pub fn open_file(id: u64) -> Result<FileLease, u64> {
     let mount = get(id)?;
+    let reference;
     {
         let mut state = mount.state.lock();
         if state.dead || state.detached {
             return Err(ENOTCONN as u64);
         }
+        reference = crate::fs::vfs::mount::pin(id as usize).map_err(|_| ENOTCONN as u64)?;
         state.open_files = state.open_files.checked_add(1).ok_or(EMFILE as u64)?;
     }
-    Ok(FileLease(mount))
+    Ok(FileLease { mount, _reference: reference })
 }
 
 impl Drop for FileLease {
     fn drop(&mut self) {
-        self.0.state.lock().open_files -= 1;
+        self.mount.state.lock().open_files -= 1;
     }
 }
 
@@ -401,17 +385,6 @@ pub fn wake_deferred() {
     }
 }
 
-/// Append entries for mounts currently attached to the namespace.
-#[inline]
-pub fn append_mounts(out: &mut Vec<u8>) {
-    let mounts = MOUNTS.lock();
-    for mount in mounts.iter() {
-        if let Some(point) = mount.point.lock().as_ref() {
-            out.extend_from_slice(&mounts_line::format_mount_line(&mount.source, &point.path));
-        }
-    }
-}
-
 fn mount(source: u64, target: u64, fstype: u64, flags: u64, data: u64) -> Result<(), u64> {
     let cred = crate::fs::permissions::Credentials::current(false)?;
     args::require_root(cred.euid)?;
@@ -479,18 +452,18 @@ fn mount(source: u64, target: u64, fstype: u64, flags: u64, data: u64) -> Result
         return Err(EBUSY as u64);
     }
     let mut mounts = MOUNTS.lock();
-    if mounts.iter().any(|m| m.cover.covered == (covered_mount, covered_ino)) {
-        return Err(EBUSY as u64);
-    }
     mounts.try_reserve(1).map_err(|_| ENOMEM as u64)?;
-    let id = NEXT_MOUNT
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
-        .map_err(|_| ENOSPC as u64)?;
+    let id = crate::fs::vfs::mount::allocate_id().map_err(|e| e.0 as u64)? as u64;
+    let covered_id = covered_mount.0;
+    let parent_id = parent_mount.0;
+    let mut table_entry = crate::fs::vfs::mount::MountPoint::new(
+        id as usize, point.path.clone(), "ufs", crate::fs::attrs::MountFlags::default(),
+        crate::fs::vfs::mount::Backend::User(id), ufs_abi::payload::ROOT,
+        Some((covered_id, covered_ino)), Some((parent_id, parent_ino)));
+    table_entry.source = source;
+    table_entry.custody = Some(Arc::try_new(point).map_err(|_| ENOMEM as u64)?);
     let mount = Arc::try_new(Mount {
         id,
-        source,
-        cover: cover::Cover { mount: id, covered: (covered_mount, covered_ino), parent: (parent_mount, parent_ino) },
-        point: Mutex::new(Some(point)),
         state: Mutex::new(State {
             requests: RequestTable::new(),
             dead: false,
@@ -505,6 +478,7 @@ fn mount(source: u64, target: u64, fstype: u64, flags: u64, data: u64) -> Result
         mutations: Mutex::new(node_gates::NodeGates::new()),
     })
     .map_err(|_| ENOMEM as u64)?;
+    crate::fs::vfs::mount::register_user(table_entry).map_err(|e| e.0 as u64)?;
     mounts.push(mount.clone());
     *binding = Some(mount);
     drop(mounts);
@@ -533,6 +507,8 @@ fn umount(target: u64, flags: u64) -> Result<(), u64> {
         if flags == 0 && !state.dead && state.open_files != 0 {
             return Err(EBUSY as u64);
         }
+        crate::fs::vfs::mount::unmount(mounts[index].id as usize, flags != 0 || state.dead)
+            .map_err(|e| e.0 as u64)?;
         // Detach invalidates existing handles as well as pathname access.
         // FileLease keeps their mount storage alive until the final close.
         state.detached = true;
@@ -540,9 +516,6 @@ fn umount(target: u64, flags: u64) -> Result<(), u64> {
         drop(state);
         mounts.remove(index)
     };
-    // Detachment releases namespace custody even if open handles retain storage.
-    let point = mount.point.lock().take();
-    drop(point);
     mount.wake();
     Ok(())
 }

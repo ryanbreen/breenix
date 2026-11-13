@@ -1,5 +1,7 @@
 #[path = "../../../kernel/src/fs/ext2/write.rs"]
 mod write;
+#[path = "../../../kernel/src/fs/ext2/data_ops.rs"]
+mod data_ops;
 #[path = "../../../kernel/src/fs/ext2/errno.rs"]
 pub mod errno;
 #[path = "../../../kernel/src/fs/ext2/block_group.rs"]
@@ -28,6 +30,15 @@ pub mod superblock;
 mod mount_device;
 #[path = "../../../kernel/src/fs/ext2/sector_cache.rs"]
 mod sector_cache;
+#[path = "../../../kernel/src/fs/ext2/namespace_ops.rs"]
+mod namespace_ops;
+#[path = "../../../kernel/src/fs/ext2/namespace_alloc.rs"]
+mod namespace_alloc;
+#[path = "../../../kernel/src/fs/ext2/rename.rs"]
+pub mod rename;
+#[path = "live_inode.rs"]
+pub mod live_inode;
+use create_node::dir_entry_type;
 pub use block_group::*;
 pub use inode::*;
 pub use dir::*;
@@ -42,8 +53,20 @@ impl LiveInodes {
         None
     }
 }
+pub struct FileKey {
+    pub incarnation: u64,
+}
 pub struct LiveInode {
+    pub key: FileKey,
     pub map: FileMap,
+    pub orphan: core::sync::atomic::AtomicBool,
+}
+impl LiveInode {
+    pub fn unused(&self) -> bool { true }
+
+    // Namespace tests inspect the detached inode on disk; the kernel's
+    // asynchronous orphan finalizer is outside this harness.
+    pub fn defer(&self) {}
 }
 pub struct FileMap;
 fn content_privilege(mode: u16) -> u16 {
@@ -52,10 +75,22 @@ fn content_privilege(mode: u16) -> u16 {
 impl FileMap {
     pub fn restore_disk_epoch(&self, _epoch: u64) {}
 
+    pub fn has_dirty(&self) -> bool { false }
+
     pub fn note_disk_write(&self, _epoch: u64) -> u64 {
         0
     }
 }
+pub struct FsStats {
+    pub block_size: u64,
+    pub blocks: u64,
+    pub reserved_blocks: u64,
+    pub free_blocks: u64,
+    pub inodes: u64,
+    pub free_inodes: u64,
+}
+pub struct ShrinkTicket(u32, reclaim::Reclaim);
+
 pub struct Ext2Fs {
     pub device: Box<dyn crate::block::BlockDevice>,
     pub superblock: Ext2Superblock,
@@ -65,9 +100,55 @@ pub struct Ext2Fs {
     namespace: generation::Namespace,
 }
 impl Ext2Fs {
-    // The host fixture has no pending shrink or file-size limit.
-    fn check_shrink(&self, _inode: u32) -> Result<(), &'static str> { Ok(()) }
-    fn max_file_size(&self) -> u64 { u64::MAX }
+    pub fn namespace(&self) -> generation::Namespace { self.namespace }
+    pub fn host_set_namespace(&mut self, namespace: generation::Namespace) { self.namespace = namespace; }
+    pub fn is_read_only(&self) -> bool { self.device.is_read_only() }
+    pub fn flush_inode_times(&mut self, _ino: u32) -> Result<(), &'static str> { Ok(()) }
+    pub fn statfs(&self) -> FsStats {
+        let (free_blocks, free_inodes) = self.block_groups.iter().fold((0u64, 0u64), |(b, i), g| {
+            (b + u64::from(g.bg_free_blocks_count), i + u64::from(g.bg_free_inodes_count))
+        });
+        FsStats { block_size: self.superblock.block_size() as u64,
+            blocks: self.superblock.s_blocks_count.into(), reserved_blocks: self.superblock.s_r_blocks_count.into(),
+            free_blocks, inodes: self.superblock.s_inodes_count.into(), free_inodes }
+    }
+    pub fn ensure_writable(&self) -> Result<(), &'static str> {
+        if self.is_read_only() { Err("Read-only filesystem") } else { Ok(()) }
+    }
+
+    pub fn pin_inode(&self, ino: u32) -> Result<live_inode::FileHandle, &'static str> {
+        let inode = self.read_inode(ino)?;
+        self.pin_loaded_inode(ino, inode.size())
+    }
+
+    fn pin_loaded_inode(&self, ino: u32, _size: u64) -> Result<live_inode::FileHandle, &'static str> {
+        Ok(live_inode::FileHandle {
+            ino,
+            object: LiveInode { key: FileKey { incarnation: ino.into() }, map: FileMap, orphan: core::sync::atomic::AtomicBool::new(false) },
+        })
+    }
+    // The host fixture completes reclaim synchronously; no shrink is pending.
+    pub fn check_shrink(&self, _inode: u32) -> Result<(), &'static str> { Ok(()) }
+
+
+    pub fn read_file_range_coherent(&self, _ino: u32, inode: &Ext2Inode, offset: u64, length: usize) -> Result<Vec<u8>, &'static str> {
+        // This harness has no resident mapped pages to overlay.
+        self.read_file_range(inode, offset, length)
+    }
+    pub fn write_file_range(&mut self, ino: u32, offset: u64, bytes: &[u8]) -> Result<usize, &'static str> {
+        self.ensure_writable()?;
+        self.write_file_range_disk(ino, offset, bytes, false, false)
+    }
+    pub fn begin_resize_file_as(&mut self, ino: u32, size: u64, unprivileged: bool) -> Result<Option<ShrinkTicket>, &'static str> {
+        self.ensure_writable()?;
+        self.resize_file_disk(ino, size, unprivileged).map(|progress| progress.map(|p| ShrinkTicket(ino, p)))
+    }
+
+    pub fn finish_host_shrink(&mut self, ticket: ShrinkTicket) -> Result<(), &'static str> {
+        let ShrinkTicket(ino, mut progress) = ticket;
+        while !progress.finish(self, ino, &mut 128).map_err(|_| "Failed to reclaim resized suffix")? {}
+        Ok(())
+    }
 
     pub fn host_new(device: Box<dyn crate::block::BlockDevice>, superblock: Ext2Superblock, block_groups: Vec<Ext2BlockGroupDesc>) -> Self {
         Self { device, superblock, block_groups, durable_epoch: core::sync::atomic::AtomicU64::new(0), live_inodes: LiveInodes, namespace: generation::Namespace::RAW }
@@ -84,13 +165,11 @@ impl Ext2Fs {
         }
         Ok(())
     }
-    pub fn read_directory(&self, inode: &Ext2Inode) -> Result<Vec<u8>, &'static str> {
-        if !inode.is_dir() { return Err("Not a directory"); }
-        file::read_file(self.device.as_ref(),inode,&self.superblock).map_err(|e| if e == crate::block::BlockError::OutOfMemory { "No memory for directory data" } else { "read directory" })
-    }
     /// The kernel's mount stops writing here; the harness disk has no write
     /// fence, so a test reads the disk to see what a failure left.
     fn fail_writes(&mut self) {}
+    pub fn dirty_handles(&self) -> Result<Vec<live_inode::FileHandle>, &'static str> { Ok(Vec::new()) }
+
     pub fn sync(&self) -> Result<(), &'static str> {
         self.device.flush().map_err(|_| "flush")?;
         self.durable_epoch.fetch_add(1, core::sync::atomic::Ordering::Release);
@@ -126,7 +205,7 @@ impl Ext2Fs {
     }
 }
 #[cfg(test)]
-mod reclaim_checks {
+pub(crate) mod reclaim_checks {
     use super::*;
     use crate::block;
     use std::sync::{Arc, Mutex};
@@ -563,7 +642,7 @@ mod reclaim_checks {
     }
     /// A directory (inode 2, block 21) with room, on a disk whose writes can
     /// be made to fail after they land.
-    fn directory_fixture() -> (Ext2Fs, Arc<Mutex<Vec<u8>>>, Arc<Mutex<Option<u64>>>) {
+    pub(crate) fn directory_fixture() -> (Ext2Fs, Arc<Mutex<Vec<u8>>>, Arc<Mutex<Option<u64>>>) {
         let data = Arc::new(Mutex::new(vec![0; 512 * 4096]));
         let fail = Arc::new(Mutex::new(None));
         let mut sb = Ext2Superblock::from_bytes(&[0; 1024]).unwrap();

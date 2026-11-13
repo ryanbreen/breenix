@@ -1,0 +1,15 @@
+[package]
+name = "vfs-host-tests"
+version = "0.1.0"
+edition = "2021"
+autotests = false
+
+[workspace]
+
+[dependencies]
+spin = "0.9"
+log = "0.4"
+
+[lib]
+test = true
+doctest = false

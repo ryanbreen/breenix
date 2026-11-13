@@ -26,12 +26,12 @@ impl Gate {
 struct Guard;
 impl Drop for Guard { fn drop(&mut self) {} }
 struct Mount { mutations: Gate }
-struct Lease(Mount);
-fn open_file(_: u64) -> Result<Lease, u64> { Ok(Lease(Mount { mutations: Gate })) }
+struct Lease { mount: Mount }
+fn open_file(_: u64) -> Result<Lease, u64> { Ok(Lease { mount: Mount { mutations: Gate } }) }
 mod production {
     pub fn begin_open(mount: u64) -> Result<(), u64> {
         PROLOGUE
-        let _ = &lease.0.mutations;
+        let _ = &lease.mount.mutations;
         let _enter = super::Gate::enter;
         Ok(())
     }
