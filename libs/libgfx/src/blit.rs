@@ -147,9 +147,10 @@ fn blend(dst: &mut Surface, src: &dyn Source, x: i32, y: i32, pipe: u32) {
     dst.mark(whole);
 }
 
-/// Source pixel `(i, j)` fills the `n × n` square at `(x + i·n, y + j·n)`, `n ≥ 1`: one
-/// `copy_scaled` instance, its destination origin moved by whole source pixels to the
-/// visible box's first covered pixel.
+/// Source pixel `(i, j)` fills the `n × n` square at `(x + i·n, y + j·n)`, `n ≥ 1`.
+/// A `copy_scaled` origin moves by whole source pixels to the visible box's first
+/// covered pixel. Large visible boxes use row bands, each below
+/// the core's work cap, keeping the original source-pixel grid.
 pub fn blit_scaled(dst: &mut Surface, src: &dyn Source, x: i32, y: i32, n: i32) {
     if n < 1 {
         return;
@@ -159,10 +160,18 @@ pub fn blit_scaled(dst: &mut Surface, src: &dyn Source, x: i32, y: i32, n: i32) 
     if v.is_empty() {
         return;
     }
-    work::add(1);
-    let (kx, ky) = ((v.x0 - x as i64) / n64, (v.y0 - y as i64) / n64);
-    let (ox, oy) = (x as i64 + kx * n64, y as i64 + ky * n64);
     let flags = if src.format().premultiplied && dst.format().premultiplied { 0 } else { gpu::abi::draw::SOURCE_OPAQUE };
-    sampled(dst, pipeline::COPY_SCALED, src.resource(), v, &[ox, oy, kx, ky, n64], flags);
+    let pixels = abi::limits::WORK / 2 / abi::draw::steps(pipeline::COPY_SCALED).expect("scaled copy weight");
+    let rows = (pixels as i64 / (v.x1 - v.x0)).max(1);
+    let mut top = v.y0;
+    while top < v.y1 {
+        let bottom = (top + rows).min(v.y1);
+        let band = Box64 { y0: top, y1: bottom, ..v };
+        let (kx, ky) = ((band.x0 - x as i64) / n64, (top - y as i64) / n64);
+        let (ox, oy) = (x as i64 + kx * n64, y as i64 + ky * n64);
+        work::add(1);
+        sampled(dst, pipeline::COPY_SCALED, src.resource(), band, &[ox, oy, kx, ky, n64], flags);
+        top = bottom;
+    }
     dst.mark(whole);
 }
