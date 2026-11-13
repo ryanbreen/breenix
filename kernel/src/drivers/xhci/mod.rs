@@ -12,6 +12,7 @@
 pub use crate::input::host as host_keys;
 mod keyboard;
 mod suite_replay;
+mod wait_evidence;
 mod recovery;
 #[cfg(feature = "xhci_fault_inject")]
 mod fault;
@@ -52,6 +53,21 @@ const ERDP: usize = 0x18;
 const EHB: u64 = 1 << 3; // RW1C, not a bit to preserve (5.5.2.3.3).
 static OP: AtomicUsize = AtomicUsize::new(0);
 static IR: AtomicUsize = AtomicUsize::new(0);
+// Controller-owned event DMA stays pinned, including after a command failure.
+static WAIT_EVENT: AtomicUsize = AtomicUsize::new(0);
+static WAIT_CYCLE: AtomicU64 = AtomicU64::new(0);
+static WAIT_HARDWARE: crate::log_notice::Record = crate::log_notice::Record::new();
+
+fn report_wait_hardware() {
+    let op = OP.load(Ordering::Acquire);
+    let ir = IR.load(Ordering::Acquire);
+    let at = WAIT_EVENT.load(Ordering::Acquire);
+    if op == 0 || ir == 0 || at == 0 { return; }
+    let cycle = WAIT_CYCLE.load(Ordering::Relaxed);
+    WAIT_HARDWARE.post_again(format_args!("XHCI_REPLAY_HARDWARE usbsts={:#x} iman={:#x} erdp={:#x}/{:#x} cycle={cycle} event={:#x}/{:#x}/{:#x}/{:#x}",
+        rd(op, USBSTS), rd(ir, IMAN), rd(ir, ERDP), rd(ir, ERDP + 4),
+        rd(at, 0), rd(at, 4), rd(at, 8), rd(at, 12)));
+}
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// True after the controller has completed commands and device enumeration.
@@ -195,6 +211,7 @@ pub fn handle_interrupt() {
     INTERRUPTS.fetch_add(1, Ordering::Relaxed);
     crate::tracing::providers::xhci::count_irq_entry();
     let tid = WORK.signal();
+    wait_evidence::irq(tid);
     if tid != 0 {
         // A persistent per-CPU bit cannot overflow the shared ISR TID queue.
         crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::IrqPoll);
@@ -205,6 +222,7 @@ pub fn handle_interrupt() {
 /// the scheduler's owner-queue path, which retains a busy-owner wake, rather
 /// than the bounded ISR TID buffer. No hardware polling occurs here.
 fn deferred_wake(_: crate::task::softirqd::SoftirqType) {
+    wait_evidence::wake();
     let tid = WORK.waiter();
     if tid != 0 && WORK.pending() {
         scheduler::wake_waitqueue_thread(tid);
@@ -952,10 +970,12 @@ impl Controller {
             WORK.publish(tid);
             if WORK.take() {
                 WORK.withdraw();
+                wait_evidence::returned(true);
                 return Ok(true);
             }
             if requested() || deadline.is_some_and(|end| now() >= end) {
                 WORK.withdraw();
+                wait_evidence::returned(false);
                 return Ok(false);
             }
             let published = scheduler::with_current(|sched| {
@@ -965,6 +985,7 @@ impl Controller {
                 sched.block_current_for_io_with_timeout(deadline)
             })
             .unwrap_or(false);
+            if published { wait_evidence::blocked(deadline.unwrap_or(0)); }
             // A wake can race the blocked-state publication. Normalizing the
             // state is necessary even when pending lets us skip the sleep.
             if published && !WORK.pending() && !requested() {
@@ -994,9 +1015,11 @@ impl Controller {
             });
             WORK.withdraw();
             if WORK.take() {
+                wait_evidence::returned(true);
                 return Ok(true);
             }
             if requested() || deadline.is_some_and(|end| now() >= end) {
+                wait_evidence::returned(false);
                 return Ok(false);
             }
         }
@@ -1005,15 +1028,25 @@ impl Controller {
     fn event_any(&mut self, pointers: &[u64], kind: u32) -> Result<Trb, &'static str> {
         let began_irq = INTERRUPTS.load(Ordering::Acquire);
         let deadline = now().saturating_add(3 * SECOND);
+        let wanted = pointers.first().copied().unwrap_or(0);
+        let command = wanted.checked_sub(self.command.memory.phys)
+            .filter(|at| kind == 33 && *at < self.command.memory.bytes as u64 && at % 16 == 0)
+            .map(|at| self.command.memory.get32(at as usize + 12)).unwrap_or(0);
+        wait_evidence::begin(wanted, kind, command, deadline, began_irq);
         loop {
+            WAIT_CYCLE.store(self.consumer.cycle as u64, Ordering::Relaxed);
+            WAIT_EVENT.store(self.events.virt + self.consumer.index * 16, Ordering::Release);
             if let Some(i) = self
                 .completions
                 .iter()
                 .position(|e| e.kind() == kind && pointers.contains(&(e.parameter & !15)))
             {
-                return self.completions.remove(i).ok_or("completion queue changed");
+                let event = self.completions.remove(i).ok_or("completion queue changed")?;
+                wait_evidence::end(event.code());
+                return Ok(event);
             }
             if !self.wait_work(Some(deadline), false)? {
+                wait_evidence::end(255);
                 self.completion_timeout(pointers, kind, began_irq, deadline);
                 return Err("MSI completion timed out");
             }
