@@ -32,20 +32,23 @@ impl Window { fn id(&self) -> u64 { 42 } }
 // TITLE
 fn main() {
     let win = Window;
-    for (collaborating, name, expected) in [
-        (false, None, None),
-        (false, Some("Host"), Some("Gus Kit (Host)")),
-        (true, Some("Host"), None),
-        (false, Some("Peer"), Some("Gus Kit (Peer)")),
+    for (collaborating, name, previous, expected) in [
+        (false, None, "Gus Kit", None),
+        (false, Some("Host"), "Gus Kit", Some("Gus Kit (Host)")),
+        (true, Some("Host"), "Gus Kit (Host)", None),
+        (false, Some("Peer"), "Gus Kit (Host)", Some("Gus Kit (Peer)")),
+        (false, Some("Host"), "Gus Kit (Host)", None),
     ] {
         let app = App { session: name.map(|name| Session {
             core: Core { model: Model { name: name.into() } }
         }) };
+        let mut title = previous.to_string();
         TITLES.lock().unwrap().clear();
         // UPDATE
         let titles = TITLES.lock().unwrap();
         let wanted = expected.map(|title: &str| vec![(42, title.as_bytes().to_vec())]).unwrap_or_default();
         assert_eq!(*titles, wanted, "session start must update the registered title");
+        assert_eq!(title, expected.unwrap_or(previous));
         // An empty update must fail the assertion rather than an unused-code lint.
         assert_eq!(win.id(), 42);
         let _ = (collaborating, app.session.map(|s| s.core.model.name));
