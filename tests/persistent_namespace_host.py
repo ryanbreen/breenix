@@ -9,8 +9,8 @@ ROOT = Path(__file__).resolve().parents[1]
 source = (ROOT / 'kernel/src/fs/namei.rs').read_text()
 
 
-def function(name):
-    start = source.index('fn ' + name + '(')
+def function(name, source=source):
+    start = source.index('fn ' + name)
     body = source.index('{', start)
     depth = 0
     for end in range(body, len(source)):
@@ -24,9 +24,24 @@ production = '\n'.join(function(name) for name in ('namespace_root', 'top', 'cop
 start = source.index('    pub fn is_mount_point(')
 end = source.index('\n    }', start) + len('\n    }')
 production += '\nimpl Resolved {\n' + source[start:end] + '\n}\n'
+adapter = (ROOT / 'kernel/src/fs/ext2/adapter.rs').read_text()
+mounts = (ROOT / 'kernel/src/fs/vfs/mount.rs').read_text()
+production += '\nimpl Ext2Adapter {\n' + function('register_root', adapter) + '\n}\n'
+production += function('generation_binds', adapter)
+mount_root = 'pub ' + function('is_mount_root', mounts)
 harness = r'''
 extern crate alloc;
 use std::collections::BTreeMap;
+use attrs::MountFlags;
+use errno::Errno;
+use syscall::errno::*;
+use ext2::Ext2Fs;
+struct MountPin { mount_id: usize }
+struct Ext2Adapter { mount: MountPin }
+mod fs {
+    pub use crate::{attrs, errno};
+    pub mod vfs { pub use crate::mount_table; }
+}
 const ENOENT: i32 = 2;
 const ENOTDIR: i32 = 20;
 const ENAMETOOLONG: i32 = 36;
@@ -54,10 +69,22 @@ mod mounts {
             4 => b"var", 5 => b"run", _ => return None };
         Some(((0, 100), name.to_vec()))
     }
-    pub fn is_mount_root(id: usize, ino: u64) -> bool {
-        [(0, 100), (0, 22), (0, 10), (0, 11), (0, 20), (0, 21),
-            (1, 2), (2, 10), (3, 11), (4, 20), (5, 21)].contains(&(id, ino))
+    struct Registry(std::sync::Mutex<crate::mount_table::MountTable<()>>);
+    impl Registry {
+        fn lock(&self) -> std::sync::MutexGuard<'_, crate::mount_table::MountTable<()>> {
+            self.0.lock().unwrap()
+        }
     }
+    static MOUNT_TABLE: std::sync::LazyLock<Registry> = std::sync::LazyLock::new(|| {
+        use crate::{attrs::MountFlags, mount_table::{Entry, MountTable}};
+        let mut table = MountTable::new();
+        table.insert(Entry::new(1, b"/home".to_vec(), "ext2", MountFlags::default(),
+            (), 2, Some((0, 22)), Some((0, 100)))).unwrap();
+        crate::Ext2Adapter { mount: crate::MountPin { mount_id: 0 } }
+            .register_root(&crate::fixture(), MountFlags::default(), &mut table, || ()).unwrap();
+        Registry(std::sync::Mutex::new(table))
+    });
+    MOUNT_ROOT_FUNCTION
     pub fn path_is_mount(path: &[u8]) -> bool { path == b"/proc" || path == b"/dev" }
 }
 mod ufs_abi { pub mod payload { pub const ROOT: u64 = 1; } }
@@ -70,10 +97,15 @@ pub struct Resolved { target: Target, path: alloc::boxed::Box<[u8]> }
 fn ext2_errno(_: &'static str) -> u64 { 5 }
 mod ext2 {
     use super::*;
+    pub use crate::generation;
     pub struct Ext2Inode { pub ino: u32, pub i_links_count: u16 }
     impl Ext2Inode { pub fn is_dir(&self) -> bool { true } }
     pub struct Ext2Fs(pub BTreeMap<u32, Vec<u8>>);
     impl Ext2Fs {
+        pub fn namespace(&self) -> generation::Namespace {
+            generation::Namespace { root: 100, etc: 10, data: 11, shared: 90,
+                mutable: [10, 20, 0, 0, 0, 21] }
+        }
         pub fn read_inode(&self, ino: u32) -> Result<Ext2Inode, &'static str> {
             self.0.get(&ino).ok_or("inode")?;
             Ok(Ext2Inode { ino, i_links_count: 2 })
@@ -145,7 +177,7 @@ fn directory_descriptor_storage_identity_recovers_the_bind_ancestry() {
 #[test]
 fn shared_roots_are_mount_points_and_cannot_be_renamed_as_placeholders() {
     for (mount, ino, expected) in [(Mount(0), 100, true), (Mount(0), 10, true),
-        (Mount(0), 11, true), (Mount(0), 20, true), (Mount(0), 21, true), (Mount(0), 200, false), (Mount(1), 2, true), (Mount(1), 10, false)] {
+        (Mount(0), 11, true), (Mount(0), 20, true), (Mount(0), 21, true), (Mount(0), 90, true), (Mount(0), 200, false), (Mount(1), 2, true), (Mount(1), 10, false)] {
         assert_eq!(Resolved { target: Target::Inode { mount, ino }, path: Box::new([]) }.is_mount_point(), expected);
     }
     assert!(Resolved { target: Target::Virtual, path: b"/proc".as_slice().into() }.is_mount_point());
@@ -156,8 +188,13 @@ fn shared_roots_are_mount_points_and_cannot_be_renamed_as_placeholders() {
 with tempfile.TemporaryDirectory(prefix='breenix-persistent-namespace-') as directory:
     directory = Path(directory)
     test = directory / 'tests.rs'
-    test.write_text('#[path = "' + str(ROOT / 'kernel/src/fs/ext2/generation.rs') + '"]\n'
-                    + 'pub mod generation;\n' + harness + production)
+    modules = ''.join('#[path = "' + str(ROOT / path) + '"]\npub mod ' + name + ';\n'
+                      for name, path in [('generation', 'kernel/src/fs/ext2/generation.rs'),
+                                         ('attrs', 'kernel/src/fs/attrs.rs'),
+                                         ('errno', 'kernel/src/fs/errno.rs'),
+                                         ('mount_table', 'kernel/src/fs/vfs/mount_table.rs')])
+    modules += 'pub mod syscall { #[path = "' + str(ROOT / 'kernel/src/syscall/errno.rs') + '"] pub mod errno; }\n'
+    test.write_text(modules + harness.replace('MOUNT_ROOT_FUNCTION', mount_root) + production)
     binary = directory / 'tests'
     environment = dict(os.environ, CARGO_BUILD_JOBS='4')
     subprocess.run([str(ROOT / 'scripts/build-background.sh'), 'rustc', '--edition=2021', '--test', str(test),
