@@ -500,6 +500,7 @@ impl FileSystem for Ext2Adapter {
         &self,
         dir: u64,
         name: &[u8],
+        kind: NodeKind,
         check: &dyn Fn(NodeAttrs) -> Result<crate::fs::attrs::InodeAttrs, Errno>,
         prepare: &mut dyn FnMut(Arc<VNode>) -> Result<(), Errno>,
     ) -> Result<(), Errno> {
@@ -512,7 +513,12 @@ impl FileSystem for Ext2Adapter {
             return Err(Errno(EEXIST));
         }
         let attrs = check(attributes(dir.into(), &parent)?)?;
-        let mode = ext2::EXT2_S_IFREG | (attrs.mode & 0o7777) as u16;
+        let file_type = match kind {
+            NodeKind::Regular => ext2::EXT2_S_IFREG,
+            NodeKind::Socket => ext2::EXT2_S_IFSOCK,
+            _ => return Err(Errno(EOPNOTSUPP)),
+        };
+        let mode = file_type | (attrs.mode & 0o7777) as u16;
         let inode = ext2::create_node::node_inode(mode, attrs.uid, attrs.gid, 0);
         let mut preparation_error = None;
         fs.create_node_prepared(dir, name, mode, attrs.uid, attrs.gid, 0, |fs, ino| {

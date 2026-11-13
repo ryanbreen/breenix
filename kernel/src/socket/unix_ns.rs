@@ -6,7 +6,7 @@ use crate::fs::{
     attrs::InodeAttrs,
     namei::{Last, Target},
     permissions::Credentials,
-    vfs::{mount, names, NewNode, NodeKind, VNode},
+    vfs::{mount, names, NodeKind, VNode},
 };
 use crate::irq_safe_mutex::IrqSafeMutex;
 use crate::syscall::errno::*;
@@ -155,21 +155,19 @@ fn create_path(bytes: &[u8]) -> Result<Key, i32> {
     if resolved.trailing_slash {
         return Err(ENOENT);
     }
-    let (fs, parent, attrs) = names::entry_dir(&resolved).map_err(|e| e.0)?;
-    let gid =
-        crate::syscall::fifo_policy::check_parent_access(attrs.attrs, attrs.nlink, &cred, None)
-            .map_err(|e| e as i32)?;
-    let mode = 0o140000 | crate::syscall::fifo_policy::creation_mode(0o777, &cred, gid, false);
-    let ino = fs
-        .create(
-            parent.ino,
-            resolved.final_name(),
-            NewNode::Socket {
-                attrs: InodeAttrs::new(mode.into(), cred.euid, gid),
-            },
-        )
-        .map_err(|error| if error.0 == EEXIST { EADDRINUSE } else { error.0 })?;
-    fs.open(ino).map(Key::Path).map_err(|e| e.0)
+    let (fs, parent, _) = names::entry_dir(&resolved).map_err(|e| e.0)?;
+    let mut key = None;
+    fs.create_open(parent.ino, resolved.final_name(), NodeKind::Socket, &|parent| {
+        let gid = crate::syscall::fifo_policy::check_parent_access(
+            parent.attrs, parent.nlink, &cred, None,
+        ).map_err(|error| crate::fs::errno::Errno(error as i32))?;
+        let mode = crate::syscall::fifo_policy::creation_mode(0o777, &cred, gid, false);
+        Ok(InodeAttrs::new(mode.into(), cred.euid, gid))
+    }, &mut |node| {
+        key = Some(Key::Path(node));
+        Ok(())
+    }).map_err(|error| if error.0 == EEXIST { EADDRINUSE } else { error.0 })?;
+    Ok(key.expect("create_open did not prepare its socket"))
 }
 pub fn bind_name(name: &UnixName, socket: Weak<Socket>) -> Result<(), i32> {
     // Allocate the registry entry before creating the on-disk node. Publishing

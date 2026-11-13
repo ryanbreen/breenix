@@ -92,7 +92,7 @@ fn failed_create_open_leaves_no_name_and_exclusive_retry_succeeds() {
     // The caller receives the prepared VNode before publication and may still
     // fail allocation of its descriptor. No name or inode allocation survives.
     let mut calls = 0;
-    assert_eq!(fs.create_open(root, b"exclusive", &policy, &mut |node| {
+    assert_eq!(fs.create_open(root, b"exclusive", NodeKind::Regular, &policy, &mut |node| {
         calls += 1;
         assert_eq!(node.mount, disk.pin().mount_id);
         assert_eq!(node.size.load(core::sync::atomic::Ordering::Acquire), 0);
@@ -104,10 +104,10 @@ fn failed_create_open_leaves_no_name_and_exclusive_retry_succeeds() {
 
     // A publication I/O failure also leaves the exclusive retry possible.
     disk.fail_next_write();
-    assert_eq!(fs.create_open(root, b"exclusive", &policy, &mut |_| Ok(())), Err(Errno(EIO)));
+    assert_eq!(fs.create_open(root, b"exclusive", NodeKind::Regular, &policy, &mut |_| Ok(())), Err(Errno(EIO)));
     assert_eq!(fs.lookup(root, b"exclusive"), Err(Errno(ENOENT)));
     let mut opened = None;
-    fs.create_open(root, b"exclusive", &policy, &mut |node| {
+    fs.create_open(root, b"exclusive", NodeKind::Regular, &policy, &mut |node| {
         opened = Some(node);
         Ok(())
     }).unwrap();
@@ -118,7 +118,7 @@ fn failed_create_open_leaves_no_name_and_exclusive_retry_succeeds() {
     let mut bytes = [0; 8];
     assert_eq!(fs.read(&node, 0, &mut bytes), Ok(8));
     assert_eq!(&bytes, b"prepared");
-    assert_eq!(fs.create_open(root, b"exclusive", &policy, &mut |_| panic!("existing name must not prepare")), Err(Errno(EEXIST)));
+    assert_eq!(fs.create_open(root, b"exclusive", NodeKind::Regular, &policy, &mut |_| panic!("existing name must not prepare")), Err(Errno(EEXIST)));
 }
 
 #[test]

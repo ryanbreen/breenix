@@ -334,7 +334,7 @@ fn sys_open_create(
         Err(error) => return Err(error),
     }
     let mut entry = None;
-    fs.create_open(parent.ino, resolved.final_name(), &|parent| {
+    fs.create_open(parent.ino, resolved.final_name(), crate::fs::vfs::NodeKind::Regular, &|parent| {
         let gid = super::fifo_policy::check_parent_access(parent.attrs, parent.nlink, cred, None)
             .map_err(|e| Errno(e as i32))?;
         let mode = super::fifo_policy::creation_mode(mode, cred, gid, false);
