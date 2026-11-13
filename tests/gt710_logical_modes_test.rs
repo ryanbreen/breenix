@@ -1,4 +1,4 @@
-//! G20 logical surfaces retain the EDID raster and use the 927D head scaler.
+//! Monitor modes use unity viewports inside the retained EDID raster.
 #![allow(dead_code)] // Host includes the production hardware module's other APIs.
 extern crate alloc;
 #[path = "../kernel/src/gpu/gk208/edid.rs"] mod edid;
@@ -17,7 +17,7 @@ impl modeset::Io for Registers {
 }
 #[test]
 fn both_modes_encode_surface_viewports_and_fixed_edid_timing() {
-    for head in [0,1,3] {for (width,height) in [(1280,800),(2560,1600)] {
+    for head in [0,1,3] {for (width,height) in [(1024,768),(1280,1024)] {
         let h=head*0x300;
         let view=modeset::Viewport::new(&raster(),width,height).unwrap();
         let methods=view.methods(head).unwrap();
@@ -26,18 +26,18 @@ fn both_modes_encode_surface_viewports_and_fixed_edid_timing() {
         assert_eq!(m[&(0x4b0+h)],0);
         assert_eq!(m[&(0x4b8+h)],width|height<<16);
         assert_eq!(m[&(0x4bc+h)],0); // hardware centres the viewport; no adjustment
-        for r in [0x4c0,0x4c4,0x4c8] {assert_eq!(m[&(r+h)],1280|800<<16);}
+        for r in [0x4c0,0x4c4,0x4c8] {assert_eq!(m[&(r+h)],width|height<<16);}
         assert_eq!(m[&(0x42c+h)],0); // black default base/borders
         let encoded=modeset::logical_head_methods(&raster(),head,0,1,0x10000000,
-            u64::from(width*4),width,height).unwrap();
+            5120,width,height).unwrap();
         let full:BTreeMap<_,_>=encoded.into_iter().collect();
         assert_eq!(full[&(0x468+h)],width|height<<16);
-        assert_eq!(full[&(0x46c+h)],0x01000000|width*4);
+        assert_eq!(full[&(0x46c+h)],0x01000000|5120);
         assert_eq!(full[&(0x414+h)],1688|1066<<16);
         assert_eq!(full[&(0x450+h)],108000000);
         assert_eq!(full[&(0x420+h)],1639|1064<<16);
         for (r,v) in methods {assert_eq!(full[&r],v);}
-        assert_eq!((raster().height-800)/2,112);
+        assert_eq!((raster().height-1024)/2,0);
         let mut io=Registers::default();
         for (&method,&value) in &m {for bank in [0x640000,0x660000] {
             io.words.insert(bank+method as usize,value);

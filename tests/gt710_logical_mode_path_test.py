@@ -12,8 +12,14 @@ class LogicalModePath(unittest.TestCase):
     def test_viewport_is_in_the_notified_update_and_high_console_avoids_userd(self):
         native=(ROOT/'kernel/src/gpu/gk208/native.rs').read_text()
         present=item(native,'pub(in crate::gk208) fn present(').replace('pub(in crate::gk208)','').replace('super::present::','present::').replace('super::display_evidence::','display_evidence::').replace('super::cost::','cost::')
+        inner=item(native,'fn present_inner(').replace('super::present::','present::').replace('super::cost::','cost::').replace('super::memx_display::','memx_display::').replace('super::display_evidence::','display_evidence::')
+        present += '\n' + inner
         console=item(native,'pub(super) fn logical_console(').replace('pub(super)','').replace('crate::memory::map_mmio','host_map').replace('crate::console::display::linear::map_native_write_combining','host_wc').replace('super::present::','present::').replace('super::vm::TABLE_BYTES','vm::TABLE_BYTES').replace('super::display_evidence::','display_evidence::')
         binding=item(native,'pub fn console_binding(').replace('pub fn','fn').replace('surface: &ConsoleSurface','surface: &ConsoleSurface, regs: &mut Registers').replace('    let mut regs = Registers(surface.regs);','').replace('view.verify(&mut regs,','view.verify(regs,')
+        process=(ROOT/'kernel/src/gpu/gk208/ce/process.rs').read_text()
+        switch=item(process,'pub(crate) fn set_mode(')
+        selection=switch[switch.index('        let surface='):switch.index('        let receipt=')]
+        selection=selection.replace('super::super::present::','present::')
         fixture=r'''
 #![allow(dead_code)] // Production modules include hardware APIs outside this fixture.
 extern crate alloc;
@@ -29,6 +35,7 @@ impl Registers {
  fn read(&self,r:usize)->u32 {if (0x700000..0x800000).contains(&r) {
   *self.vram.get(&((u64::from(*self.r.get(&0x1700).unwrap_or(&0))<<16)+(r-0x700000) as u64)).unwrap_or(&0)
  } else {*self.r.get(&r).unwrap_or(&0)}}
+ fn delay_us(&mut self,_:u32){}
  fn write(&mut self,r:usize,v:u32) {if (0x700000..0x800000).contains(&r) {
   self.vram.insert((u64::from(self.read(0x1700))<<16)+(r-0x700000) as u64,v);
  } else {self.r.insert(r,v);}}
@@ -52,11 +59,27 @@ mod display_evidence {
  pub fn record(_: &mut super::Registers,_:u32,_:super::present::Surface,_:&super::present::Receipt){}
  pub fn transition(_: &mut super::Registers,_:u32,s:super::present::Surface,r:&super::present::Receipt,
   allocation:[u64;2],console:[u64;2],event:&'static str)->Result<u64,&'static str>{
-  assert_eq!(event,"handoff");assert_eq!(allocation,console);assert_eq!(allocation,[s.address,16384000]);
+  assert_eq!(event,"handoff");assert_eq!(allocation,console);assert_eq!(allocation,[s.address,5242880]);
   assert_eq!(r.active,r.armed);Ok(1)
  }
 }
-struct Evo {head:u32,sor:u32,total:u64,push:u64,put:u32,notifier:u64,limits:(),coefficients:(),scripts:[Vec<modeset::Op>;4]}
+struct Evo {head:u32,sor:u32,total:u64,push:u64,put:u32,notifier:u64,limits:(),coefficients:(),scripts:[Vec<modeset::Op>;4],pending_presentation:Option<PendingPresentation>}
+#[derive(Clone,Copy)] struct PendingPresentation {resource:u32,acknowledged:Option<u32>}
+impl Evo {
+ fn start_clock(&mut self,_:&Registers)->Result<(),&'static str>{Ok(())}
+ fn arm_presentation(&mut self,_:&Registers,resource:u32)->Result<(),&'static str>{self.pending_presentation=Some(PendingPresentation{resource,acknowledged:None});Ok(())}
+ fn finish_presentation(&mut self,_:&Registers,_:u32)->Result<bool,&'static str>{self.pending_presentation=None;Ok(true)}
+ fn record_presentation(&mut self,_:&Registers,_:u32)->Result<(),&'static str>{Ok(())}
+ fn presentation_attempts(&self)->u64{1}
+}
+static MEMX_PRESENT_PHASE:core::sync::atomic::AtomicU32=core::sync::atomic::AtomicU32::new(0);
+static MEMX_CLEAR_AVAILABLE:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
+mod memx_display {
+ #[derive(Clone,Copy)]pub struct Health;
+ impl Health {pub fn read(_: &mut super::Registers,_:u32,_:u32)->Self{Self}pub fn check(&self)->Result<(),&'static str>{Ok(())}}
+}
+fn memx_health_record(_: &str,_:&str,_:u32,_:u32,_:memx_display::Health){}
+fn memx_pending_check(_: &mut Registers,_:u32,_:u32,_:memx_display::Health)->((),Result<(),&'static str>){((),Ok(()))}
 #[derive(Clone,Copy)] struct ConsoleSurface {pointer:usize,bytes:usize,width:usize,height:usize,pitch:usize,vram:u64,phys:u64,regs:usize,head:u32,firmware_baseline:u64}
 fn host_map(_:u64,n:usize)->Result<usize,&'static str>{assert_eq!(n,32<<20);Ok(Box::leak(vec![0u32;n/4].into_boxed_slice()).as_mut_ptr() as usize)}
 fn host_wc(_:u64,n:u64)->Result<(),&'static str>{assert!(n>=32<<20);Ok(())}
@@ -73,16 +96,22 @@ fn complete(r:&mut Registers,_:u64,_:u64,_:&(),_:&(),_:(u32,u32,bool,bool),_:&[V
 // PRESENT
 // CONSOLE
 // BINDING
+struct Session {console:ConsoleSurface,layout:memory::Layout,modes:[Mode;2]}
+struct Mode {width:u32,height:u32,scale:u32,reserved:u32}
+fn selected(index:u32,s:&Session)->Result<present::Surface,&'static str>{
+// SELECTION
+ Ok(surface)
+}
 fn hardware()->(Registers,Evo){
  let mut r=Registers::default();for (a,v) in [(0x64041c,359|40<<16),(0x640420,1639|1064<<16),(0x616308,1),(0x61c004,1),(0x100c80,0x10000|0x8000)]{r.r.insert(a,v);}
- (r,Evo{head:0,sor:0,total:1<<30,push:0x10000,put:0,notifier:0x11000,limits:(),coefficients:(),scripts:std::array::from_fn(|_|vec![])})
+ (r,Evo{head:0,sor:0,total:1<<30,push:0x10000,put:0,notifier:0x11000,limits:(),coefficients:(),scripts:std::array::from_fn(|_|vec![]),pending_presentation:None})
 }
 fn main(){
- for (w,h) in [(1280,800),(2560,1600),(1024,768),(640,480)] {
+ for (w,h) in [(1024,768),(1280,1024),(1280,800),(2560,1600),(640,480)] {
   let (mut r,mut e)=hardware();let s=present::Surface{resource:1,address:0x1000000,width:w,height:h,pitch:w*4,block_height:0,format:0,dma:1};
   present(&mut e,&mut r,s).unwrap();assert_eq!(r.updates,1);
   assert_eq!(r.read(0x6604b8),w|h<<16);
-  let out=if w==1280||w==2560 {1280|800<<16}else{w|h<<16};
+  let out=if (w,h)==(1280,800)||(w,h)==(2560,1600) {1280|800<<16}else{w|h<<16};
   assert_eq!(r.read(0x6604c0),out);
   assert_eq!(r.read(0x640420),1639|1064<<16); // raster untouched
   let (mut r,mut e)=hardware();r.stale=true;assert!(present(&mut e,&mut r,s).is_err());
@@ -92,14 +121,14 @@ fn main(){
  let instance=layout.objects[4].range.start;
  let slot=instance+0x4000+(((8<<20)-4096)/4096)*8;r.vram.insert(slot,0x1234);
  let high=logical_console(&mut r,&mut layout,&mut e,old,0x10000000,128<<20).unwrap();
- assert_eq!((high.width,high.height,high.pitch,high.bytes),(2560,1600,10240,16384000));
+ assert_eq!((high.width,high.height,high.pitch,high.bytes),(1280,1024,5120,5242880));
  let low=layout.objects.iter().find(|o|o.name=="logical-low").unwrap().range;
- assert_eq!(low.size,1280*800*4);assert_ne!(low.start,layout.objects[1].range.start);
+ assert_eq!(low.size,1024*768*4);assert_ne!(low.start,layout.objects[1].range.start);
  assert_eq!(high.phys,0x21000000);assert_eq!(high.firmware_baseline,9);
  console_binding(&high,&mut r).unwrap();
- r.r.insert(0x6604b8,1280|800<<16);
+ r.r.insert(0x6604b8,1024|768<<16);
  assert!(console_binding(&high,&mut r).is_err(),"console accepted low armed mode");
- r.r.insert(0x6604b8,2560|1600<<16);
+ r.r.insert(0x6604b8,1280|1024<<16);
  assert_eq!(r.vram[&slot],0x1234,"high console overwrote USERD PTE");
  assert_eq!(r.vram[&(instance+0x2208)],(32<<20)-1);
  // G2: vmmgk104.c's 128 MiB PDE coverage, also vm.rs COVERAGE=1<<27.
@@ -107,14 +136,22 @@ fn main(){
  assert_eq!(table.size,vm::TABLE_BYTES);
  assert_eq!(r.vram[&(instance+0x3004)],(table.start>>8) as u32|1);
  assert_eq!(r.vram[&(table.start+(((8<<20)-4096)/4096)*8)],0x1234);
- for i in [0,2048,3999] {let at=table.start+((16<<20)/4096+i)*8;
+ for i in [0,640,1279] {let at=table.start+((16<<20)/4096+i)*8;
   assert_eq!(r.vram[&at],((high.vram+i*4096)>>8) as u32|1);
  }
  assert_eq!(r.vram[&(table.start+((32<<20)/4096-1)*8)],0);
  unsafe {assert_eq!(*(high.pointer as *const u32),0xff000000);assert_eq!(*((high.pointer+high.bytes-4) as *const u32),0xff000000);}
  assert!(logical_console(&mut r,&mut layout,&mut e,old,0x10000000,16<<20).is_err());
+ let session=Session{console:high,layout,modes:[Mode{width:1024,height:768,scale:1,reserved:0},Mode{width:1280,height:1024,scale:1,reserved:0}]};
+ for (index,w,h,pitch) in [(0,1024,768,4096),(1,1280,1024,5120)] {
+  let surface=selected(index,&session).unwrap();
+  assert_eq!((surface.width,surface.height,surface.pitch),(w,h,pitch));
+  let allocation=session.layout.objects.iter().find(|o|o.range.start==surface.address).unwrap().range;
+  assert_eq!(allocation.size,u64::from(pitch*h));
+ }
+
 }
-'''.replace('@ROOT@',str(ROOT)).replace('// PRESENT',present).replace('// CONSOLE',console).replace('// BINDING',binding)
+'''.replace('@ROOT@',str(ROOT)).replace('// PRESENT',present).replace('// CONSOLE',console).replace('// BINDING',binding).replace('// SELECTION',selection)
         priority=['taskpolicy','-b'] if sys.platform=='darwin' else []
         with tempfile.TemporaryDirectory() as tmp:
             p=Path(tmp);(p/'modes.rs').write_text(fixture)
