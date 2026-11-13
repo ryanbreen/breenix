@@ -439,3 +439,139 @@ fn read_only_mount_write_is_erofs() {
     );
     assert_eq!(fs.getattr(ino).unwrap().size, 0);
 }
+
+#[test]
+fn getdents_cookie_survives_concurrent_unlink() {
+    use crate::{
+        ext2::{generation::Namespace, live_inode::FileHandle},
+        host_mounts::write_mount,
+        vfs::file::OpenFile,
+    };
+    use std::{collections::BTreeMap, sync::Arc};
+
+    let disk = Fixture::new();
+    let fs: Arc<dyn FileSystem> = Arc::new(Ext2Adapter::new(disk.pin()));
+    let generation = fs
+        .create(
+            2,
+            b"generation",
+            NewNode::Directory {
+                attrs: attrs(0o755),
+            },
+        )
+        .unwrap();
+    // The physical parent is inode 2; the selected namespace's parent is itself.
+    let ns = Namespace {
+        root: generation as u32,
+        ..Namespace::RAW
+    };
+    write_mount(disk.pin())
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .host_set_namespace(ns);
+    let mut expected = BTreeMap::new();
+    for name in [b"a".as_slice(), b"b", b"pending", b"c", b"d"] {
+        expected.insert(
+            name.to_vec(),
+            (regular(fs.as_ref(), generation, name), NodeKind::Regular),
+        );
+    }
+    expected.insert(b".".to_vec(), (generation, NodeKind::Directory));
+    expected.insert(b"..".to_vec(), (u64::from(ns.root), NodeKind::Directory));
+    let node = fs.open(generation).unwrap();
+    let pin = node.pin::<FileHandle>().expect("ext2 inode pin");
+    assert_eq!(pin.object.key.incarnation, node.incarnation);
+    assert!(node.pin::<u64>().is_none());
+    let file = OpenFile {
+        fs: fs.clone(),
+        node,
+    };
+    assert_eq!(file.dirents(0, &mut |_| Ok(false)), Ok(0));
+    let mut seen = Vec::new();
+    let cookie = file
+        .dirents(0, &mut |entry| {
+            if seen.len() == 4 {
+                return Ok(false);
+            }
+            seen.push(entry);
+            Ok(true)
+        })
+        .unwrap();
+    assert_eq!(seen.len(), 4);
+    assert_eq!(seen[0].name, b".");
+    assert_eq!(
+        (seen[1].name.as_slice(), seen[1].ino),
+        (b"..".as_slice(), u64::from(ns.root))
+    );
+    let returned = seen[2].name.clone();
+    assert_ne!(returned, b"pending");
+    fs.remove(generation, &returned, Remove::NonDir).unwrap();
+    fs.remove(generation, b"pending", Remove::NonDir).unwrap();
+    expected.remove(b"pending".as_slice());
+    // Larger than either freed slot, so ext2 inserts it beyond the saved cookie.
+    let created = b"created-with-a-long-name-that-does-not-fit-unlinked-slots";
+    expected.insert(
+        created.to_vec(),
+        (regular(fs.as_ref(), generation, created), NodeKind::Regular),
+    );
+    let mut pos = cookie;
+    for _ in 0..expected.len() + 1 {
+        let mut count = 0;
+        let next = file
+            .dirents(pos, &mut |entry| {
+                if count == 2 {
+                    return Ok(false);
+                }
+                count += 1;
+                seen.push(entry);
+                Ok(true)
+            })
+            .unwrap();
+        assert!(next >= pos);
+        pos = next;
+        if count == 0 {
+            break;
+        }
+    }
+    let mut actual = BTreeMap::new();
+    for entry in seen {
+        assert!(
+            actual.insert(entry.name, (entry.ino, entry.kind)).is_none(),
+            "repeated name after cookie resume"
+        );
+    }
+    assert_eq!(actual, expected);
+    let mut dots = Vec::new();
+    let after_dots = file
+        .dirents(0, &mut |entry| {
+            if dots.len() == 2 {
+                return Ok(false);
+            }
+            dots.push(entry);
+            Ok(true)
+        })
+        .unwrap();
+    assert!(after_dots >= 2);
+    assert_eq!(
+        dots.iter()
+            .map(|e| (e.name.as_slice(), e.ino))
+            .collect::<Vec<_>>(),
+        vec![
+            (b".".as_slice(), generation),
+            (b"..".as_slice(), generation)
+        ]
+    );
+    let mut parent_only = Vec::new();
+    let after_parent = file
+        .dirents(1, &mut |entry| {
+            if !parent_only.is_empty() {
+                return Ok(false);
+            }
+            parent_only.push(entry);
+            Ok(true)
+        })
+        .unwrap();
+    assert!(after_parent >= 2);
+    assert_eq!(parent_only, dots[1..]);
+}
