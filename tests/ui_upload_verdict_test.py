@@ -4,8 +4,10 @@ import hashlib
 import json
 from pathlib import Path
 import runpy
+import sys
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SEQUENCE = runpy.run_path(str(ROOT / 'scripts/suite-sequence.py'))
@@ -52,6 +54,33 @@ class UploadVerdictTest(unittest.TestCase):
             serial.write_text(text)
             def score():
                 return SEQUENCE['score'](['ui-testing'], serial, [serial], repo=repo)
+            # Exercise the actual standalone launcher's scoring branch, keeping
+            # only process management and the unrelated wall clock out of scope.
+            watcher = runpy.run_path(str(ROOT / 'scripts/watch-qemu.py'))
+            main = watcher['main']
+            def standalone():
+                clock = Mock()
+                clock.verdict.return_value = (True, 'clock fixture')
+                with patch.dict(main.__globals__, ROOT=repo, watch=lambda *a: 'done',
+                                stop=lambda *a: None, WallClockCheck=lambda *a: clock), \
+                     patch('subprocess.Popen'), \
+                     patch.object(sys, 'argv', ['watch-qemu', '--serial', str(serial),
+                                               '--mode', 'suite', '--suite', 'ui-testing', '--', 'fixture']):
+                    return main()
+            self.assertEqual(standalone(), 0)
+            for bad_text in (text.replace('result=ok', 'result=disk-only:no-route'),
+                             text.replace(text.splitlines()[-1], 'SUITE_EVIDENCE ui-testing suite-final-panel skipped=no-route')):
+                serial.write_text(bad_text)
+                self.assertNotEqual(standalone(), 0, 'real standalone scoring accepted failed upload')
+            serial.write_text(text)
+            payload = uploads / 'gt710-final.rle'
+            payload.write_bytes(b'wrong')
+            self.assertNotEqual(standalone(), 0, 'real standalone scoring accepted corrupt upload')
+            payload.write_bytes(b'final')
+            route_info = (uploads / 'route.json').read_text()
+            (uploads / 'route.json').unlink()
+            self.assertNotEqual(standalone(), 0, 'missing receiver route bypassed validation')
+            (uploads / 'route.json').write_text(route_info)
             ok, rows = score()
             self.assertTrue(ok, rows)
             receipt = uploads / f'native-diagnostic-{label}.json'
