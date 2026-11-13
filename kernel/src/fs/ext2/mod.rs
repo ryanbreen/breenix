@@ -6,6 +6,7 @@
 pub mod block_group;
 pub mod create_node;
 pub mod dir;
+pub mod errno;
 mod directory_io;
 mod directory_extension;
 mod fifo_times;

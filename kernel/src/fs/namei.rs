@@ -259,16 +259,9 @@ fn copy_frames(frames: &[Frame]) -> Result<Vec<Frame>, u64> {
 }
 
 pub(crate) fn fs_errno(error: &'static str) -> u64 {
-    if error == crate::fs::ext2::EXT2_READ_ONLY {
-        crate::syscall::errno::EROFS as u64
-    } else if error == crate::fs::ext2::EXT2_ACQUIRE_KILLED {
-        crate::syscall::errno::EINTR as u64
-    } else if error.contains("memory") {
-        12
-    } else {
-        EIO as u64
-    }
+    crate::fs::ext2::errno::errno(error).0 as u64
 }
+
 fn copy_string(text: &str) -> Result<String, u64> {
     let mut copy = String::new();
     copy.try_reserve_exact(text.len()).map_err(|_| 12u64)?;

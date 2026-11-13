@@ -1,10 +1,18 @@
-use crate::{ext2::errno::{classified, errno}, fs::errno::Errno, syscall::errno::*};
+use crate::{
+    ext2::errno::{classified, errno},
+    fs::errno::Errno,
+    syscall::errno::*,
+};
 use std::{collections::BTreeSet, path::Path};
 use syn::visit::{self, Visit};
 
 #[test]
 fn nospace_is_enospc() {
-    for message in ["No free blocks available", "No free inodes available", "No space in directory"] {
+    for message in [
+        "No free blocks available",
+        "No free inodes available",
+        "No space in directory",
+    ] {
         assert_eq!(errno(message), Errno(ENOSPC), "{message}");
     }
 }
@@ -49,7 +57,10 @@ impl<'ast> Visit<'ast> for ErrorLiterals {
     }
 
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
-        if ["ok_or", "ok_or_else", "map_err"].iter().any(|name| call.method == name) {
+        if ["ok_or", "ok_or_else", "map_err"]
+            .iter()
+            .any(|name| call.method == name)
+        {
             for arg in &call.args {
                 Strings(&mut self.0).visit_expr(arg);
             }
@@ -89,7 +100,10 @@ fn scan(directory: &Path, errors: &mut ErrorLiterals) {
 #[test]
 fn every_ext2_error_literal_is_classified() {
     let mut errors = ErrorLiterals::default();
-    scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../kernel/src/fs/ext2"), &mut errors);
+    scan(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../kernel/src/fs/ext2"),
+        &mut errors,
+    );
     assert!(!errors.0.is_empty(), "ext2 source scan found no errors");
     let mut missing = Vec::new();
     for message in errors.0 {

@@ -651,6 +651,3 @@ mod reclaim_checks {
     }
 
 }
-
-#[path = "../../../kernel/src/fs/ext2/errno.rs"]
-pub mod errno;

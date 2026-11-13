@@ -1,0 +1,173 @@
+//! Translate ext2's internal string errors at the filesystem boundary.
+
+use crate::fs::errno::Errno;
+use crate::syscall::errno::*;
+
+/// Unknown errors remain I/O errors; known errors are matched exactly.
+pub fn errno(error: &'static str) -> Errno {
+    classified(error).unwrap_or(Errno(EIO))
+}
+
+// Keeping the fallback separate lets the host source scan distinguish an
+// intentional EIO classification from a newly introduced, unclassified error.
+pub(crate) fn classified(error: &str) -> Option<Errno> {
+    Some(Errno(match error {
+        "Cannot remove . or .." => EACCES,
+        "Cannot remove root directory"
+        | "Directory is busy"
+        | "Home ext2 mount is pinned"
+        | "Root ext2 mount is pinned" => EBUSY,
+        "Destination already exists" | "Directory already exists" | "File already exists" => EEXIST,
+        "File too large" => EFBIG,
+        "ext2 acquisition interrupted by SIGKILL" => EINTR,
+        "Empty symlink target"
+        | "Invalid directory name"
+        | "Invalid directory name length"
+        | "Invalid filename"
+        | "Invalid filename length"
+        | "Invalid name length"
+        | "Invalid newpath"
+        | "Invalid path"
+        | "Not a regular file"
+        | "Not a symbolic link"
+        | "Path must be absolute"
+        | "Paths must be absolute"
+        | "Symlink target cannot be empty" => EINVAL,
+        "Block number out of range"
+        | "Clean state did not reach disk"
+        | "Corrupt directory entry"
+        | "Corrupt directory size"
+        | "Corrupt parent link count"
+        | "Failed to flush filesystem"
+        | "Failed to flush mapped file"
+        | "Failed to link directory block"
+        | "Failed to mark filesystem clean"
+        | "Failed to mark mount dirty"
+        | "Failed to persist allocation count"
+        | "Failed to persist allocation groups"
+        | "Failed to persist mapped allocation counts"
+        | "Failed to populate mapped file"
+        | "Failed to publish allocation metadata"
+        | "Failed to publish directory extension"
+        | "Failed to publish mapped allocation"
+        | "Failed to publish mapped inode"
+        | "Failed to publish mapped pointer"
+        | "Failed to read block bitmap"
+        | "Failed to read block group descriptors"
+        | "Failed to read clean state"
+        | "Failed to read directory addressing"
+        | "Failed to read directory data"
+        | "Failed to read disk state"
+        | "Failed to read ext2 superblock"
+        | "Failed to read file content"
+        | "Failed to read file range"
+        | "Failed to read inode"
+        | "Failed to read inode bitmap"
+        | "Failed to read mapped block pointer"
+        | "Failed to read mapped data"
+        | "Failed to read orphan bitmap"
+        | "Failed to read superblock"
+        | "Failed to read symlink data block"
+        | "Failed to reclaim resized suffix"
+        | "Failed to release mapped reservation"
+        | "Failed to reserve mapped blocks"
+        | "Failed to resize file"
+        | "Failed to restore directory extension; allocations retained"
+        | "Failed to settle ext2 allocation counters"
+        | "Failed to start ext2 finalization service"
+        | "Failed to sync mapped files"
+        | "Failed to verify directory addressing"
+        | "Failed to write block bitmap"
+        | "Failed to write block group descriptors"
+        | "Failed to write directory block"
+        | "Failed to write directory entry removal"
+        | "Failed to write directory removal"
+        | "Failed to write file data"
+        | "Failed to write inode"
+        | "Failed to write inode bitmap"
+        | "Failed to write mapped data"
+        | "Failed to write new directory entry"
+        | "Failed to write orphan bitmap"
+        | "Failed to write superblock"
+        | "Failed to zero allocated block"
+        | "Filesystem disappeared during shutdown"
+        | "Filesystem finalization failed"
+        | "Filesystem has errors; refusing clean shutdown"
+        | "Filesystem shutdown deadline expired"
+        | "Invalid UTF-8 in symlink target"
+        | "Invalid block number (below first data block)"
+        | "Invalid block size"
+        | "Invalid directory block geometry"
+        | "Invalid directory write plan"
+        | "Invalid ext2 magic number"
+        | "Invalid file size or type"
+        | "Mapped write exceeds EOF"
+        | "Missing ext2 mount"
+        | "Missing ext2 shrink"
+        | "Missing mount"
+        | "No block device with ext2 filesystem (tried VirtIO and all AHCI devices)"
+        | "No home block device available"
+        | "No mountable 512-byte-sector ext2 block device"
+        | "Stale ext2 inode mount identity"
+        | "Stale ext2 mount identity"
+        | "Symlink has no data block"
+        | "Unfinished ext2 shrink after I/O failure"
+        | "Unknown ext2 mount"
+        | "disk failure"
+        | "ext2 content mutation requires inode transfer wait"
+        | "ext2 identity space exhausted"
+        | "ext2 mount changed during accounting"
+        | "ext2 mount changed during shrink wait"
+        | "ext2 mount unavailable"
+        | "incomplete userland generation"
+        | "inode is linked"
+        | "invalid userland completion record"
+        | "invalid userland generation"
+        | "missing userland completion record"
+        | "missing userland directory"
+        | "userland mount point is not a directory"
+        | "v2 shared state missing" => EIO,
+        "Cannot unlink directory (use rmdir)" => EISDIR,
+        "Too many levels of symbolic links" => ELOOP,
+        "Too many links" => EMLINK,
+        "Symlink target too long" => ENAMETOOLONG,
+        "Directory not found"
+        | "Entry not found"
+        | "File not found"
+        | "Inode already unlinked"
+        | "Parent not found"
+        | "Path component not found"
+        | "Source not found" => ENOENT,
+        "No memory for allocation batch"
+        | "No memory for allocation plan"
+        | "No memory for directory addressing"
+        | "No memory for directory data"
+        | "No memory for directory removal"
+        | "No memory for directory removal plan"
+        | "No memory for directory transaction"
+        | "No memory for directory write plan"
+        | "No memory for ext2 accounting"
+        | "No memory for ext2 inode index"
+        | "No memory for ext2 inode object"
+        | "No memory for mapped transfer"
+        | "No memory for namespace image"
+        | "No memory for new block"
+        | "No memory for symlink target"
+        | "No memory for sync leases"
+        | "No memory for sync sequences"
+        | "No memory for writeback handles"
+        | "No memory to publish mapped transfer"
+        | "Out of memory for sync handles" => ENOMEM,
+        "No free blocks available"
+        | "No free inodes available"
+        | "No space for another directory block"
+        | "No space for directory addressing"
+        | "No space for directory data"
+        | "No space in directory" => ENOSPC,
+        "Not a directory" | "Not a directory in path" | "Parent is not a directory" => ENOTDIR,
+        "Directory not empty" => ENOTEMPTY,
+        "Cannot create hard link to directory" => EPERM,
+        "Read-only filesystem" => EROFS,
+        _ => return None,
+    }))
+}
