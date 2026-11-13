@@ -4,7 +4,169 @@ use std::path::{Path, PathBuf};
 /// The staged migration in docs/fs/cowfs-design.md section 1.1 lowers this
 /// ext2-only ceiling at each stage and never raises it.
 /// claim-lint:ok: Staged migration requirement in docs/fs/cowfs-design.md section 1.1.
-const CEILING: usize = 128;
+const CEILING: usize = 97;
+
+#[test]
+fn attribute_syscalls_use_the_trait() {
+    use syn::visit::{self, Visit};
+    #[derive(Default)]
+    struct Boundary { backend: Vec<String>, calls: Vec<String> }
+    impl<'ast> Visit<'ast> for Boundary {
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            if matches!(ident.to_string().as_str(), "ext2" | "ext2_errno" | "Ext2Fs"
+                | "Ext2Inode" | "FileHandle" | "ext2_handle" | "ino32" | "read_inode"
+                | "write_inode" | "write_mount" | "ext2_statfs" | "statfs_pin" | "verify") {
+                self.backend.push(ident.to_string());
+            }
+        }
+        fn visit_expr_method_call(&mut self, expr: &'ast syn::ExprMethodCall) {
+            self.calls.push(expr.method.to_string());
+            visit::visit_expr_method_call(self, expr);
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("kernel/src/syscall");
+    let mut boundary = Boundary::default();
+    for (file, functions) in [
+        ("metadata.rs", &["update", "fifo", "pathname", "by_cwd", "by_fd", "sys_chmod",
+            "sys_fchmod", "sys_fchmodat", "sys_chown", "sys_lchown", "sys_fchown", "sys_fchownat"][..]),
+        ("fs.rs", &["sys_utimensat", "update_inode_timestamps", "sys_statfs", "sys_fstatfs", "resolved_statfs"][..]),
+    ] {
+        let parsed = syn::parse_file(&fs::read_to_string(root.join(file)).unwrap()).unwrap();
+        for name in functions {
+            let f = parsed.items.iter().find_map(|item| match item {
+                syn::Item::Fn(f) if f.sig.ident == *name => Some(f), _ => None,
+            }).unwrap_or_else(|| panic!("missing {file}::{name}"));
+            boundary.visit_item_fn(f);
+        }
+        for item in &parsed.items {
+            if let syn::Item::Fn(f) = item {
+                if f.sig.ident.to_string().contains("statfs") { boundary.visit_item_fn(f); }
+            }
+        }
+        // Retiring a syscall's backend helper must not leave it callable elsewhere.
+        assert!(!parsed.items.iter().any(|item| matches!(item,
+            syn::Item::Fn(f) if f.sig.ident == "ext2_statfs" || f.sig.ident == "statfs_pin")));
+    }
+    assert!(boundary.backend.is_empty(), "backend names: {}", boundary.backend.join(", "));
+    for operation in ["setattr", "statfs"] {
+        assert!(boundary.calls.iter().any(|name| name == operation), "attributes must call {operation}");
+    }
+}
+
+#[test]
+fn open_and_access_use_the_trait() {
+    use syn::visit::{self, Visit};
+
+    #[derive(Default)]
+    struct Boundary { backend: Vec<String>, calls: Vec<String> }
+    impl<'ast> Visit<'ast> for Boundary {
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            if matches!(ident.to_string().as_str(), "ext2" | "ext2_errno" | "Ext2Fs"
+                | "Ext2Inode" | "Ext2FileType" | "FileHandle" | "ShrinkTicket"
+                | "ino32" | "read_inode" | "lookup_in_dir_bytes" | "create_file"
+                | "pin_loaded_inode" | "begin_resize_file_as" | "verify") {
+                self.backend.push(ident.to_string());
+            }
+        }
+        fn visit_expr_method_call(&mut self, expr: &'ast syn::ExprMethodCall) {
+            self.calls.push(expr.method.to_string());
+            visit::visit_expr_method_call(self, expr);
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("kernel/src");
+    let parsed = syn::parse_file(&fs::read_to_string(root.join("syscall/fs.rs")).unwrap()).unwrap();
+    let mut boundary = Boundary::default();
+    for item in &parsed.items {
+        if let syn::Item::Fn(f) = item {
+            let name = f.sig.ident.to_string();
+            if name.starts_with("sys_open") || matches!(name.as_str(),
+                "check_open_access" | "open_is_access_checked" | "access_resolved"
+                | "sys_access" | "sys_faccessat" | "prepare_open_descriptor") {
+                boundary.visit_item_fn(f);
+            }
+        }
+    }
+    assert!(boundary.backend.is_empty(), "backend names: {}", boundary.backend.join(", "));
+    for operation in ["lookup", "getattr", "create_open", "resize"] {
+        assert!(boundary.calls.iter().any(|name| name == operation), "open/access must use {operation}");
+    }
+    // The create-open primitive must prepare the VNode before publication,
+    // rather than compose create followed by a fallible open of the new name.
+    let adapter = syn::parse_file(&fs::read_to_string(root.join("fs/ext2/adapter.rs")).unwrap()).unwrap();
+    let method = adapter.items.iter().find_map(|item| {
+        let syn::Item::Impl(i) = item else { return None; };
+        i.items.iter().find_map(|item| match item {
+            syn::ImplItem::Fn(f) if f.sig.ident == "create_open" => Some(f), _ => None,
+        })
+    }).expect("adapter must provide atomic create_open");
+    let mut prepare = Boundary::default();
+    prepare.visit_block(&method.block);
+    assert!(prepare.calls.iter().any(|name| name == "create_node_prepared"),
+        "create_open must prepare its open state before publishing the name");
+    assert!(!prepare.calls.iter().any(|name| name == "open"),
+        "create_open must use the inode it prepares, without a second open");
+}
+
+#[test]
+fn link_and_rename_use_the_trait() {
+    use syn::visit::{self, Visit};
+
+    #[derive(Default)]
+    struct Boundary { backend: Vec<String>, link: bool, rename: bool }
+    impl<'ast> Visit<'ast> for Boundary {
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            if matches!(ident.to_string().as_str(), "ext2" | "ext2_errno" | "RenameError"
+                | "FileType" | "read_inode" | "lookup_in_dir" | "link_in_dir" | "verify") {
+                self.backend.push(ident.to_string());
+            }
+        }
+        fn visit_expr_method_call(&mut self, expr: &'ast syn::ExprMethodCall) {
+            self.link |= expr.method == "link";
+            self.rename |= expr.method == "rename";
+            visit::visit_expr_method_call(self, expr);
+        }
+    }
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("kernel/src/syscall/fs.rs");
+    let parsed = syn::parse_file(&fs::read_to_string(path).unwrap()).unwrap();
+    let mut boundary = Boundary::default();
+    for name in ["sys_link_from", "sys_rename_from", "sys_linkat", "sys_renameat", "sys_renameat2"] {
+        let function = parsed.items.iter().find_map(|item| match item {
+            syn::Item::Fn(f) if f.sig.ident == name => Some(f), _ => None,
+        });
+        if let Some(function) = function {
+            boundary.visit_item_fn(function);
+        } else {
+            assert_eq!(name, "sys_renameat2", "missing fs.rs::{name}");
+        }
+    }
+    assert!(boundary.backend.is_empty(), "backend names: {}", boundary.backend.join(", "));
+    assert!(boundary.link && boundary.rename, "link and rename must call the filesystem trait");
+}
+
+#[test]
+fn unix_socket_names_use_the_trait() {
+    use syn::visit::Visit;
+
+    #[derive(Default)]
+    struct BackendNames(Vec<String>);
+    impl<'ast> Visit<'ast> for BackendNames {
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            if matches!(ident.to_string().as_str(),
+                "ext2" | "FileHandle" | "read_inode"
+                | "create_node_prepared" | "pin_loaded_inode")
+            {
+                self.0.push(ident.to_string());
+            }
+        }
+    }
+
+    let source = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("kernel/src/socket/unix_ns.rs")).unwrap();
+    let parsed = syn::parse_file(&source).unwrap();
+    let mut names = BackendNames::default();
+    names.visit_file(&parsed);
+    assert!(names.0.is_empty(), "unix_ns.rs names {}", names.0.join(", "));
+}
 
 fn visit(directory: &Path, ext2_dir: &Path, tally: &mut Vec<(PathBuf, usize)>) {
     for entry in fs::read_dir(directory)
@@ -581,4 +743,85 @@ fn getdents_collects_a_batch_in_one_backend_traversal() {
     let mut traversal = Traversal::default();
     traversal.visit_block(&f.block);
     assert_eq!(traversal.calls, 1);
+}
+
+#[test]
+fn remove_syscalls_use_the_trait() {
+    use syn::visit::Visit;
+
+    #[derive(Default)]
+    struct BackendNames(Vec<String>);
+    impl<'ast> Visit<'ast> for BackendNames {
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            if matches!(ident.to_string().as_str(),
+                "ext2" | "ext2_errno" | "Ext2Inode" | "read_inode"
+                | "lookup_in_dir_bytes" | "unlink_in_dir" | "remove_directory_in"
+                | "write_removal")
+            {
+                self.0.push(ident.to_string());
+            }
+        }
+    }
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("kernel/src/syscall");
+    let parsed = syn::parse_file(&fs::read_to_string(root.join("fs.rs")).unwrap()).unwrap();
+    let mut violations = Vec::new();
+    for name in ["sys_unlink_from", "sys_rmdir_from", "sys_unlinkat", "remove_entry"] {
+        let function = parsed.items.iter().find_map(|item| match item {
+            syn::Item::Fn(function) if function.sig.ident == name => Some(function),
+            _ => None,
+        }).unwrap_or_else(|| panic!("missing fs.rs::{name}"));
+        let mut names = BackendNames::default();
+        names.visit_item_fn(function);
+        for backend in names.0 {
+            violations.push(format!("fs.rs::{name} names {backend}"));
+        }
+    }
+    let policy = syn::parse_file(&fs::read_to_string(root.join("fifo_policy.rs")).unwrap()).unwrap();
+    let mut names = BackendNames::default();
+    names.visit_file(&policy);
+    for backend in names.0 {
+        violations.push(format!("fifo_policy.rs names {backend}"));
+    }
+    assert!(violations.is_empty(), "{}", violations.join("\n"));
+}
+
+#[test]
+fn create_syscalls_use_the_trait() {
+    use syn::visit::Visit;
+
+    #[derive(Default)]
+    struct BackendNames(Vec<String>);
+    impl<'ast> Visit<'ast> for BackendNames {
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            let name = ident.to_string();
+            if matches!(name.as_str(),
+                "ext2" | "ext2_errno" | "read_inode" | "lookup_in_dir_bytes" | "create_node")
+                || name.starts_with("create_directory") || name.starts_with("create_symlink")
+            {
+                self.0.push(name);
+            }
+        }
+    }
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("kernel/src/syscall");
+    let mut violations = Vec::new();
+    for (file, functions) in [
+        ("fs.rs", &["sys_mkdir_from", "sys_symlink_from"][..]),
+        ("fifo.rs", &["mknodat_path"][..]),
+    ] {
+        let parsed = syn::parse_file(&fs::read_to_string(root.join(file)).unwrap()).unwrap();
+        for name in functions {
+            let function = parsed.items.iter().find_map(|item| match item {
+                syn::Item::Fn(function) if function.sig.ident == *name => Some(function),
+                _ => None,
+            }).unwrap_or_else(|| panic!("missing {file}::{name}"));
+            let mut names = BackendNames::default();
+            names.visit_item_fn(function);
+            for backend in names.0 {
+                violations.push(format!("{file}::{name} names {backend}"));
+            }
+        }
+    }
+    assert!(violations.is_empty(), "{}", violations.join("\n"));
 }

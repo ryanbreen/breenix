@@ -9,8 +9,11 @@ use core::{any::Any, sync::atomic::AtomicU64};
 use spin::Mutex;
 
 pub use crate::fs::attrs::MountFlags;
+pub mod attributes;
 pub mod file;
 pub mod mount_table;
+#[cfg(not(test))]
+pub mod names;
 #[cfg(not(test))]
 pub mod mount;
 #[cfg(not(test))]
@@ -98,6 +101,9 @@ pub struct NodeAttrs {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SetAttr {
+    /// Recheck permission inputs after acquiring mutation exclusion or waiting.
+    /// A mismatch returns EAGAIN without changing the inode.
+    pub expected: Option<InodeAttrs>,
     pub mode: Option<u16>,
     pub uid: Option<u32>,
     pub gid: Option<u32>,
@@ -117,10 +123,17 @@ pub enum NewNode<'a> {
     Socket { attrs: InodeAttrs },
 }
 
+/// The VFS checked access using this victim and parent policy snapshot.
+/// A backend rechecks it under mutation exclusion, after any wait, and returns
+/// EAGAIN without mutation if it changed. The caller then repeats lookup and
+/// its credential checks. Only the parent is held: pinning the victim would
+/// itself make an otherwise empty directory busy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Remove {
-    Dir,
-    NonDir,
+pub struct Remove {
+    pub directory: bool,
+    pub expected: u64,
+    pub owner: u32,
+    pub parent: InodeAttrs,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RenameMode {
@@ -128,6 +141,11 @@ pub enum RenameMode {
     NoReplace,
     Exchange,
 }
+/// Pure VFS policy, called under backend mutation exclusion on fresh attributes.
+/// These callbacks must not acquire filesystem or process-manager locks.
+pub type LinkCheck<'a> = dyn Fn(NodeAttrs, NodeAttrs) -> Result<(), Errno> + 'a;
+pub type RenameCheck<'a> =
+    dyn Fn(NodeAttrs, NodeAttrs, NodeAttrs, Option<NodeAttrs>) -> Result<(), Errno> + 'a;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WriteAt {
     Offset(u64),
@@ -235,8 +253,23 @@ pub trait FileSystem: core::any::Any + Send + Sync {
         sink: &mut dyn FnMut(DirEnt, u64) -> Result<bool, Errno>,
     ) -> Result<u64, Errno>;
     fn create(&self, dir: u64, name: &[u8], node: NewNode<'_>) -> Result<u64, Errno>;
-    fn link(&self, ino: u64, dir: u64, name: &[u8]) -> Result<(), Errno>;
+    /// Create a regular file or socket at an absent name. Check VFS policy on the current
+    /// parent, then prepare the VNode and caller's open state before publishing
+    /// the name. An existing name returns EEXIST; any failure leaves it absent.
+    /// Callbacks must not acquire filesystem or process-manager locks.
+    fn create_open(
+        &self,
+        dir: u64,
+        name: &[u8],
+        kind: NodeKind,
+        check: &dyn Fn(NodeAttrs) -> Result<InodeAttrs, Errno>,
+        prepare: &mut dyn FnMut(Arc<VNode>) -> Result<(), Errno>,
+    ) -> Result<(), Errno>;
+    /// Refuse directory hard links with EPERM. Check VFS policy before mutation.
+    fn link(&self, ino: u64, dir: u64, name: &[u8], check: &LinkCheck<'_>) -> Result<(), Errno>;
     fn remove(&self, dir: u64, name: &[u8], which: Remove) -> Result<(), Errno>;
+    /// Refuse a directory moved into itself or a descendant with EINVAL.
+    /// Check VFS policy after waits and before changing either entry.
     fn rename(
         &self,
         from_dir: u64,
@@ -244,6 +277,7 @@ pub trait FileSystem: core::any::Any + Send + Sync {
         to_dir: u64,
         to: &[u8],
         mode: RenameMode,
+        check: &RenameCheck<'_>,
     ) -> Result<(), Errno>;
     fn readlink(&self, ino: u64) -> Result<Vec<u8>, Errno>;
     // Data

@@ -1,8 +1,8 @@
-//! Mode and ownership updates. Resolve once, then read and write the same
-//! inode under its filesystem write guard. Errors after a write allocate nothing.
+//! Mode and ownership updates through the filesystem interface.
 
 use super::{errno::*, SyscallResult};
-use crate::fs::{ext2::{self, ino32, errno::errno as ext2_errno}, namei, permissions::Credentials};
+use crate::fs::{ext2::errno::errno as ext2_errno, namei, permissions::Credentials};
+use crate::fs::vfs::{self, FileSystem, attributes::{attribute_change, AttributeChange as Change}};
 use crate::ipc::FdKind;
 
 use super::at_path::AT_FDCWD;
@@ -66,61 +66,24 @@ pub(crate) fn resolve_create_at(fd: i32, path: &[u8], cred: &Credentials) -> Res
     namei::resolve_create_from(path, start, cred)
 }
 
-enum Change {
-    Mode(u32),
-    Owner(u32, u32),
-}
-
-fn update(fs: &mut ext2::Ext2Fs, ino: u64, change: Change, cred: &Credentials) -> SyscallResult {
-    let ino = match ino32(ino) { Ok(ino) => ino, Err(error) => return SyscallResult::Err(error.into()) };
-    let mut inode = match fs.read_inode(ino).map_err(ext2_errno) {
-        Ok(inode) => inode,
-        Err(error) => return SyscallResult::Err(error.into()),
-    };
-    if let Err(errno) = apply(&mut inode, change, cred) {
-        return SyscallResult::Err(errno);
-    }
-    inode.update_timestamps(false, false, true);
-    match fs.write_inode(ino, &inode).map_err(ext2_errno) {
-        Ok(()) => SyscallResult::Ok(0),
-        Err(error) => SyscallResult::Err(error.into()),
-    }
-}
-
-fn apply(inode: &mut ext2::Ext2Inode, change: Change, cred: &Credentials) -> Result<(), u64> {
-    let uid = inode.uid();
-    let gid = inode.gid();
-    if cred.euid != 0 && cred.euid != uid {
-        return Err(EPERM as u64);
-    }
-    match change {
-        Change::Mode(mode) => {
-            let mut bits = (mode & 0o7777) as u16;
-            // An unprivileged owner cannot set SGID to a group it is not in.
-            if cred.euid != 0 && !cred.in_group(gid) {
-                bits &= !0o2000;
-            }
-            inode.i_mode = (inode.i_mode & 0o170000) | bits;
-        }
-        Change::Owner(owner, group) => {
-            if cred.euid != 0
-                && ((owner != u32::MAX && owner != uid)
-                    || (group != u32::MAX && group != gid && !cred.in_group(group)))
-            {
-                return Err(EPERM as u64);
-            }
-            inode.set_owner(
-                if owner == u32::MAX { uid } else { owner },
-                if group == u32::MAX { gid } else { group },
-            );
-            // Breenix clears both execution privilege bits on regular files
-            // even for root. Directories retain SGID for group inheritance.
-            if !inode.is_dir() && (inode.is_file() || cred.euid != 0) {
-                inode.i_mode &= !0o6000;
-            }
+fn update(fs: &dyn FileSystem, ino: u64, change: Change, cred: &Credentials) -> SyscallResult {
+    // Bound metadata contention so the syscall returns to signal delivery.
+    for _ in 0..16 {
+        let attrs = match fs.getattr(ino) {
+            Ok(attrs) => attrs.attrs,
+            Err(error) => return SyscallResult::Err(error.into()),
+        };
+        let request = match attribute_change(attrs, change, cred) {
+            Ok(request) => request,
+            Err(error) => return SyscallResult::Err(error.into()),
+        };
+        match fs.setattr(ino, request) {
+            Err(error) if error.0 == EAGAIN => continue,
+            Ok(()) => return SyscallResult::Ok(0),
+            Err(error) => return SyscallResult::Err(error.into()),
         }
     }
-    Ok(())
+    SyscallResult::Err(EAGAIN as u64)
 }
 
 fn fifo(
@@ -129,13 +92,10 @@ fn fifo(
     cred: &Credentials,
 ) -> SyscallResult {
     let Some(handle) = entry.lock().handle.clone() else { return SyscallResult::Err(EIO as u64); };
-    let mut guard = match ext2::write_mount(handle.object.mount).map_err(ext2_errno) {
-        Ok(g) => g, Err(error) => return SyscallResult::Err(error.into()),
-    };
-    let Some(fs) = guard.as_mut() else { return SyscallResult::Err(EIO as u64); };
-    let ino = match handle.verify(fs).map_err(ext2_errno) { Ok(ino) => ino, Err(error) => return SyscallResult::Err(error.into()) };
-    update(fs, ino.into(), change, cred)
-
+    match vfs::names::held(&handle) {
+        Ok((fs, node)) => update(fs.as_ref(), node.ino, change, cred),
+        Err(error) => SyscallResult::Err(error.into()),
+    }
 }
 
 fn pathname(fd: i32, pathname: u64, follow: bool, empty: bool, change: Change) -> SyscallResult {
@@ -154,16 +114,14 @@ fn pathname(fd: i32, pathname: u64, follow: bool, empty: bool, change: Change) -
         Ok(r) => r,
         Err(errno) => return SyscallResult::Err(errno),
     };
-    let (mount, ino) = match resolved.target {
-        namei::Target::Inode { mount, ino, .. } => (mount, ino),
-        namei::Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
-        namei::Target::User { node: 0, .. } => return SyscallResult::Err(ENOENT as u64),
+    match resolved.target {
+        namei::Target::Absent { .. } | namei::Target::User { node: 0, .. } => return SyscallResult::Err(ENOENT as u64),
         namei::Target::Virtual | namei::Target::User { .. } => return SyscallResult::Err(EOPNOTSUPP as u64),
-    };
-    let mut guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
-    match guard.as_mut() {
-        Some(fs) => update(fs, ino.into(), change, &cred),
-        None => SyscallResult::Err(EIO as u64),
+        namei::Target::Inode { .. } => {}
+    }
+    match vfs::names::target(&resolved) {
+        Ok((fs, node)) => update(fs.as_ref(), node.ino, change, &cred),
+        Err(error) => SyscallResult::Err(error.into()),
     }
 }
 
@@ -173,23 +131,16 @@ fn by_cwd(change: Change) -> SyscallResult {
         Ok(cred) => cred,
         Err(errno) => return SyscallResult::Err(errno),
     };
-    let (mount, handle) = match namei::current_working_dir() {
-        namei::WorkingDir::Root => (namei::Mount::root(), None),
-        namei::WorkingDir::Ext2 { mount, dir } => (mount, Some(dir)),
+    let target = match namei::current_working_dir() {
+        namei::WorkingDir::Root => vfs::mount::filesystem(namei::Mount::root().0)
+            .and_then(|fs| fs.root().and_then(|ino| fs.open(ino)).map(|node| (fs, node))),
+        namei::WorkingDir::Ext2 { dir, .. } => vfs::names::held(&dir),
         namei::WorkingDir::Virtual(_) | namei::WorkingDir::User { .. } => return SyscallResult::Err(EOPNOTSUPP as u64),
     };
-    let mut guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
-    let Some(fs) = guard.as_mut() else {
-        return SyscallResult::Err(EIO as u64);
-    };
-    let ino = match handle.as_ref() {
-        Some(handle) => match handle.verify(fs).map_err(ext2_errno) {
-            Ok(ino) => ino,
-            Err(error) => return SyscallResult::Err(error.into()),
-        },
-        None => ext2::root_inode(),
-    };
-    update(fs, ino.into(), change, &cred)
+    match target {
+        Ok((fs, node)) => update(fs.as_ref(), node.ino, change, &cred),
+        Err(error) => SyscallResult::Err(error.into()),
+    }
 }
 
 fn by_fd(fd: i32, change: Change) -> SyscallResult {
@@ -203,10 +154,10 @@ fn by_fd(fd: i32, change: Change) -> SyscallResult {
         return SyscallResult::Err(EIO as u64);
     }
     if let Some(handle) = &entry.native_inode {
-        let mut guard = match ext2::write_mount(handle.object.mount).map_err(ext2_errno) { Ok(g) => g, Err(error) => return SyscallResult::Err(error.into()) };
-        let Some(fs) = guard.as_mut() else { return SyscallResult::Err(EIO as u64); };
-        let ino = match handle.verify(fs).map_err(ext2_errno) { Ok(ino) => ino, Err(error) => return SyscallResult::Err(error.into()) };
-        return update(fs, ino.into(), change, &cred);
+        return match vfs::names::held(handle) {
+            Ok((fs, node)) => update(fs.as_ref(), node.ino, change, &cred),
+            Err(error) => SyscallResult::Err(error.into()),
+        };
     }
     let kind = entry.kind;
     match kind {
@@ -232,40 +183,16 @@ fn by_fd(fd: i32, change: Change) -> SyscallResult {
             match result { Ok(()) => SyscallResult::Ok(0), Err(e) => SyscallResult::Err(e) }
         }
         FdKind::RegularFile(file) => {
-            let handle = match file.lock().open.ext2_handle() {
-                Some(handle) => handle,
-                None => return SyscallResult::Err(EIO as u64),
-            };
-            let mut guard = match ext2::write_mount(handle.object.mount).map_err(ext2_errno) {
-                Ok(g) => g,
-                Err(error) => return SyscallResult::Err(error.into()),
-            };
-            let Some(fs) = guard.as_mut() else {
-                return SyscallResult::Err(EIO as u64);
-            };
-            let ino = match handle.verify(fs).map_err(ext2_errno) {
-                Ok(ino) => ino,
-                Err(error) => return SyscallResult::Err(error.into()),
-            };
-            update(fs, ino.into(), change, &cred)
+            let file = file.lock();
+            let (fs, node) = (file.open.fs.clone(), file.open.node.clone());
+            drop(file);
+            update(fs.as_ref(), node.ino, change, &cred)
         }
         FdKind::Directory(dir) => {
-            let handle = match dir.lock().open.ext2_handle() {
-                Some(handle) => handle,
-                None => return SyscallResult::Err(EIO as u64),
-            };
-            let mut guard = match ext2::write_mount(handle.object.mount).map_err(ext2_errno) {
-                Ok(g) => g,
-                Err(error) => return SyscallResult::Err(error.into()),
-            };
-            let Some(fs) = guard.as_mut() else {
-                return SyscallResult::Err(EIO as u64);
-            };
-            let ino = match handle.verify(fs).map_err(ext2_errno) {
-                Ok(ino) => ino,
-                Err(error) => return SyscallResult::Err(error.into()),
-            };
-            update(fs, ino.into(), change, &cred)
+            let dir = dir.lock();
+            let (fs, node) = (dir.open.fs.clone(), dir.open.node.clone());
+            drop(dir);
+            update(fs.as_ref(), node.ino, change, &cred)
         }
         FdKind::FifoRead(_, _, entry) | FdKind::FifoWrite(_, _, entry) | FdKind::FifoReadWrite(_, _, entry) => {
             fifo(&entry, change, &cred)

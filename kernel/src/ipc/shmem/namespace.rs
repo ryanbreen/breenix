@@ -32,7 +32,9 @@ fn component(path: &str) -> Option<Result<&str, u64>> {
     })
 }
 fn device() -> u64 {
-    crate::fs::vfs::mount::find_mount("/dev").unwrap_or(0) as u64
+    crate::fs::vfs::mount::find_mount("/dev")
+        .and_then(crate::fs::vfs::mount::device_id)
+        .unwrap_or(0)
 }
 fn fill_directory(st: &mut Stat) {
     st.st_dev = device();

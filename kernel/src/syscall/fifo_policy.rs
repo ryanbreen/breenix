@@ -1,5 +1,5 @@
 //! Mknod types and parent-directory policy, without namespace or PM locks.
-use crate::fs::{ext2::Ext2Inode, permissions::Credentials};
+use crate::fs::{attrs::InodeAttrs, permissions::Credentials};
 
 pub(crate) fn node_type(mode: u32) -> Result<u16, u64> {
     match mode & 0o170000 {
@@ -11,30 +11,31 @@ pub(crate) fn node_type(mode: u32) -> Result<u16, u64> {
 }
 
 pub(crate) fn check_parent_access(
-    parent: &Ext2Inode,
+    parent: InodeAttrs,
+    nlink: u64,
     cred: &Credentials,
     owner: Option<u32>,
 ) -> Result<u32, u64> {
     if !parent.is_dir() {
         return Err(20);
     }
-    if parent.i_links_count == 0 {
+    if nlink == 0 {
         return Err(2);
     }
-    if !cred.may(parent.attrs(), 3) {
+    if !cred.may(parent, 3) {
         return Err(13);
     }
     if let Some(owner) = owner {
         if parent.permissions() & 0o1000 != 0
             && cred.euid != 0
-            && cred.euid != parent.uid()
+            && cred.euid != parent.uid
             && cred.euid != owner
         {
             return Err(1); // Linux sticky-directory unlink: EPERM.
         }
     }
     Ok(if parent.permissions() & 0o2000 != 0 {
-        parent.gid()
+        parent.gid
     } else {
         cred.egid
     })
@@ -60,38 +61,35 @@ mod tests {
     }
     #[test]
     fn creation_requires_write_and_search_in_the_selected_class() {
-        let mut parent = Ext2Inode::new_directory(0o777);
-        parent.set_owner(10, 20);
+        let mut parent = InodeAttrs::new(0o040777, 10, 20);
         for mode in [0o444, 0o666, 0o555, 0o711] {
-            parent.i_mode = 0o040000 | mode;
-            assert_eq!(check_parent_access(&parent, &cred(11, 21), None), Err(13));
+            parent.mode = 0o040000 | mode;
+            assert_eq!(check_parent_access(parent, 2, &cred(11, 21), None), Err(13));
         }
-        parent.i_mode = 0o040733;
-        assert_eq!(check_parent_access(&parent, &cred(11, 20), None), Ok(20));
-        parent.i_links_count = 0;
-        assert_eq!(check_parent_access(&parent, &cred(0, 0), None), Err(2));
+        parent.mode = 0o040733;
+        assert_eq!(check_parent_access(parent, 2, &cred(11, 20), None), Ok(20));
+        assert_eq!(check_parent_access(parent, 0, &cred(0, 0), None), Err(2));
     }
     #[test]
     fn sticky_unlink_allows_root_parent_owner_and_target_owner() {
-        let mut parent = Ext2Inode::new_directory(0o1777);
-        parent.set_owner(10, 20);
+        let parent = InodeAttrs::new(0o041777, 10, 20);
         assert_eq!(
-            check_parent_access(&parent, &cred(11, 21), Some(12)),
+            check_parent_access(parent, 2, &cred(11, 21), Some(12)),
             Err(1)
         );
         for uid in [0, 10, 12] {
-            assert!(check_parent_access(&parent, &cred(uid, 21), Some(12)).is_ok());
+            assert!(check_parent_access(parent, 2, &cred(uid, 21), Some(12)).is_ok());
         }
-        assert_eq!(check_parent_access(&parent, &cred(11, 21), None), Ok(21));
+        assert_eq!(check_parent_access(parent, 2, &cred(11, 21), None), Ok(21));
     }
     #[test]
     fn setgid_parent_supplies_its_group_for_fifo_creation() {
-        let mut parent = Ext2Inode::new_directory(0o777);
-        parent.i_mode = 0o042777;
-        parent.set_owner(10, 30000);
-        assert_eq!(check_parent_access(&parent, &cred(11, 21), None), Ok(30000));
-        parent.i_mode = 0o040777;
-        assert_eq!(check_parent_access(&parent, &cred(11, 21), None), Ok(21));
+        let mut parent = InodeAttrs::new(0o040777, 10, 20);
+        parent.mode = 0o042777;
+        parent.gid = 30000;
+        assert_eq!(check_parent_access(parent, 2, &cred(11, 21), None), Ok(30000));
+        parent.mode = 0o040777;
+        assert_eq!(check_parent_access(parent, 2, &cred(11, 21), None), Ok(21));
     }
     #[test]
     fn unprivileged_creation_clears_unowned_setgid_but_directories_inherit_it() {

@@ -85,6 +85,18 @@ impl Ext2Adapter {
         }
     }
 
+    /// Construct an open from the inode already loaded or being created under
+    /// this guard. No second inode lookup may fail after a name is published.
+    fn open_loaded(&self, fs: &Ext2Fs, ino: u32, inode: &Ext2Inode) -> Result<Arc<VNode>, Errno> {
+        let handle = fs.pin_loaded_inode(ino, inode.size()).map_err(errno)?;
+        let attrs = attributes(ino.into(), inode)?;
+        let incarnation = handle.object.key.incarnation;
+        let pin = Arc::try_new(handle).map_err(|_| Errno(ENOMEM))?;
+        Arc::try_new(VNode::new(
+            self.mount.mount_id, ino.into(), incarnation, attrs.size, attrs.times, pin,
+        )).map_err(|_| Errno(ENOMEM))
+    }
+
     fn pin_node(&self, fs: &Ext2Fs, node: &VNode) -> Result<FileHandle, Errno> {
         if node.mount != self.mount.mount_id {
             return Err(Errno(EXDEV));
@@ -255,7 +267,8 @@ impl FileSystem for Ext2Adapter {
             block_size: stats.block_size,
             blocks: stats.blocks,
             free_blocks: stats.free_blocks,
-            available_blocks: stats.free_blocks.saturating_sub(stats.reserved_blocks),
+            // The allocator does not enforce the image's reserved-block count.
+            available_blocks: stats.free_blocks,
             inodes: stats.inodes,
             free_inodes: stats.free_inodes,
             max_name_len: 255,
@@ -309,8 +322,13 @@ impl FileSystem for Ext2Adapter {
             .map_err(errno)?;
         let fs = guard.as_mut().ok_or(Errno(EIO))?;
         fs.ensure_writable().map_err(errno)?;
-        fs.flush_inode_times(ino).map_err(errno)?;
         let mut inode = fs.read_inode(ino).map_err(errno)?;
+        if attrs.expected.is_some_and(|expected| expected != inode.attrs()) {
+            return Err(Errno(EAGAIN));
+        }
+        fs.flush_inode_times(ino).map_err(errno)?;
+        // Flushing pending times can update the inode's stored timestamps.
+        inode = fs.read_inode(ino).map_err(errno)?;
         if let Some(mode) = attrs.mode {
             inode.i_mode = (inode.i_mode & 0o170000) | (mode & 0o7777);
         }
@@ -331,16 +349,8 @@ impl FileSystem for Ext2Adapter {
     fn open(&self, ino: u64) -> Result<Arc<VNode>, Errno> {
         let guard = read_mount(self.mount).map_err(errno)?;
         let fs = guard.as_ref().ok_or(Errno(EIO))?;
-        let handle = fs.pin_inode(ext2::ino32(ino)?).map_err(errno)?;
-        let attrs = attributes(ino, &fs.read_inode(ext2::ino32(ino)?).map_err(errno)?)?;
-        Ok(Arc::new(VNode::new(
-            self.mount.mount_id,
-            ino,
-            handle.object.key.incarnation,
-            attrs.size,
-            attrs.times,
-            Arc::new(handle),
-        )))
+        let ino = ext2::ino32(ino)?;
+        self.open_loaded(fs, ino, &fs.read_inode(ino).map_err(errno)?)
     }
 
     fn lookup(&self, dir: u64, name: &[u8]) -> Result<u64, Errno> {
@@ -486,17 +496,55 @@ impl FileSystem for Ext2Adapter {
         .map_err(errno)
     }
 
-    fn link(&self, ino: u64, dir: u64, name: &[u8]) -> Result<(), Errno> {
+    fn create_open(
+        &self,
+        dir: u64,
+        name: &[u8],
+        kind: NodeKind,
+        check: &dyn Fn(NodeAttrs) -> Result<crate::fs::attrs::InodeAttrs, Errno>,
+        prepare: &mut dyn FnMut(Arc<VNode>) -> Result<(), Errno>,
+    ) -> Result<(), Errno> {
         component(name)?;
         let mut guard = write_mount(self.mount).map_err(errno)?;
         let fs = guard.as_mut().ok_or(Errno(EIO))?;
-        let (dir, _) = directory(fs, dir)?;
+        fs.ensure_writable().map_err(errno)?;
+        let (dir, parent) = directory(fs, dir)?;
+        if self.lookup_in(fs, dir.into(), name)?.is_some() {
+            return Err(Errno(EEXIST));
+        }
+        let attrs = check(attributes(dir.into(), &parent)?)?;
+        let file_type = match kind {
+            NodeKind::Regular => ext2::EXT2_S_IFREG,
+            NodeKind::Socket => ext2::EXT2_S_IFSOCK,
+            _ => return Err(Errno(EOPNOTSUPP)),
+        };
+        let mode = file_type | (attrs.mode & 0o7777) as u16;
+        let inode = ext2::create_node::node_inode(mode, attrs.uid, attrs.gid, 0);
+        let mut preparation_error = None;
+        fs.create_node_prepared(dir, name, mode, attrs.uid, attrs.gid, 0, |fs, ino| {
+            self.open_loaded(fs, ino, &inode).and_then(prepare).map_err(|error| {
+                preparation_error = Some(error);
+                // Transport the original typed callback error through ext2's
+                // internal string API; it is restored at this boundary below.
+                "No memory for ext2 inode object"
+            })
+        }).map_err(|error| preparation_error.unwrap_or_else(|| errno(error)))
+    }
+
+    fn link(&self, ino: u64, dir: u64, name: &[u8], check: &crate::fs::vfs::LinkCheck<'_>) -> Result<(), Errno> {
+        component(name)?;
+        let mut guard = write_mount(self.mount).map_err(errno)?;
+        let fs = guard.as_mut().ok_or(Errno(EIO))?;
+        let (dir, parent) = directory(fs, dir)?;
+        let source = fs.read_inode(ext2::ino32(ino)?).map_err(errno)?;
+        check(attributes(dir.into(), &parent)?, attributes(ino, &source)?)?;
         fs.link_in_dir(ext2::ino32(ino)?, dir, name).map_err(errno)
     }
 
     fn remove(&self, dir: u64, name: &[u8], which: Remove) -> Result<(), Errno> {
         component(name)?;
-        let mut guard = write_mount(self.mount).map_err(errno)?;
+        // Removal must remain possible without waiting for free allocations.
+        let mut guard = sync_mount_guard(self.mount).map_err(errno)?;
         let parent = {
             let fs = guard.as_ref().ok_or(Errno(EIO))?;
             let (ino, _) = directory(fs, dir)?;
@@ -505,9 +553,24 @@ impl FileSystem for Ext2Adapter {
         guard = guard.wait_for_entry_data(&parent, name).map_err(errno)?;
         let fs = guard.as_mut().ok_or(Errno(EIO))?;
         let dir = parent.verify(fs).map_err(errno)?;
-        match which {
-            Remove::Dir => fs.remove_directory_in(dir, name),
-            Remove::NonDir => fs.unlink_in_dir(dir, name),
+        let (_, parent_inode) = directory(fs, dir.into())?;
+        let victim = self.lookup_in(fs, dir.into(), name)?.ok_or(Errno(ENOENT))?;
+        // The visible entry may be a generation bind rather than its raw
+        // placeholder. Reject directory unlink before comparing retry inputs.
+        if !which.directory && fs.read_inode(victim).map_err(errno)?.is_dir() {
+            return Err(Errno(EISDIR));
+        }
+        if u64::from(victim) != which.expected
+            || parent_inode.attrs() != which.parent
+            || fs.read_inode(victim).map_err(errno)?.uid() != which.owner
+        {
+            return Err(Errno(EAGAIN));
+        }
+        // No guard release between the precondition and the namespace writes.
+        if which.directory {
+            fs.remove_directory_in(dir, name)
+        } else {
+            fs.unlink_in_dir(dir, name)
         }
         .map_err(errno)
     }
@@ -519,6 +582,7 @@ impl FileSystem for Ext2Adapter {
         to_dir: u64,
         to: &[u8],
         mode: RenameMode,
+        check: &crate::fs::vfs::RenameCheck<'_>,
     ) -> Result<(), Errno> {
         if mode == RenameMode::Exchange {
             return Err(Errno(EINVAL));
@@ -539,6 +603,13 @@ impl FileSystem for Ext2Adapter {
         guard = guard.wait_for_entry_data(&new, to).map_err(errno)?;
         let fs = guard.as_mut().ok_or(Errno(EIO))?;
         fs.ensure_writable().map_err(errno)?;
+        let (from_dir, parent) = directory(fs, old.verify(fs).map_err(errno)?.into())?;
+        let (to_dir, dest_parent) = directory(fs, new.verify(fs).map_err(errno)?.into())?;
+        let source = fs.lookup_in_dir_bytes(&parent, from).map_err(errno)?.ok_or(Errno(ENOENT))?;
+        let source_attrs = attributes(source.into(), &fs.read_inode(source).map_err(errno)?)?;
+        let victim = fs.lookup_in_dir_bytes(&dest_parent, to).map_err(errno)?
+            .map(|ino| attributes(ino.into(), &fs.read_inode(ino).map_err(errno)?)).transpose()?;
+        check(attributes(from_dir.into(), &parent)?, attributes(to_dir.into(), &dest_parent)?, source_attrs, victim)?;
         if mode == RenameMode::NoReplace {
             let dest = fs
                 .read_inode(new.verify(fs).map_err(errno)?)

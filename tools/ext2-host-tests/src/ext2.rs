@@ -121,7 +121,7 @@ impl Ext2Fs {
         self.pin_loaded_inode(ino, inode.size())
     }
 
-    fn pin_loaded_inode(&self, ino: u32, _size: u64) -> Result<live_inode::FileHandle, &'static str> {
+    pub(crate) fn pin_loaded_inode(&self, ino: u32, _size: u64) -> Result<live_inode::FileHandle, &'static str> {
         Ok(live_inode::FileHandle {
             ino,
             object: LiveInode { key: FileKey { incarnation: ino.into() }, map: FileMap, orphan: core::sync::atomic::AtomicBool::new(false) },
