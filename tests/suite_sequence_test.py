@@ -148,7 +148,7 @@ class ResolveTests(unittest.TestCase):
 
 
 class ScoreTests(unittest.TestCase):
-    def score(self, serial, suites, manifests=None):
+    def score(self, serial, suites, manifests=None, milestones=None):
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
             (repo / "scripts").mkdir()
@@ -161,9 +161,15 @@ class ScoreTests(unittest.TestCase):
             for suite in suites:
                 (repo / "docs/suites" / f"{suite}.json").write_text(
                     manifests[suite] if manifests and suite in manifests else manifest(suite))
+            if milestones:
+                (repo / "docs/efforts").mkdir()
+                (repo / "docs/efforts/path.json").write_text(json.dumps(dict(efforts=[dict(
+                    id="effort", milestones=[dict(id=k, measure=dict(suite="users", categories=v))
+                                             for k, v in milestones.items()])])))
             log = repo / "serial.txt"
             log.write_text(serial)
-            return SEQUENCE["score"](suites, log, [log], repo=repo)
+            options = {"milestones": {"users": "effort/" + next(iter(milestones))}} if milestones else {}
+            return SEQUENCE["score"](suites, log, [log], repo=repo, **options)
 
     @staticmethod
     def passing(suite):
@@ -174,6 +180,20 @@ class ScoreTests(unittest.TestCase):
                 f"SUITE {suite} MEMORY after free=990 heap_free_kb=496 {owners}\n"
                 f"SUITE {suite} MEMORY reclaimed=PASS free_before=1000 free_after=990 allowance=48\n"
                 f"SUITE_SEQUENCE READY {suite}\n")
+
+    def test_milestone_scores_its_categories_in_a_sequence(self):
+        mixed = json.loads(manifest("users"))
+        mixed["categories"].append(dict(id="later", cases=[]))
+        serial = self.passing("users") + "SUITE_SEQUENCE RESET other removed=0 changed=0 tcp=0 tcpwait=0\n" + self.passing("other")
+        ok, rows = self.score(serial, ["users", "other"], {"users": json.dumps(mixed)}, {"ready": ["case"]})
+        self.assertTrue(ok)
+        self.assertEqual([row[1] for row in rows], ["PASS", "PASS"])
+
+    def test_milestone_missing_category_fails(self):
+        ok, rows = self.score(self.passing("users"), ["users"], milestones={"missing": ["absent"]})
+        self.assertFalse(ok)
+        self.assertEqual(rows[0][1], "FAIL")
+        self.assertIn("missing measured categories", rows[0][2])
 
     def test_passing_populated_categories_cannot_complete_a_planned_suite(self):
         mixed = json.loads(manifest("users"))
