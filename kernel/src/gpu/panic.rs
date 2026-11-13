@@ -1,7 +1,6 @@
 //! Terminal GPU diagnostics for ruling 40 (#1749). Preparation uses the normal
 //! core; presentation uses preallocated requests outside that core.
 //! Pixels are rendered by bitmap_text, not by a CPU framebuffer copy.
-use super::console::{HEIGHT, WIDTH};
 use super::*;
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicPtr, AtomicUsize};
@@ -301,16 +300,16 @@ pub(super) fn prepare() -> Result<(), i64> {
         Tag::Background,
         c.context,
         c.target,
-        WIDTH,
-        HEIGHT,
+        c.width,
+        c.height,
     ));
     let flush = Command::new(virgl::flush_resource(
         Tag::Background,
         c.context,
         fences[0],
         c.target,
-        WIDTH,
-        HEIGHT,
+        c.width,
+        c.height,
     ));
     #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
     let reads = [1, 2].map(|i| {
@@ -322,8 +321,8 @@ pub(super) fn prepare() -> Result<(), i64> {
             backing.clone(),
             0,
             0,
-            WIDTH,
-            HEIGHT,
+            c.width,
+            c.height,
             0,
             pitch as u32,
         ))
@@ -416,7 +415,7 @@ impl Screen {
     /// mismatch count and the first mismatch when the two reads agree.
     #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
     fn observe(&self, deadline: u64) -> Option<(u64, Option<(usize, usize, u32, u32)>)> {
-        let bytes = self.pitch * HEIGHT as usize;
+        let bytes = self.pitch * self.console.height as usize;
         let mut a = [0u8; PAGE];
         let mut b = [0u8; PAGE];
         for pass in 0..2 {
@@ -454,7 +453,7 @@ impl Screen {
             for (i, px) in a[..n].chunks_exact(4).enumerate() {
                 let at = offset + i * 4;
                 let (x, y) = (at % self.pitch / 4, at / self.pitch);
-                if x >= WIDTH as usize {
+                if x >= self.console.width as usize {
                     continue;
                 }
                 let got = u32::from_le_bytes([px[0], px[1], px[2], px[3]]);
@@ -616,7 +615,7 @@ fn report(s: &Screen, shown: bool, deadline: u64) {
     line.dec(result.is_some() as u64);
     if let Some((mismatches, first)) = result {
         line.text(" pixels=");
-        line.dec(WIDTH as u64 * HEIGHT as u64);
+        line.dec(s.console.width as u64 * s.console.height as u64);
         line.text(" mismatches=");
         line.dec(mismatches);
         if let Some((x, y, got, want)) = first {

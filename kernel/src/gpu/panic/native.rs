@@ -25,8 +25,8 @@ struct Bindings<'a>(&'a console::Console);
 impl stream::Resolver for Bindings<'_> {
     fn target(&self, h: u64) -> Option<stream::TargetInfo> {
         (h == u64::from(self.0.target)).then_some(stream::TargetInfo {
-            width: WIDTH,
-            height: HEIGHT,
+            width: self.0.width,
+            height: self.0.height,
             invalid: false,
             format: format::B8G8R8A8,
         })
@@ -262,7 +262,8 @@ impl prepared::Terminal for Runtime<'_> {
 #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
 impl Screen {
     fn observe(&self, deadline: u64) -> Option<u64> {
-        let bytes = WIDTH as usize * HEIGHT as usize * 4;
+        let pitch = console::pitch_of(kind::TARGET, format::B8G8R8A8, self.console.width) as usize;
+        let bytes = pitch * self.console.height as usize;
         let mut a = [0u8; PAGE];
         let mut b = [0u8; PAGE];
         if !self.display.bound() {
@@ -300,12 +301,15 @@ impl Screen {
             let n = (bytes - offset).min(PAGE);
             self.first.read(offset, &mut a[..n]);
             for (i, pixel) in a[..n].chunks_exact(4).enumerate() {
-                let at = offset / 4 + i;
+                let at = offset + i * 4;
+                let x = at % pitch / 4;
+                let y = at / pitch;
+                if x >= self.console.width as usize { continue; }
                 if u32::from_le_bytes(pixel.try_into().ok()?)
                     != expected(
                         self.console.glyph_width,
-                        at % WIDTH as usize,
-                        at / WIDTH as usize,
+                        x,
+                        y,
                     )
                 {
                     mismatches += 1;
