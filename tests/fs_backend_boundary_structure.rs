@@ -473,3 +473,38 @@ fn open_file_write_syscalls_use_the_trait() {
     }
     assert!(violations.is_empty(), "{}", violations.join("\n"));
 }
+
+#[test]
+fn directory_and_sync_syscalls_use_the_trait() {
+    use syn::visit::Visit;
+
+    #[derive(Default)]
+    struct BackendNames(Vec<String>);
+    impl<'ast> Visit<'ast> for BackendNames {
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            if matches!(ident.to_string().as_str(),
+                "read_mount" | "write_mount" | "raw_entries" | "read_directory"
+                | "check_shrink" | "ext2_fd_info" | "resize_inode")
+            {
+                self.0.push(ident.to_string());
+            }
+        }
+    }
+
+    let source = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("kernel/src/syscall/fs.rs")).unwrap();
+    let parsed = syn::parse_file(&source).unwrap();
+    let mut violations = Vec::new();
+    for name in ["sys_getdents64", "sys_fsync", "sys_ftruncate"] {
+        let function = parsed.items.iter().find_map(|item| match item {
+            syn::Item::Fn(function) if function.sig.ident == name => Some(function),
+            _ => None,
+        }).unwrap_or_else(|| panic!("missing fs.rs::{name}"));
+        let mut names = BackendNames::default();
+        names.visit_block(&function.block);
+        for backend in names.0 {
+            violations.push(format!("fs.rs::{name} names {backend}"));
+        }
+    }
+    assert!(violations.is_empty(), "{}", violations.join("\n"));
+}
