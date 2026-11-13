@@ -342,7 +342,8 @@ fn make_static_label(s: &str) -> &'static [u8] {
 fn main() {
     print!("[bterm] starting\n");
     // Create window (loads system font automatically from /etc/fonts.conf)
-    let mut win = match Window::new(b"Terminal", WIN_WIDTH, WIN_HEIGHT) {
+    let scale = libbreenix::gpu::current_mode().expect("Terminal display mode").scale.max(1);
+    let mut win = match Window::new(b"Terminal", WIN_WIDTH * scale, WIN_HEIGHT * scale) {
         Ok(w) => w,
         Err(e) => {
             print!("[bterm] ERROR: failed to create window: {}\n", e);
@@ -363,8 +364,8 @@ fn main() {
     let (mut cell_w, mut cell_h) = cells::cell_dims(ttf_font.as_mut(), font_size, ui_scale as u32);
     let mut tab_bar_pixels = (TAB_BAR_HEIGHT * ui_scale) as u32;
     // Calculate content area (below tab bar)
-    let mut content_w = WIN_WIDTH;
-    let mut content_h = WIN_HEIGHT.saturating_sub(tab_bar_pixels);
+    let mut content_w = win.width();
+    let mut content_h = win.height().saturating_sub(tab_bar_pixels);
     let mut cols = (content_w as usize / cell_w).max(1);
     let mut rows = (content_h as usize / cell_h).max(1);
 
@@ -385,7 +386,7 @@ fn main() {
     let theme = Theme::dark();
     let label = if let Some(ref cmd) = exec_args { make_static_label(&cmd[0]) } else { make_tab_label() };
     let mut tab_bar = TabBar::new(
-        Rect::new(0, 0, WIN_WIDTH as i32 / ui_scale, TAB_BAR_HEIGHT),
+        Rect::new(0, 0, win.width() as i32 / ui_scale, TAB_BAR_HEIGHT),
         vec![label], &theme);
     let mut tabs = vec![match exec_args {
         Some(ref cmd) => spawn_tab_cmd(cols, rows, content_w, content_h, cmd, true),

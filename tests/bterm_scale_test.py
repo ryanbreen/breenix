@@ -75,6 +75,31 @@ fn main() {
 }
 '''.replace('CODE', code))
 
+    def test_initial_window_preserves_the_grid_at_scale_two(self):
+        terminal = source('userspace/programs/src/bterm.rs')
+        start = terminal.index('    // Create window')
+        end = terminal.index('    win.set_font_poll_interval', start)
+        startup = terminal[start:end]
+        self.run_rust(r'''
+mod libbreenix {pub mod gpu {
+    pub struct Mode {pub scale:u32}
+    pub fn current_mode()->Result<Mode, &'static str> {Ok(Mode {scale:2})}
+}}
+use std::process;
+const WIN_WIDTH:u32=750; const WIN_HEIGHT:u32=550;
+struct Window {width:u32,height:u32}
+impl Window {fn new(_: &[u8],width:u32,height:u32)->Result<Self,&'static str> {Ok(Self {width,height})}}
+fn main() {
+    assert_eq!(libbreenix::gpu::current_mode().unwrap().scale,2);
+STARTUP
+    // Cells are 8x18 logical pixels. An 80-column shell must still fit.
+    assert!(win.width / 16 >= 80, "scale-2 terminal only has {} columns",win.width/16);
+    assert_eq!((win.width/2,win.height/2),(WIN_WIDTH,WIN_HEIGHT));
+    // Keep the mutable binding used by the real startup.
+    win.width=0;assert_eq!(win.width,0);
+}
+'''.replace('STARTUP', startup))
+
     def test_terminal_cells_double_at_scale_two(self):
         terminal = source('userspace/programs/src/bterm.rs')
         text = source('libs/libbui/src/text.rs')
