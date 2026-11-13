@@ -13,7 +13,9 @@ from vm_site import load_site
 
 
 def stage(image, suite, case, forward_port):
-    if not smb_gui_selection('suite', suite, case or None):
+    gui = smb_gui_selection('suite', suite, case or None)
+    network = 'network-shares' in suite.split(',')
+    if not gui and not network:
         return
     site = load_site()
     keys = ('SMB_TEST_USER', 'SMB_TEST_PASSWORD', 'SMB_TEST_HOST', 'SMB_TEST_PORT', 'SMB_TEST_INSTANCE')
@@ -36,7 +38,6 @@ def stage(image, suite, case, forward_port):
     with tempfile.TemporaryDirectory(prefix='qemu-desktop-') as tmp:
         tmp = Path(tmp)
         files = {
-            '/etc/breenix/desktop-suite': ('gui-apps\n', '0644'),
             '/etc/breenix/sntp-servers': (''.join(name + '\n' for name in servers), '0644'),
             '/etc/breenix/smb-test.cred': (f'username={user}\npassword={password}\n', '0600'),
             '/etc/breenix/smb-test-server': (f'{host} {port}\n', '0600'),
@@ -44,6 +45,8 @@ def stage(image, suite, case, forward_port):
                 f'//{host}/{share} /mnt/guskit-{share} smb credfile=/etc/breenix/smb-test.cred,port={port}\n'
                 for share in ('rw', 'ro')), '0644'),
         }
+        if gui:
+            files['/etc/breenix/desktop-suite'] = ('gui-apps\n', '0644')
         commands = ['mkdir /mnt']
         for path in ('/mnt/guskit-rw', '/mnt/guskit-ro'):
             commands.extend([f'mkdir {path}', f'set_inode_field {path} mode 040755',

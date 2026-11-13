@@ -395,12 +395,12 @@ if [[ "$SUITE" == *,* ]]; then
         "$ROOT/userspace/programs/aarch64/suite-${SUITE%%,*}.elf" "$SUITE"
 fi
 SMB_INSTANCE=
-if [ "$MODE" = suite ] && [[ ",$SUITE," == *,gui-apps,* ]]; then
+if [ "$MODE" = suite ] && { [[ ",$SUITE," == *,gui-apps,* ]] || [[ ",$SUITE," == *,network-shares,* ]]; }; then
     SMB_INSTANCE=$(PYTHONPATH="$ROOT/scripts:$ROOT/scripts/metal" python3 - "$SUITE" "$ONLY" <<'PYSMB'
 import sys
 from metal.metal_root import smb_gui_selection
 from vm_site import load_site
-if smb_gui_selection('suite', sys.argv[1], sys.argv[2] or None):
+if smb_gui_selection('suite', sys.argv[1], sys.argv[2] or None) or 'network-shares' in sys.argv[1].split(','):
     print(load_site()['SMB_TEST_INSTANCE'])
 PYSMB
 )
@@ -413,7 +413,7 @@ PYSMB
 fi
 source "$ROOT/scripts/qemu-smb-forward.sh"
 trap qemu_smb_forward_stop EXIT
-if [ "$MODE" = suite ] && [[ ",$SUITE," == *,gui-apps,* ]]; then
+if [ "$MODE" = suite ] && { [[ ",$SUITE," == *,gui-apps,* ]] || [[ ",$SUITE," == *,network-shares,* ]]; }; then
     qemu_smb_forward_start "$MODE" "$SUITE" "$ONLY"
     python3 "$ROOT/scripts/qemu-desktop-stage.py" "$WRITABLE" "$SUITE" "$ONLY" --forward-port "$SMB_FORWARD_PORT"
 fi
