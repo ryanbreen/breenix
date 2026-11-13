@@ -2280,18 +2280,6 @@ fn reclaim_fs_write(home: bool, pressure_only: bool) -> Result<Ext2WriteGuard, &
     }
 }
 
-/// Persist relatime without making a reader finish unrelated suffix work.
-/// This changes only the inode's timestamp under the same exclusive guard;
-/// reclaim reloads the inode before each detachment batch.
-pub(crate) fn update_read_atime(inode: u32, home: bool) -> Result<(), &'static str> {
-    {
-        let guard = if home { home_fs_read()? } else { root_fs_read()? };
-        if guard.as_ref().ok_or("Missing ext2 mount")?.is_read_only() { return Ok(()); }
-    }
-    let mut guard = fs_write_raw(home)?;
-    guard.as_mut().ok_or("Missing ext2 mount")?.update_atime(inode)
-}
-
 /// Check if the root filesystem is mounted
 ///
 /// Read from the published mount ID, not through `root_fs_read()`: it takes

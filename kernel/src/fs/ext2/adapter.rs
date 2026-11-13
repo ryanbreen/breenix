@@ -573,7 +573,7 @@ impl FileSystem for Ext2Adapter {
         buf[..bytes.len()].copy_from_slice(&bytes);
         drop(guard);
         if update_atime {
-            // Like ext2::update_read_atime, reload under the raw write guard:
+            // Reload under the raw write guard:
             // a timestamp update need not finish another inode's suffix work.
             // A completed read keeps its result if metadata I/O fails.
             let _ = (|| -> Result<(), Errno> {

@@ -1056,11 +1056,11 @@ pub fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
     // to acquire the PM lock.  If we are holding it while blocked on I/O, every
     // attempt to re-dispatch us returns PmLockBusy and we spin forever.
     //
-    // Strategy: extract the inode/mount info under the lock, drop all locks,
-    // do the disk read unlocked, then re-acquire to update the position.
+    // Retain the filesystem and node, release PM and the file lock for the
+    // backend call, then re-acquire to update the position.
     if whence == SEEK_END {
         // Phase 1: extract file metadata under PM lock
-        let (handle, current_position) = {
+        let (fs, node) = {
             let mut manager_guard = crate::process::manager();
             let process = match &mut *manager_guard {
                 Some(manager) => match manager.find_process_by_thread_mut(thread_id) {
@@ -1076,11 +1076,7 @@ pub fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
             match &fd_entry.kind {
                 FdKind::RegularFile(file) => {
                     let f = file.lock();
-                    let handle = match f.open.ext2_handle() {
-                        Some(handle) => handle,
-                        None => return SyscallResult::Err(super::errno::EIO as u64),
-                    };
-                    (handle, f.position)
+                    (f.open.fs.clone(), f.open.node.clone())
                 }
                 // A directory position is a record offset, not a byte count
                 // that SEEK_END can be relative to.
@@ -1091,19 +1087,15 @@ pub fn sys_lseek(fd: i32, offset: i64, whence: i32) -> SyscallResult {
         };
 
         // Phase 2: disk read WITHOUT any lock held
-        let file_size = match get_ext2_file_size_for_handle(&handle) {
-            Some(size) => size as i64,
-            None => {
-                log::error!("sys_lseek: cannot get pinned inode size");
-                return SyscallResult::Err(5); // EIO
-            }
+        let file_size = match fs.getattr(node.ino) {
+            Ok(attrs) => attrs.size as i64,
+            Err(error) => return SyscallResult::Err(error.into()),
         };
         let new_position = match file_size.checked_add(offset) {
             Some(position) if position >= 0 => position,
             _ => return SyscallResult::Err(22), // EINVAL
         };
         let new_pos = new_position as u64;
-        let _ = current_position; // not needed, position updated below
 
         // Phase 3: update position under PM lock
         let mut manager_guard = crate::process::manager();
@@ -1212,20 +1204,14 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
     };
 
     // Describe what kind of fstat this is, extracting only the data we need
-    // under the PM lock.  We must NOT hold the PM lock while doing ext2 disk
-    // I/O: on ARM64 the PM lock disables ALL IRQs, and AHCI completions arrive
-    // as interrupts — holding the lock during disk I/O deadlocks the system.
+    // under the PM lock. Release PM before filesystem I/O so IRQ-driven disk
+    // completions can run.
     enum FstatKind {
         StdIo(i32),
         Pipe(alloc::sync::Arc<spin::Mutex<crate::ipc::pipe::PipeBuffer>>),
         Socket(u64),
-        RegularFile {
-            inode_num: u64,
-            mount_id: usize,
-            handle: crate::fs::ext2::live_inode::FileHandle,
-        },
-        Directory {
-            inode_num: u64,
+        File {
+            open: crate::fs::vfs::file::OpenFile,
             mount_id: usize,
         },
         Device {
@@ -1281,19 +1267,21 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
                 FdKind::Socket(socket) => FstatKind::Socket(socket.common.ino()),
                 FdKind::RegularFile(file) => {
                     let file_guard = file.lock();
-                    FstatKind::RegularFile {
-                        inode_num: file_guard.inode_num,
-                        mount_id: file_guard.mount_id,
-                        handle: match file_guard.open.ext2_handle() {
-                            Some(handle) => handle,
-                            None => return SyscallResult::Err(super::errno::EIO as u64),
+                    FstatKind::File {
+                        open: crate::fs::vfs::file::OpenFile {
+                            fs: file_guard.open.fs.clone(),
+                            node: file_guard.open.node.clone(),
                         },
+                        mount_id: file_guard.mount_id,
                     }
                 }
                 FdKind::Directory(dir) => {
                     let dir_guard = dir.lock();
-                    FstatKind::Directory {
-                        inode_num: dir_guard.inode_num,
+                    FstatKind::File {
+                        open: crate::fs::vfs::file::OpenFile {
+                            fs: dir_guard.open.fs.clone(),
+                            node: dir_guard.open.node.clone(),
+                        },
                         mount_id: dir_guard.mount_id,
                     }
                 }
@@ -1336,8 +1324,8 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
         // manager_guard drops here — PM lock released, IRQs restored
     };
 
-    // Now build the stat structure.  For ext2 files/directories, disk I/O
-    // happens here with the PM lock fully released and IRQs enabled.
+    // Build file and directory attributes through the backend after releasing
+    // the PM lock and restoring IRQs.
     let mut stat = Stat::zeroed();
     stat.st_blksize = 4096; // Standard block size
 
@@ -1374,54 +1362,27 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             stat.st_mode = S_IFSOCK | 0o777;
             stat.st_nlink = 1;
         }
-        FstatKind::RegularFile {
-            inode_num,
-            mount_id,
-            handle,
-        } => {
-            // Disk I/O happens here — PM lock is NOT held.
-            stat.st_dev = (mount_id as u64) + 1;
-            stat.st_ino = inode_num;
-            stat.st_mode = S_IFREG | 0o644;
-            stat.st_nlink = 1;
-            let inode_stat = match load_ext2_inode_stat_for_handle(&handle) {
-                Some(stat) => stat,
-                None => return SyscallResult::Err(super::errno::EIO as u64),
+        FstatKind::File { open, mount_id } => {
+            // Backend I/O happens here with the PM lock released.
+            let attrs = match open.fs.getattr(open.node.ino) {
+                Ok(attrs) => attrs,
+                Err(error) => return SyscallResult::Err(error.into()),
             };
-            {
-                stat.st_mode = inode_stat.mode;
-                stat.st_uid = inode_stat.uid;
-                stat.st_gid = inode_stat.gid;
-                stat.st_size = inode_stat.size;
-                stat.st_nlink = inode_stat.nlink as _;
-                stat.st_atime = inode_stat.atime;
-                stat.st_mtime = inode_stat.mtime;
-                stat.st_ctime = inode_stat.ctime;
-                stat.st_blocks = inode_stat.blocks;
-                stat.st_rdev = inode_stat.rdev;
-            }
-        }
-        FstatKind::Directory {
-            inode_num,
-            mount_id,
-        } => {
-            // Disk I/O happens here — PM lock is NOT held.
             stat.st_dev = (mount_id as u64) + 1;
-            stat.st_ino = inode_num;
-            stat.st_mode = S_IFDIR | 0o755;
-            stat.st_nlink = 2;
-            if let Some(inode_stat) = load_ext2_inode_stat_for_mount(inode_num, mount_id) {
-                stat.st_mode = inode_stat.mode;
-                stat.st_uid = inode_stat.uid;
-                stat.st_gid = inode_stat.gid;
-                stat.st_size = inode_stat.size;
-                stat.st_nlink = inode_stat.nlink as _;
-                stat.st_atime = inode_stat.atime;
-                stat.st_mtime = inode_stat.mtime;
-                stat.st_ctime = inode_stat.ctime;
-                stat.st_blocks = inode_stat.blocks;
-                stat.st_rdev = inode_stat.rdev;
-            }
+            stat.st_ino = attrs.ino;
+            stat.st_mode = attrs.attrs.mode;
+            stat.st_uid = attrs.attrs.uid;
+            stat.st_gid = attrs.attrs.gid;
+            stat.st_size = attrs.size as i64;
+            stat.st_nlink = attrs.nlink as _;
+            stat.st_atime = attrs.times.atime.sec;
+            stat.st_atime_nsec = attrs.times.atime.nsec.into();
+            stat.st_mtime = attrs.times.mtime.sec;
+            stat.st_mtime_nsec = attrs.times.mtime.nsec.into();
+            stat.st_ctime = attrs.times.ctime.sec;
+            stat.st_ctime_nsec = attrs.times.ctime.nsec.into();
+            stat.st_blocks = attrs.blocks as i64;
+            stat.st_rdev = attrs.rdev;
         }
         FstatKind::Device { inode, rdev, attrs } => fill_device_stat(&mut stat, inode, rdev, attrs),
         FstatKind::DevfsDirectory => {
@@ -5291,13 +5252,6 @@ pub fn sys_truncate(pathname: u64, length: i64) -> SyscallResult {
     }
     result
 }
-
-/// Record a successful nonempty read after releasing the read-side FS lock.
-pub(super) fn update_read_atime(ino: u64, mount_id: usize) -> Result<(), u64> {
-    let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
-    ext2::update_read_atime(ino32(ino)?, is_home).map_err(ext2_errno).map_err(u64::from)
-}
-
 
 fn ufs_status(result: Result<(), u64>) -> SyscallResult {
     match result { Ok(()) => SyscallResult::Ok(0), Err(e) => SyscallResult::Err(e) }
