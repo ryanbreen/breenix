@@ -304,3 +304,51 @@ fn inode_numbers_above_ext2_are_u64() {
     walk(&kernel, &mut violations);
     assert!(violations.is_empty(), "{}", violations.join("\n"));
 }
+
+#[test]
+fn home_prefix_helpers_stay_in_ext2() {
+    fn walk(directory: &Path, violations: &mut Vec<String>) {
+        for entry in fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.ends_with("fs/ext2") { continue; }
+            if path.is_dir() { walk(&path, violations); }
+            else if path.extension().is_some_and(|ext| ext == "rs") {
+                let source = fs::read_to_string(&path).unwrap();
+                for (line, text) in source.lines().enumerate() {
+                    if text.contains("strip_home_prefix") || text.contains("is_home_path") {
+                        violations.push(format!("{}:{}: {text}", path.display(), line + 1));
+                    }
+                }
+            }
+        }
+    }
+    let mut violations = Vec::new();
+    walk(&Path::new(env!("CARGO_MANIFEST_DIR")).join("kernel/src"), &mut violations);
+    assert!(violations.is_empty(), "{}", violations.join("\n"));
+}
+
+#[test]
+fn namei_enters_mounts_only_through_the_table() {
+    use syn::visit::{self, Visit};
+    #[derive(Default)]
+    struct Names(Vec<String>);
+    impl<'ast> Visit<'ast> for Names {
+        fn visit_arm(&mut self, arm: &'ast syn::Arm) {
+            struct Pattern<'a>(&'a mut Vec<String>);
+            impl<'ast> Visit<'ast> for Pattern<'_> {
+                fn visit_lit_byte_str(&mut self, literal: &'ast syn::LitByteStr) {
+                    if matches!(literal.value().as_slice(), b"home" | b"dev" | b"proc") {
+                        self.0.push(format!("mount-name match arm: {:?}", literal.value()));
+                    }
+                }
+            }
+            Pattern(&mut self.0).visit_pat(&arm.pat);
+            visit::visit_arm(self, arm);
+        }
+    }
+    let source = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("kernel/src/fs/namei.rs")).unwrap();
+    let mut names = Names::default();
+    names.visit_file(&syn::parse_file(&source).unwrap());
+    assert!(!source.contains("ufs::covering"), "namei calls the separate ufs cover lookup");
+    assert!(names.0.is_empty(), "{}", names.0.join("\n"));
+}
