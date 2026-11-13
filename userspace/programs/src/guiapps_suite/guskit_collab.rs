@@ -25,8 +25,11 @@ impl Script {
         attach(t, owner)?;
         t.key(38, &[])?; // Line: one completed gesture is one submitted operation.
         let color = if green {
-            t.drag("hue", (260, 4), &[])?;
-            t.drag("sv", (80, 19), &[])?;
+            let tree = t.tree()?;
+            let hue = tree.children.iter().find(|n| n.key == "hue").ok_or("missing hue")?.bounds;
+            let sv = tree.children.iter().find(|n| n.key == "sv").ok_or("missing sv")?.bounds;
+            t.drag("hue", ((hue[2] / 3) as i32, (hue[3] * 4 / 18) as i32), &[])?;
+            t.drag("sv", ((sv[2] * 80 / 100) as i32, (sv[3] * 19 / 100) as i32), &[])?;
             [40, 204, 40]
         } else { [0, 0, 0] };
         t.wait_node("status", |v| v["tool"] == "line" && v["color"] == serde_json::json!(color))?;
