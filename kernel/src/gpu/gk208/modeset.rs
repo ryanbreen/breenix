@@ -272,6 +272,28 @@ pub fn switch_sequence(modes: &[Timing]) -> Result<[Timing; 3], &'static str> {
     Ok([*low,high,*low])
 }
 
+/// Derive the low and preferred logical modes from the sink's EDID.
+// The display integration consumes this API in the next unit of issue #2952.
+#[allow(dead_code)]
+pub fn display_modes(edid: &[u8]) -> Result<[(u32, u32, u32); 2], &'static str> {
+    let timings = super::edid::parse(edid)?;
+    let [low, high, _] = switch_sequence(&timings)?;
+    // E-EDID detailed timing bytes 12-14 encode image dimensions in mm.
+    let d = &edid[54..72];
+    let mut width_mm = u32::from(d[12]) | (u32::from(d[14] & 0xf0) << 4);
+    let mut height_mm = u32::from(d[13]) | (u32::from(d[14] & 0x0f) << 8);
+    if width_mm == 0 || height_mm == 0 {
+        width_mm = u32::from(edid[21]) * 10;
+        height_mm = u32::from(edid[22]) * 10;
+    }
+    // Compare diagonal density without floating point: 25.4 mm per inch.
+    let pixels_squared = u64::from(high.width).pow(2) + u64::from(high.height).pow(2);
+    let mm_squared = u64::from(width_mm).pow(2) + u64::from(height_mm).pow(2);
+    let scale = if width_mm != 0 && height_mm != 0
+        && pixels_squared * 254 * 254 >= mm_squared * 1800 * 1800 { 2 } else { 1 };
+    Ok([(low.width, low.height, 1), (high.width, high.height, scale)])
+}
+
 pub fn detach_methods(head: u32, sor: u32) -> Result<[(u32,u32);2], &'static str> {
     if head >= 4 || sor >= 4 { return Err("invalid native display route"); }
     // NV927D: release ISO storage and SOR owner before a clock-changing UPDATE.
