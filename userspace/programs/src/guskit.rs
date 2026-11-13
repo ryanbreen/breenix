@@ -92,9 +92,16 @@ impl App {
         let r = l.status;
         let mut damage = Clip::new(r.x,r.y,r.w,r.h);
         if let Some((previous,_)) = &self.canvas_surface {
-            self.canvas().render_changes(previous, |x,y,w,_| {
-                damage = union(damage,Clip::new(x as i32*l.scale,y as i32*l.scale+l.canvas_y,w as i32*l.scale,l.scale));
-            });
+            let (old_w,old_h) = previous.dimensions();
+            let (new_w,new_h) = self.canvas().dimensions();
+            if (old_w,old_h) != (new_w,new_h) {
+                let r = l.canvas(old_w.max(new_w),old_h.max(new_h));
+                damage = union(damage,Clip::new(r.x,r.y,r.w,r.h));
+            } else {
+                self.canvas().render_changes(previous, |x,y,w,_| {
+                    damage = union(damage,Clip::new(x as i32*l.scale,y as i32*l.scale+l.canvas_y,w as i32*l.scale,l.scale));
+                });
+            }
         } else {
             let r = l.canvas(self.width,self.height);
             damage = union(damage,Clip::new(r.x,r.y,r.w,r.h));

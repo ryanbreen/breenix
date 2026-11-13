@@ -62,6 +62,12 @@ HELPERS
   verify(&app,&before,redraw);
   app.canvas_surface=Some((app.canvas().clone(),()));
  }
+ // A smaller host document must erase the previously visible larger image.
+ app.image.pencil(&[(1000,400)],[9,8,7]);app.canvas_surface=Some((app.image.clone(),()));
+ app.session=Some(Session{core:Core{model:Model{status:String::new(),canvas:Canvas::new(200,120)}}});
+ let r=app.content_damage();
+ assert!(r.x<=2000 && r.y<=1152 && r.x+r.w>=2002 && r.y+r.h>=1154,"old document extent was not erased");
+ app.session=None;app.image=Canvas::new(1148,454);app.canvas_surface=Some((app.image.clone(),()));
  let mut redraw=false;assert_eq!(dispatch_input(&mut app,&mut MenuBar,&breengel::Delivered{event:Event::Idle},&mut redraw),Handled::NoChange);
  for undo in [false,true] {
   let before=app.canvas().clone();let mut changed=before.clone();
