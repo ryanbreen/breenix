@@ -27,6 +27,7 @@ class BootInteractiveQmpTest(unittest.TestCase):
         scripts = self.root / "scripts"
         scripts.mkdir()
         shutil.copyfile(ROOT / "scripts/boot-interactive.sh", scripts / "boot-interactive.sh")
+        shutil.copyfile(ROOT / "scripts/qemu-smb-forward.sh", scripts / "qemu-smb-forward.sh")
         shutil.copyfile(ROOT / "scripts/suite-sequence.py", scripts / "suite-sequence.py")
         shutil.copytree(ROOT / "docs", self.root / "docs")
         (scripts / "boot-commit.sh").write_text("boot_commit() { echo test; }\n")
