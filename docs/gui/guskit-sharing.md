@@ -13,6 +13,11 @@ Open Gus Kit, choose **Session → Host Session...**, enter a name and start the
 session. If macOS asks whether to allow incoming connections for QEMU, allow
 them in the hosting Mac's firewall prompt.
 
+`--collab-host` listens on `0.0.0.0` (the host’s LAN and other interfaces). Collaboration
+has no authentication or encryption: anyone who can reach the forwarded port
+can join and change the drawing. Use it on a trusted network and close the
+hosting desktop when sharing is finished.
+
 On the joining Mac, start the desktop and open Gus Kit. Choose **Session → Join
 Session...**, enter the hosting Mac's LAN IPv4 address in Address and your name
 in Name, then join. The address defaults to port 7890; append `:PORT` when the
