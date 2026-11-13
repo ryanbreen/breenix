@@ -352,6 +352,16 @@ impl FileSystem for Ext2Adapter {
             .ok_or(Errno(ENOENT))
     }
 
+    fn parent(&self, dir: u64) -> Result<u64, Errno> {
+        let guard = read_mount(self.mount).map_err(errno)?;
+        let fs = guard.as_ref().ok_or(Errno(EIO))?;
+        let (dir, inode) = directory(fs, dir)?;
+        let record = fs.lookup_in_dir_bytes(&inode, b"..").map_err(errno)?
+            .ok_or(Errno(EIO))?;
+        fs.namespace().entry(dir, b"..", record)
+            .map(u64::from).ok_or(Errno(EIO))
+    }
+
     fn readdir(
         &self,
         dir: u64,

@@ -89,16 +89,18 @@ fn attach_virtual_parents(table: &mut MountTable<Backend>) {
     }
 }
 
+/// Retain a filesystem after releasing the table lock, before backend calls.
+pub fn filesystem(id: usize) -> Result<Arc<dyn FileSystem>, Errno> {
+    let table = MOUNT_TABLE.lock();
+    match &table.get(id).ok_or(Errno(crate::syscall::errno::ENOENT))?.backend {
+        Backend::Fs(fs) => Ok(fs.clone()),
+        _ => Err(Errno(crate::syscall::errno::EOPNOTSUPP)),
+    }
+}
+
 /// The single legacy accessor; no filesystem lock is taken under the table lock.
 pub fn ext2_adapter(id: usize) -> Result<Arc<crate::fs::ext2::adapter::Ext2Adapter>, Errno> {
-    let backend = {
-        let table = MOUNT_TABLE.lock();
-        match &table.get(id).ok_or(Errno(crate::syscall::errno::ENOENT))?.backend {
-            Backend::Fs(fs) => fs.clone(),
-            _ => return Err(Errno(crate::syscall::errno::EOPNOTSUPP)),
-        }
-    };
-    let backend: Arc<dyn core::any::Any + Send + Sync> = backend;
+    let backend: Arc<dyn core::any::Any + Send + Sync> = filesystem(id)?;
     backend.downcast().map_err(|_| Errno(crate::syscall::errno::EOPNOTSUPP))
 }
 

@@ -5,10 +5,11 @@
 use crate::fs::{attrs::InodeAttrs, errno::Errno};
 use crate::syscall::errno::EOPNOTSUPP;
 use alloc::{sync::Arc, vec::Vec};
-use core::sync::atomic::AtomicU64;
+use core::{any::Any, sync::atomic::AtomicU64};
 use spin::Mutex;
 
 pub use crate::fs::attrs::MountFlags;
+pub mod file;
 pub mod mount_table;
 #[cfg(not(test))]
 pub mod mount;
@@ -48,7 +49,7 @@ pub struct VNode {
     pub incarnation: u64,
     pub size: AtomicU64,
     pub times: Mutex<NodeTimes>,
-    _pin: Arc<dyn Send + Sync>,
+    backend_pin: Arc<dyn Any + Send + Sync>,
 }
 impl VNode {
     pub fn new(
@@ -57,7 +58,7 @@ impl VNode {
         incarnation: u64,
         size: u64,
         times: NodeTimes,
-        pin: Arc<dyn Send + Sync>,
+        pin: Arc<dyn Any + Send + Sync>,
     ) -> Self {
         Self {
             mount,
@@ -65,8 +66,13 @@ impl VNode {
             incarnation,
             size: AtomicU64::new(size),
             times: Mutex::new(times),
-            _pin: pin,
+            backend_pin: pin,
         }
+    }
+
+    /// Borrow the backend's retained inode handle without changing its lifetime.
+    pub fn pin<T: Any>(&self) -> Option<&T> {
+        self.backend_pin.downcast_ref()
     }
 }
 
@@ -182,6 +188,8 @@ pub trait FileSystem: core::any::Any + Send + Sync {
     fn open(&self, ino: u64) -> Result<Arc<VNode>, Errno>;
     // Names
     fn lookup(&self, dir: u64, name: &[u8]) -> Result<u64, Errno>;
+    /// Parent inode exposed by `..`, including the backend's selected namespace.
+    fn parent(&self, dir: u64) -> Result<u64, Errno>;
     /// The cookie returned is after the last accepted entry. A sink returning
     /// false leaves that entry for the next call. Dot entries belong to VFS.
     fn readdir(
