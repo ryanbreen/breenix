@@ -149,3 +149,66 @@ fn bind_enters_target_directory() {
     table.remove(bind, false).unwrap();
     assert_eq!(table.enter((native, cover)), None);
 }
+
+#[test]
+fn generation_root_hides_record_and_binds_etc_and_root() {
+    use crate::{ext2::generation::Namespace, host_mounts::{read_mount, write_mount}};
+    use crate::syscall_errno::ENOENT;
+    for shared_layout in [false, true] {
+        let disk = Fixture::new();
+        let fs = Ext2Adapter::new(disk.pin());
+        let dir = |parent, name: &[u8]| fs.create(parent, name, NewNode::Directory {
+            attrs: InodeAttrs::new(0o755, 0, 0),
+        }).unwrap();
+        let generation = dir(2, b"generation");
+        let own_etc = dir(generation, b"etc");
+        let own_root = dir(generation, b"root");
+        let data = dir(2, b"root");
+        let store = dir(2, b".breenix-shared");
+        let mut mutable = [0; 6];
+        if shared_layout {
+            for (i, name) in [b"etc".as_slice(), b"var", b"opt", b"srv", b"tmp", b"run"].iter().enumerate() {
+                if i != 0 { dir(generation, name); }
+                mutable[i] = dir(store, name) as u32;
+            }
+        }
+        let etc = if shared_layout { u64::from(mutable[0]) } else { own_etc };
+        let record = fs.create(generation, b".complete", NewNode::Regular {
+            attrs: InodeAttrs::new(0o644, 0, 0),
+        }).unwrap();
+        let child = fs.create(data, b"visible", NewNode::Regular {
+            attrs: InodeAttrs::new(0o644, 0, 0),
+        }).unwrap();
+        let ns = Namespace { root: generation as u32, etc: etc as u32,
+            data: data as u32, shared: store as u32, mutable };
+        write_mount(disk.pin()).unwrap().as_mut().unwrap().host_set_namespace(ns);
+        assert_eq!(fs.root(), Ok(generation));
+        assert_eq!(fs.lookup(generation, b".complete"), Err(Errno(ENOENT)));
+        assert_eq!(fs.lookup(generation, b"etc"), Ok(etc));
+        assert_eq!(fs.lookup(generation, b"root"), Ok(data));
+        assert_ne!(own_root, data);
+        assert_eq!(fs.lookup(generation, b".breenix-shared"), Ok(store));
+        let mut entries = Vec::new();
+        fs.readdir(generation, 0, &mut |entry| { entries.push(entry); Ok(true) }).unwrap();
+        assert!(!entries.iter().any(|e| e.ino == record || e.name == b".complete"));
+        for (name, ino) in [(b"etc".as_slice(), etc), (b"root", data), (b".breenix-shared", store)] {
+            assert_eq!(entries.iter().filter(|e| e.name == name).map(|e| e.ino).collect::<Vec<_>>(), vec![ino]);
+        }
+        let mut table = MountTable::new();
+        {
+            let guard = read_mount(disk.pin()).unwrap();
+            fs.register_root(guard.as_ref().unwrap(), MountFlags::default(), &mut table, || ()).unwrap();
+        }
+        let native = disk.pin().mount_id;
+        for (path, target) in [(b"/etc".as_slice(), etc), (b"/root", data)] {
+            let bind = table.find_mount(path).unwrap();
+            let entry = table.get(bind).unwrap();
+            assert_eq!(entry.bind, Some((native, target)));
+            assert_eq!(entry.parent, Some((native, generation)));
+            assert_eq!(table.enter((native, target)), Some((bind, target)));
+        }
+        let (bind, target) = table.enter((native, fs.lookup(generation, b"root").unwrap())).unwrap();
+        assert_ne!(bind, native);
+        assert_eq!(fs.lookup(target, b"visible"), Ok(child));
+    }
+}
