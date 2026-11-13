@@ -25,7 +25,7 @@ mod io {
     pub fn read(f:Fd,b:&mut[u8])->Result<usize,Error>{let n=unsafe{native::read(f.0,b.as_mut_ptr(),b.len())};if n<0{Err(error())}else{Ok(n as usize)}}
     pub fn write(f:Fd,b:&[u8])->Result<usize,Error>{let n=unsafe{native::write(f.0,b.as_ptr(),b.len())};if n<0{Err(error())}else{Ok(n as usize)}}
 }
-mod fs {use super::*;pub const O_RDWR:i32=2;pub fn open(p:&str,f:i32)->Result<Fd,Error>{let p=std::ffi::CString::new(p).unwrap();let fd=unsafe{native::open(p.as_ptr().cast(),f)};if fd<0{Err(error())}else{Ok(Fd(fd))}}}
+mod fs {use super::*;pub const O_RDWR:u32=2;pub const O_WRONLY:u32=1;pub fn open(p:&str,f:u32)->Result<Fd,Error>{let p=std::ffi::CString::new(if p=="/dev/console" {"/dev/fd/2"} else {p}).unwrap();let fd=unsafe{native::open(p.as_ptr().cast(),f as i32)};if fd<0{Err(error())}else{Ok(Fd(fd))}}}
 #[derive(Clone,Copy)] struct Pid(i32); impl Pid {fn raw(self)->u64{self.0 as u64}}
 mod process {use super::*;pub const WNOHANG:i32=1;
  pub fn execve(p:&[u8],a:*const *const u8,e:*const *const u8)->Result<(),Error>{unsafe{native::execve(p.as_ptr(),a,e);}Err(error())}

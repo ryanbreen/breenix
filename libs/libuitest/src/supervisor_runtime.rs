@@ -138,14 +138,25 @@ fn report_failure(pid: u64, output: &mut Output) {
     output.failure_reported = true;
     let signal = status & 0x7f;
     let code = (status >> 8) & 0xff;
-    use std::io::Write;
-    let mut serial = std::io::stderr().lock();
-    let _ = writeln!(serial, "SUPERVISOR_FAILURE pid={pid} name={} status={status} exit={code} signal={signal}", output.name);
+    // A nested executor may inherit /dev/null. Open the serial console explicitly,
+    // without acquiring a controlling terminal (O_NOCTTY).
+    let console = fs::open("/dev/console", fs::O_WRONLY | 0x100).ok().map(Pipe);
+    let serial = console.as_ref().map_or(Fd::STDERR, |pipe| pipe.0);
+    let mut record = format!("\nSUPERVISOR_FAILURE pid={pid} name={} status={status} exit={code} signal={signal}\n", output.name).into_bytes();
     let stderr = output.ring.bytes();
     for (name, bytes) in [("stderr", &stderr[stderr.len().saturating_sub(4096)..]), ("stdout", output.stdout_tail.as_slice())] {
-        let _ = writeln!(serial, "SUPERVISOR_FAILURE {name} tail={} pid={pid}", bytes.len());
-        let _ = serial.write_all(bytes);
-        let _ = writeln!(serial);
+        record.extend_from_slice(format!("SUPERVISOR_FAILURE {name} tail={} pid={pid}\n", bytes.len()).as_bytes());
+        record.extend_from_slice(bytes);
+        record.push(b'\n');
+    }
+    let mut remaining = record.as_slice();
+    while !remaining.is_empty() {
+        match io::write(serial, remaining) {
+            Ok(0) => break,
+            Ok(n) => remaining = &remaining[n..],
+            Err(Error::Os(Errno::EINTR)) => continue,
+            Err(_) => break,
+        }
     }
 }
 
