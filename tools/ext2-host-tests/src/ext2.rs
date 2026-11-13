@@ -28,6 +28,15 @@ pub mod superblock;
 mod mount_device;
 #[path = "../../../kernel/src/fs/ext2/sector_cache.rs"]
 mod sector_cache;
+#[path = "../../../kernel/src/fs/ext2/namespace_ops.rs"]
+mod namespace_ops;
+#[path = "../../../kernel/src/fs/ext2/namespace_alloc.rs"]
+mod namespace_alloc;
+#[path = "../../../kernel/src/fs/ext2/rename.rs"]
+pub mod rename;
+#[path = "live_inode.rs"]
+pub mod live_inode;
+use create_node::dir_entry_type;
 pub use block_group::*;
 pub use inode::*;
 pub use dir::*;
@@ -44,6 +53,14 @@ impl LiveInodes {
 }
 pub struct LiveInode {
     pub map: FileMap,
+    pub orphan: core::sync::atomic::AtomicBool,
+}
+impl LiveInode {
+    pub fn unused(&self) -> bool { true }
+
+    // Namespace tests inspect the detached inode on disk; the kernel's
+    // asynchronous orphan finalizer is outside this harness.
+    pub fn defer(&self) {}
 }
 pub struct FileMap;
 fn content_privilege(mode: u16) -> u16 {
@@ -65,6 +82,20 @@ pub struct Ext2Fs {
     namespace: generation::Namespace,
 }
 impl Ext2Fs {
+    // This fixture device is writable and has no kernel mount lifecycle.
+    pub fn ensure_writable(&self) -> Result<(), &'static str> { Ok(()) }
+
+    pub fn pin_inode(&self, ino: u32) -> Result<live_inode::FileHandle, &'static str> {
+        let inode = self.read_inode(ino)?;
+        self.pin_loaded_inode(ino, inode.size())
+    }
+
+    fn pin_loaded_inode(&self, ino: u32, _size: u64) -> Result<live_inode::FileHandle, &'static str> {
+        Ok(live_inode::FileHandle {
+            ino,
+            object: LiveInode { map: FileMap, orphan: core::sync::atomic::AtomicBool::new(false) },
+        })
+    }
     // The host fixture has no pending shrink or file-size limit.
     fn check_shrink(&self, _inode: u32) -> Result<(), &'static str> { Ok(()) }
     fn max_file_size(&self) -> u64 { u64::MAX }
@@ -83,10 +114,6 @@ impl Ext2Fs {
             file::write_ext2_block(self.device.as_ref(), block, size, records).map_err(|_| "write")?;
         }
         Ok(())
-    }
-    pub fn read_directory(&self, inode: &Ext2Inode) -> Result<Vec<u8>, &'static str> {
-        if !inode.is_dir() { return Err("Not a directory"); }
-        file::read_file(self.device.as_ref(),inode,&self.superblock).map_err(|e| if e == crate::block::BlockError::OutOfMemory { "No memory for directory data" } else { "read directory" })
     }
     /// The kernel's mount stops writing here; the harness disk has no write
     /// fence, so a test reads the disk to see what a failure left.
