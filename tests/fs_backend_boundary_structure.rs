@@ -215,3 +215,73 @@ fn no_ext2_error_strings_above_ext2() {
     walk(&kernel, &kernel, &mut violations);
     assert!(violations.is_empty(), "{}", violations.join("\n"));
 }
+
+#[test]
+fn inode_numbers_above_ext2_are_u64() {
+    use syn::visit::{self, Visit};
+
+    fn integer(ty: &syn::Type, name: &str) -> bool {
+        matches!(ty, syn::Type::Path(path) if path.path.is_ident(name))
+    }
+    fn inode_name(name: &str) -> bool {
+        matches!(name, "ino" | "inode_num" | "inode_number" | "parent_ino")
+    }
+    #[derive(Default)]
+    struct Boundary(Vec<String>);
+    impl<'ast> Visit<'ast> for Boundary {
+        fn visit_field(&mut self, field: &'ast syn::Field) {
+            if field.ident.as_ref().is_some_and(|id| inode_name(&id.to_string()))
+                && integer(&field.ty, "u32")
+            {
+                self.0.push("u32 inode field".into());
+            }
+            visit::visit_field(self, field);
+        }
+        fn visit_pat_type(&mut self, pat: &'ast syn::PatType) {
+            if matches!(&*pat.pat, syn::Pat::Ident(id) if inode_name(&id.ident.to_string()))
+                && integer(&pat.ty, "u32")
+            {
+                self.0.push("u32 inode parameter".into());
+            }
+            visit::visit_pat_type(self, pat);
+        }
+        fn visit_expr_cast(&mut self, cast: &'ast syn::ExprCast) {
+            if integer(&cast.ty, "u32") {
+                let inode = match &*cast.expr {
+                    syn::Expr::Path(path) => path.path.segments.last().is_some_and(|id| inode_name(&id.ident.to_string())),
+                    syn::Expr::Field(field) => matches!(&field.member, syn::Member::Named(id) if inode_name(&id.to_string()) || id == "inode"),
+                    _ => false,
+                };
+                if inode { self.0.push("unchecked inode narrowing".into()); }
+            }
+            visit::visit_expr_cast(self, cast);
+        }
+    }
+    fn walk(directory: &Path, violations: &mut Vec<String>) {
+        for entry in fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.ends_with("fs/ext2") { continue; }
+            if path.is_dir() { walk(&path, violations); }
+            else if path.extension().is_some_and(|ext| ext == "rs") {
+                let mut boundary = Boundary::default();
+                boundary.visit_file(&syn::parse_file(&fs::read_to_string(&path).unwrap()).unwrap());
+                for error in boundary.0 { violations.push(format!("{}: {error}", path.display())); }
+            }
+        }
+    }
+    let kernel = Path::new(env!("CARGO_MANIFEST_DIR")).join("kernel/src");
+    let source = fs::read_to_string(kernel.join("fs/namei.rs")).unwrap();
+    let parsed = syn::parse_file(&source).unwrap();
+    let target = parsed.items.iter().find_map(|item| match item {
+        syn::Item::Enum(item) if item.ident == "Target" => Some(item),
+        _ => None,
+    }).unwrap();
+    let mut violations = Vec::new();
+    for (variant, field) in [("Inode", "ino"), ("Absent", "parent")] {
+        let ty = &target.variants.iter().find(|v| v.ident == variant).unwrap()
+            .fields.iter().find(|f| f.ident.as_ref().is_some_and(|id| id == field)).unwrap().ty;
+        if !integer(ty, "u64") { violations.push(format!("Target::{variant}.{field} must be u64")); }
+    }
+    walk(&kernel, &mut violations);
+    assert!(violations.is_empty(), "{}", violations.join("\n"));
+}

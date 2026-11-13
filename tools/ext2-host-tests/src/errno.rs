@@ -116,3 +116,11 @@ fn every_ext2_error_literal_is_classified() {
     }
     assert!(missing.is_empty(), "unclassified ext2 errors: {missing:#?}");
 }
+
+#[test]
+fn ino_above_u32_is_enoent() {
+    assert_eq!(kernel::ext2::ino32(u32::MAX as u64), Ok(u32::MAX));
+    for ino in [u32::MAX as u64 + 1, (1u64 << 32) + 2, u64::MAX] {
+        assert_eq!(kernel::ext2::ino32(ino).map_err(|error| error.0), Err(ENOENT), "{ino}");
+    }
+}
