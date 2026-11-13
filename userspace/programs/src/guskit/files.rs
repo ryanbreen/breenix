@@ -20,7 +20,7 @@ pub fn encode(name: &str, canvas: &Canvas, width: usize, height: usize) -> Resul
     }
 }
 
-/// A zero extent preserves the corresponding native image dimension.
+/// Passing 0 for width or height selects the native image dimension.
 pub fn decode(name: &str, bytes: &[u8], width: usize, height: usize) -> Result<(Canvas, Option<String>), String> {
     let (w, h, rgb) = match format(name)? {
         "bmp" => { let image = libimg::bmp::decode_bmp(bytes).map_err(|e| format!("BMP decode: {e:?}"))?; (image.width, image.height, image.rgb) },
