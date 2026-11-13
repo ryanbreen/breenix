@@ -22,15 +22,13 @@ struct Snapshot {
 
 pub(super) fn baseline(value: u64) { BASELINE.store(value, Ordering::Release); }
 
-fn mode_index(surface: Surface) -> Option<usize> {
-    match (surface.width, surface.height) {
-        (1280, 800) => Some(0), (2560, 1600) => Some(1), _ => None,
-    }
+fn mode_index(mode: u32) -> Option<usize> {
+    (mode < 2).then_some(mode as usize)
 }
 
 /// Called after native::present confirmed completion, both banks and output health.
-pub(super) fn record(regs: &mut Registers, head: u32, surface: Surface, receipt: &Receipt) {
-    let Some(mode) = mode_index(surface) else { return; };
+pub(super) fn record(regs: &mut Registers, head: u32, surface: Surface, receipt: &Receipt, mode: u32) {
+    let Some(mode) = mode_index(mode) else { return; };
     let mut snapshot = snapshot(regs, head, surface, receipt, mode);
     let mut state = STATE.lock();
     state.sequence += 1;
@@ -57,8 +55,8 @@ fn snapshot(regs: &Registers, head: u32, surface: Surface, receipt: &Receipt, mo
 /// until the next G12 upload. Observer pressure drops records instead of failing
 /// the display; the exported count makes that loss visible.
 pub(super) fn transition(regs: &mut Registers, head: u32, surface: Surface, receipt: &Receipt,
-    allocation: [u64; 2], console: [u64; 2], event: &'static str) -> Result<u64, &'static str> {
-    let Some(mode) = mode_index(surface) else { return Ok(0); };
+    allocation: [u64; 2], console: [u64; 2], event: &'static str, mode: u32) -> Result<u64, &'static str> {
+    let Some(mode) = mode_index(mode) else { return Ok(0); };
     let mut snapshot = snapshot(regs, head, surface, receipt, mode);
     let mut state = STATE.lock();
     state.sequence += 1;

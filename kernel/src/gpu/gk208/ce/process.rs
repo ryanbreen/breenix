@@ -304,7 +304,7 @@ pub(in crate::gk208) fn present(surface:super::super::present::Surface)
     // binding latches. Normal admission has already waited in the shared core.
     if let Some(pending) = s.pending_present.take() {
         if s.ready_present.take().is_none() {
-            super::super::native::wait_present(&mut s.evo,&mut Registers(s.registers),pending)?;
+            super::super::native::wait_present(&mut s.evo,&mut Registers(s.registers),pending,s.mode)?;
         }
     }
     let hold=s.resources.hold(surface.resource)?;
@@ -313,7 +313,7 @@ pub(in crate::gk208) fn present(surface:super::super::present::Surface)
     s.scanout.push(hold);
     // EVO retires its slot on failure. Keep uncertain scanout pins, but only
     // retain session work after acceptance has established the EVO record.
-    s.ready_present=super::super::native::present_accepted(&mut s.evo,&mut Registers(s.registers),surface)?;
+    s.ready_present=super::super::native::present_accepted(&mut s.evo,&mut Registers(s.registers),surface,s.mode)?;
     s.pending_present=Some(surface);
     Ok(())
 }
@@ -330,14 +330,14 @@ pub(in crate::gk208) fn present_complete(surface:super::super::present::Surface)
     // ordinary flip notifier, which may still contain an older completion.
     let receipt=match s.ready_present.take() {
         Some(receipt)=>receipt,
-        None=>match super::super::native::present_latched(&mut s.evo,&mut Registers(s.registers),surface)? {
+        None=>match super::super::native::present_latched(&mut s.evo,&mut Registers(s.registers),surface,s.mode)? {
             Some(receipt)=>receipt,
             None=>{s.pending_present=Some(surface);return Ok(false);},
         },
     };
     let allocation=s.resources.scanout_allocation(surface.resource).ok_or("scanout allocation absent")?;
     super::super::display_evidence::transition(&mut Registers(s.registers),s.evo.head,surface,&receipt,
-        [allocation.start,allocation.size],[s.console.vram,s.console.bytes as u64],"flip")?;
+        [allocation.start,allocation.size],[s.console.vram,s.console.bytes as u64],"flip",s.mode)?;
     if receipt.notifier&1!=1 || receipt.active!=receipt.armed {
         return Err("native present receipt mismatch");
     }
@@ -371,7 +371,7 @@ pub(crate) fn set_mode(index:u32)->Result<(), &'static str> {
         let s=owner.as_mut().ok_or("native display owner absent")?;
         if let Some(pending) = s.pending_present.take() {
             if s.ready_present.take().is_none() {
-                super::super::native::wait_present(&mut s.evo,&mut Registers(s.registers),pending)?;
+                super::super::native::wait_present(&mut s.evo,&mut Registers(s.registers),pending,s.mode)?;
             }
         }
         let surface={
@@ -384,12 +384,12 @@ pub(crate) fn set_mode(index:u32)->Result<(), &'static str> {
             super::super::present::Surface{resource:u32::MAX,address,
                 width:mode.width,height:mode.height,pitch,block_height:0,format:0,dma:1}
         };
-        let receipt=super::super::native::present(&mut s.evo,&mut Registers(s.registers),surface)?;
+        let receipt=super::super::native::present(&mut s.evo,&mut Registers(s.registers),surface,index)?;
         diagnostics=Some(super::super::presentation_trace::snapshot());
         let allocation=s.layout.objects.iter().find(|o|o.range.start==surface.address)
             .ok_or("logical mode allocation absent")?.range;
         super::super::display_evidence::transition(&mut Registers(s.registers),s.evo.head,surface,&receipt,
-            [allocation.start,allocation.size],[s.console.vram,s.console.bytes as u64],"mode")?;
+            [allocation.start,allocation.size],[s.console.vram,s.console.bytes as u64],"mode",index)?;
         s.mode=index;
         s.scanout.clear();
         Ok(())
@@ -431,7 +431,7 @@ pub(in crate::gk208) fn capture_crc(checkpoint: super::super::display_crc::Check
     let notifier = s.layout.objects.iter().find(|o| o.name == "dma")
         .filter(|o|o.range.size==4096).ok_or("CRC notifier allocation absent")?.range.start;
     super::super::native::capture_crc(&mut s.evo, &mut Registers(s.registers),
-        notifier, surface, checkpoint, binding, mode, &mut s.output_perturbation)
+        notifier, surface, checkpoint, binding, mode, s.mode, &mut s.output_perturbation)
 }
 
 /// SESSION serializes disarm with the checkpoint and EVO publication.

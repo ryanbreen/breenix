@@ -461,11 +461,12 @@ pub struct ConsoleSurface {
     pub head: u32,
     pub phys: u64,
     pub firmware_baseline: u64,
+    pub logical: bool,
 }
 
 /// BAR1 displacement of the console within its CPU aperture.
 pub(in crate::gk208) fn console_bar_offset(console: &ConsoleSurface, displacement: usize) -> usize {
-    if (console.width, console.height) == (2560, 1600) {
+    if console.logical {
         16 << 20
     } else {
         displacement
@@ -859,23 +860,23 @@ fn acknowledge(evo: &mut Evo, regs: &mut Registers) -> Result<u32, &'static str>
 /// bring-up flip, this binds the target's size, storage, format and DMA kind.
 /// No console copy, framebuffer writes or fixed raster delay is involved.
 pub(in crate::gk208) fn present(evo: &mut Evo, regs: &mut Registers,
-    surface: super::present::Surface,
+    surface: super::present::Surface, mode: u32,
 ) -> Result<super::present::Receipt, &'static str> {
-    present_inner(evo, regs, surface, true)?.ok_or("native synchronous receipt absent")
+    present_inner(evo, regs, surface, true, mode)?.ok_or("native synchronous receipt absent")
 }
 
 /// G26 answers PRESENT after GET consumes the unchanged G22 sequence.
 /// Real flips retain their latch; an unchanged latched binding uses a fresh
 /// device acknowledgement without scheduling another flip.
 pub(in crate::gk208) fn present_accepted(evo: &mut Evo, regs: &mut Registers,
-    surface: super::present::Surface,
+    surface: super::present::Surface, mode: u32,
 ) -> Result<Option<super::present::Receipt>, &'static str> {
-    present_inner(evo, regs, surface, false)
+    present_inner(evo, regs, surface, false, mode)
 }
 
 /// Drain the one accepted flip before a synchronous mode/console transition.
 pub(in crate::gk208) fn wait_present(evo: &mut Evo, regs: &mut Registers,
-    surface: super::present::Surface,
+    surface: super::present::Surface, mode: u32,
 ) -> Result<super::present::Receipt, &'static str> {
         let result = (|| {
     if evo.pending_presentation.is_some_and(|p| p.acknowledged.is_none()) {
@@ -883,7 +884,7 @@ pub(in crate::gk208) fn wait_present(evo: &mut Evo, regs: &mut Registers,
             (evo.head, evo.sor, true, true), &evo.scripts)?;
     }
     for _ in 0..evo.presentation_attempts() {
-        if let Some(receipt) = present_latched(evo, regs, surface)? { return Ok(receipt); }
+        if let Some(receipt) = present_latched(evo, regs, surface, mode)? { return Ok(receipt); }
         regs.delay_us(100);
     }
     Err("native accepted flip did not latch")
@@ -896,7 +897,7 @@ pub(in crate::gk208) fn wait_present(evo: &mut Evo, regs: &mut Registers,
     }
 
 pub(in crate::gk208) fn present_latched(evo: &mut Evo, regs: &mut Registers,
-    surface: super::present::Surface,
+    surface: super::present::Surface, mode: u32,
 ) -> Result<Option<super::present::Receipt>, &'static str> {
         let result = (|| {
     let before_notifier = presentation_sample(regs, evo.head)?;
@@ -918,7 +919,7 @@ pub(in crate::gk208) fn present_latched(evo: &mut Evo, regs: &mut Registers,
         .ok_or("invalid native raster width")?, (end >> 16).checked_sub(blank >> 16)
         .ok_or("invalid native raster height")?, surface.width, surface.height)?.verify(regs, evo.head)?;
     super::memx_display::Health::read(regs, evo.head, evo.sor).check()?;
-    super::display_evidence::record(regs, evo.head, surface, &receipt);
+    super::display_evidence::record(regs, evo.head, surface, &receipt, mode);
     Ok(Some(receipt))
 
         })();
@@ -945,7 +946,7 @@ pub(super) fn observed_scanout(regs: &mut Registers, head: u32,
 }
 
 fn present_inner(evo: &mut Evo, regs: &mut Registers,
-    surface: super::present::Surface, wait: bool,
+    surface: super::present::Surface, wait: bool, mode: u32,
 ) -> Result<Option<super::present::Receipt>, &'static str> {
         let result = (|| {
     evo.start_clock(regs)?;
@@ -1057,7 +1058,7 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
         MEMX_CLEAR_AVAILABLE.store(false,core::sync::atomic::Ordering::Release);
         MEMX_PRESENT_PHASE.store(0,core::sync::atomic::Ordering::Release);
     }else{health.check()?;}
-    super::display_evidence::record(regs, head, surface, &receipt);
+    super::display_evidence::record(regs, head, surface, &receipt, mode);
     Ok(Some(receipt))
 
         })();
@@ -1340,7 +1341,7 @@ pub fn takeover(
         pointer, bytes: surface.size as usize, width: t.width as usize,
         height: t.height as usize, pitch: layout.pitch as usize, vram: surface.start,
         regs: regs.0, head, phys: device.bars[1].address + displacement as u64,
-        firmware_baseline,
+        firmware_baseline, logical: false,
     };
     MEMX_ROUTE.store(head | (u32::from(route.sor)<<8),core::sync::atomic::Ordering::Release);
     if !measuring() {
@@ -1716,9 +1717,9 @@ pub(super) fn logical_console(regs:&mut Registers,layout:&mut memory::Layout,
     modeset::bar_flush(regs)?;
     let surface=super::present::Surface{resource:u32::MAX,address:allocation.range.start,
         width:mode.width,height:mode.height,pitch:pitch as u32,block_height:0,format:0,dma:1};
-    let receipt=present(evo,regs,surface)?;
+    let receipt=present(evo,regs,surface,1)?;
     let latch=super::display_evidence::transition(regs,evo.head,surface,&receipt,
-        [allocation.range.start,allocation.range.size],[allocation.range.start,allocation.range.size],"handoff")?;
+        [allocation.range.start,allocation.range.size],[allocation.range.start,allocation.range.size],"handoff",1)?;
     crate::serial_println!("GT710_NATIVE_HANDOFF latch={}",latch);
     layout.objects.try_reserve(1).map_err(|_| "logical low-mode object allocation")?;
     let low_mode=modes[0];
@@ -1727,7 +1728,7 @@ pub(super) fn logical_console(regs:&mut Registers,layout:&mut memory::Layout,
     let low=layout.allocator.allocate(low_bytes,65536,memory::allocator::Kind::Display)?;
     layout.objects.push(memory::Object{name:"logical-low",range:low.range,align:65536,allocation:low});
     Ok(ConsoleSurface{pointer,bytes:bytes as usize,width:mode.width as usize,height:mode.height as usize,pitch:pitch as usize,
-        vram:allocation.range.start,phys:old.phys-(old.pointer-bar) as u64+OFFSET,..old})
+        logical:true,vram:allocation.range.start,phys:old.phys-(old.pointer-bar) as u64+OFFSET,..old})
 }
 
 fn active_snapshot(regs: &Registers, head: u32, sor: u32) -> String {
@@ -1757,7 +1758,7 @@ pub(super) fn console_receipt(evo: &Evo, regs: &mut Registers, console: ConsoleS
         width:console.width as u32,height:console.height as u32,pitch:console.pitch as u32,
         block_height:0,format:0,dma:1};
     super::display_evidence::transition(regs,evo.head,surface,&receipt,
-        [allocation.start,allocation.size],[allocation.start,allocation.size],"receipt")
+        [allocation.start,allocation.size],[allocation.start,allocation.size],"receipt",1)
 }
 
 pub fn console_binding(surface: &ConsoleSurface) -> Result<(), &'static str> {
@@ -2007,12 +2008,12 @@ pub(super) fn restore_output_perturbation(evo: &mut Evo, regs: &mut Registers,
 #[cfg(target_os = "none")]
 pub(super) fn capture_crc(evo: &mut Evo, regs: &mut Registers, notifier: u64,
     surface: super::present::Surface, checkpoint: super::display_crc::Checkpoint<'_>,
-    binding: super::display_crc::Binding, mode: [u32;2],
+    binding: super::display_crc::Binding, mode: [u32;2], mode_index: u32,
     state: &mut super::display_crc::Perturbation)
     -> Result<super::display_crc::Record, &'static str> {
     struct Crc<'a> {
         evo: &'a mut Evo, regs: &'a mut Registers, notifier: u64,
-        surface: super::present::Surface, binding: super::display_crc::Binding,
+        surface: super::present::Surface, binding: super::display_crc::Binding, mode: u32,
         armed: [u32; 4],
     }
     impl Crc<'_> {
@@ -2070,11 +2071,11 @@ pub(super) fn capture_crc(evo: &mut Evo, regs: &mut Registers, notifier: u64,
             self.regs.read(0x61009c) | (self.regs.read(0x616308+self.evo.head as usize*0x800)&0x110)
         }
         fn recover_present(&mut self) -> Result<(), &'static str> {
-            present(self.evo,self.regs,self.surface).map(|_| ())
+            present(self.evo,self.regs,self.surface,self.mode).map(|_| ())
         }
     }
     let (head,sor)=(evo.head,evo.sor);
-    let mut io = Crc{evo,regs,notifier,surface,binding,armed:[0;4]};
+    let mut io = Crc{evo,regs,notifier,surface,binding,mode:mode_index,armed:[0;4]};
     let result = super::display_crc::perturb_checkpoint(&mut io,state,binding,head,sor)
         .and_then(|()| super::display_crc::capture(&mut io,checkpoint,binding,mode,head,sor,4));
     if let Err(error) = result.as_ref() {

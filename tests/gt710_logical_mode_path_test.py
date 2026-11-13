@@ -56,10 +56,10 @@ mod cost {
 // Retained same-mode updates use a separate capabilities acknowledgement.
 fn acknowledge(_: &mut Evo, _: &mut Registers)->Result<u32,&'static str>{Ok(1)}
 mod display_evidence {
- pub fn record(_: &mut super::Registers,_:u32,_:super::present::Surface,_:&super::present::Receipt){}
+ pub fn record(_: &mut super::Registers,_:u32,_:super::present::Surface,_:&super::present::Receipt,_:u32){}
  pub fn transition(_: &mut super::Registers,_:u32,s:super::present::Surface,r:&super::present::Receipt,
-  allocation:[u64;2],console:[u64;2],event:&'static str)->Result<u64,&'static str>{
-  assert_eq!(event,"handoff");assert_eq!(allocation,console);assert_eq!(allocation,[s.address,5242880]);
+  allocation:[u64;2],console:[u64;2],event:&'static str,mode:u32)->Result<u64,&'static str>{
+  assert_eq!(mode,1);assert_eq!(event,"handoff");assert_eq!(allocation,console);assert_eq!(allocation,[s.address,5242880]);
   assert_eq!(r.active,r.armed);Ok(1)
  }
 }
@@ -80,7 +80,7 @@ mod memx_display {
 }
 fn memx_health_record(_: &str,_:&str,_:u32,_:u32,_:memx_display::Health){}
 fn memx_pending_check(_: &mut Registers,_:u32,_:u32,_:memx_display::Health)->((),Result<(),&'static str>){((),Ok(()))}
-#[derive(Clone,Copy)] struct ConsoleSurface {pointer:usize,bytes:usize,width:usize,height:usize,pitch:usize,vram:u64,phys:u64,regs:usize,head:u32,firmware_baseline:u64}
+#[derive(Clone,Copy)] struct ConsoleSurface {pointer:usize,bytes:usize,width:usize,height:usize,pitch:usize,vram:u64,phys:u64,regs:usize,head:u32,firmware_baseline:u64,logical:bool}
 fn host_map(_:u64,n:usize)->Result<usize,&'static str>{assert_eq!(n,32<<20);Ok(Box::leak(vec![0u32;n/4].into_boxed_slice()).as_mut_ptr() as usize)}
 fn host_wc(_:u64,n:u64)->Result<(),&'static str>{assert!(n>=32<<20);Ok(())}
 fn write_words(r:&mut Registers,_:u64,a:u64,words:&[u32])->Result<(),&'static str>{for (i,&w) in words.iter().enumerate(){r.vram.insert(a+i as u64*4,w);}Ok(())}
@@ -110,15 +110,15 @@ fn hardware()->(Registers,Evo){
 fn main(){
  for (w,h) in [(1024,768),(1280,1024),(1280,800),(2560,1600),(640,480)] {
   let (mut r,mut e)=hardware();let s=present::Surface{resource:1,address:0x1000000,width:w,height:h,pitch:w*4,block_height:0,format:0,dma:1};
-  present(&mut e,&mut r,s).unwrap();assert_eq!(r.updates,1);
+  present(&mut e,&mut r,s,1).unwrap();assert_eq!(r.updates,1);
   assert_eq!(r.read(0x6604b8),w|h<<16);
   let out=if (w,h)==(1280,800)||(w,h)==(2560,1600) {1280|800<<16}else{w|h<<16};
   assert_eq!(r.read(0x6604c0),out);
   assert_eq!(r.read(0x640420),1639|1064<<16); // raster untouched
-  let (mut r,mut e)=hardware();r.stale=true;assert!(present(&mut e,&mut r,s).is_err());
+  let (mut r,mut e)=hardware();r.stale=true;assert!(present(&mut e,&mut r,s,1).is_err());
  }
  let (mut r,mut e)=hardware();let mut layout=memory::Layout::new(1<<30,&[],1280,1024).unwrap();
- let old=ConsoleSurface{pointer:0x10010000,phys:0x20010000,bytes:1280*1024*4,width:1280,height:1024,pitch:5120,vram:layout.objects[0].range.start,regs:0,head:0,firmware_baseline:9};
+ let old=ConsoleSurface{pointer:0x10010000,phys:0x20010000,bytes:1280*1024*4,width:1280,height:1024,pitch:5120,vram:layout.objects[0].range.start,regs:0,head:0,firmware_baseline:9,logical:false};
  let instance=layout.objects[4].range.start;
  let slot=instance+0x4000+(((8<<20)-4096)/4096)*8;r.vram.insert(slot,0x1234);
  let modes=[Mode{width:1024,height:768,scale:1,reserved:0},Mode{width:1280,height:1024,scale:1,reserved:0}];
@@ -126,7 +126,7 @@ fn main(){
  assert_eq!((high.width,high.height,high.pitch,high.bytes),(1280,1024,5120,5242880));
  let low=layout.objects.iter().find(|o|o.name=="logical-low").unwrap().range;
  assert_eq!(low.size,1024*768*4);assert_ne!(low.start,layout.objects[1].range.start);
- assert_eq!(high.phys,0x21000000);assert_eq!(high.firmware_baseline,9);
+ assert!(!old.logical);assert!(high.logical);assert_eq!(high.phys,0x21000000);assert_eq!(high.firmware_baseline,9);
  console_binding(&high,&mut r).unwrap();
  r.r.insert(0x6604b8,1024|768<<16);
  assert!(console_binding(&high,&mut r).is_err(),"console accepted low armed mode");

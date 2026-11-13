@@ -16,7 +16,7 @@ class ConsoleTraceLock(unittest.TestCase):
     def test_handback_exports_after_unlock_with_a_detached_snapshot(self):
         process = timing.source('kernel/src/gpu/gk208/ce/process.rs')
         native = item(timing.source('kernel/src/gpu/gk208/native.rs'), 'fn present_inner(')
-        tail = native[native.index('    super::display_evidence::record(regs, head, surface, &receipt);'):]
+        tail = native[native.index('    super::display_evidence::record(regs, head, surface, &receipt, mode);'):]
         tail = tail[:tail.index('    Ok(Some(receipt))')]
         mode = item(process, 'pub(crate) fn set_mode(').replace('super::super::', '')
         trace = timing.source('kernel/src/gpu/gk208/presentation_trace.rs').replace('//!', '//')
