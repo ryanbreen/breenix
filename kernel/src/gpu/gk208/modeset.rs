@@ -273,8 +273,6 @@ pub fn switch_sequence(modes: &[Timing]) -> Result<[Timing; 3], &'static str> {
 }
 
 /// Derive the low and preferred logical modes from the sink's EDID.
-// The display integration consumes this API in the next unit of issue #2952.
-#[allow(dead_code)]
 pub fn display_modes(edid: &[u8]) -> Result<[(u32, u32, u32); 2], &'static str> {
     let timings = super::edid::parse(edid)?;
     let [low, high, _] = switch_sequence(&timings)?;

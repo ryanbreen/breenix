@@ -14,12 +14,12 @@ static RECOVERY_WAITERS:WaitQueueHead=WaitQueueHead::new();
 static WAITING:AtomicBool=AtomicBool::new(false);
 static WAITERS:WaitQueueHead=WaitQueueHead::new();
 struct Work {a:Channel,b:Channel,ticket:Option<Ticket>,request:Request,seed:u32,baseline:memory::allocator::Stats,old:[u32;3],userd:Allocation,engine:Engine}
-pub(super) struct Session {pub(super) layout:memory::Layout,pub(super) registers:usize,pub(super) bar:usize,pub(super) bi:u64,pub(super) bd:u64,pub(super) pte:u64,pub(super) total:u64,console:super::super::ConsoleSurface,mode:u32,output_perturbation:super::super::display_crc::Perturbation,evo:super::super::native::Evo,pending_present:Option<super::super::present::Surface>,ready_present:Option<super::super::present::Receipt>,scanout:Vec<super::super::resource::Hold>,work:Option<Work>,resources:super::super::resource::Resources<crate::gpu::dma::Pages>}
+pub(super) struct Session {pub(super) layout:memory::Layout,pub(super) registers:usize,pub(super) bar:usize,pub(super) bi:u64,pub(super) bd:u64,pub(super) pte:u64,pub(super) total:u64,console:super::super::ConsoleSurface,modes:[gpu_abi::Mode;2],mode:u32,output_perturbation:super::super::display_crc::Perturbation,evo:super::super::native::Evo,pending_present:Option<super::super::present::Surface>,ready_present:Option<super::super::present::Receipt>,scanout:Vec<super::super::resource::Hold>,work:Option<Work>,resources:super::super::resource::Resources<crate::gpu::dma::Pages>}
 pub(in crate::gk208) fn test_ownership()->Result<(),&'static str> {
     if CORE_STARTED.load(Ordering::Acquire) {return Err("native GPU core owns FIFO");}
     Ok(())
 }
-pub(crate) fn retain(mut layout:memory::Layout,regs:usize,bar:usize,console:super::super::ConsoleSurface,mut evo:super::super::native::Evo)->Result<super::super::ConsoleSurface,&'static str> {
+pub(crate) fn retain(mut layout:memory::Layout,regs:usize,bar:usize,console:super::super::ConsoleSurface,mut evo:super::super::native::Evo,modes:[gpu_abi::Mode;2])->Result<super::super::ConsoleSurface,&'static str> {
     test_ownership()?;
     let device=crate::drivers::pci::find_device(0x10de,0x128b).ok_or("native PCI device absent")?;
     super::super::display_evidence::baseline(console.firmware_baseline);
@@ -30,7 +30,7 @@ pub(crate) fn retain(mut layout:memory::Layout,regs:usize,bar:usize,console:supe
         .ok_or("logical console BAR table absent")?.range.start;
     let s=layout.allocator.stats();
     *SESSION.lock()=Some(Session{layout,registers:regs,bar,bi:native+0x2000,bd:native+0x3000,
-        pte:table+(SLOT/4096)*8,total:s.reserved+s.charged+s.free,console,mode:1,output_perturbation:super::super::display_crc::Perturbation::new(),evo,pending_present:None,ready_present:None,scanout:Vec::new(),work:None,resources:super::super::resource::Resources::new()});
+        pte:table+(SLOT/4096)*8,total:s.reserved+s.charged+s.free,console,modes,mode:1,output_perturbation:super::super::display_crc::Perturbation::new(),evo,pending_present:None,ready_present:None,scanout:Vec::new(),work:None,resources:super::super::resource::Resources::new()});
     Ok(console)
 }
 pub(in crate::gk208) fn initialize_core()->Result<(),&'static str> {
@@ -48,6 +48,7 @@ pub(in crate::gk208) fn initialize_core()->Result<(),&'static str> {
     })();
     // Builders borrow SESSION. Restore it before probing, without holding its
     // lock across device submission/reaping or storage retirement.
+    let modes = s.modes;
     *SESSION.lock()=Some(s);
     let mut native = result?;
     crate::gpu::dev::select_gk208();
@@ -57,7 +58,7 @@ pub(in crate::gk208) fn initialize_core()->Result<(),&'static str> {
         core::mem::forget(native);
         return Err(error);
     }
-    crate::gpu::install_native(native)
+    crate::gpu::install_native(native, modes)
 }
 
 impl Session {

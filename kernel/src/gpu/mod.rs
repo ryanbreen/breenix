@@ -657,6 +657,7 @@ pub fn init() {
             DOORBELL.store(dev.doorbell(), Ordering::Release);
             arch::configure_irq(&dev);
             core.queue_size = dev.queue_size();
+            core.display.modes = display::PANEL_MODES;
             core.dev = Some(Device::Virgl(dev));
         }
         Err(e) => {
@@ -676,7 +677,7 @@ pub fn init() {
 
 /// Install the native owner only after hardware startup and channel receipts.
 #[cfg(target_arch = "x86_64")]
-pub(crate) fn install_native(device: crate::gk208::adapter::Device) -> Result<(), &'static str> {
+pub(crate) fn install_native(device: crate::gk208::adapter::Device, modes: [abi::Mode; 2]) -> Result<(), &'static str> {
     let mut retained = Some(device);
     let result = (|| {
         let device = retained.as_ref().unwrap();
@@ -699,6 +700,7 @@ pub(crate) fn install_native(device: crate::gk208::adapter::Device) -> Result<()
         with_core(|core| {
             if core.dev.is_some() { return Err("GPU core already has a device"); }
             core.queue_size = queue_size;
+            core.display.modes = modes;
             core.status = caps.status;
             core.caps = caps;
             core.dev = Some(Device::Gk208(retained.take().unwrap()));
@@ -761,6 +763,7 @@ pub fn init_vmware() {
                 device.profile.contexts, device.profile.surfaces, core.status, core.reason
             );
             core.queue_size = device.queue_size();
+            core.display.modes = display::PANEL_MODES;
             core.dev = Some(Device::Svga(device));
         }
         Err(error) => {
@@ -5795,7 +5798,7 @@ pub fn observe_scanout(dst: u64, dst_len: u64, record: u64) -> Result<u64, (i64,
         return Err((ENODEV, readback_reason::NONE));
     }
     let tgid = caller().map_err(|e| (e, readback_reason::NONE))?;
-    let mode = with_core(|c| display::MODES[c.display.mode as usize])
+    let mode = with_core(|c| c.display.modes[c.display.mode as usize])
         .ok_or((ENODEV, readback_reason::NONE))?;
     if dst_len < mode.width as u64 * mode.height as u64 * 4 {
         return Err((EINVAL, readback_reason::NONE));
@@ -6051,7 +6054,7 @@ fn read_back_impl(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Opt
         // SVGA screen binding (svga/mod.rs set_scanout), GK208 viewport-in
         // (gk208/modeset.rs Viewport::methods).
         // Keep this inside the binding transition that excludes mode changes.
-        let mode = with_core(|c| display::MODES[c.display.mode as usize]).ok_or(ENODEV)?;
+        let mode = with_core(|c| c.display.modes[c.display.mode as usize]).ok_or(ENODEV)?;
         let [x, y, w, h] = abi::screen::rectangle([mode.width, mode.height], [tw, th], Some([0, 0]))
             .ok_or(EIO)?;
         a.x = x;
