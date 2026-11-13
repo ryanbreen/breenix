@@ -91,6 +91,8 @@ if os.environ['SCENARIO'] == 'missing' and role == 'join': sys.exit(1)
 record = pathlib.Path(os.environ['VIGIL_TEST_HOME']) / 'Library/Application Support/Vigil/breenix/boots' / ('id-' + role)
 record.mkdir(parents=True)
 (record / 'run.json').write_text(json.dumps({'serial': str(serial), 'id': 'id-' + role}))
+(record / 'pid').write_text(os.environ['BREENIX_LAUNCHER_PID'])
+(record / 'serial.txt').symlink_to(serial)
 if os.environ['SCENARIO'] == 'join_fail' and role == 'join':
     line = 'COLLAB_LAN role=join FAIL reason=refused'
 else:

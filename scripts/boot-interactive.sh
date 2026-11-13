@@ -15,6 +15,8 @@
 #   --program PATH       for --mode program: the absolute guest path /sbin/probe runs (probe --run PATH)
 #   --collab-host [PORT] forward LAN TCP PORT to guest collaboration port 7890 (default 7890;
 #                        desktop and program modes only)
+#   BREENIX_COLLAB_HOST_BIND=127.0.0.1 limits that forward to this host for collab-pair.py;
+#                        the operator's default is 0.0.0.0 for LAN sharing.
 #   --case CATEGORY[/CASE]       for --mode suite: run one category or case (not full-suite evidence; not filed in Vigil)
 #   --suite ID           for --mode suite: the effort suite (docs/suites/ID.json) run as PID 1, /sbin/suite-ID
 #                        console selects --gpu-gl for its display-owner and scanout cases
@@ -82,6 +84,7 @@ GPU_GL=0
 UNTIL_DESKTOP_READY=0
 COLLAB_HOST_PORT=
 COLLAB_HOST=0
+COLLAB_HOST_BIND=${BREENIX_COLLAB_HOST_BIND:-0.0.0.0}
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -125,7 +128,7 @@ case "$MODE" in
 esac
 if [ "$COLLAB_HOST" -eq 1 ]; then
     [ "$MODE" = desktop ] || [ "$MODE" = program ] || { echo "--collab-host requires desktop or program mode" >&2; exit 2; }
-    COLLAB_HOST_PORT=$(python3 - "$COLLAB_HOST_PORT" <<'PY'
+    COLLAB_HOST_PORT=$(python3 - "$COLLAB_HOST_PORT" "$COLLAB_HOST_BIND" <<'PY'
 import socket
 import sys
 
@@ -133,9 +136,12 @@ value = sys.argv[1]
 if not value.isascii() or not value.isdecimal() or len(value.lstrip('0')) > 5 or not 1 <= int(value) <= 65535:
     sys.exit('--collab-host needs a port from 1 to 65535')
 port = int(value)
+bind = sys.argv[2]
+if bind not in ('0.0.0.0', '127.0.0.1'):
+    sys.exit('BREENIX_COLLAB_HOST_BIND must be 0.0.0.0 or 127.0.0.1')
 try:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(('0.0.0.0', port))
+        sock.bind((bind, port))
 except OSError as error:
     sys.exit(f'--collab-host port {port} cannot be bound: {error}')
 print(port)
@@ -439,7 +445,7 @@ if [ "$MODE" = suite ] && { [ "$SUITE" = ui-testing ] || [ "$SUITE" = gui-apps ]
 fi
 # The users suite's external-client cases need the boot host's real OpenSSH.
 NETDEV="user,id=net0"
-[ -z "$COLLAB_HOST_PORT" ] || NETDEV+=",hostfwd=tcp:0.0.0.0:$COLLAB_HOST_PORT-:7890"
+[ -z "$COLLAB_HOST_PORT" ] || NETDEV+=",hostfwd=tcp:$COLLAB_HOST_BIND:$COLLAB_HOST_PORT-:7890"
 USERS_SSH_STATE=
 if [ "$MODE" = suite ] && [[ ",$SUITE," == *,users,* ]] && { [ -z "$ONLY" ] || [[ "$ONLY" == ssh || "$ONLY" == ssh/* ]]; }; then
     USERS_SSH_STATE="$SERIAL_LOG.users-hostssh-state.json"
