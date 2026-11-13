@@ -57,3 +57,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("breenix
 [[test]]
 name = "guskit_argv"
 path = "../../tests/guskit_argv.rs"
+
+[[test]]
+name = "guskit_session_dialog"
+path = "../../tests/guskit_session_dialog.rs"
