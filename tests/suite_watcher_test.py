@@ -61,6 +61,31 @@ while True:
 
 
 class SuiteWatcherTest(unittest.TestCase):
+    def test_poweroff_scores_completed_recording_and_partial_exit_cancels(self):
+        # Replay the standalone DONE -> MEMORY -> READY shutdown shape from
+        # the gui-apps baseline, with directories records usable by the scorer.
+        complete = RECORDING + b'SUITE_SEQUENCE READY directories\n'
+        failed = complete.replace(b' PASS ms=0\n', b' FAIL ms=0\n', 1).replace(
+            f'DONE passed={len(CASES)} failed=0'.encode(),
+            f'DONE passed={len(CASES) - 1} failed=1'.encode())
+        for data, status in ((complete, 0), (failed, 1), (b'boot still running\n', 130)):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as tmp:
+                source, serial = Path(tmp) / 'recording', Path(tmp) / 'serial'
+                source.write_bytes(data)
+                fake = ("from pathlib import Path\nimport sys, time\n"
+                        "Path(sys.argv[2]).write_bytes(('[clock] UTC epoch=%d source=PL031\\n' "
+                        "% int(time.time())).encode() + Path(sys.argv[1]).read_bytes())\n")
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / 'scripts/watch-qemu.py'), '--serial', str(serial),
+                     '--mode', 'suite', '--suite', 'directories', '--', sys.executable,
+                     '-c', fake, str(source), str(serial)], capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, status, result.stdout + result.stderr)
+                if status != 130:
+                    self.assertIn('UTC clock PASS', result.stdout)
+                    self.assertNotIn('operator cancellation', result.stdout)
+                else:
+                    self.assertIn('operator cancellation', result.stdout)
+
     def test_case_progress_cannot_extend_suite_done_deadlines(self):
         for monitor in ('watch-qemu.py', 'wait-boot-done.py'):
             with self.subTest(monitor=monitor), tempfile.TemporaryDirectory() as tmp:
