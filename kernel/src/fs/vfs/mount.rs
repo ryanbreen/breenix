@@ -27,14 +27,17 @@ pub fn allocate_id() -> Result<usize, Errno> {
     MOUNT_TABLE.lock().allocate_id()
 }
 pub fn register(entry: MountPoint) -> Result<(), Errno> {
-    MOUNT_TABLE.lock().insert(entry)
+    let mut table = MOUNT_TABLE.lock();
+    table.insert(entry)?;
+    attach_virtual_parents(&mut table);
+    Ok(())
 }
 
 /// Virtual filesystems retain their boot registration order and ids.
 pub fn mount(path: &str, kind: &'static str) -> usize {
     let mut table = MOUNT_TABLE.lock();
     let id = table.allocate_id().expect("mount id exhausted");
-    let parent = table.find_mount(path.as_bytes()).map(|id| (id, 0));
+    let parent = None;
     table
         .insert(Entry::new(
             id,
@@ -47,7 +50,86 @@ pub fn mount(path: &str, kind: &'static str) -> usize {
             parent,
         ))
         .expect("virtual mount registration");
+    attach_virtual_parents(&mut table);
     id
+}
+
+// x86 registers virtual filesystems before storage; ARM registers them after it.
+// Fill their named covers from registered parent roots in either boot order.
+fn attach_virtual_parents(table: &mut MountTable<Backend>) {
+    let parents: Vec<_> = table.iter().filter(|m| matches!(m.backend, Backend::Virtual))
+        .filter_map(|m| {
+            let slash = m.path.iter().rposition(|b| *b == b'/')?;
+            let parent_path = if slash == 0 { b"/".as_slice() } else { &m.path[..slash] };
+            let parent = table.iter().find(|p| p.path == parent_path)?;
+            Some((m.id, (parent.id, parent.root)))
+        }).collect();
+    for (id, parent) in parents {
+        table.get_mut(id).expect("registered virtual mount").parent = Some(parent);
+    }
+}
+
+/// The single legacy accessor; no filesystem lock is taken under the table lock.
+pub fn ext2_adapter(id: usize) -> Result<Arc<crate::fs::ext2::adapter::Ext2Adapter>, Errno> {
+    let backend = {
+        let table = MOUNT_TABLE.lock();
+        match &table.get(id).ok_or(Errno(crate::syscall::errno::ENOENT))?.backend {
+            Backend::Fs(fs) => fs.clone(),
+            _ => return Err(Errno(crate::syscall::errno::EOPNOTSUPP)),
+        }
+    };
+    let backend: Arc<dyn core::any::Any + Send + Sync> = backend;
+    backend.downcast().map_err(|_| Errno(crate::syscall::errno::EOPNOTSUPP))
+}
+
+pub fn root_inode(id: usize) -> Option<u64> {
+    Some(MOUNT_TABLE.lock().get(id)?.root)
+}
+
+#[derive(Clone, Copy)]
+pub enum Entered {
+    Fs(usize, u64),
+    User(u64, u64),
+    Virtual,
+}
+fn entered(entry: &MountPoint) -> Entered {
+    match entry.backend {
+        Backend::Fs(_) => Entered::Fs(entry.id, entry.root),
+        Backend::User(id) => Entered::User(id, entry.root),
+        Backend::Virtual => Entered::Virtual,
+    }
+}
+
+/// Inode covers retain their identity when an ancestor is renamed.
+pub fn enter(key: InodeKey) -> Option<Entered> {
+    let table = MOUNT_TABLE.lock();
+    let (id, _) = table.enter(key)?;
+    Some(entered(table.get(id)?))
+}
+
+/// Virtual covers have no storage inode. Their parent identity and registered
+/// final component select them without locking an unrelated storage backend.
+pub fn virtual_cover(parent: InodeKey, name: &[u8]) -> Option<Entered> {
+    let table = MOUNT_TABLE.lock();
+    let found = table.iter().find(|m| matches!(m.backend, Backend::Virtual)
+        && m.parent == Some(parent)
+        && m.path.rsplit(|b| *b == b'/').next() == Some(name)).map(entered);
+    found
+}
+
+pub fn is_mount_root(id: usize, ino: u64) -> bool {
+    let table = MOUNT_TABLE.lock();
+    table.get(id).is_some_and(|m| m.root == ino) || table.enter((id, ino)).is_some()
+}
+
+pub fn path_is_mount(path: &[u8]) -> bool {
+    MOUNT_TABLE.lock().iter().any(|m| m.path == path)
+}
+
+/// Bind entries share the adapter's storage identity.
+pub fn storage_mounts() -> Vec<usize> {
+    MOUNT_TABLE.lock().iter().filter(|m| matches!(m.backend, Backend::Fs(_)) && m.bind.is_none())
+        .map(|m| m.id).collect()
 }
 
 pub fn bind_home_if_unmounted() {
@@ -128,14 +210,6 @@ pub fn unmount(id: usize, force: bool) -> Result<(), Errno> {
     let removed = MOUNT_TABLE.lock().remove(id, force)?;
     drop(removed);
     Ok(())
-}
-pub fn covering(key: InodeKey) -> Option<u64> {
-    let table = MOUNT_TABLE.lock();
-    let (id, _) = table.enter(key)?;
-    match table.get(id)?.backend {
-        Backend::User(id) => Some(id),
-        _ => None,
-    }
 }
 pub fn covered_directory(id: usize) -> Option<InodeKey> {
     MOUNT_TABLE.lock().get(id)?.cover

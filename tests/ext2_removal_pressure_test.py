@@ -12,13 +12,30 @@ class RemovalPressure(unittest.TestCase):
     def test_removal_keeps_exclusion_shrink_wait_and_errors_on_both_mounts(self):
         method = item((ROOT / 'kernel/src/fs/namei.rs').read_text(), '    pub fn write_removal(')
         guard = item((ROOT / 'kernel/src/fs/ext2/mod.rs').read_text(), 'pub(crate) fn fs_sync_guard(')
+        adapter = item((ROOT / 'kernel/src/fs/ext2/adapter.rs').read_text(), '    pub fn exclusive(')
+        sync = item((ROOT / 'kernel/src/fs/ext2/mod.rs').read_text(), 'pub(super) fn sync_mount_guard(')
         result = run_rust(r'''
 use std::sync::{Mutex,atomic::{AtomicBool,Ordering}};
 static CALLS:Mutex<Vec<(bool,&str)>>=Mutex::new(Vec::new());
 static FAIL:AtomicBool=AtomicBool::new(false);
+#[derive(Debug,PartialEq)]struct Errno(u64);
+fn errno(error:&str)->Errno{assert_eq!(error,"interrupted");Errno(4)}
+struct Ext2Adapter{mount:ext2::Pin}
+impl Ext2Adapter{ADAPTER}
+use ext2::sync_mount_guard;
+mod mounts{
+ pub fn ext2_adapter(id:usize)->Result<crate::Ext2Adapter,crate::Errno>{
+  assert!(id<2);Ok(crate::Ext2Adapter{mount:crate::ext2::Pin(id==1)})
+ }
+}
 mod ext2{
+ #[derive(Clone,Copy)]pub struct Pin(pub bool);
+ impl Pin{fn verify(self,fs:&Ext2WriteGuard)->Result<(),&'static str>{assert_eq!(self.0,fs.home);Ok(())}}
+ fn pin_is_home(pin:Pin)->Result<bool,&'static str>{Ok(pin.0)}
+ pub mod live_inode{pub use super::Pin as MountPin;}
  pub struct Ext2WriteGuard{pub home:bool}
  impl Ext2WriteGuard{
+  fn as_ref(&self)->Option<&Self>{Some(self)}
   fn wait_for_shrink_writer(self)->Result<Self,&'static str>{
    crate::CALLS.lock().unwrap().push((self.home,"shrink-wait"));
    if crate::FAIL.load(crate::Ordering::Relaxed){Err("interrupted")}else{Ok(self)}
@@ -28,19 +45,19 @@ mod ext2{
   crate::CALLS.lock().unwrap().push((home,"write-lock"));Ok(Ext2WriteGuard{home})
  }
  GUARD
+ SYNC
 }
-#[derive(Clone,Copy)]enum Mount{Root,Home}
-fn fs_errno(error:&str)->u64{assert_eq!(error,"interrupted");4}
+#[derive(Clone,Copy)]struct Mount(usize);
 impl Mount{METHOD}
 fn main(){
- for (mount,home) in [(Mount::Root,false),(Mount::Home,true)]{
+ for (mount,home) in [(Mount(0),false),(Mount(1),true)]{
   CALLS.lock().unwrap().clear();let guard=mount.write_removal().unwrap();assert_eq!(guard.home,home);
   assert_eq!(*CALLS.lock().unwrap(),[(home,"write-lock"),(home,"shrink-wait")]);
-  FAIL.store(true,Ordering::Relaxed);assert_eq!(mount.write_removal().err(),Some(4));
+  FAIL.store(true,Ordering::Relaxed);assert_eq!(mount.write_removal().err(),Some(Errno(4)));
   FAIL.store(false,Ordering::Relaxed);
  }
 }
-'''.replace('METHOD', method).replace('GUARD', guard))
+'''.replace('METHOD', method).replace('GUARD', guard).replace('ADAPTER', adapter).replace('SYNC', sync))
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_unlink_and_rmdir_use_a_nonallocating_guard(self):

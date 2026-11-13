@@ -106,33 +106,6 @@ impl Mount {
     }
 }
 
-// Temporary translation for namei's native mount enum until its table walk lands.
-fn native_id(mount: crate::fs::namei::Mount) -> Option<usize> {
-    crate::fs::vfs::mount::find_mount(match mount {
-        crate::fs::namei::Mount::Root => "/",
-        crate::fs::namei::Mount::Home => "/home",
-    })
-}
-fn native_key(key: (usize, u64)) -> Option<(crate::fs::namei::Mount, u64)> {
-    let mount = if Some(key.0) == native_id(crate::fs::namei::Mount::Root) {
-        crate::fs::namei::Mount::Root
-    } else if Some(key.0) == native_id(crate::fs::namei::Mount::Home) {
-        crate::fs::namei::Mount::Home
-    } else { return None };
-    Some((mount, key.1))
-}
-
-/// The shared registry enters by inode, including after an ancestor rename.
-pub fn covering(mount: crate::fs::namei::Mount, ino: u64) -> Option<u64> {
-    crate::fs::vfs::mount::covering((native_id(mount)?, ino))
-}
-pub fn covered_directory(id: u64) -> Result<(crate::fs::namei::Mount, u64), u64> {
-    crate::fs::vfs::mount::covered_directory(id as usize).and_then(native_key).ok_or(ENOTCONN as u64)
-}
-pub fn covered_parent(id: u64) -> Option<(crate::fs::namei::Mount, u64)> {
-    crate::fs::vfs::mount::covered_parent(id as usize).and_then(native_key)
-}
-
 pub fn get(id: u64) -> Result<Arc<Mount>, u64> {
     MOUNTS
         .lock()
@@ -481,8 +454,8 @@ fn mount(source: u64, target: u64, fstype: u64, flags: u64, data: u64) -> Result
     let mut mounts = MOUNTS.lock();
     mounts.try_reserve(1).map_err(|_| ENOMEM as u64)?;
     let id = crate::fs::vfs::mount::allocate_id().map_err(|e| e.0 as u64)? as u64;
-    let covered_id = native_id(covered_mount).ok_or(EBUSY as u64)?;
-    let parent_id = native_id(parent_mount).ok_or(EBUSY as u64)?;
+    let covered_id = covered_mount.0;
+    let parent_id = parent_mount.0;
     let mut table_entry = crate::fs::vfs::mount::MountPoint::new(
         id as usize, point.path.clone(), "ufs", crate::fs::attrs::MountFlags::default(),
         crate::fs::vfs::mount::Backend::User(id), ufs_abi::payload::ROOT,

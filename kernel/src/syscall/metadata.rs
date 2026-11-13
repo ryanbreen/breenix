@@ -40,11 +40,7 @@ pub(crate) fn directory_of(kind: FdKind) -> Result<namei::WorkingDir, u64> {
         return Err(ENOTDIR as u64);
     };
     let handle = dir.lock().handle.clone();
-    let mount = if ext2::home_mount_id() == Some(handle.object.mount.mount_id) {
-        namei::Mount::Home
-    } else {
-        namei::Mount::Root
-    };
+    let mount = namei::Mount(handle.object.mount.mount_id);
     let guard = mount.read()?;
     let fs = guard.as_ref().ok_or(EIO as u64)?;
     let ino = handle.verify(fs).map_err(ext2_errno)?;
@@ -178,7 +174,7 @@ fn by_cwd(change: Change) -> SyscallResult {
         Err(errno) => return SyscallResult::Err(errno),
     };
     let (mount, handle) = match namei::current_working_dir() {
-        namei::WorkingDir::Root => (namei::Mount::Root, None),
+        namei::WorkingDir::Root => (namei::Mount::root(), None),
         namei::WorkingDir::Ext2 { mount, dir } => (mount, Some(dir)),
         namei::WorkingDir::Virtual(_) | namei::WorkingDir::User { .. } => return SyscallResult::Err(EOPNOTSUPP as u64),
     };
