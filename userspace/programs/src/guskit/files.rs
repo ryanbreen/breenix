@@ -27,9 +27,14 @@ pub fn decode(name: &str, bytes: &[u8], width: usize, height: usize) -> Result<(
     // its own byte budget; a phone photo is refused without replacing the drawing.
     let native = match format(name)? {
         "bmp" if bytes.len() >= 26 && &bytes[..2] == b"BM" => {
-            let w = i32::from_le_bytes(bytes[18..22].try_into().unwrap());
-            let h = i32::from_le_bytes(bytes[22..26].try_into().unwrap());
-            Some((u64::from(w.unsigned_abs()), u64::from(h.unsigned_abs())))
+            if u32::from_le_bytes(bytes[14..18].try_into().unwrap()) == 12 {
+                Some((u64::from(u16::from_le_bytes(bytes[18..20].try_into().unwrap())),
+                      u64::from(u16::from_le_bytes(bytes[20..22].try_into().unwrap()))))
+            } else {
+                let w = u32::from_le_bytes(bytes[18..22].try_into().unwrap());
+                let h = i32::from_le_bytes(bytes[22..26].try_into().unwrap());
+                Some((u64::from(w), u64::from(h.unsigned_abs())))
+            }
         }
         "png" if bytes.len() >= 24 && &bytes[..8] == b"\x89PNG\r\n\x1a\n" && &bytes[12..16] == b"IHDR" =>
             Some((u64::from(u32::from_be_bytes(bytes[16..20].try_into().unwrap())),
