@@ -13,7 +13,7 @@ extern crate alloc;
 fn main() {
  let hex=include_str!("ROOT/tests/fixtures/gt710-edid/lcd17-19.hex").trim();
  let e:Vec<u8>=(0..hex.len()).step_by(2).map(|i|u8::from_str_radix(&hex[i..i+2],16).unwrap()).collect();
- assert_eq!(modeset::display_modes(&e).unwrap().as_slice(), &[(1024,768,1),(1280,1024,1),(2560,2048,2)]);
+ assert_eq!(modeset::display_modes(&edid::parse(&e).unwrap()).unwrap().as_slice(), &[(1024,768,1),(1280,1024,1),(2560,2048,2)]);
  for (w,h) in [(1280,1024),(2560,2048)] {
   let m=modeset::Viewport::for_raster(1280,1024,w,h).unwrap().methods(0).unwrap();
   assert_eq!(m.iter().find(|(r,_)|*r==0x4b8).unwrap().1,w|h<<16);

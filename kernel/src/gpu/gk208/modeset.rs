@@ -274,11 +274,7 @@ pub fn switch_sequence(modes: &[Timing]) -> Result<[Timing; 3], &'static str> {
 
 /// Keep the preferred scale-1 mode at the kernel's index 1. Reserve one
 /// of MODES' ten slots for its exact scale-2 mode; optional sizes are bounded.
-pub fn display_modes(edid: &[u8]) -> Result<Vec<(u32, u32, u32)>, &'static str> {
-    catalogue(&super::edid::parse(edid)?)
-}
-
-pub fn catalogue(timings: &[Timing]) -> Result<Vec<(u32, u32, u32)>, &'static str> {
+pub fn display_modes(timings: &[Timing]) -> Result<Vec<(u32, u32, u32)>, &'static str> {
     let high = *super::edid::native_raster(timings)?;
     let scaled = (high.width.checked_mul(2).ok_or("scale-2 width overflow")?,
         high.height.checked_mul(2).ok_or("scale-2 height overflow")?, 2);

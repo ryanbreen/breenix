@@ -475,8 +475,8 @@ pub(in crate::gk208) fn console_bar_offset(console: &ConsoleSurface, displacemen
 
 /// Retain the owned EVO channel and its post-takeover command cursor.
 #[derive(Clone)]
-struct RasterMode {
-    timing: edid::Timing,
+pub(super) struct RasterMode {
+    pub(super) timing: edid::Timing,
     pll: modeset::Pll,
     scripts: [Vec<modeset::Op>; 4],
 }
@@ -1131,7 +1131,30 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
         result
     }
 
-pub fn takeover(
+/// Prepare recipes before display ownership and catalogue publication.
+pub(super) fn runtime_rasters(rom: &[u8], modes: &[edid::Timing], route: &board::Route,
+    head: u32) -> Result<Vec<RasterMode>, &'static str> {
+    edid::native_raster(modes)?;
+    let limits = modeset::board_pll(rom, head)?;
+    let protocol = if route.conf & 0x10 != 0 { 1 } else if route.conf & 0x20 != 0 { 2 }
+        else { return Err("no TMDS link"); };
+    let mut rasters = Vec::new();
+    for (index, &timing) in modes.iter().enumerate() {
+        let recipe = (|| Ok(RasterMode { timing,
+            pll: modeset::pll(&limits, timing.clock_khz)?,
+            scripts: modeset::board_scripts(rom,head,u32::from(route.sor),protocol,timing.clock_khz)
+                .map_err(|e| e.reason)?,
+        }))();
+        match recipe {
+            Ok(recipe) => rasters.push(recipe),
+            Err(error) if index == 0 => return Err(error),
+            Err(_) => {}
+        }
+    }
+    Ok(rasters)
+}
+
+pub(super) fn takeover(
     regs: &mut Registers,
     device: &pci::Device,
     rom: &[u8],
@@ -1139,6 +1162,7 @@ pub fn takeover(
     route: &board::Route,
     head: u32,
     layout: &memory::Layout,
+    rasters: Vec<RasterMode>,
 ) -> Result<(ConsoleSurface, Evo), &'static str> {
     let t = edid::native_raster(modes)?;
     let limits = modeset::board_pll(rom, head)?;
@@ -1164,13 +1188,6 @@ pub fn takeover(
             );
             e.reason
         })?;
-    // Decode runtime timing changes before owning the display. Scale 2 uses
-    // the preferred raster; other advertised modes use their own 1:1 timing.
-    let rasters = modes.iter().map(|&timing| {
-        Ok(RasterMode { timing, pll: modeset::pll(&limits,timing.clock_khz)?,
-            scripts: modeset::board_scripts(rom,head,u32::from(route.sor),protocol,timing.clock_khz)
-                .map_err(|e|e.reason)? })
-    }).collect::<Result<Vec<_>, &'static str>>()?;
     let surface = layout.objects[0].range;
     let evo = layout.objects[2].range.start;
     let notifier = layout.objects[3].range.start;

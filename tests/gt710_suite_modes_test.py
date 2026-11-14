@@ -34,7 +34,7 @@ extern crate alloc;
 fn main() {{
  let hex = include_str!("{ROOT}/tests/fixtures/gt710-edid/lcd17-19.hex").trim();
  let bytes: Vec<u8> = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i+2], 16).unwrap()).collect();
- assert_eq!(expected_modes(true), modeset::display_modes(&bytes).unwrap());
+ assert_eq!(expected_modes(true), modeset::display_modes(&edid::parse(&bytes).unwrap()).unwrap());
  assert_eq!(expected_modes(false), [(1280,800,1),(2560,1600,2)]);
 }}
 '''
