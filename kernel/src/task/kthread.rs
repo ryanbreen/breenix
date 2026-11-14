@@ -37,6 +37,12 @@ impl KthreadHandle {
     pub fn tid(&self) -> u64 {
         self.inner.tid
     }
+
+    /// Failure-snapshot observation only; does not change the park handoff.
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) fn is_parked(&self) -> bool {
+        self.inner.parked.load(Ordering::Acquire)
+    }
 }
 
 #[derive(Debug)]
