@@ -67,7 +67,7 @@ fn present(ctx: u64, t: u64) -> R<()> {
     wait_ok(ctx, p.fence, 0)
 }
 
-/// Prepare the containing-mode scanout once; timed frames only copy and present.
+/// Prepare the containing-mode scanout once, outside the measured frames.
 /// The measured source remains 2560x1600 even when the display mode is taller.
 struct RateView {
     target: u64,
@@ -94,10 +94,6 @@ impl RateView {
         Ok(view)
     }
 
-    fn present(&self, ctx: u64) -> R<()> {
-        if !self.copy.is_empty() { submit(ctx, &self.copy)?; }
-        present(ctx, self.target)
-    }
 }
 
 impl Drop for RateView {
@@ -161,14 +157,18 @@ pub fn clear_rate_2560() -> CaseResult {
     let views = [RateView::new(ctx, targets[0])?, RateView::new(ctx, targets[1])?];
     let streams: Vec<_> = (0..FRAMES).map(|n| {
         let mut s = Vec::new();
-        encode::begin(&mut s, targets[(n % 2) as usize]);
+        let view = &views[(n % 2) as usize];
+        encode::begin(&mut s, view.target);
+        if !view.copy.is_empty() {
+            s.extend_from_slice(&[stream::cmd::SCISSOR, 6, 0, 0, W, H]);
+        }
         encode::clear(&mut s, colour(n));
         s
     }).collect();
     let start = now_ns();
     for n in 0..FRAMES as usize {
         submit(ctx, &streams[n])?;
-        views[n % 2].present(ctx)?;
+        present(ctx, views[n % 2].target)?;
     }
     let last = colour(FRAMES - 1);
     all(&read_rect(0, [W - 16, H - 16, 16, 16])?, last, "the scanout after the last presented clear")?;
@@ -178,7 +178,16 @@ pub fn clear_rate_2560() -> CaseResult {
         format!("{FRAMES} presented 2560x1600 clears took {us} us, under {CLEARS_PER_S} a second")
     })?;
     all_judged(read_rect(0, [0, 0, W, H])?, last, "the whole scanout after the last presented clear", W, H)?;
-    present_view(ctx, targets[((FRAMES - 1) % 2) as usize])?
+    let last_index = ((FRAMES - 1) % 2) as usize;
+    if !views[last_index].copy.is_empty() {
+        // Reconstruct the source for present_view's exact comparison after the
+        // sample; the timed clears write the scanout directly.
+        let mut copy = Vec::new();
+        encode::begin(&mut copy, targets[last_index]);
+        encode::copy(&mut copy, views[last_index].target, [0, 0, W, H], targets[last_index], [0, 0]);
+        frame(ctx, &copy)?;
+    }
+    present_view(ctx, targets[last_index])?
         .ok_or_else(|| fail_msg(format!("display does not contain the {W}x{H} performance view")))?;
     pass()
 }
