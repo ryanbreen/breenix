@@ -52,7 +52,7 @@ pub mod task {
     }
 }
 pub mod syscall {
-    pub mod graphics {
+    pub mod display {
         use std::sync::atomic::AtomicU64;
         pub static DISPLAY_OWNER_PID: AtomicU64 = AtomicU64::new(u64::MAX);
         pub static DISPLAY_OWNER_GROUP: AtomicU64 = AtomicU64::new(u64::MAX);
@@ -67,6 +67,12 @@ pub mod syscall {
         ) -> Result<(), i32> {
             Ok(())
         }
+    }
+}
+
+pub mod gpu {
+    pub fn vt_resumed() {
+        panic!("GPU frame restoration is outside the host VT state tests")
     }
 }
 
@@ -221,8 +227,8 @@ fn cursor_presentations_follow_current_ownership_and_drain_before_text() {
     assert!(vt::Presentation::begin_cursor().is_none());
     vt::take_display(77, 1).unwrap();
     assert!(vt::Presentation::begin_cursor().is_none(), "takeover must quiesce first");
-    syscall::graphics::DISPLAY_OWNER_GROUP.store(77, std::sync::atomic::Ordering::Release);
-    syscall::graphics::DISPLAY_OWNER_PID.store(77, std::sync::atomic::Ordering::Release);
+    syscall::display::DISPLAY_OWNER_GROUP.store(77, std::sync::atomic::Ordering::Release);
+    syscall::display::DISPLAY_OWNER_PID.store(77, std::sync::atomic::Ordering::Release);
     let pass = vt::Presentation::begin_cursor().expect("foreground owner permits cursor");
     vt::give_back_display();
     assert!(vt::Presentation::begin_cursor().is_none());
