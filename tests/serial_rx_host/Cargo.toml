@@ -14,3 +14,7 @@ log = { version = "0.4", default-features = false }
 [[test]]
 name = "serial_rx"
 path = "serial_rx.rs"
+
+[[test]]
+name = "progress"
+path = "progress.rs"
