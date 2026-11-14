@@ -187,7 +187,9 @@ fn main(){
             subprocess.run([str(p/'modes')],check=True)
     def test_mode_hook_publishes_only_confirmed_switches(self):
         source=(ROOT/'kernel/src/gpu/display.rs').read_text()
-        function=item(source,'pub(super) fn set_mode(').replace('pub(super)','').replace('#[cfg(target_arch = "x86_64")]','').replace('super::arch::','arch::')
+        function='\n'.join(item(source, marker) for marker in [
+            'pub(super) fn set_mode(', 'pub(super) fn activate_mode(',
+        ]).replace('pub(super)','').replace('#[cfg(target_arch = "x86_64")]','').replace('super::arch::','arch::')
         fixture=r'''
 use std::{cell::RefCell,sync::atomic::{AtomicBool,AtomicU32,Ordering}};
 const EINVAL:i64=-22;const EPERM:i64=-1;const ENODEV:i64=-19;const EIO:i64=-5;

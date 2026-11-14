@@ -32,6 +32,8 @@ class Scale2Ownership(unittest.TestCase):
         transitions = transitions.replace('#[cfg(target_arch = "x86_64")]', '')
         transitions = transitions.replace('c.native_console_restored();',
             'if NATIVE.with(|n|n.get()) { c.native_console_restored(); }')
+        fixture = fixture.replace('c.native_console_restored();',
+            'if NATIVE.with(|n|n.get()) { c.native_console_restored(); }')
         # fixture_source has already filled its markers.
         at = fixture.index('pub(super) fn owner(')
         fixture = fixture[:at] + transitions + '\n' + fixture[at:]

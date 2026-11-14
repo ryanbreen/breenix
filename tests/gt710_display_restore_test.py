@@ -34,6 +34,7 @@ def fixture_source():
         'pub(super) fn owner(', 'fn publish_owner(', 'pub(super) fn back(',
         'pub(super) fn ended(', 'pub(super) fn restore()', 'pub(super) fn restored(',
         'pub(super) fn readable(', 'pub(super) fn binding(',
+        'pub(super) fn activate_mode(',
     ])
     screen_methods = '\n'.join(item(screen, marker) for marker in [
         'fn fenced(', 'fn upload(', 'fn flush(', 'fn bind(', 'fn show(',
