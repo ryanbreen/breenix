@@ -660,6 +660,11 @@ impl Transition {
         }
         Ok(guard)
     }
+    /// CRC reuses the native notifier, so acceptance alone is insufficient.
+    /// Let the adapter consume the latch/ready receipt before excluding bindings.
+    pub(super) fn for_crc(deadline: Option<u64>) -> Result<Self, i64> {
+        Self::acquire(deadline)
+    }
     /// A transition for SCANOUT_READBACK: the window layer authorized the observer, which
     /// need not own the display; the binding cannot change while it is held.
     pub(super) fn for_window_observer(deadline: Option<u64>) -> Result<Self, i64> {

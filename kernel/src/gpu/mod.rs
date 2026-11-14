@@ -5990,7 +5990,12 @@ fn read_back_impl(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Opt
             #[cfg(target_arch = "x86_64")] false, #[cfg(target_arch = "x86_64")] None)
         .map_err(|stop| match stop { Stop::Timeout => ETIMEDOUT, Stop::Interrupted => EINTR })?;
         Some(if window {
-            display::Transition::for_window_observer(deadline).map_err(|errno| {
+            let transition = if crc.is_some() {
+                display::Transition::for_crc(deadline)
+            } else {
+                display::Transition::for_window_observer(deadline)
+            };
+            transition.map_err(|errno| {
                 if observer == Observer::Window && errno == ETIMEDOUT {
                     Refused::Eio(readback_reason::BINDING_UNKNOWN, 0)
                 } else { Refused::Errno(errno) }
