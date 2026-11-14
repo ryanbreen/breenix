@@ -35,7 +35,7 @@ fn irq_overflow_fills_the_claimed_static_snapshot_in_place() {
 fn first_overflow_preserves_progress_and_suspended_site_once() {
     let progress = Progress::new();
     let command = Lane::new();
-    let failure = FirstFailure::new();
+    let failure = FirstFailure::new(([0; progress::COUNT], 0));
     assert!(failure.take().is_none(), "passing input must remain silent");
     progress.note(Count::Push);
     progress.note(Count::Pop);
@@ -47,17 +47,21 @@ fn first_overflow_preserves_progress_and_suspended_site_once() {
     }
     assert_eq!(command.site(), Site::Stream as u64);
     outer.at(Site::Stream);
-    assert!(failure.capture(|| (progress.sample(), command.site(), 256)));
+    assert!(failure.capture(|snapshot| {
+        snapshot.0 = progress.sample();
+        snapshot.1 = command.site();
+        assert!(failure.take().is_none(), "unfinished capture must stay private");
+        assert!(!failure.capture(|_| unreachable!("slot is already claimed")));
+    }));
     progress.note(Count::Push);
     drop(outer);
     for _ in 0..4096 {
-        assert!(!failure.capture(|| unreachable!("later overflows must not resample")));
+        assert!(!failure.capture(|_| unreachable!("later overflows must not resample")));
     }
-    let (counts, site, queue_len) = failure.take().expect("first overflow must be retained");
+    let (counts, site) = failure.take().expect("first overflow must be retained");
     assert_eq!(counts[Count::Push as usize], 1);
     assert_eq!(counts[Count::Pop as usize], 1);
     assert_eq!(site, Site::Stream as u64);
-    assert_eq!(queue_len, 256);
     assert_eq!(command.site(), Site::Idle as u64);
     assert!(
         failure.take().is_none(),

@@ -17,9 +17,13 @@ mod input {
             pub use crate::progress::Count;
             use crate::progress::{FirstFailure, Progress, COUNT};
             pub static PROGRESS: Progress = Progress::new();
-            pub static FAILURE: FirstFailure<(usize, [u64; COUNT])> = FirstFailure::new();
+            pub static FAILURE: FirstFailure<(usize, [u64; COUNT])> =
+                FirstFailure::new((0, [0; COUNT]));
             pub fn capture_overflow(len: usize) {
-                FAILURE.capture(|| (len, PROGRESS.sample()));
+                FAILURE.capture(|snapshot| {
+                    snapshot.0 = len;
+                    snapshot.1 = PROGRESS.sample();
+                });
             }
         }
     }

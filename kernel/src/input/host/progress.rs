@@ -1,7 +1,6 @@
 //! Fixed-storage witnesses for #2572. Recording never waits or formats output.
 use core::{
     cell::UnsafeCell,
-    mem::MaybeUninit,
     sync::atomic::{AtomicU64, AtomicU8, Ordering},
 };
 
@@ -172,19 +171,19 @@ impl Drop for At<'_> {
 /// A second overflow never waits for the writer or overwrites its evidence.
 pub struct FirstFailure<T: Copy> {
     state: AtomicU8,
-    value: UnsafeCell<MaybeUninit<T>>,
+    value: UnsafeCell<T>,
 }
 // SAFETY: the state protocol gives one writer exclusive access until Release
 // publication. The sole reader acquires that publication; storage is never reused.
 unsafe impl<T: Copy + Send> Sync for FirstFailure<T> {}
 impl<T: Copy> FirstFailure<T> {
-    pub const fn new() -> Self {
+    pub const fn new(value: T) -> Self {
         Self {
             state: AtomicU8::new(0),
-            value: UnsafeCell::new(MaybeUninit::uninit()),
+            value: UnsafeCell::new(value),
         }
     }
-    pub fn capture(&self, sample: impl FnOnce() -> T) -> bool {
+    pub fn capture(&self, sample: impl FnOnce(&mut T)) -> bool {
         if self
             .state
             .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
@@ -193,8 +192,9 @@ impl<T: Copy> FirstFailure<T> {
             return false;
         }
         // SAFETY: only the winner of 0 -> 1 writes, before publishing state 2.
+        // Fill the slot directly: an IRQ caller must not build T on its stack.
         unsafe {
-            (*self.value.get()).write(sample());
+            sample(&mut *self.value.get());
         }
         self.state.store(2, Ordering::Release);
         true
@@ -204,6 +204,6 @@ impl<T: Copy> FirstFailure<T> {
             .compare_exchange(2, 3, Ordering::Acquire, Ordering::Relaxed)
             .ok()?;
         // SAFETY: state 2 publishes an initialized value; it is never modified again.
-        Some(unsafe { (*self.value.get()).assume_init_read() })
+        Some(unsafe { *self.value.get() })
     }
 }

@@ -95,22 +95,36 @@ mod failure {
         last_accept: u64,
         last_ack: u64,
     }
-    static FIRST: FirstFailure<Snapshot> = FirstFailure::new();
+    static FIRST: FirstFailure<Snapshot> = FirstFailure::new(Snapshot {
+        counts: [0; COUNT],
+        sites: [0; 3],
+        rx_len: 0,
+        tasks: 0,
+        parked: None,
+        ns: 0,
+        rows: [ThreadSample::empty(0); 19],
+        census_total: 0,
+        last_accept: 0,
+        last_ack: 0,
+    });
 
     pub fn capture_overflow(rx_len: usize) {
-        FIRST.capture(|| {
+        FIRST.capture(|snapshot| {
             // Freeze progress before taking bounded scheduler observations. These
             // are concurrent witnesses, not a globally atomic scheduler image.
-            let counts = PROGRESS.sample();
-            let sites = [COMMAND.site(), INPUT.site(), RENDER.site()];
-            let last_accept = LAST_ACCEPT.load(Ordering::Relaxed);
-            let last_ack = LAST_ACK.load(Ordering::Relaxed);
+            snapshot.counts = PROGRESS.sample();
+            snapshot.sites = [COMMAND.site(), INPUT.site(), RENDER.site()];
+            snapshot.last_accept = LAST_ACCEPT.load(Ordering::Relaxed);
+            snapshot.last_ack = LAST_ACK.load(Ordering::Relaxed);
+            snapshot.rx_len = rx_len;
             let (tid, tasks, parked) = crate::task::executor::input_snapshot();
+            snapshot.tasks = tasks;
+            snapshot.parked = parked;
             let (s, n) = crate::time::get_monotonic_time_ns();
+            snapshot.ns = s.saturating_mul(1_000_000_000).saturating_add(n);
             let mut tids = [0; 16];
-            let census_total = crate::task::dispatch_strand_census::outstanding_tids(&mut tids);
-            let mut rows = [ThreadSample::empty(0); 19];
-            for (row, tid) in rows.iter_mut().zip(
+            snapshot.census_total = crate::task::dispatch_strand_census::outstanding_tids(&mut tids);
+            for (row, tid) in snapshot.rows.iter_mut().zip(
                 [
                     tid,
                     INPUT_TID.load(Ordering::Relaxed),
@@ -122,18 +136,6 @@ mod failure {
                 if tid != 0 {
                     *row = crate::task::scheduler::input_thread_snapshot(tid);
                 }
-            }
-            Snapshot {
-                counts,
-                sites,
-                rx_len,
-                tasks,
-                parked,
-                ns: s.saturating_mul(1_000_000_000).saturating_add(n),
-                rows,
-                census_total,
-                last_accept,
-                last_ack,
             }
         });
     }
