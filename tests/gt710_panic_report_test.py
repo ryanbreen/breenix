@@ -3,14 +3,15 @@ import runpy
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
+from gt710_runtime_catalogue_test import BOARD_TEXT
 
 ROOT = Path(__file__).resolve().parents[1]
 API = runpy.run_path(str(ROOT / 'scripts/metal/gt710-suite'))
-VALID = ('KERNEL PANIC: capture_panic_oracle: deliberate panic\n'
+VALID = BOARD_TEXT + ('KERNEL PANIC: capture_panic_oracle: deliberate panic\n'
          '[BXCAP:BEGIN seq=1 edge=PANIC]\n'
          '[BXCAP:END seq=1 edge=PANIC verdict=complete truncated=0 sections_skipped=0]\n'
-         '[GPU_PANIC_SCREEN shown=1 observed=1 pixels=4096000 mismatches=0]\n'
-         '[GPU_PANIC_NATIVE target=42 bound=42 poisons=55,aa equal=1 firmware_writes=0]\n')
+         '[GPU_PANIC_SCREEN shown=1 observed=1 pixels=1310720 mismatches=0]\n'
+         '[GPU_PANIC_NATIVE target=42 bound=42 width=1280 height=1024 poisons=55,aa equal=1 firmware_writes=0]\n')
 
 
 def producer(text):
@@ -35,7 +36,7 @@ class NativePanic(unittest.TestCase):
             VALID.replace('observed=1', 'observed=0'),
             VALID.replace('shown=1', 'shown=0'),
             VALID + '[BXCAP:BEGIN seq=2 edge=LOCKUP]\n',
-            VALID + '[GPU_PANIC_NATIVE target=42 bound=42 poisons=55,aa equal=1 firmware_writes=0]\n',
+            VALID + '[GPU_PANIC_NATIVE target=42 bound=42 width=1280 height=1024 poisons=55,aa equal=1 firmware_writes=0]\n',
             VALID.split('[GPU_PANIC_SCREEN')[0],
         ):
             with self.subTest(serial=bad), self.assertRaises(ValueError):

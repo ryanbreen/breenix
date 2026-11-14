@@ -17,11 +17,12 @@ MEMORY = runpy.run_path(str(ROOT / 'tests/gt710_memory_report_test.py'))
 @lru_cache(maxsize=None)
 def capture(kind):
     path, function = {
-        'mode': ('gt710_native_report_test.py', 'capture'),
+        'mode': ('gt710_raster_report_test.py', 'capture'),
         'switches': ('gt710_switch_report_test.py', 'switch_capture'),
         'flips': ('gt710_flip_report_test.py', 'capture'),
     }[kind]
-    return runpy.run_path(str(ROOT / 'tests' / path))[function]()
+    make = runpy.run_path(str(ROOT / 'tests' / path))[function]
+    return make(fast=False) if kind == 'mode' else make()
 
 
 def logical_console():
@@ -35,11 +36,9 @@ def console_event(sequence=1, event='handoff', mode=1):
     row = DISPLAY['row'](mode)
     row.update(sequence=sequence, event=event, resource=0xffffffff,
                requested=0x30000000 if mode else 0x32000000,
-               console=[0x30000000, 2560*1600*4])
+               console=[0x30000000, 1280*1024*4])
     row['active'][0] = row['armed'][0] = row['requested'] >> 8
-    row['allocation'] = [row['requested'], row['pitch'] * (1600 if mode else 800)]
-    timing = MEMORY['board']['modes'][0]
-    row['raster'] = [0, timing['width'] | timing['height'] << 16]
+    row['allocation'] = [row['requested'], row['pitch'] * (1024 if mode else 768)]
     return row
 
 

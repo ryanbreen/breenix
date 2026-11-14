@@ -4,8 +4,8 @@
 //! (`common::context`). Rendering intervals end with a dependent readback compared with
 //! the suite's expectation. Empty-submit latency measures SUBMIT through WAIT only;
 //! wait-no-spin measures WAIT's CPU and wall time, then validates its output. The throughput draws cannot be culled: the
-//! rectangles do not overlap and the coverage draw blends. Whole-target comparisons run
-//! after the timed interval, outside it.
+//! rectangles do not overlap and the coverage draw blends. Final target comparisons run
+//! after the timed interval; rate cases verify the exact view once after the sample.
 use super::common::*;
 use super::pipelines::{crossings, edges};
 use gpu::abi::draw::{self, Instance};
@@ -17,8 +17,6 @@ const W: u32 = 2560;
 const H: u32 = 1600;
 const BG: u32 = 0xff312719;
 const FG: u32 = 0xffb76321;
-/// The 2560x1600 mode's index in `MODES` (`docs/gui/gpu-abi.md`, G7 display interface).
-const MODE_2560: u32 = 1;
 /// CLOCK_THREAD_CPUTIME_ID: the calling thread's user and system time.
 const THREAD_CPUTIME: u32 = 3;
 
@@ -50,15 +48,58 @@ fn thread_cpu_ns() -> R<u64> {
     Ok(ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64)
 }
 
-fn take_display_2560() -> R<()> {
+pub(super) fn take_display_2560() -> R<()> {
     libbreenix::graphics::take_over_display().map_err(|e| fail_msg(format!("take display: {e:?}")))?;
-    let r = gpu::set_mode(MODE_2560);
-    ensure(r == 0, || format!("SET_MODE 2560x1600: {}", errno(r)))
+    let (r, modes) = gpu::modes();
+    ensure(r == 0, || format!("MODES: {}", errno(r)))?;
+    let (index, _) = modes.mode_list()
+        .filter(|(_, m)| m.width >= W && m.height >= H)
+        .min_by_key(|(_, m)| u64::from(m.width) * u64::from(m.height))
+        .ok_or_else(|| fail_msg(format!("no display mode contains {W}x{H}: {:?}", modes.mode_list().collect::<Vec<_>>())))?;
+    let r = gpu::set_mode(index);
+    ensure(r == 0, || format!("SET_MODE {index} for {W}x{H}: {}", errno(r)))
 }
 
 fn present(ctx: u64, t: u64) -> R<()> {
-    let (r, p) = gpu::present(ctx, t);
-    ensure(r == 0 && p.answer == native_success()?, || format!("PRESENT: {} answer {:#x}", errno(r), p.answer))
+    let (ret, p) = gpu::present(ctx, t);
+    ensure(ret == 0 && p.fence != 0 && p.answer == native_success()?,
+        || format!("PRESENT: {} fence={} answer={:#x}", errno(ret), p.fence, p.answer))?;
+    wait_ok(ctx, p.fence, 0)
+}
+
+/// Prepare the containing-mode scanout once, outside the measured frames.
+/// The measured source remains 2560x1600 even when the display mode is taller.
+struct RateView {
+    target: u64,
+    copy: Vec<u32>,
+}
+
+impl RateView {
+    fn new(ctx: u64, source: u64) -> R<Self> {
+        let (r, modes) = gpu::modes();
+        ensure(r == 0, || format!("MODES: {}", errno(r)))?;
+        let mode = modes.current_mode().ok_or_else(|| fail_msg("MODES: invalid current mode".to_string()))?;
+        ensure(mode.width >= W && mode.height >= H,
+            || format!("display does not contain the {W}x{H} performance view"))?;
+        if (mode.width, mode.height) == (W, H) {
+            return Ok(Self { target: source, copy: Vec::new() });
+        }
+        let target = scanout_target(format::B8G8R8A8, mode.width, mode.height)?;
+        let mut view = Self { target, copy: Vec::new() };
+        // Clear the area outside the source once, before starting the sample.
+        // Seed copy before the fallible frame so Drop owns the temporary target.
+        encode::begin(&mut view.copy, target);
+        encode::copy(&mut view.copy, source, [0, 0, W, H], target, [0, 0]);
+        frame(ctx, &scene(target, 0xff181512, &[]))?;
+        Ok(view)
+    }
+
+}
+
+impl Drop for RateView {
+    fn drop(&mut self) {
+        if !self.copy.is_empty() { let _ = gpu::resource_destroy(self.target); }
+    }
 }
 
 /// Colour `n` of a sequence, so consecutive frames of a timed run differ.
@@ -113,14 +154,21 @@ pub fn clear_rate_2560() -> CaseResult {
     take_display_2560()?;
     let ctx = context()?;
     let targets = [scanout_target(format::B8G8R8A8, W, H)?, scanout_target(format::B8G8R8A8, W, H)?];
-    let start = now_ns();
-    for n in 0..FRAMES {
-        let t = targets[(n % 2) as usize];
+    let views = [RateView::new(ctx, targets[0])?, RateView::new(ctx, targets[1])?];
+    let streams: Vec<_> = (0..FRAMES).map(|n| {
         let mut s = Vec::new();
-        encode::begin(&mut s, t);
+        let view = &views[(n % 2) as usize];
+        encode::begin(&mut s, view.target);
+        if !view.copy.is_empty() {
+            s.extend_from_slice(&[stream::cmd::SCISSOR, 6, 0, 0, W, H]);
+        }
         encode::clear(&mut s, colour(n));
-        submit(ctx, &s)?;
-        present(ctx, t)?;
+        s
+    }).collect();
+    let start = now_ns();
+    for n in 0..FRAMES as usize {
+        submit(ctx, &streams[n])?;
+        present(ctx, views[n % 2].target)?;
     }
     let last = colour(FRAMES - 1);
     all(&read_rect(0, [W - 16, H - 16, 16, 16])?, last, "the scanout after the last presented clear")?;
@@ -129,7 +177,19 @@ pub fn clear_rate_2560() -> CaseResult {
     ensure(rate_met(FRAMES, us, CLEARS_PER_S), || {
         format!("{FRAMES} presented 2560x1600 clears took {us} us, under {CLEARS_PER_S} a second")
     })?;
-    all_judged(read_rect(0, [0, 0, W, H])?, last, "the whole scanout after the last presented clear", W, H)
+    all_judged(read_rect(0, [0, 0, W, H])?, last, "the whole scanout after the last presented clear", W, H)?;
+    let last_index = ((FRAMES - 1) % 2) as usize;
+    if !views[last_index].copy.is_empty() {
+        // Reconstruct the source for present_view's exact comparison after the
+        // sample; the timed clears write the scanout directly.
+        let mut copy = Vec::new();
+        encode::begin(&mut copy, targets[last_index]);
+        encode::copy(&mut copy, views[last_index].target, [0, 0, W, H], targets[last_index], [0, 0]);
+        frame(ctx, &copy)?;
+    }
+    present_view(ctx, targets[last_index])?
+        .ok_or_else(|| fail_msg(format!("display does not contain the {W}x{H} performance view")))?;
+    pass()
 }
 
 pub fn rect_throughput() -> CaseResult {
@@ -315,6 +375,7 @@ pub fn first_draw_latency() -> CaseResult {
 
 pub fn readback_time_2560() -> CaseResult {
     let _case = begin()?;
+    take_display_2560()?;
     let ctx = context()?;
     let t = target(format::B8G8R8A8, W, H)?;
     frame(ctx, &scene(t, FG, &[]))?;
@@ -373,6 +434,7 @@ fn coverage(f: u32, b: u32, a: u8) -> u32 {
 
 pub fn coverage_throughput() -> CaseResult {
     let _case = begin()?;
+    take_display_2560()?;
     let ctx = context()?;
     let mask: Vec<u8> = (0..W * H).map(|i| ((i % W) * 7 + (i / W) * 13) as u8).collect();
     let tex = texture(ctx, format::R8, W, H, &mask)?;
@@ -476,9 +538,14 @@ pub fn present_rate_2560() -> CaseResult {
     for (t, c) in targets.iter().zip(colours) {
         frame(ctx, &scene(*t, c, &[]))?;
     }
+    let views = [RateView::new(ctx, targets[0])?, RateView::new(ctx, targets[1])?];
+    // Populate the two static sources' containing views before timing.
+    for view in &views {
+        if !view.copy.is_empty() { frame(ctx, &view.copy)?; }
+    }
     let start = now_ns();
     for n in 0..FRAMES as usize {
-        present(ctx, targets[n % 2])?;
+        present(ctx, views[n % 2].target)?;
         all(&read_rect(0, [W - 16, H - 16, 16, 16])?, colours[n % 2], "the alternating scanout")?;
     }
     all(&read_rect(0, [W - 16, H - 16, 16, 16])?, colours[(FRAMES as usize - 1) % 2], "the scanout after the last present")?;
@@ -487,5 +554,8 @@ pub fn present_rate_2560() -> CaseResult {
     ensure(rate_met(FRAMES, us, PRESENTS_PER_S), || {
         format!("{FRAMES} presents alternating two 2560x1600 targets took {us} us, under {PRESENTS_PER_S} a second")
     })?;
-    all_judged(read_rect(0, [0, 0, W, H])?, colours[(FRAMES as usize - 1) % 2], "the whole final scanout", W, H)
+    all_judged(read_rect(0, [0, 0, W, H])?, colours[(FRAMES as usize - 1) % 2], "the whole final scanout", W, H)?;
+    present_view(ctx, targets[(FRAMES as usize - 1) % 2])?
+        .ok_or_else(|| fail_msg(format!("display does not contain the {W}x{H} performance view")))?;
+    pass()
 }

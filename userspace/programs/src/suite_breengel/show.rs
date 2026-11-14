@@ -23,14 +23,23 @@ pub(crate) const PANEL: &[Case] = &[
     case("stage-hidpi", "The full HiDPI stage has scaled geometry and independently rasterized text", panel_stage_hidpi),
 ];
 
+pub(crate) fn scale2_mode() -> Result<libbreenix::gpu::abi::Mode,breenix_suite::suite::CaseError> {
+    let list=bgl::modes().map_err(|r|format!("MODES {}",outcome(r)))?;
+    let (index,mode)=list.scale2_mode().ok_or("scale-2 mode absent")?;
+    libbreenix::graphics::take_over_display().map_err(|e|format!("take display: {e:?}"))?;
+    bgl::set_mode(index).map_err(|r|format!("SET_MODE {}",outcome(r)))?;
+    Ok(mode)
+}
+
 // gpu-display: §2.2 replaces fb_info with GPU MODES, including R4 physical scale; capacity checks remain.
 fn composition_fbinfo_geometry() -> CaseResult {
+    let expected=scale2_mode()?;
     crate::display_regressions::many_windows()?;
     let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r))).cite("18")?;
-    ensure(modes.current<modes.count && modes.count==2,"18","gpu-display: mode catalogue is incomplete")?;
-    let mode=modes.modes[modes.current as usize];
-    ensure((mode.width,mode.height,mode.scale)==(2560,1600,2),"18",
-        format!("gpu-display: active mode is {}x{} scale {}; expected 2560x1600 scale 2",mode.width,mode.height,mode.scale))?;
+    ensure(modes.current<modes.count && modes.count as usize==modes.mode_list().count(),"18","gpu-display: mode catalogue is incomplete")?;
+    let mode=modes.current_mode().expect("MODES current index is listed");
+    ensure(mode==expected,"18",
+        format!("gpu-display: active mode {mode:?}; expected {expected:?}"))?;
     ensure(modes.binding_known==1 && modes.scanout_resource!=0,"18","gpu-display: the current mode has no completed scanout binding")
 }
 
@@ -108,19 +117,7 @@ fn panel_judged_frame_shown() -> CaseResult { breenix_suite::suite::showcase_che
 fn panel_serial_agreement() -> CaseResult { breenix_suite::suite::showcase_check("serial-agreement") }
 fn panel_quiet_window() -> CaseResult { breenix_suite::suite::showcase_check("quiet-window") }
 fn panel_boot_ribbon() -> CaseResult {
-    let (width,height)=crate::window_cases::composition::screen_size()?;
-    let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r))).cite("23.7")?;
-    let scale=modes.modes[modes.current as usize].scale as usize;
-    // B36: independent contract geometry, including native rasters outside the stage aspect.
-    let (left,top,span,thickness,units)=if scale>0 && width==1280*scale && height==800*scale {
-        (112,772,1152,6,scale)
-    } else {
-        let (glyph,line)=[(14,34),(11,26),(9,22),(7,18)].into_iter()
-            .find(|&(g,l)|width/g>=128 && height/l>=36).unwrap_or((7,18));
-        ensure(width>16*glyph && height>=2*line+48,"23.7","mode cannot hold the native status panel")?;
-        (14*glyph,height-(2*line+48)+line+32+(line-6)/2,width-16*glyph,6,1)
-    };
-    use crate::window_cases::composition::{give_back, take_over, screen};
+    use crate::window_cases::composition::{give_back, take_over, console_screen};
     for faulty in [true,false] {
         let before=std::fs::read_to_string("/proc/breenix/boot-ribbon").map_err(|e|format!("producer stage records: {e}"))?;
         #[cfg(target_arch="aarch64")]
@@ -152,8 +149,25 @@ fn panel_boot_ribbon() -> CaseResult {
         ensure(!reached.is_empty() && reached.iter().any(|v|*v),"23.7","no actual producer stages were observed")?;
         if faulty {libbreenix::test_control::arm(15,0,0)?;}
         ensure(give_back()>=0,"23.7","give back for kernel ribbon failed")?;
-        let result=screen();let took=take_over();ensure(took>=0,"23.7","retake after ribbon failed")?;
-        let (px,_)=result?;let mut mismatch=false;
+        let result=console_screen();
+        let modes=bgl::modes();
+        let took=take_over();ensure(took>=0,"23.7","retake after ribbon failed")?;
+        let (px,rec)=result?;
+        let modes=modes.map_err(|r|format!("gpu-display: MODES {}",outcome(r))).cite("23.7")?;
+        let scale=modes.current_mode().ok_or("kernel console has no listed current mode").cite("23.7")?.scale as usize;
+        use libbreenix::gpu::abi::record;
+        let (width,height)=(crate::window_cases::handoff::word(&rec,record::WIDTH) as usize,
+            crate::window_cases::handoff::word(&rec,record::HEIGHT) as usize);
+        // B36: independent contract geometry, including native rasters outside the stage aspect.
+        let (left,top,span,thickness,units)=if scale>0 && width==1280*scale && height==800*scale {
+            (112,772,1152,6,scale)
+        } else {
+            let (glyph,line)=[(14,34),(11,26),(9,22),(7,18)].into_iter()
+                .find(|&(g,l)|width/g>=128 && height/l>=36).unwrap_or((7,18));
+            ensure(width>16*glyph && height>=2*line+48,"23.7","mode cannot hold the native status panel")?;
+            (14*glyph,height-(2*line+48)+line+32+(line-6)/2,width-16*glyph,6,1)
+        };
+        let mut mismatch=false;
         for (i,&lit) in reached.iter().enumerate() {
             let a=left+span*i/reached.len();let b=left+span*(i+1)/reached.len();let gap_start=a.max(b.saturating_sub(2));
             let rgb=if lit {[77,112,26,255]}else{[96,67,48,255]};
@@ -172,9 +186,10 @@ fn stage_fixture(name:&str)->CaseResult {
 }
 
 fn scaled_stage(name:&str)->CaseResult {
+    let expected=scale2_mode()?;
     let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r))).cite("23")?;
-    let mode=modes.modes[modes.current as usize];
-    ensure((mode.width,mode.height,mode.scale)==(2560,1600,2),"23","gpu-display: stage is not in the required scale-2 GPU mode")?;
+    let mode=modes.current_mode().expect("MODES current index is listed");
+    ensure(mode==expected,"23","gpu-display: stage is not in the required scale-2 GPU mode")?;
     stage_fixture(name)
 }
 

@@ -14,23 +14,23 @@ static RECOVERY_WAITERS:WaitQueueHead=WaitQueueHead::new();
 static WAITING:AtomicBool=AtomicBool::new(false);
 static WAITERS:WaitQueueHead=WaitQueueHead::new();
 struct Work {a:Channel,b:Channel,ticket:Option<Ticket>,request:Request,seed:u32,baseline:memory::allocator::Stats,old:[u32;3],userd:Allocation,engine:Engine}
-pub(super) struct Session {pub(super) layout:memory::Layout,pub(super) registers:usize,pub(super) bar:usize,pub(super) bi:u64,pub(super) bd:u64,pub(super) pte:u64,pub(super) total:u64,console:super::super::ConsoleSurface,mode:u32,output_perturbation:super::super::display_crc::Perturbation,evo:super::super::native::Evo,pending_present:Option<super::super::present::Surface>,ready_present:Option<super::super::present::Receipt>,scanout:Vec<super::super::resource::Hold>,work:Option<Work>,resources:super::super::resource::Resources<crate::gpu::dma::Pages>}
+pub(super) struct Session {pub(super) layout:memory::Layout,pub(super) registers:usize,pub(super) bar:usize,pub(super) bi:u64,pub(super) bd:u64,pub(super) pte:u64,pub(super) total:u64,console:super::super::ConsoleSurface,modes:Vec<gpu_abi::Mode>,mode:u32,output_perturbation:super::super::display_crc::Perturbation,evo:super::super::native::Evo,pending_present:Option<super::super::present::Surface>,ready_present:Option<super::super::present::Receipt>,scanout:Vec<super::super::resource::Hold>,work:Option<Work>,resources:super::super::resource::Resources<crate::gpu::dma::Pages>}
 pub(in crate::gk208) fn test_ownership()->Result<(),&'static str> {
     if CORE_STARTED.load(Ordering::Acquire) {return Err("native GPU core owns FIFO");}
     Ok(())
 }
-pub(crate) fn retain(mut layout:memory::Layout,regs:usize,bar:usize,console:super::super::ConsoleSurface,mut evo:super::super::native::Evo)->Result<super::super::ConsoleSurface,&'static str> {
+pub(crate) fn retain(mut layout:memory::Layout,regs:usize,bar:usize,console:super::super::ConsoleSurface,mut evo:super::super::native::Evo,modes:Vec<gpu_abi::Mode>)->Result<super::super::ConsoleSurface,&'static str> {
     test_ownership()?;
     let device=crate::drivers::pci::find_device(0x10de,0x128b).ok_or("native PCI device absent")?;
     super::super::display_evidence::baseline(console.firmware_baseline);
     let console=super::super::native::logical_console(&mut Registers(regs),&mut layout,
-        &mut evo,console,bar,device.bars[1].size)?;
+        &mut evo,console,bar,device.bars[1].size,&modes)?;
     let native=layout.objects[4].range.start;
     let table=layout.objects.iter().find(|o|o.name=="bar1-table")
         .ok_or("logical console BAR table absent")?.range.start;
     let s=layout.allocator.stats();
     *SESSION.lock()=Some(Session{layout,registers:regs,bar,bi:native+0x2000,bd:native+0x3000,
-        pte:table+(SLOT/4096)*8,total:s.reserved+s.charged+s.free,console,mode:1,output_perturbation:super::super::display_crc::Perturbation::new(),evo,pending_present:None,ready_present:None,scanout:Vec::new(),work:None,resources:super::super::resource::Resources::new()});
+        pte:table+(SLOT/4096)*8,total:s.reserved+s.charged+s.free,console,modes,mode:1,output_perturbation:super::super::display_crc::Perturbation::new(),evo,pending_present:None,ready_present:None,scanout:Vec::new(),work:None,resources:super::super::resource::Resources::new()});
     Ok(console)
 }
 pub(in crate::gk208) fn initialize_core()->Result<(),&'static str> {
@@ -48,6 +48,7 @@ pub(in crate::gk208) fn initialize_core()->Result<(),&'static str> {
     })();
     // Builders borrow SESSION. Restore it before probing, without holding its
     // lock across device submission/reaping or storage retirement.
+    let modes = s.modes.clone();
     *SESSION.lock()=Some(s);
     let mut native = result?;
     crate::gpu::dev::select_gk208();
@@ -57,7 +58,7 @@ pub(in crate::gk208) fn initialize_core()->Result<(),&'static str> {
         core::mem::forget(native);
         return Err(error);
     }
-    crate::gpu::install_native(native)
+    crate::gpu::install_native(native, modes)
 }
 
 impl Session {
@@ -140,6 +141,9 @@ fn recovery_read()->Result<Vec<u8>,i32> {
     if !RECOVERY_STARTED.load(Ordering::Acquire) && SESSION.lock().is_none() {return Ok(b"unavailable\n".to_vec());}
     if !RECOVERY_STARTED.swap(true,Ordering::AcqRel) {
         let started=crate::task::kthread::kthread_run(|| {
+            // Finish any console receipt before moving its session out, as
+            // core and clock startup do. Keep rendering paused through restore.
+            let _canvas=crate::console::hold_canvas();
             let owned={SESSION.lock().take()};
             let result=if let Some(mut s)=owned {
                 let result=if s.work.is_some() {Err("native deferred work still owned")} else {super::recovery::probe(&mut s)};
@@ -266,8 +270,7 @@ pub(crate) fn console_state() -> Option<(gpu_abi::Mode, u64, bool, u64)> {
     let s = &session.console;
     let bound = super::super::console_binding(s).is_ok();
     let writes = crate::firmware_writes::count().checked_sub(s.firmware_baseline)?;
-    let (width,height,scale)=if session.mode==0 {(1280,800,1)} else {(2560,1600,2)};
-    Some((gpu_abi::Mode { width, height, scale, reserved: 0 }, u64::from(u32::MAX), bound, writes))
+    Some((session.modes[session.mode as usize], u64::from(u32::MAX), bound, writes))
 }
 
 pub(in crate::gk208) fn console_allocation() -> Option<(super::super::ConsoleSurface, Allocation)> {
@@ -304,7 +307,7 @@ pub(in crate::gk208) fn present(surface:super::super::present::Surface)
     // binding latches. Normal admission has already waited in the shared core.
     if let Some(pending) = s.pending_present.take() {
         if s.ready_present.take().is_none() {
-            super::super::native::wait_present(&mut s.evo,&mut Registers(s.registers),pending)?;
+            super::super::native::wait_present(&mut s.evo,&mut Registers(s.registers),pending,s.mode)?;
         }
     }
     let hold=s.resources.hold(surface.resource)?;
@@ -313,7 +316,7 @@ pub(in crate::gk208) fn present(surface:super::super::present::Surface)
     s.scanout.push(hold);
     // EVO retires its slot on failure. Keep uncertain scanout pins, but only
     // retain session work after acceptance has established the EVO record.
-    s.ready_present=super::super::native::present_accepted(&mut s.evo,&mut Registers(s.registers),surface)?;
+    s.ready_present=super::super::native::present_accepted(&mut s.evo,&mut Registers(s.registers),surface,s.mode)?;
     s.pending_present=Some(surface);
     Ok(())
 }
@@ -330,14 +333,14 @@ pub(in crate::gk208) fn present_complete(surface:super::super::present::Surface)
     // ordinary flip notifier, which may still contain an older completion.
     let receipt=match s.ready_present.take() {
         Some(receipt)=>receipt,
-        None=>match super::super::native::present_latched(&mut s.evo,&mut Registers(s.registers),surface)? {
+        None=>match super::super::native::present_latched(&mut s.evo,&mut Registers(s.registers),surface,s.mode)? {
             Some(receipt)=>receipt,
             None=>{s.pending_present=Some(surface);return Ok(false);},
         },
     };
     let allocation=s.resources.scanout_allocation(surface.resource).ok_or("scanout allocation absent")?;
     super::super::display_evidence::transition(&mut Registers(s.registers),s.evo.head,surface,&receipt,
-        [allocation.start,allocation.size],[s.console.vram,s.console.bytes as u64],"flip")?;
+        [allocation.start,allocation.size],[s.console.vram,s.console.bytes as u64],"flip",s.mode)?;
     if receipt.notifier&1!=1 || receipt.active!=receipt.armed {
         return Err("native present receipt mismatch");
     }
@@ -364,32 +367,31 @@ pub(crate) fn observed_scanout() -> Result<u32, &'static str> {
 /// Serialize a logical mode switch with client display readers through the
 /// shared ownership transition. No core spin lock is held across EVO waits.
 pub(crate) fn set_mode(index:u32)->Result<(), &'static str> {
-    if index>1 {return Err("invalid native logical mode");}
     let mut owner=SESSION.lock();
     let mut diagnostics=None;
     let result=(|| {
         let s=owner.as_mut().ok_or("native display owner absent")?;
         if let Some(pending) = s.pending_present.take() {
             if s.ready_present.take().is_none() {
-                super::super::native::wait_present(&mut s.evo,&mut Registers(s.registers),pending)?;
+                super::super::native::wait_present(&mut s.evo,&mut Registers(s.registers),pending,s.mode)?;
             }
         }
-        let surface=if index==1 {
-            let c=s.console;
-            super::super::present::Surface{resource:u32::MAX,address:c.vram,
-                width:2560,height:1600,pitch:10240,block_height:0,format:0,dma:1}
-        } else {
-            let range=s.layout.objects.iter().find(|o|o.name=="logical-low")
-                .ok_or("logical low-mode allocation absent")?.range;
-            super::super::present::Surface{resource:u32::MAX,address:range.start,
-                width:1280,height:800,pitch:5120,block_height:0,format:0,dma:1}
+        let surface={
+            let mode=*s.modes.get(index as usize).ok_or("invalid native logical mode")?;
+            let pitch=(mode.width*4+255)&!255;
+            let address=if index==1 {s.console.vram} else {
+                s.layout.objects.iter().filter(|o|o.name=="logical-mode").nth(if index<1 {index as usize} else {index as usize-1})
+                    .ok_or("logical mode allocation absent")?.range.start
+            };
+            super::super::present::Surface{resource:u32::MAX,address,
+                width:mode.width,height:mode.height,pitch,block_height:0,format:0,dma:1}
         };
-        let receipt=super::super::native::present(&mut s.evo,&mut Registers(s.registers),surface)?;
+        let receipt=super::super::native::present(&mut s.evo,&mut Registers(s.registers),surface,index)?;
         diagnostics=Some(super::super::presentation_trace::snapshot());
         let allocation=s.layout.objects.iter().find(|o|o.range.start==surface.address)
             .ok_or("logical mode allocation absent")?.range;
         super::super::display_evidence::transition(&mut Registers(s.registers),s.evo.head,surface,&receipt,
-            [allocation.start,allocation.size],[s.console.vram,s.console.bytes as u64],"mode")?;
+            [allocation.start,allocation.size],[s.console.vram,s.console.bytes as u64],"mode",index)?;
         s.mode=index;
         s.scanout.clear();
         Ok(())
@@ -431,7 +433,7 @@ pub(in crate::gk208) fn capture_crc(checkpoint: super::super::display_crc::Check
     let notifier = s.layout.objects.iter().find(|o| o.name == "dma")
         .filter(|o|o.range.size==4096).ok_or("CRC notifier allocation absent")?.range.start;
     super::super::native::capture_crc(&mut s.evo, &mut Registers(s.registers),
-        notifier, surface, checkpoint, binding, mode, &mut s.output_perturbation)
+        notifier, surface, checkpoint, binding, mode, s.mode, &mut s.output_perturbation)
 }
 
 /// SESSION serializes disarm with the checkpoint and EVO publication.

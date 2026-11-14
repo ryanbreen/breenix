@@ -766,10 +766,25 @@ pub fn foreign_readback() -> CaseResult {
     pass()
 }
 
+/// Isolation needs a presentable full-screen resource, independent of panel size: the
+/// display's default mode (1280x1024 on the GT 710, 2560x1600 on virtio).
+fn take_native_display() -> R<abi::Mode> {
+    let (r, modes) = gpu::modes();
+    ensure(r == 0, || format!("MODES: {}", errno(r)))?;
+    let index = modes.current;
+    let mode = modes.current_mode()
+        .ok_or_else(|| fail_msg(format!("current mode {index} absent: {:?}", modes.mode_list().collect::<Vec<_>>())))?;
+    graphics::take_over_display().map_err(|e| fail_msg(format!("take display: {e:?}")))?;
+    let r = gpu::set_mode(index);
+    ensure(r == 0, || format!("SET_MODE {index}: {}", errno(r)))?;
+    Ok(mode)
+}
+
 pub fn display_context_unreachable() -> CaseResult {
     let _case = begin()?;
     let ctx = context()?;
-    let t = scanout_target(format::B8G8R8A8, 2560, 1600)?;
+    let mode = take_native_display()?;
+    let t = scanout_target(format::B8G8R8A8, mode.width, mode.height)?;
     let rects = [([2, 2, 10, 8], BLUE)];
     frame(ctx, &scene(t, GREY, &rects))?;
     graphics::take_over_display().map_err(|e| fail_msg(format!("take display: {e:?}")))?;
@@ -826,7 +841,8 @@ pub fn no_addresses() -> CaseResult {
         handle_form(h, "a context handle")?;
         let _ = gpu::context_destroy(h);
     }
-    let t = scanout_target(format::B8G8R8A8, 2560, 1600)?;
+    let mode = take_native_display()?;
+    let t = scanout_target(format::B8G8R8A8, mode.width, mode.height)?;
     let tex = gpu::texture_create(format::R8, 8, 8).map_err(|e| fail_msg(format!("texture: {}", errno(e))))?;
     let buf = gpu::buffer_create(4096).map_err(|e| fail_msg(format!("buffer: {}", errno(e))))?;
     for (h, what) in [(t, "a target handle"), (tex, "a texture handle"), (buf, "a buffer handle")] {
@@ -1551,7 +1567,8 @@ pub fn killable_wait() -> CaseResult {
 pub fn client_cannot_scanout() -> CaseResult {
     let _case = begin()?;
     let ctx = context()?;
-    let t = scanout_target(format::B8G8R8A8, 2560, 1600)?;
+    let mode = take_native_display()?;
+    let t = scanout_target(format::B8G8R8A8, mode.width, mode.height)?;
     let rects = [([3, 3, 9, 9], RED)];
     frame(ctx, &scene(t, BLUE, &rects))?;
     graphics::take_over_display().map_err(|e| fail_msg(format!("take display: {e:?}")))?;
@@ -1559,7 +1576,7 @@ pub fn client_cannot_scanout() -> CaseResult {
     ensure(r == 0, || format!("the owner's PRESENT returned {}", errno(r)))?;
     let kid = spawn(|_| {
         let c = child(context())?;
-        let own = child(scanout_target(format::B8G8R8A8, 2560, 1600))?;
+        let own = child(scanout_target(format::B8G8R8A8, mode.width, mode.height))?;
         child(frame(c, &scene(own, GREEN, &[])).map(drop))?;
         let eperm = -abi::errno::EPERM;
         need(gpu::set_mode(0) == eperm, || "a client's valid SET_MODE was not refused with EPERM".to_string())?;
@@ -1588,6 +1605,7 @@ pub fn client_cannot_scanout() -> CaseResult {
 }
 
 pub fn irq_masked_bound() -> CaseResult {
+    use super::common::present_view_end_only as present_view;
     let _case = begin()?;
     let ctx = context()?;
     let small_t = target(format::B8G8R8A8, 8, 8)?;
@@ -1608,7 +1626,7 @@ pub fn irq_masked_bound() -> CaseResult {
     let (r, _) = gpu::upload(ctx, tex, [0, 0, w, h], &pixels, w * 4, abi::upload_source::B8G8R8A8, abi::purpose::IMAGE);
     ensure(r == 0, || format!("the full-screen UPLOAD returned {}", errno(r)))?;
     drop(pixels);
-    graphics::take_over_display().map_err(|e| fail_msg(format!("take display: {e:?}")))?;
+    super::performance::take_display_2560()?;
     for i in 0..10u32 {
         let mut s = Vec::new();
         encode::begin(&mut s, t);
@@ -1620,8 +1638,7 @@ pub fn irq_masked_bound() -> CaseResult {
         params[..4].copy_from_slice(&[0, 0, 0, 0]);
         abi::draw::encode(&mut s, pipeline::OVER, 0, tex, 0, 0, &[abi::draw::Instance { rect: [0, 0, w as i32, h as i32], params }]);
         frame(ctx, &s)?;
-        let (r, _) = gpu::present(ctx, t);
-        ensure(r == 0, || format!("PRESENT returned {}", errno(r)))?;
+        present_view(ctx, t)?.ok_or_else(|| fail_msg(format!("display does not contain the {w}x{h} IRQ workload")))?;
     }
     let mut px = vec![0u8; (w * h * 4) as usize];
     let mut rec = [0u8; record::SIZE];

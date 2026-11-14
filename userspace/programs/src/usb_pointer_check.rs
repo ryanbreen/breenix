@@ -290,7 +290,7 @@ fn screen_size() -> Result<(u32, u32), String> {
     if r != 0 {
         return Err(format!("MODES errno {}", -r));
     }
-    modes.modes.get(modes.current as usize).map(|m| (m.width, m.height)).ok_or_else(|| String::from("MODES has no current mode"))
+    modes.current_mode().map(|m| (m.width, m.height)).ok_or_else(|| String::from("MODES has no current mode"))
 }
 
 fn observe() -> (u32, u32, u32, i32) {

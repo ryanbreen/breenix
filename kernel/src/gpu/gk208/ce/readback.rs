@@ -299,11 +299,7 @@ impl Reader {
             device.bars[1].size,
             17,
         )?;
-        let console_offset = if (console.width, console.height) == (2560, 1600) {
-            16 << 20
-        } else {
-            displacement
-        };
+        let console_offset = super::super::native::console_bar_offset(console, displacement);
         let bar = console.pointer - console_offset;
         let old = [
             regs.read(0x2254),

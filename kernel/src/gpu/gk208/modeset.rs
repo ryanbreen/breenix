@@ -272,6 +272,25 @@ pub fn switch_sequence(modes: &[Timing]) -> Result<[Timing; 3], &'static str> {
     Ok([*low,high,*low])
 }
 
+/// Keep the preferred scale-1 mode at the kernel's index 1. Reserve one
+/// of MODES' ten slots for its exact scale-2 mode; optional sizes are bounded.
+pub fn display_modes(timings: &[Timing]) -> Result<Vec<(u32, u32, u32)>, &'static str> {
+    let high = *super::edid::native_raster(timings)?;
+    let scaled = (high.width.checked_mul(2).ok_or("scale-2 width overflow")?,
+        high.height.checked_mul(2).ok_or("scale-2 height overflow")?, 2);
+    let native = (high.width, high.height, 1);
+    let low = switch_sequence(timings).ok().map(|s| s[0])
+        .or_else(|| timings.iter().copied().find(|t| (t.width,t.height)!=(high.width,high.height)))
+        .map(|t| (t.width,t.height,1));
+    let mut modes = vec![low.unwrap_or(scaled), native];
+    for t in timings {
+        let mode = (t.width, t.height, 1);
+        if modes.len() < 9 && !modes.contains(&mode) { modes.push(mode); }
+    }
+    if low.is_some() { modes.push(scaled); }
+    Ok(modes)
+}
+
 pub fn detach_methods(head: u32, sor: u32) -> Result<[(u32,u32);2], &'static str> {
     if head >= 4 || sor >= 4 { return Err("invalid native display route"); }
     // NV927D: release ISO storage and SOR owner before a clock-changing UPDATE.
@@ -367,11 +386,10 @@ pub fn head_methods(
     Ok(m)
 }
 /// NV927D viewport fields are 15 bits (cl927d.h:1417-1434). The two
-/// logical modes use only unity and exact 2:1 reduction; fitting client targets
-/// use unity. This is a deliberate
-/// admission subset, not a claim about an undocumented general ratio limit.
-/// MIT nouveau head.c:180-218 permits input larger than output and centres
-/// aspect-preserving output; head907d.c:378-409 selects one-tap/no-bias scaling.
+/// native raster admits only the full extent at 1:1 or exact 2:1 reduction.
+/// Other EDID modes select their own raster; partial client targets are composed
+/// into a full-mode target before native presentation. No centring is needed.
+/// MIT head907d.c:378-409 selects one-tap/no-bias scaling.
 #[derive(Clone, Copy)]
 pub struct Viewport { input: (u32,u32), output: (u32,u32) }
 impl Viewport {
@@ -379,12 +397,10 @@ impl Viewport {
         Self::for_raster(t.width,t.height,width,height)
     }
     pub fn for_raster(rw:u32,rh:u32,width:u32,height:u32) -> Result<Self, &'static str> {
-        let output = match (width,height) {
-            (1280,800) | (2560,1600) if rw>=1280 && rh>=800 => (1280,800),
-            // Smaller client targets need no new scaler ratio: centre at 1:1.
-            _ if width<=rw && height<=rh => (width,height),
-            _ => return Err("unadmitted native scaler ratio"),
-        };
+        let output = if (width,height)==(rw,rh)
+            || (Some(width),Some(height))==(rw.checked_mul(2),rh.checked_mul(2)) {
+            (rw,rh)
+        } else { return Err("unadmitted native scaler ratio"); };
         if [rw,rh,width,height].iter().any(|&v|v==0 || v>0x7fff) {
             return Err("native viewport exceeds 15-bit fields");
         }
@@ -470,6 +486,7 @@ pub struct PllLimits {
     pub min_p: u8,
     pub max_p: u8,
 }
+#[derive(Clone)]
 pub struct Pll {
     pub n: u32,
     pub fraction: u16,
@@ -628,6 +645,7 @@ pub trait Io {
     fn read(&mut self, reg: usize) -> u32;
     fn write(&mut self, reg: usize, value: u32);
     fn delay_us(&mut self, us: u32);
+    fn live(&self) -> bool {true}
 }
 
 /// Pause measurement only while the prior window is healthy (G25).
@@ -661,6 +679,7 @@ fn mask(a: &mut impl Io, r: usize, m: u32, v: u32) {
 }
 pub fn wait(a: &mut impl Io, r: usize, mask: u32, value: u32) -> Result<(), &'static str> {
     for _ in 0..20000 {
+        if !a.live() {return Err("display deadline expired");}
         if a.read(r) & mask == value {
             return Ok(());
         }
@@ -794,6 +813,7 @@ pub enum Op {
 pub fn execute_ops(a: &mut impl Io, ops: &[Op]) {
     fn run(a: &mut impl Io, ops: &[Op], enabled: &mut bool) {
         for op in ops {
+            if !a.live() {return;}
             match op {
                 Op::Resume => { *enabled = true; continue; }
                 Op::Call(body) => {
@@ -812,6 +832,7 @@ pub fn execute_ops(a: &mut impl Io, ops: &[Op]) {
                 Op::ConditionTime { register, mask, value, attempts } => {
                     let mut met = false;
                     for _ in 0..attempts {
+                        if !a.live() {return;}
                         if a.read(register) & mask == value { met=true;break; }
                         a.delay_us(20000);
                     }
@@ -1162,4 +1183,72 @@ pub fn output_dither_methods(head: u32, previous: u32, enable: bool)
     if head >= 4 { return Err("invalid output dithering head"); }
     let value = if enable { (previous & !0x1ff) | 0x19 } else { previous };
     Ok([(0x4a0 + head * 0x300, value), (0x84, 0x80000000), (0x80, 0)])
+}
+
+/// Service one pending display supervisor phase using predecoded recipes.
+pub fn supervise(regs:&mut impl Io, limits:&PllLimits, coefficients:&Pll,
+    route:(u32,u32,bool,bool), scripts:&[Vec<Op>;4]) -> Result<(), &'static str> {
+    let (head, sor, attached, attaching) = route;
+    let h = head as usize * 0x800;
+    let errors = regs.read(0x61009c);
+    if errors != 0 {
+        return Err("native display method error");
+    }
+    let pending = regs.read(0x6100ac) & 7;
+    if pending != 0 {
+        let phase = if pending & 1 != 0 {
+            1
+        } else if pending & 2 != 0 {
+            2
+        } else {
+            4
+        };
+        let state = regs.read(0x6101d4 + h);
+        regs.write(0x6100ac, phase);
+        if state & 0x1000 != 0 {
+            if phase == 1 && attached {
+                execute_ops(regs, &scripts[0]);
+            }
+            if phase == 2 && attached {
+                execute_ops(regs, &scripts[1]);
+            }
+            if phase == 4 && attaching {
+                execute_ops(regs, &scripts[3]);
+            }
+        }
+        if phase == 2 && state & 0x10000 != 0 {
+            let r = limits.reg as usize;
+            mask(regs, r + 12, 0, 0x100);
+            regs.write(
+                r + 4,
+                coefficients.p << 16 | coefficients.n << 8 | coefficients.m,
+            );
+            regs.write(r + 16, u32::from(coefficients.fraction) << 16);
+        }
+        // Release power for an outgoing attachment; gate incoming scripts
+        // separately from the outgoing configuration.
+        if phase == 2 && state & 0x1000 != 0 && attached && !attaching {
+            let s = sor as usize * 0x800;
+            wait(regs, 0x61c004 + s, 0x80000000, 0)?;
+            mask(regs, 0x61c004 + s, 0x80000001, 0x80000000);
+            wait(regs, 0x61c004 + s, 0x80000000, 0)?;
+            wait(regs, 0x61c030 + s, 0x10000000, 0)?;
+        }
+        if phase == 2 && state & 0x1000 != 0 && attaching {
+            execute_ops(regs, &scripts[2]);
+            mask(regs, 0x612200 + h, 15, 0);
+            let s = sor as usize * 0x800;
+            mask(regs, 0x612300 + s, 0x007c0707, 0x0a << 18);
+            wait(regs, 0x61c004 + s, 0x80000000, 0)?;
+            mask(regs, 0x61c004 + s, 0x80000001, 0x80000001);
+            wait(regs, 0x61c004 + s, 0x80000000, 0)?;
+            wait(regs, 0x61c030 + s, 0x10000000, 0)?;
+        }
+        for i in 0..4 {
+            regs.write(0x6101d4 + i * 0x800, 0);
+        }
+        regs.write(0x6101d0, 0x80000000);
+    }
+    if !regs.live() {return Err("display deadline expired");}
+    Ok(())
 }

@@ -19,12 +19,14 @@ use super::*;
 use core::ops::Range;
 use display::Binding;
 
-/// The kernel screen's size: the display mode it returns to with no owner.
-pub const WIDTH: u32 = display::MODES[display::KERNEL_MODE].width;
-pub const HEIGHT: u32 = display::MODES[display::KERNEL_MODE].height;
-const PITCH: usize = WIDTH as usize * 4;
+/// The admitted device's kernel mode and the backing reserved for that extent.
+/// Modes remain fixed for the lifetime of the admitted device, including resets.
+struct Backing {
+    mode: abi::Mode,
+    pages: Arc<Pages>,
+}
 
-static BACKING: conquer_once::spin::OnceCell<Arc<Pages>> = conquer_once::spin::OnceCell::uninit();
+static BACKING: conquer_once::spin::OnceCell<Backing> = conquer_once::spin::OnceCell::uninit();
 static TARGET: crate::irq_safe_mutex::IrqSafeMutex<Option<Target>> = crate::irq_safe_mutex::IrqSafeMutex::new(None);
 /// The device resource of the kernel's screen, for MODES' `console_resource`.
 static RESOURCE: AtomicU64 = AtomicU64::new(0);
@@ -40,12 +42,15 @@ struct Target {
     handle: u64,
     id: u32,
     pages: Arc<Pages>,
+    mode: abi::Mode,
 }
 
 impl Target {
     fn new() -> Result<Target, i64> {
         open().ok_or(ENOMEM)?;
-        let pages = BACKING.get().ok_or(ENODEV)?.clone();
+        let backing = BACKING.get().ok_or(ENODEV)?;
+        let mode = backing.mode;
+        let pages = backing.pages.clone();
         let (handle, _) = create_kernel_context()?;
         let (context, epoch) = match with_core(|c| Some((c.ctx_of(0, handle)?, c.epoch))).flatten() {
             Some(found) => found,
@@ -54,7 +59,7 @@ impl Target {
                 return Err(EIO);
             }
         };
-        let id = match console::resource_with(context, kind::TARGET, format::B8G8R8A8, WIDTH, HEIGHT, true, pages) {
+        let id = match console::resource_with(context, kind::TARGET, format::B8G8R8A8, mode.width, mode.height, true, pages) {
             Ok(id) => id,
             Err(e) => {
                 destroy_context(0, handle);
@@ -62,7 +67,7 @@ impl Target {
             }
         };
         RESOURCE.store(id as u64, Ordering::Release);
-        Ok(Target { epoch, context, handle, id, pages: BACKING.get().ok_or(ENODEV)?.clone() })
+        Ok(Target { epoch, context, handle, id, pages: backing.pages.clone(), mode })
     }
 
     fn live(&self) -> bool {
@@ -95,8 +100,9 @@ impl Target {
             return Ok(());
         }
         let pages = &self.pages;
-        let offset = rows.start as usize * PITCH;
-        pages.maintain(offset, rows.len() * PITCH, false);
+        let pitch = self.mode.width as usize * 4;
+        let offset = rows.start as usize * pitch;
+        pages.maintain(offset, rows.len() * pitch, false);
         let fence = with_core(|c| c.device_fence()).ok_or(ENODEV)?;
         let serial = with_core(|c| c.serial()).ok_or(ENODEV)?;
         let req = dev::transfer_to_host(
@@ -107,10 +113,10 @@ impl Target {
             pages.clone(),
             0,
             rows.start,
-            WIDTH,
+            self.mode.width,
             rows.len() as u32,
             offset as u64,
-            PITCH as u32,
+            pitch as u32,
         ).ok_or(EIO)?;
         let d = exec_req(serial, req, self.context, &[self.id], &[])?;
         if !dev::ok(d.answer) || !d.matches_fence(fence) {
@@ -139,7 +145,7 @@ impl Target {
             return Ok(());
         }
         let (id, context, len) = (self.id, self.context, rows.len() as u32);
-        self.fenced(|t, fence| dev::flush_rect(t, context, fence, id, 0, rows.start, WIDTH, len)).map(drop)
+        self.fenced(|t, fence| dev::flush_rect(t, context, fence, id, 0, rows.start, self.mode.width, len)).map(drop)
     }
 
     /// Bind `b.id`, a target of this size, to scanout 0 and flush it whole. The kernel's
@@ -185,7 +191,7 @@ impl Target {
     fn show(&self) -> Result<(), i64> {
         #[cfg(target_arch = "x86_64")]
         if crate::gk208::console_state().is_some_and(|(mode, _, _, _)| {
-            (mode.width, mode.height) != (WIDTH, HEIGHT)
+            (mode.width, mode.height) != (self.mode.width, self.mode.height)
         }) {
             // A released graphics VT may have left the low logical mode active.
             // The foreground text VT still draws the shared high-mode screen.
@@ -231,7 +237,7 @@ impl Lease {
         if self.0.as_ref().is_none_or(|t| !t.live()) {
             self.0 = None;
             let target = Target::new()?;
-            target.upload(0..HEIGHT)?;
+            target.upload(0..target.mode.height)?;
             self.0 = Some(target);
         }
         self.0.as_ref().ok_or(EIO)
@@ -252,14 +258,19 @@ impl Drop for Lease {
 /// Reserve the backing of the kernel's screen, once, on a boot whose display the core owns,
 /// and give its size when the core owns the display and the frames were reserved.
 pub fn open() -> Option<(usize, usize)> {
-    if !display::active() {
+    let mode = with_core(|c| (c.status == abi::status::ADMITTED)
+        .then_some(c.display.modes[display::KERNEL_MODE])).flatten()?;
+    let bytes = mode.width as usize * mode.height as usize * 4;
+    let backing = BACKING.try_get_or_init(|| Backing {
+        mode,
+        pages: Arc::new(Pages::new(bytes.div_ceil(PAGE)).unwrap_or_else(Pages::none)),
+    }).ok()?;
+    if backing.mode != mode || backing.pages.bytes() < bytes {
         return None;
     }
-    let pages = BACKING.try_get_or_init(|| Arc::new(Pages::new((PITCH * HEIGHT as usize).div_ceil(PAGE)).unwrap_or_else(Pages::none)));
-    pages.ok().filter(|p| p.bytes() >= PITCH * HEIGHT as usize)?;
     // The pointer moves over this screen, not the firmware framebuffer it replaced.
-    super::arch::set_screen(WIDTH, HEIGHT);
-    Some((WIDTH as usize, HEIGHT as usize))
+    super::arch::set_screen(mode.width, mode.height);
+    Some((mode.width as usize, mode.height as usize))
 }
 
 /// The first native owner/observer must inherit a completed core resource,
@@ -273,11 +284,12 @@ pub(super) fn await_binding() -> Result<(), i64> {
         .filter(|&ready| ready).map(|_| ()).ok_or(EIO)
 }
 
-/// Copy `bytes` into the backing at byte `offset` (rows laid out `WIDTH * 4` bytes apart).
+/// Copy `bytes` into the backing at byte `offset` (rows laid out at the kernel mode's pitch).
 pub fn write(offset: usize, bytes: &[u8]) {
-    if let Some(pages) = BACKING.get() {
-        if offset + bytes.len() <= PITCH * HEIGHT as usize {
-            pages.write(offset, bytes);
+    if let Some(backing) = BACKING.get() {
+        let len = backing.mode.width as usize * backing.mode.height as usize * 4;
+        if offset.checked_add(bytes.len()).is_some_and(|end| end <= len) {
+            backing.pages.write(offset, bytes);
         }
     }
 }
@@ -296,8 +308,8 @@ pub fn read(offset: usize, out: &mut [u8]) {
     }
 }
 
-fn rows_of(lines: Range<usize>) -> Range<u32> {
-    (lines.start.min(HEIGHT as usize) as u32)..(lines.end.min(HEIGHT as usize) as u32)
+fn rows_of(lines: Range<usize>, height: u32) -> Range<u32> {
+    (lines.start.min(height as usize) as u32)..(lines.end.min(height as usize) as u32)
 }
 
 /// The console's present of pixel rows `lines`, while no process owns the display. Returns
@@ -309,7 +321,7 @@ pub fn present(lines: Range<usize>) -> Result<u64, &'static str> {
     };
     let mut lease = Lease::take();
     let target = lease.ensure().map_err(|_| "the GPU core could not create the screen's target")?;
-    let rows = rows_of(lines);
+    let rows = rows_of(lines, target.mode.height);
     target.upload(rows.clone()).map_err(|_| "the upload of the screen's rows failed")?;
     let shown = if target.bound() { target.flush(rows) } else { target.show() };
     shown.map_err(|_| "the screen's target was not shown")?;
@@ -325,19 +337,21 @@ pub fn settle() -> Result<(u32, u64), &'static str> {
     };
     let mut lease = Lease::take();
     let target = lease.ensure().map_err(|_| "the GPU core could not create the screen's target")?;
-    target.upload(0..HEIGHT).map_err(|_| "the upload of the screen failed")?;
-    let shown = if target.bound() { target.flush(0..HEIGHT) } else { target.show() };
+    let (width, height) = (target.mode.width, target.mode.height);
+    let pitch = width as usize * 4;
+    target.upload(0..height).map_err(|_| "the upload of the screen failed")?;
+    let shown = if target.bound() { target.flush(0..height) } else { target.show() };
     shown.map_err(|_| "the screen's target was not shown")?;
     let flush = PRESENTS.fetch_add(1, Ordering::AcqRel) + 1;
     if !target.bound() {
         return Err("the screen's target is not the completed binding of scanout 0");
     }
-    let pages = BACKING.get().ok_or("the screen has no backing")?;
-    let band = (READBACK_BAND / PITCH).max(1) as u32;
+    let pages = &target.pages;
+    let band = (READBACK_BAND / pitch).max(1) as u32;
     // An uploaded SVGA surface may still use its MOB as the source of its pixels.
     // Poison only a separate destination, then GPU-copy the band before reading it back.
     let readback = if dev::is_svga() {
-        Some(Arc::new(Pages::new((band as usize * PITCH).div_ceil(PAGE))
+        Some(Arc::new(Pages::new((band as usize * pitch).div_ceil(PAGE))
             .ok_or("no frames for the screen's read-back surface")?))
     } else { None };
     #[cfg(target_arch = "x86_64")]
@@ -348,24 +362,24 @@ pub fn settle() -> Result<(u32, u64), &'static str> {
     let mut observed = Vec::new();
     #[cfg(target_arch = "x86_64")]
     if sample {
-        observed.try_reserve_exact(PITCH).map_err(|_| "screen sample allocation")?;
-        observed.resize(PITCH, 0);
+        observed.try_reserve_exact(pitch).map_err(|_| "screen sample allocation")?;
+        observed.resize(pitch, 0);
     }
     let mut y = 0;
-    while y < HEIGHT {
-        let rows = band.min(HEIGHT - y);
-        let (offset, len) = (y as usize * PITCH, rows as usize * PITCH);
+    while y < height {
+        let rows = band.min(height - y);
+        let (offset, len) = (y as usize * pitch, rows as usize * pitch);
         let mut row = Vec::new();
-        row.try_reserve_exact(PITCH).map_err(|_| "screen readback row allocation")?;
-        row.resize(PITCH, 0);
+        row.try_reserve_exact(pitch).map_err(|_| "screen readback row allocation")?;
+        row.resize(pitch, 0);
         // Only a transfer into the backing itself poisons it: keep its band until that succeeds.
         let saved = match &readback {
             Some(_) => None,
             None => {
                 let saved = Pages::new(len.div_ceil(PAGE)).ok_or("no frames to preserve the screen's read-back band")?;
                 for n in 0..rows as usize {
-                    pages.read(offset + n * PITCH, &mut row);
-                    saved.write(n * PITCH, &row);
+                    pages.read(offset + n * pitch, &mut row);
+                    saved.write(n * pitch, &row);
                 }
                 Some(saved)
             }
@@ -378,13 +392,13 @@ pub fn settle() -> Result<(u32, u64), &'static str> {
         backing.maintain(transfer_offset, len, false);
         let (id, context) = (target.id, target.context);
         let transferred = target
-            .fenced(|t, fence| dev::transfer_from_host(t, context, fence, id, backing.clone(), 0, y, WIDTH, rows, transfer_offset as u64, PITCH as u32));
+            .fenced(|t, fence| dev::transfer_from_host(t, context, fence, id, backing.clone(), 0, y, width, rows, transfer_offset as u64, pitch as u32));
         backing.maintain(transfer_offset, len, true);
         if transferred.is_err() {
             if let Some(saved) = &saved {
                 for n in 0..rows as usize {
-                    saved.read(n * PITCH, &mut row);
-                    pages.write(offset + n * PITCH, &row);
+                    saved.read(n * pitch, &mut row);
+                    pages.write(offset + n * pitch, &row);
                 }
             }
             return Err("the device did not transfer the screen back");
@@ -393,11 +407,11 @@ pub fn settle() -> Result<(u32, u64), &'static str> {
         if sample && difference.is_none() {
             if let Some(saved) = &saved {
                 for n in 0..rows as usize {
-                    saved.read(n * PITCH, &mut row);
-                    pages.read(offset + n * PITCH, &mut observed);
+                    saved.read(n * pitch, &mut row);
+                    pages.read(offset + n * pitch, &mut observed);
                     if let Some(x) = row.chunks_exact(4).zip(observed.chunks_exact(4)).position(|(a, b)| a != b) {
                         let at = x * 4;
-                        difference = Some((offset + n * PITCH + at,
+                        difference = Some((offset + n * pitch + at,
                             u32::from_le_bytes(row[at..at + 4].try_into().unwrap()),
                             u32::from_le_bytes(observed[at..at + 4].try_into().unwrap())));
                         break;
@@ -407,8 +421,8 @@ pub fn settle() -> Result<(u32, u64), &'static str> {
         }
         if readback.is_some() {
             for n in 0..rows as usize {
-                backing.read(n * PITCH, &mut row);
-                pages.write(offset + n * PITCH, &row);
+                backing.read(n * pitch, &mut row);
+                pages.write(offset + n * pitch, &row);
             }
         }
         y += rows;
@@ -425,7 +439,7 @@ pub fn settle() -> Result<(u32, u64), &'static str> {
 pub(super) fn show() -> Result<(), i64> {
     let mut lease = Lease::take();
     let target = lease.ensure()?;
-    target.upload(0..HEIGHT)?;
+    target.upload(0..target.mode.height)?;
     target.show()?;
     PRESENTS.fetch_add(1, Ordering::AcqRel);
     Ok(())

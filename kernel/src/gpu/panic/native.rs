@@ -5,6 +5,8 @@ use crate::gk208::{self, emergency, encode as enc, prepared};
 static NATIVE: AtomicPtr<Screen> = AtomicPtr::new(core::ptr::null_mut());
 struct Screen {
     console: console::Console,
+    #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
+    text_layout: Layout,
     queue: emergency::Queue,
     display: emergency::Display,
     frame: Arc<Pages>,
@@ -25,8 +27,8 @@ struct Bindings<'a>(&'a console::Console);
 impl stream::Resolver for Bindings<'_> {
     fn target(&self, h: u64) -> Option<stream::TargetInfo> {
         (h == u64::from(self.0.target)).then_some(stream::TargetInfo {
-            width: WIDTH,
-            height: HEIGHT,
+            width: self.0.width,
+            height: self.0.height,
             invalid: false,
             format: format::B8G8R8A8,
         })
@@ -64,7 +66,7 @@ impl enc::Bindings for Bindings<'_> {
 
 pub(super) fn prepare() -> Result<(), i64> {
     let c = console::Console::new()?;
-    let words = prepared::text_stream(c.target, c.atlas, c.glyph_width).map_err(|_| ENOMEM)?;
+    let words = prepared::text_stream(c.target, c.atlas, c.glyph_width, c.width, c.height).map_err(|_| ENOMEM)?;
     let mut frame = enc::translate(words.as_slice(), &Bindings(&c))
         .map_err(|e| if e == enc::NO_MEMORY { ENOMEM } else { EIO })?;
     let glyphs = prepared::glyph_offsets(
@@ -148,6 +150,8 @@ pub(super) fn prepare() -> Result<(), i64> {
         packets.remove(packets.len() - 1),
     ];
     let screen = Box::into_raw(Box::new(Screen {
+        #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
+        text_layout: Layout::new(c.glyph_width, c.width, c.height).map_err(|_| EIO)?,
         console: c,
         queue,
         display,
@@ -164,6 +168,13 @@ pub(super) fn prepare() -> Result<(), i64> {
         #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
         reads,
     }));
+    // Exercise a runtime timing change after packet preparation, on the
+    // existing diagnostic profile and outside its timer-triggered panic.
+    #[cfg(feature = "capture_panic_oracle")]
+    if gk208::set_mode(0).is_err() {
+        unsafe {drop(Box::from_raw(screen));}
+        return Err(EIO);
+    }
     let old = with_core(|core| {
         let prepared = unsafe { &*screen };
         if core.epoch != prepared.console.epoch
@@ -262,7 +273,8 @@ impl prepared::Terminal for Runtime<'_> {
 #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
 impl Screen {
     fn observe(&self, deadline: u64) -> Option<u64> {
-        let bytes = WIDTH as usize * HEIGHT as usize * 4;
+        let pitch = console::pitch_of(kind::TARGET, format::B8G8R8A8, self.console.width) as usize;
+        let bytes = pitch * self.console.height as usize;
         let mut a = [0u8; PAGE];
         let mut b = [0u8; PAGE];
         if !self.display.bound() {
@@ -300,12 +312,15 @@ impl Screen {
             let n = (bytes - offset).min(PAGE);
             self.first.read(offset, &mut a[..n]);
             for (i, pixel) in a[..n].chunks_exact(4).enumerate() {
-                let at = offset / 4 + i;
+                let at = offset + i * 4;
+                let x = at % pitch / 4;
+                let y = at / pitch;
+                if x >= self.console.width as usize { continue; }
                 if u32::from_le_bytes(pixel.try_into().ok()?)
                     != expected(
-                        self.console.glyph_width,
-                        at % WIDTH as usize,
-                        at / WIDTH as usize,
+                        self.text_layout,
+                        x,
+                        y,
                     )
                 {
                     mismatches += 1;
@@ -322,7 +337,9 @@ impl Screen {
         line.text(" observed=");
         line.dec(result.is_some() as u64);
         if let Some(mismatches) = result {
-            line.text(" pixels=4096000 mismatches=");
+            line.text(" pixels=");
+            line.dec(u64::from(self.console.width) * u64::from(self.console.height));
+            line.text(" mismatches=");
             line.dec(mismatches);
         }
         line.text("]");
@@ -335,6 +352,10 @@ impl Screen {
         } else {
             0
         });
+        line.text(" width=");
+        line.dec(u64::from(self.console.width));
+        line.text(" height=");
+        line.dec(u64::from(self.console.height));
         line.text(" poisons=55,aa equal=");
         line.dec(result.is_some() as u64);
         line.text(" firmware_writes=");

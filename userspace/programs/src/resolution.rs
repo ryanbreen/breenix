@@ -21,7 +21,7 @@ fn main() {
         }
     }
     let (r, modes) = libbreenix::gpu::modes();
-    let mode = (r == 0).then(|| modes.modes.get(modes.current as usize).copied()).flatten();
+    let mode = (r == 0).then(|| modes.current_mode()).flatten();
     match mode {
         Some(mode) => {
             println!("Resolution: {}x{}", mode.width, mode.height);

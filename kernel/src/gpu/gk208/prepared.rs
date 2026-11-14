@@ -25,12 +25,14 @@
 //! the fatal path only patches glyph selectors and executes retained packets.
 use alloc::vec::Vec;
 use gpu_abi::{draw, pipeline, stream};
+use crate::gpu::panic_layout::Layout;
 
 pub(crate) const COLS: usize = 80;
 pub(crate) const ROWS: usize = 32;
 pub(crate) const CELLS: usize = COLS * ROWS;
 
-pub(crate) fn text_stream(target: u32, atlas: u32, glyph_width: u32) -> Result<Vec<u32>, &'static str> {
+pub(crate) fn text_stream(target: u32, atlas: u32, glyph_width: u32, width: u32, height: u32) -> Result<Vec<u32>, &'static str> {
+    let layout = Layout::new(glyph_width, width, height)?;
     let mut words = Vec::new();
     words.try_reserve_exact(7 + draw::HEADER + draw::INSTANCE * CELLS)
         .map_err(|_| "terminal stream allocation")?;
@@ -40,12 +42,12 @@ pub(crate) fn text_stream(target: u32, atlas: u32, glyph_width: u32) -> Result<V
     instances.try_reserve_exact(CELLS).map_err(|_| "terminal instance allocation")?;
     for row in 0..ROWS {
         for col in 0..COLS {
-            let x = 40 + col as u32 * glyph_width * 2;
-            let y = 32 + row as u32 * 46;
+            let x = 40 + col as u32 * layout.cell_width;
+            let y = 32 + row as u32 * layout.cell_height;
             let mut params = [0; 16];
-            params[..8].copy_from_slice(&[x, y, 0, 0, glyph_width, 16, 2, 1]);
+            params[..8].copy_from_slice(&[x, y, 0, 0, glyph_width, 16, layout.scale, 1]);
             instances.push(draw::Instance {
-                rect: [x as i32, y as i32, (x + glyph_width * 2) as i32, (y + 32) as i32],
+                rect: [x as i32, y as i32, (x + layout.cell_width) as i32, (y + 16 * layout.scale) as i32],
                 params,
             });
         }

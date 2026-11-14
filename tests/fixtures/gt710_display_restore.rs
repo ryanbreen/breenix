@@ -8,16 +8,17 @@ use display::owner;
 const EIO:i64=5;const ENODEV:i64=19;const EPERM:i64=1;
 #[derive(Clone,Copy)] struct LastWrite {ctx:u32,device_ctx:u32,fence:u64,serial:u64,answer:u32,kind:u32}
 struct Resource {width:u32,height:u32,lost:bool,holds:usize,last:Option<LastWrite>,generation:u64,invalid:bool}
-struct Core {display:display::State,resources:BTreeMap<u32,Resource>,released:Vec<u32>,next:u64}
+struct Context {issued:u32,done_upto:u32,ns:u32,early:BTreeSet<u32>}
+struct Core {contexts:BTreeMap<u32,Context>,display:display::State,resources:BTreeMap<u32,Resource>,released:Vec<u32>,next:u64}
 impl Core {
  fn unhold(&mut self,id:u32){self.released.push(id);self.resources.get_mut(&id).unwrap().holds-=1;}
  fn device_fence(&mut self)->u64{self.next+=1;self.next}
  fn serial(&mut self)->u64{self.next+=1;self.next}
  // CORE_METHODS
 }
-#[derive(Default)] struct Host {events:Vec<(&'static str,u32)>,fail:bool,mode:u32,restores:usize,firmware:[u8;32]}
+#[derive(Default)] struct Host {events:Vec<(&'static str,u32)>,fail:bool,mode:u32,restores:usize,firmware:[u8;32],transfers:Vec<(u32,u32,u32,u64,u32)>}
 thread_local! {
- static CORE:RefCell<Core>=RefCell::new(Core{display:display::State::new(),resources:BTreeMap::new(),released:vec![],next:100});
+ static CORE:RefCell<Core>=RefCell::new(Core{contexts:BTreeMap::new(),display:display::State::new(),resources:BTreeMap::new(),released:vec![],next:100});
  static HOST:RefCell<Host>=RefCell::new(Host{mode:1,firmware:[0x5a;32],..Host::default()});
 }
 fn with_core<R>(f:impl FnOnce(&mut Core)->R)->Option<R>{Some(CORE.with(|c|f(&mut c.borrow_mut())))}
@@ -40,8 +41,8 @@ mod console {
 mod arch {pub fn with_interrupts<R>(f:impl FnOnce()->R)->R{f()}}
 mod gk208 {
  pub fn console_state()->Option<(crate::abi::Mode,u64,bool,u64)>{
-  let low=crate::HOST.with(|h|h.borrow().mode==0);
-  Some((crate::abi::Mode{width:if low{1280}else{2560},height:if low{800}else{1600},scale:if low{1}else{2},reserved:0},u32::MAX.into(),true,0))
+  let index=crate::HOST.with(|h|h.borrow().mode as usize);
+  Some((crate::with_core(|c|c.display.modes[index]).unwrap(),u32::MAX.into(),true,0))
  }
  pub fn restore_console()->Result<(),&'static str>{crate::event("legacy-restore",0);Ok(())}
  pub struct ConsoleSurface{pub pointer:usize,pub width:usize,pub height:usize,pub pitch:usize}
@@ -89,7 +90,7 @@ mod display {
  use super::*;
  // DEFINITIONS
  pub(super) struct Transition;
- impl Transition {fn acquire()->Result<Self,i64>{Ok(Self)}}
+ impl Transition {fn acquire(_:Option<u64>)->Result<Self,i64>{Ok(Self)}}
  // DISPLAY_FUNCTIONS
 }
 #[derive(Clone,Copy)] enum Tag {Sync(u64)}
@@ -112,7 +113,7 @@ mod dev {
  fn backend()->u32{abi::backend::GK208}
  pub fn resource_id(id:u32)->Option<u32>{(id!=0).then_some(id+1000)}
  pub fn context_id(c:u32)->u32{c+1000}pub fn upload_kind()->u32{1}pub fn ok(a:u32)->bool{a==0x60000000}
- pub fn transfer_to_host(_:Tag,_:u32,fence:u64,id:u32,_:Arc<Pages>,_:u32,_:u32,_:u32,_:u32,_:u64,_:u32)->Option<Request>{Some(Request::Gk208(Command{kind:"upload",id,fence}))}
+ pub fn transfer_to_host(_:Tag,_:u32,fence:u64,id:u32,_:Arc<Pages>,_:u32,y:u32,w:u32,h:u32,offset:u64,pitch:u32)->Option<Request>{HOST.with(|host|host.borrow_mut().transfers.push((y,w,h,offset,pitch)));Some(Request::Gk208(Command{kind:"upload",id,fence}))}
  pub fn set_scanout(_:Tag,_:u32,id:u32,_:u32,_:u32)->Option<Request>{Some(Request::Gk208(Command{kind:"bind",id,fence:0}))}
  pub fn flush_resource(_:Tag,_:u32,fence:u64,id:u32,_:u32,_:u32)->Option<Request>{Some(Request::Gk208(Command{kind:"flip",id,fence}))}
  // FLUSH_RECT
@@ -121,15 +122,14 @@ mod dev {
 }
 mod screen {
  use super::*;use display::Binding;
- const WIDTH:u32=2560;const HEIGHT:u32=1600;const PITCH:usize=WIDTH as usize*4;
  static RESOURCE:AtomicU64=AtomicU64::new(50);static PRESENTS:AtomicU64=AtomicU64::new(0);
- struct Target {context:u32,id:u32,pages:Arc<Pages>}
+ struct Target {context:u32,id:u32,pages:Arc<Pages>,mode:abi::Mode}
  impl Target {
   // SCREEN_METHODS
  }
  struct Lease(Target);
  impl Lease {
-  fn take()->Self{Self(Target{context:7,id:50,pages:Arc::new(Pages)})}
+  fn take()->Self{Self(Target{context:7,id:50,pages:Arc::new(Pages),mode:with_core(|c|c.display.modes[display::KERNEL_MODE]).unwrap()})}
   fn ensure(&mut self)->Result<&Target,i64>{Ok(&self.0)}
  }
  // SCREEN_FUNCTIONS
@@ -138,7 +138,7 @@ mod screen {
 }
 fn reset(){
  syscall::display::DISPLAY_OWNER_GROUP.store(2,Ordering::Release);
- with_core(|c|{c.display=display::State::new();c.resources.clear();c.released.clear();
+ with_core(|c|{c.contexts.clear();c.contexts.insert(7,Context{issued:0,done_upto:0,ns:1,early:BTreeSet::new()});c.display=display::State::new();c.resources.clear();c.released.clear();
   for id in [11,22,50]{c.resources.insert(id,Resource{width:2560,height:1600,lost:false,holds:4,last:None,generation:0,invalid:false});}
   c.display.stack=vec![display::Owner{group:1,pid:1,mode:1,last:Some(display::Binding{id:11,fence:41,answer:0x60000000})},display::Owner{group:2,pid:2,mode:0,last:Some(display::Binding{id:22,fence:42,answer:0x60000000})}];
   c.display.binding=Some(display::Binding{id:22,fence:42,answer:0x60000000});c.display.holds.insert(22);
@@ -216,4 +216,18 @@ fn readback_denied(tgid:u64,a:&abi::Readback,observer:Observer)->Result<(),Refus
  assert!(events().contains(&("mode",1)),"restore used the owner's later mode rather than the retained high frame");
  assert_eq!(with_core(|c|c.display.stack[0].mode),Some(0));
  assert_eq!(with_core(|c|c.display.binding.unwrap().id),Some(11));
+}
+
+#[test] fn admitted_kernel_mode_sets_upload_extent_and_pitch(){
+ for (width,height,scale) in [(1280,1024,1),(2560,1600,2)] {
+  reset();with_core(|c|{
+   c.display.modes[1]=abi::Mode{width,height,scale,reserved:0};
+   c.display.stack.clear();
+   let r=c.resources.get_mut(&50).unwrap();r.width=width;r.height=height;
+  });
+  screen::show().unwrap();
+  assert_eq!(HOST.with(|h|h.borrow().transfers.clone()),vec![(0,width,height,0,width*4)]);
+  screen::repaint_rows().unwrap();
+  assert_eq!(HOST.with(|h|*h.borrow().transfers.last().unwrap()),(3,width,4,u64::from(width)*4*3,width*4));
+ }
 }

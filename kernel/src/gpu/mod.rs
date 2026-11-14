@@ -74,6 +74,7 @@ mod present_answers;
 mod display;
 pub mod console;
 pub mod panic;
+pub(crate) mod panic_layout;
 pub mod screen;
 use crate::gpu_observation as observation;
 mod quota;
@@ -657,6 +658,7 @@ pub fn init() {
             DOORBELL.store(dev.doorbell(), Ordering::Release);
             arch::configure_irq(&dev);
             core.queue_size = dev.queue_size();
+            core.display.modes = display::PANEL_MODES.to_vec();
             core.dev = Some(Device::Virgl(dev));
         }
         Err(e) => {
@@ -676,7 +678,7 @@ pub fn init() {
 
 /// Install the native owner only after hardware startup and channel receipts.
 #[cfg(target_arch = "x86_64")]
-pub(crate) fn install_native(device: crate::gk208::adapter::Device) -> Result<(), &'static str> {
+pub(crate) fn install_native(device: crate::gk208::adapter::Device, modes: Vec<abi::Mode>) -> Result<(), &'static str> {
     let mut retained = Some(device);
     let result = (|| {
         let device = retained.as_ref().unwrap();
@@ -699,6 +701,7 @@ pub(crate) fn install_native(device: crate::gk208::adapter::Device) -> Result<()
         with_core(|core| {
             if core.dev.is_some() { return Err("GPU core already has a device"); }
             core.queue_size = queue_size;
+            core.display.modes = modes;
             core.status = caps.status;
             core.caps = caps;
             core.dev = Some(Device::Gk208(retained.take().unwrap()));
@@ -761,6 +764,7 @@ pub fn init_vmware() {
                 device.profile.contexts, device.profile.surfaces, core.status, core.reason
             );
             core.queue_size = device.queue_size();
+            core.display.modes = display::PANEL_MODES.to_vec();
             core.dev = Some(Device::Svga(device));
         }
         Err(error) => {
@@ -5795,7 +5799,7 @@ pub fn observe_scanout(dst: u64, dst_len: u64, record: u64) -> Result<u64, (i64,
         return Err((ENODEV, readback_reason::NONE));
     }
     let tgid = caller().map_err(|e| (e, readback_reason::NONE))?;
-    let mode = with_core(|c| display::MODES[c.display.mode as usize])
+    let mode = with_core(|c| c.display.modes[c.display.mode as usize])
         .ok_or((ENODEV, readback_reason::NONE))?;
     if dst_len < mode.width as u64 * mode.height as u64 * 4 {
         return Err((EINVAL, readback_reason::NONE));
@@ -5987,7 +5991,12 @@ fn read_back_impl(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Opt
             #[cfg(target_arch = "x86_64")] false, #[cfg(target_arch = "x86_64")] None)
         .map_err(|stop| match stop { Stop::Timeout => ETIMEDOUT, Stop::Interrupted => EINTR })?;
         Some(if window {
-            display::Transition::for_window_observer(deadline).map_err(|errno| {
+            let transition = if crc.is_some() {
+                display::Transition::for_crc(deadline)
+            } else {
+                display::Transition::for_window_observer(deadline)
+            };
+            transition.map_err(|errno| {
                 if observer == Observer::Window && errno == ETIMEDOUT {
                     Refused::Eio(readback_reason::BINDING_UNKNOWN, 0)
                 } else { Refused::Errno(errno) }
@@ -6051,7 +6060,7 @@ fn read_back_impl(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Opt
         // SVGA screen binding (svga/mod.rs set_scanout), GK208 viewport-in
         // (gk208/modeset.rs Viewport::methods).
         // Keep this inside the binding transition that excludes mode changes.
-        let mode = with_core(|c| display::MODES[c.display.mode as usize]).ok_or(ENODEV)?;
+        let mode = with_core(|c| c.display.modes[c.display.mode as usize]).ok_or(ENODEV)?;
         let [x, y, w, h] = abi::screen::rectangle([mode.width, mode.height], [tw, th], Some([0, 0]))
             .ok_or(EIO)?;
         a.x = x;
@@ -6940,4 +6949,18 @@ pub fn give_display() -> SyscallResult {
 pub fn vt_resumed() {
     with_core(|c| console::request_restore(c.display.owner_sequence));
     notify();
+}
+
+/// The admitted display catalogue for the native upload resource envelope.
+#[cfg(target_arch = "x86_64")]
+pub fn evidence_modes() -> Option<alloc::string::String> {
+    with_core(|c| {
+        use core::fmt::Write;
+        let mut row = alloc::format!("GT710_EVIDENCE_MODES {{\"default\":{},\"modes\":[", display::KERNEL_MODE);
+        for (index, mode) in c.display.modes.iter().enumerate() {
+            let _ = write!(row, "{}[{},{},{}]", if index == 0 { "" } else { "," }, mode.width, mode.height, mode.scale);
+        }
+        row.push_str("]}\n");
+        row
+    })
 }

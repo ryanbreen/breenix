@@ -9,19 +9,10 @@ import subprocess
 import sys
 import unittest
 from unittest.mock import patch
+from gt710_runtime_catalogue_test import BOARD_TEXT, row
 
 ROOT = Path(__file__).resolve().parents[1]
 API = runpy.run_path(str(ROOT / 'scripts/metal/gt710-suite'))
-
-def row(mode):
-    w,h = [(1280,800),(2560,1600)][mode]
-    return dict(schema=1, sequence=mode+1, mode=mode, resource=70+mode,
-                requested=0x1000000+mode*0x1000000, head=0, pitch=w*4, block_height=0, format=0, notifier=1,
-                active=[0x10000+mode*0x10000,w|h<<16,0x1000000+w*4,0xcf00,1],
-                armed=[0x10000+mode*0x10000,w|h<<16,0x1000000+w*4,0xcf00,1],
-                viewport_active=[0,0,0,w|h<<16,0,1280|800<<16,1280|800<<16,1280|800<<16],
-                viewport_armed=[0,0,0,w|h<<16,0,1280|800<<16,1280|800<<16,1280|800<<16],
-                raster=[359|40<<16,1639|1064<<16],firmware_writes=0)
 
 def text(rows):
     return ''.join('GT710_DISPLAY_V1 '+json.dumps(r,separators=(',',':'))+'\n' for r in rows)
@@ -33,7 +24,7 @@ class DisplayEvidence(unittest.TestCase):
         # that differs from the native DDC timing.
         mode = dict(timing=dict(width=1280, height=1024))
         producer = dict(console=dict(serial='native console capture'),
-                        gpu=dict(serial=text([row(0), row(1)])))
+                        gpu=dict(serial=BOARD_TEXT+text([row(0), row(1), row(2)])))
         with patch.dict(API['check_case'].__globals__,
                         native_mode=lambda serial: (mode, b'')):
             API['check_case']('presentation', 'display', '', producer)
@@ -41,9 +32,10 @@ class DisplayEvidence(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'runtime raster differs'):
                 API['check_case']('presentation', 'display', '', producer)
 
-    def test_both_modes_and_independent_latched_address_are_required(self):
+    def test_all_modes_and_independent_latched_address_are_required(self):
         self.assertTrue('runtime_display' in API,'runtime display proof is absent')
-        check=API['runtime_display'];good=[row(0),row(1)]
+        check=lambda serial, preferred: API['runtime_display'](BOARD_TEXT+serial,preferred)
+        good=[row(0),row(1),row(2)]
         check(text(good),(1280,1024))
         tiled=copy.deepcopy(good)
         for r in tiled:
@@ -55,7 +47,7 @@ class DisplayEvidence(unittest.TestCase):
                        lambda r:r['active'].__setitem__(0,r['active'][0]+16),
                        lambda r:r['armed'].__setitem__(0,r['armed'][0]+16),
                        lambda r:r['viewport_active'].__setitem__(3,1280|800<<16),
-                       lambda r:r['viewport_armed'].__setitem__(5,1280|1024<<16),
+                       lambda r:r['viewport_armed'].__setitem__(5,1280|800<<16),
                        lambda r:r['raster'].__setitem__(1,1639|840<<16),
                        lambda r:r.update(firmware_writes=1),lambda r:r.update(notifier=0)]:
             bad=copy.deepcopy(good);mutate(bad[1])

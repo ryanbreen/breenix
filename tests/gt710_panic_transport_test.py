@@ -21,7 +21,7 @@ class TerminalTransport(unittest.TestCase):
         body = body[:start] + body[end:]
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
-            (path / 'test.rs').write_text((ROOT / 'tests/fixtures/gt710_panic_transport.rs').read_text().replace('// TRANSPORT', body))
+            (path / 'test.rs').write_text((ROOT / 'tests/fixtures/gt710_panic_transport.rs').read_text().replace('@ROOT@',str(ROOT)).replace('// TRANSPORT', body))
             subprocess.run(['rustc', '--edition=2021', '--test', '--cfg', 'feature="capture_panic_oracle"', '-Dwarnings', str(path / 'test.rs'), '-o', str(path / 'test')], check=True)
             subprocess.run([str(path / 'test'), '--test-threads=1'], check=True)
 

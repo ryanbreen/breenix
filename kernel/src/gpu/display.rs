@@ -8,8 +8,8 @@ use abi::errno::EPERM;
 
 const EBUSY: i64 = 16;
 
-/// The display's modes (section 1.7): 1280x800 at scale 1 and 2560x1600 at scale 2.
-pub(super) const MODES: [abi::Mode; 2] = [
+/// Virtual panel modes (section 1.7): 1280x800 at scale 1 and 2560x1600 at scale 2.
+pub(super) const PANEL_MODES: [abi::Mode; 2] = [
     abi::Mode { width: 1280, height: 800, scale: 1, reserved: 0 },
     abi::Mode { width: 2560, height: 1600, scale: 2, reserved: 0 },
 ];
@@ -35,6 +35,7 @@ pub(super) struct Owner {
 pub(super) struct State {
     pub stack: Vec<Owner>,
     pub mode: u32,
+    pub modes: Vec<abi::Mode>,
     pub changing: bool,
     pub owner_sequence: u64,
     /// Latest completed binding, or latest GET-accepted binding on native G26.
@@ -55,10 +56,11 @@ pub(super) struct State {
     pub latest_ok: bool,
 }
 impl State {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             stack: Vec::new(),
             mode: KERNEL_MODE as u32,
+            modes: PANEL_MODES.to_vec(),
             changing: false,
             owner_sequence: 0,
             binding: None,
@@ -546,7 +548,7 @@ pub(super) fn current_mode(arg: u64, len: u64) -> Result<u64, i64> {
     if input != abi::Mode::ZERO {
         return Err(EINVAL);
     }
-    let mode = with_core(|c| MODES[c.display.mode as usize]).ok_or(ENODEV)?;
+    let mode = with_core(|c| c.display.modes[c.display.mode as usize]).ok_or(ENODEV)?;
     write_arg(arg, &mode)?;
     Ok(0)
 }
@@ -570,13 +572,16 @@ pub(super) fn modes(arg: u64, len: u64) -> Result<u64, i64> {
         let mut a = abi::Modes::ZERO;
         a.version = 1;
         a.size = 256;
-        a.count = 2;
+        a.count = c.display.modes.len() as u32;
         a.current = c.display.mode;
         a.max_width = c.caps.max_width;
         a.max_height = c.caps.max_height;
         a.owner_depth = c.display.stack.len() as u32;
         a.binding_known = c.display.known as u32;
-        a.modes = MODES;
+        for (i, &mode) in c.display.modes.iter().enumerate() {
+            if i < a.modes.len() { a.modes[i] = mode; }
+            else { a.extra_modes[i - a.modes.len()] = mode; }
+        }
         a.scanout_resource = c
             .display
             .binding
@@ -596,7 +601,7 @@ pub(super) fn set_mode(arg: u64, len: u64) -> Result<u64, i64> {
         return Err(EPERM);
     }
     let a: abi::SetMode = read_arg(arg, len)?;
-    if a.index > 1 || a.reserved != [0; 3] {
+    if a.reserved != [0; 3] || !with_core(|c| (a.index as usize) < c.display.modes.len()).unwrap_or(false) {
         return Err(EINVAL);
     }
     #[cfg(target_arch = "x86_64")]
@@ -654,6 +659,11 @@ impl Transition {
             return Err(EPERM);
         }
         Ok(guard)
+    }
+    /// CRC reuses the native notifier, so acceptance alone is insufficient.
+    /// Let the adapter consume the latch/ready receipt before excluding bindings.
+    pub(super) fn for_crc(deadline: Option<u64>) -> Result<Self, i64> {
+        Self::acquire(deadline)
     }
     /// A transition for SCANOUT_READBACK: the window layer authorized the observer, which
     /// need not own the display; the binding cannot change while it is held.
@@ -886,7 +896,7 @@ pub(super) fn restore() -> Result<(), i64> {
         // holds can end; the following shared bind publishes the final resource.
         let mode = with_core(|c| {
             saved.and_then(|b| c.resources.get(&b.id))
-                .and_then(|r| MODES.iter().position(|m| (m.width, m.height) == (r.width, r.height)))
+                .and_then(|r| c.display.modes.iter().position(|m| (m.width, m.height) == (r.width, r.height)))
                 .map_or(KERNEL_MODE as u32, |mode| mode as u32)
         }).ok_or(ENODEV)?;
         if super::arch::with_interrupts(|| crate::gk208::set_mode(mode)).is_err() {

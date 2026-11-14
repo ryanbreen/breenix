@@ -892,7 +892,7 @@ pub fn display() -> Result<(u32, abi::Mode), String> {
     if r != 0 {
         return Err(format!("MODES: errno {}", -r));
     }
-    let mode = m.modes.get(m.current as usize).copied().ok_or_else(|| format!("MODES: current mode {} of {}", m.current, m.count))?;
+    let mode = m.current_mode().ok_or_else(|| format!("MODES: current mode {} of {}", m.current, m.count))?;
     Ok((m.current, mode))
 }
 

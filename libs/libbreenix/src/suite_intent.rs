@@ -159,7 +159,7 @@ pub(super) fn streams(source: [u32; 2], mode: [u32; 2], target: u64, texture: u6
     Ok(streams)
 }
 
-struct Frame { context: u64, texture: u64, target: u64, display: bool }
+struct Frame { context: u64, texture: u64, target: u64, display: bool, stage: bool }
 impl Drop for Frame {
     fn drop(&mut self) {
         if self.display { let _ = graphics::give_back_display(); }
@@ -198,7 +198,12 @@ impl Frame {
             if r != 0 { return Err("intent-submit"); }
             if gpu::wait(self.context, submitted.fence, 10_000_000_000).0 != 0 { return Err("intent-wait"); }
         }
-        graphics::take_over_display().map_err(|_| "intent-display")?;
+        if self.stage {
+            // Each page's giveback may have restored the kernel mode.
+            crate::suite_stage::take_display().map_err(|_| "intent-display")?;
+        } else {
+            graphics::take_over_display().map_err(|_| "intent-display")?;
+        }
         self.display = true;
         let (r, presented) = gpu::present(self.context, self.target);
         let success = crate::suite_gpu_backend::backend_values(gpu::caps().1.backend).ok_or("intent-backend")?.success;
@@ -244,7 +249,7 @@ pub(super) fn show(suite: &str, case: &str, picture: &super::JudgedFrame, pace: 
         let count = plans.len();
         for (i, plan) in plans.into_iter().enumerate() {
             let checkpoint = if count == 1 { "intent".into() } else { std::format!("intent-p{}", i+1) };
-            let mut frame = Frame { context: 0, texture: 0, target: 0, display: false };
+            let mut frame = Frame { context: 0, texture: 0, target: 0, display: false, stage: suite == "breengel" };
             let captured = frame.present(picture, mode, plan).and_then(|()| frame.snapshot(suite, case, &checkpoint, mode));
             super::screen::emit_intent(suite, case, &checkpoint, captured);
             if frame.display && time::sleep_ms(pace).is_err() {
