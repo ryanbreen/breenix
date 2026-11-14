@@ -50,6 +50,7 @@ fn picture(pixels: Vec<u8>, width: u32, height: u32) -> Observation {
 }
 #[test] fn retains_observation_and_exact_pixels_with_serial_and_http_digest() {
     let mut upload = Upload::new("window-manager", Ok(Some(route(true))));
+    upload.set_bound(MAX_TOTAL, |n| { assert!(n <= MAX_TOTAL); Ok(()) });
     for (label, suffix) in [("startup", ""), ("suite-final-panel", "/final")] {
         let pixels = vec![0, 1, 2, 255, 3, 4, 5, 255];
         let line = upload.capture(label, || Ok(picture(pixels.clone(), 2, 1)),

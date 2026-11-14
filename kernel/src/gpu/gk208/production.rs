@@ -182,7 +182,7 @@ impl Controller {
                     resource:u32::MAX,address:console.vram,width:console.width as u32,
                     height:console.height as u32,pitch:console.pitch as u32,
                     block_height:0,format:0,dma:1,
-                })?;
+                },1)?;
                 // with_clock_wait moved the owner out of SESSION before this call.
                 super::presentation_trace::dump();
                 self.cool()?;self.gpu_health()?;

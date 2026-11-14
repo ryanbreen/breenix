@@ -3,12 +3,14 @@
 use super::stage::{self, Finale, Image, Milestone, Run, Spotlight, Stamp, Tile};
 use libgfx_ref::{color::Color, framebuf::FrameBuf};
 use libgfx_ref::ttf_font::{CachedFont,Font};
+thread_local! {static DISPLAY_SIZE:std::cell::Cell<Option<(usize,usize)>>=const{std::cell::Cell::new(None)};}
 thread_local! {static DISPLAY_SCALE:std::cell::Cell<usize>=const{std::cell::Cell::new(1)};}
 
 // claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
 fn surface() -> FrameBuf {
     let n=DISPLAY_SCALE.with(|s|s.get());
-    FrameBuf::new(1280*n, 800*n, libgfx_ref::framebuf::Format::BGRX).unwrap()
+    let (width,height)=DISPLAY_SIZE.with(|s|s.get()).unwrap_or((1280*n,800*n));
+    FrameBuf::new(width,height,libgfx_ref::framebuf::Format::BGRX).unwrap()
 }
 fn expect_pixel(fb:&FrameBuf,x:usize,y:usize,rgb:(u8,u8,u8)) -> Result<(),String> {
     let n=fb.width/1280;
@@ -83,16 +85,21 @@ const MILESTONES:[Milestone<'static>;2]=[Milestone {id:"alpha",first:0,end:2},Mi
 pub fn check(name:&str) -> Result<(),String> {check_capture(name,|_|Ok(()))}
 pub fn check_capture(name:&str,capture:impl FnOnce(&FrameBuf)->Result<(),String>) -> Result<(),String> {
     let scaled=matches!(name,"stage-layout"|"tile-stamps"|"tile-thumbnail"|"spotlight-picture"|"spotlight-timing"|"spotlight-input"|"spotlight-measurement"|"milestone-ribbon"|"finale"|"stage-hidpi");
+    #[cfg(not(test))]
+    if scaled {
+        let mode=crate::show::scale2_mode().map_err(|e|format!("{e:?}"))?;
+        DISPLAY_SIZE.with(|s|s.set(Some((mode.width as usize,mode.height as usize))));
+    }
     DISPLAY_SCALE.with(|s|s.set(if scaled{2}else{1}));
-    struct Reset;impl Drop for Reset{fn drop(&mut self){DISPLAY_SCALE.with(|s|s.set(1));}}let _reset=Reset;
+    struct Reset;impl Drop for Reset{fn drop(&mut self){DISPLAY_SCALE.with(|s|s.set(1));DISPLAY_SIZE.with(|s|s.set(None));}}let _reset=Reset;
     let mut fb=surface();
     let result=(|| {
     let mut cases=tiles(); let mut model=run(&cases,&MILESTONES);
     match name {
         "stage-hidpi" => {
             render(&mut fb,&model)?;
-            if (fb.width,fb.height)!=(2560,1600) {return Err("gpu-display: HiDPI stage does not cover the display".into());}
-            rect(&fb,0,799,1280,1,(12,19,31))?;
+            if (fb.width,fb.height)!=DISPLAY_SIZE.with(|s|s.get()).unwrap_or((1280*2,800*2)) {return Err("gpu-display: HiDPI stage does not cover the display".into());}
+            rect(&fb,0,fb.height/2-1,fb.width/2,1,(12,19,31))?;
             text(&fb,24,16,"BREENIX / fixture",3,(24,39,59))?;
             let detailed=(32..90).any(|y|(48..750).any(|x|{
                 let p=fb.get_pixel(x,y);let q=fb.get_pixel(x&!1,y&!1);p!=q

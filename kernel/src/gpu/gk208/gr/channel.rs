@@ -602,9 +602,7 @@ mod native {
                 h.device.bars[1].size,
                 17,
             )?;
-            let console_offset=if (h.console.width,h.console.height)==(2560,1600) {
-                16<<20
-            } else {displacement};
+            let console_offset=crate::gk208::native::console_bar_offset(h.console, displacement);
             if console_offset < SLOT as usize+4096
                 && console_offset+h.console.bytes > SLOT as usize {
                 return Err("GR USERD overlaps console");
@@ -1669,9 +1667,9 @@ mod native {
             -> Result<bool, &'static str> {
             crate::gk208::ce::present_complete(surface)
         }
-        pub(crate) fn present(&mut self, surface:crate::gk208::present::Surface)
+        pub(crate) fn present(&mut self, surface:crate::gk208::present::Surface, restoring: bool)
             -> Result<(), &'static str> {
-            crate::gk208::ce::present(surface)
+            crate::gk208::ce::present(surface, restoring)
         }
         /// True only after USERD GP_PUT publishes this sequence to the engine.
         pub(crate) fn published(&self, sequence: u32) -> bool { self.put == sequence }

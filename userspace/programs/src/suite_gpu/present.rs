@@ -60,8 +60,8 @@ fn shown(t: u64, want: &Canvas, fence: u64) -> R<u64> {
     let source = u64_at(&rec, record::RESOURCE);
     let id = u64_at(&actual, record::RESOURCE);
     let m = modes()?;
-    let mode = u32_at(&m, 12) as usize;
-    let (dw, dh) = (u32_at(&m, 32 + mode * 16), u32_at(&m, 36 + mode * 16));
+    let selected=catalogue()?.current_mode().ok_or_else(||fail_msg("current mode absent".into()))?;
+    let (dw,dh)=(selected.width,selected.height);
     let composed = u32_at(&rec, record::TARGET_WIDTH) != dw
         || u32_at(&rec, record::TARGET_HEIGHT) != dh;
     ensure(u32_at(&actual, record::FLAGS) & 1 == 1
@@ -77,32 +77,52 @@ fn shown(t: u64, want: &Canvas, fence: u64) -> R<u64> {
     ensure(u64_at(&m, 64) == id, || "MODES binding differs from actual scanout".to_string())?;
     Ok(id)
 }
+fn expected_scale(native: bool, count: usize, index: usize) -> Option<u32> {
+    if !(2..=10).contains(&count) || index>=count {return None;}
+    if !native {return (count==2).then_some(index as u32+1);}
+    let scaled=if count==2 {0} else {count-1};
+    Some(if index==scaled {2} else {1})
+}
+fn valid_catalogue(native: bool, modes: &[(u32,u32,u32)]) -> bool {
+    if !(2..=10).contains(&modes.len()) {return false;}
+    if !native {return modes==[(1280,800,1),(2560,1600,2)];}
+    for (i,&(w,h,scale)) in modes.iter().enumerate() {
+        if w==0 || h==0 || Some(scale)!=expected_scale(native,modes.len(),i)
+            || modes[..i].contains(&(w,h,scale)) {return false;}
+        if scale==2 && (Some(w),Some(h))!=
+            (modes[1].0.checked_mul(2),modes[1].1.checked_mul(2)) {return false;}
+    }
+    true
+}
+fn catalogue() -> R<abi::Modes> {
+    let (r,m)=gpu::modes();
+    ensure(r==0, || format!("MODES: {}",errno(r)))?;
+    Ok(m)
+}
+fn target_modes() -> R<Vec<(u32, u32, u32)>> {
+    Ok(catalogue()?.mode_list().map(|(_,m)|(m.width,m.height,m.scale)).collect())
+}
 pub fn modes_listed() -> CaseResult {
     let _case = begin()?;
     let m = modes()?;
     let c = caps()?;
-    for (at, want) in [
-        (0, 1),
-        (4, 256),
-        (8, 2),
-        (16, c.max_width),
-        (20, c.max_height),
-        (32, 1280),
-        (36, 800),
-        (40, 1),
-        (44, 0),
-        (48, 2560),
-        (52, 1600),
-        (56, 2),
-        (60, 0),
-    ] {
-        ensure(u32_at(&m, at) == want, || {
-            format!("MODES offset {at}: {} expected {want}", u32_at(&m, at))
-        })?;
+    let expected=target_modes()?;
+    ensure(valid_catalogue(c.backend==abi::backend::GK208,&expected),
+        || format!("invalid mode catalogue: {expected:?}"))?;
+    ensure(expected.iter().all(|&(w,h,_)|w<=c.max_width && h<=c.max_height),
+        || "listed mode exceeds device extent".to_string())?;
+    for (at, want) in [(0,1),(4,256),(8,expected.len() as u32),
+        (16,c.max_width),(20,c.max_height)] {
+        ensure(u32_at(&m,at)==want, || format!("MODES offset {at}: {} expected {want}",u32_at(&m,at)))?;
     }
-    ensure(m[128..].iter().all(|&b| b == 0), || {
-        "MODES reserved bytes changed".to_string()
-    })?;
+    for (i,&(w,h,scale)) in expected.iter().enumerate() {
+        let at=if i<2 {32+i*16} else {128+(i-2)*16};
+        for (offset,want) in [(0,w),(4,h),(8,scale),(12,0)] {
+            ensure(u32_at(&m,at+offset)==want, || format!("MODES offset {}: {} expected {want}",at+offset,u32_at(&m,at+offset)))?;
+        }
+    }
+    let unused=128+expected.len().saturating_sub(2)*16;
+    ensure(m[unused..].iter().all(|&b|b==0), || "MODES unused mode bytes changed".to_string())?;
     Ok(())
 }
 fn full(index: u32, w: u32, h: u32) -> CaseResult {
@@ -117,21 +137,27 @@ fn full(index: u32, w: u32, h: u32) -> CaseResult {
     Ok(())
 }
 pub fn mode_1280x800() -> CaseResult {
-    full(0, 1280, 800)
+    let (i,m)=catalogue()?.smallest_mode().ok_or_else(||fail_msg("smallest mode absent".into()))?;
+    full(i,m.width,m.height)
 }
 pub fn mode_2560x1600() -> CaseResult {
-    full(1, 2560, 1600)
+    let (i,m)=catalogue()?.scale2_mode().ok_or_else(||fail_msg("scale-2 mode absent".into()))?;
+    full(i,m.width,m.height)
 }
 pub fn scale_reported() -> CaseResult {
     let _case = begin()?;
     take()?;
-    for (i, s) in [(0, 1), (1, 2)] {
-        mode(i)?;
+    let native=caps()?.backend==abi::backend::GK208;
+    let listed=target_modes()?;
+    ensure(valid_catalogue(native,&listed), || format!("invalid mode catalogue: {listed:?}"))?;
+    for index in 0..listed.len() {
+        let expected=expected_scale(native,listed.len(),index)
+            .ok_or_else(||fail_msg("mode scale rule absent".into()))?;
+        mode(index as u32)?;
         let m = modes()?;
         let n = u32_at(&m, 12) as usize;
-        ensure(n == i as usize && u32_at(&m, 32 + n * 16 + 8) == s, || {
-            "current mode scale differs".to_string()
-        })?;
+        ensure(n==index && u32_at(&m,if n<2 {32+n*16+8} else {128+(n-2)*16+8})==expected,
+            || "current mode scale differs from independent mode rule".to_string())?;
     }
     Ok(())
 }
@@ -141,7 +167,8 @@ pub fn scanout_bind() -> CaseResult {
     let fence = present(c, t)?;
     let id = shown(t, &w, fence)?;
     let m = modes()?;
-    let at = 32 + u32_at(&m, 12) as usize * 16;
+    let n=u32_at(&m,12) as usize;
+    let at=if n<2 {32+n*16} else {128+(n-2)*16};
     let (dw, dh) = (u32_at(&m, at), u32_at(&m, at + 4));
     let mut pixel = [0; 4];
     let mut rec = [0; record::SIZE];
@@ -154,10 +181,13 @@ pub fn scanout_bind() -> CaseResult {
 }
 pub fn flip() -> CaseResult {
     let _case = begin()?;
-    let (c, a, wa) = setup(1280, 800, A)?;
-    let b = scanout_target(format::B8G8R8A8, 1280, 800)?;
+    let (index,m)=catalogue()?.native_mode().ok_or_else(||fail_msg("native mode absent".into()))?;
+    let (w,h)=(m.width,m.height);
+    let (c, a, wa) = setup(w, h, A)?;
+    mode(index)?;
+    let b = scanout_target(format::B8G8R8A8, w, h)?;
     frame(c, &scene(b, B, &[]))?;
-    let wb = scene_canvas(1280, 800, B, &[]);
+    let wb = scene_canvas(w, h, B, &[]);
     let mut prior = 0;
     for (t, w) in [(a, &wa), (b, &wb), (a, &wa)] {
         let f = present(c, t)?;
@@ -221,11 +251,14 @@ pub fn takeover_giveback() -> CaseResult {
     let (c, t, w) = setup(73, 17, A)?;
     let f = present(c, t)?;
     let id = shown(t, &w, f)?;
-    mode(0)?;
-    let kid = spawn(|_| {
+    let list=catalogue()?;
+    let (low,_)=list.smallest_mode().ok_or_else(||fail_msg("smallest mode absent".into()))?;
+    let (high,_)=list.scale2_mode().ok_or_else(||fail_msg("scale-2 mode absent".into()))?;
+    mode(low)?;
+    let kid = spawn(move |_| {
         (|| -> CaseResult {
             let (c, t, w) = setup(73, 17, B)?;
-            mode(1)?;
+            mode(high)?;
             shown(t, &w, present(c, t)?)?;
             back()?;
             Ok(())
@@ -235,7 +268,7 @@ pub fn takeover_giveback() -> CaseResult {
     kid.done()?;
     let rec = expect(0, &w, "owner restore")?;
     ensure(
-        u64_at(&rec, record::RESOURCE) == id && u32_at(&modes()?, 12) == 0,
+        u64_at(&rec, record::RESOURCE) == id && u32_at(&modes()?, 12) == low,
         || "give-back lost target or mode".to_string(),
     )?;
     Ok(())
@@ -313,9 +346,8 @@ pub fn ownership_stack() -> CaseResult {
 /// presented, as a framebuffer owner's flush showed its pane. The process keeps it until it
 /// exits.
 fn pane_frame(colour: u32) -> CaseResult {
-    let m = modes()?;
-    let mode = u32_at(&m, 12) as usize;
-    let (w, h) = (u32_at(&m, 32 + mode * 16), u32_at(&m, 36 + mode * 16));
+    let selected=catalogue()?.current_mode().ok_or_else(||fail_msg("current mode absent".into()))?;
+    let (w,h)=(selected.width,selected.height);
     let c = gpu::context_create().map_err(|e| fail_msg(format!("CONTEXT_CREATE: {}", errno(e))))?;
     let t = scanout_target(format::B8G8R8A8, w, h)?;
     frame(c, &scene(t, colour, &[]))?;
@@ -415,11 +447,14 @@ pub fn firmware_handoff() -> CaseResult {
 }
 pub fn mode_change_content() -> CaseResult {
     let _case = begin()?;
-    let (c, a, wa) = setup(1280, 800, A)?;
-    let b = scanout_target(format::B8G8R8A8, 2560, 1600)?;
+    let list=catalogue()?;
+    let (low,l)=list.smallest_mode().ok_or_else(||fail_msg("smallest mode absent".into()))?;
+    let (high,h)=list.scale2_mode().ok_or_else(||fail_msg("scale-2 mode absent".into()))?;
+    let (c, a, wa) = setup(l.width, l.height, A)?;
+    let b = scanout_target(format::B8G8R8A8, h.width, h.height)?;
     frame(c, &scene(b, B, &[]))?;
-    let wb = scene_canvas(2560, 1600, B, &[]);
-    for (i, t, w) in [(0, a, &wa), (1, b, &wb), (0, a, &wa)] {
+    let wb = scene_canvas(h.width, h.height, B, &[]);
+    for (i, t, w) in [(low, a, &wa), (high, b, &wb), (low, a, &wa)] {
         mode(i)?;
         shown(t, w, present(c, t)?)?;
     }
@@ -427,7 +462,8 @@ pub fn mode_change_content() -> CaseResult {
 }
 pub fn fault_skip_flush() -> CaseResult {
     let _case = begin()?;
-    let (c, t, w) = setup(2560, 1600, A)?;
+    let m=catalogue()?.current_mode().ok_or_else(||fail_msg("current mode absent".into()))?;
+    let (c, t, w) = setup(m.width, m.height, A)?;
     present(c, t)?;
     arm(25, 0)?;
     let (r, p) = gpu::present(c, t);
@@ -469,10 +505,11 @@ pub fn fault_skip_flush() -> CaseResult {
 }
 pub fn fault_wrong_scanout() -> CaseResult {
     let _case = begin()?;
-    let (c, a, wa) = setup(2560, 1600, A)?;
-    let b = scanout_target(format::B8G8R8A8, 2560, 1600)?;
+    let m=catalogue()?.current_mode().ok_or_else(||fail_msg("current mode absent".into()))?;
+    let (c, a, wa) = setup(m.width, m.height, A)?;
+    let b = scanout_target(format::B8G8R8A8, m.width, m.height)?;
     frame(c, &scene(b, B, &[]))?;
-    let wb = scene_canvas(2560, 1600, B, &[]);
+    let wb = scene_canvas(m.width, m.height, B, &[]);
     let f = present(c, a)?;
     let aid = shown(a, &wa, f)?;
     let brec = expect(b, &wb, "other target")?;

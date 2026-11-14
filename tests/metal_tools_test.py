@@ -1530,6 +1530,29 @@ class DriverTest(StateTest):
         d.completion_reported = False
         self.finish(lambda: d.on_line('PROBE DONE passed=16 failed=1'), m.EXIT_SHORT)
 
+    def test_panic_oracle_waits_for_its_capture_and_device_records(self):
+        d = self.driver
+        d.args.mode, d.args.gt710_category = 'probe', 'panic'
+        definition = d.dir / 'definition/docs/metal'
+        definition.mkdir(parents=True)
+        m.write_json(definition / 'boot-path.json', {
+            'gateArch': 'x86_64', 'fatal': ['KERNEL PANIC'], 'milestones': []})
+        d.load_definition()
+        d.on_line('PROBE DONE passed=17 failed=0')
+        self.assertFalse(d.final_seen)
+        self.assertFalse(d.completion_reported)
+        d.kernel_started = 110
+        d.on_line('KERNEL PANIC: capture_panic_oracle: deliberate panic', observed_at=120)
+        d.on_line('[BXCAP:BEGIN seq=1 edge=PANIC]')
+        d.on_line('[BXCAP:END seq=1 edge=PANIC verdict=complete truncated=0 sections_skipped=0]')
+        d.on_line('[GPU_PANIC_SCREEN shown=1 observed=1 pixels=1310720 mismatches=0]')
+        self.assertFalse(d.completion_reported)
+        # Keep the fatal-capture lifecycle used by the companion joiner (exit 1).
+        self.finish(lambda: d.on_line('[GPU_PANIC_NATIVE target=42 bound=42 poisons=55,aa equal=1 firmware_writes=0]'), m.EXIT_SHORT)
+        self.assertTrue(d.final_seen)
+        self.assertEqual(d.fatal_at, 120)
+        self.assertTrue(d.completion_reported)
+
     def test_one_suite_ends_at_its_ready_after_the_memory_record(self):
         d = self.driver
         d.args.mode, d.args.suite = 'suite', 'processes'

@@ -102,9 +102,9 @@ fn main() {
 #[cfg(target_arch = "aarch64")]
 fn test_fbinfo_returns_valid_data() -> bool {
     let (ret, modes) = libbreenix::gpu::modes();
-    let valid = ret == 0 && modes.count > 0 && modes.count as usize <= modes.modes.len()
+    let valid = ret == 0 && modes.count > 0 && modes.count as usize <= modes.modes.len()+modes.extra_modes.len()
         && (modes.current as usize) < modes.count as usize
-        && modes.modes[..modes.count as usize].iter().all(|m| m.width > 0 && m.height > 0 && m.scale > 0);
+        && modes.mode_list().all(|(_,m)| m.width > 0 && m.height > 0 && m.scale > 0);
     println!("FBINFO_TEST: GPU display modes {}", if valid { "OK" } else { "FAIL" });
     valid
 }

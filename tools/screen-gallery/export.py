@@ -16,7 +16,9 @@ import zlib
 ROOT = Path(__file__).resolve().parents[2]
 NAME = r'[a-z0-9]+(?:-[a-z0-9]+)*'
 SCREEN = re.compile(rf'SUITE ({NAME}) SCREEN ({NAME}/{NAME}) ({NAME}) sha256=([0-9a-f]{{64}}) mode=([1-9][0-9]*x[1-9][0-9]*) binding=([1-9][0-9]*x[1-9][0-9]*)(?: crc=[0-9a-f]{{8}} crc2=(?:[0-9a-f]{{8}}|none) raster=[1-9][0-9]*x[1-9][0-9]* out=sor[0-9]+)?')
-MAX_PIXELS = 2560 * 1600 * 4
+# Decoded BGRA for scale 2 of a 4096x4096 native mode, matching screen-capture.
+# EDID detailed timings have 12-bit extents; doubling fits the 15-bit viewport.
+MAX_PIXELS = (2 * 4096) * (2 * 4096) * 4
 
 
 def git(*args):
@@ -140,6 +142,29 @@ def known_pictures(manifest):
     return pictures
 
 
+def checkpoint_byte_bound(directory, serial, records):
+    anchors = re.findall(r'^GT710_BULK ([1-9][0-9]*) ([0-9a-f]{64})$', serial, re.M)
+    if not anchors:
+        return 64 << 20
+    if len(anchors) != 1:
+        raise ValueError('duplicate display artifact digest')
+    data = (directory / 'gt710-pixels.rle').read_bytes()
+    size, digest = anchors[0]
+    if (len(data) != int(size) or len(data) > 2 << 20
+            or hashlib.sha256(data).hexdigest() != digest):
+        raise ValueError('display artifact differs from serial length/digest')
+    sys.path.insert(0, str(ROOT / 'scripts/metal'))
+    from gt710_upload import byte_bound, catalogue
+    listed = catalogue(data)
+    if listed is None:
+        return 64 << 20
+    modes, default = listed
+    # Ledger line 98's checkpoint envelope is shared with the receiver; the
+    # retained native-picture allowance alone does not cover SCR1 checkpoints.
+    return sum(byte_bound(dict(suite=suite, evidenceModes=modes, evidenceDefault=default))
+               for suite in {row[0] for row in records})
+
+
 def metal_records(directory, known_manifest):
     import io
     directory = Path(directory)
@@ -152,6 +177,7 @@ def metal_records(directory, known_manifest):
         serial_path = directory / 'console.log'
     records = serial_records(serial_path)
     serial = serial_path.read_text()
+    byte_bound = checkpoint_byte_bound(directory, serial, records)
     if re.search(r'^SCREEN_UPLOAD .*refused=', serial, re.M):
         raise ValueError('checkpoint picture upload refused')
     lookup = {(r[0], r[1], r[2]): r for r in records}
@@ -183,7 +209,9 @@ def metal_records(directory, known_manifest):
                 raise ValueError('checkpoint part receipt or digest differs')
             data.extend(body); used.add(path)
         total += len(data)
-        if total > 64<<20 or len(data) != size or hashlib.sha256(data).hexdigest() != digest:
+        if total > byte_bound:
+            raise ValueError('checkpoint uploads exceed declared byte bound')
+        if len(data) != size or hashlib.sha256(data).hexdigest() != digest:
             raise ValueError('checkpoint upload aggregate digest differs')
         decoded = disk_records(io.BytesIO(b'SCRDISK1' + bytes(504) + data + bytes(512)))
         if len(decoded) != 1:

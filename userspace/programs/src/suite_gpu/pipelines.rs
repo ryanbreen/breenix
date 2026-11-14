@@ -670,9 +670,9 @@ fn circles(outline: bool) -> CaseResult {
     let mut modes = gpu::abi::Modes::ZERO;
     let ret = gpu::call_with(gpu::abi::op::MODES, &mut modes);
     ensure(ret == 0, || format!("MODES: {}", errno(ret)))?;
-    ensure((modes.current as usize) < modes.modes.len() && modes.current < modes.count,
+    ensure((modes.current as usize) < modes.modes.len()+modes.extra_modes.len() && modes.current < modes.count,
         || "MODES: invalid current mode".to_string())?;
-    let mode = modes.modes[modes.current as usize];
+    let mode = modes.current_mode().expect("MODES current index is listed");
     ensure(mode.width >= 83 && mode.height >= 83,
         || "circle source exceeds display".to_string())?;
     let view = scanout_target(format::B8G8R8A8, mode.width, mode.height)?;
@@ -1233,7 +1233,7 @@ pub fn coverage_spans_corpus() -> CaseResult {
     let mut modes = gpu::abi::Modes::ZERO;
     let ret = gpu::call_with(gpu::abi::op::MODES, &mut modes);
     ensure(ret == 0, || format!("MODES: {}", errno(ret)))?;
-    let mode = modes.modes[modes.current as usize];
+    let mode = modes.current_mode().expect("MODES current index is listed");
     ensure(mode.width >= 72 && mode.height >= 72,
         || "corpus source exceeds display".to_string())?;
     let view = scanout_target(format::B8G8R8A8, mode.width, mode.height)?;

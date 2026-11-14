@@ -1,3 +1,4 @@
+extern crate alloc;
 use std::{cell::{Cell, RefCell}, ops::{Deref, DerefMut}, sync::{Mutex, MutexGuard}};
 thread_local! {
     static LOCKED: Cell<bool> = const { Cell::new(false) };
@@ -39,7 +40,9 @@ struct Registers(usize);
 struct Object { name:&'static str, range:Range }
 struct Layout { objects:Vec<Object> }
 #[derive(Clone, Copy)] struct Console { vram:u64, bytes:usize }
-struct Session { pending_present:Option<present::Surface>, ready_present:Option<present::Receipt>,
+#[derive(Clone,Copy)] struct Mode {width:u32,height:u32}
+const MODES:[Mode;2]=[Mode{width:1280,height:800},Mode{width:2560,height:1600}];
+struct Session {modes:[Mode;2], pending_present:Option<present::Surface>, ready_present:Option<present::Receipt>,
     evo:native::Evo, registers:usize, console:Console, layout:Layout, mode:u32, scanout:Vec<u32> }
 struct Owner(Mutex<Option<Session>>);
 struct Guard<'a>(MutexGuard<'a, Option<Session>>);
@@ -57,17 +60,17 @@ impl Drop for Guard<'_> {
     fn drop(&mut self) {
         LOCKED.with(|v| v.set(false)); event("unlock");
         // Force a new frame between session unlock and serial export.
-        presentation_trace::record([999;15]);
+        presentation_trace::record([999;15], 0);
     }
 }
 static SESSION:Owner=Owner(Mutex::new(None));
 mod native {
     use super::*;
     pub struct Evo { pub head:u32 }
-    pub fn wait_present(_: &mut Evo, _: &mut Registers, _:present::Surface)->Result<present::Receipt,&'static str> {
+    pub fn wait_present(_: &mut Evo, _: &mut Registers, _:present::Surface,_:u32)->Result<present::Receipt,&'static str> {
         assert!(locked()); event("drain"); Ok(present::Receipt)
     }
-    pub fn present(_: &mut Evo, regs: &mut Registers, surface:present::Surface)->Result<present::Receipt,&'static str> {
+    pub fn present(_: &mut Evo, regs: &mut Registers, surface:present::Surface,mode:u32)->Result<present::Receipt,&'static str> {
         assert!(locked()); assert_eq!(regs.0,0); event("present");
         assert_eq!((surface.resource,surface.pitch,surface.block_height,surface.format,surface.dma),
             (u32::MAX,surface.width*4,0,0,1));
@@ -80,13 +83,13 @@ mod native {
 }
 mod display_evidence {
     use super::*;
-    pub fn record(_: &mut Registers, _:u32, _:present::Surface, _:&present::Receipt) {
+    pub fn record(_: &mut Registers, _:u32, _:present::Surface, _:&present::Receipt,_:u32) {
         assert!(locked());
-        for i in 0..10 { let mut row=[0;15]; row[0]=i; presentation_trace::record(row); }
+        for i in 0..10 { let mut row=[0;15]; row[0]=i; presentation_trace::record(row, 0); }
         event("record");
     }
     pub fn transition(_: &mut Registers, _:u32, _:present::Surface, _:&present::Receipt,
-        _:[u64;2], _:[u64;2], _: &str)->Result<(),&'static str> {
+        _:[u64;2], _:[u64;2], _: &str,_:u32)->Result<(),&'static str> {
         assert!(locked()); event("transition");
         if fail(2) { Err("transition failed") } else { Ok(()) }
     }
@@ -94,7 +97,7 @@ mod display_evidence {
 // MODE
 fn setup() {
     presentation_trace::dump();
-    *SESSION.0.lock().unwrap()=Some(Session { pending_present:Some(present::Surface {resource:7,address:100,
+    *SESSION.0.lock().unwrap()=Some(Session { modes:MODES,pending_present:Some(present::Surface {resource:7,address:100,
         width:1280,height:800,pitch:5120,block_height:0,format:0,dma:1}),ready_present:None,
         evo:native::Evo{head:0},registers:0,console:Console{vram:100,bytes:100},
         layout:Layout{objects:vec![Object{name:"logical-low",range:Range{start:100,size:100}}]},

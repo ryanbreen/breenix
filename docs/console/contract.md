@@ -171,6 +171,7 @@ from read-back. No-suite appearance and serial-derived counts follow section 23.
 | 1024x768 | Native GOP | 16 | 7x18 | 146x38 | 684 | 2 |
 | 1280x800 | Stage scale 1 | 20 | 9x22 | 142x32 | 704 | 2 |
 | 1280x960 | Native raster | 20 | 9x22 | 142x39 | 868 | 2 |
+| 1280x1024 | Native raster | 20 | 9x22 | 142x42 | 932 | 2 |
 | 1920x1080 | Native raster | 24 | 11x26 | 174x37 | 980 | 3 |
 | 1920x1200 | Native raster | 24 | 11x26 | 174x42 | 1100 | 3 |
 | 2560x1600 | Stage scale 2 | 32 | 14x34 | 182x41 | 1408 | 4 |

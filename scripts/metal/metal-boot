@@ -298,6 +298,7 @@ class Driver:
         self.shutdown_action = None
         self.requested_reset_at = None
         self.clean_mounts = set()
+        self.panic_oracle = False
         self.fatal_at = None
         self.fatal_patterns = []
         self.final_marker = None
@@ -805,6 +806,14 @@ class Driver:
             # "Memory record"); several suites when the last has handed off.
             self.final_marker = (('SUITE_SEQUENCE READY ' + self.args.suite, 'contains') if len(suites(self.args)) == 1
                                  else ('SUITE_SEQUENCE DONE ', 'contains'))
+        self.panic_oracle = 'capture_panic_oracle' in kernel_profile(self.args)[0]
+        if self.panic_oracle:
+            # The production probe finishes before the timer-triggered oracle arms.
+            # Keep capturing through the device observation, including its binding.
+            self.final_marker = ('[GPU_PANIC_NATIVE ', 'contains')
+            self.required_stages.append([
+                ('[BXCAP:BEGIN ', 'contains'), ('[BXCAP:END ', 'contains'),
+                ('[GPU_PANIC_SCREEN ', 'contains'), ('[GPU_PANIC_NATIVE ', 'contains')])
         self.event('definition', metalPath=bool(metal), fatalPatterns=len(self.fatal_patterns),
                    finalMarker=self.final_marker is not None)
 
@@ -1306,9 +1315,11 @@ class Driver:
                 and (not getattr(self.args, 'run', None) or self.run_done)
                 and (self.args.mode != 'console' or self.console_done)
                 and (not getattr(self.args, 'upgrade_parent', None) or self.ssh_verified())
-                and self.fatal_at is None and not self.completion_reported):
+                and (self.fatal_at is None or self.panic_oracle) and not self.completion_reported):
             self.completion_reported = True
             self.event('final-marker', observed_at=observed_at, seconds=seconds)
+            if self.panic_oracle:
+                raise Finish(m.EXIT_SHORT, 'panic oracle terminal records captured')
             if self.args.mode == 'tests':
                 passed, reason = metal_score.tests_verdict(self.dir, ''.join(self.test_report_lines))
                 self.event('test-report', passed=passed, reason=reason)

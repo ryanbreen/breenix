@@ -36,7 +36,7 @@ mod signal{pub fn monotonic_nanos()->u64{super::NOW.with(Cell::get)}use std::cel
 mod vblank_clock{ CLOCK }
 mod rate{ RATE }
 mod window {pub mod pipeline {pub fn at(_:u64,_:u64,_:u64,_:u64,_:u64){}}}
-mod presentation_trace {pub fn record(row:[u64;15]){assert!(row[7]>=row[1]);assert_ne!(row[2]>>16,row[9]>>16);}}
+mod presentation_trace {pub fn record<const N:usize>(row:[u64;N],period:u64){assert!(period>0);assert!(row[7]>=row[1]);assert_ne!(row[2]>>16,row[9]>>16);}}
 mod native{
  use super::*;
  pub struct Registers{pub base:u16}
@@ -96,8 +96,8 @@ mod native{
    NOW.with(|n|n.set(EPOCH+nanos((frame+1)*PIXELS)+delay));
    assert!(e.finish_presentation(&regs,7).unwrap());times.push(e.last_presentation.unwrap().1);
   }
-  assert!(rate::measure(&times).unwrap().passes,"reaper scheduling changed the W2 frame floor");
-  times.remove(150);assert!(!rate::measure(&times).unwrap().passes,"a missing presentation was hidden");
+  assert!(rate::measure(&times,EPOCH,EPOCH+nanos(311*PIXELS)).unwrap().passes,"reaper scheduling changed the W2 frame floor");
+  times.remove(150);assert!(!rate::measure(&times,EPOCH,EPOCH+nanos(311*PIXELS)).unwrap().passes,"a missing presentation was hidden");
  }
  // Existing early-acceptance fixtures use a synthetic deadline at phase1065.
  // W20's R240-mode fixture has counter-relative deadline952 and includes its band.

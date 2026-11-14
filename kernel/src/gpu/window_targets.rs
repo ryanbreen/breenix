@@ -520,7 +520,7 @@ pub fn scene_epoch(owner: u64, context: u64) -> Result<SceneEpoch, i32> {
             refused = Some((id, ctx.state, ctx.dropped, ctx.device_alive, ctx.errors_in_row, ctx.warm_failures));
             return Err(EIO);
         }
-        let mode = display::MODES[c.display.mode as usize];
+        let mode = c.display.modes[c.display.mode as usize];
         Ok(SceneEpoch { reset: c.epoch, owner_sequence: c.display.owner_sequence,
             width: mode.width, height: mode.height, scale: mode.scale })
     }).unwrap_or(Err(ENODEV));

@@ -277,6 +277,12 @@ fn main() {
     if let Err(error) = prepare_raster_audit() {
         std::env::set_var("BREENIX_RASTER_AUDIT_ERROR",error);
     }
+    // The suite exercises scale-2 mechanics; the kernel and console default
+    // remain the preferred scale-1 mode when this display owner exits.
+    if let Err(error)=show::scale2_mode() {
+        eprintln!("BreenGL scale-2 display setup failed: {error:?}");
+        std::process::exit(1);
+    }
     SUITE.run()
 }
 

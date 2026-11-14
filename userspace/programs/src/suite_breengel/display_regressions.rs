@@ -51,7 +51,7 @@ pub fn many_windows() -> CaseResult {
         "gpu-display: composite record lost its serial, 18 entries or zero flags")?;
     // Record v2 still has sixteen entries; eighteen must fail without partial output.
     let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r)))?;
-    let mode=modes.modes[modes.current as usize];
+    let mode=modes.current_mode().expect("MODES current index is listed");
     let mut pixels = vec![0xA5u8; mode.width as usize * mode.height as usize * 4];
     let mut observation = [0xA5u8; 1024];
     let mut rb = crate::window_cases::handoff::Readback::ZERO;

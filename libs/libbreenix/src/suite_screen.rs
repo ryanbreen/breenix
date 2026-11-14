@@ -634,6 +634,14 @@ pub(super) fn upload_pending(suite: &'static str, case: &str) {
         }));
         super::evidence::Upload::new(suite, route)
     });
+    let budget = match super::native_evidence_budget() {
+        Ok(budget) => budget,
+        Err(error) => {
+            emit(&std::format!("SCREEN_UPLOAD {suite} {case} refused={error}"));
+            return;
+        }
+    };
+    upload.set_bound(budget.limit(), super::evidence_check);
     for line in super::screen_upload::flush(&pending_path(), upload, super::evidence_transfer) { emit(&line); }
 }
 

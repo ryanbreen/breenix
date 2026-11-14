@@ -12,6 +12,92 @@ ROOT = Path(__file__).resolve().parents[1]
 EXPORT = ROOT / 'tools/screen-gallery/export.py'
 
 class ExportTest(unittest.TestCase):
+    def test_metal_checkpoint_bytes_follow_the_declared_receiver_envelope(self):
+        import runpy
+        gallery = runpy.run_path(str(EXPORT))
+        with tempfile.TemporaryDirectory() as tmp:
+            boot = Path(tmp)
+            boot_id = 'metal-checkpoint-envelope'
+            (boot / 'run.json').write_text(json.dumps(dict(
+                id=boot_id, commit='a'*40, screenProof=True)))
+            catalogue = b'GT710_EVIDENCE_MODES {"modes":[[1024,768,1],[1280,1024,1],[2560,2048,2]],"default":1}\n'
+            (boot / 'gt710-pixels.rle').write_bytes(catalogue)
+            lines = [f'GT710_BULK {len(catalogue)} {hashlib.sha256(catalogue).hexdigest()}']
+            expected = {}
+            first = 0
+            total = 0
+            for n in range(4):
+                case = f'bmp/fixture-{n}'
+                names = [b'breengel', case.encode(), b'intent']
+                pixels = bytes([n, 2, 3, 255]) * (2560*2048)
+                digest = hashlib.sha256(pixels).hexdigest()
+                expected[digest] = pixels
+                payload = b''.join(names) + pixels
+                record = bytearray((80+len(payload)+511)//512*512)
+                record[:4] = b'SCR1'
+                struct.pack_into('<IIIIIHHH', record, 4, len(record), 0, len(pixels),
+                                 2560, 2048, *map(len, names))
+                record[32:64] = bytes.fromhex(digest)
+                struct.pack_into('<I', record, 64, len(pixels))
+                record[80:80+len(payload)] = payload
+                parts = (len(record)+(2<<20)-1)//(2<<20)
+                for part in range(parts):
+                    body = record[part*(2<<20):(part+1)*(2<<20)]
+                    index = first+part
+                    (boot / f'screen-part-{index:04}.bin').write_bytes(body)
+                    (boot / f'screen-part-upload-{index:04}.json').write_text(json.dumps(dict(
+                        id=boot_id, complete=True, bytes=len(body),
+                        sha256=hashlib.sha256(body).hexdigest())))
+                lines.extend([
+                    f'SUITE breengel SCREEN {case} intent sha256={digest} mode=2560x2048 binding=2560x2048',
+                    f'SCREEN_UPLOAD breengel {case} intent first={first} parts={parts} bytes={len(record)} sha256={hashlib.sha256(record).hexdigest()}',
+                ])
+                first += parts
+                total += len(record)
+            self.assertGreater(total, 64<<20)
+            (boot / 'serial.txt').write_text('\n'.join(lines)+'\n')
+            records, pictures, identity = gallery['metal_records'](boot, None)
+            self.assertEqual(len(records), 4)
+            self.assertEqual(identity, (boot_id, 'a'*40))
+            self.assertEqual({digest: picture[2] for digest, picture in pictures.items()}, expected)
+
+    def test_monitor_scale_two_record_and_decoded_bound(self):
+        import io
+        import runpy
+        gallery = runpy.run_path(str(EXPORT))
+        width, height = 2560, 2048
+        pixels = bytes([255]) * (width * height * 4)
+        digest = hashlib.sha256(pixels).digest()
+        names = b'gpudraw/oneend'
+        rec = bytearray(512)
+        rec[:4] = b'SCR1'
+        struct.pack_into('<IIIIIHHH', rec, 4, 512, 1, 8, width, height, 3, 8, 3)
+        rec[32:64] = digest
+        struct.pack_into('<I', rec, 64, len(pixels))
+        rec[80:80+len(names)] = names
+        struct.pack_into('<I4B', rec, 80+len(names), width*height, 255, 255, 255, 255)
+
+        def read(record):
+            disk = io.BytesIO(b'SCRDISK1' + bytes(504) + record + bytes(512))
+            return gallery['disk_records'](disk)
+
+        pictures = read(rec)
+        self.assertEqual(pictures[digest.hex()],
+                         (('gpu', 'draw/one', 'end'), '2560x2048', pixels))
+        bad = rec.copy()
+        bad[32] ^= 1
+        with self.assertRaisesRegex(ValueError, 'pixel digest mismatch'):
+            read(bad)
+        bad = rec.copy()
+        struct.pack_into('<I', bad, 64, len(pixels)-4)
+        with self.assertRaisesRegex(ValueError, 'invalid record header'):
+            read(bad)
+        bad = rec.copy()
+        struct.pack_into('<II', bad, 16, 8193, 8192)
+        struct.pack_into('<I', bad, 64, 8193*8192*4)
+        with self.assertRaisesRegex(ValueError, 'invalid record header'):
+            read(bad)
+
     def test_u13_sor_only_screen_parses_without_losing_picture_identity(self):
         import runpy
         gallery = runpy.run_path(str(EXPORT))

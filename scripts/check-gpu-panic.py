@@ -4,6 +4,7 @@
 import argparse
 from pathlib import Path
 import re
+import runpy
 
 
 def fields(row):
@@ -13,7 +14,7 @@ def fields(row):
     return dict(pairs)
 
 
-def check(text):
+def check(text, extent=(2560, 1600)):
     captures = list(re.finditer(r"\[BXCAP:BEGIN ([^\]\r\n]+)\]", text))
     ends = list(re.finditer(r"\[BXCAP:END ([^\]\r\n]+)\]", text))
     if len(captures) != 1 or len(ends) != 1:
@@ -38,18 +39,25 @@ def check(text):
     if screen is None:
         return False, "duplicate screen field"
     if any(screen.get(key) != value for key, value in {
-        "shown": "1", "observed": "1", "pixels": "4096000", "mismatches": "0",
+        "shown": "1", "observed": "1", "pixels": str(extent[0] * extent[1]), "mismatches": "0",
     }.items()):
-        return False, "panic screen did not match the full 2560x1600 target"
+        return False, f"panic screen did not match the full {extent[0]}x{extent[1]} target"
     if not captures[0].start() < ends[0].start() < screens[0].start():
         return False, "panic capture and screen observation are out of order"
     if re.search(r"edge=LOCKUP|kind=LOCKUP|soft[ -]lockup", text, re.IGNORECASE):
         return False, "boot contains a soft-lockup record"
-    return True, "complete PANIC; 4096000 device pixels matched; no soft-lockup record"
+    return True, f"complete PANIC; {extent[0] * extent[1]} device pixels matched; no soft-lockup record"
 
 
 def check_native(text):
-    ok, detail = check(text)
+    # Use the independently decoded live EDID, not the producer's dimensions.
+    api = runpy.run_path(str(Path(__file__).resolve().parent / 'metal/gt710-suite'))
+    try:
+        raster = api['native_raster'](api['board_inventory'](text))
+        extent = (raster['width'], raster['height'])
+    except (ValueError, KeyError, TypeError) as error:
+        return False, f"missing or invalid monitor evidence: {error}"
+    ok, detail = check(text, extent)
     if not ok:
         return ok, detail
     banner = re.search(r"KERNEL PANIC: capture_panic_oracle: deliberate panic[^\r\n]*", text)
@@ -61,7 +69,8 @@ def check_native(text):
     row = fields(rows[0])
     if (row is None or not row.get("target", "").isdigit() or int(row["target"]) == 0
             or row.get("bound") != row["target"] or row.get("poisons") != "55,aa"
-            or row.get("equal") != "1" or row.get("firmware_writes") != "0"):
+            or row.get("equal") != "1" or row.get("firmware_writes") != "0"
+            or row.get("width") != str(extent[0]) or row.get("height") != str(extent[1])):
         return False, "native panic binding, poisons or firmware writes failed"
     return True, detail
 

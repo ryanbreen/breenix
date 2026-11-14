@@ -140,7 +140,12 @@ mod rom;
 pub(crate) fn console_sample(stage: usize, offset: usize, expected: u32, actual: u32) {
     display_evidence::sample(stage, offset, expected, actual);
 }
-pub fn proc_pixels()->Vec<u8> {bulk::take()}
+pub fn proc_pixels()->Vec<u8> {
+    let mut data = bulk::take();
+    if data.is_empty() { return data; }
+    if let Some(modes) = crate::gpu::evidence_modes() { data.extend_from_slice(modes.as_bytes()); }
+    data
+}
 pub fn proc_ce(op:u8)->Result<Vec<u8>,i32> {ce::proc_read(op)}
 use crate::arch_impl::x86_64::timer;
 use crate::drivers::pci;
@@ -361,6 +366,11 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
             route.entry,route.conf,route.i2c_entry,route.connector,route.kind,route.drive,route.sor,state,head,
             regs.read(0x640414+head as usize*0x300),regs.read(0x640450+head as usize*0x300),hex(&data),hash(&data),timings);
         crate::serial_println!("GT710_NATIVE {}", evidence);
+        let rasters = native::runtime_rasters(&rom,&modes,route,head)?;
+        let modes = rasters.iter().map(|r| r.timing).collect::<Vec<_>>();
+        let display_modes = modeset::display_modes(&modes)?.into_iter().map(|(width, height, scale)|
+            gpu_abi::Mode { width, height, scale, reserved: 0 }).collect::<Vec<_>>();
+        if display_modes.len()>10 {return Err("EDID modes exceed MODES wire capacity");}
         let preferred = modes.first().ok_or("no preferred sink timing")?;
         let mut layout=display_memory(
             &mut regs,
@@ -368,7 +378,7 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
             preferred.width.into(),
             preferred.height.into(),
         )?;
-        let result=native::takeover(&mut regs,&device,&rom,&modes,route,head,&layout);
+        let result=native::takeover(&mut regs,&device,&rom,&modes,route,head,&layout,rasters);
         if result.is_err() {
             crate::serial_println!("GT710_MODE_STATE ctrl={:#x} error={:#x} stat={:#x} data={:#x} code={:#x} put={} get={} super={:#x} head-super={:#x}",
                 regs.read(0x610490),regs.read(0x61009c),regs.read(0x6101f0),regs.read(0x6101f4),regs.read(0x6101f8),
@@ -438,7 +448,7 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
             crate::serial_println!("GT710_PROBE_TIME graphics us={}",channel::elapsed(start));
         }
         let (_,displacement,_)=modeset::bar1_view(layout.objects[0].range.start,layout.objects[0].range.size,device.bars[1].size,17)?;
-        let console=ce::retain(layout,regs.0,console.pointer-displacement,console,evo)?;
+        let console=ce::retain(layout,regs.0,console.pointer-displacement,console,evo,display_modes)?;
         return Ok(console);
     }
     Err("no active board-routed TMDS sink responded to live DDC")
