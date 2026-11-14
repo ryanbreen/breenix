@@ -30,7 +30,7 @@ mod stage {
     m.count=c.display.modes.len() as u32;for(i,v)in c.display.modes.iter().enumerate(){if i<2{m.modes[i]=*v;}else{m.extra_modes[i-2]=*v;}}
     m.binding_known=c.display.known as u32;m.scanout_resource=c.display.binding.map_or(0,|b|b.id as u64);m}).unwrap())
   }
-  pub fn set_mode(index:u32)->Result<(),i64>{let a=abi::SetMode{index,..abi::SetMode::ZERO};super::display::set_mode(&a as *const _ as u64,std::mem::size_of_val(&a) as u64).map(|_|())}
+  pub fn set_mode(index:u32)->i64{let a=abi::SetMode{index,..abi::SetMode::ZERO};super::display::set_mode(&a as *const _ as u64,std::mem::size_of_val(&a) as u64).map_or_else(|e|-e, |_|0)}
  }
  mod process {
   pub struct Pid;impl Pid{pub fn raw(&self)->u32{super::GROUP.with(|g|g.get() as u32)}}
@@ -61,9 +61,9 @@ mod stage {
  static SHOW:Mutex<Option<Show>>=Mutex::new(None);
  // TAKE
  // PREPARE
- pub fn child(name:&str)->Result<(),i64>{
+ pub fn child(name:&str)->Result<(),String>{
   // CHILD_READY
-  ready
+  ready.map_err(|e|e.to_string())
  }
  pub fn case_takes_display(_: &str)->bool{true}
  pub fn clean(){*GPU.lock().unwrap()=None;}
@@ -79,7 +79,7 @@ fn start(native:bool){
  syscall::display::DISPLAY_OWNER_GROUP.store(u64::MAX,Ordering::Release);
  graphics::take_over_display().unwrap();
  // main's startup show::scale2_mode: take then SET_MODE.
- let index=if native{2}else{1};stage::gpu::set_mode(index).unwrap();stage::remember();
+ let index=if native{2}else{1};assert_eq!(stage::gpu::set_mode(index),0);stage::remember();
 }
 #[test] fn breengel_first_stage_observes_a_bound_target(){
  for native in [false,true]{
