@@ -16,6 +16,7 @@ class Scale2Ownership(unittest.TestCase):
         display = (ROOT / 'kernel/src/gpu/display.rs').read_text()
         runner = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
         core = (ROOT / 'kernel/src/gpu/mod.rs').read_text()
+        intent = (ROOT / 'libs/libbreenix/src/suite_intent.rs').read_text()
         fixture = fixture_source()
         fixture = fixture.replace('fn caller()->Result<u64,i64>{Ok(99)}',
                                   'fn caller()->Result<u64,i64>{Ok(GROUP.with(|g|g.get()))}')
@@ -44,6 +45,14 @@ class Scale2Ownership(unittest.TestCase):
         check_end = core.index('    let (id, fmt,', check_start)
         binding_check = core[check_start:check_end].replace('Refused::', 'StageRefused::')
         code = (ROOT / 'tests/fixtures/breengel_scale2_ownership.rs').read_text()
+        present = item(intent, 'fn present(')
+        begin = present.index('        if self.stage {') if 'if self.stage {' in present else present.index('        graphics::take_over_display()')
+        custody = present[begin:present.index('        let (r, presented)', begin)]
+        frame = item(intent, 'struct Frame {') + '\n' + item(intent, 'impl Drop for Frame')
+        code = code.replace('// INTENT_FRAME', frame)
+        code = code.replace('// INTENT_CUSTODY', custody + '\n let expected=if NATIVE.with(|n|n.get()){2}else{1};assert_eq!(with_core(|c|c.display.mode),Some(expected),\"intent page lost scale2\");')
+        code = code.replace('// INTENT_FIELDS', ', stage:true' if 'stage: bool' in frame else '')
+        code = code.replace('// INTENT_TAKE', 'take_display()' if take else 'graphics::take_over_display().map_err(|e|e.to_string())')
         code = code.replace('// PREPARE', prepare).replace('// TAKE', take)
         code = code.replace('// REMEMBER', prefix).replace('// CHILD_READY', ready)
         code = code.replace('// BINDING_CHECK', binding_check)

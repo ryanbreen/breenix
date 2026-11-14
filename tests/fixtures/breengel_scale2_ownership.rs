@@ -8,6 +8,7 @@ thread_local! {
 const EINVAL:i64=22;const EBUSY:i64=16;const ENOMEM:i64=12;
 fn read_arg<T:Copy>(arg:u64,_:u64)->Result<T,i64>{Ok(unsafe{*(arg as *const T)})}
 mod graphics {
+ pub fn give_back_display()->Result<(),i64>{super::display::back(super::caller()?)}
  pub fn take_over_display()->Result<(),i64>{super::display::take(super::caller()?,super::caller()?,1)}
 }
 #[derive(Debug)] enum StageRefused{Eio(u32,u32)}
@@ -67,6 +68,9 @@ mod stage {
   ready.map_err(|e|e.to_string())
  }
  pub fn case_takes_display(_: &str)->bool{true}
+ pub fn take_for_intent()->Result<(),String>{
+  // INTENT_TAKE
+ }
  pub fn clean(){*GPU.lock().unwrap()=None;}
 }
 fn start(native:bool){
@@ -93,6 +97,11 @@ fn start(native:bool){
 #[test] fn breengel_later_case_keeps_scale2_after_kernel_return(){
  for native in [false,true]{
   start(native);let expected=if native{2}else{1};
+  // The intent frame's idempotent takeover is followed by a root giveback
+  // on drop. A second page takes ownership before selecting its retained mode.
+  intent::page();intent::page();
+  assert_eq!(with_core(|c|c.display.mode),Some(1));
+  stage::child("runner-reclaim").unwrap();
   // Ordinary child exit restores the root's requested mode.
   GROUP.with(|g|g.set(2));stage::child("windows/distinct-content").unwrap();
   with_core(|c|display::ended(c,2));display::restore().unwrap();
@@ -106,6 +115,24 @@ fn start(native:bool){
   with_core(|c|display::ended(c,3));display::restore().unwrap();
   GROUP.with(|g|g.set(1));stage::child("panel/kernel-screens").unwrap();
   assert_eq!(with_core(|c|c.display.mode),Some(expected));
-  assert_eq!(MODE_SETS.with(|n|n.get()),if native{3}else{1},"virtio must keep the startup-only SET_MODE sequence");
+  assert_eq!(MODE_SETS.with(|n|n.get()),if native{5}else{1},"virtio must keep the startup-only SET_MODE sequence");
  }
+}
+
+mod intent {
+ use super::*;
+ mod gpu {
+  pub fn resource_destroy(_:u64)->i64{0}
+  pub fn context_destroy(_:u64)->i64{0}
+ }
+ mod suite_stage {pub fn take_display()->Result<(),String>{crate::stage::take_for_intent()}}
+ // INTENT_FRAME
+ impl Frame {
+  fn takeover(&mut self)->Result<(),&'static str>{
+   // INTENT_CUSTODY
+   Ok(())
+  }
+ }
+ pub fn page(){let mut f=Frame{context:0,texture:0,target:0,display:false // INTENT_FIELDS
+};f.takeover().unwrap();}
 }
