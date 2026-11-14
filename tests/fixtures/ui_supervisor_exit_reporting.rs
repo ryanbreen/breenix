@@ -41,7 +41,7 @@ impl Ownership {fn apply(&mut self,_:Event,_:&mut Display)->Result<(),String>{Ok
 #[derive(Debug)] enum Message {Output{pid:u64,bytes:Vec<u8>},Exited{pid:u64,status:i32}}
 #[derive(Default)] struct Channel {exits:Vec<(u64,i32)>,bytes:usize}
 impl Channel {fn queue(&mut self,m:&Message)->Result<(),String>{match m{Message::Output{pid,bytes}=>{assert!(*pid>0);self.bytes+=bytes.len();},Message::Exited{pid,status}=>self.exits.push((*pid,*status))}Ok(())}}
-// The four fixture launches pass uid 0; Breenix-only credential calls must not run.
+// Fixture launches pass uid 0; Breenix-only credential calls must not run.
 #[export_name="setresuid"] extern "C" fn host_setresuid(_:u32,_:u32,_:u32)->i32{panic!("unexpected credential switch")}
 #[export_name="setresgid"] extern "C" fn host_setresgid(_:u32,_:u32,_:u32)->i32{panic!("unexpected credential switch")}
 #[export_name="getresuid"] extern "C" fn host_getresuid(_:*mut u32,_:*mut u32,_:*mut u32)->i32{panic!("unexpected credential query")}

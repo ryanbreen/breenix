@@ -343,6 +343,29 @@ def result_problem(manifest, records, cases):
     return None
 
 
+def bwm_case_problem(lines):
+    """A self-check failure in a case's lifetime overrules its claimed verdict."""
+    active = False
+    failure = None
+    for line in lines:
+        if line.startswith("SUITE gui-apps START "):
+            active = True
+            failure = None
+        if not active:
+            continue
+        # Supervisor copies are quoted to keep child text out of the kernel
+        # fatal grammar. A bwm self-check is still authoritative app evidence.
+        if re.match(r"(?:UI_CHILD pid=[1-9][0-9]* name=/usr/bin/bwm \| )?"
+                    r"\[bwm\] .*check FAILED(?:[: ]|$)", line):
+            failure = line
+        case = re.match(r"SUITE gui-apps CASE (\S+) (?:PASS|FAIL|SKIP) ", line)
+        if case and failure:
+            return f"CASE {case[1]}: {failure[:400]}"
+        if line.startswith("SUITE gui-apps DONE "):
+            active = False
+    return None
+
+
 def verdict(manifest, records_log, logs, only=None, categories=None, disk=None, uploads=None):
     suite = manifest["id"]
     planned = [category["id"] for category in manifest["categories"] if not category["cases"]]
@@ -368,6 +391,10 @@ def verdict(manifest, records_log, logs, only=None, categories=None, disk=None, 
         if not selected:
             return False, f"unknown case {only}; valid ids: {', '.join(cases)}"
         cases = selected
+    if suite == "gui-apps":
+        problem = bwm_case_problem(read_lines(records_log))
+        if problem:
+            return False, problem
     suffix = rf" only={re.escape(only)}" if only else ""
     fatal = json.loads((REPO / "docs/boot-path.json").read_text())["fatal"] + [r"KERNEL PANIC:"]
     for log in logs:
