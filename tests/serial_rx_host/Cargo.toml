@@ -1,0 +1,16 @@
+[package]
+name = "serial-rx-host-test"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+conquer-once = { version = "0.4.0", default-features = false }
+crossbeam-queue = { version = "0.3", default-features = false, features = ["alloc"] }
+futures-util = { version = "0.3.17", default-features = false, features = ["alloc"] }
+log = { version = "0.4", default-features = false }
+
+[[test]]
+name = "serial_rx"
+path = "serial_rx.rs"
