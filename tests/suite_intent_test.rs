@@ -147,6 +147,44 @@ fn intent_layout_preserves_enlargement_and_full_screen() {
 }
 
 #[test]
+fn native_intent_layout_keeps_full_and_folded_pictures_lossless() {
+    for (suite, case, picture, mode, displayed, border) in [
+        ("gpu", "present/flip", [1280, 1024], [1280, 1024], [1280, 1024], false),
+        ("breengel", "composition/compose-position", [2560, 2048], [2560, 2048], [2560, 2048], false),
+        ("gpu", "profile/int-float-exact", [16384, 2], [1280, 1024], [1276, 26], true),
+        ("gpu", "profile/int-float-exact", [16384, 2], [2560, 1600], [2556, 14], true),
+        ("breengel", "bmp/padding", [1446, 1553], [2560, 1600], [1446, 1553], true),
+        ("breengel", "bmp/padding", [1446, 1553], [2560, 2048], [1446, 1553], true),
+        ("breengel", "panel/kernel-screens", [1280, 1024], [2560, 2048], [1280, 1024], true),
+    ] {
+        let mut plans = super::intent::picture_pages(suite, case, picture, mode).unwrap();
+        assert_eq!(plans.len(), 1, "{suite}/{case} {mode:?}");
+        let plan = plans.remove(0);
+        assert_eq!(plan.scale, 1);
+        assert_eq!(plan.picture, [(mode[0]-displayed[0])/2, (mode[1]-displayed[1])/2,
+            displayed[0], displayed[1]]);
+        assert_eq!(plan.border.is_some(), border);
+        if let Some([x, y, w, h]) = plan.border {
+            assert_eq!([x+2, y+2, w-4, h-4], plan.picture);
+            assert!(x+w <= mode[0] && y+h <= mode[1]);
+        }
+        let mut hits = vec![0u8; (picture[0]*picture[1]) as usize];
+        let mut occupied = vec![false; (mode[0]*mode[1]) as usize];
+        for (dst, src) in samples(picture, plan) {
+            assert_eq!(dst[2..], src[2..]);
+            assert!(dst[0]+dst[2] <= mode[0] && dst[1]+dst[3] <= mode[1]);
+            for y in 0..src[3] { for x in 0..src[2] {
+                let at = ((dst[1]+y)*mode[0]+dst[0]+x) as usize;
+                assert!(!occupied[at], "{suite}/{case}: overprint");
+                occupied[at] = true;
+                hits[((src[1]+y)*picture[0]+src[0]+x) as usize] += 1;
+            } }
+        }
+        assert!(hits.iter().all(|&n| n == 1), "{suite}/{case}: source union");
+    }
+}
+
+#[test]
 fn panel_pages_keep_tile_boundaries_and_exact_source_union() {
     for (case, size, page_sizes) in [
         ("png-decode/interlace-small", [2022,2083], vec![[2490,1490], [1710,295]]),
