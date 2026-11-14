@@ -9,15 +9,14 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'tests'))
 from gt710_gr_live_unwind_test import item
 
-class RuntimeRaster(unittest.TestCase):
-    def test_larger_and_equal_extent_modes(self):
-        source=(ROOT/'kernel/src/gpu/gk208/native.rs').read_text()
-        select=item(source,'    fn select_raster(').replace('super::present::','present::')
-        extra=''
-        if '    fn apply_raster(' in source:
-            extra=item(source,'    fn apply_raster(').replace('super::present::','present::')
-        call='e.select_raster(r,s,index).map(|_|())' if 'surface: ' in select else 'e.select_raster(r,s.width,s.height)'
-        code=r'''#![allow(dead_code)]
+def fixture_source():
+    source=(ROOT/'kernel/src/gpu/gk208/native.rs').read_text()
+    select=item(source,'    fn select_raster(').replace('super::present::','present::')
+    extra=''
+    if '    fn apply_raster(' in source:
+        extra=item(source,'    fn apply_raster(').replace('super::present::','present::')
+    call='e.select_raster(r,s,index).map(|_|())' if 'surface: ' in select else 'e.select_raster(r,s.width,s.height)'
+    code=r'''#![allow(dead_code)]
 extern crate alloc;
 use std::collections::BTreeMap;
 #[path="ROOT/kernel/src/gpu/gk208/edid.rs"] mod edid;
@@ -66,6 +65,11 @@ fn run(w:u32,h:u32,fault:usize){let p=t(w,h,65000);let big=t(1920,1080,148500);
 fn select(e:&mut Evo,r:&mut Registers,s:present::Surface,index:u32)->Result<(), &'static str>{let _=index;CALL}
 fn main(){run(1366,768,0);run(960,540,0);run(1366,768,1);run(1366,768,2);}
 '''.replace('ROOT',str(ROOT)).replace('SELECT',select).replace('EXTRA',extra).replace('CALL',call)
+    return code
+
+class RuntimeRaster(unittest.TestCase):
+    def test_larger_and_equal_extent_modes(self):
+        code=fixture_source()
         priority=['taskpolicy','-b'] if sys.platform=='darwin' else []
         with tempfile.TemporaryDirectory() as tmp:
             p=Path(tmp);(p/'check.rs').write_text(code)
