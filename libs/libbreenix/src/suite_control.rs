@@ -6,17 +6,17 @@ pub enum Wait { CompositorRegistration, SupervisorReady, Configure, HoldWindow, 
 const WAITS: [Wait; 19] = [Wait::CompositorRegistration, Wait::SupervisorReady, Wait::Configure, Wait::HoldWindow, Wait::InputAck, Wait::Stderr, Wait::Launch, Wait::AppOutput, Wait::AppExit, Wait::Stopped, Wait::ChannelSend, Wait::SupervisorTeardown, Wait::InputGrab, Wait::CollectorReply, Wait::DiscardReply, Wait::ControllerReply, Wait::DiagnosticUpload, Wait::InputDelivery, Wait::TreeCapture];
 const NAMES: [&str; 19] = ["CompositorRegistration", "SupervisorReady", "Configure", "HoldWindow", "InputAck", "Stderr", "Launch", "AppOutput", "AppExit", "Stopped", "ChannelSend", "SupervisorTeardown", "InputGrab", "CollectorReply", "DiscardReply", "ControllerReply", "DiagnosticUpload", "InputDelivery", "TreeCapture"];
 const CELLS: usize = 6;
-// One timestamp per named boundary, shared with the runner across fork. No
-// formatting or output on the measured path; a killed case needs no destructor.
+// Twenty boundaries for the SMB interruption case; no formatting or output on
+// the measured path. Each stamp retains cumulative AppOutput time as well.
 const PHASES: &[&str] = &[
-    "case-begin", "launch-begin", "launch-done", "stroke-done", "save-begin",
-    "save-requested", "save-done", "close-begin", "close-done", "reopen-begin",
-    "reopen-done", "edit-done", "interrupted-save-begin", "partial-write",
+    "case-begin", "launch-begin", "launch-done", "stroke-done", "save-requested",
+    "save-done", "close-done", "reopen-done", "edit-done", "interrupted-save-begin",
     "stop-issued", "stop-written", "eio-seen", "failed-write", "start-issued",
-    "start-written", "recovery", "ui-status", "watcher-done", "finish-begin", "finish-done",
+    "start-written", "recovery", "ui-status", "watcher-done", "finish-done",
 ];
 const PHASE_BASE: usize = WAITS.len() * CELLS;
-const USED_CELLS: usize = PHASE_BASE + PHASES.len();
+const APP_OUTPUT_CLOCK: usize = PHASE_BASE + PHASES.len() * 2;
+const USED_CELLS: usize = APP_OUTPUT_CLOCK + 1;
 static PAGE: AtomicUsize = AtomicUsize::new(0);
 fn now_ms() -> Result<u64, String> {
     libbreenix::time::now_monotonic().map(|t| (t.as_nanos()/1_000_000) as u64).map_err(|e| e.to_string())
@@ -25,18 +25,33 @@ fn cell(page: usize, wait: Wait, field: usize) -> &'static AtomicU64 {
     // The case scope outlives its children and their watchdogs.
     unsafe { &*((page as *const AtomicU64).add(wait as usize * CELLS + field)) }
 }
+fn phase_cell(page: usize, index: usize, field: usize) -> &'static AtomicU64 {
+    unsafe { &*((page as *const AtomicU64).add(PHASE_BASE + index * 2 + field)) }
+}
+fn app_output_clock(page: usize) -> &'static AtomicU64 {
+    unsafe { &*((page as *const AtomicU64).add(APP_OUTPUT_CLOCK)) }
+}
+fn app_output_ms(page: usize, at: u64) -> u64 {
+    // AppOutput waits on this case's App are sequential. One atomic word keeps
+    // a watcher-thread phase from observing a half-updated start/end pair:
+    // even = completed time * 2; odd = (start - completed time) * 2 + 1.
+    let clock = app_output_clock(page).load(Ordering::Acquire);
+    if clock & 1 == 0 { clock >> 1 } else { at.saturating_sub(clock >> 1) }
+}
 /// Record the first occurrence only, in the case's existing shared diagnostics.
 pub fn phase(name: &str) {
     let page = PAGE.load(Ordering::Acquire);
     if page == 0 { return; }
     if let Some(index) = PHASES.iter().position(|&phase| phase == name) {
         if let Ok(at) = now_ms() {
-            let slot = unsafe { &*((page as *const AtomicU64).add(PHASE_BASE + index)) };
-            let _ = slot.compare_exchange(0, at, Ordering::Release, Ordering::Relaxed);
+            let total = app_output_ms(page, at);
+            if phase_cell(page, index, 0).compare_exchange(0, at, Ordering::Release, Ordering::Relaxed).is_ok() {
+                phase_cell(page, index, 1).store(total, Ordering::Release);
+            }
         }
     }
 }
-pub struct Watchdog { wait: Wait, start: u64, page: usize }
+pub struct Watchdog { wait: Wait, start: u64, page: usize, phased: bool }
 impl Watchdog {
     pub fn new(wait: Wait) -> Result<Self, String> {
         let start = now_ms()?;
@@ -45,7 +60,13 @@ impl Watchdog {
             cell(page, wait, 0).fetch_add(1, Ordering::Relaxed);
             cell(page, wait, 4).store(start, Ordering::Relaxed);
         }
-        Ok(Self { wait, start, page })
+        let phased = page != 0 && matches!(wait, Wait::AppOutput)
+            && phase_cell(page, 0, 0).load(Ordering::Acquire) != 0;
+        if phased {
+            let total = app_output_ms(page, start);
+            app_output_clock(page).store((start.saturating_sub(total) << 1) | 1, Ordering::Release);
+        }
+        Ok(Self { wait, start, page, phased })
     }
     pub fn deadline_ms(&self) -> i128 { i128::from(self.start.saturating_add(HANG_MS)) }
     pub fn deadline_ns(&self) -> u64 { self.start.saturating_add(HANG_MS).saturating_mul(1_000_000) }
@@ -55,6 +76,9 @@ impl Drop for Watchdog {
         if self.page == 0 { return; }
         match now_ms() {
             Ok(end) if end >= self.start => {
+                if self.phased {
+                    app_output_clock(self.page).store(app_output_ms(self.page, end) << 1, Ordering::Release);
+                }
                 let elapsed = end - self.start;
                 cell(self.page, self.wait, 2).fetch_add(elapsed, Ordering::Relaxed);
                 cell(self.page, self.wait, 3).fetch_max(elapsed, Ordering::Relaxed);
@@ -89,18 +113,22 @@ impl Scope {
             (values[0] != 0).then(|| format!("UI_CONTROL {suite} {case} wait={} started={} completed={} total_ms={} max_ms={} last_start_ms={} clock_errors={}", NAMES[i], values[0], values[1], values[2], values[3], values[4], values[5]))
         }).collect()
     }
-    pub(super) fn failure_phases(&self, suite: &str, case: &str, failed: bool) -> Vec<String> {
-        if !failed { return Vec::new(); }
-        let stamps: Vec<_> = (0..PHASES.len()).map(|index| unsafe {
-            (&*((self.page as *const AtomicU64).add(PHASE_BASE + index))).load(Ordering::Acquire)
-        }).collect();
-        if stamps.iter().all(|&at| at == 0) { return Vec::new(); }
-        use std::fmt::Write;
-        let mut line = format!("UI_PHASE {suite} {case} clock=monotonic-ms");
-        for (name, at) in PHASES.iter().zip(stamps) {
-            write!(&mut line, " {name}={at}").expect("format case phase");
-        }
-        vec![line]
+    pub(super) fn phases(&self, suite: &str, case: &str) -> Vec<String> {
+        if suite != "gui-apps" || case != "guskit/smb-share-gone"
+            || phase_cell(self.page, 0, 0).load(Ordering::Acquire) == 0 { return Vec::new(); }
+        let (mut previous_at, mut previous_wait) = (0, 0);
+        PHASES.iter().enumerate().map(|(index, name)| {
+            let at = phase_cell(self.page, index, 0).load(Ordering::Acquire);
+            let total = phase_cell(self.page, index, 1).load(Ordering::Acquire);
+            let (step, wait) = if at == 0 { (0, 0) } else {
+                let step = if previous_at == 0 { 0 } else { at.saturating_sub(previous_at) };
+                let wait = total.saturating_sub(previous_wait);
+                previous_at = at;
+                previous_wait = total;
+                (step, wait)
+            };
+            format!("UI_PHASE {suite} {case} phase={} name={name} at_ms={at} step_ms={step} app_output_ms={wait} app_output_total_ms={total}", index + 1)
+        }).collect()
     }
 }
 impl Drop for Scope {

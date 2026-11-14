@@ -2151,7 +2151,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, scre
     };
     if let Some(controls) = controls {
         for line in controls.report(suite, name) { emit(&line); }
-        for line in controls.failure_phases(suite, name, matches!(outcome, Outcome::Fail { .. })) { emit(&line); }
+        for line in controls.phases(suite, name) { emit(&line); }
     }
     outcome
 }

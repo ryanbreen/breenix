@@ -404,17 +404,14 @@ pub fn smb_share_gone() -> CaseResult {
     phase("launch-done");
     stroke(&mut t, 10)?;
     phase("stroke-done");
-    phase("save-begin");
     save_as(&mut t, &file)?;
     phase("save-requested");
     t.wait_node("status", |v| v["file"] == file && v["dirty"] == false && v["message"] == "Saved")?;
     phase("save-done");
     let before = std::fs::read(&file).map_err(|e| e.to_string())?;
     let names = directory_names(&dir)?;
-    phase("close-begin");
     close_saved(&mut t)?;
     phase("close-done");
-    phase("reopen-begin");
     t.launch_next(&[b"/usr/bin/guskit", b"--canvas", b"200x120", file.as_bytes()], "Gus Kit")?;
     t.wait_node("status", |v| v["file"] == file && v["dirty"] == false)?;
     phase("reopen-done");
@@ -447,7 +444,6 @@ pub fn smb_share_gone() -> CaseResult {
         if temps.len() != 1 || temps[0].metadata().map_err(|e| e.to_string())?.len() != 16 {
             return Err("save has not written a partial temporary".into());
         }
-        phase("partial-write");
         phase("stop-issued");
         smb_request("STOP", seq)?;
         phase("stop-written");
@@ -489,7 +485,6 @@ pub fn smb_share_gone() -> CaseResult {
     t.key(16, &[Modifier::Ctrl])?;
     t.wait_node("confirm", |_| true)?;
     t.key_exit(32, 0)?;
-    phase("finish-begin");
     t.finish()?;
     std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
     std::mem::forget(folder);
