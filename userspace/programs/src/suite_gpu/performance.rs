@@ -4,8 +4,8 @@
 //! (`common::context`). Rendering intervals end with a dependent readback compared with
 //! the suite's expectation. Empty-submit latency measures SUBMIT through WAIT only;
 //! wait-no-spin measures WAIT's CPU and wall time, then validates its output. The throughput draws cannot be culled: the
-//! rectangles do not overlap and the coverage draw blends. Whole-target comparisons run
-//! after the timed interval, outside it.
+//! rectangles do not overlap and the coverage draw blends. Final target comparisons run
+//! after the timed interval; view presentation also verifies its scanout during that interval.
 use super::common::*;
 use super::pipelines::{crossings, edges};
 use gpu::abi::draw::{self, Instance};
@@ -17,8 +17,6 @@ const W: u32 = 2560;
 const H: u32 = 1600;
 const BG: u32 = 0xff312719;
 const FG: u32 = 0xffb76321;
-/// The 2560x1600 mode's index in `MODES` (`docs/gui/gpu-abi.md`, G7 display interface).
-const MODE_2560: u32 = 1;
 /// CLOCK_THREAD_CPUTIME_ID: the calling thread's user and system time.
 const THREAD_CPUTIME: u32 = 3;
 
@@ -52,13 +50,19 @@ fn thread_cpu_ns() -> R<u64> {
 
 fn take_display_2560() -> R<()> {
     libbreenix::graphics::take_over_display().map_err(|e| fail_msg(format!("take display: {e:?}")))?;
-    let r = gpu::set_mode(MODE_2560);
-    ensure(r == 0, || format!("SET_MODE 2560x1600: {}", errno(r)))
+    let (r, modes) = gpu::modes();
+    ensure(r == 0, || format!("MODES: {}", errno(r)))?;
+    let (index, _) = modes.mode_list()
+        .filter(|(_, m)| m.width >= W && m.height >= H)
+        .min_by_key(|(_, m)| u64::from(m.width) * u64::from(m.height))
+        .ok_or_else(|| fail_msg(format!("no display mode contains {W}x{H}: {:?}", modes.mode_list().collect::<Vec<_>>())))?;
+    let r = gpu::set_mode(index);
+    ensure(r == 0, || format!("SET_MODE {index} for {W}x{H}: {}", errno(r)))
 }
 
 fn present(ctx: u64, t: u64) -> R<()> {
-    let (r, p) = gpu::present(ctx, t);
-    ensure(r == 0 && p.answer == native_success()?, || format!("PRESENT: {} answer {:#x}", errno(r), p.answer))
+    present_view(ctx, t)?.ok_or_else(|| fail_msg(format!("display does not contain the {W}x{H} performance view")))?;
+    Ok(())
 }
 
 /// Colour `n` of a sequence, so consecutive frames of a timed run differ.
@@ -315,6 +319,7 @@ pub fn first_draw_latency() -> CaseResult {
 
 pub fn readback_time_2560() -> CaseResult {
     let _case = begin()?;
+    take_display_2560()?;
     let ctx = context()?;
     let t = target(format::B8G8R8A8, W, H)?;
     frame(ctx, &scene(t, FG, &[]))?;
@@ -373,6 +378,7 @@ fn coverage(f: u32, b: u32, a: u8) -> u32 {
 
 pub fn coverage_throughput() -> CaseResult {
     let _case = begin()?;
+    take_display_2560()?;
     let ctx = context()?;
     let mask: Vec<u8> = (0..W * H).map(|i| ((i % W) * 7 + (i / W) * 13) as u8).collect();
     let tex = texture(ctx, format::R8, W, H, &mask)?;
