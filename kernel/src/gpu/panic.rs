@@ -2,6 +2,7 @@
 //! core; presentation uses preallocated requests outside that core.
 //! Pixels are rendered by bitmap_text, not by a CPU framebuffer copy.
 use super::*;
+use super::panic_layout::Layout;
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicPtr, AtomicUsize};
 #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
@@ -147,6 +148,8 @@ pub(crate) fn native_reset() {
 
 struct Screen {
     #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
+    text_layout: Layout,
+    #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
     observed: AtomicBool,
     console: console::Console,
     queue: Queue,
@@ -216,22 +219,23 @@ pub(super) fn prepare() -> Result<(), i64> {
     })
     .flatten()
     .ok_or(EIO)?;
+    let text_layout = Layout::new(c.glyph_width, c.width, c.height).map_err(|_| EIO)?;
     let mut stream = Vec::new();
     stream::encode::begin(&mut stream, c.target as u64);
     stream::encode::clear(&mut stream, BG);
     let mut instances = Vec::with_capacity(CELLS);
     for row in 0..ROWS {
         for col in 0..COLS {
-            let x = 40 + col as u32 * c.glyph_width * 2;
-            let y = 32 + row as u32 * 46;
+            let x = 40 + col as u32 * text_layout.cell_width;
+            let y = 32 + row as u32 * text_layout.cell_height;
             let mut params = [0; 16];
-            params[..8].copy_from_slice(&[x, y, 0, 0, c.glyph_width, 16, 2, 1]);
+            params[..8].copy_from_slice(&[x, y, 0, 0, c.glyph_width, 16, text_layout.scale, 1]);
             instances.push(abi::draw::Instance {
                 rect: [
                     x as i32,
                     y as i32,
-                    (x + c.glyph_width * 2) as i32,
-                    (y + 32) as i32,
+                    (x + text_layout.cell_width) as i32,
+                    (y + 16 * text_layout.scale) as i32,
                 ],
                 params,
             });
@@ -331,6 +335,8 @@ pub(super) fn prepare() -> Result<(), i64> {
     let first = Pages::new(backing.count()).ok_or(ENOMEM)?;
     let screen = Box::into_raw(Box::new(Screen {
         #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
+        text_layout,
+        #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
         observed: AtomicBool::new(false),
         console: c,
         queue,
@@ -403,11 +409,11 @@ impl Screen {
             && self.queue.exec(&self.bind, deadline)
             && self.queue.exec(&self.flush, deadline)
     }
-    /// The pixel the layout above puts at (x, y): each cell's glyph at scale 2,
+    /// The pixel the layout above puts at (x, y): each cell's glyph at its prepared scale,
     /// coverage-blended (gpu.md section 2) like the suite's console check.
     #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
     fn expected(&self, x: usize, y: usize) -> u32 {
-        expected(self.console.glyph_width, x, y)
+        expected(self.text_layout, x, y)
     }
 
     /// Device readback of the bound panic target (gpu-abi.md, READBACK's two-poison
@@ -503,13 +509,14 @@ fn layout(mut emit: impl FnMut(usize, &[u8]), title: &str, headline: &str,
 }
 
 #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
-fn expected(glyph_width: u32, x: usize, y: usize) -> u32 {
-    let gw = glyph_width as usize;
+fn expected(layout: Layout, x: usize, y: usize) -> u32 {
+    let scale = layout.scale as usize;
+    let (cw, ch) = (layout.cell_width as usize, layout.cell_height as usize);
     if x < 40 || y < 32 {
         return BG;
     }
-    let (column, row) = ((x - 40) / (gw * 2), (y - 32) / 46);
-    let (dx, dy) = ((x - 40) % (gw * 2) / 2, (y - 32) % 46 / 2);
+    let (column, row) = ((x - 40) / cw, (y - 32) / ch);
+    let (dx, dy) = ((x - 40) % cw / scale, (y - 32) % ch / scale);
     if column >= COLS || row >= ROWS || dy >= 16 {
         return BG;
     }

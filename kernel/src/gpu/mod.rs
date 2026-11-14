@@ -74,6 +74,7 @@ mod present_answers;
 mod display;
 pub mod console;
 pub mod panic;
+pub(crate) mod panic_layout;
 pub mod screen;
 use crate::gpu_observation as observation;
 mod quota;
