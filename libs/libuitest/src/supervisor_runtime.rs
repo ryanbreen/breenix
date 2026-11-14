@@ -142,12 +142,21 @@ fn report_failure(pid: u64, output: &mut Output) {
     // without acquiring a controlling terminal (O_NOCTTY).
     let console = fs::open("/dev/console", fs::O_WRONLY | 0x100).ok().map(Pipe);
     let serial = console.as_ref().map_or(Fd::STDERR, |pipe| pipe.0);
-    let mut record = format!("\nSUPERVISOR_FAILURE pid={pid} name={} status={status} exit={code} signal={signal}\n", output.name).into_bytes();
+    let name = output.name.escape_default().to_string().replace('|', "\\x7c");
+    let mut record = format!("\nSUPERVISOR_FAILURE pid={pid} name={} status={status} exit={code} signal={signal}\n", name).into_bytes();
     let stderr = output.ring.bytes();
-    for (name, bytes) in [("stderr", &stderr[stderr.len().saturating_sub(4096)..]), ("stdout", output.stdout_tail.as_slice())] {
-        record.extend_from_slice(format!("SUPERVISOR_FAILURE {name} tail={} pid={pid}\n", bytes.len()).as_bytes());
-        record.extend_from_slice(bytes);
-        record.push(b'\n');
+    for (stream, bytes) in [("stderr", &stderr[stderr.len().saturating_sub(4096)..]), ("stdout", output.stdout_tail.as_slice())] {
+        record.extend_from_slice(format!("SUPERVISOR_FAILURE {stream} tail={} pid={pid}\n", bytes.len()).as_bytes());
+        for line in bytes.split(|&b| b == b'\n') {
+            if line.is_empty() { continue; }
+            record.extend_from_slice(format!("UI_CHILD pid={pid} name={name} | ").as_bytes());
+            // Keep carriage returns and terminal controls inside the quoted line.
+            for &byte in line {
+                if byte < 32 || byte == 127 { record.extend(std::ascii::escape_default(byte)); }
+                else { record.push(byte); }
+            }
+            record.push(b'\n');
+        }
     }
     let mut remaining = record.as_slice();
     while !remaining.is_empty() {
