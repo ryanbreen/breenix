@@ -3628,10 +3628,28 @@ def capture_serial_body(directory, serial, inherited_probes=None, original_probe
         data+=final_data
     text=data.decode('ascii')
     groups={};group_slots={};previous=None;offset=0
+    evidence_catalogues={}
     for line in text.splitlines(keepends=True):
         slot=int(offset>=startup_bytes);offset+=len(line)
         fields=line.split()
-        if fields[0]=='GT710_PIX': key=('native',)
+        if fields[0]=='GT710_EVIDENCE_MODES':
+            row = json.loads(line.removeprefix('GT710_EVIDENCE_MODES '))
+            board = board_inventory(serial)
+            modes = display_catalogue(board)
+            native = native_raster(board)
+            expected = dict(default=modes.index((native['width'], native['height'], 1)),
+                            modes=[list(mode) for mode in modes])
+            if (not isinstance(row, dict) or row != expected
+                    or type(row.get('default')) is not int
+                    or any(type(v) is not int for mode in row['modes'] for v in mode)):
+                raise ValueError('evidence mode catalogue differs from live EDID')
+            if slot in evidence_catalogues:
+                raise ValueError('duplicate evidence mode catalogue')
+            # Envelope metadata has no independent serial anchor; the enclosing
+            # slot's exact byte count/digest binds it, before any records expand.
+            evidence_catalogues[slot] = row
+            continue
+        elif fields[0]=='GT710_PIX': key=('native',)
         elif fields[0]=='GT710_SWITCH_PIX': key=('switch',int(fields[1]))
         elif fields[0]=='GT710_FLIP_PIX': key=('flip',int(fields[1]),int(fields[2]))
         elif fields[0]=='GT710_MULTI': key=('multi',)
@@ -3749,6 +3767,8 @@ def capture_serial_body(directory, serial, inherited_probes=None, original_probe
         group_slots[key]=slot
         if key!=previous and key in groups: raise ValueError('interleaved display artifact blocks')
         groups.setdefault(key,[]).append(line);previous=key
+    if evidence_catalogues and set(evidence_catalogues) != ({0, 1} if finals else {0}):
+        raise ValueError('evidence mode catalogue missing from an upload slot')
     if ('case-heap',) in groups:
         measured = [json.loads(row.removeprefix('GT710_CASE_HEAP ')) for row in groups[('case-heap',)]]
         names = [''] + re.findall(r'^SUITE ' + str(suite) + r' CASE (\S+) (?:PASS|FAIL|SKIP) ', serial, re.M)

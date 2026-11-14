@@ -1,5 +1,4 @@
 """The scorer must validate the catalogue the native upload receiver consumes."""
-import copy
 import hashlib
 import json
 from pathlib import Path
