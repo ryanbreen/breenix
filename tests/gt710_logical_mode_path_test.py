@@ -13,7 +13,7 @@ class LogicalModePath(unittest.TestCase):
         native=(ROOT/'kernel/src/gpu/gk208/native.rs').read_text()
         present=item(native,'pub(in crate::gk208) fn present(').replace('pub(in crate::gk208)','').replace('super::present::','present::').replace('super::display_evidence::','display_evidence::').replace('super::cost::','cost::')
         inner=item(native,'fn present_inner(').replace('super::present::','present::').replace('super::cost::','cost::').replace('super::memx_display::','memx_display::').replace('super::display_evidence::','display_evidence::')
-        raster=item(native,'    fn submit_mode(')+'\n'+item(native,'    fn select_raster(')
+        raster=(item(native,'    fn submit_mode(')+'\n'+item(native,'    fn select_raster(')).replace('super::present::','present::')
         present += '\n' + inner
         console=item(native,'pub(super) fn logical_console(').replace('pub(super)','').replace('crate::memory::map_mmio','host_map').replace('crate::console::display::linear::map_native_write_combining','host_wc').replace('super::present::','present::').replace('super::vm::TABLE_BYTES','vm::TABLE_BYTES').replace('super::display_evidence::','display_evidence::')
         binding=item(native,'pub fn console_binding(').replace('pub fn','fn').replace('surface: &ConsoleSurface','surface: &ConsoleSurface, regs: &mut Registers').replace('    let mut regs = Registers(surface.regs);','').replace('view.verify(&mut regs,','view.verify(regs,')
@@ -65,7 +65,7 @@ mod display_evidence {
  }
 }
 #[derive(Clone)] struct RasterMode {timing:edid::Timing,pll:modeset::Pll,scripts:[Vec<modeset::Op>;4]}
-struct Evo {surfaces:[memory::Range;2],rasters:Vec<RasterMode>,protocol:u32,clock:Option<()>,latch_phase:Option<()>,last_presentation:Option<()>,frame_pixels:u64,pixel_hz:u64,head:u32,sor:u32,total:u64,push:u64,put:u32,notifier:u64,limits:(),coefficients:modeset::Pll,scripts:[Vec<modeset::Op>;4],pending_presentation:Option<PendingPresentation>}
+struct Evo {modes:Vec<(u32,u32,u32)>,surfaces:[memory::Range;2],rasters:Vec<RasterMode>,protocol:u32,clock:Option<()>,latch_phase:Option<()>,last_presentation:Option<()>,frame_pixels:u64,pixel_hz:u64,head:u32,sor:u32,total:u64,push:u64,put:u32,notifier:u64,limits:(),coefficients:modeset::Pll,scripts:[Vec<modeset::Op>;4],pending_presentation:Option<PendingPresentation>}
 #[derive(Clone,Copy)] struct PendingPresentation {resource:u32,acknowledged:Option<u32>}
 impl Evo {
  // RASTER
@@ -117,18 +117,18 @@ fn hardware()->(Registers,Evo){
  let bytes:Vec<_>=(0..hex.len()).step_by(2).map(|i|u8::from_str_radix(&hex[i..i+2],16).unwrap()).collect();
  let rasters=edid::parse(&bytes).unwrap().into_iter().map(|timing|RasterMode{timing,
  pll:modeset::Pll{n:1,fraction:0,m:1,p:1},scripts:std::array::from_fn(|_|vec![])}).collect();
- (r,Evo{rasters,protocol:1,clock:None,latch_phase:None,last_presentation:None,frame_pixels:0,pixel_hz:0,surfaces:[memory::Range{start:0x8000000,size:1280*1024*4};2],head:0,sor:0,total:1<<30,push:0x10000,put:0,notifier:0x11000,limits:(),coefficients:modeset::Pll{n:1,fraction:0,m:1,p:1},scripts:std::array::from_fn(|_|vec![]),pending_presentation:None})
+ (r,Evo{modes:vec![(1024,768,1),(1280,1024,1),(2560,2048,2)],rasters,protocol:1,clock:None,latch_phase:None,last_presentation:None,frame_pixels:0,pixel_hz:0,surfaces:[memory::Range{start:0x8000000,size:1280*1024*4};2],head:0,sor:0,total:1<<30,push:0x10000,put:0,notifier:0x11000,limits:(),coefficients:modeset::Pll{n:1,fraction:0,m:1,p:1},scripts:std::array::from_fn(|_|vec![]),pending_presentation:None})
 }
 fn main(){
- for (w,h) in [(1024,768),(1280,1024),(2560,2048)] {
+ for (index,(w,h)) in [(1024,768),(1280,1024),(2560,2048)].into_iter().enumerate() {
   let (mut r,mut e)=hardware();let s=present::Surface{resource:1,address:0x1000000,width:w,height:h,pitch:w*4,block_height:0,format:0,dma:1};
-  present(&mut e,&mut r,s,1).unwrap();assert_eq!(r.updates,if w==1024 {3}else{1});
+  present(&mut e,&mut r,s,index as u32).unwrap();assert_eq!(r.updates,if w==1024 {3}else{1});
   assert_eq!(r.read(0x6604b8),w|h<<16);
   let (rw,rh)=if w==2560 {(1280,1024)}else{(w,h)};
   assert_eq!(r.read(0x6604c0),rw|rh<<16);
   let blank=r.read(0x64041c);let end=r.read(0x640420);
   assert_eq!(((end&0xffff)-(blank&0xffff),(end>>16)-(blank>>16)),(rw,rh));
-  let (mut r,mut e)=hardware();r.stale=true;assert!(present(&mut e,&mut r,s,1).is_err());
+  let (mut r,mut e)=hardware();r.stale=true;assert!(present(&mut e,&mut r,s,index as u32).is_err());
  }
  let (mut r,mut e)=hardware();e.put=1900;r.r.insert(0x640004,1900);
  let low=present::Surface{resource:9,address:0x1000000,width:1024,height:768,pitch:4096,block_height:0,format:0,dma:1};

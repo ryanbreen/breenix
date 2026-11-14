@@ -24,6 +24,8 @@ extern crate alloc;
 #[derive(Clone)] struct RasterMode {timing:edid::Timing,pll:(),scripts:[Vec<()>;4]}
 mod board {pub struct Route {pub sor:u8,pub conf:u32}}
 mod modeset {
+ pub fn head_methods(t:&super::edid::Timing,_:u32,_:u32,_:u32,_:u64,_:u64)->Result<Vec<(u32,u32)>, &'static str>{
+  if t.clock_khz>165000 {Err("TMDS")}else{Ok(Vec::new())}}
  pub fn board_pll(_: &[u8],_:u32)->Result<(), &'static str>{Ok(())}
  pub fn pll(_: &(),clock:u32)->Result<(), &'static str>{if clock==27000 {Err("VCO")}else{Ok(())}}
  pub struct Error {pub reason:&'static str}
@@ -34,7 +36,7 @@ RECIPE
 fn timing(clock:u32)->edid::Timing{edid::Timing{width:1024,height:768,clock_khz:clock,
  hsync_start:1048,hsync_end:1184,htotal:1344,vsync_start:771,vsync_end:777,vtotal:806,flags:24}}
 fn main(){let route=board::Route{sor:0,conf:16};
- let modes=[timing(65000),timing(27000),timing(30000),timing(75000)];
+ let modes=[timing(65000),timing(27000),timing(30000),timing(75000),timing(170000)];
  let rasters=runtime_rasters(&[],&modes,&route,0).expect("optional timing disabled preferred takeover");
  assert_eq!(rasters.iter().map(|r|r.timing.clock_khz).collect::<Vec<_>>(),[65000,75000]);
  assert!(runtime_rasters(&[],&[timing(27000),timing(65000)],&route,0).is_err());

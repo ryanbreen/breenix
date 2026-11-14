@@ -481,6 +481,7 @@ pub(super) struct RasterMode {
     scripts: [Vec<modeset::Op>; 4],
 }
 pub struct Evo {
+    modes: Vec<(u32,u32,u32)>,
     rasters: Vec<RasterMode>,
     protocol: u32,
     frame_pixels: u64,
@@ -569,23 +570,20 @@ impl Evo {
         }
         submit(regs,self.total,self.push,&mut self.put,methods)
     }
-    fn select_raster(&mut self, regs: &mut Registers, width:u32, height:u32)
-        -> Result<(), &'static str> {
+    fn select_raster(&mut self, regs: &mut Registers, surface: super::present::Surface, mode:u32)
+        -> Result<bool, &'static str> {
+        let (width,height,scale)=*self.modes.get(mode as usize).ok_or("runtime mode absent")?;
+        if (surface.width,surface.height)!=(width,height) {return Err("surface differs from selected mode");}
         let preferred=self.rasters.first().ok_or("preferred runtime raster absent")?.timing;
-        let selected=if (Some(width),Some(height))==
-            (preferred.width.checked_mul(2),preferred.height.checked_mul(2)) { preferred }
+        let selected=if scale==2 { preferred }
         else { self.rasters.iter().find(|r| (r.timing.width,r.timing.height)==(width,height))
             .ok_or("surface has no advertised native raster")?.timing };
         let h=self.head as usize*0x300;
         let blank=regs.read(0x64041c+h);let end=regs.read(0x640420+h);
         if (end&0xffff).checked_sub(blank&0xffff)==Some(selected.width)
-            && (end>>16).checked_sub(blank>>16)==Some(selected.height) {return Ok(());}
+            && (end>>16).checked_sub(blank>>16)==Some(selected.height) {return Ok(false);}
         let next=self.rasters.iter().find(|r|r.timing==selected)
             .ok_or("runtime raster recipe absent")?.clone();
-        let pitch=(u64::from(selected.width)*4+255)&!255;
-        if pitch*u64::from(selected.height)>self.surfaces[0].size {
-            return Err("runtime native timing exceeds retained surface");
-        }
         modeset::pause_underflow(regs,self.head)?;
         write_words(regs,self.total,self.notifier,&[0,0,0,0])?;
         let mut detach=modeset::detach_methods(self.head,self.sor)?.to_vec();
@@ -595,10 +593,15 @@ impl Evo {
             (self.head,self.sor,true,false),&self.scripts)?;
         modeset::wait(regs,0x640004,u32::MAX,self.put)?;
         write_words(regs,self.total,self.notifier,&[0,0,0,0])?;
-        // The selected scanout is installed by the following PRESENT. During
-        // the timing attach, retain a bounded, display-owned native surface.
+        // The caller retains this full-mode surface through the transaction.
+        // Attach its actual storage, including tiled format and pitch, rather
+        // than a preferred-size bootstrap surface.
         let mut attach=modeset::head_methods(&selected,self.head,self.sor,self.protocol,
-            self.surfaces[0].start,pitch)?;
+            surface.address,u64::from(surface.pitch))?;
+        for (method,value) in surface.methods(self.head)?.into_iter().take(5) {
+            attach.iter_mut().find(|(m,_)|*m==method).ok_or("attach surface method absent")?.1=value;
+        }
+        attach.extend(modeset::Viewport::new(&selected,width,height)?.methods(self.head)?);
         attach.extend([(0x84,0x80000000),(0x80,0)]);
         self.submit_mode(regs,&attach)?;
         complete(regs,self.total,self.notifier,&self.limits,&next.pll,
@@ -609,7 +612,7 @@ impl Evo {
         self.frame_pixels=u64::from(selected.htotal)*u64::from(selected.vtotal);
         self.pixel_hz=u64::from(selected.clock_khz)*1000;
         self.clock=None;self.latch_phase=None;self.last_presentation=None;
-        Ok(())
+        Ok(true)
     }
 
     // W20 can select +2. Allow another period of dispatch margin at any mode.
@@ -1011,7 +1014,7 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
     surface: super::present::Surface, wait: bool, mode: u32,
 ) -> Result<Option<super::present::Receipt>, &'static str> {
         let result = (|| {
-    evo.select_raster(regs,surface.width,surface.height)?;
+    let raster_changed=evo.select_raster(regs,surface,mode)?;
     evo.start_clock(regs)?;
     let _cost = super::cost::phase(super::cost::Slot::Evo);
     let phase=MEMX_PRESENT_PHASE.load(core::sync::atomic::Ordering::Acquire);
@@ -1078,7 +1081,7 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
         let mut update = Update { evo, regs, view, resource: surface.resource };
         // A retained binding is already latched. Refresh its contents through
         // the existing fresh capabilities report before considering a flip.
-        let retained = if view.verify(update.regs, head).is_ok() {
+        let retained = if !raster_changed && view.verify(update.regs, head).is_ok() {
             super::present::retained(&mut update, head, surface,
                 |u| {
                     let value = acknowledge(u.evo, u.regs)?;
@@ -1140,11 +1143,14 @@ pub(super) fn runtime_rasters(rom: &[u8], modes: &[edid::Timing], route: &board:
         else { return Err("no TMDS link"); };
     let mut rasters = Vec::new();
     for (index, &timing) in modes.iter().enumerate() {
-        let recipe = (|| Ok(RasterMode { timing,
+        let recipe = (|| {
+            modeset::head_methods(&timing,head,u32::from(route.sor),protocol,0,
+                (u64::from(timing.width)*4+255)&!255)?;
+            Ok(RasterMode { timing,
             pll: modeset::pll(&limits, timing.clock_khz)?,
             scripts: modeset::board_scripts(rom,head,u32::from(route.sor),protocol,timing.clock_khz)
                 .map_err(|e| e.reason)?,
-        }))();
+        }) })();
         match recipe {
             Ok(recipe) => rasters.push(recipe),
             Err(error) if index == 0 => return Err(error),
@@ -1165,6 +1171,7 @@ pub(super) fn takeover(
     rasters: Vec<RasterMode>,
 ) -> Result<(ConsoleSurface, Evo), &'static str> {
     let t = edid::native_raster(modes)?;
+    let runtime_modes = modeset::display_modes(modes)?;
     let limits = modeset::board_pll(rom, head)?;
     let pll_record = modeset::board_pll_record(rom,head)?;
     let coefficients = modeset::pll(&limits, t.clock_khz)?;
@@ -1439,7 +1446,7 @@ pub(super) fn takeover(
             clock: None, vblank_line: 0, latch_phase: None, last_presentation: None, pending_presentation: None,
             head, sor: u32::from(route.sor), total, push: evo, put, notifier,
             surfaces: [layout.objects[0].range, layout.objects[1].range],
-            limits, coefficients, scripts, rasters, protocol,
+            limits, coefficients, scripts, rasters, protocol, modes: runtime_modes,
         }));
     }
     let mut digest = crate::block::install::sha256::Sha256::new();
@@ -1751,7 +1758,7 @@ pub(super) fn takeover(
             clock: None, vblank_line: 0, latch_phase: None, last_presentation: None, pending_presentation: None,
             head, sor: u32::from(route.sor), total, push: evo, put, notifier,
             surfaces: [layout.objects[0].range, layout.objects[1].range],
-            limits, coefficients, scripts, rasters, protocol,
+            limits, coefficients, scripts, rasters, protocol, modes: runtime_modes,
         }))
 }
 
