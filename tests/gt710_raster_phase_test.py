@@ -43,7 +43,7 @@ const EPOCH:u64=2_000_000_000;
 thread_local!{static NOW:std::cell::Cell<u64>=const{std::cell::Cell::new(EPOCH)};}
 mod signal{pub fn monotonic_nanos()->u64{super::NOW.with(|n|{let t=n.get();n.set(t+100);t})}}
 mod window{pub mod pipeline{pub fn at(_:u64,_:u64,_:u64,_:u64,_:u64){}}}
-mod presentation_trace{pub fn record(r:[u64;15],_:u64){assert!(r[7]>=r[1]);}}
+mod presentation_trace{pub fn record<const N:usize>(r:[u64;N],_:u64){assert!(r[7]>=r[1]);}}
 mod vblank_clock{ CLOCK }
 PENDING
 SAMPLE

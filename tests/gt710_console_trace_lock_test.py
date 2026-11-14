@@ -24,6 +24,7 @@ class ConsoleTraceLock(unittest.TestCase):
         # sources are selected by the revision environment variable.
         from pathlib import Path
         fixture = (Path(__file__).parent / 'fixtures/gt710_console_trace.rs').read_text()
+        fixture = fixture.replace(';15]', ';16]' if 'type Row = [u64; 16]' in trace else ';15]')
         fixture = fixture.replace('// MODE', mode).replace('// TRACE', trace).replace('// NATIVE_TAIL', tail)
         self.run_fixture(fixture)
 
