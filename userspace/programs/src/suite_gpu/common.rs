@@ -272,6 +272,15 @@ pub fn expect(t: u64, want: &Canvas, what: &str) -> Result<[u8; record::SIZE], C
 /// Show a judged source without changing the display's shape (ruling 53).
 /// Oversized sources remain offscreen; their callers still judge their full readback.
 pub fn present_view(ctx: u64, source: u64) -> Result<Option<abi::Present>, CaseError> {
+    present_view_impl(ctx, source, true)
+}
+
+/// End-only cases verify the same view without publishing an intent picture.
+pub fn present_view_end_only(ctx: u64, source: u64) -> Result<Option<abi::Present>, CaseError> {
+    present_view_impl(ctx, source, false)
+}
+
+fn present_view_impl(ctx: u64, source: u64, intent: bool) -> Result<Option<abi::Present>, CaseError> {
     libbreenix::graphics::take_over_display()
         .map_err(|e| fail_msg(format!("take display: {e:?}")))?;
     let mut modes = abi::Modes::ZERO;
@@ -306,7 +315,7 @@ pub fn present_view(ctx: u64, source: u64) -> Result<Option<abi::Present>, CaseE
         let (pixels, actual) = read(0, w, h)?;
         let comparison = want.compare(&pixels, "scanout source rectangle");
         if comparison.is_ok() { breenix_suite::suite::screen_judged_readback(&pixels, &actual); }
-        let _ = breenix_suite::suite::judged_readback_owned(pixels, w, h);
+        if intent { let _ = breenix_suite::suite::judged_readback_owned(pixels, w, h); }
         comparison?;
         ensure(u32_at(&actual, record::TARGET_WIDTH) == mode.width
             && u32_at(&actual, record::TARGET_HEIGHT) == mode.height

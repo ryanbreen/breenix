@@ -15,6 +15,7 @@ class IrqCheckpoint(unittest.TestCase):
         irq = item((ROOT / 'userspace/programs/src/suite_gpu/isolation.rs').read_text(), 'pub fn irq_masked_bound(')
         presentation = next(line.strip() for line in irq.splitlines() if 'present_view(ctx, t)?' in line)
         alias = '\n'.join(line for line in irq.splitlines() if 'use super::common::' in line)
+        alias = alias.replace('super::common::', 'crate::')
         intent = (ROOT / 'libs/libbreenix/src/suite_intent.rs').read_text()
         intent = intent[intent.index('#[derive'):intent.index('pub(super) fn configured')]
         intent = intent.replace('include_str!("../../../scripts/metal/intent-pictures.tsv")',

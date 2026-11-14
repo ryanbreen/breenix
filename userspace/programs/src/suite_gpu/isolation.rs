@@ -1605,6 +1605,7 @@ pub fn client_cannot_scanout() -> CaseResult {
 }
 
 pub fn irq_masked_bound() -> CaseResult {
+    use super::common::present_view_end_only as present_view;
     let _case = begin()?;
     let ctx = context()?;
     let small_t = target(format::B8G8R8A8, 8, 8)?;
