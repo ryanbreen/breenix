@@ -12,6 +12,8 @@ class ScreenUpload(unittest.TestCase):
         code = r'''
 #![allow(dead_code)]
 extern crate self as libbreenix;
+#[path="ERRNO"] pub mod errno;
+pub use errno::Errno;
 pub mod crypto { #[path="SHA"] pub mod sha256; }
 #[path="EVIDENCE"] mod evidence;
 #[path="QUEUE"] mod queue;
@@ -74,7 +76,8 @@ pub mod crypto { #[path="SHA"] pub mod sha256; }
 '''
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
-            for key, value in [('SHA','libs/libbreenix/src/crypto/sha256.rs'),
+            for key, value in [('ERRNO','libs/libbreenix/src/errno.rs'),
+                               ('SHA','libs/libbreenix/src/crypto/sha256.rs'),
                                ('EVIDENCE','libs/libbreenix/src/suite_evidence.rs'),
                                ('QUEUE','libs/libbreenix/src/suite_screen_upload.rs')]:
                 code = code.replace('"'+key+'"', '"'+str(ROOT/value)+'"')

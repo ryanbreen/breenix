@@ -38,7 +38,10 @@ class NativeEvidenceReceiver(unittest.TestCase):
                 self.assertEqual(sum(current.get(k,0) for k in ('bytes','screenBytes','diagnosticBytes','finalBytes')),sent)
                 if not diagnostics_only: self.assertTrue(current['finalComplete'])
 
-    def test_runtime_paged_crc_inventory(self): self.replay(diagnostics_only=True)
+    def test_runtime_paged_crc_inventory(self):
+        self.replay(diagnostics_only=True)
+        # 88 declared ends + 146 pages from the runtime-sized sources + 4 phases.
+        self.assertEqual(upload.crc_checkpoint_cap('gpu', FIXTURE['modes'], FIXTURE['default']),238)
     def test_retained_upload_order_and_missing_body_upper_bounds(self): self.replay()
 
     def test_wire_volume_independent_of_crc_slots(self): self.replay(wire_only=True)
@@ -51,7 +54,8 @@ class NativeEvidenceReceiver(unittest.TestCase):
                 route=upload.prepare(boot,'sample',{'BOOT_URL':'http://fixture.invalid/boot'},suite='gpu').split('fixture.invalid')[1]
                 def send(suffix,body=b'row',digest=None):
                     h=Handler(route+suffix,body,digest); upload.receive(h); return h.code
-                self.assertEqual(send(''),200)
+                catalogue='GT710_EVIDENCE_MODES '+json.dumps({k:FIXTURE[k] for k in ('default','modes')})+'\n'
+                self.assertEqual(send('',catalogue.encode()),200)
                 self.assertEqual(send('/screens/pictures/1'),404)
                 self.assertEqual(send('/diagnostics/unknown-checkpoint'),404)
                 self.assertEqual(send('/screens/pictures/0',digest='0'*64),400)
@@ -59,7 +63,7 @@ class NativeEvidenceReceiver(unittest.TestCase):
                 self.assertEqual(send('/screens/pictures/0'),200)
                 self.assertEqual(send('/screens/pictures/0'),404)
                 current=upload.m.read_json(state/'gt710-upload.json')
-                current['screenBytes']=upload.MAX_TOTAL
+                current['screenBytes']=upload.byte_bound(current)
                 upload.m.write_json(state/'gt710-upload.json',current)
                 self.assertEqual(send('/screens/pictures/1'),400)
                 self.assertFalse((boot/'screen-part-0001.bin').exists())
