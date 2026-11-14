@@ -310,7 +310,11 @@ fn render(fb: &mut Surface, app: &mut App, menu: &MenuBar, font: &mut Option<Cac
     }
     let mut cached = app.canvas_surface.take();
     let canvas = app.canvas();
-    if cached.as_ref().is_some_and(|(_,surface)|surface.width()!=app.width || surface.height()!=app.height) { cached=None; }
+    // Join's provisional document can differ from the view until sync completes.
+    // Cache exactly the document that content_damage tracks: a larger surface
+    // would blit an untracked zero-filled tail into the window's buffer pool.
+    let (width, height) = canvas.dimensions();
+    if cached.as_ref().is_some_and(|(_,surface)|surface.width()!=width || surface.height()!=height) { cached=None; }
     if let Some((previous, surface)) = &mut cached {
         let changed = surface.batch(|fb| canvas.render_changes(previous, |x, y, width, c|
             shapes::fill_rect(fb, x as i32, y as i32, width as i32, 1, Color::rgb(c[0], c[1], c[2]))));
@@ -319,7 +323,7 @@ fn render(fb: &mut Surface, app: &mut App, menu: &MenuBar, font: &mut Option<Cac
             previous.clone_from(canvas);
         }
     } else {
-        let mut surface = Surface::new(app.width, app.height, libgfx::surface::Format::BGRX)
+        let mut surface = Surface::new(width, height, libgfx::surface::Format::BGRX)
             .map_err(|e| format!("canvas surface: {e}"))?;
         surface.batch(|fb| canvas.render_runs(|x, y, width, c|
             shapes::fill_rect(fb, x as i32, y as i32, width as i32, 1, Color::rgb(c[0], c[1], c[2]))));
