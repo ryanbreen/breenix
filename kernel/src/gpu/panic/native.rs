@@ -164,6 +164,13 @@ pub(super) fn prepare() -> Result<(), i64> {
         #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
         reads,
     }));
+    // Exercise a runtime timing change after packet preparation, on the
+    // existing diagnostic profile and outside its timer-triggered panic.
+    #[cfg(feature = "capture_panic_oracle")]
+    if gk208::set_mode(0).is_err() {
+        unsafe {drop(Box::from_raw(screen));}
+        return Err(EIO);
+    }
     let old = with_core(|core| {
         let prepared = unsafe { &*screen };
         if core.epoch != prepared.console.epoch

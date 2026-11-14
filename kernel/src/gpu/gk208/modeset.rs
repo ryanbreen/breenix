@@ -645,6 +645,7 @@ pub trait Io {
     fn read(&mut self, reg: usize) -> u32;
     fn write(&mut self, reg: usize, value: u32);
     fn delay_us(&mut self, us: u32);
+    fn live(&self) -> bool {true}
 }
 
 /// Pause measurement only while the prior window is healthy (G25).
@@ -678,6 +679,7 @@ fn mask(a: &mut impl Io, r: usize, m: u32, v: u32) {
 }
 pub fn wait(a: &mut impl Io, r: usize, mask: u32, value: u32) -> Result<(), &'static str> {
     for _ in 0..20000 {
+        if !a.live() {return Err("display deadline expired");}
         if a.read(r) & mask == value {
             return Ok(());
         }
@@ -811,6 +813,7 @@ pub enum Op {
 pub fn execute_ops(a: &mut impl Io, ops: &[Op]) {
     fn run(a: &mut impl Io, ops: &[Op], enabled: &mut bool) {
         for op in ops {
+            if !a.live() {return;}
             match op {
                 Op::Resume => { *enabled = true; continue; }
                 Op::Call(body) => {
@@ -829,6 +832,7 @@ pub fn execute_ops(a: &mut impl Io, ops: &[Op]) {
                 Op::ConditionTime { register, mask, value, attempts } => {
                     let mut met = false;
                     for _ in 0..attempts {
+                        if !a.live() {return;}
                         if a.read(register) & mask == value { met=true;break; }
                         a.delay_us(20000);
                     }
@@ -1179,4 +1183,72 @@ pub fn output_dither_methods(head: u32, previous: u32, enable: bool)
     if head >= 4 { return Err("invalid output dithering head"); }
     let value = if enable { (previous & !0x1ff) | 0x19 } else { previous };
     Ok([(0x4a0 + head * 0x300, value), (0x84, 0x80000000), (0x80, 0)])
+}
+
+/// Service one pending display supervisor phase using predecoded recipes.
+pub fn supervise(regs:&mut impl Io, limits:&PllLimits, coefficients:&Pll,
+    route:(u32,u32,bool,bool), scripts:&[Vec<Op>;4]) -> Result<(), &'static str> {
+    let (head, sor, attached, attaching) = route;
+    let h = head as usize * 0x800;
+    let errors = regs.read(0x61009c);
+    if errors != 0 {
+        return Err("native display method error");
+    }
+    let pending = regs.read(0x6100ac) & 7;
+    if pending != 0 {
+        let phase = if pending & 1 != 0 {
+            1
+        } else if pending & 2 != 0 {
+            2
+        } else {
+            4
+        };
+        let state = regs.read(0x6101d4 + h);
+        regs.write(0x6100ac, phase);
+        if state & 0x1000 != 0 {
+            if phase == 1 && attached {
+                execute_ops(regs, &scripts[0]);
+            }
+            if phase == 2 && attached {
+                execute_ops(regs, &scripts[1]);
+            }
+            if phase == 4 && attaching {
+                execute_ops(regs, &scripts[3]);
+            }
+        }
+        if phase == 2 && state & 0x10000 != 0 {
+            let r = limits.reg as usize;
+            mask(regs, r + 12, 0, 0x100);
+            regs.write(
+                r + 4,
+                coefficients.p << 16 | coefficients.n << 8 | coefficients.m,
+            );
+            regs.write(r + 16, u32::from(coefficients.fraction) << 16);
+        }
+        // Release power for an outgoing attachment; gate incoming scripts
+        // separately from the outgoing configuration.
+        if phase == 2 && state & 0x1000 != 0 && attached && !attaching {
+            let s = sor as usize * 0x800;
+            wait(regs, 0x61c004 + s, 0x80000000, 0)?;
+            mask(regs, 0x61c004 + s, 0x80000001, 0x80000000);
+            wait(regs, 0x61c004 + s, 0x80000000, 0)?;
+            wait(regs, 0x61c030 + s, 0x10000000, 0)?;
+        }
+        if phase == 2 && state & 0x1000 != 0 && attaching {
+            execute_ops(regs, &scripts[2]);
+            mask(regs, 0x612200 + h, 15, 0);
+            let s = sor as usize * 0x800;
+            mask(regs, 0x612300 + s, 0x007c0707, 0x0a << 18);
+            wait(regs, 0x61c004 + s, 0x80000000, 0)?;
+            mask(regs, 0x61c004 + s, 0x80000001, 0x80000001);
+            wait(regs, 0x61c004 + s, 0x80000000, 0)?;
+            wait(regs, 0x61c030 + s, 0x10000000, 0)?;
+        }
+        for i in 0..4 {
+            regs.write(0x6101d4 + i * 0x800, 0);
+        }
+        regs.write(0x6101d0, 0x80000000);
+    }
+    if !regs.live() {return Err("display deadline expired");}
+    Ok(())
 }

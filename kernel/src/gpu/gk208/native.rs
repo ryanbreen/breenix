@@ -317,67 +317,7 @@ fn completion(
         fn poll(&mut self) -> Result<u32, &'static str> {
             let Self { regs, total, notifier, limits, coefficients, route, scripts } = self;
             let regs = &mut **regs;
-            let (head, sor, attached, attaching) = *route;
-            let h = head as usize * 0x800;
-            let errors = regs.read(0x61009c);
-            if errors != 0 {
-                return Err("native display method error");
-            }
-            let pending = regs.read(0x6100ac) & 7;
-            if pending != 0 {
-                let phase = if pending & 1 != 0 {
-                    1
-                } else if pending & 2 != 0 {
-                    2
-                } else {
-                    4
-                };
-                let state = regs.read(0x6101d4 + h);
-                regs.write(0x6100ac, phase);
-                if state & 0x1000 != 0 {
-                    if phase == 1 && attached {
-                        modeset::execute_ops(regs, &scripts[0]);
-                    }
-                    if phase == 2 && attached {
-                        modeset::execute_ops(regs, &scripts[1]);
-                    }
-                    if phase == 4 && attaching {
-                        modeset::execute_ops(regs, &scripts[3]);
-                    }
-                }
-                if phase == 2 && state & 0x10000 != 0 {
-                    let r = limits.reg as usize;
-                    regs.mask(r + 12, 0, 0x100);
-                    regs.write(
-                        r + 4,
-                        coefficients.p << 16 | coefficients.n << 8 | coefficients.m,
-                    );
-                    regs.write(r + 16, u32::from(coefficients.fraction) << 16);
-                }
-                // Release power for an outgoing attachment; gate incoming scripts
-                // separately from the outgoing configuration.
-                if phase == 2 && state & 0x1000 != 0 && attached && !attaching {
-                    let s = sor as usize * 0x800;
-                    modeset::wait(regs, 0x61c004 + s, 0x80000000, 0)?;
-                    regs.mask(0x61c004 + s, 0x80000001, 0x80000000);
-                    modeset::wait(regs, 0x61c004 + s, 0x80000000, 0)?;
-                    modeset::wait(regs, 0x61c030 + s, 0x10000000, 0)?;
-                }
-                if phase == 2 && state & 0x1000 != 0 && attaching {
-                    modeset::execute_ops(regs, &scripts[2]);
-                    regs.mask(0x612200 + h, 15, 0);
-                    let s = sor as usize * 0x800;
-                    regs.mask(0x612300 + s, 0x007c0707, 0x0a << 18);
-                    modeset::wait(regs, 0x61c004 + s, 0x80000000, 0)?;
-                    regs.mask(0x61c004 + s, 0x80000001, 0x80000001);
-                    modeset::wait(regs, 0x61c004 + s, 0x80000000, 0)?;
-                    modeset::wait(regs, 0x61c030 + s, 0x10000000, 0)?;
-                }
-                for i in 0..4 {
-                    regs.write(0x6101d4 + i * 0x800, 0);
-                }
-                regs.write(0x6101d0, 0x80000000);
-            }
+            modeset::supervise(regs,limits,coefficients,*route,scripts)?;
             read_word(regs, *total, *notifier)
         }
         fn delay_us(&mut self, us: u32) { self.regs.delay_us(us); }
@@ -856,13 +796,8 @@ impl Evo {
     }
     pub(in crate::gk208) fn terminal_display(&self, registers: usize, surface: super::present::Surface)
         -> Result<super::emergency::Display, &'static str> {
-        let regs = Registers(registers);
-        let h = self.head as usize * 0x300;
-        let blank = regs.read(0x64041c+h);
-        let end = regs.read(0x640420+h);
-        let view = modeset::Viewport::for_raster((end&0xffff).checked_sub(blank&0xffff)
-            .ok_or("invalid terminal raster")?, (end>>16).checked_sub(blank>>16)
-            .ok_or("invalid terminal raster")?, surface.width, surface.height)?;
+        let preferred=self.rasters.first().ok_or("terminal preferred raster absent")?;
+        let view=modeset::Viewport::new(&preferred.timing,surface.width,surface.height)?;
         let surface_methods = surface.methods(self.head)?;
         let view_methods = view.methods(self.head)?;
         let mut methods = Vec::new();
@@ -875,17 +810,30 @@ impl Evo {
         // completion in a disjoint 16-byte slot of the owned notifier page.
         methods.iter_mut().find(|(m, _)| *m == 0x84)
             .ok_or("terminal notifier control absent")?.1 |= 16;
-        // Ordinary EVO packets stay below 2048; the second half of this
-        // already-owned 4096-byte push page is terminal-only (NV927D JUMP).
-        if methods.len() * 8 > 2048 { return Err("terminal EVO packet extent"); }
-        let mut words = Vec::new();
-        words.try_reserve_exact(methods.len() * 2).map_err(|_| "terminal EVO packet allocation")?;
-        words.extend(methods.iter().flat_map(|&(m, v)| [0x40000 | m, v]));
-        write_words(&mut Registers(registers), self.total, self.push + 2048, &words)?;
+        let mut detach=modeset::detach_methods(self.head,self.sor)?.to_vec();
+        detach.extend([(0x84,0x80000010),(0x80,0)]);
+        let mut attach=modeset::head_methods(&preferred.timing,self.head,self.sor,self.protocol,
+            surface.address,u64::from(surface.pitch))?;
+        for &(method,value) in &surface_methods[..5] {
+            attach.iter_mut().find(|(m,_)|*m==method).ok_or("terminal attach surface method absent")?.1=value;
+        }
+        attach.extend_from_slice(&view_methods);
+        attach.extend([(0x84,0x80000010),(0x80,0)]);
+        // Three terminal packets share the disjoint half of the owned push page.
+        let count=methods.len()+detach.len()+attach.len();
+        if count*8>2048 {return Err("terminal EVO packet extent");}
+        let mut words=Vec::new();
+        words.try_reserve_exact(count*2).map_err(|_|"terminal EVO packet allocation")?;
+        words.extend(methods.iter().chain(&detach).chain(&attach).flat_map(|&(m,v)|[0x40000|m,v]));
+        write_words(&mut Registers(registers),self.total,self.push+2048,&words)?;
         modeset::bar_flush(&mut Registers(registers))?;
+        let raster=super::emergency::Raster { limits:self.limits,
+            pll:preferred.pll.clone(),scripts:preferred.scripts.clone(),
+            outgoing:self.rasters.iter().map(|r|(r.timing.clock_khz*1000,r.scripts.clone())).collect(),
+            detach,attach };
         Ok(super::emergency::Display { registers, total: self.total,
             push: self.push, notifier: self.notifier + 16, head: self.head, sor: self.sor,
-            methods,
+            methods,raster,
             #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
             target: surface.resource })
     }
