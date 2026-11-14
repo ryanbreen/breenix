@@ -66,13 +66,13 @@ fn main(){
  let which=std::env::args().nth(1).unwrap();
  for (entries,native,native_index,containing) in [
   (vec![(1024,768,1),(1280,1024,1),(2560,2048,2)],(1280,1024),1,2),
-  (vec![(1280,800,1),(2560,1600,2)],(1280,800),0,1),
+  (vec![(1280,800,1),(2560,1600,2)],(2560,1600),1,1),
  ]{
   catalogue(&entries);EXPECTED.with(|e|e.set(native));
   if which!="irq" {
    let case=match which.as_str(){"context"=>display_context_unreachable,"addresses"=>no_addresses,_=>client_cannot_scanout};
    SELECTED.with(|s|s.set(None));case().unwrap();assert_eq!(SELECTED.with(Cell::get),Some(native_index));
-  let mode=MODES.with(|m|m.borrow().native_mode().unwrap().1);
+  let mode=MODES.with(|m|m.borrow().current_mode().unwrap());
   assert_eq!((mode.width,mode.height),native);let own=CHILD.unwrap();assert_target(own,native);
   } else {SELECTED.with(|s|s.set(None));irq().unwrap();assert_eq!(SELECTED.with(Cell::get),Some(containing));}
  }
