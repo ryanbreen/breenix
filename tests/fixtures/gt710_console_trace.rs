@@ -1,3 +1,4 @@
+extern crate alloc;
 use std::{cell::{Cell, RefCell}, ops::{Deref, DerefMut}, sync::{Mutex, MutexGuard}};
 thread_local! {
     static LOCKED: Cell<bool> = const { Cell::new(false) };
@@ -59,7 +60,7 @@ impl Drop for Guard<'_> {
     fn drop(&mut self) {
         LOCKED.with(|v| v.set(false)); event("unlock");
         // Force a new frame between session unlock and serial export.
-        presentation_trace::record([999;15]);
+        presentation_trace::record([999;15], 0);
     }
 }
 static SESSION:Owner=Owner(Mutex::new(None));
@@ -84,7 +85,7 @@ mod display_evidence {
     use super::*;
     pub fn record(_: &mut Registers, _:u32, _:present::Surface, _:&present::Receipt,_:u32) {
         assert!(locked());
-        for i in 0..10 { let mut row=[0;15]; row[0]=i; presentation_trace::record(row); }
+        for i in 0..10 { let mut row=[0;15]; row[0]=i; presentation_trace::record(row, 0); }
         event("record");
     }
     pub fn transition(_: &mut Registers, _:u32, _:present::Surface, _:&present::Receipt,

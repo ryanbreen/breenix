@@ -1,6 +1,47 @@
 //! W17: bounded acceptance/completion samples, emitted on console restoration.
 //! Collection is independent of detailed-timing switches and allocates no memory.
+use alloc::vec::Vec;
 type Row = [u64; 15];
+// A rate interval has 120 frames plus its final view and restoration. Keep 128
+// receipts in static storage. Snapshot copies them to a Vec after the interval,
+// keeping the ring off the 16 KiB kernel stack and avoiding per-frame allocation.
+const FRAME_CAPACITY: usize = 128;
+struct Frames {
+    rows: [Row; FRAME_CAPACITY],
+    count: u64,
+    missed: bool,
+    previous_latch: u64,
+}
+impl Frames {
+    const fn new() -> Self {
+        Self { rows: [[0; 15]; FRAME_CAPACITY], count: 0, missed: false, previous_latch: 0 }
+    }
+    fn record(&mut self, row: Row, period_ns: u64) {
+        let gap = row[7].saturating_sub(self.previous_latch);
+        // A receipt later than the first refresh after acceptance, or a two-edge
+        // cadence gap, needs its surrounding frames. Longer gaps can be deliberate
+        // idle work; the acceptance-to-latch condition still detects their late flip.
+        self.missed |= period_ns != 0 && (row[7].saturating_sub(row[1]) > period_ns
+            || (self.count != 0 && gap > period_ns + period_ns / 2
+                && gap < period_ns.saturating_mul(2) + period_ns / 2));
+        self.rows[self.count as usize % FRAME_CAPACITY] = row;
+        self.count += 1;
+        self.previous_latch = row[7];
+    }
+    fn take(&mut self) -> Vec<Row> {
+        let mut rows = Vec::new();
+        if self.missed {
+            for i in self.count.saturating_sub(FRAME_CAPACITY as u64)..self.count {
+                rows.push(self.rows[i as usize % FRAME_CAPACITY]);
+            }
+        }
+        self.count = 0;
+        self.missed = false;
+        self.previous_latch = 0;
+        rows
+    }
+}
+static FRAMES: spin::Mutex<Frames> = spin::Mutex::new(Frames::new());
 struct Trace {
     count: u64,
     early: u64,
@@ -25,12 +66,16 @@ impl Trace {
 }
 static TRACE: spin::Mutex<Trace> = spin::Mutex::new(Trace::new());
 
-pub(super) fn record(row: Row) { TRACE.lock().record(row); }
+pub(super) fn record(row: Row, period_ns: u64) {
+    TRACE.lock().record(row);
+    FRAMES.lock().record(row, period_ns);
+}
 
 /// Detached receipt samples and wakeup counters from one restoration boundary.
 pub(super) struct Snapshot {
     wakeup: [u64; 3],
     trace: Option<Trace>,
+    frames: Vec<Row>,
 }
 
 /// Detach while the native session still serializes presentation. Serial output
@@ -42,7 +87,8 @@ pub(super) fn snapshot() -> Snapshot {
         if live.count == 0 { None }
         else { Some(core::mem::replace(&mut *live, Trace::new())) }
     };
-    Snapshot { wakeup, trace }
+    let frames = FRAMES.lock().take();
+    Snapshot { wakeup, trace, frames }
 }
 
 #[cfg(not(feature = "gt710_clock_probe"))]
@@ -59,6 +105,16 @@ pub(super) fn export(snapshot: Snapshot) {
     for i in 0..trace.count.min(4) { emit(i + 1, trace.first[i as usize]); }
     for i in trace.count.saturating_sub(4).max(4)..trace.count {
         emit(i + 1, trace.tail[(i % 4) as usize]);
+    }
+    if !snapshot.frames.is_empty() {
+        let retained = snapshot.frames.len() as u64;
+        let dropped = trace.count.saturating_sub(retained);
+        crate::serial_println!("GT710_PRESENT_MISS count={} retained={} dropped={}", trace.count, retained, dropped);
+        for (i, row) in snapshot.frames.into_iter().enumerate() {
+            crate::serial_println!("GT710_PRESENT_FRAME seq={} resource={} accept_to_latch_ns={}",
+                dropped + i as u64 + 1, row[0], row[7].saturating_sub(row[1]));
+            emit(dropped + i as u64 + 1, row);
+        }
     }
 }
 fn emit(sequence: u64, r: Row) {

@@ -695,7 +695,8 @@ impl Evo {
             u64::from(regs.read(0x64041c + self.head as usize * 0x300)),
             u64::from(regs.read(0x640420 + self.head as usize * 0x300)),
             self.latch_phase.map_or(u64::MAX, u64::from),
-        ]);
+        ], (u128::from(self.frame_pixels) * 1_000_000_000)
+            .div_ceil(u128::from(self.pixel_hz)) as u64);
         self.last_presentation = Some((resource, at));
         self.pending_presentation = None;
         Ok(true)
