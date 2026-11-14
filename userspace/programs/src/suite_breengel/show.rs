@@ -31,13 +31,37 @@ pub(crate) fn scale2_mode() -> Result<libbreenix::gpu::abi::Mode,breenix_suite::
     Ok(mode)
 }
 
+// Count populated wire slots independently of count, including the unused tail.
+// The host scorer additionally compares native catalogue sizes with live EDID.
+fn complete_catalogue(modes: &libbreenix::gpu::abi::Modes, native: bool) -> bool {
+    let slots: Vec<_> = modes.modes.iter().chain(modes.extra_modes.iter()).collect();
+    let count = slots.iter().filter(|m| m.width | m.height | m.scale | m.reserved != 0).count();
+    if !(2..=slots.len()).contains(&count) || modes.count as usize != count
+        || modes.current as usize >= count { return false; }
+    for (i, m) in slots[..count].iter().enumerate() {
+        if m.width == 0 || m.height == 0 || m.reserved != 0
+            || slots[..i].contains(m) { return false; }
+    }
+    if slots[count..].iter().any(|m| m.width | m.height | m.scale | m.reserved != 0) {
+        return false;
+    }
+    if !native {
+        return count == 2 && (slots[0].width, slots[0].height, slots[0].scale) == (1280, 800, 1)
+            && (slots[1].width, slots[1].height, slots[1].scale) == (2560, 1600, 2);
+    }
+    let scaled = if count == 2 { 0 } else { count - 1 };
+    slots[..count].iter().enumerate().all(|(i, m)| m.scale == if i == scaled { 2 } else { 1 })
+        && slots[1].width.checked_mul(2) == Some(slots[scaled].width)
+        && slots[1].height.checked_mul(2) == Some(slots[scaled].height)
+}
+
 // gpu-display: §2.2 replaces fb_info with GPU MODES, including R4 physical scale; capacity checks remain.
 fn composition_fbinfo_geometry() -> CaseResult {
     let expected=scale2_mode()?;
     crate::display_regressions::many_windows()?;
     let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r))).cite("18")?;
-    ensure(modes.current<modes.count && modes.count as usize==modes.mode_list().count(),"18","gpu-display: mode catalogue is incomplete")?;
-    let mode=modes.current_mode().expect("MODES current index is listed");
+    ensure(complete_catalogue(&modes, cfg!(target_arch = "x86_64")),"18","gpu-display: mode catalogue is incomplete")?;
+    let mode=modes.current_mode().ok_or("MODES current index is not listed")?;
     ensure(mode==expected,"18",
         format!("gpu-display: active mode {mode:?}; expected {expected:?}"))?;
     ensure(modes.binding_known==1 && modes.scanout_resource!=0,"18","gpu-display: the current mode has no completed scanout binding")
