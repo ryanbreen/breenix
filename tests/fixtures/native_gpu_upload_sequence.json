@@ -1650,7 +1650,7 @@
     ],
     [
       "screen",
-      5243392
+      3513856
     ],
     [
       "crc-gpu-1d2e06b0663e8d42",
@@ -1712,7 +1712,8 @@
       "case": "performance/coverage-throughput",
       "checkpoint": "intent-p4",
       "cause": "http-status",
-      "bytes": 5243392
+      "bytes": 3513856,
+      "length_source": "retained SCR1 header in part 186"
     },
     {
       "case": "performance/wait-no-spin",
