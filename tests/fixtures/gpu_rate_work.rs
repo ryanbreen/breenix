@@ -7,7 +7,7 @@ type CaseResult = R<()>;
 pub struct State {
     pub mode: [u32; 2], pub targets: Vec<([u32; 2], u32)>, pub screen: u64, pub timed: bool,
     pub views: usize, pub timed_views: usize, pub timed_allocations: usize,
-    pub presents: usize, pub timed_presents: usize, pub corners: usize, pub full: usize,
+    pub presents: usize, pub timed_presents: usize, pub corners: usize, pub full: usize, pub timed_copies: usize,
 }
 thread_local! { static STATE: RefCell<State> = RefCell::new(State::default()); }
 pub fn ensure(ok: bool, why: impl FnOnce() -> String) -> R<()> { if ok { Ok(()) } else { Err(why()) } }
@@ -57,7 +57,7 @@ pub fn submit(_:u64,stream:&[u32])->R<u64> {
         while at<stream.len() {match stream[at] {
             0=>{target=stream[at+1] as usize-1;at+=2;},
             1=>{s.targets[target].1=stream[at+1];at+=2;},
-            2=>{let src=stream[at+1] as usize-1;let dst=stream[at+2] as usize-1;s.targets[dst].1=s.targets[src].1;at+=3;},
+            2=>{if s.timed {s.timed_copies+=1;} let src=stream[at+1] as usize-1;let dst=stream[at+2] as usize-1;s.targets[dst].1=s.targets[src].1;at+=3;},
             _=>panic!("bad stream"),
         }}
     }); Ok(1)
@@ -85,6 +85,7 @@ fn main() {
             assert_eq!(s.timed_views,0,"per-frame exact view verification in the measured loop");
             assert_eq!(s.timed_allocations,0,"per-frame scanout allocation");
             assert_eq!(s.timed_presents,120);
+            assert_eq!(s.timed_copies,if case=="clear" && mode!=[W,H] {120} else {0},"only changing sources need timed viewing copies");
             assert_eq!(s.corners,if case=="clear" {1} else {121},"original far-corner checks");
             assert_eq!(s.full,1,"final whole scanout check");
             assert_eq!(s.views,1,"one exact source-rectangle view check outside the sample");
