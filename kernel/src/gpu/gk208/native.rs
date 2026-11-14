@@ -481,6 +481,7 @@ pub(super) struct RasterMode {
     scripts: [Vec<modeset::Op>; 4],
 }
 pub struct Evo {
+    raster_known: bool,
     modes: Vec<(u32,u32,u32)>,
     rasters: Vec<RasterMode>,
     protocol: u32,
@@ -580,11 +581,51 @@ impl Evo {
             .ok_or("surface has no advertised native raster")?.timing };
         let h=self.head as usize*0x300;
         let blank=regs.read(0x64041c+h);let end=regs.read(0x640420+h);
-        if (end&0xffff).checked_sub(blank&0xffff)==Some(selected.width)
+        if self.raster_known && (end&0xffff).checked_sub(blank&0xffff)==Some(selected.width)
             && (end>>16).checked_sub(blank>>16)==Some(selected.height) {return Ok(false);}
         let next=self.rasters.iter().find(|r|r.timing==selected)
             .ok_or("runtime raster recipe absent")?.clone();
-        modeset::pause_underflow(regs,self.head)?;
+        let mut attach=modeset::head_methods(&selected,self.head,self.sor,self.protocol,
+            surface.address,u64::from(surface.pitch))?;
+        for (method,value) in surface.methods(self.head)?.into_iter().take(5) {
+            attach.iter_mut().find(|(m,_)|*m==method).ok_or("attach surface method absent")?.1=value;
+        }
+        attach.extend(modeset::Viewport::new(&selected,width,height)?.methods(self.head)?);
+        attach.extend([(0x84,0x80000000),(0x80,0)]);
+        // Retain the old timing and complete surface/viewport before detaching.
+        let previous=self.rasters.iter().find(|r|
+            Some(r.timing.width)==(end&0xffff).checked_sub(blank&0xffff)
+            && Some(r.timing.height)==(end>>16).checked_sub(blank>>16)
+            && r.timing.clock_khz*1000==regs.read(0x640450+h)).cloned();
+        let rollback=previous.as_ref().map(|old| {
+            let mut methods=modeset::head_methods(&old.timing,self.head,self.sor,self.protocol,
+                u64::from(regs.read(0x640460+h))<<8,
+                u64::from((old.timing.width*4+255)&!255))?;
+            for method in [0x460,0x468,0x46c,0x470,0x474,0x42c,0x494,0x4b0,0x4b8,0x4bc,0x4c0,0x4c4,0x4c8] {
+                let value=regs.read(0x640000+h+method as usize);
+                if let Some(entry)=methods.iter_mut().find(|(m,_)|*m==method+self.head*0x300) {entry.1=value;}
+                else {methods.push((method+self.head*0x300,value));}
+            }
+            methods.extend([(0x84,0x80000000),(0x80,0)]);
+            Ok::<_, &'static str>(methods)
+        }).transpose()?;
+        if self.raster_known {modeset::pause_underflow(regs,self.head)?;}
+        if let Err(error)=self.apply_raster(regs,&next,&attach) {
+            if let (Some(old),Some(methods))=(previous,rollback) {
+                if self.apply_raster(regs,&old,&methods).is_ok() {return Err(error);}
+            }
+            self.raster_known=false;
+            return Err("runtime raster switch and rollback failed");
+        }
+        Ok(true)
+    }
+
+    fn apply_raster(&mut self, regs:&mut Registers, next:&RasterMode, attach:&[(u32,u32)])
+        -> Result<(), &'static str> {
+        self.raster_known=false;
+        if regs.read(0x616308+self.head as usize*0x800)&0x111!=0 {
+            return Err("runtime raster recovery requires paused healthy reporting");
+        }
         write_words(regs,self.total,self.notifier,&[0,0,0,0])?;
         let mut detach=modeset::detach_methods(self.head,self.sor)?.to_vec();
         detach.extend([(0x84,0x80000000),(0x80,0)]);
@@ -593,26 +634,18 @@ impl Evo {
             (self.head,self.sor,true,false),&self.scripts)?;
         modeset::wait(regs,0x640004,u32::MAX,self.put)?;
         write_words(regs,self.total,self.notifier,&[0,0,0,0])?;
-        // The caller retains this full-mode surface through the transaction.
-        // Attach its actual storage, including tiled format and pitch, rather
-        // than a preferred-size bootstrap surface.
-        let mut attach=modeset::head_methods(&selected,self.head,self.sor,self.protocol,
-            surface.address,u64::from(surface.pitch))?;
-        for (method,value) in surface.methods(self.head)?.into_iter().take(5) {
-            attach.iter_mut().find(|(m,_)|*m==method).ok_or("attach surface method absent")?.1=value;
-        }
-        attach.extend(modeset::Viewport::new(&selected,width,height)?.methods(self.head)?);
-        attach.extend([(0x84,0x80000000),(0x80,0)]);
-        self.submit_mode(regs,&attach)?;
-        complete(regs,self.total,self.notifier,&self.limits,&next.pll,
-            (self.head,self.sor,false,true),&next.scripts)?;
+        // Keep the outgoing recipe consistent even if the new attach times out.
+        self.coefficients=next.pll.clone();self.scripts=next.scripts.clone();
+        self.submit_mode(regs,attach)?;
+        complete(regs,self.total,self.notifier,&self.limits,&self.coefficients,
+            (self.head,self.sor,false,true),&self.scripts)?;
         modeset::wait(regs,0x640004,u32::MAX,self.put)?;
         modeset::arm_underflow(regs,self.head)?;
-        self.coefficients=next.pll;self.scripts=next.scripts;
-        self.frame_pixels=u64::from(selected.htotal)*u64::from(selected.vtotal);
-        self.pixel_hz=u64::from(selected.clock_khz)*1000;
+        self.frame_pixels=u64::from(next.timing.htotal)*u64::from(next.timing.vtotal);
+        self.pixel_hz=u64::from(next.timing.clock_khz)*1000;
         self.clock=None;self.latch_phase=None;self.last_presentation=None;
-        Ok(true)
+        self.raster_known=true;
+        Ok(())
     }
 
     // W20 can select +2. Allow another period of dispatch margin at any mode.
@@ -1446,7 +1479,7 @@ pub(super) fn takeover(
             clock: None, vblank_line: 0, latch_phase: None, last_presentation: None, pending_presentation: None,
             head, sor: u32::from(route.sor), total, push: evo, put, notifier,
             surfaces: [layout.objects[0].range, layout.objects[1].range],
-            limits, coefficients, scripts, rasters, protocol, modes: runtime_modes,
+            limits, coefficients, scripts, rasters, protocol, modes: runtime_modes, raster_known: true,
         }));
     }
     let mut digest = crate::block::install::sha256::Sha256::new();
@@ -1758,7 +1791,7 @@ pub(super) fn takeover(
             clock: None, vblank_line: 0, latch_phase: None, last_presentation: None, pending_presentation: None,
             head, sor: u32::from(route.sor), total, push: evo, put, notifier,
             surfaces: [layout.objects[0].range, layout.objects[1].range],
-            limits, coefficients, scripts, rasters, protocol, modes: runtime_modes,
+            limits, coefficients, scripts, rasters, protocol, modes: runtime_modes, raster_known: true,
         }))
 }
 

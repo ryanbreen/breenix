@@ -13,7 +13,7 @@ class LogicalModePath(unittest.TestCase):
         native=(ROOT/'kernel/src/gpu/gk208/native.rs').read_text()
         present=item(native,'pub(in crate::gk208) fn present(').replace('pub(in crate::gk208)','').replace('super::present::','present::').replace('super::display_evidence::','display_evidence::').replace('super::cost::','cost::')
         inner=item(native,'fn present_inner(').replace('super::present::','present::').replace('super::cost::','cost::').replace('super::memx_display::','memx_display::').replace('super::display_evidence::','display_evidence::')
-        raster=(item(native,'    fn submit_mode(')+'\n'+item(native,'    fn select_raster(')).replace('super::present::','present::')
+        raster=(item(native,'    fn submit_mode(')+'\n'+item(native,'    fn select_raster(')+'\n'+item(native,'    fn apply_raster(')).replace('super::present::','present::')
         present += '\n' + inner
         console=item(native,'pub(super) fn logical_console(').replace('pub(super)','').replace('crate::memory::map_mmio','host_map').replace('crate::console::display::linear::map_native_write_combining','host_wc').replace('super::present::','present::').replace('super::vm::TABLE_BYTES','vm::TABLE_BYTES').replace('super::display_evidence::','display_evidence::')
         binding=item(native,'pub fn console_binding(').replace('pub fn','fn').replace('surface: &ConsoleSurface','surface: &ConsoleSurface, regs: &mut Registers').replace('    let mut regs = Registers(surface.regs);','').replace('view.verify(&mut regs,','view.verify(regs,')
@@ -65,7 +65,7 @@ mod display_evidence {
  }
 }
 #[derive(Clone)] struct RasterMode {timing:edid::Timing,pll:modeset::Pll,scripts:[Vec<modeset::Op>;4]}
-struct Evo {modes:Vec<(u32,u32,u32)>,surfaces:[memory::Range;2],rasters:Vec<RasterMode>,protocol:u32,clock:Option<()>,latch_phase:Option<()>,last_presentation:Option<()>,frame_pixels:u64,pixel_hz:u64,head:u32,sor:u32,total:u64,push:u64,put:u32,notifier:u64,limits:(),coefficients:modeset::Pll,scripts:[Vec<modeset::Op>;4],pending_presentation:Option<PendingPresentation>}
+struct Evo {raster_known:bool,modes:Vec<(u32,u32,u32)>,surfaces:[memory::Range;2],rasters:Vec<RasterMode>,protocol:u32,clock:Option<()>,latch_phase:Option<()>,last_presentation:Option<()>,frame_pixels:u64,pixel_hz:u64,head:u32,sor:u32,total:u64,push:u64,put:u32,notifier:u64,limits:(),coefficients:modeset::Pll,scripts:[Vec<modeset::Op>;4],pending_presentation:Option<PendingPresentation>}
 #[derive(Clone,Copy)] struct PendingPresentation {resource:u32,acknowledged:Option<u32>}
 impl Evo {
  // RASTER
@@ -117,7 +117,7 @@ fn hardware()->(Registers,Evo){
  let bytes:Vec<_>=(0..hex.len()).step_by(2).map(|i|u8::from_str_radix(&hex[i..i+2],16).unwrap()).collect();
  let rasters=edid::parse(&bytes).unwrap().into_iter().map(|timing|RasterMode{timing,
  pll:modeset::Pll{n:1,fraction:0,m:1,p:1},scripts:std::array::from_fn(|_|vec![])}).collect();
- (r,Evo{modes:vec![(1024,768,1),(1280,1024,1),(2560,2048,2)],rasters,protocol:1,clock:None,latch_phase:None,last_presentation:None,frame_pixels:0,pixel_hz:0,surfaces:[memory::Range{start:0x8000000,size:1280*1024*4};2],head:0,sor:0,total:1<<30,push:0x10000,put:0,notifier:0x11000,limits:(),coefficients:modeset::Pll{n:1,fraction:0,m:1,p:1},scripts:std::array::from_fn(|_|vec![]),pending_presentation:None})
+ (r,Evo{raster_known:true,modes:vec![(1024,768,1),(1280,1024,1),(2560,2048,2)],rasters,protocol:1,clock:None,latch_phase:None,last_presentation:None,frame_pixels:0,pixel_hz:0,surfaces:[memory::Range{start:0x8000000,size:1280*1024*4};2],head:0,sor:0,total:1<<30,push:0x10000,put:0,notifier:0x11000,limits:(),coefficients:modeset::Pll{n:1,fraction:0,m:1,p:1},scripts:std::array::from_fn(|_|vec![]),pending_presentation:None})
 }
 fn main(){
  for (index,(w,h)) in [(1024,768),(1280,1024),(2560,2048)].into_iter().enumerate() {
