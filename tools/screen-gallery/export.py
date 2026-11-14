@@ -16,7 +16,9 @@ import zlib
 ROOT = Path(__file__).resolve().parents[2]
 NAME = r'[a-z0-9]+(?:-[a-z0-9]+)*'
 SCREEN = re.compile(rf'SUITE ({NAME}) SCREEN ({NAME}/{NAME}) ({NAME}) sha256=([0-9a-f]{{64}}) mode=([1-9][0-9]*x[1-9][0-9]*) binding=([1-9][0-9]*x[1-9][0-9]*)(?: crc=[0-9a-f]{{8}} crc2=(?:[0-9a-f]{{8}}|none) raster=[1-9][0-9]*x[1-9][0-9]* out=sor[0-9]+)?')
-MAX_PIXELS = 2560 * 1600 * 4
+# Decoded BGRA for scale 2 of a 4096x4096 native mode, matching screen-capture.
+# EDID detailed timings have 12-bit extents; doubling fits the 15-bit viewport.
+MAX_PIXELS = (2 * 4096) * (2 * 4096) * 4
 
 
 def git(*args):
