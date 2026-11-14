@@ -75,7 +75,7 @@ mod display_evidence {
 }
 FUNCTIONS
 fn surface(resource:u32)->present::Surface{present::Surface{resource,address:100,width:1280,height:800,pitch:5120,block_height:0,format:0,dma:1}}
-fn setup(){*SESSION.lock()=Some(Session{modes:MODES,pending_present:None,ready_present:None,scanout:vec![6],evo:native::Evo{head:0,pending:false},registers:0,resources:Resources,mode:1,console:Console{vram:100,bytes:100},layout:Layout{objects:vec![Object{name:"logical-low",range:Range{start:100,size:100}}]}});}
+fn setup(){*SESSION.lock()=Some(Session{modes:MODES,pending_present:None,ready_present:None,scanout:vec![6],evo:native::Evo{head:0,pending:false},registers:0,resources:Resources,mode:1,console:Console{vram:100,bytes:100},layout:Layout{objects:vec![Object{name:"logical-mode",range:Range{start:100,size:100}}]}});}
 fn pinned(ids:&[u32]){assert_eq!(SESSION.lock().as_ref().unwrap().scanout,ids);}
 fn replacement(){present(surface(8)).unwrap();pinned(&[6,7,8]);assert!(present_complete(surface(8)).unwrap());pinned(&[8]);}
 #[test]fn recover(){
