@@ -141,6 +141,9 @@ fn recovery_read()->Result<Vec<u8>,i32> {
     if !RECOVERY_STARTED.load(Ordering::Acquire) && SESSION.lock().is_none() {return Ok(b"unavailable\n".to_vec());}
     if !RECOVERY_STARTED.swap(true,Ordering::AcqRel) {
         let started=crate::task::kthread::kthread_run(|| {
+            // Finish any console receipt before moving its session out, as
+            // core and clock startup do. Keep rendering paused through restore.
+            let _canvas=crate::console::hold_canvas();
             let owned={SESSION.lock().take()};
             let result=if let Some(mut s)=owned {
                 let result=if s.work.is_some() {Err("native deferred work still owned")} else {super::recovery::probe(&mut s)};
