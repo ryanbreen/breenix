@@ -2,7 +2,7 @@
 use std::collections::BTreeMap;
 #[derive(Clone, Copy)] struct Fd(i32);
 impl Fd { const STDIN: Self=Self(0); const STDOUT: Self=Self(1); const STDERR: Self=Self(2); }
-#[derive(Debug, PartialEq)] enum Errno { EINTR, EAGAIN, ECHILD, Other }
+#[derive(Debug, PartialEq)] enum Errno { EINTR, EAGAIN, ECHILD, ESRCH, Other }
 #[derive(Debug)] enum Error { Os(Errno) }
 impl std::fmt::Display for Error { fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result { write!(f,"{self:?}") } }
 mod native {
@@ -12,10 +12,10 @@ mod native {
         pub fn close(f:i32)->i32; pub fn open(p:*const u8,f:i32,...)->i32;
         pub fn fork()->i32; pub fn dup2(a:i32,b:i32)->i32; pub fn _exit(s:i32)->!;
         pub fn execve(p:*const u8,a:*const *const u8,e:*const *const u8)->i32;
-        pub fn waitpid(p:i32,s:*mut i32,o:i32)->i32;
+        pub fn waitpid(p:i32,s:*mut i32,o:i32)->i32; pub fn kill(p:i32,s:i32)->i32; pub fn getpid()->i32;
     }
 }
-fn error()->Error { Error::Os(match std::io::Error::last_os_error().raw_os_error().unwrap() {4=>Errno::EINTR,35=>Errno::EAGAIN,10=>Errno::ECHILD,_=>Errno::Other}) }
+fn error()->Error { Error::Os(match std::io::Error::last_os_error().raw_os_error().unwrap() {4=>Errno::EINTR,35=>Errno::EAGAIN,10=>Errno::ECHILD,3=>Errno::ESRCH,_=>Errno::Other}) }
 mod io {
     use super::*;
     pub mod status_flags {pub const O_CLOEXEC:i32=0x1000000;pub const O_NONBLOCK:i32=4;}
@@ -27,7 +27,10 @@ mod io {
 }
 mod fs {use super::*;pub const O_RDWR:u32=2;pub const O_WRONLY:u32=1;pub fn open(p:&str,f:u32)->Result<Fd,Error>{let p=std::ffi::CString::new(if p=="/dev/console" {"/dev/fd/2"} else {p}).unwrap();let fd=unsafe{native::open(p.as_ptr().cast(),f as i32)};if fd<0{Err(error())}else{Ok(Fd(fd))}}}
 #[derive(Clone,Copy)] struct Pid(i32); impl Pid {fn raw(self)->u64{self.0 as u64}}
+mod signal {use super::*;pub const SIGKILL:i32=9; pub fn kill(p:i32,s:i32)->Result<(),Error>{if unsafe{native::kill(p,s)}<0{Err(error())}else{Ok(())}}}
+// PRODUCTION_DESCENDANTS
 mod process {use super::*;pub const WNOHANG:i32=1;
+ pub fn getpid()->Result<Pid,Error>{Ok(Pid(unsafe{native::getpid()}))}
  pub fn execve(p:&[u8],a:*const *const u8,e:*const *const u8)->Result<(),Error>{unsafe{native::execve(p.as_ptr(),a,e);}Err(error())}
  pub fn waitpid(p:i32,s:&mut i32,o:i32)->Result<Pid,Error>{let n=unsafe{native::waitpid(p,s,o)};if n<0{Err(error())}else{Ok(Pid(n))}}
 }
@@ -44,11 +47,17 @@ impl Channel {fn queue(&mut self,m:&Message)->Result<(),String>{match m{Message:
 #[export_name="getresuid"] extern "C" fn host_getresuid(_:*mut u32,_:*mut u32,_:*mut u32)->i32{panic!("unexpected credential query")}
 #[export_name="getresgid"] extern "C" fn host_getresgid(_:*mut u32,_:*mut u32,_:*mut u32)->i32{panic!("unexpected credential query")}
 // PRODUCTION_RUNTIME
-fn main(){
+fn harness_kill(outputs_state: &mut BTreeMap<u64, Output>)->Result<(),String> {
+ std::hint::black_box(&mut *outputs_state);
+ // PRODUCTION_KILL_CALL
+ Ok(())
+}
+fn main()->Result<(),String>{
  for (script,expected,connected) in [
    ("printf 'child-stderr-cause\\n' >&2; printf 'child-stdout-tail\\n'; exit 1",256,true),
    ("printf successful-child >&2; exit 0",0,true),
    ("printf signal-cause >&2; kill -TERM $$",15,false),
+   ("kill -KILL $$",9,false),
    ("printf discarded-prefix; printf discarded-prefix >&2; i=0; while [ $i -lt 5000 ]; do printf x; printf y >&2; i=$((i+1)); done; printf child-stdout-tail; printf child-stderr-cause >&2; exit 1",256,false),
  ] {
    let (pid,output)=launch(&[b"/bin/sh".to_vec(),b"-c".to_vec(),script.as_bytes().to_vec()],&[],0,false).unwrap();
@@ -64,4 +73,29 @@ fn main(){
    assert_eq!(outputs_state[&pid].status,Some(expected));
    assert_eq!(channel.exits,if connected{vec![(pid,expected)]}else{vec![]});
  }
+
+ // The harness kills only this run's child, selected through production ancestry.
+ let (pid, output)=launch(&[b"/bin/sh".to_vec(),b"-c".to_vec(),b"printf '[bwm] client frame check FAILED: teardown-child\\n'; while :; do :; done".to_vec()],&[],0,false).unwrap();
+ let root=std::env::temp_dir().join(format!("supervisor-proc-{}",process::getpid().unwrap().raw()));
+ std::fs::create_dir_all(root.join(pid.to_string())).unwrap();
+ std::fs::write(root.join(pid.to_string()).join("stat"),format!("{pid} (sh) R {}",process::getpid().unwrap().raw())).unwrap();
+ std::env::set_var("HOST_PROC",&root);
+ let mut outputs_state=BTreeMap::from([(pid,output)]);let mut channel=Channel::default();let mut ownership=Ownership;
+ let end=std::time::Instant::now()+std::time::Duration::from_secs(10);
+ // Observe the child's output before sending its teardown kill.
+ while outputs_state[&pid].stdout_tail.is_empty() {
+   outputs(&mut outputs_state,&mut channel,true).unwrap();
+   assert!(std::time::Instant::now()<end);std::thread::yield_now();
+ }
+ harness_kill(&mut outputs_state)?;
+ loop {
+   let empty=reap(&mut channel,&mut outputs_state,true,None,&mut ownership,false).unwrap();
+   outputs(&mut outputs_state,&mut channel,true).unwrap();
+   if empty && outputs_state.values().all(|o|o.stdout.is_none()&&o.stderr.is_none()){break}
+   assert!(std::time::Instant::now()<end);std::thread::yield_now();
+ }
+ assert_eq!(outputs_state[&pid].status,Some(9));
+ println!("teardown_pid={pid}");
+ std::fs::remove_dir_all(root).unwrap();
+ Ok(())
 }
