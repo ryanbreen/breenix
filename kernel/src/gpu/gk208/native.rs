@@ -553,6 +553,13 @@ impl Evo {
         if self.raster_known {modeset::pause_underflow(regs,self.head)?;}
         if let Err(error)=self.apply_raster(regs,&next,&attach) {
             if let (Some(old),Some(methods))=(previous,rollback) {
+                // The failed new raster may have armed reporting before failing
+                // its health check. End that window and acknowledge its W1C bit;
+                // the original error is still returned after restoring the old
+                // raster, whose attach must pass a fresh arm/health check.
+                let underflow=0x616308+self.head as usize*0x800;
+                let status=regs.read(underflow);
+                modeset::Io::write(regs,underflow,(status&!0x111)|0x10);
                 if self.apply_raster(regs,&old,&methods).is_ok() {return Err(error);}
             }
             self.raster_known=false;

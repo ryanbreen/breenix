@@ -23,10 +23,17 @@ use std::collections::BTreeMap;
 #[path="ROOT/kernel/src/gpu/gk208/modeset.rs"] mod modeset;
 #[path="ROOT/kernel/src/gpu/gk208/present.rs"] mod present;
 #[path="ROOT/kernel/src/gpu/gk208/memory.rs"] mod memory;
-#[derive(Default)] struct Registers{r:BTreeMap<usize,u32>,detaches:usize,fail:usize,calls:usize}
+#[derive(Default)] struct Registers{r:BTreeMap<usize,u32>,detaches:usize,fail:usize,calls:usize,arm_fault:bool}
 impl Registers{fn read(&self,r:usize)->u32{*self.r.get(&r).unwrap_or(&0)}}
 impl modeset::Io for Registers{fn read(&mut self,r:usize)->u32{Registers::read(self,r)}
- fn write(&mut self,r:usize,v:u32){self.r.insert(r,v);}fn delay_us(&mut self,_:u32){}}
+ fn write(&mut self,r:usize,v:u32){
+  if r==0x616308 {
+   let sticky=if v&16!=0 {0} else {self.read(r)&16};
+   let mut value=(v&!16)|sticky;
+   if v&1!=0 && self.arm_fault {value|=16;self.arm_fault=false;}
+   self.r.insert(r,value);
+  } else {self.r.insert(r,v);}
+ }fn delay_us(&mut self,_:u32){}}
 #[derive(Clone)]struct RasterMode{timing:edid::Timing,pll:modeset::Pll,scripts:[Vec<modeset::Op>;4]}
 struct Evo{rasters:Vec<RasterMode>,modes:Vec<(u32,u32,u32)>,raster_known:bool,
  head:u32,sor:u32,total:u64,push:u64,notifier:u64,put:u32,protocol:u32,
@@ -48,11 +55,13 @@ fn run(w:u32,h:u32,fault:usize){let p=t(w,h,65000);let big=t(1920,1080,148500);
  head:0,sor:0,total:1<<30,push:0,notifier:0,put:0,protocol:1,limits:(),coefficients:pll,scripts:core::array::from_fn(|_|Vec::new()),
  surfaces:[memory::Range{start:0x10000,size:u64::from(((w*4+255)&!255)*h)};2],frame_pixels:1,pixel_hz:1,clock:None,latch_phase:None,last_presentation:None};
  let mut r=Registers::default();for(a,v)in modeset::head_methods(&p,0,0,1,0x10000,(u64::from(w)*4+255)&!255).unwrap(){r.r.insert(0x640000+a as usize,v);r.r.insert(0x660000+a as usize,v);}
- r.r.insert(0x616308,1);r.fail=fault;
+ r.r.insert(0x616308,1);r.fail=if fault==3 {0} else {fault};r.arm_fault=fault==3;
  let s=present::Surface{resource:7,address:0x1000000,width:1920,height:1080,pitch:7680,block_height:0,format:0,dma:1};
  let result=select(&mut e,&mut r,s,0);
  if fault!=0 {
   assert!(result.is_err());
+  assert!(e.raster_known,"failed arm prevented restoration of the previous raster");
+  assert_eq!(r.read(0x616308),1,"rollback did not restore healthy reporting");
   assert_eq!(r.read(0x640200),0x101,"failed switch left the SOR detached");
   assert_eq!(r.read(0x640450),65000000,"failed switch did not restore the old timing");
   let old=present::Surface{width:w,height:h,pitch:(w*4+255)&!255,address:0x10000,..s};
@@ -63,7 +72,7 @@ fn run(w:u32,h:u32,fault:usize){let p=t(w,h,65000);let big=t(1920,1080,148500);
  assert_eq!(r.read(0x640460),s.address as u32>>8);assert_eq!(r.read(0x640468),1920|1080<<16);
 }
 fn select(e:&mut Evo,r:&mut Registers,s:present::Surface,index:u32)->Result<(), &'static str>{let _=index;CALL}
-fn main(){run(1366,768,0);run(960,540,0);run(1366,768,1);run(1366,768,2);}
+fn main(){run(1366,768,0);run(960,540,0);run(1366,768,1);run(1366,768,2);run(1366,768,3);}
 '''.replace('ROOT',str(ROOT)).replace('SELECT',select).replace('EXTRA',extra).replace('CALL',call)
     return code
 
