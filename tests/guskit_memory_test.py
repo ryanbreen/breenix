@@ -30,6 +30,12 @@ DRAIN
  std::fs::remove_file(path).unwrap();
 }
 #[test] fn oversized_import_is_refused_before_decode() {
+ // CORE headers store unsigned 16-bit dimensions rather than INFO's 32-bit fields.
+ let mut core=vec![0u8;30];core[..2].copy_from_slice(b"BM");core[2..6].copy_from_slice(&30u32.to_le_bytes());core[10..14].copy_from_slice(&26u32.to_le_bytes());core[14..18].copy_from_slice(&12u32.to_le_bytes());
+ core[18..20].copy_from_slice(&1u16.to_le_bytes());core[20..22].copy_from_slice(&1u16.to_le_bytes());core[22..24].copy_from_slice(&1u16.to_le_bytes());core[24..26].copy_from_slice(&24u16.to_le_bytes());core[26..29].copy_from_slice(&[3,2,1]);
+ let (small,message)=files::decode("small.bmp",&core,0,0).expect("fitting CORE bitmap refused");assert_eq!(small.pixels(),[1,2,3]);assert!(message.is_none());
+ core[18..20].copy_from_slice(&4000u16.to_le_bytes());core[20..22].copy_from_slice(&3000u16.to_le_bytes());
+ assert!(files::decode("large.bmp",&core,0,0).err().unwrap().contains("document memory limit"));
  let mut bmp=vec![0u8;54];bmp[..2].copy_from_slice(b"BM");bmp[14..18].copy_from_slice(&40u32.to_le_bytes());
  bmp[18..22].copy_from_slice(&4000i32.to_le_bytes());bmp[22..26].copy_from_slice(&3000i32.to_le_bytes());
  let err=files::decode("photo.bmp",&bmp,0,0).err().expect("oversized BMP accepted");
