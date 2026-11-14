@@ -77,13 +77,22 @@ fn shown(t: u64, want: &Canvas, fence: u64) -> R<u64> {
     ensure(u64_at(&m, 64) == id, || "MODES binding differs from actual scanout".to_string())?;
     Ok(id)
 }
-// The native pair is the recorded GT710 monitor fixture; virtual panels retain their pair.
-fn expected_modes(native: bool) -> Vec<(u32, u32, u32)> {
-    if native {
-        vec![(1024, 768, 1), (1280, 1024, 1), (2560, 2048, 2)]
-    } else {
-        vec![(1280, 800, 1), (2560, 1600, 2)]
+fn expected_scale(native: bool, count: usize, index: usize) -> Option<u32> {
+    if !(2..=10).contains(&count) || index>=count {return None;}
+    if !native {return (count==2).then_some(index as u32+1);}
+    let scaled=if count==2 {0} else {count-1};
+    Some(if index==scaled {2} else {1})
+}
+fn valid_catalogue(native: bool, modes: &[(u32,u32,u32)]) -> bool {
+    if !(2..=10).contains(&modes.len()) {return false;}
+    if !native {return modes==[(1280,800,1),(2560,1600,2)];}
+    for (i,&(w,h,scale)) in modes.iter().enumerate() {
+        if w==0 || h==0 || Some(scale)!=expected_scale(native,modes.len(),i)
+            || modes[..i].contains(&(w,h,scale)) {return false;}
+        if scale==2 && (Some(w),Some(h))!=
+            (modes[1].0.checked_mul(2),modes[1].1.checked_mul(2)) {return false;}
     }
+    true
 }
 fn catalogue() -> R<abi::Modes> {
     let (r,m)=gpu::modes();
@@ -97,7 +106,11 @@ pub fn modes_listed() -> CaseResult {
     let _case = begin()?;
     let m = modes()?;
     let c = caps()?;
-    let expected=expected_modes(c.backend == abi::backend::GK208);
+    let expected=target_modes()?;
+    ensure(valid_catalogue(c.backend==abi::backend::GK208,&expected),
+        || format!("invalid mode catalogue: {expected:?}"))?;
+    ensure(expected.iter().all(|&(w,h,_)|w<=c.max_width && h<=c.max_height),
+        || "listed mode exceeds device extent".to_string())?;
     for (at, want) in [(0,1),(4,256),(8,expected.len() as u32),
         (16,c.max_width),(20,c.max_height)] {
         ensure(u32_at(&m,at)==want, || format!("MODES offset {at}: {} expected {want}",u32_at(&m,at)))?;
@@ -134,14 +147,17 @@ pub fn mode_2560x1600() -> CaseResult {
 pub fn scale_reported() -> CaseResult {
     let _case = begin()?;
     take()?;
-    for (i, (_, _, s)) in target_modes()?.into_iter().enumerate() {
-        let i = i as u32;
-        mode(i)?;
+    let native=caps()?.backend==abi::backend::GK208;
+    let listed=target_modes()?;
+    ensure(valid_catalogue(native,&listed), || format!("invalid mode catalogue: {listed:?}"))?;
+    for index in 0..listed.len() {
+        let expected=expected_scale(native,listed.len(),index)
+            .ok_or_else(||fail_msg("mode scale rule absent".into()))?;
+        mode(index as u32)?;
         let m = modes()?;
         let n = u32_at(&m, 12) as usize;
-        ensure(n == i as usize && u32_at(&m, if n<2 {32+n*16+8} else {128+(n-2)*16+8}) == s, || {
-            "current mode scale differs".to_string()
-        })?;
+        ensure(n==index && u32_at(&m,if n<2 {32+n*16+8} else {128+(n-2)*16+8})==expected,
+            || "current mode scale differs from independent mode rule".to_string())?;
     }
     Ok(())
 }
