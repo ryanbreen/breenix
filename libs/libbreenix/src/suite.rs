@@ -2265,8 +2265,8 @@ fn run_case_body(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool,
             let _ = CASE_NAME.set(String::from(name));
             keep_record_output(suite, name);
             detach_transcript();
-            let ready = if screen.gui && crate::suite_stage::case_takes_display(name) { graphics::take_over_display() } else { Ok(()) };
-            let outcome = match ready.and_then(|()| silence_output()) {
+            let ready = if screen.gui && crate::suite_stage::case_takes_display(name) { crate::suite_stage::take_display() } else { Ok(()) };
+            let outcome = match ready.and_then(|()| silence_output().map_err(|e| e.to_string())) {
                 Ok(()) => run_inline(case),
                 Err(error) => Outcome::Fail {
                     ms: 0,

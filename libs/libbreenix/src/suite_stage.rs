@@ -104,6 +104,8 @@ fn painter<R>(f: impl FnOnce(&mut dyn Painter) -> Result<R, String>) -> Result<R
 
 use crate::ui_clock as clock;
 static SHOW: Mutex<Option<Show>> = Mutex::new(None);
+// The runner's requested mode survives a return to the kernel screen.
+static DISPLAY_MODE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(u32::MAX);
 /// The stage's DejaVu Sans and its glyph cache, kept across frames.
 static FONT: Mutex<StageFont> = Mutex::new(StageFont::new());
 #[derive(Clone)]
@@ -188,6 +190,22 @@ fn quad(rec: &[u8], at: usize) -> u64 {
 /// The display's current mode, which sizes the stage's screen buffers (ruling B8).
 fn mode() -> Result<gpu::abi::Mode, String> {
     gpu::current_mode().map_err(|r| std::format!("stage CURRENT_MODE: errno {}", -r))
+}
+/// Take custody and restore the mode selected when this stage started. A case
+/// takes its own owner entry before selecting it; a kernel-screen giveback is
+/// still free to restore the kernel's default in between.
+pub(super) fn take_display() -> Result<(), String> {
+    graphics::take_over_display().map_err(|e| std::format!("stage display ownership: {e:?}"))?;
+    let wanted = DISPLAY_MODE.load(core::sync::atomic::Ordering::Relaxed);
+    let (r, modes) = gpu::modes();
+    if r != 0 || wanted >= modes.count {
+        return Err(std::format!("stage mode catalogue: errno {}, requested {wanted}", -r));
+    }
+    if modes.current != wanted {
+        let r = gpu::set_mode(wanted);
+        if r != 0 { return Err(std::format!("stage SET_MODE: errno {}", -r)); }
+    }
+    Ok(())
 }
 /// Observe the whole scanout into `pixels` by the 48-byte SCANOUT_READBACK.
 pub(crate) fn observe(pixels: &mut Vec<u8>) -> Result<Seen, String> {
@@ -759,7 +777,7 @@ impl Gpu {
         if w > self.width as usize || h > self.height as usize {
             return Err(std::format!("the {w}x{h} judged frame does not fit the {}x{} canvas", self.width, self.height));
         }
-        graphics::take_over_display().map_err(|e| std::format!("stage display ownership: {e:?}"))?;
+        take_display()?;
         win::claim_compositor().map_err(|e| std::format!("stage compositor claim: {e:?}"))?;
         let composed = self.compose_window(id, w, h);
         let _ = win::release_compositor();
@@ -996,7 +1014,7 @@ impl Gpu {
     /// Show the scanout target again, as the stage last drew it, after a case that started
     /// above the kernel's screen.
     fn represent(&self) -> Result<(), String> {
-        graphics::take_over_display().map_err(|e| std::format!("stage display ownership: {e:?}"))?;
+        take_display()?;
         let (r, presented) = gpu::present(self.context, self.scanout[self.shown]);
         if r != 0 {
             return Err(std::format!("stage present: errno {}, answer {:#x}", -r, presented.answer));
@@ -1031,7 +1049,7 @@ impl Gpu {
         self.run(&stream, "stage")?;
         // The stage holds the display between cases (idempotent while it does) and gives
         // it back while a case runs (`release`).
-        graphics::take_over_display().map_err(|e| std::format!("stage display ownership: {e:?}"))?;
+        take_display()?;
         let (r, presented) = gpu::present(self.context, self.scanout[next]);
         // The device's native success answer (gpu.md section 1.8, ruling 47).
         let success = crate::suite_gpu_backend::backend_values(gpu::caps().1.backend)
@@ -1066,6 +1084,7 @@ fn artifact_panes(f: &JudgedFrame, expected: &[u8]) -> (Vec<u8>, Vec<u8>) {
 /// draw would, so both samples count them, and read the scanout's record into the kept
 /// buffer, so the first frame's notice decodes a real record.
 pub(super) fn prepare() -> Result<(), String> {
+    take_display()?;
     let pid = process::getpid().map_err(|e| e.to_string())?.raw() as u64;
     let seen = {
         let mut guard = GPU.lock().unwrap();
@@ -1073,6 +1092,18 @@ pub(super) fn prepare() -> Result<(), String> {
             *guard = Some(Gpu::new(pid)?);
         }
         let g = guard.as_mut().ok_or("stage GPU objects missing")?;
+        let (r, modes) = gpu::modes();
+        if r != 0 { return Err(std::format!("stage MODES: errno {}", -r)); }
+        if modes.scanout_resource == 0 {
+            // SET_MODE may leave the native console allocation outside the shared
+            // binding. Establish the stage's own written target before observing.
+            use gpu::abi::stream::encode;
+            let mut stream = Vec::new();
+            encode::begin(&mut stream, g.canvas);
+            encode::clear(&mut stream, 0xFF00_0000);
+            g.run(&stream, "stage initial canvas")?;
+            g.present(false)?;
+        }
         observe(&mut g.seen)?
     };
     // The font, too, is in both samples.
@@ -1452,6 +1483,7 @@ impl Show {
     /// Draw, present and check this stage frame with the runner's GPU objects.
     fn paint(&mut self, bits: u32) -> Result<(), String> {
         // Rendered at the display's physical size (contract section 23.2, ruling B24).
+        take_display()?;
         let m = mode()?;
         let mut fb = FrameBuf::new(m.width as usize, m.height as usize, Format::BGRX).map_err(|e| e.to_string())?;
         // Before the stage's first frame, learn the actual backend from the scanout, so the
@@ -1489,6 +1521,8 @@ fn quiet(windows: &[(u64, u64, u64)]) -> bool {
     windows.iter().all(|&(before, after, asked)| after.checked_sub(before) == Some(asked))
 }
 pub(super) fn init(suite: &Suite) -> u64 {
+    let (r, modes) = gpu::modes();
+    DISPLAY_MODE.store(if r == 0 { modes.current } else { u32::MAX }, core::sync::atomic::Ordering::Relaxed);
     let mut entries = Vec::new();
     let mut groups: Vec<(String, usize, usize)> = Vec::new();
     for c in suite.categories {
