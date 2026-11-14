@@ -563,6 +563,9 @@ impl Evo {
 
     fn apply_raster(&mut self, regs:&mut Registers, next:&RasterMode, attach:&[(u32,u32)])
         -> Result<(), &'static str> {
+        let timing_changed = regs.read(0x640414 + self.head as usize * 0x300)
+            != (next.timing.htotal | (next.timing.vtotal << 16))
+            || self.pixel_hz != u64::from(next.timing.clock_khz) * 1000;
         self.raster_known=false;
         if regs.read(0x616308+self.head as usize*0x800)&0x111!=0 {
             return Err("runtime raster recovery requires paused healthy reporting");
@@ -584,7 +587,8 @@ impl Evo {
         modeset::arm_underflow(regs,self.head)?;
         self.frame_pixels=u64::from(next.timing.htotal)*u64::from(next.timing.vtotal);
         self.pixel_hz=u64::from(next.timing.clock_khz)*1000;
-        self.clock=None;self.latch_phase=None;self.last_presentation=None;
+        if timing_changed { self.clock=None;self.latch_phase=None; }
+        self.last_presentation=None;
         self.raster_known=true;
         Ok(())
     }
@@ -668,15 +672,20 @@ impl Evo {
             let line_ns = (u64::from(width) * 1_000_000_000).div_ceil(self.pixel_hz);
             let before = ((negative_vert & 0xffff) + height - u32::from(self.vblank_line)) % height;
             let after = ((completed.1 & 0xffff) + height - u32::from(self.vblank_line)) % height;
-            if negative_vert >> 16 == completed.1 >> 16 && after >= before
+            let edges = ((completed.1 >> 16) as u16).wrapping_sub((negative_vert >> 16) as u16);
+            if ((edges == 0 && after >= before) || (edges == 1 && after < before))
                 && completed.0.saturating_sub(negative_ns) <= 2 * line_ns {
                 self.latch_phase = Some(self.latch_phase.map_or(before as u16, |old| old.min(before as u16)));
             }
         }
         // W20: freeze +1/+2 from acceptance, independently of a delayed first poll.
-        // Without calibration, DONE seen before +1 can confirm it; otherwise choose +2.
+        // A cold timing can learn its deadline from this UPDATE's tightly
+        // bracketed hardware edge, including a counter wrap between the polls.
+        let accepted_phase = ((pending.vert & 0xffff) + height - u32::from(self.vblank_line)) % height;
+        let calibrated = pending.accepted_edges.or_else(|| self.latch_phase.map(|deadline|
+            if accepted_phase < u32::from(deadline) { 1 } else { 2 }));
         let edges = if pending.acknowledged.is_some() { 1 } else {
-            pending.accepted_edges.unwrap_or(if completed.1 >> 16 == u32::from(pending.count) { 1 } else { 2 })
+            calibrated.unwrap_or(if completed.1 >> 16 == u32::from(pending.count) { 1 } else { 2 })
         };
         if advanced < edges { return Ok(false); }
         let pixels = u64::from((line + height - u32::from(self.vblank_line)) % height)
@@ -1007,11 +1016,12 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
     surface: super::present::Surface, wait: bool, mode: u32, restoring: bool,
 ) -> Result<Option<super::present::Receipt>, &'static str> {
         let result = (|| {
-    let selection = if restoring {
-        let &(width, height, _) = evo.modes.get(mode as usize).ok_or("runtime mode absent")?;
-        super::present::Surface { width, height, ..surface }
-    } else { surface };
-    let raster_changed=evo.select_raster(regs,selection,mode)?;
+    let raster_changed = if restoring {
+        // activate_mode already confirmed the owner's raster. Rebinding its
+        // old frame rebinds the surface/view while retaining that selection.
+        if !evo.raster_known { return Err("native restore raster unknown"); }
+        false
+    } else { evo.select_raster(regs,surface,mode)? };
     evo.start_clock(regs)?;
     let _cost = super::cost::phase(super::cost::Slot::Evo);
     let phase=MEMX_PRESENT_PHASE.load(core::sync::atomic::Ordering::Acquire);
@@ -1069,8 +1079,31 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
         }
         fn complete(&mut self) -> Result<u32, &'static str> {
             let e=&self.evo;
-            let value=complete(self.regs,e.total,e.notifier,&e.limits,&e.coefficients,
-                (e.head,e.sor,true,true),&e.scripts)?;
+            // On a new timing, bracket the notifier with hardware raster samples
+            // before the first receipt. A coarse first poll after vblank cannot
+            // distinguish a late observation from a second-edge UPDATE.
+            let value=if e.latch_phase.is_none() {
+                let start=crate::signal::monotonic_nanos();
+                loop {
+                    let before=presentation_sample(self.regs,self.evo.head)?;
+                    let e=&self.evo;
+                    let value=completion(self.regs,e.total,e.notifier,&e.limits,&e.coefficients,
+                        (e.head,e.sor,true,true),&e.scripts,false)?;
+                    if value & 1 != 0 { break value; }
+                    if let Some(pending)=self.evo.pending_presentation.as_mut() {
+                        pending.last_negative=Some(before);
+                    }
+                    if crate::signal::monotonic_nanos().saturating_sub(start)
+                        >= self.evo.presentation_attempts().saturating_mul(100_000) {
+                        return Err("native initial presentation notifier did not complete");
+                    }
+                    core::hint::spin_loop();
+                }
+            } else {
+                complete(self.regs,e.total,e.notifier,&e.limits,&e.coefficients,
+                    (e.head,e.sor,true,true),&e.scripts)?
+            };
+            let e=&self.evo;
             modeset::wait(self.regs,0x640004,u32::MAX,e.put)?;
             Ok(value)
         }

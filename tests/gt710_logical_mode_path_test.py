@@ -66,15 +66,18 @@ mod display_evidence {
 }
 #[derive(Clone)] struct RasterMode {timing:edid::Timing,pll:modeset::Pll,scripts:[Vec<modeset::Op>;4]}
 struct Evo {raster_known:bool,modes:Vec<(u32,u32,u32)>,surfaces:[memory::Range;2],rasters:Vec<RasterMode>,protocol:u32,clock:Option<()>,latch_phase:Option<()>,last_presentation:Option<()>,frame_pixels:u64,pixel_hz:u64,head:u32,sor:u32,total:u64,push:u64,put:u32,notifier:u64,limits:(),coefficients:modeset::Pll,scripts:[Vec<modeset::Op>;4],pending_presentation:Option<PendingPresentation>}
-#[derive(Clone,Copy)] struct PendingPresentation {resource:u32,acknowledged:Option<u32>,restoring:bool}
+#[derive(Clone,Copy)] struct PendingPresentation {resource:u32,acknowledged:Option<u32>,restoring:bool,last_negative:Option<(u64,u32,u32)>}
 impl Evo {
  // RASTER
  fn start_clock(&mut self,_:&Registers)->Result<(),&'static str>{Ok(())}
- fn arm_presentation(&mut self,_:&Registers,resource:u32)->Result<(),&'static str>{self.pending_presentation=Some(PendingPresentation{resource,acknowledged:None,restoring:false});Ok(())}
+ fn arm_presentation(&mut self,_:&Registers,resource:u32)->Result<(),&'static str>{self.pending_presentation=Some(PendingPresentation{resource,acknowledged:None,restoring:false,last_negative:None});Ok(())}
  fn finish_presentation(&mut self,_:&Registers,_:u32)->Result<bool,&'static str>{self.pending_presentation=None;Ok(true)}
  fn record_presentation(&mut self,_:&Registers,_:u32)->Result<(),&'static str>{Ok(())}
  fn presentation_attempts(&self)->u64{1}
 }
+mod signal {pub fn monotonic_nanos()->u64{100}}
+fn presentation_sample(_: &Registers,_:u32)->Result<(u64,u32,u32),&'static str>{Ok((100,0,0))}
+fn completion(r:&mut Registers,total:u64,notifier:u64,limits:&(),pll:&modeset::Pll,head:(u32,u32,bool,bool),scripts:&[Vec<modeset::Op>;4],_:bool)->Result<u32,&'static str>{complete(r,total,notifier,limits,pll,head,scripts)}
 static MEMX_PRESENT_PHASE:core::sync::atomic::AtomicU32=core::sync::atomic::AtomicU32::new(0);
 static MEMX_CLEAR_AVAILABLE:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
 mod memx_display {

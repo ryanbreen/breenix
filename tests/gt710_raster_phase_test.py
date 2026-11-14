@@ -36,6 +36,8 @@ class RasterPhase(unittest.TestCase):
   return (p%w)as u32;
  } *self.r.get(&r).unwrap_or(&0)
 }''')
+        complete = item(item(native,'fn present_inner('),'fn complete(&mut self)')
+        complete = complete.replace('fn complete(', 'fn complete_update(')
         fixture += r'''
 const EPOCH:u64=2_000_000_000;
 thread_local!{static NOW:std::cell::Cell<u64>=const{std::cell::Cell::new(EPOCH)};}
@@ -46,6 +48,13 @@ mod vblank_clock{ CLOCK }
 PENDING
 SAMPLE
 impl Evo{ METHODS }
+struct Update<'a>{evo:&'a mut Evo,regs:&'a mut Registers}
+impl Update<'_>{ COMPLETE }
+fn completion(r:&mut Registers,_:u64,_:u64,_:&(),_:&modeset::Pll,_:(u32,u32,bool,bool),_:&[Vec<modeset::Op>;4],_:bool)->Result<u32,&'static str>{
+ let total=r.read(0x640414);let pixels=u64::from(total&0xffff)*u64::from(total>>16);
+ let p=u128::from(NOW.with(|n|n.get())-EPOCH)*u128::from(r.read(0x640450))/1_000_000_000;
+ Ok(u32::from(p>=u128::from(2*pixels)))
+}
 fn at(e:&Evo,p:u64){NOW.with(|n|n.set(EPOCH+(u128::from(p)*1_000_000_000/u128::from(e.pixel_hz))as u64));}
 fn setup()->(Evo,Registers,RasterMode){
  let timing=t(1280,1024,108000);let pll=modeset::Pll{m:1,n:1,p:1,fraction:0};
@@ -81,8 +90,8 @@ fn apply(e:&mut Evo,r:&mut Registers,next:&RasterMode){
  at(&e,pixels-w/2);e.start_clock(&r).unwrap();assert_eq!(e.vblank_line,37);
  at(&e,pixels+pixels/4);e.arm_presentation(&r,7).unwrap();
  // The notifier's negative and positive polls straddle the hardware counter edge.
- at(&e,2*pixels-100);let negative=presentation_sample(&r,0).unwrap();
- e.pending_presentation.as_mut().unwrap().last_negative=Some(negative);
+ at(&e,2*pixels-w/2);
+ Update{evo:&mut e,regs:&mut r}.complete_update().unwrap();
  at(&e,2*pixels+100);
  assert!(e.finish_presentation(&r,7).unwrap(),"cold timing retirement waited for +2 despite hardware edge");
  assert!(e.latch_phase.is_some());
@@ -90,7 +99,7 @@ fn apply(e:&mut Evo,r:&mut Registers,next:&RasterMode){
 '''.replace('CLOCK',clock).replace('PENDING',item(native,'#[derive(Clone, Copy)]\nstruct PendingPresentation {'))
         fixture = fixture.replace('SAMPLE',item(native,'fn presentation_sample('))
         methods = '\n'.join(item(native,m) for m in ['fn presentation_attempts(', 'fn start_clock(', 'fn arm_presentation(', 'fn finish_presentation('])
-        fixture = fixture.replace('METHODS',methods).replace('super::vblank_clock','vblank_clock').replace('super::presentation_trace','presentation_trace').replace('pub(in crate::gk208)','pub(crate)')
+        fixture = fixture.replace('COMPLETE',complete).replace('METHODS',methods).replace('super::vblank_clock','vblank_clock').replace('super::presentation_trace','presentation_trace').replace('pub(in crate::gk208)','pub(crate)')
         self.run_fixture(fixture)
 
 

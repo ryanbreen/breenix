@@ -96,8 +96,8 @@ mod native{
    NOW.with(|n|n.set(EPOCH+nanos((frame+1)*PIXELS)+delay));
    assert!(e.finish_presentation(&regs,7).unwrap());times.push(e.last_presentation.unwrap().1);
   }
-  assert!(rate::measure(&times).unwrap().passes,"reaper scheduling changed the W2 frame floor");
-  times.remove(150);assert!(!rate::measure(&times).unwrap().passes,"a missing presentation was hidden");
+  assert!(rate::measure(&times,EPOCH,EPOCH+nanos(311*PIXELS)).unwrap().passes,"reaper scheduling changed the W2 frame floor");
+  times.remove(150);assert!(!rate::measure(&times,EPOCH,EPOCH+nanos(311*PIXELS)).unwrap().passes,"a missing presentation was hidden");
  }
  // Existing early-acceptance fixtures use a synthetic deadline at phase1065.
  // W20's R240-mode fixture has counter-relative deadline952 and includes its band.
