@@ -4494,11 +4494,12 @@ def record_breengel_capture(directory, sha, category):
     return 0 if passed else 1
 
 
-RETAINED_SCORER_FILES = ('scripts/metal/gt710-suite', 'scripts/metal/metal_score.py')
+RETAINED_SCORER_FILES = ('scripts/metal/gt710-suite', 'scripts/metal/metal_score.py',
+                         'tools/screen-gallery/export.py')
 
 
 def retained_scorer_changes(sha, scorer_head):
-    """Prove a retained runtime is an ancestor with only host scoring changes."""
+    """Require an ancestor runtime with host scoring or screen export changes."""
     import subprocess
     root = Path(__file__).resolve().parents[2]
     try:
