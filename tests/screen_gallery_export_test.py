@@ -12,6 +12,43 @@ ROOT = Path(__file__).resolve().parents[1]
 EXPORT = ROOT / 'tools/screen-gallery/export.py'
 
 class ExportTest(unittest.TestCase):
+    def test_monitor_scale_two_record_and_decoded_bound(self):
+        import io
+        import runpy
+        gallery = runpy.run_path(str(EXPORT))
+        width, height = 2560, 2048
+        pixels = bytes([255]) * (width * height * 4)
+        digest = hashlib.sha256(pixels).digest()
+        names = b'gpudraw/oneend'
+        rec = bytearray(512)
+        rec[:4] = b'SCR1'
+        struct.pack_into('<IIIIIHHH', rec, 4, 512, 1, 8, width, height, 3, 8, 3)
+        rec[32:64] = digest
+        struct.pack_into('<I', rec, 64, len(pixels))
+        rec[80:80+len(names)] = names
+        struct.pack_into('<I4B', rec, 80+len(names), width*height, 255, 255, 255, 255)
+
+        def read(record):
+            disk = io.BytesIO(b'SCRDISK1' + bytes(504) + record + bytes(512))
+            return gallery['disk_records'](disk)
+
+        pictures = read(rec)
+        self.assertEqual(pictures[digest.hex()],
+                         (('gpu', 'draw/one', 'end'), '2560x2048', pixels))
+        bad = rec.copy()
+        bad[32] ^= 1
+        with self.assertRaisesRegex(ValueError, 'pixel digest mismatch'):
+            read(bad)
+        bad = rec.copy()
+        struct.pack_into('<I', bad, 64, len(pixels)-4)
+        with self.assertRaisesRegex(ValueError, 'invalid record header'):
+            read(bad)
+        bad = rec.copy()
+        struct.pack_into('<II', bad, 16, 8193, 8192)
+        struct.pack_into('<I', bad, 64, 8193*8192*4)
+        with self.assertRaisesRegex(ValueError, 'invalid record header'):
+            read(bad)
+
     def test_u13_sor_only_screen_parses_without_losing_picture_identity(self):
         import runpy
         gallery = runpy.run_path(str(EXPORT))
