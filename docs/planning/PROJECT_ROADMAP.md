@@ -16,6 +16,12 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+Native monitor-derived display modes and owner-mode restoration are implemented
+in [PR #2957](https://github.com/ryanbreen/breenix/pull/2957).
+The [landing review](../gui/provenance/monitor-modes-2957.md) records native and
+ARM GPU/BreenGL acceptance, console disposition under ruling 257, and the
+remaining Minor work in [#2991](https://github.com/ryanbreen/breenix/issues/2991).
+
 ARM window-manager catch-up A.3 landed in
 [PR #2874](https://github.com/ryanbreen/breenix/pull/2874).
 The accepted runtime `0d6a985a` passes the selected window-manager suite 81/81
