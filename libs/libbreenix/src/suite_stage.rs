@@ -721,19 +721,31 @@ impl Gpu {
     /// Sample the `w` x `h` frame at `at` in `source`, a resource of this process, into tile
     /// `tile`'s atlas cell (the integer box filter, section 23.3) and into new panes (the
     /// nearest-scaled 400 x 250 and 128 x 128 samples, section 23.4), recorded as the
-    /// pictures of the frame with SHA-256 `hash`. The box filter goes in a submission of its
-    /// own: a whole 2560 x 1600 frame takes most of one submission's work cap.
+    /// pictures of the frame with SHA-256 `hash`. Clip the original filter draw into
+    /// submission-sized bands; splitting the source would change its integer bins.
     fn sample(&mut self, source: u64, at: (usize, usize), w: usize, h: usize, tile: usize, hash: [u8; 32]) -> Result<(), String> {
         use gpu::abi::{pipeline, stream::encode};
         if tile >= 1024 {
             return Err(String::from("the thumbnail atlas holds 1,024 tiles"));
         }
         let (cx, cy) = cell(tile);
-        let mut stream = Vec::new();
-        encode::begin(&mut stream, self.atlas);
-        sampled(&mut stream, pipeline::BOX_FILTER, source, [cx, cy, w.min(16), h.min(12)], [at.0, at.1, w, h]);
+        let (tw, th) = (w.min(16), h.min(12));
+        // The validator charges each output pixel for its maximum source bin.
+        let bin = w.div_ceil(tw) as u64 * h.div_ceil(th) as u64;
+        let pixel_work = 16384 + bin * gpu::abi::draw::steps(pipeline::BOX_FILTER).unwrap();
+        let rows = (gpu::abi::limits::WORK / (tw as u64 * pixel_work)) as usize;
+        if rows == 0 {
+            return Err(String::from("stage thumbnail row exceeds submission work limit"));
+        }
         self.set_cell(tile, None);
-        self.run(&stream, "stage thumbnail")?;
+        for y in (0..th).step_by(rows) {
+            let mut stream = Vec::new();
+            encode::begin(&mut stream, self.atlas);
+            stream.extend([gpu::abi::stream::cmd::SCISSOR, 6, cx as u32,
+                (cy + y) as u32, (cx + tw) as u32, (cy + (y + rows).min(th)) as u32]);
+            sampled(&mut stream, pipeline::BOX_FILTER, source, [cx, cy, tw, th], [at.0, at.1, w, h]);
+            self.run(&stream, "stage thumbnail")?;
+        }
         let (wide, square) = match self.spare.pop() {
             Some(targets) => targets,
             None => {
