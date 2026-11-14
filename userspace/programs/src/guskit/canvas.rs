@@ -1,6 +1,7 @@
 //! Pure RGB canvas. Coordinates outside the canvas are clipped.
 extern crate alloc;
-use self::alloc::{vec, vec::Vec};
+use self::alloc::{sync::Arc, vec, vec::Vec};
+use core::cell::OnceCell;
 
 pub type Color = [u8; 3];
 pub type Point = (i32, i32);
@@ -26,7 +27,8 @@ impl Radius {
 pub struct Canvas {
     width: usize,
     height: usize,
-    pixels: Vec<u8>,
+    pixels: Arc<Vec<u8>>,
+    digest: OnceCell<[u8; 32]>,
 }
 impl Canvas {
     /// A white, row-major RGB canvas.
@@ -34,13 +36,14 @@ impl Canvas {
         Self {
             width,
             height,
-            pixels: vec![
+            pixels: Arc::new(vec![
                 255;
                 width
                     .checked_mul(height)
                     .and_then(|n| n.checked_mul(3))
                     .expect("canvas size overflow")
-            ],
+            ]),
+            digest: OnceCell::new(),
         }
     }
     /// Extend the image with white pixels, preserving the original coordinates.
@@ -52,12 +55,15 @@ impl Canvas {
         for y in 0..self.height {
             let old = y * self.width * 3;
             let new = y * width * 3;
-            grown.pixels[new..new + self.width * 3].copy_from_slice(&self.pixels[old..old + self.width * 3]);
+            grown.pixels_mut()[new..new + self.width * 3].copy_from_slice(&self.pixels[old..old + self.width * 3]);
         }
         *self = grown;
     }
     pub fn dimensions(&self) -> (usize, usize) { (self.width, self.height) }
-    pub(crate) fn pixels_mut(&mut self) -> &mut [u8] { &mut self.pixels }
+    pub(crate) fn pixels_mut(&mut self) -> &mut [u8] {
+        self.digest.take();
+        Arc::make_mut(&mut self.pixels).as_mut_slice()
+    }
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
     }
@@ -80,6 +86,7 @@ impl Canvas {
     }
     /// Emit only pixels that differ from the image already on a retained target.
     pub fn render_changes(&self, previous: &Self, mut emit: impl FnMut(usize, usize, usize, Color)) -> bool {
+        if Arc::ptr_eq(&self.pixels, &previous.pixels) { return false; }
         if self.width != previous.width || self.height != previous.height {
             self.render_runs(emit);
             return true;
@@ -114,7 +121,7 @@ impl Canvas {
         let mut patch = Self::new(width, height);
         for row in 0..height {
             let start = ((y + row) * self.width + x) * 3;
-            patch.pixels[row * width * 3..(row + 1) * width * 3]
+            patch.pixels_mut()[row * width * 3..(row + 1) * width * 3]
                 .copy_from_slice(&self.pixels[start..start + width * 3]);
         }
         patch
@@ -125,12 +132,12 @@ impl Canvas {
         image
     }
     pub fn digest(&self) -> [u8; 32] {
-        libpixcheck::sha256(&self.pixels)
+        *self.digest.get_or_init(|| libpixcheck::sha256(&self.pixels))
     }
     fn put(&mut self, x: i64, y: i64, color: Color) {
         if x >= 0 && y >= 0 && (x as usize) < self.width && (y as usize) < self.height {
             let i = (y as usize * self.width + x as usize) * 3;
-            self.pixels[i..i + 3].copy_from_slice(&color);
+            if self.pixels[i..i + 3] != color { self.pixels_mut()[i..i + 3].copy_from_slice(&color); }
         }
     }
     fn trace(&mut self, a: Point, b: Point, mut stamp: impl FnMut(&mut Self, i64, i64)) {
@@ -261,7 +268,7 @@ impl Canvas {
                 if nx < self.width && ny < self.height {
                     let i = (ny * self.width + nx) * 3;
                     if self.pixels[i..i + 3] == target {
-                        self.pixels[i..i + 3].copy_from_slice(&color);
+                        if self.pixels[i..i + 3] != color { self.pixels_mut()[i..i + 3].copy_from_slice(&color); }
                         stack.push((nx, ny));
                     }
                 }
