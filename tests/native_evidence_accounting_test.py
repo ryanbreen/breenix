@@ -40,6 +40,94 @@ mod breenix_suite {pub mod suite {
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)
             result=subprocess.run([str(p/'test')],capture_output=True,text=True)
             self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+    def test_screen_upload_setup_uses_runtime_budget_and_shared_preflight(self):
+        from gt710_gr_live_unwind_test import item
+        setup=item((ROOT/'libs/libbreenix/src/suite_screen.rs').read_text(),
+                   "pub(super) fn upload_pending(")
+        budget=(ROOT/'libs/libbreenix/src/suite_evidence_budget.rs').read_text()
+        budget=budget[budget.index('pub(super) struct Budget'):]
+        support=(ROOT/'tests/suite_evidence_errno.rs').read_text()
+        support=support.replace('../libs/',str(ROOT/'libs')+'/')
+        code='#![allow(dead_code)]\n'+support+'\n'+r'''
+use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+mod evidence_budget {
+    use std::sync::Mutex;
+    // BUDGET
+}
+static BUDGET: OnceLock<evidence_budget::Budget> = OnceLock::new();
+static INVALID: AtomicBool = AtomicBool::new(false);
+static SENT: AtomicUsize = AtomicUsize::new(0);
+static ROUND: AtomicUsize = AtomicUsize::new(0);
+static LINES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+fn native_evidence_budget() -> Result<&'static evidence_budget::Budget, String> {
+    if INVALID.load(Ordering::Relaxed) { return Err("evidence-modes".into()); }
+    Ok(BUDGET.get_or_init(|| evidence_budget::Budget::new(5_063_743_488)))
+}
+fn evidence_check(n: usize) -> Result<(), String> { native_evidence_budget()?.check(n) }
+fn evidence_transfer(_: &evidence::Route, _: &str, data: &[u8], _: [u8;32]) -> Result<(),String> {
+    native_evidence_budget()?.reserve(data.len())?;
+    SENT.fetch_add(1, Ordering::Relaxed);
+    Ok(())
+}
+fn evidence_route(_: &str, _: bool) -> Result<Option<evidence::Route>, String> {
+    Ok(Some(evidence::Route::parse("http://fixture.invalid/upload", "gpu", false)?))
+}
+fn upload_diagnostic(_: &str, _: &str, _: &[u8]) -> Result<String,String> { panic!("no CRC queue") }
+mod sequence {
+    pub fn read(_: &str) -> Option<(Vec<String>, usize)> { None }
+}
+mod screen_upload {
+    pub fn flush(_: &std::path::Path, upload: &mut super::evidence::Upload,
+        mut send: impl FnMut(&super::evidence::Route, &str, &[u8], [u8;32]) -> Result<(),String>) -> Vec<String> {
+        let round=super::ROUND.fetch_add(1,super::Ordering::Relaxed);
+        if round==0 {
+            // Drive the retained failure: the real uploader crosses its private 64 MiB.
+            let body=vec![7; 2<<20];
+            for _ in 0..34 {
+                assert!(upload.send_parts(&body,&mut send).is_ok(),
+                    "screen uploader retained its private 64 MiB limit");
+            }
+        } else {
+            // The runtime envelope is large, but other senders have used all but 1 MiB.
+            let before=super::SENT.load(super::Ordering::Relaxed);
+            assert_eq!(upload.send_parts(&vec![9;3<<20],&mut send),Err("total-bound".into()));
+            assert_eq!(super::SENT.load(super::Ordering::Relaxed),before,"orphan first part");
+        }
+        Vec::new()
+    }
+}
+mod screen {
+    use super::Mutex;
+    fn pending_path()->std::path::PathBuf { std::env::var("PENDING").unwrap().into() }
+    fn crc_pending_path()->std::path::PathBuf { pending_path().with_extension("crc") }
+    fn flush_crc(_: &std::path::Path, _: &str, _: &str,
+        _: impl FnMut(&str,&[u8])->Result<String,String>) -> Vec<String> {Vec::new()}
+    fn emit(line: &str) { super::LINES.lock().unwrap().push(line.to_string()); }
+    // SETUP
+}
+#[test] fn screen_setup_obeys_runtime_envelope_and_whole_record_preflight() {
+    screen::upload_pending("gpu","performance/coverage-throughput");
+    assert_eq!(SENT.load(Ordering::Relaxed),34);
+    let budget=native_evidence_budget().unwrap();
+    budget.reserve(budget.limit()-(68<<20)-(1<<20)).unwrap();
+    screen::upload_pending("gpu","performance/present-rate-2560");
+    INVALID.store(true,Ordering::Relaxed);
+    screen::upload_pending("gpu","performance/present-rate-2560");
+    assert_eq!(ROUND.load(Ordering::Relaxed),2,"bad budget must not reach flush");
+    assert_eq!(*LINES.lock().unwrap(),["SCREEN_UPLOAD gpu performance/present-rate-2560 refused=evidence-modes"]);
+}
+'''.replace('// SETUP',setup).replace('// BUDGET',budget)
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp); (p/'test.rs').write_text(code)
+            pending=p/'pending'; pending.touch()
+            priority=['taskpolicy','-b'] if sys.platform=='darwin' else []
+            r=subprocess.run(priority+['rustc','--edition=2021','--test','-Dwarnings',str(p/'test.rs'),'-O','-o',str(p/'test')],capture_output=True,text=True)
+            self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+            import os
+            r=subprocess.run([str(p/'test'),'screen_setup_obeys_runtime_envelope_and_whole_record_preflight'],capture_output=True,text=True,env=dict(os.environ,PENDING=str(pending)))
+            self.assertEqual(r.returncode,0,r.stdout+r.stderr)
+
     def test_guest_and_receiver_envelopes_match_and_records_preflight_whole(self):
         import json
         from gt710_final_upload_test import upload
