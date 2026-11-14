@@ -215,7 +215,7 @@ static SUITE: Suite = native_heap(suite("gpu", "GPU rendering", &[
     category("present", "display modes, HiDPI & present", &[
         case("modes-listed", "MODES lists the target monitor modes and scales, with the device's maximum", present::modes_listed),
         case("mode-1280x800", "At the low mode a full-screen target presents and reads back exactly", present::mode_1280x800),
-        case("mode-2560x1600", "At the preferred mode a full-screen target presents and reads back exactly", present::mode_2560x1600),
+        case("mode-2560x1600", "At the scale-2 mode a full-screen target presents and reads back exactly", present::mode_2560x1600),
         case("scale-reported", "The scale factor is published with the mode", present::scale_reported),
         case("scanout-bind", "PRESENT binds the drawn target to the scanout, and the record names it", present::scanout_bind),
         case("flip", "Two targets alternate on the scanout, each reading back exactly while presented", present::flip),
