@@ -54,7 +54,7 @@ impl Core{
 }
 impl gk208::gr::channel::NativeChannel{pub fn record_refusal(&self)->Result<(),&'static str>{Ok(())}}
 #[test]fn caller_discovers_fault_between_worker_check_and_block(){
- let (mut d,s)=device();
+ let (mut d,s)=device();s.borrow_mut().epoch=1;
  let bad=Tag::Submit{ctx:7,serial:9001,last:true};
  assert!(d.send(Request::undefined_command(bad,7,9001).unwrap()).is_ok());
  mmu_fault(&s,1);

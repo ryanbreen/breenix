@@ -1464,6 +1464,13 @@ impl Core {
                 }
             }
         }
+        // A caller can discover an attributed native fault while kgpu sleeps.
+        // Empty means recovery work, not an ordinary receipt; publish an event
+        // as well as the wake so a concurrent worker block cannot lose it.
+        #[cfg(target_arch = "x86_64")]
+        if self.dev.as_ref().is_some_and(|d| matches!(d, Device::Gk208(d) if d.recovery_pending())) {
+            notify();
+        }
         // The device signals DEVICE_NEEDS_RESET with a configuration change notification
         // (VirtIO 1.3 section 2.1.2), so the status register, an MMIO read, is read only
         // after one. A device that stops answering without it meets the watchdog.
