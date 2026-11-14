@@ -363,7 +363,7 @@ pub(super) fn note_directory_freed(
 }
 
 /// Clear an orphan inode's bitmap bit and post it to its group. Same
-/// contract as `release_orphan_block`, including `write_attempted`.
+/// contract as orphan block release: retain write custody until counts post.
 pub(super) fn release_orphan_inode<B: BlockDevice + ?Sized>(
     device: &B, ino: u32, superblock: &super::Ext2Superblock, groups: &mut [super::Ext2BlockGroupDesc],
     write_attempted: &mut bool,

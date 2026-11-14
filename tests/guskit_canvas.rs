@@ -113,3 +113,110 @@ fn canvas_render_runs_preserve_pixels_and_coalesce_adjacent_colors() {
     image.render_runs(|x, y, width, color| runs.push((x, y, width, color)));
     assert_eq!(runs, vec![(0,0,1,[255;3]), (1,0,2,[0;3]), (3,0,1,[255;3]), (0,1,4,[255;3])]);
 }
+
+#[test]
+fn grow_preserves_pixels_and_pads_white() {
+    let mut h = canvas::History::new(Canvas::new(2, 2));
+    let mut image = h.canvas().clone();
+    image.pencil(&[(0, 0), (1, 1)], K);
+    h.push(image);
+    h.grow(4, 3);
+    assert_eq!(h.canvas().pixels(), &[1,2,3,255,255,255,255,255,255,255,255,255, 255,255,255,1,2,3,255,255,255,255,255,255, 255,255,255,255,255,255,255,255,255,255,255,255]);
+}
+
+#[test]
+fn shrink_then_grow_never_discards_pixels() {
+    let mut image = Canvas::new(3, 2);
+    image.pencil(&[(2, 1)], K);
+    let mut h = canvas::History::new(image);
+    h.grow(1, 1);
+    h.grow(4, 3);
+    assert_eq!(&h.canvas().pixels()[(4 + 2)*3..(4 + 3)*3], &K);
+    assert_eq!(h.canvas().pixels().len(), 4 * 3 * 3);
+}
+
+#[test]
+fn undo_and_redo_after_grow_preserve_all_states() {
+    let mut h = canvas::History::new(Canvas::new(2, 2));
+    let clean = h.canvas().digest();
+    let mut first = h.canvas().clone();
+    first.pencil(&[(1, 1)], K);
+    h.push(first.clone());
+    let mut second = first;
+    second.pencil(&[(0, 0)], K);
+    h.push(second);
+    assert!(h.undo());
+    let grown_clean = h.clean_after_grow(3, 3, clean).unwrap();
+    h.grow(3, 3);
+    assert_eq!((h.undo_depth(), h.redo_depth()), (1, 1));
+    assert!(h.undo());
+    assert_eq!(h.canvas().pixels(), &[255; 27]);
+    assert_eq!(h.canvas().digest(), grown_clean);
+    assert!(h.redo());
+    assert_eq!(&h.canvas().pixels()[12..15], &K);
+    assert!(h.redo());
+    assert_eq!(&h.canvas().pixels()[..3], &K);
+    assert_eq!(&h.canvas().pixels()[12..15], &K);
+}
+
+#[test]
+fn preview_region_keeps_source_coordinates_and_leaves_the_base_unchanged() {
+    let mut base = Canvas::new(8, 8);
+    base.line((1, 2), (6, 2), K);
+    let before = base.pixels().to_vec();
+    let mut patch = base.region(1, 1, 4, 3);
+    assert_eq!(&patch.pixels()[4*3..8*3], &[1,2,3,1,2,3,1,2,3,1,2,3]);
+    patch.brush(&[(1,1),(2,1)], Radius::Small, [0;3]);
+    assert_eq!(base.pixels(), before);
+}
+
+#[test]
+fn cached_digests_and_retained_frames_follow_canvas_mutations() {
+    let mut image = Canvas::new(24, 24);
+    for edit in 0..9 {
+        let digest = image.digest();
+        let previous = image.clone();
+        match edit {
+            0 => image.pencil(&[(1, 1), (8, 1)], K),
+            1 => image.brush(&[(10, 10)], Radius::Small, K),
+            2 => image.erase(&[(10, 10)], Radius::Small),
+            3 => image.line((0, 3), (8, 3), K),
+            4 => image.rectangle((2, 5), (8, 9), K),
+            5 => image.circle((15, 15), (18, 15), K),
+            6 => image.fill((23, 23), K),
+            7 => image.pixels_mut()[0..3].copy_from_slice(&[4, 5, 6]),
+            _ => image.grow(25, 26),
+        }
+        assert_eq!(previous.digest(), digest, "shared snapshot changed at edit {edit}");
+        assert_eq!(image.digest(), libpixcheck::sha256(image.pixels()), "stale digest at edit {edit}");
+        assert_ne!(image.digest(), digest, "edit {edit} did not change the drawing");
+        let (width, height) = image.dimensions();
+        let mut rendered = if previous.dimensions() == (width, height) {
+            previous.pixels().to_vec()
+        } else { vec![0; width * height * 3] };
+        assert!(image.render_changes(&previous, |x, y, count, color| {
+            for x in x..x + count { rendered[(y * width + x) * 3..(y * width + x + 1) * 3].copy_from_slice(&color); }
+        }), "retained frame skipped edit {edit}");
+        assert_eq!(rendered, image.pixels());
+        let mut retained = previous;
+        retained.clone_from(&image);
+        assert_eq!(retained.digest(), image.digest());
+        assert!(!image.render_changes(&retained, |_, _, _, _| panic!("unchanged snapshot redrawn")));
+    }
+    let mut patch = image.region(0, 0, 4, 4);
+    let before = patch.digest();
+    let preview = patch.preview(&[(0, 0)], |c, p| c.pencil(p, [7, 8, 9]));
+    patch.clone_from(&preview);
+    assert_ne!(patch.digest(), before);
+    assert_eq!(patch.digest(), libpixcheck::sha256(patch.pixels()));
+    let mut history = canvas::History::new(image);
+    let clean = history.canvas().digest();
+    let mut next = history.canvas().clone();
+    next.pencil(&[(0, 0)], W);
+    history.push(next);
+    assert_eq!(history.canvas().digest(), libpixcheck::sha256(history.canvas().pixels()));
+    assert!(history.undo());
+    assert_eq!(history.canvas().digest(), clean);
+    assert!(history.redo());
+    assert_eq!(history.canvas().digest(), libpixcheck::sha256(history.canvas().pixels()));
+}

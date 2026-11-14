@@ -19,6 +19,8 @@
 //!   q          Quit
 
 use std::process;
+#[path = "blog/layout.rs"] mod layout;
+use layout::Layout;
 
 #[path = "blog/tail.rs"]
 mod tail;
@@ -49,7 +51,6 @@ use libgfx::surface::Surface;
 const WIN_W: u32 = 600;
 const WIN_H: u32 = 400;
 const TAB_BAR_H: i32 = 20;
-const STATUS_BAR_H: i32 = 18;
 const READ_CHUNK: usize = 4096;
 
 // Colors
@@ -146,8 +147,7 @@ impl LogTab {
 struct FontState {
     ttf: Option<CachedFont>,
     size: f32,
-    char_w: usize,
-    line_h: usize,
+    layout: Layout,
 }
 
 /// A frame's text, drawn after its fills, which it does not overlap: each line as
@@ -167,12 +167,12 @@ impl Text {
         if let Some(ref mut font) = fonts.ttf {
             let clip = libgfx::surface::Rect::new(0, 0, fb.width() as i32, fb.height() as i32);
             let runs: Vec<ttf_font::TextRun<'_>> = self.lines.iter().map(|(bytes, x, y, fg)| ttf_font::TextRun {
-                bytes, x: *x as i32, y: *y as i32, size: fonts.size, fg: *fg, clip,
+                bytes, x: *x as i32, y: *y as i32, size: fonts.layout.text.size, fg: *fg, clip,
             }).collect();
             ttf_font::draw_runs(fb, font, &runs);
         } else {
             for (bytes, x, y, fg) in &self.lines {
-                bitmap_font::draw_text(fb, bytes, *x, *y, *fg);
+                bitmap_font::draw_text_at(fb, bytes, *x, *y, *fg, fonts.layout.text.raster);
             }
         }
     }
@@ -197,22 +197,19 @@ fn render(
         }
     };
     let w = fb.width() as i32;
-    let h = fb.height() as i32;
     let mut text = Text { lines: Vec::new() };
 
     fb.clear(BG);
     tab_bar.draw(fb, theme);
 
-    let line_h = fonts.line_h;
-    let char_w = fonts.char_w;
+    let layout = &fonts.layout;
+    let line_h = layout.text.line_h as usize;
+    let char_w = layout.text.cell_w as usize;
+    let pad = layout.text.px(2) as usize;
 
-    let content_y = TAB_BAR_H * fb.ui_scale() as i32;
-    let content_h = h - content_y - STATUS_BAR_H;
-    let visible_lines = if content_h > 0 {
-        content_h as usize / line_h
-    } else {
-        0
-    };
+    let content_y = layout.content_y;
+    let content_h = (layout.status_y - content_y).max(0);
+    let visible_lines = layout.visible;
 
     // Line number gutter width: 5 chars + 1 space
     let gutter_w = 6 * char_w;
@@ -237,12 +234,12 @@ fn render(
             if line_idx >= tab.line_count() {
                 break;
             }
-            let y = content_y as usize + i * line_h;
+            let y = layout.row_rect(i)[1] as usize;
 
             // Line number
             let mut num_buf = [b' '; 5];
             format_line_number(&mut num_buf, tab.tail.line_number(line_idx));
-            text.draw_text(&num_buf, 2, y, TEXT_LINE_NUM);
+            text.draw_text(&num_buf, pad, y, TEXT_LINE_NUM);
 
             // Line content, truncated to fit
             if tab.view.matched == Some(line_idx) { shapes::fill_rect(fb, 0, y as i32, w, line_h as i32, Color::rgb(80, 70, 35)); }
@@ -256,12 +253,12 @@ fn render(
     }
 
     // Status bar
-    let status_y = h - STATUS_BAR_H;
-    shapes::fill_rect(fb, 0, status_y, w, STATUS_BAR_H, STATUS_BG);
+    let status_y = layout.status_y;
+    shapes::fill_rect(fb, 0, status_y, w, layout.status_h, STATUS_BG);
 
     let search_text = format!("/{}", tab.view.draft());
     let path_bytes = if tab.view.editing { search_text.as_bytes() } else { tab.path.as_bytes() };
-    text.draw_text(path_bytes, 4, status_y as usize + 2, STATUS_FG);
+    text.draw_text(path_bytes, 2 * pad, status_y as usize + pad, STATUS_FG);
 
     let mut info_buf = [0u8; 40];
     let info_len = format_line_info(
@@ -270,12 +267,12 @@ fn render(
         tab.tail.line_number(tab.line_count()).saturating_sub(1),
     );
     let info_x = (w as usize / 2).saturating_sub(info_len * char_w / 2);
-    text.draw_text(&info_buf[..info_len], info_x, status_y as usize + 2, STATUS_FG);
+    text.draw_text(&info_buf[..info_len], info_x, status_y as usize + pad, STATUS_FG);
 
     if tab.view.follow {
         let label = b"[FOLLOW]";
-        let label_x = w as usize - label.len() * char_w - 4;
-        text.draw_text(label, label_x, status_y as usize + 2, FOLLOW_COLOR);
+        let label_x = (w as usize).saturating_sub(label.len() * char_w + 2 * pad);
+        text.draw_text(label, label_x, status_y as usize + pad, FOLLOW_COLOR);
     }
     text.finish(fb, fonts);
 }
@@ -358,36 +355,15 @@ fn main() {
     // Take font for local use (needed alongside the window's surface for rendering)
     let ttf_font: Option<CachedFont> = win.take_mono_font();
 
-    let mut fonts = if let Some(font) = ttf_font {
-        let metrics = font.metrics(font_size);
-        let glyph_m = font.glyph_index('M');
-        let advance = font.advance_width(glyph_m, font_size);
-        let char_w = (advance + 0.5) as i32;
-        let line_h = (metrics.ascender + 0.99) as i32 + ((-metrics.descender) + 0.99) as i32;
-        println!("[blog] font loaded, char_w={} line_h={}", char_w.max(1), line_h.max(1));
-        FontState {
-            ttf: Some(font),
-            size: font_size,
-            char_w: char_w.max(1) as usize,
-            line_h: line_h.max(1) as usize,
-        }
-    } else {
-        println!("[blog] TTF font NOT loaded, using bitmap fallback");
-        let fm = bitmap_font::metrics();
-        FontState {
-            ttf: None,
-            size: font_size,
-            char_w: fm.char_width,
-            line_h: fm.line_height(),
-        }
-    };
+    let ui_scale = win.surface().expect("log surface").ui_scale() as i32;
+    if ui_scale != 1 { win.apply_resize(WIN_W * ui_scale as u32, WIN_H * ui_scale as u32).expect("scaled log viewer"); }
+    let layout = Layout::new(ttf_font.as_ref(), font_size, ui_scale as u32, win.width() as i32, win.height() as i32);
+    let mut fonts = FontState { ttf: ttf_font, size: font_size, layout };
 
     let mut theme = Theme::dark();
     theme.use_bitmap_font = true;
 
-    let ui_scale = win.surface().expect("log surface").ui_scale() as i32;
-    let tab_pixels = TAB_BAR_H * ui_scale;
-    let tab_rect = Rect::new(0, 0, WIN_W as i32 / ui_scale, TAB_BAR_H);
+    let tab_rect = Rect::new(0, 0, win.width() as i32 / ui_scale, TAB_BAR_H);
     let paths: Vec<String> = {
         let args: Vec<String> = std::env::args().skip(1).collect();
         if args.is_empty() { vec!["/var/log/kernel.log".into()] } else { args }
@@ -407,12 +383,7 @@ fn main() {
                  i, tab.path, tab.is_open(), tab.line_count(), tab.tail.offset());
     }
 
-    let content_h = WIN_H as i32 - tab_pixels - STATUS_BAR_H;
-    let mut visible_lines = if content_h > 0 && fonts.line_h > 0 {
-        content_h as usize / fonts.line_h
-    } else {
-        1
-    };
+    let mut visible_lines = fonts.layout.visible;
 
     for tab in tabs.iter_mut() {
         if tab.view.follow {
@@ -499,12 +470,8 @@ fn main() {
                     resize_requested = Some((width, height));
                 }
                 Event::Resized { width: w, height: h } => {
-                    let new_content_h = h as i32 - tab_pixels - STATUS_BAR_H;
-                    visible_lines = if new_content_h > 0 && fonts.line_h > 0 {
-                        new_content_h as usize / fonts.line_h
-                    } else {
-                        1
-                    };
+                    fonts.layout = Layout::new(fonts.ttf.as_ref(), fonts.size, ui_scale as u32, w as i32, h as i32);
+                    visible_lines = fonts.layout.visible;
                     tab_bar.set_rect(Rect::new(0, 0, w as i32 / ui_scale, TAB_BAR_H));
                 }
                 Event::CloseRequested => {
@@ -524,34 +491,21 @@ fn main() {
         if let Some((width, height)) = resize_requested {
             if let Err(e) = win.apply_resize(width, height) {
                 println!("[blog] resize refused: {}x{}: {}", width, height, e);
+            } else {
+                fonts.layout = Layout::new(fonts.ttf.as_ref(), fonts.size, ui_scale as u32, win.width() as i32, win.height() as i32);
+                visible_lines = fonts.layout.visible;
+                tab_bar.set_rect(Rect::new(0, 0, win.width() as i32 / ui_scale, TAB_BAR_H));
             }
         }
         if reload_font {
                     win.put_mono_font(fonts.ttf.take());
                     let new_font = win.take_mono_font();
                     let new_size = win.mono_size();
-                    if let Some(ref f) = new_font {
-                        let metrics = f.metrics(new_size);
-                        let glyph_m = f.glyph_index('M');
-                        let advance = f.advance_width(glyph_m, new_size);
-                        let advance_rounded = (advance + 0.5) as i32;
-                        let new_char_w = advance_rounded.max(1) as usize;
-                        let asc_ceil = (metrics.ascender + 0.99) as i32;
-                        let desc_ceil = ((-metrics.descender) + 0.99) as i32;
-                        let new_line_h = (asc_ceil + desc_ceil).max(1) as usize;
-                        fonts.char_w = new_char_w;
-                        fonts.line_h = new_line_h;
-                        fonts.size = new_size;
-                        visible_lines = if content_h > 0 && fonts.line_h > 0 {
-                            content_h as usize / fonts.line_h
-                        } else {
-                            1
-                        };
-                        for tab in tabs.iter_mut() {
-                            if tab.view.follow {
-                                tab.scroll_to_bottom(visible_lines);
-                            }
-                        }
+                    fonts.size = new_size;
+                    fonts.layout = Layout::new(new_font.as_ref(), new_size, ui_scale as u32, win.width() as i32, win.height() as i32);
+                    visible_lines = fonts.layout.visible;
+                    for tab in tabs.iter_mut() {
+                        if tab.view.follow { tab.scroll_to_bottom(visible_lines); }
                     }
                     fonts.ttf = new_font;
 

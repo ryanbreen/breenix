@@ -947,8 +947,8 @@ fn main() {
                             print!("[bwm] GPU frame failed: {}\n", e);
                         }
                         frame_failed = true;
-                        if let Err(e) = gpu.reopen() {
-                            print!("[bwm] ERROR: GPU compositor could not be reopened: {}\n", e);
+                        if let Err(reopen_error) = gpu.reopen() {
+                            eprintln!("BWM_FAILURE site=gpu-reopen frame_error={e} reopen_error={reopen_error}");
                             process::exit(1);
                         }
                         paint_background(&mut gpu.background);
@@ -974,7 +974,7 @@ fn main() {
             if let Err(error) = libbreenix::window::call(
                 libbreenix::window::abi::op::COMPOSITOR_ACK, &mut ack,
             ) {
-                eprintln!("[bwm] compositor acknowledgment failed: {}", error);
+                eprintln!("BWM_FAILURE site=compositor-ack error={error} claim_epoch={} handled_serial={} next_deadline_ns={}", ack.claim_epoch, ack.handled_serial, ack.next_deadline_ns);
                 process::exit(1);
             }
             clock.acknowledged();
@@ -1096,7 +1096,7 @@ extern "C" fn terminate(_: i32) {
 fn term_mask(how: i32) {
     let mask = (1u64 << (signal::SIGTERM - 1)) | (1u64 << (signal::SIGCHLD - 1));
     if let Err(error) = signal::sigprocmask(how, Some(&mask), None) {
-        eprintln!("[bwm] cannot set shutdown signal mask: {error}");
+        eprintln!("BWM_FAILURE site=sigprocmask how={how} error={error}");
         process::exit(1);
     }
 }
@@ -1145,13 +1145,13 @@ impl shutdown::Runtime for ShutdownWait<'_> {
     fn terminated(&self) -> bool { TERMINATE.load(std::sync::atomic::Ordering::Relaxed) }
     fn release(&mut self) {
         if let Err(error) = libbreenix::window::release_compositor() {
-            eprintln!("[bwm] cannot release compositor: {error}");
+            eprintln!("BWM_FAILURE site=shutdown-release error={error}");
             self.failed = true;
         }
     }
     fn restore(&mut self) {
         if let Err(error) = libbreenix::graphics::give_back_display() {
-            eprintln!("[bwm] cannot restore display: {error}");
+            eprintln!("BWM_FAILURE site=shutdown-restore error={error}");
             self.failed = true;
         }
     }

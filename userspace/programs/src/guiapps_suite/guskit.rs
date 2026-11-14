@@ -15,43 +15,67 @@ fn tool(t: &mut App, name: &str) -> Result<(), String> {
     t.drag(&format!("tool-{name}"), (4, 4), &[])?;
     t.wait_node("status", |v| v["tool"] == name)
 }
-fn capture(t: &App, expected: &Expected) -> Result<(), String> {
-    let mut bgra = vec![0; 800 * 600 * 4];
-    let frame = libbreenix::window::capture(t.window(), &mut bgra, None).map_err(|e| e.to_string())?;
-    if frame.width < 200 || frame.height < 296 { return Err("capture too small for canvas".into()); }
-    let mut rgb = Vec::with_capacity(200 * 120 * 3);
-    for y in 176..296 {
-        for x in 0..200 {
-            let i = (y * frame.width as usize + x) * 4;
-            rgb.extend_from_slice(&[bgra[i + 2], bgra[i + 1], bgra[i]]);
-        }
+// Scenario coordinates are document pixels; libuitest drags use device pixels.
+pub(super) fn canvas_drag(t: &mut App, from: (i32,i32), steps: &[(i32,i32)]) -> Result<(),String> {
+    let tree = t.tree()?;
+    let canvas = tree.children.iter().find(|n| n.key == "canvas").ok_or("missing canvas")?;
+    let width = canvas.value["width"].as_i64().ok_or("missing canvas width")?;
+    let height = canvas.value["height"].as_i64().ok_or("missing canvas height")?;
+    let scale = canvas.bounds[2] / width;
+    if scale < 1 || canvas.bounds[2] != width*scale || canvas.bounds[3] != height*scale {
+        return Err("canvas must use one integer display scale".into());
     }
+    let scale = scale as i32;
+    t.drag("canvas", (from.0*scale,from.1*scale), &steps.iter().map(|&(x,y)| (x*scale,y*scale)).collect::<Vec<_>>())
+}
+fn capture(t: &mut App, expected: &Expected) -> Result<(), String> {
+    let tree = t.tree()?;
+    let bounds = tree.children.iter().find(|n| n.key == "canvas").ok_or("missing canvas")?.bounds;
+    let scale = bounds[2] / 200;
+    if scale < 1 || bounds[2..] != [200*scale, 120*scale] { return Err("unexpected canvas dimensions".into()); }
+    let mut bgra = vec![0; tree.root.bounds[2] as usize * tree.root.bounds[3] as usize * 4];
+    let frame = libbreenix::window::capture(t.window(), &mut bgra, None).map_err(|e| e.to_string())?;
+    let [left, top, width, height] = bounds;
+    if left < 0 || top < 0 || left + width > i64::from(frame.width) || top + height > i64::from(frame.height) {
+        return Err("capture too small for canvas".into());
+    }
+    let mut rgb = Vec::with_capacity(200 * 120 * 3);
+    for y in 0..120 { for x in 0..200 {
+        let expected_pixel = &expected.0[(y*200+x)*3..(y*200+x+1)*3];
+        for dy in 0..scale { for dx in 0..scale {
+            let i = ((top+y as i64*scale+dy) as usize * frame.width as usize
+                + (left+x as i64*scale+dx) as usize) * 4;
+            let pixel = [bgra[i+2],bgra[i+1],bgra[i]];
+            if pixel != expected_pixel { return Err(format!("canvas pixel {x},{y} replica {dx},{dy}: {pixel:?}, expected {expected_pixel:?}")); }
+            if dx == 0 && dy == 0 { rgb.extend_from_slice(&pixel); }
+        }}
+    }}
     let actual: String = libbreenix::crypto::sha256::sha256(&rgb).iter().map(|b| format!("{b:02x}")).collect();
     if actual != expected.digest() { return Err(format!("canvas capture digest {actual}, expected {}", expected.digest())); }
     Ok(())
 }
 pub fn pencil() -> CaseResult {
     let mut t = launch()?;
-    t.drag("canvas", (10, 10), &[(30, 0), (0, 20)])?;
+    canvas_drag(&mut t, (10, 10), &[(30, 0), (0, 20)])?;
     let mut image = Expected::white(); image.horizontal(10, 40, 10); image.vertical(40, 10, 30);
-    expect(&mut t, &image)?; capture(&t, &image)?;
+    expect(&mut t, &image)?; capture(&mut t, &image)?;
     Ok(t.finish()?)
 }
 pub fn shapes() -> CaseResult {
     let mut t = launch()?; let mut image = Expected::white();
-    tool(&mut t, "line")?; t.drag("canvas", (10, 10), &[(30, 0)])?;
+    tool(&mut t, "line")?; canvas_drag(&mut t, (10, 10), &[(30, 0)])?;
     image.horizontal(10, 40, 10); expect(&mut t, &image)?;
-    tool(&mut t, "rectangle")?; t.drag("canvas", (20, 30), &[(30, 20)])?;
+    tool(&mut t, "rectangle")?; canvas_drag(&mut t, (20, 30), &[(30, 20)])?;
     image.rectangle(20, 30, 50, 50); expect(&mut t, &image)?;
-    tool(&mut t, "circle")?; t.drag("canvas", (80, 60), &[(5, 0)])?;
+    tool(&mut t, "circle")?; canvas_drag(&mut t, (80, 60), &[(5, 0)])?;
     image.circle5(80, 60); expect(&mut t, &image)?;
     Ok(t.finish()?)
 }
 pub fn fill() -> CaseResult {
     let mut t = launch()?; let mut image = Expected::white();
-    tool(&mut t, "rectangle")?; t.drag("canvas", (20, 30), &[(30, 20)])?;
+    tool(&mut t, "rectangle")?; canvas_drag(&mut t, (20, 30), &[(30, 20)])?;
     image.rectangle(20, 30, 50, 50); expect(&mut t, &image)?;
-    tool(&mut t, "fill")?; t.drag("canvas", (25, 35), &[])?;
+    tool(&mut t, "fill")?; canvas_drag(&mut t, (25, 35), &[])?;
     image.interior(20, 30, 50, 50); expect(&mut t, &image)?;
     Ok(t.finish()?)
 }
@@ -64,16 +88,19 @@ fn absent(t: &mut App, key: &str) -> Result<(), String> {
     Ok(())
 }
 fn stroke(t: &mut App, y: i32) -> Result<(), String> {
-    t.drag("canvas", (10, y), &[(30, 0)])
+    canvas_drag(t, (10, y), &[(30, 0)])
 }
 fn undo(t: &mut App) -> Result<(), String> { t.key(44, &[Modifier::Ctrl]) }
 fn redo(t: &mut App) -> Result<(), String> { t.key(44, &[Modifier::Ctrl, Modifier::Shift]) }
 
 pub fn eraser_color() -> CaseResult {
     let mut t = launch()?;
-    // x=260 gives hue 120; (80,19) gives saturation and value 204.
-    t.drag("hue", (260, 4), &[])?;
-    t.drag("sv", (80, 19), &[])?;
+    // guskit/eraser-color keeps hue 120 and saturation/value 204 at UI scale 2.
+    let tree = t.tree()?;
+    let hue = tree.children.iter().find(|n| n.key == "hue").ok_or("missing hue")?.bounds;
+    let sv = tree.children.iter().find(|n| n.key == "sv").ok_or("missing sv")?.bounds;
+    t.drag("hue", ((hue[2] / 3) as i32, (hue[3] * 4 / 18) as i32), &[])?;
+    t.drag("sv", ((sv[2] * 80 / 100) as i32, (sv[3] * 19 / 100) as i32), &[])?;
     t.wait_node("status", |v| v["color"] == serde_json::json!([40, 204, 40]))?;
     stroke(&mut t, 10)?;
     let mut image = Expected::white();

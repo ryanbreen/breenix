@@ -29,6 +29,7 @@ fn pipe() -> Result<(Pipe, Pipe), String> {
 struct Output {
     stdout: Option<Pipe>, stderr: Option<Pipe>, stdout_bytes: usize,
     ring: StderrRing, status: Option<i32>,
+    name: String, stdout_tail: Vec<u8>, failure_reported: bool,
     stdin: Option<Pipe>,
     startup: Option<Vec<u8>>,
     input_ready: bool,
@@ -84,7 +85,7 @@ fn launch(argv: &[Vec<u8>], env: &[Vec<u8>], uid: u32, kiosk: bool) -> Result<(u
         io::write(write.0, b"auto 1\n").map_err(|e| e.to_string())?;
         Some(write)
     } else { None };
-    Ok((pid, Output { stdout: Some(r), stderr: Some(err_r), stdout_bytes: 0, ring: StderrRing::default(), status: None, stdin, startup: kiosk.then(Vec::new), input_ready: false }))
+    Ok((pid, Output { stdout: Some(r), stderr: Some(err_r), stdout_bytes: 0, ring: StderrRing::default(), status: None, name: String::from_utf8_lossy(&argv[0][..argv[0].len().min(256)]).into_owned(), stdout_tail: Vec::new(), failure_reported: false, stdin, startup: kiosk.then(Vec::new), input_ready: false }))
 }
 
 fn outputs(outputs: &mut BTreeMap<u64, Output>, channel: &mut Channel, connected: bool) -> Result<(), String> {
@@ -112,6 +113,9 @@ fn outputs(outputs: &mut BTreeMap<u64, Output>, channel: &mut Channel, connected
                                     output.startup = None;
                                 }
                             }
+                            let tail = &mut output.stdout_tail;
+                            tail.extend_from_slice(&chunk[..n]);
+                            if tail.len() > 4096 { tail.drain(..tail.len() - 4096); }
                             let keep = n.min((64 * 1024usize).saturating_sub(output.stdout_bytes));
                             output.stdout_bytes += keep;
                             if connected && keep != 0 { channel.queue(&Message::Output { pid, bytes: chunk[..keep].to_vec() })?; }
@@ -123,15 +127,58 @@ fn outputs(outputs: &mut BTreeMap<u64, Output>, channel: &mut Channel, connected
                 }
             }
         }
+        report_failure(pid, output);
     }
     Ok(())
 }
+
+fn report_failure(pid: u64, output: &mut Output) {
+    let Some(status) = output.status else { return };
+    if status == 0 || output.failure_reported { return; }
+    output.failure_reported = true;
+    let signal = status & 0x7f;
+    let code = (status >> 8) & 0xff;
+    // A nested executor may inherit /dev/null. Open the serial console explicitly,
+    // without acquiring a controlling terminal (O_NOCTTY).
+    let console = fs::open("/dev/console", fs::O_WRONLY | 0x100).ok().map(Pipe);
+    let serial = console.as_ref().map_or(Fd::STDERR, |pipe| pipe.0);
+    let name = output.name.escape_default().to_string().replace('|', "\\x7c");
+    let mut record = format!("\nSUPERVISOR_FAILURE pid={pid} name={} status={status} exit={code} signal={signal}\n", name).into_bytes();
+    let stderr = output.ring.bytes();
+    for (stream, bytes) in [("stderr", &stderr[stderr.len().saturating_sub(4096)..]), ("stdout", output.stdout_tail.as_slice())] {
+        record.extend_from_slice(format!("SUPERVISOR_FAILURE {stream} tail={} pid={pid}\n", bytes.len()).as_bytes());
+        for line in bytes.split(|&b| b == b'\n') {
+            if line.is_empty() { continue; }
+            record.extend_from_slice(format!("UI_CHILD pid={pid} name={name} | ").as_bytes());
+            // Keep carriage returns and terminal controls inside the quoted line.
+            for &byte in line {
+                if byte < 32 || byte == 127 { record.extend(std::ascii::escape_default(byte)); }
+                else { record.push(byte); }
+            }
+            record.push(b'\n');
+        }
+    }
+    let mut remaining = record.as_slice();
+    while !remaining.is_empty() {
+        match io::write(serial, remaining) {
+            Ok(0) => break,
+            Ok(n) => remaining = &remaining[n..],
+            Err(Error::Os(Errno::EINTR)) => continue,
+            Err(_) => break,
+        }
+    }
+}
+
 fn reap(channel: &mut Channel, outputs: &mut BTreeMap<u64, Output>, connected: bool, compositor: Option<u64>, ownership: &mut Ownership, recover: bool) -> Result<bool, String> {
     loop {
         let mut status = 0;
         match process::waitpid(-1, &mut status, process::WNOHANG) {
             Ok(pid) if pid.raw() != 0 => {
                 if let Some(output) = outputs.get_mut(&pid.raw()) { output.status = Some(status); output.stdin.take(); }
+                // Collect the exited child's last writes before custody recovery can fail.
+                // A descendant may retain a pipe writer: report the bounded snapshot now,
+                // without waiting for EOF or delaying the exit notification.
+                self::outputs(outputs, channel, connected)?;
                 if compositor == Some(pid.raw()) {
                     ownership.apply(Event::Died, &mut Display)?;
                     if recover { ownership.apply(Event::Recover, &mut Display)?; }

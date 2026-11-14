@@ -372,6 +372,9 @@ def verdict(manifest, records_log, logs, only=None, categories=None, disk=None, 
     fatal = json.loads((REPO / "docs/boot-path.json").read_text())["fatal"] + [r"KERNEL PANIC:"]
     for log in logs:
         for line in read_lines(log):
+            # Supervisor copies are quoted child diagnostics, judged by child status.
+            if re.match(r"^UI_CHILD pid=[1-9][0-9]* name=[^|\r\n]* \| ", line):
+                continue
             for pattern in fatal:
                 if re.search(pattern, line):
                     return False, f"fatal kernel output in {log}: {line.strip()[:200]}"

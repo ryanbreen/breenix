@@ -9,6 +9,9 @@ use std::process;
 
 #[path = "bounce/sim.rs"]
 mod sim;
+#[path = "bounce/fps.rs"]
+mod fps;
+use fps::FpsCounter;
 #[path = "demos/status.rs"]
 mod status;
 use sim::Simulation;
@@ -101,18 +104,16 @@ fn draw_sphere(fb: &mut Surface, cx: i32, cy: i32, radius: i32, base_color: Colo
 // FPS counter
 // ---------------------------------------------------------------------------
 
-struct FpsCounter {
-    last_time_ms: u64,
-    frame_count: u32,
-    display_fps: u32,
+struct FpsOverlay {
+    counter: FpsCounter,
     speed_pct: i32,
     ttf_font: Option<CachedFont>,
     font_size: f32,
 }
 
-impl FpsCounter {
+impl FpsOverlay {
     fn new() -> Self {
-        Self { last_time_ms: 0, frame_count: 0, display_fps: 0, speed_pct: 100, ttf_font: None, font_size: 20.0 }
+        Self { counter: FpsCounter::new(breengel::clock::now_ns() / 1_000_000), speed_pct: 100, ttf_font: None, font_size: 20.0 }
     }
 
     fn with_ttf(mut self, font: Option<CachedFont>, size: f32) -> Self {
@@ -121,24 +122,12 @@ impl FpsCounter {
         self
     }
 
-    fn tick(&mut self, now: u64) {
-        self.frame_count += 1;
-        if self.frame_count >= 16 {
-            let elapsed = now.saturating_sub(self.last_time_ms);
-            if elapsed > 0 {
-                self.display_fps = (self.frame_count as u64 * 1_000 / elapsed) as u32;
-            }
-            self.frame_count = 0;
-            self.last_time_ms = now;
-        }
-    }
-
     fn draw(&mut self, fb: &mut Surface) {
         let y = fb.height().saturating_sub(20);
         let mut buf = [b' '; 12];
         buf[0] = b'F'; buf[1] = b'P'; buf[2] = b'S'; buf[3] = b':'; buf[4] = b' ';
 
-        let mut fps = self.display_fps;
+        let mut fps = self.counter.display_fps;
         let mut len = 6; // default: "FPS: 0"
         if fps == 0 {
             buf[5] = b'0';
@@ -228,7 +217,7 @@ fn run_window_loop(win: &mut Window, simulation: &mut Simulation) {
 
     let ttf_font_opt = win.take_mono_font();
     let font_size = win.mono_size().max(10.0);
-    let mut fps = FpsCounter::new().with_ttf(ttf_font_opt, font_size);
+    let mut fps = FpsOverlay::new().with_ttf(ttf_font_opt, font_size);
     let mut last_tick = None;
     let mut first_frame = true;
     let mut redraw = true;
@@ -245,7 +234,6 @@ fn run_window_loop(win: &mut Window, simulation: &mut Simulation) {
                     Event::AnimationTick { time_ms } => {
                         simulation.advance(last_tick.map_or(1, |last| time_ms.saturating_sub(last)));
                         last_tick = Some(time_ms);
-                        fps.tick(time_ms);
                         redraw = true;
                     }
                     Event::MouseMove { .. } => redraw = true,
@@ -306,6 +294,9 @@ fn run_window_loop(win: &mut Window, simulation: &mut Simulation) {
         fps.draw(fb);
 
         let presented = win.present();
+        if presented.is_ok() {
+            fps.counter.tick(breengel::clock::now_ns() / 1_000_000);
+        }
         if first_frame {
             first_frame = false;
             match presented {

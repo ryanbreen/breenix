@@ -29,6 +29,9 @@ mod session;
 #[path = "bterm/paint.rs"]
 mod paint;
 
+#[path = "bterm/cells.rs"]
+mod cells;
+
 use libbreenix::window::abi::frame_stage;
 use std::process;
 
@@ -53,10 +56,6 @@ use libbui::{InputState, WidgetEvent};
 const MIN_FONT_SIZE: f32 = 8.0;
 const MAX_FONT_SIZE: f32 = 32.0;
 const FONT_SIZE_STEP: f32 = 1.0;
-
-/// Bitmap font cell dimensions (fallback when TTF is unavailable).
-const BITMAP_CELL_W: usize = 7;
-const BITMAP_CELL_H: usize = 18;
 
 /// Tab bar height in logical UI units.
 const TAB_BAR_HEIGHT: i32 = 24;
@@ -94,7 +93,7 @@ impl TermEmu {
     /// underline. A cell is drawn only when it lies inside the clip area, edge to edge.
     fn render(&mut self, fb: &mut Surface, x_off: usize, y_off: usize,
               clip_w: usize, clip_h: usize, cell_w: usize, cell_h: usize,
-              font_size: f32, ttf: Option<&mut CachedFont>) {
+              font_size: f32, bitmap_height: bitmap_font::RasterHeight, ttf: Option<&mut CachedFont>) {
         if !self.dirty { return; }
         self.dirty = false;
         let max_x = (x_off + clip_w).min(fb.width());
@@ -151,12 +150,12 @@ impl TermEmu {
                 let mut text = vec![if self.vt.view_cell(col, row).ch.is_ascii() { self.vt.view_cell(col, row).ch as u8 } else { b'?' }];
                 let mut j = i + 1;
                 while j < glyphs.len() && glyphs[j].1 == row && glyphs[j].2 == fg
-                    && glyphs[j].0 == col + text.len() && cell_w == bitmap_font::metrics().char_width {
+                    && glyphs[j].0 == col + text.len() && cell_w == bitmap_font::metrics_at(bitmap_height).char_width {
                     let ch = self.vt.view_cell(glyphs[j].0, row).ch;
                     text.push(if ch.is_ascii() { ch as u8 } else { b'?' });
                     j += 1;
                 }
-                bitmap_font::draw_text(fb, &text, x_off + col * cell_w, y_off + row * cell_h, fg);
+                bitmap_font::draw_text_at(fb, &text, x_off + col * cell_w, y_off + row * cell_h, fg, bitmap_height);
                 i = j;
             }
         }
@@ -338,27 +337,13 @@ fn make_static_label(s: &str) -> &'static [u8] {
     Box::leak(boxed)
 }
 
-/// Compute cell dimensions from TTF font metrics.
-fn ttf_cell_dims(font: &mut CachedFont, size: f32) -> (usize, usize) {
-    let metrics = font.metrics(size);
-    let glyph_m = font.glyph_index('M');
-    let advance = font.advance_width(glyph_m, size);
-    // Guard against NaN/Inf: if advance or ascender is unreasonable, fall back to bitmap dims
-    if advance <= 0.0 || advance > 200.0 || metrics.ascender <= 0.0 || metrics.ascender > 200.0 {
-        return (BITMAP_CELL_W, BITMAP_CELL_H);
-    }
-    // Use i32 intermediate to avoid potential f32-to-usize codegen issues
-    let w = (advance + 0.5) as i32;
-    let h = (metrics.ascender + 0.99) as i32 + ((-metrics.descender) + 0.99) as i32;
-    (w.max(1) as usize, h.max(1) as usize)
-}
-
 // ─── Main ───────────────────────────────────────────────────────────────────
 
 fn main() {
     print!("[bterm] starting\n");
     // Create window (loads system font automatically from /etc/fonts.conf)
-    let mut win = match Window::new(b"Terminal", WIN_WIDTH, WIN_HEIGHT) {
+    let scale = libbreenix::gpu::current_mode().expect("Terminal display mode").scale.max(1);
+    let mut win = match Window::new(b"Terminal", WIN_WIDTH * scale, WIN_HEIGHT * scale) {
         Ok(w) => w,
         Err(e) => {
             print!("[bterm] ERROR: failed to create window: {}\n", e);
@@ -373,22 +358,14 @@ fn main() {
     // Take TrueType font for local use (needed alongside the window's surface)
     let mut ttf_font: Option<CachedFont> = win.take_mono_font();
 
-    // Compute cell dimensions from font metrics (or fall back to bitmap constants)
-    let (mut cell_w, mut cell_h) = if let Some(ref mut font) = ttf_font {
-        print!("[bterm] font_size={} ", font_size);
-        let dims = ttf_cell_dims(font, font_size);
-        print!("cell={}x{}\n", dims.0, dims.1);
-        dims
-    } else {
-        (BITMAP_CELL_W, BITMAP_CELL_H)
-    };
-
     // Widgets use logical UI coordinates; the terminal grid uses device pixels.
-    let ui_scale = win.surface().expect("terminal surface").ui_scale() as i32;
-    let tab_bar_pixels = (TAB_BAR_HEIGHT * ui_scale) as u32;
+    let mut ui_scale = win.surface().expect("terminal surface").ui_scale() as i32;
+    let (mut device_font_size, mut bitmap_height) = libbui::text::scaled_font(font_size, ui_scale as u32);
+    let (mut cell_w, mut cell_h) = cells::cell_dims(ttf_font.as_mut(), font_size, ui_scale as u32);
+    let mut tab_bar_pixels = (TAB_BAR_HEIGHT * ui_scale) as u32;
     // Calculate content area (below tab bar)
-    let mut content_w = WIN_WIDTH;
-    let mut content_h = WIN_HEIGHT.saturating_sub(tab_bar_pixels);
+    let mut content_w = win.width();
+    let mut content_h = win.height().saturating_sub(tab_bar_pixels);
     let mut cols = (content_w as usize / cell_w).max(1);
     let mut rows = (content_h as usize / cell_h).max(1);
 
@@ -409,7 +386,7 @@ fn main() {
     let theme = Theme::dark();
     let label = if let Some(ref cmd) = exec_args { make_static_label(&cmd[0]) } else { make_tab_label() };
     let mut tab_bar = TabBar::new(
-        Rect::new(0, 0, WIN_WIDTH as i32 / ui_scale, TAB_BAR_HEIGHT),
+        Rect::new(0, 0, win.width() as i32 / ui_scale, TAB_BAR_HEIGHT),
         vec![label], &theme);
     let mut tabs = vec![match exec_args {
         Some(ref cmd) => spawn_tab_cmd(cols, rows, content_w, content_h, cmd, true),
@@ -436,6 +413,7 @@ fn main() {
         let mut close_requested = false;
         let mut reload_font = false;
         let mut resize_requested = None;
+        let mut resized = None;
         let mut mouse_x: i32 = 0;
         let mut mouse_y: i32 = 0;
         let mut buttons: u32 = prev_buttons;
@@ -604,17 +582,7 @@ fn main() {
                     resize_requested = Some((*width, *height));
                 }
                 Event::Resized { width, height } => {
-                    content_w = *width;
-                    content_h = height.saturating_sub(tab_bar_pixels);
-                    cols = (content_w as usize / cell_w).max(1);
-                    rows = (content_h as usize / cell_h).max(1);
-                    for tab in &mut tabs {
-                        tab.resize(cols, rows, content_w, content_h);
-                    }
-                    tab_bar.set_rect(Rect::new(0, 0, *width as i32 / ui_scale, TAB_BAR_HEIGHT));
-                    for tab in tabs.iter_mut() {
-                        tab.emu.dirty = true;
-                    }
+                    resized = Some((*width, *height));
                 }
                 _ => {}
             }
@@ -636,28 +604,31 @@ fn main() {
             }
         }
 
-        // Handle font size change: recompute grid, resize all tabs
-        if font_changed {
-            if let Some(ref mut font) = ttf_font {
-                font.clear_cache();
-                let (new_cw, new_ch) = ttf_cell_dims(font, font_size);
-                cell_w = new_cw;
-                cell_h = new_ch;
-                let new_cols = (content_w as usize / cell_w).max(1);
-                let new_rows = (content_h as usize / cell_h).max(1);
-                if new_cols != cols || new_rows != rows {
-                    cols = new_cols;
-                    rows = new_rows;
-                    for tab in tabs.iter_mut() {
-                        tab.resize(cols, rows, content_w, content_h);
-                    }
+        // Refresh from the current surface after dispatch has applied its resize.
+        // Keep the configured font logical; measurement, painting and selection
+        // share the resulting device cell dimensions.
+        if font_changed || resized.is_some() {
+            if font_changed {
+                if let Some(font) = ttf_font.as_mut() { font.clear_cache(); }
+            }
+            ui_scale = win.surface().expect("terminal surface").ui_scale() as i32;
+            (device_font_size, bitmap_height) = libbui::text::scaled_font(font_size, ui_scale as u32);
+            (cell_w, cell_h) = cells::cell_dims(ttf_font.as_mut(), font_size, ui_scale as u32);
+            tab_bar_pixels = (TAB_BAR_HEIGHT * ui_scale) as u32;
+            content_w = win.width();
+            content_h = win.height().saturating_sub(tab_bar_pixels);
+            let new_cols = (content_w as usize / cell_w).max(1);
+            let new_rows = (content_h as usize / cell_h).max(1);
+            for tab in &mut tabs {
+                if resized.is_some() || new_cols != cols || new_rows != rows {
+                    tab.resize(new_cols, new_rows, content_w, content_h);
                 } else {
-                    // Same grid size but different font — force redraw
-                    for tab in tabs.iter_mut() {
-                        tab.emu.invalidate();
-                    }
+                    tab.emu.invalidate();
                 }
             }
+            cols = new_cols;
+            rows = new_rows;
+            tab_bar.set_rect(Rect::new(0, 0, content_w as i32 / ui_scale, TAB_BAR_HEIGHT));
         }
 
         // Pass mouse state to TabBar for tab switching
@@ -743,7 +714,8 @@ fn main() {
                     content_h as usize,
                     cell_w,
                     cell_h,
-                    font_size,
+                    device_font_size,
+                    bitmap_height,
                     ttf_font.as_mut(),
                 );
             }

@@ -8,6 +8,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ResizeContent(unittest.TestCase):
+    def test_resize_grab_scales_from_logical_units(self):
+        config = (ROOT / "userspace/programs/src/bwm/config.rs").read_text()
+        desk = (ROOT / "userspace/programs/src/bwm/desk.rs").read_text()
+        import re
+        self.assertRegex(config, r"const RESIZE_GRAB: usize = 8;")
+        self.assertRegex(item(desk, "pub(super) fn hit_resize_edge("), r"px\(RESIZE_GRAB\)")
+        self.assertRegex(item(config, "pub(super) fn px("), r"n\s*\*\s*ui\(\)\.scale")
+
     def test_content_edges_deliver_to_client_and_frame_still_resizes(self):
         source = (ROOT / "userspace/programs/src/bwm/desk.rs").read_text()
         methods = "\n".join(item(source, f"pub(super) fn {name}(") for name in [
