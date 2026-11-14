@@ -1,4 +1,4 @@
-"""Count presentation and verification work in the production rate cases (#2971)."""
+"""Count rate-frame commands and pixel traffic against the main clear loop (#2977)."""
 from pathlib import Path
 import re
 import subprocess
@@ -23,7 +23,11 @@ class RateWork(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp)
             (p / 'check.rs').write_text(code)
-            subprocess.run(priority + ['rustc', '--edition=2021', '-Dwarnings', str(p / 'check.rs'), '-o', str(p / 'check')], check=True)
+            lib = p / 'libgpu_abi.rlib'
+            subprocess.run(priority + ['rustc', '--edition=2021', '--crate-name', 'gpu_abi', '--crate-type', 'rlib',
+                            str(ROOT / 'libs/gpu-abi/src/lib.rs'), '-o', str(lib)], check=True)
+            subprocess.run(priority + ['rustc', '--edition=2021', '-Dwarnings', str(p / 'check.rs'),
+                            '--extern', f'gpu_abi={lib}', '-o', str(p / 'check')], check=True)
             for case in ['clear', 'present']:
                 with self.subTest(case=case):
                     subprocess.run([str(p / 'check'), case], check=True)
