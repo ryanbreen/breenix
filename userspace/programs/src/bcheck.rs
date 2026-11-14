@@ -396,7 +396,7 @@ fn main() {
     let mut scroll_bar = ScrollBar::new(bar_rect, total_h, visible_h);
     let theme = libbui::Theme::dark();
     // Present the scrollbar as soon as results become scrollable.
-    if frame(&mut win, &tests, 0, &mut ttf_font, font_size, Some((&scroll_bar, &theme))).is_ok() {
+    if scroll_bar.can_scroll() && frame(&mut win, &tests, 0, &mut ttf_font, font_size, Some((&scroll_bar, &theme))).is_ok() {
         let mut pixels = vec![0u8; win.width() as usize * win.height() as usize * 4];
         match libbreenix::window::capture(win.id(), &mut pixels, None) {
             Ok(_) => {
