@@ -357,7 +357,7 @@ fn gpu_display() -> Verdict<Option<((usize, usize), u64)>> {
     let r = gpu::call_with(abi::op::MODES, &mut modes);
     require(r == 0, &format!("MODES returned {r}"))?;
     require(modes.binding_known == 1, "the GPU core does not know what scanout 0 shows")?;
-    let mode = modes.modes.get(modes.current as usize).ok_or("MODES names no current mode")?;
+    let mode = modes.current_mode().ok_or("MODES names no current mode")?;
     Ok(Some(((mode.width as usize, mode.height as usize), modes.scanout_resource)))
 }
 
@@ -541,7 +541,7 @@ fn paint_owner() -> Verdict<Painted> {
 fn display_size() -> Verdict<(u32, u32)> {
     let (r, modes) = libbreenix::gpu::modes();
     require(r == 0, &format!("MODES: errno {}", -r))?;
-    modes.modes.get(modes.current as usize).map(|m| (m.width, m.height)).ok_or_else(|| "MODES has no current mode".to_string())
+    modes.current_mode().map(|m| (m.width, m.height)).ok_or_else(|| "MODES has no current mode".to_string())
 }
 
 /// The displayed screen, read back from the device by the display owner: the scanout's

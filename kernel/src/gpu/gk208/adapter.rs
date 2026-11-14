@@ -351,7 +351,7 @@ impl Device {
             return Reap::Fault;
         }
         if let Some(surface) = front.request.scanout {
-            if let Err(reason) = self.channel.present(surface) {
+            if let Err(reason) = self.channel.present(surface, matches!(front.request.tag, Tag::Sync(_))) {
                 self.first_error.get_or_insert(reason);
                 self.fault = true;
                 return Reap::Fault;

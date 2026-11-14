@@ -2715,7 +2715,7 @@ fn sans_width(text:&[u8])->i32 {
 }
 fn ui_scale() -> usize {
     let modes = bgl::modes().expect("widget fixture display mode");
-    modes.modes[modes.current as usize].scale as usize
+    modes.current_mode().expect("MODES current index is listed").scale as usize
 }
 fn ui_frame(w:usize,h:usize)->Drawn { let s=ui_scale(); Drawn::bgrx(w*s,h*s) }
 fn ui_rect(x:i32,y:i32,w:i32,h:i32)->libgfx_ref::framebuf::Rect {
@@ -2745,8 +2745,9 @@ fn sans_center(fb:&mut FrameBuf,text:&[u8],rect:Rect,colour:Color) {
 // claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
 // gpu-text: R4 doubles logical geometry and uses DejaVu Sans at 32 px, never replicated 16 px pixels.
 fn widgets_scale_2()->CaseResult {
+    crate::show::scale2_mode()?;
     let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r))).cite("14")?;
-    ensure(modes.modes[modes.current as usize].scale==2,"14","gpu-display: widget case is not in scale-2 mode")?;
+    ensure(modes.current_mode().expect("MODES current index is listed").scale==2,"14","gpu-display: widget case is not in scale-2 mode")?;
     let theme=Theme::dark();let mut g=Drawn::bgrx(400,160);g.reset(PAPER);
     Button::new(Rect::new(20,16,120,40),b"OK").draw(&mut g.fb(),&theme);
     let bytes=std::fs::read("/usr/share/fonts/DejaVuSans.ttf").map_err(|e|e.to_string())?;

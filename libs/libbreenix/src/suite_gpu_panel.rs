@@ -19,7 +19,7 @@ impl GpuPanel {
         }
         let (r, modes) = gpu::modes();
         if r != 0 { return Err(std::format!("MODES errno {}", -r)); }
-        let mode = modes.modes.get(modes.current as usize).ok_or("MODES has no current mode")?;
+        let mode = modes.current_mode().ok_or("MODES has no current mode")?;
         let surface = Surface::new(mode.width as usize, mode.height as usize, Format::BGRX)
             .map_err(|e| std::format!("panel surface: {e}"))?;
         let context = bgl::Context::new().map_err(|e| std::format!("panel context: {e}"))?;

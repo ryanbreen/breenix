@@ -3,7 +3,7 @@
 use crate::*;
 
 pub(crate) const SCANOUT: &[Case] = &[
-    pictured!("mode-set", "GPU MODES and full readback agree on 2560x1600 at scale 2", scanout_mode_set),
+    pictured!("mode-set", "GPU MODES and full readback agree on the advertised scale-2 mode at scale 2", scanout_mode_set),
     pictured!("device-path", "Readback uses this backend's observation path from the contract and names it", scanout_device_path),
     pictured!("changing-scene", "Three successive known scenes each read back equal to their formulas", scanout_changing_scene),
     pictured!("full-destination", "Readback covers the whole destination, and a change in its last row is seen", scanout_full_destination),
@@ -19,7 +19,7 @@ pub(crate) const SCANOUT: &[Case] = &[
     pictured!("fault-outside-damage", "Corruption written outside any damage is found by comparing the full destination", scanout_fault_outside_damage),
     pictured!("boundary-stated", "The record states what lies outside the guest's view for this backend", scanout_boundary_stated),
     pictured!("present-flip", "Every flip records its actual target and completed present fence", scanout_present_flip),
-    pictured!("hidpi-mode", "The complete 2560x1600 scanout is read back and changes in its final row are observed", scanout_hidpi_mode),
+    pictured!("hidpi-mode", "The complete the advertised scale-2 mode scanout is read back and changes in its final row are observed", scanout_hidpi_mode),
 ];
 
 // ---------------------------------------------------------------------------------------
@@ -64,12 +64,13 @@ fn readback_raw() -> Result<(i64, Vec<u8>, [u8; 1024]),String> {
 
 // gpu-display: §2.2/R4 replaces fb_info with MODES and full physical-size GPU readback.
 fn scanout_mode_set() -> CaseResult {
+    let expected=crate::show::scale2_mode()?;
 let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r))).cite("18")?;
-    let mode=modes.modes[modes.current as usize];
-    ensure((mode.width,mode.height,mode.scale)==(2560,1600,2),"18,20.2","gpu-display: suite mode is not 2560x1600 at scale 2")?;
+    let mode=modes.current_mode().expect("MODES current index is listed");
+    ensure(mode==expected,"18,20.2","gpu-display: suite mode is not the advertised scale-2 mode at scale 2")?;
     interface()?;let (mut k,_w,_p,_)=one_window(1)?;
     let s=super::composition::gpu_snapshot(&mut k)?;
-    ensure((s.width,s.height)==(2560,1600) && s.word(56)==2560*4,"20.1","gpu-display: record/readback dimensions or stride disagree with MODES")
+    ensure((s.width,s.height)==(mode.width as usize,mode.height as usize) && s.word(56)==mode.width*4,"20.1","gpu-display: record/readback dimensions or stride disagree with MODES")
 }
 
 // gpu-display: §2.2 uses record version 2 and ruling 47 native backend-specific completion identities.
@@ -403,15 +404,17 @@ fn scanout_present_flip()->CaseResult {
 }
 
 // claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
-// gpu-display: R4 reads every pixel of 2560x1600, including a changed final row, with physical dimensions in record v2.
+// gpu-display: R4 reads every pixel of the advertised scale-2 mode, including a changed final row, with physical dimensions in record v2.
 fn scanout_hidpi_mode()->CaseResult {
-    interface()?;let mut k=compositor()?;let mut p=Placed::new(0,1599,2560,1,0,50);
-    let w=W::new(2560,1,2)?;show(&mut k,&w,&p)?;compose(&mut k)?;
+    let mode=crate::show::scale2_mode()?;
+    let (width,height)=(mode.width,mode.height);
+    interface()?;let mut k=compositor()?;let mut p=Placed::new(0,height as i32-1,width,1,0,50);
+    let w=W::new(width,1,2)?;show(&mut k,&w,&p)?;compose(&mut k)?;
     for n in 0..2 {
         if n==1 {p.seed=51;w.frame(51).cite("17.3")?;compose(&mut k)?;}
         let s=super::composition::gpu_snapshot(&mut k)?;
-        ensure((s.width,s.height)==(2560,1600) && (s.word(40),s.word(44),s.word(48),s.word(52))==(2560,1600,2560,1600),"20",
+        ensure((s.width,s.height)==(width as usize,height as usize) && (s.word(40),s.word(44),s.word(48),s.word(52))==(width,height,width,height),"20",
             "gpu-display: HiDPI readback or record omitted part of the physical destination")?;
-        same(&s.pixels,2560,1600,true,"full HiDPI scanout including its last row","20",formula(&[p]))?;
+        same(&s.pixels,width,height,true,"full HiDPI scanout including its last row","20",formula(&[p]))?;
     }Ok(())
 }

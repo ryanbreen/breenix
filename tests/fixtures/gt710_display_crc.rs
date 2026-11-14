@@ -34,14 +34,14 @@ impl Model {
         let t = edid::Timing { width:1280,height:1024,clock_khz:108000,
             hsync_start:1328,hsync_end:1440,htotal:1688,
             vsync_start:1025,vsync_end:1028,vtotal:1066,flags:30 };
-        let methods = modeset::logical_head_methods(&t,0,0,1,0x08000000,10240,2560,1600)
+        let methods = modeset::logical_head_methods(&t,0,0,1,0x08000000,u64::from(t.width)*4,t.width,t.height)
             .unwrap().into_iter().collect();
         Self { now:0,methods,submitted:vec![],available:vec![sample(91,0),
             sample(11,0),sample(11,0),sample(11,0),sample(11,0)],
             reads:vec![],fault:0,phase:0,recovered:0,changed:false,status:1,error:0 }
     }
     fn capture(&mut self) -> Result<display_crc::Record, &'static str> {
-        display_crc::capture(self, checkpoint(), PIN, [2560,1600], 0, 0, 4)
+        display_crc::capture(self, checkpoint(), PIN, [1280,1024], 0, 0, 4)
     }
     fn disarmed(&self) {
         assert_eq!(self.submitted.last().unwrap(),
@@ -129,9 +129,9 @@ impl Io for Model {
     assert_eq!(r.binding_before,PIN);assert_eq!(r.binding_after,PIN);
     assert!(r.disarmed);assert_eq!(r.status,1);assert_eq!(r.display_error,0);
     assert!(r.elapsed_us<=250000);assert_eq!(m.recovered,0);
-    assert_eq!(r.output_config.mode,[2560,1600]);
+    assert_eq!(r.output_config.mode,[1280,1024]);
     assert_eq!(r.output_config.raster,[1280,1024]);
-    assert_eq!(r.output_config.viewport,[0,112,1280,800]);
+    assert_eq!(r.output_config.viewport,[0,0,1280,1024]);
     let methods=&r.output_config.methods;
     assert!(methods.windows(2).all(|w|w[0].0<w[1].0));
     assert!(methods.iter().all(|(a,v)|a&3==0 && m.methods[a]==*v));
@@ -196,8 +196,8 @@ impl Io for Model {
     assert_eq!(u64at(32),7);assert_eq!(u64at(40),9);
     assert_eq!(u64at(48),7);assert_eq!(u64at(56),9);
     assert_eq!(u32at(64),r.elapsed_us);assert_eq!(u32at(68),0);assert_eq!(u32at(72),1);
-    assert_eq!([u32at(76),u32at(80),u32at(84),u32at(88)],[2560,1600,1280,1024]);
-    assert_eq!([u32at(92),u32at(96),u32at(100),u32at(104)],[0,112,1280,800]);
+    assert_eq!([u32at(76),u32at(80),u32at(84),u32at(88)],[1280,1024,1280,1024]);
+    assert_eq!([u32at(92),u32at(96),u32at(100),u32at(104)],[0,0,1280,1024]);
     assert_eq!([u32at(108),u32at(112)],[0,0]);
     let names=b"gpupresent/exampleend";
     assert_eq!(&bytes[120..120+names.len()],names);

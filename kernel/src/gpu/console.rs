@@ -8,8 +8,6 @@ use super::*;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use noto_sans_mono_bitmap::{get_raster, get_raster_width, FontWeight, RasterHeight};
 
-pub(super) const WIDTH: u32 = 2560;
-pub(super) const HEIGHT: u32 = 1600;
 const BG: u32 = 0xff181512;
 const FG: u32 = 0xffe8edf2;
 const VB_BYTES: u32 = 128 * 1024;
@@ -47,6 +45,8 @@ pub(super) struct Console {
     pub(super) scratch: u32,
     pub(super) vertices: u32,
     pub(super) glyph_width: u32,
+    pub(super) width: u32,
+    pub(super) height: u32,
 }
 
 pub fn active() -> bool {
@@ -257,11 +257,11 @@ impl Console {
             armed: true,
             handle,
         };
-        let (ctx, epoch) = with_core(|c| {
+        let (ctx, epoch, mode) = with_core(|c| {
             let id = c.ctx_of(0, handle).ok_or(EIO)?;
             // The private console context compiles its programs on demand; kgpu warms
             // client contexts, whose catalogue contract is unchanged.
-            Ok::<_, i64>((id, c.epoch))
+            Ok::<_, i64>((id, c.epoch, c.display.modes[display::KERNEL_MODE]))
         })
         .ok_or(ENODEV)??;
         let gw = get_raster_width(FontWeight::Regular, RasterHeight::Size16) as u32;
@@ -269,8 +269,8 @@ impl Console {
             ctx,
             kind::TARGET,
             format::B8G8R8A8,
-            WIDTH,
-            HEIGHT,
+            mode.width,
+            mode.height,
             true,
             cfg!(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance")),
         )?;
@@ -281,8 +281,8 @@ impl Console {
             ctx,
             kind::TEXTURE,
             format::B8G8R8A8,
-            WIDTH,
-            HEIGHT,
+            mode.width,
+            mode.height,
             false,
             false,
         )?;
@@ -324,6 +324,8 @@ impl Console {
             scratch,
             vertices,
             glyph_width: gw,
+            width: mode.width,
+            height: mode.height,
         })
     }
     fn text(&self, s: &mut Vec<u32>, text: &[u8], y: i32) {
@@ -373,7 +375,7 @@ impl Console {
                 .flatten()
                 .ok_or(EIO)?;
             let extras = || svga::encode::Extras {
-                scratch: [[WIDTH, HEIGHT], [0, 0]],
+                scratch: [[self.width, self.height], [0, 0]],
                 data_width: 1,
                 corrupt: None,
                 suppress: None,
@@ -467,8 +469,8 @@ impl encode::Bindings for Console {
             id: self.target,
             format: wire::format::B8G8R8A8_UNORM,
             info: TargetInfo {
-                width: WIDTH,
-                height: HEIGHT,
+                width: self.width,
+                height: self.height,
                 invalid: false,
                 format: format::B8G8R8A8,
             },

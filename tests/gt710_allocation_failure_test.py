@@ -195,7 +195,7 @@ trait CheckedStream{fn checked(self)->bool;}
 impl CheckedStream for Vec<u32>{fn checked(self)->bool{false}}
 impl CheckedStream for Result<Vec<u32>,&'static str>{fn checked(self)->bool{self.is_err()}}
 #[test]fn prepared_stream_allocation_is_a_refusal(){
- arm();let refused=prepared::text_stream(42,43,8).checked();ARMED.store(false,Ordering::Relaxed);
+ arm();let refused=prepared::text_stream(42,43,8,2560,1600).checked();ARMED.store(false,Ordering::Relaxed);
  assert!(HIT.load(Ordering::Relaxed));assert!(refused);
 }
 '''

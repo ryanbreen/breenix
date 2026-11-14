@@ -6,6 +6,23 @@ fn record(pixels: &[u8]) -> Record<'_> {
 }
 
 #[test]
+fn scr1_encodes_monitor_scale_two_checkpoint() {
+    // Issue 2962's retained reproduction: complete opaque frames and their SHA-256.
+    for (width, height) in [(1280, 1024), (2560, 1600), (2560, 2048)] {
+        let pixels = vec![255; width as usize * height as usize * 4];
+        let input = Record { width, height, ..record(&pixels) };
+        let bytes = encode(&input).expect("listed mode's full SCREEN frame must encode");
+        assert_eq!(bytes.len(), 512);
+        let (output, used) = decode(&bytes).unwrap();
+        assert_eq!(used, bytes.len());
+        assert_eq!((output.width, output.height), (width, height));
+        assert_eq!(output.pixels, pixels);
+    }
+    let over_bound = Record { width: 8193, height: 8192, ..record(&[]) };
+    assert_eq!(encode(&over_bound), Err("capture-dimensions"));
+}
+
+#[test]
 fn scr1_round_trips_and_selects_the_smaller_payload() {
     for (pixels, encoding) in [(vec![1,2,3,255].repeat(128), 1u32),
         ((0..32u8).flat_map(|n| [n,0,0,255]).collect(), 0), (vec![1,2,3,255].repeat(2), 0)] {

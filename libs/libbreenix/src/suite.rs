@@ -100,6 +100,8 @@ pub mod memory_record;
 pub mod prerequisites;
 #[path = "suite_sequence.rs"]
 pub mod sequence;
+#[path = "suite_evidence_budget.rs"]
+mod evidence_budget;
 #[path = "suite_screen_upload.rs"]
 mod screen_upload;
 #[path = "suite_evidence.rs"]
@@ -1259,6 +1261,12 @@ impl Suite {
         let mut evidence = self.evidence_upload.then(|| evidence::Upload::new(self.id,
             evidence_route(self.id, place.as_ref().is_some_and(|(ids, _)| ids.len() > 1))));
         if let Some(upload) = &mut evidence {
+            match native_evidence_budget() {
+                Ok(budget) => upload.set_bound(budget.limit(), evidence_check),
+                Err(error) => { emit(&format!("SUITE {} ERROR evidence budget: {error}", self.id)); process::exit(1); }
+            }
+        }
+        if let Some(upload) = &mut evidence {
             emit(&upload.capture("startup", evidence_scanout, evidence_transfer));
         }
         // Match the retired ownership boundary at the end. The warm-up leaves
@@ -1495,7 +1503,29 @@ fn evidence_scanout() -> Result<evidence::Observation, String> {
     Ok(observation)
 }
 
+fn native_evidence_budget() -> Result<&'static evidence_budget::Budget, String> {
+    static BUDGET: std::sync::OnceLock<Result<evidence_budget::Budget, String>> = std::sync::OnceLock::new();
+    BUDGET.get_or_init(|| {
+        let suite = std::env::args().next().and_then(|s| s.rsplit('/').next()?.strip_prefix("suite-").map(str::to_owned)).unwrap_or_default();
+        let mut limit = evidence_budget::LEGACY_TOTAL;
+        if screen_proof_enabled(&suite) && crate::gpu::caps().1.backend == crate::gpu::abi::backend::GK208 {
+            let (status, catalogue) = crate::gpu::modes();
+            if status != 0 { return Err("evidence-modes".into()); }
+            let modes: Vec<_> = catalogue.mode_list().map(|(_, m)| [m.width, m.height, m.scale]).collect();
+            limit = evidence_budget::limit(&suite, &modes, 1)?;
+        }
+        Ok(evidence_budget::Budget::new(limit))
+    }).as_ref().map_err(Clone::clone)
+}
+
+/// Check a complete record before sending its first part.
+pub fn evidence_check(bytes: usize) -> Result<(), String> { native_evidence_budget()?.check(bytes) }
+/// Reserve attempted wire bodies across native, SCR1 and diagnostic senders.
+/// An ambiguous network failure retains its reservation instead of retrying it.
+pub fn evidence_reserve(bytes: usize) -> Result<(), String> { native_evidence_budget()?.reserve(bytes) }
+
 fn evidence_transfer(route: &evidence::Route, path: &str, data: &[u8], digest: [u8; 32]) -> Result<(), String> {
+    evidence_reserve(data.len())?;
     use libbreenix::{dns, socket};
     use libbreenix::syscall::{nr, raw};
     // Static policy needs no DHCP lease; DHCP still waits for acquisition.
@@ -2235,8 +2265,8 @@ fn run_case_body(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool,
             let _ = CASE_NAME.set(String::from(name));
             keep_record_output(suite, name);
             detach_transcript();
-            let ready = if screen.gui && crate::suite_stage::case_takes_display(name) { graphics::take_over_display() } else { Ok(()) };
-            let outcome = match ready.and_then(|()| silence_output()) {
+            let ready = if screen.gui && crate::suite_stage::case_takes_display(name) { crate::suite_stage::take_display() } else { Ok(()) };
+            let outcome = match ready.and_then(|()| silence_output().map_err(|e| e.to_string())) {
                 Ok(()) => run_inline(case),
                 Err(error) => Outcome::Fail {
                     ms: 0,

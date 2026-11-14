@@ -264,12 +264,13 @@
 //! NVIDIA open-gpu-doc headers at 9fdf5c4 (MIT), notices above. The ordinary
 //! writers are frozen by gpu::panic::Access; no lock, allocation, VM change,
 //! normal request or reset is permitted below the preparation boundary.
-use super::{memory, Registers};
+use super::{memory, modeset, Registers};
 use alloc::vec::Vec;
 mod arch {
     pub fn counter() -> u64 {
         crate::arch_read_timestamp()
     }
+    pub fn frequency() -> u64 {crate::arch_impl::x86_64::timer::frequency_hz()}
 }
 
 /// A private PRAMIN accessor after the terminal drain. It deliberately does not
@@ -438,6 +439,24 @@ impl Queue {
     }
 }
 
+struct DeadlineIo {registers:usize,deadline:u64}
+impl modeset::Io for DeadlineIo {
+    fn read(&mut self,r:usize)->u32 {Registers(self.registers).read(r)}
+    fn write(&mut self,r:usize,v:u32) {if self.live() {Registers(self.registers).write(r,v);}}
+    fn delay_us(&mut self,us:u32) {
+        let end=arch::counter().saturating_add(arch::frequency()/1_000_000*u64::from(us)).min(self.deadline);
+        while arch::counter()<end {core::hint::spin_loop();}
+    }
+    fn live(&self)->bool {arch::counter()<self.deadline}
+}
+pub(crate) struct Raster {
+    pub limits:modeset::PllLimits,
+    pub pll:modeset::Pll,
+    pub scripts:[Vec<modeset::Op>;4],
+    pub outgoing:Vec<(u32,[Vec<modeset::Op>;4])>,
+    pub detach:Vec<(u32,u32)>,
+    pub attach:Vec<(u32,u32)>,
+}
 pub(crate) struct Display {
     pub registers: usize,
     pub total: u64,
@@ -446,6 +465,7 @@ pub(crate) struct Display {
     pub head: u32,
     pub sor: u32,
     pub methods: Vec<(u32, u32)>,
+    pub raster: Raster,
     #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
     pub target: u32,
 }
@@ -466,13 +486,52 @@ impl Display {
             && r.read(0x61c004 + self.sor as usize * 0x800) & 0x80000001 == 1
             && r.read(0x61c030 + self.sor as usize * 0x800) & 0x10000000 == 0
     }
+    fn restore_raster(&self,deadline:u64)->Option<bool> {
+        let r=Registers(self.registers);
+        let h=self.head as usize*0x300;
+        let timing=[0x414,0x418,0x41c,0x420,0x450];
+        if timing.iter().all(|m|self.raster.attach.iter().find(|(method,_)|*method==*m+self.head*0x300)
+            .is_some_and(|(_,v)|r.read(0x640000+h+*m as usize)==*v
+                && r.read(0x660000+h+*m as usize)==*v)) {return Some(false);}
+        let mut io=DeadlineIo{registers:self.registers,deadline};
+        let outgoing=self.raster.outgoing.iter().find(|(clock,_)|*clock==r.read(0x640450+h))
+            .map(|(_,scripts)|scripts).unwrap_or(&self.raster.scripts);
+        let detach_offset=2048+self.methods.len() as u32*8;
+        let attach_offset=detach_offset+self.raster.detach.len() as u32*8;
+        let end=attach_offset+self.raster.attach.len() as u32*8;
+        let put=r.read(0x640000);
+        if put>2044 || !modeset::Io::live(&io) {return None;}
+        // The new raster starts a new underflow measurement window.
+        modeset::Io::write(&mut io,0x616308+self.head as usize*0x800,
+            r.read(0x616308+self.head as usize*0x800)&!0x111);
+        let mut terminal=Terminal(self.registers);
+        for n in 0..4 {if !write(&mut terminal,self.total,self.notifier+n*4,0) {return None;}}
+        if !write(&mut terminal,self.total,self.push+u64::from(put),0x20000000|detach_offset)
+            || !flush(&r,deadline) {return None;}
+        r.write(0x640000,attach_offset);
+        if !poll(deadline,||modeset::supervise(&mut io,&self.raster.limits,&self.raster.pll,
+            (self.head,self.sor,true,false),outgoing).is_ok()
+            && read(&mut terminal,self.total,self.notifier).is_some_and(|v|v&1==1)
+            && r.read(0x640004)==attach_offset) {return None;}
+        for n in 0..4 {if !write(&mut terminal,self.total,self.notifier+n*4,0) {return None;}}
+        if !flush(&r,deadline) {return None;}
+        r.write(0x640000,end);
+        if !poll(deadline,||modeset::supervise(&mut io,&self.raster.limits,&self.raster.pll,
+            (self.head,self.sor,false,true),&self.raster.scripts).is_ok()
+            && read(&mut terminal,self.total,self.notifier).is_some_and(|v|v&1==1)
+            && r.read(0x640004)==end) {return None;}
+        (modeset::arm_underflow(&mut io,self.head).is_ok() && self.bound()).then_some(true)
+    }
     pub(crate) fn show(&self, deadline: u64) -> bool {
+        match self.restore_raster(deadline) {
+            Some(true)=>return true,
+            Some(false)=>{},
+            None=>return false,
+        }
         let r = Registers(self.registers);
         let mut io = Terminal(self.registers);
         let put = r.read(0x640000);
-        if put > 2044 || arch::counter() >= deadline {
-            return false;
-        }
+        if put>2044 || arch::counter()>=deadline {return false;}
         // Append the prepared flip at the hardware-published cursor. A
         // stranded CPU's unpublished bytes are replaceable; prior methods
         // precede the jump. Do not wait on the ordinary EVO queue.

@@ -123,21 +123,28 @@ pub(super) struct Upload {
     suite: &'static str,
     route: Result<Option<Route>, String>,
     bytes: usize,
+    bound: usize,
+    preflight: Option<fn(usize) -> Result<(), String>>,
     parts: usize,
     startup_failure: Option<String>,
     pub(super) screen_digests: Vec<(u32, u32, [u8; 32])>,
 }
 impl Upload {
     pub fn new(suite: &'static str, route: Result<Option<Route>, String>) -> Self {
-        Self { suite, route, bytes: 0, parts: 0, startup_failure: None, screen_digests: Vec::new() }
+        Self { suite, route, bytes: 0, bound: MAX_TOTAL, preflight: None, parts: 0, startup_failure: None, screen_digests: Vec::new() }
+    }
+    pub fn set_bound(&mut self, bound: usize, preflight: fn(usize) -> Result<(), String>) {
+        self.bound = bound;
+        self.preflight = Some(preflight);
     }
     /// Send complete bodies as bounded ordered parts, accounting before any request.
     pub fn send_parts(&mut self, data: &[u8],
         mut send: impl FnMut(&Route, &str, &[u8], [u8; 32]) -> Result<(), String>) -> Result<(usize, usize, String), String> {
         let route = self.route.as_ref().map_err(String::clone)?.as_ref().ok_or("no-route")?;
-        if data.is_empty() || self.bytes.checked_add(data.len()).is_none_or(|n| n > MAX_TOTAL) {
+        if data.is_empty() || self.bytes.checked_add(data.len()).is_none_or(|n| n > self.bound) {
             return Err("total-bound".into());
         }
+        if let Some(check) = self.preflight { check(data.len())?; }
         let first = self.parts;
         let count = data.len().div_ceil(MAX_UPLOAD);
         let hex: String = sha256(data).iter().map(|b| format!("{b:02x}")).collect();
@@ -167,14 +174,15 @@ impl Upload {
         };
         let result = (|| {
             let observation = capture()?;
-            let data = encode(&observation, MAX_TOTAL - self.bytes)?;
+            let data = encode(&observation, self.bound - self.bytes)?;
             let digest = sha256(&data);
             let path = if label == "suite-final-panel" { format!("{}/final", route.path) } else { route.path.clone() };
             let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
             if data.len() > MAX_UPLOAD {
                 let count = data.len().div_ceil(MAX_UPLOAD);
                 let manifest = format!("SUITE_PARTS v=1 first={} parts={count} bytes={} sha256={hex}\n", self.parts, data.len());
-                if self.bytes + data.len() + manifest.len() > MAX_TOTAL { return Err("total-bound".into()); }
+                if self.bytes + data.len() + manifest.len() > self.bound { return Err("total-bound".into()); }
+                if let Some(check) = self.preflight { check(data.len() + manifest.len())?; }
                 // Reuse the native ordered picture-chunk route. Startup opens
                 // the route first; final seals it only after its parts arrive.
                 self.bytes += manifest.len();

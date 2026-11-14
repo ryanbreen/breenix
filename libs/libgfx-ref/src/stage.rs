@@ -202,7 +202,7 @@ impl Default for StageFont {
 /// at a whole scale (section 23.2, R4).
 fn scale_of(fb: &FrameBuf) -> Result<usize, StageError> {
     let n = fb.width / 1280;
-    if n == 0 || n > 8 || fb.width != 1280 * n || fb.height != 800 * n {
+    if n == 0 || n > 8 || fb.width != 1280 * n || fb.height < 800 * n {
         return Err(StageError::Size);
     }
     Ok(n)
@@ -401,7 +401,8 @@ pub fn draw_with(fb: &mut FrameBuf, run: &Run<'_>, font: &mut StageFont) -> Resu
     let n = scale_of(fb)?;
     let font = if n == 1 { None } else { Some(font.get()?) };
     let cv = &mut Canvas { fb, n, font };
-    cv.fill(0, 0, 1280, 800, BG);
+    let height=cv.fb.height/n;
+    cv.fill(0, 0, 1280, height, BG);
     cv.fill(0, 0, 1280, 96, HEADER);
     let mut title = Text::new();
     let _ = write!(title, "BREENIX / {}", run.suite);

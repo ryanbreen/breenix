@@ -212,7 +212,7 @@ fn scanout_check() -> Result<(), &'static str> {
         if status != 0 || caps.status != abi::status::ADMITTED { return Err("GPU admission failed"); }
     }
     let modes = bgl::modes().map_err(|_| "GPU MODES failed")?;
-    let mode = modes.modes.get(modes.current as usize).copied().ok_or("GPU MODES has no current mode")?;
+    let mode = modes.current_mode().ok_or("GPU MODES has no current mode")?;
     if mode.width == 0 || mode.height == 0 { return Err("empty display mode"); }
     graphics::take_over_display().map_err(|_| "display takeover failed")?;
     let target = gpu::scanout_target_create(abi::format::B8G8R8A8, mode.width, mode.height)
@@ -422,7 +422,7 @@ fn open_screen() -> Option<Screen> {
         if status != 0 || caps.status != abi::status::ADMITTED { return None; }
     }
     let modes = bgl::modes().ok()?;
-    let mode = modes.modes.get(modes.current as usize).copied()?;
+    let mode = modes.current_mode()?;
     if mode.width < 480 || mode.height < 400 { return None; }
     graphics::take_over_display().ok()?;
     let fb = libgfx::surface::Surface::new(mode.width as usize, mode.height as usize, libgfx::surface::Format::BGRX).ok()?;

@@ -273,6 +273,13 @@ DEVICE_HUNG and DEVICE_RESET do not themselves prove that device access has ende
 until actual device completion or a successfully confirmed reset supplies that proof; a failed reset
 leaves it held, including after a timeout, kill or EIO return (section 1.4.1 of `docs/gui/gpu.md`).
 
+The virtual panel retains 1280x800 scale 1 and 2560x1600 scale 2. Native
+GK208 modes come from EDID at scale 1, followed by exactly twice the preferred
+mode at scale 2. The preferred native mode remains index 1 and the kernel default;
+other native timings scan out 1:1, while scale 2 uses the preferred timing at 2:1.
+The first pair and diagnostic field offsets are unchanged. Consumers enumerate
+`count` using `Modes::mode_list()` and use `current_mode()` for the active entry.
+
 <!-- claim-lint:ok: Normative catch-up interface requirements, rulings 47 and 50 (#1814), not measured results. -->
 **`READBACK` (64 bytes):** `target: u64`, `x, y, width, height: u32`, `pixels: u64` (address),
 `pixels_len: u64`, `stride: u32`, `reason: u32` out at 44, `record: u64` (address of 1,024 bytes),
@@ -340,10 +347,10 @@ framebuffer. `MODES` retains its complete diagnostic sampling below.
 | Offset | Field |
 |---|---|
 | 0 | `version: u32` (1), `size: u32` (256) |
-| 8 | `count: u32` (2), `current: u32` (mode index, initially 1) |
+| 8 | `count: u32` (up to 10), `current: u32` (mode index, initially 1) |
 | 16 | `max_width: u32`, `max_height: u32`, from CAPS |
 | 24 | `owner_depth: u32` (0 to 4, excluding the kernel), `binding_known: u32` |
-| 32 | Two 16-byte modes: `width, height, scale, reserved: u32`; index 0 is 1280x800 at scale 1, index 1 is 2560x1600 at scale 2 |
+| 32 | First two 16-byte modes: `width, height, scale, reserved: u32` |
 | 64 | `scanout_resource: u64`, the completed binding's device resource id, or 0 |
 | 72 | `console_resource: u64`, the device resource id of the kernel's screen (the screen console's scanout target, ruling F25), or 0 before creation |
 | 80 | `console_draws: u64`, completed presents of the kernel's screen |
@@ -351,7 +358,14 @@ framebuffer. `MODES` retains its complete diagnostic sampling below.
 | 96 | `handoff: u64`, 1 after the first completed present of the kernel's screen, else 0 |
 | 104 | `firmware_hash_at_handoff: u64`, `firmware_hash_now: u64` at 112 |
 | 120 | `firmware_writes_after_handoff: u64` |
-| 128 | Reserved through byte 255 (128 bytes, value 0) |
+| 128 | Up to eight additional 16-byte modes; unused entries contain 0 |
+
+The virtual panel retains 1280x800 scale 1 and 2560x1600 scale 2. Native
+GK208 modes come from EDID at scale 1, followed by exactly twice the preferred
+mode at scale 2. The preferred native mode remains index 1 and the kernel default;
+other native timings scan out 1:1, while scale 2 uses the preferred timing at 2:1.
+The first pair and diagnostic field offsets are unchanged. Consumers enumerate
+`count` using `Modes::mode_list()` and use `current_mode()` for the active entry.
 
 <!-- claim-lint:ok: Normative catch-up interface requirements, rulings 47 and 50 (#1814), not measured results. -->
 `firmware_writes_after_handoff` is a device-wide, monotonic, saturating count of kernel

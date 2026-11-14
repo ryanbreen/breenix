@@ -299,11 +299,7 @@ impl Reader {
             device.bars[1].size,
             17,
         )?;
-        let console_offset = if (console.width, console.height) == (2560, 1600) {
-            16 << 20
-        } else {
-            displacement
-        };
+        let console_offset = super::super::native::console_bar_offset(console, displacement);
         let bar = console.pointer - console_offset;
         let old = [
             regs.read(0x2254),
@@ -600,10 +596,10 @@ pub(crate) fn set_scanout(tag: crate::gpu::dev::Tag, ctx:u32, id:u32,
     width:u32, height:u32,
 ) -> Option<super::super::adapter::Request> {
     super::super::resource::context_id(ctx)?;
-    scanout(id,width,height)?;
+    scanout(id,width,height,matches!(tag,crate::gpu::dev::Tag::Sync(_)))?;
     Some(super::super::adapter::Request::storage(tag,None))
 }
-fn scanout(id:u32,width:u32,height:u32) -> Option<super::super::present::Surface> {
+fn scanout(id:u32,width:u32,height:u32,restoring:bool) -> Option<super::super::present::Surface> {
     let surface=super::with_resources(|r,_,_| {
         let surface=r.scanout(id).ok_or("native scanout target absent")?;
         if surface.width!=width || surface.height!=height {
@@ -611,14 +607,14 @@ fn scanout(id:u32,width:u32,height:u32) -> Option<super::super::present::Surface
         }
         Ok(surface)
     }).ok()?;
-    super::process::presentable(width,height).ok()?;
+    super::process::presentable(width,height,restoring).ok()?;
     Some(surface)
 }
 pub(crate) fn flush_resource(tag:crate::gpu::dev::Tag,ctx:u32,fence:u64,id:u32,
     width:u32,height:u32,
 ) -> Option<super::super::adapter::Request> {
     super::super::resource::context_id(ctx)?;
-    let surface=scanout(id,width,height)?;
+    let surface=scanout(id,width,height,matches!(tag,crate::gpu::dev::Tag::Sync(_)))?;
     let hold=super::with_resources(|r,_,_|r.hold(id)).ok()?;
     let mut holds = Vec::new(); holds.try_reserve_exact(1).ok()?; holds.push(hold);
     Some(super::super::adapter::Request::present(tag,fence,surface,

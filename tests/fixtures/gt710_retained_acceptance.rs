@@ -29,7 +29,7 @@ mod memx_display {
  #[derive(Clone,Copy)]pub struct Health;
  impl Health {pub fn read(_: &mut super::Registers,_:u32,_:u32)->Self{Self}pub fn check(&self)->Result<(),&'static str>{Ok(())}}
 }
-mod display_evidence {pub fn record(_: &mut super::Registers,_:u32,_:super::present::Surface,_:&super::present::Receipt){}}
+mod display_evidence {pub fn record(_: &mut super::Registers,_:u32,_:super::present::Surface,_:&super::present::Receipt,_:u32){}}
 mod native {
  use super::*;
  static MEMX_PRESENT_PHASE:core::sync::atomic::AtomicU32=core::sync::atomic::AtomicU32::new(0);
@@ -47,11 +47,11 @@ mod native {
  fn acknowledge(_: &mut Evo,r:&mut Registers)->Result<u32,&'static str>{r.acks+=1;if r.acknowledge{Ok(0xcafe0001)}else{Err("withheld fresh ack")}}
  // PRESENT_INNER
  // WAIT_PRESENT
- fn present_latched(e:&mut Evo,r:&mut Registers,s:present::Surface)->Result<Option<present::Receipt>,&'static str>{if !e.finish_presentation(r,s.resource)?{return Ok(None);} present::receipt(&mut MockRead(r),e.head,s,1).map(Some)}
+ fn present_latched(e:&mut Evo,r:&mut Registers,s:present::Surface,_:u32)->Result<Option<present::Receipt>,&'static str>{if !e.finish_presentation(r,s.resource)?{return Ok(None);} present::receipt(&mut MockRead(r),e.head,s,1).map(Some)}
  struct MockRead<'a>(&'a mut Registers);
  impl present::Io for MockRead<'_>{fn clear_notifier(&mut self)->Result<(),&'static str>{unreachable!()}fn submit(&mut self,_:&[(u32,u32)])->Result<(),&'static str>{unreachable!()}fn complete(&mut self)->Result<u32,&'static str>{unreachable!()}fn read(&mut self,r:usize)->u32{self.0.read(r)}}
- pub fn sync(e:&mut Evo,r:&mut Registers,s:present::Surface)->Result<Option<present::Receipt>,&'static str>{present_inner(e,r,s,true)}
- pub fn run(e:&mut Evo,r:&mut Registers,s:present::Surface)->Result<Option<present::Receipt>,&'static str>{present_inner(e,r,s,false)}
+ pub fn sync(e:&mut Evo,r:&mut Registers,s:present::Surface)->Result<Option<present::Receipt>,&'static str>{present_inner(e,r,s,true,0)}
+ pub fn run(e:&mut Evo,r:&mut Registers,s:present::Surface)->Result<Option<present::Receipt>,&'static str>{present_inner(e,r,s,false,0)}
 }
 fn setup()->(Evo,Registers,present::Surface){
  let s=present::Surface{resource:71,address:0x12340000,width:1280,height:800,pitch:5120,block_height:0,format:0,dma:1};
@@ -109,7 +109,7 @@ fn setup()->(Evo,Registers,present::Surface){
  for notifier in [true,false] {
   let(mut e,mut r,s)=setup();e.arm_presentation(&r,s.resource).unwrap();
   r.fail_complete=notifier;r.fail_finish=!notifier;
-  assert!(native::wait_present(&mut e,&mut r,s).is_err());
+  assert!(native::wait_present(&mut e,&mut r,s,0).is_err());
   assert!(e.pending_presentation.is_none(),"failed console drain poisoned the slot");
  }
 }

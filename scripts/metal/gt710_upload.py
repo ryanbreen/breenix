@@ -1,5 +1,6 @@
 """Private, bounded actual-display-row upload for the powered boot's lease."""
 import hashlib
+from functools import lru_cache
 import json
 import intent_manifest
 import http.client
@@ -14,12 +15,44 @@ MAX_BYTES=2<<20
 # R6 amended: includes startup, picture chunks and the final evidence slot.
 MAX_TOTAL=64<<20
 PREFIX='/gt710-upload/'
-def crc_checkpoint_cap(suite):
+def crc_checkpoint_cap(suite, modes=None, default=1):
+    return _checkpoint_cap(suite, tuple(map(tuple,modes)) if modes else None, default)
+
+
+@lru_cache(maxsize=32)
+def _checkpoint_cap(suite, modes, default):
     root = Path(__file__).resolve().parents[2]
     path = root / 'docs/suites/frames/checkpoints.json'
     if not path.exists(): path = Path(__file__).with_name('checkpoints.json')
     checkpoints = json.loads(path.read_text())
-    return len(checkpoints[suite]) + intent_manifest.counts()[suite] + 4
+    return len(checkpoints[suite]) + intent_manifest.counts(modes=modes, default=default)[suite] + 4
+
+
+def byte_bound(intent):
+    modes = intent.get('evidenceModes')
+    if not modes: return MAX_TOTAL
+    checkpoints = crc_checkpoint_cap(intent['suite'], modes, intent['evidenceDefault'])
+    pixels = max(w*h*4 for w,h,scale in modes)
+    # Same sum as suite_evidence_budget.rs: one worst-case SCR1 (pixels +
+    # 1024 header/names/sector padding) and 4096-byte CRC per checkpoint,
+    # two 2 MiB startup/final slots, and 64 MiB retained native pictures.
+    return max(MAX_TOTAL, checkpoints*(pixels+1024+4096) + 2*MAX_BYTES + MAX_TOTAL)
+
+
+def catalogue(body):
+    rows = re.findall(rb'^GT710_EVIDENCE_MODES (.+)$', body, re.M)
+    if not rows: return None
+    if len(rows) != 1: raise ValueError('duplicate evidence mode catalogue')
+    row = json.loads(rows[0])
+    if not isinstance(row,dict) or set(row) != {'modes','default'}:
+        raise ValueError('invalid evidence mode catalogue')
+    modes, default = row['modes'], row['default']
+    if (type(default) is not int or not isinstance(modes,list) or not 1 <= len(modes) <= 16
+            or not 0 <= default < len(modes) or any(not isinstance(m,list) or len(m) != 3
+            or any(type(v) is not int for v in m) or not 64 < m[0] <= 8192
+            or not 64 < m[1] <= 8192 or m[2] not in (1,2) for m in modes)):
+        raise ValueError('invalid evidence mode catalogue')
+    return modes, default
 
 def prepare(directory,boot_id,site,suite=None):
     route=PREFIX+secrets.token_hex(32)
@@ -113,7 +146,7 @@ def receive(handler, backend=m):
                      if intent.get('suite') in ('window-manager', 'ui-testing', 'gui-apps') else
                      not (proof and intent.get('suite') in ('gpu', 'breengel') and
                           re.fullmatch(r'crc-' + intent['suite'] + r'-[0-9a-f]{16}', diagnostic_label) and
-                          len(intent.get('diagnosticUploads', {})) < crc_checkpoint_cap(intent['suite'])))))
+                          len(intent.get('diagnosticUploads', {})) < crc_checkpoint_cap(intent['suite'], intent.get('evidenceModes'), intent.get('evidenceDefault', 1))))))
                 or (intent.get('finalComplete') if final else (False if is_picture or is_diagnostic or is_screen else intent.get('complete')))
                 or (final and not intent.get('complete'))
                 or lease.get('id')!=intent.get('id') or lease.get('state')!='powered'):
@@ -134,8 +167,13 @@ def receive(handler, backend=m):
                     or not re.fullmatch('[a-f0-9]{64}',expected) or (boot_directory/'ended').exists()):
                 raise ValueError('invalid display artifact framing')
             total = root_intent.get('aggregateBytes', 0) if suite_directory else intent.get('bytes', 0) + intent.get('pictureBytes', 0) + intent.get('diagnosticBytes', 0) + intent.get('screenBytes', 0)
-            if total + length > MAX_TOTAL:
-                raise ValueError('native per-boot evidence exceeds 64 MiB')
+            suite_total = sum(intent.get(k, 0) for k in ('bytes','pictureBytes','diagnosticBytes','screenBytes','finalBytes'))
+            slots = root_intent.get('suiteSlots', {})
+            aggregate_bound = (sum(byte_bound(slots.get(s, {})) for s in sequence)
+                               if suite_directory and any(v.get('evidenceModes') for v in slots.values())
+                               else byte_bound(intent))
+            if suite_total + length > byte_bound(intent) or total + length > aggregate_bound:
+                raise ValueError('native per-boot evidence exceeds declared byte bound')
             handler.connection.settimeout(30)
             digest=hashlib.sha256();remaining=length
             with temporary.open('wb') as out:
@@ -145,6 +183,10 @@ def receive(handler, backend=m):
                     out.write(chunk);digest.update(chunk);remaining-=len(chunk)
                 out.flush();os.fsync(out.fileno())
             if digest.hexdigest()!=expected:raise ValueError('display artifact digest differs')
+            if proof and intent.get('suite') in ('gpu','breengel') and route == intent['route']:
+                listed = catalogue(temporary.read_bytes())
+                if listed:
+                    intent['evidenceModes'], intent['evidenceDefault'] = listed
             payload_length, payload_digest = length, expected
             reference = handler.headers.get('X-Breenix-Picture-Reference')
             if reference is not None:

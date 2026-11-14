@@ -317,67 +317,7 @@ fn completion(
         fn poll(&mut self) -> Result<u32, &'static str> {
             let Self { regs, total, notifier, limits, coefficients, route, scripts } = self;
             let regs = &mut **regs;
-            let (head, sor, attached, attaching) = *route;
-            let h = head as usize * 0x800;
-            let errors = regs.read(0x61009c);
-            if errors != 0 {
-                return Err("native display method error");
-            }
-            let pending = regs.read(0x6100ac) & 7;
-            if pending != 0 {
-                let phase = if pending & 1 != 0 {
-                    1
-                } else if pending & 2 != 0 {
-                    2
-                } else {
-                    4
-                };
-                let state = regs.read(0x6101d4 + h);
-                regs.write(0x6100ac, phase);
-                if state & 0x1000 != 0 {
-                    if phase == 1 && attached {
-                        modeset::execute_ops(regs, &scripts[0]);
-                    }
-                    if phase == 2 && attached {
-                        modeset::execute_ops(regs, &scripts[1]);
-                    }
-                    if phase == 4 && attaching {
-                        modeset::execute_ops(regs, &scripts[3]);
-                    }
-                }
-                if phase == 2 && state & 0x10000 != 0 {
-                    let r = limits.reg as usize;
-                    regs.mask(r + 12, 0, 0x100);
-                    regs.write(
-                        r + 4,
-                        coefficients.p << 16 | coefficients.n << 8 | coefficients.m,
-                    );
-                    regs.write(r + 16, u32::from(coefficients.fraction) << 16);
-                }
-                // Release power for an outgoing attachment; gate incoming scripts
-                // separately from the outgoing configuration.
-                if phase == 2 && state & 0x1000 != 0 && attached && !attaching {
-                    let s = sor as usize * 0x800;
-                    modeset::wait(regs, 0x61c004 + s, 0x80000000, 0)?;
-                    regs.mask(0x61c004 + s, 0x80000001, 0x80000000);
-                    modeset::wait(regs, 0x61c004 + s, 0x80000000, 0)?;
-                    modeset::wait(regs, 0x61c030 + s, 0x10000000, 0)?;
-                }
-                if phase == 2 && state & 0x1000 != 0 && attaching {
-                    modeset::execute_ops(regs, &scripts[2]);
-                    regs.mask(0x612200 + h, 15, 0);
-                    let s = sor as usize * 0x800;
-                    regs.mask(0x612300 + s, 0x007c0707, 0x0a << 18);
-                    modeset::wait(regs, 0x61c004 + s, 0x80000000, 0)?;
-                    regs.mask(0x61c004 + s, 0x80000001, 0x80000001);
-                    modeset::wait(regs, 0x61c004 + s, 0x80000000, 0)?;
-                    modeset::wait(regs, 0x61c030 + s, 0x10000000, 0)?;
-                }
-                for i in 0..4 {
-                    regs.write(0x6101d4 + i * 0x800, 0);
-                }
-                regs.write(0x6101d0, 0x80000000);
-            }
+            modeset::supervise(regs,limits,coefficients,*route,scripts)?;
             read_word(regs, *total, *notifier)
         }
         fn delay_us(&mut self, us: u32) { self.regs.delay_us(us); }
@@ -461,10 +401,30 @@ pub struct ConsoleSurface {
     pub head: u32,
     pub phys: u64,
     pub firmware_baseline: u64,
+    pub logical: bool,
+}
+
+/// BAR1 displacement of the console within its CPU aperture.
+pub(in crate::gk208) fn console_bar_offset(console: &ConsoleSurface, displacement: usize) -> usize {
+    if console.logical {
+        16 << 20
+    } else {
+        displacement
+    }
 }
 
 /// Retain the owned EVO channel and its post-takeover command cursor.
+#[derive(Clone)]
+pub(super) struct RasterMode {
+    pub(super) timing: edid::Timing,
+    pll: modeset::Pll,
+    scripts: [Vec<modeset::Op>; 4],
+}
 pub struct Evo {
+    raster_known: bool,
+    modes: Vec<(u32,u32,u32)>,
+    rasters: Vec<RasterMode>,
+    protocol: u32,
     frame_pixels: u64,
     pixel_hz: u64,
     clock: Option<super::vblank_clock::VblankClock>,
@@ -495,6 +455,7 @@ struct PendingPresentation {
     last_negative: Option<(u64, u32, u32)>,
     accepted_edges: Option<u16>,
     predicted_latch_ns: u64,
+    restoring: bool,
 }
 pub struct FlipSnapshot {
     pub notifier_before: u32,
@@ -540,6 +501,105 @@ fn presentation_sample(regs: &Registers, head: u32)
 }
 
 impl Evo {
+    fn submit_mode(&mut self, regs:&mut Registers, methods:&[(u32,u32)])
+        -> Result<(), &'static str> {
+        modeset::wait(regs,0x640004,u32::MAX,self.put)?;
+        if self.put as usize+(methods.len()+1)*8>2044 {
+            write_words(regs,self.total,self.push+u64::from(self.put),&[0x20000000])?;
+            modeset::publish(regs,0)?;
+            modeset::wait(regs,0x640004,u32::MAX,0)?;
+            self.put=0;
+        }
+        submit(regs,self.total,self.push,&mut self.put,methods)
+    }
+    fn select_raster(&mut self, regs: &mut Registers, surface: super::present::Surface, mode:u32)
+        -> Result<bool, &'static str> {
+        let (width,height,scale)=*self.modes.get(mode as usize).ok_or("runtime mode absent")?;
+        if (surface.width,surface.height)!=(width,height) {return Err("surface differs from selected mode");}
+        let preferred=self.rasters.first().ok_or("preferred runtime raster absent")?.timing;
+        let selected=if scale==2 { preferred }
+        else { self.rasters.iter().find(|r| (r.timing.width,r.timing.height)==(width,height))
+            .ok_or("surface has no advertised native raster")?.timing };
+        let h=self.head as usize*0x300;
+        let blank=regs.read(0x64041c+h);let end=regs.read(0x640420+h);
+        if self.raster_known && (end&0xffff).checked_sub(blank&0xffff)==Some(selected.width)
+            && (end>>16).checked_sub(blank>>16)==Some(selected.height) {return Ok(false);}
+        let next=self.rasters.iter().find(|r|r.timing==selected)
+            .ok_or("runtime raster recipe absent")?.clone();
+        let mut attach=modeset::head_methods(&selected,self.head,self.sor,self.protocol,
+            surface.address,u64::from(surface.pitch))?;
+        for (method,value) in surface.methods(self.head)?.into_iter().take(5) {
+            attach.iter_mut().find(|(m,_)|*m==method).ok_or("attach surface method absent")?.1=value;
+        }
+        attach.extend(modeset::Viewport::new(&selected,width,height)?.methods(self.head)?);
+        attach.extend([(0x84,0x80000000),(0x80,0)]);
+        // Retain the old timing and complete surface/viewport before detaching.
+        let previous=self.rasters.iter().find(|r|
+            Some(r.timing.width)==(end&0xffff).checked_sub(blank&0xffff)
+            && Some(r.timing.height)==(end>>16).checked_sub(blank>>16)
+            && r.timing.clock_khz*1000==regs.read(0x640450+h)).cloned();
+        let rollback=previous.as_ref().map(|old| {
+            let mut methods=modeset::head_methods(&old.timing,self.head,self.sor,self.protocol,
+                u64::from(regs.read(0x640460+h))<<8,
+                u64::from((old.timing.width*4+255)&!255))?;
+            for method in [0x460,0x468,0x46c,0x470,0x474,0x42c,0x494,0x4b0,0x4b8,0x4bc,0x4c0,0x4c4,0x4c8] {
+                let value=regs.read(0x640000+h+method as usize);
+                if let Some(entry)=methods.iter_mut().find(|(m,_)|*m==method+self.head*0x300) {entry.1=value;}
+                else {methods.push((method+self.head*0x300,value));}
+            }
+            methods.extend([(0x84,0x80000000),(0x80,0)]);
+            Ok::<_, &'static str>(methods)
+        }).transpose()?;
+        if self.raster_known {modeset::pause_underflow(regs,self.head)?;}
+        if let Err(error)=self.apply_raster(regs,&next,&attach) {
+            if let (Some(old),Some(methods))=(previous,rollback) {
+                // The failed new raster may have armed reporting before failing
+                // its health check. End that window and acknowledge its W1C bit;
+                // the original error is still returned after restoring the old
+                // raster, whose attach must pass a fresh arm/health check.
+                let underflow=0x616308+self.head as usize*0x800;
+                let status=regs.read(underflow);
+                modeset::Io::write(regs,underflow,(status&!0x111)|0x10);
+                if self.apply_raster(regs,&old,&methods).is_ok() {return Err(error);}
+            }
+            self.raster_known=false;
+            return Err("runtime raster switch and rollback failed");
+        }
+        Ok(true)
+    }
+
+    fn apply_raster(&mut self, regs:&mut Registers, next:&RasterMode, attach:&[(u32,u32)])
+        -> Result<(), &'static str> {
+        let timing_changed = regs.read(0x640414 + self.head as usize * 0x300)
+            != (next.timing.htotal | (next.timing.vtotal << 16))
+            || self.pixel_hz != u64::from(next.timing.clock_khz) * 1000;
+        self.raster_known=false;
+        if regs.read(0x616308+self.head as usize*0x800)&0x111!=0 {
+            return Err("runtime raster recovery requires paused healthy reporting");
+        }
+        write_words(regs,self.total,self.notifier,&[0,0,0,0])?;
+        let mut detach=modeset::detach_methods(self.head,self.sor)?.to_vec();
+        detach.extend([(0x84,0x80000000),(0x80,0)]);
+        self.submit_mode(regs,&detach)?;
+        complete(regs,self.total,self.notifier,&self.limits,&self.coefficients,
+            (self.head,self.sor,true,false),&self.scripts)?;
+        modeset::wait(regs,0x640004,u32::MAX,self.put)?;
+        write_words(regs,self.total,self.notifier,&[0,0,0,0])?;
+        // Keep the outgoing recipe consistent even if the new attach times out.
+        self.coefficients=next.pll.clone();self.scripts=next.scripts.clone();
+        self.submit_mode(regs,attach)?;
+        complete(regs,self.total,self.notifier,&self.limits,&self.coefficients,
+            (self.head,self.sor,false,true),&self.scripts)?;
+        modeset::wait(regs,0x640004,u32::MAX,self.put)?;
+        modeset::arm_underflow(regs,self.head)?;
+        self.frame_pixels=u64::from(next.timing.htotal)*u64::from(next.timing.vtotal);
+        self.pixel_hz=u64::from(next.timing.clock_khz)*1000;
+        if timing_changed { self.clock=None;self.latch_phase=None; }
+        self.last_presentation=None;
+        self.raster_known=true;
+        Ok(())
+    }
+
     // W20 can select +2. Allow another period of dispatch margin at any mode.
     fn presentation_attempts(&self) -> u64 {
         let period = (u128::from(self.frame_pixels) * 1_000_000_000)
@@ -585,7 +645,7 @@ impl Evo {
         crate::window::pipeline::at(15, u64::from(resource), u64::from(vert), u64::from(pixel), accepted_ns);
         self.pending_presentation = Some(PendingPresentation {
             resource, accepted_ns, count: (vert >> 16) as u16, vert, pixel,
-            acknowledged: None, completed: None, last_negative: None, accepted_edges, predicted_latch_ns,
+            acknowledged: None, completed: None, last_negative: None, accepted_edges, predicted_latch_ns, restoring: false,
         });
         Ok(())
     }
@@ -619,15 +679,20 @@ impl Evo {
             let line_ns = (u64::from(width) * 1_000_000_000).div_ceil(self.pixel_hz);
             let before = ((negative_vert & 0xffff) + height - u32::from(self.vblank_line)) % height;
             let after = ((completed.1 & 0xffff) + height - u32::from(self.vblank_line)) % height;
-            if negative_vert >> 16 == completed.1 >> 16 && after >= before
+            let edges = ((completed.1 >> 16) as u16).wrapping_sub((negative_vert >> 16) as u16);
+            if ((edges == 0 && after >= before) || (edges == 1 && after < before))
                 && completed.0.saturating_sub(negative_ns) <= 2 * line_ns {
                 self.latch_phase = Some(self.latch_phase.map_or(before as u16, |old| old.min(before as u16)));
             }
         }
         // W20: freeze +1/+2 from acceptance, independently of a delayed first poll.
-        // Without calibration, DONE seen before +1 can confirm it; otherwise choose +2.
+        // A cold timing can learn its deadline from this UPDATE's tightly
+        // bracketed hardware edge, including a counter wrap between the polls.
+        let accepted_phase = ((pending.vert & 0xffff) + height - u32::from(self.vblank_line)) % height;
+        let calibrated = pending.accepted_edges.or_else(|| self.latch_phase.map(|deadline|
+            if accepted_phase < u32::from(deadline) { 1 } else { 2 }));
         let edges = if pending.acknowledged.is_some() { 1 } else {
-            pending.accepted_edges.unwrap_or(if completed.1 >> 16 == u32::from(pending.count) { 1 } else { 2 })
+            calibrated.unwrap_or(if completed.1 >> 16 == u32::from(pending.count) { 1 } else { 2 })
         };
         if advanced < edges { return Ok(false); }
         let pixels = u64::from((line + height - u32::from(self.vblank_line)) % height)
@@ -646,8 +711,9 @@ impl Evo {
             sampled_ns, u64::from(vert), u64::from(pixel), u64::from(self.vblank_line),
             u64::from(regs.read(0x64041c + self.head as usize * 0x300)),
             u64::from(regs.read(0x640420 + self.head as usize * 0x300)),
-            self.latch_phase.map_or(u64::MAX, u64::from),
-        ]);
+            self.latch_phase.map_or(u64::MAX, u64::from), u64::from(height),
+        ], (u128::from(self.frame_pixels) * 1_000_000_000)
+            .div_ceil(u128::from(self.pixel_hz)) as u64);
         self.last_presentation = Some((resource, at));
         self.pending_presentation = None;
         Ok(true)
@@ -748,13 +814,8 @@ impl Evo {
     }
     pub(in crate::gk208) fn terminal_display(&self, registers: usize, surface: super::present::Surface)
         -> Result<super::emergency::Display, &'static str> {
-        let regs = Registers(registers);
-        let h = self.head as usize * 0x300;
-        let blank = regs.read(0x64041c+h);
-        let end = regs.read(0x640420+h);
-        let view = modeset::Viewport::for_raster((end&0xffff).checked_sub(blank&0xffff)
-            .ok_or("invalid terminal raster")?, (end>>16).checked_sub(blank>>16)
-            .ok_or("invalid terminal raster")?, surface.width, surface.height)?;
+        let preferred=self.rasters.first().ok_or("terminal preferred raster absent")?;
+        let view=modeset::Viewport::new(&preferred.timing,surface.width,surface.height)?;
         let surface_methods = surface.methods(self.head)?;
         let view_methods = view.methods(self.head)?;
         let mut methods = Vec::new();
@@ -767,17 +828,30 @@ impl Evo {
         // completion in a disjoint 16-byte slot of the owned notifier page.
         methods.iter_mut().find(|(m, _)| *m == 0x84)
             .ok_or("terminal notifier control absent")?.1 |= 16;
-        // Ordinary EVO packets stay below 2048; the second half of this
-        // already-owned 4096-byte push page is terminal-only (NV927D JUMP).
-        if methods.len() * 8 > 2048 { return Err("terminal EVO packet extent"); }
-        let mut words = Vec::new();
-        words.try_reserve_exact(methods.len() * 2).map_err(|_| "terminal EVO packet allocation")?;
-        words.extend(methods.iter().flat_map(|&(m, v)| [0x40000 | m, v]));
-        write_words(&mut Registers(registers), self.total, self.push + 2048, &words)?;
+        let mut detach=modeset::detach_methods(self.head,self.sor)?.to_vec();
+        detach.extend([(0x84,0x80000010),(0x80,0)]);
+        let mut attach=modeset::head_methods(&preferred.timing,self.head,self.sor,self.protocol,
+            surface.address,u64::from(surface.pitch))?;
+        for &(method,value) in &surface_methods[..5] {
+            attach.iter_mut().find(|(m,_)|*m==method).ok_or("terminal attach surface method absent")?.1=value;
+        }
+        attach.extend_from_slice(&view_methods);
+        attach.extend([(0x84,0x80000010),(0x80,0)]);
+        // Three terminal packets share the disjoint half of the owned push page.
+        let count=methods.len()+detach.len()+attach.len();
+        if count*8>2048 {return Err("terminal EVO packet extent");}
+        let mut words=Vec::new();
+        words.try_reserve_exact(count*2).map_err(|_|"terminal EVO packet allocation")?;
+        words.extend(methods.iter().chain(&detach).chain(&attach).flat_map(|&(m,v)|[0x40000|m,v]));
+        write_words(&mut Registers(registers),self.total,self.push+2048,&words)?;
         modeset::bar_flush(&mut Registers(registers))?;
+        let raster=super::emergency::Raster { limits:self.limits,
+            pll:preferred.pll.clone(),scripts:preferred.scripts.clone(),
+            outgoing:self.rasters.iter().map(|r|(r.timing.clock_khz*1000,r.scripts.clone())).collect(),
+            detach,attach };
         Ok(super::emergency::Display { registers, total: self.total,
             push: self.push, notifier: self.notifier + 16, head: self.head, sor: self.sor,
-            methods,
+            methods,raster,
             #[cfg(any(feature = "capture_panic_oracle", feature = "gpu_fault_acceptance"))]
             target: surface.resource })
     }
@@ -850,23 +924,31 @@ fn acknowledge(evo: &mut Evo, regs: &mut Registers) -> Result<u32, &'static str>
 /// bring-up flip, this binds the target's size, storage, format and DMA kind.
 /// No console copy, framebuffer writes or fixed raster delay is involved.
 pub(in crate::gk208) fn present(evo: &mut Evo, regs: &mut Registers,
-    surface: super::present::Surface,
+    surface: super::present::Surface, mode: u32,
 ) -> Result<super::present::Receipt, &'static str> {
-    present_inner(evo, regs, surface, true)?.ok_or("native synchronous receipt absent")
+    present_inner(evo, regs, surface, true, mode, false)?.ok_or("native synchronous receipt absent")
 }
 
 /// G26 answers PRESENT after GET consumes the unchanged G22 sequence.
 /// Real flips retain their latch; an unchanged latched binding uses a fresh
 /// device acknowledgement without scheduling another flip.
 pub(in crate::gk208) fn present_accepted(evo: &mut Evo, regs: &mut Registers,
-    surface: super::present::Surface,
+    surface: super::present::Surface, mode: u32,
 ) -> Result<Option<super::present::Receipt>, &'static str> {
-    present_inner(evo, regs, surface, false)
+    present_inner(evo, regs, surface, false, mode, false)
+}
+
+/// A saved owner frame keeps its original extent across a mode selection.
+/// Only the shared kernel restoration path uses this viewport operation.
+pub(in crate::gk208) fn restore_accepted(evo: &mut Evo, regs: &mut Registers,
+    surface: super::present::Surface, mode: u32,
+) -> Result<Option<super::present::Receipt>, &'static str> {
+    present_inner(evo, regs, surface, false, mode, true)
 }
 
 /// Drain the one accepted flip before a synchronous mode/console transition.
 pub(in crate::gk208) fn wait_present(evo: &mut Evo, regs: &mut Registers,
-    surface: super::present::Surface,
+    surface: super::present::Surface, mode: u32,
 ) -> Result<super::present::Receipt, &'static str> {
         let result = (|| {
     if evo.pending_presentation.is_some_and(|p| p.acknowledged.is_none()) {
@@ -874,7 +956,7 @@ pub(in crate::gk208) fn wait_present(evo: &mut Evo, regs: &mut Registers,
             (evo.head, evo.sor, true, true), &evo.scripts)?;
     }
     for _ in 0..evo.presentation_attempts() {
-        if let Some(receipt) = present_latched(evo, regs, surface)? { return Ok(receipt); }
+        if let Some(receipt) = present_latched(evo, regs, surface, mode)? { return Ok(receipt); }
         regs.delay_us(100);
     }
     Err("native accepted flip did not latch")
@@ -887,7 +969,7 @@ pub(in crate::gk208) fn wait_present(evo: &mut Evo, regs: &mut Registers,
     }
 
 pub(in crate::gk208) fn present_latched(evo: &mut Evo, regs: &mut Registers,
-    surface: super::present::Surface,
+    surface: super::present::Surface, mode: u32,
 ) -> Result<Option<super::present::Receipt>, &'static str> {
         let result = (|| {
     let before_notifier = presentation_sample(regs, evo.head)?;
@@ -900,16 +982,18 @@ pub(in crate::gk208) fn present_latched(evo: &mut Evo, regs: &mut Registers,
         if let Some(pending) = evo.pending_presentation.as_mut() { pending.last_negative = Some(before_notifier); }
         return Ok(None);
     }
+    let restoring = evo.pending_presentation.is_some_and(|p| p.restoring);
     if !evo.finish_presentation(regs, surface.resource)? { return Ok(None); }
     let receipt = super::present::receipt(&mut PresentRead(regs), evo.head, surface, value)?;
     let h = evo.head as usize * 0x300;
     let blank = regs.read(0x64041c + h);
     let end = regs.read(0x640420 + h);
-    modeset::Viewport::for_raster((end & 0xffff).checked_sub(blank & 0xffff)
+    let viewport = if restoring { modeset::Viewport::for_saved } else { modeset::Viewport::for_raster };
+    viewport((end & 0xffff).checked_sub(blank & 0xffff)
         .ok_or("invalid native raster width")?, (end >> 16).checked_sub(blank >> 16)
         .ok_or("invalid native raster height")?, surface.width, surface.height)?.verify(regs, evo.head)?;
     super::memx_display::Health::read(regs, evo.head, evo.sor).check()?;
-    super::display_evidence::record(regs, evo.head, surface, &receipt);
+    super::display_evidence::record(regs, evo.head, surface, &receipt, mode);
     Ok(Some(receipt))
 
         })();
@@ -936,9 +1020,15 @@ pub(super) fn observed_scanout(regs: &mut Registers, head: u32,
 }
 
 fn present_inner(evo: &mut Evo, regs: &mut Registers,
-    surface: super::present::Surface, wait: bool,
+    surface: super::present::Surface, wait: bool, mode: u32, restoring: bool,
 ) -> Result<Option<super::present::Receipt>, &'static str> {
         let result = (|| {
+    let raster_changed = if restoring {
+        // activate_mode already confirmed the owner's raster. Rebinding its
+        // old frame rebinds the surface/view while retaining that selection.
+        if !evo.raster_known { return Err("native restore raster unknown"); }
+        false
+    } else { evo.select_raster(regs,surface,mode)? };
     evo.start_clock(regs)?;
     let _cost = super::cost::phase(super::cost::Slot::Evo);
     let phase=MEMX_PRESENT_PHASE.load(core::sync::atomic::Ordering::Acquire);
@@ -951,10 +1041,11 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
     let h=evo.head as usize*0x300;
     let blank=regs.read(0x64041c+h);
     let end=regs.read(0x640420+h);
-    let view=modeset::Viewport::for_raster((end&0xffff).checked_sub(blank&0xffff)
+    let viewport = if restoring { modeset::Viewport::for_saved } else { modeset::Viewport::for_raster };
+    let view=viewport((end&0xffff).checked_sub(blank&0xffff)
         .ok_or("invalid native raster width")?,(end>>16).checked_sub(blank>>16)
         .ok_or("invalid native raster height")?,surface.width,surface.height)?;
-    struct Update<'a> { evo:&'a mut Evo, regs:&'a mut Registers, view:modeset::Viewport, resource:u32 }
+    struct Update<'a> { evo:&'a mut Evo, regs:&'a mut Registers, view:modeset::Viewport, resource:u32, restoring:bool }
     impl super::present::Io for Update<'_> {
         fn clear_notifier(&mut self) -> Result<(), &'static str> {
             modeset::wait(self.regs,0x640004,u32::MAX,self.evo.put)?;
@@ -973,7 +1064,7 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
             let mut words=Vec::new();
             words.try_reserve_exact(head.len() + 10).map_err(|_| "native UPDATE allocation")?;
             if !same { words.extend_from_slice(head); }
-            if self.view.verify(self.regs,self.evo.head).is_err() {
+            if self.restoring || self.view.verify(self.regs,self.evo.head).is_err() {
                 words.extend(self.view.methods(self.evo.head)?);
             }
             words.extend_from_slice(&methods[methods.len()-2..]);
@@ -989,12 +1080,37 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
             }
             submit(self.regs,self.evo.total,self.evo.push,&mut self.evo.put,methods)?;
             modeset::wait(self.regs,0x640004,u32::MAX,self.evo.put)?;
-            self.evo.arm_presentation(self.regs,self.resource)
+            self.evo.arm_presentation(self.regs,self.resource)?;
+            self.evo.pending_presentation.as_mut().unwrap().restoring = self.restoring;
+            Ok(())
         }
         fn complete(&mut self) -> Result<u32, &'static str> {
             let e=&self.evo;
-            let value=complete(self.regs,e.total,e.notifier,&e.limits,&e.coefficients,
-                (e.head,e.sor,true,true),&e.scripts)?;
+            // On a new timing, bracket the notifier with hardware raster samples
+            // before the first receipt. A coarse first poll after vblank cannot
+            // distinguish a late observation from a second-edge UPDATE.
+            let value=if e.latch_phase.is_none() {
+                let start=crate::signal::monotonic_nanos();
+                loop {
+                    let before=presentation_sample(self.regs,self.evo.head)?;
+                    let e=&self.evo;
+                    let value=completion(self.regs,e.total,e.notifier,&e.limits,&e.coefficients,
+                        (e.head,e.sor,true,true),&e.scripts,false)?;
+                    if value & 1 != 0 { break value; }
+                    if let Some(pending)=self.evo.pending_presentation.as_mut() {
+                        pending.last_negative=Some(before);
+                    }
+                    if crate::signal::monotonic_nanos().saturating_sub(start)
+                        >= self.evo.presentation_attempts().saturating_mul(100_000) {
+                        return Err("native initial presentation notifier did not complete");
+                    }
+                    core::hint::spin_loop();
+                }
+            } else {
+                complete(self.regs,e.total,e.notifier,&e.limits,&e.coefficients,
+                    (e.head,e.sor,true,true),&e.scripts)?
+            };
+            let e=&self.evo;
             modeset::wait(self.regs,0x640004,u32::MAX,e.put)?;
             Ok(value)
         }
@@ -1002,15 +1118,16 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
     }
     let head=evo.head;
     let (receipt, retained_ack) = {
-        let mut update = Update { evo, regs, view, resource: surface.resource };
+        let mut update = Update { evo, regs, view, resource: surface.resource, restoring };
         // A retained binding is already latched. Refresh its contents through
         // the existing fresh capabilities report before considering a flip.
-        let retained = if view.verify(update.regs, head).is_ok() {
+        let retained = if !raster_changed && view.verify(update.regs, head).is_ok() {
             super::present::retained(&mut update, head, surface,
                 |u| {
                     let value = acknowledge(u.evo, u.regs)?;
                     u.evo.arm_presentation(u.regs, surface.resource)?;
                     u.evo.pending_presentation.as_mut().unwrap().acknowledged = Some(value);
+                    u.evo.pending_presentation.as_mut().unwrap().restoring = restoring;
                     Ok(value)
                 })?
         } else { None };
@@ -1048,7 +1165,7 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
         MEMX_CLEAR_AVAILABLE.store(false,core::sync::atomic::Ordering::Release);
         MEMX_PRESENT_PHASE.store(0,core::sync::atomic::Ordering::Release);
     }else{health.check()?;}
-    super::display_evidence::record(regs, head, surface, &receipt);
+    super::display_evidence::record(regs, head, surface, &receipt, mode);
     Ok(Some(receipt))
 
         })();
@@ -1058,7 +1175,33 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
         result
     }
 
-pub fn takeover(
+/// Prepare recipes before display ownership and catalogue publication.
+pub(super) fn runtime_rasters(rom: &[u8], modes: &[edid::Timing], route: &board::Route,
+    head: u32) -> Result<Vec<RasterMode>, &'static str> {
+    edid::native_raster(modes)?;
+    let limits = modeset::board_pll(rom, head)?;
+    let protocol = if route.conf & 0x10 != 0 { 1 } else if route.conf & 0x20 != 0 { 2 }
+        else { return Err("no TMDS link"); };
+    let mut rasters = Vec::new();
+    for (index, &timing) in modes.iter().enumerate() {
+        let recipe = (|| {
+            modeset::head_methods(&timing,head,u32::from(route.sor),protocol,0,
+                (u64::from(timing.width)*4+255)&!255)?;
+            Ok(RasterMode { timing,
+            pll: modeset::pll(&limits, timing.clock_khz)?,
+            scripts: modeset::board_scripts(rom,head,u32::from(route.sor),protocol,timing.clock_khz)
+                .map_err(|e| e.reason)?,
+        }) })();
+        match recipe {
+            Ok(recipe) => rasters.push(recipe),
+            Err(error) if index == 0 => return Err(error),
+            Err(_) => {}
+        }
+    }
+    Ok(rasters)
+}
+
+pub(super) fn takeover(
     regs: &mut Registers,
     device: &pci::Device,
     rom: &[u8],
@@ -1066,8 +1209,10 @@ pub fn takeover(
     route: &board::Route,
     head: u32,
     layout: &memory::Layout,
+    rasters: Vec<RasterMode>,
 ) -> Result<(ConsoleSurface, Evo), &'static str> {
     let t = edid::native_raster(modes)?;
+    let runtime_modes = modeset::display_modes(modes)?;
     let limits = modeset::board_pll(rom, head)?;
     let pll_record = modeset::board_pll_record(rom,head)?;
     let coefficients = modeset::pll(&limits, t.clock_khz)?;
@@ -1331,7 +1476,7 @@ pub fn takeover(
         pointer, bytes: surface.size as usize, width: t.width as usize,
         height: t.height as usize, pitch: layout.pitch as usize, vram: surface.start,
         regs: regs.0, head, phys: device.bars[1].address + displacement as u64,
-        firmware_baseline,
+        firmware_baseline, logical: false,
     };
     MEMX_ROUTE.store(head | (u32::from(route.sor)<<8),core::sync::atomic::Ordering::Release);
     if !measuring() {
@@ -1342,7 +1487,7 @@ pub fn takeover(
             clock: None, vblank_line: 0, latch_phase: None, last_presentation: None, pending_presentation: None,
             head, sor: u32::from(route.sor), total, push: evo, put, notifier,
             surfaces: [layout.objects[0].range, layout.objects[1].range],
-            limits, coefficients, scripts,
+            limits, coefficients, scripts, rasters, protocol, modes: runtime_modes, raster_known: true,
         }));
     }
     let mut digest = crate::block::install::sha256::Sha256::new();
@@ -1654,7 +1799,7 @@ pub fn takeover(
             clock: None, vblank_line: 0, latch_phase: None, last_presentation: None, pending_presentation: None,
             head, sor: u32::from(route.sor), total, push: evo, put, notifier,
             surfaces: [layout.objects[0].range, layout.objects[1].range],
-            limits, coefficients, scripts,
+            limits, coefficients, scripts, rasters, protocol, modes: runtime_modes, raster_known: true,
         }))
 }
 
@@ -1662,12 +1807,15 @@ pub fn takeover(
 /// USERD page. A GK208 SPT covers 128 MiB (MIT vmmgk104.c; vm::TABLE_BYTES).
 /// Preserve the first 8 MiB PTEs and map the high surface at BAR1 offset 16 MiB.
 pub(super) fn logical_console(regs:&mut Registers,layout:&mut memory::Layout,
-    evo:&mut Evo,old:ConsoleSurface,bar:usize,bar_bytes:u64)
+    evo:&mut Evo,old:ConsoleSurface,bar:usize,bar_bytes:u64,modes:&[gpu_abi::Mode])
     ->Result<ConsoleSurface, &'static str> {
     const OFFSET:u64=16<<20;
-    const BYTES:u64=2560*1600*4;
+    let mode=modes[1];
+    let pitch=(u64::from(mode.width)*4+255)&!255;
+    let bytes=pitch.checked_mul(u64::from(mode.height)).ok_or("logical console size overflow")?;
+    if bytes>16<<20 {return Err("logical console exceeds BAR1 alias");}
     if bar_bytes<32<<20 {return Err("native logical console needs 32 MiB BAR1");}
-    let allocation=layout.allocator.allocate(BYTES,65536,memory::allocator::Kind::Display)?;
+    let allocation=layout.allocator.allocate(bytes,65536,memory::allocator::Kind::Display)?;
     // Permanent display allocations stay charged after a partial publication.
     layout.objects.push(memory::Object{name:"logical-console",range:allocation.range,
         align:65536,allocation});
@@ -1683,7 +1831,7 @@ pub(super) fn logical_console(regs:&mut Registers,layout:&mut memory::Layout,
         for (i,word) in words[..modeset::BAR1_WINDOW/4096*2].iter_mut().enumerate() {
             *word=p.read(instance+0x4000+i as u64*4)?;
         }
-        for i in 0..BYTES/4096 {
+        for i in 0..allocation.range.size/4096 {
             let entry=((allocation.range.start+i*4096)>>8)|1;
             let at=((OFFSET/4096+i)*2) as usize;
             words[at]=entry as u32;words[at+1]=(entry>>32) as u32;
@@ -1700,19 +1848,23 @@ pub(super) fn logical_console(regs:&mut Registers,layout:&mut memory::Layout,
     crate::console::display::linear::map_native_write_combining(
         old.phys-(old.pointer-bar) as u64,bar_bytes)?;
     // Clear through the owned CPU aperture before making this surface visible.
-    for n in 0..BYTES as usize/4 {unsafe {((pointer+n*4) as *mut u32).write_volatile(0xff000000);}}
+    for n in 0..bytes as usize/4 {unsafe {((pointer+n*4) as *mut u32).write_volatile(0xff000000);}}
     modeset::bar_flush(regs)?;
     let surface=super::present::Surface{resource:u32::MAX,address:allocation.range.start,
-        width:2560,height:1600,pitch:10240,block_height:0,format:0,dma:1};
-    let receipt=present(evo,regs,surface)?;
+        width:mode.width,height:mode.height,pitch:pitch as u32,block_height:0,format:0,dma:1};
+    let receipt=present(evo,regs,surface,1)?;
     let latch=super::display_evidence::transition(regs,evo.head,surface,&receipt,
-        [allocation.range.start,allocation.range.size],[allocation.range.start,allocation.range.size],"handoff")?;
+        [allocation.range.start,allocation.range.size],[allocation.range.start,allocation.range.size],"handoff",1)?;
     crate::serial_println!("GT710_NATIVE_HANDOFF latch={}",latch);
-    layout.objects.try_reserve(1).map_err(|_| "logical low-mode object allocation")?;
-    let low=layout.allocator.allocate(1280*800*4,65536,memory::allocator::Kind::Display)?;
-    layout.objects.push(memory::Object{name:"logical-low",range:low.range,align:65536,allocation:low});
-    Ok(ConsoleSurface{pointer,bytes:BYTES as usize,width:2560,height:1600,pitch:10240,
-        vram:allocation.range.start,phys:old.phys-(old.pointer-bar) as u64+OFFSET,..old})
+    for (index,mode) in modes.iter().enumerate() {
+        if index==1 {continue;}
+        let pitch=(u64::from(mode.width)*4+255)&!255;
+        let bytes=pitch.checked_mul(u64::from(mode.height)).ok_or("logical mode size overflow")?;
+        let allocation=layout.allocator.allocate(bytes,65536,memory::allocator::Kind::Display)?;
+        layout.objects.push(memory::Object{name:"logical-mode",range:allocation.range,align:65536,allocation});
+    }
+    Ok(ConsoleSurface{pointer,bytes:bytes as usize,width:mode.width as usize,height:mode.height as usize,pitch:pitch as usize,
+        logical:true,vram:allocation.range.start,phys:old.phys-(old.pointer-bar) as u64+OFFSET,..old})
 }
 
 fn active_snapshot(regs: &Registers, head: u32, sor: u32) -> String {
@@ -1739,9 +1891,10 @@ pub(super) fn console_receipt(evo: &Evo, regs: &mut Registers, console: ConsoleS
         armed:methods.map(|m|regs.read(0x660000+m+h)),
     };
     let surface=super::present::Surface {resource:u32::MAX,address:console.vram,
-        width:2560,height:1600,pitch:10240,block_height:0,format:0,dma:1};
+        width:console.width as u32,height:console.height as u32,pitch:console.pitch as u32,
+        block_height:0,format:0,dma:1};
     super::display_evidence::transition(regs,evo.head,surface,&receipt,
-        [allocation.start,allocation.size],[allocation.start,allocation.size],"receipt")
+        [allocation.start,allocation.size],[allocation.start,allocation.size],"receipt",1)
 }
 
 pub fn console_binding(surface: &ConsoleSurface) -> Result<(), &'static str> {
@@ -1991,12 +2144,12 @@ pub(super) fn restore_output_perturbation(evo: &mut Evo, regs: &mut Registers,
 #[cfg(target_os = "none")]
 pub(super) fn capture_crc(evo: &mut Evo, regs: &mut Registers, notifier: u64,
     surface: super::present::Surface, checkpoint: super::display_crc::Checkpoint<'_>,
-    binding: super::display_crc::Binding, mode: [u32;2],
+    binding: super::display_crc::Binding, mode: [u32;2], mode_index: u32,
     state: &mut super::display_crc::Perturbation)
     -> Result<super::display_crc::Record, &'static str> {
     struct Crc<'a> {
         evo: &'a mut Evo, regs: &'a mut Registers, notifier: u64,
-        surface: super::present::Surface, binding: super::display_crc::Binding,
+        surface: super::present::Surface, binding: super::display_crc::Binding, mode: u32,
         armed: [u32; 4],
     }
     impl Crc<'_> {
@@ -2054,11 +2207,11 @@ pub(super) fn capture_crc(evo: &mut Evo, regs: &mut Registers, notifier: u64,
             self.regs.read(0x61009c) | (self.regs.read(0x616308+self.evo.head as usize*0x800)&0x110)
         }
         fn recover_present(&mut self) -> Result<(), &'static str> {
-            present(self.evo,self.regs,self.surface).map(|_| ())
+            present(self.evo,self.regs,self.surface,self.mode).map(|_| ())
         }
     }
     let (head,sor)=(evo.head,evo.sor);
-    let mut io = Crc{evo,regs,notifier,surface,binding,armed:[0;4]};
+    let mut io = Crc{evo,regs,notifier,surface,binding,mode:mode_index,armed:[0;4]};
     let result = super::display_crc::perturb_checkpoint(&mut io,state,binding,head,sor)
         .and_then(|()| super::display_crc::capture(&mut io,checkpoint,binding,mode,head,sor,4));
     if let Err(error) = result.as_ref() {

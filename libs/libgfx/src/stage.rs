@@ -246,7 +246,7 @@ impl Default for StageFont {
 /// The display scale of a stage surface: the logical 1280 x 800 layout at a whole scale.
 fn scale_of(fb: &Surface) -> Result<usize, StageError> {
     let n = fb.width() / 1280;
-    if n == 0 || n > 8 || fb.width() != 1280 * n || fb.height() != 800 * n {
+    if n == 0 || n > 8 || fb.width() != 1280 * n || fb.height() < 800 * n {
         return Err(StageError::Size);
     }
     Ok(n)
@@ -676,7 +676,8 @@ fn update_wall(cv: &mut Canvas<'_>, run: &Run<'_>, wall: Wall, tiles: &mut [Opti
 type Trail = (Vec<InputPoint>, usize, usize, i64, i64);
 
 fn paint(cv: &mut Canvas<'_>, run: &Run<'_>, wall: &Surface, trails: &mut Vec<Trail>) {
-    cv.fill(0, 0, 1280, 800, BG);
+    let height=cv.fb.height()/cv.n;
+    cv.fill(0, 0, 1280, height, BG);
     cv.fill(0, 0, 1280, 96, HEADER);
     let mut title = Text::new();
     let _ = write!(title, "BREENIX / {}", run.suite);

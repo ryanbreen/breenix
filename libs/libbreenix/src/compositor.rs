@@ -181,7 +181,7 @@ impl Compositor {
         if r != 0 {
             return Err(r);
         }
-        let mode = modes.modes.get(modes.current as usize).copied().ok_or(-22)?;
+        let mode = modes.current_mode().ok_or(-22)?;
         (self.width, self.height) = (mode.width, mode.height);
         // The scanout targets first: test point 26 binds the process's lowest other scanout.
         for slot in 0..2 {

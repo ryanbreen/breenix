@@ -74,14 +74,15 @@ impl GpuScreen {
         Ok(())
     }
 
-    /// Create the context and its 2560x1600 scanout target unless the view has them, and
+    /// Create the context and its current-mode scanout target unless the view has them, and
     /// wait for the context's warm-up.
     fn create(&mut self) -> Result<(), String> {
         if self.context != 0 {
             return Ok(());
         }
         self.context = gpu::context_create().map_err(|e| std::format!("context: errno {}", -e))?;
-        match gpu::scanout_target_create(abi::format::B8G8R8A8, 2560, 1600) {
+        let mode=gpu::current_mode().map_err(|r|std::format!("CURRENT_MODE: errno {}",-r))?;
+        match gpu::scanout_target_create(abi::format::B8G8R8A8, mode.width, mode.height) {
             Ok(t) => self.target = t,
             Err(e) => {
                 let _ = gpu::context_destroy(self.context);

@@ -43,7 +43,7 @@ impl Registers {
 }
 PENDING
 mod window {pub mod pipeline {pub fn at(_:u64,_:u64,_:u64,_:u64,_:u64){}}}
-mod presentation_trace {pub fn record(row:[u64;15]){assert!(row[7]>=row[1]);}}
+mod presentation_trace {pub fn record<const N:usize>(row:[u64;N],period:u64){assert!(period>0);assert!(row[7]>=row[1]);}}
 struct Evo {head:u32,clock:Option<vblank_clock::VblankClock>,frame_pixels:u64,
  pixel_hz:u64,vblank_line:u16,latch_phase:Option<u16>,pending_presentation:Option<PendingPresentation>,last_presentation:Option<(u32,u64)>}
 SAMPLE

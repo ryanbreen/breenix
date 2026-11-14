@@ -8,12 +8,12 @@ use abi::errno::EPERM;
 
 const EBUSY: i64 = 16;
 
-/// The display's modes (section 1.7): 1280x800 at scale 1 and 2560x1600 at scale 2.
-pub(super) const MODES: [abi::Mode; 2] = [
+/// Virtual panel modes (section 1.7): 1280x800 at scale 1 and 2560x1600 at scale 2.
+pub(super) const PANEL_MODES: [abi::Mode; 2] = [
     abi::Mode { width: 1280, height: 800, scale: 1, reserved: 0 },
     abi::Mode { width: 2560, height: 1600, scale: 2, reserved: 0 },
 ];
-/// The mode the display returns to when no process owns it (`publish_owner`), which the
+/// The mode the display returns to when no process owns it (`restore`), which the
 /// kernel's screen is drawn at.
 pub(super) const KERNEL_MODE: usize = 1;
 
@@ -35,6 +35,7 @@ pub(super) struct Owner {
 pub(super) struct State {
     pub stack: Vec<Owner>,
     pub mode: u32,
+    pub modes: Vec<abi::Mode>,
     pub changing: bool,
     pub owner_sequence: u64,
     /// Latest completed binding, or latest GET-accepted binding on native G26.
@@ -55,10 +56,11 @@ pub(super) struct State {
     pub latest_ok: bool,
 }
 impl State {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             stack: Vec::new(),
             mode: KERNEL_MODE as u32,
+            modes: PANEL_MODES.to_vec(),
             changing: false,
             owner_sequence: 0,
             binding: None,
@@ -546,7 +548,7 @@ pub(super) fn current_mode(arg: u64, len: u64) -> Result<u64, i64> {
     if input != abi::Mode::ZERO {
         return Err(EINVAL);
     }
-    let mode = with_core(|c| MODES[c.display.mode as usize]).ok_or(ENODEV)?;
+    let mode = with_core(|c| c.display.modes[c.display.mode as usize]).ok_or(ENODEV)?;
     write_arg(arg, &mode)?;
     Ok(0)
 }
@@ -570,13 +572,16 @@ pub(super) fn modes(arg: u64, len: u64) -> Result<u64, i64> {
         let mut a = abi::Modes::ZERO;
         a.version = 1;
         a.size = 256;
-        a.count = 2;
+        a.count = c.display.modes.len() as u32;
         a.current = c.display.mode;
         a.max_width = c.caps.max_width;
         a.max_height = c.caps.max_height;
         a.owner_depth = c.display.stack.len() as u32;
         a.binding_known = c.display.known as u32;
-        a.modes = MODES;
+        for (i, &mode) in c.display.modes.iter().enumerate() {
+            if i < a.modes.len() { a.modes[i] = mode; }
+            else { a.extra_modes[i - a.modes.len()] = mode; }
+        }
         a.scanout_resource = c
             .display
             .binding
@@ -596,25 +601,21 @@ pub(super) fn set_mode(arg: u64, len: u64) -> Result<u64, i64> {
         return Err(EPERM);
     }
     let a: abi::SetMode = read_arg(arg, len)?;
-    if a.index > 1 || a.reserved != [0; 3] {
+    if a.reserved != [0; 3] || !with_core(|c| (a.index as usize) < c.display.modes.len()).unwrap_or(false) {
         return Err(EINVAL);
     }
     #[cfg(target_arch = "x86_64")]
     let _transition=Transition::for_mutation(tgid)?;
     #[cfg(target_arch = "x86_64")]
-    if super::arch::with_interrupts(|| crate::gk208::set_mode(a.index)).is_err() {
-        // A refused UPDATE may already have changed what the head reads.
-        // Preserve possible readers, but do not report the old binding as known.
-        with_core(|c| c.display.known=false);
-        return Err(EIO);
-    }
+    activate_mode(a.index)?;
     with_core(|c| {
         if !owner(tgid) {
             return Err(EPERM);
         }
-        #[cfg(target_arch = "x86_64")]
-        c.native_console_restored();
-        c.display.mode = a.index;
+        // The virtual mode change has no device transaction; publish it in the
+        // same critical section that checks and updates its owner.
+        #[cfg(target_arch = "aarch64")]
+        { c.display.mode = a.index; }
         if let Some(o) = c.display.stack.last_mut() {
             o.mode = a.index;
         }
@@ -623,17 +624,32 @@ pub(super) fn set_mode(arg: u64, len: u64) -> Result<u64, i64> {
     .ok_or(ENODEV)?
 }
 
+/// Confirm a mode inside a display transition, then publish that current mode.
+/// The owner's requested mode is retained separately from a displaced frame.
+pub(super) fn activate_mode(mode: u32) -> Result<(), i64> {
+    #[cfg(target_arch = "x86_64")]
+    if super::arch::with_interrupts(|| crate::gk208::set_mode(mode)).is_err() {
+        // A refused UPDATE may already have changed what the head reads.
+        with_core(|c| c.display.known = false);
+        return Err(EIO);
+    }
+    with_core(|c| {
+        #[cfg(target_arch = "x86_64")]
+        c.native_console_restored();
+        c.display.mode = mode;
+    }).ok_or(ENODEV)
+}
+
 pub(super) fn active() -> bool {
     with_core(|c| c.status == abi::status::ADMITTED).unwrap_or(false)
 }
 fn publish_owner(c: &mut Core) {
     c.display.owner_sequence += 1;
-    let (group, pid, mode) = c
+    let (group, pid) = c
         .display
         .stack
         .last()
-        .map_or((u64::MAX, u64::MAX, KERNEL_MODE as u32), |o| (o.group, o.pid, o.mode));
-    c.display.mode = mode;
+        .map_or((u64::MAX, u64::MAX), |o| (o.group, o.pid));
     crate::syscall::display::DISPLAY_OWNER_GROUP.store(group, Ordering::Release);
     crate::syscall::display::DISPLAY_OWNER_PID.store(pid, Ordering::Release);
 }
@@ -654,6 +670,11 @@ impl Transition {
             return Err(EPERM);
         }
         Ok(guard)
+    }
+    /// CRC reuses the native notifier, so acceptance alone is insufficient.
+    /// Let the adapter consume the latch/ready receipt before excluding bindings.
+    pub(super) fn for_crc(deadline: Option<u64>) -> Result<Self, i64> {
+        Self::acquire(deadline)
     }
     /// A transition for SCANOUT_READBACK: the window layer authorized the observer, which
     /// need not own the display; the binding cannot change while it is held.
@@ -874,31 +895,18 @@ pub(super) fn restore() -> Result<(), i64> {
         (c.display.stack.iter().rev().find_map(|o| o.last), current, !c.display.stack.is_empty())
     })
     .unwrap_or((None, None, false));
-    if saved.is_some_and(|b| current.is_some_and(|c| c.id == b.id)) {
+    // The selection belongs to the owner; the saved frame retains its own extent.
+    let (mode, current_mode) = with_core(|c| (
+        c.display.stack.last().map_or(KERNEL_MODE as u32, |o| o.mode), c.display.mode))
+        .ok_or(ENODEV)?;
+    if mode == current_mode && saved.is_some_and(|b| current.is_some_and(|c| c.id == b.id)) {
         return Ok(());
     }
-    #[cfg(target_arch = "x86_64")]
-    {
-        // Restore the retained frame's extent. The owner's requested logical mode
-        // may have changed after presenting that frame, and remains independent.
-        // With no retained frame, the kernel screen uses its high logical mode.
-        // SET_MODE confirms an interim native allocation before its old scanout
-        // holds can end; the following shared bind publishes the final resource.
-        let mode = with_core(|c| {
-            saved.and_then(|b| c.resources.get(&b.id))
-                .and_then(|r| MODES.iter().position(|m| (m.width, m.height) == (r.width, r.height)))
-                .map_or(KERNEL_MODE as u32, |mode| mode as u32)
-        }).ok_or(ENODEV)?;
-        if super::arch::with_interrupts(|| crate::gk208::set_mode(mode)).is_err() {
-            with_core(|c| c.display.known = false);
-            return Err(EIO);
-        }
-        with_core(|c| c.native_console_restored()).ok_or(ENODEV)?;
-    }
+    activate_mode(mode)?;
     match saved {
         Some(b) => super::screen::bind_saved(b),
         // No owner on the stack has presented: the kernel's screen as it was left.
-        None if owned => super::screen::show(),
+        None if owned => super::screen::show_saved(),
         // No owner: the screen console has the display again (ruling F25).
         None => super::screen::restore(),
     }

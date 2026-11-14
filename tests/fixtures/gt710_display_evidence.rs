@@ -28,13 +28,13 @@ struct Session {resources:Resources,evo:Evo,console:Console,scanout:Vec<u32>,mod
 static SESSION:Mutex<Option<Session>>=Mutex::new(None);
 mod native {
  pub static RETAINED:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
- pub fn present_accepted(_: &mut super::Evo,_:&mut super::Registers,_:super::present::Surface)
+ pub fn present_accepted(_: &mut super::Evo,_:&mut super::Registers,_:super::present::Surface,_:u32)
  ->Result<Option<super::present::Receipt>,&'static str>{
   Ok(RETAINED.load(std::sync::atomic::Ordering::SeqCst).then_some(super::present::Receipt{notifier:0xcafe0001,active:[7;5],armed:[7;5]}))
  }
- pub fn wait_present(e: &mut super::Evo,r:&mut super::Registers,s:super::present::Surface)
- ->Result<super::present::Receipt,&'static str>{present_latched(e,r,s).map(|v|v.unwrap())}
- pub fn present_latched(_: &mut super::Evo,_:&mut super::Registers,_:super::present::Surface)
+ pub fn wait_present(e: &mut super::Evo,r:&mut super::Registers,s:super::present::Surface,mode:u32)
+ ->Result<super::present::Receipt,&'static str>{present_latched(e,r,s,mode).map(|v|v.unwrap())}
+ pub fn present_latched(_: &mut super::Evo,_:&mut super::Registers,_:super::present::Surface,_:u32)
  ->Result<Option<super::present::Receipt>,&'static str>{
   assert!(!RETAINED.load(std::sync::atomic::Ordering::SeqCst),"retained refresh polled an old flip notifier");
   Ok(Some(super::present::Receipt{notifier:1,active:[0;5],armed:[0;5]}))
@@ -47,12 +47,12 @@ mod native {
  for bank in [0x640000,0x660000]{for m in [0x42c,0x494,0x4b0,0x4b8,0x4bc,0x4c0,0x4c4,0x4c8]{regs.0.insert(bank+m,m as u32);}}
  regs.0.insert(0x64041c,123);regs.0.insert(0x640420,456);
  for n in 0..500 {
-  let (w,h)=if n%2==0{(1280,800)}else{(2560,1600)};
+  let (w,h)=if n%2==0{(1024,768)}else{(1280,1024)};
   let surface=present::Surface{resource:n+1,address:0x1000000,width:w,height:h,pitch:w*4,block_height:0,format:0,dma:1};
   // Keep the latch distinct from the requested surface in this transport
   // check: the observer must report the raw receipt, not reconstruct it.
   let receipt=present::Receipt{notifier:1,active:[0x20000,2,3,4,5],armed:[0x20000,2,3,4,5]};
-  display_evidence::record(&mut regs,0,surface,&receipt);
+  display_evidence::record(&mut regs,0,surface,&receipt,n%2);
  }
  display_evidence::sample(0,64,0x12345678,0xdeadbeef);
  display_evidence::sample(0,128,0,0); // Preserve the first mismatch.
@@ -62,6 +62,7 @@ mod native {
  assert!(exported[3].0.contains("\"stage\":1,\"offset\":256,\"expected\":2864434397,\"actual\":287454020"));
  for ((text,anchor),seq) in exported.iter().zip([499,500]) {
   assert!(text.contains(&format!("\"sequence\":{seq}")));
+  assert!(text.contains(&format!("\"mode\":{}",seq-499)));
   assert!(text.contains("\"requested\":16777216"));assert!(text.contains("\"active\":[131072, 2, 3, 4, 5]"));
   assert!(text.contains("\"viewport_active\":[1068, 1172, 1200, 1208, 1212, 1216, 1220, 1224]"));
   assert!(text.contains("\"raster\":[123, 456]"));assert!(text.contains("\"firmware_writes\":1"));
@@ -69,14 +70,15 @@ mod native {
  }
  display_evidence::sample(0,999,0,0);display_evidence::sample(1,999,0,0);
  assert!(display_evidence::export().is_empty(),"sample repeated in the final upload slot");
- let surface=present::Surface{resource:u32::MAX,address:0x30000000,width:2560,height:1600,pitch:10240,block_height:0,format:0,dma:1};
+ let surface=present::Surface{resource:u32::MAX,address:0x30000000,width:1280,height:1024,pitch:5120,block_height:0,format:0,dma:1};
  let receipt=present::Receipt{notifier:1,active:[0x300000,2,3,4,5],armed:[0x400000,2,3,4,5]};
  for event in ["handoff","mode","flip","receipt"] {
-  assert!(display_evidence::transition(&mut regs,0,surface,&receipt,[0x30000000,16384000],[0x30000000,16384000],event).is_ok());
+  assert!(display_evidence::transition(&mut regs,0,surface,&receipt,[0x30000000,16384000],[0x30000000,16384000],event,1).is_ok());
  }
  let events=display_evidence::export_transitions().unwrap();assert_eq!(events.len(),4);
  for ((text,anchor),event) in events.iter().zip(["handoff","mode","flip","receipt"]) {
   assert!(text.starts_with("GT710_CONSOLE_V1 "));
+  assert!(text.contains("\"mode\":1"));
   assert!(text.contains(&format!("\"event\":\"{event}\"")));
   // G2: the sample time belongs to this completed update, not upload time.
   let index=["handoff","mode","flip","receipt"].iter().position(|e| *e==event).unwrap();
@@ -101,9 +103,10 @@ mod native {
  assert!(process_present_complete(small,&mut regs).unwrap());
  assert_eq!(SESSION.lock().as_ref().unwrap().mode,0);
  let ring=display_evidence::export_transitions().unwrap();assert_eq!(ring.len(),2048);
- assert!(ring[0].0.contains("\"sequence\":2554"));
- assert!(ring[2047].0.contains("\"sequence\":4601"));
- assert!(ring[2047].0.contains("\"dropped\":2049"));
+ assert!(ring[0].0.contains("\"sequence\":2555"));
+ assert!(ring[2047].0.contains("\"sequence\":4602"));
+ assert!(ring[2047].0.contains("\"dropped\":2050"));
+ assert!(ring[2047].0.contains("\"mode\":0"));
  assert!(display_evidence::export_transitions().unwrap().is_empty());
  native::RETAINED.store(true,std::sync::atomic::Ordering::SeqCst);
  process_present(surface,&mut regs).unwrap();

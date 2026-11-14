@@ -1,0 +1,42 @@
+"""The GPU core publishes the mode table installed for its device."""
+from pathlib import Path
+import re
+import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class CoreModes(unittest.TestCase):
+    def test_device_mode_table(self):
+        gpu = ROOT / 'kernel/src/gpu'
+        display = (gpu / 'display.rs').read_text()
+        core = (gpu / 'mod.rs').read_text()
+        targets = (gpu / 'window_targets.rs').read_text()
+        native = (gpu / 'gk208/mod.rs').read_text()
+        process = (gpu / 'gk208/ce/process.rs').read_text()
+        for path in gpu.rglob('*.rs'):
+            self.assertNotRegex(path.read_text(), r'\bMODES\s*(?:\[|\.iter\s*\()')
+        screen = (gpu / 'screen.rs').read_text()
+        self.assertIn('c.display.modes[display::KERNEL_MODE]', screen)
+        self.assertNotRegex(screen, r'const (?:WIDTH|HEIGHT|PITCH)\b')
+        self.assertRegex(display, r'pub\s+modes:\s*Vec<abi::Mode>')
+        self.assertIn('c.display.modes.iter().enumerate()', display)
+        self.assertIn('a.extra_modes[i - a.modes.len()] = mode;', display)
+        self.assertIn('c.display.modes[c.display.mode as usize]', display)
+        self.assertIn('c.display.modes.iter()', display)
+        self.assertIn('c.display.modes[c.display.mode as usize]', core)
+        self.assertIn('c.display.modes[c.display.mode as usize]', targets)
+        self.assertIn('modeset::display_modes(&modes)?', native)
+        self.assertLess(native.index('native::runtime_rasters(&rom,&modes,route,head)?'), native.index('modeset::display_modes(&modes)?'))
+        self.assertIn('install_native(native,', process)
+        self.assertRegex(core, r'core\.display\.modes\s*=\s*modes')
+        panel = re.search(r'const PANEL_MODES:\s*\[abi::Mode;\s*2\]\s*=\s*\[(.*?)\];', display, re.S)
+        self.assertIsNotNone(panel)
+        values = re.findall(r'abi::Mode\s*\{\s*width:\s*(\d+),\s*height:\s*(\d+),\s*scale:\s*(\d+),\s*reserved:\s*(\d+)\s*\}', panel.group(1))
+        self.assertEqual(values, [('1280', '800', '1', '0'), ('2560', '1600', '2', '0')])
+        self.assertRegex(display, r'const KERNEL_MODE:\s*usize\s*=\s*1;')
+        self.assertIn('modes: PANEL_MODES.to_vec()', display)
+
+
+if __name__ == '__main__':
+    unittest.main()

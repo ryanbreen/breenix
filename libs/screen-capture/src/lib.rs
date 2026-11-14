@@ -6,7 +6,9 @@ use alloc::{string::String, vec::Vec};
 pub const HEADER: usize = 80;
 pub const DISK_MAGIC: &[u8; 8] = b"SCRDISK1";
 pub const REQUEST_MAGIC: &[u8; 8] = b"SCRWRITE";
-pub const MAX_PIXELS: usize = 2560 * 1600 * 4;
+// Decoded BGRA for scale 2 of a 4096x4096 native mode. EDID detailed
+// timings have 12-bit extents; doubling them fits the 15-bit viewport.
+pub const MAX_PIXELS: usize = (2 * 4096) * (2 * 4096) * 4;
 pub const MAX_RECORD: usize = MAX_PIXELS + 4096;
 
 pub struct Record<'a> {
