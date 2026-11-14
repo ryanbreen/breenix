@@ -766,13 +766,15 @@ pub fn foreign_readback() -> CaseResult {
     pass()
 }
 
-/// Isolation needs a presentable full-screen resource, independent of panel size.
+/// Isolation needs a presentable full-screen resource, independent of panel size: the
+/// display's default mode (1280x1024 on the GT 710, 2560x1600 on virtio).
 fn take_native_display() -> R<abi::Mode> {
-    graphics::take_over_display().map_err(|e| fail_msg(format!("take display: {e:?}")))?;
     let (r, modes) = gpu::modes();
     ensure(r == 0, || format!("MODES: {}", errno(r)))?;
-    let (index, mode) = modes.native_mode()
-        .ok_or_else(|| fail_msg(format!("native mode absent: {:?}", modes.mode_list().collect::<Vec<_>>())))?;
+    let index = modes.current;
+    let mode = modes.current_mode()
+        .ok_or_else(|| fail_msg(format!("current mode {index} absent: {:?}", modes.mode_list().collect::<Vec<_>>())))?;
+    graphics::take_over_display().map_err(|e| fail_msg(format!("take display: {e:?}")))?;
     let r = gpu::set_mode(index);
     ensure(r == 0, || format!("SET_MODE {index}: {}", errno(r)))?;
     Ok(mode)
