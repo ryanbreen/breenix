@@ -278,10 +278,21 @@ pub struct History {
     future: Vec<Canvas>,
 }
 impl History {
+    const BYTE_BUDGET: usize = 32 * 1024 * 1024;
+    fn drop_oldest(&mut self) {
+        if !self.past.is_empty() { self.base = self.past.remove(0); }
+        else { self.future.remove(0); }
+    }
+    fn states(&self) -> usize { 1 + self.past.len() + self.future.len() }
     pub fn new(base: Canvas) -> Self {
         Self { base, past: Vec::new(), future: Vec::new() }
     }
     pub fn grow(&mut self, width: usize, height: usize) {
+        let (w,h) = self.canvas().dimensions();
+        let bytes = width.max(w).saturating_mul(height.max(h)).saturating_mul(3);
+        // Retain the current drawing even when it alone exceeds the budget.
+        // Discard old snapshots before allocating padded replacements.
+        while self.states() > 1 && bytes.saturating_mul(self.states()) > Self::BYTE_BUDGET { self.drop_oldest(); }
         self.base.grow(width, height);
         for canvas in self.past.iter_mut().chain(self.future.iter_mut()) { canvas.grow(width, height); }
     }
@@ -297,7 +308,10 @@ impl History {
     pub fn push(&mut self, canvas: Canvas) {
         self.future.clear();
         self.past.push(canvas);
-        if self.past.len() > 32 { self.base = self.past.remove(0); }
+        while self.states() > 1 && (self.past.len() > 32 ||
+            core::iter::once(&self.base).chain(self.past.iter()).map(|c| c.pixels.len()).sum::<usize>() > Self::BYTE_BUDGET) {
+            self.drop_oldest();
+        }
     }
     pub fn undo(&mut self) -> bool {
         match self.past.pop() {

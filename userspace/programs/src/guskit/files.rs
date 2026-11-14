@@ -22,6 +22,25 @@ pub fn encode(name: &str, canvas: &Canvas, width: usize, height: usize) -> Resul
 
 /// Passing 0 for width or height selects the native image dimension.
 pub fn decode(name: &str, bytes: &[u8], width: usize, height: usize) -> Result<(Canvas, Option<String>), String> {
+    // Inspect dimensions before the decoder allocates its native-size buffers.
+    // Four megapixels keeps an imported RGB state within 12 MiB. History has
+    // its own byte budget; a phone photo is refused without replacing the drawing.
+    let native = match format(name)? {
+        "bmp" if bytes.len() >= 26 && &bytes[..2] == b"BM" => {
+            let w = i32::from_le_bytes(bytes[18..22].try_into().unwrap());
+            let h = i32::from_le_bytes(bytes[22..26].try_into().unwrap());
+            Some((u64::from(w.unsigned_abs()), u64::from(h.unsigned_abs())))
+        }
+        "png" if bytes.len() >= 24 && &bytes[..8] == b"\x89PNG\r\n\x1a\n" && &bytes[12..16] == b"IHDR" =>
+            Some((u64::from(u32::from_be_bytes(bytes[16..20].try_into().unwrap())),
+                  u64::from(u32::from_be_bytes(bytes[20..24].try_into().unwrap())))),
+        _ => None,
+    };
+    if let Some((w,h)) = native {
+        if w > 4096 || h > 4096 || w * h > 4 * 1024 * 1024 {
+            return Err(format!("Image {w}x{h} exceeds document memory limit (4096 per side, 4 megapixels); drawing unchanged"));
+        }
+    }
     let (w, h, rgb) = match format(name)? {
         "bmp" => { let image = libimg::bmp::decode_bmp(bytes).map_err(|e| format!("BMP decode: {e:?}"))?; (image.width, image.height, image.rgb) },
         _ => {
