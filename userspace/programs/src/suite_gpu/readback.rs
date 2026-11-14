@@ -401,9 +401,9 @@ pub fn large_target() -> CaseResult {
     let mut modes = abi::Modes::ZERO;
     let result = gpu::call_with(abi::op::MODES, &mut modes);
     ensure(result == 0, || format!("MODES: {}", errno(result)))?;
-    ensure(modes.current < modes.count && modes.current < modes.count,
+    ensure(modes.current < modes.count && modes.count as usize <= modes.modes.len()+modes.extra_modes.len(),
         || "MODES: invalid current mode".to_string())?;
-    let mode = modes.current_mode().expect("MODES current index is listed");
+    let mode = modes.current_mode().ok_or_else(||fail_msg("MODES current index is not listed".into()))?;
     // R53 (#1956), G11: oversized sources remain offscreen. When it fits,
     // the viewing path must still return its completed present fence.
     if 2560 > mode.width || 1600 > mode.height {
