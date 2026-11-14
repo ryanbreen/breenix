@@ -272,17 +272,26 @@ pub fn switch_sequence(modes: &[Timing]) -> Result<[Timing; 3], &'static str> {
     Ok([*low,high,*low])
 }
 
-/// Advertised scale-1 modes, with preferred at index 1, plus its exact scale-2 mode.
+/// Keep the preferred scale-1 mode at the kernel's index 1. Reserve one
+/// of MODES' ten slots for its exact scale-2 mode; optional sizes are bounded.
 pub fn display_modes(edid: &[u8]) -> Result<Vec<(u32, u32, u32)>, &'static str> {
-    let timings = super::edid::parse(edid)?;
-    let [low, high, _] = switch_sequence(&timings)?;
-    let mut modes = vec![(low.width, low.height, 1), (high.width, high.height, 1)];
-    for t in &timings {
+    catalogue(&super::edid::parse(edid)?)
+}
+
+pub fn catalogue(timings: &[Timing]) -> Result<Vec<(u32, u32, u32)>, &'static str> {
+    let high = *super::edid::native_raster(timings)?;
+    let scaled = (high.width.checked_mul(2).ok_or("scale-2 width overflow")?,
+        high.height.checked_mul(2).ok_or("scale-2 height overflow")?, 2);
+    let native = (high.width, high.height, 1);
+    let low = switch_sequence(timings).ok().map(|s| s[0])
+        .or_else(|| timings.iter().copied().find(|t| (t.width,t.height)!=(high.width,high.height)))
+        .map(|t| (t.width,t.height,1));
+    let mut modes = vec![low.unwrap_or(scaled), native];
+    for t in timings {
         let mode = (t.width, t.height, 1);
-        if !modes.contains(&mode) { modes.push(mode); }
+        if modes.len() < 9 && !modes.contains(&mode) { modes.push(mode); }
     }
-    modes.push((high.width.checked_mul(2).ok_or("scale-2 width overflow")?,
-        high.height.checked_mul(2).ok_or("scale-2 height overflow")?, 2));
+    if low.is_some() { modes.push(scaled); }
     Ok(modes)
 }
 
