@@ -48,7 +48,7 @@ fn thread_cpu_ns() -> R<u64> {
     Ok(ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64)
 }
 
-fn take_display_2560() -> R<()> {
+pub(super) fn take_display_2560() -> R<()> {
     libbreenix::graphics::take_over_display().map_err(|e| fail_msg(format!("take display: {e:?}")))?;
     let (r, modes) = gpu::modes();
     ensure(r == 0, || format!("MODES: {}", errno(r)))?;
