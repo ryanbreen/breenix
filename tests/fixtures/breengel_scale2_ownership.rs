@@ -119,13 +119,14 @@ fn start(native:bool){
  }
 }
 
+mod suite_stage {pub fn take_display()->Result<(),String>{crate::stage::take_for_intent()}}
 mod intent {
  use super::*;
  mod gpu {
   pub fn resource_destroy(_:u64)->i64{0}
   pub fn context_destroy(_:u64)->i64{0}
  }
- mod suite_stage {pub fn take_display()->Result<(),String>{crate::stage::take_for_intent()}}
+
  // INTENT_FRAME
  impl Frame {
   fn takeover(&mut self)->Result<(),&'static str>{
@@ -133,6 +134,9 @@ mod intent {
    Ok(())
   }
  }
- pub fn page(){let mut f=Frame{context:0,texture:0,target:0,display:false // INTENT_FIELDS
-};f.takeover().unwrap();}
+ pub fn page(){
+  // INTENT_SUITE
+  // INTENT_NEW
+  frame.takeover().unwrap();
+ }
 }
