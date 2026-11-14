@@ -2,6 +2,7 @@ use std::{cell::Cell, sync::{Mutex,atomic::AtomicU32}};
 thread_local! {
  static GROUP:Cell<u64>=const{Cell::new(1)};
  static NATIVE:Cell<bool>=const{Cell::new(true)};
+ static MODE_SETS:Cell<usize>=const{Cell::new(0)};
  static BOOTSTRAPS:Cell<usize>=const{Cell::new(0)};
 }
 const EINVAL:i64=22;const EBUSY:i64=16;const ENOMEM:i64=12;
@@ -30,7 +31,7 @@ mod stage {
     m.count=c.display.modes.len() as u32;for(i,v)in c.display.modes.iter().enumerate(){if i<2{m.modes[i]=*v;}else{m.extra_modes[i-2]=*v;}}
     m.binding_known=c.display.known as u32;m.scanout_resource=c.display.binding.map_or(0,|b|b.id as u64);m}).unwrap())
   }
-  pub fn set_mode(index:u32)->i64{let a=abi::SetMode{index,..abi::SetMode::ZERO};super::display::set_mode(&a as *const _ as u64,std::mem::size_of_val(&a) as u64).map_or_else(|e|-e, |_|0)}
+  pub fn set_mode(index:u32)->i64{super::MODE_SETS.with(|n|n.set(n.get()+1));let a=abi::SetMode{index,..abi::SetMode::ZERO};super::display::set_mode(&a as *const _ as u64,std::mem::size_of_val(&a) as u64).map_or_else(|e|-e, |_|0)}
  }
  mod process {
   pub struct Pid;impl Pid{pub fn raw(&self)->u32{super::GROUP.with(|g|g.get() as u32)}}
@@ -69,7 +70,7 @@ mod stage {
  pub fn clean(){*GPU.lock().unwrap()=None;}
 }
 fn start(native:bool){
- reset();NATIVE.with(|n|n.set(native));GROUP.with(|g|g.set(1));BOOTSTRAPS.with(|n|n.set(0));stage::clean();
+ reset();MODE_SETS.with(|n|n.set(0));NATIVE.with(|n|n.set(native));GROUP.with(|g|g.set(1));BOOTSTRAPS.with(|n|n.set(0));stage::clean();
  with_core(|c|{
   c.display=display::State::new();
   if native {c.display.modes=vec![abi::Mode{width:1024,height:768,scale:1,reserved:0},abi::Mode{width:1280,height:1024,scale:1,reserved:0},abi::Mode{width:2560,height:2048,scale:2,reserved:0}];}
@@ -85,6 +86,7 @@ fn start(native:bool){
  for native in [false,true]{
   start(native);let result=stage::prepare();
   assert!(result.is_ok(),"native={native}: first stage observe {result:?}");
+  assert_eq!(MODE_SETS.with(|n|n.get()),1,"prepare must not reset an already selected mode");
   assert_eq!(BOOTSTRAPS.with(|n|n.get()),usize::from(native),"virtio keeps its existing bound frame");
  }
 }
@@ -104,5 +106,6 @@ fn start(native:bool){
   with_core(|c|display::ended(c,3));display::restore().unwrap();
   GROUP.with(|g|g.set(1));stage::child("panel/kernel-screens").unwrap();
   assert_eq!(with_core(|c|c.display.mode),Some(expected));
+  assert_eq!(MODE_SETS.with(|n|n.get()),if native{3}else{1},"virtio must keep the startup-only SET_MODE sequence");
  }
 }
