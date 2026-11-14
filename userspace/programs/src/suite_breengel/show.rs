@@ -117,19 +117,7 @@ fn panel_judged_frame_shown() -> CaseResult { breenix_suite::suite::showcase_che
 fn panel_serial_agreement() -> CaseResult { breenix_suite::suite::showcase_check("serial-agreement") }
 fn panel_quiet_window() -> CaseResult { breenix_suite::suite::showcase_check("quiet-window") }
 fn panel_boot_ribbon() -> CaseResult {
-    let (width,height)=crate::window_cases::composition::screen_size()?;
-    let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r))).cite("23.7")?;
-    let scale=modes.current_mode().expect("MODES current index is listed").scale as usize;
-    // B36: independent contract geometry, including native rasters outside the stage aspect.
-    let (left,top,span,thickness,units)=if scale>0 && width==1280*scale && height==800*scale {
-        (112,772,1152,6,scale)
-    } else {
-        let (glyph,line)=[(14,34),(11,26),(9,22),(7,18)].into_iter()
-            .find(|&(g,l)|width/g>=128 && height/l>=36).unwrap_or((7,18));
-        ensure(width>16*glyph && height>=2*line+48,"23.7","mode cannot hold the native status panel")?;
-        (14*glyph,height-(2*line+48)+line+32+(line-6)/2,width-16*glyph,6,1)
-    };
-    use crate::window_cases::composition::{give_back, take_over, screen};
+    use crate::window_cases::composition::{give_back, take_over, console_screen};
     for faulty in [true,false] {
         let before=std::fs::read_to_string("/proc/breenix/boot-ribbon").map_err(|e|format!("producer stage records: {e}"))?;
         #[cfg(target_arch="aarch64")]
@@ -161,8 +149,25 @@ fn panel_boot_ribbon() -> CaseResult {
         ensure(!reached.is_empty() && reached.iter().any(|v|*v),"23.7","no actual producer stages were observed")?;
         if faulty {libbreenix::test_control::arm(15,0,0)?;}
         ensure(give_back()>=0,"23.7","give back for kernel ribbon failed")?;
-        let result=screen();let took=take_over();ensure(took>=0,"23.7","retake after ribbon failed")?;
-        let (px,_)=result?;let mut mismatch=false;
+        let result=console_screen();
+        let modes=bgl::modes();
+        let took=take_over();ensure(took>=0,"23.7","retake after ribbon failed")?;
+        let (px,rec)=result?;
+        let modes=modes.map_err(|r|format!("gpu-display: MODES {}",outcome(r))).cite("23.7")?;
+        let scale=modes.current_mode().ok_or("kernel console has no listed current mode").cite("23.7")?.scale as usize;
+        use libbreenix::gpu::abi::record;
+        let (width,height)=(crate::window_cases::handoff::word(&rec,record::WIDTH) as usize,
+            crate::window_cases::handoff::word(&rec,record::HEIGHT) as usize);
+        // B36: independent contract geometry, including native rasters outside the stage aspect.
+        let (left,top,span,thickness,units)=if scale>0 && width==1280*scale && height==800*scale {
+            (112,772,1152,6,scale)
+        } else {
+            let (glyph,line)=[(14,34),(11,26),(9,22),(7,18)].into_iter()
+                .find(|&(g,l)|width/g>=128 && height/l>=36).unwrap_or((7,18));
+            ensure(width>16*glyph && height>=2*line+48,"23.7","mode cannot hold the native status panel")?;
+            (14*glyph,height-(2*line+48)+line+32+(line-6)/2,width-16*glyph,6,1)
+        };
+        let mut mismatch=false;
         for (i,&lit) in reached.iter().enumerate() {
             let a=left+span*i/reached.len();let b=left+span*(i+1)/reached.len();let gap_start=a.max(b.saturating_sub(2));
             let rgb=if lit {[77,112,26,255]}else{[96,67,48,255]};

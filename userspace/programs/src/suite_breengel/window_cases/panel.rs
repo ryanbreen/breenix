@@ -16,7 +16,7 @@ pub(crate) const PANEL: &[Case] = &[
 // panel: the suite panel around window cases (contract section 23)
 // ---------------------------------------------------------------------------------------
 
-use super::composition::{screen_size,give_back, paint, screen, take_over};
+use super::composition::{screen_size,give_back, paint, screen, console_screen, take_over};
 use super::kit::*;
 
 fn first_difference(a: &[u8], b: &[u8]) -> Result<Option<(usize, usize)>,breenix_suite::suite::CaseError> {
@@ -143,7 +143,7 @@ fn panel_kernel_screens() -> CaseResult {
         .map_err(|e| format!("captured producer serial: {e}")).cite("23.7")?;
     let heading = kernel_restore::Heading::read(&serial).ok_or("suite heading is absent from captured serial").cite("23.7")?;
     let shown_start = now_ms();
-    let shown = screen();
+    let shown = console_screen();
     let shown_end = now_ms();
     let f = || {
         if take_over() < 0 {
@@ -159,14 +159,16 @@ fn panel_kernel_screens() -> CaseResult {
     };
     let ended = child_end(5_000, || f());
     let again_start = now_ms();
-    let again = screen();
+    let again = console_screen();
     let again_end = now_ms();
     let retook = take_over();
-    let (console, _) = shown?;
+    let (console, rec) = shown?;
     let (redrawn, _) = again?;
     ensure(retook >= 0, "18", format!("the runner's take_over_display {}", outcome(retook)))?;
     ensure(matches!(ended.cite("23")?, Ended::Exit(0)), "23", "the display-taking child did not take, paint and give back the display")?;
-    let (width,height) = screen_size()?;
+    use libbreenix::gpu::abi::record;
+    let (width,height) = (super::handoff::word(&rec,record::WIDTH) as usize,
+        super::handoff::word(&rec,record::HEIGHT) as usize);
     crate::remember_frame(&redrawn,width,height,Some(console.clone()));
     kernel_restore::compare(&console,&redrawn,width,height,&heading,[(shown_start,shown_end),(again_start,again_end)]).cite("23.7")?;
     let fixed = crate::console_picture::picture("panel/kernel-screens", &redrawn, width, height).cite("23.7")?;

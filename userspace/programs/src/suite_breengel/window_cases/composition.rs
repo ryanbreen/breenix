@@ -127,6 +127,19 @@ pub(crate) fn screen_size() -> Result<(usize,usize), breenix_suite::suite::CaseE
 /// The whole composed screen and its observation record (`SCANOUT_READBACK`, as root).
 pub(crate) fn screen() -> Result<(Vec<u8>, [u8; 1024]), breenix_suite::suite::CaseError> {
     let (width,height) = screen_size()?;
+    screen_at(width,height)
+}
+
+/// The kernel console is observed after the last owner gives the display back.
+/// Its default mode can differ from the composed stage's scale-2 mode.
+pub(crate) fn console_screen() -> Result<(Vec<u8>, [u8; 1024]), breenix_suite::suite::CaseError> {
+    let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r))).cite("23.7")?;
+    ensure(modes.owner_depth==0,"23.7","kernel console observation still has a display owner")?;
+    let mode=modes.current_mode().ok_or("kernel console has no listed current mode").cite("23.7")?;
+    screen_at(mode.width as usize,mode.height as usize)
+}
+
+fn screen_at(width: usize,height: usize) -> Result<(Vec<u8>, [u8; 1024]), breenix_suite::suite::CaseError> {
     let mut px = vec![0u8; width * height * 4];
     let mut rec = [0u8; 1024];
     let mut rb = libbreenix::window::abi::Readback::ZERO;
@@ -140,6 +153,10 @@ pub(crate) fn screen() -> Result<(Vec<u8>, [u8; 1024]), breenix_suite::suite::Ca
     }
     ensure(super::handoff::word(&rec,0)==2 && super::handoff::word(&rec,4)==1024,
         "20.1", "gpu-display: B13 window observation must decode core record v2")?;
+    use libbreenix::gpu::abi::record;
+    ensure(super::handoff::word(&rec,record::WIDTH) as usize==width
+        && super::handoff::word(&rec,record::HEIGHT) as usize==height,
+        "20.1","gpu-display: observation dimensions differ from the requested mode")?;
     Ok((px, rec))
 }
 
