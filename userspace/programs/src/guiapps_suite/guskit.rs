@@ -388,6 +388,8 @@ fn wait_share(path: &str, stopped: bool) -> Result<(), String> {
 }
 
 pub fn smb_share_gone() -> CaseResult {
+    use breenix_suite::suite::control::phase;
+    phase("case-begin");
     require_shares("smb-share-gone")?;
     let seq = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?.as_micros() as u64;
@@ -397,17 +399,28 @@ pub fn smb_share_gone() -> CaseResult {
     impl Drop for Folder { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
     let folder = Folder(dir.clone());
     let file = format!("{dir}/drawing.png");
+    phase("launch-begin");
     let mut t = launch()?;
+    phase("launch-done");
     stroke(&mut t, 10)?;
+    phase("stroke-done");
+    phase("save-begin");
     save_as(&mut t, &file)?;
+    phase("save-requested");
     t.wait_node("status", |v| v["file"] == file && v["dirty"] == false && v["message"] == "Saved")?;
+    phase("save-done");
     let before = std::fs::read(&file).map_err(|e| e.to_string())?;
     let names = directory_names(&dir)?;
+    phase("close-begin");
     close_saved(&mut t)?;
+    phase("close-done");
+    phase("reopen-begin");
     t.launch_next(&[b"/usr/bin/guskit", b"--canvas", b"200x120", file.as_bytes()], "Gus Kit")?;
     t.wait_node("status", |v| v["file"] == file && v["dirty"] == false)?;
+    phase("reopen-done");
     stroke(&mut t, 20)?;
     t.wait_node("status", |v| v["dirty"] == true)?;
+    phase("edit-done");
     // Always request recovery on an early error; the host helper also restores on exit.
     struct Restart(Option<u64>);
     impl Drop for Restart { fn drop(&mut self) { if let Some(seq) = self.0 { let _ = smb_request("START", seq); } } }
@@ -434,24 +447,35 @@ pub fn smb_share_gone() -> CaseResult {
         if temps.len() != 1 || temps[0].metadata().map_err(|e| e.to_string())?.len() != 16 {
             return Err("save has not written a partial temporary".into());
         }
+        phase("partial-write");
+        phase("stop-issued");
         smb_request("STOP", seq)?;
+        phase("stop-written");
         wait_share(&watch_dir, true)?;
+        phase("eio-seen");
         std::fs::write(watch_control.join("stopped"), b"").map_err(|e| e.to_string())?;
         save_wait::wait(&watch_control, "failed").map_err(|e| e.to_string())?;
         if std::fs::read_to_string(watch_control.join("failed")).map_err(|e| e.to_string())? != "5" {
             return Err("interrupted write did not return EIO".into());
         }
+        phase("failed-write");
+        phase("start-issued");
         smb_request("START", seq + 1)?;
+        phase("start-written");
         wait_share(&watch_dir, false)?;
+        phase("recovery");
         std::fs::write(watch_control.join("recovered"), b"").map_err(|e| e.to_string())?;
         use std::io::Write;
         let mut output = SMB_RESTART_OUTPUT.get().ok_or("missing SMB diagnostic output")?;
         writeln!(output, "GUSKIT_SMB_EVIDENCE guskit/smb-share-gone partial_bytes=16 write_errno=5 recovered=true").map_err(|e| e.to_string())?;
         Ok(())
     });
+    phase("interrupted-save-begin");
     let key_result = t.key_wait_node(31, &[Modifier::Ctrl], "status", |v|
         v["dirty"] == true && v["message"].as_str().is_some_and(|s| !s.is_empty() && s != "Saved"));
+    if key_result.is_ok() { phase("ui-status"); }
     watcher.join().map_err(|_| "save interruption watcher panicked")??;
+    phase("watcher-done");
     restart.0 = None;
     key_result?;
     // The save-result commit is now visible; a fresh tool key must still be
@@ -465,8 +489,10 @@ pub fn smb_share_gone() -> CaseResult {
     t.key(16, &[Modifier::Ctrl])?;
     t.wait_node("confirm", |_| true)?;
     t.key_exit(32, 0)?;
+    phase("finish-begin");
     t.finish()?;
     std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
     std::mem::forget(folder);
+    phase("finish-done");
     Ok(())
 }

@@ -6,6 +6,17 @@ pub enum Wait { CompositorRegistration, SupervisorReady, Configure, HoldWindow, 
 const WAITS: [Wait; 19] = [Wait::CompositorRegistration, Wait::SupervisorReady, Wait::Configure, Wait::HoldWindow, Wait::InputAck, Wait::Stderr, Wait::Launch, Wait::AppOutput, Wait::AppExit, Wait::Stopped, Wait::ChannelSend, Wait::SupervisorTeardown, Wait::InputGrab, Wait::CollectorReply, Wait::DiscardReply, Wait::ControllerReply, Wait::DiagnosticUpload, Wait::InputDelivery, Wait::TreeCapture];
 const NAMES: [&str; 19] = ["CompositorRegistration", "SupervisorReady", "Configure", "HoldWindow", "InputAck", "Stderr", "Launch", "AppOutput", "AppExit", "Stopped", "ChannelSend", "SupervisorTeardown", "InputGrab", "CollectorReply", "DiscardReply", "ControllerReply", "DiagnosticUpload", "InputDelivery", "TreeCapture"];
 const CELLS: usize = 6;
+// One timestamp per named boundary, shared with the runner across fork. No
+// formatting or output on the measured path; a killed case needs no destructor.
+const PHASES: &[&str] = &[
+    "case-begin", "launch-begin", "launch-done", "stroke-done", "save-begin",
+    "save-requested", "save-done", "close-begin", "close-done", "reopen-begin",
+    "reopen-done", "edit-done", "interrupted-save-begin", "partial-write",
+    "stop-issued", "stop-written", "eio-seen", "failed-write", "start-issued",
+    "start-written", "recovery", "ui-status", "watcher-done", "finish-begin", "finish-done",
+];
+const PHASE_BASE: usize = WAITS.len() * CELLS;
+const USED_CELLS: usize = PHASE_BASE + PHASES.len();
 static PAGE: AtomicUsize = AtomicUsize::new(0);
 fn now_ms() -> Result<u64, String> {
     libbreenix::time::now_monotonic().map(|t| (t.as_nanos()/1_000_000) as u64).map_err(|e| e.to_string())
@@ -13,6 +24,17 @@ fn now_ms() -> Result<u64, String> {
 fn cell(page: usize, wait: Wait, field: usize) -> &'static AtomicU64 {
     // The case scope outlives its children and their watchdogs.
     unsafe { &*((page as *const AtomicU64).add(wait as usize * CELLS + field)) }
+}
+/// Record the first occurrence only, in the case's existing shared diagnostics.
+pub fn phase(name: &str) {
+    let page = PAGE.load(Ordering::Acquire);
+    if page == 0 { return; }
+    if let Some(index) = PHASES.iter().position(|&phase| phase == name) {
+        if let Ok(at) = now_ms() {
+            let slot = unsafe { &*((page as *const AtomicU64).add(PHASE_BASE + index)) };
+            let _ = slot.compare_exchange(0, at, Ordering::Release, Ordering::Relaxed);
+        }
+    }
 }
 pub struct Watchdog { wait: Wait, start: u64, page: usize }
 impl Watchdog {
@@ -51,10 +73,10 @@ impl Scope {
     pub(super) fn new() -> Result<Self, String> {
         #[cfg(target_os="macos")] const ANON: i32 = 0x1000;
         #[cfg(not(target_os="macos"))] const ANON: i32 = 0x20;
-        assert!(WAITS.len() * CELLS * core::mem::size_of::<AtomicU64>() <= 4096);
+        assert!(USED_CELLS * core::mem::size_of::<AtomicU64>() <= 4096);
         let ptr = unsafe { mmap(core::ptr::null_mut(), 4096, 3, 1 | ANON, -1, 0) };
         if ptr as isize == -1 { return Err("control diagnostics mmap failed".into()); }
-        for i in 0..WAITS.len()*CELLS {
+        for i in 0..USED_CELLS {
             unsafe { ptr.cast::<AtomicU64>().add(i).write(AtomicU64::new(0)); }
         }
         let page = ptr as usize;
@@ -66,6 +88,19 @@ impl Scope {
             let values: Vec<_> = (0..CELLS).map(|f| cell(self.page, wait, f).load(Ordering::Acquire)).collect();
             (values[0] != 0).then(|| format!("UI_CONTROL {suite} {case} wait={} started={} completed={} total_ms={} max_ms={} last_start_ms={} clock_errors={}", NAMES[i], values[0], values[1], values[2], values[3], values[4], values[5]))
         }).collect()
+    }
+    pub(super) fn failure_phases(&self, suite: &str, case: &str, failed: bool) -> Vec<String> {
+        if !failed { return Vec::new(); }
+        let stamps: Vec<_> = (0..PHASES.len()).map(|index| unsafe {
+            (&*((self.page as *const AtomicU64).add(PHASE_BASE + index))).load(Ordering::Acquire)
+        }).collect();
+        if stamps.iter().all(|&at| at == 0) { return Vec::new(); }
+        use std::fmt::Write;
+        let mut line = format!("UI_PHASE {suite} {case} clock=monotonic-ms");
+        for (name, at) in PHASES.iter().zip(stamps) {
+            write!(&mut line, " {name}={at}").expect("format case phase");
+        }
+        vec![line]
     }
 }
 impl Drop for Scope {
