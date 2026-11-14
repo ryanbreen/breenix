@@ -455,6 +455,7 @@ struct PendingPresentation {
     last_negative: Option<(u64, u32, u32)>,
     accepted_edges: Option<u16>,
     predicted_latch_ns: u64,
+    restoring: bool,
 }
 pub struct FlipSnapshot {
     pub notifier_before: u32,
@@ -633,7 +634,7 @@ impl Evo {
         crate::window::pipeline::at(15, u64::from(resource), u64::from(vert), u64::from(pixel), accepted_ns);
         self.pending_presentation = Some(PendingPresentation {
             resource, accepted_ns, count: (vert >> 16) as u16, vert, pixel,
-            acknowledged: None, completed: None, last_negative: None, accepted_edges, predicted_latch_ns,
+            acknowledged: None, completed: None, last_negative: None, accepted_edges, predicted_latch_ns, restoring: false,
         });
         Ok(())
     }
@@ -909,7 +910,7 @@ fn acknowledge(evo: &mut Evo, regs: &mut Registers) -> Result<u32, &'static str>
 pub(in crate::gk208) fn present(evo: &mut Evo, regs: &mut Registers,
     surface: super::present::Surface, mode: u32,
 ) -> Result<super::present::Receipt, &'static str> {
-    present_inner(evo, regs, surface, true, mode)?.ok_or("native synchronous receipt absent")
+    present_inner(evo, regs, surface, true, mode, false)?.ok_or("native synchronous receipt absent")
 }
 
 /// G26 answers PRESENT after GET consumes the unchanged G22 sequence.
@@ -918,7 +919,15 @@ pub(in crate::gk208) fn present(evo: &mut Evo, regs: &mut Registers,
 pub(in crate::gk208) fn present_accepted(evo: &mut Evo, regs: &mut Registers,
     surface: super::present::Surface, mode: u32,
 ) -> Result<Option<super::present::Receipt>, &'static str> {
-    present_inner(evo, regs, surface, false, mode)
+    present_inner(evo, regs, surface, false, mode, false)
+}
+
+/// A saved owner frame keeps its original extent across a mode selection.
+/// Only the shared kernel restoration path uses this viewport operation.
+pub(in crate::gk208) fn restore_accepted(evo: &mut Evo, regs: &mut Registers,
+    surface: super::present::Surface, mode: u32,
+) -> Result<Option<super::present::Receipt>, &'static str> {
+    present_inner(evo, regs, surface, false, mode, true)
 }
 
 /// Drain the one accepted flip before a synchronous mode/console transition.
@@ -957,12 +966,14 @@ pub(in crate::gk208) fn present_latched(evo: &mut Evo, regs: &mut Registers,
         if let Some(pending) = evo.pending_presentation.as_mut() { pending.last_negative = Some(before_notifier); }
         return Ok(None);
     }
+    let restoring = evo.pending_presentation.is_some_and(|p| p.restoring);
     if !evo.finish_presentation(regs, surface.resource)? { return Ok(None); }
     let receipt = super::present::receipt(&mut PresentRead(regs), evo.head, surface, value)?;
     let h = evo.head as usize * 0x300;
     let blank = regs.read(0x64041c + h);
     let end = regs.read(0x640420 + h);
-    modeset::Viewport::for_raster((end & 0xffff).checked_sub(blank & 0xffff)
+    let viewport = if restoring { modeset::Viewport::for_saved } else { modeset::Viewport::for_raster };
+    viewport((end & 0xffff).checked_sub(blank & 0xffff)
         .ok_or("invalid native raster width")?, (end >> 16).checked_sub(blank >> 16)
         .ok_or("invalid native raster height")?, surface.width, surface.height)?.verify(regs, evo.head)?;
     super::memx_display::Health::read(regs, evo.head, evo.sor).check()?;
@@ -993,10 +1004,14 @@ pub(super) fn observed_scanout(regs: &mut Registers, head: u32,
 }
 
 fn present_inner(evo: &mut Evo, regs: &mut Registers,
-    surface: super::present::Surface, wait: bool, mode: u32,
+    surface: super::present::Surface, wait: bool, mode: u32, restoring: bool,
 ) -> Result<Option<super::present::Receipt>, &'static str> {
         let result = (|| {
-    let raster_changed=evo.select_raster(regs,surface,mode)?;
+    let selection = if restoring {
+        let &(width, height, _) = evo.modes.get(mode as usize).ok_or("runtime mode absent")?;
+        super::present::Surface { width, height, ..surface }
+    } else { surface };
+    let raster_changed=evo.select_raster(regs,selection,mode)?;
     evo.start_clock(regs)?;
     let _cost = super::cost::phase(super::cost::Slot::Evo);
     let phase=MEMX_PRESENT_PHASE.load(core::sync::atomic::Ordering::Acquire);
@@ -1009,10 +1024,11 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
     let h=evo.head as usize*0x300;
     let blank=regs.read(0x64041c+h);
     let end=regs.read(0x640420+h);
-    let view=modeset::Viewport::for_raster((end&0xffff).checked_sub(blank&0xffff)
+    let viewport = if restoring { modeset::Viewport::for_saved } else { modeset::Viewport::for_raster };
+    let view=viewport((end&0xffff).checked_sub(blank&0xffff)
         .ok_or("invalid native raster width")?,(end>>16).checked_sub(blank>>16)
         .ok_or("invalid native raster height")?,surface.width,surface.height)?;
-    struct Update<'a> { evo:&'a mut Evo, regs:&'a mut Registers, view:modeset::Viewport, resource:u32 }
+    struct Update<'a> { evo:&'a mut Evo, regs:&'a mut Registers, view:modeset::Viewport, resource:u32, restoring:bool }
     impl super::present::Io for Update<'_> {
         fn clear_notifier(&mut self) -> Result<(), &'static str> {
             modeset::wait(self.regs,0x640004,u32::MAX,self.evo.put)?;
@@ -1031,7 +1047,7 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
             let mut words=Vec::new();
             words.try_reserve_exact(head.len() + 10).map_err(|_| "native UPDATE allocation")?;
             if !same { words.extend_from_slice(head); }
-            if self.view.verify(self.regs,self.evo.head).is_err() {
+            if self.restoring || self.view.verify(self.regs,self.evo.head).is_err() {
                 words.extend(self.view.methods(self.evo.head)?);
             }
             words.extend_from_slice(&methods[methods.len()-2..]);
@@ -1047,7 +1063,9 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
             }
             submit(self.regs,self.evo.total,self.evo.push,&mut self.evo.put,methods)?;
             modeset::wait(self.regs,0x640004,u32::MAX,self.evo.put)?;
-            self.evo.arm_presentation(self.regs,self.resource)
+            self.evo.arm_presentation(self.regs,self.resource)?;
+            self.evo.pending_presentation.as_mut().unwrap().restoring = self.restoring;
+            Ok(())
         }
         fn complete(&mut self) -> Result<u32, &'static str> {
             let e=&self.evo;
@@ -1060,7 +1078,7 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
     }
     let head=evo.head;
     let (receipt, retained_ack) = {
-        let mut update = Update { evo, regs, view, resource: surface.resource };
+        let mut update = Update { evo, regs, view, resource: surface.resource, restoring };
         // A retained binding is already latched. Refresh its contents through
         // the existing fresh capabilities report before considering a flip.
         let retained = if !raster_changed && view.verify(update.regs, head).is_ok() {
@@ -1069,6 +1087,7 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
                     let value = acknowledge(u.evo, u.regs)?;
                     u.evo.arm_presentation(u.regs, surface.resource)?;
                     u.evo.pending_presentation.as_mut().unwrap().acknowledged = Some(value);
+                    u.evo.pending_presentation.as_mut().unwrap().restoring = restoring;
                     Ok(value)
                 })?
         } else { None };

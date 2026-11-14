@@ -406,6 +406,16 @@ impl Viewport {
         }
         Ok(Self{input:(width,height),output})
     }
+    /// Retained frames do not resize with their owner. Preserve the admitted
+    /// 1:1/2:1 view when it fits; otherwise clip a 1:1 view to the selected raster.
+    pub fn for_saved(rw:u32,rh:u32,width:u32,height:u32) -> Result<Self, &'static str> {
+        if let Ok(view) = Self::for_raster(rw,rh,width,height) { return Ok(view); }
+        if [rw,rh,width,height].iter().any(|&v|v==0 || v>0x7fff) {
+            return Err("native viewport exceeds 15-bit fields");
+        }
+        let input=(width.min(rw),height.min(rh));
+        Ok(Self { input, output: input })
+    }
     pub fn methods(self,head:u32) -> Result<Vec<(u32,u32)>, &'static str> {
         if head>=4 {return Err("invalid native viewport head");}
         let h=head*0x300;

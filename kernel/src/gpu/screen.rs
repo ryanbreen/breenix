@@ -443,6 +443,17 @@ pub(super) fn show() -> Result<(), i64> {
     Ok(())
 }
 
+/// An owner without a retained frame inherits the kernel's registered screen,
+/// viewed in its requested mode. Do not change that mode to the kernel's mode.
+pub(super) fn show_saved() -> Result<(), i64> {
+    let mut lease = Lease::take();
+    let target = lease.ensure()?;
+    target.upload(0..target.mode.height)?;
+    target.bind(Binding { id: target.id, fence: 0, answer: 0 })?;
+    PRESENTS.fetch_add(1, Ordering::AcqRel);
+    Ok(())
+}
+
 /// The display came back to the kernel: show its screen again and let the console redraw it.
 pub(super) fn restore() -> Result<(), i64> {
     show()?;

@@ -282,14 +282,16 @@ pub(in crate::gk208) fn console_allocation() -> Option<(super::super::ConsoleSur
 
 /// Refuse unadmitted viewport shapes before a request enters the adapter.
 /// This reads the fixed raster without changing the selected logical mode.
-pub(super) fn presentable(width:u32,height:u32)->Result<(), &'static str> {
+pub(super) fn presentable(width:u32,height:u32,restoring:bool)->Result<(), &'static str> {
     let owner=SESSION.lock();
     let s=owner.as_ref().ok_or("native display owner absent")?;
     let regs=Registers(s.registers);
     let h=s.evo.head as usize*0x300;
     let blank=regs.read(0x64041c+h);
     let end=regs.read(0x640420+h);
-    super::super::modeset::Viewport::for_raster(
+    let viewport = if restoring { super::super::modeset::Viewport::for_saved }
+        else { super::super::modeset::Viewport::for_raster };
+    viewport(
         (end&0xffff).checked_sub(blank&0xffff).ok_or("invalid native raster width")?,
         (end>>16).checked_sub(blank>>16).ok_or("invalid native raster height")?,
         width,height).map(|_| ())
@@ -298,7 +300,7 @@ pub(super) fn presentable(width:u32,height:u32)->Result<(), &'static str> {
 /// Invoked only after the adapter's in-order native release has completed.
 /// Retain the active target independently of requests until another surface is
 /// confirmed. An uncertain update retains its request hold in the adapter.
-pub(in crate::gk208) fn present(surface:super::super::present::Surface)
+pub(in crate::gk208) fn present(surface:super::super::present::Surface, restoring: bool)
     -> Result<(), &'static str> {
     let mut owner=SESSION.lock();
     let s=owner.as_mut().ok_or("native display owner absent")?;
@@ -316,7 +318,11 @@ pub(in crate::gk208) fn present(surface:super::super::present::Surface)
     s.scanout.push(hold);
     // EVO retires its slot on failure. Keep uncertain scanout pins, but only
     // retain session work after acceptance has established the EVO record.
-    s.ready_present=super::super::native::present_accepted(&mut s.evo,&mut Registers(s.registers),surface,s.mode)?;
+    s.ready_present=if restoring {
+        super::super::native::restore_accepted(&mut s.evo,&mut Registers(s.registers),surface,s.mode)?
+    } else {
+        super::super::native::present_accepted(&mut s.evo,&mut Registers(s.registers),surface,s.mode)?
+    };
     s.pending_present=Some(surface);
     Ok(())
 }

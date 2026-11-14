@@ -14,7 +14,7 @@ class LogicalModePath(unittest.TestCase):
         present=item(native,'pub(in crate::gk208) fn present(').replace('pub(in crate::gk208)','').replace('super::present::','present::').replace('super::display_evidence::','display_evidence::').replace('super::cost::','cost::')
         inner=item(native,'fn present_inner(').replace('super::present::','present::').replace('super::cost::','cost::').replace('super::memx_display::','memx_display::').replace('super::display_evidence::','display_evidence::')
         raster=(item(native,'    fn submit_mode(')+'\n'+item(native,'    fn select_raster(')+'\n'+item(native,'    fn apply_raster(')).replace('super::present::','present::')
-        present += '\n' + inner
+        present += '\n' + inner + '\n' + item(native,'pub(in crate::gk208) fn restore_accepted(').replace('pub(in crate::gk208)','').replace('super::present::','present::')
         console=item(native,'pub(super) fn logical_console(').replace('pub(super)','').replace('crate::memory::map_mmio','host_map').replace('crate::console::display::linear::map_native_write_combining','host_wc').replace('super::present::','present::').replace('super::vm::TABLE_BYTES','vm::TABLE_BYTES').replace('super::display_evidence::','display_evidence::')
         binding=item(native,'pub fn console_binding(').replace('pub fn','fn').replace('surface: &ConsoleSurface','surface: &ConsoleSurface, regs: &mut Registers').replace('    let mut regs = Registers(surface.regs);','').replace('view.verify(&mut regs,','view.verify(regs,')
         process=(ROOT/'kernel/src/gpu/gk208/ce/process.rs').read_text()
@@ -66,11 +66,11 @@ mod display_evidence {
 }
 #[derive(Clone)] struct RasterMode {timing:edid::Timing,pll:modeset::Pll,scripts:[Vec<modeset::Op>;4]}
 struct Evo {raster_known:bool,modes:Vec<(u32,u32,u32)>,surfaces:[memory::Range;2],rasters:Vec<RasterMode>,protocol:u32,clock:Option<()>,latch_phase:Option<()>,last_presentation:Option<()>,frame_pixels:u64,pixel_hz:u64,head:u32,sor:u32,total:u64,push:u64,put:u32,notifier:u64,limits:(),coefficients:modeset::Pll,scripts:[Vec<modeset::Op>;4],pending_presentation:Option<PendingPresentation>}
-#[derive(Clone,Copy)] struct PendingPresentation {resource:u32,acknowledged:Option<u32>}
+#[derive(Clone,Copy)] struct PendingPresentation {resource:u32,acknowledged:Option<u32>,restoring:bool}
 impl Evo {
  // RASTER
  fn start_clock(&mut self,_:&Registers)->Result<(),&'static str>{Ok(())}
- fn arm_presentation(&mut self,_:&Registers,resource:u32)->Result<(),&'static str>{self.pending_presentation=Some(PendingPresentation{resource,acknowledged:None});Ok(())}
+ fn arm_presentation(&mut self,_:&Registers,resource:u32)->Result<(),&'static str>{self.pending_presentation=Some(PendingPresentation{resource,acknowledged:None,restoring:false});Ok(())}
  fn finish_presentation(&mut self,_:&Registers,_:u32)->Result<bool,&'static str>{self.pending_presentation=None;Ok(true)}
  fn record_presentation(&mut self,_:&Registers,_:u32)->Result<(),&'static str>{Ok(())}
  fn presentation_attempts(&self)->u64{1}
@@ -143,6 +143,21 @@ fn main(){
   let (mut r,mut e)=hardware();let s=present::Surface{resource:1,address:0x1000000,width:w,height:h,pitch:w*4,block_height:0,format:0,dma:1};
   assert!(present(&mut e,&mut r,s,1).is_err());
  }
+ // A restored saved frame is viewed on the owner's selected raster. Public
+ // Client submission still requires exact logical extent, including after restoration.
+ let (mut r,mut e)=hardware();
+ let low=present::Surface{resource:9,address:0x1000000,width:1024,height:768,pitch:4096,block_height:0,format:0,dma:1};
+ present(&mut e,&mut r,low,0).unwrap();
+ let saved=present::Surface{resource:11,width:1280,height:1024,pitch:5120,..low};
+ assert!(present(&mut e,&mut r,saved,0).is_err());
+ restore_accepted(&mut e,&mut r,saved,0).unwrap();
+ complete(&mut r,e.total,e.notifier,&e.limits,&e.coefficients,(e.head,e.sor,true,true),&e.scripts).unwrap();
+ assert_eq!(r.read(0x6404b8),1024|768<<16);
+ assert_eq!(r.read(0x6604c0),1024|768<<16);
+ let blank=r.read(0x64041c);let end=r.read(0x640420);
+ assert_eq!(((end&0xffff)-(blank&0xffff),(end>>16)-(blank>>16)),(1024,768));
+ assert_eq!(r.read(0x640468),1280|1024<<16);
+ assert!(present(&mut e,&mut r,saved,0).is_err());
  let (mut r,mut e)=hardware();let mut layout=memory::Layout::new(1<<30,&[],1280,1024).unwrap();
  let old=ConsoleSurface{pointer:0x10010000,phys:0x20010000,bytes:1280*1024*4,width:1280,height:1024,pitch:5120,vram:layout.objects[0].range.start,regs:0,head:0,firmware_baseline:9,logical:false};
  let instance=layout.objects[4].range.start;

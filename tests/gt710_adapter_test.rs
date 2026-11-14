@@ -42,7 +42,8 @@ pub mod gk208 {
                     self.0.borrow_mut().operations.push(match operation {crate::gk208::adapter::Operation::Transfer(_)=>"transfer",_=>"other"});
                     self.0.borrow_mut().published.push(sequence);Ok(())
                 }
-                pub fn present(&mut self, surface:crate::gk208::present::Surface)->Result<(),&'static str> {
+                pub fn present(&mut self, surface:crate::gk208::present::Surface, restoring:bool)->Result<(),&'static str> {
+                    self.0.borrow_mut().events.push(if restoring {"restore"} else {"client-present"});
                     let mut s=self.0.borrow_mut();
                     assert_eq!(surface.resource,71);s.events.push("display-update");
                     if s.fail_display {Err("display did not latch target")} else {Ok(())}

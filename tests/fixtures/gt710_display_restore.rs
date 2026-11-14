@@ -213,7 +213,8 @@ fn readback_denied(tgid:u64,a:&abi::Readback,observer:Observer)->Result<(),Refus
   c.display.binding=Some(display::Binding{id:22,fence:8,answer:0x60000000});c.display.known=true;
  });
  display::restore().unwrap();
- assert!(events().contains(&("mode",1)),"restore used the owner's later mode rather than the retained high frame");
+ assert!(events().contains(&("mode",0)),"restore did not use the owner's selected mode");
+ assert_eq!(with_core(|c|c.display.mode),Some(0));
  assert_eq!(with_core(|c|c.display.stack[0].mode),Some(0));
  assert_eq!(with_core(|c|c.display.binding.unwrap().id),Some(11));
 }

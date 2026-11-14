@@ -895,28 +895,18 @@ pub(super) fn restore() -> Result<(), i64> {
         (c.display.stack.iter().rev().find_map(|o| o.last), current, !c.display.stack.is_empty())
     })
     .unwrap_or((None, None, false));
-    if saved.is_some_and(|b| current.is_some_and(|c| c.id == b.id)) {
+    // The selection belongs to the owner; the saved frame retains its own extent.
+    let (mode, current_mode) = with_core(|c| (
+        c.display.stack.last().map_or(KERNEL_MODE as u32, |o| o.mode), c.display.mode))
+        .ok_or(ENODEV)?;
+    if mode == current_mode && saved.is_some_and(|b| current.is_some_and(|c| c.id == b.id)) {
         return Ok(());
     }
-    // A retained frame keeps its extent even if its owner later requested a
-    // different mode. After reset there is no frame: restore the top owner's
-    // request, or the kernel mode when unowned, and publish only after confirmation.
-    let mode = with_core(|c| {
-        saved.and_then(|b| c.resources.get(&b.id))
-            .and_then(|r| c.display.modes.iter().position(|m| (m.width, m.height) == (r.width, r.height)))
-            .map_or_else(|| c.display.stack.last().map_or(KERNEL_MODE as u32, |o| o.mode), |mode| mode as u32)
-    }).ok_or(ENODEV)?;
     activate_mode(mode)?;
-    #[cfg(target_arch = "x86_64")]
-    if saved.is_none() && owned {
-        // SET_MODE installed the owner's mode-sized native allocation. Showing
-        // the kernel's differently sized target would switch away from it again.
-        return Ok(());
-    }
     match saved {
         Some(b) => super::screen::bind_saved(b),
         // No owner on the stack has presented: the kernel's screen as it was left.
-        None if owned => super::screen::show(),
+        None if owned => super::screen::show_saved(),
         // No owner: the screen console has the display again (ruling F25).
         None => super::screen::restore(),
     }

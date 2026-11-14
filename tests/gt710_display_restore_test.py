@@ -40,7 +40,7 @@ def fixture_source():
         'fn fenced(', 'fn upload(', 'fn flush(', 'fn bind(', 'fn show(',
     ])
     screen_functions = '\n'.join(item(screen, marker) for marker in [
-        'pub(super) fn show()', 'pub(super) fn restore()',
+        'pub(super) fn show()', 'pub(super) fn show_saved()', 'pub(super) fn restore()',
         'pub(super) fn bind_saved(', 'pub(super) fn describe()',
     ])
     # Execute actual permission preflights, stopping before any user copy,

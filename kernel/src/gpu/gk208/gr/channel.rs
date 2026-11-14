@@ -1667,9 +1667,9 @@ mod native {
             -> Result<bool, &'static str> {
             crate::gk208::ce::present_complete(surface)
         }
-        pub(crate) fn present(&mut self, surface:crate::gk208::present::Surface)
+        pub(crate) fn present(&mut self, surface:crate::gk208::present::Surface, restoring: bool)
             -> Result<(), &'static str> {
-            crate::gk208::ce::present(surface)
+            crate::gk208::ce::present(surface, restoring)
         }
         /// True only after USERD GP_PUT publishes this sequence to the engine.
         pub(crate) fn published(&self, sequence: u32) -> bool { self.put == sequence }
