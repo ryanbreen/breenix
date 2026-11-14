@@ -1,3 +1,10 @@
+# Runtime size selectors mirror the cases' source-target allocation rules.
+# size-mode gpu present/mode-1280x800 smallest
+# size-mode gpu present/mode-2560x1600 scale2
+# size-mode gpu present/flip native
+# size-mode gpu present/mode-change-content smallest
+# size-mode gpu present/fault-skip-flush native
+# size-mode gpu present/fault-wrong-scanout native
 # row	suite	case	width	height	mode-width	mode-height	x-cuts	y-cuts
 0	gpu	device/no-fallback	16	16	2560	1600	-	-
 1	gpu	submit/context-create	4	4	2560	1600	-	-

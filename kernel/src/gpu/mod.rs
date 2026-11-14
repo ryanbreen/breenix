@@ -6949,3 +6949,17 @@ pub fn vt_resumed() {
     with_core(|c| console::request_restore(c.display.owner_sequence));
     notify();
 }
+
+/// The admitted display catalogue for the native upload resource envelope.
+#[cfg(target_arch = "x86_64")]
+pub fn evidence_modes() -> Option<alloc::string::String> {
+    with_core(|c| {
+        use core::fmt::Write;
+        let mut row = alloc::format!("GT710_EVIDENCE_MODES {{\"default\":{},\"modes\":[", display::KERNEL_MODE);
+        for (index, mode) in c.display.modes.iter().enumerate() {
+            let _ = write!(row, "{}[{},{},{}]", if index == 0 { "" } else { "," }, mode.width, mode.height, mode.scale);
+        }
+        row.push_str("]}\n");
+        row
+    })
+}

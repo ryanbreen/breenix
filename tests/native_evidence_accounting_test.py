@@ -51,12 +51,14 @@ mod breenix_suite {pub mod suite {
         for path in ('../../../docs/suites/frames/checkpoints.json','../../../scripts/metal/intent-pictures.tsv'):
             budget=budget.replace(path,str((ROOT/'libs/libbreenix/src'/path).resolve()))
         bound=upload.byte_bound(dict(suite='gpu',evidenceModes=fixture['modes'],evidenceDefault=fixture['default']))
+        breengel_bound=upload.byte_bound(dict(suite='breengel',evidenceModes=fixture['modes'],evidenceDefault=fixture['default']))
         source=(ROOT/'tests/suite_evidence_errno.rs').read_text()
         source=source.replace('../libs/',str(ROOT/'libs')+'/')
         code='#![allow(dead_code)]\n'+source+'\nmod intent {use std::vec::Vec;\n'+intents+'\n}\nmod budget {\n'+budget+'\n}\n'+r'''
 #[test] fn same_envelope_and_preflight() {
     let modes=[[1024,768,1],[1280,1024,1],[2560,2048,2]];
     assert_eq!(budget::limit("gpu", &modes,1).unwrap(),BOUND);
+    assert_eq!(budget::limit("breengel", &modes,1).unwrap(),BREENGL);
     let budget=budget::Budget::new(64<<20);
     budget.reserve((63<<20)+1).unwrap();
     assert!(budget.check(1<<20).is_err());
@@ -68,7 +70,7 @@ mod breenix_suite {pub mod suite {
     upload.set_bound(64<<20,|n|SHARED.get().unwrap().check(n));
     assert!(upload.send_parts(&vec![0;3<<20],|_,_,_,_|panic!("no orphan first part")).is_err());
 }
-'''.replace('BOUND',str(bound))
+'''.replace('BOUND',str(bound)).replace('BREENGL',str(breengel_bound))
         with tempfile.TemporaryDirectory() as tmp:
             p=Path(tmp);(p/'test.rs').write_text(code)
             priority=['taskpolicy','-b'] if sys.platform=='darwin' else []

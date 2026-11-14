@@ -70,10 +70,22 @@ def row_plans(row, mode=None):
     return plans(row['size'], mode or row['mode'], cells(row))
 
 
-def counts():
+def runtime_plans(row, modes, default):
+    rules = [line.split() for line in Path(__file__).with_name('intent-pictures.tsv').read_text().splitlines()
+             if line.startswith('# size-mode ')]
+    rule = next((r[4] for r in rules if r[2:4] == [row['suite'], row['case']]), None)
+    scale2 = max((m for m in modes if m[2] == 2), key=lambda m:m[0]*m[1])
+    selected = {'native': modes[default], 'scale2': scale2,
+                'smallest': min(modes,key=lambda m:m[0]*m[1])}
+    size = tuple(selected[rule][:2]) if rule else row['size']
+    target = scale2 if row['suite'] == 'breengel' else modes[default]
+    return plans(size, tuple(target[:2]), cells(row))
+
+
+def counts(mode=None, modes=None, default=1):
     result = {}
     for row in inventory():
-        result[row['suite']] = result.get(row['suite'],0)+len(row_plans(row))
+        result[row['suite']] = result.get(row['suite'],0)+len(runtime_plans(row, modes, default) if modes else row_plans(row, mode))
     return result
 
 

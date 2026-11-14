@@ -140,7 +140,12 @@ mod rom;
 pub(crate) fn console_sample(stage: usize, offset: usize, expected: u32, actual: u32) {
     display_evidence::sample(stage, offset, expected, actual);
 }
-pub fn proc_pixels()->Vec<u8> {bulk::take()}
+pub fn proc_pixels()->Vec<u8> {
+    let mut data = bulk::take();
+    if data.is_empty() { return data; }
+    if let Some(modes) = crate::gpu::evidence_modes() { data.extend_from_slice(modes.as_bytes()); }
+    data
+}
 pub fn proc_ce(op:u8)->Result<Vec<u8>,i32> {ce::proc_read(op)}
 use crate::arch_impl::x86_64::timer;
 use crate::drivers::pci;
