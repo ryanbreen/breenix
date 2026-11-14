@@ -8,12 +8,16 @@ use canvas::Canvas;
 #[test]
 fn bmp_and_png_round_trip_exact_rgb() {
     let mut canvas = Canvas::new(3, 2);
+    let white = canvas.digest();
     canvas.pencil(&[(0, 0)], [1, 2, 3]);
     canvas.pencil(&[(2, 1)], [17, 42, 201]);
+    assert_ne!(canvas.digest(), white);
     for name in ["drawing.bmp", "drawing.png"] {
         let bytes = files::encode(name, &canvas, 3, 2).unwrap();
         let (opened, message) = files::decode(name, &bytes, 3, 2).unwrap();
         assert_eq!(opened.pixels(), canvas.pixels());
+        assert_eq!(opened.digest(), canvas.digest());
+        assert_eq!(opened.digest(), libpixcheck::sha256(opened.pixels()));
         assert!(message.is_none());
     }
 }

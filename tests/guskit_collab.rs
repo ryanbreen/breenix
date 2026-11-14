@@ -198,12 +198,19 @@ fn lan_script_converges_through_two_cores() {
     }
     let mut host = Core::host("host", Canvas::new(64, 64), 64, 64);
     let mut peer = Core::join("join");
+    let original = host.model.canvas.clone();
+    let original_digest = original.digest();
+    peer.model.canvas.digest();
     host.connect(7);
     let mut hello = Buffer(Vec::new()); peer.flush(1, &mut hello); host.receive(7, &hello.0);
     while host.pending(7) {
         let mut wire = Buffer(Vec::new()); host.flush(7, &mut wire); peer.receive(1, &wire.0);
     }
-    for ops in lan_script::strokes() { host.submit_stroke(ops); }
+    for ops in lan_script::strokes() {
+        host.model.canvas.digest();
+        host.submit_stroke(ops);
+        assert_eq!(host.model.canvas.digest(), libpixcheck::sha256(host.model.canvas.pixels()));
+    }
     for ops in lan_script::strokes() { peer.submit_stroke(ops); }
     let mut wire = Buffer(Vec::new()); peer.flush(1, &mut wire); host.receive(7, &wire.0);
     while host.pending(7) {
@@ -211,6 +218,17 @@ fn lan_script_converges_through_two_cores() {
     }
     assert_eq!(host.model.peer.log().len(), 8);
     assert_eq!(peer.model.peer.log().len(), 8);
+    assert_eq!(host.model.canvas.digest(), peer.model.canvas.digest());
+    let drawn = peer.model.canvas.clone();
+    let drawn_digest = drawn.digest();
+    host.submit(DrawOp::Undo);
+    while host.pending(7) {
+        let mut wire = Buffer(Vec::new()); host.flush(7, &mut wire); peer.receive(1, &wire.0);
+    }
+    assert_eq!(original.digest(), original_digest);
+    assert_eq!(drawn.digest(), drawn_digest);
+    assert_eq!(host.model.canvas.digest(), libpixcheck::sha256(host.model.canvas.pixels()));
+    assert_eq!(peer.model.canvas.digest(), libpixcheck::sha256(peer.model.canvas.pixels()));
     assert_eq!(host.model.canvas.digest(), peer.model.canvas.digest());
     for core in [&host, &peer] {
         for id in &core.model.submitted {
