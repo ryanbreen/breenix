@@ -5,6 +5,33 @@ mod progress;
 use progress::{Count, FirstFailure, Lane, Progress, Site};
 
 #[test]
+fn irq_overflow_fills_the_claimed_static_snapshot_in_place() {
+    let recorder = include_str!("../../kernel/src/input/host/progress.rs");
+    let diagnostics = include_str!("../../kernel/src/input/host/diagnostics.rs");
+    let capture = diagnostics
+        .split("pub fn capture_overflow(rx_len: usize)")
+        .nth(1)
+        .expect("production overflow capture")
+        .split("pub fn report_failure()")
+        .next()
+        .unwrap();
+
+    assert!(
+        recorder.contains("sample: impl FnOnce(&mut T)"),
+        "IRQ capture must receive the claimed slot, not return a Snapshot by value"
+    );
+    assert!(recorder.contains("value: UnsafeCell<T>"));
+    assert!(recorder.contains("sample(&mut *self.value.get())"));
+    assert!(diagnostics.contains("static FIRST: FirstFailure<Snapshot>"));
+    assert!(capture.contains("FIRST.capture(|snapshot|"));
+    assert!(capture.contains("snapshot.rows.iter_mut()"));
+    assert!(
+        !capture.contains("Snapshot {") && !capture.contains("[ThreadSample::empty"),
+        "IRQ capture must not construct a Snapshot or its row array on the stack"
+    );
+}
+
+#[test]
 fn first_overflow_preserves_progress_and_suspended_site_once() {
     let progress = Progress::new();
     let command = Lane::new();
