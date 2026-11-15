@@ -20,6 +20,8 @@ pub enum Event {
     Waiting(String),
     Returned(Op),
     WaitReturning(String),
+    Failed(Op),
+    BatchReturned(Result<(), BlockError>),
 }
 
 #[derive(Default)]
@@ -30,6 +32,7 @@ struct State {
     hold_read: bool,
     hold_wait_return: bool,
     hold_flush: bool,
+    fail_write: Option<u64>,
 }
 
 #[derive(Default)]
@@ -53,6 +56,10 @@ impl RecordingDevice {
         s.hold_write = write;
         s.hold_flush = flush;
         self.changed.notify_all();
+    }
+
+    pub fn fail_write(&self, block: Option<u64>) {
+        self.state.lock().unwrap().fail_write = block;
     }
 
     pub fn hold_reads(&self, hold: bool) {
@@ -118,6 +125,11 @@ impl BlockDevice for RecordingDevice {
         // One block is held so the test can force a flush to drain an issued write.
         while block == 1 && s.hold_write {
             s = self.changed.wait(s).unwrap();
+        }
+        if s.fail_write == Some(block) {
+            s.events.push(Event::Failed(Op::Write(block)));
+            self.changed.notify_all();
+            return Err(BlockError::IoError);
         }
         s.blocks.insert(block, buf[..SIZE].to_vec());
         s.events.push(Event::Complete(Op::Write(block)));

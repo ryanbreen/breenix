@@ -1,5 +1,5 @@
-use crate::block::BlockDevice;
-use crate::buffer_cache::{BufferCache, WriteGroup};
+use crate::block::{BlockDevice, BlockError};
+use crate::buffer_cache::{BufferCache, BufferStatus, WriteGroup};
 use crate::recording::{Event, HostWait, Op, RecordingDevice, SIZE};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -13,14 +13,29 @@ fn spawn(name: &str, work: impl FnOnce() + Send + 'static) -> JoinHandle<()> {
 
 #[test]
 fn flush_orders_later_writes() {
+    for hold in [false, true] {
+        flush_ordering(hold);
+    }
+}
+
+fn flush_ordering(hold: bool) {
     let device = Arc::new(RecordingDevice::default());
     let cache = Arc::new(BufferCache::new(HostWait::new(device.clone())));
+    let group = WriteGroup::hold(&*device, Arc::new(|| {}));
+    if hold {
+        cache.write(&*device, group.clone(), 1, &[1; SIZE]).unwrap();
+        cache.write(&*device, group.clone(), 3, &[3; SIZE]).unwrap();
+    }
     device.hold(true, true);
     let earlier = {
         let (c, d) = (cache.clone(), device.clone());
         spawn("earlier", move || {
-            c.write(&*d, WriteGroup::WriteThrough, 1, &[1; SIZE])
-                .unwrap()
+            if hold {
+                c.submit(&*d, &group).wait().unwrap();
+            } else {
+                c.write(&*d, WriteGroup::WriteThrough, 1, &[1; SIZE])
+                    .unwrap();
+            }
         })
     };
     device.until(|e| e.contains(&Event::Issue(Op::Write(1))));
@@ -67,6 +82,9 @@ fn flush_orders_later_writes() {
     let events = device.events();
     let at = |event| events.iter().position(|e| *e == event).unwrap();
     assert!(at(Event::Complete(Op::Write(1))) < at(Event::Issue(Op::Flush)));
+    if hold {
+        assert!(at(Event::Complete(Op::Write(3))) < at(Event::Issue(Op::Flush)));
+    }
     assert!(at(Event::Complete(Op::Flush)) < at(Event::Issue(Op::Write(2))));
 }
 
@@ -263,4 +281,147 @@ fn reader_waits_for_inflight_miss() {
     assert_eq!(counters.device_reads.count, 2);
     assert!(counters.misses.sequence < counters.device_reads.sequence);
     assert!(counters.device_reads.sequence < counters.hits.sequence);
+}
+
+#[test]
+fn hold_writes_nothing_until_submit() {
+    let device = Arc::new(RecordingDevice::default());
+    let cache = BufferCache::new(HostWait::new(device.clone()));
+    let group = WriteGroup::hold(&*device, Arc::new(|| {}));
+    let other = WriteGroup::hold(&*device, Arc::new(|| {}));
+    cache.write(&*device, group.clone(), 1, &[1; SIZE]).unwrap();
+    cache.write(&*device, group.clone(), 2, &[2; SIZE]).unwrap();
+    cache.write(&*device, other.clone(), 3, &[3; SIZE]).unwrap();
+    // A second dirty version replaces only this group's earlier bytes.
+    cache.write(&*device, group.clone(), 2, &[9; SIZE]).unwrap();
+    assert_eq!(cache.status(&*device, 2), Some(BufferStatus::Dirty));
+    let mut bytes = [0; SIZE];
+    cache.read(&*device, 2, &mut bytes).unwrap();
+    assert_eq!(bytes, [9; SIZE]);
+    cache.flush(&*device).unwrap();
+    assert!(!device
+        .events()
+        .iter()
+        .any(|e| matches!(e, Event::Issue(Op::Write(_)))));
+    cache.submit(&*device, &group).wait().unwrap();
+    for block in [1, 2] {
+        assert_eq!(cache.status(&*device, block), Some(BufferStatus::Clean));
+    }
+    assert_eq!(cache.status(&*device, 3), Some(BufferStatus::Dirty));
+    assert!(!device.events().contains(&Event::Issue(Op::Write(3))));
+    device.read_block(2, &mut bytes).unwrap();
+    assert_eq!(bytes, [9; SIZE]);
+    cache.submit(&*device, &other).wait().unwrap();
+    assert!(device.events().contains(&Event::Complete(Op::Write(3))));
+}
+
+#[test]
+fn batch_wait_returns_after_device_writes() {
+    for fail in [false, true] {
+        let device = Arc::new(RecordingDevice::default());
+        let cache = Arc::new(BufferCache::new(HostWait::new(device.clone())));
+        let group = WriteGroup::hold(&*device, Arc::new(|| {}));
+        for block in [0, 1, 2] {
+            cache
+                .write(&*device, group.clone(), block, &[block as u8; SIZE])
+                .unwrap();
+        }
+        device.fail_write(if fail { Some(1) } else { None });
+        device.hold(true, false);
+        let submitter = {
+            let (c, d) = (cache.clone(), device.clone());
+            spawn("batch", move || {
+                let result = c.submit(&*d, &group).wait();
+                d.record(Event::BatchReturned(result));
+            })
+        };
+        device.until(|e| {
+            e.contains(&Event::Issue(Op::Write(1)))
+                || e.iter().any(|e| matches!(e, Event::BatchReturned(_)))
+        });
+        let held = device.events();
+        let inflight = cache.status(&*device, 1);
+        device.hold(false, false);
+        submitter.join().unwrap();
+        assert!(
+            !held.iter().any(|e| matches!(e, Event::BatchReturned(_))),
+            "batch returned before its held write: {held:?}"
+        );
+        assert_eq!(inflight, Some(BufferStatus::InFlight));
+        let events = device.events();
+        let returned = events
+            .iter()
+            .position(|e| matches!(e, Event::BatchReturned(_)))
+            .unwrap();
+        for block in [0, 1, 2] {
+            let done = if fail && block == 1 {
+                Event::Failed(Op::Write(block))
+            } else {
+                Event::Complete(Op::Write(block))
+            };
+            assert!(events.iter().position(|e| *e == done).unwrap() < returned);
+            assert_eq!(
+                cache.status(&*device, block),
+                Some(if fail && block == 1 {
+                    BufferStatus::Failed
+                } else {
+                    BufferStatus::Clean
+                })
+            );
+        }
+        assert_eq!(
+            events[returned],
+            Event::BatchReturned(if fail {
+                Err(BlockError::IoError)
+            } else {
+                Ok(())
+            })
+        );
+        if fail {
+            assert!(cache.pin(&*device, 1).is_none());
+            assert_eq!(
+                cache.read(&*device, 1, &mut [0; SIZE]),
+                Err(BlockError::IoError)
+            );
+        }
+    }
+}
+
+#[test]
+fn pressure_asks_holder_to_commit() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let device = Arc::new(RecordingDevice::default());
+    let cache = Arc::new(BufferCache::with_capacity(
+        HostWait::new(device.clone()),
+        SIZE,
+    ));
+    let requests = Arc::new(AtomicUsize::new(0));
+    let group = WriteGroup::hold(&*device, {
+        let (c, d, requests) = (Arc::downgrade(&cache), device.clone(), requests.clone());
+        Arc::new(move || {
+            // Reenter cache and device admission: the callback holds neither.
+            c.upgrade().unwrap().flush(&*d).unwrap();
+            requests.fetch_add(1, Ordering::SeqCst);
+        })
+    });
+    cache.write(&*device, group.clone(), 1, &[1; SIZE]).unwrap();
+    for _ in 0..2 {
+        cache.read(&*device, 2, &mut [0; SIZE]).unwrap();
+        assert_eq!(
+            cache.write(&*device, group.clone(), 3, &[3; SIZE]),
+            Err(BlockError::OutOfMemory)
+        );
+    }
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    assert_eq!(cache.resident_bytes(), SIZE);
+    assert!(!device
+        .events()
+        .iter()
+        .any(|e| matches!(e, Event::Issue(Op::Write(_)))));
+    assert_eq!(cache.status(&*device, 1), Some(BufferStatus::Dirty));
+    cache.submit(&*device, &group).wait().unwrap();
+    cache.write(&*device, group.clone(), 3, &[3; SIZE]).unwrap();
+    cache.read(&*device, 4, &mut [0; SIZE]).unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), 2);
+    assert_eq!(cache.status(&*device, 3), Some(BufferStatus::Dirty));
 }

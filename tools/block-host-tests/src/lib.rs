@@ -6,6 +6,7 @@ pub mod block {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum BlockError {
         IoError,
+        OutOfMemory,
         OutOfBounds,
     }
 
