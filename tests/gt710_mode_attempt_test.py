@@ -27,6 +27,11 @@ fn main() {
     let line = attempt.to_string();
     assert_eq!(line, "index=3 phases=[drain-flip:50:8:32:64:0,raster-get:25:0:64:96:0,raster-notifier:15:0:96:96:0,raster-get:20:0:96:128:1] dropped=0");
     assert!(!line.contains('\n'));
+    attempt.clock_observation([42, 2, 1, 1400000]);
+    assert!(attempt.to_string().ends_with("samples=42 advances=2 rejected=1 max_gap_ns=1400000"));
+    let mut refusal = gpu_abi::ModeReport::refused(3, 110, RASTER, 51000000, [0;4], "native vblank edge not observed");
+    attempt.annotate_refusal(&mut refusal);
+    assert_eq!(refusal.reason(), "native vblank edge not observed samples=42 advances=2 rejected=1 max_gap_ns=1400000");
 }
 '''.replace('SOURCE', str(ROOT / 'kernel/src/gpu/gk208/mode_attempt.rs'))
             (path / 'check.rs').write_text(source)

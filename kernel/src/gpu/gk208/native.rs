@@ -516,6 +516,9 @@ impl Evo {
             start: now, failure: None,
             attempt: super::mode_attempt::ModeAttempt::new(index, gpu_abi::mode_phase::DRAIN_FLIP, now, state) });
     }
+    fn record_clock_observation(&mut self, counts: [u64; 4]) {
+        if let Some(trace) = &mut self.mode_trace { trace.attempt.clock_observation(counts); }
+    }
     pub(in crate::gk208) fn mode_state(&self, regs: &mut Registers) -> [u64; 4] {
         [self.pending_presentation.map_or(0, |p| u64::from(p.resource) + 1),
          u64::from(regs.read(0x640004)), u64::from(self.put),
@@ -535,13 +538,15 @@ impl Evo {
         if trace.failure.is_some() { return; }
         let errno = if reason.contains("timed out") || reason.contains("deadline")
             || reason.contains("did not complete") || reason.contains("did not latch")
-            || reason.contains("did not advance") { gpu_abi::errno::ETIMEDOUT }
+            || reason.contains("did not advance") || reason == "native vblank raster stopped"
+            || reason == "native vblank edge not observed" { gpu_abi::errno::ETIMEDOUT }
             else { gpu_abi::errno::EIO };
         trace.failure = Some(gpu_abi::ModeReport::refused(trace.index, errno, trace.phase,
             crate::signal::monotonic_nanos().saturating_sub(trace.start),
             [self.pending_presentation.map_or(0, |p| u64::from(p.resource) + 1),
              u64::from(regs.read(0x640004)), u64::from(self.put),
              u64::from(read_word(regs, self.total, self.notifier).unwrap_or(u32::MAX))], reason));
+        if let Some(report) = &mut trace.failure { trace.attempt.annotate_refusal(report); }
     }
     pub(in crate::gk208) fn end_mode(&mut self, regs: &mut Registers, result: Result<(), &'static str>)
         -> Result<super::mode_attempt::ModeAttempt, gpu_abi::ModeReport> {
@@ -812,29 +817,55 @@ impl Evo {
         }
         let line_ns = u64::from(width) * 1_000_000_000 / self.pixel_hz;
         let mut previous = presentation_sample(regs, self.head)?;
-        let start = previous.0;
-        while crate::signal::monotonic_nanos().saturating_sub(start) < self.presentation_attempts().saturating_mul(100_000) {
-            let sample = presentation_sample(regs, self.head)?;
-            let (at, vert, pixel) = sample;
-            let count = (vert >> 16) as u16;
-            let line = vert & 0xffff;
-            // A delayed/preempted poll must not choose a later raster line as
-            // the edge. Accept only adjacent lines less than one line apart.
-            if count.wrapping_sub((previous.1 >> 16) as u16) == 1
-                && line == ((previous.1 & 0xffff) + 1) % height
-                && at - previous.0 < line_ns && pixel < width {
+        let deadline = previous.0.saturating_add(self.presentation_attempts().saturating_mul(100_000));
+        // samples, counter advances, rejected advancing pairs, largest poll gap.
+        let mut counts = [1u64, 0, 0, 0];
+        while crate::signal::monotonic_nanos() < deadline {
+            // Discover the counter-edge line by observing successive raster-line
+            // boundaries as candidates. IRQs can run between observations.
+            // Each masked span is bounded to two line times, including when
+            // the raster stops moving.
+            let observed = crate::arch_without_interrupts(|| {
+                let until = crate::signal::monotonic_nanos()
+                    .saturating_add(line_ns.saturating_mul(2)).min(deadline);
+                let mut boundary = None;
+                while crate::signal::monotonic_nanos() < until {
+                    let sample = presentation_sample(regs, self.head)?;
+                    let (at, vert, pixel) = sample;
+                    let count = (vert >> 16) as u16;
+                    let line = vert & 0xffff;
+                    let advanced = count.wrapping_sub((previous.1 >> 16) as u16);
+                    let gap = at.saturating_sub(previous.0);
+                    counts[0] += 1;
+                    counts[1] += u64::from(advanced);
+                    counts[3] = counts[3].max(gap);
+                    // Keep the original edge acceptance rule unchanged.
+                    let accepted = advanced == 1
+                        && line == ((previous.1 & 0xffff) + 1) % height
+                        && gap < line_ns && pixel < width;
+                    if advanced != 0 && !accepted { counts[2] += 1; }
+                    previous = sample;
+                    if accepted { return Ok(Some(sample)); }
+                    let first_line = *boundary.get_or_insert(line);
+                    if line != first_line { break; }
+                    core::hint::spin_loop();
+                }
+                Ok::<_, &'static str>(None)
+            });
+            self.record_clock_observation(counts);
+            if let Some((at, vert, pixel)) = observed? {
                 let edge_ns = at.checked_sub(u64::from(pixel) * 1_000_000_000 / self.pixel_hz)
                     .ok_or("native vblank edge predates clock")?;
                 self.clock = Some(super::vblank_clock::VblankClock::new(
-                    count, edge_ns, self.frame_pixels, self.pixel_hz));
-                self.vblank_line = line as u16;
+                    (vert >> 16) as u16, edge_ns, self.frame_pixels, self.pixel_hz));
+                self.vblank_line = vert as u16;
                 return Ok(());
             }
-            previous = sample;
-            core::hint::spin_loop();
         }
-        Err("native vblank clock did not advance")
+        Err(if counts[1] == 0 { "native vblank raster stopped" }
+            else { "native vblank edge not observed" })
     }
+
     pub(in crate::gk208) fn record_presentation(&mut self, regs: &Registers, resource: u32)
         -> Result<(), &'static str> {
         let (sampled_ns, vert, pixel) = presentation_sample(regs, self.head)?;
