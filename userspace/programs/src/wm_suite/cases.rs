@@ -1001,6 +1001,7 @@ pub fn display_mode() -> CaseResult {
     let original = modes.current_mode().ok_or("MODES lacks original mode")?;
     let (_, smallest) = modes.smallest_mode().ok_or("MODES is empty")?;
     check(smallest != original, "display case needs a smaller listed mode")?;
+    display_clocks("before")?;
     // Preserve restoration even when a mechanical assertion fails mid-case.
     let result = (|| -> CaseResult {
         client.clear()?;
@@ -1019,7 +1020,8 @@ pub fn display_mode() -> CaseResult {
     let restored = (|| -> CaseResult {
         client.clear()?;
         let reply = set_display_mode(original)?;
-        display_geometry(&reply, original, &tree, &mut client, &config)
+        display_geometry(&reply, original, &tree, &mut client, &config)?;
+        display_clocks("after")
     })();
     match (result, restored) {
         (Err(error), Err(restore)) => Err(format!("{error:?}; restore original mode: {restore:?}").into()),
