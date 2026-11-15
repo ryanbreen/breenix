@@ -303,6 +303,26 @@ impl FileSystem for Ext2Adapter {
         }
     }
 
+    fn init_service(&self) -> Result<(), Errno> {
+        #[cfg(not(test))]
+        ext2::writeback::init().map_err(errno)?;
+        Ok(())
+    }
+
+    fn shutdown(&self, name: &str, deadline: u64) -> Result<(), Errno> {
+        #[cfg(not(test))]
+        { ext2::shutdown_mount(self.mount, name, deadline).map_err(errno) }
+        #[cfg(test)]
+        { let _ = (name, deadline); Err(Errno(EOPNOTSUPP)) }
+    }
+
+    fn report(&self, report: crate::fs::vfs::Report, name: &str, text: &mut alloc::string::String) -> Result<(), Errno> {
+        #[cfg(not(test))]
+        { ext2::report_mount(self.mount, report, name, text).map_err(errno) }
+        #[cfg(test)]
+        { let _ = (report, name, text); Err(Errno(EOPNOTSUPP)) }
+    }
+
     fn read_only(&self) -> Result<bool, Errno> {
         let guard = read_mount(self.mount).map_err(errno)?;
         Ok(guard.as_ref().ok_or(Errno(EIO))?.is_read_only())

@@ -36,6 +36,9 @@ pub use inode::*;
 pub use rename::RenameError;
 pub use superblock::*;
 
+mod format;
+pub use format::FORMAT;
+
 use crate::block::BlockDevice;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -1965,98 +1968,13 @@ pub(super) fn sync_mount_guard(pin: live_inode::MountPin) -> Result<Ext2WriteGua
 /// Initialize the root ext2 filesystem
 ///
 /// Mounts the ext2 disk as the root filesystem.
-/// x86 selects a mountable ext2 filesystem from 512-byte-sector block devices.
-/// ARM64 prefers VirtIO, then scans AHCI disks for an ext2 superblock.
+/// VFS has selected this device by its format magic.
 ///
 /// This should be called during kernel initialization after block
 /// device driver initialization.
-pub fn init_root_fs() -> Result<(), &'static str> {
-    // Try VirtIO block devices first (works on both x86_64 and QEMU ARM64)
-    #[cfg(target_arch = "aarch64")]
-    let device: alloc::boxed::Box<dyn BlockDevice> = {
-        use crate::block::virtio::VirtioBlockWrapper;
-        if let Some(dev) = VirtioBlockWrapper::new(2).or_else(|| VirtioBlockWrapper::new(0)) {
-            #[cfg(target_arch = "aarch64")]
-            crate::serial_println!(
-                "[ext2] Using VirtIO block device ({} sectors)",
-                dev.num_blocks()
-            );
-            alloc::boxed::Box::new(dev)
-        } else {
-            // Fall back to AHCI block devices (Parallels ARM64).
-            // Try each SATA device looking for one with a valid ext2 superblock.
-            // On Parallels, sata:0 is typically the FAT32 EFI boot disk.
-            {
-                crate::serial_println!("[ext2] No VirtIO block device, trying AHCI...");
-                let count = crate::drivers::ahci::sata_device_count();
-                let mut found: Option<crate::drivers::ahci::AhciBlockDevice> = None;
-                for i in 0..count {
-                    if let Some(dev) = crate::drivers::ahci::get_block_device_by_index(i) {
-                        crate::serial_println!(
-                            "[ext2] AHCI device {}: {} sectors ({} MB)",
-                            i,
-                            dev.num_blocks(),
-                            dev.num_blocks() * 512 / (1024 * 1024)
-                        );
-                        // Try reading ext2 superblock (at byte offset 1024, sector 2)
-                        let mut buf = [0u8; 512];
-                        if dev.read_block(2, &mut buf).is_ok() {
-                            let magic = (buf[56] as u16) | ((buf[57] as u16) << 8);
-                            if magic == 0xEF53 {
-                                crate::serial_println!(
-                                    "[ext2] Found ext2 superblock on AHCI device {}",
-                                    i
-                                );
-                                found = Some(dev);
-                                break;
-                            } else {
-                                crate::serial_println!(
-                                    "[ext2] AHCI device {}: not ext2 (magic={:#06x})",
-                                    i,
-                                    magic
-                                );
-                            }
-                        } else {
-                            crate::serial_println!("[ext2] AHCI device {}: read failed", i);
-                        }
-                    }
-                }
-                let ahci_dev = found.ok_or(
-                    "No block device with ext2 filesystem (tried VirtIO and all AHCI devices)",
-                )?;
-                alloc::boxed::Box::new(ahci_dev)
-            }
-        }
-    };
-
-    // Register with VFS mount system
+fn mount_root_device(device: alloc::boxed::Box<dyn BlockDevice>) -> Result<alloc::sync::Arc<dyn crate::fs::vfs::FileSystem>, &'static str> {
     let mount_id = crate::fs::vfs::mount::allocate_id().map_err(|_| "Mount id exhausted")?;
-
-    // Create the ext2 filesystem instance
-    #[cfg(target_arch = "aarch64")]
     let fs = Ext2Fs::new(device, mount_id)?;
-    #[cfg(target_arch = "x86_64")]
-    let fs = crate::block::root_devices()
-        .into_iter()
-        .find_map(|device| {
-            if device.block_size() != 512 {
-                return None;
-            }
-            let mut superblock = [0u8; 512];
-            if device.read_block(2, &mut superblock).is_err()
-                || u16::from_le_bytes([superblock[56], superblock[57]]) != 0xEF53
-            {
-                return None;
-            }
-            match Ext2Fs::new(device, mount_id) {
-                Ok(fs) => Some(fs),
-                Err(error) => {
-                    log::warn!("ext2: Root candidate mount failed: {}", error);
-                    None
-                }
-            }
-        })
-        .ok_or("No mountable 512-byte-sector ext2 block device")?;
 
     #[cfg(target_arch = "aarch64")]
     let fs = {
@@ -2113,7 +2031,7 @@ pub fn init_root_fs() -> Result<(), &'static str> {
     ROOT_MOUNT_ID.store(fs.mount_id, Ordering::Release);
     *installed = Some(fs);
 
-    Ok(())
+    Ok(backend)
 }
 
 /// Access the root ext2 filesystem for read-only operations
@@ -2296,45 +2214,8 @@ pub fn is_mounted() -> bool {
 /// other machines without overwriting their local user data.
 static HOME_EXT2: RwLock<Option<Ext2Fs>> = RwLock::new(None);
 
-/// Initialize the home ext2 filesystem
-///
-/// Mounts a second ext2 disk as the /home filesystem.
-/// Noninteractive testing kernels use an embedded fixture when no disk is attached.
-/// Device layout:
-///   - x86_64: Device 3 (boot=0, test=1, root=2, home=3)
-///   - ARM64: Device 1 (root=0, home=1)
-///
-/// This is non-fatal — if no home disk is attached, /home falls through
-/// to the root ext2 filesystem (backward compatible).
-pub fn init_home_fs() -> Result<(), &'static str> {
-    // Prefer the attached home device so VM acceptance boots exercise the
-    // transport's read-only feature. Physical disks remain protected by the
-    // hardware write-refusal policy rather than selected by index here.
-    // On a physical boot the home is the partition the boot intent names, when it names one.
-    #[cfg(target_arch = "x86_64")]
-    let device = if crate::block::hardware_read_only() {
-        crate::block::named_home()
-    } else {
-        crate::block::disk(3).or_else(|| crate::block::disk(1))
-    };
-
-    #[cfg(target_arch = "aarch64")]
-    let device = {
-        use crate::block::virtio::VirtioBlockWrapper;
-        VirtioBlockWrapper::new(3)
-            .or_else(|| VirtioBlockWrapper::new(1))
-            .map(|dev| alloc::boxed::Box::new(dev) as alloc::boxed::Box<dyn BlockDevice>)
-    };
-
-    // Interactive includes testing, but must retain its writable home disk.
-    #[cfg(all(feature = "testing", not(feature = "interactive")))]
-    let device = device.or_else(|| {
-        log::info!("ext2: using embedded read-only home fixture");
-        Some(alloc::boxed::Box::new(crate::block::testing_fixture::ReadOnlyFixture)
-            as alloc::boxed::Box<dyn BlockDevice>)
-    });
-    let device = device.ok_or("No home block device available")?;
-
+/// Mount the VFS-selected home device, retaining its nosuid,nodev options.
+fn mount_home_device(device: alloc::boxed::Box<dyn BlockDevice>) -> Result<alloc::sync::Arc<dyn crate::fs::vfs::FileSystem>, &'static str> {
     // Register with VFS mount system
     let mount_id = crate::fs::vfs::mount::allocate_id().map_err(|_| "Mount id exhausted")?;
 
@@ -2363,21 +2244,18 @@ pub fn init_home_fs() -> Result<(), &'static str> {
     let flags = crate::fs::vfs::mount::HOME_FLAGS;
     let backend = alloc::sync::Arc::new(adapter::Ext2Adapter::new(fs.mount_pin));
     let root = u64::from(fs.namespace.root);
-    let (cover, parent) = {
-        let guard = root_fs_read()?;
-        let native = guard.as_ref().ok_or("Missing root mount")?;
-        let directory = native.read_inode(native.namespace.root)?;
-        let ino = native.lookup_in_dir(&directory, "home")?.ok_or("Missing home directory")?;
-        (Some((native.mount_id, u64::from(ino))),
-            Some((native.mount_id, u64::from(native.namespace.root))))
-    };
+    let root_id = crate::fs::vfs::mount::find_mount("/").ok_or("Missing root mount")?;
+    let root_fs = crate::fs::vfs::mount::filesystem(root_id).map_err(|_| "Missing root filesystem")?;
+    let root_ino = root_fs.root().map_err(|_| "Missing root inode")?;
+    let home_ino = root_fs.lookup(root_ino, b"home").map_err(|_| "Missing home directory")?;
+    let (cover, parent) = (Some((root_id, home_ino)), Some((root_id, root_ino)));
     crate::fs::vfs::mount::register(crate::fs::vfs::mount::MountPoint::new(
-        mount_id, b"/home".to_vec(), "ext2", flags, crate::fs::vfs::mount::Backend::Fs(backend),
+        mount_id, b"/home".to_vec(), "ext2", flags, crate::fs::vfs::mount::Backend::Fs(backend.clone()),
         root, cover, parent)).map_err(|_| "Mount registration failed")?;
     HOME_MOUNT_ID.store(fs.mount_id, Ordering::Release);
     *installed = Some(fs);
 
-    Ok(())
+    Ok(backend)
 }
 
 /// Access the home ext2 filesystem for read-only operations
@@ -2461,32 +2339,18 @@ pub(crate) fn request_map_eviction() {
     writeback::request();
 }
 
-/// The mounted device's superblock, read past the write-through cache.
-pub fn filesystem_states() -> Result<alloc::string::String, &'static str> {
-    use core::fmt::Write;
-    let mut text = alloc::string::String::new();
-    for (home, name) in [(false, "root"), (true, "home")] {
-        let guard = if home { home_fs_read()? } else { root_fs_read()? };
-        if let Some(fs) = guard.as_ref() {
-            let sb = Ext2Superblock::read_from(fs.device.uncached()).map_err(|_| "Failed to read disk state")?;
-            let _ = writeln!(text, "{} mounted={}", name, if sb.s_state == 0 { "dirty" } else if sb.s_state == 1 { "clean" } else { "error" });
-        }
-    }
-    Ok(text)
-}
-
 /// PID 1 calls after reaping user processes: write back mappings, finish
 /// deferred inode work, flush, persist clean superblocks and fence new writes.
 /// The mount guard serializes the transition with the writeback kthread.
-pub fn shutdown_filesystems() -> Result<(), &'static str> {
-    let deadline = ext2_now_ns().saturating_add(10_000_000_000);
+fn shutdown_mount(pin: live_inode::MountPin, name: &str, deadline: u64) -> Result<(), &'static str> {
+    let home = pin_is_home(pin)?;
     let mut buffer = crate::memory::file_map::writeback_buffer()?;
-    for (home, name) in [(true, "home"), (false, "root")] {
+    {
         let handles = {
             let guard = if home { home_fs_read()? } else { root_fs_read()? };
             match guard.as_ref() {
                 Some(fs) if !fs.is_read_only() => fs.dirty_handles()?,
-                _ => continue,
+                _ => return Ok(()),
             }
         };
         for handle in &handles {
@@ -2518,6 +2382,35 @@ pub fn shutdown_filesystems() -> Result<(), &'static str> {
             crate::fs::vfs::mount::remount_read_only(fs.mount_id)?;
             crate::serial_println!("[shutdown] {} clean read-only", name);
             break;
+        }
+    }
+    Ok(())
+}
+
+/// Settle accounting before sampling, and read persisted values past the cache.
+fn report_mount(pin: live_inode::MountPin, report: crate::fs::vfs::Report,
+    name: &str, text: &mut alloc::string::String) -> Result<(), &'static str> {
+    use core::fmt::Write;
+    match report {
+        crate::fs::vfs::Report::Allocation => {
+            let guard = accounting_fs_write(pin_is_home(pin)?)?;
+            pin.verify(guard.as_ref().ok_or("Missing mount")?)?;
+            let fs = guard.as_ref().ok_or("Missing mount")?;
+            let (disk, groups) = fs.persisted_metadata()?;
+            let free = fs.superblock.s_free_blocks_count;
+            let disk_free = disk.s_free_blocks_count;
+            let group_free: u64 = fs.block_groups.iter().map(|g| g.bg_free_blocks_count as u64).sum();
+            let disk_group_free: u64 = groups.iter().map(|g| g.bg_free_blocks_count as u64).sum();
+            writeln!(text, "{} {} {} {} {} {}", name, fs.superblock.block_size(),
+                free, disk_free, group_free, disk_group_free).map_err(|_| "Report formatting failed")?;
+        }
+        crate::fs::vfs::Report::State => {
+            let guard = read_mount(pin)?;
+            let fs = guard.as_ref().ok_or("Missing mount")?;
+            let sb = Ext2Superblock::read_from(fs.device.uncached()).map_err(|_| "Failed to read disk state")?;
+            writeln!(text, "{} mounted={}", name,
+                if sb.s_state == 0 { "dirty" } else if sb.s_state == 1 { "clean" } else { "error" })
+                .map_err(|_| "Report formatting failed")?;
         }
     }
     Ok(())

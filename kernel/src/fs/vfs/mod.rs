@@ -11,6 +11,16 @@ use spin::Mutex;
 
 pub use crate::fs::attrs::MountFlags;
 pub mod attributes;
+pub mod format;
+pub use format::{BootMount, Format, probe_mount};
+#[cfg(not(test))]
+pub mod boot;
+#[cfg(not(test))]
+pub use boot::*;
+
+#[derive(Clone, Copy)]
+pub enum Report { Allocation, State }
+
 #[cfg(not(test))]
 pub mod exec;
 pub mod file;
@@ -283,6 +293,9 @@ pub trait FileSystem: core::any::Any + Send + Sync {
     fn root(&self) -> Result<u64, Errno>;
     fn statfs(&self) -> Result<StatFs, Errno>;
     fn sync(&self) -> Result<(), Errno>;
+    fn init_service(&self) -> Result<(), Errno> { Ok(()) }
+    fn shutdown(&self, _name: &str, _deadline: u64) -> Result<(), Errno> { Err(Errno(EOPNOTSUPP)) }
+    fn report(&self, _report: Report, _name: &str, _text: &mut alloc::string::String) -> Result<(), Errno> { Ok(()) }
     fn read_only(&self) -> Result<bool, Errno>;
     fn max_file_size(&self) -> Result<u64, Errno>;
     // Inode

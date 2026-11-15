@@ -29,6 +29,7 @@ pub mod host_mounts;
 #[path = "../../../kernel/src/fs/vfs/mod.rs"]
 pub mod vfs;
 pub mod ext2 {
+    pub use crate::host_mounts::{mount_root_device, mount_home_device};
     pub use crate::host_mounts::{read_mount, read_mount as sync_mount_guard, write_mount};
     pub use crate::storage::rename::RenameError;
     pub use crate::storage::*;
@@ -92,8 +93,7 @@ pub use attribute_support::{process, task, test_control};
 #[path = "../../../kernel/src/fs/vfs/exec.rs"]
 pub mod exec;
 
-#[path = "../../../kernel/src/fs/vfs/format.rs"]
-pub mod format;
+pub use vfs::format;
 #[path = "../../../kernel/src/fs/ext2/format.rs"]
 pub mod ext2_format;
 #[path = "../tests/boot_mount_tests.rs"]

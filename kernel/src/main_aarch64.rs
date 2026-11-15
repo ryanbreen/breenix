@@ -1018,8 +1018,8 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         false
     };
 
-    // Initialize ext2 root filesystem (if block device present)
-    match kernel::fs::ext2::init_root_fs() {
+    // Probe and mount the root filesystem (if block device present)
+    match kernel::fs::vfs::mount_root() {
         Ok(()) => {
             serial_println!("[boot] ext2 root filesystem mounted");
             splash::stage(Stage::Ext2Mounted);
@@ -1027,7 +1027,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             kernel::test_framework::btrt::pass(kernel::test_framework::catalog::EXT2_MOUNT);
         }
         Err(e) => {
-            serial_println!("[boot] ext2 init: {} (continuing without root fs)", e);
+            serial_println!("[boot] ext2 init: {:?} (continuing without root fs)", e);
             #[cfg(feature = "btrt")]
             kernel::test_framework::btrt::fail(
                 kernel::test_framework::catalog::EXT2_MOUNT,
@@ -1043,10 +1043,10 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // of this boot prints is evidence the kernel survived the injected faults.
     #[cfg(feature = "fs_fault_inject")]
     kernel::fs::fault_inject::run_fs_fault_leg();
-    // Initialize ext2 home filesystem (/home on separate disk)
-    match kernel::fs::ext2::init_home_fs() {
+    // Probe and mount the home filesystem (/home on separate disk)
+    match kernel::fs::vfs::mount_home() {
         Ok(()) => serial_println!("[boot] ext2 home filesystem mounted at /home"),
-        Err(e) => serial_println!("[boot] No home filesystem: {} (continuing)", e),
+        Err(e) => serial_println!("[boot] No home filesystem: {:?} (continuing)", e),
     }
     kernel::fs::vfs::mount::bind_home_if_unmounted();
 
@@ -1267,7 +1267,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
 
     // Initialize workqueue subsystem (depends on kthread infrastructure)
     kernel::task::workqueue::init_workqueue();
-    kernel::fs::ext2::writeback::init().expect("ext2 finalization service");
+    kernel::fs::vfs::init_services().expect("filesystem finalization services");
     kernel::input::stream::init().expect("input release service");
     serial_println!("[boot] Workqueue subsystem initialized");
     #[cfg(feature = "btrt")]

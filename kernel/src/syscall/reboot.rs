@@ -42,7 +42,7 @@ pub fn sys_reboot(magic: u64, magic2: u64, command: u64) -> SyscallResult {
         Ok(token) => token,
         Err(errno) => return SyscallResult::Err(errno),
     };
-    if crate::fs::ext2::shutdown_filesystems().is_err() {
+    if crate::fs::vfs::shutdown().is_err() {
         return SyscallResult::Err(super::errno::EIO as u64);
     }
     let action = if command == 0x01234567 { "reboot" } else { "poweroff" };
@@ -79,23 +79,17 @@ pub fn sys_reboot(magic: u64, magic2: u64, command: u64) -> SyscallResult {
 fn power_token() -> Result<Option<alloc::vec::Vec<u8>>, u64> {
     use power_token_validation::{validate, File, Invalid, Kind};
     let read = |path: &str, kind: Kind| -> Result<alloc::vec::Vec<u8>, u64> {
-        let (_, ino, node, _) = crate::fs::namei::resolve_file(path)?;
-        let handle = node.pin::<crate::fs::ext2::live_inode::FileHandle>()
-            .ok_or(super::errno::EIO as u64)?;
-        let guard = crate::fs::ext2::read_mount(handle.object.mount)
-            .map_err(crate::fs::ext2::errno::errno)?;
-        let fs = guard.as_ref().ok_or(super::errno::EIO as u64)?;
-        let ino = crate::fs::ext2::ino32(ino)?;
-        let inode = fs.read_inode(ino).map_err(|_| super::errno::EIO as u64)?;
+        let (_, _, node, _) = crate::fs::namei::resolve_file(path)?;
+        let inode = node.filesystem.getattr(node.ino).map_err(|e| e.0 as u64)?;
         // Reject untrusted metadata before reading its contents.
-        let metadata = File { regular: inode.is_file(), uid: inode.uid() as u32,
-            mode: inode.i_mode, size: inode.size() as u64, data: &[] };
+        let metadata = File { regular: inode.kind == crate::fs::vfs::NodeKind::Regular,
+            uid: inode.attrs.uid, mode: inode.attrs.mode as u16, size: inode.size, data: &[] };
         if validate(kind_ref(&kind), Some(metadata)) == Err(Invalid::Metadata) {
             return Err(super::errno::EACCES as u64);
         }
-        let bytes = fs.read_file_content_coherent(ino, &inode).map_err(|_| super::errno::EIO as u64)?;
-        let file = File { regular: inode.is_file(), uid: inode.uid() as u32,
-            mode: inode.i_mode, size: inode.size() as u64, data: &bytes };
+        let bytes = crate::fs::vfs::read_config_node(&node, 65).map_err(|e| e.0 as u64)?;
+        let file = File { regular: inode.kind == crate::fs::vfs::NodeKind::Regular,
+            uid: inode.attrs.uid, mode: inode.attrs.mode as u16, size: inode.size, data: &bytes };
         validate(kind, Some(file)).map_err(|_| {
             #[cfg(target_arch = "x86_64")]
             { super::errno::EINVAL as u64 }

@@ -2,9 +2,7 @@
 //!
 //! Provides support for various filesystem types including ext2, devfs, and procfs.
 //!
-//! Note: The filesystem layer is complete but not yet integrated into
-//! kernel initialization. Call ext2::init_root_fs() to mount the root
-//! filesystem before using sys_open().
+//! Boot discovers on-disk formats through the VFS registry.
 
 // Allow dead code for filesystem modules until they are integrated into kernel init
 #![allow(dead_code)]
@@ -13,7 +11,13 @@ pub mod attrs;
 pub mod devfs;
 pub mod devptsfs;
 pub mod errno;
-pub mod ext2;
+macro_rules! filesystems {
+    ($($backend:ident),+ $(,)?) => {
+        $(pub mod $backend;)+
+        pub static FORMATS: &[vfs::Format] = &[$($backend::FORMAT),+];
+    };
+}
+filesystems! { ext2 }
 pub mod locks;
 pub mod namei;
 pub(crate) mod permissions;

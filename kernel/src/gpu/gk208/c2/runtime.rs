@@ -270,12 +270,9 @@ fn memx_compare(plan:&crate::gk208::memx::Plan,phase:&str,target:bool) {
     // A private diagnostic input supplies expected operations. Card-derived
     // streams are kept out of the kernel image and public source tree (K9).
     let text=(|| {
-        let root=crate::fs::ext2::root_fs_read().ok()?;
-        let fs=root.as_ref()?;
-        let n=fs.resolve_path("/etc/breenix/gt710-memx-expected").ok()?;
-        let inode=fs.read_inode(n).ok()?;
-        if inode.is_dir() || inode.size()>1<<20 {return None;}
-        alloc::string::String::from_utf8(fs.read_file_content_coherent(n,&inode).ok()?).ok()
+        alloc::string::String::from_utf8(
+            crate::fs::vfs::read_config("/etc/breenix/gt710-memx-expected", 1 << 20).ok()?
+        ).ok()
     })();
     for (i,op) in plan.ops.iter().enumerate() {
         crate::serial_println!("GT710_MEMX_OP phase={} ordinal={} code={} args={:?}",phase,i+1,op.code,op.args);
