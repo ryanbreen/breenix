@@ -19,6 +19,7 @@ pub enum Event {
     Complete(Op),
     Waiting(String),
     Returned(Op),
+    WaitReturning(String),
 }
 
 #[derive(Default)]
@@ -26,6 +27,8 @@ struct State {
     events: Vec<Event>,
     blocks: BTreeMap<u64, Vec<u8>>,
     hold_write: bool,
+    hold_read: bool,
+    hold_wait_return: bool,
     hold_flush: bool,
 }
 
@@ -52,6 +55,29 @@ impl RecordingDevice {
         self.changed.notify_all();
     }
 
+    pub fn hold_reads(&self, hold: bool) {
+        self.state.lock().unwrap().hold_read = hold;
+        self.changed.notify_all();
+    }
+
+    pub fn hold_wait_return(&self, hold: bool) {
+        self.state.lock().unwrap().hold_wait_return = hold;
+        self.changed.notify_all();
+    }
+
+    fn wait_return(&self) {
+        let mut s = self.state.lock().unwrap();
+        if s.hold_wait_return {
+            s.events.push(Event::WaitReturning(
+                std::thread::current().name().unwrap().to_owned(),
+            ));
+            self.changed.notify_all();
+            while s.hold_wait_return {
+                s = self.changed.wait(s).unwrap();
+            }
+        }
+    }
+
     pub fn until(&self, ready: impl Fn(&[Event]) -> bool) {
         let s = self.state.lock().unwrap();
         let (s, timeout) = self
@@ -70,6 +96,10 @@ impl BlockDevice for RecordingDevice {
     fn read_block(&self, block: u64, buf: &mut [u8]) -> Result<(), BlockError> {
         let mut s = self.state.lock().unwrap();
         s.events.push(Event::Issue(Op::Read(block)));
+        self.changed.notify_all();
+        while s.hold_read {
+            s = self.changed.wait(s).unwrap();
+        }
         buf[..SIZE].copy_from_slice(
             s.blocks
                 .get(&block)
@@ -144,6 +174,8 @@ impl Wait for HostWait {
         while *generation == observed {
             generation = self.changed.wait(generation).unwrap();
         }
+        drop(generation);
+        self.trace.wait_return();
     }
 
     fn wake_all(&self) {
