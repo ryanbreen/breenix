@@ -176,12 +176,8 @@ mod fault {
     use super::wait;
     pub fn run() -> Result<(), &'static str> {
         let mode = {
-            let guard = crate::fs::ext2::root_fs_read()?;
-            let fs = guard.as_ref().ok_or("fault root absent")?;
-            let number = fs.resolve_path("/etc/breenix/watchdog-fault")?;
-            let inode = fs.read_inode(number)?;
-            if inode.size() > 32 { return Err("fault intent too long"); }
-            let bytes = fs.read_file_content_coherent(number, &inode)?;
+            let bytes = crate::fs::vfs::read_config("/etc/breenix/watchdog-fault", 32)
+                .map_err(|_| "fault intent unreadable")?;
             match bytes.as_slice() { b"feeder-hang\n" => 1, b"health-hang\n" => 2, b"" => return Ok(()), _ => return Err("fault intent invalid") }
         };
         // Run independently of KCS initialization: a missing watchdog must
@@ -190,9 +186,11 @@ mod fault {
         if mode == 2 {
             // A real filesystem wedge: hold its writer forever while timer
             // interrupts and scheduling continue. The ordinary health read blocks.
-            let _guard = crate::fs::ext2::root_fs_write()?;
-            crate::serial_println!("\n[watchdog-fault] trigger health-hang");
-            loop { crate::arch_halt_with_interrupts(); }
+            return crate::fs::vfs::root_filesystem().map_err(|_| "fault root absent")?
+                .hold_writer(&|| {
+                    crate::serial_println!("\n[watchdog-fault] trigger health-hang");
+                    loop { crate::arch_halt_with_interrupts(); }
+                }).map_err(|_| "fault writer unavailable");
         }
         // Both this injector and the feeder are pinned to CPU 0; halting
         // this CPU prevents the feeder from running, independent of its state.

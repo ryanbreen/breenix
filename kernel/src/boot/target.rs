@@ -166,34 +166,20 @@ pub fn parse(text: &str) -> Result<Target, String> {
     }
 }
 
-/// Read the boot target from the mounted ext2 root. `Ok(None)` when there is no
-/// file (or no root filesystem); `Err` when the file exists but cannot be used.
+/// Read the boot target from the mounted root, distinguishing a missing file
+/// from unusable configuration.
 pub fn read() -> Result<Option<Target>, String> {
     if let Some(bytes) = crate::boot::intent::get() {
         let text = core::str::from_utf8(bytes).map_err(|_| String::from("boot intent is not text"))?;
         return parse(text).map(Some);
     }
-    let fs_guard = crate::fs::ext2::root_fs_read().map_err(String::from)?;
-    let Some(fs) = fs_guard.as_ref() else {
-        return Ok(None);
+    let bytes = match crate::fs::vfs::read_config(PATH, FILE_MAX as usize) {
+        Ok(bytes) => bytes,
+        Err(crate::fs::errno::Errno(crate::syscall::errno::ENOENT | crate::syscall::errno::ENODEV)) => return Ok(None),
+        Err(crate::fs::errno::Errno(crate::syscall::errno::EISDIR)) => return Err(String::from("it is a directory")),
+        Err(crate::fs::errno::Errno(crate::syscall::errno::EFBIG)) => return Err(String::from("expected one short line")),
+        Err(_) => return Err(String::from("cannot read it")),
     };
-    let Ok(inode_num) = fs.resolve_path(PATH) else {
-        return Ok(None);
-    };
-    let inode = fs
-        .read_inode(inode_num)
-        .map_err(|_| String::from("cannot read its inode"))?;
-    if inode.is_dir() {
-        return Err(String::from("it is a directory"));
-    }
-    let size = inode.size();
-    if size > FILE_MAX {
-        return Err(format!("it is {} bytes; expected one short line", size));
-    }
-    let bytes = fs
-        .read_file_content_coherent(inode_num, &inode)
-        .map_err(|_| String::from("cannot read it"))?;
-    drop(fs_guard);
     let text = core::str::from_utf8(&bytes).map_err(|_| String::from("it is not text"))?;
     parse(text).map(Some)
 }

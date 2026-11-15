@@ -8545,7 +8545,6 @@ fn test_arm64_socket_reset_quantum() -> TestResult {
 /// 4. Content verification (byte-by-byte comparison)
 #[cfg(target_arch = "aarch64")]
 fn test_filesystem_syscalls_aarch64() -> TestResult {
-    use crate::fs::ext2;
     use crate::syscall::errno::{EBADF, EFAULT, ENOSYS, ESRCH};
     use crate::syscall::fs::{sys_fstat, sys_getdents64, sys_lseek, SEEK_SET};
     use crate::syscall::SyscallResult;
@@ -8586,167 +8585,27 @@ fn test_filesystem_syscalls_aarch64() -> TestResult {
     // Part 2: Verify actual file content (the rigorous part)
     // =========================================================================
 
-    // Check if ext2 filesystem is mounted
-    if !ext2::is_mounted() {
-        return TestResult::Fail("ext2 filesystem not mounted");
+    for (path, expected) in [
+        ("/hello.txt", &b"Hello from ext2!\n"[..]),
+        ("/usr/libexec/breenix/test/nested.txt", &b"Nested file content\n"[..]),
+        ("/usr/libexec/breenix/deep/path/to/file/data.txt", &b"Deep nested content\n"[..]),
+    ] {
+        // read_config resolves and retains the VNode, checks regular-file type
+        // and reads through FileSystem; its bound rejects oversized fixtures.
+        let content = match crate::fs::vfs::read_config(path, expected.len()) {
+            Ok(content) => content,
+            Err(error) => {
+                log::error!("Failed to read {}: {}", path, error.0);
+                return TestResult::Fail("filesystem fixture read failed");
+            }
+        };
+        if content.as_slice() != expected {
+            log::error!("{} content mismatch: expected {:?}, got {:?}", path, expected, content);
+            return TestResult::Fail("filesystem fixture content mismatch");
+        }
     }
-
-    // Access the root filesystem
-    let Ok(fs_guard) = ext2::root_fs_read() else { return TestResult::Fail("ext2 acquisition interrupted"); };
-    let fs = match fs_guard.as_ref() {
-        Some(fs) => fs,
-        None => return TestResult::Fail("ext2 root_fs_read() returned None"),
-    };
-
-    // -------------------------------------------------------------------------
-    // Test 1: Read /hello.txt and verify content
-    // Expected content: "Hello from ext2!\n" (17 bytes)
-    // -------------------------------------------------------------------------
-    const HELLO_PATH: &str = "/hello.txt";
-    const HELLO_EXPECTED: &[u8] = b"Hello from ext2!\n";
-
-    // Step 1a: Resolve the path to an inode number
-    let hello_inode_num = match fs.resolve_path(HELLO_PATH) {
-        Ok(ino) => ino,
-        Err(e) => {
-            log::error!("Failed to resolve {}: {}", HELLO_PATH, e);
-            return TestResult::Fail("resolve_path failed for /hello.txt");
-        }
-    };
-
-    // Step 1b: Read the inode
-    let hello_inode = match fs.read_inode(hello_inode_num) {
-        Ok(inode) => inode,
-        Err(e) => {
-            log::error!("Failed to read inode {}: {}", hello_inode_num, e);
-            return TestResult::Fail("read_inode failed for /hello.txt");
-        }
-    };
-
-    // Step 1c: Verify it's a regular file
-    if !hello_inode.is_file() {
-        return TestResult::Fail("/hello.txt is not a regular file");
-    }
-
-    // Step 1d: Read the file content
-    let hello_content = match fs.read_file_content_coherent(hello_inode_num, &hello_inode) {
-        Ok(content) => content,
-        Err(e) => {
-            log::error!("Failed to read content of /hello.txt: {}", e);
-            return TestResult::Fail("read_file_content failed for /hello.txt");
-        }
-    };
-
-    // Step 1e: Verify content length
-    if hello_content.len() != HELLO_EXPECTED.len() {
-        log::error!(
-            "/hello.txt length mismatch: expected {}, got {}",
-            HELLO_EXPECTED.len(),
-            hello_content.len()
-        );
-        return TestResult::Fail("/hello.txt has wrong content length");
-    }
-
-    // Step 1f: Verify content bytes
-    if hello_content.as_slice() != HELLO_EXPECTED {
-        log::error!(
-            "/hello.txt content mismatch: expected {:?}, got {:?}",
-            core::str::from_utf8(HELLO_EXPECTED),
-            core::str::from_utf8(&hello_content)
-        );
-        return TestResult::Fail("/hello.txt content does not match expected");
-    }
-
-    // -------------------------------------------------------------------------
-    // Test 2: Read /test/nested.txt and verify content
-    // Expected content: "Nested file content\n" (20 bytes)
-    // -------------------------------------------------------------------------
-    const NESTED_PATH: &str = "/usr/libexec/breenix/test/nested.txt";
-    const NESTED_EXPECTED: &[u8] = b"Nested file content\n";
-
-    // Step 2a: Resolve the path
-    let nested_inode_num = match fs.resolve_path(NESTED_PATH) {
-        Ok(ino) => ino,
-        Err(e) => {
-            log::error!("Failed to resolve {}: {}", NESTED_PATH, e);
-            return TestResult::Fail("resolve_path failed for /test/nested.txt");
-        }
-    };
-
-    // Step 2b: Read the inode
-    let nested_inode = match fs.read_inode(nested_inode_num) {
-        Ok(inode) => inode,
-        Err(e) => {
-            log::error!("Failed to read inode {}: {}", nested_inode_num, e);
-            return TestResult::Fail("read_inode failed for /test/nested.txt");
-        }
-    };
-
-    // Step 2c: Read and verify content
-    let nested_content = match fs.read_file_content_coherent(nested_inode_num, &nested_inode) {
-        Ok(content) => content,
-        Err(e) => {
-            log::error!("Failed to read content of /test/nested.txt: {}", e);
-            return TestResult::Fail("read_file_content failed for /test/nested.txt");
-        }
-    };
-
-    if nested_content.as_slice() != NESTED_EXPECTED {
-        log::error!(
-            "/usr/libexec/breenix/test/nested.txt content mismatch: expected {:?}, got {:?}",
-            core::str::from_utf8(NESTED_EXPECTED),
-            core::str::from_utf8(&nested_content)
-        );
-        return TestResult::Fail("/usr/libexec/breenix/test/nested.txt content mismatch");
-    }
-
-    // -------------------------------------------------------------------------
-    // Test 3: Read a deeply nested file to test multi-level path resolution
-    // Expected content: "Deep nested content\n" (20 bytes)
-    // -------------------------------------------------------------------------
-    const DEEP_PATH: &str = "/usr/libexec/breenix/deep/path/to/file/data.txt";
-    const DEEP_EXPECTED: &[u8] = b"Deep nested content\n";
-
-    let deep_inode_num = match fs.resolve_path(DEEP_PATH) {
-        Ok(ino) => ino,
-        Err(e) => {
-            log::error!("Failed to resolve {}: {}", DEEP_PATH, e);
-            return TestResult::Fail("resolve_path failed for deep path");
-        }
-    };
-
-    let deep_inode = match fs.read_inode(deep_inode_num) {
-        Ok(inode) => inode,
-        Err(e) => {
-            log::error!("Failed to read deep inode: {}", e);
-            return TestResult::Fail("read_inode failed for deep path");
-        }
-    };
-
-    let deep_content = match fs.read_file_content_coherent(deep_inode_num, &deep_inode) {
-        Ok(content) => content,
-        Err(e) => {
-            log::error!("Failed to read deep file content: {}", e);
-            return TestResult::Fail("read_file_content failed for deep path");
-        }
-    };
-
-    if deep_content.as_slice() != DEEP_EXPECTED {
-        return TestResult::Fail("deep file content mismatch");
-    }
-
-    // -------------------------------------------------------------------------
-    // Test 4: Verify error handling for non-existent file
-    // -------------------------------------------------------------------------
-    const NONEXISTENT_PATH: &str = "/this/path/does/not/exist.txt";
-
-    match fs.resolve_path(NONEXISTENT_PATH) {
-        Ok(_) => {
-            return TestResult::Fail("resolve_path succeeded for non-existent file");
-        }
-        Err(_) => {
-            // Expected - file should not exist
-        }
+    if crate::fs::namei::resolve_file("/this/path/does/not/exist.txt").is_ok() {
+        return TestResult::Fail("resolve_path succeeded for non-existent file");
     }
 
     log::info!(

@@ -565,8 +565,14 @@ fn resize_shrink_then_grow_reads_zeros() {
         .map(|r| r.bytes),
         Ok(data.len())
     );
-    fs.resize(&node, 37, false).unwrap();
-    fs.resize(&node, data.len() as u64, false).unwrap();
+    // Resize policy runs under mutation exclusion before size or data changes.
+    assert_eq!(fs.resize(&node, 37, false, &|current| {
+        assert_eq!(current.size, data.len() as u64);
+        Err(Errno(EACCES))
+    }), Err(Errno(EACCES)));
+    assert_eq!(fs.getattr(ino).unwrap().size, data.len() as u64);
+    fs.resize(&node, 37, false, &|_| Ok(())).unwrap();
+    fs.resize(&node, data.len() as u64, false, &|_| Ok(())).unwrap();
     let mut bytes = vec![0xa5; data.len()];
     assert_eq!(fs.read(&node, 0, &mut bytes), Ok(bytes.len()));
     assert_eq!(&bytes[..37], &[0x5a; 37]);
@@ -729,7 +735,7 @@ fn read_only_mount_write_is_erofs() {
         .map(|r| r.bytes),
         Err(Errno(EROFS))
     );
-    assert_eq!(fs.resize(&node, 1, false), Err(Errno(EROFS)));
+    assert_eq!(fs.resize(&node, 1, false, &|_| Ok(())), Err(Errno(EROFS)));
     assert_eq!(
         fs.setattr(
             ino,
@@ -930,9 +936,9 @@ fn append_reports_offset_and_clears_setid() {
         },
     )
     .unwrap();
-    fs.resize(&node, 3, false).unwrap();
+    fs.resize(&node, 3, false, &|_| Ok(())).unwrap();
     assert_eq!(fs.getattr(ino).unwrap().attrs.mode & 0o7777, 0o6750);
-    fs.resize(&node, 8, true).unwrap();
+    fs.resize(&node, 8, true, &|_| Ok(())).unwrap();
     assert_eq!(fs.getattr(ino).unwrap().attrs.mode & 0o7777, 0o750);
 }
 
@@ -1131,5 +1137,100 @@ fn removal_rechecks_identity_owner_and_parent_policy() {
         assert_eq!(fs.lookup(root, b"moved"), Err(Errno(ENOENT)));
         fs.remove(root, b"victim", Remove { expected: replacement, owner, ..request }).unwrap();
         fs.setattr(root, SetAttr { mode: Some(0o755), ..SetAttr::default() }).unwrap();
+    }
+}
+
+#[test]
+fn exec_image_returns_bytes_and_setid_identity() {
+    use crate::attrs::MountFlags;
+    use crate::permissions::Credentials;
+    let disk = Fixture::new();
+    let fs = Ext2Adapter::new(disk.pin());
+    let root = fs.root().unwrap();
+    let ino = regular(&fs, root, b"program");
+    let node = fs.open(ino).unwrap();
+    // Cross the loader's chunk boundary so copying cannot stop at its first read.
+    let bytes: Vec<u8> = (0..70001).map(|n| (n % 251) as u8).collect();
+    fs.write(&node, WriteReq { at: WriteAt::Offset(0), limit: u64::MAX, clear_setid: false }, &bytes).unwrap();
+    fs.setattr(ino, SetAttr { mode: Some(0o4755), ..SetAttr::default() }).unwrap();
+    let mut user = Credentials::kernel();
+    user.euid = 90000;
+    user.egid = 90001;
+    let (image, identity) = crate::exec::read_image(&fs, &node, MountFlags::default(), &user, || false).unwrap();
+    assert_eq!(image, bytes);
+    assert_eq!((identity.uid, identity.gid), (Some(70000), None));
+    fs.setattr(ino, SetAttr { mode: Some(0o4644), ..SetAttr::default() }).unwrap();
+    assert_eq!(crate::exec::read_image(&fs, &node, MountFlags::default(), &user, || false).err(), Some(Errno(EACCES)));
+    assert_eq!(crate::exec::read_image(&fs, &fs.open(root).unwrap(), MountFlags::default(), &user, || false).err(), Some(Errno(EISDIR)));
+}
+
+#[test]
+fn getcwd_walk_names_each_ancestor() {
+    let disk = Fixture::new();
+    let fs = Ext2Adapter::new(disk.pin());
+    let root = fs.root().unwrap();
+    let a = fs.create(root, b"first", NewNode::Directory { attrs: attrs(0o755) }).unwrap();
+    let b = fs.create(a, b"second", NewNode::Directory { attrs: attrs(0o755) }).unwrap();
+    let c = fs.create(b, b"third-\xff", NewNode::Directory { attrs: attrs(0o755) }).unwrap();
+    let leaf = fs.lookup_open(&fs.open(b).unwrap(), b"third-\xff").unwrap();
+    assert_eq!(leaf.ino, c);
+    // A rename of an ancestor must be reflected without a saved pathname.
+    fs.rename(root, b"first", root, b"renamed", RenameMode::Replace,
+        &|_, _, _, _| Ok(())).unwrap();
+    let mut node = leaf;
+    let mut names = Vec::new();
+    let mut parents = Vec::new();
+    while node.ino != root {
+        let (parent, name) = crate::vfs::names::parent_name(&node).unwrap();
+        names.push(name);
+        parents.push(parent.ino);
+        node = parent;
+    }
+    assert_eq!(parents, [b, a, root]);
+    assert_eq!(names, [b"third-\xff".to_vec(), b"second".to_vec(), b"renamed".to_vec()]);
+}
+
+#[test]
+fn live_check_reads_metadata_and_propagates_device_errors() {
+    use crate::block::{BlockDevice, BlockError};
+    use std::sync::{Arc, Mutex};
+    struct Reads {
+        inner: Box<dyn BlockDevice>,
+        failed_sector: Arc<Mutex<Option<u64>>>,
+        seen: Arc<Mutex<Vec<u64>>>,
+    }
+    impl BlockDevice for Reads {
+        fn read_block(&self, sector: u64, out: &mut [u8]) -> Result<(), BlockError> {
+            self.seen.lock().unwrap().push(sector);
+            if *self.failed_sector.lock().unwrap() == Some(sector) { return Err(BlockError::IoError); }
+            self.inner.read_block(sector, out)
+        }
+        fn write_block(&self, sector: u64, bytes: &[u8]) -> Result<(), BlockError> { self.inner.write_block(sector, bytes) }
+        fn block_size(&self) -> usize { self.inner.block_size() }
+        fn num_blocks(&self) -> u64 { self.inner.num_blocks() }
+        fn flush(&self) -> Result<(), BlockError> { self.inner.flush() }
+    }
+    let disk = Fixture::new();
+    let failed_sector = Arc::new(Mutex::new(None));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    {
+        let mut guard = crate::host_mounts::write_mount(disk.pin()).unwrap();
+        let fs = guard.as_mut().unwrap();
+        fs.superblock.s_magic = 0xef53;
+        fs.superblock.write_to(fs.device.as_ref()).unwrap();
+        let inner = std::mem::replace(&mut fs.device, crate::host_mounts::zeroed_device());
+        fs.device = Box::new(Reads { inner, failed_sector: failed_sector.clone(), seen: seen.clone() });
+    }
+    let adapter = Ext2Adapter::new(disk.pin());
+    adapter.check_live().unwrap();
+    // Fixture geometry: superblock at byte 1024, descriptors at block 1,
+    // root inode in table block 8; sectors are 512 bytes, blocks 4096 bytes.
+    let sectors = seen.lock().unwrap().clone();
+    for sector in [2, 8, 64] {
+        assert!(sectors.contains(&sector), "health omitted sector {sector}: {sectors:?}");
+        *failed_sector.lock().unwrap() = Some(sector);
+        assert_eq!(adapter.check_live(), Err(Errno(EIO)));
+        *failed_sector.lock().unwrap() = None;
+        adapter.check_live().unwrap();
     }
 }

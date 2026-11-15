@@ -3,16 +3,30 @@
 //! Backends take their own locks; inode numbers crossing this boundary are u64.
 
 use crate::fs::{attrs::InodeAttrs, errno::Errno};
+use crate::memory::file_map::MapState;
 use crate::syscall::errno::EOPNOTSUPP;
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{any::Any, sync::atomic::AtomicU64};
 use spin::Mutex;
 
 pub use crate::fs::attrs::MountFlags;
 pub mod attributes;
+pub mod format;
+#[cfg(feature = "fs_fault_inject")]
+pub mod fault;
+pub use format::{BootMount, Format, probe_mount};
+#[cfg(not(test))]
+pub mod boot;
+#[cfg(not(test))]
+pub use boot::*;
+
+#[derive(Clone, Copy)]
+pub enum Report { Allocation, State }
+
+#[cfg(not(test))]
+pub mod exec;
 pub mod file;
 pub mod mount_table;
-#[cfg(not(test))]
 pub mod names;
 #[cfg(not(test))]
 pub mod mount;
@@ -45,12 +59,14 @@ pub struct NodeTimes {
 }
 
 /// An open inode. The opaque backend pin retains its incarnation; dropping it
-/// must do no I/O. MapState stays in ext2 until the mmap migration in 24.6.
+/// must do no I/O. Opens of one incarnation share its size and mapping state.
 pub struct VNode {
     pub mount: usize,
     pub ino: u64,
     pub incarnation: u64,
-    pub size: AtomicU64,
+    pub size: Arc<AtomicU64>,
+    pub map: MapState,
+    pub filesystem: Arc<dyn FileSystem>,
     pub times: Mutex<NodeTimes>,
     backend_pin: Arc<dyn Any + Send + Sync>,
 }
@@ -61,13 +77,32 @@ impl VNode {
         incarnation: u64,
         size: u64,
         times: NodeTimes,
+        filesystem: Arc<dyn FileSystem>,
+        durable_epoch: u64,
         pin: Arc<dyn Any + Send + Sync>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, Errno> {
+        Ok(Self {
             mount,
             ino,
             incarnation,
-            size: AtomicU64::new(size),
+            size: Arc::try_new(AtomicU64::new(size))
+                .map_err(|_| Errno(crate::syscall::errno::ENOMEM))?,
+            map: MapState::new(size, durable_epoch, filesystem.clone())?,
+            filesystem,
+            times: Mutex::new(times),
+            backend_pin: pin,
+        })
+    }
+
+    /// Retain the backend observer while sharing the incarnation's cache.
+    pub fn reopen(&self, times: NodeTimes, pin: Arc<dyn Any + Send + Sync>) -> Self {
+        Self {
+            mount: self.mount,
+            ino: self.ino,
+            incarnation: self.incarnation,
+            size: self.size.clone(),
+            map: self.map.clone(),
+            filesystem: self.filesystem.clone(),
             times: Mutex::new(times),
             backend_pin: pin,
         }
@@ -77,6 +112,33 @@ impl VNode {
     pub fn pin<T: Any>(&self) -> Option<&T> {
         self.backend_pin.downcast_ref()
     }
+}
+
+impl core::fmt::Debug for VNode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("VNode")
+            .field("mount", &self.mount)
+            .field("ino", &self.ino)
+            .field("incarnation", &self.incarnation)
+            .finish_non_exhaustive()
+    }
+}
+/// A pinned transfer excludes content mutations until dropped. Data I/O holds
+/// no process-manager or mapping lock. Publication takes the filesystem guard
+/// before entering the caller's short process-manager section.
+pub trait MappingIo: Any {
+    fn as_any(&self) -> &dyn Any;
+    fn size(&self) -> u64;
+    fn read(&self, offset: u64, length: usize) -> Result<Vec<u8>, Errno>;
+    fn needs_flush(&self) -> bool;
+    fn sync(&self, first: u64, last: u64) -> Result<(), Errno>;
+    fn publish(&self, bind: &mut dyn FnMut(bool) -> Result<(), Errno>) -> Result<(), Errno>;
+}
+
+/// Read repair while the backend caller already holds mutation exclusion.
+/// Reserved for mutation completion; see docs/fs/cowfs-design.md section 1.1.
+pub trait MappingRead {
+    fn read_mapping_page(&self, ino: u64, offset: u64, length: usize) -> Result<Vec<u8>, Errno>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -214,7 +276,6 @@ pub enum Xattr<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StatFs {
     pub magic: u64,
-    pub fsid: u64,
     pub block_size: u64,
     pub blocks: u64,
     pub free_blocks: u64,
@@ -233,6 +294,14 @@ pub trait FileSystem: core::any::Any + Send + Sync {
     fn root(&self) -> Result<u64, Errno>;
     fn statfs(&self) -> Result<StatFs, Errno>;
     fn sync(&self) -> Result<(), Errno>;
+    /// Verify mounted storage with backend I/O before a watchdog feed.
+    fn check_live(&self) -> Result<(), Errno> { Err(Errno(EOPNOTSUPP)) }
+    /// Hold mutation exclusion while a watchdog fault leaves scheduling alive.
+    #[cfg(feature = "watchdog_fault_inject")]
+    fn hold_writer(&self, held: &dyn Fn()) -> Result<(), Errno> { let _ = held; Err(Errno(EOPNOTSUPP)) }
+    fn init_service(&self) -> Result<(), Errno> { Ok(()) }
+    fn shutdown(&self, _name: &str, _deadline: u64) -> Result<(), Errno> { Err(Errno(EOPNOTSUPP)) }
+    fn report(&self, _report: Report, _name: &str, _text: &mut alloc::string::String) -> Result<(), Errno> { Ok(()) }
     fn read_only(&self) -> Result<bool, Errno>;
     fn max_file_size(&self) -> Result<u64, Errno>;
     // Inode
@@ -241,6 +310,12 @@ pub trait FileSystem: core::any::Any + Send + Sync {
     fn open(&self, ino: u64) -> Result<Arc<VNode>, Errno>;
     // Names
     fn lookup(&self, dir: u64, name: &[u8]) -> Result<u64, Errno>;
+    /// Lookup and retain the child under the same namespace exclusion, so its
+    /// inode number cannot be recycled between lookup and open.
+    fn lookup_open(&self, dir: &VNode, name: &[u8]) -> Result<Arc<VNode>, Errno>;
+    /// Queue stream timestamps without I/O, allocation or blocking locks.
+    /// Safe while the caller holds a FIFO entry lock, including under PM.
+    fn touch(&self, node: &VNode, read: bool);
     /// Parent inode exposed by `..`, including the backend's selected namespace.
     fn parent(&self, dir: u64) -> Result<u64, Errno>;
     /// The cookie returned is after the last accepted entry. A sink returning
@@ -287,15 +362,34 @@ pub trait FileSystem: core::any::Any + Send + Sync {
     fn write(&self, _node: &VNode, _req: WriteReq, _buf: &[u8]) -> Result<WriteResult, WriteError> {
         Err(Errno(EOPNOTSUPP).into())
     }
-    fn resize(&self, _node: &VNode, _size: u64, _clear_setid: bool) -> Result<(), Errno> {
+    /// Evaluate VFS policy on fresh metadata after waiting for mutation exclusion.
+    /// A policy error leaves the inode and mappings unchanged.
+    fn resize(
+        &self, _node: &VNode, _size: u64, _clear_setid: bool,
+        _check: &dyn Fn(NodeAttrs) -> Result<(), Errno>,
+    ) -> Result<(), Errno> {
         Err(Errno(EOPNOTSUPP))
     }
     fn fsync(&self, _node: &VNode, _data_only: bool) -> Result<(), Errno> {
         Err(Errno(EOPNOTSUPP))
     }
-    fn writeback_pages(&self, _node: &VNode, _page: u64, _bytes: &[u8]) -> Result<(), Errno> {
+    fn writeback_pages(
+        &self,
+        _node: &VNode,
+        _page: u64,
+        _bytes: &[u8],
+        _io: &dyn MappingIo,
+    ) -> Result<(), Errno> {
         Err(Errno(EOPNOTSUPP))
     }
+    fn mapping_io(&self, _node: &VNode) -> Result<Box<dyn MappingIo>, Errno> {
+        Err(Errno(EOPNOTSUPP))
+    }
+    fn clear_mapping_privilege(&self, _node: &VNode) -> Result<(), Errno> {
+        Err(Errno(EOPNOTSUPP))
+    }
+    /// Must be nonblocking and safe under PROCESS_MANAGER, including on drop.
+    fn request_eviction(&self) {}
     // Xattrs (no syscall consumer yet).
     fn xattr(&self, _ino: u64, _op: Xattr<'_>) -> Result<usize, Errno> {
         Err(Errno(EOPNOTSUPP))

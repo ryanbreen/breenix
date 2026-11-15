@@ -1018,7 +1018,7 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::XhciCounters => text(xhci::generate_xhci_counters()),
         ProcEntryType::XhciPointers => text(crate::drivers::xhci::describe_pointers()),
         ProcEntryType::Ext2 => generate_ext2().map(String::into_bytes),
-        ProcEntryType::Filesystems => crate::fs::ext2::filesystem_states().map(String::into_bytes).map_err(|_| -5),
+        ProcEntryType::Filesystems => crate::fs::vfs::report(crate::fs::vfs::Report::State).map(String::into_bytes).map_err(|_| -5),
         ProcEntryType::Frames => generate_frames().map(String::into_bytes),
         ProcEntryType::InputLedger => text(crate::input::stream::ledger()),
         // syscall/fs.rs opens the live input::control descriptor for I/O.
@@ -1129,24 +1129,7 @@ pub fn read_file(path: &str) -> Result<Vec<u8>, i32> {
 /// Settle queued orphan reclamation before snapshotting allocation counters
 /// and their persisted counterparts. Failures reach the reader.
 fn generate_ext2() -> Result<String, i32> {
-    use crate::fs::ext2;
-    use core::fmt::Write;
-    let mut text = String::new();
-    for home in [false, true] {
-        let guard = ext2::accounting_fs_write(home).map_err(|_| 5)?;
-        let name = if home { "home" } else { "root" };
-        if let Some(fs) = guard.as_ref() {
-            // Read from the device itself, not the mount's copy of what it wrote.
-            let (disk, groups) = fs.persisted_metadata().map_err(|_| 5)?;
-            let free = fs.superblock.s_free_blocks_count;
-            let disk_free = disk.s_free_blocks_count;
-            let group_free: u64 = fs.block_groups.iter().map(|g| g.bg_free_blocks_count as u64).sum();
-            let disk_group_free: u64 = groups.iter().map(|g| g.bg_free_blocks_count as u64).sum();
-            writeln!(text, "{} {} {} {} {} {}", name, fs.superblock.block_size(),
-                free, disk_free, group_free, disk_group_free).map_err(|_| 5)?;
-        }
-    }
-    Ok(text)
+    crate::fs::vfs::report(crate::fs::vfs::Report::Allocation).map_err(|_| 5)
 }
 
 /// Generate /proc/uptime content

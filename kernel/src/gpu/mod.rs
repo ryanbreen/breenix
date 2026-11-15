@@ -5898,12 +5898,8 @@ pub fn observe_screen_crc(request: abi::screen::CrcRequest<'_>) -> Result<(), i6
 
 fn screen_proof_enabled() -> bool {
     if crate::drivers::fw_cfg::read_string("opt/breenix/screen-proof").is_some_and(|s|s.trim()=="on") { return true; }
-    let Ok(guard) = crate::fs::ext2::root_fs_read() else { return false; };
-    let Some(fs) = guard.as_ref() else { return false; };
-    let Ok(number) = fs.resolve_path("/etc/breenix/screen-proof") else { return false; };
-    let Ok(inode) = fs.read_inode(number) else { return false; };
-    if inode.is_dir() || inode.size() > 16 { return false; }
-    fs.read_file_content_coherent(number, &inode).is_ok_and(|b|b.as_slice() == b"on\n" || b.as_slice() == b"on")
+    crate::fs::vfs::read_config("/etc/breenix/screen-proof", 16)
+        .is_ok_and(|b| b.as_slice() == b"on\n" || b.as_slice() == b"on")
 }
 
 static DISPLAY_CRC_SUMMARY: spin::Mutex<Option<alloc::string::String>> = spin::Mutex::new(None);

@@ -119,7 +119,8 @@ fn every_ext2_error_literal_is_classified() {
 
 #[test]
 fn mapped_allocation_errors_are_enomem() {
-    for message in ["Out of memory for file mapping", "Out of memory for writeback", "Out of memory for file page"] {
+    for message in ["Out of memory for file mapping", "Out of memory for writeback", "Out of memory for file page",
+        "No memory for inode filesystem", "No memory for inode mapping state", "No memory for inode pin"] {
         assert_eq!(errno(message), Errno(ENOMEM), "{message}");
     }
     assert_eq!(errno("Short mapped writeback"), Errno(EIO));

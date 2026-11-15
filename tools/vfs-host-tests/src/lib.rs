@@ -29,18 +29,10 @@ pub mod host_mounts;
 #[path = "../../../kernel/src/fs/vfs/mod.rs"]
 pub mod vfs;
 pub mod ext2 {
+    pub use crate::host_mounts::{mount_root_device, mount_home_device};
     pub use crate::host_mounts::{read_mount, read_mount as sync_mount_guard, write_mount};
     pub use crate::storage::rename::RenameError;
     pub use crate::storage::*;
-    pub mod mapped_io {
-        pub fn write_mapped_range(
-            _handle: &super::live_inode::FileHandle,
-            _offset: u64,
-            _bytes: &[u8],
-        ) -> Result<usize, &'static str> {
-            Err("Host harness has no mapped pages")
-        }
-    }
     pub mod live_inode {
         pub use crate::host_mounts::MountPin;
         pub use crate::storage::live_inode::*;
@@ -48,6 +40,7 @@ pub mod ext2 {
 }
 pub mod fs {
     pub use crate::{attrs, errno, ext2, vfs, permissions};
+    pub use crate::statfs_support::{namei, ufs};
 }
 pub fn arch_without_interrupts<R>(f: impl FnOnce() -> R) -> R {
     f()
@@ -66,12 +59,23 @@ mod vfs_host_tests;
 // Mapped-page sync is kernel-only; storage::FileMap::has_dirty returns false here.
 pub mod memory {
     pub mod file_map {
-        pub fn sync_range(
-            _handle: &crate::ext2::live_inode::FileHandle,
+        // Disk-only conformance fixtures have no mapped frames.
+        #[derive(Clone)]
+        pub struct MapState;
+        impl MapState {
+            pub fn new(
+                _size: u64, _epoch: u64,
+                _fs: alloc::sync::Arc<dyn crate::vfs::FileSystem>,
+            ) -> Result<Self, crate::errno::Errno> { Ok(Self) }
+            pub fn has_dirty(&self) -> bool { false }
+            pub fn may_change_exec_image(&self) -> bool { false }
+        }
+        pub fn sync_range<T: ?Sized>(
+            _node: &T,
             _first: u64,
             _last: u64,
-        ) -> Result<(), &'static str> {
-            Err("Host harness has no mapped pages")
+        ) -> Result<(), crate::errno::Errno> {
+            Err(crate::errno::Errno(crate::syscall::errno::EOPNOTSUPP))
         }
     }
 }
@@ -86,3 +90,14 @@ pub mod permissions;
 pub mod credentials;
 mod attribute_support;
 pub use attribute_support::{process, task, test_control};
+
+#[path = "../../../kernel/src/fs/vfs/exec.rs"]
+pub mod exec;
+
+pub use vfs::format;
+#[path = "../../../kernel/src/fs/ext2/format.rs"]
+pub mod ext2_format;
+#[path = "../tests/boot_mount_tests.rs"]
+mod boot_mount_tests;
+
+pub mod statfs_support;

@@ -156,6 +156,14 @@ impl Fixture {
             fail_write,
         )
     }
+    pub fn device_image(&self) -> Box<dyn block::BlockDevice> {
+        let guard = read_mount(self.0).unwrap();
+        let fs = guard.as_ref().unwrap();
+        let mut bytes = vec![0; 512 * 4096];
+        fs.device.read_blocks(0, 4096, &mut bytes).unwrap();
+        bytes[1024 + 56..1024 + 58].copy_from_slice(&0xef53u16.to_le_bytes());
+        Box::new(Disk(Mutex::new(bytes), Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false))))
+    }
     pub fn fail_next_write(&self) {
         self.2.store(true, Ordering::Release);
     }
@@ -176,3 +184,17 @@ impl Drop for Fixture {
         MOUNTS.lock().unwrap().remove(&self.0.mount_id);
     }
 }
+
+pub fn zeroed_device() -> Box<dyn block::BlockDevice> {
+    Box::new(Disk(Mutex::new(vec![0; 512 * 4096]), Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false))))
+}
+
+pub fn mount_root_device(device: Box<dyn block::BlockDevice>) -> Result<Arc<dyn crate::vfs::FileSystem>, &'static str> {
+    let sb = Ext2Superblock::read_from(device.as_ref()).map_err(|_| "superblock")?;
+    let groups = Ext2BlockGroupDesc::read_table(device.as_ref(), &sb).map_err(|_| "groups")?;
+    let fs = Ext2Fs::host_new(device, sb, groups);
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    MOUNTS.lock().unwrap().insert(id, Some(fs));
+    Ok(Arc::new(crate::adapter::Ext2Adapter::new(MountPin { mount_id: id, instance: id as u64 })))
+}
+pub use mount_root_device as mount_home_device;

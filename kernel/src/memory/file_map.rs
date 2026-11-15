@@ -1,6 +1,6 @@
 //! File mappings with shared dirty-page custody.
 //!
-//! Each live inode carries a cache of resident file pages and a reverse map of
+//! Each VNode carries a cache of resident file pages and a reverse map of
 //! the bindings (one per file VMA) that may map them. Page-table entries are
 //! installed only by faults, from the cache. Everything that runs after the
 //! disk has changed only removes entries, so no step there can fail for want
@@ -19,17 +19,22 @@
 //! and the poison set are sorted vectors for that reason: inserting into
 //! reserved capacity, draining a range and truncating never allocate.
 //!
-//! Lock order: ext2 mount guard, PROCESS_MANAGER, live-inode table, `MapState`,
+//! Lock order: filesystem, PROCESS_MANAGER, VNode table, `MapState`,
 //! frame ledger and allocator. Signal-frame delivery also takes `MapState`
-//! under PROCESS_MANAGER with interrupts masked. The inode table may take
+//! under PROCESS_MANAGER with interrupts masked. The VNode table may take
 //! `MapState` without PM.
-//! No disk I/O runs under PROCESS_MANAGER or `MapState`. No path
-//! takes an ext2 guard with PROCESS_MANAGER held: faults never touch the
+//! The exec/mmap binding gate is acquired after a transfer lease and before
+//! filesystem/PROCESS_MANAGER guards. It spans the image copy, separately from
+//! the page-cache mutex. No disk I/O runs under PROCESS_MANAGER or that mutex. No path
+//! takes a filesystem guard with PROCESS_MANAGER held: faults never touch the
 //! filesystem, and mmap releases PROCESS_MANAGER before taking the mount guard.
+//! claim-lint:ok: Lock and fault contract in docs/fs/cowfs-design.md section 1.1.
 
 #[cfg(not(target_arch = "x86_64"))]
 use super::arch_stub::{Page, PageTableFlags, PhysFrame, Size4KiB, VirtAddr};
-use crate::fs::ext2::{live_inode::FileHandle, Ext2Fs};
+use crate::fs::errno::Errno;
+use crate::fs::vfs::{FileSystem, MappingIo, MappingRead, VNode};
+use alloc::{boxed::Box, sync::Arc};
 use crate::memory::{
     process_memory::{ProcessPageTable, Revoked, COW_FLAG},
     vma::{MmapFlags, Protection, Vma},
@@ -66,50 +71,46 @@ pub(crate) fn writeback_buffer() -> Result<Vec<u8>, &'static str> {
 /// Synchronous writeback walks the requested range once, reusing a bounded
 /// copy buffer and releasing the mount guard between batches. A live writer
 /// can keep earlier pages dirty without causing this call to loop over them.
-pub(crate) fn sync_range(
-    handle: &FileHandle,
-    first: u64,
-    last: u64,
-) -> Result<(), &'static str> {
-    let mut bytes = writeback_buffer()?;
-    sync_range_with_buffer(handle, first, last, &mut bytes)
+pub(crate) fn sync_range(handle: &VNode, first: u64, last: u64) -> Result<(), Errno> {
+    let mut bytes = writeback_buffer().map_err(|_| Errno(crate::syscall::errno::ENOMEM))?;
+    write_range_with_buffer(handle, first, last, &mut bytes, true)
 }
 
 pub(crate) fn sync_range_with_buffer(
-    handle: &FileHandle,
+    handle: &VNode,
     first: u64,
     last: u64,
     bytes: &mut [u8],
 ) -> Result<(), &'static str> {
-    write_range_with_buffer(handle, first, last, bytes, true)
+    write_range_with_buffer(handle, first, last, bytes, true).map_err(|_| "Failed mapped sync")
 }
 
 /// Global sync stages each inode, then leases those identities across its
 /// detached device barrier before completing their clean candidates.
 pub(crate) fn stage_range_with_buffer(
-    handle: &FileHandle,
+    handle: &VNode,
     first: u64,
     last: u64,
     bytes: &mut [u8],
 ) -> Result<(), &'static str> {
-    write_range_with_buffer(handle, first, last, bytes, false)
+    write_range_with_buffer(handle, first, last, bytes, false).map_err(|_| "Failed mapped staging")
 }
 
 fn write_range_with_buffer(
-    handle: &FileHandle,
+    handle: &VNode,
     mut first: u64,
     last: u64,
     bytes: &mut [u8],
     flush: bool,
-) -> Result<(), &'static str> {
-    let _sync = SyncMaps::new(core::slice::from_ref(handle));
+) -> Result<(), Errno> {
+    let _sync = SyncMaps::new(core::slice::from_ref(&handle));
     let range_first = first;
     loop {
-        let next = handle.object.map.writeback(handle, first, last, WRITEBACK_PAGES, bytes)?;
+        let next = handle.map.writeback(handle, first, last, WRITEBACK_PAGES, bytes)?;
         if flush && (next.is_none() || next.is_some_and(|next| next >= last)) {
-            let file = crate::fs::ext2::mapped_io::DataFile::open(handle)?;
+            let file = handle.filesystem.mapping_io(handle)?;
             let result = file.sync(range_first, last);
-            if result.is_err() { handle.object.map.request_writeback(); }
+            if result.is_err() { handle.map.request_writeback(); }
             result?;
         }
         let Some(next) = next else {
@@ -124,25 +125,25 @@ fn write_range_with_buffer(
 
 /// A foreground traversal keeps the service from taking an intermediate
 /// barrier between its bounded batches. The last caller restores its wake.
-pub(crate) struct SyncMaps<'a> {
-    handles: &'a [FileHandle],
+pub(crate) struct SyncMaps<'a, T: core::ops::Deref<Target = VNode>> {
+    handles: &'a [T],
 }
 
-impl<'a> SyncMaps<'a> {
-    pub(crate) fn new(handles: &'a [FileHandle]) -> Self {
+impl<'a, T: core::ops::Deref<Target = VNode>> SyncMaps<'a, T> {
+    pub(crate) fn new(handles: &'a [T]) -> Self {
         for handle in handles {
-            handle.object.map.syncers.fetch_add(1, Ordering::AcqRel);
+            handle.map.state.syncers.fetch_add(1, Ordering::AcqRel);
         }
         Self { handles }
     }
 }
 
-impl Drop for SyncMaps<'_> {
+impl<T: core::ops::Deref<Target = VNode>> Drop for SyncMaps<'_, T> {
     fn drop(&mut self) {
         for handle in self.handles {
-            let map = &handle.object.map;
-            if map.syncers.fetch_sub(1, Ordering::AcqRel) == 1 && map.writeback_pending() {
-                crate::fs::ext2::request_map_eviction();
+            let map = &handle.map;
+            if map.state.syncers.fetch_sub(1, Ordering::AcqRel) == 1 && map.writeback_pending() {
+                handle.filesystem.request_eviction();
             }
         }
     }
@@ -157,9 +158,18 @@ fn pages(size: u64) -> u64 {
     size.div_ceil(PAGE_SIZE)
 }
 
-#[derive(Debug)]
+/// Opens of one incarnation share custody; cloning this state does not copy
+/// cached frames, reverse maps or durability generations.
+#[derive(Clone)]
 pub struct MapState {
+    state: Arc<MapShared>,
+}
+
+struct MapShared {
+    filesystem: Arc<dyn FileSystem>,
     inner: Mutex<MapInner>,
+    /// Exec copies exclude new mmap publication without holding the page-map lock.
+    binding_gate: spin::RwLock<()>,
     eviction_pending: AtomicBool,
     resident: AtomicBool,
     dirty: AtomicBool,
@@ -425,14 +435,14 @@ impl Drop for CachePage {
 #[derive(Debug)]
 pub struct Binding {
     id: u64,
-    handle: FileHandle,
+    handle: Arc<VNode>,
 }
 
 impl Drop for Binding {
     fn drop(&mut self) {
-        let map = &self.handle.object.map;
+        let map = &self.handle.map;
         let (removed, cached) = {
-            let mut inner = map.inner.lock();
+            let mut inner = map.state.inner.lock();
             let removed = inner
                 .bindings
                 .iter()
@@ -446,13 +456,13 @@ impl Drop for Binding {
                 !inner.pages.is_empty() || !inner.poisoned.is_empty(),
             )
         };
-        // Pages this binding covered may now be unbound: ask the ext2 service
+        // Pages this binding covered may now be unbound: ask the filesystem service
         // to retire them. Parked copies release their frames here, outside
         // the map lock.
         if cached {
             map.request_writeback();
-            map.eviction_pending.store(true, Ordering::Release);
-            crate::fs::ext2::request_map_eviction();
+            map.state.eviction_pending.store(true, Ordering::Release);
+            self.handle.filesystem.request_eviction();
         }
         drop(removed);
     }
@@ -556,99 +566,132 @@ impl MapInner {
 }
 
 impl MapState {
-    pub fn new(size: u64, durable_epoch: u64) -> Self {
-        Self {
-            inner: Mutex::new(MapInner {
-                mapped_size: size,
-                pages: PageVec::new(),
-                poisoned: PageVec::new(),
-                bindings: Vec::new(),
-                writable_shared: 0,
-                writeback_cursor: 0,
-                writeback_epoch: 0,
-            }),
-            eviction_pending: AtomicBool::new(false),
-            resident: AtomicBool::new(false),
-            dirty: AtomicBool::new(false),
-            writeback_pending: AtomicBool::new(false),
-            writeback_requests: AtomicU64::new(0),
-            disk_epoch: AtomicU64::new(durable_epoch),
-            disk_write_seq: AtomicU64::new(0),
-            syncers: AtomicUsize::new(0),
-        }
+    pub fn new(
+        size: u64,
+        durable_epoch: u64,
+        filesystem: Arc<dyn FileSystem>,
+    ) -> Result<Self, Errno> {
+        Ok(Self {
+            state: Arc::try_new(MapShared {
+                filesystem,
+                inner: Mutex::new(MapInner {
+                    mapped_size: size,
+                    pages: PageVec::new(),
+                    poisoned: PageVec::new(),
+                    bindings: Vec::new(),
+                    writable_shared: 0,
+                    writeback_cursor: 0,
+                    writeback_epoch: 0,
+                }),
+                binding_gate: spin::RwLock::new(()),
+                eviction_pending: AtomicBool::new(false),
+                resident: AtomicBool::new(false),
+                dirty: AtomicBool::new(false),
+                writeback_pending: AtomicBool::new(false),
+                writeback_requests: AtomicU64::new(0),
+                disk_epoch: AtomicU64::new(durable_epoch),
+                disk_write_seq: AtomicU64::new(0),
+                syncers: AtomicUsize::new(0),
+            })
+            .map_err(|_| Errno(crate::syscall::errno::ENOMEM))?,
+        })
     }
 
     /// Called under the mount write guard before I/O; failures retain custody.
     pub(crate) fn note_disk_write(&self, epoch: u64) -> u64 {
-        self.disk_write_seq.fetch_add(1, Ordering::AcqRel);
-        self.disk_epoch.swap(epoch, Ordering::AcqRel)
+        self.state.disk_write_seq.fetch_add(1, Ordering::AcqRel);
+        self.state.disk_epoch.swap(epoch, Ordering::AcqRel)
     }
 
     pub(crate) fn restore_disk_epoch(&self, epoch: u64) {
-        self.disk_epoch.store(epoch, Ordering::Release);
+        self.state.disk_epoch.store(epoch, Ordering::Release);
     }
 
-    pub(crate) fn disk_epoch(&self) -> u64 { self.disk_epoch.load(Ordering::Acquire) }
+    pub(crate) fn disk_epoch(&self) -> u64 { self.state.disk_epoch.load(Ordering::Acquire) }
 
-    pub(crate) fn disk_write_seq(&self) -> u64 { self.disk_write_seq.load(Ordering::Acquire) }
+    pub(crate) fn disk_write_seq(&self) -> u64 { self.state.disk_write_seq.load(Ordering::Acquire) }
 
     /// Caller holds the mount guard. Metadata changes during the detached
     /// barrier keep their own pending durability requirement.
     pub(crate) fn record_data_durable(&self, before: u64) {
         if self.disk_write_seq() == before {
-            self.disk_epoch.store(u64::MAX, Ordering::Release);
+            self.state.disk_epoch.store(u64::MAX, Ordering::Release);
         }
     }
 
     fn refresh(&self, inner: &MapInner) {
-        self.resident.store(
+        self.state.resident.store(
             !inner.pages.is_empty() || !inner.poisoned.is_empty(),
             Ordering::Release,
         );
-        self.dirty.store(
+        self.state.dirty.store(
             inner.pages.entries.iter().any(|(_, page)| page.dirty),
             Ordering::Release,
         );
     }
 
     pub(crate) fn nonempty(&self) -> bool {
-        let inner = self.inner.lock();
+        let inner = self.state.inner.lock();
         !inner.pages.is_empty() || !inner.poisoned.is_empty() || !inner.bindings.is_empty()
     }
 
-    /// Exec holds the mount write guard through its image copy. A shared
+    /// Acquire only outside filesystem and PROCESS_MANAGER guards. The caller
+    /// retains its transfer lease for mutation exclusion while waiting/copying.
+    pub(crate) fn block_mapping_bindings(&self) -> spin::RwLockWriteGuard<'_, ()> {
+        loop {
+            if let Some(guard) = self.state.binding_gate.try_write() {
+                return guard;
+            }
+            crate::task::scheduler::yield_current();
+            core::hint::spin_loop();
+        }
+    }
+
+    /// Population retains its transfer lease, then joins the gate before taking
+    /// the filesystem/PROCESS_MANAGER guards that publish the new binding.
+    pub(crate) fn allow_mapping_binding(&self) -> spin::RwLockReadGuard<'_, ()> {
+        loop {
+            if let Some(guard) = self.state.binding_gate.try_read() {
+                return guard;
+            }
+            crate::task::scheduler::yield_current();
+            core::hint::spin_loop();
+        }
+    }
+
+    /// Exec retains a per-inode transfer lease through its image copy. A shared
     /// binding with write authority can fault or gain PROT_WRITE without that
-    /// guard, so even a clean/read-only binding must suppress set-ID identity.
+    /// lease, so even a clean/read-only binding must suppress set-ID identity.
     pub(crate) fn may_change_exec_image(&self) -> bool {
-        let inner = self.inner.lock();
+        let inner = self.state.inner.lock();
         inner.bindings.iter().any(|rec| rec.shared && rec.may_write)
             || inner.pages.entries.iter().any(|(_, page)| page.dirty)
     }
 
     pub(crate) fn has_dirty(&self) -> bool {
-        self.dirty.load(Ordering::Acquire)
+        self.state.dirty.load(Ordering::Acquire)
     }
 
     pub(crate) fn request_writeback(&self) {
         if self.has_dirty() {
-            self.writeback_requests.fetch_add(1, Ordering::AcqRel);
-            self.writeback_pending.store(true, Ordering::Release);
-            crate::fs::ext2::request_map_eviction();
+            self.state.writeback_requests.fetch_add(1, Ordering::AcqRel);
+            self.state.writeback_pending.store(true, Ordering::Release);
+            self.state.filesystem.request_eviction();
         }
     }
 
     pub(crate) fn writeback_pending(&self) -> bool {
-        self.writeback_pending.load(Ordering::Acquire)
+        self.state.writeback_pending.load(Ordering::Acquire)
     }
 
     /// Overlay under the filesystem guard, which prevents cache removal and
     /// disk transitions. The map lock serializes fault insertion and lookup.
     pub(crate) fn overlay(&self, offset: u64, bytes: &mut [u8]) -> Result<(), &'static str> {
-        if bytes.is_empty() || !self.resident.load(Ordering::Acquire) {
+        if bytes.is_empty() || !self.state.resident.load(Ordering::Acquire) {
             return Ok(());
         }
         let end = offset + bytes.len() as u64;
-        let inner = self.inner.lock();
+        let inner = self.state.inner.lock();
         if !inner
             .poisoned
             .range(offset / PAGE_SIZE, pages(end))
@@ -675,12 +718,12 @@ impl MapState {
     /// before clearing dirty custody. No PTEs are changed here.
     pub(crate) fn writeback(
         &self,
-        handle: &FileHandle,
+        handle: &VNode,
         first: u64,
         last: u64,
         limit: usize,
         bytes: &mut [u8],
-    ) -> Result<Option<u64>, &'static str> {
+    ) -> Result<Option<u64>, Errno> {
         let limit = limit
             .min(WRITEBACK_PAGES)
             .min(bytes.len() / PAGE_SIZE as usize);
@@ -693,15 +736,15 @@ impl MapState {
 
     fn writeback_snapshot(
         &self,
-        handle: &FileHandle,
+        handle: &VNode,
         first: u64,
         last: u64,
         limit: usize,
         bytes: &mut [u8],
-    ) -> Result<Option<u64>, &'static str> {
-        let file = crate::fs::ext2::mapped_io::DataFile::open(handle)?;
+    ) -> Result<Option<u64>, Errno> {
+        let file = handle.filesystem.mapping_io(handle)?;
         let (snapshot, writable) = {
-            let inner = self.inner.lock();
+            let inner = self.state.inner.lock();
             let count = inner
                 .pages
                 .range(first, last)
@@ -712,7 +755,7 @@ impl MapState {
             let mut snapshot = Vec::new();
             snapshot
                 .try_reserve(count)
-                .map_err(|_| "Out of memory for writeback")?;
+                .map_err(|_| Errno(crate::syscall::errno::ENOMEM))?;
             for (index, page) in inner
                 .pages
                 .range(first, last)
@@ -728,7 +771,7 @@ impl MapState {
             return Ok(None);
         }
         {
-            let mut inner = self.inner.lock();
+            let mut inner = self.state.inner.lock();
             for (index, _, _) in &snapshot {
                 if let Some(page) = inner.pages.get_mut(*index) { page.written_gen = None; }
             }
@@ -747,7 +790,7 @@ impl MapState {
             if length == 0 {
                 continue;
             }
-            let inner = self.inner.lock();
+            let inner = self.state.inner.lock();
             for (slot, (_, frame, _)) in snapshot[start..cursor].iter().enumerate() {
                 let at = slot * PAGE_SIZE as usize;
                 if at >= length {
@@ -765,12 +808,9 @@ impl MapState {
                 }
             }
             drop(inner);
-            let written = file.write(offset, &bytes[..length])?;
-            if written != length {
-                return Err("Short mapped writeback");
-            }
+            handle.filesystem.writeback_pages(handle, snapshot[start].0, &bytes[..length], file.as_ref())?;
         }
-        let mut inner = self.inner.lock();
+        let mut inner = self.state.inner.lock();
         if writable == 0 && inner.writable_shared == 0 {
             for (index, _, gen) in &snapshot {
                 if let Some(page) = inner.pages.get_mut(*index) {
@@ -789,7 +829,7 @@ impl MapState {
     /// A new write fault changes gen. Shared writable mappings retain dirty
     /// custody because stores can continue without another fault.
     pub(crate) fn complete_writeback(&self, first: u64, last: u64) {
-        let mut inner = self.inner.lock();
+        let mut inner = self.state.inner.lock();
         if inner.writable_shared == 0 {
             for (_, page) in inner.pages.entries.iter_mut().filter(|(index, _)| *index >= first && *index < last) {
                 if page.written_gen == Some(page.gen) { page.dirty = false; }
@@ -804,18 +844,18 @@ impl MapState {
     /// passed, so the traversal that ends under it is followed by a full one.
     pub(crate) fn service_writeback(
         &self,
-        handle: &FileHandle,
+        handle: &VNode,
         budget: &mut usize,
     ) -> Result<bool, &'static str> {
-        if !self.writeback_pending() || self.syncers.load(Ordering::Acquire) != 0 {
+        if !self.writeback_pending() || self.state.syncers.load(Ordering::Acquire) != 0 {
             return Ok(false);
         }
         if *budget == 0 {
             return Ok(true);
         }
-        let request = self.writeback_requests.load(Ordering::Acquire);
+        let request = self.state.writeback_requests.load(Ordering::Acquire);
         let (first, count) = {
-            let mut inner = self.inner.lock();
+            let mut inner = self.state.inner.lock();
             let first = inner.writeback_cursor;
             if first == 0 {
                 inner.writeback_epoch = request;
@@ -830,20 +870,21 @@ impl MapState {
             (first, count)
         };
         let mut bytes = writeback_buffer()?;
-        let next = self.writeback(handle, first, u64::MAX, *budget, &mut bytes)?;
+        let next = self.writeback(handle, first, u64::MAX, *budget, &mut bytes)
+            .map_err(|_| "Failed mapped service writeback")?;
         if let Some(end) = next {
             // An identical snapshot of already durable bytes must not flush
             // pending writes belonging to another inode. Its transfer lease
             // serializes the epoch check with data writes and barriers.
-            let file = crate::fs::ext2::mapped_io::DataFile::open(handle)?;
+            let file = handle.filesystem.mapping_io(handle).map_err(|_| "Failed to lease mapped file")?;
             if file.needs_flush() {
-                file.sync(first, end)?;
+                file.sync(first, end).map_err(|_| "Failed to sync mapped file")?;
             } else {
                 self.complete_writeback(first, end);
             }
         }
         *budget -= count;
-        let mut inner = self.inner.lock();
+        let mut inner = self.state.inner.lock();
         let next = next.unwrap_or(u64::MAX);
         let more = inner
             .pages
@@ -853,12 +894,12 @@ impl MapState {
         inner.writeback_cursor = if more { next } else { 0 };
         let epoch = inner.writeback_epoch;
         drop(inner);
-        self.writeback_pending.store(more, Ordering::Release);
+        self.state.writeback_pending.store(more, Ordering::Release);
         // Publish idle before checking the request generation. A request on
         // either side of this check either changes the generation or sets the
         // flag after it; neither wake can be lost.
-        if self.writeback_requests.load(Ordering::Acquire) != epoch {
-            self.writeback_pending.store(true, Ordering::Release);
+        if self.state.writeback_requests.load(Ordering::Acquire) != epoch {
+            self.state.writeback_pending.store(true, Ordering::Release);
             return Ok(true);
         }
         Ok(more)
@@ -869,7 +910,7 @@ impl MapState {
     /// discards cached pages.
     pub(crate) fn resync_unbound(&self, size: u64) {
         let stale = {
-            let mut inner = self.inner.lock();
+            let mut inner = self.state.inner.lock();
             if inner.mapped_size == size
                 || !inner.bindings.is_empty()
                 || inner.pages.entries.iter().any(|(_, page)| page.dirty)
@@ -877,7 +918,7 @@ impl MapState {
                 return;
             }
             inner.mapped_size = size;
-            self.resident.store(false, Ordering::Release);
+            self.state.resident.store(false, Ordering::Release);
             inner.poisoned = PageVec::new();
             core::mem::replace(&mut inner.pages, PageVec::new())
         };
@@ -885,21 +926,21 @@ impl MapState {
     }
 
     /// mmap failed after `populate`: pages it read that no binding covers
-    /// are left for the ext2 service to retire.
+    /// are left for the filesystem service to retire.
     pub(crate) fn abandon_population(&self) {
         let unbound = {
-            let inner = self.inner.lock();
+            let inner = self.state.inner.lock();
             let unbound = inner.pages.keys().any(|index| !inner.bound(index));
             unbound
         };
         if unbound {
-            self.eviction_pending.store(true, Ordering::Release);
-            crate::fs::ext2::request_map_eviction();
+            self.state.eviction_pending.store(true, Ordering::Release);
+            self.state.filesystem.request_eviction();
         }
     }
 
     pub(crate) fn eviction_pending(&self) -> bool {
-        self.eviction_pending.load(Ordering::Acquire)
+        self.state.eviction_pending.load(Ordering::Acquire)
     }
 
     /// An unlinked inode with no external handle has no reader or writer left.
@@ -907,7 +948,7 @@ impl MapState {
     /// whose contents no observer can recover. The caller holds the mount write
     /// guard and has established that the orphan has no external handles.
     pub(crate) fn discard_unobserved(&self, budget: &mut usize) -> bool {
-        let mut inner = self.inner.lock();
+        let mut inner = self.state.inner.lock();
         if !inner.bindings.is_empty() { return true; }
         let count = inner.pages.len().min(*budget);
         let keep = inner.pages.len() - count;
@@ -921,7 +962,7 @@ impl MapState {
     /// Retire cache pages no binding covers. The filesystem write guard
     /// excludes population and every mutation hook.
     pub(crate) fn evict(&self, budget: &mut usize) -> bool {
-        let mut inner = self.inner.lock();
+        let mut inner = self.state.inner.lock();
         let MapInner {
             pages,
             poisoned,
@@ -943,9 +984,9 @@ impl MapState {
             .entries
             .iter()
             .any(|(index, page)| unbound(*index) && !page.dirty);
-        self.resident
+        self.state.resident
             .store(!pages.is_empty() || !poisoned.is_empty(), Ordering::Release);
-        self.eviction_pending.store(more, Ordering::Release);
+        self.state.eviction_pending.store(more, Ordering::Release);
         more
     }
 
@@ -959,7 +1000,7 @@ impl MapState {
         let end = offset.checked_add(len as u64).ok_or("File too large")?;
         let (first, last) = (offset / PAGE_SIZE, pages(end));
         let wanted = {
-            let mut inner = self.inner.lock();
+            let mut inner = self.state.inner.lock();
             if inner.bindings.is_empty() {
                 return Ok(());
             }
@@ -976,7 +1017,7 @@ impl MapState {
         for _ in 0..wanted {
             prepared.push((0, CachePage::allocate()?));
         }
-        let mut inner = self.inner.lock();
+        let mut inner = self.state.inner.lock();
         inner.pages.try_reserve(prepared.len())?;
         // The lock was released while frames were allocated. Faults may have
         // filled holes meanwhile, and nothing makes new ones, so the holes
@@ -990,7 +1031,7 @@ impl MapState {
         });
         prepared.truncate(filled);
         inner.pages.merge_reserved(prepared);
-        self.resident.store(
+        self.state.resident.store(
             !inner.pages.is_empty() || !inner.poisoned.is_empty(),
             Ordering::Release,
         );
@@ -1002,7 +1043,7 @@ impl MapState {
     /// Copies into pages already in the cache; allocates nothing.
     pub(crate) fn commit_write(&self, offset: u64, bytes: &[u8]) {
         let end = offset + bytes.len() as u64;
-        let inner = self.inner.lock();
+        let inner = self.state.inner.lock();
         for (index, page) in inner.pages.range(offset / PAGE_SIZE, pages(end)) {
             let start = offset.max(index * PAGE_SIZE);
             let stop = end.min((index + 1) * PAGE_SIZE);
@@ -1023,7 +1064,7 @@ impl MapState {
     /// `invalidate` needs for the boundary page if the resize fails.
     pub(crate) fn prepare_resize(&self, before: u64, length: u64) -> Result<(), &'static str> {
         let boundary = before.min(length);
-        self.inner
+        self.state.inner
             .lock()
             .reserve_poison(boundary / PAGE_SIZE, pages(boundary.saturating_add(1)))
     }
@@ -1036,11 +1077,11 @@ impl MapState {
         let first = offset / PAGE_SIZE;
         let last = pages(offset.saturating_add(len));
         let cached = {
-            let mut inner = self.inner.lock();
+            let mut inner = self.state.inner.lock();
             // Dirty cache pages are authoritative even if the disk mutation
             // failed; poison only pages that lack dirty custody.
             inner.poison(first, last);
-            self.resident.store(
+            self.state.resident.store(
                 !inner.pages.is_empty() || !inner.poisoned.is_empty(),
                 Ordering::Release,
             );
@@ -1048,7 +1089,7 @@ impl MapState {
         };
         if cached {
             self.revoke(first, last, true);
-            let mut inner = self.inner.lock();
+            let mut inner = self.state.inner.lock();
             inner
                 .pages
                 .entries
@@ -1057,14 +1098,15 @@ impl MapState {
         }
     }
 
-    /// Bring the cache to `size`, the EOF ext2 published, on success or
+    /// Bring the cache to `size`, the EOF the filesystem published, on success or
     /// failure of the mutation. Growth only moves the EOF: the new pages are
     /// holes, which faults fill with zero pages. A shrink drops the cache,
     /// poison and parked copies past the new EOF, in place, and removes every
     /// entry there. Allocates nothing.
+    /// claim-lint:ok: kernel/src/memory/file_map.rs transition retains the reserved-capacity PageVec and revocation algorithm.
     pub(crate) fn transition(&self, size: u64) {
         let old = {
-            let mut inner = self.inner.lock();
+            let mut inner = self.state.inner.lock();
             let old = inner.mapped_size;
             if size == old {
                 return;
@@ -1099,9 +1141,9 @@ impl MapState {
     /// Runs under the filesystem write guard, after a mutation. A page that
     /// still cannot be read, or for which no memory is left, stays poisoned
     /// and faults on it raise SIGBUS.
-    pub(crate) fn repair(&self, fs: &Ext2Fs, ino: u64) {
+    pub(crate) fn repair(&self, fs: &impl MappingRead, ino: u64) {
         {
-            let mut inner = self.inner.lock();
+            let mut inner = self.state.inner.lock();
             if inner.poisoned.is_empty() {
                 return;
             }
@@ -1113,14 +1155,10 @@ impl MapState {
                 return;
             }
         }
-        let Ok(ino) = crate::fs::ext2::ino32(ino) else { return; };
-        let Ok(inode) = fs.read_inode(ino) else {
-            return;
-        };
         let mut cursor = 0;
         loop {
             let next = {
-                let inner = self.inner.lock();
+                let inner = self.state.inner.lock();
                 let valid = pages(inner.mapped_size);
                 inner
                     .poisoned
@@ -1135,18 +1173,18 @@ impl MapState {
             let Ok(page) = CachePage::allocate() else {
                 return;
             };
-            let Ok(bytes) = fs.read_file_range(&inode, index * PAGE_SIZE, PAGE_SIZE as usize)
+            let Ok(bytes) = fs.read_mapping_page(ino, index * PAGE_SIZE, PAGE_SIZE as usize)
             else {
                 continue;
             };
             // SAFETY: a fresh cache frame; `bytes` is at most one page.
             unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), page.ptr(), bytes.len()) };
-            let mut inner = self.inner.lock();
+            let mut inner = self.state.inner.lock();
             if inner.poisoned.contains(index)
                 && !inner.pages.contains(index)
                 && inner.pages.try_insert(index, page).is_ok()
             {
-                self.resident.store(true, Ordering::Release);
+                self.state.resident.store(true, Ordering::Release);
                 inner.poisoned.remove(index);
             }
         }
@@ -1167,7 +1205,7 @@ impl MapState {
             let Some(manager) = guard.as_mut() else {
                 return;
             };
-            let inner = self.inner.lock();
+            let inner = self.state.inner.lock();
             let mut slot = inner.bindings.partition_point(|rec| rec.id < id);
             let mut passed = 0;
             let (rec, low, high) = loop {
@@ -1287,16 +1325,16 @@ pub(crate) enum MapError {
 /// Populate absent pages through a stable per-inode transfer lease. File
 /// bytes are read without a mount guard; the map lock publishes the cache.
 pub(crate) fn populate(
-    handle: &FileHandle,
+    handle: &VNode,
     first: u64,
     count: u64,
-) -> Result<crate::fs::ext2::mapped_io::DataFile, MapError> {
-    let file = crate::fs::ext2::mapped_io::DataFile::open(handle).map_err(|_| MapError::Io)?;
-    let map = &handle.object.map;
-    let size = handle.object.size.load(Ordering::Acquire);
+) -> Result<Box<dyn MappingIo>, MapError> {
+    let file = handle.filesystem.mapping_io(handle).map_err(|_| MapError::Io)?;
+    let map = &handle.map;
+    let size = handle.size.load(Ordering::Acquire);
     let last = first.saturating_add(count).min(pages(size));
     let wanted = {
-        let inner = map.inner.lock();
+        let inner = map.state.inner.lock();
         (first..last)
             .filter(|index| !inner.pages.contains(*index))
             .count()
@@ -1307,7 +1345,7 @@ pub(crate) fn populate(
     let mut read = Vec::new();
     read.try_reserve(wanted).map_err(|_| MapError::NoMemory)?;
     for index in first..last {
-        if map.inner.lock().pages.contains(index) {
+        if map.state.inner.lock().pages.contains(index) {
             continue;
         }
         if read.len() == read.capacity() {
@@ -1321,7 +1359,7 @@ pub(crate) fn populate(
         unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), page.ptr(), bytes.len()) };
         read.push((index, page));
     }
-    let mut inner = map.inner.lock();
+    let mut inner = map.state.inner.lock();
     inner
         .pages
         .try_reserve(read.len())
@@ -1330,7 +1368,7 @@ pub(crate) fn populate(
         inner.poisoned.remove(*index);
     }
     inner.pages.merge_reserved(read);
-    map.resident.store(
+    map.state.resident.store(
         !inner.pages.is_empty() || !inner.poisoned.is_empty(),
         Ordering::Release,
     );
@@ -1341,7 +1379,7 @@ pub(crate) fn populate(
 /// population lease and the mount read guard held through publication, so
 /// no content mutation or eviction has removed the populated pages.
 pub(crate) fn bind(
-    handle: FileHandle,
+    handle: Arc<VNode>,
     pid: ProcessId,
     pt: &ProcessPageTable,
     vma: &Vma,
@@ -1349,7 +1387,7 @@ pub(crate) fn bind(
     may_write: bool,
 ) -> Result<Binding, &'static str> {
     let id = {
-        let mut inner = handle.object.map.inner.lock();
+        let mut inner = handle.map.state.inner.lock();
         inner
             .bindings
             .try_reserve(1)
@@ -1433,7 +1471,7 @@ pub(crate) fn fork_vmas(
 impl Binding {
     /// mincore includes cached file pages even before this VA faults them in.
     pub(crate) fn resident(&self, address: u64) -> bool {
-        let inner = self.handle.object.map.inner.lock();
+        let inner = self.handle.map.state.inner.lock();
         let Some(rec) = inner.bindings.iter().find(|rec| rec.id == self.id) else {
             return false;
         };
@@ -1447,8 +1485,8 @@ impl Binding {
         &self,
         start: u64,
         end: u64,
-    ) -> Result<(FileHandle, u64, u64), &'static str> {
-        let inner = self.handle.object.map.inner.lock();
+    ) -> Result<(Arc<VNode>, u64, u64), &'static str> {
+        let inner = self.handle.map.state.inner.lock();
         let rec = inner
             .bindings
             .iter()
@@ -1458,7 +1496,7 @@ impl Binding {
     }
 
     fn fork(&self, pid: ProcessId, pt: &ProcessPageTable) -> Result<Binding, &'static str> {
-        let mut inner = self.handle.object.map.inner.lock();
+        let mut inner = self.handle.map.state.inner.lock();
         inner
             .bindings
             .try_reserve(1)
@@ -1541,7 +1579,7 @@ pub(crate) fn isolate(
     let (head_id, handle) = (binding.id, binding.handle.clone());
     vmas.try_reserve(cuts.len())
         .map_err(|_| "Out of memory for VMA split")?;
-    let mut inner = handle.object.map.inner.lock();
+    let mut inner = handle.map.state.inner.lock();
     inner
         .bindings
         .try_reserve(cuts.len())
@@ -1651,9 +1689,9 @@ pub(crate) fn unmap(
 
 /// The file of `vma` when it is a shared mapping that may be made writable.
 /// PROCESS_MANAGER held.
-pub(crate) fn shared_writer(vma: &Vma) -> Option<FileHandle> {
+pub(crate) fn shared_writer(vma: &Vma) -> Option<Arc<VNode>> {
     let binding = vma.backing.as_ref()?;
-    let inner = binding.handle.object.map.inner.lock();
+    let inner = binding.handle.map.state.inner.lock();
     let rec = inner.bindings.iter().find(|rec| rec.id == binding.id)?;
     (rec.shared && rec.may_write).then(|| binding.handle.clone())
 }
@@ -1685,7 +1723,7 @@ pub(crate) fn protect(
     // Private copies are the entries that do not map their cache page.
     let mut copies = Vec::new();
     {
-        let inner = handle.object.map.inner.lock();
+        let inner = handle.map.state.inner.lock();
         let rec = inner
             .bindings
             .iter()
@@ -1712,7 +1750,7 @@ pub(crate) fn protect(
     let binding = vmas[index].backing.as_ref().ok_or("Not a file VMA")?;
     // Commit: nothing below allocates. PROCESS_MANAGER is held throughout,
     // so no fault observes the binding and the VMA apart.
-    let mut inner = binding.handle.object.map.inner.lock();
+    let mut inner = binding.handle.map.state.inner.lock();
     let valid = pages(inner.mapped_size);
     let rec = inner
         .rec_mut(binding.id)
@@ -1747,7 +1785,7 @@ pub(crate) fn protect(
         inner.writable_shared -= 1;
     }
     drop(inner);
-    binding.handle.object.map.request_writeback();
+    binding.handle.map.request_writeback();
     vmas[index].prot = prot;
     Ok(true)
 }
@@ -1850,8 +1888,8 @@ pub(crate) fn resolve_page(
         }
         return FaultOutcome::NotFile;
     }
-    let object = &binding.handle.object;
-    let Some(mut inner) = object.map.inner.try_lock() else {
+    let object = &binding.handle;
+    let Some(mut inner) = object.map.state.inner.try_lock() else {
         // Delivery runs with interrupts masked. A contended cache requests a
         // retry, just like the in-progress size transition below.
         return FaultOutcome::Resolved;
@@ -1872,7 +1910,7 @@ pub(crate) fn resolve_page(
     }
     let index = rec.index(address);
     if index >= pages(mapped_size) {
-        // ext2 has published a larger size that the transition has not yet
+        // The filesystem has published a larger size that the transition has not yet
         // applied: retry until it has.
         if index < pages(object.size.load(Ordering::Acquire)) {
             return FaultOutcome::Resolved;
@@ -1916,7 +1954,7 @@ pub(crate) fn resolve_page(
             Err(_) => return FaultOutcome::Signal(SIGBUS),
         },
     };
-    object.map.resident.store(true, Ordering::Release);
+    object.map.state.resident.store(true, Ordering::Release);
     if prot.contains(Protection::EXEC) {
         sync_executable(frame);
     }
@@ -1924,7 +1962,7 @@ pub(crate) fn resolve_page(
         let cached = inner.pages.get_mut(index).expect("resident file page");
         cached.dirty = true;
         cached.gen = cached.gen.wrapping_add(1);
-        object.map.dirty.store(true, Ordering::Release);
+        object.map.state.dirty.store(true, Ordering::Release);
     }
     if pt.map_page(page, frame, entry_flags(prot, shared)).is_err() {
         return FaultOutcome::Signal(SIGBUS);

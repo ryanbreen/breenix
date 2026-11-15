@@ -7,15 +7,12 @@
 //! the text names. The pathname a resolution reports is that physical stack,
 //! with no symlink, `.` or `..` component.
 //!
-//! A walk holds the read guard of the filesystem it is in across every step
-//! there, so no directory it has entered and no symlink it reads can be removed
-//! and its inode reused under it. It changes filesystem only at a filesystem
-//! root, whose inode is never reused. The inode a lookup resolves to, or the
-//! directory an absent name would be created in, is held by the result, so a
-//! caller acting on it after the guard is released acts on what the walk found.
+//! A walk pins each inode through the filesystem interface before releasing
+//! lookup exclusion. Frames retain those pins while the walk uses them. The
+//! result retains the target or entry parent for the calling operation.
 //!
-//! The working directory is a directory, not a string: an ext2 directory is
-//! held by a live-inode handle, and its pathname is derived from the directory
+//! The working directory is a directory, not a string: a filesystem directory is
+//! held by a VNode, and its pathname is derived from the directory
 //! itself, by walking `..` entries, whenever it is needed. A rename of the
 //! directory or of an ancestor is therefore seen at once, and the handle keeps
 //! the directory from being removed (rmdir fails with EBUSY) or its inode
@@ -28,15 +25,14 @@
 //! copies both. Until some process changes its root, every root is `/` and a
 //! walk does not look it up.
 //!
-//! The ext2 root filesystem holds `/`. The home filesystem is entered at
+//! The root filesystem holds `/`. The home filesystem is entered at
 //! `/home` when mounted. devfs and procfs are entered at `/dev` and `/proc`,
 //! and each name below their mount points is checked against the entries they
 //! hold. procfs's links (`/proc/self`, `/proc/<pid>/exe`) are expanded as
 //! symlinks are.
 
-use crate::fs::errno::Errno;
 use crate::fs::vfs::mount as mounts;
-use crate::fs::ext2::{self, ino32, errno::errno as ext2_errno, live_inode::FileHandle, FileType, EXT2_ROOT_INO};
+use crate::fs::vfs::{NodeAttrs, NodeKind, VNode};
 use crate::syscall::errno::{EINVAL, EIO, ELOOP, ENAMETOOLONG, ENOENT, ENOTDIR};
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -63,29 +59,19 @@ impl Mount {
         Self(mounts::find_mount("/").unwrap_or(usize::MAX))
     }
     pub fn root_inode(self) -> u64 {
-        mounts::root_inode(self.0).unwrap_or(u64::from(EXT2_ROOT_INO))
-    }
-    pub fn read(self) -> Result<ext2::Ext2ReadGuard, Errno> {
-        mounts::ext2_adapter(self.0)?.read()
-    }
-    /// Exclude mapping creation and mutation while copying an exec image.
-    pub fn read_exclusive(self) -> Result<ext2::Ext2WriteGuard, Errno> {
-        mounts::ext2_adapter(self.0)?.exclusive()
-    }
-    pub fn write(self) -> Result<ext2::Ext2WriteGuard, Errno> {
-        mounts::ext2_adapter(self.0)?.write()
+        mounts::root_inode(self.0).unwrap_or(0)
     }
 }
 
 /// What a resolved pathname names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
-    /// An existing ext2 inode. A final symlink is reported as itself only when
+    /// An existing filesystem inode. A final symlink is reported as itself only when
     /// the resolution did not follow it.
     Inode {
         mount: Mount,
         ino: u64,
-        file_type: FileType,
+        file_type: NodeKind,
     },
     /// The final component names nothing; `parent` is the existing directory
     /// it would be created in.
@@ -126,10 +112,10 @@ pub struct Resolved<P = String> {
     /// For a lookup, the target inode, or for an absent target the directory
     /// it would be created in: held from the walk step that found it, so its
     /// inode is not reclaimed and its number reused while this lives.
-    pin: Option<FileHandle>,
+    pin: Option<Arc<VNode>>,
     /// For a rename, the directory holding the final entry, held so the
     /// entry is looked up again in the directory the walk found.
-    entry_dir: Option<FileHandle>,
+    entry_dir: Option<Arc<VNode>>,
 }
 
 impl Resolved {
@@ -152,7 +138,7 @@ impl Resolved<Vec<u8>> {
 }
 
 impl<P: AsRef<[u8]>> Resolved<P> {
-    /// The ext2 filesystem that holds the target, if any.
+    /// The filesystem that holds the target, if any.
     pub fn mount(&self) -> Option<Mount> {
         match self.target {
             Target::Inode { mount, .. } | Target::Absent { mount, .. } => Some(mount),
@@ -174,8 +160,8 @@ impl<P: AsRef<[u8]>> Resolved<P> {
 }
 
 impl<P> Resolved<P> {
-    /// The handle a lookup holds on an existing ext2 target.
-    pub fn handle(&self) -> Option<&FileHandle> {
+    /// The handle a lookup holds on an existing filesystem target.
+    pub fn handle(&self) -> Option<&Arc<VNode>> {
         match self.target {
             Target::Inode { .. } => self.pin.as_ref(),
             _ => None,
@@ -184,7 +170,7 @@ impl<P> Resolved<P> {
 
     /// The parent held by a lookup of an absent final name. This is distinct
     /// from handle(), whose callers require an existing target inode.
-    pub fn lookup_parent(&self) -> Option<&FileHandle> {
+    pub fn lookup_parent(&self) -> Option<&Arc<VNode>> {
         match self.target {
             Target::Absent { .. } => self.pin.as_ref(),
             _ => None,
@@ -192,7 +178,7 @@ impl<P> Resolved<P> {
     }
 
     /// The directory a rename resolution holds for its final name.
-    pub fn entry_dir(&self) -> Option<&FileHandle> {
+    pub fn entry_dir(&self) -> Option<&Arc<VNode>> {
         self.entry_dir.as_ref()
     }
 
@@ -200,7 +186,7 @@ impl<P> Resolved<P> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Node {
-    Ext2(Mount, u64),
+    Fs(Mount, u64),
     User(u64, u64),
     Virtual,
 }
@@ -208,15 +194,16 @@ enum Node {
 struct Frame {
     name: Vec<u8>,
     node: Node,
+    pin: Option<Arc<VNode>>,
 }
 
 fn namespace_root() -> Node {
     let mount = Mount::root();
-    Node::Ext2(mount, mount.root_inode())
+    Node::Fs(mount, mount.root_inode())
 }
 fn entered_node(entered: mounts::Entered) -> Node {
     match entered {
-        mounts::Entered::Fs(id, ino) => Node::Ext2(Mount(id), ino),
+        mounts::Entered::Fs(id, ino) => Node::Fs(Mount(id), ino),
         mounts::Entered::User(id, ino) => Node::User(id, ino),
         mounts::Entered::Virtual => Node::Virtual,
     }
@@ -236,7 +223,7 @@ fn copy_frames(frames: &[Frame]) -> Result<Vec<Frame>, u64> {
     let mut copy = Vec::new();
     copy.try_reserve_exact(frames.len()).map_err(|_| 12u64)?;
     for frame in frames {
-        copy.push(Frame { name: copy_bytes(&frame.name)?, node: frame.node });
+        copy.push(Frame { name: copy_bytes(&frame.name)?, node: frame.node, pin: frame.pin.clone() });
     }
     Ok(copy)
 }
@@ -273,37 +260,12 @@ fn push_components(pending: &mut Vec<Vec<u8>>, path: &[u8]) -> Result<(), u64> {
     Ok(())
 }
 
-/// The read guard of the ext2 filesystem a walk is in.
-struct Held(Option<(Mount, ext2::Ext2ReadGuard)>);
-
-impl Held {
-    /// The filesystem `mount`, taking its guard after releasing any other.
-    fn fs(&mut self, mount: Mount) -> Result<&ext2::Ext2Fs, u64> {
-        if self.0.as_ref().map_or(true, |(held, _)| *held != mount) {
-            self.0 = None;
-            self.0 = Some((mount, mount.read()?));
-        }
-        self.0
-            .as_ref()
-            .and_then(|(_, guard)| guard.as_ref())
-            .ok_or(ENOENT as u64)
-    }
-
-    fn release(&mut self) {
-        self.0 = None;
-    }
-}
-
-fn read_dir_inode(fs: &ext2::Ext2Fs, ino: u64) -> Result<ext2::Ext2Inode, u64> {
-    let inode = fs.read_inode(ino32(ino)?).map_err(ext2_errno)?;
-    if !inode.is_dir() {
-        return Err(ENOTDIR as u64);
-    }
-    // A removed directory holds no names, and nothing may be created in it.
-    if unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_links_count)) } == 0 {
-        return Err(ENOENT as u64);
-    }
-    Ok(inode)
+/// Validate a live directory without retaining a backend guard.
+fn directory(node: &VNode) -> Result<NodeAttrs, u64> {
+    let attrs = node.filesystem.getattr(node.ino)?;
+    if attrs.kind != NodeKind::Directory { return Err(ENOTDIR as u64); }
+    if attrs.nlink == 0 { return Err(ENOENT as u64); }
+    Ok(attrs)
 }
 
 /// Whether a devfs or procfs pathname names a directory (`Some(true)`),
@@ -486,13 +448,12 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
     } else {
         (try_current_working_dir()?, WorkingDir::Root)
     };
-    let mut held = Held(None);
     // The directory `/` names, which `..` does not leave.
-    let root = frames(&root, &mut held)?;
+    let root = frames(&root)?;
     let mut stack = if absolute {
         copy_frames(&root)?
     } else {
-        frames(&start.unwrap_or(cwd), &mut held)?
+        frames(&start.unwrap_or(cwd))?
     };
     let mut trailing_slash = path.ends_with(b"/");
     let follow_final = match mode {
@@ -518,26 +479,29 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
         if !top_is_dir {
             return Err(ENOTDIR as u64);
         }
-        // Root may always search a directory. Entering a virtual mount from
-        // the namespace root needs no ext2 inode lookup in that case: taking
+        // Root bypasses the search-permission check. Entering a virtual mount from
+        // the namespace root needs no filesystem inode lookup in that case: taking
         // the whole root filesystem lock here makes even /proc/net/pnp wait
         // behind unrelated file writes. Other callers still check the real
         // directory's search permissions below.
         let virtual_cover = match top(&stack) {
-            Node::Ext2(mount, dir) => mounts::virtual_cover((mount.0, dir), &name),
+            Node::Fs(mount, dir) => mounts::virtual_cover((mount.0, dir), &name),
             _ => None,
         };
         let entering_virtual_mount = virtual_cover.is_some();
         let searched_inode = if entering_virtual_mount && cred.euid == 0 {
             None
-        } else if let Node::Ext2(mount, dir) = top(&stack) {
-            let inode = read_dir_inode(held.fs(mount)?, dir)?;
-            if !cred.may(inode.attrs(), 1) {
+        } else if let Node::Fs(mount, dir) = top(&stack) {
+            let node = match stack.last().and_then(|f| f.pin.clone()) {
+                Some(node) => node,
+                None => mounts::filesystem(mount.0)?.open(dir)?,
+            };
+            let inode = directory(&node)?;
+            if !cred.may(inode.attrs, 1) {
                 return Err(crate::syscall::errno::EACCES as u64);
             }
-            Some(inode)
+            Some((node, inode))
         } else if let Node::User(mount, node) = top(&stack) {
-            held.release();
             let attr = super::ufs::path::getattr(mount, node)?;
             let attrs = super::ufs::path::attrs(attr);
             if !attrs.is_dir() { return Err(ENOTDIR as u64); }
@@ -561,7 +525,7 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
                     };
                     stack.pop();
                     if let Some((mount, ino)) = parent {
-                        if top(&stack) != Node::Ext2(mount, ino) { return Err(ENOENT as u64); }
+                        if top(&stack) != Node::Fs(mount, ino) { return Err(ENOENT as u64); }
                     }
                 }
                 continue;
@@ -570,12 +534,11 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
         }
         match top(&stack) {
             Node::User(mount, dir) => {
-                held.release();
                 match super::ufs::path::lookup(mount, dir, &name) {
                     Ok(attr) => {
                         top_is_dir = super::ufs::path::attrs(attr).is_dir();
                         stack.try_reserve(1).map_err(|_| 12u64)?;
-                        stack.push(Frame { name, node: Node::User(mount, attr.node) });
+                        stack.push(Frame { name, node: Node::User(mount, attr.node), pin: None });
                     }
                     Err(errno) if errno == ENOENT as u64 && is_final => {
                         let mut path = join(&stack)?;
@@ -592,11 +555,11 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
             Node::Virtual => {
                 // devfs and procfs take locks no filesystem guard is held
                 // across.
-                held.release();
                 stack.try_reserve(1).map_err(|_| 12u64)?;
                 stack.push(Frame {
                     name,
                     node: Node::Virtual,
+                    pin: None,
                 });
                 let joined = join(&stack)?;
                 let link = match core::str::from_utf8(&joined) {
@@ -632,26 +595,28 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
                     None => return Err(ENOENT as u64),
                 }
             }
-            Node::Ext2(mount, dir) => {
+            Node::Fs(mount, dir) => {
                 if let Some(entered) = virtual_cover {
-                    held.release();
                     stack.try_reserve(1).map_err(|_| 12u64)?;
-                    stack.push(Frame { name, node: entered_node(entered) });
+                    stack.push(Frame { name, node: entered_node(entered), pin: None });
                     continue;
                 }
-                let fs = held.fs(mount)?;
-                let dir_inode = searched_inode.ok_or(ENOTDIR as u64)?;
-                let found = mounts::ext2_adapter(mount.0)?.lookup_in(fs, dir, &name)?;
-                let Some(ino) = found else {
+                let (parent_node, dir_inode) = searched_inode.ok_or(ENOTDIR as u64)?;
+                let fs = parent_node.filesystem.clone();
+                let found = match fs.lookup_open(&parent_node, &name) {
+                    Ok(node) => Some(node),
+                    Err(error) if error.0 == ENOENT => None,
+                    Err(error) => return Err(error.into()),
+                };
+                let Some(node) = found else {
                     if !is_final {
                         return Err(ENOENT as u64);
                     }
-                    let dir_pin = || fs.pin_loaded_inode(ino32(dir)?, dir_inode.size()).map_err(ext2_errno);
                     let (pin, entry_dir) = match mode {
-                        Mode::Lookup { .. } => (Some(dir_pin()?), None),
-                        Mode::Rename => (None, Some(dir_pin()?)),
-                        Mode::Create => (None, Some(dir_pin()?)),
-                        Mode::Entry => (None, Some(dir_pin()?)),
+                        Mode::Lookup { .. } => (Some(parent_node.clone()), None),
+                        Mode::Rename => (None, Some(parent_node.clone())),
+                        Mode::Create => (None, Some(parent_node.clone())),
+                        Mode::Entry => (None, Some(parent_node.clone())),
                     };
                     let mut absent = join(&stack)?;
                     absent.try_reserve(name.len() + 1).map_err(|_| 12u64)?;
@@ -669,23 +634,22 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
                         entry_dir,
                     });
                 };
-                let ino = u64::from(ino);
-                let inode = fs.read_inode(ino32(ino)?).map_err(ext2_errno)?;
-                if inode.is_dir() {
+                let ino = node.ino;
+                let inode = fs.getattr(ino)?;
+                if inode.kind == NodeKind::Directory {
                     if let Some(entered) = mounts::enter((mount.0, ino)) {
-                        held.release();
                         stack.try_reserve(1).map_err(|_| 12u64)?;
-                        stack.push(Frame { name, node: entered_node(entered) });
+                        stack.push(Frame { name, node: entered_node(entered), pin: None });
                         continue;
                     }
                 }
-                if inode.is_symlink() && (!is_final || follow_final) {
-                    may_follow(&dir_inode.attrs(), &inode.attrs(), cred)?;
+                if inode.kind == NodeKind::Symlink && (!is_final || follow_final) {
+                    may_follow(&dir_inode.attrs, &inode.attrs, cred)?;
                     links += 1;
                     if links > MAX_SYMLINKS {
                         return Err(ELOOP as u64);
                     }
-                    let target = fs.read_symlink_bytes(ino32(ino)?).map_err(ext2_errno)?;
+                    let target = fs.readlink(ino)?;
                     if target.is_empty() {
                         return Err(ENOENT as u64);
                     }
@@ -708,11 +672,12 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
                     }
                     continue;
                 }
-                top_is_dir = inode.is_dir();
+                top_is_dir = inode.kind == NodeKind::Directory;
                 stack.try_reserve(1).map_err(|_| 12u64)?;
                 stack.push(Frame {
                     name,
-                    node: Node::Ext2(mount, ino),
+                    node: Node::Fs(mount, ino),
+                    pin: Some(node),
                 });
             }
         }
@@ -722,12 +687,16 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
         return Err(ENOTDIR as u64);
     }
     let (target, pin, entry_dir) = match top(&stack) {
-        Node::Ext2(mount, ino) => {
-            let fs = held.fs(mount)?;
-            let inode = fs.read_inode(ino32(ino)?).map_err(ext2_errno)?;
+        Node::Fs(mount, ino) => {
+            let node = match stack.last().and_then(|f| f.pin.clone()) {
+                Some(node) => node,
+                None => mounts::filesystem(mount.0)?.open(ino)?,
+            };
+            let fs = node.filesystem.clone();
+            let inode = fs.getattr(ino)?;
             let pin = match mode {
                 Mode::Lookup { .. } => {
-                    Some(fs.pin_loaded_inode(ino32(ino)?, inode.size()).map_err(ext2_errno)?)
+                    Some(node.clone())
                 }
                 Mode::Entry | Mode::Rename | Mode::Create => None,
             };
@@ -735,26 +704,24 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
             // filesystem unless the name is a filesystem root.
             let below = stack.len().checked_sub(2).map_or(namespace_root(), |i| stack[i].node);
             let entry_dir = match (mode, last, below) {
-                (Mode::Rename | Mode::Entry, Last::Name, Node::Ext2(dir_mount, dir))
+                (Mode::Rename | Mode::Entry, Last::Name, Node::Fs(dir_mount, dir))
                     if dir_mount == mount =>
                 {
-                    let dir_inode = fs.read_inode(ino32(dir)?).map_err(ext2_errno)?;
-                    Some(
-                        fs.pin_loaded_inode(ino32(dir)?, dir_inode.size())
-                            .map_err(ext2_errno)?,
-                    )
+                    Some(match stack.len().checked_sub(2).and_then(|i| stack[i].pin.clone()) {
+                        Some(parent) => parent,
+                        None => fs.open(dir)?,
+                    })
                 }
                 _ => None,
             };
             let target = Target::Inode {
                 mount,
                 ino,
-                file_type: inode.file_type(),
+                file_type: inode.kind,
             };
             (target, pin, entry_dir)
         }
         Node::User(mount, node) => {
-            held.release();
             let parent = stack.len().checked_sub(2).and_then(|i| match stack[i].node {
                 Node::User(parent_mount, parent) if parent_mount == mount => Some(parent),
                 _ => None,
@@ -763,7 +730,6 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
         }
         Node::Virtual => (Target::Virtual, None, None),
     };
-    drop(held);
     Ok(Resolved {
         path: join(&stack)?,
         target,
@@ -775,15 +741,15 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
     })
 }
 
-/// Resolve `path`, following every symlink, to an existing ext2 inode, as a
+/// Resolve `path`, following symlinks, to an existing filesystem inode, as a
 /// program loader needs. The handle holds the inode while it is read; the
 /// pathname is the inode's physical absolute pathname.
-pub fn resolve_file(path: &str) -> Result<(Mount, u64, FileHandle, Vec<u8>), u64> {
+pub fn resolve_file(path: &str) -> Result<(Mount, u64, Arc<VNode>, Vec<u8>), u64> {
     resolve_file_bytes(path.as_bytes())
 }
 
 /// `resolve_file` for a POSIX byte pathname, which may hold any byte but NUL.
-pub(crate) fn resolve_file_bytes(path: &[u8]) -> Result<(Mount, u64, FileHandle, Vec<u8>), u64> {
+pub(crate) fn resolve_file_bytes(path: &[u8]) -> Result<(Mount, u64, Arc<VNode>, Vec<u8>), u64> {
     let resolved = resolve_bytes(path, true)?;
     match resolved.target {
         Target::Inode { mount, ino, .. } => resolved
@@ -805,8 +771,8 @@ pub(crate) fn resolve_bytes(path: &[u8], follow: bool) -> Result<Resolved<Vec<u8
 pub enum WorkingDir {
     /// `/`, which can be neither renamed nor removed.
     Root,
-    /// An ext2 directory, held so that it stays the same directory.
-    Ext2 { mount: Mount, dir: FileHandle },
+    /// A filesystem directory, held so that it stays the same directory.
+    Fs { mount: Mount, dir: Arc<VNode> },
     /// A devfs or procfs directory, named as written.
     Virtual(String),
     /// A daemon directory kept alive by its open description.
@@ -920,7 +886,7 @@ impl SharedWorkingDir {
 fn copy_dir(dir: &WorkingDir) -> Result<WorkingDir, u64> {
     Ok(match dir {
         WorkingDir::Root => WorkingDir::Root,
-        WorkingDir::Ext2 { mount, dir } => WorkingDir::Ext2 {
+        WorkingDir::Fs { mount, dir } => WorkingDir::Fs {
             mount: *mount,
             dir: dir.clone(),
         },
@@ -1002,13 +968,13 @@ pub fn working_dir<P: AsRef<[u8]>>(resolved: &Resolved<P>) -> Result<WorkingDir,
             Some(false) => Err(ENOTDIR as u64),
             None => Err(ENOENT as u64),
         },
-        Target::Inode { file_type, .. } if file_type != FileType::Directory => Err(ENOTDIR as u64),
+        Target::Inode { file_type, .. } if file_type != NodeKind::Directory => Err(ENOTDIR as u64),
         Target::Inode {
             mount, ino, ..
         } if mount == Mount::root() && ino == mount.root_inode() => Ok(WorkingDir::Root),
         Target::Inode { mount, .. } => {
             let dir = resolved.pin.clone().ok_or(ENOENT as u64)?;
-            Ok(WorkingDir::Ext2 { mount, dir })
+            Ok(WorkingDir::Fs { mount, dir })
         }
     }
 }
@@ -1028,19 +994,14 @@ pub(crate) fn may_search(
                 else { Err(crate::syscall::errno::EACCES as u64) };
         },
         WorkingDir::Root => (Mount::root(), None),
-        WorkingDir::Ext2 { mount, dir } => (*mount, Some(dir)),
+        WorkingDir::Fs { mount, dir } => (*mount, Some(dir)),
     };
-    let mut held = Held(None);
-    let fs = held.fs(mount)?;
-    let ino = match handle {
-        Some(handle) => handle.verify(fs).map_err(|_| ENOENT as u64)?,
-        None => ino32(mount.root_inode())?,
+    let node = match handle {
+        Some(node) => node.clone(),
+        None => mounts::filesystem(mount.0)?.open(mount.root_inode())?,
     };
-    let inode = fs.read_inode(ino).map_err(ext2_errno)?;
-    if !inode.is_dir() {
-        return Err(ENOTDIR as u64);
-    }
-    if !cred.may(inode.attrs(), 1) {
+    let inode = directory(&node)?;
+    if !cred.may(inode.attrs, 1) {
         return Err(crate::syscall::errno::EACCES as u64);
     }
     Ok(())
@@ -1060,24 +1021,21 @@ pub(crate) fn working_dir_path_bytes(dir: &WorkingDir) -> Result<Vec<u8>, u64> {
     } else {
         WorkingDir::Root
     };
-    let mut held = Held(None);
-    let root = frames(&root, &mut held)?;
-    let stack = frames(dir, &mut held)?;
+    let root = frames(&root)?;
+    let stack = frames(dir)?;
     let path = if stack.len() >= root.len() && is_root(&stack[..root.len()], &root) {
         join(&stack[root.len()..])?
     } else {
         return Err(ENOENT as u64);
     };
-    drop(held);
     if path.len() >= PATH_MAX {
         return Err(ENAMETOOLONG as u64);
     }
     Ok(path)
 }
 
-/// The physical directory stack of a working directory. An ext2 directory's
-/// stack is read under `held`, which stays on its filesystem.
-fn frames(dir: &WorkingDir, held: &mut Held) -> Result<Vec<Frame>, u64> {
+/// The physical directory stack of a working directory, retaining each ancestor.
+fn frames(dir: &WorkingDir) -> Result<Vec<Frame>, u64> {
     match dir {
         WorkingDir::Root => Ok(Vec::new()),
         WorkingDir::Virtual(path) => {
@@ -1087,22 +1045,21 @@ fn frames(dir: &WorkingDir, held: &mut Held) -> Result<Vec<Frame>, u64> {
                 frames.push(Frame {
                     name: copy_bytes(name.as_bytes())?,
                     node: Node::Virtual,
+                    pin: None,
                 });
             }
             Ok(frames)
         }
-        WorkingDir::User { mount, node, .. } => user_frames(*mount, *node, held),
-        WorkingDir::Ext2 { mount, dir } => {
-            let fs = held.fs(*mount)?;
-            let ino = dir.verify(fs).map_err(|_| ENOENT as u64)?;
-            ancestry(held, *mount, ino.into())
+        WorkingDir::User { mount, node, .. } => user_frames(*mount, *node),
+        WorkingDir::Fs { mount, dir } => {
+            directory(dir)?;
+            ancestry(*mount, dir.clone())
         }
     }
 }
 
 /// Reconstruct daemon ancestry by node id, then attach its covered mount point.
-fn user_frames(mount: u64, mut node: u64, held: &mut Held) -> Result<Vec<Frame>, u64> {
-    held.release();
+fn user_frames(mount: u64, mut node: u64) -> Result<Vec<Frame>, u64> {
     let mut children = Vec::new();
     let mut length = 0;
     while node != ufs_abi::payload::ROOT {
@@ -1110,71 +1067,50 @@ fn user_frames(mount: u64, mut node: u64, held: &mut Held) -> Result<Vec<Frame>,
         length += name.len() + 1;
         if length >= PATH_MAX { return Err(ENAMETOOLONG as u64); }
         children.try_reserve(1).map_err(|_| 12u64)?;
-        children.push(Frame { name, node: Node::User(mount, node) });
+        children.push(Frame { name, node: Node::User(mount, node), pin: None });
         node = parent;
     }
     let (id, ino) = mounts::covered_directory(mount as usize).ok_or(ENOENT as u64)?;
     let native = Mount(id);
-    let mut stack = ancestry(held, native, ino)?;
+    let mut stack = ancestry(native, mounts::filesystem(native.0)?.open(ino)?)?;
     let point = stack.last_mut().ok_or(EIO as u64)?;
     point.node = Node::User(mount, ufs_abi::payload::ROOT);
+    point.pin = None;
     stack.try_reserve(children.len()).map_err(|_| 12u64)?;
     stack.extend(children.into_iter().rev());
     Ok(stack)
 }
 
 /// Walk `..` entries from directory `ino` up to its filesystem's root,
-/// naming each directory by the entry its parent holds for it. The whole
-/// walk is one read of the filesystem, so a concurrent rename cannot leave
-/// it with a pathname the directory never had.
-fn ancestry(held: &mut Held, mount: Mount, mut ino: u64) -> Result<Vec<Frame>, u64> {
+/// naming each pinned directory by its parent's current entry. A concurrent
+/// rename that removes that entry returns ENOENT.
+fn ancestry(mount: Mount, mut node: Arc<VNode>) -> Result<Vec<Frame>, u64> {
     let mut frames: Vec<Frame> = Vec::new();
     let root = mount.root_inode();
-    while ino != root {
-        // Directory descriptors still pin the storage mount. Recover a bind
-        // before following its physical parent outside the selected namespace.
-        if let Some(id) = mounts::bind_cover((mount.0, ino)) {
+    let mut length = 0usize;
+    while node.ino != root {
+        if let Some(id) = mounts::bind_cover((mount.0, node.ino)) {
             let bound = Mount(id);
-            let mut prefix = ancestry(held, bound, ino)?;
+            let mut prefix = ancestry(bound, node)?;
             prefix.try_reserve(frames.len()).map_err(|_| 12u64)?;
             for mut frame in frames.into_iter().rev() {
-                if let Node::Ext2(ref mut native, _) = frame.node {
-                    *native = bound;
-                }
+                if let Node::Fs(ref mut native, _) = frame.node { *native = bound; }
                 prefix.push(frame);
             }
             return Ok(prefix);
         }
-        let fs = held.fs(mount)?;
-        let inode = read_dir_inode(fs, ino)?;
-        let data = fs.read_directory(&inode).map_err(ext2_errno)?;
-        let parent = ext2::dir::find_inode(&data, "..").ok_or(ENOENT as u64)?;
-        let parent_inode = read_dir_inode(fs, parent.into())?;
-        let parent_data = fs.read_directory(&parent_inode).map_err(ext2_errno)?;
-        // Only an exact name can have been looked up, so a directory is
-        // never entered through one that is not.
-        let entry = ext2::dir::raw_entries(&parent_data)
-            .find(|entry| {
-                u64::from(entry.inode) == ino
-                    && entry.name != b"."
-                    && entry.name != b".."
-
-            })
-            .ok_or(ENOENT as u64)?;
+        let (parent, name) = super::vfs::names::parent_name(&node)?;
+        length = length.saturating_add(name.len() + 1);
+        if length >= PATH_MAX { return Err(ENAMETOOLONG as u64); }
         frames.try_reserve(1).map_err(|_| 12u64)?;
-        frames.push(Frame {
-            name: copy_bytes(entry.name)?,
-            node: Node::Ext2(mount, ino),
-        });
-        ino = parent.into();
+        frames.push(Frame { name, node: Node::Fs(mount, node.ino), pin: Some(node) });
+        node = parent;
     }
     if mount != Mount::root() {
-        // A bind target can live outside the selected root's physical tree.
-        // Its table parent and final component give its namespace ancestry.
         let ((native, parent), name) = mounts::attachment(mount.0).ok_or(ENOENT as u64)?;
-        let mut prefix = ancestry(held, Mount(native), parent)?;
+        let mut prefix = ancestry(Mount(native), mounts::filesystem(native)?.open(parent)?)?;
         prefix.try_reserve(1).map_err(|_| 12u64)?;
-        prefix.push(Frame { name, node: Node::Ext2(mount, root) });
+        prefix.push(Frame { name, node: Node::Fs(mount, root), pin: Some(node) });
         prefix.try_reserve(frames.len()).map_err(|_| 12u64)?;
         prefix.extend(frames.into_iter().rev());
         return Ok(prefix);

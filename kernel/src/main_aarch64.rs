@@ -42,31 +42,19 @@ extern crate kernel;
     allow(dead_code)
 )]
 fn read_init_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, &'static str> {
-    let fs_guard = kernel::fs::ext2::root_fs_read()?;
-    let fs = fs_guard
-        .as_ref()
-        .ok_or("ext2 root filesystem not mounted")?;
-
-    let inode_num = fs.resolve_path(path).map_err(|_| "init not found")?;
-
-    let inode = fs
-        .read_inode(inode_num)
-        .map_err(|_| "failed to read inode")?;
-
-    if inode.is_dir() {
-        unsafe {
-            kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts();
-        }
-        return Err("init is a directory");
-    }
-
-    let elf_data = fs
-        .read_file_content_coherent(inode_num, &inode)
-        .map_err(|_| "failed to read init")?;
-
-    drop(fs_guard);
-
-    Ok(elf_data)
+    let cred = kernel::fs::vfs::exec::Credentials::kernel();
+    kernel::fs::vfs::exec::load_image(path, &cred, || false)
+        .map(|(bytes, _, _)| bytes)
+        .map_err(|errno| match errno.0 {
+            kernel::syscall::errno::ENOENT => "init not found",
+            kernel::syscall::errno::EISDIR => {
+                unsafe {
+                    kernel::arch_impl::aarch64::cpu::Aarch64Cpu::enable_interrupts();
+                }
+                "init is a directory"
+            }
+            _ => "failed to read init",
+        })
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -1030,8 +1018,8 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         false
     };
 
-    // Initialize ext2 root filesystem (if block device present)
-    match kernel::fs::ext2::init_root_fs() {
+    // Probe and mount the root filesystem (if block device present)
+    match kernel::fs::vfs::mount_root() {
         Ok(()) => {
             serial_println!("[boot] ext2 root filesystem mounted");
             splash::stage(Stage::Ext2Mounted);
@@ -1039,7 +1027,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             kernel::test_framework::btrt::pass(kernel::test_framework::catalog::EXT2_MOUNT);
         }
         Err(e) => {
-            serial_println!("[boot] ext2 init: {} (continuing without root fs)", e);
+            serial_println!("[boot] ext2 init: {:?} (continuing without root fs)", e);
             #[cfg(feature = "btrt")]
             kernel::test_framework::btrt::fail(
                 kernel::test_framework::catalog::EXT2_MOUNT,
@@ -1054,11 +1042,11 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Runs immediately after the root filesystem mounts, so every marker the rest
     // of this boot prints is evidence the kernel survived the injected faults.
     #[cfg(feature = "fs_fault_inject")]
-    kernel::fs::fault_inject::run_fs_fault_leg();
-    // Initialize ext2 home filesystem (/home on separate disk)
-    match kernel::fs::ext2::init_home_fs() {
+    kernel::fs::vfs::fault::run_fs_fault_leg();
+    // Probe and mount the home filesystem (/home on separate disk)
+    match kernel::fs::vfs::mount_home() {
         Ok(()) => serial_println!("[boot] ext2 home filesystem mounted at /home"),
-        Err(e) => serial_println!("[boot] No home filesystem: {} (continuing)", e),
+        Err(e) => serial_println!("[boot] No home filesystem: {:?} (continuing)", e),
     }
     kernel::fs::vfs::mount::bind_home_if_unmounted();
 
@@ -1279,7 +1267,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
 
     // Initialize workqueue subsystem (depends on kthread infrastructure)
     kernel::task::workqueue::init_workqueue();
-    kernel::fs::ext2::writeback::init().expect("ext2 finalization service");
+    kernel::fs::vfs::init_services().expect("filesystem finalization services");
     kernel::input::stream::init().expect("input release service");
     serial_println!("[boot] Workqueue subsystem initialized");
     #[cfg(feature = "btrt")]
@@ -1936,7 +1924,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // after mount -- kthreads do not exist, and SMP CPUs are not yet online,
     // that early in boot.
     #[cfg(feature = "ext2_lock_race")]
-    kernel::fs::ext2_lock_race::run_ext2_lock_race_leg();
+    kernel::fs::run_ext2_lock_race_leg();
 
     kernel::tracing::providers::teardown::emit_root_custody_summary();
     kernel::tracing::providers::teardown::emit_tombstone_census();
@@ -2196,54 +2184,28 @@ fn load_test_binaries_from_ext2() {
             test_binaries.len(),
             name
         ));
-        // Load ELF from ext2 - acquire and release lock for each binary
         let elf_data = {
-            let Ok(fs_guard) = kernel::fs::ext2::root_fs_read() else { return; };
-            let fs = match fs_guard.as_ref() {
-                Some(fs) => fs,
-                None => {
-                    serial_println!("[test] ext2 not mounted, cannot load {}", name);
-                    return;
-                }
-            };
-
-            // Try each search directory until we find the binary
-            let mut found_entry = None;
+            let cred = kernel::fs::vfs::exec::Credentials::kernel();
+            let mut found = None;
             for dir in &search_dirs {
                 let path = format!("{}/{}", dir, name);
-                if let Ok(num) = fs.resolve_path(&path) {
-                    found_entry = Some((num, path));
-                    break;
+                match kernel::fs::vfs::exec::load_image(path.as_bytes(), &cred, || false) {
+                    Ok((bytes, _, _)) => { found = Some(bytes); break; }
+                    Err(errno) if errno.0 == kernel::syscall::errno::ENOENT => continue,
+                    Err(errno) => {
+                        serial_println!("[test] Failed to read {}: {}", path, errno.0);
+                        break;
+                    }
                 }
             }
-
-            let (inode_num, resolved_path) = match found_entry {
-                Some(entry) => entry,
+            match found {
+                Some(bytes) => bytes,
                 None => {
-                    serial_println!("[test] Failed to load {}: not found in any test directory", name);
-                    failed += 1;
-                    continue;
-                }
-            };
-
-            let inode = match fs.read_inode(inode_num) {
-                Ok(inode) => inode,
-                Err(e) => {
-                    serial_println!("[test] Failed to read inode for {}: {}", name, e);
-                    failed += 1;
-                    continue;
-                }
-            };
-
-            match fs.read_file_content_coherent(inode_num, &inode) {
-                Ok(data) => data,
-                Err(e) => {
-                    serial_println!("[test] Failed to read {}: {}", resolved_path, e);
+                    serial_println!("[test] Failed to load {} from test directories", name);
                     failed += 1;
                     continue;
                 }
             }
-            // fs_guard dropped here, releasing ext2 lock
         };
 
         // Validate ELF magic

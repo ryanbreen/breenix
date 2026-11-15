@@ -56,11 +56,6 @@ pub fn health() -> Result<(), &'static str> {
         crate::per_cpu_aarch64::preempt_disable();
         IoContext
     };
-    let guard = crate::fs::ext2::root_fs_read()?;
-    let fs = guard.as_ref().ok_or("root absent")?;
-    let (superblock, groups) = fs.persisted_metadata()?;
-    if groups.is_empty() || superblock.block_size() == 0 || !fs.read_inode(crate::fs::ext2::root_inode())?.is_dir() {
-        return Err("root metadata invalid");
-    }
-    Ok(())
+    crate::fs::vfs::root_filesystem()
+        .and_then(|fs| fs.check_live()).map_err(|_| "root metadata invalid")
 }

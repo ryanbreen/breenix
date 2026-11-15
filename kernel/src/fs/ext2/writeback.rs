@@ -27,9 +27,10 @@ pub(super) fn request_orphan() {
 }
 
 pub fn init() -> Result<(), &'static str> {
-    crate::task::kthread::kthread_run(service, "ext2-writeback")
+    static START: spin::Once<Result<(), &'static str>> = spin::Once::new();
+    *START.call_once(|| crate::task::kthread::kthread_run(service, "ext2-writeback")
         .map(|_| ())
-        .map_err(|_| "Failed to start ext2 finalization service")
+        .map_err(|_| "Failed to start ext2 finalization service"))
 }
 
 fn wait(waiters: &WaitQueueHead, deadline: Option<u64>, condition: impl FnOnce() -> bool) {

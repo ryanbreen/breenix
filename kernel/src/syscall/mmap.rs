@@ -6,7 +6,8 @@
 //! This module is architecture-independent - it uses conditional imports to support
 //! both x86_64 and ARM64.
 
-use crate::fs::ext2::{errno::errno as ext2_errno, live_inode::FileHandle};
+use crate::fs::{errno::Errno, vfs::VNode};
+use alloc::sync::Arc;
 use crate::memory::vma::{MmapFlags, Protection, Vma};
 use crate::syscall::{ErrorCode, SyscallResult};
 
@@ -478,7 +479,7 @@ fn file_mapping(
     prot: Protection,
     flags: MmapFlags,
     offset: u64,
-) -> Result<(FileHandle, bool), u64> {
+) -> Result<(Arc<VNode>, bool), u64> {
     use crate::syscall::errno::{EACCES, EINVAL, ENODEV, ENOMEM, EOVERFLOW};
     let kind = flags.bits() & 3;
     if kind == 0 || !is_page_aligned(offset) {
@@ -518,19 +519,19 @@ fn file_mapping(
     if kind != 2 && prot.contains(Protection::WRITE) && !may_write {
         return Err(EACCES as u64);
     }
-    let handle = file.lock().open.ext2_handle().ok_or(crate::syscall::errno::EIO as u64)?;
+    let handle = file.lock().open.node.clone();
     Ok((handle, may_write))
 }
 
-/// Populate the cache for a file VMA under the mount's read guard, then
-/// register it in a short PROCESS_MANAGER section. Entries are installed by
+/// Populate through a transfer lease, then register under filesystem exclusion
+/// in a short PROCESS_MANAGER section. Entries are installed by
 /// faults, not here. If registration fails, the pages population read are
-/// left for the ext2 service to retire.
+/// left for the filesystem service to retire.
 fn map_file(
-    handle: FileHandle,
+    handle: Arc<VNode>,
     thread_id: u64,
     root: u64,
-    mut vma: Vma,
+    vma: Vma,
     pgoff: u64,
     may_write: bool,
 ) -> Result<(u64, bool), u64> {
@@ -538,7 +539,7 @@ fn map_file(
     if vma.flags.bits() & 3 != 2 && vma.prot.contains(Protection::WRITE) {
         drop_writer_privilege(&handle)?;
     }
-    let object = handle.object.clone();
+    let object = handle.clone();
     let abandon = |errno: u64| {
         object.map.abandon_population();
         errno
@@ -549,74 +550,77 @@ fn map_file(
             MapError::Io => ErrorCode::IoError as u64,
         },
     )?;
-    let guard =
-        crate::fs::ext2::read_mount(handle.object.mount).map_err(ext2_errno).map_err(|error| abandon(error.into()))?;
-    let fs = guard.as_ref().ok_or_else(|| abandon(ErrorCode::IoError as u64))?;
-    let ino = handle.verify(fs).map_err(ext2_errno).map_err(|error| abandon(error.into()))?;
-    let append_only = fs
-        .read_inode(ino)
-        .map_err(ext2_errno)
-        .map_err(|error| abandon(error.into()))?
-        .i_flags
-        & 0x20
-        != 0;
-    if vma.flags.bits() & 3 != 2 && vma.prot.contains(Protection::WRITE) && append_only {
-        return Err(abandon(crate::syscall::errno::EACCES as u64));
-    }
-    let mut manager_guard = crate::process::manager_for_address_space(thread_id);
-    let Some((pid, process)) = manager_guard
-        .as_mut()
-        .and_then(|manager| manager.find_address_space_by_thread_mut(thread_id))
-    else {
-        return Err(abandon(ErrorCode::NoSuchProcess as u64));
-    };
-    if process
-        .page_table
-        .as_deref()
-        .map(|pt| pt.level_4_frame().start_address().as_u64())
-        != Some(root)
-    {
-        return Err(abandon(ErrorCode::OutOfMemory as u64));
-    }
-    let (start, end) = (vma.start.as_u64(), vma.end.as_u64());
-    if let Err(errno) = clear_for_mapping(process, start, end, vma.prot, vma.flags) {
-        return Err(abandon(errno));
-    }
-    let Some(page_table) = process.page_table.as_deref() else {
-        return Err(abandon(ErrorCode::OutOfMemory as u64));
-    };
-    match file_map::bind(
-        handle,
-        pid,
-        page_table,
-        &vma,
-        pgoff,
-        may_write && !append_only,
-    ) {
-        Ok(binding) => vma.backing = Some(binding),
-        Err(_) => return Err(abandon(ErrorCode::OutOfMemory as u64)),
-    }
-    process.vmas.push(vma);
-    super::memory_advice::record_future(process, start, end);
-    Ok((
-        start,
-        process.memory_locks.future && !process.memory_locks.onfault,
-    ))
+    let _binding = handle.map.allow_mapping_binding();
+    let mut vma = Some(vma);
+    let mut result = Err(ErrorCode::IoError as u64);
+    _population
+        .publish(&mut |append_only| {
+            result = (|| {
+                let mut vma = vma.take().ok_or(ErrorCode::IoError as u64)?;
+                if vma.flags.bits() & 3 != 2 && vma.prot.contains(Protection::WRITE) && append_only
+                {
+                    return Err(abandon(crate::syscall::errno::EACCES as u64));
+                }
+                let mut manager_guard = crate::process::manager_for_address_space(thread_id);
+                let Some((pid, process)) = manager_guard
+                    .as_mut()
+                    .and_then(|manager| manager.find_address_space_by_thread_mut(thread_id))
+                else {
+                    return Err(abandon(ErrorCode::NoSuchProcess as u64));
+                };
+                if process
+                    .page_table
+                    .as_deref()
+                    .map(|pt| pt.level_4_frame().start_address().as_u64())
+                    != Some(root)
+                {
+                    return Err(abandon(ErrorCode::OutOfMemory as u64));
+                }
+                let (start, end) = (vma.start.as_u64(), vma.end.as_u64());
+                if let Err(errno) = clear_for_mapping(process, start, end, vma.prot, vma.flags) {
+                    return Err(abandon(errno));
+                }
+                let Some(page_table) = process.page_table.as_deref() else {
+                    return Err(abandon(ErrorCode::OutOfMemory as u64));
+                };
+                match file_map::bind(
+                    handle.clone(),
+                    pid,
+                    page_table,
+                    &vma,
+                    pgoff,
+                    may_write && !append_only,
+                ) {
+                    Ok(binding) => vma.backing = Some(binding),
+                    Err(_) => return Err(abandon(ErrorCode::OutOfMemory as u64)),
+                }
+                process.vmas.push(vma);
+                super::memory_advice::record_future(process, start, end);
+                Ok((
+                    start,
+                    process.memory_locks.future && !process.memory_locks.onfault,
+                ))
+            })();
+            result
+                .as_ref()
+                .map(|_| ())
+                .map_err(|errno| Errno(*errno as i32))
+        })
+        .map_err(|errno| abandon(errno.into()))?;
+    result
 }
 
 /// A non-root caller's shared writable mapping of a file clears its set-ID
 /// bits as that caller's write would (K4), before any store can reach it.
-fn drop_writer_privilege(handle: &FileHandle) -> Result<(), u64> {
+fn drop_writer_privilege(handle: &VNode) -> Result<(), u64> {
     let cred = crate::fs::permissions::Credentials::current(false)?;
     if cred.privileged() {
         return Ok(());
     }
-    let mut guard = crate::fs::ext2::write_mount(handle.object.mount)
-        .map_err(ext2_errno)?;
-    let fs = guard.as_mut().ok_or(ErrorCode::IoError as u64)?;
-    let ino = handle.verify(fs).map_err(ext2_errno)?;
-    fs.drop_content_privilege(ino)
-        .map_err(ext2_errno).map_err(Into::into)
+    handle
+        .filesystem
+        .clear_mapping_privilege(handle)
+        .map_err(Into::into)
 }
 
 /// errno for a failed munmap or mprotect of a file VMA: a range that does not
@@ -1094,7 +1098,7 @@ pub fn sys_msync(addr: u64, length: u64, flags: u32) -> SyscallResult {
     }
     for (handle, first, last) in ranges {
         if flags & MS_SYNC == 0 {
-            handle.object.map.request_writeback();
+            handle.map.request_writeback();
             continue;
         }
         let result = crate::memory::file_map::sync_range(&handle, first, last);

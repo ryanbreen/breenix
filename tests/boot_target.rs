@@ -14,46 +14,25 @@ mod target;
 pub mod intent;
 mod boot { pub use crate::intent; }
 
-/// The mounted root as `target::read` sees it: one optional boot-target file.
+#[path = "../kernel/src/fs/errno.rs"]
+pub mod errno;
+#[path = "../kernel/src/syscall/errno.rs"]
+pub mod syscall_errno;
+mod syscall { pub use crate::syscall_errno as errno; }
+
+/// The bounded configuration-file interface used by the boot target reader.
 mod fs {
-    pub mod ext2 {
+    pub use crate::errno;
+    pub mod vfs {
+        use crate::{errno::Errno, syscall_errno::{EFBIG, ENOENT}};
         use std::sync::Mutex;
-
         pub static FILE: Mutex<Option<Vec<u8>>> = Mutex::new(None);
-
-        pub struct Inode(Vec<u8>);
-
-        impl Inode {
-            pub fn is_dir(&self) -> bool {
-                false
-            }
-
-            pub fn size(&self) -> u64 {
-                self.0.len() as u64
-            }
-        }
-
-        pub struct Root;
-
-        impl Root {
-            pub fn resolve_path(&self, path: &str) -> Result<u32, ()> {
-                match FILE.lock().unwrap().as_ref() {
-                    Some(_) if path == crate::target::PATH => Ok(2),
-                    _ => Err(()),
-                }
-            }
-
-            pub fn read_inode(&self, _inode: u32) -> Result<Inode, ()> {
-                FILE.lock().unwrap().clone().map(Inode).ok_or(())
-            }
-
-            pub fn read_file_content_coherent(&self, _inode: u32, inode: &Inode) -> Result<Vec<u8>, ()> {
-                Ok(inode.0.clone())
-            }
-        }
-
-        pub fn root_fs_read() -> Result<Option<Root>, &'static str> {
-            Ok(Some(Root))
+        pub fn read_config(path: &str, max: usize) -> Result<Vec<u8>, Errno> {
+            assert_eq!(path, crate::target::PATH);
+            let file = FILE.lock().unwrap();
+            let bytes = file.as_ref().ok_or(Errno(ENOENT))?;
+            if bytes.len() > max { return Err(Errno(EFBIG)); }
+            Ok(bytes.clone())
         }
     }
 }
@@ -157,9 +136,9 @@ fn case_tokens_are_checked_when_built_from_fw_cfg() {
 
 #[test]
 fn read_parses_the_file_on_the_root() {
-    *fs::ext2::FILE.lock().unwrap() = None;
+    *fs::vfs::FILE.lock().unwrap() = None;
     assert!(matches!(target::read(), Ok(None)));
-    *fs::ext2::FILE.lock().unwrap() = Some(b"suite memory case anonymous/page-aligned\n".to_vec());
+    *fs::vfs::FILE.lock().unwrap() = Some(b"suite memory case anonymous/page-aligned\n".to_vec());
     match target::read() {
         Ok(Some(Target::Suite(suite))) => {
             assert_eq!(suite.id, "memory");
@@ -167,16 +146,16 @@ fn read_parses_the_file_on_the_root() {
         }
         _ => panic!("the boot-target file was not read as a one-case suite"),
     }
-    *fs::ext2::FILE.lock().unwrap() = Some(vec![b'x'; 300]);
+    *fs::vfs::FILE.lock().unwrap() = Some(vec![b'x'; 300]);
     assert!(target::read().is_err());
-    *fs::ext2::FILE.lock().unwrap() = None;
+    *fs::vfs::FILE.lock().unwrap() = None;
 
     // Disk-root boots choose a fresh mode without modifying their installed target.
     assert!(!intent::capture(b"filesystem bytes"));
     assert!(intent::get().is_none());
     assert!(intent::capture(b"BREENIX-BOOT 1\nsuite signals\n"));
     assert!(intent::get().is_some());
-    *fs::ext2::FILE.lock().unwrap() = Some(b"console\n".to_vec());
+    *fs::vfs::FILE.lock().unwrap() = Some(b"console\n".to_vec());
     match target::read() {
         Ok(Some(Target::Suite(suite))) => assert_eq!(suite.id, "signals"),
         _ => panic!("the per-boot suite did not override the installed console target"),

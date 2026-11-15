@@ -80,11 +80,11 @@ fn device_modes_poll_and_non_sleeping_device_api() {
     // the reserved slot, or in one it holds before taking the reference.
     // aec7088c keeps the caller's process borrow through descriptor stamping,
     // closing the lookup/vhangup race without changing flag or slot ownership.
-    assert!(opens.contains("returnopen_tty_slave(process,&pair,flags,native_inode,reserved);"));
+    assert!(opens.contains("returnopen_tty_slave(process,&pair,flags,namespace_node,reserved);"));
     assert!(f.contains("fnopen_tty_slave(process:&mutcrate::process::Process,"));
     let tty = parser::compact(&parser::function(&read("kernel/src/syscall/fs.rs"), "open_tty_slave"));
     assert!(tty.contains("FileDescriptor::try_opened(FdKind::PtySlave(pair.clone()),flags)"));
-    assert!(tty.contains("Some(slot)=>Slot::Held(slot),"));
+    assert!(tty.contains("Some(slot)=>Slot::Reserved(slot),"));
     assert!(tty.contains("process.fd_table.reserve_slot()"));
     assert!(tty.contains("slot.install(&mutprocess.fd_table,entry)"));
     assert!(!tty.contains("manager()"));

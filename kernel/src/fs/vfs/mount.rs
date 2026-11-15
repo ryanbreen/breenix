@@ -102,12 +102,6 @@ pub fn filesystem(id: usize) -> Result<Arc<dyn FileSystem>, Errno> {
     }
 }
 
-/// The single legacy accessor; no filesystem lock is taken under the table lock.
-pub fn ext2_adapter(id: usize) -> Result<Arc<crate::fs::ext2::adapter::Ext2Adapter>, Errno> {
-    let backend: Arc<dyn core::any::Any + Send + Sync> = filesystem(id)?;
-    backend.downcast().map_err(|_| Errno(crate::syscall::errno::EOPNOTSUPP))
-}
-
 pub fn root_inode(id: usize) -> Option<u64> {
     Some(MOUNT_TABLE.lock().get(id)?.root)
 }
@@ -181,6 +175,7 @@ pub fn bind_home_if_unmounted() {
         return;
     };
     let Ok(pin) = backend.open(home) else { return };
+    let Ok(kind) = backend.kind() else { return };
     let mut table = MOUNT_TABLE.lock();
     if table.iter().any(|m| m.path == b"/home") {
         return;
@@ -189,7 +184,7 @@ pub fn bind_home_if_unmounted() {
     let mut entry = Entry::new(
         id,
         b"/home".to_vec(),
-        "ext2",
+        kind,
         HOME_FLAGS,
         Backend::Fs(backend),
         home,
@@ -208,6 +203,9 @@ pub fn flags_at(path: &[u8]) -> MountFlags {
 }
 pub fn find_mount(path: &str) -> Option<usize> {
     MOUNT_TABLE.lock().find_mount(path.as_bytes())
+}
+pub fn fsid(id: usize) -> Option<[i32; 2]> {
+    MOUNT_TABLE.lock().fsid(id)
 }
 pub fn device_id(id: usize) -> Option<u64> {
     MOUNT_TABLE.lock().device_id(id)

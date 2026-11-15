@@ -9,7 +9,12 @@ autotests = false
 [dependencies]
 spin = "0.9"
 log = "0.4"
+ufs-abi = { path = "../../libs/ufs-abi" }
 
 [lib]
 test = true
 doctest = false
+
+# These kernel-only gates appear in the shared VFS/adapter source.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("fs_fault_inject", "watchdog_fault_inject"))'] }

@@ -331,8 +331,8 @@ def boot(args):
     if args.inject == 'disk-before-mount' and (args.payload != 'image' or args.disk != 'root'):
         raise SystemExit('disk-before-mount needs a disk-root image boot')
     milestone = getattr(args, 'milestone', None)
-    if milestone and (args.payload != 'image' or args.mode != 'suite' or not args.suite or args.suite == 'all' or ',' in args.suite):
-        raise SystemExit('--milestone needs one explicit --suite on an image boot')
+    if milestone and (args.payload != 'image' or args.mode != 'suite' or not args.suite or args.suite == 'all'):
+        raise SystemExit('--milestone needs an explicit --suite on an image boot')
     env = host_env()
     payload = args.payload
     sha = target = ''
@@ -347,6 +347,16 @@ def boot(args):
     if args.suite and payload == 'image':
         args.suite = resolve_suites(env, sha, args.suite)
         print(f'[metal-run] suites: {args.suite}', file=sys.stderr, flush=True)
+        if milestone:
+            result = in_build(env, 'git', '-C', env['BUILD_REPO'], 'show',
+                              f'{sha}:docs/efforts/path.json', capture_output=True, text=True)
+            if result.returncode:
+                raise SystemExit('--milestone cannot read the commit effort path')
+            path = json.loads(result.stdout)
+            matches = [item.get('measure', {}) for effort in path['efforts'] for item in effort['milestones']
+                       if effort['id'] + '/' + item['id'] == milestone]
+            if len(matches) != 1 or not matches[0].get('categories') or matches[0].get('suite') not in args.suite.split(','):
+                raise SystemExit('--milestone needs a listed suite measured by the commit milestone')
     prebuilt = getattr(args, 'prebuilt', None)
     if prebuilt:
         if payload != 'image':

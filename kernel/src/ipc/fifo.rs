@@ -29,7 +29,7 @@ pub static FIFO_REGISTRY: FifoRegistry = FifoRegistry::new();
 /// A FIFO entry in the registry
 pub struct FifoEntry {
     /// Held filesystem identity for a disk-backed FIFO, including after unlink.
-    pub handle: Option<crate::fs::ext2::live_inode::FileHandle>,
+    pub handle: Option<Arc<crate::fs::vfs::VNode>>,
     /// The underlying pipe buffer (created on first open)
     pub buffer: Option<Arc<Mutex<PipeBuffer>>>,
     /// Number of processes that have opened for reading
@@ -154,7 +154,7 @@ impl FifoEntry {
 /// Weak entries keep the table from pinning an unlinked inode after last close.
 pub struct FifoRegistry {
     fifos: crate::irq_safe_mutex::IrqSafeMutex<
-        Vec<(crate::fs::ext2::live_inode::FileKey, Weak<Mutex<FifoEntry>>)>,
+        Vec<((usize, u64, u64), Weak<Mutex<FifoEntry>>)>,
     >,
 }
 impl FifoRegistry {
@@ -165,9 +165,9 @@ impl FifoRegistry {
     }
     pub fn get_or_create(
         &self,
-        handle: crate::fs::ext2::live_inode::FileHandle,
+        handle: Arc<crate::fs::vfs::VNode>,
     ) -> Result<Arc<Mutex<FifoEntry>>, i32> {
-        let key = handle.object.key;
+        let key = (handle.mount, handle.ino, handle.incarnation);
         let mut fifos = self.fifos.lock();
         fifos.retain(|(_, entry)| entry.strong_count() != 0);
         if let Some(entry) = fifos

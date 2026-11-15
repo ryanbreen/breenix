@@ -8,7 +8,24 @@
     {
       "id": "interface",
       "title": "Mounts and file operations through the filesystem interface",
-      "cases": []
+      "cases": [
+        {
+          "id": "mounts-listed",
+          "title": "Mounts are listed with their types and options"
+        },
+        {
+          "id": "cross-mount-exdev",
+          "title": "Links and renames across mounts fail with EXDEV"
+        },
+        {
+          "id": "statfs-per-mount",
+          "title": "Each mount reports its own type and filesystem ID"
+        },
+        {
+          "id": "ino-consistent",
+          "title": "stat, fstat and getdents agree on an inode number"
+        }
+      ]
     },
     {
       "id": "buffer-cache",

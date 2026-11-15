@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 /// The staged migration in docs/fs/cowfs-design.md section 1.1 lowers this
 /// ext2-only ceiling at each stage and never raises it.
 /// claim-lint:ok: Staged migration requirement in docs/fs/cowfs-design.md section 1.1.
-const CEILING: usize = 97;
+const CEILING: usize = 0;
 
 #[test]
 fn attribute_syscalls_use_the_trait() {
@@ -824,4 +824,199 @@ fn create_syscalls_use_the_trait() {
         }
     }
     assert!(violations.is_empty(), "{}", violations.join("\n"));
+}
+
+#[test]
+fn file_mappings_use_the_trait() {
+    use syn::visit::{self, Visit};
+
+    #[derive(Default)]
+    struct Boundary { backend: Vec<String>, writeback: bool }
+    impl<'ast> Visit<'ast> for Boundary {
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            if matches!(ident.to_string().as_str(),
+                "ext2" | "FileHandle" | "DataFile" | "Ext2Fs" | "request_map_eviction"
+                | "ino32" | "read_mount" | "write_mount" | "ext2_handle")
+            {
+                self.backend.push(ident.to_string());
+            }
+        }
+        fn visit_expr_method_call(&mut self, expr: &'ast syn::ExprMethodCall) {
+            self.writeback |= expr.method == "writeback_pages";
+            visit::visit_expr_method_call(self, expr);
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("kernel/src");
+    for file in ["memory/file_map.rs", "syscall/mmap.rs"] {
+        let parsed = syn::parse_file(&fs::read_to_string(root.join(file)).unwrap()).unwrap();
+        let mut boundary = Boundary::default();
+        boundary.visit_file(&parsed);
+        assert!(boundary.backend.is_empty(), "{file} names {}", boundary.backend.join(", "));
+        if file == "memory/file_map.rs" {
+            assert!(boundary.writeback, "file_map must call writeback_pages");
+        }
+    }
+}
+
+#[test]
+fn exec_loads_through_the_trait() {
+    use syn::visit::{self, Visit};
+    #[derive(Default)]
+    struct Boundary { backend: Vec<String>, loads: usize, calls: Vec<String> }
+    impl<'ast> Visit<'ast> for Boundary {
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            if matches!(ident.to_string().as_str(), "ext2" | "ino32" | "Ext2Fs"
+                | "read_inode" | "root_fs_read" | "read_exclusive" | "exec_attrs"
+                | "read_file_content_coherent" | "read_file_content_coherent_unless") {
+                self.backend.push(ident.to_string());
+            }
+        }
+        fn visit_expr_call(&mut self, expr: &'ast syn::ExprCall) {
+            if matches!(&*expr.func, syn::Expr::Path(p)
+                if p.path.segments.last().is_some_and(|p| p.ident == "load_image")) {
+                self.loads += 1;
+            }
+            visit::visit_expr_call(self, expr);
+        }
+        fn visit_expr_method_call(&mut self, expr: &'ast syn::ExprMethodCall) {
+            self.calls.push(expr.method.to_string());
+            visit::visit_expr_method_call(self, expr);
+        }
+    }
+    // A source root lets the same guard judge unchanged main before implementation.
+    let root = std::env::var_os("BREENIX_EXEC_SOURCE_ROOT").map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR"))).join("kernel/src");
+    let mut problems = Vec::new();
+    for (file, names) in [
+        ("boot/init_image.rs", &["read_program_image"][..]),
+        ("arch_impl/aarch64/syscall_entry.rs", &["load_elf_from_ext2"][..]),
+        ("syscall/handlers.rs", &["load_elf_from_ext2"][..]),
+        ("main_aarch64.rs", &["read_init_from_ext2", "load_test_binaries_from_ext2"][..]),
+    ] {
+        let parsed = syn::parse_file(&fs::read_to_string(root.join(file)).unwrap()).unwrap();
+        for name in names {
+            let f = parsed.items.iter().find_map(|i| match i {
+                syn::Item::Fn(f) if f.sig.ident == *name => Some(f), _ => None,
+            }).unwrap_or_else(|| panic!("missing {file}::{name}"));
+            let mut b = Boundary::default();
+            b.visit_block(&f.block);
+            if !b.backend.is_empty() || b.loads == 0 {
+                problems.push(format!("{file}::{name}: backend={:?}, load_image calls={}", b.backend, b.loads));
+            }
+        }
+        if file == "syscall/handlers.rs" {
+            for item in &parsed.items {
+                if let syn::Item::Use(u) = item {
+                    let mut b = Boundary::default();
+                    b.visit_item_use(u);
+                    if b.backend.iter().any(|name| name == "ino32") {
+                        problems.push("handlers retains ino32 import".into());
+                    }
+                }
+            }
+        }
+    }
+    assert!(problems.is_empty(), "exec backend boundary:\n{}", problems.join("\n"));
+    let parsed = syn::parse_file(&fs::read_to_string(root.join("fs/vfs/exec.rs")).unwrap()).unwrap();
+    let mut b = Boundary::default();
+    b.visit_file(&parsed);
+    assert!(b.backend.is_empty(), "shared exec names {:?}", b.backend);
+    for operation in ["getattr", "read", "mapping_io", "may_change_exec_image", "block_mapping_bindings"] {
+        assert!(b.calls.iter().any(|call| call == operation), "exec must use {operation}");
+    }
+    let mmap = syn::parse_file(&fs::read_to_string(root.join("syscall/mmap.rs")).unwrap()).unwrap();
+    let f = mmap.items.iter().find_map(|i| match i {
+        syn::Item::Fn(f) if f.sig.ident == "map_file" => Some(f), _ => None,
+    }).expect("map_file publication");
+    let mut b = Boundary::default();
+    b.visit_block(&f.block);
+    assert!(b.calls.iter().any(|call| call == "allow_mapping_binding"),
+        "mmap publication must share the exec binding gate");
+
+}
+
+#[test]
+fn descriptors_hold_vnodes() {
+    use syn::visit::Visit;
+    #[derive(Default)]
+    struct Boundary(Vec<String>);
+    impl<'ast> Visit<'ast> for Boundary {
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            if matches!(ident.to_string().as_str(), "ext2" | "ext2_errno" | "Ext2Fs"
+                | "Ext2Inode" | "FileHandle" | "NativeInode" | "native_inode"
+                | "ext2_handle" | "ext2_adapter" | "ShrinkTicket" | "Held"
+                | "read_dir_inode" | "ino32" | "read_inode" | "read_symlink_bytes"
+                | "begin_resize_file_as" | "finish_shrink") {
+                self.0.push(ident.to_string());
+            }
+        }
+    }
+    let root = std::env::var_os("BREENIX_HANDLES_SOURCE_ROOT").map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR"))).join("kernel/src");
+    let mut problems = Vec::new();
+    for file in ["ipc/fd.rs", "ipc/fifo.rs", "syscall/fs.rs", "syscall/metadata.rs",
+        "fs/vfs/names.rs", "fs/vfs/mount.rs", "fs/namei.rs", "syscall/handlers.rs"] {
+        let parsed = syn::parse_file(&fs::read_to_string(root.join(file)).unwrap()).unwrap();
+        let mut b = Boundary::default();
+        b.visit_file(&parsed);
+        if !b.0.is_empty() { problems.push(format!("{file}: {}", b.0.join(", "))); }
+    }
+    assert!(problems.is_empty(), "descriptor backend boundary:\n{}", problems.join("\n"));
+}
+
+#[test]
+fn boot_mounts_probe_by_magic() {
+    use syn::visit::{self, Visit};
+    #[derive(Default)]
+    struct Boundary { backend: Vec<String>, calls: Vec<String> }
+    impl<'ast> Visit<'ast> for Boundary {
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            if matches!(ident.to_string().as_str(), "ext2" | "Ext2Fs" | "FileHandle"
+                | "root_fs_read" | "read_inode" | "init_root_fs" | "init_home_fs"
+                | "shutdown_filesystems" | "filesystem_states") {
+                self.backend.push(ident.to_string());
+            }
+        }
+        fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+            if let syn::Expr::Path(p) = &*call.func {
+                self.calls.push(p.path.segments.last().unwrap().ident.to_string());
+            }
+            visit::visit_expr_call(self, call);
+        }
+    }
+    let root = std::env::var_os("BREENIX_BOOT_SOURCE_ROOT").map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR"))).join("kernel/src");
+    let mut problems = Vec::new();
+    for file in ["main.rs", "main_aarch64.rs", "syscall/reboot.rs", "fs/procfs/mod.rs",
+        "boot/target.rs", "gpu/mod.rs", "gpu/gk208/c2/runtime.rs"] {
+        let source = fs::read_to_string(root.join(file)).unwrap();
+        let parsed = syn::parse_file(&source).unwrap();
+        let mut b = Boundary::default();
+        b.visit_file(&parsed);
+        if !b.backend.is_empty() { problems.push(format!("{file}: {:?}", b.backend)); }
+        if file.starts_with("main") {
+            for call in ["mount_root", "mount_home", "init_services"] {
+                if !b.calls.iter().any(|c| c == call) { problems.push(format!("{file} missing {call}")); }
+            }
+            for line in ["ext2 root filesystem mounted", "ext2 home filesystem mounted at /home", "EXT2_MOUNT"] {
+                assert!(source.contains(line), "{file} lost {line}");
+            }
+        }
+        if file == "syscall/reboot.rs" && !b.calls.iter().any(|c| c == "shutdown") { problems.push("reboot must call vfs shutdown".into()); }
+    }
+    assert!(problems.is_empty(), "boot backend boundary:\n{}", problems.join("\n"));
+    let declarations = fs::read_to_string(root.join("fs/mod.rs")).unwrap();
+    let parsed = syn::parse_file(&declarations).unwrap();
+    assert!(!parsed.items.iter().any(|i| matches!(i, syn::Item::Mod(m) if m.ident == "ext2")),
+        "backends must be declared by filesystems!");
+    assert!(declarations.contains("filesystems! { ext2 }"));
+    for file in ["fs/vfs/boot.rs", "fs/vfs/format.rs"] {
+        let source = fs::read_to_string(root.join(file)).unwrap();
+        let mut b = Boundary::default();
+        b.visit_file(&syn::parse_file(&source).unwrap());
+        assert!(b.backend.is_empty(), "{file} names {:?}", b.backend);
+    }
+    let format = fs::read_to_string(root.join("fs/vfs/format.rs")).unwrap();
+    for field in ["kind", "probe", "mount"] { assert!(format.contains(&format!("pub {field}:"))); }
+    assert!(format.contains("(format.probe)") && format.contains("(format.mount)"));
 }

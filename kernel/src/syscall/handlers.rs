@@ -3,8 +3,6 @@
 //! This module contains the actual implementation of each system call.
 
 use super::SyscallResult;
-#[cfg(all(target_arch = "x86_64", feature = "testing"))]
-use crate::fs::ext2::ino32;
 #[cfg(target_arch = "x86_64")]
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -1823,31 +1821,12 @@ pub fn sys_fork() -> SyscallResult {
 fn load_elf_from_ext2(
     path: impl AsRef<[u8]>,
 ) -> Result<(Vec<u8>, crate::process::credentials::ExecIdentity, Vec<u8>), i32> {
-    use super::errno::{EACCES, EIO};
-
-    // Taken before the filesystem lock: who may execute the file.
     let cred = crate::fs::permissions::Credentials::current(false).map_err(|errno| errno as i32)?;
-
-    // Exclude new mapping bindings until the image and its identity are copied.
-    // Existing shared write authority is checked by exec_attrs.
-    let (mount, inode_num, _held, resolved) =
-        crate::fs::namei::resolve_file_bytes(path.as_ref()).map_err(|errno| errno as i32)?;
-    let mut fs_guard = mount.read_exclusive().map_err(|errno| errno.0)?;
-    let fs = fs_guard.as_mut().ok_or(EIO)?;
-
-    let ext2_ino = ino32(inode_num).map_err(|error| error.0)?;
-    let inode = fs.read_inode(ext2_ino).map_err(|_| EIO)?;
-
-    if inode.is_dir() {
-        return Err(EACCES);
-    }
-
-    let identity = cred.may_exec(fs.exec_attrs(ext2_ino, &inode), crate::fs::vfs::mount::flags_at(&resolved))?;
-
-    let data = fs
-        .read_file_content_coherent_unless(ext2_ino, &inode, super::exec::caller_killed)?
-        .ok_or(super::errno::EINTR)?;
-    Ok((data, identity, resolved))
+    crate::fs::vfs::exec::load_image(path, &cred, crate::syscall::exec::caller_killed)
+        .map_err(|errno| match errno.0 {
+            crate::syscall::errno::EISDIR => crate::syscall::errno::EACCES,
+            errno => errno,
+        })
 }
 
 /// sys_execv_with_frame - Replace the current process with a new program (with argv support)
@@ -3011,7 +2990,7 @@ struct Flock {
 /// `F_SETLKW` sleeps. The `struct flock` is copied through the fault-tolerant
 /// user-copy routine, so a bad pointer is EFAULT.
 fn fcntl_record_lock(thread_id: u64, fd: i32, cmd: i32, flock_ptr: u64) -> SyscallResult {
-    use super::errno::{EBADF, EINVAL, EIO, EOVERFLOW};
+    use super::errno::{EBADF, EINVAL, EOVERFLOW};
     use super::fs::{O_RDONLY, O_WRONLY, SEEK_CUR, SEEK_END, SEEK_SET};
     use super::userptr::{copy_from_user, copy_to_user};
     use crate::fs::locks::{self, FileKey, LockKind, F_RDLCK, F_UNLCK, F_WRLCK, OFFSET_MAX};
@@ -3040,10 +3019,7 @@ fn fcntl_record_lock(thread_id: u64, fd: i32, cmd: i32, flock_ptr: u64) -> Sysca
                     },
                     entry.status_flags() & crate::ipc::fd::status_flags::O_ACCMODE,
                     file.position,
-                    match file.open.ext2_handle() {
-                        Some(handle) => handle,
-                        None => return SyscallResult::Err(super::errno::EIO as u64),
-                    },
+                    file.open.node.clone(),
                 )
             }
             // A descriptor for anything but a regular file does not support locking.
@@ -3070,9 +3046,9 @@ fn fcntl_record_lock(thread_id: u64, fd: i32, cmd: i32, flock_ptr: u64) -> Sysca
             Ok(position) => position,
             Err(_) => return SyscallResult::Err(EOVERFLOW as u64),
         },
-        SEEK_END => match super::fs::get_ext2_file_size_for_handle(&handle) {
-            Some(size) => size as i64,
-            None => return SyscallResult::Err(EIO as u64),
+        SEEK_END => match handle.filesystem.getattr(handle.ino) {
+            Ok(attrs) => attrs.size as i64,
+            Err(error) => return SyscallResult::Err(error.into()),
         },
         _ => return SyscallResult::Err(EINVAL as u64),
     };
