@@ -1,3 +1,37 @@
+extern crate alloc;
+#[path = "../../../kernel/src/fs/cowfs/btree.rs"]
+pub mod btree;
+#[path = "../../../kernel/src/fs/cowfs/commit.rs"]
+pub mod commit;
+#[path = "../../../kernel/src/fs/cowfs/crc32c.rs"]
+pub mod crc32c;
+#[path = "../../../kernel/src/fs/cowfs/format.rs"]
+pub mod format;
+#[path = "../../../kernel/src/fs/cowfs/ops.rs"]
+pub mod ops;
+#[path = "../../../kernel/src/fs/cowfs/recover.rs"]
+pub mod recover;
+#[path = "../../../kernel/src/fs/cowfs/siphash.rs"]
+pub mod siphash;
+#[path = "../../../kernel/src/fs/cowfs/space.rs"]
+pub mod space;
+#[path = "../../../kernel/src/fs/cowfs/txn.rs"]
+pub mod txn;
+pub mod block {
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub enum BlockError {
+        IoError,
+        OutOfBounds,
+    }
+    pub trait BlockDevice: Send + Sync {
+        fn read_block(&self, block: u64, buf: &mut [u8]) -> Result<(), BlockError>;
+        fn write_block(&self, block: u64, buf: &[u8]) -> Result<(), BlockError>;
+        fn block_size(&self) -> usize;
+        fn num_blocks(&self) -> u64;
+        fn flush(&self) -> Result<(), BlockError>;
+    }
+}
+
 #[cfg(unix)]
 mod mkfs {
     use cowfs::btree::{self, NodeStore};
@@ -216,6 +250,76 @@ mod mkfs {
             }
             assert_eq!(reported, written);
         }
+    }
+
+    #[test]
+    fn mkfs_has_no_private_writer() {
+        let source = include_str!("../src/bin/cowfs-mkfs.rs");
+        assert!(!source.contains("btree::insert"));
+        assert!(!source.contains("btree::create"));
+    }
+
+    struct RecoveryDevice(Vec<u8>);
+    impl crate::block::BlockDevice for RecoveryDevice {
+        fn read_block(&self, block: u64, buf: &mut [u8]) -> Result<(), crate::block::BlockError> {
+            let start = block as usize * 512;
+            let data = self
+                .0
+                .get(start..start + buf.len())
+                .ok_or(crate::block::BlockError::OutOfBounds)?;
+            buf.copy_from_slice(data);
+            Ok(())
+        }
+        fn write_block(&self, _: u64, _: &[u8]) -> Result<(), crate::block::BlockError> {
+            Err(crate::block::BlockError::IoError)
+        }
+        fn block_size(&self) -> usize {
+            512
+        }
+        fn num_blocks(&self) -> u64 {
+            (self.0.len() / 512) as u64
+        }
+        fn flush(&self) -> Result<(), crate::block::BlockError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn populate_recovers_to_the_source() {
+        let s = Scratch::new();
+        let source = s.path("source");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(source.join("dir")).unwrap();
+        fs::write(source.join("dir/file"), b"recovered contents").unwrap();
+        std::os::unix::fs::symlink("dir/file", source.join("link")).unwrap();
+        let path = s.path("image");
+        make(&path, Some(&source));
+        let device = RecoveryDevice(fs::read(path).unwrap());
+        let sb = crate::recover::recover(&device, false).unwrap();
+        assert_eq!(sb.generation, 1);
+        let files = crate::ops::Files::new(crate::commit::DeviceStore(&device), &sb, 1).unwrap();
+        let dir = files.lookup(2, b"dir").unwrap();
+        let file = files.lookup(dir, b"file").unwrap();
+        let link = files.lookup(2, b"link").unwrap();
+        let mut bytes = [0; 64];
+        let n = files.read(&device, file, 0, &mut bytes).unwrap();
+        assert_eq!(&bytes[..n], fs::read(source.join("dir/file")).unwrap());
+        assert_eq!(
+            files.readlink(link).unwrap(),
+            fs::read_link(source.join("link"))
+                .unwrap()
+                .as_os_str()
+                .as_bytes()
+        );
+        assert_eq!(
+            files
+                .items()
+                .unwrap()
+                .iter()
+                .filter(|(k, _)| k.item_type == crate::format::DIR_INDEX)
+                .count(),
+            3
+        );
     }
 
     #[test]
