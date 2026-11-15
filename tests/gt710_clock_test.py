@@ -114,6 +114,7 @@ fn main() {
 fn hash(bytes:&[u8])->String { sha::sha256(bytes).iter().map(|v|format!("{v:02x}")).collect() }
 fn main() {
     assert!(clock::export().is_none());
+    assert!(clock::observe().is_none());
     let mut bar=vec![0u32;0x1000000/4];
     for (a,v) in [(0x101000,0x400000),(0x137100,1),(0x137000,1),(0x137004,0x21e01),
                   (0x137250,0x80000200),(0x1373f4,1),(0x132020,1),(0x132024,0x11401),
@@ -127,6 +128,15 @@ fn main() {
         let (row,anchor)=clock::export().unwrap();println!("{}\n{}",row,anchor);
     }
     assert!(clock::export().is_none());
+    // A live observer still works after the bounded boot uploads are consumed.
+    let live=clock::observe().unwrap();
+    assert!(live.starts_with("GT710_CLOCK_SAMPLE_V1 "));
+    assert!(live.contains("\"phase\":\"live\""));
+    bar[0x137004/4] ^= 1<<8;
+    let changed=clock::observe().unwrap();
+    assert_ne!(changed,live,"live observation reused a stale clock sample");
+    bar[0x137004/4] ^= 1<<8;
+    assert!(clock::export().is_none(),"live reads reset the bounded export slots");
     assert_eq!(bar,before);
 }
 '''
