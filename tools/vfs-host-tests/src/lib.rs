@@ -40,6 +40,7 @@ pub mod ext2 {
 }
 pub mod fs {
     pub use crate::{attrs, errno, ext2, vfs, permissions};
+    pub use crate::statfs_support::{namei, ufs};
 }
 pub fn arch_without_interrupts<R>(f: impl FnOnce() -> R) -> R {
     f()
@@ -98,3 +99,5 @@ pub use vfs::format;
 pub mod ext2_format;
 #[path = "../tests/boot_mount_tests.rs"]
 mod boot_mount_tests;
+
+pub mod statfs_support;

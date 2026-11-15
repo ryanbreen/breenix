@@ -9,6 +9,7 @@ autotests = false
 [dependencies]
 spin = "0.9"
 log = "0.4"
+ufs-abi = { path = "../../libs/ufs-abi" }
 
 [lib]
 test = true
