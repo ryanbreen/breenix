@@ -69,11 +69,11 @@
 //!       marker print from inside the (still-called) helper, which
 //!       property 9 cannot see since it only checks that callers reach
 //!       `ext2_record_park`, not what `ext2_record_park` does once called.
-//!   11. `run_one()` (`kernel/src/fs/ext2_lock_race.rs`) itself calls
+//!   11. `run_one()` (`kernel/src/fs/ext2/lock_race.rs`) itself calls
 //!       `ext2_reset_lock_park_first_marker()` -- catches the leg-scoping
 //!       reset silently reverting to whole-boot-first semantics, which
-//!       nothing in this file otherwise pins (the reset call lives outside
-//!       `mod.rs` entirely).
+//!       the other checks do not pin (the reset call lives outside
+//!       `mod.rs`).
 
 use std::fs;
 use std::path::PathBuf;
@@ -655,7 +655,7 @@ fn ext2_record_park_itself_prints_the_marker() {
 
 #[test]
 fn run_one_itself_resets_the_park_marker() {
-    let source = repo_text("kernel/src/fs/ext2_lock_race.rs");
+    let source = repo_text("kernel/src/fs/ext2/lock_race.rs");
     validate_run_one_resets_park_marker(function_body(&source, "run_one")).unwrap();
 }
 

@@ -683,7 +683,7 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     // Runs immediately after the root filesystem mounts, so every marker the rest
     // of this boot prints is evidence the kernel survived the injected faults.
     #[cfg(feature = "fs_fault_inject")]
-    kernel::fs::fault_inject::run_fs_fault_leg();
+    kernel::fs::vfs::fault::run_fs_fault_leg();
     // Noninteractive testing can supply a fixture; interactive needs a home disk.
     if cfg!(all(feature = "testing", not(feature = "interactive")))
         || (!kernel::block::hardware_read_only() && kernel::block::disk(3).is_some())
@@ -809,7 +809,7 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     // runs here rather than at the fault-injection leg's early insertion
     // point right after mount -- kthreads do not exist that early in boot.
     #[cfg(all(target_arch = "x86_64", feature = "ext2_lock_race"))]
-    kernel::fs::ext2_lock_race::run_ext2_lock_race_leg();
+    kernel::fs::run_ext2_lock_race_leg();
 
     kernel::tracing::providers::teardown::emit_root_custody_summary();
     kernel::tracing::providers::teardown::emit_tombstone_census();

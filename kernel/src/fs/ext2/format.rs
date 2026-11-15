@@ -9,6 +9,8 @@ use crate::{
 use alloc::{boxed::Box, sync::Arc};
 
 pub const FORMAT: Format = Format {
+    #[cfg(feature = "fs_fault_inject")]
+    fault_mount: super::fault::mount,
     kind: "ext2",
     probe,
     mount,

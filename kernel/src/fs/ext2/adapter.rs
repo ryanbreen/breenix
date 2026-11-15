@@ -182,7 +182,7 @@ fn kind(inode: &Ext2Inode) -> Result<NodeKind, Errno> {
     })
 }
 
-fn attributes(ino: u64, inode: &Ext2Inode) -> Result<NodeAttrs, Errno> {
+pub(super) fn attributes(ino: u64, inode: &Ext2Inode) -> Result<NodeAttrs, Errno> {
     let time = |sec: u32| Timestamp {
         sec: sec.into(),
         nsec: 0,
@@ -301,6 +301,25 @@ impl FileSystem for Ext2Adapter {
             let guard = sync_mount_guard(self.mount).map_err(errno)?;
             guard.as_ref().ok_or(Errno(EIO))?.sync().map_err(errno)
         }
+    }
+
+    fn check_live(&self) -> Result<(), Errno> {
+        let guard = read_mount(self.mount).map_err(errno)?;
+        let fs = guard.as_ref().ok_or(Errno(EIO))?;
+        let (superblock, groups) = fs.persisted_metadata().map_err(errno)?;
+        if groups.is_empty() || superblock.block_size() == 0
+            || !fs.read_inode(fs.namespace().root).map_err(errno)?.is_dir() {
+            return Err(Errno(EIO));
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "watchdog_fault_inject")]
+    fn hold_writer(&self, held: &dyn Fn()) -> Result<(), Errno> {
+        let guard = write_mount(self.mount).map_err(errno)?;
+        guard.as_ref().ok_or(Errno(EIO))?;
+        held();
+        Ok(())
     }
 
     fn init_service(&self) -> Result<(), Errno> {

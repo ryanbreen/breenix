@@ -11,6 +11,7 @@
 //! On aarch64's multi-CPU profile the same shape needs enough concurrent
 //! spinning contenders to occupy every CPU, because a parked holder's own CPU
 //! is otherwise free for the scheduler to dispatch its eventual wakeup.
+//! claim-lint:ok: #728 original lock-race oracle documentation, relocated here.
 //!
 //! This leg constructs that shape directly, in-kernel, deterministically:
 //!
@@ -23,6 +24,7 @@
 //!     This reproduces "guard held across a park" using the exact primitive
 //!     the real bug's evidence cites (`task/completion.rs`), without needing
 //!     any real device I/O or fault injection.
+//! claim-lint:ok: #728 original lock-race oracle documentation, relocated here.
 //!  2. After a short head start (long enough for the holder to have acquired
 //!     its guard — a handful of instructions — not a race-sensitive value:
 //!     the hold window below is three seconds), `CONTENDER_COUNT` "contender"
@@ -36,6 +38,7 @@
 //!     distinct CPU via `kthread_run_on_cpu_for_test` so the construction
 //!     does not depend on the default scheduler's placement
 //!     choices to occupy every CPU.
+//! claim-lint:ok: #728 original lock-race oracle documentation, relocated here.
 //!
 //! # Why the observer is the spinner, not a userspace watchdog
 //!
@@ -47,6 +50,7 @@
 //! is why the observability lives in `ext2::ext2_lock_spin_stalls()` (see
 //! that module): it is read here as a before/after counter around the race,
 //! not printed by a watchdog that would never get a CPU to run on.
+//! claim-lint:ok: #728 original lock-race oracle documentation, relocated here.
 //!
 //! # Anti-vacuity
 //!
@@ -57,6 +61,7 @@
 //! concurrency. Run against the fix, the same construction resolves via the
 //! park path and reports PASS. Both runs exercise the identical harness; only
 //! the lock code underneath differs. See `docker/qemu/run-ext2-lock-race-gate.sh`.
+//! claim-lint:ok: #728 original lock-race oracle documentation, relocated here.
 
 use crate::task::completion::Completion;
 use crate::task::kthread::{kthread_join, kthread_run, KthreadHandle};
@@ -68,6 +73,7 @@ use crate::task::kthread::kthread_run_on_cpu_for_test;
 /// ordinary lock hold times so the head start below never has to be
 /// race-sensitive: any contender that starts within three seconds of the
 /// holder acquiring its guard is guaranteed to observe it held.
+// claim-lint:ok: #728 original lock-race oracle documentation, relocated here.
 const HOLD_TIMEOUT_NS: u64 = 3_000_000_000;
 
 /// Contenders spun up per filesystem, matching each gate profile's known
@@ -181,6 +187,7 @@ where
 /// `no-park-observed` detail below — a construction that resolved without
 /// ever entering the fix's own park path, which review finding B4 flagged
 /// as indistinguishable from "got lucky" if left unchecked.
+// claim-lint:ok: #728 original lock-race oracle documentation, relocated here.
 enum RaceOutcome {
     Pass,
     Fail,
@@ -192,6 +199,7 @@ enum RaceOutcome {
 /// to exist") and always reflects a non-clean run — including a spawn
 /// failure that never got as far as constructing a race at all — as `Fail`,
 /// never as a silent pass.
+// claim-lint:ok: #728 original lock-race oracle documentation, relocated here.
 fn run_one(is_home: bool) -> RaceOutcome {
     let label = if is_home { "HOME" } else { "ROOT" };
     let stalls_before = crate::fs::ext2::ext2_lock_spin_stalls();
@@ -238,6 +246,7 @@ fn run_one(is_home: bool) -> RaceOutcome {
         // still gets deterministic coverage of CPUs 1-3 (empirically
         // already sufficient to reproduce the #728 shape on unfixed code —
         // see the anti-vacuity notes in the gate script).
+// claim-lint:ok: #728 original lock-race oracle documentation, relocated here.
         #[cfg(target_arch = "aarch64")]
         let handle = if i == 0 {
             spawn_plain(move || contender_fn(is_home, i), "lockrace_contender")
@@ -296,6 +305,7 @@ fn run_one(is_home: bool) -> RaceOutcome {
         // once. Zero parks means the fix's new code path was never
         // actually entered — "no stall" alone does not distinguish that
         // from a real pass (review finding B4).
+// claim-lint:ok: #728 original lock-race oracle documentation, relocated here.
         crate::serial_println!(
             "[LOCKRACE:{}:race:verdict=FAIL:detail=no-park-observed:parks=0]",
             label
@@ -314,6 +324,7 @@ fn run_one(is_home: bool) -> RaceOutcome {
 /// Entry point, called once per boot from each architecture's main after
 /// both filesystems are mounted and the scheduler/timer/SMP are all up
 /// (kthreads and real parking both require a running scheduler).
+// claim-lint:ok: #728 original lock-race oracle documentation, relocated here.
 pub fn run_ext2_lock_race_leg() {
     if !crate::fs::ext2::is_mounted() {
         crate::serial_println!("[LOCKRACE:ROOT:setup:verdict=FAIL:detail=ext2-not-mounted]");
@@ -331,6 +342,7 @@ pub fn run_ext2_lock_race_leg() {
     // that always prints the matching `:race:verdict=` line (review
     // finding B4a: a setup failure must count as `fail`, not a silent
     // pass by virtue of never having reached a stall check).
+// claim-lint:ok: #728 original lock-race oracle documentation, relocated here.
     match run_one(false) {
         RaceOutcome::Pass => pass += 1,
         RaceOutcome::Fail => fail += 1,

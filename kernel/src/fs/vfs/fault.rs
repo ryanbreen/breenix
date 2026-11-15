@@ -1,28 +1,25 @@
 //! ext2/VFS fault-injection leg — TEST PROFILE ONLY.
 //!
-//! Every boot gate this kernel has proves the filesystem works when the block
-//! device answers correctly. None of them proves what happens when it does not.
-//! This module is the missing half: it drives the ext2 read path through three
-//! block-layer fault shapes and holds each one to a stated expectation.
+//! Drives the filesystem read path through block-layer short reads, EIO and
+//! corrupted inode records. The format registration supplies private geometry.
 //!
 //! # The three shapes and what each one must do
 //!
 //! | shape             | injected at the block layer                              | required behaviour |
 //! |-------------------|----------------------------------------------------------|--------------------|
-//! | `short_read`      | device returns `Ok` having filled only the first N bytes  | the superblock parse must REJECT the truncated image (`Ext2Fs::new` → `Err`), not build a filesystem out of a half-read block |
+//! | `short_read`      | device returns `Ok` having filled only the first N bytes  | the superblock parse must REJECT the truncated image (mount → `Err`), not build a filesystem out of a half-read block |
 //! | `eio_data_block`  | device returns `Err(IoError)` for one file data block     | the error must propagate to the caller of the read, and the same read must succeed again once the device recovers |
 //! | `corrupt_inode`   | device returns `Ok` with the inode record overwritten     | the corrupt inode must produce `Err`, whether the corruption is an implausible size or wild block pointers |
 //!
-//! Common to all three, and the reason this is a leg rather than three unit
+//! Common to these three shapes, and the reason this is a leg rather than three unit
 //! tests: **no panic, no hang, and the kernel is still live afterwards** — the
-//! leg runs during boot, and the boot that follows it is the liveness proof.
+//! leg runs during boot and checks liveness after disarming.
 //!
 //! # Production cleanliness
 //!
 //! The whole module is behind `#[cfg(feature = "fs_fault_inject")]`, as are its
-//! two call sites (one per architecture main). Nothing here is reachable from,
-//! or referenced by, a production build; `scripts/check-fs-fault-production-clean.sh`
-//! measures that claim against a real production ELF rather than trusting the
+//! two call sites (one per architecture main). Production exclusion is checked by
+//! `scripts/check-fs-fault-production-clean.sh` against a production ELF rather than trusting the
 //! `#[cfg]`, and `tests/fs_fault_production_clean.rs` runs it in the host suite.
 //!
 //! # Anti-vacuity
@@ -37,20 +34,11 @@
 //! run reports the same FAIL, because "the fault did not happen" and "the fault
 //! was not detected" are the same observation here.
 
+use super::*;
 use crate::block::{BlockDevice, BlockError};
-use alloc::boxed::Box;
+use crate::fs::errno::Errno;
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-
-/// The ext2 inode record fields this module rewrites, by byte offset within the
-/// on-disk inode. Sourced from the ext2 on-disk format, matching
-/// `super::ext2::Ext2Inode`'s field order.
-const INODE_OFF_MODE: usize = 0;
-const INODE_OFF_SIZE: usize = 4;
-const INODE_OFF_LINKS: usize = 26;
-const INODE_OFF_BLOCK_PTRS: usize = 40;
-const INODE_BLOCK_PTR_COUNT: usize = 15;
-/// Smallest on-disk inode record; the corruption never writes past it.
-const INODE_MIN_RECORD: usize = 128;
 
 const SHAPE_NONE: u32 = 0;
 const SHAPE_SHORT_READ: u32 = 1;
@@ -60,7 +48,7 @@ const SHAPE_CORRUPT_INODE: u32 = 3;
 /// The armed shape, the device-sector window it applies to, and its parameter.
 ///
 /// The arming state is module-level rather than a field of the wrapper because
-/// `Ext2Fs::new` takes the device by value: for the `short_read` shape the
+/// the mount constructor takes the device by value: for the `short_read` shape the
 /// wrapper is consumed by a constructor that then fails, and the leg still has
 /// to be able to read back how many times the fault actually fired.
 static SHAPE: AtomicU32 = AtomicU32::new(SHAPE_NONE);
@@ -144,16 +132,17 @@ fn arm_corrupt_inode(sector: u64, offset: u64, which: u64) {
 /// A block device that answers faithfully except inside an armed fault window.
 ///
 /// It deliberately does NOT override `read_blocks`, so the trait's default
-/// per-block loop runs and every sector passes through `read_block` where the
+/// per-block loop runs and each requested sector passes through `read_block` where the
 /// injection decision is made. A multi-sector fast path would let a fault
 /// window be stepped over.
-struct FaultBlockDevice {
+pub struct FaultBlockDevice {
+    corrupt: fn(&mut [u8], usize, u64) -> bool,
     inner: Box<dyn BlockDevice>,
 }
 
 impl FaultBlockDevice {
-    fn new(inner: Box<dyn BlockDevice>) -> Self {
-        Self { inner }
+    pub fn new(inner: Box<dyn BlockDevice>, corrupt: fn(&mut [u8], usize, u64) -> bool) -> Self {
+        Self { inner, corrupt }
     }
 
     fn armed_for(&self, block_num: u64) -> u32 {
@@ -171,7 +160,9 @@ impl FaultBlockDevice {
 }
 
 impl BlockDevice for FaultBlockDevice {
-    fn is_read_only(&self) -> bool { self.inner.is_read_only() }
+    fn is_read_only(&self) -> bool {
+        self.inner.is_read_only()
+    }
 
     fn read_block(&self, block_num: u64, buf: &mut [u8]) -> Result<(), BlockError> {
         match self.armed_for(block_num) {
@@ -199,39 +190,12 @@ impl BlockDevice for FaultBlockDevice {
             }
             SHAPE_CORRUPT_INODE => {
                 self.inner.read_block(block_num, buf)?;
-                let offset = PARAM.load(Ordering::SeqCst) as usize;
-                if offset + INODE_MIN_RECORD > buf.len() {
-                    // Cannot corrupt what does not fit; leave the buffer honest
-                    // and let the leg report a missing fault rather than a
-                    // half-applied one.
+                if !(self.corrupt)(
+                    buf,
+                    PARAM.load(Ordering::SeqCst) as usize,
+                    PARAM2.load(Ordering::SeqCst),
+                ) {
                     return Ok(());
-                }
-                let record = &mut buf[offset..offset + INODE_MIN_RECORD];
-                match PARAM2.load(Ordering::SeqCst) {
-                    CORRUPT_SIZE => {
-                        // A regular file, one link, and a size larger than any
-                        // filesystem this kernel can mount.
-                        record[INODE_OFF_MODE..INODE_OFF_MODE + 2]
-                            .copy_from_slice(&0x81FFu16.to_le_bytes());
-                        record[INODE_OFF_LINKS..INODE_OFF_LINKS + 2]
-                            .copy_from_slice(&1u16.to_le_bytes());
-                        record[INODE_OFF_SIZE..INODE_OFF_SIZE + 4]
-                            .copy_from_slice(&0xFFFF_FFF0u32.to_le_bytes());
-                    }
-                    _ => {
-                        // A plausible small regular file whose every block
-                        // pointer names a block the device does not have.
-                        record[INODE_OFF_MODE..INODE_OFF_MODE + 2]
-                            .copy_from_slice(&0x81FFu16.to_le_bytes());
-                        record[INODE_OFF_LINKS..INODE_OFF_LINKS + 2]
-                            .copy_from_slice(&1u16.to_le_bytes());
-                        record[INODE_OFF_SIZE..INODE_OFF_SIZE + 4]
-                            .copy_from_slice(&1024u32.to_le_bytes());
-                        for i in 0..INODE_BLOCK_PTR_COUNT {
-                            let at = INODE_OFF_BLOCK_PTRS + i * 4;
-                            record[at..at + 4].copy_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
-                        }
-                    }
                 }
                 HITS.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -264,11 +228,11 @@ const ARCH: &str = "x86";
 
 /// Open a second handle to the ext2 block device.
 ///
-/// The leg never touches the mounted root filesystem: it builds its own `Ext2Fs`
+/// The injector reads a private filesystem: it builds its own filesystem
 /// over its own device handle, so an injected fault cannot reach the mount the
-/// rest of the boot depends on. Device selection mirrors `ext2::init_root_fs`
+/// rest of the boot depends on. Device selection mirrors the root device selection
 /// (disk 2, else disk 0, on x86_64; VirtIO index 0 on AArch64 QEMU).
-fn open_ext2_device() -> Option<Box<dyn BlockDevice>> {
+fn open_fault_device() -> Option<Box<dyn BlockDevice>> {
     #[cfg(target_arch = "x86_64")]
     {
         crate::block::disk(2).or_else(|| crate::block::disk(0))
@@ -281,39 +245,203 @@ fn open_ext2_device() -> Option<Box<dyn BlockDevice>> {
     }
 }
 
-/// Sector arithmetic for one inode record, mirroring `Ext2Inode::read_from`.
-///
-/// Returns `(device_sector, byte_offset_within_that_sector)`.
-fn inode_record_location(fs: &super::ext2::Ext2Fs, inode_num: u64, device_block_size: usize) -> (u64, u64) {
-    let sb = &fs.superblock;
-    let inodes_per_group =
-        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(sb.s_inodes_per_group)) };
-    let s_rev_level = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(sb.s_rev_level)) };
-    let s_inode_size = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(sb.s_inode_size)) };
-    let s_log_block_size =
-        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(sb.s_log_block_size)) };
+#[derive(Clone, Copy)]
+pub struct FaultLayout {
+    pub header_sector: u64,
+    pub data_sector: u64,
+    pub data_sectors: u64,
+    pub inode_sector: u64,
+    pub inode_offset: u64,
+}
+pub struct FaultImage {
+    pub filesystem: Arc<dyn FileSystem>,
+    pub layout: FaultLayout,
+}
 
-    let inode_index = inode_num - 1;
-    let group = (inode_index / u64::from(inodes_per_group)) as usize;
-    let local_index = inode_index % u64::from(inodes_per_group);
-    let inode_table_block = unsafe {
-        core::ptr::read_unaligned(core::ptr::addr_of!(fs.block_groups[group].bg_inode_table))
-    };
-    let inode_size: u32 = if s_rev_level == 0 {
-        128
-    } else {
-        s_inode_size as u32
-    };
-    let ext2_block_size = 1024u32 << s_log_block_size;
-    let byte_offset = local_index * u64::from(inode_size);
-    let target_ext2_block = u64::from(inode_table_block) + byte_offset / u64::from(ext2_block_size);
-    let offset_in_ext2_block = byte_offset % u64::from(ext2_block_size);
+/// Decorate a private filesystem whose block device carries the fault window.
+/// Filesystem operations still run the backend's ordinary validation and I/O.
+pub struct FaultFs<F: FileSystem + ?Sized> {
+    inner: Arc<F>,
+    layout: FaultLayout,
+}
+impl FaultFs<dyn FileSystem> {
+    fn new(image: FaultImage) -> Self {
+        Self {
+            inner: image.filesystem,
+            layout: image.layout,
+        }
+    }
+}
+impl<F: FileSystem + ?Sized> FileSystem for FaultFs<F> {
+    fn kind(&self) -> Result<&'static str, Errno> {
+        self.inner.kind()
+    }
+    fn root(&self) -> Result<u64, Errno> {
+        self.inner.root()
+    }
+    fn statfs(&self) -> Result<StatFs, Errno> {
+        self.inner.statfs()
+    }
+    fn sync(&self) -> Result<(), Errno> {
+        self.inner.sync()
+    }
+    fn check_live(&self) -> Result<(), Errno> {
+        self.inner.check_live()
+    }
+    #[cfg(feature = "watchdog_fault_inject")]
+    fn hold_writer(&self, held: &dyn Fn()) -> Result<(), Errno> {
+        self.inner.hold_writer(held)
+    }
+    fn init_service(&self) -> Result<(), Errno> {
+        self.inner.init_service()
+    }
+    fn shutdown(&self, name: &str, deadline: u64) -> Result<(), Errno> {
+        self.inner.shutdown(name, deadline)
+    }
+    fn report(
+        &self,
+        report: Report,
+        name: &str,
+        text: &mut alloc::string::String,
+    ) -> Result<(), Errno> {
+        self.inner.report(report, name, text)
+    }
+    fn read_only(&self) -> Result<bool, Errno> {
+        self.inner.read_only()
+    }
+    fn max_file_size(&self) -> Result<u64, Errno> {
+        self.inner.max_file_size()
+    }
+    fn getattr(&self, ino: u64) -> Result<NodeAttrs, Errno> {
+        self.inner.getattr(ino)
+    }
+    fn setattr(&self, ino: u64, attrs: SetAttr) -> Result<(), Errno> {
+        self.inner.setattr(ino, attrs)
+    }
+    fn open(&self, ino: u64) -> Result<Arc<VNode>, Errno> {
+        self.inner.open(ino)
+    }
+    fn lookup(&self, dir: u64, name: &[u8]) -> Result<u64, Errno> {
+        self.inner.lookup(dir, name)
+    }
+    fn lookup_open(&self, dir: &VNode, name: &[u8]) -> Result<Arc<VNode>, Errno> {
+        self.inner.lookup_open(dir, name)
+    }
+    fn touch(&self, node: &VNode, read: bool) {
+        self.inner.touch(node, read)
+    }
+    fn parent(&self, dir: u64) -> Result<u64, Errno> {
+        self.inner.parent(dir)
+    }
+    fn readdir(
+        &self,
+        dir: u64,
+        cookie: u64,
+        sink: &mut dyn FnMut(DirEnt, u64) -> Result<bool, Errno>,
+    ) -> Result<u64, Errno> {
+        self.inner.readdir(dir, cookie, sink)
+    }
+    fn create(&self, dir: u64, name: &[u8], node: NewNode<'_>) -> Result<u64, Errno> {
+        self.inner.create(dir, name, node)
+    }
+    fn create_open(
+        &self,
+        dir: u64,
+        name: &[u8],
+        kind: NodeKind,
+        check: &dyn Fn(NodeAttrs) -> Result<InodeAttrs, Errno>,
+        prepare: &mut dyn FnMut(Arc<VNode>) -> Result<(), Errno>,
+    ) -> Result<(), Errno> {
+        self.inner.create_open(dir, name, kind, check, prepare)
+    }
+    fn link(&self, ino: u64, dir: u64, name: &[u8], check: &LinkCheck<'_>) -> Result<(), Errno> {
+        self.inner.link(ino, dir, name, check)
+    }
+    fn remove(&self, dir: u64, name: &[u8], which: Remove) -> Result<(), Errno> {
+        self.inner.remove(dir, name, which)
+    }
+    fn rename(
+        &self,
+        from_dir: u64,
+        from: &[u8],
+        to_dir: u64,
+        to: &[u8],
+        mode: RenameMode,
+        check: &RenameCheck<'_>,
+    ) -> Result<(), Errno> {
+        self.inner.rename(from_dir, from, to_dir, to, mode, check)
+    }
+    fn readlink(&self, ino: u64) -> Result<Vec<u8>, Errno> {
+        self.inner.readlink(ino)
+    }
+    fn read(&self, node: &VNode, off: u64, buf: &mut [u8]) -> Result<usize, Errno> {
+        self.inner.read(node, off, buf)
+    }
+    fn write(&self, node: &VNode, req: WriteReq, buf: &[u8]) -> Result<WriteResult, WriteError> {
+        self.inner.write(node, req, buf)
+    }
+    fn resize(
+        &self,
+        node: &VNode,
+        size: u64,
+        clear_setid: bool,
+        check: &dyn Fn(NodeAttrs) -> Result<(), Errno>,
+    ) -> Result<(), Errno> {
+        self.inner.resize(node, size, clear_setid, check)
+    }
+    fn fsync(&self, node: &VNode, data_only: bool) -> Result<(), Errno> {
+        self.inner.fsync(node, data_only)
+    }
+    fn writeback_pages(
+        &self,
+        node: &VNode,
+        page: u64,
+        bytes: &[u8],
+        io: &dyn MappingIo,
+    ) -> Result<(), Errno> {
+        self.inner.writeback_pages(node, page, bytes, io)
+    }
+    fn mapping_io(&self, node: &VNode) -> Result<Box<dyn MappingIo>, Errno> {
+        self.inner.mapping_io(node)
+    }
+    fn clear_mapping_privilege(&self, node: &VNode) -> Result<(), Errno> {
+        self.inner.clear_mapping_privilege(node)
+    }
+    fn request_eviction(&self) {
+        self.inner.request_eviction()
+    }
+    fn xattr(&self, ino: u64, op: Xattr<'_>) -> Result<usize, Errno> {
+        self.inner.xattr(ino, op)
+    }
+}
 
-    let sectors_per_ext2_block = (ext2_block_size as usize / device_block_size) as u64;
-    let sector = target_ext2_block * sectors_per_ext2_block
-        + (offset_in_ext2_block as usize / device_block_size) as u64;
-    let offset_in_sector = (offset_in_ext2_block as usize % device_block_size) as u64;
-    (sector, offset_in_sector)
+fn mount_image(device: Box<dyn BlockDevice>) -> Result<FaultImage, Errno> {
+    // The private constructor must see an armed short read itself, rather than
+    // consuming it in a separate probe first. The selected root supplies its kind.
+    let kind = super::root_filesystem()?.kind()?;
+    let format = crate::fs::FORMATS
+        .iter()
+        .find(|f| f.kind == kind)
+        .ok_or(Errno(crate::syscall::errno::ENODEV))?;
+    (format.fault_mount)(device)
+}
+
+fn read_all(fs: &dyn FileSystem, node: &VNode) -> Result<Vec<u8>, Errno> {
+    let size = fs.getattr(node.ino)?.size as usize;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(size)
+        .map_err(|_| Errno(crate::syscall::errno::ENOMEM))?;
+    bytes.resize(size, 0);
+    let mut at = 0;
+    while at < size {
+        let n = fs.read(node, at as u64, &mut bytes[at..])?;
+        if n == 0 {
+            return Err(Errno(crate::syscall::errno::EIO));
+        }
+        at += n;
+    }
+    Ok(bytes)
 }
 
 struct Tally {
@@ -337,12 +465,10 @@ impl Tally {
 /// mounts, so that everything the boot does afterwards is evidence that the
 /// kernel survived the faults.
 pub fn run_fs_fault_leg() {
-    use super::ext2::{read_file, Ext2Fs, EXT2_ROOT_INO};
-
     crate::serial_println!("[FSFAULT:{}:BEGIN]", ARCH);
     let mut tally = Tally { pass: 0, fail: 0 };
 
-    let Some(device) = open_ext2_device() else {
+    let Some(device) = open_fault_device() else {
         crate::serial_println!(
             "[FSFAULT:{}:setup:verdict=FAIL:detail=no-ext2-block-device]",
             ARCH
@@ -350,50 +476,49 @@ pub fn run_fs_fault_leg() {
         crate::serial_println!("[FSFAULT:{}:COMPLETE:pass=0:fail=1]", ARCH);
         return;
     };
-    let device_block_size = device.block_size();
 
     // ---------------------------------------------------------------- baseline
     // Everything below asserts that a fault produces an error. That claim is
     // vacuous unless the same operations succeed with no fault armed, so the
     // clean arm runs first, through the same injector object.
     disarm();
-    let baseline = Ext2Fs::new_uncached(Box::new(FaultBlockDevice::new(device)), usize::MAX);
+    let baseline = mount_image(device);
     let fs = match baseline {
-        Ok(fs) => {
+        Ok(image) => {
             crate::serial_println!("[FSFAULT:{}:baseline_mount:verdict=PASS]", ARCH);
             tally.record(true);
-            fs
+            FaultFs::new(image)
         }
         Err(e) => {
             crate::serial_println!(
                 "[FSFAULT:{}:baseline_mount:verdict=FAIL:detail=clean-mount-failed:{}]",
                 ARCH,
-                e
+                e.0
             );
             crate::serial_println!("[FSFAULT:{}:COMPLETE:pass=0:fail=1]", ARCH);
             return;
         }
     };
 
-    let root_inode = match fs.read_inode(EXT2_ROOT_INO) {
+    let root_inode = match fs.open(fs.root().unwrap_or(0)) {
         Ok(inode) => inode,
         Err(e) => {
             crate::serial_println!(
                 "[FSFAULT:{}:baseline_inode:verdict=FAIL:detail=clean-root-inode-failed:{}]",
                 ARCH,
-                e
+                e.0
             );
             crate::serial_println!("[FSFAULT:{}:COMPLETE:pass={}:fail=1]", ARCH, tally.pass);
             return;
         }
     };
-    let baseline_dir = match fs.read_directory(&root_inode) {
+    let baseline_dir = match read_all(&fs, &root_inode) {
         Ok(bytes) => bytes,
         Err(e) => {
             crate::serial_println!(
                 "[FSFAULT:{}:baseline_read:verdict=FAIL:detail=clean-root-read-failed:{}]",
                 ARCH,
-                e
+                e.0
             );
             crate::serial_println!("[FSFAULT:{}:COMPLETE:pass={}:fail=1]", ARCH, tally.pass);
             return;
@@ -407,13 +532,11 @@ pub fn run_fs_fault_leg() {
     tally.record(true);
 
     // ------------------------------------------------------------- short read
-    // The superblock lives at byte 1024. Deliver only the first 16 bytes of the
-    // sector that carries it: the ext2 magic at offset 56 is then never written,
-    // and a filesystem must refuse to mount rather than mount a phantom.
+    // Deliver only the first 16 bytes of the registered header sector. The
+    // constructor must refuse the truncated header.
     {
-        let sb_sector = (1024 / device_block_size) as u64;
-        arm_short_read(sb_sector, 16);
-        let Some(device) = open_ext2_device() else {
+        arm_short_read(fs.layout.header_sector, 16);
+        let Some(device) = open_fault_device() else {
             crate::serial_println!(
                 "[FSFAULT:{}:short_read:verdict=FAIL:detail=device-handle-lost]",
                 ARCH
@@ -422,7 +545,7 @@ pub fn run_fs_fault_leg() {
             disarm();
             return;
         };
-        let result = Ext2Fs::new_uncached(Box::new(FaultBlockDevice::new(device)), usize::MAX);
+        let result = mount_image(device);
         let fired = hits();
         match result {
             Err(reason) => {
@@ -430,7 +553,7 @@ pub fn run_fs_fault_leg() {
                     "[FSFAULT:{}:short_read:verdict=PASS:hits={}:observed=Err:detail={}]",
                     ARCH,
                     fired,
-                    reason
+                    reason.0
                 );
                 tally.record(true);
             }
@@ -450,14 +573,9 @@ pub fn run_fs_fault_leg() {
     // The root directory's first data block, named by the inode itself, so the
     // failing sector is a real file data block rather than a guessed offset.
     {
-        let i_block =
-            unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(root_inode.i_block)) };
-        let ext2_block_size = fs.superblock.block_size();
-        let sectors_per_ext2_block = (ext2_block_size / device_block_size) as u64;
-        let data_sector = i_block[0] as u64 * sectors_per_ext2_block;
-
-        arm_io_error(data_sector, sectors_per_ext2_block.max(1));
-        let faulted = fs.read_directory(&root_inode);
+        let data_sector = fs.layout.data_sector;
+        arm_io_error(data_sector, fs.layout.data_sectors);
+        let faulted = read_all(&fs, &root_inode);
         let fired = hits();
         match faulted {
             Err(reason) => {
@@ -466,7 +584,7 @@ pub fn run_fs_fault_leg() {
                     ARCH,
                     fired,
                     data_sector,
-                    reason
+                    reason.0
                 );
                 tally.record(true);
             }
@@ -486,7 +604,7 @@ pub fn run_fs_fault_leg() {
         // again. This is what separates "the error propagated" from "the error
         // wedged the filesystem".
         disarm();
-        match fs.read_directory(&root_inode) {
+        match read_all(&fs, &root_inode) {
             Ok(bytes) if bytes.len() == baseline_dir.len() => {
                 crate::serial_println!(
                     "[FSFAULT:{}:eio_recovery:verdict=PASS:bytes={}]",
@@ -508,7 +626,7 @@ pub fn run_fs_fault_leg() {
                 crate::serial_println!(
                     "[FSFAULT:{}:eio_recovery:verdict=FAIL:detail=still-failing:{}]",
                     ARCH,
-                    reason
+                    reason.0
                 );
                 tally.record(false);
             }
@@ -520,32 +638,31 @@ pub fn run_fs_fault_leg() {
     // field that turns a read into a multi-gigabyte allocation, and block
     // pointers that name blocks the device does not have.
     {
-        let (inode_sector, offset_in_sector) =
-            inode_record_location(&fs, EXT2_ROOT_INO.into(), device_block_size);
+        let (inode_sector, offset_in_sector) = (fs.layout.inode_sector, fs.layout.inode_offset);
 
         for (which, arm_name) in [(CORRUPT_SIZE, "size"), (CORRUPT_BLOCKS, "blocks")] {
             arm_corrupt_inode(inode_sector, offset_in_sector, which);
-            let corrupt = match fs.read_inode(EXT2_ROOT_INO) {
+            let corrupt = match fs.open(fs.root().unwrap_or(0)) {
                 Ok(inode) => inode,
                 Err(reason) => {
                     // Rejecting the corrupt inode at read time is also a correct
-                    // outcome: the error reached the caller and nothing was
-                    // built on top of the corruption.
+                    // outcome: the error reached the caller before a read.
                     crate::serial_println!(
                         "[FSFAULT:{}:corrupt_inode:arm={}:verdict=PASS:hits={}:observed=Err:detail=rejected-at-read-inode:{}]",
                         ARCH,
                         arm_name,
                         hits(),
-                        reason
+                        reason.0
                     );
                     tally.record(true);
                     disarm();
                     continue;
                 }
             };
-            let read = read_file(fs.device.as_ref(), &corrupt, &fs.superblock);
+            let mut bytes = [0; 4096];
+            let read = fs.read(&corrupt, 0, &mut bytes);
             let fired = hits();
-            let size = corrupt.size();
+            let size = corrupt.size.load(Ordering::Acquire);
             match read {
                 Err(reason) => {
                     crate::serial_println!(
@@ -554,7 +671,7 @@ pub fn run_fs_fault_leg() {
                         arm_name,
                         fired,
                         size,
-                        reason
+                        reason.0
                     );
                     tally.record(true);
                 }
@@ -565,7 +682,7 @@ pub fn run_fs_fault_leg() {
                         arm_name,
                         fired,
                         size,
-                        bytes.len()
+                        bytes
                     );
                     tally.record(false);
                 }
@@ -576,20 +693,19 @@ pub fn run_fs_fault_leg() {
 
     // ---------------------------------------------------------------- liveness
     // The injector is disarmed; the shadow filesystem must still read, and the
-    // real mounted root filesystem — which the leg never touched — must still
-    // resolve a path. Everything the boot does after this line is the rest of
-    // the liveness evidence.
+    // mounted root must still pass its ordinary backend health check.
     disarm();
-    let shadow_ok = fs
-        .read_directory(&root_inode)
+    let shadow_ok = read_all(&fs, &root_inode)
         .map(|b| b.len() == baseline_dir.len())
         .unwrap_or(false);
-    let root_ok = match super::ext2::root_fs_read().ok().as_deref() {
-        Some(Some(root)) => root.read_inode(EXT2_ROOT_INO).is_ok(),
-        Some(None) | None => false,
-    };
+    let root_ok = super::root_filesystem()
+        .and_then(|fs| fs.check_live())
+        .is_ok();
     if shadow_ok && root_ok {
-        crate::serial_println!("[FSFAULT:{}:liveness:verdict=PASS:shadow=1:mounted=1]", ARCH);
+        crate::serial_println!(
+            "[FSFAULT:{}:liveness:verdict=PASS:shadow=1:mounted=1]",
+            ARCH
+        );
         tally.record(true);
     } else {
         crate::serial_println!(

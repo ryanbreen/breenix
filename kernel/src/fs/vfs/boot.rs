@@ -141,3 +141,9 @@ pub fn read_config_node(node: &super::VNode, max: usize) -> Result<Vec<u8>, Errn
     }
     Ok(bytes)
 }
+
+/// Retain the mounted root backend without holding the table during I/O.
+pub fn root_filesystem() -> Result<Arc<dyn FileSystem>, Errno> {
+    let id = super::mount::find_mount("/").ok_or(Errno(ENODEV))?;
+    super::mount::filesystem(id)
+}

@@ -1042,7 +1042,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Runs immediately after the root filesystem mounts, so every marker the rest
     // of this boot prints is evidence the kernel survived the injected faults.
     #[cfg(feature = "fs_fault_inject")]
-    kernel::fs::fault_inject::run_fs_fault_leg();
+    kernel::fs::vfs::fault::run_fs_fault_leg();
     // Probe and mount the home filesystem (/home on separate disk)
     match kernel::fs::vfs::mount_home() {
         Ok(()) => serial_println!("[boot] ext2 home filesystem mounted at /home"),
@@ -1924,7 +1924,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // after mount -- kthreads do not exist, and SMP CPUs are not yet online,
     // that early in boot.
     #[cfg(feature = "ext2_lock_race")]
-    kernel::fs::ext2_lock_race::run_ext2_lock_race_leg();
+    kernel::fs::run_ext2_lock_race_leg();
 
     kernel::tracing::providers::teardown::emit_root_custody_summary();
     kernel::tracing::providers::teardown::emit_tombstone_census();

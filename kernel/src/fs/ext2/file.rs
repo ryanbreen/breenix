@@ -263,7 +263,7 @@ pub fn read_file_range<B: BlockDevice + ?Sized>(
     // filesystem was an immediate allocation-error panic, reached before a
     // single block pointer was ever examined, so no downstream block validation
     // could have caught it. Found by the ext2 fault-injection leg's
-    // corrupt-inode shape (kernel/src/fs/fault_inject.rs).
+    // corrupt-inode shape (kernel/src/fs/vfs/fault.rs).
     //
     // The bound is on the ALLOCATION, not on i_size. A sparse ext2 file may
     // legitimately carry an i_size larger than the device -- Linux bounds i_size

@@ -14,6 +14,8 @@ pub enum BootMount {
 }
 
 pub struct Format {
+    #[cfg(feature = "fs_fault_inject")]
+    pub fault_mount: fn(Box<dyn BlockDevice>) -> Result<super::fault::FaultImage, Errno>,
     pub kind: &'static str,
     pub probe: fn(&dyn BlockDevice) -> Result<bool, Errno>,
     pub mount: fn(Box<dyn BlockDevice>, BootMount) -> Result<Arc<dyn FileSystem>, Errno>,

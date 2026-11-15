@@ -12,6 +12,8 @@ use spin::Mutex;
 pub use crate::fs::attrs::MountFlags;
 pub mod attributes;
 pub mod format;
+#[cfg(feature = "fs_fault_inject")]
+pub mod fault;
 pub use format::{BootMount, Format, probe_mount};
 #[cfg(not(test))]
 pub mod boot;
@@ -293,6 +295,11 @@ pub trait FileSystem: core::any::Any + Send + Sync {
     fn root(&self) -> Result<u64, Errno>;
     fn statfs(&self) -> Result<StatFs, Errno>;
     fn sync(&self) -> Result<(), Errno>;
+    /// Verify mounted storage with backend I/O before a watchdog feed.
+    fn check_live(&self) -> Result<(), Errno> { Err(Errno(EOPNOTSUPP)) }
+    /// Hold mutation exclusion while a watchdog fault leaves scheduling alive.
+    #[cfg(feature = "watchdog_fault_inject")]
+    fn hold_writer(&self, held: &dyn Fn()) -> Result<(), Errno> { let _ = held; Err(Errno(EOPNOTSUPP)) }
     fn init_service(&self) -> Result<(), Errno> { Ok(()) }
     fn shutdown(&self, _name: &str, _deadline: u64) -> Result<(), Errno> { Err(Errno(EOPNOTSUPP)) }
     fn report(&self, _report: Report, _name: &str, _text: &mut alloc::string::String) -> Result<(), Errno> { Ok(()) }

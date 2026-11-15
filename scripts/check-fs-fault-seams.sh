@@ -8,8 +8,8 @@
 # rot: every reference to the leg outside its own module is cfg-guarded, and no
 # reference to it exists in a hot path at all.
 #
-#   RULE A (cfg census): every mention of `fault_inject` in kernel/src outside
-#   kernel/src/fs/fault_inject.rs is either the `#[cfg(feature =
+#   RULE A (cfg census): a reference to this fault leg in kernel/src outside
+#   kernel/src/fs/vfs/fault.rs and kernel/src/fs/ext2/fault.rs is either the `#[cfg(feature =
 #   "fs_fault_inject")]` attribute itself, a comment, or a line whose preceding
 #   non-blank line is that attribute. An unguarded call is what would put the
 #   leg into a production build, and it is exactly what this catches.
@@ -62,12 +62,12 @@ PROHIBITED=(
     "kernel/src/arch/aarch64/context_switch.rs"
 )
 
-MODULE_REL="kernel/src/fs/fault_inject.rs"
+MODULE_REL="kernel/src/fs/vfs/fault.rs"
 # Spellings that name THIS leg. Deliberately not the bare word `fault_inject`:
 # the unrelated, pre-existing `ec0_fault_inject` feature contains it as a
 # substring, and a needle that swept that in would make this ratchet a
 # permanent red rather than a check.
-NEEDLE='fs_fault_inject|fs::fault_inject|run_fs_fault_leg|mod fault_inject'
+NEEDLE='fs_fault_inject|fs::fault_inject|fs::vfs::fault|super::fault::|run_fs_fault_leg|mod fault_inject|pub mod fault'
 CFG_ATTR='#\[cfg\(feature = "fs_fault_inject"\)\]'
 
 scan() {
@@ -78,7 +78,7 @@ scan() {
     # One awk pass per file: remember whether the previous non-blank line was the
     # cfg attribute, so a guarded reference on the following line is accepted.
     local unguarded
-    unguarded="$(find "$root/kernel/src" -name '*.rs' -type f ! -path "*/fs/fault_inject.rs" -print0 \
+    unguarded="$(find "$root/kernel/src" -name '*.rs' -type f ! -path "*/fs/vfs/fault.rs" ! -path "*/fs/ext2/fault.rs" -print0 \
         | xargs -0 awk '
             FNR == 1 { guarded = 0 }
             {
@@ -87,7 +87,7 @@ scan() {
                 sub(/^[ \t]*/, "", trimmed)
                 if (trimmed == "") next
                 if (line ~ /#\[cfg\(feature = "fs_fault_inject"\)\]/) { guarded = 1; next }
-                if (line ~ /fs_fault_inject|fs::fault_inject|run_fs_fault_leg|mod fault_inject/) {
+                if (line ~ /fs_fault_inject|fs::fault_inject|fs::vfs::fault|super::fault::|run_fs_fault_leg|mod fault_inject|pub mod fault/) {
                     is_comment = (trimmed ~ /^\/\// || trimmed ~ /^\/\*/ || trimmed ~ /^\*/)
                     if (!is_comment && !guarded) printf "  UNGUARDED: %s:%d: %s\n", FILENAME, FNR, trimmed
                 }
@@ -126,7 +126,7 @@ if [ "$PROVE" -eq 1 ]; then
         echo "FS-FAULT SEAM RATCHET ANTI-VACUITY: FAILED (no file to plant into)"
         exit 1
     fi
-    printf '\nfn planted_unguarded_seam() { crate::fs::fault_inject::run_fs_fault_leg(); }\n' >> "$PLANT"
+    printf '\nfn planted_unguarded_seam() { crate::fs::vfs::fault::run_fs_fault_leg(); }\n' >> "$PLANT"
     scan "$WORK" >/dev/null
     PLANTED_VIOLATIONS="$(cat "$WORK/.fs-fault-seam-violations")"
     if [ "$PLANTED_VIOLATIONS" -lt 1 ]; then

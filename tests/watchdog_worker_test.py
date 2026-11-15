@@ -60,21 +60,15 @@ pub mod task {
     }
 }
 pub fn arch_halt_with_interrupts() { panic!("ARM worker must switch inline"); }
-pub mod fs { pub mod ext2 {
+pub mod fs { pub mod vfs {
     pub struct Fs;
-    pub struct Superblock;
-    pub struct Inode;
-    pub fn root_inode() -> u32 { 2 }
-    pub fn root_fs_read() -> Result<Option<Fs>, &'static str> {
-        if crate::PREEMPT.with(|v| v.get()) != 1 { return Err("contended ARM I/O cannot sleep"); }
-        Ok(Some(Fs))
-    }
+    pub fn root_filesystem() -> Result<Fs, &'static str> { Ok(Fs) }
     impl Fs {
-        pub fn persisted_metadata(&self) -> Result<(Superblock, Vec<u8>), &'static str> { Ok((Superblock, vec![1])) }
-        pub fn read_inode(&self, _: u32) -> Result<Inode, &'static str> { Ok(Inode) }
+        pub fn check_live(&self) -> Result<(), &'static str> {
+            if crate::PREEMPT.with(|v| v.get()) != 1 { return Err("contended ARM I/O cannot sleep"); }
+            Ok(())
+        }
     }
-    impl Superblock { pub fn block_size(&self) -> u32 { 4096 } }
-    impl Inode { pub fn is_dir(&self) -> bool { true } }
 } }
 #[test] fn timer_wait_gives_up_cpu() {
     policy::wait(20_000).unwrap();

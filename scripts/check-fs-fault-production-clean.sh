@@ -63,7 +63,7 @@ NM="$(find_llvm_tool llvm-nm)" || { echo "ERROR: no llvm-nm available" >&2; exit
 
 # `fault_inject` covers the module's mangled symbols; `[FSFAULT:` is the marker
 # prefix every emitter in the leg carries and the one the gate keys on.
-SYMBOL_NEEDLE='fault_inject'
+SYMBOL_NEEDLE='fault_inject|kernel::fs::(vfs|ext2)::fault::'
 MARKER_NEEDLE='[FSFAULT:'
 
 build_kernel() {
@@ -72,7 +72,7 @@ build_kernel() {
 }
 
 leg1_symbols() {
-    "$NM" --defined-only "$1" 2>/dev/null | grep -ci "$SYMBOL_NEEDLE" || true
+    "$NM" --defined-only --demangle "$1" 2>/dev/null | grep -ciE "$SYMBOL_NEEDLE" || true
 }
 
 leg2_strings() {
@@ -80,15 +80,17 @@ leg2_strings() {
 }
 
 if [ "$MODE" = "prove" ]; then
-    DIRTY_DIR="$REPO_ROOT/target/fs-fault-prove-dirty"
-    echo "Building an fs_fault_inject kernel to prove the scan can go red..."
-    # The leg is independently feature-gated; boot_tests also embeds userspace
-    # fixtures, which are unrelated to scanning the fault-injection symbols.
-    if ! build_kernel "$DIRTY_DIR" --features fs_fault_inject; then
-        echo "FS-FAULT PRODUCTION RATCHET ANTI-VACUITY: FAILED (fs_fault_inject build failed)"
-        exit 1
+    if [ -n "$ELF" ]; then
+        DIRTY_ELF="$ELF"
+    else
+        DIRTY_DIR="$REPO_ROOT/target/fs-fault-prove-dirty"
+        echo "Building an fs_fault_inject kernel to prove the scan can go red..."
+        if ! build_kernel "$DIRTY_DIR" --features fs_fault_inject; then
+            echo "FS-FAULT PRODUCTION RATCHET ANTI-VACUITY: FAILED (fs_fault_inject build failed)"
+            exit 1
+        fi
+        DIRTY_ELF="$DIRTY_DIR/aarch64-breenix-kernel/release/kernel-aarch64"
     fi
-    DIRTY_ELF="$DIRTY_DIR/aarch64-breenix-kernel/release/kernel-aarch64"
     S="$(leg1_symbols "$DIRTY_ELF")"
     M="$(leg2_strings "$DIRTY_ELF")"
     echo "  fs_fault_inject build: symbols=$S markers=$M"
@@ -122,7 +124,7 @@ echo "LEG 1 (symbols matching '$SYMBOL_NEEDLE'): $SYMBOLS"
 echo "LEG 2 (occurrences of '$MARKER_NEEDLE'):   $MARKERS"
 if [ "$SYMBOLS" -ne 0 ] || [ "$MARKERS" -ne 0 ]; then
     echo "FS-FAULT PRODUCTION RATCHET: FAILED"
-    "$NM" --defined-only "$ELF" 2>/dev/null | grep -i "$SYMBOL_NEEDLE" | head -20
+    "$NM" --defined-only --demangle "$ELF" 2>/dev/null | grep -iE "$SYMBOL_NEEDLE" | head -20
     exit 1
 fi
 

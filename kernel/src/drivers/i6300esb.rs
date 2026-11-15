@@ -303,30 +303,19 @@ mod feeder {
     #[cfg(feature = "watchdog_fault_inject")]
     fn fault() -> Result<(), &'static str> {
         use crate::drivers::watchdog_fault_intent::{parse, Mode};
-        let mut guard = crate::fs::ext2::root_fs_write()?;
-        let fs = guard.as_mut().ok_or("fault root absent")?;
-        let number = fs.resolve_path("/etc/breenix/watchdog-fault")?;
-        let pin = fs.pin_inode(number)?;
-        guard = guard.wait_for_inode(pin.object.key.inode)?;
-        let fs = guard.as_mut().ok_or("fault root absent")?;
-        let inode = fs.read_inode(number)?;
-        if inode.size() > 32 { return Err("fault intent too long"); }
-        let bytes = fs.read_file_content_coherent(number, &inode)?;
+        let path = "/etc/breenix/watchdog-fault";
+        let bytes = crate::fs::vfs::read_config(path, 32).map_err(|_| "fault intent unreadable")?;
         let Some(mode) = parse(&bytes)? else { return Ok(()); };
-        let ticket = fs.begin_resize_file_as(number, 0, false)?;
-        if let Some(ticket) = ticket {
-            guard.finish_shrink(ticket)?;
-        } else {
-            drop(guard);
-        }
-        let guard = crate::fs::ext2::root_fs_write()?;
-        guard.as_ref().ok_or("fault root absent")?.sync()?;
-        drop(guard);
+        let (_, _, node, _) = crate::fs::namei::resolve_file(path).map_err(|_| "fault intent absent")?;
+        node.filesystem.resize(&node, 0, false, &|_| Ok(())).map_err(|_| "fault intent resize")?;
+        node.filesystem.sync().map_err(|_| "fault intent sync")?;
         wait(180_000)?;
         if mode == Mode::HealthHang {
-            let _guard = crate::fs::ext2::root_fs_write()?;
-            crate::serial_println!("\n[watchdog-fault] trigger health-hang");
-            loop { crate::arch_halt_with_interrupts(); }
+            return crate::fs::vfs::root_filesystem().map_err(|_| "fault root absent")?
+                .hold_writer(&|| {
+                    crate::serial_println!("\n[watchdog-fault] trigger health-hang");
+                    loop { crate::arch_halt_with_interrupts(); }
+                }).map_err(|_| "fault writer unavailable");
         }
         crate::serial_println!("\n[watchdog-fault] trigger feeder-hang");
         unsafe { core::arch::asm!("msr daifset, #0xf", options(nomem, nostack)); }

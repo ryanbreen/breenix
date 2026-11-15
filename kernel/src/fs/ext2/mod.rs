@@ -4,6 +4,10 @@
 //! This module provides structures and functions for parsing ext2 filesystems.
 
 pub mod adapter;
+#[cfg(feature = "ext2_lock_race")]
+pub mod lock_race;
+#[cfg(feature = "fs_fault_inject")]
+mod fault;
 pub mod block_group;
 pub mod create_node;
 pub mod dir;
@@ -1177,8 +1181,9 @@ impl Ext2Fs {
 // `EXT2_LOCK_SPIN_STALLS`, so a gate script can detect the livelock without
 // a userspace watchdog — during the pathological case in question nothing
 // userspace can run at all, so the spinner has to be its own observer (see
-// `kernel::fs::ext2_lock_race` for the in-kernel repro leg that exercises
+// `kernel::fs::ext2::lock_race` for the in-kernel repro leg that exercises
 // this).
+// claim-lint:ok: #728 original lock contention diagnosis and oracle.
 
 /// Wall-clock threshold (monotonic ns) past which a contended ext2 lock
 /// acquisition is reported as stalled. Ordinary contention resolves in well

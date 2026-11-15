@@ -1189,3 +1189,48 @@ fn getcwd_walk_names_each_ancestor() {
     assert_eq!(parents, [b, a, root]);
     assert_eq!(names, [b"third-\xff".to_vec(), b"second".to_vec(), b"renamed".to_vec()]);
 }
+
+#[test]
+fn live_check_reads_metadata_and_propagates_device_errors() {
+    use crate::block::{BlockDevice, BlockError};
+    use std::sync::{Arc, Mutex};
+    struct Reads {
+        inner: Box<dyn BlockDevice>,
+        failed_sector: Arc<Mutex<Option<u64>>>,
+        seen: Arc<Mutex<Vec<u64>>>,
+    }
+    impl BlockDevice for Reads {
+        fn read_block(&self, sector: u64, out: &mut [u8]) -> Result<(), BlockError> {
+            self.seen.lock().unwrap().push(sector);
+            if *self.failed_sector.lock().unwrap() == Some(sector) { return Err(BlockError::IoError); }
+            self.inner.read_block(sector, out)
+        }
+        fn write_block(&self, sector: u64, bytes: &[u8]) -> Result<(), BlockError> { self.inner.write_block(sector, bytes) }
+        fn block_size(&self) -> usize { self.inner.block_size() }
+        fn num_blocks(&self) -> u64 { self.inner.num_blocks() }
+        fn flush(&self) -> Result<(), BlockError> { self.inner.flush() }
+    }
+    let disk = Fixture::new();
+    let failed_sector = Arc::new(Mutex::new(None));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    {
+        let mut guard = crate::host_mounts::write_mount(disk.pin()).unwrap();
+        let fs = guard.as_mut().unwrap();
+        fs.superblock.s_magic = 0xef53;
+        fs.superblock.write_to(fs.device.as_ref()).unwrap();
+        let inner = std::mem::replace(&mut fs.device, crate::host_mounts::zeroed_device());
+        fs.device = Box::new(Reads { inner, failed_sector: failed_sector.clone(), seen: seen.clone() });
+    }
+    let adapter = Ext2Adapter::new(disk.pin());
+    adapter.check_live().unwrap();
+    // Fixture geometry: superblock at byte 1024, descriptors at block 1,
+    // root inode in table block 8; sectors are 512 bytes, blocks 4096 bytes.
+    let sectors = seen.lock().unwrap().clone();
+    for sector in [2, 8, 64] {
+        assert!(sectors.contains(&sector), "health omitted sector {sector}: {sectors:?}");
+        *failed_sector.lock().unwrap() = Some(sector);
+        assert_eq!(adapter.check_live(), Err(Errno(EIO)));
+        *failed_sector.lock().unwrap() = None;
+        adapter.check_live().unwrap();
+    }
+}

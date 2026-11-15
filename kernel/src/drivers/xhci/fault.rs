@@ -48,12 +48,11 @@ impl Injection {
 
 #[cfg(not(test))]
 pub(super) fn requested() -> Result<Option<Mode>, &'static str> {
-    let guard = crate::fs::ext2::root_fs_read()?;
-    let Some(fs) = guard.as_ref() else { return Ok(None); };
-    let Ok(number) = fs.resolve_path("/etc/breenix/xhci-fault") else { return Ok(None); };
-    let inode = fs.read_inode(number)?;
-    if inode.is_dir() || inode.size() > 32 { return Err("invalid xHCI fault request"); }
-    let bytes = fs.read_file_content_coherent(number, &inode)?;
+    let bytes = match crate::fs::vfs::read_config("/etc/breenix/xhci-fault", 32) {
+        Ok(bytes) => bytes,
+        Err(error) if matches!(error.0, crate::syscall::errno::ENOENT | crate::syscall::errno::ENODEV) => return Ok(None),
+        Err(_) => return Err("invalid xHCI fault request"),
+    };
     if bytes.is_empty() { return Ok(None); }
     Mode::parse(&bytes).map(Some).ok_or("invalid xHCI fault request")
 }

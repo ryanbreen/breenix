@@ -100,6 +100,12 @@ pub struct Ext2Fs {
     namespace: generation::Namespace,
 }
 impl Ext2Fs {
+    pub fn persisted_metadata(&self) -> Result<(Ext2Superblock, Vec<Ext2BlockGroupDesc>), &'static str> {
+        let sb = Ext2Superblock::read_from(self.device.as_ref()).map_err(|_| "Failed to read superblock")?;
+        let groups = Ext2BlockGroupDesc::read_table(self.device.as_ref(), &sb)
+            .map_err(|_| "Failed to read block group descriptors")?;
+        Ok((sb, groups))
+    }
     pub fn namespace(&self) -> generation::Namespace { self.namespace }
     pub fn host_set_namespace(&mut self, namespace: generation::Namespace) { self.namespace = namespace; }
     pub fn is_read_only(&self) -> bool { self.device.is_read_only() }
