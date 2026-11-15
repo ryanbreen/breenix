@@ -28,7 +28,6 @@ mod namespace_ops;
 mod path;
 mod reclaim;
 mod rename;
-mod sector_cache;
 pub mod superblock;
 pub mod writeback;
 mod write;

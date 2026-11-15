@@ -146,3 +146,7 @@ pub mod install;
 #[path = "../../../kernel/src/block/write_policy.rs"]
 pub mod write_policy;
 pub use write_policy::HardwareDisk;
+
+pub use crate::fs::ext2::cache;
+#[path = "cache_host.rs"]
+pub mod cache_kernel;

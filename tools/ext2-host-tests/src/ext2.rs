@@ -28,8 +28,8 @@ pub mod reclaim;
 pub mod superblock;
 #[path = "../../../kernel/src/fs/ext2/mount_device.rs"]
 mod mount_device;
-#[path = "../../../kernel/src/fs/ext2/sector_cache.rs"]
-mod sector_cache;
+#[path = "../../../kernel/src/block/cache.rs"]
+pub mod cache;
 #[path = "../../../kernel/src/fs/ext2/namespace_ops.rs"]
 mod namespace_ops;
 #[path = "../../../kernel/src/fs/ext2/namespace_alloc.rs"]
@@ -171,7 +171,7 @@ impl Ext2Fs {
     }
 
     pub fn host_new(device: Box<dyn crate::block::BlockDevice>, superblock: Ext2Superblock, block_groups: Vec<Ext2BlockGroupDesc>) -> Self {
-        Self { device, superblock, block_groups, durable_epoch: core::sync::atomic::AtomicU64::new(0), live_inodes: LiveInodes, namespace: generation::Namespace::RAW }
+        Self { device: Box::new(mount_device::MountDevice::new(device, alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false)), true)), superblock, block_groups, durable_epoch: core::sync::atomic::AtomicU64::new(0), live_inodes: LiveInodes, namespace: generation::Namespace::RAW }
     }
     /// Lay down a fixture directory's records, block by block.
     pub fn write_directory_for_host(&self, ino: u32, data: &[u8]) -> Result<(), &'static str> {

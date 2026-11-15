@@ -5,8 +5,7 @@
 //! it drains or while the device flush is open. Device calls and sleeping are
 //! outside the state lock. Reads use the same queue to keep cached copies coherent.
 //!
-//! Mount integration and the kernel BlockedOnIO wait provider
-//! belong to the following buffer-cache units.
+//! The kernel wait provider and system-wide instance live in cache_kernel.rs.
 
 use crate::block::{BlockDevice, BlockError};
 use alloc::collections::BTreeMap;
@@ -21,8 +20,8 @@ use spin::Mutex;
 /// `wait(observed)` must return immediately if a wake happened after `observed`
 /// was sampled. Otherwise it sleeps until a wake (spurious wakes are allowed).
 /// This closes the predicate-check-to-sleep race without holding the cache lock.
-/// The kernel provider must sleep BlockedOnIO and release PROCESS_MANAGER before
-/// returning; neither a device call nor this trait runs under the cache lock.
+/// The kernel provider sleeps BlockedOnIO and returns with scheduler guards
+/// released; neither a device call nor this trait runs under the cache lock.
 pub trait Wait: Send + Sync {
     fn generation(&self) -> u64;
     fn wait(&self, observed: u64);
@@ -660,6 +659,19 @@ impl<W: Wait> BufferCache<W> {
         let _admission = self.enter(device.identity());
         self.count(|c| &mut c.flushes);
         device.flush()
+    }
+
+    /// Retire clean copies when a mounted backend is dropped. This prevents a
+    /// later backend allocated at the same identity from seeing old media bytes.
+    /// In-flight and transaction-owned buffers keep their completion state.
+    pub fn discard_clean(&self, device: &dyn BlockDevice) {
+        let identity = device.identity();
+        self.with(|state| {
+            state.lru.retain(|_, key| key.0 != identity);
+            state.buffers.retain(|key, entry| {
+                key.0 != identity || !matches!(entry.status, BufferState::Clean { .. })
+            });
+        });
     }
 
     pub fn counters(&self) -> Counters {
