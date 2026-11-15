@@ -1086,7 +1086,7 @@ fn main() {
 }
 
 
-/// None deliberately leaves the monitor-derived kernel default alone.
+/// Without a selection, keep the monitor-derived kernel default.
 fn configured_display(settings: &settings::Settings) -> Option<u32> {
     for warning in &settings.warnings { eprintln!("[bwm] display: {warning}"); }
     if settings.display_mode.is_none() && settings.display_scale.is_none() { return None; }

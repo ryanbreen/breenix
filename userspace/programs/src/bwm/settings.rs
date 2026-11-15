@@ -64,7 +64,7 @@ impl Settings {
     }
 }
 
-/// Replace display settings while preserving all other configuration bytes.
+/// Replace display settings while preserving unrelated configuration bytes.
 pub fn with_display(text: &str, mode: (u32, u32), scale: u32) -> String {
     let mut result = String::new();
     let (mut found_mode, mut found_scale) = (false, false);

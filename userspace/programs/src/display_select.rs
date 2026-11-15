@@ -5,7 +5,7 @@ pub enum Refusal {
     Unsupported,
 }
 
-/// `None` preserves the kernel's default without issuing a mode change.
+/// An absent selection preserves the kernel default without a mode change.
 pub fn select(
     modes: &[(u32, u32, u32)],
     mode: Option<(u32, u32)>,
