@@ -3,7 +3,10 @@ pub const REREAD_BYTES: usize = 1024 * 1024;
 
 /// Snapshots are (hits, misses, device reads), in the proc table's order.
 pub fn reread_is_cached(before: (u64, u64, u64), after: (u64, u64, u64)) -> bool {
-    after.2 == before.2
+    // ext2's mount adapter caches native 512-byte sectors.
+    after.0.checked_sub(before.0).is_some_and(|hits| hits >= REREAD_BYTES as u64 / 512)
+        && after.1 == before.1
+        && after.2 == before.2
 }
 
 #[cfg(test)]
