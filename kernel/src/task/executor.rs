@@ -2,6 +2,7 @@ use super::{Task, TaskId};
 use alloc::{collections::BTreeMap, sync::Arc, task::Wake};
 use core::task::{Context, Poll, Waker};
 use crossbeam_queue::ArrayQueue;
+use crate::input::host::diagnostics::{Count, PROGRESS};
 #[cfg(target_arch = "x86_64")]
 use x86_64::instructions::interrupts;
 
@@ -9,6 +10,17 @@ use x86_64::instructions::interrupts;
 /// wakers unpark it.
 #[cfg(target_arch = "x86_64")]
 static PARKING_EXECUTOR: spin::Once<super::kthread::KthreadHandle> = spin::Once::new();
+#[cfg(target_arch = "x86_64")]
+static INPUT_TASK_QUEUE: spin::Once<Arc<ArrayQueue<TaskId>>> = spin::Once::new();
+
+/// Failure-only reads of the real queue and park flag; no lock or allocation.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn input_snapshot() -> (u64, usize, Option<bool>) {
+    let handle = PARKING_EXECUTOR.get();
+    (handle.map_or(0, |h| h.tid()),
+        INPUT_TASK_QUEUE.get().map_or(usize::MAX, |q| q.len()),
+        handle.map(|h| h.is_parked()))
+}
 
 #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
 pub struct Executor {
@@ -62,7 +74,10 @@ impl Executor {
                 .entry(task_id)
                 .or_insert_with(|| TaskWaker::new(task_id, task_queue.clone()));
             let mut context = Context::from_waker(waker);
-            match task.poll(&mut context) {
+            PROGRESS.note(Count::TaskPoll);
+            let result = task.poll(&mut context);
+            PROGRESS.note(Count::TaskReturn);
+            match result {
                 Poll::Ready(()) => {
                     // task done -> remove it and its cached waker
                     tasks.remove(&task_id);
@@ -139,6 +154,8 @@ impl Executor {
     #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
     pub fn run(&mut self) -> ! {
         #[cfg(target_arch = "x86_64")]
+        INPUT_TASK_QUEUE.call_once(|| self.task_queue.clone());
+        #[cfg(target_arch = "x86_64")]
         if let Some(handle) = super::kthread::current_kthread() {
             PARKING_EXECUTOR.call_once(|| handle);
         }
@@ -167,11 +184,14 @@ impl TaskWaker {
     #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
     fn wake_task(&self) {
         self.task_queue.push(self.task_id).expect("task_queue full");
+        PROGRESS.note(Count::Enqueue);
         // Publish the task before unparking: a park that has already checked
         // the queue is woken, and one that has not yet checked sees the task.
         #[cfg(target_arch = "x86_64")]
         if let Some(handle) = PARKING_EXECUTOR.get() {
+            PROGRESS.note(Count::Unpark);
             super::kthread::kthread_unpark(handle);
+            PROGRESS.note(Count::UnparkReturn);
         }
     }
 }

@@ -9,6 +9,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 use input_abi::{axis, key, kind, Capability};
 use spin::{Mutex, Once};
+use super::diagnostics::{self, Count, Site, COMMAND, INPUT, PROGRESS};
 
 struct Devices {
     keyboard: Device,
@@ -110,28 +111,39 @@ pub fn init() -> Result<(), &'static str> {
 /// output. A busy/full queue leaves sequence unchanged and sends no ACK, so a
 /// numbered sender retries. ACKs for accepted and duplicate packets are deferred.
 pub fn serial_line(line: &[u8]) {
+    let _call = diagnostics::call(Count::AcceptEnter, Count::AcceptReturn);
+    let at = COMMAND.enter(Site::Receiver);
     if !armed() {
         return;
     }
     let Some(mut receiver) = RECEIVER.try_lock() else {
+        PROGRESS.note(Count::AcceptBusy);
         return;
     };
     if receiver.ack_count == super::BACKLOG {
+        PROGRESS.note(Count::AcceptFull);
         return;
     }
+    at.at(Site::AcceptScreen);
+    let screen = crate::input::pointer::screen().unwrap_or((0, 0));
+    at.at(Site::Accept);
     let Ok(receipt) = receiver
         .channel
-        .accept(line, crate::input::pointer::screen().unwrap_or((0, 0)))
+        .accept(line, screen)
     else {
+        PROGRESS.note(Count::AcceptRejected);
         return;
     };
     if let Some(ack) = receipt.ack {
         let at = (receiver.ack_head + receiver.ack_count) % super::BACKLOG;
         receiver.acks[at] = Some(ack);
         receiver.ack_count += 1;
+        diagnostics::LAST_ACCEPT.store(ack.sequence, Ordering::Relaxed);
     }
     super::QUEUED.fetch_add(receipt.added as u64, Ordering::Relaxed);
+    PROGRESS.note(Count::Accepted);
     drop(receiver);
+    at.at(Site::AcceptNotify);
     stream::notify_host();
 }
 
@@ -156,10 +168,13 @@ static SERVICE: Mutex<Service> = Mutex::new(Service {
 });
 
 pub(crate) fn drain_one() -> bool {
+    let _call = diagnostics::call(Count::DrainEnter, Count::DrainReturn);
     let Some(devices) = DEVICES.get() else {
         return false;
     };
+    let at = INPUT.enter(Site::Service);
     let mut service = SERVICE.lock();
+    at.at(Site::Receiver);
     let Some(mut receiver) = RECEIVER.try_lock() else {
         return false;
     };
@@ -181,6 +196,8 @@ pub(crate) fn drain_one() -> bool {
     drop(receiver);
     // Serial output is deliberately task-only, after releasing the IRQ's lock.
     if let Some(ack) = ack {
+        at.at(Site::Ack);
+        let _ack = diagnostics::call(Count::AckEnter, Count::AckReturn);
         let acknowledged_ns = crate::window::events::now_ns();
         if ack.pointer {
             crate::serial_println!("\nBXPTR_ACK {:016x}", ack.sequence);
@@ -194,8 +211,10 @@ pub(crate) fn drain_one() -> bool {
                 if ack.pointer { "BXPTR_ACK" } else { "BXKEY_ACK" },
                 ack.sequence, ticket, acknowledged_ns);
         }
+        diagnostics::LAST_ACK.store(ack.sequence, Ordering::Relaxed);
     }
     if let Some(packet) = packet {
+        at.at(Site::Decode);
         let mut flight = Flight {
             device: devices.keyboard,
             events: [Event::default(); 32],
@@ -243,6 +262,7 @@ pub(crate) fn drain_one() -> bool {
         service.flight = Some(flight);
     }
     if let Some(flight) = &service.flight {
+        at.at(Site::Publish);
         if !stream::drain_hardware(
             flight.device,
             &flight.events[..flight.len],

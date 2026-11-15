@@ -2,6 +2,9 @@
 //! BXKEY keeps the original HID 1.11 wire format, sequencing and IEEE CRC-32.
 //! BXPTR carries exact pixel coordinates and the mode that gives them meaning.
 
+pub mod progress;
+pub mod diagnostics;
+
 /// Whether the declared host-key transport uses the serial host channel.
 pub fn declares_channel(value: Option<&str>) -> bool {
     value.is_some_and(|value| value.split(';').next() == Some("host-channel"))

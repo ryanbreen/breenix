@@ -53,6 +53,7 @@ pub fn register_handlers(
 /// Handle serial input with line editing and command processing
 #[allow(dead_code)] // Used in kernel_main_continue (conditionally compiled)
 pub async fn serial_command_task() {
+    use crate::input::host::diagnostics::{COMMAND, Site};
     log::info!("Serial command task started");
 
     let mut input = SerialInputStream::new();
@@ -65,13 +66,18 @@ pub async fn serial_command_task() {
     }
 
     let mut host_keys = crate::input::host::SerialLines::new();
-    while let Some(byte) = input.next().await {
+    loop {
+        let at = COMMAND.enter(Site::Stream);
+        let Some(byte) = input.next().await else { break; };
+        at.at(Site::Command);
         // A suite boot that declared serial host keys: serial lines are host-key requests.
         if crate::input::host::armed() {
+            at.at(Site::Accept);
             host_keys.feed(byte, |line| crate::input::host::serial_line(line));
             continue;
         }
         if tty_input {
+            at.at(Site::Tty);
             crate::tty::push_char_from(byte, crate::tty::InputSource::Serial);
             continue;
         }

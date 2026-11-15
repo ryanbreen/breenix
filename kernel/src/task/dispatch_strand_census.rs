@@ -134,6 +134,20 @@ fn slot(tid: u64) -> Option<&'static AtomicU8> {
     LEDGER.get(index)
 }
 
+/// Failure-only superset of census candidates: includes legitimate waiters.
+/// Fixed capacity; return the total so truncation remains explicit.
+pub(crate) fn outstanding_tids(out: &mut [u64; 16]) -> usize {
+    let mut count = 0;
+    for (tid, slot) in LEDGER.iter().enumerate() {
+        let state = slot.load(Ordering::Acquire);
+        if state & (EVER_SAVED | EXITED | LAST_EVENT_RESTORED) == EVER_SAVED {
+            if count < out.len() { out[count] = tid as u64; }
+            count += 1;
+        }
+    }
+    count
+}
+
 /// Record the event named by the former "Saved kernel context" record.
 #[inline(always)]
 pub(crate) fn note_save(tid: u64) {
@@ -394,6 +408,7 @@ pub(crate) fn report_heartbeat_if_due() {
 /// they share one `AtomicU64` compare-exchange.
 fn census_thread_fn() {
     loop {
+        crate::input::host::diagnostics::report_failure();
         report_heartbeat_if_due();
         let pending = crate::serial::drain_log_once();
         sleep_one_interval(if pending {

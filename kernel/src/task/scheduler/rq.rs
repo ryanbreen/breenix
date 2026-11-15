@@ -2528,6 +2528,45 @@ pub(super) fn thread_wait_cpu(tid: u64) -> Option<(ThreadState, Option<usize>, O
     None
 }
 
+/// One try of the existing owner lock, revalidated before dereferencing. A
+/// busy/moving owner retains the index facts and leaves state/name unavailable.
+pub(super) fn input_thread_snapshot(tid: u64) -> crate::input::host::diagnostics::ThreadSample {
+    use crate::input::host::diagnostics::ThreadSample;
+    let mut sample = ThreadSample::empty(tid);
+    let Some(slot) = find(tid) else { return sample; };
+    let owner = slot.owner.load(Ordering::Acquire) as usize;
+    sample.owner = Some(owner);
+    sample.pid = Some(slot.pid.load(Ordering::Acquire));
+    sample.held = slot.held.load(Ordering::Acquire);
+    sample.current = is_current_anywhere(tid);
+    // A retired index slot can be reused while these atomic facts are read.
+    // TIDs are not reused: a changed key invalidates this provisional sample.
+    if slot.key.load(Ordering::Acquire) != tid.wrapping_add(1) {
+        return ThreadSample::empty(tid);
+    }
+    let sched = LIVE.load(Ordering::Acquire);
+    if sched.is_null() || owner >= MAX_CPUS || !RQ_LOCKS[owner].try_lock() {
+        return sample;
+    }
+    // A read-only guard must not use Held::drop: that publishes scheduler
+    // summaries and flushes deferred IPIs. This observer only unlocks.
+    struct ReadLock(&'static RqLock);
+    impl Drop for ReadLock {
+        fn drop(&mut self) { self.0.unlock(); }
+    }
+    let _lock = ReadLock(&RQ_LOCKS[owner]);
+    if self::owner(tid) == Some(owner) {
+        // SAFETY: the owner lock protects these fields and the indexed thread,
+        // whose owner was revalidated. The caller masks interrupts throughout.
+        unsafe {
+            sample.queued = (*sched).per_cpu_queues[owner].contains(&tid);
+            sample.current = (*sched).cpu_state[owner].current_thread == Some(tid);
+            if let Some(thread) = owned_thread(tid, owner) { sample.identify(thread); }
+        }
+    }
+    sample
+}
+
 /// `f` on `tid` under its owner's lock, tried `OWNER_TRIES` times: None when
 /// that lock stays busy, the thread is not indexed, or before the live
 /// scheduler exists. Interrupts masked.
