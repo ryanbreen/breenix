@@ -807,6 +807,8 @@ pub fn display_clocks(phase: &str) -> CaseResult {
     };
     let row = records.lines().find(|line| line.starts_with("GT710_CLOCK_V1 "))
         .ok_or("display clock receipt absent")?;
-    println!("WM_DISPLAY_CLOCK phase={phase} {row}");
+    breenix_suite::suite::upload_diagnostic(
+        "window-manager", &format!("display-clocks-{phase}"), row.as_bytes(),
+    )?;
     Ok(())
 }
