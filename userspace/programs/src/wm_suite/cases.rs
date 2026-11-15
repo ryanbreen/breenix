@@ -922,6 +922,114 @@ pub fn client_resize() -> CaseResult {
     )
 }
 
+// A display mode's dimensions are physical pixels; command dimensions are
+// monitor pixels (physical / scale), as in the production display command.
+fn set_display_mode(target: libbreenix::gpu::abi::Mode) -> Result<String, String> {
+    let current = libbreenix::gpu::current_mode().map_err(|e| format!("CURRENT_MODE: {e}"))?;
+    let mut reply = String::new();
+    if (current.width / current.scale, current.height / current.scale)
+        != (target.width / target.scale, target.height / target.scale) {
+        reply = display_request(&format!("mode {}x{}", target.width / target.scale, target.height / target.scale))?;
+        if !reply.starts_with("ok ") { return Err(reply); }
+    }
+    if current.scale != target.scale {
+        reply = display_request(&format!("scale {}", target.scale))?;
+    }
+    if reply.is_empty() {
+        reply = display_request(&format!("mode {}x{}", target.width / target.scale, target.height / target.scale))?;
+    }
+    if !reply.starts_with("ok ") { return Err(reply); }
+    Ok(reply)
+}
+
+fn display_geometry(reply: &str, target: libbreenix::gpu::abi::Mode,
+    tree: &DesktopTree, client: &mut Client, config: &DisplayConfig) -> CaseResult {
+    let (status, modes) = libbreenix::gpu::modes();
+    check(status == 0 && modes.current_mode() == Some(target), "MODES did not select requested entry")?;
+    let mode = modes.current_mode().ok_or("MODES lacks current entry")?;
+    let (w, h, s) = (i64::from(mode.width), i64::from(mode.height), i64::from(mode.scale));
+    // Layout::for_mode's rule: 28 logical pixels above, 36 below.
+    let work = [0, 28 * s, w, h - 64 * s];
+    let expected = format!("ok {w}x{h} scale {s} taskbar 0,0,{w},{} appbar 0,{},{w},{} work 0,{},{w},{}\n",
+        28 * s, h - 36 * s, 36 * s, work[1], work[3]);
+    check(reply == expected, &format!("display reply geometry {reply:?}, expected {expected:?}"))?;
+    let mut observed = None;
+    until(10_000, "mode tree and client Resize", || {
+        client.snapshot()?;
+        let desktop = tree.read()?;
+        if desktop.root.bounds != [0, 0, w, h] { return Ok(false); }
+        let Some(node) = desktop.children.iter().find(|n| n.value["id"].as_u64() == Some(client.id)) else { return Ok(false); };
+        if let Some(event) = client.events.iter().rev().find(|e| e.kind == kind::RESIZE_REQUESTED
+            && node.bounds[2] == i64::from(e.width) + 4 * s
+            && node.bounds[3] == i64::from(e.height) + 36 * s
+            && (client.width, client.height) == (e.width, e.height)) {
+            observed = Some((desktop.clone(), *event));
+        }
+        Ok(observed.is_some())
+    })?;
+    let (desktop, event) = observed.unwrap();
+    check(desktop.root.bounds == [0, 0, w, h], "desktop bounds differ from MODES")?;
+    check(desktop.children.len() == 1, "display case did not retain exactly one client")?;
+    for node in &desktop.children {
+        let [x, y, width, height] = node.bounds;
+        check(x >= work[0] && y >= work[1] && width > 0 && height > 0
+            && x + width <= work[0] + work[2] && y + height <= work[1] + work[3],
+            &format!("window frame {:?} outside work area {work:?}", node.bounds))?;
+        check(node.value["id"].as_u64() == Some(client.id), "tree names another client")?;
+        check(width == i64::from(event.width) + 4 * s && height == i64::from(event.height) + 36 * s,
+            "client Resize does not match decorated tree frame")?;
+    }
+    check((client.width, client.height) == (event.width, event.height), "client did not apply mode Resize")?;
+    // Wait on the kernel completion receipt before comparing live MODES bindings.
+    measure::completed_commit(client, client.commit)?;
+    let settings = config.settings()?;
+    check(settings == format!("clock.visible=false\ndisplay.mode={}x{}\ndisplay.scale={}\n", mode.width / mode.scale, mode.height / mode.scale, mode.scale),
+        "case bwm.conf did not save selected mode and scale")
+}
+
+pub fn display_mode() -> CaseResult {
+    // Keep periodic clock repaints out of the exact refusal-state comparison.
+    let _clock = measure::Clock::new()?;
+    let config = DisplayConfig::new()?;
+    let mut desktop = config.start()?;
+    let tree = DesktopTree::open()?;
+    let mut client = Client::start(41)?;
+    placed(&client)?;
+    desktop.shown(&client)?;
+    let (status, modes) = libbreenix::gpu::modes();
+    check(status == 0, "MODES failed")?;
+    let original = modes.current_mode().ok_or("MODES lacks original mode")?;
+    let (_, smallest) = modes.smallest_mode().ok_or("MODES is empty")?;
+    check(smallest != original, "display case needs a smaller listed mode")?;
+    display_clocks("before")?;
+    // Preserve restoration even when a mechanical assertion fails mid-case.
+    let result = (|| -> CaseResult {
+        client.clear()?;
+        let reply = set_display_mode(smallest)?;
+        display_geometry(&reply, smallest, &tree, &mut client, &config)?;
+        let before_modes = libbreenix::gpu::modes();
+        let before_tree = tree.read()?;
+        let before_file = config.settings()?;
+        let refused = display_request("mode 1x1")?;
+        check(refused.starts_with("refused "), "unsupported mode was accepted")?;
+        check(libbreenix::gpu::modes() == before_modes, "refused mode changed MODES")?;
+        check(tree.read()? == before_tree, "refused mode changed desktop tree")?;
+        check(config.settings()? == before_file, "refused mode changed bwm.conf")?;
+        Ok(())
+    })();
+    let restored = (|| -> CaseResult {
+        client.clear()?;
+        let reply = set_display_mode(original)?;
+        display_geometry(&reply, original, &tree, &mut client, &config)?;
+        display_clocks("after")
+    })();
+    match (result, restored) {
+        (Err(error), Err(restore)) => Err(format!("{error:?}; restore original mode: {restore:?}").into()),
+        (Err(error), _) => Err(error),
+        (_, restored) => restored,
+    }
+}
+
 pub fn close_request() -> CaseResult {
     let (mut d, mut c) = one()?;
     d.focus(&mut c)?;

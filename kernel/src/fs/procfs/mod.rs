@@ -145,6 +145,8 @@ pub enum ProcEntryType {
     #[cfg(target_arch="x86_64")]
     Gt710Pixels,
     #[cfg(target_arch="x86_64")]
+    Gt710Clocks,
+    #[cfg(target_arch="x86_64")]
     Gt710CaseHeap,
     #[cfg(target_arch="x86_64")]
     Gt710Vblank,
@@ -247,6 +249,8 @@ impl ProcEntryType {
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710Pixels => "gt710-pixels",
             #[cfg(target_arch="x86_64")]
+            ProcEntryType::Gt710Clocks => "gt710-clocks",
+            #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710CaseHeap => "gt710-case-heap",
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710Vblank => "gt710-vblank",
@@ -332,6 +336,8 @@ impl ProcEntryType {
             ProcEntryType::NetTcp => "/proc/net/tcp",
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710Pixels => "/proc/gt710-pixels",
+            #[cfg(target_arch="x86_64")]
+            ProcEntryType::Gt710Clocks => "/proc/gt710-clocks",
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710CaseHeap => "/proc/gt710-case-heap",
             #[cfg(target_arch="x86_64")]
@@ -423,6 +429,8 @@ impl ProcEntryType {
             ProcEntryType::FbconCheck => 501,
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710Pixels => 507,
+            #[cfg(target_arch="x86_64")]
+            ProcEntryType::Gt710Clocks => 512,
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710CaseHeap => 509,
             #[cfg(target_arch="x86_64")]
@@ -594,6 +602,8 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetTcp));
     #[cfg(target_arch="x86_64")]
     procfs.entries.push(ProcEntry::new(ProcEntryType::Gt710Pixels));
+    #[cfg(target_arch="x86_64")]
+    procfs.entries.push(ProcEntry::new(ProcEntryType::Gt710Clocks));
     #[cfg(all(target_arch="x86_64",feature="gt710_clock_probe"))]
     procfs.entries.push(ProcEntry::new(ProcEntryType::Gt710Clock));
     #[cfg(target_arch="x86_64")]
@@ -1033,6 +1043,8 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::NetTcp => crate::net::tcp::proc_net_tcp().map(String::into_bytes),
         #[cfg(target_arch="x86_64")]
         ProcEntryType::Gt710Pixels => require(Operation::Trace).map(|()|crate::gk208::proc_pixels()),
+        #[cfg(target_arch="x86_64")]
+        ProcEntryType::Gt710Clocks => require(Operation::Trace).map(|()|crate::gk208::proc_clocks()),
         #[cfg(target_arch="x86_64")]
         ProcEntryType::Gt710CaseHeap => require(Operation::Trace).and_then(|()|crate::gpu::heap::record()),
         #[cfg(target_arch="x86_64")]

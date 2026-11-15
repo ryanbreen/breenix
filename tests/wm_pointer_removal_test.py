@@ -34,6 +34,7 @@ class PointerRemoval(unittest.TestCase):
 
     def test_manifest_runner_and_step_selections_agree_without_removed_case(self):
         self.assertNotIn(REMOVED, fixture.NAMES)
+        self.assertIn('geometry/display-mode', fixture.NAMES)
         source = (fixture.ROOT / 'userspace/programs/src/suite_window_manager.rs').read_text()
         category = None
         runner = []

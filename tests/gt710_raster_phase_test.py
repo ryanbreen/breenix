@@ -41,13 +41,17 @@ class RasterPhase(unittest.TestCase):
         fixture += r'''
 const EPOCH:u64=2_000_000_000;
 thread_local!{static NOW:std::cell::Cell<u64>=const{std::cell::Cell::new(EPOCH)};}
+fn arch_without_interrupts<T>(f:impl FnOnce()->T)->T{f()}
 mod signal{pub fn monotonic_nanos()->u64{super::NOW.with(|n|{let t=n.get();n.set(t+100);t})}}
 mod window{pub mod pipeline{pub fn at(_:u64,_:u64,_:u64,_:u64,_:u64){}}}
 mod presentation_trace{pub fn record<const N:usize>(r:[u64;N],_:u64){assert!(r[7]>=r[1]);}}
 mod vblank_clock{ CLOCK }
 PENDING
 SAMPLE
-impl Evo{ METHODS }
+impl Evo{ METHODS
+ fn record_clock_costs(&mut self,_:[[u64;3];2]){}
+ fn record_clock_observation(&mut self,_:[u64;4]){}
+}
 struct Update<'a>{evo:&'a mut Evo,regs:&'a mut Registers}
 impl Update<'_>{ COMPLETE }
 fn completion(r:&mut Registers,_:u64,_:u64,_:&(),_:&modeset::Pll,_:(u32,u32,bool,bool),_:&[Vec<modeset::Op>;4],_:bool)->Result<u32,&'static str>{

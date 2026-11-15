@@ -16,6 +16,13 @@ mod startup_prepare;
 mod render_requirements;
 #[path = "bwm/placement.rs"]
 mod placement;
+#[path = "bwm/switch_plan.rs"]
+mod switch_plan;
+mod display_select;
+#[path = "bwm/display_protocol.rs"]
+mod display_protocol;
+#[path = "bwm/display_socket.rs"]
+mod display_socket;
 #[path = "bwm/session.rs"]
 mod session;
 #[path = "bwm/input_backlog.rs"]
@@ -122,16 +129,27 @@ fn main() {
     }
 
     // The desktop is the GPU core's display, whole: its current mode's size.
-    let (mode_index, mode) = match compositor::display() {
+    let (mut mode_index, mut mode) = match compositor::display() {
         Ok(d) => d,
         Err(e) => {
             print!("[bwm] ERROR: GPU compositing required: {}\n", e);
             process::exit(1);
         }
     };
-    let screen_w = mode.width as usize;
-    let screen_h = mode.height as usize;
-    let _ = UI.set(Ui::for_display(screen_w, screen_h));
+    if let Some(index) = configured_display(settings()) {
+        let (result, report) = libbreenix::gpu::set_mode_report(index);
+        if result != 0 {
+            eprintln!("[bwm] display: SET_MODE {index} refused: {}", mode_refusal(result, &report));
+        } else {
+            (mode_index, mode) = compositor::display().unwrap_or_else(|error| {
+                eprintln!("[bwm] display: {error}");
+                process::exit(1);
+            });
+        }
+    }
+    let mut screen_w = mode.width as usize;
+    let mut screen_h = mode.height as usize;
+    replace_ui(Ui::for_scale(screen_w, screen_h, mode.scale as usize));
     print!(
         "[bwm] UI scale {}: font {} px ({}x{} cells, text grid {}x{}), taskbar {} px, app bar {} px; the GPU core's mode {} ({}x{}) publishes scale {}\n",
         ui().scale, ui().font.val(), ui().cell_w, ui().cell_h, screen_w / ui().cell_w, screen_h / ui().cell_h,
@@ -404,6 +422,7 @@ fn main() {
 
     // The desktop outlives a clipboard that cannot open; clipboard clients then see ENOENT.
     let mut clipboard = clipboard_socket::Server::open().map_err(|e| eprintln!("[bwm] clipboard socket: {e}")).ok();
+    let mut display_server = display_socket::Server::open().map_err(|e| eprintln!("[bwm] display socket: {e}")).ok();
     let mut poll_fds = vec![
         io::PollFd { fd: stream.fd(), events: io::poll_events::POLLIN as i16, revents: 0 },
         io::PollFd { fd: scene_fd, events: io::poll_events::POLLIN as i16, revents: 0 },
@@ -436,7 +455,7 @@ fn main() {
             wake::Deadlines {
                 presentation: hold,
                 closing: closing.deadline(),
-                clipboard: clipboard.as_ref().and_then(|c| c.deadline()),
+                clipboard: clipboard.as_ref().and_then(|c| c.deadline()).into_iter().chain(display_server.as_ref().and_then(|s| s.deadline())).min(),
                 repeat: timing.deadline(),
                 launch: children.deadline(),
                 check_after_ms: if resizing.is_none() {
@@ -457,6 +476,7 @@ fn main() {
         }
         poll_fds.push(io::PollFd { fd: signal_wake.fd(), events: io::poll_events::POLLIN as i16, revents: 0 });
         if let Some(clipboard) = &clipboard { clipboard.append_poll(&mut poll_fds); }
+        if let Some(server) = &display_server { server.append_poll(&mut poll_fds); }
         for fd in poll_fds.iter_mut() {
             fd.revents = 0;
         }
@@ -467,6 +487,51 @@ fn main() {
         prompt_watchers.retain(|id| validation.prompt_pending(id));
         signal_wake.drain();
         if let Some(clipboard) = &mut clipboard { clipboard.service(&poll_fds, libbreenix::ui_clock::now_ns()); }
+        let mut switched = false;
+        if let Some(server) = &mut display_server {
+            server.service(&poll_fds, libbreenix::ui_clock::now_ns(), |command| {
+                let (result, modes) = libbreenix::gpu::modes();
+                if result != 0 { return Err(format!("MODES errno {}", -result)); }
+                let current = modes.current_mode().ok_or("no current mode")?;
+                let current_monitor = (current.width / current.scale, current.height / current.scale);
+                let (mode, scale) = match command {
+                    display_protocol::Command::Mode(w, h) => ((w, h), current.scale),
+                    display_protocol::Command::Scale(s) => (current_monitor, s),
+                };
+                let entries: Vec<_> = modes.mode_list().map(|(_, m)| (m.width, m.height, m.scale)).collect();
+                let index = match display_select::select(&entries, Some(mode), Some(scale)) {
+                    Some(Ok(index)) => index as u32, _ => return Err("unsupported mode or scale".into()),
+                };
+                let text = match std::fs::read_to_string(&paths.bwm) {
+                    Ok(text) => text, Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+                    Err(e) => return Err(format!("read settings: {e}")),
+                };
+                let temp = paths.bwm.with_extension("conf.tmp");
+                std::fs::write(&temp, settings::with_display(&text, mode, scale)).map_err(|e| format!("write settings: {e}"))?;
+                let result = switch_display(index, &mut gpu, &mut windows, &stack, &clock_text, &mut ui_font);
+                switched = true; // Even a refused switch must re-present the retained targets.
+                match result {
+                    Ok(()) => (),
+                    Err(e) => { let _ = std::fs::remove_file(&temp); return Err(e); }
+                }
+                if let Err(error) = std::fs::rename(&temp, &paths.bwm) {
+                    let _ = std::fs::remove_file(&temp);
+                    let rollback = switch_display(modes.current, &mut gpu, &mut windows, &stack, &clock_text, &mut ui_font);
+                    return Err(format!("save settings: {error}; rollback {}", match rollback { Ok(()) => "succeeded", _ => "failed" }));
+                }
+                let state = ui();
+                let rect = |r: placement::Rect| display_protocol::Rect { x: r.x, y: r.y, width: r.width, height: r.height };
+                Ok(display_protocol::Geometry { width: state.mode.width, height: state.mode.height, scale: state.scale,
+                    taskbar: rect(state.layout.taskbar), appbar: rect(state.layout.appbar), work: rect(state.layout.work) })
+            });
+        }
+        if switched {
+            screen_w = ui().mode.width; screen_h = ui().mode.height;
+            mouse_x = mouse_x.clamp(0, screen_w.saturating_sub(1) as i32);
+            mouse_y = mouse_y.clamp(0, screen_h.saturating_sub(1) as i32);
+            dragging = None; resizing = None; chrome_device = None; active_cursor_shape = cursor_shape::ARROW;
+            validation.invalidate_scene(); pacing = pace::Pacer::default(); gpu.repaint_all(); full_redraw = true;
+        }
         if let Some(wake) = &clock_wake {
             if poll_fds[2].revents != 0 {
                 if let Err(error) = wake.drain() {
@@ -484,12 +549,40 @@ fn main() {
             session::drain_scene(scene_fd);
         }
 
+        if RELOAD_DISPLAY.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            match settings::Settings::load(&paths.bwm) {
+                Ok(settings) => if let Some(index) = configured_display(&settings) {
+                    match switch_display(index, &mut gpu, &mut windows,
+                        &stack, &clock_text, &mut ui_font) {
+                        Ok(()) => {
+                            screen_w = ui().mode.width;
+                            screen_h = ui().mode.height;
+                            mouse_x = mouse_x.clamp(0, screen_w.saturating_sub(1) as i32);
+                            mouse_y = mouse_y.clamp(0, screen_h.saturating_sub(1) as i32);
+                            dragging = None;
+                            resizing = None;
+                            chrome_device = None;
+                            active_cursor_shape = cursor_shape::ARROW;
+                            validation.invalidate_scene();
+                            pacing = pace::Pacer::default();
+                        }
+                        Err(error) => eprintln!("[bwm] display: {error}"),
+                    }
+                    // Refusal also re-presents the retained targets and layout.
+                    gpu.repaint_all();
+                    full_redraw = true;
+                },
+                Err(error) => eprintln!("[bwm] display: {error}"),
+            }
+        }
+
         hotkey_mgr.cooldown = hotkey_mgr.cooldown.saturating_sub(1);
 
         // ── 1. Discover new/removed client windows, and see client frames ──
         if scene_changed {
             let first_new_order = next_creation_order;
-            if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order, &mut win_defaults) {
+            let changed = discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order, &mut win_defaults);
+            if changed {
                 if !strict_startup {
                     for win in windows.iter().filter(|w| w.creation_order >= first_new_order
                         && w.creation_order == 0 && &w.title[..w.title_len] == b"Terminal") {
@@ -985,6 +1078,104 @@ fn main() {
 }
 
 
+/// Without a selection, keep the monitor-derived kernel default.
+fn configured_display(settings: &settings::Settings) -> Option<u32> {
+    for warning in &settings.warnings { eprintln!("[bwm] display: {warning}"); }
+    if settings.display_mode.is_none() && settings.display_scale.is_none() { return None; }
+    let (result, modes) = libbreenix::gpu::modes();
+    if result != 0 {
+        eprintln!("[bwm] display: MODES refused: {}; using default", -result);
+        return None;
+    }
+    let entries: Vec<_> = modes.mode_list().map(|(_, m)| (m.width, m.height, m.scale)).collect();
+    match display_select::select(&entries, settings.display_mode, settings.display_scale) {
+        Some(Ok(index)) => Some(index as u32),
+        Some(Err(reason)) => {
+            eprintln!("[bwm] display: {:?} mode={:?} scale={:?}; using default", reason,
+                settings.display_mode, settings.display_scale);
+            None
+        }
+        None => None,
+    }
+}
+
+fn window_frame(window: &Window) -> placement::Frame {
+    placement::Frame {
+        rect: placement::Rect { x: window.x, y: window.y, width: window.width, height: window.height },
+        decoration: [window.width - window.content_width(), window.height - window.content_height()],
+    }
+}
+
+fn mode_refusal(result: i64, report: &libbreenix::gpu::abi::ModeReport) -> String {
+    format!("{} (errno {}, phase {}, elapsed_ns {}, pending {}, GET {}, PUT {}, notifier {})",
+        report.reason(), -result, report.phase_name(), report.elapsed_ns,
+        report.pending, report.get, report.put, report.notifier)
+}
+
+/// The single live mode-switch path. SIGHUP reloads the display keys; the command
+/// can save those keys then signal bwm without taking ownership of its display.
+fn switch_display(index: u32, gpu: &mut Compositor, windows: &mut [Window],
+    stack: &Stack, clock: &[u8],
+    font: &mut Option<CachedFont>,
+) -> Result<(), String> {
+    let (result, modes) = libbreenix::gpu::modes();
+    if result != 0 { return Err(format!("MODES refused: {}", -result)); }
+    let mode = modes.mode_list().find(|(i, _)| *i == index)
+        .map(|(_, mode)| mode).ok_or_else(|| format!("unknown mode {index}"))?;
+    let old = ui();
+    let frames: Vec<_> = windows.iter().map(window_frame).collect();
+    let (result, report) = libbreenix::gpu::set_mode_report(index);
+    let plan = switch_plan::switch_plan(old.mode, if result == 0 {
+        Ok(switch_plan::Mode { width: mode.width as usize, height: mode.height as usize, scale: mode.scale as usize })
+    } else { Err(-result) }, &frames);
+    if plan.refusal.is_some() {
+        let reason = mode_refusal(result, &report);
+        eprintln!("[bwm] display: SET_MODE {index} refused: {reason}");
+        return Err(reason);
+    }
+    if let Err(error) = gpu.resize(mode.width, mode.height, plan.layout.appbar.height as u32, mode.scale) {
+        let rollback = libbreenix::gpu::set_mode(modes.current);
+        if rollback != 0 {
+            eprintln!("[bwm] display: target allocation failed: {error}; rollback refused: {}", -rollback);
+            process::exit(1);
+        }
+        return Err(format!("target allocation failed: {error}; restored mode {}", modes.current));
+    }
+    replace_ui(Ui::for_scale(plan.mode.width, plan.mode.height, plan.mode.scale));
+    for ((window, planned), previous) in windows.iter_mut().zip(plan.windows).zip(frames) {
+        window.x = planned.frame.rect.x;
+        window.y = planned.frame.rect.y;
+        // The owner alone changes its buffer. Until it publishes a resize, keep
+        // chrome fitted to the observed content, including across scale changes.
+        window.width = previous.rect.width - previous.decoration[0] + planned.frame.decoration[0];
+        window.height = previous.rect.height - previous.decoration[1] + planned.frame.decoration[1];
+        window.resize_queue.begin();
+        window.resize_right = None;
+        window.resize_bottom = None;
+        window.frame_checked = false;
+        window.check_moved = 0;
+        window.check_after_ms = monotonic_ms().unwrap_or(0) + 150;
+        if let Some([width, height]) = planned.resize {
+            input::send_id(window.window_id, Input::Resize { width, height });
+        }
+    }
+    if let Some(font) = font.as_mut() {
+        let titles: Vec<_> = windows.iter().filter(|w| !w.chromeless)
+            .map(|w| &w.title[..w.title_len]).collect();
+        let texts = startup_prepare::coverage(clock, &titles);
+        if let Err(error) = font.prepare_subpixel(&texts, ttf_font_size() * ui().scale as f32) {
+            eprintln!("[bwm] display: chrome text preparation unavailable: {error:?}");
+        }
+    }
+    paint_background(&mut gpu.background);
+    compose_full_redraw(gpu, windows, stack, clock, font);
+    print!("[bwm] display: mode {} {}x{} scale {}; work {},{} {}x{}\n", index,
+        mode.width, mode.height, ui().scale, ui().layout.work.x, ui().layout.work.y,
+        ui().layout.work.width, ui().layout.work.height);
+    Ok(())
+}
+
+
 fn pacing_ns() -> u64 {
     libbreenix::time::now_monotonic().map_or(0, |time| time.as_nanos() as u64)
 }
@@ -1087,6 +1278,12 @@ fn send_timed_pointer_notices(notices: Vec<pointer_route::Notice>, clicks: &mut 
 }
 
 static TERMINATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static RELOAD_DISPLAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn reload_display(_: i32) {
+    RELOAD_DISPLAY.store(true, std::sync::atomic::Ordering::Relaxed);
+    signal_wake::notify();
+}
 
 extern "C" fn terminate(_: i32) {
     TERMINATE.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1094,7 +1291,8 @@ extern "C" fn terminate(_: i32) {
 }
 
 fn term_mask(how: i32) {
-    let mask = (1u64 << (signal::SIGTERM - 1)) | (1u64 << (signal::SIGCHLD - 1));
+    let mask = (1u64 << (signal::SIGTERM - 1)) | (1u64 << (signal::SIGCHLD - 1))
+        | (1u64 << (signal::SIGHUP - 1));
     if let Err(error) = signal::sigprocmask(how, Some(&mask), None) {
         eprintln!("BWM_FAILURE site=sigprocmask how={how} error={error}");
         process::exit(1);
@@ -1120,6 +1318,10 @@ fn initialize_shutdown() -> signal_wake::SignalWake {
         eprintln!("[bwm] cannot create signal wake pipe: {error}");
         process::exit(1);
     });
+    if let Err(error) = signal::sigaction(signal::SIGHUP, Some(&signal::Sigaction::new(reload_display)), None) {
+        eprintln!("[bwm] cannot install display reload handler: {error}");
+        process::exit(1);
+    }
     if let Err(error) = signal::sigaction(signal::SIGCHLD, Some(&signal::Sigaction::new(child_exited)), None) {
         eprintln!("[bwm] cannot install child handler: {error}");
         process::exit(1);

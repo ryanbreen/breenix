@@ -388,6 +388,18 @@ Device writes can change these bytes, so equality is not the kernel non-interfer
 `SET_MODE` takes 16 bytes: `index: u32`, three reserved u32s, zero on input. An index other
 than 0 or 1 is EINVAL. Ownership is checked before argument validation: a non-owner
 gets EPERM even with malformed arguments. The owner's SET_MODE(NULL, 0) returns EINVAL.
+An owner may instead pass a 256-byte `ModeReport`: input index at offset 0 and
+all other bytes zero. On refusal it returns the specific negated errno and copies
+out errno (i64 at 16), phase (u32 at 24), reason length (u32 at 28), phase duration
+in monotonic nanoseconds (u64 at 32), pending resource plus one (u64 at 40), GET,
+PUT and notifier (u32 at 48, 52 and 56), reserved zero at 60, and a bounded UTF-8
+static reason at 64..256. For shared transitions pending is the outstanding count
+and the unavailable native register fields are `u32::MAX`. Phases are validation,
+shared-transition, drain-flip, raster, raster-get, raster-notifier, raster-latch
+and record (1..8). Native state is captured before failure cleanup; output and
+the GPU refusal log follow release of the shared transition and native session.
+The 16-byte form keeps its original layout and returns the same errno.
+
 The selection belongs to the current owner and is restored with that owner. SET_MODE does
 not resize existing resources: subsequent full-screen targets use the selected dimensions;
 small diagnostic targets accepted since G2 remain legal. The suite shows them by copying on the GPU

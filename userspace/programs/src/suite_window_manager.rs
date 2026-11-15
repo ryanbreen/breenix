@@ -78,6 +78,7 @@ static SUITE: Suite = suite("window-manager", "Window manager", &[
         case("client-refuses", "An owner ignoring ResizeRequested keeps its whole original content and size", cases::resize_refused),
         case("resize-cross", "Crossing the opposite edge clamps to the minimum and never requests a huge width", cases::resize_cross),
         case("client-resize", "bwm reconciles and composes a client-initiated resize", cases::client_resize),
+        case("display-mode", "Live mode changes publish fitted geometry client resizes and settings and refuse unsupported modes", cases::display_mode),
     ]),
     category("lifecycle", "Close, crash & launch", &[
         case("close-request", "The first close delivers CloseRequested without killing an ignoring owner", cases::close_request),

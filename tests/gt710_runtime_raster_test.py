@@ -16,8 +16,10 @@ def fixture_source():
     if '    fn apply_raster(' in source:
         extra=item(source,'    fn apply_raster(').replace('super::present::','present::')
     call='e.select_raster(r,s,index).map(|_|())' if 'surface: ' in select else 'e.select_raster(r,s.width,s.height)'
+    phases=item((ROOT/'libs/gpu-abi/src/lib.rs').read_text(),'pub mod mode_phase {')
     code=r'''#![allow(dead_code)]
 extern crate alloc;
+mod gpu_abi {PHASES}
 use std::collections::BTreeMap;
 #[path="ROOT/kernel/src/gpu/gk208/edid.rs"] mod edid;
 #[path="ROOT/kernel/src/gpu/gk208/modeset.rs"] mod modeset;
@@ -39,7 +41,12 @@ struct Evo{rasters:Vec<RasterMode>,modes:Vec<(u32,u32,u32)>,raster_known:bool,
  head:u32,sor:u32,total:u64,push:u64,notifier:u64,put:u32,protocol:u32,
  limits:(),coefficients:modeset::Pll,scripts:[Vec<modeset::Op>;4],surfaces:[memory::Range;2],
  frame_pixels:u64,pixel_hz:u64,clock:Option<()>,latch_phase:Option<()>,last_presentation:Option<()>}
-impl Evo{SELECT
+impl Evo{
+ // This register fixture does not export diagnostics; production methods keep
+ // their phase markers while the existing raster/rollback assertions run.
+ fn mode_phase(&mut self,_:&mut Registers,_:u32){}
+ fn mode_error(&mut self,_:&mut Registers,_:&'static str){}
+ SELECT
  EXTRA
  fn submit_mode(&mut self,r:&mut Registers,m:&[(u32,u32)])->Result<(), &'static str>{
   for &(a,v) in m {r.r.insert(0x640000+a as usize,v);r.r.insert(0x660000+a as usize,v);}
@@ -73,7 +80,7 @@ fn run(w:u32,h:u32,fault:usize){let p=t(w,h,65000);let big=t(1920,1080,148500);
 }
 fn select(e:&mut Evo,r:&mut Registers,s:present::Surface,index:u32)->Result<(), &'static str>{let _=index;CALL}
 fn main(){run(1366,768,0);run(960,540,0);run(1366,768,1);run(1366,768,2);run(1366,768,3);}
-'''.replace('ROOT',str(ROOT)).replace('SELECT',select).replace('EXTRA',extra).replace('CALL',call)
+'''.replace('ROOT',str(ROOT)).replace('PHASES',phases).replace('SELECT',select).replace('EXTRA',extra).replace('CALL',call)
     return code
 
 class RuntimeRaster(unittest.TestCase):

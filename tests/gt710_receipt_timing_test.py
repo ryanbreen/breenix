@@ -132,6 +132,7 @@ const EPOCH: u64 = 2_000_000_000;
 const PIXELS: u64 = 1688 * 1066;
 const HZ: u64 = 108_000_000;
 thread_local! { static NOW: Cell<u64> = const { Cell::new(0) }; }
+fn arch_without_interrupts<T>(f:impl FnOnce()->T)->T{f()}
 mod signal { pub fn monotonic_nanos() -> u64 { super::NOW.with(Cell::get) }
     use std::cell::Cell; }
 mod vblank_clock { CLOCK }
@@ -168,7 +169,10 @@ mod native {
         pub last_presentation: Option<(u32, u64)>,
     }
     FUNCTIONS
-    impl Evo { METHODS }
+    impl Evo { METHODS
+        fn record_clock_costs(&mut self,_:[[u64;3];2]){}
+        fn record_clock_observation(&mut self,_:[u64;4]){}
+    }
     pub fn exercise(preempt: bool) {
         NOW.with(|v| v.set(EPOCH + (PIXELS - 1000) * 1_000_000_000 / HZ));
         let regs = Registers { preempt, delayed: Cell::new(false) };

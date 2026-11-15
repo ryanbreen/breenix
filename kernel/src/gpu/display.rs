@@ -597,47 +597,85 @@ pub(super) fn modes(arg: u64, len: u64) -> Result<u64, i64> {
 }
 pub(super) fn set_mode(arg: u64, len: u64) -> Result<u64, i64> {
     let tgid = caller()?;
-    if !owner(tgid) {
-        return Err(EPERM);
-    }
-    let a: abi::SetMode = read_arg(arg, len)?;
-    if a.reserved != [0; 3] || !with_core(|c| (a.index as usize) < c.display.modes.len()).unwrap_or(false) {
-        return Err(EINVAL);
-    }
+    if !owner(tgid) { return Err(EPERM); }
+    let detailed = len == core::mem::size_of::<abi::ModeReport>() as u64;
+    let a = if detailed {
+        let input: abi::ModeReport = read_arg(arg, len)?;
+        let mut expected = abi::ModeReport::ZERO;
+        expected.index = input.index;
+        if input != expected { return Err(EINVAL); }
+        abi::SetMode { index: input.index, reserved: [0; 3] }
+    } else { read_arg::<abi::SetMode>(arg, len)? };
+    let start = now_ns();
+    let refusal = |errno, phase, reason| abi::ModeReport::refused(a.index, errno, phase,
+        now_ns().saturating_sub(start), [0; 4], reason);
     #[cfg(target_arch = "x86_64")]
-    let _transition=Transition::for_mutation(tgid)?;
-    #[cfg(target_arch = "x86_64")]
-    activate_mode(a.index)?;
+    let mut attempt = None;
+    let outcome = (|| {
+        if a.reserved != [0; 3] || !with_core(|c| (a.index as usize) < c.display.modes.len()).unwrap_or(false) {
+            return Err(refusal(EINVAL, abi::mode_phase::VALIDATION, "unsupported display mode"));
+        }
+        #[cfg(target_arch = "x86_64")]
+        let _transition = Transition::for_mutation(tgid).map_err(|errno| {
+            let pending = with_core(|c| c.display.outstanding).unwrap_or(0);
+            abi::ModeReport::refused(a.index, errno, abi::mode_phase::SHARED_TRANSITION,
+                now_ns().saturating_sub(start), [u64::from(pending), u64::from(u32::MAX), u64::from(u32::MAX), u64::from(u32::MAX)],
+                if errno == EINTR { "display transition interrupted" } else { "display transition refused" })
+        })?;
+        #[cfg(target_arch = "x86_64")]
+        { attempt = Some(activate_mode_report(a.index)?); }
+        with_core(|c| {
+            if !owner(tgid) { return Err(refusal(EPERM, abi::mode_phase::RECORD, "display owner changed")); }
+            #[cfg(target_arch = "aarch64")]
+            { c.display.mode = a.index; }
+            if let Some(o) = c.display.stack.last_mut() { o.mode = a.index; }
+            Ok(0)
+        }).ok_or_else(|| refusal(ENODEV, abi::mode_phase::RECORD, "display device absent"))?
+    })();
+    // The shared transition and native session have both been released here.
+    match outcome {
+        Ok(value) => {
+            #[cfg(target_arch = "x86_64")]
+            if let Some(record) = attempt {
+                crate::serial_println!("[gpu] SET_MODE ok {} fields=phase:elapsed_ns:pending:GET:PUT:notifier", record);
+            }
+            Ok(value)
+        },
+        Err(report) => {
+            crate::serial_println!("[gpu] SET_MODE {} refused: {} errno={} phase={} elapsed_ns={} pending={} GET={} PUT={} notifier={}",
+                report.index, report.reason(), report.errno, report.phase_name(), report.elapsed_ns,
+                report.pending, report.get, report.put, report.notifier);
+            if detailed { write_arg(arg, &report)?; }
+            Err(report.errno)
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn activate_mode_report(mode: u32) -> Result<crate::gk208::ModeAttempt, abi::ModeReport> {
+    let attempt = match super::arch::with_interrupts(|| crate::gk208::set_mode(mode)) {
+        Ok(attempt) => attempt,
+        Err(report) => {
+            // A refused UPDATE may already have changed what the head reads.
+            with_core(|c| c.display.known = false);
+            return Err(report);
+        }
+    };
     with_core(|c| {
-        if !owner(tgid) {
-            return Err(EPERM);
-        }
-        // The virtual mode change has no device transaction; publish it in the
-        // same critical section that checks and updates its owner.
-        #[cfg(target_arch = "aarch64")]
-        { c.display.mode = a.index; }
-        if let Some(o) = c.display.stack.last_mut() {
-            o.mode = a.index;
-        }
-        Ok(0)
-    })
-    .ok_or(ENODEV)?
+        c.native_console_restored();
+        c.display.mode = mode;
+        attempt
+    }).ok_or_else(|| abi::ModeReport::refused(mode, ENODEV, abi::mode_phase::RECORD,
+        0, [0; 4], "display device absent"))
 }
 
 /// Confirm a mode inside a display transition, then publish that current mode.
 /// The owner's requested mode is retained separately from a displaced frame.
 pub(super) fn activate_mode(mode: u32) -> Result<(), i64> {
     #[cfg(target_arch = "x86_64")]
-    if super::arch::with_interrupts(|| crate::gk208::set_mode(mode)).is_err() {
-        // A refused UPDATE may already have changed what the head reads.
-        with_core(|c| c.display.known = false);
-        return Err(EIO);
-    }
-    with_core(|c| {
-        #[cfg(target_arch = "x86_64")]
-        c.native_console_restored();
-        c.display.mode = mode;
-    }).ok_or(ENODEV)
+    { activate_mode_report(mode).map(|_| ()).map_err(|report| report.errno) }
+    #[cfg(target_arch = "aarch64")]
+    { with_core(|c| c.display.mode = mode).ok_or(ENODEV) }
 }
 
 pub(super) fn active() -> bool {

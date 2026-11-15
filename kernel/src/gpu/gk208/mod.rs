@@ -129,6 +129,8 @@ mod recovery_policy;
 pub use system_dma::set_platform as set_dma_platform;
 mod modeset;
 mod native;
+mod mode_attempt;
+pub(crate) use mode_attempt::ModeAttempt;
 pub(crate) use resource::present;
 mod core_record;
 pub use native::{ConsoleSurface,console_binding,takeover_started,caps_scanout};
@@ -139,6 +141,10 @@ pub(crate) fn console_surface() -> Option<ConsoleSurface> {
 mod rom;
 pub(crate) fn console_sample(stage: usize, offset: usize, expected: u32, actual: u32) {
     display_evidence::sample(stage, offset, expected, actual);
+}
+/// A live, read-only observation, independent of the boot artifact stream.
+pub fn proc_clocks() -> Vec<u8> {
+    clock::observe().map_or_else(Vec::new, |mut row| { row.push('\n'); row.into_bytes() })
 }
 pub fn proc_pixels()->Vec<u8> {
     let mut data = bulk::take();

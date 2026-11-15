@@ -323,6 +323,7 @@ STD_BINARIES=(
 
     # Phase 3: Coreutils now provided by BusyBox (see scripts/build-libc-busybox.sh)
     "resolution"
+    "display"
 
     # Phase 4: init_shell
     "init_shell"

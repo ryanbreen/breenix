@@ -253,6 +253,13 @@ pub fn modes() -> (i64, abi::Modes) {
     let r = call_with(op::MODES, &mut a);
     (r, a)
 }
+/// Select a mode and retain the kernel's specific refusal, if any.
+pub fn set_mode_report(index: u32) -> (i64, abi::ModeReport) {
+    let mut report = abi::ModeReport::ZERO;
+    report.index = index;
+    let result = call_with(op::SET_MODE, &mut report);
+    (result, report)
+}
 /// Select the display owner's mode for subsequent full-screen targets.
 pub fn set_mode(index: u32) -> i64 {
     let mut a = abi::SetMode { index, reserved: [0; 3] };

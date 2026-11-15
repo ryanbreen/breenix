@@ -248,6 +248,10 @@
         {
           "id": "client-resize",
           "title": "bwm reconciles and composes a client-initiated resize"
+        },
+        {
+          "id": "display-mode",
+          "title": "Live mode changes publish fitted geometry client resizes and settings and refuse unsupported modes"
         }
       ]
     },
