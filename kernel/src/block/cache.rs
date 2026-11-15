@@ -5,7 +5,7 @@
 //! it drains or while the device flush is open. Device calls and sleeping are
 //! outside the state lock. Reads use the same queue to keep cached copies coherent.
 //!
-//! Mount integration, Hold groups and the kernel BlockedOnIO wait provider
+//! Mount integration and the kernel BlockedOnIO wait provider
 //! belong to the following buffer-cache units.
 
 use crate::block::{BlockDevice, BlockError};
@@ -13,7 +13,7 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::Deref;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use spin::Mutex;
 
 /// A generation-based sleep/wake interface, supplied by the caller.
@@ -29,10 +29,51 @@ pub trait Wait: Send + Sync {
     fn wake_all(&self);
 }
 
-/// The synchronous group used by ext2. Deferred Hold groups are not exposed yet.
-#[derive(Clone, Copy, Debug)]
+/// WriteThrough writes synchronously; Hold retains bytes until explicit submit.
+#[derive(Clone)]
 pub enum WriteGroup {
     WriteThrough,
+    Hold(Arc<HoldGroup>),
+}
+
+/// A device-bound transaction owner. The callback asks its commit worker to run;
+/// it runs outside cache locks and device admission and may reenter the cache.
+pub struct HoldGroup {
+    device: usize,
+    request_commit: Arc<dyn Fn() + Send + Sync>,
+    requested: AtomicBool,
+}
+
+impl WriteGroup {
+    pub fn hold(device: &dyn BlockDevice, request_commit: Arc<dyn Fn() + Send + Sync>) -> Self {
+        Self::Hold(Arc::new(HoldGroup {
+            device: device.identity(),
+            request_commit,
+            requested: AtomicBool::new(false),
+        }))
+    }
+}
+
+/// Observable state of the bytes at a device/block key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BufferStatus {
+    Clean,
+    Dirty,
+    InFlight,
+    Failed,
+}
+
+/// Completion of a submitted group. BlockDevice is synchronous, so submit drives
+/// the device writes and returns a completed Batch. No flush is implied: the
+/// owner waits on the batch, then calls flush for its durability boundary.
+pub struct Batch {
+    result: Result<(), BlockError>,
+}
+
+impl Batch {
+    pub fn wait(&self) -> Result<(), BlockError> {
+        self.result
+    }
 }
 
 /// Requests sent to the device, including failed requests. The sequence is
@@ -94,7 +135,14 @@ impl Deref for Buffer {
 }
 
 enum BufferState {
-    Clean { buffer: Arc<Buffer>, used: u64 },
+    Clean {
+        buffer: Arc<Buffer>,
+        used: u64,
+    },
+    Dirty {
+        buffer: Arc<Buffer>,
+        group: Arc<HoldGroup>,
+    },
     InFlight,
     Failed,
 }
@@ -211,19 +259,53 @@ impl<W: Wait> BufferCache<W> {
         self.resident.load(Ordering::Relaxed)
     }
 
-    /// Pin a clean resident snapshot without issuing I/O. This is also an LRU
+    /// Pin a resident snapshot without issuing I/O. Clean bytes get an LRU
     /// access. A later write may replace the key but cannot mutate this snapshot.
     pub fn pin(&self, device: &dyn BlockDevice, block: u64) -> Option<Arc<Buffer>> {
         self.with(|state| {
             state.touch((device.identity(), block));
             match state.buffers.get(&(device.identity(), block)) {
                 Some(Entry {
-                    status: BufferState::Clean { buffer, .. },
+                    status: BufferState::Clean { buffer, .. } | BufferState::Dirty { buffer, .. },
                     ..
                 }) => Some(buffer.clone()),
                 _ => None,
             }
         })
+    }
+
+    pub fn status(&self, device: &dyn BlockDevice, block: u64) -> Option<BufferStatus> {
+        self.with(|state| {
+            state
+                .buffers
+                .get(&(device.identity(), block))
+                .map(|entry| match entry.status {
+                    BufferState::Clean { .. } => BufferStatus::Clean,
+                    BufferState::Dirty { .. } => BufferStatus::Dirty,
+                    BufferState::InFlight => BufferStatus::InFlight,
+                    BufferState::Failed => BufferStatus::Failed,
+                })
+        })
+    }
+
+    fn request_commits(&self) {
+        let holders = self.with(|state| {
+            state
+                .buffers
+                .values()
+                .filter_map(|entry| match &entry.status {
+                    BufferState::Dirty { group, .. }
+                        if !group.requested.swap(true, Ordering::Relaxed) =>
+                    {
+                        Some(group.clone())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        });
+        for holder in holders {
+            (holder.request_commit)();
+        }
     }
 
     // claim-lint:ok: kernel/src/block/cache.rs enter waits after with returns; read/write/flush call the driver outside with.
@@ -374,17 +456,15 @@ impl<W: Wait> BufferCache<W> {
                 }
             }
             state.touch(key);
-            if let Some(Entry {
-                status: BufferState::Clean { buffer, .. },
-                ..
-            }) = state.buffers.get(&key)
-            {
-                bytes[..size].copy_from_slice(buffer);
-                true
-            } else {
-                false
+            match state.buffers.get(&key).map(|entry| &entry.status) {
+                Some(BufferState::Clean { buffer, .. } | BufferState::Dirty { buffer, .. }) => {
+                    bytes[..size].copy_from_slice(buffer);
+                    Ok(true)
+                }
+                Some(BufferState::Failed) => Err(BlockError::IoError),
+                _ => Ok(false),
             }
-        });
+        })?;
         if hit {
             self.count(|c| &mut c.hits);
             return Ok(());
@@ -399,12 +479,19 @@ impl<W: Wait> BufferCache<W> {
                 Err(BlockError::IoError)
             }
         });
+        let pressure = charge.is_none();
         self.finish(key, &bytes[..size], charge, result);
+        drop(_admission);
+        if pressure {
+            self.request_commits();
+        }
         result
     }
 
-    /// WriteThrough completes the device write before returning. Invalidate the
-    /// old copy first, including on failure: a failed write may have changed media.
+    /// WriteThrough completes the device write before returning. Hold publishes
+    /// Dirty(group) bytes without writing media. A full dirty cache asks its
+    /// holders for a commit and returns OutOfMemory; the caller may retry after
+    /// that commit. Existing dirty bytes survive a refused write.
     pub fn write(
         &self,
         device: &dyn BlockDevice,
@@ -414,16 +501,157 @@ impl<W: Wait> BufferCache<W> {
     ) -> Result<(), BlockError> {
         let size = Self::size(device, block, bytes.len())?;
         let key = (device.identity(), block);
-        let _admission = self.enter(key.0);
-        match group {
+        let admission = self.enter(key.0);
+        let (result, pressure) = match group {
             WriteGroup::WriteThrough => {
+                // A different writer cannot discard an unsubmitted transaction.
+                if self.with(|state| {
+                    matches!(
+                        state.buffers.get(&key),
+                        Some(Entry {
+                            status: BufferState::Dirty { .. },
+                            ..
+                        })
+                    )
+                }) {
+                    return Err(BlockError::IoError);
+                }
                 let charge = self.begin(key, size);
+                let pressure = charge.is_none();
                 self.count(|c| &mut c.device_writes);
                 let result = device.write_block(block, &bytes[..size]);
                 self.finish(key, &bytes[..size], charge, result);
-                result
+                (result, pressure)
+            }
+            WriteGroup::Hold(group) => {
+                let result = self.stage(key, group, &bytes[..size]);
+                (result, result == Err(BlockError::OutOfMemory))
+            }
+        };
+        drop(admission);
+        if pressure {
+            self.request_commits();
+        }
+        result
+    }
+
+    fn stage(&self, key: Key, group: Arc<HoldGroup>, bytes: &[u8]) -> Result<(), BlockError> {
+        if group.device != key.0 {
+            return Err(BlockError::IoError);
+        }
+        // A private dirty snapshot can be overwritten without another charge.
+        let reused = self.with(|state| {
+            if let Some(Entry {
+                status:
+                    BufferState::Dirty {
+                        buffer,
+                        group: owner,
+                    },
+                ..
+            }) = state.buffers.get_mut(&key)
+            {
+                if !Arc::ptr_eq(owner, &group) {
+                    return Err(BlockError::IoError);
+                }
+                if let Some(buffer) = Arc::get_mut(buffer) {
+                    buffer.bytes.copy_from_slice(bytes);
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })?;
+        if reused {
+            return Ok(());
+        }
+        let mut copy = Vec::new();
+        copy.try_reserve_exact(bytes.len())
+            .map_err(|_| BlockError::OutOfMemory)?;
+        copy.extend_from_slice(bytes);
+        self.with(|state| {
+            let charge = state
+                .reserve(bytes.len(), self.bound, &self.resident)
+                .ok_or(BlockError::OutOfMemory)?;
+            state.remove(key);
+            state.next_generation = state
+                .next_generation
+                .checked_add(1)
+                .expect("cache generation exhausted");
+            state.buffers.insert(
+                key,
+                Entry {
+                    status: BufferState::Dirty {
+                        buffer: Arc::new(Buffer {
+                            bytes: copy,
+                            charge,
+                        }),
+                        group,
+                    },
+                    generation: state.next_generation,
+                    waiters: 0,
+                },
+            );
+            Ok(())
+        })
+    }
+
+    /// Submit this device's dirty group as one FIFO operation. A flush queued
+    /// behind it cannot split the batch. A failed block becomes Failed and the
+    /// remaining blocks are still completed before the Batch reports IoError.
+    pub fn submit(&self, device: &dyn BlockDevice, group: &WriteGroup) -> Batch {
+        Batch {
+            result: self.submit_group(device, group),
+        }
+    }
+
+    fn submit_group(&self, device: &dyn BlockDevice, group: &WriteGroup) -> Result<(), BlockError> {
+        let group = match group {
+            WriteGroup::Hold(group) if group.device == device.identity() => group,
+            _ => return Err(BlockError::IoError),
+        };
+        let _admission = self.enter(device.identity());
+        let buffers = self.with(|state| {
+            let mut buffers = Vec::new();
+            let belongs = |entry: &Entry| {
+                matches!(&entry.status,
+                BufferState::Dirty { group: owner, .. } if Arc::ptr_eq(owner, group))
+            };
+            let count = state
+                .buffers
+                .iter()
+                .filter(|(key, entry)| key.0 == group.device && belongs(entry))
+                .count();
+            buffers
+                .try_reserve_exact(count)
+                .map_err(|_| BlockError::OutOfMemory)?;
+            for (&key, entry) in state.buffers.iter_mut() {
+                if key.0 == group.device && belongs(entry) {
+                    if let BufferState::Dirty { buffer, .. } = &entry.status {
+                        buffers.push((key, buffer.clone()));
+                    }
+                    entry.status = BufferState::InFlight;
+                }
+            }
+            group.requested.store(false, Ordering::Relaxed);
+            Ok::<_, BlockError>(buffers)
+        })?;
+        let mut result = Ok(());
+        for (key, buffer) in buffers {
+            self.count(|c| &mut c.device_writes);
+            let written = device.write_block(key.1, &buffer);
+            self.with(|state| {
+                let entry = state.buffers.get_mut(&key).expect("submitted cache buffer");
+                if written.is_ok() {
+                    entry.status = BufferState::Clean { buffer, used: 0 };
+                    state.touch(key);
+                } else {
+                    entry.status = BufferState::Failed;
+                }
+            });
+            if written.is_err() {
+                result = Err(BlockError::IoError);
             }
         }
+        result
     }
 
     /// Reserve the barrier before draining earlier requests, then wait for the
