@@ -16,6 +16,13 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+The E24 filesystem interface milestone lands through
+[PR #2999](https://github.com/ryanbreen/breenix/pull/2999), routing the remaining
+filesystem consumers through the VFS. The PR records R240 milestone acceptance
+and ARM64 QEMU interface evidence; Parallels/VMware catch-up and full filesystem
+acceptance remain pending. Review follow-ups are grouped in
+[#3002](https://github.com/ryanbreen/breenix/issues/3002).
+
 Native monitor-derived display modes and owner-mode restoration are implemented
 in [PR #2957](https://github.com/ryanbreen/breenix/pull/2957).
 The [landing review](../gui/provenance/monitor-modes-2957.md) records native and
