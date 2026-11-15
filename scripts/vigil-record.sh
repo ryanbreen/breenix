@@ -13,6 +13,8 @@
 # leaves unreached suites' earlier evidence intact. start prints one boot id, as for a single suite.
 # BREENIX_VIGIL_DISPLAY=true|false is the launcher's effective window selection;
 # start records it before the VM starts. Finish retains BREENIX_HOST_RENDERER_JSON.
+# BREENIX_VIGIL_ONLY_CASE marks a selected suite watch before launch, excluding it
+# from full-suite evidence while retaining its serial and renderer as usual.
 # Skips registration when Vigil started the boot itself (VIGIL_BOOT_ID), when no vigil-cli with the
 # breenix command is installed, or off macOS. Start and finish are best effort; record returns the CLI status.
 set -u
@@ -86,7 +88,7 @@ case "${1:-}" in
         [ -z "${BREENIX_VIGIL_CPUS:-}" ] || args+=(--cpus "$BREENIX_VIGIL_CPUS")
         # A registration Vigil refuses leaves the boot unrecorded; it never stops the boot.
         id=$("$CLI" "${args[@]}") || { echo "WARNING: Vigil boot registration failed" >&2; exit 0; }
-        if [ -n "$id" ] && [ -n "${BREENIX_VIGIL_DISPLAY:-}" ]; then
+        if [ -n "$id" ] && [ -n "${BREENIX_VIGIL_DISPLAY:-}${BREENIX_VIGIL_ONLY_CASE:-}" ]; then
             python3 "$ROOT/scripts/vigil-boot-metadata.py" start "$id" "$ROOT" >&2 || true
         fi
         printf '%s\n' "$id"
