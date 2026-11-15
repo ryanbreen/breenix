@@ -413,8 +413,6 @@ fn main() {
     let mut full_redraw = false;
     let mut validation: ValidationQueue<PresentedScene> = ValidationQueue::new();
     let mut prompt_watchers = chrome::prompt_watch::Watchers::default();
-    // Keep the fitted geometry while owners asynchronously replace their buffers.
-    let mut display_resizes: Vec<(u64, switch_plan::WindowPlan)> = Vec::new();
     if !strict_startup {
         for win in windows.iter().filter(|w| w.creation_order == 0 && &w.title[..w.title_len] == b"Terminal") {
             match prompt_watchers.attach(win.window_id) {
@@ -513,7 +511,7 @@ fn main() {
                 };
                 let temp = paths.bwm.with_extension("conf.tmp");
                 std::fs::write(&temp, settings::with_display(&text, mode, scale)).map_err(|e| format!("write settings: {e}"))?;
-                let result = switch_display(index, &mut gpu, &mut windows, &mut display_resizes, &stack, &clock_text, &mut ui_font);
+                let result = switch_display(index, &mut gpu, &mut windows, &stack, &clock_text, &mut ui_font);
                 switched = true; // Even a refused switch must re-present the retained targets.
                 match result {
                     Ok(()) => (),
@@ -521,7 +519,7 @@ fn main() {
                 }
                 if let Err(error) = std::fs::rename(&temp, &paths.bwm) {
                     let _ = std::fs::remove_file(&temp);
-                    let rollback = switch_display(modes.current, &mut gpu, &mut windows, &mut display_resizes, &stack, &clock_text, &mut ui_font);
+                    let rollback = switch_display(modes.current, &mut gpu, &mut windows, &stack, &clock_text, &mut ui_font);
                     return Err(format!("save settings: {error}; rollback {}", match rollback { Ok(()) => "succeeded", _ => "failed" }));
                 }
                 let state = ui();
@@ -557,7 +555,7 @@ fn main() {
         if RELOAD_DISPLAY.swap(false, std::sync::atomic::Ordering::Relaxed) {
             match settings::Settings::load(&paths.bwm) {
                 Ok(settings) => if let Some(index) = configured_display(&settings) {
-                    match switch_display(index, &mut gpu, &mut windows, &mut display_resizes,
+                    match switch_display(index, &mut gpu, &mut windows,
                         &stack, &clock_text, &mut ui_font) {
                         Ok(()) => {
                             screen_w = ui().mode.width;
@@ -587,7 +585,6 @@ fn main() {
         if scene_changed {
             let first_new_order = next_creation_order;
             let changed = discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order, &mut win_defaults);
-            retain_display_resizes(&mut windows, &mut display_resizes);
             if changed {
                 if !strict_startup {
                     for win in windows.iter().filter(|w| w.creation_order >= first_new_order
@@ -1112,22 +1109,6 @@ fn window_frame(window: &Window) -> placement::Frame {
     }
 }
 
-fn apply_frame(window: &mut Window, frame: placement::Frame) {
-    window.x = frame.rect.x;
-    window.y = frame.rect.y;
-    window.width = frame.rect.width;
-    window.height = frame.rect.height;
-}
-
-fn retain_display_resizes(windows: &mut [Window], pending: &mut Vec<(u64, switch_plan::WindowPlan)>) {
-    pending.retain(|(id, plan)| {
-        let Some(window) = windows.iter_mut().find(|w| w.window_id == *id) else { return false; };
-        let observed = [window.content_width() as u32, window.content_height() as u32];
-        apply_frame(window, plan.frame);
-        plan.resize != Some(observed)
-    });
-}
-
 fn mode_refusal(result: i64, report: &libbreenix::gpu::abi::ModeReport) -> String {
     format!("{} (errno {}, phase {}, elapsed_ns {}, pending {}, GET {}, PUT {}, notifier {})",
         report.reason(), -result, report.phase_name(), report.elapsed_ns,
@@ -1137,7 +1118,7 @@ fn mode_refusal(result: i64, report: &libbreenix::gpu::abi::ModeReport) -> Strin
 /// The single live mode-switch path. SIGHUP reloads the display keys; the command
 /// can save those keys then signal bwm without taking ownership of its display.
 fn switch_display(index: u32, gpu: &mut Compositor, windows: &mut [Window],
-    pending: &mut Vec<(u64, switch_plan::WindowPlan)>, stack: &Stack, clock: &[u8],
+    stack: &Stack, clock: &[u8],
     font: &mut Option<CachedFont>,
 ) -> Result<(), String> {
     let (result, modes) = libbreenix::gpu::modes();
@@ -1164,9 +1145,13 @@ fn switch_display(index: u32, gpu: &mut Compositor, windows: &mut [Window],
         return Err(format!("target allocation failed: {error}; restored mode {}", modes.current));
     }
     replace_ui(Ui::for_scale(plan.mode.width, plan.mode.height, plan.mode.scale));
-    pending.clear();
-    for (window, planned) in windows.iter_mut().zip(plan.windows) {
-        apply_frame(window, planned.frame);
+    for ((window, planned), previous) in windows.iter_mut().zip(plan.windows).zip(frames) {
+        window.x = planned.frame.rect.x;
+        window.y = planned.frame.rect.y;
+        // The owner alone changes its buffer. Until it publishes a resize, keep
+        // chrome fitted to the observed content, including across scale changes.
+        window.width = previous.rect.width - previous.decoration[0] + planned.frame.decoration[0];
+        window.height = previous.rect.height - previous.decoration[1] + planned.frame.decoration[1];
         window.resize_queue.begin();
         window.resize_right = None;
         window.resize_bottom = None;
@@ -1175,7 +1160,6 @@ fn switch_display(index: u32, gpu: &mut Compositor, windows: &mut [Window],
         window.check_after_ms = monotonic_ms().unwrap_or(0) + 150;
         if let Some([width, height]) = planned.resize {
             input::send_id(window.window_id, Input::Resize { width, height });
-            pending.push((window.window_id, planned));
         }
     }
     if let Some(font) = font.as_mut() {
