@@ -217,6 +217,16 @@ mod runtime {
         let base = BAR.load(Ordering::Acquire);
         if base == 0 { return None; }
         let phase = match SLOT.fetch_add(1, Ordering::Relaxed) { 0 => "startup", 1 => "final", _ => return None };
+        let row = record(base, "GT710_CLOCK_V1", phase);
+        let anchor = format!("GT710_CLOCK_BULK phase={} bytes={} sha256={}", phase, row.len(), super::super::hash(row.as_bytes()));
+        Some((row, anchor))
+    }
+    /// Read current clocks without consuming either boot upload slot.
+    pub fn observe() -> Option<String> {
+        let base = BAR.load(Ordering::Acquire);
+        (base != 0).then(|| record(base, "GT710_CLOCK_SAMPLE_V1", "live"))
+    }
+    fn record(base: usize, prefix: &str, phase: &str) -> String {
         let sample = sample(|address| {
             // SAFETY: inventory retains the checked uncached 16 MiB BAR0
             // mapping; source-defined offsets above lie inside it. Reads only.
@@ -230,11 +240,9 @@ mod runtime {
             unsafe { (&*table).as_ref().map_err(|e| *e) }
         };
         let performance = perf::record(table, sample.gpc_khz, sample.memory_khz);
-        let row = format!("GT710_CLOCK_V1 {{\"schema\":1,\"phase\":\"{}\",\"host_source\":\"href\",\"raw\":[{}],\"gpc_khz\":{},\"memory_khz\":{},\"host_khz\":{},\"temperature_c\":{},\"performance\":{}}}",
-            phase, raw.join(","), reading(sample.gpc_khz), reading(sample.memory_khz), reading(sample.host_khz), reading(sample.temperature_c), performance);
-        let anchor = format!("GT710_CLOCK_BULK phase={} bytes={} sha256={}", phase, row.len(), super::super::hash(row.as_bytes()));
-        Some((row, anchor))
+        format!("{} {{\"schema\":1,\"phase\":\"{}\",\"host_source\":\"href\",\"raw\":[{}],\"gpc_khz\":{},\"memory_khz\":{},\"host_khz\":{},\"temperature_c\":{},\"performance\":{}}}",
+            prefix, phase, raw.join(","), reading(sample.gpc_khz), reading(sample.memory_khz), reading(sample.host_khz), reading(sample.temperature_c), performance)
     }
 }
 #[cfg(target_os = "none")]
-pub use runtime::{initialize, initialize_performance, export};
+pub use runtime::{initialize, initialize_performance, export, observe};

@@ -140,6 +140,10 @@ mod rom;
 pub(crate) fn console_sample(stage: usize, offset: usize, expected: u32, actual: u32) {
     display_evidence::sample(stage, offset, expected, actual);
 }
+/// A live, read-only observation, independent of the boot artifact stream.
+pub fn proc_clocks() -> Vec<u8> {
+    clock::observe().map_or_else(Vec::new, |mut row| { row.push('\n'); row.into_bytes() })
+}
 pub fn proc_pixels()->Vec<u8> {
     let mut data = bulk::take();
     if data.is_empty() { return data; }

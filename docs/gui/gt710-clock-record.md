@@ -144,3 +144,13 @@ changed source references and read-only decoding were reviewed directly.
 ```
 claim-lint: scripts/claim-lint.py --commit-msg /tmp/gt710-vbios-perf/change-message -> exit 0
 ```
+
+## Live observation
+
+`/proc/gt710-clocks` is a read-only clock observation with the same Trace
+permission as `/proc/gt710-pixels`. A read samples the current MMIO words and
+emits `GT710_CLOCK_SAMPLE_V1` with `phase=live`; its remaining fields use the
+clock-record decoder above. It neither drains the pixel artifact stream nor
+consumes or resets the startup/final export slots. The window-manager display
+case retains these live rows before switching and after restoring the mode,
+including when another suite already consumed the boot uploads.

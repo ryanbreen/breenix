@@ -802,12 +802,12 @@ pub fn display_request(command: &str) -> Result<String, String> {
 
 /// Retain the driver's live clock sample around the display case's switches.
 pub fn display_clocks(phase: &str) -> CaseResult {
-    let records = match std::fs::read_to_string("/proc/gt710-pixels") {
+    let records = match std::fs::read_to_string("/proc/gt710-clocks") {
         Ok(records) => records,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(format!("display clock receipt: {error}").into()),
     };
-    let row = records.lines().find(|line| line.starts_with("GT710_CLOCK_V1 "))
+    let row = records.lines().find(|line| line.starts_with("GT710_CLOCK_SAMPLE_V1 "))
         .ok_or("display clock receipt absent")?;
     breenix_suite::suite::upload_diagnostic(
         "window-manager", &format!("display-clocks-{phase}"), row.as_bytes(),

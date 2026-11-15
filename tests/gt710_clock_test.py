@@ -124,6 +124,8 @@ fn main() {
     let rom=vec![ROM];let original=rom.clone();
     clock::initialize_performance(&rom);
     assert_eq!(rom,original);
+    assert_eq!(clock::gpc_reference(|a|bar[a as usize/4]),Ok(27000));
+    assert_eq!(clock::perf::decode(&rom).unwrap().levels[0].voltage_id,0);
     for _ in 0..2 {
         let (row,anchor)=clock::export().unwrap();println!("{}\n{}",row,anchor);
     }
@@ -147,7 +149,7 @@ fn main() {
             module = module.replace('path = \"perf.rs\"', 'path = \"'+str(ROOT/'kernel/src/gpu/gk208/perf.rs')+'\"')
             (p/'module.rs').write_text(module)
             source = source.replace('ROM',','.join(map(str,synthetic_rom())))
-            source = source.replace('SHA',str(ROOT/'libs/libbreenix/src/crypto/sha256.rs')).replace('CLOCK',str(p/'module.rs'))
+            source = source.replace('SHA',str(ROOT/'libs/libbreenix/src/crypto/sha256.rs')).replace('path="CLOCK"','path="'+str(p/'module.rs')+'"')
             (p/'runtime.rs').write_text(source)
             subprocess.run(priority + ['rustc','--edition=2021','-Dwarnings',str(p/'runtime.rs'),'-o',str(p/'runtime')],check=True)
             lines = subprocess.check_output([str(p/'runtime')],text=True).splitlines()

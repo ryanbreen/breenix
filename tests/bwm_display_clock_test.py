@@ -17,7 +17,7 @@ thread_local! {
     static OUTPUT: RefCell<Vec<(String, Vec<u8>)>> = const { RefCell::new(Vec::new()) };
 }
 mod fs { pub fn read_to_string(path: &str) -> std::io::Result<String> {
-    assert_eq!(path, "/proc/gt710-pixels");
+    assert_eq!(path, "/proc/gt710-clocks");
     super::PROC.with(|p| std::mem::replace(&mut *p.borrow_mut(), Ok(String::new())))
 }}
 // suite.rs::silence_output sends a case's stdout to /dev/null.
@@ -33,10 +33,10 @@ SOURCE
 #[test] fn receipts() {
     println!("case stdout is silenced");
     for phase in ["before", "after"] {
-        PROC.with(|p| *p.borrow_mut() = Ok("unrelated pixels\nGT710_CLOCK_V1 {live registers}\n".into()));
+        PROC.with(|p| *p.borrow_mut() = Ok("unrelated pixels\nGT710_CLOCK_SAMPLE_V1 {live registers}\n".into()));
         display_clocks(phase).unwrap();
         assert_eq!(OUTPUT.with(|o| std::mem::take(&mut *o.borrow_mut())),
-            vec![(format!("display-clocks-{phase}"), b"GT710_CLOCK_V1 {live registers}".to_vec())]);
+            vec![(format!("display-clocks-{phase}"), b"GT710_CLOCK_SAMPLE_V1 {live registers}".to_vec())]);
     }
     PROC.with(|p| *p.borrow_mut() = Err(io::Error::from(io::ErrorKind::NotFound)));
     display_clocks("before").unwrap();
