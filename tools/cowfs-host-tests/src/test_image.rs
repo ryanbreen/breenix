@@ -29,10 +29,16 @@ pub fn image() -> std::vec::Vec<u8> {
 }
 
 pub fn check(bytes: &[u8], tag: &str) {
-    use std::{fs, process::Command};
+    use std::{
+        fs,
+        process::Command,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+    static NEXT: AtomicU64 = AtomicU64::new(0);
     let path = std::env::temp_dir().join(std::format!(
-        "cowfs-files-check-{}-{tag}.img",
-        std::process::id()
+        "cowfs-files-check-{}-{}-{tag}.img",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     fs::write(&path, bytes).unwrap();
     let output = Command::new(env!("CARGO_BIN_FILE_COWFS_cowfs-check"))

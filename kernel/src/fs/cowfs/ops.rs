@@ -23,6 +23,8 @@ const MAX_FILE_SIZE: u64 = (1u64 << 63) - 4096;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     EIO,
+    EPERM,
+    ENOTEMPTY,
     ENOENT,
     EEXIST,
     ENOTDIR,
@@ -66,14 +68,14 @@ pub struct SetAttr {
     pub mtime: Option<Time>,
 }
 
-pub struct Files<S: NodeStore + 'static> {
-    txn: Transaction<'static, S>,
+pub struct Files<'a, S: NodeStore + 'a> {
+    txn: Transaction<'a, S>,
     root: Root,
     root_id: u64,
     hash_key: [u8; 16],
     data: BTreeMap<u64, Vec<u8>>,
 }
-impl<S: NodeStore + 'static> Files<S> {
+impl<'a, S: NodeStore + 'a> Files<'a, S> {
     pub fn new(store: S, sb: &Superblock, root_id: u64) -> Result<Self, Error> {
         let root = recover::space_items(&store, sb)?
             .into_iter()
@@ -102,7 +104,11 @@ impl<S: NodeStore + 'static> Files<S> {
     pub fn inode(&self, ino: u64) -> Result<Inode, Error> {
         let value = btree::search(&self.txn.view(), self.root.root, key(ino, format::INODE, 0))?
             .ok_or(Error::ENOENT)?;
-        Ok(Inode::decode(&value)?)
+        let inode = Inode::decode(&value)?;
+        if inode.nlink == 0 {
+            return Err(Error::ENOENT);
+        }
+        Ok(inode)
     }
     fn put_inode(&mut self, ino: u64, inode: Inode) -> Result<(), Error> {
         self.txn.insert(
@@ -120,48 +126,140 @@ impl<S: NodeStore + 'static> Files<S> {
             _ => Err(Error::EINVAL),
         }
     }
-    pub fn create(&mut self, dir: u64, name: &[u8], mode: u32, at: Time) -> Result<u64, Error> {
-        if name.is_empty() {
-            return Err(Error::ENOENT);
-        }
-        if name.len() > 255 {
-            return Err(Error::ENAMETOOLONG);
-        }
-        if name == b"." || name == b".." || name.contains(&0) || name.contains(&b'/') {
-            return Err(Error::EINVAL);
-        }
-        valid_time(at)?;
-        let mut parent = self.inode(dir)?;
-        if parent.mode & 0o170000 != 0o040000 {
+    fn directory(&self, ino: u64) -> Result<Inode, Error> {
+        let inode = self.inode(ino)?;
+        if inode.mode & 0o170000 != 0o040000 {
             return Err(Error::ENOTDIR);
         }
-        let hash = siphash::hash(&self.hash_key, name);
-        let dk = key(dir, format::DIR_ENTRY, hash);
-        let mut bucket = btree::search(&self.txn.view(), self.root.root, dk)?.unwrap_or_default();
-        for record in dir_records(&bucket)? {
-            if record.name == name {
-                return Err(Error::EEXIST);
-            }
+        Ok(inode)
+    }
+    fn bucket(&self, dir: u64, name: &[u8]) -> Result<(Key, Vec<DirRecord>), Error> {
+        let k = key(dir, format::DIR_ENTRY, siphash::hash(&self.hash_key, name));
+        let bytes = btree::search(&self.txn.view(), self.root.root, k)?.unwrap_or_default();
+        Ok((k, dir_records(&bytes)?))
+    }
+    pub fn lookup(&self, dir: u64, name: &[u8]) -> Result<u64, Error> {
+        valid_name(name)?;
+        self.directory(dir)?;
+        self.bucket(dir, name)?
+            .1
+            .into_iter()
+            .find(|r| r.name == name)
+            .map(|r| r.ino)
+            .ok_or(Error::ENOENT)
+    }
+    // Check the next directory cookie and collision payload before edits.
+    fn vacant(&self, dir: u64, name: &[u8], kind: u8) -> Result<(), Error> {
+        valid_name(name)?;
+        let parent = self.directory(dir)?;
+        let (_, bucket) = self.bucket(dir, name)?;
+        if bucket.iter().any(|r| r.name == name) {
+            return Err(Error::EEXIST);
         }
+        if bucket.iter().map(|r| 10 + r.name.len()).sum::<usize>() + 10 + name.len() > 6144 {
+            return Err(Error::ENOSPC);
+        }
+        parent.next_index.checked_add(1).ok_or(Error::EMLINK)?;
+        parent.size.checked_add(1).ok_or(Error::EIO)?;
+        if kind == 2 {
+            parent.nlink.checked_add(1).ok_or(Error::EMLINK)?;
+        }
+        Ok(())
+    }
+    fn add_entry(
+        &mut self,
+        dir: u64,
+        name: &[u8],
+        ino: u64,
+        kind: u8,
+        at: Time,
+    ) -> Result<(), Error> {
+        self.vacant(dir, name, kind)?;
+        let mut parent = self.directory(dir)?;
+        let (k, records) = self.bucket(dir, name)?;
+        let mut bytes: Vec<_> = records.iter().flat_map(DirRecord::encode).collect();
+        let record = DirRecord {
+            ino,
+            kind,
+            name: name.to_vec(),
+        }
+        .encode();
+        bytes.extend_from_slice(&record);
+        self.txn.insert(&mut self.root.root, k, &bytes)?;
+        self.txn.insert(
+            &mut self.root.root,
+            key(dir, format::DIR_INDEX, parent.next_index),
+            &record,
+        )?;
+        parent.next_index += 1;
+        parent.size += 1;
+        if kind == 2 {
+            parent.nlink += 1;
+        }
+        parent.mtime = at;
+        parent.ctime = at;
+        self.put_inode(dir, parent)
+    }
+    fn remove_entry(&mut self, dir: u64, name: &[u8], at: Time) -> Result<DirRecord, Error> {
+        let mut parent = self.directory(dir)?;
+        let (k, mut records) = self.bucket(dir, name)?;
+        let pos = records
+            .iter()
+            .position(|r| r.name == name)
+            .ok_or(Error::ENOENT)?;
+        let record = records.remove(pos);
+        let index = self
+            .items()?
+            .into_iter()
+            .find_map(|(k, v)| {
+                if k.object != dir || k.item_type != format::DIR_INDEX {
+                    return None;
+                }
+                match dir_records(&v) {
+                    Ok(rs) if rs.len() == 1 && rs[0] == record => Some(Ok(k)),
+                    Err(e) => Some(Err(e)),
+                    _ => None,
+                }
+            })
+            .ok_or(Error::EIO)??;
+        if records.is_empty() {
+            self.txn.delete(&mut self.root.root, k)?;
+        } else {
+            let bytes: Vec<_> = records.iter().flat_map(DirRecord::encode).collect();
+            self.txn.insert(&mut self.root.root, k, &bytes)?;
+        }
+        self.txn.delete(&mut self.root.root, index)?;
+        parent.size = parent.size.checked_sub(1).ok_or(Error::EIO)?;
+        if record.kind == 2 {
+            parent.nlink = parent.nlink.checked_sub(1).ok_or(Error::EIO)?;
+        }
+        parent.mtime = at;
+        parent.ctime = at;
+        self.put_inode(dir, parent)?;
+        Ok(record)
+    }
+    fn new_inode(
+        &mut self,
+        dir: u64,
+        name: &[u8],
+        mode: u32,
+        target: Option<&[u8]>,
+        at: Time,
+    ) -> Result<u64, Error> {
+        valid_time(at)?;
+        let kind = inode_kind(mode)?;
+        self.vacant(dir, name, kind)?;
         let ino = self.root.next_inode;
         let next = ino
             .checked_add(1)
             .filter(|_| ino >= 16)
             .ok_or(Error::EMLINK)?;
-        let next_index = parent.next_index.checked_add(1).ok_or(Error::EMLINK)?;
-        let record = DirRecord {
-            ino,
-            kind: 1,
-            name: name.to_vec(),
-        }
-        .encode();
-        if bucket.len() + record.len() > 6144 {
-            return Err(Error::ENOSPC);
-        }
-        let size = parent.size.checked_add(1).ok_or(Error::EIO)?;
         let inode = Inode {
-            mode: 0o100000 | (mode & 0o7777),
-            nlink: 1,
+            mode,
+            nlink: if kind == 2 { 2 } else { 1 },
+            parent: if kind == 2 { dir } else { 0 },
+            next_index: if kind == 2 { 2 } else { 0 },
+            size: target.map_or(0, |t| t.len() as u64),
             created_generation: self.txn.generation(),
             atime: at,
             mtime: at,
@@ -170,20 +268,196 @@ impl<S: NodeStore + 'static> Files<S> {
             ..Inode::default()
         };
         self.put_inode(ino, inode)?;
-        bucket.extend_from_slice(&record);
-        self.txn.insert(&mut self.root.root, dk, &bucket)?;
-        self.txn.insert(
-            &mut self.root.root,
-            key(dir, format::DIR_INDEX, parent.next_index),
-            &record,
-        )?;
-        parent.next_index = next_index;
-        parent.size = size;
-        parent.mtime = at;
-        parent.ctime = at;
-        self.put_inode(dir, parent)?;
+        if let Some(target) = target {
+            self.txn
+                .insert(&mut self.root.root, key(ino, format::INLINE, 0), target)?;
+        }
+        self.add_entry(dir, name, ino, kind, at)?;
         self.root.next_inode = next;
         Ok(ino)
+    }
+    pub fn create(&mut self, dir: u64, name: &[u8], mode: u32, at: Time) -> Result<u64, Error> {
+        self.new_inode(dir, name, 0o100000 | (mode & 0o7777), None, at)
+    }
+    pub fn mkdir(&mut self, dir: u64, name: &[u8], mode: u32, at: Time) -> Result<u64, Error> {
+        self.new_inode(dir, name, 0o040000 | (mode & 0o7777), None, at)
+    }
+    pub fn symlink(
+        &mut self,
+        dir: u64,
+        name: &[u8],
+        target: &[u8],
+        at: Time,
+    ) -> Result<u64, Error> {
+        if target.is_empty() || target.contains(&0) {
+            return Err(Error::EINVAL);
+        }
+        if target.len() > 4095 {
+            return Err(Error::ENAMETOOLONG);
+        }
+        self.new_inode(dir, name, 0o120777, Some(target), at)
+    }
+    pub fn readlink(&self, ino: u64) -> Result<Vec<u8>, Error> {
+        let inode = self.inode(ino)?;
+        if inode.mode & 0o170000 != 0o120000 {
+            return Err(Error::EINVAL);
+        }
+        let target = btree::search(
+            &self.txn.view(),
+            self.root.root,
+            key(ino, format::INLINE, 0),
+        )?
+        .ok_or(Error::EIO)?;
+        if target.len() as u64 != inode.size {
+            return Err(Error::EIO);
+        }
+        Ok(target)
+    }
+    pub fn link(&mut self, ino: u64, dir: u64, name: &[u8], at: Time) -> Result<(), Error> {
+        let mut inode = self.inode(ino)?;
+        let kind = inode_kind(inode.mode)?;
+        if kind == 2 {
+            return Err(Error::EPERM);
+        }
+        valid_time(at)?;
+        self.vacant(dir, name, kind)?;
+        inode.nlink = inode.nlink.checked_add(1).ok_or(Error::EMLINK)?;
+        self.add_entry(dir, name, ino, kind, at)?;
+        inode.ctime = at;
+        self.put_inode(ino, inode)
+    }
+    fn delete_inode(&mut self, ino: u64) -> Result<(), Error> {
+        for (k, _) in self.items()?.into_iter().filter(|(k, _)| k.object == ino) {
+            self.txn.delete(&mut self.root.root, k)?;
+        }
+        Ok(())
+    }
+    fn drop_link(&mut self, ino: u64, at: Time) -> Result<(), Error> {
+        let mut inode = self.inode(ino)?;
+        if inode_kind(inode.mode)? == 2 {
+            return self.delete_inode(ino);
+        }
+        inode.nlink = inode.nlink.checked_sub(1).ok_or(Error::EIO)?;
+        inode.ctime = at;
+        if inode.nlink == 0 {
+            self.txn.insert(
+                &mut self.root.root,
+                key(ORPHAN_OBJECT, format::ORPHAN, ino),
+                &[],
+            )?;
+        }
+        self.put_inode(ino, inode)
+    }
+    pub fn unlink(&mut self, dir: u64, name: &[u8], at: Time) -> Result<(), Error> {
+        let ino = self.lookup(dir, name)?;
+        if inode_kind(self.inode(ino)?.mode)? == 2 {
+            return Err(Error::EPERM);
+        }
+        valid_time(at)?;
+        self.remove_entry(dir, name, at)?;
+        self.drop_link(ino, at)
+    }
+    pub fn rmdir(&mut self, dir: u64, name: &[u8], at: Time) -> Result<(), Error> {
+        let ino = self.lookup(dir, name)?;
+        if self.directory(ino)?.size != 0 {
+            return Err(Error::ENOTEMPTY);
+        }
+        valid_time(at)?;
+        self.remove_entry(dir, name, at)?;
+        self.delete_inode(ino)
+    }
+    pub fn rename(
+        &mut self,
+        from_dir: u64,
+        from: &[u8],
+        to_dir: u64,
+        to: &[u8],
+        at: Time,
+    ) -> Result<(), Error> {
+        let ino = self.lookup(from_dir, from)?;
+        valid_name(to)?;
+        let dest_parent = self.directory(to_dir)?;
+        let mut inode = self.inode(ino)?;
+        let kind = inode_kind(inode.mode)?;
+        let (_, bucket) = self.bucket(to_dir, to)?;
+        let dest = bucket.iter().find(|r| r.name == to).map(|r| r.ino);
+        if kind == 2 {
+            let mut ancestor = to_dir;
+            let mut seen = BTreeSet::new();
+            loop {
+                if ancestor == ino {
+                    return Err(Error::EINVAL);
+                }
+                if ancestor == 2 {
+                    break;
+                }
+                if !seen.insert(ancestor) {
+                    return Err(Error::EIO);
+                }
+                ancestor = self.directory(ancestor)?.parent;
+            }
+        }
+        if dest == Some(ino) {
+            return Ok(());
+        }
+        if let Some(replaced) = dest {
+            let other = self.inode(replaced)?;
+            match (kind == 2, inode_kind(other.mode)? == 2) {
+                (true, false) => return Err(Error::ENOTDIR),
+                (false, true) => return Err(Error::EISDIR),
+                (true, true) if other.size != 0 => return Err(Error::ENOTEMPTY),
+                _ => (),
+            }
+        }
+        valid_time(at)?;
+        dest_parent.next_index.checked_add(1).ok_or(Error::EMLINK)?;
+        if kind == 2 && from_dir != to_dir && dest.is_none() && dest_parent.nlink == u32::MAX {
+            return Err(Error::EMLINK);
+        }
+        let retained: usize = bucket
+            .iter()
+            .filter(|r| r.name != to && !(from_dir == to_dir && r.name == from))
+            .map(|r| 10 + r.name.len())
+            .sum();
+        if retained + 10 + to.len() > 6144 {
+            return Err(Error::ENOSPC);
+        }
+        self.remove_entry(from_dir, from, at)?;
+        if let Some(replaced) = dest {
+            self.remove_entry(to_dir, to, at)?;
+            self.drop_link(replaced, at)?;
+        }
+        self.add_entry(to_dir, to, ino, kind, at)?;
+        if kind == 2 {
+            inode.parent = to_dir;
+        }
+        inode.ctime = at;
+        self.put_inode(ino, inode)
+    }
+    fn reclaim_orphans(&mut self) -> Result<(), Error> {
+        let orphans: Vec<_> = self
+            .items()?
+            .into_iter()
+            .filter(|(k, _)| k.item_type == format::ORPHAN)
+            .collect();
+        for (k, value) in orphans {
+            if k.object != ORPHAN_OBJECT || !value.is_empty() {
+                return Err(Error::EIO);
+            }
+            let inode = btree::search(
+                &self.txn.view(),
+                self.root.root,
+                key(k.offset, format::INODE, 0),
+            )?
+            .ok_or(Error::EIO)?;
+            let inode = Inode::decode(&inode)?;
+            if inode.nlink != 0 || inode_kind(inode.mode)? == 2 {
+                return Err(Error::EIO);
+            }
+            self.delete_inode(k.offset)?;
+            self.txn.delete(&mut self.root.root, k)?;
+        }
+        Ok(())
     }
     fn extents(&self, ino: u64) -> Result<Vec<(Key, Extent)>, Error> {
         self.items()?
@@ -453,6 +727,7 @@ impl<S: NodeStore + 'static> Files<S> {
         device: &dyn BlockDevice,
         committer: &mut Committer,
     ) -> Result<Superblock, Error> {
+        self.reclaim_orphans()?;
         self.txn.update_root(self.root_id, self.root.clone())?;
         // A private allocation replaced again within this transaction is PENDING
         // and need not be submitted as data in the commit engine's REF set.
@@ -465,6 +740,31 @@ impl<S: NodeStore + 'static> Files<S> {
             .collect();
         self.data.retain(|addr, _| live.contains(addr));
         Ok(committer.commit(device, &mut self.txn, &self.data)?)
+    }
+}
+const ORPHAN_OBJECT: u64 = 0xffff_ffff_ffff_ff00;
+fn valid_name(name: &[u8]) -> Result<(), Error> {
+    if name.is_empty() {
+        return Err(Error::ENOENT);
+    }
+    if name.len() > 255 {
+        return Err(Error::ENAMETOOLONG);
+    }
+    if name == b"." || name == b".." || name.contains(&0) || name.contains(&b'/') {
+        return Err(Error::EINVAL);
+    }
+    Ok(())
+}
+fn inode_kind(mode: u32) -> Result<u8, Error> {
+    match mode & 0o170000 {
+        0o100000 => Ok(1),
+        0o040000 => Ok(2),
+        0o020000 => Ok(3),
+        0o060000 => Ok(4),
+        0o010000 => Ok(5),
+        0o140000 => Ok(6),
+        0o120000 => Ok(7),
+        _ => Err(Error::EIO),
     }
 }
 fn valid_time(at: Time) -> Result<(), Error> {

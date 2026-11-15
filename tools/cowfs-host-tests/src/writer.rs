@@ -16,7 +16,7 @@ impl NodeStore for Store {
 }
 pub struct WriterAdapter {
     device: Arc<dyn BlockDevice>,
-    files: Option<Files<Store>>,
+    files: Option<Files<'static, Store>>,
     committer: Committer,
     failed: bool,
     dirty: bool,
@@ -25,6 +25,8 @@ fn error(e: ops::Error) -> Error {
     use ops::Error as E;
     let errno = match e {
         E::EIO => Errno::EIO,
+        E::EPERM => Errno::EPERM,
+        E::ENOTEMPTY => Errno::ENOTEMPTY,
         E::ENOENT => Errno::ENOENT,
         E::EEXIST => Errno::EEXIST,
         E::ENOTDIR => Errno::ENOTDIR,
@@ -61,7 +63,7 @@ impl WriterAdapter {
             dirty: false,
         })
     }
-    fn files(&self) -> Result<&Files<Store>> {
+    fn files(&self) -> Result<&Files<'static, Store>> {
         self.files.as_ref().ok_or(Errno::EIO.into())
     }
     pub fn read(&self, ino: Ino, offset: u64, buf: &mut [u8]) -> Result<usize> {
@@ -157,7 +159,36 @@ impl Fs for WriterAdapter {
                     files.xattr(*ino, name, None, at).map_err(error)?;
                     Reply::Done
                 }
-                _ => return Err(Error::Unimplemented),
+                Action::Mkdir { dir, name, mode } => {
+                    Reply::Inode(files.mkdir(*dir, name, *mode, at).map_err(error)?)
+                }
+                Action::Symlink { dir, name, target } => {
+                    Reply::Inode(files.symlink(*dir, name, target, at).map_err(error)?)
+                }
+                Action::Link { ino, dir, name } => {
+                    files.link(*ino, *dir, name, at).map_err(error)?;
+                    Reply::Done
+                }
+                Action::Unlink { dir, name } => {
+                    files.unlink(*dir, name, at).map_err(error)?;
+                    Reply::Done
+                }
+                Action::Rmdir { dir, name } => {
+                    files.rmdir(*dir, name, at).map_err(error)?;
+                    Reply::Done
+                }
+                Action::Rename {
+                    from_dir,
+                    from,
+                    to_dir,
+                    to,
+                } => {
+                    files
+                        .rename(*from_dir, from, *to_dir, to, at)
+                        .map_err(error)?;
+                    Reply::Done
+                }
+                Action::Fsync { .. } | Action::Remount => unreachable!("handled before mutation"),
             };
             self.dirty = true;
             Ok(reply)
@@ -175,6 +206,10 @@ impl Fs for WriterAdapter {
         let mut state = State::default();
         for (k, v) in items.iter().filter(|(k, _)| k.item_type == format::INODE) {
             let i = format::Inode::decode(v).map_err(|_| Errno::EIO)?;
+            // Unlinked objects await commit-time reclamation.
+            if i.nlink == 0 {
+                continue;
+            }
             let contents = match i.mode & 0o170000 {
                 0o040000 => {
                     let mut entries = BTreeMap::new();
@@ -219,6 +254,7 @@ impl Fs for WriterAdapter {
                         bytes,
                     }
                 }
+                0o120000 => Contents::Symlink(files.readlink(k.object).map_err(error)?),
                 _ => return Err(Error::Unimplemented),
             };
             let mut xattrs = BTreeMap::new();

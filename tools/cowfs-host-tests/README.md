@@ -184,3 +184,29 @@ and DEAD reaping, reservation policy, Hold-group/page-cache integration and the
 writable VFS mount/runtime acceptance. The architecture-neutral core remains
 undeclared in kernel fs/mod.rs. ARM64 QEMU, Parallels and VMware runtime coverage
 belongs to later steps; this unit has no boot.
+
+Unit 24.8-g adds mkdir/rmdir, hard links/unlink, replacement rename and inline
+symlinks to `ops.rs` and the host writer adapter. Directory entry counts, parent
+links and monotonic index cookies accompany the paired hash/index records.
+Rename validates directory replacement and ancestor chains before changing names.
+Last unlink records an ORPHAN with nlink 0; the logical adapter hides that inode.
+Commit removes its items and releases extents through the transaction engine.
+Writable recovery resumes committed ORPHAN work using the same commit path;
+read-only recovery leaves the image alone. Open-handle lifetime remains a later
+VFS integration task, since this adapter has no open handles.
+
+`model::seed_corpus_matches_model` compares replies and logical inode state for
+seeds 1 through 8, 256 operations per seed, after each operation and remount. It
+requires the independent full checker to accept newly committed generations.
+The two namespace checks in `tests/ops.rs` cover replacement and refusal paths,
+symlink bounds, committed-orphan recovery and a real SipHash-2-4 collision under
+key `00000000000000000000000000000000`. Cookie and collision-bucket assertions
+inspect encoded items rather than the model's name map. The recording device
+continues to enforce W1-W3. The checker fixture uses a per-process invocation
+counter so parallel checks with identical tags cannot share a temporary image.
+
+ARM and x86 still lack writable cowfs VFS integration, open-handle lifetime,
+DEAD reaping, reservation policy, Hold-group/dirty-page integration and runtime
+acceptance. These modules remain undeclared in kernel fs/mod.rs; this unit
+cross-builds the actual no_std modules for both architectures and runs no boot.
+Moving mkfs population onto the writer remains the next unit.

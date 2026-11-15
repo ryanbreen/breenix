@@ -30,7 +30,7 @@ pub fn recover(device: &dyn BlockDevice, writable: bool) -> Result<Superblock, E
         }
     }
     slots.sort_by(|a, b| b.1.generation.cmp(&a.1.generation));
-    let chosen = slots
+    let mut chosen = slots
         .iter()
         .find_map(|(_, sb)| {
             space_items(&DeviceStore(device), sb)
@@ -51,6 +51,26 @@ pub fn recover(device: &dyn BlockDevice, writable: bool) -> Result<Superblock, E
         }
         if cleared {
             device.flush().map_err(|_| Error::EIO)?;
+        }
+        // Resume committed orphan work before exposing a writable mount.
+        let roots: Vec<_> = space_items(&DeviceStore(device), &chosen)?
+            .into_iter()
+            .filter(|(k, _)| k.item_type == format::ROOT)
+            .map(|(k, v)| Ok((k.offset, Root::decode(&v)?)))
+            .collect::<Result<Vec<_>, Error>>()?;
+        for (id, root) in roots {
+            if super::ops::items(&DeviceStore(device), root.root)
+                .map_err(|_| Error::EIO)?
+                .iter()
+                .any(|(k, _)| k.item_type == format::ORPHAN)
+            {
+                let mut files = super::ops::Files::new(DeviceStore(device), &chosen, id)
+                    .map_err(|_| Error::EIO)?;
+                let mut committer = commit::Committer::new(chosen);
+                chosen = files
+                    .fsync(device, &mut committer)
+                    .map_err(|_| Error::EIO)?;
+            }
         }
     }
     Ok(chosen)
