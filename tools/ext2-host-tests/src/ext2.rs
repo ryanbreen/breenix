@@ -881,3 +881,6 @@ pub(crate) mod reclaim_checks {
     }
 
 }
+
+#[path = "cache_tests.rs"]
+mod cache_tests;
