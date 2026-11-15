@@ -40,6 +40,8 @@ fn main() {
         NOW.store(210, Ordering::Relaxed);
         let _unfinished = control::Watchdog::new(control::Wait::AppOutput).unwrap();
         NOW.store(230, Ordering::Relaxed);
+        control::phase("ui-status"); // Main thread finishes before the watcher.
+        NOW.store(250, Ordering::Relaxed);
         control::phase("stop-issued");
         assert_eq!(unsafe { kill(getpid(),9) },0);
         unsafe { _exit(99) }
@@ -57,7 +59,11 @@ fn main() {
     let find = |name:&str| lines.iter().find(|l| l.contains(&format!(" name={name} "))).unwrap();
     assert!(find("launch-done").contains("at_ms=150 step_ms=50 app_output_ms=50 app_output_total_ms=50"));
     assert!(find("stroke-done").contains("at_ms=200 step_ms=50 app_output_ms=30 app_output_total_ms=80"));
-    assert!(find("stop-issued").contains("at_ms=230 step_ms=30 app_output_ms=20 app_output_total_ms=100"));
+    assert!(find("stop-issued").contains("at_ms=250 step_ms=20 app_output_ms=20 app_output_total_ms=120"));
+    assert!(find("ui-status").contains("at_ms=230 step_ms=30 app_output_ms=20 app_output_total_ms=100"));
+    let ui = lines.iter().position(|l| l.contains(" name=ui-status ")).unwrap();
+    let stop = lines.iter().position(|l| l.contains(" name=stop-issued ")).unwrap();
+    assert!(ui < stop, "concurrent phases must print in timestamp order: {lines:?}");
     assert!(find("recovery").contains("at_ms=0 step_ms=0 app_output_ms=0 app_output_total_ms=0"));
     assert!(scope.report("gui-apps","case")[0].contains("wait=AppOutput started=2 completed=1"));
     assert!(scope.phases("other","case").is_empty(),"report only the instrumented case");
@@ -73,7 +79,7 @@ fn main() {
     // The same API prints a normally completed case, with no failure predicate.
     let pass = next.phases("gui-apps","guskit/smb-share-gone");
     assert_eq!(pass.len(),20);
-    assert!(pass.last().unwrap().contains("name=finish-done at_ms=340 step_ms=40 app_output_ms=40 app_output_total_ms=40"));
+    assert!(pass.iter().any(|l| l.contains("name=finish-done at_ms=340 step_ms=40 app_output_ms=40 app_output_total_ms=40")));
 }
 '''.replace('MODULE', str(ROOT / 'libs/libbreenix/src/suite_control.rs'))
         result = run_rust(source)
