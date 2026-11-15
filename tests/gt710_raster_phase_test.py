@@ -49,6 +49,7 @@ mod vblank_clock{ CLOCK }
 PENDING
 SAMPLE
 impl Evo{ METHODS
+ fn record_clock_costs(&mut self,_:[[u64;3];2]){}
  fn record_clock_observation(&mut self,_:[u64;4]){}
 }
 struct Update<'a>{evo:&'a mut Evo,regs:&'a mut Registers}
