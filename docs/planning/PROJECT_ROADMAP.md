@@ -16,6 +16,13 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+The E24 shared buffer cache lands through
+[PR #3013](https://github.com/ryanbreen/breenix/pull/3013), with heap-bounded
+allocation accounting and cache-participation evidence on repeated reads.
+The PR records scoped R240 acceptance and the ARM runtime coverage gap;
+remaining review follow-ups are grouped in
+[#3014](https://github.com/ryanbreen/breenix/issues/3014).
+
 The E24 filesystem interface milestone lands through
 [PR #2999](https://github.com/ryanbreen/breenix/pull/2999), routing the remaining
 filesystem consumers through the VFS. The PR records R240 milestone acceptance

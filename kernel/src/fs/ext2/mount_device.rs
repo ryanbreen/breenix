@@ -6,11 +6,13 @@
 //! superblock records the error so a checker examines the filesystem before
 //! its next writable use.
 //!
-//! Every read and write of the mount passes through here, so this is where the
-//! mount keeps its write-through copy of recently transferred blocks.
+//! This adapter joins the system cache as a WriteThrough group.
 
-use super::sector_cache::SectorCache;
-use crate::block::{BlockDevice, BlockError};
+use crate::block::{
+    cache::WriteGroup,
+    cache_kernel::{self, SystemCache},
+    BlockDevice, BlockError,
+};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -19,21 +21,25 @@ pub struct MountDevice {
     inner: Box<dyn BlockDevice>,
     failed: Arc<AtomicBool>,
     read_only: AtomicBool,
-    cache: Option<SectorCache>,
+    cache: Option<&'static SystemCache>,
 }
 
 impl MountDevice {
-    /// Wrap `inner`; setting `failed` stops every later write. With `cached`,
-    /// reads are served from a copy of recently transferred blocks when the
-    /// memory for one is available.
+    /// Fault-injection mounts pass cached=false so device faults remain visible.
     pub(super) fn new(inner: Box<dyn BlockDevice>, failed: Arc<AtomicBool>, cached: bool) -> Self {
-        let cache = if cached { SectorCache::new(inner.block_size()) } else { None };
+        let cache = cached.then(cache_kernel::system_cache);
         let read_only = inner.is_read_only();
-        Self { inner, failed, read_only: AtomicBool::new(read_only), cache }
+        Self {
+            inner,
+            failed,
+            read_only: AtomicBool::new(read_only),
+            cache,
+        }
     }
 
     /// The device itself, past the copy: for checks of what reached the disk.
     pub(super) fn uncached(&self) -> &dyn BlockDevice {
+        cache_kernel::assert_io_context();
         self.inner.as_ref()
     }
 
@@ -41,83 +47,108 @@ impl MountDevice {
         self.read_only.store(true, Ordering::Release);
     }
 
-    fn write(&self, start_block: u64, buf: &[u8], write: impl FnOnce() -> Result<(), BlockError>) -> Result<(), BlockError> {
-        if self.is_read_only() { return Err(BlockError::IoError); }
-        if self.failed.load(Ordering::Acquire) {
+    fn writable(&self) -> Result<(), BlockError> {
+        if self.is_read_only() || self.failed.load(Ordering::Acquire) {
             return Err(BlockError::IoError);
         }
-        let Some(cache) = &self.cache else { return write() };
-        let store = cache.begin_write(start_block, buf.len());
-        let result = write();
-        cache.end_write(store, start_block, result.is_ok().then_some(buf));
-        result
+        Ok(())
+    }
+
+    fn span(&self, start: u64, count: usize, len: usize) -> Result<usize, BlockError> {
+        let size = self.inner.block_size();
+        let bytes = count.checked_mul(size).ok_or(BlockError::IoError)?;
+        if size == 0 || len < bytes {
+            return Err(BlockError::IoError);
+        }
+        if start
+            .checked_add(count as u64)
+            .ok_or(BlockError::OutOfBounds)?
+            > self.inner.num_blocks()
+        {
+            return Err(BlockError::OutOfBounds);
+        }
+        Ok(bytes)
+    }
+}
+
+impl Drop for MountDevice {
+    fn drop(&mut self) {
+        if let Some(cache) = self.cache {
+            cache.discard_clean(self.inner.as_ref());
+        }
     }
 }
 
 impl BlockDevice for MountDevice {
-    fn is_read_only(&self) -> bool { self.read_only.load(Ordering::Acquire) }
+    fn is_read_only(&self) -> bool {
+        self.read_only.load(Ordering::Acquire) || self.inner.is_read_only()
+    }
+    fn identity(&self) -> usize {
+        self.inner.identity()
+    }
+    fn hardware_disk(&self) -> Option<crate::block::HardwareDisk> {
+        self.inner.hardware_disk()
+    }
 
-    fn read_block(&self, block_num: u64, buf: &mut [u8]) -> Result<(), BlockError> {
-        let size = self.inner.block_size();
-        if buf.len() < size {
-            return Err(BlockError::IoError);
+    fn read_block(&self, block: u64, buf: &mut [u8]) -> Result<(), BlockError> {
+        cache_kernel::assert_io_context();
+        self.span(block, 1, buf.len())?;
+        match self.cache {
+            Some(cache) => cache.read(self.inner.as_ref(), block, buf),
+            None => self.inner.read_block(block, buf),
         }
-        let Some(cache) = &self.cache else { return self.inner.read_block(block_num, buf) };
-        let fill = match cache.lookup(block_num, &mut buf[..size]) {
-            Ok(()) => return Ok(()),
-            Err(fill) => fill,
-        };
-        self.inner.read_block(block_num, buf)?;
-        cache.fill(fill, block_num, &buf[..size]);
+    }
+
+    fn read_blocks(&self, start: u64, count: usize, buf: &mut [u8]) -> Result<(), BlockError> {
+        cache_kernel::assert_io_context();
+        let bytes = self.span(start, count, buf.len())?;
+        if self.cache.is_none() {
+            return self.inner.read_blocks(start, count, buf);
+        }
+        let size = self.inner.block_size();
+        for (i, chunk) in buf[..bytes].chunks_exact_mut(size).enumerate() {
+            self.read_block(start + i as u64, chunk)?;
+        }
         Ok(())
     }
 
-    fn read_blocks(
-        &self,
-        start_block: u64,
-        block_count: usize,
-        buf: &mut [u8],
-    ) -> Result<(), BlockError> {
-        let bytes = block_count.checked_mul(self.inner.block_size()).ok_or(BlockError::IoError)?;
-        if buf.len() < bytes {
-            return Err(BlockError::IoError);
+    fn write_block(&self, block: u64, buf: &[u8]) -> Result<(), BlockError> {
+        self.writable()?;
+        cache_kernel::assert_io_context();
+        self.span(block, 1, buf.len())?;
+        match self.cache {
+            Some(cache) => cache.write(self.inner.as_ref(), WriteGroup::WriteThrough, block, buf),
+            None => self.inner.write_block(block, buf),
         }
-        let Some(cache) = &self.cache else { return self.inner.read_blocks(start_block, block_count, buf) };
-        let fill = match cache.lookup(start_block, &mut buf[..bytes]) {
-            Ok(()) => return Ok(()),
-            Err(fill) => fill,
-        };
-        self.inner.read_blocks(start_block, block_count, buf)?;
-        cache.fill(fill, start_block, &buf[..bytes]);
-        Ok(())
     }
 
-    fn write_block(&self, block_num: u64, buf: &[u8]) -> Result<(), BlockError> {
+    fn write_blocks(&self, start: u64, count: usize, buf: &[u8]) -> Result<(), BlockError> {
+        self.writable()?;
+        cache_kernel::assert_io_context();
+        let bytes = self.span(start, count, buf.len())?;
+        if self.cache.is_none() {
+            return self.inner.write_blocks(start, count, buf);
+        }
         let size = self.inner.block_size();
-        if buf.len() < size {
-            return Err(BlockError::IoError);
+        for (i, chunk) in buf[..bytes].chunks_exact(size).enumerate() {
+            self.write_block(start + i as u64, chunk)?;
         }
-        self.write(block_num, &buf[..size], || self.inner.write_block(block_num, buf))
-    }
-
-    fn write_blocks(&self, start_block: u64, block_count: usize, buf: &[u8]) -> Result<(), BlockError> {
-        let bytes = block_count.checked_mul(self.inner.block_size()).ok_or(BlockError::IoError)?;
-        if buf.len() < bytes {
-            return Err(BlockError::IoError);
-        }
-        self.write(start_block, &buf[..bytes], || self.inner.write_blocks(start_block, block_count, buf))
+        Ok(())
     }
 
     fn block_size(&self) -> usize {
         self.inner.block_size()
     }
-
     fn num_blocks(&self) -> u64 {
         self.inner.num_blocks()
     }
 
     fn flush(&self) -> Result<(), BlockError> {
-        self.inner.flush()
+        cache_kernel::assert_io_context();
+        match self.cache {
+            Some(cache) => cache.flush(self.inner.as_ref()),
+            None => self.inner.flush(),
+        }
     }
 }
 

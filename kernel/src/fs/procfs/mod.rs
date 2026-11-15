@@ -135,6 +135,10 @@ pub enum ProcEntryType {
     XhciCounters,
     /// /proc/xhci/pointers - attached USB HID pointer interfaces
     XhciPointers,
+    /// /proc/block - block statistics directory
+    BlockDir,
+    /// /proc/block/cache - buffer cache counters
+    BlockCache,
     /// /proc/net - network directory
     NetDir,
     /// /proc/net/pnp - boot-time autoconfiguration, in Linux ipconfig's format
@@ -243,6 +247,8 @@ impl ProcEntryType {
             ProcEntryType::XhciTrace => "trace",
             ProcEntryType::XhciCounters => "counters",
             ProcEntryType::XhciPointers => "pointers",
+            ProcEntryType::BlockDir => "block",
+            ProcEntryType::BlockCache => "cache",
             ProcEntryType::NetDir => "net",
             ProcEntryType::NetPnp => "pnp",
             ProcEntryType::NetTcp => "tcp",
@@ -331,6 +337,8 @@ impl ProcEntryType {
             ProcEntryType::XhciTrace => "/proc/xhci/trace",
             ProcEntryType::XhciCounters => "/proc/xhci/counters",
             ProcEntryType::XhciPointers => "/proc/xhci/pointers",
+            ProcEntryType::BlockDir => "/proc/block",
+            ProcEntryType::BlockCache => "/proc/block/cache",
             ProcEntryType::NetDir => "/proc/net",
             ProcEntryType::NetPnp => "/proc/net/pnp",
             ProcEntryType::NetTcp => "/proc/net/tcp",
@@ -420,6 +428,8 @@ impl ProcEntryType {
             ProcEntryType::XhciTrace => 301,
             ProcEntryType::XhciCounters => 302,
             ProcEntryType::XhciPointers => 303,
+            ProcEntryType::BlockDir => 600,
+            ProcEntryType::BlockCache => 601,
             ProcEntryType::NetDir => 400,
             ProcEntryType::NetPnp => 401,
             ProcEntryType::NetTcp => 402,
@@ -479,6 +489,7 @@ impl ProcEntryType {
                 | ProcEntryType::TraceTeardownDir
                 | ProcEntryType::BreenixDir
                 | ProcEntryType::XhciDir
+                | ProcEntryType::BlockDir
                 | ProcEntryType::NetDir
                 | ProcEntryType::PidDir(_)
                 | ProcEntryType::PidTasks(_)
@@ -595,6 +606,9 @@ pub fn init() {
     procfs
         .entries
         .push(ProcEntry::new(ProcEntryType::XhciPointers));
+
+    procfs.entries.push(ProcEntry::new(ProcEntryType::BlockDir));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::BlockCache));
 
     // Register /proc/net directory and entries
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetDir));
@@ -744,6 +758,7 @@ pub fn list_entries() -> Result<Vec<String>, i32> {
                     | ProcEntryType::XhciTrace
                     | ProcEntryType::XhciCounters
                     | ProcEntryType::XhciPointers
+                    | ProcEntryType::BlockCache
                     | ProcEntryType::NetPnp
                     | ProcEntryType::NetTcp
             ) && !is_console_file(&e.entry_type)
@@ -1033,6 +1048,8 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::InputLedger => text(crate::input::stream::ledger()),
         // syscall/fs.rs opens the live input::control descriptor for I/O.
         ProcEntryType::InputReplay => Err(-38),
+        ProcEntryType::BlockDir => text(String::from("cache\n")),
+        ProcEntryType::BlockCache => text(crate::block::cache_report::render(&crate::block::cache_kernel::system_cache().counters())),
         ProcEntryType::NetDir => {
             let mut listing = Vec::new();
             listing.try_reserve_exact(8).map_err(|_| -12)?;

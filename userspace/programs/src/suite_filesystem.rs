@@ -1,8 +1,10 @@
 //! Report host filesystem format evidence staged on the disk.
+mod cache_reread;
+use cache_reread::{reread_is_cached, REREAD_BYTES};
 use breenix_suite::suite::{case, category, check, fail, running_case, suite, CaseResult, Suite};
 use libbreenix::{fs as sysfs, io as sysio, types::Fd};
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirEntryExt, MetadataExt};
 use std::path::PathBuf;
@@ -16,6 +18,11 @@ static SUITE: Suite = suite("filesystem", "Copy-on-write filesystem", &[
         case("statfs-per-mount", "Each mount reports its own type and filesystem ID", statfs_per_mount),
         case("ino-consistent", "stat, fstat and getdents agree on an inode number", ino_consistent),
     ]),
+    category("buffer-cache", "The shared buffer cache: verified misses, write groups and flush ordering", &[
+        case("reread-from-cache", "A second file read issues no device reads", reread_from_cache),
+        case("write-through", "Writes reach the device before returning", write_through),
+        case("fsync-flush", "fsync flush follows the file's last device write", fsync_flush),
+    ]),
     category("format", "Formatter images pass the independent checker and violating images are refused", &[
         case("mkfs-empty-clean", "Empty formatted images pass the full checker", host_case),
         case("mkfs-populate-clean", "Populated formatted images pass the full checker", host_case),
@@ -25,6 +32,76 @@ static SUITE: Suite = suite("filesystem", "Copy-on-write filesystem", &[
 ]);
 
 fn io<T>(result: std::io::Result<T>) -> Result<T, String> { result.map_err(|e| e.to_string()) }
+
+#[derive(Debug)]
+struct CacheCounters { hits: u64, misses: u64, reads: u64, writes: u64, write_seq: u64, pending: u64, flush_seq: u64 }
+
+fn cache_counters() -> Result<CacheCounters, String> {
+    let text = io(fs::read_to_string("/proc/block/cache"))?;
+    let mut rows = Vec::new();
+    for line in text.lines() {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        if fields.len() != 3 { return Err(format!("invalid cache counter row: {line}")); }
+        let count = fields[1].parse::<u64>().map_err(|e| e.to_string())?;
+        let sequence = fields[2].parse::<u64>().map_err(|e| e.to_string())?;
+        rows.push((fields[0], count, sequence));
+    }
+    let names = ["hits", "misses", "device_reads", "device_writes", "pending_writes", "flushes"];
+    if rows.len() != names.len() || rows.iter().zip(names).any(|(row, name)| row.0 != name) {
+        return Err(format!("invalid cache counter table: {text:?}"));
+    }
+    Ok(CacheCounters { hits: rows[0].1, misses: rows[1].1, reads: rows[2].1, writes: rows[3].1, write_seq: rows[3].2,
+        pending: rows[4].1, flush_seq: rows[5].2 })
+}
+
+struct CacheFile(PathBuf);
+impl CacheFile {
+    fn new(name: &str) -> Self { Self(PathBuf::from(format!("/tmp/filesystem-cache-{name}-{}", std::process::id()))) }
+}
+impl Drop for CacheFile { fn drop(&mut self) { let _ = fs::remove_file(&self.0); } }
+
+fn reread_from_cache() -> CaseResult {
+    let path = CacheFile::new("reread");
+    let data = vec![0x5a; REREAD_BYTES];
+    { let mut file = io(File::create(&path.0))?; io(file.write_all(&data))?; }
+    let mut first = Vec::new();
+    io(io(File::open(&path.0))?.read_to_end(&mut first))?;
+    check(first == data, "first read differs from written data")?;
+    let before = cache_counters()?;
+    let mut second = Vec::new();
+    io(io(File::open(&path.0))?.read_to_end(&mut second))?;
+    let after = cache_counters()?;
+    check(second == data, "second read differs from written data")?;
+    check(reread_is_cached((before.hits, before.misses, before.reads),
+        (after.hits, after.misses, after.reads)),
+        &format!("reread cache evidence failed: {before:?} -> {after:?}"))
+}
+
+fn write_through() -> CaseResult {
+    let path = CacheFile::new("write-through");
+    let mut file = io(File::create(&path.0))?;
+    for byte in 0..4u8 {
+        let before = cache_counters()?;
+        let data = [byte; 4096];
+        let written = io(file.write(&data))?;
+        let after = cache_counters()?;
+        check(written == data.len(), &format!("short write: {written}"))?;
+        check(after.writes > before.writes && after.pending == 0,
+            &format!("write did not complete: {before:?} -> {after:?}"))?;
+    }
+    Ok(())
+}
+
+fn fsync_flush() -> CaseResult {
+    let path = CacheFile::new("fsync");
+    let mut file = io(File::create(&path.0))?;
+    io(file.write_all(&[0x37; 4096]))?;
+    let after_write = cache_counters()?;
+    io(file.sync_all())?;
+    let after_sync = cache_counters()?;
+    check(after_write.write_seq != 0 && after_sync.flush_seq > after_write.write_seq,
+        &format!("flush did not follow write: {after_write:?} -> {after_sync:?}"))
+}
 
 struct Mount { dir: PathBuf, child: Option<Child>, output: Option<ChildStdout>, mounted: bool }
 impl Mount {

@@ -30,7 +30,20 @@
     {
       "id": "buffer-cache",
       "title": "The shared buffer cache: verified misses, write groups and flush ordering",
-      "cases": []
+      "cases": [
+        {
+          "id": "reread-from-cache",
+          "title": "A second file read issues no device reads"
+        },
+        {
+          "id": "write-through",
+          "title": "Writes reach the device before returning"
+        },
+        {
+          "id": "fsync-flush",
+          "title": "fsync flush follows the file's last device write"
+        }
+      ]
     },
     {
       "id": "format",

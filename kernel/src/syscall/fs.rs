@@ -3008,6 +3008,8 @@ fn handle_procfs_getdents64(
         .is_some_and(|pid| !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()));
     let fixed: &[&str] = if pid_dir {
         &crate::fs::procfs::PID_DIR_ENTRIES
+    } else if dir_path == "/proc/block" {
+        &["cache"]
     } else if dir_path == "/proc/breenix" {
         &["testing", "ext2", "frames"]
     } else {

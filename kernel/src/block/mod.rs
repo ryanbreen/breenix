@@ -6,6 +6,10 @@
 
 use core::fmt;
 
+pub mod cache;
+pub mod cache_kernel;
+pub mod cache_report;
+
 #[cfg(target_arch = "x86_64")]
 mod read_only;
 
