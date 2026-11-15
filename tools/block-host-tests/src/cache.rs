@@ -125,6 +125,61 @@ fn write_through_completes_before_return() {
 }
 
 #[test]
+fn write_counters_stamp_on_completion() {
+    for hold in [false, true] {
+        for fail in [false, true] {
+            let device = Arc::new(RecordingDevice::default());
+            let cache = Arc::new(BufferCache::new(HostWait::new(device.clone())));
+            let group = WriteGroup::hold(&*device, Arc::new(|| {}));
+            if hold {
+                cache.write(&*device, group.clone(), 1, &[1; SIZE]).unwrap();
+            }
+            let before = cache.counters();
+            device.fail_write(if fail { Some(1) } else { None });
+            device.hold(true, false);
+            let writer = {
+                let (c, d) = (cache.clone(), device.clone());
+                spawn("counter-writer", move || {
+                    let result = if hold {
+                        c.submit(&*d, &group).wait()
+                    } else {
+                        c.write(&*d, WriteGroup::WriteThrough, 1, &[1; SIZE])
+                    };
+                    assert_eq!(result, if fail { Err(BlockError::IoError) } else { Ok(()) });
+                })
+            };
+            device.until(|e| e.contains(&Event::Issue(Op::Write(1))));
+            let held = cache.counters();
+            // Read the public report so this check also runs on the pre-gauge code.
+            let pending = crate::cache_report::render(&held)
+                .lines()
+                .find_map(|line| {
+                    let mut fields = line.split_whitespace();
+                    (fields.next() == Some("pending_writes")).then(|| {
+                        (fields.next().unwrap().parse::<u64>().unwrap(),
+                         fields.next().unwrap().parse::<u64>().unwrap())
+                    })
+                });
+            device.hold(false, false);
+            writer.join().unwrap();
+            let after = cache.counters();
+            assert_eq!(held.device_writes, before.device_writes,
+                "counted an open write: hold={hold}, fail={fail}");
+            let (pending_count, raised_sequence) = pending.expect("pending_writes gauge");
+            assert_eq!(pending_count, 1);
+            assert_eq!(after.device_writes.count, before.device_writes.count + 1);
+            assert!(after.device_writes.sequence > raised_sequence);
+            let report = crate::cache_report::render(&after);
+            let pending: Vec<_> = report.lines()
+                .find(|line| line.starts_with("pending_writes "))
+                .unwrap().split_whitespace().collect();
+            assert_eq!(pending[1], "0");
+            assert!(pending[2].parse::<u64>().unwrap() > raised_sequence);
+        }
+    }
+}
+
+#[test]
 fn lru_evicts_within_bound() {
     let device = Arc::new(RecordingDevice::default());
     let cache = BufferCache::with_capacity(HostWait::new(device.clone()), 3 * SIZE);

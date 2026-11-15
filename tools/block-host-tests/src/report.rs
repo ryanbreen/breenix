@@ -9,10 +9,11 @@ fn renders_the_documented_table() {
         device_reads: counter(31, 32),
         device_writes: counter(41, 42),
         flushes: counter(51, 52),
+        ..Counters::default()
     };
     let doc = include_str!("../../../docs/fs/buffer-cache.md");
     let lines: Vec<_> = doc.lines().filter(|line| line.starts_with("| ")).collect();
-    assert_eq!(lines.len(), 7, "the table must contain five counters");
+    assert_eq!(lines.len(), 8, "the table must contain five counters and the pending_writes gauge");
     let expected = lines[2..].iter().map(|line| {
         let cells: Vec<_> = line.trim_matches('|').split('|').map(str::trim).collect();
         assert_eq!(cells.len(), 3);
