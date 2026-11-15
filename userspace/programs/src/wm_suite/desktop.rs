@@ -695,7 +695,9 @@ impl Desktop {
         })?;
         c.clear()?;
         let w = c.info()?;
-        self.click(w.x + 20, w.y + 20)?;
+        let (x, y) = ((w.x + 20) as u32, (w.y + 20) as u32);
+        breenix_suite::suite::hostpointer_acked(x, y, self.width, self.height, 1, 0)?;
+        breenix_suite::suite::hostpointer_acked(x, y, self.width, self.height, 0, 0)?;
         let begin = now();
         let press = c.await_event("positive click delivery to target client", |e| {
             e.kind == abi::event_kind::POINTER_BUTTON && e.pressed == 1
