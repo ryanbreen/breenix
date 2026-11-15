@@ -129,6 +129,8 @@ mod recovery_policy;
 pub use system_dma::set_platform as set_dma_platform;
 mod modeset;
 mod native;
+mod mode_attempt;
+pub(crate) use mode_attempt::ModeAttempt;
 pub(crate) use resource::present;
 mod core_record;
 pub use native::{ConsoleSurface,console_binding,takeover_started,caps_scanout};

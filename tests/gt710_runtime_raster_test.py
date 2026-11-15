@@ -44,7 +44,7 @@ struct Evo{rasters:Vec<RasterMode>,modes:Vec<(u32,u32,u32)>,raster_known:bool,
 impl Evo{
  // This register fixture does not export diagnostics; production methods keep
  // their phase markers while the existing raster/rollback assertions run.
- fn mode_phase(&mut self,_:u32){}
+ fn mode_phase(&mut self,_:&mut Registers,_:u32){}
  fn mode_error(&mut self,_:&mut Registers,_:&'static str){}
  SELECT
  EXTRA
