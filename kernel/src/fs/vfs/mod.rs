@@ -276,7 +276,6 @@ pub enum Xattr<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StatFs {
     pub magic: u64,
-    pub fsid: u64,
     pub block_size: u64,
     pub blocks: u64,
     pub free_blocks: u64,

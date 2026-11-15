@@ -4074,11 +4074,12 @@ struct Statfs {
 }
 
 fn filesystem_statfs(
+    mount: usize,
     fs: &dyn crate::fs::vfs::FileSystem,
     flags: crate::fs::attrs::MountFlags,
 ) -> Result<Statfs, u64> {
     let stats = fs.statfs().map_err(u64::from)?;
-    Ok(Statfs {
+    mounted_statfs(mount, Statfs {
         kind: stats.magic,
         bsize: stats.block_size,
         blocks: stats.blocks,
@@ -4086,12 +4087,22 @@ fn filesystem_statfs(
         bavail: stats.available_blocks,
         files: stats.inodes,
         ffree: stats.free_inodes,
-        fsid: [stats.fsid as i32, (stats.fsid >> 32) as i32],
+        fsid: [0; 2],
         namelen: stats.max_name_len,
         frsize: stats.block_size,
         flags: 0x20 | stats.flags.statvfs_bits() | flags.statvfs_bits(),
         spare: [0; 4],
     })
+}
+
+fn mounted_statfs(mount: usize, mut stat: Statfs) -> Result<Statfs, u64> {
+    stat.fsid = crate::fs::vfs::mount::fsid(mount).ok_or(super::errno::ENOENT as u64)?;
+    Ok(stat)
+}
+
+fn mounted_virtual_statfs(path: &str, kind: u64) -> Result<Statfs, u64> {
+    let mount = crate::fs::vfs::mount::find_mount(path).ok_or(super::errno::ENOENT as u64)?;
+    mounted_statfs(mount, virtual_statfs(kind))
 }
 
 /// Virtual filesystems report 0 for block/inode capacity and free counts.
@@ -4101,7 +4112,6 @@ fn virtual_statfs(kind: u64) -> Statfs {
         bsize: 4096,
         frsize: 4096,
         namelen: 255,
-        fsid: [kind as i32, 0],
         flags: 0x20,
         ..Statfs::default()
     }
@@ -4114,11 +4124,12 @@ fn resolved_statfs(resolved: &crate::fs::namei::Resolved<alloc::vec::Vec<u8>>) -
         // The mount's options join the filesystem's own read-only flag.
         Target::Inode { mount, .. } => {
             let fs = crate::fs::vfs::mount::filesystem(mount.0).map_err(u64::from)?;
-            filesystem_statfs(fs.as_ref(), crate::fs::vfs::mount::flags_at(&resolved.path))
+            filesystem_statfs(mount.0, fs.as_ref(), crate::fs::vfs::mount::flags_at(&resolved.path))
         },
         Target::Absent { .. } => Err(super::errno::ENOENT as u64),
         Target::Virtual if resolved.virtual_absent => Err(super::errno::ENOENT as u64),
-        Target::Virtual => Ok(virtual_statfs(
+        Target::Virtual => mounted_virtual_statfs(
+            core::str::from_utf8(&resolved.path).map_err(|_| super::errno::ENOENT as u64)?,
             if resolved.path == b"/proc" || resolved.path.starts_with(b"/proc/") {
                 0x9fa0
             } else if resolved.path == b"/dev/pts" || resolved.path.starts_with(b"/dev/pts/") {
@@ -4130,7 +4141,7 @@ fn resolved_statfs(resolved: &crate::fs::namei::Resolved<alloc::vec::Vec<u8>>) -
             } else {
                 0x1373
             },
-        )),
+        ),
     }
 }
 
@@ -4171,21 +4182,31 @@ pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
     // Descriptor options retain the selected bind mount even after rename.
     let stat = if let Some(handle) = native {
         crate::fs::vfs::names::held(&handle).map_err(u64::from)
-            .and_then(|(fs, _node)| filesystem_statfs(fs.as_ref(), mount_flags))
+            .and_then(|(fs, _node)| filesystem_statfs(handle.mount, fs.as_ref(), mount_flags))
     } else {
         match kind {
             FdKind::Ipc(object) => {
                 if let Some(file) = object.as_any().downcast_ref::<crate::fs::ufs::file::UfsFile>() {
                     user_statfs(file.mount, file.node)
-                } else { Ok(virtual_statfs(object.statfs_magic())) }
+                } else {
+                    let kind = object.statfs_magic();
+                    let path = if kind == 0x19800202 { "/dev/mqueue" } else { "/dev/shm" };
+                    mounted_virtual_statfs(path, kind)
+                }
             },
             FdKind::RegularFile(file) => {
-                let fs = file.lock().open.fs.clone();
-                filesystem_statfs(fs.as_ref(), mount_flags)
+                let (mount, fs) = {
+                    let file = file.lock();
+                    (file.open.node.mount, file.open.fs.clone())
+                };
+                filesystem_statfs(mount, fs.as_ref(), mount_flags)
             }
             FdKind::Directory(dir) => {
-                let fs = dir.lock().open.fs.clone();
-                filesystem_statfs(fs.as_ref(), mount_flags)
+                let (mount, fs) = {
+                    let dir = dir.lock();
+                    (dir.open.node.mount, dir.open.fs.clone())
+                };
+                filesystem_statfs(mount, fs.as_ref(), mount_flags)
             }
             FdKind::FifoRead(_, _, entry)
             | FdKind::FifoWrite(_, _, entry)
@@ -4193,17 +4214,17 @@ pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
                 let handle = entry.lock().handle.clone();
                 handle.as_ref().ok_or(5u64)
                     .and_then(|handle| crate::fs::vfs::names::held(handle).map_err(u64::from))
-                    .and_then(|(fs, _node)| filesystem_statfs(fs.as_ref(), mount_flags))
+                    .and_then(|(fs, node)| filesystem_statfs(node.mount, fs.as_ref(), mount_flags))
             }
             FdKind::ProcfsFile { .. } | FdKind::ProcfsDirectory { .. } => {
-                Ok(virtual_statfs(0x9fa0))
+                mounted_virtual_statfs("/proc", 0x9fa0)
             }
             FdKind::PipeRead(_) | FdKind::PipeWrite(_) => Ok(virtual_statfs(0x50495045)),
             FdKind::Device(_) | FdKind::StdIo(_) | FdKind::DevfsDirectory { .. } => {
-                Ok(virtual_statfs(0x1373))
+                mounted_virtual_statfs("/dev", 0x1373)
             }
             FdKind::DevptsDirectory { .. } | FdKind::PtyMaster(_) | FdKind::PtySlave(_) => {
-                Ok(virtual_statfs(0x1cd1))
+                mounted_virtual_statfs("/dev/pts", 0x1cd1)
             }
             FdKind::Epoll(_) => Ok(virtual_statfs(0x09041934)),
             FdKind::Socket(_) => Ok(virtual_statfs(0x534f434b)),
@@ -4377,5 +4398,5 @@ fn user_statfs(mount: u64, node: u64) -> Result<Statfs, u64> {
         Ok(stat)
     })().map_err(|_| super::errno::EIO as u64)?;
     if stat.bsize == 0 || stat.namelen > ufs_abi::NAME_MAX as u64 { return Err(super::errno::EIO as u64); }
-    Ok(stat)
+    mounted_statfs(usize::try_from(mount).map_err(|_| super::errno::ENOENT as u64)?, stat)
 }

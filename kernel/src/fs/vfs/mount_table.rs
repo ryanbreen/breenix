@@ -60,7 +60,7 @@ impl<B> MountTable<B> {
     pub const fn new() -> Self {
         Self {
             entries: Vec::new(),
-            next_id: 0,
+            next_id: 1,
         }
     }
 
@@ -89,6 +89,13 @@ impl<B> MountTable<B> {
     }
     pub fn get(&self, id: usize) -> Option<&Entry<B>> {
         self.entries.iter().find(|m| m.id == id)
+    }
+    /// statfs identity belongs to the mount, independently of backend type or device.
+    pub fn fsid(&self, id: usize) -> Option<[i32; 2]> {
+        self.get(id).map(|entry| {
+            let id = entry.id as u64;
+            [id as i32, (id >> 32) as i32]
+        })
     }
     pub fn device_id(&self, id: usize) -> Option<u64> {
         self.get(id).map(|entry| entry.device_id)

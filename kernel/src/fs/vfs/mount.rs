@@ -204,6 +204,9 @@ pub fn flags_at(path: &[u8]) -> MountFlags {
 pub fn find_mount(path: &str) -> Option<usize> {
     MOUNT_TABLE.lock().find_mount(path.as_bytes())
 }
+pub fn fsid(id: usize) -> Option<[i32; 2]> {
+    MOUNT_TABLE.lock().fsid(id)
+}
 pub fn device_id(id: usize) -> Option<u64> {
     MOUNT_TABLE.lock().device_id(id)
 }

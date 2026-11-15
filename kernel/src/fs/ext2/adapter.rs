@@ -259,7 +259,6 @@ impl FileSystem for Ext2Adapter {
         let stats = fs.statfs();
         Ok(StatFs {
             magic: 0xef53,
-            fsid: self.mount.mount_id as u64,
             block_size: stats.block_size,
             blocks: stats.blocks,
             free_blocks: stats.free_blocks,
