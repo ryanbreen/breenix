@@ -19,7 +19,7 @@ class StatfsFixtureTest(unittest.TestCase):
             source.write_text((ROOT / 'kernel/src/syscall/fs.rs').read_text() +
                               '\nfn unrelated_kernel_only() { missing_kernel_api(); }\n')
             binary = root / 'build-fixture'
-            subprocess.run(['taskpolicy', '-b', 'rustc', '--edition=2021',
+            subprocess.run(['rustc', '--edition=2021',
                             str(ROOT / 'tools/vfs-host-tests/build.rs'), '-o', str(binary)],
                            check=True)
             subprocess.run([str(binary)], cwd=work,
