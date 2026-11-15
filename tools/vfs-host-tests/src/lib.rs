@@ -91,3 +91,10 @@ pub use attribute_support::{process, task, test_control};
 
 #[path = "../../../kernel/src/fs/vfs/exec.rs"]
 pub mod exec;
+
+#[path = "../../../kernel/src/fs/vfs/format.rs"]
+pub mod format;
+#[path = "../../../kernel/src/fs/ext2/format.rs"]
+pub mod ext2_format;
+#[path = "../tests/boot_mount_tests.rs"]
+mod boot_mount_tests;

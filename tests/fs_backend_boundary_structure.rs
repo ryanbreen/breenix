@@ -963,3 +963,60 @@ fn descriptors_hold_vnodes() {
     }
     assert!(problems.is_empty(), "descriptor backend boundary:\n{}", problems.join("\n"));
 }
+
+#[test]
+fn boot_mounts_probe_by_magic() {
+    use syn::visit::{self, Visit};
+    #[derive(Default)]
+    struct Boundary { backend: Vec<String>, calls: Vec<String> }
+    impl<'ast> Visit<'ast> for Boundary {
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            if matches!(ident.to_string().as_str(), "ext2" | "Ext2Fs" | "FileHandle"
+                | "root_fs_read" | "read_inode" | "init_root_fs" | "init_home_fs"
+                | "shutdown_filesystems" | "filesystem_states") {
+                self.backend.push(ident.to_string());
+            }
+        }
+        fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+            if let syn::Expr::Path(p) = &*call.func {
+                self.calls.push(p.path.segments.last().unwrap().ident.to_string());
+            }
+            visit::visit_expr_call(self, call);
+        }
+    }
+    let root = std::env::var_os("BREENIX_BOOT_SOURCE_ROOT").map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR"))).join("kernel/src");
+    let mut problems = Vec::new();
+    for file in ["main.rs", "main_aarch64.rs", "syscall/reboot.rs", "fs/procfs/mod.rs",
+        "boot/target.rs", "gpu/mod.rs", "gpu/gk208/c2/runtime.rs"] {
+        let source = fs::read_to_string(root.join(file)).unwrap();
+        let parsed = syn::parse_file(&source).unwrap();
+        let mut b = Boundary::default();
+        b.visit_file(&parsed);
+        if !b.backend.is_empty() { problems.push(format!("{file}: {:?}", b.backend)); }
+        if file.starts_with("main") {
+            for call in ["mount_root", "mount_home", "init_services"] {
+                if !b.calls.iter().any(|c| c == call) { problems.push(format!("{file} missing {call}")); }
+            }
+            for line in ["ext2 root filesystem mounted", "ext2 home filesystem mounted at /home", "EXT2_MOUNT"] {
+                assert!(source.contains(line), "{file} lost {line}");
+            }
+        }
+        if file == "syscall/reboot.rs" && !b.calls.iter().any(|c| c == "shutdown") { problems.push("reboot must call vfs shutdown".into()); }
+    }
+    assert!(problems.is_empty(), "boot backend boundary:\n{}", problems.join("\n"));
+    let declarations = fs::read_to_string(root.join("fs/mod.rs")).unwrap();
+    let parsed = syn::parse_file(&declarations).unwrap();
+    assert!(!parsed.items.iter().any(|i| matches!(i, syn::Item::Mod(m) if m.ident == "ext2")),
+        "backends must be declared by filesystems!");
+    assert!(declarations.contains("filesystems! { ext2 }"));
+    for file in ["fs/vfs/boot.rs", "fs/vfs/format.rs"] {
+        let source = fs::read_to_string(root.join(file)).unwrap();
+        let mut b = Boundary::default();
+        b.visit_file(&syn::parse_file(&source).unwrap());
+        assert!(b.backend.is_empty(), "{file} names {:?}", b.backend);
+    }
+    let format = fs::read_to_string(root.join("fs/vfs/format.rs")).unwrap();
+    for field in ["kind", "probe", "mount"] { assert!(format.contains(&format!("pub {field}:"))); }
+    assert!(format.contains("(format.probe)") && format.contains("(format.mount)"));
+}
