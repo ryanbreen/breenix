@@ -14,20 +14,29 @@ use std::{cell::RefCell, io};
 type CaseResult = Result<(), String>;
 thread_local! {
     static PROC: RefCell<io::Result<String>> = RefCell::new(Ok(String::new()));
-    static OUTPUT: RefCell<String> = const { RefCell::new(String::new()) };
+    static OUTPUT: RefCell<Vec<(String, Vec<u8>)>> = const { RefCell::new(Vec::new()) };
 }
 mod fs { pub fn read_to_string(path: &str) -> std::io::Result<String> {
     assert_eq!(path, "/proc/gt710-pixels");
     super::PROC.with(|p| std::mem::replace(&mut *p.borrow_mut(), Ok(String::new())))
 }}
-macro_rules! println { ($($arg:tt)*) => { OUTPUT.with(|o| o.borrow_mut().push_str(&format!($($arg)*))) }; }
+// suite.rs::silence_output sends a case's stdout to /dev/null.
+macro_rules! println { ($($arg:tt)*) => { let _ = format!($($arg)*); }; }
+pub mod breenix_suite { pub mod suite {
+    pub fn upload_diagnostic(suite: &str, label: &str, data: &[u8]) -> Result<String, String> {
+        assert_eq!(suite, "window-manager");
+        super::super::OUTPUT.with(|o| o.borrow_mut().push((label.into(), data.into())));
+        Ok("retained".into())
+    }
+}}
 SOURCE
 #[test] fn receipts() {
+    println!("case stdout is silenced");
     for phase in ["before", "after"] {
         PROC.with(|p| *p.borrow_mut() = Ok("unrelated pixels\nGT710_CLOCK_V1 {live registers}\n".into()));
         display_clocks(phase).unwrap();
         assert_eq!(OUTPUT.with(|o| std::mem::take(&mut *o.borrow_mut())),
-            format!("WM_DISPLAY_CLOCK phase={phase} GT710_CLOCK_V1 {{live registers}}"));
+            vec![(format!("display-clocks-{phase}"), b"GT710_CLOCK_V1 {live registers}".to_vec())]);
     }
     PROC.with(|p| *p.borrow_mut() = Err(io::Error::from(io::ErrorKind::NotFound)));
     display_clocks("before").unwrap();
