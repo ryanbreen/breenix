@@ -1133,3 +1133,27 @@ fn removal_rechecks_identity_owner_and_parent_policy() {
         fs.setattr(root, SetAttr { mode: Some(0o755), ..SetAttr::default() }).unwrap();
     }
 }
+
+#[test]
+fn exec_image_returns_bytes_and_setid_identity() {
+    use crate::attrs::MountFlags;
+    use crate::permissions::Credentials;
+    let disk = Fixture::new();
+    let fs = Ext2Adapter::new(disk.pin());
+    let root = fs.root().unwrap();
+    let ino = regular(&fs, root, b"program");
+    let node = fs.open(ino).unwrap();
+    // Cross the loader's chunk boundary so copying cannot stop at its first read.
+    let bytes: Vec<u8> = (0..70001).map(|n| (n % 251) as u8).collect();
+    fs.write(&node, WriteReq { at: WriteAt::Offset(0), limit: u64::MAX, clear_setid: false }, &bytes).unwrap();
+    fs.setattr(ino, SetAttr { mode: Some(0o4755), ..SetAttr::default() }).unwrap();
+    let mut user = Credentials::kernel();
+    user.euid = 90000;
+    user.egid = 90001;
+    let (image, identity) = crate::exec::read_image(&fs, &node, MountFlags::default(), &user, || false).unwrap();
+    assert_eq!(image, bytes);
+    assert_eq!((identity.uid, identity.gid), (Some(70000), None));
+    fs.setattr(ino, SetAttr { mode: Some(0o4644), ..SetAttr::default() }).unwrap();
+    assert_eq!(crate::exec::read_image(&fs, &node, MountFlags::default(), &user, || false).err(), Some(Errno(EACCES)));
+    assert_eq!(crate::exec::read_image(&fs, &fs.open(root).unwrap(), MountFlags::default(), &user, || false).err(), Some(Errno(EISDIR)));
+}

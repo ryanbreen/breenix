@@ -87,3 +87,6 @@ pub mod permissions;
 pub mod credentials;
 mod attribute_support;
 pub use attribute_support::{process, task, test_control};
+
+#[path = "../../../kernel/src/fs/vfs/exec.rs"]
+pub mod exec;
