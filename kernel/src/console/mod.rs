@@ -951,6 +951,11 @@ impl Snapshot {
 }
 
 fn render_thread(display: &'static Display, attached: Attached) {
+    use crate::input::host::diagnostics::{RENDER, Site};
+    let _render = RENDER.enter(Site::Render);
+    #[cfg(target_arch = "x86_64")]
+    crate::input::host::diagnostics::RENDER_TID.store(
+        crate::per_cpu::current_thread_id_lock_free().unwrap_or(0), Ordering::Relaxed);
     #[cfg(target_arch = "x86_64")]
     display::linear::report_write_combining(attached.write_combining);
     let layout = display.layout();
@@ -994,10 +999,13 @@ fn render_thread(display: &'static Display, attached: Attached) {
     let mut announced = false;
     let mut last_session = false;
     while !crate::task::kthread::kthread_should_stop() {
+        let at = RENDER.enter(Site::Restore);
         // x86 has no ARM graphics render task to service owner-exit restores.
         #[cfg(target_arch = "x86_64")]
         crate::gpu::console::pump();
+        at.at(Site::Replies);
         deliver_replies();
+        at.at(Site::KeyboardDrain);
         crate::tty::driver::drain_keyboard_input();
         #[cfg(target_arch = "aarch64")]
         crate::ipc::stdin::drain_serial_input();
@@ -1006,8 +1014,11 @@ fn render_thread(display: &'static Display, attached: Attached) {
         // the request. One asked for later waits for the next pass.
         let asked = PROC_CHECK.load(Ordering::Acquire);
         // A switch a key asked for, then switch deadlines, whichever owner draws.
+        at.at(Site::Switch);
         vt::take_key_switch();
+        at.at(Site::Tick);
         vt::tick();
+        at.at(Site::Render);
         if splash::is_up() {
             PRESENTING.store(true, Ordering::SeqCst);
             #[cfg(target_arch = "x86_64")]
@@ -1302,6 +1313,8 @@ fn elapsed_us((seconds, nanos): (u64, u64)) -> u64 {
 
 /// Block the render thread on the scheduler timer for `ms`.
 fn sleep_ms(ms: u64) {
+    let _at = crate::input::host::diagnostics::RENDER.enter(
+        crate::input::host::diagnostics::Site::RenderSleep);
     use crate::task::{scheduler, thread::ThreadState};
     let Some(tid) = scheduler::current_thread_id() else {
         return;

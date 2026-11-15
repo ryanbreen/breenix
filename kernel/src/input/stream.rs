@@ -1107,11 +1107,18 @@ pub fn init() -> Result<(), &'static str> {
 }
 fn release_service() {
     use crate::task::{thread::ThreadState, waitqueue::PrepareOutcome};
+    use super::host::diagnostics::{INPUT, Site};
+    #[cfg(target_arch = "x86_64")]
+    super::host::diagnostics::INPUT_TID.store(
+        crate::per_cpu::current_thread_id_lock_free().unwrap_or(0), Ordering::Relaxed);
     loop {
+        let at = INPUT.enter(Site::Service);
         crate::per_cpu::preempt_disable();
         let generation = SERVICE_GENERATION.load(Ordering::Acquire);
         retire_descriptors();
+        at.at(Site::Hardware);
         while super::hardware::drain_one() {}
+        at.at(Site::Service);
         while super::host::drain_one() {}
         loop {
             let console = {
@@ -1209,6 +1216,7 @@ fn release_service() {
         // services it even if its arrival races wait publication; no IRQ path
         // needs a waitqueue or scheduler lock. Ordinary boots remain event-driven.
         let host_deadline = super::host::armed().then(|| crate::window::events::now_ns().saturating_add(1_000_000));
+        at.at(Site::ServiceWait);
         let outcome = RELEASE_WORK.prepare_to_wait_checked(ThreadState::BlockedOnIO, host_deadline, || {
             // IRQ wakes may interrupt a task holding STATE. Keep this predicate
             // lock-free; the generation detects work published since draining.
@@ -1278,6 +1286,8 @@ pub(super) fn drain_hardware(
     time_ns: u64,
     dropped: bool,
 ) -> bool {
+    use super::host::diagnostics::{INPUT, Site};
+    let at = INPUT.enter(Site::InputLock);
     let mut s = STATE.lock();
     if s.reserve_ledger(events.len() + usize::from(dropped))
         .is_err()
@@ -1313,8 +1323,10 @@ pub(super) fn drain_hardware(
             payload: Vec::new(),
         })
         .collect();
+    at.at(Site::InputPublish);
     let console = s.publish(device.id, records);
     drop(s);
+    at.at(Site::InputWake);
     wake_readers();
     deliver_hardware_console(device, console);
     true

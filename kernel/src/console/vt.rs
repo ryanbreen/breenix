@@ -227,6 +227,8 @@ impl Effects {
 
     /// Log, signal and wake, in thread context with no console lock held.
     pub(super) fn run(self) {
+        use crate::input::host::diagnostics::{render_site, Site};
+        let at = render_site(Site::VtLog);
         for note in self.notes.into_iter().flatten() {
             match note {
                 Note::Foreground { vt, source } => log::info!("[console] foreground tty{} ({})", vt + 1, source),
@@ -247,10 +249,12 @@ impl Effects {
                 Note::OwnerGone { vt } => log::info!("[console] tty{} owner gone: mode reset", vt + 1),
             }
         }
+        if let Some(at) = &at { at.at(Site::VtRestore); }
         if self.restore_display { crate::gpu::vt_resumed(); }
         if self.redraw {
             super::REDRAW.store(true, Ordering::Release);
         }
+        if let Some(at) = &at { at.at(Site::VtWake); }
         if self.wake {
             WAITACTIVE.wake_up();
         }
@@ -260,6 +264,7 @@ impl Effects {
             #[cfg(target_arch = "x86_64")]
             crate::drivers::xhci::lock_state_changed();
         }
+        if let Some(at) = &at { at.at(Site::VtSignal); }
         for (pid, sig) in self.signals.into_iter().flatten() {
             crate::syscall::signal::signal_process_from_kernel(crate::process::ProcessId::new(pid), sig);
         }
@@ -684,6 +689,8 @@ impl Terminals<'_> {
 /// Run `f` on the terminals under the console's lock, waiting for the lock;
 /// then run what it left to do.
 fn with_terminals<R>(f: impl FnOnce(&mut Terminals<'_>, &mut Effects) -> R) -> R {
+    use crate::input::host::diagnostics::{render_site, Site};
+    let at = render_site(Site::VtLock);
     let mut f = Some(f);
     loop {
         let mut effects = Effects::default();
@@ -694,6 +701,7 @@ fn with_terminals<R>(f: impl FnOnce(&mut Terminals<'_>, &mut Effects) -> R) -> R
             result
         });
         if let Some(result) = result {
+            if let Some(at) = &at { at.at(Site::VtEffects); }
             effects.run();
             return result;
         }

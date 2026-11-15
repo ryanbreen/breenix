@@ -9768,6 +9768,12 @@ pub(crate) fn try_thread_wait(tid: u64) -> Option<(ThreadState, Option<usize>, O
     })
 }
 
+/// First serial-overflow evidence. Never wait for an owner held by the failure.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn input_thread_snapshot(tid: u64) -> crate::input::host::diagnostics::ThreadSample {
+    without_interrupts(|| rq::input_thread_snapshot(tid))
+}
+
 /// Whether a user thread has not terminated. x86_64: read from the thread
 /// index without a lock.
 pub fn has_live_user_threads() -> bool {

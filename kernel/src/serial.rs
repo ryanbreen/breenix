@@ -1,9 +1,6 @@
 #![cfg(target_arch = "x86_64")]
 
-use conquer_once::spin::OnceCell;
 use core::fmt;
-use crossbeam_queue::ArrayQueue;
-use futures_util::task::AtomicWaker;
 use spin::Mutex;
 use uart_16550::SerialPort;
 
@@ -12,6 +9,10 @@ pub use crate::serial_writer::Writer;
 use crate::log_ring::LogRing;
 
 pub mod command;
+mod rx;
+pub use rx::{add_serial_byte, SerialInputStream};
+use rx::SERIAL_INPUT_QUEUE;
+use crossbeam_queue::ArrayQueue;
 
 const COM1_PORT: u16 = 0x3F8;
 const COM2_PORT: u16 = 0x2F8;
@@ -35,10 +36,6 @@ pub static SERIAL2: Mutex<SerialPort> = Mutex::new(unsafe { SerialPort::new(COM2
 /// The UART the kernel log goes to, chosen once before the first log line is
 /// written (`select_log_port`). COM2 until then, as under QEMU.
 static LOG_PORT: core::sync::atomic::AtomicU16 = core::sync::atomic::AtomicU16::new(COM2_PORT);
-
-// Serial input queue and waker (similar to keyboard)
-static SERIAL_INPUT_QUEUE: OnceCell<ArrayQueue<u8>> = OnceCell::uninit();
-static SERIAL_WAKER: AtomicWaker = AtomicWaker::new();
 
 static SERIAL1_FIFO: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 static LOG_FIFO: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
@@ -805,21 +802,6 @@ pub fn enable_serial_input() {
     log::info!("Serial input interrupts enabled");
 }
 
-/// Called by the serial interrupt handler
-///
-/// Must not block or allocate.
-pub fn add_serial_byte(byte: u8) {
-    if let Ok(queue) = SERIAL_INPUT_QUEUE.try_get() {
-        if let Err(_) = queue.push(byte) {
-            log::warn!("Serial input queue full; dropping input");
-        } else {
-            SERIAL_WAKER.wake();
-        }
-    } else {
-        log::warn!("Serial input queue uninitialized");
-    }
-}
-
 pub fn write_byte(writer: Writer, byte: u8) {
     write_bytes_atomic(writer, core::slice::from_ref(&byte));
 }
@@ -1366,50 +1348,4 @@ impl log::Log for SerialLogger {
     }
 
     fn flush(&self) {}
-}
-
-// Serial input stream implementation
-use core::{
-    pin::Pin,
-    task::{Context, Poll},
-};
-use futures_util::stream::Stream;
-
-#[allow(dead_code)] // Used in serial_command_task (conditionally compiled)
-pub struct SerialInputStream {
-    _private: (),
-}
-
-impl SerialInputStream {
-    #[allow(dead_code)] // Used in serial_command_task (conditionally compiled)
-    pub fn new() -> Self {
-        // Ensure queue is initialized
-        let _ = SERIAL_INPUT_QUEUE.try_init_once(|| ArrayQueue::new(256));
-
-        SerialInputStream { _private: () }
-    }
-}
-
-impl Stream for SerialInputStream {
-    type Item = u8;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<u8>> {
-        let queue = SERIAL_INPUT_QUEUE
-            .try_get()
-            .expect("serial input queue not initialized");
-
-        // Fast path
-        if let Some(byte) = queue.pop() {
-            return Poll::Ready(Some(byte));
-        }
-
-        SERIAL_WAKER.register(&cx.waker());
-        match queue.pop() {
-            Some(byte) => {
-                SERIAL_WAKER.take();
-                Poll::Ready(Some(byte))
-            }
-            None => Poll::Pending,
-        }
-    }
 }

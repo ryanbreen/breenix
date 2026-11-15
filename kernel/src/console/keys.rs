@@ -24,6 +24,9 @@ static CONSUMED: [[AtomicU64; 2]; crate::input::DEVICES] = [const { [const { Ato
 
 /// One key event. Returns how many bytes it sent the foreground terminal.
 pub fn key(device: usize, code: u16, value: i32, modifiers: Modifiers, reserved: bool, source: crate::tty::InputSource) -> usize {
+    use crate::input::host::diagnostics::{INPUT, Site};
+    let at = (device == crate::input::Device::HostKeyboard.index())
+        .then(|| INPUT.enter(Site::ConsoleKey));
     // A key press while the boot splash is up ends it and is otherwise ignored.
     if value == PRESS && super::splash::key() {
         return 0;
@@ -48,9 +51,11 @@ pub fn key(device: usize, code: u16, value: i32, modifiers: Modifiers, reserved:
     match keymap::action(code, value, modifiers, reserved, state) {
         Action::None => 0,
         Action::Bytes(bytes) => {
+            if let Some(at) = &at { at.at(Site::Tty); }
             bytes.as_slice().iter().filter(|&&byte| crate::tty::push_char_nonblock_from(byte, source)).count()
         }
         Action::Switch(target, chord) => {
+            if let Some(at) = &at { at.at(Site::VtSwitch); }
             // Previous and next count from a switch a key asked for and the render thread has not made yet.
             let from = vt::key_switch_pending().unwrap_or(fg);
             let to = match target {
