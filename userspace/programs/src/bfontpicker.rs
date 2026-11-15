@@ -12,6 +12,8 @@
 //!   q/Escape      Quit without changes
 
 use std::process;
+#[path = "bfontpicker/layout.rs"] mod layout;
+use layout::Layout;
 
 use breengel::{Window, Event, Color, Surface, FontConfig, Handled};
 #[path = "bfontpicker/conf.rs"] mod conf;
@@ -56,9 +58,6 @@ const KEY_ESCAPE: u32 = breengel::keys::ESC;
 const PREVIEW_SAMPLE: &str = "The quick brown fox jumps over the lazy dog";
 const PREVIEW_SAMPLE_2: &str = "0123456789 !@#$%^&*() ABCDEFG abcdefg";
 
-const PREVIEW_HEIGHT: usize = 100;
-const LIST_TOP: usize = 30;
-const ITEM_H: usize = 22;
 
 const MIN_FONT_SIZE: f32 = 6.0;
 const MAX_FONT_SIZE: f32 = 48.0;
@@ -300,6 +299,20 @@ fn publish_tree(win: &mut Window, fonts: &[FontEntry], list: &[ListItem], select
 
 // ─── Rendering ──────────────────────────────────────────────────────────────
 
+fn picker_layout(fonts: &mut [FontEntry], list: &[ListItem], selected: usize,
+    sizes: [f32; 2], scale: u32, width: i32, height: i32) -> Layout {
+    if let Some(ListItem::Font(i)) = list.get(selected) {
+        ensure_cached_font(&mut fonts[*i]);
+        let size = sizes[usize::from(!fonts[*i].is_mono)];
+        Layout::new(fonts[*i].cached.as_ref(), size, scale, width, height)
+    } else { Layout::new(None, 16.0, scale, width, height) }
+}
+
+fn draw_label(fb: &mut Surface, bytes: &[u8], x: usize, y: usize, color: Color) {
+    let (_, raster) = libbui::text::scaled_font(16.0, fb.ui_scale());
+    bitmap_font::draw_text_at(fb, bytes, x, y, color, raster);
+}
+
 fn render(
     fb: &mut Surface,
     fonts: &mut [FontEntry],
@@ -309,16 +322,18 @@ fn render(
     current_display: &str,
     scroll: usize,
     status_msg: &str,
+    layout: &Layout,
     sizes: &[f32; 2],  // [mono_size, display_size] — passed by ref to avoid f32 ABI issues
 ) {
     let mono_size = sizes[0];
     let display_size = sizes[1];
+    let px = |n| layout.text.px(n);
+    let cw = layout.text.cell_w as usize;
     fb.clear(BG);
 
-    bitmap_font::draw_text(fb, b"System Font Picker", 10, 8, HEADER_FG);
+    draw_label(fb, b"System Font Picker", px(10) as usize, px(8) as usize, HEADER_FG);
 
-    let list_bottom = WIN_H as usize - PREVIEW_HEIGHT - 24;
-    let visible = (list_bottom - LIST_TOP) / ITEM_H;
+    let visible = layout.visible();
 
     for i in 0..visible {
         let idx = scroll + i;
@@ -326,30 +341,31 @@ fn render(
             break;
         }
 
-        let y = LIST_TOP + i * ITEM_H;
+        let rect = layout.row_rect(i);
+        let y = rect[1] as usize;
 
         match &list[idx] {
             ListItem::SectionHeader { label, is_mono } => {
-                let line_y = y as i32 + ITEM_H as i32 / 2;
-                bitmap_font::draw_text(fb, label.as_bytes(), 10, y + 4, SECTION_FG);
+                let line_y = y as i32 + layout.row_h / 2;
+                draw_label(fb, label.as_bytes(), px(10) as usize, y + px(4) as usize, SECTION_FG);
 
                 // Show current size and +/- controls
                 let size = if *is_mono { mono_size } else { display_size };
                 let size_str = format_size_display(size);
                 let size_label = format!("  [- {} +]", size_str);
-                let label_end = label.len() * 8 + 10;
-                bitmap_font::draw_text(
+                let label_end = label.len() * cw + px(10) as usize;
+                draw_label(
                     fb, size_label.as_bytes(),
-                    label_end + 8, y + 4, SIZE_FG,
+                    label_end + px(8) as usize, y + px(4) as usize, SIZE_FG,
                 );
 
-                let total_label_w = label_end + 8 + size_label.len() * 8 + 8;
+                let total_label_w = label_end + px(8) as usize + size_label.len() * cw + px(8) as usize;
                 shapes::fill_rect(
                     fb,
                     total_label_w as i32,
                     line_y,
-                    WIN_W as i32 - total_label_w as i32 - 4,
-                    1,
+                    layout.width - total_label_w as i32 - px(4),
+                    px(1),
                     SECTION_LINE,
                 );
             }
@@ -358,7 +374,7 @@ fn render(
 
                 if idx == selected {
                     shapes::fill_rect(
-                        fb, 0, y as i32, WIN_W as i32, ITEM_H as i32, SELECTED_BG,
+                        fb, rect[0], rect[1], rect[2], rect[3], SELECTED_BG,
                     );
                 }
 
@@ -369,26 +385,26 @@ fn render(
                 };
                 let name_color = if is_active { ACTIVE_FG } else { FG };
 
-                bitmap_font::draw_text(
-                    fb, fonts[font_idx].name.as_bytes(), 20, y + 3, name_color,
+                draw_label(
+                    fb, fonts[font_idx].name.as_bytes(), px(20) as usize, y + px(3) as usize, name_color,
                 );
                 if let Some(error) = &fonts[font_idx].error {
                     let label = format!(" - {}", error);
-                    bitmap_font::draw_text(fb, label.as_bytes(), 20 + fonts[font_idx].name.len() * 8, y + 3, FG);
+                    draw_label(fb, label.as_bytes(), px(20) as usize + fonts[font_idx].name.len() * cw, y + px(3) as usize, FG);
                 }
 
                 if is_active {
-                    bitmap_font::draw_text(fb, b"*", 10, y + 3, ACTIVE_FG);
+                    draw_label(fb, b"*", px(10) as usize, y + px(3) as usize, ACTIVE_FG);
                 }
             }
         }
     }
 
     // ── Preview area ────────────────────────────────────────────────────────
-    let preview_y = (WIN_H as usize - PREVIEW_HEIGHT - 20) as i32;
-    shapes::fill_rect(fb, 0, preview_y, WIN_W as i32, 1, PREVIEW_BORDER);
+    let preview_y = layout.preview_y;
+    shapes::fill_rect(fb, 0, preview_y, layout.width, px(1), PREVIEW_BORDER);
     shapes::fill_rect(
-        fb, 0, preview_y + 1, WIN_W as i32, PREVIEW_HEIGHT as i32, PREVIEW_BG,
+        fb, 0, preview_y + px(1), layout.width, layout.preview_h, PREVIEW_BG,
     );
 
     let selected_font_idx = match list.get(selected) {
@@ -401,21 +417,21 @@ fn render(
         let preview_size = if fonts[font_idx].is_mono { mono_size } else { display_size };
         let preview_size = preview_size.max(MIN_FONT_SIZE);
         let label = format!("Preview: {} @ {}", fonts[font_idx].name, format_size_display(preview_size));
-        bitmap_font::draw_text(
-            fb, label.as_bytes(), 10, (preview_y + 6) as usize, PREVIEW_LABEL,
+        draw_label(
+            fb, label.as_bytes(), px(10) as usize, (preview_y + px(6)) as usize, PREVIEW_LABEL,
         );
 
         ensure_cached_font(&mut fonts[font_idx]);
         if let Some(ref mut cached) = fonts[font_idx].cached {
-            let metrics = cached.metrics(preview_size);
-            let line_h = (metrics.ascender + 0.99) as i32
-                + ((-metrics.descender) + 0.99) as i32;
+            let preview = libbui::text::ScaledText::new(Some(cached), preview_size, fb.ui_scale());
+            let line_h = preview.line_h;
+            let preview_size = preview.size;
             // Both sample lines, each as `ttf_font::draw_text` draws it, sharing draws.
             let clip = libgfx::surface::Rect::new(0, 0, fb.width() as i32, fb.height() as i32);
             let runs = [
-                ttf_font::TextRun { bytes: PREVIEW_SAMPLE.as_bytes(), x: 10, y: preview_y + 24,
+                ttf_font::TextRun { bytes: PREVIEW_SAMPLE.as_bytes(), x: px(10), y: preview_y + px(24),
                     size: preview_size, fg: PREVIEW_TEXT, clip },
-                ttf_font::TextRun { bytes: PREVIEW_SAMPLE_2.as_bytes(), x: 10, y: preview_y + 24 + line_h + 4,
+                ttf_font::TextRun { bytes: PREVIEW_SAMPLE_2.as_bytes(), x: px(10), y: preview_y + px(24) + line_h + px(4),
                     size: preview_size, fg: PREVIEW_TEXT, clip },
             ];
             ttf_font::draw_runs(fb, cached, &runs);
@@ -423,18 +439,18 @@ fn render(
     }
 
     // Status bar
-    let status_y = WIN_H as i32 - 20;
-    shapes::fill_rect(fb, 0, status_y, WIN_W as i32, 20, STATUS_BG);
+    let status_y = layout.status_y;
+    shapes::fill_rect(fb, 0, status_y, layout.width, fb.height() as i32 - status_y, STATUS_BG);
     if !status_msg.is_empty() {
-        bitmap_font::draw_text(
-            fb, status_msg.as_bytes(), 8, status_y as usize + 3, ACTIVE_FG,
+        draw_label(
+            fb, status_msg.as_bytes(), px(8) as usize, status_y as usize + px(3) as usize, ACTIVE_FG,
         );
     } else {
-        bitmap_font::draw_text(
+        draw_label(
             fb,
             b"Enter: apply  +/-: size  Up/Down: navigate  q: quit",
-            8,
-            status_y as usize + 3,
+            px(8) as usize,
+            status_y as usize + px(3) as usize,
             HEADER_FG,
         );
     }
@@ -496,8 +512,10 @@ fn main() {
         }
     };
 
-    let list_bottom = WIN_H as usize - PREVIEW_HEIGHT - 24;
-    let visible = (list_bottom - LIST_TOP) / ITEM_H;
+    let ui_scale = win.surface().expect("font picker surface").ui_scale();
+    if ui_scale != 1 { win.apply_resize(WIN_W * ui_scale, WIN_H * ui_scale).expect("scaled font picker"); }
+    let mut layout = picker_layout(&mut fonts, &list, selected, [mono_size, display_size], ui_scale, win.width() as i32, win.height() as i32);
+    let mut visible = layout.visible();
     let mut scroll: usize = 0;
     let mut status_msg = state.error.clone().unwrap_or_default();
     let mut status_timer: u32 = 0;
@@ -505,14 +523,14 @@ fn main() {
     let mut last_click_idx: usize = usize::MAX;
 
     if selected >= visible {
-        scroll = selected - visible + 1;
+        scroll = selected.saturating_sub(visible.saturating_sub(1));
     }
 
     match win.surface() {
         Ok(fb) => render(
             fb, &mut fonts, &list, selected,
             &current_mono, &current_display, scroll, &status_msg,
-            &[mono_size, display_size],
+            &layout, &[mono_size, display_size],
         ),
         Err(e) => {
             println!("[bfontpicker] ERROR: no window surface: {}", e);
@@ -526,6 +544,7 @@ fn main() {
     }
 
     loop {
+        let mut resize = None;
         let event_count = win.dispatch(|delivered| {
             match delivered.event.clone() {
                 Event::KeyPress { ascii, keycode, .. } => {
@@ -539,7 +558,7 @@ fn main() {
                         KEY_DOWN => {
                             selected = next_font_item(&list, selected);
                             if selected >= scroll + visible {
-                                scroll = selected - visible + 1;
+                                scroll = selected.saturating_sub(visible.saturating_sub(1));
                             }
                         }
                         KEY_ENTER => {
@@ -587,10 +606,8 @@ fn main() {
                         }
                     }
                 }
-                Event::MouseButton { button: breengel::buttons::LEFT, pressed: true, x: _, y } => {
-                    let ly = y as usize;
-                    if ly >= LIST_TOP && ly < list_bottom {
-                        let clicked_list_idx = scroll + (ly - LIST_TOP) / ITEM_H;
+                Event::MouseButton { button: breengel::buttons::LEFT, pressed: true, x, y } => {
+                    if let Some(clicked_list_idx) = layout.hit_row(x, y, scroll) {
                         if clicked_list_idx < list.len() {
                             if matches!(list[clicked_list_idx], ListItem::Font(_)) {
                                 let now_ms = time::now_monotonic()
@@ -621,6 +638,7 @@ fn main() {
                         }
                     }
                 }
+                Event::ResizeRequested { width, height } => resize = Some((width, height)),
                 Event::Resized { .. } => {}
                 Event::CloseRequested => {
                     process::exit(0);
@@ -629,6 +647,7 @@ fn main() {
             }
             Handled::Redraw
         }).unwrap_or_else(|e| { eprintln!("[bfontpicker] dispatch: {}", e); process::exit(1) });
+        if let Some((w,h)) = resize { let _ = win.apply_resize(w,h); }
         let mut needs_redraw = event_count != 0;
 
         if status_timer > 0 {
@@ -640,11 +659,16 @@ fn main() {
         }
 
         if needs_redraw {
+            layout = picker_layout(&mut fonts, &list, selected, [mono_size, display_size], ui_scale, win.width() as i32, win.height() as i32);
+            visible = layout.visible();
+            scroll = scroll.min(list.len().saturating_sub(visible));
+            if selected < scroll { scroll = selected; }
+            if selected >= scroll + visible { scroll = selected.saturating_sub(visible.saturating_sub(1)); }
             if let Ok(fb) = win.surface() {
                 render(
                     fb, &mut fonts, &list, selected,
                     &current_mono, &current_display, scroll, &status_msg,
-                    &[mono_size, display_size],
+                    &layout, &[mono_size, display_size],
                 );
                 publish_tree(&mut win, &fonts, &list, selected, &current_mono, &current_display, [mono_size, display_size], &state);
                 let _ = win.present();

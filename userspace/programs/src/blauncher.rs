@@ -13,6 +13,8 @@
 //!   Click outside Dismiss
 
 use std::process;
+#[path = "blauncher/layout.rs"] mod layout;
+use layout::Layout;
 
 use breengel::{CachedFont, Window, Event, Handled};
 
@@ -183,8 +185,9 @@ const BORDER_SEGMENT: i32 = 8;
 /// segment, which the panel body then covers on the inside.
 fn draw_sinuous_border(fb: &mut Surface, lw: i32, lh: i32, frame: u32) {
     let rotation = frame as f32 / 360.0;
-    let depth = CORNER_RADIUS as i32;
-    let seg = BORDER_SEGMENT;
+    let scale = fb.ui_scale() as i32;
+    let depth = CORNER_RADIUS as i32 * scale;
+    let seg = BORDER_SEGMENT * scale;
     // (x, y, w, h) of each segment, clockwise from the top left.
     let mut segments = Vec::new();
     for x in (0..lw).step_by(seg as usize) {
@@ -205,7 +208,7 @@ fn draw_sinuous_border(fb: &mut Surface, lw: i32, lh: i32, frame: u32) {
             let pos = border_perimeter_pos(cx, cy, 0, 0, lw, lh);
             let colour = color_of(gradient_color(fmod_pos(pos - rotation, 1.0)));
             fb.push_clip(Clip::new(x, y, w, h));
-            shapes::rounded_rect(fb, 0, 0, lw, lh, CORNER_RADIUS as i32, colour);
+            shapes::rounded_rect(fb, 0, 0, lw, lh, CORNER_RADIUS as i32 * scale, colour);
             fb.pop_clip();
         }
     });
@@ -247,43 +250,6 @@ impl LauncherState {
 // Layout helpers
 // ---------------------------------------------------------------------------
 
-struct PanelLayout {
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-    search_x: i32,
-    search_y: i32,
-    search_w: i32,
-    list_y: i32,
-    visible_count: usize,
-}
-
-fn compute_layout(win_w: usize, _win_h: usize, filtered_count: usize) -> PanelLayout {
-    let visible = filtered_count.min(MAX_VISIBLE);
-    let panel_h = PADDING + SEARCH_H + 8 + (visible.max(1) as i32 * ITEM_H) + 24 + PADDING;
-    // Panel centered horizontally in the window, at the top
-    let panel_x = (win_w as i32 - PANEL_W) / 2;
-    let panel_y = 0;
-    let search_x = panel_x + PADDING;
-    let search_y = panel_y + PADDING;
-    let search_w = PANEL_W - PADDING * 2;
-    let list_y = search_y + SEARCH_H + 8;
-
-    PanelLayout {
-        x: panel_x,
-        y: panel_y,
-        w: PANEL_W,
-        h: panel_h,
-        search_x,
-        search_y,
-        search_w,
-        list_y,
-        visible_count: visible,
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Rendering: the shapes, then the text, which the shapes do not overlap.
 // ---------------------------------------------------------------------------
 
@@ -295,7 +261,9 @@ fn render(
     entries: &[catalog::Entry], errors: &[catalog::ParseError],
 ) {
     let filtered = get_filtered_apps(entries, &state.query, state.query_len);
-    let layout = compute_layout(w, h, filtered.len());
+    let layout = Layout::new(ttf.as_ref(), font_size, fb.ui_scale(), w as i32, h as i32).panel(filtered.len());
+    let px = |n| layout.text.px(n);
+    let font_size = layout.text.size;
 
     // Panel background color everywhere, so the animated border ring pops as a bright
     // contrasting element at the window edge.
@@ -304,73 +272,88 @@ fn render(
     // Animated border at the window edge, then the panel body (inside the border, with
     // matching inner corner radius) over its inner side.
     draw_sinuous_border(fb, w as i32, h as i32, state.frame_count);
-    let bw = BORDER_WIDTH as i32;
-    shapes::rounded_rect(fb, bw, bw, w as i32 - 2 * bw, h as i32 - 2 * bw, INNER_RADIUS as i32, PANEL_BG);
+    let bw = px(BORDER_WIDTH as i32);
+    // Only the border's edge strips need covering: clear() already painted the
+    // interior. A whole scaled body exceeds one rounded-rectangle draw's work
+    // budget. Keep the same body geometry and clip it to the border's footprint.
+    let depth = px(CORNER_RADIUS as i32);
+    for clip in [
+        Clip::new(0, 0, w as i32, depth),
+        Clip::new(0, h as i32 - depth, w as i32, depth),
+        Clip::new(0, depth, depth, h as i32 - 2 * depth),
+        Clip::new(w as i32 - depth, depth, depth, h as i32 - 2 * depth),
+    ] {
+        fb.push_clip(clip);
+        shapes::rounded_rect(fb, bw, bw, w as i32 - 2 * bw, h as i32 - 2 * bw, px(INNER_RADIUS as i32), PANEL_BG);
+        fb.pop_clip();
+    }
 
     // Search field border (1px) and background
-    shapes::rounded_rect(fb, layout.search_x - 1, layout.search_y - 1,
-        layout.search_w + 2, SEARCH_H + 2, 8, SEARCH_BORDER);
+    shapes::rounded_rect(fb, layout.search_x - px(1), layout.search_y - px(1),
+        layout.search_w + px(2), layout.search_h + px(2), px(8), SEARCH_BORDER);
     shapes::rounded_rect(fb, layout.search_x, layout.search_y,
-        layout.search_w, SEARCH_H, 7, SEARCH_BG);
+        layout.search_w, layout.search_h, px(7), SEARCH_BG);
 
     // Blinking cursor in search field — compute text height and query width
-    let char_h = font_line_height(ttf.as_ref(), font_size);
+    let char_h = layout.text.line_h;
     let query_str = core::str::from_utf8(&state.query[..state.query_len]).unwrap_or("");
-    let query_w = measure_text_ttf(ttf.as_mut(), query_str, font_size);
-    let text_y = layout.search_y + (SEARCH_H - char_h) / 2;
+    let query_w = measure_text_ttf(ttf.as_mut(), query_str, font_size, layout.text.raster);
+    let text_y = layout.search_y + (layout.search_h - char_h) / 2;
     if (state.cursor_blink / 25) % 2 == 0 {
-        let cursor_x = layout.search_x + 12 + query_w;
-        shapes::fill_rect(fb, cursor_x, text_y, 2, char_h, CURSOR_COLOR);
+        let cursor_x = layout.search_x + px(12) + query_w;
+        shapes::fill_rect(fb, cursor_x, text_y, px(2), char_h, CURSOR_COLOR);
     }
 
     // App list: row highlights and badge dots
     for idx in 0..layout.visible_count {
         let app = filtered[idx];
-        let row_y = layout.list_y + idx as i32 * ITEM_H;
+        let rect = layout.row_rect(idx);
+        let row_y = rect[1];
 
         if idx == state.selected {
-            shapes::rounded_rect(fb, layout.x + 8, row_y, layout.w - 16, ITEM_H - 2, 6, SELECTED_BG_COLOR);
+            shapes::rounded_rect(fb, rect[0], rect[1], rect[2], rect[3] - px(2), px(6), SELECTED_BG_COLOR);
         } else if state.hovered == Some(idx) {
-            shapes::rounded_rect(fb, layout.x + 8, row_y, layout.w - 16, ITEM_H - 2, 6, HOVER_BG);
+            shapes::rounded_rect(fb, rect[0], rect[1], rect[2], rect[3] - px(2), px(6), HOVER_BG);
         }
 
         // App type badge dot
         let badge = if app.mode == catalog::Mode::Gui { GUI_BADGE } else { CLI_BADGE };
-        shapes::fill_circle(fb, layout.x + 22, row_y + ITEM_H / 2, 4, badge);
+        shapes::fill_circle(fb, layout.x + px(22), row_y + layout.item_h / 2, px(4), badge);
     }
 
     let mut text = Text::default();
 
     // Search text or placeholder
     if state.query_len == 0 {
-        text.push("Search applications...", layout.search_x + 12, text_y, font_size, PLACEHOLDER_COLOR);
+        text.push("Search applications...", layout.search_x + px(12), text_y, font_size, PLACEHOLDER_COLOR);
     } else {
-        text.push(query_str, layout.search_x + 12, text_y, font_size, TEXT_COLOR);
+        text.push(query_str, layout.search_x + px(12), text_y, font_size, TEXT_COLOR);
     }
 
     // Smaller size for description text
-    let desc_size = (font_size * 0.85).max(10.0);
+    let desc_size = (font_size * 0.85).max(px(10) as f32);
 
     // App list text
     for idx in 0..layout.visible_count {
         let app = filtered[idx];
-        let row_y = layout.list_y + idx as i32 * ITEM_H;
-        text.push(&app.name, layout.x + 36, row_y + 4, font_size, TEXT_COLOR);
-        text.push(&app.description, layout.x + 36, row_y + 20, desc_size, DIM_COLOR);
+        let rect = layout.row_rect(idx);
+        let row_y = rect[1];
+        text.push(&app.name, layout.x + px(36), row_y + px(2), font_size, TEXT_COLOR);
+        text.push(&app.description, layout.x + px(36), row_y + px(2) + layout.text.line_h, desc_size, DIM_COLOR);
     }
 
     if filtered.is_empty() {
-        text.push("No matches", layout.x + 36, layout.list_y + 4, font_size, DIM_COLOR);
+        text.push("No matches", layout.x + px(36), layout.list_y + px(4), font_size, DIM_COLOR);
     }
     // Footer hint
-    let footer_y = layout.list_y + layout.visible_count.max(1) as i32 * ITEM_H + 4;
-    text.push("Enter to launch | Esc to close", layout.x + PADDING, footer_y, desc_size, HINT_COLOR);
+    let footer_y = layout.list_y + layout.visible_count.max(1) as i32 * layout.item_h + px(4);
+    text.push("Enter to launch | Esc to close", layout.x + px(PADDING), footer_y, desc_size, HINT_COLOR);
     let error_lines: Vec<String> = errors.iter().map(|e| format!("Line {}: {}", e.line, e.reason)).collect();
     for (i, line) in error_lines.iter().enumerate() {
-        text.push(line, layout.x + PADDING, footer_y + 20 + i as i32 * 18, desc_size, DIM_COLOR);
+        text.push(line, layout.x + px(PADDING), footer_y + px(20) + i as i32 * layout.text.line_h, desc_size, DIM_COLOR);
     }
     if let Some(error) = &state.error {
-        text.push(error, layout.x + PADDING, footer_y + 20 + error_lines.len() as i32 * 18, desc_size, DIM_COLOR);
+        text.push(error, layout.x + px(PADDING), footer_y + px(20) + error_lines.len() as i32 * layout.text.line_h, desc_size, DIM_COLOR);
     }
     text.finish(fb, ttf.as_mut());
 }
@@ -400,33 +383,23 @@ impl<'a> Text<'a> {
             ttf_font::draw_runs(fb, f, &runs);
         } else {
             for (text, x, y, _, fg) in self.strings {
-                bitmap_font::draw_text(fb, text.as_bytes(), x as usize, y as usize, fg);
+                let (_, raster) = libbui::text::scaled_font(16.0, fb.ui_scale());
+                bitmap_font::draw_text_at(fb, text.as_bytes(), x as usize, y as usize, fg, raster);
             }
         }
     }
 }
 
 /// Measure text width using TTF font if available, falling back to bitmap.
-fn measure_text_ttf(ttf: Option<&mut CachedFont>, text: &str, size: f32) -> i32 {
+fn measure_text_ttf(ttf: Option<&mut CachedFont>, text: &str, size: f32, raster: bitmap_font::RasterHeight) -> i32 {
     if let Some(f) = ttf {
         ttf_font::text_width(f, text, size)
     } else {
-        let m = bitmap_font::metrics();
+        let m = bitmap_font::metrics_at(raster);
         (text.len() * m.char_width) as i32
     }
 }
 
-/// Get the line height for the current font configuration.
-fn font_line_height(ttf: Option<&CachedFont>, size: f32) -> i32 {
-    if let Some(f) = ttf {
-        let m = f.metrics(size);
-        m.line_height as i32
-    } else {
-        bitmap_font::metrics().char_height as i32
-    }
-}
-
-// ---------------------------------------------------------------------------
 // App launching
 // ---------------------------------------------------------------------------
 
@@ -466,31 +439,6 @@ fn try_launch(app: &catalog::Entry, state: &mut LauncherState) {
 
 /// Returns the app list row index under the given screen coordinates,
 /// or None if the point is outside the list area.
-fn hit_test_row(
-    x: i32, y: i32,
-    layout: &PanelLayout,
-) -> Option<usize> {
-    if x < layout.x + 8 || x >= layout.x + layout.w - 8 {
-        return None;
-    }
-    if y < layout.list_y || y >= layout.list_y + layout.visible_count as i32 * ITEM_H {
-        return None;
-    }
-    let row = ((y - layout.list_y) / ITEM_H) as usize;
-    if row < layout.visible_count {
-        Some(row)
-    } else {
-        None
-    }
-}
-
-/// Returns true if the point is inside the panel bounds.
-fn point_in_panel(x: i32, y: i32, layout: &PanelLayout) -> bool {
-    x >= layout.x && x < layout.x + layout.w
-        && y >= layout.y && y < layout.y + layout.h
-}
-
-// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -520,17 +468,22 @@ fn main() {
     };
 
     // Load display font (TTF) with bitmap fallback
-    let font_path = win.display_path().to_owned();
+    let mut font_path = win.display_path().to_owned();
     let mut ttf_font: Option<CachedFont> = win.take_display_font();
-    let font_size = if win.display_size() >= 6.0 { win.display_size() } else { 14.0 };
+    let mut font_size = if win.display_size() >= 6.0 { win.display_size() } else { 14.0 };
     if ttf_font.is_some() {
         println!("[blauncher] TTF display font loaded, size={}", font_size);
     } else {
         println!("[blauncher] TTF font not available, using bitmap fallback");
     }
 
-    let w = panel_w as usize;
-    let h = panel_max_h as usize;
+    let ui_scale = win.surface().expect("launcher surface").ui_scale();
+    let device_w = panel_w * ui_scale;
+    let initial = Layout::new(ttf_font.as_ref(), font_size, ui_scale, device_w as i32, panel_max_h as i32).panel(MAX_VISIBLE);
+    let device_h = initial.h + initial.text.px(20) + errors.len() as i32 * initial.text.line_h;
+    if win.width() != device_w || win.height() != device_h as u32 {
+        win.apply_resize(device_w, device_h as u32).expect("scaled launcher");
+    }
 
     let mut state = LauncherState::new();
     let start_ms = clock_ms();
@@ -547,6 +500,8 @@ fn main() {
             }
         }
         let window_id = win.id();
+        let (w,h) = (win.width() as usize, win.height() as usize);
+        let mut reload_font = false;
         win.dispatch(|delivered| {
             match delivered.event.clone() {
                 Event::KeyPress { ascii, keycode, modifiers, .. } => {
@@ -606,16 +561,16 @@ fn main() {
                 }
                 Event::MouseMove { x, y } => {
                     let filtered_count = get_filtered_apps(&entries, &state.query, state.query_len).len();
-                    let layout = compute_layout(w, h, filtered_count.min(MAX_VISIBLE));
-                    state.hovered = hit_test_row(x, y, &layout);
+                    let layout = Layout::new(ttf_font.as_ref(), font_size, ui_scale, w as i32, h as i32).panel(filtered_count);
+                    state.hovered = layout.hit_row(x, y);
                 }
                 Event::MouseButton { button: breengel::buttons::LEFT, pressed: true, x, y } => {
                     let filtered = get_filtered_apps(&entries, &state.query, state.query_len);
                     let filtered_count = filtered.len();
                     let max_vis = filtered_count.min(MAX_VISIBLE);
-                    let layout = compute_layout(w, h, max_vis);
+                    let layout = Layout::new(ttf_font.as_ref(), font_size, ui_scale, w as i32, h as i32).panel(max_vis);
 
-                    if let Some(row) = hit_test_row(x, y, &layout) {
+                    if let Some(row) = layout.hit_row(x, y) {
                         let now_ms = clock_ms();
 
                         // Double-click detection
@@ -632,13 +587,14 @@ fn main() {
                             state.last_click_ms = now_ms;
                             state.last_click_idx = row;
                         }
-                    } else if !point_in_panel(x, y, &layout)
+                    } else if !layout.contains(x, y)
                         && dismiss::should_dismiss(has_focus)
                     {
                         // Click outside the panel after the window gained focus.
                         process::exit(0);
                     }
                 }
+                Event::FontChanged => reload_font = true,
                 Event::FocusGained => {
                     has_focus = true;
                 }
@@ -655,6 +611,12 @@ fn main() {
             Handled::Redraw
         }).unwrap_or_else(|e| { eprintln!("[blauncher] dispatch: {e}"); process::exit(1) });
 
+        if reload_font {
+            win.put_display_font(ttf_font.take());
+            ttf_font = win.take_display_font();
+            font_size = win.display_size().max(6.0);
+            font_path = win.display_path().to_owned();
+        }
         let elapsed_ms = clock_ms().saturating_sub(start_ms);
         state.frame_count = (elapsed_ms.saturating_mul(60) / 1000) as u32;
         state.cursor_blink = (elapsed_ms / 16) as u32;

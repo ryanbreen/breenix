@@ -30,11 +30,21 @@ def complete(action, boot_id, checkout):
         raise ValueError("boot already finished")
     if action == "start":
         display = os.environ.get("BREENIX_VIGIL_DISPLAY", "")
-        if not display:
+        only = os.environ.get("BREENIX_VIGIL_ONLY_CASE", "")
+        if not display and not only:
             return
-        if display not in ("true", "false"):
-            raise ValueError("display must be true or false")
-        run["display"] = display == "true"
+        if display:
+            if display not in ("true", "false"):
+                raise ValueError("display must be true or false")
+            run["display"] = display == "true"
+        if only:
+            if (run.get("mode") != "suite" or not run.get("suite")
+                    or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*(?:/[a-z0-9]+(?:-[a-z0-9]+)*)?", only)):
+                raise ValueError("selected watch needs a suite and category[/case]")
+            # Vigil reads this marker as the executed selection, independently
+            # of the requested suiteCase; it excludes the run from suite evidence.
+            (folder / "only-case").write_text(only + "\n")
+            run.update(watch=True, suiteCase=only, evidenceEligible=False)
         fd, tmp = tempfile.mkstemp(prefix=".run-", dir=folder)
         try:
             with os.fdopen(fd, "w") as out:

@@ -325,6 +325,101 @@ pub(crate) mod reclaim_checks {
         (bytes[3 * 4096 + 2], bytes[4 * 4096])
     }
 
+    struct BitmapDisk {
+        disk: Disk,
+        bitmap_writes: Arc<core::sync::atomic::AtomicUsize>,
+        barriers: Arc<core::sync::atomic::AtomicUsize>,
+    }
+    impl block::BlockDevice for BitmapDisk {
+        fn read_block(&self, b: u64, out: &mut [u8]) -> Result<(), block::BlockError> {
+            self.disk.read_block(b, out)
+        }
+        fn write_block(&self, b: u64, input: &[u8]) -> Result<(), block::BlockError> {
+            if (24..32).contains(&b) {
+                assert!(self.barriers.load(core::sync::atomic::Ordering::Relaxed) > 0,
+                    "bitmap release preceded the pointer-detachment barrier");
+                self.bitmap_writes.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            }
+            self.disk.write_block(b, input)
+        }
+        fn block_size(&self) -> usize { 512 }
+        fn num_blocks(&self) -> u64 { 4096 }
+        fn flush(&self) -> Result<(), block::BlockError> {
+            self.barriers.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    type TailFixture = (Ext2Fs, Arc<Mutex<Vec<u8>>>, Arc<Mutex<Option<u64>>>, Arc<core::sync::atomic::AtomicUsize>);
+    fn populated_orphan_tail() -> TailFixture {
+        let (mut fs, data, _, _) = two_orphans();
+        fs.superblock.s_free_blocks_count = 446;
+        fs.block_groups[0].bg_free_blocks_count = 446;
+        let mut inode = Ext2Inode::new_regular_file(0o600, 0, 0);
+        inode.i_links_count = 0;
+        inode.i_size = 76 * 4096;
+        inode.i_blocks = 65 * 8;
+        inode.i_block[12] = 20;
+        {
+            let mut bytes = data.lock().unwrap();
+            bytes[3 * 4096..4 * 4096].fill(0);
+            for block in [20, 21].into_iter().chain(100..164) {
+                bytes[3 * 4096 + block / 8] |= 1 << (block % 8);
+            }
+            bytes[20 * 4096..21 * 4096].fill(0);
+            for index in 0..64 {
+                bytes[20 * 4096 + index * 4..20 * 4096 + index * 4 + 4]
+                    .copy_from_slice(&(100 + index as u32).to_le_bytes());
+            }
+        }
+        fs.write_inode(1, &inode).unwrap();
+        let fail = Arc::new(Mutex::new(None));
+        let writes = Arc::new(core::sync::atomic::AtomicUsize::new(0));
+        fs.device = Box::new(BitmapDisk {
+            disk: Disk { data: data.clone(), fail: fail.clone() },
+            bitmap_writes: writes.clone(),
+            barriers: Arc::new(core::sync::atomic::AtomicUsize::new(0)),
+        });
+        (fs, data, fail, writes)
+    }
+
+    #[test]
+    fn orphan_tail_coalesces_bitmap_writes_within_the_transition_budget() {
+        let (mut fs, data, _, writes) = populated_orphan_tail();
+        let mut progress = reclaim::Reclaim::prepare(&fs, 1).ok().unwrap();
+        let mut budget = 64;
+        assert!(!progress.finish(&mut fs, 1, &mut budget).ok().unwrap());
+        assert_eq!(budget, 0);
+        assert_eq!(writes.load(core::sync::atomic::Ordering::Relaxed), 8,
+            "one staged tail in one group must publish its 4 KiB bitmap once");
+        assert_eq!(fs.statfs().free_blocks, 510);
+        let bytes = data.lock().unwrap();
+        for block in 100..164 { assert_eq!(bytes[3 * 4096 + block / 8] & (1 << (block % 8)), 0); }
+        assert_eq!(bytes[3 * 4096 + 2] & 0x30, 0x30, "pointer block and other inode still own their bits");
+    }
+
+    #[test]
+    fn orphan_bitmap_batch_resumes_with_a_smaller_budget_and_a_new_allocation() {
+        let (mut fs, data, fail, _) = populated_orphan_tail();
+        let mut progress = reclaim::Reclaim::prepare(&fs, 1).ok().unwrap();
+        *fail.lock().unwrap() = Some(24);
+        assert!(matches!(progress.finish(&mut fs, 1, &mut 64), Err(reclaim::ReclaimError::Retry)));
+        assert_eq!(fs.statfs().free_blocks, 446, "failed bitmap publication posted counts");
+        // Another operation allocates an unrelated bit after the guard release.
+        data.lock().unwrap()[3 * 4096 + 250 / 8] |= 1 << (250 % 8);
+        fs.superblock.s_free_blocks_count -= 1;
+        fs.block_groups[0].bg_free_blocks_count -= 1;
+        let mut budget = 1;
+        assert!(!progress.finish(&mut fs, 1, &mut budget).ok().unwrap());
+        assert_eq!(budget, 0);
+        assert_eq!(fs.statfs().free_blocks, 446, "resume exceeded the new transition budget");
+        while !progress.finish(&mut fs, 1, &mut 7).ok().unwrap() {}
+        assert_eq!(fs.statfs().free_blocks, 510);
+        assert_eq!(fs.statfs().free_inodes, 127);
+        assert_ne!(data.lock().unwrap()[3 * 4096 + 250 / 8] & (1 << (250 % 8)), 0,
+            "resuming a partial write overwrote a later allocation");
+    }
+
     #[test]
     fn two_orphan_detachments_share_one_barrier_before_bitmap_release() {
         let (mut fs, data, flushes, _) = two_orphans();

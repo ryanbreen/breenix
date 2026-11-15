@@ -1,3 +1,6 @@
+mod metrics;
+pub use metrics::ScaledText;
+
 use libgfx::{bitmap_font, color::Color, surface::Surface, ttf_font::{self, CachedFont, Font}};
 use crate::{rect::Rect, theme::Theme};
 use core::cell::UnsafeCell;
@@ -34,10 +37,16 @@ pub fn text_width(text:&[u8],theme:&Theme)->i32 {
     else {with_font(|font|ttf_font::text_width_bytes(font,text,16.0))}
 }
 pub fn text_height(_theme:&Theme)->i32 {16}
+/// Convert a logical font size to the surface's TTF size and bitmap raster.
+pub fn scaled_font(logical_size: f32, ui_scale: u32) -> (f32, bitmap_font::RasterHeight) {
+    let raster = if ui_scale == 2 { bitmap_font::RasterHeight::Size32 }
+        else { bitmap_font::RasterHeight::Size16 };
+    (logical_size * ui_scale as f32, raster)
+}
 pub fn draw_text(fb:&mut Surface,text:&[u8],x:i32,y:i32,c:Color,theme:&Theme) {
     let s=fb.ui_scale() as i32;
+    let (size,height)=scaled_font(16.0,fb.ui_scale());
     if theme.use_bitmap_font {
-        let height=if s==2 {bitmap_font::RasterHeight::Size32}else{bitmap_font::RasterHeight::Size16};
         let advance=bitmap_font::metrics_at(height).char_width as i32;
         let (x,y)=(x.saturating_mul(s),y.saturating_mul(s));
         for (i,&ch) in text.iter().enumerate() {
@@ -45,7 +54,7 @@ pub fn draw_text(fb:&mut Surface,text:&[u8],x:i32,y:i32,c:Color,theme:&Theme) {
             if px>=0 && y>=0 {bitmap_font::draw_char_at(fb,ch as char,px as usize,y as usize,c,height);}
         }
     } else {
-        with_font(|font|{ttf_font::draw_text_bytes(fb,font,text,x.saturating_mul(s),y.saturating_mul(s),16.0*s as f32,c);});
+        with_font(|font|{ttf_font::draw_text_bytes(fb,font,text,x.saturating_mul(s),y.saturating_mul(s),size,c);});
     }
 }
 pub fn draw_text_centered(fb:&mut Surface,text:&[u8],rect:&Rect,c:Color,theme:&Theme) {

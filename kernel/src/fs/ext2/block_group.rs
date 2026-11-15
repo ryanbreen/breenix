@@ -390,34 +390,95 @@ pub(super) fn claim<B: BlockDevice + ?Sized>(
     })
 }
 
-/// Clear an orphan block's bitmap bit and post it to its group. Returns
-/// `false`, writing nothing, when the block is out of range or its bit is
-/// already clear and no earlier write of this release was attempted.
-/// `write_attempted` is set immediately before the bitmap write, so after a
-/// reported write error a clear bit on retry is that write having landed.
-pub(super) fn release_orphan_block<B: BlockDevice + ?Sized>(
-    device: &B, block: u32, superblock: &Ext2Superblock, groups: &mut [Ext2BlockGroupDesc],
-    write_attempted: &mut bool,
-) -> Result<bool, &'static str> {
-    let Some(adjusted) = block.checked_sub(superblock.s_first_data_block) else { return Ok(false) };
-    let Some(group) = groups.get_mut((adjusted / superblock.s_blocks_per_group) as usize) else { return Ok(false) };
-    let local = adjusted % superblock.s_blocks_per_group;
-    let size = superblock.block_size();
-    if local as usize / 8 >= size { return Ok(false); }
-    let mut bitmap = [0u8; 4096];
-    read_ext2_block(device, group.bg_block_bitmap, size, &mut bitmap[..size])
-        .map_err(|_| "Failed to read orphan bitmap")?;
-    let bit = 1 << (local % 8);
-    if bitmap[local as usize / 8] & bit != 0 {
-        bitmap[local as usize / 8] &= !bit;
-        *write_attempted = true;
-        write_ext2_block(device, group.bg_block_bitmap, size, &bitmap[..size])
-            .map_err(|_| "Failed to write orphan bitmap")?;
-    } else if !*write_attempted {
-        return Ok(false);
+/// A bounded prefix of one staged tail in one block group. `allocated` keeps
+/// the original set bits across a failed bitmap write, including one that
+/// landed partially. The caller keeps these blocks quarantined until counts
+/// persist. No bitmap image survives a mount-guard release.
+pub(super) struct OrphanBlockRelease {
+    group: Option<usize>,
+    remaining: usize,
+    allocated: u64,
+}
+
+fn orphan_group(block: u32, sb: &Ext2Superblock, groups: &[Ext2BlockGroupDesc]) -> Option<usize> {
+    if block >= sb.s_blocks_count { return None; }
+    let adjusted = block.checked_sub(sb.s_first_data_block)?;
+    let group = adjusted.checked_div(sb.s_blocks_per_group)? as usize;
+    let local = adjusted % sb.s_blocks_per_group;
+    (group < groups.len() && (local as usize / 8) < sb.block_size()).then_some(group)
+}
+
+impl OrphanBlockRelease {
+    pub fn prepare<B: BlockDevice + ?Sized>(
+        device: &B, blocks: &[u32], sb: &Ext2Superblock, groups: &[Ext2BlockGroupDesc],
+    ) -> Result<Self, &'static str> {
+        let group = orphan_group(blocks[0], sb, groups);
+        let Some(index) = group else {
+            return Ok(Self { group, remaining: 1, allocated: 0 });
+        };
+        let size = sb.block_size();
+        let mut bitmap = [0u8; 4096];
+        read_ext2_block(device, groups[index].bg_block_bitmap, size, &mut bitmap[..size])
+            .map_err(|_| "Failed to read orphan bitmap")?;
+        let mut release = Self { group, remaining: 0, allocated: 0 };
+        for (offset, &block) in blocks.iter().take(64).enumerate() {
+            if orphan_group(block, sb, groups) != group { break; }
+            let local = (block - sb.s_first_data_block) % sb.s_blocks_per_group;
+            let byte = &mut bitmap[local as usize / 8];
+            let bit = 1 << (local % 8);
+            if *byte & bit != 0 {
+                release.allocated |= 1u64 << offset;
+                *byte &= !bit; // A duplicate in this prefix is not counted twice.
+            }
+            release.remaining += 1;
+        }
+        Ok(release)
     }
-    group.bg_free_blocks_count += 1;
-    Ok(true)
+
+    pub fn is_empty(&self) -> bool { self.remaining == 0 }
+
+    /// Publish no more than this call's transition budget. Re-read and merge
+    /// with the current bitmap on resumption, so an unrelated allocation made
+    /// after a failed write is retained. Post counts only after publication.
+    pub fn publish<B: BlockDevice + ?Sized>(
+        &mut self, device: &B, blocks: &[u32], sb: &Ext2Superblock,
+        groups: &mut [Ext2BlockGroupDesc], budget: &mut usize,
+    ) -> Result<(usize, u32), &'static str> {
+        let count = self.remaining.min(*budget);
+        let mask = self.allocated & u64::MAX.checked_shr((64 - count) as u32).unwrap_or(0);
+        let freed = mask.count_ones();
+        if let Some(group) = self.group {
+            if mask != 0 {
+                let size = sb.block_size();
+                let mut bitmap = [0u8; 4096];
+                read_ext2_block(device, groups[group].bg_block_bitmap, size, &mut bitmap[..size])
+                    .map_err(|_| "Failed to read orphan bitmap")?;
+                let mut changed = false;
+                for (offset, &block) in blocks.iter().take(count).enumerate() {
+                    if mask & (1u64 << offset) == 0 { continue; }
+                    let local = (block - sb.s_first_data_block) % sb.s_blocks_per_group;
+                    let byte = &mut bitmap[local as usize / 8];
+                    let bit = 1 << (local % 8);
+                    changed |= *byte & bit != 0;
+                    *byte &= !bit;
+                }
+                if changed {
+                    write_ext2_block(device, groups[group].bg_block_bitmap, size, &bitmap[..size])
+                        .map_err(|_| "Failed to write orphan bitmap")?;
+                }
+                groups[group].bg_free_blocks_count += freed as u16;
+            }
+        }
+        for (offset, block) in blocks.iter().take(count).enumerate() {
+            if mask & (1u64 << offset) == 0 {
+                log::warn!("ext2: reclaiming block {} was not allocated", block);
+            }
+        }
+        self.remaining -= count;
+        self.allocated = self.allocated.checked_shr(count as u32).unwrap_or(0);
+        *budget -= count;
+        Ok((count, freed))
+    }
 }
 
 /// Free a data block in the block bitmap

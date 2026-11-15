@@ -36,6 +36,7 @@ struct Batch {
     published: bool,
     staged_epoch: Option<u64>,
     next: usize,
+    release: Option<super::block_group::OrphanBlockRelease>,
 }
 
 pub(super) struct Reclaim {
@@ -46,8 +47,7 @@ pub(super) struct Reclaim {
     free_inode: bool,
     inode_published: bool,
     inode_freed: bool,
-    /// Set immediately before a bitmap write, cleared once that allocation is
-    /// posted. A clear bit is evidence of an earlier write only when set.
+    /// Inode bitmap write custody. Block bitmap custody belongs to `Batch`.
     write_attempted: bool,
 }
 
@@ -129,6 +129,7 @@ impl Reclaim {
                 published: false,
                 staged_epoch: None,
                 next: 0,
+                release: None,
             });
         }
         let Self { inode, batch, .. } = self;
@@ -179,8 +180,7 @@ impl Reclaim {
             if *budget == 0 { return Ok(false); }
             let mut staging_budget = BATCH_BLOCKS.min(*budget);
             self.stage(fs, ino, &mut staging_budget)?;
-            let Self { batch, write_attempted, .. } = self;
-            let batch = batch.as_mut().expect("reclamation batch staged");
+            let batch = self.batch.as_mut().expect("reclamation batch staged");
             if !batch.published {
                 if batch.staged_epoch == Some(fs.durable_epoch()) {
                     // Cached writes may reorder. Detachments must be durable
@@ -189,31 +189,24 @@ impl Reclaim {
                 }
                 batch.published = true;
             }
-            while let Some(&block) = batch.tail.blocks.get(batch.next) {
+            while batch.next < batch.tail.blocks.len() {
                 if *budget == 0 {
                     return Ok(false);
                 }
-                *budget -= 1;
-                if super::block_group::release_orphan_block(
-                    fs.device.as_ref(),
-                    block,
-                    &fs.superblock,
-                    &mut fs.block_groups,
-                    write_attempted,
-                )
-                .map_err(|_| ReclaimError::Retry)?
-                {
-                    fs.superblock.increment_free_blocks(1);
-                } else {
-                    // A duplicate or out-of-range pointer: not ours to count.
-                    log::warn!(
-                        "ext2: reclaiming inode {} block {} was not allocated",
-                        ino,
-                        block
-                    );
+                let blocks = &batch.tail.blocks[batch.next..];
+                if batch.release.is_none() {
+                    batch.release = Some(super::block_group::OrphanBlockRelease::prepare(
+                        fs.device.as_ref(), &blocks[..blocks.len().min(*budget)],
+                        &fs.superblock, &fs.block_groups,
+                    ).map_err(|_| ReclaimError::Retry)?);
                 }
-                *write_attempted = false;
-                batch.next += 1;
+                let release = batch.release.as_mut().expect("bitmap release prepared");
+                let (count, freed) = release.publish(
+                    fs.device.as_ref(), blocks, &fs.superblock, &mut fs.block_groups, budget,
+                ).map_err(|_| ReclaimError::Retry)?;
+                fs.superblock.increment_free_blocks(freed);
+                batch.next += count;
+                if release.is_empty() { batch.release = None; }
             }
             if !batch.tail.blocks.is_empty() {
                 persist_counts(fs)?;

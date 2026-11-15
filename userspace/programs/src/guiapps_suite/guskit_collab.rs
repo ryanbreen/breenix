@@ -2,7 +2,7 @@
 use breenix_suite::suite::CaseResult;
 use libuitest::{App, input::Modifier};
 use serde_json::Value;
-use super::guskit::guskit_expect::Expected;
+use super::guskit::{canvas_drag, guskit_expect::Expected};
 
 const HOST: &str = "Host";
 const PEER: &str = "Peer";
@@ -25,12 +25,15 @@ impl Script {
         attach(t, owner)?;
         t.key(38, &[])?; // Line: one completed gesture is one submitted operation.
         let color = if green {
-            t.drag("hue", (260, 4), &[])?;
-            t.drag("sv", (80, 19), &[])?;
+            let tree = t.tree()?;
+            let hue = tree.children.iter().find(|n| n.key == "hue").ok_or("missing hue")?.bounds;
+            let sv = tree.children.iter().find(|n| n.key == "sv").ok_or("missing sv")?.bounds;
+            t.drag("hue", ((hue[2] / 3) as i32, (hue[3] * 4 / 18) as i32), &[])?;
+            t.drag("sv", ((sv[2] * 80 / 100) as i32, (sv[3] * 19 / 100) as i32), &[])?;
             [40, 204, 40]
         } else { [0, 0, 0] };
         t.wait_node("status", |v| v["tool"] == "line" && v["color"] == serde_json::json!(color))?;
-        t.drag("canvas", (10, y as i32), &[(30, 0)])?;
+        canvas_drag(t, (10, y as i32), &[(30, 0)])?;
         self.record(owner, Op::Stroke { y, color }, None);
         Ok(())
     }
@@ -261,7 +264,7 @@ pub fn undo_ownership() -> CaseResult {
     let (expected, globals)=script.replay(&mut t,&[HOST,PEER])?;
     for owner in [PEER,HOST] { check_peer(&mut t,owner,&expected,&globals)?; }
     t.key(48,&[])?; // Brush: many segments must remain one Undo gesture.
-    t.drag("canvas",(10,40),&vec![(1,0);59])?;
+    canvas_drag(&mut t,(10,40),&vec![(1,0);59])?;
     t.wait_node("status",|v|v["undo"]==1)?;
     let digest=expected.digest();
     t.expect_node("canvas",|v|v["sha256"]!=digest)?;

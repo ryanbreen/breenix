@@ -1,6 +1,7 @@
 //! Pure RGB canvas. Coordinates outside the canvas are clipped.
 extern crate alloc;
-use self::alloc::{vec, vec::Vec};
+use self::alloc::{sync::Arc, vec, vec::Vec};
+use core::cell::OnceCell;
 
 pub type Color = [u8; 3];
 pub type Point = (i32, i32);
@@ -26,7 +27,8 @@ impl Radius {
 pub struct Canvas {
     width: usize,
     height: usize,
-    pixels: Vec<u8>,
+    pixels: Arc<Vec<u8>>,
+    digest: OnceCell<[u8; 32]>,
 }
 impl Canvas {
     /// A white, row-major RGB canvas.
@@ -34,16 +36,34 @@ impl Canvas {
         Self {
             width,
             height,
-            pixels: vec![
+            pixels: Arc::new(vec![
                 255;
                 width
                     .checked_mul(height)
                     .and_then(|n| n.checked_mul(3))
                     .expect("canvas size overflow")
-            ],
+            ]),
+            digest: OnceCell::new(),
         }
     }
-    pub(crate) fn pixels_mut(&mut self) -> &mut [u8] { &mut self.pixels }
+    /// Extend the image with white pixels, preserving the original coordinates.
+    pub(crate) fn grow(&mut self, width: usize, height: usize) {
+        let width = width.max(self.width);
+        let height = height.max(self.height);
+        if width == self.width && height == self.height { return; }
+        let mut grown = Self::new(width, height);
+        for y in 0..self.height {
+            let old = y * self.width * 3;
+            let new = y * width * 3;
+            grown.pixels_mut()[new..new + self.width * 3].copy_from_slice(&self.pixels[old..old + self.width * 3]);
+        }
+        *self = grown;
+    }
+    pub fn dimensions(&self) -> (usize, usize) { (self.width, self.height) }
+    pub(crate) fn pixels_mut(&mut self) -> &mut [u8] {
+        self.digest.take();
+        Arc::make_mut(&mut self.pixels).as_mut_slice()
+    }
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
     }
@@ -66,6 +86,7 @@ impl Canvas {
     }
     /// Emit only pixels that differ from the image already on a retained target.
     pub fn render_changes(&self, previous: &Self, mut emit: impl FnMut(usize, usize, usize, Color)) -> bool {
+        if Arc::ptr_eq(&self.pixels, &previous.pixels) { return false; }
         if self.width != previous.width || self.height != previous.height {
             self.render_runs(emit);
             return true;
@@ -93,18 +114,30 @@ impl Canvas {
         }
         changed
     }
+    /// Copy a bounded patch for a temporary stroke preview, preserving RGB bytes.
+    pub fn region(&self, x: usize, y: usize, width: usize, height: usize) -> Self {
+        assert!(x <= self.width && width <= self.width - x);
+        assert!(y <= self.height && height <= self.height - y);
+        let mut patch = Self::new(width, height);
+        for row in 0..height {
+            let start = ((y + row) * self.width + x) * 3;
+            patch.pixels_mut()[row * width * 3..(row + 1) * width * 3]
+                .copy_from_slice(&self.pixels[start..start + width * 3]);
+        }
+        patch
+    }
     pub fn preview(&self, points: &[Point], draw: impl FnOnce(&mut Self, &[Point])) -> Self {
         let mut image = self.clone();
         draw(&mut image, points);
         image
     }
     pub fn digest(&self) -> [u8; 32] {
-        libpixcheck::sha256(&self.pixels)
+        *self.digest.get_or_init(|| libpixcheck::sha256(&self.pixels))
     }
     fn put(&mut self, x: i64, y: i64, color: Color) {
         if x >= 0 && y >= 0 && (x as usize) < self.width && (y as usize) < self.height {
             let i = (y as usize * self.width + x as usize) * 3;
-            self.pixels[i..i + 3].copy_from_slice(&color);
+            if self.pixels[i..i + 3] != color { self.pixels_mut()[i..i + 3].copy_from_slice(&color); }
         }
     }
     fn trace(&mut self, a: Point, b: Point, mut stamp: impl FnMut(&mut Self, i64, i64)) {
@@ -235,7 +268,7 @@ impl Canvas {
                 if nx < self.width && ny < self.height {
                     let i = (ny * self.width + nx) * 3;
                     if self.pixels[i..i + 3] == target {
-                        self.pixels[i..i + 3].copy_from_slice(&color);
+                        if self.pixels[i..i + 3] != color { self.pixels_mut()[i..i + 3].copy_from_slice(&color); }
                         stack.push((nx, ny));
                     }
                 }
@@ -252,8 +285,29 @@ pub struct History {
     future: Vec<Canvas>,
 }
 impl History {
+    const BYTE_BUDGET: usize = 32 * 1024 * 1024;
+    fn drop_oldest(&mut self) {
+        if !self.past.is_empty() { self.base = self.past.remove(0); }
+        else { self.future.remove(0); }
+    }
+    fn states(&self) -> usize { 1 + self.past.len() + self.future.len() }
     pub fn new(base: Canvas) -> Self {
         Self { base, past: Vec::new(), future: Vec::new() }
+    }
+    pub fn grow(&mut self, width: usize, height: usize) {
+        let (w,h) = self.canvas().dimensions();
+        let bytes = width.max(w).saturating_mul(height.max(h)).saturating_mul(3);
+        // Retain the current drawing even when it alone exceeds the budget.
+        // Discard old snapshots before allocating padded replacements.
+        while self.states() > 1 && bytes.saturating_mul(self.states()) > Self::BYTE_BUDGET { self.drop_oldest(); }
+        self.base.grow(width, height);
+        for canvas in self.past.iter_mut().chain(self.future.iter_mut()) { canvas.grow(width, height); }
+    }
+    pub fn clean_after_grow(&self, width: usize, height: usize, clean: [u8; 32]) -> Option<[u8; 32]> {
+        let mut canvas = core::iter::once(&self.base).chain(self.past.iter()).chain(self.future.iter())
+            .find(|canvas| canvas.digest() == clean)?.clone();
+        canvas.grow(width, height);
+        Some(canvas.digest())
     }
     pub fn canvas(&self) -> &Canvas { self.past.last().unwrap_or(&self.base) }
     pub fn undo_depth(&self) -> usize { self.past.len() }
@@ -261,7 +315,10 @@ impl History {
     pub fn push(&mut self, canvas: Canvas) {
         self.future.clear();
         self.past.push(canvas);
-        if self.past.len() > 32 { self.base = self.past.remove(0); }
+        while self.states() > 1 && (self.past.len() > 32 ||
+            core::iter::once(&self.base).chain(self.past.iter()).map(|c| c.pixels.len()).sum::<usize>() > Self::BYTE_BUDGET) {
+            self.drop_oldest();
+        }
     }
     pub fn undo(&mut self) -> bool {
         match self.past.pop() {

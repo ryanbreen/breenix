@@ -29,6 +29,7 @@ fn pipe() -> Result<(Pipe, Pipe), String> {
 struct Output {
     stdout: Option<Pipe>, stderr: Option<Pipe>, stdout_bytes: usize,
     ring: StderrRing, status: Option<i32>,
+    name: String, stdout_tail: Vec<u8>, failure_reported: bool, teardown_killed: bool,
     stdin: Option<Pipe>,
     startup: Option<Vec<u8>>,
     input_ready: bool,
@@ -84,7 +85,7 @@ fn launch(argv: &[Vec<u8>], env: &[Vec<u8>], uid: u32, kiosk: bool) -> Result<(u
         io::write(write.0, b"auto 1\n").map_err(|e| e.to_string())?;
         Some(write)
     } else { None };
-    Ok((pid, Output { stdout: Some(r), stderr: Some(err_r), stdout_bytes: 0, ring: StderrRing::default(), status: None, stdin, startup: kiosk.then(Vec::new), input_ready: false }))
+    Ok((pid, Output { stdout: Some(r), stderr: Some(err_r), stdout_bytes: 0, ring: StderrRing::default(), status: None, name: String::from_utf8_lossy(&argv[0][..argv[0].len().min(256)]).into_owned(), stdout_tail: Vec::new(), failure_reported: false, teardown_killed: false, stdin, startup: kiosk.then(Vec::new), input_ready: false }))
 }
 
 fn outputs(outputs: &mut BTreeMap<u64, Output>, channel: &mut Channel, connected: bool) -> Result<(), String> {
@@ -112,6 +113,9 @@ fn outputs(outputs: &mut BTreeMap<u64, Output>, channel: &mut Channel, connected
                                     output.startup = None;
                                 }
                             }
+                            let tail = &mut output.stdout_tail;
+                            tail.extend_from_slice(&chunk[..n]);
+                            if tail.len() > 4096 { tail.drain(..tail.len() - 4096); }
                             let keep = n.min((64 * 1024usize).saturating_sub(output.stdout_bytes));
                             output.stdout_bytes += keep;
                             if connected && keep != 0 { channel.queue(&Message::Output { pid, bytes: chunk[..keep].to_vec() })?; }
@@ -123,15 +127,67 @@ fn outputs(outputs: &mut BTreeMap<u64, Output>, channel: &mut Channel, connected
                 }
             }
         }
+        report_failure(pid, output);
     }
     Ok(())
 }
+
+fn report_failure(pid: u64, output: &mut Output) {
+    let Some(status) = output.status else { return };
+    if status == 0 || output.failure_reported { return; }
+    output.failure_reported = true;
+    let signal = status & 0x7f;
+    let code = (status >> 8) & 0xff;
+    // A nested executor may inherit /dev/null. Open the serial console explicitly,
+    // without acquiring a controlling terminal (O_NOCTTY).
+    let console = fs::open("/dev/console", fs::O_WRONLY | 0x100).ok().map(Pipe);
+    let serial = console.as_ref().map_or(Fd::STDERR, |pipe| pipe.0);
+    let name = output.name.escape_default().to_string().replace('|', "\\x7c");
+    // Retain quoted diagnostics even for harness cleanup: a bwm self-check
+    // remains case evidence. Only an accepted teardown kill with its matching
+    // wait status is excluded from failure reporting; other exits still report.
+    let teardown = output.teardown_killed && signal == signal::SIGKILL as i32;
+    let mut record = Vec::new();
+    if !teardown {
+        record.extend_from_slice(format!("\nSUPERVISOR_FAILURE pid={pid} name={} status={status} exit={code} signal={signal}\n", name).as_bytes());
+    }
+    let stderr = output.ring.bytes();
+    for (stream, bytes) in [("stderr", &stderr[stderr.len().saturating_sub(4096)..]), ("stdout", output.stdout_tail.as_slice())] {
+        if !teardown {
+            record.extend_from_slice(format!("SUPERVISOR_FAILURE {stream} tail={} pid={pid}\n", bytes.len()).as_bytes());
+        }
+        for line in bytes.split(|&b| b == b'\n') {
+            if line.is_empty() { continue; }
+            record.extend_from_slice(format!("UI_CHILD pid={pid} name={name} | ").as_bytes());
+            // Keep carriage returns and terminal controls inside the quoted line.
+            for &byte in line {
+                if byte < 32 || byte == 127 { record.extend(std::ascii::escape_default(byte)); }
+                else { record.push(byte); }
+            }
+            record.push(b'\n');
+        }
+    }
+    let mut remaining = record.as_slice();
+    while !remaining.is_empty() {
+        match io::write(serial, remaining) {
+            Ok(0) => break,
+            Ok(n) => remaining = &remaining[n..],
+            Err(Error::Os(Errno::EINTR)) => continue,
+            Err(_) => break,
+        }
+    }
+}
+
 fn reap(channel: &mut Channel, outputs: &mut BTreeMap<u64, Output>, connected: bool, compositor: Option<u64>, ownership: &mut Ownership, recover: bool) -> Result<bool, String> {
     loop {
         let mut status = 0;
         match process::waitpid(-1, &mut status, process::WNOHANG) {
             Ok(pid) if pid.raw() != 0 => {
                 if let Some(output) = outputs.get_mut(&pid.raw()) { output.status = Some(status); output.stdin.take(); }
+                // Collect the exited child's last writes before custody recovery can fail.
+                // A descendant may retain a pipe writer: report the bounded snapshot now,
+                // without waiting for EOF or delaying the exit notification.
+                self::outputs(outputs, channel, connected)?;
                 if compositor == Some(pid.raw()) {
                     ownership.apply(Event::Died, &mut Display)?;
                     if recover { ownership.apply(Event::Recover, &mut Display)?; }
@@ -146,7 +202,18 @@ fn reap(channel: &mut Channel, outputs: &mut BTreeMap<u64, Output>, connected: b
         }
     }
 }
-fn kill_descendants() -> Result<(), String> {
+fn kill_for_teardown(pid: u64, outputs: &mut BTreeMap<u64, Output>) -> Result<(), String> {
+    if outputs.get(&pid).is_some_and(|output| output.status.is_some()) { return Ok(()); }
+    match signal::kill(pid as i32, signal::SIGKILL) {
+        Ok(()) => {
+            if let Some(output) = outputs.get_mut(&pid) { output.teardown_killed = true; }
+            Ok(())
+        }
+        Err(Error::Os(Errno::ESRCH)) => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+fn kill_descendants(outputs: &mut BTreeMap<u64, Output>) -> Result<(), String> {
     let own = process::getpid().map_err(|e| e.to_string())?.raw();
     let mut rows = Vec::new();
     for entry in std::fs::read_dir("/proc").map_err(|e| e.to_string())? {
@@ -162,10 +229,7 @@ fn kill_descendants() -> Result<(), String> {
         rows.push((pid, parent));
     }
     for pid in descendant_victims(own, &rows) {
-        match signal::kill(pid as i32, signal::SIGKILL) {
-            Ok(()) | Err(Error::Os(Errno::ESRCH)) => {},
-            Err(error) => return Err(error.to_string()),
-        }
+        kill_for_teardown(pid, outputs)?;
     }
     Ok(())
 }
@@ -182,12 +246,11 @@ fn teardown(channel: &mut Channel, outputs_state: &mut BTreeMap<u64, Output>, mu
     crate::startup::teardown(1);
     let watchdog = Watchdog::new(Wait::SupervisorTeardown)?;
     let end = watchdog.deadline_ms();
+    // Observe exits already completed before cleanup sends any signal.
+    reap(channel, outputs_state, connected, if init_desktop { None } else { compositor }, ownership, true)?;
     if init_desktop {
         if let Some(pid) = compositor {
-            match signal::kill(pid as i32, signal::SIGKILL) {
-                Ok(()) | Err(Error::Os(Errno::ESRCH)) => {},
-                Err(error) => return Err(error.to_string()),
-            }
+            kill_for_teardown(pid, outputs_state)?;
             while outputs_state.get(&pid).is_some_and(|o| o.status.is_none()) {
                 outputs(outputs_state, channel, connected)?;
                 reap(channel, outputs_state, connected, None, ownership, true)?;
@@ -197,7 +260,8 @@ fn teardown(channel: &mut Channel, outputs_state: &mut BTreeMap<u64, Output>, mu
         }
     }
     loop {
-        kill_descendants()?;
+        reap(channel, outputs_state, connected, if init_desktop { None } else { compositor }, ownership, true)?;
+        kill_descendants(outputs_state)?;
         outputs(outputs_state, channel, connected)?;
         let empty = reap(channel, outputs_state, connected, if init_desktop { None } else { compositor }, ownership, true)?;
         if init_desktop && empty && ownership.owner() == Owner::CompositorAlive {
