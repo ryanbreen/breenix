@@ -39,23 +39,24 @@ fn len(&self)->usize{self.entries.len()}
 fn is_empty(&self)->bool{self.entries.is_empty()}
 }
 struct MapInner{pages:PageVec<Page>,poisoned:PageVec<()>,bindings:Vec<u64>}
-struct Map{inner:Lock<MapInner>,resident:AtomicBool,dirty:AtomicBool}
+struct State{inner:Lock<MapInner>,resident:AtomicBool,dirty:AtomicBool}
+struct Map{state:State}
 impl Map{METHODS}
 fn main(){
     let released=Rc::new(Cell::new(0));
-    let map=Map{inner:Lock(Mutex::new(MapInner{
+    let map=Map{state:State{inner:Lock(Mutex::new(MapInner{
         pages:PageVec{entries:(0..67).map(|i|(i,Page{dirty:i!=0,released:released.clone()})).collect()},
         poisoned:PageVec{entries:vec![(68,())]},bindings:vec![1]})),
-        resident:AtomicBool::new(true),dirty:AtomicBool::new(true)};
+        resident:AtomicBool::new(true),dirty:AtomicBool::new(true)}};
     let mut budget=64;assert!(map.discard_unobserved(&mut budget));
     assert_eq!(budget,64);assert_eq!(released.get(),0,"live mapping lost its bytes");
-    map.inner.lock().bindings.clear();
+    map.state.inner.lock().bindings.clear();
     assert!(map.discard_unobserved(&mut budget));assert_eq!(budget,0);assert_eq!(released.get(),64);
-    assert!(map.resident.load(Ordering::Acquire));assert!(map.dirty.load(Ordering::Acquire));
+    assert!(map.state.resident.load(Ordering::Acquire));assert!(map.state.dirty.load(Ordering::Acquire));
     assert!(map.discard_unobserved(&mut budget));assert_eq!(released.get(),64);
     budget=64;assert!(!map.discard_unobserved(&mut budget));assert_eq!(budget,61);
-    assert_eq!(released.get(),67);assert!(map.inner.lock().poisoned.is_empty());
-    assert!(!map.resident.load(Ordering::Acquire));assert!(!map.dirty.load(Ordering::Acquire));
+    assert_eq!(released.get(),67);assert!(map.state.inner.lock().poisoned.is_empty());
+    assert!(!map.state.resident.load(Ordering::Acquire));assert!(!map.state.dirty.load(Ordering::Acquire));
 }
 '''.replace('METHODS', methods))
         self.assertEqual(result.returncode, 0, result.stderr)

@@ -335,7 +335,68 @@ impl Drop for DataFile {
     }
 }
 
-/// Transfer a VFS writeback batch through the existing pinned mapped-I/O path.
-pub(crate) fn write_mapped_range(handle: &FileHandle, offset: u64, bytes: &[u8]) -> Result<usize, &'static str> {
-    DataFile::open(handle)?.write(offset, bytes)
+/// Transfer a VFS batch through the lease that protects its snapshot frames.
+/// Opening another transfer here would wait for the caller's own lease.
+pub(crate) fn writeback_pages(
+    node: &crate::fs::vfs::VNode,
+    page: u64,
+    bytes: &[u8],
+    file: &DataFile,
+) -> Result<(), &'static str> {
+    if node.mount != file.handle.object.mount.mount_id
+        || node.ino != u64::from(file.handle.object.key.inode)
+        || node.incarnation != file.handle.object.key.incarnation
+    {
+        return Err("Stale mapped transfer identity");
+    }
+    let offset = page.checked_mul(4096).ok_or("File too large")?;
+    if file.write(offset, bytes)? != bytes.len() {
+        return Err("Short mapped writeback");
+    }
+    Ok(())
+}
+
+impl crate::fs::vfs::MappingRead for Ext2Fs {
+    fn read_mapping_page(
+        &self,
+        ino: u64,
+        offset: u64,
+        length: usize,
+    ) -> Result<Vec<u8>, crate::fs::errno::Errno> {
+        let inode = self
+            .read_inode(super::ino32(ino)?)
+            .map_err(super::errno::errno)?;
+        self.read_file_range(&inode, offset, length)
+            .map_err(super::errno::errno)
+    }
+}
+
+impl crate::fs::vfs::MappingIo for DataFile {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+    fn size(&self) -> u64 {
+        self.size()
+    }
+    fn read(&self, offset: u64, length: usize) -> Result<Vec<u8>, crate::fs::errno::Errno> {
+        self.read(offset, length).map_err(super::errno::errno)
+    }
+    fn needs_flush(&self) -> bool {
+        self.needs_flush()
+    }
+    fn sync(&self, first: u64, last: u64) -> Result<(), crate::fs::errno::Errno> {
+        self.sync(first, last).map_err(super::errno::errno)
+    }
+    fn publish(
+        &self,
+        bind: &mut dyn FnMut(bool) -> Result<(), crate::fs::errno::Errno>,
+    ) -> Result<(), crate::fs::errno::Errno> {
+        let guard = super::read_mount(self.handle.object.mount).map_err(super::errno::errno)?;
+        let fs = guard
+            .as_ref()
+            .ok_or(crate::fs::errno::Errno(crate::syscall::errno::EIO))?;
+        let ino = self.handle.verify(fs).map_err(super::errno::errno)?;
+        let append_only = fs.read_inode(ino).map_err(super::errno::errno)?.i_flags & 0x20 != 0;
+        bind(append_only)
+    }
 }

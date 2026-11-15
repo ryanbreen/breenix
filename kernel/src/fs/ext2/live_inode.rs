@@ -49,19 +49,23 @@ impl MountPin {
 pub struct LiveInode {
     pub key: FileKey,
     pub mount: MountPin,
-    pub size: AtomicU64,
+    pub vnode: crate::fs::vfs::VNode,
     pub size_epoch: AtomicU64,
     pub atime_pending: AtomicU64,
     pub mtime_pending: AtomicU64,
     pub ctime_pending: AtomicU64,
-    /// Cached pages and reverse map for file mappings.
-    pub map: crate::memory::file_map::MapState,
     pub(super) data_io: AtomicBool,
     external_handles: AtomicUsize,
     pending: AtomicBool,
     pub(super) orphan: AtomicBool,
 }
 
+impl core::ops::Deref for LiveInode {
+    type Target = crate::fs::vfs::VNode;
+    fn deref(&self) -> &Self::Target {
+        &self.vnode
+    }
+}
 impl LiveInode {
     pub fn touch(&self, read: bool) {
         let now = super::fifo_times::encode(crate::time::current_unix_time_coarse() as u32);
@@ -109,6 +113,12 @@ pub struct FileHandle {
     pub(crate) object: Arc<LiveInode>,
 }
 
+impl core::ops::Deref for FileHandle {
+    type Target = crate::fs::vfs::VNode;
+    fn deref(&self) -> &Self::Target {
+        &self.object.vnode
+    }
+}
 impl FileHandle {
     fn acquire(object: Arc<LiveInode>) -> Self {
         object.external_handles.fetch_add(1, Ordering::AcqRel);
@@ -240,19 +250,32 @@ impl LiveInodes {
             object.map.resync_unbound(size);
             object.clone()
         } else {
+            let incarnation = identity(&NEXT_INCARNATION)?;
+            let filesystem = Arc::try_new(super::adapter::Ext2Adapter::new(mount))
+                .map_err(|_| "No memory for inode filesystem")?;
+            let vnode = crate::fs::vfs::VNode::new(
+                mount.mount_id,
+                inode.into(),
+                incarnation,
+                size,
+                crate::fs::vfs::NodeTimes::default(),
+                filesystem,
+                self.durable_epoch(),
+                Arc::try_new(()).map_err(|_| "No memory for inode pin")?,
+            )
+            .map_err(|_| "No memory for inode mapping state")?;
             let object = Arc::try_new(LiveInode {
                 key: FileKey {
                     mount_instance: mount.instance,
                     inode,
-                    incarnation: identity(&NEXT_INCARNATION)?,
+                    incarnation,
                 },
                 mount,
-                size: AtomicU64::new(size),
+                vnode,
                 size_epoch: AtomicU64::new(0),
                 atime_pending: AtomicU64::new(0),
                 mtime_pending: AtomicU64::new(0),
                 ctime_pending: AtomicU64::new(0),
-                map: crate::memory::file_map::MapState::new(size, self.durable_epoch()),
                 data_io: AtomicBool::new(false),
                 external_handles: AtomicUsize::new(0),
                 pending: AtomicBool::new(false),

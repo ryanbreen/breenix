@@ -10,11 +10,11 @@ use crate::fs::{
     },
     vfs::{
         DirEnt, FileSystem, NewNode, NodeAttrs, NodeKind, NodeTimes, Remove, RenameMode, SetAttr,
-        StatFs, Timestamp, VNode, WriteAt, WriteError, WriteReq, WriteResult, Xattr,
+        StatFs, Timestamp, VNode, MappingIo, WriteAt, WriteError, WriteReq, WriteResult, Xattr,
     },
 };
 use crate::syscall::errno::*;
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::sync::atomic::Ordering;
 
 pub struct Ext2Adapter {
@@ -90,11 +90,23 @@ impl Ext2Adapter {
     fn open_loaded(&self, fs: &Ext2Fs, ino: u32, inode: &Ext2Inode) -> Result<Arc<VNode>, Errno> {
         let handle = fs.pin_loaded_inode(ino, inode.size()).map_err(errno)?;
         let attrs = attributes(ino.into(), inode)?;
-        let incarnation = handle.object.key.incarnation;
-        let pin = Arc::try_new(handle).map_err(|_| Errno(ENOMEM))?;
-        Arc::try_new(VNode::new(
-            self.mount.mount_id, ino.into(), incarnation, attrs.size, attrs.times, pin,
-        )).map_err(|_| Errno(ENOMEM))
+        #[cfg(not(test))]
+        let node = handle.object.vnode.reopen(
+            attrs.times,
+            Arc::try_new(handle.clone()).map_err(|_| Errno(ENOMEM))?,
+        );
+        #[cfg(test)]
+        let node = VNode::new(
+            self.mount.mount_id,
+            ino.into(),
+            handle.object.key.incarnation,
+            attrs.size,
+            attrs.times,
+            Arc::new(Self::new(self.mount)),
+            0,
+            Arc::new(handle),
+        )?;
+        Arc::try_new(node).map_err(|_| Errno(ENOMEM))
     }
 
     fn pin_node(&self, fs: &Ext2Fs, node: &VNode) -> Result<FileHandle, Errno> {
@@ -289,7 +301,7 @@ impl FileSystem for Ext2Adapter {
                 .map_err(errno)?
         };
         for handle in &handles {
-            crate::memory::file_map::sync_range(handle, 0, u64::MAX).map_err(errno)?;
+            crate::memory::file_map::sync_range(handle, 0, u64::MAX)?;
         }
         let guard = sync_mount_guard(self.mount).map_err(errno)?;
         guard.as_ref().ok_or(Errno(EIO))?.sync().map_err(errno)
@@ -739,29 +751,77 @@ impl FileSystem for Ext2Adapter {
         let guard = sync_mount_guard(self.mount).map_err(errno)?;
         let fs = guard.as_ref().ok_or(Errno(EIO))?;
         let handle = self.pin_node(fs, node)?;
-        if handle.object.map.has_dirty() {
+        if node.map.has_dirty() {
             // Keep ext2's existing fsync/fdatasync behavior: write dirty shared
             // pages, then flush data and metadata through the pinned transfer.
             drop(guard);
-            return crate::memory::file_map::sync_range(&handle, 0, u64::MAX).map_err(errno);
+            return crate::memory::file_map::sync_range(node, 0, u64::MAX);
         }
         fs.check_shrink(handle.verify(fs).map_err(errno)?)
             .map_err(errno)?;
         fs.sync().map_err(errno)
     }
 
-    fn writeback_pages(&self, node: &VNode, page: u64, bytes: &[u8]) -> Result<(), Errno> {
-        let offset = page.checked_mul(4096).ok_or(Errno(EFBIG))?;
-        let handle = {
-            let guard = read_mount(self.mount).map_err(errno)?;
-            let fs = guard.as_ref().ok_or(Errno(EIO))?;
-            self.pin_node(fs, node)?
-        };
-        let written = ext2::mapped_io::write_mapped_range(&handle, offset, bytes).map_err(errno)?;
-        if written != bytes.len() {
-            return Err(Errno(EIO));
+    fn writeback_pages(
+        &self,
+        node: &VNode,
+        page: u64,
+        bytes: &[u8],
+        io: &dyn MappingIo,
+    ) -> Result<(), Errno> {
+        #[cfg(not(test))]
+        {
+            let file = io
+                .as_any()
+                .downcast_ref::<ext2::mapped_io::DataFile>()
+                .ok_or(Errno(EIO))?;
+            ext2::mapped_io::writeback_pages(node, page, bytes, file).map_err(errno)
         }
-        Ok(())
+        #[cfg(test)]
+        {
+            let _ = (node, page, bytes, io);
+            Err(Errno(EOPNOTSUPP))
+        }
+    }
+
+    fn mapping_io(&self, node: &VNode) -> Result<Box<dyn MappingIo>, Errno> {
+        #[cfg(not(test))]
+        {
+            let handle = {
+                let guard = read_mount(self.mount).map_err(errno)?;
+                self.pin_node(guard.as_ref().ok_or(Errno(EIO))?, node)?
+            };
+            Ok(
+                Box::try_new(ext2::mapped_io::DataFile::open(&handle).map_err(errno)?)
+                    .map_err(|_| Errno(ENOMEM))?,
+            )
+        }
+        #[cfg(test)]
+        {
+            let _ = node;
+            Err(Errno(EOPNOTSUPP))
+        }
+    }
+
+    fn clear_mapping_privilege(&self, node: &VNode) -> Result<(), Errno> {
+        #[cfg(not(test))]
+        {
+            let mut guard = write_mount(self.mount).map_err(errno)?;
+            let fs = guard.as_mut().ok_or(Errno(EIO))?;
+            let handle = self.pin_node(fs, node)?;
+            let ino = handle.verify(fs).map_err(errno)?;
+            fs.drop_content_privilege(ino).map_err(errno)
+        }
+        #[cfg(test)]
+        {
+            let _ = node;
+            Err(Errno(EOPNOTSUPP))
+        }
+    }
+
+    fn request_eviction(&self) {
+        #[cfg(not(test))]
+        ext2::request_map_eviction();
     }
 
     fn xattr(&self, _ino: u64, _op: Xattr<'_>) -> Result<usize, Errno> {

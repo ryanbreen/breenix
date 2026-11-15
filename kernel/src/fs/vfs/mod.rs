@@ -3,8 +3,9 @@
 //! Backends take their own locks; inode numbers crossing this boundary are u64.
 
 use crate::fs::{attrs::InodeAttrs, errno::Errno};
+use crate::memory::file_map::MapState;
 use crate::syscall::errno::EOPNOTSUPP;
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{any::Any, sync::atomic::AtomicU64};
 use spin::Mutex;
 
@@ -45,12 +46,14 @@ pub struct NodeTimes {
 }
 
 /// An open inode. The opaque backend pin retains its incarnation; dropping it
-/// must do no I/O. MapState stays in ext2 until the mmap migration in 24.6.
+/// must do no I/O. Opens of one incarnation share its size and mapping state.
 pub struct VNode {
     pub mount: usize,
     pub ino: u64,
     pub incarnation: u64,
-    pub size: AtomicU64,
+    pub size: Arc<AtomicU64>,
+    pub map: MapState,
+    pub filesystem: Arc<dyn FileSystem>,
     pub times: Mutex<NodeTimes>,
     backend_pin: Arc<dyn Any + Send + Sync>,
 }
@@ -61,13 +64,32 @@ impl VNode {
         incarnation: u64,
         size: u64,
         times: NodeTimes,
+        filesystem: Arc<dyn FileSystem>,
+        durable_epoch: u64,
         pin: Arc<dyn Any + Send + Sync>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, Errno> {
+        Ok(Self {
             mount,
             ino,
             incarnation,
-            size: AtomicU64::new(size),
+            size: Arc::try_new(AtomicU64::new(size))
+                .map_err(|_| Errno(crate::syscall::errno::ENOMEM))?,
+            map: MapState::new(size, durable_epoch, filesystem.clone())?,
+            filesystem,
+            times: Mutex::new(times),
+            backend_pin: pin,
+        })
+    }
+
+    /// Retain the backend observer while sharing the incarnation's cache.
+    pub fn reopen(&self, times: NodeTimes, pin: Arc<dyn Any + Send + Sync>) -> Self {
+        Self {
+            mount: self.mount,
+            ino: self.ino,
+            incarnation: self.incarnation,
+            size: self.size.clone(),
+            map: self.map.clone(),
+            filesystem: self.filesystem.clone(),
             times: Mutex::new(times),
             backend_pin: pin,
         }
@@ -77,6 +99,33 @@ impl VNode {
     pub fn pin<T: Any>(&self) -> Option<&T> {
         self.backend_pin.downcast_ref()
     }
+}
+
+impl core::fmt::Debug for VNode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("VNode")
+            .field("mount", &self.mount)
+            .field("ino", &self.ino)
+            .field("incarnation", &self.incarnation)
+            .finish_non_exhaustive()
+    }
+}
+/// A pinned transfer excludes content mutations until dropped. Data I/O holds
+/// no process-manager or mapping lock. Publication takes the filesystem guard
+/// before entering the caller's short process-manager section.
+pub trait MappingIo: Any {
+    fn as_any(&self) -> &dyn Any;
+    fn size(&self) -> u64;
+    fn read(&self, offset: u64, length: usize) -> Result<Vec<u8>, Errno>;
+    fn needs_flush(&self) -> bool;
+    fn sync(&self, first: u64, last: u64) -> Result<(), Errno>;
+    fn publish(&self, bind: &mut dyn FnMut(bool) -> Result<(), Errno>) -> Result<(), Errno>;
+}
+
+/// Read repair while the backend caller already holds mutation exclusion.
+/// Reserved for mutation completion; see docs/fs/cowfs-design.md section 1.1.
+pub trait MappingRead {
+    fn read_mapping_page(&self, ino: u64, offset: u64, length: usize) -> Result<Vec<u8>, Errno>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -293,9 +342,23 @@ pub trait FileSystem: core::any::Any + Send + Sync {
     fn fsync(&self, _node: &VNode, _data_only: bool) -> Result<(), Errno> {
         Err(Errno(EOPNOTSUPP))
     }
-    fn writeback_pages(&self, _node: &VNode, _page: u64, _bytes: &[u8]) -> Result<(), Errno> {
+    fn writeback_pages(
+        &self,
+        _node: &VNode,
+        _page: u64,
+        _bytes: &[u8],
+        _io: &dyn MappingIo,
+    ) -> Result<(), Errno> {
         Err(Errno(EOPNOTSUPP))
     }
+    fn mapping_io(&self, _node: &VNode) -> Result<Box<dyn MappingIo>, Errno> {
+        Err(Errno(EOPNOTSUPP))
+    }
+    fn clear_mapping_privilege(&self, _node: &VNode) -> Result<(), Errno> {
+        Err(Errno(EOPNOTSUPP))
+    }
+    /// Must be nonblocking and safe under PROCESS_MANAGER, including on drop.
+    fn request_eviction(&self) {}
     // Xattrs (no syscall consumer yet).
     fn xattr(&self, _ino: u64, _op: Xattr<'_>) -> Result<usize, Errno> {
         Err(Errno(EOPNOTSUPP))
