@@ -50,9 +50,10 @@ class TestsBuildTest(unittest.TestCase):
     def test_milestone_selector_reaches_the_driver(self):
         run = load_script('metal-run')
         with tempfile.TemporaryDirectory() as home, \
-             patch.object(run, 'host_env', return_value={}), \
+             patch.object(run, 'host_env', return_value={'BUILD_REPO': '/repo'}), \
              patch.object(run, 'resolve', return_value='a' * 40), \
-             patch.object(run, 'resolve_suites', return_value='users'), \
+             patch.object(run, 'resolve_suites', side_effect=lambda env, sha, spec: spec), \
+             patch.object(run, 'in_build', return_value=SimpleNamespace(returncode=0, stdout=(ROOT / 'docs/efforts/path.json').read_text())), \
              patch.object(run, 'in_metal', return_value=SimpleNamespace(returncode=0, stdout='', stderr='')) as metal, \
              patch.object(run.Path, 'home', return_value=Path(home)), \
              patch.object(run.subprocess, 'Popen'):
@@ -60,8 +61,13 @@ class TestsBuildTest(unittest.TestCase):
         command = metal.call_args.args
         self.assertEqual(command[command.index('--milestone') + 1], 'users/kernel-checks')
         self.assertEqual(command[command.index('--mode') + 1], 'suite')
-        for suite in (None, 'all', 'users,server'):
-            with self.subTest(suite=suite), self.assertRaisesRegex(SystemExit, '--milestone needs'):
+        for suite in (None, 'all', 'server,smoke'):
+            with self.subTest(suite=suite), \
+                 patch.object(run, 'host_env', return_value={'BUILD_REPO': '/repo'}), \
+                 patch.object(run, 'resolve', return_value='a' * 40), \
+                 patch.object(run, 'resolve_suites', side_effect=lambda env, sha, spec: spec), \
+                 patch.object(run, 'in_build', return_value=SimpleNamespace(returncode=0, stdout=(ROOT / 'docs/efforts/path.json').read_text())), \
+                 self.assertRaisesRegex(SystemExit, '--milestone needs'):
                 run.boot(run_args(mode='default', suite=suite, milestone='users/kernel-checks'))
 
     def test_a_tests_boot_requests_the_testing_kernel_on_a_disk_root(self):

@@ -1032,7 +1032,13 @@ class Driver:
                 command += [str(sandbox / 'scripts/suite-verdict.py'),
                             str(sandbox / 'docs/suites' / (self.args.suite + '.json')), str(sandbox / 'serial.txt')]
             if getattr(self.args, 'milestone', None):
-                command += ['--milestone', self.args.milestone]
+                selector = self.args.milestone
+                if several:
+                    path = json.loads((definition / 'docs/efforts/path.json').read_text())
+                    measure = next(item['measure'] for effort in path['efforts'] for item in effort['milestones']
+                                   if effort['id'] + '/' + item['id'] == selector)
+                    selector = measure['suite'] + '=' + selector
+                command += ['--milestone', selector]
             if disk is not None:
                 command += ['--disk', str(sandbox / 'disk.img')]
             try:
@@ -2462,8 +2468,8 @@ def main():
                 parser.error('suite mode needs --suite ID, or distinct ids joined by commas')
         elif args.suite:
             parser.error('--suite needs suite mode')
-        if args.milestone and (args.mode != 'suite' or len(suites(args)) != 1):
-            parser.error('--milestone needs one suite')
+        if args.milestone and args.mode != 'suite':
+            parser.error('--milestone needs suite mode')
         if (args.payload == 'persistent') != (args.mode == 'persistent'):
             parser.error('a persistent boot needs the persistent payload and mode together')
         if args.payload not in ('image', 'persistent') and args.mode != 'default':
