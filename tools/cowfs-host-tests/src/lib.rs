@@ -67,7 +67,7 @@ pub struct Metadata {
     pub btime: Time,
 }
 
-/// Zero bytes, including holes, are absent. Allocation layout is not POSIX state.
+/// Sparse representation omits bytes whose value is 0, including holes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Contents {
     File {
@@ -200,7 +200,7 @@ pub struct Difference {
     pub actual: Option<Inode>,
 }
 
-/// Return every differing inode, including names, hard links, bytes and metadata.
+/// Diff inode presence, names, hard links, bytes and metadata.
 pub fn compare(model: &impl Fs, fs: &impl Fs) -> Result<Vec<Difference>> {
     let expected = model.state()?;
     let actual = fs.state()?;
