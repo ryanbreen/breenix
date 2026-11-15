@@ -125,7 +125,7 @@ fn seed_1_create_write_remount() {
     let device = alloc::sync::Arc::new(
         crate::recording::RecordingDevice::new(crate::test_image::image()).unwrap(),
     );
-    let mut writer = WriterAdapter::new(device).unwrap();
+    let mut writer = WriterAdapter::new(device.clone()).unwrap();
     let operations: alloc::vec::Vec<_> = crate::stream::Stream::new(1).take(4).collect();
     assert_eq!(operations.len(), 4);
     assert!(matches!(operations[0].action, Action::Create { .. }));
@@ -136,6 +136,9 @@ fn seed_1_create_write_remount() {
         let expected = model.execute(&op).unwrap();
         assert_eq!(writer.execute(&op), Ok(expected), "{op:?}");
         assert!(compare(&model, &writer).unwrap().is_empty(), "{op:?}");
+        if matches!(op.action, Action::Fsync { .. }) {
+            crate::test_image::check(&device.durable_image(), "seed-1");
+        }
     }
 }
 
@@ -264,7 +267,16 @@ fn compare_reports_whole_inode_state() {
     assert_eq!(diff[1].expected, Some(original.inodes[&file].clone()));
     assert_eq!(diff[1].actual, Some(observed.0.inodes[&file].clone()));
     assert_eq!(diff[2].expected, None);
-    assert_eq!(compare(&model, &WriterAdapter), Err(Error::Unimplemented));
+    struct Unavailable;
+    impl Fs for Unavailable {
+        fn execute(&mut self, _: &Operation) -> Result<Reply> {
+            Err(Error::Unimplemented)
+        }
+        fn state(&self) -> Result<State> {
+            Err(Error::Unimplemented)
+        }
+    }
+    assert_eq!(compare(&model, &Unavailable), Err(Error::Unimplemented));
 }
 
 #[test]

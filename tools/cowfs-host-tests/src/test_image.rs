@@ -27,3 +27,19 @@ pub fn image() -> std::vec::Vec<u8> {
         })
         .clone()
 }
+
+pub fn check(bytes: &[u8], tag: &str) {
+    use std::{fs, process::Command};
+    let path = std::env::temp_dir().join(std::format!(
+        "cowfs-files-check-{}-{tag}.img",
+        std::process::id()
+    ));
+    fs::write(&path, bytes).unwrap();
+    let output = Command::new(env!("CARGO_BIN_FILE_COWFS_cowfs-check"))
+        .arg("--full")
+        .arg(&path)
+        .output()
+        .unwrap();
+    fs::remove_file(path).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+}

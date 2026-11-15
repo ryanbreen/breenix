@@ -105,8 +105,21 @@ impl<S: NodeStore> NodeStore for Reservations<'_, S> {
     }
 }
 
+enum Backing<'a, S> {
+    Borrowed(&'a S),
+    Owned(S),
+}
+impl<S> Backing<'_, S> {
+    fn get(&self) -> &S {
+        match self {
+            Self::Borrowed(base) => base,
+            Self::Owned(base) => base,
+        }
+    }
+}
+
 pub struct Transaction<'a, S> {
-    base: &'a S,
+    base: Backing<'a, S>,
     generation: u64,
     original_space: BlockPtr,
     space_root: BlockPtr,
@@ -121,7 +134,18 @@ pub struct Transaction<'a, S> {
 }
 impl<'a, S: NodeStore> Transaction<'a, S> {
     pub fn new(base: &'a S, space_root: BlockPtr, generation: u64) -> Result<Self, Error> {
-        let h = NodeHeader::decode(&base.get(space_root.addr)?)?;
+        Self::with_backing(Backing::Borrowed(base), space_root, generation)
+    }
+    /// Own a read-only store so an adapter can retain a transaction between calls.
+    pub fn new_owned(base: S, space_root: BlockPtr, generation: u64) -> Result<Self, Error> {
+        Self::with_backing(Backing::Owned(base), space_root, generation)
+    }
+    fn with_backing(
+        base: Backing<'a, S>,
+        space_root: BlockPtr,
+        generation: u64,
+    ) -> Result<Self, Error> {
+        let h = NodeHeader::decode(&base.get().get(space_root.addr)?)?;
         if h.tree != 2
             || h.addr != space_root.addr
             || h.generation != space_root.generation
@@ -147,7 +171,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
     }
     pub fn view(&self) -> View<'_, S> {
         View {
-            base: self.base,
+            base: self.base.get(),
             nodes: &self.nodes,
         }
     }
@@ -174,7 +198,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
         if let Some(count) = self.counts.get(&(start, length)) {
             return Ok(*count);
         }
-        let r = space::reference(self.base, self.original_space, start, length)?
+        let r = space::reference(self.base.get(), self.original_space, start, length)?
             .ok_or(Error::Invalid)?;
         self.counts.insert((start, length), r.refcount);
         Ok(r.refcount)
@@ -182,7 +206,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
     fn reserve(&mut self, length: u64, kind: Kind, crcs: &[u32]) -> Result<u64, Error> {
         let mut reservations = Reservations {
             view: View {
-                base: self.base,
+                base: self.base.get(),
                 nodes: &BTreeMap::new(),
             },
             changes: &mut self.reserved_nodes,

@@ -8,11 +8,10 @@ kernel runtime or on a host filesystem. Run it with:
 CARGO_BUILD_JOBS=4 taskpolicy -b cargo test --manifest-path tools/cowfs-host-tests/Cargo.toml
 ```
 
-Unit 24.8-a-model deliberately leaves `model::seed_1_create_write_remount` red:
-`WriterAdapter` returns `Error::Unimplemented`. That sentinel is distinct from
-`Error::Errno`; a later writer unit replaces the adapter and satisfies the same
-check. The model checks exercise errno, sparse bytes, hard links, metadata,
-namespace changes and whole-state differences.
+Unit 24.8-a-model introduced `model::seed_1_create_write_remount` as a red
+sentinel for the absent writer. Unit 24.8-f supplies the file writer adapter;
+that unchanged operation sequence now exercises create, sparse write, fsync
+and recovery from the recording device.
 
 `Fs::execute` consumes an `Operation` with an explicit timestamp. `Action` uses
 inode-relative single-component names; VFS pathname traversal, credentials,
@@ -154,3 +153,34 @@ with the later operations/adapter units. ARM and x86 still lack that adapter,
 reservation policy, DEAD/orphan reaping and writable kernel mount integration.
 The kernel module is still undeclared; ARM64 QEMU, Parallels and VMware runtime
 acceptance and the Hold-group adapter belong to later steps.
+
+
+Unit 24.8-f adds `ops.rs` for regular-file creation, sparse reads/writes,
+truncate, setattr and xattr insertion/replacement/removal. New inode numbers
+come from ROOT.next_inode. Creation publishes paired directory hash/index items.
+Writes allocate private 4 KiB data blocks with CRCs in REF; holes have no items.
+Truncate clears the portion after EOF in a mapped partial tail and releases
+removed EXTENT references through txn.rs into PENDING. Splitting an existing larger
+extent retains a reference per surviving slice. Xattr collision buckets use the
+superblock SipHash key and the design's name/value limits.
+<!-- claim-lint:ok: File representation requirements in docs/fs/cowfs-design.md section 2.3; kernel/src/fs/cowfs/ops.rs implements truncate. -->
+
+`WriterAdapter::new` takes a device, recovers root 1 and retains an owned
+read-only store in its transaction. Its `Fs` implementation calls the kernel
+file operations; `state` decodes tree items and reads file bytes without consulting
+the model. Fsync publishes the transaction; clean remount commits dirty work,
+drops the overlay and recovers from the device. Storage failure prevents further
+operations on that adapter. Preflight ENOSPC reservation remains step 24.12.
+
+Run this unit's three checks with `cargo test --test ops` and the seed with
+`cargo test --lib model::seed_1_create_write_remount`. The checks compare logical
+state after operations, inspect PENDING on disk, read holes directly, and invoke
+the actual `cowfs-check --full` binary after their fsync commits, requiring exit 0.
+The recording device checks W1-W3 during publication. Unit f does not move mkfs
+population onto the writer; that follows the namespace half of operations.
+
+ARM and x86 still lack namespace mutation beyond regular-file creation, orphan
+and DEAD reaping, reservation policy, Hold-group/page-cache integration and the
+writable VFS mount/runtime acceptance. The architecture-neutral core remains
+undeclared in kernel fs/mod.rs. ARM64 QEMU, Parallels and VMware runtime coverage
+belongs to later steps; this unit has no boot.

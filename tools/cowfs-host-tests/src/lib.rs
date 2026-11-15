@@ -22,6 +22,8 @@ pub mod space;
 pub mod txn;
 
 pub mod model;
+#[path = "../../../kernel/src/fs/cowfs/ops.rs"]
+pub mod ops;
 pub mod recording;
 pub mod stream;
 
@@ -64,6 +66,8 @@ pub enum Errno {
     EMLINK,
     ENAMETOOLONG,
     ENOTEMPTY,
+    EIO,
+    ENOSPC,
 }
 
 /// Adapter absence is separate from a filesystem's POSIX error response.
@@ -212,23 +216,10 @@ pub trait Fs {
     fn state(&self) -> Result<State>;
 }
 
-/// Deliberately red until a later unit supplies the transaction writer adapter.
-pub struct WriterAdapter;
-impl WriterAdapter {
-    pub fn new(_device: alloc::sync::Arc<dyn block::BlockDevice>) -> Result<Self> {
-        Ok(Self)
-    }
-}
+pub mod writer;
+pub use writer::WriterAdapter;
 #[cfg(test)]
 mod test_image;
-impl Fs for WriterAdapter {
-    fn execute(&mut self, _op: &Operation) -> Result<Reply> {
-        Err(Error::Unimplemented)
-    }
-    fn state(&self) -> Result<State> {
-        Err(Error::Unimplemented)
-    }
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Difference {

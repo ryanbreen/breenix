@@ -1,5 +1,5 @@
 use cowfs_host_tests::{format as disk, recording::RecordingDevice, *};
-use std::{fs, process::Command, sync::Arc};
+use std::sync::Arc;
 #[path = "../src/test_image.rs"]
 mod test_image;
 
@@ -43,18 +43,7 @@ fn create(w: &mut impl Fs, m: &mut impl Fs, name: &[u8], tick: i64) -> Ino {
 }
 fn checked_commit(w: &mut impl Fs, m: &mut impl Fs, d: &RecordingDevice, ino: Ino, tick: i64) {
     pair(w, m, Action::Fsync { ino }, tick);
-    let path = std::env::temp_dir().join(format!(
-        "cowfs-files-{}-{ino}-{tick}.img",
-        std::process::id()
-    ));
-    fs::write(&path, d.durable_image()).unwrap();
-    let output = Command::new(env!("CARGO_BIN_FILE_COWFS_cowfs-check"))
-        .arg("--full")
-        .arg(&path)
-        .output()
-        .unwrap();
-    fs::remove_file(path).unwrap();
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    test_image::check(&d.durable_image(), &format!("{ino}-{tick}"));
 }
 fn tree(d: &RecordingDevice) -> (disk::Superblock, Vec<(disk::Key, Vec<u8>)>) {
     use cowfs_host_tests::btree::NodeStore;
@@ -104,6 +93,20 @@ fn sparse_write_reads_holes_as_zero() {
         },
         2,
     );
+    pair(
+        &mut w,
+        &mut m,
+        Action::Write {
+            ino,
+            offset: 8192,
+            bytes: b"Q".to_vec(),
+        },
+        2,
+    );
+    let mut read = vec![99; 8196];
+    assert_eq!(w.read(ino, 0, &mut read).unwrap(), 8196);
+    assert!(read[..8191].iter().all(|b| *b == 0));
+    assert_eq!(&read[8191..], b"aQ\0cd");
     checked_commit(&mut w, &mut m, &d, ino, 3);
     pair(&mut w, &mut m, Action::Remount, 4);
     pair(
@@ -157,7 +160,7 @@ fn truncate_releases_extents_to_pending() {
     pair(&mut w, &mut m, Action::Truncate { ino, size: 1 }, 4);
     checked_commit(&mut w, &mut m, &d, ino, 5);
     let (sb, space) = tree(&d);
-    // Every old data REF is released, including the replaced partial tail.
+    // Shrinking to one byte releases the old data REFs, including the replaced tail.
     for (start, length) in old {
         for block in start..start + length {
             assert!(space.iter().any(|(k, v)| k.item_type == disk::PENDING && {
