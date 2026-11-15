@@ -100,3 +100,34 @@ owns child/data references. Such a zero-ref node becomes DEAD without changing
 its children; the later transaction/reaper units own those decrements.
 Space nodes remain uniquely referenced. This unit does not supply the writer,
 reservation policy, commit engine, reaper or guest mount on either architecture.
+
+
+`txn.rs` stages a transaction's FS nodes in a private overlay and uses the B-tree's
+`prepare_edit` hook before descending or rebalancing siblings. Earlier-generation
+nodes get fresh addresses; generation-T nodes keep their addresses on later edits.
+A shared FS copy increments its internal children, or the physical REF named by
+each EXTENT item in a leaf, before descending. A uniquely referenced copy transfers
+its outgoing references. Structural merges and root collapse transfer references
+and release detached nodes through `space.rs`.
+
+Space edits are deferred. A separate scratch view runs `space::allocate` to reserve
+addresses with its FREE/PENDING reuse policy. `settle` applies those allocations,
+refcount changes, releases and ROOT records to the COW space tree, including work
+queued by that tree's own copies and splits. The scratch split addresses stay in
+the reservation view; physical node writes use addresses reserved by `space.rs`.
+An error poisons the transaction; discard it and its unpublished roots. The backing
+store is borrowed read-only and retains the earlier node bytes.
+
+`allocate_data` returns one caller-owned reference; inserting its EXTENT transfers
+that reference. Another item naming the same physical REF needs `increment` first.
+Replacing an EXTENT that names a different REF, or deleting one, releases the old
+reference. `update_root` transfers the reference established by COW or `create_tree`
+into the ROOT record. The later operations layer owns namespace/item semantics.
+
+Run the four transaction checks with `cargo test --test txn`. They cover repeated
+edits, shared leaf extents, the space-tree fixpoint, and seeded insert/delete streams
+against BTreeMap while the earlier root retains its values. The transaction core
+is architecture-independent and remains undeclared in `fs/mod.rs`. ARM and x86
+still lack commit/recovery/ops, the writer adapter, reservation policy, the reaper
+and writable kernel mount integration. ARM64 QEMU, Parallels and VMware runtime
+acceptance remains in the later steps.

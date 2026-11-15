@@ -14,6 +14,8 @@ pub mod format;
 pub mod siphash;
 #[path = "../../../kernel/src/fs/cowfs/space.rs"]
 pub mod space;
+#[path = "../../../kernel/src/fs/cowfs/txn.rs"]
+pub mod txn;
 
 pub mod model;
 pub mod recording;
