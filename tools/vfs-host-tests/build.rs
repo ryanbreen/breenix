@@ -9,9 +9,10 @@ fn main() {
         .unwrap();
     let end = text[start..].find("pub fn sys_statfs(").unwrap() + start;
     let user = text.find("fn user_statfs(").unwrap();
+    let user_end = user + text[user..].find("\n}").unwrap() + 2;
     // Compile the production dispatch and UFS decoder, with namespace and
     // daemon transport supplied by the host fixture.
-    let code = format!("{}\n{}", &text[start..end], &text[user..])
+    let code = format!("{}\n{}", &text[start..end], &text[user..user_end])
         .replace("crate::fs::vfs::mount::", "crate::statfs_support::mount::");
     fs::write(
         PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("statfs_dispatch.rs"),
