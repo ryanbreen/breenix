@@ -5,5 +5,11 @@ edition = "2021"
 
 [workspace]
 
+[dependencies]
+spin = "0.9"
+
+[dev-dependencies]
+cowfs = { path = "../cowfs", artifact = "bin:cowfs-mkfs" }
+
 [lib]
 doctest = false

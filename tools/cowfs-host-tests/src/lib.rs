@@ -14,7 +14,29 @@ pub mod format;
 pub mod siphash;
 
 pub mod model;
+pub mod recording;
 pub mod stream;
+
+/// Host fixture for the synchronous kernel block-device surface.
+pub mod block {
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub enum BlockError {
+        IoError,
+        OutOfMemory,
+        OutOfBounds,
+    }
+
+    pub trait BlockDevice: Send + Sync {
+        fn identity(&self) -> usize {
+            self as *const Self as *const () as usize
+        }
+        fn read_block(&self, block: u64, buf: &mut [u8]) -> Result<(), BlockError>;
+        fn write_block(&self, block: u64, buf: &[u8]) -> Result<(), BlockError>;
+        fn block_size(&self) -> usize;
+        fn num_blocks(&self) -> u64;
+        fn flush(&self) -> Result<(), BlockError>;
+    }
+}
 
 use alloc::{collections::BTreeMap, vec::Vec};
 
