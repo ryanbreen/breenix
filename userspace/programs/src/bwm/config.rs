@@ -13,8 +13,7 @@ pub(super) fn ttf_font_size() -> f32 { settings().font_size }
 
 
 // ─── Constants ───────────────────────────────────────────────────────────────
-// Chrome sizes are logical units: `px` multiplies them by the UI scale. Client windows
-// keep their pixel sizes.
+// Chrome sizes are logical units: `px` multiplies them by the current UI scale.
 
 /// Title bar height
 pub(super) const TITLE_BAR_HEIGHT: usize = 32;
@@ -31,12 +30,15 @@ pub(super) const MIN_TEXT_COLS: usize = 128;
 pub(super) const MIN_TEXT_ROWS: usize = 36;
 
 /// bwm's UI scale and the bitmap font it draws chrome text with.
+#[derive(Clone, Copy)]
 pub(super) struct Ui {
     pub(super) scale: usize,
     pub(super) font: bitmap_font::RasterHeight,
     /// Text cell: the glyph advance, and the glyph height with its line spacing.
     pub(super) cell_w: usize,
     pub(super) cell_h: usize,
+    pub(super) mode: switch_plan::Mode,
+    pub(super) layout: placement::Layout,
 }
 
 impl Ui {
@@ -44,11 +46,7 @@ impl Ui {
     /// the largest of bwm's text sizes, 16 px at scale 1 and 32 px at scale 2 (each its
     /// own raster), whose grid is at least 128 columns by 36 rows; otherwise scale 1.
     pub(super) fn for_display(width: usize, height: usize) -> Ui {
-        let sizes = [(2, bitmap_font::RasterHeight::Size32), (1, bitmap_font::RasterHeight::Size16)];
-        let uis = sizes.map(|(scale, font)| {
-            let m = bitmap_font::metrics_at(font);
-            Ui { scale, font, cell_w: m.char_width, cell_h: m.line_height() }
-        });
+        let uis = [2, 1].map(|scale| Self::for_scale(width, height, scale));
         let [two, one] = uis;
         if width / two.cell_w >= MIN_TEXT_COLS && height / two.cell_h >= MIN_TEXT_ROWS {
             two
@@ -56,12 +54,24 @@ impl Ui {
             one
         }
     }
+
+    pub(super) fn for_scale(width: usize, height: usize, scale: usize) -> Ui {
+        let font = if scale == 2 { bitmap_font::RasterHeight::Size32 } else { bitmap_font::RasterHeight::Size16 };
+        let m = bitmap_font::metrics_at(font);
+        Ui { scale, font, cell_w: m.char_width, cell_h: m.line_height(),
+            mode: switch_plan::Mode { width, height, scale },
+            layout: placement::Layout::for_mode(width, height, scale) }
+    }
 }
 
-pub(super) static UI: std::sync::OnceLock<Ui> = std::sync::OnceLock::new();
+pub(super) static UI: std::sync::RwLock<Option<Ui>> = std::sync::RwLock::new(None);
 
-pub(super) fn ui() -> &'static Ui {
-    UI.get().expect("bwm's UI scale is chosen at start")
+pub(super) fn ui() -> Ui {
+    UI.read().expect("bwm UI lock").expect("bwm's UI scale is chosen at start")
+}
+
+pub(super) fn replace_ui(value: Ui) {
+    *UI.write().expect("bwm UI lock") = Some(value);
 }
 
 /// `n` logical units in pixels.

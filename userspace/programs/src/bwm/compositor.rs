@@ -325,6 +325,21 @@ impl Compositor {
         Ok(())
     }
 
+    /// Rebuild mode-sized targets while retaining the admitted renderer context.
+    /// Allocation failure leaves the existing targets available for rollback.
+    pub fn resize(&mut self, width: u32, height: u32, appbar_height: u32, scale: u32) -> Result<(), String> {
+        let mut next = Self::allocate(width, height, appbar_height, scale)?;
+        next.context = self.context;
+        let cleared = next.clear_targets();
+        next.context = 0;
+        cleared?;
+        core::mem::swap(&mut next.context, &mut self.context);
+        *self = next;
+        Ok(())
+    }
+
+    pub fn repaint_all(&mut self) { self.full = true; }
+
     /// Present startup chrome without a window snapshot or client presentation receipt.
     /// Real window composition starts only after the surviving clients are discovered.
     pub fn present_startup_desktop(&mut self, pointer: Option<Pointer>) -> Result<(), FrameError> {
