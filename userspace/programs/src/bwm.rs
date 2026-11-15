@@ -136,7 +136,6 @@ fn main() {
             process::exit(1);
         }
     };
-    let mut configured = false;
     if let Some(index) = configured_display(settings()) {
         let (result, report) = libbreenix::gpu::set_mode_report(index);
         if result != 0 {
@@ -146,13 +145,11 @@ fn main() {
                 eprintln!("[bwm] display: {error}");
                 process::exit(1);
             });
-            configured = true;
         }
     }
     let mut screen_w = mode.width as usize;
     let mut screen_h = mode.height as usize;
-    replace_ui(if configured { Ui::for_scale(screen_w, screen_h, mode.scale as usize) }
-               else { Ui::for_display(screen_w, screen_h) });
+    replace_ui(Ui::for_scale(screen_w, screen_h, mode.scale as usize));
     print!(
         "[bwm] UI scale {}: font {} px ({}x{} cells, text grid {}x{}), taskbar {} px, app bar {} px; the GPU core's mode {} ({}x{}) publishes scale {}\n",
         ui().scale, ui().font.val(), ui().cell_w, ui().cell_h, screen_w / ui().cell_w, screen_h / ui().cell_h,

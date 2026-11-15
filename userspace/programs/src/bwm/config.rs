@@ -24,11 +24,6 @@ pub(super) const BORDER_WIDTH: usize = 2;
 /// How far a window's drop shadow is offset right and down
 pub(super) const SHADOW_OFFSET: usize = 3;
 
-/// The console's size rule (`docs/console/contract.md`): the largest font whose text grid
-/// on the display is at least this many columns by rows.
-pub(super) const MIN_TEXT_COLS: usize = 128;
-pub(super) const MIN_TEXT_ROWS: usize = 36;
-
 /// bwm's UI scale and the bitmap font it draws chrome text with.
 #[derive(Clone, Copy)]
 pub(super) struct Ui {
@@ -42,19 +37,6 @@ pub(super) struct Ui {
 }
 
 impl Ui {
-    /// Choose the scale for a `width` x `height` display as the console chooses its font:
-    /// the largest of bwm's text sizes, 16 px at scale 1 and 32 px at scale 2 (each its
-    /// own raster), whose grid is at least 128 columns by 36 rows; otherwise scale 1.
-    pub(super) fn for_display(width: usize, height: usize) -> Ui {
-        let uis = [2, 1].map(|scale| Self::for_scale(width, height, scale));
-        let [two, one] = uis;
-        if width / two.cell_w >= MIN_TEXT_COLS && height / two.cell_h >= MIN_TEXT_ROWS {
-            two
-        } else {
-            one
-        }
-    }
-
     pub(super) fn for_scale(width: usize, height: usize, scale: usize) -> Ui {
         let font = if scale == 2 { bitmap_font::RasterHeight::Size32 } else { bitmap_font::RasterHeight::Size16 };
         let m = bitmap_font::metrics_at(font);
