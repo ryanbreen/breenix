@@ -6,10 +6,14 @@ extern crate std;
 
 #[path = "../../../kernel/src/fs/cowfs/btree.rs"]
 pub mod btree;
+#[path = "../../../kernel/src/fs/cowfs/commit.rs"]
+pub mod commit;
 #[path = "../../../kernel/src/fs/cowfs/crc32c.rs"]
 pub mod crc32c;
 #[path = "../../../kernel/src/fs/cowfs/format.rs"]
 pub mod format;
+#[path = "../../../kernel/src/fs/cowfs/recover.rs"]
+pub mod recover;
 #[path = "../../../kernel/src/fs/cowfs/siphash.rs"]
 pub mod siphash;
 #[path = "../../../kernel/src/fs/cowfs/space.rs"]

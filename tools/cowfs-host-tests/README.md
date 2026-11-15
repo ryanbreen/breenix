@@ -131,3 +131,26 @@ is architecture-independent and remains undeclared in `fs/mod.rs`. ARM and x86
 still lack commit/recovery/ops, the writer adapter, reservation policy, the reaper
 and writable kernel mount integration. ARM64 QEMU, Parallels and VMware runtime
 acceptance remains in the later steps.
+
+`commit.rs` now publishes a settled transaction directly over `&dyn BlockDevice`.
+It fills private node headers and pointers in dependency order, writes device-sized
+sectors, flushes nodes/data, writes slot G mod 4 in both rings, then flushes the
+publication. Fsync completion receipts become successful after the second flush.
+An I/O failure completes the pending receipts with EIO and latches the committer
+read-only. Prepublication errors issue no superblock; publication errors stop
+without rollback writes, per the corrected design section 2.5.
+
+`recover.rs` validates the eight slots, refuses disagreeing UUIDs, and selects the
+highest generation with matching SPACE and ROOT pointers. Writable recovery clears
+valid abandoned slots and flushes the cleanup before returning a mount candidate.
+A cleanup error refuses that writable recovery. This is a root validation pass;
+FS descendant checking on reads and the full scrub remain separate layers.
+
+Run the seven commit/recovery checks with `cargo test --test commit_recover`.
+They use the recording device, including failure wrappers, two publication
+outcomes, a retained private DEAD node, internal FS nodes, and a logical tree
+comparison against the POSIX model. The model's absent-writer sentinel remains
+with the later operations/adapter units. ARM and x86 still lack that adapter,
+reservation policy, DEAD/orphan reaping and writable kernel mount integration.
+The kernel module is still undeclared; ARM64 QEMU, Parallels and VMware runtime
+acceptance and the Hold-group adapter belong to later steps.

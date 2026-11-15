@@ -3,7 +3,7 @@ use cowfs_host_tests::{
     btree::{self, NodeStore},
     commit::{Committer, Error},
     crc32c,
-    format::*,
+    format::{self, *},
     model::Model,
     recording::{Event, RecordingDevice},
     txn::Transaction,
@@ -39,6 +39,9 @@ fn image() -> Vec<u8> {
             let dir = p.with_extension("source");
             fs::create_dir(&dir).unwrap();
             fs::write(dir.join("file"), b"old").unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::set_permissions(dir.join("file"), fs::Permissions::from_mode(0o644)).unwrap();
             let out = Command::new(env!("CARGO_BIN_FILE_COWFS_cowfs-mkfs"))
                 .args([
                     "--size",
@@ -164,13 +167,19 @@ fn stage<'a>(
     txn.update_root(1, r.clone()).unwrap();
     // Force an internal FS root to exercise bottom-up header/pointer filling.
     for n in 0..4 {
+        let name = format!("user.key{n}").into_bytes();
+        let value = Xattr {
+            name: name.clone(),
+            value: vec![n as u8; 4096],
+        }
+        .encode();
         txn.insert(
             &mut r.root,
             Key {
-                offset: n,
+                offset: cowfs_host_tests::siphash::hash(&sb.dirhash_key, &name),
                 ..key(16, XATTR)
             },
-            &vec![n as u8; 6144],
+            &value,
         )
         .unwrap();
     }
@@ -185,7 +194,8 @@ fn assert_snapshot(bytes: &[u8], sb: &Superblock, expected: &Expected) {
     let actual = snapshot(bytes, sb);
     assert_eq!(actual.tree, expected.tree);
     assert_eq!(actual.file, expected.file);
-    // Independent POSIX write oracle for the logical data in this tree.
+    // Independent POSIX oracle plus an item decoder compare logical metadata,
+    // directory entries, file bytes and xattrs, as well as the physical tree.
     let mut model = Model::new();
     let ino = model.create(2, b"file", 0o644, Default::default()).unwrap();
     model
@@ -194,6 +204,80 @@ fn assert_snapshot(bytes: &[u8], sb: &Superblock, expected: &Expected) {
     let mut read = vec![0; expected.file.len() + 1];
     let n = model.read(ino, 0, &mut read).unwrap();
     assert_eq!(actual.file, read[..n]);
+    for (k, value) in &expected.tree {
+        if k.item_type == XATTR {
+            let x = Xattr::decode(value).unwrap();
+            model
+                .setxattr(k.object, &x.name, &x.value, Default::default())
+                .unwrap();
+        }
+    }
+    use cowfs_host_tests::{Contents, Fs, Metadata, State, Time};
+    let time = |t: format::Time| Time {
+        seconds: t.seconds,
+        nanos: t.nanos,
+    };
+    let mut state = State::default();
+    for (k, value) in &actual.tree {
+        if k.item_type != INODE {
+            continue;
+        }
+        let i = Inode::decode(value).unwrap();
+        let contents = if i.mode & 0o170000 == 0o040000 {
+            let entries = actual
+                .tree
+                .iter()
+                .filter(|(d, _)| d.object == k.object && d.item_type == DIR_INDEX)
+                .map(|(_, v)| {
+                    let d = DirRecord::decode(v).unwrap();
+                    (d.name, d.ino)
+                })
+                .collect();
+            Contents::Directory {
+                parent: i.parent,
+                entries,
+            }
+        } else {
+            Contents::File {
+                size: i.size,
+                bytes: actual
+                    .file
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .filter(|(_, b)| *b != 0)
+                    .map(|(n, b)| (n as u64, b))
+                    .collect(),
+            }
+        };
+        let xattrs = actual
+            .tree
+            .iter()
+            .filter(|(x, _)| x.object == k.object && x.item_type == XATTR)
+            .map(|(_, v)| {
+                let x = Xattr::decode(v).unwrap();
+                (x.name, x.value)
+            })
+            .collect();
+        state.inodes.insert(
+            k.object,
+            cowfs_host_tests::Inode {
+                metadata: Metadata {
+                    mode: i.mode,
+                    uid: i.uid,
+                    gid: i.gid,
+                    nlink: i.nlink,
+                    atime: time(i.atime),
+                    mtime: time(i.mtime),
+                    ctime: time(i.ctime),
+                    btime: time(i.btime),
+                },
+                contents,
+                xattrs,
+            },
+        );
+    }
+    assert_eq!(state, model.state().unwrap());
 }
 fn visible(dev: &dyn BlockDevice) -> Vec<u8> {
     let mut bytes = vec![0; dev.num_blocks() as usize * dev.block_size()];
@@ -296,6 +380,9 @@ mod commit {
         let mut mount = Committer::new(initial.clone());
         let base = Image(bytes);
         let (mut txn, data, expected) = stage(&base, &initial, b"new");
+        // A newly detached FS leaf remains owned by DEAD until its reaper.
+        let dead = txn.create_tree(initial.fs_uuid).unwrap();
+        txn.release(dead.addr, 4, true).unwrap();
         let a = mount.waiter();
         let b = mount.waiter();
         assert_eq!(a.result(), None);
