@@ -25,3 +25,13 @@ writes issued and not yet returned: it rises just before `write_block` and
 falls on return, on both the WriteThrough and Hold submission paths. Its last
 sequence records its last change. The write completion and gauge decrease
 share a sequence and are published together. <!-- claim-lint:ok: kernel/src/block/cache.rs device_write and tools/block-host-tests/src/cache.rs write_counters_stamp_on_completion -->
+
+The cache's charged heap budget is one eighth of RAM, clamped to 4–8 MiB.
+The 8 MiB ceiling reserves seven eighths of the smallest supported kernel heap
+(64 MiB) for other allocations, even on machines with many GiB of RAM. Each
+snapshot charges its payload plus a conservative 1280-byte allowance for the
+buffer, Arc, both tree indexes, sparse nodes and allocator alignment. In-flight
+reservations and detached pinned snapshots keep their charge until released.
+Admission evicts before allocating a replacement; when no charge fits, ordinary
+I/O proceeds uncached without allocating an entry, while Hold returns
+OutOfMemory and requests its owner's commit.

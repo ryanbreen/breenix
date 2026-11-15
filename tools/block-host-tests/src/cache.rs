@@ -1,5 +1,7 @@
 use crate::block::{BlockDevice, BlockError};
-use crate::buffer_cache::{BufferCache, BufferStatus, WriteGroup};
+use crate::buffer_cache::{BufferCache, BufferStatus, WriteGroup, BUFFER_OVERHEAD};
+
+const CHARGED_SIZE: usize = SIZE + BUFFER_OVERHEAD;
 use crate::recording::{Event, HostWait, Op, RecordingDevice, SIZE};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -182,16 +184,16 @@ fn write_counters_stamp_on_completion() {
 #[test]
 fn lru_evicts_within_bound() {
     let device = Arc::new(RecordingDevice::default());
-    let cache = BufferCache::with_capacity(HostWait::new(device.clone()), 3 * SIZE);
+    let cache = BufferCache::with_capacity(HostWait::new(device.clone()), 3 * CHARGED_SIZE);
     let mut bytes = [0; SIZE];
     for block in [1, 2, 3] {
         cache.read(&*device, block, &mut bytes).unwrap();
-        assert!(cache.resident_bytes() <= 3 * SIZE);
+        assert!(cache.resident_bytes() <= 3 * CHARGED_SIZE);
     }
     let pinned = cache.pin(&*device, 1).expect("pin resident block");
     cache.read(&*device, 2, &mut bytes).unwrap(); // 3 is LRU, 1 is pinned.
     cache.read(&*device, 4, &mut bytes).unwrap();
-    assert_eq!(cache.resident_bytes(), 3 * SIZE);
+    assert_eq!(cache.resident_bytes(), 3 * CHARGED_SIZE);
     let before = cache.counters();
     cache.read(&*device, 1, &mut bytes).unwrap();
     cache.read(&*device, 2, &mut bytes).unwrap();
@@ -209,10 +211,10 @@ fn lru_evicts_within_bound() {
     assert_eq!(&pinned[..], &[0; SIZE]);
     for block in 5..12 {
         cache.read(&*device, block, &mut bytes).unwrap();
-        assert!(cache.resident_bytes() <= 3 * SIZE);
+        assert!(cache.resident_bytes() <= 3 * CHARGED_SIZE);
     }
     drop(pinned);
-    assert!(cache.resident_bytes() <= 3 * SIZE);
+    assert!(cache.resident_bytes() <= 3 * CHARGED_SIZE);
 }
 
 #[test]
@@ -280,7 +282,7 @@ fn reader_waits_for_inflight_miss() {
     device.write_block(1, &[0xa5; SIZE]).unwrap();
     let cache = Arc::new(BufferCache::with_capacity(
         HostWait::new(device.clone()),
-        SIZE,
+        CHARGED_SIZE,
     ));
     device.hold_reads(true);
     let first = {
@@ -320,7 +322,7 @@ fn reader_waits_for_inflight_miss() {
     device.hold_wait_return(false);
     second.join().unwrap();
     assert!(retained, "evicted bytes belonging to an awakened reader");
-    assert!(resident <= SIZE);
+    assert!(resident <= CHARGED_SIZE);
     assert!(!held.contains(&Event::Returned(Op::Read(1))));
     assert_eq!(
         device
@@ -448,7 +450,7 @@ fn pressure_asks_holder_to_commit() {
     let device = Arc::new(RecordingDevice::default());
     let cache = Arc::new(BufferCache::with_capacity(
         HostWait::new(device.clone()),
-        SIZE,
+        CHARGED_SIZE,
     ));
     let requests = Arc::new(AtomicUsize::new(0));
     let group = WriteGroup::hold(&*device, {
@@ -468,7 +470,7 @@ fn pressure_asks_holder_to_commit() {
         );
     }
     assert_eq!(requests.load(Ordering::SeqCst), 1);
-    assert_eq!(cache.resident_bytes(), SIZE);
+    assert_eq!(cache.resident_bytes(), CHARGED_SIZE);
     assert!(!device
         .events()
         .iter()

@@ -100,10 +100,16 @@ struct Queue {
 }
 
 const MIN_BYTES: usize = 4 * 1024 * 1024;
-const MAX_BYTES: usize = 1024 * 1024 * 1024;
+// Every supported kernel has at least a 64 MiB heap. Cache allocations share
+// that heap with the rest of the kernel, irrespective of physical RAM size.
+const MAX_BYTES: usize = 64 * 1024 * 1024 / 8;
+/// Conservative per-snapshot allowance for Arc/Buffer, both BTreeMap indexes,
+/// their sparsely occupied nodes, and allocator alignment. Detached pins keep
+/// this charge too; index removal therefore cannot prematurely free the budget.
+pub const BUFFER_OVERHEAD: usize = 1280;
 type Key = (usize, u64);
 
-/// Memory policy from cowfs design section 1.2, in bytes.
+/// RAM policy, additionally capped to one eighth of the smallest kernel heap.
 pub fn bound_for_memory(memory: usize) -> usize {
     (memory / 8).clamp(MIN_BYTES, MAX_BYTES)
 }
@@ -130,7 +136,7 @@ impl Deref for Buffer {
     type Target = [u8];
 
     fn deref(&self) -> &[u8] {
-        &self.bytes[..self.charge.size]
+        &self.bytes[..self.charge.size - BUFFER_OVERHEAD]
     }
 }
 
@@ -196,6 +202,7 @@ impl State {
         bound: usize,
         resident: &Arc<AtomicUsize>,
     ) -> Option<Charge> {
+        let size = size.checked_add(BUFFER_OVERHEAD)?;
         if size > bound {
             return None;
         }
@@ -254,7 +261,8 @@ impl<W: Wait> BufferCache<W> {
         }
     }
 
-    /// Includes in-flight reservations and snapshots detached by writes.
+    /// Charged heap budget: data and metadata, including in-flight reservations
+    /// and snapshots detached by writes.
     pub fn resident_bytes(&self) -> usize {
         self.resident.load(Ordering::Relaxed)
     }
@@ -384,7 +392,7 @@ impl<W: Wait> BufferCache<W> {
     fn begin(&self, key: Key, size: usize) -> Option<Charge> {
         self.with(|state| {
             state.remove(key);
-            let charge = state.reserve(size, self.bound, &self.resident);
+            let charge = state.reserve(size, self.bound, &self.resident)?;
             state.next_generation = state
                 .next_generation
                 .checked_add(1)
@@ -397,7 +405,7 @@ impl<W: Wait> BufferCache<W> {
                     waiters: 0,
                 },
             );
-            charge
+            Some(charge)
         })
     }
 
@@ -410,13 +418,16 @@ impl<W: Wait> BufferCache<W> {
         charge: Option<Charge>,
         result: Result<(), BlockError>,
     ) {
+        // No reservation means uncached I/O: do not allocate an index entry or
+        // a snapshot. Device admission still serializes the operation.
+        let Some(charge) = charge else { return };
         let mut copy = Vec::new();
         let buffer =
-            if result.is_ok() && charge.is_some() && copy.try_reserve_exact(bytes.len()).is_ok() {
+            if result.is_ok() && copy.try_reserve_exact(bytes.len()).is_ok() {
                 copy.extend_from_slice(bytes);
                 Some(Arc::new(Buffer {
                     bytes: copy,
-                    charge: charge.unwrap(),
+                    charge,
                 }))
             } else {
                 None
@@ -584,14 +595,14 @@ impl<W: Wait> BufferCache<W> {
         if reused {
             return Ok(());
         }
+        // Evict before allocating the new payload, including for Hold writes.
+        let charge = self.with(|state| state.reserve(bytes.len(), self.bound, &self.resident))
+            .ok_or(BlockError::OutOfMemory)?;
         let mut copy = Vec::new();
         copy.try_reserve_exact(bytes.len())
             .map_err(|_| BlockError::OutOfMemory)?;
         copy.extend_from_slice(bytes);
         self.with(|state| {
-            let charge = state
-                .reserve(bytes.len(), self.bound, &self.resident)
-                .ok_or(BlockError::OutOfMemory)?;
             state.remove(key);
             state.next_generation = state
                 .next_generation
