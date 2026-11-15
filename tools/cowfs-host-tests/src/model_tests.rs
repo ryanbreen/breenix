@@ -337,3 +337,52 @@ fn seeded_stream_is_reproducible_and_keeps_namespace_consistent() {
         }
     }
 }
+
+#[test]
+fn seed_corpus_matches_model() {
+    for seed in 1..=8 {
+        let device = alloc::sync::Arc::new(
+            crate::recording::RecordingDevice::new(crate::test_image::image()).unwrap(),
+        );
+        let mut writer = WriterAdapter::new(device.clone()).unwrap();
+        let mut model = Model::new();
+        let mut generation = 1;
+        for (index, op) in crate::stream::Stream::new(seed).take(256).enumerate() {
+            let before = writer.state().unwrap();
+            let expected = model.execute(&op);
+            assert_eq!(
+                writer.execute(&op),
+                expected,
+                "seed={seed} op={index} {op:?}"
+            );
+            let diff = compare(&model, &writer).unwrap();
+            assert!(diff.is_empty(), "seed={seed} op={index} {op:?}: {diff:?}");
+            if expected.is_err() {
+                assert_eq!(writer.state().unwrap(), before, "seed={seed} op={index}");
+            }
+            if matches!(op.action, Action::Fsync { .. } | Action::Remount) {
+                let sb = crate::recover::recover(device.as_ref(), false).unwrap();
+                if sb.generation != generation {
+                    crate::test_image::check(
+                        &device.durable_image(),
+                        &alloc::format!("corpus-{seed}-{index}"),
+                    );
+                    generation = sb.generation;
+                }
+            }
+        }
+        let op = Operation {
+            at: Time::default(),
+            action: Action::Remount,
+        };
+        assert_eq!(writer.execute(&op), model.execute(&op));
+        assert!(compare(&model, &writer).unwrap().is_empty());
+        let sb = crate::recover::recover(device.as_ref(), false).unwrap();
+        if sb.generation != generation {
+            crate::test_image::check(
+                &device.durable_image(),
+                &alloc::format!("corpus-{seed}-end"),
+            );
+        }
+    }
+}

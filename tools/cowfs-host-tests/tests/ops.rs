@@ -1,5 +1,5 @@
 use cowfs_host_tests::{format as disk, recording::RecordingDevice, *};
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 #[path = "../src/test_image.rs"]
 mod test_image;
 
@@ -219,4 +219,393 @@ fn xattr_limits() {
     pair(&mut w, &mut m, Action::Removexattr { ino, name }, 7);
     checked_commit(&mut w, &mut m, &d, ino, 8);
     pair(&mut w, &mut m, Action::Remount, 9);
+}
+
+#[test]
+fn namespace_replacement_and_orphan_recovery() {
+    use cowfs_host_tests::{
+        btree::{self, NodeStore},
+        commit::Committer,
+        ops,
+        txn::Transaction,
+    };
+    let (mut w, mut m, d) = setup();
+    fn made(reply: Reply) -> Ino {
+        let Reply::Inode(ino) = reply else {
+            panic!("{reply:?}")
+        };
+        ino
+    }
+    let left = made(pair(
+        &mut w,
+        &mut m,
+        Action::Mkdir {
+            dir: ROOT,
+            name: b"left".to_vec(),
+            mode: 0o755,
+        },
+        1,
+    ));
+    let right = made(pair(
+        &mut w,
+        &mut m,
+        Action::Mkdir {
+            dir: ROOT,
+            name: b"right".to_vec(),
+            mode: 0o700,
+        },
+        2,
+    ));
+    let child = made(pair(
+        &mut w,
+        &mut m,
+        Action::Mkdir {
+            dir: left,
+            name: b"child".to_vec(),
+            mode: 0o755,
+        },
+        3,
+    ));
+    pair(
+        &mut w,
+        &mut m,
+        Action::Mkdir {
+            dir: right,
+            name: b"empty".to_vec(),
+            mode: 0o755,
+        },
+        4,
+    );
+    for action in [
+        Action::Rmdir {
+            dir: ROOT,
+            name: b"left".to_vec(),
+        },
+        Action::Rename {
+            from_dir: ROOT,
+            from: b"right".to_vec(),
+            to_dir: ROOT,
+            to: b"left".to_vec(),
+        },
+        Action::Rename {
+            from_dir: ROOT,
+            from: b"left".to_vec(),
+            to_dir: child,
+            to: b"cycle".to_vec(),
+        },
+    ] {
+        let expected = call(&mut m, action.clone(), 5);
+        assert!(expected.is_err());
+        let before = w.state().unwrap();
+        assert_eq!(call(&mut w, action, 5), expected);
+        assert_eq!(w.state().unwrap(), before);
+    }
+    pair(
+        &mut w,
+        &mut m,
+        Action::Rename {
+            from_dir: left,
+            from: b"child".to_vec(),
+            to_dir: right,
+            to: b"empty".to_vec(),
+        },
+        6,
+    );
+    pair(
+        &mut w,
+        &mut m,
+        Action::Rmdir {
+            dir: right,
+            name: b"empty".to_vec(),
+        },
+        7,
+    );
+    for (n, len) in [(b"short".as_slice(), 1), (b"long".as_slice(), 4095)] {
+        pair(
+            &mut w,
+            &mut m,
+            Action::Symlink {
+                dir: ROOT,
+                name: n.to_vec(),
+                target: vec![b'x'; len],
+            },
+            8,
+        );
+    }
+    for target in [vec![], vec![b'x'; 4096], b"bad\0target".to_vec()] {
+        let a = Action::Symlink {
+            dir: ROOT,
+            name: b"invalid".to_vec(),
+            target,
+        };
+        let before = w.state().unwrap();
+        let expected = call(&mut m, a.clone(), 9);
+        assert!(expected.is_err());
+        assert_eq!(call(&mut w, a, 9), expected);
+        assert_eq!(w.state().unwrap(), before);
+    }
+    let ino = create(&mut w, &mut m, b"file", 10);
+    let replaced = create(&mut w, &mut m, b"replaced", 11);
+    for file in [ino, replaced] {
+        pair(
+            &mut w,
+            &mut m,
+            Action::Write {
+                ino: file,
+                offset: 4095,
+                bytes: b"payload".to_vec(),
+            },
+            12,
+        );
+    }
+    checked_commit(&mut w, &mut m, &d, ROOT, 13);
+    pair(
+        &mut w,
+        &mut m,
+        Action::Link {
+            ino,
+            dir: ROOT,
+            name: b"alias".to_vec(),
+        },
+        14,
+    );
+    pair(
+        &mut w,
+        &mut m,
+        Action::Rename {
+            from_dir: ROOT,
+            from: b"file".to_vec(),
+            to_dir: ROOT,
+            to: b"alias".to_vec(),
+        },
+        15,
+    );
+    pair(
+        &mut w,
+        &mut m,
+        Action::Rename {
+            from_dir: ROOT,
+            from: b"file".to_vec(),
+            to_dir: ROOT,
+            to: b"replaced".to_vec(),
+        },
+        16,
+    );
+    pair(
+        &mut w,
+        &mut m,
+        Action::Unlink {
+            dir: ROOT,
+            name: b"alias".to_vec(),
+        },
+        17,
+    );
+    checked_commit(&mut w, &mut m, &d, ROOT, 18);
+    pair(&mut w, &mut m, Action::Remount, 19);
+
+    // Construct a valid committed orphan as left by an open unlinked file.
+    // Recovery must finish it even when no namespace operation follows mount.
+    let sb = recover::recover(d.as_ref(), false).unwrap();
+    struct Image(Vec<u8>);
+    impl NodeStore for Image {
+        fn get(&self, addr: u64) -> std::result::Result<Vec<u8>, btree::Error> {
+            let lo = addr as usize * disk::BLOCK_SIZE;
+            self.0
+                .get(lo..lo + disk::NODE_SIZE)
+                .map(|b| b.to_vec())
+                .ok_or(btree::Error::Store)
+        }
+        fn put(&mut self, _: u64, _: Vec<u8>) -> std::result::Result<(), btree::Error> {
+            unreachable!()
+        }
+        fn alloc(&mut self) -> std::result::Result<u64, btree::Error> {
+            unreachable!()
+        }
+    }
+    let mut tx =
+        Transaction::new_owned(Image(d.durable_image()), sb.space_root, sb.generation + 1).unwrap();
+    let root_key = ops::key(0xffff_ffff_ffff_ff10, disk::ROOT, 1);
+    let mut root = disk::Root::decode(
+        &btree::search(&tx.view(), sb.space_root, root_key)
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    let entries = ops::items(&tx.view(), root.root).unwrap();
+    let data_refs: Vec<_> = entries
+        .iter()
+        .filter(|(k, _)| k.object == ino && k.item_type == disk::EXTENT)
+        .map(|(_, v)| disk::Extent::decode(v).unwrap().phys_start)
+        .collect();
+    assert!(!data_refs.is_empty());
+    let mut parent = disk::Inode::decode(
+        &btree::search(&tx.view(), root.root, ops::key(ROOT, disk::INODE, 0))
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    for (k, v) in &entries {
+        if k.object == ROOT
+            && (k.item_type == disk::DIR_ENTRY || k.item_type == disk::DIR_INDEX)
+            && ops::dir_records(v)
+                .unwrap()
+                .iter()
+                .any(|r| r.name == b"replaced")
+        {
+            assert_eq!(ops::dir_records(v).unwrap().len(), 1);
+            tx.delete(&mut root.root, *k).unwrap();
+        }
+    }
+    parent.size -= 1;
+    tx.insert(
+        &mut root.root,
+        ops::key(ROOT, disk::INODE, 0),
+        &parent.encode(),
+    )
+    .unwrap();
+    let ik = ops::key(ino, disk::INODE, 0);
+    let mut inode =
+        disk::Inode::decode(&btree::search(&tx.view(), root.root, ik).unwrap().unwrap()).unwrap();
+    inode.nlink = 0;
+    tx.insert(&mut root.root, ik, &inode.encode()).unwrap();
+    tx.insert(
+        &mut root.root,
+        ops::key(0xffff_ffff_ffff_ff00, disk::ORPHAN, ino),
+        &[],
+    )
+    .unwrap();
+    tx.update_root(1, root).unwrap();
+    let orphan_sb = Committer::new(sb)
+        .commit(d.as_ref(), &mut tx, &BTreeMap::new())
+        .unwrap();
+    test_image::check(&d.durable_image(), "orphan-before-recovery");
+    assert_eq!(
+        recover::recover(d.as_ref(), false).unwrap().generation,
+        orphan_sb.generation
+    );
+    let recovered = recover::recover(d.as_ref(), true).unwrap();
+    assert_eq!(recovered.generation, orphan_sb.generation + 1);
+    let (_, space) = tree(&d);
+    let root = disk::Root::decode(&space.iter().find(|(k, _)| *k == root_key).unwrap().1).unwrap();
+    let fs = ops::items(&commit::DeviceStore(d.as_ref()), root.root).unwrap();
+    assert!(!fs
+        .iter()
+        .any(|(k, _)| k.object == ino || k.item_type == disk::ORPHAN));
+    for addr in data_refs {
+        assert!(space.iter().any(|(k, v)| k.item_type == disk::PENDING && {
+            let p = disk::Pending::decode(v).unwrap();
+            k.offset <= addr
+                && addr < k.offset + p.length
+                && p.released_generation == recovered.generation
+        }));
+    }
+    test_image::check(&d.durable_image(), "orphan-after-recovery");
+}
+
+#[test]
+fn siphash_collision_keeps_both_records() {
+    use cowfs_host_tests::{btree, ops, siphash};
+    // Generated by birthday search over hexadecimal names with SipHash-2-4,
+    // key 00000000000000000000000000000000. No truncated hash or test hook.
+    let a = b"cdfc07073c9936f4";
+    let b = b"bdad17bd9f771c95";
+    let hash = siphash::hash(&[0; 16], a);
+    assert_ne!(a, b);
+    assert_eq!(hash, 0xf4fe9e6f48ac9e1d);
+    assert_eq!(hash, siphash::hash(&[0; 16], b));
+    let mut image = test_image::image();
+    let total = image.len() / disk::BLOCK_SIZE;
+    for block in (16..20).chain(total - 4..total) {
+        let bytes = &mut image[block * disk::BLOCK_SIZE..(block + 1) * disk::BLOCK_SIZE];
+        if let Ok(mut sb) = disk::Superblock::decode(bytes) {
+            sb.dirhash_key = [0; 16];
+            bytes.copy_from_slice(&sb.encode());
+        }
+    }
+    let d = Arc::new(RecordingDevice::new(image).unwrap());
+    let mut w = WriterAdapter::new(d.clone()).unwrap();
+    let mut m = model::Model::new();
+    let first = create(&mut w, &mut m, a, 1);
+    let second = create(&mut w, &mut m, b, 2);
+    checked_commit(&mut w, &mut m, &d, ROOT, 3);
+    let (_, space) = tree(&d);
+    let root = disk::Root::decode(
+        &space
+            .iter()
+            .find(|(k, _)| k.item_type == disk::ROOT)
+            .unwrap()
+            .1,
+    )
+    .unwrap();
+    let store = commit::DeviceStore(d.as_ref());
+    let bucket = btree::search(&store, root.root, ops::key(ROOT, disk::DIR_ENTRY, hash))
+        .unwrap()
+        .unwrap();
+    let records = ops::dir_records(&bucket).unwrap();
+    assert_eq!(
+        records
+            .iter()
+            .map(|r| (r.name.as_slice(), r.ino))
+            .collect::<Vec<_>>(),
+        [(a.as_slice(), first), (b.as_slice(), second)]
+    );
+    let inode = disk::Inode::decode(
+        &btree::search(&store, root.root, ops::key(ROOT, disk::INODE, 0))
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!((inode.size, inode.next_index), (2, 4));
+    for (index, name) in [(2, a), (3, b)] {
+        let v = btree::search(&store, root.root, ops::key(ROOT, disk::DIR_INDEX, index))
+            .unwrap()
+            .unwrap();
+        assert_eq!(ops::dir_records(&v).unwrap()[0].name, name);
+    }
+    pair(&mut w, &mut m, Action::Remount, 4);
+    pair(
+        &mut w,
+        &mut m,
+        Action::Rename {
+            from_dir: ROOT,
+            from: a.to_vec(),
+            to_dir: ROOT,
+            to: b.to_vec(),
+        },
+        5,
+    );
+    checked_commit(&mut w, &mut m, &d, ROOT, 6);
+    pair(
+        &mut w,
+        &mut m,
+        Action::Link {
+            ino: first,
+            dir: ROOT,
+            name: a.to_vec(),
+        },
+        7,
+    );
+    pair(
+        &mut w,
+        &mut m,
+        Action::Unlink {
+            dir: ROOT,
+            name: b.to_vec(),
+        },
+        8,
+    );
+    checked_commit(&mut w, &mut m, &d, ROOT, 9);
+    pair(&mut w, &mut m, Action::Remount, 10);
+    pair(
+        &mut w,
+        &mut m,
+        Action::Unlink {
+            dir: ROOT,
+            name: a.to_vec(),
+        },
+        11,
+    );
+    checked_commit(&mut w, &mut m, &d, ROOT, 12);
+    pair(&mut w, &mut m, Action::Remount, 13);
+    assert_eq!(w.state().unwrap().inodes.len(), 1);
 }
