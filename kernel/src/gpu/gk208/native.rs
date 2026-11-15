@@ -422,6 +422,7 @@ pub(super) struct RasterMode {
 }
 pub struct Evo {
     raster_known: bool,
+    mode_trace: Option<ModeTrace>,
     modes: Vec<(u32,u32,u32)>,
     rasters: Vec<RasterMode>,
     protocol: u32,
@@ -500,6 +501,44 @@ fn presentation_sample(regs: &Registers, head: u32)
     Err("native presentation raster did not stabilize")
 }
 
+struct ModeTrace {
+    index: u32,
+    phase: u32,
+    start: u64,
+    failure: Option<gpu_abi::ModeReport>,
+}
+impl Evo {
+    pub(in crate::gk208) fn begin_mode(&mut self, index: u32) {
+        self.mode_trace = Some(ModeTrace { index, phase: gpu_abi::mode_phase::DRAIN_FLIP,
+            start: crate::signal::monotonic_nanos(), failure: None });
+    }
+    pub(in crate::gk208) fn mode_phase(&mut self, phase: u32) {
+        if let Some(trace) = &mut self.mode_trace {
+            trace.phase = phase;
+            trace.start = crate::signal::monotonic_nanos();
+        }
+    }
+    fn mode_error(&mut self, regs: &mut Registers, reason: &'static str) {
+        let Some(trace) = &mut self.mode_trace else { return; };
+        if trace.failure.is_some() { return; }
+        let errno = if reason.contains("timed out") || reason.contains("deadline")
+            || reason.contains("did not complete") || reason.contains("did not latch")
+            || reason.contains("did not advance") { gpu_abi::errno::ETIMEDOUT }
+            else { gpu_abi::errno::EIO };
+        trace.failure = Some(gpu_abi::ModeReport::refused(trace.index, errno, trace.phase,
+            crate::signal::monotonic_nanos().saturating_sub(trace.start),
+            [self.pending_presentation.map_or(0, |p| u64::from(p.resource) + 1),
+             u64::from(regs.read(0x640004)), u64::from(self.put),
+             u64::from(read_word(regs, self.total, self.notifier).unwrap_or(u32::MAX))], reason));
+    }
+    pub(in crate::gk208) fn end_mode(&mut self, regs: &mut Registers, result: Result<(), &'static str>)
+        -> Result<(), gpu_abi::ModeReport> {
+        if let Err(reason) = result { self.mode_error(regs, reason); }
+        let trace = self.mode_trace.take().expect("mode attempt started under session");
+        trace.failure.map_or(Ok(()), Err)
+    }
+}
+
 impl Evo {
     fn submit_mode(&mut self, regs:&mut Registers, methods:&[(u32,u32)])
         -> Result<(), &'static str> {
@@ -552,6 +591,7 @@ impl Evo {
         }).transpose()?;
         if self.raster_known {modeset::pause_underflow(regs,self.head)?;}
         if let Err(error)=self.apply_raster(regs,&next,&attach) {
+            self.mode_error(regs, error);
             if let (Some(old),Some(methods))=(previous,rollback) {
                 // The failed new raster may have armed reporting before failing
                 // its health check. End that window and acknowledge its W1C bit;
@@ -573,6 +613,7 @@ impl Evo {
         let timing_changed = regs.read(0x640414 + self.head as usize * 0x300)
             != (next.timing.htotal | (next.timing.vtotal << 16))
             || self.pixel_hz != u64::from(next.timing.clock_khz) * 1000;
+        self.mode_phase(gpu_abi::mode_phase::RASTER);
         self.raster_known=false;
         if regs.read(0x616308+self.head as usize*0x800)&0x111!=0 {
             return Err("runtime raster recovery requires paused healthy reporting");
@@ -580,16 +621,22 @@ impl Evo {
         write_words(regs,self.total,self.notifier,&[0,0,0,0])?;
         let mut detach=modeset::detach_methods(self.head,self.sor)?.to_vec();
         detach.extend([(0x84,0x80000000),(0x80,0)]);
+        self.mode_phase(gpu_abi::mode_phase::RASTER_GET);
         self.submit_mode(regs,&detach)?;
+        self.mode_phase(gpu_abi::mode_phase::RASTER_NOTIFIER);
         complete(regs,self.total,self.notifier,&self.limits,&self.coefficients,
             (self.head,self.sor,true,false),&self.scripts)?;
+        self.mode_phase(gpu_abi::mode_phase::RASTER_GET);
         modeset::wait(regs,0x640004,u32::MAX,self.put)?;
         write_words(regs,self.total,self.notifier,&[0,0,0,0])?;
         // Keep the outgoing recipe consistent even if the new attach times out.
         self.coefficients=next.pll.clone();self.scripts=next.scripts.clone();
+        self.mode_phase(gpu_abi::mode_phase::RASTER_GET);
         self.submit_mode(regs,attach)?;
+        self.mode_phase(gpu_abi::mode_phase::RASTER_NOTIFIER);
         complete(regs,self.total,self.notifier,&self.limits,&self.coefficients,
             (self.head,self.sor,false,true),&self.scripts)?;
+        self.mode_phase(gpu_abi::mode_phase::RASTER_GET);
         modeset::wait(regs,0x640004,u32::MAX,self.put)?;
         modeset::arm_underflow(regs,self.head)?;
         self.frame_pixels=u64::from(next.timing.htotal)*u64::from(next.timing.vtotal);
@@ -962,6 +1009,7 @@ pub(in crate::gk208) fn wait_present(evo: &mut Evo, regs: &mut Registers,
     Err("native accepted flip did not latch")
 
         })();
+        if let Err(reason) = result { evo.mode_error(regs, reason); }
         if result.is_err() && evo.pending_presentation.is_some_and(|p| p.resource == surface.resource) {
             evo.pending_presentation = None;
         }
@@ -1023,12 +1071,14 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
     surface: super::present::Surface, wait: bool, mode: u32, restoring: bool,
 ) -> Result<Option<super::present::Receipt>, &'static str> {
         let result = (|| {
+    evo.mode_phase(gpu_abi::mode_phase::RASTER);
     let raster_changed = if restoring {
         // activate_mode already confirmed the owner's raster. Rebinding its
         // old frame rebinds the surface/view while retaining that selection.
         if !evo.raster_known { return Err("native restore raster unknown"); }
         false
     } else { evo.select_raster(regs,surface,mode)? };
+    evo.mode_phase(gpu_abi::mode_phase::RASTER);
     evo.start_clock(regs)?;
     let _cost = super::cost::phase(super::cost::Slot::Evo);
     let phase=MEMX_PRESENT_PHASE.load(core::sync::atomic::Ordering::Acquire);
@@ -1048,6 +1098,7 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
     struct Update<'a> { evo:&'a mut Evo, regs:&'a mut Registers, view:modeset::Viewport, resource:u32, restoring:bool }
     impl super::present::Io for Update<'_> {
         fn clear_notifier(&mut self) -> Result<(), &'static str> {
+            self.evo.mode_phase(gpu_abi::mode_phase::RASTER_GET);
             modeset::wait(self.regs,0x640004,u32::MAX,self.evo.put)?;
             write_words(self.regs,self.evo.total,self.evo.notifier,&[0,0,0,0])?;
             if read_word(self.regs,self.evo.total,self.evo.notifier)? != 0 {
@@ -1079,12 +1130,14 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
                 self.evo.put=0;
             }
             submit(self.regs,self.evo.total,self.evo.push,&mut self.evo.put,methods)?;
+            self.evo.mode_phase(gpu_abi::mode_phase::RASTER_GET);
             modeset::wait(self.regs,0x640004,u32::MAX,self.evo.put)?;
             self.evo.arm_presentation(self.regs,self.resource)?;
             self.evo.pending_presentation.as_mut().unwrap().restoring = self.restoring;
             Ok(())
         }
         fn complete(&mut self) -> Result<u32, &'static str> {
+            self.evo.mode_phase(gpu_abi::mode_phase::RASTER_NOTIFIER);
             let e=&self.evo;
             // On a new timing, bracket the notifier with hardware raster samples
             // before the first receipt. A coarse first poll after vblank cannot
@@ -1147,6 +1200,7 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
         };
         (receipt, retained_ack)
     };
+    evo.mode_phase(gpu_abi::mode_phase::RASTER_LATCH);
     if evo.pending_presentation.is_some() && !retained_ack {
         let mut finished = false;
         for _ in 0..evo.presentation_attempts() {
@@ -1169,6 +1223,7 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
     Ok(Some(receipt))
 
         })();
+        if let Err(reason) = result { evo.mode_error(regs, reason); }
         if result.is_err() && evo.pending_presentation.is_some_and(|p| p.resource == surface.resource) {
             evo.pending_presentation = None;
         }
@@ -1487,7 +1542,7 @@ pub(super) fn takeover(
             clock: None, vblank_line: 0, latch_phase: None, last_presentation: None, pending_presentation: None,
             head, sor: u32::from(route.sor), total, push: evo, put, notifier,
             surfaces: [layout.objects[0].range, layout.objects[1].range],
-            limits, coefficients, scripts, rasters, protocol, modes: runtime_modes, raster_known: true,
+            limits, coefficients, scripts, rasters, protocol, modes: runtime_modes, raster_known: true, mode_trace: None,
         }));
     }
     let mut digest = crate::block::install::sha256::Sha256::new();
@@ -1799,7 +1854,7 @@ pub(super) fn takeover(
             clock: None, vblank_line: 0, latch_phase: None, last_presentation: None, pending_presentation: None,
             head, sor: u32::from(route.sor), total, push: evo, put, notifier,
             surfaces: [layout.objects[0].range, layout.objects[1].range],
-            limits, coefficients, scripts, rasters, protocol, modes: runtime_modes, raster_known: true,
+            limits, coefficients, scripts, rasters, protocol, modes: runtime_modes, raster_known: true, mode_trace: None,
         }))
 }
 

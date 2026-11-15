@@ -21,7 +21,7 @@ class DisplayRefusal(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             # First compile the public result contract, before extracting its caller.
             contract = r'''
-extern crate gpu_abi;
+pub extern crate gpu_abi;
 use gpu_abi::{ModeReport, Plain, mode_phase};
 #[test] fn reason_is_bounded_and_specific() {
     assert_eq!(core::mem::size_of::<ModeReport>(), 256);
@@ -51,7 +51,7 @@ use gpu_abi::{ModeReport, Plain, mode_phase};
             source = item(bwm, 'fn mode_refusal(')
             case = item(cases, 'fn set_display_mode(')
             harness = r'''
-extern crate gpu_abi;
+pub extern crate gpu_abi;
 use gpu_abi::{ModeReport, mode_phase};
 mod libbreenix { pub mod gpu {
     pub use gpu_abi as abi;

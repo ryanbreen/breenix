@@ -138,9 +138,9 @@ fn main() {
     };
     let mut configured = false;
     if let Some(index) = configured_display(settings()) {
-        let result = libbreenix::gpu::set_mode(index);
+        let (result, report) = libbreenix::gpu::set_mode_report(index);
         if result != 0 {
-            print!("[bwm] display: SET_MODE {} refused: {}\n", index, -result);
+            eprintln!("[bwm] display: SET_MODE {index} refused: {}", mode_refusal(result, &report));
         } else {
             (mode_index, mode) = compositor::display().unwrap_or_else(|error| {
                 eprintln!("[bwm] display: {error}");
@@ -516,14 +516,13 @@ fn main() {
                 let result = switch_display(index, &mut gpu, &mut windows, &mut display_resizes, &stack, &clock_text, &mut ui_font);
                 switched = true; // Even a refused switch must re-present the retained targets.
                 match result {
-                    Ok(true) => (),
-                    Ok(false) => { let _ = std::fs::remove_file(&temp); return Err("SET_MODE failed".into()); }
+                    Ok(()) => (),
                     Err(e) => { let _ = std::fs::remove_file(&temp); return Err(e); }
                 }
                 if let Err(error) = std::fs::rename(&temp, &paths.bwm) {
                     let _ = std::fs::remove_file(&temp);
                     let rollback = switch_display(modes.current, &mut gpu, &mut windows, &mut display_resizes, &stack, &clock_text, &mut ui_font);
-                    return Err(format!("save settings: {error}; rollback {}", match rollback { Ok(true) => "succeeded", _ => "failed" }));
+                    return Err(format!("save settings: {error}; rollback {}", match rollback { Ok(()) => "succeeded", _ => "failed" }));
                 }
                 let state = ui();
                 let rect = |r: placement::Rect| display_protocol::Rect { x: r.x, y: r.y, width: r.width, height: r.height };
@@ -560,7 +559,7 @@ fn main() {
                 Ok(settings) => if let Some(index) = configured_display(&settings) {
                     match switch_display(index, &mut gpu, &mut windows, &mut display_resizes,
                         &stack, &clock_text, &mut ui_font) {
-                        Ok(true) => {
+                        Ok(()) => {
                             screen_w = ui().mode.width;
                             screen_h = ui().mode.height;
                             mouse_x = mouse_x.clamp(0, screen_w.saturating_sub(1) as i32);
@@ -572,7 +571,6 @@ fn main() {
                             validation.invalidate_scene();
                             pacing = pace::Pacer::default();
                         }
-                        Ok(false) => {}
                         Err(error) => eprintln!("[bwm] display: {error}"),
                     }
                     // Refusal also re-presents the retained targets and layout.
@@ -1130,25 +1128,32 @@ fn retain_display_resizes(windows: &mut [Window], pending: &mut Vec<(u64, switch
     });
 }
 
+fn mode_refusal(result: i64, report: &libbreenix::gpu::abi::ModeReport) -> String {
+    format!("{} (errno {}, phase {}, elapsed_ns {}, pending {}, GET {}, PUT {}, notifier {})",
+        report.reason(), -result, report.phase_name(), report.elapsed_ns,
+        report.pending, report.get, report.put, report.notifier)
+}
+
 /// The single live mode-switch path. SIGHUP reloads the display keys; the command
 /// can save those keys then signal bwm without taking ownership of its display.
 fn switch_display(index: u32, gpu: &mut Compositor, windows: &mut [Window],
     pending: &mut Vec<(u64, switch_plan::WindowPlan)>, stack: &Stack, clock: &[u8],
     font: &mut Option<CachedFont>,
-) -> Result<bool, String> {
+) -> Result<(), String> {
     let (result, modes) = libbreenix::gpu::modes();
     if result != 0 { return Err(format!("MODES refused: {}", -result)); }
     let mode = modes.mode_list().find(|(i, _)| *i == index)
         .map(|(_, mode)| mode).ok_or_else(|| format!("unknown mode {index}"))?;
     let old = ui();
     let frames: Vec<_> = windows.iter().map(window_frame).collect();
-    let result = libbreenix::gpu::set_mode(index);
+    let (result, report) = libbreenix::gpu::set_mode_report(index);
     let plan = switch_plan::switch_plan(old.mode, if result == 0 {
         Ok(switch_plan::Mode { width: mode.width as usize, height: mode.height as usize, scale: mode.scale as usize })
     } else { Err(-result) }, &frames);
-    if let Some(errno) = plan.refusal {
-        print!("[bwm] display: SET_MODE {} refused: {}\n", index, errno);
-        return Ok(false);
+    if plan.refusal.is_some() {
+        let reason = mode_refusal(result, &report);
+        eprintln!("[bwm] display: SET_MODE {index} refused: {reason}");
+        return Err(reason);
     }
     if let Err(error) = gpu.resize(mode.width, mode.height, plan.layout.appbar.height as u32, mode.scale) {
         let rollback = libbreenix::gpu::set_mode(modes.current);
@@ -1186,7 +1191,7 @@ fn switch_display(index: u32, gpu: &mut Compositor, windows: &mut [Window],
     print!("[bwm] display: mode {} {}x{} scale {}; work {},{} {}x{}\n", index,
         mode.width, mode.height, ui().scale, ui().layout.work.x, ui().layout.work.y,
         ui().layout.work.width, ui().layout.work.height);
-    Ok(true)
+    Ok(())
 }
 
 

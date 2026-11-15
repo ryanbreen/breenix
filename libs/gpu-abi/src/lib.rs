@@ -705,6 +705,70 @@ impl Modes {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SetMode { pub index: u32, pub reserved: [u32; 3] }
 
+/// Phase of a refused SET_MODE transaction.
+pub mod mode_phase {
+    pub const VALIDATION: u32 = 1;
+    pub const SHARED_TRANSITION: u32 = 2;
+    pub const DRAIN_FLIP: u32 = 3;
+    pub const RASTER: u32 = 4;
+    pub const RASTER_GET: u32 = 5;
+    pub const RASTER_NOTIFIER: u32 = 6;
+    pub const RASTER_LATCH: u32 = 7;
+    pub const RECORD: u32 = 8;
+}
+/// Extended SET_MODE argument. Input is index; remaining fields are reserved.
+/// On refusal the syscall returns -errno and copies out this bounded record.
+/// The original 16-byte SetMode argument remains available to existing callers.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModeReport {
+    pub index: u32,
+    pub reserved: [u32; 3],
+    pub errno: i64,
+    pub phase: u32,
+    pub reason_len: u32,
+    pub elapsed_ns: u64,
+    /// Native pending resource encoded as resource + 1; absent is 0.
+    /// Shared outstanding count when phase is SHARED_TRANSITION.
+    pub pending: u64,
+    pub get: u32,
+    pub put: u32,
+    pub notifier: u32,
+    pub reserved_tail: u32,
+    pub reason_bytes: [u8; 192],
+}
+impl ModeReport {
+    pub fn refused(index: u32, errno: i64, phase: u32, elapsed_ns: u64,
+        state: [u64; 4], reason: &str) -> Self {
+        let mut r = Self::ZERO;
+        r.index = index; r.errno = errno; r.phase = phase; r.elapsed_ns = elapsed_ns;
+        r.pending = state[0]; r.get = state[1] as u32;
+        r.put = state[2] as u32; r.notifier = state[3] as u32;
+        let mut end = reason.len().min(r.reason_bytes.len());
+        while !reason.is_char_boundary(end) { end -= 1; }
+        r.reason_bytes[..end].copy_from_slice(&reason.as_bytes()[..end]);
+        r.reason_len = end as u32;
+        r
+    }
+    pub fn reason(&self) -> &str {
+        core::str::from_utf8(&self.reason_bytes[..(self.reason_len as usize).min(self.reason_bytes.len())])
+            .unwrap_or("invalid mode refusal reason")
+    }
+    pub fn phase_name(&self) -> &'static str {
+        match self.phase {
+            mode_phase::VALIDATION => "validation",
+            mode_phase::SHARED_TRANSITION => "shared-transition",
+            mode_phase::DRAIN_FLIP => "drain-flip",
+            mode_phase::RASTER => "raster",
+            mode_phase::RASTER_GET => "raster-get",
+            mode_phase::RASTER_NOTIFIER => "raster-notifier",
+            mode_phase::RASTER_LATCH => "raster-latch",
+            mode_phase::RECORD => "record",
+            _ => "none",
+        }
+    }
+}
+
 /// `PRESENT` (32 bytes). Binds the whole target to scanout 0 and flushes it in
 /// `context`, one of the caller's live contexts.
 #[repr(C)]
@@ -908,7 +972,7 @@ macro_rules! plain {
     };
 }
 
-plain!(Mode, Modes, SetMode, Caps, ContextCreate, Handle, ResourceCreate, Upload, Submit, Wait, Readback, Present, Counters, TcArm, TcFired);
+plain!(Mode, Modes, SetMode, ModeReport, Caps, ContextCreate, Handle, ResourceCreate, Upload, Submit, Wait, Readback, Present, Counters, TcArm, TcFired);
 
 const _: () = {
     assert!(core::mem::size_of::<FormatCaps>() == 8);
@@ -955,6 +1019,7 @@ const _: () = {
     assert!(core::mem::offset_of!(Modes, firmware_hash_now) == 112);
     assert!(core::mem::offset_of!(Modes, firmware_writes_after_handoff) == 120);
     assert!(core::mem::size_of::<SetMode>() == 16);
+    assert!(core::mem::size_of::<ModeReport>() == 256);
 };
 
 pub mod heap_trace;

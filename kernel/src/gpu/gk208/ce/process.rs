@@ -372,9 +372,10 @@ pub(crate) fn observed_scanout() -> Result<u32, &'static str> {
 }
 /// Serialize a logical mode switch with client display readers through the
 /// shared ownership transition. No core spin lock is held across EVO waits.
-pub(crate) fn set_mode(index:u32)->Result<(), &'static str> {
+pub(crate) fn set_mode(index:u32)->Result<(), gpu_abi::ModeReport> {
     let mut owner=SESSION.lock();
     let mut diagnostics=None;
+    if let Some(s) = owner.as_mut() { s.evo.begin_mode(index); }
     let result=(|| {
         let s=owner.as_mut().ok_or("native display owner absent")?;
         if let Some(pending) = s.pending_present.take() {
@@ -392,7 +393,9 @@ pub(crate) fn set_mode(index:u32)->Result<(), &'static str> {
             super::super::present::Surface{resource:u32::MAX,address,
                 width:mode.width,height:mode.height,pitch,block_height:0,format:0,dma:1}
         };
+        s.evo.mode_phase(gpu_abi::mode_phase::RASTER);
         let receipt=super::super::native::present(&mut s.evo,&mut Registers(s.registers),surface,index)?;
+        s.evo.mode_phase(gpu_abi::mode_phase::RECORD);
         diagnostics=Some(super::super::presentation_trace::snapshot());
         let allocation=s.layout.objects.iter().find(|o|o.range.start==surface.address)
             .ok_or("logical mode allocation absent")?.range;
@@ -402,6 +405,12 @@ pub(crate) fn set_mode(index:u32)->Result<(), &'static str> {
         s.scanout.clear();
         Ok(())
     })();
+    if result.is_err() && diagnostics.is_none() { diagnostics=Some(super::super::presentation_trace::snapshot()); }
+    let result = match owner.as_mut() {
+        Some(s) => s.evo.end_mode(&mut Registers(s.registers), result),
+        None => Err(gpu_abi::ModeReport::refused(index, gpu_abi::errno::ENODEV,
+            gpu_abi::mode_phase::DRAIN_FLIP, 0, [0;4], "native display owner absent")),
+    };
     drop(owner);
     if let Some(snapshot)=diagnostics { super::super::presentation_trace::export(snapshot); }
     result
