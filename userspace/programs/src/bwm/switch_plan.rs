@@ -42,7 +42,8 @@ pub fn switch_plan(old: Mode, new: Result<Mode, i64>, windows: &[Frame]) -> Swit
         }, layout.work, [100 * mode.scale, 80 * mode.scale]);
         let size = [(frame.rect.width - decoration[0]) as u32,
                     (frame.rect.height - decoration[1]) as u32];
-        WindowPlan { frame, resize: (size != content.map(|n| n as u32)).then_some(size) }
+        // A mode change also tells unchanged-size clients to redraw for the display.
+        WindowPlan { frame, resize: (mode != old || size != content.map(|n| n as u32)).then_some(size) }
     }).collect();
     SwitchPlan { mode, layout, windows, refusal }
 }

@@ -714,3 +714,86 @@ impl Desktop {
         Ok(())
     }
 }
+
+/// The display case owns this configuration tree, including on failure.
+pub struct DisplayConfig(pub std::path::PathBuf);
+impl DisplayConfig {
+    pub fn new() -> Result<Self, String> {
+        let root = std::path::PathBuf::from(format!("/tmp/wm-display-{}-{}",
+            std::process::id(), now()));
+        std::fs::create_dir(&root).map_err(|e| e.to_string())?;
+        let owned = Self(root);
+        std::fs::create_dir(owned.0.join("etc")).map_err(|e| e.to_string())?;
+        std::fs::write(owned.0.join("etc/bwm.conf"), "clock.visible=false\n").map_err(|e| e.to_string())?;
+        Ok(owned)
+    }
+    pub fn start(&self) -> Result<Desktop, String> {
+        let previous = std::env::var_os("BREENIX_CONFIG_ROOT");
+        std::env::set_var("BREENIX_CONFIG_ROOT", &self.0);
+        let desktop = Desktop::start();
+        match previous {
+            Some(value) => std::env::set_var("BREENIX_CONFIG_ROOT", value),
+            None => std::env::remove_var("BREENIX_CONFIG_ROOT"),
+        }
+        desktop
+    }
+    pub fn settings(&self) -> Result<String, String> {
+        std::fs::read_to_string(self.0.join("etc/bwm.conf")).map_err(|e| e.to_string())
+    }
+}
+impl Drop for DisplayConfig {
+    fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+}
+
+/// Passive reader of bwm's scene-stamped mechanical desktop projection.
+pub struct DesktopTree(abi::MapTree);
+impl DesktopTree {
+    pub fn open() -> Result<Self, String> {
+        let mut mapping = abi::MapTree::default();
+        window::call(abi::op::MAP_TREE, &mut mapping).map_err(|e| e.to_string())?;
+        Ok(Self(mapping))
+    }
+    pub fn read(&self) -> Result<breengel::tree::Tree, String> {
+        let mut result = None;
+        until(10_000, "desktop tree at current scene", || {
+            let mut before = abi::CompositorStatus::default();
+            window::call(abi::op::COMPOSITOR_STATUS, &mut before).map_err(|e| e.to_string())?;
+            // SAFETY: this reader owns the coherent mapping until Drop.
+            let tree = unsafe { breengel::tree_page::Page::from_mapping(
+                self.0.addr as *mut u8, self.0.len as usize)? }.snapshot()?;
+            let mut after = abi::CompositorStatus::default();
+            window::call(abi::op::COMPOSITOR_STATUS, &mut after).map_err(|e| e.to_string())?;
+            if before.claim_epoch == after.claim_epoch && before.scene_version == after.scene_version {
+                result = tree.filter(|t| t.root.value["scene_version"].as_u64() == Some(after.scene_version));
+            }
+            Ok(result.is_some())
+        })?;
+        Ok(result.unwrap())
+    }
+}
+impl Drop for DesktopTree {
+    fn drop(&mut self) {
+        let _ = libbreenix::memory::munmap(self.0.addr as *mut u8, self.0.len as usize);
+    }
+}
+
+pub fn display_request(command: &str) -> Result<String, String> {
+    use std::os::unix::net::UnixStream;
+    let mut stream = UnixStream::connect("/run/bwm/display").map_err(|e| e.to_string())?;
+    stream.write_all(format!("{command}\n").as_bytes()).map_err(|e| e.to_string())?;
+    stream.set_nonblocking(true).map_err(|e| e.to_string())?;
+    let mut bytes = Vec::new();
+    until(10_000, "display command reply", || {
+        let mut buffer = [0; 512];
+        match stream.read(&mut buffer) {
+            Ok(0) => return Err("display socket closed without a complete reply".into()),
+            Ok(n) => bytes.extend_from_slice(&buffer[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(false),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => return Ok(false),
+            Err(e) => return Err(e.to_string()),
+        }
+        if bytes.len() > 512 { return Err("display reply exceeds protocol bound".into()); }
+        Ok(bytes.ends_with(b"\n"))
+    })?;
+    String::from_utf8(bytes).map_err(|e| e.to_string())
+}
