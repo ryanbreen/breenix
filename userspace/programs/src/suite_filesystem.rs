@@ -1,4 +1,6 @@
 //! Report host filesystem format evidence staged on the disk.
+mod cache_reread;
+use cache_reread::{reread_is_cached, REREAD_BYTES};
 use breenix_suite::suite::{case, category, check, fail, running_case, suite, CaseResult, Suite};
 use libbreenix::{fs as sysfs, io as sysio, types::Fd};
 use std::fs::{self, File};
@@ -32,7 +34,7 @@ static SUITE: Suite = suite("filesystem", "Copy-on-write filesystem", &[
 fn io<T>(result: std::io::Result<T>) -> Result<T, String> { result.map_err(|e| e.to_string()) }
 
 #[derive(Debug)]
-struct CacheCounters { reads: u64, writes: u64, write_seq: u64, pending: u64, flush_seq: u64 }
+struct CacheCounters { hits: u64, misses: u64, reads: u64, writes: u64, write_seq: u64, pending: u64, flush_seq: u64 }
 
 fn cache_counters() -> Result<CacheCounters, String> {
     let text = io(fs::read_to_string("/proc/block/cache"))?;
@@ -48,7 +50,7 @@ fn cache_counters() -> Result<CacheCounters, String> {
     if rows.len() != names.len() || rows.iter().zip(names).any(|(row, name)| row.0 != name) {
         return Err(format!("invalid cache counter table: {text:?}"));
     }
-    Ok(CacheCounters { reads: rows[2].1, writes: rows[3].1, write_seq: rows[3].2,
+    Ok(CacheCounters { hits: rows[0].1, misses: rows[1].1, reads: rows[2].1, writes: rows[3].1, write_seq: rows[3].2,
         pending: rows[4].1, flush_seq: rows[5].2 })
 }
 
@@ -60,7 +62,7 @@ impl Drop for CacheFile { fn drop(&mut self) { let _ = fs::remove_file(&self.0);
 
 fn reread_from_cache() -> CaseResult {
     let path = CacheFile::new("reread");
-    let data = vec![0x5a; 1024 * 1024];
+    let data = vec![0x5a; REREAD_BYTES];
     { let mut file = io(File::create(&path.0))?; io(file.write_all(&data))?; }
     let mut first = Vec::new();
     io(io(File::open(&path.0))?.read_to_end(&mut first))?;
@@ -70,7 +72,9 @@ fn reread_from_cache() -> CaseResult {
     io(io(File::open(&path.0))?.read_to_end(&mut second))?;
     let after = cache_counters()?;
     check(second == data, "second read differs from written data")?;
-    check(after.reads == before.reads, &format!("device reads changed: {before:?} -> {after:?}"))
+    check(reread_is_cached((before.hits, before.misses, before.reads),
+        (after.hits, after.misses, after.reads)),
+        &format!("reread cache evidence failed: {before:?} -> {after:?}"))
 }
 
 fn write_through() -> CaseResult {

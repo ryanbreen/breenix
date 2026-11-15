@@ -40,3 +40,7 @@ mod recording;
 pub mod cache_report;
 #[cfg(test)]
 mod report;
+
+#[cfg(test)]
+#[path = "../../../userspace/programs/src/cache_reread.rs"]
+mod cache_reread;
