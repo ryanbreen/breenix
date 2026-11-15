@@ -1,4 +1,4 @@
-# cowfs host model
+# cowfs host model and recording device
 
 This isolated `no_std` crate imports the existing cowfs core with `#[path]` and
 uses `alloc` for its independent logical oracle. It has no dependency on the
@@ -55,3 +55,37 @@ errors from either observer propagate.
 The model is shared across architectures. ARM still lacks the transaction
 writer adapter and writable kernel cowfs integration, as does x86 in this unit;
 ARM64 QEMU, Parallels and VMware acceptance remains for later steps.
+
+`recording::RecordingDevice` implements the host `block::BlockDevice` fixture
+(the same synchronous surface as `tools/block-host-tests`) with 512-byte sectors.
+Its initial image is durable. Reads see completed writes; `durable_image` changes
+at flush, and `events` retains sector bytes and flush boundaries for replay.
+Calls serialize through a mutex, so a returned write has completed and a flush
+cannot pass an outstanding write in this fixture.
+
+The device enforces the writer rules in `docs/fs/cowfs-format.md` section 3:
+
+- W1 protects the two highest durable generations. The device walks the encoded
+  SPACE tree, ROOT trees, DEAD nodes and extents using the kernel format and
+  B-tree readers. It protects the four blocks of a node and the full physical
+  allocation of a data REF, including slices retained by snapshots or DEAD nodes.
+- W2 requires a first-flush fence before ring writes. A valid superblock's nodes
+  and data must be readable from the flushed image, with matching pointers and
+  data CRCs. A pending superblock's reachable blocks cannot be rewritten before
+  its following flush.
+- W3 publishes a pending superblock and advances the protected generations only
+  when the following flush completes. A data-only flush leaves that set alone.
+
+A writer-rule breach panics with its W number and latches the run as failed;
+later I/O panics too. Logs and the durable image remain inspectable. Short
+buffers and sector bounds errors return `BlockError`. Constructor errors reject
+unreadable initial trees or disagreeing UUIDs. Only the two newest readable
+generations are retained, with duplicate ring copies counted once.
+
+The four recording checks run the real `cowfs-mkfs` binary, built as a Cargo
+artifact dependency, then hand-script sector writes and flushes. They exercise
+old-generation node protection, ROOT nodes and data, the first-flush fence,
+durability publication, and legal reuse after the older commit ages out. These
+scripted generations exercise W1-W3; the independent checker owns acceptance
+of the image invariants. The same host recorder serves x86-64 and ARM64; this
+unit adds no guest runtime acceptance.
