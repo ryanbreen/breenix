@@ -42,7 +42,11 @@ impl Server {
                         if c.input.len() > 128 { c.output = display_protocol::reply(Err("request too long")).into_bytes(); }
                         else if c.input.contains(&b'\n') {
                             let response = match std::str::from_utf8(&c.input).map_err(|_| "invalid request").and_then(display_protocol::parse) {
-                                Ok(cmd) => execute(cmd), Err(e) => Err(e.to_string()),
+                                Ok(cmd) => {
+                                    c.deadline = libbreenix::ui_clock::now_ns().saturating_add(TIMEOUT);
+                                    execute(cmd)
+                                }
+                                Err(e) => Err(e.to_string()),
                             };
                             c.output = match response { Ok(g) => display_protocol::reply(Ok(g)), Err(e) => display_protocol::reply(Err(&e)) }.into_bytes();
                         }
