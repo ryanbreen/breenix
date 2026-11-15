@@ -89,3 +89,14 @@ durability publication, and legal reuse after the older commit ages out. These
 scripted generations exercise W1-W3; the independent checker owns acceptance
 of the image invariants. The same host recorder serves x86-64 and ARM64; this
 unit adds no guest runtime acceptance.
+
+`space.rs` is imported from the kernel path without declaring cowfs in the kernel.
+It edits REF, FREE, PENDING and DEAD items through the generic B-tree and consumes
+caller-supplied data CRCs. A private transaction store must roll back a failed
+store operation. `add_free` accepts unowned, nonreserved ranges; allocation takes
+FREE before converting eligible PENDING ranges, and coalesces adjacent FREEs.
+`release` takes the releasing commit generation and whether an FS node still
+owns child/data references. Such a zero-ref node becomes DEAD without changing
+its children; the later transaction/reaper units own those decrements.
+Space nodes remain uniquely referenced. This unit does not supply the writer,
+reservation policy, commit engine, reaper or guest mount on either architecture.

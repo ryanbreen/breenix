@@ -12,6 +12,8 @@ pub mod crc32c;
 pub mod format;
 #[path = "../../../kernel/src/fs/cowfs/siphash.rs"]
 pub mod siphash;
+#[path = "../../../kernel/src/fs/cowfs/space.rs"]
+pub mod space;
 
 pub mod model;
 pub mod recording;
