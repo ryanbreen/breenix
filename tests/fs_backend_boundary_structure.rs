@@ -934,3 +934,32 @@ fn exec_loads_through_the_trait() {
         "mmap publication must share the exec binding gate");
 
 }
+
+#[test]
+fn descriptors_hold_vnodes() {
+    use syn::visit::Visit;
+    #[derive(Default)]
+    struct Boundary(Vec<String>);
+    impl<'ast> Visit<'ast> for Boundary {
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            if matches!(ident.to_string().as_str(), "ext2" | "ext2_errno" | "Ext2Fs"
+                | "Ext2Inode" | "FileHandle" | "NativeInode" | "native_inode"
+                | "ext2_handle" | "ext2_adapter" | "ShrinkTicket" | "Held"
+                | "read_dir_inode" | "ino32" | "read_inode" | "read_symlink_bytes"
+                | "begin_resize_file_as" | "finish_shrink") {
+                self.0.push(ident.to_string());
+            }
+        }
+    }
+    let root = std::env::var_os("BREENIX_HANDLES_SOURCE_ROOT").map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR"))).join("kernel/src");
+    let mut problems = Vec::new();
+    for file in ["ipc/fd.rs", "ipc/fifo.rs", "syscall/fs.rs", "syscall/metadata.rs",
+        "fs/vfs/names.rs", "fs/vfs/mount.rs", "fs/namei.rs", "syscall/handlers.rs"] {
+        let parsed = syn::parse_file(&fs::read_to_string(root.join(file)).unwrap()).unwrap();
+        let mut b = Boundary::default();
+        b.visit_file(&parsed);
+        if !b.0.is_empty() { problems.push(format!("{file}: {}", b.0.join(", "))); }
+    }
+    assert!(problems.is_empty(), "descriptor backend boundary:\n{}", problems.join("\n"));
+}

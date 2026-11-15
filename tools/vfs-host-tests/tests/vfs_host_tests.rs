@@ -1157,3 +1157,28 @@ fn exec_image_returns_bytes_and_setid_identity() {
     assert_eq!(crate::exec::read_image(&fs, &node, MountFlags::default(), &user, || false).err(), Some(Errno(EACCES)));
     assert_eq!(crate::exec::read_image(&fs, &fs.open(root).unwrap(), MountFlags::default(), &user, || false).err(), Some(Errno(EISDIR)));
 }
+
+#[test]
+fn getcwd_walk_names_each_ancestor() {
+    let disk = Fixture::new();
+    let fs = Ext2Adapter::new(disk.pin());
+    let root = fs.root().unwrap();
+    let a = fs.create(root, b"first", NewNode::Directory { attrs: attrs(0o755) }).unwrap();
+    let b = fs.create(a, b"second", NewNode::Directory { attrs: attrs(0o755) }).unwrap();
+    let c = fs.create(b, b"third-\xff", NewNode::Directory { attrs: attrs(0o755) }).unwrap();
+    let leaf = fs.open(c).unwrap();
+    // A rename of an ancestor must be reflected without a saved pathname.
+    fs.rename(root, b"first", root, b"renamed", RenameMode::Replace,
+        &|_, _, _, _| Ok(())).unwrap();
+    let mut node = leaf;
+    let mut names = Vec::new();
+    let mut parents = Vec::new();
+    while node.ino != root {
+        let (parent, name) = crate::vfs::names::parent_name(&node).unwrap();
+        names.push(name);
+        parents.push(parent.ino);
+        node = parent;
+    }
+    assert_eq!(parents, [b, a, root]);
+    assert_eq!(names, [b"third-\xff".to_vec(), b"second".to_vec(), b"renamed".to_vec()]);
+}
