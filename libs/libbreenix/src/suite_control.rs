@@ -116,10 +116,15 @@ impl Scope {
     pub(super) fn phases(&self, suite: &str, case: &str) -> Vec<String> {
         if suite != "gui-apps" || case != "guskit/smb-share-gone"
             || phase_cell(self.page, 0, 0).load(Ordering::Acquire) == 0 { return Vec::new(); }
+        let mut stamps: Vec<_> = PHASES.iter().enumerate().map(|(index, name)| (
+            index, name, phase_cell(self.page, index, 0).load(Ordering::Acquire),
+            phase_cell(self.page, index, 1).load(Ordering::Acquire),
+        )).collect();
+        // The UI thread can finish before the SMB watcher. Preserve stable phase
+        // IDs, but calculate deltas in time order, with unreached stamps last.
+        stamps.sort_by_key(|&(index, _, at, _)| (at == 0, at, index));
         let (mut previous_at, mut previous_wait) = (0, 0);
-        PHASES.iter().enumerate().map(|(index, name)| {
-            let at = phase_cell(self.page, index, 0).load(Ordering::Acquire);
-            let total = phase_cell(self.page, index, 1).load(Ordering::Acquire);
+        stamps.into_iter().map(|(index, name, at, total)| {
             let (step, wait) = if at == 0 { (0, 0) } else {
                 let step = if previous_at == 0 { 0 } else { at.saturating_sub(previous_at) };
                 let wait = total.saturating_sub(previous_wait);
