@@ -73,8 +73,9 @@ ceiling, the last to zero. <!-- claim-lint:ok: Normative cowfs design requiremen
 `block/cache.rs` replaces each mount's 512 KiB write-through `sector_cache.rs` with one cache for all devices. <!-- claim-lint:ok: Normative cowfs design requirement from docs/fs/cowfs-design.md section 1.2, not a measured result. -->
 
 - **Buffers**, keyed by (device, block), are Clean, Dirty(group), InFlight or Failed. Clean, unpinned buffers are
-  evicted LRU within 1/8 of memory (4 MiB–1 GiB). Waiters sleep BlockedOnIO; no I/O runs under
-  PROCESS_MANAGER.
+  evicted LRU within 1/8 of memory, capped to 1/8 of the smallest kernel heap
+  (4–8 MiB charged budget, including buffer and index overhead). Pinned snapshots
+  retain their charge. Waiters sleep BlockedOnIO; no I/O runs under PROCESS_MANAGER.
 - **Misses** pass the owner's `verify` callback before caching (cowfs: CRC, address, generation), else EIO.
 - **Write groups.** `Hold` groups (cowfs) are written only when submitted; memory pressure asks for a commit.
   `WriteThrough` groups (ext2) write synchronously, leaving ext2's crash behaviour unchanged.

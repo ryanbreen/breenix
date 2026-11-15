@@ -100,6 +100,7 @@ struct Queue {
 }
 
 const MIN_BYTES: usize = 4 * 1024 * 1024;
+// claim-lint:ok: kernel/src/memory/heap.rs HEAP_SIZE and QEMU_HEAP_SIZE.
 // Every supported kernel has at least a 64 MiB heap. Cache allocations share
 // that heap with the rest of the kernel, irrespective of physical RAM size.
 const MAX_BYTES: usize = 64 * 1024 * 1024 / 8;
