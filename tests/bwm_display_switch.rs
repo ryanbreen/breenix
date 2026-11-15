@@ -77,3 +77,15 @@ fn mode_round_trip_notifies_clients_even_when_their_content_still_fits() {
         }
     }
 }
+
+#[test]
+fn frameless_fullscreen_fills_the_new_mode_and_stays_fullscreen_on_restore() {
+    let old = Mode { width: 2560, height: 1440, scale: 1 };
+    let new = Mode { width: 1920, height: 1080, scale: 1 };
+    let fullscreen = frame(0, 0, [2560, 1440], [0, 0]);
+    let down = switch_plan(old, Ok(new), &[fullscreen]);
+    assert_eq!(down.windows[0].frame, frame(0, 0, [1920, 1080], [0, 0]));
+    assert_eq!(down.windows[0].resize, Some([1920, 1080]));
+    let back = switch_plan(new, Ok(old), &[down.windows[0].frame]);
+    assert_eq!(back.windows[0].frame, fullscreen);
+}

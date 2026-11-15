@@ -28,6 +28,12 @@ pub fn switch_plan(old: Mode, new: Result<Mode, i64>, windows: &[Frame]) -> Swit
     let layout = Layout::for_mode(mode.width, mode.height, mode.scale);
     let windows = windows.iter().map(|&frame| {
         if refusal.is_some() { return WindowPlan { frame, resize: None }; }
+        if frame.decoration == [0, 0] && frame.rect == (Rect {
+            x: 0, y: 0, width: old.width, height: old.height,
+        }) {
+            let frame = Frame { rect: Rect { x: 0, y: 0, width: mode.width, height: mode.height }, decoration: [0, 0] };
+            return WindowPlan { frame, resize: (mode != old).then_some([mode.width as u32, mode.height as u32]) };
+        }
         let ratio = |size: usize| size.saturating_mul(mode.scale) / old.scale;
         let content = [frame.rect.width.saturating_sub(frame.decoration[0]),
                        frame.rect.height.saturating_sub(frame.decoration[1])];
