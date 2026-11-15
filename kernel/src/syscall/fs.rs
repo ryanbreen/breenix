@@ -3,7 +3,6 @@
 //! Implements: open, lseek, fstat, getdents64
 
 use alloc::string::String;
-use crate::fs::ext2::{self, ino32, errno::errno as ext2_errno};
 use super::SyscallResult;
 use crate::ipc::fd::FdKind;
 
@@ -590,7 +589,7 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
             Err(error) => return SyscallResult::Err(error.into()),
         };
         if is_reg && flags & O_TRUNC != 0 {
-            if let Err(error) = fs.resize(&node, 0, cred.euid != 0) {
+            if let Err(error) = fs.resize(&node, 0, cred.euid != 0, &|_| Ok(())) {
                 return SyscallResult::Err(error.into());
             }
         }
@@ -865,7 +864,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             None => return SyscallResult::Err(EBADF as u64),
         };
 
-        if fd_entry.native_inode.is_some() {
+        if fd_entry.namespace_node.is_some() {
             FstatKind::Native(fd_entry.clone())
         } else {
             match &fd_entry.kind {
@@ -944,7 +943,7 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
             } else { object.fill_stat(&mut stat); }
         },
         FstatKind::Native(entry) => {
-            let Some(handle) = entry.native_inode else { return SyscallResult::Err(EBADF as u64); };
+            let Some(handle) = entry.namespace_node else { return SyscallResult::Err(EBADF as u64); };
             if let Err(e) = fill_handle_stat(&mut stat, &handle) {
                 return SyscallResult::Err(e);
             }
@@ -1053,22 +1052,29 @@ fn fill_fifo_stat(
 }
 fn fill_handle_stat(
     stat: &mut Stat,
-    handle: &crate::fs::ext2::live_inode::FileHandle,
+    handle: &crate::fs::vfs::VNode,
 ) -> Result<(), u64> {
-    let inode = load_ext2_inode_stat_for_handle(&handle).ok_or(5u64)?;
-    stat.st_dev = (handle.object.mount.mount_id as u64) + 1;
-    stat.st_ino = handle.object.key.inode as u64;
-    stat.st_mode = inode.mode;
-    stat.st_uid = inode.uid;
-    stat.st_gid = inode.gid;
-    stat.st_nlink = inode.nlink as _;
-    stat.st_size = inode.size;
-    stat.st_atime = inode.atime;
-    stat.st_mtime = inode.mtime;
-    stat.st_ctime = inode.ctime;
-    stat.st_blocks = inode.blocks;
-    stat.st_rdev = inode.rdev;
+    let attrs = handle.filesystem.getattr(handle.ino)?;
+    fill_node_stat(stat, &attrs, handle.mount);
     Ok(())
+}
+
+fn fill_node_stat(stat: &mut Stat, attrs: &crate::fs::vfs::NodeAttrs, mount: usize) {
+    stat.st_dev = (mount as u64) + 1;
+    stat.st_ino = attrs.ino;
+    stat.st_mode = attrs.attrs.mode;
+    stat.st_uid = attrs.attrs.uid;
+    stat.st_gid = attrs.attrs.gid;
+    stat.st_nlink = attrs.nlink as _;
+    stat.st_size = attrs.size as i64;
+    stat.st_atime = attrs.times.atime.sec;
+    stat.st_atime_nsec = attrs.times.atime.nsec.into();
+    stat.st_mtime = attrs.times.mtime.sec;
+    stat.st_mtime_nsec = attrs.times.mtime.nsec.into();
+    stat.st_ctime = attrs.times.ctime.sec;
+    stat.st_ctime_nsec = attrs.times.ctime.nsec.into();
+    stat.st_blocks = attrs.blocks as i64;
+    stat.st_rdev = attrs.rdev;
 }
 
 pub(crate) fn touch_fifo(
@@ -1077,7 +1083,7 @@ pub(crate) fn touch_fifo(
 ) {
     crate::arch_without_interrupts(|| {
         if let Some(handle) = &entry.lock().handle {
-            handle.object.touch(read);
+            handle.filesystem.touch(handle, read);
         }
     });
 }
@@ -1085,74 +1091,6 @@ pub(crate) fn touch_fifo(
 /// Helper to create device ID from major/minor numbers
 fn make_dev(major: u64, minor: u64) -> u64 {
     (major << 8) | (minor & 0xff)
-}
-
-/// Inode metadata from ext2 filesystem
-struct InodeStat {
-    mode: u32,
-    uid: u32,
-    gid: u32,
-    size: i64,
-    nlink: u64,
-    atime: i64,
-    mtime: i64,
-    ctime: i64,
-    blocks: i64,
-    rdev: u64,
-}
-
-/// Extract InodeStat from an already-loaded ext2 inode
-fn load_inode_stat_from_inode(inode: &crate::fs::ext2::Ext2Inode) -> Option<InodeStat> {
-    let mode = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_mode)) };
-    let uid = inode.uid();
-    let gid = inode.gid();
-    let links_count =
-        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_links_count)) };
-    let atime = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_atime)) };
-    let mtime = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_mtime)) };
-    let ctime = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_ctime)) };
-    let blocks = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(inode.i_blocks)) };
-
-    Some(InodeStat {
-        mode: mode as u32,
-        uid,
-        gid,
-        size: inode.size() as i64,
-        nlink: links_count as u64,
-        atime: atime as i64,
-        mtime: mtime as i64,
-        ctime: ctime as i64,
-        blocks: blocks as i64,
-        rdev: crate::fs::ext2::create_node::node_device(inode),
-    })
-}
-
-fn load_ext2_inode_stat_for_handle(
-    handle: &crate::fs::ext2::live_inode::FileHandle,
-) -> Option<InodeStat> {
-    let guard = crate::fs::ext2::read_mount(handle.object.mount).ok()?;
-    let fs = guard.as_ref()?;
-    let inode = fs.read_inode(handle.verify(fs).ok()?).ok()?;
-    load_inode_stat_from_inode(&inode)
-}
-
-/// Load inode metadata from ext2 filesystem, dispatching to correct mount
-///
-/// Returns None if the ext2 filesystem is not available or inode cannot be read.
-fn load_ext2_inode_stat_for_mount(inode_num: u64, mount_id: usize) -> Option<InodeStat> {
-
-    let fs_guard = crate::fs::namei::Mount(mount_id).read().ok()?;
-    let fs = fs_guard.as_ref()?;
-    let inode = fs.read_inode(ino32(inode_num).ok()?).ok()?;
-    load_inode_stat_from_inode(&inode)
-}
-
-pub(crate) fn get_ext2_file_size_for_handle(
-    handle: &crate::fs::ext2::live_inode::FileHandle,
-) -> Option<u64> {
-    let guard = crate::fs::ext2::read_mount(handle.object.mount).ok()?;
-    let fs = guard.as_ref()?;
-    Some(fs.read_inode(handle.verify(fs).ok()?).ok()?.size())
 }
 
 /// Convert the VFS node kind to the directory record's ABI type.
@@ -1965,8 +1903,8 @@ pub fn sys_readlink(pathname: u64, buf: u64, bufsize: u64) -> SyscallResult {
     sys_readlink_from(AT_FDCWD, pathname, buf, bufsize)
 }
 fn sys_readlink_from(dirfd: i32, pathname: u64, buf: u64, bufsize: u64) -> SyscallResult {
-    use super::errno::{EFAULT, EINVAL, EIO, ENOENT};
-    use crate::fs::ext2::FileType;
+    use super::errno::{EFAULT, EINVAL, ENOENT};
+    use crate::fs::vfs::NodeKind;
     use crate::fs::namei::Target;
 
     // A buffer of no bytes is EINVAL, as on Linux; a null one EFAULT.
@@ -2005,29 +1943,16 @@ fn sys_readlink_from(dirfd: i32, pathname: u64, buf: u64, bufsize: u64) -> Sysca
         Target::Inode {
             mount,
             ino,
-            file_type: FileType::SymLink,
+            file_type: NodeKind::Symlink,
         } => (mount, ino),
         Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
         Target::User { node: 0, .. } => return SyscallResult::Err(ENOENT as u64),
         Target::User { .. } | Target::Inode { .. } | Target::Virtual => return SyscallResult::Err(EINVAL as u64),
     };
-    let target = {
-        let fs_guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
-        let fs = match fs_guard.as_ref() {
-            Some(fs) => fs,
-            None => {
-                log::error!("sys_readlink: ext2 filesystem not mounted");
-                return SyscallResult::Err(EIO as u64);
-            }
-        };
-        let ino = match ino32(ino) { Ok(ino) => ino, Err(error) => return SyscallResult::Err(error.into()) };
-        match fs.read_symlink_bytes(ino).map_err(ext2_errno) {
-            Ok(t) => t,
-            Err(e) => {
-                log::debug!("sys_readlink: failed to read symlink: {:?}", e);
-                return SyscallResult::Err(e.into());
-            }
-        }
+    let target = match crate::fs::vfs::mount::filesystem(mount.0)
+        .and_then(|fs| fs.readlink(ino)) {
+        Ok(target) => target,
+        Err(error) => return SyscallResult::Err(error.into()),
     };
 
     // Calculate how many bytes to copy (capped by buffer size)
@@ -2269,7 +2194,7 @@ fn handle_procfs_open(path: &str, flags: u32) -> SyscallResult {
 fn handle_devfs_open(
     device_name: &str,
     flags: u32,
-    native_inode: Option<crate::ipc::fd::NativeInode>,
+    namespace_node: Option<crate::ipc::fd::MountedNode>,
     reserved: Option<ReservedSlot>,
 ) -> SyscallResult {
     use super::errno::{EMFILE, ENOENT};
@@ -2285,7 +2210,7 @@ fn handle_devfs_open(
     }
 
     if device_name == "input" {
-        return open_input(None, flags, native_inode, reserved);
+        return open_input(None, flags, namespace_node, reserved);
     }
     // Check for /dev/pts directory itself
     if device_name == "pts" {
@@ -2316,10 +2241,10 @@ fn handle_devfs_open(
         Err(errno) => return SyscallResult::Err(errno),
     }
     if matches!(device.device_type, devfs::DeviceType::InputEvents | devfs::DeviceType::Uinput) {
-        return open_input(Some(device.device_type == devfs::DeviceType::Uinput), flags, native_inode, reserved);
+        return open_input(Some(device.device_type == devfs::DeviceType::Uinput), flags, namespace_node, reserved);
     }
     if device.device_type == devfs::DeviceType::Ptmx {
-        return open_ptmx(flags, native_inode, reserved);
+        return open_ptmx(flags, namespace_node, reserved);
     }
     if device.device_type == devfs::DeviceType::Ufs {
         if flags & O_DIRECTORY != 0 { return SyscallResult::Err(super::errno::ENOTDIR as u64); }
@@ -2327,7 +2252,7 @@ fn handle_devfs_open(
             Ok(object) => object, Err(e) => return SyscallResult::Err(e),
         };
         let entry = match FileDescriptor::try_opened(FdKind::Ipc(object), flags) {
-            Ok(entry) => entry.with_inode(native_inode), Err(e) => return SyscallResult::Err(e),
+            Ok(entry) => entry.with_inode(namespace_node), Err(e) => return SyscallResult::Err(e),
         };
         let Some(tid) = crate::task::scheduler::current_thread_id() else { return SyscallResult::Err(3); };
         let mut guard = crate::process::manager();
@@ -2340,7 +2265,7 @@ fn handle_devfs_open(
     }
     if let devfs::DeviceType::Vcs(n) | devfs::DeviceType::Vcsa(n) = device.device_type {
         let attributes = matches!(device.device_type, devfs::DeviceType::Vcsa(_));
-        return open_vcs(usize::from(n), attributes, flags, native_inode, reserved);
+        return open_vcs(usize::from(n), attributes, flags, namespace_node, reserved);
     }
 
     // Get current process and allocate fd
@@ -2382,14 +2307,14 @@ fn handle_devfs_open(
         };
         return match (id, tty) {
             (TtyId::Pty(_), TtyRef::Pty(pair)) => {
-                return open_tty_slave(process, &pair, flags, native_inode, reserved);
+                return open_tty_slave(process, &pair, flags, namespace_node, reserved);
             }
             // A virtual terminal: its own device, so reads, writes and the
             // open count are that terminal's (`docs/console/contract.md` 1.1).
             (TtyId::Vt(number), TtyRef::Vt(_)) => {
                 device.device_type = devfs::DeviceType::Vt(number);
                 let fd_kind = match FileDescriptor::try_opened(FdKind::Device(device.device_type), flags) {
-                    Ok(entry) => entry.with_inode(native_inode),
+                    Ok(entry) => entry.with_inode(namespace_node),
                     Err(e) => return SyscallResult::Err(e),
                 };
                 match install_descriptor(&mut process.fd_table, reserved, fd_kind) {
@@ -2421,7 +2346,7 @@ fn handle_devfs_open(
 
     // Allocate file descriptor with Device kind
     let fd_kind = match FileDescriptor::try_opened(FdKind::Device(device.device_type), flags) {
-        Ok(entry) => entry.with_inode(native_inode),
+        Ok(entry) => entry.with_inode(namespace_node),
         Err(e) => return SyscallResult::Err(e),
     };
     match install_descriptor(&mut process.fd_table, reserved, fd_kind) {
@@ -2501,7 +2426,7 @@ fn handle_devpts_open(pty_name: &str, flags: u32, reserved: Option<ReservedSlot>
     // and build the entry with the caller's status flags, so a slave opened
     // O_NONBLOCK reads non-blocking.
     let slot = match reserved {
-        Some(slot) => Slot::Held(slot),
+        Some(slot) => Slot::Reserved(slot),
         None => match process.fd_table.reserve_slot() {
             Some(fd) => Slot::Taken(fd),
             None => return SyscallResult::Err(EMFILE as u64),
@@ -2533,7 +2458,7 @@ fn handle_devpts_open(pty_name: &str, flags: u32, reserved: Option<ReservedSlot>
 /// A descriptor slot held for a terminal open: the caller's (O_CREAT), or
 /// one taken from the table. Either way the install cannot fail.
 enum Slot {
-    Held(ReservedSlot),
+    Reserved(ReservedSlot),
     Taken(i32),
 }
 
@@ -2541,11 +2466,11 @@ impl Slot {
     /// Install `entry` in the held slot, under PROCESS_MANAGER.
     fn install(self, table: &mut crate::ipc::fd::FdTable, entry: crate::ipc::fd::FileDescriptor) -> i32 {
         let fd = match &self {
-            Slot::Held(slot) => slot.fd,
+            Slot::Reserved(slot) => slot.fd,
             Slot::Taken(fd) => *fd,
         };
         match self {
-            Slot::Held(slot) => {
+            Slot::Reserved(slot) => {
                 let _ = slot.install(table, entry);
             }
             Slot::Taken(fd) => {
@@ -2558,7 +2483,7 @@ impl Slot {
     /// Give the slot back, under PROCESS_MANAGER, for an open that failed.
     fn give_back(self, table: &mut crate::ipc::fd::FdTable) {
         let fd = match self {
-            Slot::Held(slot) => {
+            Slot::Reserved(slot) => {
                 let fd = slot.fd;
                 core::mem::forget(slot);
                 fd
@@ -2575,14 +2500,14 @@ impl Slot {
 /// /dev/ptmx.
 fn open_ptmx(
     flags: u32,
-    native_inode: Option<crate::ipc::fd::NativeInode>,
+    namespace_node: Option<crate::ipc::fd::MountedNode>,
     reserved: Option<ReservedSlot>,
 ) -> SyscallResult {
     let (pair, entry) = match crate::tty::pty::new_master(flags) {
         Ok(made) => made,
         Err(e) => return SyscallResult::Err(e as u64),
     };
-    let entry = entry.with_inode(native_inode);
+    let entry = entry.with_inode(namespace_node);
     let installed = match crate::task::scheduler::current_thread_id() {
         Some(thread_id) => {
             let mut manager_guard = crate::process::manager();
@@ -2607,7 +2532,7 @@ fn open_ptmx(
 
 /// Each input open creates one independently queued reader or virtual device.
 fn open_input(
-    injector: Option<bool>, flags: u32, native_inode: Option<crate::ipc::fd::NativeInode>,
+    injector: Option<bool>, flags: u32, namespace_node: Option<crate::ipc::fd::MountedNode>,
     reserved: Option<ReservedSlot>,
 ) -> SyscallResult {
     use crate::ipc::fd::FileDescriptor;
@@ -2622,7 +2547,7 @@ fn open_input(
         None => alloc::sync::Arc::new(crate::fs::devfs::input::Directory::default()),
     };
     let entry = match FileDescriptor::try_opened(FdKind::Ipc(object), flags) {
-        Ok(entry) => entry.with_inode(native_inode), Err(e) => return SyscallResult::Err(e),
+        Ok(entry) => entry.with_inode(namespace_node), Err(e) => return SyscallResult::Err(e),
     };
     let Some(tid) = crate::task::scheduler::current_thread_id() else { return SyscallResult::Err(3); };
     let mut guard = crate::process::manager();
@@ -2641,7 +2566,7 @@ fn open_vcs(
     vt: usize,
     attributes: bool,
     flags: u32,
-    native_inode: Option<crate::ipc::fd::NativeInode>,
+    namespace_node: Option<crate::ipc::fd::MountedNode>,
     reserved: Option<ReservedSlot>,
 ) -> SyscallResult {
     use super::errno::EACCES;
@@ -2653,7 +2578,7 @@ fn open_vcs(
     }
     let object = alloc::sync::Arc::new(crate::console::vcs::VcsFile::new(vt, attributes));
     let entry = match FileDescriptor::try_opened(FdKind::Ipc(object), flags) {
-        Ok(entry) => entry.with_inode(native_inode),
+        Ok(entry) => entry.with_inode(namespace_node),
         Err(e) => return SyscallResult::Err(e),
     };
     let Some(thread_id) = crate::task::scheduler::current_thread_id() else {
@@ -2678,18 +2603,18 @@ fn open_tty_slave(
     process: &mut crate::process::Process,
     pair: &alloc::sync::Arc<crate::tty::pty::PtyPair>,
     flags: u32,
-    native_inode: Option<crate::ipc::fd::NativeInode>,
+    namespace_node: Option<crate::ipc::fd::MountedNode>,
     reserved: Option<ReservedSlot>,
 ) -> SyscallResult {
     use super::errno::EMFILE;
     use crate::ipc::fd::FileDescriptor;
 
     let entry = match FileDescriptor::try_opened(FdKind::PtySlave(pair.clone()), flags) {
-        Ok(entry) => entry.with_inode(native_inode),
+        Ok(entry) => entry.with_inode(namespace_node),
         Err(e) => return SyscallResult::Err(e),
     };
     let slot = match reserved {
-        Some(slot) => Slot::Held(slot),
+        Some(slot) => Slot::Reserved(slot),
         None => match process.fd_table.reserve_slot() {
             Some(fd) => Slot::Taken(fd),
             None => return SyscallResult::Err(EMFILE as u64),
@@ -3744,13 +3669,13 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, flags: u32) -> Sy
         };
     }
 
-    let (mount, inode_num) = match resolved.target {
+    match resolved.target {
         Target::User { mount, node, .. } => {
             let mut stat = Stat::zeroed();
             if let Err(e) = fill_user_stat(mount, node, &mut stat) { return SyscallResult::Err(e); }
             return ufs_status(copy_to_user(statbuf as *mut Stat, &stat));
         }
-        Target::Inode { mount, ino, .. } => (mount, ino as u64),
+        Target::Inode { .. } => {},
         Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
         Target::Virtual => {
             // A procfs link not followed (lstat) is reported as the link.
@@ -3788,37 +3713,17 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, flags: u32) -> Sy
             return result;
         }
     };
-    // Released before load_ext2_inode_stat_for_mount takes its own guard.
-    let mount_id = match mount.read() {
-        Ok(guard) => match guard.as_ref() {
-            Some(fs) => fs.mount_id,
-            None => return SyscallResult::Err(ENOENT as u64),
-        },
-        Err(errno) => return SyscallResult::Err(errno.into()),
-    };
-
-    // Build stat from inode
     let mut stat = Stat::zeroed();
-    stat.st_dev = (mount_id as u64) + 1;
-    stat.st_ino = inode_num;
     stat.st_blksize = 4096;
-    stat.st_nlink = 1;
-    stat.st_mode = S_IFREG | 0o644; // Default
-
-    if let Some(inode_stat) = load_ext2_inode_stat_for_mount(inode_num, mount_id) {
-        stat.st_mode = inode_stat.mode;
-        stat.st_uid = inode_stat.uid;
-        stat.st_gid = inode_stat.gid;
-        stat.st_size = inode_stat.size;
-        stat.st_nlink = inode_stat.nlink as _;
-        stat.st_atime = inode_stat.atime;
-        stat.st_mtime = inode_stat.mtime;
-        stat.st_ctime = inode_stat.ctime;
-        stat.st_blocks = inode_stat.blocks;
-        stat.st_rdev = inode_stat.rdev;
-    } else {
-        return SyscallResult::Err(super::errno::EIO as u64);
-    }
+    let (fs, node) = match crate::fs::vfs::names::target(&resolved) {
+        Ok(target) => target,
+        Err(error) => return SyscallResult::Err(error.into()),
+    };
+    let attrs = match fs.getattr(node.ino) {
+        Ok(attrs) => attrs,
+        Err(error) => return SyscallResult::Err(error.into()),
+    };
+    fill_node_stat(&mut stat, &attrs, node.mount);
 
     if let Err(errno) = copy_to_user(statbuf as *mut Stat, &stat) {
         return SyscallResult::Err(errno);
@@ -4045,7 +3950,7 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
             Ok(entry) => entry,
             Err(error) => return SyscallResult::Err(error),
         };
-        let target = if let Some(handle) = &entry.native_inode {
+        let target = if let Some(handle) = &entry.namespace_node {
             crate::fs::vfs::names::held(handle)
         } else {
             match &entry.kind {
@@ -4259,7 +4164,7 @@ pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
             .and_then(|m| m.find_process_by_thread(tid))
             .and_then(|(_, p)| p.fd_table.get(fd));
         match entry {
-            Some(e) => (e.native_inode.clone(), e.kind.clone(), e.mount_flags),
+            Some(e) => (e.namespace_node.clone(), e.kind.clone(), e.mount_flags),
             None => return SyscallResult::Err(9),
         }
     };
@@ -4313,70 +4218,14 @@ pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
 /// Write back dirty shared mappings and flush mounted devices. Like Linux
 /// sync, this advisory interface returns zero; fsync reports individual errors.
 pub fn sys_sync() -> SyscallResult {
-    use crate::fs::namei::Mount;
-    let mut bytes = crate::memory::file_map::writeback_buffer().ok();
     for id in crate::fs::vfs::mount::storage_mounts() {
-        let mount = Mount(id);
-        let handles = {
-            let guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
-            guard.as_ref().filter(|fs| !fs.is_read_only()).map(|fs| fs.dirty_handles()).transpose()
+        let fs = match crate::fs::vfs::mount::filesystem(id) {
+            Ok(fs) => fs,
+            Err(error) => return SyscallResult::Err(error.into()),
         };
-        let _sync = handles
-            .as_ref()
-            .ok()
-            .and_then(|handles| handles.as_ref())
-            .map(|handles| crate::memory::file_map::SyncMaps::new(handles));
-        if let (Ok(Some(handles)), Some(buffer)) = (&handles, bytes.as_mut()) {
-            for handle in handles {
-                let _ =
-                    crate::memory::file_map::stage_range_with_buffer(handle, 0, u64::MAX, buffer);
-            }
-        }
-        if matches!(handles, Ok(None)) { continue; }
-        let staged = handles.as_ref().ok().and_then(|h| h.as_deref()).unwrap_or(&[]);
-        let _ = crate::fs::ext2::mapped_io::sync_mount(ext2::home_mount_id() == Some(mount.0), staged);
+        let _ = fs.sync();
     }
     SyscallResult::Ok(0)
-}
-
-fn resize_inode(
-    fs: &mut crate::fs::ext2::Ext2Fs,
-    ino: u64,
-    length: u64,
-    unprivileged: bool,
-    limit: u64,
-    exceeded: &mut bool,
-) -> Result<Option<crate::fs::ext2::ShrinkTicket>, u64> {
-    use super::errno::{EFBIG, EINVAL, EIO, EISDIR};
-    let ino = ino32(ino)?;
-    match fs.read_inode(ino) {
-        Ok(inode) if inode.is_dir() => return Err(EISDIR as u64),
-        Ok(inode) if !inode.is_file() => return Err(EINVAL as u64),
-        Err(_) => return Err(EIO as u64),
-        Ok(inode) if length > inode.size() && length > limit => {
-            *exceeded = true;
-            return Err(EFBIG as u64);
-        }
-        _ => {}
-    }
-    if length > fs.max_file_size() {
-        return Err(EFBIG as u64);
-    }
-    fs.begin_resize_file_as(ino, length, unprivileged).map_err(ext2_errno).map_err(u64::from)
-}
-
-fn finish_resize(
-    guard: crate::fs::ext2::Ext2WriteGuard,
-    result: Result<Option<crate::fs::ext2::ShrinkTicket>, u64>,
-) -> SyscallResult {
-    match result {
-        Ok(Some(ticket)) => match guard.finish_shrink(ticket).map_err(ext2_errno) {
-            Ok(_) => SyscallResult::Ok(0),
-            Err(e) => SyscallResult::Err(e.into()),
-        },
-        Ok(None) => SyscallResult::Ok(0),
-        Err(errno) => SyscallResult::Err(errno),
-    }
 }
 
 /// ftruncate changes the inode, leaving every open file description's offset alone.
@@ -4418,7 +4267,7 @@ pub fn sys_ftruncate(fd: i32, length: i64) -> SyscallResult {
         super::resource::signal_fsize();
         return SyscallResult::Err(super::errno::EFBIG as u64);
     }
-    match fs.resize(&node, len, clear_setid) {
+    match fs.resize(&node, len, clear_setid, &|_| Ok(())) {
         Ok(()) => SyscallResult::Ok(0),
         Err(errno) => SyscallResult::Err(errno.into()),
     }
@@ -4426,7 +4275,7 @@ pub fn sys_ftruncate(fd: i32, length: i64) -> SyscallResult {
 
 /// truncate resolves the final symlink and resizes the same inode open FDs use.
 pub fn sys_truncate(pathname: u64, length: i64) -> SyscallResult {
-    use super::errno::{EINVAL, EIO, ENOENT};
+    use super::errno::{EINVAL, ENOENT};
     use crate::fs::namei::Target;
     if length < 0 {
         return SyscallResult::Err(EINVAL as u64);
@@ -4442,12 +4291,12 @@ pub fn sys_truncate(pathname: u64, length: i64) -> SyscallResult {
         Ok(r) => r,
         Err(errno) => return SyscallResult::Err(errno),
     };
-    let (mount, ino) = match resolved.target {
+    match resolved.target {
         Target::User { mount, node, .. } => {
             let cred = match current_file_credentials() { Ok(c) => c, Err(e) => return SyscallResult::Err(e) };
             return ufs_status(crate::fs::ufs::path::truncate(mount, node, length as u64, &cred));
         }
-        Target::Inode { mount, ino, .. } => (mount, ino),
+        Target::Inode { .. } => {},
         Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
         Target::Virtual if resolved.is_mount_point() => {
             return SyscallResult::Err(super::errno::EISDIR as u64)
@@ -4467,39 +4316,29 @@ pub fn sys_truncate(pathname: u64, length: i64) -> SyscallResult {
         Err(errno) => return SyscallResult::Err(errno),
     };
     let size_limit = super::resource::current_fsize();
-    let mut exceeded = false;
-    let mut guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
-    let ext2_ino = match ino32(ino) { Ok(ino) => ino, Err(error) => return SyscallResult::Err(error.into()) };
-    guard = match guard.wait_for_inode(ext2_ino).map_err(ext2_errno) {
-        Ok(guard) => guard,
+    let (fs, node) = match crate::fs::vfs::names::target(&resolved) {
+        Ok(target) => target,
         Err(error) => return SyscallResult::Err(error.into()),
     };
-    let fs = match guard.as_mut() {
-        Some(fs) => fs,
-        None => return SyscallResult::Err(EIO as u64),
-    };
-    let inode = match fs.read_inode(ext2_ino) {
-        Ok(inode) => inode,
-        Err(_) => return SyscallResult::Err(EIO as u64),
-    };
-    if inode.is_file() {
-        if let Err(error) = check_open_access(inode.attrs(), O_WRONLY, &cred) {
-            return error;
+    let length = length as u64;
+    let exceeded = core::cell::Cell::new(false);
+    let check = |attrs: crate::fs::vfs::NodeAttrs| {
+        check_open_access(attrs.attrs, O_WRONLY, &cred).map_err(|error| match error {
+            SyscallResult::Err(errno) => crate::fs::errno::Errno(errno as i32),
+            SyscallResult::Ok(_) => unreachable!(),
+        })?;
+        if length > attrs.size && length > size_limit {
+            exceeded.set(true);
+            return Err(crate::fs::errno::Errno(super::errno::EFBIG));
         }
+        Ok(())
+    };
+    let result = fs.resize(&node, length, !cred.privileged(), &check);
+    if exceeded.get() { super::resource::signal_fsize(); }
+    match result {
+        Ok(()) => SyscallResult::Ok(0),
+        Err(error) => SyscallResult::Err(error.into()),
     }
-    let result = resize_inode(
-        fs,
-        ino,
-        length as u64,
-        cred.euid != 0,
-        size_limit,
-        &mut exceeded,
-    );
-    let result = finish_resize(guard, result);
-    if exceeded {
-        super::resource::signal_fsize();
-    }
-    result
 }
 
 fn ufs_status(result: Result<(), u64>) -> SyscallResult {

@@ -565,8 +565,14 @@ fn resize_shrink_then_grow_reads_zeros() {
         .map(|r| r.bytes),
         Ok(data.len())
     );
-    fs.resize(&node, 37, false).unwrap();
-    fs.resize(&node, data.len() as u64, false).unwrap();
+    // Resize policy runs under mutation exclusion before size or data changes.
+    assert_eq!(fs.resize(&node, 37, false, &|current| {
+        assert_eq!(current.size, data.len() as u64);
+        Err(Errno(EACCES))
+    }), Err(Errno(EACCES)));
+    assert_eq!(fs.getattr(ino).unwrap().size, data.len() as u64);
+    fs.resize(&node, 37, false, &|_| Ok(())).unwrap();
+    fs.resize(&node, data.len() as u64, false, &|_| Ok(())).unwrap();
     let mut bytes = vec![0xa5; data.len()];
     assert_eq!(fs.read(&node, 0, &mut bytes), Ok(bytes.len()));
     assert_eq!(&bytes[..37], &[0x5a; 37]);
@@ -729,7 +735,7 @@ fn read_only_mount_write_is_erofs() {
         .map(|r| r.bytes),
         Err(Errno(EROFS))
     );
-    assert_eq!(fs.resize(&node, 1, false), Err(Errno(EROFS)));
+    assert_eq!(fs.resize(&node, 1, false, &|_| Ok(())), Err(Errno(EROFS)));
     assert_eq!(
         fs.setattr(
             ino,
@@ -930,9 +936,9 @@ fn append_reports_offset_and_clears_setid() {
         },
     )
     .unwrap();
-    fs.resize(&node, 3, false).unwrap();
+    fs.resize(&node, 3, false, &|_| Ok(())).unwrap();
     assert_eq!(fs.getattr(ino).unwrap().attrs.mode & 0o7777, 0o6750);
-    fs.resize(&node, 8, true).unwrap();
+    fs.resize(&node, 8, true, &|_| Ok(())).unwrap();
     assert_eq!(fs.getattr(ino).unwrap().attrs.mode & 0o7777, 0o750);
 }
 
@@ -1166,7 +1172,8 @@ fn getcwd_walk_names_each_ancestor() {
     let a = fs.create(root, b"first", NewNode::Directory { attrs: attrs(0o755) }).unwrap();
     let b = fs.create(a, b"second", NewNode::Directory { attrs: attrs(0o755) }).unwrap();
     let c = fs.create(b, b"third-\xff", NewNode::Directory { attrs: attrs(0o755) }).unwrap();
-    let leaf = fs.open(c).unwrap();
+    let leaf = fs.lookup_open(&fs.open(b).unwrap(), b"third-\xff").unwrap();
+    assert_eq!(leaf.ino, c);
     // A rename of an ancestor must be reflected without a saved pathname.
     fs.rename(root, b"first", root, b"renamed", RenameMode::Replace,
         &|_, _, _, _| Ok(())).unwrap();

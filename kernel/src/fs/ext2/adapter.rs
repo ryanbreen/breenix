@@ -70,9 +70,8 @@ impl Ext2Adapter {
         Ok(())
     }
 
-    /// Lookup while a legacy namei caller already holds this storage guard.
-    /// Keep the namespace translation here until those callers use the trait.
-    pub fn lookup_in(&self, fs: &Ext2Fs, dir: u64, name: &[u8]) -> Result<Option<u32>, Errno> {
+    /// Namespace translation under this adapter's storage guard.
+    fn lookup_in(&self, fs: &Ext2Fs, dir: u64, name: &[u8]) -> Result<Option<u32>, Errno> {
         component(name)?;
         let (dir, inode) = directory(fs, dir)?;
         let ns = fs.namespace();
@@ -119,21 +118,6 @@ impl Ext2Adapter {
         }
         handle.verify(fs).map_err(errno)?;
         Ok(handle)
-    }
-}
-
-// Temporary guard boundary for callers migrated in 24.4-24.6. The adapter's
-// instance pin, rather than a pathname or a root/home choice, selects storage.
-#[cfg(not(test))]
-impl Ext2Adapter {
-    pub fn read(&self) -> Result<ext2::Ext2ReadGuard, Errno> {
-        read_mount(self.mount).map_err(errno)
-    }
-    pub fn write(&self) -> Result<ext2::Ext2WriteGuard, Errno> {
-        write_mount(self.mount).map_err(errno)
-    }
-    pub fn exclusive(&self) -> Result<ext2::Ext2WriteGuard, Errno> {
-        sync_mount_guard(self.mount).map_err(errno)
     }
 }
 
@@ -292,19 +276,31 @@ impl FileSystem for Ext2Adapter {
     }
 
     fn sync(&self) -> Result<(), Errno> {
-        let handles = {
-            let guard = sync_mount_guard(self.mount).map_err(errno)?;
-            guard
-                .as_ref()
-                .ok_or(Errno(EIO))?
-                .dirty_handles()
-                .map_err(errno)?
-        };
-        for handle in &handles {
-            crate::memory::file_map::sync_range(handle, 0, u64::MAX)?;
+        #[cfg(not(test))]
+        {
+            // Stage the dirty-handle snapshot before the device barrier,
+            // retaining service exclusion and inode-ordered leases.
+            let handles = {
+                let guard = read_mount(self.mount).map_err(errno)?;
+                let fs = guard.as_ref().ok_or(Errno(EIO))?;
+                if fs.is_read_only() { return Ok(()); }
+                fs.dirty_handles().map_err(errno)
+            };
+            let _sync = handles.as_ref().ok()
+                .map(|handles| crate::memory::file_map::SyncMaps::new(handles));
+            if let (Ok(handles), Ok(mut bytes)) = (&handles, crate::memory::file_map::writeback_buffer()) {
+                for handle in handles {
+                    let _ = crate::memory::file_map::stage_range_with_buffer(handle, 0, u64::MAX, &mut bytes);
+                }
+            }
+            let staged = handles.as_deref().unwrap_or(&[]);
+            return ext2::mapped_io::sync_mount(self.mount, staged).map_err(errno);
         }
-        let guard = sync_mount_guard(self.mount).map_err(errno)?;
-        guard.as_ref().ok_or(Errno(EIO))?.sync().map_err(errno)
+        #[cfg(test)]
+        {
+            let guard = sync_mount_guard(self.mount).map_err(errno)?;
+            guard.as_ref().ok_or(Errno(EIO))?.sync().map_err(errno)
+        }
     }
 
     fn read_only(&self) -> Result<bool, Errno> {
@@ -372,6 +368,21 @@ impl FileSystem for Ext2Adapter {
         self.lookup_in(fs, dir, name)?
             .map(u64::from)
             .ok_or(Errno(ENOENT))
+    }
+
+    fn lookup_open(&self, dir: &VNode, name: &[u8]) -> Result<Arc<VNode>, Errno> {
+        let guard = read_mount(self.mount).map_err(errno)?;
+        let fs = guard.as_ref().ok_or(Errno(EIO))?;
+        self.pin_node(fs, dir)?;
+        let ino = self.lookup_in(fs, dir.ino, name)?.ok_or(Errno(ENOENT))?;
+        self.open_loaded(fs, ino, &fs.read_inode(ino).map_err(errno)?)
+    }
+
+    fn touch(&self, node: &VNode, read: bool) {
+        #[cfg(not(test))]
+        if let Some(handle) = node.pin::<FileHandle>() { handle.object.touch(read); }
+        #[cfg(test)]
+        let _ = (node, read);
     }
 
     fn parent(&self, dir: u64) -> Result<u64, Errno> {
@@ -722,7 +733,10 @@ impl FileSystem for Ext2Adapter {
         result
     }
 
-    fn resize(&self, node: &VNode, size: u64, clear_setid: bool) -> Result<(), Errno> {
+    fn resize(
+        &self, node: &VNode, size: u64, clear_setid: bool,
+        check: &dyn Fn(NodeAttrs) -> Result<(), Errno>,
+    ) -> Result<(), Errno> {
         let ino = ext2::ino32(node.ino)?;
         let mut guard = write_mount(self.mount)
             .map_err(errno)?
@@ -731,7 +745,8 @@ impl FileSystem for Ext2Adapter {
         let fs = guard.as_mut().ok_or(Errno(EIO))?;
         let handle = self.pin_node(fs, node)?;
         fs.ensure_writable().map_err(errno)?;
-        regular_inode(fs, handle.verify(fs).map_err(errno)?)?;
+        let inode = regular_inode(fs, handle.verify(fs).map_err(errno)?)?;
+        check(attributes(node.ino, &inode)?)?;
         if size > fs.max_file_size() {
             return Err(Errno(EFBIG));
         }

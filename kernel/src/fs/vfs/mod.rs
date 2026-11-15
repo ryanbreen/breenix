@@ -15,7 +15,6 @@ pub mod attributes;
 pub mod exec;
 pub mod file;
 pub mod mount_table;
-#[cfg(not(test))]
 pub mod names;
 #[cfg(not(test))]
 pub mod mount;
@@ -292,6 +291,12 @@ pub trait FileSystem: core::any::Any + Send + Sync {
     fn open(&self, ino: u64) -> Result<Arc<VNode>, Errno>;
     // Names
     fn lookup(&self, dir: u64, name: &[u8]) -> Result<u64, Errno>;
+    /// Lookup and retain the child under the same namespace exclusion, so its
+    /// inode number cannot be recycled between lookup and open.
+    fn lookup_open(&self, dir: &VNode, name: &[u8]) -> Result<Arc<VNode>, Errno>;
+    /// Queue stream timestamps without I/O, allocation or blocking locks.
+    /// Safe while the caller holds a FIFO entry lock, including under PM.
+    fn touch(&self, node: &VNode, read: bool);
     /// Parent inode exposed by `..`, including the backend's selected namespace.
     fn parent(&self, dir: u64) -> Result<u64, Errno>;
     /// The cookie returned is after the last accepted entry. A sink returning
@@ -338,7 +343,12 @@ pub trait FileSystem: core::any::Any + Send + Sync {
     fn write(&self, _node: &VNode, _req: WriteReq, _buf: &[u8]) -> Result<WriteResult, WriteError> {
         Err(Errno(EOPNOTSUPP).into())
     }
-    fn resize(&self, _node: &VNode, _size: u64, _clear_setid: bool) -> Result<(), Errno> {
+    /// Evaluate VFS policy on fresh metadata after waiting for mutation exclusion.
+    /// A policy error leaves the inode and mappings unchanged.
+    fn resize(
+        &self, _node: &VNode, _size: u64, _clear_setid: bool,
+        _check: &dyn Fn(NodeAttrs) -> Result<(), Errno>,
+    ) -> Result<(), Errno> {
         Err(Errno(EOPNOTSUPP))
     }
     fn fsync(&self, _node: &VNode, _data_only: bool) -> Result<(), Errno> {

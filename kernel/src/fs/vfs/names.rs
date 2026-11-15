@@ -1,66 +1,56 @@
-//! Held parents for namespace operations resolved by namei.
-use super::{FileSystem, NodeAttrs, VNode};
-use crate::fs::{errno::Errno, namei::Resolved};
-use crate::syscall::errno::{EIO, ENOENT};
+//! Retained namespace nodes and filesystem ancestry.
+#[cfg(not(test))]
+use super::NodeAttrs;
+use super::{FileSystem, VNode};
+use crate::fs::errno::Errno;
+#[cfg(not(test))]
+use crate::fs::namei::Resolved;
+use crate::syscall::errno::ENOENT;
 use alloc::{sync::Arc, vec::Vec};
 
-/// Turn namei's entry-directory pin into the backend-neutral parent, retaining
-/// its incarnation while the caller checks policy and changes the entry.
+/// Name one directory by its parent's current entry, using byte names.
+/// Retain both incarnations across the separate parent and readdir operations.
+pub fn parent_name(node: &VNode) -> Result<(Arc<VNode>, Vec<u8>), Errno> {
+    let fs = &node.filesystem;
+    let parent = fs.open(fs.parent(node.ino)?)?;
+    let mut name = None;
+    fs.readdir(parent.ino, 0, &mut |entry, _| {
+        if entry.ino != node.ino || entry.name == b"." || entry.name == b".." {
+            return Ok(true);
+        }
+        name = Some(entry.name);
+        Ok(false)
+    })?;
+    let name = name.ok_or(Errno(ENOENT))?;
+    if fs.parent(node.ino)? != parent.ino {
+        return Err(Errno(ENOENT));
+    }
+    Ok((parent, name))
+}
+
+#[cfg(not(test))]
 pub fn entry_dir(
     resolved: &Resolved<Vec<u8>>,
 ) -> Result<(Arc<dyn FileSystem>, Arc<VNode>, NodeAttrs), Errno> {
-    let mount = resolved.mount().ok_or(Errno(EIO))?;
-    let held = resolved.entry_dir().ok_or(Errno(EIO))?;
-    let fs = super::mount::filesystem(mount.0)?;
-    let parent = fs.open(held.object.key.inode.into())?;
-    if parent.mount != held.object.mount.mount_id
-        || parent.incarnation != held.object.key.incarnation
-    {
-        return Err(Errno(ENOENT));
-    }
+    let parent = resolved.entry_dir().ok_or(Errno(ENOENT))?.clone();
+    let fs = parent.filesystem.clone();
     let attrs = fs.getattr(parent.ino)?;
     Ok((fs, parent, attrs))
 }
 
-/// Retain the resolved target through the trait, checking its saved incarnation.
-pub fn target(
-    resolved: &Resolved<Vec<u8>>,
-) -> Result<(Arc<dyn FileSystem>, Arc<VNode>), Errno> {
-    let mount = resolved.mount().ok_or(Errno(EIO))?;
-    let held = resolved.handle().ok_or(Errno(ENOENT))?;
-    let fs = super::mount::filesystem(mount.0)?;
-    let node = fs.open(held.object.key.inode.into())?;
-    if node.mount != held.object.mount.mount_id || node.incarnation != held.object.key.incarnation {
-        return Err(Errno(ENOENT));
-    }
-    Ok((fs, node))
+#[cfg(not(test))]
+pub fn target(resolved: &Resolved<Vec<u8>>) -> Result<(Arc<dyn FileSystem>, Arc<VNode>), Errno> {
+    held(resolved.handle().ok_or(Errno(ENOENT))?)
 }
 
-/// Lookup resolution holds an absent final name's parent in a distinct pin.
+#[cfg(not(test))]
 pub fn lookup_parent(
     resolved: &Resolved<Vec<u8>>,
 ) -> Result<(Arc<dyn FileSystem>, Arc<VNode>), Errno> {
-    let mount = resolved.mount().ok_or(Errno(EIO))?;
-    let held = resolved.lookup_parent().ok_or(Errno(ENOENT))?;
-    let fs = super::mount::filesystem(mount.0)?;
-    let parent = fs.open(held.object.key.inode.into())?;
-    if parent.mount != held.object.mount.mount_id
-        || parent.incarnation != held.object.key.incarnation
-    {
-        return Err(Errno(ENOENT));
-    }
-    Ok((fs, parent))
+    held(resolved.lookup_parent().ok_or(Errno(ENOENT))?)
 }
 
-/// Bridge a retained legacy descriptor or working-directory pin until those
-/// objects carry VNodes directly. Check the incarnation before using the node.
-pub fn held(
-    held: &crate::fs::ext2::live_inode::FileHandle,
-) -> Result<(Arc<dyn FileSystem>, Arc<VNode>), Errno> {
-    let fs = super::mount::filesystem(held.object.mount.mount_id)?;
-    let node = fs.open(held.object.key.inode.into())?;
-    if node.mount != held.object.mount.mount_id || node.incarnation != held.object.key.incarnation {
-        return Err(Errno(ENOENT));
-    }
-    Ok((fs, node))
+/// Reuse the retained incarnation without reopening by inode number.
+pub fn held(node: &Arc<VNode>) -> Result<(Arc<dyn FileSystem>, Arc<VNode>), Errno> {
+    Ok((node.filesystem.clone(), node.clone()))
 }

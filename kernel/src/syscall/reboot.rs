@@ -79,8 +79,11 @@ pub fn sys_reboot(magic: u64, magic2: u64, command: u64) -> SyscallResult {
 fn power_token() -> Result<Option<alloc::vec::Vec<u8>>, u64> {
     use power_token_validation::{validate, File, Invalid, Kind};
     let read = |path: &str, kind: Kind| -> Result<alloc::vec::Vec<u8>, u64> {
-        let (mount, ino, _pin, _) = crate::fs::namei::resolve_file(path)?;
-        let guard = mount.read()?;
+        let (_, ino, node, _) = crate::fs::namei::resolve_file(path)?;
+        let handle = node.pin::<crate::fs::ext2::live_inode::FileHandle>()
+            .ok_or(super::errno::EIO as u64)?;
+        let guard = crate::fs::ext2::read_mount(handle.object.mount)
+            .map_err(crate::fs::ext2::errno::errno)?;
         let fs = guard.as_ref().ok_or(super::errno::EIO as u64)?;
         let ino = crate::fs::ext2::ino32(ino)?;
         let inode = fs.read_inode(ino).map_err(|_| super::errno::EIO as u64)?;

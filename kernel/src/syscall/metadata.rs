@@ -1,7 +1,7 @@
 //! Mode and ownership updates through the filesystem interface.
 
 use super::{errno::*, SyscallResult};
-use crate::fs::{ext2::errno::errno as ext2_errno, namei, permissions::Credentials};
+use crate::fs::{namei, permissions::Credentials};
 use crate::fs::vfs::{self, FileSystem, attributes::{attribute_change, AttributeChange as Change}};
 use crate::ipc::FdKind;
 
@@ -39,16 +39,12 @@ pub(crate) fn directory_of(kind: FdKind) -> Result<namei::WorkingDir, u64> {
     let FdKind::Directory(dir) = kind else {
         return Err(ENOTDIR as u64);
     };
-    let handle = dir.lock().open.ext2_handle().ok_or(EIO as u64)?;
-    let mount = namei::Mount(handle.object.mount.mount_id);
-    let guard = mount.read()?;
-    let fs = guard.as_ref().ok_or(EIO as u64)?;
-    let ino = handle.verify(fs).map_err(ext2_errno)?;
-    if !fs.read_inode(ino).map_err(ext2_errno)?.is_dir() {
+    let dir = dir.lock().open.node.clone();
+    let mount = namei::Mount(dir.mount);
+    if dir.filesystem.getattr(dir.ino)?.kind != vfs::NodeKind::Directory {
         return Err(ENOTDIR as u64);
     }
-    let dir = handle;
-    Ok(namei::WorkingDir::Ext2 { mount, dir })
+    Ok(namei::WorkingDir::Fs { mount, dir })
 }
 
 pub(crate) fn resolve_at(
@@ -134,7 +130,7 @@ fn by_cwd(change: Change) -> SyscallResult {
     let target = match namei::current_working_dir() {
         namei::WorkingDir::Root => vfs::mount::filesystem(namei::Mount::root().0)
             .and_then(|fs| fs.root().and_then(|ino| fs.open(ino)).map(|node| (fs, node))),
-        namei::WorkingDir::Ext2 { dir, .. } => vfs::names::held(&dir),
+        namei::WorkingDir::Fs { dir, .. } => vfs::names::held(&dir),
         namei::WorkingDir::Virtual(_) | namei::WorkingDir::User { .. } => return SyscallResult::Err(EOPNOTSUPP as u64),
     };
     match target {
@@ -153,7 +149,7 @@ fn by_fd(fd: i32, change: Change) -> SyscallResult {
     if entry.terminal_revoked() {
         return SyscallResult::Err(EIO as u64);
     }
-    if let Some(handle) = &entry.native_inode {
+    if let Some(handle) = &entry.namespace_node {
         return match vfs::names::held(handle) {
             Ok((fs, node)) => update(fs.as_ref(), node.ino, change, &cred),
             Err(error) => SyscallResult::Err(error.into()),

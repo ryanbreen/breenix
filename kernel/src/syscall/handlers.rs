@@ -2990,7 +2990,7 @@ struct Flock {
 /// `F_SETLKW` sleeps. The `struct flock` is copied through the fault-tolerant
 /// user-copy routine, so a bad pointer is EFAULT.
 fn fcntl_record_lock(thread_id: u64, fd: i32, cmd: i32, flock_ptr: u64) -> SyscallResult {
-    use super::errno::{EBADF, EINVAL, EIO, EOVERFLOW};
+    use super::errno::{EBADF, EINVAL, EOVERFLOW};
     use super::fs::{O_RDONLY, O_WRONLY, SEEK_CUR, SEEK_END, SEEK_SET};
     use super::userptr::{copy_from_user, copy_to_user};
     use crate::fs::locks::{self, FileKey, LockKind, F_RDLCK, F_UNLCK, F_WRLCK, OFFSET_MAX};
@@ -3019,10 +3019,7 @@ fn fcntl_record_lock(thread_id: u64, fd: i32, cmd: i32, flock_ptr: u64) -> Sysca
                     },
                     entry.status_flags() & crate::ipc::fd::status_flags::O_ACCMODE,
                     file.position,
-                    match file.open.ext2_handle() {
-                        Some(handle) => handle,
-                        None => return SyscallResult::Err(super::errno::EIO as u64),
-                    },
+                    file.open.node.clone(),
                 )
             }
             // A descriptor for anything but a regular file does not support locking.
@@ -3049,9 +3046,9 @@ fn fcntl_record_lock(thread_id: u64, fd: i32, cmd: i32, flock_ptr: u64) -> Sysca
             Ok(position) => position,
             Err(_) => return SyscallResult::Err(EOVERFLOW as u64),
         },
-        SEEK_END => match super::fs::get_ext2_file_size_for_handle(&handle) {
-            Some(size) => size as i64,
-            None => return SyscallResult::Err(EIO as u64),
+        SEEK_END => match handle.filesystem.getattr(handle.ino) {
+            Ok(attrs) => attrs.size as i64,
+            Err(error) => return SyscallResult::Err(error.into()),
         },
         _ => return SyscallResult::Err(EINVAL as u64),
     };

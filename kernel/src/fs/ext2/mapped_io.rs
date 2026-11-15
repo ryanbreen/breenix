@@ -264,7 +264,7 @@ impl DataFile {
 
 /// Sync's staged handles are in inode order, so concurrent global syncs acquire
 /// their leases in the same order. The device barrier holds no namespace guard.
-pub(crate) fn sync_mount(home: bool, handles: &[FileHandle]) -> Result<(), &'static str> {
+pub(crate) fn sync_mount(mount: super::live_inode::MountPin, handles: &[FileHandle]) -> Result<(), &'static str> {
     let mut files = Vec::new();
     files
         .try_reserve_exact(handles.len())
@@ -277,7 +277,7 @@ pub(crate) fn sync_mount(home: bool, handles: &[FileHandle]) -> Result<(), &'sta
         .try_reserve_exact(files.len())
         .map_err(|_| "No memory for sync sequences")?;
     let (device, pin) = {
-        let guard = super::fs_sync_guard(home)?;
+        let guard = super::sync_mount_guard(mount)?;
         let Some(fs) = guard.as_ref() else {
             return Ok(());
         };
