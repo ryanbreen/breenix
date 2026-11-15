@@ -18,13 +18,15 @@ const FRAME:u64=W*H*1_000_000_000/HZ;
 thread_local!{static NOW:Cell<u64>=const{Cell::new(EPOCH)};
  static COST:Cell<[[u64;3];2]>=const{Cell::new([[0;3];2])};}
 fn arch_without_interrupts<T>(f:impl FnOnce()->T)->T{f()}
-mod signal{pub fn monotonic_nanos()->u64{super::NOW.with(|n|{let t=n.get();n.set(t+1_000);t})}}
+mod signal{pub fn monotonic_nanos()->u64{super::NOW.with(|n|{let t=n.get();n.set(t+600);t})}}
 mod vblank_clock{CLOCK}
 mod native{
  use super::*;
- struct Registers;
+ struct Registers{after_horz:Cell<bool>}
  impl Registers{fn read(&self,r:usize)->u32{
-  let now=NOW.with(|n|{let t=n.get();n.set(t+6_000);t+3_000});
+  // A dependent VERT completion after HORZ costs another microsecond.
+  let extra=if self.after_horz.replace(r==0x616344){1_000}else{0};
+  let now=NOW.with(|n|{let t=n.get();n.set(t+6_000+extra);t+3_000});
   let pixels=(u128::from(now-EPOCH)*u128::from(HZ)/1_000_000_000)as u64;
   match r{0x640414=>(H as u32)<<16|W as u32,
    0x616340=>(((pixels/(W*H))as u16).wrapping_add(65535)as u32)<<16|((pixels/W+37)%H)as u32,
@@ -37,11 +39,11 @@ mod native{
   fn record_clock_costs(&mut self,c:[[u64;3];2]){COST.with(|v|v.set(c));}
  }
  pub fn exercise(){
-  NOW.with(|v|v.set(EPOCH+FRAME-100_000));
+  NOW.with(|v|v.set(EPOCH+FRAME-88_000));
   let mut evo=Evo{head:0,clock:None,frame_pixels:W*H,pixel_hz:HZ,vblank_line:0};
   evo.record_clock_costs([[0;3];2]);
   let started=NOW.with(Cell::get);
-  assert_eq!(evo.start_clock(&Registers),Ok(()),"full-sample cadence misses every edge");
+  assert_eq!(evo.start_clock(&Registers{after_horz:Cell::new(false)}),Ok(()),"full-sample cadence misses every edge");
   assert_eq!(evo.vblank_line,37,"a later line was substituted for the edge");
   let clock=evo.clock.as_mut().unwrap();
   let edge=clock.at(clock.last);
