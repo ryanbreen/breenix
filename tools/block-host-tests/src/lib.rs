@@ -33,3 +33,8 @@ pub mod buffer_cache;
 mod cache;
 #[cfg(test)]
 mod recording;
+
+#[path = "../../../kernel/src/block/cache_report.rs"]
+pub mod cache_report;
+#[cfg(test)]
+mod report;
