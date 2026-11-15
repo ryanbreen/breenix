@@ -52,6 +52,7 @@ mod native {
  SAMPLE
  impl Evo {
   METHODS
+  fn record_clock_costs(&mut self,_:[[u64;3];2]){}
   fn record_clock_observation(&mut self,counts:[u64;4]){STATS.with(|s|s.set(counts));}
  }
  pub fn exercise(stopped:bool){

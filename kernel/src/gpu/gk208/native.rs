@@ -519,6 +519,9 @@ impl Evo {
     fn record_clock_observation(&mut self, counts: [u64; 4]) {
         if let Some(trace) = &mut self.mode_trace { trace.attempt.clock_observation(counts); }
     }
+    fn record_clock_costs(&mut self, costs: [[u64; 3]; 2]) {
+        if let Some(trace) = &mut self.mode_trace { trace.attempt.clock_costs(costs); }
+    }
     pub(in crate::gk208) fn mode_state(&self, regs: &mut Registers) -> [u64; 4] {
         [self.pending_presentation.map_or(0, |p| u64::from(p.resource) + 1),
          u64::from(regs.read(0x640004)), u64::from(self.put),
@@ -816,43 +819,66 @@ impl Evo {
             return Err("native presentation raster extent mismatch");
         }
         let line_ns = u64::from(width) * 1_000_000_000 / self.pixel_hz;
-        let mut previous = presentation_sample(regs, self.head)?;
+        if self.head >= 4 { return Err("invalid native display head"); }
+        let base = 0x616340 + self.head as usize * 0x800;
+        let initial = regs.read(base);
+        let mut previous = (crate::signal::monotonic_nanos(), initial);
         let deadline = previous.0.saturating_add(self.presentation_attempts().saturating_mul(100_000));
         // samples, counter advances, rejected advancing pairs, largest poll gap.
         let mut counts = [1u64, 0, 0, 0];
-        while crate::signal::monotonic_nanos() < deadline {
-            // Discover the counter-edge line by observing successive raster-line
-            // boundaries as candidates. IRQs can run between observations.
-            // Each masked span is bounded to two line times, including when
-            // the raster stops moving.
+        // min, total, max, count: VERT poll cadence and full stable sample cost.
+        // Cadence includes loop work and interruptions, so it reports the margin
+        // the adjacent-poll acceptance rule actually has, not just MMIO latency.
+        let mut costs = [[u64::MAX, 0, 0, 0]; 2];
+        while previous.0 < deadline {
+            // Bound IRQ exclusion to two lines. The cheap pair still needs to
+            // be adjacent even when serial service interrupts the polling CPU.
             let observed = crate::arch_without_interrupts(|| {
-                let until = crate::signal::monotonic_nanos()
-                    .saturating_add(line_ns.saturating_mul(2)).min(deadline);
-                let mut boundary = None;
-                while crate::signal::monotonic_nanos() < until {
-                    let sample = presentation_sample(regs, self.head)?;
-                    let (at, vert, pixel) = sample;
+                let until = previous.0.saturating_add(line_ns.saturating_mul(2)).min(deadline);
+                while previous.0 < until {
+                    // VERT alone carries both line and count. One MMIO read and
+                    // one timestamp per hunt poll avoid stable-HORZ sampling
+                    // costs throughout the frame.
+                    let vert = regs.read(base);
+                    let at = crate::signal::monotonic_nanos();
                     let count = (vert >> 16) as u16;
                     let line = vert & 0xffff;
                     let advanced = count.wrapping_sub((previous.1 >> 16) as u16);
                     let gap = at.saturating_sub(previous.0);
+                    costs[0][0] = costs[0][0].min(gap);
+                    costs[0][1] += gap;
+                    costs[0][2] = costs[0][2].max(gap);
+                    costs[0][3] += 1;
                     counts[0] += 1;
                     counts[1] += u64::from(advanced);
                     counts[3] = counts[3].max(gap);
-                    // Keep the original edge acceptance rule unchanged.
-                    let accepted = advanced == 1
+                    let candidate = advanced == 1
                         && line == ((previous.1 & 0xffff) + 1) % height
-                        && gap < line_ns && pixel < width;
-                    if advanced != 0 && !accepted { counts[2] += 1; }
-                    previous = sample;
-                    if accepted { return Ok(Some(sample)); }
-                    let first_line = *boundary.get_or_insert(line);
-                    if line != first_line { break; }
+                        && gap < line_ns;
+                    previous = (at, vert);
+                    if candidate {
+                        let start = crate::signal::monotonic_nanos();
+                        let sample = presentation_sample(regs, self.head);
+                        let elapsed = crate::signal::monotonic_nanos().saturating_sub(start);
+                        costs[1][0] = costs[1][0].min(elapsed);
+                        costs[1][1] += elapsed;
+                        costs[1][2] = costs[1][2].max(elapsed);
+                        costs[1][3] += 1;
+                        let sample = sample?;
+                        // The full observation must still name the very same
+                        // edge line/count; reject a later line.
+                        if sample.1 == vert && sample.2 < width && sample.0 < deadline {
+                            return Ok(Some(sample));
+                        }
+                    }
+                    if advanced != 0 { counts[2] += 1; }
                     core::hint::spin_loop();
                 }
                 Ok::<_, &'static str>(None)
             });
             self.record_clock_observation(counts);
+            self.record_clock_costs(costs.map(|c| if c[3] == 0 { [0; 3] }
+                else { [c[0], c[1] / c[3], c[2]] }));
             if let Some((at, vert, pixel)) = observed? {
                 let edge_ns = at.checked_sub(u64::from(pixel) * 1_000_000_000 / self.pixel_hz)
                     .ok_or("native vblank edge predates clock")?;

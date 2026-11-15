@@ -32,6 +32,11 @@ fn main() {
     let mut refusal = gpu_abi::ModeReport::refused(3, 110, RASTER, 51000000, [0;4], "native vblank edge not observed");
     attempt.annotate_refusal(&mut refusal);
     assert_eq!(refusal.reason(), "native vblank edge not observed samples=42 advances=2 rejected=1 max_gap_ns=1400000");
+    attempt.clock_costs([[6000, 7000, 9000], [19500, 22000, 24500]]);
+    assert!(attempt.to_string().ends_with("vert_ns=6000/7000/9000 full_ns=19500/22000/24500"));
+    let mut refusal = gpu_abi::ModeReport::refused(3, 110, RASTER, 51000000, [0;4], "native vblank edge not observed");
+    attempt.annotate_refusal(&mut refusal);
+    assert!(refusal.reason().ends_with("vert_ns=6000/7000/9000 full_ns=19500/22000/24500"));
 }
 '''.replace('SOURCE', str(ROOT / 'kernel/src/gpu/gk208/mode_attempt.rs'))
             (path / 'check.rs').write_text(source)

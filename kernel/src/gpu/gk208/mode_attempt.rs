@@ -17,17 +17,20 @@ pub(crate) struct ModeAttempt {
     dropped: usize,
     start: u64,
     clock: Option<[u64; 4]>,
+    costs: Option<[[u64; 3]; 2]>,
 }
 
 impl ModeAttempt {
     pub(crate) fn new(index: u32, phase: u32, now: u64, state: [u64; 4]) -> Self {
         let mut record = Self { index, steps: [Step { phase: 0, elapsed_ns: 0, state: [0; 4] }; 24],
-            count: 0, dropped: 0, start: now, clock: None };
+            count: 0, dropped: 0, start: now, clock: None, costs: None };
         record.phase(phase, now, state);
         record
     }
 
     pub(crate) fn clock_observation(&mut self, counts: [u64; 4]) { self.clock = Some(counts); }
+
+    pub(crate) fn clock_costs(&mut self, costs: [[u64; 3]; 2]) { self.costs = Some(costs); }
 
     pub(crate) fn annotate_refusal(&self, report: &mut gpu_abi::ModeReport) {
         struct Reason<'a>(&'a mut gpu_abi::ModeReport);
@@ -44,6 +47,10 @@ impl ModeAttempt {
         if let Some(c) = self.clock {
             use fmt::Write;
             let _ = write!(Reason(report), " samples={} advances={} rejected={} max_gap_ns={}", c[0], c[1], c[2], c[3]);
+        }
+        if let Some([v, f]) = self.costs {
+            use fmt::Write;
+            let _ = write!(Reason(report), " vert_ns={}/{}/{} full_ns={}/{}/{}", v[0], v[1], v[2], f[0], f[1], f[2]);
         }
     }
 
@@ -76,6 +83,9 @@ impl fmt::Display for ModeAttempt {
         write!(out, "] dropped={}", self.dropped)?;
         if let Some(c) = self.clock {
             write!(out, " samples={} advances={} rejected={} max_gap_ns={}", c[0], c[1], c[2], c[3])?;
+        }
+        if let Some([v, f]) = self.costs {
+            write!(out, " vert_ns={}/{}/{} full_ns={}/{}/{}", v[0], v[1], v[2], f[0], f[1], f[2])?;
         }
         Ok(())
     }

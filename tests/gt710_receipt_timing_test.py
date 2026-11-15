@@ -170,6 +170,7 @@ mod native {
     }
     FUNCTIONS
     impl Evo { METHODS
+        fn record_clock_costs(&mut self,_:[[u64;3];2]){}
         fn record_clock_observation(&mut self,_:[u64;4]){}
     }
     pub fn exercise(preempt: bool) {
