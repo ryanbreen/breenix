@@ -75,8 +75,8 @@ impl Batch {
     }
 }
 
-/// Requests sent to the device, including failed requests. The sequence is
-/// assigned immediately before calling the driver, from this cache's one clock.
+/// A count and its last change on this cache's shared sequence clock.
+/// Device request counters advance on completion, including failed requests.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counter {
     pub count: u64,
@@ -89,6 +89,7 @@ pub struct Counters {
     pub misses: Counter,
     pub device_reads: Counter,
     pub device_writes: Counter,
+    pub pending_writes: Counter,
     pub flushes: Counter,
 }
 
@@ -348,6 +349,27 @@ impl<W: Wait> BufferCache<W> {
         });
     }
 
+    fn device_write(
+        &self,
+        device: &dyn BlockDevice,
+        block: u64,
+        bytes: &[u8],
+    ) -> Result<(), BlockError> {
+        self.count(|c| &mut c.pending_writes);
+        let result = device.write_block(block, bytes);
+        self.with(|state| {
+            state.sequence = state
+                .sequence
+                .checked_add(1)
+                .expect("block cache sequence exhausted");
+            state.counters.device_writes.count += 1;
+            state.counters.device_writes.sequence = state.sequence;
+            state.counters.pending_writes.count -= 1;
+            state.counters.pending_writes.sequence = state.sequence;
+        });
+        result
+    }
+
     fn size(device: &dyn BlockDevice, block: u64, len: usize) -> Result<usize, BlockError> {
         if block >= device.num_blocks() {
             return Err(BlockError::OutOfBounds);
@@ -470,8 +492,9 @@ impl<W: Wait> BufferCache<W> {
         }
         self.count(|c| &mut c.misses);
         let charge = self.begin(key, size);
+        let result = device.read_block(block, &mut bytes[..size]);
         self.count(|c| &mut c.device_reads);
-        let result = device.read_block(block, &mut bytes[..size]).and_then(|()| {
+        let result = result.and_then(|()| {
             if verify(&bytes[..size]) {
                 Ok(())
             } else {
@@ -517,8 +540,7 @@ impl<W: Wait> BufferCache<W> {
                 }
                 let charge = self.begin(key, size);
                 let pressure = charge.is_none();
-                self.count(|c| &mut c.device_writes);
-                let result = device.write_block(block, &bytes[..size]);
+                let result = self.device_write(device, block, &bytes[..size]);
                 self.finish(key, &bytes[..size], charge, result);
                 (result, pressure)
             }
@@ -635,8 +657,7 @@ impl<W: Wait> BufferCache<W> {
         })?;
         let mut result = Ok(());
         for (key, buffer) in buffers {
-            self.count(|c| &mut c.device_writes);
-            let written = device.write_block(key.1, &buffer);
+            let written = self.device_write(device, key.1, &buffer);
             self.with(|state| {
                 let entry = state.buffers.get_mut(&key).expect("submitted cache buffer");
                 if written.is_ok() {
@@ -657,8 +678,9 @@ impl<W: Wait> BufferCache<W> {
     /// synchronous device flush. Admission drops on errors as well as success.
     pub fn flush(&self, device: &dyn BlockDevice) -> Result<(), BlockError> {
         let _admission = self.enter(device.identity());
+        let result = device.flush();
         self.count(|c| &mut c.flushes);
-        device.flush()
+        result
     }
 
     /// Retire clean copies when a mounted backend is dropped. This prevents a
