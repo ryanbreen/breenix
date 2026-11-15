@@ -66,6 +66,7 @@ pub mod memory {
                 _fs: alloc::sync::Arc<dyn crate::vfs::FileSystem>,
             ) -> Result<Self, crate::errno::Errno> { Ok(Self) }
             pub fn has_dirty(&self) -> bool { false }
+            pub fn may_change_exec_image(&self) -> bool { false }
         }
         pub fn sync_range<T: ?Sized>(
             _node: &T,

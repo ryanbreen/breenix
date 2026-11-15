@@ -1619,54 +1619,12 @@ fn sys_exec_aarch64(
 fn load_elf_from_ext2(
     path: impl AsRef<[u8]>,
 ) -> Result<(alloc::vec::Vec<u8>, crate::process::credentials::ExecIdentity, alloc::vec::Vec<u8>), i32> {
-    use crate::syscall::errno::{EACCES, EIO};
-
-    // Trace: entering load_elf_from_ext2
-    super::trace::trace_exec(b'1');
-
-    // Taken before the filesystem lock: who may execute the file.
     let cred = crate::fs::permissions::Credentials::current(false).map_err(|errno| errno as i32)?;
-
-    // Exclude new mapping bindings until the image and its identity are copied.
-    // Existing shared write authority is checked by exec_attrs.
-    let (mount, inode_num, _held, resolved) = crate::fs::namei::resolve_file_bytes(path.as_ref()).map_err(|errno| {
-        super::trace::trace_exec(b'!');
-        errno as i32
-    })?;
-    let mut fs_guard = mount.read_exclusive().map_err(|errno| errno.0)?;
-    super::trace::trace_exec(b'2');
-    let fs = fs_guard.as_mut().ok_or(EIO)?;
-    super::trace::trace_exec(b'3');
-    super::trace::trace_exec(b'4');
-
-    let inode_num = crate::fs::ext2::ino32(inode_num).map_err(|error| error.0)?;
-    let inode = fs.read_inode(inode_num).map_err(|_| {
-        super::trace::trace_exec(b'@');
-        EIO
-    })?;
-    super::trace::trace_exec(b'5');
-
-    if inode.is_dir() {
-        super::trace::trace_exec(b'#');
-        return Err(EACCES);
-    }
-
-    let identity = cred.may_exec(fs.exec_attrs(inode_num, &inode), crate::fs::vfs::mount::flags_at(&resolved)).map_err(|errno| {
-        super::trace::trace_exec(b'$');
-        errno
-    })?;
-    super::trace::trace_exec(b'6');
-
-    let data = fs
-        .read_file_content_coherent_unless(inode_num, &inode, crate::syscall::exec::caller_killed)
-        .map_err(|errno| {
-            super::trace::trace_exec(b'%');
-            errno
-        })?
-        .ok_or(crate::syscall::errno::EINTR)?;
-    super::trace::trace_exec(b'7');
-
-    Ok((data, identity, resolved))
+    crate::fs::vfs::exec::load_image(path, &cred, crate::syscall::exec::caller_killed)
+        .map_err(|errno| match errno.0 {
+            crate::syscall::errno::EISDIR => crate::syscall::errno::EACCES,
+            errno => errno,
+        })
 }
 
 // =============================================================================

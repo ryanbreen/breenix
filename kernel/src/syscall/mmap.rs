@@ -550,6 +550,7 @@ fn map_file(
             MapError::Io => ErrorCode::IoError as u64,
         },
     )?;
+    let _binding = handle.map.allow_mapping_binding();
     let mut vma = Some(vma);
     let mut result = Err(ErrorCode::IoError as u64);
     _population

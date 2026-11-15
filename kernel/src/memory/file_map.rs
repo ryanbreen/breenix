@@ -23,7 +23,9 @@
 //! frame ledger and allocator. Signal-frame delivery also takes `MapState`
 //! under PROCESS_MANAGER with interrupts masked. The VNode table may take
 //! `MapState` without PM.
-//! No disk I/O runs under PROCESS_MANAGER or `MapState`. No path
+//! The exec/mmap binding gate is acquired after a transfer lease and before
+//! filesystem/PROCESS_MANAGER guards. It spans the image copy, separately from
+//! the page-cache mutex. No disk I/O runs under PROCESS_MANAGER or that mutex. No path
 //! takes a filesystem guard with PROCESS_MANAGER held: faults never touch the
 //! filesystem, and mmap releases PROCESS_MANAGER before taking the mount guard.
 //! claim-lint:ok: Lock and fault contract in docs/fs/cowfs-design.md section 1.1.
@@ -166,6 +168,8 @@ pub struct MapState {
 struct MapShared {
     filesystem: Arc<dyn FileSystem>,
     inner: Mutex<MapInner>,
+    /// Exec copies exclude new mmap publication without holding the page-map lock.
+    binding_gate: spin::RwLock<()>,
     eviction_pending: AtomicBool,
     resident: AtomicBool,
     dirty: AtomicBool,
@@ -579,6 +583,7 @@ impl MapState {
                     writeback_cursor: 0,
                     writeback_epoch: 0,
                 }),
+                binding_gate: spin::RwLock::new(()),
                 eviction_pending: AtomicBool::new(false),
                 resident: AtomicBool::new(false),
                 dirty: AtomicBool::new(false),
@@ -630,9 +635,33 @@ impl MapState {
         !inner.pages.is_empty() || !inner.poisoned.is_empty() || !inner.bindings.is_empty()
     }
 
-    /// Exec holds the mount write guard through its image copy. A shared
+    /// Acquire only outside filesystem and PROCESS_MANAGER guards. The caller
+    /// retains its transfer lease for mutation exclusion while waiting/copying.
+    pub(crate) fn block_mapping_bindings(&self) -> spin::RwLockWriteGuard<'_, ()> {
+        loop {
+            if let Some(guard) = self.state.binding_gate.try_write() {
+                return guard;
+            }
+            crate::task::scheduler::yield_current();
+            core::hint::spin_loop();
+        }
+    }
+
+    /// Population retains its transfer lease, then joins the gate before taking
+    /// the filesystem/PROCESS_MANAGER guards that publish the new binding.
+    pub(crate) fn allow_mapping_binding(&self) -> spin::RwLockReadGuard<'_, ()> {
+        loop {
+            if let Some(guard) = self.state.binding_gate.try_read() {
+                return guard;
+            }
+            crate::task::scheduler::yield_current();
+            core::hint::spin_loop();
+        }
+    }
+
+    /// Exec retains a per-inode transfer lease through its image copy. A shared
     /// binding with write authority can fault or gain PROT_WRITE without that
-    /// guard, so even a clean/read-only binding must suppress set-ID identity.
+    /// lease, so even a clean/read-only binding must suppress set-ID identity.
     pub(crate) fn may_change_exec_image(&self) -> bool {
         let inner = self.state.inner.lock();
         inner.bindings.iter().any(|rec| rec.shared && rec.may_write)

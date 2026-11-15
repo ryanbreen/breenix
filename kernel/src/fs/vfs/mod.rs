@@ -11,6 +11,8 @@ use spin::Mutex;
 
 pub use crate::fs::attrs::MountFlags;
 pub mod attributes;
+#[cfg(not(test))]
+pub mod exec;
 pub mod file;
 pub mod mount_table;
 #[cfg(not(test))]
