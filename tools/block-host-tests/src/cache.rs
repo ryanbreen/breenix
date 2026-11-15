@@ -216,7 +216,7 @@ fn lru_evicts_within_bound() {
 }
 
 #[test]
-fn bound_is_an_eighth_clamped() {
+fn review_bound_preserves_kernel_heap_headroom() {
     use crate::buffer_cache::bound_for_memory;
     const MIB: usize = 1024 * 1024;
     for (memory, expected) in [
@@ -224,8 +224,8 @@ fn bound_is_an_eighth_clamped() {
         (32 * MIB - 1, 4 * MIB),
         (32 * MIB, 4 * MIB),
         (64 * MIB, 8 * MIB),
-        (8 * 1024 * MIB, 1024 * MIB),
-        (usize::MAX, 1024 * MIB),
+        (8 * 1024 * MIB, 8 * MIB),
+        (usize::MAX, 8 * MIB),
     ] {
         assert_eq!(bound_for_memory(memory), expected, "memory={memory}");
     }
@@ -479,4 +479,13 @@ fn pressure_asks_holder_to_commit() {
     cache.read(&*device, 4, &mut [0; SIZE]).unwrap();
     assert_eq!(requests.load(Ordering::SeqCst), 2);
     assert_eq!(cache.status(&*device, 3), Some(BufferStatus::Dirty));
+}
+
+#[test]
+fn review_metadata_is_charged_before_admission() {
+    let device = Arc::new(RecordingDevice::default());
+    let cache = BufferCache::with_capacity(HostWait::new(device.clone()), SIZE);
+    cache.read(&*device, 1, &mut [0; SIZE]).unwrap();
+    assert!(cache.pin(&*device, 1).is_none(), "payload-only budget retained an uncharged index and buffer");
+    assert_eq!(cache.resident_bytes(), 0);
 }
