@@ -19,6 +19,10 @@ mod placement;
 #[path = "bwm/switch_plan.rs"]
 mod switch_plan;
 mod display_select;
+#[path = "bwm/display_protocol.rs"]
+mod display_protocol;
+#[path = "bwm/display_socket.rs"]
+mod display_socket;
 #[path = "bwm/session.rs"]
 mod session;
 #[path = "bwm/input_backlog.rs"]
@@ -423,6 +427,7 @@ fn main() {
 
     // The desktop outlives a clipboard that cannot open; clipboard clients then see ENOENT.
     let mut clipboard = clipboard_socket::Server::open().map_err(|e| eprintln!("[bwm] clipboard socket: {e}")).ok();
+    let mut display_server = display_socket::Server::open().map_err(|e| eprintln!("[bwm] display socket: {e}")).ok();
     let mut poll_fds = vec![
         io::PollFd { fd: stream.fd(), events: io::poll_events::POLLIN as i16, revents: 0 },
         io::PollFd { fd: scene_fd, events: io::poll_events::POLLIN as i16, revents: 0 },
@@ -455,7 +460,7 @@ fn main() {
             wake::Deadlines {
                 presentation: hold,
                 closing: closing.deadline(),
-                clipboard: clipboard.as_ref().and_then(|c| c.deadline()),
+                clipboard: clipboard.as_ref().and_then(|c| c.deadline()).into_iter().chain(display_server.as_ref().and_then(|s| s.deadline())).min(),
                 repeat: timing.deadline(),
                 launch: children.deadline(),
                 check_after_ms: if resizing.is_none() {
@@ -476,6 +481,7 @@ fn main() {
         }
         poll_fds.push(io::PollFd { fd: signal_wake.fd(), events: io::poll_events::POLLIN as i16, revents: 0 });
         if let Some(clipboard) = &clipboard { clipboard.append_poll(&mut poll_fds); }
+        if let Some(server) = &display_server { server.append_poll(&mut poll_fds); }
         for fd in poll_fds.iter_mut() {
             fd.revents = 0;
         }
@@ -486,6 +492,52 @@ fn main() {
         prompt_watchers.retain(|id| validation.prompt_pending(id));
         signal_wake.drain();
         if let Some(clipboard) = &mut clipboard { clipboard.service(&poll_fds, libbreenix::ui_clock::now_ns()); }
+        let mut switched = false;
+        if let Some(server) = &mut display_server {
+            server.service(&poll_fds, libbreenix::ui_clock::now_ns(), |command| {
+                let (result, modes) = libbreenix::gpu::modes();
+                if result != 0 { return Err(format!("MODES errno {}", -result)); }
+                let current = modes.current_mode().ok_or("no current mode")?;
+                let current_monitor = (current.width / current.scale, current.height / current.scale);
+                let (mode, scale) = match command {
+                    display_protocol::Command::Mode(w, h) => ((w, h), current.scale),
+                    display_protocol::Command::Scale(s) => (current_monitor, s),
+                };
+                let entries: Vec<_> = modes.mode_list().map(|(_, m)| (m.width, m.height, m.scale)).collect();
+                let index = match display_select::select(&entries, Some(mode), Some(scale)) {
+                    Some(Ok(index)) => index as u32, _ => return Err("unsupported mode or scale".into()),
+                };
+                let text = match std::fs::read_to_string(&paths.bwm) {
+                    Ok(text) => text, Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+                    Err(e) => return Err(format!("read settings: {e}")),
+                };
+                let temp = paths.bwm.with_extension("conf.tmp");
+                std::fs::write(&temp, settings::with_display(&text, mode, scale)).map_err(|e| format!("write settings: {e}"))?;
+                let result = switch_display(index, &mut gpu, &mut windows, &mut display_resizes, &stack, &clock_text, &mut ui_font);
+                switched = true; // Even a refused switch must re-present the retained targets.
+                match result {
+                    Ok(true) => (),
+                    Ok(false) => { let _ = std::fs::remove_file(&temp); return Err("SET_MODE failed".into()); }
+                    Err(e) => { let _ = std::fs::remove_file(&temp); return Err(e); }
+                }
+                if let Err(error) = std::fs::rename(&temp, &paths.bwm) {
+                    let _ = std::fs::remove_file(&temp);
+                    let rollback = switch_display(modes.current, &mut gpu, &mut windows, &mut display_resizes, &stack, &clock_text, &mut ui_font);
+                    return Err(format!("save settings: {error}; rollback {}", match rollback { Ok(true) => "succeeded", _ => "failed" }));
+                }
+                let state = ui();
+                let rect = |r: placement::Rect| display_protocol::Rect { x: r.x, y: r.y, width: r.width, height: r.height };
+                Ok(display_protocol::Geometry { width: state.mode.width, height: state.mode.height, scale: state.scale,
+                    taskbar: rect(state.layout.taskbar), appbar: rect(state.layout.appbar), work: rect(state.layout.work) })
+            });
+        }
+        if switched {
+            screen_w = ui().mode.width; screen_h = ui().mode.height;
+            mouse_x = mouse_x.clamp(0, screen_w.saturating_sub(1) as i32);
+            mouse_y = mouse_y.clamp(0, screen_h.saturating_sub(1) as i32);
+            dragging = None; resizing = None; chrome_device = None; active_cursor_shape = cursor_shape::ARROW;
+            validation.invalidate_scene(); pacing = pace::Pacer::default(); gpu.repaint_all(); full_redraw = true;
+        }
         if let Some(wake) = &clock_wake {
             if poll_fds[2].revents != 0 {
                 if let Err(error) = wake.drain() {

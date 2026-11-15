@@ -285,6 +285,10 @@ name = "cow_signal_test"
 path = "src/cow_signal_test.rs"
 
 [[bin]]
+name = "display"
+path = "src/display.rs"
+
+[[bin]]
 name = "resolution"
 path = "src/resolution.rs"
 

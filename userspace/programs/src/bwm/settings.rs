@@ -65,8 +65,6 @@ impl Settings {
 }
 
 /// Replace display settings while preserving all other configuration bytes.
-// The display command consumes this API in the next unit.
-#[allow(dead_code)]
 pub fn with_display(text: &str, mode: (u32, u32), scale: u32) -> String {
     let mut result = String::new();
     let (mut found_mode, mut found_scale) = (false, false);
