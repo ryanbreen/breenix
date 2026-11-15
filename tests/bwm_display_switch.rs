@@ -57,3 +57,23 @@ fn unchanged_sizes_send_no_resize_and_refusal_preserves_even_offscreen_windows()
         assert_eq!(planned.resize, None);
     }
 }
+
+#[test]
+fn mode_round_trip_notifies_clients_even_when_their_content_still_fits() {
+    let large = Mode { width: 1280, height: 1024, scale: 1 };
+    let small = Mode { width: 1024, height: 768, scale: 1 };
+    let windows = [frame(30, 38, [300, 200], [4, 36]),
+                   frame(400, 300, [1000, 800], [4, 36])];
+    let down = switch_plan(large, Ok(small), &windows);
+    let fitted: Vec<_> = down.windows.iter().map(|w| w.frame).collect();
+    let back = switch_plan(small, Ok(large), &fitted);
+    for plan in [&down, &back] {
+        for window in &plan.windows {
+            let f = window.frame;
+            assert_eq!(window.resize, Some([
+                (f.rect.width - f.decoration[0]) as u32,
+                (f.rect.height - f.decoration[1]) as u32,
+            ]), "mode switches must notify even an unchanged fitted client");
+        }
+    }
+}
