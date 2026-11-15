@@ -46,8 +46,9 @@ mod libgfx{pub mod surface{pub type Rect=super::super::Box64;}}
 mod bitmap_font {
     use super::*;
     pub struct Metrics{pub char_width:usize}
-    pub fn metrics()->Metrics{Metrics{char_width:7}}
-    pub fn draw_text(_: &mut Surface,_:&[u8],_:usize,_:usize,_:Color){panic!("TTF fixture used bitmap");}
+    #[derive(Clone,Copy)] pub enum RasterHeight{Size16}
+    pub fn metrics_at(_:RasterHeight)->Metrics{Metrics{char_width:7}}
+    pub fn draw_text_at(_: &mut Surface,_:&[u8],_:usize,_:usize,_:Color,_:RasterHeight){panic!("TTF fixture used bitmap");}
 }
 type Fd=u32;
 mod io {pub fn write(_:super::Fd,_:&[u8])->Result<usize,()>{Err(())}}
@@ -89,7 +90,7 @@ mod ttf_font {
 }
 use ttf_font::CachedFont;
 // TERMINAL_CODE
-fn draw(term:&mut TermEmu,fb:&mut Surface,font:&mut CachedFont){term.render(fb,0,48,750,502,6,13,10.,Some(font));}
+fn draw(term:&mut TermEmu,fb:&mut Surface,font:&mut CachedFont){term.render(fb,0,48,750,502,6,13,10.,bitmap_font::RasterHeight::Size16,Some(font));}
 fn full(term:&mut TermEmu,font:&mut CachedFont)->Surface{
     // A fresh terminal has no painted history; copying the visible VT exercises the
     // same painter as an independent full redraw, rather than its damage decisions.

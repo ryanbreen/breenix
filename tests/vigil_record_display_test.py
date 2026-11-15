@@ -45,7 +45,7 @@ else:
 ''')
         cli.chmod(0o755)
         self.env = {k: v for k, v in os.environ.items() if k not in
-                    ("VIGIL_BOOT_ID", "BREENIX_VIGIL_CPUS", "BREENIX_VIGIL_DISPLAY", "BREENIX_HOST_RENDERER_JSON", "BREENIX_GPU_TIME_JSONL")}
+                    ("VIGIL_BOOT_ID", "BREENIX_VIGIL_CPUS", "BREENIX_VIGIL_DISPLAY", "BREENIX_HOST_RENDERER_JSON", "BREENIX_GPU_TIME_JSONL", "BREENIX_VIGIL_ONLY_CASE")}
         # Provenance must not stash the active checkout: concurrent git writers
         # can make stash create fail, which makes the best-effort recorder return
         # success without an ID before it ever calls the fixture CLI.
@@ -76,6 +76,33 @@ else:
         self.assertEqual(run["suite"], "gpu")
         self.assertEqual((self.folder / "commit").read_text(), "a" * 40)
         self.assertFalse((self.folder / "exit-status").exists())
+
+    def test_selected_arm_boot_is_retained_as_a_watch_before_launch(self):
+        source = (ROOT / "scripts/boot-interactive.sh").read_text()
+        registration = source[source.index('export BREENIX_VIGIL_DISPLAY=false\n'):]
+        registration = registration.split('if [ -n "$VIGIL_ID" ] && [ "$SCREEN_PROOF"', 1)[0]
+        for only in ("proof", ""):
+            with self.subTest(only=only):
+                shutil.rmtree(self.folder, ignore_errors=True)
+                env = dict(self.env, ROOT=str(ROOT), ONLY=only, MODE="suite", SUITE="ui-testing",
+                           CPUS="4", DISPLAY_MODE="none", QEMU_PROFILE="fixture",
+                           SERIAL_LOG=str(self.serial), BREENIX_VIGIL_ONLY_CASE="stale")
+                result = subprocess.run(["bash", "-c", 'set -e\n' + registration + '\nprintf "%s\\n" "$VIGIL_ID"'],
+                                        env=env, capture_output=True, text=True, check=True)
+                self.assertEqual(result.stderr, "")
+                self.assertEqual(result.stdout.strip(), BOOT_ID, "selected boot was not registered")
+                run = json.loads((self.folder / "run.json").read_text())
+                self.assertIs(run["display"], False)
+                self.assertEqual(run["suite"], "ui-testing")
+                marker = self.folder / "only-case"
+                if only:
+                    self.assertIs(run["watch"], True)
+                    self.assertIs(run["evidenceEligible"], False)
+                    self.assertEqual(run["suiteCase"], only)
+                    self.assertEqual(marker.read_text(), only + "\n")
+                else:
+                    self.assertFalse(run.get("watch", False))
+                    self.assertFalse(marker.exists())
 
     def test_no_window_and_unknown_are_never_recorded_as_visible(self):
         run = self.start("false")

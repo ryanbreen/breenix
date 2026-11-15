@@ -5,6 +5,8 @@
 //! compositor window.
 
 use breengel::{CachedFont, Window, Event, Handled};
+#[path = "bcheck/layout.rs"] mod layout;
+use layout::Layout;
 use std::time::Duration;
 
 #[path = "bcheck/catalog.rs"] mod catalog;
@@ -100,25 +102,17 @@ const COLOR_PEND: Color = Color::rgb(90, 95, 110);
 const COLOR_CAT: Color = Color::rgb(100, 110, 140);
 const COLOR_HEADER_LINE: Color = Color::rgb(50, 60, 90);
 
-const MARGIN: i32 = 12;
-const TITLE_Y: i32 = 10;
-const BAR_Y: i32 = 38;
-const BAR_H: i32 = 16;
-const LIST_START_Y: i32 = 64;
-const ROW_H: i32 = 18;
-const FOOTER_H: i32 = 24;
-
 /// Compute the total content height of the test list (for scroll clamping).
-fn content_height(tests: &[TestDef]) -> i32 {
+fn content_height(tests: &[TestDef], layout: &Layout) -> i32 {
     let mut y = 0i32;
     let mut last_cat = "";
     for test in tests.iter() {
         if test.category != last_cat {
             last_cat = &test.category;
-            if y > 0 { y += 4; }
-            y += 12;
+            if y > 0 { y += layout.text.px(4); }
+            y += layout.category_h;
         }
-        y += ROW_H;
+        y += layout.row_h;
     }
     y
 }
@@ -172,6 +166,11 @@ fn measure_text(ttf: Option<&mut CachedFont>, text: &str, size: f32, bitmap_scal
 fn render(fb: &mut Surface, tests: &[TestDef], scroll_offset: i32, ttf: &mut Option<CachedFont>, font_size: f32) {
     let w = fb.width() as i32;
     let h = fb.height() as i32;
+    let layout = Layout::new(ttf.as_ref(), font_size, fb.ui_scale(), w, h);
+    let px = |n| layout.text.px(n);
+    let font_size = layout.text.size;
+    let bitmap_scale = layout.text.scale as usize;
+    let margin = px(12);
     let mut text = Text::default();
 
     // Background
@@ -180,11 +179,11 @@ fn render(fb: &mut Surface, tests: &[TestDef], scroll_offset: i32, ttf: &mut Opt
     // Title
     let title = "BREENIX SELF-CHECK";
     let title_size = font_size * 2.0;
-    let title_w = measure_text(ttf.as_mut(), title, title_size, 2);
-    draw_text_scaled(&mut text, title, (w - title_w) / 2, TITLE_Y, title_size, TITLE_COLOR, 2);
+    let title_w = measure_text(ttf.as_mut(), title, title_size, 2 * bitmap_scale);
+    draw_text_scaled(&mut text, title, (w - title_w) / 2, px(10), title_size, TITLE_COLOR, 2 * bitmap_scale);
 
     // Header line
-    shapes::fill_rect(fb, MARGIN, BAR_Y - 4, w - MARGIN * 2, 1, COLOR_HEADER_LINE);
+    shapes::fill_rect(fb, margin, layout.bar_y - px(4), w - margin * 2, px(1), COLOR_HEADER_LINE);
 
     // Overall progress bar
     let total = tests.len() as u32;
@@ -193,24 +192,24 @@ fn render(fb: &mut Surface, tests: &[TestDef], scroll_offset: i32, ttf: &mut Opt
     let running = tests.iter().filter(|t| t.status == TestStatus::Running).count() as u32;
     let completed = passed + failed;
 
-    let bar_w = (w - MARGIN * 2) as u32;
-    shapes::fill_rect(fb, MARGIN, BAR_Y, bar_w as i32, BAR_H, BAR_BG);
+    let bar_w = (w - margin * 2) as u32;
+    shapes::fill_rect(fb, margin, layout.bar_y, bar_w as i32, layout.bar_h, BAR_BG);
 
     if total > 0 {
         // Pass segment
         let pass_w = (passed as u32 * bar_w / total) as i32;
         if pass_w > 0 {
-            shapes::fill_rect(fb, MARGIN, BAR_Y, pass_w, BAR_H, BAR_PASS);
+            shapes::fill_rect(fb, margin, layout.bar_y, pass_w, layout.bar_h, BAR_PASS);
         }
         // Fail segment
         let fail_w = (failed as u32 * bar_w / total) as i32;
         if fail_w > 0 {
-            shapes::fill_rect(fb, MARGIN + pass_w, BAR_Y, fail_w, BAR_H, BAR_FAIL);
+            shapes::fill_rect(fb, margin + pass_w, layout.bar_y, fail_w, layout.bar_h, BAR_FAIL);
         }
         // Running segment (pulsing indicator)
-        let run_w = (running as u32 * bar_w / total).max(if running > 0 { 4 } else { 0 }) as i32;
+        let run_w = (running as u32 * bar_w / total).max(if running > 0 { px(4) as u32 } else { 0 }) as i32;
         if run_w > 0 {
-            shapes::fill_rect(fb, MARGIN + pass_w + fail_w, BAR_Y, run_w, BAR_H, BAR_RUN);
+            shapes::fill_rect(fb, margin + pass_w + fail_w, layout.bar_y, run_w, layout.bar_h, BAR_RUN);
         }
     }
 
@@ -219,15 +218,15 @@ fn render(fb: &mut Surface, tests: &[TestDef], scroll_offset: i32, ttf: &mut Opt
     let mut pct_buf = [0u8; 16];
     let pct_len = format_progress(&mut pct_buf, completed, total, pct);
     let pct_str = core::str::from_utf8(&pct_buf[..pct_len]).unwrap_or("");
-    let pct_tw = measure_text(ttf.as_mut(), pct_str, font_size, 1);
-    draw_text_scaled(&mut text, pct_str, (w - pct_tw) / 2, BAR_Y + 4, font_size, FG, 1);
+    let pct_tw = measure_text(ttf.as_mut(), pct_str, font_size, bitmap_scale);
+    draw_text_scaled(&mut text, pct_str, (w - pct_tw) / 2, layout.bar_y + px(4), font_size, FG, bitmap_scale);
 
     // Visible area for test list
-    let visible_top = LIST_START_Y;
-    let visible_bottom = h - FOOTER_H;
+    let visible_top = layout.list_y;
+    let visible_bottom = h - layout.footer_h;
 
     // Test list (offset by scroll)
-    let mut y = LIST_START_Y - scroll_offset;
+    let mut y = layout.list_y - scroll_offset;
     let mut last_cat = "";
 
     for test in tests.iter() {
@@ -243,20 +242,20 @@ fn render(fb: &mut Surface, tests: &[TestDef], scroll_offset: i32, ttf: &mut Opt
                 "net"  => "NETWORK",
                 _      => "OTHER",
             };
-            if y > LIST_START_Y - scroll_offset {
-                y += 4; // Extra spacing between categories
+            if y > layout.list_y - scroll_offset {
+                y += px(4); // Extra spacing between categories
             }
             // Only draw if visible
-            if y >= visible_top && y + 12 <= visible_bottom {
-                let cat_tw = measure_text(ttf.as_mut(), cat_label, font_size, 1);
-                draw_text_scaled(&mut text, cat_label, MARGIN, y, font_size, COLOR_CAT, 1);
-                shapes::fill_rect(fb, MARGIN + cat_tw + 4, y + 3,
-                                  w - MARGIN * 2 - cat_tw - 4, 1, ACCENT);
+            if y >= visible_top && y + layout.category_h <= visible_bottom {
+                let cat_tw = measure_text(ttf.as_mut(), cat_label, font_size, bitmap_scale);
+                draw_text_scaled(&mut text, cat_label, margin, y, font_size, COLOR_CAT, bitmap_scale);
+                shapes::fill_rect(fb, margin + cat_tw + px(4), y + px(3),
+                                  w - margin * 2 - cat_tw - px(4), px(1), ACCENT);
             }
-            y += 12;
+            y += layout.category_h;
         }
 
-        if y + ROW_H > visible_bottom {
+        if y + layout.row_h > visible_bottom {
             break; // Past the bottom — stop iterating
         }
 
@@ -269,10 +268,10 @@ fn render(fb: &mut Surface, tests: &[TestDef], scroll_offset: i32, ttf: &mut Opt
                 TestStatus::Running => (">>", COLOR_RUN),
                 TestStatus::Pending => ("..", COLOR_PEND),
             };
-            draw_text_scaled(&mut text, icon, MARGIN + 2, y, font_size, icon_color, 1);
+            draw_text_scaled(&mut text, icon, margin + px(2), y, font_size, icon_color, bitmap_scale);
 
             // Test name
-            draw_text_scaled(&mut text, &test.name, MARGIN + 22, y, font_size, FG, 1);
+            draw_text_scaled(&mut text, &test.name, margin + 3 * layout.text.cell_w + px(4), y, font_size, FG, bitmap_scale);
 
             // Status label
             let (label, label_color): (&str, Color) = match test.status {
@@ -282,22 +281,22 @@ fn render(fb: &mut Surface, tests: &[TestDef], scroll_offset: i32, ttf: &mut Opt
                 TestStatus::Pending => ("    ", COLOR_PEND),
             };
             let label_x = w / 2;
-            draw_text_scaled(&mut text, label, label_x, y, font_size, label_color, 1);
+            draw_text_scaled(&mut text, label, label_x, y, font_size, label_color, bitmap_scale);
 
 
         }
 
-        y += ROW_H;
+        y += layout.row_h;
     }
 
     // Footer
-    let footer_y = h - FOOTER_H + 4;
-    shapes::fill_rect(fb, MARGIN, footer_y - 6, w - MARGIN * 2, 1, COLOR_HEADER_LINE);
+    let footer_y = h - layout.footer_h + px(4);
+    shapes::fill_rect(fb, margin, footer_y - px(6), w - margin * 2, px(1), COLOR_HEADER_LINE);
 
     let mut footer_buf = [0u8; 48];
     let footer_len = format_footer(&mut footer_buf, passed, failed, total - completed);
     let footer_str = core::str::from_utf8(&footer_buf[..footer_len]).unwrap_or("");
-    draw_text_scaled(&mut text, footer_str, MARGIN, footer_y, font_size, FG, 1);
+    draw_text_scaled(&mut text, footer_str, margin, footer_y, font_size, FG, bitmap_scale);
     text.finish(fb, ttf.as_mut());
 }
 
@@ -387,15 +386,17 @@ fn main() {
     };
     let mut ttf_font = win.take_mono_font();
     let font_size = if win.mono_size() >= 6.0 { win.mono_size() } else { 10.0 };
-    let visible_h = WIN_H as i32 - LIST_START_Y - FOOTER_H;
-    let total_h = content_height(&tests);
     let ui_scale = win.surface().expect("self-check surface").ui_scale() as i32;
-    let bar_w = ScrollBar::DEFAULT_WIDTH;
-    let bar_rect = Rect::new(WIN_W as i32 / ui_scale - bar_w, LIST_START_Y / ui_scale, bar_w, visible_h / ui_scale);
+    if ui_scale != 1 { win.apply_resize(WIN_W * ui_scale as u32, WIN_H * ui_scale as u32).expect("scaled self-check"); }
+    let layout = Layout::new(ttf_font.as_ref(), font_size, ui_scale as u32, win.width() as i32, win.height() as i32);
+    let visible_h = layout.visible_h() / ui_scale;
+    let total_h = content_height(&tests, &layout) / ui_scale;
+    let r = layout.scroll_rect();
+    let bar_rect = Rect::new(r[0] / ui_scale, r[1] / ui_scale, r[2] / ui_scale, r[3] / ui_scale);
     let mut scroll_bar = ScrollBar::new(bar_rect, total_h, visible_h);
     let theme = libbui::Theme::dark();
     // Present the scrollbar as soon as results become scrollable.
-    if frame(&mut win, &tests, 0, &mut ttf_font, font_size, Some((&scroll_bar, &theme))).is_ok() {
+    if scroll_bar.can_scroll() && frame(&mut win, &tests, 0, &mut ttf_font, font_size, Some((&scroll_bar, &theme))).is_ok() {
         let mut pixels = vec![0u8; win.width() as usize * win.height() as usize * 4];
         match libbreenix::window::capture(win.id(), &mut pixels, None) {
             Ok(_) => {
@@ -435,15 +436,23 @@ fn main() {
                 Event::CloseRequested => closing = true,
                 Event::ResizeRequested { width, height } => resize = Some((width, height)),
                 Event::Resized { width, height } => {
-                    let visible = height as i32 - LIST_START_Y - FOOTER_H;
-                    scroll_bar.set_rect(Rect::new(width as i32 / ui_scale - bar_w, LIST_START_Y / ui_scale, bar_w, visible / ui_scale));
-                    scroll_bar.set_dimensions(total_h, visible);
+                    let layout = Layout::new(ttf_font.as_ref(), font_size, ui_scale as u32, width as i32, height as i32);
+                    let r = layout.scroll_rect();
+                    scroll_bar.set_rect(Rect::new(r[0] / ui_scale, r[1] / ui_scale, r[2] / ui_scale, r[3] / ui_scale));
+                    scroll_bar.set_dimensions(total_h, layout.visible_h() / ui_scale);
                 }
                 _ => {}
             }
             Handled::Redraw
         }).unwrap_or_else(|error| { eprintln!("[bcheck] dispatch: {error}"); closing = true; 0 });
-        if let Some((width, height)) = resize { let _ = win.apply_resize(width, height); }
+        if let Some((width, height)) = resize {
+            if win.apply_resize(width, height).is_ok() {
+                let layout = Layout::new(ttf_font.as_ref(), font_size, ui_scale as u32, win.width() as i32, win.height() as i32);
+                let r = layout.scroll_rect();
+                scroll_bar.set_rect(Rect::new(r[0] / ui_scale, r[1] / ui_scale, r[2] / ui_scale, r[3] / ui_scale));
+                scroll_bar.set_dimensions(total_h, layout.visible_h() / ui_scale);
+            }
+        }
         let mut changed = count != 0;
         if closing { if let Some((_, runner, _)) = active.as_mut() { runner.cancel(); } }
         if let Some((index, runner, start)) = active.as_mut() {
@@ -464,7 +473,7 @@ fn main() {
                 changed = true;
             }
         }
-        if changed { let _ = frame(&mut win, &tests, scroll_bar.offset(), &mut ttf_font, font_size, Some((&scroll_bar, &theme))); }
+        if changed { let _ = frame(&mut win, &tests, scroll_bar.offset() * ui_scale, &mut ttf_font, font_size, Some((&scroll_bar, &theme))); }
         else { let _ = time::nanosleep(&sleep); }
     }
 }

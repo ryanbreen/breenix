@@ -1,5 +1,6 @@
 #[path = "guskit/canvas.rs"] mod canvas;
 #[path = "guskit/collab.rs"] mod collab;
+#[path = "guskit/dimensions.rs"] mod dimensions;
 #[path = "guskit/node.rs"] mod node;
 #[path = "collab_lan_script.rs"] mod script;
 

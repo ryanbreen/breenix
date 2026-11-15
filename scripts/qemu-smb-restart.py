@@ -189,12 +189,17 @@ def watch(serial, instance, admission, process=None):
                     if key in answered:
                         continue
                     answered.add(key)
-                    record = dict(case=case, seq=seq, action=action, ok=False)
+                    record = dict(case=case, seq=seq, action=action, ok=False,
+                                  receivedUnixNs=time.time_ns(), receivedMonotonicNs=time.monotonic_ns())
                     records['requests'].append(record)
                     save()
                     if action == 'stop':
                         stopped = True
+                    record['executeBeginUnixNs'] = time.time_ns()
+                    record['executeBeginMonotonicNs'] = time.monotonic_ns()
                     record['exit'] = execute(f'restart {seq}' if action == 'restart' else action)
+                    record['executeEndMonotonicNs'] = time.monotonic_ns()
+                    record['executeEndUnixNs'] = time.time_ns()
                     record['ok'] = record['exit'] == 0
                     if action == 'start' and record['ok']:
                         stopped = False

@@ -483,7 +483,7 @@ else
     host_slot_quiet
 fi
 # Vigil shows the boot while it runs and scores it when it ends (does nothing without Vigil).
-# A one-case run is not registered: Vigil would score it as a suite boot.
+# Selected runs are retained as watches, never full-suite evidence (U31).
 QEMU_PROFILE_ARGS=(-M virt,gic-version=3 -cpu "$CPU")
 QEMU_PROFILE=$(python3 "$ROOT/scripts/qemu-arm64.py" --print-profile "$QEMU" "${QEMU_PROFILE_ARGS[@]}")
 # A watched run is a distinct profile in Vigil's run.json.
@@ -496,7 +496,8 @@ VIGIL_CPUS=
 # whether --display happened to be spelled on the command line.
 export BREENIX_VIGIL_DISPLAY=false
 [ "$DISPLAY_MODE" != none ] && export BREENIX_VIGIL_DISPLAY=true
-[ -n "$ONLY" ] || VIGIL_ID=$(BREENIX_VIGIL_CPUS="$VIGIL_CPUS" "$ROOT/scripts/vigil-record.sh" start qemu "$MODE" "$SUITE" "$SERIAL_LOG" "" "$QEMU_PROFILE")
+export BREENIX_VIGIL_ONLY_CASE="$ONLY"
+VIGIL_ID=$(BREENIX_VIGIL_CPUS="$VIGIL_CPUS" "$ROOT/scripts/vigil-record.sh" start qemu "$MODE" "$SUITE" "$SERIAL_LOG" "" "$QEMU_PROFILE")
 if [ -n "$VIGIL_ID" ] && [ "$SCREEN_PROOF" -eq 1 ]; then
     VIGIL_HOME=${VIGIL_TEST_HOME:-$(python3 -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')}
     python3 - "$VIGIL_HOME/Library/Application Support/Vigil/breenix/boots/$VIGIL_ID/run.json" "$QEMU_PROFILE" "$PACE" <<'PY'

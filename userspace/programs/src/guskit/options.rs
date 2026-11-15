@@ -1,18 +1,19 @@
 pub struct Options {
-    pub width:usize, pub height:usize, pub file:Option<String>, pub session:Option<(bool,[u8;4],u16,String)>,
+    pub explicit_canvas:bool, pub width:usize, pub height:usize, pub file:Option<String>, pub session:Option<(bool,[u8;4],u16,String)>,
 }
 impl Options {
     pub fn parse(args:impl Iterator<Item=String>)->Result<Self,&'static str> {
-        let mut options=Self {width:800,height:424,file:None,session:None};
+        let mut options=Self {explicit_canvas:false,width:800,height:424,file:None,session:None};
         let mut mode=None; let mut name=None; let mut args=args;
         let usage="usage: guskit [--canvas WxH] [--host PORT|ADDR:PORT | --join PORT|ADDR[:PORT]] [--name NAME] [FILE]";
         while let Some(arg)=args.next() {
             match arg.as_str() {
                 "--canvas"=>{
+                    options.explicit_canvas=true;
                     let value=args.next().ok_or(usage)?;
                     let (w,h)=value.split_once('x').ok_or(usage)?;
                     options.width=w.parse().map_err(|_|usage)?;options.height=h.parse().map_err(|_|usage)?;
-                    if options.width==0||options.width>800||options.height==0||options.height>424 {return Err(usage);}
+                    if options.width==0||options.width>super::dimensions::MAX_WIDTH||options.height==0||options.height>super::dimensions::MAX_HEIGHT {return Err(usage);}
                 }
                 "--host"|"--join"=>{
                     if mode.is_some(){return Err(usage);}

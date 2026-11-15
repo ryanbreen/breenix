@@ -126,7 +126,12 @@ pub fn resize() -> CaseResult {
     t.type_line("echo second-survives")?;
     t.expect_text("second-survives")?;
     // App::resize drags the right and bottom edges with relative mouse motion.
-    t.resize(830, 610)?;
+    let mut windows = vec![libbreenix::window::abi::WinInfo::default(); 256];
+    let count = libbreenix::window::list(&mut windows).map_err(|e| e.to_string())?;
+    let window = windows.get(..count).ok_or("window list overflow")?.iter()
+        .find(|w| w.id == t.window()).ok_or("terminal window missing")?;
+    let scale = libbreenix::gpu::current_mode().map_err(|e| e.to_string())?.scale;
+    t.resize(window.width + 80 * scale, window.height + 60 * scale)?;
     until("resized terminal grid", || {
         let v = grid(&mut t)?;
         Ok(v["cols"].as_u64() > before["cols"].as_u64() && v["rows"].as_u64() > before["rows"].as_u64())

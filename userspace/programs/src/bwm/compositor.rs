@@ -363,6 +363,7 @@ impl Compositor {
     pub fn compose(&mut self, layers: &[Layer], pointer: Option<Pointer>, damage: &[[i32; 4]]) -> Result<(), FrameError> {
         let began_ns=monotonic_ns();
         const EPERM: i64 = -(wabi::errno::EPERM as i64);
+        const ENOENT: i64 = -(wabi::errno::ENOENT as i64);
         const EAGAIN: i64 = -(wabi::errno::EAGAIN as i64);
         const EBUSY: i64 = -(wabi::errno::EBUSY as i64);
         const EINVAL: i64 = -(wabi::errno::EINVAL as i64);
@@ -435,7 +436,10 @@ impl Compositor {
                     self.check_workspace.prepare_clients(&self.sampled);
                     return Ok(());
                 }
-                EAGAIN if monotonic_ms() < deadline => {
+                // A client can destroy its window after the snapshot, before
+                // admission. The consumed reservation must be replaced; encode
+                // then omits that window's sample from the fresh snapshot.
+                EAGAIN | ENOENT if monotonic_ms() < deadline => {
                     let _ = libbreenix::time::sleep_ms(1);
                 }
                 // The destination is still the scanout's binding: compose into the other one.
