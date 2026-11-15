@@ -825,3 +825,35 @@ fn create_syscalls_use_the_trait() {
     }
     assert!(violations.is_empty(), "{}", violations.join("\n"));
 }
+
+#[test]
+fn file_mappings_use_the_trait() {
+    use syn::visit::{self, Visit};
+
+    #[derive(Default)]
+    struct Boundary { backend: Vec<String>, writeback: bool }
+    impl<'ast> Visit<'ast> for Boundary {
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            if matches!(ident.to_string().as_str(),
+                "ext2" | "FileHandle" | "DataFile" | "Ext2Fs" | "request_map_eviction"
+                | "ino32" | "read_mount" | "write_mount" | "ext2_handle")
+            {
+                self.backend.push(ident.to_string());
+            }
+        }
+        fn visit_expr_method_call(&mut self, expr: &'ast syn::ExprMethodCall) {
+            self.writeback |= expr.method == "writeback_pages";
+            visit::visit_expr_method_call(self, expr);
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("kernel/src");
+    for file in ["memory/file_map.rs", "syscall/mmap.rs"] {
+        let parsed = syn::parse_file(&fs::read_to_string(root.join(file)).unwrap()).unwrap();
+        let mut boundary = Boundary::default();
+        boundary.visit_file(&parsed);
+        assert!(boundary.backend.is_empty(), "{file} names {}", boundary.backend.join(", "));
+        if file == "memory/file_map.rs" {
+            assert!(boundary.writeback, "file_map must call writeback_pages");
+        }
+    }
+}
