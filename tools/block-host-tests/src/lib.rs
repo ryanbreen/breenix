@@ -28,9 +28,11 @@ pub fn arch_without_interrupts<R>(f: impl FnOnce() -> R) -> R {
 
 #[path = "../../../kernel/src/block/cache.rs"]
 pub mod buffer_cache;
+pub use buffer_cache as cache;
 
 #[cfg(test)]
-mod cache;
+#[path = "cache.rs"]
+mod cache_tests;
 #[cfg(test)]
 mod recording;
 

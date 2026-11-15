@@ -3,7 +3,7 @@
 `/proc/block/cache` is read-only. Its decimal output has one line per counter,
 in the order below; each line contains the name, count, and last sequence,
 separated by single spaces and terminated by a newline. A sequence of zero
-means that counter has not advanced.
+means that counter has not advanced. <!-- claim-lint:ok: tools/block-host-tests/src/report.rs -->
 
 <!-- claim-lint:ok: normative format verified by tools/block-host-tests/src/report.rs -->
 | Name | Count | Last sequence |
