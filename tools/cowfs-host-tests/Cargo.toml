@@ -9,7 +9,7 @@ edition = "2021"
 spin = "0.9"
 
 [dev-dependencies]
-cowfs = { path = "../cowfs", artifact = "bin:cowfs-mkfs" }
+cowfs = { path = "../cowfs", artifact = ["bin:cowfs-mkfs", "bin:cowfs-check"] }
 
 [lib]
 doctest = false

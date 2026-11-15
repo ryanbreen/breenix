@@ -214,6 +214,13 @@ pub trait Fs {
 
 /// Deliberately red until a later unit supplies the transaction writer adapter.
 pub struct WriterAdapter;
+impl WriterAdapter {
+    pub fn new(_device: alloc::sync::Arc<dyn block::BlockDevice>) -> Result<Self> {
+        Ok(Self)
+    }
+}
+#[cfg(test)]
+mod test_image;
 impl Fs for WriterAdapter {
     fn execute(&mut self, _op: &Operation) -> Result<Reply> {
         Err(Error::Unimplemented)

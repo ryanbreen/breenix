@@ -122,7 +122,10 @@ fn link_to_dir_eperm() {
 #[test]
 fn seed_1_create_write_remount() {
     let mut model = Model::new();
-    let mut writer = WriterAdapter;
+    let device = alloc::sync::Arc::new(
+        crate::recording::RecordingDevice::new(crate::test_image::image()).unwrap(),
+    );
+    let mut writer = WriterAdapter::new(device).unwrap();
     let operations: alloc::vec::Vec<_> = crate::stream::Stream::new(1).take(4).collect();
     assert_eq!(operations.len(), 4);
     assert!(matches!(operations[0].action, Action::Create { .. }));
