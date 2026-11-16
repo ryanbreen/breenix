@@ -72,12 +72,21 @@ pub mod memory {
     pub mod file_map {
         // Disk-only conformance fixtures have no mapped frames.
         #[derive(Clone)]
-        pub struct MapState;
+        pub struct MapState {
+            pub mapped_size: alloc::sync::Arc<core::sync::atomic::AtomicU64>,
+        }
         impl MapState {
             pub fn new(
-                _size: u64, _epoch: u64,
+                size: u64, _epoch: u64,
                 _fs: alloc::sync::Arc<dyn crate::vfs::FileSystem>,
-            ) -> Result<Self, crate::errno::Errno> { Ok(Self) }
+            ) -> Result<Self, crate::errno::Errno> {
+                Ok(Self {
+                    mapped_size: alloc::sync::Arc::new(core::sync::atomic::AtomicU64::new(size)),
+                })
+            }
+            pub fn resync_unbound(&self, size: u64) {
+                self.mapped_size.store(size, core::sync::atomic::Ordering::Release);
+            }
             pub fn has_dirty(&self) -> bool { false }
             pub fn may_change_exec_image(&self) -> bool { false }
         }

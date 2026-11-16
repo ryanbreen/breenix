@@ -739,6 +739,23 @@ fn writer_enters_next_generation_while_fsync_waits_outside_mount_lock() {
 }
 
 #[test]
+fn mapping_a_grown_open_file_resynchronizes_its_unbound_size() {
+    use core::sync::atomic::Ordering;
+    let (disk, _) = fixture();
+    let fs = mount(disk);
+    let ino = fs.create(2, b"grow-then-map", NewNode::Regular { attrs: ATTRS }).unwrap();
+    let node = fs.open(ino).unwrap();
+    assert_eq!(node.map.mapped_size.load(Ordering::Acquire), 0);
+    fs.resize(&node, 8192, false, &|_| Ok(())).unwrap();
+    let mapping = fs.mapping_io(&node).unwrap();
+    assert_eq!(mapping.size(), 8192);
+    assert_eq!(node.size.load(Ordering::Acquire), 8192);
+    assert_eq!(node.map.mapped_size.load(Ordering::Acquire), mapping.size(),
+        "a fault must not wait forever for a completed unbound size transition");
+    assert!(Arc::ptr_eq(&node, &fs.open(ino).unwrap()));
+}
+
+#[test]
 fn writeback_pages_joins_the_transaction_and_msync_is_durable() {
     let (disk, ino) = fixture();
     let fs = mount(disk.clone());
