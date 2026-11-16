@@ -1059,6 +1059,26 @@ fn check_filesystem_host_records(manifest: &str, harness: &str, guest: &str) {
 }
 
 #[test]
+fn filesystem_read_cases_match_the_guest() {
+    let root = repo_root();
+    let manifest: Value = serde_json::from_str(
+        &fs::read_to_string(root.join("docs/suites/filesystem.json")).unwrap()).unwrap();
+    let read = manifest["categories"].as_array().unwrap().iter()
+        .find(|category| category["id"] == "read").unwrap();
+    let ids: Vec<_> = read["cases"].as_array().unwrap().iter()
+        .map(|case| case["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["manifest-equal", "holes-and-tail", "readdir-resume", "read-only-refusals"]);
+    let (_, categories) = source_suite(
+        &fs::read_to_string(root.join("userspace/programs/src/suite_filesystem.rs")).unwrap()).unwrap();
+    let guest = categories.iter().find(|category| category.entry.id == "read")
+        .expect("guest runs the read category");
+    assert_eq!(guest.entry.title, read["title"].as_str().unwrap());
+    assert_eq!(guest.cases.iter().map(|case| (&*case.id, &*case.title)).collect::<Vec<_>>(),
+        read["cases"].as_array().unwrap().iter()
+            .map(|case| (case["id"].as_str().unwrap(), case["title"].as_str().unwrap())).collect::<Vec<_>>());
+}
+
+#[test]
 fn filesystem_host_records_match_the_manifest_and_the_guest() {
     let root = repo_root();
     let harness = fs::read_to_string(root.join("scripts/filesystem-suite.py")).unwrap();
