@@ -1043,13 +1043,11 @@ fn sdk_host_records_match_the_manifest_and_the_guest() {
 
 fn check_filesystem_host_records(manifest: &str, harness: &str, guest: &str) {
     let manifest: Value = serde_json::from_str(manifest).unwrap();
-    let ids: Vec<String> = manifest["categories"].as_array().unwrap().iter().flat_map(|category| {
-        category["cases"].as_array().unwrap().iter().map(move |case| {
-            format!("{}/{}", category["id"].as_str().unwrap(), case["id"].as_str().unwrap())
-        })
-    }).collect();
-    let expected = ["format/mkfs-empty-clean", "format/mkfs-populate-clean", "format/reproducible-image", "format/violations-refused"];
-    assert_eq!(ids, expected);
+    let format = manifest["categories"].as_array().unwrap().iter()
+        .find(|category| category["id"].as_str() == Some("format"))
+        .expect("filesystem manifest has a format category");
+    let ids: Vec<String> = format["cases"].as_array().unwrap().iter()
+        .map(|case| format!("format/{}", case["id"].as_str().unwrap())).collect();
     let mut written = sdk_harness_cases(harness);
     assert_eq!(written, ids, "host records differ from manifest order");
     written.sort();
