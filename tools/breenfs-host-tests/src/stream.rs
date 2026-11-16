@@ -153,3 +153,8 @@ impl Iterator for Stream {
         Some(op)
     }
 }
+
+/// Operation budget used by the long-running crash driver.
+pub fn torture_operations(_seed: u64) -> usize {
+    8
+}

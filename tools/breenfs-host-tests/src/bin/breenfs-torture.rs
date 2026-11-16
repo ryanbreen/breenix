@@ -21,7 +21,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-const OPERATIONS: usize = 8;
+use breenfs_host_tests::stream::torture_operations;
 const USAGE: &str = "breenfs-torture --hours N [--seed-start S] --checker PATH --out DIR";
 type Result<T> = std::result::Result<T, String>;
 
@@ -308,12 +308,12 @@ fn crash_case(
         coordinate(&failure.text, "boundary="),
         coordinate(&failure.text, "image="),
     ) {
-        return crash::case_at(initial.to_vec(), seed, OPERATIONS, boundary, image, tail)
+        return crash::case_at(initial.to_vec(), seed, torture_operations(seed), boundary, image, tail)
             .map_err(|e| format!("locate crash: {e:?}"));
     }
     let mut index = checked.saturating_sub(1);
     for boundary in 0.. {
-        let case = crash::case_at(initial.to_vec(), seed, OPERATIONS, boundary, 0, tail)
+        let case = crash::case_at(initial.to_vec(), seed, torture_operations(seed), boundary, 0, tail)
             .map_err(|e| format!("locate crash: {e:?}"))?;
         let Fault::Crash { writes, .. } = case.fault else {
             unreachable!()
@@ -324,7 +324,7 @@ fn crash_case(
             writes * 2 + 4097
         };
         if index < count {
-            return crash::case_at(initial.to_vec(), seed, OPERATIONS, boundary, index, tail)
+            return crash::case_at(initial.to_vec(), seed, torture_operations(seed), boundary, index, tail)
                 .map_err(|e| format!("locate crash: {e:?}"));
         }
         index -= count;
@@ -369,8 +369,8 @@ fn seed(
                 checker.clean(image)
             };
             match tail {
-                None => crash::subset_images(empty.to_vec(), seed, OPERATIONS, check),
-                Some(tail) => crash::torn_images(empty.to_vec(), seed, OPERATIONS, tail, check),
+                None => crash::subset_images(empty.to_vec(), seed, torture_operations(seed), check),
+                Some(tail) => crash::torn_images(empty.to_vec(), seed, torture_operations(seed), tail, check),
             }?;
             Ok(Outcome::Accepted)
         });
@@ -385,7 +385,7 @@ fn seed(
             let case = case.unwrap_or_else(|| {
                 Case::seeded(
                     seed,
-                    OPERATIONS,
+                    torture_operations(seed),
                     Fault::Crash {
                         boundary: 0,
                         writes: 0,
@@ -404,9 +404,9 @@ fn seed(
             populated.to_vec(),
             empty.to_vec(),
             &[seed],
-            OPERATIONS,
+            torture_operations(seed),
             |image, flip, files| {
-                case = Some(Box::new(Case::seeded(seed, OPERATIONS, Fault::Flip(flip))));
+                case = Some(Box::new(Case::seeded(seed, torture_operations(seed), Fault::Flip(flip))));
                 checker.flipped(image, flip, files)
             },
         )?;
