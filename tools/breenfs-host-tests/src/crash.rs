@@ -300,3 +300,68 @@ pub fn subsets(writes: usize, seed: u64) -> Result<Vec<Vec<bool>>> {
     }
     Ok(masks)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seed_1_garbage_tail_in_unpublished_ring_slots() {
+        // Minimized from stream seed 1, boundary 1, mask 0 (no sector
+        // selected): A2/B2 have a zero prefix and seeded garbage tails.
+        // The preceding commit's unreferenced data does not affect recovery.
+        // claim-lint:ok: Minimized seed 1 fixture below; 2 of 2 slots retain old prefix sectors under Image::tear with mask 0.
+        fn word(state: &mut u64) -> u64 {
+            *state ^= *state >> 12;
+            *state ^= *state << 25;
+            *state ^= *state >> 27;
+            state.wrapping_mul(0x2545_f491_4f6c_dd1d)
+        }
+        let mut bytes = crate::test_image::image();
+        let total = bytes.len() / 4096;
+        let blocks = [18, total as u64 - 2];
+        for block in blocks {
+            let mut random = 1 ^ 0xd1b5_4a32_d192_ed03 ^ block.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+            let prefix = word(&mut random) % 7 + 1;
+            let start = (block * 8 + prefix) as usize * SECTOR_SIZE;
+            let end = (block as usize + 1) * 4096;
+            for chunk in bytes[start..end].chunks_exact_mut(8) {
+                chunk.copy_from_slice(&word(&mut random).to_le_bytes());
+            }
+        }
+        let image = Image::from_bytes(&bytes);
+        let device = Arc::new(MemoryDevice(Mutex::new(image.clone())));
+        assert_eq!(
+            crate::recover::recover(device.as_ref(), false)
+                .unwrap()
+                .generation,
+            1
+        );
+        assert_eq!(
+            *device.0.lock(),
+            image,
+            "read-only recovery wrote the image"
+        );
+        let recovered = WriterAdapter::new(device.clone()).unwrap();
+        assert_eq!(recovered.state().unwrap(), Model::new().state().unwrap());
+        let image = device.0.lock();
+        for block in blocks {
+            for sector in block * 8..block * 8 + 8 {
+                assert_eq!(
+                    image.read_sector(sector),
+                    [0; SECTOR_SIZE],
+                    "invalid slot at block {block} was retained"
+                );
+            }
+        }
+        for (&sector, value) in &image.sectors {
+            let at = sector as usize * SECTOR_SIZE;
+            bytes[at..at + SECTOR_SIZE].copy_from_slice(value);
+        }
+        // Explicit zeros are absent from sparse storage.
+        for block in blocks {
+            bytes[block as usize * 4096..(block as usize + 1) * 4096].fill(0);
+        }
+        crate::test_image::check(&bytes, "seed-1-garbage-slots");
+    }
+}
