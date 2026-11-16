@@ -1,6 +1,9 @@
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
+
+#[path = "../../../libs/libbreenix/src/crypto/sha256.rs"]
+pub mod sha256;
 
 #[path = "../../../kernel/src/fs/breenfs/btree.rs"]
 pub mod btree;
