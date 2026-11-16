@@ -73,6 +73,7 @@ pub struct Files<'a, S: NodeStore + 'a> {
     root_id: u64,
     hash_key: [u8; 16],
     data: BTreeMap<u64, Vec<u8>>,
+    open_inodes: BTreeSet<u64>,
 }
 impl<'a, S: NodeStore + 'a> Files<'a, S> {
     /// Create root 1 in the formatter's sole, unpublished generation.
@@ -94,6 +95,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             root_id: 1,
             hash_key: sb.dirhash_key,
             data: BTreeMap::new(),
+            open_inodes: BTreeSet::new(),
         };
         files.put_inode(
             2,
@@ -145,7 +147,12 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             root_id,
             hash_key: sb.dirhash_key,
             data: BTreeMap::new(),
+            open_inodes: BTreeSet::new(),
         })
+    }
+    /// The mount snapshots live VNodes under its mutex; drops perform no I/O.
+    pub fn retain_open_inodes(&mut self, inodes: BTreeSet<u64>) {
+        self.open_inodes = inodes;
     }
     pub fn items(&self) -> Result<Vec<(Key, Vec<u8>)>, Error> {
         items(&self.txn.view(), self.root.root)
@@ -154,7 +161,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         let value = btree::search(&self.txn.view(), self.root.root, key(ino, format::INODE, 0))?
             .ok_or(Error::ENOENT)?;
         let inode = Inode::decode(&value)?;
-        if inode.nlink == 0 {
+        if inode.nlink == 0 && !self.open_inodes.contains(&ino) {
             return Err(Error::ENOENT);
         }
         Ok(inode)
@@ -327,27 +334,56 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         target: Option<&[u8]>,
         at: Time,
     ) -> Result<u64, Error> {
+        self.create_node_prepared(
+            dir,
+            name,
+            Inode {
+                mode,
+                ..Inode::default()
+            },
+            target,
+            at,
+            |_, _| Ok(()),
+        )
+    }
+    /// Prepare an open before publishing its name. Policy and preparation errors
+    /// leave the transaction tree unchanged.
+    pub fn create_node_prepared(
+        &mut self,
+        dir: u64,
+        name: &[u8],
+        mut inode: Inode,
+        target: Option<&[u8]>,
+        at: Time,
+        prepare: impl FnOnce(u64, Inode) -> Result<(), Error>,
+    ) -> Result<u64, Error> {
         valid_time(at)?;
-        let kind = inode_kind(mode)?;
+        let kind = inode_kind(inode.mode)?;
+        match (kind, target) {
+            (7, Some(t)) if !t.is_empty() && !t.contains(&0) => {
+                if t.len() > 4095 {
+                    return Err(Error::ENAMETOOLONG);
+                }
+            }
+            (7, _) | (_, Some(_)) => return Err(Error::EINVAL),
+            _ => (),
+        }
         self.vacant(dir, name, kind)?;
         let ino = self.root.next_inode;
         let next = ino
             .checked_add(1)
             .filter(|_| ino >= 16)
             .ok_or(Error::EMLINK)?;
-        let inode = Inode {
-            mode,
-            nlink: if kind == 2 { 2 } else { 1 },
-            parent: if kind == 2 { dir } else { 0 },
-            next_index: if kind == 2 { 2 } else { 0 },
-            size: target.map_or(0, |t| t.len() as u64),
-            created_generation: self.txn.generation(),
-            atime: at,
-            mtime: at,
-            ctime: at,
-            btime: at,
-            ..Inode::default()
-        };
+        inode.nlink = if kind == 2 { 2 } else { 1 };
+        inode.parent = if kind == 2 { dir } else { 0 };
+        inode.next_index = if kind == 2 { 2 } else { 0 };
+        inode.size = target.map_or(0, |t| t.len() as u64);
+        inode.created_generation = self.txn.generation();
+        inode.atime = at;
+        inode.mtime = at;
+        inode.ctime = at;
+        inode.btime = at;
+        prepare(ino, inode)?;
         self.put_inode(ino, inode)?;
         if let Some(target) = target {
             self.txn
@@ -396,6 +432,10 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     }
     pub fn link(&mut self, ino: u64, dir: u64, name: &[u8], at: Time) -> Result<(), Error> {
         let mut inode = self.inode(ino)?;
+        // A pathname lookup that raced the last unlink cannot resurrect it.
+        if inode.nlink == 0 {
+            return Err(Error::ENOENT);
+        }
         let kind = inode_kind(inode.mode)?;
         if kind == 2 {
             return Err(Error::EPERM);
@@ -533,6 +573,9 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             let inode = Inode::decode(&inode)?;
             if inode.nlink != 0 || inode_kind(inode.mode)? == 2 {
                 return Err(Error::EIO);
+            }
+            if self.open_inodes.contains(&k.offset) {
+                continue;
             }
             self.delete_inode(k.offset)?;
             self.txn.delete(&mut self.root.root, k)?;
@@ -766,6 +809,17 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         }
         self.put_inode(ino, i)
     }
+    pub fn list_xattrs(&self, ino: u64) -> Result<Vec<Xattr>, Error> {
+        self.inode(ino)?;
+        let mut records = Vec::new();
+        for (_, bytes) in self.range(
+            key(ino, format::XATTR, 0),
+            key(ino, format::XATTR, u64::MAX),
+        )? {
+            records.extend(xattrs(&bytes)?);
+        }
+        Ok(records)
+    }
     pub fn xattr(
         &mut self,
         ino: u64,
@@ -821,6 +875,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         &mut self,
     ) -> Result<(&mut Transaction<'a, S>, &BTreeMap<u64, Vec<u8>>), Error> {
         self.reclaim_orphans()?;
+        self.txn.promote_pending()?;
         self.txn.update_root(self.root_id, self.root.clone())?;
         // A private allocation replaced again within this transaction is PENDING
         // and need not be submitted as data in the commit engine's REF set.

@@ -1,6 +1,6 @@
-//! Read-only breenfs operations at the VFS boundary (design 1.1 and 2.3).
-//! The mounted device must remain unchanged for the lifetime of this view.
+//! BreenFS operations at the VFS boundary (design 1.1, 2.3 and 2.5).
 use super::{
+    commit::Committer,
     format::{Inode, Superblock, Time, BLOCK_SIZE},
     node_cache::CachedNodeStore,
     ops::{self, Files},
@@ -20,25 +20,115 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
+use core::sync::atomic::Ordering;
 use spin::Mutex;
 
-/// Immutable durable tree; clones retain one mount and its verified cache view.
+// Extended attributes use ABI errno 61 for an absent attribute.
+const ENODATA: i32 = 61;
+
+/// Clones retain the same mount and transaction exclusion.
 pub struct BreenFs<W: Wait + 'static> {
     inner: Arc<Mount<W>>,
 }
 struct Mount<W: Wait + 'static> {
-    files: Files<'static, CachedNodeStore<'static, W>>,
+    state: Mutex<MountState<W>>,
     device: Arc<dyn BlockDevice>,
-    durable: Superblock,
+    cache: Cache<W>,
     id: usize,
-    nodes: Mutex<BTreeMap<u64, Weak<VNode>>>,
-    inodes: Mutex<InodeCache>,
+    root_id: u64,
 }
-
-// Immutable mount metadata; bounded independently of the volume's inode count.
+enum Cache<W: Wait + 'static> {
+    Shared(Arc<BufferCache<W>>),
+    Kernel(&'static BufferCache<W>),
+}
+impl<W: Wait> Cache<W> {
+    fn store(&self, device: Arc<dyn BlockDevice>, sb: &Superblock) -> CachedNodeStore<'static, W> {
+        match self {
+            Self::Shared(cache) => CachedNodeStore::new_owned(cache.clone(), device, sb),
+            Self::Kernel(cache) => CachedNodeStore::with_device(cache, device, sb),
+        }
+    }
+}
+struct MountState<W: Wait + 'static> {
+    files: Files<'static, CachedNodeStore<'static, W>>,
+    committer: Option<Committer>,
+    durable: Superblock,
+    failed: bool,
+    nodes: BTreeMap<u64, Weak<VNode>>,
+    inodes: InodeCache,
+}
+// Bounded metadata cache; mutation completion invalidates its entries.
 struct InodeCache {
     entries: [Option<(u64, Inode)>; 32],
     next: usize,
+}
+impl<W: Wait> MountState<W> {
+    fn read_only(&self) -> bool {
+        self.failed || self.committer.as_ref().is_none_or(Committer::read_only)
+    }
+    fn writable(&self) -> Result<(), Errno> {
+        if self.read_only() {
+            Err(Errno(EROFS))
+        } else {
+            Ok(())
+        }
+    }
+    fn inode(&mut self, ino: u64) -> Result<Inode, Errno> {
+        if let Some((_, inode)) = self
+            .inodes
+            .entries
+            .iter()
+            .flatten()
+            .find(|(cached, _)| *cached == ino)
+        {
+            return Ok(*inode);
+        }
+        let inode = self.files.inode(ino).map_err(errno)?;
+        let slot = self.inodes.next;
+        self.inodes.entries[slot] = Some((ino, inode));
+        self.inodes.next = (slot + 1) % self.inodes.entries.len();
+        Ok(inode)
+    }
+    fn attrs(&mut self, ino: u64) -> Result<NodeAttrs, Errno> {
+        attributes(ino, self.inode(ino)?)
+    }
+    fn directory(&mut self, ino: u64) -> Result<NodeAttrs, Errno> {
+        let attrs = self.attrs(ino)?;
+        if attrs.kind != NodeKind::Directory {
+            return Err(Errno(ENOTDIR));
+        }
+        Ok(attrs)
+    }
+    fn regular(&mut self, ino: u64) -> Result<Inode, Errno> {
+        let inode = self.inode(ino)?;
+        match kind(inode.mode)? {
+            NodeKind::Regular => Ok(inode),
+            NodeKind::Directory => Err(Errno(EISDIR)),
+            _ => Err(Errno(EINVAL)),
+        }
+    }
+    fn retain_open(&mut self) {
+        self.nodes.retain(|_, node| node.strong_count() != 0);
+        self.files
+            .retain_open_inodes(self.nodes.keys().copied().collect());
+    }
+    fn edited<T>(&mut self, result: Result<T, ops::Error>) -> Result<T, Errno> {
+        self.inodes.entries.fill(None);
+        // A storage/allocation failure may have interrupted a multi-item edit.
+        // Do not publish that transaction; reservation is a later milestone.
+        if matches!(result, Err(ops::Error::EIO | ops::Error::ENOSPC)) {
+            self.failed = true;
+        }
+        for (&ino, weak) in &self.nodes {
+            if let Some(node) = weak.upgrade() {
+                if let Ok(inode) = self.files.inode(ino) {
+                    node.size.store(inode.size, Ordering::Release);
+                    *node.times.lock() = attributes(ino, inode)?.times;
+                }
+            }
+        }
+        result.map_err(errno)
+    }
 }
 impl<W: Wait + 'static> Clone for BreenFs<W> {
     fn clone(&self) -> Self {
@@ -55,39 +145,54 @@ impl<W: Wait + 'static> BreenFs<W> {
         mount: usize,
         root_id: u64,
     ) -> Result<Arc<Self>, Errno> {
-        let durable = recover::recover(device.as_ref(), false).map_err(|_| Errno(EIO))?;
-        let store = CachedNodeStore::new_owned(cache, device.clone(), &durable);
-        Self::from_store(device, durable, store, mount, root_id)
+        Self::mount_with(device, Cache::Shared(cache), mount, root_id, false)
     }
-    /// Kernel mounts share the system cache, whose lifetime is the kernel's.
+    /// Writable recovery repairs the rings before opening the first transaction.
+    /// Commits run synchronously under the mount mutex in this stage.
+    pub fn mount_writable(
+        device: Arc<dyn BlockDevice>,
+        cache: Arc<BufferCache<W>>,
+        mount: usize,
+        root_id: u64,
+    ) -> Result<Arc<Self>, Errno> {
+        Self::mount_with(device, Cache::Shared(cache), mount, root_id, true)
+    }
+    /// Kernel read mounts borrow the system cache.
     pub fn mount_cached(
         device: Arc<dyn BlockDevice>,
         cache: &'static BufferCache<W>,
         mount: usize,
         root_id: u64,
     ) -> Result<Arc<Self>, Errno> {
-        let durable = recover::recover(device.as_ref(), false).map_err(|_| Errno(EIO))?;
-        let store = CachedNodeStore::with_device(cache, device.clone(), &durable);
-        Self::from_store(device, durable, store, mount, root_id)
+        Self::mount_with(device, Cache::Kernel(cache), mount, root_id, false)
     }
-    fn from_store(
+    fn mount_with(
         device: Arc<dyn BlockDevice>,
-        durable: Superblock,
-        store: CachedNodeStore<'static, W>,
+        cache: Cache<W>,
         mount: usize,
         root_id: u64,
+        writable: bool,
     ) -> Result<Arc<Self>, Errno> {
-        let files = Files::new(store, &durable, root_id).map_err(errno)?;
+        let durable = recover::recover(device.as_ref(), writable).map_err(|_| Errno(EIO))?;
+        let files =
+            Files::new(cache.store(device.clone(), &durable), &durable, root_id).map_err(errno)?;
+        let committer = writable.then(|| Committer::new(durable.clone()));
         let inner = Arc::try_new(Mount {
-            files,
-            device,
-            durable,
-            id: mount,
-            nodes: Mutex::new(BTreeMap::new()),
-            inodes: Mutex::new(InodeCache {
-                entries: [None; 32],
-                next: 0,
+            state: Mutex::new(MountState {
+                files,
+                committer,
+                durable,
+                failed: false,
+                nodes: BTreeMap::new(),
+                inodes: InodeCache {
+                    entries: [None; 32],
+                    next: 0,
+                },
             }),
+            device,
+            cache,
+            id: mount,
+            root_id,
         })
         .map_err(|_| Errno(ENOMEM))?;
         Arc::try_new(Self { inner }).map_err(|_| Errno(ENOMEM))
@@ -102,32 +207,29 @@ impl<W: Wait + 'static> BreenFs<W> {
         }
         Ok(())
     }
-    fn inode(&self, ino: u64) -> Result<Inode, Errno> {
-        if let Some((_, inode)) = self
-            .inner
-            .inodes
-            .lock()
-            .entries
-            .iter()
-            .flatten()
-            .find(|(cached, _)| *cached == ino)
-        {
-            return Ok(*inode);
-        }
-        let inode = self.inner.files.inode(ino).map_err(errno)?;
-        let mut cache = self.inner.inodes.lock();
-        let slot = cache.next;
-        cache.entries[slot] = Some((ino, inode));
-        cache.next = (slot + 1) % cache.entries.len();
-        Ok(inode)
+    fn new_node(&self, ino: u64, inode: Inode, epoch: u64) -> Result<Arc<VNode>, Errno> {
+        let fs = Arc::try_new(self.clone()).map_err(|_| Errno(ENOMEM))?;
+        Arc::try_new(VNode::new(
+            self.inner.id,
+            ino,
+            inode.created_generation,
+            inode.size,
+            attributes(ino, inode)?.times,
+            fs,
+            epoch,
+            self.inner.clone(),
+        )?)
+        .map_err(|_| Errno(ENOMEM))
     }
-    fn regular(&self, ino: u64) -> Result<Inode, Errno> {
-        let inode = self.inode(ino)?;
-        match kind(inode.mode)? {
-            NodeKind::Regular => Ok(inode),
-            NodeKind::Directory => Err(Errno(EISDIR)),
-            _ => Err(Errno(EINVAL)),
+    fn open_locked(&self, state: &mut MountState<W>, ino: u64) -> Result<Arc<VNode>, Errno> {
+        let inode = state.inode(ino)?;
+        if let Some(node) = state.nodes.get(&ino).and_then(Weak::upgrade) {
+            return Ok(node);
         }
+        let node = self.new_node(ino, inode, state.durable.generation)?;
+        state.nodes.insert(ino, Arc::downgrade(&node));
+        state.retain_open();
+        Ok(node)
     }
 }
 impl<W: Wait + 'static> FileSystem for BreenFs<W> {
@@ -138,74 +240,96 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         Ok(2)
     }
     fn statfs(&self) -> Result<StatFs, Errno> {
-        let sb = &self.inner.durable;
+        let state = self.inner.state.lock();
+        let sb = &state.durable;
         Ok(StatFs {
             magic: u64::from_le_bytes(*b"BREENFSS"),
             block_size: BLOCK_SIZE as u64,
             blocks: sb.total_blocks,
             free_blocks: sb.free_blocks,
             available_blocks: sb.free_blocks.saturating_sub(sb.global_reserve),
-            // There is no fixed inode table; numbers are allocated monotonically.
             inodes: 0,
             free_inodes: 0,
             max_name_len: 255,
             flags: MountFlags {
-                read_only: true,
+                read_only: state.read_only(),
                 ..MountFlags::default()
             },
         })
     }
     fn sync(&self) -> Result<(), Errno> {
+        let mut state = self.inner.state.lock();
+        if state.failed {
+            return Err(Errno(EIO));
+        }
+        if state.committer.is_none() {
+            return Ok(());
+        }
+        state.retain_open();
+        let MountState {
+            files, committer, ..
+        } = &mut *state;
+        let result = files.fsync(
+            self.inner.device.as_ref(),
+            committer.as_mut().ok_or(Errno(EIO))?,
+        );
+        let sb = match result {
+            Ok(sb) => sb,
+            Err(_) => {
+                state.failed = true;
+                return Err(Errno(EIO));
+            }
+        };
+        state.durable = sb;
+        let result = Files::new(
+            self.inner
+                .cache
+                .store(self.inner.device.clone(), &state.durable),
+            &state.durable,
+            self.inner.root_id,
+        );
+        match result {
+            Ok(files) => state.files = files,
+            Err(_) => {
+                state.failed = true;
+                return Err(Errno(EIO));
+            }
+        }
+        state.inodes.entries.fill(None);
+        state.retain_open();
         Ok(())
     }
     fn read_only(&self) -> Result<bool, Errno> {
-        Ok(true)
+        Ok(self.inner.state.lock().read_only())
     }
     fn max_file_size(&self) -> Result<u64, Errno> {
         Ok((1 << 63) - 4096)
     }
     fn getattr(&self, ino: u64) -> Result<NodeAttrs, Errno> {
-        attributes(ino, self.inode(ino)?)
+        self.inner.state.lock().attrs(ino)
     }
     fn open(&self, ino: u64) -> Result<Arc<VNode>, Errno> {
-        let inode = self.inode(ino)?;
-        let attrs = attributes(ino, inode)?;
-        let mut nodes = self.inner.nodes.lock();
-        if let Some(node) = nodes.get(&ino).and_then(Weak::upgrade) {
-            return Ok(node);
-        }
-        let fs = Arc::try_new(self.clone()).map_err(|_| Errno(ENOMEM))?;
-        let node = Arc::try_new(VNode::new(
-            self.inner.id,
-            ino,
-            inode.created_generation,
-            inode.size,
-            attrs.times,
-            fs,
-            self.inner.durable.generation,
-            self.inner.clone(),
-        )?)
-        .map_err(|_| Errno(ENOMEM))?;
-        // A dead weak observer retains no inode, but prune it before adding one
-        // so a directory walk/open workload does not grow the table indefinitely.
-        nodes.retain(|_, node| node.strong_count() != 0);
-        nodes.insert(ino, Arc::downgrade(&node));
-        Ok(node)
+        self.open_locked(&mut self.inner.state.lock(), ino)
     }
     fn lookup(&self, dir: u64, name: &[u8]) -> Result<u64, Errno> {
-        self.inner.files.lookup(dir, name).map_err(errno)
+        self.inner
+            .state
+            .lock()
+            .files
+            .lookup(dir, name)
+            .map_err(errno)
     }
     fn lookup_open(&self, dir: &VNode, name: &[u8]) -> Result<Arc<VNode>, Errno> {
         self.check_node(dir)?;
-        self.open(self.lookup(dir.ino, name)?)
+        let mut state = self.inner.state.lock();
+        let ino = state.files.lookup(dir.ino, name).map_err(errno)?;
+        self.open_locked(&mut state, ino)
     }
     fn touch(&self, _: &VNode, _: bool) {}
     fn parent(&self, dir: u64) -> Result<u64, Errno> {
-        let inode = self.inode(dir)?;
-        if kind(inode.mode)? != NodeKind::Directory {
-            return Err(Errno(ENOTDIR));
-        }
-        Ok(inode.parent)
+        let mut state = self.inner.state.lock();
+        state.directory(dir)?;
+        Ok(state.inode(dir)?.parent)
     }
     fn readdir(
         &self,
@@ -213,9 +337,9 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         mut cookie: u64,
         sink: &mut dyn FnMut(DirEnt, u64) -> Result<bool, Errno>,
     ) -> Result<u64, Errno> {
+        let state = self.inner.state.lock();
         loop {
-            let entries = self
-                .inner
+            let entries = state
                 .files
                 .directory_entries(dir, cookie, 64)
                 .map_err(errno)?;
@@ -223,12 +347,14 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 return Ok(cookie);
             }
             for (next, entry) in entries {
-                let entry = DirEnt {
-                    ino: entry.ino,
-                    kind: record_kind(entry.kind)?,
-                    name: entry.name,
-                };
-                if !sink(entry, next)? {
+                if !sink(
+                    DirEnt {
+                        ino: entry.ino,
+                        kind: record_kind(entry.kind)?,
+                        name: entry.name,
+                    },
+                    next,
+                )? {
                     return Ok(cookie);
                 }
                 cookie = next;
@@ -237,68 +363,208 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
     }
     fn read(&self, node: &VNode, off: u64, buf: &mut [u8]) -> Result<usize, Errno> {
         self.check_node(node)?;
-        // Initialize the page buffer before reading up to EOF, including its
-        // partial mapped block tail (read_conformance::reads_equal).
+        let mut state = self.inner.state.lock();
         buf.fill(0);
-        if off >= self.regular(node.ino)?.size || buf.is_empty() {
+        if off >= state.regular(node.ino)?.size || buf.is_empty() {
             return Ok(0);
         }
-        self.inner
+        state
             .files
             .read(self.inner.device.as_ref(), node.ino, off, buf)
             .map_err(errno)
     }
     fn readlink(&self, ino: u64) -> Result<Vec<u8>, Errno> {
-        self.inner.files.readlink(ino).map_err(errno)
+        self.inner.state.lock().files.readlink(ino).map_err(errno)
     }
     fn fsync(&self, node: &VNode, _: bool) -> Result<(), Errno> {
-        self.check_node(node)
+        self.check_node(node)?;
+        self.sync()
     }
     fn mapping_io(&self, node: &VNode) -> Result<Box<dyn MappingIo>, Errno> {
         self.check_node(node)?;
-        let size = self.regular(node.ino)?.size;
+        let mut state = self.inner.state.lock();
+        let size = state.regular(node.ino)?.size;
         let transfer = ReadMapping {
             fs: self.clone(),
-            node: self.open(node.ino)?,
+            node: self.open_locked(&mut state, node.ino)?,
             size,
         };
         Ok(Box::try_new(transfer).map_err(|_| Errno(ENOMEM))?)
     }
-    fn setattr(&self, _: u64, _: SetAttr) -> Result<(), Errno> {
-        Err(Errno(EROFS))
+    fn setattr(&self, ino: u64, attrs: SetAttr) -> Result<(), Errno> {
+        let mut state = self.inner.state.lock();
+        state.writable()?;
+        let current = state.attrs(ino)?;
+        if attrs
+            .expected
+            .is_some_and(|expected| current.attrs != expected)
+        {
+            return Err(Errno(EAGAIN));
+        }
+        let result = state.files.setattr(
+            ino,
+            &ops::SetAttr {
+                mode: attrs.mode.map(u32::from),
+                uid: attrs.uid,
+                gid: attrs.gid,
+                atime: attrs.atime.map(time),
+                mtime: attrs.mtime.map(time),
+            },
+            now(),
+        );
+        state.edited(result)
     }
-    fn create(&self, _: u64, _: &[u8], _: NewNode<'_>) -> Result<u64, Errno> {
-        Err(Errno(EROFS))
+    fn create(&self, dir: u64, name: &[u8], node: NewNode<'_>) -> Result<u64, Errno> {
+        let mut state = self.inner.state.lock();
+        state.writable()?;
+        let (attrs, bits, rdev, target) = match node {
+            NewNode::Regular { attrs } => (attrs, 0o100000, 0, None),
+            NewNode::Directory { attrs } => (attrs, 0o040000, 0, None),
+            NewNode::Symlink { attrs, target } => (attrs, 0o120000, 0, Some(target)),
+            NewNode::CharDevice { attrs, rdev } => (attrs, 0o020000, rdev, None),
+            NewNode::BlockDevice { attrs, rdev } => (attrs, 0o060000, rdev, None),
+            NewNode::Fifo { attrs } => (attrs, 0o010000, 0, None),
+            NewNode::Socket { attrs } => (attrs, 0o140000, 0, None),
+        };
+        let result = state.files.create_node_prepared(
+            dir,
+            name,
+            Inode {
+                mode: bits | (attrs.mode & 0o7777),
+                uid: attrs.uid,
+                gid: attrs.gid,
+                rdev,
+                ..Inode::default()
+            },
+            target,
+            now(),
+            |_, _| Ok(()),
+        );
+        state.edited(result)
     }
     fn create_open(
         &self,
-        _: u64,
-        _: &[u8],
-        _: NodeKind,
-        _: &dyn Fn(NodeAttrs) -> Result<InodeAttrs, Errno>,
-        _: &mut dyn FnMut(Arc<VNode>) -> Result<(), Errno>,
+        dir: u64,
+        name: &[u8],
+        kind: NodeKind,
+        check: &dyn Fn(NodeAttrs) -> Result<InodeAttrs, Errno>,
+        prepare: &mut dyn FnMut(Arc<VNode>) -> Result<(), Errno>,
     ) -> Result<(), Errno> {
-        Err(Errno(EROFS))
+        let mut state = self.inner.state.lock();
+        state.writable()?;
+        match state.files.lookup(dir, name) {
+            Ok(_) => return Err(Errno(EEXIST)),
+            Err(ops::Error::ENOENT) => (),
+            Err(e) => return Err(errno(e)),
+        }
+        let attrs = check(state.directory(dir)?)?;
+        let bits = match kind {
+            NodeKind::Regular => 0o100000,
+            NodeKind::Socket => 0o140000,
+            _ => return Err(Errno(EOPNOTSUPP)),
+        };
+        let mut prepared = None;
+        let mut preparation_error = None;
+        let epoch = state.durable.generation;
+        let result = state.files.create_node_prepared(
+            dir,
+            name,
+            Inode {
+                mode: bits | (attrs.mode & 0o7777),
+                uid: attrs.uid,
+                gid: attrs.gid,
+                ..Inode::default()
+            },
+            None,
+            now(),
+            |ino, inode| {
+                let result = self.new_node(ino, inode, epoch).and_then(|node| {
+                    prepare(node.clone())?;
+                    prepared = Some(node);
+                    Ok(())
+                });
+                result.map_err(|e| {
+                    preparation_error = Some(e);
+                    ops::Error::EIO
+                })
+            },
+        );
+        if let Some(e) = preparation_error {
+            return Err(e);
+        }
+        let ino = state.edited(result)?;
+        let node = prepared.ok_or(Errno(EIO))?;
+        state.nodes.insert(ino, Arc::downgrade(&node));
+        state.retain_open();
+        Ok(())
     }
-    fn link(&self, _: u64, _: u64, _: &[u8], _: &LinkCheck<'_>) -> Result<(), Errno> {
-        Err(Errno(EROFS))
+    fn link(&self, ino: u64, dir: u64, name: &[u8], check: &LinkCheck<'_>) -> Result<(), Errno> {
+        let mut state = self.inner.state.lock();
+        state.writable()?;
+        let parent = state.directory(dir)?;
+        let source = state.attrs(ino)?;
+        if source.kind == NodeKind::Directory {
+            return Err(Errno(EPERM));
+        }
+        check(parent, source)?;
+        let result = state.files.link(ino, dir, name, now());
+        state.edited(result)
     }
-    fn remove(&self, _: u64, _: &[u8], _: Remove) -> Result<(), Errno> {
-        Err(Errno(EROFS))
+    fn remove(&self, dir: u64, name: &[u8], which: Remove) -> Result<(), Errno> {
+        let mut state = self.inner.state.lock();
+        state.writable()?;
+        let parent = state.directory(dir)?;
+        let victim = state.files.lookup(dir, name).map_err(errno)?;
+        let attrs = state.attrs(victim)?;
+        if !which.directory && attrs.kind == NodeKind::Directory {
+            return Err(Errno(EISDIR));
+        }
+        if which.expected != victim
+            || which.owner != attrs.attrs.uid
+            || which.parent != parent.attrs
+        {
+            return Err(Errno(EAGAIN));
+        }
+        let result = if which.directory {
+            state.files.rmdir(dir, name, now())
+        } else {
+            state.files.unlink(dir, name, now())
+        };
+        state.edited(result)
     }
     fn rename(
         &self,
-        _: u64,
-        _: &[u8],
-        _: u64,
-        _: &[u8],
-        _: RenameMode,
-        _: &RenameCheck<'_>,
+        from_dir: u64,
+        from: &[u8],
+        to_dir: u64,
+        to: &[u8],
+        mode: RenameMode,
+        check: &RenameCheck<'_>,
     ) -> Result<(), Errno> {
-        Err(Errno(EROFS))
+        let mut state = self.inner.state.lock();
+        state.writable()?;
+        if mode == RenameMode::Exchange {
+            return Err(Errno(EINVAL));
+        }
+        let parent = state.directory(from_dir)?;
+        let dest_parent = state.directory(to_dir)?;
+        let source = state.files.lookup(from_dir, from).map_err(errno)?;
+        let source = state.attrs(source)?;
+        let dest = match state.files.lookup(to_dir, to) {
+            Ok(ino) => Some(state.attrs(ino)?),
+            Err(ops::Error::ENOENT) => None,
+            Err(e) => return Err(errno(e)),
+        };
+        check(parent, dest_parent, source, dest)?;
+        if mode == RenameMode::NoReplace && dest.is_some() {
+            return Err(Errno(EEXIST));
+        }
+        let result = state.files.rename(from_dir, from, to_dir, to, now());
+        state.edited(result)
     }
     fn write(&self, _: &VNode, _: WriteReq, _: &[u8]) -> Result<WriteResult, WriteError> {
-        Err(Errno(EROFS).into())
+        self.inner.state.lock().writable()?;
+        Err(Errno(EOPNOTSUPP).into())
     }
     fn resize(
         &self,
@@ -307,24 +573,88 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         _: bool,
         _: &dyn Fn(NodeAttrs) -> Result<(), Errno>,
     ) -> Result<(), Errno> {
-        Err(Errno(EROFS))
+        self.inner.state.lock().writable()?;
+        Err(Errno(EOPNOTSUPP))
     }
     fn writeback_pages(&self, _: &VNode, _: u64, _: &[u8], _: &dyn MappingIo) -> Result<(), Errno> {
-        Err(Errno(EROFS))
+        self.inner.state.lock().writable()?;
+        Err(Errno(EOPNOTSUPP))
     }
     fn clear_mapping_privilege(&self, _: &VNode) -> Result<(), Errno> {
-        Err(Errno(EROFS))
+        self.inner.state.lock().writable()?;
+        Err(Errno(EOPNOTSUPP))
     }
-    fn xattr(&self, _: u64, op: Xattr<'_>) -> Result<usize, Errno> {
+    fn xattr(&self, ino: u64, op: Xattr<'_>) -> Result<usize, Errno> {
+        let mut state = self.inner.state.lock();
+        if state.committer.is_none() {
+            return match op {
+                Xattr::Set { .. } | Xattr::Remove { .. } => Err(Errno(EROFS)),
+                _ => Err(Errno(EOPNOTSUPP)),
+            };
+        }
+        let records = state.files.list_xattrs(ino).map_err(errno)?;
         match op {
-            Xattr::Set { .. } | Xattr::Remove { .. } => Err(Errno(EROFS)),
-            Xattr::Get { .. } | Xattr::List { .. } => Err(Errno(EOPNOTSUPP)),
+            Xattr::Get { name, value } => {
+                let record = records
+                    .iter()
+                    .find(|x| x.name == name)
+                    .ok_or(Errno(ENODATA))?;
+                copy_xattr(value, &record.value)
+            }
+            Xattr::List { names } => {
+                let mut bytes = Vec::new();
+                for record in records {
+                    bytes.extend_from_slice(&record.name);
+                    bytes.push(0);
+                }
+                copy_xattr(names, &bytes)
+            }
+            Xattr::Set { name, value, mode } => {
+                state.writable()?;
+                let exists = records.iter().any(|x| x.name == name);
+                match mode {
+                    XattrSet::Create if exists => return Err(Errno(EEXIST)),
+                    XattrSet::Replace if !exists => return Err(Errno(ENODATA)),
+                    _ => (),
+                }
+                let result = state.files.xattr(ino, name, Some(value), now());
+                state.edited(result).map(|_| 0)
+            }
+            Xattr::Remove { name } => {
+                state.writable()?;
+                if !records.iter().any(|x| x.name == name) {
+                    return Err(Errno(ENODATA));
+                }
+                let result = state.files.xattr(ino, name, None, now());
+                state.edited(result).map(|_| 0)
+            }
         }
     }
 }
+fn copy_xattr(out: &mut [u8], bytes: &[u8]) -> Result<usize, Errno> {
+    if !out.is_empty() {
+        if out.len() < bytes.len() {
+            return Err(Errno(ERANGE));
+        }
+        out[..bytes.len()].copy_from_slice(bytes);
+    }
+    Ok(bytes.len())
+}
+fn now() -> Time {
+    Time {
+        seconds: crate::time::current_unix_time() as i64,
+        nanos: 0,
+    }
+}
+fn time(t: Timestamp) -> Time {
+    Time {
+        seconds: t.sec,
+        nanos: t.nsec,
+    }
+}
 
-// Retaining the immutable mount is its transfer lease: no writer can change
-// the inode or its extents while mapped bytes are read or published.
+// The transfer retains a VNode, keeping unlinked extents alive. Content writes
+// and writable mappings are not exposed by this namespace-only stage.
 struct ReadMapping<W: Wait + 'static> {
     fs: BreenFs<W>,
     node: Arc<VNode>,
