@@ -15,6 +15,7 @@ use crate::{
     syscall::errno::*,
 };
 use alloc::{
+    boxed::Box,
     collections::BTreeMap,
     sync::{Arc, Weak},
     vec::Vec,
@@ -31,6 +32,13 @@ struct Mount<W: Wait + 'static> {
     durable: Superblock,
     id: usize,
     nodes: Mutex<BTreeMap<u64, Weak<VNode>>>,
+    inodes: Mutex<InodeCache>,
+}
+
+// Immutable mount metadata; bounded independently of the volume's inode count.
+struct InodeCache {
+    entries: [Option<(u64, Inode)>; 32],
+    next: usize,
 }
 impl<W: Wait + 'static> Clone for BreenFs<W> {
     fn clone(&self) -> Self {
@@ -76,6 +84,10 @@ impl<W: Wait + 'static> BreenFs<W> {
             durable,
             id: mount,
             nodes: Mutex::new(BTreeMap::new()),
+            inodes: Mutex::new(InodeCache {
+                entries: [None; 32],
+                next: 0,
+            }),
         })
         .map_err(|_| Errno(ENOMEM))?;
         Arc::try_new(Self { inner }).map_err(|_| Errno(ENOMEM))
@@ -89,6 +101,33 @@ impl<W: Wait + 'static> BreenFs<W> {
             return Err(Errno(EXDEV));
         }
         Ok(())
+    }
+    fn inode(&self, ino: u64) -> Result<Inode, Errno> {
+        if let Some((_, inode)) = self
+            .inner
+            .inodes
+            .lock()
+            .entries
+            .iter()
+            .flatten()
+            .find(|(cached, _)| *cached == ino)
+        {
+            return Ok(*inode);
+        }
+        let inode = self.inner.files.inode(ino).map_err(errno)?;
+        let mut cache = self.inner.inodes.lock();
+        let slot = cache.next;
+        cache.entries[slot] = Some((ino, inode));
+        cache.next = (slot + 1) % cache.entries.len();
+        Ok(inode)
+    }
+    fn regular(&self, ino: u64) -> Result<Inode, Errno> {
+        let inode = self.inode(ino)?;
+        match kind(inode.mode)? {
+            NodeKind::Regular => Ok(inode),
+            NodeKind::Directory => Err(Errno(EISDIR)),
+            _ => Err(Errno(EINVAL)),
+        }
     }
 }
 impl<W: Wait + 'static> FileSystem for BreenFs<W> {
@@ -126,10 +165,10 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         Ok((1 << 63) - 4096)
     }
     fn getattr(&self, ino: u64) -> Result<NodeAttrs, Errno> {
-        attributes(ino, self.inner.files.inode(ino).map_err(errno)?)
+        attributes(ino, self.inode(ino)?)
     }
     fn open(&self, ino: u64) -> Result<Arc<VNode>, Errno> {
-        let inode = self.inner.files.inode(ino).map_err(errno)?;
+        let inode = self.inode(ino)?;
         let attrs = attributes(ino, inode)?;
         let mut nodes = self.inner.nodes.lock();
         if let Some(node) = nodes.get(&ino).and_then(Weak::upgrade) {
@@ -162,7 +201,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
     }
     fn touch(&self, _: &VNode, _: bool) {}
     fn parent(&self, dir: u64) -> Result<u64, Errno> {
-        let inode = self.inner.files.inode(dir).map_err(errno)?;
+        let inode = self.inode(dir)?;
         if kind(inode.mode)? != NodeKind::Directory {
             return Err(Errno(ENOTDIR));
         }
@@ -201,6 +240,9 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         // Initialize the page buffer before reading up to EOF, including its
         // partial mapped block tail (read_conformance::reads_equal).
         buf.fill(0);
+        if off >= self.regular(node.ino)?.size || buf.is_empty() {
+            return Ok(0);
+        }
         self.inner
             .files
             .read(self.inner.device.as_ref(), node.ino, off, buf)
@@ -211,6 +253,16 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
     }
     fn fsync(&self, node: &VNode, _: bool) -> Result<(), Errno> {
         self.check_node(node)
+    }
+    fn mapping_io(&self, node: &VNode) -> Result<Box<dyn MappingIo>, Errno> {
+        self.check_node(node)?;
+        let size = self.regular(node.ino)?.size;
+        let transfer = ReadMapping {
+            fs: self.clone(),
+            node: self.open(node.ino)?,
+            size,
+        };
+        Ok(Box::try_new(transfer).map_err(|_| Errno(ENOMEM))?)
     }
     fn setattr(&self, _: u64, _: SetAttr) -> Result<(), Errno> {
         Err(Errno(EROFS))
@@ -268,6 +320,38 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             Xattr::Set { .. } | Xattr::Remove { .. } => Err(Errno(EROFS)),
             Xattr::Get { .. } | Xattr::List { .. } => Err(Errno(EOPNOTSUPP)),
         }
+    }
+}
+
+// Retaining the immutable mount is its transfer lease: no writer can change
+// the inode or its extents while mapped bytes are read or published.
+struct ReadMapping<W: Wait + 'static> {
+    fs: BreenFs<W>,
+    node: Arc<VNode>,
+    size: u64,
+}
+impl<W: Wait + 'static> MappingIo for ReadMapping<W> {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+    fn size(&self) -> u64 {
+        self.size
+    }
+    fn read(&self, offset: u64, length: usize) -> Result<Vec<u8>, Errno> {
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(length).map_err(|_| Errno(ENOMEM))?;
+        bytes.resize(length, 0);
+        self.fs.read(&self.node, offset, &mut bytes)?;
+        Ok(bytes)
+    }
+    fn needs_flush(&self) -> bool {
+        false
+    }
+    fn sync(&self, _: u64, _: u64) -> Result<(), Errno> {
+        Ok(())
+    }
+    fn publish(&self, bind: &mut dyn FnMut(bool) -> Result<(), Errno>) -> Result<(), Errno> {
+        bind(false)
     }
 }
 fn attributes(ino: u64, i: Inode) -> Result<NodeAttrs, Errno> {
