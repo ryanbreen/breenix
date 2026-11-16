@@ -33,15 +33,23 @@ def root_image_matches_the_ext2_image():
         extract = ROOT / 'tools/breenfs/target/debug/breenfs-extract'
         lines = run(str(extract), str(result), 'manifest').stdout.splitlines()
         rows = {bytes.fromhex(c[0]).decode(): c for c in (line.split('\t') for line in lines)}
-        assert set(rows) == {'/', '/owned', '/setid', '/alias', '/sym', '/lost+found'}
-        assert rows['/owned'][1:5] == ['dir', '040755', '2000', '2000']
-        for name in ('/setid', '/alias'):
-            row = rows[name]
-            assert row[1:6] == ['reg', '104755', '0', '0', '19']
-            assert row[9] == hashlib.sha256(b'root image content\n').hexdigest()
-            assert row[10] == rows['/setid'][10] != '-'
-        assert rows['/sym'][1] == 'symlink'
-        assert rows['/sym'][9] == hashlib.sha256(b'setid').hexdigest()
+        digest = hashlib.sha256(b'root image content\n').hexdigest()
+        group = b'/alias'.hex()
+        listing = run('debugfs', '-R', 'ls -p -l /', str(image)).stdout
+        sym_mode = next(line.split('/')[2] for line in listing.splitlines()
+                        if line.split('/')[5:6] == ['sym'])
+        expected = {
+            '/': ('dir', '040755', '0', '0', '5', '-', '-'),
+            '/lost+found': ('dir', '040700', '0', '0', '0', '-', '-'),
+            '/owned': ('dir', '040755', '2000', '2000', '0', '-', '-'),
+            '/alias': ('reg', '104755', '0', '0', '19', digest, group),
+            '/setid': ('reg', '104755', '0', '0', '19', digest, group),
+            '/sym': ('symlink', sym_mode, '0', '0', '5',
+                     hashlib.sha256(b'setid').hexdigest(), '-'),
+        }
+        actual = {path: tuple(row[1:6] + row[9:11]) for path, row in rows.items()}
+        assert actual == expected
+
 
 
 def test_root_image_matches_the_ext2_image():

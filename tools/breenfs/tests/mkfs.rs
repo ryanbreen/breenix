@@ -472,9 +472,17 @@ mod mkfs {
         let image = s.path("image");
         let output = Command::new(env!("CARGO_BIN_EXE_breenfs-mkfs"))
             .args(["--size", &SIZE.to_string(), "--populate"])
-            .arg(&src).arg("--owners").arg(&owners).arg(&image)
-            .output().unwrap();
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            .arg(&src)
+            .arg("--owners")
+            .arg(&owners)
+            .arg(&image)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         let image = Image(fs::read(image).unwrap());
         let root = image.root().root;
         let record = DirRecord::decode(&image.get_item(root, key(2, DIR_INDEX, 2))).unwrap();
