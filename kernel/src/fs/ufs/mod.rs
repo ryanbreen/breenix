@@ -500,6 +500,9 @@ fn umount(target: u64, flags: u64) -> Result<(), u64> {
     let raw = userptr::copy_path_bytes_from_user(target)?;
     let point =
         crate::syscall::metadata::resolve_at(crate::syscall::at_path::AT_FDCWD, &raw, true, &cred)?;
+    if let Some(result) = crate::fs::breenfs::mount::unmount(&point.target, flags) {
+        return result;
+    }
     let mount = {
         let mut mounts = MOUNTS.lock();
         let index = mounts

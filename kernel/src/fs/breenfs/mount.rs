@@ -99,3 +99,18 @@ pub fn mount(source: u64, target: u64, flags: u64, cred: &Credentials) -> Result
     // Publish after validating the source, recovery state and mount point.
     registry::register(entry).map_err(|e| e.0 as u64)
 }
+
+/// Only explicitly registered native breenfs roots enter this path. All other
+/// targets retain the caller's existing unmount behavior.
+pub fn unmount(target: &Target, flags: u64) -> Option<Result<(), u64>> {
+    let Target::Inode { mount, ino, .. } = target else {
+        return None;
+    };
+    if registry::get_mount_info(mount.0)?.1 != "breenfs"
+        || registry::root_inode(mount.0)? != *ino
+        || registry::covered_directory(mount.0).is_none()
+    {
+        return None;
+    }
+    Some(registry::unmount(mount.0, flags != 0).map_err(|e| e.0 as u64))
+}

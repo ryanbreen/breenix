@@ -22,10 +22,10 @@ extern crate alloc;
 #[path = "@ROOT@/kernel/src/syscall/errno.rs"] pub mod syscall_errno;
 mod syscall { pub use crate::syscall_errno as errno; }
 mod fs { pub use crate::{attrs, errno}; }
-#[path = "@ROOT@/kernel/src/fs/vfs/mount_table.rs"] mod mount_table;
+#[path = "@ROOT@/kernel/src/fs/vfs/mount_table.rs"] pub mod mount_table;
 use std::sync::{Arc, Mutex};
-#[derive(Clone, Copy)] struct Mount(usize);
-enum Target { Inode { mount: Mount, ino: u64 }, User, Virtual, Absent }
+#[derive(Clone, Copy)] pub struct Mount(pub usize);
+pub enum Target { Inode { mount: Mount, ino: u64 }, User, Virtual, Absent }
 mod registry {
     use super::*;
     pub static TABLE: Mutex<mount_table::MountTable<()>> = Mutex::new(mount_table::MountTable::new());
