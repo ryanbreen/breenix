@@ -1,5 +1,5 @@
 use breenfs_host_tests::{
-    corrupt::{self, Kind},
+    corrupt::{self},
     format::BLOCK_SIZE,
     recording::SECTOR_SIZE,
     recover, Fs, WriterAdapter,
@@ -81,23 +81,16 @@ fn bit_flips_error_never_panic_and_checker_names_the_block() {
                 String::from_utf8_lossy(&output.stderr)
             );
             assert!(
-                matches!(output.status.code(), Some(1 | 4 | 8)),
-                "checker missed {flip:?}: {output:?}"
+                corrupt::checker_detected(output.status.code(), &diagnostic, flip),
+                "checker did not report {flip:?}: {diagnostic}"
             );
-            let names = |line: &str, number: u64| {
-                // Compare decimal tokens, so block 20 cannot match block 200.
-                line.split(|c: char| !c.is_ascii_digit())
-                    .any(|s| s.parse::<u64>() == Ok(number))
-            };
-            assert!(
-                diagnostic.lines().any(|line| match flip.kind {
-                    Kind::Data => line.starts_with("error C1 ") && names(line, flip.block),
-                    Kind::Node { addr } => names(line, flip.block) || names(line, addr),
-                    Kind::Slot => names(line, flip.block),
-                }),
-                "checker did not name {flip:?}: {diagnostic}"
-            );
-
+            if matches!(flip.kind, corrupt::Kind::Node { .. }) {
+                assert_eq!(
+                    corrupt::read_flipped_node(image, flip),
+                    Err(breenfs_host_tests::Errno::EIO.into()),
+                    "node read accepted {flip:?}"
+                );
+            }
             for writable in [false, true] {
                 let device = Arc::new(corrupt::device(image.clone()));
                 let result = catch_unwind(AssertUnwindSafe(|| {

@@ -1,11 +1,12 @@
 //! Committed-image corruption corpus (breenfs design section 5).
 use crate::{
     block::{BlockDevice, BlockError},
-    btree::NodeStore,
+    btree::{self, NodeStore},
     commit::DeviceStore,
     crash::Image,
     format::{
-        self, Extent, InternalEntry, LeafItemHeader, NodeHeader, Ref, Root, Superblock, BLOCK_SIZE,
+        self, BlockPtr, Extent, InternalEntry, LeafItemHeader, NodeHeader, Ref, Root, Superblock,
+        BLOCK_SIZE,
     },
     minimize::{Case, Fault, Outcome},
     recording::{RecordingDevice, SECTOR_SIZE},
@@ -353,4 +354,59 @@ pub fn coverage(image: &Image) -> Result<(u64, u8)> {
         }
     }
     Ok((sb.generation, height))
+}
+
+/// Exercise the production B-tree reader on the flipped node itself. Recovery
+/// may select an older tree, and a file read need not visit SPACE or DEAD nodes.
+/// Build the pointer from raw fields so no preliminary CRC check can mask a
+/// missing CRC check in btree::search's decode path.
+pub fn read_flipped_node(image: &Image, flip: Flip) -> Result<()> {
+    let Kind::Node { addr } = flip.kind else {
+        return Ok(());
+    };
+    let device = device(image.clone());
+    let store = DeviceStore(&device);
+    let bytes = store.get(addr).map_err(|_| Errno::EIO)?;
+    let ptr = BlockPtr {
+        addr,
+        generation: u64::from_le_bytes(bytes[40..48].try_into().unwrap()),
+        level: bytes[13],
+        csum: u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
+    };
+    btree::search(&store, ptr, format::Key::default())
+        .map(|_| ())
+        .map_err(|_| Errno::EIO.into())
+}
+
+/// Require an error naming the affected block/node, or the checker's specific
+/// warning that a named node CRC forced abandonment of a newer generation.
+pub fn checker_detected(code: Option<i32>, diagnostic: &str, flip: Flip) -> bool {
+    if !matches!(code, Some(1 | 4 | 8)) {
+        return false;
+    }
+    let names = |line: &str, label: &str, number: u64| {
+        let words: Vec<_> = line.split_whitespace().collect();
+        words.windows(2).any(|w| {
+            w[0].trim_start_matches('(') == label
+                && w[1]
+                    .trim_end_matches(|c: char| !c.is_ascii_digit())
+                    .parse::<u64>()
+                    == Ok(number)
+        })
+    };
+    diagnostic.lines().any(|line| {
+        if code == Some(1) {
+            return matches!(flip.kind, Kind::Node { addr } if
+                line.starts_with("warning slot ") && line.contains(" is abandoned above M = ")
+                && line.contains("node CRC ") && names(line, "node", addr));
+        }
+        line.starts_with("error ")
+            && match flip.kind {
+                Kind::Data => line.starts_with("error C1 ") && names(line, "block", flip.block),
+                Kind::Node { addr } => {
+                    names(line, "node", addr) || names(line, "block", flip.block)
+                }
+                Kind::Slot => names(line, "block", flip.block),
+            }
+    })
 }

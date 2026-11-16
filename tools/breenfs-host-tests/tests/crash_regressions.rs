@@ -90,21 +90,16 @@ fn flip_accepted(output: Output, image: &Image, flip: Flip, files: &[(u64, u64)]
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        matches!(output.status.code(), Some(1 | 4 | 8)),
-        "checker missed {flip:?}: {output:?}"
+        corrupt::checker_detected(output.status.code(), &diagnostic, flip),
+        "checker did not report {flip:?}: {diagnostic}"
     );
-    let names = |line: &str, number: u64| {
-        line.split(|c: char| !c.is_ascii_digit())
-            .any(|s| s.parse::<u64>() == Ok(number))
-    };
-    assert!(
-        diagnostic.lines().any(|line| match flip.kind {
-            corrupt::Kind::Data => line.starts_with("error C1 ") && names(line, flip.block),
-            corrupt::Kind::Node { addr } => names(line, flip.block) || names(line, addr),
-            corrupt::Kind::Slot => names(line, flip.block),
-        }),
-        "checker did not name {flip:?}: {diagnostic}"
-    );
+    if matches!(flip.kind, corrupt::Kind::Node { .. }) {
+        assert_eq!(
+            corrupt::read_flipped_node(image, flip),
+            Err(breenfs_host_tests::Errno::EIO.into()),
+            "node read accepted {flip:?}"
+        );
+    }
     for writable in [false, true] {
         let device = Arc::new(corrupt::device(image.clone()));
         let result = catch_unwind(AssertUnwindSafe(|| {

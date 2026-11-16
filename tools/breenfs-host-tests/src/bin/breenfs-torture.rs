@@ -229,27 +229,21 @@ impl Checker {
         files: &[(u64, u64)],
     ) -> breenfs_host_tests::Result<()> {
         let output = self.check(image);
-        if !matches!(output.status.code(), Some(1 | 4 | 8)) {
-            reject("checker missed corruption", format!("{flip:?}: {output:?}"));
-        }
         let diagnostic = format!(
             "{}\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        let names = |line: &str, block: u64| {
-            line.split(|c: char| !c.is_ascii_digit())
-                .any(|s| s.parse::<u64>() == Ok(block))
-        };
-        if !diagnostic.lines().any(|line| match flip.kind {
-            Kind::Data => line.starts_with("error C1 ") && names(line, flip.block),
-            Kind::Node { addr } => names(line, flip.block) || names(line, addr),
-            Kind::Slot => names(line, flip.block),
-        }) {
+        if !corrupt::checker_detected(output.status.code(), &diagnostic, flip) {
             reject(
                 "checker corruption address",
-                format!("{flip:?}: {diagnostic}"),
+                format!("{flip:?}: {output:?}"),
             );
+        }
+        if matches!(flip.kind, Kind::Node { .. })
+            && corrupt::read_flipped_node(image, flip) != Err(breenfs_host_tests::Errno::EIO.into())
+        {
+            reject("node corruption read succeeded", format!("{flip:?}"));
         }
         for writable in [false, true] {
             let device = Arc::new(corrupt::device(image.clone()));
@@ -313,13 +307,27 @@ fn crash_case(
         coordinate(&failure.text, "boundary="),
         coordinate(&failure.text, "image="),
     ) {
-        return crash::case_at(initial.to_vec(), seed, torture_operations(seed), boundary, image, tail)
-            .map_err(|e| format!("locate crash: {e:?}"));
+        return crash::case_at(
+            initial.to_vec(),
+            seed,
+            torture_operations(seed),
+            boundary,
+            image,
+            tail,
+        )
+        .map_err(|e| format!("locate crash: {e:?}"));
     }
     let mut index = checked.saturating_sub(1);
     for boundary in 0.. {
-        let case = crash::case_at(initial.to_vec(), seed, torture_operations(seed), boundary, 0, tail)
-            .map_err(|e| format!("locate crash: {e:?}"))?;
+        let case = crash::case_at(
+            initial.to_vec(),
+            seed,
+            torture_operations(seed),
+            boundary,
+            0,
+            tail,
+        )
+        .map_err(|e| format!("locate crash: {e:?}"))?;
         let Fault::Crash { writes, .. } = case.fault else {
             unreachable!()
         };
@@ -329,8 +337,15 @@ fn crash_case(
             writes * 2 + 4097
         };
         if index < count {
-            return crash::case_at(initial.to_vec(), seed, torture_operations(seed), boundary, index, tail)
-                .map_err(|e| format!("locate crash: {e:?}"));
+            return crash::case_at(
+                initial.to_vec(),
+                seed,
+                torture_operations(seed),
+                boundary,
+                index,
+                tail,
+            )
+            .map_err(|e| format!("locate crash: {e:?}"));
         }
         index -= count;
     }
@@ -375,7 +390,9 @@ fn seed(
             };
             match tail {
                 None => crash::subset_images(empty.to_vec(), seed, torture_operations(seed), check),
-                Some(tail) => crash::torn_images(empty.to_vec(), seed, torture_operations(seed), tail, check),
+                Some(tail) => {
+                    crash::torn_images(empty.to_vec(), seed, torture_operations(seed), tail, check)
+                }
             }?;
             Ok(Outcome::Accepted)
         });
@@ -411,7 +428,11 @@ fn seed(
             &[seed],
             torture_operations(seed),
             |image, flip, files| {
-                case = Some(Box::new(Case::seeded(seed, torture_operations(seed), Fault::Flip(flip))));
+                case = Some(Box::new(Case::seeded(
+                    seed,
+                    torture_operations(seed),
+                    Fault::Flip(flip),
+                )));
                 checker.flipped(image, flip, files)
             },
         )?;
@@ -469,7 +490,15 @@ fn run(args: Args) -> Result<()> {
         if let Err((case, failure)) = seed(&mut checker, &empty, &populated, current) {
             // Publish the failure count before minimization, which may take
             // longer than the requested run. Failure takes the exit-1 path.
-            summary(&args, started, clock, Some(current), checker.images, 1, (checker.deepest_generation, checker.tree_height))?;
+            summary(
+                &args,
+                started,
+                clock,
+                Some(current),
+                checker.images,
+                1,
+                (checker.deepest_generation, checker.tree_height),
+            )?;
             let failure_path = args.out.join(format!("failure-{current}.txt"));
             fs::write(
                 &failure_path,
@@ -487,10 +516,26 @@ fn run(args: Args) -> Result<()> {
                 .open(failure_path)
                 .map_err(|e| e.to_string())?;
             writeln!(file, "{}", reduced.regression_row()).map_err(|e| e.to_string())?;
-            summary(&args, started, clock, Some(current), checker.images, 1, (checker.deepest_generation, checker.tree_height))?;
+            summary(
+                &args,
+                started,
+                clock,
+                Some(current),
+                checker.images,
+                1,
+                (checker.deepest_generation, checker.tree_height),
+            )?;
             return Err(format!("seed {current}: {}", failure.kind));
         }
-        summary(&args, started, clock, Some(current), checker.images, 0, (checker.deepest_generation, checker.tree_height))?;
+        summary(
+            &args,
+            started,
+            clock,
+            Some(current),
+            checker.images,
+            0,
+            (checker.deepest_generation, checker.tree_height),
+        )?;
         eprintln!(
             "seed={current} images_checked={} elapsed={:.3}s failures=0",
             checker.images,
