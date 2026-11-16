@@ -725,6 +725,9 @@ fn writer_enters_next_generation_while_fsync_waits_outside_mount_lock() {
     assert_eq!(first, Ok(()));
     assert_eq!(next, Err(Errno(EIO)));
     assert_eq!(fs.read_only(), Ok(true));
+    let mapping = fs.mapping_io(&node).unwrap();
+    assert_eq!(mapping.sync(0, 1), Err(Errno(EIO)));
+    assert!(mapping.needs_flush());
     assert_eq!(fs.sync(), Err(Errno(EIO)));
     assert_eq!(
         fs.create(2, b"refused", NewNode::Regular { attrs: ATTRS }),
