@@ -3,8 +3,8 @@
 //! minimized into regression tests). The minimizer is `no_std` library code;
 //! the caller supplies the failure predicate, so a host binary can drive it
 //! with the same acceptance a test uses.
-use crate::{corrupt::Flip, crash::TornTail, stream::Stream, Operation, Result};
-use alloc::{string::String, vec::Vec};
+use crate::{corrupt::Flip, crash::TornTail, stream::Stream, Errno, Operation, Result};
+use alloc::{format, string::String, vec::Vec};
 
 /// Where the failure happens after the case's operations have run.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -91,7 +91,30 @@ impl Case {
     /// The case as a Rust expression for the table in tests/crash_regressions.rs,
     /// which imports `corrupt`, `crash` and `minimize::{Case, Fault}`.
     pub fn regression_row(&self) -> String {
-        String::new()
+        let fault = match &self.fault {
+            Fault::Crash {
+                boundary,
+                writes,
+                selected,
+                tail,
+                tear_seed,
+            } => format!(
+                "Fault::Crash {{ boundary: {boundary}, writes: {writes}, selected: vec!{selected:?}, tail: {}, tear_seed: {tear_seed:#018x} }}",
+                match tail {
+                    None => "None",
+                    Some(TornTail::Old) => "Some(crash::TornTail::Old)",
+                    Some(TornTail::Garbage) => "Some(crash::TornTail::Garbage)",
+                }
+            ),
+            Fault::Flip(flip) => format!(
+                "Fault::Flip(corrupt::Flip {{ seed: {:#x}, operation: {:?}, block: {}, bit: {}, kind: corrupt::Kind::{:?} }})",
+                flip.seed, flip.operation, flip.block, flip.bit, flip.kind
+            ),
+        };
+        format!(
+            "Case {{ seed: {}, operation_count: {}, keep: vec!{:?}, fault: {fault} }}",
+            self.seed, self.operation_count, self.keep
+        )
     }
 }
 
@@ -104,6 +127,49 @@ impl Case {
 /// does not. The predicate decides what counts as the same failure, and returns
 /// false for a candidate it cannot apply. The input must be well formed and
 /// must fail; otherwise this returns EINVAL. Equal inputs give equal results.
-pub fn minimize(_case: Case, _fails: impl FnMut(&Case) -> bool) -> Result<Case> {
-    Err(crate::Error::Unimplemented)
+pub fn minimize(case: Case, mut fails: impl FnMut(&Case) -> bool) -> Result<Case> {
+    if !case.well_formed() || !fails(&case) {
+        return Err(Errno::EINVAL.into());
+    }
+    let mut best = case;
+    for count in 0..best.operation_count {
+        let mut candidate = best.clone();
+        candidate.operation_count = count;
+        candidate.keep.retain(|&index| index < count);
+        if fails(&candidate) {
+            best = candidate;
+            break;
+        }
+    }
+    best = drop_singles(best, &mut fails, |case| &mut case.keep);
+    if matches!(best.fault, Fault::Crash { .. }) {
+        best = drop_singles(best, &mut fails, |case| match &mut case.fault {
+            Fault::Crash { selected, .. } => selected,
+            Fault::Flip(_) => unreachable!("checked above"),
+        });
+    }
+    Ok(best)
+}
+
+fn drop_singles(
+    mut best: Case,
+    fails: &mut impl FnMut(&Case) -> bool,
+    list: impl Fn(&mut Case) -> &mut Vec<usize>,
+) -> Case {
+    loop {
+        let mut changed = false;
+        let mut at = list(&mut best).len();
+        while at > 0 {
+            at -= 1;
+            let mut candidate = best.clone();
+            list(&mut candidate).remove(at);
+            if fails(&candidate) {
+                best = candidate;
+                changed = true;
+            }
+        }
+        if !changed {
+            return best;
+        }
+    }
 }

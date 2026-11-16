@@ -1,6 +1,7 @@
 //! Flush-boundary crash replay (breenfs design section 5).
 use crate::{
     block::{BlockDevice, BlockError},
+    minimize::{Case, Fault, Outcome},
     model::Model,
     recording::{Event, RecordingDevice, SECTOR_SIZE},
     stream::Stream,
@@ -128,6 +129,12 @@ struct Window {
     issued: u64,
     operation: usize,
 }
+/// The source run's flush windows and its model state at each published commit.
+struct Recorded {
+    seed: u64,
+    windows: Vec<Window>,
+    snapshots: BTreeMap<u64, State>,
+}
 
 /// Replay the bounded seeded stream; validate its crash images per design section 5.
 /// The checker receives the image after writable recovery, including cleanup writes.
@@ -148,6 +155,41 @@ fn replay(
     tail: Option<TornTail>,
     mut checker: impl FnMut(&Image) -> Result<()>,
 ) -> Result<Report> {
+    let recorded = record(
+        initial,
+        seed,
+        Stream::new(seed).take(operations).enumerate(),
+        operations,
+    )?;
+    let mut report = Report {
+        commits: recorded.snapshots.len() - 1,
+        boundaries: Vec::new(),
+    };
+    for (boundary, window) in recorded.windows.iter().enumerate() {
+        let masks = subsets(window.writes.len(), seed.wrapping_add(boundary as u64))?;
+        for (case, mask) in masks.iter().enumerate() {
+            let tear = tail.map(|tail| (tail, tear_seed(seed, boundary, case)));
+            validate(&recorded, boundary, case, mask, tear, &mut checker)?;
+        }
+        report.boundaries.push(Boundary {
+            writes: window.writes.len(),
+            images: masks.len(),
+            acknowledged: window.acknowledged,
+            issued: window.issued,
+        });
+    }
+    Ok(report)
+}
+
+/// Run the operations on the model and on the writer over the recording device,
+/// then a final clean remount numbered `end`. Indices name the seeded stream's
+/// positions, so a minimized stream reports the original operation numbers.
+fn record(
+    initial: Vec<u8>,
+    seed: u64,
+    operations: impl Iterator<Item = (usize, Operation)>,
+    end: usize,
+) -> Result<Recorded> {
     let mut durable = Image::from_bytes(&initial);
     let device = Arc::new(RecordingDevice::new(initial).map_err(|_| Errno::EIO)?);
     let mut writer = WriterAdapter::new(device.clone())?;
@@ -165,13 +207,14 @@ fn replay(
     let mut cursor = 0;
     let mut pending = Vec::new();
     let mut windows = Vec::new();
-    let stream = Stream::new(seed)
-        .take(operations)
-        .chain(core::iter::once(Operation {
+    let stream = operations.chain(core::iter::once((
+        end,
+        Operation {
             at: Time::default(),
             action: Action::Remount,
-        }));
-    for (index, op) in stream.enumerate() {
+        },
+    )));
+    for (index, op) in stream {
         let expected = model.execute(&op);
         assert_eq!(
             writer.execute(&op),
@@ -235,57 +278,125 @@ fn replay(
         Image::from_bytes(&device.durable_image()),
         "seed={seed}: event replay"
     );
-    let mut report = Report {
-        commits: snapshots.len() - 1,
-        boundaries: Vec::new(),
-    };
-    for (boundary, window) in windows.into_iter().enumerate() {
-        let masks = subsets(window.writes.len(), seed.wrapping_add(boundary as u64))?;
-        let blocks = window.writes.iter().map(|(sector, _)| sector / 8).collect();
-        for (case, mask) in masks.iter().enumerate() {
-            let mut image = window.durable.clone();
-            image.apply(&window.writes, mask);
-            if let Some(tail) = tail {
-                let tear_seed = seed
-                    ^ (boundary as u64).wrapping_mul(0xd1b5_4a32_d192_ed03)
-                    ^ (case as u64).wrapping_mul(0x94d0_49bb_1331_11eb);
-                image.tear(&window.durable, &blocks, tear_seed, tail);
-            }
-            let crash = Arc::new(MemoryDevice(Mutex::new(image)));
-            let recovered = WriterAdapter::new(crash.clone()).unwrap_or_else(|error| {
-                panic!(
-                    "seed={seed} op={} boundary={boundary} image={case} tail={tail:?}: recover {error:?}",
-                    window.operation
-                )
-            });
-            let image = crash.0.lock().clone();
-            assert!(
-                checker(&image).is_ok(),
-                "seed={seed} op={} boundary={boundary} image={case} tail={tail:?}: checker",
-                window.operation
-            );
-            let state = recovered.state()?;
-            assert!(matches_commit(&snapshots, window.acknowledged, window.issued, &state),
-                "seed={seed} op={} boundary={boundary} image={case} tail={tail:?}: state outside commits {}..={}: {state:?}",
-                window.operation, window.acknowledged, window.issued);
-        }
-        report.boundaries.push(Boundary {
-            writes: window.writes.len(),
-            images: masks.len(),
-            acknowledged: window.acknowledged,
-            issued: window.issued,
-        });
-    }
-    Ok(report)
+    Ok(Recorded {
+        seed,
+        windows,
+        snapshots,
+    })
 }
 
-/// Replay one regression row through the corpus acceptance.
+/// Build one crash image from a window and apply the corpus acceptance to it:
+/// writable recovery, the checker, and a model commit inside the window's bounds.
+fn validate(
+    recorded: &Recorded,
+    boundary: usize,
+    case: usize,
+    mask: &[bool],
+    tear: Option<(TornTail, u64)>,
+    checker: &mut impl FnMut(&Image) -> Result<()>,
+) -> Result<()> {
+    let seed = recorded.seed;
+    let window = &recorded.windows[boundary];
+    let tail = tear.map(|(tail, _)| tail);
+    let mut image = window.durable.clone();
+    image.apply(&window.writes, mask);
+    if let Some((tail, tear_seed)) = tear {
+        let blocks = window.writes.iter().map(|(sector, _)| sector / 8).collect();
+        image.tear(&window.durable, &blocks, tear_seed, tail);
+    }
+    let crash = Arc::new(MemoryDevice(Mutex::new(image)));
+    let recovered = WriterAdapter::new(crash.clone()).unwrap_or_else(|error| {
+        panic!(
+            "seed={seed} op={} boundary={boundary} image={case} tail={tail:?}: recover {error:?}",
+            window.operation
+        )
+    });
+    let image = crash.0.lock().clone();
+    assert!(
+        checker(&image).is_ok(),
+        "seed={seed} op={} boundary={boundary} image={case} tail={tail:?}: checker",
+        window.operation
+    );
+    let state = recovered.state()?;
+    assert!(matches_commit(&recorded.snapshots, window.acknowledged, window.issued, &state),
+        "seed={seed} op={} boundary={boundary} image={case} tail={tail:?}: state outside commits {}..={}: {state:?}",
+        window.operation, window.acknowledged, window.issued);
+    Ok(())
+}
+
+fn tear_seed(seed: u64, boundary: usize, case: usize) -> u64 {
+    seed ^ (boundary as u64).wrapping_mul(0xd1b5_4a32_d192_ed03)
+        ^ (case as u64).wrapping_mul(0x94d0_49bb_1331_11eb)
+}
+
+/// Name a corpus crash image (the seed, boundary, image index and tail that a
+/// subset or torn failure reports) as a minimizable case over the full stream.
+pub fn case_at(
+    initial: Vec<u8>,
+    seed: u64,
+    operations: usize,
+    boundary: usize,
+    image: usize,
+    tail: Option<TornTail>,
+) -> Result<Case> {
+    let recorded = record(
+        initial,
+        seed,
+        Stream::new(seed).take(operations).enumerate(),
+        operations,
+    )?;
+    let window = recorded.windows.get(boundary).ok_or(Errno::EINVAL)?;
+    let writes = window.writes.len();
+    let masks = subsets(writes, seed.wrapping_add(boundary as u64))?;
+    let mask = masks.get(image).ok_or(Errno::EINVAL)?;
+    Ok(Case::seeded(
+        seed,
+        operations,
+        Fault::Crash {
+            boundary,
+            writes,
+            selected: (0..writes).filter(|&i| mask[i]).collect(),
+            tail,
+            tear_seed: tear_seed(seed, boundary, image),
+        },
+    ))
+}
+
+/// Replay one regression row through the corpus acceptance. A case whose
+/// boundary or write count does not exist in its stream is inapplicable.
 pub fn replay_case(
-    _initial: Vec<u8>,
-    _case: &crate::minimize::Case,
-    _checker: impl FnMut(&Image) -> Result<()>,
-) -> Result<crate::minimize::Outcome> {
-    Err(crate::Error::Unimplemented)
+    initial: Vec<u8>,
+    case: &Case,
+    mut checker: impl FnMut(&Image) -> Result<()>,
+) -> Result<Outcome> {
+    let Fault::Crash {
+        boundary,
+        writes,
+        ref selected,
+        tail,
+        tear_seed,
+    } = case.fault
+    else {
+        return Ok(Outcome::Inapplicable);
+    };
+    if !case.well_formed() {
+        return Ok(Outcome::Inapplicable);
+    }
+    let recorded = record(
+        initial,
+        case.seed,
+        case.indexed_operations().into_iter(),
+        case.operation_count,
+    )?;
+    if recorded.windows.get(boundary).map(|w| w.writes.len()) != Some(writes) {
+        return Ok(Outcome::Inapplicable);
+    }
+    let mask: Vec<bool> = (0..writes)
+        .map(|i| selected.binary_search(&i).is_ok())
+        .collect();
+    let tear = tail.map(|tail| (tail, tear_seed));
+    validate(&recorded, boundary, 0, &mask, tear, &mut checker)?;
+    Ok(Outcome::Accepted)
 }
 
 /// Bytes left after the new sector prefix of a torn 4 KiB write.

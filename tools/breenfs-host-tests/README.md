@@ -366,3 +366,59 @@ kernel decoder or checker change is needed (U29). The core remains undeclared
 in kernel `fs/mod.rs`. ARM still lacks VFS read/write mounts, open-handle
 lifetime, DEAD reaping, reservation, Hold-group/dirty-page integration and
 ARM64 QEMU, Parallels and VMware runtime acceptance. This unit runs no boot.
+
+## Seed minimization and regression rows (24.9-d)
+
+`minimize::Case` names a failure by its seed, its stream length, the kept
+stream indices and a fault. A `Fault::Crash` holds the flush boundary of the
+case's run (its final clean remount included), that window's 512-byte write
+count, the ascending indices of the selected writes, and the torn tail and
+tear seed if any. A `Fault::Flip` holds a `corrupt::Flip`. Kept operations are
+the seeded stream's own, so dropping one leaves later operations unchanged.
+
+`minimize::minimize(case, fails)` is `no_std` library code with a caller-supplied
+predicate, so a host binary can drive it with a test's acceptance. It requires a
+well-formed failing case (otherwise EINVAL) and shrinks it in three
+deterministic steps: the shortest failing stream prefix; single operations
+dropped, latest first, until no single drop still fails; then single selected
+crash writes dropped the same way. The predicate decides what counts as the same
+failure and returns false for a candidate it cannot apply. `regression_row`
+prints the result as a Rust expression for `tests/crash_regressions.rs`.
+
+`crash::case_at(initial, seed, operations, boundary, image, tail)` turns the
+coordinates a subset or torn failure reports into a case.
+`crash::replay_case` and `corrupt::replay_flip` replay one row through the same
+code as the corpora: the recorded source run with W1-W3, writable recovery, the
+injected checker and the model commit bounds for crash rows; the committed image
+after the kept fsync and the corpus observer for flip rows. A row whose boundary,
+write count, fsync or block kind is absent from its run is `Inapplicable`.
+
+```sh
+CARGO_BUILD_JOBS=4 taskpolicy -b cargo test \
+  --manifest-path tools/breenfs-host-tests/Cargo.toml --test minimize --test crash_regressions
+```
+
+`tests/minimize.rs::minimizer_reduces_a_failing_stream` injects a predicate that
+fails when a successful rename precedes a successful fsync and the crash image
+keeps write 1. A seeded 256-operation stream reduces to the rename, the fsync
+and the creating operations they need, with write 1 alone selected. Stream
+operations name inodes by number, so a create that allocates an inode number
+the rename or fsync names is required as well. For seed 1 that is 8 of 111
+prefix operations: six creates, links, directories or symlinks, then the
+rename and the fsync. Removing any one kept operation passes, and a second run
+emits the same row.
+
+`tests/crash_regressions.rs::every_minimized_case_replays` holds one row. The
+24.9-b garbage-tail failure (seed 1, 8 operations, boundary 1, image 0) was
+located with `case_at` and minimized against the recovery of commit 021da596,
+before 24.9-b's repair, where the checker exits 4 naming slots A2 and B2. It
+reduces to the first create and the final remount at the publication boundary,
+with no selected writes. At this head the row passes the crash-image acceptance:
+the full checker exits 0 and the recovered tree matches a commit in bounds. The
+24.9-c corpus had no failing flip, so the table has no flip row; flip rows use
+`tests/corruption.rs`'s observer and its populated formatter fixture.
+
+This unit is host acceptance only. The core remains undeclared in kernel
+`fs/mod.rs`. ARM still lacks VFS read/write mounts, open-handle lifetime,
+DEAD reaping, reservation, Hold-group/dirty-page integration and ARM64 QEMU,
+Parallels and VMware runtime acceptance. This unit runs no boot.

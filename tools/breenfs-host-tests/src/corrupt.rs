@@ -7,6 +7,7 @@ use crate::{
     format::{
         self, Extent, InternalEntry, LeafItemHeader, NodeHeader, Ref, Root, Superblock, BLOCK_SIZE,
     },
+    minimize::{Case, Fault, Outcome},
     recording::{RecordingDevice, SECTOR_SIZE},
     recover,
     stream::Stream,
@@ -143,20 +144,11 @@ fn visit(
     observe: &mut impl FnMut(&Image, Flip, &[(u64, u64)]) -> Result<()>,
     report: &mut Report,
 ) -> Result<()> {
-    let image = sparse(bytes)?;
-    let pristine = Arc::new(device(image.clone()));
-    let writer = WriterAdapter::new(pristine.clone())?;
-    let files: Vec<_> = writer
-        .state()?
-        .inodes
-        .into_iter()
-        .filter_map(|(ino, inode)| match inode.contents {
-            Contents::File { size, .. } => Some((ino, size)),
-            _ => None,
-        })
-        .collect();
-    let sb = recover::recover(pristine.as_ref(), false).map_err(|_| Errno::EIO)?;
-    let targets = reachable(&pristine, &sb)?;
+    let Committed {
+        image,
+        files,
+        targets,
+    } = committed(bytes)?;
     report.committed_images += 1;
     for (block, kind) in targets {
         let mut random = seed
@@ -173,11 +165,7 @@ fn visit(
             bit,
             kind,
         };
-        let mut corrupt = image.clone();
-        let sector = block * 8 + (bit / (SECTOR_SIZE * 8)) as u64;
-        let bytes = corrupt.sectors.entry(sector).or_insert([0; SECTOR_SIZE]);
-        bytes[bit / 8 % SECTOR_SIZE] ^= 1 << (bit % 8);
-        observe(&corrupt, flip, &files)?;
+        observe(&flipped(&image, block, bit), flip, &files)?;
         match kind {
             Kind::Slot => report.slots += 1,
             Kind::Node { .. } => report.nodes += 1,
@@ -185,6 +173,93 @@ fn visit(
         }
     }
     Ok(())
+}
+
+/// A committed image, its regular files (inode, size) from the pristine state
+/// walk, and the selected generation's reachable blocks.
+struct Committed {
+    image: Image,
+    files: Vec<(u64, u64)>,
+    targets: BTreeMap<u64, Kind>,
+}
+
+fn committed(bytes: &[u8]) -> Result<Committed> {
+    let image = sparse(bytes)?;
+    let pristine = Arc::new(device(image.clone()));
+    let writer = WriterAdapter::new(pristine.clone())?;
+    let files: Vec<_> = writer
+        .state()?
+        .inodes
+        .into_iter()
+        .filter_map(|(ino, inode)| match inode.contents {
+            Contents::File { size, .. } => Some((ino, size)),
+            _ => None,
+        })
+        .collect();
+    let sb = recover::recover(pristine.as_ref(), false).map_err(|_| Errno::EIO)?;
+    let targets = reachable(&pristine, &sb)?;
+    Ok(Committed {
+        image,
+        files,
+        targets,
+    })
+}
+
+fn flipped(image: &Image, block: u64, bit: usize) -> Image {
+    let mut corrupt = image.clone();
+    let sector = block * 8 + (bit / (SECTOR_SIZE * 8)) as u64;
+    let bytes = corrupt.sectors.entry(sector).or_insert([0; SECTOR_SIZE]);
+    bytes[bit / 8 % SECTOR_SIZE] ^= 1 << (bit % 8);
+    corrupt
+}
+
+/// Replay one bit-flip regression row through the corpus observer. `base` is
+/// the image flipped directly when the flip names no operation (the populated
+/// formatter image), and otherwise the empty image the case's stream runs on.
+/// The flip applies only when its operation is a kept, successful fsync and its
+/// block is still reachable with the same kind.
+pub fn replay_flip(
+    base: Vec<u8>,
+    case: &Case,
+    mut observe: impl FnMut(&Image, Flip, &[(u64, u64)]) -> Result<()>,
+) -> Result<Outcome> {
+    let Fault::Flip(flip) = case.fault else {
+        return Ok(Outcome::Inapplicable);
+    };
+    if !case.well_formed() || flip.bit >= BLOCK_SIZE * 8 {
+        return Ok(Outcome::Inapplicable);
+    }
+    let bytes = match flip.operation {
+        None => base,
+        Some(at) => {
+            let source = Arc::new(RecordingDevice::new(base).map_err(|_| Errno::EIO)?);
+            let mut writer = WriterAdapter::new(source.clone())?;
+            let mut durable = None;
+            for (index, op) in case.indexed_operations() {
+                let result = writer.execute(&op);
+                if index == at {
+                    if matches!(op.action, Action::Fsync { .. }) && result.is_ok() {
+                        durable = Some(source.durable_image());
+                    }
+                    break;
+                }
+            }
+            match durable {
+                Some(bytes) => bytes,
+                None => return Ok(Outcome::Inapplicable),
+            }
+        }
+    };
+    let Committed {
+        image,
+        files,
+        targets,
+    } = committed(&bytes)?;
+    if targets.get(&flip.block) != Some(&flip.kind) {
+        return Ok(Outcome::Inapplicable);
+    }
+    observe(&flipped(&image, flip.block, flip.bit), flip, &files)?;
+    Ok(Outcome::Accepted)
 }
 
 fn reachable(device: &Device, sb: &Superblock) -> Result<BTreeMap<u64, Kind>> {
@@ -261,13 +336,4 @@ fn reachable(device: &Device, sb: &Superblock) -> Result<BTreeMap<u64, Kind>> {
         }
     }
     Ok(blocks)
-}
-
-/// Replay one bit-flip regression row through the corpus observer.
-pub fn replay_flip(
-    _base: Vec<u8>,
-    _case: &crate::minimize::Case,
-    _observe: impl FnMut(&Image, Flip, &[(u64, u64)]) -> Result<()>,
-) -> Result<crate::minimize::Outcome> {
-    Err(crate::Error::Unimplemented)
 }
