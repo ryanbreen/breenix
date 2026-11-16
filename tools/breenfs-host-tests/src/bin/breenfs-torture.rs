@@ -21,7 +21,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use breenfs_host_tests::stream::torture_operations;
+use breenfs_host_tests::stream::{torture_operations, torture_seed};
 const USAGE: &str = "breenfs-torture --hours N [--seed-start S] --checker PATH --out DIR";
 type Result<T> = std::result::Result<T, String>;
 
@@ -381,6 +381,7 @@ fn seed(
     populated: &[u8],
     seed: u64,
 ) -> std::result::Result<(), (Option<Box<Case>>, Failure)> {
+    let seed = torture_seed(seed);
     for tail in [None, Some(TornTail::Old), Some(TornTail::Garbage)] {
         let mut checked = 0;
         let result = attempt(|| {

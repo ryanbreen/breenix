@@ -447,7 +447,10 @@ Hours must be finite and positive and may be fractional; the default first seed
 is 1. A seed runs `32 + (seed % 4) * 8` stream operations plus the final remount through
 `crash::subset_images`, both `crash::torn_images` tails, and
 `corrupt::bit_flips`, using the existing full selection policy and acceptance.
-After the historical eight-operation prefix, the stream adds 4 KiB xattrs to
+The high bit of the emitted stream seed tags the torture workload, preserving
+that choice when a regression row is minimized; summaries use the consecutive
+input seed range. Ordinary untagged streams retain their previous operations.
+After the historical eight-operation prefix, the torture stream adds 4 KiB xattrs to
 split the filesystem tree, multi-block data writes, overwrites, truncations and
 repeated commits to wrap the superblock slots. The source check in
 `tests/torture.rs::torture_stream_reuses_slots_and_splits_trees` requires seeds

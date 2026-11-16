@@ -43,7 +43,7 @@ fn torture_stream_reuses_slots_and_splits_trees() {
         format::{NodeHeader, Root, Superblock},
         model::Model,
         recording::RecordingDevice,
-        stream::{torture_operations, Stream},
+        stream::{torture_operations, torture_seed, Stream},
         Fs, WriterAdapter,
     };
     use std::sync::Arc;
@@ -57,7 +57,7 @@ fn torture_stream_reuses_slots_and_splits_trees() {
         let mut model = Model::new();
         let mut generation = 0;
         let mut height = 0;
-        for op in Stream::new(seed).take(length) {
+        for op in Stream::new(torture_seed(seed)).take(length) {
             assert_eq!(writer.execute(&op), model.execute(&op), "{op:?}");
             assert_eq!(writer.state().unwrap(), model.state().unwrap(), "{op:?}");
             let bytes = device.durable_image();

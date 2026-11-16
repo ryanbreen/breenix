@@ -5,12 +5,16 @@ use alloc::{format, vec, vec::Vec};
 
 pub struct Stream {
     random: u64,
+    stress: bool,
     index: u64,
     shadow: Model,
 }
 impl Stream {
     pub fn new(seed: u64) -> Self {
+        let stress = seed & TORTURE_SEED != 0;
+        let seed = seed & !TORTURE_SEED;
         Self {
+            stress,
             random: if seed == 0 {
                 0x9e37_79b9_7f4a_7c15
             } else {
@@ -173,7 +177,7 @@ impl Iterator for Stream {
             },
             2 => Action::Fsync { ino: 16 },
             3 => Action::Remount,
-            _ if self.index >= 8 && self.index % 16 < 14 => self.stress(),
+            _ if self.stress && self.index >= 8 && self.index % 16 < 14 => self.stress(),
             _ => self.generated(),
         };
         self.index += 1;
@@ -193,4 +197,11 @@ impl Iterator for Stream {
 /// Operation budget used by the long-running crash driver.
 pub fn torture_operations(seed: u64) -> usize {
     32 + (seed as usize % 4) * 8
+}
+
+// The workload tag stays in emitted regression rows, independent of their
+// minimized operation count. Ordinary model/minimizer seeds retain their stream.
+const TORTURE_SEED: u64 = 1 << 63;
+pub fn torture_seed(seed: u64) -> u64 {
+    seed | TORTURE_SEED
 }
