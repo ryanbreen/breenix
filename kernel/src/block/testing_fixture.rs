@@ -7,6 +7,8 @@ static IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/readonly-ext2.im
 pub struct ReadOnlyFixture;
 
 impl BlockDevice for ReadOnlyFixture {
+    fn identity(&self) -> usize { IMAGE.as_ptr() as usize }
+
     fn is_read_only(&self) -> bool { true }
 
     fn read_block(&self, block: u64, buf: &mut [u8]) -> Result<(), BlockError> {

@@ -12,6 +12,8 @@ const SECTORS_PER_COMMAND: usize = 8;
 /// The namespace of one attached NVMe controller.
 pub struct NvmeBlockDevice {
     controller: Arc<NvmeController>,
+    // Discovery fixes one active namespace per controller for this boot.
+    device_index: usize,
 }
 
 impl NvmeBlockDevice {
@@ -19,11 +21,17 @@ impl NvmeBlockDevice {
     pub fn new(index: usize) -> Option<Self> {
         Some(NvmeBlockDevice {
             controller: nvme::controller(index)?,
+            device_index: index,
         })
     }
 }
 
 impl BlockDevice for NvmeBlockDevice {
+    fn identity(&self) -> usize {
+        // The index identifies the controller and its fixed selected namespace.
+        0x4e56_0000_0000_0000 | self.device_index
+    }
+
     fn hardware_disk(&self) -> Option<super::HardwareDisk> {
         Some(super::HardwareDisk::Nvme(Arc::as_ptr(&self.controller) as usize))
     }

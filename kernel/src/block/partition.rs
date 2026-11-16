@@ -48,7 +48,10 @@ impl BlockDevice for Partition {
 
     /// Distinct from the whole disk's and from another partition's of the same disk.
     fn identity(&self) -> usize {
-        self.disk.identity() ^ (self.first as usize).rotate_left(23) ^ 0x5041_5254
+        self.disk.identity()
+            ^ (self.first as usize).rotate_left(23)
+            ^ (self.sectors as usize).rotate_left(41)
+            ^ 0x5041_5254
     }
 
     fn read_block(&self, block: u64, buf: &mut [u8]) -> Result<(), BlockError> {

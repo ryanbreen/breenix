@@ -3022,6 +3022,11 @@ pub struct AhciBlockDevice {
 }
 
 impl BlockDevice for AhciBlockDevice {
+    fn identity(&self) -> usize {
+        // The driver has one fixed AHCI_CONTROLLER; ports are its disk coordinates.
+        0x4148_0000_0000_0000 | self.port_num
+    }
+
     fn hardware_disk(&self) -> Option<crate::block::HardwareDisk> {
         Some(crate::block::HardwareDisk::Ahci(self.port_num))
     }
