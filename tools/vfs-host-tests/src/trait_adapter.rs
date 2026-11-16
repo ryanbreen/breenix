@@ -210,15 +210,7 @@ impl TraitAdapter {
                 Reply::Done
             }
             Action::Removexattr { ino, name } => {
-                // The model represents missing xattrs as ENOENT, whereas the
-                // trait uses ABI ENODATA (61) for that same absence.
-                fs.xattr(*ino, vfs::Xattr::Remove { name }).map_err(|e| {
-                    if e.0 == 61 {
-                        KernelErrno(errno::ENOENT)
-                    } else {
-                        e
-                    }
-                })?;
+                fs.xattr(*ino, vfs::Xattr::Remove { name })?;
                 Reply::Done
             }
             Action::Fsync { ino } => {

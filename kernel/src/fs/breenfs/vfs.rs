@@ -96,6 +96,9 @@ impl<W: Wait> MountState<W> {
         }
     }
     fn inode(&mut self, ino: u64) -> Result<Inode, Errno> {
+        // VNode drops do no I/O or mount locking. Refresh the writer's open
+        // snapshot here so a closed orphan cannot be opened again by inode.
+        self.retain_open();
         if let Some((_, inode)) = self
             .inodes
             .entries
@@ -103,6 +106,14 @@ impl<W: Wait> MountState<W> {
             .flatten()
             .find(|(cached, _)| *cached == ino)
         {
+            if inode.nlink == 0
+                && self
+                    .nodes
+                    .get(&ino)
+                    .is_none_or(|node| node.node.strong_count() == 0)
+            {
+                return Err(Errno(ENOENT));
+            }
             return Ok(*inode);
         }
         let inode = self.files.inode(ino).map_err(errno)?;
@@ -651,7 +662,9 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         Ok(length)
     }
     fn readlink(&self, ino: u64) -> Result<Vec<u8>, Errno> {
-        self.inner.state.lock().files.readlink(ino).map_err(errno)
+        let mut state = self.inner.state.lock();
+        state.inode(ino)?;
+        state.files.readlink(ino).map_err(errno)
     }
     fn fsync(&self, node: &VNode, _: bool) -> Result<(), Errno> {
         self.check_node(node)?;
@@ -1024,6 +1037,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 _ => Err(Errno(EOPNOTSUPP)),
             };
         }
+        state.inode(ino)?;
         let records = state.files.list_xattrs(ino).map_err(errno)?;
         match op {
             Xattr::Get { name, value } => {
