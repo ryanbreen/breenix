@@ -54,7 +54,7 @@ fn subset_images_recover_to_an_acknowledged_commit() {
     for seed in [1, 2] {
         let report = crash::subset_images(initial.clone(), seed, 8, |image| {
             // Recreate a sparse file from this recovered image, including zeroed
-            // recovery sectors. Never inherit bytes from a prior checker input.
+            // recovery sectors. Truncation discards the prior checker input.
             artifact.set_len(0).unwrap();
             artifact
                 .set_len(image.sector_count * SECTOR_SIZE as u64)

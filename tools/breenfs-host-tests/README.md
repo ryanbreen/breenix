@@ -237,3 +237,55 @@ ARM and x86 share this formatter and core. Writable VFS integration, open-handle
 lifetime, DEAD reaping, reservation policy, Hold-group/dirty-page integration and
 ARM64 QEMU/Parallels/VMware runtime acceptance remain later steps. This host unit
 runs no boot and adds no architecture-specific writer implementation.
+
+## Flush-boundary subset crash images (24.9-a)
+
+`crash::subset_images(initial, seed, operations, checker)` replays a bounded
+`Stream` on the POSIX model and `WriterAdapter` over `RecordingDevice`. It compares
+operation replies and logical state, records the model at each published commit,
+and ends with a clean remount to publish pending work. The recorder continues to
+check W1-W3 on the source writes.
+
+At a recorded flush, the previous durable image is combined with selections of
+the intervening 512-byte writes, preserving issue order. The selection policy is
+breenfs-design.md section 5: exhaustive subsets through 12 writes; above that,
+prefixes, single omissions and 4,096 seeded random subsets. Duplicate selections
+still go through validation. The implementation retains the fsync acknowledgement
+that preceded the boundary and advances the upper bound when the superblock's
+first sector is issued.
+
+Recovery uses a separate plain in-memory sector device with sparse storage.
+Writable `WriterAdapter::new` can clear abandoned slots or reclaim orphans there.
+The injected checker receives the recovered image, including cleanup writes, and
+the recovered logical state must match a model snapshot within the inclusive
+acknowledged-to-issued commit interval. This device carries no recording oracle.
+
+Run the focused check with:
+
+```sh
+CARGO_BUILD_JOBS=4 taskpolicy -b cargo test \
+  --manifest-path tools/breenfs-host-tests/Cargo.toml --test crash_images \
+  subset_images_recover_to_an_acknowledged_commit -- --exact --nocapture
+```
+
+The fixed corpus uses seeds 1 and 2, eight stream operations per seed, and the
+final remount. Its checker closure materializes a fresh sparse image and invokes
+the Cargo artifact `breenfs-check --full`, requiring exit 0 for each image. Sparse
+representation reduces copying and file traffic; it does not reduce the selected
+images or the recovery, checker and model validations. The same check covers the
+12/13-write selection boundary.
+
+This unit is host acceptance only. Kernel `fs/mod.rs` still does not declare
+breenfs. ARM and x86 still lack the read/write VFS mount integration, open-handle
+lifetime, DEAD reaping, reservation and Hold-group/dirty-page integration; ARM64
+QEMU, Parallels and VMware runtime acceptance remains later work. Torn images,
+bit flips, minimization, torture and host milestone records belong to the later
+24.9 units.
+
+Current blocker: [#3020](https://github.com/ryanbreen/breenix/issues/3020).
+The first corpus run reaches a valid generation-2 ring-A-only publication prefix;
+writable recovery selects it, while the checker reports the missing ring-B copy
+with warning exit 1. The exit-0 assertion remains required. Design section 2.5's
+recovery procedure specifies abandoned-slot cleanup, without companion-copy
+restoration. A coordinator decision on that contract is pending; this unit does
+not claim a passing corpus or a measured successful-run time budget.
