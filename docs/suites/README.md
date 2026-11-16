@@ -1701,6 +1701,13 @@ and mounts it read-write at `/mnt/breenfs-write`. The six cases cover remount re
 rename replacement, open-file unlink, sparse truncate, mapped writeback and the periodic
 commit. Cases release their mounts on return, including an assertion failure.
 
+`unlinked-open-file` records its inode as a VALUE and checks that its 256 data
+blocks return to the statfs free count after close, remount and the reuse quarantine.
+The stopped-image verdict also runs `breenfs-extract dump` on that boot's companion
+`breenfs-scratch.img` and rejects an ORPHAN or inode item for the recorded inode.
+That check requires the retained scratch image beside the root passed as `--disk`;
+a missing image or inode receipt fails the verdict (E24 coordinator ledger 309, C5).
+
 `commit-without-fsync` polls the scratch mount's `durable_generation` in
 `/proc/breenix/filesystems` before closing the file or unmounting. Its watchdog allows
 one 5-second interval plus 2 seconds for scheduling and I/O, within the runner's 10-second

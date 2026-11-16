@@ -496,6 +496,7 @@ def verdict(manifest, records_log, logs, only=None, categories=None, disk=None, 
     if elapsed and (len(elapsed) != 1 or len(done) != 1 or elapsed[0] <= done[0]):
         return False, "ELAPSED needs one record after DONE"
     memory = memory_problem(records) if not only or any(k in MEMORY for k, _, _ in records) else None
+    orphan_records = [record for record in records if record[0] == "VALUE"] if suite == "filesystem" else []
     records = [record for record in records if record[0] not in LIVE + MEMORY + ("ELAPSED",)]
     if not records:
         return False, "the records do not begin with exactly one START line"
@@ -538,9 +539,56 @@ def verdict(manifest, records_log, logs, only=None, categories=None, disk=None, 
     if skipped:
         skips = "; ".join(l[len(prefix):] for k, m, l in records if k == "SKIP" and (categories is None or m.group(1).split("/", 1)[0] in categories))
         return False, f"{line}: suite acceptance requires skipped=0 and passed=total={len(accepted)}; {skips[:400]}{also}"
+    if suite == "filesystem" and ("PASS", "write/unlinked-open-file") in accepted:
+        ok, detail = orphan_disk_verdict(orphan_records, disk)
+        if not ok:
+            return False, detail
+        line += f"; {detail}"
     if memory is None:
         return True, line
     return memory[0], f"{line}; {memory[1]}" if memory[0] else f"{line}: {memory[1]}"
+
+
+def orphan_disk_verdict(records, disk):
+    """E24 ledger 309 C5: check the recorded inode in the stopped scratch image."""
+    identity = re.compile(r"SUITE filesystem VALUE write/unlinked-open-file orphan-inode=([1-9][0-9]*)$")
+    inodes = [int(m[1]) for kind, _, line in records
+              if kind == "VALUE" and (m := identity.fullmatch(line))]
+    if len(inodes) != 1:
+        return False, "orphan reclamation needs one recorded inode"
+    ino = inodes[0]
+    # root_fs_scratch creates this companion beside the boot's root image.
+    # It is kept with that boot's artifacts, not a global or newly made fixture.
+    scratch = Path(disk).parent / "breenfs-scratch.img" if disk else None
+    if scratch is None or not scratch.is_file():
+        return False, f"orphan inode {ino}: stopped BreenFS scratch image is missing"
+    target = Path(os.environ.get("CARGO_TARGET_DIR", REPO / "tools/breenfs/target"))
+    try:
+        result = subprocess.run([str(target / "release/breenfs-extract"), str(scratch), "dump"],
+                                capture_output=True, timeout=30, check=False)
+        if result.returncode:
+            return False, f"orphan inode {ino}: scratch dump failed"
+        rows = result.stdout.decode("ascii").splitlines()
+        if not rows or not re.fullmatch(r"superblock generation=[1-9][0-9]* uuid=[0-9a-f]{32} total_blocks=[0-9]+ free_blocks=[0-9]+", rows[0]):
+            return False, f"orphan inode {ino}: missing scratch superblock"
+        root_inode = False
+        for row in rows[1:]:
+            item = re.fullmatch(r"fs root=([0-9]+) object=([0-9]+) type=([0-9a-f]{2}) offset=([0-9]+) data=[0-9a-f]*", row)
+            if not item:
+                if row.startswith("space "):
+                    continue
+                return False, f"orphan inode {ino}: malformed scratch dump"
+            root, obj, kind, offset = int(item[1]), int(item[2]), int(item[3], 16), int(item[4])
+            if root != 1:
+                continue
+            root_inode |= obj == 2 and kind == 0x01 and offset == 0
+            if (obj == ino and kind == 0x01) or (kind == 0x40 and offset == ino):
+                return False, f"orphan inode {ino}: retained {'ORPHAN' if kind == 0x40 else 'inode'} item"
+        if not root_inode:
+            return False, f"orphan inode {ino}: scratch root inode is missing"
+    except (OSError, UnicodeError, subprocess.TimeoutExpired) as error:
+        return False, f"orphan inode {ino}: scratch read failed: {error}"
+    return True, f"orphan inode {ino}: no ORPHAN or inode item in stopped scratch"
 
 
 def memory_reclaim_allowance_pages():

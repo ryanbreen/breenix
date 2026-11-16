@@ -293,7 +293,7 @@ def score_one(scorer, repo, suite, last, records, window, logs, disk, needs_rese
             return suite, "NOT-ISOLATED", f"RESET {'; '.join(unrestored)}; it never printed START"
         failed_exec = any(line == f"SUITE_SEQUENCE FAIL exec {suite}" for line in records)
         return suite, "NOT-RUN", "its binary could not be started" if failed_exec else "it never printed START"
-    bundle_disk = {'disk': disk} if suite == 'ui-testing' else {}
+    bundle_disk = {'disk': disk} if suite in ('ui-testing', 'filesystem') else {}
     if suite == 'ui-testing' and uploads and (uploads / 'route.json').is_file():
         bundle_disk['uploads'] = uploads
     if milestone:

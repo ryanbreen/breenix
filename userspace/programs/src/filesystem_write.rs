@@ -1,6 +1,6 @@
 //! Writable scratch-volume cases through POSIX file operations and mount(2).
 use breenix_suite::suite::{check, value, wait_for, CaseResult};
-use libbreenix::{fs as sysfs, memory, syscall::raw};
+use libbreenix::{fs as sysfs, memory, syscall::raw, types::Fd};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -305,23 +305,41 @@ pub fn rename_replace_atomic() -> CaseResult {
 pub fn unlinked_open_file() -> CaseResult {
     on_scratch(|scratch| {
         let path = scratch.work.join("orphan");
-        let data = b"open file remains readable after unlink\n";
-        io(fs::write(&path, data))?;
+        let data_blocks = 256;
+        let data = vec![0x5a; data_blocks as usize * 4096];
+        io(fs::write(&path, &data))?;
         let mut held = io(OpenOptions::new().read(true).write(true).open(&path))?;
         io(fs::remove_file(&path))?;
         absent(&path)?;
         // Commit while the open descriptor pins the zero-link inode.
         io(held.sync_all())?;
+        let metadata = io(held.metadata())?;
+        let ino = i64::try_from(metadata.ino()).map_err(|_| "orphan inode exceeds VALUE range")?;
+        value("orphan-inode", ino, "", None);
         check(
-            io(held.metadata())?.nlink() == 0,
+            metadata.nlink() == 0,
             "unlinked open file has nonzero nlink",
         )?;
+        check(metadata.blocks() == data_blocks * 8, "orphan data blocks were not allocated")?;
+        let free_before = sysfs::fstatfs(Fd::from_raw(held.as_raw_fd() as u64))?.f_bfree;
         let mut bytes = Vec::new();
         io(held.read_to_end(&mut bytes))?;
         check(bytes == data, "unlinked open file became unreadable")?;
         drop(held);
         scratch.remount()?;
-        absent(&scratch.work.join("orphan"))
+        absent(&scratch.work.join("orphan"))?;
+        let directory = io(File::open(&scratch.work))?;
+        // The close/remount commits the release. Advance through the two
+        // durable generations required by design 2.5's reuse quarantine.
+        io(directory.sync_all())?;
+        io(directory.sync_all())?;
+        let free_after = sysfs::fstatfs(Fd::from_raw(directory.as_raw_fd() as u64))?.f_bfree;
+        value("orphan-free-before", free_before as i64, "", None);
+        value("orphan-free-after", free_after as i64, "", None);
+        check(
+            free_after >= free_before + data_blocks,
+            "orphan data blocks were not reclaimed after remount and reuse quarantine",
+        )
     })
 }
 
