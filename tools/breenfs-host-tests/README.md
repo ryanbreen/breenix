@@ -332,3 +332,37 @@ retains that minimized case. Writable recovery now clears nonzero invalid slots
 after validating the selected generation, restores its companion directly, and
 flushes before exposing the mount. Read-only recovery retains the original bytes.
 The checker and the corpus acceptance criteria are unchanged.
+
+## Committed-image corruption (24.9-c)
+
+`corrupt::bit_flips` takes a populated formatter image and the durable image
+after successful fsync calls in the fixed corpus (seeds 1 and 2, eight stream
+operations). It enumerates valid slots in both rings and walks the selected
+generation's SPACE tree, ROOT trees and DEAD nodes. Node targets include their
+four blocks; data targets include the physical allocations named by REFs and
+EXTENTs. Historical trees are outside the selected generation's reachable set.
+A seeded bit offset selects one flip in a separate image for each block.
+
+`tests/corruption.rs::bit_flips_error_never_panic_and_checker_names_the_block`
+invokes the independent `breenfs-check --full` on the corrupted image before
+recovery can alter it. Slot and node flips require nonzero exit and a diagnostic
+naming the block or covering node address; data flips require C1 naming the
+block. Separate devices exercise read-only and writable recovery. Read-only
+recovery must preserve the image. Adapter construction, the full logical state
+walk and reads of the pristine image's regular-file inode/length list run under
+`catch_unwind`; errors are permitted and a panic fails the check. The reads
+include holes, partial tails and EOF, even if the state walk returns an error.
+Data EIO enforcement remains step 24.13.
+
+```sh
+CARGO_BUILD_JOBS=4 taskpolicy -b cargo test \
+  --manifest-path tools/breenfs-host-tests/Cargo.toml --test corruption \
+  bit_flips_error_never_panic_and_checker_names_the_block -- --exact --nocapture
+```
+
+The check first failed against the corpus stub in commit `45867bd5`.
+With replay implemented, the existing decoders and checker satisfy it, so no
+kernel decoder or checker change is needed (U29). The core remains undeclared
+in kernel `fs/mod.rs`. ARM still lacks VFS read/write mounts, open-handle
+lifetime, DEAD reaping, reservation, Hold-group/dirty-page integration and
+ARM64 QEMU, Parallels and VMware runtime acceptance. This unit runs no boot.
