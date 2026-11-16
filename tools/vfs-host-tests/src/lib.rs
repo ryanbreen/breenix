@@ -110,3 +110,6 @@ mod read_conformance;
 mod manifest_walk;
 #[path = "../tests/write_conformance.rs"]
 mod write_conformance;
+
+#[path = "../tests/model.rs"]
+mod model;
