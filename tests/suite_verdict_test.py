@@ -103,6 +103,38 @@ class GuiResultVerdictTests(unittest.TestCase):
 
 
 class SuiteVerdictTests(unittest.TestCase):
+    def test_breenfs_disk_checks_read_through_extract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            disk = Path(directory) / "disk.img"
+            with disk.open("wb") as image:
+                image.truncate(64 * 1024 * 1024)
+                image.seek(16 * 4096)
+                image.write(b"BREENFSS")
+            checks = [dict(path="/result", byte=65, length=4)]
+            def run(args, **kwargs):
+                self.assertEqual(args[-3:], [str(disk), "cat", "/result"])
+                return subprocess.CompletedProcess(args, 0, stdout=content)
+            with patch.object(SCORER.subprocess, "run", side_effect=run):
+                content = b"AAAA"
+                self.assertTrue(SCORER.disk_verdict(checks, disk)[0])
+                content = b"AAAB"
+                ok, reason = SCORER.disk_verdict(checks, disk)
+                self.assertFalse(ok)
+                self.assertIn("/result", reason)
+
+    def test_ext2_disk_checks_keep_debugfs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            disk = Path(directory) / "disk.img"
+            disk.write_bytes(bytes(4096))
+            checks = [dict(path="/result", byte=65, length=4)]
+            def run(args, **kwargs):
+                self.assertIn("debugfs", args[0])
+                self.assertEqual(args[-1], str(disk))
+                Path(args[2].split()[-1]).write_bytes(b"AAAA")
+                return subprocess.CompletedProcess(args, 0)
+            with patch.object(SCORER.subprocess, "run", side_effect=run):
+                self.assertTrue(SCORER.disk_verdict(checks, disk)[0])
+
     def test_smb_restart_request_preserves_case_and_memory_requirements(self):
         manifest = json.loads(json.dumps(MANIFEST))
         manifest['id'] = 'network-shares'
