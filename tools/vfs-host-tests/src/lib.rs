@@ -108,3 +108,5 @@ pub mod breenfs;
 mod read_conformance;
 #[path = "../tests/manifest_walk.rs"]
 mod manifest_walk;
+#[path = "../tests/write_conformance.rs"]
+mod write_conformance;
