@@ -16,6 +16,11 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+The E24 filesystem rename and format host-record guard repair land through
+[PR #3018](https://github.com/ryanbreen/breenix/pull/3018).
+The filesystem is named breenfs; the core remains undeclared in the kernel.
+The PR records host acceptance and the pending runtime mount integration.
+
 The E24 shared buffer cache lands through
 [PR #3013](https://github.com/ryanbreen/breenix/pull/3013), with heap-bounded
 allocation accounting and cache-participation evidence on repeated reads.

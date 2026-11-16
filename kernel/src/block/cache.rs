@@ -1,4 +1,4 @@
-//! Shared block cache ordering core (cowfs design section 1.2).
+//! Shared block cache ordering core (breenfs design section 1.2).
 //!
 //! Admission is FIFO per BlockDevice::identity. A flush takes a place in that
 //! queue before waiting for earlier I/O, so later writes cannot pass it while
@@ -227,7 +227,7 @@ impl State {
     }
 }
 
-/// claim-lint:ok: Caller contract for cache identity and access, docs/fs/cowfs-design.md section 1.2.
+/// claim-lint:ok: Caller contract for cache identity and access, docs/fs/breenfs-design.md section 1.2.
 /// One cache is shared by its device users; wrappers must preserve identity and
 /// all their I/O must pass through it. Identities must remain stable and must not
 /// be reused for another device during this cache's lifetime.

@@ -1,0 +1,15 @@
+[package]
+name = "breenfs-host-tests"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+spin = "0.9"
+
+[dev-dependencies]
+breenfs = { path = "../breenfs", artifact = ["bin:breenfs-mkfs", "bin:breenfs-check"] }
+
+[lib]
+doctest = false

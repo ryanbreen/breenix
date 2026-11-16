@@ -28,7 +28,7 @@
 //! the page-cache mutex. No disk I/O runs under PROCESS_MANAGER or that mutex. No path
 //! takes a filesystem guard with PROCESS_MANAGER held: faults never touch the
 //! filesystem, and mmap releases PROCESS_MANAGER before taking the mount guard.
-//! claim-lint:ok: Lock and fault contract in docs/fs/cowfs-design.md section 1.1.
+//! claim-lint:ok: Lock and fault contract in docs/fs/breenfs-design.md section 1.1.
 
 #[cfg(not(target_arch = "x86_64"))]
 use super::arch_stub::{Page, PageTableFlags, PhysFrame, Size4KiB, VirtAddr};

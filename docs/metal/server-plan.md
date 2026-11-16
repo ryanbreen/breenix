@@ -5,7 +5,7 @@ ones: `server`, `users`, `filesystem` and `toolchain`. x86-64 on the R240 leads 
 ARM64 QEMU, Parallels and VMware to the same bar. Two independent design passes surveyed the machine and the options;
 the operator's decisions and the coordinator's rulings below chose among them. The detailed designs are:
 
-- [the copy-on-write filesystem](../fs/cowfs-design.md) (D1, the `filesystem` effort);
+- [the copy-on-write filesystem](../fs/breenfs-design.md) (D1, the `filesystem` effort);
 - [the C toolchain](../toolchain/design.md) (D2, the `toolchain` effort);
 - [users, permissions and the standard layout](../users/design.md) (D5, the `users` effort);
 - this document, for the `server` effort and for how the four fit together.
@@ -85,7 +85,7 @@ Coordinator rulings:
 |---|---|---|---|
 | `server` | `server` | `ssh-keys`, `services`, `logs`, `time`, `reboot`, `watchdog`, `resting-state`, `remote-upgrade` | this document |
 | `users` | `users` | `kernel-checks`, `layout`, `accounts`, `login`, `admin`, `operator-login` | [users](../users/design.md), section 7 |
-| `filesystem` | `filesystem` | `fs-interface`, `buffer-cache`, `format`, `read`, `write`, `enospc`, `crash-host`, `checksums-scrub`, `snapshots`, `test-root`, `power-cut`, `persistent-root`, `ext2-retired` | [cowfs](../fs/cowfs-design.md), section 7 |
+| `filesystem` | `filesystem` | `fs-interface`, `buffer-cache`, `format`, `read`, `write`, `enospc`, `crash-host`, `checksums-scrub`, `snapshots`, `test-root`, `power-cut`, `persistent-root`, `ext2-retired` | [breenfs](../fs/breenfs-design.md), section 7 |
 | `toolchain` | `toolchain` | `deliver`, `sysroot-oracle`, `assembler-object`, `static-link`, `cc-hello`, `make-project`, `bootstrap-language-abi`, `self-host`, `c11`, `c17-libc-suite`, `busybox-on-box`, `kernel-assembly` | [toolchain](../toolchain/design.md), section 8 |
 
 The server's own `users` step is the `users` effort, which replaces it (users design, section 7). The `server`

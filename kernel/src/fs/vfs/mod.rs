@@ -1,4 +1,4 @@
-//! Filesystem operations at the VFS boundary (cowfs design section 1.1).
+//! Filesystem operations at the VFS boundary (breenfs design section 1.1).
 //! Paths, mount traversal and credential decisions belong to the VFS caller.
 //! Backends take their own locks; inode numbers crossing this boundary are u64.
 
@@ -136,7 +136,7 @@ pub trait MappingIo: Any {
 }
 
 /// Read repair while the backend caller already holds mutation exclusion.
-/// Reserved for mutation completion; see docs/fs/cowfs-design.md section 1.1.
+/// Reserved for mutation completion; see docs/fs/breenfs-design.md section 1.1.
 pub trait MappingRead {
     fn read_mapping_page(&self, ino: u64, offset: u64, length: usize) -> Result<Vec<u8>, Errno>;
 }
