@@ -347,6 +347,8 @@ fn unlinked_open_file_survives_until_close_then_reclaims() {
     let second = fs.open(ino).unwrap();
     remove(fs.as_ref(), 2, b"seed", false).unwrap();
     assert_eq!(fs.lookup(2, b"seed"), Err(Errno(ENOENT)));
+    // A link lookup racing the unlink cannot resurrect a zero-link inode.
+    assert_eq!(fs.link(ino, 2, b"resurrect", LINK), Err(Errno(ENOENT)));
     fs.sync().unwrap();
     let before = fs.statfs().unwrap().free_blocks;
     let sb = recover::recover(disk.as_ref(), false).unwrap();
