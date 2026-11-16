@@ -46,14 +46,28 @@ pub fn recover(device: &dyn BlockDevice, writable: bool) -> Result<Superblock, E
         if chosen.ro_compat != 0 {
             return Err(Error::ReadOnly);
         }
-        let mut cleared = false;
+        let mut changed = false;
         for (block, sb) in &slots {
             if sb.generation > chosen.generation {
                 commit::write(device, *block, &[0; BLOCK_SIZE])?;
-                cleared = true;
+                changed = true;
             }
         }
-        if cleared {
+        // A crash during publication can leave M in just one ring. Restore its
+        // companion before orphan reclaim or the caller can publish a commit.
+        for ring in 0..2 {
+            let mut copy = chosen.clone();
+            copy.ring = ring;
+            if !slots.iter().any(|(_, sb)| *sb == copy) {
+                commit::write(
+                    device,
+                    commit::slot_block(total, ring, chosen.slot),
+                    &copy.encode(),
+                )?;
+                changed = true;
+            }
+        }
+        if changed {
             device.flush().map_err(|_| Error::EIO)?;
         }
         // Resume committed orphan work before exposing a writable mount.

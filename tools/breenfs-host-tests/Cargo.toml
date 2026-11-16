@@ -13,3 +13,10 @@ breenfs = { path = "../breenfs", artifact = ["bin:breenfs-mkfs", "bin:breenfs-ch
 
 [lib]
 doctest = false
+
+# Crash enumeration repeatedly decodes and checksums 16 KiB nodes. Optimize the
+# harness and its checker artifacts while retaining arithmetic/runtime checks.
+[profile.dev]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true

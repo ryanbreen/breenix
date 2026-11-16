@@ -149,7 +149,8 @@ without rollback writes, per the corrected design section 2.5.
 
 `recover.rs` validates the eight slots, refuses disagreeing UUIDs, and selects the
 highest generation with matching SPACE and ROOT pointers. Writable recovery clears
-valid abandoned slots and flushes the cleanup before returning a mount candidate.
+valid abandoned slots, restores the selected generation's missing or invalid ring
+copy, and flushes those writes before orphan reclaim or returning a mount candidate.
 A cleanup error refuses that writable recovery. This is a root validation pass;
 FS descendant checking on reads and the full scrub remain separate layers.
 
@@ -268,6 +269,8 @@ CARGO_BUILD_JOBS=4 taskpolicy -b cargo test \
   subset_images_recover_to_an_acknowledged_commit -- --exact --nocapture
 ```
 
+The host crate's dev/test profile optimizes node decoding and checksumming,
+including its artifact binaries, with debug assertions and overflow checks enabled.
 The fixed corpus uses seeds 1 and 2, eight stream operations per seed, and the
 final remount. Its checker closure materializes a fresh sparse image and invokes
 the Cargo artifact `breenfs-check --full`, requiring exit 0 for each image. Sparse
@@ -282,10 +285,12 @@ QEMU, Parallels and VMware runtime acceptance remains later work. Torn images,
 bit flips, minimization, torture and host milestone records belong to the later
 24.9 units.
 
-Current blocker: [#3020](https://github.com/ryanbreen/breenix/issues/3020).
-The first corpus run reaches a valid generation-2 ring-A-only publication prefix;
-writable recovery selects it, while the checker reports the missing ring-B copy
-with warning exit 1. The exit-0 assertion remains required. Design section 2.5's
-recovery procedure specifies abandoned-slot cleanup, without companion-copy
-restoration. A coordinator decision on that contract is pending; this unit does
-not claim a passing corpus or a measured successful-run time budget.
+Coordinator ledger line 217 settles
+[#3020](https://github.com/ryanbreen/breenix/issues/3020): writable recovery must
+restore the selected generation's missing or invalid ring copy and flush before
+its first commit. Read-only recovery leaves the image alone. The focused
+`recover::writable_recovery_restores_the_missing_ring_copy` check uses a plain
+memory device with separate visible and durable bytes. It requires the ring-B
+slot writes followed by a flush, without a requested commit, and read-only
+recovery without writes. Missing and invalid copies exercise the same contract.
+The subset corpus and the checker's exit-0 requirement remain unchanged.
