@@ -38,11 +38,17 @@ fn disk_mount_arguments_and_magic() {
         (0, 1, b"/dev/null", Err(EINVAL as u64)),
     ];
     for &(euid, flags, source, expected) in cases {
-        assert_eq!(mount_args::parse(euid, flags, source), expected,
-            "euid={euid} flags={flags:#x} source={source:?}");
+        assert_eq!(
+            mount_args::parse(euid, flags, source),
+            expected,
+            "euid={euid} flags={flags:#x} source={source:?}"
+        );
     }
     for bit in 1..64 {
-        assert_eq!(mount_args::parse(0, 1 | (1 << bit), b"/dev/disk0"), Err(EINVAL as u64));
+        assert_eq!(
+            mount_args::parse(0, 1 | (1 << bit), b"/dev/disk0"),
+            Err(EINVAL as u64)
+        );
     }
     for (bytes, expected) in [
         (&b"BREENFSS"[..], true),

@@ -5,6 +5,7 @@ pub struct CommitSignal {
     pub requested: AtomicBool,
     pub pressure: AtomicBool,
     pub started: AtomicBool,
+    pub stop: AtomicBool,
     epoch: AtomicU64,
     #[cfg(not(test))]
     queue: crate::task::waitqueue::WaitQueueHead,
@@ -15,6 +16,7 @@ impl CommitSignal {
             requested: AtomicBool::new(false),
             pressure: AtomicBool::new(false),
             started: AtomicBool::new(false),
+            stop: AtomicBool::new(false),
             epoch: AtomicU64::new(0),
             #[cfg(not(test))]
             queue: crate::task::waitqueue::WaitQueueHead::new(),

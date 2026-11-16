@@ -65,6 +65,7 @@ struct MountState<W: Wait + 'static> {
     committer: Option<Committer>,
     durable: Superblock,
     failed: bool,
+    closed: bool,
     nodes: BTreeMap<u64, NodeState>,
     dirty_bytes: u64,
     inodes: InodeCache,
@@ -86,7 +87,7 @@ struct InodeCache {
 }
 impl<W: Wait> MountState<W> {
     fn read_only(&self) -> bool {
-        self.failed || self.committer.as_ref().is_none_or(Committer::read_only)
+        self.closed || self.failed || self.committer.as_ref().is_none_or(Committer::read_only)
     }
     fn writable(&self) -> Result<(), Errno> {
         if self.read_only() {
@@ -251,6 +252,15 @@ impl<W: Wait + 'static> BreenFs<W> {
     ) -> Result<Arc<Self>, Errno> {
         Self::mount_with(device, Cache::Kernel(cache), mount, root_id, false)
     }
+    /// Writable kernel mounts borrow the system cache, as read mounts do.
+    pub fn mount_writable_cached(
+        device: Arc<dyn BlockDevice>,
+        cache: &'static BufferCache<W>,
+        mount: usize,
+        root_id: u64,
+    ) -> Result<Arc<Self>, Errno> {
+        Self::mount_with(device, Cache::Kernel(cache), mount, root_id, true)
+    }
     fn mount_with(
         device: Arc<dyn BlockDevice>,
         cache: Cache<W>,
@@ -274,6 +284,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 committer,
                 durable,
                 failed: false,
+                closed: false,
                 nodes: BTreeMap::new(),
                 dirty_bytes: 0,
                 policy: CommitPolicy::new(monotonic_ns()),
@@ -440,6 +451,44 @@ impl<W: Wait + 'static> BreenFs<W> {
         self.inner.signal.wake();
         result.map(|_| true).map_err(|_| Errno(EIO))
     }
+    fn sync_generation(&self, deadline: Option<u64>, closing: bool) -> Result<(), Errno> {
+        let waiter = {
+            let mut state = self.inner.state.lock();
+            if state.failed {
+                return Err(Errno(EIO));
+            }
+            if state.closed && !closing {
+                return if self.inner.signal.stop.load(Ordering::Acquire) {
+                    Ok(())
+                } else {
+                    Err(Errno(EBUSY))
+                };
+            }
+            let Some(committer) = state.committer.as_mut() else {
+                return Ok(());
+            };
+            let waiter = committer.waiter();
+            self.inner.signal.requested.store(true, Ordering::Release);
+            waiter
+        };
+        self.inner.signal.wake();
+        loop {
+            let observed = self.inner.signal.epoch();
+            if let Some(result) = waiter.result() {
+                return result.map_err(|_| Errno(EIO));
+            }
+            if deadline.is_some_and(|limit| monotonic_ns() >= limit) {
+                return Err(Errno(ETIMEDOUT));
+            }
+            // Host conformance drives the same worker pass explicitly. Kernel
+            // callers only sleep; the mount's commit kthread performs the I/O.
+            #[cfg(test)]
+            self.commit_due(monotonic_ns())?;
+            if waiter.result().is_none() {
+                self.inner.signal.wait(observed, deadline);
+            }
+        }
+    }
     fn data_reader(&self, pending: Option<Arc<PreparedCommit>>) -> DataReader<'_, W> {
         DataReader {
             cache: self.inner.cache.buffers(),
@@ -474,66 +523,53 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         })
     }
     fn sync(&self) -> Result<(), Errno> {
-        let waiter = {
-            let mut state = self.inner.state.lock();
-            if state.failed {
-                return Err(Errno(EIO));
-            }
-            let Some(committer) = state.committer.as_mut() else {
-                return Ok(());
-            };
-            let waiter = committer.waiter();
-            self.inner.signal.requested.store(true, Ordering::Release);
-            waiter
-        };
-        self.inner.signal.wake();
-        loop {
-            let observed = self.inner.signal.epoch();
-            if let Some(result) = waiter.result() {
-                return result.map_err(|_| Errno(EIO));
-            }
-            // Host conformance drives the same worker pass explicitly. Kernel
-            // callers only sleep; the mount's commit kthread performs the I/O.
-            #[cfg(test)]
-            self.commit_due(monotonic_ns())?;
-            if waiter.result().is_none() {
-                self.inner.signal.wait(observed, None);
-            }
-        }
+        self.sync_generation(None, false)
     }
     fn init_service(&self) -> Result<(), Errno> {
-        if self.inner.state.lock().read_only() {
-            return Ok(());
-        }
-        if self.inner.signal.started.swap(true, Ordering::AcqRel) {
-            return Ok(());
+        {
+            let mut state = self.inner.state.lock();
+            if state.failed || state.committer.as_ref().is_none_or(Committer::read_only) {
+                return Ok(());
+            }
+            if self.inner.signal.started.swap(true, Ordering::AcqRel) {
+                return Ok(());
+            }
+            self.inner.signal.stop.store(false, Ordering::Release);
+            state.closed = false;
         }
         #[cfg(not(test))]
         {
             let mount = Arc::downgrade(&self.inner);
             let signal = self.inner.signal.clone();
             if crate::task::kthread::kthread_run(
-                move || loop {
-                    let observed = signal.epoch();
-                    let Some(inner) = mount.upgrade() else {
-                        return;
-                    };
-                    let fs = Self { inner };
-                    #[cfg(target_arch = "x86_64")]
-                    crate::per_cpu::preempt_disable();
-                    #[cfg(target_arch = "aarch64")]
-                    crate::per_cpu_aarch64::preempt_disable();
-                    let result = fs.commit_due(monotonic_ns());
-                    let deadline = fs.inner.state.lock().policy.deadline();
-                    drop(fs);
-                    #[cfg(target_arch = "x86_64")]
-                    crate::per_cpu::preempt_enable();
-                    #[cfg(target_arch = "aarch64")]
-                    crate::per_cpu_aarch64::preempt_enable();
-                    if result.is_err() {
-                        return;
+                move || {
+                    loop {
+                        let observed = signal.epoch();
+                        if signal.stop.load(Ordering::Acquire) {
+                            break;
+                        }
+                        let Some(inner) = mount.upgrade() else {
+                            break;
+                        };
+                        let fs = Self { inner };
+                        #[cfg(target_arch = "x86_64")]
+                        crate::per_cpu::preempt_disable();
+                        #[cfg(target_arch = "aarch64")]
+                        crate::per_cpu_aarch64::preempt_disable();
+                        let result = fs.commit_due(monotonic_ns());
+                        let deadline = fs.inner.state.lock().policy.deadline();
+                        drop(fs);
+                        #[cfg(target_arch = "x86_64")]
+                        crate::per_cpu::preempt_enable();
+                        #[cfg(target_arch = "aarch64")]
+                        crate::per_cpu_aarch64::preempt_enable();
+                        if result.is_err() {
+                            break;
+                        }
+                        signal.wait(observed, Some(deadline));
                     }
-                    signal.wait(observed, Some(deadline));
+                    signal.started.store(false, Ordering::Release);
+                    signal.wake();
                 },
                 "breenfs-commit",
             )
@@ -544,6 +580,47 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             }
         }
         Ok(())
+    }
+    fn shutdown(&self, _name: &str, deadline: u64) -> Result<(), Errno> {
+        // Close mutation admission before requesting the final generation.
+        // The worker remains live until that generation's receipt completes.
+        let signal = &self.inner.signal;
+        {
+            let mut state = self.inner.state.lock();
+            if state.closed {
+                if signal.stop.load(Ordering::Acquire) && !signal.started.load(Ordering::Acquire) {
+                    return if state.failed {
+                        Err(Errno(EIO))
+                    } else {
+                        Ok(())
+                    };
+                }
+                return Err(Errno(EBUSY));
+            }
+            state.closed = true;
+        }
+        let result = self.sync_generation(Some(deadline), true);
+        if result.is_err() {
+            let mut state = self.inner.state.lock();
+            state.failed = true;
+            if let Some(committer) = state.committer.as_mut() {
+                committer.fail();
+            }
+        }
+        signal.stop.store(true, Ordering::Release);
+        signal.wake();
+        #[cfg(test)]
+        signal.started.store(false, Ordering::Release);
+        while signal.started.load(Ordering::Acquire) {
+            let observed = signal.epoch();
+            if monotonic_ns() >= deadline {
+                return Err(Errno(ETIMEDOUT));
+            }
+            if signal.started.load(Ordering::Acquire) {
+                signal.wait(observed, Some(deadline));
+            }
+        }
+        result
     }
     fn report(
         &self,

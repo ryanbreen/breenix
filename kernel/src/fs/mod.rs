@@ -8,19 +8,18 @@
 #![allow(dead_code)]
 
 pub mod attrs;
-pub mod breenfs;
 pub mod devfs;
 pub mod devptsfs;
 pub mod errno;
 macro_rules! filesystems {
     ($($backend:ident),+ $(,)?) => {
         $(pub mod $backend;)+
-        #[cfg(feature = "ext2_lock_race")]
-        $(pub use $backend::lock_race::run_ext2_lock_race_leg;)+
         pub static FORMATS: &[vfs::Format] = &[$($backend::FORMAT),+];
     };
 }
-filesystems! { ext2 }
+filesystems! { ext2, breenfs }
+#[cfg(feature = "ext2_lock_race")]
+pub use ext2::lock_race::run_ext2_lock_race_leg;
 pub mod locks;
 pub mod namei;
 pub(crate) mod permissions;

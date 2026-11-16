@@ -1,5 +1,5 @@
-//! Pure validation for explicit read-only breenfs disk mounts.
-use crate::syscall::errno::{EINVAL, EPERM, EROFS};
+//! Pure validation for explicit breenfs disk mounts.
+use crate::syscall::errno::{EINVAL, EPERM};
 
 pub fn validate(euid: u32, flags: u64) -> Result<(), u64> {
     if euid != 0 {
@@ -7,9 +7,6 @@ pub fn validate(euid: u32, flags: u64) -> Result<(), u64> {
     }
     if flags & !1 != 0 {
         return Err(EINVAL as u64);
-    }
-    if flags == 0 {
-        return Err(EROFS as u64);
     }
     Ok(())
 }
