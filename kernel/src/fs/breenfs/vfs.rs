@@ -29,6 +29,32 @@ use spin::Mutex;
 // Extended attributes use ABI errno 61 for an absent attribute.
 const ENODATA: i32 = 61;
 
+// Shared across cache/wait implementations and both boot and explicit mounts.
+// Admission releases the registry lock before recovery I/O.
+static WRITABLE_OWNERS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+struct WritableOwner(usize);
+impl WritableOwner {
+    fn claim(identity: usize) -> Result<Self, Errno> {
+        let mut owners = WRITABLE_OWNERS.lock();
+        // Reject an existing writer before allocating or entering recovery.
+        if owners.contains(&identity) {
+            return Err(Errno(EBUSY));
+        }
+        owners.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
+        owners.push(identity);
+        Ok(Self(identity))
+    }
+}
+impl Drop for WritableOwner {
+    fn drop(&mut self) {
+        let mut owners = WRITABLE_OWNERS.lock();
+        if let Some(index) = owners.iter().position(|&identity| identity == self.0) {
+            owners.swap_remove(index);
+        }
+    }
+}
+
 /// Clones retain the same mount and transaction exclusion.
 pub struct BreenFs<W: Wait + 'static> {
     inner: Arc<Mount<W>>,
@@ -36,6 +62,7 @@ pub struct BreenFs<W: Wait + 'static> {
 struct Mount<W: Wait + 'static> {
     state: Mutex<MountState<W>>,
     device: Arc<dyn BlockDevice>,
+    owner: Option<WritableOwner>,
     data: Box<DataBlocks>,
     cache: Cache<W>,
     id: usize,
@@ -331,6 +358,14 @@ impl<W: Wait + 'static> BreenFs<W> {
         root_id: u64,
         writable: bool,
     ) -> Result<Arc<Self>, Errno> {
+        // A failed constructor drops this guard, including failures after
+        // recovery. Successful mounts retain it through shutdown/restart until
+        // unmount releases the last mount reference (including a pinned VNode).
+        let owner = if writable {
+            Some(WritableOwner::claim(device.identity())?)
+        } else {
+            None
+        };
         let durable = recover::recover(device.as_ref(), writable).map_err(|_| Errno(EIO))?;
         let files =
             Files::new(cache.store(device.clone(), &durable), &durable, root_id).map_err(errno)?;
@@ -359,6 +394,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 },
             }),
             device,
+            owner,
             data,
             cache,
             id: mount,
@@ -1367,6 +1403,7 @@ impl<W: Wait> Drop for Mount<W> {
     fn drop(&mut self) {
         self.signal.wake();
         self.cache.buffers().discard_clean(self.data.as_ref());
+        drop(self.owner.take());
     }
 }
 

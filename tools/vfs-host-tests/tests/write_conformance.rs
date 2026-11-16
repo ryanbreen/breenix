@@ -876,7 +876,7 @@ fn shutdown_commits_and_quiesces_until_service_restarts() {
     fs.write(&node, request(), b"shutdown durable").unwrap();
     fs.shutdown("root", u64::MAX).unwrap();
     assert_eq!(fs.write(&node, request(), b"must refuse"), Err(WriteError::Filesystem(Errno(EROFS))));
-    let reopened = mount(disk);
+    let reopened = BreenFs::mount(disk, Arc::new(BufferCache::new(NoWait)), 72, 1).unwrap();
     let fresh = reopened.open(ino).unwrap();
     let mut bytes = [0; 16];
     assert_eq!(reopened.read(&fresh, 0, &mut bytes), Ok(16));
