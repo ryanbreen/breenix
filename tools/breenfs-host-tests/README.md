@@ -488,3 +488,21 @@ This host driver adds no architecture-specific path. ARM still lacks VFS
 read/write mounts, open-handle lifetime, DEAD reaping, reservation,
 Hold-group/dirty-page integration and ARM64 QEMU, Parallels and VMware runtime
 acceptance. This unit runs no boot.
+
+## Verified node reads (24.10-a)
+
+`node_cache::CachedNodeStore` reads through `BufferCache::read_verified` using
+one four-block node per cache entry. Its private device identity separates node
+verification from raw-sector readers and other mounts; dropping the store
+retires its clean entries. Admission checks the node CRC, requested address,
+nonzero generation bounded by the durable superblock, and filesystem UUID.
+The B-tree retains its exact parent-pointer checks. Allocation and writes refuse.
+
+`tests/node_cache.rs` uses a populated formatter image. It checks clean reads
+and cache hits on 512-byte and 4 KiB devices, verification failures followed by
+device retries, and successful reads after repair. Header mutations carry a
+recomputed CRC so the address, generation and UUID checks are exercised directly.
+
+The core stays undeclared in kernel `fs/mod.rs`. ARM and x86 still lack the
+read-only VFS mount integration; ARM64 QEMU, Parallels and VMware runtime
+acceptance remains later work. This unit runs no boot.
