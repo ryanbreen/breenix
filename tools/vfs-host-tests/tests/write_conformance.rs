@@ -756,8 +756,8 @@ fn writeback_pages_joins_the_transaction_and_msync_is_durable() {
     assert!(mapping.needs_flush());
     let mut bound = false;
     mapping
-        .publish(&mut |writable| {
-            bound = writable;
+        .publish(&mut |append_only| {
+            bound = !append_only;
             Ok(())
         })
         .unwrap();
