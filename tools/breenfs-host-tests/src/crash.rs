@@ -279,6 +279,15 @@ fn replay(
     Ok(report)
 }
 
+/// Replay one regression row through the corpus acceptance.
+pub fn replay_case(
+    _initial: Vec<u8>,
+    _case: &crate::minimize::Case,
+    _checker: impl FnMut(&Image) -> Result<()>,
+) -> Result<crate::minimize::Outcome> {
+    Err(crate::Error::Unimplemented)
+}
+
 /// Bytes left after the new sector prefix of a torn 4 KiB write.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TornTail {

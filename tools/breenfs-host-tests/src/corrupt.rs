@@ -63,14 +63,14 @@ impl BlockDevice for Device {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Kind {
     Slot,
     Node { addr: u64 },
     Data,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Flip {
     pub seed: u64,
     pub operation: Option<usize>,
@@ -261,4 +261,13 @@ fn reachable(device: &Device, sb: &Superblock) -> Result<BTreeMap<u64, Kind>> {
         }
     }
     Ok(blocks)
+}
+
+/// Replay one bit-flip regression row through the corpus observer.
+pub fn replay_flip(
+    _base: Vec<u8>,
+    _case: &crate::minimize::Case,
+    _observe: impl FnMut(&Image, Flip, &[(u64, u64)]) -> Result<()>,
+) -> Result<crate::minimize::Outcome> {
+    Err(crate::Error::Unimplemented)
 }
