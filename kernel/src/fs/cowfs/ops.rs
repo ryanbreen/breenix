@@ -6,8 +6,7 @@ use super::{
     commit::{self, Committer},
     crc32c,
     format::{
-        self, BlockPtr, DirRecord, Extent, Inode, InternalEntry, Key, LeafItemHeader, NodeHeader,
-        Root, Superblock, Time, Xattr, BLOCK_SIZE,
+        self, BlockPtr, DirRecord, Extent, Inode, Key, Root, Superblock, Time, Xattr, BLOCK_SIZE,
     },
     recover, siphash,
     txn::{self, Transaction},
@@ -259,7 +258,10 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             .ok_or(Error::ENOENT)?;
         let record = records.remove(pos);
         let index = self
-            .items()?
+            .range(
+                key(dir, format::DIR_INDEX, 0),
+                key(dir, format::DIR_INDEX, u64::MAX),
+            )?
             .into_iter()
             .find_map(|(k, v)| {
                 if k.object != dir || k.item_type != format::DIR_INDEX {
@@ -377,7 +379,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         self.put_inode(ino, inode)
     }
     fn delete_inode(&mut self, ino: u64) -> Result<(), Error> {
-        for (k, _) in self.items()?.into_iter().filter(|(k, _)| k.object == ino) {
+        for (k, _) in self.range(key(ino, 0, 0), key(ino, u8::MAX, u64::MAX))? {
             self.txn.delete(&mut self.root.root, k)?;
         }
         Ok(())
@@ -485,11 +487,10 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         self.put_inode(ino, inode)
     }
     fn reclaim_orphans(&mut self) -> Result<(), Error> {
-        let orphans: Vec<_> = self
-            .items()?
-            .into_iter()
-            .filter(|(k, _)| k.item_type == format::ORPHAN)
-            .collect();
+        let orphans = self.range(
+            key(ORPHAN_OBJECT, format::ORPHAN, 0),
+            key(ORPHAN_OBJECT, format::ORPHAN, u64::MAX),
+        )?;
         for (k, value) in orphans {
             if k.object != ORPHAN_OBJECT || !value.is_empty() {
                 return Err(Error::EIO);
@@ -509,12 +510,22 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         }
         Ok(())
     }
+    fn range(&self, lower: Key, upper: Key) -> Result<Vec<(Key, Vec<u8>)>, Error> {
+        Ok(btree::range(
+            &self.txn.view(),
+            self.root.root,
+            lower,
+            upper,
+        )?)
+    }
     fn extents(&self, ino: u64) -> Result<Vec<(Key, Extent)>, Error> {
-        self.items()?
-            .into_iter()
-            .filter(|(k, _)| k.object == ino && k.item_type == format::EXTENT)
-            .map(|(k, v)| Ok((k, Extent::decode(&v)?)))
-            .collect()
+        self.range(
+            key(ino, format::EXTENT, 0),
+            key(ino, format::EXTENT, u64::MAX),
+        )?
+        .into_iter()
+        .map(|(k, v)| Ok((k, Extent::decode(&v)?)))
+        .collect()
     }
     fn block(&self, device: &dyn BlockDevice, e: Extent, index: u64) -> Result<Vec<u8>, Error> {
         let addr = e.phys_start + u64::from(e.extent_offset) + index;
@@ -632,23 +643,13 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             .ok_or(Error::EFBIG)?;
         let start = offset / BLOCK_SIZE as u64 * BLOCK_SIZE as u64;
         let rounded = end.div_ceil(BLOCK_SIZE as u64) * BLOCK_SIZE as u64;
-        let mut blocks = Vec::new();
-        for off in (start..rounded).step_by(BLOCK_SIZE) {
-            let mut block = vec![0; BLOCK_SIZE];
-            self.read(device, ino, off, &mut block)?;
-            let lo = offset.max(off);
-            let hi = end.min(off + BLOCK_SIZE as u64);
-            block[(lo - off) as usize..(hi - off) as usize]
-                .copy_from_slice(&bytes[(lo - offset) as usize..(hi - offset) as usize]);
-            blocks.push((off, block));
-        }
+        let mut blocks = vec![0; (rounded - start) as usize];
+        self.read(device, ino, start, &mut blocks)?;
+        let lo = (offset - start) as usize;
+        blocks[lo..lo + bytes.len()].copy_from_slice(bytes);
         self.remove_range(ino, start, rounded)?;
-        for run in blocks.chunks(256) {
-            let bytes = run
-                .iter()
-                .flat_map(|(_, block)| block.iter().copied())
-                .collect();
-            self.replace_extent(ino, run[0].0, bytes)?;
+        for (n, run) in blocks.chunks(256 * BLOCK_SIZE).enumerate() {
+            self.replace_extent(ino, start + (n * 256 * BLOCK_SIZE) as u64, run.to_vec())?;
         }
         inode.size = inode.size.max(end);
         inode.mtime = at;
@@ -865,49 +866,10 @@ pub fn xattrs(mut bytes: &[u8]) -> Result<Vec<Xattr>, Error> {
     Ok(out)
 }
 pub fn items(store: &impl NodeStore, root: BlockPtr) -> Result<Vec<(Key, Vec<u8>)>, Error> {
-    fn walk(
-        store: &impl NodeStore,
-        ptr: BlockPtr,
-        seen: &mut BTreeSet<u64>,
-        out: &mut Vec<(Key, Vec<u8>)>,
-    ) -> Result<(), Error> {
-        if !seen.insert(ptr.addr) {
-            return Err(Error::EIO);
-        }
-        let bytes = store.get(ptr.addr)?;
-        let h = NodeHeader::decode(&bytes)?;
-        if (h.addr, h.generation, h.level) != (ptr.addr, ptr.generation, ptr.level)
-            || bytes[8..12] != ptr.csum.to_le_bytes()
-            || h.level >= 8
-        {
-            return Err(Error::EIO);
-        }
-        for n in 0..usize::from(h.nitems) {
-            if h.level == 0 {
-                let at = 48 + n * 21;
-                let i = LeafItemHeader::decode(bytes.get(at..at + 21).ok_or(Error::EIO)?)?;
-                let value = btree::search(store, ptr, i.key)?.ok_or(Error::EIO)?;
-                out.push((i.key, value));
-            } else {
-                let at = 48 + n * 37;
-                let e = InternalEntry::decode(bytes.get(at..at + 37).ok_or(Error::EIO)?)?;
-                walk(
-                    store,
-                    BlockPtr {
-                        addr: e.child_addr,
-                        generation: e.child_generation,
-                        csum: e.child_csum,
-                        level: h.level - 1,
-                    },
-                    seen,
-                    out,
-                )?;
-            }
-        }
-        Ok(())
-    }
-    let mut out = Vec::new();
-    walk(store, root, &mut BTreeSet::new(), &mut out)?;
-    out.sort_by_key(|(k, _)| *k);
-    Ok(out)
+    Ok(btree::range(
+        store,
+        root,
+        Key::default(),
+        key(u64::MAX, u8::MAX, u64::MAX),
+    )?)
 }

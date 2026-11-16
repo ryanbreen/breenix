@@ -267,6 +267,48 @@ pub fn search<S: NodeStore>(store: &S, root: BlockPtr, key: Key) -> Result<Optio
         .map(|i| node.items[i].1.clone()))
 }
 
+/// Return items in an inclusive key range, visiting only intersecting branches.
+pub fn range<S: NodeStore>(
+    store: &S,
+    root: BlockPtr,
+    lower: Key,
+    upper: Key,
+) -> Result<Vec<(Key, Vec<u8>)>, Error> {
+    fn walk<S: NodeStore>(
+        store: &S,
+        node: Node,
+        bound: Option<Key>,
+        lower: Key,
+        upper: Key,
+        out: &mut Vec<(Key, Vec<u8>)>,
+    ) -> Result<(), Error> {
+        if node.header.level == 0 {
+            out.extend(
+                node.items
+                    .into_iter()
+                    .filter(|(k, _)| *k >= lower && *k <= upper),
+            );
+        } else {
+            for (i, entry) in node.children.iter().enumerate() {
+                let next = node.children.get(i + 1).map(|e| e.key).or(bound);
+                if entry.key <= upper && next.is_none_or(|k| k > lower) {
+                    let ptr = node.child(i);
+                    let child = decode(&store.get(ptr.addr)?, ptr, false, Some(entry.key), next)?;
+                    same_tree(&node, &child)?;
+                    walk(store, child, next, lower, upper, out)?;
+                }
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    if lower <= upper {
+        let node = decode(&store.get(root.addr)?, root, true, None, None)?;
+        walk(store, node, None, lower, upper, &mut out)?;
+    }
+    Ok(out)
+}
+
 struct Edit<'a, S> {
     store: &'a mut S,
     writes: BTreeMap<u64, Vec<u8>>,
