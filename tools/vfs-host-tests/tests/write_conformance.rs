@@ -920,3 +920,67 @@ fn removing_an_open_directory_is_busy_until_last_close() {
     drop(fs);
     assert_eq!(mount(disk).lookup(2, b"held"), Err(Errno(ENOENT)));
 }
+
+
+#[test]
+fn touch_and_reads_apply_relatime_without_changing_other_metadata() {
+    use crate::time::with_unix_time;
+    let (disk, ino) = fixture();
+    let fs = mount(disk.clone());
+    let node = fs.open(ino).unwrap();
+    let stamp = |sec| Timestamp { sec, nsec: 0 };
+    // (atime, mtime, ctime, access time, expected atime)
+    for (atime, mtime, ctime, access, expected) in [
+        (10, 20, 1, 30, 30),       // Modification since the previous access.
+        (50, 20, 1, 60, 50),       // A recent access needs no refresh.
+        (50, 20, 70, 80, 80),      // Metadata change since access.
+        (100, 20, 1, 86499, 100),  // Just short of one day.
+        (100, 20, 1, 86500, 86500), // Exactly one day.
+        (100, 200, 1, 90, 100),    // A backward clock cannot lower atime.
+    ] {
+        with_unix_time(ctime, || fs.setattr(ino, SetAttr {
+            atime: Some(stamp(atime)), mtime: Some(stamp(mtime)), ..Default::default()
+        })).unwrap();
+        let before = fs.getattr(ino).unwrap();
+        // The stream hook may run while other locks, including VNode times, are held.
+        let held = node.times.lock();
+        with_unix_time(access, || fs.touch(&node, true));
+        drop(held);
+        let mut expected_attrs = before;
+        expected_attrs.times.atime = stamp(expected);
+        assert_eq!(fs.getattr(ino).unwrap(), expected_attrs);
+    }
+    with_unix_time(1, || fs.setattr(ino, SetAttr {
+        atime: Some(stamp(10)), mtime: Some(stamp(20)), ..Default::default()
+    })).unwrap();
+    with_unix_time(200, || assert_eq!(fs.read(&node, 0, &mut [0; 1]), Ok(1)));
+    assert_eq!(fs.getattr(ino).unwrap().times.atime, stamp(200));
+    with_unix_time(90000, || {
+        assert_eq!(fs.read(&node, 0, &mut []), Ok(0));
+        assert_eq!(fs.read(&node, u64::MAX, &mut [0; 1]), Ok(0));
+    });
+    assert_eq!(fs.getattr(ino).unwrap().times.atime, stamp(200));
+    // Stream writes set mtime/ctime; a touch must survive the last handle closing.
+    let fifo = fs.create(2, b"stream", NewNode::Fifo { attrs: ATTRS }).unwrap();
+    let stream = fs.open(fifo).unwrap();
+    with_unix_time(300, || fs.touch(&stream, false));
+    with_unix_time(400, || fs.touch(&stream, true));
+    drop(stream);
+    fs.sync().unwrap();
+    drop(node);
+    drop(fs);
+    let ro = BreenFs::mount(disk, Arc::new(BufferCache::new(NoWait)), 71, 1).unwrap();
+    let times = ro.getattr(fifo).unwrap().times;
+    assert_eq!(times.atime, stamp(400));
+    assert_eq!(times.mtime, stamp(300));
+    assert_eq!(times.ctime, stamp(300));
+    let node = ro.open(ino).unwrap();
+    let before = ro.getattr(ino).unwrap();
+    with_unix_time(90000, || {
+        ro.touch(&node, true);
+        ro.touch(&node, false);
+        assert_eq!(ro.read(&node, 0, &mut [0; 1]), Ok(1));
+    });
+    assert_eq!(ro.getattr(ino).unwrap(), before);
+    assert_eq!(before.times.atime, stamp(200));
+}
