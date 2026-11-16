@@ -126,3 +126,6 @@ mod write_conformance;
 mod model;
 
 mod trait_adapter;
+
+#[path = "../tests/breenfs_boot_probe.rs"]
+mod breenfs_boot_probe;

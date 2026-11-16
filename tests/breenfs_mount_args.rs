@@ -8,8 +8,8 @@ pub mod syscall {
 mod mount_args;
 
 #[test]
-fn readonly_disk_mount_arguments_and_magic() {
-    use errno::{EINVAL, EPERM, EROFS};
+fn disk_mount_arguments_and_magic() {
+    use errno::{EINVAL, EPERM};
     let cases: &[(u32, u64, &[u8], Result<usize, u64>)] = &[
         (0, 1, b"/dev/disk0", Ok(0)),
         (0, 1, b"/dev/disk9", Ok(9)),
@@ -17,7 +17,9 @@ fn readonly_disk_mount_arguments_and_magic() {
         (0, 1, b"/dev/disk255", Ok(255)),
         (1000, 1, b"/dev/disk0", Err(EPERM as u64)),
         (1000, 0, b"", Err(EPERM as u64)),
-        (0, 0, b"/dev/disk0", Err(EROFS as u64)),
+        (0, 0, b"/dev/disk0", Ok(0)),
+        (0, 0, b"/dev/disk255", Ok(255)),
+        (1000, 0, b"/dev/disk0", Err(EPERM as u64)),
         (0, 2, b"/dev/disk0", Err(EINVAL as u64)),
         (0, 3, b"/dev/disk0", Err(EINVAL as u64)),
         (0, 1 << 63, b"/dev/disk0", Err(EINVAL as u64)),
