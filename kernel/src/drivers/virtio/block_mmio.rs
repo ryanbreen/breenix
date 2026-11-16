@@ -14,8 +14,8 @@ use crate::task::waitqueue::WaitQueueHead;
 use core::ptr::read_volatile;
 use core::sync::atomic::{fence, AtomicBool, AtomicU32, Ordering};
 
-/// Maximum number of block devices supported
-pub const MAX_BLOCK_DEVICES: usize = 2;
+/// Capacity for block devices across the QEMU virt MMIO transport slots.
+pub const MAX_BLOCK_DEVICES: usize = VIRTIO_MMIO_COUNT;
 
 const VIRTIO_IRQ_BASE: u32 = 48;
 /// A request waits for its completion in sleeps of this length, checking
@@ -459,10 +459,10 @@ impl BlockMmioCompletion {
 }
 
 static REQUEST_GATES: [BlockMmioRequestGate; MAX_BLOCK_DEVICES] =
-    [BlockMmioRequestGate::new(), BlockMmioRequestGate::new()];
+    [const { BlockMmioRequestGate::new() }; MAX_BLOCK_DEVICES];
 
 static COMPLETIONS: [BlockMmioCompletion; MAX_BLOCK_DEVICES] =
-    [BlockMmioCompletion::new(), BlockMmioCompletion::new()];
+    [const { BlockMmioCompletion::new() }; MAX_BLOCK_DEVICES];
 
 /// VirtIO block request types
 mod request_type {
@@ -577,78 +577,53 @@ struct StatusBuffer {
     _padding: [u8; 15],
 }
 
-// Static buffers for device 0
-static mut QUEUE_MEM_0: QueueMemory = QueueMemory {
-    desc: [VirtqDesc {
-        addr: 0,
-        len: 0,
-        flags: 0,
-        next: 0,
-    }; 16],
-    avail: VirtqAvail {
-        flags: 0,
-        idx: 0,
-        ring: [0; 16],
-    },
-    _padding: [0; 4096 - 256 - 36],
-    used: VirtqUsed {
-        flags: 0,
-        idx: 0,
-        ring: [VirtqUsedElem { id: 0, len: 0 }; 16],
-    },
-};
-static mut REQ_HEADER_0: RequestHeader = RequestHeader {
-    req: VirtioBlkReq {
-        type_: 0,
-        reserved: 0,
-        sector: 0,
-    },
-};
-static mut DATA_BUF_0: DataBuffer = DataBuffer {
-    data: [0; DMA_DATA_SIZE],
-};
-static mut STATUS_BUF_0: StatusBuffer = StatusBuffer {
-    status: 0xff,
-    _padding: [0; 15],
-};
-
-// Static buffers for device 1
-static mut QUEUE_MEM_1: QueueMemory = QueueMemory {
-    desc: [VirtqDesc {
-        addr: 0,
-        len: 0,
-        flags: 0,
-        next: 0,
-    }; 16],
-    avail: VirtqAvail {
-        flags: 0,
-        idx: 0,
-        ring: [0; 16],
-    },
-    _padding: [0; 4096 - 256 - 36],
-    used: VirtqUsed {
-        flags: 0,
-        idx: 0,
-        ring: [VirtqUsedElem { id: 0, len: 0 }; 16],
-    },
-};
-static mut REQ_HEADER_1: RequestHeader = RequestHeader {
-    req: VirtioBlkReq {
-        type_: 0,
-        reserved: 0,
-        sector: 0,
-    },
-};
-static mut DATA_BUF_1: DataBuffer = DataBuffer {
-    data: [0; DMA_DATA_SIZE],
-};
-static mut STATUS_BUF_1: StatusBuffer = StatusBuffer {
-    status: 0xff,
-    _padding: [0; 15],
-};
+// Per-device DMA storage. Element alignment keeps each queue and data buffer
+// page-aligned while giving each transport independent request storage.
+static mut QUEUE_MEM: [QueueMemory; MAX_BLOCK_DEVICES] = [const {
+    QueueMemory {
+        desc: [VirtqDesc {
+            addr: 0,
+            len: 0,
+            flags: 0,
+            next: 0,
+        }; 16],
+        avail: VirtqAvail {
+            flags: 0,
+            idx: 0,
+            ring: [0; 16],
+        },
+        _padding: [0; 4096 - 256 - 36],
+        used: VirtqUsed {
+            flags: 0,
+            idx: 0,
+            ring: [VirtqUsedElem { id: 0, len: 0 }; 16],
+        },
+    }
+}; MAX_BLOCK_DEVICES];
+static mut REQ_HEADERS: [RequestHeader; MAX_BLOCK_DEVICES] = [const {
+    RequestHeader {
+        req: VirtioBlkReq {
+            type_: 0,
+            reserved: 0,
+            sector: 0,
+        },
+    }
+}; MAX_BLOCK_DEVICES];
+static mut DATA_BUFS: [DataBuffer; MAX_BLOCK_DEVICES] = [const {
+    DataBuffer {
+        data: [0; DMA_DATA_SIZE],
+    }
+}; MAX_BLOCK_DEVICES];
+static mut STATUS_BUFS: [StatusBuffer; MAX_BLOCK_DEVICES] = [const {
+    StatusBuffer {
+        status: 0xff,
+        _padding: [0; 15],
+    }
+}; MAX_BLOCK_DEVICES];
 
 /// VirtIO block device states (one per device)
-static mut BLOCK_DEVICES: [Option<BlockDeviceState>; MAX_BLOCK_DEVICES] = [None, None];
+static mut BLOCK_DEVICES: [Option<BlockDeviceState>; MAX_BLOCK_DEVICES] =
+    [const { None }; MAX_BLOCK_DEVICES];
 
 struct BlockDeviceState {
     base: u64,
@@ -677,20 +652,14 @@ struct DeviceBuffers {
 /// Submitters must hold REQUEST_GATES[device_index]. The IRQ handler may access
 /// the used ring and status buffer for the armed request without taking the gate.
 fn device_buffers(device_index: usize) -> DeviceBuffers {
-    match device_index {
-        0 => DeviceBuffers {
-            queue_mem: &raw mut QUEUE_MEM_0,
-            req_header: &raw mut REQ_HEADER_0,
-            data_buf: &raw mut DATA_BUF_0,
-            status_buf: &raw mut STATUS_BUF_0,
-        },
-        1 => DeviceBuffers {
-            queue_mem: &raw mut QUEUE_MEM_1,
-            req_header: &raw mut REQ_HEADER_1,
-            data_buf: &raw mut DATA_BUF_1,
-            status_buf: &raw mut STATUS_BUF_1,
-        },
-        _ => panic!("device_index out of range"),
+    // Raw projections avoid references to storage shared with device DMA and IRQs.
+    unsafe {
+        DeviceBuffers {
+            queue_mem: &raw mut QUEUE_MEM[device_index],
+            req_header: &raw mut REQ_HEADERS[device_index],
+            data_buf: &raw mut DATA_BUFS[device_index],
+            status_buf: &raw mut STATUS_BUFS[device_index],
+        }
     }
 }
 
@@ -703,20 +672,13 @@ fn device_buffers_const(
     *const DataBuffer,
     *const StatusBuffer,
 ) {
-    match device_index {
-        0 => (
-            &raw const QUEUE_MEM_0,
-            &raw const REQ_HEADER_0,
-            &raw const DATA_BUF_0,
-            &raw const STATUS_BUF_0,
-        ),
-        1 => (
-            &raw const QUEUE_MEM_1,
-            &raw const REQ_HEADER_1,
-            &raw const DATA_BUF_1,
-            &raw const STATUS_BUF_1,
-        ),
-        _ => panic!("device_index out of range"),
+    unsafe {
+        (
+            &raw const QUEUE_MEM[device_index],
+            &raw const REQ_HEADERS[device_index],
+            &raw const DATA_BUFS[device_index],
+            &raw const STATUS_BUFS[device_index],
+        )
     }
 }
 
