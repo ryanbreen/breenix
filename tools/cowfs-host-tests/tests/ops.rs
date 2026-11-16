@@ -644,3 +644,36 @@ fn fsync_preparation_error_completes_waiters_and_latches() {
     assert_eq!(files.fsync(&device, &mut mount), Err(ops::Error::EIO));
     assert!(device.events().is_empty());
 }
+
+#[test]
+fn write_does_not_scan_unrelated_inodes() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Counted<'a> {
+        device: &'a RecordingDevice,
+        reads: &'a AtomicUsize,
+    }
+    impl btree::NodeStore for Counted<'_> {
+        fn get(&self, addr: u64) -> std::result::Result<Vec<u8>, btree::Error> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            btree::NodeStore::get(&commit::DeviceStore(self.device), addr)
+        }
+        fn put(&mut self, _: u64, _: Vec<u8>) -> std::result::Result<(), btree::Error> { unreachable!() }
+        fn alloc(&mut self) -> std::result::Result<u64, btree::Error> { unreachable!() }
+    }
+    let device = RecordingDevice::new(test_image::image()).unwrap();
+    let sb = recover::recover(&device, false).unwrap();
+    let mut files = ops::Files::new(commit::DeviceStore(&device), &sb, 1).unwrap();
+    for n in 0..256 {
+        files.create(2, format!("file{n:03}").as_bytes(), 0o644, Default::default()).unwrap();
+    }
+    let sb = files.fsync(&device, &mut commit::Committer::new(sb)).unwrap();
+    let reads = AtomicUsize::new(0);
+    let mut files = ops::Files::new(Counted { device: &device, reads: &reads }, &sb, 1).unwrap();
+    reads.store(0, Ordering::Relaxed);
+    assert_eq!(files.write(&device, 16, 0, &vec![9; 32768], Default::default()).unwrap(), 32768);
+    // Eight data blocks in one inode need only its search paths, not 256 files.
+    assert!(reads.load(Ordering::Relaxed) < 128, "{} node reads", reads.load(Ordering::Relaxed));
+    let mut bytes = vec![0; 32768];
+    assert_eq!(files.read(&device, 16, 0, &mut bytes).unwrap(), bytes.len());
+    assert_eq!(bytes, vec![9; 32768]);
+}
