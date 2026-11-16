@@ -29,6 +29,9 @@ use spin::Mutex;
 #[cfg(test)]
 #[path = "../../../../tools/breenfs-host-tests/src/failed_mount_teardown.rs"]
 mod failed_mount_teardown;
+#[cfg(test)]
+#[path = "../../../../tools/breenfs-host-tests/src/dirty_heap_bound.rs"]
+mod dirty_heap_bound;
 
 // Extended attributes use ABI errno 61 for an absent attribute.
 const ENODATA: i32 = 61;
