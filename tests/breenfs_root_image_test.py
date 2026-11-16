@@ -56,7 +56,7 @@ def root_image_matches_the_ext2_image():
                      hashlib.sha256(b'setid').hexdigest(), '-'),
         }
         actual = {path: tuple(row[1:6] + row[9:11]) for path, row in rows.items()}
-        assert actual == expected
+        assert actual == expected, (actual, expected)
 
 
 

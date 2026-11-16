@@ -436,6 +436,18 @@ fn mkfs(a: Args) -> Result<()> {
                 .ok_or("invalid owner entry")?;
             let owner = std::str::from_utf8(&line[..split]).map_err(|_| "invalid owner")?;
             let (uid, gid) = owner.split_once(':').ok_or("invalid owner")?;
+            // uid:gid[:octal-mode] TAB raw-path. The optional mode preserves
+            // symlink permissions that the extraction host cannot represent.
+            let (gid, mode) = match gid.split_once(':') {
+                Some((gid, mode)) => {
+                    let mode = u32::from_str_radix(mode, 8).map_err(|_| "invalid owner mode")?;
+                    if mode > 0o7777 {
+                        return Err("invalid owner mode".into());
+                    }
+                    (gid, Some(mode))
+                }
+                None => (gid, None),
+            };
             let uid = uid.parse::<u32>().map_err(|_| "invalid uid")?;
             let gid = gid.parse::<u32>().map_err(|_| "invalid gid")?;
             let path = &line[split + 1..];
@@ -460,6 +472,7 @@ fn mkfs(a: Args) -> Result<()> {
             operation(files.setattr(
                 ino,
                 &SetAttr {
+                    mode,
                     uid: Some(uid),
                     gid: Some(gid),
                     ..SetAttr::default()

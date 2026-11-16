@@ -104,8 +104,11 @@ def list_entries(image):
 
 
 def list_owners(image):
-    for _, _, uid, gid, path in list_entries(image):
-        if uid or gid:
+    for _, mode, uid, gid, path in list_entries(image):
+        if mode & 0o170000 == 0o120000:
+            # Linux cannot chmod a symlink; preserve its image mode in mkfs.
+            print(f'{uid}:{gid}:{mode & 0o7777:o}\t{path}')
+        elif uid or gid:
             print(f'{uid}:{gid}\t{path}')
 
 
