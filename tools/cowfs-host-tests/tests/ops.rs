@@ -609,3 +609,38 @@ fn siphash_collision_keeps_both_records() {
     pair(&mut w, &mut m, Action::Remount, 13);
     assert_eq!(w.state().unwrap().inodes.len(), 1);
 }
+
+#[test]
+fn fsync_preparation_error_completes_waiters_and_latches() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    struct Store<'a> {
+        device: &'a RecordingDevice,
+        fail: &'a AtomicBool,
+    }
+    impl btree::NodeStore for Store<'_> {
+        fn get(&self, addr: u64) -> std::result::Result<Vec<u8>, btree::Error> {
+            if self.fail.load(Ordering::Relaxed) {
+                Err(btree::Error::Store)
+            } else {
+                btree::NodeStore::get(&commit::DeviceStore(self.device), addr)
+            }
+        }
+        fn put(&mut self, _: u64, _: Vec<u8>) -> std::result::Result<(), btree::Error> { unreachable!() }
+        fn alloc(&mut self) -> std::result::Result<u64, btree::Error> { unreachable!() }
+    }
+    let device = RecordingDevice::new(test_image::image()).unwrap();
+    let sb = recover::recover(&device, false).unwrap();
+    let fail = AtomicBool::new(false);
+    let mut files = ops::Files::new(Store { device: &device, fail: &fail }, &sb, 1).unwrap();
+    let mut mount = commit::Committer::new(sb);
+    let waiters = [mount.waiter(), mount.waiter()];
+    fail.store(true, Ordering::Relaxed);
+    assert_eq!(files.fsync(&device, &mut mount), Err(ops::Error::EIO));
+    assert!(mount.read_only());
+    for w in waiters { assert_eq!(w.result(), Some(Err(commit::Error::EIO))); }
+    assert_eq!(mount.waiter().result(), Some(Err(commit::Error::EIO)));
+    assert!(device.events().is_empty());
+    fail.store(false, Ordering::Relaxed);
+    assert_eq!(files.fsync(&device, &mut mount), Err(ops::Error::EIO));
+    assert!(device.events().is_empty());
+}
