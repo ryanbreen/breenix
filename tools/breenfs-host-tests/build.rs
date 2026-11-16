@@ -49,6 +49,8 @@ fn main() {
         "    fn writeback_snapshot(",
         "    pub(crate) fn complete_writeback(",
         "    pub(crate) fn service_writeback(",
+        "    pub(crate) fn eviction_pending(",
+        "    pub(crate) fn evict(",
     ] {
         out.push_str(&item(&source, marker));
         out.push('\n');

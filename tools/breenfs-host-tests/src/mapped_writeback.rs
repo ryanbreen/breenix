@@ -65,6 +65,8 @@ fn fixture() -> (Arc<BreenFs<NoWait>>, Arc<Disk>, Arc<VNode>) {
     let node = fs.open(ino).unwrap();
     fs.resize(&node, 67 * 4096, false, &|_| Ok(())).unwrap();
     fs.fsync(&node, false).unwrap();
+    // mmap obtains a MappingIo transfer before it publishes shared pages.
+    drop(fs.mapping_io(&node).unwrap());
     (fs, disk, node)
 }
 fn expected(tag: u8) -> Vec<u8> {
@@ -119,16 +121,20 @@ fn c2_async_request_is_serviced_by_commit_worker() {
     node.map.shared_stores(&bytes, false);
     // MS_ASYNC's entry point marks the mapping pending and requests eviction.
     node.map.request_writeback();
+    let ino = node.ino;
+    let map = node.map.clone();
+    // Close the final descriptor and binding before the service takes custody.
+    drop(node);
     // Two bounded worker passes must cover 67 pages without fsync or teardown.
     for _ in 0..2 {
         fs.commit_due(monotonic_ns()).unwrap();
     }
     assert!(
-        cold_bytes(&disk, node.ino) == bytes,
-        "MS_ASYNC was not serviced"
+        cold_bytes(&disk, ino) == bytes,
+        "MS_ASYNC was not serviced after final close"
     );
     assert!(
-        !node.map.has_dirty(),
+        !map.has_dirty(),
         "durable unbound pages retained dirty custody"
     );
 }

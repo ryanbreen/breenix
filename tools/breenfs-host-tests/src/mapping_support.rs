@@ -21,12 +21,14 @@ struct MapShared {
     resident: AtomicBool,
     dirty: AtomicBool,
     writeback_pending: AtomicBool,
+    eviction_pending: AtomicBool,
     writeback_requests: AtomicU64,
     syncers: AtomicUsize,
 }
 struct MapInner {
     pages: PageVec<CachePage>,
-    poisoned: Vec<()>,
+    poisoned: PageVec<()>,
+    bindings: Vec<BindingRec>,
     writable_shared: usize,
     writeback_cursor: u64,
     writeback_epoch: u64,
@@ -34,7 +36,19 @@ struct MapInner {
 struct PageVec<T> {
     entries: Vec<(u64, T)>,
 }
+struct BindingRec {
+    first: u64,
+    last: u64,
+}
+impl BindingRec {
+    fn covers(&self, index: u64) -> bool {
+        self.first <= index && index < self.last
+    }
+}
 impl<T> PageVec<T> {
+    fn retain(&mut self, keep: impl Fn(u64) -> bool) {
+        self.entries.retain(|(i, _)| keep(*i));
+    }
     fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -76,7 +90,10 @@ impl MapState {
                     pages: PageVec {
                         entries: Vec::new(),
                     },
-                    poisoned: Vec::new(),
+                    poisoned: PageVec {
+                        entries: Vec::new(),
+                    },
+                    bindings: Vec::new(),
                     writable_shared: 0,
                     writeback_cursor: 0,
                     writeback_epoch: 0,
@@ -84,6 +101,7 @@ impl MapState {
                 resident: AtomicBool::new(false),
                 dirty: AtomicBool::new(false),
                 writeback_pending: AtomicBool::new(false),
+                eviction_pending: AtomicBool::new(false),
                 writeback_requests: AtomicU64::new(0),
                 syncers: AtomicUsize::new(0),
             }),
