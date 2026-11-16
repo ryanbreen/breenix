@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Run breenfs host evidence and optionally stage its records on an ext2 image."""
 import argparse
+import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -14,6 +16,8 @@ GUEST = '/usr/local/filesystem-suite/host'
 HOST_CASES = (
     'format/mkfs-empty-clean', 'format/mkfs-populate-clean',
     'format/reproducible-image', 'format/violations-refused',
+    'crash-images/subset-images', 'crash-images/torn-images',
+    'crash-images/corruption-no-panic', 'crash-images/torture-24h',
 )
 
 
@@ -25,14 +29,30 @@ def run(args, cwd=ROOT):
         return 127, f'could not start {Path(str(args[0])).name}: {error.strerror}'
 
 
-def reason(label, code, output):
+def reason(label, code, _output):
     # Records are visible in guest reports: do not expose host paths.
-    lines = [line for line in output.splitlines() if line.startswith(('error:', 'test result:'))]
-    detail = ' '.join(lines[-2:]).replace(str(ROOT), '<checkout>')
-    return f'FAIL {label} exited {code}' + (f': {detail}' if detail else '')
+    return f'FAIL {label} exited {code}'
 
 
-def collect(work):
+def torture_record(path):
+    if path is None:
+        return 'FAIL no torture summary supplied'
+    try:
+        summary = json.loads(path.read_text())
+    except (OSError, UnicodeError, ValueError):
+        return 'FAIL torture summary unreadable or invalid JSON'
+    if not isinstance(summary, dict):
+        return 'FAIL torture summary is not an object'
+    elapsed = summary.get('elapsed')
+    if isinstance(elapsed, bool) or not isinstance(elapsed, (int, float)) or (isinstance(elapsed, float) and not math.isfinite(elapsed)) or elapsed < 24 * 3600:
+        return 'FAIL torture elapsed time is less than 24 hours or invalid'
+    failures = summary.get('failures')
+    if type(failures) is not int or failures != 0:
+        return 'FAIL torture failures is nonzero or invalid'
+    return 'PASS'
+
+
+def collect(work, torture_summary):
     records = {}
     code, output = run(['cargo', 'test', '--manifest-path', BREENFS / 'Cargo.toml'])
     print(output, end='', flush=True)
@@ -65,6 +85,22 @@ def collect(work):
         records[HOST_CASES[2]] = 'FAIL populated image was not produced and checked'
     else:
         records[HOST_CASES[2]] = 'PASS' if images[1].read_bytes() == other.read_bytes() else 'FAIL fixed inputs produced different images'
+    manifest = ROOT / 'tools/breenfs-host-tests/Cargo.toml'
+    tests = (
+        ('crash_images', 'subset_images_recover_to_an_acknowledged_commit'),
+        ('crash_images', 'torn_images_recover_to_an_acknowledged_commit'),
+        ('corruption', 'bit_flips_error_never_panic_and_checker_names_the_block'),
+    )
+    for case, (target, name) in zip(HOST_CASES[4:7], tests):
+        code, output = run(['cargo', 'test', '--manifest-path', manifest, '--test', target, name, '--', '--exact'])
+        print(output, end='', flush=True)
+        if code != 0:
+            records[case] = f'FAIL host test {name} exited {code}'
+        elif f'test {name} ... ok' not in output.splitlines():
+            records[case] = f'FAIL host test {name} did not report a pass'
+        else:
+            records[case] = 'PASS'
+    records[HOST_CASES[7]] = torture_record(torture_summary)
     return records
 
 
@@ -108,10 +144,11 @@ def stage(image, work, records):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--image', type=Path)
+    parser.add_argument('--torture-summary', type=Path)
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='filesystem-suite-') as directory:
         work = Path(directory)
-        records = collect(work)
+        records = collect(work, args.torture_summary)
         for case in HOST_CASES:
             print(f'{case}: {records[case]}', flush=True)
         if args.image:

@@ -85,7 +85,24 @@
     {
       "id": "crash-images",
       "title": "Host-enumerated crash images recover to an acknowledged commit",
-      "cases": []
+      "cases": [
+        {
+          "id": "subset-images",
+          "title": "Crash write subsets recover to an acknowledged commit"
+        },
+        {
+          "id": "torn-images",
+          "title": "Torn images recover to an acknowledged commit"
+        },
+        {
+          "id": "corruption-no-panic",
+          "title": "Corrupted images return errors without panicking"
+        },
+        {
+          "id": "torture-24h",
+          "title": "Twenty-four hours of torture complete without failures"
+        }
+      ]
     },
     {
       "id": "checksum",
