@@ -975,7 +975,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         inode.mtime = now();
         inode.ctime = inode.mtime;
         if req.clear_setid {
-            inode.mode &= !0o6000;
+            inode.mode &= !content_privilege(inode.mode);
         }
         let result = state.files.put_inode(node.ino, inode);
         state.edited(result)?;
@@ -1037,7 +1037,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         inode.mtime = now();
         inode.ctime = inode.mtime;
         if clear_setid {
-            inode.mode &= !0o6000;
+            inode.mode &= !content_privilege(inode.mode);
         }
         let result = state.files.put_inode(node.ino, inode);
         state.edited(result)
@@ -1101,10 +1101,10 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         let mut state = self.inner.state.lock();
         state.writable()?;
         let mut inode = state.regular(node.ino)?;
-        if inode.mode & 0o6000 == 0 {
+        if inode.mode & content_privilege(inode.mode) == 0 {
             return Ok(());
         }
-        inode.mode &= !0o6000;
+        inode.mode &= !content_privilege(inode.mode);
         inode.ctime = now();
         let result = state.files.put_inode(node.ino, inode);
         state.edited(result)
@@ -1165,6 +1165,10 @@ fn copy_xattr(out: &mut [u8], bytes: &[u8]) -> Result<usize, Errno> {
         out[..bytes.len()].copy_from_slice(bytes);
     }
     Ok(bytes.len())
+}
+// Match the content-change policy in fs/ext2/mod.rs::content_privilege.
+fn content_privilege(mode: u32) -> u32 {
+    0o4000 | if mode & 0o0010 != 0 { 0o2000 } else { 0 }
 }
 fn now() -> Time {
     Time {
