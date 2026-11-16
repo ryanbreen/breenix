@@ -5,6 +5,7 @@ use super::{
     commit_signal::{monotonic_ns, CommitSignal},
     dirty::DirtyPages,
     format::{Inode, Superblock, Time, BLOCK_SIZE},
+    mount_lock::{MountGuard, MountLock},
     node_cache::CachedNodeStore,
     ops::{self, Files},
     recover,
@@ -24,7 +25,7 @@ use alloc::{
     vec::Vec,
 };
 use core::sync::atomic::{AtomicU64, Ordering};
-use spin::{Mutex, MutexGuard};
+use spin::Mutex;
 
 #[cfg(test)]
 #[path = "../../../../tools/breenfs-host-tests/src/failed_mount_teardown.rs"]
@@ -36,6 +37,10 @@ mod dirty_heap_bound;
 #[cfg(test)]
 #[path = "../../../../tools/breenfs-host-tests/src/mapped_writeback.rs"]
 mod mapped_writeback;
+
+#[cfg(test)]
+#[path = "../../../../tools/breenfs-host-tests/src/mount_exclusion.rs"]
+mod mount_exclusion;
 
 // Extended attributes use ABI errno 61 for an absent attribute.
 const ENODATA: i32 = 61;
@@ -71,7 +76,7 @@ pub struct BreenFs<W: Wait + 'static> {
     inner: Arc<Mount<W>>,
 }
 struct Mount<W: Wait + 'static> {
-    state: Mutex<MountState<W>>,
+    state: MountLock<MountState<W>>,
     device: Arc<dyn BlockDevice>,
     owner: Option<WritableOwner>,
     data: Box<DataBlocks>,
@@ -403,7 +408,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         .map_err(|_| Errno(ENOMEM))?;
         let signal = Arc::new(CommitSignal::new());
         let inner = Arc::try_new(Mount {
-            state: Mutex::new(MountState {
+            state: MountLock::new(MountState {
                 files,
                 committer,
                 durable,
@@ -487,7 +492,7 @@ impl<W: Wait + 'static> BreenFs<W> {
     /// sleeps, holding no mount lock, until a generation completes. A call
     /// larger than the whole budget is admitted alone, once no other bytes are
     /// charged.
-    fn admit(&self, incoming: u64) -> Result<MutexGuard<'_, MountState<W>>, Errno> {
+    fn admit(&self, incoming: u64) -> Result<MountGuard<'_, MountState<W>>, Errno> {
         loop {
             let observed = self.inner.signal.epoch();
             let state = self.inner.state.lock();

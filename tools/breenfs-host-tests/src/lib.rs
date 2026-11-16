@@ -257,6 +257,9 @@ pub use vfs_support::{attrs, credentials, errno, fs, memory, permissions, proces
 #[path = "../../../kernel/src/fs/breenfs/commit_signal.rs"]
 mod commit_signal;
 #[cfg(test)]
+#[path = "../../../kernel/src/fs/breenfs/mount_lock.rs"]
+mod mount_lock;
+#[cfg(test)]
 #[path = "../../../kernel/src/fs/breenfs/dirty.rs"]
 mod dirty;
 #[cfg(test)]

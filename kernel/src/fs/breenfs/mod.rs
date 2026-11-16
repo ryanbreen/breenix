@@ -10,6 +10,7 @@ pub mod dirty;
 pub mod format;
 pub mod mount;
 pub mod mount_args;
+mod mount_lock;
 pub mod node_cache;
 pub mod ops;
 pub mod probe;

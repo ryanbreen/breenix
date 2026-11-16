@@ -199,5 +199,67 @@ impl Store {
         self.assertEqual(violations(scoped), [])
 
 
+def function(code, name):
+    start = re.search(rf'\bfn\s+{name}\b', code)
+    assert start, f'fn {name} missing'
+    opening = code.index('{', start.end())
+    return code[opening:block_end(code, opening + 1) + 1]
+
+
+def kernel_arm(code, name):
+    """The body of the cfg(not(test)) definition of fn `name`."""
+    for match in re.finditer(rf'#\[cfg\(not\(test\)\)\]\s*(?:pub\s+)?fn\s+{name}\b', code):
+        return function(code[match.start():], name)
+    raise AssertionError(f'kernel fn {name} missing')
+
+
+class MountLockMechanism(unittest.TestCase):
+    """The exclusion C1's fix put on Mount.state, pinned as ext2's #728
+    guard pins its park path."""
+
+    def setUp(self):
+        self.raw_lock = (BREENFS / 'mount_lock.rs').read_text()
+        self.lock = strip_comments(self.raw_lock)
+        self.vfs = strip_comments((BREENFS / 'vfs.rs').read_text())
+
+    def test_mount_state_uses_the_sleeping_exclusion(self):
+        mount = function(self.vfs, 'mount_with')
+        self.assertRegex(self.vfs, r'struct\s+Mount<[^{]*\{\s*state\s*:\s*MountLock<MountState<W>>')
+        self.assertIn('MountLock::new(MountState', mount)
+
+    def test_kernel_park_waits_on_a_checked_bounded_queue(self):
+        park = kernel_arm(self.lock, 'park')
+        self.assertIn('if !can_sleep()', park, 'park must spin only where it cannot sleep')
+        self.assertRegex(park, r'prepare_to_wait_checked\(\s*ThreadState::BlockedOnIO\s*,\s*Some\(deadline\)')
+        self.assertRegex(park, r'\|\|\s*\{?\s*self\.held\.load\(Ordering::SeqCst\)',
+                         'the enqueue must recheck the lock under the queue lock')
+        self.assertNotRegex(self.lock, r'\.prepare_to_wait\(', 'untimed prepare_to_wait')
+        self.assertIn('schedule_current_wait()', park)
+        self.assertIn('finish_wait()', park)
+        # The release can miss a contender only if the announce precedes the
+        # recheck on the contender's side.
+        self.assertLess(park.index('self.parked.fetch_add(1, Ordering::SeqCst)'),
+                        park.index('prepare_to_wait_checked'))
+
+    def test_release_clears_the_lock_before_waking(self):
+        release = function(self.lock, 'release')
+        store = release.index('self.held.store(false, Ordering::SeqCst)')
+        self.assertLess(store, release.index('self.parked.load(Ordering::SeqCst)'))
+        self.assertLess(store, release.index('self.wake()'))
+        drop = function(self.lock[self.lock.index('impl<T> Drop for MountGuard'):], 'drop')
+        self.assertIn('self.lock.release()', drop)
+
+    def test_x86_can_sleep_does_not_require_interrupts(self):
+        # x86 syscalls run with IF=0; requiring interrupts would make the park
+        # unreachable there (ext2 #728 review finding B1).
+        can_sleep = kernel_arm(self.raw_lock, 'can_sleep')
+        x86 = can_sleep[can_sleep.index('#[cfg(target_arch = "x86_64")]'):]
+        aarch64 = can_sleep[:can_sleep.index('#[cfg(target_arch = "x86_64")]')]
+        self.assertNotIn('interrupts_enabled', x86)
+        self.assertIn('preempt_count() <= 1', x86)
+        self.assertIn('interrupts_enabled()', aarch64)
+        self.assertIn('preempt_count() <= 1', aarch64)
+
+
 if __name__ == '__main__':
     unittest.main()
