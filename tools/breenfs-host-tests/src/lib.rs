@@ -12,6 +12,8 @@ pub mod commit;
 pub mod crc32c;
 #[path = "../../../kernel/src/fs/breenfs/format.rs"]
 pub mod format;
+#[path = "../../../kernel/src/fs/breenfs/node_cache.rs"]
+pub mod node_cache;
 #[path = "../../../kernel/src/fs/breenfs/recover.rs"]
 pub mod recover;
 #[path = "../../../kernel/src/fs/breenfs/siphash.rs"]
@@ -32,6 +34,7 @@ pub mod stream;
 
 /// Host fixture for the synchronous kernel block-device surface.
 pub mod block {
+    pub use crate::buffer_cache as cache;
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub enum BlockError {
         IoError,
@@ -50,6 +53,13 @@ pub mod block {
         fn flush(&self) -> Result<(), BlockError>;
     }
 }
+
+pub fn arch_without_interrupts<R>(f: impl FnOnce() -> R) -> R {
+    f()
+}
+
+#[path = "../../../kernel/src/block/cache.rs"]
+pub mod buffer_cache;
 
 use alloc::{collections::BTreeMap, vec::Vec};
 
