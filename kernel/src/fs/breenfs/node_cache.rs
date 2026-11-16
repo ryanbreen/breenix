@@ -1,15 +1,18 @@
 //! Read-only verified node store (breenfs design sections 1.2 and 2.2).
 use super::{
-    btree::{Error, NodeStore},
+    btree::{self, Error, Node, NodeStore},
     commit,
-    format::{NodeHeader, Superblock, BLOCK_SIZE, NODE_SIZE},
+    format::{BlockPtr, NodeHeader, Superblock, BLOCK_SIZE, NODE_SIZE},
 };
 use crate::block::{
     cache::{BufferCache, Wait},
     BlockDevice, BlockError,
 };
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
 use core::ops::Deref;
+use spin::Mutex;
+
+const DECODED_NODES: usize = 64;
 
 /// A durable mount's node reads. Exact parent-pointer checks remain in btree.
 ///
@@ -23,6 +26,9 @@ pub struct CachedNodeStore<'a, W: Wait> {
     device: Box<NodeDevice<'a>>,
     fs_uuid: [u8; 16],
     generation: u64,
+    // Read-only mount lifetime; an entry cannot outlive or observe a write to
+    // this device view. Bound retained allocations independently of disk size.
+    decoded: Mutex<VecDeque<(BlockPtr, Arc<Node>)>>,
 }
 
 impl<'a, W: Wait> CachedNodeStore<'a, W> {
@@ -41,6 +47,7 @@ impl<'a, W: Wait> CachedNodeStore<'a, W> {
             }),
             fs_uuid: durable.fs_uuid,
             generation: durable.generation,
+            decoded: Mutex::new(VecDeque::new()),
         }
     }
     /// Borrow the system-wide cache while retaining the mount's device.
@@ -57,6 +64,7 @@ impl<'a, W: Wait> CachedNodeStore<'a, W> {
             }),
             fs_uuid: durable.fs_uuid,
             generation: durable.generation,
+            decoded: Mutex::new(VecDeque::new()),
         }
     }
     /// Retain the mount's device and shared cache without self-references.
@@ -73,11 +81,34 @@ impl<'a, W: Wait> CachedNodeStore<'a, W> {
             }),
             fs_uuid: durable.fs_uuid,
             generation: durable.generation,
+            decoded: Mutex::new(VecDeque::new()),
         }
     }
 }
 
 impl<W: Wait> NodeStore for CachedNodeStore<'_, W> {
+    fn read_node(&self, ptr: BlockPtr) -> Result<Arc<Node>, Error> {
+        {
+            let mut cache = self.decoded.lock();
+            if let Some(at) = cache.iter().position(|(key, _)| *key == ptr) {
+                let entry = cache.remove(at).ok_or(Error::Store)?;
+                let node = entry.1.clone();
+                cache.push_back(entry);
+                return Ok(node);
+            }
+        }
+        // I/O and decoding run outside the decoded-cache lock. get verifies
+        // UUID/address/generation through the shared buffer cache; decode_node
+        // verifies the exact pointer, CRC and complete node layout.
+        let node = btree::decode_node(&self.get(ptr.addr)?, ptr)?;
+        let mut cache = self.decoded.lock();
+        if cache.len() == DECODED_NODES {
+            cache.pop_front();
+        }
+        cache.try_reserve(1).map_err(|_| Error::Store)?;
+        cache.push_back((ptr, node.clone()));
+        Ok(node)
+    }
     fn get(&self, addr: u64) -> Result<Vec<u8>, Error> {
         let mut bytes = Vec::new();
         bytes

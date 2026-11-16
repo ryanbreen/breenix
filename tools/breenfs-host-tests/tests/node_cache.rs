@@ -137,6 +137,11 @@ fn clean_node_is_verified_then_cached() {
         );
         assert_eq!(store.alloc(), Err(btree::Error::Store));
 
+        // Warm the decoded cache before trying mismatched parent pointers.
+        let found = btree::search(&store, sb.space_root, Key::default()).unwrap();
+        let before = cache.counters();
+        assert_eq!(btree::search(&store, sb.space_root, Key::default()).unwrap(), found);
+        assert_eq!(cache.counters(), before, "decoded hits must not reread node bytes");
         // Cache admission is mount-wide; exact parent-pointer checks remain in decode.
         for ptr in [
             BlockPtr {

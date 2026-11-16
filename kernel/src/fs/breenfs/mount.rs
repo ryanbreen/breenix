@@ -100,8 +100,8 @@ pub fn mount(source: u64, target: u64, flags: u64, cred: &Credentials) -> Result
     registry::register(entry).map_err(|e| e.0 as u64)
 }
 
-/// Only explicitly registered native breenfs roots enter this path. All other
-/// targets retain the caller's existing unmount behavior.
+/// Explicitly registered native breenfs roots enter this path. Other
+/// targets fall through to the caller's existing unmount behavior.
 pub fn unmount(target: &Target, flags: u64) -> Option<Result<(), u64>> {
     let Target::Inode { mount, ino, .. } = target else {
         return None;

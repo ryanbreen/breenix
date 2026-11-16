@@ -65,6 +65,12 @@ pub struct View<'a, S> {
     nodes: &'a BTreeMap<u64, Vec<u8>>,
 }
 impl<S: NodeStore> NodeStore for View<'_, S> {
+    fn read_node(&self, ptr: BlockPtr) -> Result<alloc::sync::Arc<btree::Node>, btree::Error> {
+        match self.nodes.get(&ptr.addr) {
+            Some(bytes) => btree::decode_node(bytes, ptr),
+            None => self.base.read_node(ptr),
+        }
+    }
     fn get(&self, addr: u64) -> Result<Vec<u8>, btree::Error> {
         self.nodes
             .get(&addr)
