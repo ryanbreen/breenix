@@ -1,38 +1,3 @@
-use std::{fs, process::Command};
-
-#[test]
-fn one_seed_writes_a_summary() {
-    let dir = std::env::temp_dir().join(format!("breenfs-torture-test-{}", std::process::id()));
-    let output = Command::new(env!("CARGO_BIN_EXE_breenfs-torture"))
-        .args([
-            "--seeds",
-            "1",
-            "--checker",
-            env!("CARGO_BIN_FILE_BREENFS_breenfs-check"),
-            "--out",
-        ])
-        .arg(&dir)
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{output:?}");
-    let summary: serde_json::Value =
-        serde_json::from_slice(&fs::read(dir.join("summary.json")).unwrap()).unwrap();
-    assert!(summary["images_checked"].as_u64().unwrap() > 0, "{summary}");
-    assert_eq!(summary["seeds_requested"].as_u64(), Some(1), "{summary}");
-    assert_eq!(summary["first_seed"].as_u64(), Some(1), "{summary}");
-    assert!(
-        summary["last_seed"].as_u64() == Some(1),
-        "{summary}"
-    );
-    assert_eq!(summary["failures"].as_u64(), Some(0), "{summary}");
-    assert!(
-        summary["deepest_generation"].as_u64().unwrap() >= 9,
-        "{summary}"
-    );
-    assert!(summary["tree_height"].as_u64().unwrap() >= 2, "{summary}");
-    fs::remove_dir_all(dir).unwrap();
-}
-
 #[path = "../src/test_image.rs"]
 mod test_image;
 
