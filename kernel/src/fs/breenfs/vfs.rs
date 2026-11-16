@@ -894,6 +894,13 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         {
             return Err(Errno(EAGAIN));
         }
+        // Match ext2's held-directory policy before testing emptiness.
+        if which.directory
+            && attrs.kind == NodeKind::Directory
+            && state.nodes.get(&victim).is_some_and(|entry| entry.node.strong_count() != 0)
+        {
+            return Err(Errno(EBUSY));
+        }
         let result = if which.directory {
             state.files.rmdir(dir, name, now())
         } else {
