@@ -468,7 +468,7 @@ mod mkfs {
         fs::create_dir(&src).unwrap();
         fs::create_dir(src.join("owned")).unwrap();
         let owners = s.path("owners");
-        fs::write(&owners, "2000:2001\t/owned\n").unwrap();
+        fs::write(&owners, format!("2000:2001\t{}\n", src.join("owned").display())).unwrap();
         let image = s.path("image");
         let output = Command::new(env!("CARGO_BIN_EXE_breenfs-mkfs"))
             .args(["--size", &SIZE.to_string(), "--populate"])
