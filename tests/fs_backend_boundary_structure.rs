@@ -1,9 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// The staged migration in docs/fs/cowfs-design.md section 1.1 lowers this
+/// The staged migration in docs/fs/breenfs-design.md section 1.1 lowers this
 /// ext2-only ceiling at each stage and never raises it.
-/// claim-lint:ok: Staged migration requirement in docs/fs/cowfs-design.md section 1.1.
+/// claim-lint:ok: Staged migration requirement in docs/fs/breenfs-design.md section 1.1.
 const CEILING: usize = 0;
 
 #[test]

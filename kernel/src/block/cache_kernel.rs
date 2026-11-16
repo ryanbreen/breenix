@@ -1,4 +1,4 @@
-//! System cache ownership and scheduler waits (cowfs design section 1.2).
+//! System cache ownership and scheduler waits (breenfs design section 1.2).
 use super::cache::{bound_for_memory, BufferCache, Wait};
 use crate::task::{
     thread::ThreadState,

@@ -1,0 +1,15 @@
+[package]
+name = "breenfs"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[lib]
+name = "breenfs"
+
+# The property check walks encoded 16 KiB nodes after each operation.
+[profile.test]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true

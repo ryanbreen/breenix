@@ -11,7 +11,7 @@ pub struct OpenFile {
 
 impl OpenFile {
     /// Return the position after the last entry the sink accepted. Positions 0
-    /// and 1 name the VFS dots; backend cookies start at 2 (cowfs DIR_INDEX).
+    /// and 1 name the VFS dots; backend cookies start at 2 (breenfs DIR_INDEX).
     pub fn dirents(
         &self,
         mut pos: u64,

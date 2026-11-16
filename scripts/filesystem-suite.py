@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run cowfs host evidence and optionally stage its records on an ext2 image."""
+"""Run breenfs host evidence and optionally stage its records on an ext2 image."""
 import argparse
 import os
 from pathlib import Path
@@ -9,7 +9,7 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
-COWFS = ROOT / 'tools/cowfs'
+BREENFS = ROOT / 'tools/breenfs'
 GUEST = '/usr/local/filesystem-suite/host'
 HOST_CASES = (
     'format/mkfs-empty-clean', 'format/mkfs-populate-clean',
@@ -34,21 +34,21 @@ def reason(label, code, output):
 
 def collect(work):
     records = {}
-    code, output = run(['cargo', 'test', '--manifest-path', COWFS / 'Cargo.toml'])
+    code, output = run(['cargo', 'test', '--manifest-path', BREENFS / 'Cargo.toml'])
     print(output, end='', flush=True)
     tests_ok = code == 0
-    records[HOST_CASES[3]] = 'PASS' if tests_ok else reason('cowfs tests', code, output)
-    target = Path(os.environ.get('CARGO_TARGET_DIR', COWFS / 'target'))
+    records[HOST_CASES[3]] = 'PASS' if tests_ok else reason('breenfs tests', code, output)
+    target = Path(os.environ.get('CARGO_TARGET_DIR', BREENFS / 'target'))
     if not target.is_absolute():
         target = ROOT / target
-    mkfs, check = target / 'debug/cowfs-mkfs', target / 'debug/cowfs-check'
+    mkfs, check = target / 'debug/breenfs-mkfs', target / 'debug/breenfs-check'
     common = ['--uuid', '00112233445566778899aabbccddeeff', '--hash-key',
               '000102030405060708090a0b0c0d0e0f', '--time', '123456789', '--size', '67108864']
     def image(name, populate):
         path = work / name
         args = [mkfs, *common]
         if populate:
-            args += ['--populate', COWFS / 'tests/fixture']
+            args += ['--populate', BREENFS / 'tests/fixture']
         code, output = run([*args, path])
         return path, code, output
     images = []
