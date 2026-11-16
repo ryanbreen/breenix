@@ -25,26 +25,10 @@ pub mod time {
         1
     }
 }
-// These checks have open VNodes but no guest mappings or frame allocator.
+// The mapping fixture executes the production writeback traversal and copy.
 pub mod memory {
-    pub mod file_map {
-        #[derive(Clone)]
-        pub struct MapState;
-        impl MapState {
-            pub fn new(
-                _size: u64,
-                _epoch: u64,
-                _fs: alloc::sync::Arc<dyn crate::vfs::FileSystem>,
-            ) -> Result<Self, crate::errno::Errno> {
-                Ok(Self)
-            }
-            pub fn resync_unbound(&self, _size: u64) {}
-            pub fn has_dirty(&self) -> bool {
-                false
-            }
-            pub fn may_change_exec_image(&self) -> bool {
-                false
-            }
-        }
-    }
+    pub fn physical_memory_offset() -> HostOffset { HostOffset }
+    pub struct HostOffset;
+    impl HostOffset { pub fn as_u64(&self) -> u64 { 0 } }
+    pub mod file_map { include!("mapping_support.rs"); }
 }

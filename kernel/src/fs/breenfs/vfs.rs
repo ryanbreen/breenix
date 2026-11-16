@@ -33,6 +33,10 @@ mod failed_mount_teardown;
 #[path = "../../../../tools/breenfs-host-tests/src/dirty_heap_bound.rs"]
 mod dirty_heap_bound;
 
+#[cfg(test)]
+#[path = "../../../../tools/breenfs-host-tests/src/mapped_writeback.rs"]
+mod mapped_writeback;
+
 // Extended attributes use ABI errno 61 for an absent attribute.
 const ENODATA: i32 = 61;
 

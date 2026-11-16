@@ -67,37 +67,12 @@ pub mod time {
 #[path = "../tests/vfs_host_tests.rs"]
 mod vfs_host_tests;
 
-// Mapped-page sync is kernel-only; storage::FileMap::has_dirty returns false here.
+// Share the pinned-frame fixture and production mapping entry points.
 pub mod memory {
-    pub mod file_map {
-        // Disk-only conformance fixtures have no mapped frames.
-        #[derive(Clone)]
-        pub struct MapState {
-            pub mapped_size: alloc::sync::Arc<core::sync::atomic::AtomicU64>,
-        }
-        impl MapState {
-            pub fn new(
-                size: u64, _epoch: u64,
-                _fs: alloc::sync::Arc<dyn crate::vfs::FileSystem>,
-            ) -> Result<Self, crate::errno::Errno> {
-                Ok(Self {
-                    mapped_size: alloc::sync::Arc::new(core::sync::atomic::AtomicU64::new(size)),
-                })
-            }
-            pub fn resync_unbound(&self, size: u64) {
-                self.mapped_size.store(size, core::sync::atomic::Ordering::Release);
-            }
-            pub fn has_dirty(&self) -> bool { false }
-            pub fn may_change_exec_image(&self) -> bool { false }
-        }
-        pub fn sync_range<T: ?Sized>(
-            _node: &T,
-            _first: u64,
-            _last: u64,
-        ) -> Result<(), crate::errno::Errno> {
-            Err(crate::errno::Errno(crate::syscall::errno::EOPNOTSUPP))
-        }
-    }
+    pub fn physical_memory_offset() -> HostOffset { HostOffset }
+    pub struct HostOffset;
+    impl HostOffset { pub fn as_u64(&self) -> u64 { 0 } }
+    pub mod file_map { include!("../../breenfs-host-tests/src/mapping_support.rs"); }
 }
 
 pub use vfs::mount_table;
