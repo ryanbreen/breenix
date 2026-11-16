@@ -785,6 +785,11 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         device: &dyn BlockDevice,
         committer: &mut Committer,
     ) -> Result<Superblock, Error> {
+        Ok(committer.commit_files(device, self)?)
+    }
+    pub(crate) fn prepare_commit(
+        &mut self,
+    ) -> Result<(&mut Transaction<'a, S>, &BTreeMap<u64, Vec<u8>>), Error> {
         self.reclaim_orphans()?;
         self.txn.update_root(self.root_id, self.root.clone())?;
         // A private allocation replaced again within this transaction is PENDING
@@ -797,7 +802,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             .map(|(k, _)| k.object)
             .collect();
         self.data.retain(|addr, _| live.contains(addr));
-        Ok(committer.commit(device, &mut self.txn, &self.data)?)
+        Ok((&mut self.txn, &self.data))
     }
 }
 const ORPHAN_OBJECT: u64 = 0xffff_ffff_ffff_ff00;

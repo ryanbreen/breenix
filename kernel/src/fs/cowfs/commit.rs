@@ -94,13 +94,29 @@ impl Committer {
         txn: &mut Transaction<'_, S>,
         data: &BTreeMap<u64, Vec<u8>>,
     ) -> Result<Superblock, Error> {
+        self.committing(|mount| mount.publish(device, txn, data))
+    }
+    pub(crate) fn commit_files<S: NodeStore>(
+        &mut self,
+        device: &dyn BlockDevice,
+        files: &mut super::ops::Files<'_, S>,
+    ) -> Result<Superblock, Error> {
+        self.committing(|mount| {
+            let (txn, data) = files.prepare_commit().map_err(|_| Error::EIO)?;
+            mount.publish(device, txn, data)
+        })
+    }
+    fn committing(
+        &mut self,
+        operation: impl FnOnce(&Self) -> Result<Superblock, Error>,
+    ) -> Result<Superblock, Error> {
         if self.failed {
             return Err(Error::EIO);
         }
         if self.read_only() {
             return Err(Error::ReadOnly);
         }
-        let result = self.publish(device, txn, data);
+        let result = operation(self);
         match &result {
             Ok(sb) => self.durable = sb.clone(),
             Err(_) => self.failed = true,
