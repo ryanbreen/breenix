@@ -274,6 +274,18 @@ pub fn range<S: NodeStore>(
     lower: Key,
     upper: Key,
 ) -> Result<Vec<(Key, Vec<u8>)>, Error> {
+    range_limit(store, root, lower, upper, usize::MAX)
+}
+
+/// Read at most `limit` items, stopping before visiting later branches.
+/// Resuming at the successor key re-descends from the durable root.
+pub fn range_limit<S: NodeStore>(
+    store: &S,
+    root: BlockPtr,
+    lower: Key,
+    upper: Key,
+    limit: usize,
+) -> Result<Vec<(Key, Vec<u8>)>, Error> {
     fn walk<S: NodeStore>(
         store: &S,
         node: Node,
@@ -281,30 +293,35 @@ pub fn range<S: NodeStore>(
         lower: Key,
         upper: Key,
         out: &mut Vec<(Key, Vec<u8>)>,
+        limit: usize,
     ) -> Result<(), Error> {
         if node.header.level == 0 {
             out.extend(
                 node.items
                     .into_iter()
-                    .filter(|(k, _)| *k >= lower && *k <= upper),
+                    .filter(|(k, _)| *k >= lower && *k <= upper)
+                    .take(limit - out.len()),
             );
         } else {
             for (i, entry) in node.children.iter().enumerate() {
+                if out.len() == limit {
+                    break;
+                }
                 let next = node.children.get(i + 1).map(|e| e.key).or(bound);
                 if entry.key <= upper && next.is_none_or(|k| k > lower) {
                     let ptr = node.child(i);
                     let child = decode(&store.get(ptr.addr)?, ptr, false, Some(entry.key), next)?;
                     same_tree(&node, &child)?;
-                    walk(store, child, next, lower, upper, out)?;
+                    walk(store, child, next, lower, upper, out, limit)?;
                 }
             }
         }
         Ok(())
     }
     let mut out = Vec::new();
-    if lower <= upper {
+    if lower <= upper && limit != 0 {
         let node = decode(&store.get(root.addr)?, root, true, None, None)?;
-        walk(store, node, None, lower, upper, &mut out)?;
+        walk(store, node, None, lower, upper, &mut out, limit)?;
     }
     Ok(out)
 }

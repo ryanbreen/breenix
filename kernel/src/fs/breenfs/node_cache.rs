@@ -8,7 +8,8 @@ use crate::block::{
     cache::{BufferCache, Wait},
     BlockDevice, BlockError,
 };
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use core::ops::Deref;
 
 /// A durable mount's node reads. Exact parent-pointer checks remain in btree.
 ///
@@ -18,7 +19,7 @@ use alloc::{boxed::Box, vec::Vec};
 /// raw sector readers and mounts with different UUID/generation limits. Dropping
 /// the store discards its entries before that identity can be reused.
 pub struct CachedNodeStore<'a, W: Wait> {
-    cache: &'a BufferCache<W>,
+    cache: Retained<'a, BufferCache<W>>,
     device: Box<NodeDevice<'a>>,
     fs_uuid: [u8; 16],
     generation: u64,
@@ -33,9 +34,25 @@ impl<'a, W: Wait> CachedNodeStore<'a, W> {
         durable: &Superblock,
     ) -> Self {
         Self {
-            cache,
+            cache: Retained::Borrowed(cache),
             device: Box::new(NodeDevice {
-                device,
+                device: Retained::Borrowed(device),
+                total_blocks: durable.total_blocks,
+            }),
+            fs_uuid: durable.fs_uuid,
+            generation: durable.generation,
+        }
+    }
+    /// Retain the mount's device and shared cache without self-references.
+    pub fn new_owned(
+        cache: Arc<BufferCache<W>>,
+        device: Arc<dyn BlockDevice>,
+        durable: &Superblock,
+    ) -> Self {
+        Self {
+            cache: Retained::Shared(cache),
+            device: Box::new(NodeDevice {
+                device: Retained::Shared(device),
                 total_blocks: durable.total_blocks,
             }),
             fs_uuid: durable.fs_uuid,
@@ -81,12 +98,12 @@ impl<W: Wait> Drop for CachedNodeStore<'_, W> {
 // Keys retain the format's 4 KiB start address, including nodes not aligned to
 // four blocks. Only read_block is exposed to the store; mutation is refused.
 struct NodeDevice<'a> {
-    device: &'a dyn BlockDevice,
+    device: Retained<'a, dyn BlockDevice + 'a>,
     total_blocks: u64,
 }
 impl BlockDevice for NodeDevice<'_> {
     fn read_block(&self, addr: u64, bytes: &mut [u8]) -> Result<(), BlockError> {
-        let total = commit::partition_blocks(self.device).map_err(|_| BlockError::IoError)?;
+        let total = commit::partition_blocks(&*self.device).map_err(|_| BlockError::IoError)?;
         if bytes.len() != NODE_SIZE
             || self.total_blocks > total
             || addr < 20
@@ -117,5 +134,21 @@ impl BlockDevice for NodeDevice<'_> {
     }
     fn flush(&self) -> Result<(), BlockError> {
         Err(BlockError::IoError)
+    }
+}
+
+// The borrowed form remains useful for scoped host/core readers; the owned
+// form lets an Any + 'static VFS backend retain exactly the same verified store.
+enum Retained<'a, T: ?Sized> {
+    Borrowed(&'a T),
+    Shared(Arc<T>),
+}
+impl<T: ?Sized> Deref for Retained<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        match self {
+            Self::Borrowed(value) => value,
+            Self::Shared(value) => value,
+        }
     }
 }
