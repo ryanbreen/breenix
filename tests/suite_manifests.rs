@@ -1041,10 +1041,8 @@ fn sdk_host_records_match_the_manifest_and_the_guest() {
     assert_eq!(read, written, "the records suite_sdk.rs reads differ from those scripts/sdk-suite.py writes");
 }
 
-#[test]
-fn filesystem_host_records_match_the_manifest_and_the_guest() {
-    let root = repo_root();
-    let manifest: Value = serde_json::from_str(&fs::read_to_string(root.join("docs/suites/filesystem.json")).unwrap()).unwrap();
+fn check_filesystem_host_records(manifest: &str, harness: &str, guest: &str) {
+    let manifest: Value = serde_json::from_str(manifest).unwrap();
     let ids: Vec<String> = manifest["categories"].as_array().unwrap().iter().flat_map(|category| {
         category["cases"].as_array().unwrap().iter().map(move |case| {
             format!("{}/{}", category["id"].as_str().unwrap(), case["id"].as_str().unwrap())
@@ -1052,11 +1050,45 @@ fn filesystem_host_records_match_the_manifest_and_the_guest() {
     }).collect();
     let expected = ["format/mkfs-empty-clean", "format/mkfs-populate-clean", "format/reproducible-image", "format/violations-refused"];
     assert_eq!(ids, expected);
-    let mut written = sdk_harness_cases(&fs::read_to_string(root.join("scripts/filesystem-suite.py")).unwrap());
+    let mut written = sdk_harness_cases(harness);
     assert_eq!(written, ids, "host records differ from manifest order");
     written.sort();
-    let read = sdk_guest_reads(&fs::read_to_string(root.join("userspace/programs/src/suite_filesystem.rs")).unwrap());
+    let read = sdk_guest_reads(guest);
     assert_eq!(read, written, "guest records differ from host records");
+}
+
+#[test]
+fn filesystem_host_records_match_the_manifest_and_the_guest() {
+    let root = repo_root();
+    check_filesystem_host_records(
+        &fs::read_to_string(root.join("docs/suites/filesystem.json")).unwrap(),
+        &fs::read_to_string(root.join("scripts/filesystem-suite.py")).unwrap(),
+        &fs::read_to_string(root.join("userspace/programs/src/suite_filesystem.rs")).unwrap(),
+    );
+}
+
+#[test]
+fn filesystem_record_guard_checks_format_and_guest() {
+    let manifest = |cases: &str| format!(r#"{{"categories":[{{"id":"interface","cases":[{{"id":"other"}}]}},{{"id":"format","cases":[{cases}]}}]}}"#);
+    let harness = |cases: &str| format!("\nHOST_CASES = (\n{cases}\n)\n");
+    let guest = |cases: &str| format!("fn records() {{ {cases} }}");
+    let good_manifest = manifest(r#"{"id":"a"},{"id":"b"}"#);
+    let good_harness = harness("'format/a', 'format/b',");
+    let good_guest = guest("host(\"format/a\"); host(\"format/b\");");
+    let check = |m: &str, h: &str, g: &str| std::panic::catch_unwind(|| check_filesystem_host_records(m, h, g)).is_ok();
+    assert!(check(&good_manifest, &good_harness, &good_guest), "other categories must not affect format records");
+    let extra_case = manifest(r#"{"id":"a"},{"id":"b"},{"id":"c"}"#);
+    let extra_host = harness("'format/a', 'format/b', 'interface/other',");
+    let wrong_order = harness("'format/b', 'format/a',");
+    let extra_read = guest("host(\"format/a\"); host(\"format/b\"); host(\"format/c\");");
+    for (name, m, h, g) in [
+        ("missing host record", extra_case.as_str(), good_harness.as_str(), good_guest.as_str()),
+        ("host outside format", good_manifest.as_str(), extra_host.as_str(), good_guest.as_str()),
+        ("wrong order", good_manifest.as_str(), wrong_order.as_str(), good_guest.as_str()),
+        ("unwritten guest record", good_manifest.as_str(), good_harness.as_str(), extra_read.as_str()),
+    ] {
+        assert!(!check(m, h, g), "guard accepted {name}");
+    }
 }
 
 #[test]
