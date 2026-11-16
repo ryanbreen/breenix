@@ -867,3 +867,32 @@ fn shutdown_commits_and_quiesces_until_service_restarts() {
     fs.init_service().unwrap(); // An EBUSY unmount leaves the mount usable.
     assert_eq!(fs.write(&node, request(), b"resumed").unwrap().bytes, 7);
 }
+
+
+#[test]
+fn content_changes_preserve_nonexecutable_sgid() {
+    let (disk, ino) = fixture();
+    let fs = mount(disk);
+    let node = fs.open(ino).unwrap();
+    let mut modes = Vec::new();
+    for mode in [0o6640, 0o6750] {
+        for operation in ["write", "resize", "mapping"] {
+            fs.setattr(ino, SetAttr { mode: Some(mode), ..Default::default() }).unwrap();
+            match operation {
+                "write" => {
+                    fs.write(&node, WriteReq {
+                        at: WriteAt::Offset(0), limit: u64::MAX, clear_setid: true,
+                    }, b"changed").unwrap();
+                }
+                "resize" => fs.resize(&node, fs.getattr(ino).unwrap().size + 1, true, &|_| Ok(())).unwrap(),
+                "mapping" => fs.clear_mapping_privilege(&node).unwrap(),
+                _ => unreachable!(),
+            }
+            modes.push((mode, operation, fs.getattr(ino).unwrap().attrs.mode & 0o7777));
+        }
+    }
+    assert_eq!(modes, vec![
+        (0o6640, "write", 0o2640), (0o6640, "resize", 0o2640), (0o6640, "mapping", 0o2640),
+        (0o6750, "write", 0o0750), (0o6750, "resize", 0o0750), (0o6750, "mapping", 0o0750),
+    ]);
+}
