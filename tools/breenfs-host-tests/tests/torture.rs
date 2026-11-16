@@ -27,9 +27,17 @@ fn torture_stream_reuses_slots_and_splits_trees() {
             assert_eq!(writer.execute(&op), model.execute(&op), "{op:?}");
             assert_eq!(writer.state().unwrap(), model.state().unwrap(), "{op:?}");
             let bytes = device.durable_image();
+            let slots: [Option<Superblock>; 4] = core::array::from_fn(|index| {
+                let slot = 16 + index;
+                Superblock::decode(&bytes[slot * 4096..(slot + 1) * 4096]).ok()
+            });
+            let max_gen = slots.iter().flatten().map(|sb| sb.generation).max().unwrap();
             for slot in 16..20 {
-                if let Ok(sb) = Superblock::decode(&bytes[slot * 4096..(slot + 1) * 4096]) {
+                if let Some(sb) = &slots[slot - 16] {
                     generation = generation.max(sb.generation);
+                    if sb.generation < max_gen.saturating_sub(1) {
+                        continue;
+                    }
                     let store = DeviceStore(device.as_ref());
                     let h = NodeHeader::decode(&store.get(sb.space_root.addr).unwrap()).unwrap();
                     height = height.max(h.level + 1);
