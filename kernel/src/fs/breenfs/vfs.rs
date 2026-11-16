@@ -923,6 +923,9 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         if size > (1 << 63) - 4096 {
             return Err(Errno(EFBIG));
         }
+        if size == inode.size {
+            return Ok(());
+        }
         if size < inode.size {
             let floor = size / BLOCK_SIZE as u64 * BLOCK_SIZE as u64;
             let mapped_tail = state
