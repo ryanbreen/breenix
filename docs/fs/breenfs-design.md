@@ -381,7 +381,7 @@ quarter full are only warnings.
 - **Model.** A reference POSIX model runs the same random streams (create, sparse write, truncate, link, unlink,
   rename, mkdir, rmdir, symlink, setattr, xattrs, fsync, remount, snapshots, fill to ENOSPC and delete) and is
   compared after every operation and crash. Failing seeds are minimized into regression tests. A fixed-seed corpus
-  runs in `cargo test`; `breenfs-torture --hours N` produces milestone evidence. <!-- claim-lint:ok: Normative breenfs design requirement from docs/fs/breenfs-design.md section 5, not a measured result. -->
+  runs in `cargo test`; `breenfs-torture --seeds N` produces coverage-bounded evidence (E24 coordinator ledger line 267). <!-- claim-lint:ok: Normative breenfs design requirement from docs/fs/breenfs-design.md section 5, not a measured result. -->
 - **Corruption.** Bit flips in committed images yield errors, never panics, and the checker names the block. <!-- claim-lint:ok: Normative breenfs design requirement from docs/fs/breenfs-design.md section 5, not a measured result. -->
 
 **R240 power cuts, on the test root only.** Test boots get only the test root's GUID, so the fence protects system
@@ -467,7 +467,7 @@ SDK suite's host cases are.
 | 4 | `read` | `read` | A host-built disk matches its manifest | host, QEMU | QEMU |
 | 5 | `write` | `write` | Model runs; files-io and directories on a breenfs root | host, QEMU | QEMU |
 | 6 | `enospc` | `enospc` | Host fill-and-delete | host, QEMU | QEMU |
-| 7 | `crash-host` | `crash-images` | Clean crash and corruption corpora; 24-hour torture run | host | host |
+| 7 | `crash-host` | Mac-side evidence | Clean crash and corruption corpora; seeds 1-8 | host | host |
 | 8 | `checksums-scrub` | `checksum`, `scrub` | Bit flips return EIO; scrub and the checker name the block | host, QEMU | QEMU |
 | 9 | `snapshots` | `snapshots` | Snapshots in the model and the crash corpus | host, QEMU | QEMU |
 | 10 | `test-root` | `test-root` | Each suite on a breenfs test root | QEMU | R240 |

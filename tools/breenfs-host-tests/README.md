@@ -428,7 +428,7 @@ This unit is host acceptance only. The core remains undeclared in kernel
 DEAD reaping, reservation, Hold-group/dirty-page integration and ARM64 QEMU,
 Parallels and VMware runtime acceptance. This unit runs no boot.
 
-## Timed torture driver (24.9-e)
+## Seed-bounded torture driver (E24 coordinator ledger line 267)
 
 Build and run the host binary with an independent checker:
 
@@ -438,13 +438,13 @@ CARGO_BUILD_JOBS=4 taskpolicy -b cargo build \
 CARGO_BUILD_JOBS=4 taskpolicy -b cargo build \
   --manifest-path tools/breenfs-host-tests/Cargo.toml --bin breenfs-torture
 taskpolicy -b tools/breenfs-host-tests/target/debug/breenfs-torture \
-  --hours 0.002 --seed-start 1 \
+  --seeds 2 --seed-start 1 \
   --checker tools/breenfs/target/debug/breenfs-check --out /tmp/breenfs-torture
 ```
 
-The command accepts only `--hours N [--seed-start S] --checker PATH --out DIR`.
-Hours must be finite and positive and may be fractional; the default first seed
-is 1. A seed runs `32 + (seed % 4) * 8` stream operations plus the final remount through
+The command accepts only `--seeds N [--seed-start S] --checker PATH --out DIR`.
+The seed count must be a positive integer; the default first seed is 1.
+The inclusive range must fit in u64. A seed runs `32 + (seed % 4) * 8` stream operations plus the final remount through
 `crash::subset_images`, both `crash::torn_images` tails, and
 `corrupt::bit_flips`, using the existing full selection policy and acceptance.
 The high bit of the emitted stream seed tags the torture workload, preserving
@@ -460,13 +460,12 @@ entry points, with fixed metadata and a populated tree containing multi-block
 data, a partial tail, an empty file and a symlink. No formatter executable is
 required by the driver. The checker is invoked as `PATH --full IMAGE`.
 
-The deadline is checked between complete seeds. A short request can overrun
-its deadline while finishing its first seed; it does not truncate a corpus or
-count a partial seed as passed. Seeds advance consecutively without wrapping.
-Exit 0 requires a passed seed and an expired deadline with no failure.
+The driver stops after the requested count of complete seeds. Seeds advance
+consecutively without wrapping. A partial seed cannot satisfy the count.
+Exit 0 requires the requested seed range to finish without failure.
 
 `DIR/summary.json` is replaced atomically at startup and after a seed. Its fields
-are `started` (Unix seconds), `hours_requested`, `elapsed` (monotonic seconds),
+are `started` (Unix seconds), `seeds_requested`, `elapsed` (monotonic seconds),
 `first_seed`, `last_seed` (inclusive; null before a seed), `images_checked`
 (checker invocations, including minimization), `deepest_generation` and
 `tree_height` (greatest selected generation and reachable height among recovered
@@ -476,13 +475,15 @@ minimizing. `DIR/failure-<seed>.txt` holds the diagnostic and the minimized Rust
 row from `minimize::Case::regression_row`, replayed against the same failure
 kind. It then exits 1. A failed run retains its last sparse checker input;
 a successful run removes that scratch image. Setup or output I/O errors also
-exit 1 and cannot be accepted as an expired deadline.
+exit 1.
 
-`tests/torture.rs::short_run_writes_a_summary` runs the built binary with
-`--hours 0.002` and Cargo's artifact checker. It requires exit 0, checked images,
-an inclusive seed range and a failure count of 0. The check-first commit is `75ba4f78`.
-The one-hour final-head acceptance and later background 24-hour run are the
-separate milestone work specified by coordinator ledger line 213.
+`tests/torture.rs::one_seed_writes_a_summary` runs the built binary with
+`--seeds 1` and Cargo's artifact checker. It requires exit 0, checked images,
+the exact one-seed range and a failure count of 0. The original duration-based
+check-first commit was `75ba4f78`; seed-range parsing is checked by `61ad8d8e`.
+Coordinator ledger line 267 replaces timed acceptance with seeds 1-8, run after
+the acceptance boot as four processes of two seeds each at nice 15.
+The PR records the range, image count and failures.
 
 This host driver adds no architecture-specific path. ARM still lacks VFS
 read/write mounts, open-handle lifetime, DEAD reaping, reservation,

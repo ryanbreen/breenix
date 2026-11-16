@@ -1,4 +1,4 @@
-//! Time-bounded driver for the design section 5 host crash corpora.
+//! Seed-bounded driver for the design section 5 host crash corpora.
 use breenfs_host_tests::{
     commit::{Committer, DeviceStore},
     corrupt::{self, Flip, Kind},
@@ -18,26 +18,30 @@ use std::{
     path::PathBuf,
     process::{Command, ExitCode, Output},
     sync::Arc,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use breenfs_host_tests::stream::{torture_operations, torture_seed};
-const USAGE: &str = "breenfs-torture --hours N [--seed-start S] --checker PATH --out DIR";
+const USAGE: &str = "breenfs-torture --seeds N [--seed-start S] --checker PATH --out DIR";
 type Result<T> = std::result::Result<T, String>;
 
 struct Args {
-    hours: f64,
-    duration: Duration,
+    seeds: u64,
+    last_seed: u64,
     seed: u64,
     checker: PathBuf,
     out: PathBuf,
 }
 
 fn args() -> Result<Args> {
+    parse_args(std::env::args_os().skip(1))
+}
+
+fn parse_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Args> {
     let mut values = BTreeMap::new();
-    let mut args = std::env::args_os().skip(1);
+    let mut args = args.into_iter();
     while let Some(flag) = args.next() {
-        if !["--hours", "--seed-start", "--checker", "--out"]
+        if !["--seeds", "--seed-start", "--checker", "--out"]
             .iter()
             .any(|s| flag == *s)
         {
@@ -51,25 +55,21 @@ fn args() -> Result<Args> {
             return Err(format!("repeated option\n{USAGE}"));
         }
     }
-    let hours: f64 = values
-        .remove(std::ffi::OsStr::new("--hours"))
+    let seeds: u64 = values
+        .remove(std::ffi::OsStr::new("--seeds"))
         .and_then(|s| s.to_str().and_then(|s| s.parse().ok()))
-        .ok_or(USAGE)?;
-    if !hours.is_finite() || hours <= 0.0 {
-        return Err("--hours must be finite and positive".into());
-    }
-    let duration =
-        Duration::try_from_secs_f64(hours * 3600.0).map_err(|_| "--hours is out of range")?;
-    if duration.is_zero() {
-        return Err("--hours is below clock resolution".into());
-    }
-    let seed = match values.remove(std::ffi::OsStr::new("--seed-start")) {
+        .filter(|n| *n != 0)
+        .ok_or("--seeds must be a positive unsigned 64-bit integer")?;
+    let seed: u64 = match values.remove(std::ffi::OsStr::new("--seed-start")) {
         None => 1,
         Some(s) => s
             .to_str()
             .and_then(|s| s.parse().ok())
             .ok_or("--seed-start must be an unsigned 64-bit integer")?,
     };
+    let last_seed = seed
+        .checked_add(seeds - 1)
+        .ok_or("seed range overflows u64")?;
     let checker = values
         .remove(std::ffi::OsStr::new("--checker"))
         .filter(|s| !s.is_empty())
@@ -81,8 +81,8 @@ fn args() -> Result<Args> {
         .ok_or(USAGE)?
         .into();
     Ok(Args {
-        hours,
-        duration,
+        seeds,
+        last_seed,
         seed,
         checker,
         out,
@@ -455,7 +455,7 @@ fn summary(
         .map(|_| args.seed.to_string())
         .unwrap_or_else(|| "null".into());
     let last = last.map(|s| s.to_string()).unwrap_or_else(|| "null".into());
-    let json = format!("{{\n  \"started\": {started},\n  \"hours_requested\": {},\n  \"elapsed\": {},\n  \"first_seed\": {first},\n  \"last_seed\": {last},\n  \"images_checked\": {images},\n  \"deepest_generation\": {},\n  \"tree_height\": {},\n  \"failures\": {failures}\n}}\n", args.hours, clock.elapsed().as_secs_f64(), coverage.0, coverage.1);
+    let json = format!("{{\n  \"started\": {started},\n  \"seeds_requested\": {},\n  \"elapsed\": {},\n  \"first_seed\": {first},\n  \"last_seed\": {last},\n  \"images_checked\": {images},\n  \"deepest_generation\": {},\n  \"tree_height\": {},\n  \"failures\": {failures}\n}}\n", args.seeds, clock.elapsed().as_secs_f64(), coverage.0, coverage.1);
     let tmp = args.out.join("summary.json.tmp");
     fs::write(&tmp, json).map_err(|e| e.to_string())?;
     fs::rename(tmp, args.out.join("summary.json")).map_err(|e| e.to_string())
@@ -542,14 +542,14 @@ fn run(args: Args) -> Result<()> {
             checker.images,
             clock.elapsed().as_secs_f64()
         );
-        if clock.elapsed() >= args.duration {
+        if current == args.last_seed {
             drop(checker);
             fs::remove_file(path).map_err(|e| e.to_string())?;
             return Ok(());
         }
         current = current
             .checked_add(1)
-            .ok_or("seed range exhausted before the deadline")?;
+            .ok_or("seed range exhausted before requested count")?;
     }
 }
 
@@ -572,13 +572,42 @@ mod tests {
     #[test]
     fn seed_count_selects_an_exact_nonwrapping_range() {
         let parse = |flags: &[&str]| super::parse_args(flags.iter().map(std::ffi::OsString::from));
-        let args = parse(&["--seeds", "2", "--seed-start", "7", "--checker", "check", "--out", "out"]).unwrap();
+        let args = parse(&[
+            "--seeds",
+            "2",
+            "--seed-start",
+            "7",
+            "--checker",
+            "check",
+            "--out",
+            "out",
+        ])
+        .unwrap();
         assert_eq!((args.seed, args.seeds, args.last_seed), (7, 2, 8));
-        let args = parse(&["--seeds", "1", "--seed-start", "18446744073709551615", "--checker", "check", "--out", "out"]).unwrap();
+        let args = parse(&[
+            "--seeds",
+            "1",
+            "--seed-start",
+            "18446744073709551615",
+            "--checker",
+            "check",
+            "--out",
+            "out",
+        ])
+        .unwrap();
         assert_eq!(args.last_seed, u64::MAX);
         for flags in [
             vec!["--seeds", "0", "--checker", "check", "--out", "out"],
-            vec!["--seeds", "2", "--seed-start", "18446744073709551615", "--checker", "check", "--out", "out"],
+            vec![
+                "--seeds",
+                "2",
+                "--seed-start",
+                "18446744073709551615",
+                "--checker",
+                "check",
+                "--out",
+                "out",
+            ],
             vec!["--hours", "1", "--checker", "check", "--out", "out"],
         ] {
             assert!(parse(&flags).is_err(), "accepted {flags:?}");
