@@ -62,5 +62,75 @@ def set_owners(image, ownership, root):
             raise ValueError('ext2 ownership readback differs: ' + path)
 
 
+def list_entries(image):
+    # debugfs is a read-only binary oracle; its parsable directory listing includes
+    # inode identity, mode and numeric ownership even when rdump cannot chown.
+    pending = ['/']
+    seen_dirs = set()
+    entries = []
+    while pending:
+        directory = pending.pop()
+        quoted = '"' + directory.replace('\\', '\\\\').replace('"', '\\"') + '"'
+        result = subprocess.run(['debugfs', '-R', 'ls -p -l ' + quoted, str(image)],
+                                capture_output=True, check=True)
+        if not result.stdout.startswith(b'/'):
+            raise ValueError('debugfs could not list ' + directory + ': ' + result.stderr.decode(errors='replace'))
+        for line in result.stdout.decode(errors='surrogateescape').splitlines():
+            fields = line.split('/')
+            if len(fields) < 8 or fields[0] or fields[5] in ('.', '..'):
+                continue
+            ino, mode, uid, gid, name = fields[1:6]
+            if ino == '0':
+                continue
+            if not ino or not name or '\t' in name or '\n' in name:
+                raise ValueError('invalid ext2 directory entry')
+            path = directory.rstrip('/') + '/' + name
+            entries.append((int(ino), int(mode, 8), int(uid), int(gid), path))
+            if int(mode, 8) & 0o170000 == 0o040000:
+                if int(ino) in seen_dirs:
+                    raise ValueError('directory cycle in image')
+                seen_dirs.add(int(ino))
+                pending.append(path)
+    # The root is not returned by ls as a normal entry.
+    stat = subprocess.check_output(['debugfs', '-R', 'stat /', str(image)], text=True)
+    owner = re.search(r'User:\s+(\d+)\s+Group:\s+(\d+)', stat)
+    if not owner:
+        raise ValueError('cannot read root ownership')
+    root_mode = re.search(r'Mode:\s+(0?[0-7]+)', stat)
+    if not root_mode:
+        raise ValueError('cannot read root mode')
+    entries.append((2, 0o040000 | int(root_mode[1], 8), int(owner[1]), int(owner[2]), '/'))
+    return sorted(entries, key=lambda item: item[4])
+
+
+def list_owners(image):
+    for _, _, uid, gid, path in list_entries(image):
+        if uid or gid:
+            print(f'{uid}:{gid}\t{path}')
+
+
+def restore_links(image, tree):
+    import os
+    first = {}
+    entries = list_entries(image)
+    for ino, mode, _, _, path in entries:
+        if mode & 0o170000 == 0o040000:
+            continue
+        target = Path(tree) / path.lstrip('/')
+        if ino in first:
+            target.unlink()
+            os.link(first[ino], target, follow_symlinks=False)
+        else:
+            first[ino] = target
+    for _, mode, _, _, path in reversed(entries):
+        if mode & 0o170000 != 0o120000:
+            os.chmod(Path(tree) / path.lstrip('/'), mode & 0o7777)
+
+
 if __name__ == '__main__':
-    set_owners(*sys.argv[1:])
+    if len(sys.argv) == 3 and sys.argv[1] == '--list':
+        list_owners(sys.argv[2])
+    elif len(sys.argv) == 4 and sys.argv[1] == '--restore-links':
+        restore_links(sys.argv[2], sys.argv[3])
+    else:
+        set_owners(*sys.argv[1:])
