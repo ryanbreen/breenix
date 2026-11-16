@@ -53,7 +53,11 @@ impl Stream {
             _ => unreachable!(),
         };
         let Some(ino) = ino else {
-            return Action::Create { dir: ROOT, name, mode: 0o644 };
+            return Action::Create {
+                dir: ROOT,
+                name,
+                mode: 0o644,
+            };
         };
         match self.index % 16 {
             1..=4 => Action::Setxattr {

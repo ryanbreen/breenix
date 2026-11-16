@@ -352,6 +352,11 @@ recovery must preserve the image. Adapter construction, the full logical state
 walk and reads of the pristine image's regular-file inode/length list run under
 `catch_unwind`; errors are permitted and a panic fails the check. The reads
 include holes, partial tails and EOF, even if the state walk returns an error.
+Each flipped node also goes directly through the production B-tree search path,
+which must return EIO even if recovery selected an older generation or the file
+reads avoid that node. The pointer is read from raw fields without a preliminary
+CRC decode. Checker diagnostics must name a block or node explicitly on an error
+line, or name the node CRC that forced abandonment of a newer generation.
 Data EIO enforcement remains step 24.13.
 
 ```sh
@@ -439,9 +444,14 @@ taskpolicy -b tools/breenfs-host-tests/target/debug/breenfs-torture \
 
 The command accepts only `--hours N [--seed-start S] --checker PATH --out DIR`.
 Hours must be finite and positive and may be fractional; the default first seed
-is 1. A seed runs eight stream operations plus the final remount through
+is 1. A seed runs `32 + (seed % 4) * 8` stream operations plus the final remount through
 `crash::subset_images`, both `crash::torn_images` tails, and
 `corrupt::bit_flips`, using the existing full selection policy and acceptance.
+After the historical eight-operation prefix, the stream adds 4 KiB xattrs to
+split the filesystem tree, multi-block data writes, overwrites, truncations and
+repeated commits to wrap the superblock slots. The source check in
+`tests/torture.rs::torture_stream_reuses_slots_and_splits_trees` requires seeds
+1 and 2 to reach generation 9 and tree height 2.
 Fixtures are built directly through the shared `Files::format` and commit
 entry points, with fixed metadata and a populated tree containing multi-block
 data, a partial tail, an empty file and a symlink. No formatter executable is
@@ -455,7 +465,9 @@ Exit 0 requires a passed seed and an expired deadline with no failure.
 `DIR/summary.json` is replaced atomically at startup and after a seed. Its fields
 are `started` (Unix seconds), `hours_requested`, `elapsed` (monotonic seconds),
 `first_seed`, `last_seed` (inclusive; null before a seed), `images_checked`
-(checker invocations, including minimization), and `failures` (failed seeds).
+(checker invocations, including minimization), `deepest_generation` and
+`tree_height` (greatest selected generation and reachable height among recovered
+crash images; a leaf has height 1), and `failures` (failed seeds).
 On failure the driver publishes the failed seed and failure count before
 minimizing. `DIR/failure-<seed>.txt` holds the diagnostic and the minimized Rust
 row from `minimize::Case::regression_row`, replayed against the same failure

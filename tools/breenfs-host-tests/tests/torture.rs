@@ -4,19 +4,33 @@ use std::{fs, process::Command};
 fn short_run_writes_a_summary() {
     let dir = std::env::temp_dir().join(format!("breenfs-torture-test-{}", std::process::id()));
     let output = Command::new(env!("CARGO_BIN_EXE_breenfs-torture"))
-        .args(["--hours", "0.002", "--checker", env!("CARGO_BIN_FILE_BREENFS_breenfs-check"), "--out"])
+        .args([
+            "--hours",
+            "0.002",
+            "--checker",
+            env!("CARGO_BIN_FILE_BREENFS_breenfs-check"),
+            "--out",
+        ])
         .arg(&dir)
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
-    let summary: serde_json::Value = serde_json::from_slice(&fs::read(dir.join("summary.json")).unwrap()).unwrap();
+    let summary: serde_json::Value =
+        serde_json::from_slice(&fs::read(dir.join("summary.json")).unwrap()).unwrap();
     assert!(summary["images_checked"].as_u64().unwrap() > 0, "{summary}");
     assert!(summary["first_seed"].as_u64().is_some(), "{summary}");
-    assert!(summary["last_seed"].as_u64().unwrap() >= summary["first_seed"].as_u64().unwrap(), "{summary}");
+    assert!(
+        summary["last_seed"].as_u64().unwrap() >= summary["first_seed"].as_u64().unwrap(),
+        "{summary}"
+    );
     assert_eq!(summary["failures"].as_u64(), Some(0), "{summary}");
+    assert!(
+        summary["deepest_generation"].as_u64().unwrap() >= 9,
+        "{summary}"
+    );
+    assert!(summary["tree_height"].as_u64().unwrap() >= 2, "{summary}");
     fs::remove_dir_all(dir).unwrap();
 }
-
 
 #[path = "../src/test_image.rs"]
 mod test_image;
@@ -24,8 +38,13 @@ mod test_image;
 #[test]
 fn torture_stream_reuses_slots_and_splits_trees() {
     use breenfs_host_tests::{
-        btree::NodeStore, commit::DeviceStore, format::{NodeHeader, Root, Superblock},
-        model::Model, recording::RecordingDevice, stream::{Stream, torture_operations}, Fs, WriterAdapter,
+        btree::NodeStore,
+        commit::DeviceStore,
+        format::{NodeHeader, Root, Superblock},
+        model::Model,
+        recording::RecordingDevice,
+        stream::{torture_operations, Stream},
+        Fs, WriterAdapter,
     };
     use std::sync::Arc;
     test_image::check(&test_image::image(), "torture-source");
@@ -43,13 +62,22 @@ fn torture_stream_reuses_slots_and_splits_trees() {
             assert_eq!(writer.state().unwrap(), model.state().unwrap(), "{op:?}");
             let bytes = device.durable_image();
             for slot in 16..20 {
-                if let Ok(sb) = Superblock::decode(&bytes[slot*4096..(slot+1)*4096]) {
+                if let Ok(sb) = Superblock::decode(&bytes[slot * 4096..(slot + 1) * 4096]) {
                     generation = generation.max(sb.generation);
                     let store = DeviceStore(device.as_ref());
                     let h = NodeHeader::decode(&store.get(sb.space_root.addr).unwrap()).unwrap();
                     height = height.max(h.level + 1);
-                    let value = breenfs_host_tests::btree::search(&store, sb.space_root,
-                        breenfs_host_tests::format::Key { object: 0xffff_ffff_ffff_ff10, item_type: breenfs_host_tests::format::ROOT, offset: 1 }).unwrap().unwrap();
+                    let value = breenfs_host_tests::btree::search(
+                        &store,
+                        sb.space_root,
+                        breenfs_host_tests::format::Key {
+                            object: 0xffff_ffff_ffff_ff10,
+                            item_type: breenfs_host_tests::format::ROOT,
+                            offset: 1,
+                        },
+                    )
+                    .unwrap()
+                    .unwrap();
                     height = height.max(Root::decode(&value).unwrap().root.level + 1);
                 }
             }
