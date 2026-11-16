@@ -1,8 +1,8 @@
-//! Store-independent, in-place B-tree editing for the host writer.
+//! Store-independent B-tree editing for the host writer and transactions.
 //!
-//! This layer has no durability, copy-on-write, refcounts or block reclamation.
-//! The caller supplies a private store and root. Detached blocks remain owned by
-//! that caller. A fallible store must provide rollback for allocation/put failures;
+//! The default store hooks edit in place; transactions supply copy-on-write and
+//! detached-node accounting. The caller supplies a private store and root.
+//! A fallible store must provide rollback for allocation/put failures;
 //! the root is published only after the buffered puts succeed.
 use super::format::{self, BlockPtr, InternalEntry, Key, LeafItemHeader, NodeHeader, NODE_SIZE};
 use alloc::{collections::BTreeMap, vec, vec::Vec};
@@ -34,6 +34,15 @@ pub trait NodeStore {
     fn get(&self, addr: u64) -> Result<Vec<u8>, Error>;
     fn put(&mut self, addr: u64, bytes: Vec<u8>) -> Result<(), Error>;
     fn alloc(&mut self) -> Result<u64, Error>;
+    /// Called top-down before modifying a node, including rebalance siblings.
+    /// A transaction may replace its address/generation and transfer references.
+    fn prepare_edit(&mut self, _header: &mut NodeHeader) -> Result<(), Error> {
+        Ok(())
+    }
+    /// The node's outgoing references have been transferred or removed already.
+    fn retire(&mut self, _header: NodeHeader) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
 struct Node {
@@ -258,9 +267,52 @@ pub fn search<S: NodeStore>(store: &S, root: BlockPtr, key: Key) -> Result<Optio
         .map(|i| node.items[i].1.clone()))
 }
 
+/// Return items in an inclusive key range, visiting only intersecting branches.
+pub fn range<S: NodeStore>(
+    store: &S,
+    root: BlockPtr,
+    lower: Key,
+    upper: Key,
+) -> Result<Vec<(Key, Vec<u8>)>, Error> {
+    fn walk<S: NodeStore>(
+        store: &S,
+        node: Node,
+        bound: Option<Key>,
+        lower: Key,
+        upper: Key,
+        out: &mut Vec<(Key, Vec<u8>)>,
+    ) -> Result<(), Error> {
+        if node.header.level == 0 {
+            out.extend(
+                node.items
+                    .into_iter()
+                    .filter(|(k, _)| *k >= lower && *k <= upper),
+            );
+        } else {
+            for (i, entry) in node.children.iter().enumerate() {
+                let next = node.children.get(i + 1).map(|e| e.key).or(bound);
+                if entry.key <= upper && next.is_none_or(|k| k > lower) {
+                    let ptr = node.child(i);
+                    let child = decode(&store.get(ptr.addr)?, ptr, false, Some(entry.key), next)?;
+                    same_tree(&node, &child)?;
+                    walk(store, child, next, lower, upper, out)?;
+                }
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    if lower <= upper {
+        let node = decode(&store.get(root.addr)?, root, true, None, None)?;
+        walk(store, node, None, lower, upper, &mut out)?;
+    }
+    Ok(out)
+}
+
 struct Edit<'a, S> {
     store: &'a mut S,
     writes: BTreeMap<u64, Vec<u8>>,
+    empty_root: Option<NodeHeader>,
 }
 impl<S: NodeStore> Edit<'_, S> {
     fn load(
@@ -318,8 +370,13 @@ impl<S: NodeStore> Edit<'_, S> {
             },
         })
     }
-    fn pack(&mut self, mut node: Node) -> Result<Vec<InternalEntry>, Error> {
+    fn pack(&mut self, mut node: Node, root: bool) -> Result<Vec<InternalEntry>, Error> {
         if node.len() == 0 {
+            if root {
+                self.empty_root = Some(node.header);
+            } else {
+                self.store.retire(node.header)?;
+            }
             return Ok(Vec::new());
         }
         let mut links = Vec::new();
@@ -366,6 +423,8 @@ impl<S: NodeStore> Edit<'_, S> {
         )?;
         same_tree(parent, &left)?;
         same_tree(parent, &right)?;
+        self.store.prepare_edit(&mut left.header)?;
+        self.store.prepare_edit(&mut right.header)?;
         left.items.append(&mut right.items);
         left.children.append(&mut right.children);
         let mut links = Vec::new();
@@ -373,6 +432,8 @@ impl<S: NodeStore> Edit<'_, S> {
             right = self.split(&mut left, right.header.addr)?;
             let ptr = self.save(&mut right)?;
             links.push(entry(right.key(0), ptr));
+        } else {
+            self.store.retire(right.header)?;
         }
         let ptr = self.save(&mut left)?;
         links.insert(0, entry(left.key(0), ptr));
@@ -389,6 +450,7 @@ impl<S: NodeStore> Edit<'_, S> {
         value: Option<&[u8]>,
     ) -> Result<(Vec<InternalEntry>, Option<Vec<u8>>), Error> {
         let mut node = self.load(ptr, root, lower, upper)?;
+        self.store.prepare_edit(&mut node.header)?;
         let old;
         if node.header.level == 0 {
             match node.items.binary_search_by_key(&key, |e| e.0) {
@@ -430,7 +492,7 @@ impl<S: NodeStore> Edit<'_, S> {
                 self.rebalance(&mut node, i, upper)?;
             }
         }
-        Ok((self.pack(node)?, old))
+        Ok((self.pack(node, root)?, old))
     }
 }
 
@@ -443,6 +505,7 @@ fn change<S: NodeStore>(
     let mut edit = Edit {
         store,
         writes: BTreeMap::new(),
+        empty_root: None,
     };
     let original = edit.load(*root, true, None, None)?;
     let (links, old) = edit.change(*root, true, None, None, key, value)?;
@@ -451,7 +514,7 @@ fn change<S: NodeStore>(
             let mut empty = Node {
                 header: NodeHeader {
                     level: 0,
-                    ..original.header
+                    ..edit.empty_root.take().ok_or(Error::InvalidNode)?
                 },
                 items: Vec::new(),
                 children: Vec::new(),
@@ -472,6 +535,7 @@ fn change<S: NodeStore>(
                 header: NodeHeader {
                     addr: edit.store.alloc()?,
                     level: root.level + 1,
+                    generation: links[0].child_generation,
                     ..original.header
                 },
                 items: Vec::new(),
@@ -485,6 +549,7 @@ fn change<S: NodeStore>(
         if node.header.level == 0 || node.len() != 1 {
             break;
         }
+        edit.store.retire(node.header)?;
         new_root = node.child(0);
     }
     for (addr, bytes) in edit.writes {

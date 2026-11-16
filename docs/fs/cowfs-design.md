@@ -233,7 +233,11 @@ written.
 5. Write superblock *G* to slot *G mod 4* of rings A and B.
 6. FLUSH. *G* is durable, and its fsync waiters succeed.
 
-A failure in steps 3–6 writes no superblock, returns EIO and turns the mount read-only; *G−1* is intact.
+A failure in steps 3–4 issues no superblock write. A failure in step 5 or 6 issues no further write of any kind
+(no erasure attempt). Either way, the commit and every fsync waiter of *G* receive EIO, and the mount latches
+read-only so no later commit can run on it. *G−1* stays intact under the reuse rule. Superblock *G* sectors already
+issued may survive: step 4 flushed its nodes and data, so recovery may choose *G* if its roots validate, or *G−1*
+otherwise. EIO from fsync leaves the outcome unknown, as POSIX permits. <!-- claim-lint:ok: Normative contract from docs/fs/cowfs-design.md section 2.5, corrected by E24 coordinator ruling line 183. -->
 
 **Recovery** reads the eight slots.
 1. A slot is valid when its magic, CRC, `csum_type`, sizes, ring, slot (= generation mod 4), incompat bits and

@@ -1,16 +1,17 @@
 //! Initial-image writer; on-disk layouts and tree edits come from the cowfs core.
-use cowfs::btree::{self, NodeStore};
+use cowfs::block::{BlockDevice, BlockError};
+use cowfs::commit::{Committer, DeviceStore};
 use cowfs::format::*;
-use std::collections::{BTreeMap, BTreeSet};
+use cowfs::ops::{Files, SetAttr};
+use std::collections::BTreeSet;
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 type Result<T> = std::result::Result<T, String>;
-const ROOT_OBJECT: u64 = 0xffff_ffff_ffff_ff10;
-const FREE_OBJECT: u64 = 0xffff_ffff_ffff_ff20;
 const USAGE: &str = "cowfs-mkfs [--populate DIR] [--uuid HEX] [--time SECS] [--hash-key HEX] [--label L] [--extents] --size BYTES IMAGE";
 
 struct Args {
@@ -120,15 +121,8 @@ fn args() -> Result<Args> {
         extents,
     })
 }
-fn key(object: u64, item_type: u8, offset: u64) -> Key {
-    Key {
-        object,
-        item_type,
-        offset,
-    }
-}
-fn tree<T>(r: std::result::Result<T, btree::Error>) -> Result<T> {
-    r.map_err(|e| format!("B-tree: {e:?}"))
+fn operation<T>(r: std::result::Result<T, cowfs::ops::Error>) -> Result<T> {
+    r.map_err(|e| format!("writer: {e:?}"))
 }
 fn io<T>(r: std::io::Result<T>, path: &Path) -> Result<T> {
     r.map_err(|e| format!("{}: {e}", path.display()))
@@ -204,318 +198,124 @@ impl Source {
     }
 }
 
-struct Store {
-    nodes: BTreeMap<u64, Vec<u8>>,
-    next: u64,
-    end: u64,
+// The adapter knows file I/O and records submitted ranges, not tree layouts.
+struct ImageDevice {
+    file: Mutex<File>,
+    blocks: u64,
+    written: Mutex<BTreeSet<u64>>,
 }
-impl Store {
-    fn new(next: u64, end: u64) -> Self {
-        Self {
-            nodes: BTreeMap::new(),
-            next,
-            end,
+impl BlockDevice for ImageDevice {
+    fn read_block(&self, block: u64, buf: &mut [u8]) -> std::result::Result<(), BlockError> {
+        if block >= self.blocks || buf.len() != BLOCK_SIZE {
+            return Err(BlockError::OutOfBounds);
         }
+        let mut file = self.file.lock().map_err(|_| BlockError::IoError)?;
+        file.seek(SeekFrom::Start(block * BLOCK_SIZE as u64))
+            .and_then(|_| file.read_exact(buf))
+            .map_err(|_| BlockError::IoError)
     }
-    fn reserve(&mut self, count: u64) -> Result<u64> {
-        let next = self
-            .next
-            .checked_add(count)
-            .filter(|n| *n <= self.end)
-            .ok_or("image is too small for populated data and metadata")?;
-        let addr = self.next;
-        self.next = next;
-        Ok(addr)
-    }
-    fn reachable(&self, root: BlockPtr) -> Result<Vec<u64>> {
-        let mut pending = vec![root.addr];
-        let mut seen = BTreeSet::new();
-        while let Some(addr) = pending.pop() {
-            if !seen.insert(addr) {
-                return Err("cycle or shared child in initial tree".into());
-            }
-            let b = self.nodes.get(&addr).ok_or("missing initial node")?;
-            let h = NodeHeader::decode(b).map_err(|e| format!("node: {e:?}"))?;
-            if h.level > 0 {
-                for i in 0..usize::from(h.nitems) {
-                    let e = InternalEntry::decode(&b[48 + i * 37..48 + (i + 1) * 37])
-                        .map_err(|e| format!("entry: {e:?}"))?;
-                    pending.push(e.child_addr);
-                }
-            }
+    fn write_block(&self, block: u64, buf: &[u8]) -> std::result::Result<(), BlockError> {
+        if block >= self.blocks || buf.len() != BLOCK_SIZE {
+            return Err(BlockError::OutOfBounds);
         }
-        Ok(seen.into_iter().collect())
-    }
-}
-impl NodeStore for Store {
-    fn get(&self, addr: u64) -> std::result::Result<Vec<u8>, btree::Error> {
-        self.nodes.get(&addr).cloned().ok_or(btree::Error::Store)
-    }
-    fn put(&mut self, addr: u64, bytes: Vec<u8>) -> std::result::Result<(), btree::Error> {
-        self.nodes.insert(addr, bytes);
+        let mut file = self.file.lock().map_err(|_| BlockError::IoError)?;
+        file.seek(SeekFrom::Start(block * BLOCK_SIZE as u64))
+            .and_then(|_| file.write_all(buf))
+            .map_err(|_| BlockError::IoError)?;
+        self.written
+            .lock()
+            .map_err(|_| BlockError::IoError)?
+            .insert(block);
         Ok(())
     }
-    fn alloc(&mut self) -> std::result::Result<u64, btree::Error> {
-        self.reserve(4).map_err(|_| btree::Error::Store)
+    fn block_size(&self) -> usize {
+        BLOCK_SIZE
     }
-}
-fn write_at(file: &mut File, addr: u64, bytes: &[u8]) -> Result<()> {
-    file.seek(SeekFrom::Start(addr * BLOCK_SIZE as u64))
-        .and_then(|_| file.write_all(bytes))
-        .map_err(|e| format!("write block {addr}: {e}"))
-}
-fn node_ref(kind: u8) -> Ref {
-    Ref {
-        refcount: 1,
-        kind,
-        alloc_generation: 1,
-        crcs: Vec::new(),
+    fn num_blocks(&self) -> u64 {
+        self.blocks
+    }
+    fn flush(&self) -> std::result::Result<(), BlockError> {
+        self.file
+            .lock()
+            .map_err(|_| BlockError::IoError)?
+            .sync_all()
+            .map_err(|_| BlockError::IoError)
     }
 }
 
-struct Builder {
-    store: Store,
-    root: BlockPtr,
-    refs: BTreeMap<Key, Vec<u8>>,
-    next_inode: u64,
-    time: Option<Time>,
+fn import_source(
+    files: &mut Files<'_, DeviceStore<'_>>,
+    device: &ImageDevice,
+    source: &Source,
+    ino: u64,
     now: Time,
-    hash_key: [u8; 16],
-}
-impl Builder {
-    fn insert(&mut self, k: Key, v: &[u8]) -> Result<()> {
-        tree(btree::insert(&mut self.store, &mut self.root, k, v)).map(|_| ())
-    }
-    fn inode(&self, source: Option<&Source>, parent: u64) -> Inode {
-        let mut inode = Inode {
-            mode: 0o40755,
-            nlink: 2,
-            uid: 0,
-            gid: 0,
-            size: 0,
-            nblocks: 0,
-            parent,
-            rdev: 0,
-            next_index: 2,
-            created_generation: 1,
-            atime: self.now,
-            mtime: self.now,
-            ctime: self.now,
-            btime: self.now,
-        };
-        if let Some(s) = source {
-            inode.mode = s.meta.mode() & 0o177777;
-            inode.atime = Time {
-                seconds: s.meta.atime(),
-                nanos: s.meta.atime_nsec() as u32,
-            };
-            inode.mtime = Time {
-                seconds: s.meta.mtime(),
-                nanos: s.meta.mtime_nsec() as u32,
-            };
-            inode.ctime = Time {
-                seconds: s.meta.ctime(),
-                nanos: s.meta.ctime_nsec() as u32,
-            };
-            inode.btime = s.meta.created().map(system_time).unwrap_or(inode.ctime);
-            if !s.meta.is_dir() {
-                inode.nlink = 1;
-                inode.parent = 0;
-                inode.next_index = 0;
-            }
-        }
-        if let Some(t) = self.time {
-            inode.atime = t;
-            inode.mtime = t;
-            inode.ctime = t;
-            inode.btime = t;
-        }
-        inode
-    }
-    fn populate(
-        &mut self,
-        file: &mut File,
-        source: Option<&Source>,
-        ino: u64,
-        parent: u64,
-    ) -> Result<()> {
-        let mut inode = self.inode(source, parent);
-        if let Some(s) = source {
-            if s.meta.is_dir() {
-                for child in &s.children {
-                    let child_ino = self.next_inode;
-                    self.next_inode = self
-                        .next_inode
-                        .checked_add(1)
-                        .ok_or("inode numbers exhausted")?;
-                    let kind = if child.meta.is_dir() {
-                        inode.nlink = inode
-                            .nlink
-                            .checked_add(1)
-                            .ok_or("too many subdirectories")?;
-                        2
-                    } else if child.meta.is_file() {
-                        1
-                    } else {
-                        7
-                    };
-                    let name = child
-                        .path
-                        .file_name()
-                        .ok_or("missing source name")?
-                        .as_bytes()
-                        .to_vec();
-                    let record = DirRecord {
-                        ino: child_ino,
-                        kind,
-                        name,
-                    }
-                    .encode();
-                    let k = key(
-                        ino,
-                        DIR_ENTRY,
-                        cowfs::siphash::hash(
-                            &self.hash_key,
-                            child.path.file_name().unwrap().as_bytes(),
-                        ),
-                    );
-                    let mut bucket =
-                        tree(btree::search(&self.store, self.root, k))?.unwrap_or_default();
-                    bucket.extend_from_slice(&record);
-                    self.insert(k, &bucket)?;
-                    self.insert(key(ino, DIR_INDEX, inode.next_index), &record)?;
-                    inode.next_index += 1;
-                    inode.size += 1;
-                    self.populate(file, Some(child), child_ino, ino)?;
-                }
-            } else if let Some(target) = &s.target {
-                inode.size = target.len() as u64;
-                self.insert(key(ino, INLINE, 0), target)?;
+    fixed_time: Option<Time>,
+) -> Result<()> {
+    if source.meta.is_dir() {
+        for child in &source.children {
+            let name = child
+                .path
+                .file_name()
+                .ok_or("missing source name")?
+                .as_bytes();
+            let child_ino = operation(if child.meta.is_dir() {
+                files.mkdir(ino, name, child.meta.mode(), now)
+            } else if let Some(target) = &child.target {
+                files.symlink(ino, name, target, now)
             } else {
-                inode.size = s.meta.len();
-                let mut input = io(File::open(&s.path), &s.path)?;
-                let mut remaining = inode.size;
-                let mut logical = 0;
-                while remaining > 0 {
-                    let len = remaining.min(256 * BLOCK_SIZE as u64) as usize;
-                    let blocks = len.div_ceil(BLOCK_SIZE);
-                    let mut bytes = vec![0; blocks * BLOCK_SIZE];
-                    io(input.read_exact(&mut bytes[..len]), &s.path)?;
-                    let addr = self.store.reserve(blocks as u64)?;
-                    write_at(file, addr, &bytes)?;
-                    let crcs = bytes
-                        .chunks_exact(BLOCK_SIZE)
-                        .map(cowfs::crc32c::checksum)
-                        .collect();
-                    self.refs.insert(
-                        key(addr, REF, blocks as u64),
-                        Ref {
-                            crcs,
-                            ..node_ref(3)
-                        }
-                        .encode(),
-                    );
-                    self.insert(
-                        key(ino, EXTENT, logical),
-                        &Extent {
-                            phys_start: addr,
-                            phys_len: blocks as u32,
-                            extent_offset: 0,
-                            num_blocks: blocks as u32,
-                            flags: 0,
-                        }
-                        .encode(),
-                    )?;
-                    inode.nblocks += blocks as u64;
-                    logical += bytes.len() as u64;
-                    remaining -= len as u64;
-                }
-                if io(input.read(&mut [0]), &s.path)? != 0 {
-                    return Err(format!(
-                        "{}: source grew while formatting",
-                        s.path.display()
-                    ));
-                }
-            }
+                files.create(ino, name, child.meta.mode(), now)
+            })?;
+            import_source(files, device, child, child_ino, now, fixed_time)?;
         }
-        self.insert(key(ino, INODE, 0), &inode.encode())
+    } else if source.meta.is_file() {
+        let mut input = io(File::open(&source.path), &source.path)?;
+        let mut offset = 0;
+        let mut bytes = vec![0; 256 * BLOCK_SIZE];
+        while offset < source.meta.len() {
+            let len = (source.meta.len() - offset).min(bytes.len() as u64) as usize;
+            io(input.read_exact(&mut bytes[..len]), &source.path)?;
+            let count = operation(files.write(device, ino, offset, &bytes[..len], now))?;
+            if count != len {
+                return Err("short writer import".into());
+            }
+            offset += len as u64;
+        }
+        if io(input.read(&mut [0]), &source.path)? != 0 {
+            return Err(format!(
+                "{}: source grew while formatting",
+                source.path.display()
+            ));
+        }
     }
+    // Preserve the formatter's root ownership and source modes/timestamps.
+    // Restore directory times after its children have changed the directory.
+    operation(files.setattr(
+        ino,
+        &SetAttr {
+            mode: Some(source.meta.mode()),
+            ..SetAttr::default()
+        },
+        now,
+    ))?;
+    let ctime = Time {
+        seconds: source.meta.ctime(),
+        nanos: source.meta.ctime_nsec() as u32,
+    };
+    let times = fixed_time.map(|t| [t; 4]).unwrap_or([
+        Time {
+            seconds: source.meta.atime(),
+            nanos: source.meta.atime_nsec() as u32,
+        },
+        Time {
+            seconds: source.meta.mtime(),
+            nanos: source.meta.mtime_nsec() as u32,
+        },
+        ctime,
+        source.meta.created().map(system_time).unwrap_or(ctime),
+    ]);
+    operation(files.set_initial_times(ino, times))
 }
 
-// Compute the complement of the referenced allocations, including space nodes.
-fn free_ranges(
-    refs: &BTreeMap<Key, Vec<u8>>,
-    space_nodes: &[u64],
-    end: u64,
-) -> Result<Vec<(u64, u64)>> {
-    let mut used: Vec<_> = refs
-        .keys()
-        .map(|k| (k.object, k.offset))
-        .chain(space_nodes.iter().map(|a| (*a, 4)))
-        .collect();
-    used.sort_unstable();
-    let mut free = Vec::new();
-    let mut cursor = 20;
-    for (start, len) in used {
-        if start < cursor || start + len > end {
-            return Err("overlapping or out-of-range initial allocations".into());
-        }
-        if start > cursor {
-            free.push((cursor, start - cursor));
-        }
-        cursor = start + len;
-    }
-    if cursor < end {
-        free.push((cursor, end - cursor));
-    }
-    Ok(free)
-}
-fn space_tree(builder: &Builder, uuid: [u8; 16]) -> Result<(Store, BlockPtr, u64)> {
-    let start = builder.store.next;
-    let end = builder.store.end;
-    let mut own_nodes = Vec::new();
-    let mut attempts = BTreeSet::new();
-    loop {
-        if !attempts.insert(own_nodes.clone()) {
-            return Err("space-tree allocation fixed point did not converge".into());
-        }
-        let mut items = builder.refs.clone();
-        for addr in &own_nodes {
-            items.insert(key(*addr, REF, 4), node_ref(2).encode());
-        }
-        items.insert(
-            key(ROOT_OBJECT, ROOT, 1),
-            Root {
-                root: builder.root,
-                next_inode: builder.next_inode,
-                source_root: 0,
-                created_generation: 1,
-                ctime: builder.now,
-                flags: 0,
-                name: b"default".to_vec(),
-            }
-            .encode(),
-        );
-        let free = free_ranges(&builder.refs, &own_nodes, end)?;
-        let free_blocks = free.iter().map(|(_, len)| len).sum();
-        for (addr, len) in free {
-            items.insert(
-                key(FREE_OBJECT, FREE, addr),
-                Free { length: len }.encode().to_vec(),
-            );
-        }
-        let mut store = Store::new(start, end);
-        let mut root = tree(btree::create(&mut store, 2, uuid, 1))?;
-        for (k, v) in items {
-            tree(btree::insert(&mut store, &mut root, k, &v))?;
-        }
-        let actual = store.reachable(root)?;
-        if actual == own_nodes {
-            return Ok((store, root, free_blocks));
-        }
-        own_nodes = actual;
-    }
-}
 fn mkfs(a: Args) -> Result<()> {
     let source = a.populate.as_deref().map(Source::read).transpose()?;
     if source.as_ref().is_some_and(|s| !s.meta.is_dir()) {
@@ -543,7 +343,7 @@ fn mkfs(a: Args) -> Result<()> {
             return Err("IMAGE must be outside --populate DIR".into());
         }
     }
-    let mut file = io(
+    let file = io(
         OpenOptions::new()
             .read(true)
             .write(true)
@@ -555,48 +355,19 @@ fn mkfs(a: Args) -> Result<()> {
     io(file.set_len(a.size), &a.image)?;
     let total = a.size / BLOCK_SIZE as u64;
     let now = a.time.unwrap_or_else(|| system_time(SystemTime::now()));
-    let mut store = Store::new(20, total - 4);
-    let root = tree(btree::create(&mut store, 1, a.uuid, 1))?;
-    let mut builder = Builder {
-        store,
-        root,
-        refs: BTreeMap::new(),
-        next_inode: 16,
-        time: a.time,
-        now,
-        hash_key: a.hash_key,
+    let device = ImageDevice {
+        file: Mutex::new(file),
+        blocks: total,
+        written: Mutex::new(BTreeSet::new()),
     };
-    builder.populate(&mut file, source.as_ref(), 2, 2)?;
-    let fs_nodes = builder.store.reachable(builder.root)?;
-    for addr in &fs_nodes {
-        builder
-            .refs
-            .insert(key(*addr, REF, 4), node_ref(1).encode());
-    }
-    let (space, space_root, free_blocks) = space_tree(&builder, a.uuid)?;
-    let global_reserve = (total / 200).clamp(4096, 262144);
-    if free_blocks < global_reserve {
-        return Err("image is too small to retain the global reserve".into());
-    }
-    let mut written: Vec<_> = builder.refs.keys().map(|k| (k.object, k.offset)).collect();
-    for addr in fs_nodes {
-        write_at(&mut file, addr, &builder.store.nodes[&addr])?;
-    }
-    for addr in space.reachable(space_root)? {
-        write_at(&mut file, addr, &space.nodes[&addr])?;
-        written.push((addr, 4));
-    }
-    io(file.sync_all(), &a.image)?;
     let mut writer = [0; 32];
     writer[..13].copy_from_slice(b"cowfs-mkfs v1");
-    let mut sb = Superblock {
+    let sb = Superblock {
         fs_uuid: a.uuid,
         generation: 1,
         slot: 1,
         total_blocks: total,
-        space_root,
-        free_blocks,
-        global_reserve,
+        global_reserve: (total / 200).clamp(4096, 262144),
         next_root_id: 2,
         dirhash_key: a.hash_key,
         commit_time: now,
@@ -605,26 +376,22 @@ fn mkfs(a: Args) -> Result<()> {
         writer,
         ..Superblock::default()
     };
-    for (ring, start) in [(0, 16), (1, total - 4)] {
-        sb.ring = ring;
-        for slot in 0..4 {
-            write_at(
-                &mut file,
-                start + slot,
-                &if slot == 1 {
-                    sb.encode()
-                } else {
-                    [0; BLOCK_SIZE]
-                },
-            )?;
-        }
-        written.push((start, 4));
+    let mut files = operation(Files::format(DeviceStore(&device), &sb))?;
+    if let Some(source) = &source {
+        import_source(&mut files, &device, source, 2, now, a.time)?;
     }
-    io(file.sync_all(), &a.image)?;
+    let mut committer = Committer::format(sb);
+    operation(files.fsync(&device, &mut committer))?;
     if a.extents {
-        written.sort_unstable();
         let mut merged: Vec<(u64, u64)> = Vec::new();
-        for (start, len) in written {
+        for start in device
+            .written
+            .lock()
+            .map_err(|_| "image write ledger poisoned")?
+            .iter()
+            .copied()
+        {
+            let len = 1;
             if let Some(last) = merged.last_mut().filter(|last| last.0 + last.1 == start) {
                 last.1 += len;
             } else {
