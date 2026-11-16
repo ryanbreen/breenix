@@ -25,6 +25,7 @@ pub enum Error {
     EIO,
     UuidMismatch,
     NoGeneration,
+    InvalidGeneration,
     ReadOnly,
 }
 impl From<format::Error> for Error {

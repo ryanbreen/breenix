@@ -30,14 +30,18 @@ pub fn recover(device: &dyn BlockDevice, writable: bool) -> Result<Superblock, E
         }
     }
     slots.sort_by(|a, b| b.1.generation.cmp(&a.1.generation));
-    let mut chosen = slots
-        .iter()
-        .find_map(|(_, sb)| {
-            space_items(&DeviceStore(device), sb)
-                .ok()
-                .map(|_| sb.clone())
-        })
-        .ok_or(Error::NoGeneration)?;
+    let mut chosen = None;
+    for (_, sb) in &slots {
+        match space_items(&DeviceStore(device), sb) {
+            Ok(_) => {
+                chosen = Some(sb.clone());
+                break;
+            }
+            Err(Error::InvalidGeneration) => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    let mut chosen = chosen.ok_or(Error::NoGeneration)?;
     if writable {
         if chosen.ro_compat != 0 {
             return Err(Error::ReadOnly);
@@ -92,24 +96,24 @@ fn node<S: NodeStore>(
             .checked_add(4)
             .is_none_or(|n| n > sb.total_blocks - 4)
     {
-        return Err(Error::EIO);
+        return Err(Error::InvalidGeneration);
     }
-    let bytes = store.get(ptr.addr)?;
+    let bytes = store.get(ptr.addr).map_err(tree_error)?;
     if bytes.len() != NODE_SIZE {
-        return Err(Error::EIO);
+        return Err(Error::InvalidGeneration);
     }
-    let h = NodeHeader::decode(&bytes)?;
+    let h = NodeHeader::decode(&bytes).map_err(|_| Error::InvalidGeneration)?;
     if (h.addr, h.generation, h.level, h.tree, h.fs_uuid)
         != (ptr.addr, ptr.generation, ptr.level, tree, sb.fs_uuid)
         || ptr.csum != u32::from_le_bytes(bytes[8..12].try_into().unwrap())
     {
-        return Err(Error::EIO);
+        return Err(Error::InvalidGeneration);
     }
     let width = if h.level == 0 { 21 } else { 37 };
     if 48 + usize::from(h.nitems) * width > NODE_SIZE
         || (h.level > 0 && (h.nitems == 0 || h.nitems > 441))
     {
-        return Err(Error::EIO);
+        return Err(Error::InvalidGeneration);
     }
     Ok((h, bytes))
 }
@@ -124,13 +128,13 @@ pub(crate) fn space_items<S: NodeStore>(
     let mut out = Vec::new();
     while let Some((ptr, limit)) = todo.pop() {
         if !seen.insert(ptr.addr) {
-            return Err(Error::EIO);
+            return Err(Error::InvalidGeneration);
         }
         let (h, bytes) = node(store, sb, ptr, 2, limit)?;
         for i in 0..usize::from(h.nitems) {
             if h.level > 0 {
                 let at = 48 + i * 37;
-                let e = InternalEntry::decode(&bytes[at..at + 37])?;
+                let e = InternalEntry::decode(&bytes[at..at + 37]).map_err(|_| Error::InvalidGeneration)?;
                 todo.push((
                     BlockPtr {
                         addr: e.child_addr,
@@ -142,12 +146,12 @@ pub(crate) fn space_items<S: NodeStore>(
                 ));
             } else {
                 let at = 48 + i * 21;
-                let item = LeafItemHeader::decode(&bytes[at..at + 21])?;
+                let item = LeafItemHeader::decode(&bytes[at..at + 21]).map_err(|_| Error::InvalidGeneration)?;
                 // Point lookup validates payload layout, key order and SPACE
                 // ancestor bounds through the existing B-tree reader.
-                let value = btree::search(store, sb.space_root, item.key)?.ok_or(Error::EIO)?;
+                let value = btree::search(store, sb.space_root, item.key).map_err(tree_error)?.ok_or(Error::InvalidGeneration)?;
                 if item.key.item_type == format::ROOT {
-                    let r = Root::decode(&value)?;
+                    let r = Root::decode(&value).map_err(|_| Error::InvalidGeneration)?;
                     node(store, sb, r.root, 1, sb.generation)?;
                 }
                 out.push((item.key, value));
@@ -155,4 +159,11 @@ pub(crate) fn space_items<S: NodeStore>(
         }
     }
     Ok(out)
+}
+
+fn tree_error(error: btree::Error) -> Error {
+    match error {
+        btree::Error::Store => Error::EIO,
+        _ => Error::InvalidGeneration,
+    }
 }

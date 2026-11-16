@@ -287,8 +287,8 @@ impl RecordingDevice {
                     return Err(BlockError::IoError);
                 }
                 uuid = Some(sb.fs_uuid);
-                // As in recovery, a valid slot with an unreadable tree cannot
-                // displace a lower generation whose trees are intact.
+                // This immutable byte image has no device read errors: failure
+                // here means invalid contents, not transient storage I/O.
                 if let Ok(commit) = Commit::read(&state.durable, sb) {
                     state.keep(commit)?;
                 }
