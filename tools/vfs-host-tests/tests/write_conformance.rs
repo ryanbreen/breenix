@@ -896,3 +896,27 @@ fn content_changes_preserve_nonexecutable_sgid() {
         (0o6750, "write", 0o0750), (0o6750, "resize", 0o0750), (0o6750, "mapping", 0o0750),
     ]);
 }
+
+
+#[test]
+fn removing_an_open_directory_is_busy_until_last_close() {
+    let (disk, _) = fixture();
+    let fs = mount(disk.clone());
+    let ino = fs.create(2, b"held", NewNode::Directory { attrs: ATTRS }).unwrap();
+    let first = fs.open(ino).unwrap();
+    let second = fs.open(ino).unwrap();
+    let before = fs.getattr(ino).unwrap();
+    let parent = fs.getattr(2).unwrap();
+    assert_eq!(remove(fs.as_ref(), 2, b"held", true), Err(Errno(EBUSY)));
+    assert_eq!(fs.lookup(2, b"held"), Ok(ino));
+    assert_eq!(fs.getattr(ino).unwrap(), before);
+    assert_eq!(fs.getattr(2).unwrap(), parent);
+    drop(first);
+    assert_eq!(remove(fs.as_ref(), 2, b"held", true), Err(Errno(EBUSY)));
+    drop(second);
+    remove(fs.as_ref(), 2, b"held", true).unwrap();
+    assert_eq!(fs.getattr(2).unwrap().nlink, parent.nlink - 1);
+    fs.sync().unwrap();
+    drop(fs);
+    assert_eq!(mount(disk).lookup(2, b"held"), Err(Errno(ENOENT)));
+}
