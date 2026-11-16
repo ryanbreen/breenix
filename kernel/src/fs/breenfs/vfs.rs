@@ -49,6 +49,26 @@ impl<W: Wait + 'static> BreenFs<W> {
     ) -> Result<Arc<Self>, Errno> {
         let durable = recover::recover(device.as_ref(), false).map_err(|_| Errno(EIO))?;
         let store = CachedNodeStore::new_owned(cache, device.clone(), &durable);
+        Self::from_store(device, durable, store, mount, root_id)
+    }
+    /// Kernel mounts share the system cache, whose lifetime is the kernel's.
+    pub fn mount_cached(
+        device: Arc<dyn BlockDevice>,
+        cache: &'static BufferCache<W>,
+        mount: usize,
+        root_id: u64,
+    ) -> Result<Arc<Self>, Errno> {
+        let durable = recover::recover(device.as_ref(), false).map_err(|_| Errno(EIO))?;
+        let store = CachedNodeStore::with_device(cache, device.clone(), &durable);
+        Self::from_store(device, durable, store, mount, root_id)
+    }
+    fn from_store(
+        device: Arc<dyn BlockDevice>,
+        durable: Superblock,
+        store: CachedNodeStore<'static, W>,
+        mount: usize,
+        root_id: u64,
+    ) -> Result<Arc<Self>, Errno> {
         let files = Files::new(store, &durable, root_id).map_err(errno)?;
         let inner = Arc::try_new(Mount {
             files,

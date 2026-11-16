@@ -43,6 +43,22 @@ impl<'a, W: Wait> CachedNodeStore<'a, W> {
             generation: durable.generation,
         }
     }
+    /// Borrow the system-wide cache while retaining the mount's device.
+    pub fn with_device(
+        cache: &'a BufferCache<W>,
+        device: Arc<dyn BlockDevice>,
+        durable: &Superblock,
+    ) -> Self {
+        Self {
+            cache: Retained::Borrowed(cache),
+            device: Box::new(NodeDevice {
+                device: Retained::Shared(device),
+                total_blocks: durable.total_blocks,
+            }),
+            fs_uuid: durable.fs_uuid,
+            generation: durable.generation,
+        }
+    }
     /// Retain the mount's device and shared cache without self-references.
     pub fn new_owned(
         cache: Arc<BufferCache<W>>,

@@ -8,6 +8,7 @@
 #![allow(dead_code)]
 
 pub mod attrs;
+pub mod breenfs;
 pub mod devfs;
 pub mod devptsfs;
 pub mod errno;

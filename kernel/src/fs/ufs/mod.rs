@@ -389,6 +389,9 @@ fn mount(source: u64, target: u64, fstype: u64, flags: u64, data: u64) -> Result
     let cred = crate::fs::permissions::Credentials::current(false)?;
     args::require_root(cred.euid)?;
     let fstype = userptr::copy_path_bytes_from_user(fstype)?;
+    if fstype == b"breenfs" {
+        return crate::fs::breenfs::mount::mount(source, target, flags, &cred);
+    }
     // Validate type/flags before touching the filesystem-specific pointer.
     if fstype != b"ufs" || flags != 0 {
         return Err(EINVAL as u64);
