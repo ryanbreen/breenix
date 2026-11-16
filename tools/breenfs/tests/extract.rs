@@ -117,6 +117,41 @@ fn manifest_and_sparse_cat_match_the_source() {
     sparse.write_all(&[b'Z'; BLOCK_SIZE]).unwrap();
     let size = 8 * 1024 * 1024 + 23;
     sparse.set_len(size).unwrap();
+    // macOS may allocate the gaps on extension; explicitly make source holes.
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::AsRawFd;
+        #[repr(C)]
+        struct Punch {
+            flags: u32,
+            reserved: u32,
+            offset: i64,
+            length: i64,
+        }
+        extern "C" {
+            fn fcntl(fd: i32, command: i32, ...) -> i32;
+        }
+        for (start, end) in [
+            (BLOCK_SIZE as i64, 4 * 1024 * 1024),
+            (
+                4 * 1024 * 1024 + BLOCK_SIZE as i64,
+                (size as i64 + 4095) / 4096 * 4096,
+            ),
+        ] {
+            let punch = Punch {
+                flags: 0,
+                reserved: 0,
+                offset: start,
+                length: end - start,
+            };
+            assert_eq!(
+                unsafe { fcntl(sparse.as_raw_fd(), 99, &punch) },
+                0,
+                "F_PUNCHHOLE: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+    }
     sparse.sync_all().unwrap();
     fs::set_permissions(source.join("sparse"), fs::Permissions::from_mode(0o644)).unwrap();
     let image = scratch.0.join("image");
