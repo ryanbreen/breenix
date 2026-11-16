@@ -166,7 +166,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         }
         Ok(inode)
     }
-    fn put_inode(&mut self, ino: u64, inode: Inode) -> Result<(), Error> {
+    pub(super) fn put_inode(&mut self, ino: u64, inode: Inode) -> Result<(), Error> {
         self.txn.insert(
             &mut self.root.root,
             key(ino, format::INODE, 0),
@@ -590,7 +590,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             upper,
         )?)
     }
-    fn extents(&self, ino: u64) -> Result<Vec<(Key, Extent)>, Error> {
+    pub(super) fn extents(&self, ino: u64) -> Result<Vec<(Key, Extent)>, Error> {
         self.range(
             key(ino, format::EXTENT, 0),
             key(ino, format::EXTENT, u64::MAX),
@@ -733,6 +733,20 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             .sum();
         self.put_inode(ino, inode)?;
         Ok(bytes.len())
+    }
+    /// Drop whole mappings beyond a VNode's new EOF without allocating data.
+    /// The adapter retains and zeroes a partial mapped tail in its dirty map.
+    pub fn trim_mappings(&mut self, ino: u64, size: u64) -> Result<u64, Error> {
+        self.remove_range(
+            ino,
+            size.div_ceil(BLOCK_SIZE as u64) * BLOCK_SIZE as u64,
+            u64::MAX,
+        )?;
+        Ok(self
+            .extents(ino)?
+            .iter()
+            .map(|(_, e)| u64::from(e.num_blocks))
+            .sum())
     }
     pub fn truncate(
         &mut self,

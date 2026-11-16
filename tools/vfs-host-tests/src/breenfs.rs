@@ -5,6 +5,8 @@ pub mod btree;
 pub mod commit;
 #[path = "../../../kernel/src/fs/breenfs/crc32c.rs"]
 pub mod crc32c;
+#[path = "../../../kernel/src/fs/breenfs/dirty.rs"]
+pub mod dirty;
 #[path = "../../../kernel/src/fs/breenfs/format.rs"]
 pub mod format;
 #[path = "../../../kernel/src/fs/breenfs/node_cache.rs"]

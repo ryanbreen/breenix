@@ -2,6 +2,7 @@
 pub mod btree;
 pub mod commit;
 pub mod crc32c;
+pub mod dirty;
 pub mod format;
 pub mod mount;
 pub mod mount_args;
