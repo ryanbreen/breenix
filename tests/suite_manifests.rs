@@ -1058,9 +1058,14 @@ fn check_filesystem_host_records(manifest: &str, harness: &str, guest: &str) {
 #[test]
 fn filesystem_host_records_match_the_manifest_and_the_guest() {
     let root = repo_root();
+    let harness = fs::read_to_string(root.join("scripts/filesystem-suite.py")).unwrap();
+    assert_eq!(sdk_harness_cases(&harness), [
+        "format/mkfs-empty-clean", "format/mkfs-populate-clean",
+        "format/reproducible-image", "format/violations-refused",
+    ], "the four required format records must remain present in order");
     check_filesystem_host_records(
         &fs::read_to_string(root.join("docs/suites/filesystem.json")).unwrap(),
-        &fs::read_to_string(root.join("scripts/filesystem-suite.py")).unwrap(),
+        &harness,
         &fs::read_to_string(root.join("userspace/programs/src/suite_filesystem.rs")).unwrap(),
     );
 }
