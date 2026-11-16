@@ -401,6 +401,9 @@ impl<W: Wait + 'static> BreenFs<W> {
     fn open_locked(&self, state: &mut MountState<W>, ino: u64) -> Result<Arc<VNode>, Errno> {
         let inode = state.inode(ino)?;
         if let Some(node) = state.nodes.get(&ino).and_then(|n| n.node.upgrade()) {
+            // A completed resize or write can predate this mapping transfer.
+            // Faults must see that size before an unbound VNode is mapped.
+            node.map.resync_unbound(inode.size);
             return Ok(node);
         }
         let node = self.new_node(ino, inode, state.durable.generation)?;
