@@ -92,7 +92,32 @@
     {
       "id": "write",
       "title": "File and directory operations commit through transactions",
-      "cases": []
+      "cases": [
+        {
+          "id": "remount-reads-back",
+          "title": "An fsynced tree reads back unchanged after remount"
+        },
+        {
+          "id": "rename-replace-atomic",
+          "title": "Rename replacement preserves open files and publishes the new name atomically"
+        },
+        {
+          "id": "unlinked-open-file",
+          "title": "An unlinked open file remains readable until close and is gone after remount"
+        },
+        {
+          "id": "truncate-sparse",
+          "title": "Sparse writes and truncate preserve data and zero-filled holes after remount"
+        },
+        {
+          "id": "mmap-msync",
+          "title": "Shared mapped stores survive MS_SYNC and remount"
+        },
+        {
+          "id": "commit-without-fsync",
+          "title": "The periodic commit makes an unfsynced write durable"
+        }
+      ]
     },
     {
       "id": "enospc",
