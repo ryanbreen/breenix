@@ -22,8 +22,8 @@ equals MEMORY_RECLAIM_ALLOWANCE_PAGES read from libs/libbreenix/src/suite_memory
 or a reclaimed verdict its own figures contradict, fails the suite like a failing
 case. Selected runs (`only`) may omit memory; when present, the same memory checks apply.
 
-A manifest with diskChecks also requires --disk: debugfs reads the stopped
-VM image directly and compares the persisted bytes, bypassing the guest cache.
+A manifest with diskChecks also requires --disk: the stopped VM image is read
+directly and its persisted bytes compared, bypassing the guest cache.
 
 A category marked "hostRunner" is run from the boot host against a persistent
 boot (scripts/metal/server-suite), not by the suite binary: the boot's records
@@ -40,6 +40,7 @@ Prints "PASS: <DONE line>" or "FAIL: <reason>" and exits 0 or 1.
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -592,6 +593,32 @@ def disk_verdict(checks, disk):
         return True, ""
     if not disk:
         return False, "the manifest requires --disk for raw writeback checks"
+    try:
+        with open(disk, "rb") as image:
+            size = image.seek(0, 2)
+            breenfs = False
+            if size >= 24 * 4096 and size % 4096 == 0:
+                for block in (*range(16, 20), *range(size // 4096 - 4, size // 4096)):
+                    image.seek(block * 4096)
+                    if image.read(8) == b"BREENFSS":
+                        breenfs = True
+                        break
+    except OSError as error:
+        return False, f"raw disk read failed: {error}"
+    if breenfs:
+        target = Path(os.environ.get("CARGO_TARGET_DIR", REPO / "tools/breenfs/target"))
+        extract = target / "release/breenfs-extract"
+        for check in checks:
+            try:
+                result = subprocess.run([str(extract), str(disk), "cat", check["path"]],
+                                        capture_output=True, timeout=30, check=False)
+            except (OSError, subprocess.TimeoutExpired) as error:
+                return False, f"raw disk read failed: {error}"
+            if result.returncode:
+                return False, f"raw disk file is missing: {check['path']}"
+            if result.stdout != bytes([check["byte"]]) * check["length"]:
+                return False, f"raw disk bytes differ: {check['path']}"
+        return True, f"raw disk checks passed={len(checks)}"
     debugfs = next((shutil.which(path) for path in (
         "debugfs", "/usr/sbin/debugfs", "/sbin/debugfs",
         "/opt/homebrew/opt/e2fsprogs/sbin/debugfs",
@@ -622,7 +649,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest")
     parser.add_argument("logs", nargs="+")
-    parser.add_argument("--disk", help="stopped VM's raw ext2 image for diskChecks and disk-only UI bundles")
+    parser.add_argument("--disk", help="stopped VM's raw image for diskChecks and disk-only UI bundles")
     parser.add_argument("--uploads", help="receiver evidence directory for UI upload verification")
     parser.add_argument("--milestone", help="effort/milestone whose category set this full boot must pass")
     args = parser.parse_args()

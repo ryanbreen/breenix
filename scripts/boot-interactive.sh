@@ -17,6 +17,7 @@
 #                        desktop and program modes only)
 #   BREENIX_COLLAB_HOST_BIND=127.0.0.1 limits that forward to this host for collab-pair.py;
 #                        the operator's default is 0.0.0.0 for LAN sharing.
+#   --root-fs ext2|breenfs  root filesystem (default ext2)
 #   --case CATEGORY[/CASE]       for --mode suite: run one category or case (not full-suite evidence; not filed in Vigil)
 #   --suite ID           for --mode suite: the effort suite (docs/suites/ID.json) run as PID 1, /sbin/suite-ID
 #                        console selects --gpu-gl for its display-owner and scanout cases
@@ -71,6 +72,7 @@ BUILD_ONLY=0
 CPUS=4
 CPU=max
 MODE=tests
+ROOT_FS=ext2
 PROGRAM=
 SUITE=
 ONLY=
@@ -88,11 +90,12 @@ COLLAB_HOST_BIND=${BREENIX_COLLAB_HOST_BIND:-0.0.0.0}
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --mode|--program|--suite|--case|--screen-capture|--screen-checkpoints|--pace|--serial-log|--idle-exit|--gate-timeout|--qmp|--accel|--cpus|--cpu)
+        --mode|--root-fs|--program|--suite|--case|--screen-capture|--screen-checkpoints|--pace|--serial-log|--idle-exit|--gate-timeout|--qmp|--accel|--cpus|--cpu)
             [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; } ;;
     esac
     case "$1" in
         --mode) MODE="$2"; shift 2 ;;
+        --root-fs) ROOT_FS="$2"; shift 2 ;;
         --accel) export BREENIX_ARM64_QEMU_ACCEL="$2"; shift 2 ;;
         --cpu) CPU="$2"; shift 2 ;;
         --program) PROGRAM="$2"; shift 2 ;;
@@ -120,6 +123,7 @@ while [ "$#" -gt 0 ]; do
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
+case "$ROOT_FS" in ext2|breenfs) ;; *) echo "--root-fs needs ext2 or breenfs" >&2; exit 2 ;; esac
 [ "$BUILD_ONLY" -eq 0 ] || [ "$BUILD" -eq 1 ] || { echo "--build-only conflicts with --no-build" >&2; exit 2; }
 [[ "$CPUS" =~ ^[1-8]$ ]] || { echo "--cpus needs 1 to 8 (the ARM64 kernel's MAX_CPUS), got: $CPUS" >&2; exit 2; }
 case "$MODE" in
@@ -452,7 +456,6 @@ if [ "$MODE" = suite ] && [[ ",$SUITE," == *,users,* ]] && { [ -z "$ONLY" ] || [
     USERS_SSH_PORT=$(python3 "$ROOT/scripts/users-hostssh.py" stage --image "$WRITABLE" --state "$USERS_SSH_STATE")
     NETDEV+=",hostfwd=tcp:127.0.0.1:$USERS_SSH_PORT-:22"
 fi
-ROOT_DRIVE="if=none,id=ext2,format=raw,file=$WRITABLE"
 FIXTURE_ARGS=()
 if [ "$MODE" = tests ]; then
     echo "==> Preparing the read-only ext2 fixture"
@@ -461,9 +464,6 @@ if [ "$MODE" = tests ]; then
     # The driver scans MMIO buses upward; QEMU allocates them downward.
     # Add /home first so the writable root is still device zero.
     FIXTURE_ARGS=(-device virtio-blk-device,drive=home -drive "if=none,id=home,format=raw,readonly=on,file=$FIXTURE")
-else
-    # Interactive suites inspect the disposable raw image without a host crash.
-    ROOT_DRIVE+=",cache=unsafe,aio=threads"
 fi
 if [ "$GPU_GL" -eq 1 ]; then
     export BREENIX_HOST_RENDERER_JSON="$(dirname "$SERIAL_LOG")/host-renderer.json"
@@ -480,6 +480,9 @@ if [ "$MODE" = suite ] && [[ ",$SUITE," == *,filesystem,* ]]; then
         -drive "if=none,id=breenfs-read,format=raw,readonly=on,file=$BREENFS_READ_IMAGE")
 fi
 # End breenfs read fixture.
+source "$ROOT/scripts/lib/root-fs.sh"
+root_fs_prepare
+root_fs_scratch
 # shellcheck source=../docker/qemu/lib/qemu-host-lock.sh
 source "$ROOT/docker/qemu/lib/qemu-host-lock.sh"
 qemu_host_lock_acquire
@@ -603,6 +606,7 @@ python3 "$ROOT/scripts/watch-qemu.py" ${WATCH_READY_ARGS[@]+"${WATCH_READY_ARGS[
     -device virtio-gpu-device \
     -device virtio-keyboard-device \
     -device virtio-tablet-device \
+    ${BREENFS_SCRATCH_ARGS[@]+"${BREENFS_SCRATCH_ARGS[@]}"} \
     ${BREENFS_READ_ARGS[@]+"${BREENFS_READ_ARGS[@]}"} \
     ${FIXTURE_ARGS[@]+"${FIXTURE_ARGS[@]}"} \
     ${CAPTURE_ARGS[@]+"${CAPTURE_ARGS[@]}"} \
