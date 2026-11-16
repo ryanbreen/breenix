@@ -1,4 +1,5 @@
 #![no_std]
+#![cfg_attr(test, feature(allocator_api))]
 
 extern crate alloc;
 #[cfg(test)]
@@ -49,6 +50,16 @@ pub mod block {
             self as *const Self as *const () as usize
         }
         fn read_block(&self, block: u64, buf: &mut [u8]) -> Result<(), BlockError>;
+        fn read_blocks(&self, start: u64, count: usize, buf: &mut [u8]) -> Result<(), BlockError> {
+            let size = self.block_size();
+            if buf.len() < count.saturating_mul(size) {
+                return Err(BlockError::IoError);
+            }
+            for i in 0..count {
+                self.read_block(start + i as u64, &mut buf[i * size..(i + 1) * size])?;
+            }
+            Ok(())
+        }
         fn write_block(&self, block: u64, buf: &[u8]) -> Result<(), BlockError>;
         fn block_size(&self) -> usize;
         fn num_blocks(&self) -> u64;
@@ -236,6 +247,21 @@ pub mod writer;
 pub use writer::WriterAdapter;
 #[cfg(test)]
 mod test_image;
+
+#[cfg(test)]
+mod vfs_support;
+#[cfg(test)]
+pub use vfs_support::{attrs, credentials, errno, fs, memory, permissions, process, syscall,
+    syscall_errno, task, test_control, time, vfs};
+#[cfg(test)]
+#[path = "../../../kernel/src/fs/breenfs/commit_signal.rs"]
+mod commit_signal;
+#[cfg(test)]
+#[path = "../../../kernel/src/fs/breenfs/dirty.rs"]
+mod dirty;
+#[cfg(test)]
+#[path = "../../../kernel/src/fs/breenfs/vfs.rs"]
+pub mod vfs_adapter;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Difference {

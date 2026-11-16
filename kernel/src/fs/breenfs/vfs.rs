@@ -26,6 +26,10 @@ use alloc::{
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
+#[cfg(test)]
+#[path = "../../../../tools/breenfs-host-tests/src/failed_mount_teardown.rs"]
+mod failed_mount_teardown;
+
 // Extended attributes use ABI errno 61 for an absent attribute.
 const ENODATA: i32 = 61;
 
