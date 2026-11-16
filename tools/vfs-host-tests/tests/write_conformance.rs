@@ -858,12 +858,12 @@ fn shutdown_commits_and_quiesces_until_service_restarts() {
     let request = || WriteReq { at: WriteAt::Offset(0), limit: u64::MAX, clear_setid: false };
     fs.write(&node, request(), b"shutdown durable").unwrap();
     fs.shutdown("root", u64::MAX).unwrap();
-    assert_eq!(fs.write(&node, request(), b"must refuse"), Err(Errno(EROFS)));
+    assert_eq!(fs.write(&node, request(), b"must refuse"), Err(WriteError::Filesystem(Errno(EROFS))));
     let reopened = mount(disk);
     let fresh = reopened.open(ino).unwrap();
     let mut bytes = [0; 16];
     assert_eq!(reopened.read(&fresh, 0, &mut bytes), Ok(16));
     assert_eq!(&bytes, b"shutdown durable");
     fs.init_service().unwrap(); // An EBUSY unmount leaves the mount usable.
-    assert_eq!(fs.write(&node, request(), b"resumed"), Ok(7));
+    assert_eq!(fs.write(&node, request(), b"resumed").unwrap().bytes, 7);
 }
