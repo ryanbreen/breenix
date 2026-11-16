@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class BootRootFsTest(unittest.TestCase):
     def test_suite_disk_declares_the_root_choice(self):
         boot = (ROOT / 'scripts/boot-interactive.sh').read_text()
-        # Execute the launcher's staging block, never its builder or QEMU.
+        # Run the launcher's disk-staging block in isolation.
         comment = boot.index('    # The first suite runs from fw_cfg;')
         start = boot.rfind('\nif ', 0, comment)
         stage = boot[start:boot.index('\nSMB_INSTANCE=', comment)]

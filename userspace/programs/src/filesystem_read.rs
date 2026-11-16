@@ -370,23 +370,28 @@ fn erofs<T: std::fmt::Debug>(result: std::io::Result<T>, operation: &str) -> Cas
 }
 
 pub fn read_only_refusals() -> CaseResult {
+    let root = crate::filesystem_root::declared()?;
     let fixture = Fixture::mount()?;
     let mounts = io(fs::read_to_string("/proc/mounts"))?;
     let rows: Vec<Vec<&str>> = mounts
         .lines()
         .map(|line| line.split_whitespace().collect())
         .collect();
-    let root_ext2 = rows.iter().any(|row| row.len() == 6 && row[1] == "/" && row[2] == "ext2");
+    let roots: Vec<_> = rows.iter().filter(|row| row.len() == 6 && row[1] == "/").collect();
+    let root_declared = roots.len() == 1 && roots[0][2] == root.name();
+    let root_distinct = io(fs::metadata("/"))?.dev() != io(fs::metadata(&fixture.0))?.dev();
     let fixture_ro = rows.iter().any(|row| {
         row.len() == 6
             && row[1] == fixture.0.to_str().unwrap_or("")
             && row[2] == "breenfs"
             && row[3].split(',').any(|option| option == "ro")
     });
-    check(root_ext2, "root is not ext2 in /proc/mounts")?;
+    check(root_declared, "root fstype differs from the host declaration")?;
+    check(root_distinct, "fixture and root have the same st_dev")?;
     check(fixture_ro, "fixture is not breenfs ro in /proc/mounts")?;
     value("fixture-disk", i64::from(fixture.2), "", None);
-    value("root-ext2", i64::from(root_ext2), "", Some((1, 1)));
+    value("root-declared", i64::from(root_declared), "", Some((1, 1)));
+    value("root-distinct", i64::from(root_distinct), "", Some((1, 1)));
     value("fixture-breenfs-ro", i64::from(fixture_ro), "", Some((1, 1)));
     let path = fixture.0.join("linked-a");
     let before = io(fs::read(&path))?;

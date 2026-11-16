@@ -2,7 +2,7 @@
 # Write the boot-target file onto an ext2 disk image, so a production kernel booted
 # from it selects a suite or probe as PID 1 (docs/boot-path.md, "Boot modes"):
 #
-#   scripts/write-boot-target.sh IMAGE SUITE_ID|--probe|--default|--shell|--console|--desktop [PID1_ELF] [SEQUENCE] [CATEGORY/CASE] [PACE_MS]
+#   scripts/write-boot-target.sh IMAGE SUITE_ID|--probe|--default|--shell|--console|--desktop [PID1_ELF] [SEQUENCE] [CATEGORY/CASE] [PACE_MS] [ROOT_FS]
 #   scripts/write-boot-target.sh IMAGE --program GUEST_PATH [WORD]
 #
 # IMAGE gets /etc/breenix/boot-target containing "suite SUITE_ID", "probe" or
@@ -13,6 +13,7 @@
 # SEQUENCE (suite ids joined by commas, SUITE_ID first) also writes /etc/breenix/suite-sequence,
 # so the boot runs each suite in turn (docs/suites/README.md, "Several suites in one boot");
 # each /sbin/suite-ID must match the ELF beside PID1_ELF.
+# ROOT_FS writes the host's root-fs ext2|breenfs declaration beside the suite list.
 #
 # Uses debugfs (e2fsprogs) when it is on PATH or in Homebrew's keg-only e2fsprogs,
 # and otherwise runs debugfs in an Alpine container.
@@ -20,7 +21,7 @@
 
 set -euo pipefail
 
-if [ "$#" -lt 2 ] || [ "$#" -gt 6 ]; then
+if [ "$#" -lt 2 ] || [ "$#" -gt 7 ]; then
     sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 fi
@@ -30,6 +31,8 @@ SUITE_ELF="${3:-}"
 SEQUENCE="${4:-}"
 ONLY="${5:-}"
 PACE="${6:-}"
+ROOT_FS="${7:-}"
+case "$ROOT_FS" in ''|ext2|breenfs) ;; *) echo "write-boot-target: unknown root filesystem: $ROOT_FS" >&2; exit 2 ;; esac
 BOOT_TARGET="suite $SUITE"
 BINARY="/sbin/suite-$SUITE"
 if [ "$SUITE" = --program ]; then
@@ -107,8 +110,14 @@ mkdir /etc/breenix
 rm /etc/breenix/boot-target
 rm /etc/breenix/pace
 rm /etc/breenix/suite-sequence
+rm /etc/breenix/root-fs
 write /work/boot-target /etc/breenix/boot-target
 EOF
+
+if [ -n "$ROOT_FS" ]; then
+    printf 'root-fs %s\n' "$ROOT_FS" > "$WORK/root-fs"
+    printf 'write /work/root-fs /etc/breenix/root-fs\n' >> "$WORK/commands"
+fi
 
 if [ -n "$PACE" ]; then
     printf '%s\n' "$PACE" > "$WORK/pace"
@@ -142,6 +151,7 @@ if [ -n "$DEBUGFS" ]; then
         pace_written="$("$DEBUGFS" -R 'cat /etc/breenix/pace' "$IMAGE" 2>/dev/null || true)"
         [ "$pace_written" = "$PACE" ] || { echo "write-boot-target: pace readback differs" >&2; exit 1; }
     fi
+    root_fs_written="$("$DEBUGFS" -R 'cat /etc/breenix/root-fs' "$IMAGE" 2>/dev/null || true)"
     written="$("$DEBUGFS" -R 'cat /etc/breenix/boot-target' "$IMAGE" 2>/dev/null || true)"
     "$DEBUGFS" -R "dump $BINARY $WORK/installed.elf" "$IMAGE" >/dev/null 2>&1 || true
 else
@@ -158,9 +168,15 @@ else
         apk add --no-cache e2fsprogs-extra >/dev/null 2>&1 || exit 1
         debugfs -w -f /work/commands /disk/$image_name >/dev/null 2>&1
         debugfs -R 'cat /etc/breenix/pace' /disk/$image_name 2>/dev/null > /work/pace-readback
+        debugfs -R 'cat /etc/breenix/root-fs' /disk/$image_name 2>/dev/null > /work/root-fs-readback
         debugfs -R 'dump $BINARY /work/installed.elf' /disk/$image_name >/dev/null 2>&1
         debugfs -R 'cat /etc/breenix/boot-target' /disk/$image_name 2>/dev/null")" || true
 fi
+
+if [ -z "$DEBUGFS" ]; then root_fs_written="$(cat "$WORK/root-fs-readback")"; fi
+expected_root_fs=
+if [ -n "$ROOT_FS" ]; then expected_root_fs="root-fs $ROOT_FS"; fi
+[ "$root_fs_written" = "$expected_root_fs" ] || { echo "write-boot-target: root filesystem readback differs" >&2; exit 1; }
 
 if [ -n "$PACE" ] && [ -z "$DEBUGFS" ] && [ "$(cat "$WORK/pace-readback")" != "$PACE" ]; then
     echo "write-boot-target: pace readback differs" >&2; exit 1

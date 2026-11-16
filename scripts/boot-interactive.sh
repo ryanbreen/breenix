@@ -393,10 +393,12 @@ if [ -n "$SCREEN_CAPTURE" ]; then
     CAPTURE_ARGS=(-device virtio-blk-device,drive=screen-capture
         -drive "if=none,id=screen-capture,format=raw,file=$SCREEN_CAPTURE,cache=writeback")
 fi
-if [[ "$SUITE" == *,* ]]; then
+if [ "$MODE" = suite ]; then
     # The first suite runs from fw_cfg; the list on the disk tells each suite which runs next.
+    SEQUENCE=
+    if [[ "$SUITE" == *,* ]]; then SEQUENCE="$SUITE"; fi
     "$ROOT/scripts/write-boot-target.sh" "$WRITABLE" "${SUITE%%,*}" \
-        "$ROOT/userspace/programs/aarch64/suite-${SUITE%%,*}.elf" "$SUITE"
+        "$ROOT/userspace/programs/aarch64/suite-${SUITE%%,*}.elf" "$SEQUENCE" "$ONLY" "$PACE" "$ROOT_FS"
 fi
 SMB_INSTANCE=
 if [ "$MODE" = suite ] && { [[ ",$SUITE," == *,gui-apps,* ]] || [[ ",$SUITE," == *,network-shares,* ]]; }; then
@@ -433,7 +435,7 @@ cleanup_evidence() {
 }
 trap cleanup_evidence EXIT
 if [ "$MODE" = suite ] && { [ "$SUITE" = ui-testing ] || [ "$SUITE" = gui-apps ]; }; then
-    "$ROOT/scripts/write-boot-target.sh" "$WRITABLE" "$SUITE"
+    "$ROOT/scripts/write-boot-target.sh" "$WRITABLE" "$SUITE" "" "" "" "" "$ROOT_FS"
     EVIDENCE_DIR="$SERIAL_LOG.evidence"
     mkdir -p "$EVIDENCE_DIR"
     rm -f "$EVIDENCE_DIR/route.json"

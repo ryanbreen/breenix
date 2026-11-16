@@ -1,9 +1,10 @@
 //! Exercise the filesystem interface, cache and BreenFS guest volumes.
 mod cache_reread;
 mod filesystem_read;
+mod filesystem_root;
 mod filesystem_write;
 use cache_reread::{reread_is_cached, REREAD_BYTES};
-use breenix_suite::suite::{case, category, check, suite, CaseResult, Suite};
+use breenix_suite::suite::{case, category, check, suite, CaseError, CaseResult, Suite};
 use libbreenix::{fs as sysfs, io as sysio, types::Fd};
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -88,8 +89,25 @@ fn reread_from_cache() -> CaseResult {
 }
 
 fn write_through() -> CaseResult {
-    let path = CacheFile::new("write-through");
+    let root = filesystem_root::declared()?;
+    let text = io(fs::read_to_string("/proc/mounts"))?;
+    let rows: Vec<Vec<_>> = text.lines().map(|line| line.split_whitespace().collect())
+        .filter(|row: &Vec<_>| row.len() == 6).collect();
+    let roots: Vec<_> = rows.iter().filter(|row| row[1] == "/").collect();
+    check(roots.len() == 1 && roots[0][2] == root.name(),
+        "root mount differs from the host declaration")?;
+    // Prefer the root on default boots, otherwise exercise an ext2 mount the boot carries.
+    let ext2 = rows.iter().find(|row| row[1] == "/" && row[2] == "ext2")
+        .or_else(|| rows.iter().find(|row| row[2] == "ext2"));
+    let Some(ext2) = ext2 else {
+        return Err(CaseError::Skip("no ext2 mount in this boot (root is breenfs)".into()));
+    };
+    let directory = if ext2[1] == "/" { "/tmp" } else { ext2[1] };
+    let path = CacheFile(PathBuf::from(directory)
+        .join(format!("filesystem-cache-write-through-{}", std::process::id())));
     let mut file = io(File::create(&path.0))?;
+    check(sysfs::fstatfs(Fd::from_raw(file.as_raw_fd() as u64))?.f_type == 0xef53,
+        "write-through file is not on ext2")?;
     for byte in 0..4u8 {
         let before = cache_counters()?;
         let data = [byte; 4096];
@@ -162,9 +180,10 @@ impl Drop for Mount {
 }
 
 fn mounts_listed() -> CaseResult {
+    let root = filesystem_root::declared()?;
     let mount = Mount::start()?;
     let text = io(fs::read_to_string("/proc/mounts"))?;
-    for (path, kind, options) in [("/", "ext2", "rw"), ("/dev", "devfs", "rw"),
+    for (path, kind, options) in [("/", root.name(), "rw"), ("/dev", "devfs", "rw"),
         ("/proc", "procfs", "rw"), (mount.dir.to_str().ok_or("mount path encoding")?, "ufs", "rw")] {
         let matches: Vec<_> = text.lines().filter_map(|line| {
             let fields: Vec<_> = line.split_whitespace().collect();
@@ -191,9 +210,10 @@ fn cross_mount_exdev() -> CaseResult {
     mount.finish()
 }
 fn statfs_per_mount() -> CaseResult {
+    let root = filesystem_root::declared()?;
     let mount = Mount::start()?;
     let mut ids = Vec::new();
-    for (path, expected) in [("/", 0xef53), ("/dev", 0x1373), ("/proc", 0x9fa0),
+    for (path, expected) in [("/", root.magic() as i64), ("/dev", 0x1373), ("/proc", 0x9fa0),
         (mount.dir.to_str().ok_or("mount path encoding")?, 0x55465331)] {
         let path = std::ffi::CString::new(path).map_err(|e| e.to_string())?;
         let mut stats = sysfs::Statfs::default();
