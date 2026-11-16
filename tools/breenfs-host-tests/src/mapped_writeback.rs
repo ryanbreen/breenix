@@ -158,3 +158,26 @@ fn c2_shutdown_publishes_shared_stores_before_stopping() {
         "shutdown lost shared stores"
     );
 }
+
+#[test]
+fn n1_async_mapping_makes_progress_at_full_dirty_budget() {
+    let (fs, disk, node) = fixture();
+    let bytes = expected(61);
+    let other = fs.create(2, b"pressure", NewNode::Regular {
+        attrs: InodeAttrs::new(0o100600, 0, 0),
+    }).unwrap();
+    let other = fs.open(other).unwrap();
+    let chunk = vec![0x73; 4096];
+    for page in 0..DIRTY_BUDGET / 4096 - 1 {
+        fs.write(&other, WriteReq {
+            at: WriteAt::Offset(page * 4096), limit: u64::MAX, clear_setid: false,
+        }, &chunk).ok().unwrap();
+    }
+    assert_eq!(fs.dirty_bytes(), DIRTY_BUDGET - 4096);
+    node.map.shared_stores(&bytes, false);
+    node.map.request_writeback();
+    for _ in 0..2 { fs.commit_due(monotonic_ns()).unwrap(); }
+    assert_eq!(cold_bytes(&disk, node.ino), bytes);
+    fs.fsync(&other, false).unwrap();
+    fs.shutdown("n1-pressure", u64::MAX).unwrap();
+}

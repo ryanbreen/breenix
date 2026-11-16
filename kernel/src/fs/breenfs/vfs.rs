@@ -507,9 +507,15 @@ impl<W: Wait + 'static> BreenFs<W> {
                 return Ok(state);
             }
             drop(state);
-            // Host checks drive the worker's pass inline, as sync does.
-            #[cfg(test)]
-            self.commit_due(monotonic_ns())?;
+            // Admission can run on the commit worker while staging mappings.
+            // Publish without servicing mappings recursively; waiting first
+            // would ask that same worker to complete its own generation.
+            self.inner.signal.requested.store(true, Ordering::Release);
+            if self.commit_generation(monotonic_ns())? {
+                continue;
+            }
+            // Another publisher owns the detached generation. Its completion
+            // wakes us, with neither mount nor mapping locks held here.
             self.inner.signal.wait(observed, None);
         }
     }
