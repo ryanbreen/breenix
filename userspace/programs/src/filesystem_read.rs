@@ -1,5 +1,5 @@
 //! Read a host-built breenfs fixture through the public filesystem interfaces.
-use breenix_suite::suite::{check, CaseResult};
+use breenix_suite::suite::{check, value, CaseResult};
 use libbreenix::crypto::sha256::{sha256, Sha256};
 use libbreenix::{fs as sysfs, memory, types::Fd};
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,21 +18,23 @@ fn io<T>(result: std::io::Result<T>) -> Result<T, String> {
     result.map_err(|error| error.to_string())
 }
 
-struct Fixture(PathBuf, bool);
+struct Fixture(PathBuf, bool, u8);
 impl Fixture {
     fn mount() -> Result<Self, String> {
         let dir = PathBuf::from(format!("/tmp/filesystem-read-{}", std::process::id()));
         io(fs::create_dir(&dir))?;
         let result = Self::find(&dir);
-        if let Err(error) = result {
-            // find unmounts an unrelated breenfs volume before continuing.
-            let _ = fs::remove_dir(&dir);
-            return Err(error);
+        match result {
+            Ok(disk) => Ok(Self(dir, true, disk)),
+            Err(error) => {
+                // find unmounts an unrelated breenfs volume before continuing.
+                let _ = fs::remove_dir(&dir);
+                Err(error)
+            }
         }
-        Ok(Self(dir, true))
     }
 
-    fn find(dir: &Path) -> Result<(), String> {
+    fn find(dir: &Path) -> Result<u8, String> {
         let target = dir.to_str().ok_or("mount path encoding")?;
         let mut disks = Vec::new();
         for entry in io(fs::read_dir("/dev"))? {
@@ -63,7 +65,7 @@ impl Fixture {
                 continue;
             }
             if fs::read(dir.join("nested/deeper/message")).is_ok_and(|bytes| bytes == MESSAGE) {
-                return Ok(());
+                return Ok(number);
             }
             sysfs::umount2(target, 0).map_err(|error| error.to_string())?;
         }
@@ -369,6 +371,23 @@ fn erofs<T: std::fmt::Debug>(result: std::io::Result<T>, operation: &str) -> Cas
 
 pub fn read_only_refusals() -> CaseResult {
     let fixture = Fixture::mount()?;
+    let mounts = io(fs::read_to_string("/proc/mounts"))?;
+    let rows: Vec<Vec<&str>> = mounts
+        .lines()
+        .map(|line| line.split_whitespace().collect())
+        .collect();
+    let root_ext2 = rows.iter().any(|row| row.len() == 6 && row[1] == "/" && row[2] == "ext2");
+    let fixture_ro = rows.iter().any(|row| {
+        row.len() == 6
+            && row[1] == fixture.0.to_str().unwrap_or("")
+            && row[2] == "breenfs"
+            && row[3].split(',').any(|option| option == "ro")
+    });
+    check(root_ext2, "root is not ext2 in /proc/mounts")?;
+    check(fixture_ro, "fixture is not breenfs ro in /proc/mounts")?;
+    value("fixture-disk", i64::from(fixture.2), "", None);
+    value("root-ext2", i64::from(root_ext2), "", Some((1, 1)));
+    value("fixture-breenfs-ro", i64::from(fixture_ro), "", Some((1, 1)));
     let path = fixture.0.join("linked-a");
     let before = io(fs::read(&path))?;
     check(
