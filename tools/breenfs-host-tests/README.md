@@ -281,9 +281,8 @@ images or the recovery, checker and model validations. The same check covers the
 This unit is host acceptance only. Kernel `fs/mod.rs` still does not declare
 breenfs. ARM and x86 still lack the read/write VFS mount integration, open-handle
 lifetime, DEAD reaping, reservation and Hold-group/dirty-page integration; ARM64
-QEMU, Parallels and VMware runtime acceptance remains later work. Torn images,
-bit flips, minimization, torture and host milestone records belong to the later
-24.9 units.
+QEMU, Parallels and VMware runtime acceptance remains later work. Bit flips,
+minimization, torture and host milestone records belong to the later 24.9 units.
 
 Coordinator ledger line 217 settles
 [#3020](https://github.com/ryanbreen/breenix/issues/3020): writable recovery must
@@ -294,3 +293,42 @@ memory device with separate visible and durable bytes. It requires the ring-B
 slot writes followed by a flush, without a requested commit, and read-only
 recovery without writes. Missing and invalid copies exercise the same contract.
 The subset corpus and the checker's exit-0 requirement remain unchanged.
+
+## Torn crash images (24.9-b)
+
+`crash::torn_images(initial, seed, operations, tail, checker)` uses the same
+stream, flush boundaries, sector-write masks and model commit interval as the
+subset corpus. For each mask it starts from the preceding durable image and
+applies the selected sector writes in issue order. Each 4 KiB block written
+since that flush then retains a seeded prefix of one through seven sectors
+from that selected image. Its remaining sectors come from the preceding durable
+image (`TornTail::Old`) or a seeded xorshift64* byte stream (`TornTail::Garbage`).
+The seed includes the stream seed, boundary, mask index and block address;
+both tail kinds use identical prefix lengths. Unselected sectors inside a
+retained prefix stay old. No block outside that window's writes is modified.
+
+The fixed check runs both tail kinds over seeds 1 and 2, eight stream operations
+and the final remount, within a ten-minute bound. Each image receives writable
+recovery, a separate invocation of the independent `breenfs-check --full` binary
+requiring exit 0, and logical comparison with a model commit no earlier than
+the last acknowledged fsync and no later than the last issued superblock.
+Failures identify the seed, operation, boundary, mask index and tail kind.
+
+```sh
+CARGO_BUILD_JOBS=4 taskpolicy -b cargo test \
+  --manifest-path tools/breenfs-host-tests/Cargo.toml --test crash_images \
+  torn_images_recover_to_an_acknowledged_commit -- --exact --nocapture
+```
+
+The check was committed against an `Unimplemented` stub before the replay
+extension. The architecture-neutral core remains undeclared in kernel
+`fs/mod.rs`. ARM still lacks VFS read/write mounts, open-handle lifetime,
+DEAD reaping, reservation, Hold-group/dirty-page integration and ARM64 QEMU,
+Parallels and VMware runtime acceptance. This unit runs no boot.
+
+The garbage-tail corpus found seed 1, boundary 1, mask 0 leaving nonzero invalid
+slots A2/B2 after recovery. `crash::tests::seed_1_garbage_tail_in_unpublished_ring_slots`
+retains that minimized case. Writable recovery now clears nonzero invalid slots
+after validating the selected generation, restores its companion directly, and
+flushes before exposing the mount. Read-only recovery retains the original bytes.
+The checker and the corpus acceptance criteria are unchanged.

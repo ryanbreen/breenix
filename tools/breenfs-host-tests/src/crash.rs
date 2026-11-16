@@ -6,7 +6,12 @@ use crate::{
     stream::Stream,
     Action, Errno, Fs, Operation, Result, State, Time, WriterAdapter,
 };
-use alloc::{collections::BTreeMap, sync::Arc, vec, vec::Vec};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    vec,
+    vec::Vec,
+};
 use spin::Mutex;
 
 /// Sparse bytes of a plain in-memory sector device.
@@ -44,6 +49,27 @@ impl Image {
     fn apply(&mut self, writes: &[(u64, [u8; SECTOR_SIZE])], mask: &[bool]) {
         for (&(sector, bytes), &keep) in writes.iter().zip(mask) {
             if keep {
+                self.write_sector(sector, bytes);
+            }
+        }
+    }
+    fn tear(&mut self, durable: &Image, blocks: &BTreeSet<u64>, seed: u64, tail: TornTail) {
+        for &block in blocks {
+            // Prefixes do not depend on the tail kind, or on garbage consumption
+            // in earlier blocks. Keep a nonempty proper prefix (1..=7 sectors).
+            let mut random = seed ^ block.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+            let prefix = random_word(&mut random) % 7 + 1;
+            for sector in block * 8 + prefix..block * 8 + 8 {
+                let bytes = match tail {
+                    TornTail::Old => durable.read_sector(sector),
+                    TornTail::Garbage => {
+                        let mut bytes = [0; SECTOR_SIZE];
+                        for word in bytes.chunks_exact_mut(8) {
+                            word.copy_from_slice(&random_word(&mut random).to_le_bytes());
+                        }
+                        bytes
+                    }
+                };
                 self.write_sector(sector, bytes);
             }
         }
@@ -110,6 +136,16 @@ pub fn subset_images(
     initial: Vec<u8>,
     seed: u64,
     operations: usize,
+    checker: impl FnMut(&Image) -> Result<()>,
+) -> Result<Report> {
+    replay(initial, seed, operations, None, checker)
+}
+
+fn replay(
+    initial: Vec<u8>,
+    seed: u64,
+    operations: usize,
+    tail: Option<TornTail>,
     mut checker: impl FnMut(&Image) -> Result<()>,
 ) -> Result<Report> {
     let mut durable = Image::from_bytes(&initial);
@@ -205,25 +241,32 @@ pub fn subset_images(
     };
     for (boundary, window) in windows.into_iter().enumerate() {
         let masks = subsets(window.writes.len(), seed.wrapping_add(boundary as u64))?;
+        let blocks = window.writes.iter().map(|(sector, _)| sector / 8).collect();
         for (case, mask) in masks.iter().enumerate() {
             let mut image = window.durable.clone();
             image.apply(&window.writes, mask);
+            if let Some(tail) = tail {
+                let tear_seed = seed
+                    ^ (boundary as u64).wrapping_mul(0xd1b5_4a32_d192_ed03)
+                    ^ (case as u64).wrapping_mul(0x94d0_49bb_1331_11eb);
+                image.tear(&window.durable, &blocks, tear_seed, tail);
+            }
             let crash = Arc::new(MemoryDevice(Mutex::new(image)));
             let recovered = WriterAdapter::new(crash.clone()).unwrap_or_else(|error| {
                 panic!(
-                    "seed={seed} op={} boundary={boundary} image={case}: recover {error:?}",
+                    "seed={seed} op={} boundary={boundary} image={case} tail={tail:?}: recover {error:?}",
                     window.operation
                 )
             });
             let image = crash.0.lock().clone();
             assert!(
                 checker(&image).is_ok(),
-                "seed={seed} op={} boundary={boundary} image={case}: checker",
+                "seed={seed} op={} boundary={boundary} image={case} tail={tail:?}: checker",
                 window.operation
             );
             let state = recovered.state()?;
             assert!(matches_commit(&snapshots, window.acknowledged, window.issued, &state),
-                "seed={seed} op={} boundary={boundary} image={case}: state outside commits {}..={}: {state:?}",
+                "seed={seed} op={} boundary={boundary} image={case} tail={tail:?}: state outside commits {}..={}: {state:?}",
                 window.operation, window.acknowledged, window.issued);
         }
         report.boundaries.push(Boundary {
@@ -251,8 +294,7 @@ pub fn torn_images(
     tail: TornTail,
     checker: impl FnMut(&Image) -> Result<()>,
 ) -> Result<Report> {
-    let _ = (initial, seed, operations, tail, checker);
-    Err(crate::Error::Unimplemented)
+    replay(initial, seed, operations, Some(tail), checker)
 }
 
 fn matches_commit(
@@ -299,6 +341,16 @@ pub fn subsets(writes: usize, seed: u64) -> Result<Vec<Vec<bool>>> {
         );
     }
     Ok(masks)
+}
+
+fn random_word(state: &mut u64) -> u64 {
+    if *state == 0 {
+        *state = 0x9e37_79b9_7f4a_7c15;
+    }
+    *state ^= *state >> 12;
+    *state ^= *state << 25;
+    *state ^= *state >> 27;
+    state.wrapping_mul(0x2545_f491_4f6c_dd1d)
 }
 
 #[cfg(test)]
