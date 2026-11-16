@@ -699,7 +699,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         }
         Ok(())
     }
-    fn shutdown(&self, _name: &str, deadline: u64) -> Result<(), Errno> {
+    fn shutdown(&self, name: &str, deadline: u64) -> Result<(), Errno> {
         // Close mutation admission before requesting the final generation.
         // The worker remains live until that generation's receipt completes.
         let signal = &self.inner.signal;
@@ -707,11 +707,13 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             let mut state = self.inner.state.lock();
             if state.closed {
                 if signal.stop.load(Ordering::Acquire) && !signal.started.load(Ordering::Acquire) {
-                    return if state.failed {
+                    let result = if state.failed {
                         Err(Errno(EIO))
                     } else {
                         Ok(())
                     };
+                    drop(state);
+                    return teardown_result(name, result);
                 }
                 return Err(Errno(EBUSY));
             }
@@ -738,7 +740,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 signal.wait(observed, Some(deadline));
             }
         }
-        result
+        teardown_result(name, result)
     }
     fn report(
         &self,
@@ -1518,6 +1520,22 @@ fn record_kind(value: u8) -> Result<NodeKind, Errno> {
         _ => Err(Errno(EIO)),
     }
 }
+// Called only after mutation admission closes and the commit worker stops.
+// A failed transaction cannot be repaired by retrying sync. Report its unknown
+// durability, then let mount removal or reboot proceed; fsync still returns EIO.
+fn teardown_result(name: &str, result: Result<(), Errno>) -> Result<(), Errno> {
+    match result {
+        Err(Errno(EIO)) => {
+            log::error!(
+                "[shutdown] {} breenfs failed read-only; uncommitted changes may be lost",
+                name
+            );
+            Ok(())
+        }
+        other => other,
+    }
+}
+
 fn errno(error: ops::Error) -> Errno {
     Errno(match error {
         ops::Error::EIO => EIO,
