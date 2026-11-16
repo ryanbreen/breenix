@@ -236,6 +236,25 @@ pub fn subset_images(
     Ok(report)
 }
 
+/// Bytes left after the new sector prefix of a torn 4 KiB write.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TornTail {
+    Old,
+    Garbage,
+}
+
+/// Validate torn variants of the same flush-boundary selections as subset_images.
+pub fn torn_images(
+    initial: Vec<u8>,
+    seed: u64,
+    operations: usize,
+    tail: TornTail,
+    checker: impl FnMut(&Image) -> Result<()>,
+) -> Result<Report> {
+    let _ = (initial, seed, operations, tail, checker);
+    Err(crate::Error::Unimplemented)
+}
+
 fn matches_commit(
     snapshots: &BTreeMap<u64, State>,
     acknowledged: u64,
