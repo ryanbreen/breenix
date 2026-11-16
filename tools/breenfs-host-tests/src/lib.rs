@@ -22,6 +22,7 @@ pub mod space;
 pub mod txn;
 
 pub mod crash;
+pub mod corrupt;
 pub mod model;
 #[path = "../../../kernel/src/fs/breenfs/ops.rs"]
 pub mod ops;
