@@ -24,6 +24,22 @@ mod syscall { pub use crate::syscall_errno as errno; }
 mod fs { pub use crate::{attrs, errno}; }
 #[path = "@ROOT@/kernel/src/fs/vfs/mount_table.rs"] pub mod mount_table;
 use std::sync::{Arc, Mutex};
+static EVENTS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+#[allow(dead_code)]
+struct Fs;
+#[allow(dead_code)]
+impl Fs {
+    fn shutdown(&self, _name: &str, _deadline: u64) -> Result<(), errno::Errno> {
+        EVENTS.lock().unwrap().push("commit-stop"); Ok(())
+    }
+    fn init_service(&self) -> Result<(), errno::Errno> {
+        EVENTS.lock().unwrap().push("resume"); Ok(())
+    }
+}
+#[allow(dead_code)]
+mod time {
+    pub fn get_monotonic_time_ns() -> (u64, u32) { (0, 0) }
+}
 #[derive(Clone, Copy)] pub struct Mount(pub usize);
 pub enum Target { Inode { mount: Mount, ino: u64 }, User, Virtual, Absent }
 mod registry {
@@ -34,7 +50,10 @@ mod registry {
     }
     pub fn root_inode(id: usize) -> Option<u64> { Some(TABLE.lock().unwrap().get(id)?.root) }
     pub fn covered_directory(id: usize) -> Option<(usize, u64)> { TABLE.lock().unwrap().get(id)?.cover }
+    #[allow(dead_code)]
+    pub fn filesystem(_id: usize) -> Result<Arc<Fs>, errno::Errno> { Ok(Arc::new(Fs)) }
     pub fn unmount(id: usize, force: bool) -> Result<(), errno::Errno> {
+        EVENTS.lock().unwrap().push("unregister");
         let removed = TABLE.lock().unwrap().remove(id, force)?;
         drop(removed);
         Ok(())
@@ -57,9 +76,12 @@ fn only_breenfs_roots_dispatch_and_custody_is_preserved() {
     let held = registry::TABLE.lock().unwrap().pin(3).unwrap();
     assert_eq!(unmount(&target(3, 2), 0), Some(Err(syscall_errno::EBUSY as u64)));
     assert!(registry::TABLE.lock().unwrap().get(3).is_some());
+    assert_eq!(*EVENTS.lock().unwrap(), ["commit-stop", "unregister", "resume"]);
+    EVENTS.lock().unwrap().clear();
     drop(held);
     assert_eq!(unmount(&target(3, 2), 0), Some(Ok(())));
     assert!(registry::TABLE.lock().unwrap().get(3).is_none());
+    assert_eq!(*EVENTS.lock().unwrap(), ["commit-stop", "unregister"]);
     assert!(registry::TABLE.lock().unwrap().get(1).is_some());
     assert!(registry::TABLE.lock().unwrap().get(2).is_some());
     let _: Option<Arc<()>> = None;
