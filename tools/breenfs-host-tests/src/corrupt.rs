@@ -337,3 +337,20 @@ fn reachable(device: &Device, sb: &Superblock) -> Result<BTreeMap<u64, Kind>> {
     }
     Ok(blocks)
 }
+
+/// Selected generation and greatest reachable tree height (a leaf has height 1).
+pub fn coverage(image: &Image) -> Result<(u64, u8)> {
+    let device = device(image.clone());
+    let sb = recover::recover(&device, false).map_err(|_| Errno::EIO)?;
+    let targets = reachable(&device, &sb)?;
+    let mut height = 0;
+    for (block, kind) in targets {
+        if let Kind::Node { addr } = kind {
+            if block == addr {
+                let bytes = DeviceStore(&device).get(addr).map_err(|_| Errno::EIO)?;
+                height = height.max(NodeHeader::decode(&bytes).map_err(|_| Errno::EIO)?.level + 1);
+            }
+        }
+    }
+    Ok((sb.generation, height))
+}

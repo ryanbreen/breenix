@@ -188,6 +188,8 @@ struct Checker {
     path: PathBuf,
     file: File,
     images: u64,
+    deepest_generation: u64,
+    tree_height: u8,
 }
 impl Checker {
     fn check(&mut self, image: &Image) -> Output {
@@ -215,6 +217,9 @@ impl Checker {
         if output.status.code() != Some(0) {
             reject("checker clean image", format!("{output:?}"));
         }
+        let (generation, height) = corrupt::coverage(image)?;
+        self.deepest_generation = self.deepest_generation.max(generation);
+        self.tree_height = self.tree_height.max(height);
         Ok(())
     }
     fn flipped(
@@ -422,12 +427,13 @@ fn summary(
     last: Option<u64>,
     images: u64,
     failures: u64,
+    coverage: (u64, u8),
 ) -> Result<()> {
     let first = last
         .map(|_| args.seed.to_string())
         .unwrap_or_else(|| "null".into());
     let last = last.map(|s| s.to_string()).unwrap_or_else(|| "null".into());
-    let json = format!("{{\n  \"started\": {started},\n  \"hours_requested\": {},\n  \"elapsed\": {},\n  \"first_seed\": {first},\n  \"last_seed\": {last},\n  \"images_checked\": {images},\n  \"failures\": {failures}\n}}\n", args.hours, clock.elapsed().as_secs_f64());
+    let json = format!("{{\n  \"started\": {started},\n  \"hours_requested\": {},\n  \"elapsed\": {},\n  \"first_seed\": {first},\n  \"last_seed\": {last},\n  \"images_checked\": {images},\n  \"deepest_generation\": {},\n  \"tree_height\": {},\n  \"failures\": {failures}\n}}\n", args.hours, clock.elapsed().as_secs_f64(), coverage.0, coverage.1);
     let tmp = args.out.join("summary.json.tmp");
     fs::write(&tmp, json).map_err(|e| e.to_string())?;
     fs::rename(tmp, args.out.join("summary.json")).map_err(|e| e.to_string())
@@ -440,7 +446,7 @@ fn run(args: Args) -> Result<()> {
         .duration_since(UNIX_EPOCH)
         .map_err(|e| e.to_string())?
         .as_secs_f64();
-    summary(&args, started, clock, None, 0, 0)?;
+    summary(&args, started, clock, None, 0, 0, (0, 0))?;
     // Keep this invocation's sparse artifact private even when a directory is
     // reused. A successful run removes it; a failure retains its last image.
     let path = args.out.join(format!("image-{}.img", std::process::id()));
@@ -453,6 +459,8 @@ fn run(args: Args) -> Result<()> {
             .open(&path)
             .map_err(|e| e.to_string())?,
         images: 0,
+        deepest_generation: 0,
+        tree_height: 0,
     };
     let empty = fixture(false);
     let populated = fixture(true);
@@ -461,7 +469,7 @@ fn run(args: Args) -> Result<()> {
         if let Err((case, failure)) = seed(&mut checker, &empty, &populated, current) {
             // Publish the failure count before minimization, which may take
             // longer than the requested run. Failure takes the exit-1 path.
-            summary(&args, started, clock, Some(current), checker.images, 1)?;
+            summary(&args, started, clock, Some(current), checker.images, 1, (checker.deepest_generation, checker.tree_height))?;
             let failure_path = args.out.join(format!("failure-{current}.txt"));
             fs::write(
                 &failure_path,
@@ -479,10 +487,10 @@ fn run(args: Args) -> Result<()> {
                 .open(failure_path)
                 .map_err(|e| e.to_string())?;
             writeln!(file, "{}", reduced.regression_row()).map_err(|e| e.to_string())?;
-            summary(&args, started, clock, Some(current), checker.images, 1)?;
+            summary(&args, started, clock, Some(current), checker.images, 1, (checker.deepest_generation, checker.tree_height))?;
             return Err(format!("seed {current}: {}", failure.kind));
         }
-        summary(&args, started, clock, Some(current), checker.images, 0)?;
+        summary(&args, started, clock, Some(current), checker.images, 0, (checker.deepest_generation, checker.tree_height))?;
         eprintln!(
             "seed={current} images_checked={} elapsed={:.3}s failures=0",
             checker.images,

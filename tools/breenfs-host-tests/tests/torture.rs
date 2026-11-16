@@ -48,10 +48,9 @@ fn torture_stream_reuses_slots_and_splits_trees() {
                     let store = DeviceStore(device.as_ref());
                     let h = NodeHeader::decode(&store.get(sb.space_root.addr).unwrap()).unwrap();
                     height = height.max(h.level + 1);
-                    if let Ok(Some(value)) = breenfs_host_tests::btree::search(&store, sb.space_root,
-                        breenfs_host_tests::format::Key { object: 1, item_type: breenfs_host_tests::format::ROOT, offset: 0 }) {
-                        height = height.max(Root::decode(&value).unwrap().root.level + 1);
-                    }
+                    let value = breenfs_host_tests::btree::search(&store, sb.space_root,
+                        breenfs_host_tests::format::Key { object: 0xffff_ffff_ffff_ff10, item_type: breenfs_host_tests::format::ROOT, offset: 1 }).unwrap().unwrap();
+                    height = height.max(Root::decode(&value).unwrap().root.level + 1);
                 }
             }
         }
