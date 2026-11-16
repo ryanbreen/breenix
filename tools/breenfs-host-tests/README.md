@@ -149,7 +149,8 @@ without rollback writes, per the corrected design section 2.5.
 
 `recover.rs` validates the eight slots, refuses disagreeing UUIDs, and selects the
 highest generation with matching SPACE and ROOT pointers. Writable recovery clears
-valid abandoned slots and flushes the cleanup before returning a mount candidate.
+valid abandoned slots, restores the selected generation's missing or invalid ring
+copy, and flushes those writes before orphan reclaim or returning a mount candidate.
 A cleanup error refuses that writable recovery. This is a root validation pass;
 FS descendant checking on reads and the full scrub remain separate layers.
 
@@ -237,3 +238,253 @@ ARM and x86 share this formatter and core. Writable VFS integration, open-handle
 lifetime, DEAD reaping, reservation policy, Hold-group/dirty-page integration and
 ARM64 QEMU/Parallels/VMware runtime acceptance remain later steps. This host unit
 runs no boot and adds no architecture-specific writer implementation.
+
+## Flush-boundary subset crash images (24.9-a)
+
+`crash::subset_images(initial, seed, operations, checker)` replays a bounded
+`Stream` on the POSIX model and `WriterAdapter` over `RecordingDevice`. It compares
+operation replies and logical state, records the model at each published commit,
+and ends with a clean remount to publish pending work. The recorder continues to
+check W1-W3 on the source writes.
+
+At a recorded flush, the previous durable image is combined with selections of
+the intervening 512-byte writes, preserving issue order. The selection policy is
+breenfs-design.md section 5: exhaustive subsets through 12 writes; above that,
+prefixes, single omissions and 4,096 seeded random subsets. Duplicate selections
+still go through validation. The implementation retains the fsync acknowledgement
+that preceded the boundary and advances the upper bound when the superblock's
+first sector is issued.
+
+Recovery uses a separate plain in-memory sector device with sparse storage.
+Writable `WriterAdapter::new` can clear abandoned slots or reclaim orphans there.
+The injected checker receives the recovered image, including cleanup writes, and
+the recovered logical state must match a model snapshot within the inclusive
+acknowledged-to-issued commit interval. This device carries no recording oracle.
+
+Run the focused check with:
+
+```sh
+CARGO_BUILD_JOBS=4 taskpolicy -b cargo test \
+  --manifest-path tools/breenfs-host-tests/Cargo.toml --test crash_images \
+  subset_images_recover_to_an_acknowledged_commit -- --exact --nocapture
+```
+
+The host crate's dev/test profile optimizes node decoding and checksumming,
+including its artifact binaries, with debug assertions and overflow checks enabled.
+The fixed corpus uses seeds 1 and 2, eight stream operations per seed, and the
+final remount. Its checker closure materializes a fresh sparse image and invokes
+the Cargo artifact `breenfs-check --full`, requiring exit 0 for each image. Sparse
+representation reduces copying and file traffic; it does not reduce the selected
+images or the recovery, checker and model validations. The same check covers the
+12/13-write selection boundary.
+
+This unit is host acceptance only. Kernel `fs/mod.rs` still does not declare
+breenfs. ARM and x86 still lack the read/write VFS mount integration, open-handle
+lifetime, DEAD reaping, reservation and Hold-group/dirty-page integration; ARM64
+QEMU, Parallels and VMware runtime acceptance remains later work. Bit flips,
+minimization, torture and host milestone records belong to the later 24.9 units.
+
+Coordinator ledger line 217 settles
+[#3020](https://github.com/ryanbreen/breenix/issues/3020): writable recovery must
+restore the selected generation's missing or invalid ring copy and flush before
+its first commit. Read-only recovery leaves the image alone. The focused
+`recover::writable_recovery_restores_the_missing_ring_copy` check uses a plain
+memory device with separate visible and durable bytes. It requires the ring-B
+slot writes followed by a flush, without a requested commit, and read-only
+recovery without writes. Missing and invalid copies exercise the same contract.
+The subset corpus and the checker's exit-0 requirement remain unchanged.
+
+## Torn crash images (24.9-b)
+
+`crash::torn_images(initial, seed, operations, tail, checker)` uses the same
+stream, flush boundaries, sector-write masks and model commit interval as the
+subset corpus. For each mask it starts from the preceding durable image and
+applies the selected sector writes in issue order. Each 4 KiB block written
+since that flush then retains a seeded prefix of one through seven sectors
+from that selected image. Its remaining sectors come from the preceding durable
+image (`TornTail::Old`) or a seeded xorshift64* byte stream (`TornTail::Garbage`).
+The seed includes the stream seed, boundary, mask index and block address;
+both tail kinds use identical prefix lengths. Unselected sectors inside a
+retained prefix stay old. No block outside that window's writes is modified.
+
+The fixed check runs both tail kinds over seeds 1 and 2, eight stream operations
+and the final remount, within a ten-minute bound. Each image receives writable
+recovery, a separate invocation of the independent `breenfs-check --full` binary
+requiring exit 0, and logical comparison with a model commit no earlier than
+the last acknowledged fsync and no later than the last issued superblock.
+Failures identify the seed, operation, boundary, mask index and tail kind.
+
+```sh
+CARGO_BUILD_JOBS=4 taskpolicy -b cargo test \
+  --manifest-path tools/breenfs-host-tests/Cargo.toml --test crash_images \
+  torn_images_recover_to_an_acknowledged_commit -- --exact --nocapture
+```
+
+The check was committed against an `Unimplemented` stub before the replay
+extension. The architecture-neutral core remains undeclared in kernel
+`fs/mod.rs`. ARM still lacks VFS read/write mounts, open-handle lifetime,
+DEAD reaping, reservation, Hold-group/dirty-page integration and ARM64 QEMU,
+Parallels and VMware runtime acceptance. This unit runs no boot.
+
+The garbage-tail corpus found seed 1, boundary 1, mask 0 leaving nonzero invalid
+slots A2/B2 after recovery. `crash::tests::seed_1_garbage_tail_in_unpublished_ring_slots`
+retains that minimized case. Writable recovery now clears nonzero invalid slots
+after validating the selected generation, restores its companion directly, and
+flushes before exposing the mount. Read-only recovery retains the original bytes.
+The checker and the corpus acceptance criteria are unchanged.
+
+## Committed-image corruption (24.9-c)
+
+`corrupt::bit_flips` takes a populated formatter image and the durable image
+after successful fsync calls in the fixed corpus (seeds 1 and 2, eight stream
+operations). It enumerates valid slots in both rings and walks the selected
+generation's SPACE tree, ROOT trees and DEAD nodes. Node targets include their
+four blocks; data targets include the physical allocations named by REFs and
+EXTENTs. Historical trees are outside the selected generation's reachable set.
+A seeded bit offset selects one flip in a separate image for each block.
+
+`tests/corruption.rs::bit_flips_error_never_panic_and_checker_names_the_block`
+invokes the independent `breenfs-check --full` on the corrupted image before
+recovery can alter it. Slot and node flips require nonzero exit and a diagnostic
+naming the block or covering node address; data flips require C1 naming the
+block. Separate devices exercise read-only and writable recovery. Read-only
+recovery must preserve the image. Adapter construction, the full logical state
+walk and reads of the pristine image's regular-file inode/length list run under
+`catch_unwind`; errors are permitted and a panic fails the check. The reads
+include holes, partial tails and EOF, even if the state walk returns an error.
+Each flipped node also goes directly through the production B-tree search path,
+which must return EIO even if recovery selected an older generation or the file
+reads avoid that node. The pointer is read from raw fields without a preliminary
+CRC decode. Checker diagnostics must name a block or node explicitly on an error
+line, or name the node CRC that forced abandonment of a newer generation.
+Data EIO enforcement remains step 24.13.
+
+```sh
+CARGO_BUILD_JOBS=4 taskpolicy -b cargo test \
+  --manifest-path tools/breenfs-host-tests/Cargo.toml --test corruption \
+  bit_flips_error_never_panic_and_checker_names_the_block -- --exact --nocapture
+```
+
+The check first failed against the corpus stub in commit `45867bd5`.
+With replay implemented, the existing decoders and checker satisfy it, so no
+kernel decoder or checker change is needed (U29). The core remains undeclared
+in kernel `fs/mod.rs`. ARM still lacks VFS read/write mounts, open-handle
+lifetime, DEAD reaping, reservation, Hold-group/dirty-page integration and
+ARM64 QEMU, Parallels and VMware runtime acceptance. This unit runs no boot.
+
+## Seed minimization and regression rows (24.9-d)
+
+`minimize::Case` names a failure by its seed, its stream length, the kept
+stream indices and a fault. A `Fault::Crash` holds the flush boundary of the
+case's run (its final clean remount included), that window's 512-byte write
+count, the ascending indices of the selected writes, and the torn tail and
+tear seed if any. A `Fault::Flip` holds a `corrupt::Flip`. Kept operations are
+the seeded stream's own, so dropping one leaves later operations unchanged.
+
+`minimize::minimize(case, fails)` is `no_std` library code with a caller-supplied
+predicate, so a host binary can drive it with a test's acceptance. It requires a
+well-formed failing case (otherwise EINVAL) and shrinks it in three
+deterministic steps: the shortest failing stream prefix; single operations
+dropped, latest first, until no single drop still fails; then single selected
+crash writes dropped the same way. The predicate decides what counts as the same
+failure and returns false for a candidate it cannot apply. `regression_row`
+prints the result as a Rust expression for `tests/crash_regressions.rs`.
+
+`crash::case_at(initial, seed, operations, boundary, image, tail)` turns the
+coordinates a subset or torn failure reports into a case.
+`crash::replay_case` and `corrupt::replay_flip` replay one row through the same
+code as the corpora: the recorded source run with W1-W3, writable recovery, the
+injected checker and the model commit bounds for crash rows; the committed image
+after the kept fsync and the corpus observer for flip rows. A row whose boundary,
+write count, fsync or block kind is absent from its run is `Inapplicable`.
+
+```sh
+CARGO_BUILD_JOBS=4 taskpolicy -b cargo test \
+  --manifest-path tools/breenfs-host-tests/Cargo.toml --test minimize --test crash_regressions
+```
+
+`tests/minimize.rs::minimizer_reduces_a_failing_stream` injects a predicate that
+fails when a successful rename precedes a successful fsync and the crash image
+keeps write 1. A seeded 256-operation stream reduces to the rename, the fsync
+and the creating operations they need, with write 1 alone selected. Stream
+operations name inodes by number, so a create that allocates an inode number
+the rename or fsync names is required as well. For seed 1 that is 8 of 111
+prefix operations: six creates, links, directories or symlinks, then the
+rename and the fsync. Removing any one kept operation passes, and a second run
+emits the same row.
+
+`tests/crash_regressions.rs::every_minimized_case_replays` holds one row. The
+24.9-b garbage-tail failure (seed 1, 8 operations, boundary 1, image 0) was
+located with `case_at` and minimized against the recovery of commit 021da596,
+before 24.9-b's repair, where the checker exits 4 naming slots A2 and B2. It
+reduces to the first create and the final remount at the publication boundary,
+with no selected writes. At this head the row passes the crash-image acceptance:
+the full checker exits 0 and the recovered tree matches a commit in bounds. The
+24.9-c corpus had no failing flip, so the table has no flip row; flip rows use
+`tests/corruption.rs`'s observer and its populated formatter fixture.
+
+This unit is host acceptance only. The core remains undeclared in kernel
+`fs/mod.rs`. ARM still lacks VFS read/write mounts, open-handle lifetime,
+DEAD reaping, reservation, Hold-group/dirty-page integration and ARM64 QEMU,
+Parallels and VMware runtime acceptance. This unit runs no boot.
+
+## Timed torture driver (24.9-e)
+
+Build and run the host binary with an independent checker:
+
+```sh
+CARGO_BUILD_JOBS=4 taskpolicy -b cargo build \
+  --manifest-path tools/breenfs/Cargo.toml --bin breenfs-check
+CARGO_BUILD_JOBS=4 taskpolicy -b cargo build \
+  --manifest-path tools/breenfs-host-tests/Cargo.toml --bin breenfs-torture
+taskpolicy -b tools/breenfs-host-tests/target/debug/breenfs-torture \
+  --hours 0.002 --seed-start 1 \
+  --checker tools/breenfs/target/debug/breenfs-check --out /tmp/breenfs-torture
+```
+
+The command accepts only `--hours N [--seed-start S] --checker PATH --out DIR`.
+Hours must be finite and positive and may be fractional; the default first seed
+is 1. A seed runs `32 + (seed % 4) * 8` stream operations plus the final remount through
+`crash::subset_images`, both `crash::torn_images` tails, and
+`corrupt::bit_flips`, using the existing full selection policy and acceptance.
+The high bit of the emitted stream seed tags the torture workload, preserving
+that choice when a regression row is minimized; summaries use the consecutive
+input seed range. Ordinary untagged streams retain their previous operations.
+After the historical eight-operation prefix, the torture stream adds 4 KiB xattrs to
+split the filesystem tree, multi-block data writes, overwrites, truncations and
+repeated commits to wrap the superblock slots. The source check in
+`tests/torture.rs::torture_stream_reuses_slots_and_splits_trees` requires seeds
+1 and 2 to reach generation 9 and tree height 2.
+Fixtures are built directly through the shared `Files::format` and commit
+entry points, with fixed metadata and a populated tree containing multi-block
+data, a partial tail, an empty file and a symlink. No formatter executable is
+required by the driver. The checker is invoked as `PATH --full IMAGE`.
+
+The deadline is checked between complete seeds. A short request can overrun
+its deadline while finishing its first seed; it does not truncate a corpus or
+count a partial seed as passed. Seeds advance consecutively without wrapping.
+Exit 0 requires a passed seed and an expired deadline with no failure.
+
+`DIR/summary.json` is replaced atomically at startup and after a seed. Its fields
+are `started` (Unix seconds), `hours_requested`, `elapsed` (monotonic seconds),
+`first_seed`, `last_seed` (inclusive; null before a seed), `images_checked`
+(checker invocations, including minimization), `deepest_generation` and
+`tree_height` (greatest selected generation and reachable height among recovered
+crash images; a leaf has height 1), and `failures` (failed seeds).
+On failure the driver publishes the failed seed and failure count before
+minimizing. `DIR/failure-<seed>.txt` holds the diagnostic and the minimized Rust
+row from `minimize::Case::regression_row`, replayed against the same failure
+kind. It then exits 1. A failed run retains its last sparse checker input;
+a successful run removes that scratch image. Setup or output I/O errors also
+exit 1 and cannot be accepted as an expired deadline.
+
+`tests/torture.rs::short_run_writes_a_summary` runs the built binary with
+`--hours 0.002` and Cargo's artifact checker. It requires exit 0, checked images,
+an inclusive seed range and a failure count of 0. The check-first commit is `75ba4f78`.
+The one-hour final-head acceptance and later background 24-hour run are the
+separate milestone work specified by coordinator ledger line 213.
+
+This host driver adds no architecture-specific path. ARM still lacks VFS
+read/write mounts, open-handle lifetime, DEAD reaping, reservation,
+Hold-group/dirty-page integration and ARM64 QEMU, Parallels and VMware runtime
+acceptance. This unit runs no boot.

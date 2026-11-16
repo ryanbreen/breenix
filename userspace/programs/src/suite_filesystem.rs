@@ -29,6 +29,12 @@ static SUITE: Suite = suite("filesystem", "Copy-on-write filesystem", &[
         case("reproducible-image", "Fixed inputs produce byte-identical images", host_case),
         case("violations-refused", "Images violating format invariants are refused", host_case),
     ]),
+    category("crash-images", "Host-enumerated crash images recover to an acknowledged commit", &[
+        case("subset-images", "Crash write subsets recover to an acknowledged commit", host_case),
+        case("torn-images", "Torn images recover to an acknowledged commit", host_case),
+        case("corruption-no-panic", "Corrupted images return errors without panicking", host_case),
+        case("torture-24h", "Twenty-four hours of torture complete without failures", host_case),
+    ]),
 ]);
 
 fn io<T>(result: std::io::Result<T>) -> Result<T, String> { result.map_err(|e| e.to_string()) }

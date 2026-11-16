@@ -468,6 +468,90 @@ mod commit {
 mod recover {
     use super::*;
     #[test]
+    fn writable_recovery_restores_the_missing_ring_copy() {
+        // A plain device permits recovery writes without the source recorder's
+        // publication oracle. Its durable bytes advance only at flush.
+        struct Memory {
+            bytes: Vec<u8>,
+            durable: Vec<u8>,
+            events: Vec<Event>,
+        }
+        struct Device(Mutex<Memory>);
+        impl BlockDevice for Device {
+            fn read_block(&self, n: u64, b: &mut [u8]) -> Result<(), BlockError> {
+                let memory = self.0.lock().unwrap();
+                let at = n as usize * 512;
+                b.copy_from_slice(&memory.bytes[at..at + 512]);
+                Ok(())
+            }
+            fn write_block(&self, n: u64, b: &[u8]) -> Result<(), BlockError> {
+                let mut memory = self.0.lock().unwrap();
+                let at = n as usize * 512;
+                memory.bytes[at..at + 512].copy_from_slice(b);
+                memory.events.push(Event::Write {
+                    sector: n,
+                    bytes: b.try_into().unwrap(),
+                });
+                Ok(())
+            }
+            fn block_size(&self) -> usize {
+                512
+            }
+            fn num_blocks(&self) -> u64 {
+                self.0.lock().unwrap().bytes.len() as u64 / 512
+            }
+            fn flush(&self) -> Result<(), BlockError> {
+                let mut memory = self.0.lock().unwrap();
+                memory.durable = memory.bytes.clone();
+                memory.events.push(Event::Flush);
+                Ok(())
+            }
+        }
+        let (bytes, newest, _) = committed();
+        let block = newest.total_blocks - 4 + u64::from(newest.slot);
+        let at = block as usize * BLOCK_SIZE;
+        for invalid in [false, true] {
+            let mut damaged = bytes.clone();
+            if invalid {
+                damaged[at + 8] ^= 1;
+            } else {
+                damaged[at..at + BLOCK_SIZE].fill(0);
+            }
+            let device = Device(Mutex::new(Memory {
+                bytes: damaged.clone(),
+                durable: damaged.clone(),
+                events: Vec::new(),
+            }));
+            let chosen = breenfs_host_tests::recover::recover(&device, false).unwrap();
+            assert_eq!(chosen.generation, newest.generation);
+            {
+                let memory = device.0.lock().unwrap();
+                assert!(memory.events.is_empty());
+                assert_eq!(memory.bytes, damaged);
+                assert_eq!(memory.durable, damaged);
+            }
+            let chosen = breenfs_host_tests::recover::recover(&device, true).unwrap();
+            assert_eq!(chosen.generation, newest.generation);
+            let mut companion = newest.clone();
+            companion.ring = 1;
+            let encoded = companion.encode();
+            let mut expected_events: Vec<_> = encoded
+                .chunks_exact(512)
+                .enumerate()
+                .map(|(i, bytes)| Event::Write {
+                    sector: block * 8 + i as u64,
+                    bytes: bytes.try_into().unwrap(),
+                })
+                .collect();
+            expected_events.push(Event::Flush);
+            let memory = device.0.lock().unwrap();
+            // No commit was requested: just the companion slot, then its flush.
+            assert_eq!(memory.events, expected_events);
+            assert_eq!(memory.durable, bytes);
+            assert_eq!(memory.bytes, bytes);
+        }
+    }
+    #[test]
     fn after_publication_failure_chooses_a_consistent_generation() {
         for fault in [
             Fault::RingA,

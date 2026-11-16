@@ -4,8 +4,10 @@ pub fn image() -> std::vec::Vec<u8> {
     static IMAGE: OnceLock<std::vec::Vec<u8>> = OnceLock::new();
     IMAGE
         .get_or_init(|| {
-            let path = std::env::temp_dir()
-                .join(std::format!("breenfs-files-empty-{}.img", std::process::id()));
+            let path = std::env::temp_dir().join(std::format!(
+                "breenfs-files-empty-{}.img",
+                std::process::id()
+            ));
             let output = Command::new(env!("CARGO_BIN_FILE_BREENFS_breenfs-mkfs"))
                 .args([
                     "--size",

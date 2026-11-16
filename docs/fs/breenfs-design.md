@@ -245,8 +245,8 @@ otherwise. EIO from fsync leaves the outcome unknown, as POSIX permits. <!-- cla
 2. Valid slots that disagree on `fs_uuid` refuse the mount.
 3. *M* is the highest valid generation whose space root, and whose ROOT tree roots written in that generation, match
    their pointers (magic, CRC, address, generation, level, uuid, tree).
-4. A writable mount zeroes valid slots above *M*, and flushes, before its first commit, so an abandoned commit is
-   never chosen later. <!-- claim-lint:ok: Normative breenfs design requirement from docs/fs/breenfs-design.md section 2.5, not a measured result. -->
+4. A writable mount zeroes valid slots above *M*, writes *M*'s superblock to the slot of *M* in any ring where that
+   copy is missing or invalid, and flushes, before its first commit. A read-only mount changes nothing on disk. <!-- claim-lint:ok: Normative recovery contract in docs/fs/breenfs-design.md section 2.5, authorized by E24 coordinator ruling line 217 for #3020. -->
 
 There is no log to replay; orphan reclaim and DEAD reaping resume. Image writers write all eight slots, zeroing
 unused ones, so a stale superblock from an earlier image never wins. <!-- claim-lint:ok: Normative breenfs design requirement from docs/fs/breenfs-design.md section 2.5, not a measured result. -->

@@ -5,12 +5,16 @@ use alloc::{format, vec, vec::Vec};
 
 pub struct Stream {
     random: u64,
+    stress: bool,
     index: u64,
     shadow: Model,
 }
 impl Stream {
     pub fn new(seed: u64) -> Self {
+        let stress = seed & TORTURE_SEED != 0;
+        let seed = seed & !TORTURE_SEED;
         Self {
+            stress,
             random: if seed == 0 {
                 0x9e37_79b9_7f4a_7c15
             } else {
@@ -40,6 +44,41 @@ impl Stream {
             }
         }
         format!("n{}", self.index).into_bytes()
+    }
+    // After the historical eight-operation corpus, keep a file alive through
+    // split-sized xattrs, overwrite/free cycles and enough commits to wrap the
+    // superblock slots. Random suffix operations still vary namespace shapes.
+    fn stress(&mut self) -> Action {
+        let round = self.index / 16;
+        let name = format!("stress-{round}").into_bytes();
+        let state = self.shadow.state().expect("model state");
+        let ino = match &state.inodes[&ROOT].contents {
+            Contents::Directory { entries, .. } => entries.get(&name).copied(),
+            _ => unreachable!(),
+        };
+        let Some(ino) = ino else {
+            return Action::Create {
+                dir: ROOT,
+                name,
+                mode: 0o644,
+            };
+        };
+        match self.index % 16 {
+            1..=4 => Action::Setxattr {
+                ino,
+                name: format!("user.stress-{}", self.index % 16).into_bytes(),
+                value: vec![(self.random() >> 56) as u8; 4096],
+            },
+            5 | 7 => Action::Write {
+                ino,
+                offset: 0,
+                bytes: vec![(self.random() >> 56) as u8; (2 + self.random() as usize % 7) * 4096],
+            },
+            9 => Action::Truncate { ino, size: 0 },
+            11 => Action::Unlink { dir: ROOT, name },
+            13 => Action::Remount,
+            _ => Action::Fsync { ino },
+        }
     }
     fn generated(&mut self) -> Action {
         let state = self.shadow.state().expect("model state");
@@ -138,6 +177,7 @@ impl Iterator for Stream {
             },
             2 => Action::Fsync { ino: 16 },
             3 => Action::Remount,
+            _ if self.stress && self.index >= 8 && self.index % 16 < 14 => self.stress(),
             _ => self.generated(),
         };
         self.index += 1;
@@ -152,4 +192,16 @@ impl Iterator for Stream {
         let _result = self.shadow.execute(&op);
         Some(op)
     }
+}
+
+/// Operation budget used by the long-running crash driver.
+pub fn torture_operations(seed: u64) -> usize {
+    32 + (seed as usize % 4) * 8
+}
+
+// The workload tag stays in emitted regression rows, independent of their
+// minimized operation count. Ordinary model/minimizer seeds retain their stream.
+const TORTURE_SEED: u64 = 1 << 63;
+pub fn torture_seed(seed: u64) -> u64 {
+    seed | TORTURE_SEED
 }

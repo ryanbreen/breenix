@@ -1043,11 +1043,14 @@ fn sdk_host_records_match_the_manifest_and_the_guest() {
 
 fn check_filesystem_host_records(manifest: &str, harness: &str, guest: &str) {
     let manifest: Value = serde_json::from_str(manifest).unwrap();
-    let format = manifest["categories"].as_array().unwrap().iter()
-        .find(|category| category["id"].as_str() == Some("format"))
-        .expect("filesystem manifest has a format category");
-    let ids: Vec<String> = format["cases"].as_array().unwrap().iter()
-        .map(|case| format!("format/{}", case["id"].as_str().unwrap())).collect();
+    let categories = manifest["categories"].as_array().unwrap();
+    assert!(categories.iter().any(|category| category["id"].as_str() == Some("format")),
+        "filesystem manifest has a format category");
+    let ids: Vec<String> = ["format", "crash-images"].iter().flat_map(|name| {
+        categories.iter().find(|category| category["id"].as_str() == Some(name))
+            .into_iter().flat_map(move |category| category["cases"].as_array().unwrap().iter()
+                .map(move |case| format!("{name}/{}", case["id"].as_str().unwrap())))
+    }).collect();
     let mut written = sdk_harness_cases(harness);
     assert_eq!(written, ids, "host records differ from manifest order");
     written.sort();
@@ -1062,7 +1065,9 @@ fn filesystem_host_records_match_the_manifest_and_the_guest() {
     assert_eq!(sdk_harness_cases(&harness), [
         "format/mkfs-empty-clean", "format/mkfs-populate-clean",
         "format/reproducible-image", "format/violations-refused",
-    ], "the four required format records must remain present in order");
+        "crash-images/subset-images", "crash-images/torn-images",
+        "crash-images/corruption-no-panic", "crash-images/torture-24h",
+    ], "the required host records must remain present in order");
     check_filesystem_host_records(
         &fs::read_to_string(root.join("docs/suites/filesystem.json")).unwrap(),
         &harness,
@@ -1081,10 +1086,12 @@ fn filesystem_record_guard_checks_format_and_guest() {
     let check = |m: &str, h: &str, g: &str| std::panic::catch_unwind(|| check_filesystem_host_records(m, h, g)).is_ok();
     assert!(check(&good_manifest, &good_harness, &good_guest), "other categories must not affect format records");
     let extra_case = manifest(r#"{"id":"a"},{"id":"b"},{"id":"c"}"#);
+    let crash_missing = r#"{"categories":[{"id":"format","cases":[{"id":"a"},{"id":"b"}]},{"id":"crash-images","cases":[{"id":"missing"}]}]}"#;
     let extra_host = harness("'format/a', 'format/b', 'interface/other',");
     let wrong_order = harness("'format/b', 'format/a',");
     let extra_read = guest("host(\"format/a\"); host(\"format/b\"); host(\"format/c\");");
     for (name, m, h, g) in [
+        ("missing crash host record", crash_missing, good_harness.as_str(), good_guest.as_str()),
         ("missing host record", extra_case.as_str(), good_harness.as_str(), good_guest.as_str()),
         ("host outside format", good_manifest.as_str(), extra_host.as_str(), good_guest.as_str()),
         ("wrong order", good_manifest.as_str(), wrong_order.as_str(), good_guest.as_str()),
