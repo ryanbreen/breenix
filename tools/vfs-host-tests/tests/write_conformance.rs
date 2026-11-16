@@ -734,3 +734,114 @@ fn writer_enters_next_generation_while_fsync_waits_outside_mount_lock() {
     fs.report(Report::State, "test", &mut report).unwrap();
     assert!(report.contains("durable_generation=2"));
 }
+
+#[test]
+fn writeback_pages_joins_the_transaction_and_msync_is_durable() {
+    let (disk, ino) = fixture();
+    let fs = mount(disk.clone());
+    let node = fs.open(ino).unwrap();
+    fs.resize(&node, 2 * 4096 + 37, false, &|_| Ok(())).unwrap();
+    fs.setattr(
+        ino,
+        SetAttr {
+            mode: Some(0o6750),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    fs.sync().unwrap();
+    let before = disk.bytes.lock().unwrap().clone();
+    let generation = recover::recover(disk.as_ref(), false).unwrap().generation;
+    let mapping = fs.mapping_io(&node).unwrap();
+    assert!(mapping.needs_flush());
+    let mut bound = false;
+    mapping
+        .publish(&mut |writable| {
+            bound = writable;
+            Ok(())
+        })
+        .unwrap();
+    assert!(bound, "writable mount must publish a writable binding");
+    let mut expected = vec![0x5a; 2 * 4096 + 37];
+    write_at(fs.as_ref(), &node, WriteAt::Offset(7), b"ordinary");
+    expected[7..15].copy_from_slice(b"ordinary");
+    fs.writeback_pages(&node, 1, &[0x61; 4096], mapping.as_ref())
+        .unwrap();
+    expected[4096..8192].fill(0x61);
+    fs.writeback_pages(&node, 2, &[0x62; 37], mapping.as_ref())
+        .unwrap();
+    expected[8192..].fill(0x62);
+    assert_eq!(fs.dirty_bytes(), 3 * 4096);
+    assert_eq!(
+        *disk.bytes.lock().unwrap(),
+        before,
+        "writeback must join, not publish, the transaction"
+    );
+    equal_bytes(fs.as_ref(), &node, &expected);
+    fs.clear_mapping_privilege(&node).unwrap();
+    assert_eq!(fs.getattr(ino).unwrap().attrs.mode & 0o6000, 0);
+    // The mapping layer obtains a fresh transfer after staging its page batches.
+    fs.mapping_io(&node).unwrap().sync(1, 3).unwrap();
+    assert_eq!(
+        recover::recover(disk.as_ref(), false).unwrap().generation,
+        generation + 1
+    );
+    assert_eq!(fs.dirty_bytes(), 0);
+    drop(mapping);
+    drop(node);
+    drop(fs);
+    let fs = BreenFs::mount(disk, Arc::new(BufferCache::new(NoWait)), 71, 1).unwrap();
+    equal_bytes(fs.as_ref(), &fs.open(ino).unwrap(), &expected);
+    assert_eq!(fs.getattr(ino).unwrap().attrs.mode & 0o6000, 0);
+}
+
+#[test]
+fn writeback_bounces_before_checksum() {
+    use crate::breenfs::{crc32c::checksum, space};
+    let (disk, ino) = fixture();
+    let fs = mount(disk.clone());
+    let node = fs.open(ino).unwrap();
+    let mapping = fs.mapping_io(&node).unwrap();
+    let mut caller: Vec<_> = (0..8192).map(|i| (i % 251) as u8).collect();
+    let snapshot = caller.clone();
+    fs.writeback_pages(&node, 3, &caller, mapping.as_ref())
+        .unwrap();
+    caller.fill(0xee);
+    let mut expected = vec![0x5a; 256 * 4096];
+    expected[3 * 4096..5 * 4096].copy_from_slice(&snapshot);
+    equal_bytes(fs.as_ref(), &node, &expected);
+    mapping.sync(3, 5).unwrap();
+    let sb = recover::recover(disk.as_ref(), false).unwrap();
+    let store = DeviceStore(disk.as_ref());
+    let files = Files::new(store, &sb, 1).unwrap();
+    for page in 3..5 {
+        let offset = page * 4096;
+        let (start, extent) = files
+            .items()
+            .unwrap()
+            .into_iter()
+            .filter(|(k, _)| k.object == ino && k.item_type == format::EXTENT)
+            .map(|(k, v)| (k, format::Extent::decode(&v).unwrap()))
+            .find(|(k, e)| k.offset <= offset && offset < k.offset + u64::from(e.num_blocks) * 4096)
+            .unwrap();
+        let reference = space::reference(
+            &DeviceStore(disk.as_ref()),
+            sb.space_root,
+            extent.phys_start,
+            u64::from(extent.phys_len),
+        )
+        .unwrap()
+        .unwrap();
+        let index = u64::from(extent.extent_offset) + (offset - start.offset) / 4096;
+        let block = (extent.phys_start + index) as usize * 4096;
+        let want = &snapshot[(page as usize - 3) * 4096..(page as usize - 2) * 4096];
+        assert_eq!(&disk.bytes.lock().unwrap()[block..block + 4096], want);
+        assert_eq!(reference.crcs[index as usize], checksum(want));
+    }
+    drop(files);
+    drop(mapping);
+    drop(node);
+    drop(fs);
+    let fs = BreenFs::mount(disk, Arc::new(BufferCache::new(NoWait)), 71, 1).unwrap();
+    equal_bytes(fs.as_ref(), &fs.open(ino).unwrap(), &expected);
+}
