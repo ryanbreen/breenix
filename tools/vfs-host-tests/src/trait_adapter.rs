@@ -48,6 +48,7 @@ fn error(error: KernelErrno) -> Error {
     let value = match error.0 {
         errno::EPERM => Errno::EPERM,
         errno::ENOENT => Errno::ENOENT,
+        61 => Errno::ENODATA,
         errno::EEXIST => Errno::EEXIST,
         errno::ENOTDIR => Errno::ENOTDIR,
         errno::EISDIR => Errno::EISDIR,

@@ -223,7 +223,7 @@ fn sparse_links_metadata_and_remount() {
     assert_eq!(fs.write(left, 0, b"x", at), Err(Errno::EISDIR.into()));
     assert_eq!(
         fs.removexattr(left, b"absent", at),
-        Err(Errno::ENOENT.into())
+        Err(Errno::ENODATA.into())
     );
     assert_eq!(fs.state().unwrap(), before);
 }

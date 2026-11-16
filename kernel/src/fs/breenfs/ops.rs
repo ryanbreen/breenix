@@ -25,6 +25,7 @@ pub enum Error {
     EPERM,
     ENOTEMPTY,
     ENOENT,
+    ENODATA,
     EEXIST,
     ENOTDIR,
     EISDIR,
@@ -472,7 +473,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     pub fn unlink(&mut self, dir: u64, name: &[u8], at: Time) -> Result<(), Error> {
         let ino = self.lookup(dir, name)?;
         if inode_kind(self.inode(ino)?.mode)? == 2 {
-            return Err(Error::EPERM);
+            return Err(Error::EISDIR);
         }
         valid_time(at)?;
         self.remove_entry(dir, name, at)?;
@@ -855,7 +856,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         let mut records = xattrs(&old)?;
         let found = records.iter().position(|x| x.name == name);
         if value.is_none() && found.is_none() {
-            return Err(Error::ENOENT);
+            return Err(Error::ENODATA);
         }
         if let Some(n) = found {
             records.remove(n);

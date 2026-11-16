@@ -1283,6 +1283,7 @@ fn errno(error: ops::Error) -> Errno {
         ops::Error::EPERM => EPERM,
         ops::Error::ENOTEMPTY => ENOTEMPTY,
         ops::Error::ENOENT => ENOENT,
+        ops::Error::ENODATA => ENODATA,
         ops::Error::EEXIST => EEXIST,
         ops::Error::ENOTDIR => ENOTDIR,
         ops::Error::EISDIR => EISDIR,
