@@ -507,3 +507,83 @@ fn corrupt_descendant_returns_eio() {
     assert_eq!(fs.getattr(tree.sparse), Err(Errno(EIO)));
     assert_eq!(fs.open(tree.sparse).unwrap_err(), Errno(EIO));
 }
+
+// Small fixture for the production omissions found by the first read boot.
+fn small_read_mount() -> (Arc<BreenFs<NoWait>>, Arc<BufferCache<NoWait>>, u64, u64) {
+    let disk = Arc::new(Disk {
+        bytes: Mutex::new(vec![0; 64 * 1024 * 1024]),
+        writable: true,
+    });
+    let sb = Superblock {
+        fs_uuid: [0x51; 16],
+        generation: 1,
+        slot: 1,
+        total_blocks: 16384,
+        global_reserve: 4096,
+        next_root_id: 2,
+        ..Superblock::default()
+    };
+    let at = Time {
+        seconds: 1,
+        nanos: 0,
+    };
+    let mut files = Files::format(DeviceStore(disk.as_ref()), &sb).unwrap();
+    let tail = files.create(2, b"tail", 0o644, at).unwrap();
+    files.write(disk.as_ref(), tail, 8192, b"tail", at).unwrap();
+    let empty = files.create(2, b"empty", 0o644, at).unwrap();
+    files
+        .fsync(disk.as_ref(), &mut Committer::format(sb))
+        .unwrap();
+    drop(files);
+    let cache = Arc::new(BufferCache::new(NoWait));
+    let fs = BreenFs::mount(disk, cache.clone(), 91, 1).unwrap();
+    (fs, cache, tail, empty)
+}
+
+#[test]
+fn readonly_mapping_reads_holes_and_zero_fills_the_partial_tail() {
+    let (fs, _, ino, _) = small_read_mount();
+    let node = fs.open(ino).unwrap();
+    let transfer = fs
+        .mapping_io(&node)
+        .expect("read-only mmap needs a transfer");
+    drop(node);
+    drop(fs);
+    assert_eq!(transfer.size(), 8196);
+    assert_eq!(transfer.read(4096, 4096).unwrap(), vec![0; 4096]);
+    let bytes = transfer.read(8192, 4096).unwrap();
+    assert_eq!(bytes.len(), 4096);
+    assert_eq!(&bytes[..4], b"tail");
+    assert!(bytes[4..].iter().all(|&byte| byte == 0));
+    assert!(!transfer.needs_flush());
+    assert_eq!(transfer.sync(0, u64::MAX), Ok(()));
+    let mut published = 0;
+    transfer
+        .publish(&mut |append_only| {
+            assert!(!append_only);
+            published += 1;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(published, 1);
+}
+
+#[test]
+fn repeated_inode_reads_reuse_immutable_metadata_and_empty_reads_stop_at_eof() {
+    let (fs, cache, _, empty) = small_read_mount();
+    let expected = fs.getattr(empty).unwrap();
+    let node = fs.open(empty).unwrap();
+    let before = cache.counters();
+    for _ in 0..16 {
+        assert_eq!(fs.getattr(empty), Ok(expected));
+        let mut byte = [0xa5];
+        assert_eq!(fs.read(&node, 0, &mut byte), Ok(0));
+        assert_eq!(byte, [0]);
+    }
+    assert_eq!(
+        cache.counters().hits,
+        before.hits,
+        "repeated stat/empty reads must not decode the B-tree again"
+    );
+    assert_eq!(cache.counters().misses, before.misses);
+}
