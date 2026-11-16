@@ -661,10 +661,12 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         self.check_node(node)?;
         let mut state = self.inner.state.lock();
         let size = state.regular(node.ino)?.size;
-        let transfer = ReadMapping {
+        let transfer = Mapping {
             fs: self.clone(),
             node: self.open_locked(&mut state, node.ino)?,
             size,
+            // A failed writable mount must still flush through sync's EIO path.
+            writable: state.committer.is_some(),
         };
         Ok(Box::try_new(transfer).map_err(|_| Errno(ENOMEM))?)
     }
@@ -947,13 +949,72 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         let result = state.files.put_inode(node.ino, inode);
         state.edited(result)
     }
-    fn writeback_pages(&self, _: &VNode, _: u64, _: &[u8], _: &dyn MappingIo) -> Result<(), Errno> {
-        self.inner.state.lock().writable()?;
-        Err(Errno(EOPNOTSUPP))
+    fn writeback_pages(
+        &self,
+        node: &VNode,
+        page: u64,
+        bytes: &[u8],
+        io: &dyn MappingIo,
+    ) -> Result<(), Errno> {
+        self.check_node(node)?;
+        let mapping = io.as_any().downcast_ref::<Mapping<W>>().ok_or(Errno(EIO))?;
+        if !Arc::ptr_eq(&mapping.fs.inner, &self.inner)
+            || mapping.node.ino != node.ino
+            || mapping.node.incarnation != node.incarnation
+        {
+            return Err(Errno(EXDEV));
+        }
+        let offset = page.checked_mul(BLOCK_SIZE as u64).ok_or(Errno(EFBIG))?;
+        // The caller can reuse its mapped-page snapshot after this call. Only
+        // this private copy enters the dirty map and later CRC calculation.
+        let mut bounce = Vec::new();
+        bounce
+            .try_reserve_exact(bytes.len())
+            .map_err(|_| Errno(ENOMEM))?;
+        bounce.extend_from_slice(bytes);
+        let mut state = self.inner.state.lock();
+        state.writable()?;
+        if !mapping.writable {
+            return Err(Errno(EROFS));
+        }
+        let mut inode = state.regular(node.ino)?;
+        let length = inode.size.saturating_sub(offset).min(bounce.len() as u64) as usize;
+        if length == 0 {
+            return Ok(());
+        }
+        let pending = state.pending.clone();
+        let MountState {
+            files,
+            nodes,
+            dirty_bytes,
+            ..
+        } = &mut *state;
+        let dirty = &mut nodes.entry(node.ino).or_default().dirty;
+        let before = dirty.bytes();
+        dirty.write(offset, &bounce[..length], |off, page| {
+            files
+                .read(&self.data_reader(pending.clone()), node.ino, off, page)
+                .map_err(errno)?;
+            Ok(())
+        })?;
+        *dirty_bytes += dirty.bytes() - before;
+        inode.mtime = now();
+        inode.ctime = inode.mtime;
+        let result = state.files.put_inode(node.ino, inode);
+        state.edited(result)
     }
-    fn clear_mapping_privilege(&self, _: &VNode) -> Result<(), Errno> {
-        self.inner.state.lock().writable()?;
-        Err(Errno(EOPNOTSUPP))
+    fn clear_mapping_privilege(&self, node: &VNode) -> Result<(), Errno> {
+        self.check_node(node)?;
+        let mut state = self.inner.state.lock();
+        state.writable()?;
+        let mut inode = state.regular(node.ino)?;
+        if inode.mode & 0o6000 == 0 {
+            return Ok(());
+        }
+        inode.mode &= !0o6000;
+        inode.ctime = now();
+        let result = state.files.put_inode(node.ino, inode);
+        state.edited(result)
     }
     fn xattr(&self, ino: u64, op: Xattr<'_>) -> Result<usize, Errno> {
         let mut state = self.inner.state.lock();
@@ -1095,14 +1156,15 @@ impl<W: Wait> Drop for Mount<W> {
     }
 }
 
-// The read transfer retains a VNode, keeping unlinked extents alive. Writable
-// mapping publication and writeback join the transaction in a later unit.
-struct ReadMapping<W: Wait + 'static> {
+// The transfer retains a VNode, keeping unlinked extents alive. Publication
+// holds the mount guard before entering the caller's mapping critical section.
+struct Mapping<W: Wait + 'static> {
     fs: BreenFs<W>,
     node: Arc<VNode>,
     size: u64,
+    writable: bool,
 }
-impl<W: Wait + 'static> MappingIo for ReadMapping<W> {
+impl<W: Wait + 'static> MappingIo for Mapping<W> {
     fn as_any(&self) -> &dyn core::any::Any {
         self
     }
@@ -1117,12 +1179,37 @@ impl<W: Wait + 'static> MappingIo for ReadMapping<W> {
         Ok(bytes)
     }
     fn needs_flush(&self) -> bool {
-        false
+        self.writable
     }
-    fn sync(&self, _: u64, _: u64) -> Result<(), Errno> {
+    fn sync(&self, _first: u64, _last: u64) -> Result<(), Errno> {
+        if !self.writable {
+            return Ok(());
+        }
+        // The open generation contains this range's staged writeback (or a
+        // successor if it already committed). sync joins its receipt and waits
+        // for the final flush, outside the mount lock.
+        self.fs.sync()?;
+        #[cfg(not(test))]
+        {
+            let state = self.fs.inner.state.lock();
+            // A later writeback may have joined G+1 during the wait. Leave its
+            // candidates dirty unless the inode has no unpublished data.
+            if state.pending.is_none()
+                && state
+                    .nodes
+                    .get(&self.node.ino)
+                    .is_none_or(|n| n.dirty.bytes() == 0)
+            {
+                self.node.map.complete_writeback(_first, _last);
+            }
+        }
         Ok(())
     }
     fn publish(&self, bind: &mut dyn FnMut(bool) -> Result<(), Errno>) -> Result<(), Errno> {
+        let state = self.fs.inner.state.lock();
+        if self.writable {
+            state.writable()?;
+        }
         bind(false)
     }
 }
