@@ -134,7 +134,8 @@ pub(crate) fn space_items<S: NodeStore>(
         for i in 0..usize::from(h.nitems) {
             if h.level > 0 {
                 let at = 48 + i * 37;
-                let e = InternalEntry::decode(&bytes[at..at + 37]).map_err(|_| Error::InvalidGeneration)?;
+                let e = InternalEntry::decode(&bytes[at..at + 37])
+                    .map_err(|_| Error::InvalidGeneration)?;
                 todo.push((
                     BlockPtr {
                         addr: e.child_addr,
@@ -146,10 +147,13 @@ pub(crate) fn space_items<S: NodeStore>(
                 ));
             } else {
                 let at = 48 + i * 21;
-                let item = LeafItemHeader::decode(&bytes[at..at + 21]).map_err(|_| Error::InvalidGeneration)?;
+                let item = LeafItemHeader::decode(&bytes[at..at + 21])
+                    .map_err(|_| Error::InvalidGeneration)?;
                 // Point lookup validates payload layout, key order and SPACE
                 // ancestor bounds through the existing B-tree reader.
-                let value = btree::search(store, sb.space_root, item.key).map_err(tree_error)?.ok_or(Error::InvalidGeneration)?;
+                let value = btree::search(store, sb.space_root, item.key)
+                    .map_err(tree_error)?
+                    .ok_or(Error::InvalidGeneration)?;
                 if item.key.item_type == format::ROOT {
                     let r = Root::decode(&value).map_err(|_| Error::InvalidGeneration)?;
                     node(store, sb, r.root, 1, sb.generation)?;

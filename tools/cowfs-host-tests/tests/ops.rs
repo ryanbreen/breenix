@@ -625,19 +625,33 @@ fn fsync_preparation_error_completes_waiters_and_latches() {
                 btree::NodeStore::get(&commit::DeviceStore(self.device), addr)
             }
         }
-        fn put(&mut self, _: u64, _: Vec<u8>) -> std::result::Result<(), btree::Error> { unreachable!() }
-        fn alloc(&mut self) -> std::result::Result<u64, btree::Error> { unreachable!() }
+        fn put(&mut self, _: u64, _: Vec<u8>) -> std::result::Result<(), btree::Error> {
+            unreachable!()
+        }
+        fn alloc(&mut self) -> std::result::Result<u64, btree::Error> {
+            unreachable!()
+        }
     }
     let device = RecordingDevice::new(test_image::image()).unwrap();
     let sb = recover::recover(&device, false).unwrap();
     let fail = AtomicBool::new(false);
-    let mut files = ops::Files::new(Store { device: &device, fail: &fail }, &sb, 1).unwrap();
+    let mut files = ops::Files::new(
+        Store {
+            device: &device,
+            fail: &fail,
+        },
+        &sb,
+        1,
+    )
+    .unwrap();
     let mut mount = commit::Committer::new(sb);
     let waiters = [mount.waiter(), mount.waiter()];
     fail.store(true, Ordering::Relaxed);
     assert_eq!(files.fsync(&device, &mut mount), Err(ops::Error::EIO));
     assert!(mount.read_only());
-    for w in waiters { assert_eq!(w.result(), Some(Err(commit::Error::EIO))); }
+    for w in waiters {
+        assert_eq!(w.result(), Some(Err(commit::Error::EIO)));
+    }
     assert_eq!(mount.waiter().result(), Some(Err(commit::Error::EIO)));
     assert!(device.events().is_empty());
     fail.store(false, Ordering::Relaxed);
@@ -657,22 +671,52 @@ fn write_does_not_scan_unrelated_inodes() {
             self.reads.fetch_add(1, Ordering::Relaxed);
             btree::NodeStore::get(&commit::DeviceStore(self.device), addr)
         }
-        fn put(&mut self, _: u64, _: Vec<u8>) -> std::result::Result<(), btree::Error> { unreachable!() }
-        fn alloc(&mut self) -> std::result::Result<u64, btree::Error> { unreachable!() }
+        fn put(&mut self, _: u64, _: Vec<u8>) -> std::result::Result<(), btree::Error> {
+            unreachable!()
+        }
+        fn alloc(&mut self) -> std::result::Result<u64, btree::Error> {
+            unreachable!()
+        }
     }
     let device = RecordingDevice::new(test_image::image()).unwrap();
     let sb = recover::recover(&device, false).unwrap();
     let mut files = ops::Files::new(commit::DeviceStore(&device), &sb, 1).unwrap();
     for n in 0..256 {
-        files.create(2, format!("file{n:03}").as_bytes(), 0o644, Default::default()).unwrap();
+        files
+            .create(
+                2,
+                format!("file{n:03}").as_bytes(),
+                0o644,
+                Default::default(),
+            )
+            .unwrap();
     }
-    let sb = files.fsync(&device, &mut commit::Committer::new(sb)).unwrap();
+    let sb = files
+        .fsync(&device, &mut commit::Committer::new(sb))
+        .unwrap();
     let reads = AtomicUsize::new(0);
-    let mut files = ops::Files::new(Counted { device: &device, reads: &reads }, &sb, 1).unwrap();
+    let mut files = ops::Files::new(
+        Counted {
+            device: &device,
+            reads: &reads,
+        },
+        &sb,
+        1,
+    )
+    .unwrap();
     reads.store(0, Ordering::Relaxed);
-    assert_eq!(files.write(&device, 16, 0, &vec![9; 32768], Default::default()).unwrap(), 32768);
+    assert_eq!(
+        files
+            .write(&device, 16, 0, &vec![9; 32768], Default::default())
+            .unwrap(),
+        32768
+    );
     // Eight data blocks in one inode need only its search paths, not 256 files.
-    assert!(reads.load(Ordering::Relaxed) < 128, "{} node reads", reads.load(Ordering::Relaxed));
+    assert!(
+        reads.load(Ordering::Relaxed) < 128,
+        "{} node reads",
+        reads.load(Ordering::Relaxed)
+    );
     let mut bytes = vec![0; 32768];
     assert_eq!(files.read(&device, 16, 0, &mut bytes).unwrap(), bytes.len());
     assert_eq!(bytes, vec![9; 32768]);

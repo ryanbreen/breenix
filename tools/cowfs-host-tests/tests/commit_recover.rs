@@ -471,6 +471,7 @@ mod recover {
     fn after_publication_failure_chooses_a_consistent_generation() {
         for fault in [
             Fault::RingA,
+            Fault::RingB,
             Fault::FinalFlush(false),
             Fault::FinalFlush(true),
         ] {
@@ -525,18 +526,30 @@ mod recover {
             fn write_block(&self, n: u64, b: &[u8]) -> Result<(), BlockError> {
                 self.inner.write_block(n, b)
             }
-            fn block_size(&self) -> usize { 512 }
-            fn num_blocks(&self) -> u64 { self.inner.num_blocks() }
-            fn flush(&self) -> Result<(), BlockError> { self.inner.flush() }
+            fn block_size(&self) -> usize {
+                512
+            }
+            fn num_blocks(&self) -> u64 {
+                self.inner.num_blocks()
+            }
+            fn flush(&self) -> Result<(), BlockError> {
+                self.inner.flush()
+            }
         }
         let (bytes, newest, _) = committed();
-        for addr in [newest.space_root.addr, root(&Image(bytes.clone()), &newest).root.addr] {
+        for addr in [
+            newest.space_root.addr,
+            root(&Image(bytes.clone()), &newest).root.addr,
+        ] {
             for writable in [false, true] {
                 let dev = ReadFault {
                     inner: RecordingDevice::new(bytes.clone()).unwrap(),
                     addr,
                 };
-                assert_eq!(cowfs_host_tests::recover::recover(&dev, writable), Err(Error::EIO));
+                assert_eq!(
+                    cowfs_host_tests::recover::recover(&dev, writable),
+                    Err(Error::EIO)
+                );
                 assert!(dev.inner.events().is_empty());
                 assert_eq!(dev.inner.durable_image(), bytes);
             }

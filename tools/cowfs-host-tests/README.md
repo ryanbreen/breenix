@@ -1,8 +1,9 @@
 # cowfs host model and recording device
 
 This isolated `no_std` crate imports the existing cowfs core with `#[path]` and
-uses `alloc` for its independent logical oracle. It has no dependency on the
-kernel runtime or on a host filesystem. Run it with:
+uses `alloc` for its independent logical oracle. The core has no dependency on
+the kernel runtime; integration tests run the host formatter and checker on
+temporary files. Run it with:
 
 ```sh
 CARGO_BUILD_JOBS=4 taskpolicy -b cargo test --manifest-path tools/cowfs-host-tests/Cargo.toml
@@ -34,7 +35,8 @@ returns ENOENT, and set replaces or inserts.
 `fsync` acknowledges the shared transaction under design section 2.5, including
 namespace changes. `durable_state` retains that acknowledged state. `remount`
 is a clean unmount/mount that commits pending changes, not a crash or a rollback
-to the last fsync. Crash recovery belongs to a later unit.
+to the last fsync. `tests/commit_recover.rs` checks commit publication faults
+and recovery; the exhaustive crash-image corpus belongs to step 24.9.
 
 `Stream::new(seed)` begins with create, sparse write, fsync and remount. Its
 subsequent xorshift64* choices are reproducible without dependencies, host
