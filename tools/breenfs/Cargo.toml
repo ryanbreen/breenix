@@ -8,6 +8,10 @@ edition = "2021"
 [lib]
 name = "breenfs"
 
+[dev-dependencies]
+# Shared SHA-256 documentation examples name their owning crate.
+libbreenix = { path = "../../libs/libbreenix", features = ["std"] }
+
 # The property check walks encoded 16 KiB nodes after each operation.
 [profile.test]
 opt-level = 2
