@@ -385,3 +385,248 @@ fn unlinked_open_file_survives_until_close_then_reclaims() {
     assert_eq!(fs.getattr(ino), Err(Errno(ENOENT)));
     assert!(fs.statfs().unwrap().free_blocks >= before + 256);
 }
+
+fn write_at(fs: &dyn FileSystem, node: &VNode, at: WriteAt, bytes: &[u8]) -> WriteResult {
+    fs.write(
+        node,
+        WriteReq {
+            at,
+            limit: u64::MAX,
+            clear_setid: false,
+        },
+        bytes,
+    )
+    .unwrap()
+}
+fn equal_bytes(fs: &dyn FileSystem, node: &VNode, expected: &[u8]) {
+    let mut actual = vec![0xcc; expected.len() + 13];
+    assert_eq!(fs.read(node, 0, &mut actual), Ok(expected.len()));
+    assert_eq!(&actual[..expected.len()], expected);
+    assert!(actual[expected.len()..].iter().all(|&b| b == 0));
+}
+
+#[test]
+fn breenfs_data_reads_dirty_pages_then_extents() {
+    let (disk, ino) = fixture();
+    let fs = mount(disk.clone());
+    let node = fs.open(ino).unwrap();
+    let mut expected = vec![0x5a; 256 * 4096];
+    // Prime the clean read path, then overwrite an unaligned, page-spanning range.
+    equal_bytes(fs.as_ref(), &node, &expected);
+    let before = disk.bytes.lock().unwrap().clone();
+    let patch: Vec<_> = (0..9001).map(|i| (i % 251) as u8).collect();
+    let result = write_at(fs.as_ref(), &node, WriteAt::Offset(4093), &patch);
+    assert_eq!(
+        result,
+        WriteResult {
+            offset: 4093,
+            bytes: patch.len(),
+            limited: false
+        }
+    );
+    expected[4093..4093 + patch.len()].copy_from_slice(&patch);
+    write_at(fs.as_ref(), &node, WriteAt::Offset(8190), b"overlap");
+    expected[8190..8197].copy_from_slice(b"overlap");
+    fs.setattr(
+        ino,
+        SetAttr {
+            mode: Some(0o6750),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let end = expected.len() as u64;
+    let req = WriteReq {
+        at: WriteAt::Append,
+        limit: end + 3,
+        clear_setid: true,
+    };
+    assert_eq!(
+        fs.write(&node, req, b"abcdef"),
+        Ok(WriteResult {
+            offset: end,
+            bytes: 3,
+            limited: true
+        })
+    );
+    expected.extend_from_slice(b"abc");
+    assert_eq!(fs.getattr(ino).unwrap().attrs.mode & 0o6000, 0);
+    assert_eq!(fs.write(&node, req, b"x"), Err(WriteError::FileSizeLimit));
+    let max = fs.max_file_size().unwrap();
+    assert_eq!(
+        fs.write(
+            &node,
+            WriteReq {
+                at: WriteAt::Offset(max),
+                limit: u64::MAX,
+                clear_setid: false
+            },
+            b"x"
+        ),
+        Err(WriteError::Filesystem(Errno(EFBIG)))
+    );
+    assert_eq!(
+        *disk.bytes.lock().unwrap(),
+        before,
+        "write must wait for commit"
+    );
+    equal_bytes(fs.as_ref(), &node, &expected);
+    drop(node);
+    let node = fs.open(ino).unwrap();
+    equal_bytes(fs.as_ref(), &node, &expected);
+    fs.fsync(&node, false).unwrap();
+    equal_bytes(fs.as_ref(), &node, &expected);
+    // Another transaction overwrites data already read through the clean cache.
+    write_at(
+        fs.as_ref(),
+        &node,
+        WriteAt::Offset(4095),
+        b"new transaction",
+    );
+    expected[4095..4110].copy_from_slice(b"new transaction");
+    fs.sync().unwrap();
+    equal_bytes(fs.as_ref(), &node, &expected);
+    fs.setattr(
+        ino,
+        SetAttr {
+            mode: Some(0o6750),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        fs.write(
+            &node,
+            WriteReq {
+                at: WriteAt::Append,
+                limit: 0,
+                clear_setid: true
+            },
+            b""
+        ),
+        Ok(WriteResult {
+            offset: expected.len() as u64,
+            bytes: 0,
+            limited: false
+        })
+    );
+    assert_eq!(fs.getattr(ino).unwrap().attrs.mode & 0o6000, 0o6000);
+    fs.sync().unwrap();
+    drop(node);
+    drop(fs);
+    let fs = mount(disk);
+    equal_bytes(fs.as_ref(), &fs.open(ino).unwrap(), &expected);
+}
+
+#[test]
+fn truncate_sparse_reads_zeros_and_counts_mapped_blocks() {
+    let (disk, _) = fixture();
+    let fs = mount(disk.clone());
+    let ino = fs
+        .create(2, b"sparse", NewNode::Regular { attrs: ATTRS })
+        .unwrap();
+    let node = fs.open(ino).unwrap();
+    fs.resize(&node, 9 * 4096 + 17, false, &|_| Ok(())).unwrap();
+    let mut expected = vec![0; 9 * 4096 + 17];
+    equal_bytes(fs.as_ref(), &node, &expected);
+    assert_eq!(fs.getattr(ino).unwrap().blocks, 0);
+    write_at(fs.as_ref(), &node, WriteAt::Offset(4094), b"four");
+    expected[4094..4098].copy_from_slice(b"four");
+    write_at(fs.as_ref(), &node, WriteAt::Offset(8 * 4096 + 3), b"tail");
+    expected[8 * 4096 + 3..8 * 4096 + 7].copy_from_slice(b"tail");
+    assert_eq!(fs.getattr(ino).unwrap().blocks, 3 * 8);
+    equal_bytes(fs.as_ref(), &node, &expected);
+    fs.sync().unwrap();
+    assert_eq!(fs.getattr(ino).unwrap().blocks, 3 * 8);
+    // Refused resize leaves content and set-ID bits alone.
+    let attrs = fs.getattr(ino).unwrap();
+    assert_eq!(
+        fs.resize(&node, 0, true, &|a| {
+            assert_eq!(a, attrs);
+            Err(Errno(EACCES))
+        }),
+        Err(Errno(EACCES))
+    );
+    assert_eq!(fs.getattr(ino).unwrap(), attrs);
+    write_at(
+        fs.as_ref(),
+        &node,
+        WriteAt::Offset(7 * 4096),
+        b"discard dirty page",
+    );
+    fs.resize(&node, 4095, true, &|_| Ok(())).unwrap();
+    expected.truncate(4095);
+    assert_eq!(fs.getattr(ino).unwrap().blocks, 8);
+    assert_eq!(fs.getattr(ino).unwrap().attrs.mode & 0o6000, 0);
+    fs.resize(&node, 9 * 4096 + 17, false, &|_| Ok(())).unwrap();
+    expected.resize(9 * 4096 + 17, 0);
+    equal_bytes(fs.as_ref(), &node, &expected);
+    fs.sync().unwrap();
+    equal_bytes(fs.as_ref(), &node, &expected);
+    assert_eq!(fs.getattr(ino).unwrap().blocks, 8);
+    drop(node);
+    drop(fs);
+    let fs = mount(disk);
+    let node = fs.open(ino).unwrap();
+    equal_bytes(fs.as_ref(), &node, &expected);
+    assert_eq!(fs.getattr(ino).unwrap().blocks, 8);
+    fs.resize(&node, 0, false, &|_| Ok(())).unwrap();
+    fs.resize(&node, 8192, false, &|_| Ok(())).unwrap();
+    equal_bytes(fs.as_ref(), &node, &[0; 8192]);
+    assert_eq!(fs.getattr(ino).unwrap().blocks, 0);
+    fs.sync().unwrap();
+    assert_eq!(fs.getattr(ino).unwrap().blocks, 0);
+}
+
+#[test]
+fn commit_drains_into_extents_of_at_most_1_mib() {
+    let (disk, _) = fixture();
+    let fs = mount(disk.clone());
+    let ino = fs
+        .create(2, b"large", NewNode::Regular { attrs: ATTRS })
+        .unwrap();
+    let node = fs.open(ino).unwrap();
+    let data: Vec<_> = (0..(531 * 4096 - 7)).map(|i| (i % 239) as u8).collect();
+    let before = disk.bytes.lock().unwrap().clone();
+    write_at(fs.as_ref(), &node, WriteAt::Offset(0), &data);
+    write_at(
+        fs.as_ref(),
+        &node,
+        WriteAt::Offset(540 * 4096 + 5),
+        b"island",
+    );
+    assert_eq!(*disk.bytes.lock().unwrap(), before);
+    assert_eq!(fs.getattr(ino).unwrap().blocks, 532 * 8);
+    fs.sync().unwrap();
+    let sb = recover::recover(disk.as_ref(), false).unwrap();
+    let files = Files::new(DeviceStore(disk.as_ref()), &sb, 1).unwrap();
+    let extents: Vec<_> = files
+        .items()
+        .unwrap()
+        .into_iter()
+        .filter(|(k, _)| k.object == ino && k.item_type == format::EXTENT)
+        .map(|(k, v)| (k.offset, format::Extent::decode(&v).unwrap()))
+        .collect();
+    assert_eq!(
+        extents
+            .iter()
+            .map(|(off, e)| (*off, e.num_blocks))
+            .collect::<Vec<_>>(),
+        vec![
+            (0, 256),
+            (256 * 4096, 256),
+            (512 * 4096, 19),
+            (540 * 4096, 1)
+        ]
+    );
+    assert!(extents.iter().all(|(_, e)| e.phys_len <= 256));
+    let mut expected = data;
+    expected.resize(540 * 4096 + 11, 0);
+    expected[540 * 4096 + 5..].copy_from_slice(b"island");
+    equal_bytes(fs.as_ref(), &node, &expected);
+    drop(files);
+    drop(node);
+    drop(fs);
+    let fs = mount(disk);
+    equal_bytes(fs.as_ref(), &fs.open(ino).unwrap(), &expected);
+}
