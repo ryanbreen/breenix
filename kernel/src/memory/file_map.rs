@@ -847,6 +847,27 @@ impl MapState {
         handle: &VNode,
         budget: &mut usize,
     ) -> Result<bool, &'static str> {
+        self.service_writeback_with(handle, budget, |first, end| {
+            // The transfer serializes its durable-epoch check with writes; an
+            // identical durable snapshot need not flush another inode.
+            let file = handle.filesystem.mapping_io(handle).map_err(|_| "Failed to lease mapped file")?;
+            if file.needs_flush() {
+                file.sync(first, end).map_err(|_| "Failed to sync mapped file")?;
+            } else {
+                self.complete_writeback(first, end);
+            }
+            Ok(())
+        })
+    }
+
+    /// Transactional commit workers publish their own generation here rather
+    /// than waiting on a transfer barrier serviced by that same worker.
+    pub(crate) fn service_writeback_with(
+        &self,
+        handle: &VNode,
+        budget: &mut usize,
+        sync: impl FnOnce(u64, u64) -> Result<(), &'static str>,
+    ) -> Result<bool, &'static str> {
         if !self.writeback_pending() || self.state.syncers.load(Ordering::Acquire) != 0 {
             return Ok(false);
         }
@@ -873,15 +894,7 @@ impl MapState {
         let next = self.writeback(handle, first, u64::MAX, *budget, &mut bytes)
             .map_err(|_| "Failed mapped service writeback")?;
         if let Some(end) = next {
-            // An identical snapshot of already durable bytes must not flush
-            // pending writes belonging to another inode. Its transfer lease
-            // serializes the epoch check with data writes and barriers.
-            let file = handle.filesystem.mapping_io(handle).map_err(|_| "Failed to lease mapped file")?;
-            if file.needs_flush() {
-                file.sync(first, end).map_err(|_| "Failed to sync mapped file")?;
-            } else {
-                self.complete_writeback(first, end);
-            }
+            sync(first, end)?;
         }
         *budget -= count;
         let mut inner = self.state.inner.lock();

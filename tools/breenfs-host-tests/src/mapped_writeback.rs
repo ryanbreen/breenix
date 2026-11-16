@@ -66,7 +66,10 @@ fn fixture() -> (Arc<BreenFs<NoWait>>, Arc<Disk>, Arc<VNode>) {
     fs.resize(&node, 67 * 4096, false, &|_| Ok(())).unwrap();
     fs.fsync(&node, false).unwrap();
     // mmap obtains a MappingIo transfer before it publishes shared pages.
-    drop(fs.mapping_io(&node).unwrap());
+    fs.mapping_io(&node)
+        .unwrap()
+        .publish(&mut |_| Ok(()))
+        .unwrap();
     (fs, disk, node)
 }
 fn expected(tag: u8) -> Vec<u8> {
@@ -93,6 +96,7 @@ fn fsync_stores(data_only: bool) {
         cold_bytes(&disk, node.ino) == bytes,
         "fsync data_only={data_only} lost shared stores"
     );
+    fs.shutdown("c2-fsync-cleanup", u64::MAX).unwrap();
 }
 #[test]
 fn c2_fsync_publishes_shared_stores() {
@@ -112,7 +116,7 @@ fn c2_sync_range_publishes_shared_stores_u29() {
         cold_bytes(&disk, node.ino) == bytes,
         "MS_SYNC lost shared stores"
     );
-    drop(fs);
+    fs.shutdown("c2-sync-cleanup", u64::MAX).unwrap();
 }
 #[test]
 fn c2_async_request_is_serviced_by_commit_worker() {
@@ -137,6 +141,11 @@ fn c2_async_request_is_serviced_by_commit_worker() {
         !map.has_dirty(),
         "durable unbound pages retained dirty custody"
     );
+    // Eviction shares the page budget with writeback, so one final pass
+    // retires the remaining clean pages and the service-owned VNode.
+    fs.commit_due(monotonic_ns()).unwrap();
+    assert!(!map.nonempty(), "unbound mapped cache was not retired");
+    fs.shutdown("c2-async-cleanup", u64::MAX).unwrap();
 }
 #[test]
 fn c2_shutdown_publishes_shared_stores_before_stopping() {

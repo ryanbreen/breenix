@@ -112,11 +112,13 @@ struct MountState<W: Wait + 'static> {
     pending: Option<Arc<PreparedCommit>>,
     signal: Arc<CommitSignal>,
 }
-// Backing state for the canonical VNode. Dirty pages outlive its last open
-// until commit, without retaining a VNode -> mount ownership cycle.
+// Transaction dirty pages outlive the last open until commit. Mapping pins
+// are held separately until cache retirement or stopped-service teardown.
 #[derive(Default)]
 struct NodeState {
     node: Weak<VNode>,
+    // Published mappings retain their VNode until service retires the cache.
+    mapped: Option<Arc<VNode>>,
     dirty: DirtyPages,
     touched: Option<Arc<TouchedTimes>>,
 }
@@ -509,6 +511,91 @@ impl<W: Wait + 'static> BreenFs<W> {
     /// One commit-worker pass. Preparation and opening G+1 are serialized;
     /// device publication and completion waits hold no mount lock.
     fn commit_due(&self, now_ns: u64) -> Result<bool, Errno> {
+        if self.inner.signal.mappings.swap(false, Ordering::AcqRel) {
+            if let Err(error) = self.service_mappings(now_ns) {
+                let mut state = self.inner.state.lock();
+                // Shutdown can close admission while a service snapshot is in
+                // flight. Its own staged generation owns that final barrier.
+                if !state.closed || state.failed {
+                    state.failed = true;
+                    if let Some(committer) = state.committer.as_mut() { committer.fail(); }
+                    self.inner.signal.wake();
+                    return Err(error);
+                }
+            }
+        }
+        self.commit_generation(now_ns)
+    }
+    fn service_mappings(&self, now_ns: u64) -> Result<(), Errno> {
+        let handles = self.mapped_nodes()?;
+        let mut budget = crate::memory::file_map::EVICT_BUDGET;
+        let mut more = false;
+        for node in handles {
+            more |= node.map.service_writeback_with(&node, &mut budget, |first, last| {
+                self.inner.signal.requested.store(true, Ordering::Release);
+                self.commit_generation(now_ns).map_err(|_| "Failed mapped commit")?;
+                self.complete_mapping(&node, first, last);
+                Ok(())
+            }).map_err(|_| Errno(EIO))?;
+            // Population and mutation take the mount lock before MapState.
+            let mut state = self.inner.state.lock();
+            if node.map.eviction_pending() { more |= node.map.evict(&mut budget); }
+            if !node.map.nonempty() {
+                if let Some(entry) = state.nodes.get_mut(&node.ino) { entry.mapped = None; }
+            }
+        }
+        if more { self.request_eviction(); }
+        Ok(())
+    }
+    fn mapped_nodes(&self) -> Result<Vec<Arc<VNode>>, Errno> {
+        let state = self.inner.state.lock();
+        let mut handles = Vec::new();
+        if state.failed || state.closed || state.committer.is_none() {
+            return Ok(handles);
+        }
+        handles.try_reserve(state.nodes.len()).map_err(|_| Errno(ENOMEM))?;
+        for entry in state.nodes.values() {
+            if let Some(node) = entry.node.upgrade() {
+                if entry.mapped.is_some() || node.map.has_dirty() || node.map.eviction_pending() || node.map.writeback_pending() {
+                    handles.push(node);
+                }
+            }
+        }
+        Ok(handles)
+    }
+    fn sync_mappings(&self, deadline: Option<u64>) -> Result<(), Errno> {
+        let nodes = self.mapped_nodes()?;
+        // Shutdown stages snapshots without an unbounded foreground generation
+        // wait; its final sync_generation below retains the supplied deadline.
+        let mut buffer = if deadline.is_some() && nodes.iter().any(|n| n.map.has_dirty()) {
+            crate::memory::file_map::writeback_buffer().map_err(|_| Errno(ENOMEM))?
+        } else { Vec::new() };
+        let _sync = crate::memory::file_map::SyncMaps::new(&nodes);
+        for node in &nodes {
+            if deadline.is_some_and(|limit| monotonic_ns() >= limit) {
+                return Err(Errno(ETIMEDOUT));
+            }
+            if node.map.has_dirty() {
+                if deadline.is_some() {
+                    crate::memory::file_map::stage_range_with_buffer(node, 0, u64::MAX, &mut buffer)
+                        .map_err(|_| Errno(EIO))?;
+                } else {
+                    crate::memory::file_map::sync_range(node, 0, u64::MAX)?;
+                }
+            }
+        }
+        Ok(())
+    }
+    fn complete_mapping(&self, node: &VNode, first: u64, last: u64) {
+        let state = self.inner.state.lock();
+        // A writeback that joined G+1 while G flushed keeps dirty custody.
+        if !state.failed && state.pending.is_none()
+            && state.nodes.get(&node.ino).is_none_or(|n| n.dirty.bytes() == 0)
+        {
+            node.map.complete_writeback(first, last);
+        }
+    }
+    fn commit_generation(&self, now_ns: u64) -> Result<bool, Errno> {
         #[cfg(not(test))]
         crate::block::cache_kernel::assert_io_context();
         let prepared = {
@@ -688,6 +775,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         })
     }
     fn sync(&self) -> Result<(), Errno> {
+        self.sync_mappings(None)?;
         self.sync_generation(None, false)
     }
     fn init_service(&self) -> Result<(), Errno> {
@@ -701,6 +789,12 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             }
             self.inner.signal.stop.store(false, Ordering::Release);
             state.closed = false;
+            // A refused unmount can restart a stopped service with bindings.
+            for entry in state.nodes.values_mut() {
+                if let Some(node) = entry.node.upgrade().filter(|node| node.map.nonempty()) {
+                    entry.mapped = Some(node);
+                }
+            }
         }
         #[cfg(not(test))]
         {
@@ -747,6 +841,9 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         Ok(())
     }
     fn shutdown(&self, name: &str, deadline: u64) -> Result<(), Errno> {
+        // Writeback uses mutation admission, so stage before closing it.
+        // Failed mounts still take M1's explicit-loss teardown path below.
+        let mapped = self.sync_mappings(Some(deadline));
         // Close mutation admission before requesting the final generation.
         // The worker remains live until that generation's receipt completes.
         let signal = &self.inner.signal;
@@ -766,7 +863,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             }
             state.closed = true;
         }
-        let result = self.sync_generation(Some(deadline), true);
+        let result = mapped.and_then(|()| self.sync_generation(Some(deadline), true));
         if result.is_err() {
             let mut state = self.inner.state.lock();
             state.failed = true;
@@ -786,6 +883,12 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             if signal.started.load(Ordering::Acquire) {
                 signal.wait(observed, Some(deadline));
             }
+        }
+        // Drop service-owned VNodes before VFS checks external mount custody.
+        // A live binding still owns its VNode; init_service re-pins it if the
+        // caller refuses unmount and resumes this mount.
+        for entry in self.inner.state.lock().nodes.values_mut() {
+            entry.mapped = None;
         }
         teardown_result(name, result)
     }
@@ -931,7 +1034,14 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
     }
     fn fsync(&self, node: &VNode, _: bool) -> Result<(), Errno> {
         self.check_node(node)?;
-        self.sync()
+        if node.map.has_dirty() {
+            return crate::memory::file_map::sync_range(node, 0, u64::MAX);
+        }
+        self.sync_generation(None, false)
+    }
+    fn request_eviction(&self) {
+        self.inner.signal.mappings.store(true, Ordering::Release);
+        self.inner.signal.wake();
     }
     fn mapping_io(&self, node: &VNode) -> Result<Box<dyn MappingIo>, Errno> {
         self.check_node(node)?;
@@ -1490,29 +1600,21 @@ impl<W: Wait + 'static> MappingIo for Mapping<W> {
         // The open generation contains this range's staged writeback (or a
         // successor if it already committed). sync joins its receipt and waits
         // for the final flush, outside the mount lock.
-        self.fs.sync()?;
-        #[cfg(not(test))]
-        {
-            let state = self.fs.inner.state.lock();
-            // A later writeback may have joined G+1 during the wait. Leave its
-            // candidates dirty unless the inode has no unpublished data.
-            if state.pending.is_none()
-                && state
-                    .nodes
-                    .get(&self.node.ino)
-                    .is_none_or(|n| n.dirty.bytes() == 0)
-            {
-                self.node.map.complete_writeback(_first, _last);
-            }
-        }
+        self.fs.sync_generation(None, false)?;
+        self.fs.complete_mapping(&self.node, _first, _last);
         Ok(())
     }
     fn publish(&self, bind: &mut dyn FnMut(bool) -> Result<(), Errno>) -> Result<(), Errno> {
-        let state = self.fs.inner.state.lock();
+        let mut state = self.fs.inner.state.lock();
         if self.writable {
             state.writable()?;
         }
-        bind(false)
+        bind(false)?;
+        if self.writable {
+            state.nodes.get_mut(&self.node.ino).ok_or(Errno(EIO))?.mapped = Some(self.node.clone());
+            self.fs.request_eviction();
+        }
+        Ok(())
     }
 }
 // The most dirty bytes a call over `len` bytes can add: the pages it spans at

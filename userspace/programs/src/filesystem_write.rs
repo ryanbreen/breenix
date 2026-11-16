@@ -418,12 +418,25 @@ pub fn mmap_msync() -> CaseResult {
             scratch.committed_bytes("mapped")? == expected,
             "MS_SYNC did not publish the mapped bytes on disk",
         )?;
+        // C2 (E24 ledger 309): an asynchronous request followed by fsync
+        // must publish new stores while this writable binding still exists.
+        let async_expected: Vec<u8> = (0..8192).map(|i| (i % 223) as u8 ^ 0x5a).collect();
+        unsafe {
+            std::ptr::copy_nonoverlapping(async_expected.as_ptr(), mapping.0, async_expected.len());
+        }
+        let result = unsafe { raw::syscall3(MSYNC, mapping.0 as u64, 8192, 1) } as i64;
+        check(result == 0, &format!("msync(MS_ASYNC) returned {result}"))?;
+        io(file.sync_all())?;
+        check(
+            scratch.committed_bytes("mapped")? == async_expected,
+            "MS_ASYNC plus fsync did not publish the mapped bytes on disk",
+        )?;
         drop(mapping);
         drop(file);
         scratch.remount()?;
         check(
-            io(fs::read(scratch.work.join("mapped")))? == expected,
-            "MS_SYNC stores did not survive remount",
+            io(fs::read(scratch.work.join("mapped")))? == async_expected,
+            "MS_ASYNC plus fsync stores did not survive remount",
         )
     })
 }

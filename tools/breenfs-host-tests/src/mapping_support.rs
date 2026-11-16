@@ -135,6 +135,17 @@ impl MapState {
             ));
         }
         inner.writable_shared = usize::from(writable);
+        inner.bindings = if writable {
+            alloc::vec![BindingRec {
+                first: 0,
+                last: bytes.len().div_ceil(4096) as u64
+            }]
+        } else {
+            Vec::new()
+        };
+        self.state
+            .eviction_pending
+            .store(!writable, Ordering::Release);
         self.refresh(&inner);
     }
 }

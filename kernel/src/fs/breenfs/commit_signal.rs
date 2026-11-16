@@ -4,6 +4,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 pub struct CommitSignal {
     pub requested: AtomicBool,
     pub pressure: AtomicBool,
+    pub mappings: AtomicBool,
     pub started: AtomicBool,
     pub stop: AtomicBool,
     epoch: AtomicU64,
@@ -15,6 +16,7 @@ impl CommitSignal {
         Self {
             requested: AtomicBool::new(false),
             pressure: AtomicBool::new(false),
+            mappings: AtomicBool::new(false),
             started: AtomicBool::new(false),
             stop: AtomicBool::new(false),
             epoch: AtomicU64::new(0),

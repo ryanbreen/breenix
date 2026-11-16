@@ -31,6 +31,7 @@ fn main() {
     for marker in [
         "pub(crate) fn writeback_buffer(",
         "pub(crate) fn sync_range(",
+        "pub(crate) fn stage_range_with_buffer(",
         "fn write_range_with_buffer(",
         "pub(crate) struct SyncMaps",
         "impl<'a, T: core::ops::Deref<Target = VNode>> SyncMaps",
@@ -43,6 +44,7 @@ fn main() {
     for marker in [
         "    fn refresh(",
         "    pub(crate) fn has_dirty(",
+        "    pub(crate) fn nonempty(",
         "    pub(crate) fn request_writeback(",
         "    pub(crate) fn writeback_pending(",
         "    pub(crate) fn writeback(",
