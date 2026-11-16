@@ -20,7 +20,7 @@ pub fn mount_root() -> Result<(), Errno> {
     let devices: Vec<Box<dyn BlockDevice>> = {
         use crate::block::virtio::VirtioBlockWrapper;
         let mut devices: Vec<Box<dyn BlockDevice>> = Vec::new();
-        if let Some(dev) = VirtioBlockWrapper::new(2).or_else(|| VirtioBlockWrapper::new(0)) {
+        if let Some(dev) = VirtioBlockWrapper::new(0) {
             devices.push(Box::new(dev));
         } else {
             for i in 0..crate::drivers::ahci::sata_device_count() {
@@ -51,8 +51,7 @@ pub fn mount_home() -> Result<(), Errno> {
     #[cfg(target_arch = "aarch64")]
     let device = {
         use crate::block::virtio::VirtioBlockWrapper;
-        VirtioBlockWrapper::new(3)
-            .or_else(|| VirtioBlockWrapper::new(1))
+        VirtioBlockWrapper::new(1)
             .map(|dev| Box::new(dev) as Box<dyn BlockDevice>)
     };
     #[cfg(all(feature = "testing", not(feature = "interactive")))]
