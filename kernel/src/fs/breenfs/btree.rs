@@ -13,6 +13,21 @@ const MAX_PAYLOAD: usize = 6144;
 const MAX_INTERNAL: usize = 441;
 const MAX_HEIGHT: u8 = 8;
 
+// Host measurement of the production decoder, isolated from parallel tests.
+#[cfg(test)]
+pub mod measurement {
+    extern crate std;
+    std::thread_local! {
+        static DECODES: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+    }
+    pub fn take_decodes() -> u64 {
+        DECODES.with(|count| count.replace(0))
+    }
+    pub(super) fn decoded() {
+        DECODES.with(|count| count.set(count.get() + 1));
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     Store,
@@ -137,6 +152,8 @@ fn decode(
     lower: Option<Key>,
     upper: Option<Key>,
 ) -> Result<Node, Error> {
+    #[cfg(test)]
+    measurement::decoded();
     if bytes.len() != NODE_SIZE {
         return Err(Error::InvalidNode);
     }

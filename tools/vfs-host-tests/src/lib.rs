@@ -106,3 +106,5 @@ pub mod statfs_support;
 pub mod breenfs;
 #[path = "../tests/read_conformance.rs"]
 mod read_conformance;
+#[path = "../tests/manifest_walk.rs"]
+mod manifest_walk;

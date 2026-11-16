@@ -20,7 +20,7 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
-struct NoWait;
+pub(crate) struct NoWait;
 impl Wait for NoWait {
     fn generation(&self) -> u64 {
         0
@@ -30,9 +30,9 @@ impl Wait for NoWait {
     }
     fn wake_all(&self) {}
 }
-struct Disk {
-    bytes: Mutex<Vec<u8>>,
-    writable: bool,
+pub(crate) struct Disk {
+    pub(crate) bytes: Mutex<Vec<u8>>,
+    pub(crate) writable: bool,
 }
 impl BlockDevice for Disk {
     fn read_block(&self, block: u64, buf: &mut [u8]) -> Result<(), BlockError> {
