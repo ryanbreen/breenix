@@ -181,3 +181,75 @@ fn n1_async_mapping_makes_progress_at_full_dirty_budget() {
     fs.fsync(&other, false).unwrap();
     fs.shutdown("n1-pressure", u64::MAX).unwrap();
 }
+
+fn allocation_retry(shutdown: bool, size: usize, nth: usize) {
+    let (fs, disk, node) = fixture();
+    let bytes = expected(79);
+    node.map.shared_stores(&bytes, false);
+    node.map.request_writeback();
+    let result = super::dirty_heap_bound::fail_allocation(size, nth, || {
+        if shutdown { fs.shutdown("n3-retry", u64::MAX) }
+        else { fs.commit_due(monotonic_ns()).map(|_| ()) }
+    });
+    if shutdown {
+        assert_eq!(result, Err(Errno(ENOMEM)), "temporary allocation failure lost its errno");
+    } else {
+        assert_eq!(result, Ok(()), "temporary allocation failure stopped the worker");
+        assert!(fs.inner.signal.mappings.load(Ordering::Acquire), "worker lost its retry");
+    }
+    assert_eq!(fs.read_only(), Ok(false), "ENOMEM failed the mount");
+    assert!(node.map.has_dirty(), "ENOMEM dropped dirty custody");
+    assert!(!fs.inner.signal.stop.load(Ordering::Acquire));
+    if shutdown {
+        fs.shutdown("n3-retry", u64::MAX).unwrap();
+    } else {
+        for _ in 0..2 { fs.commit_due(monotonic_ns()).unwrap(); }
+    }
+    assert_eq!(cold_bytes(&disk, node.ino), bytes, "retry lost mapped stores");
+    if !shutdown { fs.shutdown("n3-cleanup", u64::MAX).unwrap(); }
+}
+#[test]
+fn n3_service_retries_node_collection_enomem() {
+    // Vec<Arc<VNode>>::try_reserve(1) uses its four-entry minimum capacity.
+    allocation_retry(false, 4 * core::mem::size_of::<Arc<VNode>>(), 1);
+}
+#[test]
+fn n3_service_retries_writeback_buffer_enomem() {
+    allocation_retry(false, 64 * 4096, 1);
+}
+#[test]
+fn n3_shutdown_retries_writeback_buffer_enomem() {
+    allocation_retry(true, 64 * 4096, 1);
+}
+#[test]
+fn n3_shutdown_preserves_staging_enomem() {
+    // The first allocation is the reusable snapshot, the second is BreenFS's
+    // private writeback copy made by stage_range_with_buffer.
+    allocation_retry(true, 64 * 4096, 2);
+}
+
+#[test]
+fn minor_failed_mapping_fsync_returns_eio() {
+    let (fs, _disk, node) = fixture();
+    node.map.shared_stores(&expected(83), false);
+    fs.inner.state.lock().edited::<()>(Err(ops::Error::EIO)).unwrap_err();
+    assert_eq!(fs.fsync(&node, false), Err(Errno(EIO)));
+    fs.shutdown("minor-failed-fsync", u64::MAX).unwrap();
+}
+
+#[test]
+fn minor_stopped_shutdown_retry_releases_mapping_pins() {
+    let (fs, _disk, node) = fixture();
+    // A timed-out wait for worker exit leaves this state; on retry the
+    // worker has stopped but VFS has not yet tested external mount custody.
+    {
+        let mut state = fs.inner.state.lock();
+        assert!(state.nodes.get(&node.ino).unwrap().mapped.is_some());
+        state.closed = true;
+        state.failed = true;
+    }
+    fs.inner.signal.stop.store(true, Ordering::Release);
+    fs.inner.signal.started.store(false, Ordering::Release);
+    fs.shutdown("minor-timeout-retry", u64::MAX).unwrap();
+    assert!(fs.inner.state.lock().nodes.values().all(|entry| entry.mapped.is_none()));
+}

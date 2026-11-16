@@ -22,8 +22,25 @@ const PEAK_BOUND: usize = 3 * 64 * MIB / 8;
 const RETAINED_BOUND: usize = MIB;
 
 std::thread_local! {
+    static FAIL: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
     static LIVE: Cell<isize> = const { Cell::new(0) };
     static PEAK: Cell<isize> = const { Cell::new(0) };
+}
+fn reject(size: usize) -> bool {
+    FAIL.try_with(|fail| match fail.get() {
+        Some((target, 1)) if target == size => { fail.set(None); true }
+        Some((target, nth)) if target == size => { fail.set(Some((target, nth - 1))); false }
+        _ => false,
+    }).unwrap_or(false)
+}
+pub(super) fn fail_allocation<T>(size: usize, nth: usize, run: impl FnOnce() -> T) -> T {
+    struct Reset;
+    impl Drop for Reset { fn drop(&mut self) { FAIL.with(|fail| fail.set(None)); } }
+    FAIL.with(|fail| { assert!(fail.get().is_none()); fail.set(Some((size, nth))); });
+    let _reset = Reset;
+    let result = run();
+    FAIL.with(|fail| assert!(fail.get().is_none(), "allocation failure was not reached"));
+    result
 }
 fn charge(delta: isize) {
     let _ = LIVE.try_with(|live| {
@@ -52,6 +69,7 @@ struct Counting;
 // layout; the accounting touches only const-initialized thread-locals.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if reject(layout.size()) { return core::ptr::null_mut(); }
         let ptr = unsafe { System.alloc(layout) };
         if !ptr.is_null() {
             charge(layout.size() as isize);
@@ -59,6 +77,7 @@ unsafe impl GlobalAlloc for Counting {
         ptr
     }
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        if reject(layout.size()) { return core::ptr::null_mut(); }
         let ptr = unsafe { System.alloc_zeroed(layout) };
         if !ptr.is_null() {
             charge(layout.size() as isize);
@@ -70,6 +89,7 @@ unsafe impl GlobalAlloc for Counting {
         charge(-(layout.size() as isize));
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+        if reject(size) { return core::ptr::null_mut(); }
         let new = unsafe { System.realloc(ptr, layout, size) };
         if !new.is_null() {
             charge(size as isize - layout.size() as isize);
