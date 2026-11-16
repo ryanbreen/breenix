@@ -17,9 +17,7 @@ fn tracked_paths_and_contents_use_breenfs() {
             .windows(retired.len())
             .any(|word| word.eq_ignore_ascii_case(&retired))
     };
-    // Historical ledger quotations under docs/ may be exempted by exact path and
-    // quoted text here. No such quotations exist in the tracked tree at this step;
-    // there are currently no exemptions, including for this check's own source.
+    // This scan exempts no tracked path or contents, including its own source.
     let mut violations = Vec::new();
     let mut count = 0;
     for path in tracked

@@ -9,6 +9,12 @@ temporary files. Run it with:
 CARGO_BUILD_JOBS=4 taskpolicy -b cargo test --manifest-path tools/breenfs-host-tests/Cargo.toml
 ```
 
+Step 24.8r's rename is host-only under coordinator ledger lines 171, 203 and
+210. The kernel does not declare breenfs in `kernel/src/fs/mod.rs`; changes to
+block-cache, VFS and file-mapping files outside this core are comments only.
+The renamed format magics are exercised by regenerated host images. Runtime
+mount integration starts at 24.10, so this step reaches no guest suite or boot.
+
 Unit 24.8-a-model introduced `model::seed_1_create_write_remount` as a red
 sentinel for the absent writer. Unit 24.8-f supplies the file writer adapter;
 that unchanged operation sequence now exercises create, sparse write, fsync
