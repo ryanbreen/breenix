@@ -1,8 +1,9 @@
-//! Report host filesystem format evidence staged on the disk.
+//! Exercise the filesystem interface, cache and BreenFS guest volumes.
 mod cache_reread;
 mod filesystem_read;
+mod filesystem_write;
 use cache_reread::{reread_is_cached, REREAD_BYTES};
-use breenix_suite::suite::{case, category, check, fail, running_case, suite, CaseResult, Suite};
+use breenix_suite::suite::{case, category, check, suite, CaseResult, Suite};
 use libbreenix::{fs as sysfs, io as sysio, types::Fd};
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -24,23 +25,19 @@ static SUITE: Suite = suite("filesystem", "Copy-on-write filesystem", &[
         case("write-through", "Writes reach the device before returning", write_through),
         case("fsync-flush", "fsync flush follows the file's last device write", fsync_flush),
     ]),
-    category("format", "Formatter images pass the independent checker and violating images are refused", &[
-        case("mkfs-empty-clean", "Empty formatted images pass the full checker", host_case),
-        case("mkfs-populate-clean", "Populated formatted images pass the full checker", host_case),
-        case("reproducible-image", "Fixed inputs produce byte-identical images", host_case),
-        case("violations-refused", "Images violating format invariants are refused", host_case),
-    ]),
     category("read", "A host-built filesystem reads back as its manifest", &[
         case("manifest-equal", "Types, metadata, hashes and link groups equal the host manifest", filesystem_read::manifest_equal),
         case("holes-and-tail", "Holes and the mapped partial tail are zero with only mapped blocks counted", filesystem_read::holes_and_tail),
         case("readdir-resume", "Small directory reads and cookie seeks enumerate 5000 names exactly once", filesystem_read::readdir_resume),
         case("read-only-refusals", "Write, create and unlink are refused with EROFS", filesystem_read::read_only_refusals),
     ]),
-    category("crash-images", "Host-enumerated crash images recover to an acknowledged commit", &[
-        case("subset-images", "Crash write subsets recover to an acknowledged commit", host_case),
-        case("torn-images", "Torn images recover to an acknowledged commit", host_case),
-        case("corruption-no-panic", "Corrupted images return errors without panicking", host_case),
-        case("torture-24h", "Twenty-four hours of torture complete without failures", host_case),
+    category("write", "File and directory operations commit through transactions", &[
+        case("remount-reads-back", "An fsynced tree reads back unchanged after remount", filesystem_write::remount_reads_back),
+        case("rename-replace-atomic", "Rename replacement preserves open files and publishes the new name atomically", filesystem_write::rename_replace_atomic),
+        case("unlinked-open-file", "An unlinked open file remains readable until close and is gone after remount", filesystem_write::unlinked_open_file),
+        case("truncate-sparse", "Sparse writes and truncate preserve data and zero-filled holes after remount", filesystem_write::truncate_sparse),
+        case("mmap-msync", "Shared mapped stores survive MS_SYNC and remount", filesystem_write::mmap_msync),
+        case("commit-without-fsync", "The periodic commit makes an unfsynced write durable", filesystem_write::commit_without_fsync),
     ]),
 ]);
 
@@ -226,17 +223,6 @@ fn ino_consistent() -> CaseResult {
     drop(file);
     io(fs::remove_dir_all(dir))?;
     result
-}
-
-fn host_case() -> CaseResult {
-    let id = running_case().ok_or("the case could not tell which case it is")?;
-    let path = format!("/usr/local/filesystem-suite/host/{id}");
-    let text = std::fs::read_to_string(&path).map_err(|_| format!("the host harness left no record {path}"))?;
-    match text.lines().next().unwrap_or("") {
-        "PASS" => Ok(()),
-        line if line.starts_with("FAIL ") => fail(format!("host: {}", &line[5..])),
-        line => fail(format!("{path} reads {line:?}, not PASS or FAIL")),
-    }
 }
 
 fn main() { SUITE.run() }

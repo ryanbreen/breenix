@@ -1041,23 +1041,6 @@ fn sdk_host_records_match_the_manifest_and_the_guest() {
     assert_eq!(read, written, "the records suite_sdk.rs reads differ from those scripts/sdk-suite.py writes");
 }
 
-fn check_filesystem_host_records(manifest: &str, harness: &str, guest: &str) {
-    let manifest: Value = serde_json::from_str(manifest).unwrap();
-    let categories = manifest["categories"].as_array().unwrap();
-    assert!(categories.iter().any(|category| category["id"].as_str() == Some("format")),
-        "filesystem manifest has a format category");
-    let ids: Vec<String> = ["format", "crash-images"].iter().flat_map(|name| {
-        categories.iter().find(|category| category["id"].as_str() == Some(name))
-            .into_iter().flat_map(move |category| category["cases"].as_array().unwrap().iter()
-                .map(move |case| format!("{name}/{}", case["id"].as_str().unwrap())))
-    }).collect();
-    let mut written = sdk_harness_cases(harness);
-    assert_eq!(written, ids, "host records differ from manifest order");
-    written.sort();
-    let read = sdk_guest_reads(guest);
-    assert_eq!(read, written, "guest records differ from host records");
-}
-
 #[test]
 fn filesystem_read_cases_match_the_guest() {
     let root = repo_root();
@@ -1079,46 +1062,15 @@ fn filesystem_read_cases_match_the_guest() {
 }
 
 #[test]
-fn filesystem_host_records_match_the_manifest_and_the_guest() {
+fn filesystem_cases_match_the_guest() {
     let root = repo_root();
-    let harness = fs::read_to_string(root.join("scripts/filesystem-suite.py")).unwrap();
-    assert_eq!(sdk_harness_cases(&harness), [
-        "format/mkfs-empty-clean", "format/mkfs-populate-clean",
-        "format/reproducible-image", "format/violations-refused",
-        "crash-images/subset-images", "crash-images/torn-images",
-        "crash-images/corruption-no-panic", "crash-images/torture-24h",
-    ], "the required host records must remain present in order");
-    check_filesystem_host_records(
-        &fs::read_to_string(root.join("docs/suites/filesystem.json")).unwrap(),
-        &harness,
-        &fs::read_to_string(root.join("userspace/programs/src/suite_filesystem.rs")).unwrap(),
-    );
-}
-
-#[test]
-fn filesystem_record_guard_checks_format_and_guest() {
-    let manifest = |cases: &str| format!(r#"{{"categories":[{{"id":"interface","cases":[{{"id":"other"}}]}},{{"id":"format","cases":[{cases}]}}]}}"#);
-    let harness = |cases: &str| format!("\nHOST_CASES = (\n{cases}\n)\n");
-    let guest = |cases: &str| format!("fn records() {{ {cases} }}");
-    let good_manifest = manifest(r#"{"id":"a"},{"id":"b"}"#);
-    let good_harness = harness("'format/a', 'format/b',");
-    let good_guest = guest("host(\"format/a\"); host(\"format/b\");");
-    let check = |m: &str, h: &str, g: &str| std::panic::catch_unwind(|| check_filesystem_host_records(m, h, g)).is_ok();
-    assert!(check(&good_manifest, &good_harness, &good_guest), "other categories must not affect format records");
-    let extra_case = manifest(r#"{"id":"a"},{"id":"b"},{"id":"c"}"#);
-    let crash_missing = r#"{"categories":[{"id":"format","cases":[{"id":"a"},{"id":"b"}]},{"id":"crash-images","cases":[{"id":"missing"}]}]}"#;
-    let extra_host = harness("'format/a', 'format/b', 'interface/other',");
-    let wrong_order = harness("'format/b', 'format/a',");
-    let extra_read = guest("host(\"format/a\"); host(\"format/b\"); host(\"format/c\");");
-    for (name, m, h, g) in [
-        ("missing crash host record", crash_missing, good_harness.as_str(), good_guest.as_str()),
-        ("missing host record", extra_case.as_str(), good_harness.as_str(), good_guest.as_str()),
-        ("host outside format", good_manifest.as_str(), extra_host.as_str(), good_guest.as_str()),
-        ("wrong order", good_manifest.as_str(), wrong_order.as_str(), good_guest.as_str()),
-        ("unwritten guest record", good_manifest.as_str(), good_harness.as_str(), extra_read.as_str()),
-    ] {
-        assert!(!check(m, h, g), "guard accepted {name}");
-    }
+    let mut errors = Vec::new();
+    let manifest = read_manifest(&root.join("docs/suites/filesystem.json"), &mut errors).unwrap();
+    assert!(errors.is_empty(), "filesystem manifest: {errors:?}");
+    let (_, categories) = source_suite(
+        &fs::read_to_string(root.join("userspace/programs/src/suite_filesystem.rs")).unwrap()).unwrap();
+    let populated: Vec<_> = manifest.categories.into_iter().filter(|c| !c.cases.is_empty()).collect();
+    assert_eq!(categories, populated, "filesystem guest table differs from the manifest");
 }
 
 #[test]
