@@ -72,6 +72,37 @@ fn trait_seeds_1_to_64_match_the_model() {
 }
 
 #[test]
+fn model_and_writer_use_linux_removal_errnos() {
+    fn errors(fs: &mut impl Fs) -> [Result<Reply>; 2] {
+        let op = |action| Operation {
+            at: Time::default(),
+            action,
+        };
+        fs.execute(&op(Action::Mkdir {
+            dir: ROOT,
+            name: b"dir".to_vec(),
+            mode: 0o755,
+        }))
+        .unwrap();
+        [
+            fs.execute(&op(Action::Unlink {
+                dir: ROOT,
+                name: b"dir".to_vec(),
+            })),
+            fs.execute(&op(Action::Removexattr {
+                ino: ROOT,
+                name: b"user.absent".to_vec(),
+            })),
+        ]
+    }
+    let device = Arc::new(RecordingDevice::new(image()).unwrap());
+    let mut writer = WriterAdapter::new(device).unwrap();
+    let mut model = Model::new();
+    let expected = [Err(Errno::EISDIR.into()), Err(Errno::ENODATA.into())];
+    assert_eq!([errors(&mut model), errors(&mut writer)], [expected; 2]);
+}
+
+#[test]
 fn minimized_seed_1_closed_orphan_is_absent() {
     // Seed 1, minimized by deleting operations until no single deletion kept
     // the truncate-after-close divergence: create, sparse write, unlink, truncate.

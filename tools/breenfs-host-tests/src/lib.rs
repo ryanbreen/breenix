@@ -73,6 +73,7 @@ pub const MAX_FILE_SIZE: u64 = (1u64 << 63) - 4096;
 pub enum Errno {
     EPERM,
     ENOENT,
+    ENODATA,
     EEXIST,
     ENOTDIR,
     EISDIR,
