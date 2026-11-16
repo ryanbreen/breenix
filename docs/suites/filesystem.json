@@ -70,7 +70,24 @@
     {
       "id": "read",
       "title": "A host-built filesystem reads back as its manifest",
-      "cases": []
+      "cases": [
+        {
+          "id": "manifest-equal",
+          "title": "Types, metadata, hashes and link groups equal the host manifest"
+        },
+        {
+          "id": "holes-and-tail",
+          "title": "Holes and the mapped partial tail are zero with only mapped blocks counted"
+        },
+        {
+          "id": "readdir-resume",
+          "title": "Small directory reads and cookie seeks enumerate 5000 names exactly once"
+        },
+        {
+          "id": "read-only-refusals",
+          "title": "Write, create and unlink are refused with EROFS"
+        }
+      ]
     },
     {
       "id": "write",

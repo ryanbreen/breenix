@@ -141,13 +141,47 @@ def stage(image, work, records):
             raise RuntimeError(f'failed to read back staged record {case}')
 
 
+def stage_read_manifest(image, manifest, work):
+    """Stage only the read fixture's manifest; do not rerun host evidence."""
+    destination = '/usr/local/filesystem-suite/read/manifest'
+    debugfs = debugfs_path()
+    commands = []
+    for directory in ('/usr', '/usr/local', '/usr/local/filesystem-suite',
+                      '/usr/local/filesystem-suite/read'):
+        code, output = run([debugfs, '-R', f'stat {directory}', image])
+        if code:
+            raise RuntimeError('cannot inspect manifest destination')
+        if 'File not found' in output:
+            commands += [f'mkdir {directory}', f'sif {directory} mode 040755']
+    # The launcher owns this disposable root copy; replace any older fixture manifest.
+    commands += [f'rm {destination}', f'write "{manifest}" {destination}',
+                 f'sif {destination} mode 0100644']
+    batch = work / 'read-commands'
+    batch.write_text('\n'.join(commands) + '\n')
+    code, output = run([debugfs, '-w', '-f', batch, image])
+    if code:
+        raise RuntimeError('read manifest staging failed')
+    # debugfs writes its version banner on stderr; verify stdout separately.
+    readback = subprocess.run([debugfs, '-R', f'cat {destination}', str(image)],
+                              capture_output=True, check=False)
+    if readback.returncode or readback.stdout != manifest.read_bytes():
+        raise RuntimeError('read manifest did not stage byte for byte')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--image', type=Path)
     parser.add_argument('--torture-summary', type=Path)
+    parser.add_argument('--read-manifest', type=Path,
+                        help='stage this read manifest only (requires --image)')
     args = parser.parse_args()
+    if args.read_manifest and not args.image:
+        parser.error('--read-manifest requires --image')
     with tempfile.TemporaryDirectory(prefix='filesystem-suite-') as directory:
         work = Path(directory)
+        if args.read_manifest:
+            stage_read_manifest(args.image.resolve(), args.read_manifest.resolve(), work)
+            return 0
         records = collect(work, args.torture_summary)
         for case in HOST_CASES:
             print(f'{case}: {records[case]}', flush=True)

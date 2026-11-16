@@ -469,6 +469,17 @@ if [ "$GPU_GL" -eq 1 ]; then
     export BREENIX_HOST_RENDERER_JSON="$(dirname "$SERIAL_LOG")/host-renderer.json"
     rm -f "$BREENIX_HOST_RENDERER_JSON"
 fi
+BREENFS_READ_ARGS=()
+if [ "$MODE" = suite ] && [[ ",$SUITE," == *,filesystem,* ]]; then
+    BREENFS_READ_IMAGE="$(dirname "$SERIAL_LOG")/breenfs-read.img"
+    BREENFS_READ_MANIFEST="$(dirname "$SERIAL_LOG")/breenfs-read.manifest"
+    run_build bash "$ROOT/scripts/breenfs-read-fixture.sh" "$BREENFS_READ_IMAGE" "$BREENFS_READ_MANIFEST"
+    python3 "$ROOT/scripts/filesystem-suite.py" --image "$WRITABLE" --read-manifest "$BREENFS_READ_MANIFEST"
+    # First in descending MMIO allocation, last in disk discovery order.
+    BREENFS_READ_ARGS=(-device virtio-blk-device,drive=breenfs-read
+        -drive "if=none,id=breenfs-read,format=raw,readonly=on,file=$BREENFS_READ_IMAGE")
+fi
+# End breenfs read fixture.
 # shellcheck source=../docker/qemu/lib/qemu-host-lock.sh
 source "$ROOT/docker/qemu/lib/qemu-host-lock.sh"
 qemu_host_lock_acquire
@@ -592,6 +603,7 @@ python3 "$ROOT/scripts/watch-qemu.py" ${WATCH_READY_ARGS[@]+"${WATCH_READY_ARGS[
     -device virtio-gpu-device \
     -device virtio-keyboard-device \
     -device virtio-tablet-device \
+    ${BREENFS_READ_ARGS[@]+"${BREENFS_READ_ARGS[@]}"} \
     ${FIXTURE_ARGS[@]+"${FIXTURE_ARGS[@]}"} \
     ${CAPTURE_ARGS[@]+"${CAPTURE_ARGS[@]}"} \
     -device virtio-blk-device,drive=ext2 \
