@@ -69,6 +69,13 @@ fn main() {{
         self.execute('kernel/src/block/nvme.rs', 'impl BlockDevice for NvmeBlockDevice',
                      'device_index: usize', ('device_index: 0', 'device_index: 1'))
 
+    def test_immutable_fixture_reopens_the_same_image(self):
+        source = (ROOT / 'kernel/src/block/testing_fixture.rs').read_text()
+        body = braced(source, source.index('impl BlockDevice for ReadOnlyFixture'))
+        self.assertTrue('fn identity(&self)' in body, 'fixture must identify its backing image')
+        method = braced(body, body.index('fn identity(&self)'))
+        self.assertIn('IMAGE.as_ptr()', method)
+
     def test_partition_start_and_length(self):
         self.execute('kernel/src/block/partition.rs', 'impl BlockDevice for Partition',
                      'disk: Parent, first: u64, sectors: u64',
