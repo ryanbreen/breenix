@@ -23,7 +23,7 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
 // Extended attributes use ABI errno 61 for an absent attribute.
@@ -40,6 +40,7 @@ struct Mount<W: Wait + 'static> {
     cache: Cache<W>,
     id: usize,
     root_id: u64,
+    writable: bool,
     signal: Arc<CommitSignal>,
 }
 enum Cache<W: Wait + 'static> {
@@ -79,6 +80,22 @@ struct MountState<W: Wait + 'static> {
 struct NodeState {
     node: Weak<VNode>,
     dirty: DirtyPages,
+    touched: Option<Arc<TouchedTimes>>,
+}
+// Retained by NodeState after close, without retaining the mount itself.
+#[derive(Default)]
+struct TouchedTimes {
+    access: AtomicU64,
+    modify: AtomicU64,
+}
+impl TouchedTimes {
+    fn pending(&self) -> bool {
+        self.access.load(Ordering::Acquire) != 0 || self.modify.load(Ordering::Acquire) != 0
+    }
+}
+struct NodePin<W: Wait + 'static> {
+    mount: Arc<Mount<W>>,
+    touched: Arc<TouchedTimes>,
 }
 // Bounded metadata cache; mutation completion invalidates its entries.
 struct InodeCache {
@@ -96,7 +113,50 @@ impl<W: Wait> MountState<W> {
             Ok(())
         }
     }
+    fn apply_touches(&mut self, ino: u64) -> Result<(), Errno> {
+        let Some(touched) = self.nodes.get(&ino).and_then(|entry| entry.touched.as_ref())
+        else {
+            return Ok(());
+        };
+        let access = touched.access.swap(0, Ordering::AcqRel);
+        let modify = touched.modify.swap(0, Ordering::AcqRel);
+        if (access == 0 && modify == 0)
+            || self.failed
+            || self.committer.as_ref().is_none_or(Committer::read_only)
+        {
+            return Ok(());
+        }
+        let mut inode = match self.files.inode(ino) {
+            Ok(inode) => inode,
+            // A final touch can race commit's reclaim of a closed orphan.
+            Err(ops::Error::ENOENT) => return Ok(()),
+            Err(error) => return self.edited(Err(error)),
+        };
+        let before = inode;
+        if modify != 0 {
+            inode.mtime = Time {
+                seconds: (modify - 1) as i64,
+                nanos: 0,
+            };
+            inode.ctime = inode.mtime;
+        }
+        if access != 0 {
+            let at = Time {
+                seconds: (access - 1) as i64,
+                nanos: 0,
+            };
+            if needs_atime_update(&inode, at) {
+                inode.atime = at;
+            }
+        }
+        if inode != before {
+            let result = self.files.put_inode(ino, inode);
+            self.edited(result)?;
+        }
+        Ok(())
+    }
     fn inode(&mut self, ino: u64) -> Result<Inode, Errno> {
+        self.apply_touches(ino)?;
         // VNode drops do no I/O or mount locking. Refresh the writer's open
         // snapshot here so a closed orphan cannot be opened again by inode.
         self.retain_open();
@@ -157,8 +217,11 @@ impl<W: Wait> MountState<W> {
         }
     }
     fn retain_open(&mut self) {
-        self.nodes
-            .retain(|_, node| node.node.strong_count() != 0 || node.dirty.bytes() != 0);
+        self.nodes.retain(|_, node| {
+            node.node.strong_count() != 0
+                || node.dirty.bytes() != 0
+                || node.touched.as_ref().is_some_and(|times| times.pending())
+        });
         self.files.retain_open_inodes(
             self.nodes
                 .iter()
@@ -300,6 +363,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             cache,
             id: mount,
             root_id,
+            writable,
             signal,
         })
         .map_err(|_| Errno(ENOMEM))?;
@@ -308,8 +372,8 @@ impl<W: Wait + 'static> BreenFs<W> {
     fn check_node(&self, node: &VNode) -> Result<(), Errno> {
         if node.mount != self.inner.id
             || node
-                .pin::<Mount<W>>()
-                .is_none_or(|pin| !core::ptr::eq(pin, self.inner.as_ref()))
+                .pin::<NodePin<W>>()
+                .is_none_or(|pin| !Arc::ptr_eq(&pin.mount, &self.inner))
         {
             return Err(Errno(EXDEV));
         }
@@ -317,6 +381,11 @@ impl<W: Wait + 'static> BreenFs<W> {
     }
     fn new_node(&self, ino: u64, inode: Inode, epoch: u64) -> Result<Arc<VNode>, Errno> {
         let fs = Arc::try_new(self.clone()).map_err(|_| Errno(ENOMEM))?;
+        let pin = Arc::try_new(NodePin {
+            mount: self.inner.clone(),
+            touched: Arc::try_new(TouchedTimes::default()).map_err(|_| Errno(ENOMEM))?,
+        })
+        .map_err(|_| Errno(ENOMEM))?;
         Arc::try_new(VNode::new(
             self.inner.id,
             ino,
@@ -325,7 +394,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             attributes(ino, inode)?.times,
             fs,
             epoch,
-            self.inner.clone(),
+            pin,
         )?)
         .map_err(|_| Errno(ENOMEM))
     }
@@ -335,7 +404,9 @@ impl<W: Wait + 'static> BreenFs<W> {
             return Ok(node);
         }
         let node = self.new_node(ino, inode, state.durable.generation)?;
-        state.nodes.entry(ino).or_default().node = Arc::downgrade(&node);
+        let entry = state.nodes.entry(ino).or_default();
+        entry.node = Arc::downgrade(&node);
+        entry.touched = Some(node.pin::<NodePin<W>>().ok_or(Errno(EIO))?.touched.clone());
         state.retain_open();
         Ok(node)
     }
@@ -362,6 +433,10 @@ impl<W: Wait + 'static> BreenFs<W> {
             let pressure = self.inner.signal.pressure.swap(false, Ordering::AcqRel);
             if !state.policy.due(now_ns, state.dirty_bytes, fsync, pressure) {
                 return Ok(false);
+            }
+            let touched: Vec<_> = state.nodes.keys().copied().collect();
+            for ino in touched {
+                state.apply_touches(ino)?;
             }
             state.retain_open();
             if state.drain_dirty(&self.data_reader(None)).is_err() {
@@ -670,7 +745,25 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         let ino = state.files.lookup(dir.ino, name).map_err(errno)?;
         self.open_locked(&mut state, ino)
     }
-    fn touch(&self, _: &VNode, _: bool) {}
+    fn touch(&self, node: &VNode, read: bool) {
+        if !self.inner.writable || self.check_node(node).is_err() {
+            return;
+        }
+        let Some(pin) = node.pin::<NodePin<W>>() else {
+            return;
+        };
+        // FIFO callers can hold PM and stream locks: record only atomics here.
+        #[cfg(not(test))]
+        let seconds = crate::time::current_unix_time_coarse() as u64;
+        #[cfg(test)]
+        let seconds = crate::time::current_unix_time();
+        let pending = if read {
+            &pin.touched.access
+        } else {
+            &pin.touched.modify
+        };
+        pending.store(seconds.saturating_add(1), Ordering::Release);
+    }
     fn parent(&self, dir: u64) -> Result<u64, Errno> {
         let mut state = self.inner.state.lock();
         state.directory(dir)?;
@@ -736,6 +829,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             }
             done += take;
         }
+        self.touch(node, true);
         Ok(length)
     }
     fn readlink(&self, ino: u64) -> Result<Vec<u8>, Errno> {
@@ -863,7 +957,9 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         }
         let ino = state.edited(result)?;
         let node = prepared.ok_or(Errno(EIO))?;
-        state.nodes.entry(ino).or_default().node = Arc::downgrade(&node);
+        let entry = state.nodes.entry(ino).or_default();
+        entry.node = Arc::downgrade(&node);
+        entry.touched = Some(node.pin::<NodePin<W>>().ok_or(Errno(EIO))?.touched.clone());
         state.retain_open();
         Ok(())
     }
@@ -1176,6 +1272,16 @@ fn copy_xattr(out: &mut [u8], bytes: &[u8]) -> Result<usize, Errno> {
 // Match the content-change policy in fs/ext2/mod.rs::content_privilege.
 fn content_privilege(mode: u32) -> u32 {
     0o4000 | if mode & 0o0010 != 0 { 0o2000 } else { 0 }
+}
+// Same relatime predicate as fs/ext2/inode.rs::needs_atime_update, using
+// BreenFS's full timestamp precision. A read changes neither mtime nor ctime.
+fn needs_atime_update(inode: &Inode, now: Time) -> bool {
+    let atime = (inode.atime.seconds, inode.atime.nanos);
+    let now = (now.seconds, now.nanos);
+    now > atime
+        && (atime <= (inode.mtime.seconds, inode.mtime.nanos)
+            || atime <= (inode.ctime.seconds, inode.ctime.nanos)
+            || now >= (inode.atime.seconds.saturating_add(86400), inode.atime.nanos))
 }
 fn now() -> Time {
     Time {
