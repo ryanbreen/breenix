@@ -3,13 +3,16 @@ use breenfs::block::{BlockDevice, BlockError};
 use breenfs::commit::{Committer, DeviceStore};
 use breenfs::format::*;
 use breenfs::ops::{Files, SetAttr};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+#[path = "../sparse.rs"]
+mod sparse;
 
 type Result<T> = std::result::Result<T, String>;
 const USAGE: &str = "breenfs-mkfs [--populate DIR] [--uuid HEX] [--time SECS] [--hash-key HEX] [--label L] [--extents] --size BYTES IMAGE";
@@ -253,6 +256,7 @@ fn import_source(
     ino: u64,
     now: Time,
     fixed_time: Option<Time>,
+    links: &mut BTreeMap<(u64, u64), u64>,
 ) -> Result<()> {
     if source.meta.is_dir() {
         for child in &source.children {
@@ -261,6 +265,13 @@ fn import_source(
                 .file_name()
                 .ok_or("missing source name")?
                 .as_bytes();
+            let identity = (child.meta.dev(), child.meta.ino());
+            if !child.meta.is_dir() {
+                if let Some(&existing) = links.get(&identity) {
+                    operation(files.link(existing, ino, name, now))?;
+                    continue;
+                }
+            }
             let child_ino = operation(if child.meta.is_dir() {
                 files.mkdir(ino, name, child.meta.mode(), now)
             } else if let Some(target) = &child.target {
@@ -268,24 +279,31 @@ fn import_source(
             } else {
                 files.create(ino, name, child.meta.mode(), now)
             })?;
-            import_source(files, device, child, child_ino, now, fixed_time)?;
+            if !child.meta.is_dir() {
+                links.insert(identity, child_ino);
+            }
+            import_source(files, device, child, child_ino, now, fixed_time, links)?;
         }
     } else if source.meta.is_file() {
         let mut input = io(File::open(&source.path), &source.path)?;
-        let mut offset = 0;
         let mut bytes = vec![0; 256 * BLOCK_SIZE];
-        while offset < source.meta.len() {
-            let len = (source.meta.len() - offset).min(bytes.len() as u64) as usize;
-            io(input.read_exact(&mut bytes[..len]), &source.path)?;
-            let count = operation(files.write(device, ino, offset, &bytes[..len], now))?;
-            if count != len {
-                return Err("short writer import".into());
+        for (start, end) in io(sparse::ranges(&input, source.meta.len()), &source.path)? {
+            io(input.seek(SeekFrom::Start(start)), &source.path)?;
+            let mut offset = start;
+            while offset < end.min(source.meta.len()) {
+                let len = (end.min(source.meta.len()) - offset).min(bytes.len() as u64) as usize;
+                io(input.read_exact(&mut bytes[..len]), &source.path)?;
+                let count = operation(files.write(device, ino, offset, &bytes[..len], now))?;
+                if count != len {
+                    return Err("short writer import".into());
+                }
+                offset += len as u64;
             }
-            offset += len as u64;
         }
-        if io(input.read(&mut [0]), &source.path)? != 0 {
+        operation(files.truncate(device, ino, source.meta.len(), now))?;
+        if io(input.metadata(), &source.path)?.len() != source.meta.len() {
             return Err(format!(
-                "{}: source grew while formatting",
+                "{}: source size changed while formatting",
                 source.path.display()
             ));
         }
@@ -382,7 +400,15 @@ fn mkfs(a: Args) -> Result<()> {
     };
     let mut files = operation(Files::format(DeviceStore(&device), &sb))?;
     if let Some(source) = &source {
-        import_source(&mut files, &device, source, 2, now, a.time)?;
+        import_source(
+            &mut files,
+            &device,
+            source,
+            2,
+            now,
+            a.time,
+            &mut BTreeMap::new(),
+        )?;
     }
     let mut committer = Committer::format(sb);
     operation(files.fsync(&device, &mut committer))?;

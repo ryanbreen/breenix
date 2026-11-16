@@ -1,0 +1,23 @@
+//! Undeclared breenfs core, built against the same VFS trait as ext2.
+#[path = "../../../kernel/src/fs/breenfs/btree.rs"]
+pub mod btree;
+#[path = "../../../kernel/src/fs/breenfs/commit.rs"]
+pub mod commit;
+#[path = "../../../kernel/src/fs/breenfs/crc32c.rs"]
+pub mod crc32c;
+#[path = "../../../kernel/src/fs/breenfs/format.rs"]
+pub mod format;
+#[path = "../../../kernel/src/fs/breenfs/node_cache.rs"]
+pub mod node_cache;
+#[path = "../../../kernel/src/fs/breenfs/ops.rs"]
+pub mod ops;
+#[path = "../../../kernel/src/fs/breenfs/recover.rs"]
+pub mod recover;
+#[path = "../../../kernel/src/fs/breenfs/siphash.rs"]
+pub mod siphash;
+#[path = "../../../kernel/src/fs/breenfs/space.rs"]
+pub mod space;
+#[path = "../../../kernel/src/fs/breenfs/txn.rs"]
+pub mod txn;
+#[path = "../../../kernel/src/fs/breenfs/vfs.rs"]
+pub mod vfs;

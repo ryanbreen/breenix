@@ -1674,6 +1674,25 @@ records feed the baseline boot's `server-watchdog.json` category record. The
 host runner reports that populated category's milestone verdict, without claiming
 full-suite acceptance for the server's planned categories.
 
+## Filesystem read fixture
+
+The filesystem suite's `read` category mounts a disposable host-built breenfs
+volume read-only, discovering it through `/dev/disk<N>`. On ARM64 QEMU,
+`boot-interactive.sh` calls `scripts/breenfs-read-fixture.sh IMAGE MANIFEST` only
+when the resolved suite list includes `filesystem`. The image is attached
+read-only as the last discovered virtio disk; the root and home indices stay
+unchanged. `scripts/filesystem-suite.py --image ROOT --read-manifest MANIFEST`
+stages the extractor's TSV at `/usr/local/filesystem-suite/read/manifest`
+without collecting host format or crash evidence again.
+
+The generated tree has a sparse file with a partial final page, hard links, a
+symlink, nested directories and 5,000 short names. Modes and mtimes are fixed.
+The guest compares its walk with the extractor manifest, checks hole bytes,
+mapped EOF-tail zeros and `st_blocks`, replays directory cookies with small
+getdents buffers, and requires EROFS for write access, creation and unlink.
+The write-access check uses a write-only open: a read-only mount cannot supply
+a writable descriptor. Each case unmounts its volume before returning.
+
 ## Developer SDK
 
 `sdk` measures the Developer SDK effort in `docs/efforts/path.json`: our own applications

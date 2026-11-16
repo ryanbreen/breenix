@@ -5,13 +5,28 @@
 //! A fallible store must provide rollback for allocation/put failures;
 //! the root is published only after the buffered puts succeed.
 use super::format::{self, BlockPtr, InternalEntry, Key, LeafItemHeader, NodeHeader, NODE_SIZE};
-use alloc::{collections::BTreeMap, vec, vec::Vec};
+use alloc::{collections::BTreeMap, sync::Arc, vec, vec::Vec};
 
 const HEADER: usize = 48;
 const CAPACITY: usize = NODE_SIZE - HEADER;
 const MAX_PAYLOAD: usize = 6144;
 const MAX_INTERNAL: usize = 441;
 const MAX_HEIGHT: u8 = 8;
+
+// Host measurement of the production decoder, isolated from parallel tests.
+#[cfg(test)]
+pub mod measurement {
+    extern crate std;
+    std::thread_local! {
+        static DECODES: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+    }
+    pub fn take_decodes() -> u64 {
+        DECODES.with(|count| count.replace(0))
+    }
+    pub(super) fn decoded() {
+        DECODES.with(|count| count.set(count.get() + 1));
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -32,6 +47,11 @@ impl From<format::Error> for Error {
 /// Allocation and reclamation policy belong to the caller, not the B-tree.
 pub trait NodeStore {
     fn get(&self, addr: u64) -> Result<Vec<u8>, Error>;
+    /// Immutable stores may retain a verified decoding, keyed by the
+    /// complete parent pointer. Mutable stores decode their current bytes.
+    fn read_node(&self, ptr: BlockPtr) -> Result<Arc<Node>, Error> {
+        decode_node(&self.get(ptr.addr)?, ptr)
+    }
     fn put(&mut self, addr: u64, bytes: Vec<u8>) -> Result<(), Error>;
     fn alloc(&mut self) -> Result<u64, Error>;
     /// Called top-down before modifying a node, including rebalance siblings.
@@ -45,10 +65,34 @@ pub trait NodeStore {
     }
 }
 
-struct Node {
+pub struct Node {
     header: NodeHeader,
     items: Vec<(Key, Vec<u8>)>,
     children: Vec<InternalEntry>,
+}
+
+pub(crate) fn decode_node(bytes: &[u8], ptr: BlockPtr) -> Result<Arc<Node>, Error> {
+    Ok(Arc::new(decode(bytes, ptr, true, None, None)?))
+}
+
+// Bounds and parent identity belong to this traversal, not to the cached node.
+// Recheck them even when the exact node/pointer was verified on an earlier path.
+fn read_node<S: NodeStore>(
+    store: &S,
+    ptr: BlockPtr,
+    root: bool,
+    lower: Option<Key>,
+    upper: Option<Key>,
+) -> Result<Arc<Node>, Error> {
+    let node = store.read_node(ptr)?;
+    if (node.len() == 0 && !root)
+        || (node.len() != 0
+            && (lower.is_some_and(|k| node.key(0) < k)
+                || upper.is_some_and(|k| node.key(node.len() - 1) >= k)))
+    {
+        return Err(Error::InvalidNode);
+    }
+    Ok(node)
 }
 impl Node {
     fn len(&self) -> usize {
@@ -137,6 +181,8 @@ fn decode(
     lower: Option<Key>,
     upper: Option<Key>,
 ) -> Result<Node, Error> {
+    #[cfg(test)]
+    measurement::decoded();
     if bytes.len() != NODE_SIZE {
         return Err(Error::InvalidNode);
     }
@@ -246,7 +292,7 @@ pub fn create<S: NodeStore>(
 }
 
 pub fn search<S: NodeStore>(store: &S, root: BlockPtr, key: Key) -> Result<Option<Vec<u8>>, Error> {
-    let mut node = decode(&store.get(root.addr)?, root, true, None, None)?;
+    let mut node = read_node(store, root, true, None, None)?;
     let mut upper = None;
     while node.header.level > 0 {
         let i = node.route(key);
@@ -256,7 +302,7 @@ pub fn search<S: NodeStore>(store: &S, root: BlockPtr, key: Key) -> Result<Optio
         let lower = Some(node.key(i));
         upper = node.children.get(i + 1).map(|e| e.key).or(upper);
         let ptr = node.child(i);
-        let child = decode(&store.get(ptr.addr)?, ptr, false, lower, upper)?;
+        let child = read_node(store, ptr, false, lower, upper)?;
         same_tree(&node, &child)?;
         node = child;
     }
@@ -274,37 +320,55 @@ pub fn range<S: NodeStore>(
     lower: Key,
     upper: Key,
 ) -> Result<Vec<(Key, Vec<u8>)>, Error> {
+    range_limit(store, root, lower, upper, usize::MAX)
+}
+
+/// Read at most `limit` items, stopping before visiting later branches.
+/// Resuming at the successor key re-descends from the durable root.
+pub fn range_limit<S: NodeStore>(
+    store: &S,
+    root: BlockPtr,
+    lower: Key,
+    upper: Key,
+    limit: usize,
+) -> Result<Vec<(Key, Vec<u8>)>, Error> {
     fn walk<S: NodeStore>(
         store: &S,
-        node: Node,
+        node: Arc<Node>,
         bound: Option<Key>,
         lower: Key,
         upper: Key,
         out: &mut Vec<(Key, Vec<u8>)>,
+        limit: usize,
     ) -> Result<(), Error> {
         if node.header.level == 0 {
             out.extend(
                 node.items
-                    .into_iter()
-                    .filter(|(k, _)| *k >= lower && *k <= upper),
+                    .iter()
+                    .filter(|(k, _)| *k >= lower && *k <= upper)
+                    .take(limit - out.len())
+                    .cloned(),
             );
         } else {
             for (i, entry) in node.children.iter().enumerate() {
+                if out.len() == limit {
+                    break;
+                }
                 let next = node.children.get(i + 1).map(|e| e.key).or(bound);
                 if entry.key <= upper && next.is_none_or(|k| k > lower) {
                     let ptr = node.child(i);
-                    let child = decode(&store.get(ptr.addr)?, ptr, false, Some(entry.key), next)?;
+                    let child = read_node(store, ptr, false, Some(entry.key), next)?;
                     same_tree(&node, &child)?;
-                    walk(store, child, next, lower, upper, out)?;
+                    walk(store, child, next, lower, upper, out, limit)?;
                 }
             }
         }
         Ok(())
     }
     let mut out = Vec::new();
-    if lower <= upper {
-        let node = decode(&store.get(root.addr)?, root, true, None, None)?;
-        walk(store, node, None, lower, upper, &mut out)?;
+    if lower <= upper && limit != 0 {
+        let node = read_node(store, root, true, None, None)?;
+        walk(store, node, None, lower, upper, &mut out, limit)?;
     }
     Ok(out)
 }

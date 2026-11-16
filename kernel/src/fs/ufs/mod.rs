@@ -389,6 +389,9 @@ fn mount(source: u64, target: u64, fstype: u64, flags: u64, data: u64) -> Result
     let cred = crate::fs::permissions::Credentials::current(false)?;
     args::require_root(cred.euid)?;
     let fstype = userptr::copy_path_bytes_from_user(fstype)?;
+    if fstype == b"breenfs" {
+        return crate::fs::breenfs::mount::mount(source, target, flags, &cred);
+    }
     // Validate type/flags before touching the filesystem-specific pointer.
     if fstype != b"ufs" || flags != 0 {
         return Err(EINVAL as u64);
@@ -497,6 +500,9 @@ fn umount(target: u64, flags: u64) -> Result<(), u64> {
     let raw = userptr::copy_path_bytes_from_user(target)?;
     let point =
         crate::syscall::metadata::resolve_at(crate::syscall::at_path::AT_FDCWD, &raw, true, &cred)?;
+    if let Some(result) = crate::fs::breenfs::mount::unmount(&point.target, flags) {
+        return result;
+    }
     let mount = {
         let mut mounts = MOUNTS.lock();
         let index = mounts

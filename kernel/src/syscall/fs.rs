@@ -2243,6 +2243,7 @@ fn handle_devfs_open(
     if matches!(device.device_type, devfs::DeviceType::InputEvents | devfs::DeviceType::Uinput) {
         return open_input(Some(device.device_type == devfs::DeviceType::Uinput), flags, namespace_node, reserved);
     }
+    if let Some(errno) = devfs::open_refusal(&device.device_type) { return SyscallResult::Err(errno); }
     if device.device_type == devfs::DeviceType::Ptmx {
         return open_ptmx(flags, namespace_node, reserved);
     }

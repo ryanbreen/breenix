@@ -18,3 +18,9 @@ doctest = false
 # These kernel-only gates appear in the shared VFS/adapter source.
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("fs_fault_inject", "watchdog_fault_inject"))'] }
+
+# The large directory fixture exercises encoded node walks.
+[profile.test]
+opt-level = 2
+debug-assertions = true
+overflow-checks = true

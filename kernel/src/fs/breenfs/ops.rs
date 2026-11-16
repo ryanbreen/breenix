@@ -197,6 +197,35 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             .map(|r| r.ino)
             .ok_or(Error::ENOENT)
     }
+    /// DIR_INDEX order is the persistent directory-cookie order. A read-only
+    /// caller can bound each batch without materializing the whole directory.
+    pub fn directory_entries(
+        &self,
+        dir: u64,
+        cookie: u64,
+        limit: usize,
+    ) -> Result<Vec<(u64, DirRecord)>, Error> {
+        let inode = self.directory(dir)?;
+        btree::range_limit(
+            &self.txn.view(),
+            self.root.root,
+            key(dir, format::DIR_INDEX, cookie.max(2)),
+            key(dir, format::DIR_INDEX, u64::MAX),
+            limit,
+        )?
+        .into_iter()
+        .map(|(k, bytes)| {
+            if k.offset >= inode.next_index {
+                return Err(Error::EIO);
+            }
+            let mut records = dir_records(&bytes)?;
+            if records.len() != 1 {
+                return Err(Error::EIO);
+            }
+            Ok((k.offset + 1, records.remove(0)))
+        })
+        .collect()
+    }
     // Check the next directory cookie and collision payload before edits.
     fn vacant(&self, dir: u64, name: &[u8], kind: u8) -> Result<(), Error> {
         valid_name(name)?;
