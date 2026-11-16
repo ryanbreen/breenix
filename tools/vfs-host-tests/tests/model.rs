@@ -119,3 +119,25 @@ fn minimized_seed_1_closed_orphan_is_absent() {
         }
     }
 }
+
+#[test]
+fn minimized_seed_2_same_size_truncate_preserves_times() {
+    // Deletion-minimized seed 2: retain the allocations that give the target
+    // inode 26, then truncate it to 4095 twice at distinct logical times.
+    let keep = [0, 15, 24, 28, 32, 78, 80, 97, 100, 108, 110, 124, 152];
+    let device = Arc::new(RecordingDevice::new(image()).unwrap());
+    let mut fs = TraitAdapter::new(device);
+    let mut model = Model::new();
+    for (index, op) in Stream::new(2).take(153).enumerate() {
+        if keep.contains(&index) {
+            assert_eq!(fs.execute(&op), model.execute(&op), "seed=2 op={index} {op:?}");
+        }
+    }
+    let remount = Operation {
+        at: Time::default(),
+        action: Action::Remount,
+    };
+    assert_eq!(fs.execute(&remount), model.execute(&remount));
+    let diff = compare(&model, &fs).unwrap();
+    assert!(diff.is_empty(), "seed=2 keep={keep:?}: {diff:?}");
+}
