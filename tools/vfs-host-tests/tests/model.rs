@@ -2,25 +2,9 @@
 use breenfs_host_tests::{compare, model::Model, recording::RecordingDevice, stream::Stream, *};
 use std::sync::Arc;
 
-struct TraitAdapter;
-impl TraitAdapter {
-    fn new(_device: Arc<RecordingDevice>) -> Self {
-        Self
-    }
-}
-impl Fs for TraitAdapter {
-    fn execute(&mut self, _op: &Operation) -> Result<Reply> {
-        // Check-first stub: the trait adapter is not implemented yet.
-        let unsupported: core::result::Result<Reply, crate::errno::Errno> =
-            Err(crate::errno::Errno(crate::syscall_errno::EOPNOTSUPP));
-        unsupported.map_err(|_| Error::Unimplemented)
-    }
-    fn state(&self) -> Result<State> {
-        Err(Error::Unimplemented)
-    }
-}
+use crate::trait_adapter::TraitAdapter;
 
-fn image() -> Vec<u8> {
+pub(crate) fn image() -> Vec<u8> {
     use crate::{
         breenfs::{
             commit::{Committer, DeviceStore},
@@ -55,7 +39,7 @@ fn trait_seeds_1_to_64_match_the_model() {
     let initial = image();
     let mut covered = std::collections::HashSet::new();
     for seed in 1..=64 {
-        // RecordingDevice enforces W1-W3 on every write, including remount recovery.
+        // Writes and remount recovery pass through the W1-W3 recording device.
         let device = Arc::new(RecordingDevice::new(initial.clone()).unwrap());
         let mut fs = TraitAdapter::new(device);
         let mut model = Model::new();
@@ -85,4 +69,22 @@ fn trait_seeds_1_to_64_match_the_model() {
         14,
         "every stream operation must be exercised"
     );
+}
+
+#[test]
+fn minimized_seed_1_closed_orphan_is_absent() {
+    // Seed 1, minimized by deleting operations until no single deletion kept
+    // the truncate-after-close divergence: create, sparse write, unlink, truncate.
+    let device = Arc::new(RecordingDevice::new(image()).unwrap());
+    let mut fs = TraitAdapter::new(device);
+    let mut model = Model::new();
+    for (index, op) in Stream::new(1).take(15).enumerate() {
+        if [0, 1, 10, 14].contains(&index) {
+            assert_eq!(
+                fs.execute(&op),
+                model.execute(&op),
+                "seed=1 op={index} {op:?}"
+            );
+        }
+    }
 }
