@@ -92,8 +92,8 @@ pub(crate) fn stage_range_with_buffer(
     first: u64,
     last: u64,
     bytes: &mut [u8],
-) -> Result<(), &'static str> {
-    write_range_with_buffer(handle, first, last, bytes, false).map_err(|_| "Failed mapped staging")
+) -> Result<(), Errno> {
+    write_range_with_buffer(handle, first, last, bytes, false)
 }
 
 fn write_range_with_buffer(
@@ -850,14 +850,14 @@ impl MapState {
         self.service_writeback_with(handle, budget, |first, end| {
             // The transfer serializes its durable-epoch check with writes; an
             // identical durable snapshot need not flush another inode.
-            let file = handle.filesystem.mapping_io(handle).map_err(|_| "Failed to lease mapped file")?;
+            let file = handle.filesystem.mapping_io(handle)?;
             if file.needs_flush() {
-                file.sync(first, end).map_err(|_| "Failed to sync mapped file")?;
+                file.sync(first, end)?;
             } else {
                 self.complete_writeback(first, end);
             }
             Ok(())
-        })
+        }).map_err(|_| "Failed mapped service writeback")
     }
 
     /// Transactional commit workers publish their own generation here rather
@@ -866,8 +866,8 @@ impl MapState {
         &self,
         handle: &VNode,
         budget: &mut usize,
-        sync: impl FnOnce(u64, u64) -> Result<(), &'static str>,
-    ) -> Result<bool, &'static str> {
+        sync: impl FnOnce(u64, u64) -> Result<(), Errno>,
+    ) -> Result<bool, Errno> {
         if !self.writeback_pending() || self.state.syncers.load(Ordering::Acquire) != 0 {
             return Ok(false);
         }
@@ -890,9 +890,8 @@ impl MapState {
                 .count();
             (first, count)
         };
-        let mut bytes = writeback_buffer()?;
-        let next = self.writeback(handle, first, u64::MAX, *budget, &mut bytes)
-            .map_err(|_| "Failed mapped service writeback")?;
+        let mut bytes = writeback_buffer().map_err(|_| Errno(crate::syscall::errno::ENOMEM))?;
+        let next = self.writeback(handle, first, u64::MAX, *budget, &mut bytes)?;
         if let Some(end) = next {
             sync(first, end)?;
         }

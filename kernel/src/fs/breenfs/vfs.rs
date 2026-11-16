@@ -527,7 +527,12 @@ impl<W: Wait + 'static> BreenFs<W> {
                 let mut state = self.inner.state.lock();
                 // Shutdown can close admission while a service snapshot is in
                 // flight. Its own staged generation owns that final barrier.
-                if !state.closed || state.failed {
+                if error == Errno(ENOMEM) {
+                    // Keep the request and dirty custody. A later worker pass
+                    // retries after memory pressure has subsided; ENOMEM is
+                    // not a failed storage generation.
+                    self.inner.signal.mappings.store(true, Ordering::Release);
+                } else if !state.closed || state.failed {
                     state.failed = true;
                     if let Some(committer) = state.committer.as_mut() { committer.fail(); }
                     self.inner.signal.wake();
@@ -544,10 +549,10 @@ impl<W: Wait + 'static> BreenFs<W> {
         for node in handles {
             more |= node.map.service_writeback_with(&node, &mut budget, |first, last| {
                 self.inner.signal.requested.store(true, Ordering::Release);
-                self.commit_generation(now_ns).map_err(|_| "Failed mapped commit")?;
+                self.commit_generation(now_ns)?;
                 self.complete_mapping(&node, first, last);
                 Ok(())
-            }).map_err(|_| Errno(EIO))?;
+            })?;
             // Population and mutation take the mount lock before MapState.
             let mut state = self.inner.state.lock();
             if node.map.eviction_pending() { more |= node.map.evict(&mut budget); }
@@ -588,8 +593,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             }
             if node.map.has_dirty() {
                 if deadline.is_some() {
-                    crate::memory::file_map::stage_range_with_buffer(node, 0, u64::MAX, &mut buffer)
-                        .map_err(|_| Errno(EIO))?;
+                    crate::memory::file_map::stage_range_with_buffer(node, 0, u64::MAX, &mut buffer)?;
                 } else {
                     crate::memory::file_map::sync_range(node, 0, u64::MAX)?;
                 }
@@ -855,6 +859,11 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         // Writeback uses mutation admission, so stage before closing it.
         // Failed mounts still take M1's explicit-loss teardown path below.
         let mapped = self.sync_mappings(Some(deadline));
+        if mapped == Err(Errno(ENOMEM)) {
+            // No storage failure occurred. Preserve admission, service and
+            // dirty pins so the caller can retry teardown without data loss.
+            return mapped;
+        }
         // Close mutation admission before requesting the final generation.
         // The worker remains live until that generation's receipt completes.
         let signal = &self.inner.signal;
@@ -867,6 +876,9 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                     } else {
                         Ok(())
                     };
+                    for entry in state.nodes.values_mut() {
+                        entry.mapped = None;
+                    }
                     drop(state);
                     return teardown_result(name, result);
                 }
@@ -1045,6 +1057,9 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
     }
     fn fsync(&self, node: &VNode, _: bool) -> Result<(), Errno> {
         self.check_node(node)?;
+        if self.inner.state.lock().failed {
+            return Err(Errno(EIO));
+        }
         if node.map.has_dirty() {
             return crate::memory::file_map::sync_range(node, 0, u64::MAX);
         }
