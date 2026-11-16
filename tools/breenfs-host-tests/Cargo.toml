@@ -15,6 +15,10 @@ breenfs = { path = "../breenfs", artifact = ["bin:breenfs-mkfs", "bin:breenfs-ch
 [lib]
 doctest = false
 
+[[bin]]
+name = "breenfs-torture"
+path = "src/bin/breenfs-torture.rs"
+
 # Crash enumeration repeatedly decodes and checksums 16 KiB nodes. Optimize the
 # harness and its checker artifacts while retaining arithmetic/runtime checks.
 [profile.dev]

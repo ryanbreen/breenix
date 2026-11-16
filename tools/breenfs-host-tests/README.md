@@ -422,3 +422,54 @@ This unit is host acceptance only. The core remains undeclared in kernel
 `fs/mod.rs`. ARM still lacks VFS read/write mounts, open-handle lifetime,
 DEAD reaping, reservation, Hold-group/dirty-page integration and ARM64 QEMU,
 Parallels and VMware runtime acceptance. This unit runs no boot.
+
+## Timed torture driver (24.9-e)
+
+Build and run the host binary with an independent checker:
+
+```sh
+CARGO_BUILD_JOBS=4 taskpolicy -b cargo build \
+  --manifest-path tools/breenfs/Cargo.toml --bin breenfs-check
+CARGO_BUILD_JOBS=4 taskpolicy -b cargo build \
+  --manifest-path tools/breenfs-host-tests/Cargo.toml --bin breenfs-torture
+taskpolicy -b tools/breenfs-host-tests/target/debug/breenfs-torture \
+  --hours 0.002 --seed-start 1 \
+  --checker tools/breenfs/target/debug/breenfs-check --out /tmp/breenfs-torture
+```
+
+The command accepts only `--hours N [--seed-start S] --checker PATH --out DIR`.
+Hours must be finite and positive and may be fractional; the default first seed
+is 1. A seed runs eight stream operations plus the final remount through
+`crash::subset_images`, both `crash::torn_images` tails, and
+`corrupt::bit_flips`, using the existing full selection policy and acceptance.
+Fixtures are built directly through the shared `Files::format` and commit
+entry points, with fixed metadata and a populated tree containing multi-block
+data, a partial tail, an empty file and a symlink. No formatter executable is
+required by the driver. The checker is invoked as `PATH --full IMAGE`.
+
+The deadline is checked between complete seeds. A short request can overrun
+its deadline while finishing its first seed; it does not truncate a corpus or
+count a partial seed as passed. Seeds advance consecutively without wrapping.
+Exit 0 requires a passed seed and an expired deadline with no failure.
+
+`DIR/summary.json` is replaced atomically at startup and after a seed. Its fields
+are `started` (Unix seconds), `hours_requested`, `elapsed` (monotonic seconds),
+`first_seed`, `last_seed` (inclusive; null before a seed), `images_checked`
+(checker invocations, including minimization), and `failures` (failed seeds).
+On failure the driver publishes the failed seed and failure count before
+minimizing. `DIR/failure-<seed>.txt` holds the diagnostic and the minimized Rust
+row from `minimize::Case::regression_row`, replayed against the same failure
+kind. It then exits 1. A failed run retains its last sparse checker input;
+a successful run removes that scratch image. Setup or output I/O errors also
+exit 1 and cannot be accepted as an expired deadline.
+
+`tests/torture.rs::short_run_writes_a_summary` runs the built binary with
+`--hours 0.002` and Cargo's artifact checker. It requires exit 0, checked images,
+an inclusive seed range and a failure count of 0. The check-first commit is `75ba4f78`.
+The one-hour final-head acceptance and later background 24-hour run are the
+separate milestone work specified by coordinator ledger line 213.
+
+This host driver adds no architecture-specific path. ARM still lacks VFS
+read/write mounts, open-handle lifetime, DEAD reaping, reservation,
+Hold-group/dirty-page integration and ARM64 QEMU, Parallels and VMware runtime
+acceptance. This unit runs no boot.
