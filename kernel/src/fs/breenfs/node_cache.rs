@@ -1,4 +1,4 @@
-//! Read-only verified node store (breenfs design sections 1.2 and 2.2).
+//! Immutable verified node store (breenfs design sections 1.2 and 2.2).
 use super::{
     btree::{self, Error, Node, NodeStore},
     commit,
@@ -14,7 +14,7 @@ use spin::Mutex;
 
 const DECODED_NODES: usize = 64;
 
-/// A durable mount's node reads. Exact parent-pointer checks remain in btree.
+/// A generation's node reads. Exact parent-pointer checks remain in btree.
 ///
 /// The private device view makes a whole node one cache entry and verifies it
 /// before publishing it Clean.
@@ -26,12 +26,17 @@ pub struct CachedNodeStore<'a, W: Wait> {
     device: Box<NodeDevice<'a>>,
     fs_uuid: [u8; 16],
     generation: u64,
-    // Read-only mount lifetime; an entry cannot outlive or observe a write to
-    // this device view. Bound retained allocations independently of disk size.
+    pending: Option<Arc<commit::PreparedCommit>>,
+    // Entries belong to this immutable generation view. Bound decoded-node
+    // allocations independently of disk size.
     decoded: Mutex<VecDeque<(BlockPtr, Arc<Node>)>>,
 }
 
 impl<'a, W: Wait> CachedNodeStore<'a, W> {
+    pub fn with_pending(mut self, pending: Arc<commit::PreparedCommit>) -> Self {
+        self.pending = Some(pending);
+        self
+    }
     /// `durable` is the superblock selected by read-only recovery. The device
     /// must remain unchanged while this read-only mount is in use.
     pub fn new(
@@ -47,6 +52,7 @@ impl<'a, W: Wait> CachedNodeStore<'a, W> {
             }),
             fs_uuid: durable.fs_uuid,
             generation: durable.generation,
+            pending: None,
             decoded: Mutex::new(VecDeque::new()),
         }
     }
@@ -64,6 +70,7 @@ impl<'a, W: Wait> CachedNodeStore<'a, W> {
             }),
             fs_uuid: durable.fs_uuid,
             generation: durable.generation,
+            pending: None,
             decoded: Mutex::new(VecDeque::new()),
         }
     }
@@ -81,6 +88,7 @@ impl<'a, W: Wait> CachedNodeStore<'a, W> {
             }),
             fs_uuid: durable.fs_uuid,
             generation: durable.generation,
+            pending: None,
             decoded: Mutex::new(VecDeque::new()),
         }
     }
@@ -110,6 +118,9 @@ impl<W: Wait> NodeStore for CachedNodeStore<'_, W> {
         Ok(node)
     }
     fn get(&self, addr: u64) -> Result<Vec<u8>, Error> {
+        if let Some(bytes) = self.pending.as_ref().and_then(|p| p.node(addr)) {
+            return Ok(bytes.to_vec());
+        }
         let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(NODE_SIZE)

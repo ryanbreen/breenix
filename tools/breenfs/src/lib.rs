@@ -29,12 +29,17 @@ pub mod txn;
 
 /// Synchronous device surface used by the shared no_std writer.
 pub mod block {
+    pub use crate::buffer_cache as cache;
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub enum BlockError {
         IoError,
+        OutOfMemory,
         OutOfBounds,
     }
     pub trait BlockDevice: Send + Sync {
+        fn identity(&self) -> usize {
+            self as *const Self as *const () as usize
+        }
         fn read_block(&self, block: u64, buf: &mut [u8]) -> Result<(), BlockError>;
         fn write_block(&self, block: u64, buf: &[u8]) -> Result<(), BlockError>;
         fn block_size(&self) -> usize;
@@ -68,4 +73,10 @@ mod tests {
             assert_eq!(crate::siphash::hash(&key, &message), 0xa129_ca61_49be_45e5);
         }
     }
+}
+
+#[path = "../../../kernel/src/block/cache.rs"]
+pub mod buffer_cache;
+pub fn arch_without_interrupts<R>(f: impl FnOnce() -> R) -> R {
+    f()
 }

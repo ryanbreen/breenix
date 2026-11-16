@@ -887,7 +887,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     }
     pub(crate) fn prepare_commit(
         &mut self,
-    ) -> Result<(&mut Transaction<'a, S>, &BTreeMap<u64, Vec<u8>>), Error> {
+    ) -> Result<(&mut Transaction<'a, S>, &mut BTreeMap<u64, Vec<u8>>), Error> {
         self.reclaim_orphans()?;
         self.txn.promote_pending()?;
         self.txn.update_root(self.root_id, self.root.clone())?;
@@ -901,7 +901,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             .map(|(k, _)| k.object)
             .collect();
         self.data.retain(|addr, _| live.contains(addr));
-        Ok((&mut self.txn, &self.data))
+        Ok((&mut self.txn, &mut self.data))
     }
 }
 const ORPHAN_OBJECT: u64 = 0xffff_ffff_ffff_ff00;

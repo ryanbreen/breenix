@@ -8,6 +8,8 @@ extern crate std;
 pub mod btree;
 #[path = "../../../kernel/src/fs/breenfs/commit.rs"]
 pub mod commit;
+#[path = "../../../kernel/src/fs/breenfs/commit_policy.rs"]
+pub mod commit_policy;
 #[path = "../../../kernel/src/fs/breenfs/crc32c.rs"]
 pub mod crc32c;
 #[path = "../../../kernel/src/fs/breenfs/format.rs"]

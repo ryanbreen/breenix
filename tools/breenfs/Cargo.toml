@@ -8,6 +8,9 @@ edition = "2021"
 [lib]
 name = "breenfs"
 
+[dependencies]
+spin = "0.9"
+
 [dev-dependencies]
 # Shared SHA-256 documentation examples name their owning crate.
 libbreenix = { path = "../../libs/libbreenix", features = ["std"] }

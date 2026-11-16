@@ -78,8 +78,8 @@ impl DirtyPages {
         }
         Ok(())
     }
-    // Keep the source pages until publication succeeds. Runs stop at a hole,
-    // EOF or 256 blocks, matching the data REF limit in design section 2.4.
+    // Copy source pages into the transaction's private extents. Runs stop at
+    // a hole, EOF or 256 blocks (the data REF limit in design section 2.4).
     pub fn write_runs(
         &self,
         size: u64,

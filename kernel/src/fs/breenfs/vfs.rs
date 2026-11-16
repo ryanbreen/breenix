@@ -1,6 +1,8 @@
 //! BreenFS operations at the VFS boundary (design 1.1, 2.3 and 2.5).
 use super::{
-    commit::Committer,
+    commit::{Committer, PreparedCommit},
+    commit_policy::CommitPolicy,
+    commit_signal::{monotonic_ns, CommitSignal},
     dirty::DirtyPages,
     format::{Inode, Superblock, Time, BLOCK_SIZE},
     node_cache::CachedNodeStore,
@@ -9,7 +11,7 @@ use super::{
 };
 use crate::{
     block::{
-        cache::{BufferCache, Wait},
+        cache::{BufferCache, Wait, WriteGroup},
         BlockDevice, BlockError,
     },
     fs::{attrs::InodeAttrs, errno::Errno, vfs::*},
@@ -38,6 +40,7 @@ struct Mount<W: Wait + 'static> {
     cache: Cache<W>,
     id: usize,
     root_id: u64,
+    signal: Arc<CommitSignal>,
 }
 enum Cache<W: Wait + 'static> {
     Shared(Arc<BufferCache<W>>),
@@ -65,6 +68,9 @@ struct MountState<W: Wait + 'static> {
     nodes: BTreeMap<u64, NodeState>,
     dirty_bytes: u64,
     inodes: InodeCache,
+    policy: CommitPolicy,
+    pending: Option<Arc<PreparedCommit>>,
+    signal: Arc<CommitSignal>,
 }
 // Backing state for the canonical VNode. Dirty pages outlive its last open
 // until commit, without retaining a VNode -> mount ownership cycle.
@@ -155,6 +161,10 @@ impl<W: Wait> MountState<W> {
         // Do not publish that transaction; reservation is a later milestone.
         if matches!(result, Err(ops::Error::EIO | ops::Error::ENOSPC)) {
             self.failed = true;
+            if let Some(committer) = self.committer.as_mut() {
+                committer.fail();
+            }
+            self.signal.wake();
         }
         for (&ino, entry) in &self.nodes {
             if let Some(node) = entry.node.upgrade() {
@@ -163,6 +173,9 @@ impl<W: Wait> MountState<W> {
                     *node.times.lock() = attributes(ino, inode)?.times;
                 }
             }
+        }
+        if result.is_ok() {
+            self.signal.wake();
         }
         result.map_err(errno)
     }
@@ -209,7 +222,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         Self::mount_with(device, Cache::Shared(cache), mount, root_id, false)
     }
     /// Writable recovery repairs the rings before opening the first transaction.
-    /// Commits run synchronously under the mount mutex in this stage.
+    /// The caller starts the per-mount worker through init_service().
     pub fn mount_writable(
         device: Arc<dyn BlockDevice>,
         cache: Arc<BufferCache<W>>,
@@ -243,6 +256,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             blocks: durable.total_blocks,
         })
         .map_err(|_| Errno(ENOMEM))?;
+        let signal = Arc::new(CommitSignal::new());
         let inner = Arc::try_new(Mount {
             state: Mutex::new(MountState {
                 files,
@@ -251,6 +265,9 @@ impl<W: Wait + 'static> BreenFs<W> {
                 failed: false,
                 nodes: BTreeMap::new(),
                 dirty_bytes: 0,
+                policy: CommitPolicy::new(monotonic_ns()),
+                pending: None,
+                signal: signal.clone(),
                 inodes: InodeCache {
                     entries: [None; 32],
                     next: 0,
@@ -261,6 +278,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             cache,
             id: mount,
             root_id,
+            signal,
         })
         .map_err(|_| Errno(ENOMEM))?;
         Arc::try_new(Self { inner }).map_err(|_| Errno(ENOMEM))
@@ -302,12 +320,120 @@ impl<W: Wait + 'static> BreenFs<W> {
     /// Resident dirty-page bytes charged to this mount, including closed files
     /// awaiting commit. Available to the mount's commit-pressure policy.
     pub fn dirty_bytes(&self) -> u64 {
-        self.inner.state.lock().dirty_bytes
+        let state = self.inner.state.lock();
+        state.dirty_bytes + state.pending.as_ref().map_or(0, |p| p.dirty_bytes())
     }
-    fn data_reader(&self) -> DataReader<'_, W> {
+    /// One commit-worker pass. Preparation and opening G+1 are serialized;
+    /// device publication and completion waits hold no mount lock.
+    fn commit_due(&self, now_ns: u64) -> Result<bool, Errno> {
+        #[cfg(not(test))]
+        crate::block::cache_kernel::assert_io_context();
+        let prepared = {
+            let mut state = self.inner.state.lock();
+            if state.failed {
+                return Err(Errno(EIO));
+            }
+            if state.committer.is_none() || state.pending.is_some() {
+                return Ok(false);
+            }
+            let fsync = self.inner.signal.requested.swap(false, Ordering::AcqRel);
+            let pressure = self.inner.signal.pressure.swap(false, Ordering::AcqRel);
+            if !state.policy.due(now_ns, state.dirty_bytes, fsync, pressure) {
+                return Ok(false);
+            }
+            state.retain_open();
+            if state.drain_dirty(&self.data_reader(None)).is_err() {
+                state.failed = true;
+                if let Some(committer) = state.committer.as_mut() {
+                    committer.fail();
+                }
+                self.inner.signal.wake();
+                return Err(Errno(EIO));
+            }
+            let MountState {
+                files, committer, ..
+            } = &mut *state;
+            let result = committer
+                .as_mut()
+                .ok_or(Errno(EIO))?
+                .prepare_files(self.inner.device.as_ref(), files);
+            let prepared = match result {
+                Ok(prepared) => Arc::new(prepared),
+                Err(_) => {
+                    state.failed = true;
+                    self.inner.signal.wake();
+                    return Err(Errno(EIO));
+                }
+            };
+            let sb = prepared.superblock();
+            let store = self
+                .inner
+                .cache
+                .store(self.inner.device.clone(), sb)
+                .with_pending(prepared.clone());
+            match Files::new(store, sb, self.inner.root_id) {
+                Ok(files) => state.files = files,
+                Err(_) => {
+                    state
+                        .committer
+                        .as_mut()
+                        .ok_or(Errno(EIO))?
+                        .complete(&prepared, Err(super::commit::Error::EIO));
+                    state.pending = Some(prepared);
+                    state.failed = true;
+                    self.inner.signal.wake();
+                    return Err(Errno(EIO));
+                }
+            }
+            state.inodes.entries.fill(None);
+            for node in state.nodes.values_mut() {
+                node.dirty.clear();
+            }
+            state.dirty_bytes = 0;
+            state.retain_open();
+            state.policy = CommitPolicy::new(now_ns);
+            state.pending = Some(prepared.clone());
+            prepared
+        };
+        let signal = self.inner.signal.clone();
+        let group = WriteGroup::hold(
+            self.inner.device.as_ref(),
+            Arc::new(move || {
+                signal.pressure.store(true, Ordering::Release);
+                signal.wake();
+            }),
+        );
+        let result = prepared.write_cached(
+            self.inner.cache.buffers(),
+            self.inner.device.as_ref(),
+            &group,
+        );
+        {
+            let mut state = self.inner.state.lock();
+            state
+                .committer
+                .as_mut()
+                .ok_or(Errno(EIO))?
+                .complete(&prepared, result);
+            if result.is_ok() {
+                state.durable = prepared.superblock().clone();
+                self.inner
+                    .cache
+                    .buffers()
+                    .discard_clean(self.inner.data.as_ref());
+                state.pending = None;
+            } else {
+                state.failed = true;
+            }
+        }
+        self.inner.signal.wake();
+        result.map(|_| true).map_err(|_| Errno(EIO))
+    }
+    fn data_reader(&self, pending: Option<Arc<PreparedCommit>>) -> DataReader<'_, W> {
         DataReader {
             cache: self.inner.cache.buffers(),
             blocks: &self.inner.data,
+            pending,
         }
     }
 }
@@ -337,57 +463,97 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         })
     }
     fn sync(&self) -> Result<(), Errno> {
-        let mut state = self.inner.state.lock();
-        if state.failed {
-            return Err(Errno(EIO));
+        let waiter = {
+            let mut state = self.inner.state.lock();
+            if state.failed {
+                return Err(Errno(EIO));
+            }
+            let Some(committer) = state.committer.as_mut() else {
+                return Ok(());
+            };
+            let waiter = committer.waiter();
+            self.inner.signal.requested.store(true, Ordering::Release);
+            waiter
+        };
+        self.inner.signal.wake();
+        loop {
+            let observed = self.inner.signal.epoch();
+            if let Some(result) = waiter.result() {
+                return result.map_err(|_| Errno(EIO));
+            }
+            // Host conformance drives the same worker pass explicitly. Kernel
+            // callers only sleep; the mount's commit kthread performs the I/O.
+            #[cfg(test)]
+            self.commit_due(monotonic_ns())?;
+            if waiter.result().is_none() {
+                self.inner.signal.wait(observed, None);
+            }
         }
-        if state.committer.is_none() {
+    }
+    fn init_service(&self) -> Result<(), Errno> {
+        if self.inner.state.lock().read_only() {
             return Ok(());
         }
-        state.retain_open();
-        if state.drain_dirty(&self.data_reader()).is_err() {
-            state.failed = true;
-            return Err(Errno(EIO));
+        if self.inner.signal.started.swap(true, Ordering::AcqRel) {
+            return Ok(());
         }
-        let MountState {
-            files, committer, ..
-        } = &mut *state;
-        let result = files.fsync(
-            self.inner.device.as_ref(),
-            committer.as_mut().ok_or(Errno(EIO))?,
-        );
-        let sb = match result {
-            Ok(sb) => sb,
-            Err(_) => {
-                state.failed = true;
-                return Err(Errno(EIO));
+        #[cfg(not(test))]
+        {
+            let mount = Arc::downgrade(&self.inner);
+            let signal = self.inner.signal.clone();
+            if crate::task::kthread::kthread_run(
+                move || loop {
+                    let observed = signal.epoch();
+                    let Some(inner) = mount.upgrade() else {
+                        return;
+                    };
+                    let fs = Self { inner };
+                    #[cfg(target_arch = "x86_64")]
+                    crate::per_cpu::preempt_disable();
+                    #[cfg(target_arch = "aarch64")]
+                    crate::per_cpu_aarch64::preempt_disable();
+                    let result = fs.commit_due(monotonic_ns());
+                    let deadline = fs.inner.state.lock().policy.deadline();
+                    drop(fs);
+                    #[cfg(target_arch = "x86_64")]
+                    crate::per_cpu::preempt_enable();
+                    #[cfg(target_arch = "aarch64")]
+                    crate::per_cpu_aarch64::preempt_enable();
+                    if result.is_err() {
+                        return;
+                    }
+                    signal.wait(observed, Some(deadline));
+                },
+                "breenfs-commit",
+            )
+            .is_err()
+            {
+                self.inner.signal.started.store(false, Ordering::Release);
+                return Err(Errno(ENOMEM));
             }
-        };
-        state.durable = sb;
-        self.inner
-            .cache
-            .buffers()
-            .discard_clean(self.inner.data.as_ref());
-        let result = Files::new(
-            self.inner
-                .cache
-                .store(self.inner.device.clone(), &state.durable),
-            &state.durable,
-            self.inner.root_id,
-        );
-        match result {
-            Ok(files) => state.files = files,
-            Err(_) => {
-                state.failed = true;
-                return Err(Errno(EIO));
-            }
         }
-        state.inodes.entries.fill(None);
-        for node in state.nodes.values_mut() {
-            node.dirty.clear();
+        Ok(())
+    }
+    fn report(
+        &self,
+        report: Report,
+        name: &str,
+        text: &mut alloc::string::String,
+    ) -> Result<(), Errno> {
+        if matches!(report, Report::State) {
+            use core::fmt::Write;
+            let state = self.inner.state.lock();
+            let pending_bytes = state.pending.as_ref().map_or(0, |p| p.dirty_bytes());
+            writeln!(
+                text,
+                "{} breenfs durable_generation={} dirty_bytes={} read_only={}",
+                name,
+                state.durable.generation,
+                state.dirty_bytes + pending_bytes,
+                u8::from(state.read_only())
+            )
+            .map_err(|_| Errno(ENOMEM))?;
         }
-        state.dirty_bytes = 0;
-        state.retain_open();
         Ok(())
     }
     fn read_only(&self) -> Result<bool, Errno> {
@@ -473,7 +639,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 state
                     .files
                     .read(
-                        &self.data_reader(),
+                        &self.data_reader(state.pending.clone()),
                         node.ino,
                         pos,
                         &mut buf[done..done + take],
@@ -697,6 +863,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             .checked_add(length as u64)
             .filter(|end| *end <= (1 << 63) - 4096)
             .ok_or(Errno(EFBIG))?;
+        let pending = state.pending.clone();
         let MountState {
             files,
             nodes,
@@ -707,7 +874,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         let before = dirty.bytes();
         dirty.write(offset, &bytes[..length], |off, page| {
             files
-                .read(&self.data_reader(), node.ino, off, page)
+                .read(&self.data_reader(pending.clone()), node.ino, off, page)
                 .map_err(errno)?;
             Ok(())
         })?;
@@ -752,6 +919,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                     k.offset <= floor
                         && floor < k.offset + u64::from(e.num_blocks) * BLOCK_SIZE as u64
                 });
+            let pending = state.pending.clone();
             let MountState {
                 files,
                 nodes,
@@ -762,7 +930,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             let before = dirty.bytes();
             dirty.shrink(size, mapped_tail, |off, page| {
                 files
-                    .read(&self.data_reader(), node.ino, off, page)
+                    .read(&self.data_reader(pending.clone()), node.ino, off, page)
                     .map_err(errno)?;
                 Ok(())
             })?;
@@ -892,10 +1060,18 @@ impl BlockDevice for DataBlocks {
 struct DataReader<'a, W: Wait> {
     cache: &'a BufferCache<W>,
     blocks: &'a DataBlocks,
+    pending: Option<Arc<PreparedCommit>>,
 }
 impl<W: Wait> BlockDevice for DataReader<'_, W> {
     fn read_block(&self, block: u64, bytes: &mut [u8]) -> Result<(), BlockError> {
         // Data checksum enforcement joins this path in the checksum milestone.
+        if let Some(data) = self.pending.as_ref().and_then(|p| p.data_block(block)) {
+            if data.len() != bytes.len() {
+                return Err(BlockError::IoError);
+            }
+            bytes.copy_from_slice(data);
+            return Ok(());
+        }
         self.cache
             .read_verified(self.blocks, block, bytes, |_| true)
     }
@@ -914,6 +1090,7 @@ impl<W: Wait> BlockDevice for DataReader<'_, W> {
 }
 impl<W: Wait> Drop for Mount<W> {
     fn drop(&mut self) {
+        self.signal.wake();
         self.cache.buffers().discard_clean(self.data.as_ref());
     }
 }
