@@ -30,6 +30,10 @@
 //! ```
 
 pub mod entries;
+mod device_type;
+mod disks;
+pub use device_type::DeviceType;
+pub use disks::{disk_device, open_refusal};
 mod screen_capture;
 pub mod input;
 pub use entries::{SHM_DIRECTORY_INO, SHM_DIRECTORY_MODE};
@@ -37,40 +41,6 @@ pub use entries::{SHM_DIRECTORY_INO, SHM_DIRECTORY_MODE};
 use alloc::string::String;
 use alloc::vec::Vec;
 use spin::Mutex;
-
-/// Device types supported by devfs
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeviceType {
-    /// /dev/null - discards writes, reads return EOF
-    Null,
-    /// E18 input endpoints, instantiated as shared open descriptions.
-    InputEvents,
-    Uinput,
-    /// User filesystem daemon endpoint; each open starts unbound.
-    Ufs,
-    /// /dev/kmsg - bounded, root-only audit messages to the kernel log
-    Kmsg,
-    /// Root-only suite records sent solely to the evidence UART.
-    ScreenEvidence,
-    /// /dev/zero - discards writes, reads return zero bytes
-    Zero,
-    /// /dev/console - system console (serial port)
-    Console,
-    /// /dev/tty - controlling terminal
-    Tty,
-    /// /dev/rtc0 - read-only platform real-time clock
-    Rtc,
-    /// /dev/ptmx - pseudo-terminal multiplexor: each open makes a new master
-    Ptmx,
-    /// /dev/tty0 - the foreground virtual terminal at each operation
-    Tty0,
-    /// /dev/tty1 .. /dev/tty6 - a virtual terminal (1-based)
-    Vt(u8),
-    /// /dev/vcs, /dev/vcs1 .. 6 - a terminal's screen text (0: the foreground)
-    Vcs(u8),
-    /// /dev/vcsa, /dev/vcsa1 .. 6 - the screen with attributes (0: the foreground)
-    Vcsa(u8),
-}
 
 /// The tty group, which owns the virtual terminals.
 pub const TTY_GID: u32 = 5;
@@ -132,6 +102,7 @@ impl DeviceType {
     /// Get the device name (without /dev/ prefix)
     pub fn name(&self) -> &'static str {
         match self {
+            DeviceType::Disk(n) => disks::name(*n),
             DeviceType::Null => "null",
             DeviceType::InputEvents => "input/events",
             DeviceType::Uinput => "uinput",
@@ -147,28 +118,6 @@ impl DeviceType {
             DeviceType::Vt(n) => VT_NAMES[*n as usize],
             DeviceType::Vcs(n) => VCS_NAMES[*n as usize],
             DeviceType::Vcsa(n) => VCSA_NAMES[*n as usize],
-        }
-    }
-
-    /// Get the inode number for this device
-    /// Using fixed inode numbers for devices
-    pub fn inode(&self) -> u64 {
-        match self {
-            DeviceType::Null => 2,
-            DeviceType::InputEvents => 41,
-            DeviceType::Uinput => 42,
-            DeviceType::Ufs => 44,
-            DeviceType::Kmsg => 9,
-            DeviceType::ScreenEvidence => 40,
-            DeviceType::Zero => 3,
-            DeviceType::Console => 4,
-            DeviceType::Tty => 5,
-            DeviceType::Rtc => 6,
-            DeviceType::Ptmx => 7,
-            DeviceType::Tty0 => 8,
-            DeviceType::Vt(n) => 10 + *n as u64,
-            DeviceType::Vcs(n) => 20 + *n as u64,
-            DeviceType::Vcsa(n) => 30 + *n as u64,
         }
     }
 
@@ -192,6 +141,7 @@ impl DeviceType {
     /// clock is read-only.
     pub fn attrs(&self) -> crate::fs::attrs::InodeAttrs {
         let (permissions, gid) = match self {
+            DeviceType::Disk(_) => return disks::attrs(),
             DeviceType::Null | DeviceType::Zero | DeviceType::Tty | DeviceType::Ptmx => (0o666, 0),
             DeviceType::Console | DeviceType::Vcs(_) | DeviceType::Vcsa(_) => (0o600, 0),
             DeviceType::Kmsg | DeviceType::ScreenEvidence => (0o200, 0),
@@ -318,7 +268,8 @@ pub fn lookup(name: &str) -> Option<DeviceNode> {
             return Some(device.clone());
         }
     }
-    None
+    drop(devfs);
+    disks::lookup(name)
 }
 
 /// Resolve a native device inode through the registered driver table.
@@ -329,6 +280,7 @@ pub fn lookup_by_rdev(rdev: u64) -> Option<DeviceNode> {
         .iter()
         .find(|device| device.rdev() == rdev)
         .cloned()
+        .or_else(|| disks::lookup_by_rdev(rdev))
 }
 
 /// Look up a device by inode number
@@ -339,7 +291,8 @@ pub fn lookup_by_inode(inode: u64) -> Option<DeviceNode> {
             return Some(device.clone());
         }
     }
-    None
+    drop(devfs);
+    disks::lookup_by_inode(inode)
 }
 
 /// List all device names (for /dev directory listing)
@@ -352,18 +305,29 @@ pub fn list_devices() -> Vec<String> {
         .collect();
     names.push(String::from("shm"));
     names.push(String::from("mqueue"));
+    drop(devfs);
+    names.extend(disks::nodes().map(|node| String::from(node.device_type.name())));
     names
 }
 
 /// Snapshot directory metadata without allocating per-name strings.
 pub fn directory_entries() -> Result<Vec<entries::DirectoryEntry>, u64> {
     let devfs = DEVFS.lock();
-    entries::entries(
+    let mut entries = entries::entries(
         devfs
             .devices
             .iter()
             .map(|d| (d.device_type.name(), d.device_type.inode())),
-    )
+    )?;
+    drop(devfs);
+    let disks = disks::nodes();
+    entries.try_reserve_exact(disks.len()).map_err(|_| 12u64)?;
+    entries.extend(disks.map(|node| entries::DirectoryEntry {
+        name: node.device_type.name(),
+        ino: node.device_type.inode(),
+        kind: 6, // DT_BLK
+    }));
+    Ok(entries)
 }
 
 /// Check if devfs is initialized
@@ -374,6 +338,7 @@ pub fn is_initialized() -> bool {
 /// Device file operations - read from device
 pub fn device_read(device_type: DeviceType, buf: &mut [u8]) -> Result<usize, i32> {
     match device_type {
+        DeviceType::Disk(_) => Err(-crate::syscall::errno::ENXIO),
         DeviceType::Kmsg | DeviceType::ScreenEvidence => Err(-13), // Audit sink is write-only.
         DeviceType::InputEvents | DeviceType::Uinput | DeviceType::Ufs => Err(-22),
         DeviceType::Rtc => Err(-22), // RTC data is read through RTC_RD_TIME.
@@ -409,6 +374,7 @@ pub fn device_read(device_type: DeviceType, buf: &mut [u8]) -> Result<usize, i32
 /// Device file operations - write to device
 pub fn device_write(device_type: DeviceType, buf: &[u8]) -> Result<usize, i32> {
     match device_type {
+        DeviceType::Disk(_) => Err(crate::syscall::errno::ENXIO),
         DeviceType::InputEvents | DeviceType::Uinput | DeviceType::Ufs => Err(22),
         DeviceType::Kmsg => audit_write(buf),
         DeviceType::ScreenEvidence => screen_evidence_write(buf),

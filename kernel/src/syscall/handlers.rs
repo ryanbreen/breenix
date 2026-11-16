@@ -660,6 +660,7 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
                     Err(e) => SyscallResult::Err(e as u64),
                 },
                 DeviceType::Rtc => SyscallResult::Err(13),
+                DeviceType::Disk(_) => SyscallResult::Err(super::errno::ENXIO as u64),
                 DeviceType::Ptmx => SyscallResult::Err(6), // ENXIO: open gives a master.
                 DeviceType::Null | DeviceType::Zero => {
                     // /dev/null, /dev/zero - discard all data
