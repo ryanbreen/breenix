@@ -39,18 +39,29 @@ fn minimizer_reduces_a_failing_stream() {
     let reduced = minimize(case.clone(), fails).unwrap();
     assert!(fails(&reduced), "{reduced:?}");
 
-    // The rename, the fsync, and the create that makes the renamed name.
+    // The rename, then the fsync last, plus required creates. Stream operations
+    // name inodes by number, so the creates that allocate the numbers the rename
+    // and fsync use are required too; the drop loop below shows each is needed.
     let ops = reduced.operations();
-    assert_eq!(ops.len(), 3, "{reduced:?}");
-    match (&ops[0].action, &ops[1].action, &ops[2].action) {
-        (
-            Action::Create { dir, name, .. }
-            | Action::Mkdir { dir, name, .. }
-            | Action::Symlink { dir, name, .. },
-            Action::Rename { from_dir, from, .. },
-            Action::Fsync { .. },
-        ) => assert_eq!((dir, name), (from_dir, from), "{reduced:?}"),
-        _ => panic!("not create, rename, fsync: {reduced:?}"),
+    let (last, rest) = ops.split_last().unwrap();
+    assert!(matches!(last.action, Action::Fsync { .. }), "{reduced:?}");
+    let renames = rest
+        .iter()
+        .filter(|op| matches!(op.action, Action::Rename { .. }))
+        .count();
+    assert_eq!(renames, 1, "{reduced:?}");
+    for op in rest {
+        assert!(
+            matches!(
+                op.action,
+                Action::Rename { .. }
+                    | Action::Create { .. }
+                    | Action::Mkdir { .. }
+                    | Action::Symlink { .. }
+                    | Action::Link { .. }
+            ),
+            "not a create: {op:?} in {reduced:?}"
+        );
     }
     // Truncated at the fsync; each kept operation is the stream's own.
     assert_eq!(reduced.keep.last(), Some(&(reduced.operation_count - 1)));
