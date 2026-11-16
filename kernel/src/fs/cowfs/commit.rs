@@ -57,6 +57,12 @@ pub struct Committer {
     waiters: Vec<Arc<FsyncWaiter>>,
 }
 impl Committer {
+    /// Publish generation 1 from an unpublished formatter template. Generation
+    /// 0 is an in-memory sentinel; publication increments it before encoding.
+    pub fn format(mut template: Superblock) -> Self {
+        template.generation = 0;
+        Self::new(template)
+    }
     /// Construct only after writable recovery has cleared abandoned slots.
     pub fn new(durable: Superblock) -> Self {
         Self {
@@ -181,6 +187,9 @@ impl Committer {
         if expected_data.len() != data.len() {
             return Err(Error::EIO);
         }
+        if self.durable.generation == 0 && sb.free_blocks < sb.global_reserve {
+            return Err(Error::EIO);
+        }
         // Validate ranges before issuing step 3, including disjoint node/data
         // extents. Allocation/reuse itself is owned by txn.rs and space.rs.
         let mut end = 20;
@@ -208,6 +217,20 @@ impl Committer {
         device.flush().map_err(|_| Error::EIO)?;
         // Steps 5-6: return immediately on error. In particular, no rollback
         // writes or erasure can follow a partially published superblock.
+        if self.durable.generation == 0 {
+            // Image writers overwrite the unused slots too (design 2.5).
+            for ring in 0..2 {
+                for slot in 0..4 {
+                    if slot != sb.slot {
+                        write(
+                            device,
+                            slot_block(sb.total_blocks, ring, slot),
+                            &[0; BLOCK_SIZE],
+                        )?;
+                    }
+                }
+            }
+        }
         for ring in 0..2 {
             sb.ring = ring;
             write(

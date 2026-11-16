@@ -13,6 +13,33 @@ pub mod crc32c;
 #[path = "../../../kernel/src/fs/cowfs/siphash.rs"]
 pub mod siphash;
 
+#[path = "../../../kernel/src/fs/cowfs/commit.rs"]
+pub mod commit;
+#[path = "../../../kernel/src/fs/cowfs/ops.rs"]
+pub mod ops;
+#[path = "../../../kernel/src/fs/cowfs/recover.rs"]
+pub mod recover;
+#[path = "../../../kernel/src/fs/cowfs/space.rs"]
+pub mod space;
+#[path = "../../../kernel/src/fs/cowfs/txn.rs"]
+pub mod txn;
+
+/// Synchronous device surface used by the shared no_std writer.
+pub mod block {
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub enum BlockError {
+        IoError,
+        OutOfBounds,
+    }
+    pub trait BlockDevice: Send + Sync {
+        fn read_block(&self, block: u64, buf: &mut [u8]) -> Result<(), BlockError>;
+        fn write_block(&self, block: u64, buf: &[u8]) -> Result<(), BlockError>;
+        fn block_size(&self) -> usize;
+        fn num_blocks(&self) -> u64;
+        fn flush(&self) -> Result<(), BlockError>;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     mod crc32c {

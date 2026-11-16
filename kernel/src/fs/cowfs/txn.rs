@@ -11,6 +11,7 @@ use super::{
 };
 use alloc::{
     collections::{BTreeMap, BTreeSet, VecDeque},
+    vec,
     vec::Vec,
 };
 
@@ -133,6 +134,82 @@ pub struct Transaction<'a, S> {
     failure: Option<Error>,
 }
 impl<'a, S: NodeStore> Transaction<'a, S> {
+    /// Start the first transaction without inventing a durable generation 0.
+    /// Block 20 is already private to generation 1; its REF and the remaining
+    /// FREE range seed both the real SPACE tree and its reservation view.
+    pub fn format(base: S, uuid: [u8; 16], total: u64) -> Result<Self, Error> {
+        if !(16384..=1 << 48).contains(&total) {
+            return Err(Error::Invalid);
+        }
+        let mut bytes = vec![0; format::NODE_SIZE];
+        let entries = [
+            (
+                Key {
+                    object: 20,
+                    item_type: format::REF,
+                    offset: 4,
+                },
+                format::Ref {
+                    refcount: 1,
+                    kind: 2,
+                    alloc_generation: 1,
+                    crcs: Vec::new(),
+                }
+                .encode(),
+            ),
+            (
+                Key {
+                    object: 0xffff_ffff_ffff_ff20,
+                    item_type: format::FREE,
+                    offset: 24,
+                },
+                format::Free { length: total - 28 }.encode().to_vec(),
+            ),
+        ];
+        let mut end = bytes.len();
+        for (i, (key, value)) in entries.iter().enumerate() {
+            end -= value.len();
+            bytes[end..end + value.len()].copy_from_slice(value);
+            let at = 48 + i * 21;
+            bytes[at..at + 21].copy_from_slice(
+                &LeafItemHeader {
+                    key: *key,
+                    data_off: end as u16,
+                    data_len: value.len() as u16,
+                }
+                .encode(),
+            );
+        }
+        NodeHeader {
+            tree: 2,
+            level: 0,
+            nitems: 2,
+            fs_uuid: uuid,
+            addr: 20,
+            generation: 1,
+        }
+        .encode(&mut bytes)?;
+        let root = BlockPtr {
+            addr: 20,
+            generation: 1,
+            level: 0,
+            csum: u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
+        };
+        Ok(Self {
+            base: Backing::Owned(base),
+            generation: 1,
+            original_space: root,
+            space_root: root,
+            reservation_root: root,
+            nodes: BTreeMap::from([(20, bytes.clone())]),
+            reserved_nodes: BTreeMap::from([(20, bytes)]),
+            scratch_next: u64::MAX - 3,
+            allocated: BTreeSet::from([20]),
+            counts: BTreeMap::from([((20, 4), 1)]),
+            deferred: VecDeque::new(),
+            failure: None,
+        })
+    }
     pub fn new(base: &'a S, space_root: BlockPtr, generation: u64) -> Result<Self, Error> {
         Self::with_backing(Backing::Borrowed(base), space_root, generation)
     }

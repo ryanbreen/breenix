@@ -210,3 +210,22 @@ DEAD reaping, reservation policy, Hold-group/dirty-page integration and runtime
 acceptance. These modules remain undeclared in kernel fs/mod.rs; this unit
 cross-builds the actual no_std modules for both architectures and runs no boot.
 Moving mkfs population onto the writer remains the next unit.
+
+Unit 24.8-h moves the formatter onto `ops.rs` and `commit.rs`. The transaction
+bootstrap starts a private generation-1 SPACE leaf at block 20 with its own REF
+and a FREE range beginning at block 24. FS creation, namespace population, data
+allocation and the deferred SPACE fixpoint remain in one transaction. The
+committer uses an unpublished generation-0 sentinel to publish generation 1,
+clears the six unused ring slots, writes the two active slots and flushes.
+`--extents` reports the file device's submitted block ranges, including both rings.
+Contiguous file writes allocate runs of at most 256 blocks through the shared
+operations layer, preserving the maximum-extent/tail violation fixture.
+Source traversal is sorted; metadata restoration follows children and data writes.
+A formatter-only generation-1 operation restores source ctime and btime without
+changing setattr semantics for later transactions. Population keeps the existing
+root ownership, source modes and timestamp behavior, including `--time` overrides.
+
+ARM and x86 share this formatter and core. Writable VFS integration, open-handle
+lifetime, DEAD reaping, reservation policy, Hold-group/dirty-page integration and
+ARM64 QEMU/Parallels/VMware runtime acceptance remain later steps. This host unit
+runs no boot and adds no architecture-specific writer implementation.

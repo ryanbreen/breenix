@@ -76,6 +76,56 @@ pub struct Files<'a, S: NodeStore + 'a> {
     data: BTreeMap<u64, Vec<u8>>,
 }
 impl<'a, S: NodeStore + 'a> Files<'a, S> {
+    /// Create root 1 in the formatter's sole, unpublished generation.
+    pub fn format(store: S, sb: &Superblock) -> Result<Self, Error> {
+        valid_time(sb.mkfs_time)?;
+        let mut txn = Transaction::format(store, sb.fs_uuid, sb.total_blocks)?;
+        let root = txn.create_tree(sb.fs_uuid)?;
+        let mut files = Self {
+            txn,
+            root: Root {
+                root,
+                next_inode: 16,
+                source_root: 0,
+                created_generation: 1,
+                ctime: sb.mkfs_time,
+                flags: 0,
+                name: b"default".to_vec(),
+            },
+            root_id: 1,
+            hash_key: sb.dirhash_key,
+            data: BTreeMap::new(),
+        };
+        files.put_inode(
+            2,
+            Inode {
+                mode: 0o40755,
+                nlink: 2,
+                parent: 2,
+                next_index: 2,
+                created_generation: 1,
+                atime: sb.mkfs_time,
+                mtime: sb.mkfs_time,
+                ctime: sb.mkfs_time,
+                btime: sb.mkfs_time,
+                ..Inode::default()
+            },
+        )?;
+        Ok(files)
+    }
+    /// Import source timestamps after data and children, before mkfs publication.
+    /// Later transactions must use setattr's normal ctime/btime semantics.
+    pub fn set_initial_times(&mut self, ino: u64, times: [Time; 4]) -> Result<(), Error> {
+        if self.txn.generation() != 1 {
+            return Err(Error::EINVAL);
+        }
+        for t in times {
+            valid_time(t)?;
+        }
+        let mut inode = self.inode(ino)?;
+        [inode.atime, inode.mtime, inode.ctime, inode.btime] = times;
+        self.put_inode(ino, inode)
+    }
     pub fn new(store: S, sb: &Superblock, root_id: u64) -> Result<Self, Error> {
         let root = recover::space_items(&store, sb)?
             .into_iter()
@@ -504,19 +554,23 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         }
         Ok(n)
     }
-    // Store one private 4 KiB allocation per item. Larger contiguous allocations
-    // can be coalesced later without changing the sparse-file representation.
-    fn replace_block(&mut self, ino: u64, off: u64, bytes: Vec<u8>) -> Result<(), Error> {
-        let addr = self.txn.allocate_data(&[crc32c::checksum(&bytes)])?;
+    // One private extent per contiguous run, bounded to 1 MiB (design 1.2).
+    fn replace_extent(&mut self, ino: u64, off: u64, bytes: Vec<u8>) -> Result<(), Error> {
+        let crcs: Vec<_> = bytes
+            .chunks_exact(BLOCK_SIZE)
+            .map(crc32c::checksum)
+            .collect();
+        let blocks = crcs.len() as u32;
+        let addr = self.txn.allocate_data(&crcs)?;
         self.data.insert(addr, bytes);
         self.txn.insert(
             &mut self.root.root,
             key(ino, format::EXTENT, off),
             &Extent {
                 phys_start: addr,
-                phys_len: 1,
+                phys_len: blocks,
                 extent_offset: 0,
-                num_blocks: 1,
+                num_blocks: blocks,
                 flags: 0,
             }
             .encode(),
@@ -589,8 +643,12 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             blocks.push((off, block));
         }
         self.remove_range(ino, start, rounded)?;
-        for (off, block) in blocks {
-            self.replace_block(ino, off, block)?;
+        for run in blocks.chunks(256) {
+            let bytes = run
+                .iter()
+                .flat_map(|(_, block)| block.iter().copied())
+                .collect();
+            self.replace_extent(ino, run[0].0, bytes)?;
         }
         inode.size = inode.size.max(end);
         inode.mtime = at;
@@ -634,7 +692,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             };
             self.remove_range(ino, floor, u64::MAX)?;
             if let Some(b) = tail {
-                self.replace_block(ino, floor, b)?;
+                self.replace_extent(ino, floor, b)?;
             }
         }
         inode.size = size;
