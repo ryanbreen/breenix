@@ -138,3 +138,6 @@ mod trait_adapter;
 
 #[path = "../tests/breenfs_boot_probe.rs"]
 mod breenfs_boot_probe;
+
+#[path = "../tests/writable_owner.rs"]
+mod writable_owner;
