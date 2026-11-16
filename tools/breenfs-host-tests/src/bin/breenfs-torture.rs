@@ -565,3 +565,23 @@ fn main() -> ExitCode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn seed_count_selects_an_exact_nonwrapping_range() {
+        let parse = |flags: &[&str]| super::parse_args(flags.iter().map(std::ffi::OsString::from));
+        let args = parse(&["--seeds", "2", "--seed-start", "7", "--checker", "check", "--out", "out"]).unwrap();
+        assert_eq!((args.seed, args.seeds, args.last_seed), (7, 2, 8));
+        let args = parse(&["--seeds", "1", "--seed-start", "18446744073709551615", "--checker", "check", "--out", "out"]).unwrap();
+        assert_eq!(args.last_seed, u64::MAX);
+        for flags in [
+            vec!["--seeds", "0", "--checker", "check", "--out", "out"],
+            vec!["--seeds", "2", "--seed-start", "18446744073709551615", "--checker", "check", "--out", "out"],
+            vec!["--hours", "1", "--checker", "check", "--out", "out"],
+        ] {
+            assert!(parse(&flags).is_err(), "accepted {flags:?}");
+        }
+    }
+}
