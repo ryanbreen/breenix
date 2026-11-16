@@ -78,30 +78,36 @@ impl DirtyPages {
         }
         Ok(())
     }
-    // Copy source pages into the transaction's private extents. Runs stop at
+    // Move source pages into the transaction's private extents. Runs stop at
     // a hole, EOF or 256 blocks (the data REF limit in design section 2.4).
+    // Each page is freed once copied, so the dirty map and the transaction
+    // do not both hold the generation's data (E24 ledger 309, C3). Pages past
+    // EOF are dropped; the caller fails the mount if any write fails.
     pub fn write_runs(
-        &self,
+        &mut self,
         size: u64,
         mut write: impl FnMut(u64, &[u8]) -> Result<(), Errno>,
     ) -> Result<(), Errno> {
-        let mut pages = self.pages.iter().peekable();
-        while let Some((&first, page)) = pages.next() {
+        while let Some((first, page)) = self.pages.pop_first() {
             let offset = first * BLOCK_SIZE as u64;
             if offset >= size {
+                self.pages.clear();
                 break;
             }
             let mut run = Vec::new();
             run.try_reserve_exact(256 * BLOCK_SIZE)
                 .map_err(|_| Errno(ENOMEM))?;
-            run.extend_from_slice(page);
+            run.extend_from_slice(&page);
+            drop(page);
             let mut next = first + 1;
-            while run.len() < 256 * BLOCK_SIZE {
-                if !pages.peek().is_some_and(|(index, _)| **index == next) {
-                    break;
-                }
-                if let Some((_, page)) = pages.next() {
-                    run.extend_from_slice(page);
+            while run.len() < 256 * BLOCK_SIZE
+                && self
+                    .pages
+                    .first_key_value()
+                    .is_some_and(|(index, _)| *index == next)
+            {
+                if let Some((_, page)) = self.pages.pop_first() {
+                    run.extend_from_slice(&page);
                     next += 1;
                 }
             }

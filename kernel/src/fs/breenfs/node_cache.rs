@@ -8,7 +8,12 @@ use crate::block::{
     cache::{BufferCache, Wait},
     BlockDevice, BlockError,
 };
-use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
+use alloc::{
+    boxed::Box,
+    collections::VecDeque,
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 use core::ops::Deref;
 use spin::Mutex;
 
@@ -26,15 +31,18 @@ pub struct CachedNodeStore<'a, W: Wait> {
     device: Box<NodeDevice<'a>>,
     fs_uuid: [u8; 16],
     generation: u64,
-    pending: Option<Arc<commit::PreparedCommit>>,
+    // The mount owns the generation being published. Once it is durable the
+    // mount drops it, its buffers are freed and its nodes are read from the
+    // device (E24 coordinator ledger line 309, C3).
+    pending: Option<Weak<commit::PreparedCommit>>,
     // Entries belong to this immutable generation view. Bound decoded-node
     // allocations independently of disk size.
     decoded: Mutex<VecDeque<(BlockPtr, Arc<Node>)>>,
 }
 
 impl<'a, W: Wait> CachedNodeStore<'a, W> {
-    pub fn with_pending(mut self, pending: Arc<commit::PreparedCommit>) -> Self {
-        self.pending = Some(pending);
+    pub fn with_pending(mut self, pending: &Arc<commit::PreparedCommit>) -> Self {
+        self.pending = Some(Arc::downgrade(pending));
         self
     }
     /// `durable` is the superblock selected by read-only recovery. The device
@@ -118,8 +126,10 @@ impl<W: Wait> NodeStore for CachedNodeStore<'_, W> {
         Ok(node)
     }
     fn get(&self, addr: u64) -> Result<Vec<u8>, Error> {
-        if let Some(bytes) = self.pending.as_ref().and_then(|p| p.node(addr)) {
-            return Ok(bytes.to_vec());
+        if let Some(pending) = self.pending.as_ref().and_then(Weak::upgrade) {
+            if let Some(bytes) = pending.node(addr) {
+                return Ok(bytes.to_vec());
+            }
         }
         let mut bytes = Vec::new();
         bytes

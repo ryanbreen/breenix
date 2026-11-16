@@ -1,7 +1,7 @@
 //! BreenFS operations at the VFS boundary (design 1.1, 2.3 and 2.5).
 use super::{
     commit::{Committer, PreparedCommit},
-    commit_policy::CommitPolicy,
+    commit_policy::{CommitPolicy, DIRTY_BUDGET},
     commit_signal::{monotonic_ns, CommitSignal},
     dirty::DirtyPages,
     format::{Inode, Superblock, Time, BLOCK_SIZE},
@@ -24,7 +24,7 @@ use alloc::{
     vec::Vec,
 };
 use core::sync::atomic::{AtomicU64, Ordering};
-use spin::Mutex;
+use spin::{Mutex, MutexGuard};
 
 #[cfg(test)]
 #[path = "../../../../tools/breenfs-host-tests/src/failed_mount_teardown.rs"]
@@ -288,8 +288,20 @@ impl<W: Wait> MountState<W> {
         }
         result.map_err(errno)
     }
+    /// Dirty pages plus the private data of the generation being published:
+    /// the bytes mutation admission charges against DIRTY_BUDGET.
+    fn charged(&self) -> u64 {
+        self.dirty_bytes + self.pending.as_ref().map_or(0, |p| p.dirty_bytes())
+    }
     fn drain_dirty(&mut self, device: &dyn BlockDevice) -> Result<(), Errno> {
-        for (&ino, node) in &self.nodes {
+        let result = self.drain_pages(device);
+        // Draining frees pages as it copies them; keep the charge truthful
+        // even when a failed drain leaves the mount failed.
+        self.dirty_bytes = self.nodes.values().map(|node| node.dirty.bytes()).sum();
+        result
+    }
+    fn drain_pages(&mut self, device: &dyn BlockDevice) -> Result<(), Errno> {
+        for (&ino, node) in self.nodes.iter_mut() {
             if node.dirty.bytes() == 0 {
                 continue;
             }
@@ -299,8 +311,9 @@ impl<W: Wait> MountState<W> {
                 Err(ops::Error::ENOENT) => continue,
                 Err(e) => return Err(errno(e)),
             };
+            let files = &mut self.files;
             node.dirty.write_runs(inode.size, |offset, bytes| {
-                self.files
+                files
                     .write(device, ino, offset, bytes, inode.mtime)
                     .map_err(errno)?;
                 Ok(())
@@ -460,7 +473,34 @@ impl<W: Wait + 'static> BreenFs<W> {
     /// awaiting commit. Available to the mount's commit-pressure policy.
     pub fn dirty_bytes(&self) -> u64 {
         let state = self.inner.state.lock();
-        state.dirty_bytes + state.pending.as_ref().map_or(0, |p| p.dirty_bytes())
+        state.charged()
+    }
+    /// Admit `incoming` dirty bytes (E24 ledger 309, C3). When the open
+    /// transaction passes half the budget the caller asks for a commit; when
+    /// it and the generation being published pass the whole budget, the caller
+    /// sleeps, holding no mount lock, until a generation completes. A call
+    /// larger than the whole budget is admitted alone, once no other bytes are
+    /// charged.
+    fn admit(&self, incoming: u64) -> Result<MutexGuard<'_, MountState<W>>, Errno> {
+        loop {
+            let observed = self.inner.signal.epoch();
+            let state = self.inner.state.lock();
+            state.writable()?;
+            if state.dirty_bytes.saturating_add(incoming) > DIRTY_BUDGET / 2 {
+                // edited() also wakes the worker under the mount lock.
+                self.inner.signal.pressure.store(true, Ordering::Release);
+                self.inner.signal.wake();
+            }
+            let charged = state.charged();
+            if charged.saturating_add(incoming) <= DIRTY_BUDGET || charged == 0 {
+                return Ok(state);
+            }
+            drop(state);
+            // Host checks drive the worker's pass inline, as sync does.
+            #[cfg(test)]
+            self.commit_due(monotonic_ns())?;
+            self.inner.signal.wait(observed, None);
+        }
     }
     /// One commit-worker pass. Preparation and opening G+1 are serialized;
     /// device publication and completion waits hold no mount lock.
@@ -513,7 +553,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 .inner
                 .cache
                 .store(self.inner.device.clone(), sb)
-                .with_pending(prepared.clone());
+                .with_pending(&prepared);
             match Files::new(store, sb, self.inner.root_id) {
                 Ok(files) => state.files = files,
                 Err(_) => {
@@ -1084,8 +1124,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
     }
     fn write(&self, node: &VNode, req: WriteReq, bytes: &[u8]) -> Result<WriteResult, WriteError> {
         self.check_node(node)?;
-        let mut state = self.inner.state.lock();
-        state.writable()?;
+        let mut state = self.admit(touched_bytes(bytes.len()))?;
         let mut inode = state.regular(node.ino)?;
         let offset = match req.at {
             WriteAt::Offset(offset) => offset,
@@ -1144,8 +1183,8 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         check: &dyn Fn(NodeAttrs) -> Result<(), Errno>,
     ) -> Result<(), Errno> {
         self.check_node(node)?;
-        let mut state = self.inner.state.lock();
-        state.writable()?;
+        // Shrinking can keep one zeroed partial tail page.
+        let mut state = self.admit(BLOCK_SIZE as u64)?;
         let mut inode = state.regular(node.ino)?;
         check(state.attrs(node.ino)?)?;
         if size > (1 << 63) - 4096 {
@@ -1216,8 +1255,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             .try_reserve_exact(bytes.len())
             .map_err(|_| Errno(ENOMEM))?;
         bounce.extend_from_slice(bytes);
-        let mut state = self.inner.state.lock();
-        state.writable()?;
+        let mut state = self.admit(touched_bytes(bounce.len()))?;
         if !mapping.writable {
             return Err(Errno(EROFS));
         }
@@ -1472,6 +1510,14 @@ impl<W: Wait + 'static> MappingIo for Mapping<W> {
         }
         bind(false)
     }
+}
+// The most dirty bytes a call over `len` bytes can add: the pages it spans at
+// its worst alignment.
+fn touched_bytes(len: usize) -> u64 {
+    if len == 0 {
+        return 0;
+    }
+    ((len as u64).div_ceil(BLOCK_SIZE as u64) + 1) * BLOCK_SIZE as u64
 }
 fn attributes(ino: u64, i: Inode) -> Result<NodeAttrs, Errno> {
     Ok(NodeAttrs {

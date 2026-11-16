@@ -219,6 +219,12 @@ changed: the first change copies it and its ancestors to new addresses. Followin
 1 releases the old copy, and copying a shared node decrements it and increments each child (for a leaf, each data
 extent its EXTENT items name). <!-- claim-lint:ok: Normative breenfs design requirement from docs/fs/breenfs-design.md section 2.5, not a measured result. -->
 
+**Dirty admission.** A mount's dirty pages plus the private data of the generation being published stay within 8 MiB,
+one eighth of the smallest kernel heap. When the open transaction passes half of that, a write asks for a commit
+(memory pressure); when the total would pass the full budget, the writer waits for a generation to complete. A single call
+larger than the whole budget is admitted alone. Commit moves dirty pages into the transaction rather than copying
+them, and a generation's private buffers are freed once it is durable. <!-- claim-lint:ok: Normative admission contract set by E24 coordinator ruling line 309 (C3). -->
+
 **Reuse rule.** A block released by commit *G* is not overwritten until superblock *G+1* is durable. It becomes
 PENDING with `released_generation = G`, and transaction *T* may allocate PENDING blocks with
 `released_generation ≤ T−2` (converting them to FREE). So the last two durable commits stay intact while a commit is
