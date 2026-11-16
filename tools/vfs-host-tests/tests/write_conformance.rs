@@ -630,3 +630,107 @@ fn commit_drains_into_extents_of_at_most_1_mib() {
     let fs = mount(disk);
     equal_bytes(fs.as_ref(), &fs.open(ino).unwrap(), &expected);
 }
+
+#[test]
+fn writer_enters_next_generation_while_fsync_waits_outside_mount_lock() {
+    use crate::block::{BlockDevice, BlockError};
+    use std::sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc, Condvar,
+    };
+    use std::time::Duration;
+    struct Gate {
+        disk: Arc<Disk>,
+        armed: AtomicBool,
+        flushes: AtomicUsize,
+        entered: mpsc::Sender<()>,
+        released: (Mutex<bool>, Condvar),
+    }
+    impl BlockDevice for Gate {
+        fn read_block(&self, n: u64, b: &mut [u8]) -> Result<(), BlockError> {
+            self.disk.read_block(n, b)
+        }
+        fn write_block(&self, n: u64, b: &[u8]) -> Result<(), BlockError> {
+            self.disk.write_block(n, b)
+        }
+        fn block_size(&self) -> usize {
+            self.disk.block_size()
+        }
+        fn num_blocks(&self) -> u64 {
+            self.disk.num_blocks()
+        }
+        fn flush(&self) -> Result<(), BlockError> {
+            if self.armed.load(Ordering::Acquire) {
+                match self.flushes.fetch_add(1, Ordering::AcqRel) {
+                    0 => {
+                        self.entered.send(()).unwrap();
+                        let (lock, ready) = &self.released;
+                        let mut released = lock.lock().unwrap();
+                        while !*released {
+                            released = ready.wait(released).unwrap();
+                        }
+                    }
+                    2 => return Err(BlockError::IoError),
+                    _ => (),
+                }
+            }
+            self.disk.flush()
+        }
+    }
+    let (disk, ino) = fixture();
+    let (entered, barrier) = mpsc::channel();
+    let device = Arc::new(Gate {
+        disk,
+        armed: AtomicBool::new(false),
+        flushes: AtomicUsize::new(0),
+        entered,
+        released: (Mutex::new(false), Condvar::new()),
+    });
+    let fs =
+        BreenFs::mount_writable(device.clone(), Arc::new(BufferCache::new(NoWait)), 71, 1).unwrap();
+    let node = fs.open(ino).unwrap();
+    write_at(fs.as_ref(), &node, WriteAt::Offset(0), b"generation two");
+    device.armed.store(true, Ordering::Release);
+    let first = {
+        let fs = fs.clone();
+        let node = node.clone();
+        std::thread::spawn(move || fs.fsync(&node, false))
+    };
+    barrier.recv_timeout(Duration::from_secs(3)).unwrap();
+    let (written, observed) = mpsc::channel();
+    let next = {
+        let fs = fs.clone();
+        let node = node.clone();
+        std::thread::spawn(move || {
+            let mut data = [0; 14];
+            fs.read(&node, 0, &mut data).unwrap();
+            assert_eq!(&data, b"generation two");
+            write_at(fs.as_ref(), &node, WriteAt::Offset(0), b"G3");
+            fs.read(&node, 0, &mut data).unwrap();
+            assert_eq!(&data, b"G3neration two");
+            written.send(()).unwrap();
+            fs.fsync(&node, true)
+        })
+    };
+    // This is a hang watchdog: publication is held until the writer has run.
+    let progressed = observed.recv_timeout(Duration::from_secs(3));
+    *device.released.0.lock().unwrap() = true;
+    device.released.1.notify_all();
+    let first = first.join().unwrap();
+    let next = next.join().unwrap();
+    assert!(
+        progressed.is_ok(),
+        "writer blocked behind fsync's mount lock"
+    );
+    assert_eq!(first, Ok(()));
+    assert_eq!(next, Err(Errno(EIO)));
+    assert_eq!(fs.read_only(), Ok(true));
+    assert_eq!(fs.sync(), Err(Errno(EIO)));
+    assert_eq!(
+        fs.create(2, b"refused", NewNode::Regular { attrs: ATTRS }),
+        Err(Errno(EROFS))
+    );
+    let mut report = String::new();
+    fs.report(Report::State, "test", &mut report).unwrap();
+    assert!(report.contains("durable_generation=2"));
+}
