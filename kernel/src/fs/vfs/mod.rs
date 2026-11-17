@@ -304,6 +304,11 @@ pub trait FileSystem: core::any::Any + Send + Sync {
     fn report(&self, _report: Report, _name: &str, _text: &mut alloc::string::String) -> Result<(), Errno> { Ok(()) }
     fn read_only(&self) -> Result<bool, Errno>;
     fn max_file_size(&self) -> Result<u64, Errno>;
+    /// Backend controls on a retained node. Implementations validate user
+    /// pointers through userptr before copying request-specific arguments.
+    fn ioctl(&self, _node: &VNode, _request: u64, _arg: u64) -> Result<u64, Errno> {
+        Err(Errno(crate::syscall::errno::ENOTTY))
+    }
     // Inode
     fn getattr(&self, ino: u64) -> Result<NodeAttrs, Errno>;
     fn setattr(&self, ino: u64, attrs: SetAttr) -> Result<(), Errno>;

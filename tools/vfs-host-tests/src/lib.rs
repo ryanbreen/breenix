@@ -20,7 +20,10 @@ pub mod attrs;
 pub mod errno;
 #[path = "../../../kernel/src/syscall/errno.rs"]
 pub mod syscall_errno;
+#[path = "userptr.rs"]
+pub mod host_userptr;
 pub mod syscall {
+    pub use crate::host_userptr as userptr;
     pub use crate::syscall_errno as errno;
 }
 #[path = "../../../kernel/src/fs/ext2/adapter.rs"]

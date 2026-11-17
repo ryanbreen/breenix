@@ -1,5 +1,7 @@
 //! BreenFS operations at the VFS boundary (design 1.1, 2.3 and 2.5).
 use super::{
+    abi::*,
+    scrub::{self, Scrub},
     commit::{Committer, PreparedCommit},
     commit_policy::{CommitPolicy, COMMIT_INTERVAL_NS, DIRTY_BUDGET},
     commit_signal::{monotonic_ns, CommitSignal},
@@ -41,6 +43,11 @@ pub mod measurement {
         COMMITS.with(|cell| { let mut n = cell.get(); n[2] += 1; cell.set(n); });
     }
     pub fn take_work() -> [u64; 3] { COMMITS.with(|n| n.replace([0; 3])) }
+    pub fn scrub_step<W: crate::block::cache::Wait + 'static>(
+        fs: &super::BreenFs<W>, budget: usize,
+    ) -> Result<bool, crate::fs::errno::Errno> {
+        fs.scrub_pass(budget).map(|(running, _)| running)
+    }
     pub fn service<W: crate::block::cache::Wait + 'static>(
         fs: &super::BreenFs<W>,
     ) -> Result<bool, crate::fs::errno::Errno> {
@@ -112,6 +119,7 @@ struct Mount<W: Wait + 'static> {
     root_id: u64,
     writable: bool,
     signal: Arc<CommitSignal>,
+    scrub_signal: Arc<CommitSignal>,
 }
 enum Cache<W: Wait + 'static> {
     Shared(Arc<BufferCache<W>>),
@@ -136,6 +144,8 @@ struct MountState<W: Wait + 'static> {
     committer: Option<Committer>,
     durable: Superblock,
     failed: bool,
+    scrub: Option<Scrub>,
+    scrub_state: u32,
     #[cfg(not(test))]
     mount: usize,
     closed: bool,
@@ -572,6 +582,8 @@ impl<W: Wait + 'static> BreenFs<W> {
                 pending_grants: Vec::new(),
                 durable,
                 failed: false,
+                scrub: None,
+                scrub_state: SCRUB_IDLE,
                 #[cfg(not(test))]
                 mount,
                 closed: false,
@@ -594,6 +606,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             root_id,
             writable,
             signal,
+            scrub_signal: Arc::new(CommitSignal::new()),
         })
         .map_err(|_| Errno(ENOMEM))?;
         Arc::try_new(Self { inner }).map_err(|_| Errno(ENOMEM))
@@ -1135,6 +1148,137 @@ impl<W: Wait + 'static> BreenFs<W> {
             }
         }
     }
+    // A batch holds publication/reuse exclusion only while reading its durable
+    // view. An in-flight next generation cannot overwrite that view under 2.5.
+    fn scrub_pass(&self, budget: usize) -> Result<(bool, usize), Errno> {
+        let signal = &self.inner.scrub_signal;
+        let mut state = self.inner.state.lock();
+        if state.scrub_state != SCRUB_RUNNING {
+            return Ok((false, 0));
+        }
+        if state.closed || signal.stop.load(Ordering::Acquire) {
+            state.scrub_state = SCRUB_CANCELLED;
+            #[cfg(test)]
+            signal.started.store(false, Ordering::Release);
+            return Ok((false, 0));
+        }
+        let root = state.durable.space_root;
+        let generation = state.durable.generation;
+        let walk = state.scrub.as_mut().ok_or(Errno(EIO))?;
+        let result = walk.step(&super::commit::DeviceStore(self.inner.device.as_ref()),
+            root, generation, budget);
+        let completion = walk.completion();
+        match result {
+            Err(_) => {
+                state.scrub_state = SCRUB_FAILED;
+                #[cfg(test)]
+                signal.started.store(false, Ordering::Release);
+                Err(Errno(EIO))
+            }
+            Ok(bytes) => {
+                if let Some(done) = completion {
+                    state.scrub_state = SCRUB_DONE;
+                    if !state.read_only() {
+                        if let Some(committer) = state.committer.as_mut() {
+                            committer.record_scrub(done.generation, done.errors);
+                        }
+                    }
+                    #[cfg(test)]
+                    signal.started.store(false, Ordering::Release);
+                    Ok((false, bytes))
+                } else { Ok((true, bytes)) }
+            }
+        }
+    }
+    fn start_scrub(&self) -> Result<(), Errno> {
+        let signal = &self.inner.scrub_signal;
+        {
+            let mut state = self.inner.state.lock();
+            if state.closed || signal.started.swap(true, Ordering::AcqRel) {
+                return Err(Errno(EBUSY));
+            }
+            state.scrub = Some(Scrub::new());
+            state.scrub_state = SCRUB_RUNNING;
+            signal.stop.store(false, Ordering::Release);
+        }
+        #[cfg(not(test))]
+        {
+            let mount = Arc::downgrade(&self.inner);
+            let signal = signal.clone();
+            if crate::task::kthread::kthread_run(move || {
+                loop {
+                    let Some(inner) = mount.upgrade() else { break; };
+                    let fs = Self { inner };
+                    let began = monotonic_ns();
+                    // Match the commit worker's I/O context on both arches.
+                    #[cfg(target_arch = "x86_64")]
+                    crate::per_cpu::preempt_disable();
+                    #[cfg(target_arch = "aarch64")]
+                    crate::per_cpu_aarch64::preempt_disable();
+                    let pass = fs.scrub_pass(500_000);
+                    drop(fs);
+                    #[cfg(target_arch = "x86_64")]
+                    crate::per_cpu::preempt_enable();
+                    #[cfg(target_arch = "aarch64")]
+                    crate::per_cpu_aarch64::preempt_enable();
+                    let Ok((true, bytes)) = pass else { break; };
+                    // Decimal 50 MB/s, charged by the step's allocation bytes.
+                    // Spurious wakes do not grant another budget early.
+                    let deadline = began.saturating_add(bytes as u64 * 1_000_000_000 / 50_000_000);
+                    while !signal.stop.load(Ordering::Acquire) && monotonic_ns() < deadline {
+                        let observed = signal.epoch();
+                        if !signal.stop.load(Ordering::Acquire) {
+                            signal.wait(observed, Some(deadline));
+                        }
+                    }
+                }
+                signal.started.store(false, Ordering::Release);
+                signal.wake();
+            }, "breenfs-scrub").is_err() {
+                let mut state = self.inner.state.lock();
+                state.scrub_state = SCRUB_FAILED;
+                self.inner.scrub_signal.started.store(false, Ordering::Release);
+                self.inner.scrub_signal.wake();
+                return Err(Errno(ENOMEM));
+            }
+        }
+        Ok(())
+    }
+    fn stop_scrub(&self, deadline: u64) -> Result<(), Errno> {
+        let signal = &self.inner.scrub_signal;
+        signal.stop.store(true, Ordering::Release);
+        signal.wake();
+        #[cfg(test)]
+        self.scrub_pass(super::format::NODE_SIZE)?;
+        while signal.started.load(Ordering::Acquire) {
+            let observed = signal.epoch();
+            if monotonic_ns() >= deadline { return Err(Errno(ETIMEDOUT)); }
+            if signal.started.load(Ordering::Acquire) {
+                signal.wait(observed, Some(deadline));
+            }
+        }
+        Ok(())
+    }
+    fn scrub_status(&self) -> ScrubStatus {
+        let state = self.inner.state.lock();
+        let mut status = ScrubStatus {
+            state: state.scrub_state,
+            last_scrub_generation: state.durable.last_scrub_generation,
+            last_scrub_errors: state.durable.last_scrub_errors,
+            ..ScrubStatus::default()
+        };
+        if let Some(walk) = &state.scrub {
+            status.bytes_scanned = walk.blocks().saturating_mul(BLOCK_SIZE as u64);
+            status.errors = walk.errors();
+            for (slot, bad) in status.bad.iter_mut().zip(walk.bad()) {
+                *slot = BadBlock { block: bad.address,
+                    kind: match bad.kind { scrub::Kind::Node => BAD_NODE, scrub::Kind::Data => BAD_DATA },
+                    reserved: 0 };
+                status.bad_count += 1;
+            }
+        }
+        status
+    }
     fn data_reader(&self, pending: Option<Arc<PreparedCommit>>) -> DataReader<'_, W> {
         DataReader {
             cache: self.inner.cache.buffers(),
@@ -1144,6 +1288,22 @@ impl<W: Wait + 'static> BreenFs<W> {
     }
 }
 impl<W: Wait + 'static> FileSystem for BreenFs<W> {
+    fn ioctl(&self, node: &VNode, request: u64, arg: u64) -> Result<u64, Errno> {
+        self.check_node(node)?;
+        match request {
+            SCRUB_START => self.start_scrub()?,
+            SCRUB_CANCEL => {
+                self.inner.scrub_signal.stop.store(true, Ordering::Release);
+                self.inner.scrub_signal.wake();
+            }
+            SCRUB_STATUS => {
+                crate::syscall::userptr::copy_to_user(arg as *mut ScrubStatus, &self.scrub_status())
+                    .map_err(|error| Errno(error as i32))?;
+            }
+            _ => return Err(Errno(ENOTTY)),
+        }
+        Ok(0)
+    }
     fn kind(&self) -> Result<&'static str, Errno> {
         Ok("breenfs")
     }
@@ -1175,6 +1335,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
     fn init_service(&self) -> Result<(), Errno> {
         {
             let mut state = self.inner.state.lock();
+            state.closed = false;
             if state.failed || state.committer.as_ref().is_none_or(Committer::read_only) {
                 return Ok(());
             }
@@ -1249,7 +1410,8 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         {
             let mut state = self.inner.state.lock();
             if state.closed {
-                if signal.stop.load(Ordering::Acquire) && !signal.started.load(Ordering::Acquire) {
+                if signal.stop.load(Ordering::Acquire) && !signal.started.load(Ordering::Acquire)
+                    && !self.inner.scrub_signal.started.load(Ordering::Acquire) {
                     let result = if state.failed {
                         Err(Errno(EIO))
                     } else {
@@ -1265,6 +1427,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             }
             state.closed = true;
         }
+        self.stop_scrub(deadline)?;
         let result = mapped.and_then(|()| self.sync_generation(Some(deadline), true));
         if result.is_err() {
             let mut state = self.inner.state.lock();
@@ -1306,11 +1469,13 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             let pending_bytes = state.pending.as_ref().map_or(0, |p| p.dirty_bytes());
             writeln!(
                 text,
-                "{} breenfs durable_generation={} dirty_bytes={} read_only={}",
+                "{} breenfs durable_generation={} dirty_bytes={} read_only={} last_scrub_generation={} last_scrub_errors={}",
                 name,
                 state.durable.generation,
                 state.dirty_bytes + pending_bytes,
-                u8::from(state.read_only())
+                u8::from(state.read_only()),
+                state.durable.last_scrub_generation,
+                state.durable.last_scrub_errors
             )
             .map_err(|_| Errno(ENOMEM))?;
         }

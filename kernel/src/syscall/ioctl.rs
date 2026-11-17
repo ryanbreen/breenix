@@ -115,6 +115,17 @@ pub fn sys_ioctl(fd: u64, request: u64, arg: u64) -> SyscallResult {
             };
         }
     }
+    let node = match &kind {
+        FdKind::RegularFile(file) => Some(file.lock().open.node.clone()),
+        FdKind::Directory(file) => Some(file.lock().open.node.clone()),
+        _ => None,
+    };
+    if let Some(node) = node {
+        return match node.filesystem.ioctl(&node, request, arg) {
+            Ok(value) => SyscallResult::Ok(value),
+            Err(error) => SyscallResult::Err(error.0 as u64),
+        };
+    }
     let resolved = resolve_terminal(kind);
     let (tty, side) = match resolved {
         Ok(resolved) => resolved,

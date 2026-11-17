@@ -5,6 +5,8 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+#[path = "../../../kernel/src/fs/breenfs/abi.rs"]
+pub mod abi;
 #[path = "../../../kernel/src/fs/breenfs/btree.rs"]
 pub mod btree;
 #[path = "../../../kernel/src/fs/breenfs/commit.rs"]

@@ -31,3 +31,8 @@ pub mod space;
 pub mod txn;
 #[path = "../../../kernel/src/fs/breenfs/vfs.rs"]
 pub mod vfs;
+
+#[path = "../../../kernel/src/fs/breenfs/abi.rs"]
+pub mod abi;
+#[path = "../../../kernel/src/fs/breenfs/scrub.rs"]
+pub mod scrub;

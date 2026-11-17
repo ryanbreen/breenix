@@ -5,7 +5,10 @@ pub mod attrs;
 pub mod errno;
 #[path = "../../../kernel/src/syscall/errno.rs"]
 pub mod syscall_errno;
+#[path = "../../vfs-host-tests/src/userptr.rs"]
+pub mod host_userptr;
 pub mod syscall {
+    pub use super::host_userptr as userptr;
     pub use crate::syscall_errno as errno;
 }
 #[path = "../../vfs-host-tests/src/attribute_support.rs"]
