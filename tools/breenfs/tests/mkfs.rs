@@ -266,7 +266,7 @@ mod mkfs {
         let device = RecoveryDevice(fs::read(path).unwrap());
         let sb = crate::recover::recover(&device, false).unwrap();
         assert_eq!(sb.generation, 1);
-        let files = crate::ops::Files::new(crate::commit::DeviceStore(&device), &sb, 1).unwrap();
+        let files = crate::ops::Files::new(crate::commit::DeviceStore(&device), &sb, 1, false).unwrap();
         let dir = files.lookup(2, b"dir").unwrap();
         let file = files.lookup(dir, b"file").unwrap();
         let link = files.lookup(2, b"link").unwrap();

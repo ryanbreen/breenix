@@ -61,7 +61,7 @@ mod hold {
         // last-two-generations and data-before-superblock-flush oracle.
         let cache = BufferCache::with_capacity(NoWait, 4 * (512 + BUFFER_OVERHEAD));
         for generation in 2..=3 {
-            let mut files = Files::new(DeviceStore(dev.as_ref()), &sb, 1).unwrap();
+            let mut files = Files::new(DeviceStore(dev.as_ref()), &sb, 1, true).unwrap();
             let ino = files
                 .create(2, &[b'a' + generation as u8], 0o600, Time::default())
                 .unwrap();
@@ -160,7 +160,7 @@ fn fsync_waits_for_the_generation_it_joined() {
     };
     let cache = BufferCache::new(NoWait);
     let mut committer = Committer::new(sb.clone());
-    let mut files = Files::new(DeviceStore(&dev), &sb, 1).unwrap();
+    let mut files = Files::new(DeviceStore(&dev), &sb, 1, true).unwrap();
     files.create(2, b"first", 0o600, Time::default()).unwrap();
     let first = committer.waiter();
     let prepared = committer.prepare_files(&dev, &mut files).unwrap();
@@ -175,7 +175,7 @@ fn fsync_waits_for_the_generation_it_joined() {
     committer.complete(&prepared, result);
     assert_eq!(first.result(), Some(Ok(())));
     assert_eq!(second.result(), None, "G's flush acknowledged G+1");
-    let mut files = Files::new(DeviceStore(&dev), prepared.superblock(), 1).unwrap();
+    let mut files = Files::new(DeviceStore(&dev), prepared.superblock(), 1, true).unwrap();
     files.create(2, b"second", 0o600, Time::default()).unwrap();
     let prepared = committer.prepare_files(&dev, &mut files).unwrap();
     let third = committer.waiter();

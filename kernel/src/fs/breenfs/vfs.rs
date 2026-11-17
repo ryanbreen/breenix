@@ -565,7 +565,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         };
         let durable = recover::recover(device.as_ref(), writable).map_err(|_| Errno(EIO))?;
         let files =
-            Files::new(cache.store(device.clone(), &durable), &durable, root_id).map_err(errno)?;
+            Files::new(cache.store(device.clone(), &durable), &durable, root_id, writable).map_err(errno)?;
         let committer = writable.then(|| Committer::new(durable.clone()));
         let data = Box::try_new(DataBlocks {
             device: device.clone(),
@@ -1045,7 +1045,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 .cache
                 .store(self.inner.device.clone(), sb)
                 .with_pending(&prepared);
-            match Files::new(store, sb, self.inner.root_id) {
+            match Files::new(store, sb, self.inner.root_id, true) {
                 Ok(files) => state.files = files,
                 Err(_) => {
                     state
@@ -2318,6 +2318,8 @@ fn teardown_result(name: &str, result: Result<(), Errno>) -> Result<(), Errno> {
 fn errno(error: ops::Error) -> Errno {
     Errno(match error {
         ops::Error::EIO => EIO,
+        ops::Error::EROFS => EROFS,
+        ops::Error::EBUSY => EBUSY,
         ops::Error::EPERM => EPERM,
         ops::Error::ENOTEMPTY => ENOTEMPTY,
         ops::Error::ENOENT => ENOENT,

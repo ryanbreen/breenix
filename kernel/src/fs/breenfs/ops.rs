@@ -22,6 +22,8 @@ const MAX_FILE_SIZE: u64 = (1u64 << 63) - 4096;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     EIO,
+    EROFS,
+    EBUSY,
     EPERM,
     ENOTEMPTY,
     ENOENT,
@@ -86,6 +88,9 @@ pub struct Files<'a, S: NodeStore + 'a> {
     txn: Transaction<'a, S>,
     root: Root,
     root_id: u64,
+    roots: BTreeMap<u64, Root>,
+    next_root_id: u64,
+    writable: bool,
     hash_key: [u8; 16],
     // Non-private extents retain their generation's immutable REF tree. New
     // extents are served from data until the next Files view is opened.
@@ -111,6 +116,9 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
                 name: b"default".to_vec(),
             },
             root_id: 1,
+            roots: BTreeMap::new(),
+            next_root_id: sb.next_root_id,
+            writable: true,
             hash_key: sb.dirhash_key,
             space_root: sb.space_root,
             data: BTreeMap::new(),
@@ -136,6 +144,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     /// Import source timestamps after data and children, before mkfs publication.
     /// Later transactions must use setattr's normal ctime/btime semantics.
     pub fn set_initial_times(&mut self, ino: u64, times: [Time; 4]) -> Result<(), Error> {
+        self.require_writable()?;
         if self.txn.generation() != 1 {
             return Err(Error::EINVAL);
         }
@@ -146,15 +155,15 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         [inode.atime, inode.mtime, inode.ctime, inode.btime] = times;
         self.put_inode(ino, inode)
     }
-    pub fn new(store: S, sb: &Superblock, root_id: u64) -> Result<Self, Error> {
-        let root = recover::space_items(&store, sb)?
+    pub fn new(store: S, sb: &Superblock, root_id: u64, writable: bool) -> Result<Self, Error> {
+        let roots: BTreeMap<_, _> = recover::space_items(&store, sb)?
             .into_iter()
-            .find(|(k, _)| k.item_type == format::ROOT && k.offset == root_id)
-            .ok_or(Error::ENOENT)?
-            .1;
-        let root = Root::decode(&root)?;
-        if root.flags & 1 != 0 {
-            return Err(Error::EINVAL);
+            .filter(|(k, _)| k.item_type == format::ROOT)
+            .map(|(k, bytes)| Ok((k.offset, Root::decode(&bytes)?)))
+            .collect::<Result<_, Error>>()?;
+        let root = roots.get(&root_id).ok_or(Error::ENOENT)?.clone();
+        if writable && root.flags & 1 != 0 {
+            return Err(Error::EROFS);
         }
         Ok(Self {
             txn: Transaction::new_owned(
@@ -164,11 +173,53 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             )?,
             root,
             root_id,
+            roots,
+            next_root_id: sb.next_root_id,
+            writable,
             hash_key: sb.dirhash_key,
             space_root: sb.space_root,
             data: BTreeMap::new(),
             open_inodes: BTreeSet::new(),
         })
+    }
+    fn require_writable(&self) -> Result<(), Error> {
+        if self.writable { Ok(()) } else { Err(Error::EROFS) }
+    }
+    /// The caller closes dirty-page admission before taking this tree view.
+    /// Share only the root; descendants acquire extra references on later COW.
+    pub fn snapshot(&mut self, name: &[u8], read_only: bool) -> Result<u64, Error> {
+        self.require_writable()?;
+        valid_root_name(name)?;
+        if self.root.name == name || self.roots.values().any(|root| root.name == name) {
+            return Err(Error::EEXIST);
+        }
+        let id = self.next_root_id;
+        let next = id.checked_add(1).ok_or(Error::ENOSPC)?;
+        let mut root = self.root.clone();
+        root.source_root = self.root_id;
+        root.created_generation = self.txn.generation();
+        root.flags = u32::from(read_only);
+        root.name = name.to_vec();
+        self.txn.increment(root.root.addr, 4)?;
+        self.txn.update_root(id, root.clone())?;
+        self.roots.insert(id, root);
+        self.next_root_id = next;
+        Ok(id)
+    }
+    /// Remove the incoming ROOT reference; a zero-count node keeps its children
+    /// under DEAD ownership until a later reaper step (design 2.6).
+    pub fn delete_root(&mut self, name: &[u8]) -> Result<(), Error> {
+        self.require_writable()?;
+        valid_root_name(name)?;
+        if self.root.name == name {
+            return Err(Error::EBUSY);
+        }
+        let (&id, root) = self.roots.iter().find(|(_, root)| root.name == name)
+            .ok_or(Error::ENOENT)?;
+        self.txn.release(root.root.addr, 4, true)?;
+        self.txn.delete_root(id)?;
+        self.roots.remove(&id);
+        Ok(())
     }
     /// The mount snapshots live VNodes under its mutex; drops perform no I/O.
     pub fn retain_open_inodes(&mut self, inodes: BTreeSet<u64>) {
@@ -212,6 +263,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         Ok(inode)
     }
     pub(super) fn put_inode(&mut self, ino: u64, inode: Inode) -> Result<(), Error> {
+        self.require_writable()?;
         self.txn.insert(
             &mut self.root.root,
             key(ino, format::INODE, 0),
@@ -402,6 +454,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         at: Time,
         prepare: impl FnOnce(u64, Inode) -> Result<(), Error>,
     ) -> Result<u64, Error> {
+        self.require_writable()?;
         valid_time(at)?;
         let kind = inode_kind(inode.mode)?;
         match (kind, target) {
@@ -476,6 +529,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         Ok(target)
     }
     pub fn link(&mut self, ino: u64, dir: u64, name: &[u8], at: Time) -> Result<(), Error> {
+        self.require_writable()?;
         let mut inode = self.inode(ino)?;
         // A pathname lookup that raced the last unlink cannot resurrect it.
         if inode.nlink == 0 {
@@ -515,6 +569,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         self.put_inode(ino, inode)
     }
     pub fn unlink(&mut self, dir: u64, name: &[u8], at: Time) -> Result<(), Error> {
+        self.require_writable()?;
         let ino = self.lookup(dir, name)?;
         if inode_kind(self.inode(ino)?.mode)? == 2 {
             return Err(Error::EISDIR);
@@ -524,6 +579,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         self.drop_link(ino, at)
     }
     pub fn rmdir(&mut self, dir: u64, name: &[u8], at: Time) -> Result<(), Error> {
+        self.require_writable()?;
         let ino = self.lookup(dir, name)?;
         if self.directory(ino)?.size != 0 {
             return Err(Error::ENOTEMPTY);
@@ -540,6 +596,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         to: &[u8],
         at: Time,
     ) -> Result<(), Error> {
+        self.require_writable()?;
         let ino = self.lookup(from_dir, from)?;
         valid_name(to)?;
         let dest_parent = self.directory(to_dir)?;
@@ -786,6 +843,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         bytes: &[u8],
         at: Time,
     ) -> Result<usize, Error> {
+        self.require_writable()?;
         let mut inode = self.regular(ino)?;
         valid_time(at)?;
         if bytes.is_empty() {
@@ -827,6 +885,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     /// Drop whole mappings beyond a VNode's new EOF without allocating data.
     /// The adapter retains and zeroes a partial mapped tail in its dirty map.
     pub fn trim_mappings(&mut self, ino: u64, size: u64) -> Result<u64, Error> {
+        self.require_writable()?;
         self.remove_range(
             ino,
             size.div_ceil(BLOCK_SIZE as u64) * BLOCK_SIZE as u64,
@@ -845,6 +904,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         size: u64,
         at: Time,
     ) -> Result<(), Error> {
+        self.require_writable()?;
         let mut inode = self.regular(ino)?;
         valid_time(at)?;
         if size > MAX_FILE_SIZE {
@@ -883,6 +943,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         self.put_inode(ino, inode)
     }
     pub fn setattr(&mut self, ino: u64, attrs: &SetAttr, at: Time) -> Result<(), Error> {
+        self.require_writable()?;
         let mut i = self.inode(ino)?;
         valid_time(at)?;
         for t in [attrs.atime, attrs.mtime].into_iter().flatten() {
@@ -931,6 +992,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         value: Option<&[u8]>,
         at: Time,
     ) -> Result<(), Error> {
+        self.require_writable()?;
         let mut i = self.inode(ino)?;
         valid_time(at)?;
         if name.is_empty()
@@ -973,11 +1035,13 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         device: &dyn BlockDevice,
         committer: &mut Committer,
     ) -> Result<Superblock, Error> {
+        self.require_writable()?;
         Ok(committer.commit_files(device, self)?)
     }
     pub(crate) fn prepare_commit(
         &mut self,
     ) -> Result<(&mut Transaction<'a, S>, &mut BTreeMap<u64, Vec<u8>>), Error> {
+        self.require_writable()?;
         self.reclaim_orphans()?;
         self.txn.promote_pending()?;
         self.txn.update_root(self.root_id, self.root.clone())?;
@@ -995,6 +1059,9 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     }
 }
 pub(super) const ORPHAN_OBJECT: u64 = 0xffff_ffff_ffff_ff00;
+fn valid_root_name(name: &[u8]) -> Result<(), Error> {
+    valid_name(name).map_err(|_| Error::EINVAL)
+}
 fn valid_name(name: &[u8]) -> Result<(), Error> {
     if name.is_empty() {
         return Err(Error::ENOENT);

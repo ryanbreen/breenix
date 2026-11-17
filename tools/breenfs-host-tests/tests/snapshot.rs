@@ -20,7 +20,7 @@ fn roots(device: &RecordingDevice, sb: &Superblock) -> BTreeMap<u64, Root> {
         .collect()
 }
 
-// Include every encoded node, rather than just comparing the file's readback.
+// Compare encoded tree nodes as well as the file's readback.
 fn tree_bytes(store: &impl NodeStore, ptr: BlockPtr) -> BTreeMap<u64, Vec<u8>> {
     let bytes = store.get(ptr.addr).unwrap();
     let header = NodeHeader::decode(&bytes).unwrap();

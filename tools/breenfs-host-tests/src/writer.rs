@@ -25,6 +25,8 @@ fn error(e: ops::Error) -> Error {
     use ops::Error as E;
     let errno = match e {
         E::EIO => Errno::EIO,
+        E::EROFS => Errno::EROFS,
+        E::EBUSY => Errno::EBUSY,
         E::EPERM => Errno::EPERM,
         E::ENOTEMPTY => Errno::ENOTEMPTY,
         E::ENOENT => Errno::ENOENT,
@@ -55,7 +57,7 @@ fn logical_time(t: format::Time) -> Time {
 impl WriterAdapter {
     pub fn new(device: Arc<dyn BlockDevice>) -> Result<Self> {
         let sb = recover::recover(device.as_ref(), true).map_err(|_| Errno::EIO)?;
-        let files = Files::new(Store(device.clone()), &sb, 1).map_err(error)?;
+        let files = Files::new(Store(device.clone()), &sb, 1, true).map_err(error)?;
         Ok(Self {
             device,
             files: Some(files),
@@ -87,7 +89,7 @@ impl WriterAdapter {
             .map_err(error)?;
         // Publication may fill child pointer checksums. Discard the old overlay.
         self.files = None;
-        self.files = Some(Files::new(Store(self.device.clone()), &sb, 1).map_err(error)?);
+        self.files = Some(Files::new(Store(self.device.clone()), &sb, 1, true).map_err(error)?);
         self.dirty = false;
         Ok(())
     }
@@ -114,7 +116,7 @@ impl Fs for WriterAdapter {
                     let sb =
                         recover::recover(self.device.as_ref(), true).map_err(|_| Errno::EIO)?;
                     self.files =
-                        Some(Files::new(Store(self.device.clone()), &sb, 1).map_err(error)?);
+                        Some(Files::new(Store(self.device.clone()), &sb, 1, true).map_err(error)?);
                     self.committer = Committer::new(sb);
                     return Ok(Reply::Done);
                 }

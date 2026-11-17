@@ -388,11 +388,11 @@ fn run(mut args: Vec<OsString>) -> Result<()> {
             }
             ("dump", 2) => dump(&device, &sb, &mut out)?,
             ("manifest", 2) => {
-                let files = core(Files::new(DeviceStore(&device), &sb, 1))?;
+                let files = core(Files::new(DeviceStore(&device), &sb, 1, false))?;
                 manifest(image_rows(&files, &device)?, &mut out)?;
             }
             ("cat" | "ls", 3) => {
-                let files = core(Files::new(DeviceStore(&device), &sb, 1))?;
+                let files = core(Files::new(DeviceStore(&device), &sb, 1, false))?;
                 let path = args[2].as_bytes();
                 let ino = resolve(&files, path, command == "cat")?;
                 if command == "cat" {

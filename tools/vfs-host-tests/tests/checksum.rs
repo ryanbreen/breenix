@@ -158,7 +158,7 @@ fn extent_read_looks_up_one_ref_for_all_its_blocks() {
     let image = image();
     let sb = recover::recover(image.disk.as_ref(), false).unwrap();
     let visits = Cell::new(0);
-    let files = Files::new(Count { disk: &image.disk, root: sb.space_root.addr, visits: &visits }, &sb, 1).unwrap();
+    let files = Files::new(Count { disk: &image.disk, root: sb.space_root.addr, visits: &visits }, &sb, 1, false).unwrap();
     visits.set(0);
     let mut bytes = vec![0; 3 * BLOCK_SIZE];
     assert_eq!(files.read(image.disk.as_ref(), image.target, 0, &mut bytes), Ok(bytes.len()));

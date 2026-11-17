@@ -279,7 +279,7 @@ fn each_batch_uses_the_latest_durable_allocation_after_reuse() {
         .filter(|a| !s.data_reads.borrow().contains(a))
         .collect();
     for n in 0..5 {
-        let mut files = Files::new(DeviceStore(&dev), &sb, 1).unwrap();
+        let mut files = Files::new(DeviceStore(&dev), &sb, 1, true).unwrap();
         files.truncate(&dev, 16, 0, Default::default()).unwrap();
         files
             .write(
@@ -364,7 +364,7 @@ fn completion_is_recorded_by_the_next_commit_and_survives_later_commit_and_recov
     );
     // The split prepare/publish path used by the kernel preserves the same fields.
     let mut committer = Committer::new(recovered.clone());
-    let mut files = Files::new(DeviceStore(&remounted), &recovered, 1).unwrap();
+    let mut files = Files::new(DeviceStore(&remounted), &recovered, 1, true).unwrap();
     let prepared = committer.prepare_files(&remounted, &mut files).unwrap();
     assert_eq!(
         (

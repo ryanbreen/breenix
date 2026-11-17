@@ -55,6 +55,7 @@ enum Change {
         length: u64,
         children: bool,
     },
+    DeleteRoot { id: u64 },
     Root {
         id: u64,
         value: Root,
@@ -141,6 +142,7 @@ pub struct Transaction<'a, S> {
     counts: BTreeMap<(u64, u64), u32>,
     deferred: VecDeque<Change>,
     failure: Option<Error>,
+    next_root_id: u64,
 }
 /// Tree geometry for the caller's reservation policy.
 pub struct ReservationPaths {
@@ -225,6 +227,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             counts: BTreeMap::from([((20, 4), 1)]),
             deferred: VecDeque::new(),
             failure: None,
+            next_root_id: 0,
         })
     }
     pub fn new(base: &'a S, space_root: BlockPtr, generation: u64) -> Result<Self, Error> {
@@ -262,6 +265,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             counts: BTreeMap::new(),
             deferred: VecDeque::new(),
             failure: None,
+            next_root_id: 0,
         })
     }
     pub fn view(&self) -> View<'_, S> {
@@ -427,15 +431,16 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
         self.result(result)
     }
     fn prepare(&mut self, header: &mut NodeHeader) -> Result<(), Error> {
-        if header.generation == self.generation && self.allocated.contains(&header.addr) {
-            return Ok(());
-        }
-        if header.generation >= self.generation {
+        let private = header.generation == self.generation && self.allocated.contains(&header.addr);
+        if !private && header.generation >= self.generation {
             return Err(Error::Invalid);
         }
         let count = self.count(header.addr, 4)?;
         if count == 0 {
             return Err(Error::Invalid);
+        }
+        if private && count == 1 {
+            return Ok(());
         }
         // Ancestors call this before descending. Their increments must be in
         // the effective counts before a child decides whether it is shared.
@@ -478,7 +483,9 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
     // Only writer-produced private root leaves qualify. Disk-backed nodes still
     // use the full B-tree decoder; check the complete pointer and CRC here too.
     fn private_leaf_header(&self, root: BlockPtr) -> Result<Option<NodeHeader>, Error> {
-        if root.level != 0 || root.generation != self.generation {
+        if root.level != 0 || root.generation != self.generation
+            || self.counts.get(&(root.addr, 4)) != Some(&1)
+        {
             return Ok(None);
         }
         let Some(bytes) = self.nodes.get(&root.addr) else {
@@ -583,8 +590,18 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
         self.healthy()?;
         let result = Root::decode(&value.encode()).map_err(Error::from);
         self.result(result)?;
+        let next = id.checked_add(1).ok_or(Error::Invalid);
+        self.next_root_id = self.next_root_id.max(self.result(next)?);
         self.deferred.push_back(Change::Root { id, value });
         Ok(())
+    }
+    pub fn delete_root(&mut self, id: u64) -> Result<(), Error> {
+        self.healthy()?;
+        self.deferred.push_back(Change::DeleteRoot { id });
+        Ok(())
+    }
+    pub fn next_root_id(&self) -> u64 {
+        self.next_root_id
     }
     /// Stage the same PENDING conversions in the reservation and real trees.
     pub fn promote_pending(&mut self) -> Result<(), Error> {
@@ -643,6 +660,11 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
                     children,
                 } => space::release(&mut store, &mut root, start, length, generation, children)
                     .map_err(Error::from),
+                Change::DeleteRoot { id } => btree::delete(
+                    &mut store,
+                    &mut root,
+                    Key { object: 0xffff_ffff_ffff_ff10, item_type: format::ROOT, offset: id },
+                ).map(|_| ()).map_err(Error::from),
                 Change::Root { id, value } => btree::insert(
                     &mut store,
                     &mut root,

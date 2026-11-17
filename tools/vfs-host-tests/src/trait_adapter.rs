@@ -241,7 +241,7 @@ impl Fs for TraitAdapter {
         // FileSystem, independently of the model and WriterAdapter.
         let sb = recover::recover(self.device.as_ref(), false).map_err(|_| Errno::EIO)?;
         let files =
-            Files::new(DeviceStore(self.device.as_ref()), &sb, 1).map_err(|_| Errno::EIO)?;
+            Files::new(DeviceStore(self.device.as_ref()), &sb, 1, false).map_err(|_| Errno::EIO)?;
         let items = files.items().map_err(|_| Errno::EIO)?;
         let mut state = State::default();
         for (key, _) in items

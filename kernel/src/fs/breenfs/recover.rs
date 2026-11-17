@@ -90,6 +90,7 @@ pub fn recover(device: &dyn BlockDevice, writable: bool) -> Result<Superblock, E
             .map(|(k, v)| Ok((k.offset, Root::decode(&v)?)))
             .collect::<Result<Vec<_>, Error>>()?;
         for (id, root) in roots {
+            if root.flags & 1 != 0 { continue; }
             // Descendants outside the ORPHAN range are verified on demand.
             // Do not turn mount recovery into a whole-filesystem scrub.
             if !btree::range(
@@ -98,7 +99,7 @@ pub fn recover(device: &dyn BlockDevice, writable: bool) -> Result<Superblock, E
                 super::ops::key(super::ops::ORPHAN_OBJECT, format::ORPHAN, u64::MAX),
             ).map_err(|_| Error::EIO)?.is_empty()
             {
-                let mut files = super::ops::Files::new(DeviceStore(device), &chosen, id)
+                let mut files = super::ops::Files::new(DeviceStore(device), &chosen, id, true)
                     .map_err(|_| Error::EIO)?;
                 let mut committer = commit::Committer::new(chosen);
                 chosen = files
