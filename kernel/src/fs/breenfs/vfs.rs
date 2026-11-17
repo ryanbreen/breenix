@@ -1803,7 +1803,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
     }
     fn read(&self, node: &VNode, off: u64, buf: &mut [u8]) -> Result<usize, Errno> {
         self.check_node(node)?;
-        let publication = self.inner.frozen
+        let publication = (!self.inner.writable)
             .then(|| self.inner.mounted_root.device.publication.lock());
         let mut state = self.inner.state.lock();
         if let Some(sb) = publication.as_deref().and_then(Option::as_ref)

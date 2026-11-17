@@ -109,3 +109,34 @@ fn named_mount_errors_leave_no_claim_and_default_data_still_works() {
     let dispatch = include_str!("../../../kernel/src/fs/ufs/mod.rs");
     assert!(dispatch.contains("mount::mount(source, target, flags, data, &cred)"));
 }
+
+#[test]
+fn readonly_clone_refreshes_space_after_writer_publications() {
+    let (disk, ino, _) = fixture();
+    let writer = named(disk.clone(), None, true, 151).unwrap();
+    let live = writer.open(ino).unwrap();
+    writer.write(&live, WriteReq { at: WriteAt::Offset(0), limit: u64::MAX,
+        clear_setid: false }, &[0x51; 4096]).unwrap();
+    writer.sync().unwrap();
+    let dir = writer.open(2).unwrap();
+    let mut request = crate::breenfs::abi::SnapshotRequest {
+        flags: 0, name_len: 6, name: [0; 256],
+    };
+    request.name[..6].copy_from_slice(b"reader");
+    writer.ioctl(&dir, crate::breenfs::abi::SNAPSHOT_CREATE,
+        &request as *const _ as u64).unwrap();
+    drop((dir, live, writer));
+    let writer = named(disk.clone(), Some(b"root=reader"), true, 151).unwrap();
+    let reader = named(disk, Some(b"root=reader"), false, 152).unwrap();
+    let held = reader.open(ino).unwrap();
+    let live = writer.open(ino).unwrap();
+    // Leave clone data uncached until the original SPACE nodes can be reused.
+    for n in 0..8 {
+        writer.write(&live, WriteReq { at: WriteAt::Offset(0), limit: u64::MAX,
+            clear_setid: false }, &[b'a' + n; 4096]).unwrap();
+        writer.sync().unwrap();
+    }
+    let mut bytes = [0; 4096];
+    assert_eq!(reader.read(&held, 0, &mut bytes), Ok(4096));
+    assert_eq!(bytes, [b'h'; 4096]);
+}
