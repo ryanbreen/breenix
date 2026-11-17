@@ -23,6 +23,8 @@ pub mod recover;
 pub mod reserve;
 #[path = "../../../kernel/src/fs/breenfs/siphash.rs"]
 pub mod siphash;
+#[path = "../../../kernel/src/fs/breenfs/scrub.rs"]
+pub mod scrub;
 #[path = "../../../kernel/src/fs/breenfs/space.rs"]
 pub mod space;
 #[path = "../../../kernel/src/fs/breenfs/txn.rs"]

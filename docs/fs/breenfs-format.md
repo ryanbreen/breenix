@@ -185,6 +185,8 @@ re-descending from the current root each batch, and checks node and data CRCs. T
 too: bad data returns EIO, and a bad node returns EIO and turns the mount read-only. v1 keeps one copy, so it detects
 without repairing; incompat bit `META_DUP` is reserved for duplicated metadata.
 
+`last_scrub_generation` is the durable generation supplied to the scrub scanner for its final batch.
+
 ### 2.8 ENOSPC reservation
 
 Before changing anything, an operation reserves its data blocks, its paths' FS-tree nodes not yet copied in this

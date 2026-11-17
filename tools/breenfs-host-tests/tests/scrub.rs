@@ -268,6 +268,12 @@ fn each_batch_uses_the_latest_durable_allocation_after_reuse() {
     }
     // Stop inside the long data REF, then replace it through real commits.
     assert!(s.data_reads.borrow().len() < old.len());
+    let reads_before = s.data_reads.borrow().len();
+    let unread: Vec<_> = old
+        .iter()
+        .copied()
+        .filter(|a| !s.data_reads.borrow().contains(a))
+        .collect();
     for n in 0..5 {
         let mut files = Files::new(DeviceStore(&dev), &sb, 1).unwrap();
         files.truncate(&dev, 16, 0, Default::default()).unwrap();
@@ -282,15 +288,29 @@ fn each_batch_uses_the_latest_durable_allocation_after_reuse() {
             .unwrap();
         sb = files.fsync(&dev, &mut committer).unwrap();
         drop(files);
+        // Promotion happens at commit, after allocation. Stop on the first
+        // replacement that actually reuses the old run, before a later
+        // replacement can release it again. The reuse assertion below stays exact.
+        if allocations(&s, &sb).into_iter().any(|(k, r)| {
+            r.kind == 3 && (k.object..k.object + k.offset).any(|a| unread.contains(&a))
+        }) {
+            break;
+        }
     }
     let reused = allocations(&s, &sb)
         .into_iter()
-        .any(|(k, r)| r.kind == 3 && (k.object..k.object + k.offset).any(|a| old.contains(&a)));
+        .any(|(k, r)| r.kind == 3 && (k.object..k.object + k.offset).any(|a| unread.contains(&a)));
     assert!(
         reused,
         "the fixture must actually overwrite formerly scrubbed allocations"
     );
     finish(&mut scrub, &s, &sb);
+    assert!(
+        s.data_reads.borrow()[reads_before..]
+            .iter()
+            .any(|a| unread.contains(a)),
+        "the resumed scanner must read the reused, previously unscanned tail"
+    );
     assert_eq!(scrub.errors(), 0);
     assert_eq!(scrub.completion().unwrap().generation, sb.generation);
     check(&dev, "reused");

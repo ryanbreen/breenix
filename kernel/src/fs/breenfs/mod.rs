@@ -16,6 +16,7 @@ pub mod ops;
 pub mod probe;
 pub mod recover;
 pub mod reserve;
+pub mod scrub;
 pub mod siphash;
 pub mod space;
 pub mod txn;
