@@ -24,7 +24,8 @@ struct Image {
     data: usize,
     leaf: usize,
 }
-fn image() -> Image {
+fn image() -> Image { image_target(179, 180) }
+fn image_target(target_index: usize, count: usize) -> Image {
     let disk = Arc::new(Disk {
         bytes: Mutex::new(vec![0; 64 * 1024 * 1024]),
         writable: true,
@@ -40,8 +41,9 @@ fn image() -> Image {
     let dir = files.mkdir(2, b"rot", 0o755, at).unwrap();
     // Separate the target inode's leaf from the root and healthy inode.
     let mut target = 0;
-    for n in 0..180 {
-        target = files.create(dir, format!("f{n:04}").as_bytes(), 0o644, at).unwrap();
+    for n in 0..count {
+        let ino = files.create(dir, format!("f{n:04}").as_bytes(), 0o644, at).unwrap();
+        if n == target_index { target = ino; }
     }
     files.write(disk.as_ref(), target, 0, &vec![0x5a; 3 * BLOCK_SIZE], at).unwrap();
     let sb = files.fsync(disk.as_ref(), &mut Committer::format(sb)).unwrap();
@@ -162,4 +164,18 @@ fn extent_read_looks_up_one_ref_for_all_its_blocks() {
     assert_eq!(files.read(image.disk.as_ref(), image.target, 0, &mut bytes), Ok(bytes.len()));
     assert!(bytes.iter().all(|&byte| byte == 0x5a));
     assert_eq!(visits.get(), 1, "REF lookup must cover the extent, not a block at a time");
+}
+
+#[test]
+fn corrupt_descendant_mounts_writable_until_first_observation() {
+    let image = image_target(150, 360);
+    image.disk.bytes.lock().unwrap()[image.leaf * BLOCK_SIZE + NODE_SIZE - 1] ^= 1;
+    let fs = mount(&image);
+    healthy(fs.as_ref(), image.good);
+    assert_eq!(fs.getattr(image.target), Err(Errno(EIO)));
+    assert_eq!(fs.read_only(), Ok(true));
+    assert_eq!(fs.open(image.target).unwrap_err(), Errno(EIO));
+    assert_eq!(fs.create(2, b"refused", NewNode::Regular { attrs: InodeAttrs::new(0o100600, 0, 0) }), Err(Errno(EROFS)));
+    healthy(fs.as_ref(), image.good);
+    fs.shutdown("checksum-preexisting-node", u64::MAX).unwrap();
 }
