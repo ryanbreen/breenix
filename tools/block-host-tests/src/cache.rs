@@ -378,7 +378,9 @@ fn batch_wait_returns_after_device_writes() {
         let device = Arc::new(RecordingDevice::default());
         let cache = Arc::new(BufferCache::new(HostWait::new(device.clone())));
         let group = WriteGroup::hold(&*device, Arc::new(|| {}));
-        for block in [0, 1, 2] {
+        // Separate runs (ledger 368): a failed run fails only its own entries,
+        // and the other runs still complete before the batch returns.
+        for block in [1, 3, 5] {
             cache
                 .write(&*device, group.clone(), block, &[block as u8; SIZE])
                 .unwrap();
@@ -410,7 +412,7 @@ fn batch_wait_returns_after_device_writes() {
             .iter()
             .position(|e| matches!(e, Event::BatchReturned(_)))
             .unwrap();
-        for block in [0, 1, 2] {
+        for block in [1, 3, 5] {
             let done = if fail && block == 1 {
                 Event::Failed(Op::Write(block))
             } else {
