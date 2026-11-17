@@ -46,6 +46,12 @@ pub mod measurement {
     ) -> Result<bool, crate::fs::errno::Errno> {
         fs.commit_due(0)
     }
+    pub fn service_at<W: crate::block::cache::Wait + 'static>(
+        fs: &super::BreenFs<W>, now_ns: u64,
+    ) -> Result<(bool, bool), crate::fs::errno::Errno> {
+        let observed = fs.inner.signal.epoch();
+        fs.commit_due(now_ns).map(|worked| (worked, fs.inner.signal.epoch() != observed))
+    }
 }
 
 #[cfg(test)]

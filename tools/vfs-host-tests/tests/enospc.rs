@@ -162,13 +162,34 @@ fn mapped_enospc_keeps_dirty_pages_for_fsync_and_msync() {
         }
     }
     node.map.shared_stores(&vec![0x72; 1024 * 1024], false);
+    // munmap/MS_ASYNC asks the real worker to stage these dirty pages.
+    node.map.request_writeback();
+    use crate::breenfs::vfs::measurement;
+    measurement::service(&fs).unwrap();
+    assert!(node.map.has_dirty(), "worker ENOSPC lost mapped dirty custody");
+    measurement::take_work();
+    // Follow the worker's immediate self-wakes at a fixed monotonic time.
+    // With no new free space, they must settle without more publications.
+    for _ in 0..8 {
+        assert_eq!(measurement::service_at(&fs, 0).unwrap(), (false, false),
+            "failed mapping writeback must sleep rather than publish and self-wake");
+    }
+    assert_eq!(measurement::take_work(), [0; 3]);
     assert_eq!(fs.fsync(&node, false), Err(Errno(ENOSPC)));
     assert!(node.map.has_dirty(), "fsync ENOSPC lost mapped dirty custody");
     assert_eq!(crate::memory::file_map::sync_range(&node, 0, u64::MAX), Err(Errno(ENOSPC)));
     assert!(node.map.has_dirty(), "msync ENOSPC lost mapped dirty custody");
     assert_eq!(fs.read_only(), Ok(false));
-    // Release the synthetic host frames after the dirty-custody assertions, so this
-    // ENOSPC fixture does not retain a service-owned VNode after the test.
+    // Free space and advance the retry deadline: async writeback must resume.
+    fs.resize(&fill, 0, false, &|_| Ok(())).unwrap();
+    fs.fsync(&fill, false).unwrap();
+    for _ in 0..8 {
+        measurement::service_at(&fs, crate::breenfs::commit_policy::COMMIT_INTERVAL_NS).unwrap();
+    }
+    assert!(!node.map.has_dirty(), "worker did not retry after space was freed");
+    let mut bytes = vec![0; 1024 * 1024];
+    assert_eq!(fs.read(&node, 0, &mut bytes).unwrap(), bytes.len());
+    assert!(bytes.iter().all(|byte| *byte == 0x72));
     node.map.shared_stores(&[], false);
     fs.shutdown("enospc-cleanup", u64::MAX).unwrap();
 }
