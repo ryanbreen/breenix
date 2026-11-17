@@ -14,6 +14,7 @@ use alloc::{
     vec,
     vec::Vec,
 };
+use core::cell::Cell;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -131,6 +132,7 @@ pub struct Transaction<'a, S> {
     generation: u64,
     original_space: BlockPtr,
     space_root: BlockPtr,
+    space_count: Cell<Option<(BlockPtr, u64)>>,
     nodes: BTreeMap<u64, Vec<u8>>,
     reserved_nodes: BTreeMap<u64, Vec<u8>>,
     reservation_root: BlockPtr,
@@ -139,6 +141,13 @@ pub struct Transaction<'a, S> {
     counts: BTreeMap<(u64, u64), u32>,
     deferred: VecDeque<Change>,
     failure: Option<Error>,
+}
+/// Tree geometry for the caller's reservation policy.
+pub struct ReservationPaths {
+    pub uncopied_fs_nodes: u64,
+    pub fs_height: u64,
+    pub space_height: u64,
+    pub space_nodes: u64,
 }
 impl<'a, S: NodeStore> Transaction<'a, S> {
     /// Start the first transaction without inventing a durable generation 0.
@@ -207,6 +216,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             generation: 1,
             original_space: root,
             space_root: root,
+            space_count: Cell::new(None),
             reservation_root: root,
             nodes: BTreeMap::from([(20, bytes.clone())]),
             reserved_nodes: BTreeMap::from([(20, bytes)]),
@@ -243,6 +253,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             generation,
             original_space: space_root,
             space_root,
+            space_count: Cell::new(None),
             nodes: BTreeMap::new(),
             reserved_nodes: BTreeMap::new(),
             reservation_root: space_root,
@@ -261,6 +272,31 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
     }
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+    pub(super) fn reservation_paths(
+        &self,
+        root: BlockPtr,
+        ino: u64,
+    ) -> Result<ReservationPaths, Error> {
+        let view = self.view();
+        let space_nodes = match self.space_count.get() {
+            Some((root, count)) if root == self.space_root => count,
+            _ => {
+                let count = btree::reservation_nodes(&view, self.space_root, None, 0)?;
+                self.space_count.set(Some((self.space_root, count)));
+                count
+            }
+        };
+        Ok(ReservationPaths {
+            uncopied_fs_nodes: if self.private_leaf_header(root)?.is_some() {
+                0
+            } else {
+                btree::reservation_nodes(&view, root, Some(ino), self.generation)?
+            },
+            fs_height: u64::from(root.level),
+            space_height: u64::from(self.space_root.level),
+            space_nodes,
+        })
     }
     /// Private encoded nodes; a commit engine must call `settle` before use.
     pub fn writes(&self) -> &BTreeMap<u64, Vec<u8>> {
@@ -288,6 +324,16 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
         Ok(r.refcount)
     }
     fn reserve(&mut self, length: u64, kind: Kind, crcs: &[u32]) -> Result<u64, Error> {
+        self.reserve_extent(length, kind, crcs, false)
+            .map(|(start, _)| start)
+    }
+    fn reserve_extent(
+        &mut self,
+        length: u64,
+        kind: Kind,
+        crcs: &[u32],
+        short_data: bool,
+    ) -> Result<(u64, u64), Error> {
         let mut reservations = Reservations {
             view: View {
                 base: self.base.get(),
@@ -296,14 +342,34 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             changes: &mut self.reserved_nodes,
             next: &mut self.scratch_next,
         };
-        let start = space::allocate(
-            &mut reservations,
-            &mut self.reservation_root,
-            length,
-            kind,
-            crcs,
-            self.generation,
-        )?;
+        let requested = length;
+        let (start, length) = if short_data {
+            space::allocate_data_run(
+                &mut reservations,
+                &mut self.reservation_root,
+                crcs,
+                self.generation,
+            )?
+        } else {
+            (
+                space::allocate(
+                    &mut reservations,
+                    &mut self.reservation_root,
+                    length,
+                    kind,
+                    crcs,
+                    self.generation,
+                )?,
+                length,
+            )
+        };
+        let crcs = &crcs[..crcs.len().min(length as usize)];
+        if length < requested {
+            // A short result promoted eligible PENDING ranges before choosing
+            // its largest run. Exact-length replay could fit FREE without
+            // promotion, so mirror that conversion before replaying the REF.
+            self.deferred.push_back(Change::PromotePending);
+        }
         self.counts.insert((start, length), 1);
         self.allocated.insert(start);
         self.deferred.push_back(Change::Allocate {
@@ -312,13 +378,20 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             kind,
             crcs: crcs.to_vec(),
         });
-        Ok(start)
+        Ok((start, length))
     }
     /// The initial reference belongs to the caller and is transferred to its
     /// new EXTENT item. Additional items naming that REF need `increment` first.
     pub fn allocate_data(&mut self, crcs: &[u32]) -> Result<u64, Error> {
         self.healthy()?;
         let result = self.reserve(crcs.len() as u64, Kind::Data, crcs);
+        self.result(result)
+    }
+    /// Reserve one physical data run, which may cover only a prefix. Record
+    /// its actual length so deferred replay and EXTENT ownership agree.
+    pub fn allocate_data_run(&mut self, crcs: &[u32]) -> Result<(u64, u64), Error> {
+        self.healthy()?;
+        let result = self.reserve_extent(crcs.len() as u64, Kind::Data, crcs, true);
         self.result(result)
     }
     pub fn increment(&mut self, start: u64, length: u64) -> Result<(), Error> {
@@ -402,6 +475,25 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
     pub fn delete(&mut self, root: &mut BlockPtr, key: Key) -> Result<Option<Vec<u8>>, Error> {
         self.change(root, key, None)
     }
+    // Only writer-produced private root leaves qualify. Disk-backed nodes still
+    // use the full B-tree decoder; check the complete pointer and CRC here too.
+    fn private_leaf_header(&self, root: BlockPtr) -> Result<Option<NodeHeader>, Error> {
+        if root.level != 0 || root.generation != self.generation {
+            return Ok(None);
+        }
+        let Some(bytes) = self.nodes.get(&root.addr) else {
+            return Ok(None);
+        };
+        let h = NodeHeader::decode(bytes)?;
+        if h.tree != 1 || h.addr != root.addr || h.generation != root.generation
+            || h.level != root.level
+            || root.csum != u32::from_le_bytes(bytes[8..12].try_into().unwrap())
+            || 48 + usize::from(h.nitems) * 21 > bytes.len()
+        {
+            return Err(Error::Invalid);
+        }
+        Ok(Some(h))
+    }
     fn change(
         &mut self,
         root: &mut BlockPtr,
@@ -410,6 +502,44 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
     ) -> Result<Option<Vec<u8>>, Error> {
         self.healthy()?;
         let result = (|| {
+            // A same-size INODE replacement changes neither leaf layout nor
+            // outgoing extent references. Find its slot without materializing
+            // unrelated sibling payloads, then checksum the modified private bytes.
+            if let Some(value) = value.filter(|_| key.item_type == format::INODE) {
+                if let Some(h) = self.private_leaf_header(*root)? {
+                    let bytes = self.nodes.get_mut(&root.addr).ok_or(Error::Invalid)?;
+                    let (mut lo, mut hi) = (0, usize::from(h.nitems));
+                    while lo < hi {
+                        let mid = lo + (hi - lo) / 2;
+                        let at = 48 + mid * 21;
+                        let item = LeafItemHeader::decode(&bytes[at..at + 21])?;
+                        if item.key < key {
+                            lo = mid + 1;
+                        } else {
+                            hi = mid;
+                        }
+                    }
+                    if lo < usize::from(h.nitems) {
+                        let at = 48 + lo * 21;
+                        let item = LeafItemHeader::decode(&bytes[at..at + 21])?;
+                        if item.key == key && usize::from(item.data_len) == value.len() {
+                            let start = usize::from(item.data_off);
+                            if start < 48 + usize::from(h.nitems) * 21 {
+                                return Err(Error::Invalid);
+                            }
+                            let payload = bytes.get_mut(start..start + value.len())
+                                .ok_or(Error::Invalid)?;
+                            let old = payload.to_vec();
+                            if old != value {
+                                payload.copy_from_slice(value);
+                                h.encode(bytes)?;
+                                root.csum = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+                            }
+                            return Ok(Some(old));
+                        }
+                    }
+                }
+            }
             let h = NodeHeader::decode(&self.view().get(root.addr)?)?;
             if h.tree != 1 {
                 return Err(Error::Invalid);

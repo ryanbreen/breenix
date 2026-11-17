@@ -205,3 +205,206 @@ const TORTURE_SEED: u64 = 1 << 63;
 pub fn torture_seed(seed: u64) -> u64 {
     seed | TORTURE_SEED
 }
+
+#[derive(Clone, Copy)]
+enum FillPhase {
+    Setup(usize),
+    SetupSync,
+    Write,
+    WriteSync,
+    Delete(usize),
+    DeleteSync,
+    Remount,
+    ReuseSync,
+    Done,
+}
+
+/// Three deterministic fill/delete cycles, with feedback from the filesystem.
+/// Call complete with the result of each operation before requesting another.
+/// Successful writes are synced before the next attempt, so an ENOSPC comparison
+/// can inspect the committed extents without committing the refused operation.
+pub struct FillDelete {
+    random: u64,
+    phase: FillPhase,
+    round: u64,
+    index: i64,
+    files: [Ino; 4],
+    sizes: [u64; 4],
+    order: Vec<usize>,
+    directories: [usize; 6],
+    target: usize,
+    chunk: usize,
+}
+
+impl FillDelete {
+    const CHUNKS: [usize; 6] = [
+        4 * 1024 * 1024,
+        1024 * 1024,
+        256 * 1024,
+        64 * 1024,
+        16 * 1024,
+        4096,
+    ];
+
+    pub fn new(seed: u64) -> Self {
+        let mut stream = Self {
+            random: if seed == 0 {
+                0x9e37_79b9_7f4a_7c15
+            } else {
+                seed
+            },
+            phase: FillPhase::Setup(0),
+            round: 0,
+            index: 0,
+            files: [0; 4],
+            sizes: [0; 4],
+            order: vec![0, 1, 2, 3],
+            directories: [0, 1, 2, 3, 4, 5],
+            target: 0,
+            chunk: 0,
+        };
+        stream.shuffle();
+        for i in (1..6).rev() {
+            let j = stream.random() as usize % (i + 1);
+            stream.directories.swap(i, j);
+        }
+        stream
+    }
+
+    fn random(&mut self) -> u64 {
+        self.random ^= self.random >> 12;
+        self.random ^= self.random << 25;
+        self.random ^= self.random >> 27;
+        self.random.wrapping_mul(0x2545_f491_4f6c_dd1d)
+    }
+
+    fn shuffle(&mut self) {
+        for i in (1..self.order.len()).rev() {
+            let j = self.random() as usize % (i + 1);
+            self.order.swap(i, j);
+        }
+    }
+
+    fn name(&self, directory: bool, slot: usize) -> Vec<u8> {
+        format!("fill-{}-{slot}", if directory { "dir" } else { "file" }).into_bytes()
+    }
+
+    pub fn operation(&mut self) -> Option<Operation> {
+        let action = match self.phase {
+            FillPhase::Setup(slot) if slot < 4 => Action::Create {
+                dir: ROOT,
+                name: self.name(false, slot),
+                mode: 0o644,
+            },
+            FillPhase::Setup(slot) => Action::Mkdir {
+                dir: ROOT,
+                name: self.name(true, slot - 4),
+                mode: 0o755,
+            },
+            FillPhase::SetupSync
+            | FillPhase::WriteSync
+            | FillPhase::DeleteSync
+            | FillPhase::ReuseSync => Action::Fsync { ino: ROOT },
+            FillPhase::Write => {
+                let choice = self.random() as usize % self.order.len();
+                self.target = self.order[choice];
+                let mut bytes = vec![0; Self::CHUNKS[self.chunk]];
+                // Allocated data with sparse nonzero markers keeps the byte-map
+                // oracle small while checking page placement and payload identity.
+                for page in bytes.chunks_mut(4096) {
+                    let value = self.random();
+                    page[(value as usize >> 8) % 4096] = (value as u8).max(1);
+                }
+                Action::Write {
+                    ino: self.files[self.target],
+                    offset: self.sizes[self.target],
+                    bytes,
+                }
+            }
+            FillPhase::Delete(0) => Action::Unlink {
+                dir: ROOT,
+                name: self.name(false, self.order[0]),
+            },
+            FillPhase::Delete(1) => Action::Rmdir {
+                dir: ROOT,
+                name: self.name(true, self.directories[self.round as usize * 2]),
+            },
+            FillPhase::Delete(2) => Action::Truncate {
+                ino: self.files[self.order[1]],
+                size: 0,
+            },
+            FillPhase::Delete(3) => Action::Rmdir {
+                dir: ROOT,
+                name: self.name(true, self.directories[self.round as usize * 2 + 1]),
+            },
+            FillPhase::Delete(_) => unreachable!("four freeing calls"),
+            FillPhase::Remount => Action::Remount,
+            FillPhase::Done => return None,
+        };
+        self.index += 1;
+        Some(Operation {
+            at: Time {
+                seconds: self.index,
+                nanos: 0,
+            },
+            action,
+        })
+    }
+
+    pub fn complete(&mut self, result: Result<Reply>) {
+        self.phase = match (self.phase, result) {
+            (FillPhase::Setup(slot), Ok(Reply::Inode(ino))) => {
+                if slot < 4 {
+                    self.files[slot] = ino;
+                }
+                if slot == 9 {
+                    FillPhase::SetupSync
+                } else {
+                    FillPhase::Setup(slot + 1)
+                }
+            }
+            (FillPhase::SetupSync | FillPhase::WriteSync, Ok(Reply::Done)) => FillPhase::Write,
+            (FillPhase::Write, Ok(Reply::Written(count))) => {
+                assert_eq!(count, Self::CHUNKS[self.chunk]);
+                self.sizes[self.target] += count as u64;
+                FillPhase::WriteSync
+            }
+            (FillPhase::Write, Err(Error::Errno(Errno::ENOSPC))) => {
+                self.chunk += 1;
+                if self.chunk == Self::CHUNKS.len() {
+                    FillPhase::Delete(0)
+                } else {
+                    FillPhase::Write
+                }
+            }
+            (FillPhase::Delete(slot), Ok(Reply::Done)) => {
+                if slot == 2 {
+                    self.sizes[self.order[1]] = 0;
+                }
+                if slot == 3 {
+                    FillPhase::DeleteSync
+                } else {
+                    FillPhase::Delete(slot + 1)
+                }
+            }
+            (FillPhase::DeleteSync, Ok(Reply::Done)) => FillPhase::Remount,
+            (FillPhase::Remount, Ok(Reply::Done)) => {
+                self.round += 1;
+                if self.round == 3 {
+                    FillPhase::Done
+                } else {
+                    // Deletion's G and remount's G+1 protect the released data.
+                    // Publish its promotion to FREE before the next admission.
+                    FillPhase::ReuseSync
+                }
+            }
+            (FillPhase::ReuseSync, Ok(Reply::Done)) => {
+                self.chunk = 0;
+                self.order.remove(0);
+                self.shuffle();
+                FillPhase::Write
+            }
+            _ => panic!("unexpected fill/delete result: {result:?}"),
+        };
+    }
+}

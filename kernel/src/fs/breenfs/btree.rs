@@ -19,12 +19,24 @@ pub mod measurement {
     extern crate std;
     std::thread_local! {
         static DECODES: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+        static ITEMS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+        static FS_RESERVATIONS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+        static SPACE_RESERVATIONS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
     }
     pub fn take_decodes() -> u64 {
         DECODES.with(|count| count.replace(0))
     }
     pub(super) fn decoded() {
         DECODES.with(|count| count.set(count.get() + 1));
+    }
+    pub(super) fn items(n: u64) { ITEMS.with(|count| count.set(count.get() + n)); }
+    pub(super) fn reservation(space: bool) {
+        let visit = |count: &core::cell::Cell<u64>| count.set(count.get() + 1);
+        if space { SPACE_RESERVATIONS.with(visit); } else { FS_RESERVATIONS.with(visit); }
+    }
+    pub fn take_work() -> [u64; 4] {
+        [take_decodes(), ITEMS.with(|n| n.replace(0)), FS_RESERVATIONS.with(|n| n.replace(0)),
+            SPACE_RESERVATIONS.with(|n| n.replace(0))]
     }
 }
 
@@ -188,6 +200,8 @@ fn decode(
     }
     let header = NodeHeader::decode(bytes)?;
     let n = usize::from(header.nitems);
+    #[cfg(test)]
+    measurement::items(n as u64);
     if header.addr != ptr.addr
         || header.generation != ptr.generation
         || header.level != ptr.level
@@ -311,6 +325,29 @@ pub fn search<S: NodeStore>(store: &S, root: BlockPtr, key: Key) -> Result<Optio
         .binary_search_by_key(&key, |e| e.0)
         .ok()
         .map(|i| node.items[i].1.clone()))
+}
+
+/// Count nodes on an inode's paths, or a whole tree for the space bound.
+/// Private nodes need no further COW copy in the open generation.
+pub(super) fn reservation_nodes<S: NodeStore>(
+    store: &S,
+    root: BlockPtr,
+    object: Option<u64>,
+    generation: u64,
+) -> Result<u64, Error> {
+    #[cfg(test)]
+    measurement::reservation(object.is_none());
+    let node = store.read_node(root)?;
+    let mut count = u64::from(root.generation != generation);
+    for (i, child) in node.children.iter().enumerate() {
+        if object.is_some_and(|ino| child.key.object > ino
+            || node.children.get(i + 1).is_some_and(|next| next.key.object < ino))
+        {
+            continue;
+        }
+        count += reservation_nodes(store, node.child(i), object, generation)?;
+    }
+    Ok(count)
 }
 
 /// Return items in an inclusive key range, visiting only intersecting branches.

@@ -8,6 +8,9 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 
+#[path = "regular_read.rs"]
+mod regular_read;
+
 /// Architecture-conditional reset_quantum helper.
 /// Same pattern as syscall/socket.rs.
 #[inline]
@@ -1311,22 +1314,26 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 Err(error) => return SyscallResult::Err(error.into()),
             };
             let to_read = count.min(attrs.size.saturating_sub(position)) as usize;
-            let mut data = Vec::new();
-            if data.try_reserve_exact(to_read).is_err() {
-                return SyscallResult::Err(super::errno::ENOMEM as u64);
-            }
-            data.resize(to_read, 0);
-            let bytes_read = match fs.read(&node, position, &mut data) {
+            // A bounded buffer in a loop, not one sized to the request (#3040).
+            let bytes_read = match regular_read::read(
+                position,
+                to_read,
+                regular_read::CHUNK,
+                |offset, piece| fs.read(&node, offset, piece),
+                |at, bytes| {
+                    let user = buf_ptr.checked_add(at as u64).ok_or(())?;
+                    copy_to_user(user, bytes.as_ptr() as u64, bytes.len()).map_err(|_| ())
+                },
+            ) {
                 Ok(bytes) => bytes,
-                Err(error) => return SyscallResult::Err(error.into()),
-            };
-
-            // Copy data to userspace
-            if bytes_read > 0 {
-                if copy_to_user(buf_ptr, data.as_ptr() as u64, bytes_read).is_err() {
-                    return SyscallResult::Err(14); // EFAULT
+                Err(regular_read::Failure::NoMemory) => {
+                    return SyscallResult::Err(super::errno::ENOMEM as u64)
                 }
-            }
+                Err(regular_read::Failure::Backend(error)) => {
+                    return SyscallResult::Err(error.into())
+                }
+                Err(regular_read::Failure::Fault) => return SyscallResult::Err(14), // EFAULT
+            };
 
             // Update file position (use the owned Arc we cloned before dropping PM lock)
             {

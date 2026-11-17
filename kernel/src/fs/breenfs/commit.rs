@@ -549,11 +549,10 @@ pub(crate) fn read(device: &dyn BlockDevice, addr: u64, len: usize) -> Result<Ve
         .checked_mul((BLOCK_SIZE / sector) as u64)
         .ok_or(Error::EIO)?;
     let mut bytes = vec![0; len];
-    for (i, b) in bytes.chunks_exact_mut(sector).enumerate() {
-        device
-            .read_block(start + i as u64, b)
-            .map_err(|_| Error::EIO)?;
-    }
+    // One device request per read (E24 ledger 372, #3040).
+    device
+        .read_blocks(start, len / sector, &mut bytes)
+        .map_err(|_| Error::EIO)?;
     Ok(bytes)
 }
 pub(crate) fn write(device: &dyn BlockDevice, addr: u64, bytes: &[u8]) -> Result<(), Error> {

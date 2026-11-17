@@ -493,9 +493,14 @@ mod status_code {
 /// Sector size in bytes
 pub const SECTOR_SIZE: usize = 512;
 
-/// Size of each device's DMA data buffer: one page, so a read of up to eight
-/// consecutive sectors is one request.
+/// Size of each device's static DMA data buffer: one page. A device uses it
+/// only when its run buffer could not be allocated.
 const DMA_DATA_SIZE: usize = 4096;
+
+/// Each device's run buffer: one request carries up to 64 KiB of consecutive
+/// sectors in a single data descriptor (E24 ledger 368, #3040). It matches the
+/// block cache's RUN_BYTES, so one coalesced cache run is one request.
+const RUN_DMA_BYTES: usize = 64 * 1024;
 
 /// VirtIO block request header
 #[repr(C)]
@@ -631,9 +636,13 @@ struct BlockDeviceState {
     #[allow(dead_code)] // Will be used by is_read_only() for write tests
     device_features: u64,
     slot: usize,
-    /// The most bytes one read request carries: the DMA buffer, or the
-    /// device's size_max when it offers a smaller one, in whole sectors.
+    /// The most bytes one read or write request carries: the data buffer, or
+    /// the device's size_max when it offers a smaller one, in whole sectors.
     max_transfer_bytes: usize,
+    /// The request data buffer (the run frames, or the static page), by its
+    /// direct-map address and its physical address. Owned under the gate.
+    data_virt: u64,
+    data_phys: u64,
 }
 
 /// Helper struct providing raw pointers to a device's static DMA buffers.
@@ -642,7 +651,6 @@ struct BlockDeviceState {
 struct DeviceBuffers {
     queue_mem: *mut QueueMemory,
     req_header: *mut RequestHeader,
-    data_buf: *mut DataBuffer,
     status_buf: *mut StatusBuffer,
 }
 
@@ -657,7 +665,6 @@ fn device_buffers(device_index: usize) -> DeviceBuffers {
         DeviceBuffers {
             queue_mem: &raw mut QUEUE_MEM[device_index],
             req_header: &raw mut REQ_HEADERS[device_index],
-            data_buf: &raw mut DATA_BUFS[device_index],
             status_buf: &raw mut STATUS_BUFS[device_index],
         }
     }
@@ -685,6 +692,27 @@ fn device_buffers_const(
 #[inline(always)]
 fn virt_to_phys(addr: u64) -> u64 {
     addr - crate::memory::physical_memory_offset().as_u64()
+}
+
+/// The device's request data buffer as (direct-map address, physical address,
+/// bytes): RUN_DMA_BYTES of contiguous frames, pinned for the device's
+/// lifetime like its queue, or the static page if no contiguous run is free.
+fn data_buffer(device_index: usize) -> (u64, u64, usize) {
+    const PAGES: usize = RUN_DMA_BYTES / 4096;
+    let mut frames = [None; PAGES];
+    if let Some(frame) =
+        crate::memory::frame_allocator::allocate_contiguous_frames(PAGES, &mut frames)
+    {
+        let phys = frame.start_address().as_u64();
+        let virt = phys + crate::memory::physical_memory_offset().as_u64();
+        return (virt, phys, RUN_DMA_BYTES);
+    }
+    crate::serial_println!(
+        "[virtio-blk] Device {} has no contiguous run buffer; requests stay one page",
+        device_index
+    );
+    let (_, _, data_const, _) = device_buffers_const(device_index);
+    (data_const as u64, virt_to_phys(data_const as u64), DMA_DATA_SIZE)
 }
 
 /// Number of initialized block devices
@@ -762,13 +790,8 @@ fn init_device(
     } else {
         0
     };
-    let max_transfer_bytes = if size_max == 0 {
-        DMA_DATA_SIZE
-    } else {
-        DMA_DATA_SIZE.min(size_max)
-    } / SECTOR_SIZE
-        * SECTOR_SIZE;
-    if max_transfer_bytes == 0 {
+    // Requests use one data descriptor, so size_max alone bounds them.
+    if size_max != 0 && size_max < SECTOR_SIZE {
         return Err("VirtIO maximum segment smaller than a sector");
     }
     crate::serial_println!(
@@ -851,6 +874,15 @@ fn init_device(
         .last_used_idx
         .store(0, Ordering::Release);
 
+    // Taken after the last fallible step, so a refused device holds no frames.
+    let (data_virt, data_phys, data_bytes) = data_buffer(device_index);
+    let max_transfer_bytes = if size_max == 0 {
+        data_bytes
+    } else {
+        data_bytes.min(size_max)
+    } / SECTOR_SIZE
+        * SECTOR_SIZE;
+
     // Store device state
     unsafe {
         let ptr = &raw mut BLOCK_DEVICES;
@@ -860,6 +892,8 @@ fn init_device(
             device_features,
             slot,
             max_transfer_bytes,
+            data_virt,
+            data_phys,
         });
     }
 
@@ -896,7 +930,7 @@ fn irq_completion_available() -> bool {
     crate::task::scheduler::current_thread_id().is_some() || Aarch64Cpu::interrupts_enabled()
 }
 
-/// Publish a read of `len` bytes (whole sectors, at most the DMA buffer)
+/// Publish a read of `len` bytes (whole sectors, at most max_transfer_bytes)
 /// starting at `sector` into the device's data buffer.
 fn submit_read(
     device_index: usize,
@@ -904,7 +938,7 @@ fn submit_read(
     sector: u64,
     len: usize,
 ) -> Result<(), &'static str> {
-    if len == 0 || len % SECTOR_SIZE != 0 || len > DMA_DATA_SIZE {
+    if len == 0 || len % SECTOR_SIZE != 0 || len > state.max_transfer_bytes {
         return Err("Read length must be whole sectors within the DMA buffer");
     }
     if sector
@@ -915,7 +949,7 @@ fn submit_read(
     }
 
     let bufs = device_buffers(device_index);
-    let (_, req_const, data_const, status_const) = device_buffers_const(device_index);
+    let (_, req_const, _, status_const) = device_buffers_const(device_index);
 
     // Set up request header
     unsafe {
@@ -929,7 +963,7 @@ fn submit_read(
 
     // Get physical addresses
     let header_phys = virt_to_phys(req_const as u64);
-    let data_phys = virt_to_phys(data_const as u64);
+    let data_phys = state.data_phys;
     let status_phys = virt_to_phys(status_const as u64);
 
     // Build descriptor chain:
@@ -979,7 +1013,11 @@ fn submit_read(
 
 /// Copy a completed read out of the DMA buffer into `buffer`, whose length is
 /// the length the read was submitted with.
-fn finish_read(device_index: usize, buffer: &mut [u8]) -> Result<(), &'static str> {
+fn finish_read(
+    device_index: usize,
+    state: &BlockDeviceState,
+    buffer: &mut [u8],
+) -> Result<(), &'static str> {
     let completion = &COMPLETIONS[device_index];
     let (completed_desc, status) = completion.take_completed_request()?;
     if completed_desc != 0 {
@@ -994,10 +1032,10 @@ fn finish_read(device_index: usize, buffer: &mut [u8]) -> Result<(), &'static st
     dsb_sy();
     fence(Ordering::SeqCst);
 
-    let bufs = device_buffers(device_index);
+    // submit_read bounded the length by max_transfer_bytes, within the buffer.
     unsafe {
-        let data = &(*bufs.data_buf).data;
-        buffer.copy_from_slice(&data[..buffer.len()]);
+        let data = core::slice::from_raw_parts(state.data_virt as *const u8, buffer.len());
+        buffer.copy_from_slice(data);
     }
 
     completion.clear();
@@ -1068,28 +1106,39 @@ fn read_chunk(
         return Err(e);
     }
 
-    finish_read(device_index, buffer)?;
+    finish_read(device_index, state, buffer)?;
     drop(request_guard);
     Ok(())
 }
 
-fn submit_write_sector(
+/// Publish a write of `buffer` (whole sectors, at most max_transfer_bytes)
+/// starting at `sector`, copied into the device's data buffer.
+fn submit_write(
     device_index: usize,
     state: &BlockDeviceState,
     sector: u64,
-    buffer: &[u8; SECTOR_SIZE],
+    buffer: &[u8],
 ) -> Result<(), &'static str> {
-    if sector >= state.capacity {
+    if buffer.is_empty()
+        || buffer.len() % SECTOR_SIZE != 0
+        || buffer.len() > state.max_transfer_bytes
+    {
+        return Err("Write length must be whole sectors within the DMA buffer");
+    }
+    if sector
+        .checked_add((buffer.len() / SECTOR_SIZE) as u64)
+        .is_none_or(|end| end > state.capacity)
+    {
         return Err("Sector out of range");
     }
 
     let bufs = device_buffers(device_index);
-    let (_, req_const, data_const, status_const) = device_buffers_const(device_index);
+    let (_, req_const, _, status_const) = device_buffers_const(device_index);
 
     // Copy data to our buffer
     unsafe {
-        let data = &mut (*bufs.data_buf).data;
-        data[..SECTOR_SIZE].copy_from_slice(buffer);
+        let data = core::slice::from_raw_parts_mut(state.data_virt as *mut u8, buffer.len());
+        data.copy_from_slice(buffer);
     }
 
     // Set up request header
@@ -1104,7 +1153,7 @@ fn submit_write_sector(
 
     // Get physical addresses
     let header_phys = virt_to_phys(req_const as u64);
-    let data_phys = virt_to_phys(data_const as u64);
+    let data_phys = state.data_phys;
     let status_phys = virt_to_phys(status_const as u64);
 
     // Build descriptor chain for write:
@@ -1119,7 +1168,7 @@ fn submit_write_sector(
 
         (*bufs.queue_mem).desc[1] = VirtqDesc {
             addr: data_phys,
-            len: SECTOR_SIZE as u32,
+            len: buffer.len() as u32,
             flags: DESC_F_NEXT, // Device reads this (no WRITE flag)
             next: 2,
         };
@@ -1175,6 +1224,45 @@ pub fn write_sector(
 ) -> Result<(), &'static str> {
     let state = block_device_state(device_index)?;
     if state.device_features & features::RO != 0 { return Err("Read-only filesystem"); }
+    write_chunk(device_index, state, sector, buffer)
+}
+
+/// Write consecutive sectors from `buffer`, a nonzero multiple of the sector
+/// size, one request (one notification, one completion wait) per
+/// `max_transfer_bytes`, in order. The first failed request ends the call,
+/// as the per-sector loop does; FLUSH shares the gate, so it cannot pass them.
+pub fn write_sectors(
+    device_index: usize,
+    start_sector: u64,
+    buffer: &[u8],
+) -> Result<(), &'static str> {
+    let state = block_device_state(device_index)?;
+    if state.device_features & features::RO != 0 { return Err("Read-only filesystem"); }
+    if buffer.is_empty() || buffer.len() % SECTOR_SIZE != 0 {
+        return Err("Buffer size must be a nonzero multiple of 512");
+    }
+    if start_sector
+        .checked_add((buffer.len() / SECTOR_SIZE) as u64)
+        .is_none_or(|end| end > state.capacity)
+    {
+        return Err("Sector out of range");
+    }
+    let mut sector = start_sector;
+    for chunk in buffer.chunks(state.max_transfer_bytes) {
+        write_chunk(device_index, state, sector, chunk)?;
+        sector += (chunk.len() / SECTOR_SIZE) as u64;
+    }
+    Ok(())
+}
+
+/// One write request: `buffer.len()` bytes, whole sectors within the DMA
+/// buffer, starting at `sector`.
+fn write_chunk(
+    device_index: usize,
+    state: &BlockDeviceState,
+    sector: u64,
+    buffer: &[u8],
+) -> Result<(), &'static str> {
     if sector >= state.capacity {
         return Err("Sector out of range");
     }
@@ -1186,7 +1274,7 @@ pub fn write_sector(
     let completion = &COMPLETIONS[device_index];
     let completion_token = completion.prepare_wait();
 
-    if let Err(e) = submit_write_sector(device_index, state, sector, buffer) {
+    if let Err(e) = submit_write(device_index, state, sector, buffer) {
         completion.clear();
         return Err(e);
     }

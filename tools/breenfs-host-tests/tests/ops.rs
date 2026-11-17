@@ -1,3 +1,18 @@
+extern crate alloc;
+
+#[path = "../../../kernel/src/fs/errno.rs"]
+pub mod errno;
+pub mod fs {
+    pub use crate::errno;
+}
+#[path = "../../../kernel/src/syscall/errno.rs"]
+pub mod syscall_errno;
+pub mod syscall {
+    pub use crate::syscall_errno as errno;
+}
+#[path = "../../../kernel/src/fs/breenfs/dirty.rs"]
+pub mod dirty;
+
 use breenfs_host_tests::{format as disk, recording::RecordingDevice, *};
 use std::{collections::BTreeMap, sync::Arc};
 #[path = "../src/test_image.rs"]
@@ -45,7 +60,7 @@ fn checked_commit(w: &mut impl Fs, m: &mut impl Fs, d: &RecordingDevice, ino: In
     pair(w, m, Action::Fsync { ino }, tick);
     test_image::check(&d.durable_image(), &format!("{ino}-{tick}"));
 }
-fn tree(d: &RecordingDevice) -> (disk::Superblock, Vec<(disk::Key, Vec<u8>)>) {
+fn tree(d: &dyn block::BlockDevice) -> (disk::Superblock, Vec<(disk::Key, Vec<u8>)>) {
     use breenfs_host_tests::btree::NodeStore;
     fn items(store: &impl NodeStore, ptr: disk::BlockPtr) -> Vec<(disk::Key, Vec<u8>)> {
         let bytes = store.get(ptr.addr).unwrap();
@@ -150,7 +165,7 @@ fn truncate_releases_extents_to_pending() {
         2,
     );
     checked_commit(&mut w, &mut m, &d, ino, 3);
-    let (_, old_space) = tree(&d);
+    let (_, old_space) = tree(d.as_ref());
     let old: Vec<_> = old_space
         .iter()
         .filter(|(k, v)| k.item_type == disk::REF && disk::Ref::decode(v).unwrap().kind == 3)
@@ -159,7 +174,7 @@ fn truncate_releases_extents_to_pending() {
     assert!(!old.is_empty());
     pair(&mut w, &mut m, Action::Truncate { ino, size: 1 }, 4);
     checked_commit(&mut w, &mut m, &d, ino, 5);
-    let (sb, space) = tree(&d);
+    let (sb, space) = tree(d.as_ref());
     // Shrinking to one byte releases the old data REFs, including the replaced tail.
     for (start, length) in old {
         for block in start..start + length {
@@ -485,7 +500,7 @@ fn namespace_replacement_and_orphan_recovery() {
     );
     let recovered = recover::recover(d.as_ref(), true).unwrap();
     assert_eq!(recovered.generation, orphan_sb.generation + 1);
-    let (_, space) = tree(&d);
+    let (_, space) = tree(d.as_ref());
     let root = disk::Root::decode(&space.iter().find(|(k, _)| *k == root_key).unwrap().1).unwrap();
     let fs = ops::items(&commit::DeviceStore(d.as_ref()), root.root).unwrap();
     assert!(!fs
@@ -528,7 +543,7 @@ fn siphash_collision_keeps_both_records() {
     let first = create(&mut w, &mut m, a, 1);
     let second = create(&mut w, &mut m, b, 2);
     checked_commit(&mut w, &mut m, &d, ROOT, 3);
-    let (_, space) = tree(&d);
+    let (_, space) = tree(d.as_ref());
     let root = disk::Root::decode(
         &space
             .iter()
@@ -720,4 +735,179 @@ fn write_does_not_scan_unrelated_inodes() {
     let mut bytes = vec![0; 32768];
     assert_eq!(files.read(&device, 16, 0, &mut bytes).unwrap(), bytes.len());
     assert_eq!(bytes, vec![9; 32768]);
+}
+
+#[test]
+fn drain_splits_a_run_across_fragmented_free_space() {
+    use disk::{Free, Pending, Ref, BLOCK_SIZE};
+    use ops::Files;
+
+    struct Image(std::sync::Mutex<Vec<u8>>);
+    impl block::BlockDevice for Image {
+        fn read_block(
+            &self,
+            block: u64,
+            bytes: &mut [u8],
+        ) -> std::result::Result<(), block::BlockError> {
+            let start = block as usize * disk::BLOCK_SIZE;
+            bytes.copy_from_slice(&self.0.lock().unwrap()[start..start + bytes.len()]);
+            Ok(())
+        }
+        fn write_block(
+            &self,
+            block: u64,
+            bytes: &[u8],
+        ) -> std::result::Result<(), block::BlockError> {
+            let start = block as usize * disk::BLOCK_SIZE;
+            self.0.lock().unwrap()[start..start + bytes.len()].copy_from_slice(bytes);
+            Ok(())
+        }
+        fn block_size(&self) -> usize {
+            disk::BLOCK_SIZE
+        }
+        fn num_blocks(&self) -> u64 {
+            16384
+        }
+        fn flush(&self) -> std::result::Result<(), block::BlockError> {
+            Ok(())
+        }
+    }
+    let device = Image(std::sync::Mutex::new(test_image::image()));
+    let mut sb = recover::recover(&device, false).unwrap();
+    let mut committer = commit::Committer::new(sb.clone());
+    let mut files = Files::new(commit::DeviceStore(&device), &sb, 1).unwrap();
+    let at = disk::Time::default();
+    let ballast = files.create(2, b"ballast", 0o600, at).unwrap();
+    let ino = files.create(2, b"fragmented", 0o600, at).unwrap();
+    let chunk = vec![0x39; 256 * BLOCK_SIZE];
+    let mut ballast_end = 0;
+    // File allocations use multiples of four blocks, leaving room for
+    // four-block metadata nodes even after alternate files are removed.
+    for _ in 0..54 {
+        files
+            .write(&device, ballast, ballast_end, &chunk, at)
+            .unwrap();
+        ballast_end += chunk.len() as u64;
+    }
+    for n in 0..256 {
+        let name = format!("fill{n:03}");
+        let file = files.create(2, name.as_bytes(), 0o600, at).unwrap();
+        files
+            .write(&device, file, 0, &chunk[..8 * BLOCK_SIZE], at)
+            .unwrap();
+    }
+    sb = files.fsync(&device, &mut committer).unwrap();
+    files = Files::new(commit::DeviceStore(&device), &sb, 1).unwrap();
+    for n in (0..256).step_by(2) {
+        files
+            .unlink(2, format!("fill{n:03}").as_bytes(), at)
+            .unwrap();
+    }
+    // The deletion commit quarantines its blocks; two further fsyncs promote
+    // them under the T-2 reuse rule, without touching the image by hand.
+    for _ in 0..3 {
+        sb = files.fsync(&device, &mut committer).unwrap();
+        files = Files::new(commit::DeviceStore(&device), &sb, 1).unwrap();
+    }
+    // Consume the remaining tail and any coalesced metadata holes with
+    // aligned ballast writes, until the fixture has only 4-8-block FREE runs.
+    for _ in 0..64 {
+        let (_, space) = tree(&device);
+        let largest = space
+            .iter()
+            .filter(|(k, _)| k.item_type == disk::FREE)
+            .map(|(_, v)| Free::decode(v).unwrap().length)
+            .max()
+            .unwrap();
+        if largest <= 8 {
+            break;
+        }
+        let blocks = largest.min(256);
+        files
+            .write(
+                &device,
+                ballast,
+                ballast_end,
+                &chunk[..blocks as usize * BLOCK_SIZE],
+                at,
+            )
+            .unwrap();
+        ballast_end += blocks * BLOCK_SIZE as u64;
+        sb = files.fsync(&device, &mut committer).unwrap();
+        files = Files::new(commit::DeviceStore(&device), &sb, 1).unwrap();
+    }
+    drop(files);
+    let device = RecordingDevice::new(device.0.into_inner().unwrap()).unwrap();
+    let (before, space) = tree(&device);
+    let mut files = Files::new(commit::DeviceStore(&device), &before, 1).unwrap();
+    let free: Vec<_> = space
+        .iter()
+        .filter(|(k, _)| k.item_type == disk::FREE)
+        .map(|(_, v)| Free::decode(v).unwrap().length)
+        .collect();
+    assert!(
+        free.iter().all(|n| (4..=8).contains(n)),
+        "FREE runs: {free:?}"
+    );
+    assert!(free.iter().sum::<u64>() >= 300, "FREE runs: {free:?}");
+    let promoted: u64 = space
+        .iter()
+        .filter(|(k, _)| k.item_type == disk::PENDING)
+        .map(|(_, v)| Pending::decode(v).unwrap())
+        .filter(|p| p.released_generation <= before.generation - 1)
+        .map(|p| p.length)
+        .sum();
+
+    let bytes: Vec<_> = (0..256 * BLOCK_SIZE)
+        .map(|n| (n ^ (n >> 12)) as u8)
+        .collect();
+    let mut pages = dirty::DirtyPages::default();
+    pages
+        .write(0, &bytes, |_, _| unreachable!("whole-page write"))
+        .unwrap();
+    // The mount's fsync drains DirtyPages through Files::write before commit.
+    let synced = pages.write_runs(bytes.len() as u64, |off, run| {
+        files
+            .write(&device, ino, off, run, at)
+            .map(|_| ())
+            .map_err(|e| {
+                assert_eq!(e, ops::Error::ENOSPC);
+                errno::Errno(syscall_errno::ENOSPC)
+            })
+    });
+    assert_eq!(synced, Ok(()), "fsync drain must fit fragmented FREE space");
+    let after = files.fsync(&device, &mut committer).unwrap();
+    let extents: Vec<_> = files
+        .items()
+        .unwrap()
+        .into_iter()
+        .filter(|(k, _)| k.object == ino && k.item_type == disk::EXTENT)
+        .collect();
+    assert!(extents.len() >= 2);
+    assert_eq!(files.inode(ino).unwrap().nblocks, 256);
+    let mut read = vec![0; bytes.len()];
+    assert_eq!(files.read(&device, ino, 0, &mut read).unwrap(), bytes.len());
+    assert_eq!(read, bytes);
+    let (_, space) = tree(&device);
+    let nodes: u64 = space
+        .iter()
+        .filter(|(k, _)| k.item_type == disk::REF)
+        .filter(|(_, v)| {
+            let r = Ref::decode(v).unwrap();
+            r.kind != 3 && r.alloc_generation == after.generation
+        })
+        .map(|(k, _)| k.offset)
+        .sum();
+    assert!(nodes >= 8);
+    assert_eq!(
+        before.free_blocks + promoted - after.free_blocks,
+        256 + nodes
+    );
+    drop(files);
+    let remounted = recover::recover(&device, false).unwrap();
+    let files = Files::new(commit::DeviceStore(&device), &remounted, 1).unwrap();
+    read.fill(0);
+    assert_eq!(files.read(&device, ino, 0, &mut read).unwrap(), bytes.len());
+    assert_eq!(read, bytes);
+    test_image::check(&device.durable_image(), "fragmented-data-runs");
 }

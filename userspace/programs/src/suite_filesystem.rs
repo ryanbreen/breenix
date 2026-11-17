@@ -1,6 +1,7 @@
 //! Exercise the filesystem interface, cache and BreenFS guest volumes.
 mod cache_reread;
 mod filesystem_read;
+mod filesystem_enospc;
 mod filesystem_root;
 mod filesystem_write;
 use cache_reread::{reread_is_cached, REREAD_BYTES};
@@ -39,6 +40,11 @@ static SUITE: Suite = suite("filesystem", "Copy-on-write filesystem", &[
         case("truncate-sparse", "Sparse writes and truncate preserve data and zero-filled holes after remount", filesystem_write::truncate_sparse),
         case("mmap-msync", "Shared mapped stores survive MS_SYNC and remount", filesystem_write::mmap_msync),
         case("commit-without-fsync", "The periodic commit makes an unfsynced write durable", filesystem_write::commit_without_fsync),
+    ]),
+    category("enospc", "Space reservation: ENOSPC with nothing changed, freeing from the reserve", &[
+        case("fill-enospc-unchanged", "A failed write leaves the tree unchanged across remount", filesystem_enospc::fill_enospc_unchanged),
+        case("delete-when-full", "Unlink, rmdir and truncate succeed on a full filesystem", filesystem_enospc::delete_when_full),
+        case("bavail-excludes-reserve", "Available blocks exclude the reserve", filesystem_enospc::bavail_excludes_reserve),
     ]),
 ]);
 

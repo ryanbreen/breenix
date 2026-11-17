@@ -234,6 +234,19 @@ impl BlockDevice for VirtioBlockWrapper {
             .map_err(|_| BlockError::IoError)
     }
 
+    /// One virtio request per driver transfer limit, instead of one per
+    /// sector (E24 ledger 368, #3040).
+    fn write_blocks(&self, start_block: u64, block_count: usize, buf: &[u8]) -> Result<(), BlockError> {
+        let bytes = block_count.checked_mul(self.block_size).ok_or(BlockError::IoError)?;
+        if buf.len() < bytes { return Err(BlockError::IoError); }
+        if bytes == 0 { return Ok(()); }
+        if start_block.checked_add(block_count as u64).is_none_or(|end| end > self.num_blocks()) {
+            return Err(BlockError::OutOfBounds);
+        }
+        block_driver::write_sectors(self.device_index, start_block, &buf[..bytes])
+            .map_err(|_| BlockError::IoError)
+    }
+
     fn block_size(&self) -> usize {
         self.block_size
     }

@@ -214,6 +214,26 @@ pub fn add_free<S: NodeStore>(
     Ok(())
 }
 
+/// Last publication needed to include the current PENDING ranges in FREE.
+/// This observes the quarantine; promotion still goes through promote_pending.
+/// Admission snapshots this bound once, rather than chasing later releases.
+pub fn pending_promotion_generation<S: NodeStore>(
+    store: &S,
+    root: BlockPtr,
+) -> Result<Option<u64>, Error> {
+    let mut generation = None;
+    for (key, bytes) in range(store, root, PENDING_OBJECT, format::PENDING)? {
+        let pending = Pending::decode(&bytes)?;
+        end(key.offset, pending.length)?;
+        if pending.released_generation == 0 {
+            return Err(Error::Invalid);
+        }
+        let promoted = pending.released_generation.checked_add(2).ok_or(Error::Invalid)?;
+        generation = Some(generation.map_or(promoted, |old: u64| old.max(promoted)));
+    }
+    Ok(generation)
+}
+
 /// Commit-time conversion of quarantined space, even with ample FREE space.
 /// Allocation still prefers FREE within a transaction (design 2.5 reuse rule).
 pub fn promote_pending<S: NodeStore>(
@@ -249,7 +269,38 @@ pub fn allocate<S: NodeStore>(
     crcs: &[u32],
     generation: u64,
 ) -> Result<u64, Error> {
-    let r = Ref {
+    allocate_extent(store, root, length, kind, crcs, generation, false).map(|(start, _)| start)
+}
+
+/// Allocate a data prefix, falling back to the largest eligible run when the
+/// requested run cannot fit. The returned length owns only that CRC prefix.
+pub fn allocate_data_run<S: NodeStore>(
+    store: &mut S,
+    root: &mut BlockPtr,
+    crcs: &[u32],
+    generation: u64,
+) -> Result<(u64, u64), Error> {
+    allocate_extent(
+        store,
+        root,
+        crcs.len() as u64,
+        Kind::Data,
+        crcs,
+        generation,
+        true,
+    )
+}
+
+fn allocate_extent<S: NodeStore>(
+    store: &mut S,
+    root: &mut BlockPtr,
+    length: u64,
+    kind: Kind,
+    crcs: &[u32],
+    generation: u64,
+    short_data: bool,
+) -> Result<(u64, u64), Error> {
+    let mut r = Ref {
         refcount: 1,
         kind: kind as u8,
         alloc_generation: generation,
@@ -281,6 +332,14 @@ pub fn allocate<S: NodeStore>(
         free.extend_from_slice(&pending);
         free = merged(free)?;
         candidate = free.iter().find(|(_, len)| *len >= length).copied();
+        if candidate.is_none() && short_data {
+            // Break ties by address so replaying this exact shorter allocation
+            // in the real SPACE tree makes the same first-fit choice.
+            candidate = free
+                .iter()
+                .copied()
+                .max_by_key(|(start, len)| (*len, core::cmp::Reverse(*start)));
+        }
         if candidate.is_none() {
             return Err(Error::ENOSPC);
         }
@@ -290,6 +349,8 @@ pub fn allocate<S: NodeStore>(
         }
     }
     let (start, available) = candidate.ok_or(Error::ENOSPC)?;
+    let length = length.min(available);
+    r.crcs.truncate(length as usize);
     btree::delete(store, root, key(FREE_OBJECT, format::FREE, start))?;
     if available > length {
         btree::insert(
@@ -303,7 +364,7 @@ pub fn allocate<S: NodeStore>(
         )?;
     }
     btree::insert(store, root, key(start, format::REF, length), &r.encode())?;
-    Ok(start)
+    Ok((start, length))
 }
 
 /// Add an incoming reference. Keep space nodes uniquely owned (design A5).

@@ -108,6 +108,10 @@ const MAX_BYTES: usize = 64 * 1024 * 1024 / 8;
 /// their sparsely occupied nodes, and allocator alignment. Detached pins keep
 /// this charge too; index removal therefore cannot prematurely free the budget.
 pub const BUFFER_OVERHEAD: usize = 1280;
+/// The most bytes one coalesced device call carries (E24 ledger 368, #3040).
+/// submit and read_blocks join LBA-contiguous blocks into runs of at most this
+/// size; a driver may still split a run at its own transfer limit.
+pub const RUN_BYTES: usize = 64 * 1024;
 type Key = (usize, u64);
 
 /// RAM policy, additionally capped to one eighth of the smallest kernel heap.
@@ -347,25 +351,44 @@ impl<W: Wait> BufferCache<W> {
     }
 
     fn count(&self, select: impl FnOnce(&mut Counters) -> &mut Counter) {
+        self.count_by(1, select);
+    }
+
+    fn count_by(&self, n: usize, select: impl FnOnce(&mut Counters) -> &mut Counter) {
+        if n == 0 {
+            return;
+        }
         self.with(|state| {
             state.sequence = state
                 .sequence
                 .checked_add(1)
                 .expect("block cache sequence exhausted");
             let counter = select(&mut state.counters);
-            counter.count += 1;
+            counter.count += n as u64;
             counter.sequence = state.sequence;
         });
     }
 
+    /// Native blocks in one device call: RUN_BYTES, and at least one block.
+    fn run_limit(size: usize) -> usize {
+        RUN_BYTES.checked_div(size).unwrap_or(1).max(1)
+    }
+
+    /// One device request for `count` consecutive blocks. A single block keeps
+    /// the backend's write_block path; device_writes counts requests.
     fn device_write(
         &self,
         device: &dyn BlockDevice,
-        block: u64,
+        start: u64,
+        count: usize,
         bytes: &[u8],
     ) -> Result<(), BlockError> {
         self.count(|c| &mut c.pending_writes);
-        let result = device.write_block(block, bytes);
+        let result = if count == 1 {
+            device.write_block(start, bytes)
+        } else {
+            device.write_blocks(start, count, bytes)
+        };
         self.with(|state| {
             state.sequence = state
                 .sequence
@@ -460,6 +483,112 @@ impl<W: Wait> BufferCache<W> {
         self.read_verified(device, block, bytes, |_| true)
     }
 
+    /// Read `count` consecutive native blocks under one admission. Resident
+    /// Clean and Dirty copies are served from memory; each LBA-contiguous run
+    /// of misses, up to RUN_BYTES, is one device call (E24 ledger 368, #3040).
+    /// A failed run leaves its blocks unpublished and ends the read with the
+    /// device's error, as a failed single-block miss does. A Failed write
+    /// buffer returns IoError without device I/O, as in read_verified.
+    pub fn read_blocks(
+        &self,
+        device: &dyn BlockDevice,
+        start: u64,
+        count: usize,
+        bytes: &mut [u8],
+    ) -> Result<(), BlockError> {
+        let size = device.block_size();
+        let total = count.checked_mul(size).ok_or(BlockError::IoError)?;
+        if size == 0 || bytes.len() < total {
+            return Err(BlockError::IoError);
+        }
+        if start
+            .checked_add(count as u64)
+            .is_none_or(|end| end > device.num_blocks())
+        {
+            return Err(BlockError::OutOfBounds);
+        }
+        let identity = device.identity();
+        let limit = Self::run_limit(size);
+        let admission = self.enter(identity);
+        let mut pressure = false;
+        let mut result = Ok(());
+        let mut i = 0;
+        while i < count {
+            // Copy the resident prefix, then measure the miss run behind it.
+            let scan = self.with(|state| {
+                let mut hits = 0;
+                while i + hits < count {
+                    let key = (identity, start + (i + hits) as u64);
+                    state.touch(key);
+                    match state.buffers.get(&key).map(|entry| &entry.status) {
+                        Some(BufferState::Clean { buffer, .. } | BufferState::Dirty { buffer, .. }) => {
+                            bytes[(i + hits) * size..][..size].copy_from_slice(buffer);
+                            hits += 1;
+                        }
+                        Some(BufferState::Failed) => return Err(BlockError::IoError),
+                        _ => break,
+                    }
+                }
+                let first = i + hits;
+                let mut misses = 0;
+                while first + misses < count
+                    && misses < limit
+                    && !matches!(
+                        state
+                            .buffers
+                            .get(&(identity, start + (first + misses) as u64))
+                            .map(|entry| &entry.status),
+                        Some(
+                            BufferState::Clean { .. }
+                                | BufferState::Dirty { .. }
+                                | BufferState::Failed
+                        )
+                    )
+                {
+                    misses += 1;
+                }
+                Ok((hits, misses))
+            });
+            let (hits, misses) = match scan {
+                Ok(scan) => scan,
+                Err(error) => {
+                    result = Err(error);
+                    break;
+                }
+            };
+            self.count_by(hits, |c| &mut c.hits);
+            i += hits;
+            if misses == 0 {
+                continue;
+            }
+            self.count_by(misses, |c| &mut c.misses);
+            let block = start + i as u64;
+            let run = &mut bytes[i * size..(i + misses) * size];
+            let read = if misses == 1 {
+                device.read_block(block, run)
+            } else {
+                device.read_blocks(block, misses, run)
+            };
+            self.count(|c| &mut c.device_reads);
+            if let Err(error) = read {
+                result = Err(error);
+                break;
+            }
+            for k in 0..misses {
+                let key = (identity, block + k as u64);
+                let charge = self.begin(key, size);
+                pressure |= charge.is_none();
+                self.finish(key, &bytes[(i + k) * size..][..size], charge, Ok(()));
+            }
+            i += misses;
+        }
+        drop(admission);
+        if pressure {
+            self.request_commits();
+        }
+        result
+    }
+
     /// Verify the owner's native-block bytes on a miss before publishing Clean.
     /// The callback runs outside the state lock. Owners sharing an identity must
     /// agree on verification; hits reuse the previously accepted copy.
@@ -552,7 +681,7 @@ impl<W: Wait> BufferCache<W> {
                 }
                 let charge = self.begin(key, size);
                 let pressure = charge.is_none();
-                let result = self.device_write(device, block, &bytes[..size]);
+                let result = self.device_write(device, block, 1, &bytes[..size]);
                 self.finish(key, &bytes[..size], charge, result);
                 (result, pressure)
             }
@@ -642,7 +771,10 @@ impl<W: Wait> BufferCache<W> {
             _ => return Err(BlockError::IoError),
         };
         let _admission = self.enter(device.identity());
-        let buffers = self.with(|state| {
+        // Staged buffers are device.block_size() bytes each (stage via size()).
+        let size = device.block_size();
+        let limit = Self::run_limit(size);
+        let (buffers, mut scratch) = self.with(|state| {
             let mut buffers = Vec::new();
             let belongs = |entry: &Entry| {
                 matches!(&entry.status,
@@ -656,6 +788,13 @@ impl<W: Wait> BufferCache<W> {
             buffers
                 .try_reserve_exact(count)
                 .map_err(|_| BlockError::OutOfMemory)?;
+            // One run's contiguous copy, reserved before any entry changes state.
+            let mut scratch = Vec::new();
+            if count > 1 {
+                scratch
+                    .try_reserve_exact(count.min(limit) * size)
+                    .map_err(|_| BlockError::OutOfMemory)?;
+            }
             for (&key, entry) in state.buffers.iter_mut() {
                 if key.0 == group.device && belongs(entry) {
                     if let BufferState::Dirty { buffer, .. } = &entry.status {
@@ -665,18 +804,42 @@ impl<W: Wait> BufferCache<W> {
                 }
             }
             group.requested.store(false, Ordering::Relaxed);
-            Ok::<_, BlockError>(buffers)
+            Ok::<_, BlockError>((buffers, scratch))
         })?;
+        // Keys iterate in LBA order, so each run is a maximal contiguous slice
+        // of at most `limit` blocks and takes one device call. A failed run
+        // marks each of its entries Failed; later runs are still written.
         let mut result = Ok(());
-        for (key, buffer) in buffers {
-            let written = self.device_write(device, key.1, &buffer);
+        let mut rest = &buffers[..];
+        while let Some((first, _)) = rest.first() {
+            let len = 1 + rest
+                .windows(2)
+                .take(limit - 1)
+                .take_while(|pair| pair[0].0 .1.checked_add(1) == Some(pair[1].0 .1))
+                .count();
+            let (run, tail) = rest.split_at(len);
+            rest = tail;
+            let written = if len == 1 {
+                self.device_write(device, first.1, 1, &run[0].1)
+            } else {
+                scratch.clear();
+                for (_, buffer) in run {
+                    scratch.extend_from_slice(buffer);
+                }
+                self.device_write(device, first.1, len, &scratch)
+            };
             self.with(|state| {
-                let entry = state.buffers.get_mut(&key).expect("submitted cache buffer");
-                if written.is_ok() {
-                    entry.status = BufferState::Clean { buffer, used: 0 };
-                    state.touch(key);
-                } else {
-                    entry.status = BufferState::Failed;
+                for (key, buffer) in run {
+                    let entry = state.buffers.get_mut(key).expect("submitted cache buffer");
+                    if written.is_ok() {
+                        entry.status = BufferState::Clean {
+                            buffer: buffer.clone(),
+                            used: 0,
+                        };
+                        state.touch(*key);
+                    } else {
+                        entry.status = BufferState::Failed;
+                    }
                 }
             });
             if written.is_err() {

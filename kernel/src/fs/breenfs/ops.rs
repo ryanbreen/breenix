@@ -158,6 +158,31 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     pub fn items(&self) -> Result<Vec<(Key, Vec<u8>)>, Error> {
         items(&self.txn.view(), self.root.root)
     }
+    /// Describe COW paths without changing the private transaction.
+    pub fn reservation_paths(&self, ino: u64) -> Result<txn::ReservationPaths, Error> {
+        Ok(self.txn.reservation_paths(self.root.root, ino)?)
+    }
+    /// Namespace edits can reach parents, victims, the next inode and ORPHAN.
+    /// Count their COW paths before publishing any item changes. Shared ancestors
+    /// may be counted more than once, making this an upper bound.
+    pub fn metadata_reservation_paths(
+        &self,
+        objects: &[u64],
+        new_inode: bool,
+        orphans: bool,
+    ) -> Result<txn::ReservationPaths, Error> {
+        let mut objects: BTreeSet<_> = objects.iter().copied().collect();
+        if new_inode { objects.insert(self.root.next_inode); }
+        if orphans { objects.insert(ORPHAN_OBJECT); }
+        let mut paths = self.reservation_paths(*objects.first().ok_or(Error::EINVAL)?)?;
+        paths.uncopied_fs_nodes = 0;
+        for object in objects {
+            paths.uncopied_fs_nodes = paths.uncopied_fs_nodes.checked_add(
+                self.reservation_paths(object)?.uncopied_fs_nodes,
+            ).ok_or(Error::ENOSPC)?;
+        }
+        Ok(paths)
+    }
     pub fn inode(&self, ino: u64) -> Result<Inode, Error> {
         let value = btree::search(&self.txn.view(), self.root.root, key(ino, format::INODE, 0))?
             .ok_or(Error::ENOENT)?;
@@ -638,27 +663,33 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         }
         Ok(n)
     }
-    // One private extent per contiguous run, bounded to 1 MiB (design 1.2).
-    fn replace_extent(&mut self, ino: u64, off: u64, bytes: Vec<u8>) -> Result<(), Error> {
+    // Logical runs are bounded to 1 MiB (design 1.2); fragmented FREE space
+    // can require several physical extents for one such run.
+    fn replace_extent(&mut self, ino: u64, off: u64, bytes: &[u8]) -> Result<(), Error> {
         let crcs: Vec<_> = bytes
             .chunks_exact(BLOCK_SIZE)
             .map(crc32c::checksum)
             .collect();
-        let blocks = crcs.len() as u32;
-        let addr = self.txn.allocate_data(&crcs)?;
-        self.data.insert(addr, bytes);
-        self.txn.insert(
-            &mut self.root.root,
-            key(ino, format::EXTENT, off),
-            &Extent {
-                phys_start: addr,
-                phys_len: blocks,
-                extent_offset: 0,
-                num_blocks: blocks,
-                flags: 0,
-            }
-            .encode(),
-        )?;
+        let mut done = 0;
+        while done < crcs.len() {
+            let (addr, blocks) = self.txn.allocate_data_run(&crcs[done..])?;
+            let next = done + blocks as usize;
+            self.data
+                .insert(addr, bytes[done * BLOCK_SIZE..next * BLOCK_SIZE].to_vec());
+            self.txn.insert(
+                &mut self.root.root,
+                key(ino, format::EXTENT, off + (done * BLOCK_SIZE) as u64),
+                &Extent {
+                    phys_start: addr,
+                    phys_len: blocks as u32,
+                    extent_offset: 0,
+                    num_blocks: blocks as u32,
+                    flags: 0,
+                }
+                .encode(),
+            )?;
+            done = next;
+        }
         Ok(())
     }
     // Remove intersecting items and retain unaffected block slices. A split
@@ -722,7 +753,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         blocks[lo..lo + bytes.len()].copy_from_slice(bytes);
         self.remove_range(ino, start, rounded)?;
         for (n, run) in blocks.chunks(256 * BLOCK_SIZE).enumerate() {
-            self.replace_extent(ino, start + (n * 256 * BLOCK_SIZE) as u64, run.to_vec())?;
+            self.replace_extent(ino, start + (n * 256 * BLOCK_SIZE) as u64, run)?;
         }
         inode.size = inode.size.max(end);
         inode.mtime = at;
@@ -780,7 +811,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             };
             self.remove_range(ino, floor, u64::MAX)?;
             if let Some(b) = tail {
-                self.replace_extent(ino, floor, b)?;
+                self.replace_extent(ino, floor, &b)?;
             }
         }
         inode.size = size;

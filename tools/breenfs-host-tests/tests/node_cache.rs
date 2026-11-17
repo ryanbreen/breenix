@@ -2,6 +2,7 @@ use breenfs_host_tests::{
     block::{BlockDevice, BlockError},
     btree::{self, NodeStore},
     buffer_cache::{BufferCache, Wait},
+    commit::DeviceStore,
     crc32c,
     format::{BlockPtr, Key, Superblock, BLOCK_SIZE, NODE_SIZE},
     node_cache::CachedNodeStore,
@@ -27,10 +28,13 @@ impl Wait for NoWait {
     fn wake_all(&self) {}
 }
 
+// `reads` counts sectors transferred; `requests` counts device calls, so a
+// multi-sector read_blocks is one request (E24 ledger 372, #3040).
 struct Device {
     bytes: Mutex<Vec<u8>>,
     sector: usize,
     reads: AtomicU64,
+    requests: AtomicU64,
 }
 impl Device {
     fn new(sector: usize) -> Self {
@@ -38,11 +42,10 @@ impl Device {
             bytes: Mutex::new(populated_image()),
             sector,
             reads: AtomicU64::new(0),
+            requests: AtomicU64::new(0),
         }
     }
-}
-impl BlockDevice for Device {
-    fn read_block(&self, block: u64, buf: &mut [u8]) -> Result<(), BlockError> {
+    fn copy_sector(&self, block: u64, buf: &mut [u8]) -> Result<(), BlockError> {
         let bytes = self.bytes.lock().unwrap();
         let start = usize::try_from(block)
             .ok()
@@ -54,6 +57,25 @@ impl BlockDevice for Device {
         assert_eq!(buf.len(), self.sector);
         buf.copy_from_slice(source);
         self.reads.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
+impl BlockDevice for Device {
+    fn read_block(&self, block: u64, buf: &mut [u8]) -> Result<(), BlockError> {
+        self.requests.fetch_add(1, Ordering::Relaxed);
+        self.copy_sector(block, buf)
+    }
+    fn read_blocks(&self, start: u64, count: usize, buf: &mut [u8]) -> Result<(), BlockError> {
+        self.requests.fetch_add(1, Ordering::Relaxed);
+        if buf.len() < count * self.sector {
+            return Err(BlockError::IoError);
+        }
+        for (i, sector) in buf[..count * self.sector]
+            .chunks_exact_mut(self.sector)
+            .enumerate()
+        {
+            self.copy_sector(start + i as u64, sector)?;
+        }
         Ok(())
     }
     fn write_block(&self, _: u64, _: &[u8]) -> Result<(), BlockError> {
@@ -218,4 +240,46 @@ fn invalid_nodes_are_refused_and_retried_from_device() {
         );
         assert_eq!(cache.counters().device_reads.count, 3, "{fault} repair");
     }
+}
+
+// E24 ledger 372, #3040: a verified 16 KiB node miss on a 512-byte device is
+// one multi-block device request, not one request per sector.
+#[test]
+fn node_miss_is_one_device_request() {
+    for sector in [512, BLOCK_SIZE] {
+        let device = Device::new(sector);
+        let sb = recover::recover(&device, false).unwrap();
+        let cache = BufferCache::new(NoWait);
+        let store = CachedNodeStore::new(&cache, &device, &sb);
+        let (requests, reads) = (
+            device.requests.load(Ordering::Relaxed),
+            device.reads.load(Ordering::Relaxed),
+        );
+        assert_eq!(store.get(sb.space_root.addr).unwrap(), root_bytes(&device, &sb));
+        assert_eq!(cache.counters().misses.count, 1);
+        assert_eq!(
+            device.requests.load(Ordering::Relaxed) - requests,
+            1,
+            "{sector}-byte sectors"
+        );
+        assert_eq!(
+            device.reads.load(Ordering::Relaxed) - reads,
+            (NODE_SIZE / sector) as u64,
+            "{sector}-byte sectors"
+        );
+    }
+}
+
+// The same for the uncached reader recovery and orphan walks use
+// (commit::read behind DeviceStore).
+#[test]
+fn device_store_node_read_is_one_device_request() {
+    let device = Device::new(512);
+    let sb = recover::recover(&device, false).unwrap();
+    let requests = device.requests.load(Ordering::Relaxed);
+    assert_eq!(
+        DeviceStore(&device).get(sb.space_root.addr).unwrap(),
+        root_bytes(&device, &sb)
+    );
+    assert_eq!(device.requests.load(Ordering::Relaxed) - requests, 1);
 }

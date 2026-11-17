@@ -72,6 +72,60 @@ fn trait_seeds_1_to_64_match_the_model() {
 }
 
 #[test]
+#[ignore = "fill/delete stream: runs in the opt-in breenfs battery (fx/briefs/breenfs-battery-contract.md), never per change"]
+fn fill_and_delete_seeds_1_to_16_match_the_model() {
+    use breenfs_host_tests::stream::FillDelete;
+    let initial = image();
+    std::thread::scope(|scope| {
+        for lane in 0..4 {
+            let initial = &initial;
+            scope.spawn(move || {
+                for seed in (lane + 1..=16).step_by(4) {
+                    let device = Arc::new(RecordingDevice::new(initial.clone()).unwrap());
+                    let mut fs = TraitAdapter::new(device);
+                    let mut model = Model::new();
+                    let mut stream = FillDelete::new(seed);
+                    let mut full = 0;
+                    let mut remounts = 0;
+                    let mut deletes = [0; 3];
+                    let mut index = 0;
+                    while let Some(op) = stream.operation() {
+                        assert!(index < 1024, "seed={seed}: stream did not finish");
+                        let actual = fs.execute(&op);
+                        if actual == Err(Errno::ENOSPC.into()) {
+                            // The oracle has no space model: a refused allocation is unapplied.
+                            assert!(matches!(op.action, Action::Write { .. }), "{op:?}");
+                            full += 1;
+                        } else {
+                            assert_eq!(actual, model.execute(&op), "seed={seed} op={index} {op:?}");
+                            assert!(actual.is_ok(), "seed={seed} op={index} {op:?}: {actual:?}");
+                        }
+                        match op.action {
+                            Action::Unlink { .. } => deletes[0] += 1,
+                            Action::Rmdir { .. } => deletes[1] += 1,
+                            Action::Truncate { .. } => deletes[2] += 1,
+                            Action::Remount => remounts += 1,
+                            _ => (),
+                        }
+                        if actual == Err(Errno::ENOSPC.into()) || op.action == Action::Remount {
+                            // Observe at an earlier clock so reading cannot advance relatime.
+                            let diff = crate::time::with_unix_time(0, || compare(&model, &fs)).unwrap();
+                            assert!(diff.is_empty(), "seed={seed} op={index} {op:?}: {diff:?}");
+                        }
+                        stream.complete(actual);
+                        index += 1;
+                    }
+                    assert!(full > 0, "seed={seed}: ENOSPC was never reached");
+                    assert_eq!(remounts, 3, "seed={seed}: fill/delete/remount must repeat");
+                    assert_eq!(deletes, [3, 6, 3], "seed={seed}: freeing calls were not exercised");
+                    eprintln!("fill/delete seed {seed}: PASS");
+                }
+            });
+        }
+    });
+}
+
+#[test]
 fn model_and_writer_use_linux_removal_errnos() {
     fn errors(fs: &mut impl Fs) -> [Result<Reply>; 2] {
         let op = |action| Operation {

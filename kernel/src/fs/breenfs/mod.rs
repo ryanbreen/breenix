@@ -15,6 +15,7 @@ pub mod node_cache;
 pub mod ops;
 pub mod probe;
 pub mod recover;
+pub mod reserve;
 pub mod siphash;
 pub mod space;
 pub mod txn;

@@ -19,6 +19,8 @@ pub mod format;
 pub mod node_cache;
 #[path = "../../../kernel/src/fs/breenfs/recover.rs"]
 pub mod recover;
+#[path = "../../../kernel/src/fs/breenfs/reserve.rs"]
+pub mod reserve;
 #[path = "../../../kernel/src/fs/breenfs/siphash.rs"]
 pub mod siphash;
 #[path = "../../../kernel/src/fs/breenfs/space.rs"]
@@ -61,6 +63,17 @@ pub mod block {
             Ok(())
         }
         fn write_block(&self, block: u64, buf: &[u8]) -> Result<(), BlockError>;
+        /// Mirrors kernel/src/block/mod.rs: one write_block per block by default.
+        fn write_blocks(&self, start: u64, count: usize, buf: &[u8]) -> Result<(), BlockError> {
+            let size = self.block_size();
+            if buf.len() < count.checked_mul(size).ok_or(BlockError::IoError)? {
+                return Err(BlockError::IoError);
+            }
+            for i in 0..count {
+                self.write_block(start + i as u64, &buf[i * size..(i + 1) * size])?;
+            }
+            Ok(())
+        }
         fn block_size(&self) -> usize;
         fn num_blocks(&self) -> u64;
         fn flush(&self) -> Result<(), BlockError>;
@@ -261,7 +274,7 @@ mod commit_signal;
 mod mount_lock;
 #[cfg(test)]
 #[path = "../../../kernel/src/fs/breenfs/dirty.rs"]
-mod dirty;
+pub mod dirty;
 #[cfg(test)]
 #[path = "../../../kernel/src/fs/breenfs/vfs.rs"]
 pub mod vfs_adapter;

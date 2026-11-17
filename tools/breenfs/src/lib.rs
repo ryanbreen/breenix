@@ -41,7 +41,29 @@ pub mod block {
             self as *const Self as *const () as usize
         }
         fn read_block(&self, block: u64, buf: &mut [u8]) -> Result<(), BlockError>;
+        /// Mirrors kernel/src/block/mod.rs: one read_block per block by default.
+        fn read_blocks(&self, start: u64, count: usize, buf: &mut [u8]) -> Result<(), BlockError> {
+            let size = self.block_size();
+            if buf.len() < count.saturating_mul(size) {
+                return Err(BlockError::IoError);
+            }
+            for i in 0..count {
+                self.read_block(start + i as u64, &mut buf[i * size..(i + 1) * size])?;
+            }
+            Ok(())
+        }
         fn write_block(&self, block: u64, buf: &[u8]) -> Result<(), BlockError>;
+        /// Mirrors kernel/src/block/mod.rs: one write_block per block by default.
+        fn write_blocks(&self, start: u64, count: usize, buf: &[u8]) -> Result<(), BlockError> {
+            let size = self.block_size();
+            if buf.len() < count.checked_mul(size).ok_or(BlockError::IoError)? {
+                return Err(BlockError::IoError);
+            }
+            for i in 0..count {
+                self.write_block(start + i as u64, &buf[i * size..(i + 1) * size])?;
+            }
+            Ok(())
+        }
         fn block_size(&self) -> usize;
         fn num_blocks(&self) -> u64;
         fn flush(&self) -> Result<(), BlockError>;

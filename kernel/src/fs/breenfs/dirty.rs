@@ -4,6 +4,27 @@ use super::format::BLOCK_SIZE;
 use crate::{fs::errno::Errno, syscall::errno::ENOMEM};
 use alloc::{collections::BTreeMap, vec::Vec};
 
+#[cfg(test)]
+pub mod measurement {
+    extern crate std;
+    std::thread_local! {
+        static VISITS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+        static INDEXES: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+        static DRAINED: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+    }
+    pub fn take_visits() -> u64 {
+        VISITS.with(|count| count.replace(0))
+    }
+    pub(super) fn visited() {
+        VISITS.with(|count| count.set(count.get() + 1));
+    }
+    pub(super) fn indexed() { INDEXES.with(|n| n.set(n.get() + 1)); }
+    pub(super) fn drained() { DRAINED.with(|n| n.set(n.get() + 1)); }
+    pub fn take_work() -> [u64; 3] {
+        [take_visits(), INDEXES.with(|n| n.replace(0)), DRAINED.with(|n| n.replace(0))]
+    }
+}
+
 #[derive(Default)]
 pub struct DirtyPages {
     pages: BTreeMap<u64, Vec<u8>>,
@@ -16,7 +37,66 @@ impl DirtyPages {
         self.pages.get(&page).map(Vec::as_slice)
     }
     pub fn indexes(&self) -> impl Iterator<Item = u64> + '_ {
+        #[cfg(test)]
+        { self.pages.keys().copied().inspect(|_| measurement::indexed()) }
+        #[cfg(not(test))]
         self.pages.keys().copied()
+    }
+    /// Project write_runs after admission, without changing pages. Adjacent
+    /// writes share the eventual run and its metadata reservation.
+    pub fn reservation_runs(&self, offset: u64, length: usize) -> (u64, u64, u64) {
+        let first = offset / BLOCK_SIZE as u64;
+        let last = if length == 0 { first } else {
+            (offset + length as u64).div_ceil(BLOCK_SIZE as u64)
+        };
+        let old_pages = self.pages.len() as u64;
+        let incoming_pages = last - first;
+        let Some((&old_first, _)) = self.pages.first_key_value() else {
+            return (incoming_pages, incoming_pages, incoming_pages.div_ceil(256));
+        };
+        let old_end = self.pages.last_key_value().unwrap().0 + 1;
+        // Equal span and entry count identify a contiguous dirty range.
+        // Project this union from its endpoints, rather than walking the growing
+        // map for each small sequential write (#3040).
+        if old_end - old_first == old_pages {
+            if incoming_pages == 0 {
+                return (0, old_pages, old_pages.div_ceil(256));
+            }
+            let overlap = old_end.min(last).saturating_sub(old_first.max(first));
+            let added = incoming_pages - overlap;
+            let pages = old_pages + added;
+            let runs = if last < old_first || first > old_end {
+                old_pages.div_ceil(256) + incoming_pages.div_ceil(256)
+            } else {
+                pages.div_ceil(256)
+            };
+            return (added, pages, runs);
+        }
+        let mut old = self.indexes().peekable();
+        let mut incoming = (first..last).peekable();
+        let mut pages = 0;
+        let mut runs = 0;
+        let mut previous = None;
+        let mut run_pages = 0;
+        loop {
+            let index = match (old.peek(), incoming.peek()) {
+                (Some(&a), Some(&b)) => a.min(b),
+                (Some(&a), None) | (None, Some(&a)) => a,
+                (None, None) => break,
+            };
+            #[cfg(test)]
+            measurement::visited();
+            if old.peek() == Some(&index) { old.next(); }
+            if incoming.peek() == Some(&index) { incoming.next(); }
+            if previous != Some(index) || run_pages == 256 {
+                runs += 1;
+                run_pages = 0;
+            }
+            pages += 1;
+            run_pages += 1;
+            previous = Some(index + 1);
+        }
+        (pages - self.pages.len() as u64, pages, runs)
     }
     pub fn clear(&mut self) {
         self.pages.clear();
@@ -48,7 +128,11 @@ impl DirtyPages {
             prepared.insert(index, page);
             done += take;
         }
-        self.pages.append(&mut prepared);
+        // Bulk append rebuilds the existing index even for a one-page write
+        // (#3040). Insert the prepared pages into the retained index instead.
+        for (index, page) in prepared {
+            self.pages.insert(index, page);
+        }
         Ok(())
     }
     // Only a mapped/dirty partial tail needs a page. Growing a hole does not.
@@ -89,6 +173,8 @@ impl DirtyPages {
         mut write: impl FnMut(u64, &[u8]) -> Result<(), Errno>,
     ) -> Result<(), Errno> {
         while let Some((first, page)) = self.pages.pop_first() {
+            #[cfg(test)]
+            measurement::drained();
             let offset = first * BLOCK_SIZE as u64;
             if offset >= size {
                 self.pages.clear();
@@ -107,6 +193,8 @@ impl DirtyPages {
                     .is_some_and(|(index, _)| *index == next)
             {
                 if let Some((_, page)) = self.pages.pop_first() {
+                    #[cfg(test)]
+                    measurement::drained();
                     run.extend_from_slice(&page);
                     next += 1;
                 }
