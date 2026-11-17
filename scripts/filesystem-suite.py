@@ -141,13 +141,13 @@ def stage(image, work, records):
             raise RuntimeError(f'failed to read back staged record {case}')
 
 
-def stage_read_manifest(image, manifest, work):
-    """Stage only the read fixture's manifest; do not rerun host evidence."""
-    destination = '/usr/local/filesystem-suite/read/manifest'
+def stage_read_manifest(image, manifest, work, kind='read'):
+    """Stage a fixture manifest without rerunning host evidence."""
+    destination = f'/usr/local/filesystem-suite/{kind}/manifest'
     debugfs = debugfs_path()
     commands = []
     for directory in ('/usr', '/usr/local', '/usr/local/filesystem-suite',
-                      '/usr/local/filesystem-suite/read'):
+                      f'/usr/local/filesystem-suite/{kind}'):
         code, output = run([debugfs, '-R', f'stat {directory}', image])
         if code:
             raise RuntimeError('cannot inspect manifest destination')
@@ -174,13 +174,18 @@ def main():
     parser.add_argument('--torture-summary', type=Path)
     parser.add_argument('--read-manifest', type=Path,
                         help='stage this read manifest only (requires --image)')
+    parser.add_argument('--corrupt-manifest', type=Path,
+                        help='stage this corruption manifest (requires --image)')
     args = parser.parse_args()
-    if args.read_manifest and not args.image:
-        parser.error('--read-manifest requires --image')
+    if (args.read_manifest or args.corrupt_manifest) and not args.image:
+        parser.error('fixture manifests require --image')
     with tempfile.TemporaryDirectory(prefix='filesystem-suite-') as directory:
         work = Path(directory)
         if args.read_manifest:
             stage_read_manifest(args.image.resolve(), args.read_manifest.resolve(), work)
+        if args.corrupt_manifest:
+            stage_read_manifest(args.image.resolve(), args.corrupt_manifest.resolve(), work, 'corrupt')
+        if args.read_manifest or args.corrupt_manifest:
             return 0
         records = collect(work, args.torture_summary)
         for case in HOST_CASES:

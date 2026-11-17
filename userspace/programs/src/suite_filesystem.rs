@@ -1,6 +1,7 @@
 //! Exercise the filesystem interface, cache and BreenFS guest volumes.
 mod cache_reread;
 mod filesystem_read;
+mod filesystem_checksum;
 mod filesystem_enospc;
 mod filesystem_root;
 mod filesystem_write;
@@ -45,6 +46,14 @@ static SUITE: Suite = suite("filesystem", "Copy-on-write filesystem", &[
         case("fill-enospc-unchanged", "A failed write leaves the tree unchanged across remount", filesystem_enospc::fill_enospc_unchanged),
         case("delete-when-full", "Unlink, rmdir and truncate succeed on a full filesystem", filesystem_enospc::delete_when_full),
         case("bavail-excludes-reserve", "Available blocks exclude the reserve", filesystem_enospc::bavail_excludes_reserve),
+    ]),
+    category("checksum", "Corrupt data and nodes return EIO and never panic", &[
+        case("data-flip-eio", "Corrupt data returns EIO without making the mount read-only", filesystem_checksum::data_flip_eio),
+        case("node-flip-eio-readonly", "Corrupt metadata returns EIO and makes the mount read-only", filesystem_checksum::node_flip_eio_readonly),
+    ]),
+    category("scrub", "Scrub finds and names corrupted blocks", &[
+        case("scrub-names-block", "Scrub reports the corrupted data block", filesystem_checksum::scrub_names_block),
+        case("scrub-recorded", "Scrub results survive a remount", filesystem_checksum::scrub_recorded),
     ]),
 ]);
 

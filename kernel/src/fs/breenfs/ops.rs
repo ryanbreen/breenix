@@ -8,7 +8,7 @@ use super::{
     format::{
         self, BlockPtr, DirRecord, Extent, Inode, Key, Root, Superblock, Time, Xattr, BLOCK_SIZE,
     },
-    recover, siphash,
+    recover, siphash, space,
     txn::{self, Transaction},
 };
 use crate::block::BlockDevice;
@@ -59,6 +59,20 @@ impl From<txn::Error> for Error {
         }
     }
 }
+// Data corruption fails the read without poisoning unrelated files. Metadata
+// failures also close writable admission at the adapter (design 2.7).
+pub(super) enum ReadError {
+    Metadata(Error),
+    Data,
+}
+impl From<Error> for ReadError {
+    fn from(error: Error) -> Self { Self::Metadata(error) }
+}
+impl ReadError {
+    pub(super) fn error(self) -> Error {
+        match self { Self::Metadata(error) => error, Self::Data => Error::EIO }
+    }
+}
 #[derive(Default)]
 pub struct SetAttr {
     pub mode: Option<u32>,
@@ -73,6 +87,9 @@ pub struct Files<'a, S: NodeStore + 'a> {
     root: Root,
     root_id: u64,
     hash_key: [u8; 16],
+    // Non-private extents retain their generation's immutable REF tree. New
+    // extents are served from data until the next Files view is opened.
+    space_root: BlockPtr,
     data: BTreeMap<u64, Vec<u8>>,
     open_inodes: BTreeSet<u64>,
 }
@@ -95,6 +112,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             },
             root_id: 1,
             hash_key: sb.dirhash_key,
+            space_root: sb.space_root,
             data: BTreeMap::new(),
             open_inodes: BTreeSet::new(),
         };
@@ -147,6 +165,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             root,
             root_id,
             hash_key: sb.dirhash_key,
+            space_root: sb.space_root,
             data: BTreeMap::new(),
             open_inodes: BTreeSet::new(),
         })
@@ -625,16 +644,24 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         .map(|(k, v)| Ok((k, Extent::decode(&v)?)))
         .collect()
     }
-    fn block(&self, device: &dyn BlockDevice, e: Extent, index: u64) -> Result<Vec<u8>, Error> {
+    fn block(
+        &self, device: &dyn BlockDevice, e: Extent, index: u64, crcs: &[u32],
+    ) -> Result<Vec<u8>, ReadError> {
         let addr = e.phys_start + u64::from(e.extent_offset) + index;
         if let Some(bytes) = self.data.get(&e.phys_start) {
             let lo = (addr - e.phys_start) as usize * BLOCK_SIZE;
             return bytes
                 .get(lo..lo + BLOCK_SIZE)
                 .map(|b| b.to_vec())
-                .ok_or(Error::EIO);
+                .ok_or(ReadError::Data);
         }
-        Ok(commit::read(device, addr, BLOCK_SIZE)?)
+        let expected = crcs.get(e.extent_offset as usize + index as usize)
+            .ok_or(ReadError::Metadata(Error::EIO))?;
+        let bytes = commit::read(device, addr, BLOCK_SIZE).map_err(|_| ReadError::Data)?;
+        if crc32c::checksum(&bytes) != *expected {
+            return Err(ReadError::Data);
+        }
+        Ok(bytes)
     }
     pub fn read(
         &self,
@@ -643,6 +670,15 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         offset: u64,
         buf: &mut [u8],
     ) -> Result<usize, Error> {
+        self.read_verified(device, ino, offset, buf).map_err(ReadError::error)
+    }
+    pub(super) fn read_verified(
+        &self,
+        device: &dyn BlockDevice,
+        ino: u64,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> Result<usize, ReadError> {
         let inode = self.regular(ino)?;
         let n = inode.size.saturating_sub(offset).min(buf.len() as u64) as usize;
         buf[..n].fill(0);
@@ -650,12 +686,26 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             let lo = offset.max(k.offset);
             let hi =
                 (offset + n as u64).min(k.offset + u64::from(e.num_blocks) * BLOCK_SIZE as u64);
+            if lo >= hi { continue; }
+            // Fetch the CRC vector once for this intersecting extent, before
+            // reading its blocks. Private data has not reached disk yet.
+            let reference = if self.data.contains_key(&e.phys_start) { None } else {
+                let r = space::reference(
+                    &self.txn.view(), self.space_root, e.phys_start, u64::from(e.phys_len),
+                ).map_err(|_| ReadError::Metadata(Error::EIO))?
+                    .ok_or(ReadError::Metadata(Error::EIO))?;
+                if r.kind != space::Kind::Data as u8 {
+                    return Err(ReadError::Metadata(Error::EIO));
+                }
+                Some(r)
+            };
+            let crcs = reference.as_ref().map_or(&[][..], |r| r.crcs.as_slice());
             let mut pos = lo;
             while pos < hi {
                 let index = (pos - k.offset) / BLOCK_SIZE as u64;
                 let within = ((pos - k.offset) % BLOCK_SIZE as u64) as usize;
                 let take = ((hi - pos) as usize).min(BLOCK_SIZE - within);
-                let block = self.block(device, e, index)?;
+                let block = self.block(device, e, index, crcs)?;
                 buf[(pos - offset) as usize..(pos - offset) as usize + take]
                     .copy_from_slice(&block[within..within + take]);
                 pos += take as u64;
@@ -748,7 +798,15 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         let start = offset / BLOCK_SIZE as u64 * BLOCK_SIZE as u64;
         let rounded = end.div_ceil(BLOCK_SIZE as u64) * BLOCK_SIZE as u64;
         let mut blocks = vec![0; (rounded - start) as usize];
-        self.read(device, ino, start, &mut blocks)?;
+        // Boundary blocks retain old bytes. Replaced blocks may be
+        // corrupt and must not be read (including dirty-page commit writeback).
+        if offset != start {
+            self.read(device, ino, start, &mut blocks[..BLOCK_SIZE])?;
+        }
+        let tail = (rounded - start) as usize - BLOCK_SIZE;
+        if end != rounded && (tail != 0 || offset == start) {
+            self.read(device, ino, start + tail as u64, &mut blocks[tail..])?;
+        }
         let lo = (offset - start) as usize;
         blocks[lo..lo + bytes.len()].copy_from_slice(bytes);
         self.remove_range(ino, start, rounded)?;
@@ -936,7 +994,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         Ok((&mut self.txn, &mut self.data))
     }
 }
-const ORPHAN_OBJECT: u64 = 0xffff_ffff_ffff_ff00;
+pub(super) const ORPHAN_OBJECT: u64 = 0xffff_ffff_ffff_ff00;
 fn valid_name(name: &[u8]) -> Result<(), Error> {
     if name.is_empty() {
         return Err(Error::ENOENT);

@@ -65,6 +65,7 @@ pub struct Committer {
     open_generation: u64,
     in_flight: bool,
     waiters: Vec<Arc<FsyncWaiter>>,
+    pending_scrub: Option<(u64, u64)>,
 }
 impl Committer {
     /// Publish generation 1 from an unpublished formatter template. Generation
@@ -81,7 +82,12 @@ impl Committer {
             durable,
             failed: false,
             waiters: Vec::new(),
+            pending_scrub: None,
         }
+    }
+    /// Queue a completed durable walk for the next generation prepared.
+    pub fn record_scrub(&mut self, generation: u64, errors: u64) {
+        self.pending_scrub = Some((generation, errors));
     }
     pub fn read_only(&self) -> bool {
         self.failed || self.durable.ro_compat != 0
@@ -136,6 +142,7 @@ impl Committer {
         match &result {
             Ok(sb) => {
                 self.durable = sb.clone();
+                self.pending_scrub = None;
                 self.open_generation = sb.generation.saturating_add(1);
             }
             Err(_) => self.failed = true,
@@ -186,6 +193,10 @@ impl Committer {
             }
         }
         let mut sb = self.durable.clone();
+        if let Some((walked, errors)) = self.pending_scrub {
+            sb.last_scrub_generation = walked;
+            sb.last_scrub_errors = errors;
+        }
         sb.generation = generation;
         sb.slot = (generation % 4) as u8;
         sb.ring = 0;
@@ -284,6 +295,7 @@ impl Committer {
                 })?;
                 prepared.waiters = core::mem::take(&mut self.waiters);
                 self.in_flight = true;
+                self.pending_scrub = None;
                 Ok(prepared)
             }
             Err(e) => {

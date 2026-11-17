@@ -16,6 +16,13 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+E24 checksum and scrub acceptance is recorded in
+[PR #3050](https://github.com/ryanbreen/breenix/pull/3050): verified data reads,
+metadata-fault read-only latching, paced scrub and durable reports on ARM64 QEMU.
+Deferred read-fault durability and scrub-count findings are grouped in
+[#3052](https://github.com/ryanbreen/breenix/issues/3052); later filesystem milestones
+and Parallels/VMware catch-up remain pending.
+
 ARM64 QEMU operator-login is enabled in
 [PR #3049](https://github.com/ryanbreen/breenix/pull/3049). The PR records the
 operator case results and scoped x86-metal installer results. Disposable

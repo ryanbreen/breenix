@@ -115,6 +115,23 @@ pub fn sys_ioctl(fd: u64, request: u64, arg: u64) -> SyscallResult {
             };
         }
     }
+    let node = match &kind {
+        FdKind::RegularFile(file) => Some(file.lock().open.node.clone()),
+        FdKind::Directory(file) => Some(file.lock().open.node.clone()),
+        _ => None,
+    };
+    if let Some(node) = node {
+        use crate::fs::breenfs::abi::{SCRUB_START, SCRUB_CANCEL};
+        const EPERM: u64 = super::errno::EPERM as u64;
+        if matches!(request, SCRUB_START | SCRUB_CANCEL)
+            && !matches!(super::handlers::sys_geteuid(), SyscallResult::Ok(0)) {
+            return SyscallResult::Err(EPERM);
+        }
+        return match node.filesystem.ioctl(&node, request, arg) {
+            Ok(value) => SyscallResult::Ok(value),
+            Err(error) => SyscallResult::Err(error.0 as u64),
+        };
+    }
     let resolved = resolve_terminal(kind);
     let (tty, side) = match resolved {
         Ok(resolved) => resolved,

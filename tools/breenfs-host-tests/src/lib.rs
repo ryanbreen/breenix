@@ -5,6 +5,8 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+#[path = "../../../kernel/src/fs/breenfs/abi.rs"]
+pub mod abi;
 #[path = "../../../kernel/src/fs/breenfs/btree.rs"]
 pub mod btree;
 #[path = "../../../kernel/src/fs/breenfs/commit.rs"]
@@ -23,6 +25,8 @@ pub mod recover;
 pub mod reserve;
 #[path = "../../../kernel/src/fs/breenfs/siphash.rs"]
 pub mod siphash;
+#[path = "../../../kernel/src/fs/breenfs/scrub.rs"]
+pub mod scrub;
 #[path = "../../../kernel/src/fs/breenfs/space.rs"]
 pub mod space;
 #[path = "../../../kernel/src/fs/breenfs/txn.rs"]

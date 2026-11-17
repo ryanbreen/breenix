@@ -109,12 +109,18 @@
     {
       "id": "checksum",
       "title": "Corrupt data and nodes return EIO and never panic",
-      "cases": []
+      "cases": [
+        { "id": "data-flip-eio", "title": "Corrupt data returns EIO without making the mount read-only" },
+        { "id": "node-flip-eio-readonly", "title": "Corrupt metadata returns EIO and makes the mount read-only" }
+      ]
     },
     {
       "id": "scrub",
       "title": "Scrub finds and names corrupted blocks",
-      "cases": []
+      "cases": [
+        { "id": "scrub-names-block", "title": "Scrub reports the corrupted data block" },
+        { "id": "scrub-recorded", "title": "Scrub results survive a remount" }
+      ]
     },
     {
       "id": "snapshots",

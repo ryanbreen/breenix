@@ -1,4 +1,5 @@
 //! Breenfs core, boot format and explicit mounts.
+pub mod abi;
 mod boot;
 pub use boot::FORMAT;
 pub mod btree;
@@ -16,6 +17,7 @@ pub mod ops;
 pub mod probe;
 pub mod recover;
 pub mod reserve;
+pub mod scrub;
 pub mod siphash;
 pub mod space;
 pub mod txn;
