@@ -16,6 +16,11 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+ARM64 QEMU operator-login is enabled in
+[PR #3049](https://github.com/ryanbreen/breenix/pull/3049). The PR records the
+operator case results and scoped x86-metal installer results. Disposable
+VM fixture credential cleanup is tracked in [#3051](https://github.com/ryanbreen/breenix/issues/3051).
+
 The E24 filesystem rename and format host-record guard repair land through
 [PR #3018](https://github.com/ryanbreen/breenix/pull/3018).
 The filesystem is named breenfs; the core remains undeclared in the kernel.
