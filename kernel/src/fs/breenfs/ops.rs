@@ -798,7 +798,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         let start = offset / BLOCK_SIZE as u64 * BLOCK_SIZE as u64;
         let rounded = end.div_ceil(BLOCK_SIZE as u64) * BLOCK_SIZE as u64;
         let mut blocks = vec![0; (rounded - start) as usize];
-        // Only boundary blocks retain old bytes. Fully replaced blocks may be
+        // Boundary blocks retain old bytes. Replaced blocks may be
         // corrupt and must not be read (including dirty-page commit writeback).
         if offset != start {
             self.read(device, ino, start, &mut blocks[..BLOCK_SIZE])?;

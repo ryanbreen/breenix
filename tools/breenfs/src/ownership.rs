@@ -41,7 +41,7 @@ impl Tree {
             missing: None,
         })
     }
-    // A forensic walk trusts verified parents, never bytes from the corrupt
+    // A forensic walk uses verified parents instead of bytes from the corrupt
     // allocation. Its parent key interval identifies candidate owners only.
     fn read_for_owner(device: &Image, root: BlockPtr, target: u64) -> Result<Self> {
         let mut tree = Self {

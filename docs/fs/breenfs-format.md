@@ -179,13 +179,20 @@ deletion is O(1) to request and resumes after a crash. <!-- claim-lint:ok: Norma
 
 ### 2.7 Scrub
 
-A `breenfs-scrub` kthread (ioctl-controlled) walks REF and DEAD items in address order at 50 MB/s by default,
+A `breenfs-scrub` kthread (ioctl-controlled) walks REF and DEAD items in address order at up to 50 MB/s by default,
 re-descending from the current root each batch, and checks node and data CRCs. The next commit records
 `last_scrub_generation` and `last_scrub_errors`; `breenfs-extract owners <block>` names affected files. Reads verify
 too: bad data returns EIO, and a bad node returns EIO and turns the mount read-only. v1 keeps one copy, so it detects
 without repairing; incompat bit `META_DUP` is reserved for duplicated metadata.
 
 `last_scrub_generation` is the durable generation supplied to the scrub scanner for its final batch.
+
+Scrub start and cancel require effective uid 0; status is readable through an open descriptor.
+The worker budgets navigation and allocation reads together in at most 16 KiB raw-I/O batches,
+then waits outside mount exclusion. Its pacing includes a scheduling interval after slow I/O.
+For a corrupt filesystem node, `owners` reports candidate names from intact directory records
+and the verified parent's key interval, marked `corrupt candidates`; it does not trust the damaged node.
+A detached corrupt allocation is identified without claiming a pathname.
 
 ### 2.8 ENOSPC reservation
 

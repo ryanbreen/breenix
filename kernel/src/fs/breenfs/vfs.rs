@@ -1221,7 +1221,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                     #[cfg(target_arch = "aarch64")]
                     crate::per_cpu_aarch64::preempt_enable();
                     let Ok((true, bytes)) = pass else { break; };
-                    // Charge all raw I/O at decimal 50 MB/s, with at least one
+                    // Charge raw I/O at decimal 50 MB/s, with at least one
                     // scheduling interval after releasing exclusion, even on a
                     // slow device. Spurious wakes cannot consume the next batch.
                     let pause = (bytes as u64 * 1_000_000_000 / 50_000_000).max(1_000_000);

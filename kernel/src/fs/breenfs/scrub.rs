@@ -15,7 +15,7 @@ use alloc::{collections::VecDeque, vec::Vec};
 use core::cell::{Cell, RefCell};
 
 // Keep a bounded navigation working set across batches of one durable generation.
-// Every uncached node and every data read consumes the same raw-I/O budget.
+// Uncached node reads and data reads consume the same raw-I/O budget.
 struct BudgetStore<'a, S> {
     store: &'a S,
     nodes: RefCell<VecDeque<(u64, Vec<u8>)>>,
@@ -44,12 +44,18 @@ impl<S: Store> NodeStore for BudgetStore<'_, S> {
         }
         self.charge(NODE_SIZE)?;
         let bytes = self.store.get(addr)?;
-        if nodes.len() == 16 { nodes.pop_front(); }
+        if nodes.len() == 16 {
+            nodes.pop_front();
+        }
         nodes.push_back((addr, bytes.clone()));
         Ok(bytes)
     }
-    fn put(&mut self, _: u64, _: Vec<u8>) -> Result<(), btree::Error> { Err(btree::Error::Store) }
-    fn alloc(&mut self) -> Result<u64, btree::Error> { Err(btree::Error::Store) }
+    fn put(&mut self, _: u64, _: Vec<u8>) -> Result<(), btree::Error> {
+        Err(btree::Error::Store)
+    }
+    fn alloc(&mut self) -> Result<u64, btree::Error> {
+        Err(btree::Error::Store)
+    }
 }
 impl<S: Store> Store for BudgetStore<'_, S> {
     fn data(&self, addr: u64) -> Result<Vec<u8>, btree::Error> {
@@ -143,16 +149,25 @@ impl Scrub {
             errors: self.errors,
         });
     }
-    /// Bound all raw reads, including navigation, to `budget` bytes. A node
+    /// Bound raw reads, including navigation, to `budget` bytes. A node
     /// needs NODE_SIZE; cached navigation permits progress across small batches.
     /// Generation changes discard cached pointers before publication/reuse.
     pub fn step<S: Store>(
-        &mut self, store: &S, root: BlockPtr, generation: u64, budget: usize,
+        &mut self,
+        store: &S,
+        root: BlockPtr,
+        generation: u64,
+        budget: usize,
     ) -> Result<usize, btree::Error> {
-        if generation != self.generation { self.nodes.clear(); }
+        if generation != self.generation {
+            self.nodes.clear();
+        }
         let limited = BudgetStore {
-            store, nodes: RefCell::new(core::mem::take(&mut self.nodes)),
-            used: Cell::new(0), budget, exhausted: Cell::new(false),
+            store,
+            nodes: RefCell::new(core::mem::take(&mut self.nodes)),
+            used: Cell::new(0),
+            budget,
+            exhausted: Cell::new(false),
         };
         let result = self.step_inner(&limited, root, generation, budget);
         let used = limited.used.get();
@@ -160,8 +175,11 @@ impl Scrub {
         result.map(|_| used)
     }
     fn step_inner<S: Store>(
-        &mut self, store: &BudgetStore<'_, S>, root: BlockPtr,
-        generation: u64, budget: usize,
+        &mut self,
+        store: &BudgetStore<'_, S>,
+        root: BlockPtr,
+        generation: u64,
+        budget: usize,
     ) -> Result<usize, btree::Error> {
         if self.completion.is_some() || budget == 0 {
             return Ok(0);
@@ -171,7 +189,9 @@ impl Scrub {
         }
         self.generation = generation;
         let bytes = store.get(root.addr);
-        if store.exhausted.get() { return Ok(0); }
+        if store.exhausted.get() {
+            return Ok(0);
+        }
         let header = bytes
             .as_ref()
             .ok()
@@ -193,7 +213,9 @@ impl Scrub {
             // to rediscover that allocation without retaining its old REF.
             let lower = key(self.address.saturating_sub(255)).max(self.floor);
             let found = reader.next(root, lower, None, self.address);
-            if store.exhausted.get() { break; }
+            if store.exhausted.get() {
+                break;
+            }
             let (k, value) = match found {
                 Ok(Some(item)) => item,
                 Ok(None) => {
@@ -250,7 +272,9 @@ impl Scrub {
                     bytes.len() == BLOCK_SIZE
                         && crc32c::checksum(&bytes) == r.crcs[(address - k.object) as usize]
                 });
-                if store.exhausted.get() { break; }
+                if store.exhausted.get() {
+                    break;
+                }
                 if !good {
                     self.record(address, Kind::Data);
                 }
@@ -272,7 +296,9 @@ impl Scrub {
                     let tree = reference.as_ref().map_or(1, |r| r.kind);
                     verify_node(&bytes, ptr, tree, Some(reader.uuid), generation).is_ok()
                 });
-                if store.exhausted.get() { break; }
+                if store.exhausted.get() {
+                    break;
+                }
                 if !good {
                     self.record(k.object, Kind::Node);
                 }
