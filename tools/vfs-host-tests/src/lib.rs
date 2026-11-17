@@ -125,3 +125,6 @@ mod enospc_profile;
 
 #[path = "../tests/checksum.rs"]
 mod checksum;
+
+#[path = "../tests/scrub_ioctl.rs"]
+mod scrub_ioctl;
