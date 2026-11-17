@@ -140,3 +140,138 @@ fn mapped_enospc_keeps_dirty_pages_for_fsync_and_msync() {
     node.map.shared_stores(&[], false);
     fs.shutdown("enospc-cleanup", u64::MAX).unwrap();
 }
+
+// The flat fixture includes empty directories, symlinks, xattrs and link counts.
+// Reads do not touch atime in this host boundary.
+fn namespace_manifest(fs: &dyn FileSystem) -> Vec<(Vec<u8>, NodeAttrs, Vec<u8>, Vec<u8>)> {
+    let mut names = vec![(Vec::new(), 2)];
+    fs.readdir(2, 0, &mut |entry, _| { names.push((entry.name, entry.ino)); Ok(true) }).unwrap();
+    names.sort();
+    names.into_iter().map(|(name, ino)| {
+        let attrs = fs.getattr(ino).unwrap();
+        let content = match attrs.kind {
+            NodeKind::Regular => {
+                let node = fs.open(ino).unwrap();
+                let mut bytes = vec![0; attrs.size as usize];
+                assert_eq!(fs.read(&node, 0, &mut bytes).unwrap(), bytes.len());
+                sha256::sha256(&bytes).to_vec()
+            }
+            NodeKind::Symlink => fs.readlink(ino).unwrap(),
+            _ => Vec::new(),
+        };
+        let mut keys = vec![0; fs.xattr(ino, Xattr::List { names: &mut [] }).unwrap()];
+        fs.xattr(ino, Xattr::List { names: &mut keys }).unwrap();
+        let mut xattrs = Vec::new();
+        for key in keys.split(|b| *b == 0).filter(|k| !k.is_empty()) {
+            let mut value = vec![0; fs.xattr(ino, Xattr::Get { name: key, value: &mut [] }).unwrap()];
+            fs.xattr(ino, Xattr::Get { name: key, value: &mut value }).unwrap();
+            xattrs.extend_from_slice(key);
+            xattrs.extend_from_slice(&(value.len() as u64).to_le_bytes());
+            xattrs.extend_from_slice(&value);
+        }
+        (name, attrs, content, xattrs)
+    }).collect()
+}
+fn remove_name(fs: &dyn FileSystem, name: &[u8], directory: bool) {
+    let ino = fs.lookup(2, name).unwrap();
+    fs.remove(2, name, Remove {
+        directory, expected: ino, owner: fs.getattr(ino).unwrap().attrs.uid,
+        parent: fs.getattr(2).unwrap().attrs,
+    }).unwrap();
+}
+// Appending data leaves only metadata in PENDING. After the deletion's two
+// quarantine commits, that is also true of the post-delete image.
+fn metadata_blocks(disk: &Disk) -> u64 {
+    use crate::breenfs::{commit::DeviceStore, format, recover};
+    let sb = recover::recover(disk, false).unwrap();
+    recover::space_items(&DeviceStore(disk), &sb).unwrap().into_iter().map(|(key, value)| {
+        match key.item_type {
+            format::REF if format::Ref::decode(&value).unwrap().kind != 3 => key.offset,
+            format::PENDING => format::Pending::decode(&value).unwrap().length,
+            _ => 0,
+        }
+    }).sum()
+}
+
+#[test]
+fn full_disk_namespace_refuses_atomically_and_deletes_use_reserve() {
+    crate::time::with_unix_time(10, || {
+        let (disk, fs, fill) = fixture();
+        let attrs = InodeAttrs::new(0o640, 1000, 1000);
+        let victim = fs.create(2, b"victim", NewNode::Regular { attrs }).unwrap();
+        let victim_node = fs.open(victim).unwrap();
+        write(fs.as_ref(), &victim_node, 0, &vec![0x76; 1024 * 1024]).unwrap();
+        drop(victim_node);
+        let truncated = fs.create(2, b"truncate", NewNode::Regular { attrs }).unwrap();
+        let truncated = fs.open(truncated).unwrap();
+        write(fs.as_ref(), &truncated, 0, &vec![0x74; 1024 * 1024]).unwrap();
+        fs.create(2, b"empty", NewNode::Directory { attrs }).unwrap();
+        fs.create(2, b"symlink", NewNode::Symlink { attrs, target: b"data" }).unwrap();
+        fs.xattr(fill.ino, Xattr::Set { name: b"user.old", value: b"kept", mode: XattrSet::Create }).unwrap();
+        fs.fsync(&fill, false).unwrap();
+        let mut offset = 0;
+        for length in [1024 * 1024, 256 * 1024, 64 * 1024, 16 * 1024, 4096] {
+            let bytes = vec![0x66; length];
+            loop {
+                assert!(offset < 64 * 1024 * 1024);
+                match write(fs.as_ref(), &fill, offset, &bytes) {
+                    Ok(written) => {
+                        assert!(written.bytes > 0);
+                        offset += written.bytes as u64;
+                        fs.fsync(&fill, false).unwrap();
+                    }
+                    Err(e) => { assert_eq!(e.errno(), Errno(ENOSPC)); break; }
+                }
+            }
+        }
+        let before = namespace_manifest(fs.as_ref());
+        crate::time::with_unix_time(20, || {
+            for new in [NewNode::Directory { attrs }, NewNode::Regular { attrs },
+                NewNode::Symlink { attrs, target: b"data" }] {
+                assert_eq!(fs.create(2, b"refused", new), Err(Errno(ENOSPC)));
+                assert_eq!(namespace_manifest(fs.as_ref()), before);
+            }
+            assert_eq!(fs.xattr(fill.ino, Xattr::Set {
+                name: b"user.new", value: b"refused", mode: XattrSet::Create,
+            }), Err(Errno(ENOSPC)));
+            assert_eq!(fs.link(fill.ino, 2, b"alias", &|_, _| Ok(())), Err(Errno(ENOSPC)));
+            assert_eq!(fs.rename(2, b"symlink", 2, b"renamed", RenameMode::Replace,
+                &|_, _, _, _| Ok(())), Err(Errno(ENOSPC)));
+            assert_eq!(fs.setattr(fill.ino, SetAttr { mode: Some(0o600), ..SetAttr::default() }),
+                Err(Errno(ENOSPC)));
+            assert_eq!(fs.create_open(2, b"opened", NodeKind::Regular, &|_| Ok(attrs),
+                &mut |_| panic!("prepare ran without a reservation")), Err(Errno(ENOSPC)));
+        });
+        assert_eq!(namespace_manifest(fs.as_ref()), before);
+        assert_eq!(fs.read_only(), Ok(false));
+        fs.fsync(&fill, false).unwrap();
+        let fill_ino = fill.ino;
+        let truncate_ino = truncated.ino;
+        drop(fill); drop(truncated); drop(fs);
+        let fs = mount(disk.clone());
+        assert_eq!(namespace_manifest(fs.as_ref()), before, "refused mutation survived remount");
+        let fill = fs.open(fill_ino).unwrap();
+        let truncated = fs.open(truncate_ino).unwrap();
+        let freed = fs.getattr(victim).unwrap().blocks + fs.getattr(truncate_ino).unwrap().blocks;
+        // NodeAttrs counts 512-byte sectors; statfs counts 4096-byte blocks.
+        let freed = freed / 8;
+        let available = fs.statfs().unwrap().available_blocks;
+        let metadata = metadata_blocks(&disk);
+        remove_name(fs.as_ref(), b"victim", false);
+        remove_name(fs.as_ref(), b"empty", true);
+        fs.resize(&truncated, 0, false, &|_| Ok(())).unwrap();
+        fs.xattr(fill.ino, Xattr::Remove { name: b"user.old" }).unwrap();
+        fs.fsync(&fill, false).unwrap();
+        fs.fsync(&fill, false).unwrap();
+        fs.fsync(&fill, false).unwrap();
+        let after = fs.statfs().unwrap();
+        let metadata_after = metadata_blocks(&disk);
+        assert!(after.available_blocks > available, "deletion did not return usable space");
+        assert_eq!(after.available_blocks as i64 - available as i64,
+            freed as i64 - (metadata_after as i64 - metadata as i64));
+        assert_eq!(after.available_blocks, after.free_blocks.saturating_sub(4096));
+        assert_eq!(fs.getattr(truncate_ino).unwrap().size, 0);
+        assert_eq!(fs.lookup(2, b"victim"), Err(Errno(crate::syscall_errno::ENOENT)));
+        assert_eq!(fs.lookup(2, b"empty"), Err(Errno(crate::syscall_errno::ENOENT)));
+    });
+}
