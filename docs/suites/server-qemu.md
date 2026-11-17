@@ -9,6 +9,14 @@ scripts/vm-persistent.sh qemu build --run-dir PRIVATE_RUN --operator-account PRI
 scripts/vm-persistent.sh qemu boot --run-dir PRIVATE_RUN --mode console
 ```
 
+Run the operator-login milestone against the booted run:
+
+```sh
+scripts/metal/server-suite --target qemu --run-dir PRIVATE_RUN --boot BOOT_ID --sha COMMIT --milestone users/operator-login
+```
+
+Under D-H, the serial console stands in for SOL, with the same properties.
+
 For the reboot suite, add `--fault panic-reboot` to the build command. It seals
 a separate fault kernel for `fault-boot` and restores the production kernel at
 the shared build path before building the image. Fault launch verifies the

@@ -2417,7 +2417,7 @@ def main():
         profile = (args.run_dir / 'qemu-profile').read_text().strip()
         record_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-qemu-' + uuid.uuid4().hex
         subprocess.run([str(Path(__file__).resolve().parent.parent / 'vigil-record.sh'),
-                        'record', 'qemu', 'persistent', 'server', str(suite_file),
+                        'record', 'qemu', 'persistent', SUITES[category], str(suite_file),
                         str(machine.directory / 'serial.txt'), profile, record_id, args.sha,
                         started, ended, str(status)], check=True,
                        env=dict(os.environ, BREENIX_VIGIL_ARCH='aarch64'))
