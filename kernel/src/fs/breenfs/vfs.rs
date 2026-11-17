@@ -1147,17 +1147,29 @@ impl<W: Wait + 'static> BreenFs<W> {
             }
             // ROOT removal is its own durable operation. The next policy-due
             // generation starts reaping, with at most REAP_PER_COMMIT nodes.
-            let reap = !core::mem::take(&mut state.skip_reap)
+            let mut reap = !core::mem::take(&mut state.skip_reap)
                 && !state.closed && !state.reap_shutdown && state.dead_remaining != 0;
             let reaped = (|| -> Result<(), ops::Error> {
                 let MountState { files, reservations, grants, durable, .. } = &mut *state;
                 let (txn, _) = files.prepare_commit()?;
                 if reap {
-                    grants.try_reserve(1).map_err(|_| ops::Error::ENOSPC)?;
-                    let grant = txn.reserve_reap(reservations, durable.free_blocks)?;
-                    grants.push(grant);
-                    for _ in 0..super::txn::REAP_PER_COMMIT {
-                        if txn.reap_step()?.is_none() { break; }
+                    // Reaping is optional: admission refusal changes no trees
+                    // and must not discard already acknowledged dirty writes.
+                    let grant = if grants.try_reserve(1).is_ok() {
+                        match txn.reserve_reap(reservations, durable.free_blocks)
+                            .map_err(ops::Error::from)
+                        {
+                            Ok(grant) => Some(grant),
+                            Err(ops::Error::ENOSPC) => None,
+                            Err(error) => return Err(error),
+                        }
+                    } else { None };
+                    reap = grant.is_some();
+                    if let Some(grant) = grant {
+                        grants.push(grant);
+                        for _ in 0..super::txn::REAP_PER_COMMIT {
+                            if txn.reap_step()?.is_none() { break; }
+                        }
                     }
                 }
                 state.dead_remaining = txn.dead_count();
