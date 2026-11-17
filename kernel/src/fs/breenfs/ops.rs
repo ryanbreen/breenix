@@ -638,27 +638,33 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         }
         Ok(n)
     }
-    // One private extent per contiguous run, bounded to 1 MiB (design 1.2).
-    fn replace_extent(&mut self, ino: u64, off: u64, bytes: Vec<u8>) -> Result<(), Error> {
+    // Logical runs are bounded to 1 MiB (design 1.2); fragmented FREE space
+    // can require several physical extents for one such run.
+    fn replace_extent(&mut self, ino: u64, off: u64, bytes: &[u8]) -> Result<(), Error> {
         let crcs: Vec<_> = bytes
             .chunks_exact(BLOCK_SIZE)
             .map(crc32c::checksum)
             .collect();
-        let blocks = crcs.len() as u32;
-        let addr = self.txn.allocate_data(&crcs)?;
-        self.data.insert(addr, bytes);
-        self.txn.insert(
-            &mut self.root.root,
-            key(ino, format::EXTENT, off),
-            &Extent {
-                phys_start: addr,
-                phys_len: blocks,
-                extent_offset: 0,
-                num_blocks: blocks,
-                flags: 0,
-            }
-            .encode(),
-        )?;
+        let mut done = 0;
+        while done < crcs.len() {
+            let (addr, blocks) = self.txn.allocate_data_run(&crcs[done..])?;
+            let next = done + blocks as usize;
+            self.data
+                .insert(addr, bytes[done * BLOCK_SIZE..next * BLOCK_SIZE].to_vec());
+            self.txn.insert(
+                &mut self.root.root,
+                key(ino, format::EXTENT, off + (done * BLOCK_SIZE) as u64),
+                &Extent {
+                    phys_start: addr,
+                    phys_len: blocks as u32,
+                    extent_offset: 0,
+                    num_blocks: blocks as u32,
+                    flags: 0,
+                }
+                .encode(),
+            )?;
+            done = next;
+        }
         Ok(())
     }
     // Remove intersecting items and retain unaffected block slices. A split
@@ -722,7 +728,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         blocks[lo..lo + bytes.len()].copy_from_slice(bytes);
         self.remove_range(ino, start, rounded)?;
         for (n, run) in blocks.chunks(256 * BLOCK_SIZE).enumerate() {
-            self.replace_extent(ino, start + (n * 256 * BLOCK_SIZE) as u64, run.to_vec())?;
+            self.replace_extent(ino, start + (n * 256 * BLOCK_SIZE) as u64, run)?;
         }
         inode.size = inode.size.max(end);
         inode.mtime = at;
@@ -780,7 +786,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             };
             self.remove_range(ino, floor, u64::MAX)?;
             if let Some(b) = tail {
-                self.replace_extent(ino, floor, b)?;
+                self.replace_extent(ino, floor, &b)?;
             }
         }
         inode.size = size;

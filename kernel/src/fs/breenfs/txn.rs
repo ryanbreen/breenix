@@ -288,6 +288,16 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
         Ok(r.refcount)
     }
     fn reserve(&mut self, length: u64, kind: Kind, crcs: &[u32]) -> Result<u64, Error> {
+        self.reserve_extent(length, kind, crcs, false)
+            .map(|(start, _)| start)
+    }
+    fn reserve_extent(
+        &mut self,
+        length: u64,
+        kind: Kind,
+        crcs: &[u32],
+        short_data: bool,
+    ) -> Result<(u64, u64), Error> {
         let mut reservations = Reservations {
             view: View {
                 base: self.base.get(),
@@ -296,14 +306,34 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             changes: &mut self.reserved_nodes,
             next: &mut self.scratch_next,
         };
-        let start = space::allocate(
-            &mut reservations,
-            &mut self.reservation_root,
-            length,
-            kind,
-            crcs,
-            self.generation,
-        )?;
+        let requested = length;
+        let (start, length) = if short_data {
+            space::allocate_data_run(
+                &mut reservations,
+                &mut self.reservation_root,
+                crcs,
+                self.generation,
+            )?
+        } else {
+            (
+                space::allocate(
+                    &mut reservations,
+                    &mut self.reservation_root,
+                    length,
+                    kind,
+                    crcs,
+                    self.generation,
+                )?,
+                length,
+            )
+        };
+        let crcs = &crcs[..crcs.len().min(length as usize)];
+        if length < requested {
+            // A short result promoted eligible PENDING ranges before choosing
+            // its largest run. Exact-length replay could fit FREE without
+            // promotion, so mirror that conversion before replaying the REF.
+            self.deferred.push_back(Change::PromotePending);
+        }
         self.counts.insert((start, length), 1);
         self.allocated.insert(start);
         self.deferred.push_back(Change::Allocate {
@@ -312,13 +342,20 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             kind,
             crcs: crcs.to_vec(),
         });
-        Ok(start)
+        Ok((start, length))
     }
     /// The initial reference belongs to the caller and is transferred to its
     /// new EXTENT item. Additional items naming that REF need `increment` first.
     pub fn allocate_data(&mut self, crcs: &[u32]) -> Result<u64, Error> {
         self.healthy()?;
         let result = self.reserve(crcs.len() as u64, Kind::Data, crcs);
+        self.result(result)
+    }
+    /// Reserve one physical data run, which may cover only a prefix. Record
+    /// its actual length so deferred replay and EXTENT ownership agree.
+    pub fn allocate_data_run(&mut self, crcs: &[u32]) -> Result<(u64, u64), Error> {
+        self.healthy()?;
+        let result = self.reserve_extent(crcs.len() as u64, Kind::Data, crcs, true);
         self.result(result)
     }
     pub fn increment(&mut self, start: u64, length: u64) -> Result<(), Error> {
