@@ -29,6 +29,21 @@ fn main() {
     let source = fs::read_to_string(path).unwrap();
     let mut out = String::new();
     for marker in [
+        "fn pages(",
+        "struct PageVec<T>",
+        "impl<T> PageVec<T>",
+        "fn bound_runs(",
+    ] {
+        out.push_str(&item(&source, marker));
+        out.push('\n');
+    }
+    out.push_str("impl MapInner {\n");
+    for marker in ["    fn bound(", "    fn holes(", "    fn reserve_poison(", "    fn poison("] {
+        out.push_str(&item(&source, marker));
+        out.push('\n');
+    }
+    out.push_str("}\n");
+    for marker in [
         "pub(crate) fn writeback_buffer(",
         "pub(crate) fn sync_range(",
         "pub(crate) fn stage_range_with_buffer(",
@@ -43,6 +58,15 @@ fn main() {
     out.push_str("impl MapState {\n");
     for marker in [
         "    fn refresh(",
+        "    pub(crate) fn overlay(",
+        "    pub(crate) fn resync_unbound(",
+        "    pub(crate) fn prepare_write(",
+        "    pub(crate) fn commit_write(",
+        "    pub(crate) fn prepare_resize(",
+        "    pub(crate) fn invalidate(",
+        "    pub(crate) fn transition(",
+        "    pub(crate) fn repair(",
+        "    pub(crate) fn abandon_population(",
         "    pub(crate) fn has_dirty(",
         "    pub(crate) fn nonempty(",
         "    pub(crate) fn request_writeback(",
