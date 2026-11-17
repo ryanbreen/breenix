@@ -6,15 +6,18 @@ use alloc::{format, vec, vec::Vec};
 pub struct Stream {
     random: u64,
     stress: bool,
+    snapshots: bool,
     index: u64,
     shadow: Model,
 }
 impl Stream {
     pub fn new(seed: u64) -> Self {
         let stress = seed & TORTURE_SEED != 0;
-        let seed = seed & !TORTURE_SEED;
+        let snapshots = seed & SNAPSHOT_SEED != 0;
+        let seed = seed & !(TORTURE_SEED | SNAPSHOT_SEED);
         Self {
             stress,
+            snapshots,
             random: if seed == 0 {
                 0x9e37_79b9_7f4a_7c15
             } else {
@@ -80,6 +83,58 @@ impl Stream {
             _ => Action::Fsync { ino },
         }
     }
+    fn snapshot_prefix(&self) -> Action {
+        match self.index {
+            4..=11 => Action::Setxattr {
+                ino: 16,
+                name: format!("user.snapshot-{}", self.index).into_bytes(),
+                value: vec![self.index as u8; 4096],
+            },
+            12 => Action::Snapshot {
+                name: b"frozen".to_vec(),
+                read_only: true,
+            },
+            13 => Action::Clone {
+                name: b"clone".to_vec(),
+            },
+            14 => Action::Snapshot {
+                name: b"writable".to_vec(),
+                read_only: false,
+            },
+            15 => Action::Write {
+                ino: 16,
+                offset: 8193,
+                bytes: b"live next".to_vec(),
+            },
+            16 => {
+                // The inode/extent edit touches the first leaf. Change the last
+                // xattr leaf too, so deletion leaves multiple DEAD descendants
+                // after the shared root itself is reaped.
+                let key = core::array::from_fn(|n| n as u8);
+                let name = (4..=11)
+                    .map(|n| format!("user.snapshot-{n}").into_bytes())
+                    .max_by_key(|name| crate::siphash::hash(&key, name))
+                    .unwrap();
+                Action::Setxattr {
+                    ino: 16,
+                    name,
+                    value: b"live attribute".to_vec(),
+                }
+            }
+            17 | 21 | 22 => Action::Fsync { ino: ROOT },
+            18 => Action::DeleteSnapshot {
+                name: b"clone".to_vec(),
+            },
+            19 => Action::DeleteSnapshot {
+                name: b"writable".to_vec(),
+            },
+            20 => Action::DeleteSnapshot {
+                name: b"frozen".to_vec(),
+            },
+            23 => Action::Remount,
+            _ => unreachable!("snapshot prefix range"),
+        }
+    }
     fn generated(&mut self) -> Action {
         let state = self.shadow.state().expect("model state");
         let ids: Vec<_> = state.inodes.keys().copied().collect();
@@ -101,7 +156,7 @@ impl Stream {
         let name = self.name(dir, &state);
         let mode = 0o600 | (self.random() as u32 & 0o177);
         let offset = [0, 4095, 4096, 8193, 1 << 32][(self.random() % 5) as usize];
-        match self.random() % 14 {
+        match self.random() % if self.snapshots { 17 } else { 14 } {
             0 => Action::Create { dir, name, mode },
             1 => {
                 let count = (self.random() % 65) as usize;
@@ -157,7 +212,29 @@ impl Stream {
             12 => Action::Fsync {
                 ino: self.pick(&ids),
             },
-            _ => Action::Remount,
+            13 => Action::Remount,
+            14 => Action::Snapshot {
+                name: format!("root{}", self.random() % 4).into_bytes(),
+                read_only: self.random() & 1 != 0,
+            },
+            15 => Action::Clone {
+                name: format!("root{}", self.random() % 4).into_bytes(),
+            },
+            _ => {
+                let names: Vec<_> = self
+                    .shadow
+                    .roots()
+                    .unwrap()
+                    .into_keys()
+                    .filter(|name| name != b"default")
+                    .collect();
+                let name = if names.is_empty() {
+                    b"absent".to_vec()
+                } else {
+                    names[self.random() as usize % names.len()].clone()
+                };
+                Action::DeleteSnapshot { name }
+            }
         }
     }
 }
@@ -177,6 +254,7 @@ impl Iterator for Stream {
             },
             2 => Action::Fsync { ino: 16 },
             3 => Action::Remount,
+            4..=23 if self.snapshots => self.snapshot_prefix(),
             _ if self.stress && self.index >= 8 && self.index % 16 < 14 => self.stress(),
             _ => self.generated(),
         };
@@ -202,6 +280,11 @@ pub fn torture_operations(seed: u64) -> usize {
 // The workload tag stays in emitted regression rows, independent of their
 // minimized operation count. Ordinary model/minimizer seeds retain their stream.
 const TORTURE_SEED: u64 = 1 << 63;
+const SNAPSHOT_SEED: u64 = 1 << 62;
+/// Tag a deterministic snapshot workload while preserving ordinary regression seeds.
+pub fn snapshot_seed(seed: u64) -> u64 {
+    seed | SNAPSHOT_SEED
+}
 pub fn torture_seed(seed: u64) -> u64 {
     seed | TORTURE_SEED
 }

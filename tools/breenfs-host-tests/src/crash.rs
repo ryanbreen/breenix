@@ -5,7 +5,7 @@ use crate::{
     model::Model,
     recording::{Event, RecordingDevice, SECTOR_SIZE},
     stream::Stream,
-    Action, Errno, Fs, Operation, Result, State, Time, WriterAdapter,
+    Action, Errno, Fs, Operation, Result, Roots, Time, WriterAdapter,
 };
 use alloc::{
     collections::{BTreeMap, BTreeSet},
@@ -130,12 +130,29 @@ pub enum Masks {
     /// and above 12 writes the writes+1 prefixes, the writes omissions and one
     /// random subset in k.
     Sample(usize),
+    /// Small per-window slice: empty/partial/full prefixes, endpoint omissions
+    /// and the first random subset; small windows remain exhaustive.
+    Representative,
 }
 
 impl Masks {
     pub fn keeps(self, writes: usize, case: usize) -> bool {
         match self {
             Masks::Every => true,
+            Masks::Representative => {
+                writes <= 12
+                    || [
+                        0,
+                        1,
+                        writes / 2,
+                        writes - 1,
+                        writes,
+                        writes + 1,
+                        writes * 2,
+                        writes * 2 + 1,
+                    ]
+                    .contains(&case)
+            }
             Masks::Sample(k) => {
                 writes <= 12 || case <= writes * 2 || (case - writes * 2 - 1) % k == 0
             }
@@ -158,7 +175,7 @@ struct Window {
 struct Recorded {
     seed: u64,
     windows: Vec<Window>,
-    snapshots: BTreeMap<u64, State>,
+    snapshots: BTreeMap<u64, Roots>,
 }
 
 /// Replay the bounded seeded stream; validate its crash images per design section 5.
@@ -238,12 +255,12 @@ fn record(
     let mut writer = WriterAdapter::new(device.clone())?;
     let mut model = Model::new();
     assert_eq!(
-        writer.state()?,
-        model.state()?,
+        writer.roots()?,
+        model.roots()?,
         "seed={seed}: initial model"
     );
     let initial_generation = *device.durable_generations().last().ok_or(Errno::EIO)?;
-    let mut snapshots = BTreeMap::from([(initial_generation, model.state()?)]);
+    let mut snapshots = BTreeMap::from([(initial_generation, model.roots()?)]);
     let mut acknowledged = initial_generation;
     let mut issued = initial_generation;
     let mut generation = initial_generation;
@@ -265,8 +282,8 @@ fn record(
             "seed={seed} op={index}: {op:?}"
         );
         assert_eq!(
-            writer.state()?,
-            model.state()?,
+            writer.roots()?,
+            model.roots()?,
             "seed={seed} op={index}: {op:?}"
         );
         let committed = *device.durable_generations().last().ok_or(Errno::EIO)?;
@@ -276,7 +293,7 @@ fn record(
                 generation + 1,
                 "seed={seed} op={index}: commit snapshot"
             );
-            snapshots.insert(committed, model.state()?);
+            snapshots.insert(committed, model.roots()?);
             generation = committed;
         }
         let events = device.events();
@@ -360,7 +377,7 @@ fn validate(
         "seed={seed} op={} boundary={boundary} image={case} tail={tail:?}: checker",
         window.operation
     );
-    let state = recovered.state()?;
+    let state = recovered.roots()?;
     assert!(matches_commit(&recorded.snapshots, window.acknowledged, window.issued, &state),
         "seed={seed} op={} boundary={boundary} image={case} tail={tail:?}: state outside commits {}..={}: {state:?}",
         window.operation, window.acknowledged, window.issued);
@@ -473,10 +490,10 @@ pub fn torn_images_of(
 }
 
 fn matches_commit(
-    snapshots: &BTreeMap<u64, State>,
+    snapshots: &BTreeMap<u64, Roots>,
     acknowledged: u64,
     issued: u64,
-    state: &State,
+    state: &Roots,
 ) -> bool {
     snapshots
         .range(acknowledged..=issued)
@@ -627,6 +644,54 @@ mod tests {
             started.elapsed()
         );
         assert!(started.elapsed().as_secs_f64() < 60.0);
+    }
+
+    #[test]
+    #[ignore = "full snapshot crash corpus: opt-in breenfs battery only, never per change"]
+    fn snapshot_crash_images_full_corpus() {
+        use std::{
+            fs::OpenOptions,
+            io::{Seek, SeekFrom, Write},
+            process::Command,
+        };
+        let path = std::env::temp_dir().join(alloc::format!(
+            "breenfs-snapshot-full-{}.img",
+            std::process::id()
+        ));
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let report = subset_images(
+            crate::test_image::image(),
+            crate::stream::snapshot_seed(0x2414),
+            24,
+            |image| {
+                file.set_len(0).unwrap();
+                file.set_len(image.sector_count * SECTOR_SIZE as u64)
+                    .unwrap();
+                for (&sector, bytes) in &image.sectors {
+                    file.seek(SeekFrom::Start(sector * SECTOR_SIZE as u64))
+                        .unwrap();
+                    file.write_all(bytes).unwrap();
+                }
+                file.flush().unwrap();
+                let output = Command::new(env!("CARGO_BIN_FILE_BREENFS_breenfs-check"))
+                    .arg("--full")
+                    .arg(&path)
+                    .output()
+                    .unwrap();
+                assert_eq!(output.status.code(), Some(0), "{output:?}");
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(report
+            .boundaries
+            .iter()
+            .all(|boundary| boundary.images == boundary.validated));
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

@@ -18,6 +18,9 @@ pub struct WriterAdapter {
     device: Arc<dyn BlockDevice>,
     files: Option<Files<'static, Store>>,
     committer: Committer,
+    superblock: format::Superblock,
+    root_id: u64,
+    read_only: bool,
     failed: bool,
     dirty: bool,
 }
@@ -61,7 +64,10 @@ impl WriterAdapter {
         Ok(Self {
             device,
             files: Some(files),
-            committer: Committer::new(sb),
+            committer: Committer::new(sb.clone()),
+            superblock: sb,
+            root_id: 1,
+            read_only: false,
             failed: false,
             dirty: false,
         })
@@ -74,12 +80,43 @@ impl WriterAdapter {
             .read(self.device.as_ref(), ino, offset, buf)
             .map_err(error)
     }
+    fn space_items(&self) -> Result<Vec<(format::Key, Vec<u8>)>> {
+        ops::items(&Store(self.device.clone()), self.superblock.space_root).map_err(error)
+    }
+    fn root_items(&self) -> Result<Vec<(u64, format::Root)>> {
+        self.space_items()?
+            .into_iter()
+            .filter(|(key, _)| key.item_type == format::ROOT)
+            .map(|(key, bytes)| {
+                Ok((
+                    key.offset,
+                    format::Root::decode(&bytes).map_err(|_| Errno::EIO)?,
+                ))
+            })
+            .collect()
+    }
     fn sync(&mut self) -> Result<()> {
         if self.failed {
             return Err(Errno::EIO.into());
         }
         if !self.dirty {
-            return Ok(());
+            if self.read_only
+                || !self
+                    .space_items()?
+                    .iter()
+                    .any(|(key, _)| key.item_type == format::DEAD)
+            {
+                return Ok(());
+            }
+            // One DEAD node per host scheduling turn exposes resumable frontiers
+            // without draining the tree in a single operation.
+            let (txn, _) = self
+                .files
+                .as_mut()
+                .ok_or(Errno::EIO)?
+                .prepare_commit()
+                .map_err(error)?;
+            txn.reap_step().map_err(|e| error(e.into()))?;
         }
         let sb = self
             .files
@@ -89,7 +126,16 @@ impl WriterAdapter {
             .map_err(error)?;
         // Publication may fill child pointer checksums. Discard the old overlay.
         self.files = None;
-        self.files = Some(Files::new(Store(self.device.clone()), &sb, 1, true).map_err(error)?);
+        self.files = Some(
+            Files::new(
+                Store(self.device.clone()),
+                &sb,
+                self.root_id,
+                !self.read_only,
+            )
+            .map_err(error)?,
+        );
+        self.superblock = sb;
         self.dirty = false;
         Ok(())
     }
@@ -110,13 +156,45 @@ impl Fs for WriterAdapter {
                     self.sync()?;
                     return Ok(Reply::Done);
                 }
+                Action::Snapshot { name, .. } | Action::Clone { name } => {
+                    let read_only = match &op.action {
+                        Action::Snapshot { read_only, .. } => *read_only,
+                        _ => false,
+                    };
+                    self.files
+                        .as_mut()
+                        .ok_or(Errno::EIO)?
+                        .snapshot(name, read_only)
+                        .map_err(error)?;
+                    self.dirty = true;
+                    self.sync()?;
+                    return Ok(Reply::Done);
+                }
+                Action::DeleteSnapshot { name } => {
+                    self.files
+                        .as_mut()
+                        .ok_or(Errno::EIO)?
+                        .delete_root(name)
+                        .map_err(error)?;
+                    self.dirty = true;
+                    self.sync()?;
+                    return Ok(Reply::Done);
+                }
                 Action::Remount => {
                     self.sync()?;
                     self.files = None; // No cached tree or model state survives remount.
                     let sb =
                         recover::recover(self.device.as_ref(), true).map_err(|_| Errno::EIO)?;
-                    self.files =
-                        Some(Files::new(Store(self.device.clone()), &sb, 1, true).map_err(error)?);
+                    self.files = Some(
+                        Files::new(
+                            Store(self.device.clone()),
+                            &sb,
+                            self.root_id,
+                            !self.read_only,
+                        )
+                        .map_err(error)?,
+                    );
+                    self.superblock = sb.clone();
                     self.committer = Committer::new(sb);
                     return Ok(Reply::Done);
                 }
@@ -191,7 +269,11 @@ impl Fs for WriterAdapter {
                         .map_err(error)?;
                     Reply::Done
                 }
-                Action::Fsync { .. } | Action::Remount => unreachable!("handled before mutation"),
+                Action::Fsync { .. }
+                | Action::Remount
+                | Action::Snapshot { .. }
+                | Action::Clone { .. }
+                | Action::DeleteSnapshot { .. } => unreachable!("handled before mutation"),
             };
             self.dirty = true;
             Ok(reply)
@@ -204,7 +286,51 @@ impl Fs for WriterAdapter {
         result
     }
     fn state(&self) -> Result<State> {
-        let files = self.files()?;
+        self.state_of(self.files()?)
+    }
+    fn roots(&self) -> Result<Roots> {
+        let mut roots = Roots::new();
+        for (id, root) in self.root_items()? {
+            let state = if id == self.root_id {
+                self.state()?
+            } else {
+                let files = Files::new(Store(self.device.clone()), &self.superblock, id, false)
+                    .map_err(error)?;
+                self.state_of(&files)?
+            };
+            roots.insert(
+                root.name,
+                RootState {
+                    read_only: root.flags & 1 != 0,
+                    state,
+                },
+            );
+        }
+        Ok(roots)
+    }
+    fn select_root(&mut self, name: &[u8]) -> Result<()> {
+        let (id, root) = self
+            .root_items()?
+            .into_iter()
+            .find(|(_, root)| root.name == name)
+            .ok_or(Errno::ENOENT)?;
+        self.sync()?;
+        self.root_id = id;
+        self.read_only = root.flags & 1 != 0;
+        self.files = Some(
+            Files::new(
+                Store(self.device.clone()),
+                &self.superblock,
+                id,
+                !self.read_only,
+            )
+            .map_err(error)?,
+        );
+        Ok(())
+    }
+}
+impl WriterAdapter {
+    fn state_of(&self, files: &Files<'static, Store>) -> Result<State> {
         let items = files.items().map_err(error)?;
         let mut state = State::default();
         for (k, v) in items.iter().filter(|(k, _)| k.item_type == format::INODE) {
