@@ -98,3 +98,40 @@ fn full_disk_write_refuses_without_changing_manifest_or_failing_mount() {
         assert_eq!(fs.fsync(&node, false), Ok(()));
     });
 }
+
+#[test]
+fn mapped_enospc_keeps_dirty_pages_for_fsync_and_msync() {
+    let (_disk, fs, node) = fixture();
+    let before = fs.statfs().unwrap();
+    fs.resize(&node, 1024 * 1024, false, &|_| Ok(())).unwrap();
+    assert!(fs.statfs().unwrap().available_blocks < before.available_blocks,
+        "extending truncate must reserve its metadata");
+    fs.fsync(&node, false).unwrap();
+    fs.mapping_io(&node).unwrap().publish(&mut |_| Ok(())).unwrap();
+    let fill = fs.create(2, b"fill", NewNode::Regular {
+        attrs: InodeAttrs::new(0o600, 0, 0),
+    }).unwrap();
+    let fill = fs.open(fill).unwrap();
+    let mut offset = 0;
+    // Fill with large requests, then consume the remaining admission headroom
+    // a page at a time, so even one 64-page mapping batch cannot reserve.
+    for bytes in [vec![0x69; 1024 * 1024], vec![0x69; 4096]] {
+        loop {
+            assert!(offset < 64 * 1024 * 1024);
+            match write(fs.as_ref(), &fill, offset, &bytes) {
+                Ok(written) => {
+                    assert!(written.bytes > 0);
+                    offset += written.bytes as u64;
+                    fs.fsync(&fill, false).unwrap();
+                }
+                Err(error) => { assert_eq!(error.errno(), Errno(ENOSPC)); break; }
+            }
+        }
+    }
+    node.map.shared_stores(&vec![0x72; 1024 * 1024], false);
+    assert_eq!(fs.fsync(&node, false), Err(Errno(ENOSPC)));
+    assert!(node.map.has_dirty(), "fsync ENOSPC lost mapped dirty custody");
+    assert_eq!(crate::memory::file_map::sync_range(&node, 0, u64::MAX), Err(Errno(ENOSPC)));
+    assert!(node.map.has_dirty(), "msync ENOSPC lost mapped dirty custody");
+    assert_eq!(fs.read_only(), Ok(false));
+}
