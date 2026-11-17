@@ -385,46 +385,64 @@ pub fn range_limit<S: NodeStore>(
     upper: Key,
     limit: usize,
 ) -> Result<Vec<(Key, Vec<u8>)>, Error> {
-    fn walk<S: NodeStore>(
+    let mut out = Vec::new();
+    if limit != 0 {
+        visit_range(store, root, lower, upper, &mut |key, bytes| {
+            preemption_point();
+            out.push((key, bytes.to_vec()));
+            Ok::<_, Error>(out.len() < limit)
+        })?;
+    }
+    Ok(out)
+}
+
+/// Visit an inclusive range once, stopping as soon as the sink refuses an item.
+/// This call retains its ancestors; a later call resumes from its current root.
+/// The sink's error type keeps caller errors distinct from B-tree failures.
+pub fn visit_range<S: NodeStore, E: From<Error>>(
+    store: &S,
+    root: BlockPtr,
+    lower: Key,
+    upper: Key,
+    visit: &mut dyn FnMut(Key, &[u8]) -> Result<bool, E>,
+) -> Result<(), E> {
+    fn walk<S: NodeStore, E: From<Error>>(
         store: &S,
         node: Arc<Node>,
         bound: Option<Key>,
         lower: Key,
         upper: Key,
-        out: &mut Vec<(Key, Vec<u8>)>,
-        limit: usize,
-    ) -> Result<(), Error> {
+        visit: &mut dyn FnMut(Key, &[u8]) -> Result<bool, E>,
+    ) -> Result<bool, E> {
         preemption_point();
         if node.header.level == 0 {
-            out.extend(
-                node.items
-                    .iter()
-                    .filter(|(k, _)| { preemption_point(); *k >= lower && *k <= upper })
-                    .take(limit - out.len())
-                    .cloned(),
-            );
+            let start = node.items.partition_point(|(key, _)| *key < lower);
+            for (key, bytes) in &node.items[start..] {
+                preemption_point();
+                if *key > upper { break; }
+                if !visit(*key, bytes)? { return Ok(false); }
+            }
         } else {
             for (i, entry) in node.children.iter().enumerate() {
-                if out.len() == limit {
-                    break;
-                }
+                preemption_point();
                 let next = node.children.get(i + 1).map(|e| e.key).or(bound);
                 if entry.key <= upper && next.is_none_or(|k| k > lower) {
                     let ptr = node.child(i);
                     let child = read_node(store, ptr, false, Some(entry.key), next)?;
                     same_tree(&node, &child)?;
-                    walk(store, child, next, lower, upper, out, limit)?;
+                    if !walk(store, child, next, lower, upper, visit)? {
+                        return Ok(false);
+                    }
                 }
             }
         }
-        Ok(())
+        Ok(true)
     }
-    let mut out = Vec::new();
-    if lower <= upper && limit != 0 {
+    if lower <= upper {
         let node = read_node(store, root, true, None, None)?;
-        walk(store, node, None, lower, upper, &mut out, limit)?;
+        walk(store, node, None, lower, upper, visit)?;
     }
-    Ok(out)
+    Ok(())
 }
 
 struct Edit<'a, S> {

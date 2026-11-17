@@ -316,26 +316,42 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         cookie: u64,
         limit: usize,
     ) -> Result<Vec<(u64, DirRecord)>, Error> {
+        let mut out = Vec::new();
+        if limit != 0 {
+            self.visit_directory_entries(dir, cookie, &mut |next, entry| {
+                out.push((next, entry));
+                out.len() < limit
+            })?;
+        } else {
+            self.directory(dir)?;
+        }
+        Ok(out)
+    }
+    /// Stream DIR_INDEX records without restarting at internal batch boundaries.
+    /// The caller keeps the tree stable for the duration of the sink call.
+    pub fn visit_directory_entries(
+        &self,
+        dir: u64,
+        cookie: u64,
+        emit: &mut dyn FnMut(u64, DirRecord) -> bool,
+    ) -> Result<(), Error> {
         let inode = self.directory(dir)?;
-        btree::range_limit(
+        btree::visit_range(
             &self.txn.view(),
             self.root.root,
             key(dir, format::DIR_INDEX, cookie.max(2)),
             key(dir, format::DIR_INDEX, u64::MAX),
-            limit,
-        )?
-        .into_iter()
-        .map(|(k, bytes)| {
-            if k.offset >= inode.next_index {
-                return Err(Error::EIO);
-            }
-            let mut records = dir_records(&bytes)?;
-            if records.len() != 1 {
-                return Err(Error::EIO);
-            }
-            Ok((k.offset + 1, records.remove(0)))
-        })
-        .collect()
+            &mut |k, bytes| {
+                if k.offset >= inode.next_index {
+                    return Err(Error::EIO);
+                }
+                let mut records = dir_records(bytes)?;
+                if records.len() != 1 {
+                    return Err(Error::EIO);
+                }
+                Ok(emit(k.offset + 1, records.remove(0)))
+            },
+        )
     }
     // Check the next directory cookie and collision payload before edits.
     fn vacant(&self, dir: u64, name: &[u8], kind: u8) -> Result<(), Error> {

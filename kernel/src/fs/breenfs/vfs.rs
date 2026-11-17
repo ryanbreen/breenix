@@ -1809,27 +1809,22 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         sink: &mut dyn FnMut(DirEnt, u64) -> Result<bool, Errno>,
     ) -> Result<u64, Errno> {
         let mut state = self.inner.state.lock();
-        loop {
-            let result = state.files.directory_entries(dir, cookie, 64);
-            let entries = state.observed(result)?;
-            if entries.is_empty() {
-                return Ok(cookie);
+        let mut outcome = Ok(());
+        let result = state.files.visit_directory_entries(dir, cookie, &mut |next, entry| {
+            let accepted = record_kind(entry.kind).and_then(|kind| sink(
+                DirEnt { ino: entry.ino, kind, name: entry.name }, next,
+            ));
+            match accepted {
+                Ok(true) => { cookie = next; true }
+                Ok(false) => false,
+                Err(error) => { outcome = Err(error); false }
             }
-            for (next, entry) in entries {
-                if !sink(
-                    DirEnt {
-                        ino: entry.ino,
-                        kind: record_kind(entry.kind)?,
-                        name: entry.name,
-                    },
-                    next,
-                )? {
-                    return Ok(cookie);
-                }
-                cookie = next;
-            }
-        }
+        });
+        state.observed(result)?;
+        outcome?;
+        Ok(cookie)
     }
+
     fn read(&self, node: &VNode, off: u64, buf: &mut [u8]) -> Result<usize, Errno> {
         self.check_node(node)?;
         let publication = (!self.inner.writable)
