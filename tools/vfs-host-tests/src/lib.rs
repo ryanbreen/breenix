@@ -137,3 +137,6 @@ mod snapshot_mount_args;
 
 #[path = "../tests/snapshot_mount.rs"]
 mod snapshot_mount;
+
+#[path = "../tests/snapshot_ioctl.rs"]
+mod snapshot_ioctl;
