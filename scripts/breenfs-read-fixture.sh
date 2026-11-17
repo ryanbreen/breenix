@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# Make the disposable read-suite disk and its extractor manifest.
+# Make the disposable read-suite disk and its extractor manifest. ENTRIES (default
+# 5000, the read suite's fixture) sizes the many/ directory; the host test's
+# default-run sample asks for fewer.
 set -euo pipefail
-[ "$#" -eq 2 ] || { echo "usage: $0 IMAGE MANIFEST" >&2; exit 2; }
+[ "$#" -eq 2 ] || [ "$#" -eq 3 ] || { echo "usage: $0 IMAGE MANIFEST [ENTRIES]" >&2; exit 2; }
+ENTRIES="${3:-5000}"
+case "$ENTRIES" in ""|*[!0-9]*) echo "ENTRIES must be a count" >&2; exit 2;; esac
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export CARGO_BUILD_JOBS=4
 BUILD=()
@@ -11,7 +15,7 @@ if [ "$(uname -s)" = Darwin ]; then BUILD=(taskpolicy -b); fi
 TARGET="${CARGO_TARGET_DIR:-$ROOT/tools/breenfs/target}"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-python3 - "$WORK/tree" <<'PY'
+python3 - "$WORK/tree" "$ENTRIES" <<'PY'
 import ctypes
 import os
 from pathlib import Path
@@ -40,7 +44,7 @@ with (tree / 'sparse').open('wb') as file:
         punch = Punch(0, 0, 4096, 4 * 1024 * 1024 - 4096)
         if libc.fcntl(file.fileno(), 99, ctypes.byref(punch)) != 0:
             raise OSError(ctypes.get_errno(), 'F_PUNCHHOLE')
-for index in range(5000):
+for index in range(int(sys.argv[2])):
     (tree / 'many' / f'n{index:04}').write_bytes(b'')
 paths = [tree, *tree.rglob('*')]
 for path in paths:
