@@ -39,6 +39,29 @@ impl DirtyPages {
         let last = if length == 0 { first } else {
             (offset + length as u64).div_ceil(BLOCK_SIZE as u64)
         };
+        let old_pages = self.pages.len() as u64;
+        let incoming_pages = last - first;
+        let Some((&old_first, _)) = self.pages.first_key_value() else {
+            return (incoming_pages, incoming_pages, incoming_pages.div_ceil(256));
+        };
+        let old_end = self.pages.last_key_value().unwrap().0 + 1;
+        // Equal span and entry count identify a contiguous dirty range.
+        // Project this union from its endpoints, rather than walking the growing
+        // map for each small sequential write (#3040).
+        if old_end - old_first == old_pages {
+            if incoming_pages == 0 {
+                return (0, old_pages, old_pages.div_ceil(256));
+            }
+            let overlap = old_end.min(last).saturating_sub(old_first.max(first));
+            let added = incoming_pages - overlap;
+            let pages = old_pages + added;
+            let runs = if last < old_first || first > old_end {
+                old_pages.div_ceil(256) + incoming_pages.div_ceil(256)
+            } else {
+                pages.div_ceil(256)
+            };
+            return (added, pages, runs);
+        }
         let mut old = self.indexes().peekable();
         let mut incoming = (first..last).peekable();
         let mut pages = 0;
