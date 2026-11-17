@@ -111,6 +111,24 @@ fn named_mount_errors_leave_no_claim_and_default_data_still_works() {
 }
 
 #[test]
+fn readonly_clone_keeps_shared_bytes_beside_another_root_writer() {
+    let (disk, ino, _) = fixture();
+    let writer = named(disk.clone(), None, true, 151).unwrap();
+    let reader = named(disk, Some(b"root=work"), false, 152).unwrap();
+    let held = reader.open(ino).unwrap();
+    let live = writer.open(ino).unwrap();
+    // Leave clone data uncached until the original SPACE nodes can be reused.
+    for n in 0..8 {
+        writer.write(&live, WriteReq { at: WriteAt::Offset(0), limit: u64::MAX,
+            clear_setid: false }, &[b'a' + n; 6]).unwrap();
+        writer.sync().unwrap();
+    }
+    let mut bytes = [0; 6];
+    assert_eq!(reader.read(&held, 0, &mut bytes), Ok(6));
+    assert_eq!(&bytes, b"frozen");
+}
+
+#[test]
 fn readonly_clone_refreshes_space_after_writer_publications() {
     let (disk, ino, _) = fixture();
     let writer = named(disk.clone(), None, true, 151).unwrap();
