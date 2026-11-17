@@ -755,7 +755,8 @@ class ServerTarget(unittest.TestCase):
             (run / '.ssh/key').touch()
             site = dict(SERVER_SSH_HOST='127.0.0.1', OPERATOR_USER='fixture',
                         OPERATOR_SSH_PUBLIC_KEY='ssh-ed25519 fixture', CONSOLE_USER='fixture',
-                        CONSOLE_PASSWORD='fixture')
+                        CONSOLE_PASSWORD='fixture', OPERATOR_PASSWORD='fixture',
+                        OPERATOR_UID='1234', operatorKeys=['fixture'])
             class Machine:
                 def __init__(self, *args): self.directory = directory
                 def identity(self): return dict(mode='persistent', bootedCommit=sha, toolsCommit=sha, evidenceEligible=True)
@@ -780,20 +781,22 @@ class ServerTarget(unittest.TestCase):
             env = dict(VIGIL_CLI=str(cli), CALLS=str(calls), VIGIL_BOOT_ID='', VIGIL_TEST_HOME=str(run))
             globals_ = HOST['main'].__globals__
             replacements = dict(QemuTarget=Machine, MetalTarget=Machine, Probe=Stub, ConsoleInput=Stub,
-                                Services=Stub, Logs=Stub, TimeCases=Stub, score=lambda *a: 'PASS',
+                                Services=Stub, Logs=Stub, TimeCases=Stub, Operator=Stub, score=lambda *a: 'PASS',
                                 S27_SUSPENDS_PERSISTENT=False)
             with patch.dict(os.environ, env), patch.dict(globals_, replacements), \
                  patch.object(Path, 'home', return_value=run), contextlib.redirect_stdout(io.StringIO()):
-                for category in ('ssh-keys', 'services', 'logs', 'time', 'console-input'):
+                for category in ('ssh-keys', 'services', 'logs', 'time', 'console-input', 'operator'):
+                    suite = 'users' if category == 'operator' else 'server'
+                    milestone = 'operator-login' if category == 'operator' else category
                     argv = ['server-suite', '--target', 'qemu', '--run-dir', str(run), '--boot', boot,
-                            '--sha', sha, '--milestone', 'server/' + category]
+                            '--sha', sha, '--milestone', suite + '/' + milestone]
                     with patch.object(sys, 'argv', argv): self.assertEqual(HOST['main'](), 0)
                     rows = [json.loads(row) for row in calls.read_text().splitlines()]
                     args = rows[-1]
-                    self.assertEqual(len(rows), ('ssh-keys', 'services', 'logs', 'time', 'console-input').index(category) + 1)
+                    self.assertEqual(len(rows), ('ssh-keys', 'services', 'logs', 'time', 'console-input', 'operator').index(category) + 1)
                     def arg(name): return args[args.index(name) + 1]
                     self.assertEqual((arg('--arch'), arg('--platform'), arg('--suite'), arg('--profile'),
-                                      arg('--commit'), arg('--started')), ('aarch64', 'qemu', 'server',
+                                      arg('--commit'), arg('--started')), ('aarch64', 'qemu', suite,
                                       'fixture-profile', sha, '1793534400.125'))
                     self.assertEqual(arg('--serial'), str(directory / (category + '-suite.txt')))
                     self.assertEqual(arg('--serial-user'), str(directory / 'serial.txt'))
@@ -804,10 +807,11 @@ class ServerTarget(unittest.TestCase):
                     self.assertGreaterEqual(float(arg('--ended')), float(arg('--started')))
                     self.assertEqual(arg('--exit-status'), '0')
                     lines = Path(arg('--serial')).read_text().splitlines()
-                    self.assertEqual(lines[0], 'SUITE server START cases=' + str(len(HOST['CATEGORIES'][category])))
+                    if category == 'operator': self.assertEqual(len(HOST['CATEGORIES'][category]), 6)
+                    self.assertEqual(lines[0], 'SUITE ' + suite + ' START cases=' + str(len(HOST['CATEGORIES'][category])))
                     self.assertEqual(len(lines), len(HOST['CATEGORIES'][category]) + 2)
-                    self.assertTrue(all(line.startswith('SUITE server CASE ' + category + '/') for line in lines[1:-1]))
-                    self.assertTrue(lines[-1].startswith('SUITE server DONE '))
+                    self.assertTrue(all(line.startswith('SUITE ' + suite + ' CASE ' + category + '/') for line in lines[1:-1]))
+                    self.assertTrue(lines[-1].startswith('SUITE ' + suite + ' DONE '))
                 ids = [row[row.index('--id') + 1] for row in rows]
                 self.assertEqual(len(set(ids)), len(ids))
                 for category, flag in (('logs', '--prepare-logs'), ('time', '--prepare-time')):
@@ -817,7 +821,7 @@ class ServerTarget(unittest.TestCase):
                 argv = ['server-suite', '--boot', '20261101T120000Z-metal', '--sha', sha,
                         '--milestone', 'server/console-input']
                 with patch.object(sys, 'argv', argv): self.assertEqual(HOST['main'](), 0)
-                self.assertEqual(len(calls.read_text().splitlines()), 5)
+                self.assertEqual(len(calls.read_text().splitlines()), 6)
 
     def test_metal_target_keeps_boot_store_and_console_calls(self):
         calls = []
