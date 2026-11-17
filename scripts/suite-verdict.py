@@ -656,6 +656,14 @@ def disk_verdict(checks, disk):
     if breenfs:
         target = Path(os.environ.get("CARGO_TARGET_DIR", REPO / "tools/breenfs/target"))
         extract = target / "release/breenfs-extract"
+        checker = target / "release/breenfs-check"
+        try:
+            result = subprocess.run([str(checker), "--full", str(disk)],
+                                    capture_output=True, timeout=60, check=False)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            return False, f"breenfs-check --full failed: {error}"
+        if result.returncode:
+            return False, f"breenfs-check --full failed (exit {result.returncode})"
         for check in checks:
             try:
                 result = subprocess.run([str(extract), str(disk), "cat", check["path"]],
@@ -666,7 +674,7 @@ def disk_verdict(checks, disk):
                 return False, f"raw disk file is missing: {check['path']}"
             if result.stdout != bytes([check["byte"]]) * check["length"]:
                 return False, f"raw disk bytes differ: {check['path']}"
-        return True, f"raw disk checks passed={len(checks)}"
+        return True, f"breenfs-check --full passed; raw disk checks passed={len(checks)}"
     debugfs = next((shutil.which(path) for path in (
         "debugfs", "/usr/sbin/debugfs", "/sbin/debugfs",
         "/opt/homebrew/opt/e2fsprogs/sbin/debugfs",
