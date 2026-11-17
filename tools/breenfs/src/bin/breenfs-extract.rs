@@ -12,11 +12,13 @@ use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
 use std::path::Path;
 use std::sync::Mutex;
 
+#[path = "../ownership.rs"]
+mod ownership;
 #[path = "../sparse.rs"]
 mod sparse;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
-const USAGE: &str = "breenfs-extract IMAGE ls PATH|cat PATH|dump|manifest\n       breenfs-extract manifest --dir DIR";
+const USAGE: &str = "breenfs-extract IMAGE ls PATH|cat PATH|dump|manifest\n       breenfs-extract manifest --dir DIR\n       breenfs-extract blocks IMAGE PATH\n       breenfs-extract owners IMAGE BLOCK\nOwner paths escape non-ASCII, whitespace and backslash bytes as \\xHH.";
 
 fn core<T, E: std::fmt::Debug>(r: std::result::Result<T, E>) -> Result<T> {
     r.map_err(|e| format!("breenfs: {e:?}").into())
@@ -364,7 +366,10 @@ fn dump(device: &Image, sb: &Superblock, out: &mut impl Write) -> Result<()> {
     }
     Ok(())
 }
-fn run(args: Vec<OsString>) -> Result<()> {
+fn run(mut args: Vec<OsString>) -> Result<()> {
+    if args.len() == 3 && (args[0] == "blocks" || args[0] == "owners") {
+        args.swap(0, 1);
+    }
     let mut out = io::BufWriter::new(io::stdout().lock());
     if args.len() == 3 && args[0] == "manifest" && args[1] == "--dir" {
         manifest(source_rows(Path::new(&args[2]))?, &mut out)?;
@@ -376,6 +381,11 @@ fn run(args: Vec<OsString>) -> Result<()> {
         let sb = core(breenfs::recover::recover(&device, false))?;
         let command = args[1].to_str().ok_or("invalid command")?;
         match (command, args.len()) {
+            ("blocks", 3) => ownership::blocks(&device, &sb, args[2].as_bytes(), &mut out)?,
+            ("owners", 3) => {
+                let block = args[2].to_str().ok_or("invalid block number")?.parse()?;
+                ownership::owners(&device, &sb, block, &mut out)?;
+            }
             ("dump", 2) => dump(&device, &sb, &mut out)?,
             ("manifest", 2) => {
                 let files = core(Files::new(DeviceStore(&device), &sb, 1))?;
