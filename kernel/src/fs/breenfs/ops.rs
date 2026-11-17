@@ -798,7 +798,15 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         let start = offset / BLOCK_SIZE as u64 * BLOCK_SIZE as u64;
         let rounded = end.div_ceil(BLOCK_SIZE as u64) * BLOCK_SIZE as u64;
         let mut blocks = vec![0; (rounded - start) as usize];
-        self.read(device, ino, start, &mut blocks)?;
+        // Only boundary blocks retain old bytes. Fully replaced blocks may be
+        // corrupt and must not be read (including dirty-page commit writeback).
+        if offset != start {
+            self.read(device, ino, start, &mut blocks[..BLOCK_SIZE])?;
+        }
+        let tail = (rounded - start) as usize - BLOCK_SIZE;
+        if end != rounded && (tail != 0 || offset == start) {
+            self.read(device, ino, start + tail as u64, &mut blocks[tail..])?;
+        }
         let lo = (offset - start) as usize;
         blocks[lo..lo + bytes.len()].copy_from_slice(bytes);
         self.remove_range(ino, start, rounded)?;
