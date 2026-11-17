@@ -33,10 +33,10 @@ impl Drop for ReadbackMount {
     }
 }
 
-struct Scratch {
+pub(crate) struct Scratch {
     source: String,
     mounted: bool,
-    work: PathBuf,
+    pub(crate) work: PathBuf,
 }
 impl Scratch {
     fn mount() -> Result<Self, String> {
@@ -93,7 +93,7 @@ impl Scratch {
         self.mounted = false;
         Ok(())
     }
-    fn remount(&mut self) -> Result<(), String> {
+    pub(crate) fn remount(&mut self) -> Result<(), String> {
         self.detach()?;
         self.attach(0)
     }
@@ -132,7 +132,7 @@ impl Drop for Scratch {
         }
     }
 }
-fn on_scratch(run: impl FnOnce(&mut Scratch) -> CaseResult) -> CaseResult {
+pub(crate) fn on_scratch(run: impl FnOnce(&mut Scratch) -> CaseResult) -> CaseResult {
     let mut scratch = Scratch::mount()?;
     let result = run(&mut scratch);
     let cleanup = scratch.finish();
@@ -149,11 +149,11 @@ fn on_scratch(run: impl FnOnce(&mut Scratch) -> CaseResult) -> CaseResult {
 // This small model describes the tree we create, without learning expected
 // bytes, modes or link identity from the filesystem under test.
 #[derive(Debug, PartialEq, Eq)]
-struct TreeEntry {
+pub(crate) struct TreeEntry {
     mode: u32,
     bytes: Vec<u8>,
 }
-fn tree(root: &Path) -> Result<BTreeMap<PathBuf, TreeEntry>, String> {
+pub(crate) fn tree(root: &Path) -> Result<BTreeMap<PathBuf, TreeEntry>, String> {
     let mut pending = vec![PathBuf::new()];
     let mut entries = BTreeMap::new();
     while let Some(relative) = pending.pop() {

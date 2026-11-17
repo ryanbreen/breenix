@@ -100,7 +100,11 @@
     {
       "id": "enospc",
       "title": "Space reservation: ENOSPC with nothing changed, freeing from the reserve",
-      "cases": []
+      "cases": [
+        { "id": "fill-enospc-unchanged", "title": "A failed write leaves the tree unchanged across remount" },
+        { "id": "delete-when-full", "title": "Unlink, rmdir and truncate succeed on a full filesystem" },
+        { "id": "bavail-excludes-reserve", "title": "Available blocks exclude the reserve" }
+      ]
     },
     {
       "id": "checksum",
