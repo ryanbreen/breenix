@@ -151,3 +151,35 @@ fn guest_delete_lifecycle_phase_counts() {
     assert!(names.is_empty());
     Counts::take(&disk).emit("remount", offset);
 }
+
+#[test]
+fn bavail_reports_ungranted_headroom_after_write_refusal() {
+    let disk = Arc::new(Disk {bytes: Mutex::new(image()), io: Mutex::new(Io {durable: 1, ..Io::default()})});
+    assert_eq!(disk.bytes.lock().unwrap().len(), 64 * 1024 * 1024);
+    let fs = mount(&disk);
+    let dir = create(fs.as_ref(), 2, b"write-24", true);
+    let fill = fs.open(create(fs.as_ref(), dir, b"fill", false)).unwrap();
+    assert_eq!(fs.statfs().unwrap().blocks, 16384);
+    let mut bytes = 0;
+    loop {
+        match write(fs.as_ref(), &fill, bytes, &[0x5a; 4096]) {
+            Ok(w) => { assert_eq!(w.bytes, 4096); bytes += 4096; }
+            Err(e) => { assert_eq!(e.errno().0, ENOSPC); break; }
+        }
+        // Service the production pressure policy without a synthetic fsync.
+        measurement::service(&fs).unwrap();
+        assert!(bytes < 64 * 1024 * 1024);
+    }
+    let full = fs.statfs().unwrap();
+    let [free, reserve, outstanding, rejected, available] =
+        crate::breenfs::reserve::observation::take().unwrap();
+    assert_eq!(reserve, 4096);
+    assert!(free >= reserve + outstanding);
+    assert_eq!(available, free - reserve - outstanding);
+    assert!(rejected > available);
+    assert!(available > 0);
+    assert_eq!(outstanding, 0);
+    assert_eq!(full.free_blocks, free);
+    assert_eq!(full.available_blocks, available);
+    println!("BAVAIL_REFUSAL bytes={bytes} free={free} reserve={reserve} outstanding={outstanding} rejected_grant={rejected} available={available}");
+}

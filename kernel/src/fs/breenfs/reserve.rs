@@ -6,6 +6,24 @@
 //! before mutation and retain the grant through publication.
 use super::space::Error;
 
+/// Host-only capture of the last refused reservation (E24 ledger 403).
+#[cfg(test)]
+pub mod observation {
+    extern crate std;
+
+    std::thread_local! {
+        static REFUSAL: core::cell::Cell<Option<[u64; 5]>> = const { core::cell::Cell::new(None) };
+    }
+
+    pub fn take() -> Option<[u64; 5]> {
+        REFUSAL.with(|cell| cell.take())
+    }
+
+    pub(super) fn record(values: [u64; 5]) {
+        REFUSAL.with(|cell| cell.set(Some(values)));
+    }
+}
+
 /// Operation costs in blocks and nodes, before charging four blocks per node.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Estimate {
@@ -104,6 +122,14 @@ impl Ledger {
             | Operation::DeleteSnapshot => free_blocks.saturating_sub(self.outstanding),
         };
         if blocks > available {
+            #[cfg(test)]
+            observation::record([
+                free_blocks,
+                self.global_reserve,
+                self.outstanding,
+                blocks,
+                self.available(free_blocks),
+            ]);
             return Err(Error::ENOSPC);
         }
         let outstanding = self.outstanding.checked_add(blocks).ok_or(Error::ENOSPC)?;
