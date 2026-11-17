@@ -634,10 +634,67 @@ class ServerTarget(unittest.TestCase):
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
 
+    def test_qemu_operator_dispatch_uses_site_identity_and_runs_all_cases(self):
+        boot, sha = '20261101T120000Z-qemu', 'a' * 40
+        with tempfile.TemporaryDirectory() as scratch:
+            run = Path(scratch)
+            (run / '.ssh').mkdir()
+            (run / '.ssh/key.pub').write_text('ssh-ed25519 fixture')
+            (run / '.ssh/key').touch()
+            (run / 'qemu-profile').write_text('fixture')
+            (run / 'started').write_text('1')
+            site = dict(SERVER_SSH_HOST='127.0.0.1', SERVER_SSH_PORT=2222,
+                        OPERATOR_USER='fixture', OPERATOR_UID='1234', OPERATOR_PASSWORD='password',
+                        OPERATOR_SSH_PUBLIC_KEY='ssh-ed25519 fixture', operatorKeys=['key one', 'key two'],
+                        CONSOLE_USER='root', CONSOLE_PASSWORD='root-password')
+            calls = []
+            class Machine:
+                directory = run
+                def __init__(self, *args): pass
+                def identity(self):
+                    return dict(mode='persistent', bootedCommit=sha, toolsCommit=sha, evidenceEligible=True)
+                def holds_lease(self): return True
+                def read(self, name):
+                    if name.startswith('definition/'):
+                        return (ROOT / name.removeprefix('definition/')).read_text()
+                    return ''
+                def site(self, fields):
+                    assert {'OPERATOR_UID', 'OPERATOR_PASSWORD'} <= set(fields)
+                    return site
+                def console(self, user, password):
+                    calls.append(('console', user, password))
+                    return SimpleNamespace(logout=lambda: None, service_log=lambda _: 'host key')
+                def capture(self): return '', []
+                def write(self, *args): return reply()
+            class Probe:
+                def __init__(self, host, user, identity, directory, port):
+                    calls.append(('probe', host, user, port))
+                    self.transcript = []
+                def run_case(self, name, serial): calls.append(('probe-case', name))
+                def cleanup(self): pass
+            class Operator:
+                def __init__(self, probe, console, own, uid, password, keys):
+                    calls.append(('operator', uid, password, keys))
+                def run_case(self, name): calls.append(('case', name))
+                def cleanup(self): pass
+            argv = ['server-suite', '--target', 'qemu', '--run-dir', str(run),
+                    '--boot', boot, '--sha', sha, '--milestone', 'users/operator-login']
+            with patch.object(sys, 'argv', argv), patch.object(Path, 'home', return_value=run), \
+                 patch.dict(HOST['main'].__globals__, QemuTarget=Machine, Probe=Probe, Operator=Operator,
+                            score=lambda *args: 'PASS'), \
+                 patch.object(HOST['subprocess'], 'run', return_value=reply()):
+                self.assertEqual(HOST['main'](), 0)
+            self.assertIn(('console', site['OPERATOR_USER'], site['OPERATOR_PASSWORD']), calls)
+            self.assertIn(('probe', site['SERVER_SSH_HOST'], site['OPERATOR_USER'], site['SERVER_SSH_PORT']), calls)
+            self.assertIn(('operator', int(site['OPERATOR_UID']), site['OPERATOR_PASSWORD'],
+                           '\n'.join(site['operatorKeys'])), calls)
+            self.assertEqual([call[1] for call in calls if call[0] == 'case'],
+                             [name for name, _ in HOST['OPERATOR']])
+
     def test_qemu_does_not_dispatch_later_milestones_to_metal(self):
         import contextlib
         import io
-        for milestone in ('server/resting-state', 'users/operator-login'):
+        for milestone in ('server/resting-state',):
             argv = ['server-suite', '--target', 'qemu', '--run-dir', '/unused',
                     '--boot', '20261101T120000Z-qemu', '--sha', 'a' * 40,
                     '--milestone', milestone, '--branch', 'server/vm-runner']
