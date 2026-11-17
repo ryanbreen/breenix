@@ -10,6 +10,27 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class FixtureInstall(unittest.TestCase):
+    def test_migrated_directories_keep_table_modes_under_private_umask(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            base = Path(scratch)
+            root, binaries = base / 'root', base / 'binaries'
+            binaries.mkdir()
+            for path in ('test', 'deep', 'usr/local/libc/bin'):
+                (root / path).mkdir(parents=True, mode=0o700)
+            result = subprocess.run(
+                ['sh', '-c', 'umask 077; exec sh "$@"', 'install-layout',
+                 str(ROOT / 'scripts/install-layout.sh'), str(root), str(binaries),
+                 str(ROOT / 'libs/libbreenix/src/layout.tsv')],
+                env=dict(os.environ, BREENIX_EXT2_OWNERS=str(base / 'owners')),
+                capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for line in (ROOT / 'libs/libbreenix/src/layout.tsv').read_text().splitlines():
+                fields = line.split()
+                if fields and fields[0] == 'dir':
+                    with self.subTest(path=fields[1]):
+                        self.assertEqual((root / fields[1]).stat().st_mode & 0o7777,
+                                         int(fields[2], 8))
+
     def test_uitest_app_uses_main_layout(self):
         with tempfile.TemporaryDirectory() as scratch:
             base = Path(scratch)
