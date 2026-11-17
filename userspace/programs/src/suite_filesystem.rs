@@ -62,7 +62,24 @@ static SUITE: Suite = suite("filesystem", "Copy-on-write filesystem", &[
         case("delete-returns-space", "Deleting a snapshot returns its data blocks", filesystem_snapshots::delete_returns_space),
         case("delete-resumes-after-remount", "Snapshot deletion resumes after remount", filesystem_snapshots::delete_resumes_after_remount),
     ]),
+    category("test-root", "Every suite runs with the test root on the copy-on-write filesystem", &[
+        case("root-is-breenfs", "The test root is mounted as breenfs", root_is_breenfs),
+    ]),
 ]);
+
+fn root_is_breenfs() -> CaseResult {
+    let text = io(fs::read_to_string("/proc/mounts"))?;
+    let roots: Vec<Vec<_>> = text.lines().map(|line| line.split_whitespace().collect())
+        .filter(|fields: &Vec<_>| fields.len() == 6 && fields[1] == "/").collect();
+    check(roots.len() == 1 && roots[0][2] == "breenfs", &format!("root mount is not breenfs: {roots:?}"))?;
+    let path = std::ffi::CString::new("/").map_err(|e| e.to_string())?;
+    let mut stats = sysfs::Statfs::default();
+    #[cfg(target_arch = "x86_64")] const STATFS: u64 = 137;
+    #[cfg(target_arch = "aarch64")] const STATFS: u64 = 43;
+    let result = unsafe { libbreenix::syscall::raw::syscall2(STATFS, path.as_ptr() as u64, &mut stats as *mut _ as u64) } as i64;
+    check(result == 0 && stats.f_type == filesystem_root::RootFs::Breenfs.magic() as i64,
+        &format!("root statfs: result={result}, stats={stats:?}"))
+}
 
 fn io<T>(result: std::io::Result<T>) -> Result<T, String> { result.map_err(|e| e.to_string()) }
 
@@ -267,4 +284,12 @@ fn ino_consistent() -> CaseResult {
     result
 }
 
-fn main() { SUITE.run() }
+fn main() {
+    let root = match filesystem_root::declared() {
+        Ok(root) => root,
+        Err(error) => { println!("SUITE filesystem ERROR {error}"); std::process::exit(1); }
+    };
+    println!("SUITE filesystem ROOT {}", root.name());
+    if root == filesystem_root::RootFs::Breenfs { SUITE.run(); }
+    suite(SUITE.id, SUITE.title, &SUITE.categories[..SUITE.categories.len() - 1]).run()
+}

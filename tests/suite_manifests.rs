@@ -270,8 +270,15 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
                 let cat_at = format!("{at} categories[{c}]");
                 // A host-run category: the boot host runs its cases against a persistent boot.
                 let host = value.get("hostRunner").is_some();
-                let extra: &[&str] = if host { &["cases", "hostRunner"] } else { &["cases"] };
-                let Some(category) = entry(value, &cat_at, extra, errors) else { continue };
+                let mut extra = vec!["cases"];
+                if host { extra.push("hostRunner"); }
+                if let Some(root) = value.get("root") {
+                    extra.push("root");
+                    if id != "filesystem" || root != "breenfs" || host {
+                        errors.push(format!("{cat_at}: root must be breenfs on a filesystem guest category"));
+                    }
+                }
+                let Some(category) = entry(value, &cat_at, &extra, errors) else { continue };
                 if host {
                     if value.get("hostRunner") != Some(&Value::Bool(true)) {
                         errors.push(format!("{cat_at}: hostRunner is true when present"));
@@ -461,8 +468,23 @@ fn source_suite(source: &str) -> Result<(Entry, Vec<Category>), String> {
 /// `static NAME: [Case; total(PARTS)] = join(PARTS)` whose `const PARTS: &[&[Case]]` lists
 /// such paths, joined in order.
 fn source_suite_files(files: &[(String, String)]) -> Result<(Entry, Vec<Category>), String> {
+    // The filesystem runner has two root-dependent views of the same table.
+    // Accept only this complete launch expression, so setup cannot hide a case or exit.
+    const ROOT_MAIN: &str = r#"fn main() {
+    let root = match filesystem_root::declared() {
+        Ok(root) => root,
+        Err(error) => { println!("SUITE filesystem ERROR {error}"); std::process::exit(1); }
+    };
+    println!("SUITE filesystem ROOT {}", root.name());
+    if root == filesystem_root::RootFs::Breenfs { SUITE.run(); }
+    suite(SUITE.id, SUITE.title, &SUITE.categories[..SUITE.categories.len() - 1]).run()
+}"#;
     let mut parsed = Vec::new();
     for (module, text) in files {
+        let normalized = if module.is_empty() && text.contains(ROOT_MAIN) {
+            text.replacen(ROOT_MAIN, "fn main() { SUITE.run() }", 1)
+        } else { text.clone() };
+        let text = &normalized;
         let file = syn::parse_file(text).map_err(|error| format!("{module:?} does not parse as Rust: {error}"))?;
         parsed.push((module.clone(), file));
     }

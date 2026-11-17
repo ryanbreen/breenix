@@ -2034,3 +2034,5 @@ the required records and completed-capture scoring. The third milestone uses
 the host-run `console/acceptance` case: the same capture must pass those GT 710
 reporting categories, screen/font read-back and E16's complete 88-case `console`
 suite, including its memory reclamation record.
+
+Filesystem categories may declare `"root": "breenfs"`. The guest emits `SUITE filesystem ROOT <fs>` before its cases; the verdict requires exactly one valid declaration and scores that category only on the named root. The default ext2 run omits the category.

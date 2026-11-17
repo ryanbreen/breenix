@@ -369,6 +369,15 @@ def bwm_case_problem(lines):
 
 def verdict(manifest, records_log, logs, only=None, categories=None, disk=None, uploads=None):
     suite = manifest["id"]
+    root = None
+    if suite == "filesystem":
+        lines = read_lines(records_log)
+        roots = [line for line in lines if line.startswith("SUITE filesystem ROOT")]
+        if len(roots) != 1 or roots[0] not in ("SUITE filesystem ROOT ext2", "SUITE filesystem ROOT breenfs"):
+            return False, "filesystem needs exactly one valid ROOT record"
+        root = roots[0].split()[-1]
+        if any(line.startswith("SUITE filesystem CASE ") for line in lines[:lines.index(roots[0])]):
+            return False, "filesystem ROOT must precede every case"
     planned = [category["id"] for category in manifest["categories"] if not category["cases"]]
     hosted = [category["id"] for category in manifest["categories"] if category.get("hostRunner")]
     if categories is not None:
@@ -385,8 +394,11 @@ def verdict(manifest, records_log, logs, only=None, categories=None, disk=None, 
         planned = [category for category in planned if category in categories]
     if not only and planned:
         return False, f"planned categories have no cases: {', '.join(planned)}; acceptance is blocked"
+    if categories is not None and any(category.get("root") not in (None, root)
+                                      for category in manifest["categories"] if category["id"] in categories):
+        return False, "measured category requires a different root"
     cases = [f"{category['id']}/{case['id']}" for category in manifest["categories"]
-             if category["id"] not in hosted for case in category["cases"]]
+             if category["id"] not in hosted and category.get("root") in (None, root) for case in category["cases"]]
     if only:
         selected = [case for case in cases if case == only or case.split("/", 1)[0] == only]
         if not selected:
@@ -455,6 +467,8 @@ def verdict(manifest, records_log, logs, only=None, categories=None, disk=None, 
     shapes.update({kind: re.compile(rf"^SUITE {suite} {kind} {name} .+$") for kind in RESULT})
     records = []
     for line in read_lines(records_log):
+        if suite == "filesystem" and line == f"SUITE filesystem ROOT {root}":
+            continue
         if not line.startswith(prefix):
             if prefix in line:
                 return False, f"a SUITE record does not start its line: {line.strip()[:200]}"
