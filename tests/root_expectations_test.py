@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""Compile the guest's root contracts on the host, without a boot."""
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class RootExpectationsTest(unittest.TestCase):
+    def test_root_contracts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / 'expectations.rs'
+            source.write_text(f'''
+#[path = "{ROOT}/userspace/programs/src/filesystem_root.rs"]
+pub mod filesystem_root;
+#[path = "{ROOT}/userspace/programs/src/root_expectations.rs"]
+pub mod root_expectations;
+use filesystem_root::RootFs;
+use root_expectations::for_root;
+
+fn main() {{
+    let ext2 = for_root(RootFs::Ext2);
+    assert!(ext2.reuses_inode_numbers);
+    assert_eq!(ext2.directory_size(12288, 60), 12288);
+    assert_eq!(ext2.cache_block_bytes, 512);
+    assert_eq!(ext2.statfs_magic, 0xef53);
+    // Current sparse pointer-depth, dense shrink and regrowth expectations.
+    assert_eq!(ext2.blocks(4, 6, 8), 80);
+    assert_eq!(ext2.blocks(3, 3, 8), 48);
+    assert_eq!(ext2.blocks(2, 1, 8), 24);
+    assert_eq!(ext2.blocks(129, 1, 8), 1040);
+    assert_eq!(ext2.blocks(1, 0, 8), 8);
+    assert_eq!(ext2.blocks(0, 0, 8), 0);
+
+    let breenfs = for_root(RootFs::Breenfs);
+    assert!(!breenfs.reuses_inode_numbers);
+    // Design 2.3: size counts names, excluding synthetic dot entries.
+    assert_eq!(breenfs.directory_size(12288, 60), 60);
+    assert_eq!(breenfs.directory_size(4096, 0), 0);
+    // Design 1.2 and 2: verified buffers contain native 4096-byte blocks.
+    assert_eq!(breenfs.cache_block_bytes, 4096);
+    assert_eq!(1048576 / breenfs.cache_block_bytes, 256);
+    assert_eq!(1048576 / ext2.cache_block_bytes, 2048);
+    // Design 2.3 and F7: st_blocks counts mapped data, no pointer blocks.
+    assert_eq!(breenfs.blocks(4, 6, 8), 32);
+    assert_eq!(breenfs.blocks(3, 3, 8), 24);
+    assert_eq!(breenfs.blocks(2, 1, 8), 16);
+    assert_eq!(breenfs.blocks(129, 1, 8), 1032);
+    assert_eq!(breenfs.blocks(1, 0, 8), 8);
+    assert_eq!(breenfs.blocks(0, 0, 8), 0);
+    // Design 2.1: filesystem identity, also required for a contained FIFO.
+    assert_eq!(breenfs.statfs_magic, u64::from_le_bytes(*b"BREENFSS"));
+}}
+''')
+            binary = Path(tmp) / 'expectations'
+            subprocess.run(['taskpolicy', '-b', 'rustc', '--edition=2021', '-Dwarnings',
+                            str(source), '-o', str(binary)], check=True)
+            subprocess.run([str(binary)], check=True)
+
+
+if __name__ == '__main__':
+    unittest.main()
