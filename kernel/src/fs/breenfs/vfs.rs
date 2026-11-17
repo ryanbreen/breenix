@@ -42,6 +42,7 @@ pub mod measurement {
     pub(super) fn published() {
         COMMITS.with(|cell| { let mut n = cell.get(); n[2] += 1; cell.set(n); });
     }
+    pub fn heap_live() -> isize { super::dirty_heap_bound::live() }
     pub fn take_work() -> [u64; 3] { COMMITS.with(|n| n.replace([0; 3])) }
     pub fn scrub_step<W: crate::block::cache::Wait + 'static>(
         fs: &super::BreenFs<W>, budget: usize,

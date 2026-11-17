@@ -147,3 +147,6 @@ mod snapshot_case_setup;
 #[cfg(test)]
 #[path = "../tests/root_case_setup.rs"]
 mod root_case_setup;
+
+#[path = "../tests/root_cost.rs"]
+mod root_cost;

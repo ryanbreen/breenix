@@ -53,7 +53,7 @@ fn charge(delta: isize) {
         });
     });
 }
-fn live() -> isize {
+pub(super) fn live() -> isize {
     LIVE.with(Cell::get)
 }
 fn reset_peak() -> isize {
