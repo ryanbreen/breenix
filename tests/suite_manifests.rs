@@ -1062,6 +1062,20 @@ fn filesystem_read_cases_match_the_guest() {
 }
 
 #[test]
+fn filesystem_enospc_cases_match_the_guest() {
+    let root = repo_root();
+    let mut errors = Vec::new();
+    let manifest = read_manifest(&root.join("docs/suites/filesystem.json"), &mut errors).unwrap();
+    assert!(errors.is_empty(), "filesystem manifest: {errors:?}");
+    let enospc = manifest.categories.iter().find(|category| category.entry.id == "enospc").unwrap();
+    assert_eq!(enospc.cases.iter().map(|case| case.id.as_str()).collect::<Vec<_>>(),
+        ["fill-enospc-unchanged", "delete-when-full", "bavail-excludes-reserve"]);
+    let (_, categories) = source_suite(
+        &fs::read_to_string(root.join("userspace/programs/src/suite_filesystem.rs")).unwrap()).unwrap();
+    assert_eq!(categories.iter().find(|category| category.entry.id == "enospc"), Some(enospc));
+}
+
+#[test]
 fn filesystem_cases_match_the_guest() {
     let root = repo_root();
     let mut errors = Vec::new();
