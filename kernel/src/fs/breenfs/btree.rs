@@ -23,12 +23,24 @@ pub mod measurement {
         static ITEMS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
         static FS_RESERVATIONS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
         static SPACE_RESERVATIONS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+        static NODES: core::cell::RefCell<alloc::collections::BTreeSet<u64>> = const {
+            core::cell::RefCell::new(alloc::collections::BTreeSet::new())
+        };
+        static HEIGHT: core::cell::Cell<u8> = const { core::cell::Cell::new(0) };
     }
     pub fn take_decodes() -> u64 {
         DECODES.with(|count| count.replace(0))
     }
     pub(super) fn decoded() {
         DECODES.with(|count| count.set(count.get() + 1));
+    }
+    pub(super) fn node(addr: u64, level: u8) {
+        NODES.with(|nodes| { nodes.borrow_mut().insert(addr); });
+        HEIGHT.with(|height| height.set(height.get().max(level + 1)));
+    }
+    pub fn take_geometry() -> (usize, u8) {
+        let nodes = NODES.with(|nodes| core::mem::take(&mut *nodes.borrow_mut()).len());
+        (nodes, HEIGHT.with(|height| height.replace(0)))
     }
     pub(super) fn items(n: u64) { ITEMS.with(|count| count.set(count.get() + n)); }
     pub(super) fn reservation(space: bool) {
@@ -200,6 +212,8 @@ fn decode(
         return Err(Error::InvalidNode);
     }
     let header = NodeHeader::decode(bytes)?;
+    #[cfg(test)]
+    measurement::node(header.addr, header.level);
     let n = usize::from(header.nitems);
     #[cfg(test)]
     measurement::items(n as u64);

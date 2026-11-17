@@ -151,5 +151,8 @@ mod root_case_setup;
 #[path = "../tests/root_cost.rs"]
 mod root_cost;
 
+#[path = "../tests/large_directory_cost.rs"]
+mod large_directory_cost;
+
 #[path = "../tests/mapped_coherence.rs"]
 mod mapped_coherence;
