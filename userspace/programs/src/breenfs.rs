@@ -30,8 +30,38 @@ fn show(status: &ScrubStatus) -> Result<(), String> {
     }
     Ok(())
 }
+fn snapshot(args: &[String]) -> Result<(), String> {
+    const USAGE: &str = "usage: breenfs snapshot create|clone|delete NAME PATH; breenfs snapshot status|wait PATH";
+    let (action, path) = match args {
+        [action, name, path] if matches!(action.as_str(), "create" | "clone" | "delete") => {
+            let bytes = name.as_bytes();
+            if bytes.is_empty() || bytes.len() > 255 || bytes.iter().any(|b| matches!(b, 0 | b'/' | b',')) {
+                return Err("invalid snapshot name".into());
+            }
+            let file = File::open(path).map_err(|e| format!("{path}: {e}"))?;
+            let mut request = SnapshotRequest { flags: if action == "create" { SNAPSHOT_READ_ONLY } else { 0 }, name_len: bytes.len() as u32, name: [0; 256] };
+            request.name[..bytes.len()].copy_from_slice(bytes);
+            let op = if action == "delete" { SNAPSHOT_DELETE } else { SNAPSHOT_CREATE };
+            ioctl(&file, op, &mut request as *mut _ as u64)?;
+            return Ok(());
+        }
+        [action, path] if matches!(action.as_str(), "status" | "wait") => (action, path),
+        _ => return Err(USAGE.into()),
+    };
+    let file = File::open(path).map_err(|e| format!("{path}: {e}"))?;
+    loop {
+        let mut status = SnapshotStatus::default();
+        ioctl(&file, SNAPSHOT_STATUS, &mut status as *mut _ as u64)?;
+        if action != "wait" || status.dead_remaining == 0 {
+            println!("root_id={} flags={} roots={} dead_remaining={}", status.root_id, status.flags, status.roots, status.dead_remaining);
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
 fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("snapshot") { return snapshot(&args[1..]); }
     if args.len() != 3 || args[0] != "scrub"
         || !matches!(args[1].as_str(), "start" | "cancel" | "status" | "wait") {
         return Err("usage: breenfs scrub start|cancel|status|wait PATH".into());

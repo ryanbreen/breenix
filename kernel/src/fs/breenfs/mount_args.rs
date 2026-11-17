@@ -32,3 +32,16 @@ pub fn parse(euid: u32, flags: u64, source: &[u8]) -> Result<usize, u64> {
 pub fn has_magic(bytes: &[u8]) -> bool {
     bytes.starts_with(b"BREENFSS")
 }
+
+/// Parse optional mount data naming a filesystem root.
+pub fn parse_root(data: Option<&[u8]>) -> Result<Option<&[u8]>, u64> {
+    let data = match data {
+        None | Some([]) => return Ok(None),
+        Some(data) => data,
+    };
+    let name = data.strip_prefix(b"root=").ok_or(EINVAL as u64)?;
+    if name.is_empty() || name.len() > 255 || name.iter().any(|b| matches!(b, 0 | b'/' | b',')) {
+        return Err(EINVAL as u64);
+    }
+    Ok(Some(name))
+}
