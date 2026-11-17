@@ -122,3 +122,6 @@ mod enospc;
 
 #[path = "../tests/enospc_profile.rs"]
 mod enospc_profile;
+
+#[path = "../tests/checksum.rs"]
+mod checksum;
