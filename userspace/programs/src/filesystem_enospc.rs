@@ -76,15 +76,13 @@ pub fn bavail_excludes_reserve() -> CaseResult {
         check(before.f_blocks == 16384, "scratch volume is not 64 MiB")?;
         check(before.f_bfree >= 4096 && before.f_bavail <= before.f_bfree - 4096,
             &format!("reserve missing from statfs: {before:?}"))?;
-        fill(&mut file, &[0x5a; 4096])?;
+        let mut expected = tree(&scratch.work)?;
+        let accepted = fill_observation::fill_and_observe(&mut file, &[0x5a; 4096], |_| Ok(()))?;
+        expected.get_mut(Path::new("fill")).ok_or("missing fill manifest entry")?
+            .bytes.resize(accepted, 0x5a);
         let full = stats(&file)?;
         check(full.f_bfree >= 4096 && full.f_bavail == full.f_bfree - 4096,
             &format!("full filesystem reserve differs: {full:?}"))?;
-        let expected = tree(&scratch.work)?;
-        match file.write(&[0x5a]) {
-            Err(error) if error.raw_os_error() == Some(28) => (),
-            result => return Err(format!("one-byte append returned {result:?}").into()),
-        }
-        check(tree(&scratch.work)? == expected, "refused one-byte append changed the tree")
+        check(tree(&scratch.work)? == expected, "refused write changed the accepted fill tree")
     })
 }
