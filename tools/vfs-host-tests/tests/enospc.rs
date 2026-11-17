@@ -115,7 +115,8 @@ fn mapped_enospc_keeps_dirty_pages_for_fsync_and_msync() {
     let mut offset = 0;
     // Fill with large requests, then consume the remaining admission headroom
     // a page at a time, so even one 64-page mapping batch cannot reserve.
-    for bytes in [vec![0x69; 1024 * 1024], vec![0x69; 4096]] {
+    for length in [1024 * 1024, 256 * 1024, 64 * 1024, 16 * 1024, 4096] {
+        let bytes = vec![0x69; length];
         loop {
             assert!(offset < 64 * 1024 * 1024);
             match write(fs.as_ref(), &fill, offset, &bytes) {
@@ -134,4 +135,8 @@ fn mapped_enospc_keeps_dirty_pages_for_fsync_and_msync() {
     assert_eq!(crate::memory::file_map::sync_range(&node, 0, u64::MAX), Err(Errno(ENOSPC)));
     assert!(node.map.has_dirty(), "msync ENOSPC lost mapped dirty custody");
     assert_eq!(fs.read_only(), Ok(false));
+    // Release the synthetic host frames after the dirty-custody assertions, so this
+    // ENOSPC fixture does not retain a service-owned VNode after the test.
+    node.map.shared_stores(&[], false);
+    fs.shutdown("enospc-cleanup", u64::MAX).unwrap();
 }

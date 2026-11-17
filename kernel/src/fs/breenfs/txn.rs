@@ -140,6 +140,13 @@ pub struct Transaction<'a, S> {
     deferred: VecDeque<Change>,
     failure: Option<Error>,
 }
+/// Tree geometry for the caller's reservation policy.
+pub struct ReservationPaths {
+    pub uncopied_fs_nodes: u64,
+    pub fs_height: u64,
+    pub space_height: u64,
+    pub space_nodes: u64,
+}
 impl<'a, S: NodeStore> Transaction<'a, S> {
     /// Start the first transaction without inventing a durable generation 0.
     /// Block 20 is already private to generation 1; its REF and the remaining
@@ -261,6 +268,19 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
     }
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+    pub(super) fn reservation_paths(
+        &self,
+        root: BlockPtr,
+        ino: u64,
+    ) -> Result<ReservationPaths, Error> {
+        let view = self.view();
+        Ok(ReservationPaths {
+            uncopied_fs_nodes: btree::reservation_nodes(&view, root, Some(ino), self.generation)?,
+            fs_height: u64::from(root.level),
+            space_height: u64::from(self.space_root.level),
+            space_nodes: btree::reservation_nodes(&view, self.space_root, None, 0)?,
+        })
     }
     /// Private encoded nodes; a commit engine must call `settle` before use.
     pub fn writes(&self) -> &BTreeMap<u64, Vec<u8>> {

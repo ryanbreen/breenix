@@ -18,6 +18,37 @@ impl DirtyPages {
     pub fn indexes(&self) -> impl Iterator<Item = u64> + '_ {
         self.pages.keys().copied()
     }
+    /// Project write_runs after admission, without changing pages. Adjacent
+    /// writes share the eventual run and its metadata reservation.
+    pub fn reservation_runs(&self, offset: u64, length: usize) -> (u64, u64, u64) {
+        let first = offset / BLOCK_SIZE as u64;
+        let last = if length == 0 { first } else {
+            (offset + length as u64).div_ceil(BLOCK_SIZE as u64)
+        };
+        let mut old = self.indexes().peekable();
+        let mut incoming = (first..last).peekable();
+        let mut pages = 0;
+        let mut runs = 0;
+        let mut previous = None;
+        let mut run_pages = 0;
+        loop {
+            let index = match (old.peek(), incoming.peek()) {
+                (Some(&a), Some(&b)) => a.min(b),
+                (Some(&a), None) | (None, Some(&a)) => a,
+                (None, None) => break,
+            };
+            if old.peek() == Some(&index) { old.next(); }
+            if incoming.peek() == Some(&index) { incoming.next(); }
+            if previous != Some(index) || run_pages == 256 {
+                runs += 1;
+                run_pages = 0;
+            }
+            pages += 1;
+            run_pages += 1;
+            previous = Some(index + 1);
+        }
+        (pages - self.pages.len() as u64, pages, runs)
+    }
     pub fn clear(&mut self) {
         self.pages.clear();
     }

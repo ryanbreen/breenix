@@ -21,6 +21,8 @@ pub mod node_cache;
 pub mod ops;
 #[path = "../../../kernel/src/fs/breenfs/recover.rs"]
 pub mod recover;
+#[path = "../../../kernel/src/fs/breenfs/reserve.rs"]
+pub mod reserve;
 #[path = "../../../kernel/src/fs/breenfs/siphash.rs"]
 pub mod siphash;
 #[path = "../../../kernel/src/fs/breenfs/space.rs"]

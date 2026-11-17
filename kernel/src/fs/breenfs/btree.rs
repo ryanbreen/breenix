@@ -313,6 +313,27 @@ pub fn search<S: NodeStore>(store: &S, root: BlockPtr, key: Key) -> Result<Optio
         .map(|i| node.items[i].1.clone()))
 }
 
+/// Count nodes on an inode's paths, or a whole tree for the space bound.
+/// Private nodes need no further COW copy in the open generation.
+pub(super) fn reservation_nodes<S: NodeStore>(
+    store: &S,
+    root: BlockPtr,
+    object: Option<u64>,
+    generation: u64,
+) -> Result<u64, Error> {
+    let node = store.read_node(root)?;
+    let mut count = u64::from(root.generation != generation);
+    for (i, child) in node.children.iter().enumerate() {
+        if object.is_some_and(|ino| child.key.object > ino
+            || node.children.get(i + 1).is_some_and(|next| next.key.object < ino))
+        {
+            continue;
+        }
+        count += reservation_nodes(store, node.child(i), object, generation)?;
+    }
+    Ok(count)
+}
+
 /// Return items in an inclusive key range, visiting only intersecting branches.
 pub fn range<S: NodeStore>(
     store: &S,

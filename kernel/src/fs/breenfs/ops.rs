@@ -158,6 +158,10 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     pub fn items(&self) -> Result<Vec<(Key, Vec<u8>)>, Error> {
         items(&self.txn.view(), self.root.root)
     }
+    /// Describe COW paths without changing the private transaction.
+    pub fn reservation_paths(&self, ino: u64) -> Result<txn::ReservationPaths, Error> {
+        Ok(self.txn.reservation_paths(self.root.root, ino)?)
+    }
     pub fn inode(&self, ino: u64) -> Result<Inode, Error> {
         let value = btree::search(&self.txn.view(), self.root.root, key(ino, format::INODE, 0))?
             .ok_or(Error::ENOENT)?;

@@ -9,6 +9,7 @@ use super::{
     node_cache::CachedNodeStore,
     ops::{self, Files},
     recover,
+    reserve::{Estimate, Grant, Ledger, Operation},
 };
 use crate::{
     block::{
@@ -115,6 +116,9 @@ struct MountState<W: Wait + 'static> {
     inodes: InodeCache,
     policy: CommitPolicy,
     pending: Option<Arc<PreparedCommit>>,
+    reservations: Ledger,
+    grants: Vec<Grant>,
+    pending_grants: Vec<Grant>,
     signal: Arc<CommitSignal>,
 }
 // Transaction dirty pages outlive the last open until commit. Mapping pins
@@ -125,6 +129,7 @@ struct NodeState {
     // Published mappings retain their VNode until service retires the cache.
     mapped: Option<Arc<VNode>>,
     dirty: DirtyPages,
+    reserved_metadata: u64,
     touched: Option<Arc<TouchedTimes>>,
     // A write admitted in parts (N2) holds other writes and resizes of this
     // file off between its parts.
@@ -282,7 +287,8 @@ impl<W: Wait> MountState<W> {
     fn edited<T>(&mut self, result: Result<T, ops::Error>) -> Result<T, Errno> {
         self.inodes.entries.fill(None);
         // A storage/allocation failure may have interrupted a multi-item edit.
-        // Do not publish that transaction; reservation is a later milestone.
+        // Do not publish that transaction. Reservation refusals return before
+        // mutation via reserve_data(); an ENOSPC here is still a bug.
         if matches!(result, Err(ops::Error::EIO | ops::Error::ENOSPC)) {
             self.failed = true;
             if let Some(committer) = self.committer.as_mut() {
@@ -307,6 +313,63 @@ impl<W: Wait> MountState<W> {
     /// the bytes mutation admission charges against DIRTY_BUDGET.
     fn charged(&self) -> u64 {
         self.dirty_bytes + self.pending.as_ref().map_or(0, |p| p.dirty_bytes())
+    }
+    /// Called with mutation admission held, before publishing dirty pages or
+    /// inode changes. Clean mapped blocks also need fresh COW allocations.
+    fn reserve_data(
+        &mut self,
+        ino: u64,
+        offset: u64,
+        length: usize,
+        operation: Operation,
+    ) -> Result<(Grant, u64), Errno> {
+        let node = self.nodes.get(&ino).ok_or(Errno(EIO))?;
+        let (new_pages, pages, runs) = node.dirty.reservation_runs(offset, length);
+        let paths = self.files.reservation_paths(ino).map_err(errno)?;
+        // A run inserts at most 256 data EXTENTs and can retain up to 510
+        // one-page slices at its old boundaries (ops::remove_range). Their
+        // 45-byte items fit in three nodes' payload space; allow four split
+        // paths, their COW siblings, a new root level and the inode edit.
+        let fs_levels = runs.checked_add(1)
+            .and_then(|n| n.checked_mul(4 * (paths.fs_height + 2)))
+            .ok_or(Errno(ENOSPC))?;
+        let space_changes = paths.uncopied_fs_nodes.checked_add(fs_levels)
+            .and_then(|n| n.checked_add(pages))
+            .and_then(|n| n.checked_add(1))
+            .and_then(|n| n.checked_mul(3))
+            .ok_or(Errno(ENOSPC))?;
+        let estimate = Estimate {
+            data_blocks: pages,
+            uncopied_fs_nodes: paths.uncopied_fs_nodes,
+            fs_levels,
+            space_changes,
+            space_height: paths.space_height,
+            space_nodes: paths.space_nodes,
+        };
+        let metadata = estimate.blocks().map_err(|_| Errno(ENOSPC))? - pages;
+        let blocks = new_pages.checked_add(metadata.saturating_sub(node.reserved_metadata))
+            .ok_or(Errno(ENOSPC))?;
+        if blocks != 0 {
+            self.grants.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
+        }
+        // durable.free_blocks includes the allocations covered by both the
+        // publishing generation and the open generation. Do not debit them
+        // a second time before asking the ledger for a grant.
+        self.reservations.reserve(self.durable.free_blocks, blocks, operation)
+            .map(|grant| (grant, metadata))
+            .map_err(|_| Errno(ENOSPC))
+    }
+    fn finish_data(&mut self, ino: u64, (grant, metadata): (Grant, u64), result: Result<(), Errno>) -> Result<(), Errno> {
+        if result.is_ok() {
+            let node = self.nodes.get_mut(&ino).ok_or(Errno(EIO))?;
+            node.reserved_metadata = node.reserved_metadata.max(metadata);
+            if grant.blocks() != 0 { self.grants.push(grant); }
+            else { self.reservations.release(grant); }
+        } else {
+            // DirtyPages prepares its pages before changing the dirty map.
+            self.reservations.release(grant);
+        }
+        result
     }
     fn drain_dirty(&mut self, device: &dyn BlockDevice) -> Result<(), Errno> {
         let result = self.drain_pages(device);
@@ -415,6 +478,9 @@ impl<W: Wait + 'static> BreenFs<W> {
             state: MountLock::new(MountState {
                 files,
                 committer,
+                reservations: Ledger::new(durable.global_reserve),
+                grants: Vec::new(),
+                pending_grants: Vec::new(),
                 durable,
                 failed: false,
                 closed: false,
@@ -578,6 +644,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             .checked_add(length as u64)
             .filter(|end| *end <= (1 << 63) - 4096)
             .ok_or(Errno(EFBIG))?;
+        let grant = state.reserve_data(node.ino, offset, length, Operation::Allocate)?;
         let pending = state.pending.clone();
         let MountState {
             files,
@@ -587,13 +654,14 @@ impl<W: Wait + 'static> BreenFs<W> {
         } = &mut *state;
         let dirty = &mut nodes.entry(node.ino).or_default().dirty;
         let before = dirty.bytes();
-        dirty.write(offset, &bytes[..length], |off, page| {
+        let result = dirty.write(offset, &bytes[..length], |off, page| {
             files
                 .read(&self.data_reader(pending.clone()), node.ino, off, page)
                 .map_err(errno)?;
             Ok(())
-        })?;
+        });
         *dirty_bytes += dirty.bytes() - before;
+        state.finish_data(node.ino, grant, result)?;
         inode.size = inode.size.max(end);
         inode.mtime = now();
         inode.ctime = inode.mtime;
@@ -654,10 +722,10 @@ impl<W: Wait + 'static> BreenFs<W> {
                 let mut state = self.inner.state.lock();
                 // Shutdown can close admission while a service snapshot is in
                 // flight. Its own staged generation owns that final barrier.
-                if error == Errno(ENOMEM) {
+                if error == Errno(ENOMEM) || error == Errno(ENOSPC) {
                     // Keep the request and dirty custody. A later worker pass
-                    // retries after memory pressure has subsided; ENOMEM is
-                    // not a failed storage generation.
+                    // retries after pressure has subsided. Admission refusal
+                    // is not a failed storage generation.
                     self.inner.signal.mappings.store(true, Ordering::Release);
                 } else if !state.closed || state.failed {
                     state.failed = true;
@@ -804,10 +872,12 @@ impl<W: Wait + 'static> BreenFs<W> {
             state.inodes.entries.fill(None);
             for node in state.nodes.values_mut() {
                 node.dirty.clear();
+                node.reserved_metadata = 0;
             }
             state.dirty_bytes = 0;
             state.retain_open();
             state.policy = CommitPolicy::new(now_ns);
+            state.pending_grants = core::mem::take(&mut state.grants);
             state.pending = Some(prepared.clone());
             prepared
         };
@@ -833,6 +903,9 @@ impl<W: Wait + 'static> BreenFs<W> {
                 .complete(&prepared, result);
             if result.is_ok() {
                 state.durable = prepared.superblock().clone();
+                for grant in core::mem::take(&mut state.pending_grants) {
+                    state.reservations.release(grant);
+                }
                 self.inner
                     .cache
                     .buffers()
@@ -906,7 +979,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             block_size: BLOCK_SIZE as u64,
             blocks: sb.total_blocks,
             free_blocks: sb.free_blocks,
-            available_blocks: sb.free_blocks.saturating_sub(sb.global_reserve),
+            available_blocks: state.reservations.available(sb.free_blocks),
             inodes: 0,
             free_inodes: 0,
             max_name_len: 255,
@@ -986,7 +1059,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         // Writeback uses mutation admission, so stage before closing it.
         // Failed mounts still take M1's explicit-loss teardown path below.
         let mapped = self.sync_mappings(Some(deadline));
-        if mapped == Err(Errno(ENOMEM)) {
+        if mapped == Err(Errno(ENOMEM)) || mapped == Err(Errno(ENOSPC)) {
             // No storage failure occurred. Preserve admission, service and
             // dirty pins so the caller can retry teardown without data loss.
             return mapped;
@@ -1425,17 +1498,18 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         if size == inode.size {
             return Ok(());
         }
+        let floor = size / BLOCK_SIZE as u64 * BLOCK_SIZE as u64;
+        let mapped_tail = size < inode.size && size % BLOCK_SIZE as u64 != 0
+            && state.files.extents(node.ino).map_err(errno)?.iter().any(|(k, e)| {
+                k.offset <= floor && floor < k.offset + u64::from(e.num_blocks) * BLOCK_SIZE as u64
+            });
+        let grant = state.reserve_data(
+            node.ino,
+            floor,
+            usize::from(mapped_tail),
+            if size < inode.size { Operation::Truncate } else { Operation::Allocate },
+        )?;
         if size < inode.size {
-            let floor = size / BLOCK_SIZE as u64 * BLOCK_SIZE as u64;
-            let mapped_tail = state
-                .files
-                .extents(node.ino)
-                .map_err(errno)?
-                .iter()
-                .any(|(k, e)| {
-                    k.offset <= floor
-                        && floor < k.offset + u64::from(e.num_blocks) * BLOCK_SIZE as u64
-                });
             let pending = state.pending.clone();
             let MountState {
                 files,
@@ -1445,15 +1519,18 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             } = &mut *state;
             let dirty = &mut nodes.entry(node.ino).or_default().dirty;
             let before = dirty.bytes();
-            dirty.shrink(size, mapped_tail, |off, page| {
+            let result = dirty.shrink(size, mapped_tail, |off, page| {
                 files
                     .read(&self.data_reader(pending.clone()), node.ino, off, page)
                     .map_err(errno)?;
                 Ok(())
-            })?;
+            });
             *dirty_bytes = *dirty_bytes - before + dirty.bytes();
+            state.finish_data(node.ino, grant, result)?;
             let result = state.files.trim_mappings(node.ino, size);
             inode.nblocks = state.edited(result)?;
+        } else {
+            state.finish_data(node.ino, grant, Ok(()))?;
         }
         inode.size = size;
         inode.mtime = now();
@@ -1496,6 +1573,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         if length == 0 {
             return Ok(());
         }
+        let grant = state.reserve_data(node.ino, offset, length, Operation::Allocate)?;
         let pending = state.pending.clone();
         let MountState {
             files,
@@ -1505,13 +1583,14 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         } = &mut *state;
         let dirty = &mut nodes.entry(node.ino).or_default().dirty;
         let before = dirty.bytes();
-        dirty.write(offset, &bounce[..length], |off, page| {
+        let result = dirty.write(offset, &bounce[..length], |off, page| {
             files
                 .read(&self.data_reader(pending.clone()), node.ino, off, page)
                 .map_err(errno)?;
             Ok(())
-        })?;
+        });
         *dirty_bytes += dirty.bytes() - before;
+        state.finish_data(node.ino, grant, result)?;
         inode.mtime = now();
         inode.ctime = inode.mtime;
         let result = state.files.put_inode(node.ino, inode);
