@@ -258,3 +258,45 @@ fn n2_one_large_write_stays_inside_a_heap_share() {
         PEAK_BOUND / 1024
     );
 }
+
+#[test]
+fn n2_parted_write_holds_other_writers_of_its_file() {
+    use std::sync::atomic::AtomicUsize;
+    let (fs, _cache, node) = fixture(b"parted");
+    // A write admitted in parts clears its file's mark when it returns.
+    let mut bytes = vec![0u8; 12 * MIB];
+    fill(&mut bytes, 0);
+    write(&fs, &node, 0, &bytes);
+    assert!(fs.inner.state.lock().nodes.values().all(|entry| !entry.splitting));
+    // Between the parts of a write, the file stays held: another write or a
+    // resize of it waits, so write(2) stays atomic among them. Other files
+    // are not held.
+    fs.inner.state.lock().nodes.get_mut(&node.ino).unwrap().splitting = true;
+    let other = fs.create(2, b"other", NewNode::Regular { attrs: ATTRS }).unwrap();
+    write(&fs, &fs.open(other).unwrap(), 0, &[3u8; 16]);
+    let done = Arc::new(AtomicUsize::new(0));
+    let waiters: Vec<_> = (0..2)
+        .map(|n| {
+            let (fs, node, done) = (fs.clone(), node.clone(), done.clone());
+            std::thread::spawn(move || {
+                if n == 0 {
+                    write(&fs, &node, 0, &[7u8; 16]);
+                } else {
+                    fs.resize(&node, 2 * BLOCK_SIZE as u64, false, &|_| Ok(())).unwrap();
+                }
+                done.fetch_add(1, Ordering::SeqCst);
+            })
+        })
+        .collect();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert_eq!(done.load(Ordering::SeqCst), 0, "a write or resize entered a held file");
+    {
+        let mut state = fs.inner.state.lock();
+        state.nodes.get_mut(&node.ino).unwrap().splitting = false;
+        fs.inner.signal.wake();
+    }
+    for waiter in waiters {
+        waiter.join().unwrap();
+    }
+    assert_eq!(done.load(Ordering::SeqCst), 2);
+}

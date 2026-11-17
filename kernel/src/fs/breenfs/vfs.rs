@@ -126,6 +126,9 @@ struct NodeState {
     mapped: Option<Arc<VNode>>,
     dirty: DirtyPages,
     touched: Option<Arc<TouchedTimes>>,
+    // A write admitted in parts (N2) holds other writes and resizes of this
+    // file off between its parts.
+    splitting: bool,
 }
 // Retained by NodeState after close, without retaining the mount itself.
 #[derive(Default)]
@@ -264,6 +267,7 @@ impl<W: Wait> MountState<W> {
     fn retain_open(&mut self) {
         self.nodes.retain(|_, node| {
             node.node.strong_count() != 0
+                || node.splitting
                 || node.dirty.bytes() != 0
                 || node.touched.as_ref().is_some_and(|times| times.pending())
         });
@@ -491,7 +495,8 @@ impl<W: Wait + 'static> BreenFs<W> {
     /// it and the generation being published pass the whole budget, the caller
     /// sleeps, holding no mount lock, until a generation completes. A call
     /// larger than the whole budget is admitted alone, once no other bytes are
-    /// charged.
+    /// charged. write splits its calls at WRITE_PART (N2), so no write admits
+    /// more than half the budget and two edge pages at once.
     fn admit(&self, incoming: u64) -> Result<MountGuard<'_, MountState<W>>, Errno> {
         loop {
             let observed = self.inner.signal.epoch();
@@ -517,6 +522,128 @@ impl<W: Wait + 'static> BreenFs<W> {
             // Another publisher owns the detached generation. Its completion
             // wakes us, with neither mount nor mapping locks held here.
             self.inner.signal.wait(observed, None);
+        }
+    }
+    /// Admission for a change to one file's data. Other callers wait while a
+    /// write admitted in parts holds the file (N2), so write(2) stays atomic
+    /// with respect to writes and size changes of that file; `Split::Take`
+    /// sets that mark and `Split::Held` is its owner's later part.
+    fn admit_data(
+        &self,
+        ino: u64,
+        incoming: u64,
+        split: Split,
+    ) -> Result<MountGuard<'_, MountState<W>>, Errno> {
+        loop {
+            // Observed before the mark is read under the mount lock; clearing
+            // it bumps the epoch under that lock, so the wake is not lost.
+            let observed = self.inner.signal.epoch();
+            let mut state = self.admit(incoming)?;
+            let marked = state.nodes.get(&ino).is_some_and(|node| node.splitting);
+            if split == Split::Held || !marked {
+                if split == Split::Take {
+                    state.nodes.entry(ino).or_default().splitting = true;
+                }
+                return Ok(state);
+            }
+            drop(state);
+            self.inner.signal.wait(observed, None);
+        }
+    }
+    /// Write `bytes` under one admission. The caller admitted them.
+    fn write_part(
+        &self,
+        mut state: MountGuard<'_, MountState<W>>,
+        node: &VNode,
+        req: WriteReq,
+        bytes: &[u8],
+    ) -> Result<WriteResult, WriteError> {
+        let mut inode = state.regular(node.ino)?;
+        let offset = match req.at {
+            WriteAt::Offset(offset) => offset,
+            WriteAt::Append => inode.size,
+        };
+        if bytes.is_empty() {
+            return Ok(WriteResult {
+                offset,
+                bytes: 0,
+                limited: false,
+            });
+        }
+        if req.limit != u64::MAX && offset >= req.limit {
+            return Err(WriteError::FileSizeLimit);
+        }
+        let length = (req.limit - offset).min(bytes.len() as u64) as usize;
+        let end = offset
+            .checked_add(length as u64)
+            .filter(|end| *end <= (1 << 63) - 4096)
+            .ok_or(Errno(EFBIG))?;
+        let pending = state.pending.clone();
+        let MountState {
+            files,
+            nodes,
+            dirty_bytes,
+            ..
+        } = &mut *state;
+        let dirty = &mut nodes.entry(node.ino).or_default().dirty;
+        let before = dirty.bytes();
+        dirty.write(offset, &bytes[..length], |off, page| {
+            files
+                .read(&self.data_reader(pending.clone()), node.ino, off, page)
+                .map_err(errno)?;
+            Ok(())
+        })?;
+        *dirty_bytes += dirty.bytes() - before;
+        inode.size = inode.size.max(end);
+        inode.mtime = now();
+        inode.ctime = inode.mtime;
+        if req.clear_setid {
+            inode.mode &= !content_privilege(inode.mode);
+        }
+        let result = state.files.put_inode(node.ino, inode);
+        state.edited(result)?;
+        Ok(WriteResult {
+            offset,
+            bytes: length,
+            limited: length < bytes.len(),
+        })
+    }
+    /// The parts after the first, which `first` admitted with the mark set.
+    /// An error after some bytes are written returns those bytes, as write(2)
+    /// reports a partial transfer.
+    fn write_parts(
+        &self,
+        first: MountGuard<'_, MountState<W>>,
+        node: &VNode,
+        req: WriteReq,
+        bytes: &[u8],
+    ) -> Result<WriteResult, WriteError> {
+        let mut state = Some(first);
+        let mut part = req;
+        let mut start = None;
+        let mut done = 0;
+        loop {
+            let end = (done + WRITE_PART).min(bytes.len());
+            let written = match state.take() {
+                Some(guard) => Ok(guard),
+                None => self
+                    .admit_data(node.ino, touched_bytes(end - done), Split::Held)
+                    .map_err(WriteError::from),
+            }
+            .and_then(|guard| self.write_part(guard, node, part, &bytes[done..end]));
+            let written = match (written, start) {
+                (Ok(written), _) => written,
+                (Err(error), None) => return Err(error),
+                (Err(_), Some(offset)) => {
+                    return Ok(WriteResult { offset, bytes: done, limited: false });
+                }
+            };
+            let offset = *start.get_or_insert(written.offset);
+            done += written.bytes;
+            if written.limited || done == bytes.len() {
+                return Ok(WriteResult { offset, bytes: done, limited: written.limited });
+            }
+            part.at = WriteAt::Offset(written.offset + written.bytes as u64);
         }
     }
     /// One commit-worker pass. Preparation and opening G+1 are serialized;
@@ -1264,56 +1391,21 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
     }
     fn write(&self, node: &VNode, req: WriteReq, bytes: &[u8]) -> Result<WriteResult, WriteError> {
         self.check_node(node)?;
-        let mut state = self.admit(touched_bytes(bytes.len()))?;
-        let mut inode = state.regular(node.ino)?;
-        let offset = match req.at {
-            WriteAt::Offset(offset) => offset,
-            WriteAt::Append => inode.size,
-        };
-        if bytes.is_empty() {
-            return Ok(WriteResult {
-                offset,
-                bytes: 0,
-                limited: false,
-            });
+        if bytes.len() <= WRITE_PART {
+            let state = self.admit_data(node.ino, touched_bytes(bytes.len()), Split::No)?;
+            return self.write_part(state, node, req, bytes);
         }
-        if req.limit != u64::MAX && offset >= req.limit {
-            return Err(WriteError::FileSizeLimit);
+        // N2: admit a larger call part by part so its dirty pages stay inside
+        // the budget, holding the file's mark from the first part to the last.
+        let first = self.admit_data(node.ino, touched_bytes(WRITE_PART), Split::Take)?;
+        let result = self.write_parts(first, node, req, bytes);
+        let mut state = self.inner.state.lock();
+        if let Some(entry) = state.nodes.get_mut(&node.ino) {
+            entry.splitting = false;
         }
-        let length = (req.limit - offset).min(bytes.len() as u64) as usize;
-        let end = offset
-            .checked_add(length as u64)
-            .filter(|end| *end <= (1 << 63) - 4096)
-            .ok_or(Errno(EFBIG))?;
-        let pending = state.pending.clone();
-        let MountState {
-            files,
-            nodes,
-            dirty_bytes,
-            ..
-        } = &mut *state;
-        let dirty = &mut nodes.entry(node.ino).or_default().dirty;
-        let before = dirty.bytes();
-        dirty.write(offset, &bytes[..length], |off, page| {
-            files
-                .read(&self.data_reader(pending.clone()), node.ino, off, page)
-                .map_err(errno)?;
-            Ok(())
-        })?;
-        *dirty_bytes += dirty.bytes() - before;
-        inode.size = inode.size.max(end);
-        inode.mtime = now();
-        inode.ctime = inode.mtime;
-        if req.clear_setid {
-            inode.mode &= !content_privilege(inode.mode);
-        }
-        let result = state.files.put_inode(node.ino, inode);
-        state.edited(result)?;
-        Ok(WriteResult {
-            offset,
-            bytes: length,
-            limited: length < bytes.len(),
-        })
+        self.inner.signal.wake();
+        drop(state);
+        result
     }
     fn resize(
         &self,
@@ -1324,7 +1416,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
     ) -> Result<(), Errno> {
         self.check_node(node)?;
         // Shrinking can keep one zeroed partial tail page.
-        let mut state = self.admit(BLOCK_SIZE as u64)?;
+        let mut state = self.admit_data(node.ino, BLOCK_SIZE as u64, Split::No)?;
         let mut inode = state.regular(node.ino)?;
         check(state.attrs(node.ino)?)?;
         if size > (1 << 63) - 4096 {
@@ -1642,6 +1734,15 @@ impl<W: Wait + 'static> MappingIo for Mapping<W> {
         }
         Ok(())
     }
+}
+// The most bytes one write admits at a time (N2). Half the budget lets one
+// part fill while the generation holding the previous part is published.
+const WRITE_PART: usize = (DIRTY_BUDGET / 2) as usize;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Split {
+    No,
+    Take,
+    Held,
 }
 // The most dirty bytes a call over `len` bytes can add: the pages it spans at
 // its worst alignment.

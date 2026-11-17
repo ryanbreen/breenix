@@ -221,8 +221,10 @@ extent its EXTENT items name). <!-- claim-lint:ok: Normative breenfs design requ
 
 **Dirty admission.** A mount's dirty pages plus the private data of the generation being published stay within 8 MiB,
 one eighth of the smallest kernel heap. When the open transaction passes half of that, a write asks for a commit
-(memory pressure); when the total would pass the full budget, the writer waits for a generation to complete. A single call
-larger than the whole budget is admitted alone. Commit moves dirty pages into the transaction rather than copying
+(memory pressure); when the total would pass the full budget, the writer waits for a generation to complete. A write larger
+than half the budget is admitted in parts of at most half the budget, each admitted as above; from its first part to
+its last the file is held, so other writes and size changes of that file wait and the write stays atomic with respect
+to them. A part is admitted alone once the mount has no other charged bytes. Commit moves dirty pages into the transaction rather than copying
 them, and a generation's private buffers are freed once it is durable. <!-- claim-lint:ok: Normative admission contract set by E24 coordinator ruling line 309 (C3). -->
 
 **Reuse rule.** A block released by commit *G* is not overwritten until superblock *G+1* is durable. It becomes
