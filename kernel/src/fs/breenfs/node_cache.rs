@@ -185,10 +185,8 @@ impl BlockDevice for NodeDevice<'_> {
         let start = addr
             .checked_mul((BLOCK_SIZE / sector) as u64)
             .ok_or(BlockError::OutOfBounds)?;
-        for (i, bytes) in bytes.chunks_exact_mut(sector).enumerate() {
-            self.device.read_block(start + i as u64, bytes)?;
-        }
-        Ok(())
+        // One device request per node miss (E24 ledger 372, #3040).
+        self.device.read_blocks(start, NODE_SIZE / sector, bytes)
     }
     fn write_block(&self, _: u64, _: &[u8]) -> Result<(), BlockError> {
         Err(BlockError::IoError)
