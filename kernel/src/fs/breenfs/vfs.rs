@@ -1209,22 +1209,23 @@ impl<W: Wait + 'static> BreenFs<W> {
                 loop {
                     let Some(inner) = mount.upgrade() else { break; };
                     let fs = Self { inner };
-                    let began = monotonic_ns();
                     // Match the commit worker's I/O context on both arches.
                     #[cfg(target_arch = "x86_64")]
                     crate::per_cpu::preempt_disable();
                     #[cfg(target_arch = "aarch64")]
                     crate::per_cpu_aarch64::preempt_disable();
-                    let pass = fs.scrub_pass(500_000);
+                    let pass = fs.scrub_pass(super::format::NODE_SIZE);
                     drop(fs);
                     #[cfg(target_arch = "x86_64")]
                     crate::per_cpu::preempt_enable();
                     #[cfg(target_arch = "aarch64")]
                     crate::per_cpu_aarch64::preempt_enable();
                     let Ok((true, bytes)) = pass else { break; };
-                    // Decimal 50 MB/s, charged by the step's allocation bytes.
-                    // Spurious wakes do not grant another budget early.
-                    let deadline = began.saturating_add(bytes as u64 * 1_000_000_000 / 50_000_000);
+                    // Charge all raw I/O at decimal 50 MB/s, with at least one
+                    // scheduling interval after releasing exclusion, even on a
+                    // slow device. Spurious wakes cannot consume the next batch.
+                    let pause = (bytes as u64 * 1_000_000_000 / 50_000_000).max(1_000_000);
+                    let deadline = monotonic_ns().saturating_add(pause);
                     while !signal.stop.load(Ordering::Acquire) && monotonic_ns() < deadline {
                         let observed = signal.epoch();
                         if !signal.stop.load(Ordering::Acquire) {
