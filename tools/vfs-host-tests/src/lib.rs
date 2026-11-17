@@ -131,3 +131,6 @@ mod checksum;
 
 #[path = "../tests/scrub_ioctl.rs"]
 mod scrub_ioctl;
+
+#[path = "../tests/snapshot_mount_args.rs"]
+mod snapshot_mount_args;

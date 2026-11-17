@@ -36,3 +36,5 @@ pub mod vfs;
 pub mod abi;
 #[path = "../../../kernel/src/fs/breenfs/scrub.rs"]
 pub mod scrub;
+#[path = "../../../kernel/src/fs/breenfs/mount_args.rs"]
+pub mod mount_args;
