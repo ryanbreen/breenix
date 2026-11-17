@@ -26,6 +26,7 @@ impl NodeStore for Walk<'_> {
 struct Tree {
     items: Vec<(format::Key, Vec<u8>)>,
     nodes: BTreeMap<u64, Vec<u8>>,
+    missing: Option<(u8, format::Key, Option<format::Key>)>,
 }
 impl Tree {
     fn read(device: &Image, root: BlockPtr) -> Result<Self> {
@@ -37,7 +38,71 @@ impl Tree {
         Ok(Self {
             items,
             nodes: walk.nodes.into_inner(),
+            missing: None,
         })
+    }
+    // A forensic walk trusts verified parents, never bytes from the corrupt
+    // allocation. Its parent key interval identifies candidate owners only.
+    fn read_for_owner(device: &Image, root: BlockPtr, target: u64) -> Result<Self> {
+        let mut tree = Self {
+            items: Vec::new(),
+            nodes: BTreeMap::new(),
+            missing: None,
+        };
+        tree.visit(device, root, target, format::Key::default(), None)?;
+        Ok(tree)
+    }
+    fn visit(
+        &mut self,
+        device: &Image,
+        ptr: BlockPtr,
+        target: u64,
+        lower: format::Key,
+        upper: Option<format::Key>,
+    ) -> Result<()> {
+        let store = DeviceStore(device);
+        if let Err(error) = store.read_node(ptr) {
+            if ptr.addr != target {
+                return Err(format!("core error: {error:?}").into());
+            }
+            self.missing = Some((ptr.level, lower, upper));
+            return Ok(());
+        }
+        let bytes = core(store.get(ptr.addr))?;
+        let h = core(NodeHeader::decode(&bytes))?;
+        if h.level == 0 {
+            for i in 0..usize::from(h.nitems) {
+                let item = core(LeafItemHeader::decode(&bytes[48 + i * 21..]))?;
+                let at = usize::from(item.data_off);
+                self.items.push((
+                    item.key,
+                    bytes[at..at + usize::from(item.data_len)].to_vec(),
+                ));
+            }
+        } else {
+            for i in 0..usize::from(h.nitems) {
+                let entry = core(format::InternalEntry::decode(&bytes[48 + i * 37..]))?;
+                let bound = if i + 1 < usize::from(h.nitems) {
+                    Some(core(format::Key::decode(&bytes[48 + (i + 1) * 37..]))?)
+                } else {
+                    upper
+                };
+                self.visit(
+                    device,
+                    BlockPtr {
+                        addr: entry.child_addr,
+                        generation: entry.child_generation,
+                        csum: entry.child_csum,
+                        level: h.level - 1,
+                    },
+                    target,
+                    entry.key,
+                    bound,
+                )?;
+            }
+        }
+        self.nodes.insert(ptr.addr, bytes);
+        Ok(())
     }
     fn leaf_keys(bytes: &[u8]) -> Result<Vec<format::Key>> {
         let header = core(NodeHeader::decode(bytes))?;
@@ -203,14 +268,28 @@ pub(super) fn owners(
     }
     let mut lines = BTreeSet::new();
     let mut level = None;
+    let mut corrupt = false;
     for (_, bytes) in space
         .iter()
         .filter(|(key, _)| key.item_type == format::ROOT)
     {
-        let tree = Tree::read(device, core(Root::decode(bytes))?.root)?;
+        let tree = Tree::read_for_owner(device, core(Root::decode(bytes))?.root, addr)?;
         let names = tree.names()?;
         match allocation_kind {
             1 => {
+                if let Some((height, lower, upper)) = tree.missing {
+                    corrupt = true;
+                    level = Some(height);
+                    // Names come only from intact directory records. The
+                    // interval may include more than the damaged leaf owns.
+                    lines.insert(format!("keys={lower:?}..{upper:?}"));
+                    for (&ino, paths) in &names {
+                        let key = ops::key(ino, format::INODE, 0);
+                        if key >= lower && upper.is_none_or(|end| key < end) {
+                            lines.extend(paths.iter().map(|path| display_path(path)));
+                        }
+                    }
+                }
                 if let Some(bytes) = tree.nodes.get(&addr) {
                     level = Some(core(NodeHeader::decode(bytes))?.level);
                     for ino in tree.objects(addr)? {
@@ -252,7 +331,13 @@ pub(super) fn owners(
         // DEAD nodes and their descendants need not have a namespace name.
         if level.is_none() {
             let bytes = core(DeviceStore(device).get(addr))?;
-            let header = core(NodeHeader::decode(&bytes))?;
+            let header = match NodeHeader::decode(&bytes) {
+                Ok(header) => header,
+                Err(_) => {
+                    writeln!(out, "fs-node corrupt detached allocation={addr}")?;
+                    return Ok(());
+                }
+            };
             if header.tree != 1 || header.fs_uuid != sb.fs_uuid || header.generation > sb.generation
             {
                 return Err("invalid filesystem node".into());
@@ -273,8 +358,9 @@ pub(super) fn owners(
         }
         writeln!(
             out,
-            "fs-node level={}{}",
+            "fs-node level={}{}{}",
             level.unwrap(),
+            if corrupt { " corrupt candidates" } else { "" },
             lines
                 .into_iter()
                 .map(|name| format!(" {name}"))
