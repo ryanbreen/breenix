@@ -2,9 +2,9 @@
 pub const REREAD_BYTES: usize = 1024 * 1024;
 
 /// Snapshots are (hits, misses, device reads), in the proc table's order.
-pub fn reread_is_cached(before: (u64, u64, u64), after: (u64, u64, u64)) -> bool {
-    // ext2's mount adapter caches native 512-byte sectors.
-    after.0.checked_sub(before.0).is_some_and(|hits| hits >= REREAD_BYTES as u64 / 512)
+pub fn reread_is_cached(before: (u64, u64, u64), after: (u64, u64, u64), block_bytes: u64) -> bool {
+    // The root contract supplies the native verified cache block size.
+    after.0.checked_sub(before.0).is_some_and(|hits| hits >= REREAD_BYTES as u64 / block_bytes)
         && after.1 == before.1
         && after.2 == before.2
 }
@@ -17,10 +17,10 @@ mod tests {
     fn reread_requires_cache_participation() {
         let before = (10, 20, 20);
         let hits = REREAD_BYTES as u64 / 512;
-        assert!(reread_is_cached(before, (10 + hits, 20, 20)));
-        assert!(!reread_is_cached(before, before), "bypassing the cache passed");
-        assert!(!reread_is_cached(before, (10 + hits - 1, 20, 20)));
-        assert!(!reread_is_cached(before, (10 + hits, 21, 20)));
-        assert!(!reread_is_cached(before, (10 + hits, 20, 21)));
+        assert!(reread_is_cached(before, (10 + hits, 20, 20), 512));
+        assert!(!reread_is_cached(before, before, 512), "bypassing the cache passed");
+        assert!(!reread_is_cached(before, (10 + hits - 1, 20, 20), 512));
+        assert!(!reread_is_cached(before, (10 + hits, 21, 20), 512));
+        assert!(!reread_is_cached(before, (10 + hits, 20, 21), 512));
     }
 }

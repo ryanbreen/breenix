@@ -3,7 +3,8 @@ mod cache_reread;
 mod filesystem_read;
 mod filesystem_checksum;
 mod filesystem_enospc;
-mod filesystem_root;
+pub mod filesystem_root;
+pub mod root_expectations;
 mod filesystem_snapshots;
 mod filesystem_write;
 use cache_reread::{reread_is_cached, REREAD_BYTES};
@@ -111,9 +112,14 @@ impl CacheFile {
 impl Drop for CacheFile { fn drop(&mut self) { let _ = fs::remove_file(&self.0); } }
 
 fn reread_from_cache() -> CaseResult {
+    let root = filesystem_root::declared()?;
+    let expected = root_expectations::for_root(root);
     let path = CacheFile::new("reread");
     let data = vec![0x5a; REREAD_BYTES];
-    { let mut file = io(File::create(&path.0))?; io(file.write_all(&data))?; }
+    { let mut file = io(File::create(&path.0))?; io(file.write_all(&data))?;
+        // Design 1.2: publish dirty pages before measuring verified buffer hits.
+        if root == filesystem_root::RootFs::Breenfs { io(file.sync_all())?; }
+    }
     let mut first = Vec::new();
     io(io(File::open(&path.0))?.read_to_end(&mut first))?;
     check(first == data, "first read differs from written data")?;
@@ -123,7 +129,7 @@ fn reread_from_cache() -> CaseResult {
     let after = cache_counters()?;
     check(second == data, "second read differs from written data")?;
     check(reread_is_cached((before.hits, before.misses, before.reads),
-        (after.hits, after.misses, after.reads)),
+        (after.hits, after.misses, after.reads), expected.cache_block_bytes),
         &format!("reread cache evidence failed: {before:?} -> {after:?}"))
 }
 

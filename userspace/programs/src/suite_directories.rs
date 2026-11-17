@@ -10,6 +10,9 @@ use libbreenix::{
     io, process, time,
 };
 use std::cell::RefCell;
+pub mod filesystem_root;
+pub mod root_expectations;
+use root_expectations::{for_root, CookieEncoding};
 
 #[cfg(target_arch = "x86_64")]
 const O_NOFOLLOW: u32 = 0x20000;
@@ -865,6 +868,36 @@ fn mkdir_rmdir_parent_nlink() -> CaseResult {
 }
 
 fn mkdir_rmdir_reclaim() -> CaseResult {
+    let expected = for_root(filesystem_root::declared()?);
+    if !expected.reuses_inode_numbers {
+        // Design 2.3/2.9: removal drops the names; new inode IDs keep advancing.
+        const N: u64 = 8;
+        let f = Tree::new()?;
+        let initial = stat(&f.root, false)?.st_size;
+        let mut last = stat(&f.root, false)?.st_ino;
+        let dirs: Vec<_> = (0..N).map(|i| f.path(&format!("d{i}"))).collect();
+        for d in &dirs {
+            fs::mkdir(d, 0o777)?;
+            let attrs = stat(d, false)?;
+            check(attrs.is_dir() && attrs.st_ino > last, "mkdir reused an inode number")?;
+            check(attrs.st_size == expected.directory_size(0, 0) as i64,
+                "new directory has a nonempty entry count")?;
+            last = attrs.st_ino;
+        }
+        check(stat(&f.root, false)?.st_size == initial + N as i64,
+            "mkdir did not increase the directory entry count")?;
+        for d in &dirs {
+            fs::rmdir(d)?;
+            errno(observed::stat(d, false), 2)?;
+        }
+        check(stat(&f.root, false)?.st_size == initial,
+            "rmdir did not restore the directory entry count")?;
+        let next = f.dir("next")?;
+        check(stat(&next, false)?.st_ino > last, "rmdir allowed inode number reuse")?;
+        fs::rmdir(&next)?;
+        return check(stat(&f.root, false)?.st_size == initial,
+            "repeated rmdir left a directory entry");
+    }
     // Each mkdir allocates one inode and one block; rmdir must return both.
     // The counts are the filesystem's own (fstatfs), so a removed directory
     // whose inode or block stays allocated is a deficit here.
@@ -1071,10 +1104,17 @@ fn readdir_cookie_blocks() -> CaseResult {
     let dir = Directory::open("/usr/libexec/breenix/test/dir-blocks")?;
     let fd = dir.file.fd();
     let block = fs::fstatfs(fd)?.f_bsize as u64;
-    check(
-        fs::fstat(fd)?.st_size as u64 >= 2 * block,
-        "/usr/libexec/breenix/test/dir-blocks does not span two blocks",
-    )?;
+    let expected_root = for_root(filesystem_root::declared()?);
+    let n = (3 * block / 208 + 1) as usize;
+    if expected_root.cookie_encoding == CookieEncoding::ByteOffsets {
+        check(
+            fs::fstat(fd)?.st_size as u64 >= 2 * block,
+            "/usr/libexec/breenix/test/dir-blocks does not span two blocks",
+        )?;
+    } else {
+        check(fs::fstat(fd)?.st_size as u64 == expected_root.directory_size(0, n as u64),
+            "fixture directory size is not its entry count")?;
+    }
     let mut records = Vec::new();
     loop {
         let batch = dirents(fd)?;
@@ -1087,7 +1127,6 @@ fn readdir_cookie_blocks() -> CaseResult {
     // The builder makes names 0..n, zero-padded to 200 digits, while 208 * i
     // stays within three blocks, all linked to one file. Each of those
     // names, dot and dot-dot appears exactly once, with the inode stat gives it.
-    let n = (3 * block / 208 + 1) as usize;
     let file_ino = stat(&format!("/usr/libexec/breenix/test/dir-blocks/{:0200}", 0), false)?.st_ino;
     let mut expected: Vec<(String, u64)> = (0..n).map(|i| (format!("{i:0200}"), file_ino)).collect();
     expected.push((".".into(), fs::fstat(fd)?.st_ino));
@@ -1104,10 +1143,16 @@ fn readdir_cookie_blocks() -> CaseResult {
         records.windows(2).all(|w| w[0].1 < w[1].1),
         "cookies do not increase",
     )?;
-    check(
-        records.iter().any(|(_, c)| *c > block && *c < records.last().unwrap().1),
-        "no cookie lies past the first block",
-    )?;
+    if expected_root.cookie_encoding == CookieEncoding::ByteOffsets {
+        check(
+            records.iter().any(|(_, c)| *c > block && *c < records.last().unwrap().1),
+            "no cookie lies past the first block",
+        )?;
+    } else {
+        let cookies: Vec<_> = records.iter().map(|(_, cookie)| *cookie).collect();
+        check(expected_root.cookies_match(&cookies, block, n as u64),
+            "directory index cookies are outside their encoding")?;
+    }
     // Every cookie, including those at a block boundary, resumes at the next
     // entry; 0 is the beginning.
     check(entry_at(fd, 0)? == Some(Entry { name: ".".into(), ino: records[0].0.ino }), "cookie 0 is not dot")?;
