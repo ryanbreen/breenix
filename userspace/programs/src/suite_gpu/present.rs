@@ -179,12 +179,13 @@ pub fn scanout_bind() -> CaseResult {
         || "view remainder was not cleared on the confirmed scanout".to_string())?;
     Ok(())
 }
+/// Sources are the native scale-1 size; the display stays at the stage's mode, so on a
+/// scale-2 stage the flip is composed and the end screen is the stage mode (gpu.json).
 pub fn flip() -> CaseResult {
     let _case = begin()?;
-    let (index,m)=catalogue()?.native_mode().ok_or_else(||fail_msg("native mode absent".into()))?;
+    let (_,m)=catalogue()?.native_mode().ok_or_else(||fail_msg("native mode absent".into()))?;
     let (w,h)=(m.width,m.height);
     let (c, a, wa) = setup(w, h, A)?;
-    mode(index)?;
     let b = scanout_target(format::B8G8R8A8, w, h)?;
     frame(c, &scene(b, B, &[]))?;
     let wb = scene_canvas(w, h, B, &[]);
