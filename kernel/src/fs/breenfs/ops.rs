@@ -162,6 +162,27 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     pub fn reservation_paths(&self, ino: u64) -> Result<txn::ReservationPaths, Error> {
         Ok(self.txn.reservation_paths(self.root.root, ino)?)
     }
+    /// Namespace edits can reach parents, victims, the next inode and ORPHAN.
+    /// Count their COW paths before publishing any item changes. Shared ancestors
+    /// may be counted more than once, making this an upper bound.
+    pub fn metadata_reservation_paths(
+        &self,
+        objects: &[u64],
+        new_inode: bool,
+        orphans: bool,
+    ) -> Result<txn::ReservationPaths, Error> {
+        let mut objects: BTreeSet<_> = objects.iter().copied().collect();
+        if new_inode { objects.insert(self.root.next_inode); }
+        if orphans { objects.insert(ORPHAN_OBJECT); }
+        let mut paths = self.reservation_paths(*objects.first().ok_or(Error::EINVAL)?)?;
+        paths.uncopied_fs_nodes = 0;
+        for object in objects {
+            paths.uncopied_fs_nodes = paths.uncopied_fs_nodes.checked_add(
+                self.reservation_paths(object)?.uncopied_fs_nodes,
+            ).ok_or(Error::ENOSPC)?;
+        }
+        Ok(paths)
+    }
     pub fn inode(&self, ino: u64) -> Result<Inode, Error> {
         let value = btree::search(&self.txn.view(), self.root.root, key(ino, format::INODE, 0))?
             .ok_or(Error::ENOENT)?;

@@ -288,7 +288,7 @@ impl<W: Wait> MountState<W> {
         self.inodes.entries.fill(None);
         // A storage/allocation failure may have interrupted a multi-item edit.
         // Do not publish that transaction. Reservation refusals return before
-        // mutation via reserve_data(); an ENOSPC here is still a bug.
+        // mutation via admission; an ENOSPC here is still a bug.
         if matches!(result, Err(ops::Error::EIO | ops::Error::ENOSPC)) {
             self.failed = true;
             if let Some(committer) = self.committer.as_mut() {
@@ -370,6 +370,40 @@ impl<W: Wait> MountState<W> {
             self.reservations.release(grant);
         }
         result
+    }
+    /// Reserve COW paths and structural edits before a namespace mutation.
+    /// Each item edit allows a split/merge path, its COW siblings and a new
+    /// root. Small calls retain separate item, sibling and root-transition
+    /// paths as conservative commit headroom.
+    fn reserve_metadata(
+        &mut self,
+        objects: &[u64],
+        edits: u64,
+        new_inode: bool,
+        orphans: bool,
+        operation: Operation,
+    ) -> Result<Grant, Errno> {
+        let paths = self.files.metadata_reservation_paths(objects, new_inode, orphans).map_err(errno)?;
+        let fs_levels = edits.max(3).checked_mul(4 * (paths.fs_height + 2))
+            .ok_or(Errno(ENOSPC))?;
+        let space_changes = paths.uncopied_fs_nodes.checked_add(fs_levels)
+            .and_then(|n| n.checked_mul(3)).ok_or(Errno(ENOSPC))?;
+        let blocks = Estimate {
+            data_blocks: 0,
+            uncopied_fs_nodes: paths.uncopied_fs_nodes,
+            fs_levels,
+            space_changes,
+            space_height: paths.space_height,
+            space_nodes: paths.space_nodes,
+        }.blocks().map_err(|_| Errno(ENOSPC))?;
+        self.grants.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
+        self.reservations.reserve(self.durable.free_blocks, blocks, operation)
+            .map_err(|_| Errno(ENOSPC))
+    }
+    fn finish_metadata<T>(&mut self, grant: Grant, result: Result<T, ops::Error>) -> Result<T, Errno> {
+        if result.is_ok() { self.grants.push(grant); }
+        else { self.reservations.release(grant); }
+        self.edited(result)
     }
     fn drain_dirty(&mut self, device: &dyn BlockDevice) -> Result<(), Errno> {
         let result = self.drain_pages(device);
@@ -1292,6 +1326,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         {
             return Err(Errno(EAGAIN));
         }
+        let grant = state.reserve_metadata(&[ino], 1, false, false, Operation::Allocate)?;
         let result = state.files.setattr(
             ino,
             &ops::SetAttr {
@@ -1303,7 +1338,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             },
             now(),
         );
-        state.edited(result)
+        state.finish_metadata(grant, result)
     }
     fn create(&self, dir: u64, name: &[u8], node: NewNode<'_>) -> Result<u64, Errno> {
         let mut state = self.inner.state.lock();
@@ -1317,6 +1352,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             NewNode::Fifo { attrs } => (attrs, 0o010000, 0, None),
             NewNode::Socket { attrs } => (attrs, 0o140000, 0, None),
         };
+        let grant = state.reserve_metadata(&[dir], 5, true, false, Operation::Allocate)?;
         let result = state.files.create_node_prepared(
             dir,
             name,
@@ -1331,7 +1367,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             now(),
             |_, _| Ok(()),
         );
-        state.edited(result)
+        state.finish_metadata(grant, result)
     }
     fn create_open(
         &self,
@@ -1357,6 +1393,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         let mut prepared = None;
         let mut preparation_error = None;
         let epoch = state.durable.generation;
+        let grant = state.reserve_metadata(&[dir], 5, true, false, Operation::Allocate)?;
         let result = state.files.create_node_prepared(
             dir,
             name,
@@ -1381,9 +1418,10 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             },
         );
         if let Some(e) = preparation_error {
+            state.reservations.release(grant);
             return Err(e);
         }
-        let ino = state.edited(result)?;
+        let ino = state.finish_metadata(grant, result)?;
         let node = prepared.ok_or(Errno(EIO))?;
         let entry = state.nodes.entry(ino).or_default();
         entry.node = Arc::downgrade(&node);
@@ -1400,8 +1438,9 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             return Err(Errno(EPERM));
         }
         check(parent, source)?;
+        let grant = state.reserve_metadata(&[ino, dir], 4, false, false, Operation::Allocate)?;
         let result = state.files.link(ino, dir, name, now());
-        state.edited(result)
+        state.finish_metadata(grant, result)
     }
     fn remove(&self, dir: u64, name: &[u8], which: Remove) -> Result<(), Errno> {
         let mut state = self.inner.state.lock();
@@ -1425,12 +1464,16 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         {
             return Err(Errno(EBUSY));
         }
+        let grant = state.reserve_metadata(
+            &[dir, victim], 5, false, !which.directory,
+            if which.directory { Operation::Rmdir } else { Operation::Unlink },
+        )?;
         let result = if which.directory {
             state.files.rmdir(dir, name, now())
         } else {
             state.files.unlink(dir, name, now())
         };
-        state.edited(result)
+        state.finish_metadata(grant, result)
     }
     fn rename(
         &self,
@@ -1459,8 +1502,11 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         if mode == RenameMode::NoReplace && dest.is_some() {
             return Err(Errno(EEXIST));
         }
+        let mut objects = alloc::vec![from_dir, to_dir, source.ino];
+        if let Some(dest) = dest { objects.push(dest.ino); }
+        let grant = state.reserve_metadata(&objects, 12, false, dest.is_some(), Operation::Allocate)?;
         let result = state.files.rename(from_dir, from, to_dir, to, now());
-        state.edited(result)
+        state.finish_metadata(grant, result)
     }
     fn write(&self, node: &VNode, req: WriteReq, bytes: &[u8]) -> Result<WriteResult, WriteError> {
         self.check_node(node)?;
@@ -1643,16 +1689,18 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                     XattrSet::Replace if !exists => return Err(Errno(ENODATA)),
                     _ => (),
                 }
+                let grant = state.reserve_metadata(&[ino], 2, false, false, Operation::Allocate)?;
                 let result = state.files.xattr(ino, name, Some(value), now());
-                state.edited(result).map(|_| 0)
+                state.finish_metadata(grant, result).map(|_| 0)
             }
             Xattr::Remove { name } => {
                 state.writable()?;
                 if !records.iter().any(|x| x.name == name) {
                     return Err(Errno(ENODATA));
                 }
+                let grant = state.reserve_metadata(&[ino], 2, false, false, Operation::RemoveXattr)?;
                 let result = state.files.xattr(ino, name, None, now());
-                state.edited(result).map(|_| 0)
+                state.finish_metadata(grant, result).map(|_| 0)
             }
         }
     }
