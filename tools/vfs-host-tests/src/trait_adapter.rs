@@ -16,7 +16,7 @@ use std::{
 
 /// The two host crates compile the same kernel block interface independently.
 /// This bridge only converts their error types; I/O goes to the 24.8 recorder.
-struct Device(Arc<RecordingDevice>);
+pub(crate) struct Device(pub(crate) Arc<RecordingDevice>);
 fn block_error(error: breenfs_host_tests::block::BlockError) -> BlockError {
     use breenfs_host_tests::block::BlockError as E;
     match error {

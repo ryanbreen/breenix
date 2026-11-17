@@ -323,3 +323,65 @@ fn guest_enospc_observes_the_full_file_once_at_refusal() {
     assert_eq!(observations, 1, "full-file reads must wait for the refused call");
     assert_eq!(read_bytes, LIMIT, "manifest observation must be linear in file size");
 }
+
+// E24 ledger 377/379(2), #3040: the worker may publish the full file
+// before unlink. Its blocks then survive cleanup in PENDING across remount.
+#[test]
+fn durable_fill_delete_remount_allows_tiny_write() {
+    use breenfs_host_tests::recording::RecordingDevice;
+    use crate::trait_adapter::Device;
+    let recorder = Arc::new(RecordingDevice::new(image()).unwrap());
+    let disk = Arc::new(Device(recorder.clone()));
+    let mount = || BreenFs::mount_writable(
+        disk.clone(), Arc::new(BufferCache::new(NoWait)), 71, 1,
+    ).unwrap();
+    let attrs = InodeAttrs::new(0o700, 0, 0);
+    let fs = mount();
+    let dir = fs.create(2, b"work", NewNode::Directory { attrs }).unwrap();
+    let ino = fs.create(dir, b"fill", NewNode::Regular { attrs }).unwrap();
+    let node = fs.open(ino).unwrap();
+    let bytes = vec![0x5a; 1024 * 1024];
+    let mut offset = 0;
+    loop {
+        match write(fs.as_ref(), &node, offset, &bytes) {
+            Ok(result) => {
+                assert_eq!(result.bytes, bytes.len());
+                offset += result.bytes as u64;
+            }
+            Err(error) => { assert_eq!(error.errno(), Errno(ENOSPC)); break; }
+        }
+        assert!(offset < 64 * 1024 * 1024, "production image must fill");
+    }
+    assert!(offset > 0);
+    // Force the worker ordering from the lifecycle probe, without a timer.
+    fs.fsync(&node, false).unwrap();
+    drop(node);
+    fs.remove(dir, b"fill", Remove {
+        directory: false, expected: ino, owner: 0,
+        parent: fs.getattr(dir).unwrap().attrs,
+    }).unwrap();
+    remove_name(fs.as_ref(), b"work", true);
+    fs.shutdown("pressure-test", u64::MAX).unwrap();
+    drop(fs);
+
+    let fs = mount();
+    assert_eq!(fs.lookup(2, b"work"), Err(Errno(crate::syscall_errno::ENOENT)));
+    let dir = fs.create(2, b"work", NewNode::Directory { attrs }).unwrap();
+    let ino = fs.create(dir, b"tiny", NewNode::Regular { attrs }).unwrap();
+    let node = fs.open(ino).unwrap();
+    let before = *recorder.durable_generations().last().unwrap();
+    assert_eq!(write(fs.as_ref(), &node, 0, b"tiny").expect(
+        "reservation pressure must publish quarantined space before refusing a tiny write",
+    ).bytes, 4);
+    assert!(*recorder.durable_generations().last().unwrap() - before <= 2,
+        "pressure must stop after the existing PENDING quarantine expires");
+    fs.fsync(&node, false).unwrap();
+    drop(node);
+    drop(fs);
+    let fs = mount();
+    let node = fs.open(ino).unwrap();
+    let mut bytes = [0; 4];
+    assert_eq!(fs.read(&node, 0, &mut bytes).unwrap(), 4);
+    assert_eq!(&bytes, b"tiny");
+    // The recording device checks W1-W3 on writes and flushes.
+}
