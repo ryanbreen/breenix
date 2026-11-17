@@ -179,3 +179,32 @@ fn corrupt_descendant_mounts_writable_until_first_observation() {
     healthy(fs.as_ref(), image.good);
     fs.shutdown("checksum-preexisting-node", u64::MAX).unwrap();
 }
+
+#[test]
+fn aligned_replacement_of_corrupt_block_commits_with_healthy_pending_write() {
+    let image = image();
+    image.disk.bytes.lock().unwrap()[(image.data + 1) * BLOCK_SIZE + 31] ^= 1;
+    let fs = mount(&image);
+    let node = fs.open(image.target).unwrap();
+    let good = fs.open(image.good).unwrap();
+    let replacement = vec![0x72; BLOCK_SIZE];
+    fs.write(&good, req(0), b"saved").unwrap();
+    fs.write(&node, req(BLOCK_SIZE as u64), &replacement).unwrap();
+    fs.sync().expect("a full replacement must not read corrupt old bytes");
+    assert_eq!(fs.read_only(), Ok(false));
+    drop(node);
+    drop(good);
+    fs.shutdown("checksum-replacement", u64::MAX).unwrap();
+    drop(fs);
+    let fs = mount(&image);
+    let node = fs.open(image.target).unwrap();
+    let mut bytes = vec![0; 3 * BLOCK_SIZE];
+    assert_eq!(fs.read(&node, 0, &mut bytes), Ok(bytes.len()));
+    assert!(bytes[..BLOCK_SIZE].iter().all(|&b| b == 0x5a));
+    assert_eq!(bytes[BLOCK_SIZE..2 * BLOCK_SIZE], replacement);
+    assert!(bytes[2 * BLOCK_SIZE..].iter().all(|&b| b == 0x5a));
+    let good = fs.open(image.good).unwrap();
+    assert_eq!(fs.read(&good, 0, &mut bytes[..5]), Ok(5));
+    assert_eq!(&bytes[..5], b"saved");
+    fs.shutdown("checksum-replacement-remount", u64::MAX).unwrap();
+}
