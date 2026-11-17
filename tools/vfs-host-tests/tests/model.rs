@@ -72,6 +72,7 @@ fn trait_seeds_1_to_64_match_the_model() {
 }
 
 #[test]
+#[ignore = "fill/delete stream: runs in the opt-in breenfs battery (fx/briefs/breenfs-battery-contract.md), never per change"]
 fn fill_and_delete_seeds_1_to_16_match_the_model() {
     use breenfs_host_tests::stream::FillDelete;
     let initial = image();
