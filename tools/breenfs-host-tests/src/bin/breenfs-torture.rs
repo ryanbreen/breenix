@@ -18,11 +18,12 @@ use std::{
     path::PathBuf,
     process::{Command, ExitCode, Output},
     sync::Arc,
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use breenfs_host_tests::stream::{torture_operations, torture_seed};
-const USAGE: &str = "breenfs-torture --seeds N [--seed-start S] --checker PATH --out DIR";
+const USAGE: &str =
+    "breenfs-torture --seeds N [--seed-start S] --checker PATH --out DIR [--progress FILE]";
 type Result<T> = std::result::Result<T, String>;
 
 struct Args {
@@ -31,6 +32,140 @@ struct Args {
     seed: u64,
     checker: PathBuf,
     out: PathBuf,
+    progress: Option<PathBuf>,
+}
+
+/// How often `--progress` rewrites its file while images are checked.
+const PROGRESS_INTERVAL: Duration = Duration::from_secs(5);
+/// Waiting seeds are listed only for ranges up to this length; started seeds
+/// are listed whatever the range.
+const PROGRESS_LISTED_RANGE: u64 = 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SeedState {
+    Running,
+    Pass,
+    Fail,
+}
+
+#[derive(Debug)]
+struct SeedProgress {
+    seed: u64,
+    state: SeedState,
+    images: u64,
+    failures: u64,
+    first_image: u64,
+}
+
+/// Observation only: `--progress FILE` reports per-seed state and image counts
+/// for the opt-in battery. The checks themselves are unchanged by it.
+#[derive(Debug)]
+struct Progress {
+    path: PathBuf,
+    first_seed: u64,
+    last_seed: u64,
+    seeds: Vec<SeedProgress>,
+    written: Option<Instant>,
+    warned: bool,
+}
+
+impl Progress {
+    fn new(path: PathBuf, first_seed: u64, last_seed: u64) -> Self {
+        Self {
+            path,
+            first_seed,
+            last_seed,
+            seeds: Vec::new(),
+            written: None,
+            warned: false,
+        }
+    }
+
+    fn start(&mut self, seed: u64, images: u64) {
+        self.seeds.push(SeedProgress {
+            seed,
+            state: SeedState::Running,
+            images: 0,
+            failures: 0,
+            first_image: images,
+        });
+    }
+
+    /// Count checked images toward the running seed; a finished seed keeps its count.
+    fn checked(&mut self, images: u64) {
+        if let Some(seed) = self.seeds.last_mut() {
+            if seed.state == SeedState::Running {
+                seed.images = images - seed.first_image;
+            }
+        }
+    }
+
+    fn finish(&mut self, images: u64, passed: bool) {
+        self.checked(images);
+        if let Some(seed) = self.seeds.last_mut() {
+            seed.state = if passed {
+                SeedState::Pass
+            } else {
+                SeedState::Fail
+            };
+            seed.failures = u64::from(!passed);
+        }
+    }
+
+    fn json(&self) -> String {
+        let entry = |seed: u64, state: &str, images: u64, failures: u64| {
+            format!(
+                "{{\"seed\":{seed},\"state\":\"{state}\",\"images\":{images},\"failures\":{failures}}}"
+            )
+        };
+        let mut entries: Vec<String> = self
+            .seeds
+            .iter()
+            .map(|s| {
+                let state = match s.state {
+                    SeedState::Running => "running",
+                    SeedState::Pass => "pass",
+                    SeedState::Fail => "fail",
+                };
+                entry(s.seed, state, s.images, s.failures)
+            })
+            .collect();
+        if self.last_seed - self.first_seed < PROGRESS_LISTED_RANGE {
+            let next = self.seeds.last().map_or(self.first_seed, |s| s.seed + 1);
+            if self.seeds.last().map_or(true, |s| s.seed < self.last_seed) {
+                entries.extend((next..=self.last_seed).map(|seed| entry(seed, "waiting", 0, 0)));
+            }
+        }
+        let images: u64 = self.seeds.iter().map(|s| s.images).sum();
+        let failures: u64 = self.seeds.iter().map(|s| s.failures).sum();
+        format!(
+            "{{\"seeds\":[{}],\"images\":{images},\"failures\":{failures}}}\n",
+            entries.join(",")
+        )
+    }
+
+    /// Rewrite the file by atomic rename; unforced rewrites wait five seconds.
+    fn write(&mut self, now: Instant, force: bool) {
+        if !force
+            && self
+                .written
+                .is_some_and(|at| now.duration_since(at) < PROGRESS_INTERVAL)
+        {
+            return;
+        }
+        self.written = Some(now);
+        let mut tmp = self.path.clone().into_os_string();
+        tmp.push(".tmp");
+        let tmp = PathBuf::from(tmp);
+        let result = fs::write(&tmp, self.json()).and_then(|()| fs::rename(&tmp, &self.path));
+        if let Err(error) = result {
+            // Reporting must not change the run: note the first failure and go on.
+            if !self.warned {
+                self.warned = true;
+                eprintln!("progress {}: {error}", self.path.display());
+            }
+        }
+    }
 }
 
 fn args() -> Result<Args> {
@@ -41,7 +176,7 @@ fn parse_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Args
     let mut values = BTreeMap::new();
     let mut args = args.into_iter();
     while let Some(flag) = args.next() {
-        if !["--seeds", "--seed-start", "--checker", "--out"]
+        if !["--seeds", "--seed-start", "--checker", "--out", "--progress"]
             .iter()
             .any(|s| flag == *s)
         {
@@ -80,12 +215,18 @@ fn parse_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Args
         .filter(|s| !s.is_empty())
         .ok_or(USAGE)?
         .into();
+    let progress = match values.remove(std::ffi::OsStr::new("--progress")) {
+        None => None,
+        Some(path) if path.is_empty() => return Err(USAGE.to_owned()),
+        Some(path) => Some(path.into()),
+    };
     Ok(Args {
         seeds,
         last_seed,
         seed,
         checker,
         out,
+        progress,
     })
 }
 
@@ -190,8 +331,15 @@ struct Checker {
     images: u64,
     deepest_generation: u64,
     tree_height: u8,
+    progress: Option<Progress>,
 }
 impl Checker {
+    fn report(&mut self, force: bool) {
+        if let Some(progress) = self.progress.as_mut() {
+            progress.checked(self.images);
+            progress.write(Instant::now(), force);
+        }
+    }
     fn check(&mut self, image: &Image) -> Output {
         let write = (|| -> std::io::Result<()> {
             self.file.set_len(0)?;
@@ -210,6 +358,7 @@ impl Checker {
             .output()
             .unwrap_or_else(|e| reject("checker execution", e.to_string()));
         self.images += 1;
+        self.report(false);
         output
     }
     fn clean(&mut self, image: &Image) -> breenfs_host_tests::Result<()> {
@@ -483,12 +632,25 @@ fn run(args: Args) -> Result<()> {
         images: 0,
         deepest_generation: 0,
         tree_height: 0,
+        progress: args
+            .progress
+            .clone()
+            .map(|path| Progress::new(path, args.seed, args.last_seed)),
     };
     let empty = fixture(false);
     let populated = fixture(true);
     let mut current = args.seed;
     loop {
-        if let Err((case, failure)) = seed(&mut checker, &empty, &populated, current) {
+        if let Some(progress) = checker.progress.as_mut() {
+            progress.start(current, checker.images);
+        }
+        checker.report(true);
+        let result = seed(&mut checker, &empty, &populated, current);
+        if let Some(progress) = checker.progress.as_mut() {
+            progress.finish(checker.images, result.is_ok());
+        }
+        checker.report(true);
+        if let Err((case, failure)) = result {
             // Publish the failure count before minimization, which may take
             // longer than the requested run. Failure takes the exit-1 path.
             summary(
@@ -609,8 +771,74 @@ mod tests {
                 "out",
             ],
             vec!["--hours", "1", "--checker", "check", "--out", "out"],
+            vec![
+                "--seeds",
+                "1",
+                "--checker",
+                "check",
+                "--out",
+                "out",
+                "--progress",
+                "",
+            ],
         ] {
             assert!(parse(&flags).is_err(), "accepted {flags:?}");
         }
+        let args = parse(&[
+            "--seeds",
+            "1",
+            "--checker",
+            "check",
+            "--out",
+            "out",
+            "--progress",
+            "p.json",
+        ])
+        .unwrap();
+        assert_eq!(args.progress, Some(std::path::PathBuf::from("p.json")));
+    }
+
+    #[test]
+    fn progress_reports_each_seed_and_throttles_rewrites() {
+        use std::time::{Duration, Instant};
+        let dir = std::env::temp_dir().join(format!("breenfs-progress-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("progress.json");
+        let mut progress = super::Progress::new(path.clone(), 3, 5);
+        let at = Instant::now();
+        progress.start(3, 10);
+        progress.checked(14);
+        progress.write(at, true);
+        let first = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            first,
+            "{\"seeds\":[{\"seed\":3,\"state\":\"running\",\"images\":4,\"failures\":0},\
+             {\"seed\":4,\"state\":\"waiting\",\"images\":0,\"failures\":0},\
+             {\"seed\":5,\"state\":\"waiting\",\"images\":0,\"failures\":0}],\
+             \"images\":4,\"failures\":0}\n"
+        );
+        // A rewrite inside five seconds is skipped; one after it is not.
+        progress.checked(20);
+        progress.write(at + Duration::from_secs(4), false);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), first);
+        progress.write(at + Duration::from_secs(5), false);
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("\"images\":10,\"failures\":0}\n"));
+        // A finished seed keeps its count when later checks (minimization) run.
+        progress.finish(20, false);
+        progress.start(4, 25);
+        progress.checked(27);
+        progress.finish(27, true);
+        progress.write(at + Duration::from_secs(6), true);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "{\"seeds\":[{\"seed\":3,\"state\":\"fail\",\"images\":10,\"failures\":1},\
+             {\"seed\":4,\"state\":\"pass\",\"images\":2,\"failures\":0},\
+             {\"seed\":5,\"state\":\"waiting\",\"images\":0,\"failures\":0}],\
+             \"images\":12,\"failures\":1}\n"
+        );
+        assert!(!dir.join("progress.json.tmp").exists());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
