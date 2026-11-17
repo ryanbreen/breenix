@@ -445,8 +445,9 @@ class TortureStage(Stage):
                 break
             battery.supervise(list(running.values()))
             for seed, proc in list(running.items()):
-                read_progress(seed)
-                if proc.poll() is not None:
+                exited = proc.poll() is not None
+                read_progress(seed)  # after poll, so an exited seed's last write is read
+                if exited:
                     battery.join_output(proc)
                     del running[seed]
                     state[seed]["state"] = "pass" if proc.returncode == 0 else "fail"
