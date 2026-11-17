@@ -232,11 +232,13 @@ def boundaries(text):
 
 def windows(ids, records):
     """Each suite's part of the serial: from where it begins (the boot's start, for the first) to where the next
-    suite begins (its RESET or START), so kernel output is held against the suite that was running."""
+    suite begins (its ROOT declaration, RESET or START), so kernel output is held against the suite that was running."""
     starts = [0]
     for suite in ids[1:]:
         begins = (index for index, line in enumerate(records)
-                  if line.startswith(f"SUITE_SEQUENCE RESET {suite} ") or re.fullmatch(rf"SUITE {suite} START cases=\d+", line))
+                  if line.startswith(f"SUITE_SEQUENCE RESET {suite} ")
+                  or suite == "filesystem" and line.startswith("SUITE filesystem ROOT")
+                  or re.fullmatch(rf"SUITE {suite} START cases=\d+", line))
         starts.append(next(begins, len(records)))
     # A suite that did not start ends where the one after it, or the serial, does.
     ends = [min(starts[i + 1:] + [len(records)]) for i in range(len(ids))]

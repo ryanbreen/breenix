@@ -189,6 +189,24 @@ class ScoreTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual([row[1] for row in rows], ["PASS", "PASS"])
 
+    def test_filesystem_root_declaration_precedes_sequence_reset(self):
+        # suite_filesystem prints ROOT before Suite::run prepares the sequence.
+        for declaration, expected in (
+            ("SUITE filesystem ROOT ext2\n", True),
+            ("SUITE filesystem ROOT breenfs\n", True),
+            ("SUITE filesystem ROOT ext2\nSUITE filesystem ROOT breenfs\n", False),
+            ("SUITE filesystem ROOT unknown\n", False),
+            ("", False),
+        ):
+            with self.subTest(declaration=declaration):
+                serial = (self.passing("a") + declaration
+                          + "SUITE_SEQUENCE RESET filesystem removed=0 changed=0 tcp=0 tcpwait=0\n"
+                          + self.passing("filesystem"))
+                ok, rows = self.score(serial, ["a", "filesystem"])
+                self.assertEqual(rows[0][1], "PASS", rows)
+                self.assertEqual(ok, expected, rows)
+                self.assertEqual(rows[1][1], "PASS" if expected else "FAIL", rows)
+
     def test_milestone_missing_category_fails(self):
         ok, rows = self.score(self.passing("users"), ["users"], milestones={"missing": ["absent"]})
         self.assertFalse(ok)
