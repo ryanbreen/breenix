@@ -104,6 +104,7 @@ fn testdata_root_cost_is_linear_and_unmount_releases_pages() {
     *disk.io.lock().unwrap() = Io::default();
     let base = measurement::heap_live();
     let fs = BreenFs::mount_writable(disk.clone(), cache.clone(), 24150, 1).unwrap();
+    let mount = Arc::downgrade(&fs);
     report("mount", &disk, &cache, base, Some(&fs));
     for pass in 0..2 {
         let mut decodes = 0;
@@ -163,14 +164,33 @@ fn testdata_root_cost_is_linear_and_unmount_releases_pages() {
     assert_eq!(&buffer[..8192], &[0x5a; 8192]);
     report("mapped-fsync", &disk, &cache, base, Some(&fs));
     node.map.shared_stores(&[], false);
+    let vnode = Arc::downgrade(&node);
     drop(node);
     fs.shutdown("root-cost", u64::MAX).unwrap();
     report("shutdown", &disk, &cache, base, Some(&fs));
+    assert_eq!(fs.dirty_bytes(), 0);
     drop(fs);
+    assert!(mount.upgrade().is_none(), "mount identity survived unmount");
+    assert!(vnode.upgrade().is_none(), "mapped VNode survived unmount");
+    drop((mount, vnode));
+    // VNodes pin Mount; Mount owns dirty state, Files/CachedNodeStore and
+    // DataBlocks. Those owners retain the device and/or shared cache (vfs.rs,
+    // node_cache.rs), so neither graph may retain an extra strong reference.
+    assert_eq!(Arc::strong_count(&disk), 1, "mount-private device owner survived");
+    assert_eq!(Arc::strong_count(&cache), 1, "mount-private cache owner survived");
     let (_, _, retained) = report("unmount", &disk, &cache, base, None);
-    assert_eq!(cache.resident_bytes(), 0, "mount-private cache must be discarded");
-    // At most the shared cache's documented charged budget may remain. This
-    // includes index storage; mount-private node/data/dirty pages must retire.
-    assert!(retained < 4096, "unmount retained {} pages beyond the empty cache", retained.div_ceil(4096));
+    // Design 1.2 and E24 ledger 467/470: clean raw-device buffers may remain
+    // within the shared cache charge; mount-private custody must retire.
+    let charged = cache.resident_bytes();
+    assert!(retained <= charged, "unmount retained {retained} bytes beyond cache charge {charged}");
+    assert!(charged <= 4 * 1024 * 1024, "shared cache exceeded the 4 MiB budget");
+    cache.discard_clean(disk.as_ref());
+    assert_eq!(cache.resident_bytes(), 0, "private or dirty cache buffers survived unmount");
+    // Reclaim the same writable device identity: a stale ownership claim
+    // would refuse this mount with EBUSY before recovery (vfs.rs).
+    drop(BreenFs::mount_writable(disk.clone(), cache.clone(), 24150, 1).unwrap());
+    assert_eq!(Arc::strong_count(&disk), 1);
+    assert_eq!(Arc::strong_count(&cache), 1);
+    assert_eq!(cache.resident_bytes(), 0);
     assert!(start.elapsed().as_secs_f64() < 60.0, "U32: root count check exceeded 60 s");
 }
