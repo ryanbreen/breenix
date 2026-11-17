@@ -41,6 +41,36 @@ EXPECTATIONS = {
 }
 
 
+class FilesystemRootVerdictTests(unittest.TestCase):
+    def score(self, root_records, include_case):
+        manifest = dict(MANIFEST, id="filesystem", categories=[
+            dict(id="first", cases=[dict(id="one")]),
+            dict(id="test-root", root="breenfs", cases=[dict(id="root-is-breenfs")])])
+        text = (FIXTURES / "all-pass.txt").read_text().replace("SUITE fixture", "SUITE filesystem")
+        text = text.replace("SUITE filesystem CASE first/two PASS ms=1\n", "").replace("SUITE filesystem CASE second/three PASS ms=1\n", "")
+        if include_case:
+            text = text.replace("SUITE filesystem DONE", "SUITE filesystem CASE test-root/root-is-breenfs PASS ms=1\nSUITE filesystem DONE")
+        count = 2 if include_case else 1
+        text = text.replace("cases=3", f"cases={count}").replace("passed=3 failed=0 skipped=0 total=3", f"passed={count} failed=0 skipped=0 total={count}")
+        text = text.replace("SUITE filesystem START", root_records + "SUITE filesystem START")
+        with tempfile.TemporaryDirectory() as directory:
+            serial = Path(directory) / "serial.txt"
+            serial.write_text(text)
+            return SCORER.verdict(manifest, serial, [serial])
+
+    def test_root_condition_and_required_record(self):
+        for records, case, expected in [
+            ("SUITE filesystem ROOT ext2\n", False, True),
+            ("SUITE filesystem ROOT breenfs\n", True, True),
+            ("SUITE filesystem ROOT breenfs\n", False, False),
+            ("", False, False),
+            ("SUITE filesystem ROOT ext2\nSUITE filesystem ROOT breenfs\n", False, False),
+        ]:
+            with self.subTest(records=records, case=case):
+                ok, reason = self.score(records, case)
+                self.assertEqual(ok, expected, reason)
+
+
 class GuiResultVerdictTests(unittest.TestCase):
     records = json.loads((FIXTURES / "gui-records.json").read_text())
 

@@ -1076,6 +1076,20 @@ fn filesystem_enospc_cases_match_the_guest() {
 }
 
 #[test]
+fn filesystem_test_root_case_matches_the_guest() {
+    let root = repo_root();
+    let value: Value = serde_json::from_str(&fs::read_to_string(root.join("docs/suites/filesystem.json")).unwrap()).unwrap();
+    let category = value["categories"].as_array().unwrap().iter().find(|c| c["id"] == "test-root").unwrap();
+    assert_eq!(category["root"], "breenfs");
+    assert_eq!(category["cases"].as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap()).collect::<Vec<_>>(), ["root-is-breenfs"]);
+    let mut errors = Vec::new();
+    let manifest = read_manifest(&root.join("docs/suites/filesystem.json"), &mut errors).unwrap();
+    assert!(errors.is_empty(), "filesystem manifest: {errors:?}");
+    let (_, guest) = source_suite(&fs::read_to_string(root.join("userspace/programs/src/suite_filesystem.rs")).unwrap()).unwrap();
+    assert_eq!(guest.iter().find(|c| c.entry.id == "test-root"), manifest.categories.iter().find(|c| c.entry.id == "test-root"));
+}
+
+#[test]
 fn filesystem_cases_match_the_guest() {
     let root = repo_root();
     let mut errors = Vec::new();
