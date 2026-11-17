@@ -61,6 +61,36 @@ fn read(files: &Files<'_, DeviceStore<'_>>, device: &RecordingDevice, ino: u64) 
 }
 
 #[test]
+fn snapshot_rejects_unmountable_root_name() {
+    let device = RecordingDevice::new(test_image::image()).unwrap();
+    let sb = recover::recover(&device, false).unwrap();
+    let mut files = Files::new(DeviceStore(&device), &sb, 1, true).unwrap();
+    assert_eq!(files.snapshot(b"a,b", true), Err(Error::EINVAL));
+}
+
+#[test]
+fn snapshot_rejects_colliding_next_root_id_without_replacing_root() {
+    let device = RecordingDevice::new(test_image::image()).unwrap();
+    let mut sb = recover::recover(&device, false).unwrap();
+    sb.next_root_id = 1;
+    let mut files = Files::new(DeviceStore(&device), &sb, 1, true).unwrap();
+    assert_eq!(files.snapshot(b"collision", true), Err(Error::EIO));
+    assert_eq!(files.inode(2).unwrap().parent, 2);
+}
+
+#[test]
+fn clone_cannot_delete_default_root() {
+    let device = RecordingDevice::new(test_image::image()).unwrap();
+    let sb = recover::recover(&device, false).unwrap();
+    let mut mount = Committer::new(sb.clone());
+    let mut files = Files::new(DeviceStore(&device), &sb, 1, true).unwrap();
+    let id = files.snapshot(b"clone", false).unwrap();
+    let sb = files.fsync(&device, &mut mount).unwrap();
+    let mut clone = Files::new(DeviceStore(&device), &sb, id, true).unwrap();
+    assert_eq!(clone.delete_root(b"default"), Err(Error::EBUSY));
+}
+
+#[test]
 fn readonly_snapshot_keeps_tree_bytes_after_live_writes() {
     let start = Instant::now();
     let device = RecordingDevice::new(test_image::image()).unwrap();

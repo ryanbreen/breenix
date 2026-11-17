@@ -1460,7 +1460,9 @@ impl<W: Wait + 'static> BreenFs<W> {
             return Err(Errno(EINVAL));
         }
         let name = &request.name[..length];
-        if name == b"." || name == b".." || name.contains(&0) || name.contains(&b'/') {
+        if name == b"." || name == b".." || name.contains(&0)
+            || name.contains(&b'/') || name.contains(&b',')
+        {
             return Err(Errno(EINVAL));
         }
         // Mutation permission precedes any fsync-class work on a read mount.

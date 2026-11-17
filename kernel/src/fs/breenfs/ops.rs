@@ -194,6 +194,9 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             return Err(Error::EEXIST);
         }
         let id = self.next_root_id;
+        if id <= 1 || self.roots.contains_key(&id) {
+            return Err(Error::EIO);
+        }
         let next = id.checked_add(1).ok_or(Error::ENOSPC)?;
         let mut root = self.root.clone();
         root.source_root = self.root_id;
@@ -216,6 +219,9 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         }
         let (&id, root) = self.roots.iter().find(|(_, root)| root.name == name)
             .ok_or(Error::ENOENT)?;
+        if id == 1 {
+            return Err(Error::EBUSY);
+        }
         self.txn.release(root.root.addr, 4, true)?;
         self.txn.delete_root(id)?;
         self.roots.remove(&id);
@@ -1060,6 +1066,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
 }
 pub(super) const ORPHAN_OBJECT: u64 = 0xffff_ffff_ffff_ff00;
 fn valid_root_name(name: &[u8]) -> Result<(), Error> {
+    if name.contains(&b',') { return Err(Error::EINVAL); }
     valid_name(name).map_err(|_| Error::EINVAL)
 }
 fn valid_name(name: &[u8]) -> Result<(), Error> {
