@@ -135,11 +135,14 @@ pub fn scrub_names_block() -> CaseResult {
 }
 pub fn scrub_recorded() -> CaseResult {
     let mut f = Fixture::mount("data")?;
+    let (ok, before) = command("status", &f.dir)?;
+    check(ok, "initial scrub status failed")?;
+    let previous = field(&before, "last_scrub_generation")?.parse::<u64>().map_err(|e| e.to_string())?;
     scrub(&f)?;
     unsafe { raw::syscall0(nr::SYNC) };
     f.unmount()?;
     f.remount()?;
     let (ok, out) = command("status", &f.dir)?;
-    check(ok && field(&out, "last_scrub_errors")? == "1" && field(&out, "last_scrub_generation")?.parse::<u64>().map_err(|e| e.to_string())? > 0, &format!("scrub report not persisted: {out}"))?;
+    check(ok && field(&out, "last_scrub_errors")? == "1" && field(&out, "last_scrub_generation")?.parse::<u64>().map_err(|e| e.to_string())? > previous, &format!("scrub report not persisted: {out}"))?;
     f.finish()
 }
