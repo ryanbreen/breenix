@@ -1,4 +1,6 @@
 //! Reservation and freeing operations on a full scratch filesystem.
+#[path = "filesystem_enospc_fill.rs"]
+mod fill_observation;
 use crate::filesystem_write::{on_scratch, tree};
 use breenix_suite::suite::{check, CaseResult};
 use libbreenix::{fs as sysfs, types::Fd};
@@ -34,19 +36,20 @@ pub fn fill_enospc_unchanged() -> CaseResult {
     on_scratch(|scratch| {
         let mut file = create_fill(&scratch.work)?;
         let chunk = vec![0x5a; 1024 * 1024];
-        loop {
-            let before = tree(&scratch.work)?;
-            match file.write(&chunk) {
-                Ok(n) if n == chunk.len() => (),
-                Err(error) if error.raw_os_error() == Some(28) => {
-                    check(tree(&scratch.work)? == before, "failed write changed the tree")?;
-                    drop(file);
-                    scratch.remount()?;
-                    return check(tree(&scratch.work)? == before, "failed write changed the remounted tree");
-                }
-                result => return Err(format!("fill write returned {result:?}").into()),
+        let mut expected = tree(&scratch.work)?;
+        fill_observation::fill_and_observe(&mut file, &chunk, |accepted| {
+            // Successful writes define the expected bytes. Read the actual full
+            // tree at refusal, rather than copying its growing prefix per write.
+            expected.get_mut(Path::new("fill")).ok_or("missing fill manifest entry")?
+                .bytes.resize(accepted, 0x5a);
+            if tree(&scratch.work)? != expected {
+                return Err("failed write changed the tree".into());
             }
-        }
+            Ok(())
+        })?;
+        drop(file);
+        scratch.remount()?;
+        check(tree(&scratch.work)? == expected, "failed write changed the remounted tree")
     })
 }
 

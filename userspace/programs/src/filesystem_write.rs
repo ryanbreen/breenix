@@ -151,7 +151,7 @@ pub(crate) fn on_scratch(run: impl FnOnce(&mut Scratch) -> CaseResult) -> CaseRe
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct TreeEntry {
     mode: u32,
-    bytes: Vec<u8>,
+    pub(crate) bytes: Vec<u8>,
 }
 pub(crate) fn tree(root: &Path) -> Result<BTreeMap<PathBuf, TreeEntry>, String> {
     let mut pending = vec![PathBuf::new()];

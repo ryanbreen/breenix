@@ -8,10 +8,12 @@ pub fn fill_and_observe(
 ) -> Result<usize, String> {
     let mut accepted = 0;
     loop {
-        observe(accepted)?;
         match file.write(chunk) {
             Ok(n) if n == chunk.len() => accepted += n,
-            Err(error) if error.raw_os_error() == Some(28) => return Ok(accepted),
+            Err(error) if error.raw_os_error() == Some(28) => {
+                observe(accepted)?;
+                return Ok(accepted);
+            },
             result => return Err(format!("fill write returned {result:?}")),
         }
     }
