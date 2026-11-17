@@ -2136,7 +2136,9 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 if size > (1 << 63) - 4096 {
                     return Err(Errno(EFBIG));
                 }
-                if size == inode.size {
+                if size == inode.size
+                    && (!clear_setid || inode.mode & content_privilege(inode.mode) == 0)
+                {
                     return Ok((inode, false, None));
                 }
                 let floor = size / BLOCK_SIZE as u64 * BLOCK_SIZE as u64;

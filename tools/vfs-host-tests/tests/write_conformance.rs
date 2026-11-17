@@ -893,7 +893,7 @@ fn content_changes_preserve_nonexecutable_sgid() {
     let node = fs.open(ino).unwrap();
     let mut modes = Vec::new();
     for mode in [0o6640, 0o6750] {
-        for operation in ["write", "resize", "mapping"] {
+        for operation in ["write", "resize", "resize-same", "mapping"] {
             fs.setattr(ino, SetAttr { mode: Some(mode), ..Default::default() }).unwrap();
             match operation {
                 "write" => {
@@ -902,6 +902,7 @@ fn content_changes_preserve_nonexecutable_sgid() {
                     }, b"changed").unwrap();
                 }
                 "resize" => fs.resize(&node, fs.getattr(ino).unwrap().size + 1, true, &|_| Ok(())).unwrap(),
+                "resize-same" => fs.resize(&node, fs.getattr(ino).unwrap().size, true, &|_| Ok(())).unwrap(),
                 "mapping" => fs.clear_mapping_privilege(&node).unwrap(),
                 _ => unreachable!(),
             }
@@ -909,8 +910,8 @@ fn content_changes_preserve_nonexecutable_sgid() {
         }
     }
     assert_eq!(modes, vec![
-        (0o6640, "write", 0o2640), (0o6640, "resize", 0o2640), (0o6640, "mapping", 0o2640),
-        (0o6750, "write", 0o0750), (0o6750, "resize", 0o0750), (0o6750, "mapping", 0o0750),
+        (0o6640, "write", 0o2640), (0o6640, "resize", 0o2640), (0o6640, "resize-same", 0o2640), (0o6640, "mapping", 0o2640),
+        (0o6750, "write", 0o0750), (0o6750, "resize", 0o0750), (0o6750, "resize-same", 0o0750), (0o6750, "mapping", 0o0750),
     ]);
 }
 
