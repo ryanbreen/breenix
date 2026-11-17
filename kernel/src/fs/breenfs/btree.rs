@@ -4,6 +4,7 @@
 //! detached-node accounting. The caller supplies a private store and root.
 //! A fallible store must provide rollback for allocation/put failures;
 //! the root is published only after the buffered puts succeed.
+use super::preempt::preemption_point;
 use super::format::{self, BlockPtr, InternalEntry, Key, LeafItemHeader, NodeHeader, NODE_SIZE};
 use alloc::{collections::BTreeMap, sync::Arc, vec, vec::Vec};
 
@@ -340,6 +341,7 @@ pub(super) fn reservation_nodes<S: NodeStore>(
     let node = store.read_node(root)?;
     let mut count = u64::from(root.generation != generation);
     for (i, child) in node.children.iter().enumerate() {
+        preemption_point();
         if object.is_some_and(|ino| child.key.object > ino
             || node.children.get(i + 1).is_some_and(|next| next.key.object < ino))
         {
@@ -378,11 +380,12 @@ pub fn range_limit<S: NodeStore>(
         out: &mut Vec<(Key, Vec<u8>)>,
         limit: usize,
     ) -> Result<(), Error> {
+        preemption_point();
         if node.header.level == 0 {
             out.extend(
                 node.items
                     .iter()
-                    .filter(|(k, _)| *k >= lower && *k <= upper)
+                    .filter(|(k, _)| { preemption_point(); *k >= lower && *k <= upper })
                     .take(limit - out.len())
                     .cloned(),
             );

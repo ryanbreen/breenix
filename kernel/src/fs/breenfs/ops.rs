@@ -1,6 +1,7 @@
 //! File operations over the private transaction tree (design 2.3 and 2.5).
 //! Callers serialize operations and discard the transaction after a storage error.
 //! Credentials and pathname traversal belong to VFS; reservation policy is separate.
+use super::preempt::preemption_point;
 use super::{
     btree::{self, NodeStore},
     commit::{self, Committer},
@@ -158,7 +159,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     pub fn new(store: S, sb: &Superblock, root_id: u64, writable: bool) -> Result<Self, Error> {
         let roots: BTreeMap<_, _> = recover::space_items(&store, sb)?
             .into_iter()
-            .filter(|(k, _)| k.item_type == format::ROOT)
+            .filter(|(k, _)| { preemption_point(); k.item_type == format::ROOT })
             .map(|(k, bytes)| Ok((k.offset, Root::decode(&bytes)?)))
             .collect::<Result<_, Error>>()?;
         let root = roots.get(&root_id).ok_or(Error::ENOENT)?.clone();
@@ -554,6 +555,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     }
     fn delete_inode(&mut self, ino: u64) -> Result<(), Error> {
         for (k, _) in self.range(key(ino, 0, 0), key(ino, u8::MAX, u64::MAX))? {
+            preemption_point();
             self.txn.delete(&mut self.root.root, k)?;
         }
         Ok(())
@@ -669,6 +671,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             key(ORPHAN_OBJECT, format::ORPHAN, u64::MAX),
         )?;
         for (k, value) in orphans {
+            preemption_point();
             if k.object != ORPHAN_OBJECT || !value.is_empty() {
                 return Err(Error::EIO);
             }
@@ -704,7 +707,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             key(ino, format::EXTENT, u64::MAX),
         )?
         .into_iter()
-        .map(|(k, v)| Ok((k, Extent::decode(&v)?)))
+        .map(|(k, v)| { preemption_point(); Ok((k, Extent::decode(&v)?)) })
         .collect()
     }
     fn block(
@@ -746,6 +749,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         let n = inode.size.saturating_sub(offset).min(buf.len() as u64) as usize;
         buf[..n].fill(0);
         for (k, e) in self.extents(ino)? {
+            preemption_point();
             let lo = offset.max(k.offset);
             let hi =
                 (offset + n as u64).min(k.offset + u64::from(e.num_blocks) * BLOCK_SIZE as u64);
@@ -781,10 +785,11 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     fn replace_extent(&mut self, ino: u64, off: u64, bytes: &[u8]) -> Result<(), Error> {
         let crcs: Vec<_> = bytes
             .chunks_exact(BLOCK_SIZE)
-            .map(crc32c::checksum)
+            .map(|bytes| { preemption_point(); crc32c::checksum(bytes) })
             .collect();
         let mut done = 0;
         while done < crcs.len() {
+            preemption_point();
             let (addr, blocks) = self.txn.allocate_data_run(&crcs[done..])?;
             let next = done + blocks as usize;
             self.data
@@ -809,6 +814,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     // needs a reference per replacement item; txn::delete releases the old one.
     fn remove_range(&mut self, ino: u64, start: u64, end: u64) -> Result<(), Error> {
         for (k, e) in self.extents(ino)? {
+            preemption_point();
             let extent_end = k.offset + u64::from(e.num_blocks) * BLOCK_SIZE as u64;
             if k.offset >= end || extent_end <= start {
                 continue;
@@ -875,6 +881,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         blocks[lo..lo + bytes.len()].copy_from_slice(bytes);
         self.remove_range(ino, start, rounded)?;
         for (n, run) in blocks.chunks(256 * BLOCK_SIZE).enumerate() {
+            preemption_point();
             self.replace_extent(ino, start + (n * 256 * BLOCK_SIZE) as u64, run)?;
         }
         inode.size = inode.size.max(end);
@@ -883,7 +890,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         inode.nblocks = self
             .extents(ino)?
             .iter()
-            .map(|(_, e)| u64::from(e.num_blocks))
+            .map(|(_, e)| { preemption_point(); u64::from(e.num_blocks) })
             .sum();
         self.put_inode(ino, inode)?;
         Ok(bytes.len())
@@ -900,7 +907,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         Ok(self
             .extents(ino)?
             .iter()
-            .map(|(_, e)| u64::from(e.num_blocks))
+            .map(|(_, e)| { preemption_point(); u64::from(e.num_blocks) })
             .sum())
     }
     pub fn truncate(
@@ -944,7 +951,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         inode.nblocks = self
             .extents(ino)?
             .iter()
-            .map(|(_, e)| u64::from(e.num_blocks))
+            .map(|(_, e)| { preemption_point(); u64::from(e.num_blocks) })
             .sum();
         self.put_inode(ino, inode)
     }
@@ -1047,6 +1054,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     pub(crate) fn prepare_commit(
         &mut self,
     ) -> Result<(&mut Transaction<'a, S>, &mut BTreeMap<u64, Vec<u8>>), Error> {
+        preemption_point();
         self.require_writable()?;
         self.reclaim_orphans()?;
         self.txn.promote_pending()?;
@@ -1057,10 +1065,10 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         let refs = items(&self.txn.view(), ptr)?;
         let live: BTreeSet<_> = refs
             .into_iter()
-            .filter(|(k, _)| k.item_type == format::REF)
+            .filter(|(k, _)| { preemption_point(); k.item_type == format::REF })
             .map(|(k, _)| k.object)
             .collect();
-        self.data.retain(|addr, _| live.contains(addr));
+        self.data.retain(|addr, _| { preemption_point(); live.contains(addr) });
         Ok((&mut self.txn, &mut self.data))
     }
 }

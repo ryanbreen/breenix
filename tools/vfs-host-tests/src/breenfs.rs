@@ -38,3 +38,6 @@ pub mod abi;
 pub mod scrub;
 #[path = "../../../kernel/src/fs/breenfs/mount_args.rs"]
 pub mod mount_args;
+
+#[path = "../../../kernel/src/fs/breenfs/preempt.rs"]
+pub mod preempt;

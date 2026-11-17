@@ -17,7 +17,7 @@ breenfs = { path = "../breenfs", artifact = ["bin:breenfs-mkfs", "bin:breenfs-ch
 doctest = false
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("fs_fault_inject", "watchdog_fault_inject"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("breenix"))', 'cfg(feature, values("fs_fault_inject", "watchdog_fault_inject"))'] }
 
 [[bin]]
 name = "breenfs-torture"

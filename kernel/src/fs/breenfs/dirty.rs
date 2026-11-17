@@ -1,5 +1,6 @@
 //! BreenFS-only dirty pages; the mount serializes this per-VNode state.
 //! Clean pages belong to the buffer cache (E24 coordinator ledger line 2).
+use super::preempt::preemption_point;
 use super::format::BLOCK_SIZE;
 use crate::{fs::errno::Errno, syscall::errno::ENOMEM};
 use alloc::{collections::BTreeMap, vec::Vec};
@@ -173,6 +174,7 @@ impl DirtyPages {
         mut write: impl FnMut(u64, &[u8]) -> Result<(), Errno>,
     ) -> Result<(), Errno> {
         while let Some((first, page)) = self.pages.pop_first() {
+            preemption_point();
             #[cfg(test)]
             measurement::drained();
             let offset = first * BLOCK_SIZE as u64;

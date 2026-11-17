@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(never)", "cfg(feature, values(\"ec0_fault_inject\", \"receipt_drop_test\"))"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(target_os, values(\"breenix\"))", "cfg(never)", "cfg(feature, values(\"ec0_fault_inject\", \"receipt_drop_test\"))"] }
 
 [[bin]]
 name = "kernel"

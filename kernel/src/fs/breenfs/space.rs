@@ -5,6 +5,7 @@
 //! or perform I/O. The transaction layer owns space-tree node allocation and the
 //! deferred refcount fixpoint. Ranges supplied to `add_free` must be unowned and
 //! outside reserved blocks. FS child references are managed by txn/the reaper.
+use super::preempt::preemption_point;
 use super::{
     btree::{self, NodeStore},
     format::{self, BlockPtr, Free, InternalEntry, Key, LeafItemHeader, NodeHeader, Pending, Ref},
@@ -98,6 +99,7 @@ fn range<S: NodeStore>(
     let mut out = Vec::new();
     let uuid = NodeHeader::decode(&store.get(root.addr)?)?.fs_uuid;
     while let Some(ptr) = todo.pop() {
+        preemption_point();
         if ptr.level >= 8 || !seen.insert(ptr.addr) {
             return Err(Error::Invalid);
         }
@@ -122,6 +124,7 @@ fn range<S: NodeStore>(
         }
         if h.level == 0 {
             for i in 0..count {
+                preemption_point();
                 let at = 48 + i * 21;
                 let k = LeafItemHeader::decode(&bytes[at..at + 21])?.key;
                 if k >= lower && k <= upper {
@@ -132,10 +135,12 @@ fn range<S: NodeStore>(
         } else {
             let mut entries = Vec::new();
             for i in 0..count {
+                preemption_point();
                 let at = 48 + i * 37;
                 entries.push(InternalEntry::decode(&bytes[at..at + 37])?);
             }
             for (i, e) in entries.iter().enumerate().rev() {
+                preemption_point();
                 if e.key <= upper && entries.get(i + 1).is_none_or(|next| next.key > lower) {
                     todo.push(BlockPtr {
                         addr: e.child_addr,
@@ -147,13 +152,14 @@ fn range<S: NodeStore>(
             }
         }
     }
-    out.sort_by_key(|item| item.0);
+    out.sort_by_key(|item| { preemption_point(); item.0 });
     Ok(out)
 }
 fn free_ranges<S: NodeStore>(store: &S, root: BlockPtr) -> Result<Vec<(u64, u64)>, Error> {
     range(store, root, FREE_OBJECT, format::FREE)?
         .into_iter()
         .map(|(k, bytes)| {
+            preemption_point();
             if bytes.len() != 8 {
                 return Err(Error::Invalid);
             }
@@ -164,9 +170,10 @@ fn free_ranges<S: NodeStore>(store: &S, root: BlockPtr) -> Result<Vec<(u64, u64)
         .collect()
 }
 fn merged(mut ranges: Vec<(u64, u64)>) -> Result<Vec<(u64, u64)>, Error> {
-    ranges.sort_unstable();
+    ranges.sort_unstable_by(|a, b| { preemption_point(); a.cmp(b) });
     let mut out: Vec<(u64, u64)> = Vec::new();
     for (start, length) in ranges {
+        preemption_point();
         end(start, length)?;
         if let Some((prev, len)) = out.last_mut() {
             let prev_end = end(*prev, *len)?;
@@ -192,16 +199,18 @@ pub fn add_free<S: NodeStore>(
 ) -> Result<(), Error> {
     end(start, length)?;
     let old = free_ranges(store, *root)?;
-    let mut ranges = old.clone();
+    let mut ranges: Vec<_> = old.iter().map(|&range| { preemption_point(); range }).collect();
     ranges.push((start, length));
     let ranges = merged(ranges)?;
     for &(start, length) in &old {
-        if !ranges.contains(&(start, length)) {
+        preemption_point();
+        if !ranges.iter().any(|range| { preemption_point(); *range == (start, length) }) {
             btree::delete(store, root, key(FREE_OBJECT, format::FREE, start))?;
         }
     }
     for (start, length) in ranges {
-        if old.contains(&(start, length)) {
+        preemption_point();
+        if old.iter().any(|range| { preemption_point(); *range == (start, length) }) {
             continue;
         }
         btree::insert(
@@ -223,6 +232,7 @@ pub fn pending_promotion_generation<S: NodeStore>(
 ) -> Result<Option<u64>, Error> {
     let mut generation = None;
     for (key, bytes) in range(store, root, PENDING_OBJECT, format::PENDING)? {
+        preemption_point();
         let pending = Pending::decode(&bytes)?;
         end(key.offset, pending.length)?;
         if pending.released_generation == 0 {
@@ -245,6 +255,7 @@ pub fn promote_pending<S: NodeStore>(
     generation: u64,
 ) -> Result<(), Error> {
     for (k, bytes) in range(store, *root, PENDING_OBJECT, format::PENDING)? {
+        preemption_point();
         let pending = Pending::decode(&bytes)?;
         end(k.offset, pending.length)?;
         if pending.released_generation == 0 {
@@ -313,10 +324,11 @@ fn allocate_extent<S: NodeStore>(
         return Err(Error::Invalid);
     }
     let mut free = free_ranges(store, *root)?;
-    let mut candidate = free.iter().find(|(_, len)| *len >= length).copied();
+    let mut candidate = free.iter().find(|(_, len)| { preemption_point(); *len >= length }).copied();
     if candidate.is_none() {
         let mut pending = Vec::new();
         for (k, bytes) in range(store, *root, PENDING_OBJECT, format::PENDING)? {
+            preemption_point();
             if bytes.len() != 16 {
                 return Err(Error::Invalid);
             }
@@ -332,21 +344,22 @@ fn allocate_extent<S: NodeStore>(
                 pending.push((k.offset, p.length));
             }
         }
-        free.extend_from_slice(&pending);
+        free.extend(pending.iter().map(|&range| { preemption_point(); range }));
         free = merged(free)?;
-        candidate = free.iter().find(|(_, len)| *len >= length).copied();
+        candidate = free.iter().find(|(_, len)| { preemption_point(); *len >= length }).copied();
         if candidate.is_none() && short_data {
             // Break ties by address so replaying this exact shorter allocation
             // in the real SPACE tree makes the same first-fit choice.
             candidate = free
                 .iter()
                 .copied()
-                .max_by_key(|(start, len)| (*len, core::cmp::Reverse(*start)));
+                .max_by_key(|(start, len)| { preemption_point(); (*len, core::cmp::Reverse(*start)) });
         }
         if candidate.is_none() {
             return Err(Error::ENOSPC);
         }
         for (start, length) in pending {
+            preemption_point();
             btree::delete(store, root, key(PENDING_OBJECT, format::PENDING, start))?;
             add_free(store, root, start, length)?;
         }
@@ -434,6 +447,7 @@ pub fn dead_nodes<S: NodeStore>(store: &S, root: BlockPtr) -> Result<BTreeSet<u6
         key(0, 0, 0),
         key(0xffff_ffff_ffff_ff0f, u8::MAX, u64::MAX),
     )? {
+        preemption_point();
         if k.item_type == format::DEAD {
             if k.offset != 4 || !value.is_empty() {
                 return Err(Error::Invalid);

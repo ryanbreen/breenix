@@ -300,3 +300,21 @@ fn n2_parted_write_holds_other_writers_of_its_file() {
     }
     assert_eq!(done.load(Ordering::SeqCst), 2);
 }
+
+// Synchronous host I/O makes this worker pass CPU-bound: NoWait panics if
+// anything tries to park. Model the pending reschedule before entering it.
+#[test]
+fn cpu_bound_commit_yields_at_its_next_point() {
+    use super::super::preempt::context;
+    let (fs, _cache, node) = fixture(b"preemption");
+    write(&fs, &node, 0, &vec![0x51; 32 * BLOCK_SIZE]);
+    fs.inner.signal.requested.store(true, Ordering::Release);
+    context::request();
+    assert_eq!(fs.commit_due(0), Ok(true));
+    assert_eq!(context::yields(), 1, "pending reschedule missed the next commit point");
+    assert_eq!(context::first_yield(), 1, "yield was deferred past the first point");
+    assert_eq!(context::count(), 1, "I/O entry brake was not restored");
+    super::super::preempt::preemption_point();
+    assert_eq!(context::yields(), 1, "a cleared request caused another yield");
+    context::preempt_enable();
+}

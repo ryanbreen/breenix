@@ -104,3 +104,6 @@ pub mod buffer_cache;
 pub fn arch_without_interrupts<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
+
+#[path = "../../../kernel/src/fs/breenfs/preempt.rs"]
+pub mod preempt;

@@ -1,4 +1,5 @@
 //! BreenFS operations at the VFS boundary (design 1.1, 2.3 and 2.5).
+use super::preempt::preemption_point;
 use super::{
     abi::*,
     scrub::{self, Scrub},
@@ -271,6 +272,7 @@ impl<W: Wait> MountState<W> {
         }
     }
     fn apply_touches(&mut self, ino: u64) -> Result<(), Errno> {
+        preemption_point();
         let Some(touched) = self.nodes.get(&ino).and_then(|entry| entry.touched.as_ref())
         else {
             return Ok(());
@@ -378,6 +380,7 @@ impl<W: Wait> MountState<W> {
     }
     fn retain_open(&mut self) {
         self.nodes.retain(|_, node| {
+            preemption_point();
             node.node.strong_count() != 0
                 || node.splitting
                 || node.dirty.bytes() != 0
@@ -386,7 +389,7 @@ impl<W: Wait> MountState<W> {
         self.files.retain_open_inodes(
             self.nodes
                 .iter()
-                .filter(|(_, node)| node.node.strong_count() != 0)
+                .filter(|(_, node)| { preemption_point(); node.node.strong_count() != 0 })
                 .map(|(&ino, _)| ino)
                 .collect(),
         );
@@ -425,6 +428,7 @@ impl<W: Wait> MountState<W> {
             self.fail();
         }
         for (&ino, entry) in &self.nodes {
+            preemption_point();
             if let Some(node) = entry.node.upgrade() {
                 if let Ok(inode) = self.files.inode(ino) {
                     node.size.store(inode.size, Ordering::Release);
@@ -540,11 +544,12 @@ impl<W: Wait> MountState<W> {
         let result = self.drain_pages(device);
         // Draining frees pages as it copies them; keep the charge truthful
         // even when a failed drain leaves the mount failed.
-        self.dirty_bytes = self.nodes.values().map(|node| node.dirty.bytes()).sum();
+        self.dirty_bytes = self.nodes.values().map(|node| { preemption_point(); node.dirty.bytes() }).sum();
         result
     }
     fn drain_pages(&mut self, device: &dyn BlockDevice) -> Result<(), Errno> {
         for (&ino, node) in self.nodes.iter_mut() {
+            preemption_point();
             if node.dirty.bytes() == 0 {
                 continue;
             }
@@ -1033,6 +1038,7 @@ impl<W: Wait + 'static> BreenFs<W> {
     /// One commit-worker pass. Preparation and opening G+1 are serialized;
     /// device publication and completion waits hold no mount lock.
     fn commit_due(&self, now_ns: u64) -> Result<bool, Errno> {
+        preemption_point();
         let retry_ns = self.inner.state.lock().mapping_retry_ns;
         if now_ns >= retry_ns && self.inner.signal.mappings.swap(false, Ordering::AcqRel) {
             if let Err(error) = self.service_mappings(now_ns) {
@@ -1063,6 +1069,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         let mut budget = crate::memory::file_map::EVICT_BUDGET;
         let mut more = false;
         for node in handles {
+            preemption_point();
             more |= node.map.service_writeback_with(&node, &mut budget, |first, last| {
                 self.inner.signal.requested.store(true, Ordering::Release);
                 self.commit_generation(now_ns)?;
@@ -1087,6 +1094,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         }
         handles.try_reserve(state.nodes.len()).map_err(|_| Errno(ENOMEM))?;
         for entry in state.nodes.values() {
+            preemption_point();
             if let Some(node) = entry.node.upgrade() {
                 if entry.mapped.is_some() || node.map.has_dirty() || node.map.eviction_pending() || node.map.writeback_pending() {
                     handles.push(node);
@@ -1130,6 +1138,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         self.commit_generation_up_to(now_ns, u64::MAX, false)
     }
     fn commit_generation_up_to(&self, now_ns: u64, last: u64, force: bool) -> Result<bool, Errno> {
+        preemption_point();
         #[cfg(not(test))]
         crate::block::cache_kernel::assert_io_context();
         let (prepared, reap) = {
@@ -1147,8 +1156,9 @@ impl<W: Wait + 'static> BreenFs<W> {
             }
             #[cfg(test)]
             measurement::prepared(force, pressure);
-            let touched: Vec<_> = state.nodes.keys().copied().collect();
+            let touched: Vec<_> = state.nodes.keys().map(|&ino| { preemption_point(); ino }).collect();
             for ino in touched {
+                preemption_point();
                 state.apply_touches(ino)?;
             }
             state.retain_open();
@@ -1183,6 +1193,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                     if let Some(grant) = grant {
                         grants.push(grant);
                         for _ in 0..super::txn::REAP_PER_COMMIT {
+                            preemption_point();
                             if txn.reap_step()?.is_none() { break; }
                         }
                     }
@@ -1234,6 +1245,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             }
             state.inodes.entries.fill(None);
             for node in state.nodes.values_mut() {
+                preemption_point();
                 node.dirty.clear();
                 node.reserved_metadata = 0;
             }
@@ -1244,6 +1256,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             state.pending = Some(prepared.clone());
             (prepared, reap)
         };
+        preemption_point();
         let signal = self.inner.signal.clone();
         let group = WriteGroup::hold(
             self.inner.device.as_ref(),
@@ -1271,6 +1284,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 state.durable = prepared.superblock().clone();
                 *publication = Some(state.durable.clone());
                 for grant in core::mem::take(&mut state.pending_grants) {
+                    preemption_point();
                     state.reservations.release(grant);
                 }
                 self.inner
@@ -1286,6 +1300,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             }
         }
         drop(publication);
+        preemption_point();
         self.inner.signal.wake();
         result.map(|_| true).map_err(|_| Errno(EIO))
     }

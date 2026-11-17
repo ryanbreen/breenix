@@ -366,3 +366,6 @@ pub fn compare(model: &impl Fs, fs: &impl Fs) -> Result<Vec<Difference>> {
     }
     Ok(differences)
 }
+
+#[path = "../../../kernel/src/fs/breenfs/preempt.rs"]
+pub mod preempt;

@@ -1,5 +1,6 @@
 //! Generation preparation and ordered publication (design section 2.5).
 //! The mount closes a generation under its lock, then publishes without it.
+use super::preempt::preemption_point;
 use super::{
     btree::{self, NodeStore},
     crc32c,
@@ -166,7 +167,11 @@ impl Committer {
         // Step 1: the caller's write lock covers this deferred-space fixpoint.
         // Opening the next in-memory transaction belongs to the adapter.
         let space_root = txn.settle().map_err(|_| Error::EIO)?;
-        let mut nodes = txn.writes().clone();
+        let mut nodes = BTreeMap::new();
+        for (&addr, bytes) in txn.writes() {
+            preemption_point();
+            nodes.insert(addr, bytes.clone());
+        }
         let mut filled = BTreeMap::new();
         let space_root = fill(
             space_root,
@@ -178,8 +183,9 @@ impl Committer {
         )?;
         // A private FS node retained as DEAD still owns outgoing references.
         // Write the remaining staged nodes too, after filling their children.
-        let remaining: Vec<_> = nodes.keys().copied().collect();
+        let remaining: Vec<_> = nodes.keys().map(|&addr| { preemption_point(); addr }).collect();
         for addr in remaining {
+            preemption_point();
             if let Some(bytes) = nodes.get(&addr) {
                 let ptr = pointer(bytes, NodeHeader::decode(bytes)?);
                 fill(
@@ -210,6 +216,7 @@ impl Committer {
         sb.free_blocks = 0;
         let mut expected_data = BTreeSet::new();
         for (key, bytes) in entries {
+            preemption_point();
             if key.item_type == format::FREE {
                 sb.free_blocks = sb
                     .free_blocks
@@ -224,6 +231,7 @@ impl Committer {
                         return Err(Error::EIO);
                     }
                     for (chunk, crc) in bytes.chunks_exact(BLOCK_SIZE).zip(r.crcs) {
+                        preemption_point();
                         if crc32c::checksum(chunk) != crc {
                             return Err(Error::EIO);
                         }
@@ -244,10 +252,11 @@ impl Committer {
         let mut ranges: Vec<_> = filled
             .iter()
             .chain(data.iter())
-            .map(|(&addr, b)| (addr, b.len()))
+            .map(|(&addr, b)| { preemption_point(); (addr, b.len()) })
             .collect();
-        ranges.sort_unstable();
+        ranges.sort_unstable_by(|a, b| { preemption_point(); a.cmp(b) });
         for (addr, len) in ranges {
+            preemption_point();
             if len == 0 || len % BLOCK_SIZE != 0 || addr < end {
                 return Err(Error::EIO);
             }
@@ -316,12 +325,14 @@ impl Committer {
             self.fail();
         }
         for waiter in &prepared.waiters {
+            preemption_point();
             waiter.status.store(status, Ordering::Release);
         }
     }
     pub fn fail(&mut self) {
         self.failed = true;
         for waiter in self.waiters.drain(..) {
+            preemption_point();
             waiter.status.store(2, Ordering::Release);
         }
     }
@@ -380,11 +391,14 @@ impl PreparedCommit {
         }
         let sector = device.block_size();
         for (&addr, bytes) in self.nodes.iter().chain(self.data.iter()) {
+            preemption_point();
             for (i, bytes) in bytes.chunks_exact(sector).enumerate() {
+                preemption_point();
                 let block = addr * (BLOCK_SIZE / sector) as u64 + i as u64;
                 match cache.write(device, group.clone(), block, bytes) {
                     Err(BlockError::OutOfMemory) => {
                         cache.submit(device, group).wait().map_err(|_| Error::EIO)?;
+                        preemption_point();
                         cache
                             .write(device, group.clone(), block, bytes)
                             .map_err(|_| Error::EIO)?;
@@ -394,9 +408,12 @@ impl PreparedCommit {
             }
         }
         cache.submit(device, group).wait().map_err(|_| Error::EIO)?;
+        preemption_point();
         cache.flush(device).map_err(|_| Error::EIO)?;
+        preemption_point();
         self.superblocks(|addr, bytes| {
             for (i, bytes) in bytes.chunks_exact(sector).enumerate() {
+                preemption_point();
                 cache
                     .write(
                         device,
@@ -416,6 +433,7 @@ impl PreparedCommit {
     ) -> Result<(), Error> {
         if self.formatting {
             for ring in 0..2 {
+                preemption_point();
                 for slot in 0..4 {
                     if slot != self.sb.slot {
                         write(
@@ -428,6 +446,7 @@ impl PreparedCommit {
         }
         let mut sb = self.sb.clone();
         for ring in 0..2 {
+            preemption_point();
             sb.ring = ring;
             write(slot_block(sb.total_blocks, ring, sb.slot), &sb.encode())?;
         }
@@ -471,6 +490,7 @@ fn fill(
     generation: u64,
     uuid: [u8; 16],
 ) -> Result<BlockPtr, Error> {
+    preemption_point();
     if let Some(bytes) = done.get(&ptr.addr) {
         return Ok(pointer(bytes, NodeHeader::decode(bytes)?));
     }
@@ -496,6 +516,7 @@ fn fill(
         return Err(Error::EIO);
     }
     for i in 0..usize::from(h.nitems) {
+        preemption_point();
         let at = 48 + i * width;
         if h.level > 0 {
             let mut e = InternalEntry::decode(&bytes[at..at + 37])?;

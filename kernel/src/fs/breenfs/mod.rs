@@ -14,6 +14,7 @@ pub mod mount_args;
 mod mount_lock;
 pub mod node_cache;
 pub mod ops;
+mod preempt;
 pub mod probe;
 pub mod recover;
 pub mod reserve;

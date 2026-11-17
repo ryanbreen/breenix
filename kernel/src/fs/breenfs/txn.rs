@@ -4,6 +4,7 @@
 //! accumulate private writes; only a successful `settle` supplies a space root
 //! to the later commit engine. An error poisons the transaction: discard it and
 //! its unpublished FS roots. Reservation policy and device I/O are higher layers.
+use super::preempt::preemption_point;
 use super::{
     btree::{self, NodeStore},
     format::{self, BlockPtr, Extent, InternalEntry, Key, LeafItemHeader, NodeHeader, Root},
@@ -534,6 +535,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
                 },
             )?;
             for (start, length) in outgoing(&bytes)? {
+                preemption_point();
                 self.release(start, length, h.level != 0)?;
             }
             let mut root = self.space_root;
@@ -571,6 +573,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             }
             let bytes = self.view().get(header.addr)?;
             for (start, length) in outgoing(&bytes)? {
+                preemption_point();
                 self.increment(start, length)?;
             }
         }
@@ -755,6 +758,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
     pub fn settle(&mut self) -> Result<BlockPtr, Error> {
         self.healthy()?;
         while let Some(change) = self.deferred.pop_front() {
+            preemption_point();
             let mut root = self.space_root;
             let generation = self.generation;
             let mut store = EditStore { txn: self, tree: 2 };

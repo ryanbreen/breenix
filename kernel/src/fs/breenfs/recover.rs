@@ -1,4 +1,5 @@
 //! Eight-slot recovery and abandoned publication cleanup (design 2.5).
+use super::preempt::preemption_point;
 use super::{
     btree::{self, NodeStore},
     commit::{self, DeviceStore, Error},
@@ -158,11 +159,13 @@ pub(crate) fn space_items<S: NodeStore>(
     let mut seen = BTreeSet::new();
     let mut out = Vec::new();
     while let Some((ptr, limit)) = todo.pop() {
+        preemption_point();
         if !seen.insert(ptr.addr) {
             return Err(Error::InvalidGeneration);
         }
         let (h, bytes) = node(store, sb, ptr, 2, limit)?;
         for i in 0..usize::from(h.nitems) {
+            preemption_point();
             if h.level > 0 {
                 let at = 48 + i * 37;
                 let e = InternalEntry::decode(&bytes[at..at + 37])
