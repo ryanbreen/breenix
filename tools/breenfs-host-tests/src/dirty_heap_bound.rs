@@ -230,3 +230,31 @@ fn c3_durable_generation_releases_private_buffers() {
         RETAINED_BOUND / 1024
     );
 }
+
+#[test]
+fn n2_one_large_write_stays_inside_a_heap_share() {
+    // Round-2 landing review N2: one write(2) four times the dirty budget,
+    // with no worker pass. The caller's buffer stands for the syscall layer's
+    // snapshot and is allocated before the measurement starts; only the heap
+    // BreenFS itself holds for the call and its commit is measured.
+    let (fs, _cache, node) = fixture(b"large");
+    let mut bytes = vec![0u8; 32 * MIB];
+    fill(&mut bytes, 0);
+    let mut page = vec![0u8; BLOCK_SIZE];
+    let mut expect = vec![0u8; BLOCK_SIZE];
+    let base = reset_peak();
+    write(&fs, &node, 0, &bytes);
+    fs.fsync(&node, false).unwrap();
+    let transient = (peak() - base) as usize;
+    for index in [0, 1023, 1024, 4095, 6000, 8191] {
+        fs.read(&node, index * BLOCK_SIZE as u64, &mut page).unwrap();
+        fill(&mut expect, index);
+        assert_eq!(page, expect, "page {index} after the large write");
+    }
+    assert!(
+        transient <= PEAK_BOUND,
+        "one 32 MiB write held {} KiB of heap at peak; bound {} KiB",
+        transient / 1024,
+        PEAK_BOUND / 1024
+    );
+}
