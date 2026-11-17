@@ -79,7 +79,11 @@ impl DirtyPages {
             prepared.insert(index, page);
             done += take;
         }
-        self.pages.append(&mut prepared);
+        // Bulk append rebuilds the existing index even for a one-page write
+        // (#3040). Insert the prepared pages into the retained index instead.
+        for (index, page) in prepared {
+            self.pages.insert(index, page);
+        }
         Ok(())
     }
     // Only a mapped/dirty partial tail needs a page. Growing a hole does not.
