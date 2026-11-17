@@ -204,6 +204,7 @@ struct MountState<W: Wait + 'static> {
     committer: Option<Committer>,
     durable: Superblock,
     failed: bool,
+    failure: Option<(&'static str, i32)>,
     scrub: Option<Scrub>,
     scrub_state: u32,
     #[cfg(not(test))]
@@ -394,8 +395,12 @@ impl<W: Wait> MountState<W> {
                 .collect(),
         );
     }
-    fn fail(&mut self) {
+    fn fail(&mut self, branch: &'static str, error: Errno) {
+        if self.failure.is_some() { return; }
+        self.failure = Some((branch, error.0));
         self.failed = true;
+        log::error!("[breenfs] failure branch={} errno={} generation={}; latched read-only",
+            branch, error.0, self.durable.generation);
         if let Some(committer) = self.committer.as_mut() {
             committer.fail();
         }
@@ -407,7 +412,7 @@ impl<W: Wait> MountState<W> {
     }
     fn observed<T>(&mut self, result: Result<T, ops::Error>) -> Result<T, Errno> {
         if matches!(result, Err(ops::Error::EIO)) {
-            self.fail();
+            self.fail("observed-metadata", Errno(EIO));
         }
         result.map_err(errno)
     }
@@ -425,7 +430,7 @@ impl<W: Wait> MountState<W> {
         // Do not publish that transaction. Reservation refusals return before
         // mutation via admission; an ENOSPC here is still a bug.
         if matches!(result, Err(ops::Error::EIO | ops::Error::ENOSPC)) {
-            self.fail();
+            self.fail("edited", errno(result.as_ref().err().copied().expect("edit error")));
         }
         for (&ino, entry) in &self.nodes {
             preemption_point();
@@ -701,6 +706,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 pending_grants: Vec::new(),
                 durable,
                 failed: false,
+                failure: None,
                 scrub: None,
                 scrub_state: SCRUB_IDLE,
                 #[cfg(not(test))]
@@ -961,7 +967,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             Ok(())
         });
         *dirty_bytes += dirty.bytes() - before;
-        if bad_metadata { state.fail(); }
+        if bad_metadata { state.fail("write-read-metadata", Errno(EIO)); }
         state.finish_data(node.ino, grant, result)?;
         inode.size = inode.size.max(end);
         inode.mtime = now();
@@ -1055,9 +1061,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                     }
                     self.inner.signal.mappings.store(true, Ordering::Release);
                 } else if !state.closed || state.failed {
-                    state.failed = true;
-                    if let Some(committer) = state.committer.as_mut() { committer.fail(); }
-                    self.inner.signal.wake();
+                    state.fail("service-mappings", error);
                     return Err(error);
                 }
             }
@@ -1162,12 +1166,8 @@ impl<W: Wait + 'static> BreenFs<W> {
                 state.apply_touches(ino)?;
             }
             state.retain_open();
-            if state.drain_dirty(&self.data_reader(None)).is_err() {
-                state.failed = true;
-                if let Some(committer) = state.committer.as_mut() {
-                    committer.fail();
-                }
-                self.inner.signal.wake();
+            if let Err(error) = state.drain_dirty(&self.data_reader(None)) {
+                state.fail("drain-dirty", error);
                 return Err(Errno(EIO));
             }
             // ROOT removal is its own durable operation. The next policy-due
@@ -1202,7 +1202,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 Ok(())
             })();
             if let Err(error) = reaped {
-                state.fail();
+                state.fail("prepare-reap", errno(error));
                 return Err(errno(error));
             }
             let MountState {
@@ -1215,8 +1215,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             let prepared = match result {
                 Ok(prepared) => Arc::new(prepared),
                 Err(_) => {
-                    state.failed = true;
-                    self.inner.signal.wake();
+                    state.fail("prepare-files", Errno(EIO));
                     return Err(Errno(EIO));
                 }
             };
@@ -1231,15 +1230,14 @@ impl<W: Wait + 'static> BreenFs<W> {
                     state.files = files;
                     state.fresh = true;
                 }
-                Err(_) => {
+                Err(error) => {
                     state
                         .committer
                         .as_mut()
                         .ok_or(Errno(EIO))?
                         .complete(&prepared, Err(super::commit::Error::EIO));
                     state.pending = Some(prepared);
-                    state.failed = true;
-                    self.inner.signal.wake();
+                    state.fail("open-next-generation", errno(error));
                     return Err(Errno(EIO));
                 }
             }
@@ -1296,7 +1294,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                     self.inner.signal.requested.store(true, Ordering::Release);
                 }
             } else {
-                state.failed = true;
+                state.fail("publish", Errno(EIO));
             }
         }
         drop(publication);
@@ -1705,12 +1703,8 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         }
         self.stop_scrub(deadline)?;
         let result = mapped.and_then(|()| self.sync_generation(Some(deadline), true));
-        if result.is_err() {
-            let mut state = self.inner.state.lock();
-            state.failed = true;
-            if let Some(committer) = state.committer.as_mut() {
-                committer.fail();
-            }
+        if let Err(error) = result {
+            self.inner.state.lock().fail("shutdown-sync", error);
         }
         signal.stop.store(true, Ordering::Release);
         signal.wake();
@@ -1756,6 +1750,9 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             .map_err(|_| Errno(ENOMEM))?;
         }
         Ok(())
+    }
+    fn failure(&self) -> Option<(&'static str, i32)> {
+        self.inner.state.lock().failure
     }
     fn read_only(&self) -> Result<bool, Errno> {
         Ok(self.inner.state.lock().read_only())
@@ -2212,7 +2209,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 Ok(())
             });
             *dirty_bytes = *dirty_bytes - before + dirty.bytes();
-            if bad_metadata { state.fail(); }
+            if bad_metadata { state.fail("resize-read-metadata", Errno(EIO)); }
             state.finish_data(node.ino, grant, result)?;
             let result = state.files.trim_mappings(node.ino, size);
             inode.nblocks = state.edited(result)?;
@@ -2288,7 +2285,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             Ok(())
         });
         *dirty_bytes += dirty.bytes() - before;
-        if bad_metadata { state.fail(); }
+        if bad_metadata { state.fail("writeback-read-metadata", Errno(EIO)); }
         state.finish_data(node.ino, grant, result)?;
         inode.mtime = now();
         inode.ctime = inode.mtime;

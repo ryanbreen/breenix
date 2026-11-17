@@ -254,29 +254,25 @@ pub fn register_user(mut entry: MountPoint) -> Result<(), Errno> {
 pub fn mounts_text() -> Vec<u8> {
     use alloc::format;
     let table = MOUNT_TABLE.lock();
+    let native: Vec<_> = table.iter().filter(|m| !matches!(m.backend, Backend::User(_)))
+        .map(|m| (m.path.clone(), m.kind, m.flags, match &m.backend {
+            Backend::Fs(fs) => Some(fs.clone()), _ => None,
+        })).collect();
     let mut out = Vec::new();
-    for m in table
-        .iter()
-        .filter(|m| !matches!(m.backend, Backend::User(_)))
-    {
-        out.extend_from_slice(
-            format!(
-                "none {} {} {} 0 0\n",
-                String::from_utf8_lossy(&m.path),
-                m.kind,
-                m.flags.options()
-            )
-            .as_bytes(),
-        );
+    let users: Vec<_> = table.iter().filter(|m| matches!(m.backend, Backend::User(_)))
+        .map(|m| crate::fs::ufs::mounts_line::format_mount_line(&m.source, &m.path)).collect();
+    drop(table);
+    for (path, kind, mut flags, fs) in native {
+        let failure = fs.as_ref().and_then(|fs| fs.failure());
+        if failure.is_some() { flags.read_only = true; }
+        let mut options = flags.options();
+        if let Some(fs) = fs {
+            super::mount_table::append_failure_options(&mut options, fs.failure());
+        }
+        out.extend_from_slice(format!("none {} {} {} 0 0\n",
+            String::from_utf8_lossy(&path), kind, options).as_bytes());
     }
-    for m in table
-        .iter()
-        .filter(|m| matches!(m.backend, Backend::User(_)))
-    {
-        out.extend_from_slice(&crate::fs::ufs::mounts_line::format_mount_line(
-            &m.source, &m.path,
-        ));
-    }
+    for line in users { out.extend_from_slice(&line); }
     out
 }
 pub fn remount_read_only(id: usize) -> Result<(), &'static str> {
