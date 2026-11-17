@@ -29,6 +29,26 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
 #[cfg(test)]
+pub mod measurement {
+    std::thread_local! {
+        static COMMITS: core::cell::Cell<[u64; 3]> = const { core::cell::Cell::new([0; 3]) };
+    }
+    pub(super) fn prepared(reservation: bool, dirty: bool) {
+        COMMITS.with(|cell| { let mut n = cell.get(); n[0] += u64::from(reservation);
+            n[1] += u64::from(dirty); cell.set(n); });
+    }
+    pub(super) fn published() {
+        COMMITS.with(|cell| { let mut n = cell.get(); n[2] += 1; cell.set(n); });
+    }
+    pub fn take_work() -> [u64; 3] { COMMITS.with(|n| n.replace([0; 3])) }
+    pub fn service<W: crate::block::cache::Wait + 'static>(
+        fs: &super::BreenFs<W>,
+    ) -> Result<bool, crate::fs::errno::Errno> {
+        fs.commit_due(0)
+    }
+}
+
+#[cfg(test)]
 #[path = "../../../../tools/breenfs-host-tests/src/failed_mount_teardown.rs"]
 mod failed_mount_teardown;
 #[cfg(test)]
@@ -929,6 +949,8 @@ impl<W: Wait + 'static> BreenFs<W> {
             if !state.policy.due(now_ns, state.dirty_bytes, fsync || force, pressure) {
                 return Ok(false);
             }
+            #[cfg(test)]
+            measurement::prepared(force, pressure);
             let touched: Vec<_> = state.nodes.keys().copied().collect();
             for ino in touched {
                 state.apply_touches(ino)?;
@@ -1010,6 +1032,8 @@ impl<W: Wait + 'static> BreenFs<W> {
                 .ok_or(Errno(EIO))?
                 .complete(&prepared, result);
             if result.is_ok() {
+                #[cfg(test)]
+                measurement::published();
                 state.durable = prepared.superblock().clone();
                 for grant in core::mem::take(&mut state.pending_grants) {
                     state.reservations.release(grant);

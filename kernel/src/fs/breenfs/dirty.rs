@@ -9,12 +9,19 @@ pub mod measurement {
     extern crate std;
     std::thread_local! {
         static VISITS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+        static INDEXES: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+        static DRAINED: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
     }
     pub fn take_visits() -> u64 {
         VISITS.with(|count| count.replace(0))
     }
     pub(super) fn visited() {
         VISITS.with(|count| count.set(count.get() + 1));
+    }
+    pub(super) fn indexed() { INDEXES.with(|n| n.set(n.get() + 1)); }
+    pub(super) fn drained() { DRAINED.with(|n| n.set(n.get() + 1)); }
+    pub fn take_work() -> [u64; 3] {
+        [take_visits(), INDEXES.with(|n| n.replace(0)), DRAINED.with(|n| n.replace(0))]
     }
 }
 
@@ -30,6 +37,9 @@ impl DirtyPages {
         self.pages.get(&page).map(Vec::as_slice)
     }
     pub fn indexes(&self) -> impl Iterator<Item = u64> + '_ {
+        #[cfg(test)]
+        { self.pages.keys().copied().inspect(|_| measurement::indexed()) }
+        #[cfg(not(test))]
         self.pages.keys().copied()
     }
     /// Project write_runs after admission, without changing pages. Adjacent
@@ -163,6 +173,8 @@ impl DirtyPages {
         mut write: impl FnMut(u64, &[u8]) -> Result<(), Errno>,
     ) -> Result<(), Errno> {
         while let Some((first, page)) = self.pages.pop_first() {
+            #[cfg(test)]
+            measurement::drained();
             let offset = first * BLOCK_SIZE as u64;
             if offset >= size {
                 self.pages.clear();
@@ -181,6 +193,8 @@ impl DirtyPages {
                     .is_some_and(|(index, _)| *index == next)
             {
                 if let Some((_, page)) = self.pages.pop_first() {
+                    #[cfg(test)]
+                    measurement::drained();
                     run.extend_from_slice(&page);
                     next += 1;
                 }

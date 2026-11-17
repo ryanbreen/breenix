@@ -417,3 +417,35 @@ fn durable_fill_delete_remount_allows_tiny_write() {
     assert_eq!(&bytes, b"tiny");
     // The recording device checks W1-W3 on writes and flushes.
 }
+
+#[test]
+fn dirty_inode_write_does_not_decode_siblings_or_recount_space() {
+    let (disk, fs, node) = fixture();
+    // Durable extents enlarge both trees. Subsequent dirty writes replace only
+    // the same private INODE payload; they do not change either tree's shape.
+    let chunk = vec![0x71; 64 * 1024];
+    for index in 0..32 {
+        write(fs.as_ref(), &node, index * chunk.len() as u64, &chunk).unwrap();
+        fs.fsync(&node, false).unwrap();
+    }
+    let end = 32 * chunk.len() as u64;
+    write(fs.as_ref(), &node, end, &[0x81; 4096]).unwrap();
+    // Populate reservation geometry for this unchanged SPACE root.
+    write(fs.as_ref(), &node, end + 4096, &[0x82; 4096]).unwrap();
+    crate::breenfs::btree::measurement::take_work();
+    write(fs.as_ref(), &node, end + 8192, &[0x83; 4096]).unwrap();
+    let work = crate::breenfs::btree::measurement::take_work();
+    assert_eq!(work, [0; 4],
+        "private inode replacement decoded unrelated items or recounted unchanged trees: {work:?}");
+    assert_eq!(node.size.load(std::sync::atomic::Ordering::Acquire), end + 12288);
+    fs.fsync(&node, false).unwrap();
+    let ino = node.ino;
+    drop(node); drop(fs);
+    let fs = mount(disk);
+    let node = fs.open(ino).unwrap();
+    let mut bytes = vec![0; 12288];
+    assert_eq!(fs.read(&node, end, &mut bytes).unwrap(), bytes.len());
+    for (index, expected) in [0x81, 0x82, 0x83].into_iter().enumerate() {
+        assert_eq!(&bytes[index * 4096..(index + 1) * 4096], &[expected; 4096]);
+    }
+}

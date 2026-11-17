@@ -119,3 +119,6 @@ mod writable_owner;
 
 #[path = "../tests/enospc.rs"]
 mod enospc;
+
+#[path = "../tests/enospc_profile.rs"]
+mod enospc_profile;
