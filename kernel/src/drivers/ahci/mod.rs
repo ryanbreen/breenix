@@ -21,7 +21,63 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use spin::{Mutex, MutexGuard};
 
-use crate::task::completion::Completion;
+use crate::task::completion::{Completion, WaitStage};
+
+mod command_ring;
+use command_ring::{CommandRing, Event, EventKind};
+
+static COMMAND_HISTORY: [CommandRing; MAX_PORTS] = [const { CommandRing::new() }; MAX_PORTS];
+
+/// Observational samples only. Register fields at wait boundaries are
+/// unsampled (0); those boundaries use atomics without MMIO under the scheduler.
+#[inline]
+fn trace_command_event(
+    port: usize, token: u32, slot: u8, kind: EventKind,
+    ci: u32, port_is: u32, tfd: u32, hba_is: u32,
+) {
+    COMMAND_HISTORY[port].record(Event {
+        kind, slot, token, ci, port_is, tfd, hba_is,
+        active: PORT_ACTIVE_MASK[port].load(Ordering::Relaxed),
+        done: AHCI_COMPLETIONS[port][0].done.load(Ordering::Relaxed),
+        waiter: AHCI_COMPLETIONS[port][0].waiter_tid(),
+    });
+}
+
+#[inline]
+fn trace_wait_event(port: usize, token: u32, stage: WaitStage) {
+    let kind = match stage {
+        WaitStage::Park => EventKind::WaitPark,
+        WaitStage::Wake => EventKind::WaitWake,
+        WaitStage::Recheck => EventKind::WaitRecheck,
+    };
+    trace_command_event(port, token, 0, kind, 0, 0, 0, 0);
+}
+
+#[inline]
+fn trace_retirement(port: usize, token: u32, slot: u8, active: u32, ci: u32, port_is: u32, drain: bool) {
+    let kind = if active & !ci == 0 {
+        EventKind::RetireSingle
+    } else if drain {
+        EventKind::RetireDrain
+    } else {
+        EventKind::RetireNormal
+    };
+    trace_command_event(port, token, slot, kind, ci, port_is, 0, 0);
+}
+
+/// Serial formatting is confined to the existing timeout path.
+struct CommandHistorySerial;
+impl core::fmt::Write for CommandHistorySerial {
+    fn write_str(&mut self, text: &str) -> core::fmt::Result {
+        crate::serial_print!("{}", text);
+        Ok(())
+    }
+
+    fn write_fmt(&mut self, args: core::fmt::Arguments<'_>) -> core::fmt::Result {
+        crate::serial_print!("{}", args);
+        Ok(())
+    }
+}
 
 use crate::block::{BlockDevice, BlockError};
 use crate::drivers::pci;
@@ -880,7 +936,7 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
             kick_poller();
         }
         let wait_result =
-            AHCI_COMPLETIONS[port][0].wait_timeout_uninterruptible(cmd_num, TIMEOUT_NS);
+            AHCI_COMPLETIONS[port][0].wait_timeout_uninterruptible_observed(cmd_num, TIMEOUT_NS, |stage| trace_wait_event(port, cmd_num, stage));
         // The pollers stop looking at a command its waiter gave up on.
         if token.polled && !matches!(wait_result, Ok(true)) {
             let poll_guard = PORT_POLL[port].lock();
@@ -1044,7 +1100,9 @@ fn poll_ports() -> bool {
         if PORT_ACTIVE_MASK[port].fetch_and(!1, Ordering::AcqRel) & 1 != 0 {
             let cmd_num = PORT_ACTIVE_CMD_NUM[port].swap(0, Ordering::AcqRel);
             if cmd_num != 0 {
+                trace_retirement(port, cmd_num, 0, active, ci, is, false);
                 AHCI_COMPLETIONS[port][0].complete(cmd_num);
+                trace_command_event(port, cmd_num, 0, EventKind::ReceiptRecorded, ci, is, 0, 0);
                 completed_any = true;
             }
         }
@@ -1607,6 +1665,9 @@ impl AhciController {
             PORT_ACTIVE_MASK[port].fetch_or(1, Ordering::Release);
         }
 
+        trace_command_event(port, cmd_num, 0, EventKind::Issue,
+            port_read(abar, port, PORT_CI), port_read(abar, port, PORT_IS),
+            port_read(abar, port, PORT_TFD), 0);
         // Write PORT_CI to issue the command.
         port_write(abar, port, PORT_CI, 1);
 
@@ -1622,6 +1683,9 @@ impl AhciController {
             core::arch::asm!("isb", options(nostack, preserves_flags));
         }
 
+        trace_command_event(port, cmd_num, 0, EventKind::Issued,
+            port_read(abar, port, PORT_CI), port_read(abar, port, PORT_IS),
+            port_read(abar, port, PORT_TFD), 0);
         drop(poll_guard);
         Ok(CmdToken {
             port,
@@ -1708,6 +1772,8 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
         tfd,
         hba_is_timeout
     );
+    trace_command_event(port, cmd_num, 0, EventKind::Timeout, ci, is, tfd, hba_is_timeout);
+    let _ = COMMAND_HISTORY[port].dump_once(port, &mut CommandHistorySerial);
     crate::serial_println!(
         "[ahci]   GHC={:#x} PORT_IE={:#x} CMD={:#x} SERR={:#x}",
         ghc,
@@ -2824,6 +2890,8 @@ pub fn handle_interrupt() {
         let mut is = port_read(abar, port, PORT_IS);
         let ci_entry = port_read(abar, port, PORT_CI);
         let active_entry = PORT_ACTIVE_MASK[port].load(Ordering::Acquire) & AHCI_TRACKED_SLOT_MASK;
+        trace_command_event(port, PORT_ACTIVE_CMD_NUM[port].load(Ordering::Relaxed), 0,
+            EventKind::IsrEntry, ci_entry, is, 0, hba_is);
         if is == 0 && (active_entry & !ci_entry) == 0 {
             // Parallels can leave the global status latched after PORT_IS
             // clears. Acknowledge it even without a slot completion, or the
@@ -2894,12 +2962,14 @@ pub fn handle_interrupt() {
                 // token to publish back to wait_cmd_slot0().
                 if slot == 0 {
                     let cmd_num = PORT_ACTIVE_CMD_NUM[port].swap(0, Ordering::AcqRel);
+                    trace_retirement(port, cmd_num, slot as u8, active_mask, ci, sampled_is, loop_iterations > 1);
                     if port == 1 {
                         AHCI_LAST_ISR_PORT1_CMD_NUM.store(cmd_num, Ordering::Relaxed);
                     }
                     if cmd_num != 0 {
                         pending_cmd_num = cmd_num;
                         pending_waiter_tid = AHCI_COMPLETIONS[port][slot].waiter_tid();
+                        trace_command_event(port, cmd_num, slot as u8, EventKind::ReceiptDeferred, ci, sampled_is, 0, hba_is);
                     }
                 }
             }
@@ -2924,6 +2994,7 @@ pub fn handle_interrupt() {
             AHCI_LAST_ISR_COMPLETE_CMD.store(pending_cmd_num, Ordering::Relaxed);
             AHCI_LAST_ISR_COMPLETE_WAITER.store(pending_waiter_tid, Ordering::Relaxed);
             AHCI_COMPLETIONS[port][0].complete(pending_cmd_num);
+            trace_command_event(port, pending_cmd_num, 0, EventKind::ReceiptRecorded, ci_after_clear, is_after_clear, 0, hba_is);
             AHCI_ISR_COMPLETE_HIT[port].fetch_add(1, Ordering::Relaxed);
         }
     }

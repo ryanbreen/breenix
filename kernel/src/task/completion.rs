@@ -279,6 +279,15 @@ impl WaitMode {
     }
 }
 
+/// Observational boundaries for a device's failure-only command history.
+/// Park means BlockedOnIO was published; wake includes timer/spurious returns.
+#[derive(Clone, Copy)]
+pub(crate) enum WaitStage {
+    Park,
+    Wake,
+    Recheck,
+}
+
 /// Completion primitive — pairs one waiter thread with one ISR.
 pub struct Completion {
     /// 0 = not done, otherwise the completion token published by `complete()`.
@@ -355,6 +364,16 @@ impl Completion {
         self.wait_timeout_inner(expected_token, timeout_ns, WaitMode::Uninterruptible)
     }
 
+    /// The AHCI recorder observes wait boundaries without supplying a decision.
+    pub(crate) fn wait_timeout_uninterruptible_observed(
+        &self,
+        expected_token: u32,
+        timeout_ns: u64,
+        observe: impl Fn(WaitStage),
+    ) -> Result<bool, i32> {
+        self.wait_timeout_inner_observed(expected_token, timeout_ns, WaitMode::Uninterruptible, observe)
+    }
+
     /// Wait for completion, returning early only for a pending SIGKILL.
     pub fn wait_timeout_killable(
         &self,
@@ -370,6 +389,17 @@ impl Completion {
         timeout_ns: u64,
         wait_mode: WaitMode,
     ) -> Result<bool, i32> {
+        self.wait_timeout_inner_observed(expected_token, timeout_ns, wait_mode, |_| {})
+    }
+
+    fn wait_timeout_inner_observed(
+        &self,
+        expected_token: u32,
+        timeout_ns: u64,
+        wait_mode: WaitMode,
+        observe: impl Fn(WaitStage),
+    ) -> Result<bool, i32> {
+        observe(WaitStage::Recheck);
         // Fast path: already done (e.g., very fast device, or spurious call).
         if self.done.load(Ordering::Acquire) == expected_token {
             let in_syscall = syscall_sleep_path_available();
@@ -496,11 +526,13 @@ impl Completion {
                                 thread.uninterruptible_io = wait_mode == WaitMode::Uninterruptible;
                             }
                             sched.block_current_for_io_with_timeout(Some(deadline_ns));
+                            observe(WaitStage::Park);
                             false
                         }
                     })
                     .unwrap_or(false); // None = scheduler gone (shouldn't happen)
 
+                    observe(WaitStage::Recheck);
                     if already_done || self.done.load(Ordering::Acquire) == expected_token {
                         self.waiter.store(0, Ordering::Release);
                         finish_wait_current();
@@ -541,6 +573,7 @@ impl Completion {
                     #[cfg(target_arch = "aarch64")]
                     trace_wait_timeout_stage(1);
 
+                    observe(WaitStage::Wake);
                     // Clear BlockedOnIO state after wake (could be timer or ISR).
                     finish_wait_current();
 
@@ -548,6 +581,7 @@ impl Completion {
                     trace_wait_timeout_stage(2);
 
                     // Check done after wake.
+                    observe(WaitStage::Recheck);
                     if self.done.load(Ordering::Acquire) == expected_token {
                         self.waiter.store(0, Ordering::Release);
                         restore_syscall_preempt_state();

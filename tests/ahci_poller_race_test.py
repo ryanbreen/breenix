@@ -23,7 +23,7 @@ def function(source, name):
 class Regression(unittest.TestCase):
     def test_race(self):
         source = (ROOT / "kernel/src/drivers/ahci/mod.rs").read_text()
-        functions = "\n".join(function(source, name) for name in ("detect_completed_slots", "poll_ports"))
+        functions = "\n".join(function(source, name) for name in ("detect_completed_slots", "poll_ports", "trace_command_event", "trace_retirement"))
         constants = "\n".join(re.findall(r"const PORT_IRQ_[\s\S]*?;", source))
         harness = r'''
 
@@ -46,9 +46,12 @@ static COMPLETED:AtomicU32 = AtomicU32::new(0);
 static PAUSE:AtomicBool = AtomicBool::new(true);
 static SAMPLED:Mutex<Option<mpsc::Sender<()>>> = Mutex::new(None);
 static RELEASE:Mutex<Option<mpsc::Receiver<()>>> = Mutex::new(None);
-struct Completion;
-static AHCI_COMPLETIONS:[[Completion;1];1] = [[Completion]];
-impl Completion { fn complete(&self, cmd:u32) {
+struct Completion { done: AtomicU32 }
+static AHCI_COMPLETIONS:[[Completion;1];1] = [[Completion { done: AtomicU32::new(0) }]];
+impl Completion {
+fn waiter_tid(&self) -> u64 { 0 }
+fn complete(&self, cmd:u32) {
+    self.done.store(cmd,Ordering::Release);
     COMPLETED.store(cmd,Ordering::Release);
     // The awakened waiter immediately issues command N+1 on the same slot.
     CI.store(1,Ordering::Release);
@@ -88,7 +91,11 @@ fn main() {
 '''
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
-            (path / "race.rs").write_text(constants + "\n" + functions + "\n" + harness)
+            ring_path = ROOT / "kernel/src/drivers/ahci/command_ring.rs"
+            recorder = (f'#[path = "{ring_path}"] mod command_ring;\n'
+                        'use command_ring::{CommandRing, Event, EventKind};\n'
+                        'static COMMAND_HISTORY: [CommandRing; MAX_PORTS] = [const { CommandRing::new() }; MAX_PORTS];\n')
+            (path / "race.rs").write_text(recorder + constants + "\n" + functions + "\n" + harness)
             subprocess.run(["rustc", "--edition=2021", "-A", "dead_code", str(path / "race.rs"), "-o", str(path / "race")], check=True)
             subprocess.run([str(path / "race")], check=True, timeout=20)
 
