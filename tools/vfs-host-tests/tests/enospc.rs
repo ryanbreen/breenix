@@ -287,3 +287,39 @@ fn full_disk_namespace_refuses_atomically_and_deletes_use_reserve() {
         assert_eq!(fs.lookup(2, b"empty"), Err(Errno(crate::syscall_errno::ENOENT)));
     });
 }
+
+#[path = "../../../userspace/programs/src/filesystem_enospc_fill.rs"]
+mod guest_fill;
+
+#[test]
+fn guest_enospc_observes_the_full_file_once_at_refusal() {
+    use std::{cell::RefCell, io, rc::Rc};
+    struct LimitedFile(Rc<RefCell<Vec<u8>>>);
+    const LIMIT: usize = 48 * 1024 * 1024;
+    impl io::Write for LimitedFile {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let mut file = self.0.borrow_mut();
+            if file.len() + bytes.len() > LIMIT {
+                return Err(io::Error::from_raw_os_error(28));
+            }
+            file.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    }
+    let bytes = Rc::new(RefCell::new(Vec::new()));
+    let mut file = LimitedFile(bytes.clone());
+    let mut observations = 0;
+    let mut read_bytes = 0;
+    let accepted = guest_fill::fill_and_observe(&mut file, &vec![0x5a; 1024 * 1024], |accepted| {
+        observations += 1;
+        let snapshot = bytes.borrow().clone();
+        read_bytes += snapshot.len();
+        assert_eq!(snapshot.len(), accepted);
+        assert!(snapshot.iter().all(|byte| *byte == 0x5a));
+        Ok(())
+    }).unwrap();
+    assert_eq!(accepted, LIMIT);
+    assert_eq!(observations, 1, "full-file reads must wait for the refused call");
+    assert_eq!(read_bytes, LIMIT, "manifest observation must be linear in file size");
+}
