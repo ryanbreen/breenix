@@ -6,13 +6,14 @@
 //! before mutation and retain the grant through publication.
 use super::space::Error;
 
-/// Host-only capture of the last refused reservation (E24 ledger 403).
+/// Host-only captures of refusals and allocation grants (E24 ledger 403/408, #3047).
 #[cfg(test)]
 pub mod observation {
     extern crate std;
 
     std::thread_local! {
         static REFUSAL: core::cell::Cell<Option<[u64; 5]>> = const { core::cell::Cell::new(None) };
+        static WRITE_GRANT: core::cell::Cell<Option<[u64; 5]>> = const { core::cell::Cell::new(None) };
     }
 
     pub fn take() -> Option<[u64; 5]> {
@@ -21,6 +22,14 @@ pub mod observation {
 
     pub(super) fn record(values: [u64; 5]) {
         REFUSAL.with(|cell| cell.set(Some(values)));
+    }
+
+    pub fn take_write_grant() -> Option<[u64; 5]> {
+        WRITE_GRANT.with(|cell| cell.take())
+    }
+
+    pub(super) fn record_write_grant(values: [u64; 5]) {
+        WRITE_GRANT.with(|cell| cell.set(Some(values)));
     }
 }
 
@@ -133,6 +142,12 @@ impl Ledger {
             return Err(Error::ENOSPC);
         }
         let outstanding = self.outstanding.checked_add(blocks).ok_or(Error::ENOSPC)?;
+        #[cfg(test)]
+        if operation == Operation::Allocate {
+            observation::record_write_grant([
+                free_blocks, self.global_reserve, outstanding, blocks, available,
+            ]);
+        }
         self.outstanding = outstanding;
         Ok(Grant { blocks })
     }

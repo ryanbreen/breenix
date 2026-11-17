@@ -154,16 +154,26 @@ fn guest_delete_lifecycle_phase_counts() {
 
 #[test]
 fn bavail_reports_ungranted_headroom_after_write_refusal() {
+    use crate::breenfs::reserve::observation;
+
+    let check_grant = || {
+        let [free, reserve, outstanding, granted, available] =
+            observation::take_write_grant().expect("write returned without a grant");
+        assert_eq!(reserve, 4096);
+        assert!(granted <= available, "write grant used the global reserve");
+        assert!(free >= reserve + outstanding, "outstanding write grants used the global reserve");
+    };
     let disk = Arc::new(Disk {bytes: Mutex::new(image()), io: Mutex::new(Io {durable: 1, ..Io::default()})});
     assert_eq!(disk.bytes.lock().unwrap().len(), 64 * 1024 * 1024);
     let fs = mount(&disk);
     let dir = create(fs.as_ref(), 2, b"write-24", true);
     let fill = fs.open(create(fs.as_ref(), dir, b"fill", false)).unwrap();
+    observation::take_write_grant();
     assert_eq!(fs.statfs().unwrap().blocks, 16384);
     let mut bytes = 0;
     loop {
         match write(fs.as_ref(), &fill, bytes, &[0x5a; 4096]) {
-            Ok(w) => { assert_eq!(w.bytes, 4096); bytes += 4096; }
+            Ok(w) => { assert_eq!(w.bytes, 4096); check_grant(); bytes += 4096; }
             Err(e) => { assert_eq!(e.errno().0, ENOSPC); break; }
         }
         // Service the production pressure policy without a synthetic fsync.
@@ -172,7 +182,7 @@ fn bavail_reports_ungranted_headroom_after_write_refusal() {
     }
     let full = fs.statfs().unwrap();
     let [free, reserve, outstanding, rejected, available] =
-        crate::breenfs::reserve::observation::take().unwrap();
+        observation::take().unwrap();
     assert_eq!(reserve, 4096);
     assert!(free >= reserve + outstanding);
     assert_eq!(available, free - reserve - outstanding);
@@ -182,4 +192,44 @@ fn bavail_reports_ungranted_headroom_after_write_refusal() {
     assert_eq!(full.free_blocks, free);
     assert_eq!(full.available_blocks, available);
     println!("BAVAIL_REFUSAL bytes={bytes} free={free} reserve={reserve} outstanding={outstanding} rejected_grant={rejected} available={available}");
+
+    let mut appended = 0;
+    let mut refused = false;
+    for _ in 0..64 {
+        match write(fs.as_ref(), &fill, bytes + appended, &[0xa5]) {
+            Ok(w) => {
+                assert_eq!(w.bytes, 1);
+                assert_eq!(w.offset, bytes + appended);
+                check_grant();
+                appended += 1;
+            }
+            Err(error) => {
+                assert_eq!(error.errno().0, ENOSPC);
+                let [free, reserve, outstanding, rejected, available] = observation::take().unwrap();
+                assert_eq!(reserve, 4096);
+                assert!(free >= reserve + outstanding);
+                assert_eq!(available, free - reserve - outstanding);
+                assert!(rejected > available);
+                assert_eq!(outstanding, 0);
+                let full = fs.statfs().unwrap();
+                assert_eq!(full.free_blocks, free);
+                assert_eq!(full.available_blocks, available);
+                println!("BAVAIL_APPEND_REFUSAL successful_appends={appended} free={free} reserve={reserve} outstanding={outstanding} rejected_grant={rejected} available={available}");
+                refused = true;
+                break;
+            }
+        }
+    }
+    assert!(refused, "ENOSPC not reached within 64 one-byte appends; successful_appends={appended}");
+    assert_eq!(fs.getattr(fill.ino).unwrap().size, bytes + appended);
+    let mut buffer = vec![0; 64 * 1024];
+    let mut offset = 0;
+    while offset < bytes + appended {
+        let n = fs.read(&fill, offset, &mut buffer).unwrap();
+        assert!(n > 0);
+        for (index, byte) in buffer[..n].iter().enumerate() {
+            assert_eq!(*byte, if offset + (index as u64) < bytes {0x5a} else {0xa5});
+        }
+        offset += n as u64;
+    }
 }
