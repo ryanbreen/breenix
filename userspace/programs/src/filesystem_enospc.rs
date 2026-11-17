@@ -78,7 +78,13 @@ pub fn bavail_excludes_reserve() -> CaseResult {
             &format!("reserve missing from statfs: {before:?}"))?;
         fill(&mut file, &[0x5a; 4096])?;
         let full = stats(&file)?;
-        check(full.f_bavail == 0 && full.f_bfree >= 4096,
-            &format!("full filesystem reserve differs: {full:?}"))
+        check(full.f_bfree >= 4096 && full.f_bavail == full.f_bfree - 4096,
+            &format!("full filesystem reserve differs: {full:?}"))?;
+        let expected = tree(&scratch.work)?;
+        match file.write(&[0x5a]) {
+            Err(error) if error.raw_os_error() == Some(28) => (),
+            result => return Err(format!("one-byte append returned {result:?}").into()),
+        }
+        check(tree(&scratch.work)? == expected, "refused one-byte append changed the tree")
     })
 }
