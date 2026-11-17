@@ -640,3 +640,98 @@ fn repeated_inode_reads_reuse_immutable_metadata_and_empty_reads_stop_at_eof() {
     );
     assert_eq!(cache.counters().misses, before.misses);
 }
+
+// 512-byte sectors over a Disk image; counts device calls, not sectors.
+struct SectorDisk {
+    bytes: Vec<u8>,
+    requests: std::sync::atomic::AtomicU64,
+}
+impl SectorDisk {
+    fn copy(&self, sector: u64, buf: &mut [u8]) -> Result<(), BlockError> {
+        let start = usize::try_from(sector)
+            .ok()
+            .and_then(|s| s.checked_mul(512))
+            .ok_or(BlockError::OutOfBounds)?;
+        let end = start.checked_add(buf.len()).ok_or(BlockError::OutOfBounds)?;
+        buf.copy_from_slice(self.bytes.get(start..end).ok_or(BlockError::OutOfBounds)?);
+        Ok(())
+    }
+    fn requests(&self) -> u64 {
+        self.requests.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+impl BlockDevice for SectorDisk {
+    fn read_block(&self, sector: u64, buf: &mut [u8]) -> Result<(), BlockError> {
+        assert_eq!(buf.len(), 512);
+        self.requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.copy(sector, buf)
+    }
+    fn read_blocks(&self, start: u64, count: usize, buf: &mut [u8]) -> Result<(), BlockError> {
+        self.requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let len = count.checked_mul(512).ok_or(BlockError::IoError)?;
+        self.copy(start, buf.get_mut(..len).ok_or(BlockError::IoError)?)
+    }
+    fn write_block(&self, _: u64, _: &[u8]) -> Result<(), BlockError> {
+        panic!("read-only mount wrote to disk")
+    }
+    fn block_size(&self) -> usize {
+        512
+    }
+    fn num_blocks(&self) -> u64 {
+        (self.bytes.len() / 512) as u64
+    }
+    fn flush(&self) -> Result<(), BlockError> {
+        panic!("read-only mount flushed disk")
+    }
+}
+
+// E24 ledger 372, #3040: on a 512-byte device a file-data block miss through
+// the mount is one 4 KiB device request, not one per sector. Node misses are
+// counted in breenfs-host-tests/tests/node_cache.rs.
+#[test]
+fn data_block_miss_on_sector_device_is_one_request() {
+    let image = Disk {
+        bytes: Mutex::new(vec![0; 64 * 1024 * 1024]),
+        writable: true,
+    };
+    let sb = Superblock {
+        fs_uuid: [0x52; 16],
+        generation: 1,
+        slot: 1,
+        total_blocks: 16384,
+        global_reserve: 4096,
+        next_root_id: 2,
+        ..Superblock::default()
+    };
+    let at = Time {
+        seconds: 1,
+        nanos: 0,
+    };
+    let mut files = Files::format(DeviceStore(&image), &sb).unwrap();
+    let ino = files.create(2, b"two", 0o644, at).unwrap();
+    let mut data = vec![0x11; BLOCK_SIZE];
+    data.extend(vec![0x22; BLOCK_SIZE]);
+    files.write(&image, ino, 0, &data, at).unwrap();
+    files.fsync(&image, &mut Committer::format(sb)).unwrap();
+    drop(files);
+    let disk = Arc::new(SectorDisk {
+        bytes: image.bytes.into_inner().unwrap(),
+        requests: Default::default(),
+    });
+    let cache = Arc::new(BufferCache::new(NoWait));
+    let fs = BreenFs::mount(disk.clone(), cache.clone(), 92, 1).unwrap();
+    let node = fs.open(ino).unwrap();
+    let mut block = vec![0; BLOCK_SIZE];
+    assert_eq!(fs.read(&node, 0, &mut block), Ok(BLOCK_SIZE));
+    assert!(block.iter().all(|&b| b == 0x11));
+
+    // The second block's extent and inode are decoded already: only its data
+    // misses, as one 4 KiB request.
+    let (requests, misses) = (disk.requests(), cache.counters().misses.count);
+    assert_eq!(fs.read(&node, BLOCK_SIZE as u64, &mut block), Ok(BLOCK_SIZE));
+    assert!(block.iter().all(|&b| b == 0x22));
+    assert_eq!(cache.counters().misses.count - misses, 1);
+    assert_eq!(disk.requests() - requests, 1, "data block miss");
+}
