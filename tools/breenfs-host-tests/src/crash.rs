@@ -113,9 +113,34 @@ impl BlockDevice for MemoryDevice {
 #[derive(Debug)]
 pub struct Boundary {
     pub writes: usize,
+    /// Write selections the boundary enumerates (design section 5).
     pub images: usize,
+    /// Selections validated: `images` for the full corpus, fewer for a sample.
+    pub validated: usize,
     pub acknowledged: u64,
     pub issued: u64,
+}
+
+/// Which of a boundary's write selections a corpus run validates.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Masks {
+    /// The design section 5 corpus: subsets() yields N selections; N are validated.
+    Every,
+    /// The default-run slice: the 2^writes exhaustive selections (at most 12 writes),
+    /// and above 12 writes the writes+1 prefixes, the writes omissions and one
+    /// random subset in k.
+    Sample(usize),
+}
+
+impl Masks {
+    pub fn keeps(self, writes: usize, case: usize) -> bool {
+        match self {
+            Masks::Every => true,
+            Masks::Sample(k) => {
+                writes <= 12 || case <= writes * 2 || (case - writes * 2 - 1) % k == 0
+            }
+        }
+    }
 }
 #[derive(Debug)]
 pub struct Report {
@@ -145,7 +170,18 @@ pub fn subset_images(
     operations: usize,
     checker: impl FnMut(&Image) -> Result<()>,
 ) -> Result<Report> {
-    replay(initial, seed, operations, None, checker)
+    replay(initial, seed, operations, None, Masks::Every, checker)
+}
+
+/// `subset_images` over the selections `masks` keeps (a deterministic sample).
+pub fn subset_images_of(
+    initial: Vec<u8>,
+    seed: u64,
+    operations: usize,
+    masks: Masks,
+    checker: impl FnMut(&Image) -> Result<()>,
+) -> Result<Report> {
+    replay(initial, seed, operations, None, masks, checker)
 }
 
 fn replay(
@@ -153,6 +189,7 @@ fn replay(
     seed: u64,
     operations: usize,
     tail: Option<TornTail>,
+    keep: Masks,
     mut checker: impl FnMut(&Image) -> Result<()>,
 ) -> Result<Report> {
     let recorded = record(
@@ -167,13 +204,19 @@ fn replay(
     };
     for (boundary, window) in recorded.windows.iter().enumerate() {
         let masks = subsets(window.writes.len(), seed.wrapping_add(boundary as u64))?;
+        let mut validated = 0;
         for (case, mask) in masks.iter().enumerate() {
+            if !keep.keeps(window.writes.len(), case) {
+                continue;
+            }
             let tear = tail.map(|tail| (tail, tear_seed(seed, boundary, case)));
             validate(&recorded, boundary, case, mask, tear, &mut checker)?;
+            validated += 1;
         }
         report.boundaries.push(Boundary {
             writes: window.writes.len(),
             images: masks.len(),
+            validated,
             acknowledged: window.acknowledged,
             issued: window.issued,
         });
@@ -414,7 +457,19 @@ pub fn torn_images(
     tail: TornTail,
     checker: impl FnMut(&Image) -> Result<()>,
 ) -> Result<Report> {
-    replay(initial, seed, operations, Some(tail), checker)
+    replay(initial, seed, operations, Some(tail), Masks::Every, checker)
+}
+
+/// `torn_images` over the selections `masks` keeps (a deterministic sample).
+pub fn torn_images_of(
+    initial: Vec<u8>,
+    seed: u64,
+    operations: usize,
+    tail: TornTail,
+    masks: Masks,
+    checker: impl FnMut(&Image) -> Result<()>,
+) -> Result<Report> {
+    replay(initial, seed, operations, Some(tail), masks, checker)
 }
 
 fn matches_commit(

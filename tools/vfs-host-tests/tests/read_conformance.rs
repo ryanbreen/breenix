@@ -83,9 +83,21 @@ struct Tree {
     leaf: u64,
     sb: Superblock,
 }
-fn tree() -> &'static Tree {
-    static TREE: OnceLock<Tree> = OnceLock::new();
-    TREE.get_or_init(|| {
+// The full-size fixture's 5000-entry directory takes minutes to build and walk,
+// so the default run uses SAMPLE_NAMES entries, enough that the directory's
+// entries span several leaves; the opt-in breenfs battery runs the full form.
+const FULL_NAMES: usize = 5000;
+const SAMPLE_NAMES: usize = 600;
+fn tree(entries: usize) -> &'static Tree {
+    static FULL_TREE: OnceLock<Tree> = OnceLock::new();
+    static SAMPLE_TREE: OnceLock<Tree> = OnceLock::new();
+    let cell = if entries == FULL_NAMES {
+        &FULL_TREE
+    } else {
+        assert_eq!(entries, SAMPLE_NAMES);
+        &SAMPLE_TREE
+    };
+    cell.get_or_init(|| {
         let disk = Disk {
             bytes: Mutex::new(vec![0; 64 * 1024 * 1024]),
             writable: true,
@@ -140,7 +152,7 @@ fn tree() -> &'static Tree {
         let big = files.mkdir(2, b"big", 0o755, at).unwrap();
         let mut names = BTreeMap::new();
         let mut ids = vec![2, sparse, symlink, nested, deep, leaf, big];
-        for n in 0..5000 {
+        for n in 0..entries {
             let name = format!("name-{n:04}").into_bytes();
             let ino = files.create(big, &name, 0o600, at).unwrap();
             ids.push(ino);
@@ -429,10 +441,43 @@ fn refusals(fs: &dyn FileSystem, tree: &Tree) {
     assert_eq!(fs.sync(), Ok(()));
     assert_eq!(fs.fsync(&node, false), Ok(()));
 }
+/// Leaves of the file system tree holding an item of `object` and `item_type`.
+fn leaves_holding(tree: &Tree, object: u64, item_type: u8) -> usize {
+    let bytes = &tree.image;
+    (20..tree.sb.total_blocks as usize - 7)
+        .filter(|&block| {
+            let node = &bytes[block * BLOCK_SIZE..block * BLOCK_SIZE + NODE_SIZE];
+            let Ok(h) = format::NodeHeader::decode(node) else {
+                return false;
+            };
+            h.tree == 1
+                && h.level == 0
+                && (0..h.nitems as usize).any(|i| {
+                    let at = 48 + i * 21;
+                    let key = format::LeafItemHeader::decode(&node[at..at + 21])
+                        .unwrap()
+                        .key;
+                    key.object == object && key.item_type == item_type
+                })
+        })
+        .count()
+}
 #[test]
+fn breenfs_read_subset_sample_conformance() {
+    let tree = tree(SAMPLE_NAMES);
+    // Batched readdir and cookie seeks still cross leaves of the big directory.
+    let leaves = leaves_holding(tree, tree.big, format::DIR_ENTRY);
+    assert!(leaves >= 2, "{SAMPLE_NAMES} entries fit in {leaves} leaf");
+    read_subset(SAMPLE_NAMES);
+}
+#[test]
+#[ignore = "5000-entry directory (minutes): run by the breenfs battery, or with --ignored when fs/breenfs readdir, lookup or node reads change"]
 fn breenfs_read_subset_conformance() {
-    let tree = tree();
-    assert_eq!(tree.dirs[&tree.big].len(), 5000);
+    read_subset(FULL_NAMES);
+}
+fn read_subset(names: usize) {
+    let tree = tree(names);
+    assert_eq!(tree.dirs[&tree.big].len(), names);
     let disk = Arc::new(Disk {
         bytes: Mutex::new(tree.image.clone()),
         writable: false,
@@ -479,8 +524,16 @@ fn breenfs_read_subset_conformance() {
     reads_equal(fs, tree);
 }
 #[test]
+fn corrupt_descendant_sample_returns_eio() {
+    corrupt_descendant(SAMPLE_NAMES);
+}
+#[test]
+#[ignore = "5000-entry directory (minutes): run by the breenfs battery, or with --ignored when fs/breenfs node reads or checksums change"]
 fn corrupt_descendant_returns_eio() {
-    let tree = tree();
+    corrupt_descendant(FULL_NAMES);
+}
+fn corrupt_descendant(names: usize) {
+    let tree = tree(names);
     let mut bytes = tree.image.clone();
     let leaf = (20..tree.sb.total_blocks as usize - 7)
         .find(|&block| {

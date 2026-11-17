@@ -176,9 +176,15 @@ fn parse_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Args
     let mut values = BTreeMap::new();
     let mut args = args.into_iter();
     while let Some(flag) = args.next() {
-        if !["--seeds", "--seed-start", "--checker", "--out", "--progress"]
-            .iter()
-            .any(|s| flag == *s)
+        if ![
+            "--seeds",
+            "--seed-start",
+            "--checker",
+            "--out",
+            "--progress",
+        ]
+        .iter()
+        .any(|s| flag == *s)
         {
             return Err(format!(
                 "unknown option {}\n{USAGE}",
