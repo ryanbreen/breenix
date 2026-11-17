@@ -23,10 +23,29 @@ fn resolve(fs: &dyn FileSystem, path: &[Vec<u8>]) -> Arc<VNode> {
     node
 }
 
+// The read suite's 5000-entry fixture takes minutes to build and walk, so the
+// default run walks a SAMPLE_ENTRIES fixture from the same script; the opt-in
+// breenfs battery runs the full form. The decode and read bounds stay as they
+// are: an uncached walk decoded about 18 nodes a row (92524 for 5009 rows), so
+// the sample's roughly 500 rows still exceed them without the reuse.
+const SAMPLE_ENTRIES: usize = 500;
+
 #[test]
+fn manifest_walk_sample_reuses_verified_decoded_nodes() {
+    manifest_walk(SAMPLE_ENTRIES, false);
+}
+
+#[test]
+#[ignore = "5000-entry read fixture (minutes): run by the breenfs battery, or with --ignored when fs/breenfs lookup, readdir, node reads or the decoded-node cache change"]
 fn manifest_walk_reuses_verified_decoded_nodes() {
-    let temporary = std::env::temp_dir().join(format!("breenfs-manifest-{}", std::process::id()));
+    manifest_walk(5000, true);
+}
+
+fn manifest_walk(entries: usize, fixture_from_env: bool) {
+    let temporary =
+        std::env::temp_dir().join(format!("breenfs-manifest-{entries}-{}", std::process::id()));
     let image = std::env::var_os("BREENFS_READ_FIXTURE")
+        .filter(|_| fixture_from_env)
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             std::fs::create_dir(&temporary).unwrap();
@@ -38,6 +57,7 @@ fn manifest_walk_reuses_verified_decoded_nodes() {
                 ))
                 .arg(&image)
                 .arg(image.with_extension("manifest"))
+                .arg(entries.to_string())
                 .status()
                 .unwrap()
                 .success());
