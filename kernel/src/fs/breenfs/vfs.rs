@@ -1,7 +1,7 @@
 //! BreenFS operations at the VFS boundary (design 1.1, 2.3 and 2.5).
 use super::{
     commit::{Committer, PreparedCommit},
-    commit_policy::{CommitPolicy, DIRTY_BUDGET},
+    commit_policy::{CommitPolicy, COMMIT_INTERVAL_NS, DIRTY_BUDGET},
     commit_signal::{monotonic_ns, CommitSignal},
     dirty::DirtyPages,
     format::{Inode, Superblock, Time, BLOCK_SIZE},
@@ -141,6 +141,7 @@ struct MountState<W: Wait + 'static> {
     dirty_bytes: u64,
     inodes: InodeCache,
     policy: CommitPolicy,
+    mapping_retry_ns: u64,
     pending: Option<Arc<PreparedCommit>>,
     reservations: Ledger,
     grants: Vec<Grant>,
@@ -547,6 +548,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 nodes: BTreeMap::new(),
                 dirty_bytes: 0,
                 policy: CommitPolicy::new(monotonic_ns()),
+                mapping_retry_ns: 0,
                 pending: None,
                 signal: signal.clone(),
                 inodes: InodeCache {
@@ -848,15 +850,20 @@ impl<W: Wait + 'static> BreenFs<W> {
     /// One commit-worker pass. Preparation and opening G+1 are serialized;
     /// device publication and completion waits hold no mount lock.
     fn commit_due(&self, now_ns: u64) -> Result<bool, Errno> {
-        if self.inner.signal.mappings.swap(false, Ordering::AcqRel) {
+        let retry_ns = self.inner.state.lock().mapping_retry_ns;
+        if now_ns >= retry_ns && self.inner.signal.mappings.swap(false, Ordering::AcqRel) {
             if let Err(error) = self.service_mappings(now_ns) {
                 let mut state = self.inner.state.lock();
                 // Shutdown can close admission while a service snapshot is in
                 // flight. Its own staged generation owns that final barrier.
                 if error == Errno(ENOMEM) || error == Errno(ENOSPC) {
-                    // Keep the request and dirty custody. A later worker pass
-                    // retries after pressure has subsided. Admission refusal
-                    // is not a failed storage generation.
+                    // Keep dirty custody. Defer ENOSPC to the next interval.
+                    // Pressure publication wakes this worker and creates new
+                    // PENDING metadata even if no data space becomes available;
+                    // retrying on that wake would force commits indefinitely.
+                    if error == Errno(ENOSPC) {
+                        state.mapping_retry_ns = now_ns.saturating_add(COMMIT_INTERVAL_NS);
+                    }
                     self.inner.signal.mappings.store(true, Ordering::Release);
                 } else if !state.closed || state.failed {
                     state.failed = true;
