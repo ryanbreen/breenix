@@ -15,7 +15,7 @@ Run the operator-login milestone against the booted run:
 scripts/metal/server-suite --target qemu --run-dir PRIVATE_RUN --boot BOOT_ID --sha COMMIT --milestone users/operator-login
 ```
 
-Under D-H, the serial console stands in for SOL, with the same properties.
+The QEMU backend uses the run's serial console for the operator challenge.
 
 For the reboot suite, add `--fault panic-reboot` to the build command. It seals
 a separate fault kernel for `fault-boot` and restores the production kernel at

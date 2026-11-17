@@ -168,8 +168,7 @@ pub enum ProcEntryType {
     Gt710Drain,
     #[cfg(target_arch="x86_64")]
     Gt710Recovery,
-    /// /proc/fbcon - the x86-64 screen console's directory under the name the
-    /// x86-metal boot path reads
+    /// /proc/fbcon - the screen console directory shared by x86-64 and ARM64
     FbconDir,
     /// /proc/fbcon/check - the screen read back against the console's shadow
     /// and font, and the text rows it shows
