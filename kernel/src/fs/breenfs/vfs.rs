@@ -7,7 +7,7 @@ use super::{
     format::{Inode, Superblock, Time, BLOCK_SIZE},
     mount_lock::{MountGuard, MountLock},
     node_cache::CachedNodeStore,
-    ops::{self, Files},
+    ops::{self, Files, ReadError},
     recover,
     reserve::{Estimate, Grant, Ledger, Operation},
 };
@@ -136,6 +136,8 @@ struct MountState<W: Wait + 'static> {
     committer: Option<Committer>,
     durable: Superblock,
     failed: bool,
+    #[cfg(not(test))]
+    mount: usize,
     closed: bool,
     nodes: BTreeMap<u64, NodeState>,
     dirty_bytes: u64,
@@ -257,7 +259,8 @@ impl<W: Wait> MountState<W> {
             }
             return Ok(*inode);
         }
-        let inode = self.files.inode(ino).map_err(errno)?;
+        let result = self.files.inode(ino);
+        let inode = self.observed(result)?;
         let slot = self.inodes.next;
         self.inodes.entries[slot] = Some((ino, inode));
         self.inodes.next = (slot + 1) % self.inodes.entries.len();
@@ -265,8 +268,10 @@ impl<W: Wait> MountState<W> {
     }
     fn attrs(&mut self, ino: u64) -> Result<NodeAttrs, Errno> {
         let mut inode = self.inode(ino)?;
-        if let Some(node) = self.nodes.get(&ino).filter(|n| n.dirty.bytes() != 0) {
-            let extents = self.files.extents(ino).map_err(errno)?;
+        if self.nodes.get(&ino).is_some_and(|n| n.dirty.bytes() != 0) {
+            let result = self.files.extents(ino);
+            let extents = self.observed(result)?;
+            let node = self.nodes.get(&ino).ok_or(Errno(EIO))?;
             inode.nblocks += node
                 .dirty
                 .indexes()
@@ -311,17 +316,37 @@ impl<W: Wait> MountState<W> {
                 .collect(),
         );
     }
+    fn fail(&mut self) {
+        self.failed = true;
+        if let Some(committer) = self.committer.as_mut() {
+            committer.fail();
+        }
+        // procfs renders the registry's flags, rather than calling back into
+        // the mount under the registry lock. Host adapters have no registry.
+        #[cfg(not(test))]
+        let _ = crate::fs::vfs::mount::remount_read_only(self.mount);
+        self.signal.wake();
+    }
+    fn observed<T>(&mut self, result: Result<T, ops::Error>) -> Result<T, Errno> {
+        if matches!(result, Err(ops::Error::EIO)) {
+            self.fail();
+        }
+        result.map_err(errno)
+    }
+    fn read_result<T>(&mut self, result: Result<T, ReadError>) -> Result<T, Errno> {
+        match result {
+            Ok(value) => Ok(value),
+            Err(ReadError::Metadata(error)) => self.observed(Err(error)),
+            Err(ReadError::Data) => Err(Errno(EIO)),
+        }
+    }
     fn edited<T>(&mut self, result: Result<T, ops::Error>) -> Result<T, Errno> {
         self.inodes.entries.fill(None);
         // A storage/allocation failure may have interrupted a multi-item edit.
         // Do not publish that transaction. Reservation refusals return before
         // mutation via admission; an ENOSPC here is still a bug.
         if matches!(result, Err(ops::Error::EIO | ops::Error::ENOSPC)) {
-            self.failed = true;
-            if let Some(committer) = self.committer.as_mut() {
-                committer.fail();
-            }
-            self.signal.wake();
+            self.fail();
         }
         for (&ino, entry) in &self.nodes {
             if let Some(node) = entry.node.upgrade() {
@@ -352,7 +377,9 @@ impl<W: Wait> MountState<W> {
     ) -> Result<(Grant, u64), Errno> {
         let node = self.nodes.get(&ino).ok_or(Errno(EIO))?;
         let (new_pages, pages, runs) = node.dirty.reservation_runs(offset, length);
-        let paths = self.files.reservation_paths(ino).map_err(errno)?;
+        let reserved_metadata = node.reserved_metadata;
+        let result = self.files.reservation_paths(ino);
+        let paths = self.observed(result)?;
         // A run inserts at most 256 data EXTENTs and can retain up to 510
         // one-page slices at its old boundaries (ops::remove_range). Their
         // 45-byte items fit in three nodes' payload space; allow four split
@@ -374,7 +401,7 @@ impl<W: Wait> MountState<W> {
             space_nodes: paths.space_nodes,
         };
         let metadata = estimate.blocks().map_err(|_| Errno(ENOSPC))? - pages;
-        let blocks = new_pages.checked_add(metadata.saturating_sub(node.reserved_metadata))
+        let blocks = new_pages.checked_add(metadata.saturating_sub(reserved_metadata))
             .ok_or(Errno(ENOSPC))?;
         if blocks != 0 {
             self.grants.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
@@ -410,7 +437,8 @@ impl<W: Wait> MountState<W> {
         orphans: bool,
         operation: Operation,
     ) -> Result<Grant, Errno> {
-        let paths = self.files.metadata_reservation_paths(objects, new_inode, orphans).map_err(errno)?;
+        let result = self.files.metadata_reservation_paths(objects, new_inode, orphans);
+        let paths = self.observed(result)?;
         let fs_levels = edits.max(3).checked_mul(4 * (paths.fs_height + 2))
             .ok_or(Errno(ENOSPC))?;
         let space_changes = paths.uncopied_fs_nodes.checked_add(fs_levels)
@@ -544,6 +572,8 @@ impl<W: Wait + 'static> BreenFs<W> {
                 pending_grants: Vec::new(),
                 durable,
                 failed: false,
+                #[cfg(not(test))]
+                mount,
                 closed: false,
                 nodes: BTreeMap::new(),
                 dirty_bytes: 0,
@@ -776,13 +806,17 @@ impl<W: Wait + 'static> BreenFs<W> {
         } = &mut *state;
         let dirty = &mut nodes.entry(node.ino).or_default().dirty;
         let before = dirty.bytes();
+        let mut bad_metadata = false;
         let result = dirty.write(offset, &bytes[..length], |off, page| {
-            files
-                .read(&self.data_reader(pending.clone()), node.ino, off, page)
-                .map_err(errno)?;
+            files.read_verified(&self.data_reader(pending.clone()), node.ino, off, page)
+                .map_err(|error| {
+                    bad_metadata = matches!(error, ReadError::Metadata(ops::Error::EIO));
+                    errno(error.error())
+                })?;
             Ok(())
         });
         *dirty_bytes += dirty.bytes() - before;
+        if bad_metadata { state.fail(); }
         state.finish_data(node.ino, grant, result)?;
         inode.size = inode.size.max(end);
         inode.mtime = now();
@@ -1295,17 +1329,15 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         self.open_locked(&mut self.inner.state.lock(), ino)
     }
     fn lookup(&self, dir: u64, name: &[u8]) -> Result<u64, Errno> {
-        self.inner
-            .state
-            .lock()
-            .files
-            .lookup(dir, name)
-            .map_err(errno)
+        let mut state = self.inner.state.lock();
+        let result = state.files.lookup(dir, name);
+        state.observed(result)
     }
     fn lookup_open(&self, dir: &VNode, name: &[u8]) -> Result<Arc<VNode>, Errno> {
         self.check_node(dir)?;
         let mut state = self.inner.state.lock();
-        let ino = state.files.lookup(dir.ino, name).map_err(errno)?;
+        let result = state.files.lookup(dir.ino, name);
+        let ino = state.observed(result)?;
         self.open_locked(&mut state, ino)
     }
     fn touch(&self, node: &VNode, read: bool) {
@@ -1338,12 +1370,10 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         mut cookie: u64,
         sink: &mut dyn FnMut(DirEnt, u64) -> Result<bool, Errno>,
     ) -> Result<u64, Errno> {
-        let state = self.inner.state.lock();
+        let mut state = self.inner.state.lock();
         loop {
-            let entries = state
-                .files
-                .directory_entries(dir, cookie, 64)
-                .map_err(errno)?;
+            let result = state.files.directory_entries(dir, cookie, 64);
+            let entries = state.observed(result)?;
             if entries.is_empty() {
                 return Ok(cookie);
             }
@@ -1379,18 +1409,25 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             let take = (length - done).min(BLOCK_SIZE - within);
             if let Some(page) = state.nodes.get(&node.ino).and_then(|n| n.dirty.get(index)) {
                 buf[done..done + take].copy_from_slice(&page[within..within + take]);
+                done += take;
             } else {
-                state
-                    .files
-                    .read(
-                        &self.data_reader(state.pending.clone()),
-                        node.ino,
-                        pos,
-                        &mut buf[done..done + take],
-                    )
-                    .map_err(errno)?;
+                // Keep a clean run together so Files resolves each extent's
+                // REF once, even when a read spans several blocks.
+                let mut end = done + take;
+                while end < length {
+                    let next = off + end as u64;
+                    if state.nodes.get(&node.ino)
+                        .is_some_and(|n| n.dirty.get(next / BLOCK_SIZE as u64).is_some())
+                    { break; }
+                    end += (length - end).min(BLOCK_SIZE);
+                }
+                let result = state.files.read_verified(
+                    &self.data_reader(state.pending.clone()), node.ino, pos,
+                    &mut buf[done..end],
+                );
+                state.read_result(result)?;
+                done = end;
             }
-            done += take;
         }
         self.touch(node, true);
         Ok(length)
@@ -1398,7 +1435,8 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
     fn readlink(&self, ino: u64) -> Result<Vec<u8>, Errno> {
         let mut state = self.inner.state.lock();
         state.inode(ino)?;
-        state.files.readlink(ino).map_err(errno)
+        let result = state.files.readlink(ino);
+        state.observed(result)
     }
     fn fsync(&self, node: &VNode, _: bool) -> Result<(), Errno> {
         self.check_node(node)?;
@@ -1500,7 +1538,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             match state.files.lookup(dir, name) {
                 Ok(_) => return Err(Errno(EEXIST)),
                 Err(ops::Error::ENOENT) => (),
-                Err(e) => return Err(errno(e)),
+                Err(e) => return state.observed(Err(e)),
             }
             let attrs = check(state.directory(dir)?)?;
             let bits = match kind {
@@ -1571,7 +1609,8 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         state.writable()?;
         let (mut state, grant) = self.reserve_with_pressure(state, || Ok(self.inner.state.lock()), |state| {
             let parent = state.directory(dir)?;
-            let victim = state.files.lookup(dir, name).map_err(errno)?;
+            let result = state.files.lookup(dir, name);
+            let victim = state.observed(result)?;
             let attrs = state.attrs(victim)?;
             if !which.directory && attrs.kind == NodeKind::Directory {
                 return Err(Errno(EISDIR));
@@ -1619,12 +1658,13 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             }
             let parent = state.directory(from_dir)?;
             let dest_parent = state.directory(to_dir)?;
-            let source = state.files.lookup(from_dir, from).map_err(errno)?;
+            let result = state.files.lookup(from_dir, from);
+            let source = state.observed(result)?;
             let source = state.attrs(source)?;
             let dest = match state.files.lookup(to_dir, to) {
                 Ok(ino) => Some(state.attrs(ino)?),
                 Err(ops::Error::ENOENT) => None,
-                Err(e) => return Err(errno(e)),
+                Err(e) => return state.observed(Err(e)),
             };
             check(parent, dest_parent, source, dest)?;
             if mode == RenameMode::NoReplace && dest.is_some() {
@@ -1678,10 +1718,12 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                     return Ok((inode, false, None));
                 }
                 let floor = size / BLOCK_SIZE as u64 * BLOCK_SIZE as u64;
-                let mapped_tail = size < inode.size && size % BLOCK_SIZE as u64 != 0
-                    && state.files.extents(node.ino).map_err(errno)?.iter().any(|(k, e)| {
+                let mapped_tail = if size < inode.size && size % BLOCK_SIZE as u64 != 0 {
+                    let result = state.files.extents(node.ino);
+                    state.observed(result)?.iter().any(|(k, e)| {
                         k.offset <= floor && floor < k.offset + u64::from(e.num_blocks) * BLOCK_SIZE as u64
-                    });
+                    })
+                } else { false };
                 let grant = state.reserve_data(
                     node.ino,
                     floor,
@@ -1702,13 +1744,17 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             } = &mut *state;
             let dirty = &mut nodes.entry(node.ino).or_default().dirty;
             let before = dirty.bytes();
+            let mut bad_metadata = false;
             let result = dirty.shrink(size, mapped_tail, |off, page| {
-                files
-                    .read(&self.data_reader(pending.clone()), node.ino, off, page)
-                    .map_err(errno)?;
+                files.read_verified(&self.data_reader(pending.clone()), node.ino, off, page)
+                    .map_err(|error| {
+                        bad_metadata = matches!(error, ReadError::Metadata(ops::Error::EIO));
+                        errno(error.error())
+                    })?;
                 Ok(())
             });
             *dirty_bytes = *dirty_bytes - before + dirty.bytes();
+            if bad_metadata { state.fail(); }
             state.finish_data(node.ino, grant, result)?;
             let result = state.files.trim_mappings(node.ino, size);
             inode.nblocks = state.edited(result)?;
@@ -1772,13 +1818,17 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         } = &mut *state;
         let dirty = &mut nodes.entry(node.ino).or_default().dirty;
         let before = dirty.bytes();
+        let mut bad_metadata = false;
         let result = dirty.write(offset, &bounce[..length], |off, page| {
-            files
-                .read(&self.data_reader(pending.clone()), node.ino, off, page)
-                .map_err(errno)?;
+            files.read_verified(&self.data_reader(pending.clone()), node.ino, off, page)
+                .map_err(|error| {
+                    bad_metadata = matches!(error, ReadError::Metadata(ops::Error::EIO));
+                    errno(error.error())
+                })?;
             Ok(())
         });
         *dirty_bytes += dirty.bytes() - before;
+        if bad_metadata { state.fail(); }
         state.finish_data(node.ino, grant, result)?;
         inode.mtime = now();
         inode.ctime = inode.mtime;
@@ -1807,7 +1857,8 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             };
         }
         state.inode(ino)?;
-        let records = state.files.list_xattrs(ino).map_err(errno)?;
+        let result = state.files.list_xattrs(ino);
+        let records = state.observed(result)?;
         match op {
             Xattr::Get { name, value } => {
                 let record = records
@@ -1827,7 +1878,8 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             Xattr::Set { name, value, mode } => {
                 let (mut state, grant) = self.reserve_with_pressure(state, || Ok(self.inner.state.lock()), |state| {
                     state.writable()?;
-                    let records = state.files.list_xattrs(ino).map_err(errno)?;
+                    let result = state.files.list_xattrs(ino);
+                    let records = state.observed(result)?;
                     let exists = records.iter().any(|x| x.name == name);
                     match mode {
                         XattrSet::Create if exists => return Err(Errno(EEXIST)),
@@ -1843,7 +1895,8 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             Xattr::Remove { name } => {
                 let (mut state, grant) = self.reserve_with_pressure(state, || Ok(self.inner.state.lock()), |state| {
                     state.writable()?;
-                    let records = state.files.list_xattrs(ino).map_err(errno)?;
+                    let result = state.files.list_xattrs(ino);
+                    let records = state.observed(result)?;
                     if !records.iter().any(|x| x.name == name) {
                         return Err(Errno(ENODATA));
                     }
@@ -1932,7 +1985,7 @@ struct DataReader<'a, W: Wait> {
 }
 impl<W: Wait> BlockDevice for DataReader<'_, W> {
     fn read_block(&self, block: u64, bytes: &mut [u8]) -> Result<(), BlockError> {
-        // Data checksum enforcement joins this path in the checksum milestone.
+        // Files verifies the returned block against its extent REF before use.
         if let Some(data) = self.pending.as_ref().and_then(|p| p.data_block(block)) {
             if data.len() != bytes.len() {
                 return Err(BlockError::IoError);
