@@ -65,6 +65,38 @@ fn unsynced_data_reserves_bavail_without_changing_bfree() {
 }
 
 #[test]
+fn a_write_does_not_refresh_untouched_open_inodes() {
+    let (_disk, fs, node) = fixture();
+    let mut held = Vec::new();
+    for index in 0..16 {
+        let name = format!("held-{index}");
+        let ino = fs.create(2, name.as_bytes(), NewNode::Regular {
+            attrs: InodeAttrs::new(0o640, 1000, 1000),
+        }).unwrap();
+        held.push(fs.open(ino).unwrap());
+    }
+    write(fs.as_ref(), &node, 0, &[0x5a; 4096]).unwrap();
+    crate::breenfs::btree::measurement::take_decodes();
+    write(fs.as_ref(), &node, 4096, &[0xa5; 4096]).unwrap();
+    let with_unrelated = crate::breenfs::btree::measurement::take_decodes();
+    for other in &held {
+        assert_eq!(other.size.load(std::sync::atomic::Ordering::Acquire), 0);
+    }
+    drop(held);
+    crate::breenfs::btree::measurement::take_decodes();
+    write(fs.as_ref(), &node, 8192, &[0xcc; 4096]).unwrap();
+    let alone = crate::breenfs::btree::measurement::take_decodes();
+    assert_eq!(with_unrelated, alone,
+        "one-inode write decoded {with_unrelated} nodes with unrelated open files versus {alone} alone");
+    assert_eq!(node.size.load(std::sync::atomic::Ordering::Acquire), 12288);
+    let mut bytes = [0; 12288];
+    assert_eq!(fs.read(&node, 0, &mut bytes).unwrap(), bytes.len());
+    assert_eq!(&bytes[..4096], &[0x5a; 4096]);
+    assert_eq!(&bytes[4096..8192], &[0xa5; 4096]);
+    assert_eq!(&bytes[8192..], &[0xcc; 4096]);
+}
+
+#[test]
 fn full_disk_write_refuses_without_changing_manifest_or_failing_mount() {
     // Pin time so the manifests compare mutation, including timestamps.
     crate::time::with_unix_time(10, || {
