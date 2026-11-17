@@ -9,8 +9,12 @@ use crate::fs::{
 use crate::syscall::{at_path::AT_FDCWD, errno::*, metadata::resolve_at, userptr};
 use alloc::sync::Arc;
 
-pub fn mount(source: u64, target: u64, flags: u64, cred: &Credentials) -> Result<(), u64> {
+pub fn mount(source: u64, target: u64, flags: u64, data: u64, cred: &Credentials) -> Result<(), u64> {
     mount_args::validate(cred.euid, flags)?;
+    let data = if data == 0 { None } else {
+        Some(userptr::copy_path_bytes_from_user(data)?)
+    };
+    mount_args::parse_root(data.as_deref())?;
     let source = userptr::copy_path_bytes_from_user(source)?;
     let disk = mount_args::parse(cred.euid, flags, &source)?;
     let device: Arc<dyn BlockDevice> = crate::fs::devfs::disk_device(disk)
@@ -50,11 +54,7 @@ pub fn mount(source: u64, target: u64, flags: u64, cred: &Credentials) -> Result
 
     let id = registry::allocate_id().map_err(|e| e.0 as u64)?;
     let cache = crate::block::cache_kernel::system_cache();
-    let fs = if flags == 1 {
-        BreenFs::mount_cached(device, cache, id, 1)
-    } else {
-        BreenFs::mount_writable_cached(device, cache, id, 1)
-    }
+    let fs = BreenFs::mount_named_cached(device, cache, id, data.as_deref(), flags == 0)
     .map_err(|e| e.0 as u64)?;
     let root = fs.root().map_err(|e| e.0 as u64)?;
     let mut entry = registry::MountPoint::new(

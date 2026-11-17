@@ -23,10 +23,10 @@ pub mod node_cache;
 pub mod recover;
 #[path = "../../../kernel/src/fs/breenfs/reserve.rs"]
 pub mod reserve;
-#[path = "../../../kernel/src/fs/breenfs/siphash.rs"]
-pub mod siphash;
 #[path = "../../../kernel/src/fs/breenfs/scrub.rs"]
 pub mod scrub;
+#[path = "../../../kernel/src/fs/breenfs/siphash.rs"]
+pub mod siphash;
 #[path = "../../../kernel/src/fs/breenfs/space.rs"]
 pub mod space;
 #[path = "../../../kernel/src/fs/breenfs/txn.rs"]
@@ -111,6 +111,8 @@ pub enum Errno {
     ENAMETOOLONG,
     ENOTEMPTY,
     EIO,
+    EROFS,
+    EBUSY,
     ENOSPC,
 }
 
@@ -240,6 +242,16 @@ pub enum Action {
         ino: Ino,
     },
     Remount,
+    Snapshot {
+        name: Vec<u8>,
+        read_only: bool,
+    },
+    Clone {
+        name: Vec<u8>,
+    },
+    DeleteSnapshot {
+        name: Vec<u8>,
+    },
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Operation {
@@ -253,11 +265,31 @@ pub enum Reply {
     Written(usize),
 }
 
+/// Logical root contents and the snapshot's write policy.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RootState {
+    pub read_only: bool,
+    pub state: State,
+}
+pub type Roots = BTreeMap<Vec<u8>, RootState>;
+
 /// Paths, credentials, umask and symlink traversal belong to the VFS (design 1.1).
 /// Adapters use the supplied logical clock and expose logical bytes and metadata.
 pub trait Fs {
     fn execute(&mut self, op: &Operation) -> Result<Reply>;
     fn state(&self) -> Result<State>;
+    fn roots(&self) -> Result<Roots> {
+        Ok(BTreeMap::from([(
+            b"default".to_vec(),
+            RootState {
+                read_only: false,
+                state: self.state()?,
+            },
+        )]))
+    }
+    fn select_root(&mut self, _name: &[u8]) -> Result<()> {
+        Err(Error::Unimplemented)
+    }
 }
 
 pub mod writer;
@@ -268,50 +300,69 @@ mod test_image;
 #[cfg(test)]
 mod vfs_support;
 #[cfg(test)]
-pub use vfs_support::{attrs, credentials, errno, fs, memory, permissions, process, syscall,
-    syscall_errno, task, test_control, time, vfs};
+pub use vfs_support::{
+    attrs, credentials, errno, fs, memory, permissions, process, syscall, syscall_errno, task,
+    test_control, time, vfs,
+};
 #[cfg(test)]
 #[path = "../../../kernel/src/fs/breenfs/commit_signal.rs"]
 mod commit_signal;
 #[cfg(test)]
-#[path = "../../../kernel/src/fs/breenfs/mount_lock.rs"]
-mod mount_lock;
-#[cfg(test)]
 #[path = "../../../kernel/src/fs/breenfs/dirty.rs"]
 pub mod dirty;
 #[cfg(test)]
+#[path = "../../../kernel/src/fs/breenfs/mount_lock.rs"]
+mod mount_lock;
+#[cfg(test)]
 #[path = "../../../kernel/src/fs/breenfs/vfs.rs"]
 pub mod vfs_adapter;
+#[cfg(test)]
+#[path = "../../../kernel/src/fs/breenfs/mount_args.rs"]
+pub mod mount_args;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Difference {
+    pub root: Vec<u8>,
+    pub expected_read_only: Option<bool>,
+    pub actual_read_only: Option<bool>,
     pub ino: Ino,
     pub expected: Option<Inode>,
     pub actual: Option<Inode>,
 }
 
-/// Diff inode presence, names, hard links, bytes and metadata.
+/// Diff root presence/flags and each live root's names, bytes and metadata.
 pub fn compare(model: &impl Fs, fs: &impl Fs) -> Result<Vec<Difference>> {
-    let expected = model.state()?;
-    let actual = fs.state()?;
-    let mut ids: Vec<_> = expected
-        .inodes
-        .keys()
-        .chain(actual.inodes.keys())
-        .copied()
-        .collect();
-    ids.sort_unstable();
-    ids.dedup();
-    Ok(ids
-        .into_iter()
-        .filter_map(|ino| {
-            let a = expected.inodes.get(&ino);
-            let b = actual.inodes.get(&ino);
-            (a != b).then(|| Difference {
-                ino,
-                expected: a.cloned(),
-                actual: b.cloned(),
-            })
-        })
-        .collect())
+    let expected = model.roots()?;
+    let actual = fs.roots()?;
+    let mut names: Vec<_> = expected.keys().chain(actual.keys()).cloned().collect();
+    names.sort_unstable();
+    names.dedup();
+    let mut differences = Vec::new();
+    for name in names {
+        let a = expected.get(&name);
+        let b = actual.get(&name);
+        let expected_read_only = a.map(|root| root.read_only);
+        let actual_read_only = b.map(|root| root.read_only);
+        let empty = State::default();
+        let a = a.map(|root| &root.state).unwrap_or(&empty);
+        let b = b.map(|root| &root.state).unwrap_or(&empty);
+        let mut ids: Vec<_> = a.inodes.keys().chain(b.inodes.keys()).copied().collect();
+        ids.sort_unstable();
+        ids.dedup();
+        for ino in ids {
+            let a = a.inodes.get(&ino);
+            let b = b.inodes.get(&ino);
+            if a != b || (ino == ROOT && expected_read_only != actual_read_only) {
+                differences.push(Difference {
+                    root: name.clone(),
+                    expected_read_only,
+                    actual_read_only,
+                    ino,
+                    expected: a.cloned(),
+                    actual: b.cloned(),
+                });
+            }
+        }
+    }
+    Ok(differences)
 }

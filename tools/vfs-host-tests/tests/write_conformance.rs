@@ -352,7 +352,7 @@ fn unlinked_open_file_survives_until_close_then_reclaims() {
     fs.sync().unwrap();
     let before = fs.statfs().unwrap().free_blocks;
     let sb = recover::recover(disk.as_ref(), false).unwrap();
-    let items = Files::new(DeviceStore(disk.as_ref()), &sb, 1)
+    let items = Files::new(DeviceStore(disk.as_ref()), &sb, 1, false)
         .unwrap()
         .items()
         .unwrap();
@@ -368,7 +368,7 @@ fn unlinked_open_file_survives_until_close_then_reclaims() {
     drop(second);
     fs.sync().unwrap();
     let sb = recover::recover(disk.as_ref(), false).unwrap();
-    let items = Files::new(DeviceStore(disk.as_ref()), &sb, 1)
+    let items = Files::new(DeviceStore(disk.as_ref()), &sb, 1, false)
         .unwrap()
         .items()
         .unwrap();
@@ -599,7 +599,7 @@ fn commit_drains_into_extents_of_at_most_1_mib() {
     assert_eq!(fs.getattr(ino).unwrap().blocks, 532 * 8);
     fs.sync().unwrap();
     let sb = recover::recover(disk.as_ref(), false).unwrap();
-    let files = Files::new(DeviceStore(disk.as_ref()), &sb, 1).unwrap();
+    let files = Files::new(DeviceStore(disk.as_ref()), &sb, 1, false).unwrap();
     let extents: Vec<_> = files
         .items()
         .unwrap()
@@ -833,7 +833,7 @@ fn writeback_bounces_before_checksum() {
     mapping.sync(3, 5).unwrap();
     let sb = recover::recover(disk.as_ref(), false).unwrap();
     let store = DeviceStore(disk.as_ref());
-    let files = Files::new(store, &sb, 1).unwrap();
+    let files = Files::new(store, &sb, 1, false).unwrap();
     for page in 3..5 {
         let offset = page * 4096;
         let (start, extent) = files

@@ -121,9 +121,9 @@ pub fn sys_ioctl(fd: u64, request: u64, arg: u64) -> SyscallResult {
         _ => None,
     };
     if let Some(node) = node {
-        use crate::fs::breenfs::abi::{SCRUB_START, SCRUB_CANCEL};
+        use crate::fs::breenfs::abi::{SCRUB_START, SCRUB_CANCEL, SNAPSHOT_CREATE, SNAPSHOT_DELETE};
         const EPERM: u64 = super::errno::EPERM as u64;
-        if matches!(request, SCRUB_START | SCRUB_CANCEL)
+        if matches!(request, SCRUB_START | SCRUB_CANCEL | SNAPSHOT_CREATE | SNAPSHOT_DELETE)
             && !matches!(super::handlers::sys_geteuid(), SyscallResult::Ok(0)) {
             return SyscallResult::Err(EPERM);
         }

@@ -4,10 +4,14 @@
 //! are EINVAL. Remount means a clean unmount/mount, not a simulated crash.
 use crate::*;
 
-pub struct Model {
-    live: State,
-    durable: State,
+struct ModelRoot {
+    contents: RootState,
     next_inode: Ino,
+}
+pub struct Model {
+    roots: BTreeMap<Vec<u8>, ModelRoot>,
+    active: Vec<u8>,
+    durable: Roots,
 }
 impl Default for Model {
     fn default() -> Self {
@@ -37,22 +41,75 @@ impl Model {
                 xattrs: BTreeMap::new(),
             },
         );
+        let name = b"default".to_vec();
+        let contents = RootState {
+            read_only: false,
+            state: live,
+        };
         Self {
-            durable: live.clone(),
-            live,
-            next_inode: 16,
+            durable: BTreeMap::from([(name.clone(), contents.clone())]),
+            roots: BTreeMap::from([(
+                name.clone(),
+                ModelRoot {
+                    contents,
+                    next_inode: 16,
+                },
+            )]),
+            active: name,
         }
     }
 
     pub fn durable_state(&self) -> &State {
-        &self.durable
+        &self.durable[&self.active].state
+    }
+    fn root(&self) -> &ModelRoot {
+        &self.roots[&self.active]
+    }
+    fn root_mut(&mut self) -> &mut ModelRoot {
+        self.roots.get_mut(&self.active).unwrap()
+    }
+    fn snapshot(&mut self, name: &[u8], read_only: bool) -> Result<()> {
+        Self::name(name).map_err(|_| Error::Errno(Errno::EINVAL))?;
+        if self.roots.contains_key(name) {
+            return Err(Errno::EEXIST.into());
+        }
+        let root = self.root();
+        let copy = ModelRoot {
+            contents: RootState {
+                read_only,
+                state: root.contents.state.clone(),
+            },
+            next_inode: root.next_inode,
+        };
+        self.roots.insert(name.to_vec(), copy);
+        self.durable = self.roots()?;
+        Ok(())
+    }
+    fn delete_snapshot(&mut self, name: &[u8]) -> Result<()> {
+        Self::name(name).map_err(|_| Error::Errno(Errno::EINVAL))?;
+        if name == self.active {
+            return Err(Errno::EBUSY.into());
+        }
+        self.roots.remove(name).ok_or(Errno::ENOENT)?;
+        self.durable = self.roots()?;
+        Ok(())
     }
 
     fn inode(&self, ino: Ino) -> Result<&Inode> {
-        self.live.inodes.get(&ino).ok_or(Errno::ENOENT.into())
+        self.root()
+            .contents
+            .state
+            .inodes
+            .get(&ino)
+            .ok_or(Errno::ENOENT.into())
     }
     fn inode_mut(&mut self, ino: Ino) -> &mut Inode {
-        self.live.inodes.get_mut(&ino).expect("validated inode")
+        self.root_mut()
+            .contents
+            .state
+            .inodes
+            .get_mut(&ino)
+            .expect("validated inode")
     }
     fn entries(&self, dir: Ino) -> Result<&BTreeMap<Vec<u8>, Ino>> {
         match &self.inode(dir)?.contents {
@@ -112,9 +169,9 @@ impl Model {
         if directory && self.inode(dir)?.metadata.nlink == u32::MAX {
             return Err(Errno::EMLINK.into());
         }
-        let ino = self.next_inode;
+        let ino = self.root().next_inode;
         let next = ino.checked_add(1).ok_or(Error::Errno(Errno::EMLINK))?;
-        self.live.inodes.insert(
+        self.root_mut().contents.state.inodes.insert(
             ino,
             Inode {
                 metadata: Metadata {
@@ -131,7 +188,7 @@ impl Model {
                 xattrs: BTreeMap::new(),
             },
         );
-        self.next_inode = next;
+        self.root_mut().next_inode = next;
         self.entries_mut(dir).insert(name.to_vec(), ino);
         if directory {
             self.inode_mut(dir).metadata.nlink += 1;
@@ -244,7 +301,7 @@ impl Model {
     }
     fn drop_link(&mut self, ino: Ino, directory: bool, at: Time) {
         if directory || self.inode_mut(ino).metadata.nlink == 1 {
-            self.live.inodes.remove(&ino);
+            self.root_mut().contents.state.inodes.remove(&ino);
         } else {
             self.inode_mut(ino).metadata.nlink -= 1;
             self.changed(ino, at, false);
@@ -267,7 +324,7 @@ impl Model {
             return Err(Errno::ENOTEMPTY.into());
         }
         self.entries_mut(dir).remove(name);
-        self.live.inodes.remove(&ino);
+        self.root_mut().contents.state.inodes.remove(&ino);
         self.inode_mut(dir).metadata.nlink -= 1;
         self.changed(dir, at, true);
         Ok(())
@@ -402,12 +459,11 @@ impl Model {
     pub fn fsync(&mut self, ino: Ino) -> Result<()> {
         self.inode(ino)?;
         // Design 2.5 closes the shared transaction, including namespace changes.
-        self.durable = self.live.clone();
+        self.durable = self.roots()?;
         Ok(())
     }
     pub fn remount(&mut self) -> Result<()> {
-        self.durable = self.live.clone();
-        self.live = self.durable.clone();
+        self.durable = self.roots()?;
         Ok(())
     }
 }
@@ -415,6 +471,11 @@ impl Fs for Model {
     fn execute(&mut self, op: &Operation) -> Result<Reply> {
         if op.at.nanos >= 1_000_000_000 {
             return Err(Errno::EINVAL.into());
+        }
+        if self.root().contents.read_only
+            && !matches!(op.action, Action::Fsync { .. } | Action::Remount)
+        {
+            return Err(Errno::EROFS.into());
         }
         let at = op.at;
         match &op.action {
@@ -445,11 +506,29 @@ impl Fs for Model {
             Action::Removexattr { ino, name } => self.removexattr(*ino, name, at),
             Action::Fsync { ino } => self.fsync(*ino),
             Action::Remount => self.remount(),
+            Action::Snapshot { name, read_only } => self.snapshot(name, *read_only),
+            Action::Clone { name } => self.snapshot(name, false),
+            Action::DeleteSnapshot { name } => self.delete_snapshot(name),
         }?;
         Ok(Reply::Done)
     }
     fn state(&self) -> Result<State> {
-        Ok(self.live.clone())
+        Ok(self.root().contents.state.clone())
+    }
+    fn roots(&self) -> Result<Roots> {
+        Ok(self
+            .roots
+            .iter()
+            .map(|(name, root)| (name.clone(), root.contents.clone()))
+            .collect())
+    }
+    fn select_root(&mut self, name: &[u8]) -> Result<()> {
+        if !self.roots.contains_key(name) {
+            return Err(Errno::ENOENT.into());
+        }
+        self.durable = self.roots()?;
+        self.active = name.to_vec();
+        Ok(())
     }
 }
 

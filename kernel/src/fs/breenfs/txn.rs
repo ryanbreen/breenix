@@ -7,6 +7,7 @@
 use super::{
     btree::{self, NodeStore},
     format::{self, BlockPtr, Extent, InternalEntry, Key, LeafItemHeader, NodeHeader, Root},
+    reserve::{Estimate, Grant, Ledger, Operation},
     space::{self, Kind},
 };
 use alloc::{
@@ -38,6 +39,23 @@ impl From<format::Error> for Error {
     }
 }
 
+/// Fixed transaction budget from the snapshot deletion contract.
+pub const REAP_PER_COMMIT: usize = 16;
+
+/// Mount-owned DEAD address index. Carry it into the next transaction after
+/// publication instead of walking SPACE again. Dropping an aborted transaction
+/// also discards its unpublished index changes; recovery rebuilds it from disk.
+#[derive(Clone, Default)]
+pub struct DeadNodes {
+    addresses: BTreeSet<u64>,
+}
+
+impl DeadNodes {
+    pub fn count(&self) -> u64 {
+        self.addresses.len() as u64
+    }
+}
+
 enum Change {
     PromotePending,
     Allocate {
@@ -54,6 +72,9 @@ enum Change {
         start: u64,
         length: u64,
         children: bool,
+    },
+    DeleteRoot {
+        id: u64,
     },
     Root {
         id: u64,
@@ -141,6 +162,9 @@ pub struct Transaction<'a, S> {
     counts: BTreeMap<(u64, u64), u32>,
     deferred: VecDeque<Change>,
     failure: Option<Error>,
+    next_root_id: u64,
+    dead: DeadNodes,
+    reaped: usize,
 }
 /// Tree geometry for the caller's reservation policy.
 pub struct ReservationPaths {
@@ -225,19 +249,33 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             counts: BTreeMap::from([((20, 4), 1)]),
             deferred: VecDeque::new(),
             failure: None,
+            next_root_id: 0,
+            dead: DeadNodes::default(),
+            reaped: 0,
         })
     }
     pub fn new(base: &'a S, space_root: BlockPtr, generation: u64) -> Result<Self, Error> {
-        Self::with_backing(Backing::Borrowed(base), space_root, generation)
+        Self::with_backing(Backing::Borrowed(base), space_root, generation, None)
     }
     /// Own a read-only store so an adapter can retain a transaction between calls.
     pub fn new_owned(base: S, space_root: BlockPtr, generation: u64) -> Result<Self, Error> {
-        Self::with_backing(Backing::Owned(base), space_root, generation)
+        Self::with_backing(Backing::Owned(base), space_root, generation, None)
+    }
+    /// Continue a mount using the index from its preceding transaction at this
+    /// space root. This constructor performs no DEAD range walk.
+    pub fn new_owned_with_dead(
+        base: S,
+        space_root: BlockPtr,
+        generation: u64,
+        dead: DeadNodes,
+    ) -> Result<Self, Error> {
+        Self::with_backing(Backing::Owned(base), space_root, generation, Some(dead))
     }
     fn with_backing(
         base: Backing<'a, S>,
         space_root: BlockPtr,
         generation: u64,
+        dead: Option<DeadNodes>,
     ) -> Result<Self, Error> {
         let h = NodeHeader::decode(&base.get().get(space_root.addr)?)?;
         if h.tree != 2
@@ -248,6 +286,12 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
         {
             return Err(Error::Invalid);
         }
+        let dead = match dead {
+            Some(dead) => dead,
+            None => DeadNodes {
+                addresses: space::dead_nodes(base.get(), space_root)?,
+            },
+        };
         Ok(Self {
             base,
             generation,
@@ -262,6 +306,9 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             counts: BTreeMap::new(),
             deferred: VecDeque::new(),
             failure: None,
+            next_root_id: 0,
+            dead,
+            reaped: 0,
         })
     }
     pub fn view(&self) -> View<'_, S> {
@@ -417,6 +464,9 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
                 .checked_sub(1)
                 .ok_or(Error::Invalid)?;
             self.counts.insert((start, length), count);
+            if count == 0 && children {
+                self.dead.addresses.insert(start);
+            }
             self.deferred.push_back(Change::Release {
                 start,
                 length,
@@ -426,16 +476,92 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
         })();
         self.result(result)
     }
-    fn prepare(&mut self, header: &mut NodeHeader) -> Result<(), Error> {
-        if header.generation == self.generation && self.allocated.contains(&header.addr) {
-            return Ok(());
+    pub fn dead_nodes(&self) -> &DeadNodes {
+        &self.dead
+    }
+    pub fn dead_count(&self) -> u64 {
+        self.dead.count()
+    }
+    /// Reserve SPACE COW/split work for the remaining node budget. Reaping is
+    /// snapshot deletion work and may draw on the global reserve (design 2.8).
+    /// The mount retains this grant through publication, like its other grants.
+    pub fn reserve_reap(&self, ledger: &mut Ledger, free_blocks: u64) -> Result<Grant, Error> {
+        self.healthy()?;
+        let nodes = btree::reservation_nodes(&self.view(), self.space_root, None, 0)?;
+        // An internal node has at most 441 references; removing one can change
+        // REF plus DEAD/PENDING. Include removal of the reaped DEAD itself.
+        let changes = ((REAP_PER_COMMIT - self.reaped) as u64) * (2 * 441 + 2);
+        let blocks = Estimate {
+            space_changes: changes,
+            space_height: u64::from(self.space_root.level),
+            space_nodes: nodes,
+            ..Estimate::default()
         }
-        if header.generation >= self.generation {
+        .blocks()?;
+        Ok(ledger.reserve(free_blocks, blocks, Operation::DeleteSnapshot)?)
+    }
+    /// Reap the lowest-address DEAD node. Stop on an empty index or exhausted
+    /// transaction budget; settle preserves that budget.
+    pub fn reap_step(&mut self) -> Result<Option<u64>, Error> {
+        self.healthy()?;
+        if self.reaped == REAP_PER_COMMIT {
+            return Ok(None);
+        }
+        let result = (|| {
+            self.settle()?;
+            let Some(&addr) = self.dead.addresses.first() else {
+                return Ok(None);
+            };
+            let bytes = self.view().get(addr)?;
+            let h = NodeHeader::decode(&bytes)?;
+            let space = NodeHeader::decode(&self.view().get(self.space_root.addr)?)?;
+            if h.tree != 1
+                || h.addr != addr
+                || h.fs_uuid != space.fs_uuid
+                || h.generation > self.generation
+                || h.level >= 8
+            {
+                return Err(Error::Invalid);
+            }
+            // Validate the full node layout before changing its references.
+            btree::decode_node(
+                &bytes,
+                BlockPtr {
+                    addr,
+                    generation: h.generation,
+                    level: h.level,
+                    csum: u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
+                },
+            )?;
+            for (start, length) in outgoing(&bytes)? {
+                self.release(start, length, h.level != 0)?;
+            }
+            let mut root = self.space_root;
+            let generation = self.generation;
+            space::reap(
+                &mut EditStore { txn: self, tree: 2 },
+                &mut root,
+                addr,
+                generation,
+            )?;
+            self.space_root = root;
+            self.dead.addresses.remove(&addr);
+            self.reaped += 1;
+            Ok(Some(addr))
+        })();
+        self.result(result)
+    }
+    fn prepare(&mut self, header: &mut NodeHeader) -> Result<(), Error> {
+        let private = header.generation == self.generation && self.allocated.contains(&header.addr);
+        if !private && header.generation >= self.generation {
             return Err(Error::Invalid);
         }
         let count = self.count(header.addr, 4)?;
         if count == 0 {
             return Err(Error::Invalid);
+        }
+        if private && count == 1 {
+            return Ok(());
         }
         // Ancestors call this before descending. Their increments must be in
         // the effective counts before a child decides whether it is shared.
@@ -478,14 +604,19 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
     // Only writer-produced private root leaves qualify. Disk-backed nodes still
     // use the full B-tree decoder; check the complete pointer and CRC here too.
     fn private_leaf_header(&self, root: BlockPtr) -> Result<Option<NodeHeader>, Error> {
-        if root.level != 0 || root.generation != self.generation {
+        if root.level != 0
+            || root.generation != self.generation
+            || self.counts.get(&(root.addr, 4)) != Some(&1)
+        {
             return Ok(None);
         }
         let Some(bytes) = self.nodes.get(&root.addr) else {
             return Ok(None);
         };
         let h = NodeHeader::decode(bytes)?;
-        if h.tree != 1 || h.addr != root.addr || h.generation != root.generation
+        if h.tree != 1
+            || h.addr != root.addr
+            || h.generation != root.generation
             || h.level != root.level
             || root.csum != u32::from_le_bytes(bytes[8..12].try_into().unwrap())
             || 48 + usize::from(h.nitems) * 21 > bytes.len()
@@ -527,7 +658,8 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
                             if start < 48 + usize::from(h.nitems) * 21 {
                                 return Err(Error::Invalid);
                             }
-                            let payload = bytes.get_mut(start..start + value.len())
+                            let payload = bytes
+                                .get_mut(start..start + value.len())
                                 .ok_or(Error::Invalid)?;
                             let old = payload.to_vec();
                             if old != value {
@@ -583,8 +715,18 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
         self.healthy()?;
         let result = Root::decode(&value.encode()).map_err(Error::from);
         self.result(result)?;
+        let next = id.checked_add(1).ok_or(Error::Invalid);
+        self.next_root_id = self.next_root_id.max(self.result(next)?);
         self.deferred.push_back(Change::Root { id, value });
         Ok(())
+    }
+    pub fn delete_root(&mut self, id: u64) -> Result<(), Error> {
+        self.healthy()?;
+        self.deferred.push_back(Change::DeleteRoot { id });
+        Ok(())
+    }
+    pub fn next_root_id(&self) -> u64 {
+        self.next_root_id
     }
     /// Stage the same PENDING conversions in the reservation and real trees.
     pub fn promote_pending(&mut self) -> Result<(), Error> {
@@ -643,6 +785,17 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
                     children,
                 } => space::release(&mut store, &mut root, start, length, generation, children)
                     .map_err(Error::from),
+                Change::DeleteRoot { id } => btree::delete(
+                    &mut store,
+                    &mut root,
+                    Key {
+                        object: 0xffff_ffff_ffff_ff10,
+                        item_type: format::ROOT,
+                        offset: id,
+                    },
+                )
+                .map(|_| ())
+                .map_err(Error::from),
                 Change::Root { id, value } => btree::insert(
                     &mut store,
                     &mut root,

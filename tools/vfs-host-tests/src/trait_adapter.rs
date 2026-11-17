@@ -2,7 +2,7 @@
 use crate::{
     attrs::InodeAttrs,
     block::{cache::BufferCache, BlockDevice, BlockError},
-    breenfs::{commit::DeviceStore, format, ops::Files, recover, vfs::BreenFs},
+    breenfs::{abi::*, commit::DeviceStore, format, ops::Files, recover, vfs::BreenFs},
     errno::Errno as KernelErrno,
     read_conformance::NoWait,
     syscall_errno as errno,
@@ -46,7 +46,10 @@ impl BlockDevice for Device {
 }
 fn error(error: KernelErrno) -> Error {
     let value = match error.0 {
+        errno::ENOSYS => return Error::Unimplemented,
         errno::EPERM => Errno::EPERM,
+        errno::EROFS => Errno::EROFS,
+        errno::EBUSY => Errno::EBUSY,
         errno::ENOENT => Errno::ENOENT,
         61 => Errno::ENODATA,
         errno::EEXIST => Errno::EEXIST,
@@ -79,12 +82,15 @@ fn time(t: vfs::Timestamp) -> Time {
 pub(crate) struct TraitAdapter {
     device: Arc<Device>,
     mounted: Option<Arc<dyn FileSystem>>,
+    root_id: u64,
+    root_name: Vec<u8>,
+    read_only: bool,
 }
 impl TraitAdapter {
     pub(crate) fn new(device: Arc<RecordingDevice>) -> Self {
         let device = Arc::new(Device(device));
         let mounted = Some(Self::mount(device.clone()));
-        Self { device, mounted }
+        Self { device, mounted, root_id: 1, root_name: b"default".to_vec(), read_only: false }
     }
     fn mount(device: Arc<Device>) -> Arc<dyn FileSystem> {
         BreenFs::mount_writable(device, Arc::new(BufferCache::new(NoWait)), 71, 1).unwrap()
@@ -218,10 +224,23 @@ impl TraitAdapter {
                 fs.fsync(fs.open(*ino)?.as_ref(), false)?;
                 Reply::Done
             }
+            Action::Snapshot { name, .. } | Action::Clone { name } | Action::DeleteSnapshot { name } => {
+                if name.len() > 255 { return Err(KernelErrno(errno::EINVAL)); }
+                let mut request = SnapshotRequest { flags: match op.action {
+                    Action::Snapshot { read_only: true, .. } => SNAPSHOT_READ_ONLY,
+                    _ => 0,
+                }, name_len: name.len() as u32, name: [0; 256] };
+                request.name[..name.len()].copy_from_slice(name);
+                let code = if matches!(op.action, Action::DeleteSnapshot { .. }) {
+                    SNAPSHOT_DELETE
+                } else { SNAPSHOT_CREATE };
+                fs.ioctl(fs.open(fs.root()?)?.as_ref(), code, &request as *const _ as u64)?;
+                Reply::Done
+            }
             Action::Remount => {
                 fs.sync()?;
                 self.mounted = None; // Drop VNodes, mount state and buffer cache.
-                self.mounted = Some(Self::mount(self.device.clone()));
+                self.mounted = Some(self.mount_selected()?);
                 Reply::Done
             }
         })
@@ -236,12 +255,58 @@ impl Fs for TraitAdapter {
     }
     fn state(&self) -> Result<State> {
         let fs = self.fs();
+        self.state_of(fs, self.root_id)
+    }
+    fn roots(&self) -> Result<Roots> {
+        // Drain the selected root through VFS before enumerating the durable
+        // catalog. Each other root is observed through a named VFS mount.
+        self.fs().sync().map_err(error)?;
+        let sb = recover::recover(self.device.as_ref(), false).map_err(|_| Errno::EIO)?;
+        let items = recover::space_items(&DeviceStore(self.device.as_ref()), &sb).map_err(|_| Errno::EIO)?;
+        let mut roots = Roots::new();
+        for (key, bytes) in items.into_iter().filter(|(key, _)| key.item_type == format::ROOT) {
+            let root = format::Root::decode(&bytes).map_err(|_| Errno::EIO)?;
+            let state = if key.offset == self.root_id {
+                self.state()?
+            } else {
+                let data = [b"root=".as_slice(), &root.name].concat();
+                let fs = BreenFs::mount_named(self.device.clone(), Arc::new(BufferCache::new(NoWait)),
+                    72, Some(&data), false).map_err(error)?;
+                self.state_of(fs.as_ref(), key.offset)?
+            };
+            roots.insert(root.name, RootState { read_only: root.flags & SNAPSHOT_READ_ONLY != 0, state });
+        }
+        Ok(roots)
+    }
+    fn select_root(&mut self, name: &[u8]) -> Result<()> {
+        self.fs().sync().map_err(error)?;
+        let sb = recover::recover(self.device.as_ref(), false).map_err(|_| Errno::EIO)?;
+        let items = recover::space_items(&DeviceStore(self.device.as_ref()), &sb).map_err(|_| Errno::EIO)?;
+        let (id, root) = items.into_iter().filter(|(key, _)| key.item_type == format::ROOT)
+            .map(|(key, bytes)| format::Root::decode(&bytes).map(|root| (key.offset, root)))
+            .collect::<core::result::Result<Vec<_>, _>>().map_err(|_| Errno::EIO)?
+            .into_iter().find(|(_, root)| root.name == name).ok_or(Errno::ENOENT)?;
+        self.mounted = None;
+        self.root_id = id;
+        self.root_name = root.name;
+        self.read_only = root.flags & SNAPSHOT_READ_ONLY != 0;
+        self.mounted = Some(self.mount_selected().map_err(error)?);
+        Ok(())
+    }
+}
+impl TraitAdapter {
+    fn mount_selected(&self) -> core::result::Result<Arc<dyn FileSystem>, KernelErrno> {
+        let data = [b"root=".as_slice(), &self.root_name].concat();
+        Ok(BreenFs::mount_named(self.device.clone(), Arc::new(BufferCache::new(NoWait)),
+            71, Some(&data), !self.read_only)?)
+    }
+    fn state_of(&self, fs: &dyn FileSystem, root_id: u64) -> Result<State> {
         // Only called after remount. Inspect allocation keys to bound sparse
         // reads (streams include 4-GiB holes); contents and metadata are read through
         // FileSystem, independently of the model and WriterAdapter.
         let sb = recover::recover(self.device.as_ref(), false).map_err(|_| Errno::EIO)?;
         let files =
-            Files::new(DeviceStore(self.device.as_ref()), &sb, 1).map_err(|_| Errno::EIO)?;
+            Files::new(DeviceStore(self.device.as_ref()), &sb, root_id, false).map_err(|_| Errno::EIO)?;
         let items = files.items().map_err(|_| Errno::EIO)?;
         let mut state = State::default();
         for (key, _) in items

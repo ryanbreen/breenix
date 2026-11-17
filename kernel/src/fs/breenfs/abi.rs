@@ -34,3 +34,28 @@ pub struct ScrubStatus {
 
 const _: () = assert!(core::mem::size_of::<BadBlock>() == 16);
 const _: () = assert!(core::mem::size_of::<ScrubStatus>() == 168);
+
+pub const SNAPSHOT_CREATE: u64 = 0xb824_1401;
+pub const SNAPSHOT_DELETE: u64 = 0xb824_1402;
+pub const SNAPSHOT_STATUS: u64 = 0xb824_1403;
+pub const SNAPSHOT_READ_ONLY: u32 = 1;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SnapshotRequest {
+    pub flags: u32,
+    pub name_len: u32,
+    pub name: [u8; 256],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SnapshotStatus {
+    pub root_id: u64,
+    pub flags: u32,
+    pub roots: u32,
+    pub dead_remaining: u64,
+}
+
+const _: () = assert!(core::mem::size_of::<SnapshotRequest>() == 264);
+const _: () = assert!(core::mem::size_of::<SnapshotStatus>() == 24);

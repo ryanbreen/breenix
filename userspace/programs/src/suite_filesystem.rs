@@ -4,6 +4,7 @@ mod filesystem_read;
 mod filesystem_checksum;
 mod filesystem_enospc;
 mod filesystem_root;
+mod filesystem_snapshots;
 mod filesystem_write;
 use cache_reread::{reread_is_cached, REREAD_BYTES};
 use breenix_suite::suite::{case, category, check, suite, CaseError, CaseResult, Suite};
@@ -54,6 +55,12 @@ static SUITE: Suite = suite("filesystem", "Copy-on-write filesystem", &[
     category("scrub", "Scrub finds and names corrupted blocks", &[
         case("scrub-names-block", "Scrub reports the corrupted data block", filesystem_checksum::scrub_names_block),
         case("scrub-recorded", "Scrub results survive a remount", filesystem_checksum::scrub_recorded),
+    ]),
+    category("snapshots", "Read-only snapshots, writable clones and resumable deletion", &[
+        case("readonly-snapshot-frozen", "Read-only snapshots preserve original bytes and refuse writes", filesystem_snapshots::readonly_snapshot_frozen),
+        case("clone-diverges", "Writable clones diverge from the live root", filesystem_snapshots::clone_diverges),
+        case("delete-returns-space", "Deleting a snapshot returns its data blocks", filesystem_snapshots::delete_returns_space),
+        case("delete-resumes-after-remount", "Snapshot deletion resumes after remount", filesystem_snapshots::delete_resumes_after_remount),
     ]),
 ]);
 

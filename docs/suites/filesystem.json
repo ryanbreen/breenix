@@ -125,7 +125,12 @@
     {
       "id": "snapshots",
       "title": "Read-only snapshots, writable clones and resumable deletion",
-      "cases": []
+      "cases": [
+        { "id": "readonly-snapshot-frozen", "title": "Read-only snapshots preserve original bytes and refuse writes" },
+        { "id": "clone-diverges", "title": "Writable clones diverge from the live root" },
+        { "id": "delete-returns-space", "title": "Deleting a snapshot returns its data blocks" },
+        { "id": "delete-resumes-after-remount", "title": "Snapshot deletion resumes after remount" }
+      ]
     },
     {
       "id": "test-root",

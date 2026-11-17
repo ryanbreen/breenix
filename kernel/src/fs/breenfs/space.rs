@@ -228,7 +228,10 @@ pub fn pending_promotion_generation<S: NodeStore>(
         if pending.released_generation == 0 {
             return Err(Error::Invalid);
         }
-        let promoted = pending.released_generation.checked_add(2).ok_or(Error::Invalid)?;
+        let promoted = pending
+            .released_generation
+            .checked_add(2)
+            .ok_or(Error::Invalid)?;
         generation = Some(generation.map_or(promoted, |old: u64| old.max(promoted)));
     }
     Ok(generation)
@@ -418,5 +421,51 @@ pub fn release<S: NodeStore>(
             )?;
         }
     }
+    Ok(())
+}
+
+/// Collect the DEAD address index once when opening a mount. REF and DEAD keys
+/// are interleaved by address; stop before ROOT/FREE/PENDING's object ranges.
+pub fn dead_nodes<S: NodeStore>(store: &S, root: BlockPtr) -> Result<BTreeSet<u64>, Error> {
+    let mut dead = BTreeSet::new();
+    for (k, value) in btree::range(
+        store,
+        root,
+        key(0, 0, 0),
+        key(0xffff_ffff_ffff_ff0f, u8::MAX, u64::MAX),
+    )? {
+        if k.item_type == format::DEAD {
+            if k.offset != 4 || !value.is_empty() {
+                return Err(Error::Invalid);
+            }
+            dead.insert(k.object);
+        }
+    }
+    Ok(dead)
+}
+
+/// Retire a DEAD node after its outgoing references have been released. The
+/// caller's transaction makes both changes atomic; reuse still waits for G+2.
+pub fn reap<S: NodeStore>(
+    store: &mut S,
+    root: &mut BlockPtr,
+    addr: u64,
+    generation: u64,
+) -> Result<(), Error> {
+    let dead = key(addr, format::DEAD, 4);
+    if btree::search(store, *root, dead)?.as_deref() != Some(&[]) || generation == 0 {
+        return Err(Error::Invalid);
+    }
+    btree::delete(store, root, dead)?;
+    btree::insert(
+        store,
+        root,
+        key(PENDING_OBJECT, format::PENDING, addr),
+        &Pending {
+            length: 4,
+            released_generation: generation,
+        }
+        .encode(),
+    )?;
     Ok(())
 }

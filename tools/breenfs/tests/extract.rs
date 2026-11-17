@@ -162,7 +162,7 @@ fn manifest_and_sparse_cat_match_the_source() {
     let before = fs::read(&image).unwrap();
     let device = Image(before.clone());
     let sb = recover::recover(&device, false).unwrap();
-    let files = Files::new(DeviceStore(&device), &sb, 1).unwrap();
+    let files = Files::new(DeviceStore(&device), &sb, 1, false).unwrap();
     let ino = files.lookup(2, b"sparse").unwrap();
     assert_eq!(
         files.inode(ino).unwrap().nblocks,
@@ -296,7 +296,7 @@ fn blocks_and_owners_cover_the_populated_image() {
     let before = fs::read(&image).unwrap();
     let device = Image(before.clone());
     let sb = recover::recover(&device, false).unwrap();
-    let files = Files::new(DeviceStore(&device), &sb, 1).unwrap();
+    let files = Files::new(DeviceStore(&device), &sb, 1, false).unwrap();
     let items = files.items().unwrap();
     let space = breenfs::ops::items(&DeviceStore(&device), sb.space_root).unwrap();
     let root = space

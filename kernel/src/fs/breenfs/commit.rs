@@ -201,6 +201,7 @@ impl Committer {
         sb.slot = (generation % 4) as u8;
         sb.ring = 0;
         sb.space_root = space_root;
+        sb.next_root_id = sb.next_root_id.max(txn.next_root_id());
         let view = Prepared {
             base: txn.view(),
             nodes: &filled,

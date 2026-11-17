@@ -180,7 +180,7 @@ pub(super) fn blocks(
     path: &[u8],
     out: &mut impl Write,
 ) -> Result<()> {
-    let files = core(Files::new(DeviceStore(device), sb, 1))?;
+    let files = core(Files::new(DeviceStore(device), sb, 1, false))?;
     let ino = resolve(&files, path, true)?;
     if kind(core(files.inode(ino))?.mode)? != "reg" {
         return Err("blocks requires a regular file".into());

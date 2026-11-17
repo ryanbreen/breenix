@@ -657,6 +657,7 @@ fn fsync_preparation_error_completes_waiters_and_latches() {
         },
         &sb,
         1,
+        true,
     )
     .unwrap();
     let mut mount = commit::Committer::new(sb);
@@ -695,7 +696,7 @@ fn write_does_not_scan_unrelated_inodes() {
     }
     let device = RecordingDevice::new(test_image::image()).unwrap();
     let sb = recover::recover(&device, false).unwrap();
-    let mut files = ops::Files::new(commit::DeviceStore(&device), &sb, 1).unwrap();
+    let mut files = ops::Files::new(commit::DeviceStore(&device), &sb, 1, true).unwrap();
     for n in 0..256 {
         files
             .create(
@@ -717,6 +718,7 @@ fn write_does_not_scan_unrelated_inodes() {
         },
         &sb,
         1,
+        true,
     )
     .unwrap();
     reads.store(0, Ordering::Relaxed);
@@ -775,7 +777,7 @@ fn drain_splits_a_run_across_fragmented_free_space() {
     let device = Image(std::sync::Mutex::new(test_image::image()));
     let mut sb = recover::recover(&device, false).unwrap();
     let mut committer = commit::Committer::new(sb.clone());
-    let mut files = Files::new(commit::DeviceStore(&device), &sb, 1).unwrap();
+    let mut files = Files::new(commit::DeviceStore(&device), &sb, 1, true).unwrap();
     let at = disk::Time::default();
     let ballast = files.create(2, b"ballast", 0o600, at).unwrap();
     let ino = files.create(2, b"fragmented", 0o600, at).unwrap();
@@ -797,7 +799,7 @@ fn drain_splits_a_run_across_fragmented_free_space() {
             .unwrap();
     }
     sb = files.fsync(&device, &mut committer).unwrap();
-    files = Files::new(commit::DeviceStore(&device), &sb, 1).unwrap();
+    files = Files::new(commit::DeviceStore(&device), &sb, 1, true).unwrap();
     for n in (0..256).step_by(2) {
         files
             .unlink(2, format!("fill{n:03}").as_bytes(), at)
@@ -807,7 +809,7 @@ fn drain_splits_a_run_across_fragmented_free_space() {
     // them under the T-2 reuse rule, without touching the image by hand.
     for _ in 0..3 {
         sb = files.fsync(&device, &mut committer).unwrap();
-        files = Files::new(commit::DeviceStore(&device), &sb, 1).unwrap();
+        files = Files::new(commit::DeviceStore(&device), &sb, 1, true).unwrap();
     }
     // Consume the remaining tail and any coalesced metadata holes with
     // aligned ballast writes, until the fixture has only 4-8-block FREE runs.
@@ -834,12 +836,12 @@ fn drain_splits_a_run_across_fragmented_free_space() {
             .unwrap();
         ballast_end += blocks * BLOCK_SIZE as u64;
         sb = files.fsync(&device, &mut committer).unwrap();
-        files = Files::new(commit::DeviceStore(&device), &sb, 1).unwrap();
+        files = Files::new(commit::DeviceStore(&device), &sb, 1, true).unwrap();
     }
     drop(files);
     let device = RecordingDevice::new(device.0.into_inner().unwrap()).unwrap();
     let (before, space) = tree(&device);
-    let mut files = Files::new(commit::DeviceStore(&device), &before, 1).unwrap();
+    let mut files = Files::new(commit::DeviceStore(&device), &before, 1, true).unwrap();
     let free: Vec<_> = space
         .iter()
         .filter(|(k, _)| k.item_type == disk::FREE)
@@ -905,7 +907,7 @@ fn drain_splits_a_run_across_fragmented_free_space() {
     );
     drop(files);
     let remounted = recover::recover(&device, false).unwrap();
-    let files = Files::new(commit::DeviceStore(&device), &remounted, 1).unwrap();
+    let files = Files::new(commit::DeviceStore(&device), &remounted, 1, true).unwrap();
     read.fill(0);
     assert_eq!(files.read(&device, ino, 0, &mut read).unwrap(), bytes.len());
     assert_eq!(read, bytes);

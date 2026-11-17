@@ -272,6 +272,8 @@ reaching zero becomes DEAD. The reaper takes one DEAD node per step, decrements 
 reaching zero become DEAD, extents PENDING), then makes it PENDING. Each commit is consistent mid-deletion, so
 deletion is O(1) to request and resumes after a crash. <!-- claim-lint:ok: Normative breenfs design requirement from docs/fs/breenfs-design.md section 2.6, not a measured result. -->
 
+The snapshot wire interface uses `SNAPSHOT_CREATE`, `SNAPSHOT_DELETE` and `SNAPSHOT_STATUS` ioctls on a file in the target mount. Create requests name a root and set `READ_ONLY` for a snapshot or clear it for a writable clone; delete names the root to remove. Status reports the mounted root ID and flags, root count and remaining DEAD nodes. Mount data `root=NAME` selects a named root; absent mount data selects the default root. The `breenfs snapshot` command exposes create, clone, delete, status and wait; wait polls until no DEAD nodes remain.
+
 ### 2.7 Scrub
 
 A `breenfs-scrub` kthread (ioctl-controlled) walks REF and DEAD items in address order at 50 MB/s by default,

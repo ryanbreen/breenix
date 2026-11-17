@@ -121,3 +121,53 @@ fn m1_shutdown_deadline_still_refuses_completion() {
     fs.init_service().unwrap();
     assert_eq!(fs.shutdown("m1-deadline", 0), Err(Errno(ETIMEDOUT)));
 }
+
+#[test]
+fn refused_reap_reservation_preserves_acknowledged_writes() {
+    use super::super::{abi::*, reserve};
+    let fs = fixture();
+    let ino = fs.create(2, b"saved", NewNode::Regular {
+        attrs: crate::fs::attrs::InodeAttrs::new(0o644, 0, 0),
+    }).unwrap();
+    let file = fs.open(ino).unwrap();
+    let dir = fs.open(2).unwrap();
+    let mut request = SnapshotRequest { flags: SNAPSHOT_READ_ONLY,
+        name_len: 5, name: [0; 256] };
+    request.name[..5].copy_from_slice(b"trash");
+    fs.ioctl(&dir, SNAPSHOT_CREATE, &request as *const _ as u64).unwrap();
+    let write = |bytes: &[u8]| fs.write(&file, WriteReq {
+        at: WriteAt::Offset(0), limit: u64::MAX, clear_setid: false,
+    }, bytes).unwrap();
+    write(b"before");
+    fs.fsync(&file, false).unwrap();
+    request.flags = 0;
+    fs.ioctl(&dir, SNAPSHOT_DELETE, &request as *const _ as u64).unwrap();
+    let dead = fs.inner.state.lock().dead_remaining;
+    assert!(dead > 0);
+    assert_eq!(write(b"saved!").bytes, 6);
+    // Hold the remaining admission budget through this publication, forcing
+    // the real optional reaper reservation to refuse after dirty-page drain.
+    {
+        let mut state = fs.inner.state.lock();
+        let free = state.durable.free_blocks;
+        let remaining = free - state.reservations.outstanding();
+        let grant = state.reservations.reserve(free, remaining,
+            reserve::Operation::DeleteSnapshot).unwrap();
+        state.grants.push(grant);
+    }
+    reserve::observation::take();
+    assert_eq!(fs.fsync(&file, false), Ok(()));
+    assert!(reserve::observation::take().is_some(), "reap grant must refuse");
+    assert_eq!(fs.read_only(), Ok(false));
+    assert_eq!(fs.inner.state.lock().dead_remaining, dead);
+    // The next commit can resume reaping after the held grants are released.
+    fs.fsync(&file, false).unwrap();
+    assert_eq!(fs.inner.state.lock().dead_remaining, 0);
+    let disk = fs.inner.device.clone();
+    fs.shutdown("refused-reap", u64::MAX).unwrap();
+    drop((file, dir, fs));
+    let cold = BreenFs::mount_writable(disk, Arc::new(BufferCache::new(NoWait)), 72, 1).unwrap();
+    let mut bytes = [0; 6];
+    assert_eq!(cold.read(&cold.open(ino).unwrap(), 0, &mut bytes), Ok(6));
+    assert_eq!(&bytes, b"saved!");
+}
