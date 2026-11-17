@@ -7,15 +7,17 @@ use breenfs_host_tests::{
     recover,
     scrub::{BadAddress, Kind, Scrub, Store},
 };
-use std::{cell::RefCell, collections::BTreeMap, fs, process::Command, sync::OnceLock};
+use std::{cell::{Cell, RefCell}, collections::BTreeMap, fs, process::Command, sync::OnceLock};
 
 struct ReadStore<'a> {
     base: DeviceStore<'a>,
     flips: BTreeMap<u64, usize>,
     data_reads: RefCell<Vec<u64>>,
+    io: Cell<usize>,
 }
 impl NodeStore for ReadStore<'_> {
     fn get(&self, addr: u64) -> Result<Vec<u8>, btree::Error> {
+        self.io.set(self.io.get() + NODE_SIZE);
         let mut bytes = self.base.get(addr)?;
         if let Some(&offset) = self.flips.get(&addr) {
             bytes[offset] ^= 1;
@@ -31,6 +33,7 @@ impl NodeStore for ReadStore<'_> {
 }
 impl Store for ReadStore<'_> {
     fn data(&self, addr: u64) -> Result<Vec<u8>, btree::Error> {
+        self.io.set(self.io.get() + BLOCK_SIZE);
         self.data_reads.borrow_mut().push(addr);
         let mut bytes = Store::data(&self.base, addr)?;
         if let Some(&offset) = self.flips.get(&addr) {
@@ -44,6 +47,7 @@ fn store(dev: &RecordingDevice) -> ReadStore<'_> {
         base: DeviceStore(dev),
         flips: BTreeMap::new(),
         data_reads: RefCell::new(Vec::new()),
+        io: Cell::new(0),
     }
 }
 fn image() -> Vec<u8> {
@@ -369,4 +373,24 @@ fn completion_is_recorded_by_the_next_commit_and_survives_later_commit_and_recov
         ),
         (done.generation, 1)
     );
+}
+
+#[test]
+fn each_step_bounds_and_charges_all_device_reads_including_navigation() {
+    let dev = RecordingDevice::new(image()).unwrap();
+    let sb = recover::recover(&dev, false).unwrap();
+    let s = store(&dev);
+    let mut scrub = Scrub::new();
+    for _ in 0..512 {
+        s.io.set(0);
+        let charged = scrub.step(&s, sb.space_root, sb.generation, NODE_SIZE).unwrap();
+        assert!(s.io.get() <= NODE_SIZE, "mount exclusion covered {} raw bytes", s.io.get());
+        assert_eq!(charged, s.io.get(), "navigation I/O must be charged");
+        if scrub.completion().is_some() {
+            assert_eq!(scrub.errors(), 0);
+            assert_eq!(s.data_reads.borrow().len(), 70);
+            return;
+        }
+    }
+    panic!("bounded scanner failed to progress");
 }
