@@ -21,6 +21,14 @@ fn create(fs: &dyn FileSystem, dir: u64, name: &[u8], directory: bool) -> Arc<VN
     fs.open(fs.create(dir, name, node).unwrap()).unwrap()
 }
 
+fn remove(fs: &dyn FileSystem, dir: u64, name: &[u8], directory: bool) {
+    let ino = fs.lookup(dir, name).unwrap();
+    fs.remove(dir, name, Remove {
+        directory, expected: ino, owner: fs.getattr(ino).unwrap().attrs.uid,
+        parent: fs.getattr(dir).unwrap().attrs,
+    }).unwrap();
+}
+
 fn write_synced(fs: &dyn FileSystem, file: &VNode, bytes: &[u8]) {
     // File::create truncates even an existing file in the guest routine.
     fs.resize(file, 0, false, &|_| Ok(())).unwrap();
@@ -80,7 +88,7 @@ fn counts(fs: &dyn FileSystem, disk: &Disk) -> Counts {
     counts
 }
 
-fn marker_commits(fs: &dyn FileSystem, dir: &VNode) {
+fn marker_commit(fs: &dyn FileSystem, dir: &VNode, byte: u8) {
     let marker = match fs.lookup(dir.ino, b"commit-marker") {
         Ok(ino) => fs.open(ino).unwrap(),
         Err(error) => {
@@ -88,7 +96,11 @@ fn marker_commits(fs: &dyn FileSystem, dir: &VNode) {
             create(fs, dir.ino, b"commit-marker", false)
         }
     };
-    for byte in 0..3 { write_synced(fs, &marker, &[byte]); }
+    write_synced(fs, &marker, &[byte]);
+}
+
+fn marker_commits(fs: &dyn FileSystem, dir: &VNode) {
+    for byte in 0..3 { marker_commit(fs, dir, byte); }
 }
 
 #[test]
@@ -117,4 +129,66 @@ fn equalized_marker_commits_return_all_1024_snapshot_blocks() {
     let mut bytes = vec![0; BYTES];
     assert_eq!(fs.read(&file, 0, &mut bytes).unwrap(), BYTES);
     assert_eq!(bytes, vec![0xa7; BYTES]);
+}
+
+#[test]
+fn inline_symlinks_leave_more_than_16_dead_nodes_during_resumed_deletion() {
+    const LINKS: usize = 68;
+    const BYTES: usize = 2 * 1024 * 1024;
+    let disk = Arc::new(Disk { bytes: Mutex::new(crate::model::image()), writable: true });
+    let mount = || BreenFs::mount_writable(disk.clone(), Arc::new(BufferCache::new(NoWait)), 2415, 1).unwrap();
+    let fs = mount();
+    let dir = create(fs.as_ref(), 2, b"case", true);
+    let files = create(fs.as_ref(), dir.ino, b"files", true);
+    // INLINE holds the long target in an FS leaf, with no data write per link.
+    let target = vec![b'x'; 4095];
+    for index in 0..LINKS {
+        fs.create(files.ino, format!("link-{index:02}").as_bytes(), NewNode::Symlink {
+            attrs: InodeAttrs::new(0o777, 0, 0), target: &target,
+        }).unwrap();
+        if (index + 1) % 16 == 0 { fs.fsync(&files, false).unwrap(); }
+    }
+    let file = create(fs.as_ref(), files.ino, b"data", false);
+    write_synced(fs.as_ref(), &file, &vec![0x63; BYTES]);
+    snapshot(fs.as_ref(), &dir, SNAPSHOT_CREATE);
+    // Diverge in live first: the old leaves and data belong only to frozen.
+    drop(file);
+    for index in 0..LINKS {
+        remove(fs.as_ref(), files.ino, format!("link-{index:02}").as_bytes(), false);
+    }
+    remove(fs.as_ref(), files.ino, b"data", false);
+    drop(files);
+    remove(fs.as_ref(), dir.ino, b"files", true);
+    fs.fsync(&dir, false).unwrap();
+    // Count the setup's mutating VFS calls, including write_synced's truncate;
+    // opens/status are not mutations.
+    let creates = LINKS + 3;
+    let removes = LINKS + 2;
+    let fsyncs = LINKS / 16 + 2;
+    println!("setup creates={creates} truncates=1 writes=1 fsyncs={fsyncs} snapshots=1 removes={removes} total={}",
+        creates + removes + fsyncs + 3);
+    let before = fs.statfs().unwrap().free_blocks;
+    snapshot(fs.as_ref(), &dir, SNAPSHOT_DELETE);
+    let queued = dead(fs.as_ref(), &dir);
+    assert!(queued > 0);
+    // Deletion queues the tree root first; shutdown must not consume it.
+    fs.shutdown("snapshot-case", u64::MAX).unwrap();
+    let dir_ino = dir.ino;
+    drop((dir, fs));
+    let fs = mount();
+    let dir = fs.open(dir_ino).unwrap();
+    let recovered = dead(fs.as_ref(), &dir);
+    assert!(recovered > 0);
+    assert_eq!(recovered, queued);
+    marker_commit(fs.as_ref(), &dir, 0);
+    let frontier = dead(fs.as_ref(), &dir);
+    println!("delete queued={queued} remounted={recovered} after_first_resumed_commit={frontier}");
+    assert!(frontier > 16, "setup did not leave more than a reaper budget of exclusive DEAD nodes");
+    wait(&fs, &dir);
+    assert_eq!(dead(fs.as_ref(), &dir), 0);
+    for byte in 1..3 { marker_commit(fs.as_ref(), &dir, byte); }
+    let after = fs.statfs().unwrap().free_blocks;
+    println!("resumed free_before={before} free_after={after} delta={}", after as i64 - before as i64);
+    assert!(after >= before + (BYTES / 4096) as u64);
+    assert_eq!(fs.lookup(dir.ino, b"files"), Err(crate::errno::Errno(crate::syscall_errno::ENOENT)));
 }
