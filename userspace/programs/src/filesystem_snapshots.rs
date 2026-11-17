@@ -69,6 +69,7 @@ struct Scratch {
     selected_mounted: bool,
     root_created: bool,
     work_created: bool,
+    cleanup_started: bool,
 }
 
 impl Scratch {
@@ -87,6 +88,7 @@ impl Scratch {
             selected_mounted: false,
             root_created: false,
             work_created: false,
+            cleanup_started: false,
         };
         io(fs::create_dir(&scratch.live))?;
         io(fs::create_dir(&scratch.selected))?;
@@ -190,37 +192,58 @@ impl Scratch {
     }
 
     fn finish(&mut self) -> Result<(), String> {
+        self.cleanup_started = true;
+        let mut errors = Vec::new();
         if self.selected_mounted {
-            self.detach_selected()?;
+            if let Err(error) = self.detach_selected() {
+                errors.push(error);
+            }
         }
-        if self.root_created || self.work_created {
-            if !self.live_mounted {
-                self.attach_live(0)?;
+        // Namespace cleanup may fail too. Keep unmount outside this fallible
+        // phase so an assertion or cleanup error cannot bypass detach.
+        let namespace = (|| -> Result<(), String> {
+            if self.root_created || self.work_created {
+                if case_ms_left() < 1200 {
+                    return Err("cleanup budget exhausted before namespace removal".into());
+                }
+                if !self.live_mounted {
+                    self.attach_live(0)?;
+                }
+                if self.root_created {
+                    self.delete()?;
+                }
+                command("wait", None, &self.live)?;
+                if self.work_created {
+                    io(fs::remove_dir_all(self.work()))?;
+                    self.work_created = false;
+                }
             }
-            if self.root_created {
-                self.delete()?;
-            }
-            command("wait", None, &self.live)?;
-            if self.work_created {
-                io(fs::remove_dir_all(self.work()))?;
-                self.work_created = false;
-            }
+            Ok(())
+        })();
+        if let Err(error) = namespace {
+            errors.push(error);
         }
         if self.live_mounted {
-            self.detach_live()?;
+            if let Err(error) = self.detach_live() {
+                errors.push(error);
+            }
         }
         for path in [&self.selected, &self.live, &self.base] {
             if path.exists() {
-                io(fs::remove_dir(path))?;
+                if let Err(error) = io(fs::remove_dir(path)) {
+                    errors.push(error);
+                }
             }
         }
-        Ok(())
+        if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
     }
 }
 
 impl Drop for Scratch {
     fn drop(&mut self) {
-        let _ = self.finish();
+        if !self.cleanup_started {
+            let _ = self.finish();
+        }
     }
 }
 
@@ -249,17 +272,17 @@ fn stats(path: &Path) -> Result<sysfs::Statfs, String> {
     sysfs::fstatfs(Fd::from_raw(file.as_raw_fd() as u64)).map_err(|error| error.to_string())
 }
 
-fn regain(scratch: &Scratch, before: u64, blocks: u64, first_marker: u8) -> CaseResult {
-    let mut after = stats(&scratch.work())?.f_bfree;
+fn marker_commits(scratch: &Scratch, first_marker: u8) -> Result<u64, String> {
     // Coordinator E24 ledger 445: a changed marker plus fsync advances the
     // filesystem generation; snapshot wait alone does not drain quarantine.
     for byte in first_marker..3u8 {
-        if after >= before + blocks {
-            break;
-        }
         write_synced(&scratch.work().join("commit-marker"), &[byte])?;
-        after = stats(&scratch.work())?.f_bfree;
     }
+    Ok(stats(&scratch.work())?.f_bfree)
+}
+
+fn regain(scratch: &Scratch, before: u64, blocks: u64, first_marker: u8) -> CaseResult {
+    let after = marker_commits(scratch, first_marker)?;
     value("free-before-delete", before as i64, "", None);
     value("free-after-delete", after as i64, "", None);
     value("file-blocks", blocks as i64, "", None);
@@ -364,7 +387,9 @@ pub fn delete_returns_space() -> CaseResult {
         let blocks = metadata.blocks() / 8;
         scratch.create("create")?;
         write_synced(&path, &vec![0xa7; BYTES])?;
-        let before = stats(&scratch.work())?.f_bfree;
+        // Coordinator E24 ledger 450: measure both sides after the same marker
+        // routine, including its data allocation and COW quarantine.
+        let before = marker_commits(scratch, 0)?;
         scratch.delete()?;
         command("wait", None, &scratch.work())?;
         check(
@@ -383,14 +408,23 @@ pub fn delete_resumes_after_remount() -> CaseResult {
     on_scratch(|scratch| {
         let files = scratch.work().join("files");
         io(fs::create_dir(&files))?;
-        // Long names produce enough independent FS leaves to exceed the
-        // reaper's 16-node commit budget (txn.rs::REAP_PER_COMMIT).
-        const FILES: usize = 512;
-        for index in 0..FILES {
-            let path = files.join(format!("file-{index:04}-{}", "x".repeat(220)));
-            io(fs::write(path, [0x63; 4096]))?;
+        // Long inline targets fill FS leaves without a data write per entry.
+        // The production-VFS host check leaves 19 DEAD nodes after the first
+        // resumed commit, beyond txn.rs::REAP_PER_COMMIT's 16-node budget.
+        const LINKS: usize = 68;
+        const BYTES: usize = 2 * 1024 * 1024;
+        let target = "x".repeat(4095);
+        for index in 0..LINKS {
+            check(case_ms_left() >= 1500, "snapshot setup exhausted cleanup budget")?;
+            std::os::unix::fs::symlink(&target, files.join(format!("link-{index:02}")))
+                .map_err(|error| error.to_string())?;
+            // Publish the metadata grants instead of retaining the whole
+            // setup's reservations until its final fsync.
+            if (index + 1) % 16 == 0 {
+                io(io(File::open(&files))?.sync_all())?;
+            }
         }
-        io(io(File::open(&files))?.sync_all())?;
+        write_synced(&files.join("data"), &vec![0x63; BYTES])?;
         scratch.create("create")?;
         io(fs::remove_dir_all(&files))?;
         io(io(File::open(scratch.work()))?.sync_all())?;
@@ -424,7 +458,7 @@ pub fn delete_resumes_after_remount() -> CaseResult {
             "resumed snapshot wait left DEAD work",
         )?;
         // One marker commit above leaves two of the ruling's three commits.
-        regain(scratch, before, FILES as u64, 1)?;
+        regain(scratch, before, (BYTES / 4096) as u64, 1)?;
         check(
             !scratch.work().join("files").exists(),
             "deleted live directory returned after remount",
