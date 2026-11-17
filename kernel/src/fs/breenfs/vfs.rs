@@ -762,8 +762,19 @@ impl<W: Wait + 'static> BreenFs<W> {
         if req.clear_setid {
             inode.mode &= !content_privilege(inode.mode);
         }
-        let result = state.files.put_inode(node.ino, inode);
-        state.edited(result)?;
+        match state.files.put_inode(node.ino, inode) {
+            Err(error) => state.edited::<()>(Err(error))?,
+            Ok(()) => {
+                // This data write changes one inode. Keep its known result
+                // instead of rereading the unrelated live VNodes (#3040).
+                state.inodes.entries.fill(None);
+                state.inodes.entries[0] = Some((node.ino, inode));
+                state.inodes.next = 1;
+                node.size.store(inode.size, Ordering::Release);
+                *node.times.lock() = attributes(node.ino, inode)?.times;
+                state.signal.wake();
+            }
+        }
         Ok(WriteResult {
             offset,
             bytes: length,
