@@ -408,3 +408,111 @@ impl FillDelete {
         };
     }
 }
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use crate::{recording::RecordingDevice, WriterAdapter};
+    use alloc::sync::Arc;
+    use std::time::Instant;
+
+    #[test]
+    fn snapshot_seed_matches_all_live_roots() {
+        let started = Instant::now();
+        let seed = snapshot_seed(0x2414);
+        let operations: Vec<_> = Stream::new(seed).take(32).collect();
+        assert_eq!(operations, Stream::new(seed).take(32).collect::<Vec<_>>());
+        assert!(operations.iter().any(|op| matches!(
+            op.action,
+            Action::Snapshot {
+                read_only: true,
+                ..
+            }
+        )));
+        assert!(operations.iter().any(|op| matches!(
+            op.action,
+            Action::Snapshot {
+                read_only: false,
+                ..
+            }
+        )));
+        assert!(operations
+            .iter()
+            .any(|op| matches!(op.action, Action::Clone { .. })));
+        assert!(operations
+            .iter()
+            .any(|op| matches!(op.action, Action::DeleteSnapshot { .. })));
+        let device = Arc::new(RecordingDevice::new(crate::test_image::image()).unwrap());
+        let mut writer = WriterAdapter::new(device.clone()).unwrap();
+        let mut model = Model::new();
+        let mut frozen = None;
+        for (index, op) in operations.iter().enumerate() {
+            assert_eq!(writer.execute(op), model.execute(op), "op={index}: {op:?}");
+            assert!(
+                compare(&model, &writer).unwrap().is_empty(),
+                "op={index}: {op:?}"
+            );
+            let roots = writer.roots().unwrap();
+            if index == 14 {
+                frozen = Some(roots[b"frozen".as_slice()].state.clone());
+            }
+            if index == 17 {
+                let frozen = frozen.as_ref().unwrap();
+                assert_eq!(&roots[b"frozen".as_slice()].state, frozen);
+                assert_eq!(&roots[b"clone".as_slice()].state, frozen);
+                assert_eq!(&roots[b"writable".as_slice()].state, frozen);
+                assert_ne!(&roots[b"default".as_slice()].state, frozen);
+                for fs in [&mut model as &mut dyn Fs, &mut writer as &mut dyn Fs] {
+                    fs.select_root(b"clone").unwrap();
+                    fs.execute(&Operation {
+                        at: op.at,
+                        action: Action::Write {
+                            ino: 16,
+                            offset: 0,
+                            bytes: b"clone diverges".to_vec(),
+                        },
+                    })
+                    .unwrap();
+                    fs.execute(&Operation {
+                        at: op.at,
+                        action: Action::Create {
+                            dir: ROOT,
+                            name: b"clone-only".to_vec(),
+                            mode: 0o600,
+                        },
+                    })
+                    .unwrap();
+                    fs.select_root(b"frozen").unwrap();
+                    assert_eq!(
+                        fs.execute(&Operation {
+                            at: op.at,
+                            action: Action::Write {
+                                ino: 16,
+                                offset: 0,
+                                bytes: b"refused".to_vec(),
+                            }
+                        }),
+                        Err(Errno::EROFS.into())
+                    );
+                    fs.select_root(b"default").unwrap();
+                }
+                assert!(compare(&model, &writer).unwrap().is_empty());
+                let roots = writer.roots().unwrap();
+                assert_ne!(
+                    roots[b"clone".as_slice()].state,
+                    roots[b"default".as_slice()].state
+                );
+                assert_eq!(&roots[b"frozen".as_slice()].state, frozen);
+                assert_eq!(&roots[b"writable".as_slice()].state, frozen);
+            }
+        }
+        let remount = Operation {
+            at: Time::default(),
+            action: Action::Remount,
+        };
+        assert_eq!(writer.execute(&remount), model.execute(&remount));
+        assert!(compare(&model, &writer).unwrap().is_empty());
+        crate::test_image::check(&device.durable_image(), "snapshot-stream");
+        assert!(started.elapsed().as_secs_f64() < 60.0);
+    }
+}

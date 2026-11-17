@@ -533,6 +533,103 @@ mod tests {
     use super::*;
 
     #[test]
+    fn snapshot_crash_images_sample_matches_acknowledged_roots() {
+        use crate::stream::snapshot_seed;
+        use std::{
+            fs::OpenOptions,
+            io::{Seek, SeekFrom, Write},
+            process::Command,
+            time::Instant,
+        };
+        let started = Instant::now();
+        let seed = snapshot_seed(0x2414);
+        let initial = crate::test_image::image();
+        let recorded = record(initial, seed, Stream::new(seed).take(24).enumerate(), 24).unwrap();
+        // Creation, the last deletion and successive reaper publications have
+        // their own data and superblock flush windows.
+        for operation in [12, 20, 21, 22] {
+            assert_eq!(
+                recorded
+                    .windows
+                    .iter()
+                    .filter(|w| w.operation == operation)
+                    .count(),
+                2
+            );
+        }
+        assert!(recorded
+            .snapshots
+            .values()
+            .any(|roots| roots.contains_key(b"frozen".as_slice())));
+        assert!(!recorded
+            .snapshots
+            .last_key_value()
+            .unwrap()
+            .1
+            .contains_key(b"frozen".as_slice()));
+        let path = std::env::temp_dir().join(alloc::format!(
+            "breenfs-snapshot-crash-{}.img",
+            std::process::id()
+        ));
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let mut checks = 0;
+        let mut mid_reap = false;
+        for (boundary, window) in recorded.windows.iter().enumerate() {
+            let selections =
+                subsets(window.writes.len(), seed.wrapping_add(boundary as u64)).unwrap();
+            for (case, mask) in selections.iter().enumerate() {
+                if !Masks::Representative.keeps(window.writes.len(), case) {
+                    continue;
+                }
+                validate(&recorded, boundary, case, mask, None, &mut |image| {
+                    file.set_len(0).unwrap();
+                    file.set_len(image.sector_count * SECTOR_SIZE as u64)
+                        .unwrap();
+                    for (&sector, bytes) in &image.sectors {
+                        file.seek(SeekFrom::Start(sector * SECTOR_SIZE as u64))
+                            .unwrap();
+                        file.write_all(bytes).unwrap();
+                    }
+                    file.flush().unwrap();
+                    let output = Command::new(env!("CARGO_BIN_FILE_BREENFS_breenfs-check"))
+                        .arg("--full")
+                        .arg(&path)
+                        .output()
+                        .unwrap();
+                    assert_eq!(
+                        output.status.code(),
+                        Some(0),
+                        "boundary={boundary} image={case}: {output:?}"
+                    );
+                    let dev = MemoryDevice(Mutex::new(image.clone()));
+                    let sb = crate::recover::recover(&dev, false).unwrap();
+                    let dead = crate::recover::space_items(&crate::commit::DeviceStore(&dev), &sb)
+                        .unwrap()
+                        .iter()
+                        .filter(|(key, _)| key.item_type == crate::format::DEAD)
+                        .count();
+                    mid_reap |= window.operation == 21 && dead > 1;
+                    checks += 1;
+                    Ok(())
+                })
+                .unwrap();
+            }
+        }
+        assert!(mid_reap, "sample must retain a committed reaper frontier");
+        assert!(checks > recorded.windows.len());
+        std::fs::remove_file(path).unwrap();
+        std::eprintln!(
+            "snapshot crash sample: {checks} checked images in {:?}",
+            started.elapsed()
+        );
+        assert!(started.elapsed().as_secs_f64() < 60.0);
+    }
+
+    #[test]
     fn seed_1_garbage_tail_in_unpublished_ring_slots() {
         // Minimized from stream seed 1, boundary 1, mask 0 (no sector
         // selected): A2/B2 have a zero prefix and seeded garbage tails.
