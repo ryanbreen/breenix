@@ -140,3 +140,6 @@ mod snapshot_mount;
 
 #[path = "../tests/snapshot_ioctl.rs"]
 mod snapshot_ioctl;
+
+#[path = "../tests/snapshot_case_setup.rs"]
+mod snapshot_case_setup;
