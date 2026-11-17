@@ -69,6 +69,31 @@ def root_record(boot_id, size, digest):
     return line + bytes(SECTOR - len(line))
 
 
+def newest_breenfs_ring_a(handle, size):
+    """Identify the newest structurally valid ring A superblock."""
+    valid = []
+    for slot in range(4):
+        handle.seek((16 + slot) * 4096)
+        data = handle.read(4096)
+        if len(data) != 4096 or data[:8] != b'BREENFSS':
+            continue
+        crc = 0xffffffff
+        for byte in data[12:]:
+            crc ^= byte
+            for _ in range(8):
+                crc = (crc >> 1) ^ (0x82f63b78 if crc & 1 else 0)
+        generation = struct.unpack_from('<Q', data, 32)[0]
+        if ((crc ^ 0xffffffff) != struct.unpack_from('<I', data, 8)[0]
+                or struct.unpack_from('<I', data, 12)[0] != 1
+                or not generation or generation % 4 != slot or data[40:42] != bytes((0, slot))
+                or struct.unpack_from('<II', data, 44) != (4096, 16384)
+                or not 24 <= struct.unpack_from('<Q', data, 56)[0] <= size // 4096
+                or struct.unpack_from('<Q', data, 80)[0] & ~1):
+            continue
+        valid.append(generation)
+    return max(valid, default=None)
+
+
 def write_install_record(image, boot_id, partition=None):
     """Put the install request in sector 0 and return what the kernel will write to the disk."""
     record = install_record(boot_id, partition)
@@ -76,8 +101,9 @@ def write_install_record(image, boot_id, partition=None):
         first = handle.read(SECTOR)
         handle.seek(1024 + 56)
         magic = handle.read(2)
-        if len(first) != SECTOR or any(first) or magic != b'\x53\xef':
-            raise ValueError('the root image has no unused first sector before its ext2 superblock')
+        breenfs = newest_breenfs_ring_a(handle, os.fstat(handle.fileno()).st_size)
+        if len(first) != SECTOR or any(first) or (magic != b'\x53\xef' and breenfs is None):
+            raise ValueError('the root image has no unused first sector before its filesystem superblock')
         handle.seek(0)
         handle.write(record)
     with open(image, 'rb') as handle:
@@ -93,6 +119,41 @@ def write_install_record(image, boot_id, partition=None):
     return {'installedBy': boot_id, 'lba': 0, 'bytes': size, 'sha256AfterRecord': digest,
             **({'partition': partition} if partition else {}),
             'rootRecordSha256': hashlib.sha256(root_record(boot_id, size, digest)).hexdigest()}
+
+
+def convert_breenfs(image, tools_dir, debugfs):
+    """Convert the verified ext2 tree without requiring cargo or a container."""
+    helper = tools_dir / 'ext2-owners.py'
+    if not helper.is_file():
+        helper = Path(__file__).resolve().parents[1] / 'ext2-owners.py'
+    with tempfile.TemporaryDirectory(prefix='metal-breenfs-') as temporary:
+        work = Path(temporary)
+        tree = work / 'tree'
+        tree.mkdir()
+        result = subprocess.run([debugfs, '-R', f'rdump / {tree}', str(image)],
+                                check=True, capture_output=True)
+        for line in result.stderr.decode(errors='replace').splitlines():
+            if not re.match(r'^(debugfs [0-9]|(?:rdump|dump_file): Operation not permitted while changing ownership of )', line):
+                raise ValueError('debugfs rdump failed: ' + line)
+        env = dict(os.environ, PATH=str(Path(debugfs).parent) + os.pathsep + os.environ.get('PATH', ''))
+        owners = work / 'owners'
+        with owners.open('wb') as output:
+            subprocess.run([sys.executable, str(helper), '--list', str(image)], check=True, stdout=output, env=env)
+        subprocess.run([sys.executable, str(helper), '--restore-links', str(image), str(tree)], check=True, env=env)
+        converted = work / 'root.img'
+        result = subprocess.run([str(tools_dir / 'breenfs-mkfs'), '--populate', str(tree), '--owners', str(owners),
+                                 '--extents', '--size', str(image.stat().st_size), str(converted)],
+                                check=True, capture_output=True)
+        extents = result.stdout.splitlines()
+        if not extents or any(not re.fullmatch(rb'[0-9]+ [0-9]+', line) for line in extents):
+            raise ValueError('invalid breenfs extent list')
+        subprocess.run([str(tools_dir / 'breenfs-check'), '--full', str(converted)], check=True, capture_output=True)
+        digest = hashlib.sha256()
+        with converted.open('rb') as source:
+            while chunk := source.read(1 << 20):
+                digest.update(chunk)
+        shutil.copyfile(converted, image)
+        return {'extentCount': len(extents), 'breenfsSha256': digest.hexdigest()}
 
 
 def console_identity(site):
@@ -214,8 +275,10 @@ def console_shadow(site, hasher, image_shadow='', account='root'):
 
 
 def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None, idle_minutes=None, replug=False, xhci_fault=None,
-               install_partition=None, operator=None, watchdog_fault=None, power_token=None, gt710_upload=None, screen_proof=False, screen_known=None, smb_config=None, case=None):
+               install_partition=None, operator=None, watchdog_fault=None, power_token=None, gt710_upload=None, screen_proof=False, screen_known=None, smb_config=None, case=None, root_fs='ext2', tools_dir=None):
     """`operator`, the operator file (operator_account), is written for install-persistent's userland only."""
+    if root_fs not in ('ext2', 'breenfs') or (root_fs == 'breenfs' and tools_dir is None):
+        raise ValueError('breenfs staging needs a tools directory')
     if watchdog_fault not in (None, 'feeder-hang', 'health-hang') or (watchdog_fault and mode != 'default'):
         raise ValueError('invalid watchdog fault-test target')
     if xhci_fault is not None and (xhci_fault not in ('reset-device', 'short-read')
@@ -266,7 +329,10 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
     writer_hash = hashlib.sha256(writer.read_bytes()).hexdigest()
     target = first if mode == 'suite' else '--' + staged
     try:
-        subprocess.run(['bash', str(writer), str(image), target], check=True, capture_output=True,
+        writer_args = ['bash', str(writer), str(image), target]
+        if root_fs == 'breenfs':
+            writer_args += ['', '', '', '', 'breenfs']
+        subprocess.run(writer_args, check=True, capture_output=True,
                        env=dict(os.environ, BREENIX_REQUIRE_DEBUGFS='1',
                                 BREENIX_CONSOLE_IDLE_MINUTES='' if idle_minutes is None else str(idle_minutes),
                                 BREENIX_CONSOLE_REPLUG='1' if replug else '0',
@@ -465,6 +531,8 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
             if not installed.is_file() or installed.read_bytes()[:4] != b'\x7fELF':
                 raise ValueError('RAM disk has no selected PID 1 ELF')
     facts = {'mode': mode, 'suite': suite or None, 'siteFields': len(lines), 'writerSha256': writer_hash}
+    if root_fs == 'breenfs':
+        facts.update(convert_breenfs(image, Path(tools_dir), debugfs))
     if operator is not None:
         facts['operatorAccountSha256'] = hashlib.sha256(operator.encode()).hexdigest()
     if mode == 'console':

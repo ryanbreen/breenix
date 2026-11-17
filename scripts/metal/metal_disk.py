@@ -49,7 +49,7 @@ def config_2(action, size, partition, expected, root, url=''):
 
 
 def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite=None, idle_minutes=None, replug=False,
-          the_layout=None, operator=None, no_ssh=False, screen_proof=False, screen_known=None, case=None):
+          the_layout=None, operator=None, no_ssh=False, screen_proof=False, screen_known=None, case=None, root_fs='ext2', tools_dir=None):
     """Reset the writable root for each boot, including unchanged userspace builds. `the_layout` is the layout an
     install boot's request writes before the stub stages this root; otherwise the recorded one, if any."""
     the_layout = the_layout or metal_persist.layout()
@@ -62,16 +62,15 @@ def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite
     identity = dict(ext2=build['ext2']['sha256'], bootUrl=site.get('BOOT_URL'), console=metal_root.console_identity(site),
                     site={k: v for k, v in site.items() if k.startswith('GUEST_')},
                     writer=metal_image.sha256(writer))
+    if root_fs != 'ext2':
+        identity['rootFs'] = root_fs
     key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
     image = inputs / 'ext2.img'
     # A reused mutable root can preserve the exact bytes diskChecks must check
     # this boot wrote, as well as consume fixtures needed by other suites.
     native_suite = mode == 'suite' and bool({'console', 'gpu', 'breengel', 'window-manager', 'ui-testing', 'gui-apps'} & set((suite or '').split(',')))
     upload = gt710_upload.prepare(directory, boot_id, site, suite=suite) if mode == 'probe' or native_suite else None
-    staged = metal_root.stage_root(image, mode, suite, site, hasher=inputs / 'sha512-crypt', writer=writer,
-                                   idle_minutes=idle_minutes, replug=replug, operator=operator, power_token=m.power_token(),gt710_upload=upload,
-                                   screen_proof=screen_proof, screen_known=screen_known, case=case)
-    if no_ssh:
+    def remove_ssh():
         # Damage only the candidate's private userland before recording its digest.
         # Its kernel, init and console still boot; the previous generation is untouched.
         import subprocess
@@ -80,7 +79,18 @@ def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite
         check = subprocess.run([debugfs, '-R', 'stat /usr/sbin/bsshd', str(image)], check=True, capture_output=True)
         if b'Inode:' in check.stdout or b'File not found' not in check.stderr:
             raise ValueError('SSH fault did not remove the candidate daemon')
+    if no_ssh and root_fs == 'breenfs':
+        remove_ssh()
+    staged = metal_root.stage_root(image, mode, suite, site, hasher=inputs / 'sha512-crypt', writer=writer,
+                                   idle_minutes=idle_minutes, replug=replug, operator=operator, power_token=m.power_token(),gt710_upload=upload,
+                                   screen_proof=screen_proof, screen_known=screen_known, case=case,
+                                   **({'root_fs': root_fs, 'tools_dir': tools_dir} if root_fs != 'ext2' else {}))
+    if no_ssh and root_fs != 'breenfs':
+        remove_ssh()
     facts = metal_root.write_install_record(image, boot_id)
+    for field in ('extentCount', 'breenfsSha256'):
+        if field in staged:
+            facts[field] = staged[field]
     if 'consoleAccount' in staged:
         facts['consoleAccount'] = staged['consoleAccount']
     root = record(facts)
