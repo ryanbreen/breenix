@@ -4,6 +4,20 @@ use super::format::BLOCK_SIZE;
 use crate::{fs::errno::Errno, syscall::errno::ENOMEM};
 use alloc::{collections::BTreeMap, vec::Vec};
 
+#[cfg(test)]
+pub mod measurement {
+    extern crate std;
+    std::thread_local! {
+        static VISITS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+    }
+    pub fn take_visits() -> u64 {
+        VISITS.with(|count| count.replace(0))
+    }
+    pub(super) fn visited() {
+        VISITS.with(|count| count.set(count.get() + 1));
+    }
+}
+
 #[derive(Default)]
 pub struct DirtyPages {
     pages: BTreeMap<u64, Vec<u8>>,
@@ -37,6 +51,8 @@ impl DirtyPages {
                 (Some(&a), None) | (None, Some(&a)) => a,
                 (None, None) => break,
             };
+            #[cfg(test)]
+            measurement::visited();
             if old.peek() == Some(&index) { old.next(); }
             if incoming.peek() == Some(&index) { incoming.next(); }
             if previous != Some(index) || run_pages == 256 {

@@ -274,7 +274,7 @@ mod commit_signal;
 mod mount_lock;
 #[cfg(test)]
 #[path = "../../../kernel/src/fs/breenfs/dirty.rs"]
-mod dirty;
+pub mod dirty;
 #[cfg(test)]
 #[path = "../../../kernel/src/fs/breenfs/vfs.rs"]
 pub mod vfs_adapter;

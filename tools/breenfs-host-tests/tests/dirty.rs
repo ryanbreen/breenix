@@ -68,3 +68,43 @@ fn a_small_append_does_not_rebuild_the_existing_dirty_index() {
     assert_eq!(pages.get(1026), None);
     assert_eq!(pages.get(1027), None);
 }
+
+#[test]
+fn contiguous_reservation_projection_does_not_walk_the_dirty_pages() {
+    const PAGE: usize = format::BLOCK_SIZE;
+    let mut pages = dirty::DirtyPages::default();
+    pages.write(0, &vec![0x5a; 1024 * PAGE], |_, _| unreachable!()).unwrap();
+    dirty::measurement::take_visits();
+    assert_eq!(pages.reservation_runs((1024 * PAGE) as u64, PAGE), (1, 1025, 5));
+    let visits = dirty::measurement::take_visits();
+    assert!(visits <= 2, "sequential projection visited {visits} page indexes");
+
+    // Compare projections with the page/run partition that write_runs uses,
+    // including holes, overlaps, adjacent ranges and the 256-page boundary.
+    for existing in [vec![], vec![(17, 300)], vec![(0, 4), (9, 260)]] {
+        let mut pages = dirty::DirtyPages::default();
+        for &(start, count) in &existing {
+            pages.write(start * PAGE as u64, &vec![0x63; count * PAGE], |_, _| unreachable!()).unwrap();
+        }
+        for (offset, length) in [(0, 0), (0, 1), (16 * PAGE, PAGE), (17 * PAGE + 1, 3 * PAGE),
+            (256 * PAGE, 257 * PAGE), (317 * PAGE, PAGE), (500 * PAGE + 1, PAGE)]
+        {
+            let mut indexes: std::collections::BTreeSet<_> = pages.indexes().collect();
+            let old = indexes.len() as u64;
+            if length != 0 {
+                indexes.extend(offset as u64 / PAGE as u64..((offset + length) as u64).div_ceil(PAGE as u64));
+            }
+            let total = indexes.len() as u64;
+            let mut previous = None;
+            let mut in_run = 0;
+            let mut runs = 0;
+            for index in indexes {
+                if previous != Some(index) || in_run == 256 { runs += 1; in_run = 0; }
+                in_run += 1;
+                previous = Some(index + 1);
+            }
+            assert_eq!(pages.reservation_runs(offset as u64, length), (total - old, total, runs),
+                "existing={existing:?} offset={offset} length={length}");
+        }
+    }
+}
