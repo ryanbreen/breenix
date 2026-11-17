@@ -49,16 +49,22 @@ class DiskTest(existing.StateTest):
                 tools[name] = dict(size=path.stat().st_size, sha256=hashlib.sha256(path.read_bytes()).hexdigest())
             build = dict(commit=d.args.commit, profile='production', features=[], breenfsTools=tools)
             existing.m.write_json(inputs / 'build.json', build)
-            for invalid in (None, 'breenfs-check'):
+            for invalid in ('record', 'entry', 'file', 'size', 'digest'):
                 bad = dict(build)
                 bad['breenfsTools'] = dict(tools)
-                if invalid is None:
+                if invalid == 'record':
+                    del bad['breenfsTools']
+                elif invalid == 'entry':
                     del bad['breenfsTools']['breenfs-mkfs']
+                elif invalid == 'file':
+                    (inputs / 'breenfs-mkfs').unlink()
                 else:
-                    bad['breenfsTools'][invalid] = dict(size=1, sha256='0' * 64)
+                    bad['breenfsTools']['breenfs-check'] = dict(tools['breenfs-check'])
+                    bad['breenfsTools']['breenfs-check'][invalid if invalid == 'size' else 'sha256'] = (1 if invalid == 'size' else '0' * 64)
                 existing.m.write_json(inputs / 'build.json', bad)
                 with self.assertRaisesRegex(existing.boot.Finish, 'breenfs tools'):
                     d.prepare_payload()
+                (inputs / 'breenfs-mkfs').write_bytes(b'breenfs-mkfs')
             existing.m.write_json(inputs / 'build.json', build)
             with patch.object(existing.boot.metal_disk, 'stage', return_value=({}, {})) as stage, \
                  patch.object(existing.boot.metal_image, 'extract_esp', return_value={}), \
@@ -72,6 +78,87 @@ class DiskTest(existing.StateTest):
             shutil.rmtree(d.dir)
             d.create_record()
             self.assertEqual(existing.m.read_json(d.dir / 'run.json')['rootFs'], 'breenfs')
+        finally:
+            fixture.tearDown()
+
+    def test_breenfs_build_records_linux_release_tools_in_both_paths(self):
+        import os
+        import tempfile
+        for local in (False, True):
+            with self.subTest(local=local), tempfile.TemporaryDirectory() as temporary:
+                build = existing.load_script('metal-build')
+                args = existing.SimpleNamespace(id='20261117T000000Z-metal', root=temporary,
+                    sha='a' * 40, stub=temporary, suite='', features='', guard_target='x86-metal', local=local)
+                clone, out, tmp = build.paths(args)
+                out.mkdir(parents=True)
+                for path in (clone / 'tools/breenfs/Cargo.toml', clone / 'testdata/ext2.img',
+                             clone / 'target/release/build/breenix-0/out/breenix-uefi.img',
+                             tmp / 'stub-target' / build.STUB_RELEASE / 'metal-efi-stub.efi',
+                             tmp / 'stub-target' / build.STUB_RELEASE / 'metal-boot-manager.efi'):
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(b'fixture')
+                calls = []
+                names = ('breenfs-mkfs', 'breenfs-check', 'breenfs-extract')
+                def call(command, **options):
+                    if 'breenfs-mkfs' in command:
+                        calls.append((command, options))
+                        self.assertIn('--release', command)
+                        self.assertEqual(command[command.index('--target') + 1], 'x86_64-unknown-linux-gnu')
+                        target = Path(command[command.index('--target-dir') + 1])
+                        for name in names:
+                            self.assertIn(name, command)
+                            binary = target / 'x86_64-unknown-linux-gnu/release' / name
+                            binary.parent.mkdir(parents=True, exist_ok=True)
+                            binary.write_bytes(name.encode())
+                    return 0
+                with (patch.dict(os.environ, CARGO_BUILD_JOBS='4', CARGO_HOME=str(Path(temporary) / 'cargo')),
+                      patch.object(build.subprocess, 'call', side_effect=call),
+                      patch.object(build.subprocess, 'run', return_value=existing.SimpleNamespace(stdout=str(Path(temporary) / 'cargo')))):
+                    self.assertEqual(build.inner(args), 0)
+                self.assertEqual(len(calls), 1)
+                record = json.loads((out / 'build.json').read_text())
+                self.assertEqual(set(record['breenfsTools']), set(names))
+                for name in names:
+                    self.assertEqual((out / name).read_bytes(), name.encode())
+                    self.assertEqual(record['breenfsTools'][name],
+                        dict(size=len(name), sha256=hashlib.sha256(name.encode()).hexdigest()))
+                if local:
+                    linker = Path(calls[0][1]['env']['CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER'])
+                    self.assertIn('x86_64-linux-gnu', linker.read_text())
+
+    def test_breenfs_verdict_retains_tools_at_the_scorers_default_path(self):
+        import os
+        import runpy
+        fixture = existing.DriverTest()
+        fixture.setUp()
+        try:
+            d = fixture.driver
+            d.args.mode, d.args.suite, d.args.root_fs = 'suite', 'files-io', 'breenfs'
+            retained = d.dir / 'breenfs-tools'
+            retained.mkdir()
+            for name in ('breenfs-extract', 'breenfs-check'):
+                (retained / name).write_text('#!' + sys.executable + '\nprint("fixture")\n')
+            definition = d.dir / 'definition'
+            repo = Path(__file__).resolve().parents[1]
+            for name in ('scripts/suite-verdict.py', 'docs/boot-path.json',
+                         'docs/suites/files-io.json', 'libs/libbreenix/src/suite_memory.rs'):
+                path = definition / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes((repo / name).read_bytes())
+            (d.dir / 'serial.txt').write_text('serial')
+            real_run = existing.subprocess.run
+            def score(command, **options):
+                self.assertEqual(options['env'], {'PATH': os.defpath, 'LANG': 'C.UTF-8'})
+                binding = next(x for x in command if x.startswith('--property=BindReadOnlyPaths='))
+                root = Path(binding.split('=', 2)[2].split(':')[0])
+                scorer = runpy.run_path(str(root / 'scripts/suite-verdict.py'))
+                for name in ('breenfs-extract', 'breenfs-check'):
+                    tool = scorer['REPO'] / 'tools/breenfs/target/release' / name
+                    result = real_run([str(tool)], capture_output=True, text=True, env=options['env'])
+                    self.assertEqual((result.returncode, result.stdout), (0, 'fixture\n'))
+                return existing.SimpleNamespace(returncode=0, stdout='pass', stderr='')
+            with patch.object(existing.boot.subprocess, 'run', side_effect=score):
+                self.assertTrue(d.score_suite())
         finally:
             fixture.tearDown()
 
