@@ -986,7 +986,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         Ok((&mut self.txn, &mut self.data))
     }
 }
-const ORPHAN_OBJECT: u64 = 0xffff_ffff_ffff_ff00;
+pub(super) const ORPHAN_OBJECT: u64 = 0xffff_ffff_ffff_ff00;
 fn valid_name(name: &[u8]) -> Result<(), Error> {
     if name.is_empty() {
         return Err(Error::ENOENT);
