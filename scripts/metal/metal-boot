@@ -379,6 +379,8 @@ class Driver:
                'evidenceEligible': not fault and (persistent(self.args) or not session(self.args)) and getattr(self.args, 'case', None) is None}
         if getattr(self.args, 'case', None) is not None:
             run['onlyCase'] = self.args.case
+        if getattr(self.args, 'root_fs', None) is not None:
+            run['rootFs'] = self.args.root_fs
         if getattr(self.args, 'screen_proof', False):
             run['screenProof'] = True
         if getattr(self.args, 'screen_known_json', None) is not None:
@@ -564,6 +566,28 @@ class Driver:
             m.write_json(self.dir / 'metal-run.json', run)
         if build.get('commit') != self.args.commit or build.get('profile') != profile or build.get('features') != features:
             raise Finish(m.EXIT_CANCELLED, f'build provenance differs from the requested {profile} commit')
+        root_fs = getattr(self.args, 'root_fs', None)
+        tools = build.get('breenfsTools')
+        if root_fs == 'breenfs' or tools is not None:
+            names = ('breenfs-mkfs', 'breenfs-check', 'breenfs-extract')
+            if not isinstance(tools, dict):
+                raise Finish(m.EXIT_CANCELLED, 'breenfs tools are missing from the build record')
+            for name in names:
+                path = inputs / name
+                facts = tools.get(name)
+                if (not isinstance(facts, dict) or not path.is_file() or facts.get('size') != path.stat().st_size
+                        or facts.get('sha256') != metal_image.sha256(path)):
+                    raise Finish(m.EXIT_CANCELLED, 'breenfs tools differ from the build record: ' + name)
+            retained = self.dir / 'breenfs-tools'
+            retained.mkdir(exist_ok=True)
+            for name in names:
+                shutil.copyfile(inputs / name, retained / name)
+                (retained / name).chmod(0o755)
+            if root_fs == 'breenfs':
+                helper = Path(__file__).with_name('ext2-owners.py')
+                if not helper.is_file():
+                    helper = Path(__file__).resolve().parents[1] / 'ext2-owners.py'
+                shutil.copyfile(helper, inputs / 'ext2-owners.py')
         tests = inputs / 'test-binaries.img'
         if self.args.mode == 'tests' and (not tests.is_file() or build.get('testBinaries', {}).get('sha256') != metal_image.sha256(tests)):
             raise Finish(m.EXIT_CANCELLED, 'the test-binary disk differs from its build record')
@@ -617,7 +641,8 @@ class Driver:
                 idle_minutes=self.args.idle_minutes if session(self.args) else None,
                 replug=self.args.mode == 'console' and not session(self.args),
                 screen_proof=getattr(self.args, 'screen_proof', False),
-                screen_known=getattr(self.args, 'screen_known_json', None), case=getattr(self.args, 'case', None))
+                screen_known=getattr(self.args, 'screen_known_json', None), case=getattr(self.args, 'case', None),
+                **({'root_fs': root_fs, 'tools_dir': inputs} if root_fs is not None else {}))
             self.delivery['diskRoot'] = facts
             files.update(suite_files)
             if self.args.mode == 'suite' and m.read_json(manifest).get('diskChecks'):
@@ -1014,6 +1039,13 @@ class Driver:
             if disk is not None:
                 shutil.copyfile(disk, root / 'disk.img')
                 (root / 'disk.img').chmod(0o644)
+            retained = self.dir / 'breenfs-tools'
+            if retained.is_dir():
+                tools = root / 'tools/breenfs/target/release'
+                tools.mkdir(parents=True)
+                for name in ('breenfs-extract', 'breenfs-check'):
+                    shutil.copyfile(retained / name, tools / name)
+                    (tools / name).chmod(0o755)
             sandbox = Path('/run/metal-verdict-input')
             command = ['systemd-run', '--quiet', '--wait', '--pipe', '--collect',
                        '--property=DynamicUser=yes', '--property=PrivateTmp=yes', '--property=PrivateNetwork=yes',
@@ -2413,6 +2445,7 @@ def main():
         p.add_argument('--screen-proof', action='store_true', help='enable screen proof checkpoints')
         p.add_argument('--idle-minutes', type=int, default=30, help='session input idle limit (1 through 240; default 30)')
         p.add_argument('--suite')
+        p.add_argument('--root-fs', choices=('breenfs',), help='opt in to a BreenFS test root with --disk root')
         p.add_argument('--case')
         p.add_argument('--kernel-command-line')
         p.add_argument('--gt710-category', choices=('core', 'panic', 'clocks'))
@@ -2454,6 +2487,9 @@ def main():
     if args.command in ('launch', 'run'):
         if args.gt710_category and args.mode == 'default':
             args.mode = 'probe'
+        if args.root_fs is not None and (
+                args.disk != 'root' or args.payload != 'image' or args.mode not in ('default', 'suite', 'console')):
+            parser.error('--root-fs breenfs needs --disk root and an image boot in default, suite or console mode')
         if args.payload == 'disk-readback' and not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.source_boot or ''):
             parser.error('disk-readback needs --source-boot ID')
         try:
