@@ -1823,10 +1823,9 @@ pub fn proc_console_check() -> Result<String, i32> {
     Ok(text)
 }
 
-/// `/proc/fbcon/check`, as Metal 4's x86-metal boot path reads it: whether the
+/// `/proc/fbcon/check`, shared by x86-64 and ARM64: whether the
 /// screen matches the shadow and the font, the shadow's SHA-256, and the text
 /// rows drawn.
-#[cfg(target_arch = "x86_64")]
 pub fn proc_fbcon_check() -> Result<String, i32> {
     let mut text = String::new();
     match proc_answer()? {

@@ -64,6 +64,13 @@ def stage(image, account):
             debug(f'set_inode_field {path} gid 0', True)
             if debug('cat ' + path) != content:
                 raise ValueError('VM site image readback failed: ' + path)
+    # A RAW generation starts from the test image; its root keys are not site state.
+    for path in ('/root/.ssh/authorized_keys', '/root/.ssh/authorized_keys2'):
+        debug('rm ' + path, True)
+        result = subprocess.run(['debugfs', '-R', 'stat ' + path, image],
+                                capture_output=True, text=True, check=True)
+        if 'Inode:' in result.stdout or 'File not found' not in result.stderr:
+            raise ValueError('VM test root key removal failed: ' + path)
 
 
 if __name__ == '__main__':

@@ -168,13 +168,10 @@ pub enum ProcEntryType {
     Gt710Drain,
     #[cfg(target_arch="x86_64")]
     Gt710Recovery,
-    /// /proc/fbcon - the x86-64 screen console's directory under the name the
-    /// x86-metal boot path reads
-    #[cfg(target_arch = "x86_64")]
+    /// /proc/fbcon - the screen console directory shared by x86-64 and ARM64
     FbconDir,
     /// /proc/fbcon/check - the screen read back against the console's shadow
     /// and font, and the text rows it shows
-    #[cfg(target_arch = "x86_64")]
     FbconCheck,
     /// /proc/[pid] - per-process directory (dynamic, not registered)
     PidDir(u64),
@@ -272,9 +269,7 @@ impl ProcEntryType {
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710Recovery => "gt710-recovery",
             ProcEntryType::ConsoleCheck => "check",
-            #[cfg(target_arch = "x86_64")]
             ProcEntryType::FbconDir => "fbcon",
-            #[cfg(target_arch = "x86_64")]
             ProcEntryType::FbconCheck => "check",
             ProcEntryType::PidDir(_) => "pid",
             ProcEntryType::PidStatus(_) => "status",
@@ -362,9 +357,7 @@ impl ProcEntryType {
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710Recovery => "/proc/gt710-recovery",
             ProcEntryType::ConsoleCheck => "/proc/console/check",
-            #[cfg(target_arch = "x86_64")]
             ProcEntryType::FbconDir => "/proc/fbcon",
-            #[cfg(target_arch = "x86_64")]
             ProcEntryType::FbconCheck => "/proc/fbcon/check",
             // Dynamic entries don't have static paths
             ProcEntryType::PidDir(_) => "/proc/<pid>",
@@ -433,9 +426,7 @@ impl ProcEntryType {
             ProcEntryType::NetDir => 400,
             ProcEntryType::NetPnp => 401,
             ProcEntryType::NetTcp => 402,
-            #[cfg(target_arch = "x86_64")]
             ProcEntryType::FbconDir => 500,
-            #[cfg(target_arch = "x86_64")]
             ProcEntryType::FbconCheck => 501,
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710Pixels => 507,
@@ -479,7 +470,6 @@ impl ProcEntryType {
         if matches!(self, ProcEntryType::ConsoleDir) {
             return true;
         }
-        #[cfg(target_arch = "x86_64")]
         if matches!(self, ProcEntryType::FbconDir) {
             return true;
         }
@@ -628,14 +618,14 @@ pub fn init() {
     // Register the screen console's directories and entries
     procfs.entries.push(ProcEntry::new(ProcEntryType::ConsoleDir));
     procfs.entries.push(ProcEntry::new(ProcEntryType::ConsoleCheck));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::FbconDir));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::FbconCheck));
     #[cfg(target_arch = "x86_64")]
     {
         procfs.entries.push(ProcEntry::new(ProcEntryType::Gt710Ce));
         procfs.entries.push(ProcEntry::new(ProcEntryType::Gt710Wait));
         procfs.entries.push(ProcEntry::new(ProcEntryType::Gt710Drain));
         procfs.entries.push(ProcEntry::new(ProcEntryType::Gt710Recovery));
-        procfs.entries.push(ProcEntry::new(ProcEntryType::FbconDir));
-        procfs.entries.push(ProcEntry::new(ProcEntryType::FbconCheck));
     }
 
     // Register /proc/trace directory and entries
@@ -890,7 +880,6 @@ pub fn list_xhci_entries() -> Vec<String> {
 /// Whether `entry` lives inside a screen console directory rather than in
 /// /proc itself.
 fn is_console_file(entry: &ProcEntryType) -> bool {
-    #[cfg(target_arch = "x86_64")]
     if matches!(entry, ProcEntryType::FbconCheck) {
         return true;
     }
@@ -1078,9 +1067,7 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         #[cfg(target_arch="x86_64")]
         ProcEntryType::Gt710Recovery => require(Operation::Trace).and_then(|()|crate::gk208::proc_ce(3)),
         ProcEntryType::ConsoleCheck => crate::console::proc_console_check().map(String::into_bytes),
-        #[cfg(target_arch = "x86_64")]
         ProcEntryType::FbconDir => text(String::from("check\n")),
-        #[cfg(target_arch = "x86_64")]
         ProcEntryType::FbconCheck => crate::console::proc_fbcon_check().map(String::into_bytes),
         ProcEntryType::BreenixDir => {
             // Directory listing

@@ -32,7 +32,7 @@ if [ -d "$root/usr/local/test" ]; then
 fi
 while read -r kind path mode uid gid; do
     case "$kind" in
-        dir) mkdir -p "$root/$path"; set_owner "$uid:$gid" "$root/$path"; chmod "$mode" "$root/$path" ;;
+        dir) mkdir -p "$root/$path" ;;
     esac
 done < "$table"
 for elf in "$binaries"/*.elf; do
@@ -107,6 +107,8 @@ GROUPS
 chmod 0644 "$root/etc/breenix/test-fixtures"
 while read -r kind path mode uid gid; do
     case "$kind" in
+        # Fixture migration replaces directories; apply metadata to the final inodes.
+        dir) set_owner "$uid:$gid" "$root/$path"; chmod "$mode" "$root/$path" ;;
         file) [ -e "$root/$path" ] || : > "$root/$path"
               set_owner "$uid:$gid" "$root/$path"; chmod "$mode" "$root/$path" ;;
     esac

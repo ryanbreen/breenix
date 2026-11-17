@@ -634,10 +634,67 @@ class ServerTarget(unittest.TestCase):
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
 
+    def test_qemu_operator_dispatch_uses_site_identity_and_runs_all_cases(self):
+        boot, sha = '20261101T120000Z-qemu', 'a' * 40
+        with tempfile.TemporaryDirectory() as scratch:
+            run = Path(scratch)
+            (run / '.ssh').mkdir()
+            (run / '.ssh/key.pub').write_text('ssh-ed25519 fixture')
+            (run / '.ssh/key').touch()
+            (run / 'qemu-profile').write_text('fixture')
+            (run / 'started').write_text('1')
+            site = dict(SERVER_SSH_HOST='127.0.0.1', SERVER_SSH_PORT=2222,
+                        OPERATOR_USER='fixture', OPERATOR_UID='1234', OPERATOR_PASSWORD='password',
+                        OPERATOR_SSH_PUBLIC_KEY='ssh-ed25519 fixture', operatorKeys=['key one', 'key two'],
+                        CONSOLE_USER='root', CONSOLE_PASSWORD='root-password')
+            calls = []
+            class Machine:
+                directory = run
+                def __init__(self, *args): pass
+                def identity(self):
+                    return dict(mode='persistent', bootedCommit=sha, toolsCommit=sha, evidenceEligible=True)
+                def holds_lease(self): return True
+                def read(self, name):
+                    if name.startswith('definition/'):
+                        return (ROOT / name.removeprefix('definition/')).read_text()
+                    return ''
+                def site(self, fields):
+                    assert {'OPERATOR_UID', 'OPERATOR_PASSWORD'} <= set(fields)
+                    return site
+                def console(self, user, password):
+                    calls.append(('console', user, password))
+                    return SimpleNamespace(logout=lambda: None, service_log=lambda _: 'host key')
+                def capture(self): return '', []
+                def write(self, *args): return reply()
+            class Probe:
+                def __init__(self, host, user, identity, directory, port):
+                    calls.append(('probe', host, user, port))
+                    self.transcript = []
+                def run_case(self, name, serial): calls.append(('probe-case', name))
+                def cleanup(self): pass
+            class Operator:
+                def __init__(self, probe, console, own, uid, password, keys):
+                    calls.append(('operator', uid, password, keys))
+                def run_case(self, name): calls.append(('case', name))
+                def cleanup(self): pass
+            argv = ['server-suite', '--target', 'qemu', '--run-dir', str(run),
+                    '--boot', boot, '--sha', sha, '--milestone', 'users/operator-login']
+            with patch.object(sys, 'argv', argv), patch.object(Path, 'home', return_value=run), \
+                 patch.dict(HOST['main'].__globals__, QemuTarget=Machine, Probe=Probe, Operator=Operator,
+                            score=lambda *args: 'PASS'), \
+                 patch.object(HOST['subprocess'], 'run', return_value=reply()):
+                self.assertEqual(HOST['main'](), 0)
+            self.assertIn(('console', site['OPERATOR_USER'], site['OPERATOR_PASSWORD']), calls)
+            self.assertIn(('probe', site['SERVER_SSH_HOST'], site['OPERATOR_USER'], site['SERVER_SSH_PORT']), calls)
+            self.assertIn(('operator', int(site['OPERATOR_UID']), site['OPERATOR_PASSWORD'],
+                           '\n'.join(site['operatorKeys'])), calls)
+            self.assertEqual([call[1] for call in calls if call[0] == 'case'],
+                             [name for name, _ in HOST['OPERATOR']])
+
     def test_qemu_does_not_dispatch_later_milestones_to_metal(self):
         import contextlib
         import io
-        for milestone in ('server/resting-state', 'users/operator-login'):
+        for milestone in ('server/resting-state',):
             argv = ['server-suite', '--target', 'qemu', '--run-dir', '/unused',
                     '--boot', '20261101T120000Z-qemu', '--sha', 'a' * 40,
                     '--milestone', milestone, '--branch', 'server/vm-runner']
@@ -698,7 +755,8 @@ class ServerTarget(unittest.TestCase):
             (run / '.ssh/key').touch()
             site = dict(SERVER_SSH_HOST='127.0.0.1', OPERATOR_USER='fixture',
                         OPERATOR_SSH_PUBLIC_KEY='ssh-ed25519 fixture', CONSOLE_USER='fixture',
-                        CONSOLE_PASSWORD='fixture')
+                        CONSOLE_PASSWORD='fixture', OPERATOR_PASSWORD='fixture',
+                        OPERATOR_UID='1234', operatorKeys=['fixture'])
             class Machine:
                 def __init__(self, *args): self.directory = directory
                 def identity(self): return dict(mode='persistent', bootedCommit=sha, toolsCommit=sha, evidenceEligible=True)
@@ -723,20 +781,22 @@ class ServerTarget(unittest.TestCase):
             env = dict(VIGIL_CLI=str(cli), CALLS=str(calls), VIGIL_BOOT_ID='', VIGIL_TEST_HOME=str(run))
             globals_ = HOST['main'].__globals__
             replacements = dict(QemuTarget=Machine, MetalTarget=Machine, Probe=Stub, ConsoleInput=Stub,
-                                Services=Stub, Logs=Stub, TimeCases=Stub, score=lambda *a: 'PASS',
+                                Services=Stub, Logs=Stub, TimeCases=Stub, Operator=Stub, score=lambda *a: 'PASS',
                                 S27_SUSPENDS_PERSISTENT=False)
             with patch.dict(os.environ, env), patch.dict(globals_, replacements), \
                  patch.object(Path, 'home', return_value=run), contextlib.redirect_stdout(io.StringIO()):
-                for category in ('ssh-keys', 'services', 'logs', 'time', 'console-input'):
+                for category in ('ssh-keys', 'services', 'logs', 'time', 'console-input', 'operator'):
+                    suite = 'users' if category == 'operator' else 'server'
+                    milestone = 'operator-login' if category == 'operator' else category
                     argv = ['server-suite', '--target', 'qemu', '--run-dir', str(run), '--boot', boot,
-                            '--sha', sha, '--milestone', 'server/' + category]
+                            '--sha', sha, '--milestone', suite + '/' + milestone]
                     with patch.object(sys, 'argv', argv): self.assertEqual(HOST['main'](), 0)
                     rows = [json.loads(row) for row in calls.read_text().splitlines()]
                     args = rows[-1]
-                    self.assertEqual(len(rows), ('ssh-keys', 'services', 'logs', 'time', 'console-input').index(category) + 1)
+                    self.assertEqual(len(rows), ('ssh-keys', 'services', 'logs', 'time', 'console-input', 'operator').index(category) + 1)
                     def arg(name): return args[args.index(name) + 1]
                     self.assertEqual((arg('--arch'), arg('--platform'), arg('--suite'), arg('--profile'),
-                                      arg('--commit'), arg('--started')), ('aarch64', 'qemu', 'server',
+                                      arg('--commit'), arg('--started')), ('aarch64', 'qemu', suite,
                                       'fixture-profile', sha, '1793534400.125'))
                     self.assertEqual(arg('--serial'), str(directory / (category + '-suite.txt')))
                     self.assertEqual(arg('--serial-user'), str(directory / 'serial.txt'))
@@ -747,10 +807,11 @@ class ServerTarget(unittest.TestCase):
                     self.assertGreaterEqual(float(arg('--ended')), float(arg('--started')))
                     self.assertEqual(arg('--exit-status'), '0')
                     lines = Path(arg('--serial')).read_text().splitlines()
-                    self.assertEqual(lines[0], 'SUITE server START cases=' + str(len(HOST['CATEGORIES'][category])))
+                    if category == 'operator': self.assertEqual(len(HOST['CATEGORIES'][category]), 6)
+                    self.assertEqual(lines[0], 'SUITE ' + suite + ' START cases=' + str(len(HOST['CATEGORIES'][category])))
                     self.assertEqual(len(lines), len(HOST['CATEGORIES'][category]) + 2)
-                    self.assertTrue(all(line.startswith('SUITE server CASE ' + category + '/') for line in lines[1:-1]))
-                    self.assertTrue(lines[-1].startswith('SUITE server DONE '))
+                    self.assertTrue(all(line.startswith('SUITE ' + suite + ' CASE ' + category + '/') for line in lines[1:-1]))
+                    self.assertTrue(lines[-1].startswith('SUITE ' + suite + ' DONE '))
                 ids = [row[row.index('--id') + 1] for row in rows]
                 self.assertEqual(len(set(ids)), len(ids))
                 for category, flag in (('logs', '--prepare-logs'), ('time', '--prepare-time')):
@@ -760,7 +821,7 @@ class ServerTarget(unittest.TestCase):
                 argv = ['server-suite', '--boot', '20261101T120000Z-metal', '--sha', sha,
                         '--milestone', 'server/console-input']
                 with patch.object(sys, 'argv', argv): self.assertEqual(HOST['main'](), 0)
-                self.assertEqual(len(calls.read_text().splitlines()), 5)
+                self.assertEqual(len(calls.read_text().splitlines()), 6)
 
     def test_metal_target_keeps_boot_store_and_console_calls(self):
         calls = []
