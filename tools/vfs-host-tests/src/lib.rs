@@ -134,3 +134,6 @@ mod scrub_ioctl;
 
 #[path = "../tests/snapshot_mount_args.rs"]
 mod snapshot_mount_args;
+
+#[path = "../tests/snapshot_mount.rs"]
+mod snapshot_mount;
