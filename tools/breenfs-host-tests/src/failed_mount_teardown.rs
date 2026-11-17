@@ -171,3 +171,54 @@ fn refused_reap_reservation_preserves_acknowledged_writes() {
     assert_eq!(cold.read(&cold.open(ino).unwrap(), 0, &mut bytes), Ok(6));
     assert_eq!(&bytes, b"saved!");
 }
+
+// Coordinator 485(j): the first failure remains attributable after later
+// failures and shutdown. The source census below ties these boundary labels
+// to the production error arms; the table exercises their shared recorder.
+#[test]
+fn failure_latch_records_each_branch_once() {
+    let branches = [
+        ("observed-metadata", EIO), ("edited", EIO), ("edited", ENOSPC),
+        ("write-read-metadata", EIO), ("resize-read-metadata", EIO),
+        ("writeback-read-metadata", EIO), ("service-mappings", EIO),
+        ("drain-dirty", ENOSPC), ("prepare-reap", EIO),
+        ("prepare-files", EIO), ("open-next-generation", ENOSPC),
+        ("publish", EIO), ("shutdown-sync", ETIMEDOUT),
+    ];
+    for (branch, code) in branches {
+        let fs = fixture();
+        let before = LOG.0.lock().unwrap().len();
+        {
+            let mut state = fs.inner.state.lock();
+            state.fail(branch, Errno(code));
+            state.fail("later", Errno(EIO));
+            assert_eq!(state.writable(), Err(Errno(EROFS)));
+        }
+        assert_eq!(fs.failure(), Some((branch, code)));
+        assert_eq!(fs.fsync(&fs.open(2).unwrap(), false), Err(Errno(EIO)));
+        assert_eq!(LOG.0.lock().unwrap().len(), before + 1);
+        let log = LOG.0.lock().unwrap().last().unwrap().clone();
+        assert!(log.contains(branch) && log.contains(&alloc::format!("errno={code}")), "{log}");
+        let mut options = String::new();
+        crate::vfs::mount_table::append_failure_options(&mut options, fs.failure());
+        assert_eq!(options, alloc::format!(",failure={branch},failure_errno={code}"));
+        fs.shutdown("latched", u64::MAX).unwrap();
+        assert_eq!(fs.failure(), Some((branch, code)));
+    }
+}
+
+#[test]
+fn failure_latch_error_arms_are_named() {
+    let source = include_str!("../../../kernel/src/fs/breenfs/vfs.rs");
+    assert_eq!(source.matches("self.failed = true;").count(), 1);
+    assert!(!source.contains("state.failed = true;"));
+    for branch in ["observed-metadata", "edited", "write-read-metadata",
+        "resize-read-metadata", "writeback-read-metadata", "service-mappings",
+        "drain-dirty", "prepare-reap", "prepare-files", "open-next-generation",
+        "publish", "shutdown-sync"] {
+        assert!(source.contains(&alloc::format!(".fail(\"{branch}\",")), "unnamed {branch}");
+    }
+    let mounts = include_str!("../../../kernel/src/fs/vfs/mount.rs");
+    assert!(mounts.contains("append_failure_options(&mut options, fs.failure())"));
+    assert!(mounts.contains("drop(table)"), "backend failure read must release table exclusion");
+}
