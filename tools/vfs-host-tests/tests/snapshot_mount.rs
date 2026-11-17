@@ -75,10 +75,11 @@ fn named_snapshot_stays_frozen_beside_a_writer_and_pins_its_root() {
     // A refused unmount/restart and a second reader retain the registry claim.
     assert_eq!(writer.check_root_unmounted(snapshot), Err(Errno(EBUSY)));
     reader.init_service().unwrap();
-    drop(held);
     drop(reader);
     assert_eq!(writer.check_root_unmounted(snapshot), Err(Errno(EBUSY)));
     drop(second);
+    assert_eq!(writer.check_root_unmounted(snapshot), Err(Errno(EBUSY)));
+    drop(held);
     assert_eq!(writer.check_root_unmounted(snapshot), Ok(()));
     drop(live);
     drop(writer);

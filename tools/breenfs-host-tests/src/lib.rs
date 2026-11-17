@@ -316,6 +316,9 @@ mod mount_lock;
 #[cfg(test)]
 #[path = "../../../kernel/src/fs/breenfs/vfs.rs"]
 pub mod vfs_adapter;
+#[cfg(test)]
+#[path = "../../../kernel/src/fs/breenfs/mount_args.rs"]
+pub mod mount_args;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Difference {

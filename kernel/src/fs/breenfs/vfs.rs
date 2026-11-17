@@ -6,7 +6,7 @@ use super::{
     commit_policy::{CommitPolicy, COMMIT_INTERVAL_NS, DIRTY_BUDGET},
     commit_signal::{monotonic_ns, CommitSignal},
     dirty::DirtyPages,
-    format::{Inode, Superblock, Time, BLOCK_SIZE},
+    format::{self, Inode, Root, Superblock, Time, BLOCK_SIZE},
     mount_lock::{MountGuard, MountLock},
     node_cache::CachedNodeStore,
     ops::{self, Files, ReadError},
@@ -83,6 +83,58 @@ const ENODATA: i32 = 61;
 // Admission releases the registry lock before recovery I/O.
 static WRITABLE_OWNERS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 
+// The short registry lock protects weak device references, not device I/O.
+static MOUNTED_DEVICES: Mutex<Vec<Weak<DeviceMounts>>> = Mutex::new(Vec::new());
+struct DeviceMounts {
+    identity: usize,
+    roots: Mutex<Vec<u64>>,
+    // Snapshot data reads need current REF checksums. SPACE nodes from their
+    // original generation can be reused even while the FS root remains live.
+    // Serialize those reads with publication, using sleeping exclusion.
+    publication: MountLock<Option<Superblock>>,
+}
+impl DeviceMounts {
+    fn get(identity: usize) -> Result<Arc<Self>, Errno> {
+        let mut devices = MOUNTED_DEVICES.lock();
+        devices.retain(|device| device.strong_count() != 0);
+        if let Some(device) = devices.iter().filter_map(Weak::upgrade)
+            .find(|device| device.identity == identity)
+        {
+            return Ok(device);
+        }
+        let device = Arc::try_new(Self {
+            identity,
+            roots: Mutex::new(Vec::new()),
+            publication: MountLock::new(None),
+        }).map_err(|_| Errno(ENOMEM))?;
+        devices.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
+        devices.push(Arc::downgrade(&device));
+        Ok(device)
+    }
+}
+struct MountedRoot {
+    device: Arc<DeviceMounts>,
+    id: u64,
+}
+impl MountedRoot {
+    fn claim(device: Arc<DeviceMounts>, id: u64) -> Result<Self, Errno> {
+        {
+            let mut roots = device.roots.lock();
+            roots.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
+            roots.push(id);
+        }
+        Ok(Self { device, id })
+    }
+}
+impl Drop for MountedRoot {
+    fn drop(&mut self) {
+        let mut roots = self.device.roots.lock();
+        if let Some(index) = roots.iter().position(|&id| id == self.id) {
+            roots.swap_remove(index);
+        }
+    }
+}
+
 struct WritableOwner(usize);
 impl WritableOwner {
     fn claim(identity: usize) -> Result<Self, Errno> {
@@ -117,6 +169,8 @@ struct Mount<W: Wait + 'static> {
     cache: Cache<W>,
     id: usize,
     root_id: u64,
+    mounted_root: MountedRoot,
+    frozen: bool,
     writable: bool,
     signal: Arc<CommitSignal>,
     scrub_signal: Arc<CommitSignal>,
@@ -518,7 +572,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         mount: usize,
         root_id: u64,
     ) -> Result<Arc<Self>, Errno> {
-        Self::mount_with(device, Cache::Shared(cache), mount, root_id, false)
+        Self::mount_with(device, Cache::Shared(cache), mount, root_id, None, false)
     }
     /// Writable recovery repairs the rings before opening the first transaction.
     /// The caller starts the per-mount worker through init_service().
@@ -528,7 +582,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         mount: usize,
         root_id: u64,
     ) -> Result<Arc<Self>, Errno> {
-        Self::mount_with(device, Cache::Shared(cache), mount, root_id, true)
+        Self::mount_with(device, Cache::Shared(cache), mount, root_id, None, true)
     }
     /// Kernel read mounts borrow the system cache.
     pub fn mount_cached(
@@ -537,7 +591,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         mount: usize,
         root_id: u64,
     ) -> Result<Arc<Self>, Errno> {
-        Self::mount_with(device, Cache::Kernel(cache), mount, root_id, false)
+        Self::mount_with(device, Cache::Kernel(cache), mount, root_id, None, false)
     }
     /// Writable kernel mounts borrow the system cache, as read mounts do.
     pub fn mount_writable_cached(
@@ -546,13 +600,37 @@ impl<W: Wait + 'static> BreenFs<W> {
         mount: usize,
         root_id: u64,
     ) -> Result<Arc<Self>, Errno> {
-        Self::mount_with(device, Cache::Kernel(cache), mount, root_id, true)
+        Self::mount_with(device, Cache::Kernel(cache), mount, root_id, None, true)
+    }
+    /// Explicit mounts use the same root-data parser with either cache owner.
+    pub fn mount_named(
+        device: Arc<dyn BlockDevice>, cache: Arc<BufferCache<W>>, mount: usize,
+        data: Option<&[u8]>, writable: bool,
+    ) -> Result<Arc<Self>, Errno> {
+        let name = super::mount_args::parse_root(data).map_err(|e| Errno(e as i32))?;
+        Self::mount_with(device, Cache::Shared(cache), mount, 1, name, writable)
+    }
+    pub fn mount_named_cached(
+        device: Arc<dyn BlockDevice>, cache: &'static BufferCache<W>, mount: usize,
+        data: Option<&[u8]>, writable: bool,
+    ) -> Result<Arc<Self>, Errno> {
+        let name = super::mount_args::parse_root(data).map_err(|e| Errno(e as i32))?;
+        Self::mount_with(device, Cache::Kernel(cache), mount, 1, name, writable)
+    }
+    /// Query for snapshot deletion admission; shutdown alone retains custody.
+    pub fn check_root_unmounted(&self, root_id: u64) -> Result<(), Errno> {
+        if self.inner.mounted_root.device.roots.lock().contains(&root_id) {
+            Err(Errno(EBUSY))
+        } else {
+            Ok(())
+        }
     }
     fn mount_with(
         device: Arc<dyn BlockDevice>,
         cache: Cache<W>,
         mount: usize,
         root_id: u64,
+        root_name: Option<&[u8]>,
         writable: bool,
     ) -> Result<Arc<Self>, Errno> {
         // A failed constructor drops this guard, including failures after
@@ -563,9 +641,26 @@ impl<W: Wait + 'static> BreenFs<W> {
         } else {
             None
         };
+        let mounts = DeviceMounts::get(device.identity())?;
+        let mut publication = mounts.publication.lock();
         let durable = recover::recover(device.as_ref(), writable).map_err(|_| Errno(EIO))?;
+        // Recovery can publish orphan reclamation even if root selection fails.
+        *publication = Some(durable.clone());
+        let store = cache.store(device.clone(), &durable);
+        let roots = recover::space_items(&store, &durable).map_err(|_| Errno(EIO))?;
+        let mut selected = None;
+        for (key, bytes) in roots.iter().filter(|(key, _)| key.item_type == format::ROOT) {
+            let root = Root::decode(bytes).map_err(|_| Errno(EIO))?;
+            if root_name.map_or(key.offset == root_id, |name| root.name == name) {
+                selected = Some((key.offset, root.flags & 1 != 0));
+                break;
+            }
+        }
+        let (root_id, frozen) = selected.ok_or(Errno(ENOENT))?;
         let files =
-            Files::new(cache.store(device.clone(), &durable), &durable, root_id, writable).map_err(errno)?;
+            Files::new(store, &durable, root_id, writable).map_err(errno)?;
+        let mounted_root = MountedRoot::claim(mounts.clone(), root_id)?;
+        drop(publication);
         let committer = writable.then(|| Committer::new(durable.clone()));
         let data = Box::try_new(DataBlocks {
             device: device.clone(),
@@ -604,6 +699,8 @@ impl<W: Wait + 'static> BreenFs<W> {
             cache,
             id: mount,
             root_id,
+            mounted_root,
+            frozen,
             writable,
             signal,
             scrub_signal: Arc::new(CommitSignal::new()),
@@ -1079,6 +1176,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 signal.wake();
             }),
         );
+        let mut publication = self.inner.mounted_root.device.publication.lock();
         let result = prepared.write_cached(
             self.inner.cache.buffers(),
             self.inner.device.as_ref(),
@@ -1095,6 +1193,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 #[cfg(test)]
                 measurement::published();
                 state.durable = prepared.superblock().clone();
+                *publication = Some(state.durable.clone());
                 for grant in core::mem::take(&mut state.pending_grants) {
                     state.reservations.release(grant);
                 }
@@ -1107,6 +1206,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 state.failed = true;
             }
         }
+        drop(publication);
         self.inner.signal.wake();
         result.map(|_| true).map_err(|_| Errno(EIO))
     }
@@ -1560,7 +1660,17 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
     }
     fn read(&self, node: &VNode, off: u64, buf: &mut [u8]) -> Result<usize, Errno> {
         self.check_node(node)?;
+        let publication = self.inner.frozen
+            .then(|| self.inner.mounted_root.device.publication.lock());
         let mut state = self.inner.state.lock();
+        if let Some(sb) = publication.as_deref().and_then(Option::as_ref)
+            .filter(|sb| sb.generation > state.durable.generation)
+        {
+            let store = self.inner.cache.store(self.inner.device.clone(), sb);
+            let result = Files::new(store, sb, self.inner.root_id, false);
+            state.files = state.edited(result)?;
+            state.durable = sb.clone();
+        }
         buf.fill(0);
         let size = state.regular(node.ino)?.size;
         if off >= size || buf.is_empty() {
