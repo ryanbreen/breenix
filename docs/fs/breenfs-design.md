@@ -287,7 +287,7 @@ transaction, and one split per level. The transaction also holds space-tree node
 per allocated node or extent), at most min(changes × (space height + 1), 2 × space nodes + space height). A failed
 reservation returns ENOSPC with nothing changed. `global_reserve` (total/200, clamped to 16 MiB–1 GiB) serves only
 operations that free space (unlink, rmdir, truncation, snapshot deletion, xattr removal); `f_bavail` excludes it and
-outstanding reservations. Overwrites need new blocks and can return ENOSPC. A commit that runs out of space is a bug:
+outstanding reservations. `f_bavail` can remain positive after a write refuses because admission includes worst-case metadata. Overwrites need new blocks and can return ENOSPC. A commit that runs out of space is a bug:
 the mount turns read-only and the harness fails. <!-- claim-lint:ok: Normative breenfs design requirement from docs/fs/breenfs-design.md section 2.8, not a measured result. -->
 
 ### 2.9 Limits, features and versions
