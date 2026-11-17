@@ -18,7 +18,7 @@ pub mod filesystem_root;
 #[path = "{ROOT}/userspace/programs/src/root_expectations.rs"]
 pub mod root_expectations;
 use filesystem_root::RootFs;
-use root_expectations::for_root;
+use root_expectations::{{for_root, CookieEncoding}};
 
 fn main() {{
     let ext2 = for_root(RootFs::Ext2);
@@ -33,6 +33,13 @@ fn main() {{
     assert_eq!(ext2.blocks(129, 1, 8), 1040);
     assert_eq!(ext2.blocks(1, 0, 8), 8);
     assert_eq!(ext2.blocks(0, 0, 8), 0);
+
+    assert_eq!(ext2.cookie_encoding, CookieEncoding::ByteOffsets);
+    assert!(ext2.cookies_match(&[12, 24, 4200, 4408], 4096, 2));
+    assert!(!ext2.cookies_match(&[12, 24, 200, 408], 4096, 2));
+    assert_eq!(ext2.available_blocks(8000, 16384, 17), Some(8000));
+    assert!(ext2.inode_capacity(100, 90));
+    assert!(!ext2.inode_capacity(0, 0));
 
     let breenfs = for_root(RootFs::Breenfs);
     assert!(!breenfs.reuses_inode_numbers);
@@ -50,6 +57,18 @@ fn main() {{
     assert_eq!(breenfs.blocks(129, 1, 8), 1032);
     assert_eq!(breenfs.blocks(1, 0, 8), 8);
     assert_eq!(breenfs.blocks(0, 0, 8), 0);
+    assert_eq!(breenfs.cookie_encoding, CookieEncoding::DirectoryIndexes);
+    assert!(breenfs.cookies_match(&[1, 2, 3, 4, 5], 4096, 3));
+    assert!(!breenfs.cookies_match(&[1, 2, 3, 3, 5], 4096, 3));
+    assert!(!breenfs.cookies_match(&[1, 2, 3, 4, 6], 4096, 3));
+    assert!(!breenfs.cookies_match(&[0, 2, 3], 4096, 1));
+    // Design 2.8: total/200, clamped to 16 MiB..1 GiB, plus outstanding grants.
+    assert_eq!(breenfs.available_blocks(8000, 16384, 17), Some(3887));
+    assert_eq!(breenfs.available_blocks(100000, 10000000, 7), Some(49993));
+    assert_eq!(breenfs.available_blocks(1000000, 100000000, 0), Some(737856));
+    assert_eq!(breenfs.available_blocks(4095, 16384, 0), None);
+    assert!(breenfs.inode_capacity(0, 0));
+    assert!(!breenfs.inode_capacity(100, 90));
     // Design 2.1: filesystem identity, also required for a contained FIFO.
     assert_eq!(breenfs.statfs_magic, u64::from_le_bytes(*b"BREENFSS"));
 }}

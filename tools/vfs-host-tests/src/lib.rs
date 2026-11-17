@@ -143,3 +143,7 @@ mod snapshot_ioctl;
 
 #[path = "../tests/snapshot_case_setup.rs"]
 mod snapshot_case_setup;
+
+#[cfg(test)]
+#[path = "../tests/root_case_setup.rs"]
+mod root_case_setup;
