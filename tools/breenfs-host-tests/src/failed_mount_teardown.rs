@@ -222,3 +222,66 @@ fn failure_latch_error_arms_are_named() {
     assert!(mounts.contains("append_failure_options(&mut options, fs.failure())"));
     assert!(mounts.contains("drop(table)"), "backend failure read must release table exclusion");
 }
+
+// A device read failure is an I/O error at the filesystem boundary. It must
+// stop later mutation; guessing that a timed-out DMA completed is not recovery.
+#[test]
+fn metadata_io_failure_latches_and_prevents_later_writes() {
+    struct FaultDisk {
+        bytes: HostMutex<Vec<u8>>,
+        fail_reads: core::sync::atomic::AtomicBool,
+        failed_reads: AtomicU64,
+        writes: AtomicU64,
+    }
+    impl BlockDevice for FaultDisk {
+        fn block_size(&self) -> usize { 512 }
+        fn num_blocks(&self) -> u64 { self.bytes.lock().unwrap().len() as u64 / 512 }
+        fn read_block(&self, block: u64, bytes: &mut [u8]) -> Result<(), BlockError> {
+            let start = block as usize * 512;
+            bytes.copy_from_slice(&self.bytes.lock().unwrap()[start..start + bytes.len()]);
+            Ok(())
+        }
+        fn read_blocks(&self, block: u64, count: usize, bytes: &mut [u8]) -> Result<(), BlockError> {
+            if self.fail_reads.load(Ordering::Acquire) {
+                assert_eq!(count, 32, "expected a metadata-node miss");
+                self.failed_reads.fetch_add(1, Ordering::Relaxed);
+                return Err(BlockError::IoError);
+            }
+            let start = block as usize * 512;
+            bytes.copy_from_slice(&self.bytes.lock().unwrap()[start..start + bytes.len()]);
+            Ok(())
+        }
+        fn write_block(&self, block: u64, bytes: &[u8]) -> Result<(), BlockError> {
+            let start = block as usize * 512;
+            self.bytes.lock().unwrap()[start..start + bytes.len()].copy_from_slice(bytes);
+            self.writes.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+        fn flush(&self) -> Result<(), BlockError> { Ok(()) }
+    }
+    let disk = Arc::new(FaultDisk { bytes: HostMutex::new(vec![0; 64 * 1024 * 1024]),
+        fail_reads: core::sync::atomic::AtomicBool::new(false),
+        failed_reads: AtomicU64::new(0), writes: AtomicU64::new(0) });
+    let sb = Superblock { fs_uuid: [0x39; 16], generation: 1, slot: 1,
+        total_blocks: 16384, global_reserve: 4096, next_root_id: 2,
+        ..Superblock::default() };
+    let mut files = Files::format(super::super::commit::DeviceStore(disk.as_ref()), &sb).unwrap();
+    let mut last = 0;
+    for i in 0..256 {
+        last = files.create(2, alloc::format!("populated-{i:04}").as_bytes(), 0o644, Time::default()).unwrap();
+    }
+    files.fsync(disk.as_ref(), &mut Committer::format(sb)).unwrap();
+    drop(files);
+    let fs = BreenFs::mount_writable(disk.clone(), Arc::new(BufferCache::new(NoWait)), 75, 1).unwrap();
+    let root = fs.open(2).unwrap();
+    disk.fail_reads.store(true, Ordering::Release);
+    let writes = disk.writes.load(Ordering::Relaxed);
+    assert_eq!(fs.getattr(last).map(|_| ()), Err(Errno(EIO)));
+    assert_eq!(disk.failed_reads.load(Ordering::Relaxed), 1);
+    assert_eq!(fs.failure(), Some(("observed-metadata", EIO)));
+    assert_eq!(fs.create(2, b"after-failure", NewNode::Regular {
+        attrs: InodeAttrs::new(0o644, 0, 0),
+    }), Err(Errno(EROFS)));
+    assert_eq!(fs.fsync(&root, false), Err(Errno(EIO)));
+    assert_eq!(disk.writes.load(Ordering::Relaxed), writes);
+}
