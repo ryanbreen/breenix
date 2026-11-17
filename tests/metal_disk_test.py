@@ -32,6 +32,49 @@ class DiskTest(existing.StateTest):
     def stage(self, boot='first'):
         return disk.stage(self.directory, self.inputs, boot, 'b' * 40, self.site, self.build)
 
+    def test_breenfs_tools_are_verified_and_staged(self):
+        fixture = existing.DriverTest()
+        fixture.setUp()
+        try:
+            d = fixture.driver
+            d.args.mode, d.args.disk, d.args.commit, d.args.root_fs = 'default', 'root', 'b' * 40, 'breenfs'
+            d.args.ramdisk = True
+            inputs = d.stage / 'inputs'
+            inputs.mkdir(parents=True)
+            (inputs / 'ready').touch()
+            tools = {}
+            for name in ('breenfs-mkfs', 'breenfs-check', 'breenfs-extract'):
+                path = inputs / name
+                path.write_bytes(name.encode())
+                tools[name] = dict(size=path.stat().st_size, sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+            build = dict(commit=d.args.commit, profile='production', features=[], breenfsTools=tools)
+            existing.m.write_json(inputs / 'build.json', build)
+            for invalid in (None, 'breenfs-check'):
+                bad = dict(build)
+                bad['breenfsTools'] = dict(tools)
+                if invalid is None:
+                    del bad['breenfsTools']['breenfs-mkfs']
+                else:
+                    bad['breenfsTools'][invalid] = dict(size=1, sha256='0' * 64)
+                existing.m.write_json(inputs / 'build.json', bad)
+                with self.assertRaisesRegex(existing.boot.Finish, 'breenfs tools'):
+                    d.prepare_payload()
+            existing.m.write_json(inputs / 'build.json', build)
+            with patch.object(existing.boot.metal_disk, 'stage', return_value=({}, {})) as stage, \
+                 patch.object(existing.boot.metal_image, 'extract_esp', return_value={}), \
+                 patch.object(existing.boot.metal_image, 'assemble', side_effect=RuntimeError('captured')):
+                with self.assertRaisesRegex(RuntimeError, 'captured'):
+                    d.prepare_payload()
+            self.assertEqual(stage.call_args.kwargs['root_fs'], 'breenfs')
+            self.assertEqual(stage.call_args.kwargs['tools_dir'], inputs)
+            d.args.target, d.args.task = 'main', ''
+            import shutil
+            shutil.rmtree(d.dir)
+            d.create_record()
+            self.assertEqual(existing.m.read_json(d.dir / 'run.json')['rootFs'], 'breenfs')
+        finally:
+            fixture.tearDown()
+
     def test_each_boot_reinstalls_even_unchanged_userspace_and_credentials(self):
         original = (self.inputs / 'ext2.img').read_bytes()
         previous = existing.m.read_json(existing.m.STATE / 'disk.json')
