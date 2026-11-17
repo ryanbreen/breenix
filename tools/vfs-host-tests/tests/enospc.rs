@@ -142,12 +142,12 @@ fn mapped_enospc_keeps_dirty_pages_for_fsync_and_msync() {
 }
 
 // The flat fixture includes empty directories, symlinks, xattrs and link counts.
-// Reads do not touch atime in this host boundary.
+// Pin observation reads to the fixture time so they do not advance atime.
 fn namespace_manifest(fs: &dyn FileSystem) -> Vec<(Vec<u8>, NodeAttrs, Vec<u8>, Vec<u8>)> {
     let mut names = vec![(Vec::new(), 2)];
     fs.readdir(2, 0, &mut |entry, _| { names.push((entry.name, entry.ino)); Ok(true) }).unwrap();
     names.sort();
-    names.into_iter().map(|(name, ino)| {
+    crate::time::with_unix_time(10, || names.into_iter().map(|(name, ino)| {
         let attrs = fs.getattr(ino).unwrap();
         let content = match attrs.kind {
             NodeKind::Regular => {
@@ -170,7 +170,7 @@ fn namespace_manifest(fs: &dyn FileSystem) -> Vec<(Vec<u8>, NodeAttrs, Vec<u8>, 
             xattrs.extend_from_slice(&value);
         }
         (name, attrs, content, xattrs)
-    }).collect()
+    }).collect())
 }
 fn remove_name(fs: &dyn FileSystem, name: &[u8], directory: bool) {
     let ino = fs.lookup(2, name).unwrap();
