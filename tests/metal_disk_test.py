@@ -226,7 +226,8 @@ class DiskTest(existing.StateTest):
             for name, contents in {'docs/suites/smoke.json': '{"id":"smoke"}',
                                    'docs/suites/files-io.json': '{"id":"files-io","diskChecks":[{}]}',
                                    'scripts/suite-sequence.py': '# scorer', 'scripts/suite-verdict.py': '# verdict',
-                                   'docs/boot-path.json': '{}'}.items():
+                                   'docs/boot-path.json': '{}',
+                                   'libs/libbreenix/src/suite_memory.rs': (Path(__file__).resolve().parents[1] / 'libs/libbreenix/src/suite_memory.rs').read_text()}.items():
                 path = definition / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(contents)
