@@ -88,6 +88,9 @@ static MOUNTED_DEVICES: Mutex<Vec<Weak<DeviceMounts>>> = Mutex::new(Vec::new());
 struct DeviceMounts {
     identity: usize,
     roots: Mutex<Vec<u64>>,
+    // A delete holds this through durable ROOT removal. A constructor cannot
+    // select the old on-disk ROOT between the busy check and publication.
+    selection: MountLock<()>,
     // Snapshot data reads need current REF checksums. SPACE nodes from their
     // original generation can be reused even while the FS root remains live.
     // Serialize those reads with publication, using sleeping exclusion.
@@ -105,6 +108,7 @@ impl DeviceMounts {
         let device = Arc::try_new(Self {
             identity,
             roots: Mutex::new(Vec::new()),
+            selection: MountLock::new(()),
             publication: MountLock::new(None),
         }).map_err(|_| Errno(ENOMEM))?;
         devices.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
@@ -205,6 +209,12 @@ struct MountState<W: Wait + 'static> {
     closed: bool,
     nodes: BTreeMap<u64, NodeState>,
     dirty_bytes: u64,
+    // True only before the open transaction's first filesystem change.
+    fresh: bool,
+    roots: BTreeMap<u64, (Vec<u8>, u32)>,
+    dead_remaining: u64,
+    skip_reap: bool,
+    reap_shutdown: bool,
     inodes: InodeCache,
     policy: CommitPolicy,
     mapping_retry_ns: u64,
@@ -405,6 +415,7 @@ impl<W: Wait> MountState<W> {
         }
     }
     fn edited<T>(&mut self, result: Result<T, ops::Error>) -> Result<T, Errno> {
+        if result.is_ok() { self.fresh = false; }
         self.inodes.entries.fill(None);
         // A storage/allocation failure may have interrupted a multi-item edit.
         // Do not publish that transaction. Reservation refusals return before
@@ -642,6 +653,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             None
         };
         let mounts = DeviceMounts::get(device.identity())?;
+        let selection = mounts.selection.lock();
         let mut publication = mounts.publication.lock();
         let durable = recover::recover(device.as_ref(), writable).map_err(|_| Errno(EIO))?;
         // Recovery can publish orphan reclamation even if root selection fails.
@@ -661,6 +673,12 @@ impl<W: Wait + 'static> BreenFs<W> {
             Files::new(store, &durable, root_id, writable).map_err(errno)?;
         let mounted_root = MountedRoot::claim(mounts.clone(), root_id)?;
         drop(publication);
+        drop(selection);
+        let dead_remaining = roots.iter().filter(|(key, _)| key.item_type == format::DEAD).count() as u64;
+        let roots = roots.into_iter().filter(|(key, _)| key.item_type == format::ROOT)
+            .map(|(key, bytes)| Root::decode(&bytes)
+                .map(|root| (key.offset, (root.name, root.flags))))
+            .collect::<Result<_, _>>().map_err(|_| Errno(EIO))?;
         let committer = writable.then(|| Committer::new(durable.clone()));
         let data = Box::try_new(DataBlocks {
             device: device.clone(),
@@ -684,6 +702,11 @@ impl<W: Wait + 'static> BreenFs<W> {
                 closed: false,
                 nodes: BTreeMap::new(),
                 dirty_bytes: 0,
+                fresh: true,
+                roots,
+                dead_remaining,
+                skip_reap: false,
+                reap_shutdown: false,
                 policy: CommitPolicy::new(monotonic_ns()),
                 mapping_retry_ns: 0,
                 pending: None,
@@ -937,6 +960,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         match state.files.put_inode(node.ino, inode) {
             Err(error) => state.edited::<()>(Err(error))?,
             Ok(()) => {
+                state.fresh = false;
                 // This data write changes one inode. Keep its known result
                 // instead of rereading the unrelated live VNodes (#3040).
                 state.inodes.entries.fill(None);
@@ -1093,7 +1117,7 @@ impl<W: Wait + 'static> BreenFs<W> {
     fn commit_generation_up_to(&self, now_ns: u64, last: u64, force: bool) -> Result<bool, Errno> {
         #[cfg(not(test))]
         crate::block::cache_kernel::assert_io_context();
-        let prepared = {
+        let (prepared, reap) = {
             let mut state = self.inner.state.lock();
             if state.failed {
                 return Err(Errno(EIO));
@@ -1121,6 +1145,28 @@ impl<W: Wait + 'static> BreenFs<W> {
                 self.inner.signal.wake();
                 return Err(Errno(EIO));
             }
+            // ROOT removal is its own durable operation. The next policy-due
+            // generation starts reaping, with at most REAP_PER_COMMIT nodes.
+            let reap = !core::mem::take(&mut state.skip_reap)
+                && !state.closed && !state.reap_shutdown && state.dead_remaining != 0;
+            let reaped = (|| -> Result<(), ops::Error> {
+                let MountState { files, reservations, grants, durable, .. } = &mut *state;
+                let (txn, _) = files.prepare_commit()?;
+                if reap {
+                    grants.try_reserve(1).map_err(|_| ops::Error::ENOSPC)?;
+                    let grant = txn.reserve_reap(reservations, durable.free_blocks)?;
+                    grants.push(grant);
+                    for _ in 0..super::txn::REAP_PER_COMMIT {
+                        if txn.reap_step()?.is_none() { break; }
+                    }
+                }
+                state.dead_remaining = txn.dead_count();
+                Ok(())
+            })();
+            if let Err(error) = reaped {
+                state.fail();
+                return Err(errno(error));
+            }
             let MountState {
                 files, committer, ..
             } = &mut *state;
@@ -1143,7 +1189,10 @@ impl<W: Wait + 'static> BreenFs<W> {
                 .store(self.inner.device.clone(), sb)
                 .with_pending(&prepared);
             match Files::new(store, sb, self.inner.root_id, true) {
-                Ok(files) => state.files = files,
+                Ok(files) => {
+                    state.files = files;
+                    state.fresh = true;
+                }
                 Err(_) => {
                     state
                         .committer
@@ -1166,7 +1215,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             state.policy = CommitPolicy::new(now_ns);
             state.pending_grants = core::mem::take(&mut state.grants);
             state.pending = Some(prepared.clone());
-            prepared
+            (prepared, reap)
         };
         let signal = self.inner.signal.clone();
         let group = WriteGroup::hold(
@@ -1202,6 +1251,9 @@ impl<W: Wait + 'static> BreenFs<W> {
                     .buffers()
                     .discard_clean(self.inner.data.as_ref());
                 state.pending = None;
+                if reap && state.dead_remaining != 0 && !state.reap_shutdown {
+                    self.inner.signal.requested.store(true, Ordering::Release);
+                }
             } else {
                 state.failed = true;
             }
@@ -1387,11 +1439,85 @@ impl<W: Wait + 'static> BreenFs<W> {
             pending,
         }
     }
+    fn snapshot_request(&self, request: &SnapshotRequest, create: bool) -> Result<(), Errno> {
+        let length = request.name_len as usize;
+        if !(1..=255).contains(&length)
+            || request.flags & !SNAPSHOT_READ_ONLY != 0
+            || (!create && request.flags != 0)
+        {
+            return Err(Errno(EINVAL));
+        }
+        let name = &request.name[..length];
+        if name == b"." || name == b".." || name.contains(&0) || name.contains(&b'/') {
+            return Err(Errno(EINVAL));
+        }
+        // Mutation permission precedes any fsync-class work on a read mount.
+        self.inner.state.lock().writable()?;
+        if create {
+            loop {
+                self.sync()?;
+                let mut state = self.inner.state.lock();
+                state.writable()?;
+                // A writer may have won admission after the receipt. Close
+                // that generation too: sharing a tree already private in G
+                // would let subsequent writes change the snapshot's contents.
+                if !state.fresh || state.pending.is_some() {
+                    drop(state);
+                    continue;
+                }
+                let grant = state.reserve_metadata(&[2], 1, false, false, Operation::Allocate)?;
+                let result = state.files.snapshot(name, request.flags & SNAPSHOT_READ_ONLY != 0);
+                let id = state.finish_metadata(grant, result)?;
+                state.roots.insert(id, (name.to_vec(), request.flags));
+                drop(state);
+                return self.sync_generation(None, false);
+            }
+        }
+        let _selection = self.inner.mounted_root.device.selection.lock();
+        {
+            let mut state = self.inner.state.lock();
+            state.writable()?;
+            let id = state.roots.iter().find(|(_, (root, _))| root == name)
+                .map(|(&id, _)| id).ok_or(Errno(ENOENT))?;
+            self.check_root_unmounted(id)?;
+            let grant = state.reserve_metadata(&[2], 1, false, false, Operation::DeleteSnapshot)?;
+            let result = state.files.delete_root(name);
+            state.finish_metadata(grant, result)?;
+            state.roots.remove(&id);
+            state.skip_reap = true;
+        }
+        self.sync_generation(None, false)
+    }
+    fn snapshot_status(&self) -> Result<SnapshotStatus, Errno> {
+        // Read the current durable SPACE tree even on a frozen reader mounted
+        // before the writer's latest snapshot or reaper generation.
+        let publication = self.inner.mounted_root.device.publication.lock();
+        let state = self.inner.state.lock();
+        let sb = publication.as_ref().unwrap_or(&state.durable);
+        let store = self.inner.cache.store(self.inner.device.clone(), sb);
+        let items = recover::space_items(&store, sb).map_err(|_| Errno(EIO))?;
+        Ok(SnapshotStatus {
+            root_id: self.inner.root_id,
+            flags: if self.inner.frozen { SNAPSHOT_READ_ONLY } else { 0 },
+            roots: items.iter().filter(|(key, _)| key.item_type == format::ROOT).count()
+                .try_into().map_err(|_| Errno(EOVERFLOW))?,
+            dead_remaining: items.iter().filter(|(key, _)| key.item_type == format::DEAD).count() as u64,
+        })
+    }
 }
 impl<W: Wait + 'static> FileSystem for BreenFs<W> {
     fn ioctl(&self, node: &VNode, request: u64, arg: u64) -> Result<u64, Errno> {
         self.check_node(node)?;
         match request {
+            SNAPSHOT_CREATE | SNAPSHOT_DELETE => {
+                let value = crate::syscall::userptr::copy_from_user(arg as *const SnapshotRequest)
+                    .map_err(|error| Errno(error as i32))?;
+                self.snapshot_request(&value, request == SNAPSHOT_CREATE)?;
+            }
+            SNAPSHOT_STATUS => {
+                crate::syscall::userptr::copy_to_user(arg as *mut SnapshotStatus, &self.snapshot_status()?)
+                    .map_err(|error| Errno(error as i32))?;
+            }
             SCRUB_START => self.start_scrub()?,
             SCRUB_CANCEL => {
                 self.inner.scrub_signal.stop.store(true, Ordering::Release);
@@ -1437,6 +1563,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         {
             let mut state = self.inner.state.lock();
             state.closed = false;
+            state.reap_shutdown = false;
             if state.failed || state.committer.as_ref().is_none_or(Committer::read_only) {
                 return Ok(());
             }
@@ -1497,10 +1624,14 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         Ok(())
     }
     fn shutdown(&self, name: &str, deadline: u64) -> Result<(), Errno> {
+        // Mapping writeback can request commits before admission closes below.
+        // Those shutdown generations must not perform background reclamation.
+        self.inner.state.lock().reap_shutdown = true;
         // Writeback uses mutation admission, so stage before closing it.
         // Failed mounts still take M1's explicit-loss teardown path below.
         let mapped = self.sync_mappings(Some(deadline));
         if mapped == Err(Errno(ENOMEM)) || mapped == Err(Errno(ENOSPC)) {
+            self.inner.state.lock().reap_shutdown = false;
             // No storage failure occurred. Preserve admission, service and
             // dirty pins so the caller can retry teardown without data loss.
             return mapped;
@@ -2126,11 +2257,8 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
     }
     fn xattr(&self, ino: u64, op: Xattr<'_>) -> Result<usize, Errno> {
         let mut state = self.inner.state.lock();
-        if state.committer.is_none() {
-            return match op {
-                Xattr::Set { .. } | Xattr::Remove { .. } => Err(Errno(EROFS)),
-                _ => Err(Errno(EOPNOTSUPP)),
-            };
+        if state.committer.is_none() && matches!(op, Xattr::Set { .. } | Xattr::Remove { .. }) {
+            return Err(Errno(EROFS));
         }
         state.inode(ino)?;
         let result = state.files.list_xattrs(ino);
