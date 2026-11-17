@@ -19,5 +19,14 @@ class ScrubAbi(unittest.TestCase):
         self.assertIn('name = "breenfs"', (ROOT / 'userspace/programs/Cargo.toml').read_text())
         self.assertIn('"breenfs"', (ROOT / 'userspace/programs/build.sh').read_text())
 
+    def test_scrub_mutations_require_root_before_filesystem_dispatch(self):
+        text = (ROOT / 'kernel/src/syscall/ioctl.rs').read_text()
+        gate = text.index('if matches!(request, SCRUB_START | SCRUB_CANCEL)')
+        dispatch = text.index('node.filesystem.ioctl(&node, request, arg)')
+        self.assertLess(gate, dispatch)
+        check = text[gate:dispatch]
+        self.assertIn('!matches!(super::handlers::sys_geteuid(), SyscallResult::Ok(0))', check)
+        self.assertIn('return SyscallResult::Err(EPERM)', check)
+
 if __name__ == '__main__':
     unittest.main()
