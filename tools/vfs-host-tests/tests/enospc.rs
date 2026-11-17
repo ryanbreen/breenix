@@ -187,7 +187,19 @@ fn metadata_blocks(disk: &Disk) -> u64 {
     recover::space_items(&DeviceStore(disk), &sb).unwrap().into_iter().map(|(key, value)| {
         match key.item_type {
             format::REF if format::Ref::decode(&value).unwrap().kind != 3 => key.offset,
-            format::PENDING => format::Pending::decode(&value).unwrap().length,
+            format::PENDING => {
+                let length = format::Pending::decode(&value).unwrap().length;
+                assert_eq!(length % 4, 0, "PENDING data is not metadata overhead");
+                let bytes = disk.bytes.lock().unwrap();
+                for addr in (key.offset..key.offset + length).step_by(4) {
+                    let start = addr as usize * format::BLOCK_SIZE;
+                    let header = format::NodeHeader::decode(&bytes[start..start + format::NODE_SIZE])
+                        .expect("PENDING file data must become FREE after quarantine");
+                    assert_eq!(header.addr, addr);
+                    assert_eq!(header.fs_uuid, sb.fs_uuid);
+                }
+                length
+            },
             _ => 0,
         }
     }).sum()
