@@ -123,6 +123,27 @@ class BatteryTests(unittest.TestCase):
         self.assertEqual(set(result["stages"][0]), {"id", "outcome", "seconds", "done", "failures"})
         self.assertFalse(list(run_dir.glob("*.tmp")))
 
+    def test_torture_seeds_become_progress_events(self):
+        torture = HERE / "breenfs_battery_fixtures" / "torture_stub.py"
+        stage = battery.TortureStage(
+            id="torture", title="Stub torture", checks="Stub seeds.", command="stub", unit="seeds",
+            planned=5, seeds=5, builds=[], torture=lambda: torture, checker=lambda: Path("checker"),
+        )
+        code, run_dir = self.run_battery(stage)
+        self.assertEqual(code, 1)
+        events = read_events(run_dir)
+        progress = [e for e in events if e["event"] == "progress"]
+        last = progress[-1]
+        self.assertEqual((last["done"], last["planned"], last["failures"], last["images"]), (5, 5, 1, 1500))
+        self.assertEqual([(s["seed"], s["state"], s["images"]) for s in last["seeds"]],
+                         [(1, "pass", 100), (2, "pass", 200), (3, "fail", 300), (4, "pass", 400),
+                          (5, "pass", 500)])
+        finish = [e for e in events if e["event"] == "stage-finish"][0]
+        self.assertEqual((finish["outcome"], finish["done"], finish["failures"]), ("fail", 5, 1))
+        self.assertEqual(finish["summary"], "4 of 5 seeds passed, 1,500 images checked")
+        self.assertTrue((run_dir / "stages" / "torture" / "seed-3" / "progress.json").exists())
+        self.assertIn("[seed 3] seed=3", (run_dir / "stages" / "torture.log").read_text())
+
     def drive(self, *args: str, **kwargs) -> subprocess.Popen:
         return subprocess.Popen([sys.executable, __file__, "--drive", str(self.root), *args],
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **kwargs)
