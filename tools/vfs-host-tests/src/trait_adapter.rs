@@ -46,6 +46,7 @@ impl BlockDevice for Device {
 }
 fn error(error: KernelErrno) -> Error {
     let value = match error.0 {
+        errno::ENOSYS => return Error::Unimplemented,
         errno::EPERM => Errno::EPERM,
         errno::ENOENT => Errno::ENOENT,
         61 => Errno::ENODATA,
@@ -217,6 +218,9 @@ impl TraitAdapter {
             Action::Fsync { ino } => {
                 fs.fsync(fs.open(*ino)?.as_ref(), false)?;
                 Reply::Done
+            }
+            Action::Snapshot { .. } | Action::Clone { .. } | Action::DeleteSnapshot { .. } => {
+                return Err(KernelErrno(errno::ENOSYS));
             }
             Action::Remount => {
                 fs.sync()?;
