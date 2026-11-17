@@ -214,6 +214,30 @@ pub fn add_free<S: NodeStore>(
     Ok(())
 }
 
+/// Commit-time conversion of quarantined space, even with ample FREE space.
+/// Allocation still prefers FREE within a transaction (design 2.5 reuse rule).
+pub fn promote_pending<S: NodeStore>(
+    store: &mut S,
+    root: &mut BlockPtr,
+    generation: u64,
+) -> Result<(), Error> {
+    for (k, bytes) in range(store, *root, PENDING_OBJECT, format::PENDING)? {
+        let pending = Pending::decode(&bytes)?;
+        end(k.offset, pending.length)?;
+        if pending.released_generation == 0 {
+            return Err(Error::Invalid);
+        }
+        if generation
+            .checked_sub(2)
+            .is_some_and(|limit| pending.released_generation <= limit)
+        {
+            btree::delete(store, root, k)?;
+            add_free(store, root, k.offset, pending.length)?;
+        }
+    }
+    Ok(())
+}
+
 /// Allocate a whole REF. Prefer existing FREE space; only if that cannot fit,
 /// convert eligible PENDING items to FREE, coalescing before selecting a range.
 /// CRCs are supplied from the final data-block bytes by the transaction writer.

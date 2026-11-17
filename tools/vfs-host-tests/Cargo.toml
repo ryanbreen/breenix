@@ -11,6 +11,9 @@ spin = "0.9"
 log = "0.4"
 ufs-abi = { path = "../../libs/ufs-abi" }
 
+[dev-dependencies]
+breenfs-host-tests = { path = "../breenfs-host-tests" }
+
 [lib]
 test = true
 doctest = false

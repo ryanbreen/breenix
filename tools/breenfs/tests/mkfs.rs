@@ -1,36 +1,5 @@
 extern crate alloc;
-#[path = "../../../kernel/src/fs/breenfs/btree.rs"]
-pub mod btree;
-#[path = "../../../kernel/src/fs/breenfs/commit.rs"]
-pub mod commit;
-#[path = "../../../kernel/src/fs/breenfs/crc32c.rs"]
-pub mod crc32c;
-#[path = "../../../kernel/src/fs/breenfs/format.rs"]
-pub mod format;
-#[path = "../../../kernel/src/fs/breenfs/ops.rs"]
-pub mod ops;
-#[path = "../../../kernel/src/fs/breenfs/recover.rs"]
-pub mod recover;
-#[path = "../../../kernel/src/fs/breenfs/siphash.rs"]
-pub mod siphash;
-#[path = "../../../kernel/src/fs/breenfs/space.rs"]
-pub mod space;
-#[path = "../../../kernel/src/fs/breenfs/txn.rs"]
-pub mod txn;
-pub mod block {
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    pub enum BlockError {
-        IoError,
-        OutOfBounds,
-    }
-    pub trait BlockDevice: Send + Sync {
-        fn read_block(&self, block: u64, buf: &mut [u8]) -> Result<(), BlockError>;
-        fn write_block(&self, block: u64, buf: &[u8]) -> Result<(), BlockError>;
-        fn block_size(&self) -> usize;
-        fn num_blocks(&self) -> u64;
-        fn flush(&self) -> Result<(), BlockError>;
-    }
-}
+pub use breenfs::{block, btree, commit, crc32c, format, ops, recover, siphash, space, txn};
 
 #[cfg(unix)]
 mod mkfs {
@@ -492,6 +461,35 @@ mod mkfs {
             assert_eq!((inode.nblocks, inode.nlink), (blocks, 1));
         }
     }
+    #[test]
+    fn populate_owners_apply_uid_gid() {
+        let s = Scratch::new();
+        let src = s.path("source");
+        fs::create_dir(&src).unwrap();
+        fs::create_dir(src.join("owned")).unwrap();
+        let owners = s.path("owners");
+        fs::write(&owners, format!("2000:2001\t{}\n", src.join("owned").display())).unwrap();
+        let image = s.path("image");
+        let output = Command::new(env!("CARGO_BIN_EXE_breenfs-mkfs"))
+            .args(["--size", &SIZE.to_string(), "--populate"])
+            .arg(&src)
+            .arg("--owners")
+            .arg(&owners)
+            .arg(&image)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let image = Image(fs::read(image).unwrap());
+        let root = image.root().root;
+        let record = DirRecord::decode(&image.get_item(root, key(2, DIR_INDEX, 2))).unwrap();
+        let inode = Inode::decode(&image.get_item(root, key(record.ino, INODE, 0))).unwrap();
+        assert_eq!((inode.uid, inode.gid), (2000, 2001));
+    }
+
     #[test]
     fn populate_reads_back() {
         let s = Scratch::new();

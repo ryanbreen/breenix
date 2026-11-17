@@ -4,6 +4,7 @@ use breenfs::commit::{Committer, DeviceStore};
 use breenfs::format::*;
 use breenfs::ops::{Files, SetAttr};
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
@@ -15,12 +16,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 mod sparse;
 
 type Result<T> = std::result::Result<T, String>;
-const USAGE: &str = "breenfs-mkfs [--populate DIR] [--uuid HEX] [--time SECS] [--hash-key HEX] [--label L] [--extents] --size BYTES IMAGE";
+const USAGE: &str = "breenfs-mkfs [--populate DIR] [--owners FILE] [--uuid HEX] [--time SECS] [--hash-key HEX] [--label L] [--extents] --size BYTES IMAGE";
 
 struct Args {
     image: PathBuf,
     size: u64,
     populate: Option<PathBuf>,
+    owners: Option<PathBuf>,
     uuid: [u8; 16],
     hash_key: [u8; 16],
     time: Option<Time>,
@@ -48,6 +50,7 @@ fn args() -> Result<Args> {
     let mut it = std::env::args_os().skip(1);
     let (mut image, mut size, mut populate, mut uuid, mut hash_key, mut time) =
         (None, None, None, None, None, None);
+    let mut owners = None;
     let mut label = [0; 64];
     let mut extents = false;
     let mut seen = BTreeSet::new();
@@ -67,7 +70,13 @@ fn args() -> Result<Args> {
             }
             if !matches!(
                 flag,
-                "--populate" | "--size" | "--uuid" | "--hash-key" | "--time" | "--label"
+                "--populate"
+                    | "--owners"
+                    | "--size"
+                    | "--uuid"
+                    | "--hash-key"
+                    | "--time"
+                    | "--label"
             ) {
                 return Err(format!("unknown option {flag}"));
             }
@@ -76,6 +85,10 @@ fn args() -> Result<Args> {
                 .ok_or_else(|| format!("missing value for {flag}"))?;
             if flag == "--populate" {
                 populate = Some(PathBuf::from(value));
+                continue;
+            }
+            if flag == "--owners" {
+                owners = Some(PathBuf::from(value));
                 continue;
             }
             let value = value
@@ -111,6 +124,7 @@ fn args() -> Result<Args> {
         image: image.ok_or("IMAGE is required")?,
         size,
         populate,
+        owners,
         uuid: match uuid {
             Some(v) => v,
             None => random_bytes()?,
@@ -409,6 +423,63 @@ fn mkfs(a: Args) -> Result<()> {
             a.time,
             &mut BTreeMap::new(),
         )?;
+    }
+    if let Some(path) = &a.owners {
+        if source.is_none() {
+            return Err("--owners requires --populate".into());
+        }
+        let data = io(fs::read(path), path)?;
+        for line in data.split(|&b| b == b'\n').filter(|line| !line.is_empty()) {
+            let split = line
+                .iter()
+                .position(|&b| b == b'\t')
+                .ok_or("invalid owner entry")?;
+            let owner = std::str::from_utf8(&line[..split]).map_err(|_| "invalid owner")?;
+            let (uid, gid) = owner.split_once(':').ok_or("invalid owner")?;
+            // uid:gid[:octal-mode] TAB raw-path. The optional mode preserves
+            // symlink permissions that the extraction host cannot represent.
+            let (gid, mode) = match gid.split_once(':') {
+                Some((gid, mode)) => {
+                    let mode = u32::from_str_radix(mode, 8).map_err(|_| "invalid owner mode")?;
+                    if mode > 0o7777 {
+                        return Err("invalid owner mode".into());
+                    }
+                    (gid, Some(mode))
+                }
+                None => (gid, None),
+            };
+            let uid = uid.parse::<u32>().map_err(|_| "invalid uid")?;
+            let gid = gid.parse::<u32>().map_err(|_| "invalid gid")?;
+            let path = &line[split + 1..];
+            if !path.starts_with(b"/") {
+                return Err("owner path must be absolute".into());
+            }
+            let source_root = &source.as_ref().ok_or("--owners requires --populate")?.path;
+            let path = Path::new(OsStr::from_bytes(path));
+            let relative = path.strip_prefix(source_root).unwrap_or(path);
+            let mut ino = 2;
+            for name in relative
+                .as_os_str()
+                .as_bytes()
+                .split(|&b| b == b'/')
+                .filter(|name| !name.is_empty())
+            {
+                if name == b"." || name == b".." {
+                    return Err("invalid owner path".into());
+                }
+                ino = operation(files.lookup(ino, name))?;
+            }
+            operation(files.setattr(
+                ino,
+                &SetAttr {
+                    mode,
+                    uid: Some(uid),
+                    gid: Some(gid),
+                    ..SetAttr::default()
+                },
+                now,
+            ))?;
+        }
     }
     let mut committer = Committer::format(sb);
     operation(files.fsync(&device, &mut committer))?;

@@ -3,10 +3,18 @@
 pub mod btree;
 #[path = "../../../kernel/src/fs/breenfs/commit.rs"]
 pub mod commit;
+#[path = "../../../kernel/src/fs/breenfs/commit_policy.rs"]
+pub mod commit_policy;
+#[path = "../../../kernel/src/fs/breenfs/commit_signal.rs"]
+mod commit_signal;
 #[path = "../../../kernel/src/fs/breenfs/crc32c.rs"]
 pub mod crc32c;
+#[path = "../../../kernel/src/fs/breenfs/dirty.rs"]
+pub mod dirty;
 #[path = "../../../kernel/src/fs/breenfs/format.rs"]
 pub mod format;
+#[path = "../../../kernel/src/fs/breenfs/mount_lock.rs"]
+mod mount_lock;
 #[path = "../../../kernel/src/fs/breenfs/node_cache.rs"]
 pub mod node_cache;
 #[path = "../../../kernel/src/fs/breenfs/ops.rs"]

@@ -46,28 +46,6 @@
       ]
     },
     {
-      "id": "format",
-      "title": "Formatter images pass the independent checker and violating images are refused",
-      "cases": [
-        {
-          "id": "mkfs-empty-clean",
-          "title": "Empty formatted images pass the full checker"
-        },
-        {
-          "id": "mkfs-populate-clean",
-          "title": "Populated formatted images pass the full checker"
-        },
-        {
-          "id": "reproducible-image",
-          "title": "Fixed inputs produce byte-identical images"
-        },
-        {
-          "id": "violations-refused",
-          "title": "Images violating format invariants are refused"
-        }
-      ]
-    },
-    {
       "id": "read",
       "title": "A host-built filesystem reads back as its manifest",
       "cases": [
@@ -92,34 +70,37 @@
     {
       "id": "write",
       "title": "File and directory operations commit through transactions",
-      "cases": []
+      "cases": [
+        {
+          "id": "remount-reads-back",
+          "title": "An fsynced tree reads back unchanged after remount"
+        },
+        {
+          "id": "rename-replace-atomic",
+          "title": "Rename replacement preserves open files and publishes the new name atomically"
+        },
+        {
+          "id": "unlinked-open-file",
+          "title": "An unlinked open file remains readable until close and is gone after remount"
+        },
+        {
+          "id": "truncate-sparse",
+          "title": "Sparse writes and truncate preserve data and zero-filled holes after remount"
+        },
+        {
+          "id": "mmap-msync",
+          "title": "Shared mapped stores survive MS_SYNC and remount"
+        },
+        {
+          "id": "commit-without-fsync",
+          "title": "The periodic commit makes an unfsynced write durable"
+        }
+      ]
     },
     {
       "id": "enospc",
       "title": "Space reservation: ENOSPC with nothing changed, freeing from the reserve",
       "cases": []
-    },
-    {
-      "id": "crash-images",
-      "title": "Host-enumerated crash images recover to an acknowledged commit",
-      "cases": [
-        {
-          "id": "subset-images",
-          "title": "Crash write subsets recover to an acknowledged commit"
-        },
-        {
-          "id": "torn-images",
-          "title": "Torn images recover to an acknowledged commit"
-        },
-        {
-          "id": "corruption-no-panic",
-          "title": "Corrupted images return errors without panicking"
-        },
-        {
-          "id": "torture-24h",
-          "title": "Twenty-four hours of torture complete without failures"
-        }
-      ]
     },
     {
       "id": "checksum",

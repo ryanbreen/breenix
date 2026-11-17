@@ -240,7 +240,7 @@ fn open_fault_device() -> Option<Box<dyn BlockDevice>> {
     #[cfg(not(target_arch = "x86_64"))]
     {
         use crate::block::virtio::VirtioBlockWrapper;
-        let dev = VirtioBlockWrapper::new(2).or_else(|| VirtioBlockWrapper::new(0))?;
+        let dev = VirtioBlockWrapper::new(0)?;
         Some(Box::new(dev))
     }
 }

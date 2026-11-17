@@ -1693,6 +1693,33 @@ getdents buffers, and requires EROFS for write access, creation and unlink.
 The write-access check uses a write-only open: a read-only mount cannot supply
 a writable descriptor. Each case unmounts its volume before returning.
 
+## Filesystem write scratch volume
+
+The filesystem suite's `write` category probes `/dev/disk<N>` with read-only BreenFS
+mounts (the kernel validates the magic), selects the launcher's empty scratch volume,
+and mounts it read-write at `/mnt/breenfs-write`. The six cases cover remount readback,
+rename replacement, open-file unlink, sparse truncate, mapped writeback and the periodic
+commit. Cases release their mounts on return, including an assertion failure.
+
+`unlinked-open-file` records its inode as a VALUE and checks that its 256 data
+blocks return to the statfs free count after close, remount and the reuse quarantine.
+The stopped-image verdict also runs `breenfs-extract dump` on that boot's companion
+`breenfs-scratch.img` and rejects an ORPHAN or inode item for the recorded inode.
+That check requires the retained scratch image beside the root passed as `--disk`;
+a missing image or inode receipt fails the verdict (E24 coordinator ledger 309, C5).
+
+`commit-without-fsync` polls the scratch mount's `durable_generation` in
+`/proc/breenix/filesystems` before closing the file or unmounting. Its watchdog allows
+one 5-second interval plus 2 seconds for scheduling and I/O, within the runner's 10-second
+hang watchdog; elapsed time is reported without a latency expectation. Both this case
+and `mmap-msync` read the committed bytes through a separate read-only mount before the
+writer unmounts, so teardown cannot supply the persistence being checked.
+
+Under E24 coordinator ledger line 267, format and crash-image enumeration remain Mac-side
+checks. Their former guest cases only read host result files; they are removed from the
+guest table and manifest. `scripts/filesystem-suite.py` still stages the read fixture's
+manifest without collecting host evidence.
+
 ## Developer SDK
 
 `sdk` measures the Developer SDK effort in `docs/efforts/path.json`: our own applications

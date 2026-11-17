@@ -1,6 +1,6 @@
-//! Breenfs mounts explicitly; boot probing remains ext2-only in step 24.10.
+//! Boot formats ordered by coordinator ruling E24 ledger line 265.
 #[test]
-fn boot_formats_name_only_ext2() {
+fn boot_formats_probe_ext2_then_breenfs() {
     let source = include_str!("../kernel/src/fs/mod.rs");
     let code = source
         .lines()
@@ -20,7 +20,7 @@ fn boot_formats_name_only_ext2() {
         .split(|c: char| c.is_whitespace() || c == ',')
         .filter(|name| !name.is_empty())
         .collect();
-    assert_eq!(names, ["ext2"], "breenfs must stay outside filesystems!");
+    assert_eq!(names, ["ext2", "breenfs"], "ext2 must be probed first");
     assert_eq!(code.matches("pub static FORMATS:").count(), 1);
     assert!(
         code.contains("&[$($backend::FORMAT),+];"),

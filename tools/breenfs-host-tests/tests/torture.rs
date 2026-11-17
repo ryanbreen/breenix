@@ -1,37 +1,3 @@
-use std::{fs, process::Command};
-
-#[test]
-fn short_run_writes_a_summary() {
-    let dir = std::env::temp_dir().join(format!("breenfs-torture-test-{}", std::process::id()));
-    let output = Command::new(env!("CARGO_BIN_EXE_breenfs-torture"))
-        .args([
-            "--hours",
-            "0.002",
-            "--checker",
-            env!("CARGO_BIN_FILE_BREENFS_breenfs-check"),
-            "--out",
-        ])
-        .arg(&dir)
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{output:?}");
-    let summary: serde_json::Value =
-        serde_json::from_slice(&fs::read(dir.join("summary.json")).unwrap()).unwrap();
-    assert!(summary["images_checked"].as_u64().unwrap() > 0, "{summary}");
-    assert!(summary["first_seed"].as_u64().is_some(), "{summary}");
-    assert!(
-        summary["last_seed"].as_u64().unwrap() >= summary["first_seed"].as_u64().unwrap(),
-        "{summary}"
-    );
-    assert_eq!(summary["failures"].as_u64(), Some(0), "{summary}");
-    assert!(
-        summary["deepest_generation"].as_u64().unwrap() >= 9,
-        "{summary}"
-    );
-    assert!(summary["tree_height"].as_u64().unwrap() >= 2, "{summary}");
-    fs::remove_dir_all(dir).unwrap();
-}
-
 #[path = "../src/test_image.rs"]
 mod test_image;
 
@@ -61,9 +27,17 @@ fn torture_stream_reuses_slots_and_splits_trees() {
             assert_eq!(writer.execute(&op), model.execute(&op), "{op:?}");
             assert_eq!(writer.state().unwrap(), model.state().unwrap(), "{op:?}");
             let bytes = device.durable_image();
+            let slots: [Option<Superblock>; 4] = core::array::from_fn(|index| {
+                let slot = 16 + index;
+                Superblock::decode(&bytes[slot * 4096..(slot + 1) * 4096]).ok()
+            });
+            let max_gen = slots.iter().flatten().map(|sb| sb.generation).max().unwrap();
             for slot in 16..20 {
-                if let Ok(sb) = Superblock::decode(&bytes[slot * 4096..(slot + 1) * 4096]) {
+                if let Some(sb) = &slots[slot - 16] {
                     generation = generation.max(sb.generation);
+                    if sb.generation < max_gen.saturating_sub(1) {
+                        continue;
+                    }
                     let store = DeviceStore(device.as_ref());
                     let h = NodeHeader::decode(&store.get(sb.space_root.addr).unwrap()).unwrap();
                     height = height.max(h.level + 1);

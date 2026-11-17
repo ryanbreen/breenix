@@ -1,12 +1,19 @@
-//! Breenfs core and explicit read-only mounts; boot formats remain ext2-only.
+//! Breenfs core, boot format and explicit mounts.
+mod boot;
+pub use boot::FORMAT;
 pub mod btree;
 pub mod commit;
+pub mod commit_policy;
+mod commit_signal;
 pub mod crc32c;
+pub mod dirty;
 pub mod format;
 pub mod mount;
 pub mod mount_args;
+mod mount_lock;
 pub mod node_cache;
 pub mod ops;
+pub mod probe;
 pub mod recover;
 pub mod siphash;
 pub mod space;

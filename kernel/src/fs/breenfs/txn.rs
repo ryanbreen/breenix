@@ -38,6 +38,7 @@ impl From<format::Error> for Error {
 }
 
 enum Change {
+    PromotePending,
     Allocate {
         start: u64,
         length: u64,
@@ -455,6 +456,27 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
         self.deferred.push_back(Change::Root { id, value });
         Ok(())
     }
+    /// Stage the same PENDING conversions in the reservation and real trees.
+    pub fn promote_pending(&mut self) -> Result<(), Error> {
+        self.healthy()?;
+        let mut reservations = Reservations {
+            view: View {
+                base: self.base.get(),
+                nodes: &BTreeMap::new(),
+            },
+            changes: &mut self.reserved_nodes,
+            next: &mut self.scratch_next,
+        };
+        let result = space::promote_pending(
+            &mut reservations,
+            &mut self.reservation_root,
+            self.generation,
+        )
+        .map_err(Error::from);
+        self.result(result)?;
+        self.deferred.push_back(Change::PromotePending);
+        Ok(())
+    }
     /// Apply deferred changes to the real COW SPACE tree. Its copies/splits add
     /// more allocation/release work to this queue. Edited paths remain in T,
     /// so revisiting them does not recursively copy them again (design 2.5).
@@ -465,6 +487,9 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             let generation = self.generation;
             let mut store = EditStore { txn: self, tree: 2 };
             let result = match change {
+                Change::PromotePending => {
+                    space::promote_pending(&mut store, &mut root, generation).map_err(Error::from)
+                }
                 Change::Allocate {
                     start,
                     length,

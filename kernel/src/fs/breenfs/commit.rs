@@ -1,7 +1,5 @@
-//! Synchronous transaction publication, breenfs design section 2.5.
-//!
-//! The caller serializes a mount's commits. This core writes directly to the
-//! device; the kernel adapter supplies scheduling and Hold groups in step 24.11.
+//! Generation preparation and ordered publication (design section 2.5).
+//! The mount closes a generation under its lock, then publishes without it.
 use super::{
     btree::{self, NodeStore},
     crc32c,
@@ -11,7 +9,10 @@ use super::{
     },
     txn::Transaction,
 };
-use crate::block::BlockDevice;
+use crate::block::{
+    cache::{BufferCache, Wait, WriteGroup},
+    BlockDevice, BlockError,
+};
 use alloc::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -41,10 +42,16 @@ impl From<btree::Error> for Error {
 
 /// Completion receipt for fsync callers joining the current generation.
 /// The adapter may park a thread while completion is pending.
-pub struct FsyncWaiter(AtomicU8);
+pub struct FsyncWaiter {
+    generation: u64,
+    status: AtomicU8,
+}
 impl FsyncWaiter {
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
     pub fn result(&self) -> Option<Result<(), Error>> {
-        match self.0.load(Ordering::Acquire) {
+        match self.status.load(Ordering::Acquire) {
             0 => None,
             1 => Some(Ok(())),
             _ => Some(Err(Error::EIO)),
@@ -55,6 +62,8 @@ impl FsyncWaiter {
 pub struct Committer {
     durable: Superblock,
     failed: bool,
+    open_generation: u64,
+    in_flight: bool,
     waiters: Vec<Arc<FsyncWaiter>>,
 }
 impl Committer {
@@ -67,6 +76,8 @@ impl Committer {
     /// Construct only after writable recovery has cleared abandoned slots.
     pub fn new(durable: Superblock) -> Self {
         Self {
+            open_generation: durable.generation.saturating_add(1),
+            in_flight: false,
             durable,
             failed: false,
             waiters: Vec::new(),
@@ -76,11 +87,10 @@ impl Committer {
         self.failed || self.durable.ro_compat != 0
     }
     pub fn waiter(&mut self) -> Arc<FsyncWaiter> {
-        let w = Arc::new(FsyncWaiter(AtomicU8::new(if self.read_only() {
-            2
-        } else {
-            0
-        })));
+        let w = Arc::new(FsyncWaiter {
+            generation: self.open_generation,
+            status: AtomicU8::new(if self.read_only() { 2 } else { 0 }),
+        });
         if !self.read_only() {
             self.waiters.push(w.clone());
         }
@@ -94,7 +104,11 @@ impl Committer {
         txn: &mut Transaction<'_, S>,
         data: &BTreeMap<u64, Vec<u8>>,
     ) -> Result<Superblock, Error> {
-        self.committing(|mount| mount.publish(device, txn, data))
+        self.committing(|mount| {
+            let prepared = mount.prepare(device, txn, data)?;
+            prepared.write_direct(device, data)?;
+            Ok(prepared.sb)
+        })
     }
     pub(crate) fn commit_files<S: NodeStore>(
         &mut self,
@@ -103,7 +117,9 @@ impl Committer {
     ) -> Result<Superblock, Error> {
         self.committing(|mount| {
             let (txn, data) = files.prepare_commit().map_err(|_| Error::EIO)?;
-            mount.publish(device, txn, data)
+            let prepared = mount.prepare(device, txn, data)?;
+            prepared.write_direct(device, data)?;
+            Ok(prepared.sb)
         })
     }
     fn committing(
@@ -118,22 +134,25 @@ impl Committer {
         }
         let result = operation(self);
         match &result {
-            Ok(sb) => self.durable = sb.clone(),
+            Ok(sb) => {
+                self.durable = sb.clone();
+                self.open_generation = sb.generation.saturating_add(1);
+            }
             Err(_) => self.failed = true,
         }
         let status = if result.is_ok() { 1 } else { 2 };
         for w in self.waiters.drain(..) {
-            w.0.store(status, Ordering::Release);
+            w.status.store(status, Ordering::Release);
         }
         result
     }
-    fn publish<S: NodeStore>(
+    fn prepare<S: NodeStore>(
         &self,
         device: &dyn BlockDevice,
         txn: &mut Transaction<'_, S>,
         data: &BTreeMap<u64, Vec<u8>>,
-    ) -> Result<Superblock, Error> {
-        let generation = self.durable.generation.checked_add(1).ok_or(Error::EIO)?;
+    ) -> Result<PreparedCommit, Error> {
+        let generation = self.open_generation;
         if txn.generation() != generation || self.durable.total_blocks > partition_blocks(device)? {
             return Err(Error::EIO);
         }
@@ -227,40 +246,182 @@ impl Committer {
                 return Err(Error::EIO);
             }
         }
-        // Steps 3-4: the synchronous surface waits at each sector completion.
-        for (&addr, bytes) in filled.iter().chain(data.iter()) {
+        Ok(PreparedCommit {
+            sb,
+            nodes: filled,
+            data: BTreeMap::new(),
+            formatting: self.durable.generation == 0,
+            waiters: Vec::new(),
+        })
+    }
+
+    /// Freeze the open generation and transfer only its receipts. A mount may
+    /// now open G+1 on the returned immutable nodes, before publishing G.
+    pub fn prepare_files<S: NodeStore>(
+        &mut self,
+        device: &dyn BlockDevice,
+        files: &mut super::ops::Files<'_, S>,
+    ) -> Result<PreparedCommit, Error> {
+        if self.read_only() {
+            return Err(Error::EIO);
+        }
+        if self.in_flight {
+            return Err(Error::InvalidGeneration);
+        }
+        let result = files
+            .prepare_commit()
+            .map_err(|_| Error::EIO)
+            .and_then(|(txn, data)| {
+                let mut prepared = self.prepare(device, txn, data)?;
+                prepared.data = core::mem::take(data);
+                Ok(prepared)
+            });
+        match result {
+            Ok(mut prepared) => {
+                self.open_generation = self.open_generation.checked_add(1).ok_or_else(|| {
+                    self.fail();
+                    Error::EIO
+                })?;
+                prepared.waiters = core::mem::take(&mut self.waiters);
+                self.in_flight = true;
+                Ok(prepared)
+            }
+            Err(e) => {
+                self.fail();
+                Err(e)
+            }
+        }
+    }
+    /// Publish completion under the mount lock. A failed G also fails callers
+    /// already waiting for G+1, which can no longer be committed.
+    pub fn complete(&mut self, prepared: &PreparedCommit, result: Result<(), Error>) {
+        self.in_flight = false;
+        let status = if result.is_ok() { 1 } else { 2 };
+        if result.is_ok() {
+            self.durable = prepared.sb.clone();
+        } else {
+            self.fail();
+        }
+        for waiter in &prepared.waiters {
+            waiter.status.store(status, Ordering::Release);
+        }
+    }
+    pub fn fail(&mut self) {
+        self.failed = true;
+        for waiter in self.waiters.drain(..) {
+            waiter.status.store(2, Ordering::Release);
+        }
+    }
+}
+
+/// Immutable G, also the backing view from which the adapter opens G+1.
+/// Receipts remain pending until the mount observes the publication result.
+pub struct PreparedCommit {
+    sb: Superblock,
+    nodes: BTreeMap<u64, Vec<u8>>,
+    data: BTreeMap<u64, Vec<u8>>,
+    formatting: bool,
+    waiters: Vec<Arc<FsyncWaiter>>,
+}
+impl PreparedCommit {
+    pub fn superblock(&self) -> &Superblock {
+        &self.sb
+    }
+    pub fn dirty_bytes(&self) -> u64 {
+        self.data.values().map(|bytes| bytes.len() as u64).sum()
+    }
+    pub fn node(&self, addr: u64) -> Option<&[u8]> {
+        self.nodes.get(&addr).map(Vec::as_slice)
+    }
+    /// Read a private data block while G is being published.
+    pub fn data_block(&self, block: u64) -> Option<&[u8]> {
+        let (&start, bytes) = self.data.range(..=block).next_back()?;
+        let offset = usize::try_from(block.checked_sub(start)?)
+            .ok()?
+            .checked_mul(BLOCK_SIZE)?;
+        bytes.get(offset..offset.checked_add(BLOCK_SIZE)?)
+    }
+    fn write_direct(
+        &self,
+        device: &dyn BlockDevice,
+        data: &BTreeMap<u64, Vec<u8>>,
+    ) -> Result<(), Error> {
+        for (&addr, bytes) in self.nodes.iter().chain(data.iter()) {
             write(device, addr, bytes)?;
         }
         device.flush().map_err(|_| Error::EIO)?;
-        // Steps 5-6: return immediately on error. In particular, no rollback
-        // writes or erasure can follow a partially published superblock.
-        if self.durable.generation == 0 {
-            // Image writers overwrite the unused slots too (design 2.5).
+        self.superblocks(|addr, bytes| write(device, addr, bytes))?;
+        device.flush().map_err(|_| Error::EIO)
+    }
+    /// Hold buffers are submitted in bounded batches when the cache fills.
+    /// No superblock is issued until those batches complete and the data flush
+    /// succeeds. A publication error returns immediately, without erasure.
+    pub fn write_cached<W: Wait>(
+        &self,
+        cache: &BufferCache<W>,
+        device: &dyn BlockDevice,
+        group: &WriteGroup,
+    ) -> Result<(), Error> {
+        if !matches!(group, WriteGroup::Hold(_)) {
+            return Err(Error::EIO);
+        }
+        let sector = device.block_size();
+        for (&addr, bytes) in self.nodes.iter().chain(self.data.iter()) {
+            for (i, bytes) in bytes.chunks_exact(sector).enumerate() {
+                let block = addr * (BLOCK_SIZE / sector) as u64 + i as u64;
+                match cache.write(device, group.clone(), block, bytes) {
+                    Err(BlockError::OutOfMemory) => {
+                        cache.submit(device, group).wait().map_err(|_| Error::EIO)?;
+                        cache
+                            .write(device, group.clone(), block, bytes)
+                            .map_err(|_| Error::EIO)?;
+                    }
+                    result => result.map_err(|_| Error::EIO)?,
+                }
+            }
+        }
+        cache.submit(device, group).wait().map_err(|_| Error::EIO)?;
+        cache.flush(device).map_err(|_| Error::EIO)?;
+        self.superblocks(|addr, bytes| {
+            for (i, bytes) in bytes.chunks_exact(sector).enumerate() {
+                cache
+                    .write(
+                        device,
+                        WriteGroup::WriteThrough,
+                        addr * (BLOCK_SIZE / sector) as u64 + i as u64,
+                        bytes,
+                    )
+                    .map_err(|_| Error::EIO)?;
+            }
+            Ok(())
+        })?;
+        cache.flush(device).map_err(|_| Error::EIO)
+    }
+    fn superblocks(
+        &self,
+        mut write: impl FnMut(u64, &[u8]) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        if self.formatting {
             for ring in 0..2 {
                 for slot in 0..4 {
-                    if slot != sb.slot {
+                    if slot != self.sb.slot {
                         write(
-                            device,
-                            slot_block(sb.total_blocks, ring, slot),
+                            slot_block(self.sb.total_blocks, ring, slot),
                             &[0; BLOCK_SIZE],
                         )?;
                     }
                 }
             }
         }
+        let mut sb = self.sb.clone();
         for ring in 0..2 {
             sb.ring = ring;
-            write(
-                device,
-                slot_block(sb.total_blocks, ring, sb.slot),
-                &sb.encode(),
-            )?;
+            write(slot_block(sb.total_blocks, ring, sb.slot), &sb.encode())?;
         }
-        device.flush().map_err(|_| Error::EIO)?;
-        sb.ring = 0;
-        Ok(sb)
+        Ok(())
     }
 }
+
 struct Prepared<'a, S> {
     base: S,
     nodes: &'a BTreeMap<u64, Vec<u8>>,

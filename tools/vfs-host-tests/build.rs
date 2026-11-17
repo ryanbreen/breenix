@@ -1,6 +1,12 @@
 use std::{env, fs, path::PathBuf};
 
+mod mappings {
+    include!("../breenfs-host-tests/build.rs");
+    pub fn generate() { main(); }
+}
+
 fn main() {
+    mappings::generate();
     let source = "../../kernel/src/syscall/fs.rs";
     println!("cargo:rerun-if-changed={source}");
     let text = fs::read_to_string(source).unwrap();

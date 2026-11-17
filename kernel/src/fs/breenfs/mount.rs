@@ -1,5 +1,5 @@
-//! Explicit mounts only: neither root nor home boot probing enters here.
-use super::{format::BLOCK_SIZE, mount_args, vfs::BreenFs};
+//! Explicit disk mounts and native mount teardown.
+use super::{mount_args, probe::probe, vfs::BreenFs};
 use crate::block::BlockDevice;
 use crate::fs::{
     namei::{self, Target},
@@ -7,38 +7,7 @@ use crate::fs::{
     vfs::{mount as registry, FileSystem, MountFlags},
 };
 use crate::syscall::{at_path::AT_FDCWD, errno::*, metadata::resolve_at, userptr};
-use alloc::{sync::Arc, vec::Vec};
-
-// Look in both rings: a valid filesystem can have only a surviving B copy.
-// Recovery checks CRCs, feature bits, UUIDs and roots after this type check.
-fn require_magic(device: &dyn BlockDevice) -> Result<(), u64> {
-    let sector = device.block_size();
-    if sector < 8 || sector > BLOCK_SIZE || BLOCK_SIZE % sector != 0 {
-        return Err(EINVAL as u64);
-    }
-    let sectors_per_block = (BLOCK_SIZE / sector) as u64;
-    let total = device.num_blocks() / sectors_per_block;
-    if total < 24 {
-        return Err(EINVAL as u64);
-    }
-    let mut bytes = Vec::new();
-    bytes.try_reserve_exact(sector).map_err(|_| ENOMEM as u64)?;
-    bytes.resize(sector, 0);
-    for start in [16, total - 4] {
-        for slot in 0..4 {
-            let sector = (start + slot)
-                .checked_mul(sectors_per_block)
-                .ok_or(EINVAL as u64)?;
-            device
-                .read_block(sector, &mut bytes)
-                .map_err(|_| EIO as u64)?;
-            if mount_args::has_magic(&bytes) {
-                return Ok(());
-            }
-        }
-    }
-    Err(EINVAL as u64)
-}
+use alloc::sync::Arc;
 
 pub fn mount(source: u64, target: u64, flags: u64, cred: &Credentials) -> Result<(), u64> {
     mount_args::validate(cred.euid, flags)?;
@@ -47,7 +16,9 @@ pub fn mount(source: u64, target: u64, flags: u64, cred: &Credentials) -> Result
     let device: Arc<dyn BlockDevice> = crate::fs::devfs::disk_device(disk)
         .ok_or(ENXIO as u64)?
         .into();
-    require_magic(device.as_ref())?;
+    if !probe(device.as_ref()).map_err(|e| e.0 as u64)? {
+        return Err(EINVAL as u64);
+    }
 
     let raw = userptr::copy_path_bytes_from_user(target)?;
     let point = resolve_at(AT_FDCWD, &raw, true, cred)?;
@@ -78,18 +49,23 @@ pub fn mount(source: u64, target: u64, flags: u64, cred: &Credentials) -> Result
     };
 
     let id = registry::allocate_id().map_err(|e| e.0 as u64)?;
-    let fs = BreenFs::mount_cached(device, crate::block::cache_kernel::system_cache(), id, 1)
-        .map_err(|e| e.0 as u64)?;
+    let cache = crate::block::cache_kernel::system_cache();
+    let fs = if flags == 1 {
+        BreenFs::mount_cached(device, cache, id, 1)
+    } else {
+        BreenFs::mount_writable_cached(device, cache, id, 1)
+    }
+    .map_err(|e| e.0 as u64)?;
     let root = fs.root().map_err(|e| e.0 as u64)?;
     let mut entry = registry::MountPoint::new(
         id,
         point.path.clone(),
         "breenfs",
         MountFlags {
-            read_only: true,
+            read_only: flags == 1,
             ..MountFlags::default()
         },
-        registry::Backend::Fs(fs),
+        registry::Backend::Fs(fs.clone()),
         root,
         Some((covered_mount.0, covered_ino)),
         Some((parent_mount.0, parent_ino)),
@@ -97,7 +73,13 @@ pub fn mount(source: u64, target: u64, flags: u64, cred: &Credentials) -> Result
     entry.source = source;
     entry.custody = Some(Arc::try_new(point).map_err(|_| ENOMEM as u64)?);
     // Publish after validating the source, recovery state and mount point.
-    registry::register(entry).map_err(|e| e.0 as u64)
+    // Start before publication: a visible writable mount can receive fsync.
+    fs.init_service().map_err(|e| e.0 as u64)?;
+    if let Err(error) = registry::register(entry) {
+        fs.shutdown("mount", u64::MAX).map_err(|e| e.0 as u64)?;
+        return Err(error.0 as u64);
+    }
+    Ok(())
 }
 
 /// Explicitly registered native breenfs roots enter this path. Other
@@ -112,5 +94,19 @@ pub fn unmount(target: &Target, flags: u64) -> Option<Result<(), u64>> {
     {
         return None;
     }
-    Some(registry::unmount(mount.0, flags != 0).map_err(|e| e.0 as u64))
+    Some((|| {
+        let fs = registry::filesystem(mount.0).map_err(|e| e.0 as u64)?;
+        let (sec, nsec) = crate::time::get_monotonic_time_ns();
+        let deadline = (sec as u64)
+            .saturating_mul(1_000_000_000)
+            .saturating_add(nsec as u64)
+            .saturating_add(10_000_000_000);
+        fs.shutdown("umount", deadline).map_err(|e| e.0 as u64)?;
+        if let Err(error) = registry::unmount(mount.0, flags != 0) {
+            // Custody can refuse removal; keep the registered mount usable.
+            fs.init_service().map_err(|e| e.0 as u64)?;
+            return Err(error.0 as u64);
+        }
+        Ok(())
+    })())
 }

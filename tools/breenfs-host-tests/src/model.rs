@@ -1,6 +1,6 @@
 //! Independent inode-relative POSIX.1-2017 oracle, with breenfs durability from
 //! docs/fs/breenfs-design.md 2.5. Credentials and path traversal stay in the VFS.
-//! Xattrs are the design's extension: missing removal is ENOENT, invalid limits
+//! Xattrs are the design's extension: missing removal is ENODATA, invalid limits
 //! are EINVAL. Remount means a clean unmount/mount, not a simulated crash.
 use crate::*;
 
@@ -253,8 +253,8 @@ impl Model {
     pub fn unlink(&mut self, dir: Ino, name: &[u8], at: Time) -> Result<()> {
         let ino = self.lookup(dir, name)?;
         if matches!(self.inode(ino)?.contents, Contents::Directory { .. }) {
-            // POSIX permits EPERM for unlink of a directory.
-            return Err(Errno::EPERM.into());
+            // Breenix's Linux ABI uses EISDIR for unlink of a directory.
+            return Err(Errno::EISDIR.into());
         }
         self.entries_mut(dir).remove(name);
         self.drop_link(ino, false, at);
@@ -393,7 +393,7 @@ impl Model {
         self.inode(ino)?;
         Self::xattr_name(name)?;
         if !self.inode(ino)?.xattrs.contains_key(name) {
-            return Err(Errno::ENOENT.into());
+            return Err(Errno::ENODATA.into());
         }
         self.inode_mut(ino).xattrs.remove(name);
         self.changed(ino, at, false);

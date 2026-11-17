@@ -25,6 +25,8 @@ use alloc::sync::Arc;
 pub struct VirtioBlockWrapper {
     /// Reference to the underlying VirtIO device
     device: Arc<VirtioBlockDevice>,
+    /// Stable backend coordinate shared by independently opened wrappers.
+    device_index: usize,
     /// Block size for this wrapper (always 512 bytes for VirtIO)
     block_size: usize,
 }
@@ -44,6 +46,7 @@ impl VirtioBlockWrapper {
 
         Some(VirtioBlockWrapper {
             device,
+            device_index,
             block_size: SECTOR_SIZE,
         })
     }
@@ -57,6 +60,10 @@ impl VirtioBlockWrapper {
 
 #[cfg(target_arch = "x86_64")]
 impl BlockDevice for VirtioBlockWrapper {
+    fn identity(&self) -> usize {
+        0x5649_0000_0000_0000 | self.device_index
+    }
+
     fn is_read_only(&self) -> bool { self.device.is_read_only() }
 
     fn hardware_disk(&self) -> Option<super::HardwareDisk> {
@@ -171,6 +178,10 @@ impl VirtioBlockWrapper {
 
 #[cfg(target_arch = "aarch64")]
 impl BlockDevice for VirtioBlockWrapper {
+    fn identity(&self) -> usize {
+        0x5649_0000_0000_0000 | self.device_index
+    }
+
     fn is_read_only(&self) -> bool {
         block_driver::is_readonly(self.device_index).unwrap_or(true)
     }

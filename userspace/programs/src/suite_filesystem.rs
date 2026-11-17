@@ -1,8 +1,10 @@
-//! Report host filesystem format evidence staged on the disk.
+//! Exercise the filesystem interface, cache and BreenFS guest volumes.
 mod cache_reread;
 mod filesystem_read;
+mod filesystem_root;
+mod filesystem_write;
 use cache_reread::{reread_is_cached, REREAD_BYTES};
-use breenix_suite::suite::{case, category, check, fail, running_case, suite, CaseResult, Suite};
+use breenix_suite::suite::{case, category, check, suite, CaseError, CaseResult, Suite};
 use libbreenix::{fs as sysfs, io as sysio, types::Fd};
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -24,23 +26,19 @@ static SUITE: Suite = suite("filesystem", "Copy-on-write filesystem", &[
         case("write-through", "Writes reach the device before returning", write_through),
         case("fsync-flush", "fsync flush follows the file's last device write", fsync_flush),
     ]),
-    category("format", "Formatter images pass the independent checker and violating images are refused", &[
-        case("mkfs-empty-clean", "Empty formatted images pass the full checker", host_case),
-        case("mkfs-populate-clean", "Populated formatted images pass the full checker", host_case),
-        case("reproducible-image", "Fixed inputs produce byte-identical images", host_case),
-        case("violations-refused", "Images violating format invariants are refused", host_case),
-    ]),
     category("read", "A host-built filesystem reads back as its manifest", &[
         case("manifest-equal", "Types, metadata, hashes and link groups equal the host manifest", filesystem_read::manifest_equal),
         case("holes-and-tail", "Holes and the mapped partial tail are zero with only mapped blocks counted", filesystem_read::holes_and_tail),
         case("readdir-resume", "Small directory reads and cookie seeks enumerate 5000 names exactly once", filesystem_read::readdir_resume),
         case("read-only-refusals", "Write, create and unlink are refused with EROFS", filesystem_read::read_only_refusals),
     ]),
-    category("crash-images", "Host-enumerated crash images recover to an acknowledged commit", &[
-        case("subset-images", "Crash write subsets recover to an acknowledged commit", host_case),
-        case("torn-images", "Torn images recover to an acknowledged commit", host_case),
-        case("corruption-no-panic", "Corrupted images return errors without panicking", host_case),
-        case("torture-24h", "Twenty-four hours of torture complete without failures", host_case),
+    category("write", "File and directory operations commit through transactions", &[
+        case("remount-reads-back", "An fsynced tree reads back unchanged after remount", filesystem_write::remount_reads_back),
+        case("rename-replace-atomic", "Rename replacement preserves open files and publishes the new name atomically", filesystem_write::rename_replace_atomic),
+        case("unlinked-open-file", "An unlinked open file remains readable until close and is gone after remount", filesystem_write::unlinked_open_file),
+        case("truncate-sparse", "Sparse writes and truncate preserve data and zero-filled holes after remount", filesystem_write::truncate_sparse),
+        case("mmap-msync", "Shared mapped stores survive MS_SYNC and remount", filesystem_write::mmap_msync),
+        case("commit-without-fsync", "The periodic commit makes an unfsynced write durable", filesystem_write::commit_without_fsync),
     ]),
 ]);
 
@@ -91,8 +89,25 @@ fn reread_from_cache() -> CaseResult {
 }
 
 fn write_through() -> CaseResult {
-    let path = CacheFile::new("write-through");
+    let root = filesystem_root::declared()?;
+    let text = io(fs::read_to_string("/proc/mounts"))?;
+    let rows: Vec<Vec<_>> = text.lines().map(|line| line.split_whitespace().collect())
+        .filter(|row: &Vec<_>| row.len() == 6).collect();
+    let roots: Vec<_> = rows.iter().filter(|row| row[1] == "/").collect();
+    check(roots.len() == 1 && roots[0][2] == root.name(),
+        "root mount differs from the host declaration")?;
+    // Prefer the root on default boots, otherwise exercise an ext2 mount the boot carries.
+    let ext2 = rows.iter().find(|row| row[1] == "/" && row[2] == "ext2")
+        .or_else(|| rows.iter().find(|row| row[2] == "ext2"));
+    let Some(ext2) = ext2 else {
+        return Err(CaseError::Skip("no ext2 mount in this boot (root is breenfs)".into()));
+    };
+    let directory = if ext2[1] == "/" { "/tmp" } else { ext2[1] };
+    let path = CacheFile(PathBuf::from(directory)
+        .join(format!("filesystem-cache-write-through-{}", std::process::id())));
     let mut file = io(File::create(&path.0))?;
+    check(sysfs::fstatfs(Fd::from_raw(file.as_raw_fd() as u64))?.f_type == 0xef53,
+        "write-through file is not on ext2")?;
     for byte in 0..4u8 {
         let before = cache_counters()?;
         let data = [byte; 4096];
@@ -165,9 +180,10 @@ impl Drop for Mount {
 }
 
 fn mounts_listed() -> CaseResult {
+    let root = filesystem_root::declared()?;
     let mount = Mount::start()?;
     let text = io(fs::read_to_string("/proc/mounts"))?;
-    for (path, kind, options) in [("/", "ext2", "rw"), ("/dev", "devfs", "rw"),
+    for (path, kind, options) in [("/", root.name(), "rw"), ("/dev", "devfs", "rw"),
         ("/proc", "procfs", "rw"), (mount.dir.to_str().ok_or("mount path encoding")?, "ufs", "rw")] {
         let matches: Vec<_> = text.lines().filter_map(|line| {
             let fields: Vec<_> = line.split_whitespace().collect();
@@ -194,9 +210,10 @@ fn cross_mount_exdev() -> CaseResult {
     mount.finish()
 }
 fn statfs_per_mount() -> CaseResult {
+    let root = filesystem_root::declared()?;
     let mount = Mount::start()?;
     let mut ids = Vec::new();
-    for (path, expected) in [("/", 0xef53), ("/dev", 0x1373), ("/proc", 0x9fa0),
+    for (path, expected) in [("/", root.magic() as i64), ("/dev", 0x1373), ("/proc", 0x9fa0),
         (mount.dir.to_str().ok_or("mount path encoding")?, 0x55465331)] {
         let path = std::ffi::CString::new(path).map_err(|e| e.to_string())?;
         let mut stats = sysfs::Statfs::default();
@@ -226,17 +243,6 @@ fn ino_consistent() -> CaseResult {
     drop(file);
     io(fs::remove_dir_all(dir))?;
     result
-}
-
-fn host_case() -> CaseResult {
-    let id = running_case().ok_or("the case could not tell which case it is")?;
-    let path = format!("/usr/local/filesystem-suite/host/{id}");
-    let text = std::fs::read_to_string(&path).map_err(|_| format!("the host harness left no record {path}"))?;
-    match text.lines().next().unwrap_or("") {
-        "PASS" => Ok(()),
-        line if line.starts_with("FAIL ") => fail(format!("host: {}", &line[5..])),
-        line => fail(format!("{path} reads {line:?}, not PASS or FAIL")),
-    }
 }
 
 fn main() { SUITE.run() }

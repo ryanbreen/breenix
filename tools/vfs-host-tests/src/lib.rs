@@ -46,8 +46,19 @@ pub fn arch_without_interrupts<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 pub mod time {
+    std::thread_local! {
+        static UNIX_TIME: core::cell::Cell<u64> = const { core::cell::Cell::new(1) };
+    }
     pub fn current_unix_time() -> u64 {
-        1
+        UNIX_TIME.with(core::cell::Cell::get)
+    }
+    pub fn with_unix_time<T>(seconds: u64, f: impl FnOnce() -> T) -> T {
+        struct Restore(u64);
+        impl Drop for Restore {
+            fn drop(&mut self) { UNIX_TIME.with(|clock| clock.set(self.0)); }
+        }
+        let _restore = Restore(UNIX_TIME.with(|clock| clock.replace(seconds)));
+        f()
     }
 }
 
@@ -56,28 +67,12 @@ pub mod time {
 #[path = "../tests/vfs_host_tests.rs"]
 mod vfs_host_tests;
 
-// Mapped-page sync is kernel-only; storage::FileMap::has_dirty returns false here.
+// Share the pinned-frame fixture and production mapping entry points.
 pub mod memory {
-    pub mod file_map {
-        // Disk-only conformance fixtures have no mapped frames.
-        #[derive(Clone)]
-        pub struct MapState;
-        impl MapState {
-            pub fn new(
-                _size: u64, _epoch: u64,
-                _fs: alloc::sync::Arc<dyn crate::vfs::FileSystem>,
-            ) -> Result<Self, crate::errno::Errno> { Ok(Self) }
-            pub fn has_dirty(&self) -> bool { false }
-            pub fn may_change_exec_image(&self) -> bool { false }
-        }
-        pub fn sync_range<T: ?Sized>(
-            _node: &T,
-            _first: u64,
-            _last: u64,
-        ) -> Result<(), crate::errno::Errno> {
-            Err(crate::errno::Errno(crate::syscall::errno::EOPNOTSUPP))
-        }
-    }
+    pub fn physical_memory_offset() -> HostOffset { HostOffset }
+    pub struct HostOffset;
+    impl HostOffset { pub fn as_u64(&self) -> u64 { 0 } }
+    pub mod file_map { include!("../../breenfs-host-tests/src/mapping_support.rs"); }
 }
 
 pub use vfs::mount_table;
@@ -108,3 +103,16 @@ pub mod breenfs;
 mod read_conformance;
 #[path = "../tests/manifest_walk.rs"]
 mod manifest_walk;
+#[path = "../tests/write_conformance.rs"]
+mod write_conformance;
+
+#[path = "../tests/model.rs"]
+mod model;
+
+mod trait_adapter;
+
+#[path = "../tests/breenfs_boot_probe.rs"]
+mod breenfs_boot_probe;
+
+#[path = "../tests/writable_owner.rs"]
+mod writable_owner;

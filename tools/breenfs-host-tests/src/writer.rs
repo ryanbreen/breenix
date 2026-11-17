@@ -28,6 +28,7 @@ fn error(e: ops::Error) -> Error {
         E::EPERM => Errno::EPERM,
         E::ENOTEMPTY => Errno::ENOTEMPTY,
         E::ENOENT => Errno::ENOENT,
+        E::ENODATA => Errno::ENODATA,
         E::EEXIST => Errno::EEXIST,
         E::ENOTDIR => Errno::ENOTDIR,
         E::EISDIR => Errno::EISDIR,
