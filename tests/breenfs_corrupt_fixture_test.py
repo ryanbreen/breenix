@@ -52,6 +52,12 @@ class CorruptFixture(unittest.TestCase):
                 self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
                 self.assertEqual(len(errors), 1, errors)
                 self.assertRegex(errors[0], rf'error {invariant}\b.*\b{addr}\b')
+                owners = run(TARGET / 'breenfs-extract', 'owners', image, addr).stdout.strip()
+                if invariant == 'N1':
+                    self.assertIn('corrupt candidates', owners)
+                    self.assertIn('/rot-dir/f0001', owners)
+                else:
+                    self.assertIn('data /rot/target offset=0', owners)
                 flip(image, addr * 4096 + offset)
                 pristine = run(TARGET / 'breenfs-check', '--full', image, check=False)
                 self.assertEqual(pristine.returncode, 0, pristine.stdout + pristine.stderr)
