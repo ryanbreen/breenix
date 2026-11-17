@@ -931,6 +931,12 @@ impl<W: Wait + 'static> BreenFs<W> {
                 Ok(WriteResult { offset, bytes: 0, limited: false })
             } else { Err(WriteError::FileSizeLimit) };
         };
+        // Bound holes need frames before file bytes change. Preparation can
+        // allocate; completing a published write only copies into those frames.
+        if node.map.prepare_write(offset, length).is_err() {
+            state.reservations.release(grant.0);
+            return Err(Errno(ENOMEM).into());
+        }
         let pending = state.pending.clone();
         let MountState {
             files,
@@ -959,7 +965,12 @@ impl<W: Wait + 'static> BreenFs<W> {
             inode.mode &= !content_privilege(inode.mode);
         }
         match state.files.put_inode(node.ino, inode) {
-            Err(error) => state.edited::<()>(Err(error))?,
+            Err(error) => {
+                let result = state.edited::<()>(Err(error));
+                node.map.transition(node.size.load(Ordering::Acquire));
+                node.map.invalidate(offset, length as u64);
+                result?;
+            }
             Ok(()) => {
                 state.fresh = false;
                 // This data write changes one inode. Keep its known result
@@ -972,6 +983,9 @@ impl<W: Wait + 'static> BreenFs<W> {
                 state.signal.wake();
             }
         }
+        // Growth clears the old EOF tail before the new bytes are copied.
+        node.map.transition(inode.size);
+        node.map.commit_write(offset, &bytes[..length]);
         Ok(WriteResult {
             offset,
             bytes: length,
@@ -1851,6 +1865,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 done = end;
             }
         }
+        node.map.overlay(off, &mut buf[..length]).map_err(|_| Errno(EIO))?;
         self.touch(node, true);
         Ok(length)
     }
@@ -2158,6 +2173,10 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             },
         )?;
         let Some(grant) = grant else { return Ok(()); };
+        if node.map.prepare_resize(inode.size, size).is_err() {
+            state.reservations.release(grant.0);
+            return Err(Errno(ENOMEM));
+        }
         if size < inode.size {
             let pending = state.pending.clone();
             let MountState {
@@ -2192,7 +2211,9 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             inode.mode &= !content_privilege(inode.mode);
         }
         let result = state.files.put_inode(node.ino, inode);
-        state.edited(result)
+        let result = state.edited(result);
+        node.map.transition(node.size.load(Ordering::Acquire));
+        result
     }
     fn writeback_pages(
         &self,
