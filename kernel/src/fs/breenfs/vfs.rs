@@ -650,35 +650,95 @@ impl<W: Wait + 'static> BreenFs<W> {
             self.inner.signal.wait(observed, None);
         }
     }
+    /// Retry admission after publishing the PENDING ranges visible at its first
+    /// refusal (E24 ledger 379(2), #3040). Reserve and validate again under the
+    /// new lock: publication can change COW estimates, and another caller can
+    /// change names, ownership or append offsets while the lock is dropped.
+    fn reserve_with_pressure<'a, T>(
+        &'a self,
+        mut state: MountGuard<'a, MountState<W>>,
+        mut admit: impl FnMut() -> Result<MountGuard<'a, MountState<W>>, Errno>,
+        mut reserve: impl FnMut(&mut MountState<W>) -> Result<T, Errno>,
+    ) -> Result<(MountGuard<'a, MountState<W>>, T), Errno> {
+        let mut limit = None;
+        loop {
+            state.writable()?;
+            match reserve(&mut state) {
+                Ok(grant) => return Ok((state, grant)),
+                Err(error) if error == Errno(ENOSPC) => (),
+                Err(error) => return Err(error),
+            }
+            let last = match limit {
+                Some(last) => last,
+                None => {
+                    // The detached generation can already contain releases
+                    // absent from durable. Its private nodes are read through
+                    // the same view used by the open transaction.
+                    let sb = state.pending.as_ref().map_or(&state.durable, |p| p.superblock());
+                    let mut store = self.inner.cache.store(self.inner.device.clone(), sb);
+                    if let Some(prepared) = &state.pending { store = store.with_pending(prepared); }
+                    let generation = super::space::pending_promotion_generation(&store, sb.space_root)
+                        .map_err(|_| Errno(EIO))?.ok_or(Errno(ENOSPC))?;
+                    // A6 bounds release generations by this superblock's
+                    // generation, including the detached publication's view.
+                    if generation > sb.generation.saturating_add(2) {
+                        return Err(Errno(EIO));
+                    }
+                    // An already eligible range still needs a publication to
+                    // enter durable.free_blocks, which admission uses (design 2.5).
+                    let last = generation.max(sb.generation.checked_add(1).ok_or(Errno(ENOSPC))?);
+                    limit = Some(last);
+                    last
+                }
+            };
+            if state.durable.generation >= last { return Err(Errno(ENOSPC)); }
+            let observed = self.inner.signal.epoch();
+            drop(state);
+            // Do not service mappings recursively: a mapping writer can be the
+            // caller. Detached publication and its wait hold no mount lock.
+            if !self.commit_generation_up_to(monotonic_ns(), last, true)? {
+                self.inner.signal.wait(observed, None);
+            }
+            state = admit()?;
+        }
+    }
     /// Write `bytes` under one admission. The caller admitted them.
     fn write_part(
         &self,
-        mut state: MountGuard<'_, MountState<W>>,
+        state: MountGuard<'_, MountState<W>>,
         node: &VNode,
         req: WriteReq,
         bytes: &[u8],
     ) -> Result<WriteResult, WriteError> {
-        let mut inode = state.regular(node.ino)?;
-        let offset = match req.at {
-            WriteAt::Offset(offset) => offset,
-            WriteAt::Append => inode.size,
+        let split = if state.nodes.get(&node.ino).is_some_and(|n| n.splitting) {
+            Split::Held
+        } else { Split::No };
+        let (mut state, (mut inode, offset, length, end, grant)) = self.reserve_with_pressure(
+            state,
+            || self.admit_data(node.ino, touched_bytes(bytes.len()), split),
+            |state| {
+                let inode = state.regular(node.ino)?;
+                let offset = match req.at {
+                    WriteAt::Offset(offset) => offset,
+                    WriteAt::Append => inode.size,
+                };
+                if bytes.is_empty() || (req.limit != u64::MAX && offset >= req.limit) {
+                    return Ok((inode, offset, 0, offset, None));
+                }
+                let length = (req.limit - offset).min(bytes.len() as u64) as usize;
+                let end = offset.checked_add(length as u64)
+                    .filter(|end| *end <= (1 << 63) - 4096).ok_or(Errno(EFBIG))?;
+                let grant = if length == 0 { None } else {
+                    Some(state.reserve_data(node.ino, offset, length, Operation::Allocate)?)
+                };
+                Ok((inode, offset, length, end, grant))
+            },
+        )?;
+        let Some(grant) = grant else {
+            return if bytes.is_empty() {
+                Ok(WriteResult { offset, bytes: 0, limited: false })
+            } else { Err(WriteError::FileSizeLimit) };
         };
-        if bytes.is_empty() {
-            return Ok(WriteResult {
-                offset,
-                bytes: 0,
-                limited: false,
-            });
-        }
-        if req.limit != u64::MAX && offset >= req.limit {
-            return Err(WriteError::FileSizeLimit);
-        }
-        let length = (req.limit - offset).min(bytes.len() as u64) as usize;
-        let end = offset
-            .checked_add(length as u64)
-            .filter(|end| *end <= (1 << 63) - 4096)
-            .ok_or(Errno(EFBIG))?;
-        let grant = state.reserve_data(node.ino, offset, length, Operation::Allocate)?;
         let pending = state.pending.clone();
         let MountState {
             files,
@@ -840,6 +900,9 @@ impl<W: Wait + 'static> BreenFs<W> {
         }
     }
     fn commit_generation(&self, now_ns: u64) -> Result<bool, Errno> {
+        self.commit_generation_up_to(now_ns, u64::MAX, false)
+    }
+    fn commit_generation_up_to(&self, now_ns: u64, last: u64, force: bool) -> Result<bool, Errno> {
         #[cfg(not(test))]
         crate::block::cache_kernel::assert_io_context();
         let prepared = {
@@ -847,12 +910,12 @@ impl<W: Wait + 'static> BreenFs<W> {
             if state.failed {
                 return Err(Errno(EIO));
             }
-            if state.committer.is_none() || state.pending.is_some() {
+            if state.committer.is_none() || state.pending.is_some() || state.durable.generation >= last {
                 return Ok(false);
             }
             let fsync = self.inner.signal.requested.swap(false, Ordering::AcqRel);
             let pressure = self.inner.signal.pressure.swap(false, Ordering::AcqRel);
-            if !state.policy.due(now_ns, state.dirty_bytes, fsync, pressure) {
+            if !state.policy.due(now_ns, state.dirty_bytes, fsync || force, pressure) {
                 return Ok(false);
             }
             let touched: Vec<_> = state.nodes.keys().copied().collect();
@@ -1317,16 +1380,20 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         Ok(Box::try_new(transfer).map_err(|_| Errno(ENOMEM))?)
     }
     fn setattr(&self, ino: u64, attrs: SetAttr) -> Result<(), Errno> {
-        let mut state = self.inner.state.lock();
+        let state = self.inner.state.lock();
         state.writable()?;
-        let current = state.attrs(ino)?;
-        if attrs
-            .expected
-            .is_some_and(|expected| current.attrs != expected)
-        {
-            return Err(Errno(EAGAIN));
-        }
-        let grant = state.reserve_metadata(&[ino], 1, false, false, Operation::Allocate)?;
+        let (mut state, grant) = self.reserve_with_pressure(state, || Ok(self.inner.state.lock()), |state| {
+            let current = state.attrs(ino)?;
+            if attrs
+                .expected
+                .is_some_and(|expected| current.attrs != expected)
+            {
+                return Err(Errno(EAGAIN));
+            }
+            let grant = state.reserve_metadata(&[ino], 1, false, false, Operation::Allocate)?;
+
+            Ok(grant)
+        })?;
         let result = state.files.setattr(
             ino,
             &ops::SetAttr {
@@ -1341,7 +1408,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         state.finish_metadata(grant, result)
     }
     fn create(&self, dir: u64, name: &[u8], node: NewNode<'_>) -> Result<u64, Errno> {
-        let mut state = self.inner.state.lock();
+        let state = self.inner.state.lock();
         state.writable()?;
         let (attrs, bits, rdev, target) = match node {
             NewNode::Regular { attrs } => (attrs, 0o100000, 0, None),
@@ -1352,7 +1419,9 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             NewNode::Fifo { attrs } => (attrs, 0o010000, 0, None),
             NewNode::Socket { attrs } => (attrs, 0o140000, 0, None),
         };
-        let grant = state.reserve_metadata(&[dir], 5, true, false, Operation::Allocate)?;
+        let (mut state, grant) = self.reserve_with_pressure(state, || Ok(self.inner.state.lock()), |state| {
+            state.reserve_metadata(&[dir], 5, true, false, Operation::Allocate)
+        })?;
         let result = state.files.create_node_prepared(
             dir,
             name,
@@ -1377,23 +1446,26 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         check: &dyn Fn(NodeAttrs) -> Result<InodeAttrs, Errno>,
         prepare: &mut dyn FnMut(Arc<VNode>) -> Result<(), Errno>,
     ) -> Result<(), Errno> {
-        let mut state = self.inner.state.lock();
+        let state = self.inner.state.lock();
         state.writable()?;
-        match state.files.lookup(dir, name) {
-            Ok(_) => return Err(Errno(EEXIST)),
-            Err(ops::Error::ENOENT) => (),
-            Err(e) => return Err(errno(e)),
-        }
-        let attrs = check(state.directory(dir)?)?;
-        let bits = match kind {
-            NodeKind::Regular => 0o100000,
-            NodeKind::Socket => 0o140000,
-            _ => return Err(Errno(EOPNOTSUPP)),
-        };
+        let (mut state, (attrs, bits, grant)) = self.reserve_with_pressure(state, || Ok(self.inner.state.lock()), |state| {
+            match state.files.lookup(dir, name) {
+                Ok(_) => return Err(Errno(EEXIST)),
+                Err(ops::Error::ENOENT) => (),
+                Err(e) => return Err(errno(e)),
+            }
+            let attrs = check(state.directory(dir)?)?;
+            let bits = match kind {
+                NodeKind::Regular => 0o100000,
+                NodeKind::Socket => 0o140000,
+                _ => return Err(Errno(EOPNOTSUPP)),
+            };
+            let grant = state.reserve_metadata(&[dir], 5, true, false, Operation::Allocate)?;
+            Ok((attrs, bits, grant))
+        })?;
         let mut prepared = None;
         let mut preparation_error = None;
         let epoch = state.durable.generation;
-        let grant = state.reserve_metadata(&[dir], 5, true, false, Operation::Allocate)?;
         let result = state.files.create_node_prepared(
             dir,
             name,
@@ -1430,44 +1502,51 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         Ok(())
     }
     fn link(&self, ino: u64, dir: u64, name: &[u8], check: &LinkCheck<'_>) -> Result<(), Errno> {
-        let mut state = self.inner.state.lock();
+        let state = self.inner.state.lock();
         state.writable()?;
-        let parent = state.directory(dir)?;
-        let source = state.attrs(ino)?;
-        if source.kind == NodeKind::Directory {
-            return Err(Errno(EPERM));
-        }
-        check(parent, source)?;
-        let grant = state.reserve_metadata(&[ino, dir], 4, false, false, Operation::Allocate)?;
+        let (mut state, grant) = self.reserve_with_pressure(state, || Ok(self.inner.state.lock()), |state| {
+            let parent = state.directory(dir)?;
+            let source = state.attrs(ino)?;
+            if source.kind == NodeKind::Directory {
+                return Err(Errno(EPERM));
+            }
+            check(parent, source)?;
+            let grant = state.reserve_metadata(&[ino, dir], 4, false, false, Operation::Allocate)?;
+
+            Ok(grant)
+        })?;
         let result = state.files.link(ino, dir, name, now());
         state.finish_metadata(grant, result)
     }
     fn remove(&self, dir: u64, name: &[u8], which: Remove) -> Result<(), Errno> {
-        let mut state = self.inner.state.lock();
+        let state = self.inner.state.lock();
         state.writable()?;
-        let parent = state.directory(dir)?;
-        let victim = state.files.lookup(dir, name).map_err(errno)?;
-        let attrs = state.attrs(victim)?;
-        if !which.directory && attrs.kind == NodeKind::Directory {
-            return Err(Errno(EISDIR));
-        }
-        if which.expected != victim
-            || which.owner != attrs.attrs.uid
-            || which.parent != parent.attrs
-        {
-            return Err(Errno(EAGAIN));
-        }
-        // Match ext2's held-directory policy before testing emptiness.
-        if which.directory
-            && attrs.kind == NodeKind::Directory
-            && state.nodes.get(&victim).is_some_and(|entry| entry.node.strong_count() != 0)
-        {
-            return Err(Errno(EBUSY));
-        }
-        let grant = state.reserve_metadata(
-            &[dir, victim], 5, false, !which.directory,
-            if which.directory { Operation::Rmdir } else { Operation::Unlink },
-        )?;
+        let (mut state, grant) = self.reserve_with_pressure(state, || Ok(self.inner.state.lock()), |state| {
+            let parent = state.directory(dir)?;
+            let victim = state.files.lookup(dir, name).map_err(errno)?;
+            let attrs = state.attrs(victim)?;
+            if !which.directory && attrs.kind == NodeKind::Directory {
+                return Err(Errno(EISDIR));
+            }
+            if which.expected != victim
+                || which.owner != attrs.attrs.uid
+                || which.parent != parent.attrs
+            {
+                return Err(Errno(EAGAIN));
+            }
+            // Match ext2's held-directory policy before testing emptiness.
+            if which.directory
+                && attrs.kind == NodeKind::Directory
+                && state.nodes.get(&victim).is_some_and(|entry| entry.node.strong_count() != 0)
+            {
+                return Err(Errno(EBUSY));
+            }
+            let grant = state.reserve_metadata(
+                &[dir, victim], 5, false, !which.directory,
+                if which.directory { Operation::Rmdir } else { Operation::Unlink },
+            )?;
+            Ok(grant)
+        })?;
         let result = if which.directory {
             state.files.rmdir(dir, name, now())
         } else {
@@ -1484,27 +1563,31 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         mode: RenameMode,
         check: &RenameCheck<'_>,
     ) -> Result<(), Errno> {
-        let mut state = self.inner.state.lock();
+        let state = self.inner.state.lock();
         state.writable()?;
-        if mode == RenameMode::Exchange {
-            return Err(Errno(EINVAL));
-        }
-        let parent = state.directory(from_dir)?;
-        let dest_parent = state.directory(to_dir)?;
-        let source = state.files.lookup(from_dir, from).map_err(errno)?;
-        let source = state.attrs(source)?;
-        let dest = match state.files.lookup(to_dir, to) {
-            Ok(ino) => Some(state.attrs(ino)?),
-            Err(ops::Error::ENOENT) => None,
-            Err(e) => return Err(errno(e)),
-        };
-        check(parent, dest_parent, source, dest)?;
-        if mode == RenameMode::NoReplace && dest.is_some() {
-            return Err(Errno(EEXIST));
-        }
-        let mut objects = alloc::vec![from_dir, to_dir, source.ino];
-        if let Some(dest) = dest { objects.push(dest.ino); }
-        let grant = state.reserve_metadata(&objects, 12, false, dest.is_some(), Operation::Allocate)?;
+        let (mut state, grant) = self.reserve_with_pressure(state, || Ok(self.inner.state.lock()), |state| {
+            if mode == RenameMode::Exchange {
+                return Err(Errno(EINVAL));
+            }
+            let parent = state.directory(from_dir)?;
+            let dest_parent = state.directory(to_dir)?;
+            let source = state.files.lookup(from_dir, from).map_err(errno)?;
+            let source = state.attrs(source)?;
+            let dest = match state.files.lookup(to_dir, to) {
+                Ok(ino) => Some(state.attrs(ino)?),
+                Err(ops::Error::ENOENT) => None,
+                Err(e) => return Err(errno(e)),
+            };
+            check(parent, dest_parent, source, dest)?;
+            if mode == RenameMode::NoReplace && dest.is_some() {
+                return Err(Errno(EEXIST));
+            }
+            let mut objects = alloc::vec![from_dir, to_dir, source.ino];
+            if let Some(dest) = dest { objects.push(dest.ino); }
+            let grant = state.reserve_metadata(&objects, 12, false, dest.is_some(), Operation::Allocate)?;
+
+            Ok(grant)
+        })?;
         let result = state.files.rename(from_dir, from, to_dir, to, now());
         state.finish_metadata(grant, result)
     }
@@ -1535,26 +1618,32 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
     ) -> Result<(), Errno> {
         self.check_node(node)?;
         // Shrinking can keep one zeroed partial tail page.
-        let mut state = self.admit_data(node.ino, BLOCK_SIZE as u64, Split::No)?;
-        let mut inode = state.regular(node.ino)?;
-        check(state.attrs(node.ino)?)?;
-        if size > (1 << 63) - 4096 {
-            return Err(Errno(EFBIG));
-        }
-        if size == inode.size {
-            return Ok(());
-        }
-        let floor = size / BLOCK_SIZE as u64 * BLOCK_SIZE as u64;
-        let mapped_tail = size < inode.size && size % BLOCK_SIZE as u64 != 0
-            && state.files.extents(node.ino).map_err(errno)?.iter().any(|(k, e)| {
-                k.offset <= floor && floor < k.offset + u64::from(e.num_blocks) * BLOCK_SIZE as u64
-            });
-        let grant = state.reserve_data(
-            node.ino,
-            floor,
-            usize::from(mapped_tail),
-            if size < inode.size { Operation::Truncate } else { Operation::Allocate },
+        let state = self.admit_data(node.ino, BLOCK_SIZE as u64, Split::No)?;
+        let (mut state, (mut inode, mapped_tail, grant)) = self.reserve_with_pressure(
+            state, || self.admit_data(node.ino, BLOCK_SIZE as u64, Split::No), |state| {
+                let inode = state.regular(node.ino)?;
+                check(state.attrs(node.ino)?)?;
+                if size > (1 << 63) - 4096 {
+                    return Err(Errno(EFBIG));
+                }
+                if size == inode.size {
+                    return Ok((inode, false, None));
+                }
+                let floor = size / BLOCK_SIZE as u64 * BLOCK_SIZE as u64;
+                let mapped_tail = size < inode.size && size % BLOCK_SIZE as u64 != 0
+                    && state.files.extents(node.ino).map_err(errno)?.iter().any(|(k, e)| {
+                        k.offset <= floor && floor < k.offset + u64::from(e.num_blocks) * BLOCK_SIZE as u64
+                    });
+                let grant = state.reserve_data(
+                    node.ino,
+                    floor,
+                    usize::from(mapped_tail),
+                    if size < inode.size { Operation::Truncate } else { Operation::Allocate },
+                )?;
+                Ok((inode, mapped_tail, Some(grant)))
+            },
         )?;
+        let Some(grant) = grant else { return Ok(()); };
         if size < inode.size {
             let pending = state.pending.clone();
             let MountState {
@@ -1610,16 +1699,22 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             .try_reserve_exact(bytes.len())
             .map_err(|_| Errno(ENOMEM))?;
         bounce.extend_from_slice(bytes);
-        let mut state = self.admit(touched_bytes(bounce.len()))?;
-        if !mapping.writable {
-            return Err(Errno(EROFS));
-        }
-        let mut inode = state.regular(node.ino)?;
-        let length = inode.size.saturating_sub(offset).min(bounce.len() as u64) as usize;
-        if length == 0 {
-            return Ok(());
-        }
-        let grant = state.reserve_data(node.ino, offset, length, Operation::Allocate)?;
+        let state = self.admit(touched_bytes(bounce.len()))?;
+        let (mut state, (mut inode, length, grant)) = self.reserve_with_pressure(
+            state, || self.admit(touched_bytes(bounce.len())), |state| {
+                if !mapping.writable {
+                    return Err(Errno(EROFS));
+                }
+                let inode = state.regular(node.ino)?;
+                let length = inode.size.saturating_sub(offset).min(bounce.len() as u64) as usize;
+                if length == 0 {
+                    return Ok((inode, length, None));
+                }
+                let grant = state.reserve_data(node.ino, offset, length, Operation::Allocate)?;
+                Ok((inode, length, Some(grant)))
+            },
+        )?;
+        let Some(grant) = grant else { return Ok(()); };
         let pending = state.pending.clone();
         let MountState {
             files,
@@ -1682,23 +1777,31 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 copy_xattr(names, &bytes)
             }
             Xattr::Set { name, value, mode } => {
-                state.writable()?;
-                let exists = records.iter().any(|x| x.name == name);
-                match mode {
-                    XattrSet::Create if exists => return Err(Errno(EEXIST)),
-                    XattrSet::Replace if !exists => return Err(Errno(ENODATA)),
-                    _ => (),
-                }
-                let grant = state.reserve_metadata(&[ino], 2, false, false, Operation::Allocate)?;
+                let (mut state, grant) = self.reserve_with_pressure(state, || Ok(self.inner.state.lock()), |state| {
+                    state.writable()?;
+                    let records = state.files.list_xattrs(ino).map_err(errno)?;
+                    let exists = records.iter().any(|x| x.name == name);
+                    match mode {
+                        XattrSet::Create if exists => return Err(Errno(EEXIST)),
+                        XattrSet::Replace if !exists => return Err(Errno(ENODATA)),
+                        _ => (),
+                    }
+                    let grant = state.reserve_metadata(&[ino], 2, false, false, Operation::Allocate)?;
+                    Ok(grant)
+                })?;
                 let result = state.files.xattr(ino, name, Some(value), now());
                 state.finish_metadata(grant, result).map(|_| 0)
             }
             Xattr::Remove { name } => {
-                state.writable()?;
-                if !records.iter().any(|x| x.name == name) {
-                    return Err(Errno(ENODATA));
-                }
-                let grant = state.reserve_metadata(&[ino], 2, false, false, Operation::RemoveXattr)?;
+                let (mut state, grant) = self.reserve_with_pressure(state, || Ok(self.inner.state.lock()), |state| {
+                    state.writable()?;
+                    let records = state.files.list_xattrs(ino).map_err(errno)?;
+                    if !records.iter().any(|x| x.name == name) {
+                        return Err(Errno(ENODATA));
+                    }
+                    let grant = state.reserve_metadata(&[ino], 2, false, false, Operation::RemoveXattr)?;
+                    Ok(grant)
+                })?;
                 let result = state.files.xattr(ino, name, None, now());
                 state.finish_metadata(grant, result).map(|_| 0)
             }

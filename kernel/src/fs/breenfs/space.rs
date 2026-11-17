@@ -214,6 +214,26 @@ pub fn add_free<S: NodeStore>(
     Ok(())
 }
 
+/// Last publication needed to include the current PENDING ranges in FREE.
+/// This observes the quarantine; promotion still goes through promote_pending.
+/// Admission snapshots this bound once, rather than chasing later releases.
+pub fn pending_promotion_generation<S: NodeStore>(
+    store: &S,
+    root: BlockPtr,
+) -> Result<Option<u64>, Error> {
+    let mut generation = None;
+    for (key, bytes) in range(store, root, PENDING_OBJECT, format::PENDING)? {
+        let pending = Pending::decode(&bytes)?;
+        end(key.offset, pending.length)?;
+        if pending.released_generation == 0 {
+            return Err(Error::Invalid);
+        }
+        let promoted = pending.released_generation.checked_add(2).ok_or(Error::Invalid)?;
+        generation = Some(generation.map_or(promoted, |old: u64| old.max(promoted)));
+    }
+    Ok(generation)
+}
+
 /// Commit-time conversion of quarantined space, even with ample FREE space.
 /// Allocation still prefers FREE within a transaction (design 2.5 reuse rule).
 pub fn promote_pending<S: NodeStore>(
