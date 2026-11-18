@@ -998,7 +998,11 @@ impl MapState {
             .any(|(index, page)| unbound(*index) && !page.dirty);
         self.state.resident
             .store(!pages.is_empty() || !poisoned.is_empty(), Ordering::Release);
-        self.state.eviction_pending.store(more, Ordering::Release);
+        // Dirty unbound pages still owe eviction after writeback. Preserve
+        // that request even when this pass has no clean page left to retire;
+        // writeback owns rescheduling until those pages become clean.
+        let pending = pages.entries.iter().any(|(index, _)| unbound(*index));
+        self.state.eviction_pending.store(pending, Ordering::Release);
         more
     }
 
