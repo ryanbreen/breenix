@@ -12,6 +12,7 @@ log = "0.4"
 ufs-abi = { path = "../../libs/ufs-abi" }
 
 [dev-dependencies]
+breenfs = { path = "../breenfs" }
 breenfs-host-tests = { path = "../breenfs-host-tests" }
 
 [lib]
