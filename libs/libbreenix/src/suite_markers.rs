@@ -29,21 +29,24 @@ fn parse(text: &str) -> Option<(u64, u64, u64)> {
     };
     Some((field("durable_generation=")?, field("free_blocks=")?, field("pending_blocks=")?))
 }
-/// Read durable raw counts for failure diagnostics.
-pub fn sample_root(index: usize, after: bool) {
+/// Read durable raw counts and retain the same failure-only receipt.
+/// E24 coordinator 583(y2) also uses this sample for the unlink oracle.
+pub fn sample_root(index: usize, after: bool) -> Option<(u64, u64, u64)> {
     let page = PAGE.load(Ordering::Acquire);
-    if page == 0 || index >= SLOTS { return; }
+    if page == 0 || index >= SLOTS { return None; }
     let read = || {
         let mut text = String::new();
         std::fs::File::open("/proc/breenix/filesystems").ok()?
             .take(32 * 1024).read_to_string(&mut text).ok()?;
         parse(&text)
     };
-    if let Some((generation, free, pending)) = read() {
+    let counts = read();
+    if let Some((generation, free, pending)) = counts {
         sample(index, after, generation, free, pending);
     } else {
         cell(page, index, usize::from(after) * 4 + 3).store(2, Ordering::Release);
     }
+    counts
 }
 pub(super) fn records(page: usize, suite: &str, case: &str, failed: bool) -> Vec<String> {
     if !failed || suite != "files-io" || !matches!(case,

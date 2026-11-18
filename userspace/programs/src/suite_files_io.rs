@@ -2097,7 +2097,7 @@ fn descriptors_unlink_reclaim_breenfs() -> CaseResult {
 
     let marker = RootMarker::new()?;
     let mut f = orphan_fixture()?;
-    let before = marker.free(f.fd())?;
+    let before = marker.reclaim(None)?;
     let metadata = fstat(f.fd())?;
     let ino = metadata.st_ino;
     let block_size = u64::try_from(fs::fstatfs(f.fd())?.f_bsize)
@@ -2116,13 +2116,14 @@ fn descriptors_unlink_reclaim_breenfs() -> CaseResult {
     marker.1.set(index + 1);
     breenix_suite::suite::control::markers::sample_root(index, false);
     sync_fd(marker.0.fd(), false)?;
-    breenix_suite::suite::control::markers::sample_root(index, true);
+    let sample = breenix_suite::suite::control::markers::sample_root(index, true);
     expect_errno(stat(&f.path, false), 2, "lookup after last close and fsync")?;
-    let after = marker.free(marker.0.fd())?;
+    let after = RootMarker::non_allocated(sample)?;
     check(
         after.checked_sub(before).is_some_and(|gain| gain >= data_blocks),
-        &format!("last close returned FREE {before}->{after}, expected at least {data_blocks} blocks"),
+        &format!("unlink publication returned FREE+PENDING {before}->{after}, expected at least {data_blocks} blocks"),
     )?;
+    marker.reclaim(Some((before, data_blocks)))?;
     let parent = f.path.rsplit_once('/').ok_or("fixture has no parent")?.0;
     for entry in std::fs::read_dir(parent).map_err(|e| e.to_string())? {
         check(
@@ -2865,6 +2866,33 @@ impl RootMarker {
         }
         Ok(fs::fstatfs(fd).map_err(|e| e.to_string())?.f_bfree)
     }
+    fn non_allocated(sample: Option<(u64, u64, u64)>) -> Result<u64, String> {
+        let (_, free, pending) = sample.ok_or("root FREE/PENDING sample unavailable")?;
+        free.checked_add(pending).ok_or_else(|| String::from("root FREE/PENDING sum overflow"))
+    }
+    // 583(y2): same three marker commits as free(), observing the raw durable
+    // FREE + PENDING total. Check the bound at each post-unlink marker.
+    fn reclaim(&self, baseline: Option<(u64, u64)>) -> Result<u64, String> {
+        use breenix_suite::suite::control::markers;
+        let mut after = 0;
+        for byte in 0..3 {
+            let index = self.1.get();
+            self.1.set(index + 1);
+            markers::sample_root(index, false);
+            truncate_fd(self.0.fd(), 0)?;
+            fs::lseek(self.0.fd(), 0, SEEK_SET).map_err(|e| e.to_string())?;
+            write_all(self.0.fd(), &[byte])?;
+            sync_fd(self.0.fd(), false)?;
+            after = Self::non_allocated(markers::sample_root(index, true))?;
+            if let Some((before, data_blocks)) = baseline {
+                if !after.checked_sub(before).is_some_and(|gain| gain >= data_blocks) {
+                    return Err(format!("marker {index} returned FREE+PENDING {before}->{after}, expected at least {data_blocks} blocks"));
+                }
+            }
+        }
+        Ok(after)
+    }
+
 }
 
 fn metadata_ftruncate_large() -> CaseResult {
