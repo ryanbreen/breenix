@@ -2089,7 +2089,50 @@ fn descriptors_unlink_open() -> CaseResult {
     result
 }
 
+// E24 ledger 531(t), amended by 533: BreenFS IDs are not reused. Observe
+// data release under 465's equalized commits; inode/ORPHAN absence by inode is
+// covered through the production VFS and breenfs-check walk on the host.
+fn descriptors_unlink_reclaim_breenfs() -> CaseResult {
+    use std::os::unix::fs::DirEntryExt;
+
+    let marker = RootMarker::new()?;
+    let mut f = orphan_fixture()?;
+    let before = marker.free(f.fd())?;
+    let metadata = fstat(f.fd())?;
+    let ino = metadata.st_ino;
+    let block_size = u64::try_from(fs::fstatfs(f.fd())?.f_bsize)
+        .map_err(|_| String::from("invalid orphan block size"))?;
+    let allocated_bytes = metadata.st_blocks.checked_mul(512)
+        .ok_or("file allocation overflow")?;
+    check(
+        block_size != 0 && allocated_bytes % block_size == 0,
+        "file allocation is not a whole number of data blocks",
+    )?;
+    let data_blocks = allocated_bytes / block_size;
+    check(data_blocks == 2, "sparse orphan does not hold two data blocks")?;
+    fs::unlink(&f.path)?;
+    io::close(f.file.take().expect("fixture descriptor"))?;
+    sync_fd(marker.0.fd(), false)?;
+    expect_errno(stat(&f.path, false), 2, "lookup after last close and fsync")?;
+    let after = marker.free(marker.0.fd())?;
+    check(
+        after.checked_sub(before) == Some(data_blocks),
+        &format!("last close returned FREE {before}->{after}, expected {data_blocks} blocks"),
+    )?;
+    let parent = f.path.rsplit_once('/').ok_or("fixture has no parent")?.0;
+    for entry in std::fs::read_dir(parent).map_err(|e| e.to_string())? {
+        check(
+            entry.map_err(|e| e.to_string())?.ino() != ino,
+            "a surviving directory name reports the unlinked inode",
+        )?;
+    }
+    Ok(())
+}
+
 fn descriptors_unlink_reclaim() -> CaseResult {
+    if !root_contract()?.reuses_inode_numbers {
+        return descriptors_unlink_reclaim_breenfs();
+    }
     // The allocator hands out the lowest free inode, and the fixture took
     // the lowest when it was created, so the orphan's inode is the next one
     // handed out once its last close has freed it.
