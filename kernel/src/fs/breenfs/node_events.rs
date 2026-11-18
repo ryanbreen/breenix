@@ -2,20 +2,34 @@
 use alloc::sync::Arc;
 use core::{ptr, sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering}};
 
+// Deferred times are recorded per generation (E24 coordinator 601(2)): slot
+// `generation & 1` belongs to the open generation, the other one to a frozen
+// generation that its publication applies. A toucher that races the freeze
+// lands in the frozen slot only if it read the old generation first.
 pub(super) struct TouchedTimes {
     pub ino: u64,
-    pub access: AtomicU64,
-    pub modify: AtomicU64,
+    access: [AtomicU64; 2],
+    modify: [AtomicU64; 2],
     queued: AtomicBool,
     next: AtomicPtr<TouchedTimes>,
 }
 impl TouchedTimes {
     pub fn new(ino: u64) -> Self {
-        Self { ino, access: AtomicU64::new(0), modify: AtomicU64::new(0),
+        Self { ino, access: [const { AtomicU64::new(0) }; 2], modify: [const { AtomicU64::new(0) }; 2],
             queued: AtomicBool::new(false), next: AtomicPtr::new(ptr::null_mut()) }
     }
     pub fn pending(&self) -> bool {
-        self.access.load(Ordering::Acquire) != 0 || self.modify.load(Ordering::Acquire) != 0
+        self.access.iter().chain(&self.modify).any(|slot| slot.load(Ordering::Acquire) != 0)
+    }
+    /// Record a coarse time (seconds + 1) for `generation`.
+    pub fn record(&self, generation: u64, read: bool, stamp: u64) {
+        let slots = if read { &self.access } else { &self.modify };
+        slots[(generation & 1) as usize].store(stamp, Ordering::Release);
+    }
+    /// Take `generation`'s (access, modify) stamps; 0 means no stamp.
+    pub fn take(&self, generation: u64) -> (u64, u64) {
+        let slot = (generation & 1) as usize;
+        (self.access[slot].swap(0, Ordering::AcqRel), self.modify[slot].swap(0, Ordering::AcqRel))
     }
 }
 #[derive(Default)]

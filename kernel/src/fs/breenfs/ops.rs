@@ -15,11 +15,13 @@ use super::{
 use crate::block::BlockDevice;
 use alloc::{
     collections::{BTreeMap, BTreeSet},
+    sync::Arc,
     vec,
     vec::Vec,
 };
 
 const MAX_FILE_SIZE: u64 = (1u64 << 63) - 4096;
+type Inodes = Arc<BTreeSet<u64>>;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     EIO,
@@ -78,7 +80,7 @@ impl ReadError {
         match self { Self::Metadata(error) => error, Self::Data => Error::EIO }
     }
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct SetAttr {
     pub mode: Option<u32>,
     pub uid: Option<u32>,
@@ -91,7 +93,8 @@ pub struct Files<'a, S: NodeStore + 'a> {
     txn: Transaction<'a, S>,
     root: Root,
     root_id: u64,
-    roots: BTreeMap<u64, Root>,
+    // Shared copy-on-write with a scratch fork, so freeze copies no set.
+    roots: Arc<BTreeMap<u64, Root>>,
     next_root_id: u64,
     changed_roots: BTreeSet<u64>,
     writable: bool,
@@ -100,10 +103,10 @@ pub struct Files<'a, S: NodeStore + 'a> {
     // extents are served from data until the next Files view is opened.
     space_root: BlockPtr,
     data: BTreeMap<u64, Vec<u8>>,
-    open_inodes: BTreeSet<u64>,
-    orphans: BTreeSet<u64>,
-    orphan_work: BTreeSet<u64>,
-    unvalidated_orphans: BTreeSet<u64>,
+    open_inodes: Inodes,
+    orphans: Inodes,
+    orphan_work: Inodes,
+    unvalidated_orphans: Inodes,
     // Cleanup newly deferred by this transaction, funded by its namespace grants.
     orphan_count: u64,
 }
@@ -125,17 +128,17 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
                 name: b"default".to_vec(),
             },
             root_id: 1,
-            roots: BTreeMap::new(),
+            roots: Arc::default(),
             next_root_id: sb.next_root_id,
             changed_roots: BTreeSet::new(),
             writable: true,
             hash_key: sb.dirhash_key,
             space_root: sb.space_root,
             data: BTreeMap::new(),
-            open_inodes: BTreeSet::new(),
-            orphans: BTreeSet::new(),
-            orphan_work: BTreeSet::new(),
-            unvalidated_orphans: BTreeSet::new(),
+            open_inodes: Inodes::default(),
+            orphans: Inodes::default(),
+            orphan_work: Inodes::default(),
+            unvalidated_orphans: Inodes::default(),
             orphan_count: 0,
         };
         files.put_inode(
@@ -196,19 +199,52 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             )?,
             root,
             root_id,
-            roots,
+            roots: Arc::new(roots),
             next_root_id: sb.next_root_id,
             changed_roots: BTreeSet::new(),
             writable,
             hash_key: sb.dirhash_key,
             space_root: sb.space_root,
             data: BTreeMap::new(),
-            open_inodes: BTreeSet::new(),
-            orphan_work: orphans.clone(),
-            unvalidated_orphans: orphans.clone(),
-            orphans,
+            open_inodes: Inodes::default(),
+            orphan_work: Arc::new(orphans.clone()),
+            unvalidated_orphans: Arc::new(orphans.clone()),
+            orphans: Arc::new(orphans),
             orphan_count: 0,
         })
+    }
+    /// Freeze generation N (E24 coordinator 597/601(1)) and return N+1's
+    /// scratch Files view over frozen N and `store`, the published N-1 store.
+    /// Constant work: the transaction's private maps move into one shared
+    /// immutable layer, and the open/orphan/ROOT indexes are shared
+    /// copy-on-write. This view keeps preparing N; the fork only describes N+1
+    /// for foreground callers until N+1's changes are replayed onto N's
+    /// published view. Its data map starts empty: N's private data is written
+    /// only by preparation.
+    pub fn fork(&mut self, store: S) -> Result<Self, Error> {
+        Ok(Self {
+            txn: self.txn.fork(store)?,
+            root: self.root.clone(),
+            root_id: self.root_id,
+            roots: self.roots.clone(),
+            next_root_id: self.next_root_id,
+            changed_roots: BTreeSet::new(),
+            writable: self.writable,
+            hash_key: self.hash_key,
+            space_root: self.space_root,
+            data: BTreeMap::new(),
+            open_inodes: self.open_inodes.clone(),
+            orphans: self.orphans.clone(),
+            orphan_work: self.orphan_work.clone(),
+            unvalidated_orphans: self.unvalidated_orphans.clone(),
+            orphan_count: 0,
+        })
+    }
+    /// The stored INODE item, whether or not the inode is still linked.
+    pub fn stored_inode(&self, ino: u64) -> Result<Inode, Error> {
+        let value = btree::search(&self.txn.view(), self.root.root, key(ino, format::INODE, 0))?
+            .ok_or(Error::ENOENT)?;
+        Ok(Inode::decode(&value)?)
     }
     /// Continue from this generation's COW state. The immutable node store
     /// supplies filled pointers; ROOT and DEAD indexes retain their custody.
@@ -223,7 +259,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
                 key(0xffff_ffff_ffff_ff10, format::ROOT, id))?.ok_or(Error::EIO)?;
             let root = Root::decode(&bytes)?;
             if id == self.root_id { self.root = root.clone(); }
-            self.roots.insert(id, root);
+            Arc::make_mut(&mut self.roots).insert(id, root);
         }
         self.txn = Transaction::new_owned_with_dead(store, sb.space_root, generation,
             self.txn.take_dead_nodes())?;
@@ -256,7 +292,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         root.name = name.to_vec();
         self.txn.increment(root.root.addr, 4)?;
         self.txn.update_root(id, root.clone())?;
-        self.roots.insert(id, root);
+        Arc::make_mut(&mut self.roots).insert(id, root);
         self.changed_roots.insert(id);
         self.next_root_id = next;
         Ok(id)
@@ -276,27 +312,29 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         }
         self.txn.release(root.root.addr, 4, true)?;
         self.txn.delete_root(id)?;
-        self.roots.remove(&id);
+        Arc::make_mut(&mut self.roots).remove(&id);
         self.changed_roots.remove(&id);
         Ok(())
     }
     /// The mount snapshots live VNodes under its mutex; drops perform no I/O.
     pub fn retain_open_inodes(&mut self, inodes: BTreeSet<u64>) {
-        let previous = core::mem::replace(&mut self.open_inodes, inodes);
+        let previous = core::mem::replace(&mut self.open_inodes, Arc::new(inodes));
         for &ino in previous.symmetric_difference(&self.open_inodes) {
             if self.orphans.contains(&ino) {
                 if self.open_inodes.contains(&ino) && !self.unvalidated_orphans.contains(&ino) {
-                    self.orphan_work.remove(&ino);
-                } else { self.orphan_work.insert(ino); }
+                    Arc::make_mut(&mut self.orphan_work).remove(&ino);
+                } else { Arc::make_mut(&mut self.orphan_work).insert(ino); }
             }
         }
     }
     /// Update one VNode lifetime without rebuilding the open-inode snapshot.
     pub fn set_inode_open(&mut self, ino: u64, open: bool) {
-        if open { self.open_inodes.insert(ino); } else { self.open_inodes.remove(&ino); }
+        if open { Arc::make_mut(&mut self.open_inodes).insert(ino); }
+        else { Arc::make_mut(&mut self.open_inodes).remove(&ino); }
         if self.orphans.contains(&ino) {
-            if open && !self.unvalidated_orphans.contains(&ino) { self.orphan_work.remove(&ino); }
-            else { self.orphan_work.insert(ino); }
+            if open && !self.unvalidated_orphans.contains(&ino) {
+                Arc::make_mut(&mut self.orphan_work).remove(&ino);
+            } else { Arc::make_mut(&mut self.orphan_work).insert(ino); }
         }
     }
     pub fn items(&self) -> Result<Vec<(Key, Vec<u8>)>, Error> {
@@ -664,8 +702,8 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
                 &[],
             )?;
             self.orphan_count = self.orphan_count.checked_add(1).ok_or(Error::EIO)?;
-            self.orphans.insert(ino);
-            if !self.open_inodes.contains(&ino) { self.orphan_work.insert(ino); }
+            Arc::make_mut(&mut self.orphans).insert(ino);
+            if !self.open_inodes.contains(&ino) { Arc::make_mut(&mut self.orphan_work).insert(ino); }
         }
         self.put_inode(ino, inode)
     }
@@ -777,15 +815,15 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
                 return Err(Error::EIO);
             }
             if self.open_inodes.contains(&k.offset) {
-                self.unvalidated_orphans.remove(&ino);
-                self.orphan_work.remove(&ino);
+                Arc::make_mut(&mut self.unvalidated_orphans).remove(&ino);
+                Arc::make_mut(&mut self.orphan_work).remove(&ino);
                 continue;
             }
             self.delete_inode(k.offset)?;
             self.txn.delete(&mut self.root.root, k)?;
-            self.orphans.remove(&ino);
-            self.orphan_work.remove(&ino);
-            self.unvalidated_orphans.remove(&ino);
+            Arc::make_mut(&mut self.orphans).remove(&ino);
+            Arc::make_mut(&mut self.orphan_work).remove(&ino);
+            Arc::make_mut(&mut self.unvalidated_orphans).remove(&ino);
         }
         Ok(())
     }

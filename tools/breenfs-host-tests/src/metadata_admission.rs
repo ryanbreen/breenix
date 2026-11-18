@@ -97,10 +97,9 @@ fn namespace_churn_before_periodic_commit_must_not_refuse_admission() {
         );
         if let Err(error) = result {
             let s = fs.inner.state.lock();
-            let mut store = fs.inner.cache.store(fs.inner.device.clone(), &s.durable);
-            if let Some(p) = &s.pending {
-                store = store.with_pending(p);
-            }
+            // Refusal diagnostic only. Since 597/601 no prepared view exists
+            // before install; admission reads the published view (durable).
+            let store = fs.inner.cache.store(fs.inner.device.clone(), &s.durable);
             let promotion =
                 super::super::space::pending_promotion_generation(&store, s.durable.space_root);
             std::eprintln!("REFUSAL i={i} error={error:?} generation={} free={} reserve={} outstanding={} available={} pending_promotion={promotion:?} failed={}",s.durable.generation,s.durable.free_blocks,s.durable.global_reserve,s.reservations.outstanding(),s.reservations.available(s.durable.free_blocks),s.failed);

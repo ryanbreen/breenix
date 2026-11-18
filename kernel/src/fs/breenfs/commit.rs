@@ -26,7 +26,7 @@ use core::sync::atomic::{AtomicU8, Ordering};
 #[cfg(test)]
 pub mod publication_measurement {
     extern crate std;
-    use alloc::{collections::BTreeMap, vec::Vec};
+    use alloc::vec::Vec;
     #[derive(Default)]
     pub struct Counts {
         pub staged: Vec<(u64, u8)>,
@@ -38,11 +38,11 @@ pub mod publication_measurement {
     }
     pub fn start() { COUNTS.with(|c| *c.borrow_mut() = Some(Counts::default())); }
     pub fn take() -> Counts { COUNTS.with(|c| c.borrow_mut().take().unwrap()) }
-    pub(super) fn prepared(nodes: &BTreeMap<u64, Vec<u8>>) {
+    pub(super) fn prepared<'a>(nodes: impl Iterator<Item = (&'a u64, &'a Vec<u8>)>) {
         COUNTS.with(|c| {
             if let Some(c) = c.borrow_mut().as_mut() {
                 assert!(c.staged.is_empty(), "one preparation per publication");
-                c.staged = nodes.iter().map(|(&addr, bytes)| (addr, bytes[12])).collect();
+                c.staged = nodes.map(|(&addr, bytes)| (addr, bytes[12])).collect();
             }
         });
     }
@@ -165,7 +165,7 @@ impl Committer {
     }
     fn committing(
         &mut self,
-        operation: impl FnOnce(&Self) -> Result<Superblock, Error>,
+        operation: impl FnOnce(&FrozenCommit) -> Result<Superblock, Error>,
     ) -> Result<Superblock, Error> {
         if self.failed {
             return Err(Error::EIO);
@@ -173,7 +173,12 @@ impl Committer {
         if self.read_only() {
             return Err(Error::ReadOnly);
         }
-        let result = operation(self);
+        let result = operation(&FrozenCommit {
+            generation: self.open_generation,
+            durable: self.durable.clone(),
+            scrub: self.pending_scrub,
+            waiters: Vec::new(),
+        });
         match &result {
             Ok(sb) => {
                 self.durable = sb.clone();
@@ -188,18 +193,93 @@ impl Committer {
         }
         result
     }
+    /// Freeze the open generation N (E24 coordinator 601(3)): the receipt
+    /// boundary advances here, not in preparation. Waiters registered before
+    /// this call wait for N; later ones wait for N+1. Constant work: a counter,
+    /// a superblock copy and one waiter-list swap.
+    pub fn freeze(&mut self) -> Result<FrozenCommit, Error> {
+        if self.read_only() {
+            return Err(Error::EIO);
+        }
+        if self.in_flight {
+            return Err(Error::InvalidGeneration);
+        }
+        let generation = self.open_generation;
+        self.open_generation = generation.checked_add(1).ok_or(Error::EIO)?;
+        self.in_flight = true;
+        Ok(FrozenCommit {
+            generation,
+            durable: self.durable.clone(),
+            scrub: self.pending_scrub.take(),
+            waiters: core::mem::take(&mut self.waiters),
+        })
+    }
+    /// Install N under the mount exclusion (601(4)): constant work. The
+    /// publication wakes N's receipts after releasing the exclusion.
+    pub fn install(&mut self, sb: &Superblock) {
+        self.in_flight = false;
+        self.durable = sb.clone();
+    }
+    /// N could not be published. N+1 can no longer commit: fail the mount
+    /// and N+1's receipts; the publication fails N's after the exclusion.
+    pub fn abandon(&mut self) {
+        self.in_flight = false;
+        self.fail();
+    }
+    pub fn fail(&mut self) {
+        self.failed = true;
+        for waiter in self.waiters.drain(..) {
+            preemption_point();
+            waiter.status.store(2, Ordering::Release);
+        }
+    }
+}
+
+/// Generation N between freeze and install, owned by its publication. Its
+/// preparation needs no committer or mount state (E24 coordinator 597/601).
+pub struct FrozenCommit {
+    generation: u64,
+    durable: Superblock,
+    scrub: Option<(u64, u64)>,
+    waiters: Vec<Arc<FsyncWaiter>>,
+}
+impl FrozenCommit {
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+    /// Run commit steps 1-2 on frozen N, without mount exclusion. N's private
+    /// data moves into the result; N's receipts stay here until install.
+    pub fn prepare_files<S: NodeStore>(
+        &self,
+        device: &dyn BlockDevice,
+        files: &mut super::ops::Files<'_, S>,
+    ) -> Result<PreparedCommit, Error> {
+        let (txn, data) = files.prepare_commit().map_err(|_| Error::EIO)?;
+        let mut prepared = self.prepare(device, txn, data)?;
+        prepared.data = core::mem::take(data);
+        Ok(prepared)
+    }
+    /// Report N's result to the receipts registered before its freeze. The
+    /// publication calls this after releasing the mount exclusion (601(4)).
+    pub fn wake(&self, result: Result<(), Error>) {
+        let status = if result.is_ok() { 1 } else { 2 };
+        for waiter in &self.waiters {
+            preemption_point();
+            waiter.status.store(status, Ordering::Release);
+        }
+    }
     fn prepare<S: NodeStore>(
         &self,
         device: &dyn BlockDevice,
         txn: &mut Transaction<'_, S>,
         data: &BTreeMap<u64, Vec<u8>>,
     ) -> Result<PreparedCommit, Error> {
-        let generation = self.open_generation;
+        let generation = self.generation;
         if txn.generation() != generation || self.durable.total_blocks > partition_blocks(device)? {
             return Err(Error::EIO);
         }
-        // Step 1: the caller's write lock covers this deferred-space fixpoint.
-        // Opening the next in-memory transaction belongs to the adapter.
+        // Step 1: N is frozen and owned by its publication; no mount
+        // exclusion covers this deferred-space fixpoint (E24 coordinator 597).
         let space_root = txn.settle().map_err(|_| Error::EIO)?;
         #[cfg(test)]
         publication_measurement::prepared(txn.writes());
@@ -235,7 +315,7 @@ impl Committer {
             }
         }
         let mut sb = self.durable.clone();
-        if let Some((walked, errors)) = self.pending_scrub {
+        if let Some((walked, errors)) = self.scrub {
             sb.last_scrub_generation = walked;
             sb.last_scrub_errors = errors;
         }
@@ -306,87 +386,21 @@ impl Committer {
             nodes: filled,
             data: BTreeMap::new(),
             formatting: self.durable.generation == 0,
-            waiters: Vec::new(),
         })
-    }
-
-    /// Freeze the open generation and transfer only its receipts. A mount may
-    /// now open G+1 on the returned immutable nodes, before publishing G.
-    pub fn prepare_files<S: NodeStore>(
-        &mut self,
-        device: &dyn BlockDevice,
-        files: &mut super::ops::Files<'_, S>,
-    ) -> Result<PreparedCommit, Error> {
-        if self.read_only() {
-            return Err(Error::EIO);
-        }
-        if self.in_flight {
-            return Err(Error::InvalidGeneration);
-        }
-        let result = files
-            .prepare_commit()
-            .map_err(|_| Error::EIO)
-            .and_then(|(txn, data)| {
-                let mut prepared = self.prepare(device, txn, data)?;
-                prepared.data = core::mem::take(data);
-                Ok(prepared)
-            });
-        match result {
-            Ok(mut prepared) => {
-                self.open_generation = self.open_generation.checked_add(1).ok_or_else(|| {
-                    self.fail();
-                    Error::EIO
-                })?;
-                prepared.waiters = core::mem::take(&mut self.waiters);
-                self.in_flight = true;
-                self.pending_scrub = None;
-                Ok(prepared)
-            }
-            Err(e) => {
-                self.fail();
-                Err(e)
-            }
-        }
-    }
-    /// Publish completion under the mount lock. A failed G also fails callers
-    /// already waiting for G+1, which can no longer be committed.
-    pub fn complete(&mut self, prepared: &PreparedCommit, result: Result<(), Error>) {
-        self.in_flight = false;
-        let status = if result.is_ok() { 1 } else { 2 };
-        if result.is_ok() {
-            self.durable = prepared.sb.clone();
-        } else {
-            self.fail();
-        }
-        for waiter in &prepared.waiters {
-            preemption_point();
-            waiter.status.store(status, Ordering::Release);
-        }
-    }
-    pub fn fail(&mut self) {
-        self.failed = true;
-        for waiter in self.waiters.drain(..) {
-            preemption_point();
-            waiter.status.store(2, Ordering::Release);
-        }
     }
 }
 
-/// Immutable G, also the backing view from which the adapter opens G+1.
-/// Receipts remain pending until the mount observes the publication result.
+/// Prepared G: immutable nodes and data, also the backing view from which the
+/// publication builds G's next Files view. Receipts stay with FrozenCommit.
 pub struct PreparedCommit {
     sb: Superblock,
     nodes: BTreeMap<u64, Vec<u8>>,
     data: BTreeMap<u64, Vec<u8>>,
     formatting: bool,
-    waiters: Vec<Arc<FsyncWaiter>>,
 }
 impl PreparedCommit {
     pub fn superblock(&self) -> &Superblock {
         &self.sb
-    }
-    pub fn dirty_bytes(&self) -> u64 {
-        self.data.values().map(|bytes| bytes.len() as u64).sum()
     }
     /// Physical data ranges written by this publication, in filesystem blocks.
     pub fn data_ranges(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
@@ -394,14 +408,6 @@ impl PreparedCommit {
     }
     pub fn node(&self, addr: u64) -> Option<&[u8]> {
         self.nodes.get(&addr).map(Vec::as_slice)
-    }
-    /// Read a private data block while G is being published.
-    pub fn data_block(&self, block: u64) -> Option<&[u8]> {
-        let (&start, bytes) = self.data.range(..=block).next_back()?;
-        let offset = usize::try_from(block.checked_sub(start)?)
-            .ok()?
-            .checked_mul(BLOCK_SIZE)?;
-        bytes.get(offset..offset.checked_add(BLOCK_SIZE)?)
     }
     fn write_direct(
         &self,

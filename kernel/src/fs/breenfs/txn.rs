@@ -8,15 +8,33 @@ use super::preempt::preemption_point;
 use super::{
     btree::{self, NodeStore},
     format::{self, BlockPtr, Extent, InternalEntry, Key, LeafItemHeader, NodeHeader, Root},
-    reserve::{Estimate, Grant, Ledger, Operation},
+    reserve::Estimate,
     space::{self, Kind},
 };
 use alloc::{
     collections::{BTreeMap, BTreeSet, VecDeque},
+    sync::Arc,
     vec,
     vec::Vec,
 };
 use core::cell::Cell;
+
+/// First address handed out by a scratch transaction. Real block numbers are
+/// below 2^48 (format limit) and reservation scratch splits count down from
+/// u64::MAX, so scratch addresses name neither (E24 coordinator 601(1)).
+const SCRATCH_BASE: u64 = 1 << 62;
+
+/// Generation N's private node and allocation state at freeze (E24
+/// coordinator 597/601(1)). It is immutable once shared: N's preparation and
+/// N+1's scratch view each layer their own private maps above it, so a
+/// foreground reader never observes N's preparation edits in progress.
+#[derive(Default)]
+pub struct Frozen {
+    nodes: BTreeMap<u64, Vec<u8>>,
+    counts: BTreeMap<(u64, u64), u32>,
+    allocated: BTreeSet<u64>,
+    data_allocations: BTreeMap<u64, u64>,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -87,17 +105,22 @@ enum Change {
 pub struct View<'a, S> {
     base: &'a S,
     nodes: &'a BTreeMap<u64, Vec<u8>>,
+    frozen: Option<&'a BTreeMap<u64, Vec<u8>>>,
+}
+impl<S> View<'_, S> {
+    fn private(&self, addr: u64) -> Option<&Vec<u8>> {
+        self.nodes.get(&addr).or_else(|| self.frozen.and_then(|nodes| nodes.get(&addr)))
+    }
 }
 impl<S: NodeStore> NodeStore for View<'_, S> {
     fn read_node(&self, ptr: BlockPtr) -> Result<alloc::sync::Arc<btree::Node>, btree::Error> {
-        match self.nodes.get(&ptr.addr) {
+        match self.private(ptr.addr) {
             Some(bytes) => btree::decode_node(bytes, ptr),
             None => self.base.read_node(ptr),
         }
     }
     fn get(&self, addr: u64) -> Result<Vec<u8>, btree::Error> {
-        self.nodes
-            .get(&addr)
+        self.private(addr)
             .cloned()
             .map(Ok)
             .unwrap_or_else(|| self.base.get(addr))
@@ -168,6 +191,12 @@ pub struct Transaction<'a, S> {
     next_root_id: u64,
     dead: DeadNodes,
     reaped: usize,
+    // Freeze (601(1)) moves the four private maps above into this shared,
+    // immutable layer; the maps above then hold only later private changes.
+    frozen: Option<Arc<Frozen>>,
+    // A scratch fork names nodes with fake addresses; settle refuses it:
+    // N+1 allocates no real block while N is in flight (601(1)).
+    scratch: Option<u64>,
 }
 /// Tree geometry for the caller's reservation policy.
 pub struct ReservationPaths {
@@ -257,6 +286,8 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             next_root_id: 0,
             dead: DeadNodes::default(),
             reaped: 0,
+            frozen: None,
+            scratch: None,
         })
     }
     pub fn new(base: &'a S, space_root: BlockPtr, generation: u64) -> Result<Self, Error> {
@@ -316,16 +347,82 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             next_root_id: 0,
             dead,
             reaped: 0,
+            frozen: None,
+            scratch: None,
         })
     }
     pub fn view(&self) -> View<'_, S> {
         View {
             base: self.base.get(),
             nodes: &self.nodes,
+            frozen: self.frozen.as_deref().map(|frozen| &frozen.nodes),
         }
     }
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+    /// Freeze this generation's private state (E24 coordinator 597/601(1)).
+    /// Moves its node, count and allocation maps into one shared immutable
+    /// layer, a constant number of pointer moves, and returns N+1's scratch
+    /// transaction over that layer and `base`, the published N-1 store. This
+    /// transaction keeps preparing N above the same layer; neither side can
+    /// change what the other reads. The scratch fork allocates fake addresses
+    /// only and refuses publication work.
+    pub fn fork(&mut self, base: S) -> Result<Transaction<'a, S>, Error> {
+        self.healthy()?;
+        if self.frozen.is_some() || self.scratch.is_some() {
+            return Err(Error::Invalid);
+        }
+        // Refuse before any map moves.
+        let generation = self.generation.checked_add(1).ok_or(Error::Invalid)?;
+        let frozen = Arc::new(Frozen {
+            nodes: core::mem::take(&mut self.nodes),
+            counts: core::mem::take(&mut self.counts),
+            allocated: core::mem::take(&mut self.allocated),
+            data_allocations: core::mem::take(&mut self.data_allocations),
+        });
+        self.frozen = Some(frozen.clone());
+        Ok(Transaction {
+            base: Backing::Owned(base),
+            generation,
+            original_space: self.original_space,
+            space_root: self.original_space,
+            space_count: Cell::new(None),
+            nodes: BTreeMap::new(),
+            reserved_nodes: BTreeMap::new(),
+            reservation_root: self.original_space,
+            scratch_next: u64::MAX - 3,
+            allocated: BTreeSet::new(),
+            allocated_blocks: 0,
+            data_allocations: BTreeMap::new(),
+            counts: BTreeMap::new(),
+            deferred: VecDeque::new(),
+            failure: None,
+            next_root_id: self.next_root_id,
+            dead: DeadNodes::default(),
+            reaped: 0,
+            frozen: Some(frozen),
+            scratch: Some(SCRATCH_BASE),
+        })
+    }
+    fn private_node(&self, addr: u64) -> Option<&Vec<u8>> {
+        self.nodes.get(&addr)
+            .or_else(|| self.frozen.as_ref().and_then(|frozen| frozen.nodes.get(&addr)))
+    }
+    fn known_count(&self, start: u64, length: u64) -> Option<u32> {
+        self.counts.get(&(start, length)).copied()
+            .or_else(|| self.frozen.as_ref().and_then(|frozen| frozen.counts.get(&(start, length)).copied()))
+    }
+    fn is_allocated(&self, addr: u64) -> bool {
+        self.allocated.contains(&addr)
+            || self.frozen.as_ref().is_some_and(|frozen| frozen.allocated.contains(&addr))
+    }
+    fn data_length(&self, start: u64) -> Option<u64> {
+        self.data_allocations.get(&start).copied()
+            .or_else(|| self.frozen.as_ref().and_then(|frozen| frozen.data_allocations.get(&start).copied()))
+    }
+    fn publishable(&self) -> Result<(), Error> {
+        if self.scratch.is_some() { Err(Error::Invalid) } else { self.healthy() }
     }
     pub(super) fn reservation_paths(
         &self,
@@ -373,9 +470,13 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             ..Estimate::default()
         }.blocks()?)
     }
-    /// Private encoded nodes; a commit engine must call `settle` before use.
-    pub fn writes(&self) -> &BTreeMap<u64, Vec<u8>> {
-        &self.nodes
+    /// Private encoded nodes, the latest copy of each address, including the
+    /// frozen layer's; a commit engine must call `settle` before use.
+    pub fn writes(&self) -> impl Iterator<Item = (&u64, &Vec<u8>)> + '_ {
+        let frozen = self.frozen.as_deref().map(|frozen| &frozen.nodes);
+        frozen.into_iter().flatten()
+            .filter(|(addr, _)| !self.nodes.contains_key(addr))
+            .chain(self.nodes.iter())
     }
     fn healthy(&self) -> Result<(), Error> {
         self.failure.map_or(Ok(()), Err)
@@ -390,8 +491,8 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
         }
     }
     fn count(&mut self, start: u64, length: u64) -> Result<u32, Error> {
-        if let Some(count) = self.counts.get(&(start, length)) {
-            return Ok(*count);
+        if let Some(count) = self.known_count(start, length) {
+            return Ok(count);
         }
         let r = space::reference(self.base.get(), self.original_space, start, length)?
             .ok_or(Error::Invalid)?;
@@ -409,10 +510,24 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
         crcs: &[u32],
         short_data: bool,
     ) -> Result<(u64, u64), Error> {
+        if let Some(next) = self.scratch.as_mut() {
+            // N+1 while N is in flight: a view-only address. Record the same
+            // custody and deferred change as a real allocation, so reservation
+            // debt still counts it; replay onto N's published view allocates.
+            let start = *next;
+            *next = next.checked_add(length).ok_or(Error::Invalid)?;
+            self.counts.insert((start, length), 1);
+            if kind == Kind::Data { self.data_allocations.insert(start, length); }
+            self.allocated_blocks = self.allocated_blocks.checked_add(length).ok_or(Error::Invalid)?;
+            self.allocated.insert(start);
+            self.deferred.push_back(Change::Allocate { start, length, kind, crcs: crcs.to_vec() });
+            return Ok((start, length));
+        }
         let mut reservations = Reservations {
             view: View {
                 base: self.base.get(),
                 nodes: &BTreeMap::new(),
+                frozen: None,
             },
             changes: &mut self.reserved_nodes,
             next: &mut self.scratch_next,
@@ -513,15 +628,19 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
         core::mem::take(&mut self.dead)
     }
     pub(crate) fn data_is_live(&self, start: u64) -> bool {
-        self.data_allocations.get(&start).is_some_and(|&length|
-            self.counts.get(&(start, length)).is_some_and(|&count| count != 0))
+        self.data_length(start).is_some_and(|length|
+            self.known_count(start, length).is_some_and(|count| count != 0))
     }
     /// Allocations made by this generation that still have an incoming REF.
     pub(crate) fn live_data(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
-        self.data_allocations.iter().filter_map(|(&start, &length)| {
-            preemption_point();
-            self.data_is_live(start).then_some((start, length))
-        })
+        let frozen = self.frozen.as_deref().map(|frozen| &frozen.data_allocations);
+        frozen.into_iter().flatten()
+            .filter(|(start, _)| !self.data_allocations.contains_key(start))
+            .chain(self.data_allocations.iter())
+            .filter_map(|(&start, &length)| {
+                preemption_point();
+                self.data_is_live(start).then_some((start, length))
+            })
     }
     pub fn dead_count(&self) -> u64 {
         self.dead.count()
@@ -529,25 +648,26 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
     /// Reserve SPACE COW/split work for the remaining node budget. Reaping is
     /// snapshot deletion work and may draw on the global reserve (design 2.8).
     /// The mount retains this grant through publication, like its other grants.
-    pub fn reserve_reap(&self, ledger: &mut Ledger, free_blocks: u64) -> Result<Grant, Error> {
-        self.healthy()?;
+    /// The mount reserves these blocks for its grant, after this SPACE read
+    /// and outside its shared ledger's lock.
+    pub fn reap_reservation_blocks(&self) -> Result<u64, Error> {
+        self.publishable()?;
         let nodes = btree::reservation_nodes(&self.view(), self.space_root, None, 0)?;
         // An internal node has at most 441 references; removing one can change
         // REF plus DEAD/PENDING. Include removal of the reaped DEAD itself.
         let changes = ((REAP_PER_COMMIT - self.reaped) as u64) * (2 * 441 + 2);
-        let blocks = Estimate {
+        Ok(Estimate {
             space_changes: changes,
             space_height: u64::from(self.space_root.level),
             space_nodes: nodes,
             ..Estimate::default()
         }
-        .blocks()?;
-        Ok(ledger.reserve(free_blocks, blocks, Operation::DeleteSnapshot)?)
+        .blocks()?)
     }
     /// Reap the lowest-address DEAD node. Stop on an empty index or exhausted
     /// transaction budget; settle preserves that budget.
     pub fn reap_step(&mut self) -> Result<Option<u64>, Error> {
-        self.healthy()?;
+        self.publishable()?;
         if self.reaped == REAP_PER_COMMIT {
             return Ok(None);
         }
@@ -597,7 +717,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
         self.result(result)
     }
     fn prepare(&mut self, header: &mut NodeHeader) -> Result<(), Error> {
-        let private = header.generation == self.generation && self.allocated.contains(&header.addr);
+        let private = header.generation == self.generation && self.is_allocated(header.addr);
         if !private && header.generation >= self.generation {
             return Err(Error::Invalid);
         }
@@ -652,11 +772,11 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
     fn private_leaf_header(&self, root: BlockPtr) -> Result<Option<NodeHeader>, Error> {
         if root.level != 0
             || root.generation != self.generation
-            || self.counts.get(&(root.addr, 4)) != Some(&1)
+            || self.known_count(root.addr, 4) != Some(1)
         {
             return Ok(None);
         }
-        let Some(bytes) = self.nodes.get(&root.addr) else {
+        let Some(bytes) = self.private_node(root.addr) else {
             return Ok(None);
         };
         let h = NodeHeader::decode(bytes)?;
@@ -684,6 +804,11 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             // unrelated sibling payloads, then checksum the modified private bytes.
             if let Some(value) = value.filter(|_| key.item_type == format::INODE) {
                 if let Some(h) = self.private_leaf_header(*root)? {
+                    // A frozen copy stays readers' bytes: edit this layer's own.
+                    if !self.nodes.contains_key(&root.addr) {
+                        let copy = self.private_node(root.addr).ok_or(Error::Invalid)?.clone();
+                        self.nodes.insert(root.addr, copy);
+                    }
                     let bytes = self.nodes.get_mut(&root.addr).ok_or(Error::Invalid)?;
                     let (mut lo, mut hi) = (0, usize::from(h.nitems));
                     while lo < hi {
@@ -776,11 +901,12 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
     }
     /// Stage the same PENDING conversions in the reservation and real trees.
     pub fn promote_pending(&mut self) -> Result<(), Error> {
-        self.healthy()?;
+        self.publishable()?;
         let mut reservations = Reservations {
             view: View {
                 base: self.base.get(),
                 nodes: &BTreeMap::new(),
+                frozen: None,
             },
             changes: &mut self.reserved_nodes,
             next: &mut self.scratch_next,
@@ -799,7 +925,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
     /// more allocation/release work to this queue. Edited paths remain in T,
     /// so revisiting them does not recursively copy them again (design 2.5).
     pub fn settle(&mut self) -> Result<BlockPtr, Error> {
-        self.healthy()?;
+        self.publishable()?;
         while let Some(change) = self.deferred.pop_front() {
             preemption_point();
             let mut root = self.space_root;
@@ -920,7 +1046,7 @@ impl<S: NodeStore> NodeStore for EditStore<'_, '_, S> {
             let h = NodeHeader::decode(&bytes)?;
             if h.addr != addr
                 || h.generation != self.txn.generation
-                || !self.txn.allocated.contains(&addr)
+                || !self.txn.is_allocated(addr)
             {
                 return Err(Error::Invalid);
             }
