@@ -3008,11 +3008,14 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         }
         if size < inode.size {
             let result = self.edit_pages(&mut state, node.ino, "resize-read-metadata", |open, read| {
+                open.pages.shrink(size, mapped_tail, read)?;
                 // A frozen generation's pages past the new EOF are not this
                 // generation's bytes, even if the file grows again (601(2)).
+                // Hide them only once the shrink succeeded: a failed one
+                // changes no visible page (x11c C1).
                 let end = size.div_ceil(BLOCK_SIZE as u64);
                 open.hide_frozen_from = Some(open.hide_frozen_from.map_or(end, |from| from.min(end)));
-                open.pages.shrink(size, mapped_tail, read)
+                Ok(())
             });
             state.finish_data(node.ino, grant, result)?;
             let result = state.files.trim_mappings(node.ino, size);
