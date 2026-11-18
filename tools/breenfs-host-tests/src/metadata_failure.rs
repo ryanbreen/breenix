@@ -122,7 +122,7 @@ fn retire_after_latch(dirty: bool) {
     let weak = Arc::downgrade(&node);
     let writes = disk.writes.load(Ordering::Relaxed);
     fs.inner.state.lock().observed::<()>(Err(ops::Error::EIO)).unwrap_err();
-    // Live bindings retain their pages; service must never publish after EIO.
+    // Keep the binding live while the worker observes the failed mount.
     assert_eq!(fs.commit_due(0), Err(Errno(EIO)));
     assert!(map.nonempty());
     drop(binding);

@@ -423,6 +423,7 @@ impl<W: Wait> MountState<W> {
         // the mount under the registry lock. Host adapters have no registry.
         #[cfg(not(test))]
         let _ = crate::fs::vfs::mount::remount_read_only(self.mount);
+        self.signal.mappings.store(true, Ordering::Release);
         self.signal.wake();
     }
     fn observed<T>(&mut self, result: Result<T, ops::Error>) -> Result<T, Errno> {
@@ -1136,14 +1137,31 @@ impl<W: Wait + 'static> BreenFs<W> {
         let mut more = false;
         for node in handles {
             preemption_point();
-            more |= node.map.service_writeback_with(&node, &mut budget, |first, last| {
-                self.inner.signal.requested.store(true, Ordering::Release);
-                self.commit_generation(now_ns)?;
-                self.complete_mapping(&node, first, last);
-                Ok(())
-            })?;
+            if !self.inner.state.lock().failed {
+                more |= node.map.service_writeback_with(&node, &mut budget, |first, last| {
+                    self.inner.signal.requested.store(true, Ordering::Release);
+                    self.commit_generation(now_ns)?;
+                    self.complete_mapping(&node, first, last);
+                    Ok(())
+                })?;
+            }
             // Population and mutation take the mount lock before MapState.
             let mut state = self.inner.state.lock();
+            if state.failed {
+                if let Some(entry) = state.nodes.get_mut(&node.ino) {
+                    let internal = 1 + usize::from(entry.mapped.is_some());
+                    if Arc::strong_count(&node) == internal {
+                        // No descriptor or binding can observe these pages.
+                        // Failed storage cannot write them back; retire them
+                        // under the ordinary page budget, reporting EIO below.
+                        more |= node.map.discard_unobserved(&mut budget);
+                    } else if node.map.eviction_pending() {
+                        // External handles now own the cache lifetime. Dropping
+                        // the final descriptor must not leave a service cycle.
+                        entry.mapped = None;
+                    }
+                }
+            }
             if node.map.eviction_pending() { more |= node.map.evict(&mut budget); }
             if !node.map.nonempty() {
                 if let Some(entry) = state.nodes.get_mut(&node.ino) { entry.mapped = None; }
@@ -1155,7 +1173,7 @@ impl<W: Wait + 'static> BreenFs<W> {
     fn mapped_nodes(&self) -> Result<Vec<Arc<VNode>>, Errno> {
         let state = self.inner.state.lock();
         let mut handles = Vec::new();
-        if state.failed || state.closed || state.committer.is_none() {
+        if state.closed || state.committer.is_none() {
             return Ok(handles);
         }
         handles.try_reserve(state.nodes.len()).map_err(|_| Errno(ENOMEM))?;
@@ -1170,6 +1188,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         Ok(handles)
     }
     fn sync_mappings(&self, deadline: Option<u64>) -> Result<(), Errno> {
+        if self.inner.state.lock().failed { return Err(Errno(EIO)); }
         let nodes = self.mapped_nodes()?;
         // Shutdown stages snapshots without an unbounded foreground generation
         // wait; its final sync_generation below retains the supplied deadline.
@@ -1704,13 +1723,20 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                         #[cfg(target_arch = "aarch64")]
                         crate::per_cpu_aarch64::preempt_disable();
                         let result = fs.commit_due(monotonic_ns());
-                        let deadline = fs.inner.state.lock().policy.deadline();
+                        let (failed, deadline) = {
+                            let state = fs.inner.state.lock();
+                            // Retry a deferred eviction allocation at a bounded
+                            // interval, even though publication is disabled.
+                            (state.failed, if state.failed {
+                                monotonic_ns().saturating_add(COMMIT_INTERVAL_NS)
+                            } else { state.policy.deadline() })
+                        };
                         drop(fs);
                         #[cfg(target_arch = "x86_64")]
                         crate::per_cpu::preempt_enable();
                         #[cfg(target_arch = "aarch64")]
                         crate::per_cpu_aarch64::preempt_enable();
-                        if result.is_err() {
+                        if result.is_err() && !failed {
                             break;
                         }
                         signal.wait(observed, Some(deadline));
@@ -2272,9 +2298,9 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             });
             *dirty_bytes = *dirty_bytes - before + dirty.bytes();
             if let Some(error) = bad_metadata {
-            state.record_metadata(error);
-            if errno(error) == Errno(EIO) { state.fail("resize-read-metadata", Errno(EIO)); }
-        }
+                state.record_metadata(error);
+                if errno(error) == Errno(EIO) { state.fail("resize-read-metadata", Errno(EIO)); }
+            }
             state.finish_data(node.ino, grant, result)?;
             let result = state.files.trim_mappings(node.ino, size);
             inode.nblocks = state.edited(result)?;

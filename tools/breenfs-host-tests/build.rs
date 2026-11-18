@@ -76,6 +76,7 @@ fn main() {
         "    pub(crate) fn complete_writeback(",
         "    pub(crate) fn service_writeback(",
         "    pub(crate) fn eviction_pending(",
+        "    pub(crate) fn discard_unobserved(",
         "    pub(crate) fn evict(",
     ] {
         out.push_str(&item(&source, marker));
