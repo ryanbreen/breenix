@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Compile the guest's root contracts on the host, without a boot."""
+import re
 import subprocess
 import tempfile
 import unittest
@@ -10,6 +11,19 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class RootExpectationsTest(unittest.TestCase):
     def test_root_contracts(self):
+        # E24 ledger 520(q): conversion preserves the source fixture's names.
+        builder = (ROOT / 'scripts/create_ext2_disk.sh').read_text()
+        loop = re.search(
+            r'i=0\s+while \[ \$\(\(i \* (\d+)\)\) -le '
+            r'\$\(\((\d+) \* fixture_block_size\)\) \]; do'
+            r'(.*?)i=\$\(\(i \+ 1\)\)', builder, re.S)
+        self.assertIsNotNone(loop, 'cookie fixture builder loop not found')
+        record_bytes, blocks = map(int, loop.group(1, 2))
+        fixture_entries = len(range(0, blocks * 1024 + 1, record_bytes))
+        case = (ROOT / 'userspace/programs/src/suite_directories.rs').read_text()
+        case = case.split('fn readdir_cookie_blocks() -> CaseResult {', 1)[1]
+        count = re.search(r'let n = ([^;]+);', case)
+        self.assertIsNotNone(count, 'cookie case fixture count not found')
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / 'expectations.rs'
             source.write_text(f'''
@@ -21,6 +35,12 @@ use filesystem_root::RootFs;
 use root_expectations::{{for_root, CookieEncoding}};
 
 fn main() {{
+    // Source construction, independent of the mounted root's block geometry.
+    assert_eq!({fixture_entries}, 15);
+    for block in [1024_u64, 4096] {{
+        let n = {count.group(1)};
+        assert_eq!(n, {fixture_entries}, "fixture count on {{block}}-byte root");
+    }}
     let ext2 = for_root(RootFs::Ext2);
     assert!(ext2.reuses_inode_numbers);
     assert_eq!(ext2.directory_size(12288, 60), 12288);
