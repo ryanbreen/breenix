@@ -68,11 +68,17 @@ impl<T> MountLock<T> {
         self.held
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
             .ok()
-            .map(|_| MountGuard { lock: self })
+            .map(|_| {
+                #[cfg(test)]
+                super::preempt::context::observe(super::preempt::context::Event::Acquire(self as *const Self as usize));
+                MountGuard { lock: self }
+            })
     }
 
     // Release first, then wake: no mount state is held across the wake.
     fn release(&self) {
+        #[cfg(test)]
+        super::preempt::context::observe(super::preempt::context::Event::Release(self as *const Self as usize));
         self.held.store(false, Ordering::SeqCst);
         if self.parked.load(Ordering::SeqCst) != 0 {
             self.wake();
@@ -199,6 +205,8 @@ struct HostPark {
 impl<T> Deref for MountGuard<'_, T> {
     type Target = T;
     fn deref(&self) -> &T {
+        #[cfg(test)]
+        super::preempt::context::observe(super::preempt::context::Event::Access(self.lock as *const MountLock<T> as usize));
         // SAFETY: a live guard is the only holder of the exclusion.
         unsafe { &*self.lock.value.get() }
     }
@@ -206,6 +214,8 @@ impl<T> Deref for MountGuard<'_, T> {
 
 impl<T> DerefMut for MountGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
+        #[cfg(test)]
+        super::preempt::context::observe(super::preempt::context::Event::Access(self.lock as *const MountLock<T> as usize));
         // SAFETY: a live guard is the only holder of the exclusion.
         unsafe { &mut *self.lock.value.get() }
     }

@@ -115,7 +115,11 @@ impl Costs {
         let start = now();
         slot.last_start_ns.fetch_max(start, Ordering::Relaxed);
         slot.started.fetch_add(1, Ordering::Release);
-        Span { slot, start }
+        #[cfg(test)]
+        super::super::preempt::context::observe(super::super::preempt::context::Event::Phase {
+            op: OPS[op as usize], phase: PHASES[phase as usize], begin: true,
+        });
+        Span { slot, start, #[cfg(test)] names: (OPS[op as usize], PHASES[phase as usize]) }
     }
     pub fn device<'a>(&'a self, device: &'a dyn BlockDevice) -> PublicationDevice<'a> {
         PublicationDevice { device, costs: self }
@@ -171,9 +175,15 @@ impl BlockDevice for PublicationDevice<'_> {
 pub(super) struct Span<'a> {
     slot: &'a Slot,
     start: u64,
+    #[cfg(test)]
+    names: (&'static str, &'static str),
 }
 impl Drop for Span<'_> {
     fn drop(&mut self) {
+        #[cfg(test)]
+        super::super::preempt::context::observe(super::super::preempt::context::Event::Phase {
+            op: self.names.0, phase: self.names.1, begin: false,
+        });
         let end = now();
         self.slot
             .total_ns

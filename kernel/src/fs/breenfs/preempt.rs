@@ -53,7 +53,8 @@ mod context {
 #[cfg(test)]
 pub mod context {
     extern crate std;
-    use core::cell::Cell;
+    use core::cell::{Cell, RefCell};
+    use alloc::boxed::Box;
     std::thread_local! {
         static COUNT: Cell<u32> = const { Cell::new(0) };
         static NEED: Cell<bool> = const { Cell::new(false) };
@@ -61,7 +62,30 @@ pub mod context {
         static POINTS: Cell<u32> = const { Cell::new(0) };
         static FIRST_YIELD: Cell<u32> = const { Cell::new(0) };
     }
-    pub fn point() { POINTS.with(|n| n.set(n.get() + 1)); }
+    // Test-only scheduler/ownership observations for E24 coordinator 597(x11a).
+    // Taking the callback out prevents observer reads from recursively observing.
+    #[derive(Clone, Copy)]
+    pub enum Event {
+        Acquire(usize), Release(usize), Access(usize), Point, Yield,
+        Phase { op: &'static str, phase: &'static str, begin: bool },
+    }
+    type Observer = Box<dyn FnMut(Event)>;
+    std::thread_local! {
+        static OBSERVER: RefCell<Option<Observer>> = const { RefCell::new(None) };
+    }
+    pub fn observe(event: Event) {
+        let callback = OBSERVER.with(|o| o.borrow_mut().take());
+        if let Some(mut callback) = callback {
+            callback(event);
+            OBSERVER.with(|o| *o.borrow_mut() = Some(callback));
+        }
+    }
+    pub fn observer(callback: Option<Observer>) { OBSERVER.with(|o| *o.borrow_mut() = callback); }
+    pub fn request_reschedule() { NEED.with(|n| n.set(true)); }
+    pub fn point() {
+        POINTS.with(|n| n.set(n.get() + 1));
+        observe(Event::Point);
+    }
     pub fn first_yield() -> u32 { FIRST_YIELD.with(Cell::get) }
     pub fn can_yield() -> bool { COUNT.with(|n| n.get() == 1) }
     pub fn need_resched() -> bool { NEED.with(Cell::get) }
@@ -69,6 +93,7 @@ pub mod context {
     pub fn preempt_disable() { COUNT.with(|n| n.set(n.get() + 1)); }
     pub fn schedule() {
         assert_eq!(count(), 0, "scheduler entered with the I/O brake held");
+        observe(Event::Yield);
         FIRST_YIELD.with(|first| if first.get() == 0 { first.set(POINTS.with(Cell::get)); });
         NEED.with(|n| n.set(false));
         YIELDS.with(|n| n.set(n.get() + 1));

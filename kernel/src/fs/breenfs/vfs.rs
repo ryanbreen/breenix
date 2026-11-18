@@ -177,6 +177,10 @@ pub(super) mod publication_cost;
 #[path = "../../../../tools/breenfs-host-tests/src/metadata_failure.rs"]
 mod metadata_failure;
 
+#[cfg(test)]
+#[path = "../../../../tools/breenfs-host-tests/src/frozen_generation.rs"]
+mod frozen_generation;
+
 // Extended attributes use ABI errno 61 for an absent attribute.
 const ENODATA: i32 = 61;
 
