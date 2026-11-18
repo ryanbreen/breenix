@@ -349,7 +349,7 @@ struct MountState<W: Wait + 'static> {
     // here after the open generation and before the published view.
     pending: Option<Arc<FrozenPages>>,
     reservations: SharedLedger,
-    grants: Vec<Grant>,
+    grants: Grants,
     metadata_reserved: u64,
     signal: Arc<CommitSignal>,
 }
@@ -398,6 +398,37 @@ impl SharedLedger {
         self.0.lock().settle(grant, blocks)
     }
     fn release(&mut self, grant: Grant) { self.0.lock().release(grant) }
+    fn retire(&mut self, blocks: u64) { self.0.lock().retire(blocks) }
+    fn release_retired(&mut self, grant: Grant) { self.0.lock().release_retired(grant) }
+}
+/// One generation's retained grants and their total, so install can retire
+/// the total without walking the list (x11c M3).
+#[derive(Default)]
+struct Grants {
+    list: Vec<Grant>,
+    blocks: u64,
+}
+impl Grants {
+    fn try_reserve(&mut self, additional: usize) -> Result<(), alloc::collections::TryReserveError> {
+        self.list.try_reserve(additional)
+    }
+    fn push(&mut self, grant: Grant) {
+        self.blocks += grant.blocks();
+        self.list.push(grant);
+    }
+    fn is_empty(&self) -> bool { self.list.is_empty() }
+    // The x1 guard (outstanding_grants.rs) plants and removes a grant.
+    #[cfg(test)]
+    fn pop(&mut self) -> Option<Grant> {
+        let grant = self.list.pop()?;
+        self.blocks -= grant.blocks();
+        Some(grant)
+    }
+}
+impl IntoIterator for Grants {
+    type Item = Grant;
+    type IntoIter = alloc::vec::IntoIter<Grant>;
+    fn into_iter(self) -> Self::IntoIter { self.list.into_iter() }
 }
 type FilesView<W> = Files<'static, CachedNodeStore<'static, W>>;
 /// The open generation's Files view (E24 coordinator 597/601). Normally it is
@@ -998,7 +1029,7 @@ struct FrozenGeneration<W: Wait + 'static> {
     touches: BTreeMap<u64, Arc<TouchedTimes>>,
     // Inodes whose times preparation changed: refreshed after install.
     touched: BTreeSet<u64>,
-    grants: Vec<Grant>,
+    grants: Grants,
     ledger: SharedLedger,
     reap: bool,
     free_blocks: u64,
@@ -1196,7 +1227,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 refresh: BTreeSet::new(),
                 committer,
                 reservations: SharedLedger(ledger),
-                grants: Vec::new(),
+                grants: Grants::default(),
                 metadata_reserved: 0,
                 durable,
                 failed: false,
@@ -1916,6 +1947,9 @@ impl<W: Wait + 'static> BreenFs<W> {
                     committer.install(sb);
                 }
                 state.durable = sb.clone();
+                // With the free count that excludes N's allocations, stop
+                // charging N's grants for them; each is released below (M3).
+                ledger.retire(grants.blocks);
                 *publication = Some(sb.clone());
                 // The publication keeps its own reference: no page is freed here.
                 state.pending = None;
@@ -1952,10 +1986,11 @@ impl<W: Wait + 'static> BreenFs<W> {
         commit.wake(result);
         {
             let _cleanup = self.inner.costs.span(CostOp::Commit, CostPhase::Cleanup);
+            let installed = result.is_ok();
             for grant in grants {
                 preemption_point();
                 #[cfg(test)] publication_phases::visit(3);
-                ledger.release(grant);
+                if installed { ledger.release_retired(grant); } else { ledger.release(grant); }
             }
         }
         drop(retired);

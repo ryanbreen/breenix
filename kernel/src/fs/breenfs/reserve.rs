@@ -92,6 +92,10 @@ impl Grant {
 pub struct Ledger {
     global_reserve: u64,
     outstanding: u64,
+    // Outstanding blocks of grants whose generation is already installed:
+    // its allocations have left free_blocks, so admission charges them no
+    // longer. Each is still released one at a time (E24 coordinator 601(4)).
+    retired: u64,
 }
 
 impl Ledger {
@@ -100,6 +104,7 @@ impl Ledger {
         Self {
             global_reserve,
             outstanding: 0,
+            retired: 0,
         }
     }
 
@@ -107,11 +112,31 @@ impl Ledger {
         self.outstanding
     }
 
+    // What admission charges: grants whose blocks free_blocks still counts.
+    fn charged(&self) -> u64 {
+        self.outstanding - self.retired
+    }
+
     /// Unprivileged availability for f_bavail, in filesystem blocks.
     pub fn available(&self, free_blocks: u64) -> u64 {
         free_blocks
             .saturating_sub(self.global_reserve)
-            .saturating_sub(self.outstanding)
+            .saturating_sub(self.charged())
+    }
+
+    /// The installed free count already excludes what `blocks` of
+    /// outstanding grants funded (x11c M3). Call with that install.
+    pub fn retire(&mut self, blocks: u64) {
+        self.retired = self.retired.checked_add(blocks)
+            .filter(|&retired| retired <= self.outstanding)
+            .expect("retired more than the outstanding grants");
+    }
+
+    /// Release a grant whose blocks `retire` already covered.
+    pub fn release_retired(&mut self, grant: Grant) {
+        self.retired = self.retired.checked_sub(grant.blocks)
+            .expect("released more than the retired grants");
+        self.release(grant);
     }
 
     /// Charge a precomputed estimate before the operation changes anything.
@@ -131,7 +156,7 @@ impl Ledger {
             | Operation::Rmdir
             | Operation::Truncate
             | Operation::RemoveXattr
-            | Operation::DeleteSnapshot => free_blocks.saturating_sub(self.outstanding),
+            | Operation::DeleteSnapshot => free_blocks.saturating_sub(self.charged()),
         };
         if blocks > available {
             #[cfg(test)]
