@@ -469,6 +469,8 @@ impl<W: Wait> MountState<W> {
             self.fail("edited", errno(result.as_ref().err().copied().expect("edit error")));
         }
         for (&ino, entry) in &self.nodes {
+            #[cfg(test)]
+            super::btree::measurement::mutation(7, 1);
             preemption_point();
             if let Some(node) = entry.node.upgrade() {
                 if let Ok(inode) = self.files.inode(ino) {

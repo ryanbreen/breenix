@@ -123,6 +123,8 @@ impl Ledger {
         blocks: u64,
         operation: Operation,
     ) -> Result<Grant, Error> {
+        #[cfg(test)]
+        super::btree::measurement::mutation(0, 1);
         let available = match operation {
             Operation::Allocate => self.available(free_blocks),
             Operation::Unlink
@@ -149,6 +151,8 @@ impl Ledger {
                 free_blocks, self.global_reserve, outstanding, blocks, available,
             ]);
         }
+        #[cfg(test)]
+        super::btree::measurement::mutation(1, blocks);
         self.outstanding = outstanding;
         Ok(Grant { blocks })
     }
@@ -159,6 +163,11 @@ impl Ledger {
         let unused = grant.blocks.checked_sub(blocks).ok_or(Error::ENOSPC)?;
         self.outstanding = self.outstanding.checked_sub(unused)
             .expect("reservation settled on the wrong ledger");
+        #[cfg(test)]
+        {
+            super::btree::measurement::mutation(2, blocks);
+            super::btree::measurement::mutation(3, unused);
+        }
         grant.blocks = blocks;
         Ok(())
     }
@@ -166,6 +175,8 @@ impl Ledger {
     /// Return the exact grant after a durable commit or a discarded transaction.
     /// The grant must come from this ledger; release changes no free-block count.
     pub fn release(&mut self, grant: Grant) {
+        #[cfg(test)]
+        super::btree::measurement::mutation(3, grant.blocks);
         self.outstanding = self
             .outstanding
             .checked_sub(grant.blocks)

@@ -19,6 +19,7 @@ const MAX_HEIGHT: u8 = 8;
 pub mod measurement {
     extern crate std;
     std::thread_local! {
+        static MUTATIONS: core::cell::Cell<[u64; 8]> = const { core::cell::Cell::new([0; 8]) };
         static DECODES: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
         static ITEMS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
         static FS_RESERVATIONS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
@@ -28,6 +29,12 @@ pub mod measurement {
         };
         static HEIGHT: core::cell::Cell<u8> = const { core::cell::Cell::new(0) };
     }
+    // Reservations, granted/retained/returned blocks, inode writes, node writes,
+    // node reads and VNode refresh visits. Host-only; no guest-path cost.
+    pub(crate) fn mutation(index: usize, amount: u64) {
+        MUTATIONS.with(|cell| { let mut n = cell.get(); n[index] += amount; cell.set(n); });
+    }
+    pub fn take_mutations() -> [u64; 8] { MUTATIONS.with(|cell| cell.replace([0; 8])) }
     pub fn take_decodes() -> u64 {
         DECODES.with(|count| count.replace(0))
     }
@@ -143,6 +150,8 @@ fn read_node<S: NodeStore>(
     lower: Option<Key>,
     upper: Option<Key>,
 ) -> Result<Arc<Node>, Error> {
+    #[cfg(test)]
+    measurement::mutation(6, 1);
     let node = store.read_node(ptr)?;
     if (node.len() == 0 && !root)
         || (node.len() != 0

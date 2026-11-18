@@ -159,3 +159,6 @@ mod mapped_coherence;
 
 #[path = "../tests/unlink_reclaim.rs"]
 mod unlink_reclaim;
+
+#[path = "../tests/mutation_cost.rs"]
+mod mutation_cost;

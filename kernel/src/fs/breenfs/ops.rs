@@ -281,6 +281,8 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         Ok(inode)
     }
     pub(super) fn put_inode(&mut self, ino: u64, inode: Inode) -> Result<(), Error> {
+        #[cfg(test)]
+        btree::measurement::mutation(4, 1);
         self.require_writable()?;
         self.txn.insert(
             &mut self.root.root,

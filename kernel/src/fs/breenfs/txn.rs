@@ -906,6 +906,8 @@ impl<S: NodeStore> NodeStore for EditStore<'_, '_, S> {
             {
                 return Err(Error::Invalid);
             }
+            #[cfg(test)]
+            btree::measurement::mutation(5, 1);
             self.txn.nodes.insert(addr, bytes);
             Ok(())
         })();
