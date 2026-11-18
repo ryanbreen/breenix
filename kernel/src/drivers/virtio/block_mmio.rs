@@ -44,6 +44,7 @@ struct BlockMmioRequestGate {
 struct BlockMmioRequestGuard<'a> {
     gate: &'a BlockMmioRequestGate,
     release_on_drop: bool,
+    _custody: crate::task::thread::KillCustody,
 }
 
 impl BlockMmioRequestGate {
@@ -60,6 +61,11 @@ impl BlockMmioRequestGate {
             return Err(BLOCK_MMIO_WEDGED_ERROR);
         }
 
+        // A pending SIGKILL may end syscall waits, but cannot discard a
+        // queued device owner or its DMA receipt. Nest custody before the
+        // wait and keep it until request ownership has ended (E24 520(r)).
+        let custody = crate::task::thread::KillCustody::try_enter()
+            .ok_or("Block MMIO request gate refused a kill-claimed thread")?;
         loop {
             if self
                 .locked
@@ -69,6 +75,7 @@ impl BlockMmioRequestGate {
                 return Ok(BlockMmioRequestGuard {
                     gate: self,
                     release_on_drop: true,
+                    _custody: custody,
                 });
             }
 
@@ -1150,6 +1157,7 @@ fn read_chunk(
         let stage = match reason {
             "Block MMIO request already in progress (context cannot sleep)" => "gate-cannot-sleep",
             "Block MMIO request already in progress (waiter publication refused)" => "gate-publish-refused",
+            "Block MMIO request gate refused a kill-claimed thread" => "gate-kill-claimed",
             _ => "gate-wedged",
         };
         read_failure(device_index, Some(state), sector, buffer.len(), reason, stage)
