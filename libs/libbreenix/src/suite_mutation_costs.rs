@@ -3,6 +3,8 @@
 //! Snapshot deltas bracket a case, not a process or a causal UI attribution.
 //! Completed durations may include a span begun before the first snapshot;
 //! timestamps and active counts expose those boundary-crossing operations.
+//! max_ns is the mount-lifetime high-water mark of completed spans (583(x10)),
+//! carried unchanged rather than subtracted across the case.
 //! A missing baseline disables these optional observations (e.g. host probes).
 use std::io::Read;
 const LIMIT: usize = 64;
@@ -33,6 +35,13 @@ const PHASES: &[&str] = &[
     "write-cached",
     "device-flush",
     "mount-exclusion",
+    "retain-open",
+    "apply-touches",
+    "drain-dirty",
+    "prepare-reap",
+    "cleanup",
+    "completion",
+    "mount-excluded",
 ];
 #[derive(Clone, Copy, Default)]
 struct Row {
@@ -45,6 +54,7 @@ struct Row {
     ns: u64,
     last_start: u64,
     last_end: u64,
+    max_ns: u64,
 }
 pub(super) struct Snapshot {
     rows: Vec<Row>,
@@ -73,8 +83,8 @@ impl Snapshot {
             if !root || rows.len() == LIMIT {
                 continue;
             }
-            let fields: Vec<_> = line.split_whitespace().take(11).collect();
-            if fields.len() != 10 {
+            let fields: Vec<_> = line.split_whitespace().take(12).collect();
+            if !matches!(fields.len(), 10 | 11) {
                 continue;
             }
             let field = |i: usize, key: &str| fields[i].strip_prefix(key);
@@ -90,6 +100,7 @@ impl Snapshot {
                     ns: number(7, "total_ns=")?,
                     last_start: number(8, "last_start_ns=")?,
                     last_end: number(9, "last_end_ns=")?,
+                    max_ns: if fields.len() == 11 { number(10, "max_ns=")? } else { 0 },
                 })
             })();
             if let Some(row) = parsed {
@@ -125,9 +136,9 @@ impl Snapshot {
             let completed = row.completed.saturating_sub(old.completed);
             let ns = row.ns.saturating_sub(old.ns);
             if started == 0 && completed == 0 && ns == 0 { return None; }
-            Some(format!("CASE_OBSERVATION {suite} {case} op=vfs-{}-{} started={started} completed={completed} total_ns={ns} active={} last_start_ns={} last_end_ns={} mount={} root={} scope=mount",
+            Some(format!("CASE_OBSERVATION {suite} {case} op=vfs-{}-{} started={started} completed={completed} total_ns={ns} active={} last_start_ns={} last_end_ns={} mount={} root={} max_ns={} scope=mount",
                 OPS[row.op], PHASES[row.phase], row.started.saturating_sub(row.completed),
-                row.last_start, row.last_end, row.mount, row.root))
+                row.last_start, row.last_end, row.mount, row.root, row.max_ns))
         }).collect()
     }
 }

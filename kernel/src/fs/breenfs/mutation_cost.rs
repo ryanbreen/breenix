@@ -2,6 +2,8 @@
 //! Collection updates atomic counters and monotonic timestamps.
 //! Times include preemption and device waits; nested publication spans are
 //! inclusive, so phase totals must not be added as if they were CPU time.
+//! E24 coordinator 583(x10): max_ns is the mount-lifetime maximum completed
+//! span, including time descheduled with exclusion held; it is not a case delta.
 use alloc::string::String;
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -37,6 +39,13 @@ pub(super) enum Phase {
     WriteCached,
     DeviceFlush,
     MountExclusion,
+    RetainOpen,
+    ApplyTouches,
+    DrainDirty,
+    PrepareReap,
+    Cleanup,
+    Completion,
+    MountExcluded,
 }
 const OPS: &[&str] = &[
     "create",
@@ -64,11 +73,19 @@ const PHASES: &[&str] = &[
     "write-cached",
     "device-flush",
     "mount-exclusion",
+    "retain-open",
+    "apply-touches",
+    "drain-dirty",
+    "prepare-reap",
+    "cleanup",
+    "completion",
+    "mount-excluded",
 ];
 struct Slot {
     started: AtomicU64,
     completed: AtomicU64,
     total_ns: AtomicU64,
+    max_ns: AtomicU64,
     last_start_ns: AtomicU64,
     last_end_ns: AtomicU64,
 }
@@ -78,6 +95,7 @@ impl Slot {
             started: AtomicU64::new(0),
             completed: AtomicU64::new(0),
             total_ns: AtomicU64::new(0),
+            max_ns: AtomicU64::new(0),
             last_start_ns: AtomicU64::new(0),
             last_end_ns: AtomicU64::new(0),
         }
@@ -111,9 +129,10 @@ impl Costs {
             if started == 0 {
                 continue;
             }
-            writeln!(text, "mutation_cost mount={mount} root={root} op={} phase={} started={started} completed={completed} total_ns={} last_start_ns={} last_end_ns={}",
+            writeln!(text, "mutation_cost mount={mount} root={root} op={} phase={} started={started} completed={completed} total_ns={} last_start_ns={} last_end_ns={} max_ns={}",
                 OPS[i / PHASES.len()], PHASES[i % PHASES.len()], slot.total_ns.load(Ordering::Relaxed),
-                slot.last_start_ns.load(Ordering::Relaxed), slot.last_end_ns.load(Ordering::Relaxed))?;
+                slot.last_start_ns.load(Ordering::Relaxed), slot.last_end_ns.load(Ordering::Relaxed),
+                slot.max_ns.load(Ordering::Relaxed))?;
         }
         Ok(())
     }
@@ -159,6 +178,7 @@ impl Drop for Span<'_> {
         self.slot
             .total_ns
             .fetch_add(end.saturating_sub(self.start), Ordering::Relaxed);
+        self.slot.max_ns.fetch_max(end.saturating_sub(self.start), Ordering::Relaxed);
         self.slot.last_end_ns.fetch_max(end, Ordering::Relaxed);
         self.slot.completed.fetch_add(1, Ordering::Release);
     }

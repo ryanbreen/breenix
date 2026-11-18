@@ -1431,6 +1431,10 @@ impl<W: Wait + 'static> BreenFs<W> {
         #[cfg(test)] let _cache_cleanup;
         let (prepared, reap) = {
             let mut state = self.mutation_lock(CostOp::Commit);
+            // 583(x10): start after acquisition; stop before releasing this
+            // guard. Includes nested waits/yields, excludes acquisition/I/O
+            // after the state guard has gone.
+            let _excluded = self.inner.costs.span(CostOp::Commit, CostPhase::MountExcluded);
             if state.failed {
                 return Err(Errno(EIO));
             }
@@ -1446,7 +1450,11 @@ impl<W: Wait + 'static> BreenFs<W> {
             #[cfg(test)] { _cache_cleanup = publication_phases::CacheCleanup::new(); }
             #[cfg(test)]
             measurement::prepared(force, pressure);
-            state.retain_open();
+            {
+                let _retain = self.inner.costs.span(CostOp::Commit, CostPhase::RetainOpen);
+                state.retain_open();
+            }
+            let touches_span = self.inner.costs.span(CostOp::Commit, CostPhase::ApplyTouches);
             #[cfg(test)] let touches_phase = publication_phases::Phase::new("apply_touches");
             let touched = core::mem::take(&mut state.touches);
             for ino in touched {
@@ -1456,8 +1464,16 @@ impl<W: Wait + 'static> BreenFs<W> {
                 state.prune_node(ino);
             }
             #[cfg(test)] drop(touches_phase);
-            state.retain_open();
-            if let Err(error) = state.drain_dirty(&self.data_reader(None)) {
+            drop(touches_span);
+            {
+                let _retain = self.inner.costs.span(CostOp::Commit, CostPhase::RetainOpen);
+                state.retain_open();
+            }
+            let drained = {
+                let _drain = self.inner.costs.span(CostOp::Commit, CostPhase::DrainDirty);
+                state.drain_dirty(&self.data_reader(None))
+            };
+            if let Err(error) = drained {
                 state.fail("drain-dirty", error);
                 return Err(Errno(EIO));
             }
@@ -1466,6 +1482,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             let mut reap = !core::mem::take(&mut state.skip_reap)
                 && !state.closed && !state.reap_shutdown && state.dead_remaining != 0;
             let reaped = (|| -> Result<(), ops::Error> {
+                let _prepare = self.inner.costs.span(CostOp::Commit, CostPhase::PrepareReap);
                 #[cfg(test)] let _phase = publication_phases::Phase::new("prepare_reap");
                 let MountState { files, reservations, grants, durable, .. } = &mut *state;
                 let (txn, _) = files.prepare_commit()?;
@@ -1539,6 +1556,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                     return Err(Errno(EIO));
                 }
             }
+            let _cleanup = self.inner.costs.span(CostOp::Commit, CostPhase::Cleanup);
             #[cfg(test)] let cleanup_phase = publication_phases::Phase::new("cleanup");
             state.inodes.entries.fill(None);
             for ino in core::mem::take(&mut state.dirty_nodes) {
@@ -1551,7 +1569,10 @@ impl<W: Wait + 'static> BreenFs<W> {
                 state.prune_node(ino);
             }
             state.dirty_bytes = 0;
-            state.retain_open();
+            {
+                let _retain = self.inner.costs.span(CostOp::Commit, CostPhase::RetainOpen);
+                state.retain_open();
+            }
             state.policy = CommitPolicy::new(now_ns);
             state.pending_grants = core::mem::take(&mut state.grants);
             state.metadata_reserved = 0;
@@ -1582,6 +1603,11 @@ impl<W: Wait + 'static> BreenFs<W> {
         };
         {
             let mut state = self.mutation_lock(CostOp::Commit);
+            // 583(x10): start after acquisition; stop before releasing this
+            // guard. Includes nested waits/yields, excludes acquisition/I/O
+            // after the state guard has gone.
+            let _excluded = self.inner.costs.span(CostOp::Commit, CostPhase::MountExcluded);
+            let _completion = self.inner.costs.span(CostOp::Commit, CostPhase::Completion);
             #[cfg(test)] let _phase = publication_phases::Phase::new("completion");
             state
                 .committer
