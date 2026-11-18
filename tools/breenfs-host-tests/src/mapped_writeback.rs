@@ -232,7 +232,7 @@ fn n3_shutdown_preserves_staging_enomem() {
 fn minor_failed_mapping_fsync_returns_eio() {
     let (fs, _disk, node) = fixture();
     node.map.shared_stores(&expected(83), false);
-    fs.inner.state.lock().edited::<()>(Err(ops::Error::EIO)).unwrap_err();
+    fs.inner.state.lock().edited::<()>(&[], Err(ops::Error::EIO)).unwrap_err();
     assert_eq!(fs.fsync(&node, false), Err(Errno(EIO)));
     fs.shutdown("minor-failed-fsync", u64::MAX).unwrap();
 }

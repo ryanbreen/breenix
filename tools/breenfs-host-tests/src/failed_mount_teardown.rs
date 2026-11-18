@@ -82,7 +82,7 @@ fn failed_mount(error: ops::Error) {
     // Inject at the real multi-item edit completion boundary, before any
     // shutdown: both errors latch failure and fail the commit receipts.
     assert_eq!(
-        fs.inner.state.lock().edited::<()>(Err(error)),
+        fs.inner.state.lock().edited::<()>(&[], Err(error)),
         Err(errno(error))
     );
     assert_eq!(fs.fsync(&node, false), Err(Errno(EIO)));

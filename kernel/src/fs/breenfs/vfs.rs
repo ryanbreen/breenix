@@ -305,7 +305,7 @@ impl<W: Wait> MountState<W> {
             Ok(inode) => inode,
             // A final touch can race commit's reclaim of a closed orphan.
             Err(ops::Error::ENOENT) => return Ok(()),
-            Err(error) => return self.edited(Err(error)),
+            Err(error) => return self.edited(&[ino], Err(error)),
         };
         let before = inode;
         if modify != 0 {
@@ -326,7 +326,7 @@ impl<W: Wait> MountState<W> {
         }
         if inode != before {
             let result = self.files.put_inode(ino, inode);
-            self.edited(result)?;
+            self.edited(&[ino], result)?;
         }
         Ok(())
     }
@@ -462,7 +462,7 @@ impl<W: Wait> MountState<W> {
             Err(ReadError::Data) => Err(Errno(EIO)),
         }
     }
-    fn edited<T>(&mut self, result: Result<T, ops::Error>) -> Result<T, Errno> {
+    fn edited<T>(&mut self, objects: &[u64], result: Result<T, ops::Error>) -> Result<T, Errno> {
         #[cfg(test)]
         super::btree::measurement::refresh_call();
         if result.is_ok() { self.fresh = false; }
@@ -474,7 +474,11 @@ impl<W: Wait> MountState<W> {
         if result.as_ref().is_err_and(|error| matches!(errno(*error).0, EIO | ENOSPC)) {
             self.fail("edited", errno(result.as_ref().err().copied().expect("edit error")));
         }
-        for (&ino, entry) in &self.nodes {
+        // Refresh only inodes this edit can change. Closed dirty entries stay
+        // indexed until publication, without making later edits scan them.
+        for (index, &ino) in objects.iter().enumerate() {
+            if objects[..index].contains(&ino) { continue; }
+            let Some(entry) = self.nodes.get(&ino) else { continue; };
             #[cfg(test)]
             super::btree::measurement::mutation(7, 1);
             preemption_point();
@@ -589,7 +593,7 @@ impl<W: Wait> MountState<W> {
         self.reservations.reserve(self.durable.free_blocks, blocks, operation)
             .map_err(|_| Errno(ENOSPC))
     }
-    fn finish_metadata<T>(&mut self, mut grant: Grant, result: Result<T, ops::Error>) -> Result<T, Errno> {
+    fn finish_metadata<T>(&mut self, objects: &[u64], mut grant: Grant, result: Result<T, ops::Error>) -> Result<T, Errno> {
         if result.is_ok() {
             // durable.free_blocks still includes private allocations. Keep
             // those and the work publication still owes, once per transaction;
@@ -599,19 +603,19 @@ impl<W: Wait> MountState<W> {
                 Ok(debt) => debt,
                 Err(error) => {
                     self.reservations.release(grant);
-                    return self.edited(Err(error));
+                    return self.edited(objects, Err(error));
                 }
             };
             let retained = debt.saturating_sub(self.metadata_reserved);
             if self.reservations.settle(&mut grant, retained).is_err() {
                 self.reservations.release(grant);
-                return self.edited(Err(ops::Error::ENOSPC));
+                return self.edited(objects, Err(ops::Error::ENOSPC));
             }
             self.metadata_reserved += retained;
             if retained != 0 { self.grants.push(grant); }
             else { self.reservations.release(grant); }
         } else { self.reservations.release(grant); }
-        self.edited(result)
+        self.edited(objects, result)
     }
     fn drain_dirty(&mut self, device: &dyn BlockDevice) -> Result<(), Errno> {
         let result = self.drain_pages(device);
@@ -1087,7 +1091,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         }
         match state.files.put_inode(node.ino, inode) {
             Err(error) => {
-                let result = state.edited::<()>(Err(error));
+                let result = state.edited::<()>(&[node.ino], Err(error));
                 node.map.transition(node.size.load(Ordering::Acquire));
                 node.map.invalidate(offset, length as u64);
                 result?;
@@ -1643,7 +1647,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 }
                 let grant = state.reserve_metadata(&[2], 1, false, false, Operation::Allocate)?;
                 let result = state.files.snapshot(name, request.flags & SNAPSHOT_READ_ONLY != 0);
-                let id = state.finish_metadata(grant, result)?;
+                let id = state.finish_metadata(&[], grant, result)?;
                 state.roots.insert(id, (name.to_vec(), request.flags));
                 drop(state);
                 return self.sync_generation(None, false);
@@ -1658,7 +1662,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             self.check_root_unmounted(id)?;
             let grant = state.reserve_metadata(&[2], 1, false, false, Operation::DeleteSnapshot)?;
             let result = state.files.delete_root(name);
-            state.finish_metadata(grant, result)?;
+            state.finish_metadata(&[], grant, result)?;
             state.roots.remove(&id);
             state.skip_reap = true;
         }
@@ -1987,7 +1991,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         {
             let store = self.inner.cache.store(self.inner.device.clone(), sb);
             let result = Files::new(store, sb, self.inner.root_id, false);
-            state.files = state.edited(result)?;
+            state.files = state.edited(&[], result)?;
             state.durable = sb.clone();
         }
         buf.fill(0);
@@ -2090,7 +2094,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             },
             now(),
         );
-        state.finish_metadata(grant, result)
+        state.finish_metadata(&[ino], grant, result)
     }
     fn create(&self, dir: u64, name: &[u8], node: NewNode<'_>) -> Result<u64, Errno> {
         let _operation = self.inner.costs.span(CostOp::Create, CostPhase::Operation);
@@ -2123,7 +2127,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             now(),
             |_, _| Ok(()),
         );
-        state.finish_metadata(grant, result)
+        state.finish_metadata(&[dir], grant, result)
     }
     fn create_open(
         &self,
@@ -2182,7 +2186,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             state.reservations.release(grant);
             return Err(e);
         }
-        let ino = state.finish_metadata(grant, result)?;
+        let ino = state.finish_metadata(&[dir], grant, result)?;
         let node = prepared.ok_or(Errno(EIO))?;
         let entry = state.nodes.entry(ino).or_default();
         entry.node = Arc::downgrade(&node);
@@ -2207,14 +2211,14 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         })?;
         let _edit = self.inner.costs.span(CostOp::Link, CostPhase::Edit);
         let result = state.files.link(ino, dir, name, now());
-        state.finish_metadata(grant, result)
+        state.finish_metadata(&[ino, dir], grant, result)
     }
     fn remove(&self, dir: u64, name: &[u8], which: Remove) -> Result<(), Errno> {
         let cost = if which.directory { CostOp::Rmdir } else { CostOp::Unlink };
         let _operation = self.inner.costs.span(cost, CostPhase::Operation);
         let state = self.mutation_lock(cost);
         state.writable()?;
-        let (mut state, grant) = self.reserve_with_pressure(cost, state, || Ok(self.mutation_lock(cost)), |state| {
+        let (mut state, (grant, victim)) = self.reserve_with_pressure(cost, state, || Ok(self.mutation_lock(cost)), |state| {
             let parent = state.directory(dir)?;
             let result = state.files.lookup(dir, name);
             let victim = state.observed(result)?;
@@ -2239,7 +2243,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 &[dir, victim], 5, false, !which.directory,
                 if which.directory { Operation::Rmdir } else { Operation::Unlink },
             )?;
-            Ok(grant)
+            Ok((grant, victim))
         })?;
         let _edit = self.inner.costs.span(cost, CostPhase::Edit);
         let result = if which.directory {
@@ -2247,7 +2251,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         } else {
             state.files.unlink(dir, name, now())
         };
-        state.finish_metadata(grant, result)
+        state.finish_metadata(&[dir, victim], grant, result)
     }
     fn rename(
         &self,
@@ -2261,7 +2265,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         let _operation = self.inner.costs.span(CostOp::Rename, CostPhase::Operation);
         let state = self.mutation_lock(CostOp::Rename);
         state.writable()?;
-        let (mut state, grant) = self.reserve_with_pressure(CostOp::Rename, state, || Ok(self.mutation_lock(CostOp::Rename)), |state| {
+        let (mut state, (grant, objects)) = self.reserve_with_pressure(CostOp::Rename, state, || Ok(self.mutation_lock(CostOp::Rename)), |state| {
             if mode == RenameMode::Exchange {
                 return Err(Errno(EINVAL));
             }
@@ -2283,11 +2287,11 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             if let Some(dest) = dest { objects.push(dest.ino); }
             let grant = state.reserve_metadata(&objects, 12, false, dest.is_some(), Operation::Allocate)?;
 
-            Ok(grant)
+            Ok((grant, objects))
         })?;
         let _edit = self.inner.costs.span(CostOp::Rename, CostPhase::Edit);
         let result = state.files.rename(from_dir, from, to_dir, to, now());
-        state.finish_metadata(grant, result)
+        state.finish_metadata(&objects, grant, result)
     }
     fn write(&self, node: &VNode, req: WriteReq, bytes: &[u8]) -> Result<WriteResult, WriteError> {
         let _operation = self.inner.costs.span(CostOp::Write, CostPhase::Operation);
@@ -2379,7 +2383,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             }
             state.finish_data(node.ino, grant, result)?;
             let result = state.files.trim_mappings(node.ino, size);
-            inode.nblocks = state.edited(result)?;
+            inode.nblocks = state.edited(&[node.ino], result)?;
         } else {
             state.finish_data(node.ino, grant, Ok(()))?;
         }
@@ -2390,7 +2394,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             inode.mode &= !content_privilege(inode.mode);
         }
         let result = state.files.put_inode(node.ino, inode);
-        let result = state.edited(result);
+        let result = state.edited(&[node.ino], result);
         node.map.transition(node.size.load(Ordering::Acquire));
         result
     }
@@ -2462,7 +2466,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         inode.mtime = now();
         inode.ctime = inode.mtime;
         let result = state.files.put_inode(node.ino, inode);
-        state.edited(result)
+        state.edited(&[node.ino], result)
     }
     fn clear_mapping_privilege(&self, node: &VNode) -> Result<(), Errno> {
         let _operation = self.inner.costs.span(CostOp::Setattr, CostPhase::Operation);
@@ -2477,7 +2481,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         inode.mode &= !content_privilege(inode.mode);
         inode.ctime = now();
         let result = state.files.put_inode(node.ino, inode);
-        state.edited(result)
+        state.edited(&[node.ino], result)
     }
     fn xattr(&self, ino: u64, op: Xattr<'_>) -> Result<usize, Errno> {
         let mutation = matches!(op, Xattr::Set { .. } | Xattr::Remove { .. });
@@ -2521,7 +2525,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 })?;
                 let _edit = self.inner.costs.span(CostOp::Xattr, CostPhase::Edit);
                 let result = state.files.xattr(ino, name, Some(value), now());
-                state.finish_metadata(grant, result).map(|_| 0)
+                state.finish_metadata(&[ino], grant, result).map(|_| 0)
             }
             Xattr::Remove { name } => {
                 let (mut state, grant) = self.reserve_with_pressure(CostOp::Xattr, state, || Ok(self.mutation_lock(CostOp::Xattr)), |state| {
@@ -2536,7 +2540,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 })?;
                 let _edit = self.inner.costs.span(CostOp::Xattr, CostPhase::Edit);
                 let result = state.files.xattr(ino, name, None, now());
-                state.finish_metadata(grant, result).map(|_| 0)
+                state.finish_metadata(&[ino], grant, result).map(|_| 0)
             }
         }
     }
