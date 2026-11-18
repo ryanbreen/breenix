@@ -2124,7 +2124,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, scre
             Err(msg) => return Outcome::Fail { ms: 0, msg },
         }
     } else { None };
-    let controls = if gui {
+    let controls = if gui || (suite == "libc" && name == "dirent-glob/readdir-many") {
         match control::Scope::new() {
             Ok(scope) => Some(scope),
             Err(msg) => return Outcome::Fail { ms: 0, msg },
@@ -2150,6 +2150,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, scre
         Ok(_) => outcome,
     };
     if let Some(controls) = controls {
+        for line in controls.failure_records(suite, name, matches!(outcome, Outcome::Fail { .. })) { emit(&line); }
         for line in controls.report(suite, name) { emit(&line); }
         for line in controls.phases(suite, name) { emit(&line); }
     }

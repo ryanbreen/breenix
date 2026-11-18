@@ -1,5 +1,5 @@
 //! Case-side client for the runner's sibling session supervisor.
-use breenix_suite::suite::control::{Watchdog, Wait};
+use breenix_suite::suite::control::{Watchdog, Wait, observations::{self, Span}};
 use std::collections::{BTreeMap, BTreeSet};
 use libbreenix::{process, time};
 use crate::{channel::{Channel, now}, supervisor::{Message, SessionEnvironment, signal_name}};
@@ -264,12 +264,15 @@ impl Session {
     /// Absolute monotonic deadline, so a startup budget includes connect/launch.
     pub fn wait_window_until(&mut self, title: &str, deadline_ns: u64) -> Result<WindowReady, String> {
         if self.stopped { return Err("session has ended".into()); }
+        let _observation = Span::new("window-wait");
         let wait = WaitWindow::new(title, deadline_ns);
         let mut infos = vec![libbreenix::window::abi::WinInfo::default(); 64];
         loop {
             let at = Self::now_ns()?;
             if at > deadline_ns { return Err(format!("wait-window-timeout title={title:?} deadline_ns={deadline_ns}")); }
+            let registry_span = Span::new("window-registry");
             let total = libbreenix::window::list(&mut infos).map_err(|e| format!("wait-window title={title:?} registry: {e}"))?;
+            drop(registry_span);
             if total > infos.len() {
                 infos.resize(total, libbreenix::window::abi::WinInfo::default());
                 continue;
@@ -277,9 +280,15 @@ impl Session {
             let registry: Vec<_> = infos[..total].iter().map(|w| {
                 w.title.get(..w.title_len as usize).map(|title| (w.id, title)).ok_or("invalid registry title length")
             }).collect::<Result<_, _>>()?;
+            if registry.iter().any(|(id, bytes)| *id != 0 && *bytes == title.as_bytes()) {
+                observations::stamp("window-registry-match", crate::startup::now());
+            }
+            let composite_span = Span::new("window-composites");
             let records = std::fs::read_to_string("/proc/breenix/composites")
                 .map_err(|e| format!("wait-window title={title:?} composites: {e}"))?;
+            drop(composite_span);
             if let Some(ready) = wait.observe(&registry, &records, Self::now_ns()?)? {
+                observations::stamp("window-timed-composite", ready.presented_ns);
                 if let Some(trace) = &self.startup { trace.at("first-composite", ready.presented_ns); }
                 return Ok(ready);
             }

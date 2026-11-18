@@ -511,6 +511,9 @@ fn run(path: &str, args: &[&str], dir: &str, input: &[u8]) -> Result<Ran, CaseEr
                     Ok(n) => {
                         if buf.len() < 1 << 20 {
                             buf.extend_from_slice(&chunk[..n]);
+                            if i == 2 && args.get(1) == Some(&"readdir-many") {
+                                breenix_suite::suite::control::observations::libc_phases(buf);
+                            }
                         }
                     }
                     Err(_) => break,
@@ -583,7 +586,7 @@ fn c_case() -> CaseResult {
     let scratch = Scratch::new()?;
     let ran = run(&path, &[&program, id, RESULT_FD], &scratch.dir, b"")?;
     let report = String::from_utf8_lossy(&ran.result).into_owned();
-    let line = report.lines().next().unwrap_or("");
+    let line = report.lines().find(|line| !line.starts_with("OBS ")).unwrap_or("");
     if line == "PASS" {
         if process::wifexited(ran.status) && process::wexitstatus(ran.status) == 0 {
             return Ok(());

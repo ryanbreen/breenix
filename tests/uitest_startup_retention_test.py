@@ -46,6 +46,11 @@ fn run(request:Request)->Result<Option<String>,String>{
         teardown=item(source,'Ok(Some(Message::Teardown)) =>')
         teardown=teardown[teardown.index('{')+1:teardown.rindex('}')]
         run_rust(self,r'''
+extern crate self as libbreenix;
+pub mod time { pub fn now_monotonic()->Result<std::time::Duration,String> {Ok(std::time::Duration::from_nanos(1))} }
+#[allow(dead_code)]
+#[path="@CONTROL@"] mod control;
+use control::observations::Span;
 use std::{collections::BTreeMap,path::Path,sync::Mutex};
 static OUTPUT:Mutex<Vec<u8>>=Mutex::new(Vec::new());
 struct Fd;impl Fd{const STDOUT:Self=Self;}
@@ -62,13 +67,13 @@ struct Ring;impl Ring{fn dropped(&self)->u64{0}fn bytes(&self)->Vec<u8>{vec![]}}
 struct App{ring:Ring}
 struct SessionEnvironment{root:String}impl SessionEnvironment{fn config_root(&self)->&str{&self.root}}
 struct Evidence;impl Evidence{fn collect(&mut self,_:&str,_:&str,_:u8,_:&[(u64,u64,Vec<u8>)])->String{"collected".into()}}
-fn teardown(_: &mut Channel,_:&mut BTreeMap<u64,App>,_:bool,_:Option<u64>,_:&mut (),_:&mut Option<()>)->Result<(),String>{Ok(())}
+fn teardown(_: &mut Channel,_:&mut BTreeMap<u64,App>,_:bool,_:Option<u64>,_:bool,_:&mut (),_:&mut Option<()>)->Result<(),String>{Ok(())}
 @HELPER@
 fn run(request:Request,explicit:bool,root:&Path)->Result<Option<String>,String>{
  let mut environment=Some(SessionEnvironment{root:root.to_str().unwrap().into()});
  let mut startup_record:Option<String>=None;let _=&mut startup_record;
  let mut output=BTreeMap::<u64,App>::new();let mut evidence=Evidence;
- let mut channel=Channel;let compositor=None;let mut ownership=();let mut devices=None;let mut stopped=false;assert!(!stopped);
+ let mut channel=Channel;let compositor=None;let init_desktop=false;let mut ownership=();let mut devices=None;let mut stopped=false;assert!(!stopped);
  if explicit{@TEARDOWN@ assert!(stopped);assert!(environment.is_none());assert!(!root.exists());}
  @COLLECTOR@
  Ok(record)
@@ -90,5 +95,5 @@ fn run(request:Request,explicit:bool,root:&Path)->Result<Option<String>,String>{
  assert!(failures.is_empty(),"{failures:?}");
  let _=Accounting;let _=Path::new("unused");
 }
-'''.replace('@HELPER@',helper).replace('@TEARDOWN@',teardown).replace('@COLLECTOR@',collector))
+'''.replace('@HELPER@',helper).replace('@TEARDOWN@',teardown).replace('@COLLECTOR@',collector).replace('@CONTROL@',str(ROOT/'libs/libbreenix/src/suite_control.rs')))
 if __name__=='__main__':unittest.main()

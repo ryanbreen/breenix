@@ -16,7 +16,9 @@ const PHASES: &[&str] = &[
 ];
 const PHASE_BASE: usize = WAITS.len() * CELLS;
 const APP_OUTPUT_CLOCK: usize = PHASE_BASE + PHASES.len() * 2;
-const USED_CELLS: usize = APP_OUTPUT_CLOCK + 1;
+#[path = "suite_observations.rs"]
+pub mod observations;
+const USED_CELLS: usize = observations::USED_CELLS;
 static PAGE: AtomicUsize = AtomicUsize::new(0);
 fn now_ms() -> Result<u64, String> {
     libbreenix::time::now_monotonic().map(|t| (t.as_nanos()/1_000_000) as u64).map_err(|e| e.to_string())
@@ -106,6 +108,9 @@ impl Scope {
         let page = ptr as usize;
         let previous = PAGE.swap(page, Ordering::AcqRel);
         Ok(Self { page, previous })
+    }
+    pub(super) fn failure_records(&self, suite: &str, case: &str, failed: bool) -> Vec<String> {
+        observations::records(self.page, suite, case, failed)
     }
     pub(super) fn report(&self, suite: &str, case: &str) -> Vec<String> {
         WAITS.iter().enumerate().filter_map(|(i, &wait)| {
