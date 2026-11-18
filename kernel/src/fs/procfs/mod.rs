@@ -93,6 +93,8 @@ pub enum ProcEntryType {
     BreenixTesting,
     /// Durable clean/dirty state of the mounted disk filesystems.
     Filesystems,
+    /// Read-only mutation counter transport for failure observations.
+    FsMutationCosts,
     /// Suite-only stage fault handoff to the userspace renderer.
     StageControl,
     /// Actual producer markers reached in boot-path order.
@@ -232,6 +234,7 @@ impl ProcEntryType {
             ProcEntryType::Composites => "composites",
             ProcEntryType::Ext2 => "ext2",
             ProcEntryType::Filesystems => "filesystems",
+            ProcEntryType::FsMutationCosts => "fs-mutation-costs",
             ProcEntryType::Frames => "frames",
             ProcEntryType::WindowPipeline => "window-pipeline",
             ProcEntryType::WindowPipelineFull => "window-pipeline-full",
@@ -320,6 +323,7 @@ impl ProcEntryType {
             ProcEntryType::Composites => "/proc/breenix/composites",
             ProcEntryType::Ext2 => "/proc/breenix/ext2",
             ProcEntryType::Filesystems => "/proc/breenix/filesystems",
+            ProcEntryType::FsMutationCosts => "/proc/breenix/fs-mutation-costs",
             ProcEntryType::Frames => "/proc/breenix/frames",
             ProcEntryType::WindowPipeline => "/proc/breenix/window-pipeline",
             ProcEntryType::WindowPipelineFull => "/proc/breenix/window-pipeline-full",
@@ -409,6 +413,7 @@ impl ProcEntryType {
             ProcEntryType::Composites => 217,
             ProcEntryType::Ext2 => 202,
             ProcEntryType::Filesystems => 209,
+            ProcEntryType::FsMutationCosts => 223,
             ProcEntryType::Frames => 203,
             ProcEntryType::WindowPipeline => 220,
             ProcEntryType::WindowPipelineFull => 221,
@@ -576,6 +581,7 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::Ext2));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Frames));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Filesystems));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::FsMutationCosts));
     procfs.entries.push(ProcEntry::new(ProcEntryType::WindowPipeline));
     procfs.entries.push(ProcEntry::new(ProcEntryType::WindowPipelineFull));
     procfs.entries.push(ProcEntry::new(ProcEntryType::InputLedger));
@@ -744,6 +750,7 @@ pub fn list_entries() -> Result<Vec<String>, i32> {
                     | ProcEntryType::InputLedger
                     | ProcEntryType::InputReplay
                     | ProcEntryType::Filesystems
+                    | ProcEntryType::FsMutationCosts
                     | ProcEntryType::Frames
                     | ProcEntryType::XhciTrace
                     | ProcEntryType::XhciCounters
@@ -1033,6 +1040,7 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::XhciPointers => text(crate::drivers::xhci::describe_pointers()),
         ProcEntryType::Ext2 => generate_ext2().map(String::into_bytes),
         ProcEntryType::Filesystems => crate::fs::vfs::report(crate::fs::vfs::Report::State).map(String::into_bytes).map_err(|_| -5),
+        ProcEntryType::FsMutationCosts => crate::fs::vfs::mutation_costs().map(String::into_bytes).map_err(|_| -5),
         ProcEntryType::Frames => generate_frames().map(String::into_bytes),
         ProcEntryType::InputLedger => text(crate::input::stream::ledger()),
         // syscall/fs.rs opens the live input::control descriptor for I/O.
@@ -1071,7 +1079,7 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::FbconCheck => crate::console::proc_fbcon_check().map(String::into_bytes),
         ProcEntryType::BreenixDir => {
             // Directory listing
-            text(String::from("testing\next2\nframes\nfilesystems\n"))
+            text(String::from("testing\next2\nframes\nfilesystems\nfs-mutation-costs\n"))
         }
         ProcEntryType::BreenixTesting => {
             #[cfg(feature = "testing")]

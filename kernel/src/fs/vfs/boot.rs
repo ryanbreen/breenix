@@ -109,6 +109,16 @@ pub fn report(report: Report) -> Result<String, Errno> {
     Ok(text)
 }
 
+/// Counter transport used by failure observations, without backend state locks.
+pub fn mutation_costs() -> Result<String, Errno> {
+    let mut text = String::new();
+    for (id, fs) in storage()? {
+        let info = super::mount::get_mount_info(id).ok_or(Errno(EIO))?;
+        fs.mutation_costs(if info.0 == "/" { "root" } else { "home" }, &mut text)?;
+    }
+    Ok(text)
+}
+
 /// Configuration reads retain the resolved VNode and use only filesystem ops.
 pub fn read_config(path: &str, max: usize) -> Result<Vec<u8>, Errno> {
     let (_, _, node, _) = crate::fs::namei::resolve_file(path).map_err(|e| Errno(e as i32))?;

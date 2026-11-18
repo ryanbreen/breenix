@@ -2,6 +2,8 @@
 use crate::{attrs::InodeAttrs, block::cache::BufferCache,
     breenfs::vfs::BreenFs, read_conformance::{Disk, NoWait}, vfs::*};
 use std::sync::{Arc, Mutex};
+#[path = "../../../libs/libbreenix/src/suite_mutation_costs.rs"]
+mod observations;
 
 fn report(fs: &dyn FileSystem) -> String {
     let mut text = String::new();
@@ -14,6 +16,8 @@ fn production_mutation_subcosts_cover_cleanup_and_publication() {
     let disk = Arc::new(Disk { bytes: Mutex::new(crate::model::image()), writable: true });
     let fs = BreenFs::mount_writable(disk, Arc::new(BufferCache::new(NoWait)), 24151523, 1).unwrap();
     let before = report(fs.as_ref());
+    let baseline = observations::Snapshot::parse(&before);
+    let _reader = observations::Snapshot::read;
     let ino = fs.create(2, b"cost", NewNode::Regular { attrs: InodeAttrs::new(0o600, 0, 0) }).unwrap();
     let node = fs.open(ino).unwrap();
     fs.write(&node, WriteReq { at: WriteAt::Offset(0), limit: u64::MAX, clear_setid: false }, b"bytes").unwrap();
@@ -44,4 +48,36 @@ fn production_mutation_subcosts_cover_cleanup_and_publication() {
     }
     assert!(after.lines().filter(|l| l.starts_with("mutation_cost ")).count() <= 64);
     assert_eq!(fs.lookup(2, b"cost"), Err(crate::errno::Errno(crate::syscall_errno::ENOENT)));
+    let mut transport = String::new();
+    fs.mutation_costs("root", &mut transport).unwrap();
+    assert!(baseline.records("ui-testing", "tree/enabled-flag", false, || panic!("success snapshot read")).is_empty());
+    let lines = baseline.records("ui-testing", "tree/enabled-flag", true,
+        || Some(observations::Snapshot::parse(&transport)));
+    assert!(lines.iter().any(|line| line.contains("op=vfs-unlink-inode-edit started=1 completed=1")), "{lines:?}");
+
+    // Keep a production inode edit in flight while reading its counter path.
+    // Release the writer even if the read wrongly waits behind its mount lock.
+    let (entered, enter) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let writer_fs = fs.clone();
+    let writer = std::thread::spawn(move || {
+        writer_fs.create_open(2, b"held", NodeKind::Regular,
+            &|_| Ok(InodeAttrs::new(0o600, 0, 0)), &mut |_| {
+                entered.send(()).unwrap(); released.recv().unwrap(); Ok(())
+            }).unwrap();
+    });
+    enter.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+    let reader_fs = fs.clone();
+    let (send, receive) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut text = String::new(); reader_fs.mutation_costs("root", &mut text).unwrap();
+        send.send(text).unwrap();
+    });
+    let captured = receive.recv_timeout(std::time::Duration::from_secs(2));
+    release.send(()).unwrap(); writer.join().unwrap(); reader.join().unwrap();
+    let captured = captured.expect("diagnostic counters waited for mutation exclusion");
+    let lines = baseline.records("gui-apps", "guskit/session-dialog", true,
+        || Some(observations::Snapshot::parse(&captured)));
+    assert!(lines.iter().any(|line| line.contains("op=vfs-create-inode-edit started=2 completed=1")
+        && line.contains("active=1")), "{lines:?}");
 }

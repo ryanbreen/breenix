@@ -16,6 +16,7 @@ fn row(started:u64, completed:u64, ns:u64)->String {
     format!("/ breenfs durable_generation=7\nmutation_cost mount=1 root=1 op=unlink phase=inode-edit started={started} completed={completed} total_ns={ns} last_start_ns=90 last_end_ns=100\n")
 }
 fn main() {
+    let _reader = costs::Snapshot::read;
     let before=costs::Snapshot::parse(&row(10,10,100));
     // Successful cases must not even read the final snapshot.
     assert!(before.records("ui-testing","tree/enabled-flag",false,||panic!("success read")).is_empty());

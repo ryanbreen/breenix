@@ -190,7 +190,7 @@ fn retained_grants_publish_before_admission_refuses_without_pending_ranges() {
     let blocks = state.reservations.available(state.durable.free_blocks) + 1;
     assert!(blocks <= state.durable.free_blocks - state.durable.global_reserve);
     let admitted = fs.reserve_with_pressure(
-        state,
+        super::CostOp::Create, state,
         || Ok(fs.inner.state.lock()),
         |state| {
             state

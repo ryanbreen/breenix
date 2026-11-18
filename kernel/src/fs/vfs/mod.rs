@@ -302,6 +302,8 @@ pub trait FileSystem: core::any::Any + Send + Sync {
     fn init_service(&self) -> Result<(), Errno> { Ok(()) }
     fn shutdown(&self, _name: &str, _deadline: u64) -> Result<(), Errno> { Err(Errno(EOPNOTSUPP)) }
     fn report(&self, _report: Report, _name: &str, _text: &mut alloc::string::String) -> Result<(), Errno> { Ok(()) }
+    /// Diagnostic counters only; must not wait for mutation exclusion.
+    fn mutation_costs(&self, _name: &str, _text: &mut alloc::string::String) -> Result<(), Errno> { Ok(()) }
     /// First latched backend failure, read without the mount-table lock.
     fn failure(&self) -> Option<(&'static str, i32)> { None }
     fn read_only(&self) -> Result<bool, Errno>;

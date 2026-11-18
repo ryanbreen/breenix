@@ -1,5 +1,8 @@
 //! BreenFS operations at the VFS boundary (design 1.1, 2.3 and 2.5).
 use super::preempt::preemption_point;
+#[path = "mutation_cost.rs"]
+mod mutation_cost;
+use mutation_cost::{Costs, Op as CostOp, Phase as CostPhase};
 use super::{
     abi::*,
     scrub::{self, Scrub},
@@ -176,6 +179,7 @@ pub struct BreenFs<W: Wait + 'static> {
     inner: Arc<Mount<W>>,
 }
 struct Mount<W: Wait + 'static> {
+    costs: Costs,
     state: MountLock<MountState<W>>,
     device: Arc<dyn BlockDevice>,
     owner: Option<WritableOwner>,
@@ -760,6 +764,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         .map_err(|_| Errno(ENOMEM))?;
         let signal = Arc::new(CommitSignal::new());
         let inner = Arc::try_new(Mount {
+            costs: Costs::new(),
             state: MountLock::new(MountState {
                 files,
                 committer,
@@ -807,6 +812,14 @@ impl<W: Wait + 'static> BreenFs<W> {
         })
         .map_err(|_| Errno(ENOMEM))?;
         Arc::try_new(Self { inner }).map_err(|_| Errno(ENOMEM))
+    }
+    fn mutation_lock(&self, op: CostOp) -> MountGuard<'_, MountState<W>> {
+        let _wait = self.inner.costs.span(op, CostPhase::Wait);
+        self.inner.state.lock()
+    }
+    fn mutation_wait(&self, op: CostOp, observed: u64, deadline: Option<u64>) {
+        let _wait = self.inner.costs.span(op, CostPhase::Wait);
+        self.inner.signal.wait(observed, deadline);
     }
     fn check_node(&self, node: &VNode) -> Result<(), Errno> {
         if node.mount != self.inner.id
@@ -865,10 +878,10 @@ impl<W: Wait + 'static> BreenFs<W> {
     /// larger than the whole budget is admitted alone, once no other bytes are
     /// charged. write splits its calls at WRITE_PART (N2), so no write admits
     /// more than half the budget and two edge pages at once.
-    fn admit(&self, incoming: u64) -> Result<MountGuard<'_, MountState<W>>, Errno> {
+    fn admit(&self, incoming: u64, cost: CostOp) -> Result<MountGuard<'_, MountState<W>>, Errno> {
         loop {
             let observed = self.inner.signal.epoch();
-            let state = self.inner.state.lock();
+            let state = self.mutation_lock(cost);
             state.writable()?;
             if state.dirty_bytes.saturating_add(incoming) > DIRTY_BUDGET / 2 {
                 // edited() also wakes the worker under the mount lock.
@@ -884,12 +897,16 @@ impl<W: Wait + 'static> BreenFs<W> {
             // Publish without servicing mappings recursively; waiting first
             // would ask that same worker to complete its own generation.
             self.inner.signal.requested.store(true, Ordering::Release);
-            if self.commit_generation(monotonic_ns())? {
+            let published = {
+                let _publication = self.inner.costs.span(cost, CostPhase::Publication);
+                self.commit_generation(monotonic_ns())?
+            };
+            if published {
                 continue;
             }
             // Another publisher owns the detached generation. Its completion
             // wakes us, with neither mount nor mapping locks held here.
-            self.inner.signal.wait(observed, None);
+            self.mutation_wait(cost, observed, None);
         }
     }
     /// Admission for a change to one file's data. Other callers wait while a
@@ -901,12 +918,13 @@ impl<W: Wait + 'static> BreenFs<W> {
         ino: u64,
         incoming: u64,
         split: Split,
+        cost: CostOp,
     ) -> Result<MountGuard<'_, MountState<W>>, Errno> {
         loop {
             // Observed before the mark is read under the mount lock; clearing
             // it bumps the epoch under that lock, so the wake is not lost.
             let observed = self.inner.signal.epoch();
-            let mut state = self.admit(incoming)?;
+            let mut state = self.admit(incoming, cost)?;
             let marked = state.nodes.get(&ino).is_some_and(|node| node.splitting);
             if split == Split::Held || !marked {
                 if split == Split::Take {
@@ -915,7 +933,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 return Ok(state);
             }
             drop(state);
-            self.inner.signal.wait(observed, None);
+            self.mutation_wait(cost, observed, None);
         }
     }
     /// Retry admission after publishing retained grants and the PENDING ranges
@@ -924,6 +942,7 @@ impl<W: Wait + 'static> BreenFs<W> {
     /// change names, ownership or append offsets while the lock is dropped.
     fn reserve_with_pressure<'a, T>(
         &'a self,
+        cost: CostOp,
         mut state: MountGuard<'a, MountState<W>>,
         mut admit: impl FnMut() -> Result<MountGuard<'a, MountState<W>>, Errno>,
         mut reserve: impl FnMut(&mut MountState<W>) -> Result<T, Errno>,
@@ -931,40 +950,47 @@ impl<W: Wait + 'static> BreenFs<W> {
         let mut limit = None;
         loop {
             state.writable()?;
-            match reserve(&mut state) {
+            let result = {
+                let _reservation = self.inner.costs.span(cost, CostPhase::Reservation);
+                reserve(&mut state)
+            };
+            match result {
                 Ok(grant) => return Ok((state, grant)),
                 Err(error) if error == Errno(ENOSPC) => (),
                 Err(error) => return Err(error),
             }
-            let last = match limit {
-                Some(last) => last,
-                None => {
-                    // The detached generation can already contain releases
-                    // absent from durable. Its private nodes are read through
-                    // the same view used by the open transaction.
-                    let sb = state.pending.as_ref().map_or(&state.durable, |p| p.superblock());
-                    let mut store = self.inner.cache.store(self.inner.device.clone(), sb);
-                    if let Some(prepared) = &state.pending { store = store.with_pending(prepared); }
-                    let promotion = super::space::pending_promotion_generation(&store, sb.space_root)
-                        .map_err(|_| Errno(EIO))?;
-                    // Capture a finite publication bound on the first refusal.
-                    // The open generation can hold admission capacity without
-                    // any durable PENDING range (#3064); release its grants too.
-                    let retained = (!state.grants.is_empty() || !state.pending_grants.is_empty())
-                        .then(|| sb.generation.checked_add(1).ok_or(Errno(ENOSPC)))
-                        .transpose()?;
-                    let generation = promotion.into_iter().chain(retained).max()
-                        .ok_or(Errno(ENOSPC))?;
-                    // A6 bounds release generations by this superblock's
-                    // generation, including the detached publication's view.
-                    if generation > sb.generation.saturating_add(2) {
-                        return Err(Errno(EIO));
+            let last = {
+                let _reservation = self.inner.costs.span(cost, CostPhase::Reservation);
+                match limit {
+                    Some(last) => last,
+                    None => {
+                        // The detached generation can already contain releases
+                        // absent from durable. Its private nodes are read through
+                        // the same view used by the open transaction.
+                        let sb = state.pending.as_ref().map_or(&state.durable, |p| p.superblock());
+                        let mut store = self.inner.cache.store(self.inner.device.clone(), sb);
+                        if let Some(prepared) = &state.pending { store = store.with_pending(prepared); }
+                        let promotion = super::space::pending_promotion_generation(&store, sb.space_root)
+                            .map_err(|_| Errno(EIO))?;
+                        // Capture a finite publication bound on the first refusal.
+                        // The open generation can hold admission capacity without
+                        // any durable PENDING range (#3064); release its grants too.
+                        let retained = (!state.grants.is_empty() || !state.pending_grants.is_empty())
+                            .then(|| sb.generation.checked_add(1).ok_or(Errno(ENOSPC)))
+                            .transpose()?;
+                        let generation = promotion.into_iter().chain(retained).max()
+                            .ok_or(Errno(ENOSPC))?;
+                        // A6 bounds release generations by this superblock's
+                        // generation, including the detached publication's view.
+                        if generation > sb.generation.saturating_add(2) {
+                            return Err(Errno(EIO));
+                        }
+                        // An already eligible range still needs a publication to
+                        // enter durable.free_blocks, which admission uses (design 2.5).
+                        let last = generation.max(sb.generation.checked_add(1).ok_or(Errno(ENOSPC))?);
+                        limit = Some(last);
+                        last
                     }
-                    // An already eligible range still needs a publication to
-                    // enter durable.free_blocks, which admission uses (design 2.5).
-                    let last = generation.max(sb.generation.checked_add(1).ok_or(Errno(ENOSPC))?);
-                    limit = Some(last);
-                    last
                 }
             };
             if state.durable.generation >= last { return Err(Errno(ENOSPC)); }
@@ -972,8 +998,12 @@ impl<W: Wait + 'static> BreenFs<W> {
             drop(state);
             // Do not service mappings recursively: a mapping writer can be the
             // caller. Detached publication and its wait hold no mount lock.
-            if !self.commit_generation_up_to(monotonic_ns(), last, true)? {
-                self.inner.signal.wait(observed, None);
+            let published = {
+                let _publication = self.inner.costs.span(cost, CostPhase::Publication);
+                self.commit_generation_up_to(monotonic_ns(), last, true)?
+            };
+            if !published {
+                self.mutation_wait(cost, observed, None);
             }
             state = admit()?;
         }
@@ -981,6 +1011,7 @@ impl<W: Wait + 'static> BreenFs<W> {
     /// Write `bytes` under one admission. The caller admitted them.
     fn write_part(
         &self,
+        cost: CostOp,
         state: MountGuard<'_, MountState<W>>,
         node: &VNode,
         req: WriteReq,
@@ -990,8 +1021,8 @@ impl<W: Wait + 'static> BreenFs<W> {
             Split::Held
         } else { Split::No };
         let (mut state, (mut inode, offset, length, end, grant)) = self.reserve_with_pressure(
-            state,
-            || self.admit_data(node.ino, touched_bytes(bytes.len()), split),
+            cost, state,
+            || self.admit_data(node.ino, touched_bytes(bytes.len()), split, cost),
             |state| {
                 let inode = state.regular(node.ino)?;
                 let offset = match req.at {
@@ -1010,6 +1041,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 Ok((inode, offset, length, end, grant))
             },
         )?;
+        let _edit = self.inner.costs.span(cost, CostPhase::Edit);
         let Some(grant) = grant else {
             return if bytes.is_empty() {
                 Ok(WriteResult { offset, bytes: 0, limited: false })
@@ -1098,10 +1130,10 @@ impl<W: Wait + 'static> BreenFs<W> {
             let written = match state.take() {
                 Some(guard) => Ok(guard),
                 None => self
-                    .admit_data(node.ino, touched_bytes(end - done), Split::Held)
+                    .admit_data(node.ino, touched_bytes(end - done), Split::Held, CostOp::Write)
                     .map_err(WriteError::from),
             }
-            .and_then(|guard| self.write_part(guard, node, part, &bytes[done..end]));
+            .and_then(|guard| self.write_part(CostOp::Write, guard, node, part, &bytes[done..end]));
             let written = match (written, start) {
                 (Ok(written), _) => written,
                 (Err(error), None) => return Err(error),
@@ -1239,8 +1271,9 @@ impl<W: Wait + 'static> BreenFs<W> {
         preemption_point();
         #[cfg(not(test))]
         crate::block::cache_kernel::assert_io_context();
+        let _publication;
         let (prepared, reap) = {
-            let mut state = self.inner.state.lock();
+            let mut state = self.mutation_lock(CostOp::Commit);
             if state.failed {
                 return Err(Errno(EIO));
             }
@@ -1252,6 +1285,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             if !state.policy.due(now_ns, state.dirty_bytes, fsync || force, pressure) {
                 return Ok(false);
             }
+            _publication = self.inner.costs.span(CostOp::Commit, CostPhase::Publication);
             #[cfg(test)]
             measurement::prepared(force, pressure);
             let touched: Vec<_> = state.nodes.keys().map(|&ino| { preemption_point(); ino }).collect();
@@ -1358,14 +1392,17 @@ impl<W: Wait + 'static> BreenFs<W> {
                 signal.wake();
             }),
         );
-        let mut publication = self.inner.mounted_root.device.publication.lock();
+        let mut publication = {
+            let _wait = self.inner.costs.span(CostOp::Commit, CostPhase::Wait);
+            self.inner.mounted_root.device.publication.lock()
+        };
         let result = prepared.write_cached(
             self.inner.cache.buffers(),
             self.inner.device.as_ref(),
             &group,
         );
         {
-            let mut state = self.inner.state.lock();
+            let mut state = self.mutation_lock(CostOp::Commit);
             state
                 .committer
                 .as_mut()
@@ -1399,7 +1436,7 @@ impl<W: Wait + 'static> BreenFs<W> {
     }
     fn sync_generation(&self, deadline: Option<u64>, closing: bool) -> Result<(), Errno> {
         let waiter = {
-            let mut state = self.inner.state.lock();
+            let mut state = self.mutation_lock(CostOp::Fsync);
             if state.failed {
                 return Err(Errno(EIO));
             }
@@ -1431,7 +1468,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             #[cfg(test)]
             self.commit_due(monotonic_ns())?;
             if waiter.result().is_none() {
-                self.inner.signal.wait(observed, deadline);
+                self.mutation_wait(CostOp::Fsync, observed, deadline);
             }
         }
     }
@@ -1854,8 +1891,15 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 writeln!(text, "metadata_cause={} metadata_node={}", failure.cause, failure.addr)
                     .map_err(|_| Errno(ENOMEM))?;
             }
+            drop(state);
+            self.inner.costs.report(self.inner.id, self.inner.root_id, text).map_err(|_| Errno(ENOMEM))?;
         }
         Ok(())
+    }
+    fn mutation_costs(&self, name: &str, text: &mut alloc::string::String) -> Result<(), Errno> {
+        use core::fmt::Write;
+        writeln!(text, "{name} breenfs mutation_costs=1").map_err(|_| Errno(ENOMEM))?;
+        self.inner.costs.report(self.inner.id, self.inner.root_id, text).map_err(|_| Errno(ENOMEM))
     }
     fn failure(&self) -> Option<(&'static str, i32)> {
         self.inner.state.lock().failure
@@ -1989,8 +2033,9 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         state.observed(result)
     }
     fn fsync(&self, node: &VNode, _: bool) -> Result<(), Errno> {
+        let _operation = self.inner.costs.span(CostOp::Fsync, CostPhase::Operation);
         self.check_node(node)?;
-        if self.inner.state.lock().failed {
+        if self.mutation_lock(CostOp::Fsync).failed {
             return Err(Errno(EIO));
         }
         if node.map.has_dirty() {
@@ -2016,9 +2061,10 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         Ok(Box::try_new(transfer).map_err(|_| Errno(ENOMEM))?)
     }
     fn setattr(&self, ino: u64, attrs: SetAttr) -> Result<(), Errno> {
-        let state = self.inner.state.lock();
+        let _operation = self.inner.costs.span(CostOp::Setattr, CostPhase::Operation);
+        let state = self.mutation_lock(CostOp::Setattr);
         state.writable()?;
-        let (mut state, grant) = self.reserve_with_pressure(state, || Ok(self.inner.state.lock()), |state| {
+        let (mut state, grant) = self.reserve_with_pressure(CostOp::Setattr, state, || Ok(self.mutation_lock(CostOp::Setattr)), |state| {
             let current = state.attrs(ino)?;
             if attrs
                 .expected
@@ -2030,6 +2076,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
 
             Ok(grant)
         })?;
+        let _edit = self.inner.costs.span(CostOp::Setattr, CostPhase::Edit);
         let result = state.files.setattr(
             ino,
             &ops::SetAttr {
@@ -2044,7 +2091,8 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         state.finish_metadata(grant, result)
     }
     fn create(&self, dir: u64, name: &[u8], node: NewNode<'_>) -> Result<u64, Errno> {
-        let state = self.inner.state.lock();
+        let _operation = self.inner.costs.span(CostOp::Create, CostPhase::Operation);
+        let state = self.mutation_lock(CostOp::Create);
         state.writable()?;
         let (attrs, bits, rdev, target) = match node {
             NewNode::Regular { attrs } => (attrs, 0o100000, 0, None),
@@ -2055,9 +2103,10 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             NewNode::Fifo { attrs } => (attrs, 0o010000, 0, None),
             NewNode::Socket { attrs } => (attrs, 0o140000, 0, None),
         };
-        let (mut state, grant) = self.reserve_with_pressure(state, || Ok(self.inner.state.lock()), |state| {
+        let (mut state, grant) = self.reserve_with_pressure(CostOp::Create, state, || Ok(self.mutation_lock(CostOp::Create)), |state| {
             state.reserve_metadata(&[dir], 5, true, false, Operation::Allocate)
         })?;
+        let _edit = self.inner.costs.span(CostOp::Create, CostPhase::Edit);
         let result = state.files.create_node_prepared(
             dir,
             name,
@@ -2082,9 +2131,10 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         check: &dyn Fn(NodeAttrs) -> Result<InodeAttrs, Errno>,
         prepare: &mut dyn FnMut(Arc<VNode>) -> Result<(), Errno>,
     ) -> Result<(), Errno> {
-        let state = self.inner.state.lock();
+        let _operation = self.inner.costs.span(CostOp::Create, CostPhase::Operation);
+        let state = self.mutation_lock(CostOp::Create);
         state.writable()?;
-        let (mut state, (attrs, bits, grant)) = self.reserve_with_pressure(state, || Ok(self.inner.state.lock()), |state| {
+        let (mut state, (attrs, bits, grant)) = self.reserve_with_pressure(CostOp::Create, state, || Ok(self.mutation_lock(CostOp::Create)), |state| {
             match state.files.lookup(dir, name) {
                 Ok(_) => return Err(Errno(EEXIST)),
                 Err(ops::Error::ENOENT) => (),
@@ -2102,6 +2152,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         let mut prepared = None;
         let mut preparation_error = None;
         let epoch = state.durable.generation;
+        let _edit = self.inner.costs.span(CostOp::Create, CostPhase::Edit);
         let result = state.files.create_node_prepared(
             dir,
             name,
@@ -2138,9 +2189,10 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         Ok(())
     }
     fn link(&self, ino: u64, dir: u64, name: &[u8], check: &LinkCheck<'_>) -> Result<(), Errno> {
-        let state = self.inner.state.lock();
+        let _operation = self.inner.costs.span(CostOp::Link, CostPhase::Operation);
+        let state = self.mutation_lock(CostOp::Link);
         state.writable()?;
-        let (mut state, grant) = self.reserve_with_pressure(state, || Ok(self.inner.state.lock()), |state| {
+        let (mut state, grant) = self.reserve_with_pressure(CostOp::Link, state, || Ok(self.mutation_lock(CostOp::Link)), |state| {
             let parent = state.directory(dir)?;
             let source = state.attrs(ino)?;
             if source.kind == NodeKind::Directory {
@@ -2151,13 +2203,16 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
 
             Ok(grant)
         })?;
+        let _edit = self.inner.costs.span(CostOp::Link, CostPhase::Edit);
         let result = state.files.link(ino, dir, name, now());
         state.finish_metadata(grant, result)
     }
     fn remove(&self, dir: u64, name: &[u8], which: Remove) -> Result<(), Errno> {
-        let state = self.inner.state.lock();
+        let cost = if which.directory { CostOp::Rmdir } else { CostOp::Unlink };
+        let _operation = self.inner.costs.span(cost, CostPhase::Operation);
+        let state = self.mutation_lock(cost);
         state.writable()?;
-        let (mut state, grant) = self.reserve_with_pressure(state, || Ok(self.inner.state.lock()), |state| {
+        let (mut state, grant) = self.reserve_with_pressure(cost, state, || Ok(self.mutation_lock(cost)), |state| {
             let parent = state.directory(dir)?;
             let result = state.files.lookup(dir, name);
             let victim = state.observed(result)?;
@@ -2184,6 +2239,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             )?;
             Ok(grant)
         })?;
+        let _edit = self.inner.costs.span(cost, CostPhase::Edit);
         let result = if which.directory {
             state.files.rmdir(dir, name, now())
         } else {
@@ -2200,9 +2256,10 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         mode: RenameMode,
         check: &RenameCheck<'_>,
     ) -> Result<(), Errno> {
-        let state = self.inner.state.lock();
+        let _operation = self.inner.costs.span(CostOp::Rename, CostPhase::Operation);
+        let state = self.mutation_lock(CostOp::Rename);
         state.writable()?;
-        let (mut state, grant) = self.reserve_with_pressure(state, || Ok(self.inner.state.lock()), |state| {
+        let (mut state, grant) = self.reserve_with_pressure(CostOp::Rename, state, || Ok(self.mutation_lock(CostOp::Rename)), |state| {
             if mode == RenameMode::Exchange {
                 return Err(Errno(EINVAL));
             }
@@ -2226,20 +2283,22 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
 
             Ok(grant)
         })?;
+        let _edit = self.inner.costs.span(CostOp::Rename, CostPhase::Edit);
         let result = state.files.rename(from_dir, from, to_dir, to, now());
         state.finish_metadata(grant, result)
     }
     fn write(&self, node: &VNode, req: WriteReq, bytes: &[u8]) -> Result<WriteResult, WriteError> {
+        let _operation = self.inner.costs.span(CostOp::Write, CostPhase::Operation);
         self.check_node(node)?;
         if bytes.len() <= WRITE_PART {
-            let state = self.admit_data(node.ino, touched_bytes(bytes.len()), Split::No)?;
-            return self.write_part(state, node, req, bytes);
+            let state = self.admit_data(node.ino, touched_bytes(bytes.len()), Split::No, CostOp::Write)?;
+            return self.write_part(CostOp::Write, state, node, req, bytes);
         }
         // N2: admit a larger call part by part so its dirty pages stay inside
         // the budget, holding the file's mark from the first part to the last.
-        let first = self.admit_data(node.ino, touched_bytes(WRITE_PART), Split::Take)?;
+        let first = self.admit_data(node.ino, touched_bytes(WRITE_PART), Split::Take, CostOp::Write)?;
         let result = self.write_parts(first, node, req, bytes);
-        let mut state = self.inner.state.lock();
+        let mut state = self.mutation_lock(CostOp::Write);
         if let Some(entry) = state.nodes.get_mut(&node.ino) {
             entry.splitting = false;
         }
@@ -2254,11 +2313,12 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         clear_setid: bool,
         check: &dyn Fn(NodeAttrs) -> Result<(), Errno>,
     ) -> Result<(), Errno> {
+        let _operation = self.inner.costs.span(CostOp::Resize, CostPhase::Operation);
         self.check_node(node)?;
         // Shrinking can keep one zeroed partial tail page.
-        let state = self.admit_data(node.ino, BLOCK_SIZE as u64, Split::No)?;
+        let state = self.admit_data(node.ino, BLOCK_SIZE as u64, Split::No, CostOp::Resize)?;
         let (mut state, (mut inode, mapped_tail, grant)) = self.reserve_with_pressure(
-            state, || self.admit_data(node.ino, BLOCK_SIZE as u64, Split::No), |state| {
+            CostOp::Resize, state, || self.admit_data(node.ino, BLOCK_SIZE as u64, Split::No, CostOp::Resize), |state| {
                 let inode = state.regular(node.ino)?;
                 check(state.attrs(node.ino)?)?;
                 if size > (1 << 63) - 4096 {
@@ -2285,6 +2345,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 Ok((inode, mapped_tail, Some(grant)))
             },
         )?;
+        let _edit = self.inner.costs.span(CostOp::Resize, CostPhase::Edit);
         let Some(grant) = grant else { return Ok(()); };
         if node.map.prepare_resize(inode.size, size).is_err() {
             state.reservations.release(grant.0);
@@ -2338,6 +2399,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         bytes: &[u8],
         io: &dyn MappingIo,
     ) -> Result<(), Errno> {
+        let _operation = self.inner.costs.span(CostOp::Writeback, CostPhase::Operation);
         self.check_node(node)?;
         let mapping = io.as_any().downcast_ref::<Mapping<W>>().ok_or(Errno(EIO))?;
         if !Arc::ptr_eq(&mapping.fs.inner, &self.inner)
@@ -2354,9 +2416,9 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             .try_reserve_exact(bytes.len())
             .map_err(|_| Errno(ENOMEM))?;
         bounce.extend_from_slice(bytes);
-        let state = self.admit(touched_bytes(bounce.len()))?;
+        let state = self.admit(touched_bytes(bounce.len()), CostOp::Writeback)?;
         let (mut state, (mut inode, length, grant)) = self.reserve_with_pressure(
-            state, || self.admit(touched_bytes(bounce.len())), |state| {
+            CostOp::Writeback, state, || self.admit(touched_bytes(bounce.len()), CostOp::Writeback), |state| {
                 if !mapping.writable {
                     return Err(Errno(EROFS));
                 }
@@ -2369,6 +2431,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 Ok((inode, length, Some(grant)))
             },
         )?;
+        let _edit = self.inner.costs.span(CostOp::Writeback, CostPhase::Edit);
         let Some(grant) = grant else { return Ok(()); };
         let pending = state.pending.clone();
         let MountState {
@@ -2400,20 +2463,24 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         state.edited(result)
     }
     fn clear_mapping_privilege(&self, node: &VNode) -> Result<(), Errno> {
+        let _operation = self.inner.costs.span(CostOp::Setattr, CostPhase::Operation);
         self.check_node(node)?;
-        let mut state = self.inner.state.lock();
+        let mut state = self.mutation_lock(CostOp::Setattr);
         state.writable()?;
         let mut inode = state.regular(node.ino)?;
         if inode.mode & content_privilege(inode.mode) == 0 {
             return Ok(());
         }
+        let _edit = self.inner.costs.span(CostOp::Setattr, CostPhase::Edit);
         inode.mode &= !content_privilege(inode.mode);
         inode.ctime = now();
         let result = state.files.put_inode(node.ino, inode);
         state.edited(result)
     }
     fn xattr(&self, ino: u64, op: Xattr<'_>) -> Result<usize, Errno> {
-        let mut state = self.inner.state.lock();
+        let mutation = matches!(op, Xattr::Set { .. } | Xattr::Remove { .. });
+        let _operation = mutation.then(|| self.inner.costs.span(CostOp::Xattr, CostPhase::Operation));
+        let mut state = if mutation { self.mutation_lock(CostOp::Xattr) } else { self.inner.state.lock() };
         if state.committer.is_none() && matches!(op, Xattr::Set { .. } | Xattr::Remove { .. }) {
             return Err(Errno(EROFS));
         }
@@ -2437,7 +2504,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 copy_xattr(names, &bytes)
             }
             Xattr::Set { name, value, mode } => {
-                let (mut state, grant) = self.reserve_with_pressure(state, || Ok(self.inner.state.lock()), |state| {
+                let (mut state, grant) = self.reserve_with_pressure(CostOp::Xattr, state, || Ok(self.mutation_lock(CostOp::Xattr)), |state| {
                     state.writable()?;
                     let result = state.files.list_xattrs(ino);
                     let records = state.observed(result)?;
@@ -2450,11 +2517,12 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                     let grant = state.reserve_metadata(&[ino], 2, false, false, Operation::Allocate)?;
                     Ok(grant)
                 })?;
+                let _edit = self.inner.costs.span(CostOp::Xattr, CostPhase::Edit);
                 let result = state.files.xattr(ino, name, Some(value), now());
                 state.finish_metadata(grant, result).map(|_| 0)
             }
             Xattr::Remove { name } => {
-                let (mut state, grant) = self.reserve_with_pressure(state, || Ok(self.inner.state.lock()), |state| {
+                let (mut state, grant) = self.reserve_with_pressure(CostOp::Xattr, state, || Ok(self.mutation_lock(CostOp::Xattr)), |state| {
                     state.writable()?;
                     let result = state.files.list_xattrs(ino);
                     let records = state.observed(result)?;
@@ -2464,6 +2532,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                     let grant = state.reserve_metadata(&[ino], 2, false, false, Operation::RemoveXattr)?;
                     Ok(grant)
                 })?;
+                let _edit = self.inner.costs.span(CostOp::Xattr, CostPhase::Edit);
                 let result = state.files.xattr(ino, name, None, now());
                 state.finish_metadata(grant, result).map(|_| 0)
             }

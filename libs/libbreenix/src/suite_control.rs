@@ -18,6 +18,8 @@ const PHASE_BASE: usize = WAITS.len() * CELLS;
 const APP_OUTPUT_CLOCK: usize = PHASE_BASE + PHASES.len() * 2;
 #[path = "suite_observations.rs"]
 pub mod observations;
+#[path = "suite_mutation_costs.rs"]
+mod mutation_costs;
 const USED_CELLS: usize = observations::USED_CELLS;
 static PAGE: AtomicUsize = AtomicUsize::new(0);
 fn now_ms() -> Result<u64, String> {
@@ -94,7 +96,7 @@ extern "C" {
     fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut u8;
     fn munmap(addr: *mut u8, len: usize) -> i32;
 }
-pub(super) struct Scope { page: usize, previous: usize }
+pub(super) struct Scope { page: usize, previous: usize, mutations: mutation_costs::Snapshot }
 impl Scope {
     pub(super) fn new() -> Result<Self, String> {
         #[cfg(target_os="macos")] const ANON: i32 = 0x1000;
@@ -107,10 +109,12 @@ impl Scope {
         }
         let page = ptr as usize;
         let previous = PAGE.swap(page, Ordering::AcqRel);
-        Ok(Self { page, previous })
+        Ok(Self { page, previous, mutations: mutation_costs::Snapshot::read().unwrap_or_default() })
     }
     pub(super) fn failure_records(&self, suite: &str, case: &str, failed: bool) -> Vec<String> {
-        observations::records(self.page, suite, case, failed)
+        let mut records = observations::records(self.page, suite, case, failed);
+        records.extend(self.mutations.records(suite, case, failed, mutation_costs::Snapshot::read));
+        records
     }
     pub(super) fn report(&self, suite: &str, case: &str) -> Vec<String> {
         WAITS.iter().enumerate().filter_map(|(i, &wait)| {
