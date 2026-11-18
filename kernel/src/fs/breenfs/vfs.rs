@@ -411,7 +411,7 @@ impl<W: Wait> MountState<W> {
         self.failed = true;
         if let Some(failure) = self.metadata_error {
             log::error!("[breenfs] failure branch={} errno={} generation={} metadata_cause={} metadata_node={}; latched read-only",
-                branch, error.0, self.durable.generation, failure.cause.name(), failure.addr);
+                branch, error.0, self.durable.generation, failure.cause, failure.addr);
         } else {
             log::error!("[breenfs] failure branch={} errno={} generation={}; latched read-only",
                 branch, error.0, self.durable.generation);
@@ -1838,7 +1838,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             )
             .map_err(|_| Errno(ENOMEM))?;
             if let Some(failure) = state.metadata_error {
-                writeln!(text, "metadata_cause={} metadata_node={}", failure.cause.name(), failure.addr)
+                writeln!(text, "metadata_cause={} metadata_node={}", failure.cause, failure.addr)
                     .map_err(|_| Errno(ENOMEM))?;
             }
         }

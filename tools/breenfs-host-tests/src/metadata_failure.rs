@@ -13,12 +13,14 @@ impl Wait for NoWait {
 struct Disk {
     bytes: HostMutex<Vec<u8>>,
     fail_reads: core::sync::atomic::AtomicBool,
+    read_error: HostMutex<Option<BlockError>>,
     writes: AtomicU64,
 }
 impl BlockDevice for Disk {
     fn block_size(&self) -> usize { BLOCK_SIZE }
     fn num_blocks(&self) -> u64 { 16384 }
     fn read_block(&self, block: u64, bytes: &mut [u8]) -> Result<(), BlockError> {
+        if let Some(error) = *self.read_error.lock().unwrap() { return Err(error); }
         if self.fail_reads.load(Ordering::Acquire) { return Err(BlockError::IoError); }
         let start = block as usize * BLOCK_SIZE;
         bytes.copy_from_slice(&self.bytes.lock().unwrap()[start..start + bytes.len()]);
@@ -34,7 +36,7 @@ impl BlockDevice for Disk {
 }
 fn fixture() -> (Arc<BreenFs<NoWait>>, Arc<Disk>, Superblock, format::BlockPtr) {
     let disk = Arc::new(Disk { bytes: HostMutex::new(vec![0; 64 * 1024 * 1024]),
-        fail_reads: core::sync::atomic::AtomicBool::new(false), writes: AtomicU64::new(0) });
+        fail_reads: core::sync::atomic::AtomicBool::new(false), read_error: HostMutex::new(None), writes: AtomicU64::new(0) });
     let sb = Superblock { fs_uuid: [0x6f; 16], generation: 1, slot: 1,
         total_blocks: 16384, global_reserve: 4096, next_root_id: 2,
         ..Superblock::default() };
@@ -149,3 +151,35 @@ fn retire_after_latch(dirty: bool) {
 fn failed_mount_releases_clean_mapped_pages_after_final_unbind() { retire_after_latch(false); }
 #[test]
 fn failed_mount_releases_dirty_unobserved_pages_without_writeback() { retire_after_latch(true); }
+
+// The driver receipt crosses the production node store, observed() and both
+// renderers. The wrapper boundary itself is executed by virtio_read_cause_test.py.
+#[test]
+fn virtio_read_receipt_reaches_metadata_serial_and_report() {
+    use crate::block::read_failure::VirtioReadFailure;
+    super::failed_mount_teardown::init_log();
+    let (fs, disk, sb, ptr) = fixture();
+    let receipt = VirtioReadFailure {
+        reason: "Block MMIO read failed", stage: "finish-status", device: 0,
+        sector: ptr.addr * 8, bytes: NODE_SIZE, thread: Some(73), preempt_count: 1,
+        in_interrupt: false, interrupts_enabled: true, timer_ready: true,
+        gate_locked: true, gate_wedged: false, pending_token: 17,
+        completed_desc: 0, completed_status: 1, used_idx: 9, last_used_idx: 9,
+        device_status: 15,
+    };
+    *disk.read_error.lock().unwrap() = Some(BlockError::VirtioRead(receipt));
+    let cache = BufferCache::new(NoWait);
+    let store = CachedNodeStore::new(&cache, disk.as_ref(), &sb);
+    let error = store.read_node(ptr).err().expect("injected read succeeded");
+    assert_eq!(error, super::super::btree::Error::Read(super::super::btree::ReadFailure {
+        cause: super::super::btree::ReadCause::Driver(receipt), addr: ptr.addr,
+    }));
+    assert_eq!(fs.inner.state.lock().observed::<()>(Err(error.into())), Err(Errno(EIO)));
+    let mut report = String::new();
+    fs.report(Report::State, "/", &mut report).unwrap();
+    let detail = alloc::format!("metadata_cause=device-read {} metadata_node={}", receipt, ptr.addr);
+    assert!(report.contains(&detail), "{report}");
+    let serial = super::failed_mount_teardown::messages();
+    assert!(serial.iter().any(|line| line.contains(&detail) && line.contains("latched read-only")), "{serial:?}");
+    assert_eq!(fs.failure(), Some(("observed-metadata", EIO)));
+}

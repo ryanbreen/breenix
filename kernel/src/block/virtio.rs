@@ -199,8 +199,8 @@ impl BlockDevice for VirtioBlockWrapper {
 
         // The MMIO driver expects a fixed-size buffer
         let mut sector_buf = [0u8; 512];
-        block_driver::read_sector(self.device_index, block_num, &mut sector_buf)
-            .map_err(|_| BlockError::IoError)?;
+        block_driver::read_sectors(self.device_index, block_num, &mut sector_buf)
+            .map_err(BlockError::VirtioRead)?;
         buf[..512].copy_from_slice(&sector_buf);
         Ok(())
     }
@@ -213,7 +213,7 @@ impl BlockDevice for VirtioBlockWrapper {
             return Err(BlockError::OutOfBounds);
         }
         block_driver::read_sectors(self.device_index, start_block, &mut buf[..bytes])
-            .map_err(|_| BlockError::IoError)
+            .map_err(BlockError::VirtioRead)
     }
 
     fn write_block(&self, block_num: u64, buf: &[u8]) -> Result<(), BlockError> {

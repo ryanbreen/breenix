@@ -1,3 +1,6 @@
+#[path = "../../../kernel/src/block/read_failure.rs"]
+pub mod read_failure;
+use read_failure::VirtioReadFailure;
 use core::fmt;
 /// Generic block device interface
 ///
@@ -98,6 +101,7 @@ pub enum BlockError {
     OutOfMemory,
     /// I/O error occurred during operation
     IoError,
+    VirtioRead(VirtioReadFailure),
     /// Block number is out of bounds
     OutOfBounds,
     /// Device is not ready or not responding
@@ -114,6 +118,7 @@ impl fmt::Display for BlockError {
             BlockError::NoSpace => write!(f, "no space left"),
             BlockError::OutOfMemory => write!(f, "out of memory"),
             BlockError::IoError => write!(f, "I/O error"),
+            BlockError::VirtioRead(failure) => failure.fmt(f),
             BlockError::OutOfBounds => write!(f, "block number out of bounds"),
             BlockError::DeviceNotReady => write!(f, "device not ready"),
             BlockError::Timeout => write!(f, "operation timed out"),

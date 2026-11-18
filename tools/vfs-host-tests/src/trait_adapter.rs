@@ -21,6 +21,27 @@ fn block_error(error: breenfs_host_tests::block::BlockError) -> BlockError {
     use breenfs_host_tests::block::BlockError as E;
     match error {
         E::IoError => BlockError::IoError,
+        E::VirtioRead(f) => BlockError::VirtioRead(crate::block::read_failure::VirtioReadFailure {
+            reason: f.reason,
+            stage: f.stage,
+            device: f.device,
+            sector: f.sector,
+            bytes: f.bytes,
+            thread: f.thread,
+            preempt_count: f.preempt_count,
+            in_interrupt: f.in_interrupt,
+            interrupts_enabled: f.interrupts_enabled,
+            timer_ready: f.timer_ready,
+            gate_locked: f.gate_locked,
+            gate_wedged: f.gate_wedged,
+            pending_token: f.pending_token,
+            completed_desc: f.completed_desc,
+            completed_status: f.completed_status,
+            used_idx: f.used_idx,
+            last_used_idx: f.last_used_idx,
+            device_status: f.device_status,
+        }),
+
         E::OutOfMemory => BlockError::OutOfMemory,
         E::OutOfBounds => BlockError::OutOfBounds,
     }

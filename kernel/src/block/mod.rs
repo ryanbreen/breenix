@@ -25,6 +25,8 @@ pub mod partition;
 #[cfg(target_arch = "x86_64")]
 pub mod ramdisk;
 pub mod virtio;
+pub mod read_failure;
+use read_failure::VirtioReadFailure;
 #[cfg(all(feature = "testing", not(feature = "interactive")))]
 pub mod testing_fixture;
 
@@ -418,6 +420,8 @@ pub enum BlockError {
     OutOfMemory,
     /// I/O error occurred during operation
     IoError,
+    /// The ARM driver receipt, captured before request state is cleared.
+    VirtioRead(VirtioReadFailure),
     /// Block number is out of bounds
     OutOfBounds,
     /// Device is not ready or not responding
@@ -434,6 +438,7 @@ impl fmt::Display for BlockError {
             BlockError::NoSpace => write!(f, "no space left"),
             BlockError::OutOfMemory => write!(f, "out of memory"),
             BlockError::IoError => write!(f, "I/O error"),
+            BlockError::VirtioRead(failure) => failure.fmt(f),
             BlockError::OutOfBounds => write!(f, "block number out of bounds"),
             BlockError::DeviceNotReady => write!(f, "device not ready"),
             BlockError::Timeout => write!(f, "operation timed out"),

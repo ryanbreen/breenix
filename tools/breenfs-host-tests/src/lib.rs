@@ -41,12 +41,18 @@ pub mod ops;
 pub mod recording;
 pub mod stream;
 
+#[path = "../../../kernel/src/block/read_failure.rs"]
+pub mod read_failure;
+
 /// Host fixture for the synchronous kernel block-device surface.
 pub mod block {
+    pub use crate::read_failure;
+    use read_failure::VirtioReadFailure;
     pub use crate::buffer_cache as cache;
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub enum BlockError {
         IoError,
+        VirtioRead(VirtioReadFailure),
         OutOfMemory,
         OutOfBounds,
     }

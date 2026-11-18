@@ -49,12 +49,16 @@ impl log::Log for LossLog {
     }
     fn flush(&self) {}
 }
-fn fixture() -> Arc<BreenFs<NoWait>> {
+pub(super) fn init_log() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
         log::set_logger(&LOG).unwrap();
         log::set_max_level(log::LevelFilter::Error);
     });
+}
+pub(super) fn messages() -> Vec<String> { LOG.0.lock().unwrap().clone() }
+fn fixture() -> Arc<BreenFs<NoWait>> {
+    init_log();
     let disk = Arc::new(Disk(HostMutex::new(vec![0; 64 * 1024 * 1024])));
     let sb = Superblock {
         fs_uuid: [0x11; 16],

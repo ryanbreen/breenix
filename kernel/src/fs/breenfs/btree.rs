@@ -64,14 +64,21 @@ pub enum Error {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ReadCause { Device, Verification, Allocation }
+pub enum ReadCause { Device, Driver(crate::block::read_failure::VirtioReadFailure), Verification, Allocation }
 impl ReadCause {
     pub fn name(self) -> &'static str {
         match self {
-            Self::Device => "device-read",
+            Self::Device | Self::Driver(_) => "device-read",
             Self::Verification => "verification",
             Self::Allocation => "allocation",
         }
+    }
+}
+impl core::fmt::Display for ReadCause {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.name())?;
+        if let Self::Driver(failure) = self { write!(f, " {}", failure)?; }
+        Ok(())
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

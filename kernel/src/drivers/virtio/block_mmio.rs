@@ -10,6 +10,7 @@ use crate::arch_impl::aarch64::cpu::{dsb_sy, Aarch64Cpu};
 use crate::arch_impl::aarch64::gic;
 use crate::arch_impl::traits::{CpuOps, InterruptController};
 use crate::task::completion::Completion;
+use crate::block::read_failure::VirtioReadFailure;
 use crate::task::waitqueue::WaitQueueHead;
 use core::ptr::read_volatile;
 use core::sync::atomic::{fence, AtomicBool, AtomicU32, Ordering};
@@ -72,7 +73,7 @@ impl BlockMmioRequestGate {
             }
 
             if !block_mmio_request_gate_can_sleep() {
-                return Err("Block MMIO request already in progress");
+                return Err("Block MMIO request already in progress (context cannot sleep)");
             }
 
             if self
@@ -80,7 +81,7 @@ impl BlockMmioRequestGate {
                 .prepare_to_wait(crate::task::thread::ThreadState::BlockedOnIO)
                 .is_none()
             {
-                return Err("Block MMIO request already in progress");
+                return Err("Block MMIO request already in progress (waiter publication refused)");
             }
 
             if self.wedged.load(Ordering::Acquire) {
@@ -1011,22 +1012,70 @@ fn submit_read(
     Ok(())
 }
 
+/// Snapshot on the failing path, before clear/unlock can reuse the receipt.
+/// Without gate ownership these are concurrent samples of its current owner.
+fn read_failure(
+    device_index: usize,
+    state: Option<&BlockDeviceState>,
+    sector: u64,
+    bytes: usize,
+    reason: &'static str,
+    stage: &'static str,
+) -> VirtioReadFailure {
+    let gate = REQUEST_GATES.get(device_index);
+    let completion = COMPLETIONS.get(device_index);
+    VirtioReadFailure {
+        reason, stage, device: device_index, sector, bytes,
+        thread: crate::task::scheduler::current_thread_id(),
+        preempt_count: crate::per_cpu_aarch64::preempt_count(),
+        in_interrupt: crate::per_cpu_aarch64::in_interrupt(),
+        interrupts_enabled: Aarch64Cpu::interrupts_enabled(),
+        timer_ready: crate::arch_impl::aarch64::timer_interrupt::is_initialized(),
+        gate_locked: gate.is_some_and(|gate| gate.locked.load(Ordering::Acquire)),
+        gate_wedged: gate.is_some_and(|gate| gate.wedged.load(Ordering::Acquire)),
+        pending_token: completion.map_or(0, |c| c.pending_token()),
+        completed_desc: completion.map_or(NO_COMPLETED_DESC, |c| c.completed_desc.load(Ordering::Acquire)),
+        completed_status: completion.map_or(NO_COMPLETED_STATUS, |c| c.completed_status.load(Ordering::Acquire)),
+        last_used_idx: completion.map_or(0, |c| c.last_used_idx.load(Ordering::Acquire)),
+        used_idx: state.map_or(0, |_| unsafe { u32::from(read_volatile(&(*device_buffers(device_index).queue_mem).used.idx)) }),
+        device_status: state.map_or(u32::MAX, |state| unsafe {
+            crate::arch_impl::aarch64::mmio::read32((block_mmio_virt_base(state) + 0x70) as *const u32)
+        }),
+    }
+}
+
 /// Copy a completed read out of the DMA buffer into `buffer`, whose length is
 /// the length the read was submitted with.
 fn finish_read(
     device_index: usize,
     state: &BlockDeviceState,
+    sector: u64,
     buffer: &mut [u8],
-) -> Result<(), &'static str> {
+) -> Result<(), VirtioReadFailure> {
     let completion = &COMPLETIONS[device_index];
-    let (completed_desc, status) = completion.take_completed_request()?;
+    let desc = completion.completed_desc.load(Ordering::Acquire);
+    let status = completion.completed_status.load(Ordering::Acquire);
+    let (completed_desc, status) = completion.take_completed_request().map_err(|reason| {
+        let mut failure = read_failure(device_index, Some(state), sector, buffer.len(), reason, "take-completion");
+        failure.completed_desc = desc;
+        failure.completed_status = status;
+        failure
+    })?;
     if completed_desc != 0 {
+        let mut failure = read_failure(device_index, Some(state), sector, buffer.len(),
+            "Block MMIO read completed unexpected descriptor", "finish-descriptor");
+        failure.completed_desc = u32::from(completed_desc);
+        failure.completed_status = u32::from(status);
         completion.clear();
-        return Err("Block MMIO read completed unexpected descriptor");
+        return Err(failure);
     }
     if status != status_code::OK {
+        let mut failure = read_failure(device_index, Some(state), sector, buffer.len(),
+            "Block MMIO read failed", "finish-status");
+        failure.completed_desc = u32::from(completed_desc);
+        failure.completed_status = u32::from(status);
         completion.clear();
-        return Err("Block MMIO read failed");
+        return Err(failure);
     }
 
     dsb_sy();
@@ -1049,7 +1098,7 @@ pub fn read_sector(
     buffer: &mut [u8; SECTOR_SIZE],
 ) -> Result<(), &'static str> {
     let state = block_device_state(device_index)?;
-    read_chunk(device_index, state, sector, buffer)
+    read_chunk(device_index, state, sector, buffer).map_err(|failure| failure.reason)
 }
 
 /// Read consecutive sectors into `buffer`, a nonzero multiple of the sector
@@ -1058,16 +1107,19 @@ pub fn read_sectors(
     device_index: usize,
     start_sector: u64,
     buffer: &mut [u8],
-) -> Result<(), &'static str> {
-    let state = block_device_state(device_index)?;
+) -> Result<(), VirtioReadFailure> {
+    let state = block_device_state(device_index).map_err(|reason|
+        read_failure(device_index, None, start_sector, buffer.len(), reason, "device-state"))?;
     if buffer.is_empty() || buffer.len() % SECTOR_SIZE != 0 {
-        return Err("Buffer size must be a nonzero multiple of 512");
+        return Err(read_failure(device_index, Some(state), start_sector, buffer.len(),
+            "Buffer size must be a nonzero multiple of 512", "read-length"));
     }
     if start_sector
         .checked_add((buffer.len() / SECTOR_SIZE) as u64)
         .is_none_or(|end| end > state.capacity)
     {
-        return Err("Sector out of range");
+        return Err(read_failure(device_index, Some(state), start_sector, buffer.len(),
+            "Sector out of range", "read-range"));
     }
     let mut sector = start_sector;
     for chunk in buffer.chunks_mut(state.max_transfer_bytes) {
@@ -1084,29 +1136,40 @@ fn read_chunk(
     state: &BlockDeviceState,
     sector: u64,
     buffer: &mut [u8],
-) -> Result<(), &'static str> {
+) -> Result<(), VirtioReadFailure> {
     if sector >= state.capacity {
-        return Err("Sector out of range");
+        return Err(read_failure(device_index, Some(state), sector, buffer.len(),
+            "Sector out of range", "chunk-range"));
     }
     if !irq_completion_available() {
-        return Err("Block MMIO IRQ completion unavailable before interrupts are enabled");
+        return Err(read_failure(device_index, Some(state), sector, buffer.len(),
+            "Block MMIO IRQ completion unavailable before interrupts are enabled", "irq-unavailable"));
     }
 
-    let request_guard = REQUEST_GATES[device_index].lock()?;
+    let request_guard = REQUEST_GATES[device_index].lock().map_err(|reason| {
+        let stage = match reason {
+            "Block MMIO request already in progress (context cannot sleep)" => "gate-cannot-sleep",
+            "Block MMIO request already in progress (waiter publication refused)" => "gate-publish-refused",
+            _ => "gate-wedged",
+        };
+        read_failure(device_index, Some(state), sector, buffer.len(), reason, stage)
+    })?;
     let completion = &COMPLETIONS[device_index];
     let completion_token = completion.prepare_wait();
 
     if let Err(e) = submit_read(device_index, state, sector, buffer.len()) {
+        let failure = read_failure(device_index, Some(state), sector, buffer.len(), e, "submit");
         completion.clear();
-        return Err(e);
+        return Err(failure);
     }
 
     if let Err(e) = completion.wait_for_completion(completion_token, state, request_type::IN) {
+        let failure = read_failure(device_index, Some(state), sector, buffer.len(), e, "wait-completion");
         request_guard.wedge();
-        return Err(e);
+        return Err(failure);
     }
 
-    finish_read(device_index, state, buffer)?;
+    finish_read(device_index, state, sector, buffer)?;
     drop(request_guard);
     Ok(())
 }
