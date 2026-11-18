@@ -149,6 +149,10 @@ mod mount_exclusion;
 mod metadata_admission;
 
 #[cfg(test)]
+#[path = "../../../../tools/breenfs-host-tests/src/outstanding_grants.rs"]
+mod outstanding_grants;
+
+#[cfg(test)]
 #[path = "../../../../tools/breenfs-host-tests/src/metadata_failure.rs"]
 mod metadata_failure;
 
