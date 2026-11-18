@@ -1253,41 +1253,66 @@ impl<W: Wait + 'static> BreenFs<W> {
         preemption_point();
         let retry_ns = self.inner.state.lock().mapping_retry_ns;
         if now_ns >= retry_ns && self.inner.signal.mappings.swap(false, Ordering::AcqRel) {
-            if let Err(error) = self.service_mappings(now_ns) {
-                let mut state = self.inner.state.lock();
-                // Shutdown can close admission while a service snapshot is in
-                // flight. Its own staged generation owns that final barrier.
-                if error == Errno(ENOMEM) || error == Errno(ENOSPC) {
-                    // Keep dirty custody. Defer ENOSPC to the next interval.
-                    // Pressure publication wakes this worker and creates new
-                    // PENDING metadata even if no data space becomes available;
-                    // retrying on that wake would force commits indefinitely.
-                    if error == Errno(ENOSPC) {
-                        state.mapping_retry_ns = now_ns.saturating_add(COMMIT_INTERVAL_NS);
+            match self.service_mappings(now_ns) {
+                Ok(worked) => return Ok(worked),
+                Err(error) => {
+                    let mut state = self.inner.state.lock();
+                    // Shutdown can close admission while a service snapshot is in
+                    // flight. Its own staged generation owns that final barrier.
+                    if error == Errno(ENOMEM) || error == Errno(ENOSPC) {
+                        // Keep dirty custody. Defer ENOSPC to the next interval.
+                        // Pressure publication wakes this worker and creates new
+                        // PENDING metadata even if no data space becomes available;
+                        // retrying on that wake would force commits indefinitely.
+                        if error == Errno(ENOSPC) {
+                            state.mapping_retry_ns = now_ns.saturating_add(COMMIT_INTERVAL_NS);
+                        }
+                        self.inner.signal.mappings.store(true, Ordering::Release);
+                    } else if !state.closed || state.failed {
+                        state.fail("service-mappings", error);
+                        return Err(error);
                     }
-                    self.inner.signal.mappings.store(true, Ordering::Release);
-                } else if !state.closed || state.failed {
-                    state.fail("service-mappings", error);
-                    return Err(error);
                 }
             }
         }
         self.commit_generation(now_ns)
     }
-    fn service_mappings(&self, now_ns: u64) -> Result<(), Errno> {
+    fn service_mappings(&self, now_ns: u64) -> Result<bool, Errno> {
         let handles = self.mapped_nodes()?;
         let mut budget = crate::memory::file_map::EVICT_BUDGET;
         let mut more = false;
-        for node in handles {
+        let mut staged = Vec::new();
+        staged.try_reserve(handles.len().min(budget)).map_err(|_| Errno(ENOMEM))?;
+        for (index, node) in handles.iter().enumerate() {
             preemption_point();
             if !self.inner.state.lock().failed {
-                more |= node.map.service_writeback_with(&node, &mut budget, |first, last| {
+                let result = node.map.service_writeback_with(node, &mut budget, |first, last| {
+                    staged.push((index, first, last));
                     self.inner.signal.requested.store(true, Ordering::Release);
-                    self.commit_generation(now_ns)?;
-                    self.complete_mapping(&node, first, last);
                     Ok(())
-                })?;
+                });
+                match result {
+                    Ok(pending) => more |= pending,
+                    Err(error) => {
+                        // Earlier snapshots advanced their cursors but have no
+                        // durable receipt yet. Keep them eligible for retry.
+                        for &(index, _, _) in &staged { handles[index].map.request_writeback(); }
+                        return Err(error);
+                    }
+                }
             }
+        }
+        // E24 ledger 558(x4): the pass joins its mapping snapshots into one
+        // generation. Complete their dirty custody only after that barrier;
+        // commit_due must not publish a second generation after this returns.
+        let worked = if self.inner.state.lock().failed { false }
+            else { self.commit_generation(now_ns)? };
+        for (index, first, last) in staged {
+            preemption_point();
+            self.complete_mapping(&handles[index], first, last);
+        }
+        for node in handles {
+            preemption_point();
             // Population and mutation take the mount lock before MapState.
             let mut state = self.inner.state.lock();
             if state.failed {
@@ -1311,7 +1336,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             }
         }
         if more { self.request_eviction(); }
-        Ok(())
+        if self.inner.state.lock().failed { Err(Errno(EIO)) } else { Ok(worked) }
     }
     fn mapped_nodes(&self) -> Result<Vec<Arc<VNode>>, Errno> {
         let state = self.inner.state.lock();
