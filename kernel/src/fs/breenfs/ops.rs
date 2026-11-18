@@ -101,6 +101,9 @@ pub struct Files<'a, S: NodeStore + 'a> {
     space_root: BlockPtr,
     data: BTreeMap<u64, Vec<u8>>,
     open_inodes: BTreeSet<u64>,
+    orphans: BTreeSet<u64>,
+    orphan_work: BTreeSet<u64>,
+    unvalidated_orphans: BTreeSet<u64>,
     // Cleanup newly deferred by this transaction, funded by its namespace grants.
     orphan_count: u64,
 }
@@ -130,6 +133,9 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             space_root: sb.space_root,
             data: BTreeMap::new(),
             open_inodes: BTreeSet::new(),
+            orphans: BTreeSet::new(),
+            orphan_work: BTreeSet::new(),
+            unvalidated_orphans: BTreeSet::new(),
             orphan_count: 0,
         };
         files.put_inode(
@@ -176,6 +182,12 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         if writable && root.flags & 1 != 0 {
             return Err(Error::EROFS);
         }
+        // Initial recovery reads the ORPHAN range once. Continuations retain
+        // this index; later publications visit only newly eligible work.
+        let orphans: BTreeSet<_> = btree::range(&store, root.root,
+            key(ORPHAN_OBJECT, format::ORPHAN, 0),
+            key(ORPHAN_OBJECT, format::ORPHAN, u64::MAX))?
+            .into_iter().map(|(key, _)| key.offset).collect();
         Ok(Self {
             txn: Transaction::new_owned(
                 store,
@@ -192,6 +204,9 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             space_root: sb.space_root,
             data: BTreeMap::new(),
             open_inodes: BTreeSet::new(),
+            orphan_work: orphans.clone(),
+            unvalidated_orphans: orphans.clone(),
+            orphans,
             orphan_count: 0,
         })
     }
@@ -267,7 +282,22 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     }
     /// The mount snapshots live VNodes under its mutex; drops perform no I/O.
     pub fn retain_open_inodes(&mut self, inodes: BTreeSet<u64>) {
-        self.open_inodes = inodes;
+        let previous = core::mem::replace(&mut self.open_inodes, inodes);
+        for &ino in previous.symmetric_difference(&self.open_inodes) {
+            if self.orphans.contains(&ino) {
+                if self.open_inodes.contains(&ino) && !self.unvalidated_orphans.contains(&ino) {
+                    self.orphan_work.remove(&ino);
+                } else { self.orphan_work.insert(ino); }
+            }
+        }
+    }
+    /// Update one VNode lifetime without rebuilding the open-inode snapshot.
+    pub fn set_inode_open(&mut self, ino: u64, open: bool) {
+        if open { self.open_inodes.insert(ino); } else { self.open_inodes.remove(&ino); }
+        if self.orphans.contains(&ino) {
+            if open && !self.unvalidated_orphans.contains(&ino) { self.orphan_work.remove(&ino); }
+            else { self.orphan_work.insert(ino); }
+        }
     }
     pub fn items(&self) -> Result<Vec<(Key, Vec<u8>)>, Error> {
         items(&self.txn.view(), self.root.root)
@@ -634,6 +664,8 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
                 &[],
             )?;
             self.orphan_count = self.orphan_count.checked_add(1).ok_or(Error::EIO)?;
+            self.orphans.insert(ino);
+            if !self.open_inodes.contains(&ino) { self.orphan_work.insert(ino); }
         }
         self.put_inode(ino, inode)
     }
@@ -727,16 +759,13 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         self.put_inode(ino, inode)
     }
     fn reclaim_orphans(&mut self) -> Result<(), Error> {
-        let orphans = self.range(
-            key(ORPHAN_OBJECT, format::ORPHAN, 0),
-            key(ORPHAN_OBJECT, format::ORPHAN, u64::MAX),
-        )?;
-        for (k, value) in orphans {
-            #[cfg(test)] btree::measurement::orphan_visit();
+        let candidates: Vec<_> = self.orphan_work.iter().copied().collect();
+        for ino in candidates {
             preemption_point();
-            if k.object != ORPHAN_OBJECT || !value.is_empty() {
-                return Err(Error::EIO);
-            }
+            #[cfg(test)] btree::measurement::orphan_visit();
+            let k = key(ORPHAN_OBJECT, format::ORPHAN, ino);
+            let value = btree::search(&self.txn.view(), self.root.root, k)?.ok_or(Error::EIO)?;
+            if !value.is_empty() { return Err(Error::EIO); }
             let inode = btree::search(
                 &self.txn.view(),
                 self.root.root,
@@ -748,10 +777,15 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
                 return Err(Error::EIO);
             }
             if self.open_inodes.contains(&k.offset) {
+                self.unvalidated_orphans.remove(&ino);
+                self.orphan_work.remove(&ino);
                 continue;
             }
             self.delete_inode(k.offset)?;
             self.txn.delete(&mut self.root.root, k)?;
+            self.orphans.remove(&ino);
+            self.orphan_work.remove(&ino);
+            self.unvalidated_orphans.remove(&ino);
         }
         Ok(())
     }

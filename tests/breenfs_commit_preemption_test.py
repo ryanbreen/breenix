@@ -38,7 +38,7 @@ LOOPS = {
         'write_cached': ('for (&addr, bytes) in self.nodes.iter().chain(self.data.iter())',
                          'for (i, bytes) in bytes.chunks_exact(sector).enumerate()'),
     },
-    'ops.rs': {'prepare_commit': (), 'reclaim_orphans': ('for (k, value) in orphans',)},
+    'ops.rs': {'prepare_commit': (), 'reclaim_orphans': ('for ino in candidates',)},
     'btree.rs': {'range_limit': ()},
     'space.rs': {'range': ('while let Some(ptr) = todo.pop()',)},
     'recover.rs': {'space_items': ('while let Some((ptr, limit)) = todo.pop()',)},
