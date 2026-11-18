@@ -161,6 +161,10 @@ mod publication_trigger;
 mod incremental_files_view;
 
 #[cfg(test)]
+#[path = "../../../../tools/breenfs-host-tests/src/publication_phases.rs"]
+pub(super) mod publication_phases;
+
+#[cfg(test)]
 #[path = "../../../../tools/breenfs-host-tests/src/publication_cost.rs"]
 pub(super) mod publication_cost;
 
@@ -474,7 +478,9 @@ impl<W: Wait> MountState<W> {
         }
     }
     fn retain_open(&mut self) {
+        #[cfg(test)] let _phase = publication_phases::Phase::new("retain_open");
         self.nodes.retain(|_, node| {
+            #[cfg(test)] publication_phases::visit(0);
             preemption_point();
             node.node.strong_count() != 0
                 || node.splitting
@@ -484,7 +490,9 @@ impl<W: Wait> MountState<W> {
         self.files.retain_open_inodes(
             self.nodes
                 .iter()
-                .filter(|(_, node)| { preemption_point(); node.node.strong_count() != 0 })
+                .filter(|(_, node)| {
+                    #[cfg(test)] publication_phases::visit(0);
+                    preemption_point(); node.node.strong_count() != 0 })
                 .map(|(&ino, _)| ino)
                 .collect(),
         );
@@ -708,14 +716,18 @@ impl<W: Wait> MountState<W> {
         self.edited(objects, result)
     }
     fn drain_dirty(&mut self, device: &dyn BlockDevice) -> Result<(), Errno> {
+        #[cfg(test)] let _phase = publication_phases::Phase::new("drain_dirty");
         let result = self.drain_pages(device);
         // Draining frees pages as it copies them; keep the charge truthful
         // even when a failed drain leaves the mount failed.
-        self.dirty_bytes = self.nodes.values().map(|node| { preemption_point(); node.dirty.bytes() }).sum();
+        self.dirty_bytes = self.nodes.values().map(|node| {
+            #[cfg(test)] publication_phases::visit(0);
+            preemption_point(); node.dirty.bytes() }).sum();
         result
     }
     fn drain_pages(&mut self, device: &dyn BlockDevice) -> Result<(), Errno> {
         for (&ino, node) in self.nodes.iter_mut() {
+            #[cfg(test)] publication_phases::visit(0);
             preemption_point();
             if node.dirty.bytes() == 0 {
                 continue;
@@ -1352,6 +1364,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         if self.inner.state.lock().failed { Err(Errno(EIO)) } else { Ok(worked) }
     }
     fn mapped_nodes(&self) -> Result<Vec<Arc<VNode>>, Errno> {
+        #[cfg(test)] let _phase = publication_phases::Phase::new("mappings");
         let state = self.inner.state.lock();
         let mut handles = Vec::new();
         if state.closed || state.committer.is_none() {
@@ -1359,6 +1372,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         }
         handles.try_reserve(state.nodes.len()).map_err(|_| Errno(ENOMEM))?;
         for entry in state.nodes.values() {
+            #[cfg(test)] publication_phases::visit(1);
             preemption_point();
             if let Some(node) = entry.node.upgrade() {
                 if entry.mapped.is_some() || node.map.has_dirty() || node.map.eviction_pending() || node.map.writeback_pending() {
@@ -1424,11 +1438,16 @@ impl<W: Wait + 'static> BreenFs<W> {
             _publication = self.inner.costs.span(CostOp::Commit, CostPhase::Publication);
             #[cfg(test)]
             measurement::prepared(force, pressure);
-            let touched: Vec<_> = state.nodes.keys().map(|&ino| { preemption_point(); ino }).collect();
+            #[cfg(test)] let touches_phase = publication_phases::Phase::new("apply_touches");
+            let touched: Vec<_> = state.nodes.keys().map(|&ino| {
+                #[cfg(test)] publication_phases::visit(0);
+                preemption_point(); ino }).collect();
             for ino in touched {
                 preemption_point();
+                #[cfg(test)] publication_phases::visit(0);
                 state.apply_touches(ino)?;
             }
+            #[cfg(test)] drop(touches_phase);
             state.retain_open();
             if let Err(error) = state.drain_dirty(&self.data_reader(None)) {
                 state.fail("drain-dirty", error);
@@ -1439,6 +1458,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             let mut reap = !core::mem::take(&mut state.skip_reap)
                 && !state.closed && !state.reap_shutdown && state.dead_remaining != 0;
             let reaped = (|| -> Result<(), ops::Error> {
+                #[cfg(test)] let _phase = publication_phases::Phase::new("prepare_reap");
                 let MountState { files, reservations, grants, durable, .. } = &mut *state;
                 let (txn, _) = files.prepare_commit()?;
                 if reap {
@@ -1511,8 +1531,10 @@ impl<W: Wait + 'static> BreenFs<W> {
                     return Err(Errno(EIO));
                 }
             }
+            #[cfg(test)] let cleanup_phase = publication_phases::Phase::new("cleanup");
             state.inodes.entries.fill(None);
             for node in state.nodes.values_mut() {
+                #[cfg(test)] publication_phases::visit(0);
                 preemption_point();
                 node.dirty.clear();
                 node.reserved_metadata = 0;
@@ -1523,6 +1545,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             state.pending_grants = core::mem::take(&mut state.grants);
             state.metadata_reserved = 0;
             state.pending = Some(prepared.clone());
+            #[cfg(test)] drop(cleanup_phase);
             (prepared, reap)
         };
         preemption_point();
@@ -1548,6 +1571,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         };
         {
             let mut state = self.mutation_lock(CostOp::Commit);
+            #[cfg(test)] let _phase = publication_phases::Phase::new("completion");
             state
                 .committer
                 .as_mut()
@@ -1559,6 +1583,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 state.durable = prepared.superblock().clone();
                 *publication = Some(state.durable.clone());
                 for grant in core::mem::take(&mut state.pending_grants) {
+                    #[cfg(test)] publication_phases::visit(3);
                     preemption_point();
                     state.reservations.release(grant);
                 }

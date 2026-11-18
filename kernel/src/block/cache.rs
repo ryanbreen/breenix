@@ -235,6 +235,14 @@ impl State {
 /// One cache is shared by its device users; wrappers must preserve identity and
 /// all their I/O must pass through it. Identities must remain stable and must not
 /// be reused for another device during this cache's lifetime.
+#[cfg(test)]
+pub mod measurement {
+    extern crate std;
+    std::thread_local! { static DISCARD: core::cell::Cell<u64> = const { core::cell::Cell::new(0) }; }
+    pub fn discard_visits() -> u64 { DISCARD.with(|n| n.get()) }
+    pub(super) fn discard_visit() { DISCARD.with(|n| n.set(n.get()+1)); }
+}
+
 pub struct BufferCache<W: Wait> {
     state: Mutex<State>,
     wait: W,
@@ -864,8 +872,11 @@ impl<W: Wait> BufferCache<W> {
     pub fn discard_clean(&self, device: &dyn BlockDevice) {
         let identity = device.identity();
         self.with(|state| {
-            state.lru.retain(|_, key| key.0 != identity);
+            state.lru.retain(|_, key| {
+                #[cfg(test)] measurement::discard_visit();
+                key.0 != identity });
             state.buffers.retain(|key, entry| {
+                #[cfg(test)] measurement::discard_visit();
                 key.0 != identity || !matches!(entry.status, BufferState::Clean { .. })
             });
         });

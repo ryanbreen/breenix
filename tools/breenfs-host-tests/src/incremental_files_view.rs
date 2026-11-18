@@ -49,7 +49,7 @@ impl NodeStore for Seed {
     }
 }
 fn key(object: u64, item_type: u8, offset: u64) -> Key { Key { object, item_type, offset } }
-fn image(files: usize) -> &'static Vec<u8> {
+pub(super) fn image(files: usize) -> &'static Vec<u8> {
     static SMALL: OnceLock<Vec<u8>> = OnceLock::new();
     static LARGE: OnceLock<Vec<u8>> = OnceLock::new();
     (if files == 1100 { &SMALL } else { &LARGE }).get_or_init(|| {

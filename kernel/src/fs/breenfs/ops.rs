@@ -732,6 +732,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             key(ORPHAN_OBJECT, format::ORPHAN, u64::MAX),
         )?;
         for (k, value) in orphans {
+            #[cfg(test)] btree::measurement::orphan_visit();
             preemption_point();
             if k.object != ORPHAN_OBJECT || !value.is_empty() {
                 return Err(Error::EIO);

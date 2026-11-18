@@ -19,6 +19,7 @@ const MAX_HEIGHT: u8 = 8;
 pub mod measurement {
     extern crate std;
     std::thread_local! {
+        static ORPHANS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
         static PUBLICATION: core::cell::Cell<[[u64; 3]; 2]> = const { core::cell::Cell::new([[0; 3]; 2]) };
         static CHANGES: core::cell::RefCell<Option<alloc::vec::Vec<ChangeWork>>> = const { core::cell::RefCell::new(None) };
         static REFRESH_CALLS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
@@ -50,6 +51,9 @@ pub mod measurement {
     pub fn take_mutations() -> [u64; 8] { MUTATIONS.with(|cell| cell.replace([0; 8])) }
     // Materialized result payloads, decoder invocations and decoded item visits,
     // separately for FS and SPACE. Reset immediately before production fsync.
+    pub fn orphan_visit() { ORPHANS.with(|n| n.set(n.get()+1)); }
+    pub fn orphan_visits() -> u64 { ORPHANS.with(|n| n.get()) }
+    pub fn publication_counts() -> [[u64; 3]; 2] { PUBLICATION.with(|c| c.get()) }
     pub fn take_publication() -> [[u64; 3]; 2] {
         PUBLICATION.with(|c| c.replace([[0; 3]; 2]))
     }
