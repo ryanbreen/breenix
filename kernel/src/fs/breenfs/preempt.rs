@@ -64,9 +64,11 @@ pub mod context {
     }
     // Test-only scheduler/ownership observations for E24 coordinator 597(x11a).
     // Taking the callback out prevents observer reads from recursively observing.
+    // Touch: touch() has read the open generation and not yet recorded its
+    // stamp (x11c M4).
     #[derive(Clone, Copy)]
     pub enum Event {
-        Acquire(usize), Release(usize), Access(usize), Point, Yield,
+        Acquire(usize), Release(usize), Access(usize), Point, Yield, Touch,
         Phase { op: &'static str, phase: &'static str, begin: bool },
     }
     type Observer = Box<dyn FnMut(Event)>;

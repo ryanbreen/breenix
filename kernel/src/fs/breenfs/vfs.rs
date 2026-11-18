@@ -2594,6 +2594,8 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         #[cfg(test)]
         let seconds = crate::time::current_unix_time();
         let generation = self.inner.generation.load(Ordering::Acquire);
+        #[cfg(test)]
+        super::preempt::context::observe(super::preempt::context::Event::Touch);
         pin.touched.record(generation, read, seconds.saturating_add(1));
         self.inner.events.push(&pin.touched);
     }

@@ -138,3 +138,30 @@ fn failed_truncate_of_frozen_pages_changes_nothing() {
     let cold_node = open(&cold, b"file");
     assert!(read_at(&cold, &cold_node, 0, 3 * BLOCK_SIZE) == expected, "cold bytes after fsync");
 }
+
+// x11c M4: a touch that read generation N before N froze, and recorded its
+// stamp only after N's preparation took N's slot, has still returned before
+// the fsync that follows it. That fsync must make the touch's time durable.
+#[test]
+fn touch_racing_a_freeze_is_durable_at_the_next_fsync() {
+    const TOUCHED_AT: u64 = 77;
+    let (disk, fs) = mount(image(16384, 64, &[(b"file", 1, b'A')]), true, 2_415_156_043);
+    let node = open(&fs, b"file");
+    assert_ne!(fs.getattr(node.ino).unwrap().times.mtime.sec, TOUCHED_AT as i64);
+    let generation = fs.inner.state.lock().durable.generation + 1;
+    let (live, published) = (fs.clone(), Rc::new(RefCell::new(None)));
+    let result = published.clone();
+    // N freezes, prepares and installs between touch's load and its record.
+    context::observer(Some(Box::new(move |event| if let Event::Touch = event {
+        if result.borrow().is_none() {
+            *result.borrow_mut() = Some(live.commit_generation_up_to(0, generation, true));
+        }
+    })));
+    crate::time::with_unix_time(TOUCHED_AT, || fs.touch(&node, false));
+    context::observer(None);
+    assert_eq!(published.borrow_mut().take(), Some(Ok(true)), "N was not published inside the touch");
+    fs.fsync(&node, false).unwrap();
+    let (_, cold) = mount(disk.image(), false, 2_415_156_044);
+    let mtime = cold.getattr(node.ino).unwrap().times.mtime.sec;
+    assert_eq!(mtime, TOUCHED_AT as i64, "the fsync after the touch lost its modification time");
+}
