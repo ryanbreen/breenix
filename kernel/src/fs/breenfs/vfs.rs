@@ -214,6 +214,7 @@ struct MountState<W: Wait + 'static> {
     failed: bool,
     failure: Option<(&'static str, i32)>,
     metadata_error: Option<super::btree::ReadFailure>,
+    read_refusal_reported: bool,
     scrub: Option<Scrub>,
     scrub_state: u32,
     #[cfg(not(test))]
@@ -439,6 +440,15 @@ impl<W: Wait> MountState<W> {
                 ops::Error::Metadata(failure) => Some(failure),
                 _ => None,
             };
+            if let Some(failure) = self.metadata_error {
+                if matches!(failure.cause, super::btree::ReadCause::Driver(driver) if driver.context_refused())
+                    && !self.read_refusal_reported
+                {
+                    self.read_refusal_reported = true;
+                    log::error!("[breenfs] metadata read refused errno={} metadata_cause={} metadata_node={}",
+                        EAGAIN, failure.cause, failure.addr);
+                }
+            }
         }
     }
     fn read_result<T>(&mut self, result: Result<T, ReadError>) -> Result<T, Errno> {
@@ -759,6 +769,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 failed: false,
                 failure: None,
                 metadata_error: None,
+                read_refusal_reported: false,
                 scrub: None,
                 scrub_state: SCRUB_IDLE,
                 #[cfg(not(test))]
@@ -2702,6 +2713,9 @@ fn errno(error: ops::Error) -> Errno {
         ops::Error::Metadata(super::btree::ReadFailure {
             cause: super::btree::ReadCause::Allocation, ..
         }) => ENOMEM,
+        ops::Error::Metadata(super::btree::ReadFailure {
+            cause: super::btree::ReadCause::Driver(failure), ..
+        }) if failure.context_refused() => EAGAIN,
         ops::Error::EIO | ops::Error::Metadata(_) => EIO,
         ops::Error::EROFS => EROFS,
         ops::Error::EBUSY => EBUSY,

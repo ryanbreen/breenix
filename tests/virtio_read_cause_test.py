@@ -32,9 +32,9 @@ class VirtioReadCause(unittest.TestCase):
             failure = '''VirtioReadFailure {
                 reason: "Block MMIO request already in progress", stage: "gate-cannot-sleep",
                 device: 0, sector: 444976, bytes: 16384,
-                thread: Some(73), preempt_count: 0, in_interrupt: false,
+                thread: Some(73), preempt_count: 0, kill_custody: Some(1), in_interrupt: false,
                 interrupts_enabled: true, timer_ready: true,
-                gate_locked: true, gate_wedged: false, pending_token: 17,
+                gate_locked: true, gate_wedged: false, pending_token: 17, completed_token: 0, waiter_thread: 0,
                 completed_desc: u32::MAX, completed_status: u32::MAX,
                 used_idx: 9, last_used_idx: 9, device_status: 15,
             }'''

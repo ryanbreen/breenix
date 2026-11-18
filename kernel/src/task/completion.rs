@@ -332,6 +332,12 @@ impl Completion {
         self.waiter.store(0, Ordering::Release);
     }
 
+    /// Failure-only receipt sampled by the ARM block-read diagnostic.
+    #[cfg(target_arch = "aarch64")]
+    pub fn completed_token(&self) -> u32 {
+        self.done.load(Ordering::Acquire)
+    }
+
     pub fn waiter_tid(&self) -> u64 {
         self.waiter.load(Ordering::Acquire)
     }

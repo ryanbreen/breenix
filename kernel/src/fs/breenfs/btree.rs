@@ -68,6 +68,7 @@ pub enum ReadCause { Device, Driver(crate::block::read_failure::VirtioReadFailur
 impl ReadCause {
     pub fn name(self) -> &'static str {
         match self {
+            Self::Driver(failure) if failure.context_refused() => "io-context",
             Self::Device | Self::Driver(_) => "device-read",
             Self::Verification => "verification",
             Self::Allocation => "allocation",
