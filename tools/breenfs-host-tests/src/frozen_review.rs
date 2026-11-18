@@ -205,3 +205,40 @@ fn installed_generation_grants_refuse_no_usable_space() {
     assert!(read_at(&cold, &open(&cold, b"small"), 0, BLOCK_SIZE) == [b'W'; BLOCK_SIZE]);
     assert!(read_at(&cold, &open(&cold, b"big"), 0, data.len()) == data);
 }
+
+// x11c M2: after N installs, N+1's recorded changes still have to reach N's
+// published view and N's changed inodes still have to be refreshed. The next
+// foreground call that takes the mount exclusion does a bounded share of
+// that work: what it does per hold is independent of how many changes
+// N+1 made while N was frozen, and it does not drop the scratch view, whose
+// node store retires cache entries as it goes, under the exclusion. The
+// changes stay visible throughout and reach the cold image at the next fsync.
+#[test]
+fn install_leaves_bounded_work_to_the_next_foreground_call() {
+    const CREATED: usize = 64;
+    // The same constant 597 sets for each of the publication's own sections.
+    const MAX_TRANSITION_STEPS: u64 = 16;
+    let name = |i: usize| alloc::format!("next-{i}").into_bytes();
+    let (disk, fs) = mount(image(16384, 64, &[(b"file", 1, b'A')]), true, 2_415_156_048);
+    let node = open(&fs, b"file");
+    assert_eq!(write_at(&fs, &node, 0, &[b'N'; BLOCK_SIZE]), Ok(BLOCK_SIZE));
+    let live = fs.clone();
+    commit_with(&fs, "publication", true, move || {
+        for i in 0..CREATED {
+            live.create(ROOT_DIR, &name(i), NewNode::Regular { attrs: InodeAttrs::new(0o100644, 0, 0) }).unwrap();
+        }
+    });
+    measurement::take_materialized();
+    let visits = crate::block::cache::measurement::discard_visits();
+    assert_eq!(fs.getattr(node.ino).unwrap().size, BLOCK_SIZE as u64);
+    let steps = measurement::take_materialized();
+    let retired = crate::block::cache::measurement::discard_visits() - visits;
+    assert!(steps <= MAX_TRANSITION_STEPS && retired == 0,
+        "the first call after install did {steps} transition steps and {retired} cache retirement visits");
+    assert!((0..CREATED).all(|i| fs.lookup(ROOT_DIR, &name(i)).is_ok()), "a change made while N was frozen is missing");
+    assert!(read_at(&fs, &node, 0, BLOCK_SIZE) == [b'N'; BLOCK_SIZE], "N's bytes are missing after install");
+    fs.fsync(&node, false).unwrap();
+    let (_, cold) = mount(disk.image(), false, 2_415_156_049);
+    assert!((0..CREATED).all(|i| cold.lookup(ROOT_DIR, &name(i)).is_ok()), "a change is missing from the cold image");
+    assert!(read_at(&cold, &open(&cold, b"file"), 0, BLOCK_SIZE) == [b'N'; BLOCK_SIZE]);
+}

@@ -43,7 +43,11 @@ pub mod measurement {
     std::thread_local! {
         static COMMITS: core::cell::Cell<[u64; 3]> = const { core::cell::Cell::new([0; 3]) };
         static EVENTS: core::cell::RefCell<Option<Vec<Event>>> = const { core::cell::RefCell::new(None) };
+        static MATERIALIZED: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
     }
+    /// Replayed changes and refreshed inodes since the last take (x11c M2).
+    pub fn take_materialized() -> u64 { MATERIALIZED.with(|n| n.replace(0)) }
+    pub(super) fn materialized() { MATERIALIZED.with(|n| n.set(n.get() + 1)); }
     // Host-only observations for coordinator E24 ledger 544. Disabled unless
     // the cost replay explicitly takes events; no guest code is generated.
     #[derive(Debug)]
@@ -766,6 +770,7 @@ impl<W: Wait> MountState<W> {
             let mut failed = None;
             for change in log {
                 preemption_point();
+                #[cfg(test)] measurement::materialized();
                 if let Err(error) = change.replay(&mut next) {
                     failed = Some(error);
                     break;
@@ -781,6 +786,7 @@ impl<W: Wait> MountState<W> {
         }
         for ino in core::mem::take(&mut self.refresh) {
             preemption_point();
+            #[cfg(test)] measurement::materialized();
             if let Some(node) = self.nodes.get(&ino).and_then(|entry| entry.node.upgrade()) {
                 if let Ok(inode) = self.files.inode(ino) {
                     node.size.store(inode.size, Ordering::Release);
