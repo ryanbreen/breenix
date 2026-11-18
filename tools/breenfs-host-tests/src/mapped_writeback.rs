@@ -311,3 +311,88 @@ fn healthy_cache_returns_to_baseline_after_unmap_and_close() {
     }
     fs.shutdown("healthy-cache-cleanup", u64::MAX).unwrap();
 }
+
+// E24 coordinator ledger 558(x4): one publication for a whole worker pass,
+// including passes crossing mapping boundaries; v's eviction repair stands.
+#[test]
+fn mapped_4004_pages_batch_publication_and_settle_within_page_budget() {
+    use crate::memory::file_map::{bind_host, EVICT_BUDGET};
+    const SHAPE: [usize; 8] = [1, 1, 1, 1, 1000, 1000, 1000, 1000];
+    const TOTAL: usize = 4004;
+    assert_eq!(SHAPE.iter().sum::<usize>(), TOTAL);
+    let started = std::time::Instant::now();
+    let disk = Arc::new(Disk(HostMutex::new(vec![0; 64 * 1024 * 1024])));
+    let sb = Superblock { fs_uuid: [0x84; 16], generation: 1, slot: 1,
+        total_blocks: 16384, global_reserve: 4096, next_root_id: 2,
+        ..Superblock::default() };
+    let mut files = Files::format(super::super::commit::DeviceStore(disk.as_ref()), &sb).unwrap();
+    files.fsync(disk.as_ref(), &mut Committer::format(sb)).unwrap();
+    drop(files);
+    let fs = BreenFs::mount_writable(disk.clone(), Arc::new(BufferCache::new(NoWait)), 84, 1).unwrap();
+    fs.init_service().unwrap();
+    let mut nodes = Vec::new();
+    for (index, pages) in SHAPE.into_iter().enumerate() {
+        let ino = fs.create(2, format!("map-{index}").as_bytes(), NewNode::Regular {
+            attrs: InodeAttrs::new(0o100600, 0, 0),
+        }).unwrap();
+        let node = fs.open(ino).unwrap();
+        fs.resize(&node, (pages * BLOCK_SIZE) as u64, false, &|_| Ok(())).unwrap();
+        nodes.push(node);
+    }
+    fs.fsync(&nodes[0], false).unwrap();
+    let maps: Vec<_> = nodes.iter().map(|node| node.map.clone()).collect();
+    let weak: Vec<_> = nodes.iter().map(Arc::downgrade).collect();
+    let inos: Vec<_> = nodes.iter().map(|node| node.ino).collect();
+    let counts = || maps.iter().fold((0, 0, 0), |sum, map| {
+        let n = map.cache_counts(); (sum.0 + n.0, sum.1 + n.1, sum.2 + n.2)
+    });
+    let baseline = counts();
+    assert_eq!(baseline, (0, 0, 0));
+    for (index, (node, pages)) in nodes.iter().zip(SHAPE).enumerate() {
+        let binding = bind_host(node.clone(), (pages * BLOCK_SIZE) as u64, true, true, true);
+        for page in 0..pages {
+            binding.store((page * BLOCK_SIZE) as u64, (index + 1) as u8).unwrap();
+        }
+        drop(binding); // Production Binding::drop requests writeback/eviction.
+    }
+    drop(nodes); // Close all external VNode handles before settle.
+    assert_eq!(counts(), (TOTAL, TOTAL, 0));
+    measurement::take_work();
+    // Each page needs one writeback and one eviction, sharing EVICT_BUDGET.
+    let max_passes = (2 * TOTAL).div_ceil(EVICT_BUDGET);
+    let mut publications = Vec::new();
+    let mut remaining = counts();
+    for pass in 1..=max_passes {
+        let before = remaining;
+        fs.commit_due(0).unwrap(); // Production worker pass, no foreground sync.
+        let work = measurement::take_work();
+        remaining = counts();
+        publications.push(work[2]);
+        let consumed = before.0 - remaining.0 + before.1 - remaining.1;
+        eprintln!("mapped-batch pass={pass} publications={} resident={} dirty={} consumed={consumed}",
+            work[2], remaining.0, remaining.1);
+        assert!(consumed <= EVICT_BUDGET, "worker exceeded its shared page budget");
+        assert_eq!(fs.read_only(), Ok(false), "healthy mount latched during settle");
+        if remaining == baseline { break; }
+        assert!(consumed > 0, "worker lost writeback/eviction progress");
+    }
+    eprintln!("mapped-batch total={TOTAL} passes={} bound={max_passes} publications={} max_per_pass={} seconds={:.3}",
+        publications.len(), publications.iter().sum::<u64>(), publications.iter().max().unwrap(),
+        started.elapsed().as_secs_f64());
+    assert_eq!(remaining, baseline, "cache exceeded budget-derived settle bound");
+    assert!(weak.iter().all(|node| node.upgrade().is_none()), "closed VNode retained by mapping registry");
+    // Independent durable readback makes discarding dirty pages fail too.
+    let observer = BreenFs::mount(disk, Arc::new(BufferCache::new(NoWait)), 85, 1).unwrap();
+    for (index, (ino, pages)) in inos.into_iter().zip(SHAPE).enumerate() {
+        let node = observer.open(ino).unwrap();
+        let mut bytes = vec![0xff; pages * BLOCK_SIZE];
+        assert_eq!(observer.read(&node, 0, &mut bytes).unwrap(), bytes.len());
+        for page in bytes.chunks_exact(BLOCK_SIZE) {
+            assert_eq!(page[0], (index + 1) as u8);
+            assert!(page[1..].iter().all(|byte| *byte == 0));
+        }
+    }
+    assert!(publications.iter().all(|count| *count <= 1),
+        "worker published per mapping/chunk instead of once per pass: {publications:?}");
+    fs.shutdown("mapped-batch-cleanup", u64::MAX).unwrap();
+}
