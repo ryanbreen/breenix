@@ -45,6 +45,7 @@ struct BindingRec {
     leaves: Vec<(u64, PhysFrame)>,
 }
 impl BindingRec {
+    fn writable_shared(&self) -> bool { self.shared && self.writable }
     fn covers(&self, index: u64) -> bool {
         self.pgoff <= index && index - self.pgoff < self.pages
     }
@@ -114,6 +115,11 @@ impl MapState {
             });
         Ok(Self { mapped_size: HostMappedSize(state.clone()), state })
     }
+    pub fn cache_counts(&self) -> (usize, usize, usize) {
+        let inner = self.state.inner.lock();
+        (inner.pages.len(), inner.pages.entries.iter().filter(|(_, p)| p.dirty).count(),
+            inner.bindings.len())
+    }
     pub fn may_change_exec_image(&self) -> bool {
         self.has_dirty()
     }
@@ -178,17 +184,6 @@ pub struct HostBinding(Arc<HostBindingOwner>);
 struct HostBindingOwner { node: Arc<VNode>, id: u64 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum HostFault { Sigbus }
-impl Drop for HostBindingOwner {
-    fn drop(&mut self) {
-        let map = &self.node.map;
-        let mut inner = map.state.inner.lock();
-        inner.bindings.retain(|rec| rec.id != self.id);
-        inner.writable_shared = inner.bindings.iter().filter(|rec| rec.shared && rec.writable).count();
-        map.refresh(&inner);
-        drop(inner);
-        map.abandon_population();
-    }
-}
 pub fn bind_host(node: Arc<VNode>, length: u64, shared: bool, writable: bool, populate: bool) -> HostBinding {
     let io = node.filesystem.mapping_io(&node).unwrap();
     if populate {

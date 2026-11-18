@@ -37,6 +37,11 @@ fn main() {
         out.push_str(&item(&source, marker));
         out.push('\n');
     }
+    // Binding lifetime is production code; only the host owner's type/name differ.
+    out.push_str(&item(&source, "impl Drop for Binding")
+        .replace("impl Drop for Binding", "impl Drop for HostBindingOwner")
+        .replace("self.handle", "self.node"));
+    out.push('\n');
     out.push_str("impl MapInner {\n");
     for marker in ["    fn bound(", "    fn holes(", "    fn reserve_poison(", "    fn poison("] {
         out.push_str(&item(&source, marker));

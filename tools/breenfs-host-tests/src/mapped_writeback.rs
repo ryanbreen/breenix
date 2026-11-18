@@ -253,3 +253,61 @@ fn minor_stopped_shutdown_retry_releases_mapping_pins() {
     fs.shutdown("minor-timeout-retry", u64::MAX).unwrap();
     assert!(fs.inner.state.lock().nodes.values().all(|entry| entry.mapped.is_none()));
 }
+
+// E24 coordinator ledger 531(v): healthy cache retirement after UI-style
+// shared stores, final munmap and close, crossing the 64-page service budget.
+#[test]
+fn healthy_cache_returns_to_baseline_after_unmap_and_close() {
+    use crate::memory::file_map::{bind_host, EVICT_BUDGET};
+    let (fs, disk, first) = fixture();
+    fs.resize(&first, 64 * 4096, false, &|_| Ok(())).unwrap();
+    let ino = fs.create(2, b"second", NewNode::Regular {
+        attrs: InodeAttrs::new(0o100600, 0, 0),
+    }).unwrap();
+    let second = fs.open(ino).unwrap();
+    fs.resize(&second, 36 * 4096, false, &|_| Ok(())).unwrap();
+    fs.fsync(&second, false).unwrap();
+    let nodes = [first, second];
+    let maps = [nodes[0].map.clone(), nodes[1].map.clone()];
+    let weak = [Arc::downgrade(&nodes[0]), Arc::downgrade(&nodes[1])];
+    let inos = [nodes[0].ino, nodes[1].ino];
+    let baseline: usize = maps.iter().map(|m| m.cache_counts().0).sum();
+    assert_eq!(baseline, 0);
+    for (node, pages) in nodes.iter().zip([64, 36]) {
+        let binding = bind_host(node.clone(), pages * 4096, true, true, true);
+        for page in 0..pages { binding.store(page * 4096, 0x59).unwrap(); }
+        // Bound pages remain observable even when explicitly considered for eviction.
+        let mut budget = EVICT_BUDGET;
+        assert!(!node.map.evict(&mut budget));
+        assert_eq!(budget, EVICT_BUDGET);
+        assert_eq!(node.map.cache_counts(), (pages as usize, pages as usize, 1));
+        drop(binding); // Compiles Binding::drop from file_map.rs.
+    }
+    drop(nodes); // Only NodeState.mapped can now retain these VNodes.
+    assert!(maps.iter().all(|m| m.cache_counts().2 == 0));
+    // Deterministic settle through the production worker, without a foreground
+    // fsync/umount. Four budgets cover 100 writes + 100 evictions.
+    for pass in 0..4 {
+        fs.commit_due(0).unwrap();
+        eprintln!("healthy settle pass={pass} cache={:?}", maps.iter()
+            .map(|m| (m.cache_counts(), m.eviction_pending(), m.writeback_pending()))
+            .collect::<Vec<_>>());
+        assert_eq!(fs.read_only(), Ok(false));
+    }
+    assert!(maps.iter().all(|m| !m.has_dirty()), "settle left dirty pages");
+    assert_eq!(maps.iter().map(|m| m.cache_counts().0).sum::<usize>(), baseline,
+        "clean unbound pages survived service_mappings settle");
+    assert!(weak.iter().all(|n| n.upgrade().is_none()), "NodeState.mapped kept a cache owner");
+    // Cache release must follow durable writeback, rather than discard stores.
+    let observer = BreenFs::mount(disk, Arc::new(BufferCache::new(NoWait)), 73, 1).unwrap();
+    for (ino, pages) in inos.into_iter().zip([64, 36]) {
+        let node = observer.open(ino).unwrap();
+        let mut bytes = vec![0; pages * 4096];
+        assert_eq!(observer.read(&node, 0, &mut bytes).unwrap(), bytes.len());
+        for page in bytes.chunks(4096) {
+            assert_eq!(page[0], 0x59);
+            assert!(page[1..].iter().all(|b| *b == 0));
+        }
+    }
+    fs.shutdown("healthy-cache-cleanup", u64::MAX).unwrap();
+}
