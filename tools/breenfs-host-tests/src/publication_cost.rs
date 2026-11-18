@@ -256,7 +256,11 @@ fn publication(operations: usize) {
         &after,
     )
     .unwrap();
-    assert_eq!(counted.view_records, space_records.len());
+    // The next view refreshes the sole changed ROOT, rather than materializing
+    // SPACE. Independently compare its full FS contents with the written tree.
+    assert_eq!(counted.view_records, 1);
+    let visible: BTreeMap<_, _> = fs.inner.state.lock().files.items().unwrap().into_iter().collect();
+    assert_eq!(visible, records(&new, 1));
     let mut unchanged = 0;
     let mut copied_unchanged = Vec::new();
     for (&addr, bytes) in &new {

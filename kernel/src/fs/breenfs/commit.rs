@@ -5,7 +5,7 @@ use super::{
     btree::{self, NodeStore},
     crc32c,
     format::{
-        self, BlockPtr, Free, InternalEntry, LeafItemHeader, NodeHeader, Ref, Root, Superblock,
+        self, BlockPtr, Free, InternalEntry, LeafItemHeader, NodeHeader, Root, Superblock,
         BLOCK_SIZE, NODE_SIZE,
     },
     txn::Transaction,
@@ -248,33 +248,31 @@ impl Committer {
             base: txn.view(),
             nodes: &filled,
         };
-        let entries = super::recover::space_items(&view, &sb)?;
+        // FREE has its own key range (design 2.4); unchanged REF records do
+        // not participate in this generation's accounting or data validation.
+        let free = btree::range(&view, sb.space_root,
+            format::Key { object: 0xffff_ffff_ffff_ff20, item_type: format::FREE, offset: 0 },
+            format::Key { object: 0xffff_ffff_ffff_ff20, item_type: format::FREE, offset: u64::MAX })?;
         sb.free_blocks = 0;
-        let mut expected_data = BTreeSet::new();
-        for (key, bytes) in entries {
+        for (_, bytes) in free {
             preemption_point();
-            if key.item_type == format::FREE {
-                sb.free_blocks = sb
-                    .free_blocks
-                    .checked_add(Free::decode(&bytes)?.length)
-                    .ok_or(Error::EIO)?;
-            } else if key.item_type == format::REF {
-                let r = Ref::decode(&bytes)?;
-                if r.kind == 3 && r.alloc_generation == generation {
-                    let bytes = data.get(&key.object).ok_or(Error::EIO)?;
-                    if key.offset != r.crcs.len() as u64 || bytes.len() != r.crcs.len() * BLOCK_SIZE
-                    {
-                        return Err(Error::EIO);
-                    }
-                    for (chunk, crc) in bytes.chunks_exact(BLOCK_SIZE).zip(r.crcs) {
-                        preemption_point();
-                        if crc32c::checksum(chunk) != crc {
-                            return Err(Error::EIO);
-                        }
-                    }
-                    expected_data.insert(key.object);
-                }
+            sb.free_blocks = sb.free_blocks.checked_add(Free::decode(&bytes)?.length).ok_or(Error::EIO)?;
+        }
+        let mut expected_data = BTreeSet::new();
+        for (start, length) in txn.live_data() {
+            preemption_point();
+            let r = super::space::reference(&view, sb.space_root, start, length)
+                .map_err(|_| Error::EIO)?.ok_or(Error::EIO)?;
+            let bytes = data.get(&start).ok_or(Error::EIO)?;
+            if r.kind != 3 || r.alloc_generation != generation
+                || length != r.crcs.len() as u64 || bytes.len() != r.crcs.len() * BLOCK_SIZE {
+                return Err(Error::EIO);
             }
+            for (chunk, crc) in bytes.chunks_exact(BLOCK_SIZE).zip(r.crcs) {
+                preemption_point();
+                if crc32c::checksum(chunk) != crc { return Err(Error::EIO); }
+            }
+            expected_data.insert(start);
         }
         if expected_data.len() != data.len() {
             return Err(Error::EIO);

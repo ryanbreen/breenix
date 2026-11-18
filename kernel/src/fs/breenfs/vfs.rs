@@ -1480,9 +1480,8 @@ impl<W: Wait + 'static> BreenFs<W> {
                 .cache
                 .store(self.inner.device.clone(), sb)
                 .with_pending(&prepared);
-            match Files::new(store, sb, self.inner.root_id, true) {
-                Ok(files) => {
-                    state.files = files;
+            match state.files.next_generation(store, sb) {
+                Ok(()) => {
                     state.fresh = true;
                 }
                 Err(error) => {

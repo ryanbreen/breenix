@@ -161,6 +161,7 @@ pub struct Transaction<'a, S> {
     scratch_next: u64,
     allocated: BTreeSet<u64>,
     allocated_blocks: u64,
+    data_allocations: BTreeMap<u64, u64>,
     counts: BTreeMap<(u64, u64), u32>,
     deferred: VecDeque<Change>,
     failure: Option<Error>,
@@ -249,6 +250,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             scratch_next: u64::MAX - 3,
             allocated: BTreeSet::from([20]),
             allocated_blocks: 4,
+            data_allocations: BTreeMap::new(),
             counts: BTreeMap::from([((20, 4), 1)]),
             deferred: VecDeque::new(),
             failure: None,
@@ -307,6 +309,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             scratch_next: u64::MAX - 3,
             allocated: BTreeSet::new(),
             allocated_blocks: 0,
+            data_allocations: BTreeMap::new(),
             counts: BTreeMap::new(),
             deferred: VecDeque::new(),
             failure: None,
@@ -443,6 +446,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             self.deferred.push_back(Change::PromotePending);
         }
         self.counts.insert((start, length), 1);
+        if kind == Kind::Data { self.data_allocations.insert(start, length); }
         self.allocated_blocks = self.allocated_blocks.checked_add(length).ok_or(Error::Invalid)?;
         self.allocated.insert(start);
         self.deferred.push_back(Change::Allocate {
@@ -504,6 +508,20 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
     }
     pub fn dead_nodes(&self) -> &DeadNodes {
         &self.dead
+    }
+    pub(crate) fn take_dead_nodes(&mut self) -> DeadNodes {
+        core::mem::take(&mut self.dead)
+    }
+    pub(crate) fn data_is_live(&self, start: u64) -> bool {
+        self.data_allocations.get(&start).is_some_and(|&length|
+            self.counts.get(&(start, length)).is_some_and(|&count| count != 0))
+    }
+    /// Allocations made by this generation that still have an incoming REF.
+    pub(crate) fn live_data(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
+        self.data_allocations.iter().filter_map(|(&start, &length)| {
+            preemption_point();
+            self.data_is_live(start).then_some((start, length))
+        })
     }
     pub fn dead_count(&self) -> u64 {
         self.dead.count()

@@ -93,6 +93,7 @@ pub struct Files<'a, S: NodeStore + 'a> {
     root_id: u64,
     roots: BTreeMap<u64, Root>,
     next_root_id: u64,
+    changed_roots: BTreeSet<u64>,
     writable: bool,
     hash_key: [u8; 16],
     // Non-private extents retain their generation's immutable REF tree. New
@@ -123,6 +124,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             root_id: 1,
             roots: BTreeMap::new(),
             next_root_id: sb.next_root_id,
+            changed_roots: BTreeSet::new(),
             writable: true,
             hash_key: sb.dirhash_key,
             space_root: sb.space_root,
@@ -184,6 +186,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             root_id,
             roots,
             next_root_id: sb.next_root_id,
+            changed_roots: BTreeSet::new(),
             writable,
             hash_key: sb.dirhash_key,
             space_root: sb.space_root,
@@ -191,6 +194,29 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             open_inodes: BTreeSet::new(),
             orphan_count: 0,
         })
+    }
+    /// Continue from this generation's COW state. The immutable node store
+    /// supplies filled pointers; ROOT and DEAD indexes retain their custody.
+    /// No mount/recovery scan belongs on this publication path.
+    pub fn next_generation(&mut self, store: S, sb: &Superblock) -> Result<(), Error> {
+        let generation = sb.generation.checked_add(1).ok_or(Error::EIO)?;
+        #[cfg(test)]
+        super::commit::publication_measurement::files_view(self.changed_roots.len());
+        for &id in &self.changed_roots {
+            preemption_point();
+            let bytes = btree::search(&store, sb.space_root,
+                key(0xffff_ffff_ffff_ff10, format::ROOT, id))?.ok_or(Error::EIO)?;
+            let root = Root::decode(&bytes)?;
+            if id == self.root_id { self.root = root.clone(); }
+            self.roots.insert(id, root);
+        }
+        self.txn = Transaction::new_owned_with_dead(store, sb.space_root, generation,
+            self.txn.take_dead_nodes())?;
+        self.space_root = sb.space_root;
+        self.next_root_id = sb.next_root_id;
+        self.changed_roots.clear();
+        self.orphan_count = 0;
+        Ok(())
     }
     fn require_writable(&self) -> Result<(), Error> {
         if self.writable { Ok(()) } else { Err(Error::EROFS) }
@@ -216,6 +242,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         self.txn.increment(root.root.addr, 4)?;
         self.txn.update_root(id, root.clone())?;
         self.roots.insert(id, root);
+        self.changed_roots.insert(id);
         self.next_root_id = next;
         Ok(id)
     }
@@ -235,6 +262,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         self.txn.release(root.root.addr, 4, true)?;
         self.txn.delete_root(id)?;
         self.roots.remove(&id);
+        self.changed_roots.remove(&id);
         Ok(())
     }
     /// The mount snapshots live VNodes under its mutex; drops perform no I/O.
@@ -1092,16 +1120,14 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         self.reclaim_orphans()?;
         self.txn.promote_pending()?;
         self.txn.update_root(self.root_id, self.root.clone())?;
+        self.changed_roots.insert(self.root_id);
         // A private allocation replaced again within this transaction is PENDING
         // and need not be submitted as data in the commit engine's REF set.
-        let ptr = self.txn.settle()?;
-        let refs = items(&self.txn.view(), ptr)?;
-        let live: BTreeSet<_> = refs
-            .into_iter()
-            .filter(|(k, _)| { preemption_point(); k.item_type == format::REF })
-            .map(|(k, _)| k.object)
-            .collect();
-        self.data.retain(|addr, _| { preemption_point(); live.contains(addr) });
+        self.txn.settle()?;
+        self.data.retain(|addr, _| {
+            preemption_point();
+            self.txn.data_is_live(*addr)
+        });
         Ok((&mut self.txn, &mut self.data))
     }
 }
