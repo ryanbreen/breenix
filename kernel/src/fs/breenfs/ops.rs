@@ -23,6 +23,7 @@ const MAX_FILE_SIZE: u64 = (1u64 << 63) - 4096;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     EIO,
+    Metadata(btree::ReadFailure),
     EROFS,
     EBUSY,
     EPERM,
@@ -44,8 +45,8 @@ impl From<format::Error> for Error {
     }
 }
 impl From<btree::Error> for Error {
-    fn from(_: btree::Error) -> Self {
-        Self::EIO
+    fn from(error: btree::Error) -> Self {
+        match error { btree::Error::Read(failure) => Self::Metadata(failure), _ => Self::EIO }
     }
 }
 impl From<commit::Error> for Error {
@@ -58,6 +59,7 @@ impl From<txn::Error> for Error {
         match e {
             txn::Error::Space(super::space::Error::ENOSPC) => Self::ENOSPC,
             txn::Error::Space(super::space::Error::EMLINK) => Self::EMLINK,
+            txn::Error::Tree(error) | txn::Error::Space(super::space::Error::Tree(error)) => error.into(),
             _ => Self::EIO,
         }
     }

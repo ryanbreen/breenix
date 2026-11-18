@@ -27,7 +27,7 @@ pub struct WriterAdapter {
 fn error(e: ops::Error) -> Error {
     use ops::Error as E;
     let errno = match e {
-        E::EIO => Errno::EIO,
+        E::EIO | E::Metadata(_) => Errno::EIO,
         E::EROFS => Errno::EROFS,
         E::EBUSY => Errno::EBUSY,
         E::EPERM => Errno::EPERM,

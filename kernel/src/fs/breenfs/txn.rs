@@ -887,7 +887,10 @@ struct EditStore<'t, 'a, S> {
 }
 impl<S: NodeStore> EditStore<'_, '_, S> {
     fn bridge<T>(&mut self, result: Result<T, Error>) -> Result<T, btree::Error> {
-        self.txn.result(result).map_err(|_| btree::Error::Store)
+        self.txn.result(result).map_err(|error| match error {
+            Error::Tree(error) | Error::Space(space::Error::Tree(error)) => error,
+            _ => btree::Error::Store,
+        })
     }
 }
 impl<S: NodeStore> NodeStore for EditStore<'_, '_, S> {

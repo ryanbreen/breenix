@@ -213,6 +213,7 @@ struct MountState<W: Wait + 'static> {
     durable: Superblock,
     failed: bool,
     failure: Option<(&'static str, i32)>,
+    metadata_error: Option<super::btree::ReadFailure>,
     scrub: Option<Scrub>,
     scrub_state: u32,
     #[cfg(not(test))]
@@ -408,8 +409,13 @@ impl<W: Wait> MountState<W> {
         if self.failure.is_some() { return; }
         self.failure = Some((branch, error.0));
         self.failed = true;
-        log::error!("[breenfs] failure branch={} errno={} generation={}; latched read-only",
-            branch, error.0, self.durable.generation);
+        if let Some(failure) = self.metadata_error {
+            log::error!("[breenfs] failure branch={} errno={} generation={} metadata_cause={} metadata_node={}; latched read-only",
+                branch, error.0, self.durable.generation, failure.cause.name(), failure.addr);
+        } else {
+            log::error!("[breenfs] failure branch={} errno={} generation={}; latched read-only",
+                branch, error.0, self.durable.generation);
+        }
         if let Some(committer) = self.committer.as_mut() {
             committer.fail();
         }
@@ -420,10 +426,19 @@ impl<W: Wait> MountState<W> {
         self.signal.wake();
     }
     fn observed<T>(&mut self, result: Result<T, ops::Error>) -> Result<T, Errno> {
-        if matches!(result, Err(ops::Error::EIO)) {
+        if let Err(error) = result.as_ref() { self.record_metadata(*error); }
+        if result.as_ref().is_err_and(|error| errno(*error) == Errno(EIO)) {
             self.fail("observed-metadata", Errno(EIO));
         }
         result.map_err(errno)
+    }
+    fn record_metadata(&mut self, error: ops::Error) {
+        if self.failure.is_none() {
+            self.metadata_error = match error {
+                ops::Error::Metadata(failure) => Some(failure),
+                _ => None,
+            };
+        }
     }
     fn read_result<T>(&mut self, result: Result<T, ReadError>) -> Result<T, Errno> {
         match result {
@@ -438,7 +453,8 @@ impl<W: Wait> MountState<W> {
         // A storage/allocation failure may have interrupted a multi-item edit.
         // Do not publish that transaction. Reservation refusals return before
         // mutation via admission; an ENOSPC here is still a bug.
-        if matches!(result, Err(ops::Error::EIO | ops::Error::ENOSPC)) {
+        if let Err(error) = result.as_ref() { self.record_metadata(*error); }
+        if result.as_ref().is_err_and(|error| matches!(errno(*error).0, EIO | ENOSPC)) {
             self.fail("edited", errno(result.as_ref().err().copied().expect("edit error")));
         }
         for (&ino, entry) in &self.nodes {
@@ -741,6 +757,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 durable,
                 failed: false,
                 failure: None,
+                metadata_error: None,
                 scrub: None,
                 scrub_state: SCRUB_IDLE,
                 #[cfg(not(test))]
@@ -999,17 +1016,20 @@ impl<W: Wait + 'static> BreenFs<W> {
         } = &mut *state;
         let dirty = &mut nodes.entry(node.ino).or_default().dirty;
         let before = dirty.bytes();
-        let mut bad_metadata = false;
+        let mut bad_metadata = None;
         let result = dirty.write(offset, &bytes[..length], |off, page| {
             files.read_verified(&self.data_reader(pending.clone()), node.ino, off, page)
                 .map_err(|error| {
-                    bad_metadata = matches!(error, ReadError::Metadata(ops::Error::EIO));
+                    if let ReadError::Metadata(error) = error { bad_metadata = Some(error); }
                     errno(error.error())
                 })?;
             Ok(())
         });
         *dirty_bytes += dirty.bytes() - before;
-        if bad_metadata { state.fail("write-read-metadata", Errno(EIO)); }
+        if let Some(error) = bad_metadata {
+            state.record_metadata(error);
+            if errno(error) == Errno(EIO) { state.fail("write-read-metadata", Errno(EIO)); }
+        }
         state.finish_data(node.ino, grant, result)?;
         inode.size = inode.size.max(end);
         inode.mtime = now();
@@ -1791,6 +1811,10 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 state.durable.last_scrub_errors
             )
             .map_err(|_| Errno(ENOMEM))?;
+            if let Some(failure) = state.metadata_error {
+                writeln!(text, "metadata_cause={} metadata_node={}", failure.cause.name(), failure.addr)
+                    .map_err(|_| Errno(ENOMEM))?;
+            }
         }
         Ok(())
     }
@@ -2237,17 +2261,20 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             } = &mut *state;
             let dirty = &mut nodes.entry(node.ino).or_default().dirty;
             let before = dirty.bytes();
-            let mut bad_metadata = false;
+            let mut bad_metadata = None;
             let result = dirty.shrink(size, mapped_tail, |off, page| {
                 files.read_verified(&self.data_reader(pending.clone()), node.ino, off, page)
                     .map_err(|error| {
-                        bad_metadata = matches!(error, ReadError::Metadata(ops::Error::EIO));
+                        if let ReadError::Metadata(error) = error { bad_metadata = Some(error); }
                         errno(error.error())
                     })?;
                 Ok(())
             });
             *dirty_bytes = *dirty_bytes - before + dirty.bytes();
-            if bad_metadata { state.fail("resize-read-metadata", Errno(EIO)); }
+            if let Some(error) = bad_metadata {
+            state.record_metadata(error);
+            if errno(error) == Errno(EIO) { state.fail("resize-read-metadata", Errno(EIO)); }
+        }
             state.finish_data(node.ino, grant, result)?;
             let result = state.files.trim_mappings(node.ino, size);
             inode.nblocks = state.edited(result)?;
@@ -2313,17 +2340,20 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         } = &mut *state;
         let dirty = &mut nodes.entry(node.ino).or_default().dirty;
         let before = dirty.bytes();
-        let mut bad_metadata = false;
+        let mut bad_metadata = None;
         let result = dirty.write(offset, &bounce[..length], |off, page| {
             files.read_verified(&self.data_reader(pending.clone()), node.ino, off, page)
                 .map_err(|error| {
-                    bad_metadata = matches!(error, ReadError::Metadata(ops::Error::EIO));
+                    if let ReadError::Metadata(error) = error { bad_metadata = Some(error); }
                     errno(error.error())
                 })?;
             Ok(())
         });
         *dirty_bytes += dirty.bytes() - before;
-        if bad_metadata { state.fail("writeback-read-metadata", Errno(EIO)); }
+        if let Some(error) = bad_metadata {
+            state.record_metadata(error);
+            if errno(error) == Errno(EIO) { state.fail("writeback-read-metadata", Errno(EIO)); }
+        }
         state.finish_data(node.ino, grant, result)?;
         inode.mtime = now();
         inode.ctime = inode.mtime;
@@ -2643,7 +2673,7 @@ fn teardown_result(name: &str, result: Result<(), Errno>) -> Result<(), Errno> {
 
 fn errno(error: ops::Error) -> Errno {
     Errno(match error {
-        ops::Error::EIO => EIO,
+        ops::Error::EIO | ops::Error::Metadata(_) => EIO,
         ops::Error::EROFS => EROFS,
         ops::Error::EBUSY => EBUSY,
         ops::Error::EPERM => EPERM,

@@ -56,10 +56,36 @@ pub mod measurement {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     Store,
+    Read(ReadFailure),
     Format(format::Error),
     InvalidNode,
     PayloadTooLarge,
     HeightLimit,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReadCause { Device, Verification, Allocation }
+impl ReadCause {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Device => "device-read",
+            Self::Verification => "verification",
+            Self::Allocation => "allocation",
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReadFailure {
+    pub cause: ReadCause,
+    pub addr: u64,
+}
+impl Error {
+    pub fn at_node(self, addr: u64) -> Self {
+        match self {
+            Self::Read(_) => self,
+            _ => Self::Read(ReadFailure { cause: ReadCause::Verification, addr }),
+        }
+    }
 }
 impl From<format::Error> for Error {
     fn from(error: format::Error) -> Self {
@@ -115,7 +141,7 @@ fn read_node<S: NodeStore>(
             && (lower.is_some_and(|k| node.key(0) < k)
                 || upper.is_some_and(|k| node.key(node.len() - 1) >= k)))
     {
-        return Err(Error::InvalidNode);
+        return Err(Error::InvalidNode.at_node(ptr.addr));
     }
     Ok(node)
 }
