@@ -998,7 +998,9 @@ fn boot_mounts_probe_by_magic() {
             for call in ["mount_root", "mount_home", "init_services"] {
                 if !b.calls.iter().any(|c| c == call) { problems.push(format!("{file} missing {call}")); }
             }
-            for line in ["ext2 root filesystem mounted", "ext2 home filesystem mounted at /home", "EXT2_MOUNT"] {
+            // E24 ledger 503: the root label follows the mounted backend.
+            for line in ["{} root filesystem mounted", "kernel::fs::vfs::root_kind()",
+                "ext2 home filesystem mounted at /home", "EXT2_MOUNT"] {
                 assert!(source.contains(line), "{file} lost {line}");
             }
         }
