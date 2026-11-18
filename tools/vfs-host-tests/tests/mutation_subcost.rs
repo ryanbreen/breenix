@@ -82,7 +82,7 @@ fn production_mutation_subcosts_cover_cleanup_and_publication() {
         && line.contains("active=1")), "{lines:?}");
 }
 
-// Coordinator 574(x6): observe real publication and exclusion boundaries.
+// Coordinator 574(x6), extended by 583(x10): real publication/exclusion boundaries.
 #[test]
 fn publication_subspans_are_bounded_and_emitted_only_on_failure() {
     use crate::block::{BlockDevice, BlockError};
@@ -139,6 +139,12 @@ fn publication_subspans_are_bounded_and_emitted_only_on_failure() {
     // Release before asserting, so a failed check cannot leave a worker parked.
     release.send(()).unwrap();
     writer.join().unwrap();
+    // Preparation has released mount exclusion before the device flush parks.
+    // These are production spans, consumed by the same failure-only reader.
+    for (phase, count) in [("retain-open", 3), ("apply-touches", 1),
+        ("drain-dirty", 1), ("prepare-reap", 1), ("cleanup", 1), ("mount-excluded", 1)] {
+        assert_eq!(counters(&held, "commit", phase), (count, count), "{phase}");
+    }
     assert_eq!(counters(&held, "commit", "prepare-files"), (1, 1));
     assert_eq!(counters(&held, "commit", "next-files-view"), (1, 1));
     assert_eq!(counters(&held, "commit", "write-cached"), (1, 0));
@@ -147,12 +153,23 @@ fn publication_subspans_are_bounded_and_emitted_only_on_failure() {
         || panic!("success must not read or format observations")).is_empty());
     let lines = baseline.records("libc", "dirent-glob/readdir-many", true,
         || Some(observations::Snapshot::parse(&held)));
-    for phase in ["prepare-files", "next-files-view", "write-cached", "device-flush"] {
+    for phase in ["prepare-files", "next-files-view", "write-cached", "device-flush",
+        "retain-open", "apply-touches", "drain-dirty", "prepare-reap", "cleanup", "mount-excluded"] {
         assert_eq!(lines.iter().filter(|l| l.contains(&format!("op=vfs-commit-{phase} "))).count(), 1, "{lines:?}");
     }
     let after = report(fs.as_ref());
     assert_eq!(counters(&after, "commit", "write-cached"), (1, 1));
     assert_eq!(counters(&after, "commit", "device-flush"), (2, 2));
+    assert_eq!(counters(&after, "commit", "completion"), (1, 1));
+    assert_eq!(counters(&after, "commit", "mount-excluded"), (2, 2));
+    let lines = baseline.records("libc", "dirent-glob/readdir-many", true,
+        || Some(observations::Snapshot::parse(&after)));
+    let excluded = lines.iter().find(|l| l.contains("op=vfs-commit-mount-excluded ")).unwrap();
+    let number = |key| excluded.split_whitespace().find_map(|s| s.strip_prefix(key))
+        .unwrap().parse::<u64>().unwrap();
+    // Max is a mount-lifetime high-water mark, not a sum or a case delta.
+    assert!(number("max_ns=") > 0 && number("max_ns=") <= number("total_ns="), "{excluded}");
+    assert_eq!(lines.iter().filter(|l| l.contains("op=vfs-commit-completion ")).count(), 1);
     let read = fs.open(ino).unwrap();
     let mut bytes = [0; 7];
     assert_eq!(fs.read(&read, 0, &mut bytes).unwrap(), 7);
