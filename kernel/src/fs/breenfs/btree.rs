@@ -19,6 +19,8 @@ const MAX_HEIGHT: u8 = 8;
 pub mod measurement {
     extern crate std;
     std::thread_local! {
+        static CHANGES: core::cell::RefCell<Option<alloc::vec::Vec<ChangeWork>>> = const { core::cell::RefCell::new(None) };
+        static REFRESH_CALLS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
         static MUTATIONS: core::cell::Cell<[u64; 8]> = const { core::cell::Cell::new([0; 8]) };
         static DECODES: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
         static ITEMS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
@@ -29,6 +31,16 @@ pub mod measurement {
         };
         static HEIGHT: core::cell::Cell<u8> = const { core::cell::Cell::new(0) };
     }
+    #[derive(Clone, Copy, Debug)]
+    pub struct ChangeWork { pub height: u8, pub reads: usize, pub writes: usize }
+    pub(super) fn changed(work: ChangeWork) {
+        CHANGES.with(|rows| { if let Some(rows) = rows.borrow_mut().as_mut() { rows.push(work); } });
+    }
+    pub fn take_changes() -> alloc::vec::Vec<ChangeWork> {
+        CHANGES.with(|rows| rows.replace(Some(alloc::vec::Vec::new())).unwrap_or_default())
+    }
+    pub(crate) fn refresh_call() { REFRESH_CALLS.with(|n| n.set(n.get() + 1)); }
+    pub fn take_refresh_calls() -> u64 { REFRESH_CALLS.with(|n| n.replace(0)) }
     // Reservations, granted/retained/returned blocks, inode writes, node writes,
     // node reads and VNode refresh visits. Host-only; no guest-path cost.
     pub(crate) fn mutation(index: usize, amount: u64) {
@@ -492,6 +504,10 @@ struct Edit<'a, S> {
     store: &'a mut S,
     writes: BTreeMap<u64, Vec<u8>>,
     empty_root: Option<NodeHeader>,
+    #[cfg(test)]
+    reads: core::cell::Cell<usize>,
+    #[cfg(test)]
+    writes_count: usize,
 }
 impl<S: NodeStore> Edit<'_, S> {
     fn load(
@@ -501,6 +517,8 @@ impl<S: NodeStore> Edit<'_, S> {
         lower: Option<Key>,
         upper: Option<Key>,
     ) -> Result<Node, Error> {
+        #[cfg(test)]
+        self.reads.set(self.reads.get() + 1);
         if let Some(bytes) = self.writes.get(&ptr.addr) {
             decode(bytes, ptr, root, lower, upper)
         } else {
@@ -508,6 +526,8 @@ impl<S: NodeStore> Edit<'_, S> {
         }
     }
     fn save(&mut self, node: &mut Node) -> Result<BlockPtr, Error> {
+        #[cfg(test)]
+        { self.writes_count += 1; }
         let (ptr, bytes) = node.encode()?;
         self.writes.insert(ptr.addr, bytes);
         Ok(ptr)
@@ -685,6 +705,10 @@ fn change<S: NodeStore>(
         store,
         writes: BTreeMap::new(),
         empty_root: None,
+        #[cfg(test)]
+        reads: core::cell::Cell::new(0),
+        #[cfg(test)]
+        writes_count: 0,
     };
     let original = edit.load(*root, true, None, None)?;
     let (links, old) = edit.change(*root, true, None, None, key, value)?;
@@ -731,6 +755,10 @@ fn change<S: NodeStore>(
         edit.store.retire(node.header)?;
         new_root = node.child(0);
     }
+    #[cfg(test)]
+    measurement::changed(measurement::ChangeWork {
+        height: root.level + 1, reads: edit.reads.get(), writes: edit.writes_count,
+    });
     for (addr, bytes) in edit.writes {
         edit.store.put(addr, bytes)?;
     }

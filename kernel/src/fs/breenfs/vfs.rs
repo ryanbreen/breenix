@@ -463,6 +463,8 @@ impl<W: Wait> MountState<W> {
         }
     }
     fn edited<T>(&mut self, result: Result<T, ops::Error>) -> Result<T, Errno> {
+        #[cfg(test)]
+        super::btree::measurement::refresh_call();
         if result.is_ok() { self.fresh = false; }
         self.inodes.entries.fill(None);
         // A storage/allocation failure may have interrupted a multi-item edit.

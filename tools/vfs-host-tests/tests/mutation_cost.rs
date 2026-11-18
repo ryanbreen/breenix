@@ -1,19 +1,19 @@
-//! E24 ledger 531(u): count real cleanup and truncate shapes at production VFS.
+//! E24 ledger 531(u), amended by coordinator ruling 541: count real cleanup and truncate shapes at production VFS.
 use crate::{attrs::InodeAttrs, block::cache::BufferCache,
     breenfs::{btree::measurement as tree, vfs::{BreenFs, measurement as commits}},
     read_conformance::{Disk, NoWait}, vfs::*};
 use std::{sync::{Arc, Mutex}, time::Instant};
 
 #[derive(Clone, Copy, Debug, Default)]
-struct Counts { work: [u64; 8], commits: [u64; 3], decodes: [u64; 4] }
+struct Counts { work: [u64; 8], commits: [u64; 3], decodes: [u64; 4], refresh_calls: u64 }
 impl Counts {
-    fn take() -> Self { Self {work: tree::take_mutations(), commits: commits::take_work(), decodes: tree::take_work()} }
+    fn take() -> Self { Self {work: tree::take_mutations(), commits: commits::take_work(), decodes: tree::take_work(), refresh_calls: tree::take_refresh_calls()} }
     fn add(&mut self, other: Self) {
+        self.refresh_calls += other.refresh_calls;
         for (a,b) in self.work.iter_mut().zip(other.work) { *a += b; }
         for (a,b) in self.commits.iter_mut().zip(other.commits) { *a += b; }
         for (a,b) in self.decodes.iter_mut().zip(other.decodes) { *a += b; }
     }
-    fn flat(self) -> Vec<u64> { self.work.into_iter().chain(self.commits).chain(self.decodes).collect() }
 }
 fn mount() -> Arc<BreenFs<NoWait>> {
     let disk = Arc::new(Disk {bytes: Mutex::new(crate::model::image()), writable: true});
@@ -30,8 +30,26 @@ fn file(fs: &dyn FileSystem, dir: u64, name: &str, bytes: &[u8]) -> Arc<VNode> {
     let node = fs.open(make(fs, dir, name, false)).unwrap();
     write(fs, &node, 0, bytes); node
 }
+// btree::change: per level, change loads the path node and validates its
+// child; rebalance loads that child and at most two siblings (five reads).
+// Root collapse adds at most one load per level plus the initial root load.
+// pack saves at most two nodes; rebalance saves at most two (four writes).
+// Thus ten touches per level, with one extra level for root transitions.
+// Count each load/save, including buffered repeats, not decoded item counts.
+const BTREE_TOUCHES_PER_LEVEL: usize = 10;
 fn operation(label: &str, run: impl FnOnce(), total: &mut Counts, ok: &mut bool) {
-    Counts::take(); run(); let c = Counts::take();
+    Counts::take(); tree::take_changes(); run(); let c = Counts::take();
+    let changes = tree::take_changes();
+    for (i, change) in changes.iter().enumerate() {
+        let bound = BTREE_TOUCHES_PER_LEVEL * (usize::from(change.height) + 1);
+        if change.reads + change.writes > bound {
+            println!("TREE_BOUND {label} item={i} {change:?} bound={bound}");
+            *ok = false;
+        }
+    }
+    println!("TREE_OPERATIONS {label} count={} max_touches={} heights={:?}", changes.len(),
+        changes.iter().map(|c| c.reads + c.writes).max().unwrap_or(0),
+        changes.iter().map(|c| c.height).collect::<std::collections::BTreeSet<_>>());
     println!("MUTATION {label} {c:?}");
     // Explicit fsync/marker publications are measured separately. No cleanup
     // syscall may publish a transaction, including admission-pressure service.
@@ -123,15 +141,21 @@ fn mutation_cost_counts() {
     for (ui, sizes) in [(false, [75,150,300]), (true, [1,2,4])] {
         let mut rows = Vec::new();
         for n in sizes { rows.push(cleanup(ui, n, &mut ok)); }
-        // An affine linear envelope: doubling entries may double each count;
-        // one fixed root path (64 node visits) covers root split/merge boundaries.
-        for pair in rows.windows(2) {
-            for (index,(small,large)) in pair[0].flat().into_iter().zip(pair[1].flat()).enumerate() {
-                if large > 2*small + 64 { println!("SUPERLINEAR ui={ui} counter={index} {small}->{large}"); ok = false; }
-            }
+        // Coordinator 541 withdraws the cross-geometry ratio. Compare exact
+        // visits per edited() call, without rounding or a fixed allowance.
+        for (n, row) in sizes.into_iter().zip(&rows) {
+            println!("REFRESH ui={ui} entries={n} visits={} edits={}", row.work[7], row.refresh_calls);
+        }
+        let small = rows.first().unwrap();
+        let large = rows.last().unwrap();
+        assert!(small.refresh_calls > 0 && large.refresh_calls > 0);
+        if large.work[7] * small.refresh_calls > small.work[7] * large.refresh_calls {
+            println!("REFRESH_GROWTH ui={ui} {}/{} -> {}/{}",
+                small.work[7], small.refresh_calls, large.work[7], large.refresh_calls);
+            ok = false;
         }
     }
     truncate(false, &mut ok); truncate(true, &mut ok);
     assert!(start.elapsed().as_secs_f64() < 60.0, "U32 mutation check exceeded 60 s");
-    assert!(ok, "mutation counts exceed linear work, publish per syscall, or retain truncated data at marker commit");
+    assert!(ok, "mutation refresh visits grow, tree touches exceed height bound, publish per syscall, or retain truncated data at marker commit");
 }
