@@ -61,6 +61,7 @@ fn error(error: KernelErrno) -> Error {
         errno::ENAMETOOLONG => Errno::ENAMETOOLONG,
         errno::ENOTEMPTY => Errno::ENOTEMPTY,
         errno::EIO => Errno::EIO,
+        errno::ENOMEM => Errno::ENOMEM,
         errno::ENOSPC => Errno::ENOSPC,
         other => panic!("unmodeled trait errno {other}"),
     };

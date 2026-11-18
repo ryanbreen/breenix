@@ -111,6 +111,7 @@ pub enum Errno {
     ENAMETOOLONG,
     ENOTEMPTY,
     EIO,
+    ENOMEM,
     EROFS,
     EBUSY,
     ENOSPC,

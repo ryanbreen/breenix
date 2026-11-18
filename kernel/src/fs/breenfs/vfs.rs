@@ -2673,6 +2673,9 @@ fn teardown_result(name: &str, result: Result<(), Errno>) -> Result<(), Errno> {
 
 fn errno(error: ops::Error) -> Errno {
     Errno(match error {
+        ops::Error::Metadata(super::btree::ReadFailure {
+            cause: super::btree::ReadCause::Allocation, ..
+        }) => ENOMEM,
         ops::Error::EIO | ops::Error::Metadata(_) => EIO,
         ops::Error::EROFS => EROFS,
         ops::Error::EBUSY => EBUSY,

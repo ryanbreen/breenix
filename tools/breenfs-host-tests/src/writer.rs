@@ -27,6 +27,9 @@ pub struct WriterAdapter {
 fn error(e: ops::Error) -> Error {
     use ops::Error as E;
     let errno = match e {
+        E::Metadata(crate::btree::ReadFailure {
+            cause: crate::btree::ReadCause::Allocation, ..
+        }) => Errno::ENOMEM,
         E::EIO | E::Metadata(_) => Errno::EIO,
         E::EROFS => Errno::EROFS,
         E::EBUSY => Errno::EBUSY,
