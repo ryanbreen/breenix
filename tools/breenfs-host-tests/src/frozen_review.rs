@@ -165,3 +165,43 @@ fn touch_racing_a_freeze_is_durable_at_the_next_fsync() {
     let mtime = cold.getattr(node.ino).unwrap().times.mtime.sec;
     assert_eq!(mtime, TOUCHED_AT as i64, "the fsync after the touch lost its modification time");
 }
+
+// x11c M3: once N is installed its allocations have left free_blocks, while
+// its grants are released afterwards, one per preemption point (601(4)). A
+// write admitted between install and those releases must not be refused for
+// space that only N's spent grants still claim.
+#[test]
+fn installed_generation_grants_refuse_no_usable_space() {
+    const PAGES: usize = 512;
+    // Admission room left beyond N's grant before N's write. N allocates at
+    // least PAGES blocks, so after install the old accounting has no room.
+    const SLACK: u64 = 256;
+    let files: &[(&[u8], usize, u8)] = &[(b"big", 0, 0), (b"small", 0, 0)];
+    let data = vec![b'N'; PAGES * BLOCK_SIZE];
+    // A probe mount measures N's grant and the free count it starts from.
+    let (grant, free) = {
+        let (_, probe) = mount(image(16384, 64, files), true, 2_415_156_045);
+        assert_eq!(write_at(&probe, &open(&probe, b"big"), 0, &data), Ok(data.len()));
+        let state = probe.inner.state.lock();
+        (state.reservations.outstanding(), state.durable.free_blocks)
+    };
+    let (disk, fs) = mount(image(16384, free - grant - SLACK, files), true, 2_415_156_046);
+    let (big, small) = (open(&fs, b"big"), open(&fs, b"small"));
+    assert_eq!(write_at(&fs, &big, 0, &data), Ok(data.len()));
+    assert_eq!(fs.inner.state.lock().reservations.outstanding(), grant, "N's grant differs from the probe's");
+    let (live, handle) = (fs.clone(), small.clone());
+    let (accounting, written) = commit_with(&fs, "completion", false, move || {
+        let state = live.inner.state.lock();
+        let accounting = (state.durable.free_blocks, state.durable.global_reserve, state.reservations.outstanding());
+        drop(state);
+        (accounting, write_at(&live, &handle, 0, &[b'W'; BLOCK_SIZE]))
+    });
+    let (installed_free, reserve, outstanding) = accounting;
+    assert!(outstanding == grant && installed_free - reserve <= outstanding,
+        "the window does not exercise N's spent grants: {accounting:?}, grant {grant}");
+    assert_eq!(written, Ok(BLOCK_SIZE), "a write after N's install was refused for N's spent grants");
+    fs.fsync(&small, false).unwrap();
+    let (_, cold) = mount(disk.image(), false, 2_415_156_047);
+    assert!(read_at(&cold, &open(&cold, b"small"), 0, BLOCK_SIZE) == [b'W'; BLOCK_SIZE]);
+    assert!(read_at(&cold, &open(&cold, b"big"), 0, data.len()) == data);
+}
