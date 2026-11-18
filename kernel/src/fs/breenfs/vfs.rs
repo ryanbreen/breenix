@@ -911,6 +911,15 @@ impl<W: Wait + 'static> BreenFs<W> {
     }
     fn mutation_lock(&self, op: CostOp) -> MountGuard<'_, MountState<W>> {
         let _wait = self.inner.costs.span(op, CostPhase::Wait);
+        // Keep signal/publication waits separate from foreground exclusion.
+        // The commit worker and mapping writeback have their own wait rows.
+        if !matches!(op, CostOp::Commit | CostOp::Writeback) {
+            return self.foreground_lock();
+        }
+        self.inner.state.lock()
+    }
+    fn foreground_lock(&self) -> MountGuard<'_, MountState<W>> {
+        let _wait = self.inner.costs.span(CostOp::Foreground, CostPhase::MountExclusion);
         self.inner.state.lock()
     }
     fn mutation_wait(&self, op: CostOp, observed: u64, deadline: Option<u64>) {
@@ -1463,10 +1472,13 @@ impl<W: Wait + 'static> BreenFs<W> {
             let MountState {
                 files, committer, ..
             } = &mut *state;
-            let result = committer
-                .as_mut()
-                .ok_or(Errno(EIO))?
-                .prepare_files(self.inner.device.as_ref(), files);
+            let result = {
+                let _prepare = self.inner.costs.span(CostOp::Commit, CostPhase::PrepareFiles);
+                committer
+                    .as_mut()
+                    .ok_or(Errno(EIO))?
+                    .prepare_files(self.inner.device.as_ref(), files)
+            };
             let prepared = match result {
                 Ok(prepared) => Arc::new(prepared),
                 Err(_) => {
@@ -1480,7 +1492,11 @@ impl<W: Wait + 'static> BreenFs<W> {
                 .cache
                 .store(self.inner.device.clone(), sb)
                 .with_pending(&prepared);
-            match state.files.next_generation(store, sb) {
+            let next = {
+                let _next = self.inner.costs.span(CostOp::Commit, CostPhase::NextFilesView);
+                state.files.next_generation(store, sb)
+            };
+            match next {
                 Ok(()) => {
                     state.fresh = true;
                 }
@@ -1522,11 +1538,14 @@ impl<W: Wait + 'static> BreenFs<W> {
             let _wait = self.inner.costs.span(CostOp::Commit, CostPhase::Wait);
             self.inner.mounted_root.device.publication.lock()
         };
-        let result = prepared.write_cached(
-            self.inner.cache.buffers(),
-            self.inner.device.as_ref(),
-            &group,
-        );
+        let result = {
+            let _write = self.inner.costs.span(CostOp::Commit, CostPhase::WriteCached);
+            prepared.write_cached(
+                self.inner.cache.buffers(),
+                &self.inner.costs.device(self.inner.device.as_ref()),
+                &group,
+            )
+        };
         {
             let mut state = self.mutation_lock(CostOp::Commit);
             state
@@ -1752,11 +1771,11 @@ impl<W: Wait + 'static> BreenFs<W> {
             return Err(Errno(EINVAL));
         }
         // Mutation permission precedes any fsync-class work on a read mount.
-        self.inner.state.lock().writable()?;
+        self.foreground_lock().writable()?;
         if create {
             loop {
                 self.sync()?;
-                let mut state = self.inner.state.lock();
+                let mut state = self.foreground_lock();
                 state.writable()?;
                 // A writer may have won admission after the receipt. Close
                 // that generation too: sharing a tree already private in G
@@ -1775,7 +1794,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         }
         let _selection = self.inner.mounted_root.device.selection.lock();
         {
-            let mut state = self.inner.state.lock();
+            let mut state = self.foreground_lock();
             state.writable()?;
             let id = state.roots.iter().find(|(_, (root, _))| root == name)
                 .map(|(&id, _)| id).ok_or(Errno(ENOENT))?;
@@ -1792,7 +1811,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         // Read the current durable SPACE tree even on a frozen reader mounted
         // before the writer's latest snapshot or reaper generation.
         let publication = self.inner.mounted_root.device.publication.lock();
-        let state = self.inner.state.lock();
+        let state = self.foreground_lock();
         let sb = publication.as_ref().unwrap_or(&state.durable);
         let store = self.inner.cache.store(self.inner.device.clone(), sb);
         let items = recover::space_items(&store, sb).map_err(|_| Errno(EIO))?;
@@ -1838,7 +1857,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         Ok(2)
     }
     fn statfs(&self) -> Result<StatFs, Errno> {
-        let state = self.inner.state.lock();
+        let state = self.foreground_lock();
         let sb = &state.durable;
         Ok(StatFs {
             magic: u64::from_le_bytes(*b"BREENFSS"),
@@ -2044,28 +2063,28 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         self.inner.costs.report(self.inner.id, self.inner.root_id, text).map_err(|_| Errno(ENOMEM))
     }
     fn failure(&self) -> Option<(&'static str, i32)> {
-        self.inner.state.lock().failure
+        self.foreground_lock().failure
     }
     fn read_only(&self) -> Result<bool, Errno> {
-        Ok(self.inner.state.lock().read_only())
+        Ok(self.foreground_lock().read_only())
     }
     fn max_file_size(&self) -> Result<u64, Errno> {
         Ok((1 << 63) - 4096)
     }
     fn getattr(&self, ino: u64) -> Result<NodeAttrs, Errno> {
-        self.inner.state.lock().attrs(ino)
+        self.foreground_lock().attrs(ino)
     }
     fn open(&self, ino: u64) -> Result<Arc<VNode>, Errno> {
-        self.open_locked(&mut self.inner.state.lock(), ino)
+        self.open_locked(&mut self.foreground_lock(), ino)
     }
     fn lookup(&self, dir: u64, name: &[u8]) -> Result<u64, Errno> {
-        let mut state = self.inner.state.lock();
+        let mut state = self.foreground_lock();
         let result = state.files.lookup(dir, name);
         state.observed(result)
     }
     fn lookup_open(&self, dir: &VNode, name: &[u8]) -> Result<Arc<VNode>, Errno> {
         self.check_node(dir)?;
-        let mut state = self.inner.state.lock();
+        let mut state = self.foreground_lock();
         let result = state.files.lookup(dir.ino, name);
         let ino = state.observed(result)?;
         self.open_locked(&mut state, ino)
@@ -2090,7 +2109,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         pending.store(seconds.saturating_add(1), Ordering::Release);
     }
     fn parent(&self, dir: u64) -> Result<u64, Errno> {
-        let mut state = self.inner.state.lock();
+        let mut state = self.foreground_lock();
         state.directory(dir)?;
         Ok(state.inode(dir)?.parent)
     }
@@ -2100,7 +2119,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         mut cookie: u64,
         sink: &mut dyn FnMut(DirEnt, u64) -> Result<bool, Errno>,
     ) -> Result<u64, Errno> {
-        let mut state = self.inner.state.lock();
+        let mut state = self.foreground_lock();
         let mut outcome = Ok(());
         let result = state.files.visit_directory_entries(dir, cookie, &mut |next, entry| {
             let accepted = record_kind(entry.kind).and_then(|kind| sink(
@@ -2121,7 +2140,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         self.check_node(node)?;
         let publication = (!self.inner.writable)
             .then(|| self.inner.mounted_root.device.publication.lock());
-        let mut state = self.inner.state.lock();
+        let mut state = self.foreground_lock();
         if let Some(sb) = publication.as_deref().and_then(Option::as_ref)
             .filter(|sb| sb.generation > state.durable.generation)
         {
@@ -2169,7 +2188,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         Ok(length)
     }
     fn readlink(&self, ino: u64) -> Result<Vec<u8>, Errno> {
-        let mut state = self.inner.state.lock();
+        let mut state = self.foreground_lock();
         state.inode(ino)?;
         let result = state.files.readlink(ino);
         state.observed(result)
@@ -2191,7 +2210,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
     }
     fn mapping_io(&self, node: &VNode) -> Result<Box<dyn MappingIo>, Errno> {
         self.check_node(node)?;
-        let mut state = self.inner.state.lock();
+        let mut state = self.foreground_lock();
         let size = state.regular(node.ino)?.size;
         let transfer = Mapping {
             fs: self.clone(),
@@ -2622,7 +2641,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
     fn xattr(&self, ino: u64, op: Xattr<'_>) -> Result<usize, Errno> {
         let mutation = matches!(op, Xattr::Set { .. } | Xattr::Remove { .. });
         let _operation = mutation.then(|| self.inner.costs.span(CostOp::Xattr, CostPhase::Operation));
-        let mut state = if mutation { self.mutation_lock(CostOp::Xattr) } else { self.inner.state.lock() };
+        let mut state = if mutation { self.mutation_lock(CostOp::Xattr) } else { self.foreground_lock() };
         if state.committer.is_none() && matches!(op, Xattr::Set { .. } | Xattr::Remove { .. }) {
             return Err(Errno(EROFS));
         }
@@ -2826,7 +2845,7 @@ impl<W: Wait + 'static> MappingIo for Mapping<W> {
         Ok(())
     }
     fn publish(&self, bind: &mut dyn FnMut(bool) -> Result<(), Errno>) -> Result<(), Errno> {
-        let mut state = self.fs.inner.state.lock();
+        let mut state = self.fs.foreground_lock();
         if self.writable {
             state.writable()?;
         }

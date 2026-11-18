@@ -5,6 +5,9 @@
 use alloc::string::String;
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicU64, Ordering};
+use crate::block::{BlockDevice, BlockError};
+#[cfg(not(test))]
+use crate::block::HardwareDisk;
 
 #[derive(Clone, Copy)]
 pub(super) enum Op {
@@ -20,6 +23,7 @@ pub(super) enum Op {
     Fsync,
     Commit,
     Xattr,
+    Foreground,
 }
 #[derive(Clone, Copy)]
 pub(super) enum Phase {
@@ -28,6 +32,11 @@ pub(super) enum Phase {
     Edit,
     Publication,
     Wait,
+    PrepareFiles,
+    NextFilesView,
+    WriteCached,
+    DeviceFlush,
+    MountExclusion,
 }
 const OPS: &[&str] = &[
     "create",
@@ -42,6 +51,7 @@ const OPS: &[&str] = &[
     "fsync",
     "commit",
     "xattr",
+    "foreground",
 ];
 const PHASES: &[&str] = &[
     "operation",
@@ -49,6 +59,11 @@ const PHASES: &[&str] = &[
     "inode-edit",
     "publication",
     "wait",
+    "prepare-files",
+    "next-files-view",
+    "write-cached",
+    "device-flush",
+    "mount-exclusion",
 ];
 struct Slot {
     started: AtomicU64,
@@ -84,6 +99,9 @@ impl Costs {
         slot.started.fetch_add(1, Ordering::Release);
         Span { slot, start }
     }
+    pub fn device<'a>(&'a self, device: &'a dyn BlockDevice) -> PublicationDevice<'a> {
+        PublicationDevice { device, costs: self }
+    }
     /// Read-only transport through the existing filesystem state report.
     /// Concurrent slots are sampled independently; no mutation lock is taken.
     pub fn report(&self, mount: usize, root: u64, text: &mut String) -> fmt::Result {
@@ -98,6 +116,37 @@ impl Costs {
                 slot.last_start_ns.load(Ordering::Relaxed), slot.last_end_ns.load(Ordering::Relaxed))?;
         }
         Ok(())
+    }
+}
+/// Publication-local view: retain backend identity and native batch calls.
+/// Only the synchronous device flush call is timed, after cache admission.
+pub(super) struct PublicationDevice<'a> {
+    device: &'a dyn BlockDevice,
+    costs: &'a Costs,
+}
+impl BlockDevice for PublicationDevice<'_> {
+    #[cfg(not(test))]
+    fn is_read_only(&self) -> bool { self.device.is_read_only() }
+    #[cfg(not(test))]
+    fn hardware_disk(&self) -> Option<HardwareDisk> { self.device.hardware_disk() }
+    fn identity(&self) -> usize { self.device.identity() }
+    fn block_size(&self) -> usize { self.device.block_size() }
+    fn num_blocks(&self) -> u64 { self.device.num_blocks() }
+    fn read_block(&self, block: u64, out: &mut [u8]) -> Result<(), BlockError> {
+        self.device.read_block(block, out)
+    }
+    fn read_blocks(&self, block: u64, count: usize, out: &mut [u8]) -> Result<(), BlockError> {
+        self.device.read_blocks(block, count, out)
+    }
+    fn write_block(&self, block: u64, bytes: &[u8]) -> Result<(), BlockError> {
+        self.device.write_block(block, bytes)
+    }
+    fn write_blocks(&self, block: u64, count: usize, bytes: &[u8]) -> Result<(), BlockError> {
+        self.device.write_blocks(block, count, bytes)
+    }
+    fn flush(&self) -> Result<(), BlockError> {
+        let _flush = self.costs.span(Op::Commit, Phase::DeviceFlush);
+        self.device.flush()
     }
 }
 pub(super) struct Span<'a> {

@@ -20,6 +20,7 @@ const OPS: &[&str] = &[
     "fsync",
     "commit",
     "xattr",
+    "foreground",
 ];
 const PHASES: &[&str] = &[
     "operation",
@@ -27,6 +28,11 @@ const PHASES: &[&str] = &[
     "inode-edit",
     "publication",
     "wait",
+    "prepare-files",
+    "next-files-view",
+    "write-cached",
+    "device-flush",
+    "mount-exclusion",
 ];
 #[derive(Clone, Copy, Default)]
 struct Row {
