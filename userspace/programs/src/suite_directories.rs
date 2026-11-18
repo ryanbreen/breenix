@@ -1105,7 +1105,7 @@ fn readdir_cookie_blocks() -> CaseResult {
     let fd = dir.file.fd();
     let block = fs::fstatfs(fd)?.f_bsize as u64;
     let expected_root = for_root(filesystem_root::declared()?);
-    let n = (3 * block / 208 + 1) as usize;
+    let n = root_expectations::cookie_fixture_entries();
     if expected_root.cookie_encoding == CookieEncoding::ByteOffsets {
         check(
             fs::fstat(fd)?.st_size as u64 >= 2 * block,
