@@ -1,4 +1,4 @@
-//! E24 ledger 531(u), amended by coordinator rulings 541 and 544: production VFS cost oracles.
+//! E24 ledger 531(u), amended by coordinator rulings 541, 544, 549 and 551: production VFS cost oracles.
 use crate::{attrs::InodeAttrs, block::cache::BufferCache,
     breenfs::{btree::measurement as tree, vfs::{BreenFs, measurement as commits}},
     read_conformance::{Disk, NoWait}, vfs::*};
@@ -53,15 +53,17 @@ fn operation(label: &str, run: impl FnOnce(), total: &mut Counts, ok: &mut bool)
     let mut pressure_publications = 0;
     for event in events {
         match event {
-            commits::Event::Refresh { objects, visited } => {
+            commits::Event::Refresh { objects, visited, indexed_at_entry } => {
                 let given: std::collections::BTreeSet<_> = objects.into_iter().collect();
                 let seen: std::collections::BTreeSet<_> = visited.iter().copied().collect();
+                let expected: std::collections::BTreeSet<_> = indexed_at_entry.iter().copied().collect();
                 let visits = visited.len() as u64;
-                // 544(1): check each edited() call, including duplicate-ID and
-                // foreign-ID visits, rather than a mixed-operation average.
+                // 549/551: membership is observed before the visiting loop,
+                // independently of the visits whose completeness it checks.
                 let indexed = given.len() <= 4 && seen.len() == visited.len()
-                    && seen.is_subset(&given) && visited.len() <= given.len();
-                if !indexed { println!("REFRESH_BOUND {label} given={given:?} visited={visited:?}"); }
+                    && seen.is_subset(&given) && visited.len() <= given.len()
+                    && seen == expected && visited.len() == indexed_at_entry.len();
+                if !indexed { println!("REFRESH_BOUND {label} given={given:?} indexed_at_entry={indexed_at_entry:?} visited={visited:?}"); }
                 *ok &= indexed;
                 refresh_calls += 1;
                 refresh_visits += visits;
@@ -199,8 +201,8 @@ fn mutation_cost_counts() {
     for (ui, sizes) in [(false, [75,150,300]), (true, [1,2,4])] {
         let mut rows = Vec::new();
         for n in sizes { rows.push(cleanup(ui, n, &mut ok)); }
-        // Coordinator 544 requires identical peaks for each operation kind
-        // at the three replay sizes, with zero-visit directory edits separate.
+        // Coordinator 549/551 requires each kind's peak to stay at or below
+        // its smallest-size peak, with zero-visit directory edits separate.
         for (n, row) in sizes.into_iter().zip(&rows) {
             println!("REFRESH ui={ui} entries={n} visits={} edits={} peaks_unlink_rmdir={:?} directory_calls={} directory_visits={} pressure_publications={}",
                 row.work[7], row.refresh_calls, row.refresh_peaks, row.directory_calls, row.directory_visits, row.commits[2]);
@@ -208,8 +210,10 @@ fn mutation_cost_counts() {
         }
         let small = rows.first().unwrap();
         for (n, row) in sizes.into_iter().zip(&rows) {
-            if row.refresh_peaks != small.refresh_peaks {
-                println!("REFRESH_PEAK_MISMATCH ui={ui} entries={n} expected={:?} actual={:?}", small.refresh_peaks, row.refresh_peaks);
+            let non_growing = row.refresh_peaks.iter().zip(small.refresh_peaks)
+                .all(|(peak, baseline)| matches!((peak, baseline), (Some(peak), Some(baseline)) if *peak <= baseline));
+            if !non_growing {
+                println!("REFRESH_PEAK_GROWTH ui={ui} entries={n} baseline={:?} actual={:?}", small.refresh_peaks, row.refresh_peaks);
                 ok = false;
             }
         }

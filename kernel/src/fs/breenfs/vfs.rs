@@ -45,7 +45,7 @@ pub mod measurement {
     // the cost replay explicitly takes events; no guest code is generated.
     #[derive(Debug)]
     pub enum Event {
-        Refresh { objects: Vec<u64>, visited: Vec<u64> },
+        Refresh { objects: Vec<u64>, visited: Vec<u64>, indexed_at_entry: Vec<u64> },
         Admission { attempts: Vec<Attempt>, pressure: Vec<bool> },
     }
     #[derive(Debug)]
@@ -57,18 +57,27 @@ pub mod measurement {
     fn record(event: Event) {
         EVENTS.with(|rows| { if let Some(rows) = rows.borrow_mut().as_mut() { rows.push(event); } });
     }
-    pub(super) struct Refresh(Option<(Vec<u64>, Vec<u64>)>);
+    pub(super) struct Refresh(Option<(Vec<u64>, Vec<u64>, Vec<u64>)>);
     impl Refresh {
-        pub(super) fn new(objects: &[u64]) -> Self {
-            Self(enabled().then(|| (objects.to_vec(), Vec::new())))
+        pub(super) fn new(objects: &[u64], is_indexed: impl Fn(u64) -> bool) -> Self {
+            Self(enabled().then(|| {
+                // Coordinator 551: snapshot indexed membership independently
+                // of the subsequent loop that records actual refresh visits.
+                let indexed_at_entry = objects.iter().enumerate()
+                    .filter(|(index, ino)| !objects[..*index].contains(ino) && is_indexed(**ino))
+                    .map(|(_, &ino)| ino).collect();
+                (objects.to_vec(), Vec::new(), indexed_at_entry)
+            }))
         }
         pub(super) fn visit(&mut self, ino: u64) {
-            if let Some((_, visited)) = &mut self.0 { visited.push(ino); }
+            if let Some((_, visited, _)) = &mut self.0 { visited.push(ino); }
         }
     }
     impl Drop for Refresh {
         fn drop(&mut self) {
-            if let Some((objects, visited)) = self.0.take() { record(Event::Refresh { objects, visited }); }
+            if let Some((objects, visited, indexed_at_entry)) = self.0.take() {
+                record(Event::Refresh { objects, visited, indexed_at_entry });
+            }
         }
     }
     pub(super) struct Admission(Option<(Vec<Attempt>, Vec<bool>)>);
@@ -518,7 +527,7 @@ impl<W: Wait> MountState<W> {
     }
     fn edited<T>(&mut self, objects: &[u64], result: Result<T, ops::Error>) -> Result<T, Errno> {
         #[cfg(test)]
-        let mut refresh = measurement::Refresh::new(objects);
+        let mut refresh = measurement::Refresh::new(objects, |ino| self.nodes.get(&ino).is_some());
         #[cfg(test)]
         super::btree::measurement::refresh_call();
         if result.is_ok() { self.fresh = false; }
