@@ -157,6 +157,10 @@ mod outstanding_grants;
 mod publication_trigger;
 
 #[cfg(test)]
+#[path = "../../../../tools/breenfs-host-tests/src/incremental_files_view.rs"]
+mod incremental_files_view;
+
+#[cfg(test)]
 #[path = "../../../../tools/breenfs-host-tests/src/publication_cost.rs"]
 pub(super) mod publication_cost;
 

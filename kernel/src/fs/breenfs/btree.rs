@@ -19,6 +19,7 @@ const MAX_HEIGHT: u8 = 8;
 pub mod measurement {
     extern crate std;
     std::thread_local! {
+        static PUBLICATION: core::cell::Cell<[[u64; 3]; 2]> = const { core::cell::Cell::new([[0; 3]; 2]) };
         static CHANGES: core::cell::RefCell<Option<alloc::vec::Vec<ChangeWork>>> = const { core::cell::RefCell::new(None) };
         static REFRESH_CALLS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
         static MUTATIONS: core::cell::Cell<[u64; 8]> = const { core::cell::Cell::new([0; 8]) };
@@ -47,6 +48,18 @@ pub mod measurement {
         MUTATIONS.with(|cell| { let mut n = cell.get(); n[index] += amount; cell.set(n); });
     }
     pub fn take_mutations() -> [u64; 8] { MUTATIONS.with(|cell| cell.replace([0; 8])) }
+    // Materialized result payloads, decoder invocations and decoded item visits,
+    // separately for FS and SPACE. Reset immediately before production fsync.
+    pub fn take_publication() -> [[u64; 3]; 2] {
+        PUBLICATION.with(|c| c.replace([[0; 3]; 2]))
+    }
+    pub(super) fn publication(tree: u8, column: usize, amount: u64) {
+        PUBLICATION.with(|c| {
+            let mut counts = c.get();
+            counts[usize::from(tree - 1)][column] += amount;
+            c.set(counts);
+        });
+    }
     pub fn take_decodes() -> u64 {
         DECODES.with(|count| count.replace(0))
     }
@@ -269,6 +282,11 @@ fn decode(
     let header = NodeHeader::decode(bytes)?;
     #[cfg(test)]
     measurement::node(header.addr, header.level);
+    #[cfg(test)]
+    {
+        measurement::publication(header.tree, 1, 1);
+        measurement::publication(header.tree, 2, u64::from(header.nitems));
+    }
     let n = usize::from(header.nitems);
     #[cfg(test)]
     measurement::items(n as u64);
@@ -394,7 +412,11 @@ pub fn search<S: NodeStore>(store: &S, root: BlockPtr, key: Key) -> Result<Optio
         .items
         .binary_search_by_key(&key, |e| e.0)
         .ok()
-        .map(|i| node.items[i].1.clone()))
+        .map(|i| {
+            #[cfg(test)]
+            measurement::publication(node.header.tree, 0, 1);
+            node.items[i].1.clone()
+        }))
 }
 
 /// Count nodes on an inode's paths, or a whole tree for the space bound.
@@ -444,6 +466,8 @@ pub fn range_limit<S: NodeStore>(
     if limit != 0 {
         visit_range(store, root, lower, upper, &mut |key, bytes| {
             preemption_point();
+            #[cfg(test)]
+            measurement::publication(if key.item_type < 0x80 { 1 } else { 2 }, 0, 1);
             out.push((key, bytes.to_vec()));
             Ok::<_, Error>(out.len() < limit)
         })?;
