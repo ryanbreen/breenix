@@ -224,17 +224,40 @@ one eighth of the smallest kernel heap. When the open transaction passes half of
 (memory pressure); when the total would pass the full budget, the writer waits for a generation to complete. A write larger
 than half the budget is admitted in parts of at most half the budget, each admitted as above; from its first part to
 its last the file is held, so other writes and size changes of that file wait and the write stays atomic with respect
-to them. A part is admitted alone once the mount has no other charged bytes. Commit moves dirty pages into the transaction rather than copying
-them, and a generation's private buffers are freed once it is durable. <!-- claim-lint:ok: Normative admission contract set by E24 coordinator ruling line 309 (C3). -->
+to them. A part is admitted alone once the mount has no other charged bytes. A frozen generation's pages stay charged,
+and readable, until it is installed; preparation drains them into its private extents, and a generation's private
+buffers are freed once it is durable. <!-- claim-lint:ok: Normative admission contract set by E24 coordinator ruling line 309 (C3), amended for the frozen-generation commit by ruling lines 597 and 601. -->
 
 **Reuse rule.** A block released by commit *G* is not overwritten until superblock *G+1* is durable. It becomes
 PENDING with `released_generation = G`, and transaction *T* may allocate PENDING blocks with
 `released_generation ≤ T−2` (converting them to FREE). So the last two durable commits stay intact while a commit is
 written.
 
-**Commit of *G*** (each mount's `breenfs-commit` kthread):
-1. Under the write lock, apply the deferred refcounts, releases, PENDING conversions and ROOT updates to the space
-   tree until nothing changes. This ends because a node is copied at most once per transaction. Then open *G+1*. <!-- claim-lint:ok: Normative breenfs design requirement from docs/fs/breenfs-design.md section 2.5, not a measured result. -->
+**Frozen-generation commit** (E24 coordinator ruling lines 597 and 601; no format change). One generation is in
+flight at a time, and the next publication waits for its install. The mount exclusion is held in exactly two short
+sections per publication, each a constant number of pointer, map and queue moves:
+- *Freeze* closes the open generation *G*. The receipt boundary moves here: fsync waiters registered earlier wait
+  for *G*, later ones for *G+1* (one list swap). *G*'s transaction maps (private nodes, counts, allocations) move
+  whole into one immutable layer; its dirty pages, deferred touch notifications, changed-inode set and grants move
+  whole into *G*'s publication. *G+1* opens at once, with empty maps, as a scratch fork of *G*'s frozen view: it
+  allocates no real block while *G* is in flight, so no block is handed out twice, and admission keeps counting
+  *G*'s grants with *G+1*'s until install (2.8 unchanged). *G*'s frees enter PENDING at *G* by the reuse rule.
+- *Preparation* runs on frozen *G* without the mount exclusion and may yield anywhere: apply *G*'s touches, drain
+  *G*'s pages into private extents, reclaim orphans, reap, steps 1-2 below, build *G*'s next view, and step 3-6's
+  writes. Its edits go to maps above the frozen layer, which *G+1* does not read.
+- *Foreground* reads look newest first: *G+1*'s pages, then *G*'s frozen pages, then *G+1*'s Files view (the
+  frozen *G* tree plus *G+1*'s changes). A write to a page that only *G* holds copies it into *G+1*; a truncation
+  in *G+1* hides *G*'s pages past the new end. *G+1* records each change to its Files view.
+- *Install* swaps the published view to *G*, drops the frozen layer's reference and hands *G*'s next view to
+  *G+1*. If *G+1* recorded no change, the next view becomes *G+1*'s view in the same swap; otherwise the next
+  holder of the exclusion replays *G+1*'s record onto it, call by call, with identical results, before any other
+  use. After the exclusion, the worker wakes *G*'s receipts and then releases *G*'s grants. Clean data-cache
+  entries for the blocks *G* allocated are retired in preparation, before step 3, while no view can name those
+  blocks; retired after install, a stale entry could fail a reader's CRC check of *G*'s data.
+
+**Commit of *G*** (each mount's `breenfs-commit` kthread, on frozen *G*):
+1. Apply the deferred refcounts, releases, PENDING conversions and ROOT updates to the space tree until nothing
+   changes. This ends because a node is copied at most once per transaction. *G+1* opened at freeze. <!-- claim-lint:ok: Normative breenfs design requirement from docs/fs/breenfs-design.md section 2.5, amended by E24 coordinator ruling lines 597 and 601; not a measured result. -->
 2. Fill node headers bottom-up (address, generation *G*, CRC).
 3. Write *G*'s nodes and data, in any order, and wait for completion.
 4. FLUSH.
