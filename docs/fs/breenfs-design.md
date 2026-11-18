@@ -225,8 +225,9 @@ one eighth of the smallest kernel heap. When the open transaction passes half of
 than half the budget is admitted in parts of at most half the budget, each admitted as above; from its first part to
 its last the file is held, so other writes and size changes of that file wait and the write stays atomic with respect
 to them. A part is admitted alone once the mount has no other charged bytes. A frozen generation's pages stay charged,
-and readable, until it is installed; preparation drains them into its private extents, and a generation's private
-buffers are freed once it is durable. <!-- claim-lint:ok: Normative admission contract set by E24 coordinator ruling line 309 (C3), amended for the frozen-generation commit by ruling lines 597 and 601. -->
+and readable, until it is installed, or until the next generation's replay completes when that generation changed
+while it was frozen; preparation drains them into its private extents, and a generation's private buffers are freed
+once it is durable. <!-- claim-lint:ok: Normative admission contract set by E24 coordinator ruling line 309 (C3), amended for the frozen-generation commit by ruling lines 597 and 601 and the x11c review (ledger 604). -->
 
 **Reuse rule.** A block released by commit *G* is not overwritten until superblock *G+1* is durable. It becomes
 PENDING with `released_generation = G`, and transaction *T* may allocate PENDING blocks with
@@ -247,11 +248,17 @@ sections per publication, each a constant number of pointer, map and queue moves
   writes. Its edits go to maps above the frozen layer, which *G+1* does not read.
 - *Foreground* reads look newest first: *G+1*'s pages, then *G*'s frozen pages, then *G+1*'s Files view (the
   frozen *G* tree plus *G+1*'s changes). A write to a page that only *G* holds copies it into *G+1*; a truncation
-  in *G+1* hides *G*'s pages past the new end. *G+1* records each change to its Files view.
+  in *G+1* hides *G*'s pages past the new end once its shrink succeeds. *G+1* records each
+  change to its Files view. A touch that read *G* as the open generation and records after *G* froze also
+  records into *G+1*'s slot, so the next fsync carries it.
 - *Install* swaps the published view to *G*, drops the frozen layer's reference and hands *G*'s next view to
-  *G+1*. If *G+1* recorded no change, the next view becomes *G+1*'s view in the same swap; otherwise the next
-  holder of the exclusion replays *G+1*'s record onto it, call by call, with identical results, before any other
-  use. After the exclusion, the worker wakes *G*'s receipts and then releases *G*'s grants. Clean data-cache
+  *G+1*. It also retires *G*'s grant total in the ledger: the installed free count already excludes *G*'s
+  allocations, so admission stops charging those grants. If *G+1* recorded no change, the next view becomes
+  *G+1*'s view in the same swap. Otherwise each later holder of the exclusion replays a bounded share of *G+1*'s
+  record onto it, at most eight replayed changes or refreshed inodes per hold, oldest first and with identical
+  results. Until the record is empty *G+1* keeps its scratch view and readers keep *G*'s pages; the commit worker
+  drops the replaced view and pages outside the exclusion, and the next freeze waits for the replay and the
+  refresh. After the exclusion, the worker wakes *G*'s receipts and then releases *G*'s grants. Clean data-cache
   entries for the blocks *G* allocated are retired in preparation, before step 3, while no view can name those
   blocks; retired after install, a stale entry could fail a reader's CRC check of *G*'s data.
 
