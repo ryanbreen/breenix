@@ -1598,10 +1598,10 @@ impl<W: Wait + 'static> BreenFs<W> {
                     #[cfg(test)] publication_phases::visit(3);
                     state.reservations.release(grant);
                 }
-                self.inner
-                    .cache
-                    .buffers()
-                    .discard_clean(self.inner.data.as_ref());
+                for (start, count) in prepared.data_ranges() {
+                    preemption_point();
+                    self.inner.cache.buffers().discard_clean_range(self.inner.data.as_ref(), start, count);
+                }
                 state.pending = None;
                 if reap && state.dead_remaining != 0 && !state.reap_shutdown {
                     self.inner.signal.requested.store(true, Ordering::Release);
@@ -2775,7 +2775,7 @@ fn time(t: Timestamp) -> Time {
 }
 
 // Stable mount-private cache identity in filesystem block units. Commit writes
-// use the raw device; discard its clean entries before reusing this view.
+// use the raw device; discard changed data ranges before reusing this view.
 struct DataBlocks {
     device: Arc<dyn BlockDevice>,
     blocks: u64,

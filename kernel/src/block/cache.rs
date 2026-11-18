@@ -872,13 +872,34 @@ impl<W: Wait> BufferCache<W> {
     pub fn discard_clean(&self, device: &dyn BlockDevice) {
         let identity = device.identity();
         self.with(|state| {
-            state.lru.retain(|_, key| {
+            use core::ops::Bound::{Excluded, Included};
+            let mut lower = Included((identity, 0));
+            let upper = Included((identity, u64::MAX));
+            while let Some((&key, entry)) = state.buffers.range((lower, upper)).next() {
                 #[cfg(test)] measurement::discard_visit();
-                key.0 != identity });
-            state.buffers.retain(|key, entry| {
+                let clean = matches!(entry.status, BufferState::Clean { .. });
+                lower = Excluded(key);
+                if clean {
+                    #[cfg(test)] measurement::discard_visit();
+                    // remove also retires this entry's exact LRU key. Neither
+                    // index needs a scan over other device identities.
+                    state.remove(key);
+                }
+            }
+        });
+    }
+
+    /// Invalidate a changed physical range without inspecting unrelated cache
+    /// entries. In-flight and transaction-owned entries retain their custody.
+    pub fn discard_clean_range(&self, device: &dyn BlockDevice, start: u64, count: u64) {
+        self.with(|state| {
+            for block in start..start.saturating_add(count) {
                 #[cfg(test)] measurement::discard_visit();
-                key.0 != identity || !matches!(entry.status, BufferState::Clean { .. })
-            });
+                let key = (device.identity(), block);
+                if matches!(state.buffers.get(&key), Some(Entry { status: BufferState::Clean { .. }, .. })) {
+                    state.remove(key);
+                }
+            }
         });
     }
 

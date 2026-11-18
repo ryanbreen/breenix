@@ -388,6 +388,10 @@ impl PreparedCommit {
     pub fn dirty_bytes(&self) -> u64 {
         self.data.values().map(|bytes| bytes.len() as u64).sum()
     }
+    /// Physical data ranges written by this publication, in filesystem blocks.
+    pub fn data_ranges(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
+        self.data.iter().map(|(&start, bytes)| (start, (bytes.len() / BLOCK_SIZE) as u64))
+    }
     pub fn node(&self, addr: u64) -> Option<&[u8]> {
         self.nodes.get(&addr).map(Vec::as_slice)
     }
