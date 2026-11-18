@@ -82,7 +82,7 @@ fn free(fs: &dyn FileSystem, marker: &VNode) -> u64 {
 
 #[test]
 fn last_close_returns_exact_data_blocks_and_removes_inode() {
-    let disk = Arc::new(Disk { bytes: Mutex::new(crate::model::image()), writable: true });
+    let disk = Arc::new(Disk { bytes: Mutex::new(crate::root_case_setup::populated_image()), writable: true });
     let fs = BreenFs::mount_writable(disk.clone(), Arc::new(BufferCache::new(NoWait)), 241533, 1).unwrap();
     let marker = create(fs.as_ref(), b"marker");
     let file = create(fs.as_ref(), b"data");
@@ -90,28 +90,52 @@ fn last_close_returns_exact_data_blocks_and_removes_inode() {
     write(fs.as_ref(), &file, 61440, b"tail");
     let ino = file.ino;
     let second = fs.open(ino).unwrap();
+    let control = create(fs.as_ref(), b"ctrl");
+    write(fs.as_ref(), &control, 0, b"head");
+    write(fs.as_ref(), &control, 61440, b"tail");
+    let control_ino = control.ino;
+    let control_second = fs.open(control_ino).unwrap();
+    let control_before = free(fs.as_ref(), &marker);
+    drop(control);
+    drop(control_second);
+    fs.fsync(&marker, false).unwrap();
+    let control_after = free(fs.as_ref(), &marker);
+    assert_eq!(fs.lookup(2, b"ctrl").unwrap(), control_ino);
     let before = free(fs.as_ref(), &marker);
+    let raw_before = crate::root_case_setup::raw(&disk);
     let blocks = fs.getattr(ino).unwrap().blocks * 512 / fs.statfs().unwrap().block_size;
     assert_eq!(blocks, 2);
+    // Isolate the planted leak on a stopped copy of this baseline: its
+    // publication must not change the measured guest sequence.
+    let planted_disk = Arc::new(Disk { bytes: Mutex::new(disk.bytes.lock().unwrap().clone()), writable: true });
+    let planted_fs = BreenFs::mount_writable(planted_disk.clone(), Arc::new(BufferCache::new(NoWait)), 241534, 1).unwrap();
+    let leaked = planted_fs.open(ino).unwrap();
+    planted_fs.remove(2, b"data", Remove { directory: false, expected: ino,
+        owner: 0, parent: planted_fs.getattr(2).unwrap().attrs }).unwrap();
+    planted_fs.fsync(&leaked, false).unwrap();
+    assert_eq!(stopped_inode_records(&planted_disk.bytes.lock().unwrap(), ino, "planted-orphan"), (true, true));
+    assert_eq!(planted_fs.getattr(ino).unwrap().nlink, 0);
+    let mut tail = [0; 4];
+    assert_eq!(planted_fs.read(&leaked, 61440, &mut tail).unwrap(), 4);
+    assert_eq!(&tail, b"tail");
+    drop(leaked);
+    drop(planted_fs);
+    drop(planted_disk);
+
     fs.remove(2, b"data", Remove {
         directory: false, expected: ino, owner: fs.getattr(ino).unwrap().attrs.uid,
         parent: fs.getattr(2).unwrap().attrs,
     }).unwrap();
     drop(file);
-    fs.fsync(&marker, false).unwrap();
-    // A deliberately leaked final handle leaves a valid, durable orphan. The
-    // independent checker accepts its format but the absence observation is red.
-    let planted = disk.bytes.lock().unwrap().clone();
-    assert_eq!(stopped_inode_records(&planted, ino, "planted-orphan"), (true, true));
-    assert_eq!(fs.getattr(ino).unwrap().nlink, 0);
-    let mut tail = [0; 4];
-    assert_eq!(fs.read(&second, 61440, &mut tail).unwrap(), 4);
-    assert_eq!(&tail, b"tail");
     drop(second);
     fs.fsync(&marker, false).unwrap();
     let after = free(fs.as_ref(), &marker);
+    println!("UNLINK_RAW {raw_before:?}->{:?}", crate::root_case_setup::raw(&disk));
     println!("unlink inode={ino} FREE {before}->{after} data_blocks={blocks}");
-    assert_eq!(after.checked_sub(before), Some(blocks), "FREE {before}->{after}");
+    let control_delta = i128::from(control_after) - i128::from(control_before);
+    let unlink_delta = i128::from(after) - i128::from(before);
+    println!("DIFFERENTIAL control={control_before}->{control_after} delta={control_delta} unlink_delta={unlink_delta}");
+    assert_eq!(unlink_delta - control_delta, i128::from(blocks));
     assert_eq!(fs.lookup(2, b"data"), Err(Errno(2)));
     assert_eq!(fs.getattr(ino), Err(Errno(2)));
     assert!(matches!(fs.open(ino), Err(Errno(2))));
