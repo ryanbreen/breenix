@@ -30,7 +30,7 @@ use crate::{
 };
 use alloc::{
     boxed::Box,
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     sync::{Arc, Weak},
     vec::Vec,
 };
@@ -318,9 +318,16 @@ impl<W: Wait> Cache<W> {
 struct MountState<W: Wait + 'static> {
     files: OpenFiles<W>,
     // N's next view, installed while N+1's scratch changes await replay.
+    // Each holder of the exclusion replays a bounded share (x11c M2).
     next_files: Option<Files<'static, CachedNodeStore<'static, W>>>,
+    // Installed N's pages, readable until that replay completes: the
+    // scratch view does not hold N's drained extents.
+    installed: Option<Arc<FrozenPages>>,
+    // The scratch view and N's pages, once replaced: the commit worker drops
+    // them outside the exclusion.
+    stale_views: Option<StaleViews<W>>,
     // Inodes whose NodeState and VNode attributes a published generation
-    // changed outside the exclusion: refreshed by the next holder.
+    // changed outside the exclusion: refreshed a bounded share per holder.
     refresh: BTreeSet<u64>,
     committer: Option<Committer>,
     durable: Superblock,
@@ -435,6 +442,11 @@ impl IntoIterator for Grants {
     fn into_iter(self) -> Self::IntoIter { self.list.into_iter() }
 }
 type FilesView<W> = Files<'static, CachedNodeStore<'static, W>>;
+type StaleViews<W> = (FilesView<W>, Option<Arc<FrozenPages>>);
+/// Replayed changes plus refreshed inodes per holder of the exclusion after an
+/// install (x11c M2). A holder's own call records at most a few changes, so
+/// the replay still gains on the record.
+const MATERIALIZE_STEPS: usize = 8;
 /// The open generation's Files view (E24 coordinator 597/601). Normally it is
 /// the mount's transaction. While generation N is frozen, N+1 runs on a
 /// scratch fork of N's frozen view (`log` is Some): its changes describe N+1
@@ -443,7 +455,7 @@ type FilesView<W> = Files<'static, CachedNodeStore<'static, W>>;
 /// N's published view; N's preparation never changes what N+1 reads.
 struct OpenFiles<W: Wait + 'static> {
     files: FilesView<W>,
-    log: Option<Vec<Change>>,
+    log: Option<VecDeque<Change>>,
 }
 impl<W: Wait + 'static> Deref for OpenFiles<W> {
     type Target = FilesView<W>;
@@ -510,7 +522,7 @@ fn merge_inode(current: &mut Inode, before: &Inode, after: &Inode) {
 }
 impl<W: Wait + 'static> OpenFiles<W> {
     fn record(&mut self, change: impl FnOnce() -> Change) {
-        if let Some(log) = self.log.as_mut() { log.push(change()); }
+        if let Some(log) = self.log.as_mut() { log.push_back(change()); }
     }
     pub(super) fn put_inode(&mut self, ino: u64, inode: Inode) -> Result<(), ops::Error> {
         let before = if self.log.is_some() { Some(self.files.stored_inode(ino)?) } else { None };
@@ -651,6 +663,11 @@ impl<W: Wait> MountState<W> {
         }
         Ok(())
     }
+    /// The older generation's pages the open one reads through: frozen N's
+    /// while in flight, installed N's until N+1's replay completes.
+    fn frozen_pages(&self) -> Option<&Arc<FrozenPages>> {
+        self.pending.as_ref().or(self.installed.as_ref())
+    }
     /// Page `index` as the open generation sees it: its own dirty page, else
     /// the frozen generation's unless the open one truncated it away.
     fn page(&self, ino: u64, index: u64) -> Option<&[u8]> {
@@ -661,13 +678,13 @@ impl<W: Wait> MountState<W> {
         if open.and_then(|node| node.hide_frozen_from).is_some_and(|from| index >= from) {
             return None;
         }
-        self.pending.as_ref()?.nodes.get(&ino)?.pages.get(index)
+        self.frozen_pages()?.nodes.get(&ino)?.pages.get(index)
     }
     /// Page indexes visible through `page`, for st_blocks of unwritten data.
     fn page_indexes(&self, ino: u64) -> BTreeSet<u64> {
         let open = self.dirty.get(&ino);
         let hidden = open.and_then(|node| node.hide_frozen_from).unwrap_or(u64::MAX);
-        let frozen = self.pending.as_ref().and_then(|p| p.nodes.get(&ino));
+        let frozen = self.frozen_pages().and_then(|p| p.nodes.get(&ino));
         open.into_iter().flat_map(|node| node.pages.indexes())
             .chain(frozen.into_iter().flat_map(|node| node.pages.indexes()).filter(|&i| i < hidden))
             .collect()
@@ -760,31 +777,49 @@ impl<W: Wait> MountState<W> {
             self.touches.remove(&ino);
         }
     }
-    /// Finish what an install left to the next holder of the exclusion (E24
-    /// coordinator 601(4)): replay N+1's recorded changes onto N's published
-    /// view, then refresh the VNodes and NodeStates N's preparation changed.
-    /// This is the open generation's own work, done under its exclusion.
-    fn materialize(&mut self) {
-        if let Some(mut next) = self.next_files.take() {
-            let log = self.files.log.take().unwrap_or_default();
+    /// One bounded share of what an install left (E24 coordinator 601(4),
+    /// x11c M2): replay up to MATERIALIZE_STEPS of N+1's recorded changes onto
+    /// N's published view, oldest first, then refresh the VNodes and
+    /// NodeStates N's preparation changed. Until the replay completes, the
+    /// open view stays N+1's scratch view and installed N's pages stay
+    /// readable, so a holder sees N+1 as it stands. The replaced scratch
+    /// view and N's pages go to the commit worker, which drops them outside
+    /// the exclusion. Returns true once the replay and the refresh are done.
+    fn materialize(&mut self) -> bool {
+        let mut steps = 0;
+        if let Some(next) = self.next_files.as_mut() {
+            let log = self.files.log.get_or_insert_with(VecDeque::new);
             let mut failed = None;
-            for change in log {
+            while steps < MATERIALIZE_STEPS {
+                let Some(change) = log.pop_front() else { break; };
+                steps += 1;
                 preemption_point();
                 #[cfg(test)] measurement::materialized();
-                if let Err(error) = change.replay(&mut next) {
+                if let Err(error) = change.replay(next) {
                     failed = Some(error);
                     break;
                 }
             }
-            // The scratch view is dropped here, outside any publication.
-            drop(core::mem::replace(&mut self.files.files, next));
-            self.inodes.entries.fill(None);
+            if failed.is_none() && !log.is_empty() {
+                return false;
+            }
+            // Constant moves: N's next view with N+1's changes becomes the
+            // open view.
+            if let Some(next) = self.next_files.take() {
+                let scratch = core::mem::replace(&mut self.files.files, next);
+                self.files.log = None;
+                self.inodes.entries.fill(None);
+                // Each install is preceded by a freeze, which takes this slot.
+                self.stale_views = Some((scratch, self.installed.take()));
+            }
             if let Some(error) = failed {
                 self.record_metadata(error);
                 self.fail("replay-open-generation", Errno(EIO));
             }
         }
-        for ino in core::mem::take(&mut self.refresh) {
+        while steps < MATERIALIZE_STEPS {
+            let Some(ino) = self.refresh.pop_first() else { break; };
+            steps += 1;
             preemption_point();
             #[cfg(test)] measurement::materialized();
             if let Some(node) = self.nodes.get(&ino).and_then(|entry| entry.node.upgrade()) {
@@ -795,6 +830,7 @@ impl<W: Wait> MountState<W> {
             }
             self.prune_node(ino);
         }
+        self.next_files.is_none() && self.refresh.is_empty()
     }
     fn fail(&mut self, branch: &'static str, error: Errno) {
         if self.failure.is_some() { return; }
@@ -888,7 +924,7 @@ impl<W: Wait> MountState<W> {
     /// Dirty pages plus the private data of the generation being published:
     /// the bytes mutation admission charges against DIRTY_BUDGET.
     fn charged(&self) -> u64 {
-        self.dirty_bytes + self.pending.as_ref().map_or(0, |p| p.bytes)
+        self.dirty_bytes + self.frozen_pages().map_or(0, |p| p.bytes)
     }
     /// Called with mutation admission held, before publishing dirty pages or
     /// inode changes. Clean mapped blocks also need fresh COW allocations.
@@ -1230,6 +1266,8 @@ impl<W: Wait + 'static> BreenFs<W> {
             state: MountLock::new(MountState {
                 files: OpenFiles { files, log: None },
                 next_files: None,
+                installed: None,
+                stale_views: None,
                 refresh: BTreeSet::new(),
                 committer,
                 reservations: SharedLedger(ledger),
@@ -1299,9 +1337,11 @@ impl<W: Wait + 'static> BreenFs<W> {
         let state = self.inner.state.lock();
         self.materialized(state)
     }
+    // Install sets the flag and the last share clears it, both under the
+    // exclusion: the flag is set while replay or refresh remains (x11c M2).
     fn materialized<'a>(&self, mut state: MountGuard<'a, MountState<W>>) -> MountGuard<'a, MountState<W>> {
-        if self.inner.materialize.swap(false, Ordering::AcqRel) {
-            state.materialize();
+        if self.inner.materialize.load(Ordering::Acquire) && state.materialize() {
+            self.inner.materialize.store(false, Ordering::Release);
         }
         state
     }
@@ -1783,9 +1823,9 @@ impl<W: Wait + 'static> BreenFs<W> {
         // mount-exclusion sections. Pointer, map and queue moves only: no tree
         // or cache traversal, no allocation of file data and no yield.
         let frozen = loop {
-            // An install can leave N+1's replay to the next holder. With no
-            // foreground holder yet, do that foreground work as its own
-            // operation first; the freeze below refuses a scratch generation.
+            // An install can leave N+1's replay to the next holders. Do what
+            // remains as foreground work, a bounded share per hold (x11c M2);
+            // the freeze below refuses a scratch generation.
             if self.inner.materialize.load(Ordering::Acquire) {
                 drop(self.foreground_lock());
             }
@@ -1793,6 +1833,14 @@ impl<W: Wait + 'static> BreenFs<W> {
             // 583(x10): start after acquisition; stop before releasing this
             // guard. Excludes acquisition and everything after the guard.
             let _excluded = self.inner.costs.span(CostOp::Commit, CostPhase::MountExcluded);
+            if let Some(stale) = guard.stale_views.take() {
+                // The views a completed replay replaced: drop them outside the
+                // exclusion and before this publication starts.
+                drop(_excluded);
+                drop(guard);
+                drop(stale);
+                continue;
+            }
             let state = &mut *guard;
             if state.failed {
                 return Err(Errno(EIO));
@@ -1800,8 +1848,9 @@ impl<W: Wait + 'static> BreenFs<W> {
             if state.committer.is_none() || state.pending.is_some() || state.durable.generation >= last {
                 return Ok(false);
             }
-            if state.next_files.is_some() {
-                // An install raced the materialization above; repeat it.
+            if state.next_files.is_some() || !state.refresh.is_empty() {
+                // Replay or refresh remains, or an install raced the share
+                // above: repeat. Install replaces the refresh set whole.
                 continue;
             }
             let fsync = self.inner.signal.requested.swap(false, Ordering::AcqRel);
@@ -1958,12 +2007,15 @@ impl<W: Wait + 'static> BreenFs<W> {
                 ledger.retire(grants.blocks);
                 *publication = Some(sb.clone());
                 // The publication keeps its own reference: no page is freed here.
-                state.pending = None;
+                let installed_pages = state.pending.take();
                 state.dead_remaining = dead_remaining;
                 // Empty: the freeze ran after the previous materialization.
                 state.refresh = refresh;
                 let replay = state.files.log.as_ref().is_some_and(|log| !log.is_empty());
                 let retired = if replay {
+                    // Holders replay N+1's record a bounded share at a time
+                    // (x11c M2); until then the scratch view reads N's pages.
+                    state.installed = installed_pages;
                     state.next_files = Some(next);
                     None
                 } else {
@@ -2019,7 +2071,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         // 601(3): the receipt boundary moves here.
         let commit = state.committer.as_mut().ok_or(Errno(EIO))?.freeze().map_err(|_| Errno(EIO))?;
         let files = core::mem::replace(&mut state.files.files, scratch);
-        state.files.log = Some(Vec::new());
+        state.files.log = Some(VecDeque::new());
         // 601(2): N's pages and touches move whole; N+1 starts with empty maps.
         let frozen = Arc::get_mut(&mut pages).ok_or(Errno(EIO))?;
         frozen.nodes = core::mem::take(&mut state.dirty);
@@ -2261,11 +2313,11 @@ impl<W: Wait + 'static> BreenFs<W> {
         state.nodes.entry(ino).or_default();
         let mut bad_metadata = None;
         let result = {
-            let MountState { files, dirty, dirty_bytes, pending, .. } = state;
+            let MountState { files, dirty, dirty_bytes, pending, installed, .. } = state;
             let open = dirty.entry(ino).or_default();
             let before = open.pages.bytes();
             let hidden = open.hide_frozen_from;
-            let frozen = pending.as_ref().and_then(|pending| pending.nodes.get(&ino));
+            let frozen = pending.as_ref().or(installed.as_ref()).and_then(|pages| pages.nodes.get(&ino));
             let mut read = |off: u64, page: &mut [u8]| -> Result<(), Errno> {
                 let index = off / BLOCK_SIZE as u64;
                 if let Some(old) = frozen.filter(|_| hidden.is_none_or(|from| index < from))
@@ -2314,7 +2366,8 @@ impl<W: Wait + 'static> BreenFs<W> {
                 // A writer may have won admission after the receipt. Close
                 // that generation too: sharing a tree already private in G
                 // would let subsequent writes change the snapshot's contents.
-                if !state.fresh || state.pending.is_some() {
+                // Snapshot the materialized view, not a scratch one (x11c M2).
+                if !state.fresh || state.pending.is_some() || state.next_files.is_some() {
                     drop(state);
                     continue;
                 }
@@ -2554,7 +2607,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         if matches!(report, Report::State) {
             use core::fmt::Write;
             let state = self.inner.state.lock();
-            let pending_bytes = state.pending.as_ref().map_or(0, |p| p.bytes);
+            let pending_bytes = state.frozen_pages().map_or(0, |p| p.bytes);
             // Diagnostic view of the durable SPACE tree, not reservation or
             // open-transaction accounting (E24 coordinator 567).
             let store = self.inner.cache.store(self.inner.device.clone(), &state.durable);
