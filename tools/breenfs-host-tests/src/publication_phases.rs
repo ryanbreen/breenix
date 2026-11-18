@@ -43,6 +43,16 @@ impl Drop for Phase {
         ACTIVE.with(|p| p.replace(self.previous));
     }
 }
+pub(super) struct CacheCleanup(u64);
+impl CacheCleanup {
+    pub(super) fn new() -> Self { Self(crate::block::cache::measurement::discard_visits()) }
+}
+impl Drop for CacheCleanup {
+    fn drop(&mut self) {
+        let work = crate::block::cache::measurement::discard_visits() - self.0;
+        ROWS.with(|r| r.borrow_mut().entry("cache_cleanup").or_default().work[4] += work);
+    }
+}
 fn take() -> BTreeMap<&'static str, Counts> { ROWS.with(|r| core::mem::take(&mut *r.borrow_mut())) }
 
 // Each changed inode is queued once for touch/close, and at most twice for
@@ -57,6 +67,11 @@ const DECODES_PER_EDIT_LEVEL: u64 = 192;
 const SLOTS_PER_EDIT_LEVEL: u64 = DECODES_PER_EDIT_LEVEL * ((format::NODE_SIZE as u64 - 48) / 21);
 // Root handle, bounded inode cache and empty-range endpoints, independent of size.
 const FIXED_WORK: u64 = 16;
+// Cache removal reads and removes an entry (two visits). An inode COW path,
+// three SPACE item paths per allocation, the format's eight-level maximum
+// and ROOT/FREE/PENDING neighbours allow 32 new view entries per edit/level.
+// This counts node-store retirement too, across the nested next-view span.
+const CACHE_ITEMS_PER_EDIT_LEVEL: u64 = 64;
 
 struct Disk(HostMutex<Vec<u8>>);
 impl BlockDevice for Disk {
@@ -121,13 +136,20 @@ fn replay(files: usize) {
         for (phase,c) in rows {
             println!("PHASE files={files} dirty={dirty} phase={phase} heights={heights:?} work={:?} trees={:?}", c.work,c.trees);
             let bound=dirty*(heights[0].max(heights[1])+1)*INDEX_ITEMS_PER_EDIT_LEVEL+FIXED_WORK;
-            for (m,n) in c.work.into_iter().enumerate() { if n>bound { failures.push(alloc::format!("{dirty}/{phase}/work{m}={n}>{bound}")); }}
+            for (m,n) in c.work.into_iter().enumerate() {
+                let bound = if phase == "cache_cleanup" { dirty*(heights[0].max(heights[1])+1)*CACHE_ITEMS_PER_EDIT_LEVEL+FIXED_WORK } else { bound };
+                if n>bound { failures.push(alloc::format!("{dirty}/{phase}/work{m}={n}>{bound}")); }}
             for (t,h) in heights.into_iter().enumerate() {
                 for (m,k) in [RECORDS_PER_EDIT_LEVEL,DECODES_PER_EDIT_LEVEL,SLOTS_PER_EDIT_LEVEL].into_iter().enumerate() {
                     let b=dirty*(h+1)*k+FIXED_WORK;
                     if c.trees[t][m]>b { failures.push(alloc::format!("{dirty}/{phase}/tree{t}/{m}={}>{b}",c.trees[t][m])); }
                 }
             }
+        }
+        let cold = BreenFs::mount(disk.clone(), Arc::new(BufferCache::new(outstanding_grants::NoWait)),
+            241515900 + files + dirty as usize, 1).unwrap();
+        for i in 0..dirty/10 {
+            assert_eq!(cold.getattr(216+i).unwrap().times.mtime.sec, 1);
         }
         for i in 0..dirty/10 { assert_eq!(fs.getattr(16+i).unwrap_err(), Errno(ENOENT));
             let mut byte=[0]; fs.read(handles[100+i as usize].as_ref().unwrap(),0,&mut byte).unwrap(); assert_eq!(byte,[b'x']); }
@@ -139,3 +161,33 @@ fn replay(files: usize) {
 fn populated_1100_phase_counts() { replay(1100); }
 #[test]
 fn populated_4400_phase_counts() { replay(4400); }
+
+#[test]
+fn publication_invalidates_reused_data_without_discarding_unchanged_data() {
+    let disk = Arc::new(Disk(HostMutex::new(incremental_files_view::image(1100).clone())));
+    let cache = Arc::new(BufferCache::new(outstanding_grants::NoWait));
+    let fs = BreenFs::mount_writable(disk.clone(), cache.clone(), 241515999, 1).unwrap();
+    let file = fs.open(16).unwrap();
+    // Keep one unchanged data buffer resident. Seed the allocator's free range
+    // with old disk bytes, as a prior generation's cached data would leave it.
+    cache.read_verified(fs.inner.data.as_ref(),21,&mut [0; BLOCK_SIZE], |_| true).unwrap();
+    let unchanged = cache.pin(fs.inner.data.as_ref(),21).unwrap();
+    let sb = fs.inner.state.lock().durable.clone();
+    let (start, length) = super::super::recover::space_items(&super::super::commit::DeviceStore(disk.as_ref()),&sb)
+        .unwrap().into_iter().find_map(|(k,b)| (k.item_type == format::FREE)
+            .then(|| (k.offset,format::Free::decode(&b).unwrap().length))).unwrap();
+    let end = start + length.min(512);
+    let mut old = Vec::new();
+    for block in start..end {
+        cache.read_verified(fs.inner.data.as_ref(),block,&mut [0; BLOCK_SIZE], |_| true).unwrap();
+        old.push(cache.pin(fs.inner.data.as_ref(),block).unwrap());
+    }
+    fs.write(&file,WriteReq { at: WriteAt::Offset(0),limit:u64::MAX,clear_setid:false },b"x").unwrap();
+    fs.fsync(&file,false).unwrap();
+    let extent = fs.inner.state.lock().files.extents(16).unwrap()[0].1;
+    assert!((start..end).contains(&extent.phys_start));
+    assert!(cache.pin(fs.inner.data.as_ref(),extent.phys_start).is_none());
+    assert!(Arc::ptr_eq(&unchanged,&cache.pin(fs.inner.data.as_ref(),21).unwrap()));
+    let mut byte=[0]; fs.read(&file,0,&mut byte).unwrap(); assert_eq!(byte,[b'x']);
+    drop(old);
+}

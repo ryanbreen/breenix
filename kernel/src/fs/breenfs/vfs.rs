@@ -1422,6 +1422,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         #[cfg(not(test))]
         crate::block::cache_kernel::assert_io_context();
         let _publication;
+        #[cfg(test)] let _cache_cleanup;
         let (prepared, reap) = {
             let mut state = self.mutation_lock(CostOp::Commit);
             if state.failed {
@@ -1436,6 +1437,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 return Ok(false);
             }
             _publication = self.inner.costs.span(CostOp::Commit, CostPhase::Publication);
+            #[cfg(test)] { _cache_cleanup = publication_phases::CacheCleanup::new(); }
             #[cfg(test)]
             measurement::prepared(force, pressure);
             #[cfg(test)] let touches_phase = publication_phases::Phase::new("apply_touches");
