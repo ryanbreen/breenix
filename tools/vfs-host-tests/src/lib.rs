@@ -162,3 +162,6 @@ mod unlink_reclaim;
 
 #[path = "../tests/mutation_cost.rs"]
 mod mutation_cost;
+
+#[path = "../tests/mutation_subcost.rs"]
+mod mutation_subcost;
