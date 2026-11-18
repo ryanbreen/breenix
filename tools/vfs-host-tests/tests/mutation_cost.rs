@@ -1,15 +1,21 @@
-//! E24 ledger 531(u), amended by coordinator ruling 541: count real cleanup and truncate shapes at production VFS.
+//! E24 ledger 531(u), amended by coordinator rulings 541 and 544: production VFS cost oracles.
 use crate::{attrs::InodeAttrs, block::cache::BufferCache,
     breenfs::{btree::measurement as tree, vfs::{BreenFs, measurement as commits}},
     read_conformance::{Disk, NoWait}, vfs::*};
 use std::{sync::{Arc, Mutex}, time::Instant};
 
 #[derive(Clone, Copy, Debug, Default)]
-struct Counts { work: [u64; 8], commits: [u64; 3], decodes: [u64; 4], refresh_calls: u64 }
+struct Counts { work: [u64; 8], commits: [u64; 3], decodes: [u64; 4], refresh_calls: u64,
+    refresh_peaks: [Option<u64>; 2], directory_calls: u64, directory_visits: u64 }
 impl Counts {
-    fn take() -> Self { Self {work: tree::take_mutations(), commits: commits::take_work(), decodes: tree::take_work(), refresh_calls: tree::take_refresh_calls()} }
+    fn take() -> Self { Self {work: tree::take_mutations(), commits: commits::take_work(), decodes: tree::take_work(), refresh_calls: tree::take_refresh_calls(), ..Self::default()} }
     fn add(&mut self, other: Self) {
         self.refresh_calls += other.refresh_calls;
+        self.directory_calls += other.directory_calls;
+        self.directory_visits += other.directory_visits;
+        for (peak, value) in self.refresh_peaks.iter_mut().zip(other.refresh_peaks) {
+            *peak = (*peak).into_iter().chain(value).max();
+        }
         for (a,b) in self.work.iter_mut().zip(other.work) { *a += b; }
         for (a,b) in self.commits.iter_mut().zip(other.commits) { *a += b; }
         for (a,b) in self.decodes.iter_mut().zip(other.decodes) { *a += b; }
@@ -38,7 +44,61 @@ fn file(fs: &dyn FileSystem, dir: u64, name: &str, bytes: &[u8]) -> Arc<VNode> {
 // Count each load/save, including buffered repeats, not decoded item counts.
 const BTREE_TOUCHES_PER_LEVEL: usize = 10;
 fn operation(label: &str, run: impl FnOnce(), total: &mut Counts, ok: &mut bool) {
-    Counts::take(); tree::take_changes(); run(); let c = Counts::take();
+    Counts::take(); tree::take_changes(); commits::take_events(); run(); let mut c = Counts::take();
+    let events = commits::take_events();
+    let mut refresh_calls = 0;
+    let mut refresh_visits = 0;
+    let mut admissions = 0;
+    let mut attempts_count = 0;
+    let mut pressure_publications = 0;
+    for event in events {
+        match event {
+            commits::Event::Refresh { objects, visited } => {
+                let given: std::collections::BTreeSet<_> = objects.into_iter().collect();
+                let seen: std::collections::BTreeSet<_> = visited.iter().copied().collect();
+                let visits = visited.len() as u64;
+                // 544(1): check each edited() call, including duplicate-ID and
+                // foreign-ID visits, rather than a mixed-operation average.
+                let indexed = given.len() <= 4 && seen.len() == visited.len()
+                    && seen.is_subset(&given) && visited.len() <= given.len();
+                if !indexed { println!("REFRESH_BOUND {label} given={given:?} visited={visited:?}"); }
+                *ok &= indexed;
+                refresh_calls += 1;
+                refresh_visits += visits;
+                if let Some(kind) = if label.starts_with("unlink/") { Some(0) }
+                    else if label.starts_with("rmdir/") { Some(1) } else { None } {
+                    c.refresh_peaks[kind] = Some(c.refresh_peaks[kind].unwrap_or(0).max(visits));
+                    if kind == 1 { c.directory_calls += 1; c.directory_visits += visits; }
+                }
+            }
+            commits::Event::Admission { attempts, pressure } => {
+                admissions += 1;
+                attempts_count += attempts.len() as u64;
+                let ordinary = pressure.is_empty() && attempts.len() == 1
+                    && attempts[0].error.is_none() && attempts[0].refusal.is_none();
+                // 544(2): a pressure publication must be bracketed by an
+                // actual refused grant and a successful re-admission.
+                let pressure_admitted = pressure == [true] && attempts.len() == 2
+                    && attempts[0].error == Some(crate::syscall_errno::ENOSPC)
+                    && attempts[0].refusal.is_some_and(|[free, _, outstanding, blocks, _]| {
+                        blocks > free.saturating_sub(outstanding)
+                    })
+                    && attempts[1].error.is_none() && attempts[1].refusal.is_none();
+                if !ordinary { println!("ADMISSION {label} attempts={attempts:?} pressure={pressure:?}"); }
+                *ok &= ordinary || pressure_admitted;
+                pressure_publications += u64::from(pressure_admitted);
+            }
+        }
+    }
+    let attributed = c.commits == [pressure_publications, 0, pressure_publications]
+        && c.work[0] == attempts_count && attempts_count == admissions + pressure_publications;
+    if !attributed { println!("PUBLICATION_ATTRIBUTION {label} commits={:?} reservations={} attempts={attempts_count} admissions={admissions} pressure={pressure_publications}", c.commits, c.work[0]); }
+    *ok &= attributed && refresh_calls == c.refresh_calls && refresh_visits == c.work[7];
+    // The fixtures create directories without open(): their removals have no
+    // NodeState to refresh. Assert this separately from the peak comparison.
+    if label.starts_with("rmdir/") {
+        *ok &= c.directory_calls > 0 && c.directory_visits == 0;
+    }
     let changes = tree::take_changes();
     for (i, change) in changes.iter().enumerate() {
         let bound = BTREE_TOUCHES_PER_LEVEL * (usize::from(change.height) + 1);
@@ -51,9 +111,7 @@ fn operation(label: &str, run: impl FnOnce(), total: &mut Counts, ok: &mut bool)
         changes.iter().map(|c| c.reads + c.writes).max().unwrap_or(0),
         changes.iter().map(|c| c.height).collect::<std::collections::BTreeSet<_>>());
     println!("MUTATION {label} {c:?}");
-    // Explicit fsync/marker publications are measured separately. No cleanup
-    // syscall may publish a transaction, including admission-pressure service.
-    *ok &= c.commits == [0; 3]; total.add(c);
+    total.add(c);
 }
 fn remove_tree(fs: &dyn FileSystem, parent: u64, name: &[u8], total: &mut Counts, ok: &mut bool) {
     let ino = fs.lookup(parent, name).unwrap();
@@ -64,7 +122,7 @@ fn remove_tree(fs: &dyn FileSystem, parent: u64, name: &[u8], total: &mut Counts
         fs.readdir(ino, 0, &mut |entry,_| {entries.push(entry.name); Ok(true)}).unwrap();
         for entry in entries { remove_tree(fs, ino, &entry, total, ok); }
     }
-    operation(&format!("remove/{}", String::from_utf8_lossy(name)), || {
+    operation(&format!("{}/{}", if directory {"rmdir"} else {"unlink"}, String::from_utf8_lossy(name)), || {
         fs.remove(parent, name, Remove {directory, expected: ino, owner: attrs.attrs.uid,
             parent: fs.getattr(parent).unwrap().attrs}).unwrap();
     }, total, ok);
@@ -141,21 +199,22 @@ fn mutation_cost_counts() {
     for (ui, sizes) in [(false, [75,150,300]), (true, [1,2,4])] {
         let mut rows = Vec::new();
         for n in sizes { rows.push(cleanup(ui, n, &mut ok)); }
-        // Coordinator 541 withdraws the cross-geometry ratio. Compare exact
-        // visits per edited() call, without rounding or a fixed allowance.
+        // Coordinator 544 requires identical peaks for each operation kind
+        // at the three replay sizes, with zero-visit directory edits separate.
         for (n, row) in sizes.into_iter().zip(&rows) {
-            println!("REFRESH ui={ui} entries={n} visits={} edits={}", row.work[7], row.refresh_calls);
+            println!("REFRESH ui={ui} entries={n} visits={} edits={} peaks_unlink_rmdir={:?} directory_calls={} directory_visits={} pressure_publications={}",
+                row.work[7], row.refresh_calls, row.refresh_peaks, row.directory_calls, row.directory_visits, row.commits[2]);
+            ok &= row.directory_calls > 0 && row.directory_visits == 0;
         }
         let small = rows.first().unwrap();
-        let large = rows.last().unwrap();
-        assert!(small.refresh_calls > 0 && large.refresh_calls > 0);
-        if large.work[7] * small.refresh_calls > small.work[7] * large.refresh_calls {
-            println!("REFRESH_GROWTH ui={ui} {}/{} -> {}/{}",
-                small.work[7], small.refresh_calls, large.work[7], large.refresh_calls);
-            ok = false;
+        for (n, row) in sizes.into_iter().zip(&rows) {
+            if row.refresh_peaks != small.refresh_peaks {
+                println!("REFRESH_PEAK_MISMATCH ui={ui} entries={n} expected={:?} actual={:?}", small.refresh_peaks, row.refresh_peaks);
+                ok = false;
+            }
         }
     }
     truncate(false, &mut ok); truncate(true, &mut ok);
     assert!(start.elapsed().as_secs_f64() < 60.0, "U32 mutation check exceeded 60 s");
-    assert!(ok, "mutation refresh visits grow, tree touches exceed height bound, publish per syscall, or retain truncated data at marker commit");
+    assert!(ok, "mutation refresh bound/peak, publication attribution, tree height bound, or truncate marker oracle failed");
 }

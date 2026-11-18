@@ -36,8 +36,62 @@ use spin::Mutex;
 
 #[cfg(test)]
 pub mod measurement {
+    use alloc::vec::Vec;
     std::thread_local! {
         static COMMITS: core::cell::Cell<[u64; 3]> = const { core::cell::Cell::new([0; 3]) };
+        static EVENTS: core::cell::RefCell<Option<Vec<Event>>> = const { core::cell::RefCell::new(None) };
+    }
+    // Host-only observations for coordinator E24 ledger 544. Disabled unless
+    // the cost replay explicitly takes events; no guest code is generated.
+    #[derive(Debug)]
+    pub enum Event {
+        Refresh { objects: Vec<u64>, visited: Vec<u64> },
+        Admission { attempts: Vec<Attempt>, pressure: Vec<bool> },
+    }
+    #[derive(Debug)]
+    pub struct Attempt { pub error: Option<i32>, pub refusal: Option<[u64; 5]> }
+    pub fn take_events() -> Vec<Event> {
+        EVENTS.with(|rows| rows.replace(Some(Vec::new())).unwrap_or_default())
+    }
+    fn enabled() -> bool { EVENTS.with(|rows| rows.borrow().is_some()) }
+    fn record(event: Event) {
+        EVENTS.with(|rows| { if let Some(rows) = rows.borrow_mut().as_mut() { rows.push(event); } });
+    }
+    pub(super) struct Refresh(Option<(Vec<u64>, Vec<u64>)>);
+    impl Refresh {
+        pub(super) fn new(objects: &[u64]) -> Self {
+            Self(enabled().then(|| (objects.to_vec(), Vec::new())))
+        }
+        pub(super) fn visit(&mut self, ino: u64) {
+            if let Some((_, visited)) = &mut self.0 { visited.push(ino); }
+        }
+    }
+    impl Drop for Refresh {
+        fn drop(&mut self) {
+            if let Some((objects, visited)) = self.0.take() { record(Event::Refresh { objects, visited }); }
+        }
+    }
+    pub(super) struct Admission(Option<(Vec<Attempt>, Vec<bool>)>);
+    impl Admission {
+        pub(super) fn new() -> Self {
+            Self(enabled().then(|| {
+                super::super::reserve::observation::take();
+                (Vec::new(), Vec::new())
+            }))
+        }
+        pub(super) fn attempt(&mut self, error: Option<i32>) {
+            if let Some((attempts, _)) = &mut self.0 {
+                attempts.push(Attempt { error, refusal: super::super::reserve::observation::take() });
+            }
+        }
+        pub(super) fn pressure(&mut self, published: bool) {
+            if let Some((_, pressure)) = &mut self.0 { pressure.push(published); }
+        }
+    }
+    impl Drop for Admission {
+        fn drop(&mut self) {
+            if let Some((attempts, pressure)) = self.0.take() { record(Event::Admission { attempts, pressure }); }
+        }
     }
     pub(super) fn prepared(reservation: bool, dirty: bool) {
         COMMITS.with(|cell| { let mut n = cell.get(); n[0] += u64::from(reservation);
@@ -464,6 +518,8 @@ impl<W: Wait> MountState<W> {
     }
     fn edited<T>(&mut self, objects: &[u64], result: Result<T, ops::Error>) -> Result<T, Errno> {
         #[cfg(test)]
+        let mut refresh = measurement::Refresh::new(objects);
+        #[cfg(test)]
         super::btree::measurement::refresh_call();
         if result.is_ok() { self.fresh = false; }
         self.inodes.entries.fill(None);
@@ -480,7 +536,10 @@ impl<W: Wait> MountState<W> {
             if objects[..index].contains(&ino) { continue; }
             let Some(entry) = self.nodes.get(&ino) else { continue; };
             #[cfg(test)]
-            super::btree::measurement::mutation(7, 1);
+            {
+                super::btree::measurement::mutation(7, 1);
+                refresh.visit(ino);
+            }
             preemption_point();
             if let Some(node) = entry.node.upgrade() {
                 if let Ok(inode) = self.files.inode(ino) {
@@ -953,6 +1012,8 @@ impl<W: Wait + 'static> BreenFs<W> {
         mut admit: impl FnMut() -> Result<MountGuard<'a, MountState<W>>, Errno>,
         mut reserve: impl FnMut(&mut MountState<W>) -> Result<T, Errno>,
     ) -> Result<(MountGuard<'a, MountState<W>>, T), Errno> {
+        #[cfg(test)]
+        let mut admission = measurement::Admission::new();
         let mut limit = None;
         loop {
             state.writable()?;
@@ -960,6 +1021,8 @@ impl<W: Wait + 'static> BreenFs<W> {
                 let _reservation = self.inner.costs.span(cost, CostPhase::Reservation);
                 reserve(&mut state)
             };
+            #[cfg(test)]
+            admission.attempt(result.as_ref().err().map(|error| error.0));
             match result {
                 Ok(grant) => return Ok((state, grant)),
                 Err(error) if error == Errno(ENOSPC) => (),
@@ -1008,6 +1071,8 @@ impl<W: Wait + 'static> BreenFs<W> {
                 let _publication = self.inner.costs.span(cost, CostPhase::Publication);
                 self.commit_generation_up_to(monotonic_ns(), last, true)?
             };
+            #[cfg(test)]
+            admission.pressure(published);
             if !published {
                 self.mutation_wait(cost, observed, None);
             }
