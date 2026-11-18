@@ -690,6 +690,12 @@ impl<W: Wait> MountState<W> {
             self.metadata_reserved += retained;
             if retained != 0 { self.grants.push(grant); }
             else { self.reservations.release(grant); }
+            // E24 coordinator ledger 558(x2): request background publication
+            // before retained reservations force foreground admission to flush.
+            let trigger = self.durable.free_blocks.saturating_sub(self.durable.global_reserve) / 2;
+            if self.reservations.outstanding() > trigger {
+                self.signal.requested.store(true, Ordering::Release);
+            }
         } else { self.reservations.release(grant); }
         self.edited(objects, result)
     }
