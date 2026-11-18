@@ -2112,7 +2112,11 @@ fn descriptors_unlink_reclaim_breenfs() -> CaseResult {
     check(data_blocks == 2, "sparse orphan does not hold two data blocks")?;
     fs::unlink(&f.path)?;
     io::close(f.file.take().expect("fixture descriptor"))?;
+    let index = marker.1.get();
+    marker.1.set(index + 1);
+    breenix_suite::suite::control::markers::sample_root(index, false);
     sync_fd(marker.0.fd(), false)?;
+    breenix_suite::suite::control::markers::sample_root(index, true);
     expect_errno(stat(&f.path, false), 2, "lookup after last close and fsync")?;
     let after = marker.free(marker.0.fd())?;
     check(
@@ -2842,15 +2846,22 @@ fn prepare_large_truncate_fixture(path: &str) -> CaseResult {
 }
 
 // Equalize metadata and the two-generation quarantine on both sides (ledger 465).
-struct RootMarker(Fixture);
+struct RootMarker(Fixture, std::cell::Cell<usize>);
 impl RootMarker {
-    fn new() -> Result<Self, String> { Ok(Self(Fixture::new(b"")?)) }
+    fn new() -> Result<Self, String> { Ok(Self(Fixture::new(b"")?, std::cell::Cell::new(0))) }
     fn free(&self, fd: Fd) -> Result<u64, String> {
+        use breenix_suite::suite::control::markers;
+        let recording = matches!(breenix_suite::suite::running_case(),
+            Some("descriptors/unlink-reclaim" | "metadata/ftruncate-large" | "metadata/ftruncate-large-open"));
         for byte in 0..3 {
+            let index = self.1.get();
+            self.1.set(index + 1);
+            if recording { markers::sample_root(index, false); }
             truncate_fd(self.0.fd(), 0)?;
             fs::lseek(self.0.fd(), 0, SEEK_SET).map_err(|e| e.to_string())?;
             write_all(self.0.fd(), &[byte])?;
             sync_fd(self.0.fd(), false)?;
+            if recording { markers::sample_root(index, true); }
         }
         Ok(fs::fstatfs(fd).map_err(|e| e.to_string())?.f_bfree)
     }

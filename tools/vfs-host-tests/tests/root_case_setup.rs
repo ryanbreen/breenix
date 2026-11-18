@@ -59,11 +59,20 @@ fn write(fs: &dyn FileSystem, node: &VNode, offset: u64, bytes: &[u8]) {
 fn commits(fs: &dyn FileSystem, marker: &VNode, disk: &Disk) {
     for byte in 0..3 {
         let before = raw(disk);
+        report_raw(fs, before);
         fs.resize(marker, 0, false, &|_| Ok(())).unwrap();
         write(fs, marker, 0, &[byte]);
         fs.fsync(marker, false).unwrap();
-        println!("MARKER {byte} FREE_PENDING {before:?}->{:?}", raw(disk));
+        let after = raw(disk);
+        report_raw(fs, after);
+        println!("MARKER {byte} FREE_PENDING {before:?}->{after:?}");
     }
+}
+
+fn report_raw(fs: &dyn FileSystem, (free, pending): (u64, u64)) {
+    let mut report = String::new();
+    fs.report(Report::State, "root", &mut report).unwrap();
+    assert!(report.contains(&format!("free_blocks={free} pending_blocks={pending}")), "raw accounting differs: {report}");
 }
 
 fn bytes(fs: &dyn FileSystem, node: &VNode, expected: &[u8]) {
@@ -85,10 +94,7 @@ fn with_root(populated: bool, run: impl FnOnce(&dyn FileSystem, &VNode, &VNode, 
     let marker = create(fs.as_ref(), b"marker");
     run(fs.as_ref(), &file, &marker, &disk);
     if populated {
-        let mut report = String::new();
-        fs.report(Report::State, "root", &mut report).unwrap();
-        let (free, pending) = raw(&disk);
-        assert!(report.contains(&format!("free_blocks={free} pending_blocks={pending}")), "missing raw accounting: {report}");
+        report_raw(fs.as_ref(), raw(&disk));
     }
 }
 

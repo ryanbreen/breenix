@@ -1999,15 +1999,31 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             use core::fmt::Write;
             let state = self.inner.state.lock();
             let pending_bytes = state.pending.as_ref().map_or(0, |p| p.dirty_bytes());
+            // Diagnostic view of the durable SPACE tree, not reservation or
+            // open-transaction accounting (E24 coordinator 567).
+            let store = self.inner.cache.store(self.inner.device.clone(), &state.durable);
+            let items = recover::space_items(&store, &state.durable).map_err(|_| Errno(EIO))?;
+            let mut raw_free = 0u64;
+            let mut raw_pending = 0u64;
+            for (key, bytes) in items {
+                let (total, length) = match key.item_type {
+                    format::FREE => (&mut raw_free, format::Free::decode(&bytes).map_err(|_| Errno(EIO))?.length),
+                    format::PENDING => (&mut raw_pending, format::Pending::decode(&bytes).map_err(|_| Errno(EIO))?.length),
+                    _ => continue,
+                };
+                *total = total.checked_add(length).ok_or(Errno(EIO))?;
+            }
             writeln!(
                 text,
-                "{} breenfs durable_generation={} dirty_bytes={} read_only={} last_scrub_generation={} last_scrub_errors={}",
+                "{} breenfs durable_generation={} dirty_bytes={} read_only={} last_scrub_generation={} last_scrub_errors={} free_blocks={} pending_blocks={}",
                 name,
                 state.durable.generation,
                 state.dirty_bytes + pending_bytes,
                 u8::from(state.read_only()),
                 state.durable.last_scrub_generation,
-                state.durable.last_scrub_errors
+                state.durable.last_scrub_errors,
+                raw_free,
+                raw_pending
             )
             .map_err(|_| Errno(ENOMEM))?;
             if let Some(failure) = state.metadata_error {

@@ -20,7 +20,9 @@ const APP_OUTPUT_CLOCK: usize = PHASE_BASE + PHASES.len() * 2;
 pub mod observations;
 #[path = "suite_mutation_costs.rs"]
 mod mutation_costs;
-const USED_CELLS: usize = observations::USED_CELLS;
+#[path = "suite_markers.rs"]
+pub mod markers;
+const USED_CELLS: usize = markers::USED_CELLS;
 static PAGE: AtomicUsize = AtomicUsize::new(0);
 fn now_ms() -> Result<u64, String> {
     libbreenix::time::now_monotonic().map(|t| (t.as_nanos()/1_000_000) as u64).map_err(|e| e.to_string())
@@ -113,6 +115,7 @@ impl Scope {
     }
     pub(super) fn failure_records(&self, suite: &str, case: &str, failed: bool) -> Vec<String> {
         let mut records = observations::records(self.page, suite, case, failed);
+        records.extend(markers::records(self.page, suite, case, failed));
         records.extend(self.mutations.records(suite, case, failed, mutation_costs::Snapshot::read));
         records
     }
