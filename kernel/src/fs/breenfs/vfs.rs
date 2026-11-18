@@ -1989,7 +1989,8 @@ impl<W: Wait + 'static> BreenFs<W> {
         state.metadata_reserved = 0;
         state.fresh = true;
         state.policy = CommitPolicy::new(now_ns);
-        self.inner.generation.store(commit.generation() + 1, Ordering::Release);
+        // SeqCst: touch() pairs this store with its slot record (x11c M4).
+        self.inner.generation.store(commit.generation() + 1, Ordering::SeqCst);
         Ok(FrozenGeneration {
             files,
             commit,
@@ -2593,10 +2594,22 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         let seconds = crate::time::current_unix_time_coarse() as u64;
         #[cfg(test)]
         let seconds = crate::time::current_unix_time();
-        let generation = self.inner.generation.load(Ordering::Acquire);
+        let mut generation = self.inner.generation.load(Ordering::SeqCst);
         #[cfg(test)]
         super::preempt::context::observe(super::preempt::context::Event::Touch);
-        pin.touched.record(generation, read, seconds.saturating_add(1));
+        // A freeze between that load and the record can let N's preparation
+        // take N's slot before this stamp lands (x11c M4). Re-read after each
+        // record: if a freeze moved the generation, record into the open
+        // generation's slot too. The freeze's store, these loads and the slot
+        // store and take are SeqCst, so either the take saw this stamp or the
+        // re-read sees the new generation. A stamp recorded in two slots
+        // carries the same time each time it is applied.
+        loop {
+            pin.touched.record(generation, read, seconds.saturating_add(1));
+            let current = self.inner.generation.load(Ordering::SeqCst);
+            if current == generation { break; }
+            generation = current;
+        }
         self.inner.events.push(&pin.touched);
     }
     fn parent(&self, dir: u64) -> Result<u64, Errno> {

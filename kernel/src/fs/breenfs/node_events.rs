@@ -5,7 +5,9 @@ use core::{ptr, sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering}};
 // Deferred times are recorded per generation (E24 coordinator 601(2)): slot
 // `generation & 1` belongs to the open generation, the other one to a frozen
 // generation that its publication applies. A toucher that races the freeze
-// lands in the frozen slot only if it read the old generation first.
+// lands in the frozen slot only if it read the old generation first; it then
+// records into the new open slot as well (vfs.rs touch, x11c M4). Records and
+// takes are SeqCst for that handshake.
 pub(super) struct TouchedTimes {
     pub ino: u64,
     access: [AtomicU64; 2],
@@ -24,12 +26,12 @@ impl TouchedTimes {
     /// Record a coarse time (seconds + 1) for `generation`.
     pub fn record(&self, generation: u64, read: bool, stamp: u64) {
         let slots = if read { &self.access } else { &self.modify };
-        slots[(generation & 1) as usize].store(stamp, Ordering::Release);
+        slots[(generation & 1) as usize].store(stamp, Ordering::SeqCst);
     }
     /// Take `generation`'s (access, modify) stamps; 0 means no stamp.
     pub fn take(&self, generation: u64) -> (u64, u64) {
         let slot = (generation & 1) as usize;
-        (self.access[slot].swap(0, Ordering::AcqRel), self.modify[slot].swap(0, Ordering::AcqRel))
+        (self.access[slot].swap(0, Ordering::SeqCst), self.modify[slot].swap(0, Ordering::SeqCst))
     }
 }
 #[derive(Default)]
