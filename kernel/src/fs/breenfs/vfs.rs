@@ -78,6 +78,10 @@ mod mapped_writeback;
 #[path = "../../../../tools/breenfs-host-tests/src/mount_exclusion.rs"]
 mod mount_exclusion;
 
+#[cfg(test)]
+#[path = "../../../../tools/breenfs-host-tests/src/metadata_admission.rs"]
+mod metadata_admission;
+
 // Extended attributes use ABI errno 61 for an absent attribute.
 const ENODATA: i32 = 61;
 
