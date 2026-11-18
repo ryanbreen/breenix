@@ -2089,9 +2089,9 @@ fn descriptors_unlink_open() -> CaseResult {
     result
 }
 
-// E24 ledger 531(t), amended by 533: BreenFS IDs are not reused. Observe
-// data release under 465's equalized commits; inode/ORPHAN absence by inode is
-// covered through the production VFS and breenfs-check walk on the host.
+// E24 coordinator 567: the guest checks the data-block lower bound after
+// 465's equalized commits. The host extent-identity oracle checks exact release
+// and 533's inode/ORPHAN absence, including two planted leak controls.
 fn descriptors_unlink_reclaim_breenfs() -> CaseResult {
     use std::os::unix::fs::DirEntryExt;
 
@@ -2116,8 +2116,8 @@ fn descriptors_unlink_reclaim_breenfs() -> CaseResult {
     expect_errno(stat(&f.path, false), 2, "lookup after last close and fsync")?;
     let after = marker.free(marker.0.fd())?;
     check(
-        after.checked_sub(before) == Some(data_blocks),
-        &format!("last close returned FREE {before}->{after}, expected {data_blocks} blocks"),
+        after.checked_sub(before).is_some_and(|gain| gain >= data_blocks),
+        &format!("last close returned FREE {before}->{after}, expected at least {data_blocks} blocks"),
     )?;
     let parent = f.path.rsplit_once('/').ok_or("fixture has no parent")?.0;
     for entry in std::fs::read_dir(parent).map_err(|e| e.to_string())? {
