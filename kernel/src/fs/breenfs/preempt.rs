@@ -29,6 +29,9 @@ mod context {
         cpu::preempt_count() == 1 && !cpu::in_interrupt()
             && crate::arch_interrupts_enabled()
             && crate::task::scheduler::current_thread_id().is_some()
+            // Boot runs as idle: its continuation is not a resumable worker.
+            // Let the scheduler identify it on either architecture.
+            && crate::task::scheduler::is_current_idle_thread() == Some(false)
     }
     pub fn need_resched() -> bool { cpu::need_resched() }
     pub fn preempt_enable() { cpu::preempt_enable(); }

@@ -146,3 +146,8 @@ pub fn root_filesystem() -> Result<Arc<dyn FileSystem>, Errno> {
     let id = super::mount::find_mount("/").ok_or(Errno(ENODEV))?;
     super::mount::filesystem(id)
 }
+
+/// Boot diagnostics name the backend retained by the mounted root.
+pub fn root_kind() -> &'static str {
+    root_filesystem().and_then(|fs| fs.kind()).unwrap_or("unmounted")
+}

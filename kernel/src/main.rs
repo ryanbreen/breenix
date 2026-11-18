@@ -651,7 +651,7 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     // Probe and mount the root filesystem once IRQ-driven block completions can arrive.
     match kernel::fs::vfs::mount_root() {
         Ok(()) => {
-            log::info!("ext2 root filesystem mounted");
+            log::info!("{} root filesystem mounted", kernel::fs::vfs::root_kind());
             if kernel::block::ramdisk::device().is_some() {
                 log::info!("[fs] root mounted from the RAM disk");
             } else if kernel::block::root_on_installed_disk() {
@@ -667,7 +667,7 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
             kernel::test_framework::btrt::pass(kernel::test_framework::catalog::EXT2_MOUNT);
         }
         Err(e) => {
-            log::warn!("Failed to mount ext2 root: {:?}", e);
+            log::warn!("Failed to mount root filesystem: {:?}", e);
             #[cfg(feature = "btrt")]
             kernel::test_framework::btrt::fail(
                 kernel::test_framework::catalog::EXT2_MOUNT,
