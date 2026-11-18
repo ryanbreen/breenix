@@ -77,6 +77,15 @@ fn namespace_churn_before_periodic_commit_must_not_refuse_admission() {
     let fs = fixture();
     let tmp = fs.lookup(2, b"tmp").unwrap();
     let mut refused = None;
+    let first_estimate = {
+        let mut state = fs.inner.state.lock();
+        let grant = state
+            .reserve_metadata(&[tmp], 5, true, false, Operation::Allocate)
+            .unwrap();
+        let blocks = grant.blocks();
+        state.reservations.release(grant);
+        blocks
+    };
     for i in 0..64 {
         let name = alloc::format!("acceptance-churn-{i}");
         let result = fs.create(
@@ -99,6 +108,14 @@ fn namespace_churn_before_periodic_commit_must_not_refuse_admission() {
             break;
         }
         let ino = result.unwrap();
+        if i == 0 {
+            let retained = fs.inner.state.lock().reservations.outstanding();
+            println!("METADATA_SETTLEMENT granted={first_estimate} retained={retained}");
+            assert!(
+                retained < first_estimate,
+                "unused worst-case grant was not returned at completion"
+            );
+        }
         fs.remove(
             tmp,
             name.as_bytes(),
