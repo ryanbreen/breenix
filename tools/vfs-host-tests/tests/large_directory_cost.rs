@@ -112,3 +112,35 @@ fn large_directory_readdir_has_linear_node_and_device_cost() {
     assert!(start.elapsed().as_secs_f64() < 60.0, "U32: large directory count test exceeded 60 s");
     assert!(linear, "readdir repeatedly decodes already visited nodes instead of a linear traversal");
 }
+
+#[test]
+// Include libc's setup, which the enumeration-only count check above excludes.
+// No synthetic fsync: exercise the production admission-pressure path. U29
+// records this as an existing-behavior guard, not a reproduction of elapsed time.
+fn prelatch_libc_create_write_profile() {
+    use crate::breenfs::{btree, vfs::measurement as commits};
+    let started = Instant::now();
+    let bytes = std::env::var_os("PRELATCH_ROOT_IMAGE")
+        .map_or_else(image, |path| std::fs::read(path).unwrap());
+    let disk = Arc::new(CountDisk { disk: Disk { bytes: Mutex::new(bytes), writable: true }, calls: AtomicU64::new(0) });
+    let fs = BreenFs::mount_writable(disk.clone(), Arc::new(BufferCache::new(NoWait)), 241517, 1).unwrap();
+    let attrs = InodeAttrs::new(0o644, 0, 0);
+    let dir = fs.create(2, b"libc-many", NewNode::Directory { attrs }).unwrap();
+    btree::measurement::take_work(); commits::take_work(); disk.calls.store(0, Ordering::Relaxed);
+    for i in 0..300 {
+        let name = format!("f{i:03}xxxxxxxxx");
+        let mut opened = None;
+        fs.create_open(dir, name.as_bytes(), NodeKind::Regular, &|_| Ok(attrs), &mut |node| { opened = Some(node); Ok(()) }).unwrap();
+        let node = opened.unwrap();
+        fs.resize(&node, 0, false, &|_| Ok(())).unwrap();
+        let written = fs.write(&node, WriteReq { at: WriteAt::Offset(0), limit: u64::MAX, clear_setid: true }, b"x").unwrap();
+        assert_eq!(written.bytes, 1);
+        drop(node);
+        if [74, 149, 299].contains(&i) {
+            println!("PRELATCH_SETUP files={} work={:?} commits={:?} io={}", i+1, btree::measurement::take_work(), commits::take_work(), disk.calls.swap(0, Ordering::Relaxed));
+        }
+    }
+    let names = (0..300).map(|i| format!("f{i:03}xxxxxxxxx").into_bytes()).collect::<Vec<_>>();
+    assert!(walk(fs.clone(), &disk, dir, &names, 8192));
+    assert!(started.elapsed().as_secs_f64() < 60.0, "U32: setup profile exceeded 60 s");
+}
