@@ -106,3 +106,46 @@ fn node_buffer_enomem_returns_to_caller_without_latching() {
     fs.sync().unwrap();
     assert_eq!(fs.read_only(), Ok(false));
 }
+
+fn retire_after_latch(dirty: bool) {
+    use crate::memory::file_map::bind_host;
+    let (fs, disk, _, _) = fixture();
+    let node = fs.open(16).unwrap();
+    let pages = 67;
+    fs.resize(&node, pages * BLOCK_SIZE as u64, false, &|_| Ok(())).unwrap();
+    fs.fsync(&node, false).unwrap();
+    let binding = bind_host(node.clone(), pages * BLOCK_SIZE as u64, true, true, true);
+    if dirty {
+        for page in 0..pages { binding.store(page * BLOCK_SIZE as u64, 0x6f).unwrap(); }
+    }
+    let map = node.map.clone();
+    let weak = Arc::downgrade(&node);
+    let writes = disk.writes.load(Ordering::Relaxed);
+    fs.inner.state.lock().observed::<()>(Err(ops::Error::EIO)).unwrap_err();
+    // Live bindings retain their pages; service must never publish after EIO.
+    assert_eq!(fs.commit_due(0), Err(Errno(EIO)));
+    assert!(map.nonempty());
+    drop(binding);
+    // The kernel Binding::drop also queues writeback; the host binding only
+    // models unbinding, so issue that same request explicitly here.
+    map.request_writeback();
+    drop(node);
+    assert_eq!(fs.mapped_nodes().unwrap().len(), 1, "failed mount hid its mapping pin");
+    let live = super::dirty_heap_bound::live();
+    for _ in 0..pages.div_ceil(crate::memory::file_map::EVICT_BUDGET as u64) {
+        assert_eq!(fs.commit_due(0), Err(Errno(EIO)));
+    }
+    assert!(!map.nonempty(), "failed mount retained unbound mapped pages");
+    assert!(!map.has_dirty());
+    assert!(weak.upgrade().is_none(), "service retained the last VNode pin");
+    assert!(live - super::dirty_heap_bound::live() >= (pages * BLOCK_SIZE as u64) as isize,
+        "page flags cleared without releasing the host frames");
+    assert_eq!(disk.writes.load(Ordering::Relaxed), writes);
+    assert_eq!(fs.failure(), Some(("observed-metadata", EIO)));
+    assert_eq!(fs.read_only(), Ok(true));
+    assert_eq!(fs.sync(), Err(Errno(EIO)));
+}
+#[test]
+fn failed_mount_releases_clean_mapped_pages_after_final_unbind() { retire_after_latch(false); }
+#[test]
+fn failed_mount_releases_dirty_unobserved_pages_without_writeback() { retire_after_latch(true); }
