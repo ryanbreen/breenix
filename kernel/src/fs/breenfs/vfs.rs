@@ -153,6 +153,10 @@ mod metadata_admission;
 mod outstanding_grants;
 
 #[cfg(test)]
+#[path = "../../../../tools/breenfs-host-tests/src/publication_trigger.rs"]
+mod publication_trigger;
+
+#[cfg(test)]
 #[path = "../../../../tools/breenfs-host-tests/src/metadata_failure.rs"]
 mod metadata_failure;
 

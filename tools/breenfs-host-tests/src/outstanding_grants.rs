@@ -2,7 +2,7 @@
 use super::*;
 use std::{sync::Mutex as HostMutex, time::Instant};
 
-struct NoWait;
+pub(super) struct NoWait;
 impl Wait for NoWait {
     fn generation(&self) -> u64 { 0 }
     fn wait(&self, _: u64) { panic!("unexpected sequential wait") }
@@ -24,7 +24,7 @@ impl BlockDevice for Disk {
     }
     fn flush(&self) -> Result<(), BlockError> { Ok(()) }
 }
-fn fixture() -> Arc<BreenFs<NoWait>> {
+pub(super) fn fixture() -> Arc<BreenFs<NoWait>> {
     // Keep populated FS and SPACE trees, rather than only reducing free space
     // on an empty root. This mirrors metadata_admission's production writer.
     let disk = Arc::new(Disk(HostMutex::new(vec![0; 80000 * BLOCK_SIZE])));
