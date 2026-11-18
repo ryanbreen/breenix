@@ -1,4 +1,4 @@
-"""E24 coordinator 558(y): guest differential and failure-only marker receipts."""
+"""E24 coordinator 567: guest lower bound and failure-only marker receipts."""
 from pathlib import Path
 import unittest
 from ui_idle_capture_test import run_rust
@@ -7,11 +7,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class FreeCountDifferential(unittest.TestCase):
-    def test_guest_uses_control_and_keeps_ext2(self):
+    def test_guest_uses_extent_backed_lower_bound_and_keeps_ext2(self):
         source = (ROOT / 'userspace/programs/src/suite_files_io.rs').read_text()
         case = source.split('fn descriptors_unlink_reclaim_breenfs()', 1)[1].split('\nfn descriptors_unlink_reclaim()', 1)[0]
-        self.assertIn('let mut control = orphan_fixture()?;', case)
-        self.assertIn('unlink_delta - control_delta == i128::from(data_blocks)', case)
+        self.assertNotIn('control_delta', case)
+        self.assertIn('after.checked_sub(before).is_some_and(|gain| gain >= data_blocks)', case)
         self.assertIn('expect_errno(stat(&f.path, false), 2,', case)
         self.assertIn('.ino() != ino', case)
         self.assertNotIn('fs::unlink(&control.path)', case)
