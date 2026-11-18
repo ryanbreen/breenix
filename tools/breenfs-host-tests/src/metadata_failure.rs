@@ -88,3 +88,21 @@ fn metadata_verification_cause_and_node_are_recorded() {
 }
 #[test]
 fn metadata_allocation_cause_and_node_are_recorded() { cause("allocation", false); }
+
+#[test]
+fn node_buffer_enomem_returns_to_caller_without_latching() {
+    let (fs, disk, _, _) = fixture();
+    let writes = disk.writes.load(Ordering::Relaxed);
+    let result = super::dirty_heap_bound::fail_allocation(NODE_SIZE, 1, || fs.getattr(16));
+    assert_eq!(result, Err(Errno(ENOMEM)), "node allocation was treated as disk failure");
+    assert_eq!(fs.failure(), None);
+    assert_eq!(fs.read_only(), Ok(false));
+    assert_eq!(disk.writes.load(Ordering::Relaxed), writes);
+    // Retry the same cold lookup, then mutate and publish on the same mount.
+    assert_eq!(fs.getattr(16).unwrap().kind, NodeKind::Regular);
+    fs.create(2, b"after-pressure", NewNode::Regular {
+        attrs: InodeAttrs::new(0o600, 0, 0),
+    }).unwrap();
+    fs.sync().unwrap();
+    assert_eq!(fs.read_only(), Ok(false));
+}
