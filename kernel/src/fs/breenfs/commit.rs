@@ -22,6 +22,40 @@ use alloc::{
 };
 use core::sync::atomic::{AtomicU8, Ordering};
 
+// Opt-in host observation; absent from kernel builds and inactive in other tests.
+#[cfg(test)]
+pub mod publication_measurement {
+    extern crate std;
+    use alloc::{collections::BTreeMap, vec::Vec};
+    #[derive(Default)]
+    pub struct Counts {
+        pub staged: Vec<(u64, u8)>,
+        pub files_views: usize,
+        pub view_records: usize,
+    }
+    std::thread_local! {
+        static COUNTS: core::cell::RefCell<Option<Counts>> = const { core::cell::RefCell::new(None) };
+    }
+    pub fn start() { COUNTS.with(|c| *c.borrow_mut() = Some(Counts::default())); }
+    pub fn take() -> Counts { COUNTS.with(|c| c.borrow_mut().take().unwrap()) }
+    pub(super) fn prepared(nodes: &BTreeMap<u64, Vec<u8>>) {
+        COUNTS.with(|c| {
+            if let Some(c) = c.borrow_mut().as_mut() {
+                assert!(c.staged.is_empty(), "one preparation per publication");
+                c.staged = nodes.iter().map(|(&addr, bytes)| (addr, bytes[12])).collect();
+            }
+        });
+    }
+    pub(crate) fn files_view(records: usize) {
+        COUNTS.with(|c| {
+            if let Some(c) = c.borrow_mut().as_mut() {
+                c.files_views += 1;
+                c.view_records += records;
+            }
+        });
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     EIO,
@@ -167,6 +201,8 @@ impl Committer {
         // Step 1: the caller's write lock covers this deferred-space fixpoint.
         // Opening the next in-memory transaction belongs to the adapter.
         let space_root = txn.settle().map_err(|_| Error::EIO)?;
+        #[cfg(test)]
+        publication_measurement::prepared(txn.writes());
         let mut nodes = BTreeMap::new();
         for (&addr, bytes) in txn.writes() {
             preemption_point();

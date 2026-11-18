@@ -162,7 +162,10 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         self.put_inode(ino, inode)
     }
     pub fn new(store: S, sb: &Superblock, root_id: u64, writable: bool) -> Result<Self, Error> {
-        let roots: BTreeMap<_, _> = recover::space_items(&store, sb)?
+        let entries = recover::space_items(&store, sb)?;
+        #[cfg(test)]
+        super::commit::publication_measurement::files_view(entries.len());
+        let roots: BTreeMap<_, _> = entries
             .into_iter()
             .filter(|(k, _)| { preemption_point(); k.item_type == format::ROOT })
             .map(|(k, bytes)| Ok((k.offset, Root::decode(&bytes)?)))
