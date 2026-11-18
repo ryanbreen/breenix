@@ -1,5 +1,8 @@
 //! BreenFS operations at the VFS boundary (design 1.1, 2.3 and 2.5).
 use super::preempt::preemption_point;
+#[path = "node_events.rs"]
+mod node_events;
+use node_events::{NodeEvents, TouchedTimes};
 #[path = "mutation_cost.rs"]
 mod mutation_cost;
 use mutation_cost::{Costs, Op as CostOp, Phase as CostPhase};
@@ -27,11 +30,13 @@ use crate::{
 };
 use alloc::{
     boxed::Box,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, Weak},
     vec::Vec,
 };
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::Ordering;
+#[cfg(test)]
+use core::sync::atomic::AtomicU64;
 use spin::Mutex;
 
 #[cfg(test)]
@@ -262,6 +267,7 @@ pub struct BreenFs<W: Wait + 'static> {
     inner: Arc<Mount<W>>,
 }
 struct Mount<W: Wait + 'static> {
+    events: Arc<NodeEvents>,
     costs: Costs,
     state: MountLock<MountState<W>>,
     device: Arc<dyn BlockDevice>,
@@ -308,6 +314,9 @@ struct MountState<W: Wait + 'static> {
     mount: usize,
     closed: bool,
     nodes: BTreeMap<u64, NodeState>,
+    events: Arc<NodeEvents>,
+    touches: BTreeSet<u64>,
+    dirty_nodes: BTreeSet<u64>,
     dirty_bytes: u64,
     // True only before the open transaction's first filesystem change.
     fresh: bool,
@@ -339,20 +348,13 @@ struct NodeState {
     // file off between its parts.
     splitting: bool,
 }
-// Retained by NodeState after close, without retaining the mount itself.
-#[derive(Default)]
-struct TouchedTimes {
-    access: AtomicU64,
-    modify: AtomicU64,
-}
-impl TouchedTimes {
-    fn pending(&self) -> bool {
-        self.access.load(Ordering::Acquire) != 0 || self.modify.load(Ordering::Acquire) != 0
-    }
-}
+// The VNode pin queues its final release without mount locking or I/O.
 struct NodePin<W: Wait + 'static> {
     mount: Arc<Mount<W>>,
     touched: Arc<TouchedTimes>,
+}
+impl<W: Wait + 'static> Drop for NodePin<W> {
+    fn drop(&mut self) { self.mount.events.push(&self.touched); }
 }
 // Bounded metadata cache; mutation completion invalidates its entries.
 struct InodeCache {
@@ -371,6 +373,7 @@ impl<W: Wait> MountState<W> {
         }
     }
     fn apply_touches(&mut self, ino: u64) -> Result<(), Errno> {
+        self.touches.remove(&ino);
         preemption_point();
         let Some(touched) = self.nodes.get(&ino).and_then(|entry| entry.touched.as_ref())
         else {
@@ -479,23 +482,25 @@ impl<W: Wait> MountState<W> {
     }
     fn retain_open(&mut self) {
         #[cfg(test)] let _phase = publication_phases::Phase::new("retain_open");
-        self.nodes.retain(|_, node| {
-            #[cfg(test)] publication_phases::visit(0);
+        // Only opens, touches and final releases change this snapshot. The
+        // atomic queue owns no VNode and cannot keep an inode open itself.
+        for times in self.events.take() {
             preemption_point();
-            node.node.strong_count() != 0
-                || node.splitting
-                || node.dirty.bytes() != 0
-                || node.touched.as_ref().is_some_and(|times| times.pending())
-        });
-        self.files.retain_open_inodes(
-            self.nodes
-                .iter()
-                .filter(|(_, node)| {
-                    #[cfg(test)] publication_phases::visit(0);
-                    preemption_point(); node.node.strong_count() != 0 })
-                .map(|(&ino, _)| ino)
-                .collect(),
-        );
+            #[cfg(test)] publication_phases::visit(0);
+            let Some(node) = self.nodes.get(&times.ino) else { continue; };
+            if node.touched.as_ref().is_none_or(|current| !Arc::ptr_eq(current, &times)) { continue; }
+            self.files.set_inode_open(times.ino, node.node.strong_count() != 0);
+            if times.pending() { self.touches.insert(times.ino); }
+            self.prune_node(times.ino);
+        }
+    }
+    fn prune_node(&mut self, ino: u64) {
+        if self.nodes.get(&ino).is_some_and(|node| node.node.strong_count() == 0
+            && !node.splitting && node.dirty.bytes() == 0
+            && !node.touched.as_ref().is_some_and(|times| times.pending())) {
+            self.nodes.remove(&ino);
+            self.touches.remove(&ino);
+        }
     }
     fn fail(&mut self, branch: &'static str, error: Errno) {
         if self.failure.is_some() { return; }
@@ -642,6 +647,7 @@ impl<W: Wait> MountState<W> {
         if result.is_ok() {
             let node = self.nodes.get_mut(&ino).ok_or(Errno(EIO))?;
             node.reserved_metadata = node.reserved_metadata.max(metadata);
+            self.dirty_nodes.insert(ino);
             if grant.blocks() != 0 { self.grants.push(grant); }
             else { self.reservations.release(grant); }
             // The data grant already funds the inode/COW work just performed.
@@ -717,36 +723,30 @@ impl<W: Wait> MountState<W> {
     }
     fn drain_dirty(&mut self, device: &dyn BlockDevice) -> Result<(), Errno> {
         #[cfg(test)] let _phase = publication_phases::Phase::new("drain_dirty");
-        let result = self.drain_pages(device);
-        // Draining frees pages as it copies them; keep the charge truthful
-        // even when a failed drain leaves the mount failed.
-        self.dirty_bytes = self.nodes.values().map(|node| {
-            #[cfg(test)] publication_phases::visit(0);
-            preemption_point(); node.dirty.bytes() }).sum();
-        result
+        self.drain_pages(device)
     }
     fn drain_pages(&mut self, device: &dyn BlockDevice) -> Result<(), Errno> {
-        for (&ino, node) in self.nodes.iter_mut() {
-            #[cfg(test)] publication_phases::visit(0);
+        for &ino in &self.dirty_nodes {
             preemption_point();
-            if node.dirty.bytes() == 0 {
-                continue;
-            }
+            #[cfg(test)] publication_phases::visit(0);
+            let Some(node) = self.nodes.get_mut(&ino) else { continue; };
+            if node.dirty.bytes() == 0 { continue; }
             let mut inode = match self.files.inode(ino) {
                 Ok(inode) => inode,
-                // An orphan whose last open closed is reclaimed by fsync.
+                // Closed orphans are reclaimed by preparation below.
                 Err(ops::Error::ENOENT) => continue,
                 Err(e) => return Err(errno(e)),
             };
+            let before = node.dirty.bytes();
             let files = &mut self.files;
-            node.dirty.write_runs(inode.size, |offset, bytes| {
-                files
-                    .write(device, ino, offset, bytes, inode.mtime)
-                    .map_err(errno)?;
+            let result = node.dirty.write_runs(inode.size, |offset, bytes| {
+                files.write(device, ino, offset, bytes, inode.mtime).map_err(errno)?;
                 Ok(())
-            })?;
-            // Allocation changes nblocks; write time and subsequent setattr
-            // metadata belong to the syscall, rather than the later commit.
+            });
+            // write_runs releases source pages even on failure. Preserve the
+            // exact mount charge without scanning unrelated dirty maps.
+            self.dirty_bytes -= before - node.dirty.bytes();
+            result?;
             inode.nblocks = self.files.inode(ino).map_err(errno)?.nblocks;
             self.files.put_inode(ino, inode).map_err(errno)?;
         }
@@ -871,7 +871,9 @@ impl<W: Wait + 'static> BreenFs<W> {
         })
         .map_err(|_| Errno(ENOMEM))?;
         let signal = Arc::new(CommitSignal::new());
+        let events = Arc::try_new(NodeEvents::default()).map_err(|_| Errno(ENOMEM))?;
         let inner = Arc::try_new(Mount {
+            events: events.clone(),
             costs: Costs::new(),
             state: MountLock::new(MountState {
                 files,
@@ -891,6 +893,9 @@ impl<W: Wait + 'static> BreenFs<W> {
                 mount,
                 closed: false,
                 nodes: BTreeMap::new(),
+                events,
+                touches: BTreeSet::new(),
+                dirty_nodes: BTreeSet::new(),
                 dirty_bytes: 0,
                 fresh: true,
                 roots,
@@ -952,7 +957,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         let fs = Arc::try_new(self.clone()).map_err(|_| Errno(ENOMEM))?;
         let pin = Arc::try_new(NodePin {
             mount: self.inner.clone(),
-            touched: Arc::try_new(TouchedTimes::default()).map_err(|_| Errno(ENOMEM))?,
+            touched: Arc::try_new(TouchedTimes::new(ino)).map_err(|_| Errno(ENOMEM))?,
         })
         .map_err(|_| Errno(ENOMEM))?;
         Arc::try_new(VNode::new(
@@ -979,6 +984,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         let entry = state.nodes.entry(ino).or_default();
         entry.node = Arc::downgrade(&node);
         entry.touched = Some(node.pin::<NodePin<W>>().ok_or(Errno(EIO))?.touched.clone());
+        state.files.set_inode_open(ino, true);
         state.retain_open();
         Ok(node)
     }
@@ -1372,8 +1378,8 @@ impl<W: Wait + 'static> BreenFs<W> {
         }
         handles.try_reserve(state.nodes.len()).map_err(|_| Errno(ENOMEM))?;
         for entry in state.nodes.values() {
-            #[cfg(test)] publication_phases::visit(1);
             preemption_point();
+            #[cfg(test)] publication_phases::visit(1);
             if let Some(node) = entry.node.upgrade() {
                 if entry.mapped.is_some() || node.map.has_dirty() || node.map.eviction_pending() || node.map.writeback_pending() {
                     handles.push(node);
@@ -1440,14 +1446,14 @@ impl<W: Wait + 'static> BreenFs<W> {
             #[cfg(test)] { _cache_cleanup = publication_phases::CacheCleanup::new(); }
             #[cfg(test)]
             measurement::prepared(force, pressure);
+            state.retain_open();
             #[cfg(test)] let touches_phase = publication_phases::Phase::new("apply_touches");
-            let touched: Vec<_> = state.nodes.keys().map(|&ino| {
-                #[cfg(test)] publication_phases::visit(0);
-                preemption_point(); ino }).collect();
+            let touched = core::mem::take(&mut state.touches);
             for ino in touched {
                 preemption_point();
                 #[cfg(test)] publication_phases::visit(0);
                 state.apply_touches(ino)?;
+                state.prune_node(ino);
             }
             #[cfg(test)] drop(touches_phase);
             state.retain_open();
@@ -1535,11 +1541,14 @@ impl<W: Wait + 'static> BreenFs<W> {
             }
             #[cfg(test)] let cleanup_phase = publication_phases::Phase::new("cleanup");
             state.inodes.entries.fill(None);
-            for node in state.nodes.values_mut() {
-                #[cfg(test)] publication_phases::visit(0);
+            for ino in core::mem::take(&mut state.dirty_nodes) {
                 preemption_point();
-                node.dirty.clear();
-                node.reserved_metadata = 0;
+                #[cfg(test)] publication_phases::visit(0);
+                if let Some(node) = state.nodes.get_mut(&ino) {
+                    node.dirty.clear();
+                    node.reserved_metadata = 0;
+                }
+                state.prune_node(ino);
             }
             state.dirty_bytes = 0;
             state.retain_open();
@@ -1585,8 +1594,8 @@ impl<W: Wait + 'static> BreenFs<W> {
                 state.durable = prepared.superblock().clone();
                 *publication = Some(state.durable.clone());
                 for grant in core::mem::take(&mut state.pending_grants) {
-                    #[cfg(test)] publication_phases::visit(3);
                     preemption_point();
+                    #[cfg(test)] publication_phases::visit(3);
                     state.reservations.release(grant);
                 }
                 self.inner
@@ -2134,6 +2143,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             &pin.touched.modify
         };
         pending.store(seconds.saturating_add(1), Ordering::Release);
+        self.inner.events.push(&pin.touched);
     }
     fn parent(&self, dir: u64) -> Result<u64, Errno> {
         let mut state = self.foreground_lock();
@@ -2373,6 +2383,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         let entry = state.nodes.entry(ino).or_default();
         entry.node = Arc::downgrade(&node);
         entry.touched = Some(node.pin::<NodePin<W>>().ok_or(Errno(EIO))?.touched.clone());
+        state.files.set_inode_open(ino, true);
         state.retain_open();
         Ok(())
     }

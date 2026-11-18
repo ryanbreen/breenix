@@ -22,10 +22,10 @@ LOOPS = {
     'vfs.rs': {
         'service_mappings': ('for node in handles',),
         'mapped_nodes': ('for entry in state.nodes.values()',),
-        'retain_open': (),
-        'drain_pages': ('for (&ino, node) in self.nodes.iter_mut()',),
+        'retain_open': ('for times in self.events.take()',),
+        'drain_pages': ('for &ino in &self.dirty_nodes',),
         'commit_generation_up_to': ('for ino in touched',
-                                    'for node in state.nodes.values_mut()',
+                                    'for ino in core::mem::take(&mut state.dirty_nodes)',
                                     'for grant in core::mem::take(&mut state.pending_grants)'),
     },
     'dirty.rs': {'write_runs': ('while let Some((first, page)) = self.pages.pop_first()',)},
