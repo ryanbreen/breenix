@@ -98,6 +98,8 @@ pub struct Files<'a, S: NodeStore + 'a> {
     space_root: BlockPtr,
     data: BTreeMap<u64, Vec<u8>>,
     open_inodes: BTreeSet<u64>,
+    // Cleanup newly deferred by this transaction, funded by its namespace grants.
+    orphan_count: u64,
 }
 impl<'a, S: NodeStore + 'a> Files<'a, S> {
     /// Create root 1 in the formatter's sole, unpublished generation.
@@ -124,6 +126,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             space_root: sb.space_root,
             data: BTreeMap::new(),
             open_inodes: BTreeSet::new(),
+            orphan_count: 0,
         };
         files.put_inode(
             2,
@@ -181,6 +184,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             space_root: sb.space_root,
             data: BTreeMap::new(),
             open_inodes: BTreeSet::new(),
+            orphan_count: 0,
         })
     }
     fn require_writable(&self) -> Result<(), Error> {
@@ -259,6 +263,11 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             ).ok_or(Error::ENOSPC)?;
         }
         Ok(paths)
+    }
+    /// Newly deferred orphan cleanup belongs to this transaction's grants;
+    /// existing ORPHAN items are already part of the durable filesystem.
+    pub fn metadata_debt(&self) -> Result<u64, Error> {
+        Ok(self.txn.metadata_debt(self.root.root, self.orphan_count)?)
     }
     pub fn inode(&self, ino: u64) -> Result<Inode, Error> {
         let value = btree::search(&self.txn.view(), self.root.root, key(ino, format::INODE, 0))?
@@ -589,6 +598,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
                 key(ORPHAN_OBJECT, format::ORPHAN, ino),
                 &[],
             )?;
+            self.orphan_count = self.orphan_count.checked_add(1).ok_or(Error::EIO)?;
         }
         self.put_inode(ino, inode)
     }

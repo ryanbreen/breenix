@@ -1,9 +1,10 @@
 //! Pure block reservation accounting from design section 2.8.
 //!
 //! The mount supplies its current free-block count under its write lock. Grants
-//! remain outstanding until their transaction is durable or discarded. Admission
-//! here changes no trees and performs no allocation or I/O; callers must reserve
-//! before mutation and retain the grant through publication.
+//! are settled to the work still owed after an operation, returning unused
+//! capacity immediately. The retained part stays outstanding until durable or
+//! discarded. Admission changes no trees and performs no allocation or I/O;
+//! callers must reserve before mutation and retain the debt through publication.
 use super::space::Error;
 
 /// Host-only captures of refusals and allocation grants (E24 ledger 403/408, #3047).
@@ -150,6 +151,16 @@ impl Ledger {
         }
         self.outstanding = outstanding;
         Ok(Grant { blocks })
+    }
+
+    /// Keep only the operation's remaining transaction debt. Admission already
+    /// funded this amount; settlement cannot enlarge a grant.
+    pub fn settle(&mut self, grant: &mut Grant, blocks: u64) -> Result<(), Error> {
+        let unused = grant.blocks.checked_sub(blocks).ok_or(Error::ENOSPC)?;
+        self.outstanding = self.outstanding.checked_sub(unused)
+            .expect("reservation settled on the wrong ledger");
+        grant.blocks = blocks;
+        Ok(())
     }
 
     /// Return the exact grant after a durable commit or a discarded transaction.

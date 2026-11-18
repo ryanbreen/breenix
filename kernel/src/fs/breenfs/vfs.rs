@@ -228,6 +228,7 @@ struct MountState<W: Wait + 'static> {
     pending: Option<Arc<PreparedCommit>>,
     reservations: Ledger,
     grants: Vec<Grant>,
+    metadata_reserved: u64,
     pending_grants: Vec<Grant>,
     signal: Arc<CommitSignal>,
 }
@@ -508,6 +509,11 @@ impl<W: Wait> MountState<W> {
             node.reserved_metadata = node.reserved_metadata.max(metadata);
             if grant.blocks() != 0 { self.grants.push(grant); }
             else { self.reservations.release(grant); }
+            // The data grant already funds the inode/COW work just performed.
+            // A later namespace grant must not charge that debt a second time.
+            let debt = self.files.metadata_debt();
+            let debt = self.observed(debt)?;
+            self.metadata_reserved = self.metadata_reserved.max(debt);
         } else {
             // DirtyPages prepares its pages before changing the dirty map.
             self.reservations.release(grant);
@@ -544,9 +550,28 @@ impl<W: Wait> MountState<W> {
         self.reservations.reserve(self.durable.free_blocks, blocks, operation)
             .map_err(|_| Errno(ENOSPC))
     }
-    fn finish_metadata<T>(&mut self, grant: Grant, result: Result<T, ops::Error>) -> Result<T, Errno> {
-        if result.is_ok() { self.grants.push(grant); }
-        else { self.reservations.release(grant); }
+    fn finish_metadata<T>(&mut self, mut grant: Grant, result: Result<T, ops::Error>) -> Result<T, Errno> {
+        if result.is_ok() {
+            // durable.free_blocks still includes private allocations. Keep
+            // those and the work publication still owes, once per transaction;
+            // return unused worst-case paths (E24 ledger 509(n)).
+            let debt = self.files.metadata_debt();
+            let debt = match debt {
+                Ok(debt) => debt,
+                Err(error) => {
+                    self.reservations.release(grant);
+                    return self.edited(Err(error));
+                }
+            };
+            let retained = debt.saturating_sub(self.metadata_reserved);
+            if self.reservations.settle(&mut grant, retained).is_err() {
+                self.reservations.release(grant);
+                return self.edited(Err(ops::Error::ENOSPC));
+            }
+            self.metadata_reserved += retained;
+            if retained != 0 { self.grants.push(grant); }
+            else { self.reservations.release(grant); }
+        } else { self.reservations.release(grant); }
         self.edited(result)
     }
     fn drain_dirty(&mut self, device: &dyn BlockDevice) -> Result<(), Errno> {
@@ -707,6 +732,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 committer,
                 reservations: Ledger::new(durable.global_reserve),
                 grants: Vec::new(),
+                metadata_reserved: 0,
                 pending_grants: Vec::new(),
                 durable,
                 failed: false,
@@ -857,9 +883,9 @@ impl<W: Wait + 'static> BreenFs<W> {
             self.inner.signal.wait(observed, None);
         }
     }
-    /// Retry admission after publishing the PENDING ranges visible at its first
-    /// refusal (E24 ledger 379(2), #3040). Reserve and validate again under the
-    /// new lock: publication can change COW estimates, and another caller can
+    /// Retry admission after publishing retained grants and the PENDING ranges
+    /// visible at its first refusal (E24 ledger 379(2), 509(n)). Reserve and
+    /// validate again under the new lock: publication can change COW estimates, and another caller can
     /// change names, ownership or append offsets while the lock is dropped.
     fn reserve_with_pressure<'a, T>(
         &'a self,
@@ -884,8 +910,16 @@ impl<W: Wait + 'static> BreenFs<W> {
                     let sb = state.pending.as_ref().map_or(&state.durable, |p| p.superblock());
                     let mut store = self.inner.cache.store(self.inner.device.clone(), sb);
                     if let Some(prepared) = &state.pending { store = store.with_pending(prepared); }
-                    let generation = super::space::pending_promotion_generation(&store, sb.space_root)
-                        .map_err(|_| Errno(EIO))?.ok_or(Errno(ENOSPC))?;
+                    let promotion = super::space::pending_promotion_generation(&store, sb.space_root)
+                        .map_err(|_| Errno(EIO))?;
+                    // Capture a finite publication bound on the first refusal.
+                    // The open generation can hold admission capacity without
+                    // any durable PENDING range (#3064); release its grants too.
+                    let retained = (!state.grants.is_empty() || !state.pending_grants.is_empty())
+                        .then(|| sb.generation.checked_add(1).ok_or(Errno(ENOSPC)))
+                        .transpose()?;
+                    let generation = promotion.into_iter().chain(retained).max()
+                        .ok_or(Errno(ENOSPC))?;
                     // A6 bounds release generations by this superblock's
                     // generation, including the detached publication's view.
                     if generation > sb.generation.saturating_add(2) {
@@ -1255,6 +1289,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             state.retain_open();
             state.policy = CommitPolicy::new(now_ns);
             state.pending_grants = core::mem::take(&mut state.grants);
+            state.metadata_reserved = 0;
             state.pending = Some(prepared.clone());
             (prepared, reap)
         };

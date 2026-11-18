@@ -160,6 +160,7 @@ pub struct Transaction<'a, S> {
     reservation_root: BlockPtr,
     scratch_next: u64,
     allocated: BTreeSet<u64>,
+    allocated_blocks: u64,
     counts: BTreeMap<(u64, u64), u32>,
     deferred: VecDeque<Change>,
     failure: Option<Error>,
@@ -247,6 +248,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             reserved_nodes: BTreeMap::from([(20, bytes)]),
             scratch_next: u64::MAX - 3,
             allocated: BTreeSet::from([20]),
+            allocated_blocks: 4,
             counts: BTreeMap::from([((20, 4), 1)]),
             deferred: VecDeque::new(),
             failure: None,
@@ -304,6 +306,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             reservation_root: space_root,
             scratch_next: u64::MAX - 3,
             allocated: BTreeSet::new(),
+            allocated_blocks: 0,
             counts: BTreeMap::new(),
             deferred: VecDeque::new(),
             failure: None,
@@ -327,14 +330,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
         ino: u64,
     ) -> Result<ReservationPaths, Error> {
         let view = self.view();
-        let space_nodes = match self.space_count.get() {
-            Some((root, count)) if root == self.space_root => count,
-            _ => {
-                let count = btree::reservation_nodes(&view, self.space_root, None, 0)?;
-                self.space_count.set(Some((self.space_root, count)));
-                count
-            }
-        };
+        let space_nodes = self.space_node_count()?;
         Ok(ReservationPaths {
             uncopied_fs_nodes: if self.private_leaf_header(root)?.is_some() {
                 0
@@ -345,6 +341,34 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             space_height: u64::from(self.space_root.level),
             space_nodes,
         })
+    }
+    fn space_node_count(&self) -> Result<u64, Error> {
+        match self.space_count.get() {
+            Some((root, count)) if root == self.space_root => Ok(count),
+            _ => {
+                let count = btree::reservation_nodes(&self.view(), self.space_root, None, 0)?;
+                self.space_count.set(Some((self.space_root, count)));
+                Ok(count)
+            }
+        }
+    }
+    /// Blocks already allocated plus the unchanged design-2.8 bound for work
+    /// still deferred to publication. Include the mounted ROOT's final update
+    /// and FS edits for orphan cleanup; no unused split paths are retained.
+    pub fn metadata_debt(&self, root: BlockPtr, orphan_count: u64) -> Result<u64, Error> {
+        let fs_levels = orphan_count.checked_mul(3 * 4 * (u64::from(root.level) + 2))
+            .ok_or(space::Error::ENOSPC)?;
+        let changes = (self.deferred.len() as u64).checked_add(1)
+            .and_then(|n| n.checked_add(fs_levels))
+            .and_then(|n| n.checked_mul(3)).ok_or(space::Error::ENOSPC)?;
+        Ok(Estimate {
+            data_blocks: self.allocated_blocks,
+            fs_levels,
+            space_changes: changes,
+            space_height: u64::from(self.space_root.level),
+            space_nodes: self.space_node_count()?,
+            ..Estimate::default()
+        }.blocks()?)
     }
     /// Private encoded nodes; a commit engine must call `settle` before use.
     pub fn writes(&self) -> &BTreeMap<u64, Vec<u8>> {
@@ -419,6 +443,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             self.deferred.push_back(Change::PromotePending);
         }
         self.counts.insert((start, length), 1);
+        self.allocated_blocks = self.allocated_blocks.checked_add(length).ok_or(Error::Invalid)?;
         self.allocated.insert(start);
         self.deferred.push_back(Change::Allocate {
             start,
