@@ -2270,6 +2270,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         // Foreground callers keep running on N+1 and read frozen N's pages.
         preemption_point();
         let mut frozen = frozen;
+        frozen.files.begin_preparation();
         let touches_span = self.inner.costs.span(CostOp::Commit, CostPhase::ApplyTouches);
         #[cfg(test)] let touches_phase = publication_phases::Phase::new("apply_touches");
         // N's deferred times, from N's slot (601(2)).
@@ -2298,7 +2299,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             let _prepare = self.inner.costs.span(CostOp::Commit, CostPhase::PrepareReap);
             #[cfg(test)] let _phase = publication_phases::Phase::new("prepare_reap");
             let FrozenGeneration { files, grants, reap, free_blocks, ledger, .. } = &mut frozen;
-            let (txn, _) = files.prepare_commit()?;
+            let txn = files.prepare_commit()?;
             if *reap {
                 // Reaping is optional: admission refusal changes no trees
                 // and must not discard already acknowledged dirty writes.
@@ -2326,7 +2327,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         };
         let prepared = {
             let _prepare = self.inner.costs.span(CostOp::Commit, CostPhase::PrepareFiles);
-            frozen.commit.prepare_files(self.inner.device.as_ref(), &mut frozen.files)
+            frozen.commit.prepare_settled_files(self.inner.device.as_ref(), &mut frozen.files)
         };
         let prepared = match prepared {
             Ok(prepared) => Arc::new(prepared),

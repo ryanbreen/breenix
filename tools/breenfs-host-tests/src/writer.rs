@@ -113,7 +113,7 @@ impl WriterAdapter {
             }
             // One DEAD node per host scheduling turn exposes resumable frontiers
             // without draining the tree in a single operation.
-            let (txn, _) = self
+            let txn = self
                 .files
                 .as_mut()
                 .ok_or(Errno::EIO)?

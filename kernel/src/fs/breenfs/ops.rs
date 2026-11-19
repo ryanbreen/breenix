@@ -89,6 +89,73 @@ pub struct SetAttr {
     pub mtime: Option<Time>,
 }
 
+// The disk orders DIR_ENTRY by name hash and DIR_INDEX by cookie. Build the
+// reverse lookup once on a writable mount, including existing v1 images.
+// Frozen N and scratch N+1 share the stable base and N's immutable edits.
+// N folds those edits into the base during preparation. The frozen edits
+// shadow the base in scratch N+1, including during that fold.
+type Cookies<T> = BTreeMap<u64, BTreeMap<Vec<u8>, T>>;
+
+#[derive(Default)]
+struct DirectoryCookies {
+    installed: Arc<spin::Mutex<Cookies<u64>>>,
+    frozen: Option<Arc<Cookies<Option<u64>>>>,
+    edits: Cookies<Option<u64>>,
+}
+
+impl DirectoryCookies {
+    fn read(store: &impl NodeStore, root: BlockPtr) -> Result<Self, Error> {
+        let mut installed: Cookies<u64> = BTreeMap::new();
+        btree::visit_range(store, root, Key::default(), key(u64::MAX, u8::MAX, u64::MAX),
+            &mut |key, bytes| {
+                if key.item_type == format::DIR_INDEX {
+                    let record = DirRecord::decode(bytes)?;
+                    if 10 + record.name.len() != bytes.len() || key.offset < 2
+                        || installed.entry(key.object).or_default().insert(record.name, key.offset).is_some()
+                    {
+                        return Err(Error::EIO);
+                    }
+                }
+                Ok(true)
+            })?;
+        Ok(Self { installed: Arc::new(spin::Mutex::new(installed)), ..Self::default() })
+    }
+
+    fn get(&self, dir: u64, name: &[u8]) -> Option<u64> {
+        let lookup = |map: &Cookies<Option<u64>>| map.get(&dir)?.get(name).copied();
+        lookup(&self.edits)
+            .or_else(|| self.frozen.as_deref().and_then(lookup))
+            .unwrap_or_else(|| self.installed.lock().get(&dir)?.get(name).copied())
+    }
+
+    fn set(&mut self, dir: u64, name: &[u8], cookie: Option<u64>) {
+        self.edits.entry(dir).or_default().insert(name.to_vec(), cookie);
+    }
+
+    fn fork(&mut self) -> Self {
+        let frozen = Arc::new(core::mem::take(&mut self.edits));
+        self.frozen = Some(frozen.clone());
+        Self { installed: self.installed.clone(), frozen: Some(frozen), edits: BTreeMap::new() }
+    }
+
+    fn publish(&mut self) {
+        let frozen = self.frozen.take();
+        let edits = core::mem::take(&mut self.edits);
+        for (&dir, names) in frozen.iter().flat_map(|edits| edits.iter()).chain(edits.iter()) {
+            for (name, cookie) in names {
+                preemption_point();
+                let mut installed = self.installed.lock();
+                if let Some(cookie) = cookie {
+                    installed.entry(dir).or_default().insert(name.clone(), *cookie);
+                } else if let Some(names) = installed.get_mut(&dir) {
+                    names.remove(name);
+                    if names.is_empty() { installed.remove(&dir); }
+                }
+            }
+        }
+    }
+}
+
 pub struct Files<'a, S: NodeStore + 'a> {
     txn: Transaction<'a, S>,
     root: Root,
@@ -99,6 +166,7 @@ pub struct Files<'a, S: NodeStore + 'a> {
     changed_roots: BTreeSet<u64>,
     writable: bool,
     hash_key: [u8; 16],
+    cookies: DirectoryCookies,
     // Non-private extents retain their generation's immutable REF tree. New
     // extents are served from data until the next Files view is opened.
     space_root: BlockPtr,
@@ -133,6 +201,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             changed_roots: BTreeSet::new(),
             writable: true,
             hash_key: sb.dirhash_key,
+            cookies: DirectoryCookies::default(),
             space_root: sb.space_root,
             data: BTreeMap::new(),
             open_inodes: Inodes::default(),
@@ -191,6 +260,8 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             key(ORPHAN_OBJECT, format::ORPHAN, 0),
             key(ORPHAN_OBJECT, format::ORPHAN, u64::MAX))?
             .into_iter().map(|(key, _)| key.offset).collect();
+        let cookies = if writable { DirectoryCookies::read(&store, root.root)? }
+            else { DirectoryCookies::default() };
         Ok(Self {
             txn: Transaction::new_owned(
                 store,
@@ -204,6 +275,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             changed_roots: BTreeSet::new(),
             writable,
             hash_key: sb.dirhash_key,
+            cookies,
             space_root: sb.space_root,
             data: BTreeMap::new(),
             open_inodes: Inodes::default(),
@@ -231,6 +303,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             changed_roots: BTreeSet::new(),
             writable: self.writable,
             hash_key: self.hash_key,
+            cookies: self.cookies.fork(),
             space_root: self.space_root,
             data: BTreeMap::new(),
             open_inodes: self.open_inodes.clone(),
@@ -261,10 +334,12 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             if id == self.root_id { self.root = root.clone(); }
             Arc::make_mut(&mut self.roots).insert(id, root);
         }
+        let space_nodes = self.txn.space_node_count();
         self.txn = Transaction::new_owned_with_dead(store, sb.space_root, generation,
-            self.txn.take_dead_nodes())?;
+            self.txn.take_dead_nodes(), space_nodes)?;
         self.space_root = sb.space_root;
         self.next_root_id = sb.next_root_id;
+        self.cookies.publish();
         self.changed_roots.clear();
         self.orphan_count = 0;
         Ok(())
@@ -527,6 +602,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             key(dir, format::DIR_INDEX, parent.next_index),
             &record,
         )?;
+        let cookie = parent.next_index;
         parent.next_index += 1;
         parent.size += 1;
         if kind == 2 {
@@ -534,7 +610,9 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         }
         parent.mtime = at;
         parent.ctime = at;
-        self.put_inode(dir, parent)
+        self.put_inode(dir, parent)?;
+        self.cookies.set(dir, name, Some(cookie));
+        Ok(())
     }
     fn remove_entry(&mut self, dir: u64, name: &[u8], at: Time) -> Result<DirRecord, Error> {
         let mut parent = self.directory(dir)?;
@@ -544,21 +622,9 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             .position(|r| r.name == name)
             .ok_or(Error::ENOENT)?;
         let record = records.remove(pos);
-        let mut index = None;
-        btree::visit_range(
-            &self.txn.view(),
-            self.root.root,
-            key(dir, format::DIR_INDEX, 0),
-            key(dir, format::DIR_INDEX, u64::MAX),
-            &mut |key, value| {
-                let records = dir_records(value)?;
-                if records.len() == 1 && records[0] == record {
-                    index = Some(key);
-                }
-                Ok::<_, Error>(index.is_none())
-            },
-        )?;
-        let index = index.ok_or(Error::EIO)?;
+        let index = key(dir, format::DIR_INDEX, self.cookies.get(dir, name).ok_or(Error::EIO)?);
+        let indexed = btree::search(&self.txn.view(), self.root.root, index)?.ok_or(Error::EIO)?;
+        if indexed != record.encode() { return Err(Error::EIO); }
         if records.is_empty() {
             self.txn.delete(&mut self.root.root, k)?;
         } else {
@@ -573,6 +639,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         parent.mtime = at;
         parent.ctime = at;
         self.put_inode(dir, parent)?;
+        self.cookies.set(dir, name, None);
         Ok(record)
     }
     fn new_inode(
@@ -1202,23 +1269,30 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         self.require_writable()?;
         Ok(committer.commit_files(device, self)?)
     }
-    pub(crate) fn prepare_commit(
-        &mut self,
-    ) -> Result<(&mut Transaction<'a, S>, &mut BTreeMap<u64, Vec<u8>>), Error> {
+    pub(super) fn begin_preparation(&self) {
+        self.txn.begin_preparation();
+    }
+    pub(crate) fn prepare_commit(&mut self) -> Result<&mut Transaction<'a, S>, Error> {
         preemption_point();
         self.require_writable()?;
+        self.begin_preparation();
         self.reclaim_orphans()?;
         self.txn.promote_pending()?;
         self.txn.update_root(self.root_id, self.root.clone())?;
         self.changed_roots.insert(self.root_id);
-        // A private allocation replaced again within this transaction is PENDING
-        // and need not be submitted as data in the commit engine's REF set.
         self.txn.settle()?;
+        Ok(&mut self.txn)
+    }
+    pub(crate) fn commit_buffers(
+        &mut self,
+    ) -> (&mut Transaction<'a, S>, &mut BTreeMap<u64, Vec<u8>>) {
+        // Reap can also release a private extent, so filter just before
+        // serialization after the last settling pass.
         self.data.retain(|addr, _| {
             preemption_point();
             self.txn.data_is_live(*addr)
         });
-        Ok((&mut self.txn, &mut self.data))
+        (&mut self.txn, &mut self.data)
     }
 }
 pub(super) const ORPHAN_OBJECT: u64 = 0xffff_ffff_ffff_ff00;

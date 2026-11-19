@@ -5,7 +5,7 @@ use super::{
     btree::{self, NodeStore},
     crc32c,
     format::{
-        self, BlockPtr, Free, InternalEntry, LeafItemHeader, NodeHeader, Root, Superblock,
+        self, BlockPtr, Root, Superblock,
         BLOCK_SIZE, NODE_SIZE,
     },
     txn::Transaction,
@@ -38,11 +38,11 @@ pub mod publication_measurement {
     }
     pub fn start() { COUNTS.with(|c| *c.borrow_mut() = Some(Counts::default())); }
     pub fn take() -> Counts { COUNTS.with(|c| c.borrow_mut().take().unwrap()) }
-    pub(super) fn prepared<'a>(nodes: impl Iterator<Item = (&'a u64, &'a Vec<u8>)>) {
+    pub(super) fn prepared(nodes: impl Iterator<Item = (u64, u8)>) {
         COUNTS.with(|c| {
             if let Some(c) = c.borrow_mut().as_mut() {
                 assert!(c.staged.is_empty(), "one preparation per publication");
-                c.staged = nodes.map(|(&addr, bytes)| (addr, bytes[12])).collect();
+                c.staged = nodes.collect();
             }
         });
     }
@@ -157,7 +157,8 @@ impl Committer {
         files: &mut super::ops::Files<'_, S>,
     ) -> Result<Superblock, Error> {
         self.committing(|mount| {
-            let (txn, data) = files.prepare_commit().map_err(|_| Error::EIO)?;
+            files.prepare_commit().map_err(|_| Error::EIO)?;
+            let (txn, data) = files.commit_buffers();
             let prepared = mount.prepare(device, txn, data)?;
             prepared.write_direct(device, data)?;
             Ok(prepared.sb)
@@ -249,12 +250,12 @@ impl FrozenCommit {
     }
     /// Run commit steps 1-2 on frozen N, without mount exclusion. N's private
     /// data moves into the result; N's receipts stay here until install.
-    pub fn prepare_files<S: NodeStore>(
+    pub fn prepare_settled_files<S: NodeStore>(
         &self,
         device: &dyn BlockDevice,
         files: &mut super::ops::Files<'_, S>,
     ) -> Result<PreparedCommit, Error> {
-        let (txn, data) = files.prepare_commit().map_err(|_| Error::EIO)?;
+        let (txn, data) = files.commit_buffers();
         let mut prepared = self.prepare(device, txn, data)?;
         prepared.data = core::mem::take(data);
         Ok(prepared)
@@ -280,41 +281,13 @@ impl FrozenCommit {
         }
         // Step 1: N is frozen and owned by its publication; no mount
         // exclusion covers this deferred-space fixpoint (E24 coordinator 597).
+        txn.begin_preparation();
         let space_root = txn.settle().map_err(|_| Error::EIO)?;
-        #[cfg(test)]
-        publication_measurement::prepared(txn.writes());
-        let mut nodes = BTreeMap::new();
-        for (&addr, bytes) in txn.writes() {
-            preemption_point();
-            #[cfg(test)] btree::measurement::edit_cost(|c| c.copies += 1);
-            nodes.insert(addr, bytes.clone());
-        }
-        let mut filled = BTreeMap::new();
-        let space_root = fill(
-            space_root,
-            &mut nodes,
-            &mut filled,
-            &mut BTreeSet::new(),
-            generation,
-            self.durable.fs_uuid,
-        )?;
-        // A private FS node retained as DEAD still owns outgoing references.
-        // Write the remaining staged nodes too, after filling their children.
-        let remaining: Vec<_> = nodes.keys().map(|&addr| { preemption_point(); addr }).collect();
-        for addr in remaining {
-            preemption_point();
-            if let Some(bytes) = nodes.get(&addr) {
-                let ptr = pointer(bytes, NodeHeader::decode(bytes)?);
-                fill(
-                    ptr,
-                    &mut nodes,
-                    &mut filled,
-                    &mut BTreeSet::new(),
-                    generation,
-                    self.durable.fs_uuid,
-                )?;
-            }
-        }
+        let base_free = if self.durable.generation == 0 {
+            self.durable.total_blocks - 28
+        } else {
+            self.durable.free_blocks
+        };
         let mut sb = self.durable.clone();
         if let Some((walked, errors)) = self.scrub {
             sb.last_scrub_generation = walked;
@@ -323,26 +296,13 @@ impl FrozenCommit {
         sb.generation = generation;
         sb.slot = (generation % 4) as u8;
         sb.ring = 0;
-        sb.space_root = space_root;
         sb.next_root_id = sb.next_root_id.max(txn.next_root_id());
-        let view = Prepared {
-            base: txn.view(),
-            nodes: &filled,
-        };
-        // FREE has its own key range (design 2.4); unchanged REF records do
-        // not participate in this generation's accounting or data validation.
-        let free = btree::range(&view, sb.space_root,
-            format::Key { object: 0xffff_ffff_ffff_ff20, item_type: format::FREE, offset: 0 },
-            format::Key { object: 0xffff_ffff_ffff_ff20, item_type: format::FREE, offset: u64::MAX })?;
-        sb.free_blocks = 0;
-        for (_, bytes) in free {
-            preemption_point();
-            sb.free_blocks = sb.free_blocks.checked_add(Free::decode(&bytes)?.length).ok_or(Error::EIO)?;
-        }
+        sb.free_blocks = txn.free_blocks(base_free).ok_or(Error::EIO)?;
+        let view = txn.view();
         let mut expected_data = BTreeSet::new();
         for (start, length) in txn.live_data() {
             preemption_point();
-            let r = super::space::reference(&view, sb.space_root, start, length)
+            let r = super::space::reference(&view, space_root, start, length)
                 .map_err(|_| Error::EIO)?.ok_or(Error::EIO)?;
             let bytes = data.get(&start).ok_or(Error::EIO)?;
             if r.kind != 3 || r.alloc_generation != generation
@@ -361,6 +321,29 @@ impl FrozenCommit {
         if self.durable.generation == 0 && sb.free_blocks < sb.global_reserve {
             return Err(Error::EIO);
         }
+        // The fixpoint owns decoded nodes. Resolve only this generation's
+        // pointers and write their final bytes once, in dependency order.
+        #[cfg(test)]
+        publication_measurement::prepared(txn.writes().map(|(&addr, node)| (addr, node.header.tree)));
+        let mut nodes: BTreeMap<_, _> = txn.writes().map(|(&addr, node)| {
+            preemption_point();
+            (addr, node.clone())
+        }).collect();
+        let mut filled = BTreeMap::new();
+        let mut visiting = BTreeSet::new();
+        sb.space_root = fill(space_root, &mut nodes, &mut filled, &mut visiting,
+            generation, self.durable.fs_uuid)?;
+        // A private FS node retained as DEAD still owns outgoing references.
+        while let Some((_, node)) = nodes.first_key_value() {
+            preemption_point();
+            fill(node.private_ptr(), &mut nodes, &mut filled, &mut visiting,
+                generation, self.durable.fs_uuid)?;
+        }
+        let filled: BTreeMap<_, _> = filled.into_iter().map(|(addr, (_, bytes))| {
+            preemption_point();
+            (addr, bytes)
+        }).collect();
+
         // Validate ranges before issuing step 3, including disjoint node/data
         // extents. Allocation/reuse itself is owned by txn.rs and space.rs.
         let mut end = 20;
@@ -499,106 +482,64 @@ impl PreparedCommit {
     }
 }
 
-struct Prepared<'a, S> {
-    base: S,
-    nodes: &'a BTreeMap<u64, Vec<u8>>,
-}
-impl<S: NodeStore> NodeStore for Prepared<'_, S> {
-    fn get(&self, addr: u64) -> Result<Vec<u8>, btree::Error> {
-        self.nodes
-            .get(&addr)
-            .cloned()
-            .map(Ok)
-            .unwrap_or_else(|| self.base.get(addr))
-    }
-    fn put(&mut self, _: u64, _: Vec<u8>) -> Result<(), btree::Error> {
-        Err(btree::Error::Store)
-    }
-    fn alloc(&mut self) -> Result<u64, btree::Error> {
-        Err(btree::Error::Store)
-    }
-}
-fn pointer(bytes: &[u8], h: NodeHeader) -> BlockPtr {
-    BlockPtr {
-        addr: h.addr,
-        generation: h.generation,
-        csum: u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
-        level: h.level,
-    }
-}
 // Dependency order is children, FS roots, SPACE leaves, SPACE ancestors.
 fn fill(
     ptr: BlockPtr,
-    pending: &mut BTreeMap<u64, Vec<u8>>,
-    done: &mut BTreeMap<u64, Vec<u8>>,
+    pending: &mut BTreeMap<u64, Arc<btree::Node>>,
+    done: &mut BTreeMap<u64, (BlockPtr, Vec<u8>)>,
     visiting: &mut BTreeSet<u64>,
     generation: u64,
     uuid: [u8; 16],
 ) -> Result<BlockPtr, Error> {
     preemption_point();
-    if let Some(bytes) = done.get(&ptr.addr) {
-        return Ok(pointer(bytes, NodeHeader::decode(bytes)?));
+    if let Some((filled, _)) = done.get(&ptr.addr) {
+        if ptr != (BlockPtr { csum: 0, ..*filled }) { return Err(Error::EIO); }
+        return Ok(*filled);
     }
-    if !visiting.insert(ptr.addr) {
-        return Err(Error::EIO);
-    }
-    let Some(mut bytes) = pending.remove(&ptr.addr) else {
+    if !visiting.insert(ptr.addr) { return Err(Error::EIO); }
+    let Some(mut node) = pending.remove(&ptr.addr) else {
         visiting.remove(&ptr.addr);
         return Ok(ptr);
     };
-    let h = NodeHeader::decode(&bytes)?;
-    if h.addr != ptr.addr
-        || h.generation != generation
-        || h.fs_uuid != uuid
-        || h.level >= 8
-        || h.level != ptr.level
-        || !(1..=2).contains(&h.tree)
+    let h = node.header;
+    if node.private_ptr() != ptr || h.generation != generation || h.fs_uuid != uuid
+        || h.level >= 8 || !(1..=2).contains(&h.tree)
     {
         return Err(Error::EIO);
     }
-    let width = if h.level == 0 { 21 } else { 37 };
-    if 48 + usize::from(h.nitems) * width > NODE_SIZE {
-        return Err(Error::EIO);
-    }
-    for i in 0..usize::from(h.nitems) {
-        preemption_point();
-        let at = 48 + i * width;
+    if h.level > 0 || h.tree == 2 {
+        #[cfg(test)]
+        if Arc::strong_count(&node) > 1 {
+            btree::measurement::edit_cost(|c| {
+                c.copies += 1;
+                c.slots += (node.items.len() + node.children.len()) as u64;
+            });
+        }
+        let node = Arc::make_mut(&mut node);
         if h.level > 0 {
-            let mut e = InternalEntry::decode(&bytes[at..at + 37])?;
-            let p = fill(
-                BlockPtr {
-                    addr: e.child_addr,
-                    generation: e.child_generation,
-                    csum: e.child_csum,
-                    level: h.level - 1,
-                },
-                pending,
-                done,
-                visiting,
-                generation,
-                uuid,
-            )?;
-            e.child_addr = p.addr;
-            e.child_generation = p.generation;
-            e.child_csum = p.csum;
-            bytes[at..at + 37].copy_from_slice(&e.encode());
-        } else if h.tree == 2 {
-            let item = LeafItemHeader::decode(&bytes[at..at + 21])?;
-            if item.key.item_type == format::ROOT {
-                let lo = usize::from(item.data_off);
-                let hi = lo + usize::from(item.data_len);
-                let mut r = Root::decode(bytes.get(lo..hi).ok_or(Error::EIO)?)?;
-                r.root = fill(r.root, pending, done, visiting, generation, uuid)?;
-                bytes[lo..hi].copy_from_slice(&r.encode());
+            for entry in &mut node.children {
+                let child = BlockPtr {
+                    addr: entry.child_addr, generation: entry.child_generation,
+                    csum: entry.child_csum, level: h.level - 1,
+                };
+                entry.child_csum = fill(child, pending, done, visiting, generation, uuid)?.csum;
+            }
+        } else {
+            for (key, bytes) in &mut node.items {
+                preemption_point();
+                #[cfg(test)] btree::measurement::edit_cost(|c| c.slots += 1);
+                if key.item_type == format::ROOT {
+                    let mut root = Root::decode(bytes)?;
+                    root.root = fill(root.root, pending, done, visiting, generation, uuid)?;
+                    *bytes = Arc::from(root.encode());
+                }
             }
         }
     }
-    #[cfg(test)] btree::measurement::edit_cost(|c| { *c.encoded.entry(h.addr).or_default() += 1; c.slots += u64::from(h.nitems); });
-    h.encode(&mut bytes)?;
-    let ptr = pointer(&bytes, h);
-    done.insert(h.addr, bytes);
+    let (filled, bytes) = node.encode()?;
+    done.insert(h.addr, (filled, bytes));
     visiting.remove(&h.addr);
-    Ok(ptr)
+    Ok(filled)
 }
 
 pub(crate) fn slot_block(total: u64, ring: u8, slot: u8) -> u64 {

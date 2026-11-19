@@ -168,25 +168,44 @@ pub trait NodeStore {
     }
     fn put(&mut self, addr: u64, bytes: Vec<u8>) -> Result<(), Error>;
     fn alloc(&mut self) -> Result<u64, Error>;
-    /// Called top-down before modifying a node, including rebalance siblings.
-    /// A transaction may replace its address/generation and transfer references.
-    fn prepare_edit(&mut self, _header: &mut NodeHeader) -> Result<(), Error> {
+    /// In-memory transaction stores stage nodes with checksum-free pointers.
+    /// Publication resolves these pointers and encodes each final node once.
+    fn stages_decoded(&self) -> bool { false }
+    /// Give the editor exclusive ownership of an unshared private node.
+    /// A failed edit poisons the transaction holding such nodes.
+    fn take_decoded(&mut self, ptr: BlockPtr) -> Result<Arc<Node>, Error> {
+        self.read_node(ptr)
+    }
+    fn put_decoded(&mut self, _: Node) -> Result<(), Error> { Err(Error::Store) }
+    /// Called for a successful item change. COW copies and rebalances do not
+    /// alter item totals.
+    fn item_changed(&mut self, _: Key, _: Option<&[u8]>, _: Option<&[u8]>) -> Result<(), Error> {
         Ok(())
     }
+    /// Called top-down before modifying a node, including rebalance siblings.
+    /// A transaction may replace its address/generation and transfer references.
+    fn prepare_node(&mut self, _: &mut Node) -> Result<(), Error> { Ok(()) }
     /// The node's outgoing references have been transferred or removed already.
     fn retire(&mut self, _header: NodeHeader) -> Result<(), Error> {
         Ok(())
     }
 }
 
+#[derive(Clone)]
 pub struct Node {
-    header: NodeHeader,
-    items: Vec<(Key, Vec<u8>)>,
-    children: Vec<InternalEntry>,
+    pub(super) header: NodeHeader,
+    pub(super) items: Vec<(Key, Arc<[u8]>)>,
+    pub(super) children: Vec<InternalEntry>,
 }
 
 pub(crate) fn decode_node(bytes: &[u8], ptr: BlockPtr) -> Result<Arc<Node>, Error> {
-    Ok(Arc::new(decode(bytes, ptr, true, None, None)?))
+    NodeHeader::decode(bytes)?;
+    decode_verified_node(bytes, ptr)
+}
+
+// Only for bytes already CRC-verified by the mount's whole-node buffer cache.
+pub(super) fn decode_verified_node(bytes: &[u8], ptr: BlockPtr) -> Result<Arc<Node>, Error> {
+    Ok(Arc::new(decode(bytes, ptr, NodeHeader::decode_verified(bytes)?)?))
 }
 
 // Bounds and parent identity belong to this traversal, not to the cached node.
@@ -201,14 +220,18 @@ fn read_node<S: NodeStore>(
     #[cfg(test)]
     { measurement::mutation(6, 1); measurement::edit_cost(|c| c.reads += 1); }
     let node = store.read_node(ptr)?;
+    check_bounds(&node, root, lower, upper)?;
+    Ok(node)
+}
+fn check_bounds(node: &Node, root: bool, lower: Option<Key>, upper: Option<Key>) -> Result<(), Error> {
     if (node.len() == 0 && !root)
         || (node.len() != 0
             && (lower.is_some_and(|k| node.key(0) < k)
                 || upper.is_some_and(|k| node.key(node.len() - 1) >= k)))
     {
-        return Err(Error::InvalidNode.at_node(ptr.addr));
+        return Err(Error::InvalidNode.at_node(node.header.addr));
     }
-    Ok(node)
+    Ok(())
 }
 impl Node {
     fn len(&self) -> usize {
@@ -238,7 +261,7 @@ impl Node {
     fn fits(&self) -> bool {
         self.used() <= CAPACITY && (self.header.level == 0 || self.len() <= MAX_INTERNAL)
     }
-    fn child(&self, i: usize) -> BlockPtr {
+    pub(super) fn child(&self, i: usize) -> BlockPtr {
         let e = self.children[i];
         BlockPtr {
             addr: e.child_addr,
@@ -252,7 +275,11 @@ impl Node {
             .partition_point(|e| e.key <= key)
             .saturating_sub(1)
     }
-    fn encode(&mut self) -> Result<(BlockPtr, Vec<u8>), Error> {
+    pub(super) fn private_ptr(&self) -> BlockPtr {
+        BlockPtr { addr: self.header.addr, generation: self.header.generation,
+            level: self.header.level, csum: 0 }
+    }
+    pub(super) fn encode(&self) -> Result<(BlockPtr, Vec<u8>), Error> {
         if !self.fits() || self.header.level >= MAX_HEIGHT {
             return Err(Error::InvalidNode);
         }
@@ -262,7 +289,7 @@ impl Node {
             c.slots += self.len() as u64;
         });
         let mut bytes = vec![0; NODE_SIZE];
-        self.header.nitems = self.len() as u16;
+        let header = NodeHeader { nitems: self.len() as u16, ..self.header };
         if self.header.level == 0 {
             let mut tail = NODE_SIZE;
             for (i, (key, value)) in self.items.iter().enumerate() {
@@ -282,7 +309,7 @@ impl Node {
                 bytes[HEADER + i * 37..HEADER + (i + 1) * 37].copy_from_slice(&entry.encode());
             }
         }
-        self.header.encode(&mut bytes)?;
+        header.encode(&mut bytes)?;
         Ok((
             BlockPtr {
                 addr: self.header.addr,
@@ -295,19 +322,10 @@ impl Node {
     }
 }
 
-fn decode(
-    bytes: &[u8],
-    ptr: BlockPtr,
-    root: bool,
-    lower: Option<Key>,
-    upper: Option<Key>,
-) -> Result<Node, Error> {
+fn decode(bytes: &[u8], ptr: BlockPtr, header: NodeHeader) -> Result<Node, Error> {
     #[cfg(test)]
     measurement::decoded();
-    if bytes.len() != NODE_SIZE {
-        return Err(Error::InvalidNode);
-    }
-    let header = NodeHeader::decode(bytes)?;
+    if bytes.len() != NODE_SIZE { return Err(Error::InvalidNode); }
     #[cfg(test)]
     measurement::node(header.addr, header.level);
     #[cfg(test)]
@@ -330,7 +348,7 @@ fn decode(
         || header.level >= MAX_HEIGHT
         || !(1..=2).contains(&header.tree)
         || header.generation == 0
-        || (n == 0 && !(root && header.level == 0))
+        || (n == 0 && header.level != 0)
         || (header.level > 0 && n > MAX_INTERNAL)
     {
         return Err(Error::InvalidNode);
@@ -350,10 +368,7 @@ fn decode(
     for i in 0..n {
         let start = HEADER + i * width;
         let key = Key::decode(&bytes[start..start + 17])?;
-        if (i > 0 && node.key(i - 1) >= key)
-            || lower.is_some_and(|l| key < l)
-            || upper.is_some_and(|u| key >= u)
-        {
+        if i > 0 && node.key(i - 1) >= key {
             return Err(Error::InvalidNode);
         }
         if header.level == 0 {
@@ -368,7 +383,7 @@ fn decode(
                 return Err(Error::InvalidNode);
             }
             used[lo..hi].fill(true);
-            node.items.push((key, bytes[lo..hi].to_vec()));
+            node.items.push((key, Arc::from(&bytes[lo..hi])));
         } else {
             let entry = InternalEntry::decode(&bytes[start..start + 37])?;
             if entry.child_generation > header.generation {
@@ -409,7 +424,7 @@ pub fn create<S: NodeStore>(
     if !(1..=2).contains(&tree) || generation == 0 {
         return Err(Error::InvalidNode);
     }
-    let mut node = Node {
+    let node = Node {
         header: NodeHeader {
             tree,
             fs_uuid,
@@ -421,8 +436,15 @@ pub fn create<S: NodeStore>(
         items: Vec::new(),
         children: Vec::new(),
     };
-    let (ptr, bytes) = node.encode()?;
-    store.put(ptr.addr, bytes)?;
+    let ptr = if store.stages_decoded() {
+        let ptr = node.private_ptr();
+        store.put_decoded(node)?;
+        ptr
+    } else {
+        let (ptr, bytes) = node.encode()?;
+        store.put(ptr.addr, bytes)?;
+        ptr
+    };
     Ok(ptr)
 }
 
@@ -448,7 +470,7 @@ pub fn search<S: NodeStore>(store: &S, root: BlockPtr, key: Key) -> Result<Optio
         .map(|i| {
             #[cfg(test)]
             measurement::publication(node.header.tree, 0, 1);
-            node.items[i].1.clone()
+            node.items[i].1.to_vec()
         }))
 }
 
@@ -630,7 +652,7 @@ fn visit_range_ordered<S: NodeStore, E: From<Error>>(
 
 struct Edit<'a, S> {
     store: &'a mut S,
-    writes: BTreeMap<u64, Vec<u8>>,
+    writes: BTreeMap<u64, (BlockPtr, Arc<Node>, Option<Vec<u8>>)>,
     empty_root: Option<NodeHeader>,
     #[cfg(test)]
     reads: core::cell::Cell<usize>,
@@ -644,21 +666,49 @@ impl<S: NodeStore> Edit<'_, S> {
         root: bool,
         lower: Option<Key>,
         upper: Option<Key>,
-    ) -> Result<Node, Error> {
+    ) -> Result<Arc<Node>, Error> {
         #[cfg(test)]
         { self.reads.set(self.reads.get() + 1); measurement::edit_cost(|c| c.reads += 1); }
-        if let Some(bytes) = self.writes.get(&ptr.addr) {
-            decode(bytes, ptr, root, lower, upper)
+        let node = if let Some((staged, node, _)) = self.writes.get(&ptr.addr) {
+            if *staged != ptr { return Err(Error::InvalidNode); }
+            node.clone()
         } else {
-            decode(&self.store.get(ptr.addr)?, ptr, root, lower, upper)
-        }
+            self.store.read_node(ptr)?
+        };
+        check_bounds(&node, root, lower, upper)?;
+        Ok(node)
     }
-    fn save(&mut self, node: &mut Node) -> Result<BlockPtr, Error> {
+    fn take(
+        &mut self,
+        ptr: BlockPtr,
+        root: bool,
+        lower: Option<Key>,
+        upper: Option<Key>,
+    ) -> Result<Arc<Node>, Error> {
+        #[cfg(test)]
+        { self.reads.set(self.reads.get() + 1); measurement::edit_cost(|c| c.reads += 1); }
+        let node = self.store.take_decoded(ptr)?;
+        check_bounds(&node, root, lower, upper)?;
+        Ok(node)
+    }
+    fn own(node: Arc<Node>) -> Node {
+        Arc::try_unwrap(node).unwrap_or_else(|node| {
+            #[cfg(test)] measurement::edit_cost(|c| { c.copies += 1; c.slots += node.len() as u64; });
+            (*node).clone()
+        })
+    }
+    fn save(&mut self, node: Node) -> Result<InternalEntry, Error> {
         #[cfg(test)]
         { self.writes_count += 1; }
-        let (ptr, bytes) = node.encode()?;
-        self.writes.insert(ptr.addr, bytes);
-        Ok(ptr)
+        let (ptr, bytes) = if self.store.stages_decoded() {
+            (node.private_ptr(), None)
+        } else {
+            let (ptr, bytes) = node.encode()?;
+            (ptr, Some(bytes))
+        };
+        let link = entry(if node.len() == 0 { Key::default() } else { node.key(0) }, ptr);
+        self.writes.insert(ptr.addr, (ptr, Arc::new(node), bytes));
+        Ok(link)
     }
     // Pick the closest byte balance among legal cuts. The payload bound ensures
     // an overflowing leaf can be divided into two nonempty nodes that fit.
@@ -713,11 +763,9 @@ impl<S: NodeStore> Edit<'_, S> {
             let addr = self.store.alloc()?;
             Some(self.split(&mut node, addr)?)
         };
-        let ptr = self.save(&mut node)?;
-        links.push(entry(node.key(0), ptr));
-        if let Some(mut right) = right {
-            let ptr = self.save(&mut right)?;
-            links.push(entry(right.key(0), ptr));
+        links.push(self.save(node)?);
+        if let Some(right) = right {
+            links.push(self.save(right)?);
         }
         Ok(links)
     }
@@ -736,68 +784,65 @@ impl<S: NodeStore> Edit<'_, S> {
             return Ok(());
         }
         let left_i = if i == 0 { 0 } else { i - 1 };
-        let mut left = self.load(
-            parent.child(left_i),
+        let sibling_i = if i == 0 { 1 } else { i - 1 };
+        let sibling = self.take(
+            parent.child(sibling_i),
             false,
-            Some(parent.key(left_i)),
-            Some(parent.key(left_i + 1)),
+            Some(parent.key(sibling_i)),
+            parent.children.get(sibling_i + 1).map(|e| e.key).or(upper),
         )?;
-        let mut right = self.load(
-            parent.child(left_i + 1),
-            false,
-            Some(parent.key(left_i + 1)),
-            parent.children.get(left_i + 2).map(|e| e.key).or(upper),
-        )?;
-        same_tree(parent, &left)?;
-        same_tree(parent, &right)?;
-        self.store.prepare_edit(&mut left.header)?;
-        self.store.prepare_edit(&mut right.header)?;
+        same_tree(parent, &sibling)?;
+        // Retire this intermediate staging entry before taking its payloads.
+        // It has already been checked above and will be replaced or retired.
+        self.writes.remove(&parent.child(i).addr);
+        let child = Self::own(child);
+        let sibling = Self::own(sibling);
+        let (mut left, mut right) = if i == 0 { (child, sibling) } else { (sibling, child) };
+        self.store.prepare_node(&mut left)?;
+        self.store.prepare_node(&mut right)?;
         left.items.append(&mut right.items);
         left.children.append(&mut right.children);
         let mut links = Vec::new();
         if !left.fits() {
             right = self.split(&mut left, right.header.addr)?;
-            let ptr = self.save(&mut right)?;
-            links.push(entry(right.key(0), ptr));
+            links.push(self.save(right)?);
         } else {
             self.store.retire(right.header)?;
         }
-        let ptr = self.save(&mut left)?;
-        links.insert(0, entry(left.key(0), ptr));
+        links.insert(0, self.save(left)?);
         parent.children.splice(left_i..left_i + 2, links);
         Ok(())
     }
     fn change(
         &mut self,
-        ptr: BlockPtr,
+        node: Arc<Node>,
         root: bool,
-        lower: Option<Key>,
         upper: Option<Key>,
         key: Key,
         value: Option<&[u8]>,
     ) -> Result<(Vec<InternalEntry>, Option<Vec<u8>>), Error> {
-        let mut node = self.load(ptr, root, lower, upper)?;
-        self.store.prepare_edit(&mut node.header)?;
+        let mut node = Self::own(node);
+        self.store.prepare_node(&mut node)?;
         let old;
         if node.header.level == 0 {
             match node.items.binary_search_by_key(&key, |e| e.0) {
                 Ok(i) => {
                     old = Some(if let Some(value) = value {
-                        core::mem::replace(&mut node.items[i].1, value.to_vec())
+                        core::mem::replace(&mut node.items[i].1, Arc::from(value))
                     } else {
                         node.items.remove(i).1
-                    });
+                    }.to_vec());
                 }
                 Err(i) => {
                     old = None;
                     if let Some(value) = value {
-                        node.items.insert(i, (key, value.to_vec()));
+                        node.items.insert(i, (key, Arc::from(value)));
                     }
                 }
             }
         } else {
             let i = node.route(key);
-            let child = self.load(
+            let child = self.take(
                 node.child(i),
                 false,
                 Some(node.key(i)),
@@ -805,9 +850,8 @@ impl<S: NodeStore> Edit<'_, S> {
             )?;
             same_tree(&node, &child)?;
             let (links, previous) = self.change(
-                node.child(i),
+                child,
                 false,
-                Some(node.key(i)),
                 node.children.get(i + 1).map(|e| e.key).or(upper),
                 key,
                 value,
@@ -821,6 +865,11 @@ impl<S: NodeStore> Edit<'_, S> {
         }
         Ok((self.pack(node, root)?, old))
     }
+}
+
+fn child_ptr(link: InternalEntry, level: u8) -> BlockPtr {
+    BlockPtr { addr: link.child_addr, generation: link.child_generation,
+        csum: link.child_csum, level }
 }
 
 fn change<S: NodeStore>(
@@ -838,11 +887,12 @@ fn change<S: NodeStore>(
         #[cfg(test)]
         writes_count: 0,
     };
-    let original = edit.load(*root, true, None, None)?;
-    let (links, old) = edit.change(*root, true, None, None, key, value)?;
+    let original = edit.take(*root, true, None, None)?;
+    let header = original.header;
+    let (links, old) = edit.change(original, true, None, key, value)?;
     let mut new_root = match links.len() {
         0 => {
-            let mut empty = Node {
+            let empty = Node {
                 header: NodeHeader {
                     level: 0,
                     ..edit.empty_root.take().ok_or(Error::InvalidNode)?
@@ -850,29 +900,25 @@ fn change<S: NodeStore>(
                 items: Vec::new(),
                 children: Vec::new(),
             };
-            edit.save(&mut empty)?
+            let link = edit.save(empty)?;
+            child_ptr(link, 0)
         }
-        1 => BlockPtr {
-            addr: links[0].child_addr,
-            generation: links[0].child_generation,
-            csum: links[0].child_csum,
-            level: root.level,
-        },
+        1 => child_ptr(links[0], root.level),
         _ => {
             if root.level + 1 >= MAX_HEIGHT {
                 return Err(Error::HeightLimit);
             }
-            let mut node = Node {
+            let node = Node {
                 header: NodeHeader {
                     addr: edit.store.alloc()?,
                     level: root.level + 1,
                     generation: links[0].child_generation,
-                    ..original.header
+                    ..header
                 },
                 items: Vec::new(),
                 children: links,
             };
-            edit.save(&mut node)?
+            child_ptr(edit.save(node)?, root.level + 1)
         }
     };
     loop {
@@ -887,9 +933,14 @@ fn change<S: NodeStore>(
     measurement::changed(measurement::ChangeWork {
         height: root.level + 1, reads: edit.reads.get(), writes: edit.writes_count,
     });
-    for (addr, bytes) in edit.writes {
-        edit.store.put(addr, bytes)?;
+    for (addr, (_, node, bytes)) in edit.writes {
+        if let Some(bytes) = bytes {
+            edit.store.put(addr, bytes)?;
+        } else {
+            edit.store.put_decoded(Edit::<S>::own(node))?;
+        }
     }
+    edit.store.item_changed(key, old.as_deref(), value)?;
     *root = new_root;
     Ok(old)
 }

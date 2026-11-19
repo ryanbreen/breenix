@@ -8,7 +8,7 @@
 use super::preempt::preemption_point;
 use super::{
     btree::{self, NodeStore},
-    format::{self, BlockPtr, Free, InternalEntry, Key, LeafItemHeader, NodeHeader, Pending, Ref},
+    format::{self, BlockPtr, Free, Key, Pending, Ref},
 };
 use alloc::{collections::BTreeSet, vec::Vec};
 
@@ -83,77 +83,14 @@ pub fn reference<S: NodeStore>(
     Ok(Some(r))
 }
 
-// Only descend into branches intersecting this object's item-type range. The
-// generic B-tree has point lookup, so use it to validate each collected payload
-// and its ancestor bounds rather than maintaining a second item decoder here.
 fn range<S: NodeStore>(
     store: &S,
     root: BlockPtr,
     object: u64,
     ty: u8,
 ) -> Result<Vec<(Key, Vec<u8>)>, Error> {
-    let lower = key(object, ty, 0);
-    let upper = key(object, ty, u64::MAX);
-    let mut todo = alloc::vec![root];
-    let mut seen = BTreeSet::new();
-    let mut out = Vec::new();
-    let uuid = NodeHeader::decode(&store.get(root.addr)?)?.fs_uuid;
-    while let Some(ptr) = todo.pop() {
-        preemption_point();
-        if ptr.level >= 8 || !seen.insert(ptr.addr) {
-            return Err(Error::Invalid);
-        }
-        let bytes = store.get(ptr.addr)?;
-        if bytes.len() != format::NODE_SIZE {
-            return Err(Error::Invalid);
-        }
-        let h = NodeHeader::decode(&bytes)?;
-        if h.tree != 2
-            || h.fs_uuid != uuid
-            || h.addr != ptr.addr
-            || h.level != ptr.level
-            || h.generation != ptr.generation
-            || u32::from_le_bytes(bytes[8..12].try_into().unwrap()) != ptr.csum
-        {
-            return Err(Error::Invalid);
-        }
-        let count = usize::from(h.nitems);
-        let width = if h.level == 0 { 21 } else { 37 };
-        if 48 + count * width > bytes.len() || (h.level > 0 && count > 441) {
-            return Err(Error::Invalid);
-        }
-        if h.level == 0 {
-            for i in 0..count {
-                preemption_point();
-                let at = 48 + i * 21;
-                let k = LeafItemHeader::decode(&bytes[at..at + 21])?.key;
-                if k >= lower && k <= upper {
-                    let payload = btree::search(store, root, k)?.ok_or(Error::Invalid)?;
-                    out.push((k, payload));
-                }
-            }
-        } else {
-            let mut entries = Vec::new();
-            for i in 0..count {
-                preemption_point();
-                let at = 48 + i * 37;
-                entries.push(InternalEntry::decode(&bytes[at..at + 37])?);
-            }
-            for (i, e) in entries.iter().enumerate().rev() {
-                preemption_point();
-                if e.key <= upper && entries.get(i + 1).is_none_or(|next| next.key > lower) {
-                    todo.push(BlockPtr {
-                        addr: e.child_addr,
-                        generation: e.child_generation,
-                        csum: e.child_csum,
-                        level: h.level - 1,
-                    });
-                }
-            }
-        }
-    }
-    out.sort_by_key(|item| { preemption_point(); item.0 });
-    Ok(out)
+    if store.read_node(root)?.header.tree != 2 { return Err(Error::Invalid); }
+    Ok(btree::range(store, root, key(object, ty, 0), key(object, ty, u64::MAX))?)
 }
 fn free_record(key: Key, bytes: &[u8]) -> Result<(u64, u64), Error> {
     if bytes.len() != 8 {

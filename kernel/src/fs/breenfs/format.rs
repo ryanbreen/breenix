@@ -454,13 +454,18 @@ impl NodeHeader {
         Ok(())
     }
     pub fn decode(b: &[u8]) -> Result<Self, Error> {
-        need(b, NODE_SIZE)?;
-        if &b[..8] != b"BREENFSN" {
-            return Err(Error::Invalid);
-        }
+        let header = Self::decode_verified(b)?;
         #[cfg(test)] super::btree::measurement::edit_cost(|c| c.checksum_bytes += (NODE_SIZE - 12) as u64);
         if crc32c::checksum(&b[12..NODE_SIZE]) != u32at(b, 8) {
             return Err(Error::Checksum);
+        }
+        Ok(header)
+    }
+
+    pub(super) fn decode_verified(b: &[u8]) -> Result<Self, Error> {
+        need(b, NODE_SIZE)?;
+        if &b[..8] != b"BREENFSN" {
+            return Err(Error::Invalid);
         }
         let mut fs_uuid = [0; 16];
         fs_uuid.copy_from_slice(&b[16..32]);

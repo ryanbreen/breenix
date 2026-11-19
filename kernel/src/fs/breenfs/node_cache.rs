@@ -116,7 +116,7 @@ impl<W: Wait> NodeStore for CachedNodeStore<'_, W> {
         // I/O and decoding run outside the decoded-cache lock. get verifies
         // UUID/address/generation through the shared buffer cache; decode_node
         // verifies the exact pointer, CRC and complete node layout.
-        let node = btree::decode_node(&self.get(ptr.addr)?, ptr)
+        let node = btree::decode_verified_node(&self.get(ptr.addr)?, ptr)
             .map_err(|error| error.at_node(ptr.addr))?;
         let mut cache = self.decoded.lock();
         if cache.len() == DECODED_NODES {
