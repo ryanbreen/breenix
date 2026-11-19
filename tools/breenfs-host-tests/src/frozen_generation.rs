@@ -26,11 +26,12 @@ struct Disk {
     bytes: HostMutex<Vec<u8>>,
     mid_write: HostMutex<Option<Vec<u8>>>,
     record: core::sync::atomic::AtomicBool,
+    reads: AtomicUsize,
 }
 impl Disk {
     fn new(bytes: Vec<u8>) -> Self {
         Self { bytes: HostMutex::new(bytes), mid_write: HostMutex::new(None),
-            record: core::sync::atomic::AtomicBool::new(false) }
+            record: core::sync::atomic::AtomicBool::new(false), reads: AtomicUsize::new(0) }
     }
     fn image(&self) -> Vec<u8> { self.bytes.lock().unwrap().clone() }
 }
@@ -38,6 +39,7 @@ impl BlockDevice for Disk {
     fn block_size(&self) -> usize { BLOCK_SIZE }
     fn num_blocks(&self) -> u64 { self.bytes.lock().unwrap().len() as u64 / BLOCK_SIZE as u64 }
     fn read_block(&self, n: u64, b: &mut [u8]) -> Result<(), BlockError> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
         let at = n as usize * BLOCK_SIZE;
         b.copy_from_slice(&self.bytes.lock().unwrap()[at..at+b.len()]); Ok(())
     }
@@ -871,4 +873,154 @@ fn height_one_create_and_first_write_admit_a_cascading_split() {
             assert_eq!(bytes, [b'x']);
         }
     }
+}
+
+// E24 coordinator 630(a5), review 638 C1: atime changes can copy durable
+// inode leaves before the next operation asks to fund the open generation.
+fn apply_atime_to_durable_leaves(fs: &Fs) {
+    for ino in (17..1011).step_by(13) {
+        let node = fs.open(ino).unwrap();
+        node.pin::<NodePin<YieldWait>>().unwrap().touched
+            .record(fs.inner.generation.load(Ordering::Acquire), true, 90_001);
+        fs.getattr(ino).unwrap();
+        assert_eq!(fs.inner.state.lock().files.stored_inode(ino).unwrap().atime.seconds, 90_000);
+    }
+}
+
+#[test]
+fn review_fixes_create_covers_earlier_inode_copies_and_publishes() {
+    let disk = Arc::new(Disk::new(outstanding_grants::populated_image(80_000)));
+    let fs = mount(disk.clone(), true, 630_501);
+    let dir = fs.lookup(2, b"tmp").unwrap();
+    let before = fs.inner.state.lock().durable.generation;
+    apply_atime_to_durable_leaves(&fs);
+    {
+        let state = fs.inner.state.lock();
+        assert_eq!(state.files.reservation_paths(dir).unwrap().fs_height, 1);
+        assert!(state.files.metadata_debt().unwrap() > 300);
+        assert!(state.grants.is_empty());
+    }
+    let ino = fs.create(dir, b"after-atime", NewNode::Regular {
+        attrs: InodeAttrs::new(0o644, 0, 0),
+    }).expect("create must fund the generation it settles");
+    fs.fsync(&fs.open(ino).unwrap(), false).unwrap();
+    {
+        let state = fs.inner.state.lock();
+        assert!(!state.failed);
+        assert_eq!(state.durable.generation, before + 1);
+    }
+    drop(fs);
+    let remounted = mount(disk, false, 630_502);
+    assert_eq!(remounted.lookup(dir, b"after-atime"), Ok(ino));
+    assert_eq!(remounted.inner.state.lock().files.stored_inode(17).unwrap().atime.seconds, 90_000);
+}
+
+#[test]
+fn review_fixes_first_write_retains_funds_for_earlier_inode_copies() {
+    let fs = mount(Arc::new(Disk::new(outstanding_grants::populated_image(80_000))), true, 630_503);
+    let ino = fs.create(2, b"empty", NewNode::Regular { attrs: InodeAttrs::new(0o644, 0, 0) }).unwrap();
+    let node = fs.open(ino).unwrap();
+    fs.fsync(&node, false).unwrap();
+    let baseline = {
+        let mut state = fs.inner.state.lock();
+        let reservation = state.reserve_data(ino, 0, 1, Operation::Allocate, true).unwrap();
+        let blocks = reservation.grant.blocks();
+        state.reservations.release(reservation.grant);
+        blocks
+    };
+    apply_atime_to_durable_leaves(&fs);
+    let earlier_debt = fs.inner.state.lock().files.metadata_debt().unwrap();
+    assert_eq!(fs.write(&node, WriteReq { at: WriteAt::Offset(0), limit: u64::MAX,
+        clear_setid: false }, b"x").unwrap().bytes, 1);
+    {
+        let state = fs.inner.state.lock();
+        assert_eq!(state.metadata_reserved, earlier_debt);
+        let space_base = state.first_write_space;
+        assert!(earlier_debt > space_base);
+        assert!(state.grants.blocks >= baseline + earlier_debt - space_base,
+            "retained {} blocks, including {earlier_debt} of earlier debt with at most {space_base} shared",
+            state.grants.blocks);
+    }
+    fs.fsync(&node, false).unwrap();
+}
+
+#[test]
+fn review_fixes_refusal_records_its_own_decision_without_device_io() {
+    use super::super::reserve::observation;
+
+    let disk = Arc::new(Disk::new(incremental_files_view::full_height_one_image()));
+    let fs = mount(disk.clone(), true, 630_504);
+    fs.inner.signal.requested.store(true, Ordering::Release);
+    let publisher = start_publisher(&fs);
+    let release_generation = publisher.generation;
+    let (mut ledger, free, reserve, held) = {
+        let mut state = fs.inner.state.lock();
+        let free = state.durable.free_blocks;
+        let held = state.reservations.available(free);
+        let grant = state.reservations.reserve(free, held, Operation::Allocate).unwrap();
+        (state.reservations.clone(), free, state.durable.global_reserve, grant)
+    };
+    let snapshot = Rc::new(RefCell::new(None));
+    let outcome = snapshot.clone();
+    let reads_between = Rc::new(RefCell::new(None));
+    let reads = reads_between.clone();
+    let mut publisher = Some(publisher);
+    let mut held = Some(held);
+    let mut second_grant = None;
+    context::observer(Some(Box::new(move |event| match event {
+        Event::Phase { op: "create", phase: "reservation", begin: false }
+            if outcome.borrow().is_none() => {
+                let decision = observation::take().expect("the create was actually denied");
+                *outcome.borrow_mut() = Some((decision, disk.reads.load(Ordering::Relaxed)));
+                // Simulate frozen prepare-reap acquiring the shared ledger
+                // after this create's decision while the mount lock is held.
+                second_grant = Some(ledger.reserve(free, 1, Operation::DeleteSnapshot).unwrap());
+                assert!(ledger.reserve(free, reserve, Operation::DeleteSnapshot).is_err());
+            }
+        Event::CommitWait { .. } if publisher.is_some() => {
+            let (_, before) = outcome.borrow().unwrap();
+            *reads.borrow_mut() = Some(disk.reads.load(Ordering::Relaxed) - before);
+            ledger.release(second_grant.take().unwrap());
+            ledger.release(held.take().unwrap());
+            let publisher = publisher.take().unwrap();
+            publisher.paused.install();
+            publisher.thread.join().unwrap();
+        }
+        _ => (),
+    })));
+    let create = fs.create(2, b"pressure", NewNode::Regular { attrs: InodeAttrs::new(0o644, 0, 0) });
+    context::observer(None);
+    assert!(create.is_ok(), "{create:?}");
+    let ([_, _, charged, request, available], _) = snapshot.borrow().unwrap();
+    assert!(request > available);
+    let receipts = report_receipts(&fs);
+    assert_eq!(receipts.len(), 1);
+    let receipt = receipts[0].1;
+    assert_eq!((receipt.grants_n, receipt.request, *reads_between.borrow()),
+        (charged, request, Some(0)), "the receipt must describe the original denial without I/O");
+    assert_eq!(receipt.release_generation, release_generation);
+}
+
+#[test]
+fn review_fixes_terminal_enospc_records_no_release() {
+    let fs = mount(Arc::new(Disk::new(incremental_files_view::full_height_one_image())), true, 630_505);
+    let (generation, free, reserve, held) = {
+        let mut state = fs.inner.state.lock();
+        let sb = &state.durable;
+        let (generation, free, reserve) = (sb.generation, sb.free_blocks, sb.global_reserve);
+        assert!(state.grants.is_empty());
+        let held = state.reservations.reserve(free, free - reserve, Operation::Allocate).unwrap();
+        (generation, free, reserve, held)
+    };
+    assert_eq!(pending_census(&fs), (0, 0));
+    assert_eq!(fs.create(2, b"full", NewNode::Regular { attrs: InodeAttrs::new(0o644, 0, 0) }),
+        Err(Errno(ENOSPC)));
+    let receipts = report_receipts(&fs);
+    assert_eq!(receipts.len(), 1, "terminal admission refusal must be observable");
+    let receipt = receipts[0].1;
+    assert_eq!(receipt, Receipt { op: "create", generation, release_generation: generation,
+        free, reserve, pending: 0, pending_oldest: 0, grants_n: held.blocks(), grants_next: 0,
+        request: 72 });
+    assert_eq!(fs.lookup(2, b"full"), Err(Errno(ENOENT)));
+    fs.inner.state.lock().reservations.release(held);
 }
