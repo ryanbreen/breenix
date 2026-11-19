@@ -68,7 +68,7 @@ pub mod context {
     // stamp (x11c M4).
     #[derive(Clone, Copy)]
     pub enum Event {
-        Acquire(usize), Release(usize), Access(usize), Point, Yield, Touch,
+        Acquire(usize), Release(usize), Access(usize), Point, Yield, Touch, MappingsStaged,
         Phase { op: &'static str, phase: &'static str, begin: bool },
     }
     type Observer = Box<dyn FnMut(Event)>;

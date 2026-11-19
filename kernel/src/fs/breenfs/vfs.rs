@@ -1737,6 +1737,8 @@ impl<W: Wait + 'static> BreenFs<W> {
                 }
             }
         }
+        #[cfg(test)]
+        super::preempt::context::observe(super::preempt::context::Event::MappingsStaged);
         // E24 ledger 558(x4): the pass joins its mapping snapshots into one
         // generation. Complete their dirty custody only after that barrier;
         // commit_due must not publish a second generation after this returns.

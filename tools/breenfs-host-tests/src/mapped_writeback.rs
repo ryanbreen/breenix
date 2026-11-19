@@ -14,7 +14,17 @@ impl Wait for NoWait {
     }
     fn wake_all(&self) {}
 }
-struct Disk(HostMutex<Vec<u8>>);
+const MAPPED_TAG: [u8; 4] = [0xd3, 0xa6, 0xb7, 0x5e];
+const MAPPED_SHAPE: [usize; 8] = [1, 1, 1, 1, 1000, 1000, 1000, 1000];
+const MAPPED_TOTAL: usize = 4004;
+
+struct Disk(HostMutex<Vec<u8>>, HostMutex<Vec<usize>>);
+impl Disk {
+    fn new() -> Self {
+        Self(HostMutex::new(vec![0; 64 * 1024 * 1024]), HostMutex::new(Vec::new()))
+    }
+}
+
 impl BlockDevice for Disk {
     fn read_block(&self, block: u64, bytes: &mut [u8]) -> Result<(), BlockError> {
         let start = block as usize * BLOCK_SIZE;
@@ -24,6 +34,10 @@ impl BlockDevice for Disk {
     fn write_block(&self, block: u64, bytes: &[u8]) -> Result<(), BlockError> {
         let start = block as usize * BLOCK_SIZE;
         self.0.lock().unwrap()[start..start + bytes.len()].copy_from_slice(bytes);
+        if bytes.starts_with(&MAPPED_TAG) {
+            let page = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
+            self.1.lock().unwrap()[page] += 1;
+        }
         Ok(())
     }
     fn block_size(&self) -> usize {
@@ -37,7 +51,7 @@ impl BlockDevice for Disk {
     }
 }
 fn fixture() -> (Arc<BreenFs<NoWait>>, Arc<Disk>, Arc<VNode>) {
-    let disk = Arc::new(Disk(HostMutex::new(vec![0; 64 * 1024 * 1024])));
+    let disk = Arc::new(Disk::new());
     let sb = Superblock {
         fs_uuid: [0x22; 16],
         generation: 1,
@@ -312,16 +326,8 @@ fn healthy_cache_returns_to_baseline_after_unmap_and_close() {
     fs.shutdown("healthy-cache-cleanup", u64::MAX).unwrap();
 }
 
-// E24 coordinator ledger 558(x4): one publication for a whole worker pass,
-// including passes crossing mapping boundaries; v's eviction repair stands.
-#[test]
-fn mapped_4004_pages_batch_publication_and_settle_within_page_budget() {
-    use crate::memory::file_map::{bind_host, EVICT_BUDGET};
-    const SHAPE: [usize; 8] = [1, 1, 1, 1, 1000, 1000, 1000, 1000];
-    const TOTAL: usize = 4004;
-    assert_eq!(SHAPE.iter().sum::<usize>(), TOTAL);
-    let started = std::time::Instant::now();
-    let disk = Arc::new(Disk(HostMutex::new(vec![0; 64 * 1024 * 1024])));
+fn mapped_batch_fixture() -> (Arc<BreenFs<NoWait>>, Arc<Disk>, Vec<Arc<VNode>>) {
+    let disk = Arc::new(Disk::new());
     let sb = Superblock { fs_uuid: [0x84; 16], generation: 1, slot: 1,
         total_blocks: 16384, global_reserve: 4096, next_root_id: 2,
         ..Superblock::default() };
@@ -331,7 +337,7 @@ fn mapped_4004_pages_batch_publication_and_settle_within_page_budget() {
     let fs = BreenFs::mount_writable(disk.clone(), Arc::new(BufferCache::new(NoWait)), 84, 1).unwrap();
     fs.init_service().unwrap();
     let mut nodes = Vec::new();
-    for (index, pages) in SHAPE.into_iter().enumerate() {
+    for (index, pages) in MAPPED_SHAPE.into_iter().enumerate() {
         let ino = fs.create(2, format!("map-{index}").as_bytes(), NewNode::Regular {
             attrs: InodeAttrs::new(0o100600, 0, 0),
         }).unwrap();
@@ -340,6 +346,19 @@ fn mapped_4004_pages_batch_publication_and_settle_within_page_budget() {
         nodes.push(node);
     }
     fs.fsync(&nodes[0], false).unwrap();
+    (fs, disk, nodes)
+}
+
+// E24 coordinator ledger 558(x4): one publication for a whole worker pass,
+// including passes crossing mapping boundaries; v's eviction repair stands.
+#[test]
+fn mapped_4004_pages_batch_publication_and_settle_within_page_budget() {
+    use crate::memory::file_map::{bind_host, EVICT_BUDGET};
+    const SHAPE: [usize; 8] = MAPPED_SHAPE;
+    const TOTAL: usize = MAPPED_TOTAL;
+    assert_eq!(SHAPE.iter().sum::<usize>(), TOTAL);
+    let started = std::time::Instant::now();
+    let (fs, disk, nodes) = mapped_batch_fixture();
     let maps: Vec<_> = nodes.iter().map(|node| node.map.clone()).collect();
     let weak: Vec<_> = nodes.iter().map(Arc::downgrade).collect();
     let inos: Vec<_> = nodes.iter().map(|node| node.ino).collect();
@@ -395,4 +414,172 @@ fn mapped_4004_pages_batch_publication_and_settle_within_page_budget() {
     assert!(publications.iter().all(|count| *count <= 1),
         "worker published per mapping/chunk instead of once per pass: {publications:?}");
     fs.shutdown("mapped-batch-cleanup", u64::MAX).unwrap();
+}
+
+#[derive(Clone, Copy, Debug)]
+enum FreezeCut {
+    AfterStaging,
+    BeforeInstall,
+    AfterInstall,
+}
+
+/// Park a caller at the exact production edge and let its peer run. The
+/// publication edges here are outside mount exclusion.
+fn pause_at(
+    select: impl Fn(super::super::preempt::context::Event) -> bool + 'static,
+    entered: std::sync::mpsc::Sender<()>,
+    resume: std::sync::mpsc::Receiver<()>,
+) {
+    let mut entered = Some(entered);
+    super::super::preempt::context::observer(Some(Box::new(move |event| {
+        if select(event) {
+            if let Some(entered) = entered.take() {
+                entered.send(()).unwrap();
+                resume.recv().unwrap();
+            }
+        }
+    })));
+}
+
+fn interleave_pressure(fs: &BreenFs<NoWait>, cut: FreezeCut) {
+    use super::super::preempt::context::Event;
+    use std::{sync::mpsc::channel, thread, time::Duration};
+    let (worker_entered, at_worker_edge) = channel();
+    let (resume_worker, worker_resume) = channel();
+    let (pressure_entered, at_pressure_edge) = channel();
+    let (resume_pressure, pressure_resume) = channel();
+    let start = fs.inner.state.lock().durable.generation;
+    let wait = Duration::from_secs(5);
+
+    thread::scope(|scope| {
+        let (start_worker, worker_start) = channel();
+        let worker = scope.spawn(move || {
+            worker_start.recv().unwrap();
+            pause_at(move |event| match cut {
+                FreezeCut::AfterStaging => matches!(event, Event::MappingsStaged),
+                FreezeCut::AfterInstall => matches!(event, Event::Phase {
+                    op: "commit", phase: "publication", begin: false,
+                }),
+                FreezeCut::BeforeInstall => false,
+            }, worker_entered, worker_resume);
+            fs.commit_due(0)
+        });
+        let (start_pressure, pressure_start) = channel();
+        let pressure = scope.spawn(move || {
+            pressure_start.recv().unwrap();
+            // Leave retained metadata for the real reservation-pressure path
+            // even when this caller starts after the worker's own install.
+            fs.create(2, b"pressure", NewNode::Regular {
+                attrs: InodeAttrs::new(0o100600, 0, 0),
+            }).unwrap();
+            pause_at(move |event| match cut {
+                FreezeCut::BeforeInstall => matches!(event, Event::Phase {
+                    op: "commit", phase: "write-cached", begin: false,
+                }),
+                _ => matches!(event, Event::Phase {
+                    op: "commit", phase: "apply-touches", begin: true,
+                }),
+            }, pressure_entered, pressure_resume);
+            let state = fs.mutation_lock(CostOp::Create);
+            let result = fs.reserve_with_pressure(
+                CostOp::Create, state, || Ok(fs.mutation_lock(CostOp::Create)), |state| {
+                    state.reservations.reserve(state.durable.free_blocks, u64::MAX, Operation::Allocate)
+                        .map_err(|_| Errno(ENOSPC))
+                },
+            );
+            assert!(matches!(result, Err(Errno(ENOSPC))));
+        });
+
+        if !matches!(cut, FreezeCut::BeforeInstall) {
+            start_worker.send(()).unwrap();
+            at_worker_edge.recv_timeout(wait).unwrap();
+        }
+        start_pressure.send(()).unwrap();
+        at_pressure_edge.recv_timeout(wait).unwrap();
+        {
+            let state = fs.inner.state.lock();
+            assert!(state.pending.is_some(), "pressure did not freeze a generation");
+            let worker_installed = u64::from(matches!(cut, FreezeCut::AfterInstall));
+            assert_eq!(state.durable.generation, start + worker_installed);
+        }
+        if matches!(cut, FreezeCut::BeforeInstall) {
+            start_worker.send(()).unwrap();
+        } else {
+            resume_worker.send(()).unwrap();
+        }
+        assert_eq!(worker.join().unwrap(), Ok(matches!(cut, FreezeCut::AfterInstall)));
+        resume_pressure.send(()).unwrap();
+        pressure.join().unwrap();
+    });
+}
+
+#[test]
+fn mapped_writeback_survives_each_pressure_freeze_cut() {
+    use crate::memory::file_map::{bind_host, EVICT_BUDGET};
+    let mut failures = Vec::new();
+    for cut in [FreezeCut::AfterStaging, FreezeCut::BeforeInstall, FreezeCut::AfterInstall] {
+        let (fs, disk, nodes) = mapped_batch_fixture();
+        *disk.1.lock().unwrap() = vec![0; MAPPED_TOTAL];
+        let maps: Vec<_> = nodes.iter().map(|node| node.map.clone()).collect();
+        let weak: Vec<_> = nodes.iter().map(Arc::downgrade).collect();
+        let inos: Vec<_> = nodes.iter().map(|node| node.ino).collect();
+        let counts = || maps.iter().fold((0, 0, 0), |(resident, dirty, bindings), map| {
+            let n = map.cache_counts();
+            (resident + n.0, dirty + n.1, bindings + n.2)
+        });
+        let baseline = counts();
+        let header = |page: usize| {
+            let [lo, hi] = (page as u16).to_le_bytes();
+            [MAPPED_TAG[0], MAPPED_TAG[1], MAPPED_TAG[2], MAPPED_TAG[3], lo, hi]
+        };
+        let mut page_id = 0;
+        for (node, pages) in nodes.iter().zip(MAPPED_SHAPE) {
+            let binding = bind_host(node.clone(), (pages * BLOCK_SIZE) as u64, true, true, true);
+            for page in 0..pages {
+                for (i, byte) in header(page_id).into_iter().enumerate() {
+                    binding.store((page * BLOCK_SIZE + i) as u64, byte).unwrap();
+                }
+                page_id += 1;
+            }
+        }
+        drop(nodes);
+        assert_eq!(counts(), (MAPPED_TOTAL, MAPPED_TOTAL, 0));
+        interleave_pressure(&fs, cut);
+        let after_cut = counts();
+        let mut passes = 1;
+        // Two budgets per page (snapshot, then eviction), plus one pass whose
+        // completion the in-flight pressure publication can put off.
+        let limit = (2 * MAPPED_TOTAL).div_ceil(EVICT_BUDGET) + 1;
+        while counts() != baseline && passes < limit {
+            fs.commit_due(0).unwrap();
+            passes += 1;
+        }
+        let settled = counts();
+        let pinned = weak.iter().filter(|node| node.upgrade().is_some()).count();
+        let writes = disk.1.lock().unwrap();
+        let missing = writes.iter().filter(|&&count| count == 0).count();
+        let repeated = writes.iter().filter(|&&count| count > 1).count();
+        drop(writes);
+        let observer = BreenFs::mount(disk, Arc::new(BufferCache::new(NoWait)), 85, 1).unwrap();
+        let mut mismatches = 0;
+        let mut page_id = 0;
+        for (ino, pages) in inos.into_iter().zip(MAPPED_SHAPE) {
+            let node = observer.open(ino).unwrap();
+            let mut bytes = vec![0xff; pages * BLOCK_SIZE];
+            assert_eq!(observer.read(&node, 0, &mut bytes).unwrap(), bytes.len());
+            for page in bytes.chunks_exact(BLOCK_SIZE) {
+                if page[..6] != header(page_id) || page[6..].iter().any(|&byte| byte != 0) {
+                    mismatches += 1;
+                }
+                page_id += 1;
+            }
+        }
+        eprintln!("cut={cut:?} after_cut={after_cut:?} settled={settled:?} passes={passes}/{limit} pinned={pinned} missing={missing} repeated={repeated} mismatches={mismatches}");
+        if settled != baseline || pinned != 0 || missing != 0 || repeated != 0 || mismatches != 0 {
+            failures.push(cut);
+        }
+        assert_eq!(fs.read_only(), Ok(false));
+        fs.shutdown("mapped-freeze-cleanup", u64::MAX).unwrap();
+    }
+    assert!(failures.is_empty(), "writeback failures at pressure cuts: {failures:?}");
 }
