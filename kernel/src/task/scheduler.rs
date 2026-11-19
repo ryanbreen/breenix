@@ -10633,12 +10633,18 @@ pub fn terminate_thread_best_effort(thread_id: u64) -> bool {
 /// Best-effort switch to idle — uses try_lock to avoid deadlock in crash handlers.
 ///
 /// When an INSTRUCTION_ABORT or DATA_ABORT occurs from EL1, the SCHEDULER lock
-/// may already be held (e.g., the crash happened during a context switch). Using
-/// `switch_to_idle()` would deadlock on the same CPU. This version uses try_lock:
-/// if the lock is available, update scheduler state; if not, just return — the
-/// next timer interrupt on this CPU will see the idle loop and correct the state.
+/// may already be held. A local owner cannot discard the faulting stack with
+/// its guard still live. When a peer owns the lock, use the ordinary fallback
+/// so the idle loop can reconcile scheduler state after the peer releases it.
 #[cfg(target_arch = "aarch64")]
 pub fn switch_to_idle_best_effort() {
+    let cpu = Scheduler::current_cpu_id();
+    if cpu >= MAX_CPUS {
+        return;
+    }
+    if SCHEDULER_HELD_BY[cpu].load(Ordering::Relaxed) {
+        crate::gpu::panic::park();
+    }
     if let Some(mut scheduler_lock) = try_lock_scheduler() {
         if let Some(sched) = scheduler_lock.as_mut() {
             let cpu_id = Scheduler::current_cpu_id();
