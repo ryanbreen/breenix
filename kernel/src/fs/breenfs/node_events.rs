@@ -60,6 +60,15 @@ impl Drop for NodeEvents {
     fn drop(&mut self) { for times in self.take() { drop(times); } }
 }
 pub(super) struct Events(*mut TouchedTimes);
+// SAFETY: the detached list owns its Arc links and has one consumer. Moving
+// that ownership between mount-lock holders does not share the iterator.
+unsafe impl Send for Events {}
+impl Default for Events {
+    fn default() -> Self { Self(ptr::null_mut()) }
+}
+impl Events {
+    pub fn is_empty(&self) -> bool { self.0.is_null() }
+}
 impl Iterator for Events {
     type Item = Arc<TouchedTimes>;
     fn next(&mut self) -> Option<Self::Item> {

@@ -141,7 +141,9 @@ fn publication_subspans_are_bounded_and_emitted_only_on_failure() {
     writer.join().unwrap();
     // Preparation has released mount exclusion before the device flush parks.
     // These are production spans, consumed by the same failure-only reader.
-    for (phase, count) in [("retain-open", 3), ("apply-touches", 1),
+    assert_eq!(counters(&held, "fsync", "retain-open"), (1, 1),
+        "one fsync retention share of at most {} events", crate::breenfs::vfs::RETAIN_OPEN_STEPS);
+    for (phase, count) in [("apply-touches", 1),
         ("drain-dirty", 1), ("prepare-reap", 1), ("cleanup", 1), ("mount-excluded", 1)] {
         assert_eq!(counters(&held, "commit", phase), (count, count), "{phase}");
     }
@@ -153,8 +155,9 @@ fn publication_subspans_are_bounded_and_emitted_only_on_failure() {
         || panic!("success must not read or format observations")).is_empty());
     let lines = baseline.records("libc", "dirent-glob/readdir-many", true,
         || Some(observations::Snapshot::parse(&held)));
+    assert_eq!(lines.iter().filter(|l| l.contains("op=vfs-fsync-retain-open ")).count(), 1, "{lines:?}");
     for phase in ["prepare-files", "next-files-view", "write-cached", "device-flush",
-        "retain-open", "apply-touches", "drain-dirty", "prepare-reap", "cleanup", "mount-excluded"] {
+        "apply-touches", "drain-dirty", "prepare-reap", "cleanup", "mount-excluded"] {
         assert_eq!(lines.iter().filter(|l| l.contains(&format!("op=vfs-commit-{phase} "))).count(), 1, "{lines:?}");
     }
     let after = report(fs.as_ref());

@@ -2,7 +2,7 @@
 use super::preempt::preemption_point;
 #[path = "node_events.rs"]
 mod node_events;
-use node_events::{NodeEvents, TouchedTimes};
+use node_events::{Events, NodeEvents, TouchedTimes};
 #[path = "mutation_cost.rs"]
 mod mutation_cost;
 use mutation_cost::{Costs, Op as CostOp, Phase as CostPhase};
@@ -342,6 +342,9 @@ struct MountState<W: Wait + 'static> {
     closed: bool,
     nodes: BTreeMap<u64, NodeState>,
     events: Arc<NodeEvents>,
+    retained_events: Events,
+    retained_batches: u64,
+    retaining_for_sync: usize,
     // The open generation's custody (601(2)); freeze moves each whole.
     touches: BTreeMap<u64, Arc<TouchedTimes>>,
     dirty: BTreeMap<u64, GenPages>,
@@ -447,6 +450,8 @@ type StaleViews<W> = (FilesView<W>, Option<Arc<FrozenPages>>);
 /// install (x11c M2). A holder's own call records at most a few changes, so
 /// the replay still gains on the record.
 const MATERIALIZE_STEPS: usize = 8;
+/// Maximum detached node notifications processed per retain-open hold (E24 607).
+pub(crate) const RETAIN_OPEN_STEPS: usize = 8;
 /// The open generation's Files view (E24 coordinator 597/601). Normally it is
 /// the mount's transaction. While generation N is frozen, N+1 runs on a
 /// scratch fork of N's frozen view (`log` is Some): its changes describe N+1
@@ -694,28 +699,26 @@ impl<W: Wait> MountState<W> {
         // VNode drops do no I/O or mount locking. Refresh the writer's open
         // snapshot here so a closed orphan cannot be opened again by inode.
         self.retain_open();
-        if let Some((_, inode)) = self
+        let inode = if let Some((_, inode)) = self
             .inodes
             .entries
             .iter()
             .flatten()
             .find(|(cached, _)| *cached == ino)
         {
-            if inode.nlink == 0
-                && self
-                    .nodes
-                    .get(&ino)
-                    .is_none_or(|node| node.node.strong_count() == 0)
-            {
-                return Err(Errno(ENOENT));
-            }
-            return Ok(*inode);
+            *inode
+        } else {
+            let result = self.files.inode(ino);
+            let inode = self.observed(result)?;
+            let slot = self.inodes.next;
+            self.inodes.entries[slot] = Some((ino, inode));
+            self.inodes.next = (slot + 1) % self.inodes.entries.len();
+            inode
+        };
+        // A final-close notification may still be in a later retention share.
+        if inode.nlink == 0 && self.nodes.get(&ino).is_none_or(|node| node.node.strong_count() == 0) {
+            return Err(Errno(ENOENT));
         }
-        let result = self.files.inode(ino);
-        let inode = self.observed(result)?;
-        let slot = self.inodes.next;
-        self.inodes.entries[slot] = Some((ino, inode));
-        self.inodes.next = (slot + 1) % self.inodes.entries.len();
         Ok(inode)
     }
     fn attrs(&mut self, ino: u64) -> Result<NodeAttrs, Errno> {
@@ -756,7 +759,11 @@ impl<W: Wait> MountState<W> {
         #[cfg(test)] let _phase = publication_phases::Phase::new("retain_open");
         // Only opens, touches and final releases change this snapshot. The
         // atomic queue owns no VNode and cannot keep an inode open itself.
-        for times in self.events.take() {
+        let mut batch = core::mem::take(&mut self.retained_events);
+        if batch.is_empty() {
+            batch = self.events.take();
+        }
+        for times in batch.by_ref().take(RETAIN_OPEN_STEPS) {
             preemption_point();
             #[cfg(test)] publication_phases::visit(0);
             let Some(node) = self.nodes.get(&times.ino) else { continue; };
@@ -766,6 +773,10 @@ impl<W: Wait> MountState<W> {
             if times.pending() { self.touches.insert(times.ino, times.clone()); }
             self.prune_node(times.ino);
         }
+        if batch.is_empty() {
+            self.retained_batches += 1;
+        }
+        self.retained_events = batch;
     }
     // A generation's pages are custody of that generation, not of NodeState:
     // keep the entry only while the open generation holds pages or a touch.
@@ -791,9 +802,9 @@ impl<W: Wait> MountState<W> {
             let log = self.files.log.get_or_insert_with(VecDeque::new);
             let mut failed = None;
             while steps < MATERIALIZE_STEPS {
+                preemption_point();
                 let Some(change) = log.pop_front() else { break; };
                 steps += 1;
-                preemption_point();
                 #[cfg(test)] measurement::materialized();
                 if let Err(error) = change.replay(next) {
                     failed = Some(error);
@@ -818,9 +829,9 @@ impl<W: Wait> MountState<W> {
             }
         }
         while steps < MATERIALIZE_STEPS {
+            preemption_point();
             let Some(ino) = self.refresh.pop_first() else { break; };
             steps += 1;
-            preemption_point();
             #[cfg(test)] measurement::materialized();
             if let Some(node) = self.nodes.get(&ino).and_then(|entry| entry.node.upgrade()) {
                 if let Ok(inode) = self.files.inode(ino) {
@@ -1285,6 +1296,9 @@ impl<W: Wait + 'static> BreenFs<W> {
                 closed: false,
                 nodes: BTreeMap::new(),
                 events,
+                retained_events: Events::default(),
+                retained_batches: 0,
+                retaining_for_sync: 0,
                 touches: BTreeMap::new(),
                 dirty: BTreeMap::new(),
                 dirty_nodes: BTreeSet::new(),
@@ -1830,6 +1844,9 @@ impl<W: Wait + 'static> BreenFs<W> {
                 drop(self.foreground_lock());
             }
             let mut guard = self.mutation_lock(CostOp::Commit);
+            if guard.retaining_for_sync != 0 {
+                return Ok(false);
+            }
             // 583(x10): start after acquisition; stop before releasing this
             // guard. Excludes acquisition and everything after the guard.
             let _excluded = self.inner.costs.span(CostOp::Commit, CostPhase::MountExcluded);
@@ -2133,11 +2150,37 @@ impl<W: Wait + 'static> BreenFs<W> {
             if state.committer.is_none() {
                 return Ok(());
             }
-            // The freeze takes no event traversal (601(2)): bring this caller's
-            // earlier closes and touches into the generation it waits for.
-            {
-                let _retain = self.inner.costs.span(CostOp::Fsync, CostPhase::RetainOpen);
-                state.retain_open();
+            // Finish any detached batch and one snapshot of the producer
+            // queue. Later arrivals can wait for another caller. Keep the
+            // generation open until these touches and closes join its receipt.
+            let target = state.retained_batches + if state.retained_events.is_empty() { 1 } else { 2 };
+            state.retaining_for_sync += 1;
+            let error = loop {
+                {
+                    let _retain = self.inner.costs.span(CostOp::Fsync, CostPhase::RetainOpen);
+                    state.retain_open();
+                }
+                if state.retained_batches >= target {
+                    break None;
+                }
+                drop(state);
+                preemption_point();
+                state = self.mutation_lock(CostOp::Fsync);
+                if state.failed {
+                    break Some(Errno(EIO));
+                }
+                if deadline.is_some_and(|limit| monotonic_ns() >= limit) {
+                    break Some(Errno(ETIMEDOUT));
+                }
+                if state.retained_batches >= target {
+                    break None;
+                }
+            };
+            state.retaining_for_sync -= 1;
+            if let Some(error) = error {
+                drop(state);
+                self.inner.signal.wake();
+                return Err(error);
             }
             let waiter = state.committer.as_mut().ok_or(Errno(EIO))?.waiter();
             self.inner.signal.requested.store(true, Ordering::Release);
@@ -2509,7 +2552,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                             let state = fs.inner.state.lock();
                             // Retry a deferred eviction allocation at a bounded
                             // interval, even though publication is disabled.
-                            (state.failed, if state.failed {
+                            (state.failed, if state.failed || state.retaining_for_sync != 0 {
                                 monotonic_ns().saturating_add(COMMIT_INTERVAL_NS)
                             } else { state.policy.deadline() })
                         };

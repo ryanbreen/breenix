@@ -22,16 +22,19 @@ LOOPS = {
     'vfs.rs': {
         'service_mappings': ('for node in handles',),
         'mapped_nodes': ('for entry in state.nodes.values()',),
-        'retain_open': ('for times in self.events.take()',),
+        'retain_open': ('for times in batch.by_ref().take(RETAIN_OPEN_STEPS)',),
         'drain_pages': ('for &ino in &self.dirty_nodes',),
         'commit_generation_up_to': ('for ino in touched',
-                                    'for ino in core::mem::take(&mut state.dirty_nodes)',
-                                    'for grant in core::mem::take(&mut state.pending_grants)'),
+                                    'for (start, count) in prepared.data_ranges()',
+                                    'for grant in grants'),
+        'abandon': ('for grant in frozen.grants',),
+        'materialize': ('while steps < MATERIALIZE_STEPS', 'while steps < MATERIALIZE_STEPS'),
     },
     'dirty.rs': {'write_runs': ('while let Some((first, page)) = self.pages.pop_first()',)},
     'txn.rs': {'settle': ('while let Some(change) = self.deferred.pop_front()',)},
     'commit.rs': {
-        'prepare': ('for addr in remaining', 'for (key, bytes) in entries',
+        'wake': ('for waiter in &self.waiters',),
+        'prepare': ('for addr in remaining', 'for (_, bytes) in free',
                     'for (chunk, crc) in bytes.chunks_exact(BLOCK_SIZE).zip(r.crcs)',
                     'for (addr, len) in ranges'),
         'fill': ('for i in 0..usize::from(h.nitems)',),
@@ -54,7 +57,9 @@ class CommitPreemption(unittest.TestCase):
                     code = function(source, name)
                     self.assertIn('preemption_point();', code)
                     for loop in loops:
-                        self.assertRegex(code, re.escape(loop) + r'\s*\{\s*preemption_point\(\);')
+                        pattern = re.escape(loop) + r'\s*\{\s*preemption_point\(\);'
+                        self.assertRegex(code, pattern)
+                        code = re.sub(pattern, '', code, count=1)
         dirty = (BREENFS / 'dirty.rs').read_text()
         self.assertIn(f'run.len() < {MAX_WORK_ITEMS_PER_POINT} * BLOCK_SIZE', dirty)
         commit = strip_comments((BREENFS / 'commit.rs').read_text())
