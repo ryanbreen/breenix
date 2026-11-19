@@ -131,8 +131,8 @@ pub mod measurement {
     pub fn service_at<W: crate::block::cache::Wait + 'static>(
         fs: &super::BreenFs<W>, now_ns: u64,
     ) -> Result<(bool, bool), crate::fs::errno::Errno> {
-        let observed = fs.inner.signal.epoch();
-        fs.commit_due(now_ns).map(|worked| (worked, fs.inner.signal.epoch() != observed))
+        let observed = fs.inner.signal.worker.epoch();
+        fs.commit_due(now_ns).map(|worked| (worked, fs.inner.signal.worker.epoch() != observed))
     }
 }
 
@@ -866,7 +866,7 @@ impl<W: Wait> MountState<W> {
         #[cfg(not(test))]
         let _ = crate::fs::vfs::mount::remount_read_only(self.mount);
         self.signal.mappings.store(true, Ordering::Release);
-        self.signal.wake();
+        self.signal.wake_all();
     }
     fn observed<T>(&mut self, result: Result<T, ops::Error>) -> Result<T, Errno> {
         if let Err(error) = result.as_ref() { self.record_metadata(*error); }
@@ -932,7 +932,7 @@ impl<W: Wait> MountState<W> {
             }
         }
         if result.is_ok() {
-            self.signal.wake();
+            self.signal.worker.wake();
         }
         result.map_err(errno)
     }
@@ -1433,7 +1433,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             if state.dirty_bytes.saturating_add(incoming) > DIRTY_BUDGET / 2 {
                 // edited() also wakes the worker under the mount lock.
                 self.inner.signal.pressure.store(true, Ordering::Release);
-                self.inner.signal.wake();
+                self.inner.signal.worker.wake();
             }
             let charged = state.charged();
             if charged.saturating_add(incoming) <= DIRTY_BUDGET || charged == 0 {
@@ -1662,7 +1662,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 state.inodes.next = 1;
                 node.size.store(inode.size, Ordering::Release);
                 *node.times.lock() = attributes(node.ino, inode)?.times;
-                state.signal.wake();
+                state.signal.worker.wake();
             }
         }
         // Growth clears the old EOF tail before the new bytes are copied.
@@ -1879,7 +1879,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         // Install, abandonment and leaving the sync retention window wake
         // the worker. Observe the blocker under the same lock as completion.
         if !state.publication_blocked() {
-            self.inner.signal.wake();
+            self.inner.signal.worker.wake();
         }
         true
     }
@@ -1903,7 +1903,9 @@ impl<W: Wait + 'static> BreenFs<W> {
                 drop(self.foreground_lock());
             }
             let mut guard = self.mutation_lock(CostOp::Commit);
-            if guard.retaining_for_sync != 0 {
+            // A clean mapping pass can reach here during another publication.
+            // It cannot start a freeze section until that publication installs.
+            if guard.retaining_for_sync != 0 || (guard.pending.is_some() && !guard.failed) {
                 return Ok(false);
             }
             // 583(x10): start after acquisition; stop before releasing this
@@ -1921,7 +1923,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             if state.failed {
                 return Err(Errno(EIO));
             }
-            if state.committer.is_none() || state.pending.is_some() || state.durable.generation >= last {
+            if state.committer.is_none() || state.durable.generation >= last {
                 return Ok(false);
             }
             if state.next_files.is_some() || !state.refresh.is_empty() {
@@ -2042,7 +2044,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             self.inner.device.as_ref(),
             Arc::new(move || {
                 signal.pressure.store(true, Ordering::Release);
-                signal.wake();
+                signal.worker.wake();
             }),
         );
         let mut publication = {
@@ -2130,7 +2132,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         drop(retired);
         drop(pages);
         preemption_point();
-        self.inner.signal.wake();
+        self.inner.signal.wake_all();
         result.map(|_| true).map_err(|_| Errno(EIO))
     }
     /// Freeze the open generation N into its publication (E24 coordinator
@@ -2190,7 +2192,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             preemption_point();
             frozen.ledger.release(grant);
         }
-        self.inner.signal.wake();
+        self.inner.signal.wake_all();
         Err(if branch == "prepare-reap" { error } else { Errno(EIO) })
     }
     fn sync_generation(&self, deadline: Option<u64>, closing: bool) -> Result<(), Errno> {
@@ -2238,14 +2240,15 @@ impl<W: Wait + 'static> BreenFs<W> {
             state.retaining_for_sync -= 1;
             if let Some(error) = error {
                 drop(state);
-                self.inner.signal.wake();
+                // Pressure callers can retry a publication when retention ends.
+                self.inner.signal.wake_all();
                 return Err(error);
             }
             let waiter = state.committer.as_mut().ok_or(Errno(EIO))?.waiter();
             self.inner.signal.requested.store(true, Ordering::Release);
             waiter
         };
-        self.inner.signal.wake();
+        self.inner.signal.worker.wake();
         loop {
             let observed = self.inner.signal.epoch();
             if let Some(result) = waiter.result() {
@@ -2349,12 +2352,12 @@ impl<W: Wait + 'static> BreenFs<W> {
                     }
                 }
                 signal.started.store(false, Ordering::Release);
-                signal.wake();
+                signal.wake_waiters();
             }, "breenfs-scrub").is_err() {
                 let mut state = self.inner.state.lock();
                 state.scrub_state = SCRUB_FAILED;
                 self.inner.scrub_signal.started.store(false, Ordering::Release);
-                self.inner.scrub_signal.wake();
+                self.inner.scrub_signal.wake_waiters();
                 return Err(Errno(ENOMEM));
             }
         }
@@ -2363,7 +2366,7 @@ impl<W: Wait + 'static> BreenFs<W> {
     fn stop_scrub(&self, deadline: u64) -> Result<(), Errno> {
         let signal = &self.inner.scrub_signal;
         signal.stop.store(true, Ordering::Release);
-        signal.wake();
+        signal.wake_waiters();
         #[cfg(test)]
         self.scrub_pass(super::format::NODE_SIZE)?;
         while signal.started.load(Ordering::Acquire) {
@@ -2529,7 +2532,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             SCRUB_START => self.start_scrub()?,
             SCRUB_CANCEL => {
                 self.inner.scrub_signal.stop.store(true, Ordering::Release);
-                self.inner.scrub_signal.wake();
+                self.inner.scrub_signal.wake_waiters();
             }
             SCRUB_STATUS => {
                 crate::syscall::userptr::copy_to_user(arg as *mut ScrubStatus, &self.scrub_status())
@@ -2594,7 +2597,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             if crate::task::kthread::kthread_run(
                 move || {
                     loop {
-                        let observed = signal.epoch();
+                        let observed = signal.worker.epoch();
                         if signal.stop.load(Ordering::Acquire) {
                             break;
                         }
@@ -2624,10 +2627,10 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                         if result.is_err() && !failed {
                             break;
                         }
-                        signal.wait(observed, Some(deadline));
+                        signal.worker.wait(observed, Some(deadline));
                     }
                     signal.started.store(false, Ordering::Release);
-                    signal.wake();
+                    signal.wake_waiters();
                 },
                 "breenfs-commit",
             )
@@ -2681,7 +2684,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             self.inner.state.lock().fail("shutdown-sync", error);
         }
         signal.stop.store(true, Ordering::Release);
-        signal.wake();
+        signal.worker.wake();
         #[cfg(test)]
         signal.started.store(false, Ordering::Release);
         while signal.started.load(Ordering::Acquire) {
@@ -2975,7 +2978,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
     }
     fn request_eviction(&self) {
         self.inner.signal.mappings.store(true, Ordering::Release);
-        self.inner.signal.wake();
+        self.inner.signal.worker.wake();
     }
     fn mapping_io(&self, node: &VNode) -> Result<Box<dyn MappingIo>, Errno> {
         self.check_node(node)?;
@@ -3234,7 +3237,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         if let Some(entry) = state.nodes.get_mut(&node.ino) {
             entry.splitting = false;
         }
-        self.inner.signal.wake();
+        self.inner.signal.wake_waiters();
         drop(state);
         result
     }
@@ -3541,7 +3544,7 @@ impl<W: Wait> BlockDevice for DataReader<'_, W> {
 }
 impl<W: Wait> Drop for Mount<W> {
     fn drop(&mut self) {
-        self.signal.wake();
+        self.signal.wake_all();
         self.cache.buffers().discard_clean(self.data.as_ref());
         drop(self.owner.take());
     }

@@ -293,7 +293,7 @@ fn n2_parted_write_holds_other_writers_of_its_file() {
     {
         let mut state = fs.inner.state.lock();
         state.nodes.get_mut(&node.ino).unwrap().splitting = false;
-        fs.inner.signal.wake();
+        fs.inner.signal.wake_waiters();
     }
     for waiter in waiters {
         waiter.join().unwrap();
