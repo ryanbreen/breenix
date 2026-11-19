@@ -89,70 +89,34 @@ pub struct SetAttr {
     pub mtime: Option<Time>,
 }
 
-// The disk orders DIR_ENTRY by name hash and DIR_INDEX by cookie. Build the
-// reverse lookup once on a writable mount, including existing v1 images.
-// Frozen N and scratch N+1 share the stable base and N's immutable edits.
-// N folds those edits into the base during preparation. The frozen edits
-// shadow the base in scratch N+1, including during that fold.
-type Cookies<T> = BTreeMap<u64, BTreeMap<Vec<u8>, T>>;
-
-#[derive(Default)]
+// DIR_ENTRY is ordered by name hash, DIR_INDEX by cookie. Keep the most
+// recently searched directory per Files view, bounded to 512 v1 names.
+// A larger directory or an allocation failure uses a streaming lookup.
+const COOKIE_CACHE_ENTRIES: usize = 512;
 struct DirectoryCookies {
-    installed: Arc<spin::Mutex<Cookies<u64>>>,
-    frozen: Option<Arc<Cookies<Option<u64>>>>,
-    edits: Cookies<Option<u64>>,
+    dir: u64,
+    names: Vec<(Vec<u8>, u64)>,
 }
 
 impl DirectoryCookies {
-    fn read(store: &impl NodeStore, root: BlockPtr) -> Result<Self, Error> {
-        let mut installed: Cookies<u64> = BTreeMap::new();
-        btree::visit_range(store, root, Key::default(), key(u64::MAX, u8::MAX, u64::MAX),
-            &mut |key, bytes| {
-                if key.item_type == format::DIR_INDEX {
-                    let record = DirRecord::decode(bytes)?;
-                    if 10 + record.name.len() != bytes.len() || key.offset < 2
-                        || installed.entry(key.object).or_default().insert(record.name, key.offset).is_some()
-                    {
-                        return Err(Error::EIO);
-                    }
-                }
-                Ok(true)
-            })?;
-        Ok(Self { installed: Arc::new(spin::Mutex::new(installed)), ..Self::default() })
+    fn new(dir: u64) -> Option<Self> {
+        let mut names = Vec::new();
+        names.try_reserve_exact(COOKIE_CACHE_ENTRIES).ok()?;
+        Some(Self { dir, names })
     }
 
-    fn get(&self, dir: u64, name: &[u8]) -> Option<u64> {
-        let lookup = |map: &Cookies<Option<u64>>| map.get(&dir)?.get(name).copied();
-        lookup(&self.edits)
-            .or_else(|| self.frozen.as_deref().and_then(lookup))
-            .unwrap_or_else(|| self.installed.lock().get(&dir)?.get(name).copied())
+    fn position(&self, name: &[u8]) -> Result<usize, usize> {
+        self.names.binary_search_by(|(cached, _)| cached.as_slice().cmp(name))
     }
 
-    fn set(&mut self, dir: u64, name: &[u8], cookie: Option<u64>) {
-        self.edits.entry(dir).or_default().insert(name.to_vec(), cookie);
-    }
-
-    fn fork(&mut self) -> Self {
-        let frozen = Arc::new(core::mem::take(&mut self.edits));
-        self.frozen = Some(frozen.clone());
-        Self { installed: self.installed.clone(), frozen: Some(frozen), edits: BTreeMap::new() }
-    }
-
-    fn publish(&mut self) {
-        let frozen = self.frozen.take();
-        let edits = core::mem::take(&mut self.edits);
-        for (&dir, names) in frozen.iter().flat_map(|edits| edits.iter()).chain(edits.iter()) {
-            for (name, cookie) in names {
-                preemption_point();
-                let mut installed = self.installed.lock();
-                if let Some(cookie) = cookie {
-                    installed.entry(dir).or_default().insert(name.clone(), *cookie);
-                } else if let Some(names) = installed.get_mut(&dir) {
-                    names.remove(name);
-                    if names.is_empty() { installed.remove(&dir); }
-                }
-            }
+    fn insert(&mut self, position: usize, name: &[u8], cookie: u64) -> bool {
+        let mut owned = Vec::new();
+        if self.names.len() == COOKIE_CACHE_ENTRIES || owned.try_reserve_exact(name.len()).is_err() {
+            return false;
         }
+        owned.extend_from_slice(name);
+        self.names.insert(position, (owned, cookie));
+        true
     }
 }
 
@@ -166,7 +130,7 @@ pub struct Files<'a, S: NodeStore + 'a> {
     changed_roots: BTreeSet<u64>,
     writable: bool,
     hash_key: [u8; 16],
-    cookies: DirectoryCookies,
+    cookies: Option<DirectoryCookies>,
     // Non-private extents retain their generation's immutable REF tree. New
     // extents are served from data until the next Files view is opened.
     space_root: BlockPtr,
@@ -201,7 +165,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             changed_roots: BTreeSet::new(),
             writable: true,
             hash_key: sb.dirhash_key,
-            cookies: DirectoryCookies::default(),
+            cookies: None,
             space_root: sb.space_root,
             data: BTreeMap::new(),
             open_inodes: Inodes::default(),
@@ -260,8 +224,6 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             key(ORPHAN_OBJECT, format::ORPHAN, 0),
             key(ORPHAN_OBJECT, format::ORPHAN, u64::MAX))?
             .into_iter().map(|(key, _)| key.offset).collect();
-        let cookies = if writable { DirectoryCookies::read(&store, root.root)? }
-            else { DirectoryCookies::default() };
         Ok(Self {
             txn: Transaction::new_owned(
                 store,
@@ -275,7 +237,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             changed_roots: BTreeSet::new(),
             writable,
             hash_key: sb.dirhash_key,
-            cookies,
+            cookies: None,
             space_root: sb.space_root,
             data: BTreeMap::new(),
             open_inodes: Inodes::default(),
@@ -303,7 +265,9 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             changed_roots: BTreeSet::new(),
             writable: self.writable,
             hash_key: self.hash_key,
-            cookies: self.cookies.fork(),
+            // Resolve cookies against the scratch tree when it first needs
+            // them. The publisher keeps its own cache through continuation.
+            cookies: None,
             space_root: self.space_root,
             data: BTreeMap::new(),
             open_inodes: self.open_inodes.clone(),
@@ -339,7 +303,6 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             self.txn.take_dead_nodes(), space_nodes)?;
         self.space_root = sb.space_root;
         self.next_root_id = sb.next_root_id;
-        self.cookies.publish();
         self.changed_roots.clear();
         self.orphan_count = 0;
         Ok(())
@@ -611,9 +574,59 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         parent.mtime = at;
         parent.ctime = at;
         self.put_inode(dir, parent)?;
-        self.cookies.set(dir, name, Some(cookie));
+        if let Some(cache) = self.cookies.as_mut().filter(|cache| cache.dir == dir) {
+            let inserted = cache.position(name).err()
+                .is_some_and(|position| cache.insert(position, name, cookie));
+            if !inserted {
+                self.cookies = None;
+            }
+        }
         Ok(())
     }
+
+    fn directory_cookie(&mut self, dir: u64, parent: &Inode, name: &[u8]) -> Result<u64, Error> {
+        if let Some(cache) = self.cookies.as_ref().filter(|cache| cache.dir == dir) {
+            let position = cache.position(name).map_err(|_| Error::EIO)?;
+            return Ok(cache.names[position].1);
+        }
+        self.cookies = None;
+        let mut cache = if parent.size <= COOKIE_CACHE_ENTRIES as u64 {
+            DirectoryCookies::new(dir)
+        } else {
+            None
+        };
+        let mut cookie = None;
+        btree::visit_range(
+            &self.txn.view(),
+            self.root.root,
+            key(dir, format::DIR_INDEX, 0),
+            key(dir, format::DIR_INDEX, u64::MAX),
+            &mut |key, bytes| {
+                let entry = DirRecord::decode_name(bytes)?;
+                if bytes.len() != 10 + entry.len() || !(2..parent.next_index).contains(&key.offset) {
+                    return Err(Error::EIO);
+                }
+                if entry == name && cookie.replace(key.offset).is_some() {
+                    return Err(Error::EIO);
+                }
+                if let Some(building) = &mut cache {
+                    if !building.insert(building.names.len(), entry, key.offset) {
+                        cache = None;
+                    }
+                }
+                Ok(cache.is_some() || cookie.is_none())
+            },
+        )?;
+        if let Some(cache) = &mut cache {
+            cache.names.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+            if cache.names.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+                return Err(Error::EIO);
+            }
+        }
+        self.cookies = cache;
+        cookie.ok_or(Error::EIO)
+    }
+
     fn remove_entry(&mut self, dir: u64, name: &[u8], at: Time) -> Result<DirRecord, Error> {
         let mut parent = self.directory(dir)?;
         let (k, mut records) = self.bucket(dir, name)?;
@@ -622,7 +635,8 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             .position(|r| r.name == name)
             .ok_or(Error::ENOENT)?;
         let record = records.remove(pos);
-        let index = key(dir, format::DIR_INDEX, self.cookies.get(dir, name).ok_or(Error::EIO)?);
+        let cookie = self.directory_cookie(dir, &parent, name)?;
+        let index = key(dir, format::DIR_INDEX, cookie);
         let indexed = btree::search(&self.txn.view(), self.root.root, index)?.ok_or(Error::EIO)?;
         if indexed != record.encode() { return Err(Error::EIO); }
         if records.is_empty() {
@@ -639,7 +653,11 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         parent.mtime = at;
         parent.ctime = at;
         self.put_inode(dir, parent)?;
-        self.cookies.set(dir, name, None);
+        if let Some(cache) = &mut self.cookies {
+            if let Ok(position) = cache.position(name) {
+                cache.names.remove(position);
+            }
+        }
         Ok(record)
     }
     fn new_inode(
