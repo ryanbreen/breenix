@@ -1,5 +1,6 @@
 //! Worker requests and generation completion, separate from mount exclusion.
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use crate::fs::errno::Errno;
 
 pub struct CommitSignal {
     pub requested: AtomicBool,
@@ -35,7 +36,7 @@ impl WakeSignal {
         self.queue.wake_up_deferred();
     }
     #[cfg(not(test))]
-    pub fn wait(&self, observed: u64, deadline: Option<u64>) {
+    pub fn wait(&self, observed: u64, deadline: Option<u64>) -> Result<(), Errno> {
         use crate::task::{thread::ThreadState, waitqueue::PrepareOutcome};
         crate::block::cache_kernel::assert_io_context();
         #[cfg(target_arch = "x86_64")]
@@ -51,19 +52,32 @@ impl WakeSignal {
             1,
             "breenfs wait has nested preemption guards"
         );
-        if self
+        let outcome = self
             .queue
             .prepare_to_wait_checked(ThreadState::BlockedOnIO, deadline, || {
                 self.epoch() == observed
-            })
-            == PrepareOutcome::Queued
-        {
-            crate::task::waitqueue::schedule_current_wait();
-            self.queue.finish_wait();
-        }
+            });
+        let result = match outcome {
+            PrepareOutcome::Queued => {
+                crate::task::waitqueue::schedule_current_wait();
+                self.queue.finish_wait();
+                Ok(())
+            }
+            PrepareOutcome::Mismatch => Ok(()),
+            PrepareOutcome::OutOfMemory => {
+                if deadline.is_none_or(|limit| monotonic_ns() < limit) {
+                    crate::block::cache_kernel::park_for_wait_retry();
+                }
+                Ok(())
+            }
+            // A kill can refuse a blocked publication after the caller
+            // checked its condition. Unwind instead of retrying that wait.
+            PrepareOutcome::PublishFailed => Err(Errno(crate::syscall::errno::EINTR)),
+        };
         if add_brake {
             cpu::preempt_enable();
         }
+        result
     }
 }
 
@@ -90,9 +104,11 @@ impl CommitSignal {
         self.wake_waiters();
         self.worker.wake();
     }
-    pub fn wait(&self, observed: u64, deadline: Option<u64>) {
+    pub fn wait(&self, observed: u64, deadline: Option<u64>) -> Result<(), Errno> {
         #[cfg(not(test))]
-        self.waiters.wait(observed, deadline);
+        {
+            self.waiters.wait(observed, deadline)
+        }
         #[cfg(test)]
         {
             super::preempt::context::observe(super::preempt::context::Event::CommitWait {
@@ -101,6 +117,7 @@ impl CommitSignal {
             });
             let _ = deadline;
             std::thread::yield_now();
+            Ok(())
         }
     }
 }

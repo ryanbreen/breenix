@@ -45,9 +45,15 @@ impl Wait for KernelWait {
             .prepare_to_wait_checked(ThreadState::BlockedOnIO, None, || {
                 self.generation() == observed
             });
-        if prepared == PrepareOutcome::Queued {
-            crate::task::waitqueue::schedule_current_wait();
-            self.queue.finish_wait();
+        match prepared {
+            PrepareOutcome::Queued => {
+                crate::task::waitqueue::schedule_current_wait();
+                self.queue.finish_wait();
+            }
+            PrepareOutcome::OutOfMemory | PrepareOutcome::PublishFailed => {
+                park_for_wait_retry();
+            }
+            PrepareOutcome::Mismatch => {}
         }
         if add_brake {
             cpu::preempt_enable();
@@ -58,6 +64,16 @@ impl Wait for KernelWait {
         self.generation.fetch_add(1, Ordering::Release);
         self.queue.wake_up();
     }
+}
+
+/// Back off if no waiter could be published. Use the next interrupt instead
+/// of allocating a scheduler timer entry, and allow the owner to run here.
+/// The queue guard is gone and the caller holds one preemption brake.
+pub(crate) fn park_for_wait_retry() {
+    crate::task::scheduler::set_need_resched();
+    crate::per_cpu::preempt_enable();
+    crate::arch_halt_with_interrupts();
+    crate::per_cpu::preempt_disable();
 }
 
 pub type SystemCache = BufferCache<KernelWait>;

@@ -119,7 +119,7 @@ impl<T> MountLock<T> {
             }
             PrepareOutcome::Mismatch => {}
             PrepareOutcome::PublishFailed | PrepareOutcome::OutOfMemory => {
-                core::hint::spin_loop();
+                crate::block::cache_kernel::park_for_wait_retry();
             }
         }
         self.parked.fetch_sub(1, Ordering::SeqCst);

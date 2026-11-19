@@ -1488,9 +1488,9 @@ impl<W: Wait + 'static> BreenFs<W> {
         }
         state
     }
-    fn mutation_wait(&self, op: CostOp, observed: u64, deadline: Option<u64>) {
+    fn mutation_wait(&self, op: CostOp, observed: u64, deadline: Option<u64>) -> Result<(), Errno> {
         let _wait = self.inner.costs.span(op, CostPhase::Wait);
-        self.inner.signal.wait(observed, deadline);
+        self.inner.signal.wait(observed, deadline)
     }
     fn check_node(&self, node: &VNode) -> Result<(), Errno> {
         if node.mount != self.inner.id
@@ -1587,7 +1587,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             }
             // Another publisher owns the detached generation. Its completion
             // wakes us, with neither mount nor mapping locks held here.
-            self.mutation_wait(cost, observed, None);
+            self.mutation_wait(cost, observed, None)?;
         }
     }
     /// Admission for a change to one file's data. Other callers wait while a
@@ -1614,7 +1614,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 return Ok(state);
             }
             drop(state);
-            self.mutation_wait(cost, observed, None);
+            self.mutation_wait(cost, observed, None)?;
         }
     }
     /// Retry admission after publishing retained grants and the PENDING ranges
@@ -1650,7 +1650,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 self.note_refusal(&state, cost, state.durable.generation.saturating_add(1));
                 let observed = self.inner.signal.epoch();
                 drop(state);
-                self.mutation_wait(cost, observed, None);
+                self.mutation_wait(cost, observed, None)?;
                 state = admit()?;
                 continue;
             }
@@ -1697,7 +1697,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             #[cfg(test)]
             admission.pressure(published);
             if !published {
-                self.mutation_wait(cost, observed, None);
+                self.mutation_wait(cost, observed, None)?;
             }
             state = admit()?;
         }
@@ -2427,7 +2427,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             #[cfg(test)]
             self.commit_due(monotonic_ns())?;
             if waiter.result().is_none() {
-                self.mutation_wait(CostOp::Fsync, observed, deadline);
+                self.mutation_wait(CostOp::Fsync, observed, deadline)?;
             }
         }
     }
@@ -2489,7 +2489,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             let mount = Arc::downgrade(&self.inner);
             let signal = signal.clone();
             if crate::task::kthread::kthread_run(move || {
-                loop {
+                'service: loop {
                     let Some(inner) = mount.upgrade() else { break; };
                     let fs = Self { inner };
                     // Match the commit worker's I/O context on both arches.
@@ -2511,8 +2511,10 @@ impl<W: Wait + 'static> BreenFs<W> {
                     let deadline = monotonic_ns().saturating_add(pause);
                     while !signal.stop.load(Ordering::Acquire) && monotonic_ns() < deadline {
                         let observed = signal.epoch();
-                        if !signal.stop.load(Ordering::Acquire) {
-                            signal.wait(observed, Some(deadline));
+                        if !signal.stop.load(Ordering::Acquire)
+                            && signal.wait(observed, Some(deadline)).is_err()
+                        {
+                            break 'service;
                         }
                     }
                 }
@@ -2538,7 +2540,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             let observed = signal.epoch();
             if monotonic_ns() >= deadline { return Err(Errno(ETIMEDOUT)); }
             if signal.started.load(Ordering::Acquire) {
-                signal.wait(observed, Some(deadline));
+                signal.wait(observed, Some(deadline))?;
             }
         }
         Ok(())
@@ -2792,7 +2794,9 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                         if result.is_err() && !failed {
                             break;
                         }
-                        signal.worker.wait(observed, Some(deadline));
+                        if signal.worker.wait(observed, Some(deadline)).is_err() {
+                            break;
+                        }
                     }
                     signal.started.store(false, Ordering::Release);
                     signal.wake_waiters();
@@ -2808,6 +2812,10 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         Ok(())
     }
     fn shutdown(&self, name: &str, deadline: u64) -> Result<(), Errno> {
+        // Once shutdown changes admission it must finish its barrier even
+        // if SIGKILL arrives, as with the other lock-owning kernel sections.
+        #[cfg(not(test))]
+        let _custody = crate::task::thread::KillCustody::try_enter().ok_or(Errno(EINTR))?;
         // Mapping writeback can request commits before admission closes below.
         // Those shutdown generations must not perform background reclamation.
         self.inner.state.lock().reap_shutdown = true;
@@ -2858,7 +2866,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 return Err(Errno(ETIMEDOUT));
             }
             if signal.started.load(Ordering::Acquire) {
-                signal.wait(observed, Some(deadline));
+                signal.wait(observed, Some(deadline))?;
             }
         }
         // Drop service-owned VNodes before VFS checks external mount custody.
