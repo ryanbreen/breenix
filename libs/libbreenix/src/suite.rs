@@ -2127,7 +2127,8 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, scre
     } else { None };
     let controls = if gui || (suite == "libc" && name == "dirent-glob/readdir-many")
         || (suite == "files-io" && matches!(name,
-            "descriptors/unlink-reclaim" | "metadata/ftruncate-large" | "metadata/ftruncate-large-open"))
+            "descriptors/unlink-reclaim" | "metadata/ftruncate-large"
+                | "metadata/ftruncate-large-open" | "metadata/statfs-allocation"))
     {
         match control::Scope::new() {
             Ok(scope) => Some(scope),

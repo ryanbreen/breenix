@@ -2853,7 +2853,8 @@ impl RootMarker {
     fn free(&self, fd: Fd) -> Result<u64, String> {
         use breenix_suite::suite::control::markers;
         let recording = matches!(breenix_suite::suite::running_case(),
-            Some("descriptors/unlink-reclaim" | "metadata/ftruncate-large" | "metadata/ftruncate-large-open"));
+            Some("descriptors/unlink-reclaim" | "metadata/ftruncate-large"
+                | "metadata/ftruncate-large-open" | "metadata/statfs-allocation"));
         for byte in 0..3 {
             let index = self.1.get();
             self.1.set(index + 1);
@@ -2870,8 +2871,8 @@ impl RootMarker {
         let (_, free, pending) = sample.ok_or("root FREE/PENDING sample unavailable")?;
         free.checked_add(pending).ok_or_else(|| String::from("root FREE/PENDING sum overflow"))
     }
-    // 583(y2): same three marker commits as free(), observing the raw durable
-    // FREE + PENDING total. Check the bound at each post-unlink marker.
+    // E24 rulings 583(y2) and 646(b4): check the durable FREE + PENDING
+    // gain at each marker after unlink or truncate.
     fn reclaim(&self, baseline: Option<(u64, u64)>) -> Result<u64, String> {
         use breenix_suite::suite::control::markers;
         let mut after = 0;
@@ -2915,7 +2916,7 @@ fn metadata_ftruncate_large() -> CaseResult {
             )?;
         }
         let free = if let Some(marker) = &marker {
-            marker.free(fd)?
+            marker.reclaim(None)?
         } else { root_free_blocks()? };
         // Remove 128 suffix data blocks and their indirect block: 129 frees.
         truncate_fd(fd, 3)?;
@@ -2924,10 +2925,7 @@ fn metadata_ftruncate_large() -> CaseResult {
             "large shrink retained suffix blocks",
         )?;
         if let Some(marker) = &marker {
-            check(
-                marker.free(fd)? >= free + 128,
-                "large shrink free counts lag",
-            )?;
+            marker.reclaim(Some((free, 128)))?;
         } else {
             check(
                 root_free_blocks()? == free + 129,
@@ -2955,7 +2953,7 @@ fn metadata_ftruncate_large() -> CaseResult {
             )?;
         }
         let free = if let Some(marker) = &marker {
-            marker.free(fd)?
+            marker.reclaim(None)?
         } else { root_free_blocks()? };
         truncate_fd(fd, 0)?;
         check(
@@ -2963,10 +2961,8 @@ fn metadata_ftruncate_large() -> CaseResult {
             "large zero truncate retained allocated blocks",
         )?;
         if let Some(marker) = &marker {
-            check(
-                marker.free(fd)? >= free + 2,
-                "zero truncate free counts lag",
-            )
+            marker.reclaim(Some((free, 2)))?;
+            Ok(())
         } else {
             check(
                 root_free_blocks()? == free + 3,
@@ -4517,7 +4513,7 @@ fn metadata_statfs_allocation() -> CaseResult {
         marker.free(f.fd())?;
         let before = fs_stats(None, f.fd())?;
         write_all(f.fd(), &[0x5a; 8192])?;
-        let free = marker.free(f.fd())?;
+        let non_allocated = marker.reclaim(None)?;
         let after = fs_stats(None, f.fd())?;
         stats_fields(&before)?;
         stats_fields(&after)?;
@@ -4526,7 +4522,7 @@ fn metadata_statfs_allocation() -> CaseResult {
             "allocated file lost its blocks or changed filesystem capacity/identity")?;
         contents(f.fd(), &[0x5a; 8192])?;
         truncate_fd(f.fd(), 0)?;
-        check(marker.free(f.fd())? >= free + 2, "truncate did not return allocated data blocks")?;
+        marker.reclaim(Some((non_allocated, 2)))?;
         return contents(f.fd(), b"");
     }
     let f = Fixture::new(b"")?;

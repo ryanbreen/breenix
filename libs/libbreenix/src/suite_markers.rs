@@ -2,7 +2,7 @@
 use super::{AtomicU64, Ordering, PAGE};
 use std::io::Read;
 const BASE: usize = super::observations::USED_CELLS;
-const SLOTS: usize = 12; // Four RootMarker::free calls in ftruncate-large.
+const SLOTS: usize = 12; // Four three-marker rounds in ftruncate-large.
 const FIELDS: usize = 8; // generation, FREE, PENDING, validity, for each side.
 pub(super) const USED_CELLS: usize = BASE + SLOTS * FIELDS;
 fn cell(page: usize, index: usize, field: usize) -> &'static AtomicU64 {
@@ -30,7 +30,7 @@ fn parse(text: &str) -> Option<(u64, u64, u64)> {
     Some((field("durable_generation=")?, field("free_blocks=")?, field("pending_blocks=")?))
 }
 /// Read durable raw counts and retain the same failure-only receipt.
-/// E24 coordinator 583(y2) also uses this sample for the unlink oracle.
+/// The BreenFS reclaim oracles use these counts for unlink and truncate.
 pub fn sample_root(index: usize, after: bool) -> Option<(u64, u64, u64)> {
     let page = PAGE.load(Ordering::Acquire);
     if page == 0 || index >= SLOTS { return None; }
@@ -50,7 +50,8 @@ pub fn sample_root(index: usize, after: bool) -> Option<(u64, u64, u64)> {
 }
 pub(super) fn records(page: usize, suite: &str, case: &str, failed: bool) -> Vec<String> {
     if !failed || suite != "files-io" || !matches!(case,
-        "descriptors/unlink-reclaim" | "metadata/ftruncate-large" | "metadata/ftruncate-large-open") {
+        "descriptors/unlink-reclaim" | "metadata/ftruncate-large"
+            | "metadata/ftruncate-large-open" | "metadata/statfs-allocation") {
         return Vec::new();
     }
     (0..SLOTS).filter_map(|index| {
