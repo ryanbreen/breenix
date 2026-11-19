@@ -163,6 +163,53 @@ fn populated_1100_phase_counts() { replay(1100); }
 fn populated_4400_phase_counts() { replay(4400); }
 
 #[test]
+fn fsync_retains_open_events_in_bounded_shares() {
+    use super::super::preempt::context::{self, Event};
+    use std::{cell::Cell, rc::Rc};
+
+    const MAX_RETAIN_OPEN_STEPS: usize = 8;
+    const TOUCHED_AT: u64 = 77;
+    let mut peaks = Vec::new();
+    for (files, queued) in [(1100, 33), (4400, 65)] {
+        let disk = Arc::new(Disk(HostMutex::new(incremental_files_view::image(files).clone())));
+        let fs = BreenFs::mount_writable(disk.clone(),
+            Arc::new(BufferCache::new(outstanding_grants::NoWait)), 241515607 + files, 1).unwrap();
+        let handles: Vec<_> = (16..16 + queued).map(|ino| fs.open(ino).unwrap()).collect();
+        let oldest = handles[0].clone();
+        crate::time::with_unix_time(TOUCHED_AT, || fs.touch(&oldest, false));
+        drop(handles);
+
+        let peak = Rc::new(Cell::new(0));
+        let observed = peak.clone();
+        let mut points = None;
+        take();
+        context::observer(Some(Box::new(move |event| match event {
+            Event::Phase { op: "fsync", phase: "retain-open", begin: true } => points = Some(0),
+            Event::Phase { op: "fsync", phase: "retain-open", begin: false } => {
+                observed.set(observed.get().max(points.take().unwrap()));
+            }
+            Event::Point => {
+                if let Some(count) = &mut points { *count += 1; }
+            }
+            _ => (),
+        })));
+        let synced = fs.fsync(&oldest, false);
+        context::observer(None);
+        synced.unwrap();
+        let visits = take()["retain_open"].work[0];
+        let cold = BreenFs::mount(disk, Arc::new(BufferCache::new(outstanding_grants::NoWait)),
+            241515608 + files, 1).unwrap();
+        let mtime = cold.getattr(oldest.ino).unwrap().times.mtime.sec;
+        println!("RETAIN_OPEN files={files} queued={queued} visits={visits} peak={} bound={MAX_RETAIN_OPEN_STEPS} cold_mtime={mtime}", peak.get());
+        assert_eq!(visits, queued);
+        assert_eq!(mtime, TOUCHED_AT as i64);
+        peaks.push((files, peak.get()));
+    }
+    assert!(peaks.iter().all(|&(_, peak)| (1..=MAX_RETAIN_OPEN_STEPS).contains(&peak)),
+        "retain-open points per exclusion: {peaks:?}, bound={MAX_RETAIN_OPEN_STEPS}");
+}
+
+#[test]
 fn publication_invalidates_reused_data_without_discarding_unchanged_data() {
     let disk = Arc::new(Disk(HostMutex::new(incremental_files_view::image(1100).clone())));
     let cache = Arc::new(BufferCache::new(outstanding_grants::NoWait));
