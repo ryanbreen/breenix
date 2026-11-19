@@ -142,7 +142,9 @@ impl<T: core::ops::Deref<Target = VNode>> Drop for SyncMaps<'_, T> {
     fn drop(&mut self) {
         for handle in self.handles {
             let map = &handle.map;
-            if map.state.syncers.fetch_sub(1, Ordering::AcqRel) == 1 && map.writeback_pending() {
+            if map.state.syncers.fetch_sub(1, Ordering::AcqRel) == 1
+                && (map.writeback_pending() || map.eviction_pending())
+            {
                 handle.filesystem.request_eviction();
             }
         }

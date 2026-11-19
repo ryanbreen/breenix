@@ -132,7 +132,7 @@ fn retire_after_latch(dirty: bool) {
     // models unbinding, so issue that same request explicitly here.
     map.request_writeback();
     drop(node);
-    assert_eq!(fs.mapped_nodes().unwrap().len(), 1, "failed mount hid its mapping pin");
+    assert_eq!(fs.mapped_nodes(core::convert::identity).unwrap().len(), 1, "failed mount hid its mapping pin");
     let live = super::dirty_heap_bound::live();
     for _ in 0..pages.div_ceil(crate::memory::file_map::EVICT_BUDGET as u64) {
         assert_eq!(fs.commit_due(0), Err(Errno(EIO)));

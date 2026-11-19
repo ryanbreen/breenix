@@ -296,6 +296,20 @@ struct Mount<W: Wait + 'static> {
     generation: AtomicU64,
     // Install left N+1's replay or N's per-file cleanup to the next holder.
     materialize: AtomicBool,
+    mapping_passes: AtomicU64,
+    mapping_pages_evicted: AtomicU64,
+    mapping_requests_dropped: AtomicU64,
+}
+#[cfg(not(test))]
+struct ReportCount(Option<usize>);
+#[cfg(not(test))]
+impl core::fmt::Display for ReportCount {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self.0 {
+            Some(count) => write!(f, "{count}"),
+            None => f.write_str("unavailable"),
+        }
+    }
 }
 enum Cache<W: Wait + 'static> {
     Shared(Arc<BufferCache<W>>),
@@ -372,7 +386,9 @@ struct MountState<W: Wait + 'static> {
 #[derive(Default)]
 struct NodeState {
     node: Weak<VNode>,
-    // Published mappings retain their VNode until service retires the cache.
+    links: u32,
+    // A linked inode keeps its cache until dirty data is durable and clean
+    // pages can be evicted. An orphan is owned only by its remaining users.
     mapped: Option<Arc<VNode>>,
     touched: Option<Arc<TouchedTimes>>,
     // A write admitted in parts (N2) holds other writes and resizes of this
@@ -917,7 +933,7 @@ impl<W: Wait> MountState<W> {
         // indexed until publication, without making later edits scan them.
         for (index, &ino) in objects.iter().enumerate() {
             if objects[..index].contains(&ino) { continue; }
-            let Some(entry) = self.nodes.get(&ino) else { continue; };
+            let Some(entry) = self.nodes.get_mut(&ino) else { continue; };
             #[cfg(test)]
             {
                 super::btree::measurement::mutation(7, 1);
@@ -926,6 +942,7 @@ impl<W: Wait> MountState<W> {
             preemption_point();
             if let Some(node) = entry.node.upgrade() {
                 if let Ok(inode) = self.files.inode(ino) {
+                    entry.links = inode.nlink;
                     node.size.store(inode.size, Ordering::Release);
                     *node.times.lock() = attributes(ino, inode)?.times;
                 }
@@ -1334,9 +1351,50 @@ impl<W: Wait + 'static> BreenFs<W> {
             scrub_signal: Arc::new(CommitSignal::new()),
             generation,
             materialize: AtomicBool::new(false),
+            mapping_passes: AtomicU64::new(0),
+            mapping_pages_evicted: AtomicU64::new(0),
+            mapping_requests_dropped: AtomicU64::new(0),
         })
         .map_err(|_| Errno(ENOMEM))?;
         Arc::try_new(Self { inner }).map_err(|_| Errno(ENOMEM))
+    }
+    #[cfg(not(test))]
+    fn mapping_descriptor_counts<const N: usize>(&self, inodes: &[Option<u64>; N]) -> Option<[(usize, usize); N]> {
+        use crate::ipc::fd::{FdKind, FdTable};
+
+        // Scan each shared table once. Report unavailable if the snapshot is
+        // contended or exceeds its bounds, so partial counts cannot imply a close.
+        const MAX_ROWS: usize = 128;
+        const MAX_DESCRIPTIONS: usize = 256;
+        let mut descriptions = Vec::new();
+        descriptions.try_reserve_exact(MAX_DESCRIPTIONS).ok()?;
+        let mut tables: [Option<&FdTable>; MAX_ROWS] = [None; MAX_ROWS];
+        let mut table_count = 0;
+        let mut counts = [(0, 0); N];
+        let manager = crate::process::try_manager()?;
+        for (index, (_, process)) in manager.as_ref()?.iter_processes().enumerate() {
+            if index == MAX_ROWS { return None; }
+            let table = &process.fd_table;
+            if tables[..table_count].iter().flatten().any(|known| known.is_same_table(table)) {
+                continue;
+            }
+            tables[table_count] = Some(table);
+            table_count += 1;
+            for kind in table.kinds() {
+                let FdKind::RegularFile(description) = kind else { continue };
+                let file = description.try_lock()?;
+                if file.mount_id != self.inner.id { continue; }
+                let Some(slot) = inodes.iter().position(|ino| *ino == Some(file.inode_num)) else { continue };
+                counts[slot].0 += 1;
+                let identity = Arc::as_ptr(description);
+                if !descriptions.contains(&identity) {
+                    if descriptions.len() == MAX_DESCRIPTIONS { return None; }
+                    descriptions.push(identity);
+                    counts[slot].1 += 1;
+                }
+            }
+        }
+        Some(counts)
     }
     fn mutation_lock(&self, op: CostOp) -> MountGuard<'_, MountState<W>> {
         let _wait = self.inner.costs.span(op, CostPhase::Wait);
@@ -1407,10 +1465,19 @@ impl<W: Wait + 'static> BreenFs<W> {
         let node = self.new_node(ino, inode, state.durable.generation)?;
         let entry = state.nodes.entry(ino).or_default();
         entry.node = Arc::downgrade(&node);
+        entry.links = inode.nlink;
         entry.touched = Some(node.pin::<NodePin<W>>().ok_or(Errno(EIO))?.touched.clone());
         state.files.set_inode_open(ino, true);
         state.retain_open();
         Ok(node)
+    }
+    /// Release the namespace's cache pin after a successful last-link edit.
+    /// The returned pin drops outside mount exclusion, where it may free the
+    /// entire file cache. Descriptors and bindings retain the orphan until
+    /// their own last release.
+    fn take_orphan_cache_pin(state: &mut MountState<W>, ino: u64) -> Option<Arc<VNode>> {
+        let entry = state.nodes.get_mut(&ino)?;
+        if entry.links == 0 { entry.mapped.take() } else { None }
     }
     /// Resident dirty-page bytes charged to this mount, including closed files
     /// awaiting commit. Available to the mount's commit-pressure policy.
@@ -1743,24 +1810,25 @@ impl<W: Wait + 'static> BreenFs<W> {
         self.commit_generation(now_ns)
     }
     fn service_mappings(&self, now_ns: u64) -> Result<bool, Errno> {
-        let handles = self.mapped_nodes()?;
+        self.inner.mapping_passes.fetch_add(1, Ordering::Relaxed);
+        // A publication owns copies of staged bytes. Holding a whole
+        // snapshot of VNodes across that I/O would keep even closed orphans
+        // and their cache pages alive until the publication returns.
+        let handles = self.mapped_nodes(|node| Arc::downgrade(&node))?;
         let mut budget = crate::memory::file_map::EVICT_BUDGET;
         let blocked = self.inner.state.lock().publication_blocked();
-        if blocked {
-            // A retry can spend the whole pass on the same frozen receipts.
-            // Give clean unbound pages their share before waiting on those bytes.
-            for node in &handles {
-                preemption_point();
-                self.retire_mapping(node, &mut budget);
-            }
-        }
+        // While a foreign publication blocks staging, a retry can spend the
+        // whole pass on frozen receipts. Give ready clean pages first use of
+        // the budget in that case.
+        let mut clean_left = blocked && self.retire_mappings(&handles, &mut budget);
         let mut more = false;
         let mut staged = Vec::new();
         staged.try_reserve(handles.len().min(budget)).map_err(|_| Errno(ENOMEM))?;
-        for (index, node) in handles.iter().enumerate() {
+        for (index, handle) in handles.iter().enumerate() {
             preemption_point();
+            let Some(node) = handle.upgrade() else { continue };
             if !self.inner.state.lock().failed {
-                let result = node.map.service_writeback_with(node, &mut budget, |first, last, generation| {
+                let result = node.map.service_writeback_with(&node, &mut budget, |first, last, generation| {
                     staged.push((index, first, last));
                     if let Some(generation) = generation {
                         let state = self.inner.state.lock();
@@ -1775,7 +1843,11 @@ impl<W: Wait + 'static> BreenFs<W> {
                     Err(error) => {
                         // Earlier snapshots advanced their cursors but have no
                         // durable receipt yet. Keep them eligible for retry.
-                        for &(index, _, _) in &staged { handles[index].map.request_writeback(); }
+                        for &(index, _, _) in &staged {
+                            if let Some(node) = handles[index].upgrade() {
+                                node.map.request_writeback();
+                            }
+                        }
                         return Err(error);
                     }
                 }
@@ -1783,6 +1855,14 @@ impl<W: Wait + 'static> BreenFs<W> {
         }
         #[cfg(test)]
         super::preempt::context::observe(super::preempt::context::Event::MappingsStaged);
+        if !blocked {
+            clean_left = self.retire_mappings(&handles, &mut budget);
+        }
+        // Keep the request visible while this pass publishes, including when
+        // staging used the budget and eviction has yet to retire any pages.
+        if clean_left {
+            self.request_eviction();
+        }
         // E24 ledger 558(x4): the pass joins its mapping snapshots into one
         // generation. Complete their dirty custody only after that barrier;
         // commit_due must not publish a second generation after this returns.
@@ -1791,17 +1871,25 @@ impl<W: Wait + 'static> BreenFs<W> {
         let mut deferred = false;
         for (index, first, last) in staged {
             preemption_point();
-            deferred |= self.complete_mapping(&handles[index], first, last);
+            if let Some(node) = handles[index].upgrade() {
+                deferred |= self.complete_mapping(&node, first, last);
+            }
         }
-        let mut more_clean = false;
-        for node in handles {
-            preemption_point();
-            more_clean |= self.retire_mapping(&node, &mut budget);
-        }
+        let more_clean = self.retire_mappings(&handles, &mut budget);
         // Dirty receipts wait for the publication, but ready clean work can
         // make progress even before that publication installs.
         if more_clean || (more && !deferred) { self.request_eviction(); }
         if self.inner.state.lock().failed { Err(Errno(EIO)) } else { Ok(worked) }
+    }
+    fn retire_mappings(&self, handles: &[Weak<VNode>], budget: &mut usize) -> bool {
+        let mut more = false;
+        for handle in handles {
+            preemption_point();
+            if let Some(node) = handle.upgrade() {
+                more |= self.retire_mapping(&node, budget);
+            }
+        }
+        more
     }
     fn retire_mapping(&self, node: &Arc<VNode>, budget: &mut usize) -> bool {
         let mut more = false;
@@ -1822,13 +1910,21 @@ impl<W: Wait + 'static> BreenFs<W> {
                 }
             }
         }
-        if node.map.eviction_pending() { more |= node.map.evict(budget); }
+        if node.map.eviction_pending() {
+            let before = *budget;
+            let clean_left = node.map.evict(budget);
+            self.inner.mapping_pages_evicted.fetch_add((before - *budget) as u64, Ordering::Relaxed);
+            if clean_left && !node.map.eviction_pending() {
+                self.inner.mapping_requests_dropped.fetch_add(1, Ordering::Relaxed);
+            }
+            more |= clean_left;
+        }
         if !node.map.nonempty() {
             if let Some(entry) = state.nodes.get_mut(&node.ino) { entry.mapped = None; }
         }
         more
     }
-    fn mapped_nodes(&self) -> Result<Vec<Arc<VNode>>, Errno> {
+    fn mapped_nodes<T>(&self, mut capture: impl FnMut(Arc<VNode>) -> T) -> Result<Vec<T>, Errno> {
         #[cfg(test)] let _phase = publication_phases::Phase::new("mappings");
         let state = self.inner.state.lock();
         let mut handles = Vec::new();
@@ -1841,7 +1937,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             #[cfg(test)] publication_phases::visit(1);
             if let Some(node) = entry.node.upgrade() {
                 if entry.mapped.is_some() || node.map.has_dirty() || node.map.eviction_pending() || node.map.writeback_pending() {
-                    handles.push(node);
+                    handles.push(capture(node));
                 }
             }
         }
@@ -1849,7 +1945,7 @@ impl<W: Wait + 'static> BreenFs<W> {
     }
     fn sync_mappings(&self, deadline: Option<u64>) -> Result<(), Errno> {
         if self.inner.state.lock().failed { return Err(Errno(EIO)); }
-        let nodes = self.mapped_nodes()?;
+        let nodes = self.mapped_nodes(core::convert::identity)?;
         // Shutdown stages snapshots without an unbounded foreground generation
         // wait; its final sync_generation below retains the supplied deadline.
         let mut buffer = if deadline.is_some() && nodes.iter().any(|n| n.map.has_dirty()) {
@@ -2585,7 +2681,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             state.closed = false;
             // A refused unmount can restart a stopped service with bindings.
             for entry in state.nodes.values_mut() {
-                if let Some(node) = entry.node.upgrade().filter(|node| node.map.nonempty()) {
+                if let Some(node) = entry.node.upgrade().filter(|node| entry.links != 0 && node.map.nonempty()) {
                     entry.mapped = Some(node);
                 }
             }
@@ -2760,6 +2856,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             pages: usize,
             cache: crate::memory::file_map::CacheRetention,
             pins: usize,
+            links: u32,
             service_pin: bool,
             frozen: u64,
             installed: u64,
@@ -2790,12 +2887,14 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 preemption_point();
                 let Some((pages, node)) = slot else { break };
                 let ino = node.ino;
+                let entry = &state.nodes[&ino];
                 *row = Some(Row {
                     ino,
                     pages: *pages,
                     cache: node.map.cache_retention(),
                     pins: Arc::strong_count(node) - 1, // Exclude this report.
-                    service_pin: state.nodes.get(&ino).is_some_and(|entry| entry.mapped.is_some()),
+                    links: entry.links,
+                    service_pin: entry.mapped.is_some(),
                     frozen: layer_pages(state.pending.as_ref(), ino),
                     installed: layer_pages(state.installed.as_ref(), ino),
                     stale: layer_pages(state.stale_views.as_ref().and_then(|(_, pages)| pages.as_ref()), ino),
@@ -2809,12 +2908,21 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             )
         };
         drop(largest);
-        writeln!(text, "durable={durable} open={open} worker={worker} queued={queued} view_frame_refs=0")
+        let inodes: [_; LIMIT] = core::array::from_fn(|slot| rows[slot].as_ref().map(|row| row.ino));
+        let descriptors = self.mapping_descriptor_counts(&inodes);
+        let passes = self.inner.mapping_passes.load(Ordering::Relaxed);
+        let evicted = self.inner.mapping_pages_evicted.load(Ordering::Relaxed);
+        let dropped = self.inner.mapping_requests_dropped.load(Ordering::Relaxed);
+        writeln!(text, "durable={durable} open={open} worker={worker} queued={queued} view_frame_refs=0 worker_passes={passes} pages_evicted={evicted} requests_dropped_with_pages_left={dropped}")
             .map_err(|_| Errno(ENOMEM))?;
-        for Row { ino, pages, cache, pins, service_pin, frozen, installed, stale, open } in rows.into_iter().flatten() {
-            writeln!(text, "ino={ino} pages={pages} bindings={} dirty={} staged={} staged_first={} staged_last={} pins={pins} service_pin={} frozen_pages={frozen} installed_pages={installed} stale_pages={stale} open_pages={open}",
+        for (slot, row) in rows.into_iter().enumerate() {
+            let Some(Row { ino, pages, cache, pins, links, service_pin, frozen, installed, stale, open }) = row else { break };
+            let service_pin = usize::from(service_pin);
+            writeln!(text, "ino={ino} pages={pages} bindings={} dirty={} staged={} staged_first={} staged_last={} pins={pins} service_pin={service_pin} frozen_pages={frozen} installed_pages={installed} stale_pages={stale} open_pages={open} nlink={links} open_fds={} binding_pins={} descriptor_pins={} other_pins={}",
                 cache.bindings, cache.dirty, cache.staged, cache.first_generation, cache.last_generation,
-                u8::from(service_pin)).map_err(|_| Errno(ENOMEM))?;
+                ReportCount(descriptors.map(|counts| counts[slot].0)), cache.bindings,
+                ReportCount(descriptors.map(|counts| counts[slot].1)),
+                ReportCount(descriptors.map(|counts| pins.saturating_sub(service_pin + cache.bindings + counts[slot].1)))).map_err(|_| Errno(ENOMEM))?;
         }
         Ok(())
     }
@@ -3101,7 +3209,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             |ino, inode| {
                 let result = self.new_node(ino, inode, epoch).and_then(|node| {
                     prepare(node.clone())?;
-                    prepared = Some(node);
+                    prepared = Some((node, inode.nlink));
                     Ok(())
                 });
                 result.map_err(|e| {
@@ -3115,9 +3223,10 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             return Err(e);
         }
         let ino = state.finish_metadata(&[dir], grant, result)?;
-        let node = prepared.ok_or(Errno(EIO))?;
+        let (node, links) = prepared.ok_or(Errno(EIO))?;
         let entry = state.nodes.entry(ino).or_default();
         entry.node = Arc::downgrade(&node);
+        entry.links = links;
         entry.touched = Some(node.pin::<NodePin<W>>().ok_or(Errno(EIO))?.touched.clone());
         state.files.set_inode_open(ino, true);
         state.retain_open();
@@ -3180,7 +3289,11 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         } else {
             state.files.unlink(dir, name, now())
         };
-        state.finish_metadata(&[dir, victim], grant, result)
+        state.finish_metadata(&[dir, victim], grant, result)?;
+        let orphan = Self::take_orphan_cache_pin(&mut state, victim);
+        drop(state);
+        drop(orphan);
+        Ok(())
     }
     fn rename(
         &self,
@@ -3194,7 +3307,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         let _operation = self.inner.costs.span(CostOp::Rename, CostPhase::Operation);
         let state = self.mutation_lock(CostOp::Rename);
         state.writable()?;
-        let (mut state, (grant, objects)) = self.reserve_with_pressure(CostOp::Rename, state, || Ok(self.mutation_lock(CostOp::Rename)), |state| {
+        let (mut state, (grant, objects, replaced)) = self.reserve_with_pressure(CostOp::Rename, state, || Ok(self.mutation_lock(CostOp::Rename)), |state| {
             if mode == RenameMode::Exchange {
                 return Err(Errno(EINVAL));
             }
@@ -3216,11 +3329,15 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             if let Some(dest) = dest { objects.push(dest.ino); }
             let grant = state.reserve_metadata(&objects, 12, false, dest.is_some(), Operation::Allocate)?;
 
-            Ok((grant, objects))
+            Ok((grant, objects, dest.map(|dest| dest.ino)))
         })?;
         let _edit = self.inner.costs.span(CostOp::Rename, CostPhase::Edit);
         let result = state.files.rename(from_dir, from, to_dir, to, now());
-        state.finish_metadata(&objects, grant, result)
+        state.finish_metadata(&objects, grant, result)?;
+        let orphan = replaced.and_then(|ino| Self::take_orphan_cache_pin(&mut state, ino));
+        drop(state);
+        drop(orphan);
+        Ok(())
     }
     fn write(&self, node: &VNode, req: WriteReq, bytes: &[u8]) -> Result<WriteResult, WriteError> {
         let _operation = self.inner.costs.span(CostOp::Write, CostPhase::Operation);
@@ -3597,7 +3714,10 @@ impl<W: Wait + 'static> MappingIo for Mapping<W> {
         }
         bind(false)?;
         if self.writable {
-            state.nodes.get_mut(&self.node.ino).ok_or(Errno(EIO))?.mapped = Some(self.node.clone());
+            let entry = state.nodes.get_mut(&self.node.ino).ok_or(Errno(EIO))?;
+            if entry.links != 0 {
+                entry.mapped = Some(self.node.clone());
+            }
             self.fs.request_eviction();
         }
         Ok(())
