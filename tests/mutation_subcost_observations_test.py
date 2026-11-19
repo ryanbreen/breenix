@@ -45,10 +45,41 @@ fn main() {
 '''.replace('MODULE', str(module))
         result = run_rust(source)
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_admission_refusals_forwarded(module)
         scope = (ROOT / 'libs/libbreenix/src/suite_control.rs').read_text()
         self.assertIn('mutations.records(suite, case, failed,', scope)
         self.assertIn('mutations: mutation_costs::Snapshot', scope)
         self.assertIn('mutation_costs::Snapshot::read()', scope)
+
+    def assert_admission_refusals_forwarded(self, module):
+        # E24 621(y2): the kernel's bounded refusal receipts reach the
+        # failure-only serial path, newer than the case's baseline only.
+        source = r'''
+#[path="MODULE"] mod costs;
+fn receipt(seq:u64, mount:u64)->String {
+    format!("admission_refusal mount={mount} root=1 seq={seq} op=create generation=2 release_generation=3 free=19044 reserve=4096 pending=28 pending_oldest=2 grants_n=7182 grants_next=7599 request=532\n")
+}
+fn main() {
+    let _reader = costs::Snapshot::read;
+    let head="/ breenfs durable_generation=7\n";
+    let before=costs::Snapshot::parse(&format!("{head}{}",receipt(1,1)));
+    assert!(before.records("libc","dirent-glob/readdir-many",false,||panic!("success read")).is_empty());
+    let after=costs::Snapshot::parse(&format!("{head}{}{}{}",receipt(1,1),receipt(2,1),receipt(3,1)));
+    let lines=before.records("libc","dirent-glob/readdir-many",true,||Some(after));
+    assert_eq!(lines.len(),2,"{lines:?}");
+    assert_eq!(lines[0],"CASE_OBSERVATION libc dirent-glob/readdir-many op=vfs-admission-refusal mount=1 root=1 seq=2 op=create generation=2 release_generation=3 free=19044 reserve=4096 pending=28 pending_oldest=2 grants_n=7182 grants_next=7599 request=532 scope=mount");
+    assert!(lines[1].contains(" seq=3 "),"{lines:?}");
+    // Another mount's receipts stay out of the root's observations.
+    let foreign=costs::Snapshot::parse(&format!("/mnt/other breenfs durable_generation=1\n{}",receipt(9,2)));
+    assert!(costs::Snapshot::parse(head).records("libc","dirent-glob/readdir-many",true,||Some(foreign)).is_empty());
+    // A report cannot manufacture more receipts than the kernel's ring.
+    let many=(1..=10000).map(|seq|receipt(seq,1)).collect::<String>();
+    let lines=costs::Snapshot::parse(head).records("libc","dirent-glob/readdir-many",true,||Some(costs::Snapshot::parse(&format!("{head}{many}"))));
+    assert!(lines.len()<=32 && lines.iter().all(|line|line.len()<384),"{}",lines.len());
+}
+'''.replace('MODULE', str(module))
+        result = run_rust(source)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == '__main__':

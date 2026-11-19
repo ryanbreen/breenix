@@ -36,7 +36,7 @@ impl Disk {
 }
 impl BlockDevice for Disk {
     fn block_size(&self) -> usize { BLOCK_SIZE }
-    fn num_blocks(&self) -> u64 { 16384 }
+    fn num_blocks(&self) -> u64 { self.bytes.lock().unwrap().len() as u64 / BLOCK_SIZE as u64 }
     fn read_block(&self, n: u64, b: &mut [u8]) -> Result<(), BlockError> {
         let at = n as usize * BLOCK_SIZE;
         b.copy_from_slice(&self.bytes.lock().unwrap()[at..at+b.len()]); Ok(())
@@ -452,4 +452,264 @@ fn create_during_frozen_preparation_has_exact_admission_and_bounded_replay() {
     assert!(after_steps > 0, "post-install create reached no queued replay");
     println!("CREATE_SUMMARY files={FILES} dirty={DIRTY_OPS} creates={CREATES} generation={generation} waits={waits} locks={locks} peak_replay={max_steps} min_grant_headroom={min_headroom} post_install_waits={after_waits} post_install_locks={after_locks} post_install_replay={after_steps} seconds={:.3}",
         started.elapsed().as_secs_f64());
+}
+
+// E24 coordinator 621(y2): create admission at the guest's real headroom.
+// The stopped ARM root of run 20261119T051835Z-qemu-44689 (generation 889)
+// had 19,092 FREE blocks, global_reserve 4,096 and 156 PENDING blocks.
+const SHORTAGE_FREE: u64 = 19_092;
+// outstanding_grants::populated_image(80_000) leaves 16,084 FREE blocks.
+const X1_FREE: u64 = 16_084;
+// A refused admission records its first eight receipts per installed
+// generation; the report keeps the newest RECEIPT_RING of them.
+const RECEIPTS_PER_PUBLICATION: usize = 8;
+const RECEIPT_RING: usize = 32;
+
+/// One background publication, paused at its first drain-dirty preemption
+/// point exactly as the commit worker's would be while it prepares N.
+struct Publisher {
+    paused: PausedPublication,
+    thread: thread::JoinHandle<()>,
+    generation: u64,
+    grants: u64,
+}
+
+/// The commit worker's own entry, run when the x2 trigger asked for it.
+fn start_publisher(fs: &Arc<Fs>) -> Publisher {
+    let (generation, grants) = {
+        let state = fs.inner.state.lock();
+        assert!(state.pending.is_none());
+        (state.durable.generation + 1, state.grants.blocks)
+    };
+    let (ready_tx, ready) = mpsc::channel();
+    let (resume, resume_rx) = mpsc::channel();
+    let (installed_tx, installed) = mpsc::channel();
+    let worker = fs.clone();
+    let thread = thread::spawn(move || {
+        let mut armed = false;
+        let paused = ready_tx.clone();
+        context::observer(Some(Box::new(move |event| match event {
+            Event::Phase { op: "commit", phase: "drain-dirty", begin: true } => armed = true,
+            Event::Point if armed => {
+                armed = false;
+                paused.send(true).unwrap();
+                resume_rx.recv_timeout(CREATE_REPLAY_WATCHDOG).unwrap();
+            }
+            _ => (),
+        })));
+        let result = measurement::service(&*worker);
+        context::observer(None);
+        // A publication that stopped before drain-dirty reports false.
+        let _ = ready_tx.send(false);
+        installed_tx.send(result).unwrap();
+    });
+    assert!(ready.recv_timeout(CREATE_REPLAY_WATCHDOG).unwrap(), "the trigger publication did not freeze");
+    assert!(fs.inner.state.lock().pending.is_some());
+    Publisher { paused: PausedPublication { resume, installed }, thread, generation, grants }
+}
+
+/// PENDING blocks in the installed space tree and the oldest released
+/// generation among them (design 2.4, 2.5 reuse rule).
+fn pending_census(fs: &Fs) -> (u64, u64) {
+    let state = fs.inner.state.lock();
+    let sb = &state.durable;
+    let store = fs.inner.cache.store(fs.inner.device.clone(), sb);
+    let lower = format::Key { object: 0xffff_ffff_ffff_ff30, item_type: format::PENDING, offset: 0 };
+    let upper = format::Key { offset: u64::MAX, ..lower };
+    let (mut blocks, mut oldest) = (0, 0);
+    for (_, bytes) in btree::range(&store, sb.space_root, lower, upper).unwrap() {
+        let pending = format::Pending::decode(&bytes).unwrap();
+        // Commit G converts released_generation <= G - 2 (promote_pending).
+        assert!(pending.released_generation + 2 > sb.generation,
+            "installed generation {} still quarantines {pending:?}", sb.generation);
+        blocks += pending.length;
+        oldest = if oldest == 0 { pending.released_generation } else { oldest.min(pending.released_generation) };
+    }
+    (blocks, oldest)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Receipt {
+    op: &'static str,
+    generation: u64,
+    release_generation: u64,
+    free: u64,
+    reserve: u64,
+    pending: u64,
+    pending_oldest: u64,
+    grants_n: u64,
+    grants_next: u64,
+    request: u64,
+}
+
+#[derive(Debug)]
+struct ShortageWait {
+    generation: u64,
+    named: u64,
+    free: u64,
+    reserve: u64,
+    outstanding: u64,
+    grants_next: u64,
+    pending: (u64, u64),
+}
+
+fn report_receipts(fs: &Fs) -> Vec<(u64, Receipt)> {
+    let mut text = String::new();
+    fs.mutation_costs("root", &mut text).unwrap();
+    text.lines().filter(|line| line.starts_with("admission_refusal ")).map(|line| {
+        let value = |key: &str| line.split_whitespace()
+            .find_map(|field| field.strip_prefix(key)).unwrap_or_else(|| panic!("{key} in {line}"));
+        let number = |key: &str| value(key).parse::<u64>().unwrap();
+        assert_eq!((number("mount="), number("root=")), (fs.inner.id as u64, fs.inner.root_id), "{line}");
+        let op = match value("op=") { "create" => "create", "write" => "write", other => panic!("op {other}") };
+        (number("seq="), Receipt {
+            op, generation: number("generation="), release_generation: number("release_generation="),
+            free: number("free="), reserve: number("reserve="), pending: number("pending="),
+            pending_oldest: number("pending_oldest="), grants_n: number("grants_n="),
+            grants_next: number("grants_next="), request: number("request="),
+        })
+    }).collect()
+}
+
+#[test]
+fn create_shortage_waits_only_for_the_install_that_frees_it() {
+    use super::super::reserve::observation;
+    const CREATES: usize = 300;
+    let started = Instant::now();
+    let image = outstanding_grants::populated_image(80_000 + SHORTAGE_FREE - X1_FREE);
+    let fs = mount(Arc::new(Disk::new(image)), true, 241515621);
+    let built = started.elapsed().as_secs_f64();
+    {
+        let state = fs.inner.state.lock();
+        assert_eq!((state.durable.free_blocks, state.durable.global_reserve), (SHORTAGE_FREE, 4096));
+    }
+    // libc's readdir-many creates its names in a fresh directory of the root.
+    let dir = fs.lookup(2, b"tmp").unwrap();
+    let signal_id = Arc::as_ptr(&fs.inner.signal) as usize;
+    let publisher: Rc<RefCell<Option<Publisher>>> = Rc::new(RefCell::new(None));
+    let mut expected = Vec::new();
+    let mut in_window = (0, 0);
+    let (mut publications, mut refusals, mut write_refusals, mut retries) = (0, 0, 0, 0);
+    let (mut peak_pending, mut max_replay, mut since_publication) = (0, 0, 0);
+    let mut files_per_publication = Vec::new();
+    let (mut create_requests, mut create_retained, mut write_grants) = (Vec::new(), Vec::new(), Vec::new());
+    for i in 0..CREATES {
+        if publisher.borrow().is_none() && fs.inner.signal.requested.load(Ordering::Acquire) {
+            *publisher.borrow_mut() = Some(start_publisher(&fs));
+            publications += 1;
+            files_per_publication.push(core::mem::take(&mut since_publication));
+        }
+        since_publication += 1;
+        let name = alloc::format!("f{i:03}xxxxxxxxx");
+        let mut node = None;
+        for op in ["create", "write"] {
+            let waits = Rc::new(RefCell::new(Vec::<ShortageWait>::new()));
+            let (observed, live, owner) = (waits.clone(), fs.clone(), publisher.clone());
+            context::observer(Some(Box::new(move |event| {
+                let Event::CommitWait { signal, .. } = event else { return };
+                if signal != signal_id { return; }
+                let (generation, free, reserve, outstanding, grants_next, pending) = {
+                    let state = live.inner.state.try_lock().expect("admission waited with mount exclusion held");
+                    (state.durable.generation, state.durable.free_blocks, state.durable.global_reserve,
+                        state.reservations.outstanding(), state.grants.blocks, state.pending.is_some())
+                };
+                assert!(pending, "{op} waited with no publication in flight");
+                let census = pending_census(&live);
+                let Publisher { paused, thread, generation: named, .. } =
+                    owner.borrow_mut().take().expect("wait without the worker's publication");
+                observed.borrow_mut().push(ShortageWait { generation, named, free, reserve,
+                    outstanding, grants_next, pending: census });
+                // The install this refusal named: resume the worker and let it finish.
+                paused.install();
+                thread.join().unwrap();
+            })));
+            measurement::take_events();
+            measurement::take_materialized();
+            observation::take_write_grant();
+            let (before, frozen) = (fs.inner.state.lock().reservations.outstanding(),
+                publisher.borrow().as_ref().map_or(0, |p| p.grants));
+            let named = publisher.borrow().as_ref().map(|p| p.generation);
+            if op == "create" {
+                fs.create_open(dir, name.as_bytes(), NodeKind::Regular,
+                    &|_| Ok(InodeAttrs::new(0o644, 0, 0)),
+                    &mut |prepared| { node = Some(prepared); Ok(()) }).unwrap();
+            } else {
+                // h_put_file writes one byte and closes before the next create.
+                let opened = node.take().unwrap();
+                assert_eq!(fs.write(&opened, WriteReq { at: WriteAt::Offset(0), limit: u64::MAX,
+                    clear_setid: false }, b"x").unwrap().bytes, 1);
+            }
+            context::observer(None);
+            let replay = measurement::take_materialized();
+            assert!(replay <= MATERIALIZE_STEPS as u64, "{op} {i} replayed {replay} items");
+            max_replay = max_replay.max(replay);
+            let grant = observation::take_write_grant().unwrap();
+            let after = fs.inner.state.lock().reservations.outstanding();
+            if op == "create" {
+                create_requests.push(grant[3]);
+                create_retained.push(after.saturating_sub(before));
+            } else {
+                write_grants.push(grant[3]);
+            }
+            let mut admissions = measurement::take_events().into_iter().filter_map(|event| match event {
+                measurement::Event::Admission { attempts, pressure } => Some((attempts, pressure)),
+                _ => None,
+            });
+            let (attempts, pressure) = admissions.next().unwrap();
+            assert!(admissions.next().is_none());
+            assert!(pressure.is_empty(), "{op} {i}: the named install did not free its request");
+            let (success, denied) = attempts.split_last().unwrap();
+            assert_eq!((success.error, success.refusal), (None, None));
+            let waits = core::mem::take(&mut *waits.borrow_mut());
+            assert_eq!(denied.len(), waits.len(), "{op} {i}: refusal-to-wait attribution");
+            for (refusal, wait) in denied.iter().zip(&waits) {
+                assert_eq!(refusal.error, Some(ENOSPC));
+                let [free, reserve, outstanding, request, available] = refusal.refusal.unwrap();
+                assert_eq!((free, reserve, outstanding), (wait.free, wait.reserve, wait.outstanding));
+                // The worker is paused between its freeze and install, so
+                // outstanding equals frozen N's grants plus open N+1's.
+                assert_eq!(outstanding, frozen + wait.grants_next, "{op} {i}");
+                assert_eq!(available, free.saturating_sub(reserve).saturating_sub(frozen + wait.grants_next));
+                assert!(available < request, "{op} {i} waited with {available} for {request}");
+                assert_eq!(Some(wait.named), named);
+                assert_eq!(wait.named, wait.generation + 1);
+                println!("SHORTAGE op={op} index={i} generation={} release_generation={} free={free} reserve={reserve} pending={} pending_oldest={} grants_n={frozen} grants_next={} request={request} available={available}",
+                    wait.generation, wait.named, wait.pending.0, wait.pending.1, wait.grants_next);
+                if in_window.0 != wait.generation { in_window = (wait.generation, 0); }
+                if in_window.1 < RECEIPTS_PER_PUBLICATION {
+                    in_window.1 += 1;
+                    expected.push(Receipt { op, generation: wait.generation, release_generation: wait.named,
+                        free, reserve, pending: wait.pending.0, pending_oldest: wait.pending.1,
+                        grants_n: frozen, grants_next: wait.grants_next, request });
+                }
+                if op == "create" { refusals += 1 } else { write_refusals += 1 }
+            }
+            if let Some(wait) = waits.last() {
+                // The retry that succeeded ran after the install it named.
+                assert_eq!(fs.inner.state.lock().durable.generation, wait.named);
+                peak_pending = peak_pending.max(pending_census(&fs).0);
+                retries += 1;
+            }
+        }
+    }
+    let leftover = publisher.borrow_mut().take();
+    if let Some(Publisher { paused, thread, .. }) = leftover {
+        paused.install();
+        thread.join().unwrap();
+        peak_pending = peak_pending.max(pending_census(&fs).0);
+    }
+    let range = |values: &[u64]| (values.iter().min().copied().unwrap_or(0), values.iter().max().copied().unwrap_or(0));
+    println!("SHORTAGE_SUMMARY creates={CREATES} free={SHORTAGE_FREE} reserve=4096 publications={publications} files_per_publication={:?} create_refusals={refusals} write_refusals={write_refusals} retries_after_install={retries} pressure_publications=0 peak_pending={peak_pending} peak_replay={max_replay} create_request={:?} create_retained={:?} write_grant={:?} fixture_seconds={built:.3} seconds={:.3}",
+        files_per_publication.get(1..).unwrap_or(&[]), range(&create_requests), range(&create_retained), range(&write_grants),
+        started.elapsed().as_secs_f64());
+    assert!(publications > 1 && refusals + write_refusals > 0, "the replay reached no real shortage");
+
+    // 621(y2) receipt: the first eight refusals per installed generation,
+    // emitted with the x10 mutation_cost records, newest RECEIPT_RING kept.
+    let receipts = report_receipts(&fs);
+    let kept = expected.len().min(RECEIPT_RING);
+    assert_eq!(receipts.iter().map(|(_, receipt)| *receipt).collect::<Vec<_>>(),
+        expected[expected.len() - kept..].to_vec(), "refusal receipts");
+    assert!(receipts.windows(2).all(|pair| pair[0].0 + 1 == pair[1].0));
+    assert_eq!(receipts.last().map(|(seq, _)| *seq), Some(expected.len() as u64));
 }

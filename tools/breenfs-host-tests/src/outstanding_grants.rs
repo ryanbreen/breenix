@@ -25,24 +25,29 @@ impl BlockDevice for Disk {
     fn flush(&self) -> Result<(), BlockError> { Ok(()) }
 }
 pub(super) fn fixture() -> Arc<BreenFs<NoWait>> {
+    let disk = Arc::new(Disk(HostMutex::new(populated_image(80000))));
+    BreenFs::mount_writable(disk, Arc::new(BufferCache::new(NoWait)), 241515581, 1).unwrap()
+}
+/// The populated root: `total_blocks` sets FREE, the trees stay the same.
+pub(super) fn populated_image(total_blocks: u64) -> Vec<u8> {
     // Keep populated FS and SPACE trees, rather than only reducing free space
     // on an empty root. This mirrors metadata_admission's production writer.
-    let disk = Arc::new(Disk(HostMutex::new(vec![0; 80000 * BLOCK_SIZE])));
+    let disk = Disk(HostMutex::new(vec![0; total_blocks as usize * BLOCK_SIZE]));
     let sb = Superblock { fs_uuid: [0x58;16], generation: 1, slot: 1,
-        total_blocks: 80000, global_reserve: 4096, next_root_id: 2,
+        total_blocks, global_reserve: 4096, next_root_id: 2,
         dirhash_key: [0x31;16], ..Superblock::default() };
     let at = Time { seconds: 1, nanos: 0 };
     {
-        let mut files = Files::format(super::super::commit::DeviceStore(disk.as_ref()), &sb).unwrap();
+        let mut files = Files::format(super::super::commit::DeviceStore(&disk), &sb).unwrap();
         files.mkdir(2, b"tmp", 0o1777, at).unwrap();
         let bytes = vec![0x61; 64 * BLOCK_SIZE];
         for i in 0..994 {
             let ino = files.create(2, alloc::format!("populated-{i}").as_bytes(), 0o644, at).unwrap();
-            files.write(disk.as_ref(), ino, 0, &bytes, at).unwrap();
+            files.write(&disk, ino, 0, &bytes, at).unwrap();
         }
-        files.fsync(disk.as_ref(), &mut Committer::format(sb)).unwrap();
+        files.fsync(&disk, &mut Committer::format(sb)).unwrap();
     }
-    BreenFs::mount_writable(disk, Arc::new(BufferCache::new(NoWait)), 241515581, 1).unwrap()
+    disk.0.into_inner().unwrap()
 }
 
 #[derive(Default)]
