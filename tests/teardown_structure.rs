@@ -1206,6 +1206,20 @@ fn scheduler_lock_acquisitions_are_irq_safe_by_shape() {
     );
 }
 
+#[test]
+fn a_fatal_el1_redirect_cannot_abandon_its_scheduler_guard() {
+    let source = repo_text("kernel/src/task/scheduler.rs");
+    let body = function_body(&source, "switch_to_idle_best_effort");
+    let park_with_local_guard = r#"if SCHEDULER_HELD_BY[cpu].load(Ordering::Relaxed) {
+        crate::gpu::panic::park();
+    }"#;
+    let park = body.find(park_with_local_guard).expect(
+        "an EL1 fault on the scheduler's owner CPU cannot return to idle with the guard stranded",
+    );
+    let try_lock = body.find("try_lock_scheduler()").expect("peer contention stays nonblocking");
+    assert!(park < try_lock, "the owner CPU must park before the idle redirect");
+}
+
 /// Red and green legs for `scheduler_lock_acquisitions_are_irq_safe_by_shape`.
 ///
 /// Round 1's review (B2) reinstated #790's producer twice against the shipped
