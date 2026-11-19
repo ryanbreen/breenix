@@ -181,6 +181,36 @@ fn corrupt_descendant_mounts_writable_until_first_observation() {
 }
 
 #[test]
+fn unlink_in_healthy_directory_with_an_unrelated_corrupt_leaf() {
+    let image = image_target(150, 360);
+    image.disk.bytes.lock().unwrap()[image.leaf * BLOCK_SIZE + NODE_SIZE - 1] ^= 1;
+    let fs = mount(&image);
+    let root = fs.root().unwrap();
+    let previous = fs.lookup(root, b"good").unwrap();
+    assert_eq!(previous, image.good);
+
+    fs.remove(root, b"good", Remove {
+        directory: false,
+        expected: previous,
+        owner: fs.getattr(previous).unwrap().attrs.uid,
+        parent: fs.getattr(root).unwrap().attrs,
+    }).unwrap();
+    fs.sync().unwrap();
+    assert_eq!(fs.lookup(root, b"good"), Err(Errno(ENOENT)));
+    let mut entries = Vec::new();
+    fs.readdir(root, 2, &mut |entry, _| {
+        entries.push(entry.name);
+        Ok(true)
+    }).unwrap();
+    assert_eq!(entries, [b"rot".to_vec()]);
+    assert_eq!(fs.read_only(), Ok(false));
+
+    assert_eq!(fs.getattr(image.target), Err(Errno(EIO)));
+    assert_eq!(fs.read_only(), Ok(true));
+    fs.shutdown("checksum-unrelated-unlink", u64::MAX).unwrap();
+}
+
+#[test]
 fn aligned_replacement_of_corrupt_block_commits_with_healthy_pending_write() {
     let image = image();
     image.disk.bytes.lock().unwrap()[(image.data + 1) * BLOCK_SIZE + 31] ^= 1;
