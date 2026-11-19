@@ -129,6 +129,7 @@ impl<W: Wait> NodeStore for CachedNodeStore<'_, W> {
         Ok(node)
     }
     fn get(&self, addr: u64) -> Result<Vec<u8>, Error> {
+        #[cfg(test)] btree::measurement::edit_cost(|c| c.copies += 1);
         let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(NODE_SIZE)

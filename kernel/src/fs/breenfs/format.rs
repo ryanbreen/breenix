@@ -448,6 +448,7 @@ impl NodeHeader {
         put(b, 16, &self.fs_uuid);
         put(b, 32, &self.addr.to_le_bytes());
         put(b, 40, &self.generation.to_le_bytes());
+        #[cfg(test)] super::btree::measurement::edit_cost(|c| c.checksum_bytes += (NODE_SIZE - 12) as u64);
         let c = crc32c::checksum(&b[12..NODE_SIZE]);
         put(b, 8, &c.to_le_bytes());
         Ok(())
@@ -457,6 +458,7 @@ impl NodeHeader {
         if &b[..8] != b"BREENFSN" {
             return Err(Error::Invalid);
         }
+        #[cfg(test)] super::btree::measurement::edit_cost(|c| c.checksum_bytes += (NODE_SIZE - 12) as u64);
         if crc32c::checksum(&b[12..NODE_SIZE]) != u32at(b, 8) {
             return Err(Error::Checksum);
         }

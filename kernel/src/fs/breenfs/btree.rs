@@ -33,6 +33,25 @@ pub mod measurement {
         };
         static HEIGHT: core::cell::Cell<u8> = const { core::cell::Cell::new(0) };
     }
+    #[derive(Debug, Default)]
+    pub struct EditCost {
+        pub reads: u64,
+        pub decoded: alloc::collections::BTreeMap<u64, u64>,
+        pub encoded: alloc::collections::BTreeMap<u64, u64>,
+        pub copies: u64,
+        pub checksum_bytes: u64,
+        pub slots: u64,
+    }
+    std::thread_local! {
+        static EDIT_COST: core::cell::RefCell<alloc::vec::Vec<EditCost>> = const { core::cell::RefCell::new(alloc::vec::Vec::new()) };
+    }
+    pub fn start_edit_cost() { EDIT_COST.with(|cost| cost.borrow_mut().push(EditCost::default())); }
+    pub fn take_edit_cost() -> EditCost { EDIT_COST.with(|cost| cost.borrow_mut().pop().unwrap()) }
+    pub(crate) fn edit_cost(f: impl Fn(&mut EditCost)) {
+        EDIT_COST.with(|cost| {
+            for cost in cost.borrow_mut().iter_mut() { f(cost); }
+        });
+    }
     #[derive(Clone, Copy, Debug)]
     pub struct ChangeWork { pub height: u8, pub reads: usize, pub writes: usize }
     pub(super) fn changed(work: ChangeWork) {
@@ -180,7 +199,7 @@ fn read_node<S: NodeStore>(
     upper: Option<Key>,
 ) -> Result<Arc<Node>, Error> {
     #[cfg(test)]
-    measurement::mutation(6, 1);
+    { measurement::mutation(6, 1); measurement::edit_cost(|c| c.reads += 1); }
     let node = store.read_node(ptr)?;
     if (node.len() == 0 && !root)
         || (node.len() != 0
@@ -237,6 +256,11 @@ impl Node {
         if !self.fits() || self.header.level >= MAX_HEIGHT {
             return Err(Error::InvalidNode);
         }
+        #[cfg(test)]
+        measurement::edit_cost(|c| {
+            *c.encoded.entry(self.header.addr).or_default() += 1;
+            c.slots += self.len() as u64;
+        });
         let mut bytes = vec![0; NODE_SIZE];
         self.header.nitems = self.len() as u16;
         if self.header.level == 0 {
@@ -292,6 +316,11 @@ fn decode(
         measurement::publication(header.tree, 2, u64::from(header.nitems));
     }
     let n = usize::from(header.nitems);
+    #[cfg(test)]
+    measurement::edit_cost(|c| {
+        *c.decoded.entry(ptr.addr).or_default() += 1;
+        c.slots += n as u64;
+    });
     #[cfg(test)]
     measurement::items(n as u64);
     if header.addr != ptr.addr
@@ -571,6 +600,7 @@ fn visit_range_ordered<S: NodeStore, E: From<Error>>(
             for step in 0..end - start {
                 preemption_point();
                 let i = if reverse { end - 1 - step } else { start + step };
+                #[cfg(test)] measurement::edit_cost(|c| c.slots += 1);
                 let (key, bytes) = &node.items[i];
                 if !visit(*key, bytes)? { return Ok(false); }
             }
@@ -616,7 +646,7 @@ impl<S: NodeStore> Edit<'_, S> {
         upper: Option<Key>,
     ) -> Result<Node, Error> {
         #[cfg(test)]
-        self.reads.set(self.reads.get() + 1);
+        { self.reads.set(self.reads.get() + 1); measurement::edit_cost(|c| c.reads += 1); }
         if let Some(bytes) = self.writes.get(&ptr.addr) {
             decode(bytes, ptr, root, lower, upper)
         } else {

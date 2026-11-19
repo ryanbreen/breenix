@@ -1237,3 +1237,120 @@ fn review_fixes_terminal_enospc_records_no_release() {
     assert_eq!(fs.lookup(2, b"full"), Err(Errno(ENOENT)));
     fs.inner.state.lock().reservations.release(held);
 }
+
+#[test]
+fn populated_readdir_edit_and_publication_codec_budget() {
+    use btree::measurement::{start_edit_cost, take_edit_cost, EditCost};
+    use std::rc::Rc;
+
+    const GUEST_FREE: u64 = 25_075;
+    // New-view ROOT/SPACE endpoints and the single publication's reservation
+    // shadow can revisit fixed roots. The edited paths have no per-edit slack.
+    const FIXED_DECODES: u64 = 16;
+    let image = outstanding_grants::populated_image(80_000 + GUEST_FREE - X1_FREE);
+    let fs = mount(Arc::new(Disk::new(image)), true, 241515646);
+    let dir = fs.create(2, b"libc-readdir-many", NewNode::Directory {
+        attrs: InodeAttrs::new(0o700, 0, 0),
+    }).unwrap();
+    let attrs = InodeAttrs::new(0o644, 0, 0);
+    let file = |i| alloc::format!("f{i:03}xxxxxxxxx");
+    let files: Vec<_> = (0..300).map(|i| {
+        fs.create(dir, file(i).as_bytes(), NewNode::Regular { attrs }).unwrap()
+    }).collect();
+    let root = fs.open(2).unwrap();
+    fs.fsync(&root, false).unwrap();
+    let state = fs.inner.state.lock();
+    let paths = state.files.reservation_paths(dir).unwrap();
+    assert_eq!((paths.fs_height, paths.space_height), (1, 1));
+    drop(state);
+    let parent = fs.getattr(dir).unwrap().attrs;
+    let unlink = |i: usize| {
+        fs.remove(dir, file(i).as_bytes(), Remove {
+            directory: false, expected: files[i], owner: 0, parent,
+        }).unwrap();
+    };
+
+    type Sample = (&'static str, EditCost, u128, u32, u32);
+    let samples = Rc::new(RefCell::new(Vec::<Sample>::new()));
+    let observed = samples.clone();
+    let mut active = Vec::new();
+    let mut points = 0u32;
+    context::request();
+    context::observer(Some(Box::new(move |event| {
+        if let Event::Point = event { points += 1; }
+        if let Event::Phase { op, phase, begin } = event {
+            let name = match (op, phase) {
+                ("create" | "unlink", "inode-edit") => op,
+                ("commit", "drain-dirty" | "prepare-reap" | "publication") => phase,
+                _ => return,
+            };
+            if begin {
+                start_edit_cost();
+                active.push((name, Instant::now(), points, context::yields()));
+            } else {
+                let (start_name, now, start_points, start_yields) = active.pop().unwrap();
+                assert_eq!(start_name, name);
+                observed.borrow_mut().push((
+                    name, take_edit_cost(), now.elapsed().as_nanos(),
+                    points - start_points, context::yields() - start_yields,
+                ));
+            }
+        }
+    })));
+    fs.create(dir, b"new-entry", NewNode::Regular { attrs }).unwrap();
+    unlink(299);
+    context::observer(None);
+
+    // One publication drains 10 dirty pages and reclaims 10 orphans, like
+    // x8's 100-edit workload. The other operations touch distinct inodes.
+    for i in 0..10 {
+        let node = fs.open(files[i]).unwrap();
+        fs.write(&node, WriteReq { at: WriteAt::Offset(0), limit: u64::MAX,
+            clear_setid: false }, b"x").unwrap();
+        unlink(i + 10);
+        for j in 0..8 {
+            fs.setattr(files[20 + i * 8 + j], SetAttr {
+                mode: Some(0o600), ..SetAttr::default()
+            }).unwrap();
+        }
+    }
+    let observed = samples.clone();
+    let mut active = Vec::new();
+    let mut points = 0u32;
+    context::request();
+    context::observer(Some(Box::new(move |event| {
+        if let Event::Point = event { points += 1; context::request_reschedule(); }
+        if let Event::Phase { op: "commit", phase, begin } = event {
+            if !matches!(phase, "drain-dirty" | "prepare-reap" | "publication") { return; }
+            if begin {
+                start_edit_cost();
+                active.push((phase, Instant::now(), points, context::yields()));
+            } else {
+                let (start_phase, now, start_points, start_yields) = active.pop().unwrap();
+                assert_eq!(start_phase, phase);
+                observed.borrow_mut().push((
+                    phase, take_edit_cost(), now.elapsed().as_nanos(),
+                    points - start_points, context::yields() - start_yields,
+                ));
+            }
+        }
+    })));
+    fs.fsync(&root, false).unwrap();
+    context::observer(None);
+
+    let samples = samples.borrow();
+    assert_eq!(samples.len(), 5);
+    let mut failures = Vec::new();
+    for (name, cost, ns, points, yields) in samples.iter() {
+        let decodes = cost.decoded.values().sum::<u64>();
+        let distinct = cost.decoded.len() as u64;
+        let encodes = cost.encoded.values().sum::<u64>();
+        let encoded = cost.encoded.len() as u64;
+        println!("EDIT_COST phase={name} reads={} decodes={decodes}/{distinct} encodes={encodes}/{encoded} copies={} checksum_bytes={} slots={} points={points} yields={yields} ns={ns}",
+            cost.reads, cost.copies, cost.checksum_bytes, cost.slots);
+        if decodes > distinct + FIXED_DECODES || encodes > encoded {
+            failures.push((*name, decodes, distinct, encodes, encoded));
+        }
+    }
+    assert!(failures.is_empty(), "646(b2) codec budget: {failures:?}");
+}

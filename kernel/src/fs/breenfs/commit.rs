@@ -286,6 +286,7 @@ impl FrozenCommit {
         let mut nodes = BTreeMap::new();
         for (&addr, bytes) in txn.writes() {
             preemption_point();
+            #[cfg(test)] btree::measurement::edit_cost(|c| c.copies += 1);
             nodes.insert(addr, bytes.clone());
         }
         let mut filled = BTreeMap::new();
@@ -592,6 +593,7 @@ fn fill(
             }
         }
     }
+    #[cfg(test)] btree::measurement::edit_cost(|c| { *c.encoded.entry(h.addr).or_default() += 1; c.slots += u64::from(h.nitems); });
     h.encode(&mut bytes)?;
     let ptr = pointer(&bytes, h);
     done.insert(h.addr, bytes);

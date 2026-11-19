@@ -121,7 +121,10 @@ impl<S: NodeStore> NodeStore for View<'_, S> {
     }
     fn get(&self, addr: u64) -> Result<Vec<u8>, btree::Error> {
         self.private(addr)
-            .cloned()
+            .map(|bytes| {
+                #[cfg(test)] btree::measurement::edit_cost(|c| c.copies += 1);
+                bytes.clone()
+            })
             .map(Ok)
             .unwrap_or_else(|| self.base.get(addr))
     }
@@ -151,7 +154,10 @@ impl<S: NodeStore> NodeStore for Reservations<'_, S> {
     fn get(&self, addr: u64) -> Result<Vec<u8>, btree::Error> {
         self.changes
             .get(&addr)
-            .cloned()
+            .map(|bytes| {
+                #[cfg(test)] btree::measurement::edit_cost(|c| c.copies += 1);
+                bytes.clone()
+            })
             .map(Ok)
             .unwrap_or_else(|| self.view.get(addr))
     }
