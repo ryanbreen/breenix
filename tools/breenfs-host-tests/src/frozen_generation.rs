@@ -713,3 +713,154 @@ fn create_shortage_waits_only_for_the_install_that_frees_it() {
     assert!(receipts.windows(2).all(|pair| pair[0].0 + 1 == pair[1].0));
     assert_eq!(receipts.last().map(|(seq, _)| *seq), Some(expected.len() as u64));
 }
+
+#[test]
+fn readdir_many_setups_enumerates_and_unlinks_with_bounded_grants() {
+    use super::super::reserve::observation;
+
+    const GUEST_FREE: u64 = 25_075;
+    let started = Instant::now();
+    let image = outstanding_grants::populated_image(80_000 + GUEST_FREE - X1_FREE);
+    let fs = mount(Arc::new(Disk::new(image)), true, 241515630);
+    {
+        let state = fs.inner.state.lock();
+        let paths = state.files.reservation_paths(2).unwrap();
+        assert_eq!((paths.fs_height, paths.space_height), (1, 1));
+        assert_eq!((state.durable.free_blocks, state.durable.global_reserve), (GUEST_FREE, 4096));
+    }
+    let attrs = InodeAttrs::new(0o644, 0, 0);
+    let dir = fs.create(2, b"libc-readdir-many", NewNode::Directory {
+        attrs: InodeAttrs::new(0o700, 0, 0),
+    }).unwrap();
+    let before = fs.inner.state.lock().durable.generation;
+    // Calls, maximum and total granted blocks, retries, pressure publications,
+    // worker publications, maximum replay steps.
+    let mut rows = [[0u64; 7]; 3];
+    let mut unlink_ns = 0;
+    let mut names = BTreeMap::new();
+    let mut observe = |phase: usize| {
+        let grant = observation::take_write_grant();
+        let events = measurement::take_events();
+        let replay = measurement::take_materialized();
+        let row = &mut rows[phase];
+        row[0] += 1;
+        if let Some(grant) = grant {
+            row[1] = row[1].max(grant[3]);
+            row[2] += grant[3];
+        }
+        row[6] = row[6].max(replay);
+        for event in events {
+            if let measurement::Event::Admission { attempts, pressure } = event {
+                assert_eq!(attempts.last().unwrap().error, None);
+                row[3] += (attempts.len() - 1) as u64;
+                row[4] += pressure.into_iter().filter(|&worked| worked).count() as u64;
+            }
+        }
+        // Deliver a deterministic worker service opportunity without running
+        // the periodic timer. The y2 replay separately parks a frozen worker.
+        if fs.inner.signal.requested.load(Ordering::Acquire) {
+            let worked = fs.commit_due(0).unwrap();
+            row[5] += u64::from(worked);
+        }
+    };
+    measurement::take_events();
+    measurement::take_materialized();
+    publication_phases::take();
+    let replay_started = Instant::now();
+    for i in 0..300 {
+        let name = alloc::format!("f{i:03}xxxxxxxxx");
+        let mut node = None;
+        fs.create_open(dir, name.as_bytes(), NodeKind::Regular,
+            &|_| Ok(attrs), &mut |opened| { node = Some(opened); Ok(()) }).unwrap();
+        observe(0);
+        let node = node.unwrap();
+        assert_eq!(fs.write(&node, WriteReq { at: WriteAt::Offset(0), limit: u64::MAX,
+            clear_setid: true }, b"x").unwrap().bytes, 1);
+        names.insert(name.into_bytes(), node.ino);
+        drop(node);
+        observe(1);
+    }
+    let mut seen = BTreeMap::new();
+    let mut cursor = 2;
+    loop {
+        let mut count = 0;
+        let next = fs.readdir(dir, cursor, &mut |entry, _| {
+            if count == 32 { return Ok(false); }
+            assert!(seen.insert(entry.name, entry.ino).is_none());
+            count += 1;
+            Ok(true)
+        }).unwrap();
+        if next == cursor { break; }
+        cursor = next;
+    }
+    assert_eq!(seen, names);
+    let parent = fs.getattr(dir).unwrap().attrs;
+    for (name, ino) in names {
+        let at = Instant::now();
+        fs.remove(dir, &name, Remove { directory: false, expected: ino, owner: 0, parent }).unwrap();
+        unlink_ns += at.elapsed().as_nanos();
+        observe(2);
+    }
+    let after = fs.inner.state.lock().durable.generation;
+    fs.remove(2, b"libc-readdir-many", Remove { directory: true, expected: dir, owner: 0,
+        parent: fs.getattr(2).unwrap().attrs }).unwrap();
+    fs.fsync(&fs.open(2).unwrap(), false).unwrap();
+    assert_eq!(fs.lookup(2, b"libc-readdir-many"), Err(Errno(ENOENT)));
+    let reap = publication_phases::take().remove("prepare_reap").unwrap_or_default();
+    let publications = after - before;
+    println!("READDIR_MANY rows={rows:?} publications={publications} +        prepare_work={:?} prepare_trees={:?} unlink_host_ns={unlink_ns} +        guest_publication_seconds={:.3} replay_seconds={:.3} seconds={:.3}",
+        reap.work, reap.trees, publications as f64 * (6.174_023_123 / 8.0),
+        replay_started.elapsed().as_secs_f64(), started.elapsed().as_secs_f64());
+    assert_eq!(rows.map(|row| row[0]), [300; 3]);
+    assert_eq!(publications, rows.iter().map(|row| row[4] + row[5]).sum());
+    assert!(rows.iter().all(|row| row[6] <= MATERIALIZE_STEPS as u64));
+    assert!(rows[0][1] < 400 && rows[1][2] < 300 * 160, "height-one admission: {rows:?}");
+    assert!(publications <= 6, "reservation costs still dominate the libc case");
+}
+
+#[test]
+fn height_one_create_and_first_write_admit_a_cascading_split() {
+    use super::super::reserve::observation;
+
+    let image = incremental_files_view::full_height_one_image();
+    for create in [true, false] {
+        let fs = mount(Arc::new(Disk::new(image.clone())), true, 630_000 + usize::from(create));
+        let (free, space_cap, held) = {
+            let mut state = fs.inner.state.lock();
+            let paths = state.files.reservation_paths(16).unwrap();
+            assert_eq!((paths.fs_height, paths.space_height), (1, 1));
+            let cap = 4 * (2 * paths.space_nodes + paths.space_height);
+            let free = state.durable.free_blocks;
+            // Test exactly the calculated admission headroom, with the
+            // unrelated grant still held during prepare and publication.
+            let headroom = if create { 44 + cap } else { 125 + cap };
+            let held = state.reservations.available(free) - headroom;
+            (free, cap, state.reservations.reserve(free, held, Operation::Allocate).unwrap())
+        };
+        let node = if create {
+            let ino = fs.create(2, b"new", NewNode::Regular { attrs: InodeAttrs::new(0o644, 0, 0) }).unwrap();
+            assert_eq!(ino, 17);
+            fs.open(ino).unwrap()
+        } else {
+            let opened = fs.open(16).unwrap();
+            assert_eq!(fs.write(&opened, WriteReq { at: WriteAt::Offset(0), limit: u64::MAX,
+                clear_setid: false }, b"x").unwrap().bytes, 1);
+            opened
+        };
+        let grant = observation::take_write_grant().unwrap()[3];
+        fs.fsync(&node, false).unwrap();
+        let mut state = fs.inner.state.lock();
+        assert_eq!(state.files.reservation_paths(node.ino).unwrap().fs_height, 2);
+        assert!(free - state.durable.free_blocks <= grant);
+        println!("HEIGHT_ONE_SPLIT create={create} space_cap={space_cap} grant={grant} allocated={}",
+            free - state.durable.free_blocks);
+        assert!(held.blocks() > 0);
+        state.reservations.release(held);
+        drop(state);
+        if !create {
+            let mut bytes = [0];
+            assert_eq!(fs.read(&node, 0, &mut bytes), Ok(1));
+            assert_eq!(bytes, [b'x']);
+        }
+    }
+}

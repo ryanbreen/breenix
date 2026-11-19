@@ -53,7 +53,7 @@ impl Drop for CacheCleanup {
         ROWS.with(|r| r.borrow_mut().entry("cache_cleanup").or_default().work[4] += work);
     }
 }
-fn take() -> BTreeMap<&'static str, Counts> { ROWS.with(|r| core::mem::take(&mut *r.borrow_mut())) }
+pub(super) fn take() -> BTreeMap<&'static str, Counts> { ROWS.with(|r| core::mem::take(&mut *r.borrow_mut())) }
 
 // Each changed inode is queued once for touch/close, and at most twice for
 // retention or drain/charge. Cleanup visits its dirty node and its grants.
