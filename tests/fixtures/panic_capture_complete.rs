@@ -14,6 +14,7 @@ impl<T> Default for Once<T> {
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 static CPU: AtomicUsize = AtomicUsize::new(3);
 static BUSY: AtomicBool = AtomicBool::new(false);
+static SCHEDULER: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static READS: AtomicUsize = AtomicUsize::new(0);
 static GPU_READY: AtomicBool = AtomicBool::new(true);
 static UPTIME: AtomicU64 = AtomicU64::new(11_040);
@@ -65,6 +66,7 @@ pub mod task { pub mod scheduler {
     }
     pub fn try_liveness_snapshot(_: usize) -> Option<SchedulerLivenessSnapshot> {
         crate::READS.fetch_add(1, crate::Ordering::Relaxed);
+        let _guard = crate::SCHEDULER.try_lock().ok()?;
         if crate::BUSY.load(crate::Ordering::Relaxed) { return None; }
         Some(SchedulerLivenessSnapshot { per_cpu_current: [1260; 8],
             per_cpu_ready_len: [2; 8], total_threads: 27, blocked_count: 19 })
@@ -143,18 +145,34 @@ pub mod capture;
 fn wire() -> String { std::mem::take(&mut *WIRE.lock().unwrap()) }
 fn emit_panic() { capture::emit(capture::Edge::Panic, 95, 5); }
 #[cfg(target_arch = "aarch64")]
-fn lockup_waits() {
-    capture::emit(capture::Edge::Lockup, 5000, 1000);
-    let text = wire();
+fn assert_lockup_waits(text: &str) {
     let waits: Vec<_> = text.lines().filter(|line| line.starts_with("[BXCAP:THR tid=")).collect();
     assert_eq!(waits, [
         "[BXCAP:THR tid=21689 pid=21688 site=0xffff0000407253d8 queue=0xffff000058392010 proc=GUI%20app%5D%0A]",
         "[BXCAP:THR tid=21693 pid=21692 site=0x0 queue=0x0 proc=runner]",
     ], "{text}");
     assert!(text.contains("verdict=complete"), "{text}");
+}
+
+#[cfg(target_arch = "aarch64")]
+fn lockup_waits() {
+    capture::emit(capture::Edge::Lockup, 5000, 1000);
+    assert_lockup_waits(&wire());
     assert_eq!(READS.load(Ordering::Relaxed), 1);
     emit_panic();
     complete(&wire());
+}
+
+#[cfg(target_arch = "aarch64")]
+fn lockup_while_scheduler_held() {
+    let _guard = SCHEDULER.lock().unwrap();
+    capture::emit(capture::Edge::Lockup, 5000, 1000);
+    let text = wire();
+    assert!(text.contains("[BXCAP:NOTE sched_owner_cpu=1 pc=0xffff000040123450 tick=1376146]"), "{text}");
+    assert!(text.contains("[BXCAP:THR cpu=0 cur=21689 q=published]"), "{text}");
+    assert!(text.contains("[BXCAP:THR cpu=1 cur=21693 q=published]"), "{text}");
+    assert_lockup_waits(&text);
+    assert_eq!(READS.load(Ordering::Relaxed), 0, "LOCKUP must not try to acquire the scheduler");
 }
 fn partial(text: &str) {
     assert!(text.contains("[BXCAP:NOTE sched_lock_held]"), "{text}");
@@ -190,6 +208,11 @@ fn main() {
     #[cfg(target_arch = "aarch64")]
     if scenario == "lockup-waits" {
         lockup_waits();
+        return;
+    }
+    #[cfg(target_arch = "aarch64")]
+    if scenario == "lockup-held" {
+        lockup_while_scheduler_held();
         return;
     }
     if scenario == "real-panic" {
