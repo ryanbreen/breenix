@@ -368,7 +368,10 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     /// Newly deferred orphan cleanup belongs to this transaction's grants;
     /// existing ORPHAN items are already part of the durable filesystem.
     pub fn metadata_debt(&self) -> Result<u64, Error> {
-        Ok(self.txn.metadata_debt(self.root.root, self.orphan_count)?)
+        Ok(self.metadata_estimate()?.blocks().map_err(txn::Error::from)?)
+    }
+    pub(super) fn metadata_estimate(&self) -> Result<super::reserve::Estimate, Error> {
+        Ok(self.txn.metadata_estimate(self.root.root, self.orphan_count)?)
     }
     /// Quarantine of the prepared generation, before opening its successor.
     pub fn pending_summary(&self) -> space::PendingSummary {

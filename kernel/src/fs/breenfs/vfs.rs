@@ -1127,7 +1127,7 @@ impl<W: Wait> MountState<W> {
         // estimate and can increase its SPACE charge too.
         let result = self.files.orphan_growth_paths(3 + usize::from(inline));
         let fs_nodes = fs_nodes.checked_add(self.observed(result)?).ok_or(Errno(ENOSPC))?;
-        let blocks = Estimate {
+        let estimate = Estimate {
             fs_levels: fs_nodes,
             // Up to two deferred records per FS allocation and the ROOT
             // update. Include both in the remaining-debt calculation.
@@ -1135,11 +1135,8 @@ impl<W: Wait> MountState<W> {
             space_height: paths.space_height,
             space_nodes: paths.space_nodes,
             ..Estimate::default()
-        }.blocks().map_err(|_| Errno(ENOSPC))?;
-        let (_, unpaid) = self.unpaid_metadata(&paths)?;
-        let blocks = blocks.checked_add(unpaid).ok_or(Errno(ENOSPC))?;
-        self.grants.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
-        self.reserve_blocks(blocks, Operation::Allocate)
+        };
+        self.reserve_namespace(estimate, Operation::Allocate)
     }
     /// Reserve COW paths and structural edits before a namespace mutation.
     /// Each item edit allows a split/merge path, its COW siblings and a new
@@ -1159,16 +1156,30 @@ impl<W: Wait> MountState<W> {
             .ok_or(Errno(ENOSPC))?;
         let space_changes = paths.uncopied_fs_nodes.checked_add(fs_levels)
             .and_then(|n| n.checked_mul(3)).ok_or(Errno(ENOSPC))?;
-        let blocks = Estimate {
+        let estimate = Estimate {
             data_blocks: 0,
             uncopied_fs_nodes: paths.uncopied_fs_nodes,
             fs_levels,
             space_changes,
             space_height: paths.space_height,
             space_nodes: paths.space_nodes,
+        };
+        self.reserve_namespace(estimate, operation)
+    }
+    fn reserve_namespace(&mut self, estimate: Estimate, operation: Operation) -> Result<Grant, AdmissionError> {
+        let result = self.files.metadata_estimate();
+        let current = self.observed(result)?;
+        let combined = Estimate {
+            data_blocks: current.data_blocks,
+            fs_levels: estimate.fs_levels.checked_add(current.fs_levels).ok_or(Errno(ENOSPC))?,
+            // The namespace estimate already has room for the mounted ROOT
+            // update. Apply the SPACE cap to the combined changes once.
+            space_changes: estimate.space_changes.checked_add(current.space_changes - 3)
+                .ok_or(Errno(ENOSPC))?,
+            ..estimate
         }.blocks().map_err(|_| Errno(ENOSPC))?;
-        let (_, unpaid) = self.unpaid_metadata(&paths)?;
-        let blocks = blocks.checked_add(unpaid).ok_or(Errno(ENOSPC))?;
+        let standalone = estimate.blocks().map_err(|_| Errno(ENOSPC))?;
+        let blocks = standalone.max(combined.saturating_sub(self.metadata_reserved));
         self.grants.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
         self.reserve_blocks(blocks, operation)
     }

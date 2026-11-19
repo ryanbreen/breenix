@@ -468,7 +468,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
     /// Blocks already allocated plus the unchanged design-2.8 bound for work
     /// still deferred to publication. Include the mounted ROOT's final update
     /// and FS edits for orphan cleanup; no unused split paths are retained.
-    pub fn metadata_debt(&self, root: BlockPtr, orphan_count: u64) -> Result<u64, Error> {
+    pub(super) fn metadata_estimate(&self, root: BlockPtr, orphan_count: u64) -> Result<Estimate, Error> {
         let fs_levels = orphan_count.checked_mul(3 * 4 * (u64::from(root.level) + 2))
             .ok_or(space::Error::ENOSPC)?;
         let changes = (self.deferred.len() as u64).checked_add(1)
@@ -481,7 +481,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             space_height: u64::from(self.space_root.level),
             space_nodes: self.space_node_count()?,
             ..Estimate::default()
-        }.blocks()?)
+        })
     }
     /// Private encoded nodes, the latest copy of each address, including the
     /// frozen layer's; a commit engine must call `settle` before use.
