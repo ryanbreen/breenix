@@ -156,6 +156,9 @@ fn range<S: NodeStore>(
     Ok(out)
 }
 fn free_record(key: Key, bytes: &[u8]) -> Result<(u64, u64), Error> {
+    if bytes.len() != 8 {
+        return Err(Error::Invalid);
+    }
     let length = Free::decode(bytes)?.length;
     end(key.offset, length)?;
     Ok((key.offset, length))
