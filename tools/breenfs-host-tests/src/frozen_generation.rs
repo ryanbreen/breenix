@@ -281,6 +281,9 @@ struct PausedPublication {
 impl PausedPublication {
     fn install(self) {
         self.resume.send(()).unwrap();
+        self.wait_for_install();
+    }
+    fn wait_for_install(self) {
         assert_eq!(self.installed.recv_timeout(CREATE_REPLAY_WATCHDOG).unwrap(), Ok(true));
     }
 }
@@ -471,6 +474,7 @@ const RECEIPT_RING: usize = 32;
 /// point exactly as the commit worker's would be while it prepares N.
 struct Publisher {
     paused: PausedPublication,
+    preparing_reap: mpsc::Receiver<()>,
     thread: thread::JoinHandle<()>,
     generation: u64,
     grants: u64,
@@ -485,6 +489,7 @@ fn start_publisher(fs: &Arc<Fs>) -> Publisher {
     };
     let (ready_tx, ready) = mpsc::channel();
     let (resume, resume_rx) = mpsc::channel();
+    let (reap_tx, preparing_reap) = mpsc::channel();
     let (installed_tx, installed) = mpsc::channel();
     let worker = fs.clone();
     let thread = thread::spawn(move || {
@@ -492,6 +497,7 @@ fn start_publisher(fs: &Arc<Fs>) -> Publisher {
         let paused = ready_tx.clone();
         context::observer(Some(Box::new(move |event| match event {
             Event::Phase { op: "commit", phase: "drain-dirty", begin: true } => armed = true,
+            Event::Phase { op: "commit", phase: "prepare-reap", begin: true } => { let _ = reap_tx.send(()); }
             Event::Point if armed => {
                 armed = false;
                 paused.send(true).unwrap();
@@ -507,7 +513,7 @@ fn start_publisher(fs: &Arc<Fs>) -> Publisher {
     });
     assert!(ready.recv_timeout(CREATE_REPLAY_WATCHDOG).unwrap(), "the trigger publication did not freeze");
     assert!(fs.inner.state.lock().pending.is_some());
-    Publisher { paused: PausedPublication { resume, installed }, thread, generation, grants }
+    Publisher { paused: PausedPublication { resume, installed }, preparing_reap, thread, generation, grants }
 }
 
 /// PENDING blocks in the installed space tree and the oldest released
@@ -934,24 +940,34 @@ fn readdir_many_admits_under_captured_headroom_during_publication() {
         drive(1, writing_frozen.is_some());
         prefix += 1;
     }
-    // Give the worker a service opportunity during enumeration and cleanup,
-    // whether or not the retained-block trigger landed on those boundaries.
-    if active.borrow().is_none() {
-        fs.inner.signal.requested.store(true, Ordering::Release);
-        drive(2, false);
-    }
+    // Start a fresh publication at enumeration. Its worker must advance from
+    // drain to prepare-reap while readdir is still visiting its first entry.
+    if let Some(publisher) = active.borrow_mut().take() { install(publisher); }
+    fs.inner.signal.requested.store(true, Ordering::Release);
+    drive(2, false);
     let mut seen = BTreeMap::new();
     let mut cursor = 2;
     loop {
         let mut count = 0;
         let overlaps = active.borrow().is_some();
         let next = fs.readdir(dir, cursor, &mut |entry, _| {
+            if cursor == 2 && count == 0 {
+                let worker = active.borrow();
+                let publisher = worker.as_ref().unwrap();
+                publisher.paused.resume.send(()).unwrap();
+                publisher.preparing_reap.recv_timeout(CREATE_REPLAY_WATCHDOG).unwrap();
+            }
             if count == 32 { return Ok(false); }
             assert!(seen.insert(entry.name, entry.ino).is_none());
             count += 1;
             Ok(true)
         }).unwrap();
         drive(2, overlaps);
+        if cursor == 2 {
+            let publisher = active.borrow_mut().take().unwrap();
+            publisher.paused.wait_for_install();
+            publisher.thread.join().unwrap();
+        }
         if next == cursor { break; }
         cursor = next;
     }
