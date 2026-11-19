@@ -155,20 +155,16 @@ fn range<S: NodeStore>(
     out.sort_by_key(|item| { preemption_point(); item.0 });
     Ok(out)
 }
-fn free_ranges<S: NodeStore>(store: &S, root: BlockPtr) -> Result<Vec<(u64, u64)>, Error> {
-    range(store, root, FREE_OBJECT, format::FREE)?
-        .into_iter()
-        .map(|(k, bytes)| {
-            preemption_point();
-            if bytes.len() != 8 {
-                return Err(Error::Invalid);
-            }
-            let length = Free::decode(&bytes)?.length;
-            end(k.offset, length)?;
-            Ok((k.offset, length))
-        })
-        .collect()
+fn free_record(key: Key, bytes: &[u8]) -> Result<(u64, u64), Error> {
+    let length = Free::decode(bytes)?.length;
+    end(key.offset, length)?;
+    Ok((key.offset, length))
 }
+
+fn free_key(start: u64) -> Key {
+    key(FREE_OBJECT, format::FREE, start)
+}
+
 fn merged(mut ranges: Vec<(u64, u64)>) -> Result<Vec<(u64, u64)>, Error> {
     ranges.sort_unstable_by(|a, b| { preemption_point(); a.cmp(b) });
     let mut out: Vec<(u64, u64)> = Vec::new();
@@ -197,29 +193,34 @@ pub fn add_free<S: NodeStore>(
     start: u64,
     length: u64,
 ) -> Result<(), Error> {
-    end(start, length)?;
-    let old = free_ranges(store, *root)?;
-    let mut ranges: Vec<_> = old.iter().map(|&range| { preemption_point(); range }).collect();
-    ranges.push((start, length));
-    let ranges = merged(ranges)?;
-    for &(start, length) in &old {
-        preemption_point();
-        if !ranges.iter().any(|range| { preemption_point(); *range == (start, length) }) {
-            btree::delete(store, root, key(FREE_OBJECT, format::FREE, start))?;
-        }
+    let mut start = start;
+    let mut stop = end(start, length)?;
+    let mut left = None;
+    let mut right = None;
+    // FREE is ordered by physical start and already coalesced. Only the
+    // predecessor and successor can overlap or adjoin a returned range.
+    btree::visit_range_reverse(store, *root, free_key(0), free_key(start), &mut |key, bytes| {
+        let (addr, length) = free_record(key, bytes)?;
+        let end = end(addr, length)?;
+        if end > start { return Err(Error::Invalid); }
+        if end == start { left = Some(addr); }
+        Ok(false)
+    })?;
+    btree::visit_range(store, *root, free_key(start + 1), free_key(u64::MAX), &mut |key, bytes| {
+        let (addr, length) = free_record(key, bytes)?;
+        if addr < stop { return Err(Error::Invalid); }
+        if addr == stop { right = Some((addr, end(addr, length)?)); }
+        Ok(false)
+    })?;
+    if let Some(addr) = left {
+        btree::delete(store, root, free_key(addr))?;
+        start = addr;
     }
-    for (start, length) in ranges {
-        preemption_point();
-        if old.iter().any(|range| { preemption_point(); *range == (start, length) }) {
-            continue;
-        }
-        btree::insert(
-            store,
-            root,
-            key(FREE_OBJECT, format::FREE, start),
-            &Free { length }.encode(),
-        )?;
+    if let Some((addr, end)) = right {
+        btree::delete(store, root, free_key(addr))?;
+        stop = end;
     }
+    btree::insert(store, root, free_key(start), &Free { length: stop - start }.encode())?;
     Ok(())
 }
 
@@ -336,8 +337,17 @@ fn allocate_extent<S: NodeStore>(
     if !valid_ref(length, &r) {
         return Err(Error::Invalid);
     }
-    let mut free = free_ranges(store, *root)?;
-    let mut candidate = free.iter().find(|(_, len)| { preemption_point(); *len >= length }).copied();
+    let mut free = Vec::new();
+    let mut candidate = None;
+    btree::visit_range(store, *root, free_key(0), free_key(u64::MAX), &mut |key, bytes| {
+        let range = free_record(key, bytes)?;
+        if range.1 >= length {
+            candidate = Some(range);
+            return Ok::<_, Error>(false);
+        }
+        free.push(range);
+        Ok(true)
+    })?;
     if candidate.is_none() {
         let mut pending = Vec::new();
         for (k, bytes) in range(store, *root, PENDING_OBJECT, format::PENDING)? {

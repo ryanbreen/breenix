@@ -447,6 +447,11 @@ pub(super) fn reservation_nodes<S: NodeStore>(
     Ok(count)
 }
 
+/// A growing item can add at most one child to the existing internal root.
+pub(super) fn may_grow_root<S: NodeStore>(store: &S, root: BlockPtr, growing_items: usize) -> Result<bool, Error> {
+    Ok(root.level == 0 || store.read_node(root)?.children.len() + growing_items > MAX_INTERNAL)
+}
+
 /// Return items in an inclusive key range, visiting only intersecting branches.
 pub fn range<S: NodeStore>(
     store: &S,
@@ -489,33 +494,59 @@ pub fn visit_range<S: NodeStore, E: From<Error>>(
     upper: Key,
     visit: &mut dyn FnMut(Key, &[u8]) -> Result<bool, E>,
 ) -> Result<(), E> {
+    visit_range_ordered(store, root, lower, upper, false, visit)
+}
+
+/// Visit the upper end of an inclusive range first.
+pub(super) fn visit_range_reverse<S: NodeStore, E: From<Error>>(
+    store: &S,
+    root: BlockPtr,
+    lower: Key,
+    upper: Key,
+    visit: &mut dyn FnMut(Key, &[u8]) -> Result<bool, E>,
+) -> Result<(), E> {
+    visit_range_ordered(store, root, lower, upper, true, visit)
+}
+
+fn visit_range_ordered<S: NodeStore, E: From<Error>>(
+    store: &S,
+    root: BlockPtr,
+    lower: Key,
+    upper: Key,
+    reverse: bool,
+    visit: &mut dyn FnMut(Key, &[u8]) -> Result<bool, E>,
+) -> Result<(), E> {
     fn walk<S: NodeStore, E: From<Error>>(
         store: &S,
         node: Arc<Node>,
         bound: Option<Key>,
         lower: Key,
         upper: Key,
+        reverse: bool,
         visit: &mut dyn FnMut(Key, &[u8]) -> Result<bool, E>,
     ) -> Result<bool, E> {
         preemption_point();
         if node.header.level == 0 {
             let start = node.items.partition_point(|(key, _)| *key < lower);
-            for (key, bytes) in &node.items[start..] {
+            let end = node.items.partition_point(|(key, _)| *key <= upper);
+            for step in 0..end - start {
                 preemption_point();
-                if *key > upper { break; }
+                let i = if reverse { end - 1 - step } else { start + step };
+                let (key, bytes) = &node.items[i];
                 if !visit(*key, bytes)? { return Ok(false); }
             }
         } else {
-            for (i, entry) in node.children.iter().enumerate() {
+            let start = node.route(lower);
+            let end = node.children.partition_point(|entry| entry.key <= upper);
+            for step in 0..end.saturating_sub(start) {
                 preemption_point();
+                let i = if reverse { end - 1 - step } else { start + step };
+                let entry = node.children[i];
                 let next = node.children.get(i + 1).map(|e| e.key).or(bound);
-                if entry.key <= upper && next.is_none_or(|k| k > lower) {
-                    let ptr = node.child(i);
-                    let child = read_node(store, ptr, false, Some(entry.key), next)?;
-                    same_tree(&node, &child)?;
-                    if !walk(store, child, next, lower, upper, visit)? {
-                        return Ok(false);
-                    }
+                let child = read_node(store, node.child(i), false, Some(entry.key), next)?;
+                same_tree(&node, &child)?;
+                if !walk(store, child, next, lower, upper, reverse, visit)? {
+                    return Ok(false);
                 }
             }
         }
@@ -523,7 +554,7 @@ pub fn visit_range<S: NodeStore, E: From<Error>>(
     }
     if lower <= upper {
         let node = read_node(store, root, true, None, None)?;
-        walk(store, node, None, lower, upper, visit)?;
+        walk(store, node, None, lower, upper, reverse, visit)?;
     }
     Ok(())
 }

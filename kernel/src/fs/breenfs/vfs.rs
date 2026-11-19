@@ -379,6 +379,7 @@ struct MountState<W: Wait + 'static> {
     reservations: SharedLedger,
     grants: Grants,
     metadata_reserved: u64,
+    first_write_space: u64,
     signal: Arc<CommitSignal>,
 }
 // Mapping pins are held separately until cache retirement or stopped-service
@@ -403,6 +404,12 @@ struct GenPages {
     // This generation truncated the file while an older generation was
     // frozen: that generation's pages from this index on are not its bytes.
     hide_frozen_from: Option<u64>,
+}
+
+struct DataGrant {
+    grant: Grant,
+    metadata: u64,
+    first_write_space: u64,
 }
 /// A frozen generation's pages, immutable and readable without exclusion.
 struct FrozenPages {
@@ -966,7 +973,8 @@ impl<W: Wait> MountState<W> {
         offset: u64,
         length: usize,
         operation: Operation,
-    ) -> Result<(Grant, u64), Errno> {
+        empty_file: bool,
+    ) -> Result<DataGrant, Errno> {
         self.nodes.get(&ino).ok_or(Errno(EIO))?;
         // The open generation's pages only: a page copied from a frozen
         // generation is a new page of this one and needs its own block.
@@ -976,8 +984,30 @@ impl<W: Wait> MountState<W> {
             None => DirtyPages::default().reservation_runs(offset, length),
         };
         let reserved_metadata = open.map_or(0, |node| node.reserved_metadata);
+        let first_write = empty_file && offset == 0 && length == 1 && open.is_none();
         let result = self.files.reservation_paths(ino);
         let paths = self.observed(result)?;
+        if first_write && self.files.log.is_none() {
+            // One data block and one EXTENT without boundary slices. The
+            // foreground INODE edit can copy two nodes at each old level
+            // below the root and the root itself. The extent may use a
+            // different path. The two same-size INODE updates during drain
+            // already have a private path, but can each rebalance with an
+            // older sibling per level. Any levels grown since admission
+            // belong to this transaction. Include a full split cascade.
+            let fs_nodes = 6 * paths.fs_height + 9;
+            let metadata = 4 * fs_nodes;
+            // Design 2.8 bounds the SPACE fixpoint for the whole open
+            // transaction. Retain the base topology once, plus growth for
+            // the added REF; later files share the same pending fixpoint.
+            let space = 4 * (2 * paths.space_nodes + paths.space_height);
+            let first_write_space = self.first_write_space.max(space);
+            let blocks = 1 + metadata + 4 + (first_write_space - self.first_write_space);
+            self.grants.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
+            let grant = self.reservations.reserve(self.durable.free_blocks, blocks, operation)
+                .map_err(|_| Errno(ENOSPC))?;
+            return Ok(DataGrant { grant, metadata: metadata + 4, first_write_space });
+        }
         // A run inserts at most 256 data EXTENTs and can retain up to 510
         // one-page slices at its old boundaries (ops::remove_range). Their
         // 45-byte items fit in three nodes' payload space; allow four split
@@ -1008,12 +1038,14 @@ impl<W: Wait> MountState<W> {
         // publishing generation and the open generation. Do not debit them
         // a second time before asking the ledger for a grant.
         self.reservations.reserve(self.durable.free_blocks, blocks, operation)
-            .map(|grant| (grant, metadata))
+            .map(|grant| DataGrant { grant, metadata, first_write_space: self.first_write_space })
             .map_err(|_| Errno(ENOSPC))
     }
-    fn finish_data(&mut self, ino: u64, (grant, metadata): (Grant, u64), result: Result<(), Errno>) -> Result<(), Errno> {
+    fn finish_data(&mut self, ino: u64, reservation: DataGrant, result: Result<(), Errno>) -> Result<(), Errno> {
+        let DataGrant { grant, metadata, first_write_space } = reservation;
         if result.is_ok() {
             self.nodes.get(&ino).ok_or(Errno(EIO))?;
+            self.first_write_space = first_write_space;
             let node = self.dirty.entry(ino).or_default();
             node.reserved_metadata = node.reserved_metadata.max(metadata);
             self.dirty_nodes.insert(ino);
@@ -1029,6 +1061,40 @@ impl<W: Wait> MountState<W> {
             self.reservations.release(grant);
         }
         result
+    }
+    fn reserve_create(&mut self, dir: u64, inline: bool) -> Result<Grant, Errno> {
+        if self.files.log.is_some() {
+            // The next generation will replay this mutation against a
+            // different physical tree. Keep the replay-safe bound there.
+            return self.reserve_metadata(&[dir], 5, true, false, Operation::Allocate);
+        }
+        let result = self.files.reservation_paths(dir);
+        let paths = self.observed(result)?;
+        // Grow INODE, DIR_ENTRY, DIR_INDEX (and INLINE for a symlink), and
+        // replace the parent INODE. Below the original root, an edit can
+        // copy the target and either copy a sibling or split the target.
+        // The original root copies once if needed and can split once.
+        // The new root and both children of that split have room for the
+        // remaining create edits, and those nodes belong to this generation.
+        let edits = 4 + u64::from(inline);
+        let fs_nodes = 2 * paths.fs_height * edits + 2 + u64::from(!paths.private_fs_root);
+        // Settlement prices queued orphan cleanup at the resulting root
+        // height. Growing a level adds twelve FS nodes per orphan to that
+        // estimate and can increase its SPACE charge too.
+        let result = self.files.orphan_growth_paths(3 + usize::from(inline));
+        let fs_nodes = fs_nodes.checked_add(self.observed(result)?).ok_or(Errno(ENOSPC))?;
+        let blocks = Estimate {
+            fs_levels: fs_nodes,
+            // Up to two deferred records per FS allocation and the ROOT
+            // update. Include both in the remaining-debt calculation.
+            space_changes: 6 * fs_nodes + 3,
+            space_height: paths.space_height,
+            space_nodes: paths.space_nodes,
+            ..Estimate::default()
+        }.blocks().map_err(|_| Errno(ENOSPC))?;
+        self.grants.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
+        self.reservations.reserve(self.durable.free_blocks, blocks, Operation::Allocate)
+            .map_err(|_| Errno(ENOSPC))
     }
     /// Reserve COW paths and structural edits before a namespace mutation.
     /// Each item edit allows a split/merge path, its COW siblings and a new
@@ -1305,6 +1371,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 reservations: SharedLedger(ledger),
                 grants: Grants::default(),
                 metadata_reserved: 0,
+                first_write_space: 0,
                 durable,
                 failed: false,
                 failure: None,
@@ -1687,7 +1754,8 @@ impl<W: Wait + 'static> BreenFs<W> {
                 let end = offset.checked_add(length as u64)
                     .filter(|end| *end <= (1 << 63) - 4096).ok_or(Errno(EFBIG))?;
                 let grant = if length == 0 { None } else {
-                    Some(state.reserve_data(node.ino, offset, length, Operation::Allocate)?)
+                    Some(state.reserve_data(node.ino, offset, length, Operation::Allocate,
+                        inode.size == 0 && inode.nblocks == 0)?)
                 };
                 Ok((inode, offset, length, end, grant))
             },
@@ -1701,7 +1769,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         // Bound holes need frames before file bytes change. Preparation can
         // allocate; completing a published write only copies into those frames.
         if node.map.prepare_write(offset, length).is_err() {
-            state.reservations.release(grant.0);
+            state.reservations.release(grant.grant);
             return Err(Errno(ENOMEM).into());
         }
         let result = self.edit_pages(&mut state, node.ino, "write-read-metadata",
@@ -2254,6 +2322,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         let reap = !core::mem::take(&mut state.skip_reap)
             && !state.closed && !state.reap_shutdown && state.dead_remaining != 0;
         state.metadata_reserved = 0;
+        state.first_write_space = 0;
         state.fresh = true;
         state.policy = CommitPolicy::new(now_ns);
         // SeqCst: touch() pairs this store with its slot record (x11c M4).
@@ -3146,7 +3215,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             NewNode::Socket { attrs } => (attrs, 0o140000, 0, None),
         };
         let (mut state, grant) = self.reserve_with_pressure(CostOp::Create, state, || Ok(self.mutation_lock(CostOp::Create)), |state| {
-            state.reserve_metadata(&[dir], 5, true, false, Operation::Allocate)
+            state.reserve_create(dir, target.is_some())
         })?;
         let _edit = self.inner.costs.span(CostOp::Create, CostPhase::Edit);
         let result = state.files.create_node_prepared(
@@ -3188,7 +3257,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 NodeKind::Socket => 0o140000,
                 _ => return Err(Errno(EOPNOTSUPP)),
             };
-            let grant = state.reserve_metadata(&[dir], 5, true, false, Operation::Allocate)?;
+            let grant = state.reserve_create(dir, false)?;
             Ok((attrs, bits, grant))
         })?;
         let mut prepared = None;
@@ -3397,6 +3466,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                     floor,
                     usize::from(mapped_tail),
                     if size < inode.size { Operation::Truncate } else { Operation::Allocate },
+                    false,
                 )?;
                 Ok((inode, mapped_tail, Some(grant)))
             },
@@ -3404,7 +3474,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         let _edit = self.inner.costs.span(CostOp::Resize, CostPhase::Edit);
         let Some(grant) = grant else { return Ok(()); };
         if node.map.prepare_resize(inode.size, size).is_err() {
-            state.reservations.release(grant.0);
+            state.reservations.release(grant.grant);
             return Err(Errno(ENOMEM));
         }
         if size < inode.size {
@@ -3471,7 +3541,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 if length == 0 {
                     return Ok((inode, length, None));
                 }
-                let grant = state.reserve_data(node.ino, offset, length, Operation::Allocate)?;
+                let grant = state.reserve_data(node.ino, offset, length, Operation::Allocate, false)?;
                 Ok((inode, length, Some(grant)))
             },
         )?;

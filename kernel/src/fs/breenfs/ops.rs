@@ -370,6 +370,13 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     pub fn metadata_debt(&self) -> Result<u64, Error> {
         Ok(self.txn.metadata_debt(self.root.root, self.orphan_count)?)
     }
+    /// Additional deferred orphan paths if a growing edit can add a root level.
+    pub fn orphan_growth_paths(&self, growing_items: usize) -> Result<u64, Error> {
+        if self.orphan_count == 0 || !btree::may_grow_root(&self.txn.view(), self.root.root, growing_items)? {
+            return Ok(0);
+        }
+        self.orphan_count.checked_mul(3 * 4).ok_or(Error::ENOSPC)
+    }
     pub fn inode(&self, ino: u64) -> Result<Inode, Error> {
         let value = btree::search(&self.txn.view(), self.root.root, key(ino, format::INODE, 0))?
             .ok_or(Error::ENOENT)?;
@@ -525,23 +532,21 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             .position(|r| r.name == name)
             .ok_or(Error::ENOENT)?;
         let record = records.remove(pos);
-        let index = self
-            .range(
-                key(dir, format::DIR_INDEX, 0),
-                key(dir, format::DIR_INDEX, u64::MAX),
-            )?
-            .into_iter()
-            .find_map(|(k, v)| {
-                if k.object != dir || k.item_type != format::DIR_INDEX {
-                    return None;
+        let mut index = None;
+        btree::visit_range(
+            &self.txn.view(),
+            self.root.root,
+            key(dir, format::DIR_INDEX, 0),
+            key(dir, format::DIR_INDEX, u64::MAX),
+            &mut |key, value| {
+                let records = dir_records(value)?;
+                if records.len() == 1 && records[0] == record {
+                    index = Some(key);
                 }
-                match dir_records(&v) {
-                    Ok(rs) if rs.len() == 1 && rs[0] == record => Some(Ok(k)),
-                    Err(e) => Some(Err(e)),
-                    _ => None,
-                }
-            })
-            .ok_or(Error::EIO)??;
+                Ok::<_, Error>(index.is_none())
+            },
+        )?;
+        let index = index.ok_or(Error::EIO)?;
         if records.is_empty() {
             self.txn.delete(&mut self.root.root, k)?;
         } else {

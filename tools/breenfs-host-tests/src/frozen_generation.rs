@@ -801,16 +801,24 @@ fn readdir_many_setups_enumerates_and_unlinks_with_bounded_grants() {
         unlink_ns += at.elapsed().as_nanos();
         observe(2);
     }
-    let after = fs.inner.state.lock().durable.generation;
     fs.remove(2, b"libc-readdir-many", Remove { directory: true, expected: dir, owner: 0,
         parent: fs.getattr(2).unwrap().attrs }).unwrap();
-    fs.fsync(&fs.open(2).unwrap(), false).unwrap();
-    assert_eq!(fs.lookup(2, b"libc-readdir-many"), Err(Errno(ENOENT)));
+    let after = fs.inner.state.lock().durable.generation;
     let reap = publication_phases::take().remove("prepare_reap").unwrap_or_default();
     let publications = after - before;
-    println!("READDIR_MANY rows={rows:?} publications={publications} +        prepare_work={:?} prepare_trees={:?} unlink_host_ns={unlink_ns} +        guest_publication_seconds={:.3} replay_seconds={:.3} seconds={:.3}",
-        reap.work, reap.trees, publications as f64 * (6.174_023_123 / 8.0),
-        replay_started.elapsed().as_secs_f64(), started.elapsed().as_secs_f64());
+    let replay_seconds = replay_started.elapsed().as_secs_f64();
+    let mut costs = String::new();
+    fs.mutation_costs("root", &mut costs).unwrap();
+    for line in costs.lines().filter(|line| line.contains(" op=unlink ")) {
+        println!("READDIR_MANY_UNLINK {line}");
+    }
+    fs.fsync(&fs.open(2).unwrap(), false).unwrap();
+    assert_eq!(fs.lookup(2, b"libc-readdir-many"), Err(Errno(ENOENT)));
+    println!(concat!("READDIR_MANY rows={:?} publications={} ",
+        "prepare_work={:?} prepare_trees={:?} unlink_host_ns={} ",
+        "guest_publication_seconds={:.3} replay_seconds={:.3} seconds={:.3}"),
+        rows, publications, reap.work, reap.trees, unlink_ns, publications as f64 * (6.174_023_123 / 8.0),
+        replay_seconds, started.elapsed().as_secs_f64());
     assert_eq!(rows.map(|row| row[0]), [300; 3]);
     assert_eq!(publications, rows.iter().map(|row| row[4] + row[5]).sum());
     assert!(rows.iter().all(|row| row[6] <= MATERIALIZE_STEPS as u64));

@@ -142,6 +142,12 @@ struct Reservations<'a, S> {
     next: &'a mut u64,
 }
 impl<S: NodeStore> NodeStore for Reservations<'_, S> {
+    fn read_node(&self, ptr: BlockPtr) -> Result<Arc<btree::Node>, btree::Error> {
+        match self.changes.get(&ptr.addr) {
+            Some(bytes) => btree::decode_node(bytes, ptr),
+            None => self.view.read_node(ptr),
+        }
+    }
     fn get(&self, addr: u64) -> Result<Vec<u8>, btree::Error> {
         self.changes
             .get(&addr)
@@ -201,6 +207,7 @@ pub struct Transaction<'a, S> {
 /// Tree geometry for the caller's reservation policy.
 pub struct ReservationPaths {
     pub uncopied_fs_nodes: u64,
+    pub private_fs_root: bool,
     pub fs_height: u64,
     pub space_height: u64,
     pub space_nodes: u64,
@@ -437,6 +444,8 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             } else {
                 btree::reservation_nodes(&view, root, Some(ino), self.generation)?
             },
+            private_fs_root: root.generation == self.generation
+                && self.known_count(root.addr, 4) == Some(1),
             fs_height: u64::from(root.level),
             space_height: u64::from(self.space_root.level),
             space_nodes,
@@ -1038,6 +1047,9 @@ impl<S: NodeStore> EditStore<'_, '_, S> {
     }
 }
 impl<S: NodeStore> NodeStore for EditStore<'_, '_, S> {
+    fn read_node(&self, ptr: BlockPtr) -> Result<Arc<btree::Node>, btree::Error> {
+        self.txn.view().read_node(ptr)
+    }
     fn get(&self, addr: u64) -> Result<Vec<u8>, btree::Error> {
         self.txn.view().get(addr)
     }
