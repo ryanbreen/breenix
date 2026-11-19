@@ -46,6 +46,13 @@ pub enum ThreadState {
     Terminated,
 }
 
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct WaitSite {
+    pub return_pc: usize,
+    pub queue: usize,
+}
+
 impl ThreadState {
     /// True for every variant the scheduler treats as parked waiting on
     /// some external event, as opposed to `Running`, `Ready`, or
@@ -717,6 +724,10 @@ pub struct Thread {
     /// Current state
     pub state: ThreadState,
 
+    /// Diagnostic identity of the current I/O wait, read under SCHEDULER.
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) wait_site: WaitSite,
+
     /// CPU context (registers)
     pub context: CpuContext,
 
@@ -1330,6 +1341,8 @@ impl Clone for Thread {
             id: self.id,
             name: self.name.clone(),
             state: self.state,
+            #[cfg(target_arch = "aarch64")]
+            wait_site: WaitSite::default(),
             context: self.context.clone(),
             stack_top: self.stack_top,
             stack_bottom: self.stack_bottom,
@@ -1540,6 +1553,7 @@ impl Thread {
             id,
             name,
             state: ThreadState::Ready,
+            wait_site: WaitSite::default(),
             context,
             stack_top,
             stack_bottom,
@@ -1669,6 +1683,7 @@ impl Thread {
             id,
             name,
             state: ThreadState::Ready,
+            wait_site: WaitSite::default(),
             context,
             stack_top,
             stack_bottom,
@@ -1818,6 +1833,7 @@ impl Thread {
             id,
             name,
             state: ThreadState::Ready,
+            wait_site: WaitSite::default(),
             context,
             stack_top,
             stack_bottom,
@@ -1980,6 +1996,7 @@ impl Thread {
             id,
             name,
             state: ThreadState::Ready,
+            wait_site: WaitSite::default(),
             context,
             stack_top,
             stack_bottom,

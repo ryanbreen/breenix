@@ -1721,6 +1721,7 @@ impl ProcessManager {
             #[cfg(target_arch = "aarch64")]
             fpsimd: crate::signal::FpsimdContext::initial(),
             tls_block: initial_tpidr_el0,
+            wait_site: crate::task::thread::WaitSite::default(),
             sched: crate::task::thread::SchedPolicy::DEFAULT,
             time_slice: 10,
             entry_point: None,
@@ -3858,6 +3859,8 @@ impl ProcessManager {
                 id: child_thread_id,
                 name: child_name,
                 state: crate::task::thread::ThreadState::Ready,
+                #[cfg(target_arch = "aarch64")]
+                wait_site: crate::task::thread::WaitSite::default(),
                 context: parent_thread.context.clone(), // Will be modified below
                 stack_top: child_stack_top,
                 stack_bottom: parent_thread.stack_bottom,

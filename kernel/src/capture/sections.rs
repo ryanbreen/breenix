@@ -35,10 +35,8 @@
 //! `CNT`/`RING` and that NOTE rather than one line. What the repair does not
 //! give back is the per-thread detail the old acquired-lock arm printed --
 //! ELR/x30/SP, the inline-schedule stack scan, ready-queue membership and
-//! per-thread flags. `THR`'s rows are per-CPU aggregates, and that regression
-//! is recorded in
-//! docs/planning/green-program/failure-capture/PR-7-2026-09-06.md rather than
-//! described as equivalent.
+//! per-thread flags. Lockup captures supplement the per-CPU aggregates with
+//! bounded blocked-thread wait rows.
 
 use core::sync::atomic::Ordering;
 
@@ -71,6 +69,9 @@ pub const BXCAP_MAX_COUNTERS: usize = 32;
 /// Per-CPU scheduler rows emitted by `THR`. Matches the fixed-size arrays
 /// `SchedulerLivenessSnapshot` carries.
 pub const BXCAP_MAX_THR_ROWS: usize = 8;
+
+#[cfg(target_arch = "aarch64")]
+pub const BXCAP_MAX_WAIT_ROWS: usize = 32;
 
 #[inline(always)]
 pub fn section_bit(section: u32) -> u64 {
@@ -296,6 +297,41 @@ pub fn threads(
         writer.kv_dec("threads", snapshot.total_threads);
         writer.kv_dec("blocked", snapshot.blocked_count);
         writer.kv_text("q", "exact");
+        if !writer.close() {
+            return false;
+        }
+    }
+    true
+}
+
+/// Lockup-only THR rows. An address of `0x0` means the wait site or queue was
+/// unavailable. The process name (kernel thread name for pid=0) is a bounded,
+/// percent-encoded prefix, or '?' if the name could not be read.
+#[cfg(target_arch = "aarch64")]
+pub(super) fn blocked_waits(
+    writer: &mut Writer,
+    waits: &[crate::task::scheduler::BlockedWait],
+    blocked: u64,
+) -> bool {
+    let count = waits.len().min(blocked as usize);
+    for wait in &waits[..count] {
+        if !writer.open("THR") {
+            return false;
+        }
+        writer.kv_dec("tid", wait.tid);
+        writer.kv_dec("pid", wait.pid);
+        writer.kv_hex("site", wait.site as u64);
+        writer.kv_hex("queue", wait.queue as u64);
+        writer.kv_command_name(wait.name());
+        if !writer.close() {
+            return false;
+        }
+    }
+    if blocked > count as u64 {
+        if !writer.open("NOTE") {
+            return false;
+        }
+        writer.kv_dec("wait_rows_omitted", blocked - count as u64);
         if !writer.close() {
             return false;
         }

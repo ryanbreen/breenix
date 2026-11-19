@@ -209,6 +209,26 @@ impl core::ops::DerefMut for ProcessManagerGuard {
 /// Global process manager
 static PROCESS_MANAGER: Mutex<Option<ProcessManager>> = Mutex::new(None);
 
+/// Copy bounded names for BXCAP after the scheduler snapshot releases its guard.
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn copy_lockup_process_names(waits: &mut [crate::task::scheduler::BlockedWait]) {
+    crate::arch_without_interrupts(|| {
+        // Read through the raw try-lock so a lockup capture cannot run the
+        // process-manager guard's deferred reset and wake work on drop.
+        let Some(guard) = PROCESS_MANAGER.try_lock() else {
+            return;
+        };
+        let Some(manager) = guard.as_ref() else {
+            return;
+        };
+        for wait in waits.iter_mut().filter(|wait| wait.pid != 0) {
+            if let Some(process) = manager.get_process(ProcessId::new(wait.pid)) {
+                wait.set_name(&process.name);
+            }
+        }
+    });
+}
+
 /// The hold of PROCESS_MANAGER in progress, numbered from 1, or 0 while the
 /// lock is free. A file-descriptor table changed in a hold is closed to
 /// readers that do not take the lock until that hold ends (`FdTable`).

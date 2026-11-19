@@ -75,10 +75,7 @@ impl WaitQueueHead {
                 waiters.push_back(Waiter::new(tid));
             }
 
-            let published = crate::task::scheduler::with_current(|sched| {
-                sched.block_current_for_io_with_timeout(None)
-            })
-            .unwrap_or(false);
+            let published = self.publish_wait(None);
 
             if !published {
                 waiters.retain(|waiter| waiter.tid != tid);
@@ -120,10 +117,7 @@ impl WaitQueueHead {
                 waiters.push_back(Waiter::new(tid));
             }
 
-            let published = crate::task::scheduler::with_current(|sched| {
-                sched.block_current_for_io_with_timeout(wake_time_ns)
-            })
-            .unwrap_or(false);
+            let published = self.publish_wait(wake_time_ns);
 
             if published {
                 PrepareOutcome::Queued
@@ -132,6 +126,20 @@ impl WaitQueueHead {
                 PrepareOutcome::PublishFailed
             }
         })
+    }
+
+    fn publish_wait(&self, wake_time_ns: Option<u64>) -> bool {
+        crate::task::scheduler::with_current(|sched| {
+            let published = sched.block_current_for_io_with_timeout(wake_time_ns);
+            #[cfg(target_arch = "aarch64")]
+            if published {
+                if let Some(thread) = sched.current_thread_mut() {
+                    thread.wait_site.queue = self as *const Self as usize;
+                }
+            }
+            published
+        })
+        .unwrap_or(false)
     }
 
     /// Remove the current thread from the waitqueue and normalize syscall state.
@@ -393,13 +401,46 @@ pub(crate) fn halt_blocked_current() {
     crate::arch_halt_while_blocked();
 }
 
+// The AArch64 entry passes the incoming LR to Rust before its prologue or
+// any nested call can overwrite it.
+#[cfg(target_arch = "aarch64")]
+core::arch::global_asm!(
+    ".pushsection .text.schedule_current_wait,\"ax\"",
+    ".p2align 2",
+    ".global schedule_current_wait",
+    ".type schedule_current_wait, %function",
+    "schedule_current_wait:",
+    "mov x0, x30",
+    "b {wait}",
+    ".size schedule_current_wait, . - schedule_current_wait",
+    ".popsection",
+    wait = sym schedule_current_wait_at,
+);
+
+#[cfg(target_arch = "aarch64")]
+unsafe extern "C" {
+    pub safe fn schedule_current_wait();
+}
+
+#[cfg(target_arch = "aarch64")]
+extern "C" fn schedule_current_wait_at(return_pc: usize) {
+    run_current_wait(return_pc);
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+pub fn schedule_current_wait() {
+    run_current_wait();
+}
+
 /// Sleep the current prepared waiter until the scheduler wake path makes it
 /// runnable again.
 ///
 /// Syscall handlers enter with preemption disabled. Waiting must enable
 /// preemption before scheduling and restore the syscall entry invariant before
 /// returning to the caller.
-pub fn schedule_current_wait() {
+fn run_current_wait(#[cfg(target_arch = "aarch64")] return_pc: usize) {
+    #[cfg(target_arch = "aarch64")]
+    let mut site = Some(return_pc);
     #[cfg(target_arch = "aarch64")]
     crate::per_cpu_aarch64::preempt_enable();
     #[cfg(not(target_arch = "aarch64"))]
@@ -409,7 +450,16 @@ pub fn schedule_current_wait() {
         let still_waiting = crate::task::scheduler::with_current(|sched| {
             sched
                 .current_thread_mut()
-                .map(|thread| thread.state == ThreadState::BlockedOnIO)
+                .map(|thread| {
+                    let blocked = thread.state == ThreadState::BlockedOnIO;
+                    #[cfg(target_arch = "aarch64")]
+                    if blocked {
+                        if let Some(return_pc) = site.take() {
+                            thread.wait_site.return_pc = return_pc;
+                        }
+                    }
+                    blocked
+                })
                 .unwrap_or(false)
         })
         .unwrap_or(false);

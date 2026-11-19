@@ -21,6 +21,13 @@
 //! [BXCAP:END v=1 seq=0 edge=SELFTEST verdict=complete records=... bytes=... truncated=0 sections_skipped=0x0]
 //! ```
 //!
+//! Lockup adds rows such as
+//! `[BXCAP:THR tid=2 pid=2 site=0xffff000040000004 queue=0xffff000040010000 proc=init]`.
+//! `site` is the wait caller's return PC for offline symbolization. `queue`
+//! identifies the wait queue by address within this boot. An address of `0x0`
+//! denotes an unavailable field. The `wait_rows_omitted` note counts blocked
+//! threads beyond the row cap. These rows share the capture's byte budget.
+//!
 //! `BEGIN` without a matching `END` is the definition of a truncated
 //! capture, and that is the distinction a gate needs: it separates "no
 //! capture was emitted" from "a capture was emitted and something cut it
@@ -29,11 +36,10 @@
 //!
 //! # The constraints this path holds itself to
 //!
-//! No lock, no allocation, no formatting machinery, no page-table walk, no
-//! I/O beyond the raw serial primitive, and a bounded output size. The one
-//! piece of scheduler state a capture wants is read through
-//! `try_liveness_snapshot`, which is non-blocking; a refusal is reported and
-//! the capture continues. `kernel/src/capture/` is on
+//! A capture uses bounded output, fixed storage, and non-blocking snapshots.
+//! A refused scheduler snapshot is reported and the capture continues.
+//! Lockup uses a separate try-lock to read process names after releasing the
+//! scheduler lock. `kernel/src/capture/` is on
 //! `scripts/check-critical-path-violations.sh`'s critical-file list with an
 //! extra capture-scoped denylist, and `tests/capture_path_lock_free_structure.rs`
 //! pins the same shape from the source side.
@@ -204,6 +210,36 @@ pub(crate) fn current_cpu_id() -> usize {
 #[cold]
 #[inline(never)]
 pub fn emit(edge: Edge, arg0: u64, arg1: u64) {
+    #[cfg(target_arch = "aarch64")]
+    if edge == Edge::Lockup {
+        emit_lockup(arg0, arg1);
+        return;
+    }
+    emit_inner(
+        edge,
+        arg0,
+        arg1,
+        #[cfg(target_arch = "aarch64")]
+        &mut [],
+    );
+}
+
+#[cfg(target_arch = "aarch64")]
+#[cold]
+#[inline(never)]
+fn emit_lockup(arg0: u64, arg1: u64) {
+    let mut waits = [crate::task::scheduler::BlockedWait::default(); sections::BXCAP_MAX_WAIT_ROWS];
+    emit_inner(Edge::Lockup, arg0, arg1, &mut waits);
+}
+
+#[cold]
+#[inline(never)]
+fn emit_inner(
+    edge: Edge,
+    arg0: u64,
+    arg1: u64,
+    #[cfg(target_arch = "aarch64")] waits: &mut [crate::task::scheduler::BlockedWait],
+) {
     let cpu_id = current_cpu_id();
     let seq = CAPTURE_SEQ.fetch_add(1, Ordering::Relaxed);
 
@@ -258,6 +294,13 @@ pub fn emit(edge: Edge, arg0: u64, arg1: u64) {
         completed |= section_bit(SECTION_CPU);
     }
 
+    #[cfg(target_arch = "aarch64")]
+    let sampled_threads = if edge == Edge::Lockup {
+        crate::task::scheduler::try_liveness_snapshot_with_waits(cpu_id, waits)
+    } else {
+        sections::sample_threads(cpu_id)
+    };
+    #[cfg(not(target_arch = "aarch64"))]
     let sampled_threads = sections::sample_threads(cpu_id);
 
     if sections::events(&mut writer, cpu_id) {
@@ -270,7 +313,18 @@ pub fn emit(edge: Edge, arg0: u64, arg1: u64) {
         completed |= section_bit(SECTION_RING);
     }
     if sections::threads(&mut writer, sampled_threads) {
-        completed |= section_bit(SECTION_THR);
+        #[cfg(target_arch = "aarch64")]
+        let wait_rows_complete = edge != Edge::Lockup
+            || sections::blocked_waits(
+                &mut writer,
+                waits,
+                sampled_threads.map_or(0, |snapshot| snapshot.blocked_count),
+            );
+        #[cfg(not(target_arch = "aarch64"))]
+        let wait_rows_complete = true;
+        if wait_rows_complete {
+            completed |= section_bit(SECTION_THR);
+        }
     }
 
     let sections_skipped = SECTIONS_ALL & !completed;

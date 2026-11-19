@@ -1822,6 +1822,33 @@ pub struct SchedulerLivenessSnapshot {
     pub per_cpu_current: [u64; 8],
 }
 
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct BlockedWait {
+    pub tid: u64,
+    pub pid: u64,
+    pub site: usize,
+    pub queue: usize,
+    name: [u8; 24],
+    name_len: usize,
+}
+
+#[cfg(target_arch = "aarch64")]
+impl BlockedWait {
+    pub(crate) fn set_name(&mut self, name: &str) {
+        let mut len = name.len().min(self.name.len());
+        while !name.is_char_boundary(len) {
+            len -= 1;
+        }
+        self.name[..len].copy_from_slice(&name.as_bytes()[..len]);
+        self.name_len = len;
+    }
+
+    pub(crate) fn name(&self) -> &[u8] {
+        &self.name[..self.name_len]
+    }
+}
+
 /// Try to snapshot scheduler state without blocking.
 ///
 /// Returns `None` when the scheduler lock is busy or uninitialized; both are
@@ -1851,6 +1878,37 @@ pub struct SchedulerLivenessSnapshot {
 /// `try_schedule`'s no-caller, no-plan case, which was deleted rather than
 /// annotated.
 pub fn try_liveness_snapshot(cpu_id: usize) -> Option<SchedulerLivenessSnapshot> {
+    try_liveness_snapshot_inner(cpu_id, |_| {})
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn try_liveness_snapshot_with_waits(
+    cpu_id: usize,
+    waits: &mut [BlockedWait],
+) -> Option<SchedulerLivenessSnapshot> {
+    let snapshot = try_liveness_snapshot_inner(cpu_id, |sched| {
+        let blocked = sched.threads.iter().filter(|thread| thread.state.is_blocked());
+        for (thread, wait) in blocked.zip(waits.iter_mut()) {
+            wait.tid = thread.id();
+            wait.pid = thread.owner_pid.unwrap_or(0);
+            if thread.state == ThreadState::BlockedOnIO {
+                wait.site = thread.wait_site.return_pc;
+                wait.queue = thread.wait_site.queue;
+            }
+            if wait.pid == 0 {
+                wait.set_name(&thread.name);
+            }
+        }
+    })?;
+    let count = waits.len().min(snapshot.blocked_count as usize);
+    crate::process::copy_lockup_process_names(&mut waits[..count]);
+    Some(snapshot)
+}
+
+fn try_liveness_snapshot_inner(
+    cpu_id: usize,
+    sample_waits: impl FnOnce(&Scheduler),
+) -> Option<SchedulerLivenessSnapshot> {
     without_interrupts(|| {
         let guard = try_lock_scheduler()?;
         let sched = guard.as_ref()?;
@@ -1871,6 +1929,7 @@ pub fn try_liveness_snapshot(cpu_id: usize) -> Option<SchedulerLivenessSnapshot>
                 t.state.is_blocked() // #673 review, m4
             })
             .count() as u64;
+        sample_waits(sched);
 
         Some(SchedulerLivenessSnapshot {
             current_thread_id: sched.cpu_state[cpu].current_thread.unwrap_or(0),
@@ -6152,6 +6211,10 @@ impl Scheduler {
 
         thread.stop_timer_cpu();
         thread.state = ThreadState::BlockedOnIO;
+        #[cfg(target_arch = "aarch64")]
+        {
+            thread.wait_site = super::thread::WaitSite::default();
+        }
         thread.wake_time_ns = wake_time_ns;
         // The observation belongs to this wait, not to whatever the thread did
         // before it.

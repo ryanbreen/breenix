@@ -298,6 +298,24 @@ impl Writer {
         self.text(value);
     }
 
+    #[cfg(target_arch = "aarch64")]
+    pub fn kv_command_name(&mut self, name: &[u8]) {
+        const HEX: &[u8; 16] = b"0123456789ABCDEF";
+        self.text(" proc=");
+        if name.is_empty() {
+            self.put(b'?');
+        }
+        for &byte in name {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-') {
+                self.put(byte);
+            } else {
+                self.put(b'%');
+                self.put(HEX[(byte >> 4) as usize]);
+                self.put(HEX[(byte & 0xf) as usize]);
+            }
+        }
+    }
+
     #[inline(always)]
     pub fn truncated(&self) -> bool {
         self.truncated
