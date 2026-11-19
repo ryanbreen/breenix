@@ -545,6 +545,72 @@ fn mapped_writeback_waits_for_install_without_self_waking() {
 }
 
 #[test]
+fn gui_reset_retires_exited_child_cache_during_pressure_freeze() {
+    use crate::memory::file_map::{bind_host, EVICT_BUDGET};
+
+    // E24 ledger 621(y1). Model the supervisor's child and collector
+    // (libuitest supervisor_runtime.rs), and the shared writable evidence
+    // arena and read-side mapping (libuitest arena.rs). Drop bindings when
+    // their process roots retire, then unlink the scratch arena at RESET.
+    let (fs, _, arena) = fixture();
+    let image = fs.create(2, b"app-image", NewNode::Regular {
+        attrs: InodeAttrs::new(0o100700, 0, 0),
+    }).unwrap();
+    let image = fs.open(image).unwrap();
+    let image_pages = 4;
+    fs.resize(&image, image_pages * BLOCK_SIZE as u64, false, &|_| Ok(())).unwrap();
+    fs.write(&image, WriteReq {
+        at: WriteAt::Offset(0), limit: u64::MAX, clear_setid: false,
+    }, &vec![0x61; image_pages as usize * BLOCK_SIZE]).ok().unwrap();
+    fs.fsync(&image, false).unwrap();
+
+    let maps = [arena.map.clone(), image.map.clone()];
+    let weak = [Arc::downgrade(&arena), Arc::downgrade(&image)];
+    let arena_ino = arena.ino;
+    let counts = || (maps.each_ref().map(|map| map.cache_counts()),
+        weak.iter().filter(|node| node.strong_count() != 0).count());
+    let baseline = counts().0;
+    assert_eq!(baseline, [(0, 0, 0); 2]);
+
+    let child_image = bind_host(image.clone(), image_pages * BLOCK_SIZE as u64, false, false, true);
+    let arena_len = 67 * BLOCK_SIZE as u64;
+    let child_arena = bind_host(arena.clone(), arena_len, true, true, true);
+    for page in 0..67 {
+        child_arena.store(page * BLOCK_SIZE as u64, 0x59).unwrap();
+    }
+    let collector = bind_host(arena.clone(), arena_len, true, false, false);
+    assert_eq!(child_image.load(0), Ok(0x61));
+    assert_eq!(collector.load(66 * BLOCK_SIZE as u64), Ok(0x59));
+    drop(arena);
+    drop(image);
+    drop(child_arena);
+    drop(collector);
+    // The exited child's image binding stays with the retiring root while
+    // the worker stages the arena. Retire it during pressure preparation.
+    let during_freeze = interleave_pressure(&fs, FreezeCut::AfterStaging, || {
+        drop(child_image);
+        fs.remove(2, b"mapped", Remove {
+            directory: false, expected: arena_ino, owner: 0, parent: fs.getattr(2).unwrap().attrs,
+        }).unwrap();
+        fs.commit_due(0).unwrap();
+        counts()
+    });
+
+    // Two budgets per arena page (stage + evict), plus the freeze retry.
+    let limit = (2 * 67 + image_pages as usize).div_ceil(EVICT_BUDGET) + 1;
+    let mut passes = 0;
+    while counts() != (baseline, 0) && passes < limit {
+        fs.commit_due(0).unwrap();
+        passes += 1;
+    }
+    eprintln!("gui-reset frozen={during_freeze:?} settled={:?} passes={passes}", counts());
+    assert_eq!(counts(), (baseline, 0), "RESET left cache, bindings, dirty pages or pins");
+    assert_eq!(during_freeze.0[0], (67, 67, 0), "frozen arena still owes publication");
+    assert_eq!((during_freeze.0[1], during_freeze.1), (baseline[1], 1),
+        "retrying frozen arena receipts stranded the clean exited child's image and pin");
+}
+
+#[test]
 fn mapped_writeback_survives_each_pressure_freeze_cut() {
     use crate::memory::file_map::{bind_host, EVICT_BUDGET};
     let mut failures = Vec::new();
