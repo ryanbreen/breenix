@@ -38,6 +38,7 @@ class FreeCountDifferential(unittest.TestCase):
         self.assertIn('suite == "files-io"', scope)
         for case in ('descriptors/unlink-reclaim', 'metadata/ftruncate-large', 'metadata/ftruncate-large-open'):
             self.assertIn(case, scope)
+        self.assertIn('metadata/statfs-allocation', scope)
 
     def test_raw_marker_parser_selects_only_the_root(self):
         parse = function('libs/libbreenix/src/suite_markers.rs', 'fn parse(')
@@ -76,6 +77,10 @@ fn main() {
     assert!(rows[0].contains("marker=0 before_free=16200 before_pending=40 after_free=16201 after_pending=39"));
     assert!(rows[11].contains("marker=11 before_free=16211"));
     assert_eq!(scope.failure_records("files-io","metadata/ftruncate-large-open",true).len(),12);
+    assert!(scope.failure_records("files-io","metadata/statfs-allocation",false).is_empty());
+    let allocation = scope.failure_records("files-io","metadata/statfs-allocation",true);
+    assert_eq!(allocation.len(),12);
+    assert!(allocation[0].contains("metadata/statfs-allocation marker=0 before_free=16200 before_pending=40 after_free=16201 after_pending=39"));
     assert!(rows[0].contains("before_generation=100 after_generation=101"));
     assert_eq!(scope.failure_records("files-io","descriptors/unlink-reclaim",true).len(),12);
     control::markers::sample(12, false, 300, 1, 2);
