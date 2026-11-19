@@ -1718,6 +1718,15 @@ impl<W: Wait + 'static> BreenFs<W> {
     fn service_mappings(&self, now_ns: u64) -> Result<bool, Errno> {
         let handles = self.mapped_nodes()?;
         let mut budget = crate::memory::file_map::EVICT_BUDGET;
+        let blocked = self.inner.state.lock().publication_blocked();
+        if blocked {
+            // A retry can spend the whole pass on the same frozen receipts.
+            // Give clean unbound pages their share before waiting on those bytes.
+            for node in &handles {
+                preemption_point();
+                self.retire_mapping(node, &mut budget);
+            }
+        }
         let mut more = false;
         let mut staged = Vec::new();
         staged.try_reserve(handles.len().min(budget)).map_err(|_| Errno(ENOMEM))?;
@@ -1757,34 +1766,40 @@ impl<W: Wait + 'static> BreenFs<W> {
             preemption_point();
             deferred |= self.complete_mapping(&handles[index], first, last);
         }
+        let mut more_clean = false;
         for node in handles {
             preemption_point();
-            // Population and mutation take the mount lock before MapState.
-            let mut state = self.inner.state.lock();
-            if state.failed {
-                if let Some(entry) = state.nodes.get_mut(&node.ino) {
-                    let internal = 1 + usize::from(entry.mapped.is_some());
-                    if Arc::strong_count(&node) == internal {
-                        // No descriptor or binding can observe these pages.
-                        // Failed storage cannot write them back; retire them
-                        // under the ordinary page budget, reporting EIO below.
-                        more |= node.map.discard_unobserved(&mut budget);
-                    } else if node.map.eviction_pending() {
-                        // External handles now own the cache lifetime. Dropping
-                        // the final descriptor must not leave a service cycle.
-                        entry.mapped = None;
-                    }
+            more_clean |= self.retire_mapping(&node, &mut budget);
+        }
+        // Dirty receipts wait for the publication, but ready clean work can
+        // make progress even before that publication installs.
+        if more_clean || (more && !deferred) { self.request_eviction(); }
+        if self.inner.state.lock().failed { Err(Errno(EIO)) } else { Ok(worked) }
+    }
+    fn retire_mapping(&self, node: &Arc<VNode>, budget: &mut usize) -> bool {
+        let mut more = false;
+        // Population and mutation take the mount lock before MapState.
+        let mut state = self.inner.state.lock();
+        if state.failed {
+            if let Some(entry) = state.nodes.get_mut(&node.ino) {
+                let internal = 1 + usize::from(entry.mapped.is_some());
+                if Arc::strong_count(node) == internal {
+                    // No descriptor or binding can observe these pages.
+                    // Failed storage cannot write them back; retire them
+                    // under the ordinary page budget, reporting EIO below.
+                    more |= node.map.discard_unobserved(budget);
+                } else if node.map.eviction_pending() {
+                    // External handles now own the cache lifetime. Dropping
+                    // the final descriptor must not leave a service cycle.
+                    entry.mapped = None;
                 }
             }
-            if node.map.eviction_pending() { more |= node.map.evict(&mut budget); }
-            if !node.map.nonempty() {
-                if let Some(entry) = state.nodes.get_mut(&node.ino) { entry.mapped = None; }
-            }
         }
-        // Deferred receipts rewind the scan and can occupy the next pass's
-        // entire budget again. complete_mapping already arranged its retry.
-        if more && !deferred { self.request_eviction(); }
-        if self.inner.state.lock().failed { Err(Errno(EIO)) } else { Ok(worked) }
+        if node.map.eviction_pending() { more |= node.map.evict(budget); }
+        if !node.map.nonempty() {
+            if let Some(entry) = state.nodes.get_mut(&node.ino) { entry.mapped = None; }
+        }
+        more
     }
     fn mapped_nodes(&self) -> Result<Vec<Arc<VNode>>, Errno> {
         #[cfg(test)] let _phase = publication_phases::Phase::new("mappings");
