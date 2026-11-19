@@ -545,6 +545,104 @@ fn mapped_writeback_waits_for_install_without_self_waking() {
 }
 
 #[test]
+fn clean_retirement_does_not_wake_a_create_waiting_for_install() {
+    use crate::memory::file_map::{bind_host, EVICT_BUDGET};
+    use std::{cell::Cell, rc::Rc, sync::mpsc::channel, thread, time::Duration};
+    use super::super::preempt::context::{self, Event};
+
+    let (fs, _, node) = fixture();
+    let map = node.map.clone();
+    let pages = EVICT_BUDGET + 3;
+    drop(bind_host(node.clone(), (pages * BLOCK_SIZE) as u64, false, false, true));
+    assert_eq!(map.cache_counts(), (pages, 0, 0));
+    fs.setattr(node.ino, SetAttr { mode: Some(0o644), ..SetAttr::default() }).unwrap();
+    drop(node);
+    // Fill the reservation ledger with a retained grant so an actual
+    // open(O_CREAT) must wait until this generation retires its grants.
+    let generation = {
+        let mut state = fs.inner.state.lock();
+        let free = state.durable.free_blocks;
+        let available = state.reservations.available(free);
+        assert!(available > 0);
+        let grant = state.reservations.reserve(free, available, Operation::Allocate).unwrap();
+        state.grants.push(grant);
+        state.open_generation()
+    };
+    let report = |fs: &BreenFs<NoWait>| {
+        let mut text = alloc::string::String::new();
+        fs.mutation_costs("root", &mut text).unwrap();
+        text
+    };
+    let excluded = |text: &str| {
+        text.lines().find(|line| line.contains(" op=commit phase=mount-excluded "))
+            .and_then(|line| line.split_whitespace().find_map(|field| field.strip_prefix("started=")))
+            .map_or(0, |count| count.parse::<usize>().unwrap())
+    };
+    let waits = Rc::new(Cell::new(0));
+    let worker_spans = Rc::new(Cell::new(0));
+    thread::scope(|scope| {
+        let (frozen_tx, frozen) = channel();
+        let (resume, resume_rx) = channel();
+        let (installed_tx, installed) = channel();
+        let publisher = fs.clone();
+        let watchdog = Duration::from_secs(5);
+        scope.spawn(move || {
+            context::observer(Some(Box::new(move |event| {
+                if matches!(event, Event::Phase {
+                    op: "commit", phase: "apply-touches", begin: true,
+                }) {
+                    frozen_tx.send(()).unwrap();
+                    resume_rx.recv_timeout(watchdog).unwrap();
+                }
+            })));
+            installed_tx.send(publisher.commit_generation_up_to(0, generation, true)).unwrap();
+        });
+        frozen.recv_timeout(watchdog).unwrap();
+        let before = excluded(&report(&fs));
+        let (worker, count, spans) = (fs.clone(), waits.clone(), worker_spans.clone());
+        let mut remaining_passes = 2;
+        context::observer(Some(Box::new(move |event| {
+            let Event::CommitWait { epoch, .. } = event else { return };
+            count.set(count.get() + 1);
+            while remaining_passes > 0 {
+                let (published, self_woke) = measurement::service_at(&worker, 0).unwrap();
+                remaining_passes -= 1;
+                assert!(!published);
+                let remaining_pages = if remaining_passes == 1 { 3 } else { 0 };
+                assert_eq!(map.cache_counts(), (remaining_pages, 0, 0));
+                assert_eq!(self_woke, remaining_passes == 1);
+                assert_eq!(worker.inner.state.lock().durable.generation + 1, generation);
+                // The kernel's checked park declines to sleep when this
+                // epoch changes. Let the same create retry if that happens.
+                if worker.inner.signal.epoch() != epoch {
+                    return;
+                }
+            }
+            spans.set(excluded(&report(&worker)) - before);
+            resume.send(()).unwrap();
+            assert_eq!(installed.recv_timeout(watchdog).unwrap(), Ok(true));
+            assert_ne!(worker.inner.signal.epoch(), epoch, "install left the create asleep");
+        })));
+        let mut opened = None;
+        fs.create_open(2, b"waiting-create", NodeKind::Regular,
+            &|_| Ok(InodeAttrs::new(0o644, 0, 0)),
+            &mut |node| { opened = Some(node); Ok(()) }).unwrap();
+        context::observer(None);
+        assert_eq!(fs.lookup(2, b"waiting-create"), Ok(opened.unwrap().ino));
+    });
+    let refusals = report(&fs);
+    let receipts: Vec<_> = refusals.lines()
+        .filter(|line| line.starts_with("admission_refusal ") && line.contains(" op=create "))
+        .collect();
+    let named = alloc::format!("release_generation={generation}");
+    assert!(receipts.iter().all(|line| {
+        line.split_whitespace().any(|field| field == named)
+    }));
+    assert_eq!((waits.get(), receipts.len(), worker_spans.get()), (1, 1, 0),
+        "clean eviction disturbed a parked create (waits, receipts, excluded commit spans)");
+}
+
+#[test]
 fn gui_reset_retires_exited_child_cache_during_pressure_freeze() {
     use crate::memory::file_map::{bind_host, EVICT_BUDGET};
 
