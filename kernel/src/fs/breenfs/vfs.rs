@@ -634,6 +634,9 @@ impl<W: Wait> MountState<W> {
     fn open_generation(&self) -> u64 {
         self.durable.generation + 1 + u64::from(self.pending.is_some())
     }
+    fn publication_blocked(&self) -> bool {
+        self.pending.is_some() || self.retaining_for_sync != 0
+    }
     fn apply_touches(&mut self, ino: u64) -> Result<(), Errno> {
         self.touches.remove(&ino);
         preemption_point();
@@ -1725,7 +1728,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                     staged.push((index, first, last));
                     if let Some(generation) = generation {
                         let state = self.inner.state.lock();
-                        if generation > state.durable.generation {
+                        if generation == state.open_generation() {
                             self.inner.signal.requested.store(true, Ordering::Release);
                         }
                     }
@@ -1749,9 +1752,10 @@ impl<W: Wait + 'static> BreenFs<W> {
         // commit_due must not publish a second generation after this returns.
         let worked = if self.inner.state.lock().failed { false }
             else { self.commit_generation(now_ns)? };
+        let mut deferred = false;
         for (index, first, last) in staged {
             preemption_point();
-            self.complete_mapping(&handles[index], first, last);
+            deferred |= self.complete_mapping(&handles[index], first, last);
         }
         for node in handles {
             preemption_point();
@@ -1777,7 +1781,9 @@ impl<W: Wait + 'static> BreenFs<W> {
                 if let Some(entry) = state.nodes.get_mut(&node.ino) { entry.mapped = None; }
             }
         }
-        if more { self.request_eviction(); }
+        // Deferred receipts rewind the scan and can occupy the next pass's
+        // entire budget again. complete_mapping already arranged its retry.
+        if more && !deferred { self.request_eviction(); }
         if self.inner.state.lock().failed { Err(Errno(EIO)) } else { Ok(worked) }
     }
     fn mapped_nodes(&self) -> Result<Vec<Arc<VNode>>, Errno> {
@@ -1822,16 +1828,18 @@ impl<W: Wait + 'static> BreenFs<W> {
         }
         Ok(())
     }
-    fn complete_mapping(&self, node: &VNode, first: u64, last: u64) {
+    fn complete_mapping(&self, node: &VNode, first: u64, last: u64) -> bool {
         let state = self.inner.state.lock();
-        if !state.failed && node.map.complete_writeback_through(first, last, state.durable.generation) {
-            self.inner.signal.mappings.store(true, Ordering::Release);
-            // An in-flight publication wakes the worker at install. Preserve
-            // the request without waking the worker repeatedly before then.
-            if state.pending.is_none() {
-                self.inner.signal.wake();
-            }
+        if state.failed || !node.map.complete_writeback_through(first, last, state.durable.generation) {
+            return false;
         }
+        self.inner.signal.mappings.store(true, Ordering::Release);
+        // Install, abandonment and leaving the sync retention window wake
+        // the worker. Observe the blocker under the same lock as completion.
+        if !state.publication_blocked() {
+            self.inner.signal.wake();
+        }
+        true
     }
     fn commit_generation(&self, now_ns: u64) -> Result<bool, Errno> {
         self.commit_generation_up_to(now_ns, u64::MAX, false)
@@ -2559,9 +2567,10 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                         let result = fs.commit_due(monotonic_ns());
                         let (failed, deadline) = {
                             let state = fs.inner.state.lock();
-                            // Retry a deferred eviction allocation at a bounded
-                            // interval, even though publication is disabled.
-                            (state.failed, if state.failed || state.retaining_for_sync != 0 {
+                            // A past transaction deadline cannot make progress
+                            // while publication is blocked. Wait for its wake,
+                            // with the ordinary interval as a retry bound.
+                            (state.failed, if state.failed || state.publication_blocked() {
                                 monotonic_ns().saturating_add(COMMIT_INTERVAL_NS)
                             } else { state.policy.deadline() })
                         };
