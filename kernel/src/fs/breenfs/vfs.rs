@@ -403,6 +403,7 @@ struct FrozenPages {
 struct SharedLedger(Arc<Mutex<Ledger>>);
 impl SharedLedger {
     fn outstanding(&self) -> u64 { self.0.lock().outstanding() }
+    fn refusal(&self) -> (u64, u64) { self.0.lock().refusal() }
     fn available(&self, free_blocks: u64) -> u64 { self.0.lock().available(free_blocks) }
     fn reserve(&mut self, free_blocks: u64, blocks: u64, operation: Operation)
         -> Result<Grant, super::space::Error> {
@@ -1512,6 +1513,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             if limit.is_none() && state.pending.is_some() {
                 // A frozen generation's releases and grants settle only at its
                 // install. Wait for it before fixing this refusal's bound.
+                self.note_refusal(&state, cost, state.durable.generation.saturating_add(1));
                 let observed = self.inner.signal.epoch();
                 drop(state);
                 self.mutation_wait(cost, observed, None);
@@ -1548,6 +1550,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                     }
                 }
             };
+            self.note_refusal(&state, cost, last);
             if state.durable.generation >= last { return Err(Errno(ENOSPC)); }
             let observed = self.inner.signal.epoch();
             drop(state);
@@ -1564,6 +1567,30 @@ impl<W: Wait + 'static> BreenFs<W> {
             }
             state = admit()?;
         }
+    }
+    /// E24 coordinator 621(y2): a bounded receipt of one refusal, emitted
+    /// with the x10 mutation_cost records. Only the first few per installed
+    /// generation read the PENDING range; the rest return at once. Changes
+    /// no admission, reservation or publication state.
+    fn note_refusal(&self, state: &MountState<W>, cost: CostOp, release_generation: u64) {
+        let sb = &state.durable;
+        if !self.inner.costs.refusal_wanted(sb.generation) {
+            return;
+        }
+        let store = self.inner.cache.store(self.inner.device.clone(), sb);
+        let pending = super::space::pending_census(&store, sb.space_root).ok();
+        let (charged, request) = state.reservations.refusal();
+        let grants_next = state.grants.blocks;
+        self.inner.costs.refusal(cost, &mutation_cost::Refusal {
+            generation: sb.generation,
+            release_generation,
+            free: sb.free_blocks,
+            reserve: sb.global_reserve,
+            pending,
+            grants_n: charged.saturating_sub(grants_next),
+            grants_next,
+            request,
+        });
     }
     /// Write `bytes` under one admission. The caller admitted them.
     fn write_part(

@@ -6,7 +6,7 @@
 //! span, including time descheduled with exclusion held; it is not a case delta.
 use alloc::string::String;
 use core::fmt::{self, Write};
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{fence, AtomicU64, Ordering};
 use crate::block::{BlockDevice, BlockError};
 #[cfg(not(test))]
 use crate::block::HardwareDisk;
@@ -101,14 +101,118 @@ impl Slot {
         }
     }
 }
+/// One refused reservation (E24 coordinator 621(y2)). Grants N are those
+/// admission charges beyond the open generation's own, so they include a
+/// frozen generation's grants until its install retires them.
+pub(super) struct Refusal {
+    pub generation: u64,
+    /// The install this refusal waits for; at most `generation` when no
+    /// publication can release anything further for it.
+    pub release_generation: u64,
+    pub free: u64,
+    pub reserve: u64,
+    /// PENDING blocks and the oldest released_generation; unset after a failed read.
+    pub pending: Option<(u64, u64)>,
+    pub grants_n: u64,
+    pub grants_next: u64,
+    /// The ledger's last refused request. An ENOSPC raised before the
+    /// ledger (an estimate overflow) leaves the previous value here.
+    pub request: u64,
+}
+/// Receipts per installed generation, and the ring's size.
+const REFUSALS_PER_PUBLICATION: u64 = 8;
+const REFUSAL_RING: usize = 32;
+const REFUSAL_FIELDS: usize = 10;
+const UNREADABLE: u64 = u64::MAX;
+struct RefusalSlot {
+    // 0 while empty or being written; otherwise the receipt's sequence.
+    seq: AtomicU64,
+    fields: [AtomicU64; REFUSAL_FIELDS],
+}
+/// Written only by a holder of the mount's mutation lock; read without it.
+struct Refusals {
+    window: AtomicU64,
+    in_window: AtomicU64,
+    recorded: AtomicU64,
+    slots: [RefusalSlot; REFUSAL_RING],
+}
+impl Refusals {
+    const fn new() -> Self {
+        Self {
+            window: AtomicU64::new(0),
+            in_window: AtomicU64::new(0),
+            recorded: AtomicU64::new(0),
+            slots: [const { RefusalSlot { seq: AtomicU64::new(0), fields: [const { AtomicU64::new(0) }; REFUSAL_FIELDS] } }; REFUSAL_RING],
+        }
+    }
+}
 pub(super) struct Costs {
     slots: [Slot; OPS.len() * PHASES.len()],
+    refusals: Refusals,
 }
 impl Costs {
     pub fn new() -> Self {
         Self {
             slots: [const { Slot::new() }; OPS.len() * PHASES.len()],
+            refusals: Refusals::new(),
         }
+    }
+    /// Whether a refusal under installed `generation` gets a receipt: the
+    /// first REFUSALS_PER_PUBLICATION per generation. Mount lock held.
+    pub fn refusal_wanted(&self, generation: u64) -> bool {
+        let refusals = &self.refusals;
+        if refusals.window.load(Ordering::Relaxed) != generation {
+            refusals.window.store(generation, Ordering::Relaxed);
+            refusals.in_window.store(0, Ordering::Relaxed);
+        }
+        let taken = refusals.in_window.load(Ordering::Relaxed);
+        if taken >= REFUSALS_PER_PUBLICATION {
+            return false;
+        }
+        refusals.in_window.store(taken + 1, Ordering::Relaxed);
+        true
+    }
+    /// Record a receipt that refusal_wanted admitted. Mount lock held.
+    pub fn refusal(&self, op: Op, refusal: &Refusal) {
+        let refusals = &self.refusals;
+        let seq = refusals.recorded.load(Ordering::Relaxed) + 1;
+        let slot = &refusals.slots[(seq as usize - 1) % REFUSAL_RING];
+        let (pending, oldest) = refusal.pending.unwrap_or((UNREADABLE, UNREADABLE));
+        let values = [op as u64, refusal.generation, refusal.release_generation, refusal.free,
+            refusal.reserve, pending, oldest, refusal.grants_n, refusal.grants_next, refusal.request];
+        // Seqlock: a reader that sees the same nonzero seq before and after
+        // its loads has read one receipt whole.
+        slot.seq.store(0, Ordering::Relaxed);
+        fence(Ordering::Release);
+        for (field, value) in slot.fields.iter().zip(values) {
+            field.store(value, Ordering::Relaxed);
+        }
+        slot.seq.store(seq, Ordering::Release);
+        refusals.recorded.store(seq, Ordering::Relaxed);
+    }
+    fn report_refusals(&self, mount: usize, root: u64, text: &mut String) -> fmt::Result {
+        let mut kept = [(0u64, [0u64; REFUSAL_FIELDS]); REFUSAL_RING];
+        let mut count = 0;
+        for slot in &self.refusals.slots {
+            let seq = slot.seq.load(Ordering::Acquire);
+            if seq == 0 {
+                continue;
+            }
+            let values = core::array::from_fn(|i| slot.fields[i].load(Ordering::Relaxed));
+            fence(Ordering::Acquire);
+            if slot.seq.load(Ordering::Relaxed) == seq {
+                kept[count] = (seq, values);
+                count += 1;
+            }
+        }
+        let kept = &mut kept[..count];
+        kept.sort_unstable_by_key(|(seq, _)| *seq);
+        for (seq, v) in kept.iter() {
+            writeln!(text, "admission_refusal mount={mount} root={root} seq={seq} op={} generation={} release_generation={} free={} reserve={} pending={} pending_oldest={} grants_n={} grants_next={} request={}",
+                OPS.get(v[0] as usize).copied().unwrap_or("unknown"), v[1], v[2], v[3], v[4],
+                NumberOr(v[5]), NumberOr(v[6]), v[7], v[8], v[9])?;
+        }
+        Ok(())
     }
     pub fn span(&self, op: Op, phase: Phase) -> Span<'_> {
         let slot = &self.slots[op as usize * PHASES.len() + phase as usize];
@@ -138,7 +242,14 @@ impl Costs {
                 slot.last_start_ns.load(Ordering::Relaxed), slot.last_end_ns.load(Ordering::Relaxed),
                 slot.max_ns.load(Ordering::Relaxed))?;
         }
-        Ok(())
+        self.report_refusals(mount, root, text)
+    }
+}
+/// A receipt field that prints `unreadable` for a failed PENDING read.
+struct NumberOr(u64);
+impl fmt::Display for NumberOr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0 == UNREADABLE { f.write_str("unreadable") } else { write!(f, "{}", self.0) }
     }
 }
 /// Publication-local view: retain backend identity and native batch calls.

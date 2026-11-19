@@ -56,8 +56,13 @@ struct Row {
     last_end: u64,
     max_ns: u64,
 }
+/// The kernel keeps at most this many admission refusal receipts (621(y2)).
+const REFUSALS: usize = 32;
+const REFUSAL_BYTES: usize = 320;
 pub(super) struct Snapshot {
     rows: Vec<Row>,
+    // (seq, fields) of the root mount's admission refusal receipts.
+    refusals: Vec<(u64, String)>,
     available: bool,
 }
 impl Snapshot {
@@ -72,8 +77,21 @@ impl Snapshot {
     }
     pub fn parse(text: &str) -> Self {
         let mut rows = Vec::new();
+        let mut refusals = Vec::new();
         let mut root = false;
         for line in text.lines().take(256) {
+            if let Some(fields) = line.strip_prefix("admission_refusal ") {
+                let seq = fields.split_whitespace().find_map(|f| f.strip_prefix("seq="))
+                    .and_then(|seq| seq.parse::<u64>().ok());
+                if let Some(seq) = seq.filter(|_| root && refusals.len() < REFUSALS
+                    && fields.len() < REFUSAL_BYTES && fields.starts_with("mount="))
+                {
+                    if !refusals.iter().any(|(old, _)| *old == seq) {
+                        refusals.push((seq, fields.to_string()));
+                    }
+                }
+                continue;
+            }
             if !line.starts_with("mutation_cost ") {
                 if line.contains(" breenfs ") || line.contains(" durable_generation=") {
                     root = line.starts_with("root breenfs ") || line.starts_with("/ breenfs ");
@@ -111,6 +129,7 @@ impl Snapshot {
         }
         Self {
             rows,
+            refusals,
             available: true,
         }
     }
@@ -139,6 +158,14 @@ impl Snapshot {
             Some(format!("CASE_OBSERVATION {suite} {case} op=vfs-{}-{} started={started} completed={completed} total_ns={ns} active={} last_start_ns={} last_end_ns={} mount={} root={} max_ns={} scope=mount",
                 OPS[row.op], PHASES[row.phase], row.started.saturating_sub(row.completed),
                 row.last_start, row.last_end, row.mount, row.root, row.max_ns))
+        }).chain({
+            // Receipts are numbered by the mount; report those after the baseline.
+            let baseline = self.refusals.iter().map(|(seq, _)| *seq).max().unwrap_or(0);
+            let mut newer: Vec<_> = after.refusals.iter().filter(|(seq, _)| *seq > baseline).collect();
+            newer.sort_by_key(|(seq, _)| *seq);
+            newer.into_iter().map(move |(_, fields)| {
+                format!("CASE_OBSERVATION {suite} {case} op=vfs-admission-refusal {fields} scope=mount")
+            })
         }).collect()
     }
 }
@@ -146,6 +173,7 @@ impl Default for Snapshot {
     fn default() -> Self {
         Self {
             rows: Vec::new(),
+            refusals: Vec::new(),
             available: false,
         }
     }

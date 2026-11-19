@@ -247,6 +247,19 @@ pub fn pending_promotion_generation<S: NodeStore>(
     Ok(generation)
 }
 
+/// PENDING blocks and the oldest released_generation among them (0 for an
+/// empty PENDING range), for admission's refusal receipt (E24 coordinator 621(y2)).
+pub fn pending_census<S: NodeStore>(store: &S, root: BlockPtr) -> Result<(u64, u64), Error> {
+    let (mut blocks, mut oldest) = (0u64, 0u64);
+    for (_, bytes) in range(store, root, PENDING_OBJECT, format::PENDING)? {
+        preemption_point();
+        let pending = Pending::decode(&bytes)?;
+        blocks = blocks.checked_add(pending.length).ok_or(Error::Invalid)?;
+        oldest = if oldest == 0 { pending.released_generation } else { oldest.min(pending.released_generation) };
+    }
+    Ok((blocks, oldest))
+}
+
 /// Commit-time conversion of quarantined space, even with ample FREE space.
 /// Allocation still prefers FREE within a transaction (design 2.5 reuse rule).
 pub fn promote_pending<S: NodeStore>(
