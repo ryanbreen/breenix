@@ -24,6 +24,10 @@
 //! ARM64 LOCKUP reports `[BXCAP:NOTE sched_owner_cpu=1 pc=0x... tick=...]`
 //! or `sched_owner=free` / `sched_owner=updating`. Each CPU has a
 //! `[BXCAP:THR cpu=0 cur=2 q=published]` row with its scheduler-published TID.
+//! When sampled, the same row carries the timer's `run_tid`, local `tick`,
+//! interrupted `elr` and `lr`, and the thread's `sched` and `wait_no_park`
+//! totals. Deltas compare this TID to the same CPU's sample 1,000 ticks earlier.
+//! An absent or different baseline TID gives `window_ticks=unavailable`.
 //! Wait rows carry `tid`, `pid`, `site`, `queue` and the command name `proc`.
 //! The site is the wait publication PC, refined to the wait caller's return
 //! PC at the blocking handoff. The queue address is `0x0` when unavailable.

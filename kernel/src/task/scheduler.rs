@@ -4591,6 +4591,10 @@ impl Scheduler {
         // This ensures the flag is always accurate, even when this function returns None.
         // If we return Some(...), the flag is overwritten with the post-switch state later.
         let cpu = Self::current_cpu_id();
+        // IRQs are masked and the installed thread stays live until handoff.
+        if let Some(thread) = unsafe { super::thread::arm_current_thread_ptr().as_ref() } {
+            thread.lockup_progress.record_schedule_entry();
+        }
         // Consume the default profile's idle-inline selection marker. The live
         // profile instead reserves the victim for its dedicated driver.
         #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
@@ -5134,8 +5138,18 @@ impl Scheduler {
     #[cfg(target_arch = "aarch64")]
     pub fn commit_cpu_state_after_save(&mut self, new_thread_id: u64) {
         let cpu = Self::current_cpu_id();
-        let old_val = self.cpu_state[cpu].current_thread.unwrap_or(0xDEAD);
-        record_cpu_state_change(cpu, 1, old_val, new_thread_id);
+        let old = self.cpu_state[cpu].current_thread;
+        if old != Some(new_thread_id) {
+            // The switch has saved the outgoing context but has not yet
+            // installed the next pointer. An idle-state fixup can also call
+            // here, so check that this was the outgoing thread.
+            if let Some(thread) = unsafe { super::thread::arm_current_thread_ptr().as_ref() } {
+                if old == Some(thread.id()) && thread.state == ThreadState::BlockedOnIO {
+                    thread.io_park_epoch.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+        record_cpu_state_change(cpu, 1, old.unwrap_or(0xDEAD), new_thread_id);
         self.cpu_state[cpu].current_thread = Some(new_thread_id);
         if self.cpu_state[cpu].pending_next == Some(new_thread_id) {
             self.cpu_state[cpu].pending_next = None;

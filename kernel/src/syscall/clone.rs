@@ -445,6 +445,10 @@ pub fn sys_clone_thread(
         state: crate::task::thread::ThreadState::Blocked,
         #[cfg(target_arch = "aarch64")]
         wait_site: crate::task::thread::WaitSite::default(),
+        #[cfg(target_arch = "aarch64")]
+        lockup_progress: Default::default(),
+        #[cfg(target_arch = "aarch64")]
+        io_park_epoch: core::sync::atomic::AtomicU64::new(0),
         context: child_context,
         stack_top: stack_top_addr,
         stack_bottom: stack_bottom_addr,

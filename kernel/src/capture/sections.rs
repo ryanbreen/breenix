@@ -293,7 +293,7 @@ pub(super) fn lockup_threads(
     snapshot: crate::task::lockup::Snapshot,
     waits: &[crate::task::lockup::BlockedWait],
 ) -> bool {
-    use crate::task::lockup::Owner;
+    use crate::task::lockup::{self, Owner, Running};
 
     if !writer.open("NOTE") {
         return false;
@@ -310,13 +310,32 @@ pub(super) fn lockup_threads(
     if !writer.close() {
         return false;
     }
-    for (cpu, tid) in snapshot.current.into_iter().enumerate() {
+    for (cpu, (tid, running)) in snapshot.current.into_iter().zip(snapshot.running).enumerate() {
         if !writer.open("THR") {
             return false;
         }
         writer.kv_dec("cpu", cpu as u64);
         writer.kv_dec("cur", tid);
         writer.kv_text("q", "published");
+        match running {
+            Running::Unsampled => {}
+            Running::Updating => writer.kv_text("run", "updating"),
+            Running::Sample { tick, elr, lr, tid, schedules, unparked, delta } => {
+                writer.kv_dec("run_tid", tid);
+                writer.kv_dec("tick", tick);
+                writer.kv_hex("elr", elr);
+                writer.kv_hex("lr", lr);
+                writer.kv_dec("sched", schedules);
+                writer.kv_dec("wait_no_park", unparked);
+                if let Some([schedules, unparked]) = delta {
+                    writer.kv_dec("window_ticks", lockup::RUN_WINDOW_TICKS as u64);
+                    writer.kv_dec("sched_delta", schedules);
+                    writer.kv_dec("wait_no_park_delta", unparked);
+                } else {
+                    writer.kv_text("window_ticks", "unavailable");
+                }
+            }
+        }
         if !writer.close() {
             return false;
         }

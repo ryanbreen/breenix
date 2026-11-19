@@ -107,7 +107,7 @@ impl WaitQueueHead {
             return PrepareOutcome::PublishFailed;
         };
 
-        self.with_waiters(|waiters| {
+        let outcome = self.with_waiters(|waiters| {
             if !cond() {
                 return PrepareOutcome::Mismatch;
             }
@@ -125,7 +125,15 @@ impl WaitQueueHead {
                 waiters.retain(|waiter| waiter.tid != tid);
                 PrepareOutcome::PublishFailed
             }
-        })
+        });
+        #[cfg(target_arch = "aarch64")]
+        if outcome != PrepareOutcome::Queued {
+            // Only the installed thread's atomic counter is touched.
+            if let Some(thread) = unsafe { super::thread::arm_current_thread_ptr().as_ref() } {
+                thread.lockup_progress.record_wait_return(false);
+            }
+        }
+        outcome
     }
 
     fn publish_wait(&self, wake_time_ns: Option<u64>) -> bool {
@@ -439,6 +447,9 @@ fn run_current_wait(#[cfg(target_arch = "aarch64")] return_pc: usize) {
     #[cfg(target_arch = "aarch64")]
     let mut site = Some(return_pc);
     #[cfg(target_arch = "aarch64")]
+    let park_epoch = unsafe { super::thread::arm_current_thread_ptr().as_ref() }
+        .map(|thread| thread.io_park_epoch.load(core::sync::atomic::Ordering::Relaxed));
+    #[cfg(target_arch = "aarch64")]
     crate::per_cpu_aarch64::preempt_enable();
     #[cfg(not(target_arch = "aarch64"))]
     crate::per_cpu::preempt_enable();
@@ -454,6 +465,10 @@ fn run_current_wait(#[cfg(target_arch = "aarch64")] return_pc: usize) {
                         if let Some(return_pc) = site.take() {
                             thread.wait_site.set_pc(return_pc as u64);
                         }
+                    } else if let Some(epoch) = park_epoch {
+                        let parked = epoch
+                            != thread.io_park_epoch.load(core::sync::atomic::Ordering::Relaxed);
+                        thread.lockup_progress.record_wait_return(parked);
                     }
                     blocked
                 })

@@ -1722,6 +1722,8 @@ impl ProcessManager {
             fpsimd: crate::signal::FpsimdContext::initial(),
             tls_block: initial_tpidr_el0,
             wait_site: crate::task::thread::WaitSite::default(),
+            lockup_progress: Default::default(),
+            io_park_epoch: AtomicU64::new(0),
             sched: crate::task::thread::SchedPolicy::DEFAULT,
             time_slice: 10,
             entry_point: None,
@@ -3861,6 +3863,10 @@ impl ProcessManager {
                 state: crate::task::thread::ThreadState::Ready,
                 #[cfg(target_arch = "aarch64")]
                 wait_site: crate::task::thread::WaitSite::default(),
+                #[cfg(target_arch = "aarch64")]
+                lockup_progress: Default::default(),
+                #[cfg(target_arch = "aarch64")]
+                io_park_epoch: AtomicU64::new(0),
                 context: parent_thread.context.clone(), // Will be modified below
                 stack_top: child_stack_top,
                 stack_bottom: parent_thread.stack_bottom,

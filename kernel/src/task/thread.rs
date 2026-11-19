@@ -724,6 +724,13 @@ pub struct Thread {
     #[cfg(target_arch = "aarch64")]
     pub(crate) wait_site: WaitSite,
 
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) lockup_progress: super::lockup::ThreadProgress,
+
+    /// Advances when the scheduler saves this thread while it is blocked on I/O.
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) io_park_epoch: AtomicU64,
+
     /// CPU context (registers)
     pub context: CpuContext,
 
@@ -1339,6 +1346,10 @@ impl Clone for Thread {
             state: self.state,
             #[cfg(target_arch = "aarch64")]
             wait_site: WaitSite::default(),
+            #[cfg(target_arch = "aarch64")]
+            lockup_progress: Default::default(),
+            #[cfg(target_arch = "aarch64")]
+            io_park_epoch: AtomicU64::new(0),
             context: self.context.clone(),
             stack_top: self.stack_top,
             stack_bottom: self.stack_bottom,
@@ -1550,6 +1561,8 @@ impl Thread {
             name,
             state: ThreadState::Ready,
             wait_site: WaitSite::default(),
+            lockup_progress: Default::default(),
+            io_park_epoch: AtomicU64::new(0),
             context,
             stack_top,
             stack_bottom,
@@ -1680,6 +1693,8 @@ impl Thread {
             name,
             state: ThreadState::Ready,
             wait_site: WaitSite::default(),
+            lockup_progress: Default::default(),
+            io_park_epoch: AtomicU64::new(0),
             context,
             stack_top,
             stack_bottom,
@@ -1830,6 +1845,8 @@ impl Thread {
             name,
             state: ThreadState::Ready,
             wait_site: WaitSite::default(),
+            lockup_progress: Default::default(),
+            io_park_epoch: AtomicU64::new(0),
             context,
             stack_top,
             stack_bottom,
@@ -2010,6 +2027,8 @@ impl Thread {
             name,
             state: ThreadState::Ready,
             wait_site: WaitSite::default(),
+            lockup_progress: Default::default(),
+            io_park_epoch: AtomicU64::new(0),
             context,
             stack_top,
             stack_bottom,
@@ -2078,6 +2097,13 @@ extern "C" fn thread_entry_trampoline() -> ! {
 
     // Should never reach here
     unreachable!("Thread exit failed");
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub(crate) fn arm_current_thread_ptr() -> *const Thread {
+    use crate::arch_impl::{aarch64::percpu::Aarch64PerCpu, traits::PerCpuOps};
+    Aarch64PerCpu::current_thread_ptr().cast()
 }
 
 fn current_cpu_thread() -> Option<&'static Thread> {

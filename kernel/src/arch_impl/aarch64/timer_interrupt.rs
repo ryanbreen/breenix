@@ -644,11 +644,21 @@ pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
     // Use the entry frame's saved pre-IRQ PSTATE. A nested IRQ can overwrite
     // live SPSR_EL1 before this handler reads it; bits [9:6] are the DAIF mask.
     if cpu_id < 8 {
-        if !frame.is_null() {
-            let spsr = unsafe { (*frame).spsr };
-            TIMER_TICK_DAIF[cpu_id].store(spsr, Ordering::Relaxed);
-        }
-        TIMER_TICK_COUNT[cpu_id].fetch_add(1, Ordering::Relaxed);
+        let (elr, lr) = if let Some(frame) = unsafe { frame.as_ref() } {
+            TIMER_TICK_DAIF[cpu_id].store(frame.spsr, Ordering::Relaxed);
+            (frame.elr, frame.x30)
+        } else {
+            (0, 0)
+        };
+        let tick = TIMER_TICK_COUNT[cpu_id]
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+        // This CPU's installed thread stays live throughout the interrupt.
+        let (tid, counts) = unsafe { crate::task::thread::arm_current_thread_ptr().as_ref() }
+            .map_or((0, [0; 2]), |thread| {
+                (thread.id(), thread.lockup_progress.counts())
+            });
+        crate::task::lockup::record_running_tick(cpu_id, tick, elr, lr, tid, counts);
     }
 
     // CPU 0 only: emit raw serial breadcrumb for first 10 ticks.

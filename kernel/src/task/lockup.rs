@@ -7,6 +7,7 @@ const WAIT_SLOTS: usize = 128;
 pub(crate) const WAIT_ROWS: usize = 32;
 const WORD_BITS: usize = u64::BITS as usize;
 const NAME_WORDS: usize = 3;
+pub(crate) const RUN_WINDOW_TICKS: usize = 1000;
 
 /// Writers are serialized by the record's owner. A capture makes one read
 /// attempt and omits an in-flight row, including if it interrupted the writer.
@@ -53,6 +54,7 @@ impl<const N: usize> Sample<N> {
 
 static OWNER: Sample<3> = Sample::new();
 static CURRENT: [AtomicU64; CPU_ROWS] = [const { AtomicU64::new(0) }; CPU_ROWS];
+static RUNNING: [RunningSamples; CPU_ROWS] = [const { RunningSamples::new() }; CPU_ROWS];
 static WAITS: [Sample<7>; WAIT_SLOTS] = [const { Sample::new() }; WAIT_SLOTS];
 static CLAIMED: [AtomicU64; WAIT_SLOTS / WORD_BITS] =
     [const { AtomicU64::new(0) }; WAIT_SLOTS / WORD_BITS];
@@ -74,6 +76,111 @@ pub(crate) fn releasing() {
 
 pub(crate) fn current(cpu: usize, tid: u64) {
     CURRENT[cpu].store(tid, Ordering::Relaxed);
+}
+
+#[derive(Default)]
+pub(crate) struct ThreadProgress {
+    schedules: AtomicU64,
+    waits_without_park: AtomicU64,
+}
+
+impl ThreadProgress {
+    pub(crate) fn record_schedule_entry(&self) {
+        self.schedules.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_wait_return(&self, parked: bool) {
+        if !parked {
+            self.waits_without_park.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub(crate) fn counts(&self) -> [u64; 2] {
+        [
+            self.schedules.load(Ordering::Relaxed),
+            self.waits_without_park.load(Ordering::Relaxed),
+        ]
+    }
+}
+
+#[repr(align(64))]
+struct RunningSamples {
+    latest: Sample<9>,
+    // Only this CPU's timer uses its history. Other CPUs read latest once.
+    history: [[AtomicU64; 3]; RUN_WINDOW_TICKS],
+}
+
+impl RunningSamples {
+    const fn new() -> Self {
+        Self {
+            latest: Sample::new(),
+            history: [const { [const { AtomicU64::new(0) }; 3] }; RUN_WINDOW_TICKS],
+        }
+    }
+}
+
+#[inline]
+pub(crate) fn record_running_tick(
+    cpu: usize,
+    tick: u64,
+    elr: u64,
+    lr: u64,
+    tid: u64,
+    [schedules, unparked]: [u64; 2],
+) {
+    let Some(samples) = RUNNING.get(cpu) else { return };
+    let previous = &samples.history[(tick % RUN_WINDOW_TICKS as u64) as usize];
+    // The active timer IRQ prevents another tick on this CPU until we return.
+    // This slot last held the sample from exactly RUN_WINDOW_TICKS ticks ago.
+    let old_tid = previous[0].load(Ordering::Relaxed);
+    let old_schedules = previous[1].load(Ordering::Relaxed);
+    let old_unparked = previous[2].load(Ordering::Relaxed);
+    previous[0].store(tid, Ordering::Relaxed);
+    previous[1].store(schedules, Ordering::Relaxed);
+    previous[2].store(unparked, Ordering::Relaxed);
+    samples.latest.store([
+        tick,
+        elr,
+        lr,
+        tid,
+        schedules,
+        unparked,
+        u64::from(tick > RUN_WINDOW_TICKS as u64 && tid != 0 && old_tid == tid),
+        schedules.wrapping_sub(old_schedules),
+        unparked.wrapping_sub(old_unparked),
+    ]);
+}
+
+pub(crate) enum Running {
+    Unsampled,
+    Updating,
+    Sample {
+        tick: u64,
+        elr: u64,
+        lr: u64,
+        tid: u64,
+        schedules: u64,
+        unparked: u64,
+        delta: Option<[u64; 2]>,
+    },
+}
+
+impl RunningSamples {
+    fn sample(&self) -> Running {
+        match self.latest.load() {
+            Some([0, ..]) => Running::Unsampled,
+            Some([tick, elr, lr, tid, schedules, unparked, valid, schedule_delta, wait_delta]) => Running::Sample {
+                tick,
+                elr,
+                lr,
+                tid,
+                schedules,
+                unparked,
+                delta: (valid != 0).then_some([schedule_delta, wait_delta]),
+            },
+            None => Running::Updating,
+        }
+    }
 }
 
 /// Use a local instruction address so inlining places the PC at the caller's
@@ -208,6 +315,7 @@ impl BlockedWait {
 pub(crate) struct Snapshot {
     pub owner: Owner,
     pub current: [u64; CPU_ROWS],
+    pub running: [Running; CPU_ROWS],
     pub count: usize,
     pub omitted: u64,
     pub updating: u64,
@@ -224,6 +332,7 @@ pub(crate) fn snapshot(waits: &mut [BlockedWait; WAIT_ROWS]) -> Snapshot {
         None => Owner::Updating,
     };
     let current = CURRENT.each_ref().map(|tid| tid.load(Ordering::Relaxed));
+    let running = RUNNING.each_ref().map(RunningSamples::sample);
     let mut count = 0;
     let mut omitted = OMITTED.load(Ordering::Relaxed);
     let mut updating = 0;
@@ -253,6 +362,7 @@ pub(crate) fn snapshot(waits: &mut [BlockedWait; WAIT_ROWS]) -> Snapshot {
     Snapshot {
         owner,
         current,
+        running,
         count,
         omitted,
         updating,
