@@ -73,6 +73,19 @@ fn promote_between_free_neighbors_without_scanning_the_free_tree() {
 }
 
 #[test]
+fn oversized_free_record_is_rejected_before_allocation() {
+    let (mut store, mut root) = tree();
+    let mut payload = format::Free { length: 4 }.encode().to_vec();
+    payload.push(0);
+    btree::insert(&mut store, &mut root, Key {
+        object: 0xffff_ffff_ffff_ff20, item_type: format::FREE, offset: 100,
+    }, &payload).unwrap();
+    let before = store.nodes.clone();
+    assert_eq!(space::allocate(&mut store, &mut root, 4, Kind::FsNode, &[], 5), Err(Error::Invalid));
+    assert_eq!(store.nodes, before);
+}
+
+#[test]
 fn pending_waits_two_generations() {
     let (mut store, mut root) = tree();
     space::add_free(&mut store, &mut root, 100, 3).unwrap();
