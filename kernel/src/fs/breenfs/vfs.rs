@@ -410,6 +410,7 @@ struct DataGrant {
     grant: Grant,
     metadata: u64,
     first_write_space: u64,
+    funded_debt: u64,
 }
 /// A frozen generation's pages, immutable and readable without exclusion.
 struct FrozenPages {
@@ -965,6 +966,20 @@ impl<W: Wait> MountState<W> {
     fn charged(&self) -> u64 {
         self.dirty_bytes + self.frozen_pages().map_or(0, |p| p.bytes)
     }
+    /// Admission already includes the mounted ROOT update. Add any other
+    /// accumulated debt that previous grants did not retain, such as COW
+    /// from applying an atime before opening or statting a file.
+    fn unpaid_metadata(&mut self, paths: &super::txn::ReservationPaths) -> Result<(u64, u64), Errno> {
+        let root_update = Estimate {
+            space_changes: 3,
+            space_height: paths.space_height,
+            space_nodes: paths.space_nodes,
+            ..Estimate::default()
+        }.blocks().map_err(|_| Errno(ENOSPC))?;
+        let result = self.files.metadata_debt();
+        let debt = self.observed(result)?;
+        Ok((debt, debt.saturating_sub(self.metadata_reserved.max(root_update))))
+    }
     /// Called with mutation admission held, before publishing dirty pages or
     /// inode changes. Clean mapped blocks also need fresh COW allocations.
     fn reserve_data(
@@ -987,6 +1002,7 @@ impl<W: Wait> MountState<W> {
         let first_write = empty_file && offset == 0 && length == 1 && open.is_none();
         let result = self.files.reservation_paths(ino);
         let paths = self.observed(result)?;
+        let (funded_debt, unpaid) = self.unpaid_metadata(&paths)?;
         if first_write && self.files.log.is_none() {
             // One data block and one EXTENT without boundary slices. The
             // foreground INODE edit can copy two nodes at each old level
@@ -1002,11 +1018,12 @@ impl<W: Wait> MountState<W> {
             // the added REF; later files share the same pending fixpoint.
             let space = 4 * (2 * paths.space_nodes + paths.space_height);
             let first_write_space = self.first_write_space.max(space);
-            let blocks = 1 + metadata + 4 + (first_write_space - self.first_write_space);
+            let blocks = (1 + metadata + 4 + (first_write_space - self.first_write_space))
+                .checked_add(unpaid).ok_or(Errno(ENOSPC))?;
             self.grants.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
             let grant = self.reservations.reserve(self.durable.free_blocks, blocks, operation)
                 .map_err(|_| Errno(ENOSPC))?;
-            return Ok(DataGrant { grant, metadata: metadata + 4, first_write_space });
+            return Ok(DataGrant { grant, metadata: metadata + 4, first_write_space, funded_debt });
         }
         // A run inserts at most 256 data EXTENTs and can retain up to 510
         // one-page slices at its old boundaries (ops::remove_range). Their
@@ -1030,6 +1047,7 @@ impl<W: Wait> MountState<W> {
         };
         let metadata = estimate.blocks().map_err(|_| Errno(ENOSPC))? - pages;
         let blocks = new_pages.checked_add(metadata.saturating_sub(reserved_metadata))
+            .and_then(|blocks| blocks.checked_add(unpaid))
             .ok_or(Errno(ENOSPC))?;
         if blocks != 0 {
             self.grants.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
@@ -1038,11 +1056,11 @@ impl<W: Wait> MountState<W> {
         // publishing generation and the open generation. Do not debit them
         // a second time before asking the ledger for a grant.
         self.reservations.reserve(self.durable.free_blocks, blocks, operation)
-            .map(|grant| DataGrant { grant, metadata, first_write_space: self.first_write_space })
+            .map(|grant| DataGrant { grant, metadata, first_write_space: self.first_write_space, funded_debt })
             .map_err(|_| Errno(ENOSPC))
     }
     fn finish_data(&mut self, ino: u64, reservation: DataGrant, result: Result<(), Errno>) -> Result<(), Errno> {
-        let DataGrant { grant, metadata, first_write_space } = reservation;
+        let DataGrant { grant, metadata, first_write_space, funded_debt } = reservation;
         if result.is_ok() {
             self.nodes.get(&ino).ok_or(Errno(EIO))?;
             self.first_write_space = first_write_space;
@@ -1051,11 +1069,8 @@ impl<W: Wait> MountState<W> {
             self.dirty_nodes.insert(ino);
             if grant.blocks() != 0 { self.grants.push(grant); }
             else { self.reservations.release(grant); }
-            // The data grant already funds the inode/COW work just performed.
-            // A later namespace grant must not charge that debt a second time.
-            let debt = self.files.metadata_debt();
-            let debt = self.observed(debt)?;
-            self.metadata_reserved = self.metadata_reserved.max(debt);
+            // Credit only the existing debt measured and funded at admission.
+            self.metadata_reserved = self.metadata_reserved.max(funded_debt);
         } else {
             // DirtyPages prepares its pages before changing the dirty map.
             self.reservations.release(grant);
@@ -1092,6 +1107,8 @@ impl<W: Wait> MountState<W> {
             space_nodes: paths.space_nodes,
             ..Estimate::default()
         }.blocks().map_err(|_| Errno(ENOSPC))?;
+        let (_, unpaid) = self.unpaid_metadata(&paths)?;
+        let blocks = blocks.checked_add(unpaid).ok_or(Errno(ENOSPC))?;
         self.grants.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
         self.reservations.reserve(self.durable.free_blocks, blocks, Operation::Allocate)
             .map_err(|_| Errno(ENOSPC))
@@ -1122,6 +1139,8 @@ impl<W: Wait> MountState<W> {
             space_height: paths.space_height,
             space_nodes: paths.space_nodes,
         }.blocks().map_err(|_| Errno(ENOSPC))?;
+        let (_, unpaid) = self.unpaid_metadata(&paths)?;
+        let blocks = blocks.checked_add(unpaid).ok_or(Errno(ENOSPC))?;
         self.grants.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
         self.reservations.reserve(self.durable.free_blocks, blocks, operation)
             .map_err(|_| Errno(ENOSPC))
