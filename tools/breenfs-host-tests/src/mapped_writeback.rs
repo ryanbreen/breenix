@@ -662,10 +662,9 @@ fn gui_reset_retires_exited_child_cache_during_pressure_freeze() {
     }, &vec![0x61; image_pages as usize * BLOCK_SIZE]).ok().unwrap();
     fs.fsync(&image, false).unwrap();
 
-    let maps = [arena.map.clone(), image.map.clone()];
     let weak = [Arc::downgrade(&arena), Arc::downgrade(&image)];
     let arena_ino = arena.ino;
-    let counts = || (maps.each_ref().map(|map| map.cache_counts()),
+    let counts = || (weak.each_ref().map(|node| node.upgrade().map_or((0, 0, 0), |node| node.map.cache_counts())),
         weak.iter().filter(|node| node.strong_count() != 0).count());
     let baseline = counts().0;
     assert_eq!(baseline, [(0, 0, 0); 2]);
@@ -679,7 +678,6 @@ fn gui_reset_retires_exited_child_cache_during_pressure_freeze() {
     let collector = bind_host(arena.clone(), arena_len, true, false, false);
     assert_eq!(child_image.load(0), Ok(0x61));
     assert_eq!(collector.load(66 * BLOCK_SIZE as u64), Ok(0x59));
-    drop(arena);
     drop(image);
     drop(child_arena);
     drop(collector);
@@ -691,7 +689,11 @@ fn gui_reset_retires_exited_child_cache_during_pressure_freeze() {
             directory: false, expected: arena_ino, owner: 0, parent: fs.getattr(2).unwrap().attrs,
         }).unwrap();
         fs.commit_due(0).unwrap();
-        counts()
+        // Ruling 630 releases a closed orphan immediately. Keep the
+        // collector descriptor so this cut still owes durable writeback.
+        let observed = counts();
+        drop(arena);
+        observed
     });
 
     // Two budgets per arena page (stage + evict), plus the freeze retry.
@@ -788,4 +790,114 @@ fn mapped_writeback_survives_each_pressure_freeze_cut() {
         fs.shutdown("mapped-freeze-cleanup", u64::MAX).unwrap();
     }
     assert!(failures.is_empty(), "writeback failures at pressure cuts: {failures:?}");
+}
+
+// E24 coordinator ledger 630(a1). The session arena has three 4 KiB
+// headers, two optional 2560x1600 BGRX slots and a 1 MiB tree. The
+// supervisor and case share its inode until checkpoint replacement or RESET.
+#[test]
+fn reset_releases_surface_arenas_during_worker_publication() {
+    use crate::memory::file_map::{bind_host, EVICT_BUDGET};
+    use super::super::preempt::context::Event;
+    use std::{sync::mpsc::channel, thread, time::Duration};
+
+    const SURFACE: usize = 2560 * 1600 * 4 / BLOCK_SIZE;
+    const TREE: usize = 1024 * 1024 / BLOCK_SIZE;
+    const ARENA: usize = 4 + 2 * SURFACE + TREE;
+    let (fs, _, marker) = fixture();
+    let make = |name: &[u8]| {
+        let ino = fs.create(2, name, NewNode::Regular {
+            attrs: InodeAttrs::new(0o100600, 0, 0),
+        }).unwrap();
+        let node = fs.open(ino).unwrap();
+        fs.resize(&node, (ARENA * BLOCK_SIZE) as u64, false, &|_| Ok(())).unwrap();
+        node
+    };
+    let unlink = |name: &[u8], ino| fs.remove(2, name, Remove {
+        directory: false, expected: ino, owner: 0, parent: fs.getattr(2).unwrap().attrs,
+    }).unwrap();
+
+    // Linked cache must obey the existing 64-page budget and keep its
+    // request until the last page goes, even without another binding drop.
+    let linked = make(b"linked");
+    let reader = bind_host(linked.clone(), (ARENA * BLOCK_SIZE) as u64, true, false, false);
+    for page in 1..=SURFACE {
+        assert_eq!(reader.load((page * BLOCK_SIZE) as u64), Ok(0));
+    }
+    drop(reader);
+    for pass in 1..=SURFACE.div_ceil(EVICT_BUDGET) {
+        assert!(linked.map.eviction_pending());
+        assert!(fs.inner.signal.mappings.load(Ordering::Acquire));
+        fs.commit_due(0).unwrap();
+        assert_eq!(linked.map.cache_counts(), (SURFACE.saturating_sub(pass * EVICT_BUDGET), 0, 0));
+    }
+    assert!(!linked.map.eviction_pending());
+    drop(linked);
+
+    let mut at_reset = Vec::new();
+    for (session, ranges) in [
+        vec![1..ARENA],
+        vec![1..ARENA - 9],
+        vec![1..SURFACE + 3, 2 * SURFACE + 3..ARENA],
+        vec![1..SURFACE + 3, 2 * SURFACE + 3..2 * SURFACE + 4],
+    ].into_iter().enumerate() {
+        let name = format!("session-{session}.arena");
+        let arena = make(name.as_bytes());
+        fs.fsync(&arena, false).unwrap();
+        let mapping = bind_host(arena.clone(), (ARENA * BLOCK_SIZE) as u64, true, true, false);
+        for page in ranges.into_iter().flatten() {
+            assert_eq!(mapping.load((page * BLOCK_SIZE) as u64), Ok(0));
+        }
+        mapping.store(BLOCK_SIZE as u64, 0x59).unwrap();
+        let (pages, dirty, bindings) = arena.map.cache_counts();
+        assert_eq!((pages, dirty, bindings), ([8259, 8250, 4259, 4003][session], 1, 1));
+        let weak = Arc::downgrade(&arena);
+        if session == 0 {
+            let next = make(b"checkpoint.next");
+            fs.rename(2, b"checkpoint.next", 2, name.as_bytes(), RenameMode::Replace,
+                &|_, _, _, _| Ok(())).unwrap();
+            assert_eq!(fs.getattr(arena.ino).unwrap().nlink, 0);
+            assert_eq!(mapping.load(BLOCK_SIZE as u64), Ok(0x59));
+            drop(arena); // Arena closes the file before unmapping the payload.
+            drop(mapping);
+            let next_ino = next.ino;
+            drop(next);
+            unlink(name.as_bytes(), next_ino);
+            at_reset.push((None, weak));
+        } else {
+            drop(mapping);
+            let ino = arena.ino;
+            drop(arena);
+            at_reset.push((Some((name, ino)), weak));
+        }
+    }
+
+    let pending = bind_host(marker.clone(), BLOCK_SIZE as u64, true, true, false);
+    pending.store(0, 0x91).unwrap();
+    drop(pending);
+    let (entered, edge) = channel();
+    let (resume, released) = channel();
+    let during_reset = thread::scope(|scope| {
+        let worker = scope.spawn(|| {
+            pause_at(|event| matches!(event, Event::Phase {
+                op: "commit", phase: "apply-touches", begin: true,
+            }), entered, released);
+            fs.commit_due(0)
+        });
+        edge.recv_timeout(Duration::from_secs(5)).unwrap();
+        for (name, ino) in at_reset.iter().filter_map(|(path, _)| path.as_ref()) {
+            unlink(name.as_bytes(), *ino);
+        }
+        let counts: Vec<_> = at_reset.iter().map(|(_, node)| {
+            node.upgrade().map_or((0, 0, 0, 0), |held| {
+                let (pages, dirty, bindings) = held.map.cache_counts();
+                (pages, dirty, bindings, Arc::strong_count(&held) - 1)
+            })
+        }).collect();
+        resume.send(()).unwrap();
+        assert_eq!(worker.join().unwrap(), Ok(true));
+        counts
+    });
+    eprintln!("surface RESET custody (pages, dirty, bindings, pins): {during_reset:?}");
+    assert_eq!(during_reset, [(0, 0, 0, 0); 4]);
 }
