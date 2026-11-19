@@ -829,6 +829,203 @@ fn readdir_many_setups_enumerates_and_unlinks_with_bounded_grants() {
 }
 
 #[test]
+fn readdir_many_admits_under_captured_headroom_during_publication() {
+    use super::super::reserve::observation;
+
+    const GUEST_FREE: u64 = 25_075;
+    const HEADROOM: [u64; 6] = [178, 489, 257, 197, 169, 443];
+    let started = Instant::now();
+    let image = outstanding_grants::populated_image(80_000 + GUEST_FREE - X1_FREE);
+    let fs = mount(Arc::new(Disk::new(image)), true, 241515646);
+    {
+        let state = fs.inner.state.lock();
+        let paths = state.files.reservation_paths(2).unwrap();
+        assert_eq!((paths.fs_height, paths.space_height), (1, 1));
+        assert_eq!((state.durable.free_blocks, state.durable.global_reserve), (GUEST_FREE, 4096));
+    }
+    let attrs = InodeAttrs::new(0o644, 0, 0);
+    let dir = fs.create(2, b"libc-readdir-many", NewNode::Directory {
+        attrs: InodeAttrs::new(0o700, 0, 0),
+    }).unwrap();
+    let signal = Arc::as_ptr(&fs.inner.signal) as usize;
+    let active = Rc::new(RefCell::new(None::<Publisher>));
+    let waits = Rc::new(RefCell::new(0u64));
+    let (wait_count, worker) = (waits.clone(), active.clone());
+    let install = |publisher: Publisher| {
+        publisher.paused.install();
+        publisher.thread.join().unwrap();
+    };
+    context::observer(Some(Box::new(move |event| {
+        if matches!(event, Event::CommitWait { signal: id, .. } if id == signal) {
+            *wait_count.borrow_mut() += 1;
+            if let Some(publisher) = worker.borrow_mut().take() { install(publisher); }
+        }
+    })));
+
+    let mut counts = [[0u64; 6]; 4];
+    let mut publications = 0;
+    let mut in_flight = 0;
+    let mut drive = |phase: usize, overlaps: bool| {
+        let row = &mut counts[phase];
+        row[0] += 1;
+        row[1] += u64::from(overlaps && active.borrow().is_some());
+        let steps = measurement::take_materialized();
+        row[4] += steps;
+        row[5] = row[5].max(steps);
+        for event in measurement::take_events() {
+            if let measurement::Event::Admission { attempts, pressure } = event {
+                assert_eq!(attempts.last().unwrap().error, None);
+                row[2] += (attempts.len() - 1) as u64;
+                row[3] += pressure.into_iter().filter(|&worked| worked).count() as u64;
+            }
+        }
+        if overlaps && active.borrow().is_some() {
+            in_flight += 1;
+            if in_flight == 16 { install(active.borrow_mut().take().unwrap()); }
+        }
+        if active.borrow().is_none() && fs.inner.signal.requested.load(Ordering::Acquire) {
+            *active.borrow_mut() = Some(start_publisher(&fs));
+            publications += 1;
+            in_flight = 0;
+        }
+    };
+    measurement::take_events();
+    measurement::take_materialized();
+    let mut names = BTreeMap::new();
+    let mut probes = Vec::new();
+    let mut prefix = 0;
+    let mut generation = None;
+    let mut frozen_write = 0;
+    for i in 0..300 {
+        let name = alloc::format!("f{i:03}xxxxxxxxx");
+        let mut opened = None;
+        let frozen = active.borrow().as_ref().map(|p| p.generation);
+        if frozen != generation { generation = frozen; prefix = 0; }
+        // Match the capture's admission headroom after earlier scratch grants.
+        // The fixture grant occupies only the difference and is released after
+        // this operation. The worker owns N and resumes even on the red path.
+        let probe = frozen.filter(|_| prefix >= 2).and_then(|_| HEADROOM.get(probes.len()).copied());
+        let held = probe.map(|headroom| {
+            let mut state = fs.inner.state.lock();
+            let free = state.durable.free_blocks;
+            let available = state.reservations.available(free);
+            assert!(available >= headroom);
+            let held = state.reservations.reserve(free, available - headroom, Operation::Allocate).unwrap();
+            assert_eq!(state.reservations.available(free), headroom);
+            held
+        });
+        fs.create_open(dir, name.as_bytes(), NodeKind::Regular,
+            &|_| Ok(attrs), &mut |node| { opened = Some(node); Ok(()) }).unwrap();
+        if let Some(held) = held {
+            fs.inner.state.lock().reservations.release(held);
+            probes.push((probe.unwrap(), active.borrow().is_some()));
+        }
+        drive(0, frozen.is_some());
+        let node = opened.unwrap();
+        let writing_frozen = active.borrow().as_ref().map(|p| p.generation);
+        observation::take_write_grant();
+        assert_eq!(fs.write(&node, WriteReq { at: WriteAt::Offset(0), limit: u64::MAX,
+            clear_setid: true }, b"x").unwrap().bytes, 1);
+        if prefix >= 2 && writing_frozen.is_some() && writing_frozen == generation {
+            frozen_write = frozen_write.max(observation::take_write_grant().unwrap()[3]);
+        }
+        names.insert(name.into_bytes(), node.ino);
+        drop(node);
+        drive(1, writing_frozen.is_some());
+        prefix += 1;
+    }
+    // Give the worker a service opportunity during enumeration and cleanup,
+    // whether or not the retained-block trigger landed on those boundaries.
+    if active.borrow().is_none() {
+        fs.inner.signal.requested.store(true, Ordering::Release);
+        drive(2, false);
+    }
+    let mut seen = BTreeMap::new();
+    let mut cursor = 2;
+    loop {
+        let mut count = 0;
+        let overlaps = active.borrow().is_some();
+        let next = fs.readdir(dir, cursor, &mut |entry, _| {
+            if count == 32 { return Ok(false); }
+            assert!(seen.insert(entry.name, entry.ino).is_none());
+            count += 1;
+            Ok(true)
+        }).unwrap();
+        drive(2, overlaps);
+        if next == cursor { break; }
+        cursor = next;
+    }
+    assert_eq!(seen, names);
+    let parent = fs.getattr(dir).unwrap().attrs;
+    if active.borrow().is_none() {
+        fs.inner.signal.requested.store(true, Ordering::Release);
+        drive(3, false);
+    }
+    for (name, ino) in names {
+        let overlaps = active.borrow().is_some();
+        fs.remove(dir, &name, Remove { directory: false, expected: ino, owner: 0, parent }).unwrap();
+        drive(3, overlaps);
+    }
+    if let Some(publisher) = active.borrow_mut().take() { install(publisher); }
+    context::observer(None);
+    fs.remove(2, b"libc-readdir-many", Remove { directory: true, expected: dir, owner: 0,
+        parent: fs.getattr(2).unwrap().attrs }).unwrap();
+    fs.fsync(&fs.open(2).unwrap(), false).unwrap();
+    assert_eq!(fs.lookup(2, b"libc-readdir-many"), Err(Errno(ENOENT)));
+    println!("FROZEN_READDIR calls/overlap/refusals/pressure/replay/peak={counts:?} waits={} background_publications={publications} probes={probes:?} peak_shared_write={frozen_write} seconds={:.3}",
+        waits.borrow(), started.elapsed().as_secs_f64());
+    assert!(counts.iter().all(|row| row[1] > 0));
+    assert_eq!(probes, HEADROOM.map(|blocks| (blocks, true)), "funded scratch generation should admit each create before install");
+    assert!((1..169).contains(&frozen_write), "a subsequent first write must share the generation's SPACE base");
+}
+
+#[test]
+fn frozen_create_and_first_write_replay_a_cascading_split() {
+    use super::super::reserve::observation;
+
+    let image = incremental_files_view::full_height_one_image();
+    for create in [true, false] {
+        let fs = mount(Arc::new(Disk::new(image.clone())), true, 646_000 + usize::from(create));
+        fs.inner.signal.requested.store(true, Ordering::Release);
+        let publisher = start_publisher(&fs);
+        let installed = publisher.generation;
+        let node = if create {
+            let ino = fs.create(2, b"new", NewNode::Regular { attrs: InodeAttrs::new(0o644, 0, 0) }).unwrap();
+            assert_eq!(ino, 17);
+            fs.open(ino).unwrap()
+        } else {
+            let opened = fs.open(16).unwrap();
+            assert_eq!(fs.write(&opened, WriteReq { at: WriteAt::Offset(0), limit: u64::MAX,
+                clear_setid: false }, b"x").unwrap().bytes, 1);
+            opened
+        };
+        let request = observation::take_write_grant().unwrap()[3];
+        assert!(fs.inner.state.lock().pending.is_some());
+        publisher.paused.install();
+        publisher.thread.join().unwrap();
+        let (before, retained, replay_height) = {
+            let state = fs.foreground_lock();
+            assert_eq!(state.durable.generation, installed);
+            (state.durable.free_blocks, state.grants.blocks, state.files.reservation_paths(node.ino).unwrap().fs_height)
+        };
+        assert_eq!(replay_height, if create { 2 } else { 1 });
+        fs.fsync(&node, false).unwrap();
+        let state = fs.foreground_lock();
+        assert_eq!(state.files.reservation_paths(node.ino).unwrap().fs_height, 2);
+        let allocated = before.saturating_sub(state.durable.free_blocks);
+        assert!(allocated > 0 && allocated <= retained && retained <= request,
+            "create={create} allocated={allocated} retained={retained} request={request}");
+        drop(state);
+        if !create {
+            let mut bytes = [0];
+            assert_eq!(fs.read(&node, 0, &mut bytes), Ok(1));
+            assert_eq!(bytes, [b'x']);
+        }
+        println!("FROZEN_SPLIT create={create} request={request} retained={retained} allocated={allocated}");
+    }
+}
+
+#[test]
 fn height_one_create_and_first_write_admit_a_cascading_split() {
     use super::super::reserve::observation;
 
