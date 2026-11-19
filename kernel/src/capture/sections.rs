@@ -2,8 +2,7 @@
 //!
 //! Order is "cheapest and most lock-free first": `EDGE` and `CPU` read only
 //! per-CPU registers and statics, `EV`/`CNT`/`RING` read the lock-free trace
-//! substrate, and `THR` -- the one section that wants the scheduler lock --
-//! goes last and does not wait for it.
+//! substrate, and `THR` goes last.
 //!
 //! A section returns `bool`: `true` when it emitted its content, `false`
 //! when it refused or the budget stopped it. A `false` leaves that section's
@@ -19,24 +18,9 @@
 //! completed section, which is exactly the claim `sections_skipped=` exists
 //! to make truthfully.
 //!
-//! # THR is the inverse of the soft-lockup dump's old failure arm
-//!
-//! `arch_impl/aarch64/timer_interrupt.rs`'s `dump_lockup_state` USED TO print
-//! `HELD (possible deadlock)` and then skip the trace-buffer dump -- which
-//! needs no scheduler lock at all -- so it went quiet in exactly the case it
-//! exists to report. `THR` here is the inverse: it is emitted LAST, it uses
-//! the non-blocking `try_liveness_snapshot`, and a refusal costs only the
-//! `THR` rows. Everything above it has already been emitted by then, and the
-//! refusal itself is reported as `[BXCAP:NOTE sched_lock_held]`.
-//!
-//! PR-7 repaired that arm by deleting it: `dump_lockup_state` now calls
-//! `capture::emit(Edge::Lockup, ...)` and has no scheduler branch of its own,
-//! so a held scheduler lock during a soft lockup produces `EDGE`/`CPU`/`EV`/
-//! `CNT`/`RING` and that NOTE rather than one line. What the repair does not
-//! give back is the per-thread detail the old acquired-lock arm printed --
-//! ELR/x30/SP, the inline-schedule stack scan, ready-queue membership and
-//! per-thread flags. Lockup captures supplement the per-CPU aggregates with
-//! bounded blocked-thread wait rows.
+//! The final `THR` section reads published atomics on ARM64 LOCKUP. Other
+//! edges use the nonblocking `try_liveness_snapshot` for scheduler aggregates
+//! and emit `[BXCAP:NOTE sched_lock_held]` if those are unavailable.
 
 use core::sync::atomic::Ordering;
 
@@ -69,9 +53,6 @@ pub const BXCAP_MAX_COUNTERS: usize = 32;
 /// Per-CPU scheduler rows emitted by `THR`. Matches the fixed-size arrays
 /// `SchedulerLivenessSnapshot` carries.
 pub const BXCAP_MAX_THR_ROWS: usize = 8;
-
-#[cfg(target_arch = "aarch64")]
-pub const BXCAP_MAX_WAIT_ROWS: usize = 32;
 
 #[inline(always)]
 pub fn section_bit(section: u32) -> u64 {
@@ -304,34 +285,61 @@ pub fn threads(
     true
 }
 
-/// Lockup-only THR rows. An address of `0x0` means the wait site or queue was
-/// unavailable. The process name (kernel thread name for pid=0) is a bounded,
-/// percent-encoded prefix, or '?' if the name could not be read.
+/// The watchdog reads scheduler-published IDs and wait records without using
+/// the scheduler or process-manager snapshots used elsewhere.
 #[cfg(target_arch = "aarch64")]
-pub(super) fn blocked_waits(
+pub(super) fn lockup_threads(
     writer: &mut Writer,
-    waits: &[crate::task::scheduler::BlockedWait],
-    blocked: u64,
+    snapshot: crate::task::lockup::Snapshot,
+    waits: &[crate::task::lockup::BlockedWait],
 ) -> bool {
-    let count = waits.len().min(blocked as usize);
-    for wait in &waits[..count] {
+    use crate::task::lockup::Owner;
+
+    if !writer.open("NOTE") {
+        return false;
+    }
+    match snapshot.owner {
+        Owner::Held { cpu, pc, tick } => {
+            writer.kv_dec("sched_owner_cpu", cpu);
+            writer.kv_hex("pc", pc);
+            writer.kv_dec("tick", tick);
+        }
+        Owner::Free => writer.kv_text("sched_owner", "free"),
+        Owner::Updating => writer.kv_text("sched_owner", "updating"),
+    }
+    if !writer.close() {
+        return false;
+    }
+    for (cpu, tid) in snapshot.current.into_iter().enumerate() {
+        if !writer.open("THR") {
+            return false;
+        }
+        writer.kv_dec("cpu", cpu as u64);
+        writer.kv_dec("cur", tid);
+        writer.kv_text("q", "published");
+        if !writer.close() {
+            return false;
+        }
+    }
+    for wait in waits.iter().take(snapshot.count) {
         if !writer.open("THR") {
             return false;
         }
         writer.kv_dec("tid", wait.tid);
         writer.kv_dec("pid", wait.pid);
-        writer.kv_hex("site", wait.site as u64);
-        writer.kv_hex("queue", wait.queue as u64);
+        writer.kv_hex("site", wait.site);
+        writer.kv_hex("queue", wait.queue);
         writer.kv_command_name(wait.name());
         if !writer.close() {
             return false;
         }
     }
-    if blocked > count as u64 {
+    if snapshot.omitted != 0 || snapshot.updating != 0 {
         if !writer.open("NOTE") {
             return false;
         }
-        writer.kv_dec("wait_rows_omitted", blocked - count as u64);
+        writer.kv_dec("wait_rows_omitted", snapshot.omitted);
+        writer.kv_dec("wait_rows_updating", snapshot.updating);
         if !writer.close() {
             return false;
         }

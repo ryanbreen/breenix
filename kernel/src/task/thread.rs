@@ -47,11 +47,7 @@ pub enum ThreadState {
 }
 
 #[cfg(target_arch = "aarch64")]
-#[derive(Clone, Copy, Default)]
-pub(crate) struct WaitSite {
-    pub return_pc: usize,
-    pub queue: usize,
-}
+pub(crate) use super::lockup::WaitSite;
 
 impl ThreadState {
     /// True for every variant the scheduler treats as parked waiting on
@@ -724,7 +720,7 @@ pub struct Thread {
     /// Current state
     pub state: ThreadState,
 
-    /// Diagnostic identity of the current I/O wait, read under SCHEDULER.
+    /// Owns this thread's atomic record while it is blocked.
     #[cfg(target_arch = "aarch64")]
     pub(crate) wait_site: WaitSite,
 
@@ -1885,8 +1881,21 @@ impl Thread {
         self.state == ThreadState::Ready
     }
 
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn publish_wait(&mut self, pc: u64, queue: u64) {
+        let pid = self.owner_pid.unwrap_or(0);
+        let name = if pid == 0 {
+            super::lockup::name_words(&self.name)
+        } else {
+            self.signals.lockup_name.words()
+        };
+        self.wait_site.publish(self.id, pid, pc, queue, name);
+    }
+
     /// Mark thread as running
     pub fn set_running(&mut self) {
+        #[cfg(target_arch = "aarch64")]
+        self.wait_site.clear();
         self.state = ThreadState::Running;
         self.signals.cpu_clock.store(
             (crate::signal::monotonic_micros() << 1) | u64::from(self.signals.in_user.load(Ordering::Relaxed)),
@@ -1898,6 +1907,8 @@ impl Thread {
     pub fn set_ready(&mut self) {
         self.stop_timer_cpu();
         if self.state != ThreadState::Terminated {
+            #[cfg(target_arch = "aarch64")]
+            self.wait_site.clear();
             self.state = ThreadState::Ready;
         }
     }
@@ -1910,6 +1921,8 @@ impl Thread {
         if self.state != ThreadState::Terminated {
             crate::task::scheduler::note_thread_terminated(self);
         }
+        #[cfg(target_arch = "aarch64")]
+        self.wait_site.clear();
         self.state = ThreadState::Terminated;
     }
 

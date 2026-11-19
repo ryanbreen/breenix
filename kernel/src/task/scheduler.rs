@@ -707,11 +707,13 @@ pub struct SchedulerGuard {
 
 #[cfg(target_arch = "aarch64")]
 impl SchedulerGuard {
-    fn new(guard: spin::MutexGuard<'static, Option<Scheduler>>) -> Self {
+    #[inline(always)]
+    fn new(guard: spin::MutexGuard<'static, Option<Scheduler>>, caller_pc: u64) -> Self {
         let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
         if cpu < MAX_CPUS {
             SCHEDULER_HELD_BY[cpu].store(true, Ordering::Relaxed);
         }
+        super::lockup::acquired(cpu, caller_pc, crate::time::timer::get_ticks());
         Self {
             guard: core::mem::ManuallyDrop::new(guard),
             cpu,
@@ -746,6 +748,7 @@ impl Drop for SchedulerGuard {
         if let Some(scheduler) = self.guard.as_ref() {
             publish_queued_cpus(scheduler);
         }
+        super::lockup::releasing();
         // SAFETY: dropped once, here; the guard is not read after this.
         unsafe { core::mem::ManuallyDrop::drop(&mut self.guard) };
         scheduler_released(self.cpu);
@@ -814,7 +817,11 @@ fn send_deferred_sgis(cpu: usize) {
 fn lock_scheduler() -> SchedulerGuard {
     let guard = SCHEDULER.lock();
     crate::tracing::providers::teardown::note_scheduler_acquire();
-    SchedulerGuard::new(guard)
+    #[cfg(target_arch = "x86_64")]
+    let guard = SchedulerGuard::new(guard);
+    #[cfg(target_arch = "aarch64")]
+    let guard = SchedulerGuard::new(guard, super::lockup::site_pc());
+    guard
 }
 
 /// x86_64: a spin for a lock another CPU holds, during which this CPU
@@ -916,7 +923,7 @@ fn try_lock_scheduler() -> Option<SchedulerGuard> {
     #[cfg(target_arch = "x86_64")]
     let guard = SchedulerGuard::holding_all(guard);
     #[cfg(target_arch = "aarch64")]
-    let guard = SchedulerGuard::new(guard);
+    let guard = SchedulerGuard::new(guard, super::lockup::site_pc());
     Some(guard)
 }
 
@@ -1346,6 +1353,7 @@ pub fn increment_context_switch_count() {
 /// The caller must not call any other scheduler public functions that acquire
 /// SCHEDULER.lock() while holding this guard (would deadlock).
 #[cfg(target_arch = "aarch64")]
+#[inline(always)]
 pub fn lock_for_context_switch() -> SchedulerGuard {
     lock_scheduler()
 }
@@ -1363,6 +1371,7 @@ pub unsafe fn force_unlock_scheduler(scheduler: Option<&Scheduler>) {
     if let Some(scheduler) = scheduler {
         publish_queued_cpus(scheduler);
     }
+    super::lockup::releasing();
     SCHEDULER.force_unlock();
     scheduler_released(crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize);
 }
@@ -1565,6 +1574,8 @@ pub fn block_current_coreproof_probe() -> Option<Result<DepartureProbe, &'static
             queue.retain(|queued_tid| *queued_tid != tid);
         }
         if let Some(thread) = scheduler.get_thread_mut(tid) {
+            #[cfg(target_arch = "aarch64")]
+            thread.wait_site.clear();
             thread.state = restore_state;
             thread.blocked_in_syscall = restore_in_syscall;
         }
@@ -1822,33 +1833,6 @@ pub struct SchedulerLivenessSnapshot {
     pub per_cpu_current: [u64; 8],
 }
 
-#[cfg(target_arch = "aarch64")]
-#[derive(Clone, Copy, Default)]
-pub(crate) struct BlockedWait {
-    pub tid: u64,
-    pub pid: u64,
-    pub site: usize,
-    pub queue: usize,
-    name: [u8; 24],
-    name_len: usize,
-}
-
-#[cfg(target_arch = "aarch64")]
-impl BlockedWait {
-    pub(crate) fn set_name(&mut self, name: &str) {
-        let mut len = name.len().min(self.name.len());
-        while !name.is_char_boundary(len) {
-            len -= 1;
-        }
-        self.name[..len].copy_from_slice(&name.as_bytes()[..len]);
-        self.name_len = len;
-    }
-
-    pub(crate) fn name(&self) -> &[u8] {
-        &self.name[..self.name_len]
-    }
-}
-
 /// Try to snapshot scheduler state without blocking.
 ///
 /// Returns `None` when the scheduler lock is busy or uninitialized; both are
@@ -1867,9 +1851,8 @@ impl BlockedWait {
 /// a peer CPU holds it, and a watchdog snapshot must not wait on that.
 ///
 /// Callers: 1 in this tree today -- `capture::sections::sample_threads`, which
-/// is the BXCAP `THR` section's one scheduler read and therefore the read the
-/// AArch64 soft-lockup watchdog now reaches through `capture::emit`. The mask
-/// is here so that caller does not have to rediscover R153.
+/// is the BXCAP `THR` scheduler read for non-LOCKUP captures. The mask is
+/// here so that caller does not have to rediscover R153.
 /// `tests/teardown_structure.rs::scheduler_lock_acquisitions_are_irq_safe_by_shape`
 /// reddens if it is removed.
 ///
@@ -1878,37 +1861,6 @@ impl BlockedWait {
 /// `try_schedule`'s no-caller, no-plan case, which was deleted rather than
 /// annotated.
 pub fn try_liveness_snapshot(cpu_id: usize) -> Option<SchedulerLivenessSnapshot> {
-    try_liveness_snapshot_inner(cpu_id, |_| {})
-}
-
-#[cfg(target_arch = "aarch64")]
-pub(crate) fn try_liveness_snapshot_with_waits(
-    cpu_id: usize,
-    waits: &mut [BlockedWait],
-) -> Option<SchedulerLivenessSnapshot> {
-    let snapshot = try_liveness_snapshot_inner(cpu_id, |sched| {
-        let blocked = sched.threads.iter().filter(|thread| thread.state.is_blocked());
-        for (thread, wait) in blocked.zip(waits.iter_mut()) {
-            wait.tid = thread.id();
-            wait.pid = thread.owner_pid.unwrap_or(0);
-            if thread.state == ThreadState::BlockedOnIO {
-                wait.site = thread.wait_site.return_pc;
-                wait.queue = thread.wait_site.queue;
-            }
-            if wait.pid == 0 {
-                wait.set_name(&thread.name);
-            }
-        }
-    })?;
-    let count = waits.len().min(snapshot.blocked_count as usize);
-    crate::process::copy_lockup_process_names(&mut waits[..count]);
-    Some(snapshot)
-}
-
-fn try_liveness_snapshot_inner(
-    cpu_id: usize,
-    sample_waits: impl FnOnce(&Scheduler),
-) -> Option<SchedulerLivenessSnapshot> {
     without_interrupts(|| {
         let guard = try_lock_scheduler()?;
         let sched = guard.as_ref()?;
@@ -1929,7 +1881,6 @@ fn try_liveness_snapshot_inner(
                 t.state.is_blocked() // #673 review, m4
             })
             .count() as u64;
-        sample_waits(sched);
 
         Some(SchedulerLivenessSnapshot {
             current_thread_id: sched.cpu_state[cpu].current_thread.unwrap_or(0),
@@ -2930,6 +2881,7 @@ fn install_ec0_fault_inject_thread(scheduler: &mut Scheduler) {
 #[inline(never)]
 pub(crate) fn record_cpu_state_change(cpu: usize, setter_id: u64, old_val: u64, new_val: u64) {
     if cpu < MAX_CPUS {
+        super::lockup::current(cpu, if setter_id == 17 { 0 } else { new_val });
         let idx =
             CPU_STATE_HISTORY_IDX[cpu].fetch_add(1, core::sync::atomic::Ordering::Relaxed) as usize;
         let slot = idx % HISTORY_SIZE;
@@ -4469,6 +4421,8 @@ impl Scheduler {
             .current_thread
             .unwrap_or(self.cpu_state[current_cpu].idle_thread);
         self.cpu_state[current_cpu].current_thread = Some(next_thread_id);
+        #[cfg(target_arch = "aarch64")]
+        super::lockup::current(current_cpu, next_thread_id);
         // x86_64: this CPU stays on the outgoing thread's kernel stack until its
         // `iretq`; no other CPU dispatches the thread before then.
         #[cfg(target_arch = "x86_64")]
@@ -5446,6 +5400,8 @@ impl Scheduler {
 
             current.stop_timer_cpu();
             current.state = ThreadState::Blocked;
+            #[cfg(target_arch = "aarch64")]
+            current.publish_wait(super::lockup::site_pc(), 0);
             #[cfg(feature = "coreproof_component_a")]
             crate::proof_point!(BlockAfterStateStore);
             if in_syscall {
@@ -5537,6 +5493,8 @@ impl Scheduler {
         // Restore exactly, before the lock is released.
         self.per_cpu_queues[cpu].retain(|&id| id != tid);
         if let Some(thread) = self.get_thread_mut(tid) {
+            #[cfg(target_arch = "aarch64")]
+            thread.wait_site.clear();
             thread.state = restore_state;
             thread.blocked_in_syscall = restore_in_syscall;
         }
@@ -5849,6 +5807,8 @@ impl Scheduler {
                 }
                 thread.stop_timer_cpu();
                 thread.state = ThreadState::BlockedOnSignal;
+                #[cfg(target_arch = "aarch64")]
+                thread.publish_wait(super::lockup::site_pc(), 0);
                 // CRITICAL: Mark that this thread is blocked inside a syscall.
                 // When the thread is resumed, we must NOT restore userspace context
                 // because that would return to the pre-syscall location instead of
@@ -6000,6 +5960,8 @@ impl Scheduler {
 
                 thread.stop_timer_cpu();
                 thread.state = ThreadState::BlockedOnChildExit;
+                #[cfg(target_arch = "aarch64")]
+                thread.publish_wait(super::lockup::site_pc(), 0);
                 // CRITICAL: Mark that this thread is blocked inside a syscall.
                 // When the thread is resumed, we must NOT restore userspace context
                 // because that would return to the pre-syscall location instead of
@@ -6097,6 +6059,8 @@ impl Scheduler {
         }
         thread.stop_timer_cpu();
         thread.state = ThreadState::Blocked;
+        #[cfg(target_arch = "aarch64")]
+        thread.publish_wait(super::lockup::site_pc(), 0);
         for q in self.per_cpu_queues.iter_mut() {
             q.retain(|&id| id != thread_id);
         }
@@ -6141,6 +6105,8 @@ impl Scheduler {
 
                 thread.stop_timer_cpu();
                 thread.state = ThreadState::BlockedOnTimer;
+                #[cfg(target_arch = "aarch64")]
+                thread.publish_wait(super::lockup::site_pc(), 0);
                 thread.wake_time_ns = Some(wake_time_ns);
                 if !already_armed {
                     thread.timer_pop = Some(TimerPopRecord::armed(wake_time_ns));
@@ -6200,6 +6166,8 @@ impl Scheduler {
     fn block_current_for_io_publish(&mut self, wake_time_ns: Option<u64>) -> Option<u64> {
         let current_id = self.cpu_state[Self::current_cpu_id()].current_thread?;
         let thread = self.get_thread_mut(current_id)?;
+        #[cfg(target_arch = "aarch64")]
+        let wait_queue = core::mem::take(&mut thread.wait_site.queue_hint);
         // A thread a SIGKILL is pending for does not sleep here:
         // `Thread::must_not_sleep`.
         if thread.must_not_sleep() {
@@ -6212,9 +6180,7 @@ impl Scheduler {
         thread.stop_timer_cpu();
         thread.state = ThreadState::BlockedOnIO;
         #[cfg(target_arch = "aarch64")]
-        {
-            thread.wait_site = super::thread::WaitSite::default();
-        }
+        thread.publish_wait(super::lockup::site_pc(), wait_queue);
         thread.wake_time_ns = wake_time_ns;
         // The observation belongs to this wait, not to whatever the thread did
         // before it.
@@ -6513,6 +6479,8 @@ impl Scheduler {
 
                 thread.stop_timer_cpu();
                 thread.state = ThreadState::BlockedOnTimer;
+                #[cfg(target_arch = "aarch64")]
+                thread.publish_wait(super::lockup::site_pc(), 0);
                 thread.wake_time_ns = Some(timeout_ns);
                 thread.timer_pop = Some(TimerPopRecord::armed(timeout_ns));
                 thread.blocked_in_syscall = true;
@@ -6788,6 +6756,8 @@ impl Scheduler {
                 // manages this flag itself when it detects the state change.
                 if let Some(thread) = self.get_thread_mut(tid) {
                     let was_blocked_on_io = thread.state == ThreadState::BlockedOnIO;
+                    #[cfg(target_arch = "aarch64")]
+                    thread.wait_site.clear();
                     thread.state = ThreadState::Ready;
                     WAKE_SITE_TIMER.fetch_add(1, Ordering::Relaxed);
                     record_ready_site(tid, READY_SITE_TIMER);
@@ -6829,6 +6799,8 @@ impl Scheduler {
 
             if let Some(thread) = self.get_thread_mut(tid) {
                 let was_blocked_on_io = thread.state == ThreadState::BlockedOnIO;
+                #[cfg(target_arch = "aarch64")]
+                thread.wait_site.clear();
                 thread.state = ThreadState::Ready;
                 WAKE_SITE_TIMER.fetch_add(1, Ordering::Relaxed);
                 record_ready_site(tid, READY_SITE_TIMER);
@@ -9256,6 +9228,8 @@ impl ExecSchedCommit {
                         replaced_timers = core::mem::replace(&mut t.signal_timers, this.signal_timers);
                         #[cfg(target_arch = "x86_64")]
                         rq::publish_group(t);
+                        #[cfg(target_arch = "aarch64")]
+                        t.wait_site.clear();
                         t.state = crate::task::thread::ThreadState::Ready;
                         #[cfg(all(target_arch = "aarch64", feature = "ret_zero_pc_oracle_exec"))]
                         crate::task::ret_zero_pc_oracle::record_exec_commit_inline_state(t);

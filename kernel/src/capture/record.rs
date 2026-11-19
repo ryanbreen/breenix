@@ -7,7 +7,7 @@
 //! # What this writer may use, and why
 //!
 //! On x86_64, only `crate::tracing::output::raw_serial_char`, which is a
-//! bounded transmit-ready poll followed by one port write. On aarch64, only a `crate::serial_line::Line` held in
+//! bounded transmit-ready poll followed by one port write. On aarch64, only a `crate::serial_line::UnattributedLine` held in
 //! the writer, which assembles the record on the stack and writes it while
 //! owning the UART. Neither takes a lock or allocates. The code above it here
 //! is integer arithmetic over a stack array. That is the reason the capture
@@ -102,7 +102,7 @@ pub const BXCAP_BUDGET_BYTES: u32 = 44;
 /// it.
 pub struct Writer {
     #[cfg(target_arch = "aarch64")]
-    line: crate::serial_line::Line,
+    line: crate::serial_line::UnattributedLine,
     remaining: u32,
     records: u32,
     bytes: u32,
@@ -119,7 +119,7 @@ impl Writer {
     pub fn new() -> Self {
         Self {
             #[cfg(target_arch = "aarch64")]
-            line: crate::serial_line::Line::new(),
+            line: crate::serial_line::UnattributedLine::new(),
             remaining: BXCAP_BUDGET_BYTES,
             records: 0,
             bytes: 0,

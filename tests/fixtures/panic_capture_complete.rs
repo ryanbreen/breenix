@@ -22,8 +22,8 @@ static WIRE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
 #[cfg(target_arch = "aarch64")]
 mod serial_line {
-    pub struct Line;
-    impl Line {
+    pub struct UnattributedLine;
+    impl UnattributedLine {
         pub fn new() -> Self { Self }
         pub fn char(&mut self, c: u8) { crate::WIRE.lock().unwrap().push(c as char); }
     }
@@ -56,7 +56,15 @@ mod arch_impl {
         }
     } }
 }
-pub mod task { pub mod scheduler {
+#[cfg(target_arch = "aarch64")]
+#[path = "LOCKUP_PATH"]
+mod lockup_source;
+
+pub mod task {
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) use crate::lockup_source as lockup;
+
+    pub mod scheduler {
     #[derive(Clone, Copy, Default)]
     pub struct SchedulerLivenessSnapshot {
         pub per_cpu_current: [u64; 8],
@@ -72,36 +80,6 @@ pub mod task { pub mod scheduler {
             per_cpu_ready_len: [2; 8], total_threads: 27, blocked_count: 19 })
     }
 
-    #[cfg(target_arch = "aarch64")]
-    #[derive(Clone, Copy, Default)]
-    pub struct BlockedWait {
-        pub tid: u64,
-        pub pid: u64,
-        pub site: usize,
-        pub queue: usize,
-        pub name: &'static str,
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    impl BlockedWait {
-        pub fn name(&self) -> &[u8] { self.name.as_bytes() }
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    pub fn try_liveness_snapshot_with_waits(
-        cpu: usize,
-        waits: &mut [BlockedWait],
-    ) -> Option<SchedulerLivenessSnapshot> {
-        let mut snapshot = try_liveness_snapshot(cpu)?;
-        for (entry, (tid, pid, site, queue, name)) in waits.iter_mut().zip([
-            (21689, 21688, 0xffff0000407253d8, 0xffff000058392010, "GUI app]\n"),
-            (21693, 21692, 0, 0, "runner"),
-        ]) {
-            *entry = BlockedWait { tid, pid, site, queue, name };
-        }
-        snapshot.blocked_count = 2;
-        Some(snapshot)
-    }
 } }
 mod gpu {
     pub mod console { pub fn active() -> bool { true } }
@@ -155,24 +133,54 @@ fn assert_lockup_waits(text: &str) {
 }
 
 #[cfg(target_arch = "aarch64")]
+fn publish_waits() -> [task::lockup::WaitSite; 2] {
+    use task::lockup::{name_words, WaitSite};
+
+    let mut first = WaitSite::default();
+    assert_eq!(first.queue_hint, 0);
+    let name = task::lockup::CommandName::default();
+    name.publish("GUI app]\n");
+    first.publish(21689, 21688, task::lockup::site_pc(), 0xffff000058392010, name.words());
+    first.set_pc(0xffff0000407253d8);
+    let mut second = WaitSite::default();
+    second.publish(21693, 21692, 0, 0, name_words("runner"));
+    [first, second]
+}
+
+#[cfg(target_arch = "aarch64")]
 fn lockup_waits() {
+    let _waits = publish_waits();
     capture::emit(capture::Edge::Lockup, 5000, 1000);
     assert_lockup_waits(&wire());
-    assert_eq!(READS.load(Ordering::Relaxed), 1);
+    assert_eq!(READS.load(Ordering::Relaxed), 0);
     emit_panic();
     complete(&wire());
 }
 
 #[cfg(target_arch = "aarch64")]
 fn lockup_while_scheduler_held() {
-    let _guard = SCHEDULER.lock().unwrap();
-    capture::emit(capture::Edge::Lockup, 5000, 1000);
+    use task::lockup;
+
+    let guard = SCHEDULER.lock().unwrap();
+    lockup::acquired(1, 0xffff000040123450, 1376146);
+    lockup::current(0, 21689);
+    lockup::current(1, 21693);
+    let waits = publish_waits();
+    capture::emit_lockup(5000, 1000);
     let text = wire();
     assert!(text.contains("[BXCAP:NOTE sched_owner_cpu=1 pc=0xffff000040123450 tick=1376146]"), "{text}");
     assert!(text.contains("[BXCAP:THR cpu=0 cur=21689 q=published]"), "{text}");
     assert!(text.contains("[BXCAP:THR cpu=1 cur=21693 q=published]"), "{text}");
     assert_lockup_waits(&text);
     assert_eq!(READS.load(Ordering::Relaxed), 0, "LOCKUP must not try to acquire the scheduler");
+
+    drop(waits);
+    lockup::releasing();
+    drop(guard);
+    capture::emit_lockup(5000, 1000);
+    let text = wire();
+    assert!(text.contains("[BXCAP:NOTE sched_owner=free]"), "{text}");
+    assert!(!text.contains("[BXCAP:THR tid="), "{text}");
 }
 fn partial(text: &str) {
     assert!(text.contains("[BXCAP:NOTE sched_lock_held]"), "{text}");

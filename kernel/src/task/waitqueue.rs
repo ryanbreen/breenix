@@ -130,14 +130,11 @@ impl WaitQueueHead {
 
     fn publish_wait(&self, wake_time_ns: Option<u64>) -> bool {
         crate::task::scheduler::with_current(|sched| {
-            let published = sched.block_current_for_io_with_timeout(wake_time_ns);
             #[cfg(target_arch = "aarch64")]
-            if published {
-                if let Some(thread) = sched.current_thread_mut() {
-                    thread.wait_site.queue = self as *const Self as usize;
-                }
+            if let Some(thread) = sched.current_thread_mut() {
+                thread.wait_site.queue_hint = self as *const Self as u64;
             }
-            published
+            sched.block_current_for_io_with_timeout(wake_time_ns)
         })
         .unwrap_or(false)
     }
@@ -455,7 +452,7 @@ fn run_current_wait(#[cfg(target_arch = "aarch64")] return_pc: usize) {
                     #[cfg(target_arch = "aarch64")]
                     if blocked {
                         if let Some(return_pc) = site.take() {
-                            thread.wait_site.return_pc = return_pc;
+                            thread.wait_site.set_pc(return_pc as u64);
                         }
                     }
                     blocked

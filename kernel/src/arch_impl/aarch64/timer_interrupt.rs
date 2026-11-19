@@ -1076,10 +1076,8 @@ fn dump_gic_state() {
 /// If no context switches, syscalls, or boot-test coordinator heartbeats occur for
 /// LOCKUP_THRESHOLD_TICKS CPU0-local timer interrupts (~5 seconds), it reports
 /// the stall once through `dump_lockup_state`, which frames one bounded
-/// `BXCAP` capture. The report does not branch on the scheduler or process
-/// lock: the capture's own `THR` section asks for the scheduler lock without
-/// waiting and reports a refusal as `[BXCAP:NOTE sched_lock_held]` after the
-/// lock-independent sections are already on the wire.
+/// `BXCAP` capture. Its `THR` section reads scheduler-published atomics for
+/// the lock owner, current threads, and blocked waits.
 fn check_soft_lockup(cpu0_tick: u64) {
     // A fatal GPU takeover parks its users with IRQs masked. Remaining timer
     // ticks do not turn that intentional terminal stop into a scheduler lockup.
@@ -1185,13 +1183,8 @@ fn report_cpu0_regression(cpu0: u64, max_peer: u64) -> ! {
 /// `TARGET_TIMER_HZ`, the ticks-per-second that a0 is denominated in. A reader
 /// divides one by the other rather than assuming this kernel's tick rate.
 ///
-/// What this costs, stated rather than hidden: on a successful scheduler
-/// acquisition the old report printed each thread's ELR/x30/SP, its inline
-/// schedule stack scan, ready-queue membership, PID/name and per-thread flags.
-/// `BXCAP`'s `THR` section carries per-CPU aggregate rows instead. What it buys
-/// is the other arm: a refused scheduler lock now still yields `EV`/`CNT`/`RING`
-/// plus `[BXCAP:NOTE sched_lock_held]` rather than a single `HELD` line. See
-/// docs/planning/green-program/failure-capture/PR-7-2026-09-06.md.
+/// The scheduler evidence comes from fixed slots and shares the BXCAP byte
+/// budget with the trace events, counters, and ring metadata.
 ///
 /// `#[cold]` and `#[inline(never)]` for the same reason `capture::emit` carries
 /// them: this is a failure-edge dump, and its frame and its constants do not
@@ -1203,14 +1196,14 @@ fn report_cpu0_regression(cpu0: u64, max_peer: u64) -> ! {
 #[inline(never)]
 fn dump_lockup_state(stall_ticks: u64) {
     emit_lockup_progress(stall_ticks);
-    crate::capture::emit(crate::capture::Edge::Lockup, stall_ticks, TARGET_TIMER_HZ);
-    crate::serial_line::Line::new().bytes(b"!!! END SOFT LOCKUP DUMP !!!\n\n");
+    crate::capture::emit_lockup(stall_ticks, TARGET_TIMER_HZ);
+    crate::serial_line::UnattributedLine::new().bytes(b"!!! END SOFT LOCKUP DUMP !!!\n\n");
 }
 
 #[cold]
 #[inline(never)]
 fn emit_lockup_progress(stall_ticks: u64) {
-    let mut line = crate::serial_line::Line::new();
+    let mut line = crate::serial_line::UnattributedLine::new();
     line.bytes(b"\n\n!!! SOFT LOCKUP DETECTED !!!\n");
     line.bytes(b"No watchdog progress for ~");
     line.dec(stall_ticks / TARGET_TIMER_HZ);

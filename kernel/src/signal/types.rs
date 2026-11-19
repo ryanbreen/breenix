@@ -311,6 +311,8 @@ impl SignalTable {
 /// Dispositions remain under the process manager; these words never take its lock.
 #[derive(Default)]
 pub struct ThreadSignals {
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) lockup_name: crate::task::lockup::CommandName,
     /// Conservative notification for PM-owned pending signals and job stops.
     /// Generation sets it before releasing PM; only a quiet return check clears it.
     pub return_work: AtomicBool,

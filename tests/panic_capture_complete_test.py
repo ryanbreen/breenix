@@ -14,6 +14,7 @@ class PanicCaptureComplete(unittest.TestCase):
         fixture = (ROOT / 'tests/fixtures/panic_capture_complete.rs').read_text()
         fixture = fixture.replace('ORACLE_PATH', str(ROOT / 'kernel/src/capture_oracle.rs'))
         fixture = fixture.replace('CAPTURE_PATH', str(ROOT / 'kernel/src/capture/mod.rs'))
+        fixture = fixture.replace('LOCKUP_PATH', str(ROOT / 'kernel/src/task/lockup.rs'))
         priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
