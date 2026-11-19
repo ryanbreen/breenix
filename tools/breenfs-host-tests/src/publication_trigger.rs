@@ -110,7 +110,7 @@ fn populated_replay_publishes_reservations_in_background() {
     let blocks = state.durable.free_blocks - state.reservations.outstanding() + 1;
     assert!(blocks <= state.durable.free_blocks);
     let (mut state, grant) = fs.reserve_with_pressure(CostOp::Unlink, state,
-        || Ok(fs.inner.state.lock()), |s| s.reservations.reserve(s.durable.free_blocks, blocks, Operation::Unlink).map_err(|_| Errno(ENOSPC))).unwrap();
+        || Ok(fs.inner.state.lock()), |s| s.reserve_blocks(blocks, Operation::Unlink)).unwrap();
     state.reservations.release(grant);
     drop(state);
     assert_eq!(attribution(), 1, "backstop publication must retain exact attribution");

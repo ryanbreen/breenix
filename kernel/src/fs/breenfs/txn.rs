@@ -197,6 +197,7 @@ pub struct Transaction<'a, S> {
     next_root_id: u64,
     dead: DeadNodes,
     reaped: usize,
+    pending_summary: space::PendingSummary,
     // Freeze (601(1)) moves the four private maps above into this shared,
     // immutable layer; the maps above then hold only later private changes.
     frozen: Option<Arc<Frozen>>,
@@ -293,6 +294,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             next_root_id: 0,
             dead: DeadNodes::default(),
             reaped: 0,
+            pending_summary: space::PendingSummary::default(),
             frozen: None,
             scratch: None,
         })
@@ -354,6 +356,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             next_root_id: 0,
             dead,
             reaped: 0,
+            pending_summary: space::PendingSummary::default(),
             frozen: None,
             scratch: None,
         })
@@ -408,6 +411,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             next_root_id: self.next_root_id,
             dead: DeadNodes::default(),
             reaped: 0,
+            pending_summary: space::PendingSummary::default(),
             frozen: Some(frozen),
             scratch: Some(SCRATCH_BASE),
         })
@@ -719,6 +723,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
                 generation,
             )?;
             self.space_root = root;
+            self.pending_summary.include(4, generation);
             self.dead.addresses.remove(&addr);
             self.reaped += 1;
             Ok(Some(addr))
@@ -930,6 +935,11 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
         self.deferred.push_back(Change::PromotePending);
         Ok(())
     }
+    /// Read after prepare_commit has staged PENDING promotion and settled
+    /// the remaining releases into the real SPACE tree.
+    pub(super) fn pending_summary(&self) -> space::PendingSummary {
+        self.pending_summary
+    }
     /// Apply deferred changes to the real COW SPACE tree. Its copies/splits add
     /// more allocation/release work to this queue. Edited paths remain in T,
     /// so revisiting them does not recursively copy them again (design 2.5).
@@ -942,7 +952,11 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             let mut store = EditStore { txn: self, tree: 2 };
             let result = match change {
                 Change::PromotePending => {
-                    space::promote_pending(&mut store, &mut root, generation).map_err(Error::from)
+                    // This scan already visits the surviving quarantine.
+                    // Later allocations cannot promote more in this generation.
+                    space::promote_pending(&mut store, &mut root, generation)
+                        .map(|summary| self.pending_summary = summary)
+                        .map_err(Error::from)
                 }
                 Change::Allocate {
                     start,
@@ -966,6 +980,11 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
                     length,
                     children,
                 } => space::release(&mut store, &mut root, start, length, generation, children)
+                    .map(|quarantined| {
+                        if quarantined {
+                            self.pending_summary.include(length, generation);
+                        }
+                    })
                     .map_err(Error::from),
                 Change::DeleteRoot { id } => btree::delete(
                     &mut store,

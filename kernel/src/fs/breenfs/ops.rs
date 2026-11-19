@@ -370,6 +370,10 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     pub fn metadata_debt(&self) -> Result<u64, Error> {
         Ok(self.txn.metadata_debt(self.root.root, self.orphan_count)?)
     }
+    /// Quarantine of the prepared generation, before opening its successor.
+    pub fn pending_summary(&self) -> space::PendingSummary {
+        self.txn.pending_summary()
+    }
     /// Additional deferred orphan paths if a growing edit can add a root level.
     pub fn orphan_growth_paths(&self, growing_items: usize) -> Result<u64, Error> {
         if self.orphan_count == 0 || !btree::may_grow_root(&self.txn.view(), self.root.root, growing_items)? {

@@ -96,8 +96,6 @@ pub struct Ledger {
     // its allocations have left free_blocks, so admission charges them no
     // longer. Each is still released one at a time (E24 coordinator 601(4)).
     retired: u64,
-    // Blocks the last refused reservation asked for (E24 coordinator 621(y2)).
-    refused: u64,
 }
 
 impl Ledger {
@@ -107,7 +105,6 @@ impl Ledger {
             global_reserve,
             outstanding: 0,
             retired: 0,
-            refused: 0,
         }
     }
 
@@ -115,14 +112,8 @@ impl Ledger {
         self.outstanding
     }
 
-    /// The grants admission charges and the last refused request, for the
-    /// refusal receipt. Read-only.
-    pub fn refusal(&self) -> (u64, u64) {
-        (self.charged(), self.refused)
-    }
-
     // What admission charges: grants whose blocks free_blocks still counts.
-    fn charged(&self) -> u64 {
+    pub(super) fn charged(&self) -> u64 {
         self.outstanding - self.retired
     }
 
@@ -168,7 +159,6 @@ impl Ledger {
             | Operation::DeleteSnapshot => free_blocks.saturating_sub(self.charged()),
         };
         if blocks > available {
-            self.refused = blocks;
             #[cfg(test)]
             observation::record([
                 free_blocks,

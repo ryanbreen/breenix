@@ -19,6 +19,7 @@ use super::{
     ops::{self, Files, ReadError},
     recover,
     reserve::{Estimate, Grant, Ledger, Operation},
+    space::PendingSummary,
 };
 use crate::{
     block::{
@@ -345,6 +346,7 @@ struct MountState<W: Wait + 'static> {
     refresh: BTreeSet<u64>,
     committer: Option<Committer>,
     durable: Superblock,
+    durable_pending: Option<PendingSummary>,
     failed: bool,
     failure: Option<(&'static str, i32)>,
     metadata_error: Option<super::btree::ReadFailure>,
@@ -412,6 +414,30 @@ struct DataGrant {
     first_write_space: u64,
     funded_debt: u64,
 }
+#[derive(Debug)]
+struct DeniedGrant {
+    charged: u64,
+    request: u64,
+}
+#[derive(Debug)]
+enum AdmissionError {
+    Denied(DeniedGrant),
+    Other(Errno),
+}
+impl From<Errno> for AdmissionError {
+    fn from(error: Errno) -> Self { Self::Other(error) }
+}
+impl From<AdmissionError> for Errno {
+    fn from(error: AdmissionError) -> Self { error.errno() }
+}
+impl AdmissionError {
+    fn errno(&self) -> Errno {
+        match self {
+            Self::Denied(_) => Errno(ENOSPC),
+            Self::Other(error) => *error,
+        }
+    }
+}
 /// A frozen generation's pages, immutable and readable without exclusion.
 struct FrozenPages {
     nodes: BTreeMap<u64, GenPages>,
@@ -427,11 +453,12 @@ struct FrozenPages {
 struct SharedLedger(Arc<Mutex<Ledger>>);
 impl SharedLedger {
     fn outstanding(&self) -> u64 { self.0.lock().outstanding() }
-    fn refusal(&self) -> (u64, u64) { self.0.lock().refusal() }
     fn available(&self, free_blocks: u64) -> u64 { self.0.lock().available(free_blocks) }
     fn reserve(&mut self, free_blocks: u64, blocks: u64, operation: Operation)
-        -> Result<Grant, super::space::Error> {
-        self.0.lock().reserve(free_blocks, blocks, operation)
+        -> Result<Grant, DeniedGrant> {
+        let mut ledger = self.0.lock();
+        ledger.reserve(free_blocks, blocks, operation)
+            .map_err(|_| DeniedGrant { charged: ledger.charged(), request: blocks })
     }
     fn settle(&mut self, grant: &mut Grant, blocks: u64) -> Result<(), super::space::Error> {
         self.0.lock().settle(grant, blocks)
@@ -980,6 +1007,10 @@ impl<W: Wait> MountState<W> {
         let debt = self.observed(result)?;
         Ok((debt, debt.saturating_sub(self.metadata_reserved.max(root_update))))
     }
+    fn reserve_blocks(&mut self, blocks: u64, operation: Operation) -> Result<Grant, AdmissionError> {
+        self.reservations.reserve(self.durable.free_blocks, blocks, operation)
+            .map_err(AdmissionError::Denied)
+    }
     /// Called with mutation admission held, before publishing dirty pages or
     /// inode changes. Clean mapped blocks also need fresh COW allocations.
     fn reserve_data(
@@ -989,7 +1020,7 @@ impl<W: Wait> MountState<W> {
         length: usize,
         operation: Operation,
         empty_file: bool,
-    ) -> Result<DataGrant, Errno> {
+    ) -> Result<DataGrant, AdmissionError> {
         self.nodes.get(&ino).ok_or(Errno(EIO))?;
         // The open generation's pages only: a page copied from a frozen
         // generation is a new page of this one and needs its own block.
@@ -1021,8 +1052,7 @@ impl<W: Wait> MountState<W> {
             let blocks = (1 + metadata + 4 + (first_write_space - self.first_write_space))
                 .checked_add(unpaid).ok_or(Errno(ENOSPC))?;
             self.grants.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
-            let grant = self.reservations.reserve(self.durable.free_blocks, blocks, operation)
-                .map_err(|_| Errno(ENOSPC))?;
+            let grant = self.reserve_blocks(blocks, operation)?;
             return Ok(DataGrant { grant, metadata: metadata + 4, first_write_space, funded_debt });
         }
         // A run inserts at most 256 data EXTENTs and can retain up to 510
@@ -1055,9 +1085,8 @@ impl<W: Wait> MountState<W> {
         // durable.free_blocks includes the allocations covered by both the
         // publishing generation and the open generation. Do not debit them
         // a second time before asking the ledger for a grant.
-        self.reservations.reserve(self.durable.free_blocks, blocks, operation)
+        self.reserve_blocks(blocks, operation)
             .map(|grant| DataGrant { grant, metadata, first_write_space: self.first_write_space, funded_debt })
-            .map_err(|_| Errno(ENOSPC))
     }
     fn finish_data(&mut self, ino: u64, reservation: DataGrant, result: Result<(), Errno>) -> Result<(), Errno> {
         let DataGrant { grant, metadata, first_write_space, funded_debt } = reservation;
@@ -1077,7 +1106,7 @@ impl<W: Wait> MountState<W> {
         }
         result
     }
-    fn reserve_create(&mut self, dir: u64, inline: bool) -> Result<Grant, Errno> {
+    fn reserve_create(&mut self, dir: u64, inline: bool) -> Result<Grant, AdmissionError> {
         if self.files.log.is_some() {
             // The next generation will replay this mutation against a
             // different physical tree. Keep the replay-safe bound there.
@@ -1110,8 +1139,7 @@ impl<W: Wait> MountState<W> {
         let (_, unpaid) = self.unpaid_metadata(&paths)?;
         let blocks = blocks.checked_add(unpaid).ok_or(Errno(ENOSPC))?;
         self.grants.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
-        self.reservations.reserve(self.durable.free_blocks, blocks, Operation::Allocate)
-            .map_err(|_| Errno(ENOSPC))
+        self.reserve_blocks(blocks, Operation::Allocate)
     }
     /// Reserve COW paths and structural edits before a namespace mutation.
     /// Each item edit allows a split/merge path, its COW siblings and a new
@@ -1124,7 +1152,7 @@ impl<W: Wait> MountState<W> {
         new_inode: bool,
         orphans: bool,
         operation: Operation,
-    ) -> Result<Grant, Errno> {
+    ) -> Result<Grant, AdmissionError> {
         let result = self.files.metadata_reservation_paths(objects, new_inode, orphans);
         let paths = self.observed(result)?;
         let fs_levels = edits.max(3).checked_mul(4 * (paths.fs_height + 2))
@@ -1142,8 +1170,7 @@ impl<W: Wait> MountState<W> {
         let (_, unpaid) = self.unpaid_metadata(&paths)?;
         let blocks = blocks.checked_add(unpaid).ok_or(Errno(ENOSPC))?;
         self.grants.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
-        self.reservations.reserve(self.durable.free_blocks, blocks, operation)
-            .map_err(|_| Errno(ENOSPC))
+        self.reserve_blocks(blocks, operation)
     }
     fn finish_metadata<T>(&mut self, objects: &[u64], mut grant: Grant, result: Result<T, ops::Error>) -> Result<T, Errno> {
         if result.is_ok() {
@@ -1347,6 +1374,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         *publication = Some(durable.clone());
         let store = cache.store(device.clone(), &durable);
         let roots = recover::space_items(&store, &durable).map_err(|_| Errno(EIO))?;
+        let durable_pending = PendingSummary::from_items(&roots).ok();
         let mut selected = None;
         for (key, bytes) in roots.iter().filter(|(key, _)| key.item_type == format::ROOT) {
             let root = Root::decode(bytes).map_err(|_| Errno(EIO))?;
@@ -1392,6 +1420,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 metadata_reserved: 0,
                 first_write_space: 0,
                 durable,
+                durable_pending,
                 failed: false,
                 failure: None,
                 metadata_error: None,
@@ -1645,7 +1674,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         cost: CostOp,
         mut state: MountGuard<'a, MountState<W>>,
         mut admit: impl FnMut() -> Result<MountGuard<'a, MountState<W>>, Errno>,
-        mut reserve: impl FnMut(&mut MountState<W>) -> Result<T, Errno>,
+        mut reserve: impl FnMut(&mut MountState<W>) -> Result<T, AdmissionError>,
     ) -> Result<(MountGuard<'a, MountState<W>>, T), Errno> {
         #[cfg(test)]
         let mut admission = measurement::Admission::new();
@@ -1657,16 +1686,21 @@ impl<W: Wait + 'static> BreenFs<W> {
                 reserve(&mut state)
             };
             #[cfg(test)]
-            admission.attempt(result.as_ref().err().map(|error| error.0));
-            match result {
+            admission.attempt(result.as_ref().err().map(|error| error.errno().0));
+            let denial = match result {
                 Ok(grant) => return Ok((state, grant)),
-                Err(error) if error == Errno(ENOSPC) => (),
-                Err(error) => return Err(error),
-            }
+                Err(AdmissionError::Denied(denial)) => denial,
+                Err(AdmissionError::Other(error)) => {
+                    if error == Errno(ENOSPC) {
+                        self.note_refusal(&state, cost, state.durable.generation, None);
+                    }
+                    return Err(error);
+                }
+            };
             if limit.is_none() && state.pending.is_some() {
                 // A frozen generation's releases and grants settle only at its
                 // install. Wait for it before fixing this refusal's bound.
-                self.note_refusal(&state, cost, state.durable.generation.saturating_add(1));
+                self.note_refusal(&state, cost, state.durable.generation.saturating_add(1), Some(denial));
                 let observed = self.inner.signal.epoch();
                 drop(state);
                 self.mutation_wait(cost, observed, None)?;
@@ -1679,8 +1713,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                     Some(last) => last,
                     None => {
                         let sb = &state.durable;
-                        let store = self.inner.cache.store(self.inner.device.clone(), sb);
-                        let promotion = super::space::pending_promotion_generation(&store, sb.space_root)
+                        let promotion = state.durable_pending.ok_or(Errno(EIO))?.promotion_generation()
                             .map_err(|_| Errno(EIO))?;
                         // Capture a finite publication bound on the first refusal.
                         // The open generation can hold admission capacity without
@@ -1688,8 +1721,10 @@ impl<W: Wait + 'static> BreenFs<W> {
                         let retained = (!state.grants.is_empty())
                             .then(|| sb.generation.checked_add(1).ok_or(Errno(ENOSPC)))
                             .transpose()?;
-                        let generation = promotion.into_iter().chain(retained).max()
-                            .ok_or(Errno(ENOSPC))?;
+                        let Some(generation) = promotion.into_iter().chain(retained).max() else {
+                            self.note_refusal(&state, cost, sb.generation, Some(denial));
+                            return Err(Errno(ENOSPC));
+                        };
                         // A6 bounds release generations by this superblock's
                         // generation, including the detached publication's view.
                         if generation > sb.generation.saturating_add(2) {
@@ -1703,7 +1738,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                     }
                 }
             };
-            self.note_refusal(&state, cost, last);
+            self.note_refusal(&state, cost, last, Some(denial));
             if state.durable.generation >= last { return Err(Errno(ENOSPC)); }
             let observed = self.inner.signal.epoch();
             drop(state);
@@ -1721,28 +1756,25 @@ impl<W: Wait + 'static> BreenFs<W> {
             state = admit()?;
         }
     }
-    /// E24 coordinator 621(y2): a bounded receipt of one refusal, emitted
-    /// with the x10 mutation_cost records. Only the first few per installed
-    /// generation read the PENDING range; the rest return at once. Changes
-    /// no admission, reservation or publication state.
-    fn note_refusal(&self, state: &MountState<W>, cost: CostOp, release_generation: u64) {
+    /// E24 coordinator 621(y2): record the denial using the installed
+    /// summary and the ledger snapshot taken at the admission decision.
+    fn note_refusal(
+        &self, state: &MountState<W>, cost: CostOp, release_generation: u64,
+        denial: Option<DeniedGrant>,
+    ) {
         let sb = &state.durable;
         if !self.inner.costs.refusal_wanted(sb.generation) {
             return;
         }
-        let store = self.inner.cache.store(self.inner.device.clone(), sb);
-        let pending = super::space::pending_census(&store, sb.space_root).ok();
-        let (charged, request) = state.reservations.refusal();
         let grants_next = state.grants.blocks;
         self.inner.costs.refusal(cost, &mutation_cost::Refusal {
             generation: sb.generation,
             release_generation,
             free: sb.free_blocks,
             reserve: sb.global_reserve,
-            pending,
-            grants_n: charged.saturating_sub(grants_next),
+            pending: state.durable_pending.and_then(PendingSummary::census),
+            accounting: denial.map(|d| (d.charged.saturating_sub(grants_next), d.request)),
             grants_next,
-            request,
         });
     }
     /// Write `bytes` under one admission. The caller admitted them.
@@ -2197,6 +2229,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             Ok(prepared) => Arc::new(prepared),
             Err(_) => return self.abandon(frozen, "prepare-files", Errno(EIO)),
         };
+        let durable_pending = frozen.files.pending_summary();
         // N's next view, built here on frozen N; install only swaps it in.
         let sb = prepared.superblock();
         let store = self
@@ -2263,6 +2296,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                     committer.install(sb);
                 }
                 state.durable = sb.clone();
+                state.durable_pending = Some(durable_pending);
                 // With the free count that excludes N's allocations, stop
                 // charging N's grants for them; each is released below (M3).
                 ledger.retire(grants.blocks);
@@ -3208,7 +3242,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 .expected
                 .is_some_and(|expected| current.attrs != expected)
             {
-                return Err(Errno(EAGAIN));
+                return Err(Errno(EAGAIN).into());
             }
             let grant = state.reserve_metadata(&[ino], 1, false, false, Operation::Allocate)?;
 
@@ -3274,15 +3308,15 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         state.writable()?;
         let (mut state, (attrs, bits, grant)) = self.reserve_with_pressure(CostOp::Create, state, || Ok(self.mutation_lock(CostOp::Create)), |state| {
             match state.files.lookup(dir, name) {
-                Ok(_) => return Err(Errno(EEXIST)),
+                Ok(_) => return Err(Errno(EEXIST).into()),
                 Err(ops::Error::ENOENT) => (),
-                Err(e) => return state.observed(Err(e)),
+                Err(e) => return state.observed(Err(e)).map_err(Into::into),
             }
             let attrs = check(state.directory(dir)?)?;
             let bits = match kind {
                 NodeKind::Regular => 0o100000,
                 NodeKind::Socket => 0o140000,
-                _ => return Err(Errno(EOPNOTSUPP)),
+                _ => return Err(Errno(EOPNOTSUPP).into()),
             };
             let grant = state.reserve_create(dir, false)?;
             Ok((attrs, bits, grant))
@@ -3336,7 +3370,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             let parent = state.directory(dir)?;
             let source = state.attrs(ino)?;
             if source.kind == NodeKind::Directory {
-                return Err(Errno(EPERM));
+                return Err(Errno(EPERM).into());
             }
             check(parent, source)?;
             let grant = state.reserve_metadata(&[ino, dir], 4, false, false, Operation::Allocate)?;
@@ -3358,20 +3392,20 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             let victim = state.observed(result)?;
             let attrs = state.attrs(victim)?;
             if !which.directory && attrs.kind == NodeKind::Directory {
-                return Err(Errno(EISDIR));
+                return Err(Errno(EISDIR).into());
             }
             if which.expected != victim
                 || which.owner != attrs.attrs.uid
                 || which.parent != parent.attrs
             {
-                return Err(Errno(EAGAIN));
+                return Err(Errno(EAGAIN).into());
             }
             // Match ext2's held-directory policy before testing emptiness.
             if which.directory
                 && attrs.kind == NodeKind::Directory
                 && state.nodes.get(&victim).is_some_and(|entry| entry.node.strong_count() != 0)
             {
-                return Err(Errno(EBUSY));
+                return Err(Errno(EBUSY).into());
             }
             let grant = state.reserve_metadata(
                 &[dir, victim], 5, false, !which.directory,
@@ -3405,7 +3439,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         state.writable()?;
         let (mut state, (grant, objects, replaced)) = self.reserve_with_pressure(CostOp::Rename, state, || Ok(self.mutation_lock(CostOp::Rename)), |state| {
             if mode == RenameMode::Exchange {
-                return Err(Errno(EINVAL));
+                return Err(Errno(EINVAL).into());
             }
             let parent = state.directory(from_dir)?;
             let dest_parent = state.directory(to_dir)?;
@@ -3415,11 +3449,11 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             let dest = match state.files.lookup(to_dir, to) {
                 Ok(ino) => Some(state.attrs(ino)?),
                 Err(ops::Error::ENOENT) => None,
-                Err(e) => return state.observed(Err(e)),
+                Err(e) => return state.observed(Err(e)).map_err(Into::into),
             };
             check(parent, dest_parent, source, dest)?;
             if mode == RenameMode::NoReplace && dest.is_some() {
-                return Err(Errno(EEXIST));
+                return Err(Errno(EEXIST).into());
             }
             let mut objects = alloc::vec![from_dir, to_dir, source.ino];
             if let Some(dest) = dest { objects.push(dest.ino); }
@@ -3470,7 +3504,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 let inode = state.regular(node.ino)?;
                 check(state.attrs(node.ino)?)?;
                 if size > (1 << 63) - 4096 {
-                    return Err(Errno(EFBIG));
+                    return Err(Errno(EFBIG).into());
                 }
                 if size == inode.size
                     && (!clear_setid || inode.mode & content_privilege(inode.mode) == 0)
@@ -3561,7 +3595,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         let (mut state, (mut inode, length, grant)) = self.reserve_with_pressure(
             CostOp::Writeback, state, || self.admit(touched_bytes(bounce.len()), CostOp::Writeback), |state| {
                 if !mapping.writable {
-                    return Err(Errno(EROFS));
+                    return Err(Errno(EROFS).into());
                 }
                 let inode = state.regular(node.ino)?;
                 let length = inode.size.saturating_sub(offset).min(bounce.len() as u64) as usize;
@@ -3632,8 +3666,8 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                     let records = state.observed(result)?;
                     let exists = records.iter().any(|x| x.name == name);
                     match mode {
-                        XattrSet::Create if exists => return Err(Errno(EEXIST)),
-                        XattrSet::Replace if !exists => return Err(Errno(ENODATA)),
+                        XattrSet::Create if exists => return Err(Errno(EEXIST).into()),
+                        XattrSet::Replace if !exists => return Err(Errno(ENODATA).into()),
                         _ => (),
                     }
                     let grant = state.reserve_metadata(&[ino], 2, false, false, Operation::Allocate)?;
@@ -3649,7 +3683,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                     let result = state.files.list_xattrs(ino);
                     let records = state.observed(result)?;
                     if !records.iter().any(|x| x.name == name) {
-                        return Err(Errno(ENODATA));
+                        return Err(Errno(ENODATA).into());
                     }
                     let grant = state.reserve_metadata(&[ino], 2, false, false, Operation::RemoveXattr)?;
                     Ok(grant)

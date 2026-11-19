@@ -483,8 +483,7 @@ fn interleave_pressure<T>(fs: &BreenFs<NoWait>, cut: FreezeCut, inspect: impl Fn
             let state = fs.mutation_lock(CostOp::Create);
             let result = fs.reserve_with_pressure(
                 CostOp::Create, state, || Ok(fs.mutation_lock(CostOp::Create)), |state| {
-                    state.reservations.reserve(state.durable.free_blocks, u64::MAX, Operation::Allocate)
-                        .map_err(|_| Errno(ENOSPC))
+                    state.reserve_blocks(u64::MAX, Operation::Allocate)
                 },
             );
             assert!(matches!(result, Err(Errno(ENOSPC))));

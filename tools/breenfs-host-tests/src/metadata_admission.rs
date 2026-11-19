@@ -191,12 +191,7 @@ fn retained_grants_publish_before_admission_refuses_without_pending_ranges() {
     let admitted = fs.reserve_with_pressure(
         super::CostOp::Create, state,
         || Ok(fs.inner.state.lock()),
-        |state| {
-            state
-                .reservations
-                .reserve(state.durable.free_blocks, blocks, Operation::Allocate)
-                .map_err(|_| Errno(ENOSPC))
-        },
+        |state| state.reserve_blocks(blocks, Operation::Allocate),
     );
     assert!(
         admitted.is_ok(),

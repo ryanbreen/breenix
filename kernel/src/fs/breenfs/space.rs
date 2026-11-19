@@ -230,6 +230,7 @@ pub fn add_free<S: NodeStore>(
 /// Last publication needed to include the current PENDING ranges in FREE.
 /// This observes the quarantine; promotion still goes through promote_pending.
 /// Admission snapshots this bound once, rather than chasing later releases.
+#[cfg(test)]
 pub fn pending_promotion_generation<S: NodeStore>(
     store: &S,
     root: BlockPtr,
@@ -251,17 +252,45 @@ pub fn pending_promotion_generation<S: NodeStore>(
     Ok(generation)
 }
 
-/// PENDING blocks and the oldest released_generation among them (0 for an
-/// empty PENDING range), for admission's refusal receipt (E24 coordinator 621(y2)).
-pub fn pending_census<S: NodeStore>(store: &S, root: BlockPtr) -> Result<(u64, u64), Error> {
-    let (mut blocks, mut oldest) = (0u64, 0u64);
-    for (_, bytes) in range(store, root, PENDING_OBJECT, format::PENDING)? {
-        preemption_point();
-        let pending = Pending::decode(&bytes)?;
-        blocks = blocks.checked_add(pending.length).ok_or(Error::Invalid)?;
-        oldest = if oldest == 0 { pending.released_generation } else { oldest.min(pending.released_generation) };
+/// A fixed-size account of an installed generation's quarantine.
+#[derive(Clone, Copy, Default)]
+pub struct PendingSummary {
+    blocks: u128,
+    oldest: u64,
+    newest: u64,
+}
+impl PendingSummary {
+    /// At mount, reuse the records already read by recovery.
+    pub fn from_items(items: &[(Key, Vec<u8>)]) -> Result<Self, Error> {
+        let mut summary = Self::default();
+        for (key, bytes) in items {
+            preemption_point();
+            if key.object != PENDING_OBJECT || key.item_type != format::PENDING {
+                continue;
+            }
+            let pending = Pending::decode(bytes)?;
+            end(key.offset, pending.length)?;
+            if pending.released_generation == 0 {
+                return Err(Error::Invalid);
+            }
+            summary.include(pending.length, pending.released_generation);
+        }
+        Ok(summary)
     }
-    Ok((blocks, oldest))
+    pub(super) fn include(&mut self, length: u64, generation: u64) {
+        self.blocks += u128::from(length);
+        self.oldest = if self.oldest == 0 { generation } else { self.oldest.min(generation) };
+        self.newest = self.newest.max(generation);
+    }
+    pub fn promotion_generation(self) -> Result<Option<u64>, Error> {
+        if self.newest == 0 {
+            return Ok(None);
+        }
+        self.newest.checked_add(2).map(Some).ok_or(Error::Invalid)
+    }
+    pub fn census(self) -> Option<(u64, u64)> {
+        Some((u64::try_from(self.blocks).ok()?, self.oldest))
+    }
 }
 
 /// Commit-time conversion of quarantined space, even with ample FREE space.
@@ -270,7 +299,8 @@ pub fn promote_pending<S: NodeStore>(
     store: &mut S,
     root: &mut BlockPtr,
     generation: u64,
-) -> Result<(), Error> {
+) -> Result<PendingSummary, Error> {
+    let mut pending_summary = PendingSummary::default();
     for (k, bytes) in range(store, *root, PENDING_OBJECT, format::PENDING)? {
         preemption_point();
         let pending = Pending::decode(&bytes)?;
@@ -284,9 +314,11 @@ pub fn promote_pending<S: NodeStore>(
         {
             btree::delete(store, root, k)?;
             add_free(store, root, k.offset, pending.length)?;
+        } else {
+            pending_summary.include(pending.length, pending.released_generation);
         }
     }
-    Ok(())
+    Ok(pending_summary)
 }
 
 /// Allocate a whole REF. Prefer existing FREE space; only if that cannot fit,
@@ -427,7 +459,8 @@ pub fn increment<S: NodeStore>(
 
 /// Drop an incoming reference in commit G. `referenced_children` means an FS
 /// node still owns internal children or data extents. DEAD retains those outgoing
-/// references until the reaper processes them; an empty node/data becomes PENDING.
+/// references until the reaper processes them. Return whether this release
+/// put a range in PENDING.
 pub fn release<S: NodeStore>(
     store: &mut S,
     root: &mut BlockPtr,
@@ -435,7 +468,7 @@ pub fn release<S: NodeStore>(
     length: u64,
     generation: u64,
     referenced_children: bool,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
     let mut r = reference(store, *root, start, length)?.ok_or(Error::Invalid)?;
     if generation < r.alloc_generation || (referenced_children && r.kind != Kind::FsNode as u8) {
         return Err(Error::Invalid);
@@ -443,24 +476,24 @@ pub fn release<S: NodeStore>(
     r.refcount -= 1;
     if r.refcount > 0 {
         btree::insert(store, root, key(start, format::REF, length), &r.encode())?;
-    } else {
-        btree::delete(store, root, key(start, format::REF, length))?;
-        if referenced_children {
-            btree::insert(store, root, key(start, format::DEAD, 4), &[])?;
-        } else {
-            btree::insert(
-                store,
-                root,
-                key(PENDING_OBJECT, format::PENDING, start),
-                &Pending {
-                    length,
-                    released_generation: generation,
-                }
-                .encode(),
-            )?;
-        }
+        return Ok(false);
     }
-    Ok(())
+    btree::delete(store, root, key(start, format::REF, length))?;
+    if referenced_children {
+        btree::insert(store, root, key(start, format::DEAD, 4), &[])?;
+    } else {
+        btree::insert(
+            store,
+            root,
+            key(PENDING_OBJECT, format::PENDING, start),
+            &Pending {
+                length,
+                released_generation: generation,
+            }
+            .encode(),
+        )?;
+    }
+    Ok(!referenced_children)
 }
 
 /// Collect the DEAD address index once when opening a mount. REF and DEAD keys

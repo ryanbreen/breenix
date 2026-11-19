@@ -106,18 +106,17 @@ impl Slot {
 /// frozen generation's grants until its install retires them.
 pub(super) struct Refusal {
     pub generation: u64,
-    /// The install this refusal waits for; at most `generation` when no
-    /// publication can release anything further for it.
+    /// Upper bound on the publications this refusal can wait for, or
+    /// `generation` when there is no release to wait for.
     pub release_generation: u64,
     pub free: u64,
     pub reserve: u64,
-    /// PENDING blocks and the oldest released_generation; unset after a failed read.
+    /// PENDING blocks and the oldest released_generation, from the installed view.
     pub pending: Option<(u64, u64)>,
-    pub grants_n: u64,
     pub grants_next: u64,
-    /// The ledger's last refused request. An ENOSPC raised before the
-    /// ledger (an estimate overflow) leaves the previous value here.
-    pub request: u64,
+    /// Charged grants beyond the open generation and the denied request.
+    /// An estimate error has no ledger decision.
+    pub accounting: Option<(u64, u64)>,
 }
 /// Receipts per installed generation, and the ring's size.
 const REFUSALS_PER_PUBLICATION: u64 = 8;
@@ -178,8 +177,9 @@ impl Costs {
         let seq = refusals.recorded.load(Ordering::Relaxed) + 1;
         let slot = &refusals.slots[(seq as usize - 1) % REFUSAL_RING];
         let (pending, oldest) = refusal.pending.unwrap_or((UNREADABLE, UNREADABLE));
+        let (grants_n, request) = refusal.accounting.unwrap_or((0, 0));
         let values = [op as u64, refusal.generation, refusal.release_generation, refusal.free,
-            refusal.reserve, pending, oldest, refusal.grants_n, refusal.grants_next, refusal.request];
+            refusal.reserve, pending, oldest, grants_n, refusal.grants_next, request];
         // Seqlock: a reader that sees the same nonzero seq before and after
         // its loads has read one receipt whole.
         slot.seq.store(0, Ordering::Relaxed);
@@ -208,9 +208,15 @@ impl Costs {
         let kept = &mut kept[..count];
         kept.sort_unstable_by_key(|(seq, _)| *seq);
         for (seq, v) in kept.iter() {
-            writeln!(text, "admission_refusal mount={mount} root={root} seq={seq} op={} generation={} release_generation={} free={} reserve={} pending={} pending_oldest={} grants_n={} grants_next={} request={}",
+            write!(text, "admission_refusal mount={mount} root={root} seq={seq} op={} generation={} release_generation={} free={} reserve={} pending={} pending_oldest={}",
                 OPS.get(v[0] as usize).copied().unwrap_or("unknown"), v[1], v[2], v[3], v[4],
-                NumberOr(v[5]), NumberOr(v[6]), v[7], v[8], v[9])?;
+                NumberOr(v[5]), NumberOr(v[6]))?;
+            // A zero-block request cannot be denied by the ledger.
+            if v[9] != 0 {
+                writeln!(text, " grants_n={} grants_next={} request={}", v[7], v[8], v[9])?;
+            } else {
+                writeln!(text, " grants_n=unavailable grants_next={} request=unavailable reason=estimate", v[8])?;
+            }
         }
         Ok(())
     }
