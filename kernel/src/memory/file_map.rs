@@ -372,6 +372,14 @@ struct WritebackReceipt {
     generation: Option<u64>,
 }
 
+pub(crate) struct CacheRetention {
+    pub bindings: usize,
+    pub dirty: usize,
+    pub staged: usize,
+    pub first_generation: u64,
+    pub last_generation: u64,
+}
+
 struct WritebackPage {
     index: u64,
     frame: PhysFrame,
@@ -646,6 +654,31 @@ impl MapState {
     pub(crate) fn nonempty(&self) -> bool {
         let inner = self.state.inner.lock();
         !inner.pages.is_empty() || !inner.poisoned.is_empty() || !inner.bindings.is_empty()
+    }
+
+    pub(crate) fn cache_pages(&self) -> usize {
+        let inner = self.state.inner.lock();
+        inner.pages.len() + inner.bindings.iter().map(|binding| binding.parked.len()).sum::<usize>()
+    }
+
+    pub(crate) fn cache_retention(&self) -> CacheRetention {
+        let inner = self.state.inner.lock();
+        let mut report = CacheRetention {
+            bindings: inner.bindings.len(), dirty: 0, staged: 0,
+            first_generation: 0, last_generation: 0,
+        };
+        for (_, page) in inner.pages.entries.iter().filter(|(_, page)| page.dirty) {
+            report.dirty += 1;
+            if let Some(generation) = page.written.filter(|receipt| receipt.version == page.gen)
+                .and_then(|receipt| receipt.generation)
+            {
+                report.first_generation = if report.staged == 0 { generation }
+                    else { report.first_generation.min(generation) };
+                report.last_generation = report.last_generation.max(generation);
+                report.staged += 1;
+            }
+        }
+        report
     }
 
     /// Acquire only outside filesystem and PROCESS_MANAGER guards. The caller

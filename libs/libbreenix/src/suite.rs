@@ -1399,6 +1399,7 @@ impl Suite {
             emit(&line);
             if !reclaimed {
                 memory_failure_detail(self.id);
+                sequence::record_memory_failure(self.id);
             }
             reclaimed
         };

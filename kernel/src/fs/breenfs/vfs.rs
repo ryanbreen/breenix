@@ -2720,6 +2720,74 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         }
         Ok(())
     }
+    #[cfg(not(test))]
+    fn report_mapping_cache(&self, text: &mut alloc::string::String) -> Result<(), Errno> {
+        use core::fmt::Write;
+
+        const LIMIT: usize = 16;
+        struct Row {
+            ino: u64,
+            pages: usize,
+            cache: crate::memory::file_map::CacheRetention,
+            pins: usize,
+            service_pin: bool,
+            frozen: u64,
+            installed: u64,
+            stale: u64,
+            open: u64,
+        }
+        let mut largest: [Option<(usize, Arc<VNode>)>; LIMIT] = [const { None }; LIMIT];
+        let mut rows = [const { None }; LIMIT];
+        let (durable, open, worker, queued) = {
+            let state = self.inner.state.lock();
+            for entry in state.nodes.values() {
+                preemption_point();
+                let Some(node) = entry.node.upgrade() else { continue };
+                let pages = node.map.cache_pages();
+                if pages == 0 { continue; }
+                let slot = largest.partition_point(|row| row.as_ref().is_some_and(|(held, _)| *held >= pages));
+                if slot < LIMIT {
+                    largest[slot..].rotate_right(1);
+                    largest[slot] = Some((pages, node));
+                }
+            }
+            // The layer counts below describe the private copies of mapped data.
+            let layer_pages = |layer: Option<&Arc<FrozenPages>>, ino| {
+                layer.and_then(|layer| layer.nodes.get(&ino))
+                    .map_or(0, |node| node.pages.bytes() / BLOCK_SIZE as u64)
+            };
+            for (row, slot) in rows.iter_mut().zip(largest.iter()) {
+                preemption_point();
+                let Some((pages, node)) = slot else { break };
+                let ino = node.ino;
+                *row = Some(Row {
+                    ino,
+                    pages: *pages,
+                    cache: node.map.cache_retention(),
+                    pins: Arc::strong_count(node) - 1, // Exclude this report.
+                    service_pin: state.nodes.get(&ino).is_some_and(|entry| entry.mapped.is_some()),
+                    frozen: layer_pages(state.pending.as_ref(), ino),
+                    installed: layer_pages(state.installed.as_ref(), ino),
+                    stale: layer_pages(state.stale_views.as_ref().and_then(|(_, pages)| pages.as_ref()), ino),
+                    open: state.dirty.get(&ino).map_or(0, |node| node.pages.bytes() / BLOCK_SIZE as u64),
+                });
+            }
+            (
+                state.durable.generation, state.open_generation(),
+                u8::from(self.inner.signal.started.load(Ordering::Acquire)),
+                u8::from(self.inner.signal.mappings.load(Ordering::Acquire)),
+            )
+        };
+        drop(largest);
+        writeln!(text, "durable={durable} open={open} worker={worker} queued={queued} view_frame_refs=0")
+            .map_err(|_| Errno(ENOMEM))?;
+        for Row { ino, pages, cache, pins, service_pin, frozen, installed, stale, open } in rows.into_iter().flatten() {
+            writeln!(text, "ino={ino} pages={pages} bindings={} dirty={} staged={} staged_first={} staged_last={} pins={pins} service_pin={} frozen_pages={frozen} installed_pages={installed} stale_pages={stale} open_pages={open}",
+                cache.bindings, cache.dirty, cache.staged, cache.first_generation, cache.last_generation,
+                u8::from(service_pin)).map_err(|_| Errno(ENOMEM))?;
+        }
+        Ok(())
+    }
     fn mutation_costs(&self, name: &str, text: &mut alloc::string::String) -> Result<(), Errno> {
         use core::fmt::Write;
         writeln!(text, "{name} breenfs mutation_costs=1").map_err(|_| Errno(ENOMEM))?;

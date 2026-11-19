@@ -306,6 +306,9 @@ impl<F: FileSystem + ?Sized> FileSystem for FaultFs<F> {
     ) -> Result<(), Errno> {
         self.inner.report(report, name, text)
     }
+    fn report_mapping_cache(&self, text: &mut alloc::string::String) -> Result<(), Errno> {
+        self.inner.report_mapping_cache(text)
+    }
     fn read_only(&self) -> Result<bool, Errno> {
         self.inner.read_only()
     }
