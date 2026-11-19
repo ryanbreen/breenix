@@ -452,6 +452,45 @@ pub(super) fn may_grow_root<S: NodeStore>(store: &S, root: BlockPtr, growing_ite
     Ok(root.level == 0 || store.read_node(root)?.children.len() + growing_items > MAX_INTERNAL)
 }
 
+#[derive(Clone, Copy)]
+pub struct RootGrowth {
+    level: u64,
+    first_split: u64,
+}
+impl RootGrowth {
+    pub fn read<S: NodeStore>(store: &S, root: BlockPtr) -> Result<Self, Error> {
+        let level = u64::from(root.level);
+        let first_split = if level == 0 { 1 } else {
+            (MAX_INTERNAL + 1 - store.read_node(root)?.children.len()) as u64
+        };
+        Ok(Self { level, first_split })
+    }
+    /// Each growing edit adds at most one child at the current root. A
+    /// split starts a two-child root, even after a prior level collapsed.
+    pub fn level_after(self, edits: u64) -> u64 {
+        let mut level = self.level;
+        if edits >= self.first_split {
+            level += 1 + (edits - self.first_split) / (MAX_INTERNAL as u64 - 1);
+        }
+        level.min(u64::from(MAX_HEIGHT - 1))
+    }
+}
+
+/// Bound the installed SPACE topology when preparation starts with a leaf
+/// or a one-level tree. `growth_bytes` bounds the additional leaf payload
+/// (including slots). A split of SPACE items leaves both halves at least
+/// quarter full: each item weighs less than a quarter of the node. Below
+/// that occupancy, a leaf merges or is redistributed with a sibling.
+/// Charge the old leaves separately for any sparse leaves they can leave.
+/// If this cannot exclude a second internal level, keep the general path.
+pub fn shallow_space_bound(level: u64, nodes: u64, growth_bytes: u64) -> Option<u64> {
+    if level > 1 { return None; }
+    let old_leaves = nodes - level;
+    let payload = old_leaves * CAPACITY as u64 + growth_bytes;
+    let leaves = old_leaves + payload / (CAPACITY as u64 / 4);
+    (leaves <= MAX_INTERNAL as u64).then_some(leaves + 1)
+}
+
 /// Return items in an inclusive key range, visiting only intersecting branches.
 pub fn range<S: NodeStore>(
     store: &S,

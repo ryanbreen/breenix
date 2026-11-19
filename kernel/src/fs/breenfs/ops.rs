@@ -344,6 +344,11 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     pub fn reservation_paths(&self, ino: u64) -> Result<txn::ReservationPaths, Error> {
         Ok(self.txn.reservation_paths(self.root.root, ino)?)
     }
+    pub fn root_pointer(&self) -> BlockPtr { self.root.root }
+    pub fn root_growth(&self, root: BlockPtr) -> Result<btree::RootGrowth, Error> {
+        Ok(btree::RootGrowth::read(&self.txn.view(), root)?)
+    }
+    pub fn has_orphans(&self) -> bool { !self.orphans.is_empty() }
     /// Namespace edits can reach parents, victims, the next inode and ORPHAN.
     /// Count their COW paths before publishing any item changes. Shared ancestors
     /// may be counted more than once, making this an upper bound.

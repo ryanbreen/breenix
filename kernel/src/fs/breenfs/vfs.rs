@@ -382,6 +382,9 @@ struct MountState<W: Wait + 'static> {
     grants: Grants,
     metadata_reserved: u64,
     first_write_space: u64,
+    // SPACE funded independently of the FS allocations the scratch log owes.
+    replay_space: u64,
+    drain_growth: u64,
     signal: Arc<CommitSignal>,
 }
 // Mapping pins are held separately until cache retirement or stopped-service
@@ -413,6 +416,15 @@ struct DataGrant {
     metadata: u64,
     first_write_space: u64,
     funded_debt: u64,
+    replay_space: Option<u64>,
+    drain_growth: u64,
+}
+struct MetadataGrant {
+    grant: Grant,
+    replay_space: Option<u64>,
+}
+impl From<Grant> for MetadataGrant {
+    fn from(grant: Grant) -> Self { Self { grant, replay_space: None } }
 }
 #[derive(Debug)]
 struct DeniedGrant {
@@ -513,6 +525,13 @@ pub(crate) const RETAIN_OPEN_STEPS: usize = 8;
 struct OpenFiles<W: Wait + 'static> {
     files: FilesView<W>,
     log: Option<VecDeque<Change>>,
+    replay_bounds: Option<ReplayBounds>,
+}
+struct ReplayBounds {
+    frozen_root: format::BlockPtr,
+    root_growth: Option<super::btree::RootGrowth>,
+    growing_edits: u64,
+    space_growth_bytes: u64,
 }
 impl<W: Wait + 'static> Deref for OpenFiles<W> {
     type Target = FilesView<W>;
@@ -579,9 +598,26 @@ fn merge_inode(current: &mut Inode, before: &Inode, after: &Inode) {
 }
 impl<W: Wait + 'static> OpenFiles<W> {
     fn record(&mut self, change: impl FnOnce() -> Change) {
-        if let Some(log) = self.log.as_mut() { log.push_back(change()); }
+        let Some(log) = self.log.as_mut() else { return; };
+        let change = change();
+        if let Some(bounds) = self.replay_bounds.as_mut() {
+            match &change {
+                Change::Create { target, .. } => {
+                    bounds.growing_edits = bounds.growing_edits.saturating_add(3 + u64::from(target.is_some()));
+                }
+                Change::Inode { .. } | Change::Open { .. } | Change::Retain(_) => (),
+                // The tighter bound covers simple creates and first writes.
+                // Other mutations can alter their replay paths and debt.
+                _ => self.replay_bounds = None,
+            }
+        }
+        log.push_back(change);
     }
     pub(super) fn put_inode(&mut self, ino: u64, inode: Inode) -> Result<(), ops::Error> {
+        self.replay_bounds = None;
+        self.put_reserved_inode(ino, inode)
+    }
+    fn put_reserved_inode(&mut self, ino: u64, inode: Inode) -> Result<(), ops::Error> {
         let before = if self.log.is_some() { Some(self.files.stored_inode(ino)?) } else { None };
         self.files.put_inode(ino, inode)?;
         if let Some(before) = before { self.record(|| Change::Inode { ino, before, after: inode }); }
@@ -874,6 +910,7 @@ impl<W: Wait> MountState<W> {
             if let Some(next) = self.next_files.take() {
                 let scratch = core::mem::replace(&mut self.files.files, next);
                 self.files.log = None;
+                self.files.replay_bounds = None;
                 self.inodes.entries.fill(None);
                 // Each install is preceded by a freeze, which takes this slot.
                 self.stale_views = Some((scratch, self.installed.take()));
@@ -996,16 +1033,41 @@ impl<W: Wait> MountState<W> {
     /// Admission already includes the mounted ROOT update. Add any other
     /// accumulated debt that previous grants did not retain, such as COW
     /// from applying an atime before opening or statting a file.
-    fn unpaid_metadata(&mut self, paths: &super::txn::ReservationPaths) -> Result<(u64, u64), Errno> {
+    fn unpaid_metadata(&mut self, paths: &super::txn::ReservationPaths, space: u64) -> Result<(u64, u64), Errno> {
         let root_update = Estimate {
             space_changes: 3,
             space_height: paths.space_height,
             space_nodes: paths.space_nodes,
             ..Estimate::default()
-        }.blocks().map_err(|_| Errno(ENOSPC))?;
-        let result = self.files.metadata_debt();
+        };
+        let root_update = Self::metadata_blocks(root_update, space)?;
+        let result = self.metadata_debt(space);
         let debt = self.observed(result)?;
         Ok((debt, debt.saturating_sub(self.metadata_reserved.max(root_update))))
+    }
+    fn metadata_debt(&self, space: u64) -> Result<u64, ops::Error> {
+        if space == 0 { return self.files.metadata_debt(); }
+        Self::metadata_blocks(self.files.metadata_estimate()?, space).map_err(|_| ops::Error::ENOSPC)
+    }
+    fn metadata_blocks(estimate: Estimate, space: u64) -> Result<u64, Errno> {
+        let total = estimate.blocks().map_err(|_| Errno(ENOSPC))?;
+        if space == 0 { return Ok(total); }
+        let fs = Estimate { space_changes: 0, ..estimate }.blocks().map_err(|_| Errno(ENOSPC))?;
+        Ok(total.saturating_sub(space).max(fs))
+    }
+    /// Bound replay from the frozen root and the older generation's SPACE
+    /// topology. Scratch-private paths do not imply private installed paths.
+    fn replay_cost(&mut self, paths: &super::txn::ReservationPaths) -> Result<Option<(u64, u64)>, Errno> {
+        let Some(bounds) = self.files.replay_bounds.as_ref() else { return Ok(None); };
+        let Some(nodes) = super::btree::shallow_space_bound(paths.space_height, paths.space_nodes,
+            bounds.space_growth_bytes) else { return Ok(None); };
+        let growth = bounds.root_growth.map_or_else(|| self.files.root_growth(bounds.frozen_root), Ok);
+        let edits = bounds.growing_edits;
+        let growth = self.observed(growth)?;
+        self.files.replay_bounds.as_mut().expect("scratch replay bounds").root_growth = Some(growth);
+        // Keep the installed tree's design 2.8 SPACE allowance in the
+        // scratch generation's grants through replay.
+        Ok(Some((growth.level_after(edits).max(paths.fs_height), 4 * (2 * nodes + 1))))
     }
     fn reserve_blocks(&mut self, blocks: u64, operation: Operation) -> Result<Grant, AdmissionError> {
         self.reservations.reserve(self.durable.free_blocks, blocks, operation)
@@ -1033,8 +1095,10 @@ impl<W: Wait> MountState<W> {
         let first_write = empty_file && offset == 0 && length == 1 && open.is_none();
         let result = self.files.reservation_paths(ino);
         let paths = self.observed(result)?;
-        let (funded_debt, unpaid) = self.unpaid_metadata(&paths)?;
-        if first_write && self.files.log.is_none() {
+        let replay = if first_write { self.replay_cost(&paths)? } else { None };
+        let space = replay.map_or(self.replay_space, |(_, space)| space);
+        let (funded_debt, unpaid) = self.unpaid_metadata(&paths, space)?;
+        if first_write && (self.files.log.is_none() || replay.is_some()) {
             // One data block and one EXTENT without boundary slices. The
             // foreground INODE edit can copy two nodes at each old level
             // below the root and the root itself. The extent may use a
@@ -1042,18 +1106,20 @@ impl<W: Wait> MountState<W> {
             // already have a private path, but can each rebalance with an
             // older sibling per level. Any levels grown since admission
             // belong to this transaction. Include a full split cascade.
-            let fs_nodes = 6 * paths.fs_height + 9;
+            let fs_height = replay.map_or(paths.fs_height, |(height, _)| height);
+            let fs_nodes = 6 * fs_height + 9;
             let metadata = 4 * fs_nodes;
             // Design 2.8 bounds the SPACE fixpoint for the whole open
             // transaction. Retain the base topology once, plus growth for
             // the added REF; later files share the same pending fixpoint.
-            let space = 4 * (2 * paths.space_nodes + paths.space_height);
-            let first_write_space = self.first_write_space.max(space);
+            let first_write_space = self.first_write_space.max(
+                replay.map_or(4 * (2 * paths.space_nodes + paths.space_height), |(_, space)| space));
             let blocks = (1 + metadata + 4 + (first_write_space - self.first_write_space))
                 .checked_add(unpaid).ok_or(Errno(ENOSPC))?;
             self.grants.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
             let grant = self.reserve_blocks(blocks, operation)?;
-            return Ok(DataGrant { grant, metadata: metadata + 4, first_write_space, funded_debt });
+            return Ok(DataGrant { grant, metadata: metadata + 4, first_write_space, funded_debt,
+                replay_space: replay.map(|(_, space)| space), drain_growth: 1 });
         }
         // A run inserts at most 256 data EXTENTs and can retain up to 510
         // one-page slices at its old boundaries (ops::remove_range). Their
@@ -1086,13 +1152,17 @@ impl<W: Wait> MountState<W> {
         // publishing generation and the open generation. Do not debit them
         // a second time before asking the ledger for a grant.
         self.reserve_blocks(blocks, operation)
-            .map(|grant| DataGrant { grant, metadata, first_write_space: self.first_write_space, funded_debt })
+            .map(|grant| DataGrant { grant, metadata, first_write_space: self.first_write_space, funded_debt,
+                replay_space: None, drain_growth: pages.saturating_mul(511) })
     }
     fn finish_data(&mut self, ino: u64, reservation: DataGrant, result: Result<(), Errno>) -> Result<(), Errno> {
-        let DataGrant { grant, metadata, first_write_space, funded_debt } = reservation;
+        let DataGrant { grant, metadata, first_write_space, funded_debt, replay_space, drain_growth } = reservation;
         if result.is_ok() {
             self.nodes.get(&ino).ok_or(Errno(EIO))?;
             self.first_write_space = first_write_space;
+            self.drain_growth = self.drain_growth.saturating_add(drain_growth);
+            if let Some(space) = replay_space { self.replay_space = space; }
+            else { self.files.replay_bounds = None; }
             let node = self.dirty.entry(ino).or_default();
             node.reserved_metadata = node.reserved_metadata.max(metadata);
             self.dirty_nodes.insert(ino);
@@ -1106,14 +1176,26 @@ impl<W: Wait> MountState<W> {
         }
         result
     }
-    fn reserve_create(&mut self, dir: u64, inline: bool) -> Result<Grant, AdmissionError> {
-        if self.files.log.is_some() {
-            // The next generation will replay this mutation against a
-            // different physical tree. Keep the replay-safe bound there.
-            return self.reserve_metadata(&[dir], 5, true, false, Operation::Allocate);
+    fn reserve_create(&mut self, dir: u64, inline: bool) -> Result<MetadataGrant, AdmissionError> {
+        if self.files.log.is_some() && self.files.replay_bounds.is_none() {
+            return self.reserve_metadata(&[dir], 5, true, false, Operation::Allocate).map(Into::into);
         }
         let result = self.files.reservation_paths(dir);
         let paths = self.observed(result)?;
+        if self.files.log.is_some() {
+            if let Some((height, space)) = self.replay_cost(&paths)? {
+                let current = self.files.metadata_estimate();
+                let current = Self::metadata_blocks(self.observed(current)?, space)?;
+                let edits = 4 + u64::from(inline);
+                let blocks = 4 * (2 * height.max(1) * edits + 3) + space - self.replay_space;
+                let blocks = blocks.checked_add(current.saturating_sub(self.metadata_reserved))
+                    .ok_or(Errno(ENOSPC))?;
+                self.grants.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
+                let grant = self.reserve_blocks(blocks, Operation::Allocate)?;
+                return Ok(MetadataGrant { grant, replay_space: Some(space) });
+            }
+            return self.reserve_metadata(&[dir], 5, true, false, Operation::Allocate).map(Into::into);
+        }
         // Grow INODE, DIR_ENTRY, DIR_INDEX (and INLINE for a symlink), and
         // replace the parent INODE. Below the original root, an edit can
         // copy the target and either copy a sibling or split the target.
@@ -1136,7 +1218,7 @@ impl<W: Wait> MountState<W> {
             space_nodes: paths.space_nodes,
             ..Estimate::default()
         };
-        self.reserve_namespace(estimate, Operation::Allocate)
+        self.reserve_namespace(estimate, Operation::Allocate).map(Into::into)
     }
     /// Reserve COW paths and structural edits before a namespace mutation.
     /// Each item edit allows a split/merge path, its COW siblings and a new
@@ -1177,18 +1259,21 @@ impl<W: Wait> MountState<W> {
             space_changes: estimate.space_changes.checked_add(current.space_changes - 3)
                 .ok_or(Errno(ENOSPC))?,
             ..estimate
-        }.blocks().map_err(|_| Errno(ENOSPC))?;
+        };
+        let combined = Self::metadata_blocks(combined, self.replay_space)?;
         let standalone = estimate.blocks().map_err(|_| Errno(ENOSPC))?;
         let blocks = standalone.max(combined.saturating_sub(self.metadata_reserved));
         self.grants.try_reserve(1).map_err(|_| Errno(ENOMEM))?;
         self.reserve_blocks(blocks, operation)
     }
-    fn finish_metadata<T>(&mut self, objects: &[u64], mut grant: Grant, result: Result<T, ops::Error>) -> Result<T, Errno> {
+    fn finish_metadata<T>(&mut self, objects: &[u64], reservation: impl Into<MetadataGrant>, result: Result<T, ops::Error>) -> Result<T, Errno> {
+        let MetadataGrant { mut grant, replay_space } = reservation.into();
         if result.is_ok() {
             // durable.free_blocks still includes private allocations. Keep
             // those and the work publication still owes, once per transaction;
             // return unused worst-case paths (E24 ledger 509(n)).
-            let debt = self.files.metadata_debt();
+            let space = replay_space.unwrap_or(self.replay_space);
+            let debt = self.metadata_debt(space);
             let debt = match debt {
                 Ok(debt) => debt,
                 Err(error) => {
@@ -1197,12 +1282,17 @@ impl<W: Wait> MountState<W> {
                 }
             };
             let retained = debt.saturating_sub(self.metadata_reserved);
-            if self.reservations.settle(&mut grant, retained).is_err() {
+            if retained > grant.blocks()
+                || (replay_space.is_none() && self.reservations.settle(&mut grant, retained).is_err()) {
                 self.reservations.release(grant);
                 return self.edited(objects, Err(ops::Error::ENOSPC));
             }
+            // The real replay may copy different paths. Keep its FS bound
+            // until publication, even if the scratch edit used fewer nodes.
+            self.replay_space = space;
+            self.first_write_space = self.first_write_space.max(space);
             self.metadata_reserved += retained;
-            if retained != 0 { self.grants.push(grant); }
+            if grant.blocks() != 0 { self.grants.push(grant); }
             else { self.reservations.release(grant); }
             // E24 coordinator ledger 558(x2): request background publication
             // before retained reservations force foreground admission to flush.
@@ -1420,7 +1510,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             events: events.clone(),
             costs: Costs::new(),
             state: MountLock::new(MountState {
-                files: OpenFiles { files, log: None },
+                files: OpenFiles { files, log: None, replay_bounds: None },
                 next_files: None,
                 installed: None,
                 stale_views: None,
@@ -1430,6 +1520,8 @@ impl<W: Wait + 'static> BreenFs<W> {
                 grants: Grants::default(),
                 metadata_reserved: 0,
                 first_write_space: 0,
+                replay_space: 0,
+                drain_growth: 0,
                 durable,
                 durable_pending,
                 failed: false,
@@ -1843,7 +1935,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         if req.clear_setid {
             inode.mode &= !content_privilege(inode.mode);
         }
-        match state.files.put_inode(node.ino, inode) {
+        match state.files.put_reserved_inode(node.ino, inode) {
             Err(error) => {
                 let result = state.edited::<()>(&[node.ino], Err(error));
                 node.map.transition(node.size.load(Ordering::Acquire));
@@ -2328,6 +2420,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                     // N+1 made no change while N was frozen: N's next view is
                     // N+1's view as it stands.
                     state.files.log = None;
+                    state.files.replay_bounds = None;
                     state.inodes.entries.fill(None);
                     Some(core::mem::replace(&mut state.files.files, next))
                 };
@@ -2382,11 +2475,30 @@ impl<W: Wait + 'static> BreenFs<W> {
         let frozen = Arc::get_mut(&mut pages).ok_or(Errno(EIO))?;
         frozen.nodes = core::mem::take(&mut state.dirty);
         frozen.bytes = core::mem::take(&mut state.dirty_bytes);
+        let dirty_blocks = frozen.bytes / BLOCK_SIZE as u64;
         state.pending = Some(pages.clone());
         let reap = !core::mem::take(&mut state.skip_reap)
             && !state.closed && !state.reap_shutdown && state.dead_remaining != 0;
+        let growing_edits = core::mem::take(&mut state.drain_growth);
+        state.files.replay_bounds = state.durable_pending.and_then(PendingSummary::census)
+            .filter(|_| !reap && !files.has_orphans())
+            .map(|(pending, _)| {
+                // N can allocate at most durable FREE plus eligible PENDING.
+                // A four-block node's REF costs 21 slot + 16 value bytes.
+                // A data REF costs at most that plus 4 bytes per page, with
+                // at most one REF per dirty page. Allocation replaces or
+                // consumes a FREE record. Release and promotion replace a
+                // REF or a PENDING record with an item of no larger size.
+                // Snapshot creation can add one ROOT (21 + 65 + 255).
+                let allocation_budget = state.durable.free_blocks.saturating_add(pending)
+                    .min(state.durable.total_blocks);
+                let node_bytes = allocation_budget / 4 * 37;
+                ReplayBounds { frozen_root: files.root_pointer(), root_growth: None, growing_edits,
+                    space_growth_bytes: node_bytes + dirty_blocks * 41 + 341 }
+            });
         state.metadata_reserved = 0;
         state.first_write_space = 0;
+        state.replay_space = 0;
         state.fresh = true;
         state.policy = CommitPolicy::new(now_ns);
         // SeqCst: touch() pairs this store with its slot record (x11c M4).
@@ -3360,7 +3472,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             },
         );
         if let Some(e) = preparation_error {
-            state.reservations.release(grant);
+            state.reservations.release(grant.grant);
             return Err(e);
         }
         let ino = state.finish_metadata(&[dir], grant, result)?;
