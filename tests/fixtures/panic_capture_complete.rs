@@ -55,7 +55,7 @@ mod arch_impl {
         }
     } }
 }
-mod task { pub mod scheduler {
+pub mod task { pub mod scheduler {
     #[derive(Clone, Copy, Default)]
     pub struct SchedulerLivenessSnapshot {
         pub per_cpu_current: [u64; 8],
@@ -68,6 +68,37 @@ mod task { pub mod scheduler {
         if crate::BUSY.load(crate::Ordering::Relaxed) { return None; }
         Some(SchedulerLivenessSnapshot { per_cpu_current: [1260; 8],
             per_cpu_ready_len: [2; 8], total_threads: 27, blocked_count: 19 })
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[derive(Clone, Copy, Default)]
+    pub struct BlockedWait {
+        pub tid: u64,
+        pub pid: u64,
+        pub site: usize,
+        pub queue: usize,
+        pub name: &'static str,
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    impl BlockedWait {
+        pub fn name(&self) -> &[u8] { self.name.as_bytes() }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub fn try_liveness_snapshot_with_waits(
+        cpu: usize,
+        waits: &mut [BlockedWait],
+    ) -> Option<SchedulerLivenessSnapshot> {
+        let mut snapshot = try_liveness_snapshot(cpu)?;
+        for (entry, (tid, pid, site, queue, name)) in waits.iter_mut().zip([
+            (21689, 21688, 0xffff0000407253d8, 0xffff000058392010, "GUI app]\n"),
+            (21693, 21692, 0, 0, "runner"),
+        ]) {
+            *entry = BlockedWait { tid, pid, site, queue, name };
+        }
+        snapshot.blocked_count = 2;
+        Some(snapshot)
     }
 } }
 mod gpu {
@@ -111,6 +142,20 @@ pub mod capture;
 
 fn wire() -> String { std::mem::take(&mut *WIRE.lock().unwrap()) }
 fn emit_panic() { capture::emit(capture::Edge::Panic, 95, 5); }
+#[cfg(target_arch = "aarch64")]
+fn lockup_waits() {
+    capture::emit(capture::Edge::Lockup, 5000, 1000);
+    let text = wire();
+    let waits: Vec<_> = text.lines().filter(|line| line.starts_with("[BXCAP:THR tid=")).collect();
+    assert_eq!(waits, [
+        "[BXCAP:THR tid=21689 pid=21688 site=0xffff0000407253d8 queue=0xffff000058392010 proc=GUI%20app%5D%0A]",
+        "[BXCAP:THR tid=21693 pid=21692 site=0x0 queue=0x0 proc=runner]",
+    ], "{text}");
+    assert!(text.contains("verdict=complete"), "{text}");
+    assert_eq!(READS.load(Ordering::Relaxed), 1);
+    emit_panic();
+    complete(&wire());
+}
 fn partial(text: &str) {
     assert!(text.contains("[BXCAP:NOTE sched_lock_held]"), "{text}");
     assert!(text.contains("verdict=partial"), "{text}");
@@ -142,6 +187,11 @@ fn main() {
     let _ = (capture::Edge::SelfTest, capture::Edge::Fault, capture::Edge::Lockup);
     let scenario = std::env::args().nth(1).unwrap();
     hook(|| {});
+    #[cfg(target_arch = "aarch64")]
+    if scenario == "lockup-waits" {
+        lockup_waits();
+        return;
+    }
     if scenario == "real-panic" {
         BUSY.store(true, Ordering::Relaxed);
         emit_panic();
