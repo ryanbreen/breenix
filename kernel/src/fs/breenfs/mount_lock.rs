@@ -8,6 +8,7 @@
 //! (fs/ext2/mod.rs, ext2_acquire), and spin only where the context cannot
 //! sleep. Holding the exclusion changes no preemption count, so a holder's
 //! block waits keep the single preemption brake they assert.
+use crate::{fs::errno::Errno, syscall::errno::EINTR};
 use core::{
     cell::UnsafeCell,
     ops::{Deref, DerefMut},
@@ -60,7 +61,23 @@ impl<T> MountLock<T> {
             if let Some(guard) = self.try_lock() {
                 return guard;
             }
-            self.park();
+            self.park(false);
+        }
+    }
+
+    /// Use only before taking on work that needs to reacquire this lock to finish.
+    pub fn lock_interruptible(&self) -> Result<MountGuard<'_, T>, Errno> {
+        loop {
+            #[cfg(not(test))]
+            if crate::task::thread::current_wait_must_unwind() {
+                return Err(Errno(EINTR));
+            }
+            if let Some(guard) = self.try_lock() {
+                return Ok(guard);
+            }
+            if !self.park(true) {
+                return Err(Errno(EINTR));
+            }
         }
     }
 
@@ -86,9 +103,9 @@ impl<T> MountLock<T> {
     }
 
     #[cfg(not(test))]
-    fn park(&self) {
+    fn park(&self, interruptible: bool) -> bool {
         use crate::task::{
-            thread::ThreadState,
+            thread::{current_wait_must_unwind, ThreadState},
             waitqueue::{schedule_current_wait, PrepareOutcome},
         };
         #[cfg(target_arch = "x86_64")]
@@ -97,7 +114,7 @@ impl<T> MountLock<T> {
         use crate::per_cpu_aarch64 as cpu;
         if !can_sleep() {
             core::hint::spin_loop();
-            return;
+            return true;
         }
         // schedule_current_wait releases exactly one preemption brake.
         let add_brake = cpu::preempt_count() == 0;
@@ -119,13 +136,16 @@ impl<T> MountLock<T> {
             }
             PrepareOutcome::Mismatch => {}
             PrepareOutcome::PublishFailed | PrepareOutcome::OutOfMemory => {
-                crate::block::cache_kernel::park_for_wait_retry();
+                if !interruptible || !current_wait_must_unwind() {
+                    crate::block::cache_kernel::park_for_wait_retry();
+                }
             }
         }
         self.parked.fetch_sub(1, Ordering::SeqCst);
         if add_brake {
             cpu::preempt_enable();
         }
+        !interruptible || !current_wait_must_unwind()
     }
 
     #[cfg(not(test))]
@@ -137,7 +157,7 @@ impl<T> MountLock<T> {
     }
 
     #[cfg(test)]
-    fn park(&self) {
+    fn park(&self, _interruptible: bool) -> bool {
         self.parked.fetch_add(1, Ordering::SeqCst);
         self.host.parks.fetch_add(1, Ordering::SeqCst);
         let mut sleep = self.host.sleep.lock().unwrap();
@@ -151,6 +171,7 @@ impl<T> MountLock<T> {
         }
         drop(sleep);
         self.parked.fetch_sub(1, Ordering::SeqCst);
+        true
     }
 
     #[cfg(test)]

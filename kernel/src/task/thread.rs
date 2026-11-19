@@ -2114,6 +2114,11 @@ fn current_cpu_thread() -> Option<&'static Thread> {
     thread.map(|t| &*t)
 }
 
+/// Honor pending kill at waits that can unwind. Nested custody can finish.
+pub(crate) fn current_wait_must_unwind() -> bool {
+    current_cpu_thread().is_some_and(Thread::must_not_sleep)
+}
+
 /// Fatal cancellation check for waits that must unwind their kernel owners.
 pub(crate) fn current_kill_pending() -> bool {
     current_cpu_thread().is_some_and(Thread::kill_pending)

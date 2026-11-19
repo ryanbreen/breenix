@@ -37,7 +37,9 @@ impl WakeSignal {
     }
     #[cfg(not(test))]
     pub fn wait(&self, observed: u64, deadline: Option<u64>) -> Result<(), Errno> {
-        use crate::task::{thread::ThreadState, waitqueue::PrepareOutcome};
+        use crate::task::{thread::{current_wait_must_unwind, ThreadState}, waitqueue::PrepareOutcome};
+        const INTERRUPTED: Errno = Errno(crate::syscall::errno::EINTR);
+        if current_wait_must_unwind() { return Err(INTERRUPTED); }
         crate::block::cache_kernel::assert_io_context();
         #[cfg(target_arch = "x86_64")]
         use crate::per_cpu as cpu;
@@ -65,19 +67,19 @@ impl WakeSignal {
             }
             PrepareOutcome::Mismatch => Ok(()),
             PrepareOutcome::OutOfMemory => {
-                if deadline.is_none_or(|limit| monotonic_ns() < limit) {
+                if !current_wait_must_unwind() && deadline.is_none_or(|limit| monotonic_ns() < limit) {
                     crate::block::cache_kernel::park_for_wait_retry();
                 }
                 Ok(())
             }
             // A kill can refuse a blocked publication after the caller
             // checked its condition. Unwind instead of retrying that wait.
-            PrepareOutcome::PublishFailed => Err(Errno(crate::syscall::errno::EINTR)),
+            PrepareOutcome::PublishFailed => Err(INTERRUPTED),
         };
         if add_brake {
             cpu::preempt_enable();
         }
-        result
+        if current_wait_must_unwind() { Err(INTERRUPTED) } else { result }
     }
 }
 

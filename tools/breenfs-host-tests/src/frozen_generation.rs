@@ -1020,13 +1020,13 @@ fn frozen_create_and_first_write_replay_a_cascading_split() {
         publisher.paused.install();
         publisher.thread.join().unwrap();
         let (before, retained, replay_height) = {
-            let state = fs.foreground_lock();
+            let state = fs.foreground_lock().unwrap();
             assert_eq!(state.durable.generation, installed);
             (state.durable.free_blocks, state.grants.blocks, state.files.reservation_paths(node.ino).unwrap().fs_height)
         };
         assert_eq!(replay_height, if create { 2 } else { 1 });
         fs.fsync(&node, false).unwrap();
-        let state = fs.foreground_lock();
+        let state = fs.foreground_lock().unwrap();
         assert_eq!(state.files.reservation_paths(node.ino).unwrap().fs_height, 2);
         let allocated = before.saturating_sub(state.durable.free_blocks);
         assert!(allocated > 0 && allocated <= retained && retained <= request,
