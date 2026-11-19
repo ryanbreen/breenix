@@ -10,7 +10,9 @@ This census checks those loop boundaries, not elapsed time or guest affinity.
 import re
 import unittest
 
-from breenfs_mount_lock_test import BREENFS, ROOT, function, strip_comments, guard_ranges, spin_locks
+from breenfs_mount_lock_test import (
+    BREENFS, ROOT, block_end, function, strip_comments, guard_ranges, spin_locks,
+)
 
 # Fixed bound on pages in a dirty run / data extent between points.
 MAX_WORK_ITEMS_PER_POINT = 256
@@ -20,7 +22,6 @@ MAX_WORK_ITEMS_PER_POINT = 256
 # one, so continue/error paths cannot bypass the next scheduling opportunity.
 LOOPS = {
     'vfs.rs': {
-        'service_mappings': ('for node in handles',),
         'mapped_nodes': ('for entry in state.nodes.values()',),
         'retain_open': ('for times in batch.by_ref().take(RETAIN_OPEN_STEPS)',),
         'drain_pages': ('for &ino in &self.dirty_nodes',),
@@ -49,6 +50,20 @@ LOOPS = {
 
 
 class CommitPreemption(unittest.TestCase):
+    def test_service_mappings_preempts_before_each_mapping(self):
+        source = strip_comments((BREENFS / 'vfs.rs').read_text())
+        service = function(source, 'service_mappings')
+        # Check both the handle walk and the post-publication receipt walk.
+        # The point must run before upgrade can skip a dead handle.
+        for iterable in (r'handles\.iter\(\)\.enumerate\(\)', r'staged'):
+            with self.subTest(iterable=iterable):
+                head = rf'\bfor\s+[^{{}}\n]+?\s+in\s+{iterable}\s*\{{'
+                point = f'({head})' + r'\s*preemption_point\(\);'
+                self.assertRegex(service, point)
+                no_point = re.sub(point, r'\1', service, count=1)
+                with self.assertRaises(AssertionError):
+                    self.assertRegex(no_point, point)
+
     def test_cpu_work_reaches_bounded_points(self):
         for file, functions in LOOPS.items():
             source = strip_comments((BREENFS / file).read_text())
@@ -82,10 +97,37 @@ class CommitPreemption(unittest.TestCase):
         for file, name in [('mount_lock.rs', 'park'), ('commit_signal.rs', 'wait')]:
             code = function(strip_comments((BREENFS / file).read_text()), name)
             self.assertIn('schedule_current_wait()', code)
-        wait = function(strip_comments((ROOT / 'kernel/src/task/waitqueue.rs').read_text()),
-                        'schedule_current_wait')
-        self.assertLess(wait.index('preempt_enable()'), wait.index('loop {'))
-        self.assertGreater(wait.rindex('preempt_disable()'), wait.index('loop {'))
+        waitqueue = (ROOT / 'kernel/src/task/waitqueue.rs').read_text()
+        source = strip_comments(waitqueue)
+        self.assertRegex(waitqueue, r'(?m)^\s*"b \{wait\}",')
+        self.assertIn('wait = sym schedule_current_wait_at', source)
+        self.assertIn('run_current_wait(return_pc);', function(source, 'schedule_current_wait_at'))
+        non_arm_entry = re.search(r'\bpub\s+fn\s+schedule_current_wait\s*\(\)\s*\{', source)
+        self.assertIsNotNone(non_arm_entry)
+        self.assertIn('run_current_wait();', function(source[non_arm_entry.start():], 'schedule_current_wait'))
+        wait = function(source, 'run_current_wait')
+        for cfg, cpu, park in (
+            ('target_arch = "aarch64"', 'per_cpu_aarch64', 'schedule_from_kernel();'),
+            ('not(target_arch = "aarch64")', 'per_cpu', 'halt_blocked_current();'),
+        ):
+            with self.subTest(cpu=cpu):
+                prefix = re.escape(strip_comments(f'#[cfg({cfg})]')) + r'\s*'
+                enable = prefix + re.escape(f'crate::{cpu}::preempt_enable();')
+                disable = prefix + re.escape(f'crate::{cpu}::preempt_disable();')
+
+                def assert_park_releases_count(code):
+                    loop = re.search(r'\bloop\s*\{', code)
+                    self.assertIsNotNone(loop)
+                    end = block_end(code, loop.end())
+                    self.assertRegex(code[:loop.start()], enable)
+                    self.assertNotIn('preempt_disable()', code[:loop.start()])
+                    self.assertIn(park, code[loop.end():end])
+                    self.assertNotRegex(code[loop.end():end], r'\bpreempt_(?:enable|disable)\(')
+                    self.assertRegex(code[end + 1:], disable)
+
+                assert_park_releases_count(wait)
+                with self.assertRaises(AssertionError):
+                    assert_park_releases_count(re.sub(enable, '', wait, count=1))
         # Ruling 488 retains the driver's existing sleepable entry contract.
         ahci = (ROOT / 'kernel/src/drivers/ahci/mod.rs').read_text()
         self.assertIn('schedule_current_wait()', function(strip_comments(ahci), 'begin_port_io'))
