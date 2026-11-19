@@ -48,16 +48,19 @@ pub fn keys_select() -> CaseResult {
 }
 
 pub fn launch_gui() -> CaseResult {
+    use breenix_suite::suite::control::observations::during;
     const ACK: &str = "/usr/libexec/breenix/ack-app_test";
     let nonce = format!("{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_nanos());
     let expected = serde_json::json!([ACK, "--window", "Ack", "a", "b c", "--nonce", nonce]);
-    let _ = std::fs::remove_file("/tmp/ack-app.jsonl");
-    std::fs::write("/tmp/blauncher-gui", format!("Ack\tFixture\tgui\t{ACK}\t--window\tAck\ta\tb c\t--nonce\t{nonce}\n")).map_err(|e| e.to_string())?;
+    let _ = during("launcher-ack-unlink", || std::fs::remove_file("/tmp/ack-app.jsonl"));
+    during("launcher-catalog-write", || {
+        std::fs::write("/tmp/blauncher-gui", format!("Ack\tFixture\tgui\t{ACK}\t--window\tAck\ta\tb c\t--nonce\t{nonce}\n"))
+    }).map_err(|e| e.to_string())?;
     let mut t = App::launch(&[b"/usr/bin/blauncher", b"--catalog", b"/tmp/blauncher-gui"], "\u{1}Launcher")?;
     t.key_exit(28, 0)?;
-    t.attach("Ack")?;
+    during("launcher-ack-attach", || t.attach("Ack"))?;
     t.wait_node("ack", |v| v["argv"] == expected)?;
-    let records = std::fs::read_to_string("/tmp/ack-app.jsonl").map_err(|e| e.to_string())?;
+    let records = during("launcher-ack-read", || std::fs::read_to_string("/tmp/ack-app.jsonl")).map_err(|e| e.to_string())?;
     let lines: Vec<_> = records.lines().collect();
     if lines.len() != 1 { return Err(format!("expected one acknowledgment: {records:?}").into()); }
     let record: serde_json::Value = serde_json::from_str(lines[0]).map_err(|e| e.to_string())?;

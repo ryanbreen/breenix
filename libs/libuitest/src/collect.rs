@@ -2,7 +2,7 @@
 use std::{collections::{BTreeMap, BTreeSet}, path::Path};
 use libbreenix::{window::{self, abi}, gpu, error::Error, errno::Errno};
 use breenix_suite::suite::collection::Trigger;
-use crate::{arena::{Arena, Layout, Slot, SlotRead, TREE_BYTES}, artifacts::Store};
+use crate::{arena::{during, Arena, Layout, Slot, SlotRead, TREE_BYTES}, artifacts::Store};
 
 pub struct Evidence {
     layout: Layout,
@@ -71,7 +71,7 @@ impl Evidence {
             let mut observation = [0; 1024];
             let mut rb = abi::Readback { dst: pixels.as_mut_ptr() as u64, dst_len: pixels.len() as u64,
                 record: observation.as_mut_ptr() as u64, record_len: observation.len() as u32, ..abi::Readback::default() };
-            let rc = window::readback(&mut rb);
+            let rc = during("scanout-readback", || window::readback(&mut rb));
             let kind = if u32::from_le_bytes(observation[24..28].try_into().unwrap()) == 3 { window::ObservationKind::Composed } else { window::ObservationKind::Plain };
             if rc.is_ok() && window::validate_scanout_observation(&observation, mode.width, mode.height, kind) {
                 save_png(&mut store, if failure_screen { "screen-at-collection.png" } else { "screen.png" }, mode.width, mode.height, pixels)?;
@@ -155,7 +155,7 @@ impl Evidence {
 fn save_png(store: &mut Store, name: &str, width: u32, height: u32, mut pixels: Vec<u8>) -> Result<(), String> {
     if pixels.len() != width as usize * height as usize * 4 { return Err("artifact pixel length mismatch".into()); }
     for pixel in pixels.chunks_exact_mut(4) { pixel[3] = 255; }
-    let png = libimg_encode::encode_compact(&libimg::png::Image { width, height, pixels }).map_err(|e| format!("artifact PNG: {e:?}"))?;
+    let png = during("artifact-encode-png", || libimg_encode::encode_compact(&libimg::png::Image { width, height, pixels })).map_err(|e| format!("artifact PNG: {e:?}"))?;
     store.write(name, &png)
 }
 

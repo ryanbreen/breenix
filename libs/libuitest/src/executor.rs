@@ -67,6 +67,10 @@ fn send(outcome: &ScenarioOutcome) -> i32 {
 enum WriterRole { Logic, Controller }
 
 fn receive(reader: &mut File, child: &mut Child, limit_ms: u64, role: WriterRole) -> ScenarioOutcome {
+    let _receipt = control::observations::Span::new(match role {
+        WriterRole::Logic => "scenario-logic-outcome",
+        WriterRole::Controller => "scenario-controller-outcome",
+    });
     let start = match now_ms() { Ok(now) => now, Err(e) => return infrastructure("clock", e) };
     let mut bytes = Vec::new();
     let mut status = None;

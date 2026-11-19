@@ -1,5 +1,5 @@
 //! Case-side client for the runner's sibling session supervisor.
-use breenix_suite::suite::control::{Watchdog, Wait, observations::{self, Span}};
+use breenix_suite::suite::control::{Watchdog, Wait, observations::{self, during, Span}};
 use std::collections::{BTreeMap, BTreeSet};
 use libbreenix::{process, time};
 use crate::{channel::{Channel, now}, supervisor::{Message, SessionEnvironment, signal_name}};
@@ -194,6 +194,7 @@ impl Session {
     }
     pub fn input_devices(&self) -> [u32; 2] { self.devices.expect("connected session devices") }
     fn raw_input(&mut self, event: RawInput) -> Result<(), String> {
+        let _receipt = Span::new("input-ack");
         if self.stopped { return Err("session has ended".into()); }
         self.input_done = false;
         self.control.send(&Message::Input(event))?;
@@ -205,6 +206,7 @@ impl Session {
     pub fn raw_press(&mut self, code: u16) -> Result<(), String> { self.raw_input(RawInput { kind: 1, code, value: 1 }) }
     pub fn raw_release(&mut self, code: u16) -> Result<(), String> { self.raw_input(RawInput { kind: 1, code, value: 0 }) }
     pub fn raw_motion(&mut self, x: i32, y: i32) -> Result<(), String> {
+        let _receipt = Span::new("input-ack");
         if self.stopped {return Err("session has ended".into());}
         self.input_done=false;
         self.control.send(&Message::Motion {x,y})?;
@@ -214,6 +216,7 @@ impl Session {
         Ok(())
     }
     pub fn raw_text(&mut self, text: &str) -> Result<(), String> {
+        let _receipt = Span::new("input-ack");
         if self.stopped { return Err("session has ended".into()); }
         self.input_done = false;
         self.control.send(&Message::Text(text.into()))?;
@@ -231,7 +234,10 @@ impl Session {
     /// Advance UI milliseconds and wait for kernel-accepted participant metadata.
     pub fn step(&mut self, dt_ms: u64) -> Result<libbreenix::ui_clock::Stamp, String> {
         if self.stopped { return Err("session has ended".into()); }
-        let clock = crate::clock::Clock::open(&std::path::Path::new(self.config_root()).join("ui-clock"))?;
+        let clock = during("ui-clock-open", || {
+            crate::clock::Clock::open(&std::path::Path::new(self.config_root()).join("ui-clock"))
+        })?;
+        let _receipt = Span::new("ui-clock-advance");
         let mut step = clock.begin(dt_ms, Self::now_ns()?, |id| self.is_excluded(id))?;
         loop {
             step.check(Self::now_ns()?)?;

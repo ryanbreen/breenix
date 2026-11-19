@@ -300,7 +300,7 @@ pub fn expect_terminal(tree: &Tree, scale: u32) -> Result<(), String> {
 #[cfg(target_os = "breenix")]
 mod guest {
     use super::*;
-    use breenix_suite::suite::CaseResult;
+    use breenix_suite::suite::{control::observations::{during, Span}, CaseResult};
     use libuitest::{
         arena::{Arena, Slot, SlotRead},
         capture, Session,
@@ -368,19 +368,23 @@ mod guest {
             let path = std::path::Path::new(self.session.config_root()).join("widget-tree.arena");
             let result = (|| {
                 let mut arena = Arena::create(&path, self.session.arena_mut().layout())?;
-                let record = capture::window(&mut arena, "widget-tree", self.id)?;
-                equal(
-                    "root",
-                    "capture-size",
-                    (record.width, record.height),
-                    (literals::WIDTH * self.scale, literals::HEIGHT * self.scale),
-                )?;
-                match arena.read(Slot::Tree)? {
-                    SlotRead::Final { record, bytes } if !record.oversize => Tree::parse(&bytes),
-                    other => Err(format!("incomplete widget tree: {other:?}")),
-                }
+                let captured = (|| {
+                    let record = capture::window(&mut arena, "widget-tree", self.id)?;
+                    equal(
+                        "root",
+                        "capture-size",
+                        (record.width, record.height),
+                        (literals::WIDTH * self.scale, literals::HEIGHT * self.scale),
+                    )?;
+                    match arena.read(Slot::Tree)? {
+                        SlotRead::Final { record, bytes } if !record.oversize => Tree::parse(&bytes),
+                        other => Err(format!("incomplete widget tree: {other:?}")),
+                    }
+                })();
+                arena.close();
+                captured
             })();
-            let remove = std::fs::remove_file(path).map_err(|e| e.to_string());
+            let remove = during("arena-unlink", || std::fs::remove_file(path)).map_err(|e| e.to_string());
             let tree = result?;
             remove?;
             Ok(tree)
@@ -426,16 +430,18 @@ mod guest {
                 }
                 Ok(())
             })();
-            drop(arena);
-            let cleanup = std::fs::remove_file(path).map_err(|e| e.to_string());
+            arena.close();
+            let cleanup = during("arena-unlink", || std::fs::remove_file(path)).map_err(|e| e.to_string());
             result?; cleanup
         }
         fn wait(&mut self, judge: impl Fn(&Tree) -> Result<(), String>) -> Result<(), String> {
             let end = Instant::now() + Duration::from_secs(2);
+            let mut serialization = Some(Span::new("tree-serialization"));
             loop {
                 let (_, meta) =
                     libbreenix::window::read_meta(self.id).map_err(|e| e.to_string())?;
                 if libuitest::input::tree_ready_after_attach(meta.tree_serializations, self.tree_baseline) {
+                    drop(serialization.take());
                     let tree = self.snapshot()?;
                     match judge(&tree) {
                         Ok(()) => return Ok(()),

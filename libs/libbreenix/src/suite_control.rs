@@ -23,6 +23,7 @@ mod mutation_costs;
 #[path = "suite_markers.rs"]
 pub mod markers;
 const USED_CELLS: usize = markers::USED_CELLS;
+const DIAGNOSTICS_BYTES: usize = 8192;
 static PAGE: AtomicUsize = AtomicUsize::new(0);
 fn now_ms() -> Result<u64, String> {
     libbreenix::time::now_monotonic().map(|t| (t.as_nanos()/1_000_000) as u64).map_err(|e| e.to_string())
@@ -103,8 +104,8 @@ impl Scope {
     pub(super) fn new() -> Result<Self, String> {
         #[cfg(target_os="macos")] const ANON: i32 = 0x1000;
         #[cfg(not(target_os="macos"))] const ANON: i32 = 0x20;
-        assert!(USED_CELLS * core::mem::size_of::<AtomicU64>() <= 4096);
-        let ptr = unsafe { mmap(core::ptr::null_mut(), 4096, 3, 1 | ANON, -1, 0) };
+        assert!(USED_CELLS * core::mem::size_of::<AtomicU64>() <= DIAGNOSTICS_BYTES);
+        let ptr = unsafe { mmap(core::ptr::null_mut(), DIAGNOSTICS_BYTES, 3, 1 | ANON, -1, 0) };
         if ptr as isize == -1 { return Err("control diagnostics mmap failed".into()); }
         for i in 0..USED_CELLS {
             unsafe { ptr.cast::<AtomicU64>().add(i).write(AtomicU64::new(0)); }
@@ -151,6 +152,6 @@ impl Scope {
 impl Drop for Scope {
     fn drop(&mut self) {
         PAGE.store(self.previous, Ordering::Release);
-        unsafe { munmap(self.page as *mut u8, 4096); }
+        unsafe { munmap(self.page as *mut u8, DIAGNOSTICS_BYTES); }
     }
 }

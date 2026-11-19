@@ -1,5 +1,5 @@
 //! Captures write into the case's evidence arena before any comparison runs.
-use crate::{arena::{Arena, Layout, Record, Slot, SlotRead}, capture_marker::{self, Generation}, compare::{self, Format, Frame, Options}, FailureClass, ScenarioOutcome};
+use crate::{arena::{during, Arena, Layout, Record, Slot, SlotRead}, capture_marker::{self, Generation}, compare::{self, Format, Frame, Options}, FailureClass, ScenarioOutcome};
 use libbreenix::{gpu, window::{self, abi, ObservationKind}};
 use libgfx::surface::Surface;
 
@@ -28,11 +28,15 @@ pub fn window_result(arena: &mut Arena, check: &str, id: u64) -> Result<Record, 
     let result = arena.write_frame_tree(|pixels, tree| {
         mapping.finish();
         let phase = crate::phases::Phase::new("client-read");
+        #[cfg(target_os = "breenix")]
+        let receipt = breenix_suite::suite::control::observations::Span::new("window-front-capture");
         let captured = window::capture(id, pixels, Some(tree)).map_err(|e| {
             let detail = format!("window capture {id}: {e}");
             syscall = Some(e);
             detail
         })?;
+        #[cfg(target_os = "breenix")]
+        drop(receipt);
         phase.finish();
         let len = byte_len(captured.width, captured.height)?;
         if len > pixels.len() { return Err("captured extent exceeds arena".into()); }
@@ -60,7 +64,7 @@ pub fn screen(arena: &mut Arena, check: &str, kind: ObservationKind) -> Result<R
     let mut rb = abi::Readback { dst: pixels.as_mut_ptr() as u64, dst_len: len as u64,
         record: observation.as_mut_ptr() as u64, record_len: 1024, ..Default::default() };
     let phase = crate::phases::Phase::new("screen-read");
-    readback_until(&mut rb, deadline).map_err(|e| format!("screen capture: {e}"))?;
+    during("scanout-readback", || readback_until(&mut rb, deadline)).map_err(|e| format!("screen capture: {e}"))?;
     phase.finish();
     if !window::validate_scanout_observation(&observation, mode.width, mode.height, kind) {
         return Err("screen capture: invalid scanout observation".into());
@@ -87,8 +91,8 @@ pub fn screen_fresh(path: &std::path::Path, layout: Layout, check: &str, kind: O
             _ => Err("screen observation incomplete".into()),
         }
     })();
-    drop(arena);
-    let cleanup = std::fs::remove_file(path).map_err(|e| e.to_string());
+    arena.close();
+    let cleanup = during("arena-unlink", || std::fs::remove_file(path)).map_err(|e| e.to_string());
     match (result, cleanup) { (Err(e), _) => Err(e), (Ok(_), Err(e)) => Err(e), (Ok(value), Ok(())) => Ok(value) }
 }
 /// The v2 observation has 16 rows of (window, commit, render fence, generation). Refuse malformed or

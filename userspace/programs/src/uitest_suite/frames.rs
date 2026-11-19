@@ -1,6 +1,7 @@
 // Guest capture race cases.
 #[cfg(target_os = "breenix")]
 mod races {
+    use breenix_suite::suite::control::observations::{during, Span};
     use libbreenix::{test_control as tc, window::abi::tc_point};
     use libuitest::{arena::{Arena, Layout, Record, Slot, SlotRead}, capture,
         capture_marker::Generation, capture_race, Session};
@@ -13,15 +14,19 @@ mod races {
     fn read_capture(path: &Path, id: u64) -> Result<Captured, capture::WindowError> {
         let attempt = || -> Result<Captured, capture::WindowError> {
             let mut arena = Arena::open(path).map_err(capture::WindowError::arena)?;
-            let record = capture::window_result(&mut arena, "race", id)?;
-            let slot = |which| match arena.read(which) {
-                Ok(SlotRead::Final { record, bytes }) if !record.oversize => Ok(bytes),
-                other => Err(capture::WindowError::arena(format!("race slot incomplete: {other:?}"))),
-            };
-            Ok(Captured { record, pixels: slot(Slot::Frame)?, tree: slot(Slot::Tree)? })
+            let captured = (|| {
+                let record = capture::window_result(&mut arena, "race", id)?;
+                let slot = |which| match arena.read(which) {
+                    Ok(SlotRead::Final { record, bytes }) if !record.oversize => Ok(bytes),
+                    other => Err(capture::WindowError::arena(format!("race slot incomplete: {other:?}"))),
+                };
+                Ok(Captured { record, pixels: slot(Slot::Frame)?, tree: slot(Slot::Tree)? })
+            })();
+            arena.close();
+            captured
         };
         let result = attempt();
-        let _ = std::fs::remove_file(path);
+        let _ = during("arena-unlink", || std::fs::remove_file(path));
         result
     }
     struct Reader {
@@ -35,7 +40,8 @@ mod races {
             let (output, results) = mpsc::channel();
             let thread = thread::spawn(move || {
                 while let Ok((path, id)) = input.recv() {
-                    if output.send(read_capture(&path, id)).is_err() { break; }
+                    let result = during("capture-reader-job", || read_capture(&path, id));
+                    if output.send(result).is_err() { break; }
                 }
             });
             Self { jobs: Some(jobs), results, thread: Some(thread) }
@@ -44,7 +50,7 @@ mod races {
             self.jobs.as_ref().unwrap().send((path, id)).map_err(|e| e.to_string())
         }
         fn finish(&self) -> Result<Result<Captured, capture::WindowError>, String> {
-            self.results.recv_timeout(Duration::from_secs(2)).map_err(|e| e.to_string())
+            during("capture-reader-result", || self.results.recv_timeout(Duration::from_secs(2))).map_err(|e| e.to_string())
         }
     }
     impl Drop for Reader {
@@ -53,7 +59,7 @@ mod races {
     fn destination(root: &Path, name: &str) -> Result<PathBuf, String> {
         let path = root.join(name);
         let mode = libbreenix::gpu::current_mode().map_err(|e| e.to_string())?;
-        drop(Arena::create(&path, Layout::for_mode(mode.width, mode.height)?)?);
+        Arena::create(&path, Layout::for_mode(mode.width, mode.height)?)?.close();
         Ok(path)
     }
     struct Stall { before: u64, fired: u64, release_before: u64, began: Instant }
@@ -66,6 +72,7 @@ mod races {
             Ok(Self { before, fired: before, release_before, began })
         }
         fn wait(&mut self) -> Result<(), String> {
+            let _receipt = Span::new("capture-stall-witness");
             loop {
                 self.fired = tc::fired(tc_point::CAPTURE_STALL).map_err(|e| e.to_string())?;
                 if self.fired > self.before { return Ok(()); }

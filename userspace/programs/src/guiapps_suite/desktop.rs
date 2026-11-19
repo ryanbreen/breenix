@@ -1,4 +1,4 @@
-use breenix_suite::suite::CaseResult;
+use breenix_suite::suite::{control::observations::during, CaseResult};
 use libuitest::{input::Modifier, App};
 
 pub fn init_desktop() -> CaseResult {
@@ -60,7 +60,9 @@ pub fn copy_paste() -> CaseResult {
 pub fn font_everywhere() -> CaseResult {
     use super::bfontpicker::{self, FIRST, PLAIN, FAKE};
     let mut t = bfontpicker::launch()?;
-    bfontpicker::seed(&mut t, &format!("mono.font={FIRST}\nmono.size=14\ndisplay.font={FIRST}\ndisplay.size=17\n"))?;
+    during("font-seed", || {
+        bfontpicker::seed(&mut t, &format!("mono.font={FIRST}\nmono.size=14\ndisplay.font={FIRST}\ndisplay.size=17\n"))
+    })?;
     t.launch_next(&[b"/usr/bin/bterm"], "Terminal")?;
     t.type_line("echo Font comparison 12345")?;
     t.expect_text("Font comparison 12345")?;
@@ -68,7 +70,7 @@ pub fn font_everywhere() -> CaseResult {
     let terminal = t.window();
     let terminal_before = bfontpicker::pixels(terminal)?;
     let log_path = "/tmp/desktop-font-everywhere-log";
-    std::fs::write(log_path, "Font comparison 12345\n").map_err(|e| e.to_string())?;
+    during("font-log-write", || std::fs::write(log_path, "Font comparison 12345\n")).map_err(|e| e.to_string())?;
     t.launch_next(&[b"/usr/bin/blog", log_path.as_bytes()], "Log Viewer")?;
     t.wait_node("status", |v| v["font"]["path"] == FIRST && v["font"]["size"].as_f64() == Some(14.0))?;
     t.wait_node("lines", |v| v["total"] == 1)?;
@@ -103,10 +105,14 @@ pub fn font_everywhere() -> CaseResult {
     t.attach("Gus Kit")?;
     t.wait_node("status", |v| v["font"]["path"] == FAKE && v["font"]["size"].as_f64() == Some(17.0))?;
     if bfontpicker::pixels(guskit)? == guskit_before { return Err("Gus Kit pixels did not change".into()); }
-    t.launch_next(&[b"/usr/bin/blauncher"], "\u{1}Launcher")?;
-    t.wait_node("apps", |v| v["font"]["path"] == FAKE && v["font"]["size"].as_f64() == Some(17.0))?;
-    if bfontpicker::pixels(t.window())? == launcher_before { return Err("launcher pixels did not change".into()); }
-    Ok(t.finish()?)
+    during("font-final-launcher-launch", || t.launch_next(&[b"/usr/bin/blauncher"], "\u{1}Launcher"))?;
+    during("font-final-launcher-tree", || {
+        t.wait_node("apps", |v| v["font"]["path"] == FAKE && v["font"]["size"].as_f64() == Some(17.0))
+    })?;
+    if during("font-final-launcher-pixels", || bfontpicker::pixels(t.window()))? == launcher_before {
+        return Err("launcher pixels did not change".into());
+    }
+    Ok(during("font-final-finish", || t.finish())?)
 }
 
 
