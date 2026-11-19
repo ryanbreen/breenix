@@ -35,7 +35,11 @@ impl CommitSignal {
     pub fn wait(&self, observed: u64, deadline: Option<u64>) {
         #[cfg(test)]
         {
-            let _ = (observed, deadline);
+            super::preempt::context::observe(super::preempt::context::Event::CommitWait {
+                signal: self as *const Self as usize,
+                epoch: observed,
+            });
+            let _ = deadline;
             std::thread::yield_now();
         }
         #[cfg(not(test))]

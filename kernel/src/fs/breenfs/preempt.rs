@@ -69,6 +69,7 @@ pub mod context {
     #[derive(Clone, Copy)]
     pub enum Event {
         Acquire(usize), Release(usize), Access(usize), Point, Yield, Touch, MappingsStaged,
+        CommitWait { signal: usize, epoch: u64 },
         Phase { op: &'static str, phase: &'static str, begin: bool },
     }
     type Observer = Box<dyn FnMut(Event)>;

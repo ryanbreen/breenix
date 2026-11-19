@@ -4,7 +4,7 @@ use alloc::vec;
 use std::println;
 use super::super::{btree, preempt::context::{self, Event}};
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc,
-    sync::{Mutex as HostMutex, atomic::AtomicUsize}, thread, time::{Duration, Instant}};
+    sync::{Mutex as HostMutex, atomic::AtomicUsize, mpsc}, thread, time::{Duration, Instant}};
 
 const FILES: usize = 4400;
 const DIRTY_OPS: u64 = 100;
@@ -267,4 +267,189 @@ fn frozen_generation_keeps_foreground_progress_and_atomic_recovery() {
         o.incoherent_steps, o.progress_before_end, o.next_generation_steps, started.elapsed().as_secs_f64());
     assert!(exclusion_ok && progress_ok && coherence_ok && crash_failures == 0,
         "597(x11a): exclusion={exclusion_ok}, progress={progress_ok}, coherence={coherence_ok}, crash_failures={crash_failures}");
+}
+
+const CREATE_REPLAY_WATCHDOG: Duration = Duration::from_secs(20);
+
+struct PausedPublication {
+    resume: mpsc::Sender<()>,
+    installed: mpsc::Receiver<Result<bool, Errno>>,
+}
+
+impl PausedPublication {
+    fn install(self) {
+        self.resume.send(()).unwrap();
+        assert_eq!(self.installed.recv_timeout(CREATE_REPLAY_WATCHDOG).unwrap(), Ok(true));
+    }
+}
+
+#[derive(Debug)]
+struct InstallWait {
+    epoch: u64,
+    generation: Option<u64>,
+    free: u64,
+    reserve: u64,
+    outstanding: u64,
+}
+
+#[derive(Debug, Default)]
+struct CreateCosts {
+    locks: usize,
+    waits: Vec<InstallWait>,
+}
+
+/// Count at the VFS entry used by open(O_CREAT). The mount acquisitions
+/// used by the test to sample accounting are outside the observed call.
+fn create_during_publication(
+    fs: &Arc<Fs>,
+    index: usize,
+    frozen_grants: u64,
+    pause: &Rc<RefCell<Option<PausedPublication>>>,
+) -> (usize, usize, u64, u64) {
+    use super::super::reserve::observation;
+
+    let lock_id = &fs.inner.state as *const _ as usize;
+    let signal_id = Arc::as_ptr(&fs.inner.signal) as usize;
+    let (generation, free, reserve, frozen, open) = {
+        let state = fs.inner.state.lock();
+        (state.durable.generation, state.durable.free_blocks, state.durable.global_reserve,
+            if state.pending.is_some() { frozen_grants } else { 0 }, state.grants.blocks)
+    };
+    let expected_available = free.saturating_sub(reserve).saturating_sub(frozen + open);
+    let costs = Rc::new(RefCell::new(CreateCosts::default()));
+    let (capture, live, publication) = (costs.clone(), fs.clone(), pause.clone());
+    context::observer(Some(Box::new(move |event| match event {
+        Event::Acquire(id) if id == lock_id => capture.borrow_mut().locks += 1,
+        Event::CommitWait { signal, epoch } if signal == signal_id => {
+            let state = live.inner.state.try_lock().expect("admission waited with mount exclusion held");
+            capture.borrow_mut().waits.push(InstallWait {
+                epoch,
+                generation: state.pending.as_ref().map(|_| state.durable.generation + 1),
+                free: state.durable.free_blocks,
+                reserve: state.durable.global_reserve,
+                outstanding: state.reservations.outstanding(),
+            });
+            drop(state);
+            // A real refusal can park this caller. Resume the publisher at the
+            // observed wait so the test can score the retry without timing races.
+            publication.borrow_mut().take().expect("wait without a paused publication").install();
+        }
+        _ => (),
+    })));
+    measurement::take_events();
+    measurement::take_materialized();
+    measurement::take_work();
+    observation::take_write_grant();
+    let name = alloc::format!("create-{index:03}");
+    let mut node = None;
+    let result = fs.create_open(2, name.as_bytes(), NodeKind::Regular,
+        &|_| Ok(InodeAttrs::new(0o644, 0, 0)),
+        &mut |prepared| { node = Some(prepared); Ok(()) });
+    context::observer(None);
+    let replay = measurement::take_materialized();
+    let work = measurement::take_work();
+    let events = measurement::take_events();
+    let allocation = observation::take_write_grant();
+    let costs = costs.borrow();
+    println!("CREATE index={index} durable={generation} free={free} reserve={reserve} frozen={frozen} open={open} available={expected_available} allocation={allocation:?} locks={} replay={replay} waits={:?} result={result:?}",
+        costs.locks, costs.waits);
+    assert_eq!(result, Ok(()));
+    assert!(node.is_some(), "create did not prepare the opened VNode");
+    assert!(costs.locks > 0);
+    assert!(replay <= MATERIALIZE_STEPS as u64, "create {index} replayed {replay} steps");
+    assert_eq!(work, [0; 3], "create {index} published during the replay");
+
+    let mut admissions = events.into_iter().filter_map(|event| match event {
+        measurement::Event::Admission { attempts, pressure } => Some((attempts, pressure)),
+        _ => None,
+    });
+    let (attempts, pressure) = admissions.next().unwrap();
+    assert!(admissions.next().is_none() && pressure.is_empty());
+    let (success, refusals) = attempts.split_last().unwrap();
+    assert_eq!(success.error, None);
+    assert_eq!(success.refusal, None);
+    let [admitted_free, admitted_reserve, charged_with_grant, request, available] = allocation.unwrap();
+    assert!(request <= available);
+    assert_eq!(available, admitted_free.saturating_sub(admitted_reserve)
+        .saturating_sub(charged_with_grant - request));
+    assert_eq!(refusals.len(), costs.waits.len(), "create {index} refusal-to-wait attribution");
+    for (refusal, wait) in refusals.iter().zip(&costs.waits) {
+        println!("CREATE_REFUSAL index={index} epoch={} refusal={:?}", wait.epoch, refusal.refusal);
+        assert_eq!(refusal.error, Some(ENOSPC));
+        let [free_at_refusal, reserve_at_refusal, outstanding, requested, space] = refusal.refusal.unwrap();
+        assert_eq!(wait.generation, Some(generation + 1), "wait epoch {}", wait.epoch);
+        assert_eq!((wait.free, wait.reserve, wait.outstanding),
+            (free_at_refusal, reserve_at_refusal, outstanding));
+        assert_eq!((free_at_refusal, reserve_at_refusal, outstanding, space),
+            (free, reserve, frozen + open, expected_available));
+        assert!(requested > space, "create {index} waited for install with adequate space");
+    }
+    if costs.waits.is_empty() {
+        assert_eq!((admitted_free, admitted_reserve, charged_with_grant - request, available),
+            (free, reserve, frozen + open, expected_available));
+    }
+    (costs.waits.len(), costs.locks, replay, available - request)
+}
+
+#[test]
+fn create_during_frozen_preparation_has_exact_admission_and_bounded_replay() {
+    const CREATES: usize = 300;
+    let started = Instant::now();
+    let disk = Arc::new(Disk::new(incremental_files_view::image(FILES).clone()));
+    let fs = mount(disk, true, 241515613);
+    write(&fs, &fs.open(16).unwrap(), b'N');
+    write(&fs, &fs.open(17).unwrap(), b'N');
+    for ino in 18..16 + DIRTY_OPS {
+        fs.setattr(ino, SetAttr { mode: Some(0o600), ..SetAttr::default() }).unwrap();
+    }
+    let (generation, frozen_grants) = {
+        let state = fs.inner.state.lock();
+        (state.durable.generation + 1, state.grants.blocks)
+    };
+    assert!(frozen_grants > 0);
+    let (ready_tx, ready) = mpsc::channel();
+    let (resume, resume_rx) = mpsc::channel();
+    let (installed_tx, installed) = mpsc::channel();
+    let publisher = fs.clone();
+    let worker = thread::spawn(move || {
+        let mut armed = false;
+        context::observer(Some(Box::new(move |event| match event {
+            Event::Phase { op: "commit", phase: "drain-dirty", begin: true } => armed = true,
+            Event::Point if armed => {
+                armed = false;
+                ready_tx.send(()).unwrap();
+                resume_rx.recv_timeout(CREATE_REPLAY_WATCHDOG).unwrap();
+            }
+            _ => (),
+        })));
+        installed_tx.send(publisher.commit_generation_up_to(0, generation, true)).unwrap();
+        context::observer(None);
+    });
+    ready.recv_timeout(CREATE_REPLAY_WATCHDOG).unwrap();
+    assert!(fs.inner.state.lock().pending.is_some());
+    let pause = Rc::new(RefCell::new(Some(PausedPublication { resume, installed })));
+    let (mut waits, mut locks, mut max_steps, mut min_headroom) = (0, 0, 0, u64::MAX);
+    for i in 0..CREATES {
+        let (waited, acquired, steps, headroom) = create_during_publication(&fs, i, frozen_grants, &pause);
+        waits += waited;
+        locks += acquired;
+        max_steps = max_steps.max(steps);
+        min_headroom = min_headroom.min(headroom);
+    }
+    if let Some(publication) = pause.borrow_mut().take() {
+        publication.install();
+    }
+    worker.join().unwrap();
+    {
+        let state = fs.inner.state.lock();
+        assert_eq!(state.durable.generation, generation);
+        assert!(state.pending.is_none());
+        assert!(state.files.log.as_ref().unwrap().len() >= MATERIALIZE_STEPS);
+    }
+    // A create while preparation is held has no installed log to replay.
+    // Exercise the bound with the same log still backlogged after install.
+    let (after_waits, after_locks, after_steps, _) = create_during_publication(&fs, CREATES, 0, &pause);
+    assert!(after_steps > 0, "post-install create reached no queued replay");
+    println!("CREATE_SUMMARY files={FILES} dirty={DIRTY_OPS} creates={CREATES} generation={generation} waits={waits} locks={locks} peak_replay={max_steps} min_grant_headroom={min_headroom} post_install_waits={after_waits} post_install_locks={after_locks} post_install_replay={after_steps} seconds={:.3}",
+        started.elapsed().as_secs_f64());
 }
