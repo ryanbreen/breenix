@@ -131,6 +131,11 @@ pub trait MappingIo: Any {
     fn size(&self) -> u64;
     fn read(&self, offset: u64, length: usize) -> Result<Vec<u8>, Errno>;
     fn needs_flush(&self) -> bool;
+    /// Generation that accepted the most recent writeback run, for
+    /// backends that publish staged data in transactions.
+    fn staged_writeback_generation(&self) -> Option<u64> {
+        None
+    }
     fn sync(&self, first: u64, last: u64) -> Result<(), Errno>;
     fn publish(&self, bind: &mut dyn FnMut(bool) -> Result<(), Errno>) -> Result<(), Errno>;
 }

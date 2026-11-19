@@ -441,7 +441,7 @@ fn pause_at(
     })));
 }
 
-fn interleave_pressure(fs: &BreenFs<NoWait>, cut: FreezeCut) {
+fn interleave_pressure<T>(fs: &BreenFs<NoWait>, cut: FreezeCut, inspect: impl FnOnce() -> T) -> T {
     use super::super::preempt::context::Event;
     use std::{sync::mpsc::channel, thread, time::Duration};
     let (worker_entered, at_worker_edge) = channel();
@@ -451,7 +451,7 @@ fn interleave_pressure(fs: &BreenFs<NoWait>, cut: FreezeCut) {
     let start = fs.inner.state.lock().durable.generation;
     let wait = Duration::from_secs(5);
 
-    thread::scope(|scope| {
+    thread::scope(move |scope| {
         let (start_worker, worker_start) = channel();
         let worker = scope.spawn(move || {
             worker_start.recv().unwrap();
@@ -508,9 +508,11 @@ fn interleave_pressure(fs: &BreenFs<NoWait>, cut: FreezeCut) {
             resume_worker.send(()).unwrap();
         }
         assert_eq!(worker.join().unwrap(), Ok(matches!(cut, FreezeCut::AfterInstall)));
+        let observed = inspect();
         resume_pressure.send(()).unwrap();
         pressure.join().unwrap();
-    });
+        observed
+    })
 }
 
 #[test]
@@ -544,8 +546,12 @@ fn mapped_writeback_survives_each_pressure_freeze_cut() {
         }
         drop(nodes);
         assert_eq!(counts(), (MAPPED_TOTAL, MAPPED_TOTAL, 0));
-        interleave_pressure(&fs, cut);
-        let after_cut = counts();
+        let (after_cut, retry) = interleave_pressure(&fs, cut, || {
+            (counts(), maps[..4].iter().filter(|map| map.writeback_pending()).count())
+        });
+        let installing_mapped_pages = matches!(cut, FreezeCut::AfterInstall);
+        let expected_dirty = if installing_mapped_pages { MAPPED_TOTAL - EVICT_BUDGET } else { MAPPED_TOTAL };
+        let expected_retry = if installing_mapped_pages { 0 } else { 4 };
         let mut passes = 1;
         // Two budgets per page (snapshot, then eviction), plus one pass whose
         // completion the in-flight pressure publication can put off.
@@ -574,8 +580,15 @@ fn mapped_writeback_survives_each_pressure_freeze_cut() {
                 page_id += 1;
             }
         }
-        eprintln!("cut={cut:?} after_cut={after_cut:?} settled={settled:?} passes={passes}/{limit} pinned={pinned} missing={missing} repeated={repeated} mismatches={mismatches}");
-        if settled != baseline || pinned != 0 || missing != 0 || repeated != 0 || mismatches != 0 {
+        eprintln!("cut={cut:?} after_cut={after_cut:?} retry={retry} settled={settled:?} passes={passes}/{limit} pinned={pinned} missing={missing} repeated={repeated} mismatches={mismatches}");
+        if after_cut != (MAPPED_TOTAL, expected_dirty, 0)
+            || retry != expected_retry
+            || settled != baseline
+            || pinned != 0
+            || missing != 0
+            || repeated != 0
+            || mismatches != 0
+        {
             failures.push(cut);
         }
         assert_eq!(fs.read_only(), Ok(false));

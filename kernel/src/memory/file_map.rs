@@ -106,7 +106,7 @@ fn write_range_with_buffer(
     let _sync = SyncMaps::new(core::slice::from_ref(&handle));
     let range_first = first;
     loop {
-        let next = handle.map.writeback(handle, first, last, WRITEBACK_PAGES, bytes)?;
+        let (next, _) = handle.map.writeback(handle, first, last, WRITEBACK_PAGES, bytes)?;
         if flush && (next.is_none() || next.is_some_and(|next| next >= last)) {
             let file = handle.filesystem.mapping_io(handle)?;
             let result = file.sync(range_first, last);
@@ -366,15 +366,28 @@ impl BindingRec {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct WritebackReceipt {
+    version: u64,
+    generation: Option<u64>,
+}
+
+struct WritebackPage {
+    index: u64,
+    frame: PhysFrame,
+    version: u64,
+    staged: Option<u64>,
+}
+
 /// One frame reference held by the cache or by a parked private copy.
 #[derive(Debug)]
 struct CachePage {
     frame: PhysFrame,
     dirty: bool,
     gen: u64,
-    /// A snapshot taken with no writable binding, written but not yet flushed.
-    /// Kept on the page so a multi-batch sync needs no growing snapshot list.
-    written_gen: Option<u64>,
+    /// The last snapshot taken without a writable binding. Transactional
+    /// backends also record the generation that owns its staged bytes.
+    written: Option<WritebackReceipt>,
 }
 
 impl CachePage {
@@ -384,7 +397,7 @@ impl CachePage {
             frame,
             dirty: false,
             gen: 0,
-            written_gen: None,
+            written: None,
         })
     }
 
@@ -674,10 +687,15 @@ impl MapState {
 
     pub(crate) fn request_writeback(&self) {
         if self.has_dirty() {
-            self.state.writeback_requests.fetch_add(1, Ordering::AcqRel);
-            self.state.writeback_pending.store(true, Ordering::Release);
+            self.requeue_writeback();
             self.state.filesystem.request_eviction();
         }
+    }
+
+    /// Record a retry when the caller already owns the worker's next wake.
+    fn requeue_writeback(&self) {
+        self.state.writeback_requests.fetch_add(1, Ordering::AcqRel);
+        self.state.writeback_pending.store(true, Ordering::Release);
     }
 
     pub(crate) fn writeback_pending(&self) -> bool {
@@ -723,7 +741,7 @@ impl MapState {
         last: u64,
         limit: usize,
         bytes: &mut [u8],
-    ) -> Result<Option<u64>, Errno> {
+    ) -> Result<(Option<u64>, Option<u64>), Errno> {
         let limit = limit
             .min(WRITEBACK_PAGES)
             .min(bytes.len() / PAGE_SIZE as usize);
@@ -741,87 +759,88 @@ impl MapState {
         last: u64,
         limit: usize,
         bytes: &mut [u8],
-    ) -> Result<Option<u64>, Errno> {
+    ) -> Result<(Option<u64>, Option<u64>), Errno> {
         let file = handle.filesystem.mapping_io(handle)?;
         let (snapshot, writable) = {
-            let inner = self.state.inner.lock();
-            let count = inner
-                .pages
-                .range(first, last)
-                .iter()
-                .filter(|(_, page)| page.dirty)
-                .take(limit)
-                .count();
+            let mut inner = self.state.inner.lock();
+            let writable = inner.writable_shared;
+            let low = inner.pages.lower_bound(first);
+            let high = inner.pages.lower_bound(last).max(low);
+            let pages = &mut inner.pages.entries[low..high];
+            let count = pages.iter().filter(|(_, page)| page.dirty).take(limit).count();
             let mut snapshot = Vec::new();
             snapshot
                 .try_reserve(count)
                 .map_err(|_| Errno(crate::syscall::errno::ENOMEM))?;
-            for (index, page) in inner
-                .pages
-                .range(first, last)
-                .iter()
-                .filter(|(_, page)| page.dirty)
-                .take(limit)
-            {
-                snapshot.push((*index, page.frame, page.gen));
+            for (index, page) in pages.iter_mut().filter(|(_, page)| page.dirty).take(limit) {
+                let staged = page.written
+                    .filter(|receipt| writable == 0 && receipt.version == page.gen)
+                    .and_then(|receipt| receipt.generation);
+                if staged.is_none() {
+                    page.written = None;
+                }
+                snapshot.push(WritebackPage { index: *index, frame: page.frame, version: page.gen, staged });
             }
-            (snapshot, inner.writable_shared)
+            (snapshot, writable)
         };
-        if snapshot.is_empty() {
-            return Ok(None);
-        }
-        {
-            let mut inner = self.state.inner.lock();
-            for (index, _, _) in &snapshot {
-                if let Some(page) = inner.pages.get_mut(*index) { page.written_gen = None; }
-            }
-        }
         let size = file.size();
+        let mut latest = None;
         let mut cursor = 0;
         while cursor < snapshot.len() {
             let start = cursor;
             cursor += 1;
-            while cursor < snapshot.len() && snapshot[cursor].0 == snapshot[cursor - 1].0 + 1 {
-                cursor += 1;
-            }
-            let offset = snapshot[start].0 * PAGE_SIZE;
-            let length =
-                ((cursor - start) * PAGE_SIZE as usize).min(size.saturating_sub(offset) as usize);
-            if length == 0 {
+            if let Some(staged) = snapshot[start].staged {
+                // Retrying completion must not stage an identical snapshot
+                // into a later generation.
+                latest = latest.max(Some(staged));
                 continue;
             }
-            let inner = self.state.inner.lock();
-            for (slot, (_, frame, _)) in snapshot[start..cursor].iter().enumerate() {
-                let at = slot * PAGE_SIZE as usize;
-                if at >= length {
-                    break;
-                }
-                let ptr = (super::physical_memory_offset().as_u64()
-                    + frame.start_address().as_u64()) as *const u8;
-                // SAFETY: the map lock pins the snapshot frames during the copy.
-                unsafe {
-                    core::ptr::copy_nonoverlapping(
-                        ptr,
-                        bytes.as_mut_ptr().add(at),
-                        (PAGE_SIZE as usize).min(length - at),
-                    );
-                }
+            while cursor < snapshot.len()
+                && snapshot[cursor].index == snapshot[cursor - 1].index + 1
+                && snapshot[cursor].staged.is_none()
+            {
+                cursor += 1;
             }
-            drop(inner);
-            handle.filesystem.writeback_pages(handle, snapshot[start].0, &bytes[..length], file.as_ref())?;
-        }
-        let mut inner = self.state.inner.lock();
-        if writable == 0 && inner.writable_shared == 0 {
-            for (index, _, gen) in &snapshot {
-                if let Some(page) = inner.pages.get_mut(*index) {
-                    if page.gen == *gen {
-                        page.written_gen = Some(*gen);
+            let run = &snapshot[start..cursor];
+            let offset = run[0].index * PAGE_SIZE;
+            let length = (run.len() * PAGE_SIZE as usize).min(size.saturating_sub(offset) as usize);
+            let generation = if length == 0 {
+                None
+            } else {
+                let inner = self.state.inner.lock();
+                for (slot, page) in run.iter().enumerate() {
+                    let at = slot * PAGE_SIZE as usize;
+                    if at >= length {
+                        break;
+                    }
+                    let ptr = (super::physical_memory_offset().as_u64()
+                        + page.frame.start_address().as_u64()) as *const u8;
+                    // SAFETY: the map lock pins the snapshot frames during the copy.
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            ptr,
+                            bytes.as_mut_ptr().add(at),
+                            (PAGE_SIZE as usize).min(length - at),
+                        );
+                    }
+                }
+                drop(inner);
+                handle.filesystem.writeback_pages(handle, run[0].index, &bytes[..length], file.as_ref())?;
+                file.staged_writeback_generation()
+            };
+            latest = latest.max(generation);
+            let mut inner = self.state.inner.lock();
+            if writable == 0 && inner.writable_shared == 0 {
+                for snapshot in run {
+                    if let Some(page) = inner.pages.get_mut(snapshot.index) {
+                        if page.frame == snapshot.frame && page.gen == snapshot.version {
+                            page.written = Some(WritebackReceipt { version: snapshot.version, generation });
+                        }
                     }
                 }
             }
         }
-        self.refresh(&inner);
-        Ok(snapshot.last().map(|(index, _, _)| index + 1))
+        Ok((snapshot.last().map(|page| page.index + 1), latest))
     }
 
     /// Called under the mount guard after a successful barrier or an epoch
@@ -829,13 +848,33 @@ impl MapState {
     /// A new write fault changes gen. Shared writable mappings retain dirty
     /// custody because stores can continue without another fault.
     pub(crate) fn complete_writeback(&self, first: u64, last: u64) {
+        self.complete_writeback_through(first, last, u64::MAX);
+    }
+
+    /// Return whether a current snapshot still needs its generation installed.
+    pub(crate) fn complete_writeback_through(&self, first: u64, last: u64, installed: u64) -> bool {
         let mut inner = self.state.inner.lock();
+        let mut deferred = false;
         if inner.writable_shared == 0 {
-            for (_, page) in inner.pages.entries.iter_mut().filter(|(index, _)| *index >= first && *index < last) {
-                if page.written_gen == Some(page.gen) { page.dirty = false; }
+            let low = inner.pages.lower_bound(first);
+            let high = inner.pages.lower_bound(last).max(low);
+            for (_, page) in &mut inner.pages.entries[low..high] {
+                if let Some(receipt) = page.written.filter(|receipt| receipt.version == page.gen && page.dirty) {
+                    if receipt.generation.is_some_and(|generation| generation > installed) {
+                        deferred = true;
+                    } else {
+                        page.dirty = false;
+                        page.written = None;
+                    }
+                }
             }
         }
+        if deferred {
+            inner.writeback_cursor = inner.writeback_cursor.min(first);
+            self.requeue_writeback();
+        }
         self.refresh(&inner);
+        deferred
     }
 
     /// The service processes at most the remaining page budget and resumes
@@ -847,7 +886,7 @@ impl MapState {
         handle: &VNode,
         budget: &mut usize,
     ) -> Result<bool, &'static str> {
-        self.service_writeback_with(handle, budget, |first, end| {
+        self.service_writeback_with(handle, budget, |first, end, _| {
             // The transfer serializes its durable-epoch check with writes; an
             // identical durable snapshot need not flush another inode.
             let file = handle.filesystem.mapping_io(handle)?;
@@ -866,7 +905,7 @@ impl MapState {
         &self,
         handle: &VNode,
         budget: &mut usize,
-        sync: impl FnOnce(u64, u64) -> Result<(), Errno>,
+        sync: impl FnOnce(u64, u64, Option<u64>) -> Result<(), Errno>,
     ) -> Result<bool, Errno> {
         if !self.writeback_pending() || self.state.syncers.load(Ordering::Acquire) != 0 {
             return Ok(false);
@@ -891,9 +930,9 @@ impl MapState {
             (first, count)
         };
         let mut bytes = writeback_buffer().map_err(|_| Errno(crate::syscall::errno::ENOMEM))?;
-        let next = self.writeback(handle, first, u64::MAX, *budget, &mut bytes)?;
+        let (next, generation) = self.writeback(handle, first, u64::MAX, *budget, &mut bytes)?;
         if let Some(end) = next {
-            sync(first, end)?;
+            sync(first, end, generation)?;
         }
         *budget -= count;
         let mut inner = self.state.inner.lock();

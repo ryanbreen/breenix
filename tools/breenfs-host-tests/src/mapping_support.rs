@@ -75,13 +75,13 @@ struct CachePage {
     _storage: Box<[u8; 4096]>,
     dirty: bool,
     gen: u64,
-    written_gen: Option<u64>,
+    written: Option<WritebackReceipt>,
 }
 impl CachePage {
     fn allocate() -> Result<Self, &'static str> {
         let storage = Box::new([0; 4096]);
         Ok(Self { frame: PhysFrame(storage.as_ptr() as usize), _storage: storage,
-            dirty: false, gen: 0, written_gen: None })
+            dirty: false, gen: 0, written: None })
     }
     fn ptr(&self) -> *mut u8 { self.frame.0 as *mut u8 }
     fn zero_from(&self, offset: u64) {
@@ -139,7 +139,7 @@ impl MapState {
                     _storage: storage,
                     dirty: true,
                     gen: 1,
-                    written_gen: None,
+                    written: None,
                 },
             ));
         }

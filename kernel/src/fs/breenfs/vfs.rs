@@ -34,7 +34,7 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use core::{ops::Deref, sync::atomic::{AtomicBool, AtomicU64, Ordering}};
+use core::{cell::Cell, ops::Deref, sync::atomic::{AtomicBool, AtomicU64, Ordering}};
 use spin::Mutex;
 
 #[cfg(test)]
@@ -1721,9 +1721,14 @@ impl<W: Wait + 'static> BreenFs<W> {
         for (index, node) in handles.iter().enumerate() {
             preemption_point();
             if !self.inner.state.lock().failed {
-                let result = node.map.service_writeback_with(node, &mut budget, |first, last| {
+                let result = node.map.service_writeback_with(node, &mut budget, |first, last, generation| {
                     staged.push((index, first, last));
-                    self.inner.signal.requested.store(true, Ordering::Release);
+                    if let Some(generation) = generation {
+                        let state = self.inner.state.lock();
+                        if generation > state.durable.generation {
+                            self.inner.signal.requested.store(true, Ordering::Release);
+                        }
+                    }
                     Ok(())
                 });
                 match result {
@@ -1819,11 +1824,13 @@ impl<W: Wait + 'static> BreenFs<W> {
     }
     fn complete_mapping(&self, node: &VNode, first: u64, last: u64) {
         let state = self.inner.state.lock();
-        // A writeback that joined G+1 while G flushed keeps dirty custody.
-        if !state.failed && state.pending.is_none()
-            && state.dirty.get(&node.ino).is_none_or(|n| n.pages.bytes() == 0)
-        {
-            node.map.complete_writeback(first, last);
+        if !state.failed && node.map.complete_writeback_through(first, last, state.durable.generation) {
+            self.inner.signal.mappings.store(true, Ordering::Release);
+            // An in-flight publication wakes the worker at install. Preserve
+            // the request without waking the worker repeatedly before then.
+            if state.pending.is_none() {
+                self.inner.signal.wake();
+            }
         }
     }
     fn commit_generation(&self, now_ns: u64) -> Result<bool, Errno> {
@@ -2861,6 +2868,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             size,
             // A failed writable mount must still flush through sync's EIO path.
             writable: state.committer.is_some(),
+            staged_generation: Cell::new(None),
         };
         Ok(Box::try_new(transfer).map_err(|_| Errno(ENOMEM))?)
     }
@@ -3204,6 +3212,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         {
             return Err(Errno(EXDEV));
         }
+        mapping.staged_generation.set(None);
         let offset = page.checked_mul(BLOCK_SIZE as u64).ok_or(Errno(EFBIG))?;
         // The caller can reuse its mapped-page snapshot after this call. Only
         // this private copy enters the dirty map and later CRC calculation.
@@ -3235,7 +3244,9 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         inode.mtime = now();
         inode.ctime = inode.mtime;
         let result = state.files.put_inode(node.ino, inode);
-        state.edited(&[node.ino], result)
+        state.edited(&[node.ino], result)?;
+        mapping.staged_generation.set(Some(state.open_generation()));
+        Ok(())
     }
     fn clear_mapping_privilege(&self, node: &VNode) -> Result<(), Errno> {
         let _operation = self.inner.costs.span(CostOp::Setattr, CostPhase::Operation);
@@ -3424,6 +3435,7 @@ struct Mapping<W: Wait + 'static> {
     node: Arc<VNode>,
     size: u64,
     writable: bool,
+    staged_generation: Cell<Option<u64>>,
 }
 impl<W: Wait + 'static> MappingIo for Mapping<W> {
     fn as_any(&self) -> &dyn core::any::Any {
@@ -3442,7 +3454,10 @@ impl<W: Wait + 'static> MappingIo for Mapping<W> {
     fn needs_flush(&self) -> bool {
         self.writable
     }
-    fn sync(&self, _first: u64, _last: u64) -> Result<(), Errno> {
+    fn staged_writeback_generation(&self) -> Option<u64> {
+        self.staged_generation.get()
+    }
+    fn sync(&self, first: u64, last: u64) -> Result<(), Errno> {
         if !self.writable {
             return Ok(());
         }
@@ -3450,7 +3465,7 @@ impl<W: Wait + 'static> MappingIo for Mapping<W> {
         // successor if it already committed). sync joins its receipt and waits
         // for the final flush, outside the mount lock.
         self.fs.sync_generation(None, false)?;
-        self.fs.complete_mapping(&self.node, _first, _last);
+        self.fs.complete_mapping(&self.node, first, last);
         Ok(())
     }
     fn publish(&self, bind: &mut dyn FnMut(bool) -> Result<(), Errno>) -> Result<(), Errno> {

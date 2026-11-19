@@ -30,6 +30,8 @@ fn main() {
     let mut out = String::new();
     for marker in [
         "fn pages(",
+        "#[derive(Clone, Copy, Debug)]\nstruct WritebackReceipt",
+        "struct WritebackPage",
         "struct PageVec<T>",
         "impl<T> PageVec<T>",
         "fn bound_runs(",
@@ -75,10 +77,12 @@ fn main() {
         "    pub(crate) fn has_dirty(",
         "    pub(crate) fn nonempty(",
         "    pub(crate) fn request_writeback(",
+        "    fn requeue_writeback(",
         "    pub(crate) fn writeback_pending(",
         "    pub(crate) fn writeback(",
         "    fn writeback_snapshot(",
         "    pub(crate) fn complete_writeback(",
+        "    pub(crate) fn complete_writeback_through(",
         "    pub(crate) fn service_writeback(",
         "    pub(crate) fn eviction_pending(",
         "    pub(crate) fn discard_unobserved(",
