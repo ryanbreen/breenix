@@ -516,6 +516,35 @@ fn interleave_pressure<T>(fs: &BreenFs<NoWait>, cut: FreezeCut, inspect: impl Fn
 }
 
 #[test]
+fn mapped_writeback_waits_for_install_without_self_waking() {
+    use crate::memory::file_map::EVICT_BUDGET;
+
+    // E24 ledger 613(z4), review M1 and m1. The pending generation owns a
+    // full pass of snapshots, with more dirty pages behind them.
+    let (fs, disk, node) = fixture();
+    let bytes = expected(17);
+    let pages = bytes.len() / BLOCK_SIZE;
+    assert!(pages > EVICT_BUDGET);
+    node.map.shared_stores(&bytes, false);
+    node.map.request_writeback();
+
+    let (passes, pending, requested) = interleave_pressure(&fs, FreezeCut::AfterStaging, || {
+        let passes = [(); 3].map(|()| measurement::service_at(&fs, 0).unwrap());
+        (passes, node.map.writeback_pending(), fs.inner.signal.requested.load(Ordering::Acquire))
+    });
+    assert!(pending, "install still owes completion for the frozen snapshots");
+    assert_eq!((passes, requested), ([(false, false); 3], false),
+        "blocked passes published, woke themselves, or requested another publication");
+
+    let (published, _) = measurement::service_at(&fs, 0).unwrap();
+    assert!(!published, "completing installed receipts alone caused another publication");
+    assert_eq!(node.map.cache_counts().1, pages - EVICT_BUDGET);
+    assert!(measurement::service_at(&fs, 0).unwrap().0);
+    assert_eq!(node.map.cache_counts().1, 0);
+    assert!(cold_bytes(&disk, node.ino) == bytes, "cold mapped bytes differ after install");
+}
+
+#[test]
 fn mapped_writeback_survives_each_pressure_freeze_cut() {
     use crate::memory::file_map::{bind_host, EVICT_BUDGET};
     let mut failures = Vec::new();
