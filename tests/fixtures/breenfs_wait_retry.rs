@@ -1,0 +1,228 @@
+// Force the checked waitqueue's outcomes while exercising the real wait callers.
+extern crate self as spin;
+
+use std::cell::{Cell, RefCell};
+use std::sync::OnceLock;
+
+pub struct Once<T>(OnceLock<T>);
+impl<T> Once<T> {
+    pub const fn new() -> Self {
+        Self(OnceLock::new())
+    }
+    pub fn call_once(&self, init: impl FnOnce() -> T) -> &T {
+        self.0.get_or_init(init)
+    }
+}
+
+thread_local! {
+    static BRAKE: Cell<u32> = const { Cell::new(0) };
+    static HALTS: Cell<u32> = const { Cell::new(0) };
+    static PREPARES: Cell<u32> = const { Cell::new(0) };
+    static HOLDER: RefCell<Option<fs::mount_lock::MountGuard<'static, u32>>> =
+        const { RefCell::new(None) };
+}
+
+pub mod per_cpu {
+    pub fn preempt_count() -> u32 {
+        super::BRAKE.with(|count| count.get())
+    }
+    pub fn preempt_disable() {
+        super::BRAKE.with(|count| count.set(count.get() + 1));
+    }
+    pub fn preempt_enable() {
+        super::BRAKE.with(|count| count.set(count.get() - 1));
+    }
+    pub fn in_interrupt() -> bool {
+        false
+    }
+}
+pub use per_cpu as per_cpu_aarch64;
+
+pub mod arch_impl {
+    pub mod aarch64 {
+        pub mod cpu {
+            pub fn interrupts_enabled() -> bool {
+                true
+            }
+        }
+        pub mod timer_interrupt {
+            pub fn is_initialized() -> bool {
+                true
+            }
+        }
+    }
+}
+
+pub fn arch_without_interrupts<T>(f: impl FnOnce() -> T) -> T {
+    f()
+}
+pub fn arch_halt_with_interrupts() {
+    assert_eq!(per_cpu::preempt_count(), 0, "the owner may need this CPU");
+    HALTS.with(|count| count.set(count.get() + 1));
+    HOLDER.with(|holder| drop(holder.borrow_mut().take()));
+}
+
+pub mod time {
+    pub fn get_monotonic_time_ns() -> (u64, u64) {
+        (0, 1)
+    }
+}
+pub mod memory {
+    pub mod frame_allocator {
+        pub struct Stats {
+            pub total_bytes: u64,
+        }
+        pub fn memory_stats() -> Stats {
+            Stats { total_bytes: 0 }
+        }
+    }
+}
+pub mod process {
+    pub fn process_manager_held_on_current_cpu() -> bool {
+        false
+    }
+}
+pub mod syscall {
+    pub mod errno {
+        pub const EINTR: i32 = 4;
+    }
+}
+
+pub mod task {
+    pub mod scheduler {
+        pub fn current_thread_id() -> Option<u64> {
+            Some(7)
+        }
+        pub fn set_need_resched() {}
+    }
+    pub mod thread {
+        pub enum ThreadState {
+            BlockedOnIO,
+        }
+    }
+    pub mod waitqueue {
+        use super::thread::ThreadState;
+        use std::cell::Cell;
+
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        pub enum PrepareOutcome {
+            Queued,
+            Mismatch,
+            PublishFailed,
+            OutOfMemory,
+        }
+        thread_local! {
+            pub static REFUSAL: Cell<PrepareOutcome> = const { Cell::new(PrepareOutcome::OutOfMemory) };
+        }
+        pub struct WaitQueueHead;
+        impl WaitQueueHead {
+            pub fn new() -> Self {
+                Self
+            }
+            pub fn prepare_to_wait_checked(
+                &self,
+                _: ThreadState,
+                _: Option<u64>,
+                matches: impl FnOnce() -> bool,
+            ) -> PrepareOutcome {
+                assert_eq!(super::super::per_cpu::preempt_count(), 1);
+                super::super::PREPARES.with(|count| {
+                    assert_eq!(count.replace(count.get() + 1), 0, "retried before sleeping");
+                });
+                if matches() {
+                    REFUSAL.with(Cell::get)
+                } else {
+                    PrepareOutcome::Mismatch
+                }
+            }
+            pub fn finish_wait(&self) {
+                panic!("no waiter was published");
+            }
+            pub fn wake_up(&self) {}
+            pub fn wake_up_deferred(&self) {}
+        }
+        pub fn schedule_current_wait() {
+            panic!("no waiter was published");
+        }
+    }
+}
+
+pub mod block {
+    pub mod cache {
+        pub trait Wait {
+            fn generation(&self) -> u64;
+            fn wait(&self, observed: u64);
+            fn wake_all(&self);
+        }
+        pub struct BufferCache<W>(pub W);
+        impl<W> BufferCache<W> {
+            pub fn with_capacity(wait: W, _: usize) -> Self {
+                Self(wait)
+            }
+        }
+        pub fn bound_for_memory(_: usize) -> usize {
+            0
+        }
+    }
+    #[path = "CACHE_PATH"]
+    pub mod cache_kernel;
+}
+pub mod fs {
+    pub mod errno {
+        #[derive(Debug)]
+        pub struct Errno(pub i32);
+    }
+    #[path = "SIGNAL_PATH"]
+    pub mod commit_signal;
+    #[path = "MOUNT_PATH"]
+    pub mod mount_lock;
+}
+
+fn main() {
+    use block::cache::Wait;
+    use fs::{commit_signal::CommitSignal, mount_lock::MountLock};
+    use task::waitqueue::{PrepareOutcome, REFUSAL};
+
+    static MOUNT: OnceLock<MountLock<u32>> = OnceLock::new();
+    let scenario = std::env::args().nth(1).unwrap();
+    let inherited_brake = scenario == "worker" || scenario == "publish-refused";
+    if inherited_brake {
+        per_cpu::preempt_disable();
+    }
+    match scenario.as_str() {
+        "worker" => {
+            let signal = CommitSignal::new();
+            let _ = signal.worker.wait(signal.worker.epoch(), Some(10));
+        }
+        "foreground" => {
+            let signal = CommitSignal::new();
+            let _ = signal.wait(signal.epoch(), None);
+        }
+        "mount" => {
+            let mount = MOUNT.get_or_init(|| MountLock::new(4));
+            HOLDER.with(|holder| holder.replace(Some(mount.lock())));
+            assert_eq!(*mount.lock(), 4);
+        }
+        "cache" => {
+            let cache = &block::cache_kernel::system_cache().0;
+            cache.wait(cache.generation());
+        }
+        "publish-refused" => {
+            REFUSAL.set(PrepareOutcome::PublishFailed);
+            let signal = CommitSignal::new();
+            let outcome = signal.wait(signal.epoch(), None);
+            assert_eq!(format!("{outcome:?}"), "Err(Errno(4))");
+        }
+        "epoch-moved" => {
+            let signal = CommitSignal::new();
+            let observed = signal.epoch();
+            signal.wake_waiters();
+            let _ = signal.wait(observed, None);
+        }
+        _ => panic!("unknown scenario"),
+    }
+    assert_eq!(PREPARES.get(), 1);
+    assert_eq!(per_cpu::preempt_count(), u32::from(inherited_brake));
+    let should_halt = !matches!(scenario.as_str(), "publish-refused" | "epoch-moved");
+    assert_eq!(HALTS.get(), u32::from(should_halt));
+}

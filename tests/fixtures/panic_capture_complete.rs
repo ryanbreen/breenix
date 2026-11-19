@@ -182,6 +182,47 @@ fn lockup_while_scheduler_held() {
     assert!(text.contains("[BXCAP:NOTE sched_owner=free]"), "{text}");
     assert!(!text.contains("[BXCAP:THR tid="), "{text}");
 }
+
+#[cfg(target_arch = "aarch64")]
+fn lockup_running_samples() {
+    use task::lockup::{self, ThreadProgress};
+
+    let _guard = SCHEDULER.lock().unwrap();
+    let first = ThreadProgress::default();
+    let second = ThreadProgress::default();
+    lockup::current(0, 21689);
+    lockup::current(1, 21693);
+    first.record_schedule_entry();
+    lockup::record_running_tick(0, 1, 0x1000, 0x1004, 21689, first.counts());
+    lockup::record_running_tick(1, 1, 0x2000, 0x2004, 21692, second.counts());
+    for tick in 2..=1000 {
+        lockup::record_running_tick(0, tick, 0x1000, 0x1004, 21689, first.counts());
+        lockup::record_running_tick(1, tick, 0x2000, 0x2004, 21693, second.counts());
+    }
+    first.record_schedule_entry();
+    first.record_schedule_entry();
+    first.record_wait_return(false);
+    first.record_wait_return(true);
+    lockup::record_running_tick(0, 1001, 0x1010, 0x1014, 21689, first.counts());
+    lockup::record_running_tick(1, 1001, 0x2010, 0x2014, 21693, second.counts());
+    // A peer's latest sample may predate its scheduler-published identity.
+    lockup::current(1, 21694);
+
+    capture::emit_lockup(5000, 1000);
+    let text = wire();
+    assert!(text.contains(concat!(
+        "[BXCAP:THR cpu=0 cur=21689 q=published run_tid=21689 tick=1001 ",
+        "elr=0x1010 lr=0x1014 sched=3 wait_no_park=1 ",
+        "window_ticks=1000 sched_delta=2 wait_no_park_delta=1]"
+    )), "{text}");
+    assert!(text.contains(concat!(
+        "[BXCAP:THR cpu=1 cur=21694 q=published run_tid=21693 tick=1001 ",
+        "elr=0x2010 lr=0x2014 sched=0 wait_no_park=0 window_ticks=unavailable]"
+    )), "{text}");
+    assert!(text.contains("[BXCAP:THR cpu=2 cur=0 q=published]"), "{text}");
+    assert!(text.contains("verdict=complete"), "{text}");
+    assert_eq!(READS.load(Ordering::Relaxed), 0);
+}
 fn partial(text: &str) {
     assert!(text.contains("[BXCAP:NOTE sched_lock_held]"), "{text}");
     assert!(text.contains("verdict=partial"), "{text}");
@@ -221,6 +262,11 @@ fn main() {
     #[cfg(target_arch = "aarch64")]
     if scenario == "lockup-held" {
         lockup_while_scheduler_held();
+        return;
+    }
+    #[cfg(target_arch = "aarch64")]
+    if scenario == "lockup-running" {
+        lockup_running_samples();
         return;
     }
     if scenario == "real-panic" {

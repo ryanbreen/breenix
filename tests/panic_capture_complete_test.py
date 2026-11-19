@@ -27,6 +27,7 @@ class PanicCaptureComplete(unittest.TestCase):
             if platform.machine() in ('arm64', 'aarch64'):
                 scenarios.append('lockup-waits')
                 scenarios.append('lockup-held')
+                scenarios.append('lockup-running')
             for scenario in scenarios:
                 result = subprocess.run([str(path / 'check'), scenario],
                                         capture_output=True, text=True)
