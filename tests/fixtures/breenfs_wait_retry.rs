@@ -16,6 +16,8 @@ impl<T> Once<T> {
 
 thread_local! {
     static BRAKE: Cell<u32> = const { Cell::new(0) };
+    static KILL_DURING_PREPARE: Cell<bool> = const { Cell::new(false) };
+    static KILL_PENDING: Cell<bool> = const { Cell::new(false) };
     static HALTS: Cell<u32> = const { Cell::new(0) };
     static PREPARES: Cell<u32> = const { Cell::new(0) };
     static HOLDER: RefCell<Option<fs::mount_lock::MountGuard<'static, u32>>> =
@@ -96,12 +98,16 @@ pub mod task {
         pub fn set_need_resched() {}
     }
     pub mod thread {
+        pub fn current_wait_must_unwind() -> bool {
+            super::super::KILL_PENDING.get()
+        }
         pub enum ThreadState {
             BlockedOnIO,
         }
     }
     pub mod waitqueue {
         use super::thread::ThreadState;
+        use super::super::{KILL_DURING_PREPARE, KILL_PENDING};
         use std::cell::Cell;
 
         #[derive(Clone, Copy, PartialEq, Eq)]
@@ -129,20 +135,23 @@ pub mod task {
                 super::super::PREPARES.with(|count| {
                     assert_eq!(count.replace(count.get() + 1), 0, "retried before sleeping");
                 });
+                if KILL_DURING_PREPARE.get() {
+                    KILL_PENDING.set(true);
+                }
                 if matches() {
-                    REFUSAL.with(Cell::get)
+                    REFUSAL.get()
                 } else {
                     PrepareOutcome::Mismatch
                 }
             }
             pub fn finish_wait(&self) {
-                panic!("no waiter was published");
+                assert!(KILL_PENDING.get(), "no waiter was published");
             }
             pub fn wake_up(&self) {}
             pub fn wake_up_deferred(&self) {}
         }
         pub fn schedule_current_wait() {
-            panic!("no waiter was published");
+            assert!(KILL_PENDING.get(), "no waiter was published");
         }
     }
 }
@@ -213,6 +222,25 @@ fn main() {
             let outcome = signal.wait(signal.epoch(), None);
             assert_eq!(format!("{outcome:?}"), "Err(Errno(4))");
         }
+        "killed-during-wake" => {
+            KILL_DURING_PREPARE.set(true);
+            REFUSAL.set(PrepareOutcome::Queued);
+            let signal = CommitSignal::new();
+            assert_eq!(format!("{:?}", signal.wait(signal.epoch(), None)), "Err(Errno(4))");
+        }
+        "killed-allocation-refused" => {
+            KILL_DURING_PREPARE.set(true);
+            let signal = CommitSignal::new();
+            assert_eq!(format!("{:?}", signal.wait(signal.epoch(), None)), "Err(Errno(4))");
+        }
+        "killed-mount-contender" => {
+            let mount = MOUNT.get_or_init(|| MountLock::new(4));
+            HOLDER.with(|holder| holder.replace(Some(mount.lock())));
+            KILL_DURING_PREPARE.set(true);
+            REFUSAL.set(PrepareOutcome::PublishFailed);
+            assert!(mount.lock_interruptible().is_err());
+            assert!(HOLDER.with(|holder| holder.borrow().is_some()), "lock owner had to finish");
+        }
         "epoch-moved" => {
             let signal = CommitSignal::new();
             let observed = signal.epoch();
@@ -223,6 +251,6 @@ fn main() {
     }
     assert_eq!(PREPARES.get(), 1);
     assert_eq!(per_cpu::preempt_count(), u32::from(inherited_brake));
-    let should_halt = !matches!(scenario.as_str(), "publish-refused" | "epoch-moved");
+    let should_halt = matches!(scenario.as_str(), "worker" | "foreground" | "mount" | "cache");
     assert_eq!(HALTS.get(), u32::from(should_halt));
 }

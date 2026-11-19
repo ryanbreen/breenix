@@ -26,7 +26,8 @@ class WaitRetry(unittest.TestCase):
             subprocess.run(priority + ["rustc", "--edition=2021", "-Dwarnings",
                            str(source), "-o", str(binary)], check=True, timeout=45)
             for scenario in ("worker", "foreground", "mount", "cache",
-                             "publish-refused", "epoch-moved"):
+                             "publish-refused", "epoch-moved", "killed-during-wake",
+                             "killed-allocation-refused", "killed-mount-contender"):
                 with self.subTest(scenario=scenario):
                     result = subprocess.run([binary, scenario], capture_output=True,
                                             text=True, timeout=2)

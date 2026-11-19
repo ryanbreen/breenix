@@ -75,6 +75,66 @@ fn main() {
         libc = (ROOT / 'userspace/programs/src/suite_libc.rs').read_text()
         self.assertIn('observations::libc_phases(buf)', libc)
 
+    def test_ui_operation_receipts_name_wait_and_preserve_unfinished_call(self):
+        source = r'''#![allow(dead_code)]
+extern crate self as libbreenix;
+use std::sync::atomic::{AtomicU64, Ordering};
+static NOW: AtomicU64 = AtomicU64::new(100);
+pub mod time {
+    pub struct Stamp(u64);
+    impl Stamp { pub fn as_nanos(&self) -> i128 { i128::from(self.0) } }
+    pub fn now_monotonic() -> Result<Stamp, String> { Ok(Stamp(super::NOW.load(super::Ordering::Relaxed))) }
+}
+#[path="CONTROL"] mod control;
+extern "C" { fn fork() -> i32; fn waitpid(p: i32, status: *mut i32, flags: i32) -> i32; fn _exit(code: i32) -> !; }
+fn main() {
+    let scope = control::Scope::new().unwrap();
+    let pid = unsafe { fork() };
+    assert!(pid >= 0);
+    if pid == 0 {
+        for tick in 100..356 {
+            NOW.store(tick, Ordering::Relaxed);
+            let span = control::observations::Span::new("arena-create");
+            NOW.store(tick + 1, Ordering::Relaxed);
+            drop(span);
+        }
+        NOW.store(400, Ordering::Relaxed);
+        let _unfinished = control::observations::Span::new("arena-map-tree");
+        unsafe { _exit(0) }
+    }
+    let mut status = 0;
+    assert_eq!(unsafe { waitpid(pid, &mut status, 0) }, pid);
+    assert_eq!(status, 0);
+    for (suite, case) in [("ui-testing", "tree/names-values"), ("gui-apps", "desktop/font-everywhere")] {
+        assert!(scope.failure_records(suite, case, false).is_empty());
+        let rows = scope.failure_records(suite, case, true);
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert_eq!(rows[0], format!("CASE_OBSERVATION {suite} {case} op=arena-create started=256 completed=256 total_ns=256 max_ns=1 first_ns=100 last_start_ns=355 last_end_ns=356 may_wait=mount,admission,cache"));
+        assert_eq!(rows[1], format!("CASE_OBSERVATION {suite} {case} op=arena-map-tree started=1 completed=0 total_ns=0 max_ns=0 first_ns=400 last_start_ns=400 last_end_ns=0 may_wait=mount,cache"));
+    }
+    let transcript = concat!(
+        "CASE_OBSERVATION runner-fixture fixture/case-timeout op=artifact-file-sync ",
+        "started=1 completed=1 total_ns=60 max_ns=60 first_ns=500 last_start_ns=500 last_end_ns=560 ",
+        "may_wait=mount,generation,cache\n",
+        "CASE_OBSERVATION runner-fixture fixture/unrelated op=arena-open ",
+        "started=1 completed=1 total_ns=40 max_ns=40 first_ns=600 last_start_ns=600 last_end_ns=640 ",
+        "may_wait=mount,cache\n",
+        "CASE_OBSERVATION runner-fixture fixture/case-timeout op=arena-open started=1 completed=invalid\n",
+    );
+    control::observations::retain_fixture(transcript, "fixture/case-timeout");
+    assert!(scope.failure_records("ui-testing", "sessions/case-timeout", false).is_empty());
+    let rows = scope.failure_records("ui-testing", "sessions/case-timeout", true);
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    assert_eq!(rows[2], concat!(
+        "CASE_OBSERVATION ui-testing sessions/case-timeout op=artifact-file-sync ",
+        "started=1 completed=1 total_ns=60 max_ns=60 first_ns=500 last_start_ns=500 last_end_ns=560 ",
+        "may_wait=mount,generation,cache source=runner-fixture",
+    ));
+}
+'''.replace('CONTROL', str(ROOT / 'libs/libbreenix/src/suite_control.rs'))
+        result = run_rust(source)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_c_guest_marks_real_readdir_phases_without_changing_result(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
