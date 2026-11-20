@@ -10,6 +10,24 @@ import subprocess
 import sys
 
 
+PERSISTENT_ROOT_CASES = (
+    ('migrate-manifests-equal', 'The migrator reports equal source and destination manifests'),
+    ('host-manifests-equal', 'Cold filesystem manifests match and both ext2 images are unchanged'),
+    ('cutover-verified', 'The BreenFS generation boots and verifies before promotion'),
+    ('rescue-and-return', 'The saved ext2 rescue boots read-only and returns to BreenFS'),
+)
+
+
+def validate_manifest(path):
+    manifest = json.loads(Path(path).read_text())
+    actual = [(category['id'], case['id'], case['title'])
+              for category in manifest['categories'] if category.get('hostRunner') is True
+              for case in category['cases']]
+    expected = [('persistent-root', name, title) for name, title in PERSISTENT_ROOT_CASES]
+    if manifest['id'] != 'filesystem' or actual != expected:
+        raise ValueError('host case table differs from the manifest in ids, order or titles')
+
+
 def digest(path):
     with Path(path).open('rb') as source:
         return hashlib.file_digest(source, 'sha256').hexdigest()
@@ -149,6 +167,12 @@ def continuation(run):
 
 
 if __name__ == '__main__':
+    if len(sys.argv) == 3 and sys.argv[1] == '--check-manifest':
+        try:
+            validate_manifest(sys.argv[2])
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            sys.exit(f'VM artifacts: {error}')
+        sys.exit(0)
     operation, root, run, value, *extra = sys.argv[1:]
     if operation == 'seal-candidate':
         if len(extra) != 2:
