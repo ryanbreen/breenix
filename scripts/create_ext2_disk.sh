@@ -340,6 +340,7 @@ BSHRC
                 fi
                 i=$((i + 1))
             done
+            printf "%s\n" "$i" > /mnt/ext2/test/dir-blocks-count
 
             # Create additional test content
             mkdir -p /mnt/ext2/deep/path/to/file
@@ -642,6 +643,7 @@ BSHRC
         fi
         i=$((i + 1))
     done
+    printf '%s\n' "$i" > "$MOUNT_DIR/test/dir-blocks-count"
     mkdir -p "$MOUNT_DIR/deep/path/to/file"
     echo "Deep nested content" > "$MOUNT_DIR/deep/path/to/file/data.txt"
 

@@ -1098,14 +1098,18 @@ fn readdir_cookie_churn() -> CaseResult {
 }
 
 fn readdir_cookie_blocks() -> CaseResult {
-    // Breenix directories do not grow past their first block, so the one
-    // measured is a fixture the disk image builder fills past three blocks
-    // (scripts/create_ext2_disk.sh, /test/dir-blocks).
+    // The seed builder fills the fixture past three ext2 blocks and records
+    // its count beside it (E24 coordinator ledger 691).
     let dir = Directory::open("/usr/libexec/breenix/test/dir-blocks")?;
     let fd = dir.file.fd();
     let block = fs::fstatfs(fd)?.f_bsize as u64;
     let expected_root = for_root(filesystem_root::declared()?);
-    let n = root_expectations::cookie_fixture_entries();
+    let n = std::fs::read_to_string("/usr/libexec/breenix/test/dir-blocks-count")
+        .map_err(|e| format!("cannot read cookie fixture count: {e}"))?
+        .trim()
+        .parse::<usize>()
+        .map_err(|e| format!("invalid cookie fixture count: {e}"))?;
+    check((1..4096 - 2).contains(&n), "cookie fixture count is out of range")?;
     if expected_root.cookie_encoding == CookieEncoding::ByteOffsets {
         check(
             fs::fstat(fd)?.st_size as u64 >= 2 * block,

@@ -135,6 +135,12 @@ def convert_breenfs(image, tools_dir, debugfs):
         for line in result.stderr.decode(errors='replace').splitlines():
             if not re.match(r'^(debugfs [0-9]|(?:rdump|dump_file): Operation not permitted while changing ownership of )', line):
                 raise ValueError('debugfs rdump failed: ' + line)
+        # Carry the seed's count through --populate with the rest of the tree.
+        # It describes the source fixture's geometry, which conversion changes.
+        fixture = tree / 'usr/libexec/breenix/test/dir-blocks'
+        receipt = fixture.with_name('dir-blocks-count')
+        if fixture.is_dir() and (not receipt.is_file() or not re.fullmatch(rb'[1-9][0-9]*\n', receipt.read_bytes())):
+            raise ValueError('the ext2 cookie fixture lacks a valid dir-blocks-count receipt')
         env = dict(os.environ, PATH=str(Path(debugfs).parent) + os.pathsep + os.environ.get('PATH', ''))
         owners = work / 'owners'
         with owners.open('wb') as output:

@@ -47,8 +47,9 @@ class RootExpectationsTest(unittest.TestCase):
                                          [f'{i:0200d}' for i in range(expected)])
                         self.assertEqual(receipt.read_bytes(), f'{expected}\n'.encode())
                         image = work / 'root.img'
+                        # BreenFS needs at least 16,384 4 KiB blocks (design 2.9).
                         subprocess.run([mke2fs, '-q', '-t', 'ext2', '-b', str(block_size), '-d', str(tree),
-                                        '-F', str(image), str((32 << 20) // block_size)],
+                                        '-F', str(image), str((64 << 20) // block_size)],
                                        check=True, capture_output=True)
                         metal_root.convert_breenfs(image, tools, debugfs)
                         output = subprocess.check_output(

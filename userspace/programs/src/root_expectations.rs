@@ -1,13 +1,6 @@
 //! Implementation-defined root contracts (E24 coordinator rulings 458 and 465).
 use crate::filesystem_root::RootFs;
 
-pub const fn cookie_fixture_entries() -> usize {
-    // E24 ledger 520(q): create_ext2_disk.sh fills the source fixture with
-    // 208-byte records through three 1024-byte blocks, inclusive of i = 0.
-    // Root conversion preserves those names rather than rebuilding them.
-    3 * 1024 / 208 + 1
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CookieEncoding {
     ByteOffsets,
