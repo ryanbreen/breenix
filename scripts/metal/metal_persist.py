@@ -117,9 +117,11 @@ def manager_config(site, countdown=5):
     return ['BREENIX-MANAGER 1', 'query ' + query_url(site), f'countdown {countdown}', 'test-path load-file']
 
 
-def intent(target, root=None, home=None, tests=None, userland=None, previous_userland=None, command_line=None):
-    """A format-2 boot intent (kernel/src/boot/intent.rs)."""
-    lines = ['BREENIX-BOOT 2', 'target ' + target]
+def intent(target, root=None, home=None, tests=None, userland=None, previous_userland=None, command_line=None, mounts=None):
+    """A boot intent (kernel/src/boot/intent.rs)."""
+    if mounts is not None and (root is not None or home is not None):
+        raise ValueError('mounts cannot be mixed with root or home')
+    lines = ['BREENIX-BOOT 3' if mounts is not None else 'BREENIX-BOOT 2', 'target ' + target]
     if command_line is not None:
         if len(command_line)>255 or any(not 32<=ord(c)<=126 for c in command_line):
             raise ValueError('invalid kernel command line')
@@ -129,6 +131,22 @@ def intent(target, root=None, home=None, tests=None, userland=None, previous_use
             if not GUID.fullmatch(guid):
                 raise ValueError(f'the {item} is not a GUID')
             lines.append(f'{item} {guid}')
+    if mounts is not None:
+        paths = set()
+        writable_count = 0
+        if not 1 <= len(mounts) <= 6:
+            raise ValueError('invalid mount count')
+        for guid, path, writable in mounts:
+            if (not GUID.fullmatch(guid) or not isinstance(path, str)
+                    or not re.fullmatch(r'/[a-z0-9/._-]*', path) or len(path) > 64
+                    or any(part in ('.', '..') for part in path.split('/'))
+                    or path in paths or not isinstance(writable, bool)):
+                raise ValueError('invalid mount')
+            paths.add(path)
+            writable_count += writable
+            lines.append(f"mount {guid} {path} {'rw' if writable else 'ro'}")
+        if '/' not in paths or writable_count > 2:
+            raise ValueError('invalid mount set')
     if userland is not None:
         if not re.fullmatch(r'[A-Za-z0-9-]{1,64}', userland):
             raise ValueError('invalid userland generation')
@@ -139,7 +157,10 @@ def intent(target, root=None, home=None, tests=None, userland=None, previous_use
         lines.append('previous-userland ' + previous_userland)
     if tests is not None:
         lines.append(f'tests {tests[0]} {tests[1]}')
-    return ('\n'.join(lines) + '\n').encode('ascii')
+    result = ('\n'.join(lines) + '\n').encode('ascii')
+    if mounts is not None and len(result) > 1024:
+        raise ValueError('boot intent exceeds 1024 bytes')
+    return result
 
 
 def tests_ramdisk(output, target, root, binaries):

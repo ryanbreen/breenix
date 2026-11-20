@@ -842,6 +842,13 @@ persistent boot measures `usb-keyboard` in full the first time the operator type
 the offset and length of the BXTEST image that follows the intent in the same RAM disk; the testing kernel takes that
 image as its test disk.
 
+Format 3 uses `BREENIX-BOOT 3` and the format 2 items other than `root` and `home`,
+plus one to six `mount <guid> <path> ro|rw` lines. Exactly one path is `/`, paths are
+unique absolute strings of at most 64 bytes using lowercase ASCII letters, digits, `/`,
+`.`, `_` and `-`, with no `.` or `..` components. At most two mounts are writable.
+The complete intent is at most 1024 bytes. Malformed format 3 intents are refused.
+This format describes mounts; the migration and mount consumers arrive in later units.
+
 ### The write fence
 
 Physical boots keep hardware disks read-only until the roots are chosen. Then the block layer allows writes to the
