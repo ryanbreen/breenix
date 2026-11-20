@@ -205,3 +205,47 @@ fn memory_device_obeys_recording_device_publication_order() {
     assert_eq!(reader.read(&file, 0, &mut read), Ok(bytes.len()));
     assert_eq!(&read, bytes);
 }
+
+#[test]
+fn volatile_mounts_replace_read_only_generation_binds() {
+    let _registry = TEST_MOUNTS.lock().unwrap();
+    let (root_id, root_fs) = root(true);
+    let root_ino = root_fs.root().unwrap();
+    // A selected ext2 generation exposes its shared directory inodes through
+    // covers of this shape before the boot code installs volatile storage.
+    for (path, name) in [("/tmp", b"tmp"), ("/run", b"run")] {
+        let id = mount::allocate_id().unwrap();
+        let ino = root_fs.lookup(root_ino, name).unwrap();
+        let mut entry = mount::MountPoint::new(
+            id,
+            path.as_bytes().to_vec(),
+            "ext2",
+            crate::vfs::MountFlags {
+                read_only: true,
+                ..Default::default()
+            },
+            mount::Backend::Fs(root_fs.clone()),
+            ino,
+            Some((root_id, ino)),
+            Some((root_id, root_ino)),
+        );
+        entry.bind = Some((root_id, ino));
+        mount::register(entry).unwrap();
+    }
+
+    mount_volatile_if_needed(&format_three("ro"), || {
+        Ok(Arc::new(MemoryDevice::new().unwrap()))
+    })
+    .unwrap();
+    assert_eq!(
+        mount::mounts_text(),
+        b"none / ext2 ro 0 0\nnone /tmp breenfs rw 0 0\nnone /run breenfs rw 0 0\n"
+    );
+    for id in [
+        mount::find_mount("/run").unwrap(),
+        mount::find_mount("/tmp").unwrap(),
+        root_id,
+    ] {
+        mount::unmount(id, true).unwrap();
+    }
+}
