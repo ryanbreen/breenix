@@ -92,6 +92,44 @@ fn metadata_verification_cause_and_node_are_recorded() {
 fn metadata_allocation_cause_and_node_are_recorded() { cause("allocation", false); }
 
 #[test]
+fn ahci_preissue_refusal_leaves_root_writable() {
+    let (fs, disk, sb, ptr) = fixture();
+    let cache = BufferCache::new(NoWait);
+    let store = CachedNodeStore::new(&cache, disk.as_ref(), &sb);
+    let writes = disk.writes.load(Ordering::Relaxed);
+    // AHCI's port gate refuses before submitting a command.
+    *disk.read_error.lock().unwrap() = Some(BlockError::DeviceNotReady);
+    let result = store.read_node(ptr).map_err(ops::Error::from);
+    assert_eq!(fs.inner.state.lock().observed(result).err(), Some(Errno(EAGAIN)));
+    assert_eq!(fs.failure(), None);
+    assert_eq!(fs.read_only(), Ok(false));
+    assert_eq!(disk.writes.load(Ordering::Relaxed), writes);
+
+    *disk.read_error.lock().unwrap() = None;
+    assert!(store.read_node(ptr).is_ok());
+    assert_eq!(fs.getattr(16).unwrap().kind, NodeKind::Regular);
+    fs.create(2, b"after-refusal", NewNode::Regular {
+        attrs: InodeAttrs::new(0o600, 0, 0),
+    }).unwrap();
+    fs.sync().unwrap();
+}
+
+#[test]
+fn ahci_media_error_on_metadata_latches_root() {
+    let (fs, disk, sb, ptr) = fixture();
+    let cache = BufferCache::new(NoWait);
+    let store = CachedNodeStore::new(&cache, disk.as_ref(), &sb);
+    *disk.read_error.lock().unwrap() = Some(BlockError::IoError);
+    let result = store.read_node(ptr).map_err(ops::Error::from);
+    assert_eq!(fs.inner.state.lock().observed(result).err(), Some(Errno(EIO)));
+    assert_eq!(fs.failure(), Some(("observed-metadata", EIO)));
+    assert_eq!(fs.read_only(), Ok(true));
+    assert_eq!(fs.create(2, b"after-media-error", NewNode::Regular {
+        attrs: InodeAttrs::new(0o600, 0, 0),
+    }).err(), Some(Errno(EROFS)));
+}
+
+#[test]
 fn node_buffer_enomem_returns_to_caller_without_latching() {
     let (fs, disk, _, _) = fixture();
     let writes = disk.writes.load(Ordering::Relaxed);
