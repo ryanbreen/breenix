@@ -86,9 +86,8 @@ impl Ext2Adapter {
 
     /// Construct an open from the inode already loaded or being created under
     /// this guard. No second inode lookup may fail after a name is published.
-    fn open_loaded(&self, fs: &Ext2Fs, ino: u32, inode: &Ext2Inode) -> Result<Arc<VNode>, Errno> {
-        let handle = fs.pin_loaded_inode(ino, inode.size()).map_err(errno)?;
-        let attrs = attributes(ino.into(), inode)?;
+    fn open_loaded(&self, fs: &Ext2Fs, ino: u32, attrs: NodeAttrs) -> Result<Arc<VNode>, Errno> {
+        let handle = fs.pin_loaded_inode(ino, attrs.size).map_err(errno)?;
         #[cfg(not(test))]
         let node = handle.object.vnode.reopen(
             attrs.times,
@@ -202,6 +201,34 @@ pub(super) fn attributes(ino: u64, inode: &Ext2Inode) -> Result<NodeAttrs, Errno
             btime: None,
         },
     })
+}
+
+fn read_attributes(fs: &Ext2Fs, ino: u32) -> Result<NodeAttrs, Errno> {
+    if !fs.is_read_only() {
+        return attributes(ino.into(), &fs.read_inode(ino).map_err(errno)?);
+    }
+    // Migration and rescue see the frozen source's exact timestamps. Keep
+    // the writable ext2 path's existing timestamp and deferred-touch policy.
+    let (inode, [atime, mtime, ctime]) = Ext2Inode::read_with_time_extra(
+        fs.device.as_ref(),
+        ino,
+        &fs.superblock,
+        &fs.block_groups,
+    )
+    .map_err(|_| Errno(EIO))?;
+    let decode = |seconds: u32, extra: u32| {
+        let nsec = extra >> 2;
+        if nsec >= 1_000_000_000 {
+            return Err(Errno(EIO));
+        }
+        let sec = i64::from(seconds as i32) + (i64::from(extra & 3) << 32);
+        Ok(Timestamp { sec, nsec })
+    };
+    let mut attrs = attributes(ino.into(), &inode)?;
+    attrs.times.atime = decode(inode.i_atime, atime)?;
+    attrs.times.mtime = decode(inode.i_mtime, mtime)?;
+    attrs.times.ctime = decode(inode.i_ctime, ctime)?;
+    Ok(attrs)
 }
 
 fn regular_inode(fs: &Ext2Fs, ino: u32) -> Result<Ext2Inode, Errno> {
@@ -354,7 +381,7 @@ impl FileSystem for Ext2Adapter {
     fn getattr(&self, ino: u64) -> Result<NodeAttrs, Errno> {
         let guard = read_mount(self.mount).map_err(errno)?;
         let fs = guard.as_ref().ok_or(Errno(EIO))?;
-        attributes(ino, &fs.read_inode(ext2::ino32(ino)?).map_err(errno)?)
+        read_attributes(fs, ext2::ino32(ino)?)
     }
 
     fn setattr(&self, ino: u64, attrs: SetAttr) -> Result<(), Errno> {
@@ -396,7 +423,7 @@ impl FileSystem for Ext2Adapter {
         let guard = read_mount(self.mount).map_err(errno)?;
         let fs = guard.as_ref().ok_or(Errno(EIO))?;
         let ino = ext2::ino32(ino)?;
-        self.open_loaded(fs, ino, &fs.read_inode(ino).map_err(errno)?)
+        self.open_loaded(fs, ino, read_attributes(fs, ino)?)
     }
 
     fn lookup(&self, dir: u64, name: &[u8]) -> Result<u64, Errno> {
@@ -413,7 +440,7 @@ impl FileSystem for Ext2Adapter {
         let fs = guard.as_ref().ok_or(Errno(EIO))?;
         self.pin_node(fs, dir)?;
         let ino = self.lookup_in(fs, dir.ino, name)?.ok_or(Errno(ENOENT))?;
-        self.open_loaded(fs, ino, &fs.read_inode(ino).map_err(errno)?)
+        self.open_loaded(fs, ino, read_attributes(fs, ino)?)
     }
 
     fn touch(&self, node: &VNode, read: bool) {
@@ -583,12 +610,15 @@ impl FileSystem for Ext2Adapter {
         let inode = ext2::create_node::node_inode(mode, attrs.uid, attrs.gid, 0);
         let mut preparation_error = None;
         fs.create_node_prepared(dir, name, mode, attrs.uid, attrs.gid, 0, |fs, ino| {
-            self.open_loaded(fs, ino, &inode).and_then(prepare).map_err(|error| {
-                preparation_error = Some(error);
-                // Transport the original typed callback error through ext2's
-                // internal string API; it is restored at this boundary below.
-                "No memory for ext2 inode object"
-            })
+            attributes(ino.into(), &inode)
+                .and_then(|attrs| self.open_loaded(fs, ino, attrs))
+                .and_then(prepare)
+                .map_err(|error| {
+                    preparation_error = Some(error);
+                    // Transport the typed callback error through ext2's
+                    // internal string API and restore it at this boundary.
+                    "No memory for ext2 inode object"
+                })
         }).map_err(|error| preparation_error.unwrap_or_else(|| errno(error)))
     }
 

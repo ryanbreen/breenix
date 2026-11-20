@@ -105,13 +105,13 @@ class Ext2:
         if kind is None:
             raise ValueError(f"unsupported file type for inode {inode}: {header[2]!r}")
 
-        seconds = int(mtime[1], 16)
+        low_seconds = int(mtime[1], 16)
+        seconds = (low_seconds ^ (1 << 31)) - (1 << 31)
         nanos = 0
         if mtime[2] is not None:
             extra = int(mtime[2], 16)
             # The extended timestamp printed by debugfs combines a signed
             # low word, an epoch extension, and nanoseconds.
-            seconds = (seconds ^ (1 << 31)) - (1 << 31)
             seconds += (extra & 3) << 32
             nanos = extra >> 2
             if nanos >= 1_000_000_000:
