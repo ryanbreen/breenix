@@ -12,6 +12,7 @@ pub mod cache_report;
 
 pub(crate) mod read_only;
 mod boot_mount;
+pub(crate) mod memory_device;
 
 #[cfg(all(target_arch = "x86_64", feature = "block_fence_inject"))]
 pub mod fence_fault;

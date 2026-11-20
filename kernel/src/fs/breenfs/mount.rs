@@ -95,6 +95,9 @@ pub fn unmount(target: &Target, flags: u64) -> Option<Result<(), u64>> {
         return None;
     }
     Some((|| {
+        if registry::is_bind(mount.0) {
+            return registry::unmount(mount.0, flags != 0).map_err(|error| error.0 as u64);
+        }
         let fs = registry::filesystem(mount.0).map_err(|e| e.0 as u64)?;
         let (sec, nsec) = crate::time::get_monotonic_time_ns();
         let deadline = (sec as u64)

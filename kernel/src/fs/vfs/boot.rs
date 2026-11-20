@@ -163,6 +163,97 @@ impl ExplicitMount<'_> {
     }
 }
 
+/// Format a fresh, zeroed boot device using the regular BreenFS writer.
+pub(crate) fn format_volatile(device: &dyn BlockDevice) -> Result<(), Errno> {
+    use crate::fs::breenfs::{
+        commit::{partition_blocks, Committer, DeviceStore},
+        format::{Superblock, Time},
+        ops::Files,
+    };
+
+    let mut seed = [0; 32];
+    #[cfg(not(test))]
+    crate::random::fill(&mut seed);
+    #[cfg(test)]
+    seed.fill(1);
+    let time = Time {
+        seconds: crate::time::current_unix_time() as i64,
+        nanos: 0,
+    };
+    let sb = Superblock {
+        fs_uuid: seed[..16].try_into().unwrap(),
+        dirhash_key: seed[16..].try_into().unwrap(),
+        generation: 1,
+        slot: 1,
+        total_blocks: partition_blocks(device).map_err(|_| Errno(EIO))?,
+        global_reserve: 4096,
+        next_root_id: 2,
+        mkfs_time: time,
+        commit_time: time,
+        ..Superblock::default()
+    };
+    let mut files = Files::format(DeviceStore(device), &sb).map_err(|_| Errno(EIO))?;
+    for (name, mode) in [(b"tmp".as_slice(), 0o1777), (b"run", 0o755)] {
+        files.mkdir(2, name, mode, time).map_err(|_| Errno(EIO))?;
+    }
+    files.fsync(device, &mut Committer::format(sb)).map_err(|_| Errno(EIO))?;
+    Ok(())
+}
+
+pub(crate) fn mount_volatile_if_needed(
+    intent: &Captured,
+    device: impl FnOnce() -> Result<Arc<dyn BlockDevice>, Errno>,
+) -> Result<(), Errno> {
+    use crate::fs::{breenfs::vfs::BreenFs, vfs::NodeKind};
+
+    if !intent.explicit_mounts().map_err(|_| Errno(EINVAL))? {
+        return Ok(());
+    }
+    let root_id = registry::find_mount("/").ok_or(Errno(ENODEV))?;
+    let root = registry::filesystem(root_id)?;
+    if !root.read_only()? {
+        return Ok(());
+    }
+    let root_ino = registry::root_inode(root_id).ok_or(Errno(EIO))?;
+    let cover = |name: &[u8]| {
+        let ino = root.lookup(root_ino, name)?;
+        if root.getattr(ino)?.kind != NodeKind::Directory {
+            return Err(Errno(ENOTDIR));
+        }
+        Ok((root_id, ino))
+    };
+    let (tmp_cover, run_cover) = (cover(b"tmp")?, cover(b"run")?);
+
+    let device = device()?;
+    format_volatile(device.as_ref())?;
+    let (tmp_id, run_id) = (registry::allocate_id()?, registry::allocate_id()?);
+    let fs = BreenFs::mount_writable_cached(
+        device,
+        crate::block::cache_kernel::system_cache(),
+        tmp_id,
+        1,
+    )?;
+    let source = fs.root()?;
+    let make_entry = |id, path: &[u8], cover| {
+        let ino = fs.lookup(source, &path[1..])?;
+        let mut entry = registry::MountPoint::new(
+            id,
+            path.to_vec(),
+            fs.kind()?,
+            Default::default(),
+            registry::Backend::Fs(fs.clone()),
+            ino,
+            Some(cover),
+            Some((root_id, root_ino)),
+        );
+        entry.custody = Some(fs.open(ino)?);
+        Ok::<_, Errno>(entry)
+    };
+    let tmp = make_entry(tmp_id, b"/tmp", tmp_cover)?;
+    let run = make_entry(run_id, b"/run", run_cover)?;
+    registry::register_volatile_mounts(tmp, run)
+}
+
 #[cfg(not(test))]
 fn explicit_covers(path: &str) -> Result<(Option<InodeKey>, Option<InodeKey>), Errno> {
     use crate::fs::namei::{resolve, working_dir, Target};
@@ -205,7 +296,8 @@ fn mount_explicit() -> Result<(), Errno> {
 
     #[cfg(target_arch = "x86_64")]
     let (mut fence, mut root_role) = (block::Fence::CLOSED, 0);
-    let plan = prepare_mounts(intent::captured(), FORMATS, |guid, _path, _writable| {
+    let captured = intent::captured().ok_or(Errno(EINVAL))?;
+    let plan = prepare_mounts(Some(captured), FORMATS, |guid, _path, _writable| {
         #[cfg(target_arch = "x86_64")]
         {
             block::explicit_mount_device(guid, _path, _writable, &mut fence, &mut root_role)
@@ -242,7 +334,13 @@ fn mount_explicit() -> Result<(), Errno> {
             return Err(error);
         }
     }
-    Ok(())
+    mount_volatile_if_needed(captured, || {
+        let disk = block::memory_device::MemoryDevice::new().map_err(|_| Errno(ENOMEM))?;
+        let disk = Arc::try_new(disk).map_err(|_| Errno(ENOMEM))?;
+        Ok(disk)
+    }).inspect_err(|error| {
+        root_mount_receipt(None, format_args!("stage=boot-volatile-mount errno={}", error.0));
+    })
 }
 
 /// Emit one bounded record without allocating or waiting for serial ownership.
