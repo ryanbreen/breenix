@@ -109,9 +109,20 @@ class LayoutTest(existing.StateTest):
                 relevant = [e for e in extents if int(e[1]) == number]
                 self.assertTrue(all(0 <= int(e[2]) and 0 < int(e[3]) and
                                     int(e[2]) + int(e[3]) <= part['last'] - part['first'] + 1 for e in relevant))
-                superblock = next(e for e in relevant if int(e[2]) <= 128 < int(e[2]) + int(e[3]))
+                candidates = []
+                for slot in range(4):
+                    sector = (16 + slot) * 8
+                    for extent in relevant:
+                        if extent[4] == 'data' and int(extent[2]) <= sector < int(extent[2]) + int(extent[3]):
+                            candidate = int(extent[5]) + (sector - int(extent[2])) * 512
+                            if data[candidate:candidate + 8] == b'BREENFSS':
+                                generation = int.from_bytes(data[candidate + 32:candidate + 40], 'little')
+                                if generation > 0 and generation % 4 == slot:
+                                    candidates.append((generation, sector, extent))
+                self.assertTrue(candidates)
+                _, sector, superblock = max(candidates)
                 self.assertEqual(superblock[4], 'data')
-                offset = int(superblock[5]) + (128 - int(superblock[2])) * 512
+                offset = int(superblock[5]) + (sector - int(superblock[2])) * 512
                 self.assertEqual(data[offset:offset + 8], b'BREENFSS')
                 self.assertEqual(data[offset + 16:offset + 32], uuid.UUID(part['guid']).bytes)
 
