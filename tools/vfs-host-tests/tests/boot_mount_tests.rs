@@ -45,7 +45,7 @@ fn probe_mounts_ext2_and_refuses_zeroed_disk() {
 // Exercise the boot planner on real superblocks and a GPT-backed disk. The
 // host publishes the selected filesystems to the same registry as /proc/mounts.
 #[path = "../../../kernel/src/fs/vfs/boot.rs"]
-mod boot;
+pub(crate) mod boot;
 #[path = "../../../kernel/src/block/boot_mount.rs"]
 mod selection;
 

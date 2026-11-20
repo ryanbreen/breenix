@@ -102,6 +102,10 @@ pub use vfs::format;
 pub mod ext2_format;
 #[path = "../tests/boot_mount_tests.rs"]
 mod boot_mount_tests;
+#[path = "../../../kernel/src/block/memory_device.rs"]
+mod memory_device;
+#[path = "../tests/boot_namespace_tests.rs"]
+mod boot_namespace_tests;
 
 pub mod statfs_support;
 
