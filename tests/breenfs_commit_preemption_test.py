@@ -50,6 +50,59 @@ LOOPS = {
 
 
 class CommitPreemption(unittest.TestCase):
+    def assert_point_at_boundary(self, code, boundary):
+        with self.subTest(boundary=boundary):
+            pattern = rf'({boundary})\s*preemption_point\(\);'
+            self.assertRegex(code, pattern)
+            without_point = re.sub(pattern, r'\1', code, count=1)
+            with self.assertRaises(AssertionError):
+                self.assertRegex(without_point, pattern)
+
+    def test_prepare_preempts_for_each_staged_node(self):
+        source = strip_comments((BREENFS / 'commit.rs').read_text())
+        prepare = function(source, 'prepare')
+        for iteration in (
+            'txn.writes().map(|(&addr, node)|',
+            'while let Some((_, node)) = nodes.first_key_value()',
+            'filled.into_iter().map(|(addr, (_, bytes))|',
+        ):
+            self.assert_point_at_boundary(prepare, re.escape(iteration) + r'\s*\{')
+
+    def test_fill_preempts_for_each_decoded_child_and_leaf_item(self):
+        source = strip_comments((BREENFS / 'commit.rs').read_text())
+        fill = function(source, 'fill')
+        # Every child reaches the recursive call, whose entry point precedes
+        # the early returns for already-filled and unmodified children.
+        self.assertRegex(
+            fill,
+            r'\bfor entry in &mut node\.children\s*\{\s*'
+            r'let child = BlockPtr\s*\{[^{}]*\};\s*entry\.child_csum = fill\(child,',
+        )
+        self.assert_point_at_boundary(fill, r'^\{')
+        self.assert_point_at_boundary(
+            fill, re.escape('for (key, bytes) in &mut node.items') + r'\s*\{',
+        )
+
+    def test_space_range_preempts_while_walking_and_collecting_items(self):
+        space = strip_comments((BREENFS / 'space.rs').read_text())
+        btree = strip_comments((BREENFS / 'btree.rs').read_text())
+        self.assertIn('btree::range(store, root,', function(space, 'range'))
+        self.assertIn('range_limit(store, root, lower, upper, usize::MAX)', function(btree, 'range'))
+        self.assertIn(
+            'visit_range_ordered(store, root, lower, upper, false, visit)',
+            function(btree, 'visit_range'),
+        )
+        self.assert_point_at_boundary(
+            function(btree, 'range_limit'),
+            re.escape('visit_range(store, root, lower, upper, &mut |key, bytes|') + r'\s*\{',
+        )
+        ordered = function(btree, 'visit_range_ordered')
+        self.assertIn('walk(store, node, None, lower, upper, reverse, visit)?;', ordered)
+        walk = function(ordered, 'walk')
+        self.assert_point_at_boundary(walk, r'^\{')
+        for iteration in ('for step in 0..end - start', 'for step in 0..end.saturating_sub(start)'):
+            self.assert_point_at_boundary(walk, re.escape(iteration) + r'\s*\{')
+
     def test_service_mappings_preempts_before_each_mapping(self):
         source = strip_comments((BREENFS / 'vfs.rs').read_text())
         service = function(source, 'service_mappings')
