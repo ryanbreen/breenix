@@ -2,7 +2,7 @@
 use super::preempt::preemption_point;
 #[path = "node_events.rs"]
 mod node_events;
-use node_events::{Events, NodeEvents, TouchedTimes};
+use node_events::{Events, NodeEvents, Stamps, TouchedTimes};
 #[path = "mutation_cost.rs"]
 mod mutation_cost;
 use mutation_cost::{Costs, Op as CostOp, Phase as CostPhase};
@@ -542,6 +542,7 @@ enum Change {
     // Fields this change set; the replay keeps the published view's others
     // (N's drained nblocks and applied touches).
     Inode { ino: u64, before: Inode, after: Inode },
+    Touch { ino: u64, older: Stamps, open: Stamps },
     Open { ino: u64, open: bool },
     Retain(BTreeSet<u64>),
     Snapshot { name: Vec<u8>, read_only: bool, id: u64 },
@@ -562,6 +563,7 @@ impl Change {
                 merge_inode(&mut inode, &before, &after);
                 files.put_inode(ino, inode)
             }
+            Self::Touch { ino, older, open } => apply_inode_touches(files, ino, older, open).map(|_| ()),
             Self::Open { ino, open } => { files.set_inode_open(ino, open); Ok(()) }
             Self::Retain(inodes) => { files.retain_open_inodes(inodes); Ok(()) }
             Self::Snapshot { name, read_only, id } => {
@@ -622,6 +624,11 @@ impl<W: Wait + 'static> OpenFiles<W> {
         self.files.put_inode(ino, inode)?;
         if let Some(before) = before { self.record(|| Change::Inode { ino, before, after: inode }); }
         Ok(())
+    }
+    fn record_touches(&mut self, ino: u64, older: Stamps, open: Stamps) -> Result<bool, ops::Error> {
+        let changed = apply_inode_touches(&mut self.files, ino, older, open)?;
+        if changed { self.record(|| Change::Touch { ino, older, open }); }
+        Ok(changed)
     }
     fn set_inode_open(&mut self, ino: u64, open: bool) {
         self.files.set_inode_open(ino, open);
@@ -732,32 +739,29 @@ impl<W: Wait> MountState<W> {
         else {
             return Ok(());
         };
-        // While N is frozen its slot belongs to N's publication (601(2)).
-        // Otherwise also take a stamp that raced an earlier freeze.
         let generation = self.open_generation();
-        let (mut access, mut modify) = touched.take(generation);
-        if self.pending.is_none() {
-            let (late_access, late_modify) = touched.take(generation + 1);
-            access = access.max(late_access);
-            modify = modify.max(late_modify);
+        let mut open = touched.take(generation);
+        let mut older = Stamps::default();
+        if self.files.log.is_some() {
+            // Scratch was forked before N applied its deferred times. Inherit
+            // those once, before this inode's first N+1 observation or edit.
+            // This also covers the scratch view used during bounded replay.
+            older = touched.inherit_frozen(generation - 1);
+        } else {
+            let late = touched.take_unsampled(generation - 1);
+            open.access = open.access.max(late.access);
+            open.modify = open.modify.max(late.modify);
         }
-        if (access == 0 && modify == 0)
+        if (older.is_empty() && open.is_empty())
             || self.failed
             || self.committer.as_ref().is_none_or(Committer::read_only)
         {
             return Ok(());
         }
-        let mut inode = match self.files.inode(ino) {
-            Ok(inode) => inode,
-            // A final touch can race commit's reclaim of a closed orphan.
-            Err(ops::Error::ENOENT) => return Ok(()),
-            Err(error) => return self.edited(&[ino], Err(error)),
-        };
-        if touched_inode(&mut inode, access, modify) {
-            let result = self.files.put_inode(ino, inode);
-            self.edited(&[ino], result)?;
+        match self.files.record_touches(ino, older, open) {
+            Ok(false) => Ok(()),
+            result => self.edited(&[ino], result).map(|_| ()),
         }
-        Ok(())
     }
     /// The older generation's pages the open one reads through: frozen N's
     /// while in flight, installed N's until N+1's replay completes.
@@ -872,9 +876,12 @@ impl<W: Wait> MountState<W> {
     // A generation's pages are custody of that generation, not of NodeState:
     // keep the entry only while the open generation holds pages or a touch.
     fn prune_node(&mut self, ino: u64) {
+        let scratch = self.files.log.is_some().then(|| self.open_generation() - 1);
         if self.nodes.get(&ino).is_some_and(|node| node.node.strong_count() == 0
             && !node.splitting && !self.dirty.contains_key(&ino)
-            && !node.touched.as_ref().is_some_and(|times| times.pending())) {
+            && !node.touched.as_ref().is_some_and(|times| {
+                times.pending() || scratch.is_some_and(|generation| times.pending_frozen(generation))
+            })) {
             self.nodes.remove(&ino);
             self.touches.remove(&ino);
         }
@@ -1314,7 +1321,7 @@ struct FrozenGeneration<W: Wait + 'static> {
     pages: Arc<FrozenPages>,
     dirty_nodes: BTreeSet<u64>,
     touches: BTreeMap<u64, Arc<TouchedTimes>>,
-    // Inodes whose times preparation changed: refreshed after install.
+    // Inodes whose notifications preparation consumed: refreshed or pruned after install.
     touched: BTreeSet<u64>,
     grants: Grants,
     ledger: SharedLedger,
@@ -1324,16 +1331,9 @@ struct FrozenGeneration<W: Wait + 'static> {
 impl<W: Wait + 'static> FrozenGeneration<W> {
     /// Apply one inode's deferred times from N's slot (601(2)).
     fn apply_touch(&mut self, ino: u64, stamps: &TouchedTimes) -> Result<(), ops::Error> {
-        let (access, modify) = stamps.take(self.commit.generation());
-        if access == 0 && modify == 0 { return Ok(()); }
-        let mut inode = match self.files.inode(ino) {
-            Ok(inode) => inode,
-            // A final touch can race the reclaim of a closed orphan.
-            Err(ops::Error::ENOENT) => return Ok(()),
-            Err(error) => return Err(error),
-        };
-        if touched_inode(&mut inode, access, modify) {
-            self.files.put_inode(ino, inode)?;
+        let stamps = stamps.for_publication(self.commit.generation());
+        if !stamps.is_empty() {
+            apply_inode_touches(&mut self.files, ino, Stamps::default(), stamps)?;
             self.touched.insert(ino);
         }
         Ok(())
@@ -1368,8 +1368,24 @@ impl<W: Wait + 'static> FrozenGeneration<W> {
         Ok(())
     }
 }
+fn apply_inode_touches<W: Wait + 'static>(
+    files: &mut FilesView<W>, ino: u64, older: Stamps, open: Stamps,
+) -> Result<bool, ops::Error> {
+    let mut inode = match files.inode(ino) {
+        Ok(inode) => inode,
+        // A final touch can race the reclaim of a closed orphan.
+        Err(ops::Error::ENOENT) => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    // Replay the same touch operations over the installed inode. Inherited
+    // stamps already applied there are normally no-ops.
+    let mut changed = touched_inode(&mut inode, older);
+    changed |= touched_inode(&mut inode, open);
+    if changed { files.put_inode(ino, inode)?; }
+    Ok(changed)
+}
 /// Apply coarse touch stamps (seconds + 1; 0 means no stamp). True if changed.
-fn touched_inode(inode: &mut Inode, access: u64, modify: u64) -> bool {
+fn touched_inode(inode: &mut Inode, Stamps { access, modify }: Stamps) -> bool {
     let before = *inode;
     if modify != 0 {
         inode.mtime = Time { seconds: (modify - 1) as i64, nanos: 0 };

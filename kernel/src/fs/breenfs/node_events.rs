@@ -1,6 +1,26 @@
 //! Changed-inode notifications for deferred touches and final handle release.
 use alloc::sync::Arc;
 use core::{ptr, sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering}};
+#[cfg(not(test))]
+use crate::irq_safe_mutex::IrqSafeMutex as FrozenLock;
+#[cfg(test)]
+use spin::Mutex as FrozenLock;
+
+#[derive(Clone, Copy, Default)]
+pub(super) struct Stamps {
+    pub access: u64,
+    pub modify: u64,
+}
+impl Stamps {
+    pub fn is_empty(self) -> bool { self.access == 0 && self.modify == 0 }
+}
+
+#[derive(Default)]
+struct FrozenStamps {
+    generation: u64,
+    stamps: Stamps,
+    inherited: bool,
+}
 
 // Deferred times are recorded per generation (E24 coordinator 601(2)): slot
 // `generation & 1` belongs to the open generation, the other one to a frozen
@@ -12,12 +32,14 @@ pub(super) struct TouchedTimes {
     pub ino: u64,
     access: [AtomicU64; 2],
     modify: [AtomicU64; 2],
+    frozen: FrozenLock<FrozenStamps>,
     queued: AtomicBool,
     next: AtomicPtr<TouchedTimes>,
 }
 impl TouchedTimes {
     pub fn new(ino: u64) -> Self {
         Self { ino, access: [const { AtomicU64::new(0) }; 2], modify: [const { AtomicU64::new(0) }; 2],
+            frozen: FrozenLock::new(FrozenStamps::default()),
             queued: AtomicBool::new(false), next: AtomicPtr::new(ptr::null_mut()) }
     }
     pub fn pending(&self) -> bool {
@@ -28,10 +50,48 @@ impl TouchedTimes {
         let slots = if read { &self.access } else { &self.modify };
         slots[(generation & 1) as usize].store(stamp, Ordering::SeqCst);
     }
-    /// Take `generation`'s (access, modify) stamps; 0 means no stamp.
-    pub fn take(&self, generation: u64) -> (u64, u64) {
+    /// Take `generation`'s stamps; 0 means no stamp.
+    pub fn take(&self, generation: u64) -> Stamps {
         let slot = (generation & 1) as usize;
-        (self.access[slot].swap(0, Ordering::SeqCst), self.modify[slot].swap(0, Ordering::SeqCst))
+        Stamps {
+            access: self.access[slot].swap(0, Ordering::SeqCst),
+            modify: self.modify[slot].swap(0, Ordering::SeqCst),
+        }
+    }
+    // The first consumer preserves the sample for both publication and the
+    // scratch view. The lock covers a fixed set of scalar accesses; producers
+    // still use only the atomic slots and retry any late record in the open slot.
+    fn frozen(&self, generation: u64) -> impl core::ops::DerefMut<Target = FrozenStamps> + '_ {
+        let mut saved = self.frozen.lock();
+        if saved.generation != generation {
+            *saved = FrozenStamps { generation, stamps: self.take(generation), inherited: false };
+        }
+        saved
+    }
+    pub fn for_publication(&self, generation: u64) -> Stamps {
+        self.frozen(generation).stamps
+    }
+    pub fn inherit_frozen(&self, generation: u64) -> Stamps {
+        let mut saved = self.frozen(generation);
+        if core::mem::replace(&mut saved.inherited, true) {
+            Stamps::default()
+        } else {
+            saved.stamps
+        }
+    }
+    pub fn pending_frozen(&self, generation: u64) -> bool {
+        let saved = self.frozen.lock();
+        saved.generation == generation && !saved.inherited && !saved.stamps.is_empty()
+    }
+    /// Recover a stamp whose notification missed the previous freeze. Once
+    /// sampled, any subsequent producer in that slot retries in the open slot.
+    pub fn take_unsampled(&self, generation: u64) -> Stamps {
+        let stamps = self.take(generation);
+        if !stamps.is_empty() && self.frozen.lock().generation == generation {
+            Stamps::default()
+        } else {
+            stamps
+        }
     }
 }
 #[derive(Default)]
