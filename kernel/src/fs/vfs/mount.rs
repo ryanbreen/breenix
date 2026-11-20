@@ -42,6 +42,26 @@ pub fn register_with(register: impl FnOnce(&mut MountTable<Backend>) -> Result<(
     Ok(())
 }
 
+/// Publish a generation and its default-root binds as one namespace change.
+pub(crate) fn register_cutover(mut entries: Vec<MountPoint>, writer: usize) -> Result<(), Errno> {
+    let mut inserted = Vec::with_capacity(entries.len());
+    let mut removed = Vec::with_capacity(entries.len());
+    register_with(|table| {
+        for mut entry in entries.drain(..) {
+            let id = entry.id;
+            entry.device_id = writer as u64;
+            if let Err(error) = table.insert(entry) {
+                for id in inserted.into_iter().rev() {
+                    removed.push(table.remove(id, true).expect("unpublished cutover mount"));
+                }
+                return Err(error);
+            }
+            inserted.push(id);
+        }
+        Ok(())
+    })
+}
+
 /// Install the volatile subtree mount and bind together. A rescue root may
 /// already expose read-only binds for these same directories.
 pub(crate) fn register_volatile_mounts(tmp: MountPoint, mut run: MountPoint) -> Result<(), Errno> {

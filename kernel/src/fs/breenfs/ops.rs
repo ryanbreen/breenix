@@ -392,6 +392,22 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         Ok(self.txn.reservation_paths(self.root.root, ino)?)
     }
     pub fn root_pointer(&self) -> BlockPtr { self.root.root }
+    /// Project a pinned root through the same transaction's read paths. Open
+    /// orphans in the writer's inode number space do not belong to this root.
+    pub fn with_read_root<T>(
+        &mut self,
+        id: u64,
+        closed: &Inodes,
+        read: impl FnOnce(&Self) -> T,
+    ) -> Result<T, Error> {
+        let root = self.roots.get(&id).ok_or(Error::ENOENT)?.root;
+        let original = core::mem::replace(&mut self.root.root, root);
+        let opened = core::mem::replace(&mut self.open_inodes, closed.clone());
+        let value = read(self);
+        self.open_inodes = opened;
+        self.root.root = original;
+        Ok(value)
+    }
     pub fn root_growth(&self, root: BlockPtr) -> Result<btree::RootGrowth, Error> {
         Ok(btree::RootGrowth::read(&self.txn.view(), root)?)
     }

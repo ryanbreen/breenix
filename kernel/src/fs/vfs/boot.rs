@@ -49,6 +49,7 @@ pub(crate) struct MountLine<'a> {
     path: &'a str,
     writable: bool,
     kind: &'static str,
+    generation: Option<&'a str>,
     device: Box<dyn BlockDevice>,
 }
 
@@ -69,6 +70,7 @@ pub(crate) fn prepare_mounts<'a>(
     }
 
     let mut mounts: Vec<MountLine<'_>> = Vec::new();
+    let userland = intent.userland();
     for (guid, path, writable) in intent.mounts() {
         let fail = |reason| MountFailure {
             source: Some((guid, path)),
@@ -92,6 +94,7 @@ pub(crate) fn prepare_mounts<'a>(
             path,
             writable,
             kind: format.kind,
+            generation: userland.filter(|_| path == "/" && writable && format.kind == "breenfs"),
             device,
         });
     }
@@ -117,7 +120,7 @@ impl<'a> MountLine<'a> {
         } else {
             Default::default()
         };
-        flags.read_only = !self.writable;
+        flags.read_only = !self.writable || self.generation.is_some();
         ExplicitMount {
             id,
             path: self.path,
@@ -140,12 +143,76 @@ impl<'a> MountLine<'a> {
         } else {
             crate::block::read_only::device(self.device)
         };
+        if let Some(generation) = self.generation {
+            return mount_cutover(point, device.into(), generation);
+        }
         let format = formats
             .iter()
             .find(|format| format.kind == self.kind)
             .ok_or(Errno(ENODEV))?;
         (format.mount)(device, BootMount::Explicit(point))
     }
+}
+
+/// Recover the default root's writer before attaching its generation view.
+fn mount_cutover(
+    point: &ExplicitMount<'_>,
+    device: Arc<dyn BlockDevice>,
+    generation: &str,
+) -> Result<Arc<dyn FileSystem>, Errno> {
+    use crate::fs::{breenfs::vfs::BreenFs, vfs::NodeKind};
+
+    // /root is the writer's native inode identity. The other binds use this
+    // same identity, distinct from the generation's overlapping inode ids.
+    let writer_id = registry::allocate_id()?;
+    let writer = BreenFs::mount_writable_cached(
+        device,
+        crate::block::cache_kernel::system_cache(),
+        writer_id,
+        1,
+    )?;
+    let name = alloc::format!("gen-{generation}");
+    let view = writer.generation_view(point.id, name.as_bytes())?;
+    let root = view.root()?;
+    let default = writer.root()?;
+    let shared = writer.lookup(default, b".breenix-shared")?;
+    let mut entries = Vec::new();
+    entries.push(point.entry(view.clone())?);
+    let writer: Arc<dyn FileSystem> = writer;
+    for (path, source_parent) in [
+        ("/root", default),
+        ("/etc", shared),
+        ("/var", shared),
+        ("/opt", shared),
+        ("/srv", shared),
+        ("/tmp", shared),
+        ("/run", shared),
+    ] {
+        let name = &path.as_bytes()[1..];
+        let source = writer.lookup(source_parent, name)?;
+        let cover = view.lookup(root, name)?;
+        if writer.getattr(source)?.kind != NodeKind::Directory
+            || view.getattr(cover)?.kind != NodeKind::Directory
+        {
+            return Err(Errno(ENOTDIR));
+        }
+        let id = if path == "/root" { writer_id } else { registry::allocate_id()? };
+        let mut entry = registry::MountPoint::new(
+            id,
+            path.as_bytes().to_vec(),
+            "breenfs",
+            Default::default(),
+            registry::Backend::Fs(writer.clone()),
+            source,
+            Some((point.id, cover)),
+            Some((point.id, root)),
+        );
+        entry.bind = Some((writer_id, source));
+        entry.custody = Some(writer.open(source)?);
+        entries.push(entry);
+    }
+    registry::register_cutover(entries, writer_id)?;
+    Ok(view)
 }
 
 impl ExplicitMount<'_> {
@@ -211,7 +278,9 @@ pub(crate) fn mount_volatile_if_needed(
     }
     let root_id = registry::find_mount("/").ok_or(Errno(ENODEV))?;
     let root = registry::filesystem(root_id)?;
-    if !root.read_only()? {
+    let writable_system = intent.mounts().any(|(_, path, writable)| path == "/" && writable)
+        && root.kind()? == "breenfs";
+    if writable_system || !root.read_only()? {
         return Ok(());
     }
     let root_ino = registry::root_inode(root_id).ok_or(Errno(EIO))?;

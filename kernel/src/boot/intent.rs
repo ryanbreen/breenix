@@ -149,6 +149,10 @@ impl Captured {
             (core::str::from_utf8(&mount.guid).unwrap(), core::str::from_utf8(&mount.path[..mount.path_len]).unwrap(), mount.writable)
         })
     }
+
+    pub fn userland(&self) -> Option<&str> {
+        core::str::from_utf8(&self.userland.as_ref()?[..self.userland_len]).ok()
+    }
 }
 
 /// Mounts from the captured boot intent, for the boot mount consumer.
@@ -212,7 +216,7 @@ pub fn root_userland(captured: Option<&Captured>) -> Result<Option<&str>, &'stat
     let Some(captured) = captured else { return Ok(None) };
     if let Some(reason) = captured.refused { return Err(reason); }
     if !captured.format_2 || &captured.target[..captured.target_len] != b"persistent\n" { return Ok(None); }
-    Ok(captured.userland.as_ref().and_then(|id| core::str::from_utf8(&id[..captured.userland_len]).ok()))
+    Ok(captured.userland())
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -252,8 +256,7 @@ pub fn refused() -> Option<&'static str> {
 
 /// Immutable install identity embedded in the kernel slot and passed to the installer.
 pub fn userland() -> Option<&'static str> {
-    let captured = BOOT_INTENT.get()?;
-    core::str::from_utf8(&captured.userland.as_ref()?[..captured.userland_len]).ok()
+    BOOT_INTENT.get()?.userland()
 }
 
 /// Directory-component validation excludes relative paths and staging names.
