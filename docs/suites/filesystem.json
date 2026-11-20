@@ -148,7 +148,13 @@
     {
       "id": "persistent-root",
       "title": "The persistent install migrates from ext2 with equal manifests and rolls back",
-      "cases": []
+      "hostRunner": true,
+      "cases": [
+        { "id": "migrate-manifests-equal", "title": "The migrator reports equal source and destination manifests" },
+        { "id": "host-manifests-equal", "title": "Cold filesystem manifests match and both ext2 images are unchanged" },
+        { "id": "cutover-verified", "title": "The BreenFS generation boots and verifies before promotion" },
+        { "id": "rescue-and-return", "title": "The saved ext2 rescue boots read-only and returns to BreenFS" }
+      ]
     },
     {
       "id": "ext2-retired",

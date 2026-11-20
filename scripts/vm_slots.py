@@ -18,7 +18,8 @@ def read(run):
 
 
 def entry(value):
-    if not isinstance(value, dict) or set(value) != {'kernel', 'kernelSha256', 'userland'}:
+    fields = {'kernel', 'kernelSha256', 'userland'}
+    if not isinstance(value, dict) or set(value) not in (fields, fields | {'layout'}):
         raise ValueError('missing or incomplete slot')
     kernel, digest, userland = (value[k] for k in ('kernel', 'kernelSha256', 'userland'))
     if not isinstance(kernel, str) or not re.fullmatch(r'[A-Za-z0-9_-][A-Za-z0-9_.-]*', kernel) or kernel in ('.', '..'):
@@ -27,11 +28,13 @@ def entry(value):
         raise ValueError('invalid slot kernel digest')
     if not isinstance(userland, str) or not re.fullmatch(r'[A-Za-z0-9-]{1,64}', userland):
         raise ValueError('invalid slot userland')
+    if value.get('layout', 'ext2') not in ('ext2', 'ext2-rescue', 'breenfs'):
+        raise ValueError('invalid slot layout')
     return value
 
 
 def select(run, slot):
-    if slot not in ('current', 'next'):
+    if slot not in ('current', 'previous', 'next'):
         raise ValueError('invalid boot slot')
     record = read(run)
     if record is None:
@@ -44,14 +47,49 @@ def select(run, slot):
 
 
 def intent(value):
-    return f"BREENIX-BOOT 2\ntarget persistent\nuserland {entry(value)['userland']}\n".encode('ascii')
+    value = entry(value)
+    if value.get('layout', 'ext2') != 'ext2':
+        raise ValueError('migration slot requires a format 3 intent')
+    return f"BREENIX-BOOT 2\ntarget persistent\nuserland {value['userland']}\n".encode('ascii')
 
 
-def write(run, record):
-    path = Path(run) / 'slots.json'
+def migration_intent(phase, userland, guids):
+    sys.path.insert(0, str(Path(__file__).with_name('metal')))
+    from metal_persist import intent as format_intent
+
+    if phase == 'migrate':
+        target = 'persistent-migrate'
+        mounts = [('test-root', '/', False), ('system', '/migrate/ext2-system', False),
+                  ('home', '/migrate/ext2-home', False), ('breenfs-system', '/migrate/system', True),
+                  ('breenfs-home', '/migrate/home', True)]
+    elif phase in ('cutover', 'return'):
+        target = 'persistent'
+        mounts = [('breenfs-system', '/', True), ('breenfs-home', '/home', True)]
+    elif phase == 'rescue':
+        target = 'persistent'
+        mounts = [('system', '/', False), ('home', '/home', False)]
+    else:
+        raise ValueError('invalid migration phase')
+    return format_intent(target, userland=userland,
+                         mounts=[(guids[role], path, writable) for role, path, writable in mounts])
+
+
+def migration_slot(phase, promoted):
+    if phase == 'cutover' and not promoted:
+        return 'next'
+    if phase == 'rescue' and promoted:
+        return 'previous'
+    return 'current'
+
+
+def write_json(path, record):
     tmp = path.with_suffix('.json.tmp')
     tmp.write_text(json.dumps(record) + '\n')
     tmp.replace(path)
+
+
+def write(run, record):
+    write_json(Path(run) / 'slots.json', record)
 
 
 def promote(run):
