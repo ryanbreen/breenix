@@ -109,21 +109,37 @@ def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite
     return facts, files
 
 
+def readback_checks(directory, suite):
+    return m.read_json(directory / 'definition/docs/suites' / (suite + '.json'), {}).get('diskChecks', [])
+
+
 def prepare_readback(directory, stage, source_id, commit, boot_id, site, stub):
     source = m.boot_dir(source_id)
     run = m.read_json(source / 'run.json', {})
     facts = m.read_json(source / 'suite-disk.json')
     events = [json.loads(line) for line in (source / 'events.jsonl').read_text().splitlines()]
-    off = [event for event in events if event['event'] == 'power-off' and event.get('off')]
-    if (not facts or run.get('disk') != 'root' or run.get('mode') != 'suite' or not (source / 'ended').exists() or not off
+    off = next((e for e in reversed(events) if e['event'] == 'power-off'), {})
+    decided = next((e for e in events if e['event'] == 'decided'), {})
+    pending = next((e for e in events if e['event'] == 'suite-awaiting-disk-readback'), {})
+    # Older manual retry sources recorded an awaiting event only for a finished guest.
+    provisional = pending.get('provisional', True if pending else None)
+    names = run.get('suites') or [run.get('suite')]
+    if (not facts or run.get('disk') != 'root' or run.get('mode') != 'suite' or run.get('onlyCase')
+            or not names[-1] or not readback_checks(source, names[-1])
+            or not (source / 'ended').exists() or off.get('off') is not True
             or (source / 'commit').read_text().strip() != commit
             or any(event['event'] == 'console-gap-start' for event in events)
-            or not any(event['event'] == 'decided' and event.get('status') == m.EXIT_DONE for event in events)
-            or not any(event['event'] == 'disk-root-record' and event.get('matchesLastInstall') for event in events)):
+            or not any(event['event'] == 'disk-root-record' and event.get('matchesLastInstall') is True for event in events)):
         raise ValueError('raw readback needs a completed disk suite boot with confirmed power-off and root identity')
+    status = int((source / 'exit-status').read_text().strip())
+    ended_by = (source / 'ended-by').read_text().strip()
+    if (status != m.EXIT_SHORT or ended_by != 'driver' or type(provisional) is not bool
+            or decided.get('status') != (m.EXIT_DONE if provisional else m.EXIT_SHORT)):
+        raise ValueError('raw readback needs a provisional, failed or deadline-ended suite source')
     # Another disk user may have acquired the lease between the boots. Refuse a changed disk association.
     current = metal_persist.test_root() or {}
-    if record(current) != record(facts) or current.get('lastBoot') != source_id:
+    if (current.get('lastBoot') != source_id or current.get('partition') != facts.get('partition')
+            or record(current) != record(facts)):
         raise ValueError('the owned disk was replaced between the suite and its cold readback')
     url = urlsplit(site['BOOT_URL'])
     route = UPLOAD_PREFIX + secrets.token_hex(32)
@@ -139,7 +155,8 @@ def prepare_readback(directory, stage, source_id, commit, boot_id, site, stub):
     payload = metal_image.stub_efi(stub, image, output)
     image.unlink()
     m.write_json(directory / 'readback.json', dict(source=source_id, bytes=facts['bytes'], rootRecord=record(facts).hex(),
-                                                 suitePoweredOffAt=off[-1]['t']))
+        suitePoweredOffAt=off['t'], sourceStatus=status, sourceProvisional=provisional,
+        sourceReason=decided['reason'], sourceEndedBy=ended_by))
     m.write_json(m.STATE / 'disk-upload.json', dict(id=boot_id, route=route, bytes=facts['bytes'],
                                                  rootRecord=record(facts).hex()))
     return payload, output
