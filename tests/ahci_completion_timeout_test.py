@@ -4,14 +4,17 @@
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from ahci_poller_race_test import function
 from suite_verdict_test import FIXTURES, MANIFEST, SCORER
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "kernel/src/drivers/ahci/mod.rs"
+LOST_NOTIFICATION = "AHCI_LOST_NOTIFICATION port=0 token=51849 CI=0x0 IS=0x21 TFD=0x50 HBA_IS=0x1\n"
 
 
 class AhciCompletion(unittest.TestCase):
@@ -54,12 +57,36 @@ class AhciCompletion(unittest.TestCase):
             serial = Path(directory) / "serial.txt"
             serial.write_text(passing)
             self.assertTrue(SCORER.verdict(MANIFEST, serial, [serial])[0])
-            serial.write_text(
-                passing + "AHCI_LOST_NOTIFICATION port=0 token=51849 CI=0x0 IS=0x21 TFD=0x50 HBA_IS=0x1\n"
-            )
+            serial.write_text(passing + LOST_NOTIFICATION)
             ok, detail = SCORER.verdict(MANIFEST, serial, [serial])
             self.assertFalse(ok, detail)
             self.assertIn("AHCI_LOST_NOTIFICATION", detail)
+
+    def test_lost_notification_refuses_a_testing_kernel_capture(self):
+        import json
+
+        with patch.object(sys, "path", [str(ROOT / "scripts/metal"), *sys.path]):
+            import metal_score
+
+        def read(name):
+            return json.loads((ROOT / name.removeprefix("definition/")).read_text())
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            metal_score, "tests_verdict", return_value=(True, "complete test report")
+        ):
+            capture = Path(directory)
+            (capture / "events.jsonl").write_text("")
+            serial = capture / "serial.txt"
+            start = "[init] boot\n"
+            done = "USERSPACE TEST REPORT DONE\n"
+            serial.write_text(start + done)
+            verdict = metal_score.score_tests(capture, {}, read)
+            self.assertTrue(verdict["testReport"]["passed"])
+            serial.write_text(start + LOST_NOTIFICATION + done)
+            verdict = metal_score.score_tests(capture, {}, read)
+            self.assertEqual(
+                verdict["testReport"], {"passed": False, "reason": "fatal kernel output"}
+            )
 
 
 if __name__ == "__main__":
