@@ -1119,7 +1119,10 @@ fn filesystem_cases_match_the_guest() {
     assert!(errors.is_empty(), "filesystem manifest: {errors:?}");
     let (_, categories) = source_suite(
         &fs::read_to_string(root.join("userspace/programs/src/suite_filesystem.rs")).unwrap()).unwrap();
-    let populated: Vec<_> = manifest.categories.into_iter().filter(|c| !c.cases.is_empty()).collect();
+    let host_categories = manifest.host_categories;
+    let populated: Vec<_> = manifest.categories.into_iter()
+        .filter(|category| !category.cases.is_empty() && !host_categories.contains(&category.entry.id))
+        .collect();
     assert_eq!(categories, populated, "filesystem guest table differs from the manifest");
 }
 
