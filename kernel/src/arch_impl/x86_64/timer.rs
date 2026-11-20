@@ -473,6 +473,11 @@ pub fn tsc_to_nanos(ticks: u64) -> u64 {
 /// Returns None if TSC hasn't been calibrated yet.
 #[inline]
 pub fn nanoseconds_since_base() -> Option<u64> {
+    nanoseconds_at_tsc(rdtsc())
+}
+
+/// Convert a captured counter value using the calibrated monotonic epoch.
+pub(crate) fn nanoseconds_at_tsc(current: u64) -> Option<u64> {
     if !is_calibrated() {
         return None;
     }
@@ -483,7 +488,6 @@ pub fn nanoseconds_since_base() -> Option<u64> {
     }
 
     let base = TSC_BASE.load(Ordering::Relaxed);
-    let current = rdtsc();
     let elapsed = current.saturating_sub(base);
 
     // Convert cycles to nanoseconds: (cycles * 1_000_000_000) / frequency

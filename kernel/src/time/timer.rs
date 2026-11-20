@@ -61,14 +61,19 @@ static TICKS: AtomicU64 = AtomicU64::new(0);
 static TICK_TSC_BASE: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_arch = "x86_64")]
 static TSC_CYCLES_PER_TICK: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_arch = "x86_64")]
+static TICK_EPOCH_NS: AtomicU64 = AtomicU64::new(0);
 
 /// Start the LAPIC timer, or the PIT fallback, at `PIT_HZ`.
 #[cfg(target_arch = "x86_64")]
 pub fn init() {
     let cycles = super::tsc::frequency_hz() / u64::from(PIT_HZ);
     assert!(cycles != 0, "Scheduler timer needs a calibrated TSC");
-    TICK_TSC_BASE.store(super::tsc::read_tsc(), Ordering::Relaxed);
+    let tick_base = super::tsc::read_tsc();
+    TICK_TSC_BASE.store(tick_base, Ordering::Relaxed);
     TSC_CYCLES_PER_TICK.store(cycles, Ordering::Relaxed);
+    let epoch = crate::arch_impl::x86_64::timer::nanoseconds_at_tsc(tick_base).unwrap_or(0);
+    TICK_EPOCH_NS.store(epoch, Ordering::Relaxed);
     if crate::arch_impl::x86_64::apic::active() {
         // Each CPU's per-CPU init starts its own timer with this count.
         let count = crate::arch_impl::x86_64::apic::calibrate_timer(PIT_HZ);
@@ -186,6 +191,15 @@ pub fn get_cpu_ticks() -> u64 {
 #[inline]
 pub fn get_monotonic_time() -> u64 {
     get_ticks().saturating_mul(MS_PER_TICK)
+}
+
+/// Atomic tick snapshot expressed in the calibrated monotonic clock's epoch.
+/// ARM64 already advances its ticks from that epoch.
+pub(super) fn coarse_monotonic_time_ns() -> u64 {
+    let nanos = get_monotonic_time().saturating_mul(1_000_000);
+    #[cfg(target_arch = "x86_64")]
+    let nanos = nanos.saturating_add(TICK_EPOCH_NS.load(Ordering::Relaxed));
+    nanos
 }
 
 /// Nanoseconds since the kernel was initialized (TSC-based, nanosecond resolution).
