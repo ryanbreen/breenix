@@ -1,9 +1,5 @@
 //! Device discovery and boot consumers above the filesystem boundary.
 use super::{probe_mount, BootMount, FileSystem, Report};
-#[cfg(any(
-    target_arch = "aarch64",
-    all(feature = "testing", not(feature = "interactive"))
-))]
 use crate::block::BlockDevice;
 use crate::{fs::errno::Errno, syscall::errno::*};
 #[cfg(any(
@@ -12,6 +8,62 @@ use crate::{fs::errno::Errno, syscall::errno::*};
 ))]
 use alloc::boxed::Box;
 use alloc::{string::String, sync::Arc, vec::Vec};
+use core::fmt::{self, Write};
+
+/// Emit one bounded record without allocating or waiting for serial ownership.
+pub(crate) fn root_mount_receipt(device: Option<&dyn BlockDevice>, details: fmt::Arguments<'_>) {
+    struct Line {
+        bytes: [u8; 256],
+        len: usize,
+    }
+    impl Write for Line {
+        fn write_str(&mut self, text: &str) -> fmt::Result {
+            let end = self.len + text.len();
+            let slot = self.bytes.get_mut(self.len..end).ok_or(fmt::Error)?;
+            slot.copy_from_slice(text.as_bytes());
+            self.len = end;
+            Ok(())
+        }
+    }
+    let mut line = Line { bytes: [0; 256], len: 0 };
+    let _ = line.write_str("\n[ROOT_MOUNT_FAILURE ");
+    if let Some(device) = device {
+        let _ = write!(line, "device={:?}/{:x} ", device.hardware_disk(), device.identity());
+    } else {
+        let _ = line.write_str("device=none ");
+    }
+    if write!(line, "{}]\n", details).is_err() {
+        // Keep the framing even when a source error exceeds the receipt's budget.
+        let end = line.len.min(line.bytes.len() - 5);
+        line.bytes[end..end + 5].copy_from_slice(b"...]\n");
+        line.len = end + 5;
+    }
+    if let Ok(text) = core::str::from_utf8(&line.bytes[..line.len]) {
+        #[cfg(target_arch = "x86_64")]
+        crate::serial::write_str_briefly(text);
+        #[cfg(target_arch = "aarch64")]
+        crate::serial_aarch64::write_str_bounded(text);
+    }
+}
+
+/// A request available before the root mounts (fw_cfg or the boot loader's
+/// intent). The on-disk boot-target file cannot be read on a failed mount.
+pub fn suite_boot_requested() -> bool {
+    let mut mode = [0u8; 256];
+    #[cfg(target_arch = "x86_64")]
+    let fw_cfg = true;
+    #[cfg(target_arch = "aarch64")]
+    let fw_cfg = crate::platform_config::is_qemu();
+    if fw_cfg {
+        let size = crate::drivers::fw_cfg::read_file("opt/breenix/mode", &mut mode);
+        if size != 0 {
+            return mode.get(..size)
+                .and_then(|bytes| core::str::from_utf8(bytes).ok())
+                .is_some_and(|text| text.trim_end_matches('\0').trim() == "suite");
+        }
+    }
+    crate::boot::intent::get().is_some_and(|target| target.starts_with(b"suite "))
+}
 
 pub fn mount_root() -> Result<(), Errno> {
     #[cfg(target_arch = "x86_64")]
@@ -32,6 +84,9 @@ pub fn mount_root() -> Result<(), Errno> {
         devices
     };
     let mut error = Errno(ENODEV);
+    if devices.is_empty() {
+        root_mount_receipt(None, format_args!("stage=discovery expected=root-device found=absent"));
+    }
     for device in devices {
         match probe_mount(crate::fs::FORMATS, device, BootMount::Root) {
             Ok(_) => return Ok(()),

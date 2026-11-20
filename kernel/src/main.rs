@@ -668,6 +668,10 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
         }
         Err(e) => {
             log::warn!("Failed to mount root filesystem: {:?}", e);
+            if kernel::fs::vfs::suite_boot_requested() {
+                serial_println!("\nBREENIX_ROOT_MOUNT_FATAL errno={}", e.0);
+                kernel::hlt_loop();
+            }
             #[cfg(feature = "btrt")]
             kernel::test_framework::btrt::fail(
                 kernel::test_framework::catalog::EXT2_MOUNT,

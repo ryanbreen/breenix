@@ -1310,6 +1310,8 @@ class Driver:
                 and (panic_line or dead_suite or any(p.search(line) for p in self.fatal_patterns))):
             self.fatal_at = observed_at
             self.event('fatal', observed_at=observed_at, seconds=seconds)
+            if self.args.mode == 'suite' and re.fullmatch(r'BREENIX_ROOT_MOUNT_FATAL errno=[0-9]+', line):
+                raise Finish(m.EXIT_SHORT, 'the suite root filesystem could not be mounted')
         if self.args.mode == 'suite' and re.fullmatch(r'SUITE \S+ START cases=\d+(?: only=\S+)?(?: pace_ms=\d+)?(?: screen_proof=on)?|SUITE_SEQUENCE STALLED \S+ cases=\d+/\d+', line):
             self.suite_name = line.split()[1 if line.startswith('SUITE ') else 2]
             if len(suites(self.args)) > 1 or self.suite_name in ('breengel', 'window-manager', 'ui-testing'):

@@ -1027,6 +1027,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             kernel::test_framework::btrt::pass(kernel::test_framework::catalog::EXT2_MOUNT);
         }
         Err(e) => {
+            if kernel::fs::vfs::suite_boot_requested() {
+                panic!("BREENIX_ROOT_MOUNT_FATAL errno={}", e.0);
+            }
             serial_println!("[boot] root fs init: {:?} (continuing without root fs)", e);
             #[cfg(feature = "btrt")]
             kernel::test_framework::btrt::fail(

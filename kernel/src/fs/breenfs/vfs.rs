@@ -1398,7 +1398,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         mount: usize,
         root_id: u64,
     ) -> Result<Arc<Self>, Errno> {
-        Self::mount_with(device, Cache::Shared(cache), mount, root_id, None, false)
+        Self::mount_with(device, Cache::Shared(cache), mount, root_id, None, false, false)
     }
     /// Writable recovery repairs the rings before opening the first transaction.
     /// The caller starts the per-mount worker through init_service().
@@ -1408,7 +1408,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         mount: usize,
         root_id: u64,
     ) -> Result<Arc<Self>, Errno> {
-        Self::mount_with(device, Cache::Shared(cache), mount, root_id, None, true)
+        Self::mount_with(device, Cache::Shared(cache), mount, root_id, None, true, false)
     }
     /// Kernel read mounts borrow the system cache.
     pub fn mount_cached(
@@ -1417,7 +1417,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         mount: usize,
         root_id: u64,
     ) -> Result<Arc<Self>, Errno> {
-        Self::mount_with(device, Cache::Kernel(cache), mount, root_id, None, false)
+        Self::mount_with(device, Cache::Kernel(cache), mount, root_id, None, false, false)
     }
     /// Writable kernel mounts borrow the system cache, as read mounts do.
     pub fn mount_writable_cached(
@@ -1426,7 +1426,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         mount: usize,
         root_id: u64,
     ) -> Result<Arc<Self>, Errno> {
-        Self::mount_with(device, Cache::Kernel(cache), mount, root_id, None, true)
+        Self::mount_with(device, Cache::Kernel(cache), mount, root_id, None, true, true)
     }
     /// Explicit mounts use the same root-data parser with either cache owner.
     pub fn mount_named(
@@ -1434,14 +1434,14 @@ impl<W: Wait + 'static> BreenFs<W> {
         data: Option<&[u8]>, writable: bool,
     ) -> Result<Arc<Self>, Errno> {
         let name = super::mount_args::parse_root(data).map_err(|e| Errno(e as i32))?;
-        Self::mount_with(device, Cache::Shared(cache), mount, 1, name, writable)
+        Self::mount_with(device, Cache::Shared(cache), mount, 1, name, writable, false)
     }
     pub fn mount_named_cached(
         device: Arc<dyn BlockDevice>, cache: &'static BufferCache<W>, mount: usize,
         data: Option<&[u8]>, writable: bool,
     ) -> Result<Arc<Self>, Errno> {
         let name = super::mount_args::parse_root(data).map_err(|e| Errno(e as i32))?;
-        Self::mount_with(device, Cache::Kernel(cache), mount, 1, name, writable)
+        Self::mount_with(device, Cache::Kernel(cache), mount, 1, name, writable, false)
     }
     /// Query for snapshot deletion admission; shutdown alone retains custody.
     pub fn check_root_unmounted(&self, root_id: u64) -> Result<(), Errno> {
@@ -1458,7 +1458,16 @@ impl<W: Wait + 'static> BreenFs<W> {
         root_id: u64,
         root_name: Option<&[u8]>,
         writable: bool,
+        boot: bool,
     ) -> Result<Arc<Self>, Errno> {
+        let report = |details: core::fmt::Arguments<'_>| {
+            #[cfg(any(target_os = "none", target_os = "breenix"))]
+            if boot {
+                crate::fs::vfs::root_mount_receipt(Some(device.as_ref()), details);
+            }
+            #[cfg(not(any(target_os = "none", target_os = "breenix")))]
+            let _ = (boot, details);
+        };
         // A failed constructor drops this guard, including failures after
         // recovery. Successful mounts retain it through shutdown/restart until
         // unmount releases the last mount reference (including a pinned VNode).
@@ -1470,23 +1479,42 @@ impl<W: Wait + 'static> BreenFs<W> {
         let mounts = DeviceMounts::get(device.identity())?;
         let selection = mounts.selection.lock();
         let mut publication = mounts.publication.lock();
-        let durable = recover::recover(device.as_ref(), writable).map_err(|_| Errno(EIO))?;
+        let durable = recover::recover_detailed(device.as_ref(), writable).map_err(|failure| {
+            report(format_args!("breenfs {}", failure));
+            Errno(EIO)
+        })?;
         // Recovery can publish orphan reclamation even if root selection fails.
         *publication = Some(durable.clone());
         let store = cache.store(device.clone(), &durable);
-        let roots = recover::space_items(&store, &durable).map_err(|_| Errno(EIO))?;
+        let block = durable.space_root.addr;
+        let roots = recover::space_items(&store, &durable).map_err(|error| {
+            report(format_args!("stage=breenfs-node-cache space_root={} expected=readable-roots found={:?}", block, error));
+            Errno(EIO)
+        })?;
         let durable_pending = PendingSummary::from_items(&roots).ok();
         let mut selected = None;
         for (key, bytes) in roots.iter().filter(|(key, _)| key.item_type == format::ROOT) {
-            let root = Root::decode(bytes).map_err(|_| Errno(EIO))?;
+            let root = Root::decode(bytes).map_err(|error| {
+                report(format_args!("stage=breenfs-root-decode space_root={} expected=ROOT-item found={:?}", block, error));
+                Errno(EIO)
+            })?;
             if root_name.map_or(key.offset == root_id, |name| root.name == name) {
                 selected = Some((key.offset, root.flags & 1 != 0));
                 break;
             }
         }
-        let (root_id, frozen) = selected.ok_or(Errno(ENOENT))?;
-        let files =
-            Files::new(store, &durable, root_id, writable).map_err(errno)?;
+        let (root_id, frozen) = selected.ok_or_else(|| {
+            report(format_args!("stage=breenfs-root-select space_root={} expected=root-{} found=absent", block, root_id));
+            Errno(ENOENT)
+        })?;
+        let files = Files::new(store, &durable, root_id, writable).map_err(|error| {
+            let block = match error {
+                ops::Error::Metadata(failure) => failure.addr,
+                _ => block,
+            };
+            report(format_args!("stage=breenfs-files-view block={} expected=valid-files-view found={:?}", block, error));
+            errno(error)
+        })?;
         let mounted_root = MountedRoot::claim(mounts.clone(), root_id)?;
         drop(publication);
         drop(selection);
@@ -1494,7 +1522,10 @@ impl<W: Wait + 'static> BreenFs<W> {
         let roots = roots.into_iter().filter(|(key, _)| key.item_type == format::ROOT)
             .map(|(key, bytes)| Root::decode(&bytes)
                 .map(|root| (key.offset, (root.name, root.flags))))
-            .collect::<Result<_, _>>().map_err(|_| Errno(EIO))?;
+            .collect::<Result<_, _>>().map_err(|error| {
+                report(format_args!("stage=breenfs-root-index space_root={} expected=ROOT-item found={:?}", block, error));
+                Errno(EIO)
+            })?;
         let committer = writable.then(|| Committer::new(durable.clone()));
         let data = Box::try_new(DataBlocks {
             device: device.clone(),

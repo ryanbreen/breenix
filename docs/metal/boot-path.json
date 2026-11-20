@@ -6,7 +6,8 @@
   "scoring": "modes",
   "fatal": [
     "panicked at kernel/src/|KERNEL PANIC[:!]",
-    "!!! SOFT LOCKUP DETECTED !!!"
+    "!!! SOFT LOCKUP DETECTED !!!",
+    "^BREENIX_ROOT_MOUNT_FATAL errno=[0-9]+$"
   ],
   "modes": {
     "default": {

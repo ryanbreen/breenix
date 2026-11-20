@@ -119,7 +119,7 @@ fn named_root() -> Option<alloc::boxed::Box<dyn BlockDevice>> {
         log::warn!("[storage] root refused: {}", why);
         return None;
     };
-    let (device, entry, hardware) = match named_partition(text, &[gpt::TEST_ROOT_TYPE, gpt::SYSTEM_TYPE]) {
+    let (mut device, entry, hardware) = match named_partition(text, &[gpt::TEST_ROOT_TYPE, gpt::SYSTEM_TYPE]) {
         Ok(found) => found,
         Err(why) => {
             log::warn!("[storage] root refused: {}", why);
@@ -136,7 +136,7 @@ fn named_root() -> Option<alloc::boxed::Box<dyn BlockDevice>> {
         hardware
     );
     if test_root {
-        if let Err(why) = report_root_record(&device) {
+        if let Err(why) = report_root_record(&mut device) {
             log::warn!("[storage] root refused: {}", why);
             return None;
         }
@@ -154,7 +154,7 @@ fn named_root() -> Option<alloc::boxed::Box<dyn BlockDevice>> {
 
 /// The storage record in the test root partition's first sector, which the delivery stub wrote last.
 #[cfg(target_arch = "x86_64")]
-fn report_root_record(device: &dyn BlockDevice) -> Result<(), &'static str> {
+fn report_root_record(device: &mut partition::Partition) -> Result<(), &'static str> {
     let install::Record::Root { boot, bytes, sha256 } = install::root_record(device)? else {
         return Err("the test root holds no valid root record");
     };
@@ -164,7 +164,9 @@ fn report_root_record(device: &dyn BlockDevice) -> Result<(), &'static str> {
         Ok(false) => log::info!("[storage] root image differs from its install record: written since"),
         Err(why) => return Err(why),
     }
-    Ok(())
+    // The stage replaces a prefix of this GPT partition. The filesystem's
+    // mirror and I/O bounds follow that installed image.
+    device.limit_to(bytes / install::SECTOR as u64)
 }
 
 /// Whether the boot intent names a home partition.
