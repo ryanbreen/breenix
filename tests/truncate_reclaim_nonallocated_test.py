@@ -15,6 +15,7 @@ class TruncateNonallocated(unittest.TestCase):
             source[start:end],
             function(FILES_IO, 'fn metadata_ftruncate_large()'),
             function(FILES_IO, 'fn metadata_statfs_allocation()'),
+            function(FILES_IO, 'fn metadata_ftruncate_large_open()'),
         )
         harness = r'''
 use std::cell::Cell;
@@ -35,6 +36,11 @@ const STATFS: [Sample; 9] = [
     (4, 1000, 10), (5, 1000, 10), (6, 1000, 10),
     (7, 1000, 12), (8, 1000, 12), (9, 1000, 12),
 ];
+// After-marker rows 0-5 from ARM serial 27680-27690, E24 ruling 805.
+const OPEN: [Sample; 6] = [
+    (6583, 18874, 162), (6584, 18923, 113), (6585, 18926, 110),
+    (6586, 18914, 251), (6587, 18910, 255), (6588, 19051, 114),
+];
 thread_local! {
     static ROWS: Cell<&'static [Sample]> = Cell::new(&LARGE);
     static CASE: Cell<&'static str> = Cell::new("");
@@ -44,6 +50,7 @@ thread_local! {
     static NEXT_FIXTURE: Cell<Fd> = Cell::new(MARKER);
     static SIZE: Cell<i64> = Cell::new(0);
     static BLOCKS: Cell<u64> = Cell::new(0);
+    static EXT2_GAIN: Cell<Option<u64>> = Cell::new(None);
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -51,7 +58,9 @@ enum Fd { File, Marker }
 const FILE: Fd = Fd::File;
 const MARKER: Fd = Fd::Marker;
 const SEEK_SET: u32 = 0;
+const O_RDONLY: u32 = 0;
 const O_RDWR: u32 = 2;
+const O_TRUNC: u32 = 0x200;
 
 struct Fixture(Fd);
 impl Fixture {
@@ -65,17 +74,18 @@ impl Contract {
     fn blocks(&self, data: u64, _: u64, sectors: u64) -> u64 { data * sectors }
 }
 fn root_contract() -> Result<Contract, String> {
-    Ok(Contract { reuses_inode_numbers: false })
+    Ok(Contract { reuses_inode_numbers: EXT2_GAIN.get().is_some() })
 }
 fn prepare_large_truncate_fixture(_: &str) -> CaseResult {
     SIZE.set(129 * 4096);
-    BLOCKS.set(129);
+    BLOCKS.set(if EXT2_GAIN.get().is_some() { 130 } else { 129 });
     Ok(())
 }
 struct Metadata { st_size: i64, st_blocks: u64 }
 fn fstat(_: Fd) -> Result<Metadata, String> {
     Ok(Metadata { st_size: SIZE.get(), st_blocks: BLOCKS.get() * 8 })
 }
+fn stat(_: &str, _: bool) -> Result<Metadata, String> { fstat(FILE) }
 fn truncate_fd(fd: Fd, size: i64) -> Result<u64, String> {
     if fd == FILE {
         SIZE.set(size);
@@ -99,7 +109,10 @@ fn contents(_: Fd, bytes: &[u8]) -> CaseResult {
     assert_eq!(SIZE.get(), bytes.len() as i64);
     Ok(())
 }
-fn root_free_blocks() -> Result<u64, String> { panic!("ext2-only path") }
+fn root_free_blocks() -> Result<u64, String> {
+    let gain = EXT2_GAIN.get().expect("ext2-only path");
+    Ok(1000 + if SIZE.get() == 0 { gain } else { 0 })
+}
 fn check(ok: bool, detail: &str) -> CaseResult {
     if ok { Ok(()) } else { Err(detail.into()) }
 }
@@ -111,13 +124,20 @@ mod time { pub fn now_monotonic() -> Result<(), String> { panic!("ext2-only path
 mod process { pub fn yield_now() -> Result<(), String> { panic!("ext2-only path") } }
 mod io { pub fn close(_: super::Fd) -> Result<(), String> { Ok(()) } }
 mod fs {
-    use super::{Fd, COMMITS, FILE, ROWS};
+    use super::{truncate_fd, Fd, COMMITS, FILE, O_RDONLY, O_RDWR, O_TRUNC, ROWS};
     pub struct Statfs { pub f_bfree: u64 }
     pub fn fstatfs(_: Fd) -> Result<Statfs, String> {
         let free = ROWS.get()[COMMITS.get() - 1].1;
         Ok(Statfs { f_bfree: free })
     }
-    pub fn open(_: &str, _: u32) -> Result<Fd, String> { Ok(FILE) }
+    pub fn open(_: &str, flags: u32) -> Result<Fd, String> {
+        match flags {
+            O_RDONLY | O_RDWR => {}
+            flags if flags == O_TRUNC | O_RDWR => { truncate_fd(FILE, 0)?; }
+            _ => panic!("unexpected fixture open flags: {flags}"),
+        }
+        Ok(FILE)
+    }
     pub fn lseek(_: Fd, offset: i64, _: u32) -> Result<i64, String> { Ok(offset) }
 }
 mod breenix_suite { pub mod suite {
@@ -128,10 +148,10 @@ mod breenix_suite { pub mod suite {
             assert_eq!(COMMITS.get(), index + usize::from(after));
             SAMPLES.set(SAMPLES.get() + 1);
             if !after && index == 0 {
-                return Some(if CASE.get() == "metadata/ftruncate-large" {
-                    (2468, 24813, 146)
-                } else {
-                    (0, 1002, 10)
+                return Some(match CASE.get() {
+                    "metadata/ftruncate-large" => (2468, 24813, 146),
+                    "metadata/ftruncate-large-open" => (6582, 18870, 167),
+                    _ => (0, 1002, 10),
                 });
             }
             let (generation, free, mut pending) = ROWS.get()[COMMITS.get() - 1];
@@ -181,6 +201,21 @@ fn main() {
     assert!(result.is_ok(), "statfs truncate with +2 in PENDING must pass: {result:?}");
     let error = statfs(Some((7, 1))).expect_err("statfs truncate accepted a one-block gain");
     assert!(error.starts_with("marker 7 "), "{error}");
+
+    let open = |rows, fault| replay(
+        metadata_ftruncate_large_open, "metadata/ftruncate-large-open", rows, fault,
+    );
+    let result = open(&OPEN, None);
+    assert!(result.is_ok(), "803's +129 FREE+PENDING capture must pass: {result:?}");
+    for marker in 3..=5 {
+        let error = open(&OPEN, Some((marker, 1))).expect_err("a +128 gain passed");
+        assert!(error.starts_with(&format!("marker {marker} ")), "{error}");
+    }
+    for gain in [129, 130, 131] {
+        EXT2_GAIN.set(Some(gain));
+        let result = open(&[], None);
+        assert_eq!(result.is_ok(), gain == 130, "ext2 gain {gain}: {result:?}");
+    }
 }
 '''
         result = run_rust(harness.replace('CASE_BODIES', '\n'.join(cases)))
