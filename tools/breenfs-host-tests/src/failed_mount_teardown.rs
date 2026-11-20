@@ -75,6 +75,61 @@ fn fixture() -> Arc<BreenFs<NoWait>> {
     BreenFs::mount_writable(disk, Arc::new(BufferCache::new(NoWait)), 71, 1).unwrap()
 }
 
+#[test]
+fn opens_after_abandon_do_not_grow_the_replay_log() {
+    let fs = fixture();
+    let ino = fs.create(2, b"frozen", NewNode::Regular {
+        attrs: InodeAttrs::new(0o644, 0, 0),
+    }).unwrap();
+    let file = fs.open(ino).unwrap();
+    assert_eq!(fs.write(&file, WriteReq {
+        at: WriteAt::Offset(0), limit: u64::MAX, clear_setid: false,
+    }, b"before the failure").unwrap().bytes, 18);
+    let frozen = fs.freeze(&mut fs.inner.state.lock(), 0).unwrap();
+    drop(fs.open(2).unwrap());
+    assert_eq!(fs.abandon(frozen, "prepare-reap", Errno(EIO)), Err(Errno(EIO)));
+    assert_eq!(fs.read_only(), Ok(true));
+
+    // Two lifetime changes per open after the first: 32,769 records here.
+    // No next view will replay them, and growing one queue past 32,768 272-byte
+    // records asks the heap for the 17,825,792 bytes of ledger 763.
+    let ((), largest) = super::dirty_heap_bound::largest_allocation(|| {
+        for _ in 0..16_385 {
+            drop(fs.open(2).unwrap());
+        }
+    });
+    let records = fs.inner.state.lock().files.log.as_ref().map(|log| log.len());
+    assert_eq!(records, None, "an abandoned publication still records replay changes");
+    assert!(largest < 64 * 1024, "opens on the latched mount allocated a {largest}-byte block");
+    let mut readback = [0; 18];
+    assert_eq!(fs.read(&file, 0, &mut readback), Ok(18));
+    assert_eq!(&readback, b"before the failure");
+    assert_eq!(fs.fsync(&file, false), Err(Errno(EIO)));
+}
+
+#[test]
+fn live_replay_records_use_bounded_pages_and_refuse_with_enomem() {
+    // E24 764 (k2): N+1's record while N is frozen. Each record is 272 bytes
+    // and a replay page holds 15 of them, one 4,080-byte heap block.
+    assert_eq!(core::mem::size_of::<Change>(), 272);
+    let fs = fixture();
+    let frozen = fs.freeze(&mut fs.inner.state.lock(), 0).unwrap();
+    let refused = super::dirty_heap_bound::fail_allocation(15 * 272, 1, || fs.open(2));
+    assert_eq!(refused.err(), Some(Errno(ENOMEM)), "a refused replay page must fail the open");
+    assert_eq!(fs.read_only(), Ok(false), "a refused replay page latched the mount");
+    // 16,383 records, 4,456,448 bytes in one queue before the fix. The page
+    // table grows by one 32-byte entry per 4,080-byte page.
+    let ((), largest) = super::dirty_heap_bound::largest_allocation(|| {
+        for _ in 0..8192 {
+            drop(fs.open(2).unwrap());
+        }
+    });
+    let records = fs.inner.state.lock().files.log.as_ref().map(|log| log.len());
+    assert_eq!(records, Some(16_383));
+    assert!(largest <= 128 * 1024, "replay records allocated a {largest}-byte block");
+    assert_eq!(fs.abandon(frozen, "prepare-reap", Errno(EIO)), Err(Errno(EIO)));
+}
+
 fn failed_mount(error: ops::Error) {
     let fs = fixture();
     fs.init_service().unwrap();

@@ -25,6 +25,16 @@ std::thread_local! {
     static FAIL: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
     static LIVE: Cell<isize> = const { Cell::new(0) };
     static PEAK: Cell<isize> = const { Cell::new(0) };
+    static LARGEST: Cell<usize> = const { Cell::new(0) };
+}
+fn note_size(size: usize) {
+    let _ = LARGEST.try_with(|largest| largest.set(largest.get().max(size)));
+}
+/// The largest single block `run` asked this thread's heap for.
+pub(super) fn largest_allocation<T>(run: impl FnOnce() -> T) -> (T, usize) {
+    let previous = LARGEST.with(|largest| largest.replace(0));
+    let result = run();
+    (result, LARGEST.with(|largest| largest.replace(previous.max(largest.get()))))
 }
 fn reject(size: usize) -> bool {
     FAIL.try_with(|fail| match fail.get() {
@@ -69,6 +79,7 @@ struct Counting;
 // layout; the accounting touches only const-initialized thread-locals.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        note_size(layout.size());
         if reject(layout.size()) { return core::ptr::null_mut(); }
         let ptr = unsafe { System.alloc(layout) };
         if !ptr.is_null() {
@@ -77,6 +88,7 @@ unsafe impl GlobalAlloc for Counting {
         ptr
     }
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        note_size(layout.size());
         if reject(layout.size()) { return core::ptr::null_mut(); }
         let ptr = unsafe { System.alloc_zeroed(layout) };
         if !ptr.is_null() {
@@ -89,6 +101,7 @@ unsafe impl GlobalAlloc for Counting {
         charge(-(layout.size() as isize));
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+        note_size(size);
         if reject(size) { return core::ptr::null_mut(); }
         let new = unsafe { System.realloc(ptr, layout, size) };
         if !new.is_null() {

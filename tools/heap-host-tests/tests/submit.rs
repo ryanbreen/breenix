@@ -197,3 +197,37 @@ fn aligned_request_finds_the_only_usable_extent() {
     }
     assert_eq!(heap.free_shape(), (1, 192));
 }
+
+#[test]
+fn open_sized_request_finds_larger_extent_in_a_later_class() {
+    const MIB: usize = 1024 * 1024;
+    const REGION: usize = 64 * MIB;
+    const LARGER: usize = 30 * MIB + 4 * MIB / 5;
+    let mut backing = vec![0u64; REGION / 8];
+    let mut heap = indexed::Heap::empty();
+    unsafe { heap.init(backing.as_mut_ptr().cast(), REGION) };
+    let allocate = |heap: &mut indexed::Heap, bytes| {
+        heap.allocate(Layout::from_size_align(bytes, 8).unwrap()).0.unwrap()
+    };
+    // The smaller hole is in the same size class as the request. The
+    // allocated separators prevent it from coalescing with either neighbor.
+    let smaller = allocate(&mut heap, 16 * MIB + MIB / 2);
+    let first_guard = allocate(&mut heap, 8);
+    let larger = allocate(&mut heap, LARGER & !7);
+    let second_guard = allocate(&mut heap, 8);
+    unsafe { heap.deallocate(smaller); heap.deallocate(larger); }
+    assert_eq!(heap.free_shape(), (3, ((LARGER & !7) + 8) as u32));
+
+    let request = Layout::from_size_align(17_825_792, 8).unwrap();
+    let (allocated, _) = heap.allocate(request);
+    assert_eq!(allocated, Some(larger));
+    assert!(heap.free() > request.size());
+    assert!((heap.free_shape().1 as usize) < request.size());
+    assert_eq!(heap.allocate(request).0, None);
+    unsafe {
+        heap.deallocate(allocated.unwrap());
+        heap.deallocate(first_guard);
+        heap.deallocate(second_guard);
+    }
+    assert_eq!(heap.free_shape(), (1, REGION as u32));
+}
