@@ -18,7 +18,7 @@ mod ownership;
 mod sparse;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
-const USAGE: &str = "breenfs-extract IMAGE ls PATH|cat PATH|dump|manifest\n       breenfs-extract manifest --dir DIR\n       breenfs-extract blocks IMAGE PATH\n       breenfs-extract owners IMAGE BLOCK\nOwner paths escape non-ASCII, whitespace and backslash bytes as \\xHH.";
+const USAGE: &str = "breenfs-extract IMAGE ls PATH|cat PATH|dump|manifest\n       breenfs-extract IMAGE migration-manifest [--root NAME]\n       breenfs-extract manifest --dir DIR\n       breenfs-extract blocks IMAGE PATH\n       breenfs-extract owners IMAGE BLOCK\nOwner paths escape non-ASCII, whitespace and backslash bytes as \\xHH.";
 
 fn core<T, E: std::fmt::Debug>(r: std::result::Result<T, E>) -> Result<T> {
     r.map_err(|e| format!("breenfs: {e:?}").into())
@@ -291,12 +291,19 @@ fn source_rows(dir: &Path) -> Result<Vec<Row>> {
     }
     Ok(rows)
 }
-fn manifest(mut rows: Vec<Row>, out: &mut impl Write) -> Result<()> {
+enum ManifestFormat {
+    Fixture,
+    Migration,
+}
+
+fn manifest(mut rows: Vec<Row>, layout: ManifestFormat, out: &mut impl Write) -> Result<()> {
     rows.sort_by(|a, b| a.path.cmp(&b.path));
     let mut groups: BTreeMap<(u64, u64), (usize, Vec<u8>)> = BTreeMap::new();
     for row in &rows {
         if kind(row.inode.mode)? != "dir" {
-            let group = groups.entry(row.identity).or_insert((0, row.path.clone()));
+            let group = groups
+                .entry(row.identity)
+                .or_insert_with(|| (0, row.path.clone()));
             group.0 += 1;
         }
     }
@@ -307,25 +314,57 @@ fn manifest(mut rows: Vec<Row>, out: &mut impl Write) -> Result<()> {
             .filter(|g| g.0 > 1)
             .map(|g| hex(&g.1))
             .unwrap_or_else(|| "-".into());
-        writeln!(
-            out,
-            "{}\t{}\t{:06o}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            hex(&row.path),
-            kind(i.mode)?,
-            i.mode,
-            i.uid,
-            i.gid,
-            i.size,
-            i.nblocks
-                .checked_mul(8)
-                .ok_or("mapped block count overflow")?,
-            i.mtime.seconds,
-            i.mtime.nanos,
-            row.digest,
-            group
-        )?;
+        let path = hex(&row.path);
+        let kind = kind(i.mode)?;
+        match layout {
+            ManifestFormat::Fixture => writeln!(
+                out,
+                "{path}\t{kind}\t{:06o}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{group}",
+                i.mode,
+                i.uid,
+                i.gid,
+                i.size,
+                i.nblocks
+                    .checked_mul(8)
+                    .ok_or("mapped block count overflow")?,
+                i.mtime.seconds,
+                i.mtime.nanos,
+                row.digest,
+            )?,
+            ManifestFormat::Migration => {
+                write!(out, "{path}\t{kind}")?;
+                if matches!(kind, "chr" | "blk") {
+                    let major = (i.rdev >> 8) & 0xfff;
+                    let minor = (i.rdev & 0xff) | ((i.rdev >> 12) & 0xfff00);
+                    write!(out, ":{major}:{minor}")?;
+                }
+                let size = if matches!(kind, "reg" | "symlink") {
+                    i.size
+                } else {
+                    0
+                };
+                writeln!(
+                    out,
+                    "\t{:04o}\t{}\t{}\t{group}\t{size}\t{}.{:09}\t{}",
+                    i.mode & 0o7777,
+                    i.uid,
+                    i.gid,
+                    i.mtime.seconds,
+                    i.mtime.nanos,
+                    row.digest,
+                )?;
+            }
+        }
     }
     Ok(())
+}
+fn named_root(device: &Image, sb: &Superblock, name: &[u8]) -> Result<u64> {
+    for (key, data) in core(ops::items(&DeviceStore(device), sb.space_root))? {
+        if key.item_type == format::ROOT && core(Root::decode(&data))?.name == name {
+            return Ok(key.offset);
+        }
+    }
+    Err(format!("no root named {}", hex(name)).into())
 }
 fn dump(device: &Image, sb: &Superblock, out: &mut impl Write) -> Result<()> {
     writeln!(
@@ -372,7 +411,11 @@ fn run(mut args: Vec<OsString>) -> Result<()> {
     }
     let mut out = io::BufWriter::new(io::stdout().lock());
     if args.len() == 3 && args[0] == "manifest" && args[1] == "--dir" {
-        manifest(source_rows(Path::new(&args[2]))?, &mut out)?;
+        manifest(
+            source_rows(Path::new(&args[2]))?,
+            ManifestFormat::Fixture,
+            &mut out,
+        )?;
     } else {
         if args.len() < 2 {
             return Err(USAGE.into());
@@ -387,9 +430,19 @@ fn run(mut args: Vec<OsString>) -> Result<()> {
                 ownership::owners(&device, &sb, block, &mut out)?;
             }
             ("dump", 2) => dump(&device, &sb, &mut out)?,
-            ("manifest", 2) => {
-                let files = core(Files::new(DeviceStore(&device), &sb, 1, false))?;
-                manifest(image_rows(&files, &device)?, &mut out)?;
+            ("manifest", 2) | ("migration-manifest", 2 | 4) => {
+                let root = match args.get(2) {
+                    None => 1,
+                    Some(flag) if flag == "--root" => named_root(&device, &sb, args[3].as_bytes())?,
+                    _ => return Err(USAGE.into()),
+                };
+                let files = core(Files::new(DeviceStore(&device), &sb, root, false))?;
+                let layout = if command == "manifest" {
+                    ManifestFormat::Fixture
+                } else {
+                    ManifestFormat::Migration
+                };
+                manifest(image_rows(&files, &device)?, layout, &mut out)?;
             }
             ("cat" | "ls", 3) => {
                 let files = core(Files::new(DeviceStore(&device), &sb, 1, false))?;
