@@ -190,6 +190,115 @@ fn formats() -> [Format; 2] {
     ]
 }
 
+#[test]
+fn cutover_serves_the_generation_with_writable_system_binds_and_home() {
+    use crate::vfs::{NodeKind, WriteAt, WriteReq};
+
+    let _registry = crate::statfs_support::TEST_MOUNTS.lock().unwrap();
+    let intent = intent::parse(
+        format!("BREENIX-BOOT 3\ntarget persistent\nmount {NEW_SYSTEM} / rw\nmount {NEW_HOME} /home rw\nuserland install-42\n")
+            .as_bytes(),
+    )
+    .unwrap();
+    let mut plan = boot::prepare_mounts(Some(&intent), &formats(), |guid, _, _| {
+        Ok(if guid == NEW_SYSTEM { cutover_system() } else { breenfs(NEW_HOME) })
+    })
+    .unwrap()
+    .unwrap()
+    .into_iter();
+
+    let line = plan.next().unwrap();
+    let root_id = mount::allocate_id().unwrap();
+    let point = line.point(root_id, None, None);
+    let root = line.mount(&formats(), &point).unwrap();
+    assert_eq!(root.read_only(), Ok(true), "the OS generation at / must be read-only");
+    let root_ino = root.root().unwrap();
+    let marker = root.open(root.lookup(root_ino, b"generation").unwrap()).unwrap();
+    let mut bytes = [0; 2];
+    assert_eq!(root.read(&marker, 0, &mut bytes), Ok(2));
+    assert_eq!(&bytes, b"os");
+    let write = WriteReq { at: WriteAt::Offset(0), limit: u64::MAX, clear_setid: false };
+    assert_eq!(root.write(&marker, write, b"no").unwrap_err().errno(), Errno(EROFS));
+    let file = NewNode::Regular { attrs: crate::attrs::InodeAttrs::new(0o644, 0, 0) };
+    assert_eq!(root.create(root_ino, b"outside", file), Err(Errno(EROFS)));
+
+    let dir = root.lookup(root_ino, b"home").unwrap();
+    let line = plan.next().unwrap();
+    let home_id = mount::allocate_id().unwrap();
+    let point = line.point(home_id, Some((root_id, dir)), Some((root_id, root_ino)));
+    let home = line.mount(&formats(), &point).unwrap();
+    mount::register(point.entry(home.clone()).unwrap()).unwrap();
+    home.create(home.root().unwrap(), b"home-write", file).unwrap();
+    assert!(plan.next().is_none());
+
+    boot::mount_volatile_if_needed(&intent, || panic!("cutover allocated a memory volume")).unwrap();
+    assert_eq!(mount::list_mounts().len(), 9);
+    assert!(mount::flags_at(b"/generation").read_only);
+    assert!(!mount::flags_at(b"/home").read_only);
+    assert!(mount::flags_at(b"/home").nosuid);
+    assert!(mount::flags_at(b"/home").nodev);
+    assert_eq!(mount::storage_mounts(), [root_id, home_id]);
+    let mut ids = Vec::new();
+    let mut writer = None;
+    for name in ["root", "etc", "var", "opt", "srv", "tmp", "run"] {
+        let cover = root.lookup(root_ino, name.as_bytes()).unwrap();
+        let Some(mount::Entered::Fs(id, source)) = mount::enter((root_id, cover)) else {
+            panic!("missing /{name} cover");
+        };
+        assert_eq!(mount::get_mount_info(id), Some((format!("/{name}"), "breenfs")));
+        assert_eq!(mount::covered_parent(id), Some((root_id, root_ino)));
+        assert!(!mount::flags_at(format!("/{name}").as_bytes()).read_only);
+        let fs = mount::filesystem(id).unwrap();
+        let default = writer.get_or_insert_with(|| fs.clone());
+        assert!(Arc::ptr_eq(&fs, default));
+        assert!(!Arc::ptr_eq(&fs, &home));
+        let base = fs.root().unwrap();
+        let parent = if name == "root" { base } else { fs.lookup(base, b".breenix-shared").unwrap() };
+        assert_eq!(fs.lookup(parent, name.as_bytes()), Ok(source));
+        assert_eq!(fs.getattr(source).unwrap().kind, NodeKind::Directory);
+        let ino = fs.create(source, b"bind-write", file).unwrap();
+        assert_eq!(fs.lookup(source, b"bind-write"), Ok(ino));
+        ids.push(id);
+    }
+
+    root.sync().unwrap();
+    assert_eq!(root.read(&marker, 0, &mut bytes), Ok(2));
+    assert_eq!(&bytes, b"os");
+    for id in [home_id].into_iter().chain(ids.into_iter().rev()).chain([root_id]) {
+        mount::unmount(id, true).unwrap();
+    }
+}
+
+fn cutover_system() -> Box<dyn BlockDevice> {
+    let disk = Box::new(SparseBreenFsDisk::default());
+    let sb = Superblock {
+        fs_uuid: uuid(NEW_SYSTEM),
+        generation: 1,
+        slot: 1,
+        total_blocks: BREENFS_BLOCKS,
+        global_reserve: 32,
+        next_root_id: 2,
+        ..Superblock::default()
+    };
+    let mut files = Files::format(DeviceStore(disk.as_ref()), &sb).unwrap();
+    let at = Default::default();
+    files.mkdir(2, b"home", 0o755, at).unwrap();
+    for name in [b"etc", b"var", b"opt", b"srv", b"tmp", b"run"] {
+        files.mkdir(2, name, 0o755, at).unwrap();
+    }
+    files.mkdir(2, b"root", 0o700, at).unwrap();
+    let marker = files.create(2, b"generation", 0o644, at).unwrap();
+    files.write(disk.as_ref(), marker, 0, b"os", at).unwrap();
+    files.snapshot(b"gen-install-42", true).unwrap();
+    files.unlink(2, b"generation", at).unwrap();
+    let shared = files.mkdir(2, b".breenix-shared", 0o755, at).unwrap();
+    for name in [b"etc", b"var", b"opt", b"srv", b"tmp", b"run"] {
+        files.mkdir(shared, name, 0o755, at).unwrap();
+    }
+    files.fsync(disk.as_ref(), &mut Committer::format(sb)).unwrap();
+    disk
+}
+
 fn arm_disks() -> Vec<Box<dyn BlockDevice>> {
     vec![
         breenfs(NEW_HOME),
