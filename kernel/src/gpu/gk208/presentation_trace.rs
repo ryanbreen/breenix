@@ -89,9 +89,13 @@ impl Trace {
 }
 static TRACE: spin::Mutex<Trace> = spin::Mutex::new(Trace::new());
 
-pub(super) fn record(row: Row, period_ns: u64) {
+pub(super) fn record(row: Row, period_ns: u64, predicted_latch_ns: u64) {
     TRACE.lock().record(row);
     FRAMES.lock().record(row, period_ns);
+    // Share the wider window pipeline's retention and monotonic clock. The
+    // rate case can join these receipts by resource and exact latch timestamp.
+    crate::window::pipeline::at(48, row[0], row[7], row[4], row[8]);
+    crate::window::pipeline::at(50, row[0], row[7], predicted_latch_ns, row[1]);
 }
 
 /// Detached receipt samples and wakeup counters from one restoration boundary.

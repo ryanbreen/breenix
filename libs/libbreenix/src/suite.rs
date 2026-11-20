@@ -815,6 +815,16 @@ static RECORDS: AtomicU32 = AtomicU32::new(0);
 // Exact VALUE lines sent to serial, transported after the case timer stops.
 static VALUE_LINES: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
+/// Write a short diagnostic line on the running case's serial descriptor.
+pub fn case_diagnostic(line: &str) {
+    let fd = RECORD_FD.load(Ordering::Relaxed);
+    if fd >= 0 && line.len() <= 1024 && !line.contains(['\n', '\r'])
+        && RECORDS.fetch_add(1, Ordering::Relaxed) < RECORDS_PER_CASE
+    {
+        emit_to(Fd::from_raw(fd as u64), line);
+    }
+}
+
 /// The most VALUE and WAIT records one case process prints.
 pub const RECORDS_PER_CASE: u32 = 12;
 
