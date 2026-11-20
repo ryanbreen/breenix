@@ -121,6 +121,27 @@ pub(crate) fn explicit_mount_device(
     boot_mount::find_filesystem(disks, crate::fs::FORMATS, guid)
 }
 
+/// Reopen a writable migration volume from the captured boot plan. On x86
+/// this returns a partition view guarded by the existing sealed write fence.
+pub(crate) fn migration_device(path: &str) -> Result<alloc::boxed::Box<dyn BlockDevice>, &'static str> {
+    let intent = crate::boot::intent::captured().ok_or("missing migration intent")?;
+    if intent.explicit_mounts() != Ok(true)
+        || crate::boot::intent::get() != Some(b"persistent-migrate\n")
+        || !matches!(path, "/migrate/system" | "/migrate/home")
+    {
+        return Err("not a migration volume");
+    }
+    let (guid, _, _) = intent.mounts().find(|&(_, target, writable)| target == path && writable)
+        .ok_or("migration volume is missing from boot intent")?;
+    #[cfg(target_arch = "x86_64")]
+    {
+        let (device, _, _) = named_partition(guid, boot_mount::partition_types(path))?;
+        Ok(alloc::boxed::Box::new(device))
+    }
+    #[cfg(target_arch = "aarch64")]
+    explicit_mount_device(guid)
+}
+
 /// The root the boot intent names: the test root (a test boot, or an install's migration) or the system partition
 /// (a persistent boot), with the fence opened for its range alone.
 #[cfg(target_arch = "x86_64")]

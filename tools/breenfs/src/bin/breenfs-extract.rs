@@ -12,6 +12,9 @@ use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
 use std::path::Path;
 use std::sync::Mutex;
 
+#[path = "../../../../libs/libbreenix/src/migration_manifest.rs"]
+mod migration_manifest;
+use migration_manifest::{hex, kind};
 #[path = "../ownership.rs"]
 mod ownership;
 #[path = "../sparse.rs"]
@@ -22,14 +25,6 @@ const USAGE: &str = "breenfs-extract IMAGE ls PATH|cat PATH|dump|manifest\n     
 
 fn core<T, E: std::fmt::Debug>(r: std::result::Result<T, E>) -> Result<T> {
     r.map_err(|e| format!("breenfs: {e:?}").into())
-}
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        write!(out, "{byte:02x}").unwrap();
-    }
-    out
 }
 
 struct Image {
@@ -73,18 +68,6 @@ impl BlockDevice for Image {
     }
 }
 
-fn kind(mode: u32) -> Result<&'static str> {
-    Ok(match mode & 0o170000 {
-        0o100000 => "reg",
-        0o040000 => "dir",
-        0o120000 => "symlink",
-        0o020000 => "chr",
-        0o060000 => "blk",
-        0o010000 => "fifo",
-        0o140000 => "sock",
-        _ => return Err("invalid inode type".into()),
-    })
-}
 fn join(parent: &[u8], name: &[u8]) -> Vec<u8> {
     let mut path = parent.to_vec();
     if path != b"/" {
@@ -297,6 +280,23 @@ enum ManifestFormat {
 }
 
 fn manifest(mut rows: Vec<Row>, layout: ManifestFormat, out: &mut impl Write) -> Result<()> {
+    if matches!(layout, ManifestFormat::Migration) {
+        let rows = rows.into_iter().map(|row| {
+            let i = row.inode;
+            migration_manifest::Row {
+                path: row.path,
+                identity: row.identity,
+                mode: i.mode,
+                uid: i.uid,
+                gid: i.gid,
+                rdev: migration_manifest::device_parts(i.rdev),
+                size: i.size,
+                mtime: (i.mtime.seconds, i.mtime.nanos),
+                digest: row.digest,
+            }
+        }).collect();
+        return Ok(migration_manifest::write(rows, out)?);
+    }
     rows.sort_by(|a, b| a.path.cmp(&b.path));
     let mut groups: BTreeMap<(u64, u64), (usize, Vec<u8>)> = BTreeMap::new();
     for row in &rows {
@@ -316,45 +316,18 @@ fn manifest(mut rows: Vec<Row>, layout: ManifestFormat, out: &mut impl Write) ->
             .unwrap_or_else(|| "-".into());
         let path = hex(&row.path);
         let kind = kind(i.mode)?;
-        match layout {
-            ManifestFormat::Fixture => writeln!(
-                out,
-                "{path}\t{kind}\t{:06o}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{group}",
-                i.mode,
-                i.uid,
-                i.gid,
-                i.size,
-                i.nblocks
-                    .checked_mul(8)
-                    .ok_or("mapped block count overflow")?,
-                i.mtime.seconds,
-                i.mtime.nanos,
-                row.digest,
-            )?,
-            ManifestFormat::Migration => {
-                write!(out, "{path}\t{kind}")?;
-                if matches!(kind, "chr" | "blk") {
-                    let major = (i.rdev >> 8) & 0xfff;
-                    let minor = (i.rdev & 0xff) | ((i.rdev >> 12) & 0xfff00);
-                    write!(out, ":{major}:{minor}")?;
-                }
-                let size = if matches!(kind, "reg" | "symlink") {
-                    i.size
-                } else {
-                    0
-                };
-                writeln!(
-                    out,
-                    "\t{:04o}\t{}\t{}\t{group}\t{size}\t{}.{:09}\t{}",
-                    i.mode & 0o7777,
-                    i.uid,
-                    i.gid,
-                    i.mtime.seconds,
-                    i.mtime.nanos,
-                    row.digest,
-                )?;
-            }
-        }
+        writeln!(
+            out,
+            "{path}\t{kind}\t{:06o}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{group}",
+            i.mode,
+            i.uid,
+            i.gid,
+            i.size,
+            i.nblocks.checked_mul(8).ok_or("mapped block count overflow")?,
+            i.mtime.seconds,
+            i.mtime.nanos,
+            row.digest,
+        )?;
     }
     Ok(())
 }

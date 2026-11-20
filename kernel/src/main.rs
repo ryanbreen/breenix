@@ -1222,7 +1222,7 @@ fn launch_x86_production_init(
 ) -> Result<(), &'static str> {
     use alloc::string::String;
 
-    if console_mode.is_some() || name == "persistent-install" {
+    if console_mode.is_some() || matches!(name, "persistent-install" | "persistent-migrate") {
         serial::command::use_tty_input();
     }
     let hostkeys = if name.starts_with("suite-") {
@@ -1244,9 +1244,11 @@ fn launch_x86_production_init(
         let mut argv: alloc::vec::Vec<&[u8]> = if name == "suite-users" || name == "suite-gui-apps" {
             alloc::vec![b"/sbin/init", b"suite", path.as_bytes()]
         } else { alloc::vec![path.as_bytes()] };
-        if name == "persistent-install" {
-            let generation = kernel::boot::intent::userland().ok_or("install intent names no userland generation")?;
+        if matches!(name, "persistent-install" | "persistent-migrate") {
+            let generation = kernel::boot::intent::userland().ok_or("boot intent names no userland generation")?;
             argv.push(generation.as_bytes());
+        }
+        if name == "persistent-install" {
             if let Some(previous) = kernel::boot::intent::previous_userland() {
                 argv.push(previous.as_bytes());
             }
@@ -1317,6 +1319,7 @@ enum X86BootTarget {
     Suite(kernel::boot::target::SuiteTarget),
     Probe,
     PersistentInstall,
+    PersistentMigrate,
 }
 
 /// Which suite or probe, if any, the production kernel runs as PID 1 instead of
@@ -1348,6 +1351,18 @@ fn x86_boot_target() -> Option<X86BootTarget> {
             )) => None,
             Ok(Some(target::Target::Probe)) => Some(X86BootTarget::Probe),
             Ok(Some(target::Target::PersistentInstall)) => Some(X86BootTarget::PersistentInstall),
+            Ok(Some(target::Target::PersistentMigrate)) => {
+                use kernel::boot::intent;
+                if intent::explicit_mounts_requested()
+                    && intent::get() == Some(b"persistent-migrate\n")
+                    && intent::userland().is_some()
+                {
+                    Some(X86BootTarget::PersistentMigrate)
+                } else {
+                    log::warn!("[boot] Ignoring boot mode \"persistent-migrate\": format 3 userland intent required");
+                    None
+                }
+            }
             Ok(Some(target::Target::Program { .. })) => {
                 log::warn!("[boot] Ignoring boot target {}: program mode is ARM64 only", target::PATH);
                 None
@@ -1497,6 +1512,13 @@ fn read_x86_production_init(
                 ),
             }
             None
+        }
+        Some(X86BootTarget::PersistentMigrate) => {
+            let (elf_data, exe_path) = read_init_from_ext2("/sbin/persistent-migrate")?;
+            target::check_elf(&elf_data)?;
+            log::info!("[boot] Boot mode: persistent-migrate");
+            kernel::console::splash::set_mode(format_args!("persistent-migrate"));
+            return Ok((alloc::string::String::from("persistent-migrate"), exe_path, elf_data, None, None));
         }
         None => None,
     };

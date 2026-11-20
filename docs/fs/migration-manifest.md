@@ -35,3 +35,13 @@ root of the recovered image, including a read-only snapshot. Ext2 defaults to
 its image root. `--subtree` selects an absolute directory path within the
 image, without following symlinks in that path. Both commands read the image
 without writing to it and report read errors with a nonzero exit status.
+
+The guest migrator writes `/run/persistent-migrate/source.tsv` and
+`destination.tsv`. Its selected tree joins the system default root's
+`/.breenix-shared` and `/root`, the active generation at `/gen-<id>`, and
+the home partition at `/home`. The generation's empty mount points remain
+inside its own subtree. On the destination, the whole default root is
+compared, so an unexpected entry also prevents a match.
+
+Run `python3 tests/persistent_migrate_test.py` with `TMPDIR` on a filesystem
+that retains sparse extents when files close.

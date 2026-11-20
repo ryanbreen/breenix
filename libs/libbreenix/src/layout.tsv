@@ -50,6 +50,7 @@ bin reboot sbin 0755 0
 bin poweroff sbin 0755 0
 bin init sbin 0755 0
 bin persistent-install sbin 0755 0
+bin persistent-migrate sbin 0755 0
 bin etc-reconcile sbin 0755 0
 bin probe sbin 0755 0
 bin suite-* sbin 0755 0

@@ -73,6 +73,7 @@ enum BootMode {
     Default,
     Probe,
     PersistentInstall,
+    PersistentMigrate,
     Shell,
     Console,
     Desktop,
@@ -87,6 +88,7 @@ impl BootMode {
             BootMode::Default => "default",
             BootMode::Probe => "probe",
             BootMode::PersistentInstall => "persistent-install",
+            BootMode::PersistentMigrate => "persistent-migrate",
             BootMode::Shell => "shell",
             BootMode::Console => "console",
             BootMode::Desktop => "desktop",
@@ -120,6 +122,16 @@ fn interactive_boot_mode(target: Option<&kernel::boot::target::Target>) -> Optio
 #[cfg(target_arch = "aarch64")]
 fn read_boot_mode(fw_intent_captured: bool) -> (BootMode, Option<alloc::string::String>, Option<alloc::string::String>) {
     use kernel::boot::target;
+    if kernel::boot::intent::get() == Some(b"persistent-migrate\n") {
+        if !cfg!(feature = "testing")
+            && kernel::boot::intent::explicit_mounts_requested()
+            && kernel::boot::intent::userland().is_some()
+        {
+            return (BootMode::PersistentMigrate, None, None);
+        }
+        serial_println!("[boot] Ignoring boot mode \"persistent-migrate\": production format 3 userland intent required");
+        return (BootMode::Default, None, None);
+    }
     if fw_intent_captured && kernel::boot::intent::get() == Some(b"persistent-install\n") {
         if cfg!(feature = "testing") {
             serial_println!("[boot] Ignoring boot mode \"persistent-install\": the testing kernel runs its test loader");
@@ -157,6 +169,10 @@ fn read_boot_mode(fw_intent_captured: bool) -> (BootMode, Option<alloc::string::
             Ok(Some(target::Target::Probe)) => BootMode::Probe,
             Ok(Some(target::Target::Persistent | target::Target::PersistentInstall)) => {
                 serial_println!("[boot] Ignoring boot target {}: the persistent install is x86-metal only", target::PATH);
+                BootMode::Default
+            }
+            Ok(Some(target::Target::PersistentMigrate)) => {
+                serial_println!("[boot] Ignoring boot mode \"persistent-migrate\": format 3 userland intent required");
                 BootMode::Default
             }
             Ok(Some(target::Target::Program { path, arg })) => {
@@ -306,6 +322,11 @@ impl InitLaunch {
                 let argv = arm_install::argv(kernel::boot::intent::userland(), kernel::boot::intent::previous_userland())
                     .expect("install intent was validated before selecting boot mode");
                 InitLaunch::new("/sbin/persistent-install", &argv)
+            },
+            BootMode::PersistentMigrate => {
+                let generation = kernel::boot::intent::userland()
+                    .expect("migration intent was validated before selecting boot mode");
+                InitLaunch::new("/sbin/persistent-migrate", &[b"/sbin/persistent-migrate", generation.as_bytes()])
             },
             BootMode::Shell => InitLaunch::new("/sbin/init", &[b"init", b"shell"]),
             BootMode::Console => InitLaunch::new("/sbin/init", &[b"init", b"console"]),
@@ -1344,7 +1365,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     let mut init_launch = InitLaunch::for_mode(boot_mode, mode_arg.as_deref(), only.as_deref());
     let runs_own_binary = matches!(
         boot_mode,
-        BootMode::Probe | BootMode::PersistentInstall | BootMode::Program | BootMode::Suite
+        BootMode::Probe | BootMode::PersistentInstall | BootMode::PersistentMigrate | BootMode::Program | BootMode::Suite
     );
     let mode_elf: Option<alloc::vec::Vec<u8>> = if runs_own_binary && device_count > 0 {
         serial_println!(

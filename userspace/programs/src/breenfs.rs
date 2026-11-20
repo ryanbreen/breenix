@@ -1,7 +1,5 @@
 //! Filesystem administration through a file or directory on the target mount.
-#[path = "../../../kernel/src/fs/breenfs/abi.rs"]
-mod abi;
-use abi::*;
+use libbreenix::breenfs_abi::*;
 use libbreenix::{error::Error, syscall::{nr, raw}};
 use std::{fs::File, os::fd::AsRawFd, time::Duration};
 
