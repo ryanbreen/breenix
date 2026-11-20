@@ -1,29 +1,67 @@
 #!/usr/bin/env python3
 """Compile the guest's root contracts on the host, without a boot."""
+import os
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'scripts/metal'))
+import metal_root
+
+COOKIE_RECEIPT = '/usr/libexec/breenix/test/dir-blocks-count'
 
 
 class RootExpectationsTest(unittest.TestCase):
-    def test_root_contracts(self):
-        # E24 ledger 520(q): conversion preserves the source fixture's names.
+    def test_cookie_fixture_receipt(self):
         builder = (ROOT / 'scripts/create_ext2_disk.sh').read_text()
-        loop = re.search(
-            r'i=0\s+while \[ \$\(\(i \* (\d+)\)\) -le '
-            r'\$\(\((\d+) \* fixture_block_size\)\) \]; do'
-            r'(.*?)i=\$\(\(i \+ 1\)\)', builder, re.S)
-        self.assertIsNotNone(loop, 'cookie fixture builder loop not found')
-        record_bytes, blocks = map(int, loop.group(1, 2))
-        fixture_entries = len(range(0, blocks * 1024 + 1, record_bytes))
+        docker_start = 'mkdir -p /mnt/ext2/test/dir-blocks\n'
+        native_start = 'mkdir -p "$MOUNT_DIR/test/dir-blocks"\n'
+        fragments = (
+            (docker_start + builder.split(docker_start, 1)[1]
+             .split('# Create additional test content', 1)[0]).replace('/mnt/ext2', '${MOUNT_DIR}'),
+            native_start + builder.split(native_start, 1)[1]
+            .split('mkdir -p "$MOUNT_DIR/deep/path/to/file"', 1)[0],
+        )
+        mke2fs, debugfs = metal_root.require_e2fsprogs('mke2fs', 'debugfs')
+        tools = Path(os.environ.get('BREENFS_TOOLS_DIR', ROOT / 'tools/breenfs/target/release'))
+        for block_size, expected in ((1024, 15), (4096, 60)):
+            for fragment in fragments:
+                with self.subTest(block_size=block_size, builder=fragment.splitlines()[0]):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        work = Path(tmp)
+                        tree = work / 'tree'
+                        (tree / 'etc').mkdir(parents=True)
+                        env = dict(os.environ, MOUNT_DIR=str(tree), fixture_block_size=str(block_size),
+                                   BREENIX_EXT2_OWNERS=str(work / 'owners'))
+                        subprocess.run(['sh', '-eu', '-c', fragment], env=env, check=True)
+                        subprocess.run(
+                            ['sh', str(ROOT / 'scripts/install-layout.sh'), str(tree), str(work),
+                             str(ROOT / 'libs/libbreenix/src/layout.tsv')], env=env, check=True)
+                        receipt = tree / COOKIE_RECEIPT.lstrip('/')
+                        names = sorted(receipt.with_name('dir-blocks').iterdir())
+                        self.assertEqual([name.name for name in names],
+                                         [f'{i:0200d}' for i in range(expected)])
+                        self.assertEqual(receipt.read_bytes(), f'{expected}\n'.encode())
+                        image = work / 'root.img'
+                        subprocess.run([mke2fs, '-q', '-t', 'ext2', '-b', str(block_size), '-d', str(tree),
+                                        '-F', str(image), str((32 << 20) // block_size)],
+                                       check=True, capture_output=True)
+                        metal_root.convert_breenfs(image, tools, debugfs)
+                        output = subprocess.check_output(
+                            [str(tools / 'breenfs-extract'), str(image), 'cat', COOKIE_RECEIPT])
+                        self.assertEqual(output, receipt.read_bytes())
+
+    def test_root_contracts(self):
+        # Read the same receipt through the production case's count expression.
         case = (ROOT / 'userspace/programs/src/suite_directories.rs').read_text()
         case = case.split('fn readdir_cookie_blocks() -> CaseResult {', 1)[1]
         count = re.search(r'let n = ([^;]+);', case)
         self.assertIsNotNone(count, 'cookie case fixture count not found')
+        expression = count.group(1).replace(f'"{COOKIE_RECEIPT}"', 'receipt')
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / 'expectations.rs'
             source.write_text(f'''
@@ -34,12 +72,17 @@ pub mod root_expectations;
 use filesystem_root::RootFs;
 use root_expectations::{{for_root, CookieEncoding}};
 
+fn fixture_entries(receipt: &str) -> Result<usize, String> {{
+    let _ = receipt;
+    Ok({expression})
+}}
+
 fn main() {{
-    // Source construction, independent of the mounted root's block geometry.
-    assert_eq!({fixture_entries}, 15);
-    for block in [1024_u64, 4096] {{
-        let n = {count.group(1)};
-        assert_eq!(n, {fixture_entries}, "fixture count on {{block}}-byte root");
+    let receipt = std::env::args().nth(1).unwrap();
+    for (block, entries) in [(1024, 15), (4096, 60)] {{
+        std::fs::write(&receipt, format!("{{entries}}\\n")).unwrap();
+        assert_eq!(fixture_entries(&receipt).unwrap(), entries,
+            "fixture count from the {{block}}-byte seed");
     }}
     let ext2 = for_root(RootFs::Ext2);
     assert!(ext2.reuses_inode_numbers);
@@ -96,7 +139,7 @@ fn main() {{
             binary = Path(tmp) / 'expectations'
             subprocess.run(['taskpolicy', '-b', 'rustc', '--edition=2021', '-Dwarnings',
                             str(source), '-o', str(binary)], check=True)
-            subprocess.run([str(binary)], check=True)
+            subprocess.run([str(binary), str(Path(tmp) / 'dir-blocks-count')], check=True)
 
 
 if __name__ == '__main__':
