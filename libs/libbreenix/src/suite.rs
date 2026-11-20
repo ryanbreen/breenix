@@ -1752,6 +1752,12 @@ fn cpu_progress(action: u64) {
     let _ = action;
 }
 
+fn heap_case(action: u64) -> u64 {
+    use libbreenix::syscall::{nr, raw};
+    let result = unsafe { raw::syscall2(nr::PRCTL, 0x4252_000a, action) };
+    if result as i64 > 0 { result } else { 0 }
+}
+
 /// The child's report on the result pipe: `P <ms>`, `F <ms> <msg>` or `S <msg>`.
 fn report(outcome: &Outcome) -> String {
     match outcome {
@@ -2153,6 +2159,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, scre
         }
     } else { None };
     let session = gui && case.supervisor.is_some();
+    let heap_epoch = if matches!(suite, "breengel" | "gui-apps") { heap_case(0) } else { 0 };
     let outcome = (|| {
         if session {
             if let Err(msg) = screen.release_for_session() { return Outcome::Fail { ms: 0, msg }; }
@@ -2171,6 +2178,9 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, scre
         },
         Ok(_) => outcome,
     };
+    if heap_epoch != 0 {
+        heap_case((heap_epoch << 1) | u64::from(matches!(outcome, Outcome::Fail { .. })));
+    }
     if let Some(controls) = controls {
         for line in controls.failure_records(suite, name, matches!(outcome, Outcome::Fail { .. })) { emit(&line); }
         for line in controls.report(suite, name) { emit(&line); }

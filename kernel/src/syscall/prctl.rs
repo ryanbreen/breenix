@@ -11,6 +11,9 @@ pub fn sys_prctl(option: u64, arg: u64) -> SyscallResult {
     if option == crate::task::cpu_progress::PR_CPU_PROGRESS {
         return crate::task::cpu_progress::sys_cpu_progress(arg);
     }
+    if option == crate::memory::heap::PR_HEAP_CASE {
+        return crate::memory::heap::sys_heap_case(arg);
+    }
     if option != PR_SET_CHILD_SUBREAPER && option != PR_GET_CHILD_SUBREAPER {
         return SyscallResult::Err(ENOSYS as u64);
     }
