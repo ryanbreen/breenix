@@ -842,12 +842,20 @@ impl<W: Wait> MountState<W> {
             self.touches.remove(&ino);
             return Ok(());
         };
-        // A refused replay record leaves the stamps pending and queued.
-        if !self.failed && self.committer.as_ref().is_some_and(|committer| !committer.read_only()) {
+        let generation = self.open_generation();
+        if self.files.log.is_some() && !self.failed
+            && self.committer.as_ref().is_some_and(|committer| !committer.read_only())
+        {
+            // Publication can move a stamp from the atomic slots into the
+            // frozen sample, so check the slots first and then the sample.
+            if !touched.pending() && !touched.pending_frozen(generation - 1) {
+                self.touches.remove(&ino);
+                return Ok(());
+            }
+            // A refused replay record leaves the stamps pending and queued.
             self.files.reserve(1).map_err(errno)?;
         }
         self.touches.remove(&ino);
-        let generation = self.open_generation();
         let mut open = touched.take(generation);
         let mut older = Stamps::default();
         if self.files.log.is_some() {

@@ -130,6 +130,31 @@ fn live_replay_records_use_bounded_pages_and_refuse_with_enomem() {
     assert_eq!(fs.abandon(frozen, "prepare-reap", Errno(EIO)), Err(Errno(EIO)));
 }
 
+#[test]
+fn clean_inode_lookup_does_not_allocate_a_replay_page() {
+    let fs = fixture();
+    let node = fs.open(2).unwrap();
+    let before = fs.getattr(2).unwrap().times.atime;
+    let frozen = fs.freeze(&mut fs.inner.state.lock(), 0).unwrap();
+
+    let (attrs, largest) = super::dirty_heap_bound::largest_allocation(|| fs.getattr(2));
+    assert_eq!(attrs.unwrap().times.atime, before);
+    assert_eq!(largest, 0, "a clean cached inode needed replay storage");
+
+    // Publication can have sampled the frozen stamp before the lookup, so
+    // the atomic timestamp slots can be empty even when a touch needs replay.
+    let touched = &node.pin::<NodePin<NoWait>>().unwrap().touched;
+    let generation = fs.inner.generation.load(Ordering::Acquire) - 1;
+    touched.record(generation, true, 90_001);
+    assert_eq!(touched.for_publication(generation).access, 90_001);
+    assert!(!touched.pending());
+    let refused = super::dirty_heap_bound::fail_allocation(15 * 272, 1, || fs.getattr(2));
+    assert_eq!(refused.err(), Some(Errno(ENOMEM)));
+    assert_eq!(fs.read_only(), Ok(false));
+    assert_eq!(fs.getattr(2).unwrap().times.atime.sec, 90_000);
+    assert_eq!(fs.abandon(frozen, "prepare-reap", Errno(EIO)), Err(Errno(EIO)));
+}
+
 fn failed_mount(error: ops::Error) {
     let fs = fixture();
     fs.init_service().unwrap();
