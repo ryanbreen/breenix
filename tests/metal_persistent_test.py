@@ -121,6 +121,29 @@ class LayoutTest(existing.StateTest):
         self.assertTrue(data.startswith(f'BREENIX-BOOT 2\ntarget default\nroot {guid}\ntests 4096 1024\n'.encode()))
         self.assertEqual(data[4096:], b'BXTEST\0\0' + bytes(1016))
 
+    def test_format_3_mount_intents(self):
+        a = '11111111-1111-1111-1111-111111111111'
+        b = '22222222-2222-2222-2222-222222222222'
+        for mounts in (
+            [(a, '/', False), (a, '/old', False), (b, '/new', True), (b, '/shared', True), (a, '/home', False)],
+            [(a, '/', True), (b, '/home', True)],
+            [(a, '/', False), (b, '/tmp', True), (b, '/run', True)],
+        ):
+            expected = 'BREENIX-BOOT 3\ntarget persistent\n' + ''.join(
+                f"mount {guid} {path} {'rw' if writable else 'ro'}\n" for guid, path, writable in mounts)
+            self.assertEqual(metal_persist.intent('persistent', mounts=mounts), expected.encode())
+        for mounts in (
+            [(a, '/', True), (b, '/home', True), (a, '/tmp', True)],
+            [(a, '/home', False)], [(a, '/', False), (b, '/a/../b', False)],
+            [(a, '/', False), (b, '/', False)], [],
+        ):
+            with self.assertRaises(ValueError):
+                metal_persist.intent('persistent', mounts=mounts)
+        with self.assertRaises(ValueError):
+            metal_persist.intent('persistent', root=a, mounts=[(a, '/', False)])
+        with self.assertRaises(ValueError):
+            metal_persist.intent('persistent', home=b, mounts=[(a, '/', False)])
+
     def test_slot_image_carries_its_immutable_userland_identity(self):
         with tempfile.TemporaryDirectory() as scratch:
             layout = metal_persist.new_layout()
