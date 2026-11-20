@@ -4,8 +4,9 @@
 //! `persist.cfg` on the boot disk names an action. `install` (the one-time install) writes the GUID partition table
 //! and the partitions' contents as extents onto the one fixed disk whose first sector is the recorded whole-disk root
 //! record, invalidating the old layout first and writing the protective MBR last, then reconnects the disk so the
-//! firmware reads the new table. `upgrade` checks the disk's GUID and writes files into the EFI system partition.
-//! Either way it then writes `MANAGER.CFG` (the lab's lines, the HTTP boot port this stub was loaded through, and the
+//! firmware reads the new table. `add-breenfs` validates both GPT copies, writes two images and appends their
+//! entries. `upgrade` checks the disk's GUID and writes files into the EFI system partition.
+//! Install and upgrade also write `MANAGER.CFG` (the lab's lines, the HTTP boot port this stub was loaded through, and the
 //! HTTP boot option) and puts the boot manager's load option first in `BootOrder`, the HTTP boot option second.
 //! Each write is read back and compared. An ordinary delivery has no request and takes the existing boot path.
 use core::ffi::c_void;
@@ -18,24 +19,32 @@ use metal_efi::uefi::*;
 
 use crate::suite_disk::{partition_signature, Buffer};
 
+#[path = "gpt_append.rs"]
+mod gpt_append;
+use gpt_append::{Header, Part, ARRAY_BYTES, ARRAY_SECTORS, ENTRIES, ENTRY, ORIGINAL_PARTS};
+
 const MAGIC: &str = "BREENIX-PERSIST 1";
-const PARTITIONS: usize = 4;
-const ENTRIES: usize = 128;
-const ENTRY: usize = 128;
-const ENTRY_SECTORS: u64 = (ENTRIES * ENTRY / SECTOR) as u64;
+const PARTITIONS: usize = ORIGINAL_PARTS + 2;
 const CHUNK_SECTORS: usize = 128;
 const CONFIG_LINES: usize = 16;
 const MANAGER_FILE: &str = "\\EFI\\BREENIX\\BOOTMGR.EFI";
 const CONFIG_FILE: &str = "\\EFI\\BREENIX\\MANAGER.CFG";
 
-#[derive(Clone, Copy)]
-struct Part {
-    type_guid: [u8; 16],
-    unique: [u8; 16],
-    first: u64,
-    last: u64,
-    name: [u8; 36],
-    name_len: usize,
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Action {
+    Install,
+    Upgrade,
+    AddBreenfs,
+}
+
+impl Action {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Install => "install",
+            Self::Upgrade => "upgrade",
+            Self::AddBreenfs => "add-breenfs",
+        }
+    }
 }
 
 /// The GUID's on-disk bytes from its text form (the first three fields little-endian).
@@ -49,6 +58,9 @@ fn guid(text: &str) -> Option<[u8; 16]> {
     for &byte in bytes.iter().filter(|&&b| b != b'-') {
         digits[count] = (byte as char).to_digit(16)? as u8;
         count += 1;
+    }
+    if count != digits.len() {
+        return None;
     }
     let byte = |index: usize| digits[2 * index] << 4 | digits[2 * index + 1];
     let order = [3usize, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15];
@@ -69,7 +81,7 @@ fn hex_digit(nibble: u8) -> u8 {
 
 /// The request's header: what it does and to which disk.
 struct Request<'t> {
-    install: bool,
+    action: Action,
     expect_record: Option<[u8; SECTOR]>,
     expect_disk: Option<[u8; 16]>,
     disk_guid: [u8; 16],
@@ -86,7 +98,7 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
         return Err(INVALID_PARAMETER);
     }
     let mut request = Request {
-        install: false,
+        action: Action::Upgrade,
         expect_record: None,
         expect_disk: None,
         disk_guid: [0; 16],
@@ -100,7 +112,7 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
     for line in lines {
         let (item, value) = line.split_once(' ').unwrap_or((line, ""));
         match item {
-            "action" => action = Some(value),
+            "action" if action.is_none() => action = Some(value),
             "expect-record" => {
                 if value.len() != 2 * SECTOR {
                     return Err(INVALID_PARAMETER);
@@ -112,7 +124,9 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
                 }
                 request.expect_record = Some(record);
             }
-            "expect-disk" => request.expect_disk = Some(guid(value).ok_or(INVALID_PARAMETER)?),
+            "expect-disk" if request.expect_disk.is_none() => {
+                request.expect_disk = Some(guid(value).ok_or(INVALID_PARAMETER)?);
+            }
             "disk" => request.disk_guid = guid(value).ok_or(INVALID_PARAMETER)?,
             "esp" => request.esp = Some(guid(value).ok_or(INVALID_PARAMETER)?),
             "partition" => {
@@ -124,34 +138,65 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
                 let first = number(next()?)?;
                 let last = number(next()?)?;
                 let name_text = next()?;
-                if !(1..=PARTITIONS).contains(&index) || first > last || name_text.len() > 36 || !name_text.is_ascii() {
+                if !(1..=PARTITIONS).contains(&index)
+                    || request.parts[index - 1].is_some()
+                    || first > last
+                    || name_text.len() > 36
+                    || !name_text.is_ascii()
+                {
                     return Err(INVALID_PARAMETER);
                 }
                 let mut name = [0u8; 36];
                 name[..name_text.len()].copy_from_slice(name_text.as_bytes());
-                request.parts[index - 1] = Some(Part { type_guid, unique, first, last, name, name_len: name_text.len() });
+                request.parts[index - 1] = Some(Part { type_guid, unique, first, last, name });
             }
             "manager-config" if request.config_len < CONFIG_LINES => {
                 request.config[request.config_len] = value;
                 request.config_len += 1;
             }
             "load-option" => request.load_option = Some(value),
-            "extent" | "esp-file" => {}
+            "extent" | "esp-file" if !value.is_empty() => {}
             _ => return Err(INVALID_PARAMETER),
         }
     }
-    request.install = match action {
-        Some("install") => true,
-        Some("upgrade") => false,
+    request.action = match action {
+        Some("install") => Action::Install,
+        Some("upgrade") => Action::Upgrade,
+        Some("add-breenfs") => Action::AddBreenfs,
         _ => return Err(INVALID_PARAMETER),
     };
-    if request.install {
-        if request.expect_record.is_none() || request.parts.iter().any(Option::is_none) {
+    let (original, additions) = request.parts.split_at(ORIGINAL_PARTS);
+    match request.action {
+        Action::Install => {
+            if request.expect_record.is_none()
+                || original.iter().any(Option::is_none)
+                || additions.iter().any(Option::is_some)
+            {
+                return Err(INVALID_PARAMETER);
+            }
+            request.esp = request.parts[0].map(|part| part.unique);
+        }
+        Action::Upgrade => {
+            if request.expect_disk.is_none()
+                || request.esp.is_none()
+                || additions.iter().any(Option::is_some)
+            {
+                return Err(INVALID_PARAMETER);
+            }
+        }
+        Action::AddBreenfs if request.expect_disk.is_none()
+            || original.iter().any(Option::is_some)
+            || additions.iter().any(Option::is_none)
+            || request.expect_record.is_some()
+            || request.esp.is_some()
+            || request.disk_guid != [0; 16]
+            || request.config_len != 0
+            || request.load_option.is_some()
+            || text.lines().any(|line| line.starts_with("esp-file")) =>
+        {
             return Err(INVALID_PARAMETER);
         }
-        request.esp = request.parts[0].map(|part| part.unique);
-    } else if request.expect_disk.is_none() || request.esp.is_none() {
-        return Err(INVALID_PARAMETER);
+        Action::AddBreenfs => {}
     }
     Ok(request)
 }
@@ -220,7 +265,7 @@ impl<'b> Disk<'b> {
 
     /// Writes the wire buffer's first `sectors` sectors at `lba`, then reads them back and compares.
     unsafe fn write_wire(&mut self, lba: u64, sectors: usize) -> Result<(), Status> {
-        if lba.checked_add(sectors as u64).map_or(true, |end| end > self.last + 1) {
+        if sectors == 0 || lba.checked_add(sectors as u64 - 1).map_or(true, |end| end > self.last) {
             return Err(INVALID_PARAMETER);
         }
         ok(((*self.io).write_blocks)(self.io, self.media_id, lba, sectors * SECTOR, self.wire.data.cast()))?;
@@ -265,6 +310,21 @@ impl<'b> Disk<'b> {
         }
         Ok(())
     }
+
+    unsafe fn write_extent(&mut self, lba: u64, count: u64, offset: Option<u64>, payload: *mut File) -> Result<(), Status> {
+        let Some(mut offset) = offset else {
+            return self.zero(lba, count);
+        };
+        let mut done = 0;
+        while done < count {
+            let sectors = (count - done).min(CHUNK_SECTORS as u64) as usize;
+            data(payload, offset, &mut self.wire()[..sectors * SECTOR])?;
+            self.write_wire(lba + done, sectors)?;
+            done += sectors as u64;
+            offset += (sectors * SECTOR) as u64;
+        }
+        Ok(())
+    }
 }
 
 unsafe fn crc32(boot: &BootServices, bytes: &[u8]) -> Result<u32, Status> {
@@ -282,8 +342,8 @@ unsafe fn header(boot: &BootServices, request: &Request, last: u64, mine: u64, o
     sector[12..16].copy_from_slice(&92u32.to_le_bytes());
     sector[24..32].copy_from_slice(&mine.to_le_bytes());
     sector[32..40].copy_from_slice(&other.to_le_bytes());
-    sector[40..48].copy_from_slice(&(2 + ENTRY_SECTORS).to_le_bytes());
-    sector[48..56].copy_from_slice(&(last - 1 - ENTRY_SECTORS).to_le_bytes());
+    sector[40..48].copy_from_slice(&(2 + ARRAY_SECTORS).to_le_bytes());
+    sector[48..56].copy_from_slice(&(last - 1 - ARRAY_SECTORS).to_le_bytes());
     sector[56..72].copy_from_slice(&request.disk_guid);
     sector[72..80].copy_from_slice(&entries.to_le_bytes());
     sector[80..84].copy_from_slice(&(ENTRIES as u32).to_le_bytes());
@@ -325,14 +385,14 @@ unsafe fn data(file: *mut File, offset: u64, out: &mut [u8]) -> Result<(), Statu
 
 /// The one-time install: invalidate the old layout, write each extent, then the table copies and the MBR last.
 unsafe fn install(boot: &BootServices, disk: &mut Disk, request: &Request, text: &str, payload: *mut File) -> Result<u64, Status> {
-    let parts: [Part; PARTITIONS] = core::array::from_fn(|index| request.parts[index].unwrap());
-    if parts[PARTITIONS - 1].last + 1 + ENTRY_SECTORS > disk.last {
+    let parts: [Part; ORIGINAL_PARTS] = core::array::from_fn(|index| request.parts[index].unwrap());
+    if parts[ORIGINAL_PARTS - 1].last + 1 + ARRAY_SECTORS > disk.last {
         say!("persistent install refused: the layout does not fit the disk");
         return Err(BAD_BUFFER_SIZE);
     }
     // No old root record or table survives an interrupted install.
-    disk.zero(0, 2 + ENTRY_SECTORS)?;
-    disk.zero(disk.last - ENTRY_SECTORS, ENTRY_SECTORS + 1)?;
+    disk.zero(0, 2 + ARRAY_SECTORS)?;
+    disk.zero(disk.last - ARRAY_SECTORS, ARRAY_SECTORS + 1)?;
     let mut extents = 0u64;
     for line in text.lines().filter(|line| line.starts_with("extent ")) {
         let mut words = line[7..].split(' ');
@@ -346,51 +406,127 @@ unsafe fn install(boot: &BootServices, disk: &mut Disk, request: &Request, text:
             return Err(INVALID_PARAMETER);
         }
         let lba = part.first + first;
-        match kind {
-            "zero" => disk.zero(lba, count)?,
-            "data" => {
-                let mut offset = number(next()?)?;
-                let mut done = 0;
-                while done < count {
-                    let sectors = (count - done).min(CHUNK_SECTORS as u64) as usize;
-                    data(payload, offset, &mut disk.wire()[..sectors * SECTOR])?;
-                    disk.write_wire(lba + done, sectors)?;
-                    done += sectors as u64;
-                    offset += (sectors * SECTOR) as u64;
-                }
-            }
+        let offset = match kind {
+            "zero" => None,
+            "data" => Some(number(next()?)?),
             _ => return Err(INVALID_PARAMETER),
-        }
+        };
+        disk.write_extent(lba, count, offset, payload)?;
         extents += 1;
     }
     // The entry array (section 5.3.3), then both headers, then the protective MBR.
-    let entries = Buffer::new(boot, ENTRIES * ENTRY, 8)?;
-    let array = core::slice::from_raw_parts_mut(entries.data, ENTRIES * ENTRY);
+    let entries = Buffer::new(boot, ARRAY_BYTES, 8)?;
+    let array = core::slice::from_raw_parts_mut(entries.data, ARRAY_BYTES);
     array.fill(0);
-    for (index, part) in parts.iter().enumerate() {
-        let entry = &mut array[index * ENTRY..(index + 1) * ENTRY];
-        entry[..16].copy_from_slice(&part.type_guid);
-        entry[16..32].copy_from_slice(&part.unique);
-        entry[32..40].copy_from_slice(&part.first.to_le_bytes());
-        entry[40..48].copy_from_slice(&part.last.to_le_bytes());
-        for (at, &byte) in part.name[..part.name_len].iter().enumerate() {
-            entry[56 + 2 * at] = byte;
-        }
+    for (part, entry) in parts.iter().zip(array.chunks_exact_mut(ENTRY)) {
+        part.encode(entry);
     }
     let entries_crc = crc32(boot, array)?;
     let last = disk.last;
-    disk.write(last - ENTRY_SECTORS, array)?;
-    disk.write(last, &header(boot, request, last, last, 1, last - ENTRY_SECTORS, entries_crc)?)?;
+    disk.write(last - ARRAY_SECTORS, array)?;
+    disk.write(last, &header(boot, request, last, last, 1, last - ARRAY_SECTORS, entries_crc)?)?;
     disk.write(2, array)?;
     disk.write(1, &header(boot, request, last, 1, last, 2, entries_crc)?)?;
     disk.write(0, &protective_mbr(last))?;
     say!(
         "persistent install: layout written: {} partitions, {} extents, {} bytes",
-        PARTITIONS,
+        ORIGINAL_PARTS,
         extents,
         disk.written
     );
     Ok(extents)
+}
+
+struct Extent {
+    part: usize,
+    first: u64,
+    count: u64,
+    offset: Option<u64>,
+}
+
+fn append_extent(line: &str, parts: &[Part; 2], payload_size: u64) -> Result<Extent, Status> {
+    let mut words = line.split(' ');
+    let mut next = || words.next().ok_or(INVALID_PARAMETER);
+    let part = number(next()?)?
+        .checked_sub(ORIGINAL_PARTS as u64 + 1)
+        .filter(|&part| part < parts.len() as u64)
+        .ok_or(INVALID_PARAMETER)? as usize;
+    let first = number(next()?)?;
+    let count = number(next()?)?;
+    let offset = match next()? {
+        "zero" => None,
+        "data" => Some(number(next()?)?),
+        _ => return Err(INVALID_PARAMETER),
+    };
+    let partition = parts[part];
+    if words.next().is_some()
+        || count == 0
+        || first.checked_add(count).map_or(true, |end| end > partition.last - partition.first + 1)
+    {
+        return Err(INVALID_PARAMETER);
+    }
+    if let Some(offset) = offset {
+        let payload_end = count.checked_mul(SECTOR as u64).and_then(|size| offset.checked_add(size));
+        if payload_end.map_or(true, |end| end > payload_size) {
+            return Err(INVALID_PARAMETER);
+        }
+    }
+    Ok(Extent { part, first, count, offset })
+}
+
+fn refuse_append(reason: &str) -> Status {
+    say!("add-breenfs refused: {}", reason);
+    VOLUME_CORRUPTED
+}
+
+unsafe fn add_breenfs(
+    boot: &BootServices,
+    disk: &mut Disk,
+    request: &Request,
+    text: &str,
+    payload: *mut File,
+    payload_size: u64,
+) -> Result<(), Status> {
+    let primary = Header::parse(disk.read(1, 1)?, 1, disk.last).map_err(refuse_append)?;
+    let backup = Header::parse(disk.read(disk.last, 1)?, disk.last, disk.last).map_err(refuse_append)?;
+    let entries = Buffer::new(boot, ARRAY_BYTES, 8)?;
+    let array = core::slice::from_raw_parts_mut(entries.data, ARRAY_BYTES);
+    array.copy_from_slice(disk.read(primary.array_lba(), ARRAY_SECTORS as usize)?);
+    let backup_array = disk.read(backup.array_lba(), ARRAY_SECTORS as usize)?;
+    let parts = core::array::from_fn(|index| request.parts[index + ORIGINAL_PARTS].unwrap());
+    let update = gpt_append::prepare(primary, backup, array, backup_array, request.expect_disk.unwrap(), parts)
+        .map_err(refuse_append)?;
+
+    // Check the entire extent list before the first write. Gaps in the sparse images are allowed.
+    let extents = || {
+        text.lines().filter_map(|line| line.strip_prefix("extent "))
+            .map(|line| append_extent(line, &parts, payload_size))
+    };
+    let mut end = [0; 2];
+    for extent in extents() {
+        let extent = extent?;
+        if extent.first < end[extent.part] {
+            return Err(refuse_append("partition extents overlap or are out of order"));
+        }
+        end[extent.part] = extent.first + extent.count;
+    }
+    if end.contains(&0) {
+        return Err(refuse_append("missing partition extents"));
+    }
+    update.write(
+        disk,
+        |disk, _| {
+            for extent in extents() {
+                let extent = extent?;
+                let lba = parts[extent.part].first + extent.first;
+                disk.write_extent(lba, extent.count, extent.offset, payload)?;
+            }
+            Ok(())
+        },
+        &mut |disk, lba, bytes| disk.write(lba, bytes),
+    )?;
+    say!("add-breenfs: images and both GPT copies written and read back");
+    Ok(())
 }
 
 /// The partition handle whose unique GUID is `unique`.
@@ -594,10 +730,15 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
     let (text_pages, text_len) = delivered.read_pages(boot, "persist.cfg")?;
     let text = core::str::from_utf8(core::slice::from_raw_parts(text_pages, text_len)).map_err(|_| INVALID_PARAMETER)?;
     let request = parse(text)?;
-    say!("persistent install request: {}", if request.install { "install" } else { "upgrade" });
+    say!("persistent install request: {}", request.action.name());
     let payload = delivered.open("persist.dat", FILE_MODE_READ)?;
     let (disk_handle, io) = the_disk(boot)?;
     let mut disk = Disk::new(boot, io)?;
+    if request.action == Action::AddBreenfs {
+        add_breenfs(boot, &mut disk, &request, text, payload.handle(), delivered.size("persist.dat")?)?;
+        say!("persistent install request complete");
+        return Ok(());
+    }
     if let Some(expected) = request.expect_record {
         if disk.read(0, 1)? != &expected[..] {
             say!("persistent install refused: the disk's first sector is not the recorded root record");
@@ -614,7 +755,8 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
     // The HTTP boot option: the one this boot came through for the one-time install, the recorded one otherwise.
     let mut current = [0u8; 2];
     let boot_current = (variable(runtime, "BootCurrent", &mut current) == Ok(2)).then(|| u16::from_le_bytes(current));
-    if request.install {
+    let installing = request.action == Action::Install;
+    if installing {
         install(boot, &mut disk, &request, text, payload.handle())?;
         // The partition driver reads the new table once the disk's drivers are connected again (section 7.3).
         (boot.disconnect_controller)(disk_handle, null_mut(), null_mut());
@@ -640,7 +782,7 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
         }
     }
     metal_efi::slot_transaction::recover(&metal_efi::slot_store::SlotStore(&root))?;
-    let http_option = if request.install { boot_current } else { recorded_http_option(&root) };
+    let http_option = if installing { boot_current } else { recorded_http_option(&root) };
     let mut written = 0;
     for line in text.lines().filter(|line| line.starts_with("esp-file ")) {
         let mut words = line[9..].split(' ');
