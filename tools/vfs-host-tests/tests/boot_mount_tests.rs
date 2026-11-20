@@ -83,12 +83,19 @@ const CUTOVER: &[(&str, &str, bool)] = &[(NEW_SYSTEM, "/", true), (NEW_HOME, "/h
 const RESCUE: &[(&str, &str, bool)] = &[(SYSTEM, "/", false), (HOME, "/home", false)];
 
 fn captured(lines: &[(&str, &str, bool)]) -> intent::Captured {
-    let mut payload = String::from("BREENIX-BOOT 3\ntarget default\n");
+    let mut payload = String::from(if lines == CUTOVER {
+        "BREENIX-BOOT 3\ntarget persistent\n"
+    } else {
+        "BREENIX-BOOT 3\ntarget default\n"
+    });
     for (guid, path, rw) in lines {
         payload.push_str(&format!(
             "mount {guid} {path} {}\n",
             if *rw { "rw" } else { "ro" }
         ));
+    }
+    if lines == CUTOVER {
+        payload.push_str("userland install-42\n");
     }
     intent::parse(payload.as_bytes()).unwrap()
 }
@@ -195,11 +202,7 @@ fn cutover_serves_the_generation_with_writable_system_binds_and_home() {
     use crate::vfs::{NodeKind, WriteAt, WriteReq};
 
     let _registry = crate::statfs_support::TEST_MOUNTS.lock().unwrap();
-    let intent = intent::parse(
-        format!("BREENIX-BOOT 3\ntarget persistent\nmount {NEW_SYSTEM} / rw\nmount {NEW_HOME} /home rw\nuserland install-42\n")
-            .as_bytes(),
-    )
-    .unwrap();
+    let intent = captured(CUTOVER);
     let mut plan = boot::prepare_mounts(Some(&intent), &formats(), |guid, _, _| {
         Ok(if guid == NEW_SYSTEM { cutover_system() } else { breenfs(NEW_HOME) })
     })
@@ -289,31 +292,37 @@ fn cutover_system() -> Box<dyn BlockDevice> {
     files.mkdir(2, b"root", 0o700, at).unwrap();
     let marker = files.create(2, b"generation", 0o644, at).unwrap();
     files.write(disk.as_ref(), marker, 0, b"os", at).unwrap();
-    files.snapshot(b"gen-install-42", true).unwrap();
+    let mut commit = Committer::format(sb);
+    let sb = files.fsync(disk.as_ref(), &mut commit).unwrap();
+    let mut files = Files::new(DeviceStore(disk.as_ref()), &sb, 1, true).unwrap();
+    files.snapshot(b"gen-install-42", false).unwrap();
+    let sb = files.fsync(disk.as_ref(), &mut commit).unwrap();
+    let mut files = Files::new(DeviceStore(disk.as_ref()), &sb, 1, true).unwrap();
     files.unlink(2, b"generation", at).unwrap();
     let shared = files.mkdir(2, b".breenix-shared", 0o755, at).unwrap();
     for name in [b"etc", b"var", b"opt", b"srv", b"tmp", b"run"] {
         files.mkdir(shared, name, 0o755, at).unwrap();
     }
-    files.fsync(disk.as_ref(), &mut Committer::format(sb)).unwrap();
+    files.fsync(disk.as_ref(), &mut commit).unwrap();
     disk
 }
 
-fn arm_disks() -> Vec<Box<dyn BlockDevice>> {
+fn arm_disks(cutover: bool) -> Vec<Box<dyn BlockDevice>> {
     vec![
         breenfs(NEW_HOME),
         ext2(HOME),
         ext2(TEST),
-        breenfs(NEW_SYSTEM),
+        if cutover { cutover_system() } else { breenfs(NEW_SYSTEM) },
         ext2(SYSTEM),
     ]
 }
 
 fn arm_plan(
     intent: &intent::Captured,
+    cutover: bool,
 ) -> Result<Option<Vec<boot::MountLine<'_>>>, boot::MountFailure<'_>> {
     boot::prepare_mounts(Some(intent), &formats(), |guid, _, _| {
-        selection::find_filesystem(arm_disks(), &formats(), guid)
+        selection::find_filesystem(arm_disks(cutover), &formats(), guid)
     })
 }
 
@@ -333,7 +342,17 @@ fn format_three_mounts_migration_cutover_and_rescue_by_uuid() {
         ),
         (
             CUTOVER,
-            "none / breenfs rw 0 0\nnone /home breenfs rw,nosuid,nodev 0 0\n",
+            concat!(
+                "none / breenfs ro 0 0\n",
+                "none /root breenfs rw 0 0\n",
+                "none /etc breenfs rw 0 0\n",
+                "none /var breenfs rw 0 0\n",
+                "none /opt breenfs rw 0 0\n",
+                "none /srv breenfs rw 0 0\n",
+                "none /tmp breenfs rw 0 0\n",
+                "none /run breenfs rw 0 0\n",
+                "none /home breenfs rw,nosuid,nodev 0 0\n",
+            ),
         ),
         (
             RESCUE,
@@ -341,8 +360,7 @@ fn format_three_mounts_migration_cutover_and_rescue_by_uuid() {
         ),
     ] {
         let intent = captured(lines);
-        let plan = arm_plan(&intent).unwrap().unwrap();
-        let mut ids = Vec::new();
+        let plan = arm_plan(&intent, lines == CUTOVER).unwrap().unwrap();
         for line in plan {
             let point = line.point(mount::allocate_id().unwrap(), None, None);
             let fs = line.mount(&formats(), &point).unwrap();
@@ -359,11 +377,12 @@ fn format_three_mounts_migration_cutover_and_rescue_by_uuid() {
             } else {
                 result.unwrap();
             }
-            ids.push(point.id);
-            mount::register(point.entry(fs).unwrap()).unwrap();
+            if !mount::path_is_mount(point.path.as_bytes()) {
+                mount::register(point.entry(fs).unwrap()).unwrap();
+            }
         }
         assert_eq!(mount::mounts_text(), expected.as_bytes());
-        for id in ids.into_iter().rev() {
+        for (id, ..) in mount::list_mounts().into_iter().rev() {
             mount::unmount(id, true).unwrap();
         }
     }
@@ -516,7 +535,7 @@ fn format_three_refuses_absent_ambiguous_wrong_role_and_third_write() {
     ] {
         let intent = captured(&[(guid, "/", false)]);
         let error = boot::prepare_mounts(Some(&intent), &formats(), |guid, _, _| {
-            let mut disks = arm_disks();
+            let mut disks = arm_disks(false);
             if duplicate {
                 disks.push(ext2(TEST));
             }
