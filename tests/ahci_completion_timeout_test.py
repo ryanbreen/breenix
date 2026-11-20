@@ -26,9 +26,11 @@ class AhciCompletion(unittest.TestCase):
         # The baseline has an inline timeout error. The new helper, when present,
         # must run its production body against the very same device and tests.
         if "fn resolve_wait_timeout(" in source:
-            names.append("resolve_wait_timeout")
-        if "struct TimeoutRegisters " in source:
-            registers.append(re.search(r"struct TimeoutRegisters \{[^}]+\}", source)[0])
+            names.extend(["resolve_wait_timeout", "record_lost_notification"])
+            registers.append("#[derive(Clone, Copy)]\n" +
+                             re.search(r"struct TimeoutRegisters \{[^}]+\}", source)[0])
+        dump = function(source, "dump_timeout_state_free").split("{", 1)[0]
+        registers.append(dump + "{ MODEL.with_borrow_mut(|device| device.timeouts += 1); }")
         harness = (ROOT / "tests/fixtures/ahci_completion_timeout_model.rs").read_text()
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
@@ -39,7 +41,8 @@ class AhciCompletion(unittest.TestCase):
             (path / "driver.rs").write_text(driver)
             (path / "host.rs").write_text(harness)
             subprocess.run(
-                ["rustc", "--edition=2021", "--test", str(path / "host.rs"), "-o", str(path / "host")],
+                ["rustc", "--edition=2021", "-A", "unused_variables", "--test",
+                 str(path / "host.rs"), "-o", str(path / "host")],
                 check=True,
                 timeout=30,
             )

@@ -32,6 +32,12 @@ const NO_DEVICE: u32 = u32::MAX;
 static DESTINATION: AtomicU32 = AtomicU32::new(NO_DESTINATION);
 const NO_DESTINATION: u32 = u32::MAX;
 
+/// Processor id programmed as the physical destination for PCI MSI.
+pub(crate) fn destination() -> Option<u32> {
+    let id = DESTINATION.load(Ordering::Acquire);
+    (id != NO_DESTINATION).then_some(id)
+}
+
 // MSI capability layout (PCI Local Bus 3.0, 6.8.1).
 const CONTROL: u8 = 2;
 const ADDRESS: u8 = 4;

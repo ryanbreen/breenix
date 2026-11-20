@@ -22,6 +22,7 @@ struct Device {
     issued_after_receipt: bool,
     timeouts: usize,
     recovered: usize,
+    notices: Vec<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -33,7 +34,7 @@ enum HardwareStep {
 
 impl Device {
     fn set_global(&mut self, new: u32) {
-        // AHCI 1.3.1, 10.7.2.1: every change to a nonzero IS sends a
+        // AHCI 1.3.1, 10.7.2.1: a change to a nonzero IS sends a
         // message. SDM vol. 3A, 12.8.4: messages can share one IRR bit.
         if self.hba_is != new && new != 0 {
             self.irr = true;
@@ -59,6 +60,7 @@ thread_local! {
         port_is: [0; MAX_PORTS], ci: [1, 0], tfd: [0x50; MAX_PORTS],
         hba_is: 0, irr: false, isr: false, step: 0, events: Vec::new(),
         receipts: Vec::new(), issued_after_receipt: false, timeouts: 0, recovered: 0,
+        notices: Vec::new(),
     }) };
 }
 
@@ -85,6 +87,15 @@ static PORT_ACTIVE_CMD_NUM: [AtomicU32; MAX_PORTS] = atomics();
 static PORT_ACKED_ERRORS: [AtomicU32; MAX_PORTS] = atomics();
 static PORT_POLL: [Lock; MAX_PORTS] = [const { Lock(Mutex::new(())) }; MAX_PORTS];
 static PORT_IO_LOCK: [Lock; MAX_PORTS] = [const { Lock(Mutex::new(())) }; MAX_PORTS];
+static LOST_NOTIFICATIONS: [Notice; MAX_PORTS] = [const { Notice }; MAX_PORTS];
+
+struct Notice;
+impl Notice {
+    fn post_again(&self, args: std::fmt::Arguments<'_>) -> bool {
+        MODEL.with_borrow_mut(|device| device.notices.push(args.to_string()));
+        true
+    }
+}
 
 const fn atomics() -> [AtomicU32; MAX_PORTS] {
     [const { AtomicU32::new(0) }; MAX_PORTS]
@@ -143,10 +154,10 @@ struct CmdToken {
     polled: bool,
 }
 enum WaitStage {}
-enum EventKind { IsrEntry, ReceiptDeferred, ReceiptRecorded, LostNotification }
+enum EventKind { IsrEntry, ReceiptDeferred, ReceiptRecorded, Timeout }
 
 fn trace_command_event(_: usize, _: u32, _: u8, kind: EventKind, _: u32, _: u32, _: u32, _: u32) {
-    if matches!(kind, EventKind::LostNotification) {
+    if matches!(kind, EventKind::Timeout) {
         MODEL.with_borrow_mut(|device| device.recovered += 1);
     }
 }
@@ -156,10 +167,6 @@ fn scheduler_sleep_ready(_: bool) -> bool { true }
 fn kick_poller() {}
 fn read_cntpct() -> u64 { 0 }
 fn read_cntpct_and_freq() -> (u64, u64) { (0, 1) }
-fn dump_timeout_state_free(_: usize, _: u32) {
-    MODEL.with_borrow_mut(|device| device.timeouts += 1);
-}
-
 fn hba_read(_: u64, register: usize) -> u32 {
     assert_eq!(register, HBA_IS);
     MODEL.with_borrow_mut(|device| {
@@ -204,12 +211,18 @@ fn port_write(_: u64, port: usize, register: usize, mask: u32) {
 
 include!("driver.rs");
 
+mod timeout_msi {
+    pub fn request(_: u32) {}
+    pub fn report<T>(_: usize, _: u32, _: (), _: T) {}
+}
+
 fn reset() {
     MODEL.with_borrow_mut(|device| {
         *device = Device {
             port_is: [0; MAX_PORTS], ci: [1, 0], tfd: [0x50; MAX_PORTS],
             hba_is: 0, irr: false, isr: false, step: 0, events: Vec::new(),
             receipts: Vec::new(), issued_after_receipt: false, timeouts: 0, recovered: 0,
+            notices: Vec::new(),
         };
     });
     for port in 0..MAX_PORTS {
@@ -307,6 +320,9 @@ fn timeout_retires_the_completed_token_and_records_the_loss() {
     MODEL.with_borrow(|device| {
         assert_eq!(device.receipts, [(0, FIRST)]);
         assert_eq!(device.recovered, 1);
+        assert_eq!(device.notices, [
+            "AHCI_LOST_NOTIFICATION port=0 token=51849 CI=0x0 IS=0x21 TFD=0x50 HBA_IS=0x1",
+        ]);
         assert_eq!((device.port_is[0], device.hba_is), (0, 0));
     });
     assert_eq!(PORT_ACTIVE_CMD_NUM[0].load(Ordering::Relaxed), 0);

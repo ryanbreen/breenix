@@ -25,8 +25,14 @@ use crate::task::completion::{Completion, WaitStage};
 
 mod command_ring;
 use command_ring::{CommandRing, Event, EventKind};
+#[cfg(target_arch = "x86_64")]
+mod timeout_msi;
+#[cfg(target_arch = "x86_64")]
+pub(crate) use timeout_msi::record_lapic_sample;
 
 static COMMAND_HISTORY: [CommandRing; MAX_PORTS] = [const { CommandRing::new() }; MAX_PORTS];
+static LOST_NOTIFICATIONS: [crate::log_notice::Record; MAX_PORTS] =
+    [const { crate::log_notice::Record::new() }; MAX_PORTS];
 
 /// Observational samples only. Register fields at wait boundaries are
 /// unsampled (0); those boundaries use atomics without MMIO under the scheduler.
@@ -294,12 +300,16 @@ static AHCI_POLL_ATTRIB_EMITTED: AtomicBool = AtomicBool::new(false);
 static AHCI_ISR_LAST_MPIDR: AtomicU64 = AtomicU64::new(0xDEAD);
 /// Count commands issued via issue_cmd_slot0 (for diagnostic/timeout reporting).
 static AHCI_CMD_COUNT: AtomicU32 = AtomicU32::new(0);
-/// Serialize no-interrupt command publication, status sampling and retirement.
+/// Serialize status acknowledgement and retirement against the timeout path.
+/// On controllers without interrupts this also serializes command publication.
 /// A poller must not carry sampled status across another poller's retirement
 /// and the waiter's reuse of the slot. IRQ masking keeps a holder runnable;
-/// pollers skip a busy port rather than spinning on another CPU.
+/// IRQs and pollers skip a busy port. The timeout holder handles that command.
 static PORT_POLL: [crate::irq_safe_mutex::IrqSafeMutex<()>; MAX_PORTS] =
     [const { crate::irq_safe_mutex::IrqSafeMutex::new(()) }; MAX_PORTS];
+/// Errors W1C-cleared while the slot was armed, for a waiter racing the ISR.
+static PORT_ACKED_ERRORS: [AlignedAtomicU32; MAX_PORTS] =
+    [const { AlignedAtomicU32::new(0) }; MAX_PORTS];
 
 /// Per-port token for the command currently issued in slot 0. 0 = none.
 static PORT_ACTIVE_CMD_NUM: [AlignedAtomicU32; MAX_PORTS] =
@@ -610,7 +620,9 @@ const PORT_CMD_CR: u32 = 1 << 15; // Command List Running
 
 /// PORT_TFD bits
 const PORT_TFD_BSY: u32 = 1 << 7; // Busy
+const PORT_TFD_DF: u32 = 1 << 5; // Device fault
 const PORT_TFD_DRQ: u32 = 1 << 3; // Data Request
+const PORT_TFD_ERR: u32 = 1; // Task file error
 
 /// PORT_IS interrupt status bits (from Linux libahci.h)
 const PORT_IRQ_D2H_REG_FIS: u32 = 1 << 0; // D2H Register FIS received (command complete)
@@ -913,6 +925,10 @@ fn port_write(abar: u64, port: usize, offset: usize, value: u32) {
 #[inline]
 fn ack_port_interrupt(abar: u64, port: usize, port_is: u32) {
     if port_is != 0 {
+        let errors = port_is & PORT_IRQ_ERROR;
+        if errors != 0 && PORT_ACTIVE_MASK[port].load(Ordering::Acquire) & 1 != 0 {
+            PORT_ACKED_ERRORS[port].fetch_or(errors, Ordering::Relaxed);
+        }
         port_write(abar, port, PORT_IS, port_is);
     }
 
@@ -943,6 +959,76 @@ struct CmdToken {
     /// No completion interrupt: this CPU's completion poller completes the
     /// command, and the waiter parks as it would for the interrupt.
     polled: bool,
+}
+
+#[derive(Clone, Copy)]
+struct TimeoutRegisters {
+    ci: u32,
+    port_is: u32,
+    tfd: u32,
+    hba_is: u32,
+    acked_errors: u32,
+}
+
+#[cold]
+fn resolve_wait_timeout(abar: u64, port: usize, cmd_num: u32) -> Result<(), &'static str> {
+    #[cfg(target_arch = "x86_64")]
+    let delivery = timeout_msi::request(cmd_num);
+    let (regs, recovered) = {
+        let _port_guard = PORT_IO_LOCK[port].lock();
+        let _status_guard = PORT_POLL[port].lock();
+        // AHCI 1.3.1, 3.3.14 and 5.3.8.2: the HBA updates the transfer
+        // count and clears CI on completion. Read CI before error status.
+        let regs = TimeoutRegisters {
+            ci: port_read(abar, port, PORT_CI),
+            port_is: port_read(abar, port, PORT_IS),
+            tfd: port_read(abar, port, PORT_TFD),
+            hba_is: hba_read(abar, HBA_IS),
+            acked_errors: PORT_ACKED_ERRORS[port].load(Ordering::Relaxed),
+        };
+        let completion = &AHCI_COMPLETIONS[port][0];
+        let done = completion.done.load(Ordering::Acquire) == cmd_num;
+        let armed = PORT_ACTIVE_CMD_NUM[port].load(Ordering::Acquire) == cmd_num
+            && PORT_ACTIVE_MASK[port].load(Ordering::Acquire) & 1 != 0;
+        let recovered = (armed || done)
+            && regs.ci & 1 == 0
+            && (regs.port_is | regs.acked_errors) & PORT_IRQ_ERROR == 0
+            && regs.tfd & (PORT_TFD_BSY | PORT_TFD_DF | PORT_TFD_DRQ | PORT_TFD_ERR) == 0
+            && port_read(abar, port, PORT_CMD) & PORT_CMD_ST != 0;
+
+        if armed {
+            // The ISR can have skipped this port while we held the lock.
+            PORT_ACTIVE_MASK[port].fetch_and(!1, Ordering::AcqRel);
+            PORT_ACTIVE_CMD_NUM[port].store(0, Ordering::Release);
+            if recovered {
+                ack_port_interrupt(abar, port, regs.port_is);
+                // Read behind the posted W1Cs before permitting slot reuse.
+                let _ = hba_read(abar, HBA_IS);
+                completion.complete(cmd_num);
+            }
+        }
+        (regs, recovered)
+    };
+
+    #[cfg(target_arch = "x86_64")]
+    timeout_msi::report(port, cmd_num, delivery, regs);
+    if recovered {
+        record_lost_notification(port, cmd_num, regs);
+        Ok(())
+    } else {
+        dump_timeout_state_free(port, cmd_num, Some(regs));
+        Err("AHCI: command timeout")
+    }
+}
+
+#[cold]
+fn record_lost_notification(port: usize, cmd_num: u32, regs: TimeoutRegisters) {
+    trace_command_event(port, cmd_num, 0, EventKind::Timeout,
+        regs.ci, regs.port_is, regs.tfd, regs.hba_is);
+    LOST_NOTIFICATIONS[port].post_again(format_args!(
+        "AHCI_LOST_NOTIFICATION port={port} token={cmd_num} CI={:#x} IS={:#x} TFD={:#x} HBA_IS={:#x}",
+        regs.ci, regs.port_is, regs.tfd, regs.hba_is,
+    ));
 }
 
 #[inline]
@@ -1008,13 +1094,6 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
         }
         let wait_result =
             AHCI_COMPLETIONS[port][0].wait_timeout_uninterruptible_observed(cmd_num, TIMEOUT_NS, |stage| trace_wait_event(port, cmd_num, stage));
-        // The pollers stop looking at a command its waiter gave up on.
-        if token.polled && !matches!(wait_result, Ok(true)) {
-            let poll_guard = PORT_POLL[port].lock();
-            PORT_ACTIVE_MASK[port].fetch_and(!1, Ordering::AcqRel);
-            let _ = PORT_ACTIVE_CMD_NUM[port].compare_exchange(cmd_num, 0, Ordering::AcqRel, Ordering::Acquire);
-            drop(poll_guard);
-        }
         match wait_result {
             Ok(true) => {
                 let tfd = port_read(abar, port, PORT_TFD);
@@ -1024,10 +1103,16 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
                 return Ok(());
             }
             Ok(false) => {
-                dump_timeout_state_free(port, cmd_num);
-                return Err("AHCI: command timeout");
+                return resolve_wait_timeout(abar, port, cmd_num);
             }
             Err(_eintr) => {
+                if token.polled {
+                    let _poll_guard = PORT_POLL[port].lock();
+                    PORT_ACTIVE_MASK[port].fetch_and(!1, Ordering::AcqRel);
+                    let _ = PORT_ACTIVE_CMD_NUM[port].compare_exchange(
+                        cmd_num, 0, Ordering::AcqRel, Ordering::Acquire,
+                    );
+                }
                 return Err("AHCI: command wait failed");
             }
         }
@@ -1075,7 +1160,7 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
 
             let now = read_cntpct();
             if now >= deadline {
-                dump_timeout_state_free(port, cmd_num);
+                dump_timeout_state_free(port, cmd_num, None);
                 return Err("AHCI: command timeout");
             }
 
@@ -1335,7 +1420,7 @@ impl AhciController {
         {
             if uses_msi(pci_dev) {
                 // A failure leaves AHCI_IRQ at 0: commands then poll PORT_CI.
-                match crate::arch_impl::x86_64::msi::enable(pci_dev, handle_interrupt) {
+                match crate::arch_impl::x86_64::msi::enable(pci_dev, timeout_msi::interrupt_entry) {
                     Ok(vector) => {
                         AHCI_IRQ_EDGE.store(true, Ordering::Relaxed);
                         AHCI_IRQ.store(u32::from(vector), Ordering::Release);
@@ -1727,6 +1812,7 @@ impl AhciController {
         if arm_completion {
             AHCI_COMPLETIONS[port][0].reset();
             PORT_ACTIVE_CMD_NUM[port].store(0, Ordering::Release);
+            PORT_ACKED_ERRORS[port].store(0, Ordering::Relaxed);
         }
         let cmd_num = next_cmd_num();
         if arm_completion {
@@ -1783,7 +1869,7 @@ impl AhciController {
     /// Extracted from issue_cmd_slot0 to keep the hot path clean.
     fn dump_timeout_state(&self, port: usize, cmd_num: u32) {
         // Delegate to the free function — abar is identical to self.abar_virt.
-        dump_timeout_state_free(port, cmd_num);
+        dump_timeout_state_free(port, cmd_num, None);
     }
 }
 
@@ -1791,12 +1877,16 @@ impl AhciController {
 ///
 /// Free function variant used by `wait_cmd_slot0` (which has no `self`).
 /// Reads ABAR from the `AHCI_ABAR` static set during controller init.
-fn dump_timeout_state_free(port: usize, cmd_num: u32) {
+fn dump_timeout_state_free(port: usize, cmd_num: u32, regs: Option<TimeoutRegisters>) {
     let abar = AHCI_ABAR.load(Ordering::Relaxed);
-    let ci = port_read(abar, port, PORT_CI);
-    let is = port_read(abar, port, PORT_IS);
-    let tfd = port_read(abar, port, PORT_TFD);
-    let hba_is_timeout = hba_read(abar, HBA_IS);
+    let TimeoutRegisters { ci, port_is: is, tfd, hba_is: hba_is_timeout, acked_errors } =
+        regs.unwrap_or_else(|| TimeoutRegisters {
+            ci: port_read(abar, port, PORT_CI),
+            port_is: port_read(abar, port, PORT_IS),
+            tfd: port_read(abar, port, PORT_TFD),
+            hba_is: hba_read(abar, HBA_IS),
+            acked_errors: 0,
+        });
     let ghc = hba_read(abar, HBA_GHC);
     let port_ie = port_read(abar, port, PORT_IE);
     let port_cmd = port_read(abar, port, PORT_CMD);
@@ -1846,11 +1936,12 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
     trace_command_event(port, cmd_num, 0, EventKind::Timeout, ci, is, tfd, hba_is_timeout);
     let _ = COMMAND_HISTORY[port].dump_once(port, &mut CommandHistorySerial);
     crate::serial_println!(
-        "[ahci]   GHC={:#x} PORT_IE={:#x} CMD={:#x} SERR={:#x}",
+        "[ahci]   GHC={:#x} PORT_IE={:#x} CMD={:#x} SERR={:#x} acked_errors={:#x}",
         ghc,
         port_ie,
         port_cmd,
-        serr
+        serr,
+        acked_errors
     );
     crate::serial_println!(
         "[ahci]   GIC: SPI{} pend={} act={} DAIF={:#x} pend_snap=[{:#x},{:#x},{:#x}]",
@@ -2958,6 +3049,9 @@ pub fn handle_interrupt() {
         if !check_all && (hba_is & (1 << port)) == 0 {
             continue;
         }
+        let Some(_status_guard) = PORT_POLL[port].try_lock() else {
+            continue;
+        };
         let mut is = port_read(abar, port, PORT_IS);
         let ci_entry = port_read(abar, port, PORT_CI);
         let active_entry = PORT_ACTIVE_MASK[port].load(Ordering::Acquire) & AHCI_TRACKED_SLOT_MASK;
