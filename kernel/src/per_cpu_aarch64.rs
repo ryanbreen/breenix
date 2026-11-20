@@ -7,7 +7,7 @@
 //! delegates most operations directly to the HAL layer since the task
 //! and scheduling subsystems are not yet ported to ARM64.
 
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 // Import HAL per-CPU operations
 use crate::arch_impl::current::percpu as hal_percpu;
@@ -741,6 +741,22 @@ pub fn preempt_enable() {
         "preempt_enable called before per-CPU initialization"
     );
     hal_percpu::Aarch64PerCpu::preempt_enable();
+}
+
+/// Unpaired `preempt_enable()` calls since boot.
+static PREEMPT_UNDERFLOW_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Count an unpaired release and post its receipt (E24 ledger 703). The HAL
+/// keeps its wrapping arithmetic; this only makes the release visible.
+#[cold]
+pub(crate) fn record_preempt_underflow(count: u32) {
+    PREEMPT_UNDERFLOW_COUNT.fetch_add(1, Ordering::Relaxed);
+    crate::task::preempt_fault::underflow(count);
+}
+
+/// Total unpaired releases since boot.
+pub fn preempt_underflow_count() -> u64 {
+    PREEMPT_UNDERFLOW_COUNT.load(Ordering::Relaxed)
 }
 
 /// Get current preempt count

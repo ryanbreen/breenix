@@ -16,7 +16,7 @@ use crate::arch_impl::aarch64::constants::{
     PERCPU_KERNEL_STACK_TOP_OFFSET, PERCPU_NEED_RESCHED_OFFSET, PERCPU_NEXT_CR3_OFFSET,
     PERCPU_PREEMPT_COUNT_OFFSET, PERCPU_SAVED_PROCESS_CR3_OFFSET, PERCPU_SOFTIRQ_PENDING_OFFSET,
     PERCPU_TSS_OFFSET, PERCPU_USER_RSP_SCRATCH_OFFSET, PREEMPT_ACTIVE, SOFTIRQ_DISABLE_OFFSET,
-    SOFTIRQ_MASK, SOFTIRQ_OFFSET,
+    PREEMPT_MASK, SOFTIRQ_MASK, SOFTIRQ_OFFSET,
 };
 use crate::arch_impl::aarch64::constants::{
     percpu_kernel_stack_top, percpu_sched_stack_top, percpu_stack_published_owner,
@@ -461,7 +461,19 @@ impl PerCpuOps for Aarch64PerCpu {
     /// Enable preemption by decrementing preempt count
     #[inline]
     fn preempt_enable() {
-        update_preempt_count(|count| count.wrapping_sub(1), Ordering::Release);
+        // An unpaired release is reported (E24 ledger 703). The arithmetic is
+        // unchanged: the count still wraps and the paired disable restores it.
+        let mut before = PREEMPT_MASK;
+        update_preempt_count(
+            |count| {
+                before = count;
+                count.wrapping_sub(1)
+            },
+            Ordering::Release,
+        );
+        if before & PREEMPT_MASK == 0 {
+            crate::per_cpu_aarch64::record_preempt_underflow(before);
+        }
     }
 
     #[inline(always)]

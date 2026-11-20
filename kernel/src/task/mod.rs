@@ -22,6 +22,7 @@ pub fn start_dispatch_strand_census_kthread() {
 }
 pub mod executor;
 pub mod exit_tally;
+pub(crate) mod preempt_fault;
 pub mod thread;
 pub mod user_dispatch;
 pub mod userspace_completion;

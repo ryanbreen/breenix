@@ -52,7 +52,7 @@ mod per_cpu {
     use std::sync::atomic::{compiler_fence, AtomicBool, AtomicU64, Ordering};
 
     static PER_CPU_INITIALIZED: AtomicBool = AtomicBool::new(true);
-    pub(super) static PREEMPT_UNDERFLOW_COUNT: AtomicU64 = AtomicU64::new(0);
+    static PREEMPT_UNDERFLOW_COUNT: AtomicU64 = AtomicU64::new(0);
     use crate::arch_impl::current::constants::PREEMPT_MASK;
     fn run_pending_softirqs() {}
     mod hal_percpu {
@@ -76,12 +76,8 @@ mod per_cpu {
 
 mod task {
     pub mod preempt_fault {
-        // The deferred receipt belongs to the kernel. Count any unpaired release
-        // here even when the host harness cannot publish a serial notice.
-        #[allow(dead_code)]
-        pub fn underflow(_: u32) {
-            crate::per_cpu::PREEMPT_UNDERFLOW_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
+        // preempt_enable() counts the release itself before posting the receipt.
+        pub fn underflow(_: u32) {}
     }
     pub mod thread {
         #[derive(PartialEq)]
