@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import metal_tools_test as existing
@@ -307,42 +307,105 @@ class DiskTest(existing.StateTest):
         m.quarantine_lease('readback', 'power state uncertain')
         self.assertFalse(m.handoff_lease('readback', dict(id='third', unit='suite-unit')))
 
-    def test_cold_readback_accepts_deadline_ended_source_and_records_status(self):
-        source_id = '20261018T000000Z-metal'
+    def readback_source(self, status, reason, provisional=False, source_id='20261018T000000Z-metal'):
+        m = existing.m
         source = existing.m.boot_dir(source_id)
         source.mkdir(parents=True)
         facts = dict(installedBy='prior', bytes=4096, sha256AfterRecord='a' * 64)
-        existing.m.write_json(source / 'run.json', dict(disk='root', mode='suite'))
-        existing.m.write_json(source / 'suite-disk.json', facts)
+        m.write_json(source / 'run.json', dict(disk='root', mode='suite', suite='files-io'))
+        m.write_json(source / 'suite-disk.json', facts)
+        manifest = source / 'definition/docs/suites/files-io.json'
+        manifest.parent.mkdir(parents=True)
+        m.write_json(manifest, dict(id='files-io', diskChecks=[dict(path='/written', byte=66, length=4)]))
         (source / 'commit').write_text('b' * 40)
-        (source / 'ended').touch()
-        (source / 'exit-status').write_text('1\n')
-        events = [dict(event='decided', status=1, reason='the mode deadline passed with stages missing'),
+        events = [dict(event='disk-root-record', matchesLastInstall=True),
+                  dict(event='decided', status=status, reason=reason),
                   dict(event='power-off', off=True, t=1),
-                  dict(event='disk-root-record', matchesLastInstall=True)]
-        (source / 'events.jsonl').write_text('\n'.join(json.dumps(e) for e in events))
-        existing.m.write_json(existing.m.STATE / 'disk.json', dict(facts, lastBoot=source_id))
+                  dict(event='suite-awaiting-disk-readback', provisional=provisional)]
+        (source / 'events.jsonl').write_text(''.join(json.dumps(e) + '\n' for e in events))
+        m.close_record(source, m.EXIT_SHORT if provisional else status, 'driver')
+        m.write_json(m.STATE / 'disk.json', dict(facts, lastBoot=source_id))
+        return source, facts
+
+    def test_cold_readback_accepts_deadline_ended_source_and_records_status(self):
+        source, _ = self.readback_source(1, 'the mode deadline passed with stages missing')
         self.site['BOOT_URL'] = 'http://example.invalid/boot'
         with patch.object(disk.metal_image, 'assemble', side_effect=lambda image, _: image.touch()), \
              patch.object(disk.metal_image, 'stub_efi', return_value={}):
-            disk.prepare_readback(self.directory, self.inputs, source_id, 'b' * 40, 'readback', self.site, self.inputs / 'stub.efi')
+            disk.prepare_readback(self.directory, self.inputs, source.name, 'b' * 40, 'readback', self.site, self.inputs / 'stub.efi')
         self.assertEqual(existing.m.read_json(self.directory / 'readback.json')['sourceStatus'], 1)
 
     def test_cold_readback_refuses_an_intervening_boot_even_with_the_same_root(self):
-        source_id = '20261018T000000Z-metal'
-        source = existing.m.boot_dir(source_id)
-        source.mkdir(parents=True)
-        facts = dict(installedBy='prior', bytes=4096, sha256AfterRecord='a' * 64)
-        existing.m.write_json(source / 'run.json', dict(disk='root', mode='suite'))
-        existing.m.write_json(source / 'suite-disk.json', facts)
-        (source / 'commit').write_text('b' * 40)
-        (source / 'ended').touch()
-        events = [dict(event='power-off', off=True, t=1), dict(event='decided', status=0),
-                  dict(event='disk-root-record', matchesLastInstall=True)]
-        (source / 'events.jsonl').write_text('\n'.join(json.dumps(e) for e in events))
+        source, facts = self.readback_source(0, 'suite complete', provisional=True)
         existing.m.write_json(existing.m.STATE / 'disk.json', dict(facts, lastBoot='another-boot'))
         with self.assertRaisesRegex(ValueError, 'replaced between'):
-            disk.prepare_readback(self.directory, self.inputs, source_id, 'b' * 40, 'readback', self.site, self.inputs / 'stub.efi')
+            disk.prepare_readback(self.directory, self.inputs, source.name, 'b' * 40, 'readback', self.site, self.inputs / 'stub.efi')
+
+    def test_only_decided_failure_schedules_diagnostic_readback(self):
+        m, boot = existing.m, existing.boot
+        for minute, status, reason in [(0, m.EXIT_STOPPED, 'operator stop'),
+                                       (1, m.EXIT_INCOMPLETE, 'console capture incomplete'),
+                                       (2, m.EXIT_SHORT, 'a fatal line')]:
+            with self.subTest(status=status):
+                source, facts = self.readback_source(status, reason, source_id=f'20261018T00{minute:02}00Z-metal')
+                args = existing.SimpleNamespace(id=source.name, mode='suite', payload='image', disk='root',
+                                                suite='files-io', commit='b' * 40, inject=None)
+                with patch.object(m, 'load_site', return_value={}):
+                    driver = boot.Driver(args)
+                driver.t0 = driver.kernel_started = 2
+                driver.delivery['diskRoot'] = facts
+                root_line = '[storage] root record: installed by boot prior, 4096 bytes, sha256 ' + 'a' * 64
+                driver.on_disk_line(root_line, 2)
+                for method in ('create_record', 'claim', 'prepare_payload', 'preflight', 'do_stage',
+                               'start_console', 'power_on', 'pump_serial', 'cleanup'):
+                    setattr(driver, method, Mock())
+                driver.power_off = Mock(return_value=True)
+                driver.watch = Mock(side_effect=boot.Finish(status, reason))
+                driver.continue_disk_readback = Mock(return_value=m.EXIT_DONE)
+                (source / 'definition/docs/metal').mkdir()
+                (source / 'definition/docs/metal/boot-path.json').touch()
+                with patch.object(boot.metal_score, 'score', return_value={}), \
+                     patch.object(boot.metal_score, 'falls_short', return_value=True):
+                    self.assertEqual(driver.run(), status)
+                if status == m.EXIT_SHORT:
+                    driver.continue_disk_readback.assert_called_once()
+                else:
+                    driver.continue_disk_readback.assert_not_called()
+
+    def test_decided_failure_keeps_its_exit_after_passing_disk_checks(self):
+        m, boot = existing.m, existing.boot
+        source, _ = self.readback_source(m.EXIT_SHORT, 'a fatal line')
+        args = existing.SimpleNamespace(id='20261018T000001Z-metal', mode='default', payload='disk-readback')
+        with patch.object(m, 'load_site', return_value={}):
+            driver = boot.Driver(args)
+            driver.dir.mkdir()
+            image = driver.dir / 'disk.img'
+            image.write_bytes(b'disk')
+            driver.t0 = 2
+            sha = hashlib.sha256(b'disk').hexdigest()
+            m.write_json(driver.dir / 'readback.json', dict(source=source.name, bytes=4, rootRecord='record',
+                suitePoweredOffAt=1, sourceStatus=m.EXIT_SHORT, sourceProvisional=False,
+                sourceReason='a fatal line', sourceEndedBy='driver'))
+            m.write_json(driver.dir / 'disk-upload.json', dict(complete=True, sha256=sha, rootRecord='record'))
+            m.write_json(source / 'milestone-verdict.json', {'fixture': 'passing'})
+
+            verdict = dict(passed=True, detail='raw disk checks passed=1',
+                           diskChecks=[dict(path='/written', status='pass')], breenfsCheckExit=0)
+            def score_suite(*, disk, disk_report=None):
+                self.assertEqual(disk, image)
+                if disk_report is not None:
+                    disk_report.update(verdict)
+                return True
+
+            with patch.object(boot.Driver, 'score_suite', side_effect=score_suite), \
+                 patch.object(boot.metal_score, 'falls_short', return_value=False):
+                self.assertTrue(driver.finalize_disk_suite())
+        self.assertEqual((source / 'exit-status').read_text(), '1\n')
+        receipt = m.read_json(source / 'suite-readback.json')
+        self.assertEqual(receipt['diskVerdict'], verdict)
+        self.assertEqual(receipt['sourceStatus'], m.EXIT_SHORT)
+        self.assertEqual(receipt['sourceReason'], 'a fatal line')
+        self.assertFalse(receipt['sourceProvisional'])
 
 
 if __name__ == '__main__':

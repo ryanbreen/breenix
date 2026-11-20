@@ -134,6 +134,36 @@ class GuiResultVerdictTests(unittest.TestCase):
 
 
 class SuiteVerdictTests(unittest.TestCase):
+    def test_readback_reports_each_disk_verdict_after_guest_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            disk = Path(directory) / "disk.img"
+            with disk.open("wb") as image:
+                image.truncate(24 * 4096)
+                image.seek(16 * 4096)
+                image.write(b"BREENFSS")
+            checks = [dict(path=path, byte=65, length=4) for path in ("/wrong", "/written")]
+            manifest = Path(directory) / "manifest.json"
+            manifest.write_text(json.dumps(dict(MANIFEST, diskChecks=checks)))
+
+            def run(args, **kwargs):
+                if Path(args[0]).name == "breenfs-check":
+                    self.assertEqual(args[1:], ["--full", str(disk)])
+                    return subprocess.CompletedProcess(args, 4)
+                self.assertEqual(args[-3:-1], [str(disk), "cat"])
+                return subprocess.CompletedProcess(args, 0, stdout=b"AAAA" if args[-1] == "/written" else b"AAAB")
+
+            report_output = io.StringIO()
+            with patch.object(sys, "argv", ["suite-verdict", str(manifest),
+                    str(FIXTURES / "failed-case.txt"), "--disk", str(disk), "--disk-report"]), \
+                    patch.object(SCORER.subprocess, "run", side_effect=run), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(report_output):
+                self.assertEqual(SCORER.main(), 1)
+            report = json.loads(report_output.getvalue().removeprefix("METAL_DISK_VERDICT "))
+            self.assertFalse(report["passed"])
+            self.assertEqual(report["breenfsCheckExit"], 4)
+            self.assertEqual([(check["path"], check["status"]) for check in report["diskChecks"]],
+                             [("/wrong", "fail"), ("/written", "pass")])
+
     def test_breenfs_disk_checks_read_through_extract(self):
         with tempfile.TemporaryDirectory() as directory:
             disk = Path(directory) / "disk.img"
