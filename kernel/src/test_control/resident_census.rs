@@ -109,11 +109,10 @@ fn drain(report: bool) -> SyscallResult {
         }
     });
     if report {
+        // The caller reports missing sides with the result of its sample attempts.
         for (phase, census) in [("before", pair.before), ("after", pair.after)] {
             if let Some(census) = census {
                 census.report(phase, |line| crate::serial_println!("{}", line));
-            } else {
-                crate::serial_println!("SUITE_MEMORY_PID gui-apps {phase} unavailable=1");
             }
         }
     }

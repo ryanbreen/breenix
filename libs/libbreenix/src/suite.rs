@@ -1291,7 +1291,12 @@ impl Suite {
             }
         } else { true };
         if recording && self.gui { crate::suite_stage::memory_owners("before"); }
-        let before = if recording && baseline_ready { memory_sample(self.id, "before") } else { None };
+        let mut before_census = None;
+        let before = if recording && baseline_ready {
+            memory_sample(self.id, "before", &mut before_census)
+        } else {
+            None
+        };
         if recording && screen.gui {
             crate::suite_stage::init(self);
             screen.prepare();
@@ -1397,8 +1402,9 @@ impl Suite {
                 result
             } else { Ok(()) };
             let display = retired.and_then(|()| if screen.gpu.is_some() { gpu_screen::await_console() } else { Ok(()) });
+            let mut after_census = None;
             let after = match display {
-                Ok(()) => memory_sample(self.id, "after"),
+                Ok(()) => memory_sample(self.id, "after", &mut after_census),
                 Err(error) => {
                     emit(&std::format!("SUITE {} ERROR memory {}", self.id, error));
                     None
@@ -1411,8 +1417,21 @@ impl Suite {
                 use crate::gpu::abi::test_control::resident_census as op;
                 let action = if reclaimed { op::DISCARD } else { op::REPORT };
                 let status = gui_memory_census(action);
-                if !reclaimed && status < 0 {
-                    emit(&std::format!("SUITE_MEMORY_PID gui-apps unavailable={status}"));
+                if !reclaimed {
+                    if status < 0 {
+                        let errno = -status;
+                        emit(&std::format!("SUITE_MEMORY_PID gui-apps report unavailable=1 errno={errno}"));
+                    }
+                    for (phase, result) in [("before", before_census), ("after", after_census)] {
+                        match result {
+                            Some(status) if status < 0 => {
+                                let errno = -status;
+                                emit(&std::format!("SUITE_MEMORY_PID gui-apps {phase} unavailable=1 errno={errno}"));
+                            }
+                            None => emit(&std::format!("SUITE_MEMORY_PID gui-apps {phase} unavailable=1 reason=not-sampled")),
+                            Some(_) => {}
+                        }
+                    }
                 }
             }
             if !reclaimed {
@@ -1646,12 +1665,13 @@ pub(super) enum State {
 
 /// Print a settled memory sample as `SUITE <id> MEMORY <when> ...`, or an ERROR
 /// line saying why it could not be read.
-fn memory_sample(id: &str, when: &str) -> Option<memory_record::Sample> {
+fn memory_sample(id: &str, when: &str, census_status: &mut Option<i64>) -> Option<memory_record::Sample> {
     match memory_record::settled() {
         Ok(sample) => {
             if id == "gui-apps" {
                 use crate::gpu::abi::test_control::resident_census as op;
-                gui_memory_census(if when == "before" { op::BEFORE } else { op::AFTER });
+                let action = if when == "before" { op::BEFORE } else { op::AFTER };
+                *census_status = Some(gui_memory_census(action));
             }
             emit(&sample.record(id, when));
             Some(sample)
@@ -1664,9 +1684,24 @@ fn memory_sample(id: &str, when: &str) -> Option<memory_record::Sample> {
 }
 
 fn gui_memory_census(action: u64) -> i64 {
-    use crate::gpu::abi::{test_control::RESIDENT_CENSUS, SYS_TEST_CONTROL};
-    // SAFETY: this operation passes only a scalar action and has no user buffer.
-    unsafe { crate::syscall::raw::syscall3(SYS_TEST_CONTROL, u64::from(RESIDENT_CENSUS), action, 0) as i64 }
+    use crate::gpu::abi::{test_control::{resident_census as op, RESIDENT_CENSUS}, SYS_TEST_CONTROL};
+    let call = || {
+        // SAFETY: this operation passes only a scalar action and has no user buffer.
+        unsafe { crate::syscall::raw::syscall3(SYS_TEST_CONTROL, u64::from(RESIDENT_CENSUS), action, 0) as i64 }
+    };
+    if matches!(action, op::BEFORE | op::AFTER) {
+        // The aggregate sample is already settled. Give transient lock holders a
+        // chance to finish without waiting for a lock or arming a retry timer.
+        const MAX_RETRIES: usize = 3;
+        for _ in 0..MAX_RETRIES {
+            let status = call();
+            if status != -(crate::errno::Errno::EAGAIN as i64) {
+                return status;
+            }
+            let _ = process::yield_now();
+        }
+    }
+    call()
 }
 
 /// Capture ownership only after the settled reclamation verdict fails.
