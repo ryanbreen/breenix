@@ -1840,6 +1840,41 @@ impl<W: Wait + 'static> BreenFs<W> {
         let _wait = self.inner.costs.span(CostOp::Foreground, CostPhase::MountExclusion);
         Ok(self.materialized(self.inner.state.lock_interruptible()?))
     }
+
+    fn check_durable_roots(&self, generation: Option<u64>) -> Result<(), Errno> {
+        use super::{btree, commit};
+
+        // Keep this durable generation pinned against install and reuse while
+        // reading it. An in-flight publication still protects its blocks.
+        let state = self.inner.state.lock_interruptible()?;
+        let sb = &state.durable;
+        let device = self.inner.device.as_ref();
+        let has_superblock = (0..2).any(|ring| {
+            let slot = commit::slot_block(sb.total_blocks, ring, sb.slot);
+            let Ok(bytes) = commit::read(device, slot, BLOCK_SIZE) else { return false };
+            let mut expected = sb.clone();
+            expected.ring = ring;
+            Superblock::decode(&bytes) == Ok(expected)
+        });
+        if !has_superblock {
+            return Err(Errno(EIO));
+        }
+
+        let store = commit::DeviceStore(device);
+        // Each point lookup verifies the on-disk parent pointers and CRCs.
+        // A generation view also needs the default root for its shared binds.
+        for id in [Some(self.inner.root_id), generation].into_iter().flatten() {
+            let root = ops::persisted_root(&store, sb, id).map_err(|_| Errno(EIO))?;
+            let bytes = btree::search(&store, root.root, ops::key(2, format::INODE, 0))
+                .map_err(|_| Errno(EIO))?
+                .ok_or(Errno(EIO))?;
+            let inode = Inode::decode(&bytes).map_err(|_| Errno(EIO))?;
+            if inode.mode & 0o170000 != 0o040000 || inode.parent != 2 || inode.nlink < 2 {
+                return Err(Errno(EIO));
+            }
+        }
+        Ok(())
+    }
     // Install sets the flag and the last share clears it, both under the
     // exclusion: the flag is set while replay or refresh remains (x11c M2).
     fn materialized<'a>(&self, mut state: MountGuard<'a, MountState<W>>) -> MountGuard<'a, MountState<W>> {
@@ -3154,6 +3189,9 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         self.sync_mappings(None)?;
         self.sync_generation(None, false)
     }
+    fn check_live(&self) -> Result<(), Errno> {
+        self.check_durable_roots(None)
+    }
     fn init_service(&self) -> Result<(), Errno> {
         {
             let mut state = self.inner.state.lock();
@@ -4103,6 +4141,9 @@ impl<W: Wait + 'static> FileSystem for GenerationView<W> {
     }
     fn sync(&self) -> Result<(), Errno> {
         self.writer.sync()
+    }
+    fn check_live(&self) -> Result<(), Errno> {
+        self.writer.check_durable_roots(Some(self.root.mounted.id))
     }
     fn init_service(&self) -> Result<(), Errno> {
         self.writer.init_service()

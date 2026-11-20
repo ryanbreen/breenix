@@ -303,9 +303,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         super::commit::publication_measurement::files_view(self.changed_roots.len());
         for &id in &self.changed_roots {
             preemption_point();
-            let bytes = btree::search(&store, sb.space_root,
-                key(0xffff_ffff_ffff_ff10, format::ROOT, id))?.ok_or(Error::EIO)?;
-            let root = Root::decode(&bytes)?;
+            let root = persisted_root(&store, sb, id)?;
             if id == self.root_id { self.root = root.clone(); }
             Arc::make_mut(&mut self.roots).insert(id, root);
         }
@@ -1379,6 +1377,12 @@ fn valid_time(at: Time) -> Result<(), Error> {
         Ok(())
     }
 }
+pub(super) fn persisted_root<S: NodeStore>(store: &S, sb: &Superblock, id: u64) -> Result<Root, Error> {
+    let bytes = btree::search(store, sb.space_root, key(0xffff_ffff_ffff_ff10, format::ROOT, id))?
+        .ok_or(Error::EIO)?;
+    Ok(Root::decode(&bytes)?)
+}
+
 pub fn key(object: u64, item_type: u8, offset: u64) -> Key {
     Key {
         object,
