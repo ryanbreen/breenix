@@ -166,6 +166,58 @@ fn touch_racing_a_freeze_is_durable_at_the_next_fsync() {
     assert_eq!(mtime, TOUCHED_AT as i64, "the fsync after the touch lost its modification time");
 }
 
+// E24 ledger 691(e2): the read has returned before N freezes. Getattr must
+// see its stamp on the scratch view both before and after N applies touches.
+#[test]
+fn completed_touches_are_visible_during_publication() {
+    let at = |sec| Timestamp { sec, nsec: 0 };
+    for (cut, (phase, begin)) in [("publication", true), ("apply-touches", false)]
+        .into_iter().enumerate()
+    {
+        let id = 2_415_156_050 + 2 * cut;
+        let (disk, fs) = mount(image(16384, 64, &[(b"file", 1, b'A')]), true, id);
+        let file = open(&fs, b"file");
+        let fifo = fs.create(ROOT_DIR, b"fifo", NewNode::Fifo {
+            attrs: InodeAttrs::new(0o10644, 0, 0),
+        }).unwrap();
+        let fifo = fs.open(fifo).unwrap();
+        crate::time::with_unix_time(50, || {
+            assert_eq!(write_at(&fs, &file, BLOCK_SIZE as u64, b"B"), Ok(1));
+        });
+        let before = fs.getattr(file.ino).unwrap();
+        assert_eq!(before.times.atime, at(0));
+        crate::time::with_unix_time(77, || {
+            assert_eq!(read_at(&fs, &file, 0, 1), b"A");
+            fs.touch(&fifo, false);
+        });
+        // Retain the queued notifications without looking up either inode.
+        fs.getattr(ROOT_DIR).unwrap();
+
+        let (live, handle, pipe) = (fs.clone(), file.clone(), fifo.clone());
+        let (attrs, fifo_attrs, later) = commit_with(&fs, phase, begin, move || {
+            let attrs = live.getattr(handle.ino).unwrap();
+            let fifo_attrs = live.getattr(pipe.ino).unwrap();
+            // A later explicit timestamp can go backwards. The old read
+            // must not overwrite it on another getattr or during replay.
+            live.setattr(handle.ino, SetAttr { atime: Some(at(12)), ..SetAttr::default() }).unwrap();
+            let later = live.getattr(handle.ino).unwrap();
+            (attrs, fifo_attrs, later)
+        });
+        assert_eq!(attrs.times.atime, at(77), "read atime at {phase}");
+        assert_eq!(attrs.times.mtime, at(50), "write mtime at {phase}");
+        assert_eq!(attrs.times.ctime, at(50), "write ctime at {phase}");
+        assert_eq!(attrs.size, BLOCK_SIZE as u64 + 1, "write size at {phase}");
+        assert_eq!(fifo_attrs.times.mtime, at(77), "FIFO mtime at {phase}");
+        assert_eq!(fifo_attrs.times.ctime, at(77), "FIFO ctime at {phase}");
+        assert_eq!(later.times.atime, at(12), "explicit atime at {phase}");
+        assert_eq!(fs.getattr(file.ino).unwrap().times.atime, at(12));
+        fs.fsync(&file, false).unwrap();
+        let (_, cold) = mount(disk.image(), false, id + 1);
+        assert_eq!(cold.getattr(file.ino).unwrap().times.atime, at(12));
+        assert_eq!(cold.getattr(fifo.ino).unwrap().times.mtime, at(77));
+    }
+}
+
 // x11c M3: once N is installed its allocations have left free_blocks, while
 // its grants are released afterwards, one per preemption point (601(4)). A
 // write admitted between install and those releases must not be refused for
