@@ -45,6 +45,7 @@ fn error(e: ops::Error) -> Error {
         E::EMLINK => Errno::EMLINK,
         E::ENAMETOOLONG => Errno::ENAMETOOLONG,
         E::ENOSPC => Errno::ENOSPC,
+        E::ENOMEM => Errno::ENOMEM,
     };
     errno.into()
 }

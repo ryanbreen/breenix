@@ -41,6 +41,8 @@ pub enum Error {
     EMLINK,
     ENAMETOOLONG,
     ENOSPC,
+    /// The heap refused memory the change needs, before the change was made.
+    ENOMEM,
 }
 impl From<format::Error> for Error {
     fn from(_: format::Error) -> Self {

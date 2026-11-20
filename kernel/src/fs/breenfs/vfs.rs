@@ -524,8 +524,63 @@ pub(crate) const RETAIN_OPEN_STEPS: usize = 8;
 /// N's published view; N's preparation never changes what N+1 reads.
 struct OpenFiles<W: Wait + 'static> {
     files: FilesView<W>,
-    log: Option<VecDeque<Change>>,
+    log: Option<ReplayLog>,
     replay_bounds: Option<ReplayBounds>,
+}
+/// Records per replay page: 15 × 272 bytes is one 4,080-byte heap block.
+const REPLAY_PAGE_RECORDS: usize = 15;
+const _: () = assert!(REPLAY_PAGE_RECORDS * core::mem::size_of::<Change>() <= 4096 - 8);
+/// N+1's recorded changes, oldest first (E24 coordinator 764, k2). Records
+/// live in fixed pages, each its own fallible allocation, so a long frozen
+/// window asks the heap for one page at a time instead of doubling a single
+/// buffer (17,825,792 bytes at 65,536 records). The page table adds one
+/// 32-byte entry per page. Callers reserve before they change the open
+/// view: a refused page returns ENOMEM before the view changes, and
+/// `push_back` then fills reserved room without allocating.
+struct ReplayLog {
+    pages: VecDeque<VecDeque<Change>>,
+    len: usize,
+}
+impl ReplayLog {
+    const fn new() -> Self { Self { pages: VecDeque::new(), len: 0 } }
+    fn len(&self) -> usize { self.len }
+    fn is_empty(&self) -> bool { self.len == 0 }
+    /// Room for `additional` (at most one page) more records in the last page.
+    fn reserve(&mut self, additional: usize) -> Result<(), ops::Error> {
+        debug_assert!(additional <= REPLAY_PAGE_RECORDS);
+        if self.pages.back().is_some_and(|page| page.capacity() - page.len() >= additional) {
+            return Ok(());
+        }
+        self.pages.try_reserve(1).map_err(|_| ops::Error::ENOMEM)?;
+        let mut page = VecDeque::new();
+        page.try_reserve_exact(REPLAY_PAGE_RECORDS).map_err(|_| ops::Error::ENOMEM)?;
+        self.pages.push_back(page);
+        Ok(())
+    }
+    fn push_back(&mut self, change: Change) {
+        let page = self.pages.back_mut().filter(|page| page.len() < page.capacity());
+        debug_assert!(page.is_some(), "replay record without a reservation");
+        match page {
+            Some(page) => page.push_back(change),
+            None => {
+                let mut page = VecDeque::with_capacity(REPLAY_PAGE_RECORDS);
+                page.push_back(change);
+                self.pages.push_back(page);
+            }
+        }
+        self.len += 1;
+    }
+    // Only the last page can be empty: reserve adds a page only after a
+    // nonempty one, and a drained earlier page is dropped here.
+    fn pop_front(&mut self) -> Option<Change> {
+        let page = self.pages.front_mut()?;
+        let change = page.pop_front()?;
+        if page.is_empty() && self.pages.len() > 1 {
+            self.pages.pop_front();
+        }
+        self.len -= 1;
+        Some(change)
+    }
 }
 struct ReplayBounds {
     frozen_root: format::BlockPtr,
@@ -599,6 +654,25 @@ fn merge_inode(current: &mut Inode, before: &Inode, after: &Inode) {
         atime, mtime, ctime, btime);
 }
 impl<W: Wait + 'static> OpenFiles<W> {
+    /// Room for `records` changes, taken before the open view changes. An
+    /// operation that records twice reserves both at admission.
+    fn reserve(&mut self, records: usize) -> Result<(), ops::Error> {
+        self.log.as_mut().map_or(Ok(()), |log| log.reserve(records))
+    }
+    /// The recorded copy of a name or value, taken before the view changes.
+    fn copy(&self, bytes: &[u8]) -> Result<Vec<u8>, ops::Error> {
+        let mut copy = Vec::new();
+        if self.log.is_some() {
+            copy.try_reserve_exact(bytes.len()).map_err(|_| ops::Error::ENOMEM)?;
+            copy.extend_from_slice(bytes);
+        }
+        Ok(copy)
+    }
+    /// A generation that will not be installed has no view to replay into.
+    fn detach_replay(&mut self) -> Option<ReplayLog> {
+        self.replay_bounds = None;
+        self.log.take()
+    }
     fn record(&mut self, change: impl FnOnce() -> Change) {
         let Some(log) = self.log.as_mut() else { return; };
         let change = change();
@@ -620,36 +694,48 @@ impl<W: Wait + 'static> OpenFiles<W> {
         self.put_reserved_inode(ino, inode)
     }
     fn put_reserved_inode(&mut self, ino: u64, inode: Inode) -> Result<(), ops::Error> {
+        self.reserve(1)?;
         let before = if self.log.is_some() { Some(self.files.stored_inode(ino)?) } else { None };
         self.files.put_inode(ino, inode)?;
         if let Some(before) = before { self.record(|| Change::Inode { ino, before, after: inode }); }
         Ok(())
     }
     fn record_touches(&mut self, ino: u64, older: Stamps, open: Stamps) -> Result<bool, ops::Error> {
+        self.reserve(1)?;
         let changed = apply_inode_touches(&mut self.files, ino, older, open)?;
         if changed { self.record(|| Change::Touch { ino, older, open }); }
         Ok(changed)
     }
-    fn set_inode_open(&mut self, ino: u64, open: bool) {
+    fn set_inode_open(&mut self, ino: u64, open: bool) -> Result<(), ops::Error> {
+        self.reserve(1)?;
         self.files.set_inode_open(ino, open);
         self.record(|| Change::Open { ino, open });
+        Ok(())
     }
     #[cfg(test)]
     fn retain_open_inodes(&mut self, inodes: BTreeSet<u64>) {
-        if self.log.is_some() { self.record(|| Change::Retain(inodes.clone())); }
+        if self.log.is_some() {
+            self.reserve(1).expect("host replay page");
+            self.record(|| Change::Retain(inodes.clone()));
+        }
         self.files.retain_open_inodes(inodes);
     }
     fn snapshot(&mut self, name: &[u8], read_only: bool) -> Result<u64, ops::Error> {
+        self.reserve(1)?;
+        let copy = self.copy(name)?;
         let id = self.files.snapshot(name, read_only)?;
-        self.record(|| Change::Snapshot { name: name.to_vec(), read_only, id });
+        self.record(|| Change::Snapshot { name: copy, read_only, id });
         Ok(id)
     }
     fn delete_root(&mut self, name: &[u8]) -> Result<(), ops::Error> {
+        self.reserve(1)?;
+        let copy = self.copy(name)?;
         self.files.delete_root(name)?;
-        self.record(|| Change::DeleteRoot { name: name.to_vec() });
+        self.record(|| Change::DeleteRoot { name: copy });
         Ok(())
     }
     fn setattr(&mut self, ino: u64, attrs: &ops::SetAttr, at: Time) -> Result<(), ops::Error> {
+        self.reserve(1)?;
         self.files.setattr(ino, attrs, at)?;
         self.record(|| Change::Setattr { ino, attrs: attrs.clone(), at });
         Ok(())
@@ -663,40 +749,54 @@ impl<W: Wait + 'static> OpenFiles<W> {
         at: Time,
         prepare: impl FnOnce(u64, Inode) -> Result<(), ops::Error>,
     ) -> Result<u64, ops::Error> {
+        self.reserve(1)?;
+        let copy = self.copy(name)?;
+        let target_copy = target.map(|bytes| self.copy(bytes)).transpose()?;
         let ino = self.files.create_node_prepared(dir, name, inode, target, at, prepare)?;
-        self.record(|| Change::Create { dir, name: name.to_vec(), inode,
-            target: target.map(<[u8]>::to_vec), at, ino });
+        self.record(|| Change::Create { dir, name: copy, inode, target: target_copy, at, ino });
         Ok(ino)
     }
     fn link(&mut self, ino: u64, dir: u64, name: &[u8], at: Time) -> Result<(), ops::Error> {
+        self.reserve(1)?;
+        let copy = self.copy(name)?;
         self.files.link(ino, dir, name, at)?;
-        self.record(|| Change::Link { ino, dir, name: name.to_vec(), at });
+        self.record(|| Change::Link { ino, dir, name: copy, at });
         Ok(())
     }
     fn rmdir(&mut self, dir: u64, name: &[u8], at: Time) -> Result<(), ops::Error> {
+        self.reserve(1)?;
+        let copy = self.copy(name)?;
         self.files.rmdir(dir, name, at)?;
-        self.record(|| Change::Remove { dir, name: name.to_vec(), directory: true, at });
+        self.record(|| Change::Remove { dir, name: copy, directory: true, at });
         Ok(())
     }
     fn unlink(&mut self, dir: u64, name: &[u8], at: Time) -> Result<(), ops::Error> {
+        self.reserve(1)?;
+        let copy = self.copy(name)?;
         self.files.unlink(dir, name, at)?;
-        self.record(|| Change::Remove { dir, name: name.to_vec(), directory: false, at });
+        self.record(|| Change::Remove { dir, name: copy, directory: false, at });
         Ok(())
     }
     fn rename(&mut self, from_dir: u64, from: &[u8], to_dir: u64, to: &[u8], at: Time)
         -> Result<(), ops::Error> {
+        self.reserve(1)?;
+        let (from_copy, to_copy) = (self.copy(from)?, self.copy(to)?);
         self.files.rename(from_dir, from, to_dir, to, at)?;
-        self.record(|| Change::Rename { from_dir, from: from.to_vec(), to_dir, to: to.to_vec(), at });
+        self.record(|| Change::Rename { from_dir, from: from_copy, to_dir, to: to_copy, at });
         Ok(())
     }
     fn trim_mappings(&mut self, ino: u64, size: u64) -> Result<u64, ops::Error> {
+        self.reserve(1)?;
         let nblocks = self.files.trim_mappings(ino, size)?;
         self.record(|| Change::Trim { ino, size });
         Ok(nblocks)
     }
     fn xattr(&mut self, ino: u64, name: &[u8], value: Option<&[u8]>, at: Time) -> Result<(), ops::Error> {
+        self.reserve(1)?;
+        let copy = self.copy(name)?;
+        let value_copy = value.map(|bytes| self.copy(bytes)).transpose()?;
         self.files.xattr(ino, name, value, at)?;
-        self.record(|| Change::Xattr { ino, name: name.to_vec(), value: value.map(<[u8]>::to_vec), at });
+        self.record(|| Change::Xattr { ino, name: copy, value: value_copy, at });
         Ok(())
     }
 }
@@ -736,12 +836,17 @@ impl<W: Wait> MountState<W> {
         // A timestamp refresh can edit a private tree before returning.
         #[cfg(not(test))]
         let _custody = crate::task::thread::KillCustody::try_enter().ok_or(Errno(EINTR))?;
-        self.touches.remove(&ino);
         preemption_point();
         let Some(touched) = self.nodes.get(&ino).and_then(|entry| entry.touched.as_ref())
         else {
+            self.touches.remove(&ino);
             return Ok(());
         };
+        // A refused replay record leaves the stamps pending and queued.
+        if !self.failed && self.committer.as_ref().is_some_and(|committer| !committer.read_only()) {
+            self.files.reserve(1).map_err(errno)?;
+        }
+        self.touches.remove(&ino);
         let generation = self.open_generation();
         let mut open = touched.take(generation);
         let mut older = Stamps::default();
@@ -796,7 +901,8 @@ impl<W: Wait> MountState<W> {
         self.apply_touches(ino)?;
         // VNode drops do no I/O or mount locking. Refresh the writer's open
         // snapshot here so a closed orphan cannot be opened again by inode.
-        self.retain_open();
+        // A refused share stays queued; the final-close check below covers it.
+        let _ = self.retain_open();
         let inode = if let Some((_, inode)) = self
             .inodes
             .entries
@@ -853,7 +959,10 @@ impl<W: Wait> MountState<W> {
             _ => Err(Errno(EINVAL)),
         }
     }
-    fn retain_open(&mut self) {
+    /// One bounded share of the node notifications. ENOMEM means a replay
+    /// page was refused; the untaken notifications stay queued for a later
+    /// share, which callers other than sync may leave to the next holder.
+    fn retain_open(&mut self) -> Result<(), Errno> {
         #[cfg(test)] let _phase = publication_phases::Phase::new("retain_open");
         // Only opens, touches and final releases change this snapshot. The
         // atomic queue owns no VNode and cannot keep an inode open itself.
@@ -861,13 +970,25 @@ impl<W: Wait> MountState<W> {
         if batch.is_empty() {
             batch = self.events.take();
         }
-        for times in batch.by_ref().take(RETAIN_OPEN_STEPS) {
+        let mut result = Ok(());
+        for _ in 0..RETAIN_OPEN_STEPS {
+            if batch.is_empty() { break; }
+            if let Err(error) = self.files.reserve(1) {
+                result = Err(errno(error));
+                break;
+            }
+            let Some(times) = batch.next() else { break; };
             preemption_point();
             #[cfg(test)] publication_phases::visit(0);
             let Some(node) = self.nodes.get(&times.ino) else { continue; };
             if node.touched.as_ref().is_none_or(|current| !Arc::ptr_eq(current, &times)) { continue; }
             let open = node.node.strong_count() != 0;
-            self.files.set_inode_open(times.ino, open);
+            // Reserved above. Were it refused, requeue the notification.
+            if let Err(error) = self.files.set_inode_open(times.ino, open) {
+                self.events.push(&times);
+                result = Err(errno(error));
+                break;
+            }
             if times.pending() { self.touches.insert(times.ino, times.clone()); }
             self.prune_node(times.ino);
         }
@@ -875,6 +996,7 @@ impl<W: Wait> MountState<W> {
             self.retained_batches += 1;
         }
         self.retained_events = batch;
+        result
     }
     // A generation's pages are custody of that generation, not of NodeState:
     // keep the entry only while the open generation holds pages or a touch.
@@ -906,7 +1028,7 @@ impl<W: Wait> MountState<W> {
         };
         let mut steps = 0;
         if let Some(next) = self.next_files.as_mut() {
-            let log = self.files.log.get_or_insert_with(VecDeque::new);
+            let log = self.files.log.get_or_insert_with(ReplayLog::new);
             let mut failed = None;
             while steps < MATERIALIZE_STEPS {
                 preemption_point();
@@ -1767,13 +1889,17 @@ impl<W: Wait + 'static> BreenFs<W> {
             node.map.resync_unbound(inode.size);
             return Ok(node);
         }
+        // While N is frozen this open is one of N+1's records: refuse it
+        // with ENOMEM before any VNode exists if its page is refused.
+        state.files.reserve(1).map_err(errno)?;
         let node = self.new_node(ino, inode, state.durable.generation)?;
         let entry = state.nodes.entry(ino).or_default();
         entry.node = Arc::downgrade(&node);
         entry.links = inode.nlink;
         entry.touched = Some(node.pin::<NodePin<W>>().ok_or(Errno(EIO))?.touched.clone());
-        state.files.set_inode_open(ino, true);
-        state.retain_open();
+        state.files.set_inode_open(ino, true).map_err(errno)?;
+        // A refused share stays queued for the next holder.
+        let _ = state.retain_open();
         Ok(node)
     }
     /// Release the namespace's cache pin after a successful last-link edit.
@@ -1996,6 +2122,8 @@ impl<W: Wait + 'static> BreenFs<W> {
                 let end = offset.checked_add(length as u64)
                     .filter(|end| *end <= (1 << 63) - 4096).ok_or(Errno(EFBIG))?;
                 let grant = if length == 0 { None } else {
+                    // The inode record follows the page edit: reserve it first.
+                    state.files.reserve(1).map_err(errno)?;
                     Some(state.reserve_data(node.ino, offset, length, Operation::Allocate,
                         inode.size == 0 && inode.nblocks == 0)?)
                 };
@@ -2475,7 +2603,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         refresh.extend(touched);
         // INSTALL (601(4)): the second exclusion section. Swap the published
         // view to N and drop the frozen layer's reference: constant work.
-        let retired = {
+        let (retired, abandoned_replay) = {
             let mut guard = self.mutation_lock(CostOp::Commit);
             // 583(x10): start after acquisition; stop before releasing this
             // guard. Excludes acquisition and everything after the guard.
@@ -2520,13 +2648,15 @@ impl<W: Wait + 'static> BreenFs<W> {
                 if reap && state.dead_remaining != 0 && !state.reap_shutdown {
                     self.inner.signal.requested.store(true, Ordering::Release);
                 }
-                retired
+                (retired, None)
             } else {
                 state.fail("publish", Errno(EIO));
                 if let Some(committer) = state.committer.as_mut() {
                     committer.abandon();
                 }
-                None
+                // N is not installed, so N+1's record has no view to replay
+                // into (764 k2). The scratch view still serves reads.
+                (None, state.files.detach_replay())
             }
         };
         drop(publication);
@@ -2543,6 +2673,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             }
         }
         drop(retired);
+        drop(abandoned_replay);
         drop(pages);
         preemption_point();
         self.inner.signal.wake_all();
@@ -2562,7 +2693,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         // 601(3): the receipt boundary moves here.
         let commit = state.committer.as_mut().ok_or(Errno(EIO))?.freeze().map_err(|_| Errno(EIO))?;
         let files = core::mem::replace(&mut state.files.files, scratch);
-        state.files.log = Some(VecDeque::new());
+        state.files.log = Some(ReplayLog::new());
         // 601(2): N's pages and touches move whole; N+1 starts with empty maps.
         let frozen = Arc::get_mut(&mut pages).ok_or(Errno(EIO))?;
         frozen.nodes = core::mem::take(&mut state.dirty);
@@ -2612,14 +2743,20 @@ impl<W: Wait + 'static> BreenFs<W> {
     /// Frozen N failed before install: fail the mount, N+1's receipts with
     /// it, then N's receipts and grants after the exclusion.
     fn abandon(&self, mut frozen: FrozenGeneration<W>, branch: &'static str, error: Errno) -> Result<bool, Errno> {
-        {
+        let abandoned_replay = {
             let mut state = self.mutation_lock(CostOp::Commit);
             let _excluded = self.inner.costs.span(CostOp::Commit, CostPhase::MountExcluded);
             state.fail(branch, error);
             if let Some(committer) = state.committer.as_mut() {
                 committer.abandon();
             }
-        }
+            // N will not be installed, so N+1's record has no view to replay
+            // into (764 k2). Left attached, each later open and close on the
+            // latched mount grew it (ledger 763). The scratch view and N's
+            // pages still serve reads. The pages are freed after the exclusion.
+            state.files.detach_replay()
+        };
+        drop(abandoned_replay);
         frozen.commit.wake(Err(super::commit::Error::EIO));
         for grant in frozen.grants {
             preemption_point();
@@ -2652,7 +2789,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             let error = loop {
                 {
                     let _retain = self.inner.costs.span(CostOp::Fsync, CostPhase::RetainOpen);
-                    state.retain_open();
+                    if let Err(error) = state.retain_open() { break Some(error); }
                 }
                 if state.retained_batches >= target {
                     break None;
@@ -3535,6 +3672,8 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 NodeKind::Socket => 0o140000,
                 _ => return Err(Errno(EOPNOTSUPP).into()),
             };
+            // The create and its open are two replay records while N is frozen.
+            state.files.reserve(2).map_err(errno)?;
             let grant = state.reserve_create(dir, false)?;
             Ok((attrs, bits, grant))
         })?;
@@ -3575,8 +3714,9 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         entry.node = Arc::downgrade(&node);
         entry.links = links;
         entry.touched = Some(node.pin::<NodePin<W>>().ok_or(Errno(EIO))?.touched.clone());
-        state.files.set_inode_open(ino, true);
-        state.retain_open();
+        state.files.set_inode_open(ino, true).map_err(errno)?;
+        // A refused share stays queued for the next holder.
+        let _ = state.retain_open();
         Ok(())
     }
     fn link(&self, ino: u64, dir: u64, name: &[u8], check: &LinkCheck<'_>) -> Result<(), Errno> {
@@ -3739,6 +3879,8 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                         k.offset <= floor && floor < k.offset + u64::from(e.num_blocks) * BLOCK_SIZE as u64
                     })
                 } else { false };
+                // Shrinking records the trim and the inode; growing, the inode.
+                state.files.reserve(if size < inode.size { 2 } else { 1 }).map_err(errno)?;
                 let grant = state.reserve_data(
                     node.ino,
                     floor,
@@ -3819,6 +3961,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 if length == 0 {
                     return Ok((inode, length, None));
                 }
+                state.files.reserve(1).map_err(errno)?;
                 let grant = state.reserve_data(node.ino, offset, length, Operation::Allocate, false)?;
                 Ok((inode, length, Some(grant)))
             },
@@ -4410,5 +4553,6 @@ fn errno(error: ops::Error) -> Errno {
         ops::Error::EMLINK => EMLINK,
         ops::Error::ENAMETOOLONG => ENAMETOOLONG,
         ops::Error::ENOSPC => ENOSPC,
+        ops::Error::ENOMEM => ENOMEM,
     })
 }
