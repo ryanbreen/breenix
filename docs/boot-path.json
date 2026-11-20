@@ -4,7 +4,7 @@
   "gateArch": "aarch64",
   "bootProfile": "testing",
   "fatal": [
-    "^AHCI_LOST_NOTIFICATION ",
+    "\\bAHCI_LOST_NOTIFICATION port=",
     "panicked at kernel/src/",
     "!!! SOFT LOCKUP DETECTED !!!",
     "\\[BOOT_TESTS:FAIL:[1-9][0-9]*\\]",
