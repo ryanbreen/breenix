@@ -20,11 +20,12 @@ impl State {
             Ok(_) => {}
             Err(Error::Os(Errno::ETIMEDOUT)) => {
                 if let Some(root) = std::env::var_os("BREENIX_CONFIG_ROOT") {
-                    std::fs::write(
-                        std::path::Path::new(&root).join("timer-backpressure"),
-                        breengel::clock::epoch().to_string(),
-                    )
-                    .map_err(|e| e.to_string())?;
+                    let marker = std::path::Path::new(&root).join("timer-backpressure");
+                    let temporary = marker.with_extension(format!("{}.tmp", std::process::id()));
+                    // A successful read is a witness, so publish only the complete epoch.
+                    std::fs::write(&temporary, breengel::clock::epoch().to_string())
+                        .and_then(|()| std::fs::rename(&temporary, &marker))
+                        .map_err(|e| e.to_string())?;
                 }
             }
             Err(error) => return Err(error.to_string()),
