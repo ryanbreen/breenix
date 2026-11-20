@@ -334,6 +334,7 @@ pub fn kthread_join(handle: &KthreadHandle) -> Result<i32, KthreadError> {
 
 /// Exit the current kthread with a specific exit code.
 pub fn kthread_exit(code: i32) -> ! {
+    release_held_preemption();
     let handle = current_kthread().expect("kthread_exit called outside kthread");
     #[cfg(all(feature = "boot_tests", target_arch = "aarch64"))]
     crate::tracing::providers::teardown::record_kthread_exit_stage_for_test(handle.inner.tid);
@@ -390,6 +391,31 @@ pub fn kthread_exit(code: i32) -> ! {
             arch_enable_interrupts();
         }
         arch_halt();
+    }
+}
+
+/// A balanced exit holds no PREEMPT level and returns at once. A held one is a
+/// leak (E24 ledger 703): exit does not unwind, so its owner cannot release it,
+/// and while it is held x86's kernel-mode interrupt return keeps resuming the
+/// terminated thread instead of switching (interrupts/context_switch.rs).
+/// Post one receipt, then release the level so the rest of the exit runs as a
+/// balanced one does. Whatever the leaked level's owner held stays held either
+/// way; only the CPU is recovered.
+fn release_held_preemption() {
+    let count = crate::per_cpu::preempt_count();
+    let held = count & crate::arch_impl::current::constants::PREEMPT_MASK;
+    if held == 0 {
+        return;
+    }
+    static HELD_EXIT: crate::log_notice::Record = crate::log_notice::Record::new();
+    super::preempt_fault::post(
+        &HELD_EXIT,
+        "kthread_exit_released",
+        count,
+        crate::per_cpu::preempt_underflow_count(),
+    );
+    for _ in 0..held {
+        crate::per_cpu::preempt_enable();
     }
 }
 
