@@ -16,6 +16,10 @@ impl<T> Once<T> {
 
 thread_local! {
     static BRAKE: Cell<u32> = const { Cell::new(0) };
+    static IRQ_ENABLED: Cell<bool> = const { Cell::new(true) };
+    static CPU: Cell<u64> = const { Cell::new(0) };
+    static TID: Cell<u64> = const { Cell::new(7) };
+    static MIGRATE_TO: Cell<Option<u64>> = const { Cell::new(None) };
     static KILL_DURING_PREPARE: Cell<bool> = const { Cell::new(false) };
     static KILL_PENDING: Cell<bool> = const { Cell::new(false) };
     static HALTS: Cell<u32> = const { Cell::new(0) };
@@ -56,7 +60,19 @@ pub mod arch_impl {
 }
 
 pub fn arch_without_interrupts<T>(f: impl FnOnce() -> T) -> T {
-    f()
+    let enabled = IRQ_ENABLED.replace(false);
+    let result = f();
+    IRQ_ENABLED.set(enabled);
+    run_pending_migration();
+    result
+}
+
+fn run_pending_migration() {
+    if IRQ_ENABLED.get() && per_cpu::preempt_count() == 0 {
+        if let Some(cpu) = MIGRATE_TO.take() {
+            CPU.set(cpu);
+        }
+    }
 }
 pub fn arch_halt_with_interrupts() {
     assert_eq!(per_cpu::preempt_count(), 0, "the owner may need this CPU");
@@ -80,9 +96,57 @@ pub mod memory {
     }
 }
 pub mod process {
-    pub fn process_manager_held_on_current_cpu() -> bool {
-        false
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    const PM_LOCK_OWNER_NONE: u64 = u64::MAX;
+    static OWNER_CPU: AtomicU64 = AtomicU64::new(PM_LOCK_OWNER_NONE);
+    static PROCESS_MANAGER_OWNER_TID: AtomicU64 = AtomicU64::new(PM_LOCK_OWNER_NONE);
+
+    struct OwnerCpu;
+    static PROCESS_MANAGER_OWNER_CPU: OwnerCpu = OwnerCpu;
+    impl OwnerCpu {
+        fn load(&self, ordering: Ordering) -> u64 {
+            let sampled = OWNER_CPU.load(ordering);
+            if super::MIGRATE_TO.get().is_some() {
+                // The remote holder releases after the load. The requesting
+                // thread can then resume on that CPU if the mask permits it.
+                PROCESS_MANAGER_OWNER_TID.store(PM_LOCK_OWNER_NONE, Ordering::Relaxed);
+                OWNER_CPU.store(PM_LOCK_OWNER_NONE, Ordering::Release);
+                super::run_pending_migration();
+            }
+            sampled
+        }
     }
+
+    pub fn hold(cpu: u64, tid: u64) {
+        PROCESS_MANAGER_OWNER_TID.store(tid, Ordering::Relaxed);
+        OWNER_CPU.store(cpu, Ordering::Release);
+    }
+
+    pub fn current_process_manager_cpu() -> u64 {
+        super::CPU.get()
+    }
+
+    pub fn current_process_manager_tid() -> u64 {
+        super::TID.get()
+    }
+
+    pub fn current_process_manager_owner_identity() -> (u64, u64) {
+        (current_process_manager_cpu(), current_process_manager_tid())
+    }
+
+    PM_OWNER_QUERIES
+}
+pub mod tracing {
+    pub mod output {
+        pub fn raw_serial_char(byte: u8) -> bool {
+            eprint!("{}", char::from(byte));
+            true
+        }
+    }
+}
+pub mod serial_aarch64 {
+    pub use crate::tracing::output::raw_serial_char as write_failure_byte;
 }
 pub mod syscall {
     pub mod errno {
@@ -199,6 +263,25 @@ fn main() {
         per_cpu::preempt_disable();
     }
     match scenario.as_str() {
+        "pm-held" => {
+            process::hold(CPU.get(), TID.get());
+            // Exit before unwinding across the assertion's architecture entry.
+            std::panic::set_hook(Box::new(|info| {
+                eprintln!("{info}");
+                std::process::exit(17);
+            }));
+            block::cache_kernel::assert_io_context();
+            return;
+        }
+        "pm-migrate" => {
+            process::hold(3, 19);
+            MIGRATE_TO.set(Some(3));
+            block::cache_kernel::assert_io_context();
+            assert_eq!(CPU.get(), 3, "the attempted migration must run");
+            assert!(IRQ_ENABLED.get(), "the IRQ mask must be restored");
+            assert!(process::process_manager_owner_snapshot().is_none());
+            return;
+        }
         "worker" => {
             let signal = CommitSignal::new();
             let _ = signal.worker.wait(signal.worker.epoch(), Some(10));
