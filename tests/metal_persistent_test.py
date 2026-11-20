@@ -184,14 +184,16 @@ class LayoutTest(existing.StateTest):
     def test_format_3_mount_intents(self):
         a = '11111111-1111-1111-1111-111111111111'
         b = '22222222-2222-2222-2222-222222222222'
-        for mounts in (
-            [(a, '/', False), (a, '/old', False), (b, '/new', True), (b, '/shared', True), (a, '/home', False)],
-            [(a, '/', True), (b, '/home', True)],
-            [(a, '/', False), (b, '/tmp', True), (b, '/run', True)],
+        for mounts, userland in (
+            ([(a, '/', False), (a, '/old', False), (b, '/new', True), (b, '/shared', True), (a, '/home', False)], None),
+            ([(a, '/', True), (b, '/home', True)], 'install-42'),
+            ([(a, '/', False), (b, '/tmp', True), (b, '/run', True)], None),
         ):
             expected = 'BREENIX-BOOT 3\ntarget persistent\n' + ''.join(
                 f"mount {guid} {path} {'rw' if writable else 'ro'}\n" for guid, path, writable in mounts)
-            self.assertEqual(metal_persist.intent('persistent', mounts=mounts), expected.encode())
+            if userland is not None:
+                expected += f'userland {userland}\n'
+            self.assertEqual(metal_persist.intent('persistent', mounts=mounts, userland=userland), expected.encode())
         for mounts in (
             [(a, '/', True), (b, '/home', True), (a, '/tmp', True)],
             [(a, '/home', False)], [(a, '/', False), (b, '/a/../b', False)],

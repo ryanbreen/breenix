@@ -16,12 +16,15 @@ fn payload(lines: &[(&str, &str, bool)]) -> String {
 
 #[test]
 fn accepts_migration_cutover_and_rescue() {
-    for mounts in [
-        vec![(A, "/", false), (A, "/old", false), (B, "/new", true), (B, "/shared", true), (A, "/home", false)],
-        vec![(A, "/", true), (B, "/home", true)],
-        vec![(A, "/", false), (B, "/tmp", true), (B, "/run", true)],
+    for (mounts, userland) in [
+        (vec![(A, "/", false), (A, "/old", false), (B, "/new", true), (B, "/shared", true), (A, "/home", false)], None),
+        (vec![(A, "/", true), (B, "/home", true)], Some("install-42")),
+        (vec![(A, "/", false), (B, "/tmp", true), (B, "/run", true)], None),
     ] {
-        let text = payload(&mounts);
+        let mut text = payload(&mounts);
+        if let Some(id) = userland {
+            text.push_str(&format!("userland {id}\n"));
+        }
         let parsed = intent::parse(text.as_bytes()).expect("recognized");
         assert!(intent::root_userland(Some(&parsed)).is_ok());
         assert_eq!(parsed.mounts().collect::<Vec<_>>(), mounts);
