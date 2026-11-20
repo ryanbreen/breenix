@@ -1,8 +1,8 @@
 """The persistent install's layout and the install requests the delivery stub carries out (docs/metal/README.md,
 "Boot manager and persistent install").
 
-The layout is a GUID partition table with four partitions: the EFI system partition (the boot manager and the
-kernel slots), the test root, the system partition and the home partition. Their unique GUIDs, and the disk's, are
+The v1 layout has the EFI system partition (the boot manager and kernel slots), test root, system and home; v2 adds
+BreenFS system and home partitions. Their unique GUIDs, and the disk's, are
 made here for the one-time install and kept in the service's `disk.json` (`layout`). A kernel slot is a boot disk in
 the delivery stub's format whose `ramdisk` is the slot's format-2 boot intent. An install request (`persist.cfg`
 and `persist.dat`) tells the stub what to write: for the one-time install the partition table and each partition's
@@ -23,11 +23,15 @@ import metal_lib as m
 SECTOR = 512
 FIRST_LBA = 2048
 ROLES = ('esp', 'test', 'system', 'home')
+BREENFS_ROLES = ('breenfs-system', 'breenfs-home')
 TYPES = {'esp': 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b', 'test': 'dac951c3-27df-4e3d-8b9e-487906ac2c81',
-         'system': '2ef14a34-abbd-48f8-83d6-f2a8c7b4a9fe', 'home': '9bfeaef9-4f51-45de-8bcf-5cec1603b862'}
-SIZES = {'esp': 2 << 30, 'test': 4 << 30, 'system': 8 << 30, 'home': 16 << 30}
+         'system': '2ef14a34-abbd-48f8-83d6-f2a8c7b4a9fe', 'home': '9bfeaef9-4f51-45de-8bcf-5cec1603b862',
+         'breenfs-system': 'fad521d2-3783-43cc-be73-60ed528454c9',
+         'breenfs-home': 'f93914ad-57e7-4feb-a52e-295a07fd7e35'}
+SIZES = {'esp': 2 << 30, 'test': 4 << 30, 'system': 8 << 30, 'home': 16 << 30,
+         'breenfs-system': 64 << 30, 'breenfs-home': 256 << 30}
 NAMES = {'esp': 'EFI system partition', 'test': 'Breenix test root', 'system': 'Breenix system',
-         'home': 'Breenix home'}
+         'home': 'Breenix home', 'breenfs-system': 'BreenFS system', 'breenfs-home': 'BreenFS home'}
 MANAGER_DIR = 'efi/breenix'
 MANAGER_PATH = 'efi/breenix/bootmgr.efi'
 LOAD_OPTION = 'Breenix boot manager'
@@ -52,18 +56,41 @@ def new_layout():
 
 
 def check_layout(layout):
-    """A layout this module made: four partitions in order, each on a 1 MiB boundary, with lowercase GUIDs."""
+    """A v1 or v2 layout in role order, aligned to 1 MiB, with lowercase GUIDs."""
     parts = layout.get('partitions', {})
-    if layout.get('version') != 1 or set(parts) != set(ROLES) or not GUID.fullmatch(layout.get('diskGuid', '')):
+    roles = ROLES if layout.get('version') == 1 else ROLES + BREENFS_ROLES if layout.get('version') == 2 else ()
+    if not roles or set(parts) != set(roles) or not GUID.fullmatch(layout.get('diskGuid', '')):
         raise ValueError('the recorded layout is not a persistent-install layout')
     end = FIRST_LBA - 1
-    for number, role in enumerate(ROLES, start=1):
+    for number, role in enumerate(roles, start=1):
         part = parts[role]
-        if (part['number'] != number or part['type'] != TYPES[role] or not GUID.fullmatch(part['guid'])
-                or part['first'] <= end or part['first'] % 2048 or part['last'] - part['first'] + 1 != SIZES[role] // SECTOR):
+        try:
+            valid = (part['number'] == number and part['type'] == TYPES[role] and GUID.fullmatch(part['guid'])
+                     and part['first'] > end and part['first'] % 2048 == 0
+                     and part['last'] - part['first'] + 1 == SIZES[role] // SECTOR)
+        except (KeyError, TypeError):
+            valid = False
+        if not valid:
             raise ValueError(f'the recorded layout\'s {role} partition is malformed')
         end = part['last']
+    if layout['version'] == 2 and len({layout['diskGuid'], *(parts[role]['guid'] for role in roles)}) != 7:
+        raise ValueError('the recorded layout has duplicate GUIDs')
     return layout
+
+
+def add_breenfs_layout(layout):
+    """Extend a v1 record without changing its existing entries."""
+    check_layout(layout)
+    if layout['version'] != 1:
+        raise ValueError('adding breenfs requires a v1 layout')
+    parts = {role: dict(part) for role, part in layout['partitions'].items()}
+    lba = (parts['home']['last'] + 1 + 2047) // 2048 * 2048
+    for number, role in enumerate(BREENFS_ROLES, 5):
+        sectors = SIZES[role] // SECTOR
+        parts[role] = {'number': number, 'type': TYPES[role], 'guid': str(uuid.uuid4()), 'first': lba,
+                       'last': lba + sectors - 1, 'name': NAMES[role]}
+        lba += sectors
+    return check_layout(dict(layout, version=2, partitions=parts))
 
 
 # The service's record of the disk: `layout` (this layout), `testRoot` (the test root's last staged image, as the
@@ -394,6 +421,37 @@ def install_request(directory, the_layout, expect, files, slot, note, site, scra
         request.lines.append('manager-config ' + line)
     request.lines.append('load-option ' + LOAD_OPTION)
     return request.finish(), request
+
+
+def add_breenfs_request(directory, layout):
+    """Build an add-breenfs request from the two exact-size sparse images."""
+    check_layout(layout)
+    if layout['version'] != 2:
+        raise ValueError('adding breenfs requires a v2 layout')
+    request = Request(directory, 'add-breenfs')
+    request.lines.append('expect-disk ' + layout['diskGuid'])
+    with tempfile.TemporaryDirectory(prefix='breenfs-request-', dir=directory) as scratch:
+        for role in BREENFS_ROLES:
+            part = layout['partitions'][role]
+            request.lines.append(f"partition {part['number']} {part['type']} {part['guid']} {part['first']} {part['last']} {part['name']}")
+            size = (part['last'] - part['first'] + 1) * SECTOR
+            image = Path(scratch) / (role + '.img')
+            result = subprocess.run([str(m.TOOLS / 'breenfs-mkfs'), '--extents', '--size', str(size),
+                                     '--uuid', uuid.UUID(part['guid']).hex, str(image)],
+                                    check=True, capture_output=True, text=True)
+            extents = []
+            for line in result.stdout.splitlines():
+                if not re.fullmatch(r'[0-9]+ [0-9]+', line):
+                    raise ValueError('invalid breenfs extent list')
+                block, count = map(int, line.split())
+                first, sectors = block * 8, count * 8
+                if not count or first + sectors > size // SECTOR:
+                    raise ValueError('breenfs extent outside its partition')
+                extents.append((first, sectors))
+            if not extents or image.stat().st_size != size:
+                raise ValueError('invalid breenfs image or empty extent list')
+            request.extents_of(part['number'], image, extents)
+    return request
 
 
 def upgrade_request(directory, the_layout, files, slot, note, site):

@@ -694,10 +694,13 @@ partition starts on a 1 MiB boundary.
 | 2 | Breenix test root | `DAC951C3-27DF-4E3D-8B9E-487906AC2C81` | 4 GiB, ext2 | the root test boots get | the delivery stub, before each test boot |
 | 3 | Breenix system | `2EF14A34-ABBD-48F8-83D6-F2A8C7B4A9FE` | 8 GiB, ext2 | the persistent install's root: userland, `/etc`, `/root` | persistent boots; the install boot's migration |
 | 4 | Breenix home | `9BFEAEF9-4F51-45DE-8BCF-5CEC1603B862` | 16 GiB, ext2 | `/home` of the persistent install | persistent boots |
+| 5 | BreenFS system | `FAD521D2-3783-43CC-BE73-60ED528454C9` | 64 GiB, breenfs | migrated system and shared state | add-breenfs request; subsequent persistent boots |
+| 6 | BreenFS home | `F93914AD-57E7-4FEB-A52E-295A07FD7E35` | 256 GiB, breenfs | migrated home | add-breenfs request; subsequent persistent boots |
 
-The rest of the disk stays unallocated. The disk GUID and the four unique partition GUIDs are random; the boot host
+Layout v1 has entries 1–4; layout v2 adds entries 5–6 without changing the first four. The rest of the disk stays
+unallocated. The disk GUID and unique partition GUIDs are random; the boot host
 makes them for the one-time install and keeps them in the service's `disk.json` (`layout`), with each partition's
-first and last LBA. The three Breenix type GUIDs above are constants of this layout and name a partition's role;
+first and last LBA. The Breenix type GUIDs above are constants of this layout and name a partition's role;
 the unique GUIDs name one disk's partitions.
 
 A kernel slot is a boot disk in the delivery stub's format ("Delivery"): a GPT disk image with one FAT partition
