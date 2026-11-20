@@ -2114,6 +2114,11 @@ fn current_cpu_thread() -> Option<&'static Thread> {
     thread.map(|t| &*t)
 }
 
+/// Identity carried by the running thread, without taking the scheduler lock.
+pub(crate) fn current_owner_pid() -> Option<u64> {
+    crate::arch_without_interrupts(|| current_cpu_thread().and_then(|thread| thread.owner_pid))
+}
+
 /// Honor pending kill at waits that can unwind. Nested custody can finish.
 pub(crate) fn current_wait_must_unwind() -> bool {
     current_cpu_thread().is_some_and(Thread::must_not_sleep)

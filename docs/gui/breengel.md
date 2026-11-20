@@ -1502,8 +1502,10 @@ negative control: the device reports no resource identity and it is observed as 
 - Op 0 `STATE` returns 1 (enabled). Op 1 `ARM { point: u32 @0, reserved @4, target: u64 @8, param: u64 @16 }` <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
   arms one one-shot fault; op 2 `DISARM_ALL` disarms every point and restarts the gauge
   `gpu_irq_masked_max_us` at 0; op 3 `FIRED { point: u32 @0, reserved @4, out count: u64 @8 }`
-  reports how many times a point fired. Arming or reading a point this section does not define is EINVAL. There is no op that sets or clears the latch: op 4 `SET_LATCH` and
-  every op above 4 are EINVAL.
+  reports how many times a point fired. Arming or reading an undefined point returns EINVAL.
+  Op 5 `RESIDENT_CENSUS` takes a scalar action in `arg` with `len=0`. The GUI Apps runner uses
+  actions 0 and 1 to sample before and after, 2 to report and clear, and 3 to clear.
+  Op 4 `SET_LATCH` and undefined operations return EINVAL. The latch is immutable.
 - Points: 1 `ignore-damage` (the next composite processes the whole window), 2 `irq-hold` (the next GPU <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
   SUBMIT validation holds IRQs masked for 2 ms), 3 `emit-diagnostic` (param: the writer path, section 22), 4
   `acquire-stall` (target: a window; the next `ACQUIRE` pauses after copying half its replay rows until

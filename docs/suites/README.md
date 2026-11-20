@@ -235,6 +235,13 @@ SUITE <id> MEMORY reclaimed=PASS|FAIL free_before=<pages> free_after=<pages> all
 - `MEMORY before` comes after START and before the first case. After DONE, the runner kills
   and reaps any process left (each case's were swept after it), then prints `MEMORY after`
   and the `reclaimed` verdict, before `SUITE_SEQUENCE READY`.
+- Before launching GUI Apps, init waits for its SSH boot oracle and server-side
+  connection handlers to finish and for the finite ARM64 boot counter helper to be
+  reaped. A GUI Apps memory failure prints the paired resident samples as
+  `SUITE_MEMORY_PID gui-apps <before|after>` records. Each row has `pid`, `name`,
+  `user_pages`, `user_stacks` and `page_tables`. The header reports row truncation or
+  skipped address spaces, or marks an unavailable sample. These are per-address-space
+  mappings of tracked frames, so a shared frame can appear under more than one PID.
 - What the runner keeps for its final panel exists before `MEMORY before`, so both samples
   count it: a framebuffer suite's mapping of the display, and the GPU suite's view, a GPU
   context and its 2560x1600 scanout target (4013 pages).

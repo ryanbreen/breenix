@@ -1407,6 +1407,14 @@ impl Suite {
             if self.gui { crate::suite_stage::memory_owners("after"); }
             let (line, reclaimed) = memory_record::verdict(self.id, before.as_ref(), after.as_ref());
             emit(&line);
+            if self.id == "gui-apps" {
+                use crate::gpu::abi::test_control::resident_census as op;
+                let action = if reclaimed { op::DISCARD } else { op::REPORT };
+                let status = gui_memory_census(action);
+                if !reclaimed && status < 0 {
+                    emit(&std::format!("SUITE_MEMORY_PID gui-apps unavailable={status}"));
+                }
+            }
             if !reclaimed {
                 memory_failure_detail(self.id);
                 sequence::record_memory_failure(self.id);
@@ -1641,6 +1649,10 @@ pub(super) enum State {
 fn memory_sample(id: &str, when: &str) -> Option<memory_record::Sample> {
     match memory_record::settled() {
         Ok(sample) => {
+            if id == "gui-apps" {
+                use crate::gpu::abi::test_control::resident_census as op;
+                gui_memory_census(if when == "before" { op::BEFORE } else { op::AFTER });
+            }
             emit(&sample.record(id, when));
             Some(sample)
         }
@@ -1649,6 +1661,12 @@ fn memory_sample(id: &str, when: &str) -> Option<memory_record::Sample> {
             None
         }
     }
+}
+
+fn gui_memory_census(action: u64) -> i64 {
+    use crate::gpu::abi::{test_control::RESIDENT_CENSUS, SYS_TEST_CONTROL};
+    // SAFETY: this operation passes only a scalar action and has no user buffer.
+    unsafe { crate::syscall::raw::syscall3(SYS_TEST_CONTROL, u64::from(RESIDENT_CENSUS), action, 0) as i64 }
 }
 
 /// Capture ownership only after the settled reclamation verdict fails.

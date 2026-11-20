@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 class DesktopClock(unittest.TestCase):
     def test_initial_clock_step_precedes_cases_or_launch_is_refused(self):
         source = (ROOT / 'userspace/programs/src/init.rs').read_text()
+        services = (ROOT / 'userspace/programs/src/init_services.rs').read_text()
+        ssh_reap = item(services, 'pub fn ssh_boot_oracle_reaped(')
         functions = (item(source, 'fn finish_boot_checks(').replace('#[cfg(target_arch = "aarch64")]', '')
                      + item(source, 'fn desktop_suite_ready(') + item(source, 'fn run_desktop_suite('))
         harness = r'''
@@ -44,11 +46,20 @@ pub mod std {
   }
  }
  pub mod fs {
-  pub fn read_to_string(path: &str) -> Result<String, String> {
-   assert_eq!(path, "/run/breenix/ntp-state");
-   if crate::NOW.load(crate::Ordering::Relaxed) >= crate::CLOCK_AT.load(crate::Ordering::Relaxed) {
-    Ok("1 200 200 site\n".into())
-   } else { Err("not synchronized".into()) }
+  use ::std::io::{Error, ErrorKind};
+  pub fn read_to_string(path: impl AsRef<::std::path::Path>) -> Result<String, Error> {
+   let path = path.as_ref().to_str().unwrap();
+   let now = crate::NOW.load(crate::Ordering::Relaxed);
+   match path {
+    "/run/breenix/ntp-state" if now >= crate::CLOCK_AT.load(crate::Ordering::Relaxed) =>
+     Ok("1 200 200 site\n".into()),
+    "/run/breenix/ntp-state" | "/proc/12/stat" => Err(ErrorKind::NotFound.into()),
+    "/proc/7/status" => Ok("Name:\tbsshd\nChildren:\t11 12\n".into()),
+    "/proc/11/stat" if now >= crate::SSH_AT.load(crate::Ordering::Relaxed) =>
+     Ok("11 (bsshd) Z 7\n".into()),
+    "/proc/11/stat" => Ok("11 (bsshd) S 7\n".into()),
+    _ => panic!("unexpected read {path}"),
+   }
   }
  }
  pub mod process {
@@ -84,19 +95,28 @@ pub mod libbreenix {
  }
 }
 pub mod init_services {
+ use crate::std;
+ use ::std::io::ErrorKind;
  pub enum Scope { Daemons }
- pub struct Supervisor;
+ struct Entry { def: Definition, pid: i32 }
+ struct Definition { name: &'static str }
+ pub struct Supervisor { entries: [Entry; 1] }
  impl Supervisor {
-  pub fn load(_: Scope, _: bool) -> Self { Self }
+  pub fn load(_: Scope, _: bool) -> Self {
+   Self { entries: [Entry { def: Definition { name: "bsshd" }, pid: 7 }] }
+  }
   pub fn tick(&mut self) { crate::NOW.fetch_add(50, crate::Ordering::Relaxed); }
   pub fn service_state(&self, name: &str) -> Option<&str> {
-   match name { "shares" => Some("done"), "ntp" => Some("running"), _ => panic!("unknown service") }
+   match name {
+    "shares" => Some("done"),
+    "ntp" => Some("running"),
+    "bssh-oracle" if crate::NOW.load(crate::Ordering::Relaxed)
+        >= crate::ORACLE_AT.load(crate::Ordering::Relaxed) => Some("done"),
+    "bssh-oracle" => Some("running"),
+    _ => panic!("unknown service"),
+   }
   }
-  pub fn ssh_boot_oracle_reaped(&self) -> bool {
-   let now = crate::NOW.load(crate::Ordering::Relaxed);
-   now >= crate::ORACLE_AT.load(crate::Ordering::Relaxed)
-    && now >= crate::SSH_AT.load(crate::Ordering::Relaxed)
-  }
+  // SSH REAP
   pub fn tick_child(&mut self, child: Option<i32>) -> Option<i32> {
    if child == Some(9) { return Some(0); }
    self.tick();
@@ -138,7 +158,7 @@ fn main() {
   }
  }
 }
-'''.replace('// FUNCTIONS', functions)
+'''.replace('// FUNCTIONS', functions).replace('// SSH REAP', ssh_reap)
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
             (path / 'clock.rs').write_text(harness)
