@@ -850,7 +850,8 @@ plus one to six `mount <guid> <path> ro|rw` lines. Exactly one path is `/`, path
 unique absolute strings of at most 64 bytes using lowercase ASCII letters, digits, `/`,
 `.`, `_` and `-`, with no `.` or `..` components. At most two mounts are writable.
 The complete intent is at most 1024 bytes. Malformed format 3 intents are refused.
-This format describes mounts; the migration and mount consumers arrive in later units.
+The migration, cutover and rescue boot intents use format 3. Writable mounts name
+the BreenFS system or home volumes.
 
 ### The write fence
 

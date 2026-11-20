@@ -71,7 +71,8 @@ def migration_intent(phase, userland, guids):
     else:
         raise ValueError('invalid migration phase')
     return format_intent(target, userland=userland,
-                         mounts=[(guids[role], path, writable) for role, path, writable in mounts])
+                         mounts=[(guids[role], path, writable) for role, path, writable in mounts],
+                         mount_guids=guids)
 
 
 def migration_slot(phase, promoted):

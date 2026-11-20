@@ -89,6 +89,9 @@ pub(crate) fn prepare_mounts<'a>(
         let format = detect(formats, device.as_ref())
             .map_err(|_| fail("the filesystem magic is unreadable"))?
             .ok_or_else(|| fail("the filesystem magic is unrecognized"))?;
+        if writable && format.kind != "breenfs" {
+            return Err(fail("format-3 mounts require read-only access to non-BreenFS volumes"));
+        }
         mounts.push(MountLine {
             guid,
             path,

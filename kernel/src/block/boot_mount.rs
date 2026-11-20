@@ -94,6 +94,9 @@ pub fn grant_write(
     writable: bool,
 ) -> Result<(), &'static str> {
     if writable {
+        if !matches!(entry.type_guid, BREENFS_SYSTEM_TYPE | BREENFS_HOME_TYPE) {
+            return Err("only BreenFS system and home partitions may receive a format-3 write grant");
+        }
         fence.add(disk, entry.first, entry.last)?;
     }
     Ok(())

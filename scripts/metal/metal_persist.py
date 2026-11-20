@@ -24,6 +24,11 @@ SECTOR = 512
 FIRST_LBA = 2048
 ROLES = ('esp', 'test', 'system', 'home')
 BREENFS_ROLES = ('breenfs-system', 'breenfs-home')
+MIGRATION_PATH_ROLES = {
+    '/': 'breenfs-system', '/home': 'breenfs-home',
+    '/migrate/system': 'breenfs-system', '/migrate/home': 'breenfs-home',
+    '/migrate/ext2-system': 'system', '/migrate/ext2-home': 'home',
+}
 TYPES = {'esp': 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b', 'test': 'dac951c3-27df-4e3d-8b9e-487906ac2c81',
          'system': '2ef14a34-abbd-48f8-83d6-f2a8c7b4a9fe', 'home': '9bfeaef9-4f51-45de-8bcf-5cec1603b862',
          'breenfs-system': 'fad521d2-3783-43cc-be73-60ed528454c9',
@@ -144,8 +149,9 @@ def manager_config(site, countdown=5):
     return ['BREENIX-MANAGER 1', 'query ' + query_url(site), f'countdown {countdown}', 'test-path load-file']
 
 
-def intent(target, root=None, home=None, tests=None, userland=None, previous_userland=None, command_line=None, mounts=None):
-    """A boot intent (kernel/src/boot/intent.rs)."""
+def intent(target, root=None, home=None, tests=None, userland=None, previous_userland=None,
+           command_line=None, mounts=None, mount_guids=None):
+    """A boot intent. Writable mounts need the layout's role-to-GUID map."""
     if mounts is not None and (root is not None or home is not None):
         raise ValueError('mounts cannot be mixed with root or home')
     lines = ['BREENIX-BOOT 3' if mounts is not None else 'BREENIX-BOOT 2', 'target ' + target]
@@ -159,6 +165,9 @@ def intent(target, root=None, home=None, tests=None, userland=None, previous_use
                 raise ValueError(f'the {item} is not a GUID')
             lines.append(f'{item} {guid}')
     if mounts is not None:
+        roles = {guid: role for role, guid in (mount_guids or {}).items()}
+        if mount_guids is not None and len(roles) != len(mount_guids):
+            raise ValueError('duplicate GUIDs in the mount roles')
         paths = set()
         writable_count = 0
         if not 1 <= len(mounts) <= 6:
@@ -169,6 +178,9 @@ def intent(target, root=None, home=None, tests=None, userland=None, previous_use
                     or any(part in ('.', '..') for part in path.split('/'))
                     or path in paths or not isinstance(writable, bool)):
                 raise ValueError('invalid mount')
+            role = roles.get(guid)
+            if writable and (role not in BREENFS_ROLES or role != MIGRATION_PATH_ROLES.get(path, role)):
+                raise ValueError('writable mount does not name a BreenFS volume of the required role')
             paths.add(path)
             writable_count += writable
             lines.append(f"mount {guid} {path} {'rw' if writable else 'ro'}")
