@@ -307,6 +307,27 @@ class DiskTest(existing.StateTest):
         m.quarantine_lease('readback', 'power state uncertain')
         self.assertFalse(m.handoff_lease('readback', dict(id='third', unit='suite-unit')))
 
+    def test_cold_readback_accepts_deadline_ended_source_and_records_status(self):
+        source_id = '20261018T000000Z-metal'
+        source = existing.m.boot_dir(source_id)
+        source.mkdir(parents=True)
+        facts = dict(installedBy='prior', bytes=4096, sha256AfterRecord='a' * 64)
+        existing.m.write_json(source / 'run.json', dict(disk='root', mode='suite'))
+        existing.m.write_json(source / 'suite-disk.json', facts)
+        (source / 'commit').write_text('b' * 40)
+        (source / 'ended').touch()
+        (source / 'exit-status').write_text('1\n')
+        events = [dict(event='decided', status=1, reason='the mode deadline passed with stages missing'),
+                  dict(event='power-off', off=True, t=1),
+                  dict(event='disk-root-record', matchesLastInstall=True)]
+        (source / 'events.jsonl').write_text('\n'.join(json.dumps(e) for e in events))
+        existing.m.write_json(existing.m.STATE / 'disk.json', dict(facts, lastBoot=source_id))
+        self.site['BOOT_URL'] = 'http://example.invalid/boot'
+        with patch.object(disk.metal_image, 'assemble', side_effect=lambda image, _: image.touch()), \
+             patch.object(disk.metal_image, 'stub_efi', return_value={}):
+            disk.prepare_readback(self.directory, self.inputs, source_id, 'b' * 40, 'readback', self.site, self.inputs / 'stub.efi')
+        self.assertEqual(existing.m.read_json(self.directory / 'readback.json')['sourceStatus'], 1)
+
     def test_cold_readback_refuses_an_intervening_boot_even_with_the_same_root(self):
         source_id = '20261018T000000Z-metal'
         source = existing.m.boot_dir(source_id)
