@@ -59,6 +59,8 @@ pub mod publication_measurement {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     EIO,
+    BlockRead(BlockError),
+    NodeRead(btree::ReadFailure),
     UuidMismatch,
     NoGeneration,
     InvalidGeneration,
@@ -70,8 +72,11 @@ impl From<format::Error> for Error {
     }
 }
 impl From<btree::Error> for Error {
-    fn from(_: btree::Error) -> Self {
-        Self::EIO
+    fn from(error: btree::Error) -> Self {
+        match error {
+            btree::Error::Read(failure) => Self::NodeRead(failure),
+            _ => Self::EIO,
+        }
     }
 }
 
@@ -573,7 +578,7 @@ pub(crate) fn read(device: &dyn BlockDevice, addr: u64, len: usize) -> Result<Ve
     // One device request per read (E24 ledger 372, #3040).
     device
         .read_blocks(start, len / sector, &mut bytes)
-        .map_err(|_| Error::EIO)?;
+        .map_err(Error::BlockRead)?;
     Ok(bytes)
 }
 pub(crate) fn write(device: &dyn BlockDevice, addr: u64, bytes: &[u8]) -> Result<(), Error> {
@@ -598,9 +603,17 @@ pub(crate) fn write(device: &dyn BlockDevice, addr: u64, bytes: &[u8]) -> Result
 }
 /// Read-only backing store for a transaction or recovery walk.
 pub struct DeviceStore<'a>(pub &'a dyn BlockDevice);
+impl DeviceStore<'_> {
+    pub(crate) fn read_at(&self, addr: u64, len: usize) -> Result<Vec<u8>, btree::Error> {
+        read(self.0, addr, len).map_err(|error| match error {
+            Error::BlockRead(error) => btree::Error::Read(btree::ReadFailure { cause: error.into(), addr }),
+            _ => btree::Error::Store,
+        })
+    }
+}
 impl NodeStore for DeviceStore<'_> {
     fn get(&self, addr: u64) -> Result<Vec<u8>, btree::Error> {
-        read(self.0, addr, NODE_SIZE).map_err(|_| btree::Error::Store)
+        self.read_at(addr, NODE_SIZE)
     }
     fn put(&mut self, _: u64, _: Vec<u8>) -> Result<(), btree::Error> {
         Err(btree::Error::Store)

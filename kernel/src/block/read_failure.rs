@@ -1,5 +1,44 @@
-//! Failure-only ARM virtio read receipt (E24 ledger 520(r), #3065).
+//! Typed block read failures (E24 coordinator ledger 520(r) and 734(i1)).
 use core::fmt;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AhciReadError {
+    Range,
+    BufferSize,
+    CannotPark,
+    Interrupted,
+    WaiterAllocation,
+    WaitPublication,
+    AdmissionTimeout,
+    ControllerAbsent,
+    Setup(&'static str),
+    Issue(&'static str),
+    Wait(&'static str),
+    Finish(&'static str),
+}
+
+impl AhciReadError {
+    pub fn phase(self) -> &'static str {
+        match self {
+            Self::ControllerAbsent | Self::Setup(_) => "setup",
+            Self::Issue(_) => "issue",
+            Self::Wait(_) => "wait",
+            Self::Finish(_) => "finish",
+            _ => "admission",
+        }
+    }
+
+    /// A failure before submission cannot establish a failure of the sector.
+    pub fn pre_issue(self) -> bool {
+        !matches!(self, Self::Wait(_) | Self::Finish(_))
+    }
+}
+
+impl fmt::Display for AhciReadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ahci_phase={} ahci_error={self:?}", self.phase())
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VirtioReadFailure {

@@ -41,6 +41,23 @@ unsafe impl<T: Send> Sync for MountLock<T> {}
 #[must_use]
 pub struct MountGuard<'a, T> {
     lock: &'a MountLock<T>,
+    #[cfg(not(test))]
+    io_custody: Option<crate::task::thread::KillCustody>,
+}
+
+impl<T> MountGuard<'_, T> {
+    /// An admitted edit can need another metadata read after its first change.
+    /// Let the edit finish before a pending kill unwinds the syscall.
+    pub(super) fn protect_edit(&mut self) -> Result<(), Errno> {
+        #[cfg(not(test))]
+        {
+            if crate::task::thread::current_wait_must_unwind() {
+                return Err(Errno(EINTR));
+            }
+            self.io_custody = Some(crate::task::thread::KillCustody::try_enter().ok_or(Errno(EINTR))?);
+        }
+        Ok(())
+    }
 }
 
 impl<T> MountLock<T> {
@@ -88,7 +105,11 @@ impl<T> MountLock<T> {
             .map(|_| {
                 #[cfg(test)]
                 super::preempt::context::observe(super::preempt::context::Event::Acquire(self as *const Self as usize));
-                MountGuard { lock: self }
+                MountGuard {
+                    lock: self,
+                    #[cfg(not(test))]
+                    io_custody: None,
+                }
             })
     }
 

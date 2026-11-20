@@ -643,6 +643,8 @@ impl<W: Wait> BufferCache<W> {
         let charge = self.begin(key, size);
         let result = device.read_block(block, &mut bytes[..size]);
         self.count(|c| &mut c.device_reads);
+        // Only completed device reads reach verification. Return the original
+        // block error on failure, including a refusal before submission.
         let result = result.and_then(|()| {
             if verify(&bytes[..size]) {
                 Ok(())

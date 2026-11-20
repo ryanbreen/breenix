@@ -44,6 +44,24 @@ fn block_error(error: breenfs_host_tests::block::BlockError) -> BlockError {
             last_used_idx: f.last_used_idx,
             device_status: f.device_status,
         }),
+        E::AhciRead(error) => {
+            use breenfs_host_tests::read_failure::AhciReadError as Source;
+            use crate::block::read_failure::AhciReadError as Target;
+            BlockError::AhciRead(match error {
+                Source::Range => Target::Range,
+                Source::BufferSize => Target::BufferSize,
+                Source::CannotPark => Target::CannotPark,
+                Source::Interrupted => Target::Interrupted,
+                Source::WaiterAllocation => Target::WaiterAllocation,
+                Source::WaitPublication => Target::WaitPublication,
+                Source::AdmissionTimeout => Target::AdmissionTimeout,
+                Source::ControllerAbsent => Target::ControllerAbsent,
+                Source::Setup(reason) => Target::Setup(reason),
+                Source::Issue(reason) => Target::Issue(reason),
+                Source::Wait(reason) => Target::Wait(reason),
+                Source::Finish(reason) => Target::Finish(reason),
+            })
+        }
 
         E::OutOfMemory => BlockError::OutOfMemory,
         E::OutOfBounds => BlockError::OutOfBounds,

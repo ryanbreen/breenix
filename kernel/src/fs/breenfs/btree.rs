@@ -119,12 +119,34 @@ pub enum Error {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ReadCause { Device, Driver(crate::block::read_failure::VirtioReadFailure), Verification, Allocation }
+pub enum ReadCause {
+    Device,
+    Ahci(crate::block::read_failure::AhciReadError),
+    Driver(crate::block::read_failure::VirtioReadFailure),
+    Verification,
+    Allocation,
+}
+impl From<crate::block::BlockError> for ReadCause {
+    fn from(error: crate::block::BlockError) -> Self {
+        use crate::block::BlockError;
+        match error {
+            BlockError::AhciRead(error) => Self::Ahci(error),
+            BlockError::VirtioRead(failure) => Self::Driver(failure),
+            BlockError::OutOfMemory => Self::Allocation,
+            _ => Self::Device,
+        }
+    }
+}
 impl ReadCause {
+    pub(crate) fn pre_issue(self) -> bool {
+        matches!(self, Self::Ahci(error) if error.pre_issue())
+    }
+
     pub fn name(self) -> &'static str {
         match self {
+            cause if cause.pre_issue() => "pre-issue",
             Self::Driver(failure) if failure.context_refused() => "io-context",
-            Self::Device | Self::Driver(_) => "device-read",
+            Self::Device | Self::Ahci(_) | Self::Driver(_) => "device-read",
             Self::Verification => "verification",
             Self::Allocation => "allocation",
         }
@@ -133,7 +155,11 @@ impl ReadCause {
 impl core::fmt::Display for ReadCause {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", self.name())?;
-        if let Self::Driver(failure) = self { write!(f, " {}", failure)?; }
+        match self {
+            Self::Ahci(error) => write!(f, " {error}")?,
+            Self::Driver(failure) => write!(f, " {failure}")?,
+            _ => {}
+        }
         Ok(())
     }
 }

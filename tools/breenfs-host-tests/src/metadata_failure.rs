@@ -93,17 +93,28 @@ fn metadata_allocation_cause_and_node_are_recorded() { cause("allocation", false
 
 #[test]
 fn ahci_preissue_refusal_leaves_root_writable() {
+    use crate::block::read_failure::AhciReadError;
     let (fs, disk, sb, ptr) = fixture();
     let cache = BufferCache::new(NoWait);
     let store = CachedNodeStore::new(&cache, disk.as_ref(), &sb);
     let writes = disk.writes.load(Ordering::Relaxed);
-    // AHCI's port gate refuses before submitting a command.
-    *disk.read_error.lock().unwrap() = Some(BlockError::DeviceNotReady);
-    let result = store.read_node(ptr).map_err(ops::Error::from);
-    assert_eq!(fs.inner.state.lock().observed(result).err(), Some(Errno(EAGAIN)));
-    assert_eq!(fs.failure(), None);
-    assert_eq!(fs.read_only(), Ok(false));
-    assert_eq!(disk.writes.load(Ordering::Relaxed), writes);
+    for (error, expected) in [
+        (AhciReadError::CannotPark, EAGAIN),
+        (AhciReadError::Interrupted, EINTR),
+        (AhciReadError::AdmissionTimeout, ETIMEDOUT),
+        (AhciReadError::ControllerAbsent, EIO),
+        (AhciReadError::Issue("AHCI: command engine not running"), EIO),
+    ] {
+        *disk.read_error.lock().unwrap() = Some(BlockError::AhciRead(error));
+        let result = store.read_node(ptr).map_err(ops::Error::from);
+        assert!(matches!(result, Err(ops::Error::Metadata(super::super::btree::ReadFailure {
+            cause: super::super::btree::ReadCause::Ahci(observed), addr,
+        })) if observed == error && addr == ptr.addr));
+        assert_eq!(fs.inner.state.lock().observed(result).err(), Some(Errno(expected)));
+        assert_eq!(fs.failure(), None);
+        assert_eq!(fs.read_only(), Ok(false));
+        assert_eq!(disk.writes.load(Ordering::Relaxed), writes);
+    }
 
     *disk.read_error.lock().unwrap() = None;
     assert!(store.read_node(ptr).is_ok());
@@ -116,10 +127,11 @@ fn ahci_preissue_refusal_leaves_root_writable() {
 
 #[test]
 fn ahci_media_error_on_metadata_latches_root() {
+    use crate::block::read_failure::AhciReadError;
     let (fs, disk, sb, ptr) = fixture();
     let cache = BufferCache::new(NoWait);
     let store = CachedNodeStore::new(&cache, disk.as_ref(), &sb);
-    *disk.read_error.lock().unwrap() = Some(BlockError::IoError);
+    *disk.read_error.lock().unwrap() = Some(BlockError::AhciRead(AhciReadError::Wait("AHCI: task file error")));
     let result = store.read_node(ptr).map_err(ops::Error::from);
     assert_eq!(fs.inner.state.lock().observed(result).err(), Some(Errno(EIO)));
     assert_eq!(fs.failure(), Some(("observed-metadata", EIO)));

@@ -424,6 +424,8 @@ pub enum BlockError {
     IoError,
     /// The ARM driver receipt, captured before request state is cleared.
     VirtioRead(VirtioReadFailure),
+    /// The AHCI read phase and reason, including refusals before submission.
+    AhciRead(read_failure::AhciReadError),
     /// Block number is out of bounds
     OutOfBounds,
     /// Device is not ready or not responding
@@ -441,6 +443,7 @@ impl fmt::Display for BlockError {
             BlockError::OutOfMemory => write!(f, "out of memory"),
             BlockError::IoError => write!(f, "I/O error"),
             BlockError::VirtioRead(failure) => failure.fmt(f),
+            BlockError::AhciRead(error) => error.fmt(f),
             BlockError::OutOfBounds => write!(f, "block number out of bounds"),
             BlockError::DeviceNotReady => write!(f, "device not ready"),
             BlockError::Timeout => write!(f, "operation timed out"),

@@ -155,10 +155,11 @@ impl<W: Wait> NodeStore for CachedNodeStore<'_, W> {
                 valid
             })
             .map_err(|error| Error::Read(ReadFailure {
-                cause: if verification_failed.get() { ReadCause::Verification }
-                    else if error == BlockError::OutOfMemory { ReadCause::Allocation }
-                    else if let BlockError::VirtioRead(failure) = error { ReadCause::Driver(failure) }
-                    else { ReadCause::Device },
+                cause: if verification_failed.get() {
+                    ReadCause::Verification
+                } else {
+                    error.into()
+                },
                 addr,
             }))?;
         Ok(bytes)

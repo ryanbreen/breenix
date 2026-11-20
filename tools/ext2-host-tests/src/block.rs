@@ -102,6 +102,7 @@ pub enum BlockError {
     /// I/O error occurred during operation
     IoError,
     VirtioRead(VirtioReadFailure),
+    AhciRead(read_failure::AhciReadError),
     /// Block number is out of bounds
     OutOfBounds,
     /// Device is not ready or not responding
@@ -119,6 +120,7 @@ impl fmt::Display for BlockError {
             BlockError::OutOfMemory => write!(f, "out of memory"),
             BlockError::IoError => write!(f, "I/O error"),
             BlockError::VirtioRead(failure) => failure.fmt(f),
+            BlockError::AhciRead(error) => error.fmt(f),
             BlockError::OutOfBounds => write!(f, "block number out of bounds"),
             BlockError::DeviceNotReady => write!(f, "device not ready"),
             BlockError::Timeout => write!(f, "operation timed out"),

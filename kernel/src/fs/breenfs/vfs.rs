@@ -733,6 +733,9 @@ impl<W: Wait> MountState<W> {
         self.pending.is_some() || self.retaining_for_sync != 0
     }
     fn apply_touches(&mut self, ino: u64) -> Result<(), Errno> {
+        // A timestamp refresh can edit a private tree before returning.
+        #[cfg(not(test))]
+        let _custody = crate::task::thread::KillCustody::try_enter().ok_or(Errno(EINTR))?;
         self.touches.remove(&ino);
         preemption_point();
         let Some(touched) = self.nodes.get(&ino).and_then(|entry| entry.touched.as_ref())
@@ -895,6 +898,12 @@ impl<W: Wait> MountState<W> {
     /// view and N's pages go to the commit worker, which drops them outside
     /// the exclusion. Returns true once the replay and the refresh are done.
     fn materialize(&mut self) -> bool {
+        // Replay completes previously accepted edits. A syscall helping with
+        // replay must retain their custody through any cold metadata reads.
+        #[cfg(not(test))]
+        let Some(_custody) = crate::task::thread::KillCustody::try_enter() else {
+            return false;
+        };
         let mut steps = 0;
         if let Some(next) = self.next_files.as_mut() {
             let log = self.files.log.get_or_insert_with(VecDeque::new);
@@ -965,7 +974,7 @@ impl<W: Wait> MountState<W> {
     }
     fn observed<T>(&mut self, result: Result<T, ops::Error>) -> Result<T, Errno> {
         if let Err(error) = result.as_ref() { self.record_metadata(*error); }
-        if result.as_ref().is_err_and(|error| errno(*error) == Errno(EIO)) {
+        if result.as_ref().is_err_and(|error| latches_on_read(*error)) {
             self.fail("observed-metadata", Errno(EIO));
         }
         result.map_err(errno)
@@ -991,6 +1000,7 @@ impl<W: Wait> MountState<W> {
         match result {
             Ok(value) => Ok(value),
             Err(ReadError::Metadata(error)) => self.observed(Err(error)),
+            Err(ReadError::Device(error)) => Err(read_cause_errno(error.into())),
             Err(ReadError::Data) => Err(Errno(EIO)),
         }
     }
@@ -1004,9 +1014,19 @@ impl<W: Wait> MountState<W> {
         // A storage/allocation failure may have interrupted a multi-item edit.
         // Do not publish that transaction. Reservation refusals return before
         // mutation via admission; an ENOSPC here is still a bug.
-        if let Err(error) = result.as_ref() { self.record_metadata(*error); }
-        if result.as_ref().is_err_and(|error| matches!(errno(*error).0, EIO | ENOSPC)) {
-            self.fail("edited", errno(result.as_ref().err().copied().expect("edit error")));
+        if let Err(error) = result.as_ref() {
+            self.record_metadata(*error);
+            match (error, errno(*error)) {
+                // Admission expiry here stopped an edit already in custody.
+                // Keep the failed generation from being published.
+                (ops::Error::Metadata(super::btree::ReadFailure {
+                    cause: super::btree::ReadCause::Ahci(
+                        crate::block::read_failure::AhciReadError::AdmissionTimeout
+                    ), ..
+                }), _) => self.fail("edited", Errno(EIO)),
+                (_, error @ Errno(EIO | ENOSPC)) => self.fail("edited", error),
+                _ => {}
+            }
         }
         // Refresh only inodes this edit can change. Closed dirty entries stay
         // indexed until publication, without making later edits scan them.
@@ -1497,7 +1517,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         let mut publication = mounts.publication.lock();
         let durable = recover::recover_detailed(device.as_ref(), writable).map_err(|failure| {
             report(format_args!("breenfs {}", failure));
-            Errno(EIO)
+            recovery_errno(failure.error)
         })?;
         // Recovery can publish orphan reclamation even if root selection fails.
         *publication = Some(durable.clone());
@@ -1505,7 +1525,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         let block = durable.space_root.addr;
         let roots = recover::space_items(&store, &durable).map_err(|error| {
             report(format_args!("stage=breenfs-node-cache space_root={} expected=readable-roots found={:?}", block, error));
-            Errno(EIO)
+            recovery_errno(error)
         })?;
         let durable_pending = PendingSummary::from_items(&roots).ok();
         let mut selected = None;
@@ -1833,6 +1853,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         let mut limit = None;
         loop {
             state.writable()?;
+            state.protect_edit()?;
             let result = {
                 let _reservation = self.inner.costs.span(cost, CostPhase::Reservation);
                 reserve(&mut state)
@@ -2685,11 +2706,11 @@ impl<W: Wait + 'static> BreenFs<W> {
             root, generation, budget);
         let completion = walk.completion();
         match result {
-            Err(_) => {
+            Err(error) => {
                 state.scrub_state = SCRUB_FAILED;
                 #[cfg(test)]
                 signal.started.store(false, Ordering::Release);
-                Err(Errno(EIO))
+                Err(errno(error.into()))
             }
             Ok(bytes) => {
                 if let Some(done) = completion {
@@ -2832,8 +2853,14 @@ impl<W: Wait + 'static> BreenFs<W> {
                     return Ok(());
                 }
                 files.read_verified(&self.data_reader(), ino, off, page).map_err(|error| {
-                    if let ReadError::Metadata(error) = error { bad_metadata = Some(error); }
-                    errno(error.error())
+                    match error {
+                        ReadError::Metadata(error) => {
+                            bad_metadata = Some(error);
+                            errno(error)
+                        }
+                        ReadError::Device(error) => read_cause_errno(error.into()),
+                        ReadError::Data => Errno(EIO),
+                    }
                 })?;
                 Ok(())
             };
@@ -2843,7 +2870,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         };
         if let Some(error) = bad_metadata {
             state.record_metadata(error);
-            if errno(error) == Errno(EIO) { state.fail(branch, Errno(EIO)); }
+            if latches_on_read(error) { state.fail(branch, Errno(EIO)); }
         }
         result
     }
@@ -2876,6 +2903,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                     drop(state);
                     continue;
                 }
+                state.protect_edit()?;
                 let grant = state.reserve_metadata(&[2], 1, false, false, Operation::Allocate)?;
                 let result = state.files.snapshot(name, request.flags & SNAPSHOT_READ_ONLY != 0);
                 let id = state.finish_metadata(&[], grant, result)?;
@@ -2891,6 +2919,7 @@ impl<W: Wait + 'static> BreenFs<W> {
             let id = state.roots.iter().find(|(_, (root, _))| root == name)
                 .map(|(&id, _)| id).ok_or(Errno(ENOENT))?;
             self.check_root_unmounted(id)?;
+            state.protect_edit()?;
             let grant = state.reserve_metadata(&[2], 1, false, false, Operation::DeleteSnapshot)?;
             let result = state.files.delete_root(name);
             state.finish_metadata(&[], grant, result)?;
@@ -3337,7 +3366,8 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         {
             let store = self.inner.cache.store(self.inner.device.clone(), sb);
             let result = Files::new(store, sb, self.inner.root_id, false);
-            state.files.files = state.edited(&[], result)?;
+            let files = state.observed(result)?;
+            state.files.files = state.edited(&[], Ok(files))?;
             state.durable = sb.clone();
         }
         buf.fill(0);
@@ -3808,6 +3838,7 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         if inode.mode & content_privilege(inode.mode) == 0 {
             return Ok(());
         }
+        state.protect_edit()?;
         let _edit = self.inner.costs.span(CostOp::Setattr, CostPhase::Edit);
         inode.mode &= !content_privilege(inode.mode);
         inode.ctime = now();
@@ -4118,15 +4149,37 @@ fn teardown_result(name: &str, result: Result<(), Errno>) -> Result<(), Errno> {
     }
 }
 
+fn latches_on_read(error: ops::Error) -> bool {
+    errno(error) == Errno(EIO) && !matches!(error, ops::Error::Metadata(super::btree::ReadFailure {
+        cause, ..
+    }) if cause.pre_issue())
+}
+
+fn read_cause_errno(cause: super::btree::ReadCause) -> Errno {
+    use crate::block::read_failure::AhciReadError;
+    use super::btree::ReadCause;
+    Errno(match cause {
+        ReadCause::Allocation | ReadCause::Ahci(AhciReadError::WaiterAllocation) => ENOMEM,
+        ReadCause::Ahci(AhciReadError::Interrupted) => EINTR,
+        ReadCause::Ahci(AhciReadError::CannotPark | AhciReadError::WaitPublication) => EAGAIN,
+        ReadCause::Ahci(AhciReadError::AdmissionTimeout) => ETIMEDOUT,
+        ReadCause::Driver(failure) if failure.context_refused() => EAGAIN,
+        _ => EIO,
+    })
+}
+
+fn recovery_errno(error: super::commit::Error) -> Errno {
+    match error {
+        super::commit::Error::BlockRead(error) => read_cause_errno(error.into()),
+        _ => errno(error.into()),
+    }
+}
+
 fn errno(error: ops::Error) -> Errno {
     Errno(match error {
-        ops::Error::Metadata(super::btree::ReadFailure {
-            cause: super::btree::ReadCause::Allocation, ..
-        }) => ENOMEM,
-        ops::Error::Metadata(super::btree::ReadFailure {
-            cause: super::btree::ReadCause::Driver(failure), ..
-        }) if failure.context_refused() => EAGAIN,
-        ops::Error::EIO | ops::Error::Metadata(_) => EIO,
+        ops::Error::Metadata(failure) => return read_cause_errno(failure.cause),
+        ops::Error::DataRead(error) => return read_cause_errno(error.into()),
+        ops::Error::EIO => EIO,
         ops::Error::EROFS => EROFS,
         ops::Error::EBUSY => EBUSY,
         ops::Error::EPERM => EPERM,

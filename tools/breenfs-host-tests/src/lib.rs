@@ -53,6 +53,7 @@ pub mod block {
     pub enum BlockError {
         IoError,
         VirtioRead(VirtioReadFailure),
+        AhciRead(read_failure::AhciReadError),
         OutOfMemory,
         OutOfBounds,
     }

@@ -30,7 +30,7 @@ fn error(e: ops::Error) -> Error {
         E::Metadata(crate::btree::ReadFailure {
             cause: crate::btree::ReadCause::Allocation, ..
         }) => Errno::ENOMEM,
-        E::EIO | E::Metadata(_) => Errno::EIO,
+        E::EIO | E::Metadata(_) | E::DataRead(_) => Errno::EIO,
         E::EROFS => Errno::EROFS,
         E::EBUSY => Errno::EBUSY,
         E::EPERM => Errno::EPERM,

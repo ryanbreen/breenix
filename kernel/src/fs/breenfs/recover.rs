@@ -132,23 +132,30 @@ pub(crate) fn recover_detailed(device: &dyn BlockDevice, writable: bool) -> Resu
             if root.flags & 1 != 0 { continue; }
             // Descendants outside the ORPHAN range are verified on demand.
             // Do not turn mount recovery into a whole-filesystem scrub.
-            let orphan_failure = |stage, expected| Failure::new(Error::EIO, stage, root.root.addr, expected);
+            let orphan_failure = |error, stage, expected| Failure::new(error, stage, root.root.addr, expected);
             if !btree::range(
                 &DeviceStore(device), root.root,
                 super::ops::key(super::ops::ORPHAN_OBJECT, format::ORPHAN, 0),
                 super::ops::key(super::ops::ORPHAN_OBJECT, format::ORPHAN, u64::MAX),
-            ).map_err(|_| orphan_failure("orphan-scan", "readable-orphan-range"))?.is_empty()
+            ).map_err(|error| orphan_failure(error.into(), "orphan-scan", "readable-orphan-range"))?.is_empty()
             {
                 let mut files = super::ops::Files::new(DeviceStore(device), &chosen, id, true)
-                    .map_err(|_| orphan_failure("orphan-open", "valid-files-view"))?;
+                    .map_err(|error| orphan_failure(orphan_error(error), "orphan-open", "valid-files-view"))?;
                 let mut committer = commit::Committer::new(chosen);
                 chosen = files
                     .fsync(device, &mut committer)
-                    .map_err(|_| orphan_failure("orphan-commit", "durable-reclaim"))?;
+                    .map_err(|error| orphan_failure(orphan_error(error), "orphan-commit", "durable-reclaim"))?;
             }
         }
     }
     Ok(chosen)
+}
+
+fn orphan_error(error: super::ops::Error) -> Error {
+    match error {
+        super::ops::Error::Metadata(failure) => Error::NodeRead(failure),
+        _ => Error::EIO,
+    }
 }
 
 fn node<S: NodeStore>(
@@ -240,6 +247,7 @@ pub(crate) fn space_items<S: NodeStore>(
 
 fn tree_error(error: btree::Error) -> Error {
     match error {
+        btree::Error::Read(failure) if failure.cause != btree::ReadCause::Verification => Error::NodeRead(failure),
         btree::Error::Store => Error::EIO,
         _ => Error::InvalidGeneration,
     }

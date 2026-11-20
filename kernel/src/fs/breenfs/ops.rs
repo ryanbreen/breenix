@@ -26,6 +26,7 @@ type Inodes = Arc<BTreeSet<u64>>;
 pub enum Error {
     EIO,
     Metadata(btree::ReadFailure),
+    DataRead(crate::block::BlockError),
     EROFS,
     EBUSY,
     EPERM,
@@ -52,8 +53,11 @@ impl From<btree::Error> for Error {
     }
 }
 impl From<commit::Error> for Error {
-    fn from(_: commit::Error) -> Self {
-        Self::EIO
+    fn from(error: commit::Error) -> Self {
+        match error {
+            commit::Error::NodeRead(failure) => Self::Metadata(failure),
+            _ => Self::EIO,
+        }
     }
 }
 impl From<txn::Error> for Error {
@@ -70,6 +74,7 @@ impl From<txn::Error> for Error {
 // failures also close writable admission at the adapter (design 2.7).
 pub(super) enum ReadError {
     Metadata(Error),
+    Device(crate::block::BlockError),
     Data,
 }
 impl From<Error> for ReadError {
@@ -77,7 +82,11 @@ impl From<Error> for ReadError {
 }
 impl ReadError {
     pub(super) fn error(self) -> Error {
-        match self { Self::Metadata(error) => error, Self::Data => Error::EIO }
+        match self {
+            Self::Metadata(error) => error,
+            Self::Device(error) => Error::DataRead(error),
+            Self::Data => Error::EIO,
+        }
     }
 }
 #[derive(Clone, Default)]
@@ -959,7 +968,10 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         }
         let expected = crcs.get(e.extent_offset as usize + index as usize)
             .ok_or(ReadError::Metadata(Error::EIO))?;
-        let bytes = commit::read(device, addr, BLOCK_SIZE).map_err(|_| ReadError::Data)?;
+        let bytes = commit::read(device, addr, BLOCK_SIZE).map_err(|error| match error {
+            commit::Error::BlockRead(error) => ReadError::Device(error),
+            _ => ReadError::Data,
+        })?;
         if crc32c::checksum(&bytes) != *expected {
             return Err(ReadError::Data);
         }
@@ -995,7 +1007,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             let reference = if self.data.contains_key(&e.phys_start) { None } else {
                 let r = space::reference(
                     &self.txn.view(), self.space_root, e.phys_start, u64::from(e.phys_len),
-                ).map_err(|_| ReadError::Metadata(Error::EIO))?
+                ).map_err(|error| Error::from(txn::Error::from(error)))?
                     .ok_or(ReadError::Metadata(Error::EIO))?;
                 if r.kind != space::Kind::Data as u8 {
                     return Err(ReadError::Metadata(Error::EIO));
