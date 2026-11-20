@@ -1735,6 +1735,23 @@ fn run_inline(case: &Case) -> Outcome {
     }
 }
 
+/// Capture CPU custody immediately when the pinned workers cannot rendezvous.
+/// The parent reports it at the failed case boundary.
+pub fn pin_progress_missed() {
+    cpu_progress(2);
+}
+
+fn cpu_progress(action: u64) {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        use libbreenix::syscall::{nr, raw};
+        // This suite-only prctl accepts a scalar action and no user pointer.
+        let _ = raw::syscall2(nr::PRCTL, 0x4252_0009, action);
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = action;
+}
+
 /// The child's report on the result pipe: `P <ms>`, `F <ms> <msg>` or `S <msg>`.
 fn report(outcome: &Outcome) -> String {
     match outcome {
@@ -2334,10 +2351,12 @@ fn run_case_body(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool,
                 Waited::Exited(status) => exited(status, reader, ms_since(start)),
                 Waited::Published(_) => Outcome::Fail { ms: ms_since(start), msg: String::from("the case published two pictures") },
                 Waited::TimedOut(ms) => {
+                    cpu_progress(1);
                     let note = stop_child(pid);
                     Outcome::Fail { ms, msg: plain(&std::format!("timed out after {logic_limit_ms} ms{note}")) }
                 }
                 Waited::ClockStopped(ms) => {
+                    cpu_progress(1);
                     let note = stop_child(pid);
                     Outcome::Fail {
                         ms,
@@ -2349,6 +2368,9 @@ fn run_case_body(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool,
                     Outcome::Fail { ms: ms_since(start), msg: plain(&std::format!("waitpid failed: {error}{note}")) }
                 }
             };
+            if matches!(outcome, Outcome::Fail { .. }) {
+                cpu_progress(0);
+            }
             let outcome = if let Some(session) = session.as_mut() {
                 if case.collects {
                     // Drain the dead case before choosing collect/discard: a final

@@ -966,7 +966,11 @@ fn team<T: Send + 'static>(
     for i in 0..n {
         let (s, b) = (state.clone(), body.clone());
         threads.push(spawn(&format!("worker {i}"), move || -> Result<T, String> {
-            let stop = |msg: String| -> Result<T, String> { s.failed.store(1, SeqCst); Err(msg) };
+            let stop = |msg: String| -> Result<T, String> {
+                breenix_suite::suite::pin_progress_missed();
+                s.failed.store(1, SeqCst);
+                Err(msg)
+            };
             if let Err(e) = pin_to(i as u32) { return stop(e); }
             s.pinned.fetch_add(1, SeqCst);
             if !spin_until(2000, || s.pinned.load(SeqCst) == n as u64 || s.failed.load(SeqCst) != 0) {

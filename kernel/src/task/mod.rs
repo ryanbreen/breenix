@@ -9,6 +9,8 @@ use core::{
 // Core task/thread modules - shared across architectures
 pub mod completion;
 #[cfg(target_arch = "x86_64")]
+pub(crate) mod cpu_progress;
+#[cfg(target_arch = "x86_64")]
 pub(crate) mod dispatch_strand_census;
 #[cfg(target_arch = "x86_64")]
 pub fn report_dispatch_strand_census_heartbeat() {

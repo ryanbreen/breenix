@@ -1158,6 +1158,7 @@ fn read_counter_on(cpu: usize) -> Result<(), String> {
     let second = counter_now();
     let after = getcpu()?;
     if before != cpu as u32 || after != cpu as u32 {
+        breenix_suite::suite::pin_progress_missed();
         return Err(format!("the thread pinned to processor {cpu} ran on processor {before}, then {after}"));
     }
     if second < first { return Err(format!("on processor {cpu} the counter went back from {first} to {second}")); }
@@ -1179,6 +1180,9 @@ fn clk_counter_cpus() -> CaseResult {
         });
     }
     let finished = until(WAIT_MS, || CPU_DONE.load(Ordering::SeqCst) as usize == cpus);
+    if !finished {
+        breenix_suite::suite::pin_progress_missed();
+    }
     let read = CPU_READ.load(Ordering::SeqCst) as i64;
     value("processors", read, "", Some((cpus as i64, cpus as i64)));
     let failures = CPU_FAILURES.lock().unwrap_or_else(|e| e.into_inner()).join("; ");

@@ -7,6 +7,10 @@ const PR_SET_CHILD_SUBREAPER: u64 = 0x42520007;
 const PR_GET_CHILD_SUBREAPER: u64 = 0x42520008;
 
 pub fn sys_prctl(option: u64, arg: u64) -> SyscallResult {
+    #[cfg(target_arch = "x86_64")]
+    if option == crate::task::cpu_progress::PR_CPU_PROGRESS {
+        return crate::task::cpu_progress::sys_cpu_progress(arg);
+    }
     if option != PR_SET_CHILD_SUBREAPER && option != PR_GET_CHILD_SUBREAPER {
         return SyscallResult::Err(ENOSYS as u64);
     }

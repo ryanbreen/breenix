@@ -228,6 +228,8 @@ pub fn load_kernel_root(cpu: usize) {
 
 #[cfg(target_arch = "x86_64")]
 pub use shootdown::shootdown_nmi_handler;
+#[cfg(target_arch = "x86_64")]
+pub(crate) use shootdown::request_cpu_progress;
 
 #[cfg(target_arch = "x86_64")]
 mod shootdown {
@@ -346,6 +348,22 @@ mod shootdown {
     /// outstanding there. Set by the initiator; cleared by the target once its
     /// invalidation is done.
     static PENDING: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+    // A diagnostic shares the flight flag and the final pending recheck with
+    // shootdowns, but owns no invalidation slot and waits for no reply.
+    const CPU_PROGRESS: u64 = 1 << 63;
+    const _: () = assert!(SLOTS < 64);
+
+    pub(crate) fn request_cpu_progress(cpu: usize, post: impl FnOnce() -> bool) {
+        if let Some(destination) = smp::cpu_apic_id(cpu) {
+            apic::try_diagnostic_nmi(destination, || {
+                if !post() {
+                    return false;
+                }
+                PENDING[cpu].fetch_or(CPU_PROGRESS, Ordering::SeqCst);
+                !NMI_IN_FLIGHT[cpu].swap(true, Ordering::SeqCst)
+            });
+        }
+    }
 
     /// NMIs that found no request addressed to their CPU.
     static UNCLAIMED_NMIS: AtomicU64 = AtomicU64::new(0);
@@ -502,7 +520,7 @@ mod shootdown {
             crate::arch_impl::x86_64::nmi_report::unclaimed(&frame, Some(cpu), apic_id);
         }
 
-        service(cpu);
+        service(cpu, &frame);
         if !shootdown {
             return;
         }
@@ -517,13 +535,13 @@ mod shootdown {
             if NMI_IN_FLIGHT[cpu].swap(true, Ordering::SeqCst) {
                 return;
             }
-            service(cpu);
+            service(cpu, &frame);
         }
     }
 
     /// Carry out and acknowledge the requests pending on `cpu`, which is
     /// this CPU.
-    fn service(cpu: usize) {
+    fn service(cpu: usize, frame: &InterruptStackFrame) {
         let pending = PENDING[cpu].load(Ordering::SeqCst);
         for slot in (0..SLOTS).filter(|slot| pending & (1 << slot) != 0) {
             let arg = REQUEST_ARG[slot].load(Ordering::Relaxed);
@@ -535,6 +553,9 @@ mod shootdown {
             }
         }
         PENDING[cpu].fetch_and(!pending, Ordering::Release);
+        if pending & CPU_PROGRESS != 0 {
+            crate::task::cpu_progress::record_nmi(cpu, frame);
+        }
     }
 
     /// Leave `root` on this CPU, which is `cpu`.

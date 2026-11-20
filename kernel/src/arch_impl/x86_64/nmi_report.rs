@@ -1,7 +1,7 @@
 //! The report for an NMI this kernel did not send.
 //!
-//! The kernel sends NMIs only for TLB shootdowns (`memory::tlb`), and each of
-//! those is claimed by its target (`shootdown_nmi_handler`). Any other NMI came from outside: a
+//! The kernel sends NMIs for TLB shootdowns and suite CPU snapshots. Both use
+//! `memory::tlb`'s flight flag and are claimed by `shootdown_nmi_handler`. An unclaimed NMI came from outside: a
 //! server's BMC (its NMI button, or a Redfish or IPMI NMI, which the metal
 //! driver sends to a hung boot before powering it off), a hardware error the
 //! chipset signals as NMI, or a watchdog. This report says where the CPU was

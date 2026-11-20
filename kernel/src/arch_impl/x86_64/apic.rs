@@ -378,6 +378,33 @@ fn wait_delivery() -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Offer a diagnostic NMI without waiting for the xAPIC ICR. Post the
+/// request only once the ICR can accept it, with local interrupts masked.
+pub(crate) fn try_diagnostic_nmi(destination: u32, post: impl FnOnce() -> bool) {
+    if !active() || destination == u32::MAX {
+        return;
+    }
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let x2 = MODE.load(Ordering::Relaxed) == 2;
+        if !x2 && (destination >= 255 || read(0x300) & (1 << 12) != 0) {
+            return;
+        }
+        if !post() {
+            return;
+        }
+        const NMI: u32 = (4 << 8) | (1 << 14);
+        if x2 {
+            unsafe {
+                core::arch::asm!("mfence", "lfence", options(nostack, preserves_flags));
+                Msr::new(0x830).write((u64::from(destination) << 32) | u64::from(NMI));
+            }
+        } else {
+            write(0x310, destination << 24);
+            write(0x300, NMI);
+        }
+    });
+}
+
 /// Read-only snapshot for a slow device request; never acknowledges an IRQ.
 pub fn vector_pending_state(vector: u8) -> (bool, bool) {
     let bank = u32::from(vector / 32) * 16;

@@ -965,6 +965,16 @@ pub static PINNED_HOME_CPU_UNAVAILABLE: core::sync::atomic::AtomicU64 =
 /// once it has scanned for that CPU's held wakes.
 static PINNED_HOLDS_OUTSTANDING: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 
+/// Last published queue length and schedule tick, plus current held placements.
+#[cfg(target_arch = "x86_64")]
+pub(super) fn cpu_progress_queue(cpu: usize) -> (u64, u32, u64) {
+    (
+        rq::CPU_LAST_SCHEDULE[cpu].load(Ordering::Relaxed),
+        rq::CPU_QUEUE_LEN[cpu].load(Ordering::Relaxed),
+        PINNED_HOLDS_OUTSTANDING[cpu].load(Ordering::Relaxed),
+    )
+}
+
 /// Pins rejected at publication because the CPU they named is outside the
 /// online range -- counted here, where slice 3c discarded them in silence.
 ///

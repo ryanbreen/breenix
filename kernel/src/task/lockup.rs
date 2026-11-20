@@ -1,6 +1,10 @@
 //! Fixed atomic scheduler evidence for ARM64 BXCAP LOCKUP.
 
-use core::sync::atomic::{fence, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
+
+#[path = "cpu_sample.rs"]
+mod cpu_sample;
+use cpu_sample::Sample;
 
 pub(crate) const CPU_ROWS: usize = 8;
 const WAIT_SLOTS: usize = 128;
@@ -8,49 +12,6 @@ pub(crate) const WAIT_ROWS: usize = 32;
 const WORD_BITS: usize = u64::BITS as usize;
 const NAME_WORDS: usize = 3;
 pub(crate) const RUN_WINDOW_TICKS: usize = 1000;
-
-/// Writers are serialized by the record's owner. A capture makes one read
-/// attempt and omits an in-flight row, including if it interrupted the writer.
-struct Sample<const N: usize> {
-    version: AtomicU64,
-    words: [AtomicU64; N],
-}
-
-impl<const N: usize> Sample<N> {
-    const fn new() -> Self {
-        Self {
-            version: AtomicU64::new(0),
-            words: [const { AtomicU64::new(0) }; N],
-        }
-    }
-
-    fn store(&self, words: [u64; N]) {
-        let version = self.version.load(Ordering::Relaxed);
-        self.version
-            .store(version.wrapping_add(1), Ordering::Relaxed);
-        fence(Ordering::Release);
-        for (word, value) in self.words.iter().zip(words) {
-            word.store(value, Ordering::Relaxed);
-        }
-        self.version
-            .store(version.wrapping_add(2), Ordering::Release);
-    }
-
-    fn load(&self) -> Option<[u64; N]> {
-        let before = self.version.load(Ordering::Acquire);
-        if before & 1 != 0 {
-            return None;
-        }
-        let words = self
-            .words
-            .each_ref()
-            .map(|word| word.load(Ordering::Relaxed));
-        // Seeing a word written after the writer's release fence also orders
-        // the odd version before this final read, so a mixed row is rejected.
-        fence(Ordering::Acquire);
-        (before == self.version.load(Ordering::Relaxed)).then_some(words)
-    }
-}
 
 static OWNER: Sample<3> = Sample::new();
 static CURRENT: [AtomicU64; CPU_ROWS] = [const { AtomicU64::new(0) }; CPU_ROWS];

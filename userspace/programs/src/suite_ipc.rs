@@ -987,6 +987,7 @@ fn pin_to(cpu: usize) -> CaseResult {
     let mask = 1u64 << cpu;
     zero(&format!("sched_setaffinity to processor {cpu}"), sc(nr::SCHED_SETAFFINITY, &[0, 8, &mask as *const u64 as u64]))?;
     check(until(1000, || this_cpu() == Some(cpu as u32)), &format!("the process pinned to processor {cpu} did not run there within a second"))
+        .inspect_err(|_| breenix_suite::suite::pin_progress_missed())
 }
 
 /// Rounds of the spinning barrier processes make to show they run at once.
@@ -1006,6 +1007,7 @@ fn barrier_rounds(page: &Page, slot: usize, n: i64) -> CaseResult {
             core::hint::spin_loop();
             spins += 1;
             if spins % 4096 == 0 && now_ms().saturating_sub(start) >= ROUNDS_MS {
+                breenix_suite::suite::pin_progress_missed();
                 return fail(format!("the {n} processes made only {r} of {ROUNDS} barrier rounds in {ROUNDS_MS} ms: they do not run at once"));
             }
         }
@@ -2179,7 +2181,10 @@ fn sem_contention_cpus() -> CaseResult {
         }
         Ok(())
     })?;
-    for (i, w) in workers[producers..].iter_mut().enumerate() { w.blocks(&format!("consumer {i}'s sem_wait at zero"))?; }
+    for (i, w) in workers[producers..].iter_mut().enumerate() {
+        w.blocks(&format!("consumer {i}'s sem_wait at zero"))
+            .inspect_err(|_| breenix_suite::suite::pin_progress_missed())?;
+    }
     let start = mono();
     pg.set(GO, 1);
     let done = until(6000, || workers.iter_mut().all(|w| w.reap().is_some()));
