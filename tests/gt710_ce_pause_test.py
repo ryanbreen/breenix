@@ -32,6 +32,7 @@ mod per_cpu {
         else { COUNT.fetch_sub(1, SeqCst); }
     }
 }
+mod arch_impl { pub mod current { pub mod constants { pub const PREEMPT_MASK: u32 = 0xff; } } }
 mod time { pub mod timer { pub fn get_monotonic_time_ns() -> (u64, u64) { (1, 0) } } }
 mod task {
     pub mod thread {

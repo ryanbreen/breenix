@@ -27,18 +27,25 @@ pub(crate) fn wait_prepared(queue: &WaitQueueHead, outcome: PrepareOutcome) -> R
         PrepareOutcome::Queued => {}
     }
 
-    // Queued publication required a current thread with preemption disabled;
-    // retain that identity through the wait and both cleanup operations.
+    // Keep the queued thread's identity through the wait and cleanup.
     let tid =
         crate::task::scheduler::current_thread_id().expect("queued wait requires a current thread");
-    // Preemption stays disabled from the publication through the signal check
-    // and is enabled for the halt only. A thread switched out in its published
-    // blocked state runs again only when something wakes it, and a signal that
-    // was already pending wakes nothing: its wake may have ended an earlier
-    // sleep of this wait. Preempted before the check, the thread would sleep
-    // with the signal pending (#1230). Once the check has run, a new signal
-    // finds the thread blocked and wakes it. Every syscall wait loop that
-    // publishes a blocked state follows this order.
+    // The wait returns with the preemption level its caller entered with
+    // (E24 ledger 703; tests/canvas_wait_test.py). A syscall caller holds its
+    // entry level through the signal check and releases it for the halt only.
+    // A kernel thread can wait already preemptible, at level 0: releasing a
+    // level it did not take would underflow, and restoring one afterwards would
+    // leave it held, so a level is released and restored only when the caller
+    // holds one.
+    let release_preempt =
+        crate::per_cpu::preempt_count() & crate::arch_impl::current::constants::PREEMPT_MASK != 0;
+    // A thread switched out in its published blocked state runs again only
+    // when something wakes it, and a signal that was already pending wakes
+    // nothing: its wake may have ended an earlier sleep of this wait. Preempted
+    // before the check, the thread would sleep with the signal pending (#1230).
+    // Once the check has run, a new signal finds the thread blocked and wakes
+    // it. Every syscall wait loop that publishes a blocked state follows this
+    // order. claim-lint:ok: #1230 records the lost-signal ordering.
     let interrupted = loop {
         if let Some(error) = crate::syscall::check_signals_for_restartable_wait() {
             break Some(error);
@@ -53,10 +60,14 @@ pub(crate) fn wait_prepared(queue: &WaitQueueHead, outcome: PrepareOutcome) -> R
         if !waiting {
             break None;
         }
-        crate::per_cpu::preempt_enable();
+        if release_preempt {
+            crate::per_cpu::preempt_enable();
+        }
         crate::task::scheduler::yield_current();
         crate::arch_halt_while_blocked();
-        crate::per_cpu::preempt_disable();
+        if release_preempt {
+            crate::per_cpu::preempt_disable();
+        }
     };
 
     queue.take_waiter(tid);
