@@ -3,8 +3,8 @@
 //! An unpaired `preempt_enable()`, or a kernel thread that reaches
 //! `kthread_exit` with a level still held, posts one line to the log notice
 //! list, which the thread-context drain writes out. Posting masks interrupts
-//! only to read the current thread's identity; it takes no lock, does not
-//! allocate and does not wait, so it is safe on the preemption paths
+//! to keep the current thread's identity stable through publication. It
+//! takes no lock and does not allocate, so it can run on the preemption paths
 //! themselves. A balanced path does not reach it. claim-lint:ok:
 //! kernel/src/log_notice.rs (Record::post_again formats into static storage
 //! and publishes with a compare-exchange list push).
@@ -22,11 +22,21 @@ static UNDERFLOW: Record = Record::new();
 /// already added this release to the underflow total.
 #[cold]
 pub(crate) fn underflow(count: u32) {
-    post(&UNDERFLOW, "underflow", count, crate::per_cpu::preempt_underflow_count());
+    // The underflow total already counts this release if the detail is busy.
+    post_record(&UNDERFLOW, "underflow", count, crate::per_cpu::preempt_underflow_count());
+}
+
+/// Post a kthread exit fault or count it for the notice drain if its detail
+/// record is busy.
+#[cold]
+pub(super) fn post(record: &'static Record, reason: &str, count: u32, total: u64) {
+    if !post_record(record, reason, count, total) {
+        crate::log_notice::record_suppressed_kthread_exit();
+    }
 }
 
 #[cold]
-pub(super) fn post(record: &'static Record, reason: &str, count: u32, total: u64) {
+fn post_record(record: &'static Record, reason: &str, count: u32, total: u64) -> bool {
     crate::arch_without_interrupts(|| {
         let thread = Cpu::current_thread_ptr().cast::<super::thread::Thread>();
         let (tid, name) = if thread.is_null() {
@@ -42,11 +52,9 @@ pub(super) fn post(record: &'static Record, reason: &str, count: u32, total: u64
             *out = if byte.is_ascii_graphic() { byte } else { b'_' };
         }
         let name = core::str::from_utf8(&name_bytes[..len]).unwrap_or("-");
-        // A receipt of the same kind may still be waiting for the drain. Do
-        // not wait for it; the underflow total still counts this release.
         record.post_again(format_args!(
             "[PREEMPT_FAULT reason={} tid={} name={} count={:#x} underflows={}]",
             reason, tid, name, count, total,
-        ));
-    });
+        ))
+    })
 }

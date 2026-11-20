@@ -26,7 +26,7 @@
 use alloc::boxed::Box;
 use core::cell::UnsafeCell;
 use core::ptr;
-use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 /// A node's line, newline included.
 const LINE: usize = 81;
@@ -38,6 +38,14 @@ const WRITTEN: u8 = 3;
 
 /// Posted nodes, newest first.
 static PENDING: AtomicPtr<Node> = AtomicPtr::new(ptr::null_mut());
+
+// Exit faults that could not use their shared detail record. Keep the count
+// pending independently of the list, since a drain may already hold the node.
+static SUPPRESSED_KTHREAD_EXITS: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn record_suppressed_kthread_exit() {
+    SUPPRESSED_KTHREAD_EXITS.fetch_add(1, Ordering::Relaxed);
+}
 
 /// A `fn(usize)` called with each line's length, newline included, as it is posted; 0 until
 /// one is set. The kernel's output accounting counts a posted line toward its poster here, and
@@ -243,9 +251,10 @@ impl Drop for Notice {
     }
 }
 
-/// Some node is waiting to be written.
+/// A node or an exit-fault count is waiting to be written.
 pub fn pending() -> bool {
     !PENDING.load(Ordering::Relaxed).is_null()
+        || SUPPRESSED_KTHREAD_EXITS.load(Ordering::Relaxed) != 0
 }
 
 /// Hand each posted node's line, newline included, to `write`, oldest first.
@@ -285,6 +294,18 @@ pub fn take(mut write: impl FnMut(&[u8])) {
         write(line);
         node.state.store(WRITTEN, Ordering::Release);
         oldest = next;
+    }
+    if SUPPRESSED_KTHREAD_EXITS.load(Ordering::Relaxed) != 0 {
+        let exits = SUPPRESSED_KTHREAD_EXITS.swap(0, Ordering::Relaxed);
+        if exits != 0 {
+            use core::fmt::Write;
+            let mut bytes = [0; LINE];
+            let mut line = RecordWriter { bytes: &mut bytes, len: 0 };
+            writeln!(line, "[PREEMPT_FAULT reason=kthread_exit_suppressed exits={exits}]")
+                .expect("exit fault summary fits in a notice");
+            let len = line.len;
+            write(&bytes[..len]);
+        }
     }
 }
 
