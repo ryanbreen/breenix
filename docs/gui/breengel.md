@@ -1492,7 +1492,7 @@ negative control: the device reports no resource identity and it is observed as 
 
 ## 21. Suite-mode test controls
 
-`test_control(op: u32, arg: *mut u8, len: usize) -> isize` is system call **415** on both architectures.
+`test_control(op: u32, arg: usize, len: usize) -> isize` is system call **415** on both architectures.
 
 <!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 - **The latch.** The kernel enables test controls only when the first program it executes as PID 1 is a suite
@@ -1503,9 +1503,11 @@ negative control: the device reports no resource identity and it is observed as 
   arms one one-shot fault; op 2 `DISARM_ALL` disarms every point and restarts the gauge
   `gpu_irq_masked_max_us` at 0; op 3 `FIRED { point: u32 @0, reserved @4, out count: u64 @8 }`
   reports how many times a point fired. Arming or reading an undefined point returns EINVAL.
-  Op 5 `RESIDENT_CENSUS` takes a scalar action in `arg` with `len=0`. The GUI Apps runner uses
-  actions 0 and 1 to sample before and after, 2 to report and clear, and 3 to clear.
-  Op 4 `SET_LATCH` and undefined operations return EINVAL. The latch is immutable.
+- Op 4 is reserved and returns EINVAL. Undefined operations also return EINVAL.
+- Op 5 `RESIDENT_CENSUS` takes a scalar action in `arg` and requires `len=0`. The GUI Apps runner uses
+  `BEFORE` (0) and `AFTER` (1) to save its before and after samples, `REPORT` (2) to print and clear
+  its saved samples, and `DISCARD` (3) to clear them. A nonzero `len` or an unknown action returns EINVAL.
+  Sampling can return EAGAIN if the process manager or census is busy. Successful actions return 0.
 - Points: 1 `ignore-damage` (the next composite processes the whole window), 2 `irq-hold` (the next GPU <!-- claim-lint:ok: Normative requirement in docs/gui/gpu.md section 2 and docs/gui/breengel-gpu-rulings.md; not measured lane acceptance. -->
   SUBMIT validation holds IRQs masked for 2 ms), 3 `emit-diagnostic` (param: the writer path, section 22), 4
   `acquire-stall` (target: a window; the next `ACQUIRE` pauses after copying half its replay rows until
