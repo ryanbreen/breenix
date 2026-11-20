@@ -537,6 +537,31 @@ fn console_result_route_rejects_blocking_eagain_with_adapter_retained() {
 }
 
 #[test]
+fn console_route_restricts_preempt_count_to_the_wait_predicate() {
+    let handlers = read("kernel/src/syscall/handlers.rs");
+    let helper = read("kernel/src/syscall/blocking_io.rs");
+    audit_console_route(&handlers, &helper).expect("live prepared wait");
+
+    let failure = "return Err(errno::ESRCH);";
+    assert!(helper.contains(failure));
+    let direct = helper.replacen(
+        failure,
+        "return Err(crate::per_cpu::preempt_count() as i32 + 10);",
+        1,
+    );
+    let bound = helper.replacen(
+        "if release_preempt {\n            crate::per_cpu::preempt_enable();",
+        "if release_preempt {\n            return Err(release_preempt as i32 + 10);",
+        1,
+    );
+    assert_ne!(bound, helper);
+    for mutated in [direct, bound] {
+        let error = audit_console_route(&handlers, &mutated).expect_err("preemption reaches errno");
+        assert!(error.contains("preempt_count") || error.contains("release_preempt"), "{error}");
+    }
+}
+
+#[test]
 fn parser_tracks_renames_negation_formatting_and_extracted_errors() {
     let good = "fn renamed(nonblocking: bool) { let should_park = !nonblocking; if !should_park { return error_leaf(); } Ok(0) } fn error_leaf() { Err(EAGAIN) }";
     assert!(audit_helper(good, "renamed").is_ok());
