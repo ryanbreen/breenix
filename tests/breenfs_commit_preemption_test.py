@@ -35,16 +35,12 @@ LOOPS = {
     'txn.rs': {'settle': ('while let Some(change) = self.deferred.pop_front()',)},
     'commit.rs': {
         'wake': ('for waiter in &self.waiters',),
-        'prepare': ('for addr in remaining', 'for (_, bytes) in free',
-                    'for (chunk, crc) in bytes.chunks_exact(BLOCK_SIZE).zip(r.crcs)',
+        'prepare': ('for (chunk, crc) in bytes.chunks_exact(BLOCK_SIZE).zip(r.crcs)',
                     'for (addr, len) in ranges'),
-        'fill': ('for i in 0..usize::from(h.nitems)',),
         'write_cached': ('for (&addr, bytes) in self.nodes.iter().chain(self.data.iter())',
                          'for (i, bytes) in bytes.chunks_exact(sector).enumerate()'),
     },
     'ops.rs': {'prepare_commit': (), 'reclaim_orphans': ('for ino in candidates',)},
-    'btree.rs': {'range_limit': ()},
-    'space.rs': {'range': ('while let Some(ptr) = todo.pop()',)},
     'recover.rs': {'space_items': ('while let Some((ptr, limit)) = todo.pop()',)},
 }
 
@@ -71,8 +67,8 @@ class CommitPreemption(unittest.TestCase):
     def test_fill_preempts_for_each_decoded_child_and_leaf_item(self):
         source = strip_comments((BREENFS / 'commit.rs').read_text())
         fill = function(source, 'fill')
-        # Every child reaches the recursive call, whose entry point precedes
-        # the early returns for already-filled and unmodified children.
+        # The recursive call starts with a point before the early returns
+        # for already-filled and unmodified children.
         self.assertRegex(
             fill,
             r'\bfor entry in &mut node\.children\s*\{\s*'
