@@ -1,4 +1,4 @@
-//! The report for an NMI this kernel did not send.
+//! Interrupted CPU state and the report for an external NMI.
 //!
 //! The kernel sends NMIs for TLB shootdowns and suite CPU snapshots. Both use
 //! `memory::tlb`'s flight flag and are claimed by `shootdown_nmi_handler`. An unclaimed NMI came from outside: a
@@ -17,7 +17,38 @@
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use x86_64::instructions::port::Port;
-use x86_64::structures::idt::InterruptStackFrame;
+use x86_64::{registers::rflags::RFlags, structures::idt::InterruptStackFrame};
+
+pub(crate) struct InterruptedContext {
+    pub rip: u64,
+    pub interrupts_enabled: bool,
+    pub tid: u64,
+    pub preempt_count: u32,
+}
+
+/// Read the original frame and local scheduler state during a diagnostic NMI.
+/// The caller identifies the interrupted CPU from its APIC id.
+pub(crate) fn interrupted_context(cpu: usize, frame: &InterruptStackFrame) -> InterruptedContext {
+    let data = crate::per_cpu::cpu_data(cpu);
+    // SAFETY: the current thread and preempt count are owned by this CPU.
+    // Its thread cannot switch out during the NMI. Use the local slot without
+    // GS, which may still hold the user base in an entry or return stub.
+    let (tid, preempt_count) = unsafe {
+        let current = (&raw const (*data).current_thread).read_volatile();
+        let tid = if current.is_null() {
+            0
+        } else {
+            (&raw const (*current).id).read_volatile()
+        };
+        (tid, (&raw const (*data).preempt_count).read_volatile())
+    };
+    InterruptedContext {
+        rip: frame.instruction_pointer.as_u64(),
+        interrupts_enabled: frame.cpu_flags.contains(RFlags::INTERRUPT_FLAG),
+        tid,
+        preempt_count,
+    }
+}
 
 const MAX_REPORTS: u64 = 16;
 

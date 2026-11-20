@@ -411,3 +411,32 @@ pub fn vector_pending_state(vector: u8) -> (bool, bool) {
     let bit = 1u32 << (vector % 32);
     (read(0x200 + bank) & bit != 0, read(0x100 + bank) & bit != 0)
 }
+
+pub(crate) struct PrioritySnapshot {
+    pub cr8: u8,
+    pub ppr: u8,
+    pub isr: [u64; 4],
+    pub irr: [u64; 4],
+}
+
+/// Read the local LAPIC state while a diagnostic NMI holds IF clear.
+/// Other devices can still post requests to IRR during the sample.
+pub(crate) fn priority_snapshot() -> PrioritySnapshot {
+    let cr8: u64;
+    // SAFETY: CR8 is readable at CPL0 and the read has no side effects.
+    unsafe { core::arch::asm!("mov {}, cr8", out(reg) cr8, options(nomem, nostack, preserves_flags)) };
+    PrioritySnapshot {
+        cr8: cr8 as u8,
+        ppr: read(0xa0) as u8,
+        isr: read_bitmap(0x100),
+        irr: read_bitmap(0x200),
+    }
+}
+
+fn read_bitmap(base: u32) -> [u64; 4] {
+    core::array::from_fn(|word| {
+        // Each APIC register contributes 32 bits, spaced 16 bytes apart.
+        let low = base + 32 * word as u32;
+        u64::from(read(low)) | (u64::from(read(low + 16)) << 32)
+    })
+}
