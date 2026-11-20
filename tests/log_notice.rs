@@ -149,3 +149,60 @@ fn diagnostic_record_defers_a_complete_long_line_and_refuses_busy_or_oversized()
     assert!(RECORD.post_again(format_args!("reused {}", 42)));
     assert_eq!(written(), vec!["reused 42\n"]);
 }
+
+#[path = "../kernel/src/drivers/ahci/timeout_msi/receipt.rs"]
+mod ahci_msi_receipt;
+
+#[test]
+fn ahci_msi_timeout_reports_destination_state_in_one_line() {
+    use ahci_msi_receipt::{Receipt, SampleSource, Snapshot};
+
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    written();
+    static RECORD: log_notice::Record = log_notice::Record::new();
+    let mut receipt = Receipt {
+        port: 31,
+        token: u32::MAX,
+        vector: 0x52,
+        destination: u32::MAX - 1,
+        entries: u32::MAX,
+        hba_is: u32::MAX,
+        port_is: u32::MAX,
+        sample: Some((SampleSource::Remote, Snapshot {
+            rip: 0xffff_ffff_8020_3456,
+            interrupts_enabled: false,
+            cr8: 0xf,
+            ppr: 0xf0,
+            tid: u64::MAX,
+            preempt_count: u32::MAX,
+            isr: [1, 0, 0, 1 << 63],
+            irr: [0, 1 << 18, 0xab, 0],
+        })),
+    };
+    assert!(RECORD.post_again(format_args!("{receipt}")));
+    assert_eq!(written(), [concat!(
+        "AHCI_MSI_TIMEOUT port=31 token=4294967295 vector=0x52 destination=4294967294 ",
+        "entries=4294967295 IRR=1 ISR=0 HBA_IS=0xffffffff IS=0xffffffff ",
+        "sample=remote-nmi RIP=0xffffffff80203456 IF=0 CR8=0xf PPR=0xf0 ",
+        "TID=18446744073709551615 preempt_count=0xffffffff ",
+        "ISR256=0x8000000000000000000000000000000000000000000000000000000000000001 ",
+        "IRR256=0x000000000000000000000000000000ab00000000000400000000000000000000\n",
+    )]);
+
+    let (_, mut snapshot) = receipt.sample.unwrap();
+    snapshot.interrupts_enabled = true;
+    snapshot.irr[1] = 0;
+    snapshot.isr[1] = 1 << 18;
+    receipt.sample = Some((SampleSource::Local, snapshot));
+    let line = receipt.to_string();
+    assert!(line.contains("IRR=0 ISR=1"));
+    assert!(line.contains("sample=local-nmi RIP=0xffffffff80203456 IF=1"));
+
+    receipt.sample = None;
+    assert!(RECORD.post_again(format_args!("{receipt}")));
+    assert_eq!(written(), [concat!(
+        "AHCI_MSI_TIMEOUT port=31 token=4294967295 vector=0x52 destination=4294967294 ",
+        "entries=4294967295 IRR=unavailable ISR=unavailable HBA_IS=0xffffffff IS=0xffffffff ",
+        "sample=unavailable\n",
+    )]);
+}
