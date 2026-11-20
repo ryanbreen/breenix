@@ -139,18 +139,23 @@ fn record_wrap_dump() {
             observation = body(source, name)
             self.assertNotRegex(observation, r"\.(?:store|swap|fetch_\w+|compare_exchange\w*|lock|try_lock)\(")
             self.assertNotRegex(observation, r"\b(?:return|loop|while|for)\b|serial_print|log::")
-        # This guard is specifically for 496(a)'s behavior-preserving diagnostic
-        # diff. Hashes are normalized production bodies at d3b12d3e, not output
-        # snapshots. Erasing observations must recover those exact statements.
+        # E24 ruling 771 pins 496(a)'s behavior comparison to its diagnostic
+        # commit. The other production bodies still use the worktree source.
+        path = AHCI.relative_to(ROOT).as_posix()
+        before, diagnostic = (
+            subprocess.check_output(["git", "show", f"{commit}:{path}"], cwd=ROOT, text=True)
+            for commit in ("d3b12d3e", "07932036")
+        )
+        historical = ("setup_cmd_slot0", "handle_interrupt", "wait_cmd_slot0")
         baseline = {
-            "setup_cmd_slot0": "13c6a3ae3786b2106733df9cfb9eac87b642163626136ce5d042adbda9f2f8fb",
-            "wait_cmd_slot0": "1251a970e9da8ed223b4c8fa8891bcf0b18c69d3bb6a8bd791e587bcba7f8fca",
+            **{name: hashlib.sha256(normalized(body(before, name)).encode()).hexdigest()
+               for name in historical},
             "poll_ports": "d4be1f6ebc974933507ccc2d1315db37d7e89f2ad8c13294b5d4522289e75071",
-            "handle_interrupt": "97331ce10ee808dca04520d65814c6df92d76cab87d9b5f352bf16c19fa5878b",
             "detect_completed_slots": "eecf1f43e3970e8809bed432911fcb814aab9b8e9b47a838fc732600aacaa5d8",
         }
         for name, digest in baseline.items():
-            actual = normalized(without_observations(body(source, name)))
+            checked_source = diagnostic if name in historical else source
+            actual = normalized(without_observations(body(checked_source, name)))
             actual = actual.replace(
                 ".wait_timeout_uninterruptible_observed(cmd_num,TIMEOUT_NS,|stage|trace_wait_event(port,cmd_num,stage))",
                 ".wait_timeout_uninterruptible(cmd_num,TIMEOUT_NS)")

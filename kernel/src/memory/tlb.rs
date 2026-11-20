@@ -229,7 +229,7 @@ pub fn load_kernel_root(cpu: usize) {
 #[cfg(target_arch = "x86_64")]
 pub use shootdown::shootdown_nmi_handler;
 #[cfg(target_arch = "x86_64")]
-pub(crate) use shootdown::request_cpu_progress;
+pub(crate) use shootdown::{request_ahci_lapic_sample, request_cpu_progress};
 
 #[cfg(target_arch = "x86_64")]
 mod shootdown {
@@ -348,18 +348,27 @@ mod shootdown {
     /// outstanding there. Set by the initiator; cleared by the target once its
     /// invalidation is done.
     static PENDING: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
-    // A diagnostic shares the flight flag and the final pending recheck with
-    // shootdowns, but owns no invalidation slot and waits for no reply.
+    // Diagnostics share the flight flag and final pending recheck with
+    // shootdowns, but own no invalidation slot.
     const CPU_PROGRESS: u64 = 1 << 63;
-    const _: () = assert!(SLOTS < 64);
+    const AHCI_LAPIC_SAMPLE: u64 = 1 << 62;
+    const _: () = assert!(SLOTS <= 62);
 
     pub(crate) fn request_cpu_progress(cpu: usize, post: impl FnOnce() -> bool) {
+        request_diagnostic(cpu, CPU_PROGRESS, post);
+    }
+
+    pub(crate) fn request_ahci_lapic_sample(cpu: usize, post: impl FnOnce() -> bool) {
+        request_diagnostic(cpu, AHCI_LAPIC_SAMPLE, post);
+    }
+
+    fn request_diagnostic(cpu: usize, kind: u64, post: impl FnOnce() -> bool) {
         if let Some(destination) = smp::cpu_apic_id(cpu) {
             apic::try_diagnostic_nmi(destination, || {
                 if !post() {
                     return false;
                 }
-                PENDING[cpu].fetch_or(CPU_PROGRESS, Ordering::SeqCst);
+                PENDING[cpu].fetch_or(kind, Ordering::SeqCst);
                 !NMI_IN_FLIGHT[cpu].swap(true, Ordering::SeqCst)
             });
         }
@@ -555,6 +564,9 @@ mod shootdown {
         PENDING[cpu].fetch_and(!pending, Ordering::Release);
         if pending & CPU_PROGRESS != 0 {
             crate::task::cpu_progress::record_nmi(cpu, frame);
+        }
+        if pending & AHCI_LAPIC_SAMPLE != 0 {
+            crate::drivers::ahci::record_lapic_sample(cpu);
         }
     }
 
