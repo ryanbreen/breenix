@@ -4,7 +4,7 @@ use crate::task::{
     thread::ThreadState,
     waitqueue::{PrepareOutcome, WaitQueueHead},
 };
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{compiler_fence, AtomicU64, Ordering};
 use spin::Once;
 
 pub struct KernelWait {
@@ -95,9 +95,74 @@ pub fn system_cache() -> &'static SystemCache {
 }
 
 /// Mount I/O and waits enter with the process-manager guard released.
-pub fn assert_io_context() {
-    assert!(
-        !crate::process::process_manager_held_on_current_cpu(),
-        "block cache entered while holding the process manager"
+/// Pass the incoming return address before a Rust prologue can change the stack or LR.
+#[unsafe(naked)]
+pub extern "C" fn assert_io_context() {
+    #[cfg(target_arch = "x86_64")]
+    core::arch::naked_asm!("mov rdi, [rsp]", "jmp {}", sym assert_io_context_at);
+    #[cfg(target_arch = "aarch64")]
+    core::arch::naked_asm!("mov x0, x30", "b {}", sym assert_io_context_at);
+}
+
+extern "C" fn assert_io_context_at(caller: usize) {
+    use crate::process;
+
+    // A preemptible worker could otherwise sample a remote holder, resume on
+    // its CPU after the release, and mistake the old hold for its own.
+    let held = crate::arch_without_interrupts(|| {
+        compiler_fence(Ordering::SeqCst);
+        let held = process::process_manager_owner_snapshot().and_then(|(owner_cpu, owner_tid)| {
+            let current_cpu = process::current_process_manager_cpu();
+            (owner_cpu == current_cpu).then(|| {
+                (
+                    owner_cpu,
+                    owner_tid,
+                    current_cpu,
+                    process::current_process_manager_tid(),
+                    crate::per_cpu::preempt_count(),
+                )
+            })
+        });
+        compiler_fence(Ordering::SeqCst);
+        held
+    });
+    if let Some((owner_cpu, owner_tid, current_cpu, current_tid, preempt)) = held {
+        io_context_failure(caller, owner_cpu, owner_tid, current_cpu, current_tid, preempt);
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn io_context_failure(
+    caller: usize,
+    owner_cpu: u64,
+    owner_tid: u64,
+    current_cpu: u64,
+    current_tid: u64,
+    preempt: u32,
+) -> ! {
+    use core::fmt::{self, Write};
+    #[cfg(target_arch = "aarch64")]
+    use crate::serial_aarch64::write_failure_byte;
+    #[cfg(target_arch = "x86_64")]
+    use crate::tracing::output::raw_serial_char as write_failure_byte;
+
+    struct Receipt;
+    impl Write for Receipt {
+        fn write_str(&mut self, text: &str) -> fmt::Result {
+            for byte in text.bytes() {
+                if !write_failure_byte(byte) {
+                    return Err(fmt::Error);
+                }
+            }
+            Ok(())
+        }
+    }
+
+    let _ = write!(
+        Receipt,
+        "\r\n[PM_IO_ASSERT caller={caller:#x} owner_cpu={owner_cpu} owner_tid={owner_tid} \
+         current_cpu={current_cpu} current_tid={current_tid} preempt={preempt}]\r\n"
     );
+    panic!("block cache entered while holding the process manager");
 }

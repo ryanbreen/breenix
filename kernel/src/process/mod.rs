@@ -58,7 +58,6 @@ impl Drop for RetirementReceipt {
 }
 
 pub(crate) const PM_LOCK_OWNER_NONE: u64 = u64::MAX;
-#[cfg(target_arch = "x86_64")]
 pub(crate) const PM_LOCK_OWNER_TID_UNKNOWN: u64 = u64::MAX - 1;
 
 /// Best-effort owner snapshot for PROCESS_MANAGER lock contention analysis.
@@ -223,8 +222,8 @@ pub fn process_manager_hold() -> u64 {
 #[inline(always)]
 fn note_process_manager_lock_acquired() {
     PM_HOLD.store(PM_HOLDS.fetch_add(1, Ordering::Relaxed) + 1, Ordering::Release);
-    let (cpu, tid) = current_process_manager_owner_identity();
-    PROCESS_MANAGER_OWNER_TID.store(tid, Ordering::Relaxed);
+    let cpu = current_process_manager_cpu();
+    PROCESS_MANAGER_OWNER_TID.store(current_process_manager_tid(), Ordering::Relaxed);
     PROCESS_MANAGER_OWNER_CPU.store(cpu, Ordering::Release);
     crate::tracing::providers::teardown::note_process_manager_acquire();
     #[cfg(target_arch = "x86_64")]
@@ -285,19 +284,36 @@ pub fn process_manager_mutations() -> u64 {
 
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
-fn current_process_manager_owner_identity() -> (u64, u64) {
-    let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id();
-    (cpu, 0)
+pub(crate) fn current_process_manager_cpu() -> u64 {
+    crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id()
 }
 
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
-fn current_process_manager_owner_identity() -> (u64, u64) {
+pub(crate) fn current_process_manager_cpu() -> u64 {
     use crate::arch_impl::current::percpu::X86PerCpu;
     use crate::arch_impl::PerCpuOps;
 
-    let tid = crate::per_cpu::current_thread_id_lock_free().unwrap_or(PM_LOCK_OWNER_TID_UNKNOWN);
-    (X86PerCpu::cpu_id(), tid)
+    X86PerCpu::cpu_id()
+}
+
+// The holder and the block assertion call this with migration excluded.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub(crate) fn current_process_manager_tid() -> u64 {
+    let thread = crate::per_cpu::current_thread_ptr().cast::<crate::task::thread::Thread>();
+    if thread.is_null() {
+        PM_LOCK_OWNER_TID_UNKNOWN
+    } else {
+        // The running thread keeps its own scheduler object live.
+        unsafe { (*thread).id }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+pub(crate) fn current_process_manager_tid() -> u64 {
+    crate::per_cpu::current_thread_id_lock_free().unwrap_or(PM_LOCK_OWNER_TID_UNKNOWN)
 }
 
 /// Snapshot the best-effort PROCESS_MANAGER lock owner.
@@ -314,7 +330,7 @@ pub fn process_manager_owner_snapshot() -> Option<(u64, u64)> {
 #[inline(always)]
 pub fn process_manager_held_on_current_cpu() -> bool {
     process_manager_owner_snapshot()
-        .is_some_and(|(cpu, _)| cpu == current_process_manager_owner_identity().0)
+        .is_some_and(|(cpu, _)| cpu == current_process_manager_cpu())
 }
 
 /// #821: a scope, entered on the CPU that takes an interrupt, inside which no
@@ -341,7 +357,7 @@ static NO_BLOCKING_PM_ACQUISITIONS: AtomicU64 = AtomicU64::new(0);
 
 #[inline(always)]
 fn no_blocking_pm_slot_index() -> usize {
-    (current_process_manager_owner_identity().0 as usize).min(NO_BLOCKING_PM_CPUS - 1)
+    (current_process_manager_cpu() as usize).min(NO_BLOCKING_PM_CPUS - 1)
 }
 
 /// RAII marker for a region that must take no blocking `PROCESS_MANAGER`
