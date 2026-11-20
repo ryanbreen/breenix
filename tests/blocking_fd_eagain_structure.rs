@@ -404,6 +404,9 @@ fn inspect(
                     "arch_halt_while_blocked",
                     "preempt_enable",
                     "preempt_disable",
+                    // A read of the caller's level, used only as a boolean: the
+                    // prepared wait releases a level only when one is held.
+                    "preempt_count",
                     "from",
                     "min",
                     "read_or_prepare",
