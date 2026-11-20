@@ -1,4 +1,4 @@
-"""Run the production desktop-suite startup with shares ready before NTP."""
+"""Drive the production desktop-suite startup with independent readiness events."""
 from pathlib import Path
 import subprocess
 import tempfile
@@ -18,12 +18,15 @@ class DesktopClock(unittest.TestCase):
 use ::std::sync::atomic::{AtomicU64, Ordering};
 static NOW: AtomicU64 = AtomicU64::new(0);
 static CLOCK_AT: AtomicU64 = AtomicU64::new(200);
+static ORACLE_AT: AtomicU64 = AtomicU64::new(0);
+static SSH_AT: AtomicU64 = AtomicU64::new(0);
+static COUNTER_AT: AtomicU64 = AtomicU64::new(0);
 static SPAWN_AT: AtomicU64 = AtomicU64::new(0);
 static AMBIENT_APPS: AtomicU64 = AtomicU64::new(0);
 fn publish_log_boot_id(_: bool) { panic!("standalone log identity already prepared") }
 fn run_boot_checks() {}
 fn reconcile_machine_state() {}
-fn run_boot_script() {}
+fn run_boot_script() -> Option<i32> { Some(8) }
 // Public so the fake process boundary is also valid when startup no longer calls it.
 pub fn start_bounce() { AMBIENT_APPS.fetch_add(1, Ordering::Relaxed); }
 fn run_bssh_autorun_if_enabled() {}
@@ -89,7 +92,17 @@ pub mod init_services {
   pub fn service_state(&self, name: &str) -> Option<&str> {
    match name { "shares" => Some("done"), "ntp" => Some("running"), _ => panic!("unknown service") }
   }
-  pub fn tick_child(&mut self, _: Option<i32>) -> Option<i32> { Some(0) }
+  pub fn ssh_boot_oracle_reaped(&self) -> bool {
+   let now = crate::NOW.load(crate::Ordering::Relaxed);
+   now >= crate::ORACLE_AT.load(crate::Ordering::Relaxed)
+    && now >= crate::SSH_AT.load(crate::Ordering::Relaxed)
+  }
+  pub fn tick_child(&mut self, child: Option<i32>) -> Option<i32> {
+   if child == Some(9) { return Some(0); }
+   self.tick();
+   (child == Some(8) && crate::NOW.load(crate::Ordering::Relaxed)
+      >= crate::COUNTER_AT.load(crate::Ordering::Relaxed)).then_some(0)
+  }
   pub fn stop_for_sequence(&mut self) -> Result<(), String> { panic!("standalone stop") }
   pub fn poweroff(&mut self) {}
   pub fn run(self) -> ! { panic!("end of init loop") }
@@ -97,18 +110,31 @@ pub mod init_services {
 }
 // FUNCTIONS
 fn main() {
- for clock_at in [200, u64::MAX] {
+ for (clock_at, oracle_at, ssh_at, counter_at) in [
+  (200, 350, 450, 550),
+  (200, 350, 450, 0),
+  (200, 350, 350, 0),
+  (200, u64::MAX, u64::MAX, 0),
+  (200, 350, u64::MAX, 0),
+  (200, 350, 450, u64::MAX),
+  (u64::MAX, 0, 0, 0),
+ ] {
   NOW.store(0, Ordering::Relaxed);
   SPAWN_AT.store(0, Ordering::Relaxed);
   AMBIENT_APPS.store(0, Ordering::Relaxed);
   CLOCK_AT.store(clock_at, Ordering::Relaxed);
+  ORACLE_AT.store(oracle_at, Ordering::Relaxed);
+  SSH_AT.store(ssh_at, Ordering::Relaxed);
+  COUNTER_AT.store(counter_at, Ordering::Relaxed);
+  let ready = clock_at.max(oracle_at).max(ssh_at).max(counter_at);
   let _ = ::std::panic::catch_unwind(|| run_desktop_suite(1, "/sbin/suite-gui-apps", vec![]));
   let spawned = SPAWN_AT.load(Ordering::Relaxed);
-  if clock_at == u64::MAX {
-   assert_eq!(spawned, 0, "cases launched while NTP could still step realtime");
+  if ready == u64::MAX {
+   assert_eq!(spawned, 0, "cases launched with a boot prerequisite still outstanding");
    assert!(NOW.load(Ordering::Relaxed) >= 30_000);
   } else {
-   assert!(spawned >= clock_at, "cases started at {spawned} before initial clock step at {clock_at}");
+   assert!(spawned >= ready,
+    "cases started at {spawned} before boot prerequisites cleared at {ready}");
   }
  }
 }
