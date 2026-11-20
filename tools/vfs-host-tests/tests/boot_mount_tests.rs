@@ -272,7 +272,7 @@ fn cutover_serves_the_generation_with_writable_system_binds_and_home() {
     }
 }
 
-fn cutover_system() -> Box<dyn BlockDevice> {
+fn cutover_system() -> Box<SparseBreenFsDisk> {
     let disk = Box::new(SparseBreenFsDisk::default());
     let sb = Superblock {
         fs_uuid: uuid(NEW_SYSTEM),
@@ -305,6 +305,86 @@ fn cutover_system() -> Box<dyn BlockDevice> {
     }
     files.fsync(disk.as_ref(), &mut commit).unwrap();
     disk
+}
+
+#[test]
+fn watchdog_reads_persisted_generation_root_past_the_cache() {
+    use crate::{
+        breenfs::{btree, format, ops, recover},
+        vfs::FileSystem,
+    };
+
+    let disk = Arc::from(cutover_system());
+    let fs = BreenFs::mount_writable_cached(
+        Arc::<SparseBreenFsDisk>::clone(&disk),
+        crate::block::cache_kernel::system_cache(),
+        1000,
+        1,
+    ).unwrap();
+    let view = fs.generation_view(1001, b"gen-install-42").unwrap();
+    let root = view.root().unwrap();
+    view.getattr(root).unwrap();
+
+    let sb = recover::recover(disk.as_ref(), false).unwrap();
+    let sectors_per_block = (format::BLOCK_SIZE / gpt::SECTOR) as u64;
+    let ring_a = (16 + u64::from(sb.slot)) * sectors_per_block;
+    let ring_b = (sb.total_blocks - 4 + u64::from(sb.slot)) * sectors_per_block;
+    assert_eq!(view.check_live(), Ok(()));
+
+    disk.write_block(ring_a, &[0; gpt::SECTOR]).unwrap();
+    assert_eq!(view.check_live(), Ok(()), "one durable ring is sufficient");
+    disk.write_block(ring_b, &[0; gpt::SECTOR]).unwrap();
+    assert_eq!(view.check_live(), Err(Errno(EIO)), "both durable copies are gone");
+    let mut ring_b_copy = sb.clone();
+    ring_b_copy.ring = 1;
+    disk.write_block(ring_b, &ring_b_copy.encode()[..gpt::SECTOR]).unwrap();
+
+    let record = btree::search(
+        &DeviceStore(disk.as_ref()), sb.space_root, ops::key(0xffff_ffff_ffff_ff10, format::ROOT, 2),
+    ).unwrap().unwrap();
+    let pointer = format::Root::decode(&record).unwrap().root;
+    disk.write_block(pointer.addr * sectors_per_block, &[0; gpt::SECTOR]).unwrap();
+    assert_eq!(view.check_live(), Err(Errno(EIO)), "the cached OS root hides a failed disk read");
+    assert_eq!(fs.check_live(), Ok(()), "the default root is still intact");
+}
+
+#[test]
+fn frozen_ext2_stat_preserves_pre_epoch_and_extended_times() {
+    use crate::vfs::Timestamp;
+
+    let _registry = crate::statfs_support::TEST_MOUNTS.lock().unwrap();
+    for inode_size in [128usize, 256] {
+        let disk = ext2(SYSTEM);
+        let mut sector = [0; gpt::SECTOR];
+        disk.read_block(2, &mut sector).unwrap();
+        sector[76..80].copy_from_slice(&1u32.to_le_bytes());
+        sector[88..90].copy_from_slice(&(inode_size as u16).to_le_bytes());
+        disk.write_block(2, &sector).unwrap();
+        let inode_table = 8 * (4096 / gpt::SECTOR as u64);
+        disk.read_block(inode_table, &mut sector).unwrap();
+        sector.copy_within(128..256, inode_size);
+        let inode = &mut sector[inode_size..2 * inode_size];
+        inode[8..12].copy_from_slice(&(-11i32).to_le_bytes());
+        inode[16..20].copy_from_slice(&(-9i32).to_le_bytes());
+        let (atime, mtime) = if inode_size == 256 {
+            inode[128..130].copy_from_slice(&16u16.to_le_bytes());
+            inode[136..140].copy_from_slice(&(123_456_789u32 << 2).to_le_bytes());
+            inode[140..144].copy_from_slice(&((987_654_321u32 << 2) | 1).to_le_bytes());
+            (Timestamp { sec: (1i64 << 32) - 11, nsec: 987_654_321 },
+             Timestamp { sec: -9, nsec: 123_456_789 })
+        } else {
+            (Timestamp { sec: -11, nsec: 0 }, Timestamp { sec: -9, nsec: 0 })
+        };
+        disk.write_block(inode_table, &sector).unwrap();
+
+        let fs = crate::format::probe_mount(
+            &formats(), crate::block::read_only::device(disk), BootMount::Root,
+        ).unwrap();
+        let root = fs.root().unwrap();
+        let times = fs.getattr(root).unwrap().times;
+        assert_eq!((times.atime, times.mtime), (atime, mtime), "{inode_size}-byte inode");
+        assert_eq!(*fs.open(root).unwrap().times.lock(), times);
+    }
 }
 
 fn arm_disks(cutover: bool) -> Vec<Box<dyn BlockDevice>> {
@@ -524,6 +604,33 @@ fn format_three_x86_fences_only_the_writable_partitions() {
             !expected.is_empty()
         );
         assert!(!fence.allows(HardwareDisk::Ahci(1), BREENFS_SYSTEM_START, 1));
+    }
+}
+
+#[test]
+fn format_three_refuses_writable_frozen_volumes() {
+    let hardware = HardwareDisk::Ahci(0);
+    let mut fence = Fence::CLOSED;
+    for (guid, path) in [(TEST, "/"), (SYSTEM, "/"), (HOME, "/home")] {
+        let (_, entry, disk) = selection::find_partition(
+            vec![Box::new(GptDisk::new(hardware)) as Box<dyn BlockDevice>],
+            guid,
+            selection::partition_types(path),
+        ).unwrap();
+        assert!(selection::grant_write(&mut fence, disk, &entry, true).is_err(), "{path}");
+        assert!(fence.ranges().is_empty());
+    }
+}
+
+#[test]
+fn format_three_uuid_resolution_refuses_writable_ext2() {
+    for lines in [
+        &[(SYSTEM, "/", true)][..],
+        &[(NEW_SYSTEM, "/", true), (HOME, "/home", true)][..],
+    ] {
+        let intent = captured(lines);
+        let error = arm_plan(&intent, false).err().expect("a writable ext2 volume was admitted");
+        assert!(error.to_string().contains("read-only"), "{error}");
     }
 }
 

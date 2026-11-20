@@ -24,6 +24,17 @@ class MigrationManifestTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr.decode(errors="replace"))
         return proc.stdout
 
+    def test_pre_epoch_mtime_in_a_128_byte_inode(self):
+        mke2fs, debugfs = require_e2fsprogs("mke2fs", "debugfs")
+        with tempfile.TemporaryDirectory() as tmp:
+            image = Path(tmp) / "ext2.img"
+            self.run_tool(mke2fs, "-q", "-t", "ext2", "-I", "128", "-F", image, "4096")
+            self.run_tool(debugfs, "-w", "-R", "set_inode_field <2> mtime 0xfffffff7", image)
+            stat = self.run_tool(debugfs, "-R", "stat <2>", image)
+            self.assertRegex(stat, rb"\bmtime: 0xfffffff7 -- ")
+            manifest = self.run_tool(sys.executable, METAL / "migrate_manifest.py", "ext2", image)
+            self.assertEqual(manifest.splitlines()[0].split(b"\t")[7], b"-9.000000000")
+
     def test_ext2_and_breenfs_compare_logical_trees(self):
         mke2fs, debugfs = require_e2fsprogs("mke2fs", "debugfs")
         with tempfile.TemporaryDirectory() as tmp:

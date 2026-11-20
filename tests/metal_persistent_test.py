@@ -206,6 +206,18 @@ class LayoutTest(existing.StateTest):
         with self.assertRaises(ValueError):
             metal_persist.intent('persistent', home=b, mounts=[(a, '/', False)])
 
+    def test_format_3_writer_requires_breenfs_roles(self):
+        guids = {role: f'{i:08x}-0000-0000-0000-000000000000'
+                 for i, role in enumerate(('test', 'system', 'home', 'breenfs-system', 'breenfs-home'), 1)}
+        with self.assertRaises(ValueError):
+            metal_persist.intent('persistent', mounts=[(guids['system'], '/', True)])
+        for role, path in (('test', '/'), ('system', '/'), ('home', '/home'), ('breenfs-home', '/')):
+            with self.subTest(role=role, path=path), self.assertRaises(ValueError):
+                mounts = [(guids[role], path, True)]
+                if path != '/':
+                    mounts.insert(0, (guids['breenfs-system'], '/', True))
+                metal_persist.intent('persistent', mounts=mounts, mount_guids=guids)
+
     def test_slot_image_carries_its_immutable_userland_identity(self):
         with tempfile.TemporaryDirectory() as scratch:
             layout = metal_persist.new_layout()
