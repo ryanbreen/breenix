@@ -113,13 +113,54 @@ fn ext2(guid: &str) -> Box<dyn BlockDevice> {
     device
 }
 
+const BREENFS_BLOCKS: u64 = 16_384;
+const BREENFS_SECTORS: u64 =
+    BREENFS_BLOCKS * (crate::breenfs::format::BLOCK_SIZE / gpt::SECTOR) as u64;
+
+#[derive(Default)]
+struct SparseBreenFsDisk(std::sync::Mutex<std::collections::BTreeMap<u64, [u8; gpt::SECTOR]>>);
+
+impl BlockDevice for SparseBreenFsDisk {
+    fn block_size(&self) -> usize {
+        gpt::SECTOR
+    }
+
+    fn num_blocks(&self) -> u64 {
+        BREENFS_SECTORS
+    }
+
+    fn read_block(&self, sector: u64, buf: &mut [u8]) -> Result<(), BlockError> {
+        if sector >= self.num_blocks() {
+            return Err(BlockError::OutOfBounds);
+        }
+        if let Some(data) = self.0.lock().unwrap().get(&sector) {
+            buf.copy_from_slice(data);
+        } else {
+            buf.fill(0);
+        }
+        Ok(())
+    }
+
+    fn write_block(&self, sector: u64, buf: &[u8]) -> Result<(), BlockError> {
+        if sector >= self.num_blocks() {
+            return Err(BlockError::OutOfBounds);
+        }
+        self.0.lock().unwrap().insert(sector, buf.try_into().unwrap());
+        Ok(())
+    }
+
+    fn flush(&self) -> Result<(), BlockError> {
+        Ok(())
+    }
+}
+
 fn breenfs(guid: &str) -> Box<dyn BlockDevice> {
-    let disk = crate::host_mounts::zeroed_device();
+    let disk = Box::new(SparseBreenFsDisk::default());
     let sb = Superblock {
         fs_uuid: uuid(guid),
         generation: 1,
         slot: 1,
-        total_blocks: 512,
+        total_blocks: BREENFS_BLOCKS,
         global_reserve: 32,
         next_root_id: 2,
         ..Superblock::default()
@@ -227,11 +268,15 @@ fn format_three_mounts_migration_cutover_and_rescue_by_uuid() {
 struct GptDisk {
     header: [u8; 512],
     entries: [u8; 1024],
-    images: Vec<Box<dyn BlockDevice>>,
+    images: Vec<(u64, Box<dyn BlockDevice>)>,
     hardware: HardwareDisk,
 }
 
 const PARTITION_SECTORS: u64 = 4096;
+const EXT2_HOME_START: u64 = 3 * PARTITION_SECTORS;
+const BREENFS_SYSTEM_START: u64 = EXT2_HOME_START + PARTITION_SECTORS;
+const BREENFS_HOME_START: u64 = BREENFS_SYSTEM_START + BREENFS_SECTORS;
+const PARTITIONS_END: u64 = BREENFS_HOME_START + BREENFS_SECTORS;
 
 impl GptDisk {
     fn new(hardware: HardwareDisk) -> Self {
@@ -248,14 +293,16 @@ impl GptDisk {
         ];
         let mut entries = [0; 1024];
         let mut images = Vec::new();
+        let mut first = PARTITION_SECTORS;
         for (i, (role, guid, image)) in roles.into_iter().enumerate() {
             let entry = &mut entries[i * 128..(i + 1) * 128];
             entry[..16].copy_from_slice(&role);
             entry[16..32].copy_from_slice(&gpt::parse_guid(guid).unwrap());
-            let first = (i as u64 + 1) * PARTITION_SECTORS;
+            let end = first + image.num_blocks();
             entry[32..40].copy_from_slice(&first.to_le_bytes());
-            entry[40..48].copy_from_slice(&(first + PARTITION_SECTORS - 1).to_le_bytes());
-            images.push(image);
+            entry[40..48].copy_from_slice(&(end - 1).to_le_bytes());
+            images.push((first, image));
+            first = end;
         }
         let mut header = [0; 512];
         header[..8].copy_from_slice(b"EFI PART");
@@ -263,7 +310,7 @@ impl GptDisk {
         header[12..16].copy_from_slice(&92u32.to_le_bytes());
         header[24..32].copy_from_slice(&1u64.to_le_bytes());
         header[40..48].copy_from_slice(&PARTITION_SECTORS.to_le_bytes());
-        header[48..56].copy_from_slice(&(6 * PARTITION_SECTORS - 1).to_le_bytes());
+        header[48..56].copy_from_slice(&(PARTITIONS_END - 1).to_le_bytes());
         header[72..80].copy_from_slice(&2u64.to_le_bytes());
         header[80..84].copy_from_slice(&8u32.to_le_bytes());
         header[84..88].copy_from_slice(&128u32.to_le_bytes());
@@ -287,7 +334,7 @@ impl BlockDevice for GptDisk {
         512
     }
     fn num_blocks(&self) -> u64 {
-        7 * PARTITION_SECTORS
+        PARTITIONS_END + PARTITION_SECTORS
     }
     fn flush(&self) -> Result<(), BlockError> {
         Ok(())
@@ -297,11 +344,14 @@ impl BlockDevice for GptDisk {
             1 => buf.copy_from_slice(&self.header),
             2 => buf.copy_from_slice(&self.entries[..512]),
             3 => buf.copy_from_slice(&self.entries[512..]),
-            n if (PARTITION_SECTORS..6 * PARTITION_SECTORS).contains(&n) => {
-                let index = (n / PARTITION_SECTORS - 1) as usize;
-                return self.images[index].read_block(n % PARTITION_SECTORS, buf);
+            n => {
+                for (first, image) in &self.images {
+                    if (*first..*first + image.num_blocks()).contains(&n) {
+                        return image.read_block(n - first, buf);
+                    }
+                }
+                buf.fill(0);
             }
-            _ => buf.fill(0),
         }
         Ok(())
     }
@@ -317,15 +367,15 @@ fn format_three_x86_fences_only_the_writable_partitions() {
         (
             MIGRATION,
             &[
-                (4 * PARTITION_SECTORS, 5 * PARTITION_SECTORS - 1),
-                (5 * PARTITION_SECTORS, 6 * PARTITION_SECTORS - 1),
+                (BREENFS_SYSTEM_START, BREENFS_HOME_START - 1),
+                (BREENFS_HOME_START, PARTITIONS_END - 1),
             ][..],
         ),
         (
             CUTOVER,
             &[
-                (4 * PARTITION_SECTORS, 5 * PARTITION_SECTORS - 1),
-                (5 * PARTITION_SECTORS, 6 * PARTITION_SECTORS - 1),
+                (BREENFS_SYSTEM_START, BREENFS_HOME_START - 1),
+                (BREENFS_HOME_START, PARTITIONS_END - 1),
             ][..],
         ),
         (RESCUE, &[][..]),
@@ -345,12 +395,12 @@ fn format_three_x86_fences_only_the_writable_partitions() {
         .unwrap();
         assert_eq!(plan.len(), lines.len());
         assert_eq!(fence.ranges(), expected);
-        assert!(!fence.allows(hardware, 3 * PARTITION_SECTORS, 1));
+        assert!(!fence.allows(hardware, EXT2_HOME_START, 1));
         assert_eq!(
-            fence.allows(hardware, 4 * PARTITION_SECTORS, 1),
+            fence.allows(hardware, BREENFS_SYSTEM_START, 1),
             !expected.is_empty()
         );
-        assert!(!fence.allows(HardwareDisk::Ahci(1), 4 * PARTITION_SECTORS, 1));
+        assert!(!fence.allows(HardwareDisk::Ahci(1), BREENFS_SYSTEM_START, 1));
     }
 }
 
