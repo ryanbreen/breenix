@@ -711,7 +711,7 @@ impl FileSystem for Ext2Adapter {
             // A completed read keeps its result if metadata I/O fails.
             let _ = (|| -> Result<(), Errno> {
                 #[cfg(not(test))]
-                let mut guard = ext2::fs_write_raw(ext2::pin_is_home(self.mount).map_err(errno)?)
+                let mut guard = ext2::fs_write_raw(ext2::slot_for(self.mount).map_err(errno)?)
                     .map_err(errno)?;
                 #[cfg(test)]
                 let mut guard = write_mount(self.mount).map_err(errno)?;

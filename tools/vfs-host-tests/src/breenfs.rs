@@ -41,3 +41,6 @@ pub mod mount_args;
 
 #[path = "../../../kernel/src/fs/breenfs/preempt.rs"]
 pub mod preempt;
+
+#[path = "../../../kernel/src/fs/breenfs/probe.rs"]
+pub mod probe;

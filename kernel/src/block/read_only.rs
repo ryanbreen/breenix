@@ -1,11 +1,11 @@
-//! Hardware write barrier applied to discovered disks on physical x86 boots.
+//! Write barrier for discovered hardware disks and explicit read-only boot mounts.
 
 use alloc::boxed::Box;
 use super::{BlockDevice, BlockError};
 
 struct ReadOnly(Box<dyn BlockDevice>);
 
-pub(super) fn device(device: Box<dyn BlockDevice>) -> Box<dyn BlockDevice> {
+pub(crate) fn device(device: Box<dyn BlockDevice>) -> Box<dyn BlockDevice> {
     Box::new(ReadOnly(device))
 }
 

@@ -1,16 +1,252 @@
 //! Device discovery and boot consumers above the filesystem boundary.
-use super::{probe_mount, BootMount, FileSystem, Report};
-use crate::block::BlockDevice;
-use crate::{fs::errno::Errno, syscall::errno::*};
-#[cfg(any(
-    target_arch = "aarch64",
-    all(feature = "testing", not(feature = "interactive"))
-))]
-use alloc::boxed::Box;
-use alloc::{string::String, sync::Arc, vec::Vec};
-use core::fmt::{self, Write};
+#[cfg(not(test))]
+use crate::fs::vfs::{mount as registry, probe_mount, Report};
+#[cfg(test)]
+use crate::statfs_support::mount as registry;
+use crate::{
+    block::BlockDevice,
+    boot::intent::Captured,
+    fs::{
+        errno::Errno,
+        vfs::{
+            format::{detect, ExplicitMount},
+            mount_table::InodeKey,
+            BootMount, FileSystem, Format,
+        },
+    },
+    syscall::errno::*,
+};
+#[cfg(not(test))]
+use alloc::string::String;
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use core::fmt;
+#[cfg(not(test))]
+use core::fmt::Write;
+
+pub(crate) struct MountFailure<'a> {
+    source: Option<(&'a str, &'a str)>,
+    reason: &'static str,
+}
+
+impl fmt::Debug for MountFailure<'_> {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, out)
+    }
+}
+
+impl fmt::Display for MountFailure<'_> {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(out, "stage=boot-mount")?;
+        if let Some((guid, path)) = self.source {
+            write!(out, " guid={guid} path={path}")?;
+        }
+        write!(out, " reason={}", self.reason)
+    }
+}
+
+pub(crate) struct MountLine<'a> {
+    guid: &'a str,
+    path: &'a str,
+    writable: bool,
+    kind: &'static str,
+    device: Box<dyn BlockDevice>,
+}
+
+/// Resolve and probe the whole set before publishing a mount or a write grant.
+pub(crate) fn prepare_mounts<'a>(
+    intent: Option<&'a Captured>,
+    formats: &[Format],
+    mut resolve: impl FnMut(&str, &str, bool) -> Result<Box<dyn BlockDevice>, &'static str>,
+) -> Result<Option<Vec<MountLine<'a>>>, MountFailure<'a>> {
+    let Some(intent) = intent else {
+        return Ok(None);
+    };
+    if !intent.explicit_mounts().map_err(|reason| MountFailure {
+        source: None,
+        reason,
+    })? {
+        return Ok(None);
+    }
+
+    let mut mounts: Vec<MountLine<'_>> = Vec::new();
+    for (guid, path, writable) in intent.mounts() {
+        let fail = |reason| MountFailure {
+            source: Some((guid, path)),
+            reason,
+        };
+        if path != "/" && path[1..].split('/').any(str::is_empty) {
+            return Err(fail("the mount path is not canonical"));
+        }
+        if mounts
+            .iter()
+            .any(|line| (line.writable || writable) && line.guid.eq_ignore_ascii_case(guid))
+        {
+            return Err(fail("a writable source has more than one mount line"));
+        }
+        let device = resolve(guid, path, writable).map_err(fail)?;
+        let format = detect(formats, device.as_ref())
+            .map_err(|_| fail("the filesystem magic is unreadable"))?
+            .ok_or_else(|| fail("the filesystem magic is unrecognized"))?;
+        mounts.push(MountLine {
+            guid,
+            path,
+            writable,
+            kind: format.kind,
+            device,
+        });
+    }
+    // The cover for a nested mount belongs to the closest mounted ancestor.
+    mounts.sort_by_key(|line| {
+        (
+            line.path != "/",
+            line.path.bytes().filter(|&b| b == b'/').count(),
+        )
+    });
+    Ok(Some(mounts))
+}
+
+impl<'a> MountLine<'a> {
+    pub(crate) fn point(
+        &self,
+        id: usize,
+        cover: Option<InodeKey>,
+        parent: Option<InodeKey>,
+    ) -> ExplicitMount<'a> {
+        let mut flags = if self.path == "/home" {
+            registry::HOME_FLAGS
+        } else {
+            Default::default()
+        };
+        flags.read_only = !self.writable;
+        ExplicitMount {
+            id,
+            path: self.path,
+            flags,
+            cover,
+            parent,
+        }
+    }
+
+    pub(crate) fn mount(
+        self,
+        formats: &[Format],
+        point: &ExplicitMount<'_>,
+    ) -> Result<Arc<dyn FileSystem>, Errno> {
+        let device = if self.writable {
+            if self.device.is_read_only() {
+                return Err(Errno(EROFS));
+            }
+            self.device
+        } else {
+            crate::block::read_only::device(self.device)
+        };
+        let format = formats
+            .iter()
+            .find(|format| format.kind == self.kind)
+            .ok_or(Errno(ENODEV))?;
+        (format.mount)(device, BootMount::Explicit(point))
+    }
+}
+
+impl ExplicitMount<'_> {
+    pub(crate) fn entry(&self, fs: Arc<dyn FileSystem>) -> Result<registry::MountPoint, Errno> {
+        Ok(registry::MountPoint::new(
+            self.id,
+            self.path.as_bytes().to_vec(),
+            fs.kind()?,
+            self.flags,
+            registry::Backend::Fs(fs.clone()),
+            fs.root()?,
+            self.cover,
+            self.parent,
+        ))
+    }
+}
+
+#[cfg(not(test))]
+fn explicit_covers(path: &str) -> Result<(Option<InodeKey>, Option<InodeKey>), Errno> {
+    use crate::fs::namei::{resolve, working_dir, Target};
+
+    if path == "/" {
+        return Ok((None, None));
+    }
+    let point = resolve(path, false).map_err(|error| Errno(error as i32))?;
+    if point.path != path || point.is_mount_point() {
+        return Err(Errno(EBUSY));
+    }
+    working_dir(&point).map_err(|error| Errno(error as i32))?;
+    let Target::Inode { mount, ino, .. } = point.target else {
+        return Err(Errno(ENOTDIR));
+    };
+    let (parent_path, _) = path.rsplit_once('/').ok_or(Errno(EINVAL))?;
+    let parent = resolve(
+        if parent_path.is_empty() {
+            "/"
+        } else {
+            parent_path
+        },
+        true,
+    )
+    .map_err(|error| Errno(error as i32))?;
+    let Target::Inode {
+        mount: parent_mount,
+        ino: parent_ino,
+        ..
+    } = parent.target
+    else {
+        return Err(Errno(ENOTDIR));
+    };
+    Ok((Some((mount.0, ino)), Some((parent_mount.0, parent_ino))))
+}
+
+#[cfg(not(test))]
+fn mount_explicit() -> Result<(), Errno> {
+    use crate::{block, boot::intent, fs::FORMATS};
+
+    #[cfg(target_arch = "x86_64")]
+    let (mut fence, mut root_role) = (block::Fence::CLOSED, 0);
+    let plan = prepare_mounts(intent::captured(), FORMATS, |guid, _path, _writable| {
+        #[cfg(target_arch = "x86_64")]
+        {
+            block::explicit_mount_device(guid, _path, _writable, &mut fence, &mut root_role)
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            block::explicit_mount_device(guid)
+        }
+    })
+    .map_err(|failure| {
+        root_mount_receipt(None, format_args!("{failure}"));
+        Errno(ENODEV)
+    })?
+    .ok_or(Errno(EINVAL))?;
+
+    #[cfg(target_arch = "x86_64")]
+    block::publish_mount_fence(fence, root_role).map_err(|reason| {
+        root_mount_receipt(None, format_args!("stage=boot-mount-fence reason={reason}"));
+        Errno(EIO)
+    })?;
+
+    for line in plan {
+        let (path, guid) = (line.path, line.guid);
+        let mounted = (|| {
+            let (cover, parent) = explicit_covers(path)?;
+            let point = line.point(registry::allocate_id()?, cover, parent);
+            line.mount(FORMATS, &point)
+        })();
+        if let Err(error) = mounted {
+            root_mount_receipt(
+                None,
+                format_args!("stage=boot-mount path={path} guid={guid} errno={}", error.0),
+            );
+            return Err(error);
+        }
+    }
+    Ok(())
+}
 
 /// Emit one bounded record without allocating or waiting for serial ownership.
+#[cfg(not(test))]
 pub(crate) fn root_mount_receipt(device: Option<&dyn BlockDevice>, details: fmt::Arguments<'_>) {
     struct Line {
         bytes: [u8; 256],
@@ -48,6 +284,7 @@ pub(crate) fn root_mount_receipt(device: Option<&dyn BlockDevice>, details: fmt:
 
 /// A request available before the root mounts (fw_cfg or the boot loader's
 /// intent). The on-disk boot-target file cannot be read on a failed mount.
+#[cfg(not(test))]
 pub fn suite_boot_requested() -> bool {
     let mut mode = [0u8; 256];
     #[cfg(target_arch = "x86_64")]
@@ -65,7 +302,11 @@ pub fn suite_boot_requested() -> bool {
     crate::boot::intent::get().is_some_and(|target| target.starts_with(b"suite "))
 }
 
+#[cfg(not(test))]
 pub fn mount_root() -> Result<(), Errno> {
+    if crate::boot::intent::explicit_mounts_requested() {
+        return mount_explicit();
+    }
     #[cfg(target_arch = "x86_64")]
     let devices = crate::block::root_devices();
     #[cfg(target_arch = "aarch64")]
@@ -96,6 +337,7 @@ pub fn mount_root() -> Result<(), Errno> {
     Err(error)
 }
 
+#[cfg(not(test))]
 pub fn mount_home() -> Result<(), Errno> {
     #[cfg(target_arch = "x86_64")]
     let device = if crate::block::hardware_read_only() {
@@ -121,6 +363,7 @@ pub fn mount_home() -> Result<(), Errno> {
     Ok(())
 }
 
+#[cfg(not(test))]
 fn storage() -> Result<Vec<(usize, Arc<dyn FileSystem>)>, Errno> {
     super::mount::storage_mounts()
         .into_iter()
@@ -128,6 +371,7 @@ fn storage() -> Result<Vec<(usize, Arc<dyn FileSystem>)>, Errno> {
         .collect()
 }
 
+#[cfg(not(test))]
 pub fn init_services() -> Result<(), Errno> {
     for (_, fs) in storage()? {
         fs.init_service()?;
@@ -135,6 +379,7 @@ pub fn init_services() -> Result<(), Errno> {
     Ok(())
 }
 
+#[cfg(not(test))]
 pub fn shutdown() -> Result<(), Errno> {
     // The home mount shuts down before root, as it did before the trait move.
     let (sec, nsec) = crate::time::get_monotonic_time_ns();
@@ -151,6 +396,7 @@ pub fn shutdown() -> Result<(), Errno> {
     Ok(())
 }
 
+#[cfg(not(test))]
 pub fn report(report: Report) -> Result<String, Errno> {
     let mut text = String::new();
     for (id, fs) in storage()? {
@@ -165,6 +411,7 @@ pub fn report(report: Report) -> Result<String, Errno> {
 }
 
 /// Counter transport used by failure observations, without backend state locks.
+#[cfg(not(test))]
 pub fn mutation_costs() -> Result<String, Errno> {
     let mut text = String::new();
     for (id, fs) in storage()? {
@@ -175,11 +422,13 @@ pub fn mutation_costs() -> Result<String, Errno> {
 }
 
 /// Configuration reads retain the resolved VNode and use only filesystem ops.
+#[cfg(not(test))]
 pub fn read_config(path: &str, max: usize) -> Result<Vec<u8>, Errno> {
     let (_, _, node, _) = crate::fs::namei::resolve_file(path).map_err(|e| Errno(e as i32))?;
     read_config_node(&node, max)
 }
 
+#[cfg(not(test))]
 pub fn read_config_node(node: &super::VNode, max: usize) -> Result<Vec<u8>, Errno> {
     let attrs = node.filesystem.getattr(node.ino)?;
     if attrs.kind == super::NodeKind::Directory {
@@ -207,12 +456,14 @@ pub fn read_config_node(node: &super::VNode, max: usize) -> Result<Vec<u8>, Errn
 }
 
 /// Retain the mounted root backend without holding the table during I/O.
+#[cfg(not(test))]
 pub fn root_filesystem() -> Result<Arc<dyn FileSystem>, Errno> {
     let id = super::mount::find_mount("/").ok_or(Errno(ENODEV))?;
     super::mount::filesystem(id)
 }
 
 /// Boot diagnostics name the backend retained by the mounted root.
+#[cfg(not(test))]
 pub fn root_kind() -> &'static str {
     root_filesystem().and_then(|fs| fs.kind()).unwrap_or("unmounted")
 }

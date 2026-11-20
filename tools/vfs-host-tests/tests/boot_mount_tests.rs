@@ -46,12 +46,6 @@ fn probe_mounts_ext2_and_refuses_zeroed_disk() {
 // host publishes the selected filesystems to the same registry as /proc/mounts.
 #[path = "../../../kernel/src/fs/vfs/boot.rs"]
 mod boot;
-#[path = "../../../kernel/src/fs/breenfs/probe.rs"]
-mod breenfs_probe;
-#[path = "../../../kernel/src/block/gpt.rs"]
-mod gpt;
-#[path = "../../../kernel/src/block/partition.rs"]
-mod partition;
 #[path = "../../../kernel/src/block/boot_mount.rs"]
 mod selection;
 
@@ -61,12 +55,13 @@ use crate::{
         commit::{Committer, DeviceStore},
         format::Superblock,
         ops::Files,
+        probe as breenfs_probe,
         vfs::BreenFs,
     },
     format::{BootMount, Format},
-    intent,
+    gpt, intent, partition,
     statfs_support::mount,
-    vfs::{FileSystem, NewNode},
+    vfs::NewNode,
 };
 use std::sync::Arc;
 

@@ -1019,6 +1019,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     };
 
     // Probe and mount the root filesystem (if block device present)
+    let explicit_mounts = kernel::boot::intent::explicit_mounts_requested();
     match kernel::fs::vfs::mount_root() {
         Ok(()) => {
             serial_println!("[boot] {} root filesystem mounted", kernel::fs::vfs::root_kind());
@@ -1027,7 +1028,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             kernel::test_framework::btrt::pass(kernel::test_framework::catalog::EXT2_MOUNT);
         }
         Err(e) => {
-            if kernel::fs::vfs::suite_boot_requested() {
+            if explicit_mounts || kernel::fs::vfs::suite_boot_requested() {
                 panic!("BREENIX_ROOT_MOUNT_FATAL errno={}", e.0);
             }
             serial_println!("[boot] root fs init: {:?} (continuing without root fs)", e);
@@ -1046,12 +1047,14 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // of this boot prints is evidence the kernel survived the injected faults.
     #[cfg(feature = "fs_fault_inject")]
     kernel::fs::vfs::fault::run_fs_fault_leg();
-    // Probe and mount the home filesystem (/home on separate disk)
-    match kernel::fs::vfs::mount_home() {
-        Ok(()) => serial_println!("[boot] ext2 home filesystem mounted at /home"),
-        Err(e) => serial_println!("[boot] No home filesystem: {:?} (continuing)", e),
+    if !explicit_mounts {
+        // Probe and mount the home filesystem (/home on separate disk)
+        match kernel::fs::vfs::mount_home() {
+            Ok(()) => serial_println!("[boot] ext2 home filesystem mounted at /home"),
+            Err(e) => serial_println!("[boot] No home filesystem: {:?} (continuing)", e),
+        }
+        kernel::fs::vfs::mount::bind_home_if_unmounted();
     }
-    kernel::fs::vfs::mount::bind_home_if_unmounted();
 
     // Initialize devfs (/dev virtual filesystem)
     kernel::fs::devfs::init();

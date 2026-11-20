@@ -10,8 +10,8 @@ pub mod cache;
 pub mod cache_kernel;
 pub mod cache_report;
 
-#[cfg(target_arch = "x86_64")]
-mod read_only;
+pub(crate) mod read_only;
+mod boot_mount;
 
 #[cfg(all(target_arch = "x86_64", feature = "block_fence_inject"))]
 pub mod fence_fault;
@@ -78,36 +78,46 @@ fn named_partition(
     text: &str,
     types: &[gpt::Guid],
 ) -> Result<(partition::Partition, gpt::Partition, HardwareDisk), &'static str> {
-    let unique = gpt::parse_guid(text).ok_or("the boot intent's GUID does not parse")?;
-    let mut found = None;
-    let mut matches = 0;
-    for disk in discovered() {
-        if disk.block_size() != gpt::SECTOR {
-            continue;
+    boot_mount::find_partition(discovered(), text, types)
+}
+
+/// Resolve a format-3 partition and retain its grant in an unpublished fence.
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn explicit_mount_device(
+    guid: &str,
+    path: &str,
+    writable: bool,
+    fence: &mut Fence,
+    root_role: &mut u8,
+) -> Result<alloc::boxed::Box<dyn BlockDevice>, &'static str> {
+    let (mut device, entry, hardware) = named_partition(guid, boot_mount::partition_types(path))?;
+    if path == "/" {
+        let test_root = entry.type_guid == gpt::TEST_ROOT_TYPE;
+        if test_root {
+            report_root_record(&mut device)?;
         }
-        let mut lba1 = [0u8; gpt::SECTOR];
-        if disk.read_block(1, &mut lba1).is_err() {
-            continue;
-        }
-        let Ok(header) = gpt::header(&lba1, disk.num_blocks()) else { continue };
-        let entry = gpt::find(&header, &unique, |lba, sector| {
-            disk.read_block(lba, sector).map_err(|_| "a partition table sector is unreadable")
-        })?;
-        if let Some(entry) = entry {
-            matches += 1;
-            found = Some((disk, entry));
-        }
+        *root_role = if test_root { ROLE_TEST_ROOT } else { ROLE_SYSTEM };
     }
-    let (disk, entry) = match (matches, found) {
-        (1, Some(found)) => found,
-        (0, _) => return Err("no attached disk has a partition with the boot intent's GUID"),
-        _ => return Err("more than one attached disk has a partition with the boot intent's GUID"),
-    };
-    if !types.contains(&entry.type_guid) {
-        return Err("the named partition's type is not one this role may have");
-    }
-    let hardware = disk.hardware_disk().ok_or("the partition's disk has no hardware identity")?;
-    Ok((partition::Partition::new(disk, entry.first, entry.sectors())?, entry, hardware))
+    boot_mount::grant_write(fence, hardware, &entry, writable)?;
+    Ok(alloc::boxed::Box::new(device))
+}
+
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn publish_mount_fence(fence: Fence, root_role: u8) -> Result<(), &'static str> {
+    write_policy::publish_mount_fence(fence)?;
+    ROOT_ROLE.store(root_role, core::sync::atomic::Ordering::Release);
+    Ok(())
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn explicit_mount_device(
+    guid: &str,
+) -> Result<alloc::boxed::Box<dyn BlockDevice>, &'static str> {
+    use alloc::boxed::Box;
+    let disks = (0..crate::drivers::virtio::block_mmio::MAX_BLOCK_DEVICES)
+        .filter_map(virtio::VirtioBlockWrapper::new)
+        .map(|device| Box::new(device) as Box<dyn BlockDevice>);
+    boot_mount::find_filesystem(disks, crate::fs::FORMATS, guid)
 }
 
 /// The root the boot intent names: the test root (a test boot, or an install's migration) or the system partition
@@ -219,6 +229,9 @@ pub fn named_home() -> Option<alloc::boxed::Box<dyn BlockDevice>> {
 /// partition is refused: this layout has no whole-disk root.
 #[cfg(target_arch = "x86_64")]
 pub fn install_requested_root() {
+    if crate::boot::intent::explicit_mounts_requested() {
+        return;
+    }
     let Some(ram) = ramdisk::device() else { return };
     let mut first = [0u8; install::SECTOR];
     if ram.read_block(0, &mut first).is_err() {
