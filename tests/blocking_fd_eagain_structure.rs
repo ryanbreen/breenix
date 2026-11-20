@@ -305,6 +305,17 @@ fn boolean(nodes: &[Node], bindings: &BTreeMap<String, bool>) -> Option<bool> {
     }
     None
 }
+fn only_if_condition(nodes: &[Node], name: &str) -> bool {
+    nodes.iter().enumerate().all(|(i, node)| match node {
+        Node::Group(_, body) => only_if_condition(body, name),
+        Node::Token(token) if token == name => {
+            i > 0 && nodes[i - 1].token() == "if"
+                && nodes.get(i + 1).is_some_and(|next| next.group('{').is_some())
+        }
+        _ => true,
+    })
+}
+
 /// Explore both unknown branches; prune only a derived mode predicate. Follow
 /// local helpers and bind positional boolean arguments to renamed parameters.
 fn inspect(
@@ -319,6 +330,19 @@ fn inspect(
         let token = nodes[i].token();
         if token == "let" {
             if let Some(semi) = (i + 1..nodes.len()).find(|j| nodes[*j].token() == ";") {
+                // Permit the preemption read in this mask test only. Its
+                // boolean binding may select branches, whose bodies are
+                // still explored, but cannot be used as a result value.
+                if compact(&nodes[i..semi]) == concat!(
+                    "letrelease_preempt=crate::per_cpu::preempt_count()",
+                    "&crate::arch_impl::current::constants::PREEMPT_MASK!=0",
+                ) {
+                    if !only_if_condition(&nodes[semi + 1..], "release_preempt") {
+                        return Err("release_preempt used outside an if condition".into());
+                    }
+                    i = semi + 1;
+                    continue;
+                }
                 if let Some(eq) = (i + 1..semi).find(|j| nodes[*j].token() == "=") {
                     if let Some(name) = nodes[i + 1..eq]
                         .iter()
@@ -404,9 +428,6 @@ fn inspect(
                     "arch_halt_while_blocked",
                     "preempt_enable",
                     "preempt_disable",
-                    // A read of the caller's level, used only as a boolean: the
-                    // prepared wait releases a level only when one is held.
-                    "preempt_count",
                     "from",
                     "min",
                     "read_or_prepare",
