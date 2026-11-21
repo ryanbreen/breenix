@@ -1942,6 +1942,24 @@ class DriverTest(StateTest):
         with patch.object(m, 'now', return_value=1420):
             self.assertTrue(self.finish(d.check_deadlines, m.EXIT_HUNG).hung)
 
+    def test_persistent_export_allows_both_images_with_progress_and_stops_on_silence(self):
+        d = self.driver
+        d.args.payload = 'persistent-export'
+        d.lease_ceiling = d.t0 + boot.ceiling_seconds(d.args)
+        d.request_at = d.t0 + 100
+        d.complete_at = d.export_started = d.t0 + 300
+        # The 8 GiB system and 16 GiB home images take 12,288 seconds at 2 MiB/s.
+        d.last_serial = d.export_started + 12_288
+        with patch.object(m, 'now', return_value=d.last_serial):
+            d.check_deadlines()
+        with patch.object(m, 'now', return_value=d.last_serial + 121):
+            stalled = self.finish(d.check_deadlines, m.EXIT_HUNG)
+            self.assertEqual(str(stalled), 'persistent export stopped reporting progress')
+        d.last_serial = d.lease_ceiling
+        with patch.object(m, 'now', return_value=d.lease_ceiling):
+            timed_out = self.finish(d.check_deadlines, m.EXIT_HUNG)
+            self.assertEqual(str(timed_out), 'the attempt ceiling passed')
+
     def test_window_manager_deadlines_and_attempt_ceilings(self):
         d = self.driver
         d.args.mode = 'suite'
