@@ -93,11 +93,11 @@ fn main() -> ExitCode {
             fs::write(&nonce_path, format!("{nonce}\n"))?;
             Ok(nonce)
         };
-        let request_poweroff = |nonce: String| {
+        let request_poweroff = |nonce: &str| {
             assert_eq!(fs::read_to_string(&nonce_path)?, format!("{nonce}\n"));
             fs::write(root.join("poweroff-requested"), nonce)
         };
-        return finish::power_off_after(migrate(), || request_poweroff(prepare_shutdown()?));
+        return finish::migrate_and_power_off(prepare_shutdown, migrate, request_poweroff);
     }
     match migrate() {
         Ok(()) => ExitCode::SUCCESS,

@@ -133,9 +133,8 @@ fn run() -> io::Result<()> {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn poweroff() -> io::Result<()> {
+fn prepare_shutdown_nonce() -> io::Result<String> {
     use std::io::Write;
-
     if std::process::id() != 1 {
         return Err(io::Error::other("migration poweroff requires PID 1"));
     }
@@ -152,7 +151,17 @@ fn poweroff() -> io::Result<()> {
     }
     let nonce: String = nonce.iter().map(|byte| format!("{byte:02x}")).collect();
     fs::create_dir_all("/run/breenix")?;
-    fs::write("/run/breenix/shutdown-nonce", format!("{nonce}\n"))?;
+    let mut file = File::create("/run/breenix/shutdown-nonce")?;
+    writeln!(file, "{nonce}")?;
+    // Publish the nonce while /run can still commit writes.
+    file.sync_all()?;
+    Ok(nonce)
+}
+
+#[cfg(target_arch = "aarch64")]
+fn poweroff(nonce: &str) -> io::Result<()> {
+    use std::io::Write;
+
     {
         let mut serial = io::stdout().lock();
         writeln!(serial, "\n[init] shutdown nonce={nonce}")?;
@@ -165,7 +174,7 @@ fn poweroff() -> io::Result<()> {
 
 #[cfg(target_arch = "aarch64")]
 fn main() -> ExitCode {
-    finish::power_off_after(run(), poweroff)
+    finish::migrate_and_power_off(prepare_shutdown_nonce, run, poweroff)
 }
 
 #[cfg(not(target_arch = "aarch64"))]
