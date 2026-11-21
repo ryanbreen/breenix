@@ -124,7 +124,7 @@ class BreenfsUpgradeTest(existing.StateTest):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 upgrade_cases.breenfs_pair(before, COMMIT, one, bad)
 
-    def test_records_the_two_install_and_s21_boots_after_the_return(self):
+    def completed_upgrades(self):
         migration.close(RETURN)
         previous = self.original
         for install, child in [('20261121T180000Z-metal', '20261121T180100Z-metal'),
@@ -154,7 +154,10 @@ class BreenfsUpgradeTest(existing.StateTest):
                 outcome='verified', toolsCommit=COMMIT, verification=dict(receipt, exit=0)))
             previous = install
 
-        first = '20261121T180000Z-metal'
+        return ('20261121T180000Z-metal', install, child)
+
+    def test_records_the_two_install_and_s21_boots_after_the_return(self):
+        first, install, child = self.completed_upgrades()
         proof = migration.record_upgrades(first, install, COMMIT)
         self.assertEqual(m.read_json(m.boot_dir(child) / 'filesystem-two-upgrades.json'), proof)
         (m.boot_dir(child) / 'ssh-verification.json').unlink()

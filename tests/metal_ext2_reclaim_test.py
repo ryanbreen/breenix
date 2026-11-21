@@ -1,0 +1,89 @@
+"""Exercise ext2 retirement against the same upgrade receipts used at acceptance."""
+
+import shutil
+import unittest
+from unittest.mock import patch
+
+import metal_breenfs_upgrade_test as upgrade
+
+m = upgrade.m
+persist = upgrade.persist
+migration = upgrade.migration
+FIRST = '20261121T180000Z-metal'
+SECOND = '20261121T181000Z-metal'
+VERIFIED = '20261121T181100Z-metal'
+RECLAIM = '20261121T190000Z-metal'
+
+
+class MetalExt2ReclaimTest(upgrade.BreenfsUpgradeTest):
+    def test_reclaim_requires_lease_verified_upgrades_and_unused_rescue(self):
+        with self.assertRaisesRegex(ValueError, 'six-entry'):
+            persist.reclaim_request(m.STATE, persist.new_layout(), 'first', 'second')
+        # Exercise the real l1 verifier with its install and verification records.
+        self.assertEqual(self.completed_upgrades(), (FIRST, SECOND, VERIFIED))
+        migration.record_upgrades(FIRST, SECOND, upgrade.COMMIT)
+        result = m.boot_dir(SECOND) / 'upgrade-result.json'
+        receipt = m.read_json(result)['verification']
+        ssh = m.boot_dir(VERIFIED) / 'ssh-verification.json'
+        m.write_json(ssh, {key: value for key, value in receipt.items() if key != 'exit'})
+        persist.update_disk(slots=dict(
+            current=dict(commit=upgrade.COMMIT, installedBy=SECOND),
+            previous=dict(commit=upgrade.COMMIT, installedBy=FIRST),
+            rescue=self.slots['previous'],
+        ))
+        with self.assertRaisesRegex(ValueError, 'lease'):
+            migration.admit_reclaim(RECLAIM, FIRST, SECOND, upgrade.COMMIT, upgrade.COMMIT)
+
+        with patch.object(m, 'read_lease', return_value={'id': RECLAIM, 'state': 'claimed'}):
+            ssh.unlink()
+            with self.assertRaisesRegex(ValueError, 'verification'):
+                migration.admit_reclaim(RECLAIM, FIRST, SECOND, upgrade.COMMIT, upgrade.COMMIT)
+            m.write_json(ssh, {key: value for key, value in receipt.items() if key != 'exit'})
+
+            rescue = m.boot_dir('20261121T182000Z-metal')
+            rescue.mkdir()
+            m.write_json(rescue / 'run.json', dict(id=rescue.name, payload='persistent', entry='previous'))
+            m.event(rescue, 'manager-answer', answer=f'persistent {rescue.name} previous')
+            index = m.STATE / 'finished.jsonl'
+            original = index.read_bytes()
+            m.close_record(rescue, 0, 'driver')
+            with self.assertRaisesRegex(ValueError, 'rescue'):
+                migration.admit_reclaim(RECLAIM, FIRST, SECOND, upgrade.COMMIT, upgrade.COMMIT)
+            shutil.rmtree(rescue)
+            index.write_bytes(original)
+
+            proof = migration.admit_reclaim(RECLAIM, FIRST, SECOND, upgrade.COMMIT, upgrade.COMMIT)
+            old = persist.read_disk()
+            config, request = persist.reclaim_request(m.STATE, self.layout, FIRST, SECOND)
+            lines = config.read_text().splitlines()
+            self.assertIn('action reclaim-ext2', lines)
+            self.assertIn(f'keep-generations {SECOND} {FIRST}', lines)
+            self.assertEqual(sum(line.startswith('partition ') for line in lines), 6)
+            self.assertEqual(request.data.stat().st_size, 0)
+            self.assertEqual(persist.read_disk(), old)
+
+            boot = m.boot_dir(RECLAIM)
+            boot.mkdir()
+            m.write_json(boot / 'run.json', dict(id=RECLAIM, payload='reclaim-ext2',
+                         commit=upgrade.COMMIT, toolsCommit=upgrade.COMMIT))
+            m.event(boot, 'manager-answer', answer=f'test {RECLAIM}')
+            m.event(boot, 'power-off', off=True)
+            with self.assertRaisesRegex(ValueError, 'readback'):
+                migration.record_reclaimed(RECLAIM, proof, old)
+            self.assertEqual(persist.read_disk(), old)
+            m.event(boot, 'ext2-gpt-readback')
+            reclaimed = migration.record_reclaimed(RECLAIM, proof, old)
+            new = persist.read_disk()
+            self.assertEqual(set(new['slots']), {'current', 'previous'})
+            self.assertEqual(new['slots']['previous'], old['slots']['previous'])
+            self.assertEqual(new['layout']['partitions'], {
+                role: part for role, part in old['layout']['partitions'].items()
+                if part['number'] in (1, 2, 5, 6)
+            })
+            self.assertEqual(persist.layout(), new['layout'])
+            self.assertEqual(reclaimed['cases'][0]['id'], 'ext2-retired/reclaimed')
+            self.assertEqual(m.read_json(m.boot_dir(RECLAIM) / 'filesystem-reclaimed.json'), reclaimed)
+
+
+if __name__ == '__main__':
+    unittest.main()

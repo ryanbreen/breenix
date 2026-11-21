@@ -280,3 +280,114 @@ fn every_sector_write_prefix_leaves_a_readable_old_or_complete_new_table() {
     assert_eq!(entry(primary, 6)[16..32], [6; 16]);
     assert_eq!(sector(&disk, 0), sector(&old, 0));
 }
+
+fn migrated_fixture() -> (Vec<u8>, [Part; 6]) {
+    let parts = core::array::from_fn(|index| {
+        let first = 40 + 20 * index as u64;
+        Part {
+            type_guid: [11 + index as u8; 16],
+            unique: [1 + index as u8; 16],
+            first,
+            last: first + 19,
+            name: [b'A' + index as u8; 36],
+        }
+    });
+    let mut disk = fixture();
+    for (header, table) in [(1, PRIMARY), (LAST, BACKUP)] {
+        let at = table as usize * SECTOR;
+        for (part, bytes) in parts.iter().zip(disk[at..at + ARRAY].chunks_exact_mut(ENTRY)) {
+            bytes.fill(0);
+            part.encode(bytes);
+        }
+        stamp_copy(&mut disk, header, table);
+    }
+    (disk, parts)
+}
+
+fn stamp_copy(disk: &mut [u8], header: u64, table: u64) {
+    let checksum = crc(array(disk, table));
+    let at = header as usize * SECTOR;
+    disk[at + 88..at + 92].copy_from_slice(&checksum.to_le_bytes());
+    disk[at + 16..at + 20].fill(0);
+    let checksum = crc(&disk[at..at + 92]);
+    disk[at + 16..at + 20].copy_from_slice(&checksum.to_le_bytes());
+}
+
+fn reclaim_fixture(disk: &mut [u8], parts: [Part; 6], writes: &mut Vec<u64>) -> Result<(), &'static str> {
+    let mut entries = array(disk, PRIMARY).to_vec();
+    let update = gpt_append::prepare_reclaim(
+        Header::parse(sector(disk, 1), 1, LAST)?,
+        Header::parse(sector(disk, LAST), LAST, LAST)?,
+        &mut entries,
+        array(disk, BACKUP),
+        GUID,
+        parts,
+    )?;
+    update.write(
+        disk,
+        &mut |disk, lba, bytes| {
+            writes.push(lba);
+            let start = lba as usize * SECTOR;
+            disk[start..start + bytes.len()].copy_from_slice(bytes);
+            Ok(())
+        },
+        &mut |disk, lba, expected| {
+            let start = lba as usize * SECTOR;
+            if &disk[start..start + expected.len()] == expected {
+                Ok(())
+            } else {
+                Err("different readback")
+            }
+        },
+    )
+}
+
+#[test]
+fn reclaim_changes_only_entries_three_and_four_and_their_crcs() {
+    let (old, parts) = migrated_fixture();
+    let mut disk = old.clone();
+    let mut writes = Vec::new();
+    reclaim_fixture(&mut disk, parts, &mut writes).unwrap();
+    assert_eq!(writes, [BACKUP, LAST, PRIMARY, 1]);
+
+    let mut expected = old;
+    for (header, table) in [(1, PRIMARY), (LAST, BACKUP)] {
+        let at = table as usize * SECTOR;
+        expected[at + 2 * ENTRY..at + 4 * ENTRY].fill(0);
+        stamp_copy(&mut expected, header, table);
+        assert!(read_copy(&disk, header).is_some());
+    }
+    assert_eq!(disk, expected);
+}
+
+#[test]
+fn reclaim_refuses_invalid_or_unexpected_layouts_before_a_write() {
+    let (old, parts) = migrated_fixture();
+    for (lba, offset, restamp) in [
+        (1, 16, false),                 // Header CRC.
+        (BACKUP, 56, false),           // Array CRC.
+        (BACKUP, 56, true),            // Valid but different backup.
+        (PRIMARY, 5 * ENTRY, true),    // Matching copies with a different sixth entry.
+        (PRIMARY, 6 * ENTRY, true),    // Matching copies with a seventh entry.
+    ] {
+        let mut disk = old.clone();
+        disk[lba as usize * SECTOR + offset] ^= 1;
+        if restamp && lba == PRIMARY {
+            disk[BACKUP as usize * SECTOR + offset] ^= 1;
+            stamp_copy(&mut disk, 1, PRIMARY);
+        }
+        if restamp {
+            stamp_copy(&mut disk, LAST, BACKUP);
+        }
+        let original = disk.clone();
+        let mut writes = Vec::new();
+        assert!(reclaim_fixture(&mut disk, parts, &mut writes).is_err(), "LBA {lba} offset {offset}");
+        assert!(writes.is_empty());
+        assert_eq!(disk, original);
+    }
+
+    let mut original_layout = fixture();
+    let mut writes = Vec::new();
+    assert!(reclaim_fixture(&mut original_layout, parts, &mut writes).is_err());
+    assert!(writes.is_empty());
+}
