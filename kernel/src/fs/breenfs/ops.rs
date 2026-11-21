@@ -1304,7 +1304,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     pub(super) fn begin_preparation(&self) {
         self.txn.begin_preparation();
     }
-    pub(crate) fn prepare_commit(&mut self) -> Result<&mut Transaction<'a, S>, Error> {
+    pub fn prepare_commit(&mut self) -> Result<&mut Transaction<'a, S>, Error> {
         preemption_point();
         self.require_writable()?;
         self.begin_preparation();

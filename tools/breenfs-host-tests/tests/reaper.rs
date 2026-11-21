@@ -335,6 +335,7 @@ fn finish(device: &RecordingDevice, mut sb: Superblock, shared: (u64, u64)) -> S
             sb.space_root,
             sb.generation + 1,
             state,
+            txn.space_node_count(),
         )
         .unwrap();
     }
@@ -351,6 +352,7 @@ fn finish(device: &RecordingDevice, mut sb: Superblock, shared: (u64, u64)) -> S
             sb.space_root,
             sb.generation + 1,
             state,
+            txn.space_node_count(),
         )
         .unwrap();
     }
@@ -484,7 +486,8 @@ fn reap_uses_the_freeing_reserve_and_selects_lowest_address() {
     assert!(ledger
         .reserve(sb.free_blocks, 4, Operation::Allocate)
         .is_err());
-    let grant = txn.reserve_reap(&mut ledger, sb.free_blocks).unwrap();
+    let blocks = txn.reap_reservation_blocks().unwrap();
+    let grant = ledger.reserve(sb.free_blocks, blocks, Operation::DeleteSnapshot).unwrap();
     assert!(grant.blocks() > 0);
     for addr in expected {
         assert_eq!(txn.reap_step().unwrap(), Some(addr));

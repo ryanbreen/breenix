@@ -472,7 +472,7 @@ impl<'a, S: NodeStore> Transaction<'a, S> {
             space_nodes,
         })
     }
-    pub(super) fn space_node_count(&self) -> u64 {
+    pub fn space_node_count(&self) -> u64 {
         self.space_nodes
     }
     /// Blocks already allocated plus the unchanged design-2.8 bound for work

@@ -1,9 +1,7 @@
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 #![cfg_attr(test, feature(allocator_api))]
 
 extern crate alloc;
-#[cfg(test)]
-extern crate std;
 
 #[path = "../../../kernel/src/fs/breenfs/abi.rs"]
 pub mod abi;

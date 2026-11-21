@@ -167,11 +167,11 @@ fn second_change_does_not_copy_again() {
     txn.insert(&mut root, key(3), b"first").unwrap();
     assert_ne!(root.addr, old.addr);
     assert_eq!(root.generation, 2);
-    let nodes: BTreeSet<_> = txn.writes().keys().copied().collect();
+    let nodes: BTreeSet<_> = txn.writes().map(|(&addr, _)| addr).collect();
     let first_root = root.addr;
     txn.insert(&mut root, key(3), b"second").unwrap();
     assert_eq!(root.addr, first_root);
-    assert_eq!(txn.writes().keys().copied().collect::<BTreeSet<_>>(), nodes);
+    assert_eq!(txn.writes().map(|(&addr, _)| addr).collect::<BTreeSet<_>>(), nodes);
     assert_eq!(contents(&txn.view(), old), before);
     let space = txn.settle().unwrap();
     assert!(space::reference(&txn.view(), space, old.addr, 4)
@@ -308,9 +308,15 @@ fn fixpoint_terminates() {
         .root,
         root
     );
-    let writes = txn.writes().clone();
+    let written_nodes = |txn: &Transaction<'_, Memory>| {
+        let view = txn.view();
+        txn.writes()
+            .map(|(&addr, _)| (addr, view.get(addr).unwrap()))
+            .collect::<BTreeMap<_, _>>()
+    };
+    let writes = written_nodes(&txn);
     assert_eq!(txn.settle().unwrap(), space);
-    assert_eq!(txn.writes(), &writes);
+    assert_eq!(written_nodes(&txn), writes);
 }
 
 #[test]

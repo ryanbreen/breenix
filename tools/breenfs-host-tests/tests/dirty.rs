@@ -1,5 +1,10 @@
 //! Small writes keep the existing dirty-page index (#3040).
+#![feature(allocator_api)]
+
 extern crate alloc;
+
+#[path = "../../../kernel/src/fs/breenfs/preempt.rs"]
+pub mod preempt;
 
 #[path = "../../../kernel/src/fs/errno.rs"]
 pub mod errno;
