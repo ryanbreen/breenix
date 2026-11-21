@@ -425,6 +425,17 @@ class DriverPersistentTest(unittest.TestCase):
         with self.assertRaises(boot.Finish):
             d.prepare_persistent()
 
+    def test_rescue_verification_requires_the_read_only_fence_and_login(self):
+        definition = json.loads((Path(__file__).resolve().parents[1] / 'docs/metal/boot-path.json').read_text())
+        milestone = next(row for row in definition['milestones'] if row['id'] == 'persistent-install')
+        stages = metal_score.stages(milestone, 'persistent', definition['gateArch'], rescue=True)
+        markers = [stage['marker'] for stage in stages]
+        self.assertIn('breenix-manager: booting rescue ', markers)
+        self.assertIn('[fs] root mounted from the system partition', markers)
+        self.assertIn('[block] write fence: no partition chosen; hardware disks stay read-only', markers)
+        self.assertEqual(markers[-1], 'Breenix login:')
+        self.assertNotIn('ext2 home filesystem mounted at /home', markers)
+
     def test_completed_migration_releases_only_explicit_persistent_boots(self):
         d = self.driver
         migration = boot.metal_migration
