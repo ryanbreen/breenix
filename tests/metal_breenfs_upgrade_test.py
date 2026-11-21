@@ -1,4 +1,5 @@
 """Host evidence for the normal upgrade path after the recorded migration."""
+import hashlib
 import unittest
 from unittest.mock import patch
 
@@ -83,6 +84,48 @@ class BreenfsUpgradeFixture(existing.StateTest):
             previous = install
 
         return ('20261121T180000Z-metal', install, child)
+
+
+class MigrationClosureCarryForwardTest(BreenfsUpgradeFixture):
+    def setUp(self):
+        super().setUp()
+        self.receipt = m.boot_dir(RETURN) / 'filesystem-persistent-root.json'
+        legacy = m.read_json(self.receipt)
+        for field in ('sourceCommit', 'toolsCommit', 'bootedCommit'):
+            del legacy[field]
+        m.write_json(self.receipt, legacy)
+        self.original_receipt = self.receipt.read_bytes()
+        self.digest = hashlib.sha256(self.original_receipt).hexdigest()
+        self.assertEqual(self.digest, 'b178a8933a3121390e9ca515c7d8cd23ead859bb4ff95152cff2678d9e20ed63')
+
+    def append_carry_forward(self, boot=RETURN):
+        m.append_jsonl(m.STATE / 'migration-carry-forward.jsonl',
+                       dict(ledgerLine=1021, boot=boot, receiptSha256=self.digest))
+
+    def assert_closure_refused(self):
+        with self.assertRaisesRegex(ValueError, 'passed return to the recorded BreenFS slot'):
+            migration.close(RETURN)
+        self.assertEqual(migration.state(), self.cycle)
+
+    def test_matching_digest_closes_and_preserves_the_receipt(self):
+        self.append_carry_forward()
+        self.assertEqual(migration.close(RETURN)['closed'], RETURN)
+        self.assertEqual(migration.state()['closed'], RETURN)
+        self.assertEqual(self.receipt.read_bytes(), self.original_receipt)
+
+    def test_one_changed_receipt_byte_refuses_closure(self):
+        self.append_carry_forward()
+        # Change only the final newline to a space, leaving the parsed JSON identical.
+        self.assertTrue(self.original_receipt.endswith(b'\n'))
+        self.receipt.write_bytes(self.original_receipt[:-1] + b' ')
+        self.assert_closure_refused()
+
+    def test_missing_record_refuses_closure(self):
+        self.assert_closure_refused()
+
+    def test_record_for_another_boot_refuses_closure(self):
+        self.append_carry_forward(boot=self.cycle['boots']['rescue'])
+        self.assert_closure_refused()
 
 
 class BreenfsUpgradeTest(BreenfsUpgradeFixture):
