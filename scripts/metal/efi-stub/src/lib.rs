@@ -8,6 +8,7 @@ pub mod com1;
 pub mod files;
 pub mod firmware;
 pub mod http;
+pub mod sha256;
 pub mod uefi;
 
 pub mod slot_transaction;

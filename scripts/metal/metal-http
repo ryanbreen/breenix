@@ -26,6 +26,7 @@ import metal_lib as m  # noqa: E402
 from metal_probe import PROBE_PATH, PROBE_BODY
 import gt710_upload
 import metal_disk
+import metal_export
 import metal_persist
 
 CHUNK = 1 << 20
@@ -104,7 +105,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_PUT(self):
-        if urlsplit(self.path).path.startswith(gt710_upload.PREFIX):
+        path = urlsplit(self.path).path
+        if path.startswith(metal_export.PREFIX):
+            metal_export.receive(self)
+        elif path.startswith(gt710_upload.PREFIX):
             gt710_upload.receive(self)
         else:
             metal_disk.receive(self)

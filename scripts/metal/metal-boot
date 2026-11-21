@@ -43,6 +43,7 @@ import metal_census  # noqa: E402
 import metal_root  # noqa: E402
 import metal_score  # noqa: E402
 import metal_disk  # noqa: E402
+import metal_export  # noqa: E402
 import metal_persist  # noqa: E402
 import breenfs_replay  # noqa: E402
 import metal_power_cut  # noqa: E402
@@ -59,12 +60,14 @@ DISK_ACTIONS = ('install', 'root')
 READ_BACK_LINE = re.compile(r'\[storage\] read back identical: (\d+) bytes, sha256 after the record sector ([0-9a-f]{64})')
 ROOT_RECORD_LINE = re.compile(r'\[storage\] root record: installed by boot ([A-Za-z0-9-]+), (\d+) bytes, sha256 ([0-9a-f]{64})')
 INTENT_LINE = re.compile(r'\[console\] input preparation: replug (requested|not requested) by (fw_cfg|intent|target)')
-PAYLOADS = ('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux', 'disk-readback', 'manager', 'persistent')
+PAYLOADS = ('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux', 'disk-readback', 'manager', 'persistent',
+            metal_export.PAYLOAD)
 CEILING_SECONDS = {'default': 900, 'shell': 900, 'probe': 900, 'suite': 1320, 'console': 900, 'tests': 1500,
                    'persistent-install': 2400, 'persistent': 900}
 # The install boot's stub writes the layout and the test root before the bootloader starts (README, "Install and
 # upgrade"); it reports progress every 64 MiB.
 INSTALL_STUB_SECONDS = 1500
+EXPORT_CEILING_SECONDS = 3600  # Full system and home images share one firmware boot.
 PERSIST_DONE = 'metal-stub: persistent install request complete'
 INSTALL_DONE = '[persistent] install complete: '
 INSTALL_FAILED = '[persistent] install failed: '
@@ -168,6 +171,8 @@ def suites(args):
 
 
 def ceiling_seconds(args):
+    if args.payload == metal_export.PAYLOAD:
+        return EXPORT_CEILING_SECONDS
     if args.mode == 'suite':
         # The base includes startup and a 900-second first suite; longer suites need more time.
         names = suites(args)
@@ -364,6 +369,8 @@ class Driver:
         self.post_budget = m.DEFAULT_POST_BUDGET
         self.stopping = threading.Event()
         self.census = metal_census.Census() if args.payload == 'linux' else None
+        self.export_started = None
+        self.export_receipts = {}
 
     # claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
     # Record helpers: event text is always a fixed template or redacted.
@@ -412,7 +419,8 @@ class Driver:
                'input': input_kind(self.args),
                'session': session(self.args),
                'idleMinutes': getattr(self.args, 'idle_minutes', 30) if session(self.args) else None,
-               'evidenceEligible': not fault and (persistent(self.args) or not session(self.args)) and getattr(self.args, 'case', None) is None}
+               'evidenceEligible': not fault and self.args.payload != metal_export.PAYLOAD
+               and (persistent(self.args) or not session(self.args)) and getattr(self.args, 'case', None) is None}
         if getattr(self.args, 'case', None) is not None:
             run['onlyCase'] = self.args.case
         if getattr(self.args, 'root_fs', None) is not None:
@@ -555,15 +563,18 @@ class Driver:
             self.event('payload-ready', name='metal-boot-manager.efi', size=self.payload_facts['size'],
                        sha256=self.payload_facts['sha256'])
             return
-        if self.args.payload == 'disk-readback':
+        if self.args.payload in ('disk-readback', metal_export.PAYLOAD):
             build = m.read_json(inputs / 'build.json', {})
             stub = inputs / 'stub.efi'
-            if (build.get('commit') != self.args.commit or build.get('profile') != 'disk-readback'
+            if (build.get('commit') != self.args.commit or build.get('profile') != self.args.payload
                     or build.get('stub', {}).get('sha256') != metal_image.sha256(stub)):
                 raise Finish(m.EXIT_CANCELLED, 'the readback firmware differs from its build record')
             self.delivery['build'] = build
-            facts, image = metal_disk.prepare_readback(self.dir, self.stage, self.args.source_boot,
-                                                       self.args.commit, self.id, self.site, stub)
+            if self.args.payload == metal_export.PAYLOAD:
+                facts, image = metal_export.prepare(self.stage, self.id, self.site, stub)
+            else:
+                facts, image = metal_disk.prepare_readback(self.dir, self.stage, self.args.source_boot,
+                                                           self.args.commit, self.id, self.site, stub)
             self.payload_facts = dict(path=image, size=facts['size'], sha256=facts['sha256'],
                                       contentType=metal_image.CONTENT_TYPES['efi'], name='boot.efi')
             self.delivery['image'] = {k: v for k, v in self.payload_facts.items() if k != 'path'}
@@ -933,6 +944,8 @@ class Driver:
         self.post_code = baseline.get('postCode')
         self.progress_key = progress_key(baseline.get('bootProgress'))
         if baseline.get('power') != 'Off':
+            if self.args.payload == metal_export.PAYLOAD:
+                raise Finish(m.EXIT_CANCELLED, 'the persistent export requires a powered-off machine')
             if getattr(self.args, 'resting', False):
                 raise Finish(m.EXIT_CANCELLED, 'an existing power-on is left for boot manager adoption')
             self.event('stray-power-on', power=baseline.get('power'))
@@ -1423,6 +1436,25 @@ class Driver:
                 if not upload.get('complete'):
                     raise Finish(m.EXIT_SHORT, 'the cold disk upload is missing')
                 raise Finish(m.EXIT_DONE, 'cold disk readback received')
+        if self.args.payload == metal_export.PAYLOAD:
+            if STUB_LINE in line and self.export_started is None:
+                self.export_started = observed_at
+            if receipt := metal_export.RECEIPT.fullmatch(line):
+                role, count, digest = receipt.groups()
+                if role in self.export_receipts:
+                    raise Finish(m.EXIT_SHORT, 'persistent export repeated a firmware receipt')
+                self.export_receipts[role] = (int(count), digest)
+            if line == metal_export.DONE:
+                if self.export_started is None:
+                    raise Finish(m.EXIT_SHORT, 'persistent export is missing the firmware start')
+                try:
+                    metal_export.verify(self.id, self.export_receipts)
+                except ValueError as error:
+                    raise Finish(m.EXIT_SHORT, str(error)) from error
+                except OSError as error:
+                    raise Finish(m.EXIT_SHORT, 'persistent export image is missing or unreadable') from error
+                raise Finish(m.EXIT_DONE, 'persistent export verified')
+            return
         if self.kernel_started and self.fatal_at is None:
             challenge = re.fullmatch(r'\[init\] shutdown nonce=([a-f0-9]{64})', line)
             if challenge:
@@ -2179,6 +2211,10 @@ class Driver:
             if m.now() - self.first_byte_at > DOWNLOAD_SECONDS:
                 raise Finish(m.EXIT_DELIVERY, 'the transfer was too slow')
             return
+        if self.export_started is not None:
+            if m.now() - max(self.last_serial or 0, self.export_started) > SILENCE_SECONDS:
+                raise Finish(m.EXIT_HUNG, 'persistent export stopped reporting progress')
+            return
         if self.kernel_started is None:
             # An install's stub writes the layout and the test root first, reporting its progress.
             limit = INSTALL_STUB_SECONDS if self.args.mode == 'persistent-install' else BOOTLOADER_SECONDS
@@ -2321,6 +2357,8 @@ class Driver:
             upload = m.read_json(m.STATE / 'disk-upload.json', {})
             if upload.get('id') == self.id:
                 (m.STATE / 'disk-upload.json').unlink(missing_ok=True)
+            if self.args.payload == metal_export.PAYLOAD:
+                metal_export.discard(self.id)
             m.clear_override()
             m.unstage(self.id)
             subprocess.run(self.tmux + ['kill-server'], capture_output=True)
@@ -2426,6 +2464,13 @@ class Driver:
                     except Exception as error:
                         self.event('disk-suite-verdict-error', error=error.__class__.__name__)
                         status = m.EXIT_SHORT
+                if self.args.payload == metal_export.PAYLOAD and status == m.EXIT_DONE and off and not self.gap:
+                    try:
+                        metal_export.publish(self.dir, self.id, self.export_receipts)
+                        self.event('persistent-export-published')
+                    except (ValueError, OSError) as error:
+                        self.event('persistent-export-publish-error', error=error.__class__.__name__)
+                        status = m.EXIT_INCOMPLETE
                 if self.census and status == m.EXIT_DONE:
                     if off and not self.gap:
                         try:
@@ -2728,6 +2773,10 @@ def main():
             parser.error('--root-fs breenfs needs --disk root and an image boot in default, suite or console mode')
         if args.payload == 'disk-readback' and not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.source_boot or ''):
             parser.error('disk-readback needs --source-boot ID')
+        if args.payload == metal_export.PAYLOAD and (
+                args.disk or args.inject or args.nmi or args.source_boot or args.slot_action
+                or args.resting or not re.fullmatch(r'[0-9a-f]{40}', args.commit)):
+            parser.error('persistent export needs a commit and a firmware-only boot')
         try:
             metal_power_cut.validate(args)
             validate_xhci_fault(args)
