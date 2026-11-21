@@ -11,7 +11,7 @@ use super::{
     txn::Transaction,
 };
 use crate::block::{
-    cache::{BufferCache, Wait, WriteGroup},
+    cache::{BufferCache, PressureWait, Wait, WriteGroup, RUN_BYTES},
     BlockDevice, BlockError,
 };
 use alloc::{
@@ -401,6 +401,22 @@ pub struct PreparedCommit {
     data: BTreeMap<u64, Vec<u8>>,
     formatting: bool,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PublicationStep {
+    Stage,
+    DataWrite,
+    DataFlush,
+    SuperblockWrite,
+    SuperblockFlush,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PublicationError {
+    pub step: PublicationStep,
+    pub block_error: BlockError,
+}
+
 impl PreparedCommit {
     pub fn superblock(&self) -> &Superblock {
         &self.sb
@@ -432,31 +448,57 @@ impl PreparedCommit {
         cache: &BufferCache<W>,
         device: &dyn BlockDevice,
         group: &WriteGroup,
-    ) -> Result<(), Error> {
-        if !matches!(group, WriteGroup::Hold(_)) {
-            return Err(Error::EIO);
-        }
+    ) -> Result<(), PublicationError> {
+        use PublicationStep::*;
+        let at = |step| move |block_error| PublicationError { step, block_error };
         let sector = device.block_size();
+        if !matches!(group, WriteGroup::Hold(_)) || sector == 0 || BLOCK_SIZE % sector != 0 {
+            return Err(at(Stage)(BlockError::IoError));
+        }
+        let mut uncached = false;
         for (&addr, bytes) in self.nodes.iter().chain(self.data.iter()) {
             preemption_point();
+            let start = addr * (BLOCK_SIZE / sector) as u64;
+            let mut staged = 0;
             for (i, bytes) in bytes.chunks_exact(sector).enumerate() {
                 preemption_point();
-                let block = addr * (BLOCK_SIZE / sector) as u64 + i as u64;
-                match cache.write(device, group.clone(), block, bytes) {
-                    Err(BlockError::OutOfMemory) => {
-                        cache.submit(device, group).wait().map_err(|_| Error::EIO)?;
-                        preemption_point();
-                        cache
-                            .write(device, group.clone(), block, bytes)
-                            .map_err(|_| Error::EIO)?;
+                if uncached {
+                    break;
+                }
+                let stage = || cache.write(device, group.clone(), start + i as u64, bytes);
+                let mut result = stage();
+                if result == Err(BlockError::OutOfMemory) {
+                    cache.submit(device, group).wait().map_err(at(DataWrite))?;
+                    preemption_point();
+                    result = stage();
+                    if result == Err(BlockError::OutOfMemory)
+                        && cache.relieve_publication_pressure(device) != PressureWait::Unavailable
+                    {
+                        result = stage();
                     }
-                    result => result.map_err(|_| Error::EIO)?,
+                }
+                if result == Err(BlockError::OutOfMemory) {
+                    uncached = true;
+                    break;
+                }
+                result.map_err(at(DataWrite))?;
+                staged = i + 1;
+            }
+            if uncached {
+                // The batch above has completed. The prepared bytes already
+                // belong to this generation and can be submitted without a
+                // second copy when peer buffers keep the cache full.
+                let mut block = start + staged as u64;
+                for run in bytes[staged * sector..].chunks(RUN_BYTES) {
+                    preemption_point();
+                    cache.write_uncached(device, block, run).map_err(at(DataWrite))?;
+                    block += (run.len() / sector) as u64;
                 }
             }
         }
-        cache.submit(device, group).wait().map_err(|_| Error::EIO)?;
+        cache.submit(device, group).wait().map_err(at(DataWrite))?;
         preemption_point();
-        cache.flush(device).map_err(|_| Error::EIO)?;
+        cache.flush(device).map_err(at(DataFlush))?;
         preemption_point();
         self.superblocks(|addr, bytes| {
             for (i, bytes) in bytes.chunks_exact(sector).enumerate() {
@@ -468,16 +510,16 @@ impl PreparedCommit {
                         addr * (BLOCK_SIZE / sector) as u64 + i as u64,
                         bytes,
                     )
-                    .map_err(|_| Error::EIO)?;
+                    .map_err(at(SuperblockWrite))?;
             }
-            Ok(())
+            Ok::<(), PublicationError>(())
         })?;
-        cache.flush(device).map_err(|_| Error::EIO)
+        cache.flush(device).map_err(at(SuperblockFlush))
     }
-    fn superblocks(
+    fn superblocks<E>(
         &self,
-        mut write: impl FnMut(u64, &[u8]) -> Result<(), Error>,
-    ) -> Result<(), Error> {
+        mut write: impl FnMut(u64, &[u8]) -> Result<(), E>,
+    ) -> Result<(), E> {
         if self.formatting {
             for ring in 0..2 {
                 preemption_point();

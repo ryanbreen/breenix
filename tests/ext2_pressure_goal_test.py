@@ -11,7 +11,7 @@ class PressureGoal(unittest.TestCase):
     def test_headroom_stops_early_but_accounting_drains_its_snapshot(self):
         text = (ROOT / 'kernel/src/fs/ext2/mod.rs').read_text()
         methods = '\n'.join(item(text, marker) for marker in [
-            'fn allocation_pressure(', 'pub(crate) fn accounting_fs_write(', 'fn reclaim_fs_write('])
+            'fn allocation_pressure(', 'fn accounting_fs_write(', 'fn reclaim_fs_write('])
         result = run_rust(r'''
 use std::sync::{Mutex,atomic::{AtomicUsize,Ordering}};
 const RECLAIM_BUDGET:usize=128;
@@ -42,8 +42,11 @@ impl Ext2WriteGuard{
  fn as_mut(&mut self)->Option<&mut Ext2Fs>{self.0.as_mut()}
 }
 impl Drop for Ext2WriteGuard{fn drop(&mut self){HELD.fetch_sub(1,Ordering::Relaxed);}}
-fn fs_write_raw(home:bool)->Result<Ext2WriteGuard,&'static str>{
- let mut s=STATE.lock().unwrap();s.homes.push(home);HELD.fetch_add(1,Ordering::Relaxed);
+type MountSlot=bool;
+static ROOT:MountSlot=false;
+static HOME:MountSlot=true;
+fn fs_write_raw(slot:&'static MountSlot)->Result<Ext2WriteGuard,&'static str>{
+ let mut s=STATE.lock().unwrap();s.homes.push(*slot);HELD.fetch_add(1,Ordering::Relaxed);
  Ok(Ext2WriteGuard(Some(Ext2Fs{mount_pin:Pin(s.id),live_inodes:LiveInodes})))
 }
 mod writeback{
@@ -53,25 +56,25 @@ mod writeback{
 METHODS
 fn reset(){assert_eq!(HELD.load(Ordering::Relaxed),0);*STATE.lock().unwrap()=State::new();}
 fn main(){
- reset();drop(reclaim_fs_write(true,true).unwrap());
+ reset();drop(reclaim_fs_write(&HOME,true).unwrap());
  {let s=STATE.lock().unwrap();assert_eq!(s.starts,[0]);assert_eq!(s.snapshots,1);assert_eq!(s.homes,[true,true]);assert!(s.free>1000&&s.inodes>32);}
- reset();drop(accounting_fs_write(false).unwrap());
+ reset();drop(accounting_fs_write(&ROOT).unwrap());
  {let s=STATE.lock().unwrap();assert_eq!(s.starts,[0,32,64]);assert_eq!(s.snapshots,1);assert_eq!(s.homes,[false,false,false]);}
- reset();STATE.lock().unwrap().more=true;drop(accounting_fs_write(false).unwrap());
+ reset();STATE.lock().unwrap().more=true;drop(accounting_fs_write(&ROOT).unwrap());
  assert_eq!(STATE.lock().unwrap().starts,[0,0,32,64]);
- reset();STATE.lock().unwrap().retry=true;assert!(reclaim_fs_write(false,true).is_err());
+ reset();STATE.lock().unwrap().retry=true;assert!(reclaim_fs_write(&ROOT,true).is_err());
  assert!(STATE.lock().unwrap().requested);
- reset();STATE.lock().unwrap().change=true;assert!(reclaim_fs_write(false,true).is_err(),"headroom return bypassed mount identity");
- reset();{let mut s=STATE.lock().unwrap();s.free=1001;s.inodes=33;}drop(reclaim_fs_write(false,true).unwrap());
+ reset();STATE.lock().unwrap().change=true;assert!(reclaim_fs_write(&ROOT,true).is_err(),"headroom return bypassed mount identity");
+ reset();{let mut s=STATE.lock().unwrap();s.free=1001;s.inodes=33;}drop(reclaim_fs_write(&ROOT,true).unwrap());
  assert!(STATE.lock().unwrap().starts.is_empty());
- reset();{let mut s=STATE.lock().unwrap();s.free=1001;}drop(reclaim_fs_write(false,true).unwrap());
+ reset();{let mut s=STATE.lock().unwrap();s.free=1001;}drop(reclaim_fs_write(&ROOT,true).unwrap());
  assert_eq!(STATE.lock().unwrap().starts,[0],"inode pressure was ignored");
 }
 '''.replace('METHODS', methods))
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_allocating_writer_selects_headroom_not_full_accounting(self):
-        body = item((ROOT / 'kernel/src/fs/ext2/mod.rs').read_text(), 'fn fs_write(home: bool)')
+        body = item((ROOT / 'kernel/src/fs/ext2/mod.rs').read_text(), 'fn fs_write(')
         result = run_rust(r'''
 use std::sync::atomic::{AtomicUsize,Ordering};
 static FULL:AtomicUsize=AtomicUsize::new(0);
@@ -87,16 +90,19 @@ impl Ext2WriteGuard{
  fn as_ref(&self)->Option<&Ext2Fs>{self.0.as_ref()}
  fn wait_for_shrink_writer(self)->Result<Self,&'static str>{Ok(self)}
 }
-fn fs_write_raw(_:bool)->Result<Ext2WriteGuard,&'static str>{Ok(Ext2WriteGuard(Some(Ext2Fs)))}
-fn accounting_fs_write(home:bool)->Result<Ext2WriteGuard,&'static str>{FULL.fetch_add(1,Ordering::Relaxed);fs_write_raw(home)}
-fn reclaim_fs_write(home:bool,pressure_only:bool)->Result<Ext2WriteGuard,&'static str>{assert!(pressure_only);HEADROOM.fetch_add(1,Ordering::Relaxed);fs_write_raw(home)}
+type MountSlot=bool;
+static ROOT:MountSlot=false;
+static HOME:MountSlot=true;
+fn fs_write_raw(_:&'static MountSlot)->Result<Ext2WriteGuard,&'static str>{Ok(Ext2WriteGuard(Some(Ext2Fs)))}
+fn accounting_fs_write(slot:&'static MountSlot)->Result<Ext2WriteGuard,&'static str>{FULL.fetch_add(1,Ordering::Relaxed);fs_write_raw(slot)}
+fn reclaim_fs_write(slot:&'static MountSlot,pressure_only:bool)->Result<Ext2WriteGuard,&'static str>{assert!(pressure_only);HEADROOM.fetch_add(1,Ordering::Relaxed);fs_write_raw(slot)}
 fn allocation_pressure(fs:&Ext2Fs)->bool{let stats=fs.statfs();stats.free_blocks<=(stats.blocks/16).max(128)||stats.free_inodes<=32}
 BODY
 fn main(){
  assert!(allocation_pressure(&Ext2Fs));
- assert!(accounting_fs_write(false).is_ok());assert!(reclaim_fs_write(false,true).is_ok());
+ assert!(accounting_fs_write(&ROOT).is_ok());assert!(reclaim_fs_write(&ROOT,true).is_ok());
  FULL.store(0,Ordering::Relaxed);HEADROOM.store(0,Ordering::Relaxed);
- for home in [false,true]{assert!(fs_write(home).is_ok());}
+ for slot in [&ROOT,&HOME]{assert!(fs_write(slot).is_ok());}
  assert_eq!(FULL.load(Ordering::Relaxed),0,"allocation waits for unrelated accounting cohort");
  assert_eq!(HEADROOM.load(Ordering::Relaxed),2);
 }

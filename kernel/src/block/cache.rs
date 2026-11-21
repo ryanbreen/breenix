@@ -26,6 +26,19 @@ pub trait Wait: Send + Sync {
     fn generation(&self) -> u64;
     fn wait(&self, observed: u64);
     fn wake_all(&self);
+
+    /// One bounded wait for already-issued I/O. Providers without a timed
+    /// wait can decline it; publication has a path that needs no cache space.
+    fn wait_for_pressure(&self, _observed: u64) -> PressureWait {
+        PressureWait::Unavailable
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PressureWait {
+    Progress,
+    TimedOut,
+    Unavailable,
 }
 
 /// WriteThrough writes synchronously; Hold retains bytes until explicit submit.
@@ -41,6 +54,10 @@ pub struct HoldGroup {
     device: usize,
     request_commit: Arc<dyn Fn() + Send + Sync>,
     requested: AtomicBool,
+    ready_device: Option<Arc<dyn BlockDevice>>,
+    // Serialized by this device's cache admission. The publisher consumes
+    // errors from writes that another publisher completed on its behalf.
+    assisted_error: Mutex<Option<BlockError>>,
 }
 
 impl WriteGroup {
@@ -49,7 +66,19 @@ impl WriteGroup {
             device: device.identity(),
             request_commit,
             requested: AtomicBool::new(false),
+            ready_device: None,
+            assisted_error: Mutex::new(None),
         }))
+    }
+
+    /// Stage frozen copy-on-write data that may be submitted by a peer.
+    /// The owner still controls the durability barriers and publication.
+    pub fn ready_hold(device: Arc<dyn BlockDevice>, request_commit: Arc<dyn Fn() + Send + Sync>) -> Self {
+        let Self::Hold(mut group) = Self::hold(device.as_ref(), request_commit) else {
+            unreachable!("Hold constructor");
+        };
+        Arc::get_mut(&mut group).expect("new Hold group").ready_device = Some(device);
+        Self::Hold(group)
     }
 }
 
@@ -310,21 +339,19 @@ impl<W: Wait> BufferCache<W> {
     }
 
     fn request_commits(&self) {
-        let holders = self.with(|state| {
-            state
-                .buffers
-                .values()
-                .filter_map(|entry| match &entry.status {
-                    BufferState::Dirty { group, .. }
-                        if !group.requested.swap(true, Ordering::Relaxed) =>
-                    {
-                        Some(group.clone())
+        use core::ops::Bound::{Excluded, Unbounded};
+        let mut start = Unbounded;
+        while let Some((key, holder)) = self.with(|state| {
+            state.buffers.range((start, Unbounded)).find_map(|(&key, entry)| {
+                if let BufferState::Dirty { group, .. } = &entry.status {
+                    if !group.requested.swap(true, Ordering::Relaxed) {
+                        return Some((key, group.clone()));
                     }
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-        });
-        for holder in holders {
+                }
+                None
+            })
+        }) {
+            start = Excluded(key);
             (holder.request_commit)();
         }
     }
@@ -696,7 +723,14 @@ impl<W: Wait> BufferCache<W> {
                 (result, pressure)
             }
             WriteGroup::Hold(group) => {
-                let result = self.stage(key, group, &bytes[..size]);
+                if group.device != key.0 {
+                    return Err(BlockError::IoError);
+                }
+                let previous = *group.assisted_error.lock();
+                let result = match previous {
+                    Some(error) => Err(error),
+                    None => self.stage(key, group, &bytes[..size]),
+                };
                 (result, result == Err(BlockError::OutOfMemory))
             }
         };
@@ -708,9 +742,6 @@ impl<W: Wait> BufferCache<W> {
     }
 
     fn stage(&self, key: Key, group: Arc<HoldGroup>, bytes: &[u8]) -> Result<(), BlockError> {
-        if group.device != key.0 {
-            return Err(BlockError::IoError);
-        }
         // A private dirty snapshot can be overwritten without another charge.
         let reused = self.with(|state| {
             if let Some(Entry {
@@ -781,15 +812,62 @@ impl<W: Wait> BufferCache<W> {
             _ => return Err(BlockError::IoError),
         };
         let _admission = self.enter(device.identity());
+        let assisted_error = *group.assisted_error.lock();
+        if let Some(error) = assisted_error {
+            return Err(error);
+        }
+        self.submit_admitted(device, group)
+    }
+
+    /// Under pressure, help one ready peer without queueing behind that peer.
+    /// The caller holds no cache admission. The helper takes only the peer's
+    /// admission and leaves its mount state and barriers to the peer.
+    pub fn relieve_publication_pressure(&self, publisher: &dyn BlockDevice) -> PressureWait {
+        let identity = publisher.identity();
+        let observed = self.wait.generation();
+        let (ready, in_flight) = self.with(|state| {
+            let mut in_flight = false;
+            for (&(device, _), entry) in &state.buffers {
+                if device == identity {
+                    continue;
+                }
+                match &entry.status {
+                    BufferState::Dirty { group, .. } if group.ready_device.is_some() => {
+                        let queue = state.devices.get_mut(&device).expect("staged cache device");
+                        if queue.next == queue.completed {
+                            queue.next = queue.next.checked_add(1).expect("block cache ticket exhausted");
+                            return (Some(group.clone()), in_flight);
+                        }
+                    }
+                    BufferState::InFlight => in_flight = true,
+                    _ => {}
+                }
+            }
+            (None, in_flight)
+        });
+        if let Some(group) = ready {
+            let _admission = Admission { cache: self, device: group.device };
+            let device = group.ready_device.as_ref().expect("ready cache group");
+            if let Err(error) = self.submit_admitted(device.as_ref(), &group) {
+                *group.assisted_error.lock() = Some(error);
+            }
+            PressureWait::Progress
+        } else if in_flight {
+            self.wait.wait_for_pressure(observed)
+        } else {
+            PressureWait::Unavailable
+        }
+    }
+
+    fn submit_admitted(&self, device: &dyn BlockDevice, group: &HoldGroup) -> Result<(), BlockError> {
         // Staged buffers are device.block_size() bytes each (stage via size()).
         let size = device.block_size();
         let limit = Self::run_limit(size);
-        let (buffers, mut scratch) = self.with(|state| {
+        let belongs = |entry: &Entry| {
+            matches!(&entry.status, BufferState::Dirty { group: owner, .. } if core::ptr::eq(owner.as_ref(), group))
+        };
+        let workspace = self.with(|state| {
             let mut buffers = Vec::new();
-            let belongs = |entry: &Entry| {
-                matches!(&entry.status,
-                BufferState::Dirty { group: owner, .. } if Arc::ptr_eq(owner, group))
-            };
             let count = state
                 .buffers
                 .iter()
@@ -813,9 +891,14 @@ impl<W: Wait> BufferCache<W> {
                     entry.status = BufferState::InFlight;
                 }
             }
-            group.requested.store(false, Ordering::Relaxed);
             Ok::<_, BlockError>((buffers, scratch))
-        })?;
+        });
+        group.requested.store(false, Ordering::Relaxed);
+        // A full heap can also refuse the coalescing workspace. Submit one
+        // existing snapshot at a time without allocating that workspace.
+        let Ok((buffers, mut scratch)) = workspace else {
+            return self.submit_one_at_a_time(device, group.device, belongs);
+        };
         // Keys iterate in LBA order, so each run is a maximal contiguous slice
         // of at most `limit` blocks and takes one device call. A failed run
         // marks each of its entries Failed; later runs are still written.
@@ -838,25 +921,86 @@ impl<W: Wait> BufferCache<W> {
                 }
                 self.device_write(device, first.1, len, &scratch)
             };
-            self.with(|state| {
-                for (key, buffer) in run {
-                    let entry = state.buffers.get_mut(key).expect("submitted cache buffer");
-                    if written.is_ok() {
-                        entry.status = BufferState::Clean {
-                            buffer: buffer.clone(),
-                            used: 0,
-                        };
-                        state.touch(*key);
-                    } else {
-                        entry.status = BufferState::Failed;
-                    }
-                }
-            });
-            if written.is_err() {
-                result = Err(BlockError::IoError);
-            }
+            self.finish_submitted(run, written);
+            result = result.and(written);
         }
         result
+    }
+
+    fn submit_one_at_a_time(
+        &self,
+        device: &dyn BlockDevice,
+        identity: usize,
+        belongs: impl Fn(&Entry) -> bool,
+    ) -> Result<(), BlockError> {
+        let mut result = Ok(());
+        let mut start = (identity, 0);
+        loop {
+            let next = self.with(|state| {
+                let (&key, entry) = state.buffers.range_mut(start..=(identity, u64::MAX))
+                    .find(|(_, entry)| belongs(entry))?;
+                let BufferState::Dirty { buffer, .. } =
+                    core::mem::replace(&mut entry.status, BufferState::InFlight)
+                else { unreachable!("selected dirty buffer") };
+                Some((key, buffer))
+            });
+            let Some(next) = next else { break };
+            let block = next.0.1;
+            let written = self.device_write(device, block, 1, &next.1);
+            self.with(|state| {
+                if written.is_ok() {
+                    state.remove(next.0);
+                } else {
+                    state.buffers.get_mut(&next.0).expect("submitted cache buffer").status =
+                        BufferState::Failed;
+                }
+            });
+            result = result.and(written);
+            let Some(block) = block.checked_add(1) else { break };
+            start = (identity, block);
+        }
+        result
+    }
+
+    fn finish_submitted(&self, buffers: &[(Key, Arc<Buffer>)], result: Result<(), BlockError>) {
+        self.with(|state| {
+            for (key, buffer) in buffers {
+                let entry = state.buffers.get_mut(key).expect("submitted cache buffer");
+                if result.is_ok() {
+                    entry.status = BufferState::Clean { buffer: buffer.clone(), used: 0 };
+                    state.touch(*key);
+                } else {
+                    entry.status = BufferState::Failed;
+                }
+            }
+        });
+    }
+
+    /// Submit a prepared range directly when no cache capacity is reclaimable.
+    /// Keep device ordering and retire old cache copies under that admission.
+    pub fn write_uncached(&self, device: &dyn BlockDevice, start: u64, bytes: &[u8]) -> Result<(), BlockError> {
+        let size = device.block_size();
+        if size == 0 || bytes.is_empty() || bytes.len() % size != 0 {
+            return Err(BlockError::IoError);
+        }
+        let count = bytes.len() / size;
+        if start.checked_add(count as u64).is_none_or(|end| end > device.num_blocks()) {
+            return Err(BlockError::OutOfBounds);
+        }
+        let identity = device.identity();
+        let _admission = self.enter(identity);
+        self.with(|state| {
+            let end = start + count as u64;
+            let keys = (identity, start)..(identity, end);
+            if state.buffers.range(keys).any(|(_, entry)| matches!(entry.status, BufferState::Dirty { .. })) {
+                return Err(BlockError::IoError);
+            }
+            for block in start..end {
+                state.remove((identity, block));
+            }
+            Ok(())
+        })?;
+        self.device_write(device, start, count, bytes)
     }
 
     /// Reserve the barrier before draining earlier requests, then wait for the

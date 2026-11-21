@@ -425,6 +425,7 @@ STD_BINARIES=(
     "passwd"
     "probe"
     "persistent-install"
+    "persistent-migrate"
     "sync"
 
     # Effort suites, installed as /sbin/suite-<id>

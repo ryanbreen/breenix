@@ -14,7 +14,7 @@ impl Wait for NoWait {
     }
     fn wake_all(&self) {}
 }
-struct Disk(HostMutex<Vec<u8>>);
+struct Disk(HostMutex<Vec<u8>>, AtomicBool);
 impl BlockDevice for Disk {
     fn read_block(&self, block: u64, bytes: &mut [u8]) -> Result<(), BlockError> {
         let start = block as usize * BLOCK_SIZE;
@@ -33,7 +33,7 @@ impl BlockDevice for Disk {
         16384
     }
     fn flush(&self) -> Result<(), BlockError> {
-        Ok(())
+        if self.1.load(Ordering::Acquire) { Err(BlockError::IoError) } else { Ok(()) }
     }
 }
 // The process-wide sink writes to a buffer owned by the thread that
@@ -69,8 +69,8 @@ pub(super) fn init_log() {
 pub(super) fn messages() -> Vec<String> {
     MESSAGES.with(|messages| messages.borrow().as_ref().unwrap().clone())
 }
-fn fixture() -> Arc<BreenFs<NoWait>> {
-    let disk = Arc::new(Disk(HostMutex::new(vec![0; 64 * 1024 * 1024])));
+fn disk_fixture() -> Arc<Disk> {
+    let disk = Arc::new(Disk(HostMutex::new(vec![0; 64 * 1024 * 1024]), AtomicBool::new(false)));
     let sb = Superblock {
         fs_uuid: [0x11; 16],
         generation: 1,
@@ -83,7 +83,33 @@ fn fixture() -> Arc<BreenFs<NoWait>> {
     files
         .fsync(disk.as_ref(), &mut Committer::format(sb))
         .unwrap();
-    BreenFs::mount_writable(disk, Arc::new(BufferCache::new(NoWait)), 71, 1).unwrap()
+    disk
+}
+
+fn fixture() -> Arc<BreenFs<NoWait>> {
+    BreenFs::mount_writable(disk_fixture(), Arc::new(BufferCache::new(NoWait)), 71, 1).unwrap()
+}
+
+#[test]
+fn committing_device_flush_failure_latches_mount() {
+    init_log();
+    let disk = disk_fixture();
+    let fs = BreenFs::mount_writable(disk.clone(), Arc::new(BufferCache::new(NoWait)), 76, 1).unwrap();
+    let ino = fs.create(2, b"pending", NewNode::Regular {
+        attrs: InodeAttrs::new(0o644, 0, 0),
+    }).unwrap();
+    let file = fs.open(ino).unwrap();
+    disk.1.store(true, Ordering::Release);
+
+    assert_eq!(fs.fsync(&file, false), Err(Errno(EIO)));
+    assert_eq!(fs.read_only(), Ok(true));
+    assert_eq!(fs.failure(), Some(("publish", EIO)));
+    assert_eq!(fs.create(2, b"later", NewNode::Regular {
+        attrs: InodeAttrs::new(0o644, 0, 0),
+    }), Err(Errno(EROFS)));
+    assert!(messages().iter().any(|line| line.contains("mount=76")
+        && line.contains("substep=DataFlush")
+        && line.contains("block_error=IoError")), "{:?}", messages());
 }
 
 #[test]

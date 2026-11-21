@@ -1,6 +1,5 @@
 //! Boot type detection uses the production probes and real filesystem images.
-#[path = "../../../kernel/src/fs/breenfs/probe.rs"]
-mod breenfs_probe;
+use crate::breenfs::probe as breenfs_probe;
 use crate::{block::BlockDevice, errno::Errno};
 
 fn kind(device: &dyn BlockDevice) -> Result<Option<&'static str>, Errno> {
@@ -64,9 +63,7 @@ fn ext2_first_and_breenfs_in_either_ring() {
 
 // Same boot selection, record parser, partition translations and BreenFS
 // recovery as x86 metal. The sparse host disk supplies the sectors and GPT hit.
-#[path = "../../../kernel/src/block/partition.rs"]
-mod partition;
-use crate::block::{BlockError, HardwareDisk};
+use crate::partition;
 
 mod restage {
     use crate::block::{install, BlockDevice, BlockError, HardwareDisk};

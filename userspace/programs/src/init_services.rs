@@ -752,14 +752,19 @@ impl Supervisor {
                             output.lines.feed_observed(&bytes[..n], output.stream, log, |line| {
                                 // Explicit boot receipts still feed serial gates. Ordinary daemon
                                 // output stays in the log and cannot overwrite a getty prompt.
+                                let receipt = "\nbsshd: listening on 0.0.0.0:22\n";
                                 let readiness = entry.def.name == "bsshd"
-                                    && line == b"bsshd: listening on 0.0.0.0:22";
+                                    && line == receipt.trim_matches('\n').as_bytes();
                                 let oracle = entry.def.name == "bssh-oracle"
                                     && (line.starts_with(b"[BSSH_PUBKEY_ORACLE:")
                                         || line.starts_with(b"[BSSH_ACCOUNT_ORACLE:"))
                                     && line.ends_with(b"]");
                                 let desktop = entry.def.name == "bwm" && desktop_log_receipt(line);
-                                if (output.stream == "stdout" && (readiness || oracle)) || desktop {
+                                if output.stream == "stdout" && readiness {
+                                    // Getty writes its prompt from another process. Send the
+                                    // line break and receipt together so the receipt starts a line.
+                                    print!("{receipt}");
+                                } else if (output.stream == "stdout" && oracle) || desktop {
                                     if let Ok(text) = core::str::from_utf8(line) {
                                         print!("{}\n", text);
                                     }

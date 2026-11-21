@@ -9,7 +9,7 @@
 //! a manifest. A category with no cases yet is planned: the binary leaves it out, and a
 //! manifest in which each category is planned is a skeleton with no suite source
 //! (docs/suites/README.md, "Planned categories"). A category marked `"hostRunner": true` is run
-//! from the boot host against a persistent boot by `scripts/metal/server-suite`, which checks
+//! by its host runner, which checks
 //! that category's cases; the binary leaves it out.
 //!
 //! The efforts in `docs/efforts/path.json` that name their targets name known ones (`targets`,
@@ -141,7 +141,12 @@ fn entry(value: &Value, at: &str, extra: &[&str], errors: &mut Vec<String>) -> O
 }
 
 /// The runner of host-run categories in a suite whose binary runs the others.
-const CATEGORY_HOST_RUNNER: &str = "scripts/metal/server-suite";
+fn category_host_runner(suite: &str) -> &'static str {
+    match suite {
+        "filesystem" => "scripts/vm-artifacts.py",
+        _ => "scripts/metal/server-suite",
+    }
+}
 
 /// Check one manifest's shape, returning what it lists.
 fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
@@ -885,7 +890,7 @@ fn suite_manifests_match_their_binaries() {
         // completion: suite-verdict.py blocks full-suite acceptance while any category
         // is planned; a milestone must have cases in each category it measures.
         if !manifest.host_categories.is_empty() {
-            let checked = std::process::Command::new("python3").arg(root.join(CATEGORY_HOST_RUNNER))
+            let checked = std::process::Command::new("python3").arg(root.join(category_host_runner(id)))
                 .arg("--check-manifest").arg(path).output().expect("host runner starts");
             if !checked.status.success() {
                 errors.push(format!("{id}: host-run category table differs: {}", String::from_utf8_lossy(&checked.stderr)));
@@ -1119,7 +1124,10 @@ fn filesystem_cases_match_the_guest() {
     assert!(errors.is_empty(), "filesystem manifest: {errors:?}");
     let (_, categories) = source_suite(
         &fs::read_to_string(root.join("userspace/programs/src/suite_filesystem.rs")).unwrap()).unwrap();
-    let populated: Vec<_> = manifest.categories.into_iter().filter(|c| !c.cases.is_empty()).collect();
+    let host_categories = manifest.host_categories;
+    let populated: Vec<_> = manifest.categories.into_iter()
+        .filter(|category| !category.cases.is_empty() && !host_categories.contains(&category.entry.id))
+        .collect();
     assert_eq!(categories, populated, "filesystem guest table differs from the manifest");
 }
 

@@ -649,10 +649,11 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     kernel::block::install_requested_root();
 
     // Probe and mount the root filesystem once IRQ-driven block completions can arrive.
+    let explicit_mounts = kernel::boot::intent::explicit_mounts_requested();
     match kernel::fs::vfs::mount_root() {
         Ok(()) => {
             log::info!("{} root filesystem mounted", kernel::fs::vfs::root_kind());
-            if kernel::block::ramdisk::device().is_some() {
+            if !explicit_mounts && kernel::block::ramdisk::device().is_some() {
                 log::info!("[fs] root mounted from the RAM disk");
             } else if kernel::block::root_on_installed_disk() {
                 log::info!("[fs] root mounted from the installed disk");
@@ -668,7 +669,7 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
         }
         Err(e) => {
             log::warn!("Failed to mount root filesystem: {:?}", e);
-            if kernel::fs::vfs::suite_boot_requested() {
+            if explicit_mounts || kernel::fs::vfs::suite_boot_requested() {
                 serial_println!("\nBREENIX_ROOT_MOUNT_FATAL errno={}", e.0);
                 kernel::hlt_loop();
             }
@@ -681,26 +682,30 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
         }
     }
 
-    kernel::fs::vfs::init_services().expect("filesystem finalization services");
+    if !explicit_mounts {
+        kernel::fs::vfs::init_services().expect("filesystem finalization services");
+    }
 
     // ext2/VFS fault-injection leg (test profile only, feature `fs_fault_inject`).
     // Runs immediately after the root filesystem mounts, so every marker the rest
     // of this boot prints is evidence the kernel survived the injected faults.
     #[cfg(feature = "fs_fault_inject")]
     kernel::fs::vfs::fault::run_fs_fault_leg();
-    // Noninteractive testing can supply a fixture; interactive needs a home disk.
-    if cfg!(all(feature = "testing", not(feature = "interactive")))
-        || (!kernel::block::hardware_read_only() && kernel::block::disk(3).is_some())
-        || kernel::block::home_named()
-    {
-        match kernel::fs::vfs::mount_home() {
-            Ok(()) => log::info!("ext2 home filesystem mounted at /home"),
-            Err(e) => log::warn!("No home filesystem: {:?}", e),
+    if !explicit_mounts {
+        // Noninteractive testing can supply a fixture; interactive needs a home disk.
+        if cfg!(all(feature = "testing", not(feature = "interactive")))
+            || (!kernel::block::hardware_read_only() && kernel::block::disk(3).is_some())
+            || kernel::block::home_named()
+        {
+            match kernel::fs::vfs::mount_home() {
+                Ok(()) => log::info!("ext2 home filesystem mounted at /home"),
+                Err(e) => log::warn!("No home filesystem: {:?}", e),
+            }
+        } else {
+            log::info!("No home filesystem: no home block device attached");
         }
-    } else {
-        log::info!("No home filesystem: no home block device attached");
+        kernel::fs::vfs::mount::bind_home_if_unmounted();
     }
-    kernel::fs::vfs::mount::bind_home_if_unmounted();
     kernel::fs::vfs::init_services().expect("filesystem finalization services");
     // The boot's partitions are chosen and mounted: no further range may take writes.
     kernel::block::fence_seal();
@@ -1217,7 +1222,7 @@ fn launch_x86_production_init(
 ) -> Result<(), &'static str> {
     use alloc::string::String;
 
-    if console_mode.is_some() || name == "persistent-install" {
+    if console_mode.is_some() || matches!(name, "persistent-install" | "persistent-migrate") {
         serial::command::use_tty_input();
     }
     let hostkeys = if name.starts_with("suite-") {
@@ -1239,9 +1244,11 @@ fn launch_x86_production_init(
         let mut argv: alloc::vec::Vec<&[u8]> = if name == "suite-users" || name == "suite-gui-apps" {
             alloc::vec![b"/sbin/init", b"suite", path.as_bytes()]
         } else { alloc::vec![path.as_bytes()] };
-        if name == "persistent-install" {
-            let generation = kernel::boot::intent::userland().ok_or("install intent names no userland generation")?;
+        if matches!(name, "persistent-install" | "persistent-migrate") {
+            let generation = kernel::boot::intent::userland().ok_or("boot intent names no userland generation")?;
             argv.push(generation.as_bytes());
+        }
+        if name == "persistent-install" {
             if let Some(previous) = kernel::boot::intent::previous_userland() {
                 argv.push(previous.as_bytes());
             }
@@ -1312,6 +1319,7 @@ enum X86BootTarget {
     Suite(kernel::boot::target::SuiteTarget),
     Probe,
     PersistentInstall,
+    PersistentMigrate,
 }
 
 /// Which suite or probe, if any, the production kernel runs as PID 1 instead of
@@ -1343,6 +1351,18 @@ fn x86_boot_target() -> Option<X86BootTarget> {
             )) => None,
             Ok(Some(target::Target::Probe)) => Some(X86BootTarget::Probe),
             Ok(Some(target::Target::PersistentInstall)) => Some(X86BootTarget::PersistentInstall),
+            Ok(Some(target::Target::PersistentMigrate)) => {
+                use kernel::boot::intent;
+                if intent::explicit_mounts_requested()
+                    && intent::get() == Some(b"persistent-migrate\n")
+                    && intent::userland().is_some()
+                {
+                    Some(X86BootTarget::PersistentMigrate)
+                } else {
+                    log::warn!("[boot] Ignoring boot mode \"persistent-migrate\": format 3 userland intent required");
+                    None
+                }
+            }
             Ok(Some(target::Target::Program { .. })) => {
                 log::warn!("[boot] Ignoring boot target {}: program mode is ARM64 only", target::PATH);
                 None
@@ -1492,6 +1512,13 @@ fn read_x86_production_init(
                 ),
             }
             None
+        }
+        Some(X86BootTarget::PersistentMigrate) => {
+            let (elf_data, exe_path) = read_init_from_ext2("/sbin/persistent-migrate")?;
+            target::check_elf(&elf_data)?;
+            log::info!("[boot] Boot mode: persistent-migrate");
+            kernel::console::splash::set_mode(format_args!("persistent-migrate"));
+            return Ok((alloc::string::String::from("persistent-migrate"), exe_path, elf_data, None, None));
         }
         None => None,
     };

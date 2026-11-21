@@ -126,6 +126,28 @@ impl Ext2Inode {
         superblock: &super::Ext2Superblock,
         block_groups: &[super::Ext2BlockGroupDesc],
     ) -> Result<Self, BlockError> {
+        Self::read_prefix(device, inode_num, superblock, block_groups, false)
+            .map(|(inode, _)| inode)
+    }
+
+    /// Read the inode and its atime, mtime and ctime extension words for
+    /// immutable volumes. The ext2 writer only maintains the base timestamps.
+    pub fn read_with_time_extra<B: BlockDevice + ?Sized>(
+        device: &B,
+        inode_num: u32,
+        superblock: &super::Ext2Superblock,
+        block_groups: &[super::Ext2BlockGroupDesc],
+    ) -> Result<(Self, [u32; 3]), BlockError> {
+        Self::read_prefix(device, inode_num, superblock, block_groups, true)
+    }
+
+    fn read_prefix<B: BlockDevice + ?Sized>(
+        device: &B,
+        inode_num: u32,
+        superblock: &super::Ext2Superblock,
+        block_groups: &[super::Ext2BlockGroupDesc],
+        extended_times: bool,
+    ) -> Result<(Self, [u32; 3]), BlockError> {
         // Inode numbers are 1-indexed, array indices are 0-indexed
         let inode_index = inode_num - 1;
 
@@ -174,10 +196,12 @@ impl Ext2Inode {
         let device_blocks_per_ext2_block = ext2_block_size as usize / device_block_size;
         let start_device_block = (target_ext2_block as usize) * device_blocks_per_ext2_block;
 
-        // Only the device sectors containing the 128-byte inode are needed.
-        // Keep the surrounding bytes for the matching read-modify-write path.
+        // Cap the extension at this inode's length, even if the next inode
+        // lies in the same device sector.
+        let tail_size = inode_size.saturating_sub(128) as usize;
+        let prefix_size = 128 + if extended_times { tail_size.min(16) } else { 0 };
         let first_sector = offset_in_ext2_block / device_block_size;
-        let sector_end = (offset_in_ext2_block + 128).div_ceil(device_block_size);
+        let sector_end = (offset_in_ext2_block + prefix_size).div_ceil(device_block_size);
         let mut block_buf = [0u8; 4096];
         for i in first_sector..sector_end {
             device.read_block(
@@ -186,19 +210,22 @@ impl Ext2Inode {
             )?;
         }
 
-        // Extract the inode from the block buffer
-        // We only read the first 128 bytes regardless of actual inode_size
-        let inode_bytes = &block_buf[offset_in_ext2_block..offset_in_ext2_block + 128];
-
-        // Safety: We're casting a byte slice to a packed struct
-        // This is safe because:
-        // 1. The struct is #[repr(C, packed)] matching on-disk layout
-        // 2. We've read exactly 128 bytes (size of Ext2Inode)
-        // 3. All field types are Copy and have no invalid bit patterns
-        unsafe {
-            let ptr = inode_bytes.as_ptr() as *const Ext2Inode;
-            Ok(ptr.read_unaligned())
+        let prefix = &block_buf[offset_in_ext2_block..offset_in_ext2_block + prefix_size];
+        let (base, extra) = prefix.split_at(128);
+        let mut time_extra = [0; 3];
+        if let Some(size) = extra.get(..2) {
+            let size = u16::from_le_bytes(size.try_into().unwrap()) as usize;
+            if size > tail_size {
+                return Err(BlockError::IoError);
+            }
+            let fields = &extra[..size.min(extra.len())];
+            for (word, offset) in time_extra.iter_mut().zip([12, 8, 4]) {
+                if let Some(bytes) = fields.get(offset..offset + 4) {
+                    *word = u32::from_le_bytes(bytes.try_into().unwrap());
+                }
+            }
         }
+        Ok((Self::from_bytes(base), time_extra))
     }
 
     /// Linux ext2 stores the upper half of each ownership ID in i_osd2.

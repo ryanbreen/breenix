@@ -694,10 +694,13 @@ partition starts on a 1 MiB boundary.
 | 2 | Breenix test root | `DAC951C3-27DF-4E3D-8B9E-487906AC2C81` | 4 GiB, ext2 | the root test boots get | the delivery stub, before each test boot |
 | 3 | Breenix system | `2EF14A34-ABBD-48F8-83D6-F2A8C7B4A9FE` | 8 GiB, ext2 | the persistent install's root: userland, `/etc`, `/root` | persistent boots; the install boot's migration |
 | 4 | Breenix home | `9BFEAEF9-4F51-45DE-8BCF-5CEC1603B862` | 16 GiB, ext2 | `/home` of the persistent install | persistent boots |
+| 5 | BreenFS system | `FAD521D2-3783-43CC-BE73-60ED528454C9` | 64 GiB, breenfs | migrated system and shared state | add-breenfs request; subsequent persistent boots |
+| 6 | BreenFS home | `F93914AD-57E7-4FEB-A52E-295A07FD7E35` | 256 GiB, breenfs | migrated home | add-breenfs request; subsequent persistent boots |
 
-The rest of the disk stays unallocated. The disk GUID and the four unique partition GUIDs are random; the boot host
+Layout v1 has entries 1–4; layout v2 adds entries 5–6 without changing the first four. The rest of the disk stays
+unallocated. The disk GUID and unique partition GUIDs are random; the boot host
 makes them for the one-time install and keeps them in the service's `disk.json` (`layout`), with each partition's
-first and last LBA. The three Breenix type GUIDs above are constants of this layout and name a partition's role;
+first and last LBA. The Breenix type GUIDs above are constants of this layout and name a partition's role;
 the unique GUIDs name one disk's partitions.
 
 A kernel slot is a boot disk in the delivery stub's format ("Delivery"): a GPT disk image with one FAT partition
@@ -841,6 +844,31 @@ services, bsshd, the boot script and getty on the six virtual terminals) with th
 persistent boot measures `usb-keyboard` in full the first time the operator types. A tests boot's `tests` item gives
 the offset and length of the BXTEST image that follows the intent in the same RAM disk; the testing kernel takes that
 image as its test disk.
+
+Format 3 uses `BREENIX-BOOT 3` and the format 2 items other than `root` and `home`,
+plus one to six `mount <guid> <path> ro|rw` lines. Exactly one path is `/`, paths are
+unique absolute strings of at most 64 bytes using lowercase ASCII letters, digits, `/`,
+`.`, `_` and `-`, with no `.` or `..` components. At most two mounts are writable.
+The complete intent is at most 1024 bytes. Malformed format 3 intents are refused.
+The migration, cutover and rescue boot intents use format 3. Writable mounts name
+the BreenFS system or home volumes.
+
+For the disposable ARM64 VM migration cycle, put a nonempty `migration.txt`
+in the operator's ext2 home before staging `migrate`. After cutover, rescue and
+return each reach SSH readiness, run the probe from another terminal before
+requesting guest poweroff. Supply the operator's private identity and the
+trusted guest Ed25519 public host key. The probe uses the operator configured
+in the private VM site file (`BREENIX_VM_SITE`).
+
+```sh
+scripts/vm-persistent.sh qemu probe-migration --run-dir "$run" \
+  --identity "$operator_key" --host-key "$guest_host_public_key"
+```
+
+The probe checks the generation marker and `/proc/mounts` through strict SSH,
+then compares the SSH readback of `migration.txt` byte for byte with the frozen
+ext2 home image. The scorer requires that boot's receipt and authenticated
+guest poweroff before passing cutover, rescue or return.
 
 ### The write fence
 

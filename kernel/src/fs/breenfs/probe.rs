@@ -26,3 +26,9 @@ pub fn probe(device: &dyn BlockDevice) -> Result<bool, Errno> {
     }
     Ok(false)
 }
+
+pub(crate) fn uuid(device: &dyn BlockDevice) -> Result<[u8; 16], Errno> {
+    crate::fs::breenfs::recover::recover(device, false)
+        .map(|sb| sb.fs_uuid)
+        .map_err(|_| Errno(EIO))
+}

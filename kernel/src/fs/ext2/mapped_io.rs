@@ -20,7 +20,7 @@ pub(crate) struct DataFile {
 
 impl DataFile {
     pub(crate) fn open(handle: &FileHandle) -> Result<Self, &'static str> {
-        let mut guard = super::fs_sync_guard(super::pin_is_home(handle.object.mount)?)?
+        let mut guard = super::fs_sync_guard(super::slot_for(handle.object.mount)?)?
             .wait_for_inode(handle.object.key.inode)?;
         let fs = guard.as_mut().ok_or("Missing mount")?;
         let ino = handle.verify(fs)?;
@@ -324,13 +324,8 @@ fn persist_counts(
 impl Drop for DataFile {
     fn drop(&mut self) {
         self.handle.object.data_io.store(false, Ordering::Release);
-        if let Ok(home) = super::pin_is_home(self.handle.object.mount) {
-            let waiters = if home {
-                &super::HOME_EXT2_WAITERS
-            } else {
-                &super::ROOT_EXT2_WAITERS
-            };
-            waiters.wake_up_deferred();
+        if let Ok(slot) = super::slot_for(self.handle.object.mount) {
+            slot.waiters.wake_up_deferred();
         }
     }
 }

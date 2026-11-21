@@ -136,6 +136,17 @@ pub(super) fn fence_add(disk: HardwareDisk, first: u64, last: u64) -> Result<(),
     FENCE.lock().add(disk, first, last)
 }
 
+/// Install the staged write ranges for the resolved format-3 mount plan.
+#[cfg(all(target_arch = "x86_64", not(test)))]
+pub(super) fn publish_mount_fence(plan: Fence) -> Result<(), &'static str> {
+    let mut fence = FENCE.lock();
+    if *fence != Fence::CLOSED {
+        return Err("the write fence was already configured");
+    }
+    *fence = plan;
+    Ok(())
+}
+
 /// Seals the fence once the boot's mounts are done and reports it.
 #[cfg(target_arch = "x86_64")]
 pub fn fence_seal() {

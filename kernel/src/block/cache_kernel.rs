@@ -1,5 +1,5 @@
 //! System cache ownership and scheduler waits (breenfs design section 1.2).
-use super::cache::{bound_for_memory, BufferCache, Wait};
+use super::cache::{bound_for_memory, BufferCache, PressureWait, Wait};
 use crate::task::{
     thread::ThreadState,
     waitqueue::{PrepareOutcome, WaitQueueHead},
@@ -18,6 +18,34 @@ impl Wait for KernelWait {
     }
 
     fn wait(&self, observed: u64) {
+        self.wait_once(observed, None);
+    }
+
+    fn wait_for_pressure(&self, observed: u64) -> PressureWait {
+        const PRESSURE_WAIT_NS: u64 = 10_000_000;
+        let now_ns = || {
+            let (seconds, nanos) = crate::time::get_monotonic_time_ns();
+            (seconds as u64).saturating_mul(1_000_000_000).saturating_add(nanos as u64)
+        };
+        let deadline = now_ns().saturating_add(PRESSURE_WAIT_NS);
+        self.wait_once(observed, Some(deadline));
+        if self.generation() != observed {
+            PressureWait::Progress
+        } else if now_ns() >= deadline {
+            PressureWait::TimedOut
+        } else {
+            PressureWait::Unavailable
+        }
+    }
+
+    fn wake_all(&self) {
+        self.generation.fetch_add(1, Ordering::Release);
+        self.queue.wake_up();
+    }
+}
+
+impl KernelWait {
+    fn wait_once(&self, observed: u64, deadline: Option<u64>) {
         assert_io_context();
         if self.generation() != observed {
             return;
@@ -42,7 +70,7 @@ impl Wait for KernelWait {
         );
         let prepared = self
             .queue
-            .prepare_to_wait_checked(ThreadState::BlockedOnIO, None, || {
+            .prepare_to_wait_checked(ThreadState::BlockedOnIO, deadline, || {
                 self.generation() == observed
             });
         match prepared {
@@ -50,20 +78,16 @@ impl Wait for KernelWait {
                 crate::task::waitqueue::schedule_current_wait();
                 self.queue.finish_wait();
             }
-            PrepareOutcome::OutOfMemory | PrepareOutcome::PublishFailed => {
+            PrepareOutcome::OutOfMemory | PrepareOutcome::PublishFailed if deadline.is_none() => {
                 park_for_wait_retry();
             }
-            PrepareOutcome::Mismatch => {}
+            _ => {}
         }
         if add_brake {
             cpu::preempt_enable();
         }
     }
 
-    fn wake_all(&self) {
-        self.generation.fetch_add(1, Ordering::Release);
-        self.queue.wake_up();
-    }
 }
 
 /// Back off if no waiter could be published. Use the next interrupt instead

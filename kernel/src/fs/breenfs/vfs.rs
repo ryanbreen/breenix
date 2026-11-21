@@ -9,7 +9,7 @@ use mutation_cost::{Costs, Op as CostOp, Phase as CostPhase};
 use super::{
     abi::*,
     scrub::{self, Scrub},
-    commit::{Committer, FrozenCommit},
+    commit::{Committer, FrozenCommit, PublicationError},
     commit_policy::{CommitPolicy, COMMIT_INTERVAL_NS, DIRTY_BUDGET},
     commit_signal::{monotonic_ns, CommitSignal},
     dirty::DirtyPages,
@@ -330,6 +330,19 @@ impl<W: Wait> Cache<W> {
         }
     }
 }
+enum MountFailure {
+    Other(Errno),
+    Publication(PublicationError),
+}
+
+impl From<Errno> for MountFailure {
+    fn from(error: Errno) -> Self { Self::Other(error) }
+}
+
+impl From<PublicationError> for MountFailure {
+    fn from(error: PublicationError) -> Self { Self::Publication(error) }
+}
+
 struct MountState<W: Wait + 'static> {
     files: OpenFiles<W>,
     // N's next view, installed while N+1's scratch changes await replay.
@@ -353,7 +366,6 @@ struct MountState<W: Wait + 'static> {
     read_refusal_reported: bool,
     scrub: Option<Scrub>,
     scrub_state: u32,
-    #[cfg(not(test))]
     mount: usize,
     closed: bool,
     nodes: BTreeMap<u64, NodeState>,
@@ -1082,11 +1094,18 @@ impl<W: Wait> MountState<W> {
         }
         self.next_files.is_none() && self.refresh.is_empty()
     }
-    fn fail(&mut self, branch: &'static str, error: Errno) {
+    fn fail(&mut self, branch: &'static str, failure: impl Into<MountFailure>) {
         if self.failure.is_some() { return; }
+        let (error, publication) = match failure.into() {
+            MountFailure::Other(error) => (error, None),
+            MountFailure::Publication(error) => (Errno(EIO), Some(error)),
+        };
         self.failure = Some((branch, error.0));
         self.failed = true;
-        if let Some(failure) = self.metadata_error {
+        if let Some(failure) = publication {
+            log::error!("[breenfs] failure branch={} errno={} generation={} mount={} substep={:?} block_error={:?}; latched read-only",
+                branch, error.0, self.durable.generation, self.mount, failure.step, failure.block_error);
+        } else if let Some(failure) = self.metadata_error {
             log::error!("[breenfs] failure branch={} errno={} generation={} metadata_cause={} metadata_node={}; latched read-only",
                 branch, error.0, self.durable.generation, failure.cause, failure.addr);
         } else {
@@ -1595,6 +1614,24 @@ impl<W: Wait + 'static> BreenFs<W> {
     ) -> Result<Arc<Self>, Errno> {
         Self::mount_with(device, Cache::Kernel(cache), mount, root_id, None, true, true)
     }
+    /// Pin the selected root after writable recovery. The view reuses the
+    /// writer's Files transaction and cache.
+    pub fn generation_view(&self, id: usize, name: &[u8]) -> Result<Arc<dyn FileSystem>, Errno> {
+        let device = &self.inner.mounted_root.device;
+        let _selection = device.selection.lock();
+        let state = self.foreground_lock()?;
+        state.writable()?;
+        let root_id = state.roots.iter().find(|(_, (root, _))| root == name)
+            .map(|(&id, _)| id).ok_or(Errno(ENOENT))?;
+        let root = Arc::try_new(GenerationRoot {
+            mount: id,
+            mounted: MountedRoot::claim(device.clone(), root_id)?,
+            closed_inodes: Arc::try_new(BTreeSet::new()).map_err(|_| Errno(ENOMEM))?,
+        }).map_err(|_| Errno(ENOMEM))?;
+        let view = Arc::try_new(GenerationView { writer: self.clone(), root })
+            .map_err(|_| Errno(ENOMEM))?;
+        Ok(view)
+    }
     /// Explicit mounts use the same root-data parser with either cache owner.
     pub fn mount_named(
         device: Arc<dyn BlockDevice>, cache: Arc<BufferCache<W>>, mount: usize,
@@ -1728,7 +1765,6 @@ impl<W: Wait + 'static> BreenFs<W> {
                 read_refusal_reported: false,
                 scrub: None,
                 scrub_state: SCRUB_IDLE,
-                #[cfg(not(test))]
                 mount,
                 closed: false,
                 nodes: BTreeMap::new(),
@@ -1831,6 +1867,41 @@ impl<W: Wait + 'static> BreenFs<W> {
     fn foreground_lock(&self) -> Result<MountGuard<'_, MountState<W>>, Errno> {
         let _wait = self.inner.costs.span(CostOp::Foreground, CostPhase::MountExclusion);
         Ok(self.materialized(self.inner.state.lock_interruptible()?))
+    }
+
+    fn check_durable_roots(&self, generation: Option<u64>) -> Result<(), Errno> {
+        use super::{btree, commit};
+
+        // Keep this durable generation pinned against install and reuse while
+        // reading it. An in-flight publication still protects its blocks.
+        let state = self.inner.state.lock_interruptible()?;
+        let sb = &state.durable;
+        let device = self.inner.device.as_ref();
+        let has_superblock = (0..2).any(|ring| {
+            let slot = commit::slot_block(sb.total_blocks, ring, sb.slot);
+            let Ok(bytes) = commit::read(device, slot, BLOCK_SIZE) else { return false };
+            let mut expected = sb.clone();
+            expected.ring = ring;
+            Superblock::decode(&bytes) == Ok(expected)
+        });
+        if !has_superblock {
+            return Err(Errno(EIO));
+        }
+
+        let store = commit::DeviceStore(device);
+        // Each point lookup verifies the on-disk parent pointers and CRCs.
+        // A generation view also needs the default root for its shared binds.
+        for id in [Some(self.inner.root_id), generation].into_iter().flatten() {
+            let root = ops::persisted_root(&store, sb, id).map_err(|_| Errno(EIO))?;
+            let bytes = btree::search(&store, root.root, ops::key(2, format::INODE, 0))
+                .map_err(|_| Errno(EIO))?
+                .ok_or(Errno(EIO))?;
+            let inode = Inode::decode(&bytes).map_err(|_| Errno(EIO))?;
+            if inode.mode & 0o170000 != 0o040000 || inode.parent != 2 || inode.nlink < 2 {
+                return Err(Errno(EIO));
+            }
+        }
+        Ok(())
     }
     // Install sets the flag and the last share clears it, both under the
     // exclusion: the flag is set while replay or refresh remains (x11c M2).
@@ -2619,8 +2690,8 @@ impl<W: Wait + 'static> BreenFs<W> {
         }
         preemption_point();
         let signal = self.inner.signal.clone();
-        let group = WriteGroup::hold(
-            self.inner.device.as_ref(),
+        let group = WriteGroup::ready_hold(
+            self.inner.device.clone(),
             Arc::new(move || {
                 signal.pressure.store(true, Ordering::Release);
                 signal.worker.wake();
@@ -2690,7 +2761,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 }
                 (retired, None)
             } else {
-                state.fail("publish", Errno(EIO));
+                state.fail("publish", result.unwrap_err());
                 if let Some(committer) = state.committer.as_mut() {
                     committer.abandon();
                 }
@@ -2702,7 +2773,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         drop(publication);
         // After the exclusion, on the worker, in this order (601(4)): wake N's
         // receipts, then release N's grants.
-        commit.wake(result);
+        commit.wake(result.map_err(|_| super::commit::Error::EIO));
         {
             let _cleanup = self.inner.costs.span(CostOp::Commit, CostPhase::Cleanup);
             let installed = result.is_ok();
@@ -3194,6 +3265,9 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         self.sync_mappings(None)?;
         self.sync_generation(None, false)
     }
+    fn check_live(&self) -> Result<(), Errno> {
+        self.check_durable_roots(None)
+    }
     fn init_service(&self) -> Result<(), Errno> {
         {
             let mut state = self.inner.state.lock();
@@ -3525,24 +3599,12 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
     fn readdir(
         &self,
         dir: u64,
-        mut cookie: u64,
+        cookie: u64,
         sink: &mut dyn FnMut(DirEnt, u64) -> Result<bool, Errno>,
     ) -> Result<u64, Errno> {
         let mut state = self.foreground_lock()?;
-        let mut outcome = Ok(());
-        let result = state.files.visit_directory_entries(dir, cookie, &mut |next, entry| {
-            let accepted = record_kind(entry.kind).and_then(|kind| sink(
-                DirEnt { ino: entry.ino, kind, name: entry.name }, next,
-            ));
-            match accepted {
-                Ok(true) => { cookie = next; true }
-                Ok(false) => false,
-                Err(error) => { outcome = Err(error); false }
-            }
-        });
-        state.observed(result)?;
-        outcome?;
-        Ok(cookie)
+        let result = read_directory(&state.files, dir, cookie, sink);
+        state.observed(result)?
     }
 
     fn read(&self, node: &VNode, off: u64, buf: &mut [u8]) -> Result<usize, Errno> {
@@ -4102,6 +4164,219 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         }
     }
 }
+struct GenerationRoot {
+    mount: usize,
+    mounted: MountedRoot,
+    closed_inodes: Arc<BTreeSet<u64>>,
+}
+
+/// Different root and VNode identity, with the same on-disk owner and Files
+/// transaction as the writable default root.
+struct GenerationView<W: Wait + 'static> {
+    writer: BreenFs<W>,
+    root: Arc<GenerationRoot>,
+}
+
+impl<W: Wait + 'static> GenerationView<W> {
+    fn read_files<T>(
+        &self,
+        read: impl FnOnce(&Files<'static, CachedNodeStore<'static, W>>) -> Result<T, ReadError>,
+    ) -> Result<T, Errno> {
+        let mut state = self.writer.foreground_lock()?;
+        let result = state.files.files.with_read_root(self.root.mounted.id, &self.root.closed_inodes, read);
+        let result = state.observed(result)?;
+        state.read_result(result)
+    }
+
+    fn check_node(&self, node: &VNode) -> Result<(), Errno> {
+        if node.pin::<GenerationRoot>().is_some_and(|pin| core::ptr::eq(pin, self.root.as_ref())) {
+            Ok(())
+        } else {
+            Err(Errno(EXDEV))
+        }
+    }
+}
+
+impl<W: Wait + 'static> FileSystem for GenerationView<W> {
+    fn kind(&self) -> Result<&'static str, Errno> {
+        self.writer.kind()
+    }
+    fn root(&self) -> Result<u64, Errno> {
+        self.writer.root()
+    }
+    fn statfs(&self) -> Result<StatFs, Errno> {
+        let mut stats = self.writer.statfs()?;
+        stats.flags.read_only = true;
+        Ok(stats)
+    }
+    fn sync(&self) -> Result<(), Errno> {
+        self.writer.sync()
+    }
+    fn check_live(&self) -> Result<(), Errno> {
+        self.writer.check_durable_roots(Some(self.root.mounted.id))
+    }
+    fn init_service(&self) -> Result<(), Errno> {
+        self.writer.init_service()
+    }
+    fn shutdown(&self, name: &str, deadline: u64) -> Result<(), Errno> {
+        self.writer.shutdown(name, deadline)
+    }
+    fn report(&self, report: Report, name: &str, text: &mut alloc::string::String) -> Result<(), Errno> {
+        self.writer.report(report, name, text)
+    }
+    fn report_mapping_cache(&self, text: &mut alloc::string::String) -> Result<(), Errno> {
+        self.writer.report_mapping_cache(text)
+    }
+    fn mutation_costs(&self, name: &str, text: &mut alloc::string::String) -> Result<(), Errno> {
+        self.writer.mutation_costs(name, text)
+    }
+    fn failure(&self) -> Option<(&'static str, i32)> {
+        self.writer.failure()
+    }
+    fn read_only(&self) -> Result<bool, Errno> {
+        Ok(true)
+    }
+    fn max_file_size(&self) -> Result<u64, Errno> {
+        self.writer.max_file_size()
+    }
+    fn getattr(&self, ino: u64) -> Result<NodeAttrs, Errno> {
+        let inode = self.read_files(|files| Ok(files.inode(ino)?))?;
+        attributes(ino, inode)
+    }
+    fn open(&self, ino: u64) -> Result<Arc<VNode>, Errno> {
+        let inode = self.read_files(|files| Ok(files.inode(ino)?))?;
+        let fs = Arc::try_new(Self { writer: self.writer.clone(), root: self.root.clone() })
+            .map_err(|_| Errno(ENOMEM))?;
+        Arc::try_new(VNode::new(
+            self.root.mount, ino, inode.created_generation, inode.size,
+            attributes(ino, inode)?.times, fs, inode.created_generation, self.root.clone(),
+        )?).map_err(|_| Errno(ENOMEM))
+    }
+    fn lookup(&self, dir: u64, name: &[u8]) -> Result<u64, Errno> {
+        self.read_files(|files| Ok(files.lookup(dir, name)?))
+    }
+    fn lookup_open(&self, dir: &VNode, name: &[u8]) -> Result<Arc<VNode>, Errno> {
+        self.check_node(dir)?;
+        self.open(self.lookup(dir.ino, name)?)
+    }
+    fn touch(&self, _: &VNode, _: bool) {}
+    fn parent(&self, dir: u64) -> Result<u64, Errno> {
+        let inode = self.read_files(|files| Ok(files.inode(dir)?))?;
+        if kind(inode.mode)? != NodeKind::Directory {
+            return Err(Errno(ENOTDIR));
+        }
+        Ok(inode.parent)
+    }
+    fn readdir(
+        &self,
+        dir: u64,
+        cookie: u64,
+        sink: &mut dyn FnMut(DirEnt, u64) -> Result<bool, Errno>,
+    ) -> Result<u64, Errno> {
+        self.read_files(|files| Ok(read_directory(files, dir, cookie, sink)?))?
+    }
+    fn readlink(&self, ino: u64) -> Result<Vec<u8>, Errno> {
+        self.read_files(|files| Ok(files.readlink(ino)?))
+    }
+    fn read(&self, node: &VNode, off: u64, buf: &mut [u8]) -> Result<usize, Errno> {
+        self.check_node(node)?;
+        buf.fill(0);
+        self.read_files(|files| files.read_verified(&self.writer.data_reader(), node.ino, off, buf))
+    }
+    fn fsync(&self, node: &VNode, _: bool) -> Result<(), Errno> {
+        self.check_node(node)
+    }
+    fn mapping_io(&self, node: &VNode) -> Result<Box<dyn MappingIo>, Errno> {
+        self.check_node(node)?;
+        let attr = self.getattr(node.ino)?;
+        match attr.kind {
+            NodeKind::Regular => {}
+            NodeKind::Directory => return Err(Errno(EISDIR)),
+            _ => return Err(Errno(EINVAL)),
+        }
+        Ok(Box::try_new(Mapping {
+            fs: self.writer.clone(),
+            node: self.open(node.ino)?,
+            size: attr.size,
+            writable: false,
+            staged_generation: Cell::new(None),
+        }).map_err(|_| Errno(ENOMEM))?)
+    }
+    fn setattr(&self, _: u64, _: SetAttr) -> Result<(), Errno> {
+        Err(Errno(EROFS))
+    }
+    fn create(&self, _: u64, _: &[u8], _: NewNode<'_>) -> Result<u64, Errno> {
+        Err(Errno(EROFS))
+    }
+    fn create_open(
+        &self, _: u64, _: &[u8], _: NodeKind,
+        _: &dyn Fn(NodeAttrs) -> Result<InodeAttrs, Errno>,
+        _: &mut dyn FnMut(Arc<VNode>) -> Result<(), Errno>,
+    ) -> Result<(), Errno> {
+        Err(Errno(EROFS))
+    }
+    fn link(&self, _: u64, _: u64, _: &[u8], _: &LinkCheck<'_>) -> Result<(), Errno> {
+        Err(Errno(EROFS))
+    }
+    fn remove(&self, _: u64, _: &[u8], _: Remove) -> Result<(), Errno> {
+        Err(Errno(EROFS))
+    }
+    fn rename(&self, _: u64, _: &[u8], _: u64, _: &[u8], _: RenameMode, _: &RenameCheck<'_>) -> Result<(), Errno> {
+        Err(Errno(EROFS))
+    }
+    fn write(&self, _: &VNode, _: WriteReq, _: &[u8]) -> Result<WriteResult, WriteError> {
+        Err(Errno(EROFS).into())
+    }
+    fn resize(&self, _: &VNode, _: u64, _: bool, _: &dyn Fn(NodeAttrs) -> Result<(), Errno>) -> Result<(), Errno> {
+        Err(Errno(EROFS))
+    }
+    fn writeback_pages(&self, _: &VNode, _: u64, _: &[u8], _: &dyn MappingIo) -> Result<(), Errno> {
+        Err(Errno(EROFS))
+    }
+    fn clear_mapping_privilege(&self, _: &VNode) -> Result<(), Errno> {
+        Err(Errno(EROFS))
+    }
+    fn xattr(&self, ino: u64, op: Xattr<'_>) -> Result<usize, Errno> {
+        match op {
+            Xattr::Get { name, value } => {
+                let records = self.read_files(|files| Ok(files.list_xattrs(ino)?))?;
+                let record = records.iter().find(|record| record.name == name).ok_or(Errno(ENODATA))?;
+                copy_xattr(value, &record.value)
+            }
+            Xattr::List { names } => {
+                let records = self.read_files(|files| Ok(files.list_xattrs(ino)?))?;
+                let mut bytes = Vec::new();
+                for record in records {
+                    bytes.extend_from_slice(&record.name);
+                    bytes.push(0);
+                }
+                copy_xattr(names, &bytes)
+            }
+            Xattr::Set { .. } | Xattr::Remove { .. } => Err(Errno(EROFS)),
+        }
+    }
+}
+
+fn read_directory<S: super::btree::NodeStore>(
+    files: &Files<'_, S>,
+    dir: u64,
+    mut cookie: u64,
+    sink: &mut dyn FnMut(DirEnt, u64) -> Result<bool, Errno>,
+) -> Result<Result<u64, Errno>, ops::Error> {
+    let mut outcome = Ok(());
+    files.visit_directory_entries(dir, cookie, &mut |next, entry| {
+        let accepted = record_kind(entry.kind).and_then(|kind| sink(
+            DirEnt { ino: entry.ino, kind, name: entry.name }, next,
+        ));
+        match accepted {
+            Ok(true) => { cookie = next; true }
+            Ok(false) => false,
+            Err(error) => { outcome = Err(error); false }
+        }
+    })?;
+    Ok(outcome.map(|()| cookie))
+}
+
 fn copy_xattr(out: &mut [u8], bytes: &[u8]) -> Result<usize, Errno> {
     if !out.is_empty() {
         if out.len() < bytes.len() {
@@ -4225,7 +4500,7 @@ impl<W: Wait + 'static> MappingIo for Mapping<W> {
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(length).map_err(|_| Errno(ENOMEM))?;
         bytes.resize(length, 0);
-        self.fs.read(&self.node, offset, &mut bytes)?;
+        self.node.filesystem.read(&self.node, offset, &mut bytes)?;
         Ok(bytes)
     }
     fn needs_flush(&self) -> bool {

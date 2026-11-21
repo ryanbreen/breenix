@@ -1789,7 +1789,7 @@ impl Drop for Ext2ReadGuard {
 /// module docs above).
 pub struct Ext2WriteGuard {
     inner: Option<spin::RwLockWriteGuard<'static, Option<Ext2Fs>>>,
-    waiters: &'static crate::task::waitqueue::WaitQueueHead,
+    slot: &'static MountSlot,
     /// Opened before the acquisition and closed after `Drop` releases the
     /// lock, so a SIGKILL never abandons a holder or a queued waiter (#1025).
     _custody: crate::task::thread::KillCustody,
@@ -1800,17 +1800,17 @@ impl Ext2WriteGuard {
     pub fn wait_for_inode(mut self, ino: u32) -> Result<Self, &'static str> {
         let _wait_custody = crate::task::thread::KillCustody::try_enter()
             .expect("inode transfer wait retains guard custody");
-        let home = core::ptr::eq(self.waiters, &HOME_EXT2_WAITERS);
+        let slot = self.slot;
         let pin = self.as_ref().ok_or("Missing mount")?.mount_pin;
         loop {
             let fs = self.as_ref().ok_or("Missing mount")?;
             pin.verify(fs)?;
             let object = fs.live_inodes.get(ino);
             let Some(object) = object.filter(|o| o.data_io.load(Ordering::Acquire)) else { return Ok(self); };
-            let waiters = self.waiters;
+            let waiters = &slot.waiters;
             drop(self);
             wait_for_data_io(waiters, &object);
-            self = fs_write_raw(home)?.wait_for_shrink_writer()?;
+            self = fs_write_raw(slot)?.wait_for_shrink_writer()?;
         }
     }
 
@@ -1829,7 +1829,7 @@ impl Ext2WriteGuard {
     /// Finish this syscall's suffix, keeping errors with their producer.
     /// Readers may run between batches; other mutators wait for the ticket.
     pub fn finish_shrink(mut self, ticket: ShrinkTicket) -> Result<Self, &'static str> {
-        let home = core::ptr::eq(self.waiters, &HOME_EXT2_WAITERS);
+        let slot = self.slot;
         loop {
             let fs = self.as_mut().ok_or("Missing ext2 mount")?;
             ticket.mount.verify(fs)?;
@@ -1844,7 +1844,7 @@ impl Ext2WriteGuard {
             if crate::task::thread::current_kill_pending() { return Err(EXT2_ACQUIRE_KILLED); }
             drop(self);
             writeback::pause(1_000_000);
-            self = fs_write_raw(home)?;
+            self = fs_write_raw(slot)?;
         }
     }
 
@@ -1854,7 +1854,7 @@ impl Ext2WriteGuard {
     fn wait_for_shrink_writer(mut self) -> Result<Self, &'static str> {
         let _wait_custody = crate::task::thread::KillCustody::try_enter()
             .expect("ext2 writer wait requires its write guard custody");
-        let home = core::ptr::eq(self.waiters, &HOME_EXT2_WAITERS);
+        let slot = self.slot;
         let pin = self.as_ref().map(|fs| fs.mount_pin);
         loop {
             if let Some(fs) = self.as_ref() {
@@ -1869,7 +1869,7 @@ impl Ext2WriteGuard {
             }
             drop(self);
             writeback::pause(1_000_000);
-            self = fs_write_raw(home)?;
+            self = fs_write_raw(slot)?;
         }
     }
 }
@@ -1900,71 +1900,74 @@ impl Drop for Ext2WriteGuard {
         // `has_waiters()` takes the same `WaitQueueHead` lock `wake_up()`
         // does, so gating on it does not skip a lock acquisition on the
         // uncontended path and adds a second one on the contended path.
-        self.waiters.wake_up();
+        self.slot.waiters.wake_up();
     }
 }
 
-/// Wait queue for contended `ROOT_EXT2` acquisitions (both read and write —
-/// a shared queue is deliberate: every release wakes every waiter, which is
-/// always correct for an RwLock, even if occasionally spurious for a waiter
-/// whose specific condition a given release didn't satisfy, and the bounded
-/// per-round timeout is the backstop regardless).
-static ROOT_EXT2_WAITERS: crate::task::waitqueue::WaitQueueHead =
-    crate::task::waitqueue::WaitQueueHead::new();
+/// Each mounted volume has its own namespace lock and wait queue.
+struct MountSlot {
+    fs: RwLock<Option<Ext2Fs>>,
+    waiters: crate::task::waitqueue::WaitQueueHead,
+    id: AtomicUsize,
+    read_name: &'static str,
+    write_name: &'static str,
+    commit_name: &'static str,
+}
 
-/// Wait queue for contended `HOME_EXT2` acquisitions. See `ROOT_EXT2_WAITERS`.
-static HOME_EXT2_WAITERS: crate::task::waitqueue::WaitQueueHead =
-    crate::task::waitqueue::WaitQueueHead::new();
-
-/// Global mounted ext2 root filesystem
-///
-/// Uses RwLock to allow concurrent read access (exec, file reads, getdents)
-/// while exclusive write access is needed only for mutations (create, truncate,
-/// rename, link, unlink, write). This prevents spinlock contention under slow
-/// I/O where a writer holding the lock blocks all readers.
-static ROOT_EXT2: RwLock<Option<Ext2Fs>> = RwLock::new(None);
-
-/// VFS mount IDs of the installed root and home filesystems, published under
-/// their install guards, so a handle's mount is chosen before any guard is
-/// taken. `usize::MAX` means not installed.
-static ROOT_MOUNT_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
-static HOME_MOUNT_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
-
-fn pin_is_home(pin: live_inode::MountPin) -> Result<bool, &'static str> {
-    if pin.mount_id == ROOT_MOUNT_ID.load(Ordering::Acquire) {
-        Ok(false)
-    } else if pin.mount_id == HOME_MOUNT_ID.load(Ordering::Acquire) {
-        Ok(true)
-    } else {
-        Err("Unknown ext2 mount")
+impl MountSlot {
+    const fn new(read_name: &'static str, write_name: &'static str, commit_name: &'static str) -> Self {
+        Self {
+            fs: RwLock::new(None),
+            waiters: crate::task::waitqueue::WaitQueueHead::new(),
+            id: AtomicUsize::new(usize::MAX),
+            read_name,
+            write_name,
+            commit_name,
+        }
     }
+
+    fn id(&self) -> usize {
+        self.id.load(Ordering::Acquire)
+    }
+}
+
+static ROOT_SLOT: MountSlot = MountSlot::new("ROOT_EXT2_read", "ROOT_EXT2_write", "ROOT_EXT2_data_commit");
+static HOME_SLOT: MountSlot = MountSlot::new("HOME_EXT2_read", "HOME_EXT2_write", "HOME_EXT2_data_commit");
+// Keep the legacy boot initializers and lock-free mount queries tied to their slots.
+static ROOT_EXT2: &RwLock<Option<Ext2Fs>> = &ROOT_SLOT.fs;
+static HOME_EXT2: &RwLock<Option<Ext2Fs>> = &HOME_SLOT.fs;
+static ROOT_MOUNT_ID: &AtomicUsize = &ROOT_SLOT.id;
+static HOME_MOUNT_ID: &AtomicUsize = &HOME_SLOT.id;
+
+// A format-3 intent can name five volumes besides its root.
+static EXTRA_SLOTS: [MountSlot; 5] = [const {
+    MountSlot::new("BOOT_EXT2_read", "BOOT_EXT2_write", "BOOT_EXT2_data_commit")
+}; 5];
+
+fn mount_slots() -> impl Iterator<Item = &'static MountSlot> {
+    [&ROOT_SLOT, &HOME_SLOT].into_iter().chain(EXTRA_SLOTS.iter().filter(|slot| slot.id() != usize::MAX))
+}
+
+fn slot_for(pin: live_inode::MountPin) -> Result<&'static MountSlot, &'static str> {
+    mount_slots().find(|slot| slot.id() == pin.mount_id).ok_or("Unknown ext2 mount")
 }
 
 /// Route only to an installed mount whose VFS ID and lifetime token match.
-/// Only the selected guard is taken, and it stays held for the caller.
 pub fn read_mount(pin: live_inode::MountPin) -> Result<Ext2ReadGuard, &'static str> {
-    let guard = if pin_is_home(pin)? {
-        home_fs_read()
-    } else {
-        root_fs_read()
-    }?;
+    let guard = read_slot(slot_for(pin)?)?;
     pin.verify(guard.as_ref().ok_or("ext2 mount unavailable")?)?;
     Ok(guard)
 }
 
 pub fn write_mount(pin: live_inode::MountPin) -> Result<Ext2WriteGuard, &'static str> {
-    let guard = if pin_is_home(pin)? {
-        home_fs_write()
-    } else {
-        root_fs_write()
-    }?;
+    let guard = fs_write(slot_for(pin)?)?;
     pin.verify(guard.as_ref().ok_or("ext2 mount unavailable")?)?;
     Ok(guard)
 }
 
 /// Take ext2's synchronization guard without requiring a writable mount.
 pub(super) fn sync_mount_guard(pin: live_inode::MountPin) -> Result<Ext2WriteGuard, &'static str> {
-    let guard = fs_sync_guard(pin_is_home(pin)?)?;
+    let guard = fs_sync_guard(slot_for(pin)?)?;
     pin.verify(guard.as_ref().ok_or("ext2 mount unavailable")?)?;
     Ok(guard)
 }
@@ -1978,6 +1981,14 @@ pub(super) fn sync_mount_guard(pin: live_inode::MountPin) -> Result<Ext2WriteGua
 /// device driver initialization.
 fn mount_root_device(device: alloc::boxed::Box<dyn BlockDevice>) -> Result<alloc::sync::Arc<dyn crate::fs::vfs::FileSystem>, &'static str> {
     let mount_id = crate::fs::vfs::mount::allocate_id().map_err(|_| "Mount id exhausted")?;
+    mount_root_with_flags(device, mount_id, crate::fs::attrs::MountFlags::default())
+}
+
+fn mount_root_with_flags(
+    device: alloc::boxed::Box<dyn BlockDevice>,
+    mount_id: usize,
+    flags: crate::fs::attrs::MountFlags,
+) -> Result<alloc::sync::Arc<dyn crate::fs::vfs::FileSystem>, &'static str> {
     let fs = Ext2Fs::new(device, mount_id)?;
 
     #[cfg(target_arch = "aarch64")]
@@ -2026,7 +2037,6 @@ fn mount_root_device(device: alloc::boxed::Box<dyn BlockDevice>) -> Result<alloc
     }
     let mut fs = fs;
     fs.activate("root")?;
-    let flags = crate::fs::attrs::MountFlags::default();
     let backend = alloc::sync::Arc::new(adapter::Ext2Adapter::new(fs.mount_pin));
     crate::fs::vfs::mount::register_with(|table| {
         backend.register_root(&fs, flags, table,
@@ -2043,17 +2053,21 @@ fn mount_root_device(device: alloc::boxed::Box<dyn BlockDevice>) -> Result<alloc
 /// Multiple readers can hold this lock concurrently, allowing parallel
 /// exec, file reads, getdents, and stat operations without contention.
 pub fn root_fs_read() -> Result<Ext2ReadGuard, &'static str> {
-    let custody = ext2_kill_custody(&ROOT_EXT2_WAITERS);
+    read_slot(&ROOT_SLOT)
+}
+
+fn read_slot(slot: &'static MountSlot) -> Result<Ext2ReadGuard, &'static str> {
+    let custody = ext2_kill_custody(&slot.waiters);
     let inner = ext2_acquire(
         true,
-        &ROOT_EXT2_WAITERS,
-        "ROOT_EXT2_read",
-        || ROOT_EXT2.try_read(),
-        || ext2_spin_wait(true, "ROOT_EXT2_read", || ROOT_EXT2.try_read()),
+        &slot.waiters,
+        slot.read_name,
+        || slot.fs.try_read(),
+        || ext2_spin_wait(true, slot.read_name, || slot.fs.try_read()),
     )?;
     Ok(Ext2ReadGuard {
         inner: Some(inner),
-        waiters: &ROOT_EXT2_WAITERS,
+        waiters: &slot.waiters,
         _custody: custody,
     })
 }
@@ -2070,37 +2084,24 @@ pub fn root_fs_read() -> Result<Ext2ReadGuard, &'static str> {
 /// the UPGRADED bit, which causes try_read() to reject new readers. The writer
 /// then only waits for existing readers to drain, guaranteeing forward progress.
 pub fn root_fs_write() -> Result<Ext2WriteGuard, &'static str> {
-    fs_write(false)
+    fs_write(&ROOT_SLOT)
 }
 
 /// Acquire exclusive access without performing another inode's reclamation.
-pub(super) fn fs_write_raw(home: bool) -> Result<Ext2WriteGuard, &'static str> {
-    let (lock, waiters, name) = if home {
-        (&HOME_EXT2, &HOME_EXT2_WAITERS, "HOME_EXT2_write")
-    } else {
-        (&ROOT_EXT2, &ROOT_EXT2_WAITERS, "ROOT_EXT2_write")
-    };
-    let custody = ext2_kill_custody(waiters);
-    let inner = ext2_acquire_write(true, lock, waiters, name)?;
-    Ok(Ext2WriteGuard {
-        inner: Some(inner),
-        waiters,
-        _custody: custody,
-    })
+fn fs_write_raw(slot: &'static MountSlot) -> Result<Ext2WriteGuard, &'static str> {
+    let custody = ext2_kill_custody(&slot.waiters);
+    let inner = ext2_acquire_write(true, &slot.fs, &slot.waiters, slot.write_name)?;
+    Ok(Ext2WriteGuard { inner: Some(inner), slot, _custody: custody })
 }
 
 /// Finish a reserved transfer even after SIGKILL became pending. The transfer
 /// owns kill custody until its bitmap/pointer outcome has been published.
 fn data_commit_guard(pin: live_inode::MountPin) -> Ext2WriteGuard {
-    let home = pin_is_home(pin).expect("live transfer mount remains installed");
-    let (lock, waiters, name) = if home {
-        (&HOME_EXT2, &HOME_EXT2_WAITERS, "HOME_EXT2_data_commit")
-    } else {
-        (&ROOT_EXT2, &ROOT_EXT2_WAITERS, "ROOT_EXT2_data_commit")
-    };
-    let custody = ext2_kill_custody(waiters);
-    let inner = ext2_acquire_write(false, lock, waiters, name).expect("noninterruptible data commit");
-    Ext2WriteGuard { inner: Some(inner), waiters, _custody: custody }
+    let slot = slot_for(pin).expect("live transfer mount remains installed");
+    let custody = ext2_kill_custody(&slot.waiters);
+    let inner = ext2_acquire_write(false, &slot.fs, &slot.waiters, slot.commit_name)
+        .expect("noninterruptible data commit");
+    Ext2WriteGuard { inner: Some(inner), slot, _custody: custody }
 }
 
 fn wait_for_data_io(waiters: &crate::task::waitqueue::WaitQueueHead, object: &live_inode::LiveInode) {
@@ -2116,8 +2117,8 @@ fn wait_for_data_io(waiters: &crate::task::waitqueue::WaitQueueHead, object: &li
     }
 }
 
-pub(crate) fn fs_sync_guard(home: bool) -> Result<Ext2WriteGuard, &'static str> {
-    fs_write_raw(home)?.wait_for_shrink_writer()
+fn fs_sync_guard(slot: &'static MountSlot) -> Result<Ext2WriteGuard, &'static str> {
+    fs_write_raw(slot)?.wait_for_shrink_writer()
 }
 
 fn allocation_pressure(fs: &Ext2Fs) -> bool {
@@ -2125,8 +2126,8 @@ fn allocation_pressure(fs: &Ext2Fs) -> bool {
     stats.free_blocks <= (stats.blocks / 16).max(128) || stats.free_inodes <= 32
 }
 
-fn fs_write(home: bool) -> Result<Ext2WriteGuard, &'static str> {
-    let guard = fs_write_raw(home)?;
+fn fs_write(slot: &'static MountSlot) -> Result<Ext2WriteGuard, &'static str> {
+    let guard = fs_write_raw(slot)?;
     if let Some(fs) = guard.as_ref() { fs.ensure_writable()?; }
     let guard = guard.wait_for_shrink_writer()?;
     let pressure = guard.as_ref().is_some_and(allocation_pressure);
@@ -2134,12 +2135,12 @@ fn fs_write(home: bool) -> Result<Ext2WriteGuard, &'static str> {
         drop(guard);
         // Last-observer reclamation must not turn rm followed by allocation
         // into ENOSPC solely because the background service has not run yet.
-        if let Ok(guard) = reclaim_fs_write(home, true) {
+        if let Ok(guard) = reclaim_fs_write(slot, true) {
             return guard.wait_for_shrink_writer();
         }
         // Failed I/O keeps allocations quarantined; normal operations report
         // their own errors rather than exposing those allocations for reuse.
-        fs_write_raw(home)?.wait_for_shrink_writer()
+        fs_write_raw(slot)?.wait_for_shrink_writer()
     } else {
         Ok(guard)
     }
@@ -2150,15 +2151,15 @@ fn fs_write(home: bool) -> Result<Ext2WriteGuard, &'static str> {
 /// bitmap-transition budget, and pauses happen without the mount guard.
 /// The returned guard excludes reclamation while counters and their disk
 /// counterparts are read. I/O errors retain custody and reach the reader.
-pub(crate) fn accounting_fs_write(home: bool) -> Result<Ext2WriteGuard, &'static str> {
-    reclaim_fs_write(home, false)
+fn accounting_fs_write(slot: &'static MountSlot) -> Result<Ext2WriteGuard, &'static str> {
+    reclaim_fs_write(slot, false)
 }
 
 /// Accounting drains the captured cohort; allocation only needs the existing
 /// pressure thresholds restored. Both retain the same per-pass disk budgets,
 /// mount identity checks and finite snapshot of the pending cohort.
-fn reclaim_fs_write(home: bool, pressure_only: bool) -> Result<Ext2WriteGuard, &'static str> {
-    let mut guard = fs_write_raw(home)?;
+fn reclaim_fs_write(slot: &'static MountSlot, pressure_only: bool) -> Result<Ext2WriteGuard, &'static str> {
+    let mut guard = fs_write_raw(slot)?;
     let pin = guard.as_ref().map(|fs| fs.mount_pin);
     let objects = guard
         .as_ref()
@@ -2187,7 +2188,7 @@ fn reclaim_fs_write(home: bool, pressure_only: bool) -> Result<Ext2WriteGuard, &
                 cohort_at = cohort_end;
                 drop(guard);
                 writeback::pause(1_000_000);
-                guard = fs_write_raw(home)?;
+                guard = fs_write_raw(slot)?;
             }
             Finalize::Retry => {
                 writeback::request();
@@ -2196,7 +2197,7 @@ fn reclaim_fs_write(home: bool, pressure_only: bool) -> Result<Ext2WriteGuard, &
             Finalize::More => {
                 drop(guard);
                 writeback::pause(1_000_000);
-                guard = fs_write_raw(home)?;
+                guard = fs_write_raw(slot)?;
             }
         }
     }
@@ -2211,14 +2212,7 @@ pub fn is_mounted() -> bool {
     ROOT_MOUNT_ID.load(Ordering::Acquire) != usize::MAX
 }
 
-/// Global mounted ext2 home filesystem (/home)
-///
-/// Separate from ROOT_EXT2 so that user data lives on a different disk
-/// from the system binaries. This allows syncing the system disk to
-/// other machines without overwriting their local user data.
-static HOME_EXT2: RwLock<Option<Ext2Fs>> = RwLock::new(None);
-
-/// Mount the VFS-selected home device, retaining its nosuid,nodev options.
+/// Mount the legacy home device with its existing flags and namespace.
 fn mount_home_device(device: alloc::boxed::Box<dyn BlockDevice>) -> Result<alloc::sync::Arc<dyn crate::fs::vfs::FileSystem>, &'static str> {
     // Register with VFS mount system
     let mount_id = crate::fs::vfs::mount::allocate_id().map_err(|_| "Mount id exhausted")?;
@@ -2262,28 +2256,46 @@ fn mount_home_device(device: alloc::boxed::Box<dyn BlockDevice>) -> Result<alloc
     Ok(backend)
 }
 
+/// Register an ext2 volume at the cover selected by the explicit boot plan.
+fn mount_explicit_device(
+    device: alloc::boxed::Box<dyn BlockDevice>,
+    point: &crate::fs::vfs::format::ExplicitMount<'_>,
+) -> Result<alloc::sync::Arc<dyn crate::fs::vfs::FileSystem>, crate::fs::errno::Errno> {
+    use crate::{fs::vfs::mount, syscall::errno::ENOSPC};
+    if point.path == "/" {
+        return mount_root_with_flags(device, point.id, point.flags).map_err(errno::errno);
+    }
+
+    let slot = if point.path == "/home" {
+        &HOME_SLOT
+    } else {
+        EXTRA_SLOTS.iter().find(|slot| slot.id() == usize::MAX)
+            .ok_or(crate::fs::errno::Errno(ENOSPC))?
+    };
+    let mut fs = Ext2Fs::new(device, point.id).map_err(errno::errno)?;
+    fs.activate(point.path).map_err(errno::errno)?;
+    let root = fs.namespace.root.into();
+    let backend = alloc::sync::Arc::new(adapter::Ext2Adapter::new(fs.mount_pin));
+    let mut installed = fs_write_raw(slot).map_err(errno::errno)?;
+    mount::register(mount::MountPoint::new(
+        point.id, point.path.as_bytes().to_vec(), "ext2", point.flags,
+        mount::Backend::Fs(backend.clone()), root, point.cover, point.parent,
+    ))?;
+    *installed = Some(fs);
+    slot.id.store(point.id, Ordering::Release);
+    Ok(backend)
+}
+
 /// Access the home ext2 filesystem for read-only operations
 pub fn home_fs_read() -> Result<Ext2ReadGuard, &'static str> {
-    let custody = ext2_kill_custody(&HOME_EXT2_WAITERS);
-    let inner = ext2_acquire(
-        true,
-        &HOME_EXT2_WAITERS,
-        "HOME_EXT2_read",
-        || HOME_EXT2.try_read(),
-        || ext2_spin_wait(true, "HOME_EXT2_read", || HOME_EXT2.try_read()),
-    )?;
-    Ok(Ext2ReadGuard {
-        inner: Some(inner),
-        waiters: &HOME_EXT2_WAITERS,
-        _custody: custody,
-    })
+    read_slot(&HOME_SLOT)
 }
 
 /// Access the home ext2 filesystem for write operations
 ///
 /// Uses upgradeable_read() + upgrade() to prevent writer starvation (same as root_fs_write).
 pub fn home_fs_write() -> Result<Ext2WriteGuard, &'static str> {
-    fs_write(true)
+    fs_write(&HOME_SLOT)
 }
 
 /// Check if the home filesystem is mounted. Lock-free, as `is_mounted()`.
@@ -2308,9 +2320,9 @@ fn content_privilege(mode: u16) -> u16 {
 }
 
 /// Select bounded pinned identities, then leave the namespace for data I/O.
-pub(super) fn service_mapped_writeback(home: bool) -> Result<bool, &'static str> {
+fn service_mapped_writeback(slot: &'static MountSlot) -> Result<bool, &'static str> {
     let handles = {
-        let guard = fs_write_raw(home)?;
+        let guard = fs_write_raw(slot)?;
         match guard.as_ref() {
             Some(fs) => fs.mapped_writeback_handles()?,
             None => return Ok(false),
@@ -2347,11 +2359,11 @@ pub(crate) fn request_map_eviction() {
 /// deferred inode work, flush, persist clean superblocks and fence new writes.
 /// The mount guard serializes the transition with the writeback kthread.
 fn shutdown_mount(pin: live_inode::MountPin, name: &str, deadline: u64) -> Result<(), &'static str> {
-    let home = pin_is_home(pin)?;
+    let slot = slot_for(pin)?;
     let mut buffer = crate::memory::file_map::writeback_buffer()?;
     {
         let handles = {
-            let guard = if home { home_fs_read()? } else { root_fs_read()? };
+            let guard = read_slot(slot)?;
             match guard.as_ref() {
                 Some(fs) if !fs.is_read_only() => fs.dirty_handles()?,
                 _ => return Ok(()),
@@ -2362,7 +2374,7 @@ fn shutdown_mount(pin: live_inode::MountPin, name: &str, deadline: u64) -> Resul
         }
         loop {
             if ext2_now_ns() >= deadline { return Err("Filesystem shutdown deadline expired"); }
-            let mut guard = fs_sync_guard(home)?;
+            let mut guard = fs_sync_guard(slot)?;
             while let Some(ino) = guard.as_ref().and_then(|fs| fs.live_inodes.active_data_inode()) {
                 guard = guard.wait_for_inode(ino)?;
             }
@@ -2397,7 +2409,7 @@ fn report_mount(pin: live_inode::MountPin, report: crate::fs::vfs::Report,
     use core::fmt::Write;
     match report {
         crate::fs::vfs::Report::Allocation => {
-            let guard = accounting_fs_write(pin_is_home(pin)?)?;
+            let guard = accounting_fs_write(slot_for(pin)?)?;
             pin.verify(guard.as_ref().ok_or("Missing mount")?)?;
             let fs = guard.as_ref().ok_or("Missing mount")?;
             let (disk, groups) = fs.persisted_metadata()?;
