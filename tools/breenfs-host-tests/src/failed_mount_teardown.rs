@@ -256,6 +256,25 @@ fn refused_reap_reservation_preserves_acknowledged_writes() {
     assert_eq!(&bytes, b"saved!");
 }
 
+#[test]
+fn log_capture_excludes_peer_receipts_and_survives_peer_panic() {
+    init_log();
+    let before = messages().len();
+    let panic = std::thread::spawn(|| {
+        init_log();
+        log::error!("unrelated fixture receipt");
+        panic!("peer fixture stopped");
+    })
+    .join()
+    .unwrap_err();
+    assert_eq!(panic.downcast_ref::<&str>(), Some(&"peer fixture stopped"));
+
+    log::error!("expected fixture receipt");
+    let captured = messages();
+    assert_eq!(captured.len(), before + 1);
+    assert_eq!(captured.last().map(String::as_str), Some("expected fixture receipt"));
+}
+
 // Coordinator 485(j): the first failure remains attributable after later
 // failures and shutdown. The source census below ties these boundary labels
 // to the production error arms; the table exercises their shared recorder.
