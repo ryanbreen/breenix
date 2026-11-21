@@ -309,10 +309,13 @@ fn main() {
         Err(error) => { println!("SUITE filesystem ERROR {error}"); std::process::exit(1); }
     };
     println!("SUITE filesystem ROOT {}", root.name());
-    if std::env::args().skip(1).collect::<Vec<_>>().chunks_exact(2)
-        .any(|pair| pair[0] == "--case" && pair[1] == "power-cut/writer")
-    {
-        // The host cuts power while this workload runs and scores the cold readback.
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    let writer_selected = match args.as_slice() {
+        [flag, name] => flag == "--case" && name == "power-cut/writer",
+        [flag, name, hostkeys, _] => flag == "--case" && name == "power-cut/writer" && hostkeys == "--hostkeys",
+        _ => false,
+    };
+    if writer_selected {
         if let Err(error) = power_cut_writer(root) {
             println!("SUITE filesystem ERROR power-cut/writer: {error:?}");
             std::process::exit(1);
