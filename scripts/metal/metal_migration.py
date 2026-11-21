@@ -16,12 +16,40 @@ from migrate_manifest import Ext2, require_e2fsprogs, shared_manifest
 COPY_OFF = '20261121T094229Z-metal'
 BOOT_ID = re.compile(r'[0-9]{8}T[0-9]{6}Z-metal')
 SHA256 = re.compile(r'[0-9a-f]{64}')
+COMMIT = re.compile(r'[0-9a-f]{40}')
 BLOCK = 4096
 MAX_DATA = 32 << 30
 
 
 def events(boot):
     return [json.loads(line) for line in (boot / 'events.jsonl').read_text().splitlines()]
+
+
+def safe_failed_attempt(boot, record, log):
+    phase = record.get('migrationPhase')
+    status = (boot / 'exit-status').read_text().strip()
+    payload = ('persistent' if phase in ('rescue', 'return')
+               else metal_export.PAYLOAD if phase == 'readback' else 'image')
+    if (phase not in PHASES or not status.isdecimal() or int(status) in (m.EXIT_DONE, m.EXIT_INCOMPLETE)
+            or record.get('payload') != payload
+            or log[-1].get('event') != 'closed' or log[-1].get('endedBy') != 'driver'
+            or log[-1].get('status') != int(status) or record.get('bootManagerAbort')):
+        return False
+    names = [row['event'] for row in log]
+    if 'migration-not-powered' in names:
+        return (not {'power-on', 'power-on-error', 'manager-answer'} & set(names)
+                and not any(row['event'] == 'baseline' and row.get('power') != 'Off' for row in log))
+
+    commit = record.get('commit')
+    if (not COMMIT.fullmatch(commit or '')
+            or record.get('toolsCommit') != commit
+            or not any(row['event'] == 'migration-admitted' and row.get('phase') == phase for row in log)
+            or 'power-on' not in names or 'capture-incomplete' in names or 'power-on-error' in names):
+        return False
+    answers = [row.get('answer') for row in log if row['event'] == 'manager-answer']
+    power_off = [row for row in log if row['event'] == 'power-off']
+    return (answers == [manager_answer(phase, record['id'], record.get('slotAction'))]
+            and bool(power_off) and power_off[-1].get('off') is True)
 
 
 def prove_history(index, boots, read_events, *, allowed=None, active=None):
@@ -53,6 +81,10 @@ def prove_history(index, boots, read_events, *, allowed=None, active=None):
             if (record.get('migrationPhase') != allowed[name] or (boot / 'exit-status').read_text().strip() != '0'
                     or not any(row['event'] == 'power-off' and row.get('off') is True for row in log)):
                 raise ValueError(f'unverified migration phase after copy-off: {name}')
+            continue
+        if any(row['event'] in ('migration-admitted', 'migration-not-powered') for row in log):
+            if not safe_failed_attempt(boot, record, log):
+                raise ValueError(f'failed migration phase lacks safe shutdown or routing evidence: {name}')
             continue
         payload = record.get('payload')
         if (record.get('bootManagerAbort') or record.get('upgradeParent')
@@ -221,6 +253,19 @@ def state():
     return m.read_json(m.STATE / 'persistent-migration.json', {}) or {}
 
 
+def in_progress():
+    cycle = state()
+    return bool(cycle) and set(cycle.get('boots', {})) != set(PHASES)
+
+
+def manager_answer(phase, boot_id, slot_action=None):
+    if phase == 'rescue':
+        return f'persistent {boot_id} previous' + (' commit' if slot_action == 'commit' else '')
+    if phase == 'return':
+        return f'persistent {boot_id} current'
+    return f'test {boot_id}'
+
+
 def save(value):
     m.write_json(m.STATE / 'persistent-migration.json', value)
 
@@ -280,20 +325,30 @@ def require_carry_forward(phase, cycle_commit, commit):
 
 def admit(phase, boot_id, commit, tools_commit):
     """Under the machine lease, authorize just the next phase at the pinned head."""
-    if commit != tools_commit or not re.fullmatch(r'[0-9a-f]{40}', tools_commit or ''):
+    if commit != tools_commit or not COMMIT.fullmatch(tools_commit or ''):
         raise ValueError('migration needs matching source and deployed tools commits')
     layout = metal_persist.layout()
     cycle = state()
     if phase == 'add':
-        current = metal_persist.read_disk().get('slots', {}).get('current') or {}
+        slots = metal_persist.read_disk().get('slots', {})
+        current = slots.get('current') or {}
         generation = current.get('installedBy')
-        if (cycle or not layout or layout['version'] != 1
+        if (not layout or cycle.get('boots')
                 or not re.fullmatch(r'[A-Za-z0-9-]{1,64}', generation or '')
-                or metal_persist.read_disk().get('slots', {}).get('next')):
-            raise ValueError('add-breenfs needs the undisturbed v1 install and no pending candidate')
-        cycle = dict(commit=commit, userland=generation, add=boot_id, boots={},
-                     layout=metal_persist.add_breenfs_layout(layout))
+                or slots.get('next')):
+            raise ValueError('add-breenfs needs an unmigrated install and no pending candidate')
+        if cycle:
+            expected = cycle['layout']
+            original = dict(expected, version=1, partitions={
+                role: expected['partitions'][role] for role in metal_persist.ROLES})
+            if (cycle['commit'] != commit or cycle['userland'] != generation
+                    or layout not in (original, expected)):
+                raise ValueError('add-breenfs retry differs from the original migration request')
+        else:
+            cycle = dict(commit=commit, userland=generation, boots={},
+                         layout=metal_persist.add_breenfs_layout(layout))
         backup(layout, active=boot_id)
+        cycle['add'] = boot_id
         save(cycle)  # From here an idle manager request must select the test loop.
     else:
         previous = PHASES[:PHASES.index(phase)]

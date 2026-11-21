@@ -931,9 +931,16 @@ completion before starting the next command.
 | `metal-run migrate-persistent return` | The manager boots the promoted BreenFS slot and SSH verifies its generation, mounts and home access. |
 
 The final run stores `filesystem-persistent-root.json`. Each successful phase records confirmed
-power-off. The boot manager selects the test path when the migration record is present and no
-lease is active. Keep the reviewed tools deployed through the acceptance and stop on a failed
-phase with its run records.
+power-off. The idle boot manager selects the test path even after the cycle closes. After a
+successful return, the cycle releases the gate on explicitly leased persistent boots.
+
+Keep the reviewed tools deployed through acceptance. Preserve a failed phase's records and get
+the coordinator's ruling before retrying it. The next attempt checks the failed boot's manager
+route and confirmed power-off, or that the attempt ended before power-on. Retrying add uses the
+same layout and can initialize the same two BreenFS volumes again before migration. Retrying
+rescue after confirmed promotion boots the previous slot without another slot action. Stop
+for recovery if the GPT copies or slot records disagree, migrated data is partially written, or
+the phase reports a manifest mismatch.
 
 ### Install and upgrade
 

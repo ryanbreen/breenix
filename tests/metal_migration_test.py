@@ -85,6 +85,57 @@ class MetalMigrationTest(existing.StateTest):
             metal_migration.compare_guest_manifests(body, body.replace(b'0700', b'0777'),
                                                     dict(source=digest, destination=digest))
 
+    def test_add_can_be_retried_with_the_original_partition_ids(self):
+        import metal_migration
+
+        commit = 'a' * 40
+        layout = metal_persist.new_layout()
+        metal_persist.update_disk(layout=layout, slots={'current': {'installedBy': 'old'}})
+        with patch.object(metal_migration, 'backup'):
+            first = metal_migration.admit('add', '20261121T100000Z-metal', commit, commit)
+            retry = metal_migration.admit('add', '20261121T101000Z-metal', commit, commit)
+            metal_persist.update_disk(layout=first['layout'])
+            retry = metal_migration.admit('add', '20261121T102000Z-metal', commit, commit)
+            metal_persist.update_disk(layout=metal_persist.add_breenfs_layout(layout))
+            with self.assertRaises(ValueError):
+                metal_migration.admit('add', '20261121T103000Z-metal', commit, commit)
+        self.assertEqual(retry['layout'], first['layout'])
+        self.assertEqual(metal_migration.state()['add'], '20261121T102000Z-metal')
+
+    def test_failed_readback_with_a_safe_route_does_not_block_retry(self):
+        import metal_migration
+
+        child = '20261121T100000Z-metal'
+        rows = [dict(seq=40, id=metal_migration.COPY_OFF), dict(seq=41, id=child)]
+        boots = m.STATE / 'boots'
+        directory = boots / child
+        directory.mkdir(parents=True)
+        (directory / 'ended').touch()
+        (directory / 'exit-status').write_text('1\n')
+        commit = 'a' * 40
+        m.write_json(directory / 'run.json',
+                     dict(id=child, kind='fault-test', payload='persistent-export', disk=None, mode='default',
+                          migrationPhase='readback', commit=commit, toolsCommit=commit))
+        closed = dict(event='closed', status=1, endedBy='driver')
+        self.assertEqual(metal_migration.prove_history(
+            rows, boots, lambda _: [dict(event='migration-not-powered'), closed]), [child])
+        with self.assertRaises(ValueError):
+            metal_migration.prove_history(
+                rows, boots, lambda _: [dict(event='baseline', power='On'),
+                                        dict(event='migration-not-powered'), closed])
+
+        admitted = dict(event='migration-admitted', phase='readback')
+        power_on = dict(event='power-on')
+        answer = dict(event='manager-answer', answer=f'test {child}')
+        off = dict(event='power-off', off=True)
+        self.assertEqual(metal_migration.prove_history(
+            rows, boots, lambda _: [admitted, power_on, answer, off, closed]), [child])
+        for log in ([power_on, answer, off, closed], [admitted, power_on, answer, closed],
+                    [admitted, power_on, dict(event='manager-answer', answer=f'persistent {child} current'),
+                     off, closed]):
+            with self.assertRaises(ValueError):
+                metal_migration.prove_history(rows, boots, lambda _: log)
+
     def test_shared_manifest_labels_only_retained_hard_links(self):
         import metal_migration
 

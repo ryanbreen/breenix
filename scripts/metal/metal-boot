@@ -545,8 +545,9 @@ class Driver:
         if self.migration_phase:
             self.migration = metal_migration.admit(
                 self.migration_phase, self.id, self.args.commit, tools_commit())
+            self.event('migration-admitted', phase=self.migration_phase)
         if persistent(self.args):
-            if not self.migration_phase and metal_migration.state():
+            if not self.migration_phase and metal_migration.in_progress():
                 raise Finish(m.EXIT_CANCELLED, 'the E24 migration has parked the persistent install in the test loop')
             self.prepare_persistent()
             return
@@ -699,7 +700,7 @@ class Driver:
             self.assemble(inputs, files, extracted, root_ramdisk=False)
             return
         if self.args.mode == 'persistent-install':
-            if metal_migration.state():
+            if metal_migration.in_progress():
                 raise Finish(m.EXIT_CANCELLED, 'the E24 migration has parked the persistent install in the test loop')
             files, extracted = self.prepare_install(inputs, build)
             self.assemble(inputs, files, extracted, root_ramdisk=False)
@@ -843,15 +844,13 @@ class Driver:
         sessions")."""
         if not metal_persist.layout():
             raise Finish(m.EXIT_CANCELLED, 'the disk has no persistent install')
-        commit = self.slot_commit()
         if self.migration_phase in ('rescue', 'return'):
             slots = metal_persist.read_disk().get('slots', {})
             if self.migration_phase == 'rescue':
-                if ((slots.get('current') or {}).get('migration') != 'rescue'
-                        or (slots.get('next') or {}).get('migration') != 'cutover'):
-                    raise Finish(m.EXIT_CANCELLED, 'migration rescue needs the staged candidate and rescue slot')
+                self.prepare_migration_rescue(slots)
             elif (slots.get('current') or {}).get('migration') != 'cutover':
                 raise Finish(m.EXIT_CANCELLED, 'migration return needs the promoted BreenFS slot')
+        commit = self.slot_commit()
         if not commit:
             raise Finish(m.EXIT_CANCELLED, 'no kernel slot is recorded for this persistent boot')
         self.args.commit = commit
@@ -863,6 +862,23 @@ class Driver:
                    slotAction=getattr(self.args, 'slot_action', None), definition=kept.is_dir())
         m.unstage()
         self.load_definition()
+
+    def prepare_migration_rescue(self, slots):
+        current = slots.get('current') or {}
+        if current.get('migration') == 'rescue' and (slots.get('next') or {}).get('migration') == 'cutover':
+            return
+        previous = slots.get('previous') or {}
+        cutover = m.boot_dir(self.migration['boots']['cutover'])
+        staged_commit = m.read_json(cutover / 'run.json', {}).get('commit')
+        if (not staged_commit or slots.get('next') or current.get('migration') != 'cutover'
+                or previous.get('migration') != 'rescue'
+                or current.get('commit') != staged_commit or previous.get('commit') != staged_commit):
+            raise Finish(m.EXIT_CANCELLED, 'migration rescue needs the staged or confirmed promoted slot pair')
+        if not m.update_lease(self.id, slotAction=None):
+            raise Finish(m.EXIT_CANCELLED, 'migration rescue lost its lease')
+        self.args.slot_action = None
+        run = m.read_json(self.dir / 'run.json', {})
+        m.write_json(self.dir / 'run.json', dict(run, slotAction=None))
 
     def prepare_migration(self, inputs, build):
         phase, cycle = self.migration_phase, self.migration
@@ -910,6 +926,8 @@ class Driver:
         """The install boot (README, "Install and upgrade"): the request, the new kernel slot, the new userland on the
         test root, and the migration's intent. Returns the boot disk's files."""
         the_layout = metal_persist.layout()
+        if the_layout and the_layout['version'] == 2:
+            raise Finish(m.EXIT_CANCELLED, 'BreenFS upgrades require a BreenFS install intent')
         action = 'upgrade' if the_layout else 'install'
         expect = None
         if not the_layout:
@@ -1906,8 +1924,8 @@ class Driver:
         """The boot manager's start, the lab's answer it acted on, and a probe's end (README, "The boot manager")."""
         answer = MANAGER_ANSWER.search(line)
         if self.migration_phase in ('rescue', 'return'):
-            entry = 'previous commit' if self.migration_phase == 'rescue' else 'current'
-            if ((answer and answer[1] != f'persistent {self.id} {entry}')
+            expected = metal_migration.manager_answer(self.migration_phase, self.id, self.args.slot_action)
+            if ((answer and answer[1] != expected)
                     or 'breenix-manager: the slot action failed' in line
                     or 'breenix-manager: installed configuration unavailable' in line):
                 raise BootManagerAbort(line, observed_at)
@@ -2557,6 +2575,8 @@ class Driver:
                 m.sol_deactivate()
         if self.delivery:
             m.write_json(self.dir / 'delivery.json', self.delivery)
+        if self.migration_phase and self.t0 is None and ended_by == 'driver':
+            self.event('migration-not-powered')
         m.close_record(self.dir, status, ended_by)
         shutil.rmtree(self.stage, ignore_errors=True)
         if self.claimed and not keep_lease:
