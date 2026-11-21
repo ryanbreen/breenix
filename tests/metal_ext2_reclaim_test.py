@@ -16,6 +16,44 @@ RECLAIM = '20261121T190000Z-metal'
 
 
 class MetalExt2ReclaimTest(upgrade.BreenfsUpgradeFixture):
+    def failed_attempt(self, ident, payload, mode, *, powered=False):
+        boot = m.boot_dir(ident)
+        boot.mkdir()
+        m.write_json(boot / 'run.json', dict(id=ident, payload=payload, mode=mode, kind='fault-test'))
+        if powered:
+            m.event(boot, 'power-on')
+            m.event(boot, 'manager-answer', answer=f'test {ident}')
+            m.event(boot, 'power-off', off=True)
+        m.close_record(boot, m.EXIT_SHORT if powered else m.EXIT_CANCELLED, 'driver')
+        return boot
+
+    def test_reclaim_history_allows_a_refusal_before_power_on(self):
+        refused = '20261121T175000Z-metal'
+        self.failed_attempt(refused, 'reclaim-ext2', 'reclaim-ext2')
+        self.completed_upgrades()
+        proof = migration.record_upgrades(FIRST, SECOND, upgrade.COMMIT)
+        self.assertIn(refused, migration.reclaim_history(upgrade.RETURN, RECLAIM, proof['upgrades']))
+
+    def test_reclaim_history_allows_a_powered_refusal_only_on_the_test_route(self):
+        self.completed_upgrades()
+        proof = migration.record_upgrades(FIRST, SECOND, upgrade.COMMIT)
+        refused = '20261121T183000Z-metal'
+        boot = self.failed_attempt(refused, 'reclaim-ext2', 'reclaim-ext2', powered=True)
+        self.assertIn(refused, migration.reclaim_history(upgrade.RETURN, RECLAIM, proof['upgrades']))
+        m.event(boot, 'slot-boot', entry='previous')
+        with self.assertRaisesRegex(ValueError, 'rescue'):
+            migration.reclaim_history(upgrade.RETURN, RECLAIM, proof['upgrades'])
+
+    def test_refused_install_does_not_count_as_one_of_the_two_upgrades(self):
+        refused = '20261121T175000Z-metal'
+        boot = self.failed_attempt(refused, 'image', 'persistent-install')
+        self.completed_upgrades()
+        proof = migration.record_upgrades(FIRST, SECOND, upgrade.COMMIT)
+        self.assertIn(refused, migration.reclaim_history(upgrade.RETURN, RECLAIM, proof['upgrades']))
+        m.event(boot, 'power-on-error')
+        with self.assertRaisesRegex(ValueError, 'paired install'):
+            migration.record_upgrades(FIRST, SECOND, upgrade.COMMIT)
+
     def test_reclaim_requires_lease_verified_upgrades_and_unused_rescue(self):
         with self.assertRaisesRegex(ValueError, 'six-entry'):
             persist.reclaim_request(m.STATE, persist.new_layout(), 'first', 'second')
