@@ -7,6 +7,11 @@
 extern crate alloc;
 #[path = "../../ext2-host-tests/src/block.rs"]
 pub mod block;
+use block::{BlockDevice, BlockError, HardwareDisk};
+#[path = "../../../kernel/src/block/gpt.rs"]
+pub mod gpt;
+#[path = "../../../kernel/src/block/partition.rs"]
+pub mod partition;
 #[path = "../../../kernel/src/boot/intent.rs"]
 pub mod intent;
 #[path = "../../ext2-host-tests/src/ext2.rs"]
@@ -42,7 +47,7 @@ pub mod ext2 {
     }
 }
 pub mod fs {
-    pub use crate::{attrs, errno, ext2, vfs, permissions};
+    pub use crate::{attrs, breenfs, errno, ext2, vfs, permissions};
     pub use crate::statfs_support::{namei, ufs};
 }
 pub fn arch_without_interrupts<R>(f: impl FnOnce() -> R) -> R {
@@ -83,6 +88,10 @@ pub use vfs::format;
 pub mod ext2_format;
 #[path = "../tests/boot_mount_tests.rs"]
 mod boot_mount_tests;
+#[path = "../../../kernel/src/block/memory_device.rs"]
+mod memory_device;
+#[path = "../tests/boot_namespace_tests.rs"]
+mod boot_namespace_tests;
 
 pub mod statfs_support;
 

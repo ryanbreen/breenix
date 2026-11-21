@@ -251,7 +251,9 @@ def bit_flip(serial, check_output):
 
 def check_manifest(path):
     manifest = json.loads(path.read_text())
-    categories = [c for c in manifest['categories'] if c.get('hostRunner') is True]
+    # The migration runner validates persistent-root separately.
+    categories = [c for c in manifest['categories']
+                  if c.get('hostRunner') is True and c['id'] != 'persistent-root']
     if (manifest['id'] != 'filesystem' or len(categories) != 1 or categories[0]['id'] != 'power-cut'
             or tuple((c['id'], c['title']) for c in categories[0]['cases']) != CASES):
         raise ValueError('filesystem power-cut host records differ from the replay checker')

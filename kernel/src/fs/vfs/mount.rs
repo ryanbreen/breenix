@@ -42,6 +42,73 @@ pub fn register_with(register: impl FnOnce(&mut MountTable<Backend>) -> Result<(
     Ok(())
 }
 
+/// Publish a generation and its default-root binds as one namespace change.
+pub(crate) fn register_cutover(mut entries: Vec<MountPoint>, writer: usize) -> Result<(), Errno> {
+    let mut inserted = Vec::with_capacity(entries.len());
+    let mut removed = Vec::with_capacity(entries.len());
+    register_with(|table| {
+        for mut entry in entries.drain(..) {
+            let id = entry.id;
+            entry.device_id = writer as u64;
+            if let Err(error) = table.insert(entry) {
+                for id in inserted.into_iter().rev() {
+                    removed.push(table.remove(id, true).expect("unpublished cutover mount"));
+                }
+                return Err(error);
+            }
+            inserted.push(id);
+        }
+        Ok(())
+    })
+}
+
+/// Install the volatile subtree mount and bind together. A rescue root may
+/// already expose read-only binds for these same directories.
+pub(crate) fn register_volatile_mounts(tmp: MountPoint, mut run: MountPoint) -> Result<(), Errno> {
+    use crate::syscall::errno::EBUSY;
+
+    let tmp_id = tmp.id;
+    run.bind = Some((tmp_id, run.root));
+    let mut replaced = [None, None];
+    let mut rolled_back = None;
+    let result = register_with(|table| {
+        let publish = (|| {
+            for (old, new) in replaced.iter_mut().zip([&tmp, &run]) {
+                let Some(current) = table.iter().find(|entry| entry.path == new.path) else {
+                    continue;
+                };
+                if !current.flags.read_only || current.bind != new.cover
+                    || current.cover != new.cover || current.parent != new.parent
+                {
+                    return Err(Errno(EBUSY));
+                }
+                let id = current.id;
+                *old = Some(table.remove(id, false)?);
+            }
+            table.insert(tmp)?;
+            if let Err(error) = table.insert(run) {
+                rolled_back = Some(table.remove(tmp_id, true).expect("unpublished volatile mount"));
+                return Err(error);
+            }
+            Ok(())
+        })();
+        if publish.is_err() {
+            for entry in replaced.iter_mut().filter_map(Option::take) {
+                table.insert(entry).expect("restore the previous cover");
+            }
+        }
+        publish
+    });
+    drop(rolled_back);
+    drop(replaced);
+    result
+}
+
+#[cfg(not(test))]
+pub(crate) fn is_bind(id: usize) -> bool {
+    MOUNT_TABLE.lock().get(id).is_some_and(|entry| entry.bind.is_some())
+}
+
 pub fn attachment(id: usize) -> Option<(InodeKey, Vec<u8>)> {
     let table = MOUNT_TABLE.lock();
     let entry = table.get(id)?;

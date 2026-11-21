@@ -1,5 +1,8 @@
 //! Boot format registration. Device selection remains in VFS.
-use super::{probe::probe, vfs::BreenFs};
+use super::{
+    probe::{probe, uuid},
+    vfs::BreenFs,
+};
 use crate::{
     block::BlockDevice,
     fs::{
@@ -16,10 +19,25 @@ pub const FORMAT: Format = Format {
     fault_mount: |_| Err(Errno(EOPNOTSUPP)),
     kind: "breenfs",
     probe,
+    uuid,
     mount,
 };
 
-fn mount(device: Box<dyn BlockDevice>, target: BootMount) -> Result<Arc<dyn FileSystem>, Errno> {
+fn mount(
+    device: Box<dyn BlockDevice>,
+    target: BootMount<'_>,
+) -> Result<Arc<dyn FileSystem>, Errno> {
+    if let BootMount::Explicit(point) = target {
+        let cache = crate::block::cache_kernel::system_cache();
+        let fs = if point.flags.read_only {
+            BreenFs::mount_cached(device.into(), cache, point.id, 1)?
+        } else {
+            BreenFs::mount_writable_cached(device.into(), cache, point.id, 1)?
+        };
+        registry::register(point.entry(fs.clone())?)?;
+        return Ok(fs);
+    }
+
     // The read fixture remains an explicit mount, even when discovery offers
     // its disk as a possible home device. Boot-home integration is not part
     // of the writable test-root path.

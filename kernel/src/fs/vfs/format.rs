@@ -7,10 +7,22 @@ use crate::{
 };
 use alloc::{boxed::Box, sync::Arc};
 
+use super::{mount_table::InodeKey, MountFlags};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BootMount {
+pub struct ExplicitMount<'a> {
+    pub id: usize,
+    pub path: &'a str,
+    pub flags: MountFlags,
+    pub cover: Option<InodeKey>,
+    pub parent: Option<InodeKey>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BootMount<'a> {
     Root,
     Home,
+    Explicit(&'a ExplicitMount<'a>),
 }
 
 pub struct Format {
@@ -18,13 +30,27 @@ pub struct Format {
     pub fault_mount: fn(Box<dyn BlockDevice>) -> Result<super::fault::FaultImage, Errno>,
     pub kind: &'static str,
     pub probe: fn(&dyn BlockDevice) -> Result<bool, Errno>,
-    pub mount: fn(Box<dyn BlockDevice>, BootMount) -> Result<Arc<dyn FileSystem>, Errno>,
+    pub uuid: fn(&dyn BlockDevice) -> Result<[u8; 16], Errno>,
+    pub mount: fn(Box<dyn BlockDevice>, BootMount<'_>) -> Result<Arc<dyn FileSystem>, Errno>,
+}
+
+/// A read-only probe for explicit mount planning and UUID discovery.
+pub fn detect<'a>(
+    formats: &'a [Format],
+    device: &dyn BlockDevice,
+) -> Result<Option<&'a Format>, Errno> {
+    for format in formats {
+        if (format.probe)(device)? {
+            return Ok(Some(format));
+        }
+    }
+    Ok(None)
 }
 
 pub fn probe_mount(
     formats: &[Format],
     device: Box<dyn BlockDevice>,
-    target: BootMount,
+    target: BootMount<'_>,
 ) -> Result<Arc<dyn FileSystem>, Errno> {
     for format in formats {
         let detected = (format.probe)(device.as_ref()).map_err(|error| {

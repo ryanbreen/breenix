@@ -73,6 +73,7 @@ enum BootMode {
     Default,
     Probe,
     PersistentInstall,
+    PersistentMigrate,
     Shell,
     Console,
     Desktop,
@@ -87,6 +88,7 @@ impl BootMode {
             BootMode::Default => "default",
             BootMode::Probe => "probe",
             BootMode::PersistentInstall => "persistent-install",
+            BootMode::PersistentMigrate => "persistent-migrate",
             BootMode::Shell => "shell",
             BootMode::Console => "console",
             BootMode::Desktop => "desktop",
@@ -120,6 +122,16 @@ fn interactive_boot_mode(target: Option<&kernel::boot::target::Target>) -> Optio
 #[cfg(target_arch = "aarch64")]
 fn read_boot_mode(fw_intent_captured: bool) -> (BootMode, Option<alloc::string::String>, Option<alloc::string::String>) {
     use kernel::boot::target;
+    if kernel::boot::intent::get() == Some(b"persistent-migrate\n") {
+        if !cfg!(feature = "testing")
+            && kernel::boot::intent::explicit_mounts_requested()
+            && kernel::boot::intent::userland().is_some()
+        {
+            return (BootMode::PersistentMigrate, None, None);
+        }
+        serial_println!("[boot] Ignoring boot mode \"persistent-migrate\": production format 3 userland intent required");
+        return (BootMode::Default, None, None);
+    }
     if fw_intent_captured && kernel::boot::intent::get() == Some(b"persistent-install\n") {
         if cfg!(feature = "testing") {
             serial_println!("[boot] Ignoring boot mode \"persistent-install\": the testing kernel runs its test loader");
@@ -157,6 +169,10 @@ fn read_boot_mode(fw_intent_captured: bool) -> (BootMode, Option<alloc::string::
             Ok(Some(target::Target::Probe)) => BootMode::Probe,
             Ok(Some(target::Target::Persistent | target::Target::PersistentInstall)) => {
                 serial_println!("[boot] Ignoring boot target {}: the persistent install is x86-metal only", target::PATH);
+                BootMode::Default
+            }
+            Ok(Some(target::Target::PersistentMigrate)) => {
+                serial_println!("[boot] Ignoring boot mode \"persistent-migrate\": format 3 userland intent required");
                 BootMode::Default
             }
             Ok(Some(target::Target::Program { path, arg })) => {
@@ -306,6 +322,11 @@ impl InitLaunch {
                 let argv = arm_install::argv(kernel::boot::intent::userland(), kernel::boot::intent::previous_userland())
                     .expect("install intent was validated before selecting boot mode");
                 InitLaunch::new("/sbin/persistent-install", &argv)
+            },
+            BootMode::PersistentMigrate => {
+                let generation = kernel::boot::intent::userland()
+                    .expect("migration intent was validated before selecting boot mode");
+                InitLaunch::new("/sbin/persistent-migrate", &[b"/sbin/persistent-migrate", generation.as_bytes()])
             },
             BootMode::Shell => InitLaunch::new("/sbin/init", &[b"init", b"shell"]),
             BootMode::Console => InitLaunch::new("/sbin/init", &[b"init", b"console"]),
@@ -1019,6 +1040,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     };
 
     // Probe and mount the root filesystem (if block device present)
+    let explicit_mounts = kernel::boot::intent::explicit_mounts_requested();
     match kernel::fs::vfs::mount_root() {
         Ok(()) => {
             serial_println!("[boot] {} root filesystem mounted", kernel::fs::vfs::root_kind());
@@ -1027,7 +1049,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
             kernel::test_framework::btrt::pass(kernel::test_framework::catalog::EXT2_MOUNT);
         }
         Err(e) => {
-            if kernel::fs::vfs::suite_boot_requested() {
+            if explicit_mounts || kernel::fs::vfs::suite_boot_requested() {
                 panic!("BREENIX_ROOT_MOUNT_FATAL errno={}", e.0);
             }
             serial_println!("[boot] root fs init: {:?} (continuing without root fs)", e);
@@ -1046,12 +1068,14 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // of this boot prints is evidence the kernel survived the injected faults.
     #[cfg(feature = "fs_fault_inject")]
     kernel::fs::vfs::fault::run_fs_fault_leg();
-    // Probe and mount the home filesystem (/home on separate disk)
-    match kernel::fs::vfs::mount_home() {
-        Ok(()) => serial_println!("[boot] ext2 home filesystem mounted at /home"),
-        Err(e) => serial_println!("[boot] No home filesystem: {:?} (continuing)", e),
+    if !explicit_mounts {
+        // Probe and mount the home filesystem (/home on separate disk)
+        match kernel::fs::vfs::mount_home() {
+            Ok(()) => serial_println!("[boot] ext2 home filesystem mounted at /home"),
+            Err(e) => serial_println!("[boot] No home filesystem: {:?} (continuing)", e),
+        }
+        kernel::fs::vfs::mount::bind_home_if_unmounted();
     }
-    kernel::fs::vfs::mount::bind_home_if_unmounted();
 
     // Initialize devfs (/dev virtual filesystem)
     kernel::fs::devfs::init();
@@ -1341,7 +1365,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     let mut init_launch = InitLaunch::for_mode(boot_mode, mode_arg.as_deref(), only.as_deref());
     let runs_own_binary = matches!(
         boot_mode,
-        BootMode::Probe | BootMode::PersistentInstall | BootMode::Program | BootMode::Suite
+        BootMode::Probe | BootMode::PersistentInstall | BootMode::PersistentMigrate | BootMode::Program | BootMode::Suite
     );
     let mode_elf: Option<alloc::vec::Vec<u8>> = if runs_own_binary && device_count > 0 {
         serial_println!(

@@ -16,15 +16,18 @@ pub fn mount(source: u64, target: u64, flags: u64, data: u64, cred: &Credentials
     };
     mount_args::parse_root(data.as_deref())?;
     let source = userptr::copy_path_bytes_from_user(source)?;
-    let disk = mount_args::parse(cred.euid, flags, &source)?;
-    let device: Arc<dyn BlockDevice> = crate::fs::devfs::disk_device(disk)
-        .ok_or(ENXIO as u64)?
-        .into();
+    let raw = userptr::copy_path_bytes_from_user(target)?;
+    let device: Arc<dyn BlockDevice> = if source == b"boot" {
+        let path = core::str::from_utf8(&raw).map_err(|_| EINVAL as u64)?;
+        crate::block::migration_device(path).map_err(|_| ENODEV as u64)?
+    } else {
+        let disk = mount_args::parse(cred.euid, flags, &source)?;
+        crate::fs::devfs::disk_device(disk).ok_or(ENXIO as u64)?
+    }.into();
     if !probe(device.as_ref()).map_err(|e| e.0 as u64)? {
         return Err(EINVAL as u64);
     }
 
-    let raw = userptr::copy_path_bytes_from_user(target)?;
     let point = resolve_at(AT_FDCWD, &raw, true, cred)?;
     let Target::Inode {
         mount: covered_mount,
@@ -95,6 +98,9 @@ pub fn unmount(target: &Target, flags: u64) -> Option<Result<(), u64>> {
         return None;
     }
     Some((|| {
+        if registry::is_bind(mount.0) {
+            return registry::unmount(mount.0, flags != 0).map_err(|error| error.0 as u64);
+        }
         let fs = registry::filesystem(mount.0).map_err(|e| e.0 as u64)?;
         let (sec, nsec) = crate::time::get_monotonic_time_ns();
         let deadline = (sec as u64)

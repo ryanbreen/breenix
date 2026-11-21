@@ -66,6 +66,66 @@ class LabAnswerTest(existing.StateTest):
 
 
 class LayoutTest(existing.StateTest):
+    def test_breenfs_layout_and_request(self):
+        original = metal_persist.new_layout()
+        self.assertEqual(metal_persist.check_layout(original), original)
+        layout = metal_persist.add_breenfs_layout(original)
+        self.assertEqual(layout['version'], 2)
+        for role in metal_persist.ROLES:
+            self.assertEqual(layout['partitions'][role], original['partitions'][role])
+        self.assertEqual(original['version'], 1)
+        parts = layout['partitions']
+        for number, role, size in ((5, 'breenfs-system', 64 << 30), (6, 'breenfs-home', 256 << 30)):
+            part = parts[role]
+            self.assertEqual(part['number'], number)
+            self.assertEqual((part['last'] - part['first'] + 1) * 512, size)
+            self.assertEqual(part['first'] % 2048, 0)
+        self.assertGreater(parts['breenfs-system']['first'], parts['home']['last'])
+        self.assertGreater(parts['breenfs-home']['first'], parts['breenfs-system']['last'])
+        self.assertEqual(metal_persist.check_layout(layout), layout)
+        import copy
+        for role, field, value in (('breenfs-system', 'first', parts['home']['first']),
+                                   ('breenfs-home', 'last', parts['breenfs-home']['last'] - 1),
+                                   ('breenfs-home', 'number', 5),
+                                   ('breenfs-system', 'guid', 'bad'),
+                                   ('breenfs-system', 'type', parts['home']['type'])):
+            broken = copy.deepcopy(layout)
+            broken['partitions'][role][field] = value
+            with self.subTest(role=role, field=field), self.assertRaises(ValueError):
+                metal_persist.check_layout(broken)
+        with tempfile.TemporaryDirectory() as scratch:
+            mkfs = Path(__file__).resolve().parents[1] / 'tools/breenfs/target/debug/breenfs-mkfs'
+            with patch.object(metal_persist.m, 'TOOLS', mkfs.parent):
+                request = metal_persist.add_breenfs_request(scratch, layout)
+            lines = request.finish().read_text().splitlines()
+            self.assertEqual(lines[:3], ['BREENIX-PERSIST 1', 'action add-breenfs', 'expect-disk ' + layout['diskGuid']])
+            partitions = [line.split() for line in lines if line.startswith('partition ')]
+            self.assertEqual([int(p[1]) for p in partitions], [5, 6])
+            extents = [line.split() for line in lines if line.startswith('extent ')]
+            self.assertEqual({int(e[1]) for e in extents}, {5, 6})
+            data = (Path(scratch) / 'persist.dat').read_bytes()
+            for number, role in ((5, 'breenfs-system'), (6, 'breenfs-home')):
+                part = parts[role]
+                relevant = [e for e in extents if int(e[1]) == number]
+                self.assertTrue(all(0 <= int(e[2]) and 0 < int(e[3]) and
+                                    int(e[2]) + int(e[3]) <= part['last'] - part['first'] + 1 for e in relevant))
+                candidates = []
+                for slot in range(4):
+                    sector = (16 + slot) * 8
+                    for extent in relevant:
+                        if extent[4] == 'data' and int(extent[2]) <= sector < int(extent[2]) + int(extent[3]):
+                            candidate = int(extent[5]) + (sector - int(extent[2])) * 512
+                            if data[candidate:candidate + 8] == b'BREENFSS':
+                                generation = int.from_bytes(data[candidate + 32:candidate + 40], 'little')
+                                if generation > 0 and generation % 4 == slot:
+                                    candidates.append((generation, sector, extent))
+                self.assertTrue(candidates)
+                _, sector, superblock = max(candidates)
+                self.assertEqual(superblock[4], 'data')
+                offset = int(superblock[5]) + (sector - int(superblock[2])) * 512
+                self.assertEqual(data[offset:offset + 8], b'BREENFSS')
+                self.assertEqual(data[offset + 16:offset + 32], uuid.UUID(part['guid']).bytes)
+
     def test_layout_partitions_are_ordered_aligned_and_recorded_beside_the_old_root(self):
         layout = metal_persist.new_layout()
         metal_persist.check_layout(layout)
@@ -120,6 +180,46 @@ class LayoutTest(existing.StateTest):
             data = ramdisk.read_bytes()
         self.assertTrue(data.startswith(f'BREENIX-BOOT 2\ntarget default\nroot {guid}\ntests 4096 1024\n'.encode()))
         self.assertEqual(data[4096:], b'BXTEST\0\0' + bytes(1016))
+
+    def test_format_3_mount_intents(self):
+        a = '11111111-1111-1111-1111-111111111111'
+        b = '22222222-2222-2222-2222-222222222222'
+        frozen = {'system': a, 'breenfs-system': b}
+        cutover = {'breenfs-system': a, 'breenfs-home': b}
+        for mounts, userland, guids in (
+            ([(a, '/', False), (a, '/old', False), (b, '/new', True), (b, '/shared', True), (a, '/home', False)], None, frozen),
+            ([(a, '/', True), (b, '/home', True)], 'install-42', cutover),
+            ([(a, '/', False), (b, '/tmp', True), (b, '/run', True)], None, frozen),
+        ):
+            expected = 'BREENIX-BOOT 3\ntarget persistent\n' + ''.join(
+                f"mount {guid} {path} {'rw' if writable else 'ro'}\n" for guid, path, writable in mounts)
+            if userland is not None:
+                expected += f'userland {userland}\n'
+            self.assertEqual(metal_persist.intent('persistent', mounts=mounts, userland=userland, mount_guids=guids),
+                             expected.encode())
+        for mounts in (
+            [(a, '/', True), (b, '/home', True), (a, '/tmp', True)],
+            [(a, '/home', False)], [(a, '/', False), (b, '/a/../b', False)],
+            [(a, '/', False), (b, '/', False)], [],
+        ):
+            with self.assertRaises(ValueError):
+                metal_persist.intent('persistent', mounts=mounts, mount_guids=cutover)
+        with self.assertRaises(ValueError):
+            metal_persist.intent('persistent', root=a, mounts=[(a, '/', False)])
+        with self.assertRaises(ValueError):
+            metal_persist.intent('persistent', home=b, mounts=[(a, '/', False)])
+
+    def test_format_3_writer_requires_breenfs_roles(self):
+        guids = {role: f'{i:08x}-0000-0000-0000-000000000000'
+                 for i, role in enumerate(('test', 'system', 'home', 'breenfs-system', 'breenfs-home'), 1)}
+        with self.assertRaises(ValueError):
+            metal_persist.intent('persistent', mounts=[(guids['system'], '/', True)])
+        for role, path in (('test', '/'), ('system', '/'), ('home', '/home'), ('breenfs-home', '/')):
+            with self.subTest(role=role, path=path), self.assertRaises(ValueError):
+                mounts = [(guids[role], path, True)]
+                if path != '/':
+                    mounts.insert(0, (guids['breenfs-system'], '/', True))
+                metal_persist.intent('persistent', mounts=mounts, mount_guids=guids)
 
     def test_slot_image_carries_its_immutable_userland_identity(self):
         with tempfile.TemporaryDirectory() as scratch:

@@ -12,10 +12,7 @@ class MountDataIo(unittest.TestCase):
     def test_service_releases_namespace_before_data_write(self):
         service = item((ROOT / 'kernel/src/fs/ext2/writeback.rs').read_text(), 'fn service()')
         ext2 = (ROOT / 'kernel/src/fs/ext2/mod.rs').read_text()
-        # The detached service helper is included when present; the old service
-        # calls finalize_writeback directly under its mount guard.
-        detached = (item(ext2, 'pub(super) fn service_mapped_writeback(')
-                    if 'pub(super) fn service_mapped_writeback(' in ext2 else '')
+        detached = item(ext2, 'fn service_mapped_writeback(')
         result = run(r'''
 #![allow(dead_code)]
 extern crate alloc;
@@ -52,8 +49,12 @@ impl Map {
     }
 }
 enum Finalize { Idle, More, Retry }
-fn fs_write_raw(home: bool) -> Result<RwLockWriteGuard<'static, Option<Fs>>, &'static str> {
-    if home { Ok(HOME.write().unwrap()) } else { Ok(ROOT.write().unwrap()) }
+type MountSlot = RwLock<Option<Fs>>;
+fn mount_slots() -> impl Iterator<Item = &'static MountSlot> {
+    [&ROOT, &HOME].into_iter()
+}
+fn fs_write_raw(slot: &'static MountSlot) -> Result<RwLockWriteGuard<'static, Option<Fs>>, &'static str> {
+    Ok(slot.write().unwrap())
 }
 mod memory { pub mod file_map { pub const EVICT_BUDGET: usize = 64; } }
 DETACHED
@@ -75,7 +76,7 @@ fn main() {
     assert!(DATA_STARTED.load(Ordering::SeqCst), "service did not reach device data I/O");
     assert!(CREATED.load(Ordering::SeqCst), "namespace create could not complete during data I/O");
 }
-'''.replace('DETACHED', detached.replace('pub(super)', 'pub(crate)')).replace('SERVICE', service + '\npub fn run() { service(); }'))
+'''.replace('DETACHED', detached).replace('SERVICE', service + '\npub fn run() { service(); }'))
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_reserved_blocks_transfer_without_namespace_and_publish_after_data(self):

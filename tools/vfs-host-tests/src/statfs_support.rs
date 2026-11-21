@@ -3,6 +3,8 @@ pub use crate::{mount_table, syscall_errno as errno, vfs::FileSystem};
 #[path = "../../../kernel/src/fs/vfs/mount.rs"]
 pub mod mount;
 
+pub static TEST_MOUNTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub mod namei {
     #[derive(Clone, Copy)]
     pub struct Mount(pub usize);
@@ -46,6 +48,7 @@ mod dispatch {
 
     #[test]
     fn statfs_reports_distinct_nonzero_mount_ids() {
+        let _registry = super::TEST_MOUNTS.lock().unwrap();
         use crate::{
             adapter::Ext2Adapter, attrs::MountFlags, host_mounts::Fixture, mount_table::Entry,
         };

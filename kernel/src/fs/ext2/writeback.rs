@@ -69,8 +69,8 @@ fn service() {
         let mut more = false;
         let mut retry = false;
         if PENDING.swap(false, Ordering::AcqRel) {
-            for home in [false, true] {
-                let Ok(mut guard) = super::fs_write_raw(home) else { retry = true; continue; };
+            for slot in super::mount_slots() {
+                let Ok(mut guard) = super::fs_write_raw(slot) else { retry = true; continue; };
                 if let Some(fs) = guard.as_mut() {
                     match fs.finalize_metadata() {
                         super::Finalize::Idle => {}
@@ -79,8 +79,8 @@ fn service() {
                     }
                 }
             }
-            for home in [false, true] {
-                match super::service_mapped_writeback(home) {
+            for slot in super::mount_slots() {
+                match super::service_mapped_writeback(slot) {
                     Ok(pending) => more |= pending,
                     Err(_) => retry = true,
                 }
@@ -92,8 +92,8 @@ fn service() {
                 // below. A later request keeps both its flag and wake.
                 ORPHANS.store(false, Ordering::Release);
             }
-            for home in [false, true] {
-                let Ok(mut guard) = super::fs_write_raw(home) else { retry = true; continue; };
+            for slot in super::mount_slots() {
+                let Ok(mut guard) = super::fs_write_raw(slot) else { retry = true; continue; };
                 if let Some(fs) = guard.as_mut() {
                     match fs.finalize_pending_orphans() {
                         super::Finalize::Idle => {}

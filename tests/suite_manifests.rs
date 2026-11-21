@@ -140,7 +140,12 @@ fn entry(value: &Value, at: &str, extra: &[&str], errors: &mut Vec<String>) -> O
 }
 
 /// The runner of host-run categories in a suite whose binary runs the others.
-const CATEGORY_HOST_RUNNER: &str = "scripts/metal/server-suite";
+fn category_host_runners(suite: &str) -> &'static [&'static str] {
+    match suite {
+        "filesystem" => &["scripts/metal/breenfs_replay.py", "scripts/vm-artifacts.py"],
+        _ => &["scripts/metal/server-suite"],
+    }
+}
 
 /// Check one manifest's shape, returning what it lists.
 fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
@@ -873,11 +878,12 @@ fn suite_manifests_match_their_binaries() {
             continue;
         }
         if !manifest.host_categories.is_empty() {
-            let runner = if id == "filesystem" { "scripts/metal/breenfs_replay.py" } else { CATEGORY_HOST_RUNNER };
-            let checked = std::process::Command::new("python3").arg(root.join(runner))
-                .arg("--check-manifest").arg(path).output().expect("host runner starts");
-            if !checked.status.success() {
-                errors.push(format!("{id}: host-run category table differs: {}", String::from_utf8_lossy(&checked.stderr)));
+            for runner in category_host_runners(id) {
+                let checked = std::process::Command::new("python3").arg(root.join(runner))
+                    .arg("--check-manifest").arg(path).output().expect("host runner starts");
+                if !checked.status.success() {
+                    errors.push(format!("{id}: {runner} host-run category table differs: {}", String::from_utf8_lossy(&checked.stderr)));
+                }
             }
         }
         let Some((source_rel, files)) = suite_files(&root, &module) else {
@@ -1140,8 +1146,10 @@ fn filesystem_cases_match_the_guest() {
     assert!(errors.is_empty(), "filesystem manifest: {errors:?}");
     let (_, categories) = source_suite(
         &fs::read_to_string(root.join("userspace/programs/src/suite_filesystem.rs")).unwrap()).unwrap();
+    let host_categories = manifest.host_categories;
     let populated: Vec<_> = manifest.categories.into_iter()
-        .filter(|c| !c.cases.is_empty() && !manifest.host_categories.contains(&c.entry.id)).collect();
+        .filter(|category| !category.cases.is_empty() && !host_categories.contains(&category.entry.id))
+        .collect();
     assert_eq!(categories, populated, "filesystem guest table differs from the manifest");
 }
 

@@ -11,7 +11,7 @@ use super::{
     txn::Transaction,
 };
 use crate::block::{
-    cache::{BufferCache, Wait, WriteGroup},
+    cache::{BufferCache, PressureWait, Wait, WriteGroup, RUN_BYTES},
     BlockDevice, BlockError,
 };
 use alloc::{
@@ -405,6 +405,22 @@ pub struct PreparedCommit {
     data: BTreeMap<u64, Vec<u8>>,
     formatting: bool,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PublicationStep {
+    Stage,
+    DataWrite,
+    DataFlush,
+    SuperblockWrite,
+    SuperblockFlush,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PublicationError {
+    pub step: PublicationStep,
+    pub block_error: BlockError,
+}
+
 impl PreparedCommit {
     pub fn superblock(&self) -> &Superblock {
         &self.sb
@@ -440,58 +456,94 @@ impl PreparedCommit {
         window: Option<faults::Window>,
         #[cfg(feature = "breenfs_corrupt_inject")]
         injection: Option<(&faults::Injection, u64)>,
-    ) -> Result<(), Error> {
-        if !matches!(group, WriteGroup::Hold(_)) {
-            return Err(Error::EIO);
-        }
+    ) -> Result<(), PublicationError> {
+        use PublicationStep::*;
+        let at = |step| move |block_error| PublicationError { step, block_error };
         let sector = device.block_size();
+        if !matches!(group, WriteGroup::Hold(_)) || sector == 0 || BLOCK_SIZE % sector != 0 {
+            return Err(at(Stage)(BlockError::IoError));
+        }
+        let mut uncached = false;
         #[cfg(feature = "breenfs_corrupt_inject")]
         let mut altered = [0; BLOCK_SIZE];
         for (&addr, bytes) in self.nodes.iter().chain(self.data.iter()) {
             preemption_point();
-            for (i, bytes) in bytes.chunks_exact(sector).enumerate() {
-                preemption_point();
-                let block = addr * (BLOCK_SIZE / sector) as u64 + i as u64;
-                // Stage the changed sector from a copy. The prepared bytes,
-                // extent CRCs and node pointers still describe the original.
-                #[cfg(feature = "breenfs_corrupt_inject")]
-                let flip = injection.filter(|_| self.data.contains_key(&addr))
-                    .and_then(|(injection, target)| injection.take_for(target, block, sector));
-                #[cfg(feature = "breenfs_corrupt_inject")]
-                let bytes = if let Some(flip) = &flip {
-                    let staged = &mut altered[..sector];
-                    staged.copy_from_slice(bytes);
-                    flip.apply(staged);
-                    staged
-                } else {
-                    bytes
-                };
-                match cache.write(device, group.clone(), block, bytes) {
-                    Err(BlockError::OutOfMemory) => {
-                        cache.submit(device, group).wait().map_err(|_| Error::EIO)?;
-                        preemption_point();
-                        cache
-                            .write(device, group.clone(), block, bytes)
-                            .map_err(|_| Error::EIO)?;
+            #[cfg(feature = "breenfs_corrupt_inject")]
+            let flip = injection.and_then(|(injection, target)| {
+                if !self.data.contains_key(&addr)
+                    || !(addr..addr + (bytes.len() / BLOCK_SIZE) as u64).contains(&target)
+                {
+                    return None;
+                }
+                injection.take_for(target, target, BLOCK_SIZE)
+            });
+            // Both cached and uncached writes use the same altered block, while
+            // the prepared bytes and their checksums still describe the original.
+            #[cfg(feature = "breenfs_corrupt_inject")]
+            let ranges = if let Some(flip) = &flip {
+                let offset = (flip.block - addr) as usize * BLOCK_SIZE;
+                altered.copy_from_slice(&bytes[offset..offset + BLOCK_SIZE]);
+                flip.apply(&mut altered);
+                [&bytes[..offset], altered.as_slice(), &bytes[offset + BLOCK_SIZE..]]
+            } else {
+                [bytes.as_slice(), &[], &[]]
+            };
+            #[cfg(not(feature = "breenfs_corrupt_inject"))]
+            let ranges = [bytes.as_slice()];
+            let mut start = addr * (BLOCK_SIZE / sector) as u64;
+            for bytes in ranges.into_iter().filter(|range| !range.is_empty()) {
+                let mut staged = 0;
+                for (i, bytes) in bytes.chunks_exact(sector).enumerate() {
+                    preemption_point();
+                    if uncached {
+                        break;
                     }
-                    result => result.map_err(|_| Error::EIO)?,
+                    let stage = || cache.write(device, group.clone(), start + i as u64, bytes);
+                    let mut result = stage();
+                    if result == Err(BlockError::OutOfMemory) {
+                        cache.submit(device, group).wait().map_err(at(DataWrite))?;
+                        preemption_point();
+                        result = stage();
+                        if result == Err(BlockError::OutOfMemory)
+                            && cache.relieve_publication_pressure(device) != PressureWait::Unavailable
+                        {
+                            result = stage();
+                        }
+                    }
+                    if result == Err(BlockError::OutOfMemory) {
+                        uncached = true;
+                        break;
+                    }
+                    result.map_err(at(DataWrite))?;
+                    staged = i + 1;
                 }
-                #[cfg(feature = "breenfs_corrupt_inject")]
-                if let Some(flip) = flip {
-                    crate::serial_println!(
-                        "\n[breenfs] corrupt-inject block={} offset={} bit={}",
-                        flip.block, flip.offset, flip.bit
-                    );
+                if uncached {
+                    // The batch above has completed. The prepared bytes can be
+                    // submitted without another copy when peer buffers keep the cache full.
+                    let mut block = start + staged as u64;
+                    for run in bytes[staged * sector..].chunks(RUN_BYTES) {
+                        preemption_point();
+                        cache.write_uncached(device, block, run).map_err(at(DataWrite))?;
+                        block += (run.len() / sector) as u64;
+                    }
                 }
+                start += (bytes.len() / sector) as u64;
+            }
+            #[cfg(feature = "breenfs_corrupt_inject")]
+            if let Some(flip) = flip {
+                crate::serial_println!(
+                    "\n[breenfs] corrupt-inject block={} offset={} bit={}",
+                    flip.block, flip.offset, flip.bit
+                );
             }
         }
-        cache.submit(device, group).wait().map_err(|_| Error::EIO)?;
+        cache.submit(device, group).wait().map_err(at(DataWrite))?;
         #[cfg(feature = "breenfs_commit_window")]
         if let Some(selected) = window {
             faults::Faults::window(selected, faults::Window::NodeWrites);
         }
         preemption_point();
-        cache.flush(device).map_err(|_| Error::EIO)?;
+        cache.flush(device).map_err(at(DataFlush))?;
         #[cfg(feature = "breenfs_commit_window")]
         if let Some(selected) = window {
             faults::Faults::window(selected, faults::Window::FirstFlush);
@@ -513,16 +565,16 @@ impl PreparedCommit {
                         addr * (BLOCK_SIZE / sector) as u64 + i as u64,
                         bytes,
                     )
-                    .map_err(|_| Error::EIO)?;
+                    .map_err(at(SuperblockWrite))?;
             }
-            Ok(())
+            Ok::<(), PublicationError>(())
         })?;
-        cache.flush(device).map_err(|_| Error::EIO)
+        cache.flush(device).map_err(at(SuperblockFlush))
     }
-    fn superblocks(
+    fn superblocks<E>(
         &self,
-        mut write: impl FnMut(u64, &[u8]) -> Result<(), Error>,
-    ) -> Result<(), Error> {
+        mut write: impl FnMut(u64, &[u8]) -> Result<(), E>,
+    ) -> Result<(), E> {
         if self.formatting {
             for ring in 0..2 {
                 preemption_point();

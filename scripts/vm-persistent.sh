@@ -8,17 +8,21 @@
 # vm-persistent.sh qemu promote|rollback --run-dir DIR
 # vm-persistent.sh qemu stage-candidate --run-dir DIR [--inject upgrade-no-ssh|upgrade-service-down]
 # vm-persistent.sh qemu install --run-dir DIR
+# vm-persistent.sh qemu migrate|check-manifests|cutover|rescue|return --run-dir DIR
+# vm-persistent.sh qemu probe-migration --run-dir DIR --identity FILE --host-key FILE
+# Each migration action stages the next boot. Cold-check the stopped migration
+# before cutover, then promote a verified NEXT before staging rescue and return.
 # vm-persistent.sh qemu fault-boot --run-dir DIR [--inject feeder-hang|health-hang]
 # vm-persistent.sh qemu reboot --run-dir DIR
 # vm-persistent.sh qemu stop --run-dir DIR
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 umask 077
-usage() { echo 'usage: vm-persistent.sh qemu build|boot|fault-boot|reboot|stop|promote|rollback|stage-candidate|install --run-dir DIR [--operator-account FILE [--system-image IMAGE | --fault panic-reboot|watchdog] | --mode console|desktop [--kernel FILE] [--slot current|next] | --inject feeder-hang|health-hang|upgrade-no-ssh|upgrade-service-down]' >&2; exit 2; }
+usage() { echo 'usage: vm-persistent.sh qemu build|boot|fault-boot|reboot|stop|promote|rollback|stage-candidate|install|migrate|check-manifests|cutover|rescue|return|probe-migration --run-dir DIR [--operator-account FILE [--system-image IMAGE | --fault panic-reboot|watchdog] | --mode console|desktop [--kernel FILE] [--slot current|next] | --inject feeder-hang|health-hang|upgrade-no-ssh|upgrade-service-down | --identity FILE --host-key FILE]' >&2; exit 2; }
 [ "$#" -ge 2 ] && [ "$1" = qemu ] || usage
 op=$2; shift 2
-case "$op" in build|boot|fault-boot|reboot|stop|promote|rollback|stage-candidate|install) ;; *) usage ;; esac
-run= system= account= kernel= mode= fault= inject= slot=
+case "$op" in build|boot|fault-boot|reboot|stop|promote|rollback|stage-candidate|install|migrate|check-manifests|cutover|rescue|return|probe-migration) ;; *) usage ;; esac
+run= system= account= kernel= mode= fault= inject= slot= identity= host_key=
 while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] && [ -n "$2" ] || usage
     case "$1" in
@@ -30,11 +34,14 @@ while [ "$#" -gt 0 ]; do
         --mode) [ -z "$mode" ] || usage; mode=$2 ;;
         --inject) [ -z "$inject" ] || usage; inject=$2 ;;
         --slot) [ -z "$slot" ] || usage; slot=$2 ;;
+        --identity) [ -z "$identity" ] || usage; identity=$2 ;;
+        --host-key) [ -z "$host_key" ] || usage; host_key=$2 ;;
         *) usage ;;
     esac
     shift 2
 done
 [ -n "$run" ] || usage
+[ "$op" = probe-migration ] || [ -z "$identity$host_key" ] || usage
 case "$op" in
     build) [ -z "$inject$slot" ] && [ -n "$account" ] && [ -z "$kernel" ] && [ -z "$mode" ] || usage
            case "$fault" in ""|panic-reboot|watchdog) ;; *) usage ;; esac
@@ -46,12 +53,16 @@ case "$op" in
                 case "$inject" in ""|feeder-hang|health-hang) ;; *) usage ;; esac; mode=console ;;
     stage-candidate) [ -z "$fault$system$account$kernel$mode$slot" ] || usage
                      case "$inject" in ""|upgrade-no-ssh|upgrade-service-down) ;; *) usage ;; esac ;;
-    reboot|stop|promote|rollback|install) [ -z "$inject$fault$system$account$kernel$mode$slot" ] || usage ;;
+    probe-migration) [ -z "$inject$fault$system$account$kernel$mode$slot" ] || usage
+                     [ -f "$identity" ] && [ -f "$host_key" ] || usage ;;
+    reboot|stop|promote|rollback|install|migrate|check-manifests|cutover|rescue|return)
+        [ -z "$inject$fault$system$account$kernel$mode$slot" ] || usage ;;
 esac
 # debugfs command files and QEMU comma-separated options cannot safely encode
 # these characters; reject them instead of interpreting caller-supplied syntax.
 case "$run" in *[!a-zA-Z0-9_./-]*) echo 'invalid run directory path' >&2; exit 2 ;; esac
 case "$run" in /*) ;; *) run="$PWD/$run" ;; esac
+breenfs_tools="${BREENFS_TOOLS_DIR:-${CARGO_TARGET_DIR:-$ROOT/tools/breenfs/target}/release}"
 if [ "$op" = build ]; then
     [ -f "$account" ] && { [ -z "$system" ] || [ -f "$system" ]; } || { echo 'system image and operator account must exist' >&2; exit 1; }
     mkdir -m 700 "$run" || exit 1
@@ -85,7 +96,7 @@ if [ "$op" = build ]; then
     chmod 600 "$run/system.img" "$run/operator-account"
     PATH="$PATH:/opt/homebrew/opt/e2fsprogs/sbin:/usr/local/opt/e2fsprogs/sbin"
     export PATH
-    command -v debugfs >/dev/null && command -v mke2fs >/dev/null || { echo 'e2fsprogs is required' >&2; exit 1; }
+    command -v debugfs >/dev/null && command -v mke2fs >/dev/null && command -v tune2fs >/dev/null || { echo 'e2fsprogs is required' >&2; exit 1; }
     python3 "$ROOT/scripts/vm_site.py" power-token --out "$run/power-token"
     # debugfs returns success even when a command fails; read back each change.
     debugfs -w -R 'rm /etc/breenix/boot-target' "$run/system.img" >/dev/null 2>&1 || true
@@ -110,6 +121,15 @@ if [ "$op" = build ]; then
     python3 "$ROOT/scripts/vm-image.py" "$run/system.img" "$account"
     truncate -s 1G "$run/home.img"
     mke2fs -q -t ext2 -F "$run/home.img"
+    if [ -z "${BREENFS_TOOLS_DIR:-}" ]; then
+        export CARGO_BUILD_JOBS=4
+        build_prefix=()
+        if [ "$(uname -s)" = Darwin ]; then build_prefix=(taskpolicy -b); fi
+        CARGO_TARGET_DIR="$(dirname "$breenfs_tools")" "${build_prefix[@]}" cargo build --release \
+            --manifest-path "$ROOT/tools/breenfs/Cargo.toml" \
+            --bin breenfs-mkfs --bin breenfs-check --bin breenfs-extract
+    fi
+    python3 -B "$ROOT/scripts/vm-artifacts.py" migration-images "$ROOT" "$run" "$breenfs_tools"
     python3 "$ROOT/scripts/vm-artifacts.py" seal "$ROOT" "$run" "$source_commit"
     : > "$run/.breenix-vm-persistent"
     trap - EXIT
@@ -121,10 +141,23 @@ fi
 # Existing disk, socket and kernel arguments continue to use physical paths.
 intent_run=$run
 run=$(cd "$run" && pwd -P)
+case "$op" in
+    probe-migration)
+        export PATH="$PATH:/opt/homebrew/opt/e2fsprogs/sbin:/usr/local/opt/e2fsprogs/sbin"
+        exec python3 -B "$ROOT/scripts/vm-artifacts.py" probe-cycle "$ROOT" "$run" "$identity" "$host_key" ;;
+    migrate|check-manifests|cutover|rescue|return)
+        mkdir "$run/boot.lock" || { echo 'run is already booting or staging' >&2; exit 1; }
+        trap 'rmdir "$run/boot.lock"' EXIT
+        python3 -B "$ROOT/scripts/vm-artifacts.py" "$op" "$ROOT" "$run" "$breenfs_tools"
+        exit 0 ;;
+    stage-candidate|install|fault-boot)
+        [ ! -e "$run/migration-cycle.json" ] || { echo 'operation unavailable after the ext2 images are frozen' >&2; exit 1; } ;;
+esac
 if [ "$op" = stage-candidate ]; then
     mkdir "$run/boot.lock" || { echo 'run is already booting or staging' >&2; exit 1; }
     candidate_tmp=
     trap 'if [ -n "$candidate_tmp" ]; then rm -rf -- "$candidate_tmp"; fi; rmdir "$run/boot.lock"' EXIT
+    [ ! -e "$run/migration-cycle.json" ] || { echo 'the ext2 images are frozen' >&2; exit 1; }
     candidate_tmp=$(mktemp -d "$run/candidate-stage.XXXXXX")
     [ -z "$(git -C "$ROOT" status --porcelain)" ] || { echo 'source build requires a clean checkout' >&2; exit 1; }
     source_commit=$(git -C "$ROOT" rev-parse HEAD)
@@ -163,7 +196,11 @@ fi
 if [ "$op" = promote ] || [ "$op" = rollback ]; then
     mkdir "$run/boot.lock" || { echo 'run is already booting' >&2; exit 1; }
     trap 'rmdir "$run/boot.lock"' EXIT
-    python3 "$ROOT/scripts/vm_slots.py" "$op" "$run"
+    if [ -f "$run/migration-cycle.json" ]; then
+        python3 -B "$ROOT/scripts/vm-artifacts.py" "$op-cycle" "$ROOT" "$run" ''
+    else
+        python3 "$ROOT/scripts/vm_slots.py" "$op" "$run"
+    fi
     exit 0
 fi
 if [ "$op" = reboot ]; then
@@ -234,10 +271,18 @@ cleanup() {
     fi
     rmdir "$run/boot.lock" 2>/dev/null || true; }
 trap cleanup EXIT
+case "$op" in
+    install|fault-boot)
+        [ ! -e "$run/migration-cycle.json" ] || { echo 'the ext2 images are frozen' >&2; exit 1; } ;;
+esac
 verify=verify
 if [ "$op" = fault-boot ]; then verify=verify-fault; fi
 slot_args=()
-if [ "$op" = boot ] && { [ -e "$run/slots.json" ] || [ -L "$run/slots.json" ]; }; then
+cycle_phase=
+if [ "$op" = boot ] && [ -f "$run/migration-cycle.json" ]; then
+    cycle_phase=$(python3 -B "$ROOT/scripts/vm-artifacts.py" verify-cycle "$ROOT" "$run" '')
+    slot_args=(-fw_cfg "name=opt/breenix/intent,file=$intent_run/boot-intent")
+elif [ "$op" = boot ] && { [ -e "$run/slots.json" ] || [ -L "$run/slots.json" ]; }; then
     python3 "$ROOT/scripts/vm-artifacts.py" verify-slot "$ROOT" "$run" "$slot"
     slot_args=(-fw_cfg "name=opt/breenix/intent,file=$intent_run/boot-intent")
 else
@@ -322,6 +367,20 @@ if [ "$op" = install ]; then
     disks=(-device virtio-blk-device,drive=home -drive "if=none,id=home,format=raw,file=$run/system.img"
            -device virtio-blk-device,drive=ext2 -drive "if=none,id=ext2,format=raw,file=$run/install-root.img")
 fi
+case "$cycle_phase" in
+    migrate)
+        disks=(-device virtio-blk-device,drive=breenfs-home -drive "if=none,id=breenfs-home,format=raw,file=$run/breenfs-home.img"
+               -device virtio-blk-device,drive=breenfs-system -drive "if=none,id=breenfs-system,format=raw,file=$run/breenfs-system.img"
+               -device virtio-blk-device,drive=home -drive "if=none,id=home,format=raw,file=$run/home.img,readonly=on"
+               -device virtio-blk-device,drive=ext2 -drive "if=none,id=ext2,format=raw,file=$run/system.img,readonly=on"
+               -device virtio-blk-device,drive=test-root -drive "if=none,id=test-root,format=raw,file=$run/test-root.img,readonly=on") ;;
+    cutover|return)
+        disks=(-device virtio-blk-device,drive=home -drive "if=none,id=home,format=raw,file=$run/breenfs-home.img"
+               -device virtio-blk-device,drive=ext2 -drive "if=none,id=ext2,format=raw,file=$run/breenfs-system.img") ;;
+    rescue)
+        disks=(-device virtio-blk-device,drive=home -drive "if=none,id=home,format=raw,file=$run/home.img,readonly=on"
+               -device virtio-blk-device,drive=ext2 -drive "if=none,id=ext2,format=raw,file=$run/system.img,readonly=on") ;;
+esac
 action=(-device i6300esb -action watchdog=reset)
 if [ "$op" = fault-boot ] && [ "$fault_kind" = panic-reboot ]; then disks=(); action+=(-action reboot=shutdown); fi
 if [ "$op" = install ]; then
@@ -381,7 +440,9 @@ if [ "$op" = install ]; then
     fi
     rm -f "$run/install-root.img" "$run/install-references" "$run/install-monitor-ready" "$run/install-qemu-pid"
 fi
-if [ "$code" -eq 0 ] && [ "$op" = boot ]; then
+if [ -n "$cycle_phase" ]; then
+    python3 -B "$ROOT/scripts/vm-artifacts.py" finish-cycle "$ROOT" "$run" "$cycle_phase:$code" || code=1
+elif [ "$code" -eq 0 ] && [ "$op" = boot ]; then
     python3 "$ROOT/scripts/vm-artifacts.py" continuation "$ROOT" "$run" ""
 fi
 host_slot_header "$serial"
