@@ -162,6 +162,12 @@ pub mod task {
         pub fn set_need_resched() {}
     }
     pub mod thread {
+        pub struct KillCustody;
+        impl KillCustody {
+            pub fn try_enter() -> Option<Self> {
+                (!current_wait_must_unwind()).then_some(Self)
+            }
+        }
         pub fn current_wait_must_unwind() -> bool {
             super::super::KILL_PENDING.get()
         }
@@ -249,6 +255,10 @@ pub mod fs {
     pub mod commit_signal;
     #[path = "MOUNT_PATH"]
     pub mod mount_lock;
+
+    pub fn protect_mount_edit(guard: &mut mount_lock::MountGuard<'_, u32>) {
+        guard.protect_edit().unwrap();
+    }
 }
 
 fn main() {
@@ -293,7 +303,9 @@ fn main() {
         "mount" => {
             let mount = MOUNT.get_or_init(|| MountLock::new(4));
             HOLDER.with(|holder| holder.replace(Some(mount.lock())));
-            assert_eq!(*mount.lock(), 4);
+            let mut guard = mount.lock();
+            fs::protect_mount_edit(&mut guard);
+            assert_eq!(*guard, 4);
         }
         "cache" => {
             let cache = &block::cache_kernel::system_cache().0;
