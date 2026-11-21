@@ -96,6 +96,8 @@ pub(super) unsafe fn run(
     if urls.next().is_some() || system_url == home_url {
         return Err(INVALID_PARAMETER);
     }
+    // UEFI 2.10 §7.5.1 allows this long-running export to disable the boot-option watchdog.
+    ok((boot.set_watchdog_timer)(0, 0, 0, null()))?;
     let [system_disk, home_disk] = select(boot, &wanted)?;
     export(boot, image, "system", system_disk, system, system_url)?;
     export(boot, image, "home", home_disk, home, home_url)?;
