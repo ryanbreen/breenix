@@ -1809,7 +1809,7 @@ class Driver:
         if self.migration_phase in ('rescue', 'return'):
             expected = 'previous' if self.migration_phase == 'rescue' else 'current'
             kind = 'rescue' if self.migration_phase == 'rescue' else 'cutover'
-            if entry != expected or slot.get('migration') != kind or commit != self.migration['commit']:
+            if entry != expected or slot.get('migration') != kind or commit != slot.get('commit'):
                 raise BootManagerAbort(line, observed_at)
         kept = m.STATE / 'persistent' / commit / 'definition'
         if slot.get('commit') != commit or not kept.is_dir():
