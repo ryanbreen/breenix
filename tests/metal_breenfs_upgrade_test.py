@@ -50,11 +50,13 @@ class BreenfsUpgradeFixture(existing.StateTest):
         m.event(returned, 'power-off', off=True)
         m.close_record(returned, 0, 'driver')
 
-    def completed_upgrades(self):
+    def completed_upgrades(self, pairs=None):
         migration.close(RETURN)
         previous = self.original
-        for install, child in [('20261121T180000Z-metal', '20261121T180100Z-metal'),
-                               ('20261121T181000Z-metal', '20261121T181100Z-metal')]:
+        if pairs is None:
+            pairs = [('20261121T180000Z-metal', '20261121T180100Z-metal'),
+                     ('20261121T181000Z-metal', '20261121T181100Z-metal')]
+        for install, child in pairs:
             for ident, mode in [(install, 'persistent-install'), (child, 'persistent')]:
                 directory = m.boot_dir(ident)
                 directory.mkdir()
@@ -83,7 +85,7 @@ class BreenfsUpgradeFixture(existing.StateTest):
                 outcome='verified', toolsCommit=COMMIT, verification=dict(receipt, exit=0)))
             previous = install
 
-        return ('20261121T180000Z-metal', install, child)
+        return (pairs[0][0], install, child)
 
 
 class MigrationClosureCarryForwardTest(BreenfsUpgradeFixture):
