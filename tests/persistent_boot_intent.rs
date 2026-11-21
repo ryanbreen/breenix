@@ -30,4 +30,17 @@ fixture 4096 67108864 read\nfixture 67112960 67108864 corrupt-node\n\
 fixture 134221824 67108864 corrupt-data\nfixture 201330688 67108864 scratch\n";
     let captured = intent::parse(payload).unwrap();
     assert_eq!(intent::root_userland(Some(&captured)), Ok(None));
+    let end = 268439552;
+    let slices = captured.fixture_slices(4096, end).unwrap();
+    assert_eq!(slices.iter().map(|s| (s.offset, s.length)).collect::<Vec<_>>(),
+               [(4096, 67108864), (67112960, 67108864), (134221824, 67108864), (201330688, 67108864)]);
+    assert!(captured.fixture_slices(4608, end).is_err()); // Root overlap.
+    assert!(captured.fixture_slices(4096, end - 512).is_err());
+    let text = core::str::from_utf8(payload).unwrap();
+    for bad in [text.replace("67112960", "67112448"),
+                text.replace("201330688", "18446744073709551104"),
+                text.replace("corrupt-node", "corrupt-data")] {
+        let refused = intent::parse(bad.as_bytes()).unwrap();
+        assert!(intent::root_userland(Some(&refused)).is_err());
+    }
 }

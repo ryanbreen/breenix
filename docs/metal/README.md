@@ -900,6 +900,18 @@ the stub writes the image through that partition's own Block I/O, so its writes 
 storage record in the partition's first sector written last, as before. A cold disk readback reads the test root
 partition. A tests boot's RAM disk is its intent followed by the BXTEST image.
 
+Filesystem suite boots append the ARM64 QEMU fixture images to the staged root image. The root record
+keeps the root image's own length. The format-2 intent records each partition-relative range as
+`fixture <byte offset> <byte length> <role>`. The four 64 MiB slices follow the root contiguously in
+ARM64 discovery order: `read`, `corrupt-node`, `corrupt-data`, `scratch`. The host checks the staged
+length against the recorded test partition. The kernel checks the slices against the root record and
+the partition's actual GPT bounds before exposing them as additional `/dev/disk<N>` devices. Only
+the read fixture has a read-only device wrapper.
+
+Cold readback streams the staged range through the same partition handle after confirming the source
+boot's root record. The scorer receives the root prefix at its original length and the scratch slice
+from that upload as its companion image.
+
 ### Persistent partition export
 
 `metal-run export-persistent --branch BRANCH` queues a firmware boot for the cold copy of the last install's

@@ -1,4 +1,5 @@
 """The R240 filesystem suite must receive the same disks as ARM64 QEMU."""
+import json
 from pathlib import Path
 import re
 import sys
@@ -47,7 +48,7 @@ class FilesystemFixturesTest(existing.StateTest):
                 image.truncate(FIXTURE_BYTES)
             built[name] = dict(size=FIXTURE_BYTES, sha256=disk.metal_image.sha256(path))
         self.build['filesystemFixtures'] = built
-        layout = persist.new_layout()
+        layout = persist.reclaimed_layout(persist.add_breenfs_layout(persist.new_layout()))
         with patch.object(disk.metal_root, 'stage_root'), patch.object(disk.metal_root, 'console_identity', return_value='fixture'):
             facts, files = disk.stage(self.directory, self.inputs, 'suite', 'b' * 40, self.site,
                                      self.build, mode='suite', suite='directories,filesystem,files-io',
@@ -61,20 +62,42 @@ class FilesystemFixturesTest(existing.StateTest):
                                 fixtures=slices)
         self.assertEqual([line for line in intent.decode().splitlines() if line.startswith('fixture ')],
                          [f"fixture {s['offset']} {s['length']} {s['role']}" for s in expected])
-        self.assertEqual(disk.HEADER_2.unpack(files['suite-disk.cfg'].read_bytes())[1:3],
-                         (1, ROOT_BYTES + 4 * FIXTURE_BYTES))
+        install = disk.HEADER_2.unpack(files['suite-disk.cfg'].read_bytes())
+        self.assertEqual(install[1:3], (1, ROOT_BYTES + 4 * FIXTURE_BYTES))
         with files['suite-root.img'].open('rb') as payload:
             self.assertEqual(payload.read(512), disk.record(facts))
             for item in slices:
                 payload.seek(item['offset'])
                 self.assertEqual(payload.read(len(item['role'])), item['role'].encode())
-        # Model a stopped guest write. Scoring must use those bytes, from this
-        # capture, and pass the root image at its original length.
-        cold = files['suite-root.img']
+        m = existing.m
+        source = self.directory
+        m.write_json(m.STATE / 'disk.json', dict(layout=layout, testRoot=dict(facts, lastBoot=source.name)))
+        m.write_json(source / 'run.json', dict(disk='root', mode='suite', suite='filesystem'))
+        (source / 'commit').write_text('b' * 40)
+        events = [dict(event='disk-root-record', matchesLastInstall=True),
+                  dict(event='decided', status=m.EXIT_DONE, reason='suite complete'),
+                  dict(event='power-off', off=True, t=1),
+                  dict(event='suite-awaiting-disk-readback', provisional=True)]
+        (source / 'events.jsonl').write_text(''.join(json.dumps(event) + '\n' for event in events))
+        m.close_record(source, m.EXIT_SHORT, 'driver')
+        readback = source / 'cold'
+        readback.mkdir()
+        with (patch.object(disk.metal_image, 'assemble', side_effect=lambda image, _: image.touch()),
+              patch.object(disk.metal_image, 'stub_efi', return_value={})):
+            disk.prepare_readback(readback, readback, source.name, 'b' * 40, 'readback',
+                                  {'BOOT_URL': 'http://example.invalid/boot'}, self.inputs / 'stub.efi')
+        request = (readback / 'suite-disk.cfg').read_bytes()
+        self.assertEqual(disk.HEADER_2.unpack_from(request)[1:],
+                         (2, install[2], install[3], install[5], install[5]))
+        receipt = m.read_json(readback / 'readback.json')
+        self.assertEqual(receipt['fixtureSlices'], slices)
+        # Model a stopped guest write. Scoring receives those cold bytes
+        # alongside the root image at its original length.
+        cold = files['suite-root.img'].rename(readback / 'disk.img')
         with cold.open('r+b') as captured:
             captured.seek(slices[-1]['offset'])
             captured.write(b'stopped')
-        root = disk.unpack_readback(cold, facts['bytes'], slices)
+        root = disk.unpack_readback(cold, receipt['rootBytes'], receipt['fixtureSlices'])
         self.assertEqual(root.stat().st_size, ROOT_BYTES)
         scratch = root.with_name('breenfs-scratch.img')
         self.assertEqual(scratch.stat().st_size, FIXTURE_BYTES)

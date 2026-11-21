@@ -1686,11 +1686,11 @@ full-suite acceptance for the server's planned categories.
 ## Filesystem read fixture
 
 The filesystem suite's `read` category mounts a disposable host-built breenfs
-volume read-only, discovering it through `/dev/disk<N>`. On ARM64 QEMU,
-`boot-interactive.sh` calls `scripts/breenfs-read-fixture.sh IMAGE MANIFEST` only
-when the resolved suite list includes `filesystem`. The image is attached
-read-only as the last discovered virtio disk; the root and home indices stay
-unchanged. `scripts/filesystem-suite.py --image ROOT --read-manifest MANIFEST`
+volume read-only, discovering it through `/dev/disk<N>`. ARM64 QEMU and x86-metal
+use `scripts/breenfs-suite-fixtures.sh` when the suite list includes `filesystem`.
+It builds the read image with `scripts/breenfs-read-fixture.sh IMAGE MANIFEST`.
+Both launchers discover it before the corruption and scratch devices.
+`scripts/filesystem-suite.py --image ROOT --read-manifest MANIFEST`
 stages the extractor's TSV at `/usr/local/filesystem-suite/read/manifest`
 without collecting host format or crash evidence again.
 
@@ -1714,7 +1714,8 @@ commit. Cases release their mounts on return, including an assertion failure.
 blocks return to the statfs free count after close, remount and the reuse quarantine.
 The stopped-image verdict also runs `breenfs-extract dump` on that boot's companion
 `breenfs-scratch.img` and rejects an ORPHAN or inode item for the recorded inode.
-That check requires the retained scratch image beside the root passed as `--disk`;
+On x86-metal the companion comes from the same lease-bound cold firmware readback
+as the root. The check requires the retained scratch image beside the root passed as `--disk`;
 a missing image or inode receipt fails the verdict (E24 coordinator ledger 309, C5).
 
 `commit-without-fsync` polls the scratch mount's `durable_generation` in

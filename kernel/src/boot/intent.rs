@@ -11,6 +11,16 @@ const FORMAT_2: &[u8] = b"BREENIX-BOOT 2\n";
 const FORMAT_3: &[u8] = b"BREENIX-BOOT 3\n";
 const TARGET_MAX: usize = 256;
 const FORMAT_2_MAX: usize = 1024;
+const FIXTURE_ROLES: [&str; 4] = ["read", "corrupt-node", "corrupt-data", "scratch"];
+const FIXTURE_BYTES: u64 = 64 << 20;
+
+#[derive(Clone, Copy)]
+pub(crate) struct FixtureSlice {
+    pub offset: u64,
+    pub length: u64,
+}
+
+const EMPTY_FIXTURE: FixtureSlice = FixtureSlice { offset: 0, length: 0 };
 
 #[derive(Clone, Copy)]
 struct Mount {
@@ -38,6 +48,7 @@ pub struct Captured {
     previous_len: usize,
     mount_entries: [Option<Mount>; 6],
     mount_count: usize,
+    fixtures: [FixtureSlice; FIXTURE_ROLES.len()],
     refused: Option<&'static str>,
 }
 
@@ -61,8 +72,9 @@ fn parse_format_2(body: &[u8], format_3: bool) -> Result<Captured, &'static str>
     }
     let text = core::str::from_utf8(&body[..end]).map_err(|_| "the boot intent is not text")?;
     let mut captured =
-        Captured { format_3, #[cfg(any(target_arch = "aarch64", test))] format_2: true, target: [0; TARGET_MAX], target_len: 0, cmdline:[0;256], cmdline_len:None, root: None, home: None, tests: None, userland: None, userland_len: 0, previous: None, previous_len: 0, mount_entries: [None; 6], mount_count: 0, refused: None };
+        Captured { format_3, #[cfg(any(target_arch = "aarch64", test))] format_2: true, target: [0; TARGET_MAX], target_len: 0, cmdline:[0;256], cmdline_len:None, root: None, home: None, tests: None, userland: None, userland_len: 0, previous: None, previous_len: 0, mount_entries: [None; 6], mount_count: 0, fixtures: [EMPTY_FIXTURE; FIXTURE_ROLES.len()], refused: None };
     let mut target = false;
+    let mut fixture_count = 0;
     for line in text.split('\n').filter(|line| !line.is_empty()) {
         let (item, value) = line.split_once(' ').ok_or("a boot intent line has no value")?;
         match item {
@@ -114,6 +126,26 @@ fn parse_format_2(body: &[u8], format_3: bool) -> Result<Captured, &'static str>
                 let (offset, bytes) = value.split_once(' ').ok_or("tests needs an offset and a length")?;
                 captured.tests = Some((number(offset).ok_or("bad tests offset")?, number(bytes).ok_or("bad tests length")?));
             }
+            "fixture" if !format_3 => {
+                let (range, role) = value.rsplit_once(' ').ok_or("fixture needs a role")?;
+                if FIXTURE_ROLES.get(fixture_count).copied() != Some(role) {
+                    return Err("invalid filesystem fixture role or order");
+                }
+                let (offset, length) = range.split_once(' ').ok_or("fixture needs an offset and a length")?;
+                let offset = number(offset).ok_or("bad fixture offset")? as u64;
+                let length = number(length).ok_or("bad fixture length")? as u64;
+                if offset % 512 != 0 || length != FIXTURE_BYTES || offset.checked_add(length).is_none() {
+                    return Err("invalid filesystem fixture range");
+                }
+                if fixture_count != 0 {
+                    let previous = captured.fixtures[fixture_count - 1];
+                    if offset != previous.offset + previous.length {
+                        return Err("filesystem fixture slices must be contiguous");
+                    }
+                }
+                captured.fixtures[fixture_count] = FixtureSlice { offset, length };
+                fixture_count += 1;
+            }
             _ => return Err("the boot intent has an unknown or repeated item"),
         }
     }
@@ -122,6 +154,13 @@ fn parse_format_2(body: &[u8], format_3: bool) -> Result<Captured, &'static str>
     }
     if format_3 && !captured.mounts().any(|(_, path, _)| path == "/") {
         return Err("the boot intent names no root mount");
+    }
+    if fixture_count != 0
+        && (fixture_count != FIXTURE_ROLES.len()
+            || captured.root.is_none() || captured.home.is_some() || captured.tests.is_some()
+            || !captured.target[..captured.target_len].starts_with(b"suite "))
+    {
+        return Err("filesystem fixtures need a test-root suite intent");
     }
     Ok(captured)
 }
@@ -133,6 +172,20 @@ fn valid_mount_path(path: &str) -> bool {
 }
 
 impl Captured {
+    /// The parsed ranges are contiguous and in discovery order. Bind them to
+    /// the independently recorded root image and its actual GPT partition.
+    #[cfg(any(target_arch = "x86_64", test))]
+    pub(crate) fn fixture_slices(&self, root_bytes: u64, partition_bytes: u64) -> Result<&[FixtureSlice], &'static str> {
+        if self.fixtures[0].length == 0 {
+            return Ok(&[]);
+        }
+        let [first, .., last] = self.fixtures;
+        if first.offset != root_bytes || last.offset + last.length > partition_bytes {
+            return Err("filesystem fixtures do not fit after the recorded root");
+        }
+        Ok(&self.fixtures)
+    }
+
     /// Distinguish a refused format-3 intent from a legacy boot.
     pub fn explicit_mounts(&self) -> Result<bool, &'static str> {
         if self.format_3 {
@@ -175,7 +228,7 @@ pub fn parse(bytes: &[u8]) -> Option<Captured> {
     if let Some(line) = bytes.strip_prefix(FORMAT_1) {
         if line.is_empty() || line.len() > TARGET_MAX { return None; }
         let mut captured =
-            Captured { format_3: false, #[cfg(any(target_arch = "aarch64", test))] format_2: false, target: [0; TARGET_MAX], target_len: line.len(), cmdline:[0;256], cmdline_len:None, root: None, home: None, tests: None, userland: None, userland_len: 0, previous: None, previous_len: 0, mount_entries: [None; 6], mount_count: 0, refused: None };
+            Captured { format_3: false, #[cfg(any(target_arch = "aarch64", test))] format_2: false, target: [0; TARGET_MAX], target_len: line.len(), cmdline:[0;256], cmdline_len:None, root: None, home: None, tests: None, userland: None, userland_len: 0, previous: None, previous_len: 0, mount_entries: [None; 6], mount_count: 0, fixtures: [EMPTY_FIXTURE; FIXTURE_ROLES.len()], refused: None };
         captured.target[..line.len()].copy_from_slice(line);
         return Some(captured);
     }
@@ -198,6 +251,7 @@ pub fn parse(bytes: &[u8]) -> Option<Captured> {
         previous_len: 0,
         mount_entries: [None; 6],
         mount_count: 0,
+        fixtures: [EMPTY_FIXTURE; FIXTURE_ROLES.len()],
         refused: Some(why),
     });
     Some(captured)

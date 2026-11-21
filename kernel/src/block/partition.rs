@@ -3,11 +3,13 @@
 //! selection"). The write fence (`write_policy`) still checks each write the driver receives.
 
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 
 use super::{BlockDevice, BlockError, HardwareDisk};
 
+#[derive(Clone)]
 pub struct Partition {
-    disk: Box<dyn BlockDevice>,
+    disk: Arc<dyn BlockDevice>,
     first: u64,
     sectors: u64,
 }
@@ -17,7 +19,15 @@ impl Partition {
         if sectors == 0 || first.checked_add(sectors).map_or(true, |end| end > disk.num_blocks()) {
             return Err("the partition does not fit its disk");
         }
-        Ok(Self { disk, first, sectors })
+        Ok(Self { disk: Arc::from(disk), first, sectors })
+    }
+
+    /// A partition-relative view sharing the same fenced backend.
+    pub(super) fn slice(&self, first: u64, sectors: u64) -> Result<Self, &'static str> {
+        if sectors == 0 || first.checked_add(sectors).is_none_or(|end| end > self.sectors) {
+            return Err("the fixture slice does not fit its partition");
+        }
+        Ok(Self { disk: self.disk.clone(), first: self.first + first, sectors })
     }
 
     pub(super) fn limit_to(&mut self, sectors: u64) -> Result<(), &'static str> {

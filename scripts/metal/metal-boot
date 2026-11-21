@@ -749,7 +749,7 @@ class Driver:
                 self.retain_cut_recovery_payload(inputs, files, facts)
             files.update(suite_files)
             if self.power_cut is not None or self.bit_flip or (self.args.mode == 'suite'
-                    and metal_disk.readback_checks(self.dir, suites(self.args)[-1])):
+                    and metal_disk.needs_readback(self.dir, suites(self.args))):
                 shutil.copyfile(inputs / 'stub.efi', self.dir / 'readback-stub.efi')
         root_ramdisk = self.args.ramdisk and disk != 'root'
         if root_ramdisk:
@@ -769,7 +769,8 @@ class Driver:
             fault = metal_power_cut.kernel_fault(self.args)
             command_line = fault[1] if fault else getattr(self.args, 'kernel_command_line', None)
             if test_root or command_line is not None:
-                intent.write_bytes(metal_persist.intent(target, root=test_root, command_line=command_line))
+                intent.write_bytes(metal_persist.intent(target, root=test_root, command_line=command_line,
+                                                       fixtures=facts.get('fixtureSlices')))
             else:
                 intent.write_bytes(('BREENIX-BOOT 1\n' + target + '\n').encode('ascii'))
             files['ramdisk'] = intent
@@ -1333,6 +1334,10 @@ class Driver:
             if disk is not None:
                 shutil.copyfile(disk, root / 'disk.img')
                 (root / 'disk.img').chmod(0o644)
+                scratch = disk.with_name('breenfs-scratch.img')
+                if 'filesystem' in suites(self.args) and scratch.is_file():
+                    shutil.copyfile(scratch, root / scratch.name)
+                    (root / scratch.name).chmod(0o644)
             retained = self.dir / 'breenfs-tools'
             if retained.is_dir():
                 tools = root / 'tools/breenfs/target/release'
@@ -1434,7 +1439,10 @@ class Driver:
                                   inject=None, milestone=run.get('milestone'))
         scorer = Driver(args)
         disk_report = {}
-        suite_passed = scorer.score_suite(disk=image, disk_report=disk_report)
+        score_image = image
+        if slices := readback.get('fixtureSlices'):
+            score_image = metal_disk.unpack_readback(image, readback['rootBytes'], slices)
+        suite_passed = scorer.score_suite(disk=score_image, disk_report=disk_report)
         legacy_scorer = disk_report.pop('legacyScorer', False)
         if not disk_report:
             checks = metal_disk.readback_checks(source, suites(args)[-1])
@@ -2209,13 +2217,14 @@ class Driver:
             if self.recovery_expected:
                 raise Finish(m.EXIT_SHORT, 'the recovery boot unexpectedly staged a fixture')
             installed = self.delivery['diskRoot']
-            if int(found.group(1)) != installed['bytes']:
+            size = installed.get('stagedBytes', installed['bytes'])
+            if int(found.group(1)) != size:
                 raise Finish(m.EXIT_SHORT, 'the firmware fixture size differs from the staged image')
             self.seen.add('disk-fixture')
             # Firmware has flushed and read back the entire image and written
             # the record last. Persist before a kernel panic can prevent mount.
             metal_persist.record_test_root(dict(installed, lastBoot=self.id))
-            self.event('disk-fixture-verified', observed_at=observed_at, bytes=installed['bytes'])
+            self.event('disk-fixture-verified', observed_at=observed_at, bytes=size)
         if disk == 'root' and 'disk-root' not in self.seen and (found := ROOT_RECORD_LINE.search(line)):
             self.seen.add('disk-root')
             installed = self.delivery['diskRoot']
@@ -2765,7 +2774,7 @@ class Driver:
                         try:
                             if (disk_source and 'disk-root-confirmed' in self.seen
                                     and status in (m.EXIT_DONE, m.EXIT_SHORT)
-                                    and metal_disk.readback_checks(self.dir, suites(self.args)[-1])):
+                                    and metal_disk.needs_readback(self.dir, suites(self.args))):
                                 provisional_readback = status == m.EXIT_DONE
                                 m.write_text(self.dir / 'suite-verdict.txt', 'FAIL: awaiting cold raw disk readback after power-off\n')
                                 self.event('suite-awaiting-disk-readback', provisional=provisional_readback)
