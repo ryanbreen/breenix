@@ -101,12 +101,14 @@ def score(directory):
     if run.get('mode') == 'tests':
         return score_tests(directory, run, read)
     definition = read('definition/docs/metal/boot-path.json')
+    upgrade_parent = None
     if run.get('breenfsUpgrade') and run['mode'] == 'persistent':
         # On a rolled-back first upgrade the old slot's definition predates
         # the BreenFS upgrade scorer. Use the install's pinned boot definition.
         parent = run.get('upgradeParent')
         if parent and re.fullmatch(r'[0-9]{8}T[0-9]{6}Z-metal', parent):
-            definition = json.loads((directory.parent / parent / 'definition/docs/metal/boot-path.json').read_text())
+            upgrade_parent = directory.parent / parent
+            definition = json.loads((upgrade_parent / 'definition/docs/metal/boot-path.json').read_text())
     catalog = {stage['name']: stage for stage in read(
         'definition/tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json')['stages']}
     shape = boot_shape(run.get('disk'))
@@ -114,25 +116,33 @@ def score(directory):
     events = {json.loads(line)['event'] for line in (directory / 'events.jsonl').read_text().splitlines()}
     host = {'console-ready': 'console-ready', 'power-on': 'power-on', 'firmware-text': 'firmware-text',
             'post': 'post-code', 'image-complete': 'image-complete', 'handoff': 'handoff'}
+    retired = run.get('ext2Reclaimed')
+    breenfs = bool(run.get('breenfsUpgrade') or retired)
+    rescue = run.get('entry') == 'rescue'
     results = {}
     for milestone in definition['milestones']:
         if milestone.get('stub') or not measures(milestone, shape, run['mode']):
             continue
-        retired = run.get('ext2Reclaimed')
-        listed = stages(milestone, run['mode'], definition['gateArch'],
-                        breenfs=bool(run.get('breenfsUpgrade') or retired),
+        listed = stages(milestone, run['mode'], definition['gateArch'], breenfs=breenfs,
                         previous=bool(retired and run.get('entry') == 'previous'),
-                        rescue=run.get('entry') == 'rescue')
+                        rescue=rescue)
         if not listed:
             continue
-        if listed is milestone.get('breenfsInstallStages'):
-            try:
-                layout = read('persist.json').get('layout')
-            except (OSError, ValueError, AttributeError):
-                layout = None
-            fence_matches = exact_breenfs_fence(lines, layout)
-        else:
-            fence_matches = True
+        install_stages = listed is milestone.get('breenfsInstallStages')
+        persistent_stages = breenfs and not rescue and run['mode'] == 'persistent' and milestone.get('breenfsStages')
+        fence_matches = True
+        if install_stages or persistent_stages:
+            layout = run.get('persistentLayout')
+            request = directory if install_stages else None
+            if persistent_stages and not retired and 'persistentLayout' not in run:
+                # Older S21 captures pin the same layout in their install request.
+                request = upgrade_parent
+            if request is not None:
+                try:
+                    layout = json.loads((request / 'persist.json').read_text()).get('layout')
+                except (OSError, ValueError, AttributeError):
+                    layout = None
+            fence_matches = exact_breenfs_fence(lines, layout) and (not retired or layout['version'] == 3)
         cursor, reached = 0, 0
         for stage in listed:
             spec = catalog[stage] if isinstance(stage, str) else stage

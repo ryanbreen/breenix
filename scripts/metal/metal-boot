@@ -328,6 +328,7 @@ class Driver:
         self.run_verified = 0
         self.run_failure = None
         self.persist = None
+        self.persistent_fence_layout = None
         self.slot_userlands = {}
         self.slot_userlands_complete = False
         self.slot_refs_sent = False
@@ -861,8 +862,13 @@ class Driver:
             if not metal_migration.BOOT_ID.fullmatch(record.get('boot', '')):
                 raise Finish(m.EXIT_CANCELLED, 'the retired layout is missing its firmware readback record')
             self.args.ext2_reclaimed = record['boot']
+        if layout['version'] == 3 or getattr(self.args, 'breenfs_upgrade', None):
             run = m.read_json(self.dir / 'run.json', {})
-            m.write_json(self.dir / 'run.json', dict(run, ext2Reclaimed=record['boot']))
+            if layout['version'] == 3:
+                run['ext2Reclaimed'] = record['boot']
+            m.write_json(self.dir / 'run.json', dict(run, persistentLayout=layout))
+            if not session(self.args):
+                self.persistent_fence_layout = layout
         if self.migration_phase in ('rescue', 'return'):
             slots = metal_persist.read_disk().get('slots', {})
             if self.migration_phase == 'rescue':
@@ -1758,12 +1764,14 @@ class Driver:
         self.challenge_console(line, complete=True)
         # A prompt is often completed by the next kernel log line before the driver reads it unterminated.
         self.challenge_persistent(line)
-        if (self.args.mode == 'persistent-install' and getattr(self.args, 'breenfs_upgrade', None)
-                and metal_score.WRITE_FENCE in line):
-            if ('breenfs-install-fence' in self.seen
-                    or not metal_score.breenfs_fence_matches(line, self.persist['layout'])):
-                raise Finish(m.EXIT_SHORT, 'the install lacks the exact BreenFS system and home write fence')
-            self.seen.add('breenfs-install-fence')
+        if metal_score.WRITE_FENCE in line:
+            layout = self.persistent_fence_layout
+            if self.args.mode == 'persistent-install' and getattr(self.args, 'breenfs_upgrade', None):
+                layout = self.persist['layout']
+            if layout is not None:
+                if ('breenfs-fence' in self.seen or not metal_score.breenfs_fence_matches(line, layout)):
+                    raise Finish(m.EXIT_SHORT, 'the boot lacks the exact BreenFS system and home write fence')
+                self.seen.add('breenfs-fence')
         for stages in self.required_stages:
             if stages and marker_matches(stages[0], line):
                 stages.pop(0)
@@ -2924,12 +2932,9 @@ class Driver:
                 if receipt.get('homeReadable') is not True:
                     raise ValueError('the BreenFS home is unreadable')
                 metal_migration.verify_mounts(receipt.get('mounts', ''), 'BreenFS upgrade')
-                parts = metal_persist.layout()['partitions']
-                expected = [(parts[role]['first'], parts[role]['last']) for role in metal_persist.BREENFS_ROLES]
                 # The kernel seals this fence before launching a persistent init.
-                serial = (self.dir / 'serial.txt').read_text()
-                fences = re.findall(r'\[block\] write fence: [^\n]+ LBA (\d+)-(\d+), (\d+)-(\d+)', serial)
-                if len(fences) != 1 or sorted(zip(map(int, fences[0][::2]), map(int, fences[0][1::2]))) != sorted(expected):
+                lines = (self.dir / 'serial.txt').read_text().splitlines()
+                if not metal_score.exact_breenfs_fence(lines, self.persistent_fence_layout):
                     raise ValueError('verification lacks the exact BreenFS system and home write fence')
             except ValueError as error:
                 raise Finish(m.EXIT_SHORT, str(error)) from error

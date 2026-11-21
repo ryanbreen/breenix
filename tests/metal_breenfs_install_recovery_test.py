@@ -82,6 +82,76 @@ class BreenfsInstallReplayTest(existing.StateTest):
                 self.assertFalse(verdict['passed'], verdict)
 
 
+class BreenfsPersistentReplayTest(existing.StateTest):
+    def replay(self, layout, entry, serial, *, upgrading=False):
+        ident = '20261121T213335Z-metal'
+        reclaim = '20261121T213044Z-metal'
+        commit = upgrade.COMMIT
+        parent = upgrade.RETURN if upgrading else None
+        args = SimpleNamespace(id=ident, mode='persistent', payload='persistent', entry=entry,
+                               verify=True, inject=None, upgrade_parent=parent,
+                               breenfs_upgrade=upgrade.RETURN if upgrading else None)
+        with patch.object(m, 'load_site', return_value={}):
+            driver = boot.Driver(args)
+        driver.t0 = 100
+        driver.phase = driver.event = driver.on_manager_line = Mock()
+        driver.seen.add('manager-slot')
+        slots = {entry: dict(commit=commit)}
+        record = dict(layout=layout, slots=slots)
+        if layout['version'] == 3:
+            record['ext2Reclaimed'] = dict(boot=reclaim)
+        m.write_json(m.STATE / 'disk.json', record)
+        kept = m.STATE / 'persistent' / commit / 'definition'
+        for relative in ('docs/metal/boot-path.json', CATALOG):
+            destination = kept / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(existing.TOOLS.parents[1] / relative, destination)
+        definition_path = kept / 'docs/metal/boot-path.json'
+        definition = m.read_json(definition_path)
+        definition['milestones'] = [row for row in definition['milestones'] if row['id'] == 'persistent-install']
+        m.write_json(definition_path, definition)
+        if parent:
+            shutil.copytree(kept, m.boot_dir(parent) / 'definition')
+        m.write_json(driver.dir / 'run.json', dict(mode=args.mode, disk='persistent', entry=entry,
+                     breenfsUpgrade=args.breenfs_upgrade, upgradeParent=parent))
+        driver.prepare_persistent()
+        (driver.dir / 'serial.txt').write_text(serial)
+        (driver.dir / 'events.jsonl').write_text('')
+        if upgrading:
+            m.write_json(driver.dir / 'ssh-verification.json', dict(
+                boot=ident, powerOn=100, passed=True, authenticated=True, strictHostKey=True,
+                servicesStarted=True, homeReadable=True, completedAt=200))
+        status = None
+        try:
+            with patch.object(migration, 'verify_mounts'):
+                for line in serial.splitlines():
+                    driver.on_line(line, observed_at=200)
+        except boot.Finish as result:
+            status = result.status
+        verdict = metal_score.score(driver.dir)['milestones']['persistent-install']
+        shutil.rmtree(driver.dir)
+        shutil.rmtree(kept)
+        if parent:
+            shutil.rmtree(m.boot_dir(parent))
+        return status, verdict['passed']
+
+    def test_persistent_verification_requires_the_exact_breenfs_fence(self):
+        v2 = persist.add_breenfs_layout(persist.new_layout())
+        v3 = persist.reclaimed_layout(v2)
+        for layout, entry, upgrading in ((v3, 'current', False), (v3, 'previous', False), (v2, 'current', True)):
+            for fence in (FENCE, '[block] write fence: no partition chosen; hardware disks stay read-only',
+                          FENCE + ', 1-2', FENCE.replace('734005247', '734005248'), FENCE + '\n' + FENCE):
+                with self.subTest(version=layout['version'], entry=entry, fence=fence):
+                    serial = '\n'.join(('breenix-manager: screen read back identical: menu',
+                        'breenix-manager: row: No test boot is pending; session ready',
+                        f'breenix-manager: booting {entry} {upgrade.COMMIT}',
+                        'breenfs root filesystem mounted', '[fs] root mounted from the system partition',
+                        fence, 'Breenix login: '))
+                    status, passed = self.replay(layout, entry, serial, upgrading=upgrading)
+                    expected = fence == FENCE
+                    self.assertEqual((status == m.EXIT_DONE, passed), (expected, expected))
+
+
 class StoppedUpgradeTest(upgrade.BreenfsUpgradeFixture):
     def attempt(self, ident=STOPPED, *, answer=None, selection=None, fence=FENCE, off=True,
                 status=143, ended_by='driver'):
