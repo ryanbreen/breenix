@@ -19,13 +19,23 @@ CASES = (
     ('bit-flips', 'Reads reject the injected block and the checker identifies it'),
 )
 WRITER_START = re.compile(rb'SUITE filesystem START cases=1 only=power-cut/writer nonce=([0-9a-f]{16})')
-ACK = re.compile(rb'FSYNC ([0-9a-f]{16}) ([1-9][0-9]{0,19}) ([0-9a-f]{64})')
+ACK = re.compile(rb'FSYNC ([1-9][0-9]{0,19}) ([0-9a-f]{64}) nonce=([0-9a-f]{16})')
 INJECTION = re.compile(rb'\[breenfs\] corrupt-inject block=([1-9][0-9]{0,19}) offset=([0-9]{1,4}) bit=[0-7]')
 READ_RESULT = re.compile(rb'\[breenfs\] corrupt-read block=([1-9][0-9]{0,19}) result=(\S+)')
 DATA_CRC = re.compile(rb'error C1 block ([1-9][0-9]{0,19}) \(data REF [0-9]+\+[0-9]+\): '
                       rb'CRC 0x[0-9a-f]{8}, REF records 0x[0-9a-f]{8}')
 RECORD_BYTES = 4096
 BODY = struct.Struct('<508Q')
+
+
+def truncated_ack(line, nonce, seq):
+    prefix = f'FSYNC {seq} '.encode()
+    if prefix.startswith(line):
+        return True
+    if not line.startswith(prefix):
+        return False
+    digest, suffix = line[len(prefix):len(prefix) + 64], line[len(prefix) + 64:]
+    return re.fullmatch(rb'[0-9a-f]{0,64}', digest) and (b' nonce=' + nonce).startswith(suffix)
 
 
 def receipts(serial):
@@ -42,18 +52,15 @@ def receipts(serial):
         if b'FSYNC ' not in line:
             continue
         match = ACK.fullmatch(line)
-        if match is None and index == len(lines) - 1:
-            prefix = f'FSYNC {nonce.decode()} {len(acknowledged) + 1} '.encode()
-            if prefix.startswith(line) or (line.startswith(prefix)
-                    and re.fullmatch(rb'[0-9a-f]{0,63}', line[len(prefix):])):
-                continue  # The cut may interrupt the last serial line.
-        if match is None or index < start or match[1] != nonce:
+        if match is None and index == len(lines) - 1 and truncated_ack(line, nonce, len(acknowledged) + 1):
+            continue  # The cut may interrupt the last serial line.
+        if match is None or index < start or match[3] != nonce:
             raise ValueError(f'invalid FSYNC receipt at serial line {index + 1}')
-        seq = int(match[2])
+        seq = int(match[1])
         expected = len(acknowledged) + 1
         if seq != expected:
             raise ValueError(f'expected FSYNC sequence {expected}, found {seq}')
-        acknowledged.append(bytes.fromhex(match[3].decode('ascii')))
+        acknowledged.append(bytes.fromhex(match[2].decode('ascii')))
     if not acknowledged:
         raise ValueError("no acknowledged writes before the cut")
     return int(nonce, 16), acknowledged

@@ -1738,7 +1738,7 @@ fresh disposable BreenFS root. The writer creates `/crash/log` and appends
 506 little-endian 64-bit payload words
 (`seq XOR index`, with indexes starting at 0), and the 32-byte SHA-256 of the
 preceding 4,064 bytes. After fsync succeeds, the writer emits
-`FSYNC <hex nonce> <seq> <lowercase hex digest>` and flushes that line to serial.
+`FSYNC <seq> <lowercase hex digest> nonce=<hex nonce>` and flushes that line to serial.
 Score a cut with the BreenFS host tools from the matching build. Keep the
 writer capture beside its driver run and event records.
 
@@ -1751,6 +1751,11 @@ with `breenfs-extract`. Each record must match the writer's sequence, payload
 and digest, including a complete tail that reached disk before the cut but
 whose receipt did not reach serial. Replay fails on a missing acknowledged record,
 a receipt digest mismatch, a failed extraction or an incomplete disk record.
+
+Aimed cuts arm on the first acknowledged writer record, then hold the selected
+window on the next publication for up to 60 seconds. The driver archives the
+marker arrival and Off confirmation, and replay refuses subsequent publication
+progress in the capture.
 
 On metal, the cut driver reads the stopped test partition through the firmware
 under the same lease and runs the replay checker. A passing replay permits a

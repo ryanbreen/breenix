@@ -36,7 +36,7 @@ pub(super) fn write_records<W: Write>(
             write!(hex, "{byte:02x}").expect("writing to a String cannot fail");
         }
         // Start a fresh serial line even if the kernel left a breadcrumb unfinished.
-        let line = format!("\nFSYNC {nonce:016x} {seq} {hex}\n");
+        let line = format!("\nFSYNC {seq} {hex} nonce={nonce:016x}\n");
         receipts.write_all(line.as_bytes())?;
         receipts.flush()?;
         if after_receipt(log, seq)? {
@@ -63,4 +63,10 @@ pub(super) fn probe_record<W: Write>(
         Err(error) => Err(error),
         Ok(count) => Err(io::Error::other(format!("corruption probe returned {count} bytes"))),
     }
+}
+
+pub(super) fn diagnostic_done(serial: &mut impl Write, selection: &str) -> io::Result<()> {
+    writeln!(serial, "\nSUITE filesystem DONE passed=1 failed=0 skipped=0 total=1 only={selection}")?;
+    writeln!(serial, "SUITE_SEQUENCE READY filesystem")?;
+    serial.flush()
 }

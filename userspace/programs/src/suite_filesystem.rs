@@ -321,9 +321,15 @@ fn power_cut_writer(root: filesystem_root::RootFs) -> CaseResult {
             error => Err(std::io::Error::from_raw_os_error((-error) as i32)),
         }
     }))?;
-    io(writeln!(serial, "\nSUITE_SEQUENCE READY filesystem"))?;
-    io(serial.flush())?;
-    Ok(())
+    io(filesystem_power_cut::diagnostic_done(&mut serial, "power-cut/writer"))?;
+    drop(serial);
+    diagnostic_idle()
+}
+
+fn diagnostic_idle() -> ! {
+    loop {
+        std::thread::sleep(Duration::from_secs(60));
+    }
 }
 
 fn power_cut_recovery() -> CaseResult {
@@ -344,9 +350,9 @@ fn power_cut_recovery() -> CaseResult {
     let hex: String = digest.finalize().iter().map(|byte| format!("{byte:02x}")).collect();
     let mut serial = std::io::stdout().lock();
     io(writeln!(serial, "\nBREENFS POWER-CUT RECOVERY root-is-breenfs bytes={bytes} sha256={hex}"))?;
-    io(writeln!(serial, "SUITE_SEQUENCE READY filesystem"))?;
-    io(serial.flush())?;
-    Ok(())
+    io(filesystem_power_cut::diagnostic_done(&mut serial, "power-cut/recovery"))?;
+    drop(serial);
+    diagnostic_idle()
 }
 
 fn main() {

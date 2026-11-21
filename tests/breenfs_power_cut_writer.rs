@@ -45,7 +45,7 @@ fn power_cut_writer_acknowledges_only_complete_synced_records() {
     }
     assert_eq!(
         String::from_utf8(receipts).unwrap(),
-        format!("\nFSYNC {nonce:016x} 1 {}\n\nFSYNC {nonce:016x} 2 {}\n", DIGESTS[0], DIGESTS[1]),
+        format!("\nFSYNC 1 {} nonce={nonce:016x}\n\nFSYNC 2 {} nonce={nonce:016x}\n", DIGESTS[0], DIGESTS[1]),
     );
 }
 

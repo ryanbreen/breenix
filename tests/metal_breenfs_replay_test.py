@@ -26,7 +26,7 @@ def record(seq, *, wrong_payload=False, nonce=NONCE):
 
 
 def ack(seq):
-    return f'FSYNC {NONCE} {seq} {record(seq)[-32:].hex()}\n'.encode()
+    return f'FSYNC {seq} {record(seq)[-32:].hex()} nonce={NONCE}\n'.encode()
 
 
 class ColdReadbackTest(unittest.TestCase):
@@ -81,7 +81,7 @@ else:
         )
 
     def test_clean_prefix_includes_unacknowledged_complete_tail(self):
-        result = self.score('replay', START + ack(1) + f'FSYNC {NONCE} 2 123'.encode(), record(1) + record(2))
+        result = self.score('replay', START + ack(1) + b'FSYNC 2 123', record(1) + record(2))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('2 records, 1 acknowledged', result.stdout)
 
@@ -128,6 +128,8 @@ else:
 
     def test_aimed_replay_refuses_publication_progress_after_the_trigger(self):
         trigger = START + ack(1) + b'[breenfs] commit-window first-flush'
+        valid = self.score('replay', trigger + b'\n', record(1), aimed=True)
+        self.assertEqual(valid.returncode, 0, valid.stderr)
         for tail in (b'[breenfs] commit-window first-flush released\n',
                      b'[breenfs] commit-window between-rings\n', ack(2)):
             result = self.score('replay', trigger + b'\n' + tail, record(1) + record(2), aimed=True)

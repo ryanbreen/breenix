@@ -360,7 +360,7 @@ class DiskTest(existing.StateTest):
         (source / 'events.jsonl').write_text(''.join(json.dumps(e) + '\n' for e in events))
         (source / 'serial.txt').write_text(
             'SUITE filesystem START cases=1 only=power-cut/writer nonce=0123456789abcdef\n'
-            + 'FSYNC 0123456789abcdef 1 ' + 'a' * 64 + '\n')
+            + 'FSYNC 1 ' + 'a' * 64 + ' nonce=0123456789abcdef\n')
         self.site['BOOT_URL'] = 'http://example.invalid/boot'
         with patch.object(disk.metal_persist, 'layout', return_value={'partitions': {'test': {'guid': partition}}}), \
              patch.object(disk.metal_image, 'assemble', side_effect=lambda image, _: image.touch()), \

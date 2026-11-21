@@ -44,6 +44,7 @@ import metal_root  # noqa: E402
 import metal_score  # noqa: E402
 import metal_disk  # noqa: E402
 import metal_persist  # noqa: E402
+import breenfs_replay  # noqa: E402
 import metal_power_cut  # noqa: E402
 import metal_prebuilt  # noqa: E402
 from metal_score import boot_shape  # noqa: E402
@@ -1274,10 +1275,10 @@ class Driver:
 
     def continue_cut_recovery(self):
         source = m.boot_dir(self.args.source_boot)
-        boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
+        boot_id = boot_id_now()
         while m.boot_dir(boot_id).exists():
             time.sleep(1)
-            boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
+            boot_id = boot_id_now()
         args = argparse.Namespace(**(vars(self.args) | dict(id=boot_id, mode='suite', suite='filesystem',
             payload='image', disk='root', root_fs='breenfs', case='power-cut/recovery',
             kernel_command_line=None, cut_recovery_from=self.id)))
@@ -1375,13 +1376,14 @@ class Driver:
         seconds = round(observed_at - self.t0, 1) if self.t0 is not None else 0
         if self.t0 is None or not line.strip() or line.startswith('[SOL Session'):
             return
-        if self.power_cut is not None and (writer := re.fullmatch(
-                r'SUITE filesystem START cases=1 only=power-cut/writer nonce=([0-9a-f]{16})', line)):
-            self.suite_name = 'filesystem'
-            self.writer_nonce = writer[1]
-            self.event('power-cut-writer-start', observed_at=observed_at, nonce=writer[1])
-        if self.writer_nonce and re.fullmatch(f'FSYNC {self.writer_nonce} 1 [0-9a-f]{{64}}', line):
-            self.writer_acknowledged = True
+        if (self.power_cut is not None or getattr(self.args, 'breenfs_bit_flip', False)):
+            if writer := breenfs_replay.WRITER_START.fullmatch(line.encode()):
+                self.suite_name = 'filesystem'
+                self.writer_nonce = writer[1]
+                self.event('power-cut-writer-start', observed_at=observed_at, nonce=writer[1].decode())
+            elif (self.writer_nonce and (ack := breenfs_replay.ACK.fullmatch(line.encode()))
+                  and ack[1] == b'1' and ack[3] == self.writer_nonce):
+                self.writer_acknowledged = True
         cut = self.power_cut
         if (cut is not None and self.writer_acknowledged and cut['window'] is not None and cut['cutAt'] is None
                 and self.suite_name == self.args.suite and 'disk-root-confirmed' in self.seen
