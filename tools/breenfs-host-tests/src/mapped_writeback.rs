@@ -3,6 +3,9 @@
 use super::*;
 use alloc::vec;
 use std::sync::Mutex as HostMutex;
+use std::time::{Duration, Instant};
+
+const WAIT_LIMIT: Duration = Duration::from_secs(5);
 
 struct NoWait;
 impl Wait for NoWait {
@@ -431,11 +434,16 @@ fn pause_at(
     resume: std::sync::mpsc::Receiver<()>,
 ) {
     let mut entered = Some(entered);
+    let mut wait_deadline = None;
     super::super::preempt::context::observer(Some(Box::new(move |event| {
+        if matches!(event, super::super::preempt::context::Event::CommitWait { .. }) {
+            let deadline = wait_deadline.get_or_insert_with(|| Instant::now() + WAIT_LIMIT);
+            assert!(Instant::now() < *deadline, "commit receipt wait exceeded its deadline");
+        }
         if select(event) {
             if let Some(entered) = entered.take() {
                 entered.send(()).unwrap();
-                resume.recv().unwrap();
+                resume.recv_timeout(WAIT_LIMIT).expect("publication edge was not released");
             }
         }
     })));
@@ -443,18 +451,17 @@ fn pause_at(
 
 fn interleave_pressure<T>(fs: &BreenFs<NoWait>, cut: FreezeCut, inspect: impl FnOnce() -> T) -> T {
     use super::super::preempt::context::Event;
-    use std::{sync::mpsc::channel, thread, time::Duration};
+    use std::{sync::mpsc::channel, thread};
     let (worker_entered, at_worker_edge) = channel();
     let (resume_worker, worker_resume) = channel();
     let (pressure_entered, at_pressure_edge) = channel();
     let (resume_pressure, pressure_resume) = channel();
     let start = fs.inner.state.lock().durable.generation;
-    let wait = Duration::from_secs(5);
 
     thread::scope(move |scope| {
         let (start_worker, worker_start) = channel();
         let worker = scope.spawn(move || {
-            worker_start.recv().unwrap();
+            worker_start.recv_timeout(WAIT_LIMIT).expect("worker was not started");
             pause_at(move |event| match cut {
                 FreezeCut::AfterStaging => matches!(event, Event::MappingsStaged),
                 FreezeCut::AfterInstall => matches!(event, Event::Phase {
@@ -466,7 +473,7 @@ fn interleave_pressure<T>(fs: &BreenFs<NoWait>, cut: FreezeCut, inspect: impl Fn
         });
         let (start_pressure, pressure_start) = channel();
         let pressure = scope.spawn(move || {
-            pressure_start.recv().unwrap();
+            pressure_start.recv_timeout(WAIT_LIMIT).expect("pressure create was not started");
             // Leave retained metadata for the real reservation-pressure path
             // even when this caller starts after the worker's own install.
             fs.create(2, b"pressure", NewNode::Regular {
@@ -491,10 +498,10 @@ fn interleave_pressure<T>(fs: &BreenFs<NoWait>, cut: FreezeCut, inspect: impl Fn
 
         if !matches!(cut, FreezeCut::BeforeInstall) {
             start_worker.send(()).unwrap();
-            at_worker_edge.recv_timeout(wait).unwrap();
+            at_worker_edge.recv_timeout(WAIT_LIMIT).expect("worker did not reach its publication edge");
         }
         start_pressure.send(()).unwrap();
-        at_pressure_edge.recv_timeout(wait).unwrap();
+        at_pressure_edge.recv_timeout(WAIT_LIMIT).expect("pressure create did not reach its publication edge");
         {
             let state = fs.inner.state.lock();
             assert!(state.pending.is_some(), "pressure did not freeze a generation");

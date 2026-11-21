@@ -647,7 +647,10 @@ mod recover {
                 };
                 assert_eq!(
                     breenfs_host_tests::recover::recover(&dev, writable),
-                    Err(Error::EIO)
+                    Err(Error::NodeRead(btree::ReadFailure {
+                        cause: btree::ReadCause::Device,
+                        addr,
+                    }))
                 );
                 assert!(dev.inner.events().is_empty());
                 assert_eq!(dev.inner.durable_image(), bytes);
