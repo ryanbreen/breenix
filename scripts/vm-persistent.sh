@@ -9,6 +9,7 @@
 # vm-persistent.sh qemu stage-candidate --run-dir DIR [--inject upgrade-no-ssh|upgrade-service-down]
 # vm-persistent.sh qemu install --run-dir DIR
 # vm-persistent.sh qemu migrate|check-manifests|cutover|rescue|return --run-dir DIR
+# vm-persistent.sh qemu probe-migration --run-dir DIR --identity FILE --host-key FILE
 # Each migration action stages the next boot. Cold-check the stopped migration
 # before cutover, then promote a verified NEXT before staging rescue and return.
 # vm-persistent.sh qemu fault-boot --run-dir DIR [--inject feeder-hang|health-hang]
@@ -17,11 +18,11 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 umask 077
-usage() { echo 'usage: vm-persistent.sh qemu build|boot|fault-boot|reboot|stop|promote|rollback|stage-candidate|install|migrate|check-manifests|cutover|rescue|return --run-dir DIR [--operator-account FILE [--system-image IMAGE | --fault panic-reboot|watchdog] | --mode console|desktop [--kernel FILE] [--slot current|next] | --inject feeder-hang|health-hang|upgrade-no-ssh|upgrade-service-down]' >&2; exit 2; }
+usage() { echo 'usage: vm-persistent.sh qemu build|boot|fault-boot|reboot|stop|promote|rollback|stage-candidate|install|migrate|check-manifests|cutover|rescue|return|probe-migration --run-dir DIR [--operator-account FILE [--system-image IMAGE | --fault panic-reboot|watchdog] | --mode console|desktop [--kernel FILE] [--slot current|next] | --inject feeder-hang|health-hang|upgrade-no-ssh|upgrade-service-down | --identity FILE --host-key FILE]' >&2; exit 2; }
 [ "$#" -ge 2 ] && [ "$1" = qemu ] || usage
 op=$2; shift 2
-case "$op" in build|boot|fault-boot|reboot|stop|promote|rollback|stage-candidate|install|migrate|check-manifests|cutover|rescue|return) ;; *) usage ;; esac
-run= system= account= kernel= mode= fault= inject= slot=
+case "$op" in build|boot|fault-boot|reboot|stop|promote|rollback|stage-candidate|install|migrate|check-manifests|cutover|rescue|return|probe-migration) ;; *) usage ;; esac
+run= system= account= kernel= mode= fault= inject= slot= identity= host_key=
 while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] && [ -n "$2" ] || usage
     case "$1" in
@@ -33,11 +34,14 @@ while [ "$#" -gt 0 ]; do
         --mode) [ -z "$mode" ] || usage; mode=$2 ;;
         --inject) [ -z "$inject" ] || usage; inject=$2 ;;
         --slot) [ -z "$slot" ] || usage; slot=$2 ;;
+        --identity) [ -z "$identity" ] || usage; identity=$2 ;;
+        --host-key) [ -z "$host_key" ] || usage; host_key=$2 ;;
         *) usage ;;
     esac
     shift 2
 done
 [ -n "$run" ] || usage
+[ "$op" = probe-migration ] || [ -z "$identity$host_key" ] || usage
 case "$op" in
     build) [ -z "$inject$slot" ] && [ -n "$account" ] && [ -z "$kernel" ] && [ -z "$mode" ] || usage
            case "$fault" in ""|panic-reboot|watchdog) ;; *) usage ;; esac
@@ -49,6 +53,8 @@ case "$op" in
                 case "$inject" in ""|feeder-hang|health-hang) ;; *) usage ;; esac; mode=console ;;
     stage-candidate) [ -z "$fault$system$account$kernel$mode$slot" ] || usage
                      case "$inject" in ""|upgrade-no-ssh|upgrade-service-down) ;; *) usage ;; esac ;;
+    probe-migration) [ -z "$inject$fault$system$account$kernel$mode$slot" ] || usage
+                     [ -f "$identity" ] && [ -f "$host_key" ] || usage ;;
     reboot|stop|promote|rollback|install|migrate|check-manifests|cutover|rescue|return)
         [ -z "$inject$fault$system$account$kernel$mode$slot" ] || usage ;;
 esac
@@ -136,6 +142,9 @@ fi
 intent_run=$run
 run=$(cd "$run" && pwd -P)
 case "$op" in
+    probe-migration)
+        export PATH="$PATH:/opt/homebrew/opt/e2fsprogs/sbin:/usr/local/opt/e2fsprogs/sbin"
+        exec python3 -B "$ROOT/scripts/vm-artifacts.py" probe-cycle "$ROOT" "$run" "$identity" "$host_key" ;;
     migrate|check-manifests|cutover|rescue|return)
         mkdir "$run/boot.lock" || { echo 'run is already booting or staging' >&2; exit 1; }
         trap 'rmdir "$run/boot.lock"' EXIT

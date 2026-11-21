@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 
@@ -23,6 +24,8 @@ EXT2_DISKS = ('system.img', 'home.img')
 BREENFS_DISKS = ('breenfs-system.img', 'breenfs-home.img')
 MIGRATION_DISKS = (*BREENFS_DISKS, 'test-root.img')
 CYCLE_RECORD = 'migration-cycle.json'
+MIGRATION_PROBE = 'migration-ssh.json'
+SHARED_BINDS = ('/root', '/etc', '/var', '/opt', '/srv', '/tmp', '/run')
 
 
 def validate_manifest(path):
@@ -288,6 +291,7 @@ def promote_cycle(run):
     slots = slots_module()
     if cycle['phase'] != 'cutover' or not cycle['boots'].get('cutover'):
         raise ValueError('promotion needs a verified BreenFS cutover boot')
+    check_cycle_probe(run, cycle, 'cutover', cycle['boots']['cutover'])
     frozen_ext2(run, cycle)
     if slots.select(run, 'current').get('layout') != 'breenfs':
         if slots.select(run, 'next').get('layout') != 'breenfs':
@@ -321,6 +325,104 @@ def verify_cycle(root, run):
     print(cycle['phase'])
 
 
+def validate_cycle_probe(probe, boot, phase, userland):
+    if probe['boot'] != boot or probe['phase'] != phase or probe['generation'] != userland:
+        raise ValueError('SSH evidence names a different boot, phase or generation')
+    if not re.fullmatch(r'[0-9a-f]{64}', probe['sentinelSha256']):
+        raise ValueError('SSH evidence has no verified home sentinel')
+
+    mounts = {}
+    for line in probe['mounts'].splitlines():
+        _, path, kind, options, _, _ = line.split()
+        if path in mounts:
+            raise ValueError(f'duplicate mount for {path}')
+        mounts[path] = (kind, set(options.split(',')))
+
+    def require_mount(path, kind, mode, *flags):
+        actual_kind, options = mounts.get(path, ('', set()))
+        if actual_kind != kind or options & {'ro', 'rw'} != {mode} or not set(flags) <= options:
+            raise ValueError(f'{path} is not mounted as {kind} {",".join((mode, *flags))}')
+
+    if phase == 'rescue':
+        require_mount('/', 'ext2', 'ro')
+        require_mount('/home', 'ext2', 'ro')
+        for path in '/tmp', '/run':
+            require_mount(path, 'breenfs', 'rw')
+    else:
+        require_mount('/', 'breenfs', 'ro')
+        require_mount('/home', 'breenfs', 'rw', 'nosuid', 'nodev')
+        for path in SHARED_BINDS:
+            require_mount(path, 'breenfs', 'rw')
+
+
+def check_cycle_probe(run, cycle, phase, boot):
+    probe = json.loads((run / 'boots' / boot / MIGRATION_PROBE).read_text())
+    validate_cycle_probe(probe, boot, phase, cycle['userland'])
+
+
+def has_cycle_probe(run, cycle, phase, boot):
+    if boot:
+        try:
+            check_cycle_probe(run, cycle, phase, boot)
+            return True
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            return False
+    return False
+
+
+def probe_cycle(run, identity, public_host_key):
+    """Capture a live, read-only operator SSH probe before guest poweroff."""
+    import vm_site
+
+    cycle = cycle_state(run)
+    phase = cycle['phase']
+    if phase not in ('cutover', 'rescue', 'return') or not (run / 'boot.lock').is_dir():
+        raise ValueError('SSH verification needs a live cutover, rescue or return boot')
+    boot = current_boot(run)
+    if (boot / 'ended').exists():
+        raise ValueError('SSH verification needs a live boot')
+    site = vm_site.site(run)
+    user, uid = site['OPERATOR_USER'], site['OPERATOR_UID']
+    if not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', user) or not uid.isascii() or not uid.isdecimal() or int(uid) == 0:
+        raise ValueError('SSH verification needs a non-root operator account')
+    port = str(site['SERVER_SSH_PORT'])
+    host_key = ' '.join(Path(public_host_key).read_text().split()[:2])
+    if not re.fullmatch(r'ssh-ed25519 [A-Za-z0-9+/]+={0,2}', host_key):
+        raise ValueError('expected the trusted guest Ed25519 public host key')
+    expected = subprocess.check_output(['debugfs', '-R', f'cat /{user}/migration.txt', run / 'home.img'],
+                                       stderr=subprocess.PIPE)
+    if not expected:
+        raise ValueError('frozen ext2 home has no nonempty operator migration.txt sentinel')
+
+    with tempfile.TemporaryDirectory(dir=boot) as directory:
+        known = Path(directory) / 'known_hosts'
+        known.write_text(f'[127.0.0.1]:{port} {host_key}\n')
+        args = ['ssh', '-F', '/dev/null', '-o', 'StrictHostKeyChecking=yes',
+                '-o', f'UserKnownHostsFile={known}', '-o', 'GlobalKnownHostsFile=/dev/null',
+                '-o', 'HostKeyAlgorithms=ssh-ed25519', '-o', 'BatchMode=yes',
+                '-o', 'IdentitiesOnly=yes', '-o', 'ConnectTimeout=5',
+                '-i', identity, '-p', port, '-l', user, '127.0.0.1']
+
+        def ssh(command):
+            return subprocess.check_output([*args, command], timeout=10)
+
+        if ssh('id -u').strip() != uid.encode('ascii'):
+            raise ValueError('SSH login returned the wrong operator UID')
+        generation = ssh('cat /usr/share/factory/generation').decode().strip()
+        mounts = ssh('cat /proc/mounts').decode()
+        sentinel = ssh('cat "$HOME/migration.txt"')
+        if sentinel != expected:
+            raise ValueError('SSH home sentinel differs from the frozen ext2 home')
+
+    probe = dict(boot=boot.name, phase=phase, generation=generation, mounts=mounts,
+                 sentinelSha256=hashlib.sha256(sentinel).hexdigest())
+    validate_cycle_probe(probe, boot.name, phase, cycle['userland'])
+    if current_boot(run) != boot or (boot / 'ended').exists():
+        raise ValueError('boot changed during SSH verification')
+    slots_module().write_json(boot / MIGRATION_PROBE, probe)
+    print(f'{phase}: verified SSH generation, mounts and home sentinel for {boot.name}')
+
+
 def finish_cycle(run, phase, exit_status):
     cycle = cycle_state(run)
     if cycle['phase'] != phase:
@@ -340,7 +442,8 @@ def finish_cycle(run, phase, exit_status):
         filesystem = 'ext2' if phase == 'rescue' else 'breenfs'
         verified = (clean and shutdown_verified(events)
                     and f'[boot] {filesystem} root filesystem mounted' in serial
-                    and 'bsshd: listening on 0.0.0.0:22' in serial)
+                    and 'bsshd: listening on 0.0.0.0:22' in serial
+                    and has_cycle_probe(run, cycle, phase, boot.name))
     if phase == 'migrate' or phase == 'rescue':
         cycle['boots'].pop('return', None)
     cycle['boots'][phase] = boot.name if verified else None
@@ -407,8 +510,9 @@ def write_cycle_result(run, cycle):
     outcomes = (
         (boots.get('migrate'), 'missing guest migration equality receipt'),
         (cycle.get('compared'), cycle.get('comparisonError', 'cold manifests have not been compared')),
-        (boots.get('cutover'), 'missing verified cutover boot'),
-        (boots.get('rescue') and boots.get('return'), 'missing verified rescue and return boots'),
+        (has_cycle_probe(run, cycle, 'cutover', boots.get('cutover')), 'missing verified cutover boot'),
+        (all(has_cycle_probe(run, cycle, phase, boots.get(phase)) for phase in ('rescue', 'return')),
+         'missing verified rescue and return boots'),
     )
     build = json.loads((run / 'build.json').read_text())
     cases = [dict(id='persistent-root/' + case, result='PASS' if passed else 'FAIL',
@@ -452,6 +556,14 @@ if __name__ == '__main__':
             sys.exit(f'VM artifacts: {error}')
         sys.exit(0)
     operation, root, run, value, *extra = sys.argv[1:]
+    if operation == 'probe-cycle':
+        if len(extra) != 1:
+            sys.exit('SSH verification needs an identity and a trusted guest public host key')
+        try:
+            probe_cycle(Path(run), value, extra[0])
+        except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+            sys.exit(f'VM migration: {error}')
+        sys.exit(0)
     if operation in ('migration-images', 'migrate', 'cutover', 'rescue', 'return',
                      'check-manifests', 'promote-cycle', 'rollback-cycle', 'verify-cycle', 'finish-cycle'):
         if extra:

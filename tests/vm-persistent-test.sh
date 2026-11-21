@@ -93,6 +93,7 @@ cp "$root/scripts/metal/metal_lib.py" "$fixture/scripts/metal/metal_lib.py"
 cp "$launcher" "$fixture/scripts/vm-persistent.sh"
 cp "$root/scripts/vm-serial-pump.py" "$fixture/scripts/vm-serial-pump.py"
 cp "$root/scripts/vm-artifacts.py" "$fixture/scripts/vm-artifacts.py"
+cp "$root/scripts/vm_site.py" "$fixture/scripts/vm_site.py"
 [ ! -f "$root/scripts/vm_slots.py" ] || cp "$root/scripts/vm_slots.py" "$fixture/scripts/vm_slots.py"
 cp "$root/scripts/qemu-arm64.py" "$fixture/scripts/qemu-arm64.py"
 cat > "$fixture/scripts/host-slots.sh" <<'SH'
@@ -240,6 +241,16 @@ if scenario in ('migrate', 'cutover', 'rescue', 'return'):
         kind = 'ext2' if scenario == 'rescue' else 'breenfs'
         serial.sendall(f'[boot] {kind} root filesystem mounted\n'.encode())
         serial.sendall(b'bsshd: listening on 0.0.0.0:22\n')
+        if os.environ.get('VERIFY_SSH'):
+            key = Path(os.environ['BREENIX_VM_SITE']).with_name('operator-key')
+            probe = [root / 'scripts/vm-persistent.sh', 'qemu', 'probe-migration', '--run-dir', run,
+                     '--identity', key, '--host-key', key.with_suffix('.pub')]
+            if scenario == 'cutover':
+                for bad, diagnostic in [('mounts', b'/home is not mounted as breenfs rw,nosuid,nodev'),
+                                        ('sentinel', b'SSH home sentinel differs')]:
+                    result = subprocess.run(probe, env=dict(os.environ, BAD_PROBE=bad), capture_output=True)
+                    assert result.returncode and diagnostic in result.stderr, result
+            subprocess.run(probe, check=True)
         nonce = 'a' * 64
         token = (run / 'power-token').read_text().strip()
         receipt = hashlib.sha256((token + nonce).encode()).hexdigest()
@@ -345,8 +356,7 @@ done
 echo 'vm-persistent watchdog fault checks passed'
 fi
 
-# Cold readers run against disposable fixture files, with the fake guest
-# supplying only the distinct serial outcome expected for each cycle stage.
+# Cold readers and the SSH collector run against disposable fixture files.
 for name in metal_image metal_persist metal_probe metal_root migrate_manifest; do
     cp "$root/scripts/metal/$name.py" "$fixture/scripts/metal/"
 done
@@ -354,8 +364,9 @@ run="$fixture/run"
 rm -f "$run/continuation.json" "$run/fault-kind" "$run/fault-kernel" "$run/slot-kernels.json"
 cp "$fixture/kernel" "$run/kernel"
 mkdir -p "$fixture/old-system/.breenix-shared" "$fixture/old-system/root" \
-    "$fixture/old-system/.breenix-generations/gen-1" "$fixture/old-home"
+    "$fixture/old-system/.breenix-generations/gen-1" "$fixture/old-home/operator"
 printf data > "$fixture/old-system/.breenix-generations/gen-1/payload"
+printf 'migration sentinel\n' > "$fixture/old-home/operator/migration.txt"
 for role in system home; do
     truncate -s 8M "$run/$role.img"
     mke2fs -q -F -t ext2 -d "$fixture/old-$role" "$run/$role.img"
@@ -393,6 +404,38 @@ case "${1##*/}:$*" in
 esac
 FAKEEXTRACT
 chmod +x "$fixture/bin/breenfs-check" "$fixture/bin/breenfs-extract"
+cat > "$fixture/bin/ssh" <<'PYSSH'
+#!/usr/bin/env python3
+import os
+from pathlib import Path
+import sys
+
+arguments = sys.argv[1:]
+assert 'StrictHostKeyChecking=yes' in arguments and 'BatchMode=yes' in arguments
+known = next(Path(arg.split('=', 1)[1]) for arg in arguments if arg.startswith('UserKnownHostsFile='))
+port = arguments[arguments.index('-p') + 1]
+assert known.read_text().startswith(f'[127.0.0.1]:{port} ssh-ed25519 ')
+assert arguments[arguments.index('-l') + 1] == 'operator'
+command = arguments[-1]
+bad = os.environ.get('BAD_PROBE')
+if command == 'id -u':
+    print('1234')
+elif command == 'cat /usr/share/factory/generation':
+    print('gen-1')
+elif command == 'cat "$HOME/migration.txt"':
+    print('wrong sentinel' if bad == 'sentinel' else 'migration sentinel')
+elif command == 'cat /proc/mounts':
+    rescue = os.environ['STUB_SCENARIO'] == 'rescue'
+    kind = 'ext2' if rescue else 'breenfs'
+    home = 'ro,nosuid,nodev' if rescue else 'rw,nosuid,nodev'
+    print(f'none / {kind} ro 0 0')
+    print(f'none /home {kind} {"rw,nosuid" if bad == "mounts" else home} 0 0')
+    for path in ('/tmp', '/run') if rescue else ('/root', '/etc', '/var', '/opt', '/srv', '/tmp', '/run'):
+        print(f'none {path} breenfs rw 0 0')
+else:
+    sys.exit('unexpected SSH command')
+PYSSH
+chmod +x "$fixture/bin/ssh"
 export BREENFS_TOOLS_DIR="$fixture/bin" CAPTURE="$fixture"
 cycle() { "$fixture/scripts/vm-persistent.sh" qemu "$1" --run-dir "$run"; }
 intent_is() { cmp -s "$run/boot-intent" "$1" || fail "boot intent differs from $1"; }
@@ -467,13 +510,20 @@ record_is PASS PASS FAIL FAIL
 cycle cutover
 intent_is "$fixture/cutover.intent"
 if cycle promote; then fail 'unverified cutover promoted'; fi
-STUB_SCENARIO=cutover boot_fixture --mode console
+if STUB_SCENARIO=cutover boot_fixture --mode console > "$fixture/cutover-no-ssh.log" 2>&1; then
+    fail 'cutover passed with serial and shutdown evidence alone'
+fi
+grep -q 'cutover boot did not supply its verification receipts' "$fixture/cutover-no-ssh.log" || fail 'cutover did not reach stock finish'
+record_is PASS PASS FAIL FAIL
+if cycle promote; then fail 'cutover without SSH evidence promoted'; fi
+cycle cutover
+VERIFY_SSH=1 STUB_SCENARIO=cutover boot_fixture --mode console
 cycle promote
 cycle rescue
 intent_is "$fixture/rescue.intent"
-STUB_SCENARIO=rescue boot_fixture --mode console
+VERIFY_SSH=1 STUB_SCENARIO=rescue boot_fixture --mode console
 cycle return
 intent_is "$fixture/cutover.intent"
-STUB_SCENARIO=return boot_fixture --mode console
+VERIFY_SSH=1 STUB_SCENARIO=return boot_fixture --mode console
 record_is PASS PASS PASS PASS
 echo 'vm-persistent cold manifests and migration cycle checks passed'

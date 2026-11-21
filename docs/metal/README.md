@@ -853,6 +853,23 @@ The complete intent is at most 1024 bytes. Malformed format 3 intents are refuse
 The migration, cutover and rescue boot intents use format 3. Writable mounts name
 the BreenFS system or home volumes.
 
+For the disposable ARM64 VM migration cycle, put a nonempty `migration.txt`
+in the operator's ext2 home before staging `migrate`. After cutover, rescue and
+return each reach SSH readiness, run the probe from another terminal before
+requesting guest poweroff. Supply the operator's private identity and the
+trusted guest Ed25519 public host key. The probe uses the operator configured
+in the private VM site file (`BREENIX_VM_SITE`).
+
+```sh
+scripts/vm-persistent.sh qemu probe-migration --run-dir "$run" \
+  --identity "$operator_key" --host-key "$guest_host_public_key"
+```
+
+The probe checks the generation marker and `/proc/mounts` through strict SSH,
+then compares the SSH readback of `migration.txt` byte for byte with the frozen
+ext2 home image. The scorer requires that boot's receipt and authenticated
+guest poweroff before passing cutover, rescue or return.
+
 ### The write fence
 
 Physical boots keep hardware disks read-only until the roots are chosen. Then the block layer allows writes to the
