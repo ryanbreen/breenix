@@ -1394,6 +1394,55 @@ class DriverTest(StateTest):
         self.assertEqual(raised.exception.status, status)
         return raised.exception
 
+    def test_unexpected_manager_answers_force_off_before_kernel_dispatch(self):
+        for payload in ('image', 'persistent-export'):
+            reports = ('lab answered: nothing (no query URL is configured)',
+                       'lab answered: test another-boot',
+                       f'lab answered: busy {self.args.id}',
+                       f'lab answered: persistent {self.args.id} current',
+                       'menu: Starting Breenix in 5 s; any key stops the countdown.',
+                       'menu: Starting the previous kernel in 5 s; any key stops the countdown.')
+            for index, report in enumerate(reports):
+                with self.subTest(payload=payload, report=report):
+                    args = SimpleNamespace(**vars(self.args))
+                    args.payload, args.target, args.commit, args.task = payload, 'main', 'a' * 40, None
+                    args.nmi = True
+                    with patch.object(m, 'load_site', return_value={}):
+                        d = boot.Driver(args)
+                    d.dir = self.driver.dir / f'fixture-{payload}-{index}'
+
+                    def serial_watch():
+                        raw = d.dir / 'serial.raw'
+                        raw.write_text(f'breenix-manager: lab answered: test {d.id}\n'
+                                       'breenix-manager: menu: Starting the test loop in 3 s; '
+                                       'a key does not cancel it.\n')
+                        d.pump_serial()
+                        with raw.open('a') as serial:
+                            serial.write(f'breenix-manager: {report}\n{boot.HANDOFF_LINE}\n')
+                        d.pump_serial()
+                        raise boot.Finish(m.EXIT_SHORT, 'the serial watcher kept running')
+
+                    def force_off(*, immediate=False):
+                        self.assertTrue(immediate)
+                        self.assertIsNone(d.kernel_started)
+                        self.assertNotIn('"event": "decided"', (d.dir / 'events.jsonl').read_text())
+                        return True
+
+                    with patch.multiple(d, claim=Mock(), prepare_payload=Mock(), preflight=Mock(),
+                                        do_stage=Mock(), start_console=Mock(), cleanup=Mock(),
+                                        power_on=Mock(side_effect=lambda: setattr(d, 't0', 100)),
+                                        watch=serial_watch), \
+                         patch.object(m, 'force_off_and_wait', side_effect=force_off) as off, \
+                         patch.object(boot, 'NMI_CAPTURE_SECONDS', 0), \
+                         patch.object(m, 'rf') as management:
+                        self.assertEqual(d.run(), m.EXIT_DELIVERY)
+                    off.assert_called_once_with(immediate=True)
+                    management.assert_not_called()
+                    entry = m.read_json(d.dir / 'run.json')['bootManagerAbort']
+                    self.assertEqual(entry['line'], f'breenix-manager: {report}')
+                    self.assertEqual(entry['action'], 'ForceOff')
+                    self.assertTrue(entry['powerOffConfirmed'])
+
     def test_unavailable_native_upload_route_refuses_before_console_or_power_on(self):
         import gt710_upload
         self.driver.create_record = self.driver.claim = self.driver.prepare_payload = Mock()
