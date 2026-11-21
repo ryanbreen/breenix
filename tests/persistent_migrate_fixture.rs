@@ -9,19 +9,25 @@ pub mod layout;
 pub mod sha256;
 
 use migrate::{Mounts, Paths};
-use std::{fs, io, os::unix::fs::PermissionsExt, path::PathBuf, process::ExitCode};
+use std::{cell::Cell, fs, io, os::unix::fs::PermissionsExt, path::PathBuf, process::ExitCode};
 
-struct Fixture {
+struct Fixture<'a> {
     root: PathBuf,
     switch: usize,
     mismatch: Option<String>,
+    latch_run_at_snapshot: Option<&'a Cell<bool>>,
 }
 
-impl Mounts for Fixture {
+impl Mounts for Fixture<'_> {
     fn snapshot(&mut self, name: &str) -> io::Result<()> {
         assert_eq!(name, "gen-fixture");
         assert!(self.root.join("default").read_dir()?.next().is_none());
-        fs::create_dir(self.root.join("generation"))
+        fs::create_dir(self.root.join("generation"))?;
+        if let Some(run_read_only) = self.latch_run_at_snapshot {
+            run_read_only.set(true);
+            return Err(io::ErrorKind::ReadOnlyFilesystem.into());
+        }
+        Ok(())
     }
 
     fn switch_system(&mut self, root: Option<&str>, read_only: bool) -> io::Result<PathBuf> {
@@ -65,17 +71,35 @@ fn main() -> ExitCode {
         home: &root.join("home"),
         evidence: &root.join("evidence"),
     };
-    let vm_poweroff = std::env::args().nth(2).as_deref() == Some("--vm-poweroff");
+    let mode = std::env::args().nth(2);
+    let latch_run = mode.as_deref() == Some("--vm-poweroff-run-read-only");
+    let vm_poweroff = latch_run || mode.as_deref() == Some("--vm-poweroff");
+    let run_read_only = Cell::new(false);
     let mut mounts = Fixture {
         root: root.clone(),
         switch: 0,
-        mismatch: std::env::args().nth(2).filter(|_| !vm_poweroff),
+        mismatch: mode.filter(|_| !vm_poweroff),
+        latch_run_at_snapshot: latch_run.then_some(&run_read_only),
     };
-    let result = migrate::run(&paths, "fixture", &mut mounts, &mut io::stdout());
+    let mut migrate = || migrate::run(&paths, "fixture", &mut mounts, &mut io::stdout());
     if vm_poweroff {
-        return finish::power_off_after(result, || fs::write(root.join("poweroff-requested"), []));
+        let nonce_path = root.join("run/breenix/shutdown-nonce");
+        let prepare_shutdown = || -> io::Result<String> {
+            if run_read_only.get() {
+                return Err(io::ErrorKind::ReadOnlyFilesystem.into());
+            }
+            let nonce = "a".repeat(64);
+            fs::create_dir_all(nonce_path.parent().unwrap())?;
+            fs::write(&nonce_path, format!("{nonce}\n"))?;
+            Ok(nonce)
+        };
+        let request_poweroff = |nonce: String| {
+            assert_eq!(fs::read_to_string(&nonce_path)?, format!("{nonce}\n"));
+            fs::write(root.join("poweroff-requested"), nonce)
+        };
+        return finish::power_off_after(migrate(), || request_poweroff(prepare_shutdown()?));
     }
-    match result {
+    match migrate() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");

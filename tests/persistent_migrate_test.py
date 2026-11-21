@@ -100,6 +100,21 @@ class PersistentMigration(unittest.TestCase):
             self.assertNotEqual((root / "evidence/source.tsv").read_bytes(),
                                 (root / "evidence/destination.tsv").read_bytes())
 
+    def test_run_latching_read_only_still_requests_poweroff(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.fixture(root)
+            result = subprocess.run(
+                [self.driver, root, "--vm-poweroff-run-read-only"], capture_output=True
+            )
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertTrue((root / "generation").is_dir(), "destination write did not start")
+            self.assertIn(b"[migrate] exit code: 1", result.stdout.splitlines())
+            self.assertNotIn(RECEIPT, result.stdout)
+            request = root / "poweroff-requested"
+            self.assertTrue(request.is_file(), result.stderr.decode())
+            self.assertEqual(request.read_bytes(), b"a" * 64)
+
     @unittest.skipUnless(os.chmod in os.supports_follow_symlinks,
                          "requires setting permissions on the source symlink")
     def test_symlink_modes_are_normalized_and_counted(self):
