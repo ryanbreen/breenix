@@ -1,7 +1,9 @@
 """Host checks for the R240 migration boundaries."""
 import hashlib
 import io
+from pathlib import Path
 import struct
+import subprocess
 from unittest.mock import patch
 import unittest
 
@@ -131,6 +133,79 @@ class MetalMigrationTest(existing.StateTest):
         self.assertEqual(out.read(), data[-4 * block:])
         with self.assertRaises(ValueError):
             metal_migration.unpack_sparse(io.BytesIO(body[:-1]), io.BytesIO(), 64 * block, len(body))
+
+
+class CarryForwardAdmissionTest(existing.StateTest):
+    allowed_files = ['scripts/metal/server-suite', 'scripts/metal/metal_migration.py',
+                     'tests/remote_upgrade_test.py', 'tests/metal_migration_test.py']
+
+    def setUp(self):
+        super().setUp()
+        import metal_migration
+
+        self.migration = metal_migration
+        self.worktree = Path(self.temporary.name) / 'source'
+        self.worktree.mkdir()
+        self.git('init', '--quiet', '--separate-git-dir', str(m.STATE / 'migration-source.git'))
+        self.cycle_commit = self.commit_files('cycle', self.allowed_files)
+        self.layout = metal_persist.add_breenfs_layout(metal_persist.new_layout())
+        self.cycle = dict(commit=self.cycle_commit, userland='v1', add='a',
+                          boots=dict(add='a', migrate='b', readback='c'), layout=self.layout)
+        self.migration.save(self.cycle)
+        metal_persist.update_disk(layout=self.layout)
+        self.backup = self.enterContext(patch.object(self.migration, 'backup'))
+
+    def git(self, *args):
+        return subprocess.check_output(['git', '-C', str(self.worktree), '-c', 'commit.gpgSign=false',
+                                        '-c', 'core.hooksPath=/dev/null', '-c', 'user.name=Fixture',
+                                        '-c', 'user.email=fixture@example.invalid', *args], text=True).strip()
+
+    def commit_files(self, title, paths):
+        for path in paths:
+            file = self.worktree / path
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_text(title + '\n')
+        self.git('add', '--', *paths)
+        self.git('commit', '--quiet', '-m', title)
+        return self.git('rev-parse', 'HEAD')
+
+    def append_record(self, head, **fields):
+        m.append_jsonl(m.STATE / 'migration-carry-forward.jsonl',
+                       dict(cycleCommit=self.cycle_commit, headCommit=head,
+                            allowedFiles=self.allowed_files, **fields))
+
+    def admit(self, head):
+        # Use a real Git range with fixture content under the ruling's cycle policy.
+        with patch.object(self.migration, 'CARRY_FORWARD_CYCLE', self.cycle_commit, create=True):
+            return self.migration.admit('cutover', 'next-boot', head, head)
+
+    def test_carry_forward_admits_an_allowed_diff(self):
+        head = self.commit_files('repair', self.allowed_files)
+        self.append_record(head, ledgerLine=985)
+        self.assertEqual(self.admit(head), self.cycle)
+        self.backup.assert_called_once_with(self.layout, allowed={'a': 'add', 'b': 'migrate', 'c': 'readback'},
+                                            active='next-boot')
+        self.assertEqual(self.migration.state(), self.cycle)
+
+    def test_carry_forward_refuses_files_outside_the_ruling(self):
+        for path in ('scripts/metal/metal-boot', 'scripts/metal/metal_export.py',
+                     'scripts/metal/migrate_manifest.py', 'scripts/metal/efi-stub/src/persist.rs',
+                     'kernel/src/fs/breenfs/commit.rs', 'userspace/programs/src/persistent_migrate.rs'):
+            with self.subTest(path=path):
+                # Each comparison includes only one disallowed file.
+                self.git('checkout', '--quiet', '--detach', self.cycle_commit)
+                head = self.commit_files('outside ruling', [self.allowed_files[0], path])
+                self.append_record(head, ledgerLine=985)
+                with self.assertRaises(ValueError):
+                    self.admit(head)
+        self.backup.assert_not_called()
+
+    def test_carry_forward_requires_the_ruling_line(self):
+        head = self.commit_files('repair', self.allowed_files)
+        self.append_record(head)
+        with self.assertRaises(ValueError):
+            self.admit(head)
+        self.backup.assert_not_called()
 
 
 if __name__ == '__main__':
