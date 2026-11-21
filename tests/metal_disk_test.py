@@ -341,6 +341,43 @@ class DiskTest(existing.StateTest):
         with self.assertRaisesRegex(ValueError, 'replaced between'):
             disk.prepare_readback(self.directory, self.inputs, source.name, 'b' * 40, 'readback', self.site, self.inputs / 'stub.efi')
 
+    def test_cut_readback_and_recovery_admit_only_the_original_test_partition(self):
+        m = existing.m
+        source, facts = self.readback_source(m.EXIT_SHORT, 'deliberate power cut')
+        partition = '12345678-abcd-1234-abcd-000000000123'
+        facts.update(installedBy=source.name, partition=partition)
+        m.write_json(source / 'suite-disk.json', facts)
+        m.write_json(source / 'run.json', dict(id=source.name, disk='root', mode='suite',
+            suite='filesystem', onlyCase='power-cut/writer', rootFs='breenfs',
+            powerCut=dict(powerOffConfirmed=True, cutAt=3)))
+        m.write_json(m.STATE / 'disk.json', dict(facts, lastBoot=source.name))
+        events = [
+            dict(event='disk-root-record', matchesLastInstall=True, installedBy=source.name, t=1),
+            dict(event='power-cut-writer-start', nonce='0123456789abcdef', t=2),
+            dict(event='decided', status=m.EXIT_SHORT, reason='deliberate power cut', t=4),
+            dict(event='power-off', off=True, t=5),
+        ]
+        (source / 'events.jsonl').write_text(''.join(json.dumps(e) + '\n' for e in events))
+        (source / 'serial.txt').write_text(
+            'SUITE filesystem START cases=1 only=power-cut/writer nonce=0123456789abcdef\n'
+            + 'FSYNC 0123456789abcdef 1 ' + 'a' * 64 + '\n')
+        self.site['BOOT_URL'] = 'http://example.invalid/boot'
+        with patch.object(disk.metal_persist, 'layout', return_value={'partitions': {'test': {'guid': partition}}}), \
+             patch.object(disk.metal_image, 'assemble', side_effect=lambda image, _: image.touch()), \
+             patch.object(disk.metal_image, 'stub_efi', return_value={}):
+            disk.prepare_readback(self.directory, self.inputs, source.name, 'b' * 40, 'readback',
+                                  self.site, self.inputs / 'stub.efi')
+            request = disk.HEADER_2.unpack_from((self.inputs / 'suite-disk.cfg').read_bytes())
+            self.assertEqual(request[1], 2)  # Firmware raw read, never stage.
+            self.assertEqual(request[3], disk.uuid.UUID(partition).bytes_le)
+            self.assertTrue(m.read_json(self.directory / 'readback.json')['powerCut'])
+            result = dict(id='readback', passed=True, logBytes=4096, logSha256='e' * 64)
+            m.write_json(source / 'cut-readback.json', result)
+            self.assertEqual(disk.prepare_cut_recovery(source.name, 'readback', 'b' * 40), (facts, result))
+            m.write_json(m.STATE / 'disk.json', dict(facts, lastBoot='another-boot'))
+            with self.assertRaisesRegex(ValueError, 'replaced between'):
+                disk.prepare_cut_recovery(source.name, 'readback', 'b' * 40)
+
     def test_only_decided_failure_schedules_diagnostic_readback(self):
         m, boot = existing.m, existing.boot
         for minute, status, reason in [(0, m.EXIT_STOPPED, 'operator stop'),
