@@ -77,14 +77,13 @@ run those suites explicitly with their milestone selector. See [effort measures]
 
 ### Host-run categories
 
-A category marked `"hostRunner": true` in a suite the binary runs is measured from the boot host
-against a persistent boot instead, by `scripts/metal/server-suite` (the users suite's `operator`
-category, "Users & permissions" below). The binary leaves it out, as it does a planned category;
+A category marked `"hostRunner": true` is scored by a host tool. The guest suite's table omits it.
 `tests/suite_manifests.rs` compares the binary's table with the other populated categories and asks
-the runner to check the host-run category's cases (`--check-manifest`). A suite boot's verdict
-expects no record for it and says it is scored elsewhere, `--milestone` refuses a milestone that
-measures it, and `all` leaves the suite out. The runner's records go to that persistent boot's
-store and into its `milestone-verdict.json`, as the server suite's do (below). <!-- claim-lint:ok: `all` is the flag's name; scripts/suite-sequence.py (resolve) and tests/suite_sequence_test.py (test_all_leaves_out_suites_with_host_run_categories). -->
+the host tool to check the category's cases (`--check-manifest`). A guest verdict expects no
+case records for the category, `--milestone` refuses to score it, and `all` leaves the suite out.
+`scripts/metal/server-suite` scores the users suite's `operator` category against a persistent
+boot and puts its records in that boot's store and `milestone-verdict.json`. The filesystem
+suite's `power-cut` category uses the cold readback described below. <!-- claim-lint:ok: `all` is the flag's name; scripts/suite-sequence.py (resolve) and tests/suite_sequence_test.py (test_all_leaves_out_suites_with_host_run_categories). -->
 
 A suite whose cases read clocks, measure time or exercise concurrency adds
 `"timingSensitive": true`, including smoke for its monotonic-clock case.
@@ -1739,7 +1738,24 @@ fresh disposable BreenFS root. The writer creates `/crash/log` and appends
 (`seq XOR index`, with indexes starting at 0), and the 32-byte SHA-256 of the
 preceding 4,064 bytes. After fsync succeeds, the writer emits
 `FSYNC <seq> <lowercase hex digest>` and flushes that line to serial.
-The host scores these receipts against the cold readback.
+Score a cut with the BreenFS host tools from the matching build:
+
+```sh
+python3 scripts/metal/breenfs_replay.py replay SERIAL COLD_IMAGE --tools-dir BREENFS_TOOLS
+```
+
+The checker requires `breenfs-check --full` to exit 0 and reads `/crash/log`
+with `breenfs-extract`. Each record must match the writer's sequence, payload
+and digest, including a complete tail that reached disk before the cut but
+whose receipt did not reach serial. Replay fails on a missing acknowledged record,
+a receipt digest mismatch, a failed extraction or an incomplete disk record.
+
+For the data bit-flip boot, use `bit-flip` in place of `replay`. The same serial
+must report the injected block and then `[breenfs] corrupt-read block=N result=ReadError::Data`
+from the read probe. An absent result, a generic I/O error or returned data fails.
+The full checker must exit 4 with a C1 CRC error naming that exact block.
+These per-boot verdicts supply the `aimed-cuts`, `random-cuts` and `bit-flips`
+host records. The acceptance set supplies the complete category result.
 
 ## Developer SDK
 

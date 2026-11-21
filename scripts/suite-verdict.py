@@ -25,9 +25,8 @@ case. Selected runs (`only`) may omit memory; when present, the same memory chec
 A manifest with diskChecks also requires --disk: the stopped VM image is read
 directly and its persisted bytes compared, bypassing the guest cache.
 
-A category marked "hostRunner" is run from the boot host against a persistent
-boot (scripts/metal/server-suite), not by the suite binary: the boot's records
-leave it out, and a milestone that measures it is scored on that persistent boot.
+A category marked "hostRunner" is scored by its host tool. The guest suite's
+records leave it out, and this scorer refuses milestones that measure it.
 
 With --milestone, the commit's effort path supplies the required category set.
 Missing or planned measured categories block acceptance. The full boot's records,
@@ -389,6 +388,8 @@ def verdict(manifest, records_log, logs, only=None, categories=None, disk=None, 
             return False, f"missing measured categories: {', '.join(sorted(missing))}"
         elsewhere = [category for category in categories if category in hosted]
         if elsewhere:
+            if suite == "filesystem":
+                return False, "filesystem power-cut evidence is scored by scripts/metal/breenfs_replay.py"
             return False, (f"host-run categories are scored on their persistent boot, not this one: {', '.join(elsewhere)}"
                            "; run scripts/metal/server-suite against it")
         planned = [category for category in planned if category in categories]

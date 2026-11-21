@@ -143,7 +143,12 @@
     {
       "id": "power-cut",
       "title": "Power cuts during commits lose no acknowledged write",
-      "cases": []
+      "hostRunner": true,
+      "cases": [
+        { "id": "aimed-cuts", "title": "Aimed power cuts preserve acknowledged writes" },
+        { "id": "random-cuts", "title": "Random power cuts preserve acknowledged writes" },
+        { "id": "bit-flips", "title": "Reads reject the injected block and the checker identifies it" }
+      ]
     },
     {
       "id": "persistent-root",
