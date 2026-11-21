@@ -48,7 +48,7 @@ def generations(proof, reclamation=False):
 
 def breenfs_pair(cycle, commit, first, second):
     """Score the paired S21 receipts for successive BreenFS upgrades."""
-    from metal_migration import BOOT_ID, COMMIT, RECORDED_RETURN, verify_mounts
+    from metal_migration import BOOT_ID, COMMIT, RECORDED_RETURN, TWO_UPGRADES, verify_mounts
 
     if cycle.get('closed') != RECORDED_RETURN or not COMMIT.fullmatch(commit):
         raise ValueError('two-upgrades needs the closed migration and a pinned tools commit')
@@ -75,5 +75,5 @@ def breenfs_pair(cycle, commit, first, second):
         last, generation = boot, install
     return dict(milestone='filesystem/ext2-retired', boot=last, commit=commit, toolsCommit=commit,
                 migration=cycle['closed'], upgrades=upgrades,
-                cases=[dict(id='ext2-retired/two-upgrades', result='PASS', ms=0)],
+                cases=[dict(id=TWO_UPGRADES, result='PASS', ms=0)],
                 cleanup=True, consoleGaps=[])

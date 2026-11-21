@@ -51,6 +51,8 @@ def prepare(stage, boot_id, site, stub, *, sparse=False):
         raise ValueError('persistent export needs a recorded persistent install')
     if sparse and layout['version'] != 2:
         raise ValueError('sparse readback requires the recorded BreenFS layout')
+    if not sparse and layout['version'] == 3:
+        raise ValueError('the ext2 partitions were retired from the recorded layout')
     roles = metal_persist.BREENFS_ROLES if sparse else ROLES
     parts = layout['partitions']
     guids = [uuid.UUID(part['guid']) for part in parts.values()]

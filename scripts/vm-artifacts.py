@@ -30,10 +30,10 @@ SHARED_BINDS = ('/root', '/etc', '/var', '/opt', '/srv', '/tmp', '/run')
 
 def validate_manifest(path):
     manifest = json.loads(Path(path).read_text())
-    # The metal replay checker validates power-cut separately.
+    # The metal tools account for power-cut and ext2-retired.
     actual = [(category['id'], case['id'], case['title'])
               for category in manifest['categories']
-              if category.get('hostRunner') is True and category['id'] != 'power-cut'
+              if category.get('hostRunner') is True and category['id'] not in ('power-cut', 'ext2-retired')
               for case in category['cases']]
     expected = [('persistent-root', name, title) for name, title in PERSISTENT_ROOT_CASES]
     if manifest['id'] != 'filesystem' or actual != expected:

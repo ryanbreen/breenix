@@ -5,7 +5,8 @@
 //! and the partitions' contents as extents onto the one fixed disk whose first sector is the recorded whole-disk root
 //! record, invalidating the old layout first and writing the protective MBR last, then reconnects the disk so the
 //! firmware reads the new table. `add-breenfs` validates both GPT copies, writes two images and appends their
-//! entries. `upgrade` checks the disk's GUID and writes files into the EFI system partition.
+//! entries. `reclaim-ext2` checks the migrated table and selectable slots before clearing the ext2 entries.
+//! `upgrade` checks the disk's GUID and writes files into the EFI system partition.
 //! Install and upgrade also write `MANAGER.CFG` (the lab's lines, the HTTP boot port this stub was loaded through, and the
 //! HTTP boot option) and puts the boot manager's load option first in `BootOrder`, the HTTP boot option second.
 //! Each write is read back and compared. An ordinary delivery has no request and takes the existing boot path.
@@ -29,12 +30,21 @@ const CHUNK_SECTORS: usize = 128;
 const CONFIG_LINES: usize = 16;
 const MANAGER_FILE: &str = "\\EFI\\BREENIX\\BOOTMGR.EFI";
 const CONFIG_FILE: &str = "\\EFI\\BREENIX\\MANAGER.CFG";
+const PART_TYPES: [&str; PARTITIONS] = [
+    "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
+    "dac951c3-27df-4e3d-8b9e-487906ac2c81",
+    "2ef14a34-abbd-48f8-83d6-f2a8c7b4a9fe",
+    "9bfeaef9-4f51-45de-8bcf-5cec1603b862",
+    "fad521d2-3783-43cc-be73-60ed528454c9",
+    "f93914ad-57e7-4feb-a52e-295a07fd7e35",
+];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Action {
     Install,
     Upgrade,
     AddBreenfs,
+    ReclaimExt2,
 }
 
 impl Action {
@@ -43,6 +53,7 @@ impl Action {
             Self::Install => "install",
             Self::Upgrade => "upgrade",
             Self::AddBreenfs => "add-breenfs",
+            Self::ReclaimExt2 => "reclaim-ext2",
         }
     }
 }
@@ -92,6 +103,7 @@ struct Request<'t> {
     load_option: Option<&'t str>,
     migration_slots: bool,
     breenfs_upgrade: Option<[[u8; 16]; 4]>,
+    keep_generations: Option<[&'t str; 2]>,
 }
 
 fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
@@ -111,6 +123,7 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
         load_option: None,
         migration_slots: false,
         breenfs_upgrade: None,
+        keep_generations: None,
     };
     let mut action = None;
     for line in lines {
@@ -160,17 +173,28 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
             }
             "load-option" => request.load_option = Some(value),
             "migration-slots" if value.is_empty() && !request.migration_slots => request.migration_slots = true,
+            "keep-generations" if request.keep_generations.is_none() => {
+                let (current, previous) = value.split_once(' ').ok_or(INVALID_PARAMETER)?;
+                if !valid_generation(current) || !valid_generation(previous) || current == previous {
+                    return Err(INVALID_PARAMETER);
+                }
+                request.keep_generations = Some([current, previous]);
+            }
             "breenfs-upgrade" if request.breenfs_upgrade.is_none() => {
-                let mut words = value.split(' ');
                 let mut guids = [[0; 16]; 4];
-                for index in 0..guids.len() {
-                    let unique = words.next().and_then(guid).ok_or(INVALID_PARAMETER)?;
+                let mut count = 0;
+                for (index, word) in value.split(' ').enumerate() {
+                    let unique = guid(word).ok_or(INVALID_PARAMETER)?;
+                    if index >= guids.len() {
+                        return Err(INVALID_PARAMETER);
+                    }
                     if unique == [0; 16] || guids[..index].contains(&unique) {
                         return Err(INVALID_PARAMETER);
                     }
                     guids[index] = unique;
+                    count += 1;
                 }
-                if words.next().is_some() {
+                if !matches!(count, 2 | 4) {
                     return Err(INVALID_PARAMETER);
                 }
                 request.breenfs_upgrade = Some(guids);
@@ -184,8 +208,12 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
         Some("install") => Action::Install,
         Some("upgrade") => Action::Upgrade,
         Some("add-breenfs") => Action::AddBreenfs,
+        Some("reclaim-ext2") => Action::ReclaimExt2,
         _ => return Err(INVALID_PARAMETER),
     };
+    if request.keep_generations.is_some() != (request.action == Action::ReclaimExt2) {
+        return Err(INVALID_PARAMETER);
+    }
     let rescue_files = text.lines().filter_map(|line| line.strip_prefix("rescue-file "));
     if request.migration_slots {
         let files = rescue_files.map(|line| line.split(' ').next().unwrap_or(""));
@@ -240,6 +268,21 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
             return Err(INVALID_PARAMETER);
         }
         Action::AddBreenfs => {}
+        Action::ReclaimExt2 => {
+            if request.expect_disk.is_none()
+                || request.expect_record.is_some()
+                || request.esp.is_some()
+                || request.disk_guid != [0; 16]
+                || request.config_len != 0
+                || request.load_option.is_some()
+                || text.lines().any(|line| line.starts_with("extent ") || line.starts_with("esp-file "))
+                || request.parts.iter().zip(PART_TYPES).any(|(part, kind)| {
+                    part.is_none_or(|part| Some(part.type_guid) != guid(kind))
+                })
+            {
+                return Err(INVALID_PARAMETER);
+            }
+        }
     }
     Ok(request)
 }
@@ -791,13 +834,15 @@ unsafe fn check_upgrade_layout(
     array.copy_from_slice(disk.read(primary.array_lba(), ARRAY_SECTORS as usize)?);
     let backup_array = disk.read(backup.array_lba(), ARRAY_SECTORS as usize)?;
     gpt_append::validate_pair(&primary, &backup, array, backup_array, expected).map_err(refuse_append)?;
-    for (entry, (unique, kind)) in array.chunks_exact(ENTRY).skip(2).zip([
-        (guids[2], "2ef14a34-abbd-48f8-83d6-f2a8c7b4a9fe"),
-        (guids[3], "9bfeaef9-4f51-45de-8bcf-5cec1603b862"),
-        (guids[0], "fad521d2-3783-43cc-be73-60ed528454c9"),
-        (guids[1], "f93914ad-57e7-4feb-a52e-295a07fd7e35"),
-    ]) {
-        if entry[..16] != guid(kind).ok_or(INVALID_PARAMETER)? || entry[16..32] != unique {
+    for ((entry, unique), kind) in array.chunks_exact(ENTRY).skip(2)
+        .zip([guids[2], guids[3], guids[0], guids[1]]).zip(&PART_TYPES[2..])
+    {
+        let valid = if unique == [0; 16] {
+            entry.iter().all(|&byte| byte == 0)
+        } else {
+            entry[..16] == guid(kind).ok_or(INVALID_PARAMETER)? && entry[16..32] == unique
+        };
+        if !valid {
             return Err(VOLUME_CORRUPTED);
         }
     }
@@ -805,6 +850,10 @@ unsafe fn check_upgrade_layout(
         return Err(VOLUME_CORRUPTED);
     }
     Ok(())
+}
+
+fn valid_generation(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
 fn slot_intent<'a>(
@@ -822,7 +871,7 @@ fn slot_intent<'a>(
             .and_then(|line| line.split_once(' ')).ok_or(VOLUME_CORRUPTED)?;
         let root = (guid(root.0), root.1);
         let home = (guid(home.0), home.1);
-        rescue = slot == "PREVIOUS" && root == (Some(guids[2]), "/ ro")
+        rescue = slot == "PREVIOUS" && guids[2] != [0; 16] && root == (Some(guids[2]), "/ ro")
             && home == (Some(guids[3]), "/home ro");
         if !rescue && (root != (Some(guids[0]), "/ rw") || home != (Some(guids[1]), "/home rw")) {
             return Err(VOLUME_CORRUPTED);
@@ -835,12 +884,98 @@ fn slot_intent<'a>(
     }
     let mut ids = text.lines().filter_map(|line| line.strip_prefix("userland "));
     let id = ids.next().unwrap_or("flat");
-    if ids.next().is_some() || id.is_empty() || id.len() > 64
-        || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-    {
+    if ids.next().is_some() || !valid_generation(id) {
         return Err(VOLUME_CORRUPTED);
     }
     Ok((id, rescue))
+}
+
+/// Read the actual boot intent out of a slot image. Firmware can retain the attached memory.
+unsafe fn read_slot_intent(
+    boot: &BootServices, root: &Root, path: &str, intent: &mut [u8; 1024],
+) -> Result<(*mut u8, usize, usize), Status> {
+    if root.size(path)? > 512 << 20 {
+        return Err(OUT_OF_RESOURCES);
+    }
+    let (memory, size) = root.read_pages(boot, path)?;
+    let disk = metal_efi::bootdisk::attach(boot, memory, size, "reference slot")?;
+    let mut volume = metal_efi::bootdisk::connect(boot, disk, "reference slot")?;
+    let mut handle = null_mut();
+    ok((boot.locate_device_path)(&SIMPLE_FILE_SYSTEM, &mut volume, &mut handle))?;
+    let slot_root = files::root_of(boot, handle)?;
+    let len = slot_root.read("ramdisk", intent)?;
+    Ok((memory, size, len))
+}
+
+unsafe fn check_reclaim_slots(
+    boot: &BootServices, parts: &[Part; PARTITIONS], generations: [&str; 2],
+) -> Result<(), Status> {
+    let esp = partition_handle(boot, &parts[0].unique)?;
+    let root = files::root_of(boot, esp)?;
+    for path in [
+        r"\EFI\BREENIX\NEXT.IMG", r"\EFI\BREENIX\NEXT.TXT",
+        r"\EFI\BREENIX\SWAP.IMG", r"\EFI\BREENIX\SWAP.TXT",
+        r"\EFI\BREENIX\SLOT.TXN", r"\EFI\BREENIX\SLOT.NEW",
+    ] {
+        match root.size(path) {
+            Err(NOT_FOUND) => (),
+            Err(status) => return Err(status),
+            Ok(_) => return Err(VOLUME_CORRUPTED),
+        }
+    }
+    let guids = [parts[4].unique, parts[5].unique, parts[2].unique, parts[3].unique];
+    for ((image, note), expected) in [
+        (r"\EFI\BREENIX\CURRENT.IMG", r"\EFI\BREENIX\CURRENT.TXT"),
+        (r"\EFI\BREENIX\PREVIOUS.IMG", r"\EFI\BREENIX\PREVIOUS.TXT"),
+    ].into_iter().zip(generations) {
+        let mut intent = [0u8; 1024];
+        let (_, _, len) = read_slot_intent(boot, &root, image, &mut intent)?;
+        let text = core::str::from_utf8(&intent[..len]).map_err(|_| VOLUME_CORRUPTED)?;
+        // Use CURRENT for both checks to forbid the read-only ext2 rescue form.
+        if slot_intent(text, false, Some(guids), "CURRENT")? != (expected, false) {
+            return Err(VOLUME_CORRUPTED);
+        }
+        let mut bytes = [0u8; 256];
+        if root.size(note)? > bytes.len() as u64 {
+            return Err(VOLUME_CORRUPTED);
+        }
+        let len = root.read(note, &mut bytes)?;
+        let mut lines = core::str::from_utf8(&bytes[..len]).map_err(|_| VOLUME_CORRUPTED)?.lines();
+        let commit = lines.next().and_then(|line| line.strip_prefix("commit ")).ok_or(VOLUME_CORRUPTED)?;
+        if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || lines.next().and_then(|line| line.strip_prefix("installed-by ")) != Some(expected)
+            || lines.next().is_some()
+        {
+            return Err(VOLUME_CORRUPTED);
+        }
+    }
+    // RESCUE.IMG/TXT are an archive. Only CURRENT and PREVIOUS are selectable.
+    Ok(())
+}
+
+unsafe fn reclaim_ext2(boot: &BootServices, disk: &mut Disk, request: &Request<'_>) -> Result<(), Status> {
+    let refused = |reason| {
+        say!("reclaim-ext2 refused: {}", reason);
+        VOLUME_CORRUPTED
+    };
+    let primary = Header::parse(disk.read(1, 1)?, 1, disk.last).map_err(refused)?;
+    let backup = Header::parse(disk.read(disk.last, 1)?, disk.last, disk.last).map_err(refused)?;
+    let entries = Buffer::new(boot, ARRAY_BYTES, 8)?;
+    let array = core::slice::from_raw_parts_mut(entries.data, ARRAY_BYTES);
+    array.copy_from_slice(disk.read(primary.array_lba(), ARRAY_SECTORS as usize)?);
+    let backup_array = disk.read(backup.array_lba(), ARRAY_SECTORS as usize)?;
+    let parts = request.parts.map(Option::unwrap);
+    let update = gpt_append::prepare_reclaim(primary, backup, array, backup_array,
+        request.expect_disk.unwrap(), parts).map_err(refused)?;
+    check_reclaim_slots(boot, &parts, request.keep_generations.unwrap())?;
+    update.write(disk, &mut |disk, lba, bytes| disk.write(lba, bytes), &mut |disk, lba, bytes| {
+        if disk.read(lba, bytes.len() / SECTOR)? != bytes {
+            return Err(DEVICE_ERROR);
+        }
+        Ok(())
+    })?;
+    say!("reclaim-ext2: entries 3 and 4 cleared and both GPT copies read back");
+    Ok(())
 }
 
 unsafe fn report_slot(
@@ -858,17 +993,10 @@ unsafe fn report_slot(
             return Ok(());
         }
         Err(status) => return Err(status),
-        Ok(size) if size > 512 << 20 => return Err(OUT_OF_RESOURCES),
         Ok(_) => (),
     }
-    let (memory, size) = root.read_pages(boot, path)?;
-    let disk = metal_efi::bootdisk::attach(boot, memory, size, "reference slot")?;
-    let mut volume = metal_efi::bootdisk::connect(boot, disk, "reference slot")?;
-    let mut handle = null_mut();
-    ok((boot.locate_device_path)(&SIMPLE_FILE_SYSTEM, &mut volume, &mut handle))?;
-    let slot_root = files::root_of(boot, handle)?;
     let mut intent = [0u8; 1024];
-    let len = slot_root.read("ramdisk", &mut intent)?;
+    let (memory, size, len) = read_slot_intent(boot, root, path, &mut intent)?;
     let text = core::str::from_utf8(&intent[..len]).map_err(|_| VOLUME_CORRUPTED)?;
     let (id, rescue) = slot_intent(text, request.migration_slots, request.breenfs_upgrade, slot)?;
     if rescue {
@@ -903,6 +1031,13 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
     let payload = delivered.open("persist.dat", FILE_MODE_READ)?;
     let (disk_handle, io) = the_disk(boot)?;
     let mut disk = Disk::new(boot, io)?;
+    if request.action == Action::ReclaimExt2 {
+        if delivered.size("persist.dat")? != 0 {
+            return Err(INVALID_PARAMETER);
+        }
+        reclaim_ext2(boot, &mut disk, &request)?;
+        metal_efi::com1::halt();
+    }
     if request.action == Action::AddBreenfs {
         add_breenfs(boot, &mut disk, &request, text, payload.handle(), delivered.size("persist.dat")?)?;
         say!("persistent install request complete");

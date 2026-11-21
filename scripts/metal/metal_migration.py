@@ -19,6 +19,12 @@ RECORDED_CUTOVER_COMMIT = '94109fc7b3d95137cb91289f6a9f1321409cbcf6'
 RECORDED_RETURN_COMMIT = '250fb833de97abddbf4672dbfca1980cb370cfe3'
 PERSISTENT_ROOT_CASES = ('migrate-manifests-equal', 'host-manifests-equal',
                          'cutover-verified', 'rescue-and-return')
+TWO_UPGRADES = 'ext2-retired/two-upgrades'
+RECLAIMED = 'ext2-retired/reclaimed'
+EXT2_RETIREMENT_CASES = (
+    (TWO_UPGRADES, 'Two successive BreenFS generations boot and pass SSH verification'),
+    (RECLAIMED, 'Both GPT copies confirm ext2 retirement with the BreenFS slots preserved'),
+)
 COPY_OFF = '20261121T094229Z-metal'
 BOOT_ID = re.compile(r'[0-9]{8}T[0-9]{6}Z-metal')
 SHA256 = re.compile(r'[0-9a-f]{64}')
@@ -266,7 +272,13 @@ def in_progress():
 
 def require_closed(layout):
     cycle = state()
-    if (cycle.get('closed') != RECORDED_RETURN or cycle.get('layout') != layout
+    recorded = cycle.get('layout')
+    if layout and recorded and layout['version'] == 3:
+        retired = metal_persist.read_disk().get('ext2Reclaimed') or {}
+        matches = retired.get('migration') == RECORDED_RETURN and metal_persist.reclaimed_layout(recorded) == layout
+    else:
+        matches = recorded == layout
+    if (cycle.get('closed') != RECORDED_RETURN or not matches
             or set(cycle.get('boots', {})) != set(PHASES)
             or cycle['boots']['return'] != RECORDED_RETURN):
         raise ValueError('BreenFS upgrades require a BreenFS install intent from the closed, completed 24.18 migration')
@@ -449,7 +461,7 @@ def record_phase(cycle, phase, boot_id):
     save(cycle)
 
 
-def record_upgrades(first, second, commit):
+def upgrade_proof(first, second, commit):
     """Read the existing upgrade verifier's receipts from the service boot store."""
     from upgrade_cases import breenfs_pair
 
@@ -507,23 +519,159 @@ def record_upgrades(first, second, commit):
             actual.append(ident)
     if actual != expected:
         raise ValueError('two-upgrades needs the paired install and verification boots in order after the 24.18 return')
+    return proof
+
+
+def record_upgrades(first, second, commit):
+    proof = upgrade_proof(first, second, commit)
     m.write_json(m.boot_dir(proof['boot']) / 'filesystem-two-upgrades.json', proof)
     return proof
+
+
+def reclaim_history(returned, active, upgrades):
+    """Account for every finished boot since return and refuse any unproved slot selection."""
+    boots = m.STATE / 'boots'
+    index = [json.loads(line) for line in (m.STATE / 'finished.jsonl').read_text().splitlines()]
+    boundaries = [i for i, row in enumerate(index) if row['id'] == returned]
+    if len(boundaries) != 1:
+        raise ValueError('the returned boot is missing or ambiguous in the finished index')
+    base = boundaries[0]
+    tail = index[base + 1:]
+    names = [row['id'] for row in tail]
+    queued = {row['id'] for row in m.read_queue()}
+    directories = {boot.name for boot in boots.iterdir() if boot.is_dir()
+                   and BOOT_ID.fullmatch(boot.name) and boot.name > returned and boot.name != active
+                   and (boot.name not in queued or (boot / 'ended').is_file())}
+    if (len(set(names)) != len(names)
+            or any(row['seq'] != index[base]['seq'] + offset or not BOOT_ID.fullmatch(row['id'])
+                   or row['id'] <= returned for offset, row in enumerate(tail, 1))
+            or set(names) != directories):
+        raise ValueError('the boot history after return has a gap')
+    upgrade_answers = {}
+    for row in upgrades:
+        install, verify = row['install'], row['verification']
+        upgrade_answers[install] = (f'test {install}', [])
+        upgrade_answers[verify] = (f'persistent {verify} current commit', ['current'])
+    if not upgrade_answers.keys() <= set(names):
+        raise ValueError('the boot history is missing a verified upgrade')
+    for ident in names:
+        boot = boots / ident
+        run = m.read_json(boot / 'run.json', {})
+        log = events(boot)
+        answers = [row.get('answer') for row in log if row['event'] == 'manager-answer']
+        selections = [row.get('entry') for row in log if row['event'] == 'slot-boot']
+        power = [row.get('off') for row in log if row['event'] == 'power-off']
+        closed = [row for row in log if row['event'] == 'closed']
+        # An install closes before its driver links the verification child.
+        if (run.get('id') != ident or not (boot / 'ended').is_file() or len(closed) != 1
+                or not power or power[-1] is not True
+                or run.get('bootManagerAbort') or any(row['event'] == 'capture-incomplete' for row in log)):
+            raise ValueError(f'incomplete rescue-slot history after return: {ident}')
+        if ident in upgrade_answers:
+            answer, entries = upgrade_answers[ident]
+            allowed = answers == [answer] and selections == entries
+        else:
+            allowed = (answers == [f'test {ident}'] and not selections and run.get('kind') in ('boot', 'fault-test')
+                       and not any(run.get(field) for field in ('migrationPhase', 'slotAction', 'upgradeParent'))
+                       and not any(row['event'] == 'watchdog-persistent' for row in log)
+                       and (run.get('payload') == 'disk-readback'
+                            or run.get('payload') == 'image' and run.get('disk') == 'root'
+                            and run.get('mode') in ('default', 'suite', 'tests', 'console', 'probe', 'shell')
+                            and run.get('inject') != 'fence-out-of-partition'))
+        if not allowed:
+            raise ValueError(f'boot history cannot rule out use of the ext2 rescue slot: {ident}')
+    return names
+
+
+def admit_reclaim(boot_id, first, second, commit, tools_commit):
+    lease = m.read_lease() or {}
+    if (lease.get('id') != boot_id or lease.get('state') != 'claimed'
+            or lease.get('payload') != metal_persist.RECLAIM_PAYLOAD):
+        raise ValueError('ext2 reclaim requires its own claimed machine lease')
+    if tools_commit != commit or not COMMIT.fullmatch(commit or ''):
+        raise ValueError('ext2 reclaim requires matching pinned source and deployed tools')
+    layout = metal_persist.layout()
+    if not layout or layout['version'] != 2:
+        raise ValueError('ext2 reclaim needs the migrated six-entry layout')
+    proof = upgrade_proof(first, second, commit)
+    if m.read_json(m.boot_dir(proof['boot']) / 'filesystem-two-upgrades.json', {}) != proof:
+        raise ValueError('ext2 reclaim requires the recorded two-upgrades verdict')
+    history = reclaim_history(proof['migration'], boot_id, proof['upgrades'])
+    slots = metal_persist.read_disk().get('slots', {})
+    rescue = slots.get('rescue') or {}
+    if (slots.get('next') or rescue.get('migration') != 'rescue'
+            or rescue.get('installedBy') != proof['upgrades'][0]['previous']
+            or any((slots.get(slot) or {}).get('installedBy') != generation
+                   or (slots.get(slot) or {}).get('commit') != commit
+                   or (slots.get(slot) or {}).get('migration') == 'rescue'
+                   for slot, generation in (('current', second), ('previous', first)))):
+        raise ValueError('ext2 reclaim needs both verified BreenFS slots and the archived rescue')
+    return dict(proof, history=history)
+
+
+def record_reclaimed(boot_id, proof, previous):
+    """Retire the rescue reference and publish the layout after firmware readback and Off."""
+    boot = m.boot_dir(boot_id)
+    run = m.read_json(boot / 'run.json', {})
+    log = events(boot)
+    receipts = [(row['event'], row.get('answer') if row['event'] == 'manager-answer' else row.get('off'))
+                for row in log if row['event'] in ('manager-answer', 'ext2-gpt-readback', 'power-off')]
+    if (run.get('id') != boot_id or run.get('payload') != metal_persist.RECLAIM_PAYLOAD
+            or run.get('bootManagerAbort') or run.get('commit') != proof['commit']
+            or run.get('toolsCommit') != proof['toolsCommit']
+            or receipts != [('manager-answer', f'test {boot_id}'), ('ext2-gpt-readback', None), ('power-off', True)]
+            or any(row['event'] in ('capture-incomplete', 'console-gap-start') for row in log)):
+        raise ValueError('ext2 reclaim is missing firmware readback or clean power-off evidence')
+    with m.locked('lease'), m.locked('disk'):
+        lease = m.read_lease() or {}
+        if (lease.get('id') != boot_id or lease.get('state') != 'powered'
+                or lease.get('payload') != metal_persist.RECLAIM_PAYLOAD):
+            raise ValueError('ext2 reclaim lost its machine lease before publishing the layout')
+        current = metal_persist.read_disk()
+        if current.get('layout') != previous['layout'] or current.get('slots') != previous['slots']:
+            raise ValueError('the recorded layout or slots changed during ext2 reclaim')
+        layout = metal_persist.reclaimed_layout(current['layout'])
+        slots = dict(current['slots'])
+        rescue = slots.pop('rescue')
+        record = dict(
+            milestone='filesystem/ext2-retired', boot=boot_id, commit=proof['commit'],
+            toolsCommit=proof['toolsCommit'], migration=proof['migration'], twoUpgrades=proof['boot'],
+            history=proof['history'], entries=[3, 4], copies=['primary', 'backup'],
+            retiredRescue=rescue['installedBy'], cleanup=True, consoleGaps=[],
+            cases=[dict(id=RECLAIMED, result='PASS', ms=0)],
+        )
+        m.write_json(m.STATE / 'disk.json', dict(current, layout=layout, slots=slots, ext2Reclaimed=record))
+    m.write_json(boot / 'filesystem-reclaimed.json', record)
+    return record
+
+
+def check_retirement_manifest(path):
+    manifest = json.loads(path.read_text())
+    cases = [(category['id'] + '/' + case['id'], case['title']) for category in manifest['categories']
+             if category['id'] == 'ext2-retired' and category.get('hostRunner') is True
+             for case in category['cases']]
+    if manifest['id'] != 'filesystem' or tuple(cases) != EXT2_RETIREMENT_CASES:
+        raise ValueError('the ext2 retirement host cases differ from the filesystem manifest')
 
 
 def main():
     import argparse
 
     parser = argparse.ArgumentParser(description=__doc__)
-    commands = parser.add_subparsers(dest='command', required=True)
+    parser.add_argument('--check-manifest', type=Path)
+    commands = parser.add_subparsers(dest='command')
     commands.add_parser('close').add_argument('return_boot')
     record = commands.add_parser('record-upgrades')
     record.add_argument('first')
     record.add_argument('second')
     record.add_argument('--sha', required=True)
     args = parser.parse_args()
+    if bool(args.check_manifest) == bool(args.command):
+        parser.error('select a migration operation or --check-manifest')
     try:
-        if args.command == 'close':
+        if args.check_manifest:
+            check_retirement_manifest(args.check_manifest)
+        elif args.command == 'close':
             print(close(args.return_boot)['closed'])
         else:
             print(json.dumps(record_upgrades(args.first, args.second, args.sha)))

@@ -697,8 +697,9 @@ partition starts on a 1 MiB boundary.
 | 5 | BreenFS system | `FAD521D2-3783-43CC-BE73-60ED528454C9` | 64 GiB, breenfs | migrated system and shared state | add-breenfs request; subsequent persistent boots |
 | 6 | BreenFS home | `F93914AD-57E7-4FEB-A52E-295A07FD7E35` | 256 GiB, breenfs | migrated home | add-breenfs request; subsequent persistent boots |
 
-Layout v1 has entries 1–4; layout v2 adds entries 5–6 without changing the first four. The rest of the disk stays
-unallocated. The disk GUID and unique partition GUIDs are random; the boot host
+Layout v1 has entries 1–4. Layout v2 adds entries 5–6 without changing the first four. Layout v3 clears entries
+3 and 4. The remaining partitions keep their entry numbers, GUIDs and ranges. The disk GUID and unique partition
+GUIDs are random. The boot host
 makes them for the one-time install and keeps them in the service's `disk.json` (`layout`), with each partition's
 first and last LBA. The Breenix type GUIDs above are constants of this layout and name a partition's role;
 the unique GUIDs name one disk's partitions.
@@ -952,6 +953,20 @@ read-only and publishes the new system root by renaming its completed draft. The
 SSH probe checks the selected generation, shared mounts and readable BreenFS home.
 After both upgrades, `metal-run record-breenfs-upgrades FIRST SECOND --sha SHA`
 writes `filesystem-two-upgrades.json` beside the second verification boot.
+
+After both verifications pass, run `metal-run reclaim-ext2 FIRST SECOND --branch BRANCH --sha SHA`
+with the same install IDs, source and tools. Under its lease, the driver rereads the S21
+receipts and accounts for the boot history since the migration return. The firmware checks
+the six recorded entries, both GPT copies, and the BreenFS intents in CURRENT and PREVIOUS.
+It clears entries 3 and 4, flushes and rereads both GPT copies, then halts. The driver
+publishes layout v3 and retires the rescue reference after confirmed power-off. The
+unselectable RESCUE archive and the old filesystem data remain as bytes on disk. The
+reclaim writes only GPT sectors.
+
+The reclaim boot stores `filesystem-reclaimed.json`. Follow it to successful completion,
+then run `metal-run boot --persistent --verify` and follow that boot to confirmed Off.
+The idle manager continues to answer test. If reclaim is refused or its capture is
+incomplete, preserve the evidence and stop the acceptance for diagnosis.
 
 ### Install and upgrade
 

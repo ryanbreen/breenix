@@ -1,4 +1,4 @@
-//! Append two partitions to the stub's 512-byte-sector GPT layout (UEFI 2.10 §5.3).
+//! Edit the stub's 512-byte-sector GPT layout (UEFI 2.10 §5.3).
 
 const SECTOR: usize = 512;
 const HEADER: usize = 92;
@@ -249,6 +249,68 @@ impl Append<'_> {
                 write(disk, header.array_lba(), self.entries)?;
                 write(disk, read_u64(&header.bytes, 24), &header.bytes)?;
             }
+        }
+        Ok(())
+    }
+}
+
+pub(super) struct Reclaim<'a> {
+    entries: &'a [u8],
+    primary: Header,
+    backup: Header,
+}
+
+/// Match the entire migrated table before clearing the two ext2 entries.
+pub(super) fn prepare_reclaim<'a>(
+    mut primary: Header,
+    mut backup: Header,
+    entries: &'a mut [u8],
+    backup_entries: &[u8],
+    expected: [u8; 16],
+    parts: [Part; ORIGINAL_PARTS + 2],
+) -> Result<Reclaim<'a>, Error> {
+    validate_pair(&primary, &backup, entries, backup_entries, expected)?;
+    let mut end = read_u64(&primary.bytes, 40) - 1;
+    let last_usable = read_u64(&primary.bytes, 48);
+    for (index, (part, entry)) in parts.iter().zip(entries.chunks_exact(ENTRY)).enumerate() {
+        if part.type_guid == [0; 16] || part.unique == [0; 16] || part.unique == expected
+            || parts[..index].iter().any(|earlier| earlier.unique == part.unique)
+            || part.first <= end || part.last < part.first || part.last > last_usable
+        {
+            return Err("invalid migrated partition identity or range");
+        }
+        let mut wanted = [0; ENTRY];
+        part.encode(&mut wanted);
+        if entry != wanted {
+            return Err("GPT entry differs from the recorded migrated layout");
+        }
+        end = part.last;
+    }
+    if entries[parts.len() * ENTRY..].iter().any(|&byte| byte != 0) {
+        return Err("unexpected entry beyond the six migrated partitions");
+    }
+    entries[2 * ENTRY..4 * ENTRY].fill(0);
+    let crc = crc32(entries);
+    primary.set_array_crc(crc);
+    backup.set_array_crc(crc);
+    Ok(Reclaim { entries, primary, backup })
+}
+
+impl Reclaim<'_> {
+    pub(super) fn write<D: ?Sized, E>(
+        &self,
+        disk: &mut D,
+        write: &mut impl FnMut(&mut D, u64, &[u8]) -> Result<(), E>,
+        verify: &mut impl FnMut(&mut D, u64, &[u8]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        // A flushed backup survives the primary update. Read both complete copies again last.
+        for header in [&self.backup, &self.primary] {
+            write(disk, header.array_lba(), self.entries)?;
+            write(disk, read_u64(&header.bytes, 24), &header.bytes)?;
+        }
+        for header in [&self.primary, &self.backup] {
+            verify(disk, read_u64(&header.bytes, 24), &header.bytes)?;
+            verify(disk, header.array_lba(), self.entries)?;
         }
         Ok(())
     }

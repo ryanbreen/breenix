@@ -313,7 +313,9 @@ fn stamp_copy(disk: &mut [u8], header: u64, table: u64) {
     disk[at + 16..at + 20].copy_from_slice(&checksum.to_le_bytes());
 }
 
-fn reclaim_fixture(disk: &mut [u8], parts: [Part; 6], writes: &mut Vec<u64>) -> Result<(), &'static str> {
+fn reclaim_fixture(
+    disk: &mut [u8], parts: [Part; 6], writes: &mut Vec<u64>, reads: &mut Vec<u64>,
+) -> Result<(), &'static str> {
     let mut entries = array(disk, PRIMARY).to_vec();
     let update = gpt_append::prepare_reclaim(
         Header::parse(sector(disk, 1), 1, LAST)?,
@@ -332,6 +334,7 @@ fn reclaim_fixture(disk: &mut [u8], parts: [Part; 6], writes: &mut Vec<u64>) -> 
             Ok(())
         },
         &mut |disk, lba, expected| {
+            reads.push(lba);
             let start = lba as usize * SECTOR;
             if &disk[start..start + expected.len()] == expected {
                 Ok(())
@@ -347,8 +350,10 @@ fn reclaim_changes_only_entries_three_and_four_and_their_crcs() {
     let (old, parts) = migrated_fixture();
     let mut disk = old.clone();
     let mut writes = Vec::new();
-    reclaim_fixture(&mut disk, parts, &mut writes).unwrap();
+    let mut reads = Vec::new();
+    reclaim_fixture(&mut disk, parts, &mut writes, &mut reads).unwrap();
     assert_eq!(writes, [BACKUP, LAST, PRIMARY, 1]);
+    assert_eq!(reads, [1, PRIMARY, LAST, BACKUP]);
 
     let mut expected = old;
     for (header, table) in [(1, PRIMARY), (LAST, BACKUP)] {
@@ -364,11 +369,11 @@ fn reclaim_changes_only_entries_three_and_four_and_their_crcs() {
 fn reclaim_refuses_invalid_or_unexpected_layouts_before_a_write() {
     let (old, parts) = migrated_fixture();
     for (lba, offset, restamp) in [
-        (1, 16, false),                 // Header CRC.
-        (BACKUP, 56, false),           // Array CRC.
-        (BACKUP, 56, true),            // Valid but different backup.
-        (PRIMARY, 5 * ENTRY, true),    // Matching copies with a different sixth entry.
-        (PRIMARY, 6 * ENTRY, true),    // Matching copies with a seventh entry.
+        (1, 16, false),              // Header CRC.
+        (BACKUP, 56, false),         // Array CRC.
+        (BACKUP, 56, true),          // Valid but different backup.
+        (PRIMARY, 5 * ENTRY, true),  // Matching copies with a different sixth entry.
+        (PRIMARY, 6 * ENTRY, true),  // Matching copies with a seventh entry.
     ] {
         let mut disk = old.clone();
         disk[lba as usize * SECTOR + offset] ^= 1;
@@ -381,13 +386,13 @@ fn reclaim_refuses_invalid_or_unexpected_layouts_before_a_write() {
         }
         let original = disk.clone();
         let mut writes = Vec::new();
-        assert!(reclaim_fixture(&mut disk, parts, &mut writes).is_err(), "LBA {lba} offset {offset}");
+        assert!(reclaim_fixture(&mut disk, parts, &mut writes, &mut Vec::new()).is_err(), "LBA {lba} offset {offset}");
         assert!(writes.is_empty());
         assert_eq!(disk, original);
     }
 
     let mut original_layout = fixture();
     let mut writes = Vec::new();
-    assert!(reclaim_fixture(&mut original_layout, parts, &mut writes).is_err());
+    assert!(reclaim_fixture(&mut original_layout, parts, &mut writes, &mut Vec::new()).is_err());
     assert!(writes.is_empty());
 }

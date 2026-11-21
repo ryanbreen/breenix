@@ -4,7 +4,7 @@
   metal-build --id ID --sha SHA --repo DIR --rust-fork DIR --cache DIR --root DIR --stub DIR
               [--features xhci_fault_inject|block_fence_inject|server_reboot_fault|watchdog_fault_inject|testing|capture_panic_oracle|gt710_core_probe|gt710_clock_probe]
               [--suite ID[,ID...]]
-  metal-build ... --stub-only --tools-profile disk-readback|boot-manager|persistent-export
+  metal-build ... --stub-only --tools-profile disk-readback|boot-manager|persistent-export|reclaim-ext2
 
 # claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
 In a private clone of SHA: the effort-target guard, then userspace and the ext2 root, built once
@@ -373,7 +373,8 @@ def main():
     parser.add_argument('--catchup', action='store_true', help='request catch-up under the policy from origin/main')
     parser.add_argument('--inner', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--stub-only', action='store_true', help='build only the deployed EFI applications')
-    parser.add_argument('--tools-profile', choices=('disk-readback', 'boot-manager', 'persistent-export'), default='disk-readback',
+    parser.add_argument('--tools-profile', choices=('disk-readback', 'boot-manager', 'persistent-export', 'reclaim-ext2'),
+                        default='disk-readback',
                         help='what a --stub-only build is for, recorded as its profile')
     parser.add_argument('--guard-target', default='', help=argparse.SUPPRESS)
     parser.add_argument('--features', choices=tuple(PROFILES), default='',

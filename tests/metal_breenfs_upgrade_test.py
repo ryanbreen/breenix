@@ -15,7 +15,7 @@ RETURN_COMMIT = '250fb833de97abddbf4672dbfca1980cb370cfe3'
 COMMIT = 'a' * 40
 
 
-class BreenfsUpgradeTest(existing.StateTest):
+class BreenfsUpgradeFixture(existing.StateTest):
     def setUp(self):
         super().setUp()
         self.layout = persist.add_breenfs_layout(persist.new_layout())
@@ -49,6 +49,43 @@ class BreenfsUpgradeTest(existing.StateTest):
         m.event(returned, 'power-off', off=True)
         m.close_record(returned, 0, 'driver')
 
+    def completed_upgrades(self):
+        migration.close(RETURN)
+        previous = self.original
+        for install, child in [('20261121T180000Z-metal', '20261121T180100Z-metal'),
+                               ('20261121T181000Z-metal', '20261121T181100Z-metal')]:
+            for ident, mode in [(install, 'persistent-install'), (child, 'persistent')]:
+                directory = m.boot_dir(ident)
+                directory.mkdir()
+                run = dict(id=ident, mode=mode, commit=COMMIT, toolsCommit=COMMIT, breenfsUpgrade=RETURN)
+                if ident == child:
+                    run.update(upgradeParent=install, bootedCommit=COMMIT, entry='current')
+                    m.event(directory, 'power-on', observed_at=1)
+                    m.event(directory, 'manager-answer', answer=f'persistent {child} current commit')
+                    m.event(directory, 'slot-boot', entry='current', commit=COMMIT)
+                else:
+                    m.event(directory, 'manager-answer', answer=f'test {install}')
+                m.write_json(directory / 'run.json', run)
+                m.event(directory, 'power-off', off=True)
+                m.close_record(directory, 0, 'driver')
+            m.event(m.boot_dir(install), 'persistent-verification-next', verification=child)
+            mounts = '\n'.join(f'disk {path} breenfs {flags} 0 0' for path, flags in [
+                ('/', 'ro'), ('/home', 'rw,nosuid,nodev'),
+                *((path, 'rw') for path in ('/etc', '/var', '/opt', '/srv', '/tmp', '/run', '/root')),
+            ])
+            receipt = dict(boot=child, passed=True, authenticated=True, strictHostKey=True,
+                           servicesStarted=True, homeReadable=True, mounts=mounts,
+                           fingerprint='pin', generation=install, powerOn=1, completedAt=2)
+            m.write_json(m.boot_dir(child) / 'ssh-verification.json', receipt)
+            m.write_json(m.boot_dir(install) / 'upgrade-result.json', dict(
+                install=install, candidateGeneration=install, previousGeneration=previous,
+                outcome='verified', toolsCommit=COMMIT, verification=dict(receipt, exit=0)))
+            previous = install
+
+        return ('20261121T180000Z-metal', install, child)
+
+
+class BreenfsUpgradeTest(BreenfsUpgradeFixture):
     def test_closes_only_the_recorded_successful_return_and_keeps_test_routing(self):
         with self.assertRaisesRegex(ValueError, 'closed'):
             migration.require_closed(self.layout)
@@ -123,38 +160,6 @@ class BreenfsUpgradeTest(existing.StateTest):
                     dict(two, verification=dict(two['verification'], fingerprint='changed'))):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 upgrade_cases.breenfs_pair(before, COMMIT, one, bad)
-
-    def completed_upgrades(self):
-        migration.close(RETURN)
-        previous = self.original
-        for install, child in [('20261121T180000Z-metal', '20261121T180100Z-metal'),
-                               ('20261121T181000Z-metal', '20261121T181100Z-metal')]:
-            for ident, mode in [(install, 'persistent-install'), (child, 'persistent')]:
-                directory = m.boot_dir(ident)
-                directory.mkdir()
-                run = dict(id=ident, mode=mode, commit=COMMIT, toolsCommit=COMMIT, breenfsUpgrade=RETURN)
-                if ident == child:
-                    run.update(upgradeParent=install, bootedCommit=COMMIT, entry='current')
-                    m.event(directory, 'power-on', observed_at=1)
-                    m.event(directory, 'manager-answer', answer=f'persistent {child} current commit')
-                m.write_json(directory / 'run.json', run)
-                m.event(directory, 'power-off', off=True)
-                m.close_record(directory, 0, 'driver')
-            m.event(m.boot_dir(install), 'persistent-verification-next', verification=child)
-            mounts = '\n'.join(f'disk {path} breenfs {flags} 0 0' for path, flags in [
-                ('/', 'ro'), ('/home', 'rw,nosuid,nodev'),
-                *((path, 'rw') for path in ('/etc', '/var', '/opt', '/srv', '/tmp', '/run', '/root')),
-            ])
-            receipt = dict(boot=child, passed=True, authenticated=True, strictHostKey=True,
-                           servicesStarted=True, homeReadable=True, mounts=mounts,
-                           fingerprint='pin', generation=install, powerOn=1, completedAt=2)
-            m.write_json(m.boot_dir(child) / 'ssh-verification.json', receipt)
-            m.write_json(m.boot_dir(install) / 'upgrade-result.json', dict(
-                install=install, candidateGeneration=install, previousGeneration=previous,
-                outcome='verified', toolsCommit=COMMIT, verification=dict(receipt, exit=0)))
-            previous = install
-
-        return ('20261121T180000Z-metal', install, child)
 
     def test_records_the_two_install_and_s21_boots_after_the_return(self):
         first, install, child = self.completed_upgrades()

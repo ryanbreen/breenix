@@ -28,9 +28,11 @@ def measures(milestone, shape, mode):
             and ('bootModes' not in milestone or mode in milestone['bootModes']))
 
 
-def stages(milestone, mode, arch, *, breenfs=False):
+def stages(milestone, mode, arch, *, breenfs=False, previous=False):
     if breenfs and mode == 'persistent' and 'breenfsStages' in milestone:
-        return milestone['breenfsStages']
+        return [dict(stage, marker='breenix-manager: booting previous ')
+                if previous and stage.get('marker') == 'breenix-manager: booting current ' else stage
+                for stage in milestone['breenfsStages']]
     lists = milestone.get('stages', {})
     return lists.get(mode, lists.get(arch, []) if milestone.get('kernel') else [])
 
@@ -74,7 +76,10 @@ def score(directory):
     for milestone in definition['milestones']:
         if milestone.get('stub') or not measures(milestone, shape, run['mode']):
             continue
-        listed = stages(milestone, run['mode'], definition['gateArch'], breenfs=bool(run.get('breenfsUpgrade')))
+        retired = run.get('ext2Reclaimed')
+        listed = stages(milestone, run['mode'], definition['gateArch'],
+                        breenfs=bool(run.get('breenfsUpgrade') or retired),
+                        previous=bool(retired and run.get('entry') == 'previous'))
         if not listed:
             continue
         cursor, reached = 0, 0
@@ -90,7 +95,7 @@ def score(directory):
                     reached += 1
                     cursor = index + 1
                     break
-        results[milestone['id']] = {'reached': reached, 'total': len(stages), 'passed': reached == len(stages)}
+        results[milestone['id']] = {'reached': reached, 'total': len(listed), 'passed': reached == len(listed)}
         if run['mode'] == 'default' and milestone['id'] == 'desktop':
             prompt_lines = [line for line in lines if '[bwm] terminal prompt read back:' in line]
             def valid_prompt(line):

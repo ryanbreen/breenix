@@ -15,7 +15,7 @@ VERIFIED = '20261121T181100Z-metal'
 RECLAIM = '20261121T190000Z-metal'
 
 
-class MetalExt2ReclaimTest(upgrade.BreenfsUpgradeTest):
+class MetalExt2ReclaimTest(upgrade.BreenfsUpgradeFixture):
     def test_reclaim_requires_lease_verified_upgrades_and_unused_rescue(self):
         with self.assertRaisesRegex(ValueError, 'six-entry'):
             persist.reclaim_request(m.STATE, persist.new_layout(), 'first', 'second')
@@ -34,7 +34,8 @@ class MetalExt2ReclaimTest(upgrade.BreenfsUpgradeTest):
         with self.assertRaisesRegex(ValueError, 'lease'):
             migration.admit_reclaim(RECLAIM, FIRST, SECOND, upgrade.COMMIT, upgrade.COMMIT)
 
-        with patch.object(m, 'read_lease', return_value={'id': RECLAIM, 'state': 'claimed'}):
+        lease = {'id': RECLAIM, 'state': 'claimed', 'payload': 'reclaim-ext2'}
+        with patch.object(m, 'read_lease', return_value=lease):
             ssh.unlink()
             with self.assertRaisesRegex(ValueError, 'verification'):
                 migration.admit_reclaim(RECLAIM, FIRST, SECOND, upgrade.COMMIT, upgrade.COMMIT)
@@ -44,6 +45,7 @@ class MetalExt2ReclaimTest(upgrade.BreenfsUpgradeTest):
             rescue.mkdir()
             m.write_json(rescue / 'run.json', dict(id=rescue.name, payload='persistent', entry='previous'))
             m.event(rescue, 'manager-answer', answer=f'persistent {rescue.name} previous')
+            m.event(rescue, 'power-off', off=True)
             index = m.STATE / 'finished.jsonl'
             original = index.read_bytes()
             m.close_record(rescue, 0, 'driver')
@@ -67,11 +69,12 @@ class MetalExt2ReclaimTest(upgrade.BreenfsUpgradeTest):
             m.write_json(boot / 'run.json', dict(id=RECLAIM, payload='reclaim-ext2',
                          commit=upgrade.COMMIT, toolsCommit=upgrade.COMMIT))
             m.event(boot, 'manager-answer', answer=f'test {RECLAIM}')
-            m.event(boot, 'power-off', off=True)
+            lease['state'] = 'powered'
             with self.assertRaisesRegex(ValueError, 'readback'):
                 migration.record_reclaimed(RECLAIM, proof, old)
             self.assertEqual(persist.read_disk(), old)
             m.event(boot, 'ext2-gpt-readback')
+            m.event(boot, 'power-off', off=True)
             reclaimed = migration.record_reclaimed(RECLAIM, proof, old)
             new = persist.read_disk()
             self.assertEqual(set(new['slots']), {'current', 'previous'})
@@ -81,6 +84,7 @@ class MetalExt2ReclaimTest(upgrade.BreenfsUpgradeTest):
                 if part['number'] in (1, 2, 5, 6)
             })
             self.assertEqual(persist.layout(), new['layout'])
+            self.assertEqual(migration.require_closed(new['layout'])['closed'], upgrade.RETURN)
             self.assertEqual(reclaimed['cases'][0]['id'], 'ext2-retired/reclaimed')
             self.assertEqual(m.read_json(m.boot_dir(RECLAIM) / 'filesystem-reclaimed.json'), reclaimed)
 

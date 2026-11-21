@@ -10,6 +10,7 @@
   metal-run migrate-persistent migrate|readback|cutover|rescue|return --sha SHA --branch NAME
   metal-run close-migration RETURN_BOOT
   metal-run record-breenfs-upgrades FIRST SECOND --sha SHA
+  metal-run reclaim-ext2 FIRST SECOND --sha SHA --branch NAME
   metal-run export-persistent [--branch NAME] [--sha SHA] [--wait MIN]
   metal-run stop ID
   metal-run status
@@ -48,6 +49,7 @@ from metal_root import smb_gui_selection
 
 TOOLS = '/opt/breenix-metal'
 STATE = '/var/lib/breenix-metal'
+RECLAIM_PAYLOAD = 'reclaim-ext2'
 HERE = Path(__file__).resolve().parent
 SMB_CONFIG_PATH = '/etc/breenix-metal/smb-test.json'
 XHCI_FAULTS = ('xhci-reset-device', 'xhci-short-read')
@@ -376,7 +378,7 @@ def boot(args):
     payload = args.payload
     sha = target = ''
     tools_profiles = {'disk-readback': 'disk-readback', 'manager': 'boot-manager',
-                      'persistent-export': 'persistent-export'}
+                      'persistent-export': 'persistent-export', RECLAIM_PAYLOAD: RECLAIM_PAYLOAD}
     needs_build = payload == 'image' or payload in tools_profiles
     migration = getattr(args, 'migration_phase', None)
     if needs_build or migration:
@@ -414,6 +416,8 @@ def boot(args):
     command += ['--mode', args.mode, '--wait', str(wait)]
     if migration:
         command += ['--migration-phase', migration]
+    if payload == RECLAIM_PAYLOAD:
+        command += ['--reclaim-upgrades', *args.reclaim_upgrades]
     if getattr(args, 'root_fs', None) is not None:
         command += ['--root-fs', args.root_fs]
     if getattr(args, 'build_choice', None) is not None:
@@ -648,7 +652,7 @@ def build(boot_id, sha, features=None, suite=None, tools_profile=None, catchup=F
         except Exception as error:
             preemption_errors.append(type(error).__name__ + ': ' + str(error))
     preemption = None
-    if not migration and tools_profile != 'persistent-export':
+    if not migration and tools_profile not in ('persistent-export', RECLAIM_PAYLOAD):
         preemption = threading.Thread(target=preempt, daemon=True)
         preemption.start()
     in_build(env, 'rm', '-rf', tools, check=True)
@@ -778,6 +782,11 @@ def argument_parser(automatic=False):
     proof.add_argument('first')
     proof.add_argument('second')
     proof.add_argument('--sha', required=True)
+    reclaim = sub.add_parser(RECLAIM_PAYLOAD, help='retire the unused ext2 rescue after two verified upgrades')
+    reclaim.add_argument('first')
+    reclaim.add_argument('second')
+    reclaim.add_argument('--sha', required=True)
+    reclaim.add_argument('--branch', required=True)
     p = sub.add_parser('export-persistent', help='copy the recorded system and home partitions through read-only firmware')
     p.add_argument('--branch')
     p.add_argument('--sha')
@@ -790,7 +799,7 @@ def argument_parser(automatic=False):
     p.add_argument('sha')
     p.add_argument('--features', choices=(FAULT_FEATURE, FENCE_FEATURE, PANIC_FEATURE, TESTING_FEATURE, 'capture_panic_oracle', 'gt710_core_probe', 'gt710_clock_probe', 'watchdog_fault_inject', *metal_power_cut.FEATURES))
     p.add_argument('--suite')
-    p.add_argument('--tools-profile', choices=('disk-readback', 'boot-manager', 'persistent-export'))
+    p.add_argument('--tools-profile', choices=('disk-readback', 'boot-manager', 'persistent-export', RECLAIM_PAYLOAD))
     p.add_argument('--smb-helper', action='store_true')
     p.add_argument('--catchup', action='store_true')
     p.add_argument('--migration-build', action='store_true', help=argparse.SUPPRESS)
@@ -826,6 +835,17 @@ def main():
         return in_metal(host_env(), 'python3', '/opt/breenix-metal/metal_migration.py', *operation).returncode
     if args.command == 'migrate-persistent':
         return migration_boot(args, args.phase)
+    if args.command == RECLAIM_PAYLOAD:
+        if not re.fullmatch(r'metal-[a-z0-9_-]+/[a-zA-Z0-9_./-]+', args.branch):
+            parser.error('ext2 reclaim needs a pushed metal effort branch')
+        options = parser.parse_args(['boot'])
+        options.payload = RECLAIM_PAYLOAD
+        options.sha, options.branch = args.sha, args.branch
+        options.reclaim_upgrades = (validate_id(args.first), validate_id(args.second))
+        deployed = HERE / 'COMMIT'
+        if not deployed.is_file() or deployed.read_text().strip() != args.sha:
+            parser.error('ext2 reclaim needs the pinned tools deployed on the boot host')
+        return boot(options)
     if args.command == '_upgrade':
         return runpy.run_path(str(HERE / 'upgrade_probe.py'))['watch'](globals(), validate_id(args.id))
     if args.command == '_resume':

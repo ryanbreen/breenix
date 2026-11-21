@@ -142,7 +142,11 @@ fn entry(value: &Value, at: &str, extra: &[&str], errors: &mut Vec<String>) -> O
 /// The runner of host-run categories in a suite whose binary runs the others.
 fn category_host_runners(suite: &str) -> &'static [&'static str] {
     match suite {
-        "filesystem" => &["scripts/metal/breenfs_replay.py", "scripts/vm-artifacts.py"],
+        "filesystem" => &[
+            "scripts/metal/breenfs_replay.py",
+            "scripts/vm-artifacts.py",
+            "scripts/metal/metal_migration.py",
+        ],
         _ => &["scripts/metal/server-suite"],
     }
 }
