@@ -1,4 +1,5 @@
 //! Process ownership and local collector handshake for the shared session core.
+use breenix_suite::suite::control::observations::Span;
 use breenix_suite::suite::control::{Watchdog, Wait};
 use libbreenix::{error::Error, errno::Errno, fs, io, process, signal, time, types::Fd};
 use breenix_suite::suite::{descendants::descendant_victims, spawn, Run};
@@ -246,6 +247,7 @@ fn teardown(channel: &mut Channel, outputs_state: &mut BTreeMap<u64, Output>, mu
     crate::startup::teardown(1);
     let watchdog = Watchdog::new(Wait::SupervisorTeardown)?;
     let end = watchdog.deadline_ms();
+    let children_span = Span::new("discard-children");
     // Observe exits already completed before cleanup sends any signal.
     reap(channel, outputs_state, connected, if init_desktop { None } else { compositor }, ownership, true)?;
     if init_desktop {
@@ -281,7 +283,9 @@ fn teardown(channel: &mut Channel, outputs_state: &mut BTreeMap<u64, Output>, mu
         time::sleep_ms(1).map_err(|e| e.to_string())?;
     }
     // Reap recovers the compositor claim before releases can reach the console.
+    drop(children_span);
     crate::startup::teardown(2);
+    let devices_span = Span::new("discard-devices");
     let release = if let Some(mut pair) = devices.take() {
         let grabbed = if ownership.owner() == Owner::SupervisorHolds {
             pair.recover(process::getpid().map_err(|e| e.to_string())?.raw())
@@ -289,8 +293,11 @@ fn teardown(channel: &mut Channel, outputs_state: &mut BTreeMap<u64, Output>, mu
         let destroyed = pair.destroy();
         grabbed.and(destroyed)
     } else { Ok(()) };
+    drop(devices_span);
     crate::startup::teardown(3);
+    let display_span = Span::new("discard-display");
     let handback = ownership.apply(Event::End, &mut Display);
+    drop(display_span);
     crate::startup::teardown(4);
     release.and(handback)
 }
@@ -361,7 +368,9 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                     if ended.len() > 128 { return Err("invalid collector message".into()); }
                     if ended.ends_with(b"\n") {
                         let request = Request::parse(std::str::from_utf8(&ended).map_err(|_| "invalid collector command UTF-8")?)?;
+                        let outputs_span = Span::new("discard-outputs");
                         outputs(&mut output, &mut channel, false)?;
+                        drop(outputs_span);
                         let record = if let Request::Collect(trigger) = request {
                             let suite = std::env::var("BREENIX_COLLECT_SUITE").map_err(|e| e.to_string())?;
                             let case = std::env::var("BREENIX_COLLECT_CASE").map_err(|e| e.to_string())?;
@@ -377,8 +386,13 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                             let _ = io::write(Fd::STDOUT, line.as_bytes());
                         }
                         if !stopped { teardown(&mut channel, &mut output, false, compositor, init_desktop, &mut ownership, &mut devices)?; }
+                        let delete_span = Span::new("discard-root-delete");
                         if let Some(config) = environment.take() { std::fs::remove_dir_all(config.config_root()).map_err(|e| e.to_string())?; }
+                        drop(delete_span);
+                        let remnants_span = Span::new("discard-remnants");
                         evidence.release_remnants();
+                        drop(remnants_span);
+                        let _reply_span = Span::new("discard-reply");
                         let reply = format!("{}done\n", record.unwrap_or_default());
                         let mut left = reply.as_bytes();
                         while !left.is_empty() {
@@ -420,6 +434,7 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                     Ok(Some(Message::Configure { case_pid, seed, mode })) => {
                         if environment.is_some() || !output.is_empty() { return Err("session already configured or launched".into()); }
                         let configure_began = crate::startup::now();
+                        let parent_span = Span::new("configure-parent");
                         let config = SessionEnvironment::new(case_pid, seed, &mode)?;
                         // The parent directory is harness-owned. Refuse a symlink or
                         // an untrusted owner before creating a case-PID directory.
@@ -437,20 +452,29 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                         // Keep the root in cleanup state even if setup fails partway.
                         environment = Some(config);
                         let root = Path::new(environment.as_ref().unwrap().config_root());
+                        drop(parent_span);
+                        let fixtures_span = Span::new("configure-fixtures");
                         crate::fixtures::prepare(root)?;
+                        drop(fixtures_span);
                         // Input injection runs in this supervisor, beside its apps.
                         std::env::set_var("BREENIX_UI_CLOCK", root.join("ui-clock"));
                         std::env::set_var("BREENIX_CONFIG_ROOT", root);
+                        let trace_span = Span::new("configure-trace");
                         let trace = crate::startup::Trace::create(root)?;
+                        drop(trace_span);
                         for (name, ns) in [("supervisor-enter", entered), ("supervisor-registered", registered_at),
                             ("supervisor-channel", channel_at), ("supervisor-evidence", evidence_at),
                             ("supervisor-display", display_at), ("supervisor-devices", devices_at),
                             ("supervisor-ready", ready_at)] { trace.at(name, ns); }
                         trace.at("configure-begin", configure_began);
                         trace.mark("fixtures-ready");
+                        let verify_span = Span::new("configure-verify");
                         crate::fixtures::verify(root)?;
+                        drop(verify_span);
                         trace.mark("pins-ready");
+                        let arena_span = Span::new("configure-arena");
                         evidence.configure(root)?;
+                        drop(arena_span);
                         trace.mark("arena-ready");
                         channel.queue(&Message::Configured)?;
                     }
@@ -512,7 +536,9 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                     Ok(Some(Message::Teardown)) => { teardown(&mut channel, &mut output, true, compositor, init_desktop, &mut ownership, &mut devices)?;
                         startup_record = startup_record.or_else(|| startup_phase_record(&environment, false));
                         crate::startup::teardown(5);
+                        let delete_span = Span::new("discard-root-delete");
                         if let Some(config) = environment.take() { std::fs::remove_dir_all(config.config_root()).map_err(|e| e.to_string())?; }
+                        drop(delete_span);
                         crate::startup::teardown(6);
                         stopped = true; channel.send(&Message::Stopped)?;
                         crate::startup::teardown(7); }

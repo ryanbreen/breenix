@@ -1553,6 +1553,23 @@ class DriverTest(StateTest):
         self.assertEqual(d.fatal_at, 120)
         self.assertTrue(d.completion_reported)
 
+    def test_suite_root_mount_failure_ends_the_attempt_immediately(self):
+        d = self.driver
+        d.args.mode, d.args.suite = 'suite', 'filesystem'
+        d.kernel_started = 120
+        for source in ('docs/metal/boot-path.json',
+                       'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json'):
+            target = d.dir / 'definition' / source
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(TOOLS.parents[1] / source, target)
+        d.load_definition()
+        d.on_line('[ROOT_MOUNT_FAILURE stage=breenfs-recovery block=1048573]', observed_at=121)
+        self.assertIsNone(d.fatal_at)
+        marker = 'BREENIX_ROOT_MOUNT_FATAL errno=5'
+        self.assertTrue(any(p.search(marker) for p in d.fatal_patterns))
+        self.finish(lambda: d.on_line(marker, observed_at=121), m.EXIT_SHORT)
+        self.assertEqual(d.fatal_at, 121)
+
     def test_one_suite_ends_at_its_ready_after_the_memory_record(self):
         d = self.driver
         d.args.mode, d.args.suite = 'suite', 'processes'

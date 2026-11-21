@@ -3,7 +3,34 @@ use crate::memory::arch_stub::{OffsetPageTable, VirtAddr};
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use linked_list_allocator::{Heap, LockedHeap};
+use spin::Mutex;
+
+#[path = "heap_index.rs"]
+mod index;
+use index::Heap;
+
+#[path = "heap_case.rs"]
+mod case;
+pub(crate) use case::{sys_heap_case, PR_HEAP_CASE};
+
+struct Inner {
+    heap: Heap,
+    counts: case::Counts,
+}
+
+impl Inner {
+    #[inline(always)]
+    fn run<R>(
+        &mut self,
+        mut wait: case::LockWait,
+        operation: impl FnOnce(&mut Heap) -> (R, u32),
+    ) -> R {
+        wait.acquired();
+        let (result, walk) = operation(&mut self.heap);
+        self.counts.record(&self.heap, wait, walk);
+        result
+    }
+}
 #[cfg(target_arch = "x86_64")]
 use x86_64::structures::paging::{Mapper, OffsetPageTable, Page, PageTableFlags, Size4KiB};
 #[cfg(target_arch = "x86_64")]
@@ -36,7 +63,7 @@ pub const HEAP_SIZE: u64 = 128 * 1024 * 1024;
 #[cfg(target_arch = "aarch64")]
 pub const QEMU_HEAP_SIZE: u64 = 64 * 1024 * 1024;
 
-/// IRQ-safe wrapper around the kernel's free-list allocator.
+/// IRQ-safe wrapper around the kernel's size-indexed allocator.
 ///
 /// On both architectures, every hold of the inner heap mutex masks local
 /// interrupts and restores the exact prior interrupt state after the heap
@@ -59,62 +86,82 @@ pub const QEMU_HEAP_SIZE: u64 = 64 * 1024 * 1024;
 /// already masked interrupts may hold an interrupt-safe lock, so it keeps
 /// waiting masked.
 struct IrqSafeLockedHeap {
-    inner: LockedHeap,
+    inner: Mutex<Inner>,
 }
 
 impl IrqSafeLockedHeap {
     const fn empty() -> Self {
         Self {
-            inner: LockedHeap::empty(),
+            inner: Mutex::new(Inner {
+                heap: Heap::empty(),
+                counts: case::Counts::new(),
+            }),
         }
     }
 
     #[inline(always)]
-    fn with_inner<R>(&self, operation: impl FnOnce(&mut Heap) -> R) -> R {
+    fn with_inner<R>(&self, operation: impl FnOnce(&mut Heap) -> (R, u32)) -> R {
+        let mut wait = case::LockWait::new();
         #[cfg(target_arch = "aarch64")]
         if crate::arch_interrupts_enabled() {
             let mut operation = Some(operation);
             loop {
+                let mut acquired = Some(wait);
                 let done = crate::arch_without_interrupts(|| {
-                    self.inner
-                        .try_lock()
-                        .map(|mut heap| (operation.take().expect("heap operation runs once"))(&mut heap))
+                    self.inner.try_lock().map(|mut inner| {
+                        inner.run(acquired.take().unwrap(), operation.take().unwrap())
+                    })
                 });
                 if let Some(result) = done {
                     return result;
                 }
+                wait = acquired.unwrap();
+                wait.contended();
                 while self.inner.is_locked() {
                     core::hint::spin_loop();
                 }
             }
         }
-        crate::arch_without_interrupts(|| operation(&mut self.inner.lock()))
+        crate::arch_without_interrupts(|| {
+            if wait.active() {
+                if let Some(mut inner) = self.inner.try_lock() {
+                    return inner.run(wait, operation);
+                }
+                wait.contended();
+            }
+            self.inner.lock().run(wait, operation)
+        })
     }
 
     unsafe fn init(&self, heap_bottom: *mut u8, heap_size: usize) {
         self.with_inner(|heap| unsafe {
             heap.init(heap_bottom, heap_size);
+            ((), 0)
         });
     }
 }
 
 /// The most heap bytes in use at once since boot, counted as the allocator
-/// counts them (each allocation's size after alignment).
+/// counts them, including block headers and alignment padding.
 static HIGH_WATER: AtomicUsize = AtomicUsize::new(0);
 
 unsafe impl GlobalAlloc for IrqSafeLockedHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         self.with_inner(|heap| {
-            let ptr = heap.allocate_first_fit(layout)
-                .map_or(core::ptr::null_mut(), |allocation| allocation.as_ptr());
-            HIGH_WATER.fetch_max(heap.used(), Ordering::Relaxed);
-            ptr
+            let (ptr, walk) = heap.allocate(layout);
+            let ptr = ptr.map_or(core::ptr::null_mut(), NonNull::as_ptr);
+            let used = heap.used();
+            if used > HIGH_WATER.load(Ordering::Relaxed) {
+                HIGH_WATER.store(used, Ordering::Relaxed);
+            }
+            (ptr, walk)
         })
     }
 
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
         self.with_inner(|heap| unsafe {
-            heap.deallocate(NonNull::new_unchecked(ptr), layout);
+            heap.deallocate(NonNull::new_unchecked(ptr));
+            ((), 0)
         });
     }
 
@@ -144,11 +191,7 @@ unsafe impl GlobalAlloc for IrqSafeLockedHeap {
     }
 }
 
-/// Global allocator instance using a proper free-list allocator.
-///
-/// Unlike the previous bump allocator, linked_list_allocator properly
-/// reclaims freed memory, preventing heap exhaustion from temporary
-/// allocations (Vec clones, BTreeMap nodes, etc.).
+/// Global allocator over the boot-reserved kernel heap.
 #[global_allocator]
 static ALLOCATOR: IrqSafeLockedHeap = IrqSafeLockedHeap::empty();
 
@@ -227,7 +270,7 @@ pub fn init(mapper: &OffsetPageTable<'static>) -> Result<(), &'static str> {
 /// Bytes free in the kernel heap. Physical frames are not heap and are
 /// counted by the frame allocator instead.
 pub fn free_bytes() -> usize {
-    ALLOCATOR.with_inner(|heap| heap.free())
+    ALLOCATOR.with_inner(|heap| (heap.free(), 0))
 }
 
 /// The most bytes the kernel heap has had in use at once since boot.

@@ -517,7 +517,7 @@ The delivered image records the resulting component checksums; the cached base r
 Shell mode starts `/sbin/init shell`; the serial input task feeds its bytes into the console TTY instead of the
 kernel debug-command parser. When the prompt arrives, the driver sends `print("metal-console-ok", 6*7)`
 through SOL and requires the whole answer line `metal-console-ok 42` after sending it. A suite boot's target declares
-`hostkeys xhci-replay` (docs/console/contract.md section 10): the driver answers each `SUITE <id> HOSTKEY` record
+`hostkeys host-channel` for the shared host channel (docs/console/contract.md section 10): the driver answers each `SUITE <id> HOSTKEY` record
 once by typing a `BXKEY <report>,...` line per chord through SOL, HID boot keyboard reports that the kernel replays
 through its USB boot keyboard's interrupt-IN completion path, and records what it sent as `hostkeys` events. While
 that path is armed the kernel reads serial input as host-key lines only. Suite mode copies the commit's

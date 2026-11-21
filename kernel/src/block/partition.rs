@@ -20,6 +20,14 @@ impl Partition {
         Ok(Self { disk, first, sectors })
     }
 
+    pub(super) fn limit_to(&mut self, sectors: u64) -> Result<(), &'static str> {
+        if sectors == 0 || sectors > self.sectors {
+            return Err("the root image does not fit its partition");
+        }
+        self.sectors = sectors;
+        Ok(())
+    }
+
     pub fn first(&self) -> u64 {
         self.first
     }

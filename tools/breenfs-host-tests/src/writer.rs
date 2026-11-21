@@ -27,7 +27,10 @@ pub struct WriterAdapter {
 fn error(e: ops::Error) -> Error {
     use ops::Error as E;
     let errno = match e {
-        E::EIO => Errno::EIO,
+        E::Metadata(crate::btree::ReadFailure {
+            cause: crate::btree::ReadCause::Allocation, ..
+        }) => Errno::ENOMEM,
+        E::EIO | E::Metadata(_) | E::DataRead(_) => Errno::EIO,
         E::EROFS => Errno::EROFS,
         E::EBUSY => Errno::EBUSY,
         E::EPERM => Errno::EPERM,
@@ -42,6 +45,7 @@ fn error(e: ops::Error) -> Error {
         E::EMLINK => Errno::EMLINK,
         E::ENAMETOOLONG => Errno::ENAMETOOLONG,
         E::ENOSPC => Errno::ENOSPC,
+        E::ENOMEM => Errno::ENOMEM,
     };
     errno.into()
 }
@@ -110,7 +114,7 @@ impl WriterAdapter {
             }
             // One DEAD node per host scheduling turn exposes resumable frontiers
             // without draining the tree in a single operation.
-            let (txn, _) = self
+            let txn = self
                 .files
                 .as_mut()
                 .ok_or(Errno::EIO)?

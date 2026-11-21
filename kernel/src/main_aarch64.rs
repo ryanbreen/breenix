@@ -1021,13 +1021,16 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Probe and mount the root filesystem (if block device present)
     match kernel::fs::vfs::mount_root() {
         Ok(()) => {
-            serial_println!("[boot] ext2 root filesystem mounted");
+            serial_println!("[boot] {} root filesystem mounted", kernel::fs::vfs::root_kind());
             splash::stage(Stage::Ext2Mounted);
             #[cfg(feature = "btrt")]
             kernel::test_framework::btrt::pass(kernel::test_framework::catalog::EXT2_MOUNT);
         }
         Err(e) => {
-            serial_println!("[boot] ext2 init: {:?} (continuing without root fs)", e);
+            if kernel::fs::vfs::suite_boot_requested() {
+                panic!("BREENIX_ROOT_MOUNT_FATAL errno={}", e.0);
+            }
+            serial_println!("[boot] root fs init: {:?} (continuing without root fs)", e);
             #[cfg(feature = "btrt")]
             kernel::test_framework::btrt::fail(
                 kernel::test_framework::catalog::EXT2_MOUNT,
@@ -1342,8 +1345,8 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     );
     let mode_elf: Option<alloc::vec::Vec<u8>> = if runs_own_binary && device_count > 0 {
         serial_println!(
-            "[boot] Pre-loading {} from ext2 (before timer)...",
-            init_launch.path
+            "[boot] Pre-loading {} from {} (before timer)...",
+            init_launch.path, kernel::fs::vfs::root_kind()
         );
         match read_init_from_ext2(&init_launch.path) {
             Ok(data) => match kernel::boot::target::check_elf(&data) {
@@ -1386,7 +1389,7 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     let init_elf: Option<alloc::vec::Vec<u8>> = if mode_elf.is_some() {
         mode_elf
     } else if device_count > 0 {
-        serial_println!("[boot] Pre-loading /sbin/init from ext2 (before timer)...");
+        serial_println!("[boot] Pre-loading /sbin/init from {} (before timer)...", kernel::fs::vfs::root_kind());
         match read_init_from_ext2("/sbin/init") {
             Ok(data) => {
                 serial_println!("[boot] Init binary pre-loaded: {} bytes", data.len());

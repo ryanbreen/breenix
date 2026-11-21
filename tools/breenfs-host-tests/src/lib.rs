@@ -1,9 +1,7 @@
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 #![cfg_attr(test, feature(allocator_api))]
 
 extern crate alloc;
-#[cfg(test)]
-extern crate std;
 
 #[path = "../../../kernel/src/fs/breenfs/abi.rs"]
 pub mod abi;
@@ -41,12 +39,19 @@ pub mod ops;
 pub mod recording;
 pub mod stream;
 
+#[path = "../../../kernel/src/block/read_failure.rs"]
+pub mod read_failure;
+
 /// Host fixture for the synchronous kernel block-device surface.
 pub mod block {
+    pub use crate::read_failure;
+    use read_failure::VirtioReadFailure;
     pub use crate::buffer_cache as cache;
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub enum BlockError {
         IoError,
+        VirtioRead(VirtioReadFailure),
+        AhciRead(read_failure::AhciReadError),
         OutOfMemory,
         OutOfBounds,
     }
@@ -111,6 +116,7 @@ pub enum Errno {
     ENAMETOOLONG,
     ENOTEMPTY,
     EIO,
+    ENOMEM,
     EROFS,
     EBUSY,
     ENOSPC,
@@ -366,3 +372,6 @@ pub fn compare(model: &impl Fs, fs: &impl Fs) -> Result<Vec<Difference>> {
     }
     Ok(differences)
 }
+
+#[path = "../../../kernel/src/fs/breenfs/preempt.rs"]
+pub mod preempt;

@@ -1,5 +1,5 @@
 //! Local evidence publication and the boot-wide on-disk artifact budget.
-use crate::arena::{Arena, Slot, SlotRead};
+use crate::arena::{during, Arena, Slot, SlotRead};
 use libpixcheck::{sha256, Frame, Options};
 use std::{
     fs::{self, File, OpenOptions},
@@ -126,10 +126,10 @@ fn directory(path: &Path) -> std::io::Result<()> {
             directory(parent)?;
         }
     }
-    match fs::DirBuilder::new().mode(0o700).create(path) {
+    match during("artifact-directory", || fs::DirBuilder::new().mode(0o700).create(path)) {
         Ok(()) => {
             if let Some(p) = path.parent() {
-                File::open(p)?.sync_all()?;
+                during("artifact-directory-sync", || File::open(p)?.sync_all())?;
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -163,32 +163,25 @@ impl Publish for Disk<'_> {
     fn write_temp(&mut self, name: &str, bytes: &[u8]) -> Result<(), String> {
         self.temp = self.path.join(format!("{name}.tmp"));
         self.file = Some(
-            OpenOptions::new()
+            during("artifact-create", || OpenOptions::new()
                 .write(true)
                 .create_new(true)
-                .open(&self.temp)
+                .open(&self.temp))
                 .map_err(|e| e.to_string())?,
         );
-        self.file
-            .as_mut()
-            .unwrap()
-            .write_all(bytes)
+        during("artifact-write", || self.file.as_mut().unwrap().write_all(bytes))
             .map_err(|e| e.to_string())
     }
     fn sync_temp(&mut self) -> Result<(), String> {
-        self.file
-            .as_ref()
-            .unwrap()
-            .sync_all()
+        during("artifact-file-sync", || self.file.as_ref().unwrap().sync_all())
             .map_err(|e| e.to_string())
     }
     fn rename(&mut self, name: &str) -> Result<(), String> {
         self.file.take();
-        fs::rename(&self.temp, self.path.join(name)).map_err(|e| e.to_string())
+        during("artifact-rename", || fs::rename(&self.temp, self.path.join(name))).map_err(|e| e.to_string())
     }
     fn sync_directory(&mut self) -> Result<(), String> {
-        File::open(self.path)
-            .and_then(|f| f.sync_all())
+        during("artifact-directory-sync", || File::open(self.path).and_then(|f| f.sync_all()))
             .map_err(|e| e.to_string())
     }
 }
@@ -286,7 +279,7 @@ impl Store {
         if !component(name) || name.ends_with(".tmp") {
             return Err(SaveError::Io);
         }
-        let used = usage(&self.root).map_err(|_| SaveError::Io)?;
+        let used = during("artifact-scan", || usage(&self.root)).map_err(|_| SaveError::Io)?;
         if used
             .checked_add(bytes.len() as u64)
             .is_none_or(|n| n > CAP_BYTES as u64)
@@ -317,7 +310,7 @@ impl Store {
             if name == "collection.txt" || name.ends_with(".tmp") {
                 continue;
             }
-            let bytes = fs::read(entry.path()).map_err(|e| e.to_string())?;
+            let bytes = during("artifact-scan", || fs::read(entry.path())).map_err(|e| e.to_string())?;
             let hash: String = sha256(&bytes).iter().map(|b| format!("{b:02x}")).collect();
             entries.push_str(&format!(
                 "file={name} bytes={} sha256={hash}\n",

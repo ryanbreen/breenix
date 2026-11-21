@@ -1707,10 +1707,26 @@ impl ProcessPageTable {
     ///
     /// Only userspace pages (addresses < 0x8000_0000_0000_0000) are visited.
     /// Returns the count of pages visited.
-    pub fn walk_mapped_pages<F>(&self, mut callback: F) -> Result<usize, &'static str>
+    pub fn walk_mapped_pages<F>(&self, callback: F) -> Result<usize, &'static str>
     where
         F: FnMut(VirtAddr, PhysAddr, PageTableFlags),
     {
+        Ok(self.walk_pages(false, callback))
+    }
+
+    /// Visit leaves only under root slots owned by this address space.
+    pub(crate) fn walk_owned_mapped_pages(
+        &self,
+        callback: impl FnMut(VirtAddr, PhysAddr, PageTableFlags),
+    ) {
+        self.walk_pages(true, callback);
+    }
+
+    fn walk_pages(
+        &self,
+        owned_only: bool,
+        mut callback: impl FnMut(VirtAddr, PhysAddr, PageTableFlags),
+    ) -> usize {
         self.await_copy();
         let phys_offset = crate::memory::physical_memory_offset();
         let mut page_count = 0;
@@ -1726,6 +1742,9 @@ impl ProcessPageTable {
             #[cfg(target_arch = "aarch64")]
             let l4_range = 0..512u64;
             for l4_idx in l4_range {
+                if owned_only && !self.owned_root_slots.contains(l4_idx as usize) {
+                    continue;
+                }
                 let l4_entry = &l4_table[l4_idx as usize];
                 if l4_entry.is_unused() || !l4_entry.flags().contains(PageTableFlags::PRESENT) {
                     continue;
@@ -1802,7 +1821,7 @@ impl ProcessPageTable {
             }
         }
 
-        Ok(page_count)
+        page_count
     }
 
     /// Visit every user page this table maps, in address order, and let `f`

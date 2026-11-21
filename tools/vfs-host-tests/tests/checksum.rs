@@ -110,10 +110,10 @@ fn data_flip_refuses_read_page_in_and_partial_edits() {
 }
 #[test]
 fn node_flip_latches_read_only_without_losing_healthy_reads_or_unmount() {
-    let image = image();
+    let image = image_target(150, 360);
     let fs = mount(&image);
-    // Writable recovery walks the FS tree for ORPHANs. Flip after recovery,
-    // before this mount has fetched the target leaf into its read cache.
+    // The middle leaf is outside the ORPHAN search at the end of the tree.
+    // Flip before this mount's first read of the target leaf.
     image.disk.bytes.lock().unwrap()[image.leaf * BLOCK_SIZE + NODE_SIZE - 1] ^= 1;
     // Exercise each entry point as the first observer, with fresh node caches.
     let attr = fs.getattr(image.target);
@@ -178,6 +178,36 @@ fn corrupt_descendant_mounts_writable_until_first_observation() {
     assert_eq!(fs.create(2, b"refused", NewNode::Regular { attrs: InodeAttrs::new(0o100600, 0, 0) }), Err(Errno(EROFS)));
     healthy(fs.as_ref(), image.good);
     fs.shutdown("checksum-preexisting-node", u64::MAX).unwrap();
+}
+
+#[test]
+fn unlink_in_healthy_directory_with_an_unrelated_corrupt_leaf() {
+    let image = image_target(150, 360);
+    image.disk.bytes.lock().unwrap()[image.leaf * BLOCK_SIZE + NODE_SIZE - 1] ^= 1;
+    let fs = mount(&image);
+    let root = fs.root().unwrap();
+    let previous = fs.lookup(root, b"good").unwrap();
+    assert_eq!(previous, image.good);
+
+    fs.remove(root, b"good", Remove {
+        directory: false,
+        expected: previous,
+        owner: fs.getattr(previous).unwrap().attrs.uid,
+        parent: fs.getattr(root).unwrap().attrs,
+    }).unwrap();
+    fs.sync().unwrap();
+    assert_eq!(fs.lookup(root, b"good"), Err(Errno(ENOENT)));
+    let mut entries = Vec::new();
+    fs.readdir(root, 2, &mut |entry, _| {
+        entries.push(entry.name);
+        Ok(true)
+    }).unwrap();
+    assert_eq!(entries, [b"rot".to_vec()]);
+    assert_eq!(fs.read_only(), Ok(false));
+
+    assert_eq!(fs.getattr(image.target), Err(Errno(EIO)));
+    assert_eq!(fs.read_only(), Ok(true));
+    fs.shutdown("checksum-unrelated-unlink", u64::MAX).unwrap();
 }
 
 #[test]

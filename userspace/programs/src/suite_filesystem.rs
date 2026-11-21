@@ -3,7 +3,8 @@ mod cache_reread;
 mod filesystem_read;
 mod filesystem_checksum;
 mod filesystem_enospc;
-mod filesystem_root;
+pub mod filesystem_root;
+pub mod root_expectations;
 mod filesystem_snapshots;
 mod filesystem_write;
 use cache_reread::{reread_is_cached, REREAD_BYTES};
@@ -62,7 +63,24 @@ static SUITE: Suite = suite("filesystem", "Copy-on-write filesystem", &[
         case("delete-returns-space", "Deleting a snapshot returns its data blocks", filesystem_snapshots::delete_returns_space),
         case("delete-resumes-after-remount", "Snapshot deletion resumes after remount", filesystem_snapshots::delete_resumes_after_remount),
     ]),
+    category("test-root", "Every suite runs with the test root on the copy-on-write filesystem", &[
+        case("root-is-breenfs", "The test root is mounted as breenfs", root_is_breenfs),
+    ]),
 ]);
+
+fn root_is_breenfs() -> CaseResult {
+    let text = io(fs::read_to_string("/proc/mounts"))?;
+    let roots: Vec<Vec<_>> = text.lines().map(|line| line.split_whitespace().collect())
+        .filter(|fields: &Vec<_>| fields.len() == 6 && fields[1] == "/").collect();
+    check(roots.len() == 1 && roots[0][2] == "breenfs", &format!("root mount is not breenfs: {roots:?}"))?;
+    let path = std::ffi::CString::new("/").map_err(|e| e.to_string())?;
+    let mut stats = sysfs::Statfs::default();
+    #[cfg(target_arch = "x86_64")] const STATFS: u64 = 137;
+    #[cfg(target_arch = "aarch64")] const STATFS: u64 = 43;
+    let result = unsafe { libbreenix::syscall::raw::syscall2(STATFS, path.as_ptr() as u64, &mut stats as *mut _ as u64) } as i64;
+    check(result == 0 && stats.f_type == filesystem_root::RootFs::Breenfs.magic() as i64,
+        &format!("root statfs: result={result}, stats={stats:?}"))
+}
 
 fn io<T>(result: std::io::Result<T>) -> Result<T, String> { result.map_err(|e| e.to_string()) }
 
@@ -94,9 +112,14 @@ impl CacheFile {
 impl Drop for CacheFile { fn drop(&mut self) { let _ = fs::remove_file(&self.0); } }
 
 fn reread_from_cache() -> CaseResult {
+    let root = filesystem_root::declared()?;
+    let expected = root_expectations::for_root(root);
     let path = CacheFile::new("reread");
     let data = vec![0x5a; REREAD_BYTES];
-    { let mut file = io(File::create(&path.0))?; io(file.write_all(&data))?; }
+    { let mut file = io(File::create(&path.0))?; io(file.write_all(&data))?;
+        // Design 1.2: publish dirty pages before measuring verified buffer hits.
+        if root == filesystem_root::RootFs::Breenfs { io(file.sync_all())?; }
+    }
     let mut first = Vec::new();
     io(io(File::open(&path.0))?.read_to_end(&mut first))?;
     check(first == data, "first read differs from written data")?;
@@ -106,7 +129,7 @@ fn reread_from_cache() -> CaseResult {
     let after = cache_counters()?;
     check(second == data, "second read differs from written data")?;
     check(reread_is_cached((before.hits, before.misses, before.reads),
-        (after.hits, after.misses, after.reads)),
+        (after.hits, after.misses, after.reads), expected.cache_block_bytes),
         &format!("reread cache evidence failed: {before:?} -> {after:?}"))
 }
 
@@ -267,4 +290,12 @@ fn ino_consistent() -> CaseResult {
     result
 }
 
-fn main() { SUITE.run() }
+fn main() {
+    let root = match filesystem_root::declared() {
+        Ok(root) => root,
+        Err(error) => { println!("SUITE filesystem ERROR {error}"); std::process::exit(1); }
+    };
+    println!("SUITE filesystem ROOT {}", root.name());
+    if root == filesystem_root::RootFs::Breenfs { SUITE.run(); }
+    suite(SUITE.id, SUITE.title, &SUITE.categories[..SUITE.categories.len() - 1]).run()
+}

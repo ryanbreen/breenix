@@ -2,11 +2,13 @@
  * The libc suite's case runner: looks up argv[1] in the category's table, runs it, and
  * writes the result line to the descriptor named by argv[2]. See case.h.
  */
+#define _POSIX_C_SOURCE 200809L
 #include "case.h"
 
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <time.h>
 
 char **libc_case_envp;
 
@@ -323,6 +325,33 @@ static void report(int fd, const char *kind, const char *text) {
     }
     line[n++] = '\n';
     write_all(fd, line, n);
+}
+
+void h_phase(const char *name) {
+    static const char *const names[] = { "readdir-setup-done", "readdir-opendir-reached",
+        "readdir-enumeration-start", "readdir-enumeration-end" };
+    static unsigned emitted;
+    int saved_errno = errno;
+    for (unsigned i = 0; i < sizeof names / sizeof names[0]; i++) {
+        if (!h_streq(name, names[i]) || (emitted & (1U << i)))
+            continue;
+        emitted |= 1U << i;
+        struct timespec ts;
+        unsigned long long ns = clock_gettime(CLOCK_MONOTONIC, &ts) == 0
+            ? (unsigned long long)ts.tv_sec * 1000000000ULL + (unsigned long long)ts.tv_nsec : 0;
+        char line[96], digits[24];
+        size_t n = 0, d = 0;
+        const char *prefix = "OBS ";
+        while (*prefix) line[n++] = *prefix++;
+        for (const char *p = name; *p; p++) line[n++] = *p;
+        line[n++] = ' ';
+        do { digits[d++] = (char)('0' + ns % 10); ns /= 10; } while (ns);
+        while (d) line[n++] = digits[--d];
+        line[n++] = '\n';
+        write_all(result_fd, line, n);
+        break;
+    }
+    errno = saved_errno;
 }
 
 void libc_case_missing(const char *name) {

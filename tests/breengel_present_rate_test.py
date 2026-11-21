@@ -109,6 +109,7 @@ impl<T> Cite<T> for Result<T, String> {
 }
 struct Window;
 impl Window {
+    fn id(&self) -> u64 { 1 }
     fn frame(&self, _: u32) -> Result<(), String> {
         MODEL.with(|m| { let mut m = m.borrow_mut();
             m.frames += 1;
@@ -119,6 +120,9 @@ impl Window {
             } else { m.ns += 13_000_000; } });
         Ok(())
     }
+}
+fn report_present_gap(_: u64, start: u64, end: u64, composed: u64) {
+    assert!(i128::from(composed) * 1_000_000_000 < 60 * i128::from(end - start));
 }
 mod breenix_suite { pub mod suite {
     pub type CaseError = String;

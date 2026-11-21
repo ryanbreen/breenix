@@ -1,5 +1,5 @@
 //! Local check evidence; records and planted failures stay in the inner executor.
-use breenix_suite::suite::CaseResult;
+use breenix_suite::suite::{control::observations::{during, Span}, CaseResult};
 use libuitest::{
     arena::{Slot, SlotRead},
     capture, capture_marker, classify,
@@ -148,7 +148,7 @@ fn inner(case: &str, which: u8, client: &mut RecordClient<'_>) -> Result<Scenari
                     return Err("screen slot not final".into());
                 };
                 let image = libimg::png::decode(
-                    &fs::read(path.join("screen.png")).map_err(|e| e.to_string())?,
+                    &during("scenario-artifact-checks", || fs::read(path.join("screen.png"))).map_err(|e| e.to_string())?,
                 )
                 .map_err(|e| format!("screen PNG: {e:?}"))?;
                 require(
@@ -168,7 +168,7 @@ fn inner(case: &str, which: u8, client: &mut RecordClient<'_>) -> Result<Scenari
                     "saved screen differs from failure-step readback",
                 )?;
                 require(
-                    fs::read(path.join("screen.record")).map_err(|e| e.to_string())?
+                    during("scenario-artifact-checks", || fs::read(path.join("screen.record"))).map_err(|e| e.to_string())?
                         == record.observation,
                     "saved screen readback record changed",
                 )?;
@@ -206,12 +206,14 @@ fn run(id: &str, which: u8) -> Result<(), String> {
     }
     // Exercise the same switch that the runner and local writer consult.
     let switch = Path::new("/etc/breenix/uitest-save");
+    let change_switch = Span::new("scenario-save-switch");
     let previous = fs::read(switch).ok();
     if which == 2 {
         fs::write(switch, b"all\n").map_err(|e| e.to_string())?;
     } else if switch.exists() {
         fs::remove_file(switch).map_err(|e| e.to_string())?;
     }
+    drop(change_switch);
     let outcome = libuitest::run_scenario(ScenarioSpec {
         suite: "ui-testing",
         case: &case,
@@ -223,6 +225,7 @@ fn run(id: &str, which: u8) -> Result<(), String> {
             })
         },
     });
+    let restore_switch = Span::new("scenario-save-switch");
     match previous {
         Some(bytes) => fs::write(switch, bytes).map_err(|e| e.to_string())?,
         None => {
@@ -231,6 +234,7 @@ fn run(id: &str, which: u8) -> Result<(), String> {
             }
         }
     }
+    drop(restore_switch);
     let expected = if which == 1 || which == 2 {
         Expected::Pass
     } else {

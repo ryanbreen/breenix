@@ -1,5 +1,5 @@
 //! Runner self-tests: judge the real scoped runner's transcript, not an inner outcome.
-use breenix_suite::suite::{check, fail, spawn, CaseResult, Run};
+use breenix_suite::suite::{check, control::observations::{self, Span}, fail, spawn, CaseResult, Run};
 use libbreenix::{io, process, signal, time, types::{Fd, Pid}};
 use std::{fs::File, io::Read, os::fd::{AsRawFd, FromRawFd}};
 
@@ -68,7 +68,8 @@ fn capture(mode: &str, config_sequence: bool) -> Result<(String, i32), breenix_s
 }
 
 pub(crate) fn collection_evidence(mode: &str, trigger: &str) -> CaseResult {
-    let (text, exit) = fixture(mode)?;
+    let (text, exit) = observations::during("fixture-transcript", || fixture(mode))?;
+    observations::retain_fixture(&text, &format!("fixture/{mode}"));
     check(exit == 1, "killed fixture did not fail")?;
     let collect = format!("SUITE runner-fixture COLLECT fixture/{mode} trigger={trigger} screen=at-collection");
     let at = text.find(&collect).ok_or("collection did not save a screen")?;
@@ -78,6 +79,7 @@ pub(crate) fn collection_evidence(mode: &str, trigger: &str) -> CaseResult {
     let case = text.find(&format!("CASE fixture/{mode} FAIL")).ok_or("fixture case did not fail")?;
     check(done < case && text.contains("DONE passed=0 failed=1 skipped=0 total=1"), "fixture result ordering differs")?;
     let path = std::path::Path::new("/var/uitest/runner-fixture/fixture").join(mode);
+    let read_artifacts = Span::new("fixture-read-artifacts");
     let manifest = std::fs::read_to_string(path.join("collection.txt")).map_err(|e| e.to_string())?;
     check(manifest.contains(&format!("trigger={trigger}")) && manifest.contains("frame=partial:case-died"), "missing death/timeout or partial-slot evidence")?;
     check(std::fs::read(path.join("screen.png")).map_err(|e| e.to_string())?.starts_with(b"\x89PNG\r\n\x1a\n"), "screen is not a saved PNG")?;
@@ -89,6 +91,7 @@ pub(crate) fn collection_evidence(mode: &str, trigger: &str) -> CaseResult {
         .filter(|p| p.file_name().to_string_lossy().starts_with("stderr-"))
         .map(|p| std::fs::read(p.path()).unwrap_or_default()).collect::<Vec<_>>();
     check(stderr.iter().any(|b| b.len() == 4096 && b.iter().all(|&v| v == b'x')), "app stderr was not saved")?;
+    drop(read_artifacts);
     if trigger == "timeout" {
         check(text.contains("timed out after 1500 ms"), "timeout did not use the logic bound")?;
         let elapsed: u64 = text.split(" collection-ms=").nth(1).ok_or("collection elapsed missing")?

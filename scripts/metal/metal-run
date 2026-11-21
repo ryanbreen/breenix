@@ -276,6 +276,9 @@ def boot(args):
     if category and args.mode == 'default':
         # The existing automated probe uploads bulk evidence before exiting.
         args.mode = 'probe'
+    if getattr(args, 'root_fs', None) is not None and (
+            args.disk != 'root' or args.payload != 'image' or args.mode not in ('default', 'suite', 'console')):
+        raise SystemExit('--root-fs breenfs needs --disk root and an image boot in default, suite or console mode')
     try:
         kernel_features(args.mode, args.suite, args.inject, category, getattr(args, 'case', None))
     except ValueError as error:
@@ -369,6 +372,8 @@ def boot(args):
     boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
     command = ['python3', f'{TOOLS}/metal-boot', 'launch', '--id', boot_id, '--payload', payload]
     command += ['--mode', args.mode, '--wait', str(wait)]
+    if getattr(args, 'root_fs', None) is not None:
+        command += ['--root-fs', args.root_fs]
     if getattr(args, 'build_choice', None) is not None:
         command += ['--build-choice', json.dumps(args.build_choice)]
     if catchup:
@@ -687,6 +692,7 @@ def argument_parser(automatic=False):
     p.add_argument('--idle-minutes', type=int, default=30, help='console session input idle limit; default 30')
     p.add_argument('--disk', choices=('install', 'root'),
                    help='physical disk root (default), or an explicit recovery install')
+    p.add_argument('--root-fs', choices=('breenfs',), help='opt in to a BreenFS test root with --disk root')
     p.add_argument('--suite')
     p.add_argument('--case', help='watch one category or case using the existing suite selector; not full-suite evidence')
     p.add_argument('--kernel-command-line', help='kernel options passed before root mounting')

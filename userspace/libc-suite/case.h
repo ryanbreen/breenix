@@ -41,6 +41,9 @@ extern char **libc_case_envp;
 
 #define PASS ((const char *)0)
 
+/* Bounded phase stamp to the private result pipe; the runner exports it only on failure. */
+void h_phase(const char *name);
+
 /* Fail with fixed text. */
 const char *fail_text(const char *what);
 /* "<what>: got <got>, expected <want>". */

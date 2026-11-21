@@ -48,7 +48,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             Handled::NoChange
-        }).map_err(|e| e.to_string())?;
+        }).map_err(|e| format!("wait-dispatch: {e}"))?;
         win.commit_no_change().map_err(|e| e.to_string())?;
         if close { break; }
         // A new semantic reader needs a serialization newer than its attach.

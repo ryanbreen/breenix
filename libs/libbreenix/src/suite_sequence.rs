@@ -195,6 +195,7 @@ pub fn activate_desktop_shares() -> Result<(), String> {
 /// Prepare the filesystem as the PID 1 owner, before starting services.
 pub fn prepare_owner(ids: &[String], index: usize) {
     configure(ids, index);
+    let failed_memory = take_memory_failure(&ids[index]);
     if index == 0 {
         if let Err(error) = park_desktop_shares() {
             emit(&std::format!("SUITE_SEQUENCE RESET {} FAIL {error}", ids[index]));
@@ -213,6 +214,7 @@ pub fn prepare_owner(ids: &[String], index: usize) {
             Err(why) => std::format!("SUITE_SEQUENCE RESET {} FAIL {why}", ids[index]),
         });
         frames(&ids[index]);
+        if failed_memory { mapping_cache(&ids[index]); }
     }
 }
 
@@ -264,6 +266,41 @@ fn frames(id: &str) {
     let Ok(text) = std::fs::read_to_string("/proc/breenix/frames") else { return };
     for line in text.lines() {
         emit(&std::format!("SUITE_SEQUENCE FRAMES {id} {line}"));
+    }
+}
+
+fn memory_failure_path() -> std::path::PathBuf {
+    sequence_paths().baseline.with_file_name("suite-memory-failure")
+}
+
+/// Pass the failure to the next sequence owner, including across the desktop
+/// member's exit and init's subsequent exec.
+pub(super) fn record_memory_failure(id: &str) {
+    use std::io::Write;
+
+    let Some(next) = AFTER.get().and_then(|commands| commands.first()) else { return };
+    let result = std::fs::OpenOptions::new().write(true).create_new(true)
+        .open(memory_failure_path()).and_then(|mut file| file.write_all(next.id.as_bytes()));
+    if let Err(error) = result {
+        emit(&std::format!("SUITE_MEMORY_DETAIL {id} after reset_cache_unavailable={error}"));
+    }
+}
+
+fn take_memory_failure(id: &str) -> bool {
+    let path = memory_failure_path();
+    let Ok(next) = std::fs::read_to_string(&path) else { return false };
+    let _ = std::fs::remove_file(path);
+    next == id
+}
+
+fn mapping_cache(id: &str) {
+    match std::fs::read_to_string("/proc/breenix/mapping-cache") {
+        Ok(text) => {
+            for line in text.lines() {
+                emit(&std::format!("SUITE_SEQUENCE RESET_CACHE {id} {line}"));
+            }
+        }
+        Err(error) => emit(&std::format!("SUITE_SEQUENCE RESET_CACHE {id} unavailable={error}")),
     }
 }
 

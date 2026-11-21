@@ -423,6 +423,7 @@ pub(super) fn unpinned() -> bool {
 pub(super) static CPU_LOAD: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(0) }; MAX_CPUS];
 pub(super) static CPU_IDLE: [AtomicBool; MAX_CPUS] = [const { AtomicBool::new(false) }; MAX_CPUS];
 pub(super) static CPU_LAST_SCHEDULE: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+pub(super) static CPU_QUEUE_LEN: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(0) }; MAX_CPUS];
 /// Per CPU, the thread it ran when its lock was last released, plus one; 0
 /// for none.
 static CURRENT: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
@@ -471,7 +472,9 @@ pub(super) fn refresh(scheduler: &Scheduler) {
         }
         let idle = state.pending_next.or(state.current_thread) == Some(state.idle_thread);
         let busy = state.pending_next.or(state.current_thread).is_some() && !idle;
-        CPU_LOAD[cpu].store(scheduler.per_cpu_queues[cpu].len() as u32 + busy as u32, Ordering::Relaxed);
+        let len = scheduler.per_cpu_queues[cpu].len() as u32;
+        CPU_LOAD[cpu].store(len + busy as u32, Ordering::Relaxed);
+        CPU_QUEUE_LEN[cpu].store(len, Ordering::Relaxed);
         CPU_IDLE[cpu].store(idle, Ordering::Relaxed);
         CPU_LAST_SCHEDULE[cpu].store(state.last_schedule_ticks, Ordering::Relaxed);
         CURRENT[cpu].store(state.current_thread.map_or(0, |tid| tid + 1), Ordering::Release);
@@ -554,6 +557,7 @@ impl Held {
         let last = state.last_schedule_ticks;
         let current = state.current_thread.map_or(0, |tid| tid + 1);
         CPU_LOAD[cpu].store(len + busy as u32, Ordering::Relaxed);
+        CPU_QUEUE_LEN[cpu].store(len, Ordering::Relaxed);
         CPU_IDLE[cpu].store(idle, Ordering::Relaxed);
         CPU_LAST_SCHEDULE[cpu].store(last, Ordering::Relaxed);
         CURRENT[cpu].store(current, Ordering::Release);

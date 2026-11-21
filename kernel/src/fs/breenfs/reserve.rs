@@ -1,9 +1,10 @@
 //! Pure block reservation accounting from design section 2.8.
 //!
 //! The mount supplies its current free-block count under its write lock. Grants
-//! remain outstanding until their transaction is durable or discarded. Admission
-//! here changes no trees and performs no allocation or I/O; callers must reserve
-//! before mutation and retain the grant through publication.
+//! are settled to the work still owed after an operation, returning unused
+//! capacity immediately. The retained part stays outstanding until durable or
+//! discarded. Admission changes no trees and performs no allocation or I/O;
+//! callers must reserve before mutation and retain the debt through publication.
 use super::space::Error;
 
 /// Host-only captures of refusals and allocation grants (E24 ledger 403/408, #3047).
@@ -91,6 +92,10 @@ impl Grant {
 pub struct Ledger {
     global_reserve: u64,
     outstanding: u64,
+    // Outstanding blocks of grants whose generation is already installed:
+    // its allocations have left free_blocks, so admission charges them no
+    // longer. Each is still released one at a time (E24 coordinator 601(4)).
+    retired: u64,
 }
 
 impl Ledger {
@@ -99,6 +104,7 @@ impl Ledger {
         Self {
             global_reserve,
             outstanding: 0,
+            retired: 0,
         }
     }
 
@@ -106,11 +112,31 @@ impl Ledger {
         self.outstanding
     }
 
+    // What admission charges: grants whose blocks free_blocks still counts.
+    pub(super) fn charged(&self) -> u64 {
+        self.outstanding - self.retired
+    }
+
     /// Unprivileged availability for f_bavail, in filesystem blocks.
     pub fn available(&self, free_blocks: u64) -> u64 {
         free_blocks
             .saturating_sub(self.global_reserve)
-            .saturating_sub(self.outstanding)
+            .saturating_sub(self.charged())
+    }
+
+    /// The installed free count already excludes what `blocks` of
+    /// outstanding grants funded (x11c M3). Call with that install.
+    pub fn retire(&mut self, blocks: u64) {
+        self.retired = self.retired.checked_add(blocks)
+            .filter(|&retired| retired <= self.outstanding)
+            .expect("retired more than the outstanding grants");
+    }
+
+    /// Release a grant whose blocks `retire` already covered.
+    pub fn release_retired(&mut self, grant: Grant) {
+        self.retired = self.retired.checked_sub(grant.blocks)
+            .expect("released more than the retired grants");
+        self.release(grant);
     }
 
     /// Charge a precomputed estimate before the operation changes anything.
@@ -122,13 +148,15 @@ impl Ledger {
         blocks: u64,
         operation: Operation,
     ) -> Result<Grant, Error> {
+        #[cfg(test)]
+        super::btree::measurement::mutation(0, 1);
         let available = match operation {
             Operation::Allocate => self.available(free_blocks),
             Operation::Unlink
             | Operation::Rmdir
             | Operation::Truncate
             | Operation::RemoveXattr
-            | Operation::DeleteSnapshot => free_blocks.saturating_sub(self.outstanding),
+            | Operation::DeleteSnapshot => free_blocks.saturating_sub(self.charged()),
         };
         if blocks > available {
             #[cfg(test)]
@@ -148,13 +176,32 @@ impl Ledger {
                 free_blocks, self.global_reserve, outstanding, blocks, available,
             ]);
         }
+        #[cfg(test)]
+        super::btree::measurement::mutation(1, blocks);
         self.outstanding = outstanding;
         Ok(Grant { blocks })
+    }
+
+    /// Keep only the operation's remaining transaction debt. Admission already
+    /// funded this amount; settlement cannot enlarge a grant.
+    pub fn settle(&mut self, grant: &mut Grant, blocks: u64) -> Result<(), Error> {
+        let unused = grant.blocks.checked_sub(blocks).ok_or(Error::ENOSPC)?;
+        self.outstanding = self.outstanding.checked_sub(unused)
+            .expect("reservation settled on the wrong ledger");
+        #[cfg(test)]
+        {
+            super::btree::measurement::mutation(2, blocks);
+            super::btree::measurement::mutation(3, unused);
+        }
+        grant.blocks = blocks;
+        Ok(())
     }
 
     /// Return the exact grant after a durable commit or a discarded transaction.
     /// The grant must come from this ledger; release changes no free-block count.
     pub fn release(&mut self, grant: Grant) {
+        #[cfg(test)]
+        super::btree::measurement::mutation(3, grant.blocks);
         self.outstanding = self
             .outstanding
             .checked_sub(grant.blocks)

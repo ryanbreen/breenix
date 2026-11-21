@@ -5,9 +5,10 @@
 //! or perform I/O. The transaction layer owns space-tree node allocation and the
 //! deferred refcount fixpoint. Ranges supplied to `add_free` must be unowned and
 //! outside reserved blocks. FS child references are managed by txn/the reaper.
+use super::preempt::preemption_point;
 use super::{
     btree::{self, NodeStore},
-    format::{self, BlockPtr, Free, InternalEntry, Key, LeafItemHeader, NodeHeader, Pending, Ref},
+    format::{self, BlockPtr, Free, Key, Pending, Ref},
 };
 use alloc::{collections::BTreeSet, vec::Vec};
 
@@ -82,91 +83,33 @@ pub fn reference<S: NodeStore>(
     Ok(Some(r))
 }
 
-// Only descend into branches intersecting this object's item-type range. The
-// generic B-tree has point lookup, so use it to validate each collected payload
-// and its ancestor bounds rather than maintaining a second item decoder here.
 fn range<S: NodeStore>(
     store: &S,
     root: BlockPtr,
     object: u64,
     ty: u8,
 ) -> Result<Vec<(Key, Vec<u8>)>, Error> {
-    let lower = key(object, ty, 0);
-    let upper = key(object, ty, u64::MAX);
-    let mut todo = alloc::vec![root];
-    let mut seen = BTreeSet::new();
-    let mut out = Vec::new();
-    let uuid = NodeHeader::decode(&store.get(root.addr)?)?.fs_uuid;
-    while let Some(ptr) = todo.pop() {
-        if ptr.level >= 8 || !seen.insert(ptr.addr) {
-            return Err(Error::Invalid);
-        }
-        let bytes = store.get(ptr.addr)?;
-        if bytes.len() != format::NODE_SIZE {
-            return Err(Error::Invalid);
-        }
-        let h = NodeHeader::decode(&bytes)?;
-        if h.tree != 2
-            || h.fs_uuid != uuid
-            || h.addr != ptr.addr
-            || h.level != ptr.level
-            || h.generation != ptr.generation
-            || u32::from_le_bytes(bytes[8..12].try_into().unwrap()) != ptr.csum
-        {
-            return Err(Error::Invalid);
-        }
-        let count = usize::from(h.nitems);
-        let width = if h.level == 0 { 21 } else { 37 };
-        if 48 + count * width > bytes.len() || (h.level > 0 && count > 441) {
-            return Err(Error::Invalid);
-        }
-        if h.level == 0 {
-            for i in 0..count {
-                let at = 48 + i * 21;
-                let k = LeafItemHeader::decode(&bytes[at..at + 21])?.key;
-                if k >= lower && k <= upper {
-                    let payload = btree::search(store, root, k)?.ok_or(Error::Invalid)?;
-                    out.push((k, payload));
-                }
-            }
-        } else {
-            let mut entries = Vec::new();
-            for i in 0..count {
-                let at = 48 + i * 37;
-                entries.push(InternalEntry::decode(&bytes[at..at + 37])?);
-            }
-            for (i, e) in entries.iter().enumerate().rev() {
-                if e.key <= upper && entries.get(i + 1).is_none_or(|next| next.key > lower) {
-                    todo.push(BlockPtr {
-                        addr: e.child_addr,
-                        generation: e.child_generation,
-                        csum: e.child_csum,
-                        level: h.level - 1,
-                    });
-                }
-            }
-        }
+    if store.read_node(root)?.header.tree != 2 { return Err(Error::Invalid); }
+    Ok(btree::range(store, root, key(object, ty, 0), key(object, ty, u64::MAX))?)
+}
+fn free_record(key: Key, bytes: &[u8]) -> Result<(u64, u64), Error> {
+    if bytes.len() != 8 {
+        return Err(Error::Invalid);
     }
-    out.sort_by_key(|item| item.0);
-    Ok(out)
+    let length = Free::decode(bytes)?.length;
+    end(key.offset, length)?;
+    Ok((key.offset, length))
 }
-fn free_ranges<S: NodeStore>(store: &S, root: BlockPtr) -> Result<Vec<(u64, u64)>, Error> {
-    range(store, root, FREE_OBJECT, format::FREE)?
-        .into_iter()
-        .map(|(k, bytes)| {
-            if bytes.len() != 8 {
-                return Err(Error::Invalid);
-            }
-            let length = Free::decode(&bytes)?.length;
-            end(k.offset, length)?;
-            Ok((k.offset, length))
-        })
-        .collect()
+
+fn free_key(start: u64) -> Key {
+    key(FREE_OBJECT, format::FREE, start)
 }
+
 fn merged(mut ranges: Vec<(u64, u64)>) -> Result<Vec<(u64, u64)>, Error> {
-    ranges.sort_unstable();
+    ranges.sort_unstable_by(|a, b| { preemption_point(); a.cmp(b) });
     let mut out: Vec<(u64, u64)> = Vec::new();
     for (start, length) in ranges {
+        preemption_point();
         end(start, length)?;
         if let Some((prev, len)) = out.last_mut() {
             let prev_end = end(*prev, *len)?;
@@ -190,39 +133,48 @@ pub fn add_free<S: NodeStore>(
     start: u64,
     length: u64,
 ) -> Result<(), Error> {
-    end(start, length)?;
-    let old = free_ranges(store, *root)?;
-    let mut ranges = old.clone();
-    ranges.push((start, length));
-    let ranges = merged(ranges)?;
-    for &(start, length) in &old {
-        if !ranges.contains(&(start, length)) {
-            btree::delete(store, root, key(FREE_OBJECT, format::FREE, start))?;
-        }
+    let mut start = start;
+    let mut stop = end(start, length)?;
+    let mut left = None;
+    let mut right = None;
+    // FREE is ordered by physical start and already coalesced. Only the
+    // predecessor and successor can overlap or adjoin a returned range.
+    btree::visit_range_reverse(store, *root, free_key(0), free_key(start), &mut |key, bytes| {
+        let (addr, length) = free_record(key, bytes)?;
+        let end = end(addr, length)?;
+        if end > start { return Err(Error::Invalid); }
+        if end == start { left = Some(addr); }
+        Ok(false)
+    })?;
+    btree::visit_range(store, *root, free_key(start + 1), free_key(u64::MAX), &mut |key, bytes| {
+        let (addr, length) = free_record(key, bytes)?;
+        if addr < stop { return Err(Error::Invalid); }
+        if addr == stop { right = Some((addr, end(addr, length)?)); }
+        Ok(false)
+    })?;
+    if let Some(addr) = left {
+        btree::delete(store, root, free_key(addr))?;
+        start = addr;
     }
-    for (start, length) in ranges {
-        if old.contains(&(start, length)) {
-            continue;
-        }
-        btree::insert(
-            store,
-            root,
-            key(FREE_OBJECT, format::FREE, start),
-            &Free { length }.encode(),
-        )?;
+    if let Some((addr, end)) = right {
+        btree::delete(store, root, free_key(addr))?;
+        stop = end;
     }
+    btree::insert(store, root, free_key(start), &Free { length: stop - start }.encode())?;
     Ok(())
 }
 
 /// Last publication needed to include the current PENDING ranges in FREE.
 /// This observes the quarantine; promotion still goes through promote_pending.
 /// Admission snapshots this bound once, rather than chasing later releases.
+#[cfg(test)]
 pub fn pending_promotion_generation<S: NodeStore>(
     store: &S,
     root: BlockPtr,
 ) -> Result<Option<u64>, Error> {
     let mut generation = None;
     for (key, bytes) in range(store, root, PENDING_OBJECT, format::PENDING)? {
+        preemption_point();
         let pending = Pending::decode(&bytes)?;
         end(key.offset, pending.length)?;
         if pending.released_generation == 0 {
@@ -237,14 +189,57 @@ pub fn pending_promotion_generation<S: NodeStore>(
     Ok(generation)
 }
 
+/// A fixed-size account of an installed generation's quarantine.
+#[derive(Clone, Copy, Default)]
+pub struct PendingSummary {
+    blocks: u128,
+    oldest: u64,
+    newest: u64,
+}
+impl PendingSummary {
+    /// At mount, reuse the records already read by recovery.
+    pub fn from_items(items: &[(Key, Vec<u8>)]) -> Result<Self, Error> {
+        let mut summary = Self::default();
+        for (key, bytes) in items {
+            preemption_point();
+            if key.object != PENDING_OBJECT || key.item_type != format::PENDING {
+                continue;
+            }
+            let pending = Pending::decode(bytes)?;
+            end(key.offset, pending.length)?;
+            if pending.released_generation == 0 {
+                return Err(Error::Invalid);
+            }
+            summary.include(pending.length, pending.released_generation);
+        }
+        Ok(summary)
+    }
+    pub(super) fn include(&mut self, length: u64, generation: u64) {
+        self.blocks += u128::from(length);
+        self.oldest = if self.oldest == 0 { generation } else { self.oldest.min(generation) };
+        self.newest = self.newest.max(generation);
+    }
+    pub fn promotion_generation(self) -> Result<Option<u64>, Error> {
+        if self.newest == 0 {
+            return Ok(None);
+        }
+        self.newest.checked_add(2).map(Some).ok_or(Error::Invalid)
+    }
+    pub fn census(self) -> Option<(u64, u64)> {
+        Some((u64::try_from(self.blocks).ok()?, self.oldest))
+    }
+}
+
 /// Commit-time conversion of quarantined space, even with ample FREE space.
 /// Allocation still prefers FREE within a transaction (design 2.5 reuse rule).
 pub fn promote_pending<S: NodeStore>(
     store: &mut S,
     root: &mut BlockPtr,
     generation: u64,
-) -> Result<(), Error> {
+) -> Result<PendingSummary, Error> {
+    let mut pending_summary = PendingSummary::default();
     for (k, bytes) in range(store, *root, PENDING_OBJECT, format::PENDING)? {
+        preemption_point();
         let pending = Pending::decode(&bytes)?;
         end(k.offset, pending.length)?;
         if pending.released_generation == 0 {
@@ -256,9 +251,11 @@ pub fn promote_pending<S: NodeStore>(
         {
             btree::delete(store, root, k)?;
             add_free(store, root, k.offset, pending.length)?;
+        } else {
+            pending_summary.include(pending.length, pending.released_generation);
         }
     }
-    Ok(())
+    Ok(pending_summary)
 }
 
 /// Allocate a whole REF. Prefer existing FREE space; only if that cannot fit,
@@ -312,11 +309,21 @@ fn allocate_extent<S: NodeStore>(
     if !valid_ref(length, &r) {
         return Err(Error::Invalid);
     }
-    let mut free = free_ranges(store, *root)?;
-    let mut candidate = free.iter().find(|(_, len)| *len >= length).copied();
+    let mut free = Vec::new();
+    let mut candidate = None;
+    btree::visit_range(store, *root, free_key(0), free_key(u64::MAX), &mut |key, bytes| {
+        let range = free_record(key, bytes)?;
+        if range.1 >= length {
+            candidate = Some(range);
+            return Ok::<_, Error>(false);
+        }
+        free.push(range);
+        Ok(true)
+    })?;
     if candidate.is_none() {
         let mut pending = Vec::new();
         for (k, bytes) in range(store, *root, PENDING_OBJECT, format::PENDING)? {
+            preemption_point();
             if bytes.len() != 16 {
                 return Err(Error::Invalid);
             }
@@ -332,21 +339,22 @@ fn allocate_extent<S: NodeStore>(
                 pending.push((k.offset, p.length));
             }
         }
-        free.extend_from_slice(&pending);
+        free.extend(pending.iter().map(|&range| { preemption_point(); range }));
         free = merged(free)?;
-        candidate = free.iter().find(|(_, len)| *len >= length).copied();
+        candidate = free.iter().find(|(_, len)| { preemption_point(); *len >= length }).copied();
         if candidate.is_none() && short_data {
             // Break ties by address so replaying this exact shorter allocation
             // in the real SPACE tree makes the same first-fit choice.
             candidate = free
                 .iter()
                 .copied()
-                .max_by_key(|(start, len)| (*len, core::cmp::Reverse(*start)));
+                .max_by_key(|(start, len)| { preemption_point(); (*len, core::cmp::Reverse(*start)) });
         }
         if candidate.is_none() {
             return Err(Error::ENOSPC);
         }
         for (start, length) in pending {
+            preemption_point();
             btree::delete(store, root, key(PENDING_OBJECT, format::PENDING, start))?;
             add_free(store, root, start, length)?;
         }
@@ -388,7 +396,8 @@ pub fn increment<S: NodeStore>(
 
 /// Drop an incoming reference in commit G. `referenced_children` means an FS
 /// node still owns internal children or data extents. DEAD retains those outgoing
-/// references until the reaper processes them; an empty node/data becomes PENDING.
+/// references until the reaper processes them. Return whether this release
+/// put a range in PENDING.
 pub fn release<S: NodeStore>(
     store: &mut S,
     root: &mut BlockPtr,
@@ -396,7 +405,7 @@ pub fn release<S: NodeStore>(
     length: u64,
     generation: u64,
     referenced_children: bool,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
     let mut r = reference(store, *root, start, length)?.ok_or(Error::Invalid)?;
     if generation < r.alloc_generation || (referenced_children && r.kind != Kind::FsNode as u8) {
         return Err(Error::Invalid);
@@ -404,24 +413,24 @@ pub fn release<S: NodeStore>(
     r.refcount -= 1;
     if r.refcount > 0 {
         btree::insert(store, root, key(start, format::REF, length), &r.encode())?;
-    } else {
-        btree::delete(store, root, key(start, format::REF, length))?;
-        if referenced_children {
-            btree::insert(store, root, key(start, format::DEAD, 4), &[])?;
-        } else {
-            btree::insert(
-                store,
-                root,
-                key(PENDING_OBJECT, format::PENDING, start),
-                &Pending {
-                    length,
-                    released_generation: generation,
-                }
-                .encode(),
-            )?;
-        }
+        return Ok(false);
     }
-    Ok(())
+    btree::delete(store, root, key(start, format::REF, length))?;
+    if referenced_children {
+        btree::insert(store, root, key(start, format::DEAD, 4), &[])?;
+    } else {
+        btree::insert(
+            store,
+            root,
+            key(PENDING_OBJECT, format::PENDING, start),
+            &Pending {
+                length,
+                released_generation: generation,
+            }
+            .encode(),
+        )?;
+    }
+    Ok(!referenced_children)
 }
 
 /// Collect the DEAD address index once when opening a mount. REF and DEAD keys
@@ -434,6 +443,7 @@ pub fn dead_nodes<S: NodeStore>(store: &S, root: BlockPtr) -> Result<BTreeSet<u6
         key(0, 0, 0),
         key(0xffff_ffff_ffff_ff0f, u8::MAX, u64::MAX),
     )? {
+        preemption_point();
         if k.item_type == format::DEAD {
             if k.offset != 4 || !value.is_empty() {
                 return Err(Error::Invalid);

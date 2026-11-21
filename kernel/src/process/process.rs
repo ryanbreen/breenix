@@ -680,6 +680,8 @@ impl Process {
     /// the process table and wherever its credentials, session, process group
     /// or thread group change.
     pub fn publish_identity(&self) {
+        #[cfg(target_arch = "aarch64")]
+        self.signals.thread.lockup_name.publish(&self.name);
         let id = self.id.as_u64();
         self.signals.thread.mirror.set_identity(&crate::signal::types::Identity {
             uid: self.cred.uid,

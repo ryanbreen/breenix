@@ -939,6 +939,14 @@ pub mod test_control {
     pub const ARM: u32 = 1;
     pub const DISARM_ALL: u32 = 2;
     pub const FIRED: u32 = 3;
+    pub const RESIDENT_CENSUS: u32 = 5;
+
+    pub mod resident_census {
+        pub const BEFORE: u64 = 0;
+        pub const AFTER: u64 = 1;
+        pub const REPORT: u64 = 2;
+        pub const DISCARD: u64 = 3;
+    }
 }
 
 /// `test_control` `ARM` (24 bytes).

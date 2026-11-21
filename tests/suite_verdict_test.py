@@ -4,6 +4,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -38,6 +39,36 @@ EXPECTATIONS = {
     "failed-case": (False, "CASE first/two FAIL ms=1 msg=case failed"),
     "memory-leaked": (False, "memory not reclaimed: 100 pages short after the reap, allowance 48"),
 }
+
+
+class FilesystemRootVerdictTests(unittest.TestCase):
+    def score(self, root_records, include_case):
+        manifest = dict(MANIFEST, id="filesystem", categories=[
+            dict(id="first", cases=[dict(id="one")]),
+            dict(id="test-root", root="breenfs", cases=[dict(id="root-is-breenfs")])])
+        text = (FIXTURES / "all-pass.txt").read_text().replace("SUITE fixture", "SUITE filesystem")
+        text = text.replace("SUITE filesystem CASE first/two PASS ms=1\n", "").replace("SUITE filesystem CASE second/three PASS ms=1\n", "")
+        if include_case:
+            text = text.replace("SUITE filesystem DONE", "SUITE filesystem CASE test-root/root-is-breenfs PASS ms=1\nSUITE filesystem DONE")
+        count = 2 if include_case else 1
+        text = text.replace("cases=3", f"cases={count}").replace("passed=3 failed=0 skipped=0 total=3", f"passed={count} failed=0 skipped=0 total={count}")
+        text = text.replace("SUITE filesystem START", root_records + "SUITE filesystem START")
+        with tempfile.TemporaryDirectory() as directory:
+            serial = Path(directory) / "serial.txt"
+            serial.write_text(text)
+            return SCORER.verdict(manifest, serial, [serial])
+
+    def test_root_condition_and_required_record(self):
+        for records, case, expected in [
+            ("SUITE filesystem ROOT ext2\n", False, True),
+            ("SUITE filesystem ROOT breenfs\n", True, True),
+            ("SUITE filesystem ROOT breenfs\n", False, False),
+            ("", False, False),
+            ("SUITE filesystem ROOT ext2\nSUITE filesystem ROOT breenfs\n", False, False),
+        ]:
+            with self.subTest(records=records, case=case):
+                ok, reason = self.score(records, case)
+                self.assertEqual(ok, expected, reason)
 
 
 class GuiResultVerdictTests(unittest.TestCase):
@@ -103,6 +134,36 @@ class GuiResultVerdictTests(unittest.TestCase):
 
 
 class SuiteVerdictTests(unittest.TestCase):
+    def test_readback_reports_each_disk_verdict_after_guest_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            disk = Path(directory) / "disk.img"
+            with disk.open("wb") as image:
+                image.truncate(24 * 4096)
+                image.seek(16 * 4096)
+                image.write(b"BREENFSS")
+            checks = [dict(path=path, byte=65, length=4) for path in ("/wrong", "/written")]
+            manifest = Path(directory) / "manifest.json"
+            manifest.write_text(json.dumps(dict(MANIFEST, diskChecks=checks)))
+
+            def run(args, **kwargs):
+                if Path(args[0]).name == "breenfs-check":
+                    self.assertEqual(args[1:], ["--full", str(disk)])
+                    return subprocess.CompletedProcess(args, 4)
+                self.assertEqual(args[-3:-1], [str(disk), "cat"])
+                return subprocess.CompletedProcess(args, 0, stdout=b"AAAA" if args[-1] == "/written" else b"AAAB")
+
+            report_output = io.StringIO()
+            with patch.object(sys, "argv", ["suite-verdict", str(manifest),
+                    str(FIXTURES / "failed-case.txt"), "--disk", str(disk), "--disk-report"]), \
+                    patch.object(SCORER.subprocess, "run", side_effect=run), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(report_output):
+                self.assertEqual(SCORER.main(), 1)
+            report = json.loads(report_output.getvalue().removeprefix("METAL_DISK_VERDICT "))
+            self.assertFalse(report["passed"])
+            self.assertEqual(report["breenfsCheckExit"], 4)
+            self.assertEqual([(check["path"], check["status"]) for check in report["diskChecks"]],
+                             [("/wrong", "fail"), ("/written", "pass")])
+
     def test_breenfs_disk_checks_read_through_extract(self):
         with tempfile.TemporaryDirectory() as directory:
             disk = Path(directory) / "disk.img"
@@ -112,6 +173,8 @@ class SuiteVerdictTests(unittest.TestCase):
                 image.write(b"BREENFSS")
             checks = [dict(path="/result", byte=65, length=4)]
             def run(args, **kwargs):
+                if Path(args[0]).name == "breenfs-check":
+                    return subprocess.CompletedProcess(args, 0)
                 self.assertEqual(args[-3:], [str(disk), "cat", "/result"])
                 return subprocess.CompletedProcess(args, 0, stdout=content)
             with patch.object(SCORER.subprocess, "run", side_effect=run):
@@ -121,6 +184,45 @@ class SuiteVerdictTests(unittest.TestCase):
                 ok, reason = SCORER.disk_verdict(checks, disk)
                 self.assertFalse(ok)
                 self.assertIn("/result", reason)
+
+    def test_breenfs_disk_checks_reject_corrupt_superblock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            disk, checks, target = self.make_breenfs_disk(Path(directory))
+            with disk.open("r+b") as image:
+                image.seek(16 * 4096 + 8)
+                byte = image.read(1)
+                image.seek(-1, 1)
+                image.write(bytes([byte[0] ^ 1]))
+            readback = subprocess.run([str(target / "release/breenfs-extract"), str(disk),
+                                       "cat", "/result"], capture_output=True, check=True)
+            self.assertEqual(readback.stdout, b"AAAA")
+            ok, reason = SCORER.disk_verdict(checks, disk)
+            self.assertFalse(ok)
+            self.assertIn("breenfs-check --full failed", reason)
+
+    def test_breenfs_disk_checks_report_full_check_passed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            disk, checks, _ = self.make_breenfs_disk(Path(directory))
+            manifest = dict(MANIFEST, diskChecks=checks)
+            manifest_path = Path(directory) / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest))
+            output = io.StringIO()
+            with patch.object(sys, "argv", ["suite-verdict", str(manifest_path),
+                                             str(FIXTURES / "all-pass.txt"), "--disk", str(disk)]), \
+                    contextlib.redirect_stdout(output):
+                self.assertEqual(SCORER.main(), 0)
+            self.assertIn("breenfs-check --full passed", output.getvalue())
+
+    def make_breenfs_disk(self, directory):
+        target = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "tools/breenfs/target"))
+        source = directory / "source"
+        source.mkdir()
+        (source / "result").write_bytes(b"AAAA")
+        disk = directory / "disk.img"
+        subprocess.run([str(target / "release/breenfs-mkfs"), "--populate", str(source),
+                        "--size", str(64 * 1024 * 1024), str(disk)],
+                       capture_output=True, check=True)
+        return disk, [dict(path="/result", byte=65, length=4)], target
 
     def test_ext2_disk_checks_keep_debugfs(self):
         with tempfile.TemporaryDirectory() as directory:

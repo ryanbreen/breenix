@@ -12,6 +12,10 @@
 //! (35..42), unavailable scheduler sample (43), sampling CPU (44); section 17.1.
 //! Pending-render acceptance (45) and observed seal decision (46): window,
 //! accepted commit, processed watermark. Stage 14 remains front publication.
+//! Render submit (47): composite serial, COMPOSITE entry ns, submit entry ns, submit return ns.
+//! Native latch completion (48): resource, latch ns, completed ns, observed ns.
+//! Scene descriptor read (49): change count, 0, 0, read ns.
+//! Native latch prediction (50): resource, latch ns, predicted latch ns, accept ns.
 use alloc::{string::String, vec::Vec};
 use core::fmt::Write;
 const CAPACITY: usize = 32768;

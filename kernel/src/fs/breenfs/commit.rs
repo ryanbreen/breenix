@@ -1,10 +1,11 @@
 //! Generation preparation and ordered publication (design section 2.5).
 //! The mount closes a generation under its lock, then publishes without it.
+use super::preempt::preemption_point;
 use super::{
     btree::{self, NodeStore},
     crc32c,
     format::{
-        self, BlockPtr, Free, InternalEntry, LeafItemHeader, NodeHeader, Ref, Root, Superblock,
+        self, BlockPtr, Root, Superblock,
         BLOCK_SIZE, NODE_SIZE,
     },
     txn::Transaction,
@@ -21,9 +22,45 @@ use alloc::{
 };
 use core::sync::atomic::{AtomicU8, Ordering};
 
+// Opt-in host observation; absent from kernel builds and inactive in other tests.
+#[cfg(test)]
+pub mod publication_measurement {
+    extern crate std;
+    use alloc::vec::Vec;
+    #[derive(Default)]
+    pub struct Counts {
+        pub staged: Vec<(u64, u8)>,
+        pub files_views: usize,
+        pub view_records: usize,
+    }
+    std::thread_local! {
+        static COUNTS: core::cell::RefCell<Option<Counts>> = const { core::cell::RefCell::new(None) };
+    }
+    pub fn start() { COUNTS.with(|c| *c.borrow_mut() = Some(Counts::default())); }
+    pub fn take() -> Counts { COUNTS.with(|c| c.borrow_mut().take().unwrap()) }
+    pub(super) fn prepared(nodes: impl Iterator<Item = (u64, u8)>) {
+        COUNTS.with(|c| {
+            if let Some(c) = c.borrow_mut().as_mut() {
+                assert!(c.staged.is_empty(), "one preparation per publication");
+                c.staged = nodes.collect();
+            }
+        });
+    }
+    pub(crate) fn files_view(records: usize) {
+        COUNTS.with(|c| {
+            if let Some(c) = c.borrow_mut().as_mut() {
+                c.files_views += 1;
+                c.view_records += records;
+            }
+        });
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     EIO,
+    BlockRead(BlockError),
+    NodeRead(btree::ReadFailure),
     UuidMismatch,
     NoGeneration,
     InvalidGeneration,
@@ -35,8 +72,11 @@ impl From<format::Error> for Error {
     }
 }
 impl From<btree::Error> for Error {
-    fn from(_: btree::Error) -> Self {
-        Self::EIO
+    fn from(error: btree::Error) -> Self {
+        match error {
+            btree::Error::Read(failure) => Self::NodeRead(failure),
+            _ => Self::EIO,
+        }
     }
 }
 
@@ -92,15 +132,29 @@ impl Committer {
     pub fn read_only(&self) -> bool {
         self.failed || self.durable.ro_compat != 0
     }
-    pub fn waiter(&mut self) -> Arc<FsyncWaiter> {
-        let w = Arc::new(FsyncWaiter {
+    fn new_waiter(&self) -> FsyncWaiter {
+        FsyncWaiter {
             generation: self.open_generation,
             status: AtomicU8::new(if self.read_only() { 2 } else { 0 }),
-        });
+        }
+    }
+    pub fn waiter(&mut self) -> Arc<FsyncWaiter> {
+        let w = Arc::new(self.new_waiter());
         if !self.read_only() {
             self.waiters.push(w.clone());
         }
         w
+    }
+    pub fn try_waiter(
+        &mut self,
+        allocate: impl FnOnce(FsyncWaiter) -> Option<Arc<FsyncWaiter>>,
+    ) -> Option<Arc<FsyncWaiter>> {
+        let w = allocate(self.new_waiter())?;
+        if !self.read_only() {
+            self.waiters.try_reserve(1).ok()?;
+            self.waiters.push(w.clone());
+        }
+        Some(w)
     }
     /// `data` contains private extents, keyed by their starting breenfs block.
     /// The transaction owns their allocated REF records and per-block CRCs.
@@ -122,7 +176,8 @@ impl Committer {
         files: &mut super::ops::Files<'_, S>,
     ) -> Result<Superblock, Error> {
         self.committing(|mount| {
-            let (txn, data) = files.prepare_commit().map_err(|_| Error::EIO)?;
+            files.prepare_commit().map_err(|_| Error::EIO)?;
+            let (txn, data) = files.commit_buffers();
             let prepared = mount.prepare(device, txn, data)?;
             prepared.write_direct(device, data)?;
             Ok(prepared.sb)
@@ -130,7 +185,7 @@ impl Committer {
     }
     fn committing(
         &mut self,
-        operation: impl FnOnce(&Self) -> Result<Superblock, Error>,
+        operation: impl FnOnce(&FrozenCommit) -> Result<Superblock, Error>,
     ) -> Result<Superblock, Error> {
         if self.failed {
             return Err(Error::EIO);
@@ -138,7 +193,12 @@ impl Committer {
         if self.read_only() {
             return Err(Error::ReadOnly);
         }
-        let result = operation(self);
+        let result = operation(&FrozenCommit {
+            generation: self.open_generation,
+            durable: self.durable.clone(),
+            scrub: self.pending_scrub,
+            waiters: Vec::new(),
+        });
         match &result {
             Ok(sb) => {
                 self.durable = sb.clone();
@@ -153,84 +213,126 @@ impl Committer {
         }
         result
     }
+    /// Freeze the open generation N (E24 coordinator 601(3)): the receipt
+    /// boundary advances here, not in preparation. Waiters registered before
+    /// this call wait for N; later ones wait for N+1. Constant work: a counter,
+    /// a superblock copy and one waiter-list swap.
+    pub fn freeze(&mut self) -> Result<FrozenCommit, Error> {
+        if self.read_only() {
+            return Err(Error::EIO);
+        }
+        if self.in_flight {
+            return Err(Error::InvalidGeneration);
+        }
+        let generation = self.open_generation;
+        self.open_generation = generation.checked_add(1).ok_or(Error::EIO)?;
+        self.in_flight = true;
+        Ok(FrozenCommit {
+            generation,
+            durable: self.durable.clone(),
+            scrub: self.pending_scrub.take(),
+            waiters: core::mem::take(&mut self.waiters),
+        })
+    }
+    /// Install N under the mount exclusion (601(4)): constant work. The
+    /// publication wakes N's receipts after releasing the exclusion.
+    pub fn install(&mut self, sb: &Superblock) {
+        self.in_flight = false;
+        self.durable = sb.clone();
+    }
+    /// N could not be published. N+1 can no longer commit: fail the mount
+    /// and N+1's receipts; the publication fails N's after the exclusion.
+    pub fn abandon(&mut self) {
+        self.in_flight = false;
+        self.fail();
+    }
+    pub fn fail(&mut self) {
+        self.failed = true;
+        for waiter in self.waiters.drain(..) {
+            preemption_point();
+            waiter.status.store(2, Ordering::Release);
+        }
+    }
+}
+
+/// Generation N between freeze and install, owned by its publication. Its
+/// preparation needs no committer or mount state (E24 coordinator 597/601).
+pub struct FrozenCommit {
+    generation: u64,
+    durable: Superblock,
+    scrub: Option<(u64, u64)>,
+    waiters: Vec<Arc<FsyncWaiter>>,
+}
+impl FrozenCommit {
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+    /// Run commit steps 1-2 on frozen N, without mount exclusion. N's private
+    /// data moves into the result; N's receipts stay here until install.
+    pub fn prepare_settled_files<S: NodeStore>(
+        &self,
+        device: &dyn BlockDevice,
+        files: &mut super::ops::Files<'_, S>,
+    ) -> Result<PreparedCommit, Error> {
+        let (txn, data) = files.commit_buffers();
+        let mut prepared = self.prepare(device, txn, data)?;
+        prepared.data = core::mem::take(data);
+        Ok(prepared)
+    }
+    /// Report N's result to the receipts registered before its freeze. The
+    /// publication calls this after releasing the mount exclusion (601(4)).
+    pub fn wake(&self, result: Result<(), Error>) {
+        let status = if result.is_ok() { 1 } else { 2 };
+        for waiter in &self.waiters {
+            preemption_point();
+            waiter.status.store(status, Ordering::Release);
+        }
+    }
     fn prepare<S: NodeStore>(
         &self,
         device: &dyn BlockDevice,
         txn: &mut Transaction<'_, S>,
         data: &BTreeMap<u64, Vec<u8>>,
     ) -> Result<PreparedCommit, Error> {
-        let generation = self.open_generation;
+        let generation = self.generation;
         if txn.generation() != generation || self.durable.total_blocks > partition_blocks(device)? {
             return Err(Error::EIO);
         }
-        // Step 1: the caller's write lock covers this deferred-space fixpoint.
-        // Opening the next in-memory transaction belongs to the adapter.
+        // Step 1: N is frozen and owned by its publication; no mount
+        // exclusion covers this deferred-space fixpoint (E24 coordinator 597).
+        txn.begin_preparation();
         let space_root = txn.settle().map_err(|_| Error::EIO)?;
-        let mut nodes = txn.writes().clone();
-        let mut filled = BTreeMap::new();
-        let space_root = fill(
-            space_root,
-            &mut nodes,
-            &mut filled,
-            &mut BTreeSet::new(),
-            generation,
-            self.durable.fs_uuid,
-        )?;
-        // A private FS node retained as DEAD still owns outgoing references.
-        // Write the remaining staged nodes too, after filling their children.
-        let remaining: Vec<_> = nodes.keys().copied().collect();
-        for addr in remaining {
-            if let Some(bytes) = nodes.get(&addr) {
-                let ptr = pointer(bytes, NodeHeader::decode(bytes)?);
-                fill(
-                    ptr,
-                    &mut nodes,
-                    &mut filled,
-                    &mut BTreeSet::new(),
-                    generation,
-                    self.durable.fs_uuid,
-                )?;
-            }
-        }
+        let base_free = if self.durable.generation == 0 {
+            self.durable.total_blocks - 28
+        } else {
+            self.durable.free_blocks
+        };
         let mut sb = self.durable.clone();
-        if let Some((walked, errors)) = self.pending_scrub {
+        if let Some((walked, errors)) = self.scrub {
             sb.last_scrub_generation = walked;
             sb.last_scrub_errors = errors;
         }
         sb.generation = generation;
         sb.slot = (generation % 4) as u8;
         sb.ring = 0;
-        sb.space_root = space_root;
         sb.next_root_id = sb.next_root_id.max(txn.next_root_id());
-        let view = Prepared {
-            base: txn.view(),
-            nodes: &filled,
-        };
-        let entries = super::recover::space_items(&view, &sb)?;
-        sb.free_blocks = 0;
+        sb.free_blocks = txn.free_blocks(base_free).ok_or(Error::EIO)?;
+        let view = txn.view();
         let mut expected_data = BTreeSet::new();
-        for (key, bytes) in entries {
-            if key.item_type == format::FREE {
-                sb.free_blocks = sb
-                    .free_blocks
-                    .checked_add(Free::decode(&bytes)?.length)
-                    .ok_or(Error::EIO)?;
-            } else if key.item_type == format::REF {
-                let r = Ref::decode(&bytes)?;
-                if r.kind == 3 && r.alloc_generation == generation {
-                    let bytes = data.get(&key.object).ok_or(Error::EIO)?;
-                    if key.offset != r.crcs.len() as u64 || bytes.len() != r.crcs.len() * BLOCK_SIZE
-                    {
-                        return Err(Error::EIO);
-                    }
-                    for (chunk, crc) in bytes.chunks_exact(BLOCK_SIZE).zip(r.crcs) {
-                        if crc32c::checksum(chunk) != crc {
-                            return Err(Error::EIO);
-                        }
-                    }
-                    expected_data.insert(key.object);
-                }
+        for (start, length) in txn.live_data() {
+            preemption_point();
+            let r = super::space::reference(&view, space_root, start, length)
+                .map_err(|_| Error::EIO)?.ok_or(Error::EIO)?;
+            let bytes = data.get(&start).ok_or(Error::EIO)?;
+            if r.kind != 3 || r.alloc_generation != generation
+                || length != r.crcs.len() as u64 || bytes.len() != r.crcs.len() * BLOCK_SIZE {
+                return Err(Error::EIO);
             }
+            for (chunk, crc) in bytes.chunks_exact(BLOCK_SIZE).zip(r.crcs) {
+                preemption_point();
+                if crc32c::checksum(chunk) != crc { return Err(Error::EIO); }
+            }
+            expected_data.insert(start);
         }
         if expected_data.len() != data.len() {
             return Err(Error::EIO);
@@ -238,16 +340,40 @@ impl Committer {
         if self.durable.generation == 0 && sb.free_blocks < sb.global_reserve {
             return Err(Error::EIO);
         }
+        // The fixpoint owns decoded nodes. Resolve only this generation's
+        // pointers and write their final bytes once, in dependency order.
+        #[cfg(test)]
+        publication_measurement::prepared(txn.writes().map(|(&addr, node)| (addr, node.header.tree)));
+        let mut nodes: BTreeMap<_, _> = txn.writes().map(|(&addr, node)| {
+            preemption_point();
+            (addr, node.clone())
+        }).collect();
+        let mut filled = BTreeMap::new();
+        let mut visiting = BTreeSet::new();
+        sb.space_root = fill(space_root, &mut nodes, &mut filled, &mut visiting,
+            generation, self.durable.fs_uuid)?;
+        // A private FS node retained as DEAD still owns outgoing references.
+        while let Some((_, node)) = nodes.first_key_value() {
+            preemption_point();
+            fill(node.private_ptr(), &mut nodes, &mut filled, &mut visiting,
+                generation, self.durable.fs_uuid)?;
+        }
+        let filled: BTreeMap<_, _> = filled.into_iter().map(|(addr, (_, bytes))| {
+            preemption_point();
+            (addr, bytes)
+        }).collect();
+
         // Validate ranges before issuing step 3, including disjoint node/data
         // extents. Allocation/reuse itself is owned by txn.rs and space.rs.
         let mut end = 20;
         let mut ranges: Vec<_> = filled
             .iter()
             .chain(data.iter())
-            .map(|(&addr, b)| (addr, b.len()))
+            .map(|(&addr, b)| { preemption_point(); (addr, b.len()) })
             .collect();
-        ranges.sort_unstable();
+        ranges.sort_unstable_by(|a, b| { preemption_point(); a.cmp(b) });
         for (addr, len) in ranges {
+            preemption_point();
             if len == 0 || len % BLOCK_SIZE != 0 || addr < end {
                 return Err(Error::EIO);
             }
@@ -263,96 +389,28 @@ impl Committer {
             nodes: filled,
             data: BTreeMap::new(),
             formatting: self.durable.generation == 0,
-            waiters: Vec::new(),
         })
-    }
-
-    /// Freeze the open generation and transfer only its receipts. A mount may
-    /// now open G+1 on the returned immutable nodes, before publishing G.
-    pub fn prepare_files<S: NodeStore>(
-        &mut self,
-        device: &dyn BlockDevice,
-        files: &mut super::ops::Files<'_, S>,
-    ) -> Result<PreparedCommit, Error> {
-        if self.read_only() {
-            return Err(Error::EIO);
-        }
-        if self.in_flight {
-            return Err(Error::InvalidGeneration);
-        }
-        let result = files
-            .prepare_commit()
-            .map_err(|_| Error::EIO)
-            .and_then(|(txn, data)| {
-                let mut prepared = self.prepare(device, txn, data)?;
-                prepared.data = core::mem::take(data);
-                Ok(prepared)
-            });
-        match result {
-            Ok(mut prepared) => {
-                self.open_generation = self.open_generation.checked_add(1).ok_or_else(|| {
-                    self.fail();
-                    Error::EIO
-                })?;
-                prepared.waiters = core::mem::take(&mut self.waiters);
-                self.in_flight = true;
-                self.pending_scrub = None;
-                Ok(prepared)
-            }
-            Err(e) => {
-                self.fail();
-                Err(e)
-            }
-        }
-    }
-    /// Publish completion under the mount lock. A failed G also fails callers
-    /// already waiting for G+1, which can no longer be committed.
-    pub fn complete(&mut self, prepared: &PreparedCommit, result: Result<(), Error>) {
-        self.in_flight = false;
-        let status = if result.is_ok() { 1 } else { 2 };
-        if result.is_ok() {
-            self.durable = prepared.sb.clone();
-        } else {
-            self.fail();
-        }
-        for waiter in &prepared.waiters {
-            waiter.status.store(status, Ordering::Release);
-        }
-    }
-    pub fn fail(&mut self) {
-        self.failed = true;
-        for waiter in self.waiters.drain(..) {
-            waiter.status.store(2, Ordering::Release);
-        }
     }
 }
 
-/// Immutable G, also the backing view from which the adapter opens G+1.
-/// Receipts remain pending until the mount observes the publication result.
+/// Prepared G: immutable nodes and data, also the backing view from which the
+/// publication builds G's next Files view. Receipts stay with FrozenCommit.
 pub struct PreparedCommit {
     sb: Superblock,
     nodes: BTreeMap<u64, Vec<u8>>,
     data: BTreeMap<u64, Vec<u8>>,
     formatting: bool,
-    waiters: Vec<Arc<FsyncWaiter>>,
 }
 impl PreparedCommit {
     pub fn superblock(&self) -> &Superblock {
         &self.sb
     }
-    pub fn dirty_bytes(&self) -> u64 {
-        self.data.values().map(|bytes| bytes.len() as u64).sum()
+    /// Physical data ranges written by this publication, in filesystem blocks.
+    pub fn data_ranges(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
+        self.data.iter().map(|(&start, bytes)| (start, (bytes.len() / BLOCK_SIZE) as u64))
     }
     pub fn node(&self, addr: u64) -> Option<&[u8]> {
         self.nodes.get(&addr).map(Vec::as_slice)
-    }
-    /// Read a private data block while G is being published.
-    pub fn data_block(&self, block: u64) -> Option<&[u8]> {
-        let (&start, bytes) = self.data.range(..=block).next_back()?;
-        let offset = usize::try_from(block.checked_sub(start)?)
-            .ok()?
-            .checked_mul(BLOCK_SIZE)?;
-        bytes.get(offset..offset.checked_add(BLOCK_SIZE)?)
     }
     fn write_direct(
         &self,
@@ -380,11 +438,14 @@ impl PreparedCommit {
         }
         let sector = device.block_size();
         for (&addr, bytes) in self.nodes.iter().chain(self.data.iter()) {
+            preemption_point();
             for (i, bytes) in bytes.chunks_exact(sector).enumerate() {
+                preemption_point();
                 let block = addr * (BLOCK_SIZE / sector) as u64 + i as u64;
                 match cache.write(device, group.clone(), block, bytes) {
                     Err(BlockError::OutOfMemory) => {
                         cache.submit(device, group).wait().map_err(|_| Error::EIO)?;
+                        preemption_point();
                         cache
                             .write(device, group.clone(), block, bytes)
                             .map_err(|_| Error::EIO)?;
@@ -394,9 +455,12 @@ impl PreparedCommit {
             }
         }
         cache.submit(device, group).wait().map_err(|_| Error::EIO)?;
+        preemption_point();
         cache.flush(device).map_err(|_| Error::EIO)?;
+        preemption_point();
         self.superblocks(|addr, bytes| {
             for (i, bytes) in bytes.chunks_exact(sector).enumerate() {
+                preemption_point();
                 cache
                     .write(
                         device,
@@ -416,6 +480,7 @@ impl PreparedCommit {
     ) -> Result<(), Error> {
         if self.formatting {
             for ring in 0..2 {
+                preemption_point();
                 for slot in 0..4 {
                     if slot != self.sb.slot {
                         write(
@@ -428,6 +493,7 @@ impl PreparedCommit {
         }
         let mut sb = self.sb.clone();
         for ring in 0..2 {
+            preemption_point();
             sb.ring = ring;
             write(slot_block(sb.total_blocks, ring, sb.slot), &sb.encode())?;
         }
@@ -435,103 +501,64 @@ impl PreparedCommit {
     }
 }
 
-struct Prepared<'a, S> {
-    base: S,
-    nodes: &'a BTreeMap<u64, Vec<u8>>,
-}
-impl<S: NodeStore> NodeStore for Prepared<'_, S> {
-    fn get(&self, addr: u64) -> Result<Vec<u8>, btree::Error> {
-        self.nodes
-            .get(&addr)
-            .cloned()
-            .map(Ok)
-            .unwrap_or_else(|| self.base.get(addr))
-    }
-    fn put(&mut self, _: u64, _: Vec<u8>) -> Result<(), btree::Error> {
-        Err(btree::Error::Store)
-    }
-    fn alloc(&mut self) -> Result<u64, btree::Error> {
-        Err(btree::Error::Store)
-    }
-}
-fn pointer(bytes: &[u8], h: NodeHeader) -> BlockPtr {
-    BlockPtr {
-        addr: h.addr,
-        generation: h.generation,
-        csum: u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
-        level: h.level,
-    }
-}
 // Dependency order is children, FS roots, SPACE leaves, SPACE ancestors.
 fn fill(
     ptr: BlockPtr,
-    pending: &mut BTreeMap<u64, Vec<u8>>,
-    done: &mut BTreeMap<u64, Vec<u8>>,
+    pending: &mut BTreeMap<u64, Arc<btree::Node>>,
+    done: &mut BTreeMap<u64, (BlockPtr, Vec<u8>)>,
     visiting: &mut BTreeSet<u64>,
     generation: u64,
     uuid: [u8; 16],
 ) -> Result<BlockPtr, Error> {
-    if let Some(bytes) = done.get(&ptr.addr) {
-        return Ok(pointer(bytes, NodeHeader::decode(bytes)?));
+    preemption_point();
+    if let Some((filled, _)) = done.get(&ptr.addr) {
+        if ptr != (BlockPtr { csum: 0, ..*filled }) { return Err(Error::EIO); }
+        return Ok(*filled);
     }
-    if !visiting.insert(ptr.addr) {
-        return Err(Error::EIO);
-    }
-    let Some(mut bytes) = pending.remove(&ptr.addr) else {
+    if !visiting.insert(ptr.addr) { return Err(Error::EIO); }
+    let Some(mut node) = pending.remove(&ptr.addr) else {
         visiting.remove(&ptr.addr);
         return Ok(ptr);
     };
-    let h = NodeHeader::decode(&bytes)?;
-    if h.addr != ptr.addr
-        || h.generation != generation
-        || h.fs_uuid != uuid
-        || h.level >= 8
-        || h.level != ptr.level
-        || !(1..=2).contains(&h.tree)
+    let h = node.header;
+    if node.private_ptr() != ptr || h.generation != generation || h.fs_uuid != uuid
+        || h.level >= 8 || !(1..=2).contains(&h.tree)
     {
         return Err(Error::EIO);
     }
-    let width = if h.level == 0 { 21 } else { 37 };
-    if 48 + usize::from(h.nitems) * width > NODE_SIZE {
-        return Err(Error::EIO);
-    }
-    for i in 0..usize::from(h.nitems) {
-        let at = 48 + i * width;
+    if h.level > 0 || h.tree == 2 {
+        #[cfg(test)]
+        if Arc::strong_count(&node) > 1 {
+            btree::measurement::edit_cost(|c| {
+                c.copies += 1;
+                c.slots += (node.items.len() + node.children.len()) as u64;
+            });
+        }
+        let node = Arc::make_mut(&mut node);
         if h.level > 0 {
-            let mut e = InternalEntry::decode(&bytes[at..at + 37])?;
-            let p = fill(
-                BlockPtr {
-                    addr: e.child_addr,
-                    generation: e.child_generation,
-                    csum: e.child_csum,
-                    level: h.level - 1,
-                },
-                pending,
-                done,
-                visiting,
-                generation,
-                uuid,
-            )?;
-            e.child_addr = p.addr;
-            e.child_generation = p.generation;
-            e.child_csum = p.csum;
-            bytes[at..at + 37].copy_from_slice(&e.encode());
-        } else if h.tree == 2 {
-            let item = LeafItemHeader::decode(&bytes[at..at + 21])?;
-            if item.key.item_type == format::ROOT {
-                let lo = usize::from(item.data_off);
-                let hi = lo + usize::from(item.data_len);
-                let mut r = Root::decode(bytes.get(lo..hi).ok_or(Error::EIO)?)?;
-                r.root = fill(r.root, pending, done, visiting, generation, uuid)?;
-                bytes[lo..hi].copy_from_slice(&r.encode());
+            for entry in &mut node.children {
+                let child = BlockPtr {
+                    addr: entry.child_addr, generation: entry.child_generation,
+                    csum: entry.child_csum, level: h.level - 1,
+                };
+                entry.child_csum = fill(child, pending, done, visiting, generation, uuid)?.csum;
+            }
+        } else {
+            for (key, bytes) in &mut node.items {
+                preemption_point();
+                #[cfg(test)] btree::measurement::edit_cost(|c| c.slots += 1);
+                if key.item_type == format::ROOT {
+                    let mut root = Root::decode(bytes)?;
+                    root.root = fill(root.root, pending, done, visiting, generation, uuid)?;
+                    *bytes = Arc::from(root.encode());
+                }
             }
         }
     }
-    h.encode(&mut bytes)?;
-    let ptr = pointer(&bytes, h);
-    done.insert(h.addr, bytes);
+    let (filled, bytes) = node.encode()?;
+    done.insert(h.addr, (filled, bytes));
     visiting.remove(&h.addr);
-    Ok(ptr)
+    Ok(filled)
 }
 
 pub(crate) fn slot_block(total: u64, ring: u8, slot: u8) -> u64 {
@@ -565,7 +592,7 @@ pub(crate) fn read(device: &dyn BlockDevice, addr: u64, len: usize) -> Result<Ve
     // One device request per read (E24 ledger 372, #3040).
     device
         .read_blocks(start, len / sector, &mut bytes)
-        .map_err(|_| Error::EIO)?;
+        .map_err(Error::BlockRead)?;
     Ok(bytes)
 }
 pub(crate) fn write(device: &dyn BlockDevice, addr: u64, bytes: &[u8]) -> Result<(), Error> {
@@ -590,9 +617,17 @@ pub(crate) fn write(device: &dyn BlockDevice, addr: u64, bytes: &[u8]) -> Result
 }
 /// Read-only backing store for a transaction or recovery walk.
 pub struct DeviceStore<'a>(pub &'a dyn BlockDevice);
+impl DeviceStore<'_> {
+    pub(crate) fn read_at(&self, addr: u64, len: usize) -> Result<Vec<u8>, btree::Error> {
+        read(self.0, addr, len).map_err(|error| match error {
+            Error::BlockRead(error) => btree::Error::Read(btree::ReadFailure { cause: error.into(), addr }),
+            _ => btree::Error::Store,
+        })
+    }
+}
 impl NodeStore for DeviceStore<'_> {
     fn get(&self, addr: u64) -> Result<Vec<u8>, btree::Error> {
-        read(self.0, addr, NODE_SIZE).map_err(|_| btree::Error::Store)
+        self.read_at(addr, NODE_SIZE)
     }
     fn put(&mut self, _: u64, _: Vec<u8>) -> Result<(), btree::Error> {
         Err(btree::Error::Store)

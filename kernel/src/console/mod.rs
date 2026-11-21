@@ -479,8 +479,8 @@ fn end_pass() {
 /// Wait until the render thread has no row of the console's on its way to
 /// the screen and no fenced GPU command of its own outstanding: a timed-out
 /// fenced command still belongs to the device, and a new owner may not draw
-/// until that DMA has stopped. The caller is a process in a system call. It
-/// blocks as an I/O wait, woken at the end of each pass and
+/// until that DMA has stopped. A syscall or kernel thread blocks as an I/O
+/// waiter, woken at the end of each pass and
 /// after at most a millisecond to look at the GPU again. A signal cannot
 /// finish the hand-over while a presentation is outstanding. The render
 /// thread's own `sleep_ms` blocks a kernel thread on the timer, which a

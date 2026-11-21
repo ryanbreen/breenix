@@ -12,6 +12,7 @@ log = "0.4"
 ufs-abi = { path = "../../libs/ufs-abi" }
 
 [dev-dependencies]
+breenfs = { path = "../breenfs" }
 breenfs-host-tests = { path = "../breenfs-host-tests" }
 
 [lib]
@@ -20,7 +21,7 @@ doctest = false
 
 # These kernel-only gates appear in the shared VFS/adapter source.
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("fs_fault_inject", "watchdog_fault_inject"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("breenix"))', 'cfg(feature, values("fs_fault_inject", "watchdog_fault_inject"))'] }
 
 # The large directory fixture exercises encoded node walks.
 [profile.test]

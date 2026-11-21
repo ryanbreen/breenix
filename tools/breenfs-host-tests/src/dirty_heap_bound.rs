@@ -25,6 +25,16 @@ std::thread_local! {
     static FAIL: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
     static LIVE: Cell<isize> = const { Cell::new(0) };
     static PEAK: Cell<isize> = const { Cell::new(0) };
+    static LARGEST: Cell<usize> = const { Cell::new(0) };
+}
+fn note_size(size: usize) {
+    let _ = LARGEST.try_with(|largest| largest.set(largest.get().max(size)));
+}
+/// The largest single block `run` asked this thread's heap for.
+pub(super) fn largest_allocation<T>(run: impl FnOnce() -> T) -> (T, usize) {
+    let previous = LARGEST.with(|largest| largest.replace(0));
+    let result = run();
+    (result, LARGEST.with(|largest| largest.replace(previous.max(largest.get()))))
 }
 fn reject(size: usize) -> bool {
     FAIL.try_with(|fail| match fail.get() {
@@ -53,7 +63,7 @@ fn charge(delta: isize) {
         });
     });
 }
-fn live() -> isize {
+pub(super) fn live() -> isize {
     LIVE.with(Cell::get)
 }
 fn reset_peak() -> isize {
@@ -69,6 +79,7 @@ struct Counting;
 // layout; the accounting touches only const-initialized thread-locals.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        note_size(layout.size());
         if reject(layout.size()) { return core::ptr::null_mut(); }
         let ptr = unsafe { System.alloc(layout) };
         if !ptr.is_null() {
@@ -77,6 +88,7 @@ unsafe impl GlobalAlloc for Counting {
         ptr
     }
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        note_size(layout.size());
         if reject(layout.size()) { return core::ptr::null_mut(); }
         let ptr = unsafe { System.alloc_zeroed(layout) };
         if !ptr.is_null() {
@@ -89,6 +101,7 @@ unsafe impl GlobalAlloc for Counting {
         charge(-(layout.size() as isize));
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+        note_size(size);
         if reject(size) { return core::ptr::null_mut(); }
         let new = unsafe { System.realloc(ptr, layout, size) };
         if !new.is_null() {
@@ -293,10 +306,28 @@ fn n2_parted_write_holds_other_writers_of_its_file() {
     {
         let mut state = fs.inner.state.lock();
         state.nodes.get_mut(&node.ino).unwrap().splitting = false;
-        fs.inner.signal.wake();
+        fs.inner.signal.wake_waiters();
     }
     for waiter in waiters {
         waiter.join().unwrap();
     }
     assert_eq!(done.load(Ordering::SeqCst), 2);
+}
+
+// Synchronous host I/O makes this worker pass CPU-bound: NoWait panics if
+// anything tries to park. Model the pending reschedule before entering it.
+#[test]
+fn cpu_bound_commit_yields_at_its_next_point() {
+    use super::super::preempt::context;
+    let (fs, _cache, node) = fixture(b"preemption");
+    write(&fs, &node, 0, &vec![0x51; 32 * BLOCK_SIZE]);
+    fs.inner.signal.requested.store(true, Ordering::Release);
+    context::request();
+    assert_eq!(fs.commit_due(0), Ok(true));
+    assert_eq!(context::yields(), 1, "pending reschedule missed the next commit point");
+    assert_eq!(context::first_yield(), 1, "yield was deferred past the first point");
+    assert_eq!(context::count(), 1, "I/O entry brake was not restored");
+    super::super::preempt::preemption_point();
+    assert_eq!(context::yields(), 1, "a cleared request caused another yield");
+    context::preempt_enable();
 }

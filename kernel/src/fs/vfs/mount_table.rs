@@ -160,3 +160,11 @@ fn within(path: &[u8], prefix: &[u8]) -> bool {
     prefix == b"/"
         || path.starts_with(prefix) && matches!(path.get(prefix.len()), None | Some(b'/'))
 }
+
+/// Render the backend's retained first cause in /proc/mounts options.
+pub fn append_failure_options(options: &mut alloc::string::String, failure: Option<(&'static str, i32)>) {
+    use core::fmt::Write;
+    if let Some((branch, errno)) = failure {
+        write!(options, ",failure={branch},failure_errno={errno}").expect("string write");
+    }
+}

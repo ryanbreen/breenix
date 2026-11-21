@@ -232,18 +232,20 @@ def boundaries(text):
 
 def windows(ids, records):
     """Each suite's part of the serial: from where it begins (the boot's start, for the first) to where the next
-    suite begins (its RESET or START), so kernel output is held against the suite that was running."""
+    suite begins (its ROOT declaration, RESET or START), so kernel output is held against the suite that was running."""
     starts = [0]
     for suite in ids[1:]:
         begins = (index for index, line in enumerate(records)
-                  if line.startswith(f"SUITE_SEQUENCE RESET {suite} ") or re.fullmatch(rf"SUITE {suite} START cases=\d+", line))
+                  if line.startswith(f"SUITE_SEQUENCE RESET {suite} ")
+                  or suite == "filesystem" and line.startswith("SUITE filesystem ROOT")
+                  or re.fullmatch(rf"SUITE {suite} START cases=\d+", line))
         starts.append(next(begins, len(records)))
     # A suite that did not start ends where the one after it, or the serial, does.
     ends = [min(starts[i + 1:] + [len(records)]) for i in range(len(ids))]
     return [records[start:max(start, end)] for start, end in zip(starts, ends)]
 
 
-def score(ids, records_log, logs, disk=None, repo=REPO, milestones=None):
+def score(ids, records_log, logs, disk=None, repo=REPO, milestones=None, *, report_disk=False, disk_root_fs=None):
     """(ok, rows): each row is (suite, status, detail)."""
     scorer = runpy.run_path(str(repo / "scripts/suite-verdict.py"))
     milestones = milestones or {}
@@ -252,6 +254,10 @@ def score(ids, records_log, logs, disk=None, repo=REPO, milestones=None):
         scorer["milestone_categories"](path, milestone, suite)
         if suite not in ids:
             raise ValueError(f"{milestone} does not measure categories of a listed suite {suite}")
+    disk_result = None
+    if report_disk:
+        manifest = json.loads((repo / "docs/suites" / f"{ids[-1]}.json").read_text())
+        disk_result = scorer["emit_disk_report"](manifest.get("diskChecks", []), disk, disk_root_fs)
     text = Path(records_log).read_bytes().decode("utf-8", errors="replace")
     rows = []
     with tempfile.TemporaryDirectory(prefix="suite-sequence-") as scratch:
@@ -260,11 +266,12 @@ def score(ids, records_log, logs, disk=None, repo=REPO, milestones=None):
             window.write_text("\n".join(records) + "\n")
             rows.append(score_one(scorer, repo, suite, suite == ids[-1], records, window,
                                   [window] + [Path(log) for log in logs[1:]], disk, index > 0,
-                                  Path(str(records_log) + ".evidence"), milestones.get(suite)))
+                                  Path(str(records_log) + ".evidence"), milestones.get(suite), disk_result=disk_result))
     return all(status == "PASS" for _, status, _ in rows), rows
 
 
-def score_one(scorer, repo, suite, last, records, window, logs, disk, needs_reset=False, uploads=None, milestone=None):
+def score_one(scorer, repo, suite, last, records, window, logs, disk, needs_reset=False, uploads=None, milestone=None,
+              *, disk_result=None):
     manifest = json.loads((repo / "docs/suites" / f"{suite}.json").read_text())
     started = any(re.fullmatch(rf"SUITE {suite} START cases=\d+", line) for line in records)
     done = any(line.startswith(f"SUITE {suite} DONE ") for line in records)
@@ -307,7 +314,8 @@ def score_one(scorer, repo, suite, last, records, window, logs, disk, needs_rese
         status, detail = "STALLED", f"the boot ended after {reported} of its cases: {detail}"
     else:
         if ok and last:
-            ok, disk_detail = scorer["disk_verdict"](manifest.get("diskChecks", []), disk)
+            ok, disk_detail = (disk_result if disk_result is not None
+                               else scorer["disk_verdict"](manifest.get("diskChecks", []), disk))
             if disk_detail:
                 detail += f"; {disk_detail}"
         status = "PASS" if ok else "FAIL"
@@ -327,6 +335,8 @@ def main():
     p.add_argument("suites")
     p.add_argument("logs", nargs="+")
     p.add_argument("--disk")
+    p.add_argument("--disk-report", action="store_true")
+    p.add_argument("--disk-root-fs", choices=("ext2", "breenfs"))
     p.add_argument("--milestone", action="append", default=[], metavar="SUITE=EFFORT/ID")
     p = sub.add_parser("run")
     p.add_argument("suites")
@@ -353,7 +363,8 @@ def main():
             if not suite or not milestone or suite in milestones:
                 raise ValueError(f"invalid or duplicate milestone selector: {selector}")
             milestones[suite] = milestone
-        ok, rows = score(ids, args.logs[0], args.logs, args.disk, milestones=milestones)
+        ok, rows = score(ids, args.logs[0], args.logs, args.disk, milestones=milestones,
+                         report_disk=args.disk_report, disk_root_fs=args.disk_root_fs)
     except ValueError as error:
         print(f"suite-sequence: {error}", file=sys.stderr)
         return 2

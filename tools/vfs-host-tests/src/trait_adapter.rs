@@ -21,6 +21,48 @@ fn block_error(error: breenfs_host_tests::block::BlockError) -> BlockError {
     use breenfs_host_tests::block::BlockError as E;
     match error {
         E::IoError => BlockError::IoError,
+        E::VirtioRead(f) => BlockError::VirtioRead(crate::block::read_failure::VirtioReadFailure {
+            reason: f.reason,
+            stage: f.stage,
+            device: f.device,
+            sector: f.sector,
+            bytes: f.bytes,
+            thread: f.thread,
+            preempt_count: f.preempt_count,
+            kill_custody: f.kill_custody,
+            in_interrupt: f.in_interrupt,
+            interrupts_enabled: f.interrupts_enabled,
+            timer_ready: f.timer_ready,
+            gate_locked: f.gate_locked,
+            gate_wedged: f.gate_wedged,
+            pending_token: f.pending_token,
+            completed_token: f.completed_token,
+            waiter_thread: f.waiter_thread,
+            completed_desc: f.completed_desc,
+            completed_status: f.completed_status,
+            used_idx: f.used_idx,
+            last_used_idx: f.last_used_idx,
+            device_status: f.device_status,
+        }),
+        E::AhciRead(error) => {
+            use breenfs_host_tests::read_failure::AhciReadError as Source;
+            use crate::block::read_failure::AhciReadError as Target;
+            BlockError::AhciRead(match error {
+                Source::Range => Target::Range,
+                Source::BufferSize => Target::BufferSize,
+                Source::CannotPark => Target::CannotPark,
+                Source::Interrupted => Target::Interrupted,
+                Source::WaiterAllocation => Target::WaiterAllocation,
+                Source::WaitPublication => Target::WaitPublication,
+                Source::AdmissionTimeout => Target::AdmissionTimeout,
+                Source::ControllerAbsent => Target::ControllerAbsent,
+                Source::Setup(reason) => Target::Setup(reason),
+                Source::Issue(reason) => Target::Issue(reason),
+                Source::Wait(reason) => Target::Wait(reason),
+                Source::Finish(reason) => Target::Finish(reason),
+            })
+        }
+
         E::OutOfMemory => BlockError::OutOfMemory,
         E::OutOfBounds => BlockError::OutOfBounds,
     }
@@ -61,6 +103,7 @@ fn error(error: KernelErrno) -> Error {
         errno::ENAMETOOLONG => Errno::ENAMETOOLONG,
         errno::ENOTEMPTY => Errno::ENOTEMPTY,
         errno::EIO => Errno::EIO,
+        errno::ENOMEM => Errno::ENOMEM,
         errno::ENOSPC => Errno::ENOSPC,
         other => panic!("unmodeled trait errno {other}"),
     };

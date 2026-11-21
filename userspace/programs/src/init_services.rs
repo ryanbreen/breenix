@@ -379,6 +379,32 @@ impl Supervisor {
         self.entries.iter().find(|e| e.def.name == name).map(|e| e.state.name())
     }
 
+    /// The test-image oracle is a one-shot service. Wait for its reap and for
+    /// any server-side connection handlers to exit their channel-close tail.
+    pub fn ssh_boot_oracle_reaped(&self) -> bool {
+        let Some(state) = self.service_state("bssh-oracle") else { return true };
+        if !matches!(state, "done" | "failed" | "stopped") {
+            return false;
+        }
+        let Some(server) = self.entries.iter().find(|e| e.def.name == "bsshd" && e.pid > 0) else {
+            return true;
+        };
+        let Ok(status) = std::fs::read_to_string(format!("/proc/{}/status", server.pid)) else {
+            return false;
+        };
+        let Some(children) = status.lines().find_map(|line| line.strip_prefix("Children:")) else {
+            return false;
+        };
+        children.split_whitespace().all(|pid| {
+            match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+                // bsshd can reap on its next accept. A zombie has already
+                // exited its address space; MEMORY still settles its receipts.
+                Ok(stat) => stat.rsplit_once(") ").is_some_and(|(_, fields)| fields.starts_with("Z ")),
+                Err(error) => error.kind() == ErrorKind::NotFound,
+            }
+        })
+    }
+
     /// Read the table and, for the system's init, open `/run/breenix` and the control socket.
     pub fn load(scope: Scope, publish: bool) -> Self {
         let now = now_ms();

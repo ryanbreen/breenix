@@ -1,6 +1,8 @@
 //! The window cases of composition (contract section 18).
 
 use crate::*;
+#[path = "present_gap.rs"]
+mod present_gap;
 
 pub(crate) const COMPOSITION: &[Case] = &[
     pictured!("compose-position", "A committed pattern appears at the window's position in the composed frame, exactly", composition_compose_position),
@@ -860,7 +862,38 @@ fn composition_present_rate() -> CaseResult {
     let rate = composed * 1_000_000_000_000 / elapsed_ns;
     breenix_suite::suite::timing(&frame_times,16_667)?;
     value("composites-per-second", rate as i64, "millihertz", Some((60_000, i64::MAX)));
-    ensure(composed * 1_000_000_000 >= 60 * elapsed_ns, "18", format!("one 256x256 window committing as fast as its buffers are released was composed {composed} times in {elapsed_ns} ns, {rate} mHz; the contract requires at least 60 Hz"))
+    let meets_rate = composed * 1_000_000_000 >= 60 * elapsed_ns;
+    if !meets_rate {
+        report_present_gap(w.id(), start as u64, end as u64, composites1 - composites0);
+    }
+    ensure(meets_rate, "18", format!("one 256x256 window committing as fast as its buffers are released was composed {composed} times in {elapsed_ns} ns, {rate} mHz; the contract requires at least 60 Hz"))
+}
+
+fn report_present_gap(window: u64, start: u64, end: u64, composed: u64) {
+    use breenix_suite::suite::case_diagnostic;
+    let (rc, caps) = libbreenix::gpu::caps();
+    if rc != 0 || caps.backend != libbreenix::gpu::abi::backend::GK208 {
+        return;
+    }
+    let report = std::fs::read_to_string("/proc/breenix/window-pipeline-full")
+        .map_err(|_| "pipeline-read")
+        .and_then(|text| {
+            let rows = text.lines().map(|line| {
+                let mut words = line.split_ascii_whitespace();
+                let mut row = [0; 5];
+                for number in &mut row {
+                    *number = words.next()?.parse().ok()?;
+                }
+                words.next().is_none().then_some(row)
+            }).collect::<Option<Vec<_>>>().ok_or("pipeline-format")?;
+            present_gap::lines(&rows, window, start, end, composed).ok_or("incomplete-interval")
+        });
+    match report {
+        Ok(lines) => lines.iter().for_each(|line| case_diagnostic(line)),
+        Err(reason) => case_diagnostic(&format!(
+            "GT710_PRESENT_TIMELINE gap_unavailable={reason} start_ns={start} end_ns={end} composites={composed}"
+        )),
+    }
 }
 
 /// In a helper: say why it stops (on its standard output, which the case reads) and give the

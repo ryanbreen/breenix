@@ -3,15 +3,17 @@ use breenfs_host_tests::{
     format::{self, BlockPtr, Key, Ref},
     space::{self, Error, Kind},
 };
-use std::collections::BTreeMap;
+use std::{cell::Cell, collections::BTreeMap};
 
 #[derive(Default)]
 struct Memory {
     nodes: BTreeMap<u64, Vec<u8>>,
     next: u64,
+    reads: Cell<usize>,
 }
 impl NodeStore for Memory {
     fn get(&self, addr: u64) -> Result<Vec<u8>, btree::Error> {
+        self.reads.set(self.reads.get() + 1);
         self.nodes.get(&addr).cloned().ok_or(btree::Error::Store)
     }
     fn put(&mut self, addr: u64, bytes: Vec<u8>) -> Result<(), btree::Error> {
@@ -39,6 +41,48 @@ fn item(store: &Memory, root: BlockPtr, object: u64, ty: u8, offset: u64) -> Opt
         },
     )
     .unwrap()
+}
+
+#[test]
+fn promote_between_free_neighbors_without_scanning_the_free_tree() {
+    let (mut store, mut root) = tree();
+    // Multiple FREE leaves, with a gap that closes between two existing runs.
+    // Seed the ranges directly so setup is independent of the coalescer.
+    const FREE: u64 = 0xffff_ffff_ffff_ff20;
+    for i in 0..1500 {
+        btree::insert(&mut store, &mut root, Key {
+            object: FREE, item_type: format::FREE, offset: 20_000 + 12 * i,
+        }, &format::Free { length: 4 }.encode()).unwrap();
+    }
+    assert_eq!(root.level, 1);
+    let start = 20_000 + 12 * 750;
+    store.reads.set(0);
+    space::add_free(&mut store, &mut root, start + 4, 8).unwrap();
+    let coalesce = store.reads.replace(0);
+    assert_eq!(
+        space::allocate(&mut store, &mut root, 4, Kind::SpaceNode, &[], 5),
+        Ok(20_000)
+    );
+    let allocate = store.reads.replace(0);
+    assert_eq!(item(&store, root, FREE, format::FREE, start).unwrap(), format::Free { length: 16 }.encode());
+    assert!(item(&store, root, FREE, format::FREE, start + 12).is_none());
+    // Three B-tree edits and two range endpoints, or three edits and the
+    // first eligible FREE record. A height-one edit loads at most ten nodes.
+    println!("FREE_READS coalesce={coalesce} allocate={allocate}");
+    assert!(coalesce <= 38 && allocate <= 34, "FREE reads: {coalesce}/{allocate}");
+}
+
+#[test]
+fn oversized_free_record_is_rejected_before_allocation() {
+    let (mut store, mut root) = tree();
+    let mut payload = format::Free { length: 4 }.encode().to_vec();
+    payload.push(0);
+    btree::insert(&mut store, &mut root, Key {
+        object: 0xffff_ffff_ffff_ff20, item_type: format::FREE, offset: 100,
+    }, &payload).unwrap();
+    let before = store.nodes.clone();
+    assert_eq!(space::allocate(&mut store, &mut root, 4, Kind::FsNode, &[], 5), Err(Error::Invalid));
+    assert_eq!(store.nodes, before);
 }
 
 #[test]

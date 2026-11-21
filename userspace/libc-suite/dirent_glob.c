@@ -116,10 +116,13 @@ static const char *readdir_many(void) {
         name[n] = 0;
         CHECK(make(name) == 0, "could not create a file");
     }
+    h_phase("readdir-setup-done");
+    h_phase("readdir-opendir-reached");
     DIR *d = opendir(".");
     CHECK(d != NULL, "opendir failed");
     struct dirent *e;
     long total = 0;
+    h_phase("readdir-enumeration-start");
     while ((e = readdir(d)) != NULL) {
         total++;
         if (e->d_name[0] == 'f') {
@@ -128,6 +131,7 @@ static const char *readdir_many(void) {
                 return fail_str("an entry appeared twice or was not created", e->d_name, "f<000-299>xxxxxxxxx");
         }
     }
+    h_phase("readdir-enumeration-end");
     EXPECT_INT("entries readdir returned for 300 files", total, 302);
     return PASS;
 }

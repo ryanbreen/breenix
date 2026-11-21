@@ -130,7 +130,12 @@ pub fn capture_fmt(args: core::fmt::Arguments) {
 /// line if another writer's line is open. This is the accounting boundary of
 /// kernel output (`output_accounting`): the record's bytes count once, toward
 /// the current thread when `attributed`, and the lead newline does not count.
-fn emit<const TEE: bool, const TERMINAL: bool>(writer: Writer, bytes: &[u8], level: log::Level, attributed: bool) {
+fn emit<const TEE: bool, const TERMINAL: bool, const UNATTRIBUTED: bool>(
+    writer: Writer,
+    bytes: &[u8],
+    level: log::Level,
+    attributed: bool,
+) {
     if bytes.is_empty() {
         return;
     }
@@ -138,7 +143,11 @@ fn emit<const TEE: bool, const TERMINAL: bool>(writer: Writer, bytes: &[u8], lev
         return;
     }
     if writer == Writer::Kernel {
-        crate::output_accounting::count(bytes.len(), attributed);
+        if UNATTRIBUTED {
+            crate::tracing::providers::output::count_unattributed(bytes.len() as u64);
+        } else {
+            crate::output_accounting::count(bytes.len(), attributed);
+        }
     }
     // Terminal output queued before this record goes first, from thread context:
     // raw kernel records (the timer's lockup capture among them) and interrupt
@@ -461,6 +470,9 @@ pub fn set_output_stopped(stopped: bool) {
 /// it; dropping the buffer writes any unterminated remainder.
 /// Raw records do not drain deferred log notices.
 pub type Line = Buffer<false>;
+/// Failure records that go straight to the unattributed counter instead of
+/// consulting the interrupted thread or opening an accounting mask scope.
+pub(crate) type UnattributedLine = Buffer<false, false, true>;
 /// A [`Line`] whose bytes also go to the kernel log capture rings, draining
 /// deferred notices first when written from thread context.
 pub type TeeLine = Buffer<true>;
@@ -469,13 +481,13 @@ pub type TeeLine = Buffer<true>;
 /// this entry point. Raw diagnostic buffers cannot link the scheduler wake.
 pub fn write_bytes(writer: Writer, bytes: &[u8]) {
     if writer == Writer::Tty {
-        emit::<false, true>(writer, bytes, log::Level::Info, true);
+        emit::<false, true, false>(writer, bytes, log::Level::Info, true);
     } else {
         Line::for_writer(writer).bytes(bytes);
     }
 }
 
-pub struct Buffer<const TEE: bool, const TERMINAL: bool = false> {
+pub struct Buffer<const TEE: bool, const TERMINAL: bool = false, const UNATTRIBUTED: bool = false> {
     bytes: [MaybeUninit<u8>; CAPACITY],
     len: usize,
     writer: Writer,
@@ -484,7 +496,9 @@ pub struct Buffer<const TEE: bool, const TERMINAL: bool = false> {
     attributed: bool,
 }
 
-impl<const TEE: bool, const TERMINAL: bool> Buffer<TEE, TERMINAL> {
+impl<const TEE: bool, const TERMINAL: bool, const UNATTRIBUTED: bool>
+    Buffer<TEE, TERMINAL, UNATTRIBUTED>
+{
     /// A record of kernel output.
     pub const fn new() -> Self {
         Self::for_writer(Writer::Kernel)
@@ -592,19 +606,23 @@ impl<const TEE: bool, const TERMINAL: bool> Buffer<TEE, TERMINAL> {
         // `char` initializes every byte below `len`.
         let record =
             unsafe { core::slice::from_raw_parts(self.bytes.as_ptr().cast::<u8>(), self.len) };
-        emit::<TEE, TERMINAL>(self.writer, record, self.level, self.attributed);
+        emit::<TEE, TERMINAL, UNATTRIBUTED>(self.writer, record, self.level, self.attributed);
         self.len = 0;
     }
 }
 
-impl<const TEE: bool, const TERMINAL: bool> core::fmt::Write for Buffer<TEE, TERMINAL> {
+impl<const TEE: bool, const TERMINAL: bool, const UNATTRIBUTED: bool> core::fmt::Write
+    for Buffer<TEE, TERMINAL, UNATTRIBUTED>
+{
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         self.text(s);
         Ok(())
     }
 }
 
-impl<const TEE: bool, const TERMINAL: bool> Drop for Buffer<TEE, TERMINAL> {
+impl<const TEE: bool, const TERMINAL: bool, const UNATTRIBUTED: bool> Drop
+    for Buffer<TEE, TERMINAL, UNATTRIBUTED>
+{
     fn drop(&mut self) {
         self.flush();
     }

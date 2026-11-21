@@ -369,6 +369,15 @@ def bwm_case_problem(lines):
 
 def verdict(manifest, records_log, logs, only=None, categories=None, disk=None, uploads=None):
     suite = manifest["id"]
+    root = None
+    if suite == "filesystem":
+        lines = read_lines(records_log)
+        roots = [line for line in lines if line.startswith("SUITE filesystem ROOT")]
+        if len(roots) != 1 or roots[0] not in ("SUITE filesystem ROOT ext2", "SUITE filesystem ROOT breenfs"):
+            return False, "filesystem needs exactly one valid ROOT record"
+        root = roots[0].split()[-1]
+        if any(line.startswith("SUITE filesystem CASE ") for line in lines[:lines.index(roots[0])]):
+            return False, "filesystem ROOT must precede every case"
     planned = [category["id"] for category in manifest["categories"] if not category["cases"]]
     hosted = [category["id"] for category in manifest["categories"] if category.get("hostRunner")]
     if categories is not None:
@@ -385,8 +394,11 @@ def verdict(manifest, records_log, logs, only=None, categories=None, disk=None, 
         planned = [category for category in planned if category in categories]
     if not only and planned:
         return False, f"planned categories have no cases: {', '.join(planned)}; acceptance is blocked"
+    if categories is not None and any(category.get("root") not in (None, root)
+                                      for category in manifest["categories"] if category["id"] in categories):
+        return False, "measured category requires a different root"
     cases = [f"{category['id']}/{case['id']}" for category in manifest["categories"]
-             if category["id"] not in hosted for case in category["cases"]]
+             if category["id"] not in hosted and category.get("root") in (None, root) for case in category["cases"]]
     if only:
         selected = [case for case in cases if case == only or case.split("/", 1)[0] == only]
         if not selected:
@@ -455,6 +467,8 @@ def verdict(manifest, records_log, logs, only=None, categories=None, disk=None, 
     shapes.update({kind: re.compile(rf"^SUITE {suite} {kind} {name} .+$") for kind in RESULT})
     records = []
     for line in read_lines(records_log):
+        if suite == "filesystem" and line == f"SUITE filesystem ROOT {root}":
+            continue
         if not line.startswith(prefix):
             if prefix in line:
                 return False, f"a SUITE record does not start its line: {line.strip()[:200]}"
@@ -637,60 +651,101 @@ def memory_problem(records):
 
 
 def disk_verdict(checks, disk):
+    report = disk_readback_report(checks, disk, complete=False)
+    return report["passed"], report["detail"]
+
+
+def disk_readback_report(checks, disk, *, complete=True, root_fs=None):
+    """Score the cold image independently of serial, retaining the result of each check."""
+    results = [dict(path=check["path"], status="not-run") for check in checks]
+    report = dict(passed=False, detail="", diskChecks=results, breenfsCheckExit=None)
+
+    def verify_files(read_file):
+        for index, (check, row) in enumerate(zip(checks, results)):
+            path = check["path"]
+            try:
+                actual = read_file(index, path)
+                if actual is None:
+                    problem = f"raw disk file is missing: {path}"
+                elif actual != bytes([check["byte"]]) * check["length"]:
+                    problem = f"raw disk bytes differ: {path}"
+                else:
+                    row["status"] = "pass"
+                    continue
+            except (OSError, subprocess.TimeoutExpired) as error:
+                problem = f"raw disk read failed: {error}"
+            row.update(status="fail", detail=problem)
+            if not report["detail"]:
+                report["detail"] = problem
+            if not complete:
+                return
+
     if not checks:
-        return True, ""
+        return dict(report, passed=True)
     if not disk:
-        return False, "the manifest requires --disk for raw writeback checks"
-    try:
-        with open(disk, "rb") as image:
-            size = image.seek(0, 2)
-            breenfs = False
-            if size >= 24 * 4096 and size % 4096 == 0:
-                for block in (*range(16, 20), *range(size // 4096 - 4, size // 4096)):
-                    image.seek(block * 4096)
-                    if image.read(8) == b"BREENFSS":
-                        breenfs = True
-                        break
-    except OSError as error:
-        return False, f"raw disk read failed: {error}"
+        return dict(report, detail="the manifest requires --disk for raw writeback checks")
+    breenfs = root_fs == "breenfs"
+    if root_fs is None:
+        try:
+            with open(disk, "rb") as image:
+                size = image.seek(0, 2)
+                if size >= 24 * 4096 and size % 4096 == 0:
+                    for block in (*range(16, 20), *range(size // 4096 - 4, size // 4096)):
+                        image.seek(block * 4096)
+                        if image.read(8) == b"BREENFSS":
+                            breenfs = True
+                            break
+        except OSError as error:
+            return dict(report, detail=f"raw disk read failed: {error}")
     if breenfs:
         target = Path(os.environ.get("CARGO_TARGET_DIR", REPO / "tools/breenfs/target"))
         extract = target / "release/breenfs-extract"
-        for check in checks:
-            try:
-                result = subprocess.run([str(extract), str(disk), "cat", check["path"]],
-                                        capture_output=True, timeout=30, check=False)
-            except (OSError, subprocess.TimeoutExpired) as error:
-                return False, f"raw disk read failed: {error}"
+        checker = target / "release/breenfs-check"
+        try:
+            result = subprocess.run([str(checker), "--full", str(disk)],
+                                    capture_output=True, timeout=60, check=False)
+            report["breenfsCheckExit"] = result.returncode
             if result.returncode:
-                return False, f"raw disk file is missing: {check['path']}"
-            if result.stdout != bytes([check["byte"]]) * check["length"]:
-                return False, f"raw disk bytes differ: {check['path']}"
-        return True, f"raw disk checks passed={len(checks)}"
-    debugfs = next((shutil.which(path) for path in (
-        "debugfs", "/usr/sbin/debugfs", "/sbin/debugfs",
-        "/opt/homebrew/opt/e2fsprogs/sbin/debugfs",
-        "/usr/local/opt/e2fsprogs/sbin/debugfs",
-    ) if shutil.which(path)), None)
-    if not debugfs:
-        return False, "raw disk checks require debugfs (e2fsprogs)"
-    with tempfile.TemporaryDirectory(prefix="suite-disk-") as directory:
-        for index, check in enumerate(checks):
-            output = Path(directory) / str(index)
-            try:
+                report["detail"] = f"breenfs-check --full failed (exit {result.returncode})"
+        except (OSError, subprocess.TimeoutExpired) as error:
+            report["detail"] = f"breenfs-check --full failed: {error}"
+        if report["detail"] and not complete:
+            return report
+
+        def read_breenfs(_, path):
+            result = subprocess.run([str(extract), str(disk), "cat", path],
+                                    capture_output=True, timeout=30, check=False)
+            return None if result.returncode else result.stdout
+
+        verify_files(read_breenfs)
+    else:
+        debugfs = next((shutil.which(path) for path in (
+            "debugfs", "/usr/sbin/debugfs", "/sbin/debugfs",
+            "/opt/homebrew/opt/e2fsprogs/sbin/debugfs",
+            "/usr/local/opt/e2fsprogs/sbin/debugfs",
+        ) if shutil.which(path)), None)
+        if not debugfs:
+            return dict(report, detail="raw disk checks require debugfs (e2fsprogs)")
+        with tempfile.TemporaryDirectory(prefix="suite-disk-") as directory:
+            def read_ext2(index, path):
+                output = Path(directory) / str(index)
                 result = subprocess.run(
-                    [debugfs, "-R", f"dump {check['path']} {output}", str(disk)],
+                    [debugfs, "-R", f"dump {path} {output}", str(disk)],
                     capture_output=True, timeout=30, check=False,
                 )
-                if result.returncode or not output.exists():
-                    return False, f"raw disk file is missing: {check['path']}"
-                actual = output.read_bytes()
-            except (OSError, subprocess.TimeoutExpired) as error:
-                return False, f"raw disk read failed: {error}"
-            expected = bytes([check["byte"]]) * check["length"]
-            if actual != expected:
-                return False, f"raw disk bytes differ: {check['path']}"
-    return True, f"raw disk checks passed={len(checks)}"
+                return None if result.returncode or not output.exists() else output.read_bytes()
+
+            verify_files(read_ext2)
+    if not report["detail"]:
+        prefix = "breenfs-check --full passed; " if breenfs else ""
+        report.update(passed=True, detail=f"{prefix}raw disk checks passed={len(checks)}")
+    return report
+
+
+def emit_disk_report(checks, disk, root_fs=None):
+    report = disk_readback_report(checks, disk, root_fs=root_fs)
+    print("METAL_DISK_VERDICT " + json.dumps(report), file=sys.stderr)
+    return report["passed"], report["detail"]
 
 
 def main():
@@ -698,6 +753,8 @@ def main():
     parser.add_argument("manifest")
     parser.add_argument("logs", nargs="+")
     parser.add_argument("--disk", help="stopped VM's raw image for diskChecks and disk-only UI bundles")
+    parser.add_argument("--disk-report", action="store_true", help="emit independent disk check results on stderr")
+    parser.add_argument("--disk-root-fs", choices=("ext2", "breenfs"), help="filesystem staged for the disk report")
     parser.add_argument("--uploads", help="receiver evidence directory for UI upload verification")
     parser.add_argument("--milestone", help="effort/milestone whose category set this full boot must pass")
     args = parser.parse_args()
@@ -707,9 +764,11 @@ def main():
                                           args.milestone, manifest["id"]) if args.milestone else None
     except ValueError as error:
         parser.error(str(error))
+    checks = manifest.get("diskChecks", [])
+    disk_result = emit_disk_report(checks, args.disk, args.disk_root_fs) if args.disk_report else None
     ok, reason = verdict(manifest, args.logs[0], args.logs, categories=categories, disk=args.disk, uploads=args.uploads)
     if ok:
-        ok, disk_reason = disk_verdict(manifest.get("diskChecks", []), args.disk)
+        ok, disk_reason = disk_result if disk_result is not None else disk_verdict(checks, args.disk)
         if disk_reason:
             reason = f"{reason}; {disk_reason}"
     print(f"{'PASS' if ok else 'FAIL'}: {reason}")

@@ -235,6 +235,14 @@ impl State {
 /// One cache is shared by its device users; wrappers must preserve identity and
 /// all their I/O must pass through it. Identities must remain stable and must not
 /// be reused for another device during this cache's lifetime.
+#[cfg(test)]
+pub mod measurement {
+    extern crate std;
+    std::thread_local! { static DISCARD: core::cell::Cell<u64> = const { core::cell::Cell::new(0) }; }
+    pub fn discard_visits() -> u64 { DISCARD.with(|n| n.get()) }
+    pub(super) fn discard_visit() { DISCARD.with(|n| n.set(n.get()+1)); }
+}
+
 pub struct BufferCache<W: Wait> {
     state: Mutex<State>,
     wait: W,
@@ -635,6 +643,8 @@ impl<W: Wait> BufferCache<W> {
         let charge = self.begin(key, size);
         let result = device.read_block(block, &mut bytes[..size]);
         self.count(|c| &mut c.device_reads);
+        // Only completed device reads reach verification. Return the original
+        // block error on failure, including a refusal before submission.
         let result = result.and_then(|()| {
             if verify(&bytes[..size]) {
                 Ok(())
@@ -864,10 +874,34 @@ impl<W: Wait> BufferCache<W> {
     pub fn discard_clean(&self, device: &dyn BlockDevice) {
         let identity = device.identity();
         self.with(|state| {
-            state.lru.retain(|_, key| key.0 != identity);
-            state.buffers.retain(|key, entry| {
-                key.0 != identity || !matches!(entry.status, BufferState::Clean { .. })
-            });
+            use core::ops::Bound::{Excluded, Included};
+            let mut lower = Included((identity, 0));
+            let upper = Included((identity, u64::MAX));
+            while let Some((&key, entry)) = state.buffers.range((lower, upper)).next() {
+                #[cfg(test)] measurement::discard_visit();
+                let clean = matches!(entry.status, BufferState::Clean { .. });
+                lower = Excluded(key);
+                if clean {
+                    #[cfg(test)] measurement::discard_visit();
+                    // remove also retires this entry's exact LRU key. Neither
+                    // index needs a scan over other device identities.
+                    state.remove(key);
+                }
+            }
+        });
+    }
+
+    /// Invalidate a changed physical range without inspecting unrelated cache
+    /// entries. In-flight and transaction-owned entries retain their custody.
+    pub fn discard_clean_range(&self, device: &dyn BlockDevice, start: u64, count: u64) {
+        self.with(|state| {
+            for block in start..start.saturating_add(count) {
+                #[cfg(test)] measurement::discard_visit();
+                let key = (device.identity(), block);
+                if matches!(state.buffers.get(&key), Some(Entry { status: BufferState::Clean { .. }, .. })) {
+                    state.remove(key);
+                }
+            }
         });
     }
 

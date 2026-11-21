@@ -109,13 +109,13 @@ pub fn current_unix_time_coarse() -> i64 {
         let offset_nanos = WALL_OFFSET_NANOS.load(Ordering::Relaxed);
         let slew_start = SLEW_START.load(Ordering::Relaxed);
         let slew_delta = SLEW_DELTA.load(Ordering::Relaxed);
-        let ms = get_monotonic_time();
+        let mono = timer::coarse_monotonic_time_ns();
         let boot = rtc::get_boot_wall_time();
         core::sync::atomic::fence(Ordering::Acquire);
         if WALL_SEQUENCE.load(Ordering::Relaxed) == seq {
-            let correction = slew::applied(slew_delta, ms.saturating_mul(1_000_000).saturating_sub(slew_start));
-            let base = (i128::from(boot) + i128::from(ms / 1000) + i128::from(offset_secs)) * 1_000_000_000
-                + i128::from((ms % 1000) * 1_000_000 + offset_nanos) + i128::from(correction);
+            let correction = slew::applied(slew_delta, mono.saturating_sub(slew_start));
+            let base = (i128::from(boot) + i128::from(offset_secs)) * 1_000_000_000
+                + i128::from(mono) + i128::from(offset_nanos) + i128::from(correction);
             return base.div_euclid(1_000_000_000) as i64;
         }
     }

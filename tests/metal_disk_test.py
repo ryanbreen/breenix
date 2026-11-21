@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import metal_tools_test as existing
@@ -31,6 +31,136 @@ class DiskTest(existing.StateTest):
 
     def stage(self, boot='first'):
         return disk.stage(self.directory, self.inputs, boot, 'b' * 40, self.site, self.build)
+
+    def test_breenfs_tools_are_verified_and_staged(self):
+        fixture = existing.DriverTest()
+        fixture.setUp()
+        try:
+            d = fixture.driver
+            d.args.mode, d.args.disk, d.args.commit, d.args.root_fs = 'default', 'root', 'b' * 40, 'breenfs'
+            d.args.ramdisk = True
+            inputs = d.stage / 'inputs'
+            inputs.mkdir(parents=True)
+            (inputs / 'ready').touch()
+            tools = {}
+            for name in ('breenfs-mkfs', 'breenfs-check', 'breenfs-extract'):
+                path = inputs / name
+                path.write_bytes(name.encode())
+                tools[name] = dict(size=path.stat().st_size, sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+            build = dict(commit=d.args.commit, profile='production', features=[], breenfsTools=tools)
+            existing.m.write_json(inputs / 'build.json', build)
+            for invalid in ('record', 'entry', 'file', 'size', 'digest'):
+                bad = dict(build)
+                bad['breenfsTools'] = dict(tools)
+                if invalid == 'record':
+                    del bad['breenfsTools']
+                elif invalid == 'entry':
+                    del bad['breenfsTools']['breenfs-mkfs']
+                elif invalid == 'file':
+                    (inputs / 'breenfs-mkfs').unlink()
+                else:
+                    bad['breenfsTools']['breenfs-check'] = dict(tools['breenfs-check'])
+                    bad['breenfsTools']['breenfs-check'][invalid if invalid == 'size' else 'sha256'] = (1 if invalid == 'size' else '0' * 64)
+                existing.m.write_json(inputs / 'build.json', bad)
+                with self.assertRaisesRegex(existing.boot.Finish, 'breenfs tools'):
+                    d.prepare_payload()
+                (inputs / 'breenfs-mkfs').write_bytes(b'breenfs-mkfs')
+            existing.m.write_json(inputs / 'build.json', build)
+            with patch.object(existing.boot.metal_disk, 'stage', return_value=({}, {})) as stage, \
+                 patch.object(existing.boot.metal_image, 'extract_esp', return_value={}), \
+                 patch.object(existing.boot.metal_image, 'assemble', side_effect=RuntimeError('captured')):
+                with self.assertRaisesRegex(RuntimeError, 'captured'):
+                    d.prepare_payload()
+            self.assertEqual(stage.call_args.kwargs['root_fs'], 'breenfs')
+            self.assertEqual(stage.call_args.kwargs['tools_dir'], inputs)
+            d.args.target, d.args.task = 'main', ''
+            import shutil
+            shutil.rmtree(d.dir)
+            d.create_record()
+            self.assertEqual(existing.m.read_json(d.dir / 'run.json')['rootFs'], 'breenfs')
+        finally:
+            fixture.tearDown()
+
+    def test_breenfs_build_records_linux_release_tools_in_both_paths(self):
+        import os
+        import tempfile
+        for local in (False, True):
+            with self.subTest(local=local), tempfile.TemporaryDirectory() as temporary:
+                build = existing.load_script('metal-build')
+                args = existing.SimpleNamespace(id='20261117T000000Z-metal', root=temporary,
+                    sha='a' * 40, stub=temporary, suite='', features='', guard_target='x86-metal', local=local)
+                clone, out, tmp = build.paths(args)
+                out.mkdir(parents=True)
+                for path in (clone / 'tools/breenfs/Cargo.toml', clone / 'testdata/ext2.img',
+                             clone / 'target/release/build/breenix-0/out/breenix-uefi.img',
+                             tmp / 'stub-target' / build.STUB_RELEASE / 'metal-efi-stub.efi',
+                             tmp / 'stub-target' / build.STUB_RELEASE / 'metal-boot-manager.efi'):
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(b'fixture')
+                calls = []
+                names = ('breenfs-mkfs', 'breenfs-check', 'breenfs-extract')
+                def call(command, **options):
+                    if 'breenfs-mkfs' in command:
+                        calls.append((command, options))
+                        self.assertIn('--release', command)
+                        self.assertEqual(command[command.index('--target') + 1], 'x86_64-unknown-linux-gnu')
+                        target = Path(command[command.index('--target-dir') + 1])
+                        for name in names:
+                            self.assertIn(name, command)
+                            binary = target / 'x86_64-unknown-linux-gnu/release' / name
+                            binary.parent.mkdir(parents=True, exist_ok=True)
+                            binary.write_bytes(name.encode())
+                    return 0
+                with (patch.dict(os.environ, CARGO_BUILD_JOBS='4', CARGO_HOME=str(Path(temporary) / 'cargo')),
+                      patch.object(build.subprocess, 'call', side_effect=call),
+                      patch.object(build.subprocess, 'run', return_value=existing.SimpleNamespace(stdout=str(Path(temporary) / 'cargo')))):
+                    self.assertEqual(build.inner(args), 0)
+                self.assertEqual(len(calls), 1)
+                record = json.loads((out / 'build.json').read_text())
+                self.assertEqual(set(record['breenfsTools']), set(names))
+                for name in names:
+                    self.assertEqual((out / name).read_bytes(), name.encode())
+                    self.assertEqual(record['breenfsTools'][name],
+                        dict(size=len(name), sha256=hashlib.sha256(name.encode()).hexdigest()))
+                if local:
+                    linker = Path(calls[0][1]['env']['CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER'])
+                    self.assertIn('x86_64-linux-gnu', linker.read_text())
+
+    def test_breenfs_verdict_retains_tools_at_the_scorers_default_path(self):
+        import os
+        import runpy
+        fixture = existing.DriverTest()
+        fixture.setUp()
+        try:
+            d = fixture.driver
+            d.args.mode, d.args.suite, d.args.root_fs = 'suite', 'files-io', 'breenfs'
+            retained = d.dir / 'breenfs-tools'
+            retained.mkdir()
+            for name in ('breenfs-extract', 'breenfs-check'):
+                (retained / name).write_text('#!' + sys.executable + '\nprint("fixture")\n')
+            definition = d.dir / 'definition'
+            repo = Path(__file__).resolve().parents[1]
+            for name in ('scripts/suite-verdict.py', 'docs/boot-path.json',
+                         'docs/suites/files-io.json', 'libs/libbreenix/src/suite_memory.rs'):
+                path = definition / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes((repo / name).read_bytes())
+            (d.dir / 'serial.txt').write_text('serial')
+            real_run = existing.subprocess.run
+            def score(command, **options):
+                self.assertEqual(options['env'], {'PATH': os.defpath, 'LANG': 'C.UTF-8'})
+                binding = next(x for x in command if x.startswith('--property=BindReadOnlyPaths='))
+                root = Path(binding.split('=', 2)[2].split(':')[0])
+                scorer = runpy.run_path(str(root / 'scripts/suite-verdict.py'))
+                for name in ('breenfs-extract', 'breenfs-check'):
+                    tool = scorer['REPO'] / 'tools/breenfs/target/release' / name
+                    result = real_run([str(tool)], capture_output=True, text=True, env=options['env'])
+                    self.assertEqual((result.returncode, result.stdout), (0, 'fixture\n'))
+                return existing.SimpleNamespace(returncode=0, stdout='pass', stderr='')
+            with patch.object(existing.boot.subprocess, 'run', side_effect=score):
+                self.assertTrue(d.score_suite())
+        finally:
+            fixture.tearDown()
 
     def test_each_boot_reinstalls_even_unchanged_userspace_and_credentials(self):
         original = (self.inputs / 'ext2.img').read_bytes()
@@ -96,7 +226,8 @@ class DiskTest(existing.StateTest):
             for name, contents in {'docs/suites/smoke.json': '{"id":"smoke"}',
                                    'docs/suites/files-io.json': '{"id":"files-io","diskChecks":[{}]}',
                                    'scripts/suite-sequence.py': '# scorer', 'scripts/suite-verdict.py': '# verdict',
-                                   'docs/boot-path.json': '{}'}.items():
+                                   'docs/boot-path.json': '{}',
+                                   'libs/libbreenix/src/suite_memory.rs': (Path(__file__).resolve().parents[1] / 'libs/libbreenix/src/suite_memory.rs').read_text()}.items():
                 path = definition / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(contents)
@@ -105,7 +236,7 @@ class DiskTest(existing.StateTest):
                  patch.object(existing.boot.metal_image, 'assemble', side_effect=RuntimeError('captured')) as assemble:
                 with self.assertRaisesRegex(RuntimeError, 'captured'):
                     d.prepare_payload()
-            self.assertEqual(assemble.call_args.args[1]['ramdisk'].read_bytes(), b'BREENIX-BOOT 1\nsuite smoke hostkeys xhci-replay\n')
+            self.assertEqual(assemble.call_args.args[1]['ramdisk'].read_bytes(), b'BREENIX-BOOT 1\nsuite smoke hostkeys host-channel\n')
             self.assertEqual(stage.call_args.kwargs['suite'], 'smoke,files-io')
             self.assertEqual((d.dir / 'readback-stub.efi').read_bytes(), b'stub')
             (d.dir / 'serial.txt').write_text('serial')
@@ -176,21 +307,105 @@ class DiskTest(existing.StateTest):
         m.quarantine_lease('readback', 'power state uncertain')
         self.assertFalse(m.handoff_lease('readback', dict(id='third', unit='suite-unit')))
 
-    def test_cold_readback_refuses_an_intervening_boot_even_with_the_same_root(self):
-        source_id = '20261018T000000Z-metal'
+    def readback_source(self, status, reason, provisional=False, source_id='20261018T000000Z-metal'):
+        m = existing.m
         source = existing.m.boot_dir(source_id)
         source.mkdir(parents=True)
         facts = dict(installedBy='prior', bytes=4096, sha256AfterRecord='a' * 64)
-        existing.m.write_json(source / 'run.json', dict(disk='root', mode='suite'))
-        existing.m.write_json(source / 'suite-disk.json', facts)
+        m.write_json(source / 'run.json', dict(disk='root', mode='suite', suite='files-io'))
+        m.write_json(source / 'suite-disk.json', facts)
+        manifest = source / 'definition/docs/suites/files-io.json'
+        manifest.parent.mkdir(parents=True)
+        m.write_json(manifest, dict(id='files-io', diskChecks=[dict(path='/written', byte=66, length=4)]))
         (source / 'commit').write_text('b' * 40)
-        (source / 'ended').touch()
-        events = [dict(event='power-off', off=True, t=1), dict(event='decided', status=0),
-                  dict(event='disk-root-record', matchesLastInstall=True)]
-        (source / 'events.jsonl').write_text('\n'.join(json.dumps(e) for e in events))
+        events = [dict(event='disk-root-record', matchesLastInstall=True),
+                  dict(event='decided', status=status, reason=reason),
+                  dict(event='power-off', off=True, t=1),
+                  dict(event='suite-awaiting-disk-readback', provisional=provisional)]
+        (source / 'events.jsonl').write_text(''.join(json.dumps(e) + '\n' for e in events))
+        m.close_record(source, m.EXIT_SHORT if provisional else status, 'driver')
+        m.write_json(m.STATE / 'disk.json', dict(facts, lastBoot=source_id))
+        return source, facts
+
+    def test_cold_readback_accepts_deadline_ended_source_and_records_status(self):
+        source, _ = self.readback_source(1, 'the mode deadline passed with stages missing')
+        self.site['BOOT_URL'] = 'http://example.invalid/boot'
+        with patch.object(disk.metal_image, 'assemble', side_effect=lambda image, _: image.touch()), \
+             patch.object(disk.metal_image, 'stub_efi', return_value={}):
+            disk.prepare_readback(self.directory, self.inputs, source.name, 'b' * 40, 'readback', self.site, self.inputs / 'stub.efi')
+        self.assertEqual(existing.m.read_json(self.directory / 'readback.json')['sourceStatus'], 1)
+
+    def test_cold_readback_refuses_an_intervening_boot_even_with_the_same_root(self):
+        source, facts = self.readback_source(0, 'suite complete', provisional=True)
         existing.m.write_json(existing.m.STATE / 'disk.json', dict(facts, lastBoot='another-boot'))
         with self.assertRaisesRegex(ValueError, 'replaced between'):
-            disk.prepare_readback(self.directory, self.inputs, source_id, 'b' * 40, 'readback', self.site, self.inputs / 'stub.efi')
+            disk.prepare_readback(self.directory, self.inputs, source.name, 'b' * 40, 'readback', self.site, self.inputs / 'stub.efi')
+
+    def test_only_decided_failure_schedules_diagnostic_readback(self):
+        m, boot = existing.m, existing.boot
+        for minute, status, reason in [(0, m.EXIT_STOPPED, 'operator stop'),
+                                       (1, m.EXIT_INCOMPLETE, 'console capture incomplete'),
+                                       (2, m.EXIT_SHORT, 'a fatal line')]:
+            with self.subTest(status=status):
+                source, facts = self.readback_source(status, reason, source_id=f'20261018T00{minute:02}00Z-metal')
+                args = existing.SimpleNamespace(id=source.name, mode='suite', payload='image', disk='root',
+                                                suite='files-io', commit='b' * 40, inject=None)
+                with patch.object(m, 'load_site', return_value={}):
+                    driver = boot.Driver(args)
+                driver.t0 = driver.kernel_started = 2
+                driver.delivery['diskRoot'] = facts
+                root_line = '[storage] root record: installed by boot prior, 4096 bytes, sha256 ' + 'a' * 64
+                driver.on_disk_line(root_line, 2)
+                for method in ('create_record', 'claim', 'prepare_payload', 'preflight', 'do_stage',
+                               'start_console', 'power_on', 'pump_serial', 'cleanup'):
+                    setattr(driver, method, Mock())
+                driver.power_off = Mock(return_value=True)
+                driver.watch = Mock(side_effect=boot.Finish(status, reason))
+                driver.continue_disk_readback = Mock(return_value=m.EXIT_DONE)
+                (source / 'definition/docs/metal').mkdir()
+                (source / 'definition/docs/metal/boot-path.json').touch()
+                with patch.object(boot.metal_score, 'score', return_value={}), \
+                     patch.object(boot.metal_score, 'falls_short', return_value=True):
+                    self.assertEqual(driver.run(), status)
+                if status == m.EXIT_SHORT:
+                    driver.continue_disk_readback.assert_called_once()
+                else:
+                    driver.continue_disk_readback.assert_not_called()
+
+    def test_decided_failure_keeps_its_exit_after_passing_disk_checks(self):
+        m, boot = existing.m, existing.boot
+        source, _ = self.readback_source(m.EXIT_SHORT, 'a fatal line')
+        args = existing.SimpleNamespace(id='20261018T000001Z-metal', mode='default', payload='disk-readback')
+        with patch.object(m, 'load_site', return_value={}):
+            driver = boot.Driver(args)
+            driver.dir.mkdir()
+            image = driver.dir / 'disk.img'
+            image.write_bytes(b'disk')
+            driver.t0 = 2
+            sha = hashlib.sha256(b'disk').hexdigest()
+            m.write_json(driver.dir / 'readback.json', dict(source=source.name, bytes=4, rootRecord='record',
+                suitePoweredOffAt=1, sourceStatus=m.EXIT_SHORT, sourceProvisional=False,
+                sourceReason='a fatal line', sourceEndedBy='driver'))
+            m.write_json(driver.dir / 'disk-upload.json', dict(complete=True, sha256=sha, rootRecord='record'))
+            m.write_json(source / 'milestone-verdict.json', {'fixture': 'passing'})
+
+            verdict = dict(passed=True, detail='raw disk checks passed=1',
+                           diskChecks=[dict(path='/written', status='pass')], breenfsCheckExit=0)
+            def score_suite(*, disk, disk_report=None):
+                self.assertEqual(disk, image)
+                if disk_report is not None:
+                    disk_report.update(verdict)
+                return True
+
+            with patch.object(boot.Driver, 'score_suite', side_effect=score_suite), \
+                 patch.object(boot.metal_score, 'falls_short', return_value=False):
+                self.assertTrue(driver.finalize_disk_suite())
+        self.assertEqual((source / 'exit-status').read_text(), '1\n')
+        receipt = m.read_json(source / 'suite-readback.json')
+        self.assertEqual(receipt['diskVerdict'], verdict)
+        self.assertEqual(receipt['sourceStatus'], m.EXIT_SHORT)
+        self.assertEqual(receipt['sourceReason'], 'a fatal line')
+        self.assertFalse(receipt['sourceProvisional'])
 
 
 if __name__ == '__main__':

@@ -49,7 +49,7 @@ def config_2(action, size, partition, expected, root, url=''):
 
 
 def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite=None, idle_minutes=None, replug=False,
-          the_layout=None, operator=None, no_ssh=False, screen_proof=False, screen_known=None, case=None):
+          the_layout=None, operator=None, no_ssh=False, screen_proof=False, screen_known=None, case=None, root_fs='ext2', tools_dir=None):
     """Reset the writable root for each boot, including unchanged userspace builds. `the_layout` is the layout an
     install boot's request writes before the stub stages this root; otherwise the recorded one, if any."""
     the_layout = the_layout or metal_persist.layout()
@@ -62,16 +62,15 @@ def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite
     identity = dict(ext2=build['ext2']['sha256'], bootUrl=site.get('BOOT_URL'), console=metal_root.console_identity(site),
                     site={k: v for k, v in site.items() if k.startswith('GUEST_')},
                     writer=metal_image.sha256(writer))
+    if root_fs != 'ext2':
+        identity['rootFs'] = root_fs
     key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
     image = inputs / 'ext2.img'
     # A reused mutable root can preserve the exact bytes diskChecks must check
     # this boot wrote, as well as consume fixtures needed by other suites.
     native_suite = mode == 'suite' and bool({'console', 'gpu', 'breengel', 'window-manager', 'ui-testing', 'gui-apps'} & set((suite or '').split(',')))
     upload = gt710_upload.prepare(directory, boot_id, site, suite=suite) if mode == 'probe' or native_suite else None
-    staged = metal_root.stage_root(image, mode, suite, site, hasher=inputs / 'sha512-crypt', writer=writer,
-                                   idle_minutes=idle_minutes, replug=replug, operator=operator, power_token=m.power_token(),gt710_upload=upload,
-                                   screen_proof=screen_proof, screen_known=screen_known, case=case)
-    if no_ssh:
+    def remove_ssh():
         # Damage only the candidate's private userland before recording its digest.
         # Its kernel, init and console still boot; the previous generation is untouched.
         import subprocess
@@ -80,7 +79,18 @@ def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite
         check = subprocess.run([debugfs, '-R', 'stat /usr/sbin/bsshd', str(image)], check=True, capture_output=True)
         if b'Inode:' in check.stdout or b'File not found' not in check.stderr:
             raise ValueError('SSH fault did not remove the candidate daemon')
+    if no_ssh and root_fs == 'breenfs':
+        remove_ssh()
+    staged = metal_root.stage_root(image, mode, suite, site, hasher=inputs / 'sha512-crypt', writer=writer,
+                                   idle_minutes=idle_minutes, replug=replug, operator=operator, power_token=m.power_token(),gt710_upload=upload,
+                                   screen_proof=screen_proof, screen_known=screen_known, case=case,
+                                   **({'root_fs': root_fs, 'tools_dir': tools_dir} if root_fs != 'ext2' else {}))
+    if no_ssh and root_fs != 'breenfs':
+        remove_ssh()
     facts = metal_root.write_install_record(image, boot_id)
+    for field in ('extentCount', 'breenfsSha256'):
+        if field in staged:
+            facts[field] = staged[field]
     if 'consoleAccount' in staged:
         facts['consoleAccount'] = staged['consoleAccount']
     root = record(facts)
@@ -99,21 +109,37 @@ def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite
     return facts, files
 
 
+def readback_checks(directory, suite):
+    return m.read_json(directory / 'definition/docs/suites' / (suite + '.json'), {}).get('diskChecks', [])
+
+
 def prepare_readback(directory, stage, source_id, commit, boot_id, site, stub):
     source = m.boot_dir(source_id)
     run = m.read_json(source / 'run.json', {})
     facts = m.read_json(source / 'suite-disk.json')
     events = [json.loads(line) for line in (source / 'events.jsonl').read_text().splitlines()]
-    off = [event for event in events if event['event'] == 'power-off' and event.get('off')]
-    if (not facts or run.get('disk') != 'root' or run.get('mode') != 'suite' or not (source / 'ended').exists() or not off
+    off = next((e for e in reversed(events) if e['event'] == 'power-off'), {})
+    decided = next((e for e in events if e['event'] == 'decided'), {})
+    pending = next((e for e in events if e['event'] == 'suite-awaiting-disk-readback'), {})
+    # Older manual retry sources recorded an awaiting event only for a finished guest.
+    provisional = pending.get('provisional', True if pending else None)
+    names = run.get('suites') or [run.get('suite')]
+    if (not facts or run.get('disk') != 'root' or run.get('mode') != 'suite' or run.get('onlyCase')
+            or not names[-1] or not readback_checks(source, names[-1])
+            or not (source / 'ended').exists() or off.get('off') is not True
             or (source / 'commit').read_text().strip() != commit
             or any(event['event'] == 'console-gap-start' for event in events)
-            or not any(event['event'] == 'decided' and event.get('status') == m.EXIT_DONE for event in events)
-            or not any(event['event'] == 'disk-root-record' and event.get('matchesLastInstall') for event in events)):
+            or not any(event['event'] == 'disk-root-record' and event.get('matchesLastInstall') is True for event in events)):
         raise ValueError('raw readback needs a completed disk suite boot with confirmed power-off and root identity')
+    status = int((source / 'exit-status').read_text().strip())
+    ended_by = (source / 'ended-by').read_text().strip()
+    if (status != m.EXIT_SHORT or ended_by != 'driver' or type(provisional) is not bool
+            or decided.get('status') != (m.EXIT_DONE if provisional else m.EXIT_SHORT)):
+        raise ValueError('raw readback needs a provisional, failed or deadline-ended suite source')
     # Another disk user may have acquired the lease between the boots. Refuse a changed disk association.
     current = metal_persist.test_root() or {}
-    if record(current) != record(facts) or current.get('lastBoot') != source_id:
+    if (current.get('lastBoot') != source_id or current.get('partition') != facts.get('partition')
+            or record(current) != record(facts)):
         raise ValueError('the owned disk was replaced between the suite and its cold readback')
     url = urlsplit(site['BOOT_URL'])
     route = UPLOAD_PREFIX + secrets.token_hex(32)
@@ -129,7 +155,8 @@ def prepare_readback(directory, stage, source_id, commit, boot_id, site, stub):
     payload = metal_image.stub_efi(stub, image, output)
     image.unlink()
     m.write_json(directory / 'readback.json', dict(source=source_id, bytes=facts['bytes'], rootRecord=record(facts).hex(),
-                                                 suitePoweredOffAt=off[-1]['t']))
+        suitePoweredOffAt=off['t'], sourceStatus=status, sourceProvisional=provisional,
+        sourceReason=decided['reason'], sourceEndedBy=ended_by))
     m.write_json(m.STATE / 'disk-upload.json', dict(id=boot_id, route=route, bytes=facts['bytes'],
                                                  rootRecord=record(facts).hex()))
     return payload, output

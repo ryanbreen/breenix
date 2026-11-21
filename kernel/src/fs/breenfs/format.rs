@@ -448,17 +448,24 @@ impl NodeHeader {
         put(b, 16, &self.fs_uuid);
         put(b, 32, &self.addr.to_le_bytes());
         put(b, 40, &self.generation.to_le_bytes());
+        #[cfg(test)] super::btree::measurement::edit_cost(|c| c.checksum_bytes += (NODE_SIZE - 12) as u64);
         let c = crc32c::checksum(&b[12..NODE_SIZE]);
         put(b, 8, &c.to_le_bytes());
         Ok(())
     }
     pub fn decode(b: &[u8]) -> Result<Self, Error> {
+        let header = Self::decode_verified(b)?;
+        #[cfg(test)] super::btree::measurement::edit_cost(|c| c.checksum_bytes += (NODE_SIZE - 12) as u64);
+        if crc32c::checksum(&b[12..NODE_SIZE]) != u32at(b, 8) {
+            return Err(Error::Checksum);
+        }
+        Ok(header)
+    }
+
+    pub(super) fn decode_verified(b: &[u8]) -> Result<Self, Error> {
         need(b, NODE_SIZE)?;
         if &b[..8] != b"BREENFSN" {
             return Err(Error::Invalid);
-        }
-        if crc32c::checksum(&b[12..NODE_SIZE]) != u32at(b, 8) {
-            return Err(Error::Checksum);
         }
         let mut fs_uuid = [0; 16];
         fs_uuid.copy_from_slice(&b[16..32]);
@@ -488,23 +495,28 @@ impl DirRecord {
         b
     }
     pub fn decode(b: &[u8]) -> Result<Self, Error> {
-        need(b, 10)?;
-        let n = b[9] as usize;
-        need(b, 10 + n)?;
-        if n == 0
-            || !(1..=7).contains(&b[8])
-            || b[10..10 + n].contains(&0)
-            || b[10..10 + n].contains(&b'/')
-            || &b[10..10 + n] == b"."
-            || &b[10..10 + n] == b".."
-        {
-            return Err(Error::Invalid);
-        }
+        let name = Self::decode_name(b)?.to_vec();
         Ok(Self {
             ino: u64at(b, 0),
             kind: b[8],
-            name: b[10..10 + n].to_vec(),
+            name,
         })
+    }
+    pub(super) fn decode_name(b: &[u8]) -> Result<&[u8], Error> {
+        need(b, 10)?;
+        let n = b[9] as usize;
+        need(b, 10 + n)?;
+        let name = &b[10..10 + n];
+        if n == 0
+            || !(1..=7).contains(&b[8])
+            || name.contains(&0)
+            || name.contains(&b'/')
+            || name == b"."
+            || name == b".."
+        {
+            return Err(Error::Invalid);
+        }
+        Ok(name)
     }
 }
 #[derive(Clone, Debug, Eq, PartialEq)]

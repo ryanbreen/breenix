@@ -46,6 +46,9 @@ pub enum ThreadState {
     Terminated,
 }
 
+#[cfg(target_arch = "aarch64")]
+pub(crate) use super::lockup::WaitSite;
+
 impl ThreadState {
     /// True for every variant the scheduler treats as parked waiting on
     /// some external event, as opposed to `Running`, `Ready`, or
@@ -717,6 +720,17 @@ pub struct Thread {
     /// Current state
     pub state: ThreadState,
 
+    /// Owns this thread's atomic record while it is blocked.
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) wait_site: WaitSite,
+
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) lockup_progress: super::lockup::ThreadProgress,
+
+    /// Advances when the scheduler saves this thread while it is blocked on I/O.
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) io_park_epoch: AtomicU64,
+
     /// CPU context (registers)
     pub context: CpuContext,
 
@@ -1330,6 +1344,12 @@ impl Clone for Thread {
             id: self.id,
             name: self.name.clone(),
             state: self.state,
+            #[cfg(target_arch = "aarch64")]
+            wait_site: WaitSite::default(),
+            #[cfg(target_arch = "aarch64")]
+            lockup_progress: Default::default(),
+            #[cfg(target_arch = "aarch64")]
+            io_park_epoch: AtomicU64::new(0),
             context: self.context.clone(),
             stack_top: self.stack_top,
             stack_bottom: self.stack_bottom,
@@ -1540,6 +1560,9 @@ impl Thread {
             id,
             name,
             state: ThreadState::Ready,
+            wait_site: WaitSite::default(),
+            lockup_progress: Default::default(),
+            io_park_epoch: AtomicU64::new(0),
             context,
             stack_top,
             stack_bottom,
@@ -1669,6 +1692,9 @@ impl Thread {
             id,
             name,
             state: ThreadState::Ready,
+            wait_site: WaitSite::default(),
+            lockup_progress: Default::default(),
+            io_park_epoch: AtomicU64::new(0),
             context,
             stack_top,
             stack_bottom,
@@ -1818,6 +1844,9 @@ impl Thread {
             id,
             name,
             state: ThreadState::Ready,
+            wait_site: WaitSite::default(),
+            lockup_progress: Default::default(),
+            io_park_epoch: AtomicU64::new(0),
             context,
             stack_top,
             stack_bottom,
@@ -1869,8 +1898,21 @@ impl Thread {
         self.state == ThreadState::Ready
     }
 
+    #[cfg(target_arch = "aarch64")]
+    pub(crate) fn publish_wait(&mut self, pc: u64, queue: u64) {
+        let pid = self.owner_pid.unwrap_or(0);
+        let name = if pid == 0 {
+            super::lockup::name_words(&self.name)
+        } else {
+            self.signals.lockup_name.words()
+        };
+        self.wait_site.publish(self.id, pid, pc, queue, name);
+    }
+
     /// Mark thread as running
     pub fn set_running(&mut self) {
+        #[cfg(target_arch = "aarch64")]
+        self.wait_site.clear();
         self.state = ThreadState::Running;
         self.signals.cpu_clock.store(
             (crate::signal::monotonic_micros() << 1) | u64::from(self.signals.in_user.load(Ordering::Relaxed)),
@@ -1882,6 +1924,8 @@ impl Thread {
     pub fn set_ready(&mut self) {
         self.stop_timer_cpu();
         if self.state != ThreadState::Terminated {
+            #[cfg(target_arch = "aarch64")]
+            self.wait_site.clear();
             self.state = ThreadState::Ready;
         }
     }
@@ -1894,6 +1938,8 @@ impl Thread {
         if self.state != ThreadState::Terminated {
             crate::task::scheduler::note_thread_terminated(self);
         }
+        #[cfg(target_arch = "aarch64")]
+        self.wait_site.clear();
         self.state = ThreadState::Terminated;
     }
 
@@ -1980,6 +2026,9 @@ impl Thread {
             id,
             name,
             state: ThreadState::Ready,
+            wait_site: WaitSite::default(),
+            lockup_progress: Default::default(),
+            io_park_epoch: AtomicU64::new(0),
             context,
             stack_top,
             stack_bottom,
@@ -2050,12 +2099,29 @@ extern "C" fn thread_entry_trampoline() -> ! {
     unreachable!("Thread exit failed");
 }
 
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+pub(crate) fn arm_current_thread_ptr() -> *const Thread {
+    use crate::arch_impl::{aarch64::percpu::Aarch64PerCpu, traits::PerCpuOps};
+    Aarch64PerCpu::current_thread_ptr().cast()
+}
+
 fn current_cpu_thread() -> Option<&'static Thread> {
     #[cfg(target_arch = "x86_64")]
     let thread = crate::per_cpu::current_thread();
     #[cfg(target_arch = "aarch64")]
     let thread = crate::per_cpu_aarch64::current_thread();
     thread.map(|t| &*t)
+}
+
+/// Identity carried by the running thread, without taking the scheduler lock.
+pub(crate) fn current_owner_pid() -> Option<u64> {
+    crate::arch_without_interrupts(|| current_cpu_thread().and_then(|thread| thread.owner_pid))
+}
+
+/// Honor pending kill at waits that can unwind. Nested custody can finish.
+pub(crate) fn current_wait_must_unwind() -> bool {
+    current_cpu_thread().is_some_and(Thread::must_not_sleep)
 }
 
 /// Fatal cancellation check for waits that must unwind their kernel owners.

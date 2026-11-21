@@ -21,6 +21,19 @@
 //! [BXCAP:END v=1 seq=0 edge=SELFTEST verdict=complete records=... bytes=... truncated=0 sections_skipped=0x0]
 //! ```
 //!
+//! ARM64 LOCKUP reports `[BXCAP:NOTE sched_owner_cpu=1 pc=0x... tick=...]`
+//! or `sched_owner=free` / `sched_owner=updating`. Each CPU has a
+//! `[BXCAP:THR cpu=0 cur=2 q=published]` row with its scheduler-published TID.
+//! When sampled, the same row carries the timer's `run_tid`, local `tick`,
+//! interrupted `elr` and `lr`, and the thread's `sched` and `wait_no_park`
+//! totals. Deltas compare this TID to the same CPU's sample 1,000 ticks earlier.
+//! An absent or different baseline TID gives `window_ticks=unavailable`.
+//! Wait rows carry `tid`, `pid`, `site`, `queue` and the command name `proc`.
+//! The site is the wait publication PC, refined to the wait caller's return
+//! PC at the blocking handoff. The queue address is `0x0` when unavailable.
+//! Notes count rows omitted by the storage or output cap and rows in flight
+//! during sampling. These records share the capture's byte budget.
+//!
 //! `BEGIN` without a matching `END` is the definition of a truncated
 //! capture, and that is the distinction a gate needs: it separates "no
 //! capture was emitted" from "a capture was emitted and something cut it
@@ -29,11 +42,9 @@
 //!
 //! # The constraints this path holds itself to
 //!
-//! No lock, no allocation, no formatting machinery, no page-table walk, no
-//! I/O beyond the raw serial primitive, and a bounded output size. The one
-//! piece of scheduler state a capture wants is read through
-//! `try_liveness_snapshot`, which is non-blocking; a refusal is reported and
-//! the capture continues. `kernel/src/capture/` is on
+//! A capture uses bounded output, fixed storage, and non-blocking snapshots.
+//! LOCKUP reads fixed atomic storage. The other edges report a refused
+//! scheduler snapshot and continue. `kernel/src/capture/` is on
 //! `scripts/check-critical-path-violations.sh`'s critical-file list with an
 //! extra capture-scoped denylist, and `tests/capture_path_lock_free_structure.rs`
 //! pins the same shape from the source side.
@@ -204,6 +215,43 @@ pub(crate) fn current_cpu_id() -> usize {
 #[cold]
 #[inline(never)]
 pub fn emit(edge: Edge, arg0: u64, arg1: u64) {
+    #[cfg(target_arch = "aarch64")]
+    if edge == Edge::Lockup {
+        emit_lockup(arg0, arg1);
+        return;
+    }
+    emit_inner(edge, arg0, arg1, sections::sample_threads, sections::threads);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[cold]
+#[inline(never)]
+pub(crate) fn emit_lockup(stall_ticks: u64, ticks_per_second: u64) {
+    use crate::task::lockup::{BlockedWait, WAIT_ROWS};
+
+    let mut waits = [BlockedWait::default(); WAIT_ROWS];
+    let waits = &mut waits;
+    emit_inner(
+        Edge::Lockup,
+        stall_ticks,
+        ticks_per_second,
+        move |_| {
+            let sample = crate::task::lockup::snapshot(waits);
+            (sample, waits)
+        },
+        |writer, (sample, waits)| sections::lockup_threads(writer, sample, waits),
+    );
+}
+
+#[cold]
+#[inline(never)]
+fn emit_inner<T>(
+    edge: Edge,
+    arg0: u64,
+    arg1: u64,
+    sample_threads: impl FnOnce(usize) -> T,
+    write_threads: impl FnOnce(&mut Writer, T) -> bool,
+) {
     let cpu_id = current_cpu_id();
     let seq = CAPTURE_SEQ.fetch_add(1, Ordering::Relaxed);
 
@@ -258,7 +306,7 @@ pub fn emit(edge: Edge, arg0: u64, arg1: u64) {
         completed |= section_bit(SECTION_CPU);
     }
 
-    let sampled_threads = sections::sample_threads(cpu_id);
+    let sampled_threads = sample_threads(cpu_id);
 
     if sections::events(&mut writer, cpu_id) {
         completed |= section_bit(SECTION_EV);
@@ -269,7 +317,7 @@ pub fn emit(edge: Edge, arg0: u64, arg1: u64) {
     if sections::ring(&mut writer, cpu_id) {
         completed |= section_bit(SECTION_RING);
     }
-    if sections::threads(&mut writer, sampled_threads) {
+    if write_threads(&mut writer, sampled_threads) {
         completed |= section_bit(SECTION_THR);
     }
 

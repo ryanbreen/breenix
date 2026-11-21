@@ -1,8 +1,9 @@
 //! BreenFS-only dirty pages; the mount serializes this per-VNode state.
 //! Clean pages belong to the buffer cache (E24 coordinator ledger line 2).
+use super::preempt::preemption_point;
 use super::format::BLOCK_SIZE;
 use crate::{fs::errno::Errno, syscall::errno::ENOMEM};
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 
 #[cfg(test)]
 pub mod measurement {
@@ -25,16 +26,20 @@ pub mod measurement {
     }
 }
 
-#[derive(Default)]
+// Pages are shared, never changed in place: a frozen generation's map stays
+// readable while its preparation drains a clone (E24 coordinator 597/601(2)).
+type Page = Arc<Vec<u8>>;
+
+#[derive(Clone, Default)]
 pub struct DirtyPages {
-    pages: BTreeMap<u64, Vec<u8>>,
+    pages: BTreeMap<u64, Page>,
 }
 impl DirtyPages {
     pub fn bytes(&self) -> u64 {
         self.pages.len() as u64 * BLOCK_SIZE as u64
     }
     pub fn get(&self, page: u64) -> Option<&[u8]> {
-        self.pages.get(&page).map(Vec::as_slice)
+        self.pages.get(&page).map(|page| page.as_slice())
     }
     pub fn indexes(&self) -> impl Iterator<Item = u64> + '_ {
         #[cfg(test)]
@@ -125,7 +130,7 @@ impl DirtyPages {
                 }
             }
             page[within..within + take].copy_from_slice(&bytes[done..done + take]);
-            prepared.insert(index, page);
+            prepared.insert(index, Arc::try_new(page).map_err(|_| Errno(ENOMEM))?);
             done += take;
         }
         // Bulk append rebuilds the existing index even for a one-page write
@@ -152,7 +157,7 @@ impl DirtyPages {
                 read(index * BLOCK_SIZE as u64, &mut page)?;
             }
             page[within..].fill(0);
-            Some(page)
+            Some(Arc::try_new(page).map_err(|_| Errno(ENOMEM))?)
         } else {
             None
         };
@@ -173,6 +178,7 @@ impl DirtyPages {
         mut write: impl FnMut(u64, &[u8]) -> Result<(), Errno>,
     ) -> Result<(), Errno> {
         while let Some((first, page)) = self.pages.pop_first() {
+            preemption_point();
             #[cfg(test)]
             measurement::drained();
             let offset = first * BLOCK_SIZE as u64;

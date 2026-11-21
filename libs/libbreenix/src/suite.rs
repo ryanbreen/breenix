@@ -815,6 +815,16 @@ static RECORDS: AtomicU32 = AtomicU32::new(0);
 // Exact VALUE lines sent to serial, transported after the case timer stops.
 static VALUE_LINES: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
+/// Write a short diagnostic line on the running case's serial descriptor.
+pub fn case_diagnostic(line: &str) {
+    let fd = RECORD_FD.load(Ordering::Relaxed);
+    if fd >= 0 && line.len() <= 1024 && !line.contains(['\n', '\r'])
+        && RECORDS.fetch_add(1, Ordering::Relaxed) < RECORDS_PER_CASE
+    {
+        emit_to(Fd::from_raw(fd as u64), line);
+    }
+}
+
 /// The most VALUE and WAIT records one case process prints.
 pub const RECORDS_PER_CASE: u32 = 12;
 
@@ -1281,7 +1291,12 @@ impl Suite {
             }
         } else { true };
         if recording && self.gui { crate::suite_stage::memory_owners("before"); }
-        let before = if recording && baseline_ready { memory_sample(self.id, "before") } else { None };
+        let mut before_census = None;
+        let before = if recording && baseline_ready {
+            memory_sample(self.id, "before", &mut before_census)
+        } else {
+            None
+        };
         if recording && screen.gui {
             crate::suite_stage::init(self);
             screen.prepare();
@@ -1387,8 +1402,9 @@ impl Suite {
                 result
             } else { Ok(()) };
             let display = retired.and_then(|()| if screen.gpu.is_some() { gpu_screen::await_console() } else { Ok(()) });
+            let mut after_census = None;
             let after = match display {
-                Ok(()) => memory_sample(self.id, "after"),
+                Ok(()) => memory_sample(self.id, "after", &mut after_census),
                 Err(error) => {
                     emit(&std::format!("SUITE {} ERROR memory {}", self.id, error));
                     None
@@ -1397,8 +1413,30 @@ impl Suite {
             if self.gui { crate::suite_stage::memory_owners("after"); }
             let (line, reclaimed) = memory_record::verdict(self.id, before.as_ref(), after.as_ref());
             emit(&line);
+            if self.id == "gui-apps" {
+                use crate::gpu::abi::test_control::resident_census as op;
+                let action = if reclaimed { op::DISCARD } else { op::REPORT };
+                let status = gui_memory_census(action);
+                if !reclaimed {
+                    if status < 0 {
+                        let errno = -status;
+                        emit(&std::format!("SUITE_MEMORY_PID gui-apps report unavailable=1 errno={errno}"));
+                    }
+                    for (phase, result) in [("before", before_census), ("after", after_census)] {
+                        match result {
+                            Some(status) if status < 0 => {
+                                let errno = -status;
+                                emit(&std::format!("SUITE_MEMORY_PID gui-apps {phase} unavailable=1 errno={errno}"));
+                            }
+                            None => emit(&std::format!("SUITE_MEMORY_PID gui-apps {phase} unavailable=1 reason=not-sampled")),
+                            Some(_) => {}
+                        }
+                    }
+                }
+            }
             if !reclaimed {
                 memory_failure_detail(self.id);
+                sequence::record_memory_failure(self.id);
             }
             reclaimed
         };
@@ -1627,9 +1665,14 @@ pub(super) enum State {
 
 /// Print a settled memory sample as `SUITE <id> MEMORY <when> ...`, or an ERROR
 /// line saying why it could not be read.
-fn memory_sample(id: &str, when: &str) -> Option<memory_record::Sample> {
+fn memory_sample(id: &str, when: &str, census_status: &mut Option<i64>) -> Option<memory_record::Sample> {
     match memory_record::settled() {
         Ok(sample) => {
+            if id == "gui-apps" {
+                use crate::gpu::abi::test_control::resident_census as op;
+                let action = if when == "before" { op::BEFORE } else { op::AFTER };
+                *census_status = Some(gui_memory_census(action));
+            }
             emit(&sample.record(id, when));
             Some(sample)
         }
@@ -1638,6 +1681,27 @@ fn memory_sample(id: &str, when: &str) -> Option<memory_record::Sample> {
             None
         }
     }
+}
+
+fn gui_memory_census(action: u64) -> i64 {
+    use crate::gpu::abi::{test_control::{resident_census as op, RESIDENT_CENSUS}, SYS_TEST_CONTROL};
+    let call = || {
+        // SAFETY: this operation passes only a scalar action and has no user buffer.
+        unsafe { crate::syscall::raw::syscall3(SYS_TEST_CONTROL, u64::from(RESIDENT_CENSUS), action, 0) as i64 }
+    };
+    if matches!(action, op::BEFORE | op::AFTER) {
+        // The aggregate sample is already settled. Give transient lock holders a
+        // chance to finish without waiting for a lock or arming a retry timer.
+        const MAX_RETRIES: usize = 3;
+        for _ in 0..MAX_RETRIES {
+            let status = call();
+            if status != -(crate::errno::Errno::EAGAIN as i64) {
+                return status;
+            }
+            let _ = process::yield_now();
+        }
+    }
+    call()
 }
 
 /// Capture ownership only after the settled reclamation verdict fails.
@@ -1732,6 +1796,29 @@ fn run_inline(case: &Case) -> Outcome {
         Err(CaseError::Fail(msg)) => Outcome::Fail { ms, msg: plain(&msg) },
         Err(CaseError::Skip(msg)) => Outcome::Skip { msg: plain(&msg) },
     }
+}
+
+/// Capture CPU custody immediately when the pinned workers cannot rendezvous.
+/// The parent reports it at the failed case boundary.
+pub fn pin_progress_missed() {
+    cpu_progress(2);
+}
+
+fn cpu_progress(action: u64) {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        use libbreenix::syscall::{nr, raw};
+        // This suite-only prctl accepts a scalar action and no user pointer.
+        let _ = raw::syscall2(nr::PRCTL, 0x4252_0009, action);
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = action;
+}
+
+fn heap_case(action: u64) -> u64 {
+    use libbreenix::syscall::{nr, raw};
+    let result = unsafe { raw::syscall2(nr::PRCTL, 0x4252_000a, action) };
+    if result as i64 > 0 { result } else { 0 }
 }
 
 /// The child's report on the result pipe: `P <ms>`, `F <ms> <msg>` or `S <msg>`.
@@ -2124,13 +2211,18 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, scre
             Err(msg) => return Outcome::Fail { ms: 0, msg },
         }
     } else { None };
-    let controls = if gui {
+    let controls = if gui || (suite == "libc" && name == "dirent-glob/readdir-many")
+        || (suite == "files-io" && matches!(name,
+            "descriptors/unlink-reclaim" | "metadata/ftruncate-large"
+                | "metadata/ftruncate-large-open" | "metadata/statfs-allocation"))
+    {
         match control::Scope::new() {
             Ok(scope) => Some(scope),
             Err(msg) => return Outcome::Fail { ms: 0, msg },
         }
     } else { None };
     let session = gui && case.supervisor.is_some();
+    let heap_epoch = if matches!(suite, "breengel" | "gui-apps") { heap_case(0) } else { 0 };
     let outcome = (|| {
         if session {
             if let Err(msg) = screen.release_for_session() { return Outcome::Fail { ms: 0, msg }; }
@@ -2149,7 +2241,11 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, scre
         },
         Ok(_) => outcome,
     };
+    if heap_epoch != 0 {
+        heap_case((heap_epoch << 1) | u64::from(matches!(outcome, Outcome::Fail { .. })));
+    }
     if let Some(controls) = controls {
+        for line in controls.failure_records(suite, name, matches!(outcome, Outcome::Fail { .. })) { emit(&line); }
         for line in controls.report(suite, name) { emit(&line); }
         for line in controls.phases(suite, name) { emit(&line); }
     }
@@ -2328,10 +2424,12 @@ fn run_case_body(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool,
                 Waited::Exited(status) => exited(status, reader, ms_since(start)),
                 Waited::Published(_) => Outcome::Fail { ms: ms_since(start), msg: String::from("the case published two pictures") },
                 Waited::TimedOut(ms) => {
+                    cpu_progress(1);
                     let note = stop_child(pid);
                     Outcome::Fail { ms, msg: plain(&std::format!("timed out after {logic_limit_ms} ms{note}")) }
                 }
                 Waited::ClockStopped(ms) => {
+                    cpu_progress(1);
                     let note = stop_child(pid);
                     Outcome::Fail {
                         ms,
@@ -2343,6 +2441,9 @@ fn run_case_body(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool,
                     Outcome::Fail { ms: ms_since(start), msg: plain(&std::format!("waitpid failed: {error}{note}")) }
                 }
             };
+            if matches!(outcome, Outcome::Fail { .. }) {
+                cpu_progress(0);
+            }
             let outcome = if let Some(session) = session.as_mut() {
                 if case.collects {
                     // Drain the dead case before choosing collect/discard: a final

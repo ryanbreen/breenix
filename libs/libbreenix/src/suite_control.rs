@@ -16,7 +16,14 @@ const PHASES: &[&str] = &[
 ];
 const PHASE_BASE: usize = WAITS.len() * CELLS;
 const APP_OUTPUT_CLOCK: usize = PHASE_BASE + PHASES.len() * 2;
-const USED_CELLS: usize = APP_OUTPUT_CLOCK + 1;
+#[path = "suite_observations.rs"]
+pub mod observations;
+#[path = "suite_mutation_costs.rs"]
+mod mutation_costs;
+#[path = "suite_markers.rs"]
+pub mod markers;
+const USED_CELLS: usize = markers::USED_CELLS;
+const DIAGNOSTICS_BYTES: usize = 8192;
 static PAGE: AtomicUsize = AtomicUsize::new(0);
 fn now_ms() -> Result<u64, String> {
     libbreenix::time::now_monotonic().map(|t| (t.as_nanos()/1_000_000) as u64).map_err(|e| e.to_string())
@@ -92,20 +99,26 @@ extern "C" {
     fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut u8;
     fn munmap(addr: *mut u8, len: usize) -> i32;
 }
-pub(super) struct Scope { page: usize, previous: usize }
+pub(super) struct Scope { page: usize, previous: usize, mutations: mutation_costs::Snapshot }
 impl Scope {
     pub(super) fn new() -> Result<Self, String> {
         #[cfg(target_os="macos")] const ANON: i32 = 0x1000;
         #[cfg(not(target_os="macos"))] const ANON: i32 = 0x20;
-        assert!(USED_CELLS * core::mem::size_of::<AtomicU64>() <= 4096);
-        let ptr = unsafe { mmap(core::ptr::null_mut(), 4096, 3, 1 | ANON, -1, 0) };
+        assert!(USED_CELLS * core::mem::size_of::<AtomicU64>() <= DIAGNOSTICS_BYTES);
+        let ptr = unsafe { mmap(core::ptr::null_mut(), DIAGNOSTICS_BYTES, 3, 1 | ANON, -1, 0) };
         if ptr as isize == -1 { return Err("control diagnostics mmap failed".into()); }
         for i in 0..USED_CELLS {
             unsafe { ptr.cast::<AtomicU64>().add(i).write(AtomicU64::new(0)); }
         }
         let page = ptr as usize;
         let previous = PAGE.swap(page, Ordering::AcqRel);
-        Ok(Self { page, previous })
+        Ok(Self { page, previous, mutations: mutation_costs::Snapshot::read().unwrap_or_default() })
+    }
+    pub(super) fn failure_records(&self, suite: &str, case: &str, failed: bool) -> Vec<String> {
+        let mut records = observations::records(self.page, suite, case, failed);
+        records.extend(markers::records(self.page, suite, case, failed));
+        records.extend(self.mutations.records(suite, case, failed, mutation_costs::Snapshot::read));
+        records
     }
     pub(super) fn report(&self, suite: &str, case: &str) -> Vec<String> {
         WAITS.iter().enumerate().filter_map(|(i, &wait)| {
@@ -139,6 +152,6 @@ impl Scope {
 impl Drop for Scope {
     fn drop(&mut self) {
         PAGE.store(self.previous, Ordering::Release);
-        unsafe { munmap(self.page as *mut u8, 4096); }
+        unsafe { munmap(self.page as *mut u8, DIAGNOSTICS_BYTES); }
     }
 }

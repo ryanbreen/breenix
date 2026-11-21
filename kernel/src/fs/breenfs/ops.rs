@@ -1,6 +1,7 @@
 //! File operations over the private transaction tree (design 2.3 and 2.5).
 //! Callers serialize operations and discard the transaction after a storage error.
 //! Credentials and pathname traversal belong to VFS; reservation policy is separate.
+use super::preempt::preemption_point;
 use super::{
     btree::{self, NodeStore},
     commit::{self, Committer},
@@ -14,14 +15,18 @@ use super::{
 use crate::block::BlockDevice;
 use alloc::{
     collections::{BTreeMap, BTreeSet},
+    sync::Arc,
     vec,
     vec::Vec,
 };
 
 const MAX_FILE_SIZE: u64 = (1u64 << 63) - 4096;
+type Inodes = Arc<BTreeSet<u64>>;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     EIO,
+    Metadata(btree::ReadFailure),
+    DataRead(crate::block::BlockError),
     EROFS,
     EBUSY,
     EPERM,
@@ -36,6 +41,8 @@ pub enum Error {
     EMLINK,
     ENAMETOOLONG,
     ENOSPC,
+    /// The heap refused memory the change needs, before the change was made.
+    ENOMEM,
 }
 impl From<format::Error> for Error {
     fn from(_: format::Error) -> Self {
@@ -43,13 +50,16 @@ impl From<format::Error> for Error {
     }
 }
 impl From<btree::Error> for Error {
-    fn from(_: btree::Error) -> Self {
-        Self::EIO
+    fn from(error: btree::Error) -> Self {
+        match error { btree::Error::Read(failure) => Self::Metadata(failure), _ => Self::EIO }
     }
 }
 impl From<commit::Error> for Error {
-    fn from(_: commit::Error) -> Self {
-        Self::EIO
+    fn from(error: commit::Error) -> Self {
+        match error {
+            commit::Error::NodeRead(failure) => Self::Metadata(failure),
+            _ => Self::EIO,
+        }
     }
 }
 impl From<txn::Error> for Error {
@@ -57,6 +67,7 @@ impl From<txn::Error> for Error {
         match e {
             txn::Error::Space(super::space::Error::ENOSPC) => Self::ENOSPC,
             txn::Error::Space(super::space::Error::EMLINK) => Self::EMLINK,
+            txn::Error::Tree(error) | txn::Error::Space(super::space::Error::Tree(error)) => error.into(),
             _ => Self::EIO,
         }
     }
@@ -65,6 +76,7 @@ impl From<txn::Error> for Error {
 // failures also close writable admission at the adapter (design 2.7).
 pub(super) enum ReadError {
     Metadata(Error),
+    Device(crate::block::BlockError),
     Data,
 }
 impl From<Error> for ReadError {
@@ -72,10 +84,14 @@ impl From<Error> for ReadError {
 }
 impl ReadError {
     pub(super) fn error(self) -> Error {
-        match self { Self::Metadata(error) => error, Self::Data => Error::EIO }
+        match self {
+            Self::Metadata(error) => error,
+            Self::Device(error) => Error::DataRead(error),
+            Self::Data => Error::EIO,
+        }
     }
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct SetAttr {
     pub mode: Option<u32>,
     pub uid: Option<u32>,
@@ -84,19 +100,58 @@ pub struct SetAttr {
     pub mtime: Option<Time>,
 }
 
+// DIR_ENTRY is ordered by name hash, DIR_INDEX by cookie. Keep the most
+// recently searched directory per Files view, bounded to 512 v1 names.
+// A larger directory or an allocation failure uses a streaming lookup.
+const COOKIE_CACHE_ENTRIES: usize = 512;
+struct DirectoryCookies {
+    dir: u64,
+    names: Vec<(Vec<u8>, u64)>,
+}
+
+impl DirectoryCookies {
+    fn new(dir: u64) -> Option<Self> {
+        let mut names = Vec::new();
+        names.try_reserve_exact(COOKIE_CACHE_ENTRIES).ok()?;
+        Some(Self { dir, names })
+    }
+
+    fn position(&self, name: &[u8]) -> Result<usize, usize> {
+        self.names.binary_search_by(|(cached, _)| cached.as_slice().cmp(name))
+    }
+
+    fn insert(&mut self, position: usize, name: &[u8], cookie: u64) -> bool {
+        let mut owned = Vec::new();
+        if self.names.len() == COOKIE_CACHE_ENTRIES || owned.try_reserve_exact(name.len()).is_err() {
+            return false;
+        }
+        owned.extend_from_slice(name);
+        self.names.insert(position, (owned, cookie));
+        true
+    }
+}
+
 pub struct Files<'a, S: NodeStore + 'a> {
     txn: Transaction<'a, S>,
     root: Root,
     root_id: u64,
-    roots: BTreeMap<u64, Root>,
+    // Shared copy-on-write with a scratch fork, so freeze copies no set.
+    roots: Arc<BTreeMap<u64, Root>>,
     next_root_id: u64,
+    changed_roots: BTreeSet<u64>,
     writable: bool,
     hash_key: [u8; 16],
+    cookies: Option<DirectoryCookies>,
     // Non-private extents retain their generation's immutable REF tree. New
     // extents are served from data until the next Files view is opened.
     space_root: BlockPtr,
     data: BTreeMap<u64, Vec<u8>>,
-    open_inodes: BTreeSet<u64>,
+    open_inodes: Inodes,
+    orphans: Inodes,
+    orphan_work: Inodes,
+    unvalidated_orphans: Inodes,
+    // Cleanup newly deferred by this transaction, funded by its namespace grants.
+    orphan_count: u64,
 }
 impl<'a, S: NodeStore + 'a> Files<'a, S> {
     /// Create root 1 in the formatter's sole, unpublished generation.
@@ -116,13 +171,19 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
                 name: b"default".to_vec(),
             },
             root_id: 1,
-            roots: BTreeMap::new(),
+            roots: Arc::default(),
             next_root_id: sb.next_root_id,
+            changed_roots: BTreeSet::new(),
             writable: true,
             hash_key: sb.dirhash_key,
+            cookies: None,
             space_root: sb.space_root,
             data: BTreeMap::new(),
-            open_inodes: BTreeSet::new(),
+            open_inodes: Inodes::default(),
+            orphans: Inodes::default(),
+            orphan_work: Inodes::default(),
+            unvalidated_orphans: Inodes::default(),
+            orphan_count: 0,
         };
         files.put_inode(
             2,
@@ -156,15 +217,24 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         self.put_inode(ino, inode)
     }
     pub fn new(store: S, sb: &Superblock, root_id: u64, writable: bool) -> Result<Self, Error> {
-        let roots: BTreeMap<_, _> = recover::space_items(&store, sb)?
+        let entries = recover::space_items(&store, sb)?;
+        #[cfg(test)]
+        super::commit::publication_measurement::files_view(entries.len());
+        let roots: BTreeMap<_, _> = entries
             .into_iter()
-            .filter(|(k, _)| k.item_type == format::ROOT)
+            .filter(|(k, _)| { preemption_point(); k.item_type == format::ROOT })
             .map(|(k, bytes)| Ok((k.offset, Root::decode(&bytes)?)))
             .collect::<Result<_, Error>>()?;
         let root = roots.get(&root_id).ok_or(Error::ENOENT)?.clone();
         if writable && root.flags & 1 != 0 {
             return Err(Error::EROFS);
         }
+        // Initial recovery reads the ORPHAN range once. Continuations retain
+        // this index; later publications visit only newly eligible work.
+        let orphans: BTreeSet<_> = btree::range(&store, root.root,
+            key(ORPHAN_OBJECT, format::ORPHAN, 0),
+            key(ORPHAN_OBJECT, format::ORPHAN, u64::MAX))?
+            .into_iter().map(|(key, _)| key.offset).collect();
         Ok(Self {
             txn: Transaction::new_owned(
                 store,
@@ -173,14 +243,80 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             )?,
             root,
             root_id,
-            roots,
+            roots: Arc::new(roots),
             next_root_id: sb.next_root_id,
+            changed_roots: BTreeSet::new(),
             writable,
             hash_key: sb.dirhash_key,
+            cookies: None,
             space_root: sb.space_root,
             data: BTreeMap::new(),
-            open_inodes: BTreeSet::new(),
+            open_inodes: Inodes::default(),
+            orphan_work: Arc::new(orphans.clone()),
+            unvalidated_orphans: Arc::new(orphans.clone()),
+            orphans: Arc::new(orphans),
+            orphan_count: 0,
         })
+    }
+    /// Freeze generation N (E24 coordinator 597/601(1)) and return N+1's
+    /// scratch Files view over frozen N and `store`, the published N-1 store.
+    /// Constant work: the transaction's private maps move into one shared
+    /// immutable layer, and the open/orphan/ROOT indexes are shared
+    /// copy-on-write. This view keeps preparing N; the fork only describes N+1
+    /// for foreground callers until N+1's changes are replayed onto N's
+    /// published view. Its data map starts empty: N's private data is written
+    /// only by preparation.
+    pub fn fork(&mut self, store: S) -> Result<Self, Error> {
+        Ok(Self {
+            txn: self.txn.fork(store)?,
+            root: self.root.clone(),
+            root_id: self.root_id,
+            roots: self.roots.clone(),
+            next_root_id: self.next_root_id,
+            changed_roots: BTreeSet::new(),
+            writable: self.writable,
+            hash_key: self.hash_key,
+            // Resolve cookies against the scratch tree when it first needs
+            // them. The publisher keeps its own cache through continuation.
+            cookies: None,
+            space_root: self.space_root,
+            data: BTreeMap::new(),
+            open_inodes: self.open_inodes.clone(),
+            orphans: self.orphans.clone(),
+            orphan_work: self.orphan_work.clone(),
+            unvalidated_orphans: self.unvalidated_orphans.clone(),
+            orphan_count: 0,
+        })
+    }
+    /// The stored INODE item, whether or not the inode is still linked.
+    pub fn stored_inode(&self, ino: u64) -> Result<Inode, Error> {
+        let value = btree::search(&self.txn.view(), self.root.root, key(ino, format::INODE, 0))?
+            .ok_or(Error::ENOENT)?;
+        Ok(Inode::decode(&value)?)
+    }
+    /// Continue from this generation's COW state. The immutable node store
+    /// supplies filled pointers; ROOT and DEAD indexes retain their custody.
+    /// No mount/recovery scan belongs on this publication path.
+    pub fn next_generation(&mut self, store: S, sb: &Superblock) -> Result<(), Error> {
+        let generation = sb.generation.checked_add(1).ok_or(Error::EIO)?;
+        #[cfg(test)]
+        super::commit::publication_measurement::files_view(self.changed_roots.len());
+        for &id in &self.changed_roots {
+            preemption_point();
+            let bytes = btree::search(&store, sb.space_root,
+                key(0xffff_ffff_ffff_ff10, format::ROOT, id))?.ok_or(Error::EIO)?;
+            let root = Root::decode(&bytes)?;
+            if id == self.root_id { self.root = root.clone(); }
+            Arc::make_mut(&mut self.roots).insert(id, root);
+        }
+        let space_nodes = self.txn.space_node_count();
+        self.txn = Transaction::new_owned_with_dead(store, sb.space_root, generation,
+            self.txn.take_dead_nodes(), space_nodes)?;
+        self.space_root = sb.space_root;
+        self.next_root_id = sb.next_root_id;
+        self.changed_roots.clear();
+        self.orphan_count = 0;
+        Ok(())
     }
     fn require_writable(&self) -> Result<(), Error> {
         if self.writable { Ok(()) } else { Err(Error::EROFS) }
@@ -205,7 +341,8 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         root.name = name.to_vec();
         self.txn.increment(root.root.addr, 4)?;
         self.txn.update_root(id, root.clone())?;
-        self.roots.insert(id, root);
+        Arc::make_mut(&mut self.roots).insert(id, root);
+        self.changed_roots.insert(id);
         self.next_root_id = next;
         Ok(id)
     }
@@ -224,12 +361,30 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         }
         self.txn.release(root.root.addr, 4, true)?;
         self.txn.delete_root(id)?;
-        self.roots.remove(&id);
+        Arc::make_mut(&mut self.roots).remove(&id);
+        self.changed_roots.remove(&id);
         Ok(())
     }
     /// The mount snapshots live VNodes under its mutex; drops perform no I/O.
     pub fn retain_open_inodes(&mut self, inodes: BTreeSet<u64>) {
-        self.open_inodes = inodes;
+        let previous = core::mem::replace(&mut self.open_inodes, Arc::new(inodes));
+        for &ino in previous.symmetric_difference(&self.open_inodes) {
+            if self.orphans.contains(&ino) {
+                if self.open_inodes.contains(&ino) && !self.unvalidated_orphans.contains(&ino) {
+                    Arc::make_mut(&mut self.orphan_work).remove(&ino);
+                } else { Arc::make_mut(&mut self.orphan_work).insert(ino); }
+            }
+        }
+    }
+    /// Update one VNode lifetime without rebuilding the open-inode snapshot.
+    pub fn set_inode_open(&mut self, ino: u64, open: bool) {
+        if open { Arc::make_mut(&mut self.open_inodes).insert(ino); }
+        else { Arc::make_mut(&mut self.open_inodes).remove(&ino); }
+        if self.orphans.contains(&ino) {
+            if open && !self.unvalidated_orphans.contains(&ino) {
+                Arc::make_mut(&mut self.orphan_work).remove(&ino);
+            } else { Arc::make_mut(&mut self.orphan_work).insert(ino); }
+        }
     }
     pub fn items(&self) -> Result<Vec<(Key, Vec<u8>)>, Error> {
         items(&self.txn.view(), self.root.root)
@@ -238,6 +393,11 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     pub fn reservation_paths(&self, ino: u64) -> Result<txn::ReservationPaths, Error> {
         Ok(self.txn.reservation_paths(self.root.root, ino)?)
     }
+    pub fn root_pointer(&self) -> BlockPtr { self.root.root }
+    pub fn root_growth(&self, root: BlockPtr) -> Result<btree::RootGrowth, Error> {
+        Ok(btree::RootGrowth::read(&self.txn.view(), root)?)
+    }
+    pub fn has_orphans(&self) -> bool { !self.orphans.is_empty() }
     /// Namespace edits can reach parents, victims, the next inode and ORPHAN.
     /// Count their COW paths before publishing any item changes. Shared ancestors
     /// may be counted more than once, making this an upper bound.
@@ -259,6 +419,25 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         }
         Ok(paths)
     }
+    /// Newly deferred orphan cleanup belongs to this transaction's grants;
+    /// existing ORPHAN items are already part of the durable filesystem.
+    pub fn metadata_debt(&self) -> Result<u64, Error> {
+        Ok(self.metadata_estimate()?.blocks().map_err(txn::Error::from)?)
+    }
+    pub(super) fn metadata_estimate(&self) -> Result<super::reserve::Estimate, Error> {
+        Ok(self.txn.metadata_estimate(self.root.root, self.orphan_count)?)
+    }
+    /// Quarantine of the prepared generation, before opening its successor.
+    pub fn pending_summary(&self) -> space::PendingSummary {
+        self.txn.pending_summary()
+    }
+    /// Additional deferred orphan paths if a growing edit can add a root level.
+    pub fn orphan_growth_paths(&self, growing_items: usize) -> Result<u64, Error> {
+        if self.orphan_count == 0 || !btree::may_grow_root(&self.txn.view(), self.root.root, growing_items)? {
+            return Ok(0);
+        }
+        self.orphan_count.checked_mul(3 * 4).ok_or(Error::ENOSPC)
+    }
     pub fn inode(&self, ino: u64) -> Result<Inode, Error> {
         let value = btree::search(&self.txn.view(), self.root.root, key(ino, format::INODE, 0))?
             .ok_or(Error::ENOENT)?;
@@ -269,6 +448,8 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         Ok(inode)
     }
     pub(super) fn put_inode(&mut self, ino: u64, inode: Inode) -> Result<(), Error> {
+        #[cfg(test)]
+        btree::measurement::mutation(4, 1);
         self.require_writable()?;
         self.txn.insert(
             &mut self.root.root,
@@ -315,26 +496,42 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         cookie: u64,
         limit: usize,
     ) -> Result<Vec<(u64, DirRecord)>, Error> {
+        let mut out = Vec::new();
+        if limit != 0 {
+            self.visit_directory_entries(dir, cookie, &mut |next, entry| {
+                out.push((next, entry));
+                out.len() < limit
+            })?;
+        } else {
+            self.directory(dir)?;
+        }
+        Ok(out)
+    }
+    /// Stream DIR_INDEX records without restarting at internal batch boundaries.
+    /// The caller keeps the tree stable for the duration of the sink call.
+    pub fn visit_directory_entries(
+        &self,
+        dir: u64,
+        cookie: u64,
+        emit: &mut dyn FnMut(u64, DirRecord) -> bool,
+    ) -> Result<(), Error> {
         let inode = self.directory(dir)?;
-        btree::range_limit(
+        btree::visit_range(
             &self.txn.view(),
             self.root.root,
             key(dir, format::DIR_INDEX, cookie.max(2)),
             key(dir, format::DIR_INDEX, u64::MAX),
-            limit,
-        )?
-        .into_iter()
-        .map(|(k, bytes)| {
-            if k.offset >= inode.next_index {
-                return Err(Error::EIO);
-            }
-            let mut records = dir_records(&bytes)?;
-            if records.len() != 1 {
-                return Err(Error::EIO);
-            }
-            Ok((k.offset + 1, records.remove(0)))
-        })
-        .collect()
+            &mut |k, bytes| {
+                if k.offset >= inode.next_index {
+                    return Err(Error::EIO);
+                }
+                let mut records = dir_records(bytes)?;
+                if records.len() != 1 {
+                    return Err(Error::EIO);
+                }
+                Ok(emit(k.offset + 1, records.remove(0)))
+            },
+        )
     }
     // Check the next directory cookie and collision payload before edits.
     fn vacant(&self, dir: u64, name: &[u8], kind: u8) -> Result<(), Error> {
@@ -379,6 +576,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             key(dir, format::DIR_INDEX, parent.next_index),
             &record,
         )?;
+        let cookie = parent.next_index;
         parent.next_index += 1;
         parent.size += 1;
         if kind == 2 {
@@ -386,8 +584,60 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         }
         parent.mtime = at;
         parent.ctime = at;
-        self.put_inode(dir, parent)
+        self.put_inode(dir, parent)?;
+        if let Some(cache) = self.cookies.as_mut().filter(|cache| cache.dir == dir) {
+            let inserted = cache.position(name).err()
+                .is_some_and(|position| cache.insert(position, name, cookie));
+            if !inserted {
+                self.cookies = None;
+            }
+        }
+        Ok(())
     }
+
+    fn directory_cookie(&mut self, dir: u64, parent: &Inode, name: &[u8]) -> Result<u64, Error> {
+        if let Some(cache) = self.cookies.as_ref().filter(|cache| cache.dir == dir) {
+            let position = cache.position(name).map_err(|_| Error::EIO)?;
+            return Ok(cache.names[position].1);
+        }
+        self.cookies = None;
+        let mut cache = if parent.size <= COOKIE_CACHE_ENTRIES as u64 {
+            DirectoryCookies::new(dir)
+        } else {
+            None
+        };
+        let mut cookie = None;
+        btree::visit_range(
+            &self.txn.view(),
+            self.root.root,
+            key(dir, format::DIR_INDEX, 0),
+            key(dir, format::DIR_INDEX, u64::MAX),
+            &mut |key, bytes| {
+                let entry = DirRecord::decode_name(bytes)?;
+                if bytes.len() != 10 + entry.len() || !(2..parent.next_index).contains(&key.offset) {
+                    return Err(Error::EIO);
+                }
+                if entry == name && cookie.replace(key.offset).is_some() {
+                    return Err(Error::EIO);
+                }
+                if let Some(building) = &mut cache {
+                    if !building.insert(building.names.len(), entry, key.offset) {
+                        cache = None;
+                    }
+                }
+                Ok(cache.is_some() || cookie.is_none())
+            },
+        )?;
+        if let Some(cache) = &mut cache {
+            cache.names.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+            if cache.names.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+                return Err(Error::EIO);
+            }
+        }
+        self.cookies = cache;
+        cookie.ok_or(Error::EIO)
+    }
+
     fn remove_entry(&mut self, dir: u64, name: &[u8], at: Time) -> Result<DirRecord, Error> {
         let mut parent = self.directory(dir)?;
         let (k, mut records) = self.bucket(dir, name)?;
@@ -396,23 +646,10 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             .position(|r| r.name == name)
             .ok_or(Error::ENOENT)?;
         let record = records.remove(pos);
-        let index = self
-            .range(
-                key(dir, format::DIR_INDEX, 0),
-                key(dir, format::DIR_INDEX, u64::MAX),
-            )?
-            .into_iter()
-            .find_map(|(k, v)| {
-                if k.object != dir || k.item_type != format::DIR_INDEX {
-                    return None;
-                }
-                match dir_records(&v) {
-                    Ok(rs) if rs.len() == 1 && rs[0] == record => Some(Ok(k)),
-                    Err(e) => Some(Err(e)),
-                    _ => None,
-                }
-            })
-            .ok_or(Error::EIO)??;
+        let cookie = self.directory_cookie(dir, &parent, name)?;
+        let index = key(dir, format::DIR_INDEX, cookie);
+        let indexed = btree::search(&self.txn.view(), self.root.root, index)?.ok_or(Error::EIO)?;
+        if indexed != record.encode() { return Err(Error::EIO); }
         if records.is_empty() {
             self.txn.delete(&mut self.root.root, k)?;
         } else {
@@ -427,6 +664,11 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         parent.mtime = at;
         parent.ctime = at;
         self.put_inode(dir, parent)?;
+        if let Some(cache) = &mut self.cookies {
+            if let Ok(position) = cache.position(name) {
+                cache.names.remove(position);
+            }
+        }
         Ok(record)
     }
     fn new_inode(
@@ -554,6 +796,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     }
     fn delete_inode(&mut self, ino: u64) -> Result<(), Error> {
         for (k, _) in self.range(key(ino, 0, 0), key(ino, u8::MAX, u64::MAX))? {
+            preemption_point();
             self.txn.delete(&mut self.root.root, k)?;
         }
         Ok(())
@@ -571,6 +814,9 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
                 key(ORPHAN_OBJECT, format::ORPHAN, ino),
                 &[],
             )?;
+            self.orphan_count = self.orphan_count.checked_add(1).ok_or(Error::EIO)?;
+            Arc::make_mut(&mut self.orphans).insert(ino);
+            if !self.open_inodes.contains(&ino) { Arc::make_mut(&mut self.orphan_work).insert(ino); }
         }
         self.put_inode(ino, inode)
     }
@@ -664,14 +910,13 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         self.put_inode(ino, inode)
     }
     fn reclaim_orphans(&mut self) -> Result<(), Error> {
-        let orphans = self.range(
-            key(ORPHAN_OBJECT, format::ORPHAN, 0),
-            key(ORPHAN_OBJECT, format::ORPHAN, u64::MAX),
-        )?;
-        for (k, value) in orphans {
-            if k.object != ORPHAN_OBJECT || !value.is_empty() {
-                return Err(Error::EIO);
-            }
+        let candidates: Vec<_> = self.orphan_work.iter().copied().collect();
+        for ino in candidates {
+            preemption_point();
+            #[cfg(test)] btree::measurement::orphan_visit();
+            let k = key(ORPHAN_OBJECT, format::ORPHAN, ino);
+            let value = btree::search(&self.txn.view(), self.root.root, k)?.ok_or(Error::EIO)?;
+            if !value.is_empty() { return Err(Error::EIO); }
             let inode = btree::search(
                 &self.txn.view(),
                 self.root.root,
@@ -683,10 +928,15 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
                 return Err(Error::EIO);
             }
             if self.open_inodes.contains(&k.offset) {
+                Arc::make_mut(&mut self.unvalidated_orphans).remove(&ino);
+                Arc::make_mut(&mut self.orphan_work).remove(&ino);
                 continue;
             }
             self.delete_inode(k.offset)?;
             self.txn.delete(&mut self.root.root, k)?;
+            Arc::make_mut(&mut self.orphans).remove(&ino);
+            Arc::make_mut(&mut self.orphan_work).remove(&ino);
+            Arc::make_mut(&mut self.unvalidated_orphans).remove(&ino);
         }
         Ok(())
     }
@@ -704,7 +954,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             key(ino, format::EXTENT, u64::MAX),
         )?
         .into_iter()
-        .map(|(k, v)| Ok((k, Extent::decode(&v)?)))
+        .map(|(k, v)| { preemption_point(); Ok((k, Extent::decode(&v)?)) })
         .collect()
     }
     fn block(
@@ -720,7 +970,10 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         }
         let expected = crcs.get(e.extent_offset as usize + index as usize)
             .ok_or(ReadError::Metadata(Error::EIO))?;
-        let bytes = commit::read(device, addr, BLOCK_SIZE).map_err(|_| ReadError::Data)?;
+        let bytes = commit::read(device, addr, BLOCK_SIZE).map_err(|error| match error {
+            commit::Error::BlockRead(error) => ReadError::Device(error),
+            _ => ReadError::Data,
+        })?;
         if crc32c::checksum(&bytes) != *expected {
             return Err(ReadError::Data);
         }
@@ -746,6 +999,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         let n = inode.size.saturating_sub(offset).min(buf.len() as u64) as usize;
         buf[..n].fill(0);
         for (k, e) in self.extents(ino)? {
+            preemption_point();
             let lo = offset.max(k.offset);
             let hi =
                 (offset + n as u64).min(k.offset + u64::from(e.num_blocks) * BLOCK_SIZE as u64);
@@ -755,7 +1009,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             let reference = if self.data.contains_key(&e.phys_start) { None } else {
                 let r = space::reference(
                     &self.txn.view(), self.space_root, e.phys_start, u64::from(e.phys_len),
-                ).map_err(|_| ReadError::Metadata(Error::EIO))?
+                ).map_err(|error| Error::from(txn::Error::from(error)))?
                     .ok_or(ReadError::Metadata(Error::EIO))?;
                 if r.kind != space::Kind::Data as u8 {
                     return Err(ReadError::Metadata(Error::EIO));
@@ -781,10 +1035,11 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     fn replace_extent(&mut self, ino: u64, off: u64, bytes: &[u8]) -> Result<(), Error> {
         let crcs: Vec<_> = bytes
             .chunks_exact(BLOCK_SIZE)
-            .map(crc32c::checksum)
+            .map(|bytes| { preemption_point(); crc32c::checksum(bytes) })
             .collect();
         let mut done = 0;
         while done < crcs.len() {
+            preemption_point();
             let (addr, blocks) = self.txn.allocate_data_run(&crcs[done..])?;
             let next = done + blocks as usize;
             self.data
@@ -809,6 +1064,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     // needs a reference per replacement item; txn::delete releases the old one.
     fn remove_range(&mut self, ino: u64, start: u64, end: u64) -> Result<(), Error> {
         for (k, e) in self.extents(ino)? {
+            preemption_point();
             let extent_end = k.offset + u64::from(e.num_blocks) * BLOCK_SIZE as u64;
             if k.offset >= end || extent_end <= start {
                 continue;
@@ -875,6 +1131,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         blocks[lo..lo + bytes.len()].copy_from_slice(bytes);
         self.remove_range(ino, start, rounded)?;
         for (n, run) in blocks.chunks(256 * BLOCK_SIZE).enumerate() {
+            preemption_point();
             self.replace_extent(ino, start + (n * 256 * BLOCK_SIZE) as u64, run)?;
         }
         inode.size = inode.size.max(end);
@@ -883,7 +1140,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         inode.nblocks = self
             .extents(ino)?
             .iter()
-            .map(|(_, e)| u64::from(e.num_blocks))
+            .map(|(_, e)| { preemption_point(); u64::from(e.num_blocks) })
             .sum();
         self.put_inode(ino, inode)?;
         Ok(bytes.len())
@@ -900,7 +1157,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         Ok(self
             .extents(ino)?
             .iter()
-            .map(|(_, e)| u64::from(e.num_blocks))
+            .map(|(_, e)| { preemption_point(); u64::from(e.num_blocks) })
             .sum())
     }
     pub fn truncate(
@@ -944,7 +1201,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         inode.nblocks = self
             .extents(ino)?
             .iter()
-            .map(|(_, e)| u64::from(e.num_blocks))
+            .map(|(_, e)| { preemption_point(); u64::from(e.num_blocks) })
             .sum();
         self.put_inode(ino, inode)
     }
@@ -1044,24 +1301,30 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         self.require_writable()?;
         Ok(committer.commit_files(device, self)?)
     }
-    pub(crate) fn prepare_commit(
-        &mut self,
-    ) -> Result<(&mut Transaction<'a, S>, &mut BTreeMap<u64, Vec<u8>>), Error> {
+    pub(super) fn begin_preparation(&self) {
+        self.txn.begin_preparation();
+    }
+    pub fn prepare_commit(&mut self) -> Result<&mut Transaction<'a, S>, Error> {
+        preemption_point();
         self.require_writable()?;
+        self.begin_preparation();
         self.reclaim_orphans()?;
         self.txn.promote_pending()?;
         self.txn.update_root(self.root_id, self.root.clone())?;
-        // A private allocation replaced again within this transaction is PENDING
-        // and need not be submitted as data in the commit engine's REF set.
-        let ptr = self.txn.settle()?;
-        let refs = items(&self.txn.view(), ptr)?;
-        let live: BTreeSet<_> = refs
-            .into_iter()
-            .filter(|(k, _)| k.item_type == format::REF)
-            .map(|(k, _)| k.object)
-            .collect();
-        self.data.retain(|addr, _| live.contains(addr));
-        Ok((&mut self.txn, &mut self.data))
+        self.changed_roots.insert(self.root_id);
+        self.txn.settle()?;
+        Ok(&mut self.txn)
+    }
+    pub(crate) fn commit_buffers(
+        &mut self,
+    ) -> (&mut Transaction<'a, S>, &mut BTreeMap<u64, Vec<u8>>) {
+        // Reap can also release a private extent, so filter just before
+        // serialization after the last settling pass.
+        self.data.retain(|addr, _| {
+            preemption_point();
+            self.txn.data_is_live(*addr)
+        });
+        (&mut self.txn, &mut self.data)
     }
 }
 pub(super) const ORPHAN_OBJECT: u64 = 0xffff_ffff_ffff_ff00;

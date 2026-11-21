@@ -223,9 +223,19 @@ class MountLockMechanism(unittest.TestCase):
         self.vfs = strip_comments((BREENFS / 'vfs.rs').read_text())
 
     def test_mount_state_uses_the_sleeping_exclusion(self):
-        mount = function(self.vfs, 'mount_with')
-        self.assertRegex(self.vfs, r'struct\s+Mount<[^{]*\{\s*state\s*:\s*MountLock<MountState<W>>')
-        self.assertIn('MountLock::new(MountState', mount)
+        state = r'(?m)^\s*state\s*:\s*MountLock<MountState<W>>\s*,'
+
+        def assert_sleeping_state(source):
+            mount = re.search(r'\bstruct\s+Mount<[^{}]*>\s*\{([^{}]*)\}', source)
+            self.assertIsNotNone(mount)
+            self.assertRegex(mount[1], state, 'Mount.state must use the sleeping MountLock')
+            self.assertRegex(function(source, 'mount_with'),
+                             r'\bstate\s*:\s*MountLock::new\(MountState\s*\{')
+
+        assert_sleeping_state(self.vfs)
+        spin_state = re.sub(state, '\n    state: Mutex<MountState<W>>,', self.vfs, count=1)
+        with self.assertRaisesRegex(AssertionError, 'sleeping MountLock'):
+            assert_sleeping_state(spin_state)
 
     def test_kernel_park_waits_on_a_checked_bounded_queue(self):
         park = kernel_arm(self.lock, 'park')

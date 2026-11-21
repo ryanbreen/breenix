@@ -1,6 +1,6 @@
 //! Immutable verified node store (breenfs design sections 1.2 and 2.2).
 use super::{
-    btree::{self, Error, Node, NodeStore},
+    btree::{self, Error, Node, NodeStore, ReadCause, ReadFailure},
     commit,
     format::{BlockPtr, NodeHeader, Superblock, BLOCK_SIZE, NODE_SIZE},
 };
@@ -116,37 +116,52 @@ impl<W: Wait> NodeStore for CachedNodeStore<'_, W> {
         // I/O and decoding run outside the decoded-cache lock. get verifies
         // UUID/address/generation through the shared buffer cache; decode_node
         // verifies the exact pointer, CRC and complete node layout.
-        let node = btree::decode_node(&self.get(ptr.addr)?, ptr)?;
+        let node = btree::decode_verified_node(&self.get(ptr.addr)?, ptr)
+            .map_err(|error| error.at_node(ptr.addr))?;
         let mut cache = self.decoded.lock();
         if cache.len() == DECODED_NODES {
             cache.pop_front();
         }
-        cache.try_reserve(1).map_err(|_| Error::Store)?;
+        cache.try_reserve(1).map_err(|_| Error::Read(ReadFailure {
+            cause: ReadCause::Allocation, addr: ptr.addr,
+        }))?;
         cache.push_back((ptr, node.clone()));
         Ok(node)
     }
     fn get(&self, addr: u64) -> Result<Vec<u8>, Error> {
-        if let Some(pending) = self.pending.as_ref().and_then(Weak::upgrade) {
-            if let Some(bytes) = pending.node(addr) {
-                return Ok(bytes.to_vec());
-            }
-        }
+        #[cfg(test)] btree::measurement::edit_cost(|c| c.copies += 1);
         let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(NODE_SIZE)
-            .map_err(|_| Error::Store)?;
+            .map_err(|_| Error::Read(ReadFailure { cause: ReadCause::Allocation, addr }))?;
         bytes.resize(NODE_SIZE, 0);
+        if let Some(pending) = self.pending.as_ref().and_then(Weak::upgrade) {
+            if let Some(node) = pending.node(addr) {
+                bytes.copy_from_slice(node);
+                return Ok(bytes);
+            }
+        }
+        let verification_failed = core::cell::Cell::new(false);
         self.cache
             .read_verified(self.device.as_ref(), addr, &mut bytes, |node| {
                 // decode checks the magic and CRC-32C of bytes 12..16383.
-                NodeHeader::decode(node).is_ok_and(|header| {
+                let valid = NodeHeader::decode(node).is_ok_and(|header| {
                     header.addr == addr
                         && header.generation > 0
                         && header.generation <= self.generation
                         && header.fs_uuid == self.fs_uuid
-                })
+                });
+                verification_failed.set(!valid);
+                valid
             })
-            .map_err(|_| Error::Store)?;
+            .map_err(|error| Error::Read(ReadFailure {
+                cause: if verification_failed.get() {
+                    ReadCause::Verification
+                } else {
+                    error.into()
+                },
+                addr,
+            }))?;
         Ok(bytes)
     }
     fn put(&mut self, _: u64, _: Vec<u8>) -> Result<(), Error> {

@@ -21,9 +21,71 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use spin::{Mutex, MutexGuard};
 
-use crate::task::completion::Completion;
+use crate::task::completion::{Completion, WaitStage};
 
-use crate::block::{BlockDevice, BlockError};
+mod command_ring;
+use command_ring::{CommandRing, Event, EventKind};
+#[cfg(target_arch = "x86_64")]
+mod timeout_msi;
+#[cfg(target_arch = "x86_64")]
+pub(crate) use timeout_msi::record_lapic_sample;
+
+static COMMAND_HISTORY: [CommandRing; MAX_PORTS] = [const { CommandRing::new() }; MAX_PORTS];
+static LOST_NOTIFICATIONS: [crate::log_notice::Record; MAX_PORTS] =
+    [const { crate::log_notice::Record::new() }; MAX_PORTS];
+
+/// Observational samples only. Register fields at wait boundaries are
+/// unsampled (0); those boundaries use atomics without MMIO under the scheduler.
+#[inline]
+fn trace_command_event(
+    port: usize, token: u32, slot: u8, kind: EventKind,
+    ci: u32, port_is: u32, tfd: u32, hba_is: u32,
+) {
+    COMMAND_HISTORY[port].record(Event {
+        kind, slot, token, ci, port_is, tfd, hba_is,
+        active: PORT_ACTIVE_MASK[port].load(Ordering::Relaxed),
+        done: AHCI_COMPLETIONS[port][0].done.load(Ordering::Relaxed),
+        waiter: AHCI_COMPLETIONS[port][0].waiter_tid(),
+    });
+}
+
+#[inline]
+fn trace_wait_event(port: usize, token: u32, stage: WaitStage) {
+    let kind = match stage {
+        WaitStage::Park => EventKind::WaitPark,
+        WaitStage::Wake => EventKind::WaitWake,
+        WaitStage::Recheck => EventKind::WaitRecheck,
+    };
+    trace_command_event(port, token, 0, kind, 0, 0, 0, 0);
+}
+
+#[inline]
+fn trace_retirement(port: usize, token: u32, slot: u8, active: u32, ci: u32, port_is: u32, drain: bool) {
+    let kind = if active & !ci == 0 {
+        EventKind::RetireSingle
+    } else if drain {
+        EventKind::RetireDrain
+    } else {
+        EventKind::RetireNormal
+    };
+    trace_command_event(port, token, slot, kind, ci, port_is, 0, 0);
+}
+
+/// Serial formatting is confined to the existing timeout path.
+struct CommandHistorySerial;
+impl core::fmt::Write for CommandHistorySerial {
+    fn write_str(&mut self, text: &str) -> core::fmt::Result {
+        crate::serial_print!("{}", text);
+        Ok(())
+    }
+
+    fn write_fmt(&mut self, args: core::fmt::Arguments<'_>) -> core::fmt::Result {
+        crate::serial_print!("{}", args);
+        Ok(())
+    }
+}
+
+use crate::block::{read_failure::AhciReadError, BlockDevice, BlockError};
 use crate::drivers::pci;
 
 /// Some ARM64 LL/SC paths are sensitive to stronger-than-natural alignment for
@@ -238,12 +300,16 @@ static AHCI_POLL_ATTRIB_EMITTED: AtomicBool = AtomicBool::new(false);
 static AHCI_ISR_LAST_MPIDR: AtomicU64 = AtomicU64::new(0xDEAD);
 /// Count commands issued via issue_cmd_slot0 (for diagnostic/timeout reporting).
 static AHCI_CMD_COUNT: AtomicU32 = AtomicU32::new(0);
-/// Serialize no-interrupt command publication, status sampling and retirement.
+/// Serialize status acknowledgement and retirement against the timeout path.
+/// On controllers without interrupts this also serializes command publication.
 /// A poller must not carry sampled status across another poller's retirement
 /// and the waiter's reuse of the slot. IRQ masking keeps a holder runnable;
-/// pollers skip a busy port rather than spinning on another CPU.
+/// IRQs and pollers skip a busy port. The timeout holder handles that command.
 static PORT_POLL: [crate::irq_safe_mutex::IrqSafeMutex<()>; MAX_PORTS] =
     [const { crate::irq_safe_mutex::IrqSafeMutex::new(()) }; MAX_PORTS];
+/// Errors W1C-cleared while the slot was armed, for a waiter racing the ISR.
+static PORT_ACKED_ERRORS: [AlignedAtomicU32; MAX_PORTS] =
+    [const { AlignedAtomicU32::new(0) }; MAX_PORTS];
 
 /// Per-port token for the command currently issued in slot 0. 0 = none.
 static PORT_ACTIVE_CMD_NUM: [AlignedAtomicU32; MAX_PORTS] =
@@ -287,7 +353,7 @@ static AHCI_TIMEOUT_TRACE_DUMPED: AtomicBool = AtomicBool::new(false);
 
 /// Per-port I/O serialisation lock.
 ///
-/// Serialises transitions of `PORT_IO_IN_PROGRESS` and short setup/finish
+/// Serialises transitions of `PORT_IO_OWNER` and short setup/finish
 /// sections for slot-0 I/O on a port.
 ///
 /// Unlike `AHCI_CONTROLLER` (which guards the controller struct) this lock is
@@ -312,13 +378,22 @@ fn next_cmd_num() -> u32 {
 /// Sleep-safe per-port ownership for slot-0 I/O.
 ///
 /// `PORT_IO_LOCK` is a spin mutex, so it cannot be held across
-/// `wait_cmd_slot0()`. Instead, the issuing thread sets this flag under the
+/// `wait_cmd_slot0()`. Instead, the issuing thread sets the owner under the
 /// port lock before touching slot 0 / DMA memory, drops the lock while it
 /// sleeps, then re-acquires the lock for the finish step before clearing the
-/// flag. Contenders spin outside the mutex until the full setup/wait/finish
+/// owner. Contenders wait outside the mutex until the full setup/wait/finish
 /// sequence is retired.
-static PORT_IO_IN_PROGRESS: [AtomicBool; MAX_PORTS] =
-    [const { AtomicBool::new(false) }; MAX_PORTS];
+static PORT_IO_OWNER: [AtomicU64; MAX_PORTS] = [const { AtomicU64::new(0) }; MAX_PORTS];
+const OWNER_WITHOUT_TID: u64 = u64::MAX;
+
+#[cfg(target_arch = "x86_64")]
+use crate::per_cpu as io_cpu;
+#[cfg(target_arch = "aarch64")]
+use crate::per_cpu_aarch64 as io_cpu;
+
+fn io_tid() -> Option<u64> {
+    crate::arch_without_interrupts(|| io_cpu::current_thread().map(|thread| thread.id))
+}
 
 // A syscall holds the preemption brake. Spinning on an owner that sleeps for
 // I/O prevents that owner from ever running to retire its request once every
@@ -359,16 +434,23 @@ fn can_park_for_port_io() -> bool {
 
 /// Acquire exclusive ownership of a port's slot-0 I/O lifecycle.
 ///
-/// Returns with the port mutex held and `PORT_IO_IN_PROGRESS[port] = true`.
-fn begin_port_io(port: usize) -> Result<MutexGuard<'static, ()>, BlockError> {
+/// Returns with the port mutex held and the caller recorded as its owner.
+fn begin_port_io(
+    port: usize,
+    read: bool,
+) -> Result<MutexGuard<'static, ()>, (AhciReadError, u64)> {
     let deadline = {
         let (secs, nanos) = crate::time::get_monotonic_time_ns();
         (secs * 1_000_000_000 + nanos).saturating_add(AHCI_TIMEOUT_SECS * 1_000_000_000)
     };
     loop {
+        if read && crate::task::thread::current_wait_must_unwind() {
+            return Err((AhciReadError::Interrupted, PORT_IO_OWNER[port].load(Ordering::Acquire)));
+        }
         let guard = PORT_IO_LOCK[port].lock();
-        if !PORT_IO_IN_PROGRESS[port].load(Ordering::Acquire) {
-            PORT_IO_IN_PROGRESS[port].store(true, Ordering::Release);
+        let owner = PORT_IO_OWNER[port].load(Ordering::Acquire);
+        if owner == 0 {
+            PORT_IO_OWNER[port].store(io_tid().unwrap_or(OWNER_WITHOUT_TID), Ordering::Release);
             return Ok(guard);
         }
         drop(guard);
@@ -376,7 +458,7 @@ fn begin_port_io(port: usize) -> Result<MutexGuard<'static, ()>, BlockError> {
             // A caller that cannot sleep is refused on x86; on ARM64 it is
             // preemptible (kernel threads) and keeps polling.
             #[cfg(target_arch = "x86_64")]
-            return Err(BlockError::DeviceNotReady);
+            return Err((AhciReadError::CannotPark, owner));
             #[cfg(target_arch = "aarch64")]
             {
                 relax_port_io_wait();
@@ -385,23 +467,36 @@ fn begin_port_io(port: usize) -> Result<MutexGuard<'static, ()>, BlockError> {
         }
         let (secs, nanos) = crate::time::get_monotonic_time_ns();
         if secs * 1_000_000_000 + nanos >= deadline {
-            return Err(BlockError::Timeout);
+            return Err((AhciReadError::AdmissionTimeout, owner));
         }
         // x86 syscall entry keeps IF clear; schedule_current_wait enables
         // interrupts around HLT, so IF is not a prerequisite for parking.
         match PORT_IO_WAITERS[port].prepare_to_wait_checked(
             crate::task::thread::ThreadState::BlockedOnIO,
             Some(deadline),
-            || PORT_IO_IN_PROGRESS[port].load(Ordering::Acquire),
+            || PORT_IO_OWNER[port].load(Ordering::Acquire) != 0,
         ) {
             crate::task::waitqueue::PrepareOutcome::Queued => {
                 crate::task::waitqueue::schedule_current_wait();
                 PORT_IO_WAITERS[port].finish_wait();
             }
             crate::task::waitqueue::PrepareOutcome::Mismatch => {}
-            crate::task::waitqueue::PrepareOutcome::OutOfMemory => return Err(BlockError::OutOfMemory),
-            crate::task::waitqueue::PrepareOutcome::PublishFailed => {
-                return Err(BlockError::DeviceNotReady)
+            outcome => {
+                if read {
+                    if crate::task::thread::current_wait_must_unwind() {
+                        return Err((AhciReadError::Interrupted, owner));
+                    }
+                    // The waiter entry is gone. Let the port owner run and
+                    // retry admission within the original deadline.
+                    crate::block::cache_kernel::park_for_wait_retry();
+                } else {
+                    let error = if outcome == crate::task::waitqueue::PrepareOutcome::OutOfMemory {
+                        AhciReadError::WaiterAllocation
+                    } else {
+                        AhciReadError::WaitPublication
+                    };
+                    return Err((error, owner));
+                }
             }
         }
     }
@@ -409,9 +504,51 @@ fn begin_port_io(port: usize) -> Result<MutexGuard<'static, ()>, BlockError> {
 
 #[inline]
 fn end_port_io(port: usize, port_guard: MutexGuard<'static, ()>) {
-    PORT_IO_IN_PROGRESS[port].store(false, Ordering::Release);
+    PORT_IO_OWNER[port].store(0, Ordering::Release);
     drop(port_guard);
     PORT_IO_WAITERS[port].wake_up_one();
+}
+
+fn write_admission_error((error, _): (AhciReadError, u64)) -> BlockError {
+    match error {
+        AhciReadError::WaiterAllocation => BlockError::OutOfMemory,
+        AhciReadError::AdmissionTimeout => BlockError::Timeout,
+        _ => BlockError::DeviceNotReady,
+    }
+}
+
+// One pending receipt per port. Posting uses fixed storage and leaves serial
+// output to the notice drain. Keep the first failure while its record is busy.
+static READ_FAILURES: [crate::log_notice::Record; MAX_PORTS] =
+    [const { crate::log_notice::Record::new() }; MAX_PORTS];
+static NEXT_READ_REQUEST: AtomicU64 = AtomicU64::new(1);
+
+struct ReadRequest {
+    port: usize,
+    sector: u64,
+}
+
+impl ReadRequest {
+    fn new(port: usize, sector: u64) -> Self {
+        Self { port, sector }
+    }
+
+    #[cold]
+    fn failed(&self, error: AhciReadError, owner: u64, command_token: Option<u32>) -> BlockError {
+        // Pre-issue requests have no hardware token. Give each failed read
+        // its own identifier without touching the command counter.
+        let token = NEXT_READ_REQUEST.fetch_add(1, Ordering::Relaxed);
+        let (tid, preempt_count, fatal) = crate::arch_without_interrupts(|| {
+            let tid = io_cpu::current_thread().map(|thread| thread.id);
+            let fatal = crate::task::thread::current_kill_pending() || crate::syscall::fatal_signal_pending();
+            (tid, io_cpu::preempt_count(), fatal || error == AhciReadError::Interrupted)
+        });
+        READ_FAILURES[self.port].post_again(format_args!(
+            "AHCI_READ_FAILURE phase={} error={error:?} tid={tid:?} preempt_count={preempt_count} fatal_signal_pending={fatal} port={} port_owner={owner} sector={} token={token} command_token={command_token:?}",
+            error.phase(), self.port, self.sector,
+        ));
+        BlockError::AhciRead(error)
+    }
 }
 
 // =============================================================================
@@ -483,7 +620,9 @@ const PORT_CMD_CR: u32 = 1 << 15; // Command List Running
 
 /// PORT_TFD bits
 const PORT_TFD_BSY: u32 = 1 << 7; // Busy
+const PORT_TFD_DF: u32 = 1 << 5; // Device fault
 const PORT_TFD_DRQ: u32 = 1 << 3; // Data Request
+const PORT_TFD_ERR: u32 = 1; // Task file error
 
 /// PORT_IS interrupt status bits (from Linux libahci.h)
 const PORT_IRQ_D2H_REG_FIS: u32 = 1 << 0; // D2H Register FIS received (command complete)
@@ -786,6 +925,10 @@ fn port_write(abar: u64, port: usize, offset: usize, value: u32) {
 #[inline]
 fn ack_port_interrupt(abar: u64, port: usize, port_is: u32) {
     if port_is != 0 {
+        let errors = port_is & PORT_IRQ_ERROR;
+        if errors != 0 && PORT_ACTIVE_MASK[port].load(Ordering::Acquire) & 1 != 0 {
+            PORT_ACKED_ERRORS[port].fetch_or(errors, Ordering::Relaxed);
+        }
         port_write(abar, port, PORT_IS, port_is);
     }
 
@@ -816,6 +959,76 @@ struct CmdToken {
     /// No completion interrupt: this CPU's completion poller completes the
     /// command, and the waiter parks as it would for the interrupt.
     polled: bool,
+}
+
+#[derive(Clone, Copy)]
+struct TimeoutRegisters {
+    ci: u32,
+    port_is: u32,
+    tfd: u32,
+    hba_is: u32,
+    acked_errors: u32,
+}
+
+#[cold]
+fn resolve_wait_timeout(abar: u64, port: usize, cmd_num: u32) -> Result<(), &'static str> {
+    #[cfg(target_arch = "x86_64")]
+    let delivery = timeout_msi::request(cmd_num);
+    let (regs, recovered) = {
+        let _port_guard = PORT_IO_LOCK[port].lock();
+        let _status_guard = PORT_POLL[port].lock();
+        // AHCI 1.3.1, 3.3.14 and 5.3.8.2: the HBA updates the transfer
+        // count and clears CI on completion. Read CI before error status.
+        let regs = TimeoutRegisters {
+            ci: port_read(abar, port, PORT_CI),
+            port_is: port_read(abar, port, PORT_IS),
+            tfd: port_read(abar, port, PORT_TFD),
+            hba_is: hba_read(abar, HBA_IS),
+            acked_errors: PORT_ACKED_ERRORS[port].load(Ordering::Relaxed),
+        };
+        let completion = &AHCI_COMPLETIONS[port][0];
+        let done = completion.done.load(Ordering::Acquire) == cmd_num;
+        let armed = PORT_ACTIVE_CMD_NUM[port].load(Ordering::Acquire) == cmd_num
+            && PORT_ACTIVE_MASK[port].load(Ordering::Acquire) & 1 != 0;
+        let recovered = (armed || done)
+            && regs.ci & 1 == 0
+            && (regs.port_is | regs.acked_errors) & PORT_IRQ_ERROR == 0
+            && regs.tfd & (PORT_TFD_BSY | PORT_TFD_DF | PORT_TFD_DRQ | PORT_TFD_ERR) == 0
+            && port_read(abar, port, PORT_CMD) & PORT_CMD_ST != 0;
+
+        if armed {
+            // The ISR can have skipped this port while we held the lock.
+            PORT_ACTIVE_MASK[port].fetch_and(!1, Ordering::AcqRel);
+            PORT_ACTIVE_CMD_NUM[port].store(0, Ordering::Release);
+            if recovered {
+                ack_port_interrupt(abar, port, regs.port_is);
+                // Read behind the posted W1Cs before permitting slot reuse.
+                let _ = hba_read(abar, HBA_IS);
+                completion.complete(cmd_num);
+            }
+        }
+        (regs, recovered)
+    };
+
+    #[cfg(target_arch = "x86_64")]
+    timeout_msi::report(port, cmd_num, delivery, regs);
+    if recovered {
+        record_lost_notification(port, cmd_num, regs);
+        Ok(())
+    } else {
+        dump_timeout_state_free(port, cmd_num, Some(regs));
+        Err("AHCI: command timeout")
+    }
+}
+
+#[cold]
+fn record_lost_notification(port: usize, cmd_num: u32, regs: TimeoutRegisters) {
+    trace_command_event(port, cmd_num, 0, EventKind::Timeout,
+        regs.ci, regs.port_is, regs.tfd, regs.hba_is);
+    LOST_NOTIFICATIONS[port].post_again(format_args!(
+        "AHCI_LOST_NOTIFICATION port={port} token={cmd_num} CI={:#x} IS={:#x} TFD={:#x} HBA_IS={:#x}",
+        regs.ci, regs.port_is, regs.tfd, regs.hba_is,
+    ));
 }
 
 #[inline]
@@ -880,14 +1093,7 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
             kick_poller();
         }
         let wait_result =
-            AHCI_COMPLETIONS[port][0].wait_timeout_uninterruptible(cmd_num, TIMEOUT_NS);
-        // The pollers stop looking at a command its waiter gave up on.
-        if token.polled && !matches!(wait_result, Ok(true)) {
-            let poll_guard = PORT_POLL[port].lock();
-            PORT_ACTIVE_MASK[port].fetch_and(!1, Ordering::AcqRel);
-            let _ = PORT_ACTIVE_CMD_NUM[port].compare_exchange(cmd_num, 0, Ordering::AcqRel, Ordering::Acquire);
-            drop(poll_guard);
-        }
+            AHCI_COMPLETIONS[port][0].wait_timeout_uninterruptible_observed(cmd_num, TIMEOUT_NS, |stage| trace_wait_event(port, cmd_num, stage));
         match wait_result {
             Ok(true) => {
                 let tfd = port_read(abar, port, PORT_TFD);
@@ -897,10 +1103,16 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
                 return Ok(());
             }
             Ok(false) => {
-                dump_timeout_state_free(port, cmd_num);
-                return Err("AHCI: command timeout");
+                return resolve_wait_timeout(abar, port, cmd_num);
             }
             Err(_eintr) => {
+                if token.polled {
+                    let _poll_guard = PORT_POLL[port].lock();
+                    PORT_ACTIVE_MASK[port].fetch_and(!1, Ordering::AcqRel);
+                    let _ = PORT_ACTIVE_CMD_NUM[port].compare_exchange(
+                        cmd_num, 0, Ordering::AcqRel, Ordering::Acquire,
+                    );
+                }
                 return Err("AHCI: command wait failed");
             }
         }
@@ -948,7 +1160,7 @@ fn wait_cmd_slot0(token: CmdToken) -> Result<(), &'static str> {
 
             let now = read_cntpct();
             if now >= deadline {
-                dump_timeout_state_free(port, cmd_num);
+                dump_timeout_state_free(port, cmd_num, None);
                 return Err("AHCI: command timeout");
             }
 
@@ -1044,7 +1256,9 @@ fn poll_ports() -> bool {
         if PORT_ACTIVE_MASK[port].fetch_and(!1, Ordering::AcqRel) & 1 != 0 {
             let cmd_num = PORT_ACTIVE_CMD_NUM[port].swap(0, Ordering::AcqRel);
             if cmd_num != 0 {
+                trace_retirement(port, cmd_num, 0, active, ci, is, false);
                 AHCI_COMPLETIONS[port][0].complete(cmd_num);
+                trace_command_event(port, cmd_num, 0, EventKind::ReceiptRecorded, ci, is, 0, 0);
                 completed_any = true;
             }
         }
@@ -1206,7 +1420,7 @@ impl AhciController {
         {
             if uses_msi(pci_dev) {
                 // A failure leaves AHCI_IRQ at 0: commands then poll PORT_CI.
-                match crate::arch_impl::x86_64::msi::enable(pci_dev, handle_interrupt) {
+                match crate::arch_impl::x86_64::msi::enable(pci_dev, timeout_msi::interrupt_entry) {
                     Ok(vector) => {
                         AHCI_IRQ_EDGE.store(true, Ordering::Relaxed);
                         AHCI_IRQ.store(u32::from(vector), Ordering::Release);
@@ -1598,6 +1812,7 @@ impl AhciController {
         if arm_completion {
             AHCI_COMPLETIONS[port][0].reset();
             PORT_ACTIVE_CMD_NUM[port].store(0, Ordering::Release);
+            PORT_ACKED_ERRORS[port].store(0, Ordering::Relaxed);
         }
         let cmd_num = next_cmd_num();
         if arm_completion {
@@ -1607,6 +1822,9 @@ impl AhciController {
             PORT_ACTIVE_MASK[port].fetch_or(1, Ordering::Release);
         }
 
+        trace_command_event(port, cmd_num, 0, EventKind::Issue,
+            port_read(abar, port, PORT_CI), port_read(abar, port, PORT_IS),
+            port_read(abar, port, PORT_TFD), 0);
         // Write PORT_CI to issue the command.
         port_write(abar, port, PORT_CI, 1);
 
@@ -1622,6 +1840,9 @@ impl AhciController {
             core::arch::asm!("isb", options(nostack, preserves_flags));
         }
 
+        trace_command_event(port, cmd_num, 0, EventKind::Issued,
+            port_read(abar, port, PORT_CI), port_read(abar, port, PORT_IS),
+            port_read(abar, port, PORT_TFD), 0);
         drop(poll_guard);
         Ok(CmdToken {
             port,
@@ -1648,7 +1869,7 @@ impl AhciController {
     /// Extracted from issue_cmd_slot0 to keep the hot path clean.
     fn dump_timeout_state(&self, port: usize, cmd_num: u32) {
         // Delegate to the free function — abar is identical to self.abar_virt.
-        dump_timeout_state_free(port, cmd_num);
+        dump_timeout_state_free(port, cmd_num, None);
     }
 }
 
@@ -1656,12 +1877,16 @@ impl AhciController {
 ///
 /// Free function variant used by `wait_cmd_slot0` (which has no `self`).
 /// Reads ABAR from the `AHCI_ABAR` static set during controller init.
-fn dump_timeout_state_free(port: usize, cmd_num: u32) {
+fn dump_timeout_state_free(port: usize, cmd_num: u32, regs: Option<TimeoutRegisters>) {
     let abar = AHCI_ABAR.load(Ordering::Relaxed);
-    let ci = port_read(abar, port, PORT_CI);
-    let is = port_read(abar, port, PORT_IS);
-    let tfd = port_read(abar, port, PORT_TFD);
-    let hba_is_timeout = hba_read(abar, HBA_IS);
+    let TimeoutRegisters { ci, port_is: is, tfd, hba_is: hba_is_timeout, acked_errors } =
+        regs.unwrap_or_else(|| TimeoutRegisters {
+            ci: port_read(abar, port, PORT_CI),
+            port_is: port_read(abar, port, PORT_IS),
+            tfd: port_read(abar, port, PORT_TFD),
+            hba_is: hba_read(abar, HBA_IS),
+            acked_errors: 0,
+        });
     let ghc = hba_read(abar, HBA_GHC);
     let port_ie = port_read(abar, port, PORT_IE);
     let port_cmd = port_read(abar, port, PORT_CMD);
@@ -1708,12 +1933,15 @@ fn dump_timeout_state_free(port: usize, cmd_num: u32) {
         tfd,
         hba_is_timeout
     );
+    trace_command_event(port, cmd_num, 0, EventKind::Timeout, ci, is, tfd, hba_is_timeout);
+    let _ = COMMAND_HISTORY[port].dump_once(port, &mut CommandHistorySerial);
     crate::serial_println!(
-        "[ahci]   GHC={:#x} PORT_IE={:#x} CMD={:#x} SERR={:#x}",
+        "[ahci]   GHC={:#x} PORT_IE={:#x} CMD={:#x} SERR={:#x} acked_errors={:#x}",
         ghc,
         port_ie,
         port_cmd,
-        serr
+        serr,
+        acked_errors
     );
     crate::serial_println!(
         "[ahci]   GIC: SPI{} pend={} act={} DAIF={:#x} pend_snap=[{:#x},{:#x},{:#x}]",
@@ -2222,17 +2450,17 @@ impl AhciController {
         dma_index: usize,
         lba: u64,
         count: u16,
-    ) -> Result<(CmdToken, usize), &'static str> {
+    ) -> Result<(CmdToken, usize), AhciReadError> {
         if count == 0 || count > 128 {
-            return Err("AHCI: invalid sector count");
+            return Err(AhciReadError::Setup("AHCI: invalid sector count"));
         }
         let byte_count = count as usize * SECTOR_SIZE;
 
-        self.wait_ready(port)?;
+        self.wait_ready(port).map_err(AhciReadError::Setup)?;
 
         {
             let mut dma_lock = PORT_DMA.lock();
-            let dma = dma_lock[dma_index].as_mut().ok_or("AHCI: no DMA memory")?;
+            let dma = dma_lock[dma_index].as_mut().ok_or(AhciReadError::Setup("AHCI: no DMA memory"))?;
 
             // Compute physical addresses from the dma reference.
             let cmd_table_phys = virt_to_phys(&dma.cmd_tables[0] as *const CmdTable as u64);
@@ -2274,7 +2502,7 @@ impl AhciController {
             dma_cache_clean(dma_ptr, core::mem::size_of::<PortDmaMem>());
         } // DMA lock released
 
-        let token = self.setup_cmd_slot0(port)?;
+        let token = self.setup_cmd_slot0(port).map_err(AhciReadError::Issue)?;
         Ok((token, byte_count))
     }
 
@@ -2821,9 +3049,14 @@ pub fn handle_interrupt() {
         if !check_all && (hba_is & (1 << port)) == 0 {
             continue;
         }
+        let Some(_status_guard) = PORT_POLL[port].try_lock() else {
+            continue;
+        };
         let mut is = port_read(abar, port, PORT_IS);
         let ci_entry = port_read(abar, port, PORT_CI);
         let active_entry = PORT_ACTIVE_MASK[port].load(Ordering::Acquire) & AHCI_TRACKED_SLOT_MASK;
+        trace_command_event(port, PORT_ACTIVE_CMD_NUM[port].load(Ordering::Relaxed), 0,
+            EventKind::IsrEntry, ci_entry, is, 0, hba_is);
         if is == 0 && (active_entry & !ci_entry) == 0 {
             // Parallels can leave the global status latched after PORT_IS
             // clears. Acknowledge it even without a slot completion, or the
@@ -2894,12 +3127,14 @@ pub fn handle_interrupt() {
                 // token to publish back to wait_cmd_slot0().
                 if slot == 0 {
                     let cmd_num = PORT_ACTIVE_CMD_NUM[port].swap(0, Ordering::AcqRel);
+                    trace_retirement(port, cmd_num, slot as u8, active_mask, ci, sampled_is, loop_iterations > 1);
                     if port == 1 {
                         AHCI_LAST_ISR_PORT1_CMD_NUM.store(cmd_num, Ordering::Relaxed);
                     }
                     if cmd_num != 0 {
                         pending_cmd_num = cmd_num;
                         pending_waiter_tid = AHCI_COMPLETIONS[port][slot].waiter_tid();
+                        trace_command_event(port, cmd_num, slot as u8, EventKind::ReceiptDeferred, ci, sampled_is, 0, hba_is);
                     }
                 }
             }
@@ -2924,6 +3159,7 @@ pub fn handle_interrupt() {
             AHCI_LAST_ISR_COMPLETE_CMD.store(pending_cmd_num, Ordering::Relaxed);
             AHCI_LAST_ISR_COMPLETE_WAITER.store(pending_waiter_tid, Ordering::Relaxed);
             AHCI_COMPLETIONS[port][0].complete(pending_cmd_num);
+            trace_command_event(port, pending_cmd_num, 0, EventKind::ReceiptRecorded, ci_after_clear, is_after_clear, 0, hba_is);
             AHCI_ISR_COMPLETE_HIT[port].fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -3047,13 +3283,12 @@ impl BlockDevice for AhciBlockDevice {
         if start_block >= self.sector_count
             || start_block.saturating_add(block_count as u64) > self.sector_count
         {
-            return Err(BlockError::OutOfBounds);
+            return Err(ReadRequest::new(self.port_num, start_block).failed(
+                AhciReadError::Range, PORT_IO_OWNER[self.port_num].load(Ordering::Acquire), None));
         }
-        let total_bytes = block_count
-            .checked_mul(SECTOR_SIZE)
-            .ok_or(BlockError::IoError)?;
-        if buf.len() < total_bytes {
-            return Err(BlockError::IoError);
+        if block_count.checked_mul(SECTOR_SIZE).is_none_or(|bytes| buf.len() < bytes) {
+            return Err(ReadRequest::new(self.port_num, start_block).failed(
+                AhciReadError::BufferSize, PORT_IO_OWNER[self.port_num].load(Ordering::Acquire), None));
         }
 
         let mut current_block = start_block;
@@ -3062,52 +3297,35 @@ impl BlockDevice for AhciBlockDevice {
 
         while remaining > 0 {
             let chunk = remaining.min(128);
+            let request = ReadRequest::new(self.port_num, current_block);
 
-            // PHASE 1: lock + setup (PORT_IO_IN_PROGRESS=true)
-            let port_guard = begin_port_io(self.port_num)?;
-            let setup_result: Result<(CmdToken, usize), BlockError> = {
+            let port_guard = begin_port_io(self.port_num, true)
+                .map_err(|(error, owner)| request.failed(error, owner, None))?;
+            let owner = PORT_IO_OWNER[self.port_num].load(Ordering::Relaxed);
+            let setup_result = {
                 let ctrl = AHCI_CONTROLLER.lock();
-                match ctrl.as_ref() {
-                    Some(ctrl) => ctrl
-                        .setup_read_sectors(
-                            self.port_num,
-                            self.dma_index,
-                            current_block,
-                            chunk as u16,
-                        )
-                        .map_err(|e| {
-                            crate::serial_println!(
-                                "[ahci] read_blocks({}, {}) setup failed: {}",
-                                current_block,
-                                chunk,
-                                e
-                            );
-                            BlockError::IoError
-                        }),
-                    None => Err(BlockError::DeviceNotReady),
+                if crate::task::thread::current_wait_must_unwind() {
+                    Err(AhciReadError::Interrupted)
+                } else {
+                    ctrl.as_ref().ok_or(AhciReadError::ControllerAbsent).and_then(|ctrl| {
+                        ctrl.setup_read_sectors(self.port_num, self.dma_index, current_block, chunk as u16)
+                    })
                 }
             }; // AHCI_CONTROLLER lock released
             let (token, byte_count) = match setup_result {
                 Ok(value) => value,
                 Err(err) => {
+                    let error = request.failed(err, owner, None);
                     end_port_io(self.port_num, port_guard);
-                    return Err(err);
+                    return Err(error);
                 }
             };
             drop(port_guard);
 
             // PHASE 2: wait (NO locks held)
-            let wait_result = wait_cmd_slot0(token).map_err(|e| {
-                {
-                    crate::serial_println!(
-                        "[ahci] read_blocks({}, {}) wait failed: {}",
-                        current_block,
-                        chunk,
-                        e
-                    );
-                }
-                BlockError::IoError
-            });
+            let command_token = Some(token.cmd_num);
+            let wait_result = wait_cmd_slot0(token)
+                .map_err(|error| request.failed(AhciReadError::Wait(error), owner, command_token));
 
             // PHASE 3: re-lock + finish (copy DMA result before next issue)
             let port_guard = PORT_IO_LOCK[self.port_num].lock();
@@ -3117,7 +3335,7 @@ impl BlockDevice for AhciBlockDevice {
                     byte_count,
                     &mut buf[offset..offset + byte_count],
                 )
-                .map_err(|_| BlockError::IoError)
+                .map_err(|error| request.failed(AhciReadError::Finish(error), owner, command_token))
             });
             end_port_io(self.port_num, port_guard);
 
@@ -3158,8 +3376,8 @@ impl BlockDevice for AhciBlockDevice {
             let byte_count = (total_bytes - offset).min(128 * SECTOR_SIZE);
             let chunk = &buf[offset..offset + byte_count];
 
-            // ── PHASE 1: lock + setup (PORT_IO_IN_PROGRESS=true) ─────────────
-            let port_guard = begin_port_io(self.port_num)?;
+            // ── PHASE 1: lock + setup ───────────────────────────────────────
+            let port_guard = begin_port_io(self.port_num, false).map_err(write_admission_error)?;
             let setup_result: Result<CmdToken, BlockError> = {
                 let ctrl = AHCI_CONTROLLER.lock();
                 match ctrl.as_ref() {
@@ -3201,8 +3419,8 @@ impl BlockDevice for AhciBlockDevice {
 
     fn flush(&self) -> Result<(), BlockError> {
         if crate::block::hardware_disk_read_only(crate::block::HardwareDisk::Ahci(self.port_num)) { return Ok(()); }
-        // ── PHASE 1: lock + setup (PORT_IO_IN_PROGRESS=true) ─────────────────
-        let port_guard = begin_port_io(self.port_num)?;
+        // ── PHASE 1: lock + setup ───────────────────────────────────────────
+        let port_guard = begin_port_io(self.port_num, false).map_err(write_admission_error)?;
         let setup_result: Result<CmdToken, BlockError> = {
             let ctrl = AHCI_CONTROLLER.lock();
             match ctrl.as_ref() {

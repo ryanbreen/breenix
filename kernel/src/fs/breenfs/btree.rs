@@ -4,6 +4,7 @@
 //! detached-node accounting. The caller supplies a private store and root.
 //! A fallible store must provide rollback for allocation/put failures;
 //! the root is published only after the buffered puts succeed.
+use super::preempt::preemption_point;
 use super::format::{self, BlockPtr, InternalEntry, Key, LeafItemHeader, NodeHeader, NODE_SIZE};
 use alloc::{collections::BTreeMap, sync::Arc, vec, vec::Vec};
 
@@ -18,16 +19,83 @@ const MAX_HEIGHT: u8 = 8;
 pub mod measurement {
     extern crate std;
     std::thread_local! {
+        static ORPHANS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+        static PUBLICATION: core::cell::Cell<[[u64; 3]; 2]> = const { core::cell::Cell::new([[0; 3]; 2]) };
+        static CHANGES: core::cell::RefCell<Option<alloc::vec::Vec<ChangeWork>>> = const { core::cell::RefCell::new(None) };
+        static REFRESH_CALLS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+        static MUTATIONS: core::cell::Cell<[u64; 8]> = const { core::cell::Cell::new([0; 8]) };
         static DECODES: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
         static ITEMS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
         static FS_RESERVATIONS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
         static SPACE_RESERVATIONS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+        static NODES: core::cell::RefCell<alloc::collections::BTreeSet<u64>> = const {
+            core::cell::RefCell::new(alloc::collections::BTreeSet::new())
+        };
+        static HEIGHT: core::cell::Cell<u8> = const { core::cell::Cell::new(0) };
+    }
+    #[derive(Debug, Default)]
+    pub struct EditCost {
+        pub reads: u64,
+        pub decoded: alloc::collections::BTreeMap<u64, u64>,
+        pub encoded: alloc::collections::BTreeMap<u64, u64>,
+        pub copies: u64,
+        pub checksum_bytes: u64,
+        pub slots: u64,
+    }
+    std::thread_local! {
+        static EDIT_COST: core::cell::RefCell<alloc::vec::Vec<EditCost>> = const { core::cell::RefCell::new(alloc::vec::Vec::new()) };
+    }
+    pub fn start_edit_cost() { EDIT_COST.with(|cost| cost.borrow_mut().push(EditCost::default())); }
+    pub fn take_edit_cost() -> EditCost { EDIT_COST.with(|cost| cost.borrow_mut().pop().unwrap()) }
+    pub(crate) fn edit_cost(f: impl Fn(&mut EditCost)) {
+        EDIT_COST.with(|cost| {
+            for cost in cost.borrow_mut().iter_mut() { f(cost); }
+        });
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub struct ChangeWork { pub height: u8, pub reads: usize, pub writes: usize }
+    pub(super) fn changed(work: ChangeWork) {
+        CHANGES.with(|rows| { if let Some(rows) = rows.borrow_mut().as_mut() { rows.push(work); } });
+    }
+    pub fn take_changes() -> alloc::vec::Vec<ChangeWork> {
+        CHANGES.with(|rows| rows.replace(Some(alloc::vec::Vec::new())).unwrap_or_default())
+    }
+    pub(crate) fn refresh_call() { REFRESH_CALLS.with(|n| n.set(n.get() + 1)); }
+    pub fn take_refresh_calls() -> u64 { REFRESH_CALLS.with(|n| n.replace(0)) }
+    // Reservations, granted/retained/returned blocks, inode writes, node writes,
+    // node reads and VNode refresh visits. Host-only; no guest-path cost.
+    pub(crate) fn mutation(index: usize, amount: u64) {
+        MUTATIONS.with(|cell| { let mut n = cell.get(); n[index] += amount; cell.set(n); });
+    }
+    pub fn take_mutations() -> [u64; 8] { MUTATIONS.with(|cell| cell.replace([0; 8])) }
+    // Materialized result payloads, decoder invocations and decoded item visits,
+    // separately for FS and SPACE. Reset immediately before production fsync.
+    pub fn orphan_visit() { ORPHANS.with(|n| n.set(n.get()+1)); }
+    pub fn orphan_visits() -> u64 { ORPHANS.with(|n| n.get()) }
+    pub fn publication_counts() -> [[u64; 3]; 2] { PUBLICATION.with(|c| c.get()) }
+    pub fn take_publication() -> [[u64; 3]; 2] {
+        PUBLICATION.with(|c| c.replace([[0; 3]; 2]))
+    }
+    pub(super) fn publication(tree: u8, column: usize, amount: u64) {
+        PUBLICATION.with(|c| {
+            let mut counts = c.get();
+            counts[usize::from(tree - 1)][column] += amount;
+            c.set(counts);
+        });
     }
     pub fn take_decodes() -> u64 {
         DECODES.with(|count| count.replace(0))
     }
     pub(super) fn decoded() {
         DECODES.with(|count| count.set(count.get() + 1));
+    }
+    pub(super) fn node(addr: u64, level: u8) {
+        NODES.with(|nodes| { nodes.borrow_mut().insert(addr); });
+        HEIGHT.with(|height| height.set(height.get().max(level + 1)));
+    }
+    pub fn take_geometry() -> (usize, u8) {
+        let nodes = NODES.with(|nodes| core::mem::take(&mut *nodes.borrow_mut()).len());
+        (nodes, HEIGHT.with(|height| height.replace(0)))
     }
     pub(super) fn items(n: u64) { ITEMS.with(|count| count.set(count.get() + n)); }
     pub(super) fn reservation(space: bool) {
@@ -43,10 +111,70 @@ pub mod measurement {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     Store,
+    Read(ReadFailure),
     Format(format::Error),
     InvalidNode,
     PayloadTooLarge,
     HeightLimit,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReadCause {
+    Device,
+    Ahci(crate::block::read_failure::AhciReadError),
+    Driver(crate::block::read_failure::VirtioReadFailure),
+    Verification,
+    Allocation,
+}
+impl From<crate::block::BlockError> for ReadCause {
+    fn from(error: crate::block::BlockError) -> Self {
+        use crate::block::BlockError;
+        match error {
+            BlockError::AhciRead(error) => Self::Ahci(error),
+            BlockError::VirtioRead(failure) => Self::Driver(failure),
+            BlockError::OutOfMemory => Self::Allocation,
+            _ => Self::Device,
+        }
+    }
+}
+impl ReadCause {
+    pub(crate) fn pre_issue(self) -> bool {
+        matches!(self, Self::Ahci(error) if error.pre_issue())
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            cause if cause.pre_issue() => "pre-issue",
+            Self::Driver(failure) if failure.context_refused() => "io-context",
+            Self::Device | Self::Ahci(_) | Self::Driver(_) => "device-read",
+            Self::Verification => "verification",
+            Self::Allocation => "allocation",
+        }
+    }
+}
+impl core::fmt::Display for ReadCause {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.name())?;
+        match self {
+            Self::Ahci(error) => write!(f, " {error}")?,
+            Self::Driver(failure) => write!(f, " {failure}")?,
+            _ => {}
+        }
+        Ok(())
+    }
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReadFailure {
+    pub cause: ReadCause,
+    pub addr: u64,
+}
+impl Error {
+    pub fn at_node(self, addr: u64) -> Self {
+        match self {
+            Self::Read(_) => self,
+            _ => Self::Read(ReadFailure { cause: ReadCause::Verification, addr }),
+        }
+    }
 }
 impl From<format::Error> for Error {
     fn from(error: format::Error) -> Self {
@@ -66,25 +194,44 @@ pub trait NodeStore {
     }
     fn put(&mut self, addr: u64, bytes: Vec<u8>) -> Result<(), Error>;
     fn alloc(&mut self) -> Result<u64, Error>;
-    /// Called top-down before modifying a node, including rebalance siblings.
-    /// A transaction may replace its address/generation and transfer references.
-    fn prepare_edit(&mut self, _header: &mut NodeHeader) -> Result<(), Error> {
+    /// In-memory transaction stores stage nodes with checksum-free pointers.
+    /// Publication resolves these pointers and encodes each final node once.
+    fn stages_decoded(&self) -> bool { false }
+    /// Give the editor exclusive ownership of an unshared private node.
+    /// A failed edit poisons the transaction holding such nodes.
+    fn take_decoded(&mut self, ptr: BlockPtr) -> Result<Arc<Node>, Error> {
+        self.read_node(ptr)
+    }
+    fn put_decoded(&mut self, _: Node) -> Result<(), Error> { Err(Error::Store) }
+    /// Called for a successful item change. COW copies and rebalances do not
+    /// alter item totals.
+    fn item_changed(&mut self, _: Key, _: Option<&[u8]>, _: Option<&[u8]>) -> Result<(), Error> {
         Ok(())
     }
+    /// Called top-down before modifying a node, including rebalance siblings.
+    /// A transaction may replace its address/generation and transfer references.
+    fn prepare_node(&mut self, _: &mut Node) -> Result<(), Error> { Ok(()) }
     /// The node's outgoing references have been transferred or removed already.
     fn retire(&mut self, _header: NodeHeader) -> Result<(), Error> {
         Ok(())
     }
 }
 
+#[derive(Clone)]
 pub struct Node {
-    header: NodeHeader,
-    items: Vec<(Key, Vec<u8>)>,
-    children: Vec<InternalEntry>,
+    pub(super) header: NodeHeader,
+    pub(super) items: Vec<(Key, Arc<[u8]>)>,
+    pub(super) children: Vec<InternalEntry>,
 }
 
 pub(crate) fn decode_node(bytes: &[u8], ptr: BlockPtr) -> Result<Arc<Node>, Error> {
-    Ok(Arc::new(decode(bytes, ptr, true, None, None)?))
+    NodeHeader::decode(bytes)?;
+    decode_verified_node(bytes, ptr)
+}
+
+// Only for bytes already CRC-verified by the mount's whole-node buffer cache.
+pub(super) fn decode_verified_node(bytes: &[u8], ptr: BlockPtr) -> Result<Arc<Node>, Error> {
+    Ok(Arc::new(decode(bytes, ptr, NodeHeader::decode_verified(bytes)?)?))
 }
 
 // Bounds and parent identity belong to this traversal, not to the cached node.
@@ -96,15 +243,21 @@ fn read_node<S: NodeStore>(
     lower: Option<Key>,
     upper: Option<Key>,
 ) -> Result<Arc<Node>, Error> {
+    #[cfg(test)]
+    { measurement::mutation(6, 1); measurement::edit_cost(|c| c.reads += 1); }
     let node = store.read_node(ptr)?;
+    check_bounds(&node, root, lower, upper)?;
+    Ok(node)
+}
+fn check_bounds(node: &Node, root: bool, lower: Option<Key>, upper: Option<Key>) -> Result<(), Error> {
     if (node.len() == 0 && !root)
         || (node.len() != 0
             && (lower.is_some_and(|k| node.key(0) < k)
                 || upper.is_some_and(|k| node.key(node.len() - 1) >= k)))
     {
-        return Err(Error::InvalidNode);
+        return Err(Error::InvalidNode.at_node(node.header.addr));
     }
-    Ok(node)
+    Ok(())
 }
 impl Node {
     fn len(&self) -> usize {
@@ -134,7 +287,7 @@ impl Node {
     fn fits(&self) -> bool {
         self.used() <= CAPACITY && (self.header.level == 0 || self.len() <= MAX_INTERNAL)
     }
-    fn child(&self, i: usize) -> BlockPtr {
+    pub(super) fn child(&self, i: usize) -> BlockPtr {
         let e = self.children[i];
         BlockPtr {
             addr: e.child_addr,
@@ -148,12 +301,21 @@ impl Node {
             .partition_point(|e| e.key <= key)
             .saturating_sub(1)
     }
-    fn encode(&mut self) -> Result<(BlockPtr, Vec<u8>), Error> {
+    pub(super) fn private_ptr(&self) -> BlockPtr {
+        BlockPtr { addr: self.header.addr, generation: self.header.generation,
+            level: self.header.level, csum: 0 }
+    }
+    pub(super) fn encode(&self) -> Result<(BlockPtr, Vec<u8>), Error> {
         if !self.fits() || self.header.level >= MAX_HEIGHT {
             return Err(Error::InvalidNode);
         }
+        #[cfg(test)]
+        measurement::edit_cost(|c| {
+            *c.encoded.entry(self.header.addr).or_default() += 1;
+            c.slots += self.len() as u64;
+        });
         let mut bytes = vec![0; NODE_SIZE];
-        self.header.nitems = self.len() as u16;
+        let header = NodeHeader { nitems: self.len() as u16, ..self.header };
         if self.header.level == 0 {
             let mut tail = NODE_SIZE;
             for (i, (key, value)) in self.items.iter().enumerate() {
@@ -173,7 +335,7 @@ impl Node {
                 bytes[HEADER + i * 37..HEADER + (i + 1) * 37].copy_from_slice(&entry.encode());
             }
         }
-        self.header.encode(&mut bytes)?;
+        header.encode(&mut bytes)?;
         Ok((
             BlockPtr {
                 addr: self.header.addr,
@@ -186,20 +348,23 @@ impl Node {
     }
 }
 
-fn decode(
-    bytes: &[u8],
-    ptr: BlockPtr,
-    root: bool,
-    lower: Option<Key>,
-    upper: Option<Key>,
-) -> Result<Node, Error> {
+fn decode(bytes: &[u8], ptr: BlockPtr, header: NodeHeader) -> Result<Node, Error> {
     #[cfg(test)]
     measurement::decoded();
-    if bytes.len() != NODE_SIZE {
-        return Err(Error::InvalidNode);
+    if bytes.len() != NODE_SIZE { return Err(Error::InvalidNode); }
+    #[cfg(test)]
+    measurement::node(header.addr, header.level);
+    #[cfg(test)]
+    {
+        measurement::publication(header.tree, 1, 1);
+        measurement::publication(header.tree, 2, u64::from(header.nitems));
     }
-    let header = NodeHeader::decode(bytes)?;
     let n = usize::from(header.nitems);
+    #[cfg(test)]
+    measurement::edit_cost(|c| {
+        *c.decoded.entry(ptr.addr).or_default() += 1;
+        c.slots += n as u64;
+    });
     #[cfg(test)]
     measurement::items(n as u64);
     if header.addr != ptr.addr
@@ -209,7 +374,7 @@ fn decode(
         || header.level >= MAX_HEIGHT
         || !(1..=2).contains(&header.tree)
         || header.generation == 0
-        || (n == 0 && !(root && header.level == 0))
+        || (n == 0 && header.level != 0)
         || (header.level > 0 && n > MAX_INTERNAL)
     {
         return Err(Error::InvalidNode);
@@ -229,10 +394,7 @@ fn decode(
     for i in 0..n {
         let start = HEADER + i * width;
         let key = Key::decode(&bytes[start..start + 17])?;
-        if (i > 0 && node.key(i - 1) >= key)
-            || lower.is_some_and(|l| key < l)
-            || upper.is_some_and(|u| key >= u)
-        {
+        if i > 0 && node.key(i - 1) >= key {
             return Err(Error::InvalidNode);
         }
         if header.level == 0 {
@@ -247,7 +409,7 @@ fn decode(
                 return Err(Error::InvalidNode);
             }
             used[lo..hi].fill(true);
-            node.items.push((key, bytes[lo..hi].to_vec()));
+            node.items.push((key, Arc::from(&bytes[lo..hi])));
         } else {
             let entry = InternalEntry::decode(&bytes[start..start + 37])?;
             if entry.child_generation > header.generation {
@@ -288,7 +450,7 @@ pub fn create<S: NodeStore>(
     if !(1..=2).contains(&tree) || generation == 0 {
         return Err(Error::InvalidNode);
     }
-    let mut node = Node {
+    let node = Node {
         header: NodeHeader {
             tree,
             fs_uuid,
@@ -300,8 +462,15 @@ pub fn create<S: NodeStore>(
         items: Vec::new(),
         children: Vec::new(),
     };
-    let (ptr, bytes) = node.encode()?;
-    store.put(ptr.addr, bytes)?;
+    let ptr = if store.stages_decoded() {
+        let ptr = node.private_ptr();
+        store.put_decoded(node)?;
+        ptr
+    } else {
+        let (ptr, bytes) = node.encode()?;
+        store.put(ptr.addr, bytes)?;
+        ptr
+    };
     Ok(ptr)
 }
 
@@ -324,7 +493,11 @@ pub fn search<S: NodeStore>(store: &S, root: BlockPtr, key: Key) -> Result<Optio
         .items
         .binary_search_by_key(&key, |e| e.0)
         .ok()
-        .map(|i| node.items[i].1.clone()))
+        .map(|i| {
+            #[cfg(test)]
+            measurement::publication(node.header.tree, 0, 1);
+            node.items[i].1.to_vec()
+        }))
 }
 
 /// Count nodes on an inode's paths, or a whole tree for the space bound.
@@ -340,6 +513,7 @@ pub(super) fn reservation_nodes<S: NodeStore>(
     let node = store.read_node(root)?;
     let mut count = u64::from(root.generation != generation);
     for (i, child) in node.children.iter().enumerate() {
+        preemption_point();
         if object.is_some_and(|ino| child.key.object > ino
             || node.children.get(i + 1).is_some_and(|next| next.key.object < ino))
         {
@@ -348,6 +522,50 @@ pub(super) fn reservation_nodes<S: NodeStore>(
         count += reservation_nodes(store, node.child(i), object, generation)?;
     }
     Ok(count)
+}
+
+/// A growing item can add at most one child to the existing internal root.
+pub(super) fn may_grow_root<S: NodeStore>(store: &S, root: BlockPtr, growing_items: usize) -> Result<bool, Error> {
+    Ok(root.level == 0 || store.read_node(root)?.children.len() + growing_items > MAX_INTERNAL)
+}
+
+#[derive(Clone, Copy)]
+pub struct RootGrowth {
+    level: u64,
+    first_split: u64,
+}
+impl RootGrowth {
+    pub fn read<S: NodeStore>(store: &S, root: BlockPtr) -> Result<Self, Error> {
+        let level = u64::from(root.level);
+        let first_split = if level == 0 { 1 } else {
+            (MAX_INTERNAL + 1 - store.read_node(root)?.children.len()) as u64
+        };
+        Ok(Self { level, first_split })
+    }
+    /// Each growing edit adds at most one child at the current root. A
+    /// split starts a two-child root, even after a prior level collapsed.
+    pub fn level_after(self, edits: u64) -> u64 {
+        let mut level = self.level;
+        if edits >= self.first_split {
+            level += 1 + (edits - self.first_split) / (MAX_INTERNAL as u64 - 1);
+        }
+        level.min(u64::from(MAX_HEIGHT - 1))
+    }
+}
+
+/// Bound the installed SPACE topology when preparation starts with a leaf
+/// or a one-level tree. `growth_bytes` bounds the additional leaf payload
+/// (including slots). A split of SPACE items leaves both halves at least
+/// quarter full: each item weighs less than a quarter of the node. Below
+/// that occupancy, a leaf merges or is redistributed with a sibling.
+/// Charge the old leaves separately for any sparse leaves they can leave.
+/// If this cannot exclude a second internal level, keep the general path.
+pub fn shallow_space_bound(level: u64, nodes: u64, growth_bytes: u64) -> Option<u64> {
+    if level > 1 { return None; }
+    let old_leaves = nodes - level;
+    let payload = old_leaves * CAPACITY as u64 + growth_bytes;
+    let leaves = old_leaves + payload / (CAPACITY as u64 / 4);
+    (leaves <= MAX_INTERNAL as u64).then_some(leaves + 1)
 }
 
 /// Return items in an inclusive key range, visiting only intersecting branches.
@@ -369,51 +587,103 @@ pub fn range_limit<S: NodeStore>(
     upper: Key,
     limit: usize,
 ) -> Result<Vec<(Key, Vec<u8>)>, Error> {
-    fn walk<S: NodeStore>(
+    let mut out = Vec::new();
+    if limit != 0 {
+        visit_range(store, root, lower, upper, &mut |key, bytes| {
+            preemption_point();
+            #[cfg(test)]
+            measurement::publication(if key.item_type < 0x80 { 1 } else { 2 }, 0, 1);
+            out.push((key, bytes.to_vec()));
+            Ok::<_, Error>(out.len() < limit)
+        })?;
+    }
+    Ok(out)
+}
+
+/// Visit an inclusive range once, stopping as soon as the sink refuses an item.
+/// This call retains its ancestors; a later call resumes from its current root.
+/// The sink's error type keeps caller errors distinct from B-tree failures.
+pub fn visit_range<S: NodeStore, E: From<Error>>(
+    store: &S,
+    root: BlockPtr,
+    lower: Key,
+    upper: Key,
+    visit: &mut dyn FnMut(Key, &[u8]) -> Result<bool, E>,
+) -> Result<(), E> {
+    visit_range_ordered(store, root, lower, upper, false, visit)
+}
+
+/// Visit the upper end of an inclusive range first.
+pub(super) fn visit_range_reverse<S: NodeStore, E: From<Error>>(
+    store: &S,
+    root: BlockPtr,
+    lower: Key,
+    upper: Key,
+    visit: &mut dyn FnMut(Key, &[u8]) -> Result<bool, E>,
+) -> Result<(), E> {
+    visit_range_ordered(store, root, lower, upper, true, visit)
+}
+
+fn visit_range_ordered<S: NodeStore, E: From<Error>>(
+    store: &S,
+    root: BlockPtr,
+    lower: Key,
+    upper: Key,
+    reverse: bool,
+    visit: &mut dyn FnMut(Key, &[u8]) -> Result<bool, E>,
+) -> Result<(), E> {
+    fn walk<S: NodeStore, E: From<Error>>(
         store: &S,
         node: Arc<Node>,
         bound: Option<Key>,
         lower: Key,
         upper: Key,
-        out: &mut Vec<(Key, Vec<u8>)>,
-        limit: usize,
-    ) -> Result<(), Error> {
+        reverse: bool,
+        visit: &mut dyn FnMut(Key, &[u8]) -> Result<bool, E>,
+    ) -> Result<bool, E> {
+        preemption_point();
         if node.header.level == 0 {
-            out.extend(
-                node.items
-                    .iter()
-                    .filter(|(k, _)| *k >= lower && *k <= upper)
-                    .take(limit - out.len())
-                    .cloned(),
-            );
+            let start = node.items.partition_point(|(key, _)| *key < lower);
+            let end = node.items.partition_point(|(key, _)| *key <= upper);
+            for step in 0..end - start {
+                preemption_point();
+                let i = if reverse { end - 1 - step } else { start + step };
+                #[cfg(test)] measurement::edit_cost(|c| c.slots += 1);
+                let (key, bytes) = &node.items[i];
+                if !visit(*key, bytes)? { return Ok(false); }
+            }
         } else {
-            for (i, entry) in node.children.iter().enumerate() {
-                if out.len() == limit {
-                    break;
-                }
+            let start = node.route(lower);
+            let end = node.children.partition_point(|entry| entry.key <= upper);
+            for step in 0..end.saturating_sub(start) {
+                preemption_point();
+                let i = if reverse { end - 1 - step } else { start + step };
+                let entry = node.children[i];
                 let next = node.children.get(i + 1).map(|e| e.key).or(bound);
-                if entry.key <= upper && next.is_none_or(|k| k > lower) {
-                    let ptr = node.child(i);
-                    let child = read_node(store, ptr, false, Some(entry.key), next)?;
-                    same_tree(&node, &child)?;
-                    walk(store, child, next, lower, upper, out, limit)?;
+                let child = read_node(store, node.child(i), false, Some(entry.key), next)?;
+                same_tree(&node, &child)?;
+                if !walk(store, child, next, lower, upper, reverse, visit)? {
+                    return Ok(false);
                 }
             }
         }
-        Ok(())
+        Ok(true)
     }
-    let mut out = Vec::new();
-    if lower <= upper && limit != 0 {
+    if lower <= upper {
         let node = read_node(store, root, true, None, None)?;
-        walk(store, node, None, lower, upper, &mut out, limit)?;
+        walk(store, node, None, lower, upper, reverse, visit)?;
     }
-    Ok(out)
+    Ok(())
 }
 
 struct Edit<'a, S> {
     store: &'a mut S,
-    writes: BTreeMap<u64, Vec<u8>>,
+    writes: BTreeMap<u64, (BlockPtr, Arc<Node>, Option<Vec<u8>>)>,
     empty_root: Option<NodeHeader>,
+    #[cfg(test)]
+    reads: core::cell::Cell<usize>,
+    #[cfg(test)]
+    writes_count: usize,
 }
 impl<S: NodeStore> Edit<'_, S> {
     fn load(
@@ -422,17 +692,49 @@ impl<S: NodeStore> Edit<'_, S> {
         root: bool,
         lower: Option<Key>,
         upper: Option<Key>,
-    ) -> Result<Node, Error> {
-        if let Some(bytes) = self.writes.get(&ptr.addr) {
-            decode(bytes, ptr, root, lower, upper)
+    ) -> Result<Arc<Node>, Error> {
+        #[cfg(test)]
+        { self.reads.set(self.reads.get() + 1); measurement::edit_cost(|c| c.reads += 1); }
+        let node = if let Some((staged, node, _)) = self.writes.get(&ptr.addr) {
+            if *staged != ptr { return Err(Error::InvalidNode); }
+            node.clone()
         } else {
-            decode(&self.store.get(ptr.addr)?, ptr, root, lower, upper)
-        }
+            self.store.read_node(ptr)?
+        };
+        check_bounds(&node, root, lower, upper)?;
+        Ok(node)
     }
-    fn save(&mut self, node: &mut Node) -> Result<BlockPtr, Error> {
-        let (ptr, bytes) = node.encode()?;
-        self.writes.insert(ptr.addr, bytes);
-        Ok(ptr)
+    fn take(
+        &mut self,
+        ptr: BlockPtr,
+        root: bool,
+        lower: Option<Key>,
+        upper: Option<Key>,
+    ) -> Result<Arc<Node>, Error> {
+        #[cfg(test)]
+        { self.reads.set(self.reads.get() + 1); measurement::edit_cost(|c| c.reads += 1); }
+        let node = self.store.take_decoded(ptr)?;
+        check_bounds(&node, root, lower, upper)?;
+        Ok(node)
+    }
+    fn own(node: Arc<Node>) -> Node {
+        Arc::try_unwrap(node).unwrap_or_else(|node| {
+            #[cfg(test)] measurement::edit_cost(|c| { c.copies += 1; c.slots += node.len() as u64; });
+            (*node).clone()
+        })
+    }
+    fn save(&mut self, node: Node) -> Result<InternalEntry, Error> {
+        #[cfg(test)]
+        { self.writes_count += 1; }
+        let (ptr, bytes) = if self.store.stages_decoded() {
+            (node.private_ptr(), None)
+        } else {
+            let (ptr, bytes) = node.encode()?;
+            (ptr, Some(bytes))
+        };
+        let link = entry(if node.len() == 0 { Key::default() } else { node.key(0) }, ptr);
+        self.writes.insert(ptr.addr, (ptr, Arc::new(node), bytes));
+        Ok(link)
     }
     // Pick the closest byte balance among legal cuts. The payload bound ensures
     // an overflowing leaf can be divided into two nonempty nodes that fit.
@@ -487,11 +789,9 @@ impl<S: NodeStore> Edit<'_, S> {
             let addr = self.store.alloc()?;
             Some(self.split(&mut node, addr)?)
         };
-        let ptr = self.save(&mut node)?;
-        links.push(entry(node.key(0), ptr));
-        if let Some(mut right) = right {
-            let ptr = self.save(&mut right)?;
-            links.push(entry(right.key(0), ptr));
+        links.push(self.save(node)?);
+        if let Some(right) = right {
+            links.push(self.save(right)?);
         }
         Ok(links)
     }
@@ -510,68 +810,65 @@ impl<S: NodeStore> Edit<'_, S> {
             return Ok(());
         }
         let left_i = if i == 0 { 0 } else { i - 1 };
-        let mut left = self.load(
-            parent.child(left_i),
+        let sibling_i = if i == 0 { 1 } else { i - 1 };
+        let sibling = self.take(
+            parent.child(sibling_i),
             false,
-            Some(parent.key(left_i)),
-            Some(parent.key(left_i + 1)),
+            Some(parent.key(sibling_i)),
+            parent.children.get(sibling_i + 1).map(|e| e.key).or(upper),
         )?;
-        let mut right = self.load(
-            parent.child(left_i + 1),
-            false,
-            Some(parent.key(left_i + 1)),
-            parent.children.get(left_i + 2).map(|e| e.key).or(upper),
-        )?;
-        same_tree(parent, &left)?;
-        same_tree(parent, &right)?;
-        self.store.prepare_edit(&mut left.header)?;
-        self.store.prepare_edit(&mut right.header)?;
+        same_tree(parent, &sibling)?;
+        // Retire this intermediate staging entry before taking its payloads.
+        // It has already been checked above and will be replaced or retired.
+        self.writes.remove(&parent.child(i).addr);
+        let child = Self::own(child);
+        let sibling = Self::own(sibling);
+        let (mut left, mut right) = if i == 0 { (child, sibling) } else { (sibling, child) };
+        self.store.prepare_node(&mut left)?;
+        self.store.prepare_node(&mut right)?;
         left.items.append(&mut right.items);
         left.children.append(&mut right.children);
         let mut links = Vec::new();
         if !left.fits() {
             right = self.split(&mut left, right.header.addr)?;
-            let ptr = self.save(&mut right)?;
-            links.push(entry(right.key(0), ptr));
+            links.push(self.save(right)?);
         } else {
             self.store.retire(right.header)?;
         }
-        let ptr = self.save(&mut left)?;
-        links.insert(0, entry(left.key(0), ptr));
+        links.insert(0, self.save(left)?);
         parent.children.splice(left_i..left_i + 2, links);
         Ok(())
     }
     fn change(
         &mut self,
-        ptr: BlockPtr,
+        node: Arc<Node>,
         root: bool,
-        lower: Option<Key>,
         upper: Option<Key>,
         key: Key,
         value: Option<&[u8]>,
     ) -> Result<(Vec<InternalEntry>, Option<Vec<u8>>), Error> {
-        let mut node = self.load(ptr, root, lower, upper)?;
-        self.store.prepare_edit(&mut node.header)?;
+        let mut node = Self::own(node);
+        self.store.prepare_node(&mut node)?;
         let old;
         if node.header.level == 0 {
             match node.items.binary_search_by_key(&key, |e| e.0) {
                 Ok(i) => {
                     old = Some(if let Some(value) = value {
-                        core::mem::replace(&mut node.items[i].1, value.to_vec())
+                        core::mem::replace(&mut node.items[i].1, Arc::from(value))
                     } else {
                         node.items.remove(i).1
-                    });
+                    }.to_vec());
                 }
                 Err(i) => {
                     old = None;
                     if let Some(value) = value {
-                        node.items.insert(i, (key, value.to_vec()));
+                        node.items.insert(i, (key, Arc::from(value)));
                     }
                 }
             }
         } else {
             let i = node.route(key);
-            let child = self.load(
+            let child = self.take(
                 node.child(i),
                 false,
                 Some(node.key(i)),
@@ -579,9 +876,8 @@ impl<S: NodeStore> Edit<'_, S> {
             )?;
             same_tree(&node, &child)?;
             let (links, previous) = self.change(
-                node.child(i),
+                child,
                 false,
-                Some(node.key(i)),
                 node.children.get(i + 1).map(|e| e.key).or(upper),
                 key,
                 value,
@@ -597,6 +893,11 @@ impl<S: NodeStore> Edit<'_, S> {
     }
 }
 
+fn child_ptr(link: InternalEntry, level: u8) -> BlockPtr {
+    BlockPtr { addr: link.child_addr, generation: link.child_generation,
+        csum: link.child_csum, level }
+}
+
 fn change<S: NodeStore>(
     store: &mut S,
     root: &mut BlockPtr,
@@ -607,12 +908,17 @@ fn change<S: NodeStore>(
         store,
         writes: BTreeMap::new(),
         empty_root: None,
+        #[cfg(test)]
+        reads: core::cell::Cell::new(0),
+        #[cfg(test)]
+        writes_count: 0,
     };
-    let original = edit.load(*root, true, None, None)?;
-    let (links, old) = edit.change(*root, true, None, None, key, value)?;
+    let original = edit.take(*root, true, None, None)?;
+    let header = original.header;
+    let (links, old) = edit.change(original, true, None, key, value)?;
     let mut new_root = match links.len() {
         0 => {
-            let mut empty = Node {
+            let empty = Node {
                 header: NodeHeader {
                     level: 0,
                     ..edit.empty_root.take().ok_or(Error::InvalidNode)?
@@ -620,29 +926,25 @@ fn change<S: NodeStore>(
                 items: Vec::new(),
                 children: Vec::new(),
             };
-            edit.save(&mut empty)?
+            let link = edit.save(empty)?;
+            child_ptr(link, 0)
         }
-        1 => BlockPtr {
-            addr: links[0].child_addr,
-            generation: links[0].child_generation,
-            csum: links[0].child_csum,
-            level: root.level,
-        },
+        1 => child_ptr(links[0], root.level),
         _ => {
             if root.level + 1 >= MAX_HEIGHT {
                 return Err(Error::HeightLimit);
             }
-            let mut node = Node {
+            let node = Node {
                 header: NodeHeader {
                     addr: edit.store.alloc()?,
                     level: root.level + 1,
                     generation: links[0].child_generation,
-                    ..original.header
+                    ..header
                 },
                 items: Vec::new(),
                 children: links,
             };
-            edit.save(&mut node)?
+            child_ptr(edit.save(node)?, root.level + 1)
         }
     };
     loop {
@@ -653,9 +955,18 @@ fn change<S: NodeStore>(
         edit.store.retire(node.header)?;
         new_root = node.child(0);
     }
-    for (addr, bytes) in edit.writes {
-        edit.store.put(addr, bytes)?;
+    #[cfg(test)]
+    measurement::changed(measurement::ChangeWork {
+        height: root.level + 1, reads: edit.reads.get(), writes: edit.writes_count,
+    });
+    for (addr, (_, node, bytes)) in edit.writes {
+        if let Some(bytes) = bytes {
+            edit.store.put(addr, bytes)?;
+        } else {
+            edit.store.put_decoded(Edit::<S>::own(node))?;
+        }
     }
+    edit.store.item_changed(key, old.as_deref(), value)?;
     *root = new_root;
     Ok(old)
 }

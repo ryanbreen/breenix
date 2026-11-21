@@ -135,7 +135,10 @@
     {
       "id": "test-root",
       "title": "Every suite runs with the test root on the copy-on-write filesystem",
-      "cases": []
+      "root": "breenfs",
+      "cases": [
+        { "id": "root-is-breenfs", "title": "The test root is mounted as breenfs" }
+      ]
     },
     {
       "id": "power-cut",

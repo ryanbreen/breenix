@@ -204,6 +204,7 @@ impl crate::ipc::object::IpcFile for SceneFile {
         crate::syscall::userptr::copy_to_user(buf as *mut u64, &changes)
             .map_err(|_| breengel_abi::errno::EFAULT as u64)?;
         self.read.store(changes, core::sync::atomic::Ordering::Release);
+        super::pipeline::record(49, changes, 0, 0);
         Ok(8)
     }
 }

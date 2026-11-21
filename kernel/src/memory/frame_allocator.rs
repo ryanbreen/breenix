@@ -1335,6 +1335,24 @@ impl FrameOwner {
 static FRAME_SITE_OWNERS: [AtomicU8; FRAME_SITE_SLOTS] =
     [const { AtomicU8::new(0) }; FRAME_SITE_SLOTS];
 
+/// Classify a tracked resident mapping using the same allocation site as the
+/// global census. The caller holds the address space stable for the walk.
+pub(crate) fn resident_frame_owner(address: PhysAddr) -> Option<FrameOwner> {
+    let index = frame_ordinal(PhysFrame::containing_address(address))?;
+    let slot = FRAME_LEDGER.get()?.get(index)?;
+    if slot.load(Ordering::Relaxed) & STATE_MASK != ST_ALLOCATED {
+        return None;
+    }
+    let site = (slot.site.load(Ordering::Relaxed) as usize).checked_sub(1)?;
+    let tagged = FRAME_SITE_OWNERS[site].load(Ordering::Relaxed);
+    if tagged != 0 {
+        return FrameOwner::ALL.into_iter().find(|owner| *owner as u8 == tagged);
+    }
+    // SAFETY: non-null site entries point to static source locations.
+    let location = unsafe { FRAME_SITES[site].load(Ordering::Acquire).as_ref() }?;
+    Some(FrameOwner::of_site(short_source_path(location.file()), true))
+}
+
 /// `allocate_frame`, recording what the caller's frames are for where the
 /// census cannot tell it from the caller's source file.
 #[track_caller]

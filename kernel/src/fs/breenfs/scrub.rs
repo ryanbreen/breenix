@@ -22,6 +22,7 @@ struct BudgetStore<'a, S> {
     used: Cell<usize>,
     budget: usize,
     exhausted: Cell<bool>,
+    refusal: Cell<Option<btree::Error>>,
 }
 impl<S> BudgetStore<'_, S> {
     fn charge(&self, bytes: usize) -> Result<(), btree::Error> {
@@ -31,6 +32,16 @@ impl<S> BudgetStore<'_, S> {
         }
         self.used.set(self.used.get() + bytes);
         Ok(())
+    }
+    fn record_refusal<T>(&self, result: Result<T, btree::Error>) -> Result<T, btree::Error> {
+        result.inspect_err(|error| {
+            if matches!(error, btree::Error::Read(failure) if failure.cause.pre_issue()) {
+                self.refusal.set(Some(*error));
+            }
+        })
+    }
+    fn check_refusal(&self) -> Result<(), btree::Error> {
+        self.refusal.get().map_or(Ok(()), Err)
     }
 }
 impl<S: Store> NodeStore for BudgetStore<'_, S> {
@@ -43,7 +54,7 @@ impl<S: Store> NodeStore for BudgetStore<'_, S> {
             return Ok(bytes);
         }
         self.charge(NODE_SIZE)?;
-        let bytes = self.store.get(addr)?;
+        let bytes = self.record_refusal(self.store.get(addr))?;
         if nodes.len() == 16 {
             nodes.pop_front();
         }
@@ -60,7 +71,7 @@ impl<S: Store> NodeStore for BudgetStore<'_, S> {
 impl<S: Store> Store for BudgetStore<'_, S> {
     fn data(&self, addr: u64) -> Result<Vec<u8>, btree::Error> {
         self.charge(BLOCK_SIZE)?;
-        self.store.data(addr)
+        self.record_refusal(self.store.data(addr))
     }
 }
 
@@ -71,7 +82,7 @@ pub trait Store: NodeStore {
 }
 impl Store for DeviceStore<'_> {
     fn data(&self, address: u64) -> Result<Vec<u8>, btree::Error> {
-        super::commit::read(self.0, address, BLOCK_SIZE).map_err(|_| btree::Error::Store)
+        self.read_at(address, BLOCK_SIZE)
     }
 }
 
@@ -168,6 +179,7 @@ impl Scrub {
             used: Cell::new(0),
             budget,
             exhausted: Cell::new(false),
+            refusal: Cell::new(None),
         };
         let result = self.step_inner(&limited, root, generation, budget);
         let used = limited.used.get();
@@ -189,6 +201,7 @@ impl Scrub {
         }
         self.generation = generation;
         let bytes = store.get(root.addr);
+        store.check_refusal()?;
         if store.exhausted.get() {
             return Ok(0);
         }
@@ -213,6 +226,7 @@ impl Scrub {
             // to rediscover that allocation without retaining its old REF.
             let lower = key(self.address.saturating_sub(255)).max(self.floor);
             let found = reader.next(root, lower, None, self.address);
+            store.check_refusal()?;
             if store.exhausted.get() {
                 break;
             }
@@ -272,6 +286,7 @@ impl Scrub {
                     bytes.len() == BLOCK_SIZE
                         && crc32c::checksum(&bytes) == r.crcs[(address - k.object) as usize]
                 });
+                store.check_refusal()?;
                 if store.exhausted.get() {
                     break;
                 }
@@ -281,7 +296,9 @@ impl Scrub {
                 self.address = address + 1;
                 self.blocks += 1;
             } else {
-                let good = store.get(k.object).is_ok_and(|bytes| {
+                let bytes = store.get(k.object);
+                store.check_refusal()?;
+                let good = bytes.is_ok_and(|bytes| {
                     let Ok(h) = NodeHeader::decode(&bytes) else {
                         return false;
                     };

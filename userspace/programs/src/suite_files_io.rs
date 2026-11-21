@@ -10,6 +10,12 @@ use libbreenix::{
     io, memory, process, signal, time,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
+pub mod filesystem_root;
+pub mod root_expectations;
+
+fn root_contract() -> Result<root_expectations::Expectations, String> {
+    Ok(root_expectations::for_root(filesystem_root::declared()?))
+}
 
 const BAD: Fd = Fd::from_raw(10000);
 const CLOEXEC: u32 = 0x80000;
@@ -2083,7 +2089,55 @@ fn descriptors_unlink_open() -> CaseResult {
     result
 }
 
+// E24 coordinator 567: the guest checks the data-block lower bound after
+// 465's equalized commits. The host extent-identity oracle checks exact release
+// and 533's inode/ORPHAN absence, including two planted leak controls.
+fn descriptors_unlink_reclaim_breenfs() -> CaseResult {
+    use std::os::unix::fs::DirEntryExt;
+
+    let marker = RootMarker::new()?;
+    let mut f = orphan_fixture()?;
+    let before = marker.reclaim(None)?;
+    let metadata = fstat(f.fd())?;
+    let ino = metadata.st_ino;
+    let block_size = u64::try_from(fs::fstatfs(f.fd())?.f_bsize)
+        .map_err(|_| String::from("invalid orphan block size"))?;
+    let allocated_bytes = metadata.st_blocks.checked_mul(512)
+        .ok_or("file allocation overflow")?;
+    check(
+        block_size != 0 && allocated_bytes % block_size == 0,
+        "file allocation is not a whole number of data blocks",
+    )?;
+    let data_blocks = allocated_bytes / block_size;
+    check(data_blocks == 2, "sparse orphan does not hold two data blocks")?;
+    fs::unlink(&f.path)?;
+    io::close(f.file.take().expect("fixture descriptor"))?;
+    let index = marker.1.get();
+    marker.1.set(index + 1);
+    breenix_suite::suite::control::markers::sample_root(index, false);
+    sync_fd(marker.0.fd(), false)?;
+    let sample = breenix_suite::suite::control::markers::sample_root(index, true);
+    expect_errno(stat(&f.path, false), 2, "lookup after last close and fsync")?;
+    let after = RootMarker::non_allocated(sample)?;
+    check(
+        after.checked_sub(before).is_some_and(|gain| gain >= data_blocks),
+        &format!("unlink publication returned FREE+PENDING {before}->{after}, expected at least {data_blocks} blocks"),
+    )?;
+    marker.reclaim(Some((before, data_blocks)))?;
+    let parent = f.path.rsplit_once('/').ok_or("fixture has no parent")?.0;
+    for entry in std::fs::read_dir(parent).map_err(|e| e.to_string())? {
+        check(
+            entry.map_err(|e| e.to_string())?.ino() != ino,
+            "a surviving directory name reports the unlinked inode",
+        )?;
+    }
+    Ok(())
+}
+
 fn descriptors_unlink_reclaim() -> CaseResult {
+    if !root_contract()?.reuses_inode_numbers {
+        return descriptors_unlink_reclaim_breenfs();
+    }
     // The allocator hands out the lowest free inode, and the fixture took
     // the lowest when it was created, so the orphan's inode is the next one
     // handed out once its last close has freed it.
@@ -2688,16 +2742,31 @@ fn metadata_truncate_indirect() -> CaseResult {
             "sparse pwrite returned wrong count",
         )?;
     }
-    check(
-        fstat(f.fd())?.st_blocks == 10 * sectors,
-        "write omitted indirect block accounting",
-    )?;
+    if root_contract()?.reuses_inode_numbers {
+        check(
+            fstat(f.fd())?.st_blocks == 10 * sectors,
+            "write omitted indirect block accounting",
+        )?;
+    } else {
+        check(
+            fstat(f.fd())?.st_blocks == root_contract()?.blocks(4, 6, sectors),
+            "write omitted indirect block accounting",
+        )?;
+    }
     for (offset, blocks) in [(triple, 10), (double, 6), (single, 3)] {
         truncate_fd(f.fd(), (offset + 6) as i64)?;
-        check(
-            fstat(f.fd())?.st_blocks == blocks * sectors,
-            "shrink has wrong block accounting",
-        )?;
+        if root_contract()?.reuses_inode_numbers {
+            check(
+                fstat(f.fd())?.st_blocks == blocks * sectors,
+                "shrink has wrong block accounting",
+            )?;
+        } else {
+            let (data, pointers) = match blocks { 10 => (4, 6), 6 => (3, 3), _ => (2, 1) };
+            check(
+                fstat(f.fd())?.st_blocks == root_contract()?.blocks(data, pointers, sectors),
+                "shrink has wrong block accounting",
+            )?;
+        }
         let mut b = [0; 6];
         check(
             sc(
@@ -2777,28 +2846,93 @@ fn prepare_large_truncate_fixture(path: &str) -> CaseResult {
     result
 }
 
+// Equalize metadata and the two-generation quarantine on both sides (ledger 465).
+struct RootMarker(Fixture, std::cell::Cell<usize>);
+impl RootMarker {
+    fn new() -> Result<Self, String> { Ok(Self(Fixture::new(b"")?, std::cell::Cell::new(0))) }
+    fn free(&self, fd: Fd) -> Result<u64, String> {
+        use breenix_suite::suite::control::markers;
+        let recording = matches!(breenix_suite::suite::running_case(),
+            Some("descriptors/unlink-reclaim" | "metadata/ftruncate-large"
+                | "metadata/ftruncate-large-open" | "metadata/statfs-allocation"));
+        for byte in 0..3 {
+            let index = self.1.get();
+            self.1.set(index + 1);
+            if recording { markers::sample_root(index, false); }
+            truncate_fd(self.0.fd(), 0)?;
+            fs::lseek(self.0.fd(), 0, SEEK_SET).map_err(|e| e.to_string())?;
+            write_all(self.0.fd(), &[byte])?;
+            sync_fd(self.0.fd(), false)?;
+            if recording { markers::sample_root(index, true); }
+        }
+        Ok(fs::fstatfs(fd).map_err(|e| e.to_string())?.f_bfree)
+    }
+    fn non_allocated(sample: Option<(u64, u64, u64)>) -> Result<u64, String> {
+        let (_, free, pending) = sample.ok_or("root FREE/PENDING sample unavailable")?;
+        free.checked_add(pending).ok_or_else(|| String::from("root FREE/PENDING sum overflow"))
+    }
+    // E24 rulings 583(y2) and 646(b4): check the durable FREE + PENDING
+    // gain at each marker after unlink or truncate.
+    fn reclaim(&self, baseline: Option<(u64, u64)>) -> Result<u64, String> {
+        use breenix_suite::suite::control::markers;
+        let mut after = 0;
+        for byte in 0..3 {
+            let index = self.1.get();
+            self.1.set(index + 1);
+            markers::sample_root(index, false);
+            truncate_fd(self.0.fd(), 0)?;
+            fs::lseek(self.0.fd(), 0, SEEK_SET).map_err(|e| e.to_string())?;
+            write_all(self.0.fd(), &[byte])?;
+            sync_fd(self.0.fd(), false)?;
+            after = Self::non_allocated(markers::sample_root(index, true))?;
+            if let Some((before, data_blocks)) = baseline {
+                if !after.checked_sub(before).is_some_and(|gain| gain >= data_blocks) {
+                    return Err(format!("marker {index} returned FREE+PENDING {before}->{after}, expected at least {data_blocks} blocks"));
+                }
+            }
+        }
+        Ok(after)
+    }
+
+}
+
 fn metadata_ftruncate_large() -> CaseResult {
     prepare_large_truncate_fixture("/usr/libexec/breenix/test/files-io-large-shrink")?;
+    let marker = if root_contract()?.reuses_inode_numbers { None } else { Some(RootMarker::new()?) };
     let fd = fs::open("/usr/libexec/breenix/test/files-io-large-shrink", O_RDWR)?;
     let result = (|| -> CaseResult {
         let original = fstat(fd)?;
         let block_size = original.st_size as usize / 129;
         let sectors = block_size as u64 / 512;
-        check(
-            original.st_blocks == 130 * sectors,
-            "large fixture block count",
-        )?;
-        let free = root_free_blocks()?;
+        if root_contract()?.reuses_inode_numbers {
+            check(
+                original.st_blocks == 130 * sectors,
+                "large fixture block count",
+            )?;
+        } else {
+            check(
+                original.st_blocks == root_contract()?.blocks(129, 1, sectors),
+                "large fixture block count",
+            )?;
+        }
+        let free = if let Some(marker) = &marker {
+            marker.reclaim(None)?
+        } else { root_free_blocks()? };
         // Remove 128 suffix data blocks and their indirect block: 129 frees.
         truncate_fd(fd, 3)?;
         check(
             fstat(fd)?.st_blocks == sectors,
             "large shrink retained suffix blocks",
         )?;
-        check(
-            root_free_blocks()? == free + 129,
-            "large shrink free counts lag",
-        )?;
+        if let Some(marker) = &marker {
+            marker.reclaim(Some((free, 128)))?;
+        } else {
+            check(
+                root_free_blocks()? == free + 129,
+                "large shrink free counts lag",
+            )?;
+        }
+        if marker.is_some() { contents(fd, &[0x5a; 3])?; }
         truncate_fd(fd, original.st_size)?;
         let mut expected = vec![0; original.st_size as usize];
         expected[..3].fill(0x5a);
@@ -2807,20 +2941,34 @@ fn metadata_ftruncate_large() -> CaseResult {
         write_all(fd, b"Z")?;
         expected[original.st_size as usize - 1] = b'Z';
         contents(fd, &expected)?;
-        check(
-            fstat(fd)?.st_blocks == 3 * sectors,
-            "large regrowth block count",
-        )?;
-        let free = root_free_blocks()?;
+        if root_contract()?.reuses_inode_numbers {
+            check(
+                fstat(fd)?.st_blocks == 3 * sectors,
+                "large regrowth block count",
+            )?;
+        } else {
+            check(
+                fstat(fd)?.st_blocks == root_contract()?.blocks(2, 1, sectors),
+                "large regrowth block count",
+            )?;
+        }
+        let free = if let Some(marker) = &marker {
+            marker.reclaim(None)?
+        } else { root_free_blocks()? };
         truncate_fd(fd, 0)?;
         check(
             fstat(fd)?.st_blocks == 0,
             "large zero truncate retained allocated blocks",
         )?;
-        check(
-            root_free_blocks()? == free + 3,
-            "zero truncate free counts lag",
-        )
+        if let Some(marker) = &marker {
+            marker.reclaim(Some((free, 2)))?;
+            Ok(())
+        } else {
+            check(
+                root_free_blocks()? == free + 3,
+                "zero truncate free counts lag",
+            )
+        }
     })();
     io::close(fd)?;
     result
@@ -2829,23 +2977,37 @@ fn metadata_ftruncate_large() -> CaseResult {
 fn metadata_ftruncate_large_open() -> CaseResult {
     let path = "/usr/libexec/breenix/test/files-io-large-open";
     prepare_large_truncate_fixture(path)?;
+    let marker = if root_contract()?.reuses_inode_numbers { None } else { Some(RootMarker::new()?) };
     let original = stat(path, false)?;
     let block_size = original.st_size as u64 / 129;
-    check(
-        original.st_blocks == 130 * (block_size / 512),
-        "open truncate fixture block count",
-    )?;
-    let free = root_free_blocks()?;
+    if root_contract()?.reuses_inode_numbers {
+        check(
+            original.st_blocks == 130 * (block_size / 512),
+            "open truncate fixture block count",
+        )?;
+    } else {
+        check(
+            original.st_blocks == root_contract()?.blocks(129, 1, block_size / 512),
+            "open truncate fixture block count",
+        )?;
+    }
+    let free = if let Some(marker) = &marker {
+        marker.reclaim(None)?
+    } else { root_free_blocks()? };
     let fd = fs::open(path, O_TRUNC | O_RDWR)?;
     let result = (|| -> CaseResult {
         check(
             fstat(fd)?.st_blocks == 0,
             "open truncate retained allocated blocks",
         )?;
-        check(
-            root_free_blocks()? == free + 130,
-            "open truncate free counts lag",
-        )?;
+        if let Some(marker) = &marker {
+            marker.reclaim(Some((free, 129)))?;
+        } else {
+            check(
+                root_free_blocks()? == free + 130,
+                "open truncate free counts lag",
+            )?;
+        }
         write_all(fd, b"fresh")?;
         contents(fd, b"fresh")
     })();
@@ -4208,6 +4370,17 @@ fn fs_stats(path: Option<&str>, fd: Fd) -> Result<[u64; 15], String> {
     Ok(words)
 }
 fn stats_fields(s: &[u64; 15]) -> CaseResult {
+    let expected = root_contract()?;
+    if !expected.reuses_inode_numbers {
+        check(s[0] == expected.statfs_magic && s[1] == 4096,
+            "statfs did not report the declared root format and block size")?;
+        check(s[2] > 0 && s[3] <= s[2] && expected.available_blocks(s[3], s[2], 0) == Some(s[4]),
+            "invalid block capacity or available count after fsync")?;
+        check(expected.inode_capacity(s[5], s[6]), "invalid inode capacity")?;
+        return check(s[7] != u64::MAX && s[7] >> 32 == 0 && s[8] == 255
+            && s[9] == s[1] && s[10] == 0x20 && s[11..] == [0; 4],
+            "undefined fsid, name limit, fragment size, flags or spare fields");
+    }
     check(
         s[0] == 0xef53 && s[1].is_power_of_two() && s[1] >= 1024,
         "statfs did not report ext2 and its block size",
@@ -4233,10 +4406,12 @@ fn stable_stats(a: &[u64; 15], b: &[u64; 15]) -> bool {
 }
 fn metadata_statfs() -> CaseResult {
     let f = Fixture::new(b"stats")?;
+    if !root_contract()?.reuses_inode_numbers { sync_fd(f.fd(), false)?; }
     stats_fields(&fs_stats(Some(&f.path), BAD)?)
 }
 fn metadata_fstatfs() -> CaseResult {
     let f = Fixture::new(b"stats")?;
+    if !root_contract()?.reuses_inode_numbers { sync_fd(f.fd(), false)?; }
     let by_path = fs_stats(Some(&f.path), BAD)?;
     let by_fd = fs_stats(None, f.fd())?;
     stats_fields(&by_fd)?;
@@ -4248,6 +4423,7 @@ fn metadata_fstatfs() -> CaseResult {
 }
 fn metadata_statfs_symlink() -> CaseResult {
     let f = Fixture::new(b"stats")?;
+    if !root_contract()?.reuses_inode_numbers { sync_fd(f.fd(), false)?; }
     fs::symlink("/proc", &f.extra("link"))?;
     let stats = fs_stats(Some(&f.extra("link")), BAD)?;
     check(
@@ -4272,7 +4448,12 @@ fn metadata_statfs_missing() -> CaseResult {
     let by_path = fs_stats(Some(&f.path), BAD)?;
     let by_fd = fs_stats(None, fd)?;
     io::close(fd)?;
-    check(by_path[0] == 0xef53 && by_path == by_fd, "FIFO statfs identity differs from fstatfs")?;
+    if root_contract()?.reuses_inode_numbers {
+        check(by_path[0] == 0xef53 && by_path == by_fd, "FIFO statfs identity differs from fstatfs")?;
+    } else {
+        check(by_path[0] == root_contract()?.statfs_magic && by_path == by_fd,
+            "FIFO statfs identity differs from fstatfs")?;
+    }
     fs::unlink(&f.path)?;
     let pts = fs::open("/dev/pts", O_RDONLY | O_DIRECTORY)?;
     let by_fd = fs_stats(None, pts)?;
@@ -4320,6 +4501,24 @@ fn metadata_statfs_fault() -> CaseResult {
     )
 }
 fn metadata_statfs_allocation() -> CaseResult {
+    if !root_contract()?.reuses_inode_numbers {
+        let f = Fixture::new(b"")?;
+        let marker = RootMarker::new()?;
+        marker.free(f.fd())?;
+        let before = fs_stats(None, f.fd())?;
+        write_all(f.fd(), &[0x5a; 8192])?;
+        let non_allocated = marker.reclaim(None)?;
+        let after = fs_stats(None, f.fd())?;
+        stats_fields(&before)?;
+        stats_fields(&after)?;
+        check(fstat(f.fd())?.st_blocks == root_contract()?.blocks(2, 0, 8)
+            && stable_stats(&before, &after),
+            "allocated file lost its blocks or changed filesystem capacity/identity")?;
+        contents(f.fd(), &[0x5a; 8192])?;
+        truncate_fd(f.fd(), 0)?;
+        marker.reclaim(Some((non_allocated, 2)))?;
+        return contents(f.fd(), b"");
+    }
     let f = Fixture::new(b"")?;
     let before = fs_stats(None, f.fd())?;
     write_all(f.fd(), &[0x5a; 8192])?;

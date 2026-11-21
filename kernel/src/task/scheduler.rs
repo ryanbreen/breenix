@@ -707,11 +707,13 @@ pub struct SchedulerGuard {
 
 #[cfg(target_arch = "aarch64")]
 impl SchedulerGuard {
-    fn new(guard: spin::MutexGuard<'static, Option<Scheduler>>) -> Self {
+    #[inline(always)]
+    fn new(guard: spin::MutexGuard<'static, Option<Scheduler>>, caller_pc: u64) -> Self {
         let cpu = crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize;
         if cpu < MAX_CPUS {
             SCHEDULER_HELD_BY[cpu].store(true, Ordering::Relaxed);
         }
+        super::lockup::acquired(cpu, caller_pc, crate::time::timer::get_ticks());
         Self {
             guard: core::mem::ManuallyDrop::new(guard),
             cpu,
@@ -746,6 +748,7 @@ impl Drop for SchedulerGuard {
         if let Some(scheduler) = self.guard.as_ref() {
             publish_queued_cpus(scheduler);
         }
+        super::lockup::releasing();
         // SAFETY: dropped once, here; the guard is not read after this.
         unsafe { core::mem::ManuallyDrop::drop(&mut self.guard) };
         scheduler_released(self.cpu);
@@ -814,7 +817,11 @@ fn send_deferred_sgis(cpu: usize) {
 fn lock_scheduler() -> SchedulerGuard {
     let guard = SCHEDULER.lock();
     crate::tracing::providers::teardown::note_scheduler_acquire();
-    SchedulerGuard::new(guard)
+    #[cfg(target_arch = "x86_64")]
+    let guard = SchedulerGuard::new(guard);
+    #[cfg(target_arch = "aarch64")]
+    let guard = SchedulerGuard::new(guard, super::lockup::site_pc());
+    guard
 }
 
 /// x86_64: a spin for a lock another CPU holds, during which this CPU
@@ -916,7 +923,7 @@ fn try_lock_scheduler() -> Option<SchedulerGuard> {
     #[cfg(target_arch = "x86_64")]
     let guard = SchedulerGuard::holding_all(guard);
     #[cfg(target_arch = "aarch64")]
-    let guard = SchedulerGuard::new(guard);
+    let guard = SchedulerGuard::new(guard, super::lockup::site_pc());
     Some(guard)
 }
 
@@ -957,6 +964,16 @@ pub static PINNED_HOME_CPU_UNAVAILABLE: core::sync::atomic::AtomicU64 =
 /// `hold_pinned_wake_for_home`, cleared by `deliver_pinned_wakes_for_this_cpu`
 /// once it has scanned for that CPU's held wakes.
 static PINNED_HOLDS_OUTSTANDING: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+
+/// Last published queue length and schedule tick, plus current held placements.
+#[cfg(target_arch = "x86_64")]
+pub(super) fn cpu_progress_queue(cpu: usize) -> (u64, u32, u64) {
+    (
+        rq::CPU_LAST_SCHEDULE[cpu].load(Ordering::Relaxed),
+        rq::CPU_QUEUE_LEN[cpu].load(Ordering::Relaxed),
+        PINNED_HOLDS_OUTSTANDING[cpu].load(Ordering::Relaxed),
+    )
+}
 
 /// Pins rejected at publication because the CPU they named is outside the
 /// online range -- counted here, where slice 3c discarded them in silence.
@@ -1346,6 +1363,7 @@ pub fn increment_context_switch_count() {
 /// The caller must not call any other scheduler public functions that acquire
 /// SCHEDULER.lock() while holding this guard (would deadlock).
 #[cfg(target_arch = "aarch64")]
+#[inline(always)]
 pub fn lock_for_context_switch() -> SchedulerGuard {
     lock_scheduler()
 }
@@ -1363,6 +1381,7 @@ pub unsafe fn force_unlock_scheduler(scheduler: Option<&Scheduler>) {
     if let Some(scheduler) = scheduler {
         publish_queued_cpus(scheduler);
     }
+    super::lockup::releasing();
     SCHEDULER.force_unlock();
     scheduler_released(crate::arch_impl::aarch64::percpu::Aarch64PerCpu::cpu_id() as usize);
 }
@@ -1565,6 +1584,8 @@ pub fn block_current_coreproof_probe() -> Option<Result<DepartureProbe, &'static
             queue.retain(|queued_tid| *queued_tid != tid);
         }
         if let Some(thread) = scheduler.get_thread_mut(tid) {
+            #[cfg(target_arch = "aarch64")]
+            thread.wait_site.clear();
             thread.state = restore_state;
             thread.blocked_in_syscall = restore_in_syscall;
         }
@@ -1840,9 +1861,8 @@ pub struct SchedulerLivenessSnapshot {
 /// a peer CPU holds it, and a watchdog snapshot must not wait on that.
 ///
 /// Callers: 1 in this tree today -- `capture::sections::sample_threads`, which
-/// is the BXCAP `THR` section's one scheduler read and therefore the read the
-/// AArch64 soft-lockup watchdog now reaches through `capture::emit`. The mask
-/// is here so that caller does not have to rediscover R153.
+/// is the BXCAP `THR` scheduler read for non-LOCKUP captures. The mask is
+/// here so that caller does not have to rediscover R153.
 /// `tests/teardown_structure.rs::scheduler_lock_acquisitions_are_irq_safe_by_shape`
 /// reddens if it is removed.
 ///
@@ -2871,6 +2891,7 @@ fn install_ec0_fault_inject_thread(scheduler: &mut Scheduler) {
 #[inline(never)]
 pub(crate) fn record_cpu_state_change(cpu: usize, setter_id: u64, old_val: u64, new_val: u64) {
     if cpu < MAX_CPUS {
+        super::lockup::current(cpu, if setter_id == 17 { 0 } else { new_val });
         let idx =
             CPU_STATE_HISTORY_IDX[cpu].fetch_add(1, core::sync::atomic::Ordering::Relaxed) as usize;
         let slot = idx % HISTORY_SIZE;
@@ -4410,6 +4431,8 @@ impl Scheduler {
             .current_thread
             .unwrap_or(self.cpu_state[current_cpu].idle_thread);
         self.cpu_state[current_cpu].current_thread = Some(next_thread_id);
+        #[cfg(target_arch = "aarch64")]
+        super::lockup::current(current_cpu, next_thread_id);
         // x86_64: this CPU stays on the outgoing thread's kernel stack until its
         // `iretq`; no other CPU dispatches the thread before then.
         #[cfg(target_arch = "x86_64")]
@@ -4578,6 +4601,10 @@ impl Scheduler {
         // This ensures the flag is always accurate, even when this function returns None.
         // If we return Some(...), the flag is overwritten with the post-switch state later.
         let cpu = Self::current_cpu_id();
+        // IRQs are masked and the installed thread stays live until handoff.
+        if let Some(thread) = unsafe { super::thread::arm_current_thread_ptr().as_ref() } {
+            thread.lockup_progress.record_schedule_entry();
+        }
         // Consume the default profile's idle-inline selection marker. The live
         // profile instead reserves the victim for its dedicated driver.
         #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
@@ -5121,8 +5148,18 @@ impl Scheduler {
     #[cfg(target_arch = "aarch64")]
     pub fn commit_cpu_state_after_save(&mut self, new_thread_id: u64) {
         let cpu = Self::current_cpu_id();
-        let old_val = self.cpu_state[cpu].current_thread.unwrap_or(0xDEAD);
-        record_cpu_state_change(cpu, 1, old_val, new_thread_id);
+        let old = self.cpu_state[cpu].current_thread;
+        if old != Some(new_thread_id) {
+            // The switch has saved the outgoing context but has not yet
+            // installed the next pointer. An idle-state fixup can also call
+            // here, so check that this was the outgoing thread.
+            if let Some(thread) = unsafe { super::thread::arm_current_thread_ptr().as_ref() } {
+                if old == Some(thread.id()) && thread.state == ThreadState::BlockedOnIO {
+                    thread.io_park_epoch.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+        record_cpu_state_change(cpu, 1, old.unwrap_or(0xDEAD), new_thread_id);
         self.cpu_state[cpu].current_thread = Some(new_thread_id);
         if self.cpu_state[cpu].pending_next == Some(new_thread_id) {
             self.cpu_state[cpu].pending_next = None;
@@ -5387,6 +5424,8 @@ impl Scheduler {
 
             current.stop_timer_cpu();
             current.state = ThreadState::Blocked;
+            #[cfg(target_arch = "aarch64")]
+            current.publish_wait(super::lockup::site_pc(), 0);
             #[cfg(feature = "coreproof_component_a")]
             crate::proof_point!(BlockAfterStateStore);
             if in_syscall {
@@ -5478,6 +5517,8 @@ impl Scheduler {
         // Restore exactly, before the lock is released.
         self.per_cpu_queues[cpu].retain(|&id| id != tid);
         if let Some(thread) = self.get_thread_mut(tid) {
+            #[cfg(target_arch = "aarch64")]
+            thread.wait_site.clear();
             thread.state = restore_state;
             thread.blocked_in_syscall = restore_in_syscall;
         }
@@ -5790,6 +5831,8 @@ impl Scheduler {
                 }
                 thread.stop_timer_cpu();
                 thread.state = ThreadState::BlockedOnSignal;
+                #[cfg(target_arch = "aarch64")]
+                thread.publish_wait(super::lockup::site_pc(), 0);
                 // CRITICAL: Mark that this thread is blocked inside a syscall.
                 // When the thread is resumed, we must NOT restore userspace context
                 // because that would return to the pre-syscall location instead of
@@ -5941,6 +5984,8 @@ impl Scheduler {
 
                 thread.stop_timer_cpu();
                 thread.state = ThreadState::BlockedOnChildExit;
+                #[cfg(target_arch = "aarch64")]
+                thread.publish_wait(super::lockup::site_pc(), 0);
                 // CRITICAL: Mark that this thread is blocked inside a syscall.
                 // When the thread is resumed, we must NOT restore userspace context
                 // because that would return to the pre-syscall location instead of
@@ -6038,6 +6083,8 @@ impl Scheduler {
         }
         thread.stop_timer_cpu();
         thread.state = ThreadState::Blocked;
+        #[cfg(target_arch = "aarch64")]
+        thread.publish_wait(super::lockup::site_pc(), 0);
         for q in self.per_cpu_queues.iter_mut() {
             q.retain(|&id| id != thread_id);
         }
@@ -6082,6 +6129,8 @@ impl Scheduler {
 
                 thread.stop_timer_cpu();
                 thread.state = ThreadState::BlockedOnTimer;
+                #[cfg(target_arch = "aarch64")]
+                thread.publish_wait(super::lockup::site_pc(), 0);
                 thread.wake_time_ns = Some(wake_time_ns);
                 if !already_armed {
                     thread.timer_pop = Some(TimerPopRecord::armed(wake_time_ns));
@@ -6141,6 +6190,8 @@ impl Scheduler {
     fn block_current_for_io_publish(&mut self, wake_time_ns: Option<u64>) -> Option<u64> {
         let current_id = self.cpu_state[Self::current_cpu_id()].current_thread?;
         let thread = self.get_thread_mut(current_id)?;
+        #[cfg(target_arch = "aarch64")]
+        let wait_queue = core::mem::take(&mut thread.wait_site.queue_hint);
         // A thread a SIGKILL is pending for does not sleep here:
         // `Thread::must_not_sleep`.
         if thread.must_not_sleep() {
@@ -6152,6 +6203,8 @@ impl Scheduler {
 
         thread.stop_timer_cpu();
         thread.state = ThreadState::BlockedOnIO;
+        #[cfg(target_arch = "aarch64")]
+        thread.publish_wait(super::lockup::site_pc(), wait_queue);
         thread.wake_time_ns = wake_time_ns;
         // The observation belongs to this wait, not to whatever the thread did
         // before it.
@@ -6450,6 +6503,8 @@ impl Scheduler {
 
                 thread.stop_timer_cpu();
                 thread.state = ThreadState::BlockedOnTimer;
+                #[cfg(target_arch = "aarch64")]
+                thread.publish_wait(super::lockup::site_pc(), 0);
                 thread.wake_time_ns = Some(timeout_ns);
                 thread.timer_pop = Some(TimerPopRecord::armed(timeout_ns));
                 thread.blocked_in_syscall = true;
@@ -6725,6 +6780,8 @@ impl Scheduler {
                 // manages this flag itself when it detects the state change.
                 if let Some(thread) = self.get_thread_mut(tid) {
                     let was_blocked_on_io = thread.state == ThreadState::BlockedOnIO;
+                    #[cfg(target_arch = "aarch64")]
+                    thread.wait_site.clear();
                     thread.state = ThreadState::Ready;
                     WAKE_SITE_TIMER.fetch_add(1, Ordering::Relaxed);
                     record_ready_site(tid, READY_SITE_TIMER);
@@ -6766,6 +6823,8 @@ impl Scheduler {
 
             if let Some(thread) = self.get_thread_mut(tid) {
                 let was_blocked_on_io = thread.state == ThreadState::BlockedOnIO;
+                #[cfg(target_arch = "aarch64")]
+                thread.wait_site.clear();
                 thread.state = ThreadState::Ready;
                 WAKE_SITE_TIMER.fetch_add(1, Ordering::Relaxed);
                 record_ready_site(tid, READY_SITE_TIMER);
@@ -9193,6 +9252,8 @@ impl ExecSchedCommit {
                         replaced_timers = core::mem::replace(&mut t.signal_timers, this.signal_timers);
                         #[cfg(target_arch = "x86_64")]
                         rq::publish_group(t);
+                        #[cfg(target_arch = "aarch64")]
+                        t.wait_site.clear();
                         t.state = crate::task::thread::ThreadState::Ready;
                         #[cfg(all(target_arch = "aarch64", feature = "ret_zero_pc_oracle_exec"))]
                         crate::task::ret_zero_pc_oracle::record_exec_commit_inline_state(t);
@@ -10596,12 +10657,18 @@ pub fn terminate_thread_best_effort(thread_id: u64) -> bool {
 /// Best-effort switch to idle — uses try_lock to avoid deadlock in crash handlers.
 ///
 /// When an INSTRUCTION_ABORT or DATA_ABORT occurs from EL1, the SCHEDULER lock
-/// may already be held (e.g., the crash happened during a context switch). Using
-/// `switch_to_idle()` would deadlock on the same CPU. This version uses try_lock:
-/// if the lock is available, update scheduler state; if not, just return — the
-/// next timer interrupt on this CPU will see the idle loop and correct the state.
+/// may already be held. A local owner cannot discard the faulting stack with
+/// its guard still live. When a peer owns the lock, use the ordinary fallback
+/// so the idle loop can reconcile scheduler state after the peer releases it.
 #[cfg(target_arch = "aarch64")]
 pub fn switch_to_idle_best_effort() {
+    let cpu = Scheduler::current_cpu_id();
+    if cpu >= MAX_CPUS {
+        return;
+    }
+    if SCHEDULER_HELD_BY[cpu].load(Ordering::Relaxed) {
+        crate::gpu::panic::park();
+    }
     if let Some(mut scheduler_lock) = try_lock_scheduler() {
         if let Some(sched) = scheduler_lock.as_mut() {
             let cpu_id = Scheduler::current_cpu_id();

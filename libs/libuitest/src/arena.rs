@@ -2,6 +2,16 @@
 use std::{fs::{File, OpenOptions}, os::{fd::AsRawFd, unix::fs::OpenOptionsExt}, path::Path,
     sync::atomic::{AtomicU32, Ordering}};
 use libpixcheck::sha256;
+pub(crate) fn during<T>(name: &str, operation: impl FnOnce() -> T) -> T {
+    #[cfg(target_os = "breenix")]
+    return breenix_suite::suite::control::observations::during(name, operation);
+    #[cfg(not(target_os = "breenix"))]
+    {
+        let _ = name;
+        operation()
+    }
+}
+
 const PAGE: usize = 4096;
 const HEADER: usize = 4096;
 pub const TREE_BYTES: usize = 1024 * 1024;
@@ -10,7 +20,16 @@ const WRITING: u32 = 1;
 const FINAL: u32 = 2;
 #[derive(Clone, Copy, Debug)]
 pub enum Slot { Screen, Frame, Tree }
-impl Slot { fn index(self) -> usize { match self { Self::Screen => 0, Self::Frame => 1, Self::Tree => 2 } } }
+impl Slot {
+    fn index(self) -> usize { match self { Self::Screen => 0, Self::Frame => 1, Self::Tree => 2 } }
+    fn map_receipt(self) -> &'static str {
+        match self {
+            Self::Screen => "arena-map-screen",
+            Self::Frame => "arena-map-frame",
+            Self::Tree => "arena-map-tree",
+        }
+    }
+}
 #[derive(Clone, Copy, Debug)]
 pub struct Layout { pub width: u32, pub height: u32, pixels: usize }
 impl Layout {
@@ -111,7 +130,11 @@ impl Mapping {
         Ok(Self { base: ptr, ptr: unsafe { ptr.add(skip) }, len })
     }
 }
-impl Drop for Mapping { fn drop(&mut self) { unsafe { munmap(self.base, self.len); } } }
+impl Drop for Mapping {
+    fn drop(&mut self) {
+        during("arena-unmap", || unsafe { munmap(self.base, self.len) });
+    }
+}
 pub struct Arena {
     path: std::path::PathBuf,
     file: File,
@@ -124,23 +147,23 @@ impl Arena {
         Self::create_timed(path, layout, &mut CallTimes::new(false))
     }
     fn create_timed(path: &Path, layout: Layout, calls: &mut CallTimes) -> Result<Self, String> {
-        let mut file = calls.call(0, || OpenOptions::new().read(true).write(true).create_new(true).mode(0o600).open(path)).map_err(|e| e.to_string())?;
-        calls.call(1, || file.set_len(layout.len() as u64)).map_err(|e| e.to_string())?;
+        let mut file = calls.call(0, || during("arena-create", || OpenOptions::new().read(true).write(true).create_new(true).mode(0o600).open(path))).map_err(|e| e.to_string())?;
+        calls.call(1, || during("arena-resize", || file.set_len(layout.len() as u64))).map_err(|e| e.to_string())?;
         use std::io::Write;
         let mut header = [0; 16]; header[..8].copy_from_slice(b"UTARE001");
         header[8..12].copy_from_slice(&layout.width.to_le_bytes()); header[12..16].copy_from_slice(&layout.height.to_le_bytes());
-        calls.call(2, || file.write_all(&header)).map_err(|e| e.to_string())?;
+        calls.call(2, || during("arena-header-write", || file.write_all(&header))).map_err(|e| e.to_string())?;
         Self::map_timed(path, file, layout, calls)
     }
     pub fn open(path: &Path) -> Result<Self, String> {
         use std::{io::Read, os::unix::fs::MetadataExt};
-        let meta = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+        let meta = during("arena-stat", || std::fs::symlink_metadata(path)).map_err(|e| e.to_string())?;
         if !meta.is_file() || meta.mode() & 0o077 != 0 { return Err("untrusted arena file".into()); }
-        let mut file = OpenOptions::new().read(true).write(true).open(path).map_err(|e| e.to_string())?;
-        let mut header = [0; 16]; file.read_exact(&mut header).map_err(|e| e.to_string())?;
+        let mut file = during("arena-open", || OpenOptions::new().read(true).write(true).open(path)).map_err(|e| e.to_string())?;
+        let mut header = [0; 16]; during("arena-header-read", || file.read_exact(&mut header)).map_err(|e| e.to_string())?;
         if &header[..8] != b"UTARE001" { return Err("invalid arena header".into()); }
         let layout = Layout::for_mode(u32::from_le_bytes(header[8..12].try_into().unwrap()), u32::from_le_bytes(header[12..16].try_into().unwrap()))?;
-        if file.metadata().map_err(|e| e.to_string())?.len() != layout.len() as u64 { return Err("arena length mismatch".into()); }
+        if during("arena-stat", || file.metadata()).map_err(|e| e.to_string())?.len() != layout.len() as u64 { return Err("arena length mismatch".into()); }
         Self::map(path, file, layout)
     }
     fn map(path: &Path, file: File, layout: Layout) -> Result<Self, String> {
@@ -148,9 +171,16 @@ impl Arena {
     }
     fn map_timed(path: &Path, file: File, layout: Layout, calls: &mut CallTimes) -> Result<Self, String> {
         let headers = [Slot::Screen, Slot::Frame, Slot::Tree].into_iter()
-            .map(|slot| Mapping::new_timed(&file, layout.header_offset(slot), HEADER, calls, 3 + slot.index()))
+            .map(|slot| during("arena-map-headers", || Mapping::new_timed(&file, layout.header_offset(slot), HEADER, calls, 3 + slot.index())))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self { path: path.into(), file, headers, payloads: [None, None, None], layout })
+    }
+    /// Release the descriptor and mappings while recording their individual waits.
+    pub fn close(self) {
+        let Self { file, headers, payloads, .. } = self;
+        during("arena-close", || drop(file));
+        drop(headers);
+        drop(payloads);
     }
     pub fn layout(&self) -> Layout { self.layout }
     /// Start another immutable checkpoint; existing mappings retain the old inode.
@@ -159,8 +189,8 @@ impl Arena {
         let result = (|| {
             let next_path = self.path.with_extension("next");
             let mut next = Self::create_timed(&next_path, self.layout, &mut calls)?;
-            if let Err(error) = calls.call(6, || std::fs::rename(&next_path, &self.path)) {
-                let _ = std::fs::remove_file(&next_path);
+            if let Err(error) = calls.call(6, || during("arena-rename", || std::fs::rename(&next_path, &self.path))) {
+                let _ = during("arena-unlink", || std::fs::remove_file(&next_path));
                 return Err(error.to_string());
             }
             next.path = self.path.clone();
@@ -168,7 +198,7 @@ impl Arena {
             // Preserve Arena's field-drop order: file, headers, then payloads.
             // The old mappings continue to own the unlinked inode after close.
             let Self { file, headers, payloads, .. } = old;
-            calls.call(7, || drop(file));
+            calls.call(7, || during("arena-close", || drop(file)));
             for (index, mapping) in headers.into_iter().enumerate() {
                 calls.call(8 + index, || drop(mapping));
             }
@@ -188,14 +218,14 @@ impl Arena {
     }
     pub fn begin(&mut self, slot: Slot) -> Result<Writer<'_>, String> {
         self.state(slot).compare_exchange(FREE, WRITING, Ordering::AcqRel, Ordering::Acquire).map_err(|_| "arena slot already used")?;
-        self.payloads[slot.index()] = Some(Mapping::new(&self.file, self.layout.data_offset(slot), self.layout.capacity(slot))?);
+        self.payloads[slot.index()] = Some(during(slot.map_receipt(), || Mapping::new(&self.file, self.layout.data_offset(slot), self.layout.capacity(slot)))?);
         Ok(Writer { arena: self, slot })
     }
     /// Fill the frame and its tree directly, keeping both WRITING on any refusal.
     pub fn write_frame_tree(&mut self, fill: impl FnOnce(&mut [u8], &mut [u8]) -> Result<(Record, usize), String>) -> Result<Record, String> {
         for slot in [Slot::Frame, Slot::Tree] {
             self.state(slot).compare_exchange(FREE, WRITING, Ordering::AcqRel, Ordering::Acquire).map_err(|_| "arena slot already used")?;
-            self.payloads[slot.index()] = Some(Mapping::new(&self.file, self.layout.data_offset(slot), self.layout.capacity(slot))?);
+            self.payloads[slot.index()] = Some(during(slot.map_receipt(), || Mapping::new(&self.file, self.layout.data_offset(slot), self.layout.capacity(slot)))?);
         }
         // The layout reserves disjoint payload ranges for the two slots. Both are
         // mutably borrowed for this call and neither is published yet.
@@ -222,14 +252,14 @@ impl Arena {
         let n = usize::try_from(q(0)).map_err(|_| "invalid arena length")?;
         let check_len = q(56) as usize;
         if n > self.layout.capacity(slot) || check_len > 256 { return Err("invalid arena record lengths".into()); }
-        let payload = if n == 0 { None } else { Some(Mapping::new(&self.file, self.layout.data_offset(slot), n)?) };
+        let payload = if n == 0 { None } else { Some(during(slot.map_receipt(), || Mapping::new(&self.file, self.layout.data_offset(slot), n))?) };
         let bytes = payload.as_ref().map_or(&[][..], |mapping| unsafe { std::slice::from_raw_parts(mapping.ptr, n) });
-        if sha256(bytes).as_slice() != &h[64..96] { return Err("arena payload hash mismatch".into()); }
+        if during("arena-copy-hash", || sha256(bytes)).as_slice() != &h[64..96] { return Err("arena payload hash mismatch".into()); }
         let observation_len = q(360) as usize;
         if observation_len > 1024 { return Err("invalid arena observation length".into()); }
         let record = Record { observation: h[368..368+observation_len].to_vec(), check: String::from_utf8(h[96..96+check_len].to_vec()).map_err(|_| "invalid arena check")?,
             window: q(8), commit: q(16), epoch: q(24), composite: q(32), width: q(40) as u32, height: q(48) as u32, oversize: h[352] != 0 };
-        Ok(SlotRead::Final { record, bytes: bytes.to_vec() })
+        Ok(SlotRead::Final { record, bytes: during("arena-copy-hash", || bytes.to_vec()) })
     }
 }
 /// Dropping an unpublished writer leaves WRITING visible to the collector.
@@ -242,7 +272,7 @@ impl Writer<'_> {
         if record.observation.len() > 1024 || record.check.len() > 256 || record.check.contains(['\n', '\r', '\0']) { return Err("invalid arena check name".into()); }
         let n = requested.min(self.arena.layout.capacity(self.slot));
         record.oversize |= requested > n;
-        let hash = sha256(&self.bytes_mut()[..n]);
+        let hash = during("arena-copy-hash", || sha256(&self.bytes_mut()[..n]));
         let h = unsafe { std::slice::from_raw_parts_mut(self.arena.headers[self.slot.index()].ptr.add(4), HEADER - 4) };
         for (i, value) in [n as u64, record.window, record.commit, record.epoch, record.composite,
             u64::from(record.width), u64::from(record.height), record.check.len() as u64].into_iter().enumerate() {

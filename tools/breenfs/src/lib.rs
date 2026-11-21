@@ -29,12 +29,19 @@ pub mod space;
 #[path = "../../../kernel/src/fs/breenfs/txn.rs"]
 pub mod txn;
 
+#[path = "../../../kernel/src/block/read_failure.rs"]
+pub mod read_failure;
+
 /// Synchronous device surface used by the shared no_std writer.
 pub mod block {
+    pub use crate::read_failure;
+    use read_failure::VirtioReadFailure;
     pub use crate::buffer_cache as cache;
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub enum BlockError {
         IoError,
+        VirtioRead(VirtioReadFailure),
+        AhciRead(read_failure::AhciReadError),
         OutOfMemory,
         OutOfBounds,
     }
@@ -104,3 +111,6 @@ pub mod buffer_cache;
 pub fn arch_without_interrupts<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
+
+#[path = "../../../kernel/src/fs/breenfs/preempt.rs"]
+pub mod preempt;

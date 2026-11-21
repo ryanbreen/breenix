@@ -1,7 +1,7 @@
 // Pinned host frames for the production file_map writeback entry points.
 use crate::{
     errno::Errno,
-    vfs::{FileSystem, VNode},
+    vfs::{FileSystem, MappingRead, VNode},
 };
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -13,7 +13,7 @@ pub const EVICT_BUDGET: usize = 64;
 #[derive(Clone)]
 pub struct MapState {
     state: Arc<MapShared>,
-    pub mapped_size: Arc<AtomicU64>,
+    pub mapped_size: HostMappedSize,
 }
 struct MapShared {
     filesystem: Arc<dyn FileSystem>,
@@ -26,6 +26,7 @@ struct MapShared {
     syncers: AtomicUsize,
 }
 struct MapInner {
+    mapped_size: u64,
     pages: PageVec<CachePage>,
     poisoned: PageVec<()>,
     bindings: Vec<BindingRec>,
@@ -33,38 +34,33 @@ struct MapInner {
     writeback_cursor: u64,
     writeback_epoch: u64,
 }
-struct PageVec<T> {
-    entries: Vec<(u64, T)>,
-}
+// PageVec and mutation algorithms are extracted from production file_map.rs.
 struct BindingRec {
-    first: u64,
-    last: u64,
+    id: u64,
+    pgoff: u64,
+    pages: u64,
+    shared: bool,
+    writable: bool,
+    parked: Vec<(u64, CachePage)>,
+    leaves: Vec<(u64, PhysFrame)>,
 }
 impl BindingRec {
+    fn writable_shared(&self) -> bool { self.shared && self.writable }
     fn covers(&self, index: u64) -> bool {
-        self.first <= index && index < self.last
+        self.pgoff <= index && index - self.pgoff < self.pages
     }
 }
-impl<T> PageVec<T> {
-    fn retain(&mut self, keep: impl Fn(u64) -> bool) {
-        self.entries.retain(|(i, _)| keep(*i));
-    }
-    fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-    fn range(&self, first: u64, last: u64) -> &[(u64, T)] {
-        let start = self.entries.partition_point(|(i, _)| *i < first);
-        let end = self.entries.partition_point(|(i, _)| *i < last);
-        &self.entries[start..end]
-    }
-    fn get_mut(&mut self, index: u64) -> Option<&mut T> {
-        self.entries
-            .iter_mut()
-            .find(|(i, _)| *i == index)
-            .map(|(_, page)| page)
-    }
+// Keep the existing fixture's EOF observer, reading the real MapInner state.
+#[derive(Clone)]
+pub struct HostMappedSize(Arc<MapShared>);
+impl HostMappedSize {
+    pub fn load(&self, _: Ordering) -> u64 { self.0.inner.lock().mapped_size }
 }
-#[derive(Clone, Copy)]
+impl MapInner {
+    // Host frames are data only; there is no guest instruction cache to sync.
+    fn sync_if_executable(&self, _: u64) {}
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct PhysFrame(usize);
 impl PhysFrame {
     fn start_address(self) -> Self {
@@ -79,14 +75,26 @@ struct CachePage {
     _storage: Box<[u8; 4096]>,
     dirty: bool,
     gen: u64,
-    written_gen: Option<u64>,
+    written: Option<WritebackReceipt>,
+}
+impl CachePage {
+    fn allocate() -> Result<Self, &'static str> {
+        let storage = Box::new([0; 4096]);
+        Ok(Self { frame: PhysFrame(storage.as_ptr() as usize), _storage: storage,
+            dirty: false, gen: 0, written: None })
+    }
+    fn ptr(&self) -> *mut u8 { self.frame.0 as *mut u8 }
+    fn zero_from(&self, offset: u64) {
+        assert!(offset < PAGE_SIZE);
+        unsafe { core::ptr::write_bytes(self.ptr().add(offset as usize), 0, (PAGE_SIZE - offset) as usize) };
+    }
 }
 impl MapState {
     pub fn new(size: u64, _epoch: u64, filesystem: Arc<dyn FileSystem>) -> Result<Self, Errno> {
-        Ok(Self {
-            state: Arc::new(MapShared {
+        let state = Arc::new(MapShared {
                 filesystem,
                 inner: Mutex::new(MapInner {
+                    mapped_size: size,
                     pages: PageVec {
                         entries: Vec::new(),
                     },
@@ -104,12 +112,13 @@ impl MapState {
                 eviction_pending: AtomicBool::new(false),
                 writeback_requests: AtomicU64::new(0),
                 syncers: AtomicUsize::new(0),
-            }),
-            mapped_size: Arc::new(AtomicU64::new(size)),
-        })
+            });
+        Ok(Self { mapped_size: HostMappedSize(state.clone()), state })
     }
-    pub fn resync_unbound(&self, size: u64) {
-        self.mapped_size.store(size, Ordering::Release);
+    pub fn cache_counts(&self) -> (usize, usize, usize) {
+        let inner = self.state.inner.lock();
+        (inner.pages.len(), inner.pages.entries.iter().filter(|(_, p)| p.dirty).count(),
+            inner.bindings.len())
     }
     pub fn may_change_exec_image(&self) -> bool {
         self.has_dirty()
@@ -130,15 +139,20 @@ impl MapState {
                     _storage: storage,
                     dirty: true,
                     gen: 1,
-                    written_gen: None,
+                    written: None,
                 },
             ));
         }
         inner.writable_shared = usize::from(writable);
         inner.bindings = if writable {
             alloc::vec![BindingRec {
-                first: 0,
-                last: bytes.len().div_ceil(4096) as u64
+                id: 1,
+                pgoff: 0,
+                pages: bytes.len().div_ceil(4096) as u64,
+                shared: true,
+                writable: true,
+                parked: Vec::new(),
+                leaves: Vec::new(),
             }]
         } else {
             Vec::new()
@@ -150,3 +164,97 @@ impl MapState {
     }
 }
 include!(concat!(env!("OUT_DIR"), "/mapping_entries.rs"));
+
+// Only page-table publication/revocation and user accesses are modeled here.
+// Overlay, prepare/commit, EOF transition and writeback above are production.
+impl MapState {
+    fn revoke(&self, first: u64, last: u64, aliases: bool) {
+        let mut inner = self.state.inner.lock();
+        let MapInner { pages, bindings, .. } = &mut *inner;
+        for rec in bindings {
+            rec.leaves.retain(|(index, frame)| {
+                if *index < first || *index >= last { return true; }
+                aliases && pages.get(*index).is_some_and(|p| p.dirty || p.frame != *frame)
+            });
+        }
+    }
+}
+#[derive(Clone)]
+pub struct HostBinding(Arc<HostBindingOwner>);
+struct HostBindingOwner { node: Arc<VNode>, id: u64 }
+#[derive(Debug, PartialEq, Eq)]
+pub enum HostFault { Sigbus }
+pub fn bind_host(node: Arc<VNode>, length: u64, shared: bool, writable: bool, populate: bool) -> HostBinding {
+    let io = node.filesystem.mapping_io(&node).unwrap();
+    if populate {
+        let bytes = io.read(0, length.min(io.size()) as usize).unwrap();
+        let mut inner = node.map.state.inner.lock();
+        for (index, bytes) in bytes.chunks(4096).enumerate() {
+            let mut page = CachePage::allocate().unwrap();
+            page._storage[..bytes.len()].copy_from_slice(bytes);
+            inner.pages.try_insert(index as u64, page).unwrap();
+        }
+        node.map.refresh(&inner);
+    }
+    let mut id = 0;
+    io.publish(&mut |_| {
+        let mut inner = node.map.state.inner.lock();
+        id = inner.bindings.iter().map(|r| r.id).max().unwrap_or(0) + 1;
+        inner.bindings.push(BindingRec { id, pgoff: 0, pages: pages(length), shared, writable,
+            parked: Vec::new(), leaves: Vec::new() });
+        inner.writable_shared += usize::from(shared && writable);
+        Ok(())
+    }).unwrap();
+    HostBinding(Arc::new(HostBindingOwner { node, id }))
+}
+impl HostBinding {
+    pub fn load(&self, offset: u64) -> Result<u8, HostFault> {
+        self.access(offset, None)
+    }
+    pub fn store(&self, offset: u64, byte: u8) -> Result<(), HostFault> {
+        self.access(offset, Some(byte)).map(|_| ())
+    }
+    pub fn has_leaf(&self, index: u64) -> bool {
+        let inner = self.0.node.map.state.inner.lock();
+        inner.bindings.iter().find(|rec| rec.id == self.0.id).unwrap()
+            .leaves.iter().any(|(i, _)| *i == index)
+    }
+    fn access(&self, offset: u64, store: Option<u8>) -> Result<u8, HostFault> {
+        let map = &self.0.node.map;
+        let mut inner = map.state.inner.lock();
+        let index = offset / PAGE_SIZE;
+        if index >= pages(inner.mapped_size) || inner.poisoned.contains(index) {
+            return Err(HostFault::Sigbus);
+        }
+        let slot = inner.bindings.iter().position(|r| r.id == self.0.id).unwrap();
+        assert!(inner.bindings[slot].covers(index));
+        assert!(store.is_none() || inner.bindings[slot].writable);
+        // Absent pages in these fixtures are holes, already read as 0 by
+        // the production MappingIo, or pages made valid by a bound extension.
+        inner.pages.try_insert(index, CachePage::allocate().unwrap()).unwrap();
+        let shared = inner.bindings[slot].shared;
+        let cache = inner.pages.get_mut(index).unwrap();
+        let frame = cache.frame;
+        if store.is_some() && shared {
+            cache.dirty = true;
+            cache.gen += 1;
+        }
+        let rec = &mut inner.bindings[slot];
+        let frame = if shared || store.is_none() && !rec.parked.iter().any(|(i, _)| *i == index) {
+            frame
+        } else {
+            if !rec.parked.iter().any(|(i, _)| *i == index) {
+                let page = CachePage::allocate().unwrap();
+                unsafe { core::ptr::copy_nonoverlapping(frame.0 as *const u8, page.ptr(), 4096) };
+                rec.parked.push((index, page));
+            }
+            rec.parked.iter().find(|(i, _)| *i == index).unwrap().1.frame
+        };
+        if !rec.leaves.iter().any(|(i, _)| *i == index) { rec.leaves.push((index, frame)); }
+        let ptr = (frame.0 as *mut u8).wrapping_add((offset % PAGE_SIZE) as usize);
+        if let Some(byte) = store { unsafe { ptr.write(byte) }; }
+        let byte = unsafe { ptr.read() };
+        map.refresh(&inner);
+        Ok(byte)
+    }
+}

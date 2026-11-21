@@ -1061,10 +1061,12 @@ pub fn preempt_enable() {
     // already zero means some path released a brake it never took. Saturate at
     // zero and count it rather than wrapping to 0xFFFFFFFF, which would leave
     // this CPU with clean preemptive scheduling structurally disabled. Debug
-    // builds make it fatal; release builds leave the count truthful and the
-    // violation readable at census time via preempt_underflow_count(). Only the
+    // builds make it fatal; release builds post one deferred PREEMPT_FAULT
+    // receipt (E24 ledger 703) and keep the total readable via
+    // preempt_underflow_count(). Only the
     // PREEMPT bits are consulted, matching what this function decrements - the
     // softirq/hardirq/NMI fields have their own enter/exit wrappers.
+    // claim-lint:ok: tests/preempt_bracket_structure.rs pins this guard's shape.
     //
     // The check and the decrement are not one atomic read-modify-write, and they
     // do not need to be: preempt_count is per-CPU, the PREEMPT field is moved
@@ -1072,8 +1074,10 @@ pub fn preempt_enable() {
     // taken in the window moves the HARDIRQ/SOFTIRQ fields and restores whatever
     // it did to the PREEMPT field before returning. The decrement it guards was
     // already a non-atomic `sub` on the same per-CPU word.
-    if hal_percpu::X86PerCpu::preempt_count() & PREEMPT_MASK == 0 {
+    let count = hal_percpu::X86PerCpu::preempt_count();
+    if count & PREEMPT_MASK == 0 {
         PREEMPT_UNDERFLOW_COUNT.fetch_add(1, Ordering::Relaxed);
+        crate::task::preempt_fault::underflow(count);
         debug_assert!(
             false,
             "preempt_enable() underflow: PREEMPT bits already zero (unpaired release)"

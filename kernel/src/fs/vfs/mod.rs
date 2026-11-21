@@ -131,6 +131,11 @@ pub trait MappingIo: Any {
     fn size(&self) -> u64;
     fn read(&self, offset: u64, length: usize) -> Result<Vec<u8>, Errno>;
     fn needs_flush(&self) -> bool;
+    /// Generation that accepted the most recent writeback run, for
+    /// backends that publish staged data in transactions.
+    fn staged_writeback_generation(&self) -> Option<u64> {
+        None
+    }
     fn sync(&self, first: u64, last: u64) -> Result<(), Errno>;
     fn publish(&self, bind: &mut dyn FnMut(bool) -> Result<(), Errno>) -> Result<(), Errno>;
 }
@@ -302,6 +307,12 @@ pub trait FileSystem: core::any::Any + Send + Sync {
     fn init_service(&self) -> Result<(), Errno> { Ok(()) }
     fn shutdown(&self, _name: &str, _deadline: u64) -> Result<(), Errno> { Err(Errno(EOPNOTSUPP)) }
     fn report(&self, _report: Report, _name: &str, _text: &mut alloc::string::String) -> Result<(), Errno> { Ok(()) }
+    /// Snapshot retained mapped pages for a failed suite memory check.
+    fn report_mapping_cache(&self, _text: &mut alloc::string::String) -> Result<(), Errno> { Ok(()) }
+    /// Diagnostic counters only; must not wait for mutation exclusion.
+    fn mutation_costs(&self, _name: &str, _text: &mut alloc::string::String) -> Result<(), Errno> { Ok(()) }
+    /// First latched backend failure, read without the mount-table lock.
+    fn failure(&self) -> Option<(&'static str, i32)> { None }
     fn read_only(&self) -> Result<bool, Errno>;
     fn max_file_size(&self) -> Result<u64, Errno>;
     /// Backend controls on a retained node. Implementations validate user

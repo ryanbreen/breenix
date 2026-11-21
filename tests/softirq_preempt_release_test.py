@@ -51,6 +51,13 @@ static PENDING: AtomicU32 = AtomicU32::new(0);
 static LOCK_HELD: AtomicBool = AtomicBool::new(false);
 static MASKED: AtomicBool = AtomicBool::new(false);
 static CALLS: AtomicU32 = AtomicU32::new(0);
+mod task {
+    pub mod preempt_fault {
+        pub fn underflow(count: u32) {
+            panic!("unexpected preempt underflow: count={count:#x}");
+        }
+    }
+}
 mod hal_percpu {
     use super::*;
     pub struct X86PerCpu;

@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 const DRIVER_COMPLETION_WAIT_POPULATION: usize = 8;
 const INTERRUPTIBLE_WAIT: &str = ".wait_timeout(";
 const UNINTERRUPTIBLE_WAIT: &str = ".wait_timeout_uninterruptible(";
+const OBSERVED_UNINTERRUPTIBLE_WAIT: &str = ".wait_timeout_uninterruptible_observed(";
 const BLOCK_EINTR_ORACLE_PREFIX: &str = "[BLOCK_EINTR_ORACLE:";
 const BOOT_TEST_FAIL_PREFIX: &str = "[BOOT_TESTS:FAIL";
 
@@ -192,7 +193,8 @@ fn census_source(label: &str, source: &str) -> CompletionWaitCensus {
     let interruptible_offsets = code_occurrences(source, INTERRUPTIBLE_WAIT);
     CompletionWaitCensus {
         interruptible: interruptible_offsets.len(),
-        uninterruptible: code_occurrences(source, UNINTERRUPTIBLE_WAIT).len(),
+        uninterruptible: code_occurrences(source, UNINTERRUPTIBLE_WAIT).len()
+            + code_occurrences(source, OBSERVED_UNINTERRUPTIBLE_WAIT).len(),
         interruptible_sites: interruptible_offsets
             .into_iter()
             .map(|offset| format!("{label}:{}", line_number(source, offset)))
@@ -333,8 +335,18 @@ fn completion_wait_validator_rejects_interruptible_synthetic_source() {
 
 #[test]
 fn completion_wait_census_ignores_comments_and_string_literals() {
+    // AHCI's observer preserves uninterruptible waiting. Count either spelling
+    // in the same population; neither may disappear from the census.
+    let observed = census_source("synthetic.rs", r#"
+        completion.wait_timeout_uninterruptible(token, TIMEOUT);
+        completion.wait_timeout_uninterruptible_observed(token, TIMEOUT, observe);
+    "#);
+    assert_eq!(observed.uninterruptible, 2);
+    assert_eq!(observed.interruptible, 0);
     let synthetic = r###"
         // self.completion.wait_timeout(token, TIMEOUT);
+        // completion.wait_timeout_uninterruptible_observed(token, TIMEOUT, observe);
+        const OBSERVED_MESSAGE: &str = ".wait_timeout_uninterruptible_observed(";
         /* device.wait_timeout(token, TIMEOUT); */
         const MESSAGE: &str = ".wait_timeout(";
         const RAW_MESSAGE: &str = r#".wait_timeout("#;

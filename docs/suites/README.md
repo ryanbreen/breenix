@@ -235,6 +235,16 @@ SUITE <id> MEMORY reclaimed=PASS|FAIL free_before=<pages> free_after=<pages> all
 - `MEMORY before` comes after START and before the first case. After DONE, the runner kills
   and reaps any process left (each case's were swept after it), then prints `MEMORY after`
   and the `reclaimed` verdict, before `SUITE_SEQUENCE READY`.
+- Before launching GUI Apps, init waits for its SSH boot oracle and server-side
+  connection handlers to finish and for the finite ARM64 boot counter helper to be
+  reaped. A GUI Apps memory failure prints the paired resident samples as
+  `SUITE_MEMORY_PID gui-apps <before|after>` records. Each row has `pid`, `name`,
+  `user_pages`, `user_stacks` and `page_tables`. The header reports row truncation or
+  skipped address spaces. The runner yields and retries a busy census after taking the
+  aggregate sample. On failure it reports an unavailable side with its final `errno`,
+  or `reason=not-sampled` if no census attempt was made. Compare the PID changes
+  with the aggregate MEMORY owner changes. A shared frame can appear under more than one
+  PID, and the aggregate can include tracked frames with no user mapping.
 - What the runner keeps for its final panel exists before `MEMORY before`, so both samples
   count it: a framebuffer suite's mapping of the display, and the GPU suite's view, a GPU
   context and its 2560x1600 scanout target (4013 pages).
@@ -2034,3 +2044,5 @@ the required records and completed-capture scoring. The third milestone uses
 the host-run `console/acceptance` case: the same capture must pass those GT 710
 reporting categories, screen/font read-back and E16's complete 88-case `console`
 suite, including its memory reclamation record.
+
+Filesystem categories may declare `"root": "breenfs"`. The guest emits `SUITE filesystem ROOT <fs>` before its cases; the verdict requires exactly one valid declaration and scores that category only on the named root. The default ext2 run omits the category.

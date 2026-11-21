@@ -1,6 +1,6 @@
 use breenfs_host_tests::{
     block::{BlockDevice, BlockError},
-    btree::{self, NodeStore},
+    btree::{self, NodeStore, ReadCause, ReadFailure},
     buffer_cache::{BufferCache, Wait},
     commit::DeviceStore,
     crc32c,
@@ -181,7 +181,10 @@ fn clean_node_is_verified_then_cached() {
         ] {
             assert_eq!(
                 btree::search(&store, ptr, Key::default()),
-                Err(btree::Error::InvalidNode)
+                Err(btree::Error::Read(ReadFailure {
+                    cause: ReadCause::Verification,
+                    addr: sb.space_root.addr,
+                }))
             );
         }
     }
@@ -222,7 +225,10 @@ fn invalid_nodes_are_refused_and_retried_from_device() {
             let before = device.reads.load(Ordering::Relaxed);
             assert_eq!(
                 store.get(sb.space_root.addr),
-                Err(btree::Error::Store),
+                Err(btree::Error::Read(ReadFailure {
+                    cause: ReadCause::Verification,
+                    addr: sb.space_root.addr,
+                })),
                 "{fault}"
             );
             assert_eq!(cache.counters().device_reads.count, attempt, "{fault}");

@@ -9,6 +9,8 @@ use core::{
 // Core task/thread modules - shared across architectures
 pub mod completion;
 #[cfg(target_arch = "x86_64")]
+pub(crate) mod cpu_progress;
+#[cfg(target_arch = "x86_64")]
 pub(crate) mod dispatch_strand_census;
 #[cfg(target_arch = "x86_64")]
 pub fn report_dispatch_strand_census_heartbeat() {
@@ -20,6 +22,7 @@ pub fn start_dispatch_strand_census_kthread() {
 }
 pub mod executor;
 pub mod exit_tally;
+pub(crate) mod preempt_fault;
 pub mod thread;
 pub mod user_dispatch;
 pub mod userspace_completion;
@@ -33,6 +36,8 @@ pub mod context;
 
 // Scheduler and preemption - works on both x86_64 and aarch64
 // (requires architecture-specific interrupt control, provided by arch_impl)
+#[cfg(target_arch = "aarch64")]
+pub(crate) mod lockup;
 pub mod scheduler;
 // Registered unconditionally: the in-path recorders it exposes are called from
 // the aarch64 dispatch path in every profile, and compile to empty inline

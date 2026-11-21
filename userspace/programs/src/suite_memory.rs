@@ -976,7 +976,11 @@ fn answer(i: usize) -> bool {
 /// then hand off HANDOFFS times with all of them at once within HANDOFF_MS, so all n + 1
 /// threads run at the same time on their own processors; then let the workers run.
 fn prove_parallel(n: usize, cpus: usize) -> CaseResult {
-    let stop = |msg: String| -> CaseResult { GO.store(2, SeqCst); fail(msg) };
+    let stop = |msg: String| -> CaseResult {
+        breenix_suite::suite::pin_progress_missed();
+        GO.store(2, SeqCst);
+        fail(msg)
+    };
     match pin_to(0) {
         1 => {}
         PIN_FAILED => return stop("sched_setaffinity to processor 0 failed".into()),

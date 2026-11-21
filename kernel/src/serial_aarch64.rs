@@ -487,6 +487,22 @@ pub(crate) fn hardware_ready() -> bool {
 /// The UART byte sink. Callers must own the UART and have waited for
 /// [`hardware_ready`] (see `serial_line`).
 pub(crate) fn hardware_write(c: u8, _owner: &crate::serial_line::Ownership) {
+    write_uart_byte(c);
+}
+
+/// Best-effort fatal output before panic handling, bypassing UART ownership.
+pub(crate) fn write_failure_byte(c: u8) -> bool {
+    for _ in 0..1024 {
+        if hardware_ready() {
+            write_uart_byte(c);
+            return true;
+        }
+        core::hint::spin_loop();
+    }
+    false
+}
+
+fn write_uart_byte(c: u8) {
     let addr = crate::platform_config::uart_virt() as usize;
     unsafe {
         if crate::platform_config::uart_type() == 1 {

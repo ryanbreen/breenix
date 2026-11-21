@@ -7,7 +7,7 @@
 //! # What this writer may use, and why
 //!
 //! On x86_64, only `crate::tracing::output::raw_serial_char`, which is a
-//! bounded transmit-ready poll followed by one port write. On aarch64, only a `crate::serial_line::Line` held in
+//! bounded transmit-ready poll followed by one port write. On aarch64, only a `crate::serial_line::UnattributedLine` held in
 //! the writer, which assembles the record on the stack and writes it while
 //! owning the UART. Neither takes a lock or allocates. The code above it here
 //! is integer arithmetic over a stack array. That is the reason the capture
@@ -102,7 +102,7 @@ pub const BXCAP_BUDGET_BYTES: u32 = 44;
 /// it.
 pub struct Writer {
     #[cfg(target_arch = "aarch64")]
-    line: crate::serial_line::Line,
+    line: crate::serial_line::UnattributedLine,
     remaining: u32,
     records: u32,
     bytes: u32,
@@ -119,7 +119,7 @@ impl Writer {
     pub fn new() -> Self {
         Self {
             #[cfg(target_arch = "aarch64")]
-            line: crate::serial_line::Line::new(),
+            line: crate::serial_line::UnattributedLine::new(),
             remaining: BXCAP_BUDGET_BYTES,
             records: 0,
             bytes: 0,
@@ -296,6 +296,24 @@ impl Writer {
         self.text(key);
         self.put(b'=');
         self.text(value);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub fn kv_command_name(&mut self, name: &[u8]) {
+        const HEX: &[u8; 16] = b"0123456789ABCDEF";
+        self.text(" proc=");
+        if name.is_empty() {
+            self.put(b'?');
+        }
+        for &byte in name {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-') {
+                self.put(byte);
+            } else {
+                self.put(b'%');
+                self.put(HEX[(byte >> 4) as usize]);
+                self.put(HEX[(byte & 0xf) as usize]);
+            }
+        }
     }
 
     #[inline(always)]
