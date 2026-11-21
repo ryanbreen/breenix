@@ -69,6 +69,30 @@ class MetalMigrationTest(existing.StateTest):
             metal_migration.compare_guest_manifests(body, body.replace(b'0700', b'0777'),
                                                     dict(source=digest, destination=digest))
 
+    def test_shared_manifest_labels_only_retained_hard_links(self):
+        import metal_migration
+
+        empty_digest = hashlib.sha256(b'').hexdigest().encode()
+
+        def row(path, group=b'-', kind=b'reg'):
+            digest = b'-' if kind == b'dir' else empty_digest
+            fields = (path.hex().encode(), kind, b'0755', b'0', b'0', group,
+                      b'0', b'0.000000000', digest)
+            return b'\t'.join(fields) + b'\n'
+
+        dirs = {p: row(p, kind=b'dir') for p in (b'/', b'/.breenix-shared', b'/root')}
+        for paths, retained, anchor in (
+            ((b'/root/a', b'/unretained/a'), (b'/root/a',), b'-'),
+            ((b'/.breenix-generations/v1/bin/b', b'/.breenix-shared/b', b'/root/b'),
+             (b'/.breenix-shared/b', b'/root/b'), b'/.breenix-shared/b'.hex().encode()),
+        ):
+            with self.subTest(paths=paths):
+                group = paths[0].hex().encode()
+                source = dirs | {p: row(p, group) for p in paths}
+                expected = dirs | {p: row(p, anchor) for p in retained}
+                self.assertEqual(metal_migration.shared_manifest(b''.join(source[p] for p in sorted(source))),
+                                 b''.join(expected[p] for p in sorted(expected)))
+
     def test_cutover_requires_cold_proof_and_idle_manager_answers_test(self):
         import metal_migration
         from metal_persistent_test import http
