@@ -1,6 +1,7 @@
 //! E24 ledger 309 M1: a latched storage error must not pin mount teardown.
 use super::*;
 use alloc::{string::String, vec, vec::Vec};
+use std::cell::RefCell;
 use std::sync::{Mutex as HostMutex, Once};
 
 struct NoWait;
@@ -35,30 +36,40 @@ impl BlockDevice for Disk {
         Ok(())
     }
 }
-struct LossLog(HostMutex<Vec<String>>);
-static LOG: LossLog = LossLog(HostMutex::new(Vec::new()));
+// The process-wide sink writes to a buffer owned by the thread that
+// requested capture. Assertions read a snapshot after releasing the borrow.
+std::thread_local! {
+    static MESSAGES: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+}
+
+struct LossLog;
+
 impl log::Log for LossLog {
     fn enabled(&self, _: &log::Metadata<'_>) -> bool {
         true
     }
     fn log(&self, record: &log::Record<'_>) {
-        self.0
-            .lock()
-            .unwrap()
-            .push(alloc::format!("{}", record.args()));
+        let _ = MESSAGES.try_with(|messages| {
+            if let Some(messages) = messages.borrow_mut().as_mut() {
+                messages.push(alloc::format!("{}", record.args()));
+            }
+        });
     }
     fn flush(&self) {}
 }
 pub(super) fn init_log() {
+    static LOG: LossLog = LossLog;
     static INIT: Once = Once::new();
     INIT.call_once(|| {
         log::set_logger(&LOG).unwrap();
         log::set_max_level(log::LevelFilter::Error);
     });
+    MESSAGES.with(|messages| *messages.borrow_mut() = Some(Vec::new()));
 }
-pub(super) fn messages() -> Vec<String> { LOG.0.lock().unwrap().clone() }
+pub(super) fn messages() -> Vec<String> {
+    MESSAGES.with(|messages| messages.borrow().as_ref().unwrap().clone())
+}
 fn fixture() -> Arc<BreenFs<NoWait>> {
-    init_log();
     let disk = Arc::new(Disk(HostMutex::new(vec![0; 64 * 1024 * 1024])));
     let sb = Superblock {
         fs_uuid: [0x11; 16],
@@ -156,6 +167,7 @@ fn clean_inode_lookup_does_not_allocate_a_replay_page() {
 }
 
 fn failed_mount(error: ops::Error) {
+    init_log();
     let fs = fixture();
     fs.init_service().unwrap();
     let node = fs.open(2).unwrap();
@@ -175,10 +187,7 @@ fn failed_mount(error: ops::Error) {
     );
     assert!(!fs.inner.signal.started.load(Ordering::Acquire));
     assert!(fs.inner.signal.stop.load(Ordering::Acquire));
-    assert!(LOG
-        .0
-        .lock()
-        .unwrap()
+    assert!(messages()
         .iter()
         .any(|line| line.contains(&name) && line.contains("uncommitted changes may be lost")));
     // A custody refusal can leave a stopped mount registered. Retrying
@@ -280,6 +289,7 @@ fn log_capture_excludes_peer_receipts_and_survives_peer_panic() {
 // to the production error arms; the table exercises their shared recorder.
 #[test]
 fn failure_latch_records_each_branch_once() {
+    init_log();
     let branches = [
         ("observed-metadata", EIO), ("edited", EIO), ("edited", ENOSPC),
         ("write-read-metadata", EIO), ("resize-read-metadata", EIO),
@@ -290,7 +300,7 @@ fn failure_latch_records_each_branch_once() {
     ];
     for (branch, code) in branches {
         let fs = fixture();
-        let before = LOG.0.lock().unwrap().len();
+        let before = messages().len();
         {
             let mut state = fs.inner.state.lock();
             state.fail(branch, Errno(code));
@@ -299,8 +309,9 @@ fn failure_latch_records_each_branch_once() {
         }
         assert_eq!(fs.failure(), Some((branch, code)));
         assert_eq!(fs.fsync(&fs.open(2).unwrap(), false), Err(Errno(EIO)));
-        assert_eq!(LOG.0.lock().unwrap().len(), before + 1);
-        let log = LOG.0.lock().unwrap().last().unwrap().clone();
+        let captured = messages();
+        assert_eq!(captured.len(), before + 1);
+        let log = captured.last().unwrap();
         assert!(log.contains(branch) && log.contains(&alloc::format!("errno={code}")), "{log}");
         let mut options = String::new();
         crate::vfs::mount_table::append_failure_options(&mut options, fs.failure());
