@@ -405,6 +405,26 @@ class DriverPersistentTest(unittest.TestCase):
         d.on_manager_line(f'breenix-manager: lab answered: persistent {d.id} previous', 0, 0)
         self.assertTrue(d.migration_answer)
 
+    def test_explicit_rescue_lease_records_the_archived_slot_and_refuses_it_after_reclaim(self):
+        d = self.driver
+        d.args.payload, d.args.mode, d.args.entry = 'persistent', 'persistent', 'rescue'
+        d.args.verify = True
+        rescue, current = 'a' * 40, 'b' * 40
+        layout = metal_persist.add_breenfs_layout(metal_persist.new_layout())
+        slots = {'rescue': {'commit': rescue, 'migration': 'rescue'}, 'current': {'commit': current}}
+        metal_persist.update_disk(layout=layout, slots=slots)
+        (m.STATE / 'persistent' / rescue / 'definition').mkdir(parents=True)
+        d.prepare_persistent()
+        self.assertEqual(d.args.commit, rescue)
+        with self.assertRaises(boot.BootManagerAbort):
+            d.on_slot_boot(f'breenix-manager: booting current {current}', 0)
+        d.on_slot_boot(f'breenix-manager: booting rescue {rescue}', 0)
+        self.assertEqual(m.read_json(d.dir / 'run.json')['entry'], 'rescue')
+        metal_persist.update_disk(layout=metal_persist.reclaimed_layout(layout),
+                                  ext2Reclaimed={'boot': '20261121T190000Z-metal'})
+        with self.assertRaises(boot.Finish):
+            d.prepare_persistent()
+
     def test_completed_migration_releases_only_explicit_persistent_boots(self):
         d = self.driver
         migration = boot.metal_migration

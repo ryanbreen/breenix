@@ -2,6 +2,7 @@
 
 import shutil
 import unittest
+import uuid
 from unittest.mock import patch
 
 import metal_breenfs_upgrade_test as upgrade
@@ -16,6 +17,20 @@ RECLAIM = '20261121T190000Z-metal'
 
 
 class MetalExt2ReclaimTest(upgrade.BreenfsUpgradeFixture):
+    def test_upgrade_config_offers_rescue_only_for_the_ext2_pair(self):
+        stage = m.STATE / 'upgrade'
+        stage.mkdir()
+        source = stage / 'payload'
+        source.write_bytes(b'slot')
+        guids = [uuid.UUID(self.layout['partitions'][role]['guid']).bytes_le.hex()
+                 for role in ('system', 'home')]
+        site = {'BOOT_URL': 'http://example.invalid/boot'}
+        config, _ = persist.upgrade_request(stage, self.layout, {}, source, source, site, breenfs=True)
+        self.assertIn('manager-config rescue-partitions ' + ' '.join(guids), config.read_text().splitlines())
+        config, _ = persist.upgrade_request(stage, persist.reclaimed_layout(self.layout), {},
+                                            source, source, site, breenfs=True)
+        self.assertNotIn('manager-config rescue-partitions ', config.read_text())
+
     def failed_attempt(self, ident, payload, mode, *, powered=False):
         boot = m.boot_dir(ident)
         boot.mkdir()
