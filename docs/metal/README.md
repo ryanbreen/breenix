@@ -739,15 +739,18 @@ On start the manager:
 4. Acts on the answer and shows which answer it acted on, on the screen and on COM1
    (`breenix-manager: lab answered: ...`).
 
-The menu has four entries: **Breenix** (the current slot, the default), **Breenix (previous kernel)** (marked
+The standard menu offers **Breenix** (the current slot, the default), **Breenix (previous kernel)** (marked
 unavailable until `PREVIOUS.IMG` exists), **Test loop (network)** and **Firmware setup**. The up and down arrow keys move the
 selection, Enter starts it, and a countdown of 5 seconds starts the default; any key stops the countdown. Keys come
 from the firmware's console input, which joins the USB keyboard and the serial console redirection.
+On the migrated layout, the BreenFS upgrade also enables **Breenix (read-only ext2 rescue)** while the
+rescue image and both configured ext2 partition GUIDs are present.
 
 | The lab answered | The manager |
 |---|---|
 | `test <boot>` | Shows `Test boot requested by the lab (boot <boot>)` and starts the test loop after 3 seconds (`Starting the test loop in 3 s; a key does not cancel it.`). A key pressed meanwhile does not cancel it: the screen says `The lab's lease holds this machine for boot <boot>; the test boot goes ahead`. |
 | `persistent <boot> <current or previous> [commit or rollback]` | A persistent session holds the lease. It applies the slot action (below), then counts down to the named entry; a key stops the countdown and the operator chooses. |
+| `persistent <boot> rescue` | A bounded verification lease selects the read-only ext2 rescue without a slot action. The manager refuses it when the rescue is unavailable. |
 | `busy <boot>` | The lease is held by a boot that has not powered the machine on yet; the lab will power it off. The menu stays up without a countdown and says so. |
 | no answer (DHCP or HTTP failed, or a reply it cannot read) | Says `The lab did not answer (<why>)` and counts down to **Breenix**. |
 
@@ -947,8 +950,11 @@ For 24.19 acceptance, use `metal-run close-migration RETURN_BOOT` while the leas
 queue are empty and the machine is off. It binds closure to the completed 24.18 return
 record and preserves the idle test answer. Normal `install-persistent` on layout v2
 requires that closure. Its install boots use the disposable test root read-only,
-mount only the BreenFS system and home volumes writable, and archive the ext2 rescue
-pair before the first promotion replaces PREVIOUS. The installer snapshots home
+mount only the BreenFS system and home volumes writable, and save the ext2 rescue
+pair for the manager's separate rescue entry before the first promotion replaces PREVIOUS.
+An authorized `metal-run boot --persistent --entry rescue --verify` selects that slot
+under a lease. A rescue selection after return prevents reclaim.
+The installer snapshots home
 read-only and publishes the new system root by renaming its completed draft. The S21
 SSH probe checks the selected generation, shared mounts and readable BreenFS home.
 After both upgrades, `metal-run record-breenfs-upgrades FIRST SECOND --sha SHA`
@@ -959,9 +965,10 @@ with the same install IDs, source and tools. Under its lease, the driver rereads
 receipts and accounts for the boot history since the migration return. The firmware checks
 the six recorded entries, both GPT copies, and the BreenFS intents in CURRENT and PREVIOUS.
 It clears entries 3 and 4, flushes and rereads both GPT copies, then halts. The driver
-publishes layout v3 and retires the rescue reference after confirmed power-off. The
-unselectable RESCUE archive and the old filesystem data remain as bytes on disk. The
-reclaim writes only GPT sectors.
+publishes layout v3 and retires the rescue reference after confirmed power-off.
+The manager hides the rescue entry as soon as firmware no longer exposes its ext2
+partition GUIDs. The RESCUE files on the ESP and the old filesystem data remain on disk.
+The reclaim writes only GPT sectors.
 
 The reclaim boot stores `filesystem-reclaimed.json`. Follow it to successful completion,
 then run `metal-run boot --persistent --verify` and follow that boot to confirmed Off.

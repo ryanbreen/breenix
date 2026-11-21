@@ -229,8 +229,8 @@ STUB_FAILED_LINE = 'metal-stub: FAILED'
 # The boot manager's lines (docs/metal/README.md, "The boot manager").
 MANAGER_STARTED = 'breenix-manager: started: '
 MANAGER_ANSWER = re.compile(r'breenix-manager: lab answered: (.*)')
-MANAGER_PERSISTENT_COUNTDOWN = re.compile(r'breenix-manager: menu: Starting (?:Breenix|the previous kernel) in [0-9]+ s;')
-MANAGER_PERSISTENT_START = re.compile(r'breenix-manager: (?:installed configuration unavailable;|booting (?:current|previous) )')
+MANAGER_PERSISTENT_COUNTDOWN = re.compile(r'breenix-manager: menu: Starting (?:Breenix|the previous kernel|the ext2 rescue) in [0-9]+ s;')
+MANAGER_PERSISTENT_START = re.compile(r'breenix-manager: (?:installed configuration unavailable;|booting (?:current|previous|rescue) )')
 MANAGER_PROBE_DONE = 'breenix-manager: probe complete'
 MANAGER_PANIC = 'breenix-manager: panic: '
 NO_BOOTABLE = 'no bootable device'
@@ -839,8 +839,7 @@ class Driver:
         slots = metal_persist.read_disk().get('slots', {})
         action = getattr(self.args, 'slot_action', None)
         entry = getattr(self.args, 'entry', None) or 'current'
-        slot = ('next' if action == 'commit' and slots.get('next') else 'previous' if action == 'rollback' or entry == 'previous'
-                else 'current')
+        slot = ('next' if action == 'commit' and slots.get('next') else 'previous' if action == 'rollback' else entry)
         return (slots.get(slot) or {}).get('commit')
 
     def prepare_persistent(self):
@@ -850,6 +849,10 @@ class Driver:
         layout = metal_persist.layout()
         if not layout:
             raise Finish(m.EXIT_CANCELLED, 'the disk has no persistent install')
+        if getattr(self.args, 'entry', None) == 'rescue':
+            rescue = (metal_persist.read_disk().get('slots') or {}).get('rescue') or {}
+            if layout['version'] != 2 or rescue.get('migration') != 'rescue':
+                raise Finish(m.EXIT_CANCELLED, 'the persistent layout has no ext2 rescue slot')
         if layout['version'] == 3:
             record = metal_persist.read_disk().get('ext2Reclaimed') or {}
             if not metal_migration.BOOT_ID.fullmatch(record.get('boot', '')):
@@ -1059,7 +1062,8 @@ class Driver:
             shape = boot_shape('persistent' if persistent(self.args) else getattr(self.args, 'disk', None))
             self.final_marker = final_marker(metal, self.args.mode, catalog, shape, breenfs=breenfs)
             self.required_stages = measured_stages(metal, self.args.mode, catalog, shape, breenfs=breenfs,
-                                                   previous=bool(retired and getattr(self.args, 'entry', None) == 'previous'))
+                                                   previous=bool(retired and getattr(self.args, 'entry', None) == 'previous'),
+                                                   rescue=getattr(self.args, 'entry', None) == 'rescue')
         if xhci_fault(self.args):
             marker = '[xhci-fault] ' + xhci_fault(self.args) + ' PASS:'
             self.final_marker = (marker, 'contains')
@@ -1885,7 +1889,7 @@ class Driver:
         self.event('slots', observed_at=observed_at, action=found.group(1), current=found.group(2), previous=found.group(3))
 
     def on_slot_boot(self, line, observed_at):
-        found = re.fullmatch(r'breenix-manager: booting (current|previous) ([0-9a-f]{40})', line)
+        found = re.fullmatch(r'breenix-manager: booting (current|previous|rescue) ([0-9a-f]{40})', line)
         if self.watchdog_trigger is not None and found:
             entry, commit = found.groups()
             if entry != 'current' or commit != self.args.commit:
@@ -1898,7 +1902,8 @@ class Driver:
         if not persistent(self.args) or not found:
             return
         entry, commit = found.groups()
-        if getattr(self.args, 'ext2_reclaimed', None) and entry != (getattr(self.args, 'entry', None) or 'current'):
+        requested = getattr(self.args, 'entry', None) or 'current'
+        if entry != requested and ('rescue' in (entry, requested) or getattr(self.args, 'ext2_reclaimed', None)):
             raise BootManagerAbort(line, observed_at)
         slot = metal_persist.read_disk().get('slots', {}).get(entry, {})
         if self.migration_phase in ('rescue', 'return'):
@@ -2000,6 +2005,10 @@ class Driver:
     def on_manager_line(self, line, observed_at, seconds):
         """The boot manager's start, the lab's answer it acted on, and a probe's end (README, "The boot manager")."""
         answer = MANAGER_ANSWER.search(line)
+        if getattr(self.args, 'entry', None) == 'rescue' and (
+                (answer and answer[1] != f'persistent {self.id} rescue')
+                or 'breenix-manager: ext2 rescue unavailable' in line):
+            raise BootManagerAbort(line, observed_at)
         if self.migration_phase in ('rescue', 'return'):
             expected = metal_migration.manager_answer(self.migration_phase, self.id, self.args.slot_action)
             if ((answer and answer[1] != expected)
@@ -2982,7 +2991,7 @@ def marker_matches(spec, line):
 
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
-def measured_stages(metal, mode, catalog, shape='ramdisk', *, breenfs=False, previous=False):
+def measured_stages(metal, mode, catalog, shape='ramdisk', *, breenfs=False, previous=False, rescue=False):
     """Track each measured milestone in its own print order, including delayed kernel producers.
     The definition selects which boot shapes and modes can measure each milestone."""
     markers = {stage['name']: stage for stage in catalog.get('stages', [])}
@@ -2990,7 +2999,7 @@ def measured_stages(metal, mode, catalog, shape='ramdisk', *, breenfs=False, pre
     for milestone in metal.get('milestones', []):
         if milestone.get('stub') or not metal_score.measures(milestone, shape, mode):
             continue
-        listed = metal_score.stages(milestone, mode, metal['gateArch'], breenfs=breenfs, previous=previous)
+        listed = metal_score.stages(milestone, mode, metal['gateArch'], breenfs=breenfs, previous=previous, rescue=rescue)
         group = []
         for stage in listed:
             spec = markers.get(stage, {}) if isinstance(stage, str) else stage
@@ -3100,7 +3109,7 @@ def main():
         p.add_argument('--no-wait', action='store_true')
         p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read', 'disk-before-mount',
                                             FENCE_FAULT, 'panic-reboot', 'upgrade-no-ssh', 'upgrade-service-down', *WATCHDOG_FAULTS))
-        p.add_argument('--entry', choices=('current', 'previous'), help='the kernel slot a persistent boot runs')
+        p.add_argument('--entry', choices=('current', 'previous', 'rescue'), help='the kernel slot a persistent boot runs')
         p.add_argument('--slot-action', choices=('commit', 'rollback'), help='what the manager does to the slots first')
         p.add_argument('--run', action='append', help='a persistent boot logs in over SOL and runs this; repeatable')
         p.add_argument('--upgrade-parent', help='install whose S21 probe owns this verification')
@@ -3184,6 +3193,8 @@ def main():
             parser.error('boot modes need an image payload')
         if (args.entry or args.slot_action or args.run or args.verify or args.adopt) and args.payload != 'persistent':
             parser.error('--entry, --slot-action, --run, --verify and --adopt need a persistent boot')
+        if args.entry == 'rescue' and (not args.verify or args.run or args.slot_action or args.adopt or args.resting):
+            parser.error('the ext2 rescue needs a bounded verification boot without slot actions')
         if args.inject in WATCHDOG_FAULTS and (args.payload != 'image' or args.mode != 'default' or args.disk or args.nmi):
             parser.error('watchdog fault needs a default RAM-disk image boot without --nmi')
         if args.inject == FENCE_FAULT and (args.payload != 'image' or args.mode != 'default' or args.disk not in (None, 'root')):

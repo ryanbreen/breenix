@@ -10,6 +10,17 @@ ANNOUNCEMENT = 'kernel::test_exec:'
 # Host records whose milestone differs from their suite/category name.
 HOST_MILESTONES = {'users-operator.json': 'users/operator-login'}
 
+EXT2_RESCUE_STAGES = (
+    dict(name='Boot manager menu read back', marker='breenix-manager: screen read back identical: '),
+    dict(name='The lab answered for the rescue lease', marker='breenix-manager: row: No test boot is pending; session '),
+    dict(name='Rescue slot booted', marker='breenix-manager: booting rescue '),
+    dict(name='Ext2 root mounted', marker='ext2 root filesystem mounted'),
+    dict(name='Root mounted from the system partition', marker='[fs] root mounted from the system partition'),
+    dict(name='Hardware disks are read-only',
+         marker='[block] write fence: no partition chosen; hardware disks stay read-only'),
+    dict(name='Console login prompt', marker='Breenix login:'),
+)
+
 
 def host_milestone(name):
     suite, category = name.removesuffix('.json').split('-', 1)
@@ -28,7 +39,11 @@ def measures(milestone, shape, mode):
             and ('bootModes' not in milestone or mode in milestone['bootModes']))
 
 
-def stages(milestone, mode, arch, *, breenfs=False, previous=False):
+def stages(milestone, mode, arch, *, breenfs=False, previous=False, rescue=False):
+    if rescue and mode == 'persistent' and milestone['id'] == 'persistent-install':
+        # The saved rescue contains a boot definition from before this lease
+        # could select it. Match the format-3 read-only boot's own receipts.
+        return EXT2_RESCUE_STAGES
     if breenfs and mode == 'persistent' and 'breenfsStages' in milestone:
         return [dict(stage, marker='breenix-manager: booting previous ')
                 if previous and stage.get('marker') == 'breenix-manager: booting current ' else stage
@@ -79,7 +94,8 @@ def score(directory):
         retired = run.get('ext2Reclaimed')
         listed = stages(milestone, run['mode'], definition['gateArch'],
                         breenfs=bool(run.get('breenfsUpgrade') or retired),
-                        previous=bool(retired and run.get('entry') == 'previous'))
+                        previous=bool(retired and run.get('entry') == 'previous'),
+                        rescue=run.get('entry') == 'rescue')
         if not listed:
             continue
         cursor, reached = 0, 0

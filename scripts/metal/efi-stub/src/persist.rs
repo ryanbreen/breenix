@@ -18,7 +18,7 @@ use metal_efi::files::{self, Root};
 use metal_efi::say;
 use metal_efi::uefi::*;
 
-use crate::suite_disk::{partition_signature, Buffer};
+use crate::suite_disk::Buffer;
 
 #[path = "gpt_append.rs"]
 mod gpt_append;
@@ -949,7 +949,8 @@ unsafe fn check_reclaim_slots(
             return Err(VOLUME_CORRUPTED);
         }
     }
-    // RESCUE.IMG/TXT are an archive. Only CURRENT and PREVIOUS are selectable.
+    // The manager gates RESCUE on the live ext2 partition GUIDs, so clearing
+    // those GPT entries retires it without another ESP write.
     Ok(())
 }
 
@@ -1000,8 +1001,8 @@ unsafe fn report_slot(
     let text = core::str::from_utf8(&intent[..len]).map_err(|_| VOLUME_CORRUPTED)?;
     let (id, rescue) = slot_intent(text, request.migration_slots, request.breenfs_upgrade, slot)?;
     if rescue {
-        // Ordinary promotion replaces PREVIOUS. Keep this read-only pair for
-        // the explicit retirement request, separate from the BreenFS rollback.
+        // Ordinary promotion replaces PREVIOUS. Save the read-only pair for
+        // the manager's independent rescue entry.
         let mut note = [0u8; 256];
         let len = root.read(r"\EFI\BREENIX\PREVIOUS.TXT", &mut note)?;
         root.write(r"\EFI\BREENIX\RESCUE.IMG", core::slice::from_raw_parts(memory, size))?;

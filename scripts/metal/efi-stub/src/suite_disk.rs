@@ -209,25 +209,6 @@ unsafe fn find_disk(boot: &BootServices, expected: &[u8], size: usize) -> Result
     Ok(found)
 }
 
-/// The unique partition signature of a GPT partition's device path: its last Hard Drive node with a GUID signature
-/// (the Hard Drive media node, section 10.3.5).
-pub unsafe fn partition_signature(boot: &BootServices, handle: Handle) -> Option<[u8; 16]> {
-    let mut path: *mut c_void = null_mut();
-    if (boot.handle_protocol)(handle, &DEVICE_PATH, &mut path) != SUCCESS || path.is_null() {
-        return None;
-    }
-    let length = path_length(path.cast())?;
-    let bytes = core::slice::from_raw_parts(path.cast::<u8>(), length);
-    let mut signature = None;
-    for (kind, subtype, node) in Nodes::new(bytes) {
-        // Header, partition number (4), start (8), size (8), signature (16), MBR type, signature type.
-        if kind == node::MEDIA && subtype == node::HARD_DRIVE && node.len() >= 42 && node[41] == 2 {
-            signature = Some(node[24..40].try_into().unwrap());
-        }
-    }
-    signature
-}
-
 /// The one partition whose unique GUID is `guid`, at least `size` bytes long.
 pub unsafe fn find_partition(boot: &BootServices, guid: &[u8; 16], size: usize) -> Result<*mut BlockIo, Status> {
     let mut count = 0;

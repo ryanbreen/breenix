@@ -529,7 +529,11 @@ def upgrade_request(directory, the_layout, files, slot, note, site, *, rescue=No
     for path, source in dict(files, **{'efi/breenix/next.img': slot, 'efi/breenix/next.txt': note}).items():
         request.esp_file(path, source)
     if rescue is None:
-        for line in manager_config(site):
+        config = manager_config(site)
+        if breenfs and the_layout['version'] == 2:
+            guids = (uuid.UUID(parts[role]['guid']).bytes_le.hex() for role in EXT2_ROLES)
+            config.append('rescue-partitions ' + ' '.join(guids))
+        for line in config:
             request.lines.append('manager-config ' + line)
         request.lines.append('load-option ' + LOAD_OPTION)
     return request.finish(), request

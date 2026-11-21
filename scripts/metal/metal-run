@@ -5,7 +5,7 @@
   metal-run boot [--payload image|hang|none|manager] [--sha SHA | --branch NAME] [--no-wait] [--inject forceoff-fail|xhci-reset-device|xhci-short-read] [--nmi]
                  [--ramdisk] [--mode default|shell|probe|suite|console|tests] [--disk install|root] [--session [--idle-minutes N]]
                  [--suite ID | --suite ID,ID,... | --suite all] [--catchup]
-  metal-run boot --persistent [--entry previous] [--run CMD ...] [--verify]
+  metal-run boot --persistent [--entry previous|rescue] [--run CMD ...] [--verify]
   metal-run install-persistent [--sha SHA | --branch NAME] [--add-breenfs] | --rollback
   metal-run migrate-persistent migrate|readback|cutover|rescue|return --sha SHA --branch NAME
   metal-run close-migration RETURN_BOOT
@@ -327,6 +327,8 @@ def boot(args):
         raise SystemExit('--gt710-category needs an automated image boot')
     if (getattr(args, 'run', None) or getattr(args, 'verify', False) or getattr(args, 'entry', None)) and args.payload != 'persistent':
         raise SystemExit('--run, --verify and --entry need --persistent')
+    if getattr(args, 'entry', None) == 'rescue' and (not args.verify or args.run):
+        raise SystemExit('--entry rescue needs --verify without --run')
     if getattr(args, 'inject', None) == FENCE_FAULT and (args.payload != 'image' or args.mode != 'default' or args.disk == 'install'):
         raise SystemExit('the fence fault needs a default disk-root image boot')
     catchup = bool(getattr(args, 'catchup', False)) or catchup_from_env()
@@ -737,7 +739,7 @@ def argument_parser(automatic=False):
     p.add_argument('--mode', choices=('default', 'shell', 'probe', 'suite', 'console', 'tests'), default='default',
                    help='default boots the framebuffer console with virtual-terminal logins')
     p.add_argument('--persistent', action='store_true', help='boot the persistent install through the boot manager')
-    p.add_argument('--entry', choices=('previous',), help='a persistent boot of the previous kernel, once')
+    p.add_argument('--entry', choices=('previous', 'rescue'), help='a one-shot previous or read-only ext2 rescue boot')
     p.add_argument('--run', action='append', metavar='CMD', help='a persistent boot logs in over SOL and runs CMD')
     p.add_argument('--verify', action='store_true', help='a persistent boot that ends at the login prompt')
     p.add_argument('--input', choices=('sol',))

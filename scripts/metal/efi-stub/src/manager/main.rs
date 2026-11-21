@@ -46,13 +46,18 @@ extern "efiapi" fn efi_main(image: Handle, system: *const SystemTable) -> Status
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Item {
-    Current,
-    Previous,
+    Slot(Entry),
     TestLoop,
     FirmwareSetup,
 }
 
-const ITEMS: [Item; 4] = [Item::Current, Item::Previous, Item::TestLoop, Item::FirmwareSetup];
+const ITEMS: [Item; 5] = [
+    Item::Slot(Entry::Current),
+    Item::Slot(Entry::Previous),
+    Item::TestLoop,
+    Item::FirmwareSetup,
+    Item::Slot(Entry::Rescue),
+];
 /// Rows of the screen: the title, the entries, the lab's status, a second status line and the keys.
 const TITLE_ROW: usize = 0;
 const FIRST_ITEM_ROW: usize = 2;
@@ -71,6 +76,7 @@ struct Manager<'a> {
     esp: Option<Root>,
     current: Note,
     previous: Note,
+    rescue: Note,
     selected: usize,
     status: Line,
     detail: Line,
@@ -91,10 +97,21 @@ fn line(arguments: core::fmt::Arguments) -> Line {
 }
 
 impl<'a> Manager<'a> {
+    fn items(&self) -> &[Item] {
+        if self.rescue.present { &ITEMS } else { &ITEMS[..ITEMS.len() - 1] }
+    }
+
+    fn note(&self, entry: Entry) -> Note {
+        match entry {
+            Entry::Current => self.current,
+            Entry::Previous => self.previous,
+            Entry::Rescue => self.rescue,
+        }
+    }
+
     fn available(&self, item: Item) -> bool {
         match item {
-            Item::Current => self.current.present,
-            Item::Previous => self.previous.present,
+            Item::Slot(entry) => self.note(entry).present,
             Item::TestLoop => self.port_len > 0 && (self.test_path == TestPath::LoadFile || self.http_option.is_some()),
             Item::FirmwareSetup => true,
         }
@@ -102,12 +119,13 @@ impl<'a> Manager<'a> {
 
     fn item_text(&self, item: Item) -> Line {
         match item {
-            Item::Current if self.current.present => line(format_args!("Breenix ({})", self.current.short())),
-            Item::Current => line(format_args!("Breenix (no kernel installed)")),
-            Item::Previous if self.previous.present => {
+            Item::Slot(Entry::Current) if self.current.present => line(format_args!("Breenix ({})", self.current.short())),
+            Item::Slot(Entry::Current) => line(format_args!("Breenix (no kernel installed)")),
+            Item::Slot(Entry::Previous) if self.previous.present => {
                 line(format_args!("Breenix (previous kernel, {})", self.previous.short()))
             }
-            Item::Previous => line(format_args!("Breenix (previous kernel: none kept)")),
+            Item::Slot(Entry::Previous) => line(format_args!("Breenix (previous kernel: none kept)")),
+            Item::Slot(Entry::Rescue) => line(format_args!("Breenix (read-only ext2 rescue, {})", self.rescue.short())),
             Item::TestLoop => line(format_args!("Test loop (network)")),
             Item::FirmwareSetup if self.setup_offered => line(format_args!("Firmware setup")),
             Item::FirmwareSetup => line(format_args!("Firmware setup (restarts; press F2 at the firmware logo)")),
@@ -118,7 +136,7 @@ impl<'a> Manager<'a> {
     fn show(&mut self, read_back: bool) {
         let mut rows = [screen::Row { text: [b' '; screen::COLS], len: 0, inverted: false }; screen::ROWS];
         rows[TITLE_ROW] = line(format_args!("Breenix boot manager")).row;
-        for (index, &item) in ITEMS.iter().enumerate() {
+        for (index, &item) in self.items().iter().enumerate() {
             let text = self.item_text(item);
             let marker = if index == self.selected { "> " } else { "  " };
             let mut row = line(format_args!("{}{}", marker, text.row.as_str())).row;
@@ -202,7 +220,7 @@ impl<'a> Manager<'a> {
     }
 
     fn select(&mut self, item: Item) {
-        self.selected = ITEMS.iter().position(|&each| each == item).unwrap_or(0);
+        self.selected = self.items().iter().position(|&each| each == item).unwrap_or(0);
     }
 
     /// Starts the selected item; returns only when it could not be started, or returned.
@@ -214,13 +232,12 @@ impl<'a> Manager<'a> {
         // A boot manager arms the five-minute watchdog before it starts a boot option (section 3.1.2).
         (self.boot.set_watchdog_timer)(300, 0, 0, core::ptr::null());
         let status = match item {
-            Item::Current | Item::Previous => {
-                let entry = if item == Item::Current { Entry::Current } else { Entry::Previous };
-                let note = if entry == Entry::Current { self.current } else { self.previous };
+            Item::Slot(entry) => {
+                let note = self.note(entry);
                 // The screen as it is at the start, read back once more, so a console capture that began late (an
                 // operator's power-on, adopted by the lab) still holds it.
                 self.show(true);
-                say!("booting {} {}", if entry == Entry::Current { "current" } else { "previous" }, note.full());
+                say!("booting {} {}", entry.as_str(), note.full());
                 match self.esp.as_ref() {
                     Some(root) => slots::boot(self.boot, self.image, root, entry),
                     None => NOT_FOUND,
@@ -242,8 +259,9 @@ impl<'a> Manager<'a> {
     unsafe fn menu(&mut self, mut countdown: u32) -> ! {
         loop {
             let what = match ITEMS[self.selected] {
-                Item::Current => "Starting Breenix",
-                Item::Previous => "Starting the previous kernel",
+                Item::Slot(Entry::Current) => "Starting Breenix",
+                Item::Slot(Entry::Previous) => "Starting the previous kernel",
+                Item::Slot(Entry::Rescue) => "Starting the ext2 rescue",
                 Item::TestLoop => "Starting the test loop",
                 Item::FirmwareSetup => "Entering firmware setup",
             };
@@ -252,12 +270,12 @@ impl<'a> Manager<'a> {
             match outcome {
                 None => {}
                 Some(key) if key.scan_code == SCAN_UP => {
-                    self.selected = (self.selected + ITEMS.len() - 1) % ITEMS.len();
+                    self.selected = (self.selected + self.items().len() - 1) % self.items().len();
                     self.show(false);
                     continue;
                 }
                 Some(key) if key.scan_code == SCAN_DOWN => {
-                    self.selected = (self.selected + 1) % ITEMS.len();
+                    self.selected = (self.selected + 1) % self.items().len();
                     self.show(false);
                     continue;
                 }
@@ -299,7 +317,7 @@ unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
             return status;
         }
     }
-    let mut config_text = [0u8; 1024];
+    let mut config_text = [0u8; 2 * slots::PATH_MAX + slots::URL_MAX + 256];
     let config: Option<Config> = esp
         .as_ref()
         .and_then(|root| root.read("\\EFI\\BREENIX\\MANAGER.CFG", &mut config_text).ok())
@@ -313,7 +331,7 @@ unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
             for entry in [Entry::Current, Entry::Previous] {
                 let note = slots::note(root, slots::slot_name(entry));
                 if note.present {
-                    say!("booting {} {}", if entry == Entry::Current { "current" } else { "previous" }, note.full());
+                    say!("booting {} {}", entry.as_str(), note.full());
                     slots::boot(boot, image, root, entry);
                 }
             }
@@ -329,6 +347,9 @@ unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
         screen: Screen::open(boot, system),
         current: esp.as_ref().map_or(Note::ABSENT, |root| slots::note(root, "CURRENT")),
         previous: esp.as_ref().map_or(Note::ABSENT, |root| slots::note(root, "PREVIOUS")),
+        rescue: esp.as_ref().zip(config.as_ref()).map_or(Note::ABSENT, |(root, config)| {
+            slots::rescue_note(boot, root, config)
+        }),
         esp,
         selected: 0,
         status: line(format_args!("Asking the lab whether a test boot is pending.")),
@@ -399,14 +420,19 @@ unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
             say!(
                 "lab answered: persistent {} {}{}",
                 id.as_str(),
-                if entry == Entry::Current { "current" } else { "previous" },
+                entry.as_str(),
                 match action {
                     SlotAction::None => "",
                     SlotAction::Commit => " commit",
                     SlotAction::Rollback => " rollback",
                 }
             );
-            manager.select(if entry == Entry::Current { Item::Current } else { Item::Previous });
+            if entry == Entry::Rescue && !manager.rescue.present {
+                say!("ext2 rescue unavailable");
+                manager.set_status(line(format_args!("The ext2 rescue is unavailable.")), Line::new());
+                manager.menu(0);
+            }
+            manager.select(Item::Slot(entry));
             manager.set_status(
                 line(format_args!("No test boot is pending; session {} holds the machine.", id.as_str())),
                 Line::new(),
@@ -482,7 +508,7 @@ unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
         }
         Answer::Busy(_) => manager.menu(0),
         Answer::None(_) => {
-            manager.select(Item::Current);
+            manager.select(Item::Slot(Entry::Current));
             manager.show(false);
             manager.menu(countdown)
         }
