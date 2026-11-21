@@ -1,0 +1,52 @@
+extern crate self as libbreenix;
+
+#[path = "../libs/libbreenix/src/crypto/sha256.rs"]
+pub mod sha256;
+
+pub mod crypto {
+    pub use crate::sha256;
+}
+
+#[path = "../userspace/programs/src/filesystem_power_cut.rs"]
+mod writer;
+
+use std::io;
+
+#[test]
+fn power_cut_writer_acknowledges_only_complete_synced_records() {
+    const RECORD_BYTES: usize = 4096;
+    const DIGESTS: [&str; 2] = [
+        "e0e28770362e4c7918918c270db2037f3bc00b53ec1eadd139b7cc0c82bbd255",
+        "ba9db884e4ce37f046b017c825e8b68e9a698756273f58bf584ab370dd9a9268",
+    ];
+    let mut log = Vec::new();
+    let mut receipts = Vec::new();
+    let mut sync_calls = 0;
+    let result = writer::write_records(&mut log, &mut receipts, |log| {
+        sync_calls += 1;
+        assert_eq!(log.len(), sync_calls * RECORD_BYTES);
+        if sync_calls == 3 {
+            return Err(io::Error::other("injected fsync failure"));
+        }
+        Ok(())
+    });
+    assert_eq!(result.unwrap_err().to_string(), "injected fsync failure");
+    assert_eq!(sync_calls, 3);
+
+    for (index, record) in log.chunks_exact(RECORD_BYTES).enumerate() {
+        assert_eq!(&record[..8], &(index as u64 + 1).to_le_bytes());
+        let (body, digest) = record.split_at(RECORD_BYTES - 32);
+        assert_eq!(digest, sha256::sha256(body));
+        if let Some(expected) = DIGESTS.get(index) {
+            assert_eq!(hex(digest), *expected);
+        }
+    }
+    assert_eq!(
+        String::from_utf8(receipts).unwrap(),
+        format!("FSYNC 1 {}\nFSYNC 2 {}\n", DIGESTS[0], DIGESTS[1]),
+    );
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
