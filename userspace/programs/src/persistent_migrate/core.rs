@@ -412,11 +412,16 @@ pub fn run(
     let gen = mounts.switch_system(Some(&name), true)?;
     collect(&mut destination, &gen, prefix.as_bytes(), None)?;
 
+    let normalized_links = source
+        .iter()
+        .filter(|row| manifest::permissions(row.mode) != row.mode & 0o7777)
+        .count();
     let source_path = paths.evidence.join("source.tsv");
     let destination_path = paths.evidence.join("destination.tsv");
     save(&source_path, source)?;
     save(&destination_path, destination)?;
     compare(&source_path, &destination_path)?;
+    writeln!(out, "[migrate] normalized symlink modes: {normalized_links}")?;
     writeln!(out, "[migrate] manifests equal")
 }
 

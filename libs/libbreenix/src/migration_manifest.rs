@@ -40,6 +40,14 @@ pub fn kind(mode: u32) -> io::Result<&'static str> {
     }
 }
 
+pub fn permissions(mode: u32) -> u32 {
+    if mode & 0o170000 == 0o120000 {
+        0o777
+    } else {
+        mode & 0o7777
+    }
+}
+
 /// Decode a device number from the on-disk and Breenix stat representation.
 pub fn device_parts(raw: u64) -> (u64, u64) {
     ((raw >> 8) & 0xfff, (raw & 0xff) | ((raw >> 12) & 0xfff00))
@@ -74,7 +82,7 @@ pub fn write(mut rows: Vec<Row>, mut out: impl Write) -> io::Result<()> {
         writeln!(
             out,
             "\t{:04o}\t{}\t{}\t{group}\t{size}\t{sec}.{nsec:09}\t{}",
-            row.mode & 0o7777,
+            permissions(row.mode),
             row.uid,
             row.gid,
             row.digest

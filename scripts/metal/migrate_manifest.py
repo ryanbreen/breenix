@@ -134,7 +134,7 @@ class Ext2:
                     raise ValueError(f"missing device number for inode {inode}")
                 kind = f"{kind}:{int(number[1])}:{int(number[2])}"
 
-        mode = int(header[3], 8)
+        mode = 0o777 if kind == "symlink" else int(header[3], 8)
         return kind, f"{mode:04o}", uid, gid, size, f"{seconds}.{nanos:09d}", digest
 
     def rows(self, subtree):

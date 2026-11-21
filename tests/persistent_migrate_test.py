@@ -60,10 +60,13 @@ class PersistentMigration(unittest.TestCase):
     def test_copy_preserves_layout_metadata_hard_links_and_holes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            self.fixture(root)
+            generation = self.fixture(root)
             result = subprocess.run([self.driver, root], capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout, RECEIPT)
+            normalized = int(stat.S_IMODE((generation / "sbin/link").lstat().st_mode) != 0o777)
+            self.assertEqual(
+                result.stdout, f"[migrate] normalized symlink modes: {normalized}\n".encode() + RECEIPT
+            )
             source = (root / "evidence/source.tsv").read_bytes()
             self.assertEqual(source, (root / "evidence/destination.tsv").read_bytes())
             rows = [line.split(b"\t") for line in source.splitlines()]
@@ -96,6 +99,43 @@ class PersistentMigration(unittest.TestCase):
             self.assertNotIn(RECEIPT, result.stdout + result.stderr)
             self.assertNotEqual((root / "evidence/source.tsv").read_bytes(),
                                 (root / "evidence/destination.tsv").read_bytes())
+
+    @unittest.skipUnless(os.chmod in os.supports_follow_symlinks,
+                         "requires setting permissions on the source symlink")
+    def test_symlink_modes_are_normalized_and_counted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            generation = self.fixture(root)
+            link = generation / "sbin/link"
+            os.chmod(link, 0o700, follow_symlinks=False)
+            self.assertEqual(stat.S_IMODE(link.lstat().st_mode), 0o700)
+            result = subprocess.run([self.driver, root], capture_output=True, umask=0)
+            self.assertEqual(stat.S_IMODE((root / "generation/sbin/link").lstat().st_mode),
+                             0o777)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, b"[migrate] normalized symlink modes: 1\n" + RECEIPT)
+            source = (root / "evidence/source.tsv").read_bytes()
+            self.assertEqual(source, (root / "evidence/destination.tsv").read_bytes())
+            row = next(line.split(b"\t") for line in source.splitlines()
+                       if line.startswith(b"/gen-fixture/sbin/link".hex().encode() + b"\t"))
+            self.assertEqual(row[1:3], [b"symlink", b"0777"])
+
+    def test_file_and_directory_mode_differences_refuse_migration(self):
+        for mismatch in ("file-mode", "directory-mode"):
+            with self.subTest(mismatch=mismatch), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                self.fixture(root)
+                result = subprocess.run([self.driver, root, mismatch], capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn(RECEIPT, result.stdout + result.stderr)
+                self.assertIn(b"migration manifests differ at row ", result.stderr)
+                source = (root / "evidence/source.tsv").read_bytes()
+                destination = (root / "evidence/destination.tsv").read_bytes()
+                self.assertEqual(
+                    sum(a != b for a, b in zip(source.splitlines(), destination.splitlines(),
+                                               strict=True)),
+                    1,
+                )
 
     def test_legacy_source_is_refused_before_snapshot_or_copy(self):
         with tempfile.TemporaryDirectory() as tmp:

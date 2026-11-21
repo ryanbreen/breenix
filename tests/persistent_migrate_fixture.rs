@@ -7,12 +7,12 @@ pub mod layout;
 pub mod sha256;
 
 use migrate::{Mounts, Paths};
-use std::{fs, io, path::PathBuf, process::ExitCode};
+use std::{fs, io, os::unix::fs::PermissionsExt, path::PathBuf, process::ExitCode};
 
 struct Fixture {
     root: PathBuf,
     switch: usize,
-    mismatch: bool,
+    mismatch: Option<String>,
 }
 
 impl Mounts for Fixture {
@@ -27,11 +27,23 @@ impl Mounts for Fixture {
         assert_eq!((root, read_only), expected[self.switch]);
         self.switch += 1;
         let path = self.root.join(if root.is_some() { "generation" } else { "default" });
-        if self.switch == expected.len() && self.mismatch {
-            let file = path.join("bin/tool");
-            let metadata = file.metadata()?;
-            fs::write(&file, b"wrong")?;
-            fs::File::open(&file)?.set_modified(metadata.modified()?)?;
+        if self.switch == expected.len() {
+            match self.mismatch.as_deref() {
+                Some("mismatch") => {
+                    let file = path.join("bin/tool");
+                    let metadata = file.metadata()?;
+                    fs::write(&file, b"wrong")?;
+                    fs::File::open(&file)?.set_modified(metadata.modified()?)?;
+                }
+                Some("file-mode") => fs::set_permissions(
+                    path.join("bin/tool"), fs::Permissions::from_mode(0o0755),
+                )?,
+                Some("directory-mode") => fs::set_permissions(
+                    path.join("root"), fs::Permissions::from_mode(0o1700),
+                )?,
+                None => {}
+                Some(other) => panic!("unknown fixture mutation {other}"),
+            }
         }
         Ok(path)
     }
@@ -54,7 +66,7 @@ fn main() -> ExitCode {
     let mut mounts = Fixture {
         root: root.clone(),
         switch: 0,
-        mismatch: std::env::args().nth(2).as_deref() == Some("mismatch"),
+        mismatch: std::env::args().nth(2),
     };
     match migrate::run(&paths, "fixture", &mut mounts, &mut io::stdout()) {
         Ok(()) => ExitCode::SUCCESS,

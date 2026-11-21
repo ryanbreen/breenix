@@ -12,7 +12,7 @@ absolute paths within that tree. The selected directory's path is `/`.
 | --- | --- |
 | Path | Lowercase hexadecimal of the raw path bytes, including the leading slash. |
 | Type | `reg`, `dir`, `symlink`, `fifo` or `sock`. Devices use `chr:MAJOR:MINOR` or `blk:MAJOR:MINOR` with decimal device numbers. |
-| Mode | Four octal digits for the permission, setuid, setgid and sticky bits. File type comes from the type column. |
+| Mode | Record `0777` for symlinks. For other types, record four octal digits for the permission, setuid, setgid and sticky bits. File type comes from the type column. |
 | UID | Unsigned decimal owner ID. |
 | GID | Unsigned decimal group ID. |
 | Link group | For a non-directory inode with several names in the selected tree, repeat the encoded path of its first row for each member. Other rows carry `-`. |
@@ -24,6 +24,8 @@ A zero-filled extent and a hole of the same logical length contribute the same
 bytes to the digest. Directory allocation and file block counts are outside the
 manifest. Link groups are local to the selected tree, so links outside it have
 no effect on the group.
+
+Compare the encoded manifests byte for byte.
 
 ```text
 breenfs-extract IMAGE migration-manifest [--root NAME]
@@ -42,6 +44,9 @@ The guest migrator writes `/run/persistent-migrate/source.tsv` and
 the home partition at `/home`. The generation's empty mount points remain
 inside its own subtree. On the destination, the whole default root is
 compared, so an unexpected entry also prevents a match.
+On a match, the migrator prints `[migrate] normalized symlink modes: N` beside
+the equality receipt. The count is the number of source symlink rows whose
+stored mode bits differed from `0777`.
 
 Run `python3 tests/persistent_migrate_test.py` with `TMPDIR` on a filesystem
 that retains sparse extents when files close.

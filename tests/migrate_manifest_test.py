@@ -64,17 +64,19 @@ class MigrationManifestTest(unittest.TestCase):
             self.run_tool(mke2fs, "-q", "-t", "ext2", "-b", "4096", "-d", source,
                           "-E", "root_owner=0:0", "-F", ext2, "16384")
             for command in ("rmdir /lost+found", f"set_inode_field <2> mtime @{TIME}",
-                            "set_inode_field /program uid 1000", "fallocate /zero 0 1"):
+                            "set_inode_field /program uid 1000", "fallocate /zero 0 1",
+                            "set_inode_field /sym mode 0120700"):
                 self.run_tool(debugfs, "-w", "-R", command, ext2)
             self.assertRegex(self.run_tool(debugfs, "-R", "stat /zero", ext2),
                              rb"Blockcount:\s+16\b")
+            self.assertRegex(self.run_tool(debugfs, "-R", "stat /sym", ext2), rb"Mode:\s+0700\b")
 
             owners = base / "owners"
             with owners.open("wb") as out:
                 for path in (nested, program, zero, symlink):
                     info = path.lstat()
                     uid = 1000 if path == program else info.st_uid
-                    mode = stat.S_IMODE(info.st_mode)
+                    mode = 0o750 if path == symlink else stat.S_IMODE(info.st_mode)
                     out.write(f"{uid}:{info.st_gid}:{mode:o}\t".encode()
                               + os.fsencode("/" + str(path.relative_to(source))) + b"\n")
             # The owners file is line-delimited. Keep the formatter's default
@@ -114,10 +116,12 @@ class MigrationManifestTest(unittest.TestCase):
             self.assertEqual(mapped[alias_key], regular)
             self.assertEqual(mapped[b"2f7a65726f"][5], b"8192")
             self.assertEqual(mapped[b"2f7a65726f"][-1], hashlib.sha256(bytes(8192)).hexdigest().encode())
+            self.assertEqual(mapped[b"2f73796d"][:2], [b"symlink", b"0777"])
             self.assertEqual(mapped[b"2f73796d"][-1], hashlib.sha256(os.fsencode(target)).hexdigest().encode())
             self.assertEqual(mapped[child_key][-1], hashlib.sha256(b"hello").hexdigest().encode())
             old_manifest = rows(self.run_tool(TOOLS / "breenfs-extract", image, "manifest"))
             self.assertEqual(old_manifest[b"2f7a65726f"][5], b"0", "BreenFS zero file must be a hole")
+            self.assertEqual(old_manifest[b"2f73796d"][:2], [b"symlink", b"120750"])
 
             subtree = rows(ext2_manifest("--subtree", "/nested"))
             self.assertEqual(subtree, {b"2f": mapped[b"2f6e6573746564"],
