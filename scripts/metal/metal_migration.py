@@ -17,6 +17,7 @@ from migrate_manifest import Ext2, require_e2fsprogs, shared_manifest
 RECORDED_RETURN = '20261121T172024Z-metal'
 RECORDED_CUTOVER_COMMIT = '94109fc7b3d95137cb91289f6a9f1321409cbcf6'
 RECORDED_RETURN_COMMIT = '250fb833de97abddbf4672dbfca1980cb370cfe3'
+CLOSURE_RECEIPT_SHA256 = 'b178a8933a3121390e9ca515c7d8cd23ead859bb4ff95152cff2678d9e20ed63'
 PERSISTENT_ROOT_CASES = ('migrate-manifests-equal', 'host-manifests-equal',
                          'cutover-verified', 'rescue-and-return')
 TWO_UPGRADES = 'ext2-retired/two-upgrades'
@@ -285,6 +286,31 @@ def require_closed(layout):
     return cycle
 
 
+def read_closure_proof(boot, run):
+    try:
+        receipt = (boot / 'filesystem-persistent-root.json').read_bytes()
+        proof = json.loads(receipt.decode())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(proof, dict):
+        return {}
+
+    provenance = dict(sourceCommit=run.get('commit'), toolsCommit=run.get('toolsCommit'),
+                      bootedCommit=run.get('bootedCommit'))
+    if (boot.name != RECORDED_RETURN or proof.keys() & provenance.keys()
+            or hashlib.sha256(receipt).hexdigest() != CLOSURE_RECEIPT_SHA256):
+        return proof
+
+    # The original pre-provenance receipt is admitted only by E24 ledger ruling 1021.
+    record = dict(ledgerLine=1021, boot=RECORDED_RETURN, receiptSha256=CLOSURE_RECEIPT_SHA256)
+    try:
+        records = [json.loads(line) for line in
+                   (m.STATE / 'migration-carry-forward.jsonl').read_text().splitlines()]
+    except (OSError, ValueError):
+        return proof
+    return proof | provenance if record in records else proof
+
+
 def close(return_boot):
     """Close the recorded cycle without changing slots, routing or disk contents."""
     with m.locked('lease'):
@@ -305,7 +331,7 @@ def close(return_boot):
             raise ValueError('closing the migration requires the recorded machine state Off')
         boot = m.boot_dir(return_boot)
         run = m.read_json(boot / 'run.json', {})
-        proof = m.read_json(boot / 'filesystem-persistent-root.json', {})
+        proof = read_closure_proof(boot, run)
         log = events(boot)
         answers = [row.get('answer') for row in log if row['event'] == 'manager-answer']
         off = [row.get('off') for row in log if row['event'] == 'power-off']
