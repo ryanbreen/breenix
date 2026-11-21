@@ -272,6 +272,7 @@ fn frozen_generation_keeps_foreground_progress_and_atomic_recovery() {
 }
 
 const CREATE_REPLAY_WATCHDOG: Duration = Duration::from_secs(20);
+const CREATE_ACQUISITIONS: usize = 8;
 
 struct PausedPublication {
     resume: mpsc::Sender<()>,
@@ -301,6 +302,7 @@ struct InstallWait {
 struct CreateCosts {
     locks: usize,
     waits: Vec<InstallWait>,
+    pressure_work: Vec<[u64; 3]>,
 }
 
 /// Count at the VFS entry used by open(O_CREAT). The mount acquisitions
@@ -310,11 +312,12 @@ fn create_during_publication(
     index: usize,
     frozen_grants: u64,
     pause: &Rc<RefCell<Option<PausedPublication>>>,
-) -> (usize, usize, u64, u64) {
+) -> (usize, usize, u64, u64, usize) {
     use super::super::reserve::observation;
 
     let lock_id = &fs.inner.state as *const _ as usize;
     let signal_id = Arc::as_ptr(&fs.inner.signal) as usize;
+    let worker_epoch = fs.inner.signal.worker.epoch();
     let (generation, free, reserve, frozen, open) = {
         let state = fs.inner.state.lock();
         (state.durable.generation, state.durable.free_blocks, state.durable.global_reserve,
@@ -335,9 +338,29 @@ fn create_during_publication(
                 outstanding: state.reservations.outstanding(),
             });
             drop(state);
-            // A real refusal can park this caller. Resume the publisher at the
-            // observed wait so the test can score the retry without timing races.
-            publication.borrow_mut().take().expect("wait without a paused publication").install();
+            if let Some(publisher) = publication.borrow_mut().take() {
+                // The first wait belongs to the publication already in flight.
+                publisher.install();
+                let state = live.inner.state.lock();
+                assert_eq!(state.durable.generation, generation + 1);
+                assert!(state.pending.is_none());
+                assert!(state.files.log.as_ref().unwrap().len() >= MATERIALIZE_STEPS);
+            } else {
+                // A new pressure request must make the worker runnable even
+                // though the previous publisher installed and has exited.
+                assert!(capture.borrow().pressure_work.is_empty(), "repeated pressure wait");
+                assert_ne!(live.inner.signal.worker.epoch(), worker_epoch, "pressure did not wake the worker");
+                let publisher = live.clone();
+                let (complete, completed) = mpsc::channel();
+                let worker = thread::spawn(move || {
+                    let result = measurement::service(&publisher);
+                    complete.send((result, measurement::take_work())).unwrap();
+                });
+                let (result, work) = completed.recv_timeout(CREATE_REPLAY_WATCHDOG).unwrap();
+                worker.join().unwrap();
+                assert_eq!(result, Ok(true));
+                capture.borrow_mut().pressure_work.push(work);
+            }
         }
         _ => (),
     })));
@@ -356,12 +379,13 @@ fn create_during_publication(
     let events = measurement::take_events();
     let allocation = observation::take_write_grant();
     let costs = costs.borrow();
-    println!("CREATE index={index} durable={generation} free={free} reserve={reserve} frozen={frozen} open={open} available={expected_available} allocation={allocation:?} locks={} replay={replay} waits={:?} result={result:?}",
-        costs.locks, costs.waits);
+    println!("CREATE index={index} durable={generation} free={free} reserve={reserve} frozen={frozen} open={open} available={expected_available} allocation={allocation:?} locks={} replay={replay} waits={:?} work={work:?} pressure_work={:?} result={result:?}",
+        costs.locks, costs.waits, costs.pressure_work);
     assert_eq!(result, Ok(()));
     assert!(node.is_some(), "create did not prepare the opened VNode");
     assert!(costs.locks > 0);
     assert!(replay <= MATERIALIZE_STEPS as u64, "create {index} replayed {replay} steps");
+    assert!(costs.locks <= CREATE_ACQUISITIONS, "create {index} acquired {} times", costs.locks);
     assert_eq!(work, [0; 3], "create {index} published during the replay");
 
     let mut admissions = events.into_iter().filter_map(|event| match event {
@@ -369,7 +393,13 @@ fn create_during_publication(
         _ => None,
     });
     let (attempts, pressure) = admissions.next().unwrap();
-    assert!(admissions.next().is_none() && pressure.is_empty());
+    assert!(admissions.next().is_none());
+    if costs.pressure_work.is_empty() {
+        assert!(pressure.is_empty(), "create {index} published with sufficient installed space");
+    } else {
+        assert_eq!(costs.pressure_work, [[1, 0, 1]]);
+        assert_eq!(pressure, [true]);
+    }
     let (success, refusals) = attempts.split_last().unwrap();
     assert_eq!(success.error, None);
     assert_eq!(success.refusal, None);
@@ -378,22 +408,25 @@ fn create_during_publication(
     assert_eq!(available, admitted_free.saturating_sub(admitted_reserve)
         .saturating_sub(charged_with_grant - request));
     assert_eq!(refusals.len(), costs.waits.len(), "create {index} refusal-to-wait attribution");
+    let mut installed = generation;
     for (refusal, wait) in refusals.iter().zip(&costs.waits) {
         println!("CREATE_REFUSAL index={index} epoch={} refusal={:?}", wait.epoch, refusal.refusal);
         assert_eq!(refusal.error, Some(ENOSPC));
         let [free_at_refusal, reserve_at_refusal, outstanding, requested, space] = refusal.refusal.unwrap();
-        assert_eq!(wait.generation, Some(generation + 1), "wait epoch {}", wait.epoch);
+        assert_eq!(wait.generation, (frozen > 0).then_some(generation + 1), "wait epoch {}", wait.epoch);
         assert_eq!((wait.free, wait.reserve, wait.outstanding),
             (free_at_refusal, reserve_at_refusal, outstanding));
         assert_eq!((free_at_refusal, reserve_at_refusal, outstanding, space),
             (free, reserve, frozen + open, expected_available));
         assert!(requested > space, "create {index} waited for install with adequate space");
+        installed += 1;
     }
+    assert_eq!(fs.inner.state.lock().durable.generation, installed);
     if costs.waits.is_empty() {
         assert_eq!((admitted_free, admitted_reserve, charged_with_grant - request, available),
             (free, reserve, frozen + open, expected_available));
     }
-    (costs.waits.len(), costs.locks, replay, available - request)
+    (costs.waits.len(), costs.locks, replay, available - request, costs.pressure_work.len())
 }
 
 #[test]
@@ -433,29 +466,30 @@ fn create_during_frozen_preparation_has_exact_admission_and_bounded_replay() {
     ready.recv_timeout(CREATE_REPLAY_WATCHDOG).unwrap();
     assert!(fs.inner.state.lock().pending.is_some());
     let pause = Rc::new(RefCell::new(Some(PausedPublication { resume, installed })));
-    let (mut waits, mut locks, mut max_steps, mut min_headroom) = (0, 0, 0, u64::MAX);
-    for i in 0..CREATES {
-        let (waited, acquired, steps, headroom) = create_during_publication(&fs, i, frozen_grants, &pause);
+    let (mut waits, mut locks, mut max_steps, mut min_headroom, mut pressure) = (0, 0, 0, u64::MAX, 0);
+    let mut first_after_install = None;
+    for i in 0..=CREATES {
+        let after_install = pause.borrow().is_none() && first_after_install.is_none();
+        let (waited, acquired, steps, headroom, publications) = create_during_publication(&fs, i, frozen_grants, &pause);
+        if after_install {
+            first_after_install = Some((waited, acquired, steps));
+        }
         waits += waited;
         locks += acquired;
         max_steps = max_steps.max(steps);
         min_headroom = min_headroom.min(headroom);
+        pressure += publications;
     }
     if let Some(publication) = pause.borrow_mut().take() {
         publication.install();
     }
     worker.join().unwrap();
-    {
-        let state = fs.inner.state.lock();
-        assert_eq!(state.durable.generation, generation);
-        assert!(state.pending.is_none());
-        assert!(state.files.log.as_ref().unwrap().len() >= MATERIALIZE_STEPS);
-    }
     // A create while preparation is held has no installed log to replay.
     // Exercise the bound with the same log still backlogged after install.
-    let (after_waits, after_locks, after_steps, _) = create_during_publication(&fs, CREATES, 0, &pause);
+    let (after_waits, after_locks, after_steps) = first_after_install.unwrap();
     assert!(after_steps > 0, "post-install create reached no queued replay");
-    println!("CREATE_SUMMARY files={FILES} dirty={DIRTY_OPS} creates={CREATES} generation={generation} waits={waits} locks={locks} peak_replay={max_steps} min_grant_headroom={min_headroom} post_install_waits={after_waits} post_install_locks={after_locks} post_install_replay={after_steps} seconds={:.3}",
+    assert_eq!(pressure, 1, "post-install shortage must publish exactly once");
+    println!("CREATE_SUMMARY files={FILES} dirty={DIRTY_OPS} creates={CREATES} generation={generation} waits={waits} locks={locks} peak_replay={max_steps} min_grant_headroom={min_headroom} post_install_waits={after_waits} post_install_locks={after_locks} post_install_replay={after_steps} pressure_publications={pressure} seconds={:.3}",
         started.elapsed().as_secs_f64());
 }
 
