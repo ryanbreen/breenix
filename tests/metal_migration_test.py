@@ -136,6 +136,18 @@ class MetalMigrationTest(existing.StateTest):
             with self.assertRaises(ValueError):
                 metal_migration.prove_history(rows, boots, lambda _: log)
 
+    def test_phase_receipt_identifies_the_tools_and_staged_kernel(self):
+        import metal_migration
+
+        cycle, tools, staged = 'a' * 40, 'b' * 40, 'c' * 40
+        ident = '20261121T100000Z-metal'
+        directory = m.boot_dir(ident)
+        m.write_json(directory / 'run.json', dict(commit=tools, toolsCommit=tools, bootedCommit=staged))
+        metal_migration.record_phase(dict(commit=cycle, boots={}), 'rescue', ident)
+        receipt = m.read_json(directory / 'filesystem-persistent-root.json')
+        self.assertEqual((receipt['commit'], receipt['sourceCommit'], receipt['toolsCommit'], receipt['bootedCommit']),
+                         (cycle, tools, tools, staged))
+
     def test_shared_manifest_labels_only_retained_hard_links(self):
         import metal_migration
 

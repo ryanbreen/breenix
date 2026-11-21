@@ -369,7 +369,12 @@ def record_phase(cycle, phase, boot_id):
     cases = [dict(id='persistent-root/' + name, result='PASS' if good else 'FAIL', ms=0)
              for name, good in zip(('migrate-manifests-equal', 'host-manifests-equal',
                                     'cutover-verified', 'rescue-and-return'), passed, strict=True)]
-    m.write_json(m.boot_dir(boot_id) / 'filesystem-persistent-root.json',
+    directory = m.boot_dir(boot_id)
+    run = m.read_json(directory / 'run.json')
+    provenance = dict(sourceCommit=run['commit'], toolsCommit=run['toolsCommit'])
+    if run.get('bootedCommit'):
+        provenance['bootedCommit'] = run['bootedCommit']
+    m.write_json(directory / 'filesystem-persistent-root.json',
                  dict(milestone='filesystem/persistent-root', commit=cycle['commit'], boot=boot_id,
-                      cases=cases, boots=boots, cleanup=True, consoleGaps=[]))
+                      cases=cases, boots=boots, cleanup=True, consoleGaps=[], **provenance))
     save(cycle)
