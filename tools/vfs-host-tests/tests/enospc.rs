@@ -260,6 +260,8 @@ fn metadata_blocks(disk: &Disk) -> u64 {
 
 #[test]
 fn full_disk_namespace_refuses_atomically_and_deletes_use_reserve() {
+    use crate::breenfs::reserve::observation;
+
     crate::time::with_unix_time(10, || {
         let (disk, fs, fill) = fixture();
         let attrs = InodeAttrs::new(0o640, 1000, 1000);
@@ -293,7 +295,14 @@ fn full_disk_namespace_refuses_atomically_and_deletes_use_reserve() {
         crate::time::with_unix_time(20, || {
             for new in [NewNode::Directory { attrs }, NewNode::Regular { attrs },
                 NewNode::Symlink { attrs, target: b"data" }] {
+                let available_before = fs.statfs().unwrap().available_blocks;
+                observation::take();
                 assert_eq!(fs.create(2, b"refused", new), Err(Errno(ENOSPC)));
+                let [_, _, _, charge, available] =
+                    observation::take().expect("create must refuse a block reservation");
+                println!("FULL_DISK_CREATE available_before={available_before} available={available} charge={charge}");
+                assert!(available_before < charge && available < charge,
+                    "fixture must be short of the create's charge");
                 assert_eq!(namespace_manifest(fs.as_ref()), before);
             }
             assert_eq!(fs.xattr(fill.ino, Xattr::Set {
