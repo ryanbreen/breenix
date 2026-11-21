@@ -223,6 +223,7 @@ STUB_FAILED_LINE = 'metal-stub: FAILED'
 # The boot manager's lines (docs/metal/README.md, "The boot manager").
 MANAGER_STARTED = 'breenix-manager: started: '
 MANAGER_ANSWER = re.compile(r'breenix-manager: lab answered: (.*)')
+MANAGER_PERSISTENT_COUNTDOWN = re.compile(r'breenix-manager: menu: Starting (?:Breenix|the previous kernel) in [0-9]+ s;')
 MANAGER_PROBE_DONE = 'breenix-manager: probe complete'
 MANAGER_PANIC = 'breenix-manager: panic: '
 NO_BOOTABLE = 'no bootable device'
@@ -272,6 +273,13 @@ class PowerCut(Finish):
         self.line = line
         self.observed_at = observed_at
         self.serial_offset = serial_offset
+
+
+class BootManagerAbort(Finish):
+    def __init__(self, line, observed_at):
+        super().__init__(m.EXIT_DELIVERY, 'the boot manager did not stay on the requested test path')
+        self.line = line
+        self.observed_at = observed_at
 
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
@@ -1086,6 +1094,8 @@ class Driver:
                         continue  # Keep archiving bytes already received without running other serial actions.
                     try:
                         self.on_line(line, observed_at=arrived)
+                    except BootManagerAbort:
+                        raise  # Act before dispatching any later lines already in the serial buffer.
                     except PowerCut as cut:
                         if decision is None:
                             decision = cut
@@ -1456,20 +1466,15 @@ class Driver:
             if STUB_LINE in line and self.export_started is None:
                 self.export_started = observed_at
             if receipt := metal_export.RECEIPT.fullmatch(line):
-                role, count, digest = receipt.groups()
-                if role in self.export_receipts:
+                role, part, count, digest = receipt.groups()
+                key = (role, int(part) if part is not None else None)
+                if key in self.export_receipts:
                     raise Finish(m.EXIT_SHORT, 'persistent export repeated a firmware receipt')
-                self.export_receipts[role] = (int(count), digest)
+                self.export_receipts[key] = (int(count), digest)
             if line == metal_export.DONE:
                 if self.export_started is None:
                     raise Finish(m.EXIT_SHORT, 'persistent export is missing the firmware start')
-                try:
-                    metal_export.verify(self.id, self.export_receipts)
-                except ValueError as error:
-                    raise Finish(m.EXIT_SHORT, str(error)) from error
-                except OSError as error:
-                    raise Finish(m.EXIT_SHORT, 'persistent export image is missing or unreadable') from error
-                raise Finish(m.EXIT_DONE, 'persistent export verified')
+                raise Finish(m.EXIT_DONE, 'persistent export firmware completed')
             return
         if self.kernel_started and self.fatal_at is None:
             challenge = re.fullmatch(r'\[init\] shutdown nonce=([a-f0-9]{64})', line)
@@ -1769,6 +1774,11 @@ class Driver:
 
     def on_manager_line(self, line, observed_at, seconds):
         """The boot manager's start, the lab's answer it acted on, and a probe's end (README, "The boot manager")."""
+        answer = MANAGER_ANSWER.search(line)
+        # An intentional watchdog recovery returns to the persistent slot.
+        if not persistent(self.args) and self.watchdog_trigger is None and (
+                (answer and answer[1] != f'test {self.id}') or MANAGER_PERSISTENT_COUNTDOWN.search(line)):
+            raise BootManagerAbort(line, observed_at)
         if MANAGER_STARTED in line and self.kernel_started is not None and session(self.args) and persistent(self.args):
             self.on_reset(self.reset_time(observed_at))
             self.event('persistent-restart', observed_at=observed_at)
@@ -1782,9 +1792,9 @@ class Driver:
             if self.args.payload == 'manager' and self.kernel_started is None:
                 self.kernel_started = observed_at
                 self.last_stage = 'boot manager started'
-        if (found := MANAGER_ANSWER.search(line)):
-            self.event('manager-answer', observed_at=observed_at, answer=found.group(1)[:120])
-            self.phase('Boot manager: the lab answered ' + found.group(1)[:80])
+        if answer:
+            self.event('manager-answer', observed_at=observed_at, answer=answer[1][:120])
+            self.phase('Boot manager: the lab answered ' + answer[1][:80])
         if MANAGER_PANIC in line:
             raise Finish(m.EXIT_SHORT, 'the boot manager panicked')
         if self.args.payload == 'manager' and MANAGER_PROBE_DONE in line:
@@ -2343,7 +2353,7 @@ class Driver:
     def power_off(self, hung, *, immediate=False):
         """NMI first when a started kernel or payload hung (or `--nmi` asks for it), then ForceOff; quarantine if it
         does not go Off."""
-        if (hung or getattr(self.args, 'nmi', False)) and self.kernel_started:
+        if not immediate and (hung or getattr(self.args, 'nmi', False)) and self.kernel_started:
             try:
                 m.rf('POST', m.SYSTEM + '/Actions/ComputerSystem.Reset', {'ResetType': 'Nmi'}, priority=0)
                 self.event('nmi')
@@ -2356,7 +2366,7 @@ class Driver:
                     self.pump_serial()
                 time.sleep(0.25)
             self.event('nmi-capture-done', bytesAfter=self.raw_offset)
-        if self.args.inject == 'forceoff-fail':
+        if not immediate and self.args.inject == 'forceoff-fail':
             self.event('power-off-failed', injected=True)
             self.phase('Power-off failed (injected): the machine may still be on')
             m.quarantine_lease(self.id, 'driver power-off failed (injected)')
@@ -2369,6 +2379,17 @@ class Driver:
         else:
             self.phase('Power-off failed: the machine may still be on')
             m.quarantine_lease(self.id, 'driver power-off failed')
+        return off
+
+    def abort_manager_boot(self, finish):
+        requested_at = m.now()
+        off = self.power_off(False, immediate=True)
+        run_path = self.dir / 'run.json'
+        run = m.read_json(run_path)
+        run['bootManagerAbort'] = dict(line=self.redact(finish.line), observedAt=finish.observed_at,
+                                      action='ForceOff', powerOffRequestedAt=requested_at, powerOffConfirmed=off)
+        m.write_json(run_path, run)
+        self.event('boot-manager-abort', **run['bootManagerAbort'])
         return off
 
     def cleanup(self, status, ended_by='driver', keep_lease=False):
@@ -2431,6 +2452,8 @@ class Driver:
         except Finish as finish:
             status = finish.status
             off = self.cut_power(finish) if isinstance(finish, PowerCut) else None
+            if isinstance(finish, BootManagerAbort):
+                off = self.abort_manager_boot(finish)
             reason = finish.reason
             if self.power_cut is not None and status == m.EXIT_DONE:
                 status, reason = m.EXIT_SHORT, 'the boot finished before the requested power cut'
@@ -2494,7 +2517,10 @@ class Driver:
                     try:
                         metal_export.publish(self.dir, self.id, self.export_receipts)
                         self.event('persistent-export-published')
-                    except (ValueError, OSError) as error:
+                    except ValueError as error:
+                        self.event('persistent-export-publish-error', error=str(error))
+                        status = m.EXIT_SHORT
+                    except OSError as error:
                         self.event('persistent-export-publish-error', error=error.__class__.__name__)
                         status = m.EXIT_INCOMPLETE
                 if self.census and status == m.EXIT_DONE:

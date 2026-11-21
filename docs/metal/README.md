@@ -873,11 +873,17 @@ partition. A tests boot's RAM disk is its intent followed by the BXTEST image.
 `metal-run export-persistent --branch BRANCH` queues a firmware boot for the cold copy of the last install's
 system and home partitions. The delivery stub checks their GPT GUIDs and ranges against the install record,
 checks that they share a disk with the recorded test root, and reads them through UEFI Block I/O. It sends each
-image to the boot host over the cold-readback HTTP transport, then reports its byte count and SHA-256 over SOL.
+image in consecutive parts of at most 1 GiB over the cold-readback HTTP transport and reports the byte count
+and SHA-256 of each part and the whole partition over SOL.
 
-After confirmed power-off and matching firmware and receiver measurements, the driver publishes the two images
-in the private store at `/var/lib/breenix-metal/persistent-exports/<id>/` and records their GUIDs, inclusive LBA
-ranges, byte counts and digests under `persistentExport` in the boot's `run.json`.
+The boot driver immediately requests ForceOff when the boot manager reports an answer other than
+`test <id>` for this boot or starts a countdown to a persistent entry. The same check applies to ordinary
+test boots, and the driver records the trigger and power-off result under `bootManagerAbort` in `run.json`.
+
+After confirmed power-off, the driver compares firmware and host measurements for the parts and whole images.
+When they match, it publishes the two images in the private store at
+`/var/lib/breenix-metal/persistent-exports/<id>/`. It records the GUIDs, inclusive LBA ranges, byte counts and
+digests under `persistentExport` in `run.json`, with the index, byte offset, count and digest of each part.
 
 ### Install and upgrade
 

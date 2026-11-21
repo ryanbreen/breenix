@@ -8,10 +8,13 @@ use metal_efi::{bootdisk::SECTOR, com1, say, sha256::Sha256, uefi::*};
 
 use crate::suite_disk::{self, Buffer, CHUNK};
 
-const MAGIC: &[u8; 16] = b"BREENIX-EXPORT1\0";
+const MAGIC: &[u8; 16] = b"BREENIX-EXPORT2\0";
 const ACTION: u64 = 3;
 const RANGE_SIZE: usize = 32;
 const HEADER_SIZE: usize = 24 + 3 * RANGE_SIZE;
+const PART_BYTES: usize = 1 << 30;
+const PART_SUFFIX: usize = 1 + 16; // Slash and the hexadecimal part index.
+const MAX_URL: usize = 2046;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Range {
@@ -83,7 +86,9 @@ pub(super) unsafe fn run(
     let mut url = || {
         urls.next()
             .filter(|value| {
-                value.len() <= 2046 && value.starts_with(b"http://") && value.is_ascii()
+                value.len() + PART_SUFFIX <= MAX_URL
+                    && value.starts_with(b"http://")
+                    && value.is_ascii()
             })
             .ok_or(INVALID_PARAMETER)
     };
@@ -214,24 +219,52 @@ unsafe fn export(
     let buffer = Buffer::new(boot, CHUNK, io_align)?;
     let mut digest = Sha256::new();
     let mut count = 0;
-    suite_disk::upload(boot, image, size, &buffer, url, |offset, len| {
-        ok(((*disk).read_blocks)(
-            disk,
-            media_id,
-            (offset / SECTOR) as u64,
-            len,
-            buffer.data.cast(),
-        ))?;
-        digest.update(core::slice::from_raw_parts(buffer.data, len));
-        count += len;
-        Ok(())
-    })?;
-    let mut hex = [0u8; 64];
-    let alphabet = b"0123456789abcdef";
-    for (pair, byte) in hex.chunks_exact_mut(2).zip(digest.finalize()) {
-        pair[0] = alphabet[(byte >> 4) as usize];
-        pair[1] = alphabet[(byte & 15) as usize];
+    let mut part_url = [0; MAX_URL];
+    let end = url.len() + PART_SUFFIX;
+    part_url[..url.len()].copy_from_slice(url);
+    part_url[url.len()] = b'/';
+    for (index, start) in (0..size).step_by(PART_BYTES).enumerate() {
+        let size = PART_BYTES.min(size - start);
+        encode_hex(
+            &(index as u64).to_be_bytes(),
+            &mut part_url[url.len() + 1..end],
+        );
+        let mut part_digest = Sha256::new();
+        let mut part_count = 0;
+        suite_disk::upload(
+            boot,
+            image,
+            size,
+            &buffer,
+            &part_url[..end],
+            |offset, len| {
+                ok(((*disk).read_blocks)(
+                    disk,
+                    media_id,
+                    ((start + offset) / SECTOR) as u64,
+                    len,
+                    buffer.data.cast(),
+                ))?;
+                let bytes = core::slice::from_raw_parts(buffer.data, len);
+                part_digest.update(bytes);
+                digest.update(bytes);
+                part_count += len;
+                Ok(())
+            },
+        )?;
+        count += part_count;
+        let mut hex = [0; 64];
+        encode_hex(&part_digest.finalize(), &mut hex);
+        say!(
+            "persistent export {} part={} bytes={} sha256={}",
+            role,
+            index,
+            part_count,
+            core::str::from_utf8(&hex).unwrap()
+        );
     }
+    let mut hex = [0u8; 64];
+    encode_hex(&digest.finalize(), &mut hex);
     say!(
         "persistent export {} bytes={} sha256={}",
         role,
@@ -239,4 +272,12 @@ unsafe fn export(
         core::str::from_utf8(&hex).unwrap()
     );
     Ok(())
+}
+
+fn encode_hex(bytes: &[u8], hex: &mut [u8]) {
+    let alphabet = b"0123456789abcdef";
+    for (pair, &byte) in hex.chunks_exact_mut(2).zip(bytes) {
+        pair[0] = alphabet[(byte >> 4) as usize];
+        pair[1] = alphabet[(byte & 15) as usize];
+    }
 }
