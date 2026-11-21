@@ -290,7 +290,7 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
     if xhci_fault is not None and (xhci_fault not in ('reset-device', 'short-read')
                                    or mode != 'console' or install or idle_minutes is not None or replug):
         raise ValueError('invalid xHCI fault-test target')
-    if mode not in ('default', 'shell', 'probe', 'suite', 'console', 'tests', 'persistent-migrate'):
+    if mode not in ('default', 'shell', 'probe', 'suite', 'console', 'tests', 'persistent-migrate', 'persistent-install'):
         raise ValueError('unsupported RAM-disk boot mode')
     # The testing kernel has production init compiled out and does not read the boot target: its root is a default boot's.
     staged = 'default' if mode == 'tests' else mode
@@ -453,8 +453,11 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
                              'set_inode_field /etc/breenix/power-token mode 0100400',
                              'set_inode_field /etc/breenix/power-token uid 0',
                              'set_inode_field /etc/breenix/power-token gid 0'])
-        migration_mounts = ('/migrate', '/migrate/ext2-system', '/migrate/ext2-home',
-                            '/migrate/system', '/migrate/home') if mode == 'persistent-migrate' else ()
+        migration_mounts = ()
+        if mode in ('persistent-migrate', 'persistent-install'):
+            migration_mounts = ('/migrate', '/migrate/system', '/migrate/home')
+        if mode == 'persistent-migrate':
+            migration_mounts += ('/migrate/ext2-system', '/migrate/ext2-home')
         commands.extend(f'mkdir {path}' for path in migration_mounts)
         script = scratch / 'commands'
         script.write_text('\n'.join(commands) + '\n')

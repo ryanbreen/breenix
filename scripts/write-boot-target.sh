@@ -52,6 +52,9 @@ if [ "$SUITE" = --program ]; then
 elif [ "$SUITE" = --default ] || [ "$SUITE" = --shell ] || [ "$SUITE" = --console ] || [ "$SUITE" = --desktop ]; then
     BOOT_TARGET="${SUITE#--}"
     BINARY=/sbin/init
+elif [ "$SUITE" = --persistent-install ]; then
+    BOOT_TARGET=persistent-install
+    BINARY=/sbin/persistent-install
 elif [ "$SUITE" = --persistent-migrate ]; then
     BOOT_TARGET=persistent-migrate
     BINARY=/sbin/persistent-migrate

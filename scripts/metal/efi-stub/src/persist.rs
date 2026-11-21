@@ -91,6 +91,7 @@ struct Request<'t> {
     config_len: usize,
     load_option: Option<&'t str>,
     migration_slots: bool,
+    breenfs_upgrade: Option<[[u8; 16]; 4]>,
 }
 
 fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
@@ -109,6 +110,7 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
         config_len: 0,
         load_option: None,
         migration_slots: false,
+        breenfs_upgrade: None,
     };
     let mut action = None;
     for line in lines {
@@ -158,6 +160,21 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
             }
             "load-option" => request.load_option = Some(value),
             "migration-slots" if value.is_empty() && !request.migration_slots => request.migration_slots = true,
+            "breenfs-upgrade" if request.breenfs_upgrade.is_none() => {
+                let mut words = value.split(' ');
+                let mut guids = [[0; 16]; 4];
+                for index in 0..guids.len() {
+                    let unique = words.next().and_then(guid).ok_or(INVALID_PARAMETER)?;
+                    if unique == [0; 16] || guids[..index].contains(&unique) {
+                        return Err(INVALID_PARAMETER);
+                    }
+                    guids[index] = unique;
+                }
+                if words.next().is_some() {
+                    return Err(INVALID_PARAMETER);
+                }
+                request.breenfs_upgrade = Some(guids);
+            }
             "rescue-file" if !value.is_empty() => {}
             "extent" | "esp-file" if !value.is_empty() => {}
             _ => return Err(INVALID_PARAMETER),
@@ -182,6 +199,13 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
             return Err(INVALID_PARAMETER);
         }
     } else if rescue_files.count() != 0 {
+        return Err(INVALID_PARAMETER);
+    }
+    if request.breenfs_upgrade.is_some()
+        && (request.action != Action::Upgrade || request.migration_slots
+            || request.expect_record.is_some() || request.parts.iter().any(Option::is_some)
+            || text.lines().any(|line| line.starts_with("extent ")))
+    {
         return Err(INVALID_PARAMETER);
     }
     let (original, additions) = request.parts.split_at(ORIGINAL_PARTS);
@@ -756,6 +780,111 @@ unsafe fn write_esp_files(
     Ok(written)
 }
 
+/// A request for the upgraded layout must agree with both physical GPT copies.
+unsafe fn check_upgrade_layout(
+    boot: &BootServices, disk: &mut Disk, expected: [u8; 16], guids: [[u8; 16]; 4],
+) -> Result<(), Status> {
+    let primary = Header::parse(disk.read(1, 1)?, 1, disk.last).map_err(refuse_append)?;
+    let backup = Header::parse(disk.read(disk.last, 1)?, disk.last, disk.last).map_err(refuse_append)?;
+    let entries = Buffer::new(boot, ARRAY_BYTES, 8)?;
+    let array = core::slice::from_raw_parts_mut(entries.data, ARRAY_BYTES);
+    array.copy_from_slice(disk.read(primary.array_lba(), ARRAY_SECTORS as usize)?);
+    let backup_array = disk.read(backup.array_lba(), ARRAY_SECTORS as usize)?;
+    gpt_append::validate_pair(&primary, &backup, array, backup_array, expected).map_err(refuse_append)?;
+    for (entry, (unique, kind)) in array.chunks_exact(ENTRY).skip(2).zip([
+        (guids[2], "2ef14a34-abbd-48f8-83d6-f2a8c7b4a9fe"),
+        (guids[3], "9bfeaef9-4f51-45de-8bcf-5cec1603b862"),
+        (guids[0], "fad521d2-3783-43cc-be73-60ed528454c9"),
+        (guids[1], "f93914ad-57e7-4feb-a52e-295a07fd7e35"),
+    ]) {
+        if entry[..16] != guid(kind).ok_or(INVALID_PARAMETER)? || entry[16..32] != unique {
+            return Err(VOLUME_CORRUPTED);
+        }
+    }
+    if array[PARTITIONS * ENTRY..].iter().any(|&byte| byte != 0) {
+        return Err(VOLUME_CORRUPTED);
+    }
+    Ok(())
+}
+
+fn slot_intent<'a>(
+    text: &'a str, migration: bool, upgrade: Option<[[u8; 16]; 4]>, slot: &str,
+) -> Result<(&'a str, bool), Status> {
+    let mut rescue = false;
+    if let Some(guids) = upgrade {
+        let mut lines = text.lines();
+        if lines.next() != Some("BREENIX-BOOT 3") || lines.next() != Some("target persistent") {
+            return Err(VOLUME_CORRUPTED);
+        }
+        let root = lines.next().and_then(|line| line.strip_prefix("mount "))
+            .and_then(|line| line.split_once(' ')).ok_or(VOLUME_CORRUPTED)?;
+        let home = lines.next().and_then(|line| line.strip_prefix("mount "))
+            .and_then(|line| line.split_once(' ')).ok_or(VOLUME_CORRUPTED)?;
+        let root = (guid(root.0), root.1);
+        let home = (guid(home.0), home.1);
+        rescue = slot == "PREVIOUS" && root == (Some(guids[2]), "/ ro")
+            && home == (Some(guids[3]), "/home ro");
+        if !rescue && (root != (Some(guids[0]), "/ rw") || home != (Some(guids[1]), "/home rw")) {
+            return Err(VOLUME_CORRUPTED);
+        }
+        if !lines.next().is_some_and(|line| line.starts_with("userland ")) || lines.next().is_some() {
+            return Err(VOLUME_CORRUPTED);
+        }
+    } else if !(text.starts_with("BREENIX-BOOT 2\n") || migration && text.starts_with("BREENIX-BOOT 3\n")) {
+        return Err(VOLUME_CORRUPTED);
+    }
+    let mut ids = text.lines().filter_map(|line| line.strip_prefix("userland "));
+    let id = ids.next().unwrap_or("flat");
+    if ids.next().is_some() || id.is_empty() || id.len() > 64
+        || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return Err(VOLUME_CORRUPTED);
+    }
+    Ok((id, rescue))
+}
+
+unsafe fn report_slot(
+    boot: &BootServices, root: &Root, request: &Request<'_>, slot: &str,
+) -> Result<(), Status> {
+    let mut name = [0u8; 64];
+    let prefix = br"\EFI\BREENIX\";
+    name[..prefix.len()].copy_from_slice(prefix);
+    name[prefix.len()..prefix.len()+slot.len()].copy_from_slice(slot.as_bytes());
+    name[prefix.len()+slot.len()..prefix.len()+slot.len()+4].copy_from_slice(b".IMG");
+    let path = core::str::from_utf8(&name[..prefix.len()+slot.len()+4]).map_err(|_| INVALID_PARAMETER)?;
+    match root.size(path) {
+        Err(NOT_FOUND) if request.breenfs_upgrade.is_none() || slot == "PREVIOUS" => {
+            say!("slot userland: {} empty", slot);
+            return Ok(());
+        }
+        Err(status) => return Err(status),
+        Ok(size) if size > 512 << 20 => return Err(OUT_OF_RESOURCES),
+        Ok(_) => (),
+    }
+    let (memory, size) = root.read_pages(boot, path)?;
+    let disk = metal_efi::bootdisk::attach(boot, memory, size, "reference slot")?;
+    let mut volume = metal_efi::bootdisk::connect(boot, disk, "reference slot")?;
+    let mut handle = null_mut();
+    ok((boot.locate_device_path)(&SIMPLE_FILE_SYSTEM, &mut volume, &mut handle))?;
+    let slot_root = files::root_of(boot, handle)?;
+    let mut intent = [0u8; 1024];
+    let len = slot_root.read("ramdisk", &mut intent)?;
+    let text = core::str::from_utf8(&intent[..len]).map_err(|_| VOLUME_CORRUPTED)?;
+    let (id, rescue) = slot_intent(text, request.migration_slots, request.breenfs_upgrade, slot)?;
+    if rescue {
+        // Ordinary promotion replaces PREVIOUS. Keep this read-only pair for
+        // the explicit retirement request, separate from the BreenFS rollback.
+        let mut note = [0u8; 256];
+        let len = root.read(r"\EFI\BREENIX\PREVIOUS.TXT", &mut note)?;
+        root.write(r"\EFI\BREENIX\RESCUE.IMG", core::slice::from_raw_parts(memory, size))?;
+        root.write(r"\EFI\BREENIX\RESCUE.TXT", &note[..len])?;
+        say!("BreenFS upgrade: ext2 rescue pair preserved");
+    }
+    say!("slot userland: {} {}", slot, id);
+    // The firmware's attached device may retain its memory until ExitBootServices.
+    Ok(())
+}
+
 /// Carries out persist.cfg when the boot disk has one.
 pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume: *const u8, image: Handle) -> Result<(), Status> {
     let mut path = volume;
@@ -791,6 +920,9 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
             say!("persistent install refused: the disk is not the recorded persistent layout");
             return Err(NOT_FOUND);
         }
+    }
+    if let Some(guids) = request.breenfs_upgrade {
+        check_upgrade_layout(boot, &mut disk, request.expect_disk.ok_or(INVALID_PARAMETER)?, guids)?;
     }
     // The HTTP boot option: the one this boot came through for the one-time install, the recorded one otherwise.
     let mut current = [0u8; 2];
@@ -828,6 +960,11 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
         metal_efi::slot_transaction::begin(&metal_efi::slot_store::SlotStore(&root), false)?;
         say!("migration rescue slot installed");
     }
+    if request.breenfs_upgrade.is_some() {
+        for slot in ["CURRENT", "PREVIOUS"] {
+            report_slot(boot, &root, &request, slot)?;
+        }
+    }
     let written = write_esp_files(boot, &root, payload.handle(), text, "esp-file ")?;
     if written > 0 {
         say!("persistent install: EFI system partition files written: {}", written);
@@ -838,45 +975,13 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
             load_option(boot, runtime, esp, description, http_option)?;
         }
     }
-    // Read embedded userland identities only after recovery and NEXT publication.
     // The host's disk.json is deliberately not an authority for reclamation.
-    for slot in ["CURRENT", "PREVIOUS", "NEXT"] {
-        let mut name = [0u8; 64];
-        let prefix = b"\\EFI\\BREENIX\\";
-        name[..prefix.len()].copy_from_slice(prefix);
-        name[prefix.len()..prefix.len()+slot.len()].copy_from_slice(slot.as_bytes());
-        name[prefix.len()+slot.len()..prefix.len()+slot.len()+4].copy_from_slice(b".IMG");
-        let path = core::str::from_utf8(&name[..prefix.len()+slot.len()+4]).map_err(|_| INVALID_PARAMETER)?;
-        match root.size(path) {
-            Err(NOT_FOUND) => { say!("slot userland: {} empty", slot); continue; }
-            Err(status) => return Err(status),
-            Ok(size) if size > 512 << 20 => return Err(OUT_OF_RESOURCES),
-            Ok(_) => (),
+    if request.breenfs_upgrade.is_none() {
+        for slot in ["CURRENT", "PREVIOUS"] {
+            report_slot(boot, &root, &request, slot)?;
         }
-        let (memory, size) = root.read_pages(boot, path)?;
-        let disk = metal_efi::bootdisk::attach(boot, memory, size, "reference slot")?;
-        let volume = metal_efi::bootdisk::connect(boot, disk, "reference slot")?;
-        let mut device = volume;
-        let mut handle = null_mut();
-        ok((boot.locate_device_path)(&SIMPLE_FILE_SYSTEM, &mut device, &mut handle))?;
-        let slot_root = files::root_of(boot, handle)?;
-        let mut intent = [0u8; 1024];
-        let len = slot_root.read("ramdisk", &mut intent)?;
-        let text = core::str::from_utf8(&intent[..len]).map_err(|_| VOLUME_CORRUPTED)?;
-        if !(text.starts_with("BREENIX-BOOT 2\n")
-            || request.migration_slots && text.starts_with("BREENIX-BOOT 3\n"))
-        {
-            return Err(VOLUME_CORRUPTED);
-        }
-        let mut ids = text.lines().filter_map(|line| line.strip_prefix("userland "));
-        let id = ids.next().unwrap_or("flat");
-        if ids.next().is_some() { return Err(VOLUME_CORRUPTED); }
-        if id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
-            return Err(VOLUME_CORRUPTED);
-        }
-        say!("slot userland: {} {}", slot, id);
-        // The firmware's attached device may retain this memory until ExitBootServices.
     }
+    report_slot(boot, &root, &request, "NEXT")?;
     say!("slot userlands complete");
     say!("persistent install request complete");
     Ok(())
@@ -888,14 +993,27 @@ mod tests {
 
     #[test]
     fn accepts_breenfs_upgrade_request_without_enabling_migration_slots() {
+        const SYSTEM: &str = "33333333-3333-3333-3333-333333333333";
+        const HOME: &str = "44444444-4444-4444-4444-444444444444";
+        const EXT_SYSTEM: &str = "55555555-5555-5555-5555-555555555555";
+        const EXT_HOME: &str = "66666666-6666-6666-6666-666666666666";
         let base = concat!(
             "BREENIX-PERSIST 1\naction upgrade\n",
             "expect-disk 11111111-1111-1111-1111-111111111111\n",
             "esp 22222222-2222-2222-2222-222222222222\n",
         );
         let base_request = parse(base).unwrap();
-        assert!(parse(&format!("{base}breenfs-upgrade 33333333-3333-3333-3333-333333333333 44444444-4444-4444-4444-444444444444\n")).is_ok());
+        let marked = format!("{base}breenfs-upgrade {SYSTEM} {HOME} {EXT_SYSTEM} {EXT_HOME}\n");
+        let request = parse(&marked).ok().unwrap();
         assert!(!base_request.migration_slots);
-        assert!(parse(&format!("{base}breenfs-upgrade 33333333-3333-3333-3333-333333333333 33333333-3333-3333-3333-333333333333\n")).is_err());
+        assert!(!request.migration_slots);
+        assert!(parse(&format!("{base}breenfs-upgrade {SYSTEM} {SYSTEM} {EXT_SYSTEM} {EXT_HOME}\n")).is_err());
+
+        let cutover = format!("BREENIX-BOOT 3\ntarget persistent\nmount {SYSTEM} / rw\nmount {HOME} /home rw\nuserland gen\n");
+        let rescue = format!("BREENIX-BOOT 3\ntarget persistent\nmount {EXT_SYSTEM} / ro\nmount {EXT_HOME} /home ro\nuserland gen\n");
+        assert_eq!(slot_intent(&cutover, false, None, "CURRENT"), Err(VOLUME_CORRUPTED));
+        assert_eq!(slot_intent(&cutover, false, request.breenfs_upgrade, "CURRENT"), Ok(("gen", false)));
+        assert_eq!(slot_intent(&rescue, false, request.breenfs_upgrade, "PREVIOUS"), Ok(("gen", true)));
+        assert_eq!(slot_intent(&rescue, false, request.breenfs_upgrade, "CURRENT"), Err(VOLUME_CORRUPTED));
     }
 }

@@ -8,6 +8,8 @@
   metal-run boot --persistent [--entry previous] [--run CMD ...] [--verify]
   metal-run install-persistent [--sha SHA | --branch NAME] [--add-breenfs] | --rollback
   metal-run migrate-persistent migrate|readback|cutover|rescue|return --sha SHA --branch NAME
+  metal-run close-migration RETURN_BOOT
+  metal-run record-breenfs-upgrades FIRST SECOND --sha SHA
   metal-run export-persistent [--branch NAME] [--sha SHA] [--wait MIN]
   metal-run stop ID
   metal-run status
@@ -771,6 +773,11 @@ def argument_parser(automatic=False):
     p.add_argument('phase', choices=('migrate', 'readback', 'cutover', 'rescue', 'return'))
     p.add_argument('--sha', required=True)
     p.add_argument('--branch', required=True)
+    sub.add_parser('close-migration', help='close the recorded completed migration without a boot').add_argument('return_boot')
+    proof = sub.add_parser('record-breenfs-upgrades', help='score two completed BreenFS upgrades from the boot store')
+    proof.add_argument('first')
+    proof.add_argument('second')
+    proof.add_argument('--sha', required=True)
     p = sub.add_parser('export-persistent', help='copy the recorded system and home partitions through read-only firmware')
     p.add_argument('--branch')
     p.add_argument('--sha')
@@ -810,6 +817,13 @@ def main():
     args = parser.parse_args()
     if args.command == '_verify-migration':
         return runpy.run_path(str(HERE / 'upgrade_probe.py'))['watch_migration'](globals(), validate_id(args.id))
+    if args.command in ('close-migration', 'record-breenfs-upgrades'):
+        if args.command == 'close-migration':
+            operation = ['close', validate_id(args.return_boot)]
+        else:
+            operation = ['record-upgrades', validate_id(args.first), validate_id(args.second),
+                         '--sha', args.sha]
+        return in_metal(host_env(), 'python3', '/opt/breenix-metal/metal_migration.py', *operation).returncode
     if args.command == 'migrate-persistent':
         return migration_boot(args, args.phase)
     if args.command == '_upgrade':

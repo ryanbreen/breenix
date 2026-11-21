@@ -187,18 +187,7 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         };
         files.put_inode(
             2,
-            Inode {
-                mode: 0o40755,
-                nlink: 2,
-                parent: 2,
-                next_index: 2,
-                created_generation: 1,
-                atime: sb.mkfs_time,
-                mtime: sb.mkfs_time,
-                ctime: sb.mkfs_time,
-                btime: sb.mkfs_time,
-                ..Inode::default()
-            },
+            root_inode(1, sb.mkfs_time),
         )?;
         Ok(files)
     }
@@ -343,6 +332,53 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
         self.changed_roots.insert(id);
         self.next_root_id = next;
         Ok(id)
+    }
+    /// Allocate an independent filesystem tree for a staged installation.
+    pub fn create_empty_root(&mut self, name: &[u8], at: Time) -> Result<u64, Error> {
+        self.require_writable()?;
+        valid_root_name(name)?;
+        valid_time(at)?;
+        if self.root.name == name || self.roots.values().any(|root| root.name == name) {
+            return Err(Error::EEXIST);
+        }
+        let id = self.next_root_id;
+        if id <= 1 || self.roots.contains_key(&id) {
+            return Err(Error::EIO);
+        }
+        let next = id.checked_add(1).ok_or(Error::ENOSPC)?;
+        let generation = self.txn.generation();
+        let uuid = self.txn.view().read_node(self.root.root)?.header.fs_uuid;
+        let mut root = self.txn.create_tree(uuid)?;
+        self.txn.insert(&mut root, key(2, format::INODE, 0), &root_inode(generation, at).encode())?;
+        let root = Root {
+            root, next_inode: 16, source_root: 0, created_generation: generation,
+            ctime: at, flags: 0, name: name.to_vec(),
+        };
+        self.txn.update_root(id, root.clone())?;
+        Arc::make_mut(&mut self.roots).insert(id, root);
+        self.changed_roots.insert(id);
+        self.next_root_id = next;
+        Ok(id)
+    }
+    /// Publish a staged tree by changing its ROOT name in one transaction.
+    pub fn rename_root(&mut self, from: &[u8], to: &[u8]) -> Result<(), Error> {
+        self.require_writable()?;
+        valid_root_name(from)?;
+        valid_root_name(to)?;
+        let (&id, root) = self.roots.iter().find(|(_, root)| root.name == from)
+            .ok_or(Error::ENOENT)?;
+        if id == 1 || id == self.root_id {
+            return Err(Error::EBUSY);
+        }
+        if self.roots.values().any(|root| root.name == to) {
+            return Err(Error::EEXIST);
+        }
+        let mut root = root.clone();
+        root.name = to.to_vec();
+        self.txn.update_root(id, root.clone())?;
+        Arc::make_mut(&mut self.roots).insert(id, root);
+        self.changed_roots.insert(id);
+        Ok(())
     }
     /// Remove the incoming ROOT reference; a zero-count node keeps its children
     /// under DEAD ownership until a later reaper step (design 2.6).
@@ -1344,6 +1380,12 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
     }
 }
 pub(super) const ORPHAN_OBJECT: u64 = 0xffff_ffff_ffff_ff00;
+fn root_inode(generation: u64, at: Time) -> Inode {
+    Inode {
+        mode: 0o40755, nlink: 2, parent: 2, next_index: 2, created_generation: generation,
+        atime: at, mtime: at, ctime: at, btime: at, ..Inode::default()
+    }
+}
 fn valid_root_name(name: &[u8]) -> Result<(), Error> {
     if name.contains(&b',') { return Err(Error::EINVAL); }
     valid_name(name).map_err(|_| Error::EINVAL)

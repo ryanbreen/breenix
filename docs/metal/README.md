@@ -942,6 +942,17 @@ rescue after confirmed promotion boots the previous slot without another slot ac
 for recovery if the GPT copies or slot records disagree, migrated data is partially written, or
 the phase reports a manifest mismatch.
 
+For 24.19 acceptance, use `metal-run close-migration RETURN_BOOT` while the lease and
+queue are empty and the machine is off. It binds closure to the completed 24.18 return
+record and preserves the idle test answer. Normal `install-persistent` on layout v2
+requires that closure. Its install boots use the disposable test root read-only,
+mount only the BreenFS system and home volumes writable, and archive the ext2 rescue
+pair before the first promotion replaces PREVIOUS. The installer snapshots home
+read-only and publishes the new system root by renaming its completed draft. The S21
+SSH probe checks the selected generation, shared mounts and readable BreenFS home.
+After both upgrades, `metal-run record-breenfs-upgrades FIRST SECOND --sha SHA`
+writes `filesystem-two-upgrades.json` beside the second verification boot.
+
 ### Install and upgrade
 
 `metal-run install-persistent --sha <commit>` (with `--branch` for a pushed branch) installs or upgrades the

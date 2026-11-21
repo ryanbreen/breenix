@@ -28,6 +28,13 @@ def measures(milestone, shape, mode):
             and ('bootModes' not in milestone or mode in milestone['bootModes']))
 
 
+def stages(milestone, mode, arch, *, breenfs=False):
+    if breenfs and mode == 'persistent' and 'breenfsStages' in milestone:
+        return milestone['breenfsStages']
+    lists = milestone.get('stages', {})
+    return lists.get(mode, lists.get(arch, []) if milestone.get('kernel') else [])
+
+
 def require_suite_profile(run):
     """Console bounds and GPU cases measure the shipped kernel."""
     suites = run.get('suites') or (run.get('suite') or '').split(',')
@@ -50,6 +57,12 @@ def score(directory):
     if run.get('mode') == 'tests':
         return score_tests(directory, run, read)
     definition = read('definition/docs/metal/boot-path.json')
+    if run.get('breenfsUpgrade') and run['mode'] == 'persistent':
+        # On a rolled-back first upgrade the old slot's definition predates
+        # the BreenFS upgrade scorer. Use the install's pinned boot definition.
+        parent = run.get('upgradeParent')
+        if parent and re.fullmatch(r'[0-9]{8}T[0-9]{6}Z-metal', parent):
+            definition = json.loads((directory.parent / parent / 'definition/docs/metal/boot-path.json').read_text())
     catalog = {stage['name']: stage for stage in read(
         'definition/tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json')['stages']}
     shape = boot_shape(run.get('disk'))
@@ -61,12 +74,11 @@ def score(directory):
     for milestone in definition['milestones']:
         if milestone.get('stub') or not measures(milestone, shape, run['mode']):
             continue
-        lists = milestone['stages']
-        stages = lists.get(run['mode'], lists.get(definition['gateArch'], []) if milestone.get('kernel') else [])
-        if not stages:
+        listed = stages(milestone, run['mode'], definition['gateArch'], breenfs=bool(run.get('breenfsUpgrade')))
+        if not listed:
             continue
         cursor, reached = 0, 0
-        for stage in stages:
+        for stage in listed:
             spec = catalog[stage] if isinstance(stage, str) else stage
             if 'host' in spec:
                 reached += host[spec['host']] in events

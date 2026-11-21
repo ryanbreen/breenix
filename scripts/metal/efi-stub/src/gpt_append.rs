@@ -128,22 +128,13 @@ impl Header {
     }
 }
 
-pub(super) struct Append<'a> {
-    entries: &'a [u8],
-    primary: Header,
-    backup: Header,
-    write_gpt: bool,
-}
-
-/// Check both GPT copies, and append or recognize the exact requested entries 5 and 6.
-pub(super) fn prepare<'a>(
-    mut primary: Header,
-    mut backup: Header,
-    entries: &'a mut [u8],
+pub(super) fn validate_pair(
+    primary: &Header,
+    backup: &Header,
+    entries: &[u8],
     backup_entries: &[u8],
     expected: [u8; 16],
-    parts: [Part; 2],
-) -> Result<Append<'a>, Error> {
+) -> Result<(), Error> {
     if expected == [0; 16] || primary.bytes[56..72] != expected || backup.bytes[56..72] != expected
     {
         return Err("wrong GPT disk GUID");
@@ -160,6 +151,27 @@ pub(super) fn prepare<'a>(
     if entries != backup_entries {
         return Err("GPT entry arrays disagree");
     }
+
+    Ok(())
+}
+
+pub(super) struct Append<'a> {
+    entries: &'a [u8],
+    primary: Header,
+    backup: Header,
+    write_gpt: bool,
+}
+
+/// Check both GPT copies, and append or recognize the exact requested entries 5 and 6.
+pub(super) fn prepare<'a>(
+    mut primary: Header,
+    mut backup: Header,
+    entries: &'a mut [u8],
+    backup_entries: &[u8],
+    expected: [u8; 16],
+    parts: [Part; 2],
+) -> Result<Append<'a>, Error> {
+    validate_pair(&primary, &backup, entries, backup_entries, expected)?;
 
     let mut end = read_u64(&primary.bytes, 40) - 1;
     let last_usable = read_u64(&primary.bytes, 48);

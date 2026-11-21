@@ -44,3 +44,36 @@ def generations(proof, reclamation=False):
     for name in names:
         if proof.get(name, {}).get('exit') != 0 or not proof[name].get('executed'):
             raise ValueError('missing executed generation proof: ' + name)
+
+
+def breenfs_pair(cycle, commit, first, second):
+    """Score the paired S21 receipts for successive BreenFS upgrades."""
+    from metal_migration import BOOT_ID, COMMIT, RECORDED_RETURN, verify_mounts
+
+    if cycle.get('closed') != RECORDED_RETURN or not COMMIT.fullmatch(commit):
+        raise ValueError('two-upgrades needs the closed migration and a pinned tools commit')
+    last = cycle['closed']
+    generation = cycle['userland']
+    fingerprint = None
+    upgrades = []
+    for result in (first, second):
+        install = result.get('install', '')
+        receipt = result.get('verification') or {}
+        boot = receipt.get('boot', '')
+        if (not BOOT_ID.fullmatch(install) or not BOOT_ID.fullmatch(boot) or not last < install < boot
+                or result.get('toolsCommit') != commit or result.get('outcome') != 'verified'
+                or result.get('rollback') or result.get('previousGeneration') != generation
+                or result.get('candidateGeneration') != install
+                or receipt.get('exit') != 0 or receipt.get('passed') is not True
+                or receipt.get('homeReadable') is not True or not receipt.get('fingerprint')
+                or (fingerprint is not None and fingerprint != receipt['fingerprint'])):
+            raise ValueError('two-upgrades needs distinct, successful, consecutive BreenFS upgrades')
+        probe(receipt, install)
+        verify_mounts(receipt.get('mounts', ''), 'BreenFS upgrade')
+        fingerprint = receipt['fingerprint']
+        upgrades.append(dict(install=install, verification=boot, generation=install, previous=generation))
+        last, generation = boot, install
+    return dict(milestone='filesystem/ext2-retired', boot=last, commit=commit, toolsCommit=commit,
+                migration=cycle['closed'], upgrades=upgrades,
+                cases=[dict(id='ext2-retired/two-upgrades', result='PASS', ms=0)],
+                cleanup=True, consoleGaps=[])

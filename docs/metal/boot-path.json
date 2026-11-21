@@ -669,6 +669,36 @@
       "bootModes": [
         "persistent"
       ],
+      "breenfsStages": [
+        {
+          "name": "Boot manager menu read back",
+          "marker": "breenix-manager: screen read back identical: "
+        },
+        {
+          "name": "The lab answered: no test boot pending",
+          "marker": "breenix-manager: row: No test boot is pending; session "
+        },
+        {
+          "name": "Kernel slot booted",
+          "marker": "breenix-manager: booting current "
+        },
+        {
+          "name": "BreenFS root mounted",
+          "marker": "breenfs root filesystem mounted"
+        },
+        {
+          "name": "Root mounted from the system partition",
+          "marker": "[fs] root mounted from the system partition"
+        },
+        {
+          "name": "Writes fenced to the persistent pair",
+          "marker": "[block] write fence: "
+        },
+        {
+          "name": "Console login prompt",
+          "marker": "Breenix login:"
+        }
+      ],
       "stages": {
         "persistent": [
           {

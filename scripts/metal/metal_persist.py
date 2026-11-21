@@ -220,7 +220,9 @@ def slot_image(output, esp_files, the_layout, scratch, generation):
     """A kernel slot: the build's bootloader, kernel and boot.json, and the persistent boot's intent as `ramdisk`."""
     parts = the_layout['partitions']
     ramdisk = Path(scratch) / 'slot-intent'
-    ramdisk.write_bytes(intent('persistent', root=parts['system']['guid'], home=parts['home']['guid'], userland=generation))
+    boot = (migration_intent(the_layout, 'cutover', generation) if the_layout['version'] == 2
+            else intent('persistent', root=parts['system']['guid'], home=parts['home']['guid'], userland=generation))
+    ramdisk.write_bytes(boot)
     files = {name: esp_files[name] for name in metal_image.ESP_FILES}
     files['ramdisk'] = ramdisk
     return metal_image.assemble(output, files)
@@ -390,16 +392,16 @@ class Request:
         return config
 
 
-def check_slot_capacity(the_layout, slot, files):
-    """Reserve three equally bounded slots plus manager files and FAT metadata before writing any request."""
+def check_slot_capacity(the_layout, slot, files, *, slots=3):
+    """Reserve space for the retained and staged slots, manager files and FAT metadata."""
     esp = the_layout['partitions']['esp']
     capacity = (esp['last'] - esp['first'] + 1) * SECTOR
     # FAT tables, directories, notes, configuration and replacement manager copies have room of their own.
     reserve = (32 << 20) + 2 * sum(Path(source).stat().st_size for source in files.values())
     recorded = read_disk().get('slots', {})
     largest = max([Path(slot).stat().st_size] + [entry.get('size', 0) for entry in recorded.values() if entry])
-    if 3 * largest + reserve > capacity:
-        raise ValueError('the ESP cannot hold CURRENT, PREVIOUS and NEXT; no install request was written')
+    if slots * largest + reserve > capacity:
+        raise ValueError('the ESP cannot hold the retained and staged slots; no install request was written')
 
 
 def install_request(directory, the_layout, expect, files, slot, note, site, scratch):
@@ -467,14 +469,22 @@ def add_breenfs_request(directory, layout, *, mkfs=None):
     return request
 
 
-def upgrade_request(directory, the_layout, files, slot, note, site, *, rescue=None):
+def upgrade_request(directory, the_layout, files, slot, note, site, *, rescue=None, breenfs=False):
     """An upgrade: the staged slot, the manager and its configuration into the EFI system partition."""
-    check_slot_capacity(the_layout, slot, files)
+    check_slot_capacity(the_layout, slot, files, slots=4 if breenfs else 3)
     request = Request(directory, 'upgrade')
     request.lines.append('expect-disk ' + the_layout['diskGuid'])
     request.lines.append('disk ' + the_layout['diskGuid'])
     esp = the_layout['partitions']['esp']
     request.lines.append(f"esp {esp['guid']}")
+    if breenfs:
+        if check_layout(the_layout)['version'] != 2 or rescue is not None:
+            raise ValueError('BreenFS upgrades need the migrated layout and ordinary slots')
+        parts = the_layout['partitions']
+        roles = ('breenfs-system', 'breenfs-home', 'system', 'home')
+        request.lines.append('breenfs-upgrade ' + ' '.join(parts[role]['guid'] for role in roles))
+    elif the_layout['version'] == 2 and rescue is None:
+        raise ValueError('ordinary upgrades on layout v2 need a closed migration')
     if rescue is not None:
         request.lines.append('migration-slots')
         for path, source in zip(('efi/breenix/next.img', 'efi/breenix/next.txt'), rescue, strict=True):
@@ -523,3 +533,14 @@ def migration_intent(layout, phase, userland):
     mounts = [(guids[role], path, write) for role, path, write in mount_sets[phase]]
     return intent('persistent-migrate' if phase == 'migrate' else 'persistent',
                   userland=userland, mounts=mounts, mount_guids=guids)
+
+
+def breenfs_upgrade_intent(layout, userland):
+    if check_layout(layout)['version'] != 2:
+        raise ValueError('BreenFS upgrade intent requires layout v2')
+    guids = {role: part['guid'] for role, part in layout['partitions'].items()}
+    return intent('persistent-install', userland=userland, mount_guids=guids, mounts=[
+        (guids['test'], '/', False),
+        (guids['breenfs-system'], '/migrate/system', True),
+        (guids['breenfs-home'], '/migrate/home', True),
+    ])
