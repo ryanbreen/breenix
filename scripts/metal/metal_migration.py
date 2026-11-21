@@ -461,6 +461,28 @@ def record_phase(cycle, phase, boot_id):
     save(cycle)
 
 
+def failed_retirement_operation(boot, run, log):
+    """Identify a driver-closed failure of either retirement operation."""
+    reclaim = run.get('payload') == metal_persist.RECLAIM_PAYLOAD and run.get('kind') == 'fault-test'
+    install = run.get('payload') == 'image' and run.get('mode') == 'persistent-install'
+    if (not (reclaim or install) or run.get('id') != boot.name
+            or any(run.get(field) for field in ('adopted', 'bootManagerAbort', 'inject', 'migrationPhase',
+                                                 'slotAction', 'upgradeParent'))
+            or not (boot / 'ended').is_file()):
+        return False
+    status = (boot / 'exit-status').read_text().strip()
+    closed = [(row.get('endedBy'), row.get('status')) for row in log if row['event'] == 'closed']
+    return (status.isdecimal() and int(status) not in (m.EXIT_DONE, m.EXIT_INCOMPLETE)
+            and closed == [('driver', int(status))])
+
+
+def refused_before_power(boot, run, log):
+    return (failed_retirement_operation(boot, run, log)
+            and not any(row['event'] in ('power-on', 'power-on-error', 'power-off', 'manager-answer',
+                                         'slot-boot', 'capture-incomplete')
+                        or row['event'] == 'baseline' and row.get('power') != 'Off' for row in log))
+
+
 def upgrade_proof(first, second, commit):
     """Read the existing upgrade verifier's receipts from the service boot store."""
     from upgrade_cases import breenfs_pair
@@ -514,8 +536,10 @@ def upgrade_proof(first, second, commit):
         ident = row['id']
         if not cycle['closed'] < ident <= proof['boot'] or not BOOT_ID.fullmatch(ident):
             continue
-        run = m.read_json(m.boot_dir(ident) / 'run.json', {})
-        if ident in expected or run.get('mode') == 'persistent-install' or run.get('upgradeParent'):
+        boot = m.boot_dir(ident)
+        run = m.read_json(boot / 'run.json', {})
+        if (ident in expected or run.get('upgradeParent')
+                or run.get('mode') == 'persistent-install' and not refused_before_power(boot, run, events(boot))):
             actual.append(ident)
     if actual != expected:
         raise ValueError('two-upgrades needs the paired install and verification boots in order after the 24.18 return')
@@ -564,12 +588,20 @@ def reclaim_history(returned, active, upgrades):
         closed = [row for row in log if row['event'] == 'closed']
         # An install closes before its driver links the verification child.
         if (run.get('id') != ident or not (boot / 'ended').is_file() or len(closed) != 1
-                or not power or power[-1] is not True
                 or run.get('bootManagerAbort') or any(row['event'] == 'capture-incomplete' for row in log)):
+            raise ValueError(f'incomplete rescue-slot history after return: {ident}')
+        if ident not in upgrade_answers and refused_before_power(boot, run, log):
+            continue
+        if not power or power[-1] is not True:
             raise ValueError(f'incomplete rescue-slot history after return: {ident}')
         if ident in upgrade_answers:
             answer, entries = upgrade_answers[ident]
             allowed = answers == [answer] and selections == entries
+        elif run.get('payload') == metal_persist.RECLAIM_PAYLOAD:
+            allowed = (failed_retirement_operation(boot, run, log) and answers == [f'test {ident}']
+                       and not selections and sum(row['event'] == 'power-on' for row in log) == 1
+                       and not any(row['event'] in ('power-on-error', 'console-gap-start', 'watchdog-persistent')
+                                   for row in log))
         else:
             allowed = (answers == [f'test {ident}'] and not selections and run.get('kind') in ('boot', 'fault-test')
                        and not any(run.get(field) for field in ('migrationPhase', 'slotAction', 'upgradeParent'))
