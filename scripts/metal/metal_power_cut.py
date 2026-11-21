@@ -34,6 +34,10 @@ def options(args):
 def kernel_fault(args):
     if window := getattr(args, 'power_cut_window', None):
         return FEATURES[0], f'breenfs_commit_window={window} breenfs_after_receipt=1'
+    if (getattr(args, 'power_cut_after', None) is not None
+            and getattr(args, 'case', None) == 'power-cut/writer'):
+        # Timed runs use the same fault build with no guest publication hold.
+        return FEATURES[0], None
     if getattr(args, 'breenfs_bit_flip', False):
         return FEATURES[1], 'breenfs_corrupt_inject=first-data:64:0'
     return None
