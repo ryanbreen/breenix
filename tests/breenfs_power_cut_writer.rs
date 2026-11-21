@@ -76,3 +76,10 @@ fn corruption_probe_reads_the_synced_record_and_requires_eio() {
         assert_eq!(result.is_ok(), success);
     }
 }
+
+#[test]
+fn completed_diagnostics_emit_the_suite_receipts_in_order() {
+    let mut serial = Vec::new();
+    writer::diagnostic_done(&mut serial, "power-cut/recovery").unwrap();
+    assert_eq!(serial, b"\nSUITE filesystem DONE passed=1 failed=0 skipped=0 total=1 only=power-cut/recovery\nSUITE_SEQUENCE READY filesystem\n");
+}
