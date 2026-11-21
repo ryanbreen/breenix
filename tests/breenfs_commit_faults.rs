@@ -122,3 +122,16 @@ fn first_data_skips_nodes_and_invalid_requests_stay_disarmed() {
         assert!(Injection::from_command_line(cmdline).is_none(), "{cmdline}");
     }
 }
+
+
+#[test]
+fn publication_fault_arms_once_for_the_writers_dirty_inode() {
+    let armed = faults::PublicationArm::new();
+    assert_eq!(armed.take_if(|_| true), None);
+    assert!(armed.arm(42));
+    assert!(!armed.arm(51));
+    assert_eq!(armed.take_if(|ino| ino == 51), None);
+    assert_eq!(armed.take_if(|ino| ino == 42), Some(42));
+    assert_eq!(armed.take_if(|_| true), None);
+    assert!(!armed.arm(42));
+}

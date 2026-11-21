@@ -145,6 +145,18 @@ class PowerCutDriverTest(StateTest):
         self.assertTrue(record['powerCut']['powerOffConfirmed'])
         self.assertIn('tail from the serial capture\n', (driver.dir / 'serial.txt').read_text())
 
+    def test_aimed_cut_waits_for_the_writers_first_acknowledgement(self):
+        driver = self.driver(power_cut_window='first-flush')
+        driver.t0 = 90.0
+        driver.kernel_started = 92.0
+        driver.seen.add('disk-root-confirmed')
+        nonce = '0123456789abcdef'
+        driver.on_line(f'SUITE filesystem START cases=1 only=power-cut/writer nonce={nonce}')
+        driver.on_line(MARKER)
+        driver.on_line(f'FSYNC {nonce} 1 ' + 'a' * 64)
+        with self.assertRaises(boot.PowerCut):
+            driver.on_line(MARKER)
+
     def test_immediate_off_posts_before_querying_power_state(self):
         requests = []
         with patch.object(m, 'rf', side_effect=lambda *args, **kw: requests.append(args[0])), \
