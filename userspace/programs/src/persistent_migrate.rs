@@ -1,9 +1,11 @@
 //! Copy the read-only persistent ext2 trees into the boot's empty BreenFS pair.
+#[path = "../../../kernel/src/fs/breenfs/abi.rs"]
+pub mod abi;
 #[path = "persistent_migrate/core.rs"]
 mod migrate;
 
+use abi::{SnapshotRequest, SnapshotStatus, SNAPSHOT_CREATE, SNAPSHOT_STATUS};
 use libbreenix::{
-    breenfs_abi::{SnapshotRequest, SnapshotStatus, SNAPSHOT_CREATE, SNAPSHOT_STATUS},
     crypto::sha256,
     error::Error,
     fs::{mount, umount2},

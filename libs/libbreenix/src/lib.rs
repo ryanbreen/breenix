@@ -43,8 +43,6 @@ pub mod audio;
 #[cfg(feature = "std")]
 pub mod compositor;
 pub mod crypto;
-#[path = "../../../kernel/src/fs/breenfs/abi.rs"]
-pub mod breenfs_abi;
 pub mod dns;
 #[cfg(feature = "std")]
 pub mod evidence_reference;
