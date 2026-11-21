@@ -50,6 +50,38 @@ mod commit_policy {
 
 mod hold {
     use super::*;
+
+    #[test]
+    fn commit_progresses_with_cache_held_by_another_device() {
+        let bytes = test_image::image();
+        let sb = superblock(&bytes);
+        let device = RecordingDevice::new(bytes.clone()).unwrap();
+        let other = RecordingDevice::new(bytes).unwrap();
+        let sector = device.block_size();
+        let slots = 16;
+        let cache = BufferCache::with_capacity(NoWait, slots * (sector + BUFFER_OVERHEAD));
+        let other_group = WriteGroup::hold(&other, Arc::new(|| {}));
+        let group = WriteGroup::hold(&device, Arc::new(|| {}));
+        let first = other.num_blocks() / 2;
+        let payload = vec![0x5a; sector];
+        for block in first..first + slots as u64 {
+            cache.write(&other, other_group.clone(), block, &payload).unwrap();
+        }
+        assert_eq!(cache.resident_bytes(), slots * (sector + BUFFER_OVERHEAD));
+
+        let mut committer = Committer::new(sb.clone());
+        let mut files = Files::new(DeviceStore(&device), &sb, 1, true).unwrap();
+        files.create(2, b"new", 0o600, Time::default()).unwrap();
+        let frozen = committer.freeze().unwrap();
+        files.prepare_commit().unwrap();
+        let prepared = frozen.prepare_settled_files(&device, &mut files).unwrap();
+
+        assert_eq!(prepared.write_cached(&cache, &device, &group), Ok(()));
+        assert_eq!(device.durable_generations(), vec![1, 2]);
+        assert!(other.events().is_empty(), "an unsubmitted Hold group reached its device");
+        assert_eq!(&**cache.pin(&other, first).unwrap(), payload.as_slice());
+    }
+
     #[test]
     fn commit_through_hold_group_keeps_w1_w3() {
         let bytes = test_image::image();
