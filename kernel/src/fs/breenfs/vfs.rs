@@ -9,7 +9,7 @@ use mutation_cost::{Costs, Op as CostOp, Phase as CostPhase};
 use super::{
     abi::*,
     scrub::{self, Scrub},
-    commit::{Committer, FrozenCommit},
+    commit::{Committer, FrozenCommit, PublicationError},
     commit_policy::{CommitPolicy, COMMIT_INTERVAL_NS, DIRTY_BUDGET},
     commit_signal::{monotonic_ns, CommitSignal},
     dirty::DirtyPages,
@@ -330,6 +330,19 @@ impl<W: Wait> Cache<W> {
         }
     }
 }
+enum MountFailure {
+    Other(Errno),
+    Publication(PublicationError),
+}
+
+impl From<Errno> for MountFailure {
+    fn from(error: Errno) -> Self { Self::Other(error) }
+}
+
+impl From<PublicationError> for MountFailure {
+    fn from(error: PublicationError) -> Self { Self::Publication(error) }
+}
+
 struct MountState<W: Wait + 'static> {
     files: OpenFiles<W>,
     // N's next view, installed while N+1's scratch changes await replay.
@@ -353,7 +366,6 @@ struct MountState<W: Wait + 'static> {
     read_refusal_reported: bool,
     scrub: Option<Scrub>,
     scrub_state: u32,
-    #[cfg(not(test))]
     mount: usize,
     closed: bool,
     nodes: BTreeMap<u64, NodeState>,
@@ -1082,11 +1094,18 @@ impl<W: Wait> MountState<W> {
         }
         self.next_files.is_none() && self.refresh.is_empty()
     }
-    fn fail(&mut self, branch: &'static str, error: Errno) {
+    fn fail(&mut self, branch: &'static str, failure: impl Into<MountFailure>) {
         if self.failure.is_some() { return; }
+        let (error, publication) = match failure.into() {
+            MountFailure::Other(error) => (error, None),
+            MountFailure::Publication(error) => (Errno(EIO), Some(error)),
+        };
         self.failure = Some((branch, error.0));
         self.failed = true;
-        if let Some(failure) = self.metadata_error {
+        if let Some(failure) = publication {
+            log::error!("[breenfs] failure branch={} errno={} generation={} mount={} substep={:?} block_error={:?}; latched read-only",
+                branch, error.0, self.durable.generation, self.mount, failure.step, failure.block_error);
+        } else if let Some(failure) = self.metadata_error {
             log::error!("[breenfs] failure branch={} errno={} generation={} metadata_cause={} metadata_node={}; latched read-only",
                 branch, error.0, self.durable.generation, failure.cause, failure.addr);
         } else {
@@ -1746,7 +1765,6 @@ impl<W: Wait + 'static> BreenFs<W> {
                 read_refusal_reported: false,
                 scrub: None,
                 scrub_state: SCRUB_IDLE,
-                #[cfg(not(test))]
                 mount,
                 closed: false,
                 nodes: BTreeMap::new(),
@@ -2672,8 +2690,8 @@ impl<W: Wait + 'static> BreenFs<W> {
         }
         preemption_point();
         let signal = self.inner.signal.clone();
-        let group = WriteGroup::hold(
-            self.inner.device.as_ref(),
+        let group = WriteGroup::ready_hold(
+            self.inner.device.clone(),
             Arc::new(move || {
                 signal.pressure.store(true, Ordering::Release);
                 signal.worker.wake();
@@ -2743,7 +2761,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 }
                 (retired, None)
             } else {
-                state.fail("publish", Errno(EIO));
+                state.fail("publish", result.unwrap_err());
                 if let Some(committer) = state.committer.as_mut() {
                     committer.abandon();
                 }
@@ -2755,7 +2773,7 @@ impl<W: Wait + 'static> BreenFs<W> {
         drop(publication);
         // After the exclusion, on the worker, in this order (601(4)): wake N's
         // receipts, then release N's grants.
-        commit.wake(result);
+        commit.wake(result.map_err(|_| super::commit::Error::EIO));
         {
             let _cleanup = self.inner.costs.span(CostOp::Commit, CostPhase::Cleanup);
             let installed = result.is_ok();

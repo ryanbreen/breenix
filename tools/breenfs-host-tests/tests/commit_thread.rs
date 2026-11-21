@@ -1,7 +1,7 @@
 use breenfs_host_tests::{
     block::{BlockDevice, BlockError},
     buffer_cache::{BufferCache, Wait, WriteGroup, BUFFER_OVERHEAD},
-    commit::{Committer, DeviceStore, Error},
+    commit::{Committer, DeviceStore, Error, PublicationError, PublicationStep},
     format::{Superblock, Time, BLOCK_SIZE},
     ops::Files,
     recording::{Event, RecordingDevice},
@@ -53,19 +53,32 @@ mod hold {
 
     #[test]
     fn commit_progresses_with_cache_held_by_another_device() {
+        progress_under_foreign_hold(false);
+    }
+
+    #[test]
+    fn commit_submits_a_ready_group_for_another_device() {
+        progress_under_foreign_hold(true);
+    }
+
+    fn progress_under_foreign_hold(ready: bool) {
         let bytes = test_image::image();
         let sb = superblock(&bytes);
         let device = RecordingDevice::new(bytes.clone()).unwrap();
-        let other = RecordingDevice::new(bytes).unwrap();
+        let other = Arc::new(RecordingDevice::new(bytes).unwrap());
         let sector = device.block_size();
         let slots = 16;
         let cache = BufferCache::with_capacity(NoWait, slots * (sector + BUFFER_OVERHEAD));
-        let other_group = WriteGroup::hold(&other, Arc::new(|| {}));
+        let other_group = if ready {
+            WriteGroup::ready_hold(other.clone(), Arc::new(|| {}))
+        } else {
+            WriteGroup::hold(other.as_ref(), Arc::new(|| {}))
+        };
         let group = WriteGroup::hold(&device, Arc::new(|| {}));
         let first = other.num_blocks() / 2;
         let payload = vec![0x5a; sector];
         for block in first..first + slots as u64 {
-            cache.write(&other, other_group.clone(), block, &payload).unwrap();
+            cache.write(other.as_ref(), other_group.clone(), block, &payload).unwrap();
         }
         assert_eq!(cache.resident_bytes(), slots * (sector + BUFFER_OVERHEAD));
 
@@ -78,8 +91,15 @@ mod hold {
 
         assert_eq!(prepared.write_cached(&cache, &device, &group), Ok(()));
         assert_eq!(device.durable_generations(), vec![1, 2]);
-        assert!(other.events().is_empty(), "an unsubmitted Hold group reached its device");
-        assert_eq!(&**cache.pin(&other, first).unwrap(), payload.as_slice());
+        if ready {
+            assert_eq!(other.events().len(), slots, "the peer's staged batch was not submitted");
+            assert_eq!(other.durable_generations(), vec![1], "the helper published the peer");
+            assert_eq!(cache.submit(other.as_ref(), &other_group).wait(), Ok(()));
+            assert_eq!(other.events().len(), slots, "the owner repeated the helped batch");
+        } else {
+            assert!(other.events().is_empty(), "an unsubmitted Hold group reached its device");
+            assert_eq!(&**cache.pin(other.as_ref(), first).unwrap(), payload.as_slice());
+        }
     }
 
     #[test]
@@ -133,7 +153,7 @@ mod hold {
                 "receipt completed before publication result"
             );
             committer.install(prepared.superblock());
-            frozen.wake(result);
+            frozen.wake(result.map_err(|_| Error::EIO));
             assert_eq!(receipt.result(), Some(Ok(())));
             let events = dev.events();
             let events = &events[before..];
@@ -210,7 +230,7 @@ fn fsync_waits_for_the_generation_it_joined() {
     let result = prepared.write_cached(&cache, &dev, &group);
     assert_eq!(result, Ok(()));
     committer.install(prepared.superblock());
-    frozen.wake(result);
+    frozen.wake(result.map_err(|_| Error::EIO));
     assert_eq!(first.result(), Some(Ok(())));
     assert_eq!(second.result(), None, "G's flush acknowledged G+1");
     let mut files = Files::new(DeviceStore(&dev), prepared.superblock(), 1, true).unwrap();
@@ -221,10 +241,13 @@ fn fsync_waits_for_the_generation_it_joined() {
     let third = committer.waiter();
     dev.fail.store(true, Ordering::SeqCst);
     let result = prepared.write_cached(&cache, &dev, &group);
-    assert_eq!(result, Err(Error::EIO));
+    assert_eq!(result, Err(PublicationError {
+        step: PublicationStep::DataFlush,
+        block_error: BlockError::IoError,
+    }));
     let issued = dev.disk.events().len();
     committer.abandon();
-    frozen.wake(result);
+    frozen.wake(result.map_err(|_| Error::EIO));
     assert!(committer.read_only());
     assert_eq!(first.result(), Some(Ok(())));
     for receipt in [second, third, committer.waiter()] {
