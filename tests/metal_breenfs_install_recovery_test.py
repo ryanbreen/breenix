@@ -65,6 +65,13 @@ class BreenfsInstallReplayTest(existing.StateTest):
         self.assertEqual(status, m.EXIT_DONE, pending)
         self.assertTrue(verdict['passed'], verdict)
 
+    def test_fenced_install_cannot_finish_without_install_complete(self):
+        serial = FIXTURE.read_text()
+        before_completion = serial[:serial.index(boot.INSTALL_DONE)]
+        status, verdict, pending = self.replay(before_completion)
+        self.assertNotEqual(status, m.EXIT_DONE, pending)
+        self.assertFalse(verdict['passed'], verdict)
+
     def test_other_fences_cannot_finish_the_install(self):
         serial = FIXTURE.read_text()
         for changed in (FENCE + ', 1-2', FENCE.replace('734005247', '734005248'),
