@@ -378,6 +378,27 @@ class DiskTest(existing.StateTest):
             with self.assertRaisesRegex(ValueError, 'replaced between'):
                 disk.prepare_cut_recovery(source.name, 'readback', 'b' * 40)
 
+    def test_recovery_driver_serves_the_retained_payload_without_staging_a_root(self):
+        m, boot = existing.m, existing.boot
+        source, facts = self.readback_source(m.EXIT_SHORT, 'deliberate power cut')
+        retained = source / 'recovery.efi'
+        retained.write_bytes(b'recovery fixture')
+        m.write_json(source / 'recovery-payload.json',
+                     dict(size=retained.stat().st_size, sha256=disk.metal_image.sha256(retained)))
+        args = existing.SimpleNamespace(id='20261018T000002Z-metal', mode='suite',
+            payload='image', disk='root', suite='filesystem', commit='b' * 40, inject=None,
+            case='power-cut/recovery', source_boot=source.name, cut_recovery_from='readback')
+        expected = dict(logBytes=4096, logSha256='e' * 64)
+        with patch.object(m, 'load_site', return_value={}):
+            driver = boot.Driver(args)
+        with patch.object(disk, 'prepare_cut_recovery', return_value=(facts, expected)), \
+             patch.object(disk, 'stage', side_effect=AssertionError('must not stage a root')), \
+             patch.object(driver, 'load_definition'):
+            driver.prepare_payload()
+        self.assertEqual(driver.delivery['diskRoot'], facts)
+        self.assertEqual(driver.payload_facts['path'].read_bytes(), retained.read_bytes())
+        self.assertEqual(driver.recovery_expected, expected)
+
     def test_only_decided_failure_schedules_diagnostic_readback(self):
         m, boot = existing.m, existing.boot
         for minute, status, reason in [(0, m.EXIT_STOPPED, 'operator stop'),
