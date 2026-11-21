@@ -222,6 +222,46 @@ def save(value):
     m.write_json(m.STATE / 'persistent-migration.json', value)
 
 
+# E24 ledger line 985, as corrected by line 986.
+CARRY_FORWARD_CYCLE = '2aa932f2f61542f111c23be70dd824f7ba7fe411'
+CARRY_FORWARD_FILES = ('scripts/metal/server-suite', 'scripts/metal/metal_migration.py',
+                       'tests/remote_upgrade_test.py', 'tests/metal_migration_test.py')
+
+
+def require_carry_forward(phase, cycle_commit, commit):
+    if phase not in VERIFY_PHASES or cycle_commit != CARRY_FORWARD_CYCLE:
+        raise ValueError('migration phase needs its cycle commit')
+    try:
+        records = [json.loads(line) for line in
+                   (m.STATE / 'migration-carry-forward.jsonl').read_text().splitlines()]
+    except (OSError, ValueError) as error:
+        raise ValueError('migration carry-forward record is missing or unreadable') from error
+
+    for record in records:
+        if (not isinstance(record, dict) or record.get('ledgerLine') != 985
+                or record.get('cycleCommit') != cycle_commit or record.get('headCommit') != commit):
+            continue
+        files = record.get('allowedFiles')
+        if isinstance(files, list) and len(files) == len(CARRY_FORWARD_FILES) and all(
+                path in files for path in CARRY_FORWARD_FILES):
+            break
+    else:
+        raise ValueError('migration needs a matching carry-forward record under E24 ledger line 985')
+
+    # Acceptance supplies the two commits in a local Git repository in the service state directory.
+    repo = m.STATE / 'migration-source.git'
+    try:
+        diff = subprocess.run(['git', '--no-replace-objects', f'--git-dir={repo}',
+                               'diff', '--name-only', '-z', '--no-relative', '--no-renames',
+                               '--ignore-submodules=none',
+                               f'{cycle_commit}..{commit}', '--'], check=True, capture_output=True, timeout=15)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ValueError('cannot verify the migration carry-forward Git range') from error
+    outside = set(os.fsdecode(diff.stdout).split('\0')) - {''} - set(CARRY_FORWARD_FILES)
+    if outside:
+        raise ValueError(f'migration carry-forward changes files outside E24 ledger line 985: {sorted(outside)!r}')
+
+
 def admit(phase, boot_id, commit, tools_commit):
     """Under the machine lease, authorize just the next phase at the pinned head."""
     if commit != tools_commit or not re.fullmatch(r'[0-9a-f]{40}', tools_commit or ''):
@@ -241,9 +281,10 @@ def admit(phase, boot_id, commit, tools_commit):
         save(cycle)  # From here an idle manager request must select the test loop.
     else:
         previous = PHASES[:PHASES.index(phase)]
-        if (cycle.get('commit') != commit or set(cycle.get('boots', {})) != set(previous)
-                or layout != cycle.get('layout')):
+        if set(cycle.get('boots', {})) != set(previous) or layout != cycle.get('layout'):
             raise ValueError('migration phase needs the completed preceding phases and their layout')
+        if cycle.get('commit') != commit:
+            require_carry_forward(phase, cycle.get('commit'), commit)
         allowed = {ident: step for step, ident in cycle['boots'].items()}
         backup(layout, allowed=allowed, active=boot_id)
     return cycle
