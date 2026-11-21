@@ -16,7 +16,7 @@ const MAGIC_1: &[u8; 16] = b"BREENIX-SUITE-1\0";
 const MAGIC_2: &[u8; 16] = b"BREENIX-SUITE-2\0";
 const HEADER_1: usize = 32 + 2 * SECTOR;
 const HEADER_2: usize = 48 + 2 * SECTOR;
-const CHUNK: usize = 64 * 1024;
+pub(super) const CHUNK: usize = 64 * 1024;
 const RECORD: &[u8] = b"BREENIX-STORAGE 1\nroot ";
 
 /// Pool memory aligned for firmware Block I/O. Owned by a Drop guard.
@@ -157,7 +157,9 @@ unsafe fn operate(boot: &BootServices, root: *mut File, config: &[u8], image: Ha
             return Err(INVALID_PARAMETER);
         }
         say!("reading the suite disk after power-off: {} bytes", request.size);
-        upload(boot, disk, request.size, &bytes, url, image)?;
+        upload(boot, image, request.size, &bytes, url, |offset, len| {
+            ok(((*disk).read_blocks)(disk, (*(*disk).media).media_id, (offset / SECTOR) as u64, len, bytes.data.cast()))
+        })?;
         say!("disk readback complete: {} bytes", request.size);
         metal_efi::com1::halt()
     }
@@ -342,13 +344,13 @@ pub unsafe fn boot_http_binding(boot: &BootServices, image: Handle) -> Result<(H
     Ok((nic, access))
 }
 
-unsafe fn upload(
+pub(super) unsafe fn upload(
     boot: &BootServices,
-    disk: *mut BlockIo,
+    image: Handle,
     size: usize,
     buffer: &Buffer<'_>,
     url: &[u8],
-    image: Handle,
+    mut read: impl FnMut(usize, usize) -> Result<(), Status>,
 ) -> Result<(), Status> {
     let (nic, access) = boot_http_binding(boot, image)?;
     say!("disk readback uses the HTTP boot interface");
@@ -385,7 +387,7 @@ unsafe fn upload(
     let mut offset = 0;
     while offset < size {
         let len = CHUNK.min(size - offset);
-        ok(((*disk).read_blocks)(disk, (*(*disk).media).media_id, (offset / SECTOR) as u64, len, buffer.data.cast()))?;
+        read(offset, len)?;
         client.send_body(buffer.data, len)?;
         offset += len;
         if offset % (16 * 1024 * 1024) == 0 {

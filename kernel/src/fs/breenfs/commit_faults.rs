@@ -1,0 +1,275 @@
+//! Boot-only BreenFS publication faults for the disposable suite root.
+//!
+//! With the window feature enabled, `breenfs_commit_window=<window>` holds the
+//! named window for up to sixty seconds after its marker. Only the
+//! publication armed by the writer on its log descriptor emits markers.
+//!
+//! With the corruption feature enabled, `breenfs_corrupt_inject=<block>:<offset>:<bit>`
+//! selects a filesystem-relative block written by a commit. Use `first-data`
+//! in place of a block number to select the block of the armed probe record.
+
+#[cfg(any(test, feature = "breenfs_corrupt_inject"))]
+use core::sync::atomic::AtomicBool;
+use core::sync::atomic::Ordering;
+
+use core::sync::atomic::AtomicU64;
+
+#[cfg(not(test))]
+#[path = "fault_abi.rs"]
+pub(in crate::fs::breenfs) mod abi;
+
+pub(super) struct PublicationArm(AtomicU64);
+
+impl PublicationArm {
+    pub(super) const fn new() -> Self {
+        Self(AtomicU64::new(0))
+    }
+
+    pub(super) fn arm(&self, ino: u64) -> bool {
+        self.0.compare_exchange(0, ino, Ordering::AcqRel, Ordering::Acquire).is_ok()
+    }
+
+    pub(super) fn take_if(&self, contains: impl FnOnce(u64) -> bool) -> Option<u64> {
+        let ino = self.0.load(Ordering::Acquire);
+        if ino == 0 || ino == u64::MAX || !contains(ino) {
+            return None;
+        }
+        self.0.compare_exchange(ino, u64::MAX, Ordering::AcqRel, Ordering::Acquire).ok()
+    }
+}
+
+fn option<'a>(line: &'a str, name: &str) -> Option<&'a str> {
+    let mut values = line
+        .split_ascii_whitespace()
+        .filter_map(|word| word.strip_prefix(name));
+    let value = values.next()?;
+    values.next().is_none().then_some(value)
+}
+
+#[cfg(any(test, feature = "breenfs_commit_window"))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Window {
+    NodeWrites,
+    FirstFlush,
+    BetweenRings,
+}
+
+#[cfg(any(test, feature = "breenfs_commit_window"))]
+impl Window {
+    pub(super) fn from_command_line(line: &str) -> Option<Self> {
+        match option(line, "breenfs_commit_window=")? {
+            "node-writes" => Some(Self::NodeWrites),
+            "first-flush" => Some(Self::FirstFlush),
+            "between-rings" => Some(Self::BetweenRings),
+            _ => None,
+        }
+    }
+
+    pub(super) fn marker(self) -> &'static str {
+        match self {
+            Self::NodeWrites => "[breenfs] commit-window node-writes",
+            Self::FirstFlush => "[breenfs] commit-window first-flush",
+            Self::BetweenRings => "[breenfs] commit-window between-rings",
+        }
+    }
+}
+
+#[cfg(any(test, feature = "breenfs_corrupt_inject"))]
+pub struct Injection {
+    // A missing address selects the probe record’s block.
+    block: Option<u64>,
+    offset: usize,
+    bit: u8,
+    taken: AtomicBool,
+}
+
+#[cfg(all(not(test), feature = "breenfs_corrupt_inject"))]
+use super::BLOCK_SIZE;
+#[cfg(test)]
+const BLOCK_SIZE: usize = 4096;
+
+#[cfg(any(test, feature = "breenfs_corrupt_inject"))]
+impl Injection {
+    // breenfs_corrupt_inject=<block|first-data>:<byte offset in block>:<bit>
+    pub(super) fn from_command_line(line: &str) -> Option<Self> {
+        let (block, location) = option(line, "breenfs_corrupt_inject=")?.split_once(':')?;
+        let (offset, bit) = location.split_once(':')?;
+        let block = if block == "first-data" {
+            None
+        } else {
+            let block = block.parse::<u64>().ok()?;
+            // Blocks below 20 are reserved, including the primary ring.
+            if block < 20 {
+                return None;
+            }
+            Some(block)
+        };
+        let offset = offset.parse().ok()?;
+        let bit = bit.parse().ok()?;
+        if offset >= BLOCK_SIZE || bit >= 8 {
+            return None;
+        }
+        Some(Self {
+            block,
+            offset,
+            bit,
+            taken: AtomicBool::new(false),
+        })
+    }
+
+    pub(super) fn take_for(&self, target: u64, sector: u64, sector_size: usize) -> Option<Flip> {
+        if sector / (BLOCK_SIZE / sector_size) as u64 != target {
+            return None;
+        }
+        self.take(sector, sector_size, true)
+    }
+
+    /// Publish the selected data sector from a copy, leaving its prepared CRC
+    /// and the bytes on either side of it alone.
+    pub(super) fn write_selected<E>(
+        &self,
+        target: u64,
+        start: u64,
+        sector_size: usize,
+        bytes: &[u8],
+        mut write: impl FnMut(u64, &[u8]) -> Result<(), E>,
+        report: impl FnOnce(Flip),
+    ) -> Result<(), E> {
+        let sectors_per_block = (BLOCK_SIZE / sector_size) as u64;
+        let block_offset = target
+            .checked_sub(start / sectors_per_block)
+            .filter(|&offset| offset < (bytes.len() / BLOCK_SIZE) as u64);
+        let Some(block_offset) = block_offset else {
+            return write(start, bytes);
+        };
+        if self.block.is_some_and(|block| block != target) || self.taken.load(Ordering::Relaxed) {
+            return write(start, bytes);
+        }
+
+        let offset = block_offset as usize * BLOCK_SIZE + self.offset / sector_size * sector_size;
+        let sector = start + (offset / sector_size) as u64;
+        if offset != 0 {
+            write(start, &bytes[..offset])?;
+        }
+        let Some(flip) = self.take_for(target, sector, sector_size) else {
+            return write(sector, &bytes[offset..]);
+        };
+        let end = offset + sector_size;
+        let mut altered = [0; BLOCK_SIZE];
+        let altered = &mut altered[..sector_size];
+        altered.copy_from_slice(&bytes[offset..end]);
+        flip.apply(altered);
+        write(sector, altered)?;
+        report(flip);
+        if end < bytes.len() {
+            write(sector + 1, &bytes[end..])?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn take(&self, sector: u64, sector_size: usize, is_data: bool) -> Option<Flip> {
+        let per_block = (BLOCK_SIZE / sector_size) as u64;
+        let block = sector / per_block;
+        if !self.block.map_or(is_data, |wanted| wanted == block)
+            || sector % per_block != (self.offset / sector_size) as u64
+            || self.taken.swap(true, Ordering::Relaxed)
+        {
+            return None;
+        }
+        Some(Flip {
+            block,
+            offset: self.offset,
+            bit: self.bit,
+        })
+    }
+}
+
+#[cfg(any(test, feature = "breenfs_corrupt_inject"))]
+pub(super) struct Flip {
+    pub(super) block: u64,
+    pub(super) offset: usize,
+    pub(super) bit: u8,
+}
+
+#[cfg(any(test, feature = "breenfs_corrupt_inject"))]
+impl Flip {
+    pub(super) fn apply(&self, sector: &mut [u8]) {
+        let offset = self.offset % sector.len();
+        sector[offset] ^= 1 << self.bit;
+    }
+}
+
+#[cfg(not(test))]
+pub struct Faults {
+    #[cfg(feature = "breenfs_commit_window")]
+    pause: Option<Window>,
+    #[cfg(feature = "breenfs_commit_window")]
+    after_receipt: Option<u64>,
+    armed: PublicationArm,
+    #[cfg(feature = "breenfs_corrupt_inject")]
+    injection: Option<Injection>,
+}
+
+#[cfg(not(test))]
+impl Faults {
+    pub(in crate::fs::breenfs) fn for_mount(boot_root: bool) -> Option<Self> {
+        #[cfg(target_arch = "x86_64")]
+        let disposable = crate::block::root_on_installed_disk();
+        #[cfg(target_arch = "aarch64")]
+        let disposable = crate::platform_config::is_qemu();
+        if !boot_root || !disposable || !crate::fs::vfs::suite_boot_requested() {
+            return None;
+        }
+        let line = crate::boot::intent::command_line().unwrap_or("");
+        Some(Self {
+            #[cfg(feature = "breenfs_commit_window")]
+            pause: Window::from_command_line(line),
+            #[cfg(feature = "breenfs_commit_window")]
+            after_receipt: option(line, "breenfs_after_receipt=").and_then(|value| value.parse().ok()),
+            armed: PublicationArm::new(),
+            #[cfg(feature = "breenfs_corrupt_inject")]
+            injection: Injection::from_command_line(line),
+        })
+    }
+
+    pub(in crate::fs::breenfs) fn arm(&self, ino: u64, receipt: u64) -> u64 {
+        #[cfg(feature = "breenfs_corrupt_inject")]
+        if receipt == 1 && self.injection.is_some() && self.armed.arm(ino) {
+            return 1;
+        }
+        #[cfg(feature = "breenfs_commit_window")]
+        if self.pause.is_some() && self.after_receipt == Some(receipt) {
+            self.armed.arm(ino);
+        }
+        0
+    }
+
+    pub(in crate::fs::breenfs) fn armed_inode(&self, contains: impl FnOnce(u64) -> bool) -> Option<u64> {
+        self.armed.take_if(contains)
+    }
+
+    #[cfg(feature = "breenfs_commit_window")]
+    pub(in crate::fs::breenfs) fn selected_window(&self) -> Option<Window> {
+        self.pause
+    }
+
+    #[cfg(feature = "breenfs_corrupt_inject")]
+    pub(in crate::fs::breenfs) fn injection(&self) -> Option<&Injection> {
+        self.injection.as_ref()
+    }
+
+    #[cfg(feature = "breenfs_commit_window")]
+    pub(super) fn window(selected: Window, window: Window) {
+        crate::serial_println!("\n{}", window.marker());
+        if selected == window {
+            use crate::fs::breenfs::commit_signal::monotonic_ns;
+            const PAUSE_NS: u64 = 60_000_000_000;
+            let end = monotonic_ns().saturating_add(PAUSE_NS);
+            while monotonic_ns() < end {
+                super::preemption_point();
+                core::hint::spin_loop();
+            }
+            crate::serial_println!("\n{} released", window.marker());
+        }
+    }
+}

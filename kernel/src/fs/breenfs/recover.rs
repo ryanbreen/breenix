@@ -108,16 +108,29 @@ pub(crate) fn recover_detailed(device: &dyn BlockDevice, writable: bool) -> Resu
         }
         // A crash during publication can leave M in just one ring. Restore its
         // companion before orphan reclaim or the caller can publish a commit.
+        #[cfg(any(target_os = "none", target_os = "breenix"))]
+        let mut repaired = [false; 2];
         for ring in 0..2 {
             let mut copy = chosen.clone();
             copy.ring = ring;
             if !slots.iter().any(|(_, sb)| *sb == copy) {
                 write(commit::slot_block(total, ring, chosen.slot), &copy.encode())?;
                 changed = true;
+                #[cfg(any(target_os = "none", target_os = "breenix"))]
+                {
+                    repaired[ring as usize] = true;
+                }
             }
         }
         if changed {
             device.flush().map_err(|_| Failure::new(Error::EIO, "superblock-flush", None, "durable-repair"))?;
+        }
+        #[cfg(any(target_os = "none", target_os = "breenix"))]
+        for (ring, repaired) in ['A', 'B'].into_iter().zip(repaired) {
+            if repaired {
+                crate::serial_println!("\n[breenfs] recovered-superblock ring={} slot={} generation={}",
+                    ring, chosen.slot, chosen.generation);
+            }
         }
         // Resume committed orphan work before exposing a writable mount.
         let space = chosen.space_root.addr;

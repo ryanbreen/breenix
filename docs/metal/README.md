@@ -896,6 +896,24 @@ the stub writes the image through that partition's own Block I/O, so its writes 
 storage record in the partition's first sector written last, as before. A cold disk readback reads the test root
 partition. A tests boot's RAM disk is its intent followed by the BXTEST image.
 
+### Persistent partition export
+
+`metal-run export-persistent --branch BRANCH` queues a firmware boot for the cold copy of the last install's
+system and home partitions. The delivery stub checks their GPT GUIDs and ranges against the install record,
+checks that they share a disk with the recorded test root, and reads them through UEFI Block I/O. It sends each
+image in consecutive parts of at most 1 GiB over the cold-readback HTTP transport and reports the byte count
+and SHA-256 of each part and the whole partition over SOL.
+
+The boot driver immediately requests ForceOff when the boot manager reports an answer other than
+`test <id>` for this boot, starts a countdown to a persistent entry, reports that its installed configuration
+is unavailable, or announces a boot from the current or previous persistent slot. The same check applies to
+ordinary test boots, and the driver records the trigger and power-off result under `bootManagerAbort` in `run.json`.
+
+After confirmed power-off, the driver compares firmware and host measurements for the parts and whole images.
+When they match, it publishes the two images in the private store at
+`/var/lib/breenix-metal/persistent-exports/<id>/`. It records the GUIDs, inclusive LBA ranges, byte counts and
+digests under `persistentExport` in `run.json`, with the index, byte offset, count and digest of each part.
+
 ### Install and upgrade
 
 `metal-run install-persistent --sha <commit>` (with `--branch` for a pushed branch) installs or upgrades the

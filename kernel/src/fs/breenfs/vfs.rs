@@ -300,6 +300,8 @@ struct Mount<W: Wait + 'static> {
     mapping_passes: AtomicU64,
     mapping_pages_evicted: AtomicU64,
     mapping_requests_dropped: AtomicU64,
+    #[cfg(any(feature = "breenfs_commit_window", feature = "breenfs_corrupt_inject"))]
+    commit_faults: Option<super::commit::faults::Faults>,
 }
 #[cfg(not(test))]
 struct ReportCount(Option<usize>);
@@ -1807,6 +1809,8 @@ impl<W: Wait + 'static> BreenFs<W> {
             mapping_passes: AtomicU64::new(0),
             mapping_pages_evicted: AtomicU64::new(0),
             mapping_requests_dropped: AtomicU64::new(0),
+            #[cfg(any(feature = "breenfs_commit_window", feature = "breenfs_corrupt_inject"))]
+            commit_faults: super::commit::faults::Faults::for_mount(boot && writable),
         })
         .map_err(|_| Errno(ENOMEM))?;
         Arc::try_new(Self { inner }).map_err(|_| Errno(ENOMEM))
@@ -2701,12 +2705,32 @@ impl<W: Wait + 'static> BreenFs<W> {
             let _wait = self.inner.costs.span(CostOp::Commit, CostPhase::Wait);
             self.inner.mounted_root.device.publication.lock()
         };
+        #[cfg(any(feature = "breenfs_commit_window", feature = "breenfs_corrupt_inject"))]
+        let armed = self.inner.commit_faults.as_ref().and_then(|faults| {
+            faults.armed_inode(|ino| frozen.pages.nodes.get(&ino)
+                .is_some_and(|node| node.pages.get(1).is_some())).map(|ino| (faults, ino))
+        });
+        #[cfg(feature = "breenfs_corrupt_inject")]
+        let injection = armed.and_then(|(faults, ino)| {
+            let injection = faults.injection()?;
+            // The probe appends record 2 as a separate block after receipt 1.
+            let block = frozen.files.extents(ino).ok()?.into_iter().find_map(|(key, extent)| {
+                let index = (BLOCK_SIZE as u64).checked_sub(key.offset)? / BLOCK_SIZE as u64;
+                (index < u64::from(extent.num_blocks))
+                    .then_some(extent.phys_start + u64::from(extent.extent_offset) + index)
+            })?;
+            Some((injection, block))
+        });
         let result = {
             let _write = self.inner.costs.span(CostOp::Commit, CostPhase::WriteCached);
             prepared.write_cached(
                 self.inner.cache.buffers(),
                 &self.inner.costs.device(self.inner.device.as_ref()),
                 &group,
+                #[cfg(feature = "breenfs_commit_window")]
+                armed.and_then(|(faults, _)| faults.selected_window()),
+                #[cfg(feature = "breenfs_corrupt_inject")]
+                injection,
             )
         };
         let FrozenGeneration { files: next, commit, pages, dirty_nodes, touched, grants, reap, mut ledger, .. } = frozen;
@@ -3215,6 +3239,11 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
     fn ioctl(&self, node: &VNode, request: u64, arg: u64) -> Result<u64, Errno> {
         self.check_node(node)?;
         match request {
+            #[cfg(any(feature = "breenfs_commit_window", feature = "breenfs_corrupt_inject"))]
+            super::commit::faults::abi::ARM_PUBLICATION => {
+                let faults = self.inner.commit_faults.as_ref().ok_or(Errno(ENOTTY))?;
+                return Ok(faults.arm(node.ino, arg));
+            }
             SNAPSHOT_CREATE | SNAPSHOT_DELETE => {
                 let value = crate::syscall::userptr::copy_from_user(arg as *const SnapshotRequest)
                     .map_err(|error| Errno(error as i32))?;

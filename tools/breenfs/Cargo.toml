@@ -22,4 +22,4 @@ debug-assertions = true
 overflow-checks = true
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("breenix"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("breenix"))', 'cfg(feature, values("breenfs_commit_window", "breenfs_corrupt_inject"))'] }

@@ -1,0 +1,85 @@
+extern crate self as libbreenix;
+
+#[path = "../libs/libbreenix/src/crypto/sha256.rs"]
+pub mod sha256;
+
+pub mod crypto {
+    pub use crate::sha256;
+}
+
+#[path = "../userspace/programs/src/filesystem_power_cut.rs"]
+mod writer;
+
+use std::io;
+
+#[test]
+fn power_cut_writer_acknowledges_only_complete_synced_records() {
+    const RECORD_BYTES: usize = 4096;
+    const DIGESTS: [&str; 2] = [
+        "9d341e061c7d4d67541c8c5d575d1fb471ab3687128d048a7d50123d5ce110e7",
+        "5630ad31aa545bff13439ebfbc7ff061b13fd2a887d0d9996947780a0e09e39a",
+    ];
+    let nonce = 0x0123456789abcdef_u64;
+    let mut log = Vec::new();
+    let mut receipts = Vec::new();
+    let mut sync_calls = 0;
+    let result = writer::write_records(&mut log, &mut receipts, nonce, |log| {
+        sync_calls += 1;
+        assert_eq!(log.len(), sync_calls * RECORD_BYTES);
+        if sync_calls == 3 {
+            return Err(io::Error::other("injected fsync failure"));
+        }
+        Ok(())
+    }, |_, _| Ok(false));
+    assert_eq!(result.unwrap_err().to_string(), "injected fsync failure");
+    assert_eq!(sync_calls, 3);
+
+    for (index, record) in log.chunks_exact(RECORD_BYTES).enumerate() {
+        assert_eq!(&record[..8], &(index as u64 + 1).to_le_bytes());
+        assert_eq!(&record[8..16], &nonce.to_le_bytes());
+        let (body, digest) = record.split_at(RECORD_BYTES - 32);
+        assert_eq!(digest, sha256::sha256(body));
+        if let Some(expected) = DIGESTS.get(index) {
+            assert_eq!(hex(digest), *expected);
+        }
+    }
+    assert_eq!(
+        String::from_utf8(receipts).unwrap(),
+        format!("\nFSYNC 1 {} nonce={nonce:016x}\n\nFSYNC 2 {} nonce={nonce:016x}\n", DIGESTS[0], DIGESTS[1]),
+    );
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[test]
+fn corruption_probe_reads_the_synced_record_and_requires_eio() {
+    for (actual, success) in [
+        (Ok(4096), false),
+        (Ok(0), false),
+        (Err(io::Error::from_raw_os_error(2)), false),
+        (Err(io::Error::from_raw_os_error(5)), true),
+    ] {
+        let mut log = vec![0; 4096];
+        let synced = std::cell::Cell::new(false);
+        let result = writer::probe_record(&mut log, 0x0123456789abcdef, 2, |log| {
+            assert_eq!(log.len(), 8192);
+            synced.set(true);
+            Ok(())
+        }, |_, offset, buffer| {
+            assert!(synced.get());
+            assert_eq!(offset, 4096);
+            assert_eq!(buffer.len(), 4096);
+            actual
+        });
+        assert_eq!(result.is_ok(), success);
+    }
+}
+
+#[test]
+fn completed_diagnostics_emit_the_suite_receipts_in_order() {
+    let mut serial = Vec::new();
+    writer::diagnostic_done(&mut serial, "power-cut/recovery").unwrap();
+    assert_eq!(serial, b"\nSUITE filesystem DONE passed=1 failed=0 skipped=0 total=1 only=power-cut/recovery\nSUITE_SEQUENCE READY filesystem\n");
+}

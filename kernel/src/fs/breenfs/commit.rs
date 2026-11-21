@@ -22,6 +22,10 @@ use alloc::{
 };
 use core::sync::atomic::{AtomicU8, Ordering};
 
+#[cfg(any(feature = "breenfs_commit_window", feature = "breenfs_corrupt_inject"))]
+#[path = "commit_faults.rs"]
+pub(super) mod faults;
+
 // Opt-in host observation; absent from kernel builds and inactive in other tests.
 #[cfg(test)]
 pub mod publication_measurement {
@@ -448,6 +452,10 @@ impl PreparedCommit {
         cache: &BufferCache<W>,
         device: &dyn BlockDevice,
         group: &WriteGroup,
+        #[cfg(feature = "breenfs_commit_window")]
+        window: Option<faults::Window>,
+        #[cfg(feature = "breenfs_corrupt_inject")]
+        injection: Option<(&faults::Injection, u64)>,
     ) -> Result<(), PublicationError> {
         use PublicationStep::*;
         let at = |step| move |block_error| PublicationError { step, block_error };
@@ -456,9 +464,7 @@ impl PreparedCommit {
             return Err(at(Stage)(BlockError::IoError));
         }
         let mut uncached = false;
-        for (&addr, bytes) in self.nodes.iter().chain(self.data.iter()) {
-            preemption_point();
-            let start = addr * (BLOCK_SIZE / sector) as u64;
+        let mut write_range = |start: u64, bytes: &[u8]| {
             let mut staged = 0;
             for (i, bytes) in bytes.chunks_exact(sector).enumerate() {
                 preemption_point();
@@ -485,9 +491,8 @@ impl PreparedCommit {
                 staged = i + 1;
             }
             if uncached {
-                // The batch above has completed. The prepared bytes already
-                // belong to this generation and can be submitted without a
-                // second copy when peer buffers keep the cache full.
+                // The batch above has completed. Write the remaining bytes
+                // without another copy when peer buffers keep the cache full.
                 let mut block = start + staged as u64;
                 for run in bytes[staged * sector..].chunks(RUN_BYTES) {
                     preemption_point();
@@ -495,12 +500,42 @@ impl PreparedCommit {
                     block += (run.len() / sector) as u64;
                 }
             }
+            Ok::<(), PublicationError>(())
+        };
+        for (&addr, bytes) in self.nodes.iter().chain(self.data.iter()) {
+            preemption_point();
+            let start = addr * (BLOCK_SIZE / sector) as u64;
+            #[cfg(feature = "breenfs_corrupt_inject")]
+            if let Some((injection, target)) = injection.filter(|_| self.data.contains_key(&addr)) {
+                injection.write_selected(target, start, sector, bytes, &mut write_range, |flip| {
+                    crate::serial_println!(
+                        "\n[breenfs] corrupt-inject block={} offset={} bit={}",
+                        flip.block, flip.offset, flip.bit
+                    );
+                })?;
+                continue;
+            }
+            write_range(start, bytes)?;
         }
         cache.submit(device, group).wait().map_err(at(DataWrite))?;
+        #[cfg(feature = "breenfs_commit_window")]
+        if let Some(selected) = window {
+            faults::Faults::window(selected, faults::Window::NodeWrites);
+        }
         preemption_point();
         cache.flush(device).map_err(at(DataFlush))?;
+        #[cfg(feature = "breenfs_commit_window")]
+        if let Some(selected) = window {
+            faults::Faults::window(selected, faults::Window::FirstFlush);
+        }
         preemption_point();
         self.superblocks(|addr, bytes| {
+            #[cfg(feature = "breenfs_commit_window")]
+            if let Some(selected) = window {
+                if addr == slot_block(self.sb.total_blocks, 1, self.sb.slot) {
+                    faults::Faults::window(selected, faults::Window::BetweenRings);
+                }
+            }
             for (i, bytes) in bytes.chunks_exact(sector).enumerate() {
                 preemption_point();
                 cache

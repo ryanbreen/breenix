@@ -25,6 +25,7 @@ use crate::task::completion::{Completion, WaitStage};
 
 mod command_ring;
 use command_ring::{CommandRing, Event, EventKind};
+mod identify;
 #[cfg(target_arch = "x86_64")]
 mod timeout_msi;
 #[cfg(target_arch = "x86_64")]
@@ -1666,9 +1667,20 @@ impl AhciController {
             _ => DeviceType::Unknown,
         };
 
-        // For SATA devices, issue IDENTIFY DEVICE to get sector count
+        // For SATA devices, issue IDENTIFY DEVICE for capacity and cache state.
         let sector_count = if device_type == DeviceType::Sata {
-            self.identify_device(port_num, dma_index).unwrap_or(0)
+            match self.identify_device(port_num, dma_index) {
+                Ok((sectors, supported, enabled)) => {
+                    crate::serial_println!(
+                        "[ahci] Port {}: volatile write cache supported={} enabled={}",
+                        port_num,
+                        supported,
+                        enabled,
+                    );
+                    sectors
+                }
+                Err(_) => 0,
+            }
         } else {
             0
         };
@@ -2351,8 +2363,8 @@ fn ahci_gic_irq_router(spi: u32) -> u64 {
 }
 
 impl AhciController {
-    /// Issue IDENTIFY DEVICE and return sector count.
-    fn identify_device(&self, port: usize, dma_index: usize) -> Result<u64, &'static str> {
+    /// Issue IDENTIFY DEVICE and return sector count and write-cache support/enabled bits.
+    fn identify_device(&self, port: usize, dma_index: usize) -> Result<(u64, bool, bool), &'static str> {
         self.wait_ready(port)?;
 
         let mut dma_lock = PORT_DMA.lock();
@@ -2423,16 +2435,17 @@ impl AhciController {
             | ((buf[206] as u64) << 48)
             | ((buf[207] as u64) << 56);
 
-        if sectors == 0 {
+        let sectors = if sectors == 0 {
             // Fall back to 28-bit LBA (words 60-61)
-            let sectors28 = (buf[120] as u64)
+            (buf[120] as u64)
                 | ((buf[121] as u64) << 8)
                 | ((buf[122] as u64) << 16)
-                | ((buf[123] as u64) << 24);
-            Ok(sectors28)
+                | ((buf[123] as u64) << 24)
         } else {
-            Ok(sectors)
-        }
+            sectors
+        };
+        let (supported, enabled) = identify::write_cache(buf);
+        Ok((sectors, supported, enabled))
     }
 
     /// Set up a multi-sector read DMA command and issue PORT_CI.

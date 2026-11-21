@@ -43,7 +43,10 @@ import metal_census  # noqa: E402
 import metal_root  # noqa: E402
 import metal_score  # noqa: E402
 import metal_disk  # noqa: E402
+import metal_export  # noqa: E402
 import metal_persist  # noqa: E402
+import breenfs_replay  # noqa: E402
+import metal_power_cut  # noqa: E402
 import metal_prebuilt  # noqa: E402
 from metal_score import boot_shape  # noqa: E402
 # Deployed, the host-key helper sits beside this file; in a checkout it is in scripts/.
@@ -57,12 +60,15 @@ DISK_ACTIONS = ('install', 'root')
 READ_BACK_LINE = re.compile(r'\[storage\] read back identical: (\d+) bytes, sha256 after the record sector ([0-9a-f]{64})')
 ROOT_RECORD_LINE = re.compile(r'\[storage\] root record: installed by boot ([A-Za-z0-9-]+), (\d+) bytes, sha256 ([0-9a-f]{64})')
 INTENT_LINE = re.compile(r'\[console\] input preparation: replug (requested|not requested) by (fw_cfg|intent|target)')
-PAYLOADS = ('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux', 'disk-readback', 'manager', 'persistent')
+PAYLOADS = ('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux', 'disk-readback', 'manager', 'persistent',
+            metal_export.PAYLOAD)
 CEILING_SECONDS = {'default': 900, 'shell': 900, 'probe': 900, 'suite': 1320, 'console': 900, 'tests': 1500,
                    'persistent-install': 2400, 'persistent': 900}
 # The install boot's stub writes the layout and the test root before the bootloader starts (README, "Install and
 # upgrade"); it reports progress every 64 MiB.
 INSTALL_STUB_SECONDS = 1500
+EXPORT_BYTES_PER_SECOND = 2 << 20  # Conservative planning rate for firmware reads, hashing and uploads.
+EXPORT_OVERHEAD_SECONDS = 600  # Allow for POST, firmware setup and receipts.
 PERSIST_DONE = 'metal-stub: persistent install request complete'
 INSTALL_DONE = '[persistent] install complete: '
 INSTALL_FAILED = '[persistent] install failed: '
@@ -126,6 +132,8 @@ def kernel_profile(args):
         if category not in ('core', 'panic', 'clocks') or args.mode not in ('default', 'probe') or getattr(args, 'suite', None) or args.inject:
             raise ValueError('gt710 diagnostic needs a default/probe boot without suites or injection')
         return {'panic':(['capture_panic_oracle'],'gpu-panic'),'core':(['gt710_core_probe'],'gpu-core'),'clocks':(['gt710_clock_probe'],'gpu-clock')}[category]
+    if fault := metal_power_cut.kernel_fault(args):
+        return [fault[0]], 'fault-test'
     features = (['watchdog_fault_inject'] if args.inject in WATCHDOG_FAULTS else
                 ['xhci_fault_inject'] if xhci_fault(args) else
                 ['block_fence_inject'] if args.inject == FENCE_FAULT else
@@ -164,6 +172,10 @@ def suites(args):
 
 
 def ceiling_seconds(args):
+    if args.payload == metal_export.PAYLOAD:
+        total_bytes = sum(metal_persist.SIZES[role] for role in metal_export.ROLES)
+        transfer_seconds = (total_bytes + EXPORT_BYTES_PER_SECOND - 1) // EXPORT_BYTES_PER_SECOND
+        return transfer_seconds + EXPORT_OVERHEAD_SECONDS
     if args.mode == 'suite':
         # The base includes startup and a 900-second first suite; longer suites need more time.
         names = suites(args)
@@ -211,6 +223,8 @@ STUB_FAILED_LINE = 'metal-stub: FAILED'
 # The boot manager's lines (docs/metal/README.md, "The boot manager").
 MANAGER_STARTED = 'breenix-manager: started: '
 MANAGER_ANSWER = re.compile(r'breenix-manager: lab answered: (.*)')
+MANAGER_PERSISTENT_COUNTDOWN = re.compile(r'breenix-manager: menu: Starting (?:Breenix|the previous kernel) in [0-9]+ s;')
+MANAGER_PERSISTENT_START = re.compile(r'breenix-manager: (?:installed configuration unavailable;|booting (?:current|previous) )')
 MANAGER_PROBE_DONE = 'breenix-manager: probe complete'
 MANAGER_PANIC = 'breenix-manager: panic: '
 NO_BOOTABLE = 'no bootable device'
@@ -231,10 +245,42 @@ def boot_id_now():
     return time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
 
 
+def verdict_command(root):
+    """Run branch-built disk readers with the existing isolated scorer boundary."""
+    sandbox = Path('/run/metal-verdict-input')
+    command = ['systemd-run', '--quiet', '--wait', '--pipe', '--collect',
+               '--property=DynamicUser=yes', '--property=PrivateTmp=yes', '--property=PrivateNetwork=yes',
+               '--property=BindReadOnlyPaths=' + str(root) + ':' + str(sandbox),
+               '--property=RestrictAddressFamilies=AF_UNIX',
+               '--property=ProtectSystem=strict', '--property=ProtectHome=yes',
+               '--property=NoNewPrivileges=yes', '--property=RestrictSUIDSGID=yes',
+               '--property=CapabilityBoundingSet=', '--property=WorkingDirectory=/',
+               '--property=InaccessiblePaths=/etc/breenix-metal /var/lib/breenix-metal /run/breenix-metal',
+               '--property=RuntimeMaxSec=' + str(SUITE_VERDICT_SECONDS),
+               '--property=TimeoutStopSec=2', '--property=KillMode=control-group',
+               sys.executable, '-I']
+    return sandbox, command
+
+
 class Finish(Exception):
     def __init__(self, status, reason, hung=False):
         super().__init__(reason)
         self.status, self.reason, self.hung = status, reason, hung
+
+
+class PowerCut(Finish):
+    def __init__(self, line=None, observed_at=None, serial_offset=None):
+        super().__init__(m.EXIT_SHORT, 'deliberate power cut')
+        self.line = line
+        self.observed_at = observed_at
+        self.serial_offset = serial_offset
+
+
+class BootManagerAbort(Finish):
+    def __init__(self, line, observed_at):
+        super().__init__(m.EXIT_DELIVERY, 'the boot manager did not stay on the requested test path')
+        self.line = line
+        self.observed_at = observed_at
 
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
@@ -249,6 +295,14 @@ class Driver:
         self.unit = unit_name(self.id)
         self.tmux = ['tmux', '-L', 'metal-' + self.id]
         self.watchdog_trigger = None
+        self.power_cut = None
+        self.bit_flip = bool(getattr(args, 'breenfs_bit_flip', False))
+        self.writer_nonce = None
+        self.writer_acknowledged = False
+        self.recovery_expected = None
+        if metal_power_cut.options(args):
+            self.power_cut = dict(window=args.power_cut_window, afterSeconds=args.power_cut_after,
+                                  triggerLine=None, cutAt=None, powerOffConfirmed=False)
         self.t0 = None
         self.claimed = False
         self.lost = False
@@ -328,6 +382,8 @@ class Driver:
         self.post_budget = m.DEFAULT_POST_BUDGET
         self.stopping = threading.Event()
         self.census = metal_census.Census() if args.payload == 'linux' else None
+        self.export_started = None
+        self.export_receipts = {}
 
     # claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
     # Record helpers: event text is always a fixed template or redacted.
@@ -351,7 +407,7 @@ class Driver:
         target = {'main': {}}
         if self.args.target.startswith('branch:'):
             target = {'branch': {'name': self.args.target.split(':', 1)[1]}}
-        fault = xhci_fault(self.args) or self.args.inject in (FENCE_FAULT, 'panic-reboot', *WATCHDOG_FAULTS)
+        fault = self.power_cut is not None or metal_power_cut.kernel_fault(self.args) or xhci_fault(self.args) or self.args.inject in (FENCE_FAULT, 'panic-reboot', *WATCHDOG_FAULTS)
         kind = ('fault-test' if fault else 'persistent' if persistent(self.args)
                 else 'console-session' if session(self.args)
                 else {'image': 'boot', 'linux': 'platform-census'}.get(self.args.payload, 'fault-test'))
@@ -376,11 +432,16 @@ class Driver:
                'input': input_kind(self.args),
                'session': session(self.args),
                'idleMinutes': getattr(self.args, 'idle_minutes', 30) if session(self.args) else None,
-               'evidenceEligible': not fault and (persistent(self.args) or not session(self.args)) and getattr(self.args, 'case', None) is None}
+               'evidenceEligible': not fault and self.args.payload != metal_export.PAYLOAD
+               and (persistent(self.args) or not session(self.args)) and getattr(self.args, 'case', None) is None}
         if getattr(self.args, 'case', None) is not None:
             run['onlyCase'] = self.args.case
         if getattr(self.args, 'root_fs', None) is not None:
             run['rootFs'] = self.args.root_fs
+        if self.power_cut is not None:
+            run['powerCut'] = self.power_cut
+        if self.bit_flip:
+            run['breenfsBitFlip'] = True
         if getattr(self.args, 'screen_proof', False):
             run['screenProof'] = True
         if getattr(self.args, 'screen_known_json', None) is not None:
@@ -462,6 +523,9 @@ class Driver:
     # Inputs and the image.
     def prepare_payload(self):
         self.stage.mkdir(parents=True, exist_ok=True)
+        if getattr(self.args, 'cut_recovery_from', None):
+            self.prepare_cut_recovery_payload()
+            return
         if self.args.payload == 'none':
             self.event('nothing-staged')
             return
@@ -514,15 +578,18 @@ class Driver:
             self.event('payload-ready', name='metal-boot-manager.efi', size=self.payload_facts['size'],
                        sha256=self.payload_facts['sha256'])
             return
-        if self.args.payload == 'disk-readback':
+        if self.args.payload in ('disk-readback', metal_export.PAYLOAD):
             build = m.read_json(inputs / 'build.json', {})
             stub = inputs / 'stub.efi'
-            if (build.get('commit') != self.args.commit or build.get('profile') != 'disk-readback'
+            if (build.get('commit') != self.args.commit or build.get('profile') != self.args.payload
                     or build.get('stub', {}).get('sha256') != metal_image.sha256(stub)):
                 raise Finish(m.EXIT_CANCELLED, 'the readback firmware differs from its build record')
             self.delivery['build'] = build
-            facts, image = metal_disk.prepare_readback(self.dir, self.stage, self.args.source_boot,
-                                                       self.args.commit, self.id, self.site, stub)
+            if self.args.payload == metal_export.PAYLOAD:
+                facts, image = metal_export.prepare(self.stage, self.id, self.site, stub)
+            else:
+                facts, image = metal_disk.prepare_readback(self.dir, self.stage, self.args.source_boot,
+                                                           self.args.commit, self.id, self.site, stub)
             self.payload_facts = dict(path=image, size=facts['size'], sha256=facts['sha256'],
                                       contentType=metal_image.CONTENT_TYPES['efi'], name='boot.efi')
             self.delivery['image'] = {k: v for k, v in self.payload_facts.items() if k != 'path'}
@@ -613,6 +680,8 @@ class Driver:
             self.assemble(inputs, files, extracted, root_ramdisk=False)
             return
         the_layout = metal_persist.layout()
+        if (self.power_cut is not None or self.bit_flip) and not the_layout:
+            raise Finish(m.EXIT_CANCELLED, 'BreenFS faults require the disposable test partition')
         disk = getattr(self.args, 'disk', None)
         if disk != 'root':
             screen_route = metal_disk.gt710_upload.prepare(self.dir, self.id, self.site,
@@ -644,8 +713,11 @@ class Driver:
                 screen_known=getattr(self.args, 'screen_known_json', None), case=getattr(self.args, 'case', None),
                 **({'root_fs': root_fs, 'tools_dir': inputs} if root_fs is not None else {}))
             self.delivery['diskRoot'] = facts
+            if self.power_cut is not None:
+                self.retain_cut_recovery_payload(inputs, files, facts)
             files.update(suite_files)
-            if self.args.mode == 'suite' and metal_disk.readback_checks(self.dir, suites(self.args)[-1]):
+            if self.power_cut is not None or self.bit_flip or (self.args.mode == 'suite'
+                    and metal_disk.readback_checks(self.dir, suites(self.args)[-1])):
                 shutil.copyfile(inputs / 'stub.efi', self.dir / 'readback-stub.efi')
         root_ramdisk = self.args.ramdisk and disk != 'root'
         if root_ramdisk:
@@ -662,7 +734,8 @@ class Driver:
             intent = self.stage / 'boot-intent'
             # On the persistent layout the intent names the test root, the only partition a test boot is given.
             test_root = the_layout['partitions']['test']['guid'] if the_layout else None
-            command_line=getattr(self.args,'kernel_command_line',None)
+            fault = metal_power_cut.kernel_fault(self.args)
+            command_line = fault[1] if fault else getattr(self.args, 'kernel_command_line', None)
             if test_root or command_line is not None:
                 intent.write_bytes(metal_persist.intent(target, root=test_root, command_line=command_line))
             else:
@@ -679,6 +752,34 @@ class Driver:
             # An invalid EFI image fails delivery without executing a kernel.
             files['efi/boot/bootx64.efi'].write_bytes(b'injected invalid EFI image\n')
         self.assemble(inputs, files, extracted, root_ramdisk)
+
+    def retain_cut_recovery_payload(self, inputs, esp, facts):
+        # Only the bootloader, kernel, boot configuration and intent are present.
+        intent = self.stage / 'recovery-intent'
+        intent.write_bytes(metal_persist.intent('suite filesystem case power-cut/recovery hostkeys ' + metal_root.HOSTKEYS,
+                                                root=facts['partition']))
+        disk = self.stage / 'recovery-disk.img'
+        metal_image.assemble(disk, dict(esp, ramdisk=intent))
+        image = self.dir / 'recovery.efi'
+        wrapped = metal_image.stub_efi(inputs / 'stub.efi', disk, image)
+        disk.unlink()
+        m.write_json(self.dir / 'recovery-payload.json',
+                     {key: wrapped[key] for key in ('size', 'sha256')})
+
+    def prepare_cut_recovery_payload(self):
+        source = m.boot_dir(self.args.source_boot)
+        facts, self.recovery_expected = metal_disk.prepare_cut_recovery(
+            self.args.source_boot, self.args.cut_recovery_from, self.args.commit)
+        image = self.stage / 'boot.efi'
+        shutil.copyfile(source / 'recovery.efi', image)
+        expected = m.read_json(source / 'recovery-payload.json')
+        if image.stat().st_size != expected['size'] or metal_image.sha256(image) != expected['sha256']:
+            raise Finish(m.EXIT_CANCELLED, 'the no-restage payload differs from its record')
+        self.payload_facts = dict(expected, path=image, contentType=metal_image.CONTENT_TYPES['efi'], name='boot.efi')
+        self.delivery['image'] = {key: value for key, value in self.payload_facts.items() if key != 'path'}
+        self.delivery['diskRoot'] = facts
+        shutil.copytree(source / 'definition', self.dir / 'definition')
+        self.load_definition()
 
     def assemble(self, inputs, files, extracted, root_ramdisk):
         """The boot disk of `files` appended to the stub as boot.efi, its facts recorded, and the definition loaded."""
@@ -858,6 +959,8 @@ class Driver:
         self.post_code = baseline.get('postCode')
         self.progress_key = progress_key(baseline.get('bootProgress'))
         if baseline.get('power') != 'Off':
+            if self.args.payload == metal_export.PAYLOAD:
+                raise Finish(m.EXIT_CANCELLED, 'the persistent export requires a powered-off machine')
             if getattr(self.args, 'resting', False):
                 raise Finish(m.EXIT_CANCELLED, 'an existing power-on is left for boot manager adoption')
             self.event('stray-power-on', power=baseline.get('power'))
@@ -988,11 +1091,20 @@ class Driver:
                 self.line += char_line
                 if self.line.endswith('\n'):
                     line, self.line = self.line.rstrip('\n'), ''
+                    if isinstance(decision, PowerCut):
+                        continue  # Keep archiving bytes already received without running other serial actions.
                     try:
                         self.on_line(line, observed_at=arrived)
+                    except BootManagerAbort:
+                        raise  # Act before dispatching any later lines already in the serial buffer.
+                    except PowerCut as cut:
+                        if decision is None:
+                            decision = cut
                     except Finish as finish:
                         if decision is None or finish.status != m.EXIT_DONE:
                             decision = finish
+        if isinstance(decision, PowerCut):
+            raise decision
         # getty leaves its prompt unterminated while waiting for login input.
         if self.args.mode in ("default", "persistent") and "Breenix login: " in self.line:
             try:
@@ -1053,18 +1165,7 @@ class Driver:
                 for name in ('breenfs-extract', 'breenfs-check'):
                     shutil.copyfile(retained / name, tools / name)
                     (tools / name).chmod(0o755)
-            sandbox = Path('/run/metal-verdict-input')
-            command = ['systemd-run', '--quiet', '--wait', '--pipe', '--collect',
-                       '--property=DynamicUser=yes', '--property=PrivateTmp=yes', '--property=PrivateNetwork=yes',
-                       '--property=BindReadOnlyPaths=' + str(root) + ':' + str(sandbox),
-                       '--property=RestrictAddressFamilies=AF_UNIX',
-                       '--property=ProtectSystem=strict', '--property=ProtectHome=yes',
-                       '--property=NoNewPrivileges=yes', '--property=RestrictSUIDSGID=yes',
-                       '--property=CapabilityBoundingSet=', '--property=WorkingDirectory=/',
-                       '--property=InaccessiblePaths=/etc/breenix-metal /var/lib/breenix-metal /run/breenix-metal',
-                       '--property=RuntimeMaxSec=' + str(SUITE_VERDICT_SECONDS),
-                       '--property=TimeoutStopSec=2', '--property=KillMode=control-group',
-                       sys.executable, '-I']
+            sandbox, command = verdict_command(root)
             if several:
                 command += [str(sandbox / 'scripts/suite-sequence.py'), 'score', self.args.suite, str(sandbox / 'serial.txt')]
             else:
@@ -1107,6 +1208,36 @@ class Driver:
             self.event('suite-verdict', status=status)
             return status == 0
 
+    def score_breenfs_readback(self, source, image, upload, mode):
+        bit_flip = mode == 'bit-flip'
+        with tempfile.TemporaryDirectory(prefix='metal-breenfs-readback-') as temporary:
+            root = Path(temporary)
+            root.chmod(0o755)
+            captures = ('serial.txt',) if bit_flip else ('run.json', 'events.jsonl', 'serial.txt')
+            for name in captures:
+                shutil.copyfile(source / name, root / name)
+                (root / name).chmod(0o644)
+            shutil.copyfile(Path(__file__).with_name('breenfs_replay.py'), root / 'replay.py')
+            (root / 'replay.py').chmod(0o644)
+            shutil.copyfile(image, root / 'disk.img')
+            (root / 'disk.img').chmod(0o644)
+            tools = ('breenfs-check',) if bit_flip else ('breenfs-check', 'breenfs-extract')
+            for name in tools:
+                shutil.copyfile(source / 'breenfs-tools' / name, root / name)
+                (root / name).chmod(0o755)
+            sandbox, command = verdict_command(root)
+            command += [str(sandbox / 'replay.py'), mode, str(sandbox / 'serial.txt'),
+                        str(sandbox / 'disk.img'), '--tools-dir', str(sandbox), '--json']
+            result = subprocess.run(command, capture_output=True, text=True,
+                                    timeout=SUITE_VERDICT_SECONDS + 5,
+                                    env={'PATH': os.defpath, 'LANG': 'C.UTF-8'}, cwd='/')
+        passed = result.returncode == 0
+        details = json.loads(result.stdout) if passed else dict(reason=self.redact(result.stderr.strip()))
+        name = 'bit-flip-readback' if bit_flip else 'cut-readback'
+        m.write_json(source / (name + '.json'), dict(details, id=self.id, passed=passed, sha256=upload['sha256']))
+        self.event('bit-flip-readback-verdict' if bit_flip else 'cut-replay-verdict', passed=passed)
+        return passed
+
     def finalize_disk_suite(self):
         readback = m.read_json(self.dir / 'readback.json')
         source = m.boot_dir(readback['source'])
@@ -1117,6 +1248,12 @@ class Driver:
                 or upload['rootRecord'] != readback['rootRecord']
                 or self.t0 <= readback['suitePoweredOffAt']):
             raise ValueError('cold raw disk evidence differs from the completed suite boot')
+        if readback.get('powerCut'):
+            return self.score_breenfs_readback(source, image, upload, 'replay')
+        if readback.get('bitFlip'):
+            passed = self.score_breenfs_readback(source, image, upload, 'bit-flip')
+            self.finish_readback_source(source, passed)
+            return passed
         run = m.read_json(source / 'run.json')
         args = argparse.Namespace(id=readback['source'], mode='suite', suite=','.join(run.get('suites') or [run['suite']]), payload='image',
                                   inject=None, milestone=run.get('milestone'))
@@ -1139,14 +1276,16 @@ class Driver:
         m.write_json(source / 'suite-readback.json', dict(receipt, id=self.id, bytes=image.stat().st_size,
             sha256=upload['sha256'], passed=passed, diskVerdict=disk_report))
         scorer.event('cold-disk-verdict', readback=self.id, passed=passed, sourceProvisional=provisional)
-        if not provisional:
-            return passed
+        if provisional:
+            self.finish_readback_source(source, passed)
+        return passed
+
+    def finish_readback_source(self, source, passed):
         with m.locked('finished'):
             m.write_text(source / 'exit-status', str(m.EXIT_DONE if passed else m.EXIT_SHORT) + '\n')
             finished = m.STATE / 'finished.jsonl'
             entries = [json.loads(line) for line in finished.read_text().splitlines()]
             m.append_jsonl(finished, dict(id=source.name, seq=max((e['seq'] for e in entries), default=0) + 1))
-        return passed
 
     def continue_disk_readback(self):
         """Cold readback is the next boot under this lease, before another disk user can run."""
@@ -1155,7 +1294,8 @@ class Driver:
             time.sleep(1)
             boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
         args = argparse.Namespace(**(vars(self.args) | dict(id=boot_id, mode='default', suite=None,
-            payload='disk-readback', disk=None, source_boot=self.id, session=False, input=None)))
+            payload='disk-readback', disk=None, source_boot=self.id, session=False, input=None,
+            case=None, root_fs=None, power_cut_window=None, power_cut_after=None, breenfs_bit_flip=False)))
         child = Driver(args)
         # The same live transient unit owns both boots; the reaper follows the active record's id.
         child.unit = self.unit
@@ -1168,8 +1308,26 @@ class Driver:
         m.write_json(inputs / 'build.json', dict(commit=self.args.commit, profile='disk-readback', stub=stub))
         (inputs / 'ready').touch()
         self.event('cold-readback-next', readback=boot_id)
-        child.run(inherited=self.id)
+        child_status = child.run(inherited=self.id)
+        if self.power_cut is not None or self.bit_flip:
+            return child_status
         return int((self.dir / 'exit-status').read_text().strip())
+
+    def continue_cut_recovery(self):
+        source = m.boot_dir(self.args.source_boot)
+        boot_id = boot_id_now()
+        while m.boot_dir(boot_id).exists():
+            time.sleep(1)
+            boot_id = boot_id_now()
+        args = argparse.Namespace(**(vars(self.args) | dict(id=boot_id, mode='suite', suite='filesystem',
+            payload='image', disk='root', root_fs='breenfs', case='power-cut/recovery',
+            kernel_command_line=None, cut_recovery_from=self.id)))
+        child = Driver(args)
+        child.unit = self.unit
+        self.event('cut-recovery-next', recovery=boot_id)
+        status = child.run(inherited=self.id)
+        m.write_json(source / 'cut-cycle.json', dict(readback=self.id, recovery=boot_id, passed=status == m.EXIT_DONE))
+        return status
 
 
     def challenge_shell(self, text):
@@ -1258,6 +1416,20 @@ class Driver:
         seconds = round(observed_at - self.t0, 1) if self.t0 is not None else 0
         if self.t0 is None or not line.strip() or line.startswith('[SOL Session'):
             return
+        if self.power_cut is not None or self.bit_flip:
+            if writer := breenfs_replay.WRITER_START.fullmatch(line.encode()):
+                self.suite_name = 'filesystem'
+                self.writer_nonce = writer[1]
+                self.event('power-cut-writer-start', observed_at=observed_at, nonce=writer[1].decode())
+            elif (self.writer_nonce and (ack := breenfs_replay.ACK.fullmatch(line.encode()))
+                  and ack[1] == b'1' and ack[3] == self.writer_nonce):
+                self.writer_acknowledged = True
+        cut = self.power_cut
+        if (cut is not None and self.writer_acknowledged and cut['window'] is not None and cut['cutAt'] is None
+                and self.suite_name == self.args.suite and 'disk-root-confirmed' in self.seen
+                and self.fatal_at is None and not self.gap
+                and line == f"[breenfs] commit-window {cut['window']}"):
+            raise PowerCut(line, observed_at, self.line_start)
         if not self.first_text:
             self.first_text = True
             self.event('firmware-text', observed_at=observed_at, seconds=seconds)
@@ -1291,6 +1463,20 @@ class Driver:
                 if not upload.get('complete'):
                     raise Finish(m.EXIT_SHORT, 'the cold disk upload is missing')
                 raise Finish(m.EXIT_DONE, 'cold disk readback received')
+        if self.args.payload == metal_export.PAYLOAD:
+            if STUB_LINE in line and self.export_started is None:
+                self.export_started = observed_at
+            if receipt := metal_export.RECEIPT.fullmatch(line):
+                role, part, count, digest = receipt.groups()
+                key = (role, int(part) if part is not None else None)
+                if key in self.export_receipts:
+                    raise Finish(m.EXIT_SHORT, 'persistent export repeated a firmware receipt')
+                self.export_receipts[key] = (int(count), digest)
+            if line == metal_export.DONE:
+                if self.export_started is None:
+                    raise Finish(m.EXIT_SHORT, 'persistent export is missing the firmware start')
+                raise Finish(m.EXIT_DONE, 'persistent export firmware completed')
+            return
         if self.kernel_started and self.fatal_at is None:
             challenge = re.fullmatch(r'\[init\] shutdown nonce=([a-f0-9]{64})', line)
             if challenge:
@@ -1360,6 +1546,21 @@ class Driver:
             idle = getattr(self.args, 'idle_minutes', 30)
             if line == f'[console] input idle {idle} min':
                 raise Finish(m.EXIT_DONE, f'console input idle for {idle} minutes')
+        if (getattr(self.args, 'case', None) in ('power-cut/writer', 'power-cut/recovery')
+                and line.startswith('SUITE filesystem ERROR ')):
+            raise Finish(m.EXIT_SHORT, 'the BreenFS diagnostic reported an error')
+        if self.recovery_expected and (recovered := re.fullmatch(
+                r'BREENFS POWER-CUT RECOVERY root-is-breenfs bytes=([1-9][0-9]*) sha256=([0-9a-f]{64})', line)):
+            if (int(recovered[1]), recovered[2]) != (
+                    self.recovery_expected['logBytes'], self.recovery_expected['logSha256']):
+                raise Finish(m.EXIT_SHORT, 'the mounted crash log differs from cold replay')
+            self.seen.add('cut-recovery-verified')
+            self.event('cut-recovery-verified', observed_at=observed_at,
+                       bytes=int(recovered[1]), sha256=recovered[2])
+        if self.recovery_expected and (missing := self.recovery_expected.get('missingRingB')):
+            if line == f"[breenfs] recovered-superblock ring=B slot={missing['slot']} generation={missing['generation']}":
+                self.seen.add('cut-recovery-repaired')
+                self.event('cut-recovery-repaired', observed_at=observed_at, **missing)
         self.on_disk_line(line, observed_at)
         self.on_intent_line(line, observed_at)
         if getattr(self, 'hostkey_reader', None) is None:
@@ -1574,6 +1775,12 @@ class Driver:
 
     def on_manager_line(self, line, observed_at, seconds):
         """The boot manager's start, the lab's answer it acted on, and a probe's end (README, "The boot manager")."""
+        answer = MANAGER_ANSWER.search(line)
+        # An intentional watchdog recovery returns to the persistent slot.
+        if not persistent(self.args) and self.watchdog_trigger is None and (
+                (answer and answer[1] != f'test {self.id}') or MANAGER_PERSISTENT_COUNTDOWN.search(line)
+                or MANAGER_PERSISTENT_START.search(line)):
+            raise BootManagerAbort(line, observed_at)
         if MANAGER_STARTED in line and self.kernel_started is not None and session(self.args) and persistent(self.args):
             self.on_reset(self.reset_time(observed_at))
             self.event('persistent-restart', observed_at=observed_at)
@@ -1587,9 +1794,9 @@ class Driver:
             if self.args.payload == 'manager' and self.kernel_started is None:
                 self.kernel_started = observed_at
                 self.last_stage = 'boot manager started'
-        if (found := MANAGER_ANSWER.search(line)):
-            self.event('manager-answer', observed_at=observed_at, answer=found.group(1)[:120])
-            self.phase('Boot manager: the lab answered ' + found.group(1)[:80])
+        if answer:
+            self.event('manager-answer', observed_at=observed_at, answer=answer[1][:120])
+            self.phase('Boot manager: the lab answered ' + answer[1][:80])
         if MANAGER_PANIC in line:
             raise Finish(m.EXIT_SHORT, 'the boot manager panicked')
         if self.args.payload == 'manager' and MANAGER_PROBE_DONE in line:
@@ -1602,6 +1809,10 @@ class Driver:
             needed.add('manager-slot')
         if self.console_intent:
             needed.add('console-intent')
+        if self.recovery_expected:
+            needed.add('cut-recovery-verified')
+            if self.recovery_expected.get('missingRingB'):
+                needed.add('cut-recovery-repaired')
         return needed <= self.seen
 
     def wait_replay_ack(self, sequence, kind="BXKEY"):
@@ -1733,6 +1944,8 @@ class Driver:
             metal_persist.record_test_root(dict(write, commit=self.args.commit, verifiedAt=observed_at, mode=self.args.mode,
                                                 consoleIdentity=self.delivery['root'].get('consoleIdentity')))
         if disk == 'root' and 'disk-fixture' not in self.seen and (found := re.search(r'metal-stub: suite fixture verified: (\d+) bytes', line)):
+            if self.recovery_expected:
+                raise Finish(m.EXIT_SHORT, 'the recovery boot unexpectedly staged a fixture')
             installed = self.delivery['diskRoot']
             if int(found.group(1)) != installed['bytes']:
                 raise Finish(m.EXIT_SHORT, 'the firmware fixture size differs from the staged image')
@@ -2032,6 +2245,10 @@ class Driver:
             if m.now() - self.first_byte_at > DOWNLOAD_SECONDS:
                 raise Finish(m.EXIT_DELIVERY, 'the transfer was too slow')
             return
+        if self.export_started is not None:
+            if m.now() - max(self.last_serial or 0, self.export_started) > SILENCE_SECONDS:
+                raise Finish(m.EXIT_HUNG, 'persistent export stopped reporting progress')
+            return
         if self.kernel_started is None:
             # An install's stub writes the layout and the test root first, reporting its progress.
             limit = INSTALL_STUB_SECONDS if self.args.mode == 'persistent-install' else BOOTLOADER_SECONDS
@@ -2098,6 +2315,7 @@ class Driver:
         last_console_check = 0.0
         while True:
             self.checkpoint()
+            self.check_power_cut_deadline()
             self.pump_serial()
             self.pump_http()
             self.pump_bmc()
@@ -2114,10 +2332,30 @@ class Driver:
             self.check_deadlines()
             time.sleep(0.25)
 
-    def power_off(self, hung):
+    def check_power_cut_deadline(self):
+        if self.power_cut is not None and (seconds := self.power_cut['afterSeconds']) is not None:
+            if self.t0 is not None and m.now() >= self.t0 + seconds:
+                raise PowerCut()
+
+    def cut_power(self, trigger):
+        # Record the host time of the cut request and whether the controller confirmed Off.
+        cut_at = m.now()
+        off = self.power_off(False, immediate=True)
+        self.power_cut.update(triggerLine=trigger.line, triggerObservedAt=trigger.observed_at,
+                              triggerSerialOffset=trigger.serial_offset, cutAt=cut_at,
+                              powerOffAt=m.now() if off else None, powerOffConfirmed=off)
+        for name in ('run.json', 'metal-run.json'):
+            path = self.dir / name
+            if path.is_file():
+                run = m.read_json(path)
+                run['powerCut'] = self.power_cut
+                m.write_json(path, run)
+        return off
+
+    def power_off(self, hung, *, immediate=False):
         """NMI first when a started kernel or payload hung (or `--nmi` asks for it), then ForceOff; quarantine if it
         does not go Off."""
-        if (hung or getattr(self.args, 'nmi', False)) and self.kernel_started:
+        if not immediate and (hung or getattr(self.args, 'nmi', False)) and self.kernel_started:
             try:
                 m.rf('POST', m.SYSTEM + '/Actions/ComputerSystem.Reset', {'ResetType': 'Nmi'}, priority=0)
                 self.event('nmi')
@@ -2130,19 +2368,30 @@ class Driver:
                     self.pump_serial()
                 time.sleep(0.25)
             self.event('nmi-capture-done', bytesAfter=self.raw_offset)
-        if self.args.inject == 'forceoff-fail':
+        if not immediate and self.args.inject == 'forceoff-fail':
             self.event('power-off-failed', injected=True)
             self.phase('Power-off failed (injected): the machine may still be on')
             m.quarantine_lease(self.id, 'driver power-off failed (injected)')
             return False
         started = m.now()
-        off = m.force_off_and_wait()
+        off = m.force_off_and_wait(immediate=True) if immediate else m.force_off_and_wait()
         self.event('power-off', off=off, seconds=round(m.now() - started, 1))
         if off:
             self.phase('Powered off')
         else:
             self.phase('Power-off failed: the machine may still be on')
             m.quarantine_lease(self.id, 'driver power-off failed')
+        return off
+
+    def abort_manager_boot(self, finish):
+        requested_at = m.now()
+        off = self.power_off(False, immediate=True)
+        run_path = self.dir / 'run.json'
+        run = m.read_json(run_path)
+        run['bootManagerAbort'] = dict(line=self.redact(finish.line), observedAt=finish.observed_at,
+                                      action='ForceOff', powerOffRequestedAt=requested_at, powerOffConfirmed=off)
+        m.write_json(run_path, run)
+        self.event('boot-manager-abort', **run['bootManagerAbort'])
         return off
 
     def cleanup(self, status, ended_by='driver', keep_lease=False):
@@ -2153,6 +2402,8 @@ class Driver:
             upload = m.read_json(m.STATE / 'disk-upload.json', {})
             if upload.get('id') == self.id:
                 (m.STATE / 'disk-upload.json').unlink(missing_ok=True)
+            if self.args.payload == metal_export.PAYLOAD:
+                metal_export.discard(self.id)
             m.clear_override()
             m.unstage(self.id)
             subprocess.run(self.tmux + ['kill-server'], capture_output=True)
@@ -2172,6 +2423,7 @@ class Driver:
         status = m.EXIT_SHORT
         pending_readback = False
         provisional_readback = False
+        pending_recovery = False
         try:
             if getattr(self.args, 'adopt', False):
                 self.adopt()
@@ -2201,14 +2453,21 @@ class Driver:
             self.watch()
         except Finish as finish:
             status = finish.status
+            off = self.cut_power(finish) if isinstance(finish, PowerCut) else None
+            if isinstance(finish, BootManagerAbort):
+                off = self.abort_manager_boot(finish)
+            reason = finish.reason
+            if self.power_cut is not None and status == m.EXIT_DONE:
+                status, reason = m.EXIT_SHORT, 'the boot finished before the requested power cut'
             if not self.stop_hostkey_reader():
                 status = m.EXIT_INCOMPLETE
             if status == m.EXIT_DONE and getattr(self, 'hostkey_error', None) is not None:
                 status = m.EXIT_INCOMPLETE
-            self.event('decided', status=status, reason=finish.reason)
-            self.phase(('Stopped: ' if status else 'Done: ') + finish.reason)
+            self.event('decided', status=status, reason=reason)
+            self.phase(('Stopped: ' if status else 'Done: ') + reason)
             if self.t0 is not None:
-                off = self.power_off(finish.hung)
+                if off is None:
+                    off = self.power_off(finish.hung)
                 if not off:
                     status = m.EXIT_INCOMPLETE
                 # A multi-suite boot scores each suite even when it stopped part way, so a stalled suite keeps
@@ -2216,7 +2475,14 @@ class Driver:
                 several = len(suites(self.args)) > 1 and self.kernel_started is not None
                 disk_source = (getattr(self.args, 'disk', None) == 'root' and self.args.payload == 'image'
                                and getattr(self, 'hostkey_error', None) is None)
-                if (self.args.mode == 'suite' and getattr(self.args, 'case', None) is None
+                if (isinstance(finish, PowerCut) and off and status == m.EXIT_SHORT
+                        and 'disk-root-confirmed' in self.seen and self.writer_acknowledged):
+                    pending_readback = True
+                if self.bit_flip and off and status == m.EXIT_DONE and disk_source and 'disk-root-confirmed' in self.seen:
+                    self.event('suite-awaiting-disk-readback', provisional=True)
+                    pending_readback = provisional_readback = True
+                    status = m.EXIT_SHORT
+                if (self.power_cut is None and self.args.mode == 'suite' and getattr(self.args, 'case', None) is None
                         and (status == m.EXIT_DONE or several or (disk_source and status == m.EXIT_SHORT))
                         and status not in (m.EXIT_CANCELLED, m.EXIT_STOPPED, m.EXIT_INCOMPLETE)):
                     with contextlib.suppress(Finish):
@@ -2242,11 +2508,23 @@ class Driver:
                             status = m.EXIT_SHORT
                 if self.args.payload == 'disk-readback' and status == m.EXIT_DONE and off and not self.gap:
                     try:
-                        if not self.finalize_disk_suite():
+                        if self.finalize_disk_suite():
+                            pending_recovery = m.read_json(self.dir / 'readback.json').get('powerCut', False)
+                        else:
                             status = m.EXIT_SHORT
                     except Exception as error:
                         self.event('disk-suite-verdict-error', error=error.__class__.__name__)
                         status = m.EXIT_SHORT
+                if self.args.payload == metal_export.PAYLOAD and status == m.EXIT_DONE and off and not self.gap:
+                    try:
+                        metal_export.publish(self.dir, self.id, self.export_receipts)
+                        self.event('persistent-export-published')
+                    except ValueError as error:
+                        self.event('persistent-export-publish-error', error=str(error))
+                        status = m.EXIT_SHORT
+                    except OSError as error:
+                        self.event('persistent-export-publish-error', error=error.__class__.__name__)
+                        status = m.EXIT_INCOMPLETE
                 if self.census and status == m.EXIT_DONE:
                     if off and not self.gap:
                         try:
@@ -2266,7 +2544,9 @@ class Driver:
                 self.power_off(False)
             status = m.EXIT_INCOMPLETE if self.t0 is not None else m.EXIT_CANCELLED
         # Persistent sessions are scored like default boots; console sessions and fault tests never are.
-        scored = getattr(self.args, 'case', None) is None and (not session(self.args) or persistent(self.args)) and not xhci_fault(self.args) and self.args.inject not in (FENCE_FAULT, 'panic-reboot', *WATCHDOG_FAULTS)
+        scored = (self.power_cut is None and getattr(self.args, 'case', None) is None
+                  and (not session(self.args) or persistent(self.args)) and not xhci_fault(self.args)
+                  and self.args.inject not in (FENCE_FAULT, 'panic-reboot', *WATCHDOG_FAULTS))
         if scored and (self.dir / 'definition/docs/metal/boot-path.json').is_file():
             try:
                 verdict = metal_score.score(self.dir)
@@ -2285,11 +2565,19 @@ class Driver:
             self.cleanup(status, keep_lease=True)
             try:
                 readback_status = self.continue_disk_readback()
-                return readback_status if provisional_readback else status
+                return readback_status if provisional_readback or self.power_cut is not None else status
             except Exception as error:
                 self.event('cold-readback-error', error=error.__class__.__name__)
                 m.release_lease(self.id)
                 return status
+        if pending_recovery and status == m.EXIT_DONE and not self.gap:
+            self.cleanup(status, keep_lease=True)
+            try:
+                return self.continue_cut_recovery()
+            except Exception as error:
+                self.event('cut-recovery-error', error=error.__class__.__name__)
+                m.release_lease(self.id)
+                return m.EXIT_SHORT
         if self.args.mode == 'persistent-install' and status == m.EXIT_DONE and not self.gap:
             self.cleanup(status, keep_lease=True)
             try:
@@ -2514,6 +2802,7 @@ def main():
         p.add_argument('--adopt', action='store_true', help=argparse.SUPPRESS)
         p.add_argument('--nmi', action='store_true',
                        help='send the NMI and capture for 5 s before powering off a started kernel, finished or not')
+        metal_power_cut.add_options(p)
         p.add_argument('--ramdisk', action='store_true', default=True, help='carry the ext2 RAM root for recovery boots; main-path roots use the physical disk')
         p.add_argument('--disk', choices=DISK_ACTIONS,
                        help='physical disk root (default), or an explicit recovery install')
@@ -2538,7 +2827,12 @@ def main():
             parser.error('--root-fs breenfs needs --disk root and an image boot in default, suite or console mode')
         if args.payload == 'disk-readback' and not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.source_boot or ''):
             parser.error('disk-readback needs --source-boot ID')
+        if args.payload == metal_export.PAYLOAD and (
+                args.disk or args.inject or args.nmi or args.source_boot or args.slot_action
+                or args.resting or not re.fullmatch(r'[0-9a-f]{40}', args.commit)):
+            parser.error('persistent export needs a commit and a firmware-only boot')
         try:
+            metal_power_cut.validate(args)
             validate_xhci_fault(args)
             kernel_profile(args)
             if args.gt710_category and (args.payload != 'image' or session(args)):

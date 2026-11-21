@@ -306,19 +306,21 @@ def power_state(priority=1):
     return rf_get(SYSTEM + '?$select=PowerState', priority=priority).get('PowerState')
 
 
-def force_off_and_wait(seconds=None):
+def force_off_and_wait(seconds=None, *, immediate=False):
     """ForceOff, then poll until PowerState reads Off. True when it did within `seconds` (default 60)."""
     deadline = now() + (POWER_OFF_SECONDS if seconds is None else seconds)
+    requested = False
     try:
-        if power_state(priority=0) == 'Off':
+        if not immediate and power_state(priority=0) == 'Off':
             return True
         rf('POST', SYSTEM + '/Actions/ComputerSystem.Reset', {'ResetType': 'ForceOff'}, priority=0)
+        requested = True
     except BmcError:
         pass
     while now() < deadline:
         try:
             if power_state(priority=0) == 'Off':
-                return True
+                return requested or not immediate
         except BmcError:
             pass
         time.sleep(2)

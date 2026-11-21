@@ -22,6 +22,7 @@ use metal_efi::say;
 use metal_efi::uefi::*;
 
 mod persist;
+mod persistent_export;
 mod suite_disk;
 
 /// Where the appended disk is: the tools find this record by its magic and fill in the disk's distance from the
@@ -81,6 +82,10 @@ unsafe fn run(image: Handle, system: *const SystemTable) -> Status {
         Ok(path) => path,
         Err(status) => return status,
     };
+    // An export request halts on success and returns an error on failure. It cannot reach either write action.
+    if let Err(status) = persistent_export::run(boot, volume, image) {
+        return status;
+    }
     // A persistent install's request (README, "Install and upgrade") comes before the test root it stages.
     if let Err(status) = persist::run(boot, &*(*system).runtime_services, volume, image) {
         return status;

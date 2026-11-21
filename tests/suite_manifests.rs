@@ -8,9 +8,8 @@
 //! manifest's categories that have cases, in the same order with the same titles. Each suite source has
 //! a manifest. A category with no cases yet is planned: the binary leaves it out, and a
 //! manifest in which each category is planned is a skeleton with no suite source
-//! (docs/suites/README.md, "Planned categories"). A category marked `"hostRunner": true` is run
-//! by its host runner, which checks
-//! that category's cases; the binary leaves it out.
+//! (docs/suites/README.md, "Planned categories"). A category marked `"hostRunner": true` is
+//! checked by its host runner and left out of the guest binary.
 //!
 //! The efforts in `docs/efforts/path.json` that name their targets name known ones (`targets`,
 //! docs/efforts/README.md).
@@ -80,7 +79,7 @@ struct Manifest {
     title: String,
     categories: Vec<Category>,
     host_runner: Option<String>,
-    /// Categories the boot host runs against a persistent boot (`"hostRunner": true` on the category).
+    /// Categories scored by a host runner (`"hostRunner": true` on the category).
     host_categories: Vec<String>,
 }
 
@@ -141,10 +140,10 @@ fn entry(value: &Value, at: &str, extra: &[&str], errors: &mut Vec<String>) -> O
 }
 
 /// The runner of host-run categories in a suite whose binary runs the others.
-fn category_host_runner(suite: &str) -> &'static str {
+fn category_host_runners(suite: &str) -> &'static [&'static str] {
     match suite {
-        "filesystem" => "scripts/vm-artifacts.py",
-        _ => "scripts/metal/server-suite",
+        "filesystem" => &["scripts/metal/breenfs_replay.py", "scripts/vm-artifacts.py"],
+        _ => &["scripts/metal/server-suite"],
     }
 }
 
@@ -273,7 +272,7 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
             let mut category_ids = HashSet::new();
             for (c, value) in list.iter().enumerate() {
                 let cat_at = format!("{at} categories[{c}]");
-                // A host-run category: the boot host runs its cases against a persistent boot.
+                // A host-run category is scored outside the guest suite.
                 let host = value.get("hostRunner").is_some();
                 let mut extra = vec!["cases"];
                 if host { extra.push("hostRunner"); }
@@ -481,6 +480,27 @@ fn source_suite_files(files: &[(String, String)]) -> Result<(Entry, Vec<Category
         Err(error) => { println!("SUITE filesystem ERROR {error}"); std::process::exit(1); }
     };
     println!("SUITE filesystem ROOT {}", root.name());
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    let selected = match args.as_slice() {
+        [flag, name] if flag == "--case" => Some(name.as_str()),
+        [flag, name, hostkeys, _] if flag == "--case" && hostkeys == "--hostkeys" => Some(name.as_str()),
+        _ => None,
+    };
+    if selected == Some("power-cut/recovery") {
+        if let Err(error) = power_cut_recovery() {
+            println!("SUITE filesystem ERROR power-cut/recovery: {error:?}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    let writer_selected = selected == Some("power-cut/writer");
+    if writer_selected {
+        if let Err(error) = power_cut_writer(root) {
+            println!("SUITE filesystem ERROR power-cut/writer: {error:?}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if root == filesystem_root::RootFs::Breenfs { SUITE.run(); }
     suite(SUITE.id, SUITE.title, &SUITE.categories[..SUITE.categories.len() - 1]).run()
 }"#;
@@ -857,6 +877,15 @@ fn suite_manifests_match_their_binaries() {
             }
             continue;
         }
+        if !manifest.host_categories.is_empty() {
+            for runner in category_host_runners(id) {
+                let checked = std::process::Command::new("python3").arg(root.join(runner))
+                    .arg("--check-manifest").arg(path).output().expect("host runner starts");
+                if !checked.status.success() {
+                    errors.push(format!("{id}: {runner} host-run category table differs: {}", String::from_utf8_lossy(&checked.stderr)));
+                }
+            }
+        }
         let Some((source_rel, files)) = suite_files(&root, &module) else {
             errors.push(format!("{id}: no suite source at userspace/programs/src/suite_{module}.rs or suite_{module}/main.rs"));
             continue;
@@ -889,13 +918,6 @@ fn suite_manifests_match_their_binaries() {
         // The binary runs populated categories for incremental development. This is not
         // completion: suite-verdict.py blocks full-suite acceptance while any category
         // is planned; a milestone must have cases in each category it measures.
-        if !manifest.host_categories.is_empty() {
-            let checked = std::process::Command::new("python3").arg(root.join(category_host_runner(id)))
-                .arg("--check-manifest").arg(path).output().expect("host runner starts");
-            if !checked.status.success() {
-                errors.push(format!("{id}: host-run category table differs: {}", String::from_utf8_lossy(&checked.stderr)));
-            }
-        }
         let host_categories = manifest.host_categories;
         let populated: Vec<Category> = manifest.categories.into_iter()
             .filter(|category| !category.cases.is_empty() && !host_categories.contains(&category.entry.id))
@@ -1129,6 +1151,15 @@ fn filesystem_cases_match_the_guest() {
         .filter(|category| !category.cases.is_empty() && !host_categories.contains(&category.entry.id))
         .collect();
     assert_eq!(categories, populated, "filesystem guest table differs from the manifest");
+}
+
+#[test]
+fn filesystem_writer_dispatch_keeps_the_manifest_guard() {
+    let source = fs::read_to_string(repo_root().join("userspace/programs/src/suite_filesystem.rs")).unwrap();
+    source_suite(&source).expect("the selected writer leaves the guest table discoverable");
+    let bypass = source.replace("if writer_selected {", "if true {");
+    assert_ne!(bypass, source);
+    assert!(source_suite(&bypass).is_err(), "an unconditional writer would hide the guest suite");
 }
 
 #[test]

@@ -77,14 +77,13 @@ run those suites explicitly with their milestone selector. See [effort measures]
 
 ### Host-run categories
 
-A category marked `"hostRunner": true` in a suite the binary runs is measured from the boot host
-against a persistent boot instead, by `scripts/metal/server-suite` (the users suite's `operator`
-category, "Users & permissions" below). The binary leaves it out, as it does a planned category;
+A category marked `"hostRunner": true` is scored by a host tool. The guest suite's table omits it.
 `tests/suite_manifests.rs` compares the binary's table with the other populated categories and asks
-the runner to check the host-run category's cases (`--check-manifest`). A suite boot's verdict
-expects no record for it and says it is scored elsewhere, `--milestone` refuses a milestone that
-measures it, and `all` leaves the suite out. The runner's records go to that persistent boot's
-store and into its `milestone-verdict.json`, as the server suite's do (below). <!-- claim-lint:ok: `all` is the flag's name; scripts/suite-sequence.py (resolve) and tests/suite_sequence_test.py (test_all_leaves_out_suites_with_host_run_categories). -->
+the host tool to check the category's cases (`--check-manifest`). A guest verdict expects no
+case records for the category, `--milestone` refuses to score it, and `all` leaves the suite out.
+`scripts/metal/server-suite` scores the users suite's `operator` category against a persistent
+boot and puts its records in that boot's store and `milestone-verdict.json`. The filesystem
+suite's `power-cut` category uses the cold readback described below. <!-- claim-lint:ok: `all` is the flag's name; scripts/suite-sequence.py (resolve) and tests/suite_sequence_test.py (test_all_leaves_out_suites_with_host_run_categories). -->
 
 A suite whose cases read clocks, measure time or exercise concurrency adds
 `"timingSensitive": true`, including smoke for its monotonic-clock case.
@@ -1729,6 +1728,56 @@ Under E24 coordinator ledger line 267, format and crash-image enumeration remain
 checks. Their former guest cases only read host result files; they are removed from the
 guest table and manifest. `scripts/filesystem-suite.py` still stages the read fixture's
 manifest without collecting host evidence.
+
+## Filesystem power-cut writer
+
+The power-cut boot selects `--suite filesystem --case power-cut/writer` on a
+fresh disposable BreenFS root. The writer creates `/crash/log` and appends
+4,096-byte records until power is cut. Each record contains a little-endian
+64-bit sequence number starting at 1, the 64-bit boot nonce from the writer START line,
+506 little-endian 64-bit payload words
+(`seq XOR index`, with indexes starting at 0), and the 32-byte SHA-256 of the
+preceding 4,064 bytes. After fsync succeeds, the writer emits
+`FSYNC <seq> <lowercase hex digest> nonce=<hex nonce>` and flushes that line to serial.
+Score a cut with the BreenFS host tools from the matching build. Keep the
+writer capture beside its driver run and event records.
+
+```sh
+python3 scripts/metal/breenfs_replay.py replay SERIAL COLD_IMAGE --tools-dir BREENFS_TOOLS
+```
+
+Replay reads `/crash/log` with `breenfs-extract` and records the cold state.
+It accepts `breenfs-check --full` exit 0 as `clean`. Exit 1 is `ring-B-missing`
+only with empty stderr and a warning that the newest generation G has only its
+ring A copy. The paired ring B slot must either be empty before the first wrap
+or hold the only CRC-valid copy of G−4, with a matching ring-B-only warning.
+Any additional finding fails replay. Each record must match the writer's sequence, payload
+and digest, including a complete tail that reached disk before the cut but
+whose receipt did not reach serial. Replay fails on a missing acknowledged record,
+a receipt digest mismatch, a failed extraction or an incomplete disk record.
+
+Aimed cuts arm on the first acknowledged writer record, then hold the selected
+window on the next publication for up to 60 seconds. The driver archives the
+marker arrival and Off confirmation, and replay refuses subsequent publication
+progress in the capture.
+
+On metal, the cut driver reads the stopped test partition through the firmware
+under the same lease and runs the replay checker. A passing replay permits a
+no-restage recovery boot on that partition. It mounts the root and reads
+`/crash/log` through BreenFS. The driver requires the same byte length and
+SHA-256 as cold replay. For `ring-B-missing`, recovery must also report the
+repaired ring B slot and generation after flushing it. A failed replay stops
+the cycle before recovery.
+
+The data bit-flip boot hands its recorded test root to firmware cold readback
+under the same lease after confirmed Off. To score that image directly, use
+`bit-flip` in place of `replay`. The same serial
+must report the injected block and then `[breenfs] corrupt-read block=N result=ReadError::Data`
+from the read probe. An absent result, a generic I/O error or returned data fails.
+The full checker must exit 4 with a C1 CRC error naming that exact block and
+no other error.
+These per-boot verdicts supply the `aimed-cuts`, `random-cuts` and `bit-flips`
+host records. The acceptance set supplies the complete category result.
 
 ## Developer SDK
 

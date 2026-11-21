@@ -3,6 +3,9 @@ mod cache_reread;
 mod filesystem_read;
 mod filesystem_checksum;
 mod filesystem_enospc;
+mod filesystem_power_cut;
+#[path = "../../../kernel/src/fs/breenfs/fault_abi.rs"]
+mod fault_abi;
 pub mod filesystem_root;
 pub mod root_expectations;
 mod filesystem_snapshots;
@@ -13,7 +16,7 @@ use libbreenix::{fs as sysfs, io as sysio, types::Fd};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::{DirEntryExt, MetadataExt};
+use std::os::unix::fs::{DirEntryExt, FileExt, MetadataExt};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -290,12 +293,95 @@ fn ino_consistent() -> CaseResult {
     result
 }
 
+fn power_cut_writer(root: filesystem_root::RootFs) -> CaseResult {
+    check(root == filesystem_root::RootFs::Breenfs, "power-cut writer requires a breenfs test root")?;
+    root_is_breenfs()?;
+    io(fs::create_dir("/crash"))?;
+    let mut log = io(fs::OpenOptions::new().read(true).append(true).create_new(true).open("/crash/log"))?;
+    io(log.sync_all())?;
+    io(File::open("/crash").and_then(|dir| dir.sync_all()))?;
+    io(File::open("/").and_then(|dir| dir.sync_all()))?;
+    let mut nonce = [0; 8];
+    let received = libbreenix::crypto::rand::getrandom_bytes(&mut nonce);
+    check(received == Ok(nonce.len()), "could not get a power-cut writer nonce")?;
+    let nonce = u64::from_le_bytes(nonce);
+    let mut serial = std::io::stdout().lock();
+    io(writeln!(serial, "\nSUITE filesystem START cases=1 only=power-cut/writer nonce={nonce:016x}"))?;
+    io(serial.flush())?;
+    io(filesystem_power_cut::write_records(&mut log, &mut serial, nonce, File::sync_all, |log, seq| {
+        use libbreenix::syscall::{nr, raw};
+        let result = unsafe { raw::syscall3(nr::IOCTL, log.as_raw_fd() as u64, fault_abi::ARM_PUBLICATION, seq) } as i64;
+        match result {
+            0 | -25 => Ok(false), // ENOTTY on production kernels.
+            1 => {
+                filesystem_power_cut::probe_record(log, nonce, seq + 1, File::sync_all,
+                    |file, offset, buf| file.read_at(buf, offset))?;
+                Ok(true)
+            }
+            error => Err(std::io::Error::from_raw_os_error((-error) as i32)),
+        }
+    }))?;
+    io(filesystem_power_cut::diagnostic_done(&mut serial, "power-cut/writer"))?;
+    drop(serial);
+    diagnostic_idle()
+}
+
+fn diagnostic_idle() -> ! {
+    loop {
+        std::thread::sleep(Duration::from_secs(60));
+    }
+}
+
+fn power_cut_recovery() -> CaseResult {
+    root_is_breenfs()?;
+    let mut log = io(File::open("/crash/log"))?;
+    let mut digest = libbreenix::crypto::sha256::Sha256::new();
+    let mut bytes = 0u64;
+    let mut buffer = [0; 4096];
+    loop {
+        let read = io(log.read(&mut buffer))?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+        bytes += read as u64;
+    }
+    check(bytes > 0 && bytes % 4096 == 0, "recovered crash log is empty or torn")?;
+    let hex: String = digest.finalize().iter().map(|byte| format!("{byte:02x}")).collect();
+    let mut serial = std::io::stdout().lock();
+    io(writeln!(serial, "\nBREENFS POWER-CUT RECOVERY root-is-breenfs bytes={bytes} sha256={hex}"))?;
+    io(filesystem_power_cut::diagnostic_done(&mut serial, "power-cut/recovery"))?;
+    drop(serial);
+    diagnostic_idle()
+}
+
 fn main() {
     let root = match filesystem_root::declared() {
         Ok(root) => root,
         Err(error) => { println!("SUITE filesystem ERROR {error}"); std::process::exit(1); }
     };
     println!("SUITE filesystem ROOT {}", root.name());
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    let selected = match args.as_slice() {
+        [flag, name] if flag == "--case" => Some(name.as_str()),
+        [flag, name, hostkeys, _] if flag == "--case" && hostkeys == "--hostkeys" => Some(name.as_str()),
+        _ => None,
+    };
+    if selected == Some("power-cut/recovery") {
+        if let Err(error) = power_cut_recovery() {
+            println!("SUITE filesystem ERROR power-cut/recovery: {error:?}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    let writer_selected = selected == Some("power-cut/writer");
+    if writer_selected {
+        if let Err(error) = power_cut_writer(root) {
+            println!("SUITE filesystem ERROR power-cut/writer: {error:?}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if root == filesystem_root::RootFs::Breenfs { SUITE.run(); }
     suite(SUITE.id, SUITE.title, &SUITE.categories[..SUITE.categories.len() - 1]).run()
 }
