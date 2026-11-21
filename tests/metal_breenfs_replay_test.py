@@ -86,6 +86,11 @@ else:
                 self.assertEqual(result.returncode, 1, result.stderr)
                 self.assertIn(message, result.stderr)
 
+    def test_replay_requires_an_acknowledged_write(self):
+        result = self.score('replay', START, record(1))
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('no acknowledged writes', result.stderr)
+
     def test_replay_requires_clean_full_check(self):
         result = self.score('replay', START + ack(1), record(1), check_status=1,
                             check_stdout=b'warning abandoned slot\n')
