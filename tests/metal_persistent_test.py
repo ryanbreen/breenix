@@ -348,6 +348,42 @@ class DriverPersistentTest(unittest.TestCase):
         with self.assertRaises(boot.Finish):
             d.on_slot_boot(f'breenix-manager: booting current {b}', 2)
 
+    def test_migration_boot_matches_the_staged_slot_commit_and_role(self):
+        d = self.driver
+        d.args.payload = 'persistent'
+        cycle, staged = 'a' * 40, 'b' * 40
+        d.migration = {'commit': cycle}
+        for commit in (cycle, staged):
+            (m.STATE / 'persistent' / commit / 'definition').mkdir(parents=True)
+
+        for phase, entry, kind, wrong_kind in (
+            ('rescue', 'previous', 'rescue', 'cutover'),
+            ('return', 'current', 'cutover', 'rescue'),
+        ):
+            d.migration_phase = phase
+            for recorded, role, booted, refusal in (
+                (cycle, kind, cycle, None),
+                (staged, kind, staged, None),
+                (cycle, wrong_kind, cycle, boot.BootManagerAbort),
+                (staged, kind, cycle, boot.Finish),
+            ):
+                with self.subTest(phase=phase, recorded=recorded, role=role, booted=booted):
+                    d.args.commit = recorded
+                    d.seen.discard('manager-slot')
+                    run = d.dir / 'run.json'
+                    m.write_json(run, {})
+                    metal_persist.update_disk(slots={entry: {'commit': recorded, 'migration': role}})
+                    line = f'breenix-manager: booting {entry} {booted}'
+                    if refusal:
+                        with self.assertRaises(refusal):
+                            d.on_slot_boot(line, 0)
+                        self.assertEqual(m.read_json(run), {})
+                        self.assertNotIn('manager-slot', d.seen)
+                    else:
+                        d.on_slot_boot(line, 0)
+                        self.assertEqual(m.read_json(run), {'entry': entry, 'bootedCommit': recorded})
+                        self.assertIn('manager-slot', d.seen)
+
     def test_run_logs_in_types_each_command_at_a_fresh_prompt_and_logs_out(self):
         d = self.driver
         d.args.payload, d.args.mode, d.args.run = 'persistent', 'persistent', ['writeFile("/root/a", "1")', 'sync']

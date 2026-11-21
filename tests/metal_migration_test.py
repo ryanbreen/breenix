@@ -138,6 +138,7 @@ class MetalMigrationTest(existing.StateTest):
 class CarryForwardAdmissionTest(existing.StateTest):
     allowed_files = ['scripts/metal/server-suite', 'scripts/metal/metal_migration.py',
                      'tests/remote_upgrade_test.py', 'tests/metal_migration_test.py']
+    slot_repair_files = allowed_files + ['scripts/metal/metal-boot', 'tests/metal_persistent_test.py']
 
     def setUp(self):
         super().setUp()
@@ -172,7 +173,7 @@ class CarryForwardAdmissionTest(existing.StateTest):
     def append_record(self, head, **fields):
         m.append_jsonl(m.STATE / 'migration-carry-forward.jsonl',
                        dict(cycleCommit=self.cycle_commit, headCommit=head,
-                            allowedFiles=self.allowed_files, **fields))
+                            allowedFiles=self.allowed_files) | fields)
 
     def admit(self, head):
         # Use a real Git range with fixture content under the ruling's cycle policy.
@@ -204,6 +205,27 @@ class CarryForwardAdmissionTest(existing.StateTest):
         head = self.commit_files('repair', self.allowed_files)
         self.append_record(head)
         with self.assertRaises(ValueError):
+            self.admit(head)
+        self.backup.assert_not_called()
+
+    def test_slot_repair_carry_forward_admits_the_six_file_diff(self):
+        head = self.commit_files('slot repair', self.slot_repair_files)
+        self.append_record(head, ledgerLine=996, allowedFiles=self.slot_repair_files)
+        self.assertEqual(self.admit(head), self.cycle)
+        self.assertEqual(self.migration.state(), self.cycle)
+
+    def test_slot_repair_carry_forward_requires_the_rulings_exact_list(self):
+        head = self.commit_files('slot repair', self.slot_repair_files)
+        self.append_record(head, ledgerLine=985, allowedFiles=self.slot_repair_files)
+        self.append_record(head, ledgerLine=996, allowedFiles=self.allowed_files)
+        with self.assertRaisesRegex(ValueError, 'matching carry-forward record'):
+            self.admit(head)
+        self.backup.assert_not_called()
+
+    def test_slot_repair_carry_forward_refuses_an_outside_file(self):
+        head = self.commit_files('outside slot ruling', self.slot_repair_files + ['scripts/metal/metal_export.py'])
+        self.append_record(head, ledgerLine=996, allowedFiles=self.slot_repair_files)
+        with self.assertRaisesRegex(ValueError, 'outside E24 ledger line 996'):
             self.admit(head)
         self.backup.assert_not_called()
 
