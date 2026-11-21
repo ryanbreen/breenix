@@ -877,8 +877,9 @@ image in consecutive parts of at most 1 GiB over the cold-readback HTTP transpor
 and SHA-256 of each part and the whole partition over SOL.
 
 The boot driver immediately requests ForceOff when the boot manager reports an answer other than
-`test <id>` for this boot or starts a countdown to a persistent entry. The same check applies to ordinary
-test boots, and the driver records the trigger and power-off result under `bootManagerAbort` in `run.json`.
+`test <id>` for this boot, starts a countdown to a persistent entry, reports that its installed configuration
+is unavailable, or announces a boot from the current or previous persistent slot. The same check applies to
+ordinary test boots, and the driver records the trigger and power-off result under `bootManagerAbort` in `run.json`.
 
 After confirmed power-off, the driver compares firmware and host measurements for the parts and whole images.
 When they match, it publishes the two images in the private store at

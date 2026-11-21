@@ -224,6 +224,7 @@ STUB_FAILED_LINE = 'metal-stub: FAILED'
 MANAGER_STARTED = 'breenix-manager: started: '
 MANAGER_ANSWER = re.compile(r'breenix-manager: lab answered: (.*)')
 MANAGER_PERSISTENT_COUNTDOWN = re.compile(r'breenix-manager: menu: Starting (?:Breenix|the previous kernel) in [0-9]+ s;')
+MANAGER_PERSISTENT_START = re.compile(r'breenix-manager: (?:installed configuration unavailable;|booting (?:current|previous) )')
 MANAGER_PROBE_DONE = 'breenix-manager: probe complete'
 MANAGER_PANIC = 'breenix-manager: panic: '
 NO_BOOTABLE = 'no bootable device'
@@ -1777,7 +1778,8 @@ class Driver:
         answer = MANAGER_ANSWER.search(line)
         # An intentional watchdog recovery returns to the persistent slot.
         if not persistent(self.args) and self.watchdog_trigger is None and (
-                (answer and answer[1] != f'test {self.id}') or MANAGER_PERSISTENT_COUNTDOWN.search(line)):
+                (answer and answer[1] != f'test {self.id}') or MANAGER_PERSISTENT_COUNTDOWN.search(line)
+                or MANAGER_PERSISTENT_START.search(line)):
             raise BootManagerAbort(line, observed_at)
         if MANAGER_STARTED in line and self.kernel_started is not None and session(self.args) and persistent(self.args):
             self.on_reset(self.reset_time(observed_at))
