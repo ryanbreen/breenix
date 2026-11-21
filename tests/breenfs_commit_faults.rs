@@ -143,3 +143,44 @@ fn corruption_skips_other_data_in_the_same_publication() {
     assert!(injection.take_for(41, 41 * 8 + 1, 512).is_none());
     assert_eq!(injection.take_for(41, 41 * 8, 512).unwrap().block, 41);
 }
+
+#[test]
+fn selected_sector_is_reported_before_a_later_write_fails() {
+    use std::cell::RefCell;
+
+    const SECTOR: usize = 512;
+    const START: u64 = 81 * 8;
+    let injection = Injection::from_command_line("breenfs_corrupt_inject=81:513:7").unwrap();
+    let bytes = [0x3c; 4096];
+    let mut altered = [0x3c; SECTOR];
+    altered[1] ^= 0x80;
+    let events = RefCell::new(Vec::new());
+    let result = injection.write_selected(
+        81,
+        START,
+        SECTOR,
+        &bytes,
+        |block, data| {
+            events.borrow_mut().push(("write", block));
+            match block - START {
+                0 => assert_eq!(data, &bytes[..SECTOR]),
+                1 => assert_eq!(data, &altered),
+                2 => {
+                    assert_eq!(data, &bytes[2 * SECTOR..]);
+                    return Err("later write failed");
+                }
+                _ => panic!("unexpected sector {block}"),
+            }
+            Ok(())
+        },
+        |flip| {
+            assert_eq!((flip.block, flip.offset, flip.bit), (81, 513, 7));
+            events.borrow_mut().push(("receipt", START + 1));
+        },
+    );
+    assert_eq!(result, Err("later write failed"));
+    assert_eq!(
+        events.into_inner(),
+        [("write", START), ("write", START + 1), ("receipt", START + 1), ("write", START + 2)]
+    );
+}
