@@ -3,6 +3,9 @@
 pub mod abi;
 #[path = "persistent_migrate/core.rs"]
 mod migrate;
+#[cfg(target_arch = "aarch64")]
+#[path = "persistent_migrate/finish.rs"]
+mod finish;
 
 use abi::{SnapshotRequest, SnapshotStatus, SNAPSHOT_CREATE, SNAPSHOT_STATUS};
 use libbreenix::{
@@ -129,6 +132,43 @@ fn run() -> io::Result<()> {
     )
 }
 
+#[cfg(target_arch = "aarch64")]
+fn poweroff() -> io::Result<()> {
+    use std::io::Write;
+
+    if std::process::id() != 1 {
+        return Err(io::Error::other("migration poweroff requires PID 1"));
+    }
+    // PID 1 is the migrator in this boot, so there is no service supervisor
+    // to prepare the authenticated shutdown or make the final syscall.
+    let mut nonce = [0u8; 32];
+    let count = unsafe {
+        raw::syscall3(nr::GETRANDOM, nonce.as_mut_ptr() as u64, nonce.len() as u64, 0)
+    };
+    let count = Error::from_syscall(count as i64)
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    if count != nonce.len() as u64 {
+        return Err(io::Error::other("short shutdown nonce"));
+    }
+    let nonce: String = nonce.iter().map(|byte| format!("{byte:02x}")).collect();
+    fs::create_dir_all("/run/breenix")?;
+    fs::write("/run/breenix/shutdown-nonce", format!("{nonce}\n"))?;
+    {
+        let mut serial = io::stdout().lock();
+        writeln!(serial, "\n[init] shutdown nonce={nonce}")?;
+        serial.flush()?;
+    }
+    let result = unsafe { raw::syscall3(142, 0xfee1dead, 672274793, 0x4321fedc) };
+    Error::from_syscall(result as i64).map_err(|error| io::Error::other(error.to_string()))?;
+    Err(io::Error::other("poweroff syscall returned"))
+}
+
+#[cfg(target_arch = "aarch64")]
+fn main() -> ExitCode {
+    finish::power_off_after(run(), poweroff)
+}
+
+#[cfg(not(target_arch = "aarch64"))]
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,

@@ -1,6 +1,8 @@
 //! Temporary-directory driver for persistent_migrate_test.py.
 #[path = "../userspace/programs/src/persistent_migrate/core.rs"]
 mod migrate;
+#[path = "../userspace/programs/src/persistent_migrate/finish.rs"]
+mod finish;
 #[path = "../libs/libbreenix/src/layout.rs"]
 pub mod layout;
 #[path = "../libs/libbreenix/src/crypto/sha256.rs"]
@@ -63,12 +65,17 @@ fn main() -> ExitCode {
         home: &root.join("home"),
         evidence: &root.join("evidence"),
     };
+    let vm_poweroff = std::env::args().nth(2).as_deref() == Some("--vm-poweroff");
     let mut mounts = Fixture {
         root: root.clone(),
         switch: 0,
-        mismatch: std::env::args().nth(2),
+        mismatch: std::env::args().nth(2).filter(|_| !vm_poweroff),
     };
-    match migrate::run(&paths, "fixture", &mut mounts, &mut io::stdout()) {
+    let result = migrate::run(&paths, "fixture", &mut mounts, &mut io::stdout());
+    if vm_poweroff {
+        return finish::power_off_after(result, || fs::write(root.join("poweroff-requested"), []));
+    }
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");

@@ -207,7 +207,7 @@ fi
 # or a QMP termination reason, without starting a virtual machine.
 cat > "$fixture/bin/qemu-system-aarch64" <<'PY'
 #!/usr/bin/env python3
-import hashlib, json, os, socket, sys, time
+import hashlib, json, os, socket, subprocess, sys, time
 from pathlib import Path
 args = sys.argv[1:]
 root = Path(os.environ['CAPTURE'])
@@ -225,7 +225,17 @@ qmp.recv(4096)
 scenario = os.environ['STUB_SCENARIO']
 if scenario in ('migrate', 'cutover', 'rescue', 'return'):
     if scenario == 'migrate':
-        serial.sendall(b'[migrate] manifests equal\n')
+        source = root / os.environ['MIGRATE_TREE']
+        guest = subprocess.run([root / 'migrate-guest', source, '--vm-poweroff'],
+                               capture_output=True, timeout=10)
+        serial.sendall(guest.stdout + guest.stderr)
+        # Model the VM power boundary. A userspace exit does not power off QEMU.
+        if not (source / 'poweroff-requested').is_file():
+            sys.exit('migrator exited without requesting guest poweroff')
+        nonce = 'a' * 64
+        token = (run / 'power-token').read_text().strip()
+        receipt = hashlib.sha256((token + nonce).encode()).hexdigest()
+        serial.sendall(f'[init] shutdown nonce={nonce}\n[shutdown] requested poweroff token={receipt}\n'.encode())
     else:
         kind = 'ext2' if scenario == 'rescue' else 'breenfs'
         serial.sendall(f'[boot] {kind} root filesystem mounted\n'.encode())
@@ -424,7 +434,25 @@ userland gen-1
 INTENT
 cycle migrate
 intent_is "$fixture/migrate.intent"
-STUB_SCENARIO=migrate boot_fixture --mode console
+CARGO_BUILD_JOBS=4 "$root/scripts/build-background.sh" rustc --edition=2021 -Dwarnings \
+    "$root/tests/persistent_migrate_fixture.rs" -o "$fixture/migrate-guest"
+python3 - "$root" "$fixture" <<'PYMIGRATE'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / 'tests'))
+from persistent_migrate_test import PersistentMigration
+for tree, users_layout in [('migration-ok', True), ('migration-failed', False)]:
+    PersistentMigration().fixture(Path(sys.argv[2]) / tree, users_layout=users_layout)
+PYMIGRATE
+if STUB_SCENARIO=migrate MIGRATE_TREE=migration-failed boot_fixture --mode console > "$fixture/migrate-failure.log" 2>&1; then
+    fail 'failed migration returned success'
+fi
+[ -f "$fixture/migration-failed/poweroff-requested" ] || fail 'failed migration did not power off'
+grep -q 'migrate boot did not supply its verification receipts' "$fixture/migrate-failure.log" || fail 'failed migration did not reach stock finish'
+grep -Fxq '[migrate] exit code: 1' "$run/boots/$(cat "$run/current")/serial.txt" || fail 'missing failed migration receipt'
+record_is FAIL FAIL FAIL FAIL
+STUB_SCENARIO=migrate MIGRATE_TREE=migration-ok boot_fixture --mode console
+[ -f "$fixture/migration-ok/poweroff-requested" ] || fail 'successful migration did not power off'
 cp "$fixture/home.tsv" "$fixture/home-good.tsv"
 sed '1s/0755/0700/' "$fixture/home-good.tsv" > "$fixture/home.tsv"
 if cycle check-manifests; then fail 'manifest mismatch passed'; fi

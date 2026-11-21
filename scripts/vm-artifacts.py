@@ -332,7 +332,10 @@ def finish_cycle(run, phase, exit_status):
     clean = (exit_status == 0 and (boot / 'ended').is_file()
              and not any('ROOT_MOUNT_FAILURE' in line or 'Kernel panic' in line for line in serial))
     if phase == 'migrate':
-        verified = clean and '[migrate] manifests equal' in serial
+        exits = [line for line in serial if line.startswith('[migrate] exit code:')]
+        verified = (clean and shutdown_verified(events) and exits == ['[migrate] exit code: 0']
+                    and '[migrate] manifests equal' in serial
+                    and serial.index('[migrate] manifests equal') < serial.index(exits[0]))
     else:
         filesystem = 'ext2' if phase == 'rescue' else 'breenfs'
         verified = (clean and shutdown_verified(events)
