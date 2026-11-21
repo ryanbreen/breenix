@@ -3294,32 +3294,24 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             use core::fmt::Write;
             let state = self.inner.state.lock();
             let pending_bytes = state.frozen_pages().map_or(0, |p| p.bytes);
-            // Diagnostic view of the durable SPACE tree, not reservation or
-            // open-transaction accounting (E24 coordinator 567).
-            let store = self.inner.cache.store(self.inner.device.clone(), &state.durable);
-            let items = recover::space_items(&store, &state.durable).map_err(|_| Errno(EIO))?;
-            let mut raw_free = 0u64;
-            let mut raw_pending = 0u64;
-            for (key, bytes) in items {
-                let (total, length) = match key.item_type {
-                    format::FREE => (&mut raw_free, format::Free::decode(&bytes).map_err(|_| Errno(EIO))?.length),
-                    format::PENDING => (&mut raw_pending, format::Pending::decode(&bytes).map_err(|_| Errno(EIO))?.length),
-                    _ => continue,
-                };
-                *total = total.checked_add(length).ok_or(Errno(EIO))?;
-            }
-            writeln!(
+            // These counts describe the installed SPACE tree (E24 coordinator
+            // 567). Reporting must also work if metadata reads are failing.
+            write!(
                 text,
-                "{} breenfs durable_generation={} dirty_bytes={} read_only={} last_scrub_generation={} last_scrub_errors={} free_blocks={} pending_blocks={}",
+                "{} breenfs durable_generation={} dirty_bytes={} read_only={} last_scrub_generation={} last_scrub_errors={} free_blocks={}",
                 name,
                 state.durable.generation,
                 state.dirty_bytes + pending_bytes,
                 u8::from(state.read_only()),
                 state.durable.last_scrub_generation,
                 state.durable.last_scrub_errors,
-                raw_free,
-                raw_pending
+                state.durable.free_blocks
             )
+            .map_err(|_| Errno(ENOMEM))?;
+            match state.durable_pending.and_then(PendingSummary::census) {
+                Some((blocks, _)) => writeln!(text, " pending_blocks={blocks}"),
+                None => writeln!(text, " pending_blocks=unavailable"),
+            }
             .map_err(|_| Errno(ENOMEM))?;
             if let Some(failure) = state.metadata_error {
                 writeln!(text, "metadata_cause={} metadata_node={}", failure.cause, failure.addr)
@@ -3419,7 +3411,8 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
         self.inner.state.lock().failure
     }
     fn read_only(&self) -> Result<bool, Errno> {
-        Ok(self.foreground_lock()?.read_only())
+        // Mount status describes the current latch without advancing replay.
+        Ok(self.inner.state.lock_interruptible()?.read_only())
     }
     fn max_file_size(&self) -> Result<u64, Errno> {
         Ok((1 << 63) - 4096)
