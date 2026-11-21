@@ -118,6 +118,7 @@ def replay(serial_path, extract, image):
             raise ValueError(f'breenfs-extract /crash/log exited {result.returncode}: {detail}')
         log.seek(0)
         count = 0
+        log_digest = hashlib.sha256()
         for seq, record in enumerate(iter(lambda: log.read(RECORD_BYTES), b''), 1):
             if len(record) != RECORD_BYTES:
                 raise ValueError(f'torn record at sequence {seq}: {len(record)} bytes')
@@ -134,10 +135,12 @@ def replay(serial_path, extract, image):
                 raise ValueError(f'payload differs at sequence {seq}')
             if seq <= len(acknowledged) and digest != acknowledged[seq - 1]:
                 raise ValueError(f'FSYNC digest differs at sequence {seq}')
+            log_digest.update(record)
             count = seq
     if count < len(acknowledged):
         raise ValueError(f'acknowledged sequence {count + 1} is missing')
-    return f'{count} records, {len(acknowledged)} acknowledged'
+    return dict(records=count, acknowledged=len(acknowledged),
+                logBytes=count * RECORD_BYTES, logSha256=log_digest.hexdigest())
 
 
 def bit_flip(serial, check_output):
@@ -180,6 +183,7 @@ def main():
         command.add_argument('serial', type=Path, help='boot driver serial.txt')
         command.add_argument('image', type=Path, help='cold test-root partition image')
         command.add_argument('--tools-dir', type=Path, required=True, help='matching build of the BreenFS tools')
+    commands.choices['replay'].add_argument('--json', action='store_true')
     parser.add_argument('--check-manifest', type=Path)
     args = parser.parse_args()
     if bool(args.check_manifest) == bool(args.mode):
@@ -197,7 +201,11 @@ def main():
             detail = (result.stdout + result.stderr).decode(errors='replace').strip()
             raise ValueError(f'breenfs-check --full exited {result.returncode}, expected {expected_exit}: {detail}')
         if args.mode == 'replay':
-            detail = replay(args.serial, tools / 'breenfs-extract', args.image)
+            record = replay(args.serial, tools / 'breenfs-extract', args.image)
+            if args.json:
+                print(json.dumps(record))
+                return 0
+            detail = f"{record['records']} records, {record['acknowledged']} acknowledged"
         else:
             detail = bit_flip(serial, result.stdout)
     except (OSError, ValueError, KeyError, TypeError) as error:

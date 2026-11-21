@@ -11,6 +11,7 @@ import secrets
 import struct
 from urllib.parse import urlsplit, urlunsplit
 
+import breenfs_replay
 import metal_image
 import metal_lib as m
 import metal_persist
@@ -113,6 +114,31 @@ def readback_checks(directory, suite):
     return m.read_json(directory / 'definition/docs/suites' / (suite + '.json'), {}).get('diskChecks', [])
 
 
+def verify_owned_root(source_id, facts):
+    current = metal_persist.test_root() or {}
+    if (current.get('lastBoot') != source_id or current.get('partition') != facts.get('partition')
+            or record(current) != record(facts)):
+        raise ValueError('the owned disk was replaced between the writer and the next boot')
+
+
+def require_test_partition(facts):
+    layout = metal_persist.layout()
+    if not layout or facts.get('partition') != layout['partitions']['test']['guid']:
+        raise ValueError('power-cut evidence needs the recorded disposable test partition')
+
+
+def prepare_cut_recovery(source_id, readback_id, commit):
+    source = m.boot_dir(source_id)
+    facts = m.read_json(source / 'suite-disk.json')
+    require_test_partition(facts)
+    verify_owned_root(source_id, facts)
+    result = m.read_json(source / 'cut-readback.json', {})
+    if ((source / 'commit').read_text().strip() != commit
+            or result.get('id') != readback_id or result.get('passed') is not True):
+        raise ValueError('no-restage recovery needs a successful cold replay of this cut')
+    return facts, result
+
+
 def prepare_readback(directory, stage, source_id, commit, boot_id, site, stub):
     source = m.boot_dir(source_id)
     run = m.read_json(source / 'run.json', {})
@@ -124,23 +150,33 @@ def prepare_readback(directory, stage, source_id, commit, boot_id, site, stub):
     # Older manual retry sources recorded an awaiting event only for a finished guest.
     provisional = pending.get('provisional', True if pending else None)
     names = run.get('suites') or [run.get('suite')]
-    if (not facts or run.get('disk') != 'root' or run.get('mode') != 'suite' or run.get('onlyCase')
-            or not names[-1] or not readback_checks(source, names[-1])
-            or not (source / 'ended').exists() or off.get('off') is not True
-            or (source / 'commit').read_text().strip() != commit
-            or any(event['event'] == 'console-gap-start' for event in events)
-            or not any(event['event'] == 'disk-root-record' and event.get('matchesLastInstall') is True for event in events)):
+    common = (facts and run.get('disk') == 'root' and run.get('mode') == 'suite'
+              and (source / 'ended').exists() and off.get('off') is True
+              and (source / 'commit').read_text().strip() == commit
+              and not any(event['event'] == 'console-gap-start' for event in events)
+              and any(event['event'] == 'disk-root-record' and event.get('matchesLastInstall') is True
+                      for event in events))
+    power_cut = bool(run.get('powerCut'))
+    if not common:
         raise ValueError('raw readback needs a completed disk suite boot with confirmed power-off and root identity')
     status = int((source / 'exit-status').read_text().strip())
     ended_by = (source / 'ended-by').read_text().strip()
-    if (status != m.EXIT_SHORT or ended_by != 'driver' or type(provisional) is not bool
+    if power_cut:
+        require_test_partition(facts)
+        serial = (source / 'serial.txt').read_bytes()
+        nonce, _ = breenfs_replay.receipts(serial)
+        cut = breenfs_replay.cut_evidence(source, nonce)
+        if window := cut.get('window'):
+            breenfs_replay.verify_aimed_window(serial, cut, window)
+        provisional = False
+        if (facts.get('installedBy') != source_id or status != m.EXIT_SHORT or ended_by != 'driver'
+                or decided.get('status') != m.EXIT_SHORT or decided.get('reason') != 'deliberate power cut'):
+            raise ValueError('raw readback needs the completed deliberate cut of this root')
+    elif (run.get('onlyCase') or not names[-1] or not readback_checks(source, names[-1])
+            or status != m.EXIT_SHORT or ended_by != 'driver' or type(provisional) is not bool
             or decided.get('status') != (m.EXIT_DONE if provisional else m.EXIT_SHORT)):
         raise ValueError('raw readback needs a provisional, failed or deadline-ended suite source')
-    # Another disk user may have acquired the lease between the boots. Refuse a changed disk association.
-    current = metal_persist.test_root() or {}
-    if (current.get('lastBoot') != source_id or current.get('partition') != facts.get('partition')
-            or record(current) != record(facts)):
-        raise ValueError('the owned disk was replaced between the suite and its cold readback')
+    verify_owned_root(source_id, facts)
     url = urlsplit(site['BOOT_URL'])
     route = UPLOAD_PREFIX + secrets.token_hex(32)
     request = stage / 'suite-disk.cfg'
@@ -155,7 +191,7 @@ def prepare_readback(directory, stage, source_id, commit, boot_id, site, stub):
     payload = metal_image.stub_efi(stub, image, output)
     image.unlink()
     m.write_json(directory / 'readback.json', dict(source=source_id, bytes=facts['bytes'], rootRecord=record(facts).hex(),
-        suitePoweredOffAt=off['t'], sourceStatus=status, sourceProvisional=provisional,
+        suitePoweredOffAt=off['t'], sourceStatus=status, sourceProvisional=provisional, powerCut=power_cut,
         sourceReason=decided['reason'], sourceEndedBy=ended_by))
     m.write_json(m.STATE / 'disk-upload.json', dict(id=boot_id, route=route, bytes=facts['bytes'],
                                                  rootRecord=record(facts).hex()))

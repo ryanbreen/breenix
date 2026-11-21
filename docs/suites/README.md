@@ -1752,6 +1752,12 @@ and digest, including a complete tail that reached disk before the cut but
 whose receipt did not reach serial. Replay fails on a missing acknowledged record,
 a receipt digest mismatch, a failed extraction or an incomplete disk record.
 
+On metal, the cut driver reads the stopped test partition through the firmware
+under the same lease and runs the replay checker. A passing replay permits a
+no-restage recovery boot on that partition. It mounts the root and reads
+`/crash/log` through BreenFS. The driver requires the same byte length and
+SHA-256 as cold replay. A failed replay stops the cycle before recovery.
+
 For the data bit-flip boot, use `bit-flip` in place of `replay`. The same serial
 must report the injected block and then `[breenfs] corrupt-read block=N result=ReadError::Data`
 from the read probe. An absent result, a generic I/O error or returned data fails.

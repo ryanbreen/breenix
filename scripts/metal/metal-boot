@@ -234,6 +234,23 @@ def boot_id_now():
     return time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
 
 
+def verdict_command(root):
+    """Run branch-built disk readers with the existing isolated scorer boundary."""
+    sandbox = Path('/run/metal-verdict-input')
+    command = ['systemd-run', '--quiet', '--wait', '--pipe', '--collect',
+               '--property=DynamicUser=yes', '--property=PrivateTmp=yes', '--property=PrivateNetwork=yes',
+               '--property=BindReadOnlyPaths=' + str(root) + ':' + str(sandbox),
+               '--property=RestrictAddressFamilies=AF_UNIX',
+               '--property=ProtectSystem=strict', '--property=ProtectHome=yes',
+               '--property=NoNewPrivileges=yes', '--property=RestrictSUIDSGID=yes',
+               '--property=CapabilityBoundingSet=', '--property=WorkingDirectory=/',
+               '--property=InaccessiblePaths=/etc/breenix-metal /var/lib/breenix-metal /run/breenix-metal',
+               '--property=RuntimeMaxSec=' + str(SUITE_VERDICT_SECONDS),
+               '--property=TimeoutStopSec=2', '--property=KillMode=control-group',
+               sys.executable, '-I']
+    return sandbox, command
+
+
 class Finish(Exception):
     def __init__(self, status, reason, hung=False):
         super().__init__(reason)
@@ -263,6 +280,7 @@ class Driver:
         self.power_cut = None
         self.writer_nonce = None
         self.writer_acknowledged = False
+        self.recovery_expected = None
         if metal_power_cut.options(args):
             self.power_cut = dict(window=args.power_cut_window, afterSeconds=args.power_cut_after,
                                   triggerLine=None, cutAt=None, powerOffConfirmed=False)
@@ -481,6 +499,9 @@ class Driver:
     # Inputs and the image.
     def prepare_payload(self):
         self.stage.mkdir(parents=True, exist_ok=True)
+        if getattr(self.args, 'cut_recovery_from', None):
+            self.prepare_cut_recovery_payload()
+            return
         if self.args.payload == 'none':
             self.event('nothing-staged')
             return
@@ -632,6 +653,8 @@ class Driver:
             self.assemble(inputs, files, extracted, root_ramdisk=False)
             return
         the_layout = metal_persist.layout()
+        if (self.power_cut is not None or getattr(self.args, 'breenfs_bit_flip', False)) and not the_layout:
+            raise Finish(m.EXIT_CANCELLED, 'BreenFS faults require the disposable test partition')
         disk = getattr(self.args, 'disk', None)
         if disk != 'root':
             screen_route = metal_disk.gt710_upload.prepare(self.dir, self.id, self.site,
@@ -663,8 +686,11 @@ class Driver:
                 screen_known=getattr(self.args, 'screen_known_json', None), case=getattr(self.args, 'case', None),
                 **({'root_fs': root_fs, 'tools_dir': inputs} if root_fs is not None else {}))
             self.delivery['diskRoot'] = facts
+            if self.power_cut is not None:
+                self.retain_cut_recovery_payload(inputs, files, facts)
             files.update(suite_files)
-            if self.args.mode == 'suite' and metal_disk.readback_checks(self.dir, suites(self.args)[-1]):
+            if self.power_cut is not None or (self.args.mode == 'suite'
+                    and metal_disk.readback_checks(self.dir, suites(self.args)[-1])):
                 shutil.copyfile(inputs / 'stub.efi', self.dir / 'readback-stub.efi')
         root_ramdisk = self.args.ramdisk and disk != 'root'
         if root_ramdisk:
@@ -699,6 +725,34 @@ class Driver:
             # An invalid EFI image fails delivery without executing a kernel.
             files['efi/boot/bootx64.efi'].write_bytes(b'injected invalid EFI image\n')
         self.assemble(inputs, files, extracted, root_ramdisk)
+
+    def retain_cut_recovery_payload(self, inputs, esp, facts):
+        # Only the bootloader, kernel, boot configuration and intent are present.
+        intent = self.stage / 'recovery-intent'
+        intent.write_bytes(metal_persist.intent('suite filesystem case power-cut/recovery hostkeys ' + metal_root.HOSTKEYS,
+                                                root=facts['partition']))
+        disk = self.stage / 'recovery-disk.img'
+        metal_image.assemble(disk, dict(esp, ramdisk=intent))
+        image = self.dir / 'recovery.efi'
+        wrapped = metal_image.stub_efi(inputs / 'stub.efi', disk, image)
+        disk.unlink()
+        m.write_json(self.dir / 'recovery-payload.json',
+                     {key: wrapped[key] for key in ('size', 'sha256')})
+
+    def prepare_cut_recovery_payload(self):
+        source = m.boot_dir(self.args.source_boot)
+        facts, self.recovery_expected = metal_disk.prepare_cut_recovery(
+            self.args.source_boot, self.args.cut_recovery_from, self.args.commit)
+        image = self.stage / 'boot.efi'
+        shutil.copyfile(source / 'recovery.efi', image)
+        expected = m.read_json(source / 'recovery-payload.json')
+        if image.stat().st_size != expected['size'] or metal_image.sha256(image) != expected['sha256']:
+            raise Finish(m.EXIT_CANCELLED, 'the no-restage payload differs from its record')
+        self.payload_facts = dict(expected, path=image, contentType=metal_image.CONTENT_TYPES['efi'], name='boot.efi')
+        self.delivery['image'] = {key: value for key, value in self.payload_facts.items() if key != 'path'}
+        self.delivery['diskRoot'] = facts
+        shutil.copytree(source / 'definition', self.dir / 'definition')
+        self.load_definition()
 
     def assemble(self, inputs, files, extracted, root_ramdisk):
         """The boot disk of `files` appended to the stub as boot.efi, its facts recorded, and the definition loaded."""
@@ -1080,18 +1134,7 @@ class Driver:
                 for name in ('breenfs-extract', 'breenfs-check'):
                     shutil.copyfile(retained / name, tools / name)
                     (tools / name).chmod(0o755)
-            sandbox = Path('/run/metal-verdict-input')
-            command = ['systemd-run', '--quiet', '--wait', '--pipe', '--collect',
-                       '--property=DynamicUser=yes', '--property=PrivateTmp=yes', '--property=PrivateNetwork=yes',
-                       '--property=BindReadOnlyPaths=' + str(root) + ':' + str(sandbox),
-                       '--property=RestrictAddressFamilies=AF_UNIX',
-                       '--property=ProtectSystem=strict', '--property=ProtectHome=yes',
-                       '--property=NoNewPrivileges=yes', '--property=RestrictSUIDSGID=yes',
-                       '--property=CapabilityBoundingSet=', '--property=WorkingDirectory=/',
-                       '--property=InaccessiblePaths=/etc/breenix-metal /var/lib/breenix-metal /run/breenix-metal',
-                       '--property=RuntimeMaxSec=' + str(SUITE_VERDICT_SECONDS),
-                       '--property=TimeoutStopSec=2', '--property=KillMode=control-group',
-                       sys.executable, '-I']
+            sandbox, command = verdict_command(root)
             if several:
                 command += [str(sandbox / 'scripts/suite-sequence.py'), 'score', self.args.suite, str(sandbox / 'serial.txt')]
             else:
@@ -1134,6 +1177,32 @@ class Driver:
             self.event('suite-verdict', status=status)
             return status == 0
 
+    def score_cut_readback(self, source, image, upload):
+        with tempfile.TemporaryDirectory(prefix='metal-cut-replay-') as temporary:
+            root = Path(temporary)
+            root.chmod(0o755)
+            for name in ('run.json', 'events.jsonl', 'serial.txt'):
+                shutil.copyfile(source / name, root / name)
+                (root / name).chmod(0o644)
+            shutil.copyfile(Path(__file__).with_name('breenfs_replay.py'), root / 'replay.py')
+            (root / 'replay.py').chmod(0o644)
+            shutil.copyfile(image, root / 'disk.img')
+            (root / 'disk.img').chmod(0o644)
+            for name in ('breenfs-check', 'breenfs-extract'):
+                shutil.copyfile(source / 'breenfs-tools' / name, root / name)
+                (root / name).chmod(0o755)
+            sandbox, command = verdict_command(root)
+            command += [str(sandbox / 'replay.py'), 'replay', str(sandbox / 'serial.txt'),
+                        str(sandbox / 'disk.img'), '--tools-dir', str(sandbox), '--json']
+            result = subprocess.run(command, capture_output=True, text=True,
+                                    timeout=SUITE_VERDICT_SECONDS + 5,
+                                    env={'PATH': os.defpath, 'LANG': 'C.UTF-8'}, cwd='/')
+        passed = result.returncode == 0
+        details = json.loads(result.stdout) if passed else dict(reason=self.redact(result.stderr.strip()))
+        m.write_json(source / 'cut-readback.json', dict(details, id=self.id, passed=passed, sha256=upload['sha256']))
+        self.event('cut-replay-verdict', passed=passed)
+        return passed
+
     def finalize_disk_suite(self):
         readback = m.read_json(self.dir / 'readback.json')
         source = m.boot_dir(readback['source'])
@@ -1144,6 +1213,8 @@ class Driver:
                 or upload['rootRecord'] != readback['rootRecord']
                 or self.t0 <= readback['suitePoweredOffAt']):
             raise ValueError('cold raw disk evidence differs from the completed suite boot')
+        if readback.get('powerCut'):
+            return self.score_cut_readback(source, image, upload)
         run = m.read_json(source / 'run.json')
         args = argparse.Namespace(id=readback['source'], mode='suite', suite=','.join(run.get('suites') or [run['suite']]), payload='image',
                                   inject=None, milestone=run.get('milestone'))
@@ -1182,7 +1253,8 @@ class Driver:
             time.sleep(1)
             boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
         args = argparse.Namespace(**(vars(self.args) | dict(id=boot_id, mode='default', suite=None,
-            payload='disk-readback', disk=None, source_boot=self.id, session=False, input=None)))
+            payload='disk-readback', disk=None, source_boot=self.id, session=False, input=None,
+            case=None, root_fs=None, power_cut_window=None, power_cut_after=None)))
         child = Driver(args)
         # The same live transient unit owns both boots; the reaper follows the active record's id.
         child.unit = self.unit
@@ -1195,8 +1267,26 @@ class Driver:
         m.write_json(inputs / 'build.json', dict(commit=self.args.commit, profile='disk-readback', stub=stub))
         (inputs / 'ready').touch()
         self.event('cold-readback-next', readback=boot_id)
-        child.run(inherited=self.id)
+        child_status = child.run(inherited=self.id)
+        if self.power_cut is not None:
+            return child_status
         return int((self.dir / 'exit-status').read_text().strip())
+
+    def continue_cut_recovery(self):
+        source = m.boot_dir(self.args.source_boot)
+        boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
+        while m.boot_dir(boot_id).exists():
+            time.sleep(1)
+            boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
+        args = argparse.Namespace(**(vars(self.args) | dict(id=boot_id, mode='suite', suite='filesystem',
+            payload='image', disk='root', root_fs='breenfs', case='power-cut/recovery',
+            kernel_command_line=None, cut_recovery_from=self.id)))
+        child = Driver(args)
+        child.unit = self.unit
+        self.event('cut-recovery-next', recovery=boot_id)
+        status = child.run(inherited=self.id)
+        m.write_json(source / 'cut-cycle.json', dict(readback=self.id, recovery=boot_id, passed=status == m.EXIT_DONE))
+        return status
 
 
     def challenge_shell(self, text):
@@ -1400,6 +1490,17 @@ class Driver:
             idle = getattr(self.args, 'idle_minutes', 30)
             if line == f'[console] input idle {idle} min':
                 raise Finish(m.EXIT_DONE, f'console input idle for {idle} minutes')
+        if (getattr(self.args, 'case', None) in ('power-cut/writer', 'power-cut/recovery')
+                and line.startswith('SUITE filesystem ERROR ')):
+            raise Finish(m.EXIT_SHORT, 'the BreenFS diagnostic reported an error')
+        if self.recovery_expected and (recovered := re.fullmatch(
+                r'BREENFS POWER-CUT RECOVERY root-is-breenfs bytes=([1-9][0-9]*) sha256=([0-9a-f]{64})', line)):
+            if (int(recovered[1]), recovered[2]) != (
+                    self.recovery_expected['logBytes'], self.recovery_expected['logSha256']):
+                raise Finish(m.EXIT_SHORT, 'the mounted crash log differs from cold replay')
+            self.seen.add('cut-recovery-verified')
+            self.event('cut-recovery-verified', observed_at=observed_at,
+                       bytes=int(recovered[1]), sha256=recovered[2])
         self.on_disk_line(line, observed_at)
         self.on_intent_line(line, observed_at)
         if getattr(self, 'hostkey_reader', None) is None:
@@ -1642,6 +1743,8 @@ class Driver:
             needed.add('manager-slot')
         if self.console_intent:
             needed.add('console-intent')
+        if self.recovery_expected:
+            needed.add('cut-recovery-verified')
         return needed <= self.seen
 
     def wait_replay_ack(self, sequence, kind="BXKEY"):
@@ -1773,6 +1876,8 @@ class Driver:
             metal_persist.record_test_root(dict(write, commit=self.args.commit, verifiedAt=observed_at, mode=self.args.mode,
                                                 consoleIdentity=self.delivery['root'].get('consoleIdentity')))
         if disk == 'root' and 'disk-fixture' not in self.seen and (found := re.search(r'metal-stub: suite fixture verified: (\d+) bytes', line)):
+            if self.recovery_expected:
+                raise Finish(m.EXIT_SHORT, 'the recovery boot unexpectedly staged a fixture')
             installed = self.delivery['diskRoot']
             if int(found.group(1)) != installed['bytes']:
                 raise Finish(m.EXIT_SHORT, 'the firmware fixture size differs from the staged image')
@@ -2233,6 +2338,7 @@ class Driver:
         status = m.EXIT_SHORT
         pending_readback = False
         provisional_readback = False
+        pending_recovery = False
         try:
             if getattr(self.args, 'adopt', False):
                 self.adopt()
@@ -2282,6 +2388,9 @@ class Driver:
                 several = len(suites(self.args)) > 1 and self.kernel_started is not None
                 disk_source = (getattr(self.args, 'disk', None) == 'root' and self.args.payload == 'image'
                                and getattr(self, 'hostkey_error', None) is None)
+                if (isinstance(finish, PowerCut) and off and status == m.EXIT_SHORT
+                        and 'disk-root-confirmed' in self.seen and self.writer_acknowledged):
+                    pending_readback = True
                 if (self.power_cut is None and self.args.mode == 'suite' and getattr(self.args, 'case', None) is None
                         and (status == m.EXIT_DONE or several or (disk_source and status == m.EXIT_SHORT))
                         and status not in (m.EXIT_CANCELLED, m.EXIT_STOPPED, m.EXIT_INCOMPLETE)):
@@ -2308,7 +2417,9 @@ class Driver:
                             status = m.EXIT_SHORT
                 if self.args.payload == 'disk-readback' and status == m.EXIT_DONE and off and not self.gap:
                     try:
-                        if not self.finalize_disk_suite():
+                        if self.finalize_disk_suite():
+                            pending_recovery = m.read_json(self.dir / 'readback.json').get('powerCut', False)
+                        else:
                             status = m.EXIT_SHORT
                     except Exception as error:
                         self.event('disk-suite-verdict-error', error=error.__class__.__name__)
@@ -2353,11 +2464,19 @@ class Driver:
             self.cleanup(status, keep_lease=True)
             try:
                 readback_status = self.continue_disk_readback()
-                return readback_status if provisional_readback else status
+                return readback_status if provisional_readback or self.power_cut is not None else status
             except Exception as error:
                 self.event('cold-readback-error', error=error.__class__.__name__)
                 m.release_lease(self.id)
                 return status
+        if pending_recovery and status == m.EXIT_DONE and not self.gap:
+            self.cleanup(status, keep_lease=True)
+            try:
+                return self.continue_cut_recovery()
+            except Exception as error:
+                self.event('cut-recovery-error', error=error.__class__.__name__)
+                m.release_lease(self.id)
+                return m.EXIT_SHORT
         if self.args.mode == 'persistent-install' and status == m.EXIT_DONE and not self.gap:
             self.cleanup(status, keep_lease=True)
             try:

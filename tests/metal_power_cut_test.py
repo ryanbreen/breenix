@@ -131,7 +131,8 @@ class PowerCutDriverTest(StateTest):
 
         with patch.multiple(driver, claim=lambda: None, prepare_payload=lambda: None,
                             preflight=lambda: None, do_stage=lambda: None,
-                            start_console=lambda: None, power_on=lambda: None, watch=watch), \
+                            start_console=lambda: None, power_on=lambda: None, watch=watch,
+                            continue_disk_readback=lambda: m.EXIT_SHORT), \
              patch.object(m, 'now', return_value=100.0), \
              patch.object(m, 'rf', side_effect=AssertionError('use the existing power-off path')), \
              patch.object(m, 'force_off_and_wait', side_effect=force_off) as off:

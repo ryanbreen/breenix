@@ -383,6 +383,7 @@ class DiskTest(existing.StateTest):
         source, facts = self.readback_source(m.EXIT_SHORT, 'deliberate power cut')
         retained = source / 'recovery.efi'
         retained.write_bytes(b'recovery fixture')
+        (source / 'definition').mkdir(exist_ok=True)
         m.write_json(source / 'recovery-payload.json',
                      dict(size=retained.stat().st_size, sha256=disk.metal_image.sha256(retained)))
         args = existing.SimpleNamespace(id='20261018T000002Z-metal', mode='suite',
@@ -391,6 +392,7 @@ class DiskTest(existing.StateTest):
         expected = dict(logBytes=4096, logSha256='e' * 64)
         with patch.object(m, 'load_site', return_value={}):
             driver = boot.Driver(args)
+        driver.dir.mkdir()
         with patch.object(disk, 'prepare_cut_recovery', return_value=(facts, expected)), \
              patch.object(disk, 'stage', side_effect=AssertionError('must not stage a root')), \
              patch.object(driver, 'load_definition'):

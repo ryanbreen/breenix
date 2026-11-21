@@ -476,11 +476,19 @@ fn source_suite_files(files: &[(String, String)]) -> Result<(Entry, Vec<Category
     };
     println!("SUITE filesystem ROOT {}", root.name());
     let args = std::env::args().skip(1).collect::<Vec<_>>();
-    let writer_selected = match args.as_slice() {
-        [flag, name] => flag == "--case" && name == "power-cut/writer",
-        [flag, name, hostkeys, _] => flag == "--case" && name == "power-cut/writer" && hostkeys == "--hostkeys",
-        _ => false,
+    let selected = match args.as_slice() {
+        [flag, name] if flag == "--case" => Some(name.as_str()),
+        [flag, name, hostkeys, _] if flag == "--case" && hostkeys == "--hostkeys" => Some(name.as_str()),
+        _ => None,
     };
+    if selected == Some("power-cut/recovery") {
+        if let Err(error) = power_cut_recovery() {
+            println!("SUITE filesystem ERROR power-cut/recovery: {error:?}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    let writer_selected = selected == Some("power-cut/writer");
     if writer_selected {
         if let Err(error) = power_cut_writer(root) {
             println!("SUITE filesystem ERROR power-cut/writer: {error:?}");
