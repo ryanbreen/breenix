@@ -119,7 +119,8 @@ class PowerCutDriverTest(StateTest):
             driver.pump_serial()
             self.fail('the exact serial marker did not cut power')
 
-        def force_off():
+        def force_off(*, immediate):
+            self.assertTrue(immediate)
             self.assertIn(MARKER + '\n', (driver.dir / 'serial.txt').read_text())
             after = driver.dir / 'serial.raw'
             with after.open('ab') as stream:
@@ -133,12 +134,14 @@ class PowerCutDriverTest(StateTest):
              patch.object(m, 'rf', side_effect=AssertionError('use the existing power-off path')), \
              patch.object(m, 'force_off_and_wait', side_effect=force_off) as off:
             self.assertEqual(driver.run(), m.EXIT_SHORT)
-        off.assert_called_once_with()
+        off.assert_called_once_with(immediate=True)
         record = m.read_json(driver.dir / 'run.json')
         self.assertFalse(record['evidenceEligible'])
         self.assertEqual(record['powerCut']['window'], 'first-flush')
         self.assertEqual(record['powerCut']['triggerLine'], MARKER)
         self.assertEqual(record['powerCut']['cutAt'], 100.0)
+        self.assertEqual(record['powerCut']['triggerObservedAt'], 100.0)
+        self.assertEqual(record['powerCut']['powerOffAt'], 100.0)
         self.assertTrue(record['powerCut']['powerOffConfirmed'])
         self.assertIn('tail from the serial capture\n', (driver.dir / 'serial.txt').read_text())
 

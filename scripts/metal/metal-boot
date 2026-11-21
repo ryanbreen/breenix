@@ -241,9 +241,11 @@ class Finish(Exception):
 
 
 class PowerCut(Finish):
-    def __init__(self, line=None):
+    def __init__(self, line=None, observed_at=None, serial_offset=None):
         super().__init__(m.EXIT_SHORT, 'deliberate power cut')
         self.line = line
+        self.observed_at = observed_at
+        self.serial_offset = serial_offset
 
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
@@ -1290,7 +1292,7 @@ class Driver:
                 and self.suite_name == self.args.suite and 'disk-root-confirmed' in self.seen
                 and self.fatal_at is None and not self.gap
                 and line == f"[breenfs] commit-window {cut['window']}"):
-            raise PowerCut(line)
+            raise PowerCut(line, observed_at, self.line_start)
         if not self.first_text:
             self.first_text = True
             self.event('firmware-text', observed_at=observed_at, seconds=seconds)
@@ -2153,11 +2155,13 @@ class Driver:
             if self.t0 is not None and m.now() >= self.t0 + seconds:
                 raise PowerCut()
 
-    def cut_power(self, trigger_line):
+    def cut_power(self, trigger):
         # Record the host time of the cut request and whether the controller confirmed Off.
         cut_at = m.now()
-        off = self.power_off(False)
-        self.power_cut.update(triggerLine=trigger_line, cutAt=cut_at, powerOffConfirmed=off)
+        off = self.power_off(False, immediate=True)
+        self.power_cut.update(triggerLine=trigger.line, triggerObservedAt=trigger.observed_at,
+                              triggerSerialOffset=trigger.serial_offset, cutAt=cut_at,
+                              powerOffAt=m.now() if off else None, powerOffConfirmed=off)
         for name in ('run.json', 'metal-run.json'):
             path = self.dir / name
             if path.is_file():
@@ -2166,7 +2170,7 @@ class Driver:
                 m.write_json(path, run)
         return off
 
-    def power_off(self, hung):
+    def power_off(self, hung, *, immediate=False):
         """NMI first when a started kernel or payload hung (or `--nmi` asks for it), then ForceOff; quarantine if it
         does not go Off."""
         if (hung or getattr(self.args, 'nmi', False)) and self.kernel_started:
@@ -2188,7 +2192,7 @@ class Driver:
             m.quarantine_lease(self.id, 'driver power-off failed (injected)')
             return False
         started = m.now()
-        off = m.force_off_and_wait()
+        off = m.force_off_and_wait(immediate=True) if immediate else m.force_off_and_wait()
         self.event('power-off', off=off, seconds=round(m.now() - started, 1))
         if off:
             self.phase('Powered off')
@@ -2253,7 +2257,7 @@ class Driver:
             self.watch()
         except Finish as finish:
             status = finish.status
-            off = self.cut_power(finish.line) if isinstance(finish, PowerCut) else None
+            off = self.cut_power(finish) if isinstance(finish, PowerCut) else None
             reason = finish.reason
             if self.power_cut is not None and status == m.EXIT_DONE:
                 status, reason = m.EXIT_SHORT, 'the boot finished before the requested power cut'

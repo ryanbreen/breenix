@@ -154,12 +154,13 @@ impl Faults {
         crate::serial_println!("\n{}", window.marker());
         if self.pause == Some(window) {
             use crate::fs::breenfs::commit_signal::monotonic_ns;
-            const PAUSE_NS: u64 = 2_000_000_000;
+            const PAUSE_NS: u64 = 60_000_000_000;
             let end = monotonic_ns().saturating_add(PAUSE_NS);
             while monotonic_ns() < end {
                 super::preemption_point();
                 core::hint::spin_loop();
             }
+            crate::serial_println!("\n{} released", window.marker());
         }
     }
 }

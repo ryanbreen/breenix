@@ -85,9 +85,29 @@ def cut_evidence(directory, nonce):
     return cut
 
 
+def verify_aimed_window(serial, cut, window):
+    marker = f'[breenfs] commit-window {window}'
+    offset = cut.get('triggerSerialOffset')
+    arrived = cut.get('triggerObservedAt')
+    off_at = cut.get('powerOffAt')
+    if (cut.get('triggerLine') != marker or type(offset) is not int or not 0 <= offset < len(serial)
+            or (offset and serial[offset - 1:offset] != b'\n')
+            or type(arrived) not in (int, float) or type(off_at) not in (int, float)
+            or not arrived <= cut['cutAt'] <= off_at):
+        raise ValueError('aimed cut is missing its timed trigger')
+    first, _, after = serial[offset:].partition(b'\n')
+    if first.rstrip(b'\r') != marker.encode():
+        raise ValueError('aimed cut trigger differs from captured serial')
+    if b'[breenfs] commit-window ' in after or b'FSYNC ' in after:
+        raise ValueError('publication advanced past the cut trigger')
+
+
 def replay(serial_path, extract, image):
-    nonce, acknowledged = receipts(serial_path.read_bytes())
-    cut_evidence(serial_path.parent, nonce)
+    serial = serial_path.read_bytes()
+    nonce, acknowledged = receipts(serial)
+    cut = cut_evidence(serial_path.parent, nonce)
+    if window := cut.get('window'):
+        verify_aimed_window(serial, cut, window)
     # The extractor can emit a prefix before an error. Wait for its status
     # before judging any bytes and keep the binary log off the Python heap.
     with tempfile.TemporaryFile() as log:
