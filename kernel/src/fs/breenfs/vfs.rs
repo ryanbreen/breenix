@@ -361,6 +361,7 @@ struct MountState<W: Wait + 'static> {
     retained_events: Events,
     retained_batches: u64,
     retaining_for_sync: usize,
+    reservation_pressure: bool,
     // The open generation's custody (601(2)); freeze moves each whole.
     touches: BTreeMap<u64, Arc<TouchedTimes>>,
     dirty: BTreeMap<u64, GenPages>,
@@ -1735,6 +1736,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 retained_events: Events::default(),
                 retained_batches: 0,
                 retaining_for_sync: 0,
+                reservation_pressure: false,
                 touches: BTreeMap::new(),
                 dirty: BTreeMap::new(),
                 dirty_nodes: BTreeSet::new(),
@@ -1984,6 +1986,17 @@ impl<W: Wait + 'static> BreenFs<W> {
     ) -> Result<(MountGuard<'a, MountState<W>>, T), Errno> {
         #[cfg(test)]
         let mut admission = measurement::Admission::new();
+        let create = matches!(cost, CostOp::Create);
+        let mut readmit = || {
+            if create {
+                // The entry lock already gave this create its replay share.
+                // Both the scratch view and the materialized view admit edits.
+                let _wait = self.inner.costs.span(cost, CostPhase::Wait);
+                self.inner.state.lock_interruptible()
+            } else {
+                admit()
+            }
+        };
         let mut limit = None;
         loop {
             state.writable()?;
@@ -2011,7 +2024,7 @@ impl<W: Wait + 'static> BreenFs<W> {
                 let observed = self.inner.signal.epoch();
                 drop(state);
                 self.mutation_wait(cost, observed, None)?;
-                state = admit()?;
+                state = readmit()?;
                 continue;
             }
             let last = {
@@ -2048,19 +2061,49 @@ impl<W: Wait + 'static> BreenFs<W> {
             self.note_refusal(&state, cost, last, Some(denial));
             if state.durable.generation >= last { return Err(Errno(ENOSPC)); }
             let observed = self.inner.signal.epoch();
+            // The worker can finish a backlog without spending another
+            // create replay share or waiting on a mapping held by this caller.
+            // Writeback still publishes directly: the worker can be its caller.
+            if create && (state.next_files.is_some() || !state.refresh.is_empty()) {
+                let waiter = state.committer.as_mut().ok_or(Errno(EIO))?
+                    .try_waiter(|receipt| Arc::try_new(receipt).ok()).ok_or(Errno(ENOMEM))?;
+                #[cfg(test)]
+                let requested = !state.reservation_pressure;
+                state.reservation_pressure = true;
+                drop(state);
+                let signal = &self.inner.signal;
+                signal.worker.wake();
+                loop {
+                    let observed = signal.epoch();
+                    if let Some(result) = waiter.result() {
+                        result.map_err(|_| Errno(EIO))?;
+                        break;
+                    }
+                    #[cfg(not(test))]
+                    if !signal.started.load(Ordering::Acquire) { return Err(Errno(EIO)); }
+                    self.mutation_wait(cost, observed, None)?;
+                }
+                #[cfg(test)]
+                if requested { admission.pressure(true); }
+                state = readmit()?;
+                continue;
+            }
+            // A racing install may introduce a backlog. Stop the inline
+            // attempt at that generation and revalidate admission first.
+            let through = if create { state.durable.generation + 1 } else { last };
             drop(state);
             // Do not service mappings recursively: a mapping writer can be the
             // caller. Detached publication and its wait hold no mount lock.
             let published = {
                 let _publication = self.inner.costs.span(cost, CostPhase::Publication);
-                self.commit_generation_up_to(monotonic_ns(), last, true)?
+                self.commit_generation_up_to(monotonic_ns(), through, true)?
             };
             #[cfg(test)]
             admission.pressure(published);
             if !published {
                 self.mutation_wait(cost, observed, None)?;
             }
-            state = admit()?;
+            state = readmit()?;
         }
     }
     /// E24 coordinator 621(y2): record the denial using the installed
@@ -2211,7 +2254,13 @@ impl<W: Wait + 'static> BreenFs<W> {
     /// device publication and completion waits hold no mount lock.
     fn commit_due(&self, now_ns: u64) -> Result<bool, Errno> {
         preemption_point();
-        let retry_ns = self.inner.state.lock().mapping_retry_ns;
+        let (retry_ns, reservation_pressure) = {
+            let state = self.inner.state.lock();
+            (state.mapping_retry_ns, state.reservation_pressure && !state.publication_blocked())
+        };
+        if reservation_pressure && self.commit_generation(now_ns)? {
+            return Ok(true);
+        }
         if now_ns >= retry_ns && self.inner.signal.mappings.swap(false, Ordering::AcqRel) {
             match self.service_mappings(now_ns) {
                 Ok(worked) => return Ok(worked),
@@ -2420,12 +2469,6 @@ impl<W: Wait + 'static> BreenFs<W> {
         // mount-exclusion sections. Pointer, map and queue moves only: no tree
         // or cache traversal, no allocation of file data and no yield.
         let frozen = loop {
-            // An install can leave N+1's replay to the next holders. Do what
-            // remains as foreground work, a bounded share per hold (x11c M2);
-            // the freeze below refuses a scratch generation.
-            if self.inner.materialize.load(Ordering::Acquire) {
-                drop(self.foreground_lock()?);
-            }
             let mut guard = {
                 let _wait = self.inner.costs.span(CostOp::Commit, CostPhase::Wait);
                 self.inner.state.lock_interruptible()?
@@ -2433,6 +2476,9 @@ impl<W: Wait + 'static> BreenFs<W> {
             // A clean mapping pass can reach here during another publication.
             // It cannot start a freeze section until that publication installs.
             if guard.retaining_for_sync != 0 || (guard.pending.is_some() && !guard.failed) {
+                return Ok(false);
+            }
+            if guard.durable.generation >= last && !guard.failed {
                 return Ok(false);
             }
             // 583(x10): start after acquisition; stop before releasing this
@@ -2450,23 +2496,27 @@ impl<W: Wait + 'static> BreenFs<W> {
             if state.failed {
                 return Err(Errno(EIO));
             }
-            if state.committer.is_none() || state.durable.generation >= last {
+            if state.committer.is_none() {
                 return Ok(false);
             }
             if state.next_files.is_some() || !state.refresh.is_empty() {
-                // Replay or refresh remains, or an install raced the share
-                // above: repeat. Install replaces the refresh set whole.
+                // Finish one share per hold before freezing. Account for it
+                // separately from the two publication sections.
+                drop(_excluded);
+                let _replay = self.inner.costs.span(CostOp::Foreground, CostPhase::MountExclusion);
+                drop(self.materialized(guard));
                 continue;
             }
             let fsync = self.inner.signal.requested.swap(false, Ordering::AcqRel);
             let pressure = self.inner.signal.pressure.swap(false, Ordering::AcqRel);
-            if !state.policy.due(now_ns, state.dirty_bytes, fsync || force, pressure) {
+            let reservation_pressure = core::mem::take(&mut state.reservation_pressure);
+            if !state.policy.due(now_ns, state.dirty_bytes, fsync || force || reservation_pressure, pressure) {
                 return Ok(false);
             }
             _publication = self.inner.costs.span(CostOp::Commit, CostPhase::Publication);
             #[cfg(test)] { _cache_cleanup = publication_phases::CacheCleanup::new(); }
             #[cfg(test)]
-            measurement::prepared(force, pressure);
+            measurement::prepared(force || reservation_pressure, pressure);
             match self.freeze(state, now_ns) {
                 Ok(frozen) => break frozen,
                 Err(error) => {
