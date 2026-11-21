@@ -44,6 +44,7 @@ import metal_root  # noqa: E402
 import metal_score  # noqa: E402
 import metal_disk  # noqa: E402
 import metal_persist  # noqa: E402
+import metal_power_cut  # noqa: E402
 import metal_prebuilt  # noqa: E402
 from metal_score import boot_shape  # noqa: E402
 # Deployed, the host-key helper sits beside this file; in a checkout it is in scripts/.
@@ -237,6 +238,12 @@ class Finish(Exception):
         self.status, self.reason, self.hung = status, reason, hung
 
 
+class PowerCut(Finish):
+    def __init__(self, line=None):
+        super().__init__(m.EXIT_SHORT, 'deliberate power cut')
+        self.line = line
+
+
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
 class Driver:
     def __init__(self, args):
@@ -249,6 +256,10 @@ class Driver:
         self.unit = unit_name(self.id)
         self.tmux = ['tmux', '-L', 'metal-' + self.id]
         self.watchdog_trigger = None
+        self.power_cut = None
+        if metal_power_cut.options(args):
+            self.power_cut = dict(window=args.power_cut_window, afterSeconds=args.power_cut_after,
+                                  triggerLine=None, cutAt=None, powerOffConfirmed=False)
         self.t0 = None
         self.claimed = False
         self.lost = False
@@ -351,7 +362,7 @@ class Driver:
         target = {'main': {}}
         if self.args.target.startswith('branch:'):
             target = {'branch': {'name': self.args.target.split(':', 1)[1]}}
-        fault = xhci_fault(self.args) or self.args.inject in (FENCE_FAULT, 'panic-reboot', *WATCHDOG_FAULTS)
+        fault = self.power_cut is not None or xhci_fault(self.args) or self.args.inject in (FENCE_FAULT, 'panic-reboot', *WATCHDOG_FAULTS)
         kind = ('fault-test' if fault else 'persistent' if persistent(self.args)
                 else 'console-session' if session(self.args)
                 else {'image': 'boot', 'linux': 'platform-census'}.get(self.args.payload, 'fault-test'))
@@ -381,6 +392,8 @@ class Driver:
             run['onlyCase'] = self.args.case
         if getattr(self.args, 'root_fs', None) is not None:
             run['rootFs'] = self.args.root_fs
+        if self.power_cut is not None:
+            run['powerCut'] = self.power_cut
         if getattr(self.args, 'screen_proof', False):
             run['screenProof'] = True
         if getattr(self.args, 'screen_known_json', None) is not None:
@@ -988,11 +1001,18 @@ class Driver:
                 self.line += char_line
                 if self.line.endswith('\n'):
                     line, self.line = self.line.rstrip('\n'), ''
+                    if isinstance(decision, PowerCut):
+                        continue  # Keep archiving bytes already received without running other serial actions.
                     try:
                         self.on_line(line, observed_at=arrived)
+                    except PowerCut as cut:
+                        if decision is None:
+                            decision = cut
                     except Finish as finish:
                         if decision is None or finish.status != m.EXIT_DONE:
                             decision = finish
+        if isinstance(decision, PowerCut):
+            raise decision
         # getty leaves its prompt unterminated while waiting for login input.
         if self.args.mode in ("default", "persistent") and "Breenix login: " in self.line:
             try:
@@ -1258,6 +1278,12 @@ class Driver:
         seconds = round(observed_at - self.t0, 1) if self.t0 is not None else 0
         if self.t0 is None or not line.strip() or line.startswith('[SOL Session'):
             return
+        cut = self.power_cut
+        if (cut is not None and cut['window'] is not None and cut['cutAt'] is None
+                and self.suite_name == self.args.suite and 'disk-root-confirmed' in self.seen
+                and self.fatal_at is None and not self.gap
+                and line == f"[breenfs] commit-window {cut['window']}"):
+            raise PowerCut(line)
         if not self.first_text:
             self.first_text = True
             self.event('firmware-text', observed_at=observed_at, seconds=seconds)
@@ -2098,6 +2124,7 @@ class Driver:
         last_console_check = 0.0
         while True:
             self.checkpoint()
+            self.check_power_cut_deadline()
             self.pump_serial()
             self.pump_http()
             self.pump_bmc()
@@ -2113,6 +2140,24 @@ class Driver:
                 self.phase_name = 'download'
             self.check_deadlines()
             time.sleep(0.25)
+
+    def check_power_cut_deadline(self):
+        if self.power_cut is not None and (seconds := self.power_cut['afterSeconds']) is not None:
+            if self.t0 is not None and m.now() >= self.t0 + seconds:
+                raise PowerCut()
+
+    def cut_power(self, trigger_line):
+        # Record the host time of the cut request and whether the controller confirmed Off.
+        cut_at = m.now()
+        off = self.power_off(False)
+        self.power_cut.update(triggerLine=trigger_line, cutAt=cut_at, powerOffConfirmed=off)
+        for name in ('run.json', 'metal-run.json'):
+            path = self.dir / name
+            if path.is_file():
+                run = m.read_json(path)
+                run['powerCut'] = self.power_cut
+                m.write_json(path, run)
+        return off
 
     def power_off(self, hung):
         """NMI first when a started kernel or payload hung (or `--nmi` asks for it), then ForceOff; quarantine if it
@@ -2201,14 +2246,19 @@ class Driver:
             self.watch()
         except Finish as finish:
             status = finish.status
+            off = self.cut_power(finish.line) if isinstance(finish, PowerCut) else None
+            reason = finish.reason
+            if self.power_cut is not None and status == m.EXIT_DONE:
+                status, reason = m.EXIT_SHORT, 'the boot finished before the requested power cut'
             if not self.stop_hostkey_reader():
                 status = m.EXIT_INCOMPLETE
             if status == m.EXIT_DONE and getattr(self, 'hostkey_error', None) is not None:
                 status = m.EXIT_INCOMPLETE
-            self.event('decided', status=status, reason=finish.reason)
-            self.phase(('Stopped: ' if status else 'Done: ') + finish.reason)
+            self.event('decided', status=status, reason=reason)
+            self.phase(('Stopped: ' if status else 'Done: ') + reason)
             if self.t0 is not None:
-                off = self.power_off(finish.hung)
+                if off is None:
+                    off = self.power_off(finish.hung)
                 if not off:
                     status = m.EXIT_INCOMPLETE
                 # A multi-suite boot scores each suite even when it stopped part way, so a stalled suite keeps
@@ -2216,7 +2266,7 @@ class Driver:
                 several = len(suites(self.args)) > 1 and self.kernel_started is not None
                 disk_source = (getattr(self.args, 'disk', None) == 'root' and self.args.payload == 'image'
                                and getattr(self, 'hostkey_error', None) is None)
-                if (self.args.mode == 'suite' and getattr(self.args, 'case', None) is None
+                if (self.power_cut is None and self.args.mode == 'suite' and getattr(self.args, 'case', None) is None
                         and (status == m.EXIT_DONE or several or (disk_source and status == m.EXIT_SHORT))
                         and status not in (m.EXIT_CANCELLED, m.EXIT_STOPPED, m.EXIT_INCOMPLETE)):
                     with contextlib.suppress(Finish):
@@ -2266,7 +2316,9 @@ class Driver:
                 self.power_off(False)
             status = m.EXIT_INCOMPLETE if self.t0 is not None else m.EXIT_CANCELLED
         # Persistent sessions are scored like default boots; console sessions and fault tests never are.
-        scored = getattr(self.args, 'case', None) is None and (not session(self.args) or persistent(self.args)) and not xhci_fault(self.args) and self.args.inject not in (FENCE_FAULT, 'panic-reboot', *WATCHDOG_FAULTS)
+        scored = (self.power_cut is None and getattr(self.args, 'case', None) is None
+                  and (not session(self.args) or persistent(self.args)) and not xhci_fault(self.args)
+                  and self.args.inject not in (FENCE_FAULT, 'panic-reboot', *WATCHDOG_FAULTS))
         if scored and (self.dir / 'definition/docs/metal/boot-path.json').is_file():
             try:
                 verdict = metal_score.score(self.dir)
@@ -2514,6 +2566,7 @@ def main():
         p.add_argument('--adopt', action='store_true', help=argparse.SUPPRESS)
         p.add_argument('--nmi', action='store_true',
                        help='send the NMI and capture for 5 s before powering off a started kernel, finished or not')
+        metal_power_cut.add_options(p)
         p.add_argument('--ramdisk', action='store_true', default=True, help='carry the ext2 RAM root for recovery boots; main-path roots use the physical disk')
         p.add_argument('--disk', choices=DISK_ACTIONS,
                        help='physical disk root (default), or an explicit recovery install')
@@ -2539,6 +2592,7 @@ def main():
         if args.payload == 'disk-readback' and not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.source_boot or ''):
             parser.error('disk-readback needs --source-boot ID')
         try:
+            metal_power_cut.validate(args)
             validate_xhci_fault(args)
             kernel_profile(args)
             if args.gt710_category and (args.payload != 'image' or session(args)):
