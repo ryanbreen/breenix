@@ -3346,22 +3346,23 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
             let pending_bytes = state.frozen_pages().map_or(0, |p| p.bytes);
             // These counts describe the installed SPACE tree (E24 coordinator
             // 567). Reporting must also work if metadata reads are failing.
-            write!(
+            let pending = state.durable_pending.and_then(PendingSummary::census);
+            let pending_blocks: &dyn core::fmt::Display = match &pending {
+                Some((blocks, _)) => blocks,
+                None => &"unavailable",
+            };
+            writeln!(
                 text,
-                "{} breenfs durable_generation={} dirty_bytes={} read_only={} last_scrub_generation={} last_scrub_errors={} free_blocks={}",
+                "{} breenfs durable_generation={} dirty_bytes={} read_only={} last_scrub_generation={} last_scrub_errors={} free_blocks={} pending_blocks={}",
                 name,
                 state.durable.generation,
                 state.dirty_bytes + pending_bytes,
                 u8::from(state.read_only()),
                 state.durable.last_scrub_generation,
                 state.durable.last_scrub_errors,
-                state.durable.free_blocks
+                state.durable.free_blocks,
+                pending_blocks
             )
-            .map_err(|_| Errno(ENOMEM))?;
-            match state.durable_pending.and_then(PendingSummary::census) {
-                Some((blocks, _)) => writeln!(text, " pending_blocks={blocks}"),
-                None => writeln!(text, " pending_blocks=unavailable"),
-            }
             .map_err(|_| Errno(ENOMEM))?;
             if let Some(failure) = state.metadata_error {
                 writeln!(text, "metadata_cause={} metadata_node={}", failure.cause, failure.addr)
