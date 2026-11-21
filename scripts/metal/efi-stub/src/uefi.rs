@@ -4,6 +4,7 @@
 //! (13.4, 13.5), load file (13.1), DHCPv4 (29.2) and HTTP (29.6). Services the applications do not call are kept as
 //! placeholders so the fields after them stay where the specification puts them.
 use core::ffi::c_void;
+use core::ptr::null_mut;
 
 pub type Handle = *mut c_void;
 pub type Status = usize;
@@ -415,6 +416,28 @@ pub unsafe fn path_length(path: *const u8) -> Option<usize> {
         at += length;
     }
     None
+}
+
+/// The unique partition signature of a GPT partition's device path: its last Hard Drive node with a GUID signature
+/// (the Hard Drive media node, section 10.3.5).
+///
+/// # Safety
+/// `handle` must be a valid firmware handle.
+pub unsafe fn partition_signature(boot: &BootServices, handle: Handle) -> Option<[u8; 16]> {
+    let mut path: *mut c_void = null_mut();
+    if (boot.handle_protocol)(handle, &DEVICE_PATH, &mut path) != SUCCESS || path.is_null() {
+        return None;
+    }
+    let length = path_length(path.cast())?;
+    let bytes = core::slice::from_raw_parts(path.cast::<u8>(), length);
+    let mut signature = None;
+    for (kind, subtype, node) in Nodes::new(bytes) {
+        // Header, partition number (4), start (8), size (8), signature (16), MBR type, signature type.
+        if kind == node::MEDIA && subtype == node::HARD_DRIVE && node.len() >= 42 && node[41] == 2 {
+            signature = Some(node[24..40].try_into().unwrap());
+        }
+    }
+    signature
 }
 
 /// Whether `bytes` is exactly one device path: nodes that fit, the last of them the end node.

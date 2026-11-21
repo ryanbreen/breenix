@@ -62,7 +62,7 @@ READ_BACK_LINE = re.compile(r'\[storage\] read back identical: (\d+) bytes, sha2
 ROOT_RECORD_LINE = re.compile(r'\[storage\] root record: installed by boot ([A-Za-z0-9-]+), (\d+) bytes, sha256 ([0-9a-f]{64})')
 INTENT_LINE = re.compile(r'\[console\] input preparation: replug (requested|not requested) by (fw_cfg|intent|target)')
 PAYLOADS = ('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux', 'disk-readback', 'manager', 'persistent',
-            metal_export.PAYLOAD)
+            metal_export.PAYLOAD, metal_persist.RECLAIM_PAYLOAD)
 CEILING_SECONDS = {'default': 900, 'shell': 900, 'probe': 900, 'suite': 1320, 'console': 900, 'tests': 1500,
                    'persistent-install': 2400, 'persistent': 900}
 # The install boot's stub writes the layout and the test root before the bootloader starts (README, "Install and
@@ -229,8 +229,8 @@ STUB_FAILED_LINE = 'metal-stub: FAILED'
 # The boot manager's lines (docs/metal/README.md, "The boot manager").
 MANAGER_STARTED = 'breenix-manager: started: '
 MANAGER_ANSWER = re.compile(r'breenix-manager: lab answered: (.*)')
-MANAGER_PERSISTENT_COUNTDOWN = re.compile(r'breenix-manager: menu: Starting (?:Breenix|the previous kernel) in [0-9]+ s;')
-MANAGER_PERSISTENT_START = re.compile(r'breenix-manager: (?:installed configuration unavailable;|booting (?:current|previous) )')
+MANAGER_PERSISTENT_COUNTDOWN = re.compile(r'breenix-manager: menu: Starting (?:Breenix|the previous kernel|the ext2 rescue) in [0-9]+ s;')
+MANAGER_PERSISTENT_START = re.compile(r'breenix-manager: (?:installed configuration unavailable;|booting (?:current|previous|rescue) )')
 MANAGER_PROBE_DONE = 'breenix-manager: probe complete'
 MANAGER_PANIC = 'breenix-manager: panic: '
 NO_BOOTABLE = 'no bootable device'
@@ -328,6 +328,7 @@ class Driver:
         self.run_verified = 0
         self.run_failure = None
         self.persist = None
+        self.persistent_fence_layout = None
         self.slot_userlands = {}
         self.slot_userlands_complete = False
         self.slot_refs_sent = False
@@ -443,10 +444,12 @@ class Driver:
                'input': input_kind(self.args),
                'session': session(self.args),
                'idleMinutes': getattr(self.args, 'idle_minutes', 30) if session(self.args) else None,
-               'evidenceEligible': not fault and self.args.payload != metal_export.PAYLOAD
+               'evidenceEligible': not fault and self.args.payload not in (metal_export.PAYLOAD, metal_persist.RECLAIM_PAYLOAD)
                and (persistent(self.args) or not session(self.args)) and getattr(self.args, 'case', None) is None}
         if self.migration_phase:
             run['migrationPhase'] = self.migration_phase
+        if closed := getattr(self.args, 'breenfs_upgrade', None):
+            run['breenfsUpgrade'] = closed
         if getattr(self.args, 'case', None) is not None:
             run['onlyCase'] = self.args.case
         if getattr(self.args, 'root_fs', None) is not None:
@@ -596,6 +599,9 @@ class Driver:
             self.delivery['image'] = {k: v for k, v in self.payload_facts.items() if k != 'path'}
             self.event('payload-ready', name='metal-boot-manager.efi', size=self.payload_facts['size'],
                        sha256=self.payload_facts['sha256'])
+            return
+        if self.args.payload == metal_persist.RECLAIM_PAYLOAD:
+            self.prepare_reclaim(inputs)
             return
         if self.args.payload in ('disk-readback', metal_export.PAYLOAD):
             build = m.read_json(inputs / 'build.json', {})
@@ -834,16 +840,35 @@ class Driver:
         slots = metal_persist.read_disk().get('slots', {})
         action = getattr(self.args, 'slot_action', None)
         entry = getattr(self.args, 'entry', None) or 'current'
-        slot = ('next' if action == 'commit' and slots.get('next') else 'previous' if action == 'rollback' or entry == 'previous'
-                else 'current')
-        return (slots.get(slot) or {}).get('commit')
+        slot = ('next' if action == 'commit' and slots.get('next') else 'previous' if action == 'rollback' else entry)
+        selected = slots.get(slot) or {}
+        if selected.get('installedBy') == metal_migration.STOPPED_UPGRADE:
+            raise Finish(m.EXIT_CANCELLED, 'the stopped BreenFS install in NEXT must be replaced before verification')
+        return selected.get('commit')
 
     def prepare_persistent(self):
         """A persistent boot stages nothing: the manager boots a kernel slot from the disk. Its record carries the
         slot's commit and that commit's definition, kept in the store at the install (README, "Persistent
         sessions")."""
-        if not metal_persist.layout():
+        layout = metal_persist.layout()
+        if not layout:
             raise Finish(m.EXIT_CANCELLED, 'the disk has no persistent install')
+        if getattr(self.args, 'entry', None) == 'rescue':
+            rescue = (metal_persist.read_disk().get('slots') or {}).get('rescue') or {}
+            if layout['version'] != 2 or rescue.get('migration') != 'rescue':
+                raise Finish(m.EXIT_CANCELLED, 'the persistent layout has no ext2 rescue slot')
+        if layout['version'] == 3:
+            record = metal_persist.read_disk().get('ext2Reclaimed') or {}
+            if not metal_migration.BOOT_ID.fullmatch(record.get('boot', '')):
+                raise Finish(m.EXIT_CANCELLED, 'the retired layout is missing its firmware readback record')
+            self.args.ext2_reclaimed = record['boot']
+        if layout['version'] == 3 or getattr(self.args, 'breenfs_upgrade', None):
+            run = m.read_json(self.dir / 'run.json', {})
+            if layout['version'] == 3:
+                run['ext2Reclaimed'] = record['boot']
+            m.write_json(self.dir / 'run.json', dict(run, persistentLayout=layout))
+            if not session(self.args):
+                self.persistent_fence_layout = layout
         if self.migration_phase in ('rescue', 'return'):
             slots = metal_persist.read_disk().get('slots', {})
             if self.migration_phase == 'rescue':
@@ -879,6 +904,31 @@ class Driver:
         self.args.slot_action = None
         run = m.read_json(self.dir / 'run.json', {})
         m.write_json(self.dir / 'run.json', dict(run, slotAction=None))
+
+    def prepare_reclaim(self, inputs):
+        first, second = self.args.reclaim_upgrades
+        build = m.read_json(inputs / 'build.json', {})
+        stub = inputs / 'stub.efi'
+        try:
+            if (build.get('commit') != self.args.commit or build.get('profile') != metal_persist.RECLAIM_PAYLOAD
+                    or build.get('stub') != metal_persist.file_facts(stub)):
+                raise ValueError('the ext2 reclaim firmware differs from its build record')
+            previous = metal_persist.read_disk()
+            proof = metal_migration.admit_reclaim(self.id, first, second, self.args.commit, tools_commit())
+            config, request = metal_persist.reclaim_request(self.stage, previous['layout'], first, second)
+        except (OSError, ValueError) as error:
+            raise Finish(m.EXIT_CANCELLED, str(error)) from error
+        self.reclaim = (proof, previous)
+        disk = self.stage / 'reclaim.img'
+        metal_image.assemble(disk, {'persist.cfg': config, 'persist.dat': request.data})
+        image = self.stage / 'boot.efi'
+        facts = metal_image.stub_efi(stub, disk, image)
+        disk.unlink()
+        self.payload_facts = dict(path=image, size=facts['size'], sha256=facts['sha256'],
+                                  contentType=metal_image.CONTENT_TYPES['efi'], name='boot.efi')
+        self.delivery['build'] = build
+        self.delivery['image'] = {key: value for key, value in self.payload_facts.items() if key != 'path'}
+        self.event('ext2-reclaim-admitted', twoUpgrades=proof['boot'])
 
     def prepare_migration(self, inputs, build):
         phase, cycle = self.migration_phase, self.migration
@@ -926,8 +976,17 @@ class Driver:
         """The install boot (README, "Install and upgrade"): the request, the new kernel slot, the new userland on the
         test root, and the migration's intent. Returns the boot disk's files."""
         the_layout = metal_persist.layout()
-        if the_layout and the_layout['version'] == 2:
-            raise Finish(m.EXIT_CANCELLED, 'BreenFS upgrades require a BreenFS install intent')
+        slots = metal_persist.read_disk().get('slots') or {}
+        breenfs = bool(the_layout and the_layout['version'] in (2, 3))
+        if breenfs:
+            try:
+                cycle = metal_migration.require_closed(the_layout)
+                metal_migration.require_upgrade_next(the_layout, slots)
+            except ValueError as error:
+                raise Finish(m.EXIT_CANCELLED, str(error)) from error
+            self.args.breenfs_upgrade = cycle['closed']
+            run = m.read_json(self.dir / 'run.json', {})
+            m.write_json(self.dir / 'run.json', dict(run, breenfsUpgrade=cycle['closed']))
         action = 'upgrade' if the_layout else 'install'
         expect = None
         if not the_layout:
@@ -958,29 +1017,35 @@ class Driver:
         # and SSH public key for the installer's machine state store, for the stub to write onto the test root once
         # the request is done.
         facts, suite_files = metal_disk.stage(self.dir, inputs, self.id, self.args.commit, self.site, build,
-                                              mode='default', the_layout=the_layout,
-                                              operator=metal_root.operator_account(self.site),
+                                              mode='persistent-install' if breenfs else 'default', the_layout=the_layout,
+                                              operator=None if breenfs else metal_root.operator_account(self.site),
                                               no_ssh=self.args.inject == 'upgrade-service-down')
         self.delivery['diskRoot'] = facts
         files = dict(esp_files)
         files.update(suite_files)
         parts = the_layout['partitions']
         intent = self.stage / 'boot-intent'
-        intent.write_bytes(metal_persist.intent('persistent-install', root=parts['test']['guid'],
+        intent.write_bytes(metal_persist.breenfs_upgrade_intent(the_layout, self.id) if breenfs else
+                           metal_persist.intent('persistent-install', root=parts['test']['guid'],
                                                 home=parts['system']['guid'], userland=self.id,
-                                                previous_userland=(metal_persist.read_disk().get('slots', {}).get('current') or {}).get('installedBy')))
+                                                previous_userland=(slots.get('current') or {}).get('installedBy')))
         files['ramdisk'] = intent
         if action == 'install':
             config, request = metal_persist.install_request(scratch, the_layout, expect, manager_files, slot, note,
                                                             self.site, scratch)
         else:
-            config, request = metal_persist.upgrade_request(scratch, the_layout, manager_files, slot, note, self.site)
+            config, request = metal_persist.upgrade_request(scratch, the_layout, manager_files, slot, note, self.site,
+                                                            breenfs=breenfs)
         files['persist.cfg'] = config
         files['persist.dat'] = request.data
         self.persist = {'action': action, 'layout': the_layout,
                         'slot': dict(metal_persist.file_facts(slot), commit=self.args.commit, installedBy=self.id),
                         'request': {'extents': request.extents, 'bytes': request.written,
                                     'payload': request.data.stat().st_size}}
+        if breenfs:
+            previous = slots.get('previous') or {}
+            if previous.get('migration') == 'rescue':
+                self.persist['rescue'] = previous
         m.write_json(self.dir / 'persist.json', self.persist)
         metal_persist.store_definition(self.dir / 'definition', self.args.commit)
         self.event('persist-requested', action=action, extents=request.extents, bytes=request.written,
@@ -995,11 +1060,21 @@ class Driver:
         main = m.read_json(definition / 'docs/boot-path.json', {})
         source = metal or main
         self.fatal_patterns = [re.compile(p) for p in (source or {}).get('fatal', [])]
+        retired = getattr(self.args, 'ext2_reclaimed', None)
+        upgrade = getattr(self.args, 'breenfs_upgrade', None)
+        breenfs = bool(upgrade or retired)
+        if upgrade and getattr(self.args, 'upgrade_parent', None):
+            parent = m.boot_dir(self.args.upgrade_parent)
+            metal = m.read_json(parent / 'definition/docs/metal/boot-path.json')
+            if not metal:
+                raise Finish(m.EXIT_CANCELLED, 'BreenFS verification needs the install boot definition')
         if metal and not session(self.args):
             catalog = m.read_json(definition / 'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json', {})
             shape = boot_shape('persistent' if persistent(self.args) else getattr(self.args, 'disk', None))
-            self.final_marker = final_marker(metal, self.args.mode, catalog, shape)
-            self.required_stages = measured_stages(metal, self.args.mode, catalog, shape)
+            self.final_marker = final_marker(metal, self.args.mode, catalog, shape, breenfs=breenfs)
+            self.required_stages = measured_stages(metal, self.args.mode, catalog, shape, breenfs=breenfs,
+                                                   previous=bool(retired and getattr(self.args, 'entry', None) == 'previous'),
+                                                   rescue=getattr(self.args, 'entry', None) == 'rescue')
         if xhci_fault(self.args):
             marker = '[xhci-fault] ' + xhci_fault(self.args) + ' PASS:'
             self.final_marker = (marker, 'contains')
@@ -1058,8 +1133,9 @@ class Driver:
         self.post_code = baseline.get('postCode')
         self.progress_key = progress_key(baseline.get('bootProgress'))
         if baseline.get('power') != 'Off':
-            if self.args.payload == metal_export.PAYLOAD or self.migration_phase:
-                raise Finish(m.EXIT_CANCELLED, 'persistent export and migration require a powered-off machine')
+            if (self.args.payload in (metal_export.PAYLOAD, metal_persist.RECLAIM_PAYLOAD) or self.migration_phase
+                    or getattr(self.args, 'breenfs_upgrade', None)):
+                raise Finish(m.EXIT_CANCELLED, 'this persistent operation requires a powered-off machine')
             if getattr(self.args, 'resting', False):
                 raise Finish(m.EXIT_CANCELLED, 'an existing power-on is left for boot manager adoption')
             self.event('stray-power-on', power=baseline.get('power'))
@@ -1542,6 +1618,13 @@ class Driver:
             raise Finish(m.EXIT_DELIVERY, 'the delivery stub could not start the bootloader')
 
         self.on_manager_line(line, observed_at, seconds)
+        if self.args.payload == metal_persist.RECLAIM_PAYLOAD:
+            if line == metal_persist.RECLAIM_DONE:
+                if 'stub' not in self.seen:
+                    raise Finish(m.EXIT_SHORT, 'ext2 reclaim is missing a firmware start')
+                self.event('ext2-gpt-readback', observed_at=observed_at)
+                raise Finish(m.EXIT_DONE, 'ext2 GPT entries cleared and read back')
+            return
         if self.census:
             if line == 'metal-linux-start' and self.kernel_started is None:
                 self.kernel_started = observed_at
@@ -1681,6 +1764,14 @@ class Driver:
         self.challenge_console(line, complete=True)
         # A prompt is often completed by the next kernel log line before the driver reads it unterminated.
         self.challenge_persistent(line)
+        if metal_score.WRITE_FENCE in line:
+            layout = self.persistent_fence_layout
+            if self.args.mode == 'persistent-install' and getattr(self.args, 'breenfs_upgrade', None):
+                layout = self.persist['layout']
+            if layout is not None:
+                if ('breenfs-fence' in self.seen or not metal_score.breenfs_fence_matches(line, layout)):
+                    raise Finish(m.EXIT_SHORT, 'the boot lacks the exact BreenFS system and home write fence')
+                self.seen.add('breenfs-fence')
         for stages in self.required_stages:
             if stages and marker_matches(stages[0], line):
                 stages.pop(0)
@@ -1748,6 +1839,8 @@ class Driver:
     def on_persist_line(self, line, observed_at):
         """The install boot's request and migration (README, "Install and upgrade")."""
         if self.args.mode == 'persistent-install':
+            if line == 'metal-stub: BreenFS upgrade: ext2 rescue pair preserved':
+                self.seen.add('breenfs-rescue-preserved')
             if found := re.fullmatch(r'metal-stub: slot userland: (CURRENT|PREVIOUS|NEXT) ([A-Za-z0-9-]{1,64})', line):
                 if found[1] in self.slot_userlands:
                     raise Finish(m.EXIT_SHORT, 'duplicate recovered slot reference')
@@ -1768,6 +1861,11 @@ class Driver:
             slot = self.persist['slot']
             record = metal_persist.read_disk()
             slots = dict(record.get('slots') or {}, next=slot)
+            if rescue := self.persist.get('rescue'):
+                if 'breenfs-rescue-preserved' not in self.seen:
+                    raise Finish(m.EXIT_SHORT, 'the upgrade stub did not confirm the frozen rescue pair')
+                slots['rescue'] = rescue
+                self.event('breenfs-rescue-preserved', observed_at=observed_at, commit=rescue['commit'])
             if self.persist['action'] == 'install':
                 # From here the disk has the layout, whatever the kernel does next.
                 metal_persist.update_disk(layout=self.persist['layout'], slots=slots,
@@ -1810,7 +1908,7 @@ class Driver:
         self.event('slots', observed_at=observed_at, action=found.group(1), current=found.group(2), previous=found.group(3))
 
     def on_slot_boot(self, line, observed_at):
-        found = re.fullmatch(r'breenix-manager: booting (current|previous) ([0-9a-f]{40})', line)
+        found = re.fullmatch(r'breenix-manager: booting (current|previous|rescue) ([0-9a-f]{40})', line)
         if self.watchdog_trigger is not None and found:
             entry, commit = found.groups()
             if entry != 'current' or commit != self.args.commit:
@@ -1823,6 +1921,9 @@ class Driver:
         if not persistent(self.args) or not found:
             return
         entry, commit = found.groups()
+        requested = getattr(self.args, 'entry', None) or 'current'
+        if entry != requested and ('rescue' in (entry, requested) or getattr(self.args, 'ext2_reclaimed', None)):
+            raise BootManagerAbort(line, observed_at)
         slot = metal_persist.read_disk().get('slots', {}).get(entry, {})
         if self.migration_phase in ('rescue', 'return'):
             expected = 'previous' if self.migration_phase == 'rescue' else 'current'
@@ -1923,6 +2024,10 @@ class Driver:
     def on_manager_line(self, line, observed_at, seconds):
         """The boot manager's start, the lab's answer it acted on, and a probe's end (README, "The boot manager")."""
         answer = MANAGER_ANSWER.search(line)
+        if getattr(self.args, 'entry', None) == 'rescue' and (
+                (answer and answer[1] != f'persistent {self.id} rescue')
+                or 'breenix-manager: ext2 rescue unavailable' in line):
+            raise BootManagerAbort(line, observed_at)
         if self.migration_phase in ('rescue', 'return'):
             expected = metal_migration.manager_answer(self.migration_phase, self.id, self.args.slot_action)
             if ((answer and answer[1] != expected)
@@ -2415,6 +2520,7 @@ class Driver:
         if self.kernel_started is None:
             # An install's stub writes the layout and the test root first, reporting its progress.
             limit = (INSTALL_STUB_SECONDS if self.args.mode == 'persistent-install' or self.migration_phase
+                     or self.args.payload == metal_persist.RECLAIM_PAYLOAD
                      else BOOTLOADER_SECONDS)
             if 'bootloader' not in self.seen and m.now() - self.complete_at > limit:
                 raise Finish(m.EXIT_DELIVERY, 'no bootloader after the image arrived')
@@ -2687,6 +2793,12 @@ class Driver:
                     except (ValueError, OSError, subprocess.CalledProcessError) as error:
                         self.event('migration-evidence-failed', error=str(error))
                         status = m.EXIT_SHORT
+                elif self.args.payload == metal_persist.RECLAIM_PAYLOAD and status == m.EXIT_DONE and off and not self.gap:
+                    try:
+                        metal_migration.record_reclaimed(self.id, *self.reclaim)
+                    except (OSError, ValueError) as error:
+                        self.event('ext2-reclaim-evidence-failed', error=str(error))
+                        status = m.EXIT_SHORT
                 elif self.args.payload == metal_export.PAYLOAD and status == m.EXIT_DONE and off and not self.gap:
                     try:
                         metal_export.publish(self.dir, self.id, self.export_receipts)
@@ -2815,6 +2927,17 @@ class Driver:
             raise Finish(m.EXIT_SHORT, 'S21 SSH probe failed')
         if receipt.get('generation') != getattr(self.args, 'expected_generation', None):
             raise Finish(m.EXIT_SHORT, 'SSH answered from a different userland generation')
+        if getattr(self.args, 'breenfs_upgrade', None):
+            try:
+                if receipt.get('homeReadable') is not True:
+                    raise ValueError('the BreenFS home is unreadable')
+                metal_migration.verify_mounts(receipt.get('mounts', ''), 'BreenFS upgrade')
+                # The kernel seals this fence before launching a persistent init.
+                lines = (self.dir / 'serial.txt').read_text().splitlines()
+                if not metal_score.exact_breenfs_fence(lines, self.persistent_fence_layout):
+                    raise ValueError('verification lacks the exact BreenFS system and home write fence')
+            except ValueError as error:
+                raise Finish(m.EXIT_SHORT, str(error)) from error
         if not self.t0 < receipt.get('completedAt', 0) <= self.t0 + 600:
             raise Finish(m.EXIT_SHORT, 'S21 SSH probe finished outside its deadline')
         return True
@@ -2884,7 +3007,7 @@ def marker_matches(spec, line):
 
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
-def measured_stages(metal, mode, catalog, shape='ramdisk'):
+def measured_stages(metal, mode, catalog, shape='ramdisk', *, breenfs=False, previous=False, rescue=False):
     """Track each measured milestone in its own print order, including delayed kernel producers.
     The definition selects which boot shapes and modes can measure each milestone."""
     markers = {stage['name']: stage for stage in catalog.get('stages', [])}
@@ -2892,8 +3015,7 @@ def measured_stages(metal, mode, catalog, shape='ramdisk'):
     for milestone in metal.get('milestones', []):
         if milestone.get('stub') or not metal_score.measures(milestone, shape, mode):
             continue
-        lists = milestone.get('stages', {})
-        listed = lists.get(mode, lists.get(metal['gateArch'], []) if milestone.get('kernel') else [])
+        listed = metal_score.stages(milestone, mode, metal['gateArch'], breenfs=breenfs, previous=previous, rescue=rescue)
         group = []
         for stage in listed:
             spec = markers.get(stage, {}) if isinstance(stage, str) else stage
@@ -2907,14 +3029,15 @@ def measured_stages(metal, mode, catalog, shape='ramdisk'):
     return groups
 
 
-def final_marker(metal, mode, catalog, shape='ramdisk'):
+def final_marker(metal, mode, catalog, shape='ramdisk', *, breenfs=False):
     """Resolve the final measured serial stage and preserve its matching contract. A stub milestone's markers are
     proposals its producing lane has not landed (docs/metal/boot-path.json), so no boot measures it yet, and a
     milestone excluded by `bootShapes` or `bootModes` cannot be measured by this boot."""
     markers = {stage['name']: stage for stage in catalog.get('stages', []) if 'marker' in stage}
     milestones = [milestone for milestone in reversed(metal.get('milestones', []))
                   if not milestone.get('stub') and metal_score.measures(milestone, shape, mode)]
-    scoped = [milestone.get('stages', {}).get(mode) for milestone in milestones]
+    scoped = [milestone.get('breenfsStages') if breenfs and mode == 'persistent' and 'breenfsStages' in milestone
+              else milestone.get('stages', {}).get(mode) for milestone in milestones]
     scoped = [listed for listed in scoped if listed]
     if not scoped:
         scoped = [milestone.get('stages', {}).get(metal.get('gateArch', 'x86_64'))
@@ -2993,6 +3116,7 @@ def main():
         p.add_argument('--milestone')
         p.add_argument('--source-boot')
         p.add_argument('--migration-phase', choices=metal_migration.PHASES, help=argparse.SUPPRESS)
+        p.add_argument('--reclaim-upgrades', nargs=2, help=argparse.SUPPRESS)
         p.add_argument('--commit', default='')
         p.add_argument('--target', default='main')
         p.add_argument('--catchup', action='store_true')
@@ -3001,7 +3125,7 @@ def main():
         p.add_argument('--no-wait', action='store_true')
         p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read', 'disk-before-mount',
                                             FENCE_FAULT, 'panic-reboot', 'upgrade-no-ssh', 'upgrade-service-down', *WATCHDOG_FAULTS))
-        p.add_argument('--entry', choices=('current', 'previous'), help='the kernel slot a persistent boot runs')
+        p.add_argument('--entry', choices=('current', 'previous', 'rescue'), help='the kernel slot a persistent boot runs')
         p.add_argument('--slot-action', choices=('commit', 'rollback'), help='what the manager does to the slots first')
         p.add_argument('--run', action='append', help='a persistent boot logs in over SOL and runs this; repeatable')
         p.add_argument('--upgrade-parent', help='install whose S21 probe owns this verification')
@@ -3039,6 +3163,18 @@ def main():
                 args.disk or args.inject or args.nmi or args.source_boot or args.slot_action
                 or args.resting or not re.fullmatch(r'[0-9a-f]{40}', args.commit)):
             parser.error('persistent export needs a commit and a firmware-only boot')
+        if args.payload == metal_persist.RECLAIM_PAYLOAD:
+            if (not args.reclaim_upgrades or any(not metal_migration.BOOT_ID.fullmatch(boot)
+                                                for boot in args.reclaim_upgrades)
+                    or args.reclaim_upgrades[0] >= args.reclaim_upgrades[1]
+                    or not metal_migration.COMMIT.fullmatch(args.commit)
+                    or not re.fullmatch(r'branch:metal-[a-z0-9_-]+/[a-zA-Z0-9_./-]+', args.target)
+                    or any((args.disk, args.inject, args.nmi, args.source_boot, args.session,
+                            args.resting, args.migration_phase, args.upgrade_parent, args.power_cut_after,
+                            args.power_cut_window, args.breenfs_bit_flip, args.gt710_category))):
+                parser.error('ext2 reclaim needs two upgrade IDs, a pinned metal branch and a firmware-only boot')
+        elif args.reclaim_upgrades:
+            parser.error('--reclaim-upgrades needs the ext2 reclaim payload')
         if args.migration_phase:
             phase = args.migration_phase
             payload = ('persistent' if phase in ('rescue', 'return') else metal_export.PAYLOAD
@@ -3073,6 +3209,8 @@ def main():
             parser.error('boot modes need an image payload')
         if (args.entry or args.slot_action or args.run or args.verify or args.adopt) and args.payload != 'persistent':
             parser.error('--entry, --slot-action, --run, --verify and --adopt need a persistent boot')
+        if args.entry == 'rescue' and (not args.verify or args.run or args.slot_action or args.adopt or args.resting):
+            parser.error('the ext2 rescue needs a bounded verification boot without slot actions')
         if args.inject in WATCHDOG_FAULTS and (args.payload != 'image' or args.mode != 'default' or args.disk or args.nmi):
             parser.error('watchdog fault needs a default RAM-disk image boot without --nmi')
         if args.inject == FENCE_FAULT and (args.payload != 'image' or args.mode != 'default' or args.disk not in (None, 'root')):

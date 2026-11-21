@@ -4,11 +4,26 @@ import re
 import runpy
 from pathlib import Path
 
+from metal_persist import BREENFS_ROLES, check_layout
+
 
 # The test runner names the marker each test will print before the test runs; that promise reaches no stage.
 ANNOUNCEMENT = 'kernel::test_exec:'
 # Host records whose milestone differs from their suite/category name.
 HOST_MILESTONES = {'users-operator.json': 'users/operator-login'}
+WRITE_FENCE = '[block] write fence: '
+FENCE_RANGES = re.compile(r'(?:AHCI port [0-9]+|NVMe disk|VirtIO disk) LBA ([0-9]+-[0-9]+), ([0-9]+-[0-9]+)')
+
+EXT2_RESCUE_STAGES = (
+    dict(name='Boot manager menu read back', marker='breenix-manager: screen read back identical: '),
+    dict(name='The lab answered for the rescue lease', marker='breenix-manager: row: No test boot is pending; session '),
+    dict(name='Rescue slot booted', marker='breenix-manager: booting rescue '),
+    dict(name='Ext2 root mounted', marker='ext2 root filesystem mounted'),
+    dict(name='Root mounted from the system partition', marker='[fs] root mounted from the system partition'),
+    dict(name='Hardware disks are read-only',
+         marker='[block] write fence: no partition chosen; hardware disks stay read-only'),
+    dict(name='Console login prompt', marker='Breenix login:'),
+)
 
 
 def host_milestone(name):
@@ -26,6 +41,42 @@ def measures(milestone, shape, mode):
     # Commits preceding shape metadata describe the original RAM-disk boots.
     return (shape in milestone.get('bootShapes', ['ramdisk'])
             and ('bootModes' not in milestone or mode in milestone['bootModes']))
+
+
+def stages(milestone, mode, arch, *, breenfs=False, previous=False, rescue=False):
+    if rescue and mode == 'persistent' and milestone['id'] == 'persistent-install':
+        # The saved rescue contains a boot definition from before this lease
+        # could select it. Match the format-3 read-only boot's own receipts.
+        return EXT2_RESCUE_STAGES
+    if breenfs and mode == 'persistent-install' and 'breenfsInstallStages' in milestone:
+        return milestone['breenfsInstallStages']
+    if breenfs and mode == 'persistent' and 'breenfsStages' in milestone:
+        return [dict(stage, marker='breenix-manager: booting previous ')
+                if previous and stage.get('marker') == 'breenix-manager: booting current ' else stage
+                for stage in milestone['breenfsStages']]
+    lists = milestone.get('stages', {})
+    return lists.get(mode, lists.get(arch, []) if milestone.get('kernel') else [])
+
+
+def breenfs_fence_matches(line, layout):
+    """The sealed fence must name exactly the layout's two BreenFS ranges."""
+    _, marker, ranges = line.partition(WRITE_FENCE)
+    found = FENCE_RANGES.fullmatch(ranges) if marker else None
+    if not found or not isinstance(layout, dict):
+        return False
+    try:
+        if check_layout(layout)['version'] not in (2, 3):
+            return False
+        parts = layout['partitions']
+        expected = [f"{parts[role]['first']}-{parts[role]['last']}" for role in BREENFS_ROLES]
+    except (ValueError, TypeError):
+        return False
+    return sorted(found.groups()) == sorted(expected)
+
+
+def exact_breenfs_fence(lines, layout):
+    fences = [line for line in lines if WRITE_FENCE in line]
+    return len(fences) == 1 and breenfs_fence_matches(fences[0], layout)
 
 
 def require_suite_profile(run):
@@ -50,6 +101,14 @@ def score(directory):
     if run.get('mode') == 'tests':
         return score_tests(directory, run, read)
     definition = read('definition/docs/metal/boot-path.json')
+    upgrade_parent = None
+    if run.get('breenfsUpgrade') and run['mode'] == 'persistent':
+        # On a rolled-back first upgrade the old slot's definition predates
+        # the BreenFS upgrade scorer. Use the install's pinned boot definition.
+        parent = run.get('upgradeParent')
+        if parent and re.fullmatch(r'[0-9]{8}T[0-9]{6}Z-metal', parent):
+            upgrade_parent = directory.parent / parent
+            definition = json.loads((upgrade_parent / 'definition/docs/metal/boot-path.json').read_text())
     catalog = {stage['name']: stage for stage in read(
         'definition/tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json')['stages']}
     shape = boot_shape(run.get('disk'))
@@ -57,20 +116,41 @@ def score(directory):
     events = {json.loads(line)['event'] for line in (directory / 'events.jsonl').read_text().splitlines()}
     host = {'console-ready': 'console-ready', 'power-on': 'power-on', 'firmware-text': 'firmware-text',
             'post': 'post-code', 'image-complete': 'image-complete', 'handoff': 'handoff'}
+    retired = run.get('ext2Reclaimed')
+    breenfs = bool(run.get('breenfsUpgrade') or retired)
+    rescue = run.get('entry') == 'rescue'
     results = {}
     for milestone in definition['milestones']:
         if milestone.get('stub') or not measures(milestone, shape, run['mode']):
             continue
-        lists = milestone['stages']
-        stages = lists.get(run['mode'], lists.get(definition['gateArch'], []) if milestone.get('kernel') else [])
-        if not stages:
+        listed = stages(milestone, run['mode'], definition['gateArch'], breenfs=breenfs,
+                        previous=bool(retired and run.get('entry') == 'previous'),
+                        rescue=rescue)
+        if not listed:
             continue
+        install_stages = listed is milestone.get('breenfsInstallStages')
+        persistent_stages = breenfs and not rescue and run['mode'] == 'persistent' and milestone.get('breenfsStages')
+        fence_matches = True
+        if install_stages or persistent_stages:
+            layout = run.get('persistentLayout')
+            request = directory if install_stages else None
+            if persistent_stages and not retired and 'persistentLayout' not in run:
+                # Older S21 captures pin the same layout in their install request.
+                request = upgrade_parent
+            if request is not None:
+                try:
+                    layout = json.loads((request / 'persist.json').read_text()).get('layout')
+                except (OSError, ValueError, AttributeError):
+                    layout = None
+            fence_matches = exact_breenfs_fence(lines, layout) and (not retired or layout['version'] == 3)
         cursor, reached = 0, 0
-        for stage in stages:
+        for stage in listed:
             spec = catalog[stage] if isinstance(stage, str) else stage
             if 'host' in spec:
                 reached += host[spec['host']] in events
                 continue
+            if spec['marker'] == WRITE_FENCE and not fence_matches:
+                break
             alternatives = spec['marker'].split('|')
             for index in range(cursor, len(lines)):
                 if (lines[index] in alternatives if spec.get('match') == 'line'
@@ -78,7 +158,7 @@ def score(directory):
                     reached += 1
                     cursor = index + 1
                     break
-        results[milestone['id']] = {'reached': reached, 'total': len(stages), 'passed': reached == len(stages)}
+        results[milestone['id']] = {'reached': reached, 'total': len(listed), 'passed': reached == len(listed)}
         if run['mode'] == 'default' and milestone['id'] == 'desktop':
             prompt_lines = [line for line in lines if '[bwm] terminal prompt read back:' in line]
             def valid_prompt(line):

@@ -7,7 +7,7 @@
 //! `metal-run install-persistent` stages on the test root goes into the store,
 //! not into the generation. A test image's SSH credentials (its test-only
 //! client key, its test account and `/root/.ssh`) stay behind. This
-//! program mounts no home partition.
+//! ext2 path mounts no home partition.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
@@ -16,6 +16,12 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 #[path = "../../../libs/libbreenix/src/layout.rs"]
 mod layout;
+#[cfg(target_os = "breenix")]
+#[path = "persistent_install/breenfs.rs"]
+mod breenfs;
+#[cfg(target_os = "breenix")]
+#[path = "../../../kernel/src/fs/breenfs/abi.rs"]
+pub mod breenfs_abi;
 
 const TARGET: &str = "/home";
 const KEPT: [&str; 1] = ["root"];
@@ -791,13 +797,7 @@ fn reclaim(target: &Path, retained: &[&str], checkpoint: &mut dyn FnMut() -> std
     Ok(())
 }
 
-fn install() -> Result<Totals, String> {
-    let source = Path::new("/");
-    let target = Path::new(TARGET);
-    let root_dev = fs::metadata(source).map_err(|error| fail("stat", source, error))?.dev();
-    let target_dev = fs::metadata(target).map_err(|error| fail("stat", target, error))?.dev();
-    if root_dev == target_dev { return Err(String::from("the system partition is not mounted at /home")); }
-    let id = std::env::args().nth(1).ok_or("install intent names no userland generation")?;
+fn recovered_slots(source: &Path) -> Result<String, String> {
     println!("[persistent] recovered slot references needed");
     let mut references = String::new();
     std::io::stdin().read_line(&mut references).map_err(|e| fail("read recovered slots", source, e))?;
@@ -805,6 +805,23 @@ fn install() -> Result<Totals, String> {
     if words.len() != 4 || words[0] != "BREENIX-SLOTS-1" || words[1..].iter().any(|id| !valid_id(id)) {
         return Err("missing recovered on-disk slot references".into());
     }
+    Ok(references)
+}
+
+fn install() -> Result<Totals, String> {
+    let source = Path::new("/");
+    #[cfg(target_os = "breenix")]
+    if let Some(upgrade) = breenfs::Upgrade::detect()? {
+        return upgrade.install(source);
+    }
+    println!("[persistent] install starting: the test root's userland onto the system partition at /home");
+    let target = Path::new(TARGET);
+    let root_dev = fs::metadata(source).map_err(|error| fail("stat", source, error))?.dev();
+    let target_dev = fs::metadata(target).map_err(|error| fail("stat", target, error))?.dev();
+    if root_dev == target_dev { return Err(String::from("the system partition is not mounted at /home")); }
+    let id = std::env::args().nth(1).ok_or("install intent names no userland generation")?;
+    let references = recovered_slots(source)?;
+    let words: Vec<&str> = references.split_whitespace().collect();
     for reference in &words[1..3] {
         if !matches!(*reference, "flat" | "empty") {
             let selected = target.join(GENERATIONS).join(reference);
@@ -842,7 +859,6 @@ fn install() -> Result<Totals, String> {
 }
 
 fn main() {
-    println!("[persistent] install starting: the test root's userland onto the system partition at /home");
     match install() {
         Ok(totals) => {
             println!(

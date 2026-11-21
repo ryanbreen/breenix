@@ -267,3 +267,30 @@ fn delete_removes_root_and_retains_dead_nodes_children() {
     commit(&mut live, &device, &mut mount);
     assert!(start.elapsed().as_secs_f64() < 60.0);
 }
+
+#[test]
+fn install_renames_an_empty_staging_root_without_copying_shared_state() {
+    let device = RecordingDevice::new(test_image::image()).unwrap();
+    let sb = recover::recover(&device, false).unwrap();
+    let mut mount = Committer::new(sb.clone());
+    let mut shared = Files::new(DeviceStore(&device), &sb, 1, true).unwrap();
+    let shared_ino = shared.create(2, b"machine-state", 0o600, Time::default()).unwrap();
+    let old = shared.snapshot(b"gen-old", false).unwrap();
+    let scratch = shared.create_empty_root(b"install.new", Time::default()).unwrap();
+    let sb = commit(&mut shared, &device, &mut mount);
+    let mut draft = Files::new(DeviceStore(&device), &sb, scratch, true).unwrap();
+    assert_eq!(draft.lookup(2, b"machine-state"), Err(Error::ENOENT));
+    let bin = draft.create(2, b"binary", 0o755, Time::default()).unwrap();
+    draft.write(&device, bin, 0, b"next", Time::default()).unwrap();
+    let sb = commit(&mut draft, &device, &mut mount);
+    let mut shared = Files::new(DeviceStore(&device), &sb, 1, true).unwrap();
+    assert_eq!(shared.rename_root(b"install.new", b"gen-old"), Err(Error::EEXIST));
+    shared.rename_root(b"install.new", b"gen-next").unwrap();
+    let sb = commit(&mut shared, &device, &mut mount);
+    let names = roots(&device, &sb);
+    assert_eq!(names[&scratch].name, b"gen-next");
+    assert_eq!(names[&old].name, b"gen-old");
+    let selected = Files::new(DeviceStore(&device), &sb, scratch, false).unwrap();
+    assert_eq!(read(&selected, &device, bin), b"next");
+    assert_eq!(shared.lookup(2, b"machine-state").unwrap(), shared_ino);
+}

@@ -616,6 +616,8 @@ enum Change {
     Open { ino: u64, open: bool },
     Retain(BTreeSet<u64>),
     Snapshot { name: Vec<u8>, read_only: bool, id: u64 },
+    CreateRoot { name: Vec<u8>, at: Time, id: u64 },
+    RenameRoot { from: Vec<u8>, to: Vec<u8> },
     DeleteRoot { name: Vec<u8> },
     Setattr { ino: u64, attrs: ops::SetAttr, at: Time },
     Create { dir: u64, name: Vec<u8>, inode: Inode, target: Option<Vec<u8>>, at: Time, ino: u64 },
@@ -639,6 +641,10 @@ impl Change {
             Self::Snapshot { name, read_only, id } => {
                 if files.snapshot(&name, read_only)? == id { Ok(()) } else { Err(ops::Error::EIO) }
             }
+            Self::CreateRoot { name, at, id } => {
+                if files.create_empty_root(&name, at)? == id { Ok(()) } else { Err(ops::Error::EIO) }
+            }
+            Self::RenameRoot { from, to } => files.rename_root(&from, &to),
             Self::DeleteRoot { name } => files.delete_root(&name),
             Self::Setattr { ino, attrs, at } => files.setattr(ino, &attrs, at),
             Self::Create { dir, name, inode, target, at, ino } => {
@@ -741,6 +747,21 @@ impl<W: Wait + 'static> OpenFiles<W> {
         let id = self.files.snapshot(name, read_only)?;
         self.record(|| Change::Snapshot { name: copy, read_only, id });
         Ok(id)
+    }
+    fn create_empty_root(&mut self, name: &[u8], at: Time) -> Result<u64, ops::Error> {
+        self.reserve(1)?;
+        let copy = self.copy(name)?;
+        let id = self.files.create_empty_root(name, at)?;
+        self.record(|| Change::CreateRoot { name: copy, at, id });
+        Ok(id)
+    }
+    fn rename_root(&mut self, from: &[u8], to: &[u8]) -> Result<(), ops::Error> {
+        self.reserve(1)?;
+        let from_copy = self.copy(from)?;
+        let to_copy = self.copy(to)?;
+        self.files.rename_root(from, to)?;
+        self.record(|| Change::RenameRoot { from: from_copy, to: to_copy });
+        Ok(())
     }
     fn delete_root(&mut self, name: &[u8]) -> Result<(), ops::Error> {
         self.reserve(1)?;
@@ -3165,16 +3186,10 @@ impl<W: Wait + 'static> BreenFs<W> {
         result
     }
     fn snapshot_request(&self, request: &SnapshotRequest, create: bool) -> Result<(), Errno> {
-        let length = request.name_len as usize;
-        if !(1..=255).contains(&length)
-            || request.flags & !SNAPSHOT_READ_ONLY != 0
-            || (!create && request.flags != 0)
-        {
-            return Err(Errno(EINVAL));
-        }
-        let name = &request.name[..length];
-        if name == b"." || name == b".." || name.contains(&0)
-            || name.contains(&b'/') || name.contains(&b',')
+        let name = snapshot_name(request)?;
+        let empty = request.flags == SNAPSHOT_EMPTY;
+        if (!create && request.flags != 0)
+            || (create && !matches!(request.flags, 0 | SNAPSHOT_READ_ONLY | SNAPSHOT_EMPTY))
         {
             return Err(Errno(EINVAL));
         }
@@ -3194,10 +3209,14 @@ impl<W: Wait + 'static> BreenFs<W> {
                     continue;
                 }
                 state.protect_edit()?;
-                let grant = state.reserve_metadata(&[2], 1, false, false, Operation::Allocate)?;
-                let result = state.files.snapshot(name, request.flags & SNAPSHOT_READ_ONLY != 0);
+                let grant = state.reserve_metadata(&[2], if empty { 2 } else { 1 }, false, false, Operation::Allocate)?;
+                let result = if empty {
+                    state.files.create_empty_root(name, now())
+                } else {
+                    state.files.snapshot(name, request.flags & SNAPSHOT_READ_ONLY != 0)
+                };
                 let id = state.finish_metadata(&[], grant, result)?;
-                state.roots.insert(id, (name.to_vec(), request.flags));
+                state.roots.insert(id, (name.to_vec(), request.flags & SNAPSHOT_READ_ONLY));
                 drop(state);
                 return self.sync_generation(None, false);
             }
@@ -3218,6 +3237,46 @@ impl<W: Wait + 'static> BreenFs<W> {
         }
         self.sync_generation(None, false)
     }
+    fn snapshot_rename(&self, request: &SnapshotRename) -> Result<(), Errno> {
+        if request.from.flags != 0 || request.to.flags != 0 {
+            return Err(Errno(EINVAL));
+        }
+        let from = snapshot_name(&request.from)?;
+        let to = snapshot_name(&request.to)?;
+        let _selection = self.inner.mounted_root.device.selection.lock();
+        {
+            let mut state = self.foreground_lock()?;
+            state.writable()?;
+            let (&id, (_, flags)) = state.roots.iter().find(|(_, (name, _))| name == from)
+                .ok_or(Errno(ENOENT))?;
+            let flags = *flags;
+            self.check_root_unmounted(id)?;
+            state.protect_edit()?;
+            let grant = state.reserve_metadata(&[2], 1, false, false, Operation::Allocate)?;
+            let result = state.files.rename_root(from, to);
+            state.finish_metadata(&[], grant, result)?;
+            state.roots.insert(id, (to.to_vec(), flags));
+        }
+        self.sync_generation(None, false)
+    }
+
+    fn snapshot_next(&self, cursor: u64) -> Result<SnapshotNext, Errno> {
+        let state = self.foreground_lock()?;
+        let mut next = SnapshotNext {
+            id: 0,
+            root: SnapshotRequest { flags: 0, name_len: 0, name: [0; 256] },
+        };
+        if let Some((&id, (name, flags))) = state.roots.range(
+            (core::ops::Bound::Excluded(cursor), core::ops::Bound::Unbounded),
+        ).next() {
+            next.id = id;
+            next.root.flags = *flags;
+            next.root.name_len = name.len() as u32;
+            next.root.name[..name.len()].copy_from_slice(name);
+        }
+        Ok(next)
+    }
+
     fn snapshot_status(&self) -> Result<SnapshotStatus, Errno> {
         // Read the current durable SPACE tree even on a frozen reader mounted
         // before the writer's latest snapshot or reaper generation.
@@ -3235,6 +3294,18 @@ impl<W: Wait + 'static> BreenFs<W> {
         })
     }
 }
+fn snapshot_name(request: &SnapshotRequest) -> Result<&[u8], Errno> {
+    let length = request.name_len as usize;
+    if !(1..=255).contains(&length) {
+        return Err(Errno(EINVAL));
+    }
+    let name = &request.name[..length];
+    if name == b"." || name == b".." || name.contains(&0) || name.contains(&b'/') || name.contains(&b',') {
+        return Err(Errno(EINVAL));
+    }
+    Ok(name)
+}
+
 impl<W: Wait + 'static> FileSystem for BreenFs<W> {
     fn ioctl(&self, node: &VNode, request: u64, arg: u64) -> Result<u64, Errno> {
         self.check_node(node)?;
@@ -3248,6 +3319,17 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
                 let value = crate::syscall::userptr::copy_from_user(arg as *const SnapshotRequest)
                     .map_err(|error| Errno(error as i32))?;
                 self.snapshot_request(&value, request == SNAPSHOT_CREATE)?;
+            }
+            SNAPSHOT_RENAME => {
+                let value = crate::syscall::userptr::copy_from_user(arg as *const SnapshotRename)
+                    .map_err(|error| Errno(error as i32))?;
+                self.snapshot_rename(&value)?;
+            }
+            SNAPSHOT_NEXT => {
+                let value = crate::syscall::userptr::copy_from_user(arg as *const SnapshotNext)
+                    .map_err(|error| Errno(error as i32))?;
+                crate::syscall::userptr::copy_to_user(arg as *mut SnapshotNext, &self.snapshot_next(value.id)?)
+                    .map_err(|error| Errno(error as i32))?;
             }
             SNAPSHOT_STATUS => {
                 crate::syscall::userptr::copy_to_user(arg as *mut SnapshotStatus, &self.snapshot_status()?)

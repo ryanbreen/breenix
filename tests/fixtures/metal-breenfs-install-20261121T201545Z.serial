@@ -1,0 +1,40 @@
+UEFI bootloader started
+Jumping to kernel entry point at
+Kernel entry point reached
+[console] uart 0x3f8 source=
+[apic] handoff base=
+Serial port initialized and buffer flushed
+GDT and IDT initialized
+Physical memory offset available
+Frame allocator initialized with
+Heap initialized
+[acpi] tables:
+HAL_TIMER_CALIBRATED
++ IOAPIC; 8259 masked
+PCI: Enumeration complete
+[bcm5720] found fixture
+[bcm5720] reset complete
+Timer initialized
+[smp] every reported CPU is online
+[smp] online=4 reported=4
+[xhci] found fixture
+[xhci] firmware handoff: fixture
+[xhci] running: fixture
+[bcm5720] link up 1000 Mb/s full duplex
+[ INFO] kernel::block: [storage] root record: installed by boot 20261121T201545Z-metal, 303038464 bytes, sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+[xhci] no-op completed by MSI: fixture
+[xhci] port census: fixture
+[ INFO] kernel: [fs] root mounted from the installed disk
+[ INFO] kernel: [block] hardware disks read-only: detected=1 gated=1
+[ INFO] kernel::block::write_policy: [block] write fence: AHCI port 0 LBA 62916608-197134335, 197134336-734005247
+[metal] kernel idle
+[timer] tick rate agrees with the TSC
+[smp] timer ticks on each online CPU
+[bcm5720] frame sent: fixture
+[bcm5720] first frame received
+[dhcp] lease acquired
+[bcm5720] reply received: fixture
+NET: ARP resolved gateway MAC:
+NET: ICMP echo reply received from
+[dns] answer received
+[persistent] install complete: files=823 dirs=42 links=0 hard-links=200 bytes=206757857 left-out=1

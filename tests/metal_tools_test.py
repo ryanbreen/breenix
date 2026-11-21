@@ -1395,13 +1395,15 @@ class DriverTest(StateTest):
         return raised.exception
 
     def test_unexpected_manager_answers_force_off_before_kernel_dispatch(self):
-        for payload in ('image', 'persistent-export'):
+        for payload in ('image', 'persistent-export', 'reclaim-ext2'):
             reports = ('lab answered: nothing (no query URL is configured)',
                        'lab answered: test another-boot',
                        f'lab answered: busy {self.args.id}',
                        f'lab answered: persistent {self.args.id} current',
                        'menu: Starting Breenix in 5 s; any key stops the countdown.',
                        'menu: Starting the previous kernel in 5 s; any key stops the countdown.',
+                       'menu: Starting the ext2 rescue in 5 s; any key stops the countdown.',
+                       'booting rescue ' + 'a' * 40,
                        'installed configuration unavailable; trying existing slots before returning to firmware',
                        'booting current ' + 'a' * 40,
                        'booting previous ' + 'b' * 40)

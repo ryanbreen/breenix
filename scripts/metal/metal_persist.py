@@ -1,8 +1,8 @@
 """The persistent install's layout and the install requests the delivery stub carries out (docs/metal/README.md,
 "Boot manager and persistent install").
 
-The v1 layout has the EFI system partition (the boot manager and kernel slots), test root, system and home; v2 adds
-BreenFS system and home partitions. Their unique GUIDs, and the disk's, are
+The v1 layout has the EFI system partition (the boot manager and kernel slots), test root, system and home. V2 adds
+BreenFS system and home partitions, and v3 clears the old ext2 entries. Their unique GUIDs, and the disk's, are
 made here for the one-time install and kept in the service's `disk.json` (`layout`). A kernel slot is a boot disk in
 the delivery stub's format whose `ramdisk` is the slot's format-2 boot intent. An install request (`persist.cfg`
 and `persist.dat`) tells the stub what to write: for the one-time install the partition table and each partition's
@@ -24,6 +24,9 @@ SECTOR = 512
 FIRST_LBA = 2048
 ROLES = ('esp', 'test', 'system', 'home')
 BREENFS_ROLES = ('breenfs-system', 'breenfs-home')
+EXT2_ROLES = ('system', 'home')
+RECLAIM_PAYLOAD = 'reclaim-ext2'
+RECLAIM_DONE = 'metal-stub: reclaim-ext2: entries 3 and 4 cleared and both GPT copies read back'
 MIGRATION_PATH_ROLES = {
     '/': 'breenfs-system', '/home': 'breenfs-home',
     '/migrate/system': 'breenfs-system', '/migrate/home': 'breenfs-home',
@@ -61,13 +64,20 @@ def new_layout():
 
 
 def check_layout(layout):
-    """A v1 or v2 layout in role order, aligned to 1 MiB, with lowercase GUIDs."""
+    """A persistent layout in GPT order, aligned to 1 MiB, with lowercase GUIDs."""
     parts = layout.get('partitions', {})
-    roles = ROLES if layout.get('version') == 1 else ROLES + BREENFS_ROLES if layout.get('version') == 2 else ()
-    if not roles or set(parts) != set(roles) or not GUID.fullmatch(layout.get('diskGuid', '')):
+    numbered = list(enumerate(ROLES + BREENFS_ROLES, 1))
+    version = layout.get('version')
+    if version == 1:
+        numbered = numbered[:4]
+    elif version == 3:
+        numbered = [entry for entry in numbered if entry[1] not in EXT2_ROLES]
+    elif version != 2:
+        raise ValueError('the recorded layout is not a persistent-install layout')
+    if set(parts) != {role for _, role in numbered} or not GUID.fullmatch(layout.get('diskGuid', '')):
         raise ValueError('the recorded layout is not a persistent-install layout')
     end = FIRST_LBA - 1
-    for number, role in enumerate(roles, start=1):
+    for number, role in numbered:
         part = parts[role]
         try:
             valid = (part['number'] == number and part['type'] == TYPES[role] and GUID.fullmatch(part['guid'])
@@ -78,9 +88,16 @@ def check_layout(layout):
         if not valid:
             raise ValueError(f'the recorded layout\'s {role} partition is malformed')
         end = part['last']
-    if layout['version'] == 2 and len({layout['diskGuid'], *(parts[role]['guid'] for role in roles)}) != 7:
+    if version != 1 and len({layout['diskGuid'], *(part['guid'] for part in parts.values())}) != len(parts) + 1:
         raise ValueError('the recorded layout has duplicate GUIDs')
     return layout
+
+
+def reclaimed_layout(layout):
+    if check_layout(layout)['version'] != 2:
+        raise ValueError('ext2 reclaim needs the migrated six-entry layout')
+    parts = {role: part for role, part in layout['partitions'].items() if role not in EXT2_ROLES}
+    return check_layout(dict(layout, version=3, partitions=parts))
 
 
 def add_breenfs_layout(layout):
@@ -220,7 +237,9 @@ def slot_image(output, esp_files, the_layout, scratch, generation):
     """A kernel slot: the build's bootloader, kernel and boot.json, and the persistent boot's intent as `ramdisk`."""
     parts = the_layout['partitions']
     ramdisk = Path(scratch) / 'slot-intent'
-    ramdisk.write_bytes(intent('persistent', root=parts['system']['guid'], home=parts['home']['guid'], userland=generation))
+    boot = (migration_intent(the_layout, 'cutover', generation) if the_layout['version'] in (2, 3)
+            else intent('persistent', root=parts['system']['guid'], home=parts['home']['guid'], userland=generation))
+    ramdisk.write_bytes(boot)
     files = {name: esp_files[name] for name in metal_image.ESP_FILES}
     files['ramdisk'] = ramdisk
     return metal_image.assemble(output, files)
@@ -390,16 +409,16 @@ class Request:
         return config
 
 
-def check_slot_capacity(the_layout, slot, files):
-    """Reserve three equally bounded slots plus manager files and FAT metadata before writing any request."""
+def check_slot_capacity(the_layout, slot, files, *, slots=3):
+    """Reserve space for the retained and staged slots, manager files and FAT metadata."""
     esp = the_layout['partitions']['esp']
     capacity = (esp['last'] - esp['first'] + 1) * SECTOR
     # FAT tables, directories, notes, configuration and replacement manager copies have room of their own.
     reserve = (32 << 20) + 2 * sum(Path(source).stat().st_size for source in files.values())
     recorded = read_disk().get('slots', {})
     largest = max([Path(slot).stat().st_size] + [entry.get('size', 0) for entry in recorded.values() if entry])
-    if 3 * largest + reserve > capacity:
-        raise ValueError('the ESP cannot hold CURRENT, PREVIOUS and NEXT; no install request was written')
+    if slots * largest + reserve > capacity:
+        raise ValueError('the ESP cannot hold the retained and staged slots; no install request was written')
 
 
 def install_request(directory, the_layout, expect, files, slot, note, site, scratch):
@@ -467,14 +486,41 @@ def add_breenfs_request(directory, layout, *, mkfs=None):
     return request
 
 
-def upgrade_request(directory, the_layout, files, slot, note, site, *, rescue=None):
+def reclaim_request(directory, layout, first, second):
+    """Carry the exact old GPT and the two verified generations to the firmware."""
+    if check_layout(layout)['version'] != 2:
+        raise ValueError('ext2 reclaim needs the migrated six-entry layout')
+    if (not all(re.fullmatch(r'[0-9]{8}T[0-9]{6}Z-metal', boot) for boot in (first, second))
+            or first >= second):
+        raise ValueError('ext2 reclaim needs two successive install IDs')
+    parts = layout['partitions']
+    if any(parts[role].get('name') != NAMES[role] for role in ROLES + BREENFS_ROLES):
+        raise ValueError('ext2 reclaim needs the original partition names')
+    request = Request(directory, RECLAIM_PAYLOAD)
+    request.lines.extend(('expect-disk ' + layout['diskGuid'], f'keep-generations {second} {first}'))
+    for role in ROLES + BREENFS_ROLES:
+        part = parts[role]
+        request.lines.append('partition {number} {type} {guid} {first} {last} {name}'.format(**part))
+    return request.finish(), request
+
+
+def upgrade_request(directory, the_layout, files, slot, note, site, *, rescue=None, breenfs=False):
     """An upgrade: the staged slot, the manager and its configuration into the EFI system partition."""
-    check_slot_capacity(the_layout, slot, files)
+    # The retired rescue archive may still occupy its original ESP space.
+    check_slot_capacity(the_layout, slot, files, slots=4 if breenfs else 3)
     request = Request(directory, 'upgrade')
     request.lines.append('expect-disk ' + the_layout['diskGuid'])
     request.lines.append('disk ' + the_layout['diskGuid'])
     esp = the_layout['partitions']['esp']
     request.lines.append(f"esp {esp['guid']}")
+    if breenfs:
+        if check_layout(the_layout)['version'] not in (2, 3) or rescue is not None:
+            raise ValueError('BreenFS upgrades need the migrated layout and ordinary slots')
+        parts = the_layout['partitions']
+        roles = BREENFS_ROLES + (EXT2_ROLES if the_layout['version'] == 2 else ())
+        request.lines.append('breenfs-upgrade ' + ' '.join(parts[role]['guid'] for role in roles))
+    elif the_layout['version'] in (2, 3) and rescue is None:
+        raise ValueError('ordinary BreenFS upgrades need a closed migration')
     if rescue is not None:
         request.lines.append('migration-slots')
         for path, source in zip(('efi/breenix/next.img', 'efi/breenix/next.txt'), rescue, strict=True):
@@ -483,7 +529,11 @@ def upgrade_request(directory, the_layout, files, slot, note, site, *, rescue=No
     for path, source in dict(files, **{'efi/breenix/next.img': slot, 'efi/breenix/next.txt': note}).items():
         request.esp_file(path, source)
     if rescue is None:
-        for line in manager_config(site):
+        config = manager_config(site)
+        if breenfs and the_layout['version'] == 2:
+            guids = (uuid.UUID(parts[role]['guid']).bytes_le.hex() for role in EXT2_ROLES)
+            config.append('rescue-partitions ' + ' '.join(guids))
+        for line in config:
             request.lines.append('manager-config ' + line)
         request.lines.append('load-option ' + LOAD_OPTION)
     return request.finish(), request
@@ -509,8 +559,8 @@ def store_definition(build_definition, commit):
 def migration_intent(layout, phase, userland):
     """Name only the partitions and write ranges used by this migration phase."""
     check_layout(layout)
-    if layout['version'] != 2 or not userland:
-        raise ValueError('migration needs a v2 layout and an installed generation')
+    if (layout['version'] != 2 and not (layout['version'] == 3 and phase == 'cutover')) or not userland:
+        raise ValueError('the layout and installed generation do not support this migration intent')
     mount_sets = {
         'migrate': (('test', '/', False), ('system', '/migrate/ext2-system', False),
                     ('home', '/migrate/ext2-home', False),
@@ -523,3 +573,14 @@ def migration_intent(layout, phase, userland):
     mounts = [(guids[role], path, write) for role, path, write in mount_sets[phase]]
     return intent('persistent-migrate' if phase == 'migrate' else 'persistent',
                   userland=userland, mounts=mounts, mount_guids=guids)
+
+
+def breenfs_upgrade_intent(layout, userland):
+    if check_layout(layout)['version'] not in (2, 3):
+        raise ValueError('BreenFS upgrade intent requires a BreenFS layout')
+    guids = {role: part['guid'] for role, part in layout['partitions'].items()}
+    return intent('persistent-install', userland=userland, mount_guids=guids, mounts=[
+        (guids['test'], '/', False),
+        (guids['breenfs-system'], '/migrate/system', True),
+        (guids['breenfs-home'], '/migrate/home', True),
+    ])

@@ -164,7 +164,11 @@
     {
       "id": "ext2-retired",
       "title": "The ext2 partitions are reclaimed after two verified upgrades",
-      "cases": []
+      "hostRunner": true,
+      "cases": [
+        { "id": "two-upgrades", "title": "Two successive BreenFS generations boot and pass SSH verification" },
+        { "id": "reclaimed", "title": "Both GPT copies confirm ext2 retirement with the BreenFS slots preserved" }
+      ]
     }
   ]
 }

@@ -2069,7 +2069,7 @@ def probe_upgrade_attempt(args):
                     row = services.get(name, {})
                     if row.get('starts', 0) < 1 or (name != 'ntp' and (row.get('state') != 'running' or not row.get('pid'))):
                         raise ValueError('service not started: ' + name)
-                if phase:
+                if phase or boot.get('breenfsUpgrade'):
                     mounts = probe.ssh('/bin/cat /proc/mounts')
                     probe.require(mounts)
                     probe.require(probe.ssh('/bin/ls -a "$HOME"'))

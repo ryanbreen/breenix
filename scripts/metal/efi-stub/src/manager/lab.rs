@@ -26,6 +26,17 @@ pub const ID_MAX: usize = 40;
 pub enum Entry {
     Current,
     Previous,
+    Rescue,
+}
+
+impl Entry {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Current => "current",
+            Self::Previous => "previous",
+            Self::Rescue => "rescue",
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -56,7 +67,7 @@ pub enum Answer {
     None(&'static str),
 }
 
-/// One answer line: `test <boot>`, `persistent <boot> <current|previous> [commit|rollback]` or `busy <boot>`.
+/// A rescue answer selects the read-only slot without a commit or rollback.
 pub fn parse_answer(body: &[u8]) -> Answer {
     let Ok(text) = core::str::from_utf8(body) else { return Answer::None("the answer is not text") };
     let line = text.strip_suffix('\n').unwrap_or(text);
@@ -74,6 +85,7 @@ pub fn parse_answer(body: &[u8]) -> Answer {
             let entry = match entry {
                 None | Some("current") => Entry::Current,
                 Some("previous") => Entry::Previous,
+                Some("rescue") if action.is_none() => Entry::Rescue,
                 Some(_) => return Answer::None("the answer names an unknown entry"),
             };
             let action = match action {

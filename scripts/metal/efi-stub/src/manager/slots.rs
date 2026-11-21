@@ -1,6 +1,8 @@
 //! The manager's files on the EFI system partition (docs/metal/README.md, "Disk layout" and "Slot actions"):
 //! `MANAGER.CFG`, the kernel slots `CURRENT.IMG` and `PREVIOUS.IMG` with their `.TXT` notes, and `NEXT.*` while an
 //! upgrade is staged.
+use core::ptr::{null, null_mut};
+
 use metal_efi::bootdisk;
 use metal_efi::files::Root;
 use metal_efi::say;
@@ -31,6 +33,7 @@ pub struct Config {
     pub port_len: usize,
     pub http_option: Option<u16>,
     pub test_path: TestPath,
+    rescue: Option<[[u8; 16]; 2]>,
 }
 
 impl Config {
@@ -40,6 +43,17 @@ impl Config {
 
     pub fn port(&self) -> &[u8] {
         &self.port[..self.port_len]
+    }
+
+    pub fn rescue_available(&self, partitions: impl IntoIterator<Item = [u8; 16]>) -> bool {
+        let Some([system, home]) = self.rescue else { return false };
+        let mut have_system = false;
+        let mut have_home = false;
+        for guid in partitions {
+            have_system |= guid == system;
+            have_home |= guid == home;
+        }
+        have_system && have_home
     }
 }
 
@@ -69,6 +83,7 @@ pub fn parse_config(text: &[u8]) -> Option<Config> {
         port_len: 0,
         http_option: None,
         test_path: TestPath::BootNext,
+        rescue: None,
     };
     for line in lines {
         match line.split_once(' ') {
@@ -86,6 +101,16 @@ pub fn parse_config(text: &[u8]) -> Option<Config> {
             Some(("http-option", hex)) if hex.len() == 4 => config.http_option = Some(u16::from_str_radix(hex, 16).ok()?),
             Some(("test-path", "load-file")) => config.test_path = TestPath::LoadFile,
             Some(("test-path", "boot-next")) => config.test_path = TestPath::BootNext,
+            Some(("rescue-partitions", pair)) if config.rescue.is_none() => {
+                let (system, home) = pair.split_once(' ')?;
+                let mut guids = [[0u8; 16]; 2];
+                if unhex(system, &mut guids[0])? != 16 || unhex(home, &mut guids[1])? != 16
+                    || guids[0] == guids[1] || guids.contains(&[0; 16])
+                {
+                    return None;
+                }
+                config.rescue = Some(guids);
+            }
             _ if line.is_empty() => {}
             _ => return None,
         }
@@ -120,6 +145,7 @@ pub fn slot_name(entry: Entry) -> &'static str {
     match entry {
         Entry::Current => "CURRENT",
         Entry::Previous => "PREVIOUS",
+        Entry::Rescue => "RESCUE",
     }
 }
 
@@ -132,7 +158,7 @@ fn path(name: &str, extension: &str, out: &mut [u8; 64]) -> usize {
     len
 }
 
-/// The note of slot `name` (`CURRENT`, `PREVIOUS` or `NEXT`), absent when its image is.
+/// The note of slot `name`, absent when its image is.
 ///
 /// # Safety
 /// `root` must be the EFI system partition's open root.
@@ -159,6 +185,31 @@ pub unsafe fn note(root: &Root, name: &str) -> Note {
         }
     }
     note
+}
+
+/// The rescue pair is selectable only while both of its GPT partitions are visible.
+///
+/// # Safety
+/// `root` must be the EFI system partition's open root.
+pub unsafe fn rescue_note(boot: &BootServices, root: &Root, config: &Config) -> Note {
+    if config.rescue.is_none() {
+        return Note::ABSENT;
+    }
+    let mut count = 0;
+    let mut handles = null_mut();
+    if (boot.locate_handle_buffer)(BY_PROTOCOL, &BLOCK_IO, null(), &mut count, &mut handles) != SUCCESS {
+        return Note::ABSENT;
+    }
+    let signatures = (0..count).filter_map(|i| partition_signature(boot, *handles.add(i)));
+    let available = config.rescue_available(signatures);
+    (boot.free_pool)(handles.cast());
+    if available {
+        let note = note(root, slot_name(Entry::Rescue));
+        if note.commit.iter().all(u8::is_ascii_hexdigit) {
+            return note;
+        }
+    }
+    Note::ABSENT
 }
 
 /// Boots slot `entry`: reads its image into memory, attaches it as a RAM disk and starts its bootloader. Returns only
