@@ -432,13 +432,16 @@ fn pause_at(
     select: impl Fn(super::super::preempt::context::Event) -> bool + 'static,
     entered: std::sync::mpsc::Sender<()>,
     resume: std::sync::mpsc::Receiver<()>,
+    mut wait_for_worker: impl FnMut(Duration) + 'static,
 ) {
     let mut entered = Some(entered);
     let mut wait_deadline = None;
     super::super::preempt::context::observer(Some(Box::new(move |event| {
         if matches!(event, super::super::preempt::context::Event::CommitWait { .. }) {
             let deadline = wait_deadline.get_or_insert_with(|| Instant::now() + WAIT_LIMIT);
-            assert!(Instant::now() < *deadline, "commit receipt wait exceeded its deadline");
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "commit receipt wait exceeded its deadline");
+            wait_for_worker(remaining);
         }
         if select(event) {
             if let Some(entered) = entered.take() {
@@ -451,11 +454,13 @@ fn pause_at(
 
 fn interleave_pressure<T>(fs: &BreenFs<NoWait>, cut: FreezeCut, inspect: impl FnOnce() -> T) -> T {
     use super::super::preempt::context::Event;
-    use std::{sync::mpsc::channel, thread};
+    use std::{sync::mpsc::{channel, RecvTimeoutError, Sender}, thread};
     let (worker_entered, at_worker_edge) = channel();
     let (resume_worker, worker_resume) = channel();
     let (pressure_entered, at_pressure_edge) = channel();
     let (resume_pressure, pressure_resume) = channel();
+    let (initial_pass, initial_result) = channel();
+    let (run_worker, worker_requests) = channel::<Sender<Result<bool, Errno>>>();
     let start = fs.inner.state.lock().durable.generation;
 
     thread::scope(move |scope| {
@@ -468,8 +473,17 @@ fn interleave_pressure<T>(fs: &BreenFs<NoWait>, cut: FreezeCut, inspect: impl Fn
                     op: "commit", phase: "publication", begin: false,
                 }),
                 FreezeCut::BeforeInstall => false,
-            }, worker_entered, worker_resume);
-            fs.commit_due(0)
+            }, worker_entered, worker_resume, |_| {});
+            initial_pass.send(fs.commit_due(0)).unwrap();
+            // The first pass witnesses the cut. Keep the same worker alive
+            // for any later reservation-pressure request from the creator.
+            loop {
+                match worker_requests.recv_timeout(WAIT_LIMIT) {
+                    Ok(done) => done.send(fs.commit_due(0)).unwrap(),
+                    Err(RecvTimeoutError::Disconnected) => break,
+                    Err(RecvTimeoutError::Timeout) => panic!("pressure create did not finish"),
+                }
+            }
         });
         let (start_pressure, pressure_start) = channel();
         let pressure = scope.spawn(move || {
@@ -486,7 +500,14 @@ fn interleave_pressure<T>(fs: &BreenFs<NoWait>, cut: FreezeCut, inspect: impl Fn
                 _ => matches!(event, Event::Phase {
                     op: "commit", phase: "apply-touches", begin: true,
                 }),
-            }, pressure_entered, pressure_resume);
+            }, pressure_entered, pressure_resume, move |remaining| {
+                let (done, completed) = channel();
+                run_worker.send(done).expect("pressure commit worker exited");
+                assert_eq!(
+                    completed.recv_timeout(remaining).expect("pressure commit worker did not publish"),
+                    Ok(true),
+                );
+            });
             let state = fs.mutation_lock(CostOp::Create);
             let result = fs.reserve_with_pressure(
                 CostOp::Create, state, || Ok(fs.mutation_lock(CostOp::Create)), |state| {
@@ -513,10 +534,14 @@ fn interleave_pressure<T>(fs: &BreenFs<NoWait>, cut: FreezeCut, inspect: impl Fn
         } else {
             resume_worker.send(()).unwrap();
         }
-        assert_eq!(worker.join().unwrap(), Ok(matches!(cut, FreezeCut::AfterInstall)));
+        assert_eq!(
+            initial_result.recv_timeout(WAIT_LIMIT).expect("worker did not finish its first pass"),
+            Ok(matches!(cut, FreezeCut::AfterInstall)),
+        );
         let observed = inspect();
         resume_pressure.send(()).unwrap();
         pressure.join().unwrap();
+        worker.join().unwrap();
         observed
     })
 }
@@ -887,7 +912,7 @@ fn reset_releases_surface_arenas_during_worker_publication() {
         let worker = scope.spawn(|| {
             pause_at(|event| matches!(event, Event::Phase {
                 op: "commit", phase: "apply-touches", begin: true,
-            }), entered, released);
+            }), entered, released, |_| {});
             fs.commit_due(0)
         });
         edge.recv_timeout(Duration::from_secs(5)).unwrap();
