@@ -1,6 +1,7 @@
 """Score synthetic evidence through the cold-readback checker CLI."""
 
 import hashlib
+import json
 from pathlib import Path
 import struct
 import subprocess
@@ -50,10 +51,22 @@ else:
 ''')
             tool.chmod(0o755)
 
-    def score(self, mode, serial, log=b'', *, check_status=0, check_stdout=b''):
+    def score(self, mode, serial, log=b'', *, check_status=0, check_stdout=b'', gap=False, off=True, root_match=True):
         (self.work / 'crash-log').write_bytes(log)
         (self.work / 'serial.txt').write_bytes(serial)
         (self.work / 'check-stdout').write_bytes(check_stdout)
+        events = [
+            dict(event='disk-root-record', t=1, matchesLastInstall=root_match, installedBy='writer'),
+            dict(event='power-cut-writer-start', t=2, nonce='0123456789abcdef'),
+            dict(event='power-off', t=5, off=off),
+        ]
+        if gap:
+            events.insert(2, dict(event='console-gap-start', t=3))
+        (self.work / 'events.jsonl').write_text(''.join(json.dumps(event) + '\n' for event in events))
+        (self.work / 'run.json').write_text(json.dumps(dict(
+            id='writer', rootFs='breenfs', disk='root', mode='suite',
+            onlyCase='power-cut/writer', powerCut=dict(cutAt=4, powerOffConfirmed=off),
+        )))
         (self.work / 'check-status').write_text(str(check_status))
         return subprocess.run(
             [sys.executable, str(CHECKER), mode, 'serial.txt', self.image.name,
@@ -85,6 +98,23 @@ else:
                 result = self.score('replay', serial, log)
                 self.assertEqual(result.returncode, 1, result.stderr)
                 self.assertIn(message, result.stderr)
+
+    def test_replay_refuses_unbound_or_incomplete_capture(self):
+        result = self.score('replay', START + ack(1), record(1), gap=True)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('console gap', result.stderr)
+
+        result = self.score('replay', START + b'kernel: ' + ack(1), record(1))
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('invalid FSYNC receipt', result.stderr)
+
+        result = self.score('replay', START + ack(1), record(1), off=False)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('confirmed power-off', result.stderr)
+
+        result = self.score('replay', START + ack(1), record(1), root_match=False)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('root identity', result.stderr)
 
     def test_replay_requires_an_acknowledged_write(self):
         result = self.score('replay', START, record(1))
