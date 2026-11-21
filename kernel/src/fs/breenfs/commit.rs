@@ -464,78 +464,58 @@ impl PreparedCommit {
             return Err(at(Stage)(BlockError::IoError));
         }
         let mut uncached = false;
-        #[cfg(feature = "breenfs_corrupt_inject")]
-        let mut altered = [0; BLOCK_SIZE];
+        let mut write_range = |start: u64, bytes: &[u8]| {
+            let mut staged = 0;
+            for (i, bytes) in bytes.chunks_exact(sector).enumerate() {
+                preemption_point();
+                if uncached {
+                    break;
+                }
+                let stage = || cache.write(device, group.clone(), start + i as u64, bytes);
+                let mut result = stage();
+                if result == Err(BlockError::OutOfMemory) {
+                    cache.submit(device, group).wait().map_err(at(DataWrite))?;
+                    preemption_point();
+                    result = stage();
+                    if result == Err(BlockError::OutOfMemory)
+                        && cache.relieve_publication_pressure(device) != PressureWait::Unavailable
+                    {
+                        result = stage();
+                    }
+                }
+                if result == Err(BlockError::OutOfMemory) {
+                    uncached = true;
+                    break;
+                }
+                result.map_err(at(DataWrite))?;
+                staged = i + 1;
+            }
+            if uncached {
+                // The batch above has completed. Write the remaining bytes
+                // without another copy when peer buffers keep the cache full.
+                let mut block = start + staged as u64;
+                for run in bytes[staged * sector..].chunks(RUN_BYTES) {
+                    preemption_point();
+                    cache.write_uncached(device, block, run).map_err(at(DataWrite))?;
+                    block += (run.len() / sector) as u64;
+                }
+            }
+            Ok::<(), PublicationError>(())
+        };
         for (&addr, bytes) in self.nodes.iter().chain(self.data.iter()) {
             preemption_point();
+            let start = addr * (BLOCK_SIZE / sector) as u64;
             #[cfg(feature = "breenfs_corrupt_inject")]
-            let flip = injection.and_then(|(injection, target)| {
-                if !self.data.contains_key(&addr)
-                    || !(addr..addr + (bytes.len() / BLOCK_SIZE) as u64).contains(&target)
-                {
-                    return None;
-                }
-                injection.take_for(target, target, BLOCK_SIZE)
-            });
-            // Both cached and uncached writes use the same altered block, while
-            // the prepared bytes and their checksums still describe the original.
-            #[cfg(feature = "breenfs_corrupt_inject")]
-            let ranges = if let Some(flip) = &flip {
-                let offset = (flip.block - addr) as usize * BLOCK_SIZE;
-                altered.copy_from_slice(&bytes[offset..offset + BLOCK_SIZE]);
-                flip.apply(&mut altered);
-                [&bytes[..offset], altered.as_slice(), &bytes[offset + BLOCK_SIZE..]]
-            } else {
-                [bytes.as_slice(), &[], &[]]
-            };
-            #[cfg(not(feature = "breenfs_corrupt_inject"))]
-            let ranges = [bytes.as_slice()];
-            let mut start = addr * (BLOCK_SIZE / sector) as u64;
-            for bytes in ranges.into_iter().filter(|range| !range.is_empty()) {
-                let mut staged = 0;
-                for (i, bytes) in bytes.chunks_exact(sector).enumerate() {
-                    preemption_point();
-                    if uncached {
-                        break;
-                    }
-                    let stage = || cache.write(device, group.clone(), start + i as u64, bytes);
-                    let mut result = stage();
-                    if result == Err(BlockError::OutOfMemory) {
-                        cache.submit(device, group).wait().map_err(at(DataWrite))?;
-                        preemption_point();
-                        result = stage();
-                        if result == Err(BlockError::OutOfMemory)
-                            && cache.relieve_publication_pressure(device) != PressureWait::Unavailable
-                        {
-                            result = stage();
-                        }
-                    }
-                    if result == Err(BlockError::OutOfMemory) {
-                        uncached = true;
-                        break;
-                    }
-                    result.map_err(at(DataWrite))?;
-                    staged = i + 1;
-                }
-                if uncached {
-                    // The batch above has completed. The prepared bytes can be
-                    // submitted without another copy when peer buffers keep the cache full.
-                    let mut block = start + staged as u64;
-                    for run in bytes[staged * sector..].chunks(RUN_BYTES) {
-                        preemption_point();
-                        cache.write_uncached(device, block, run).map_err(at(DataWrite))?;
-                        block += (run.len() / sector) as u64;
-                    }
-                }
-                start += (bytes.len() / sector) as u64;
+            if let Some((injection, target)) = injection.filter(|_| self.data.contains_key(&addr)) {
+                injection.write_selected(target, start, sector, bytes, &mut write_range, |flip| {
+                    crate::serial_println!(
+                        "\n[breenfs] corrupt-inject block={} offset={} bit={}",
+                        flip.block, flip.offset, flip.bit
+                    );
+                })?;
+                continue;
             }
-            #[cfg(feature = "breenfs_corrupt_inject")]
-            if let Some(flip) = flip {
-                crate::serial_println!(
-                    "\n[breenfs] corrupt-inject block={} offset={} bit={}",
-                    flip.block, flip.offset, flip.bit
-                );
-            }
+            write_range(start, bytes)?;
         }
         cache.submit(device, group).wait().map_err(at(DataWrite))?;
         #[cfg(feature = "breenfs_commit_window")]

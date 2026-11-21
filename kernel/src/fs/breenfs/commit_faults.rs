@@ -124,6 +124,49 @@ impl Injection {
         self.take(sector, sector_size, true)
     }
 
+    /// Publish the selected data sector from a copy, leaving its prepared CRC
+    /// and the bytes on either side of it alone.
+    pub(super) fn write_selected<E>(
+        &self,
+        target: u64,
+        start: u64,
+        sector_size: usize,
+        bytes: &[u8],
+        mut write: impl FnMut(u64, &[u8]) -> Result<(), E>,
+        report: impl FnOnce(Flip),
+    ) -> Result<(), E> {
+        let sectors_per_block = (BLOCK_SIZE / sector_size) as u64;
+        let block_offset = target
+            .checked_sub(start / sectors_per_block)
+            .filter(|&offset| offset < (bytes.len() / BLOCK_SIZE) as u64);
+        let Some(block_offset) = block_offset else {
+            return write(start, bytes);
+        };
+        if self.block.is_some_and(|block| block != target) || self.taken.load(Ordering::Relaxed) {
+            return write(start, bytes);
+        }
+
+        let offset = block_offset as usize * BLOCK_SIZE + self.offset / sector_size * sector_size;
+        let sector = start + (offset / sector_size) as u64;
+        if offset != 0 {
+            write(start, &bytes[..offset])?;
+        }
+        let Some(flip) = self.take_for(target, sector, sector_size) else {
+            return write(sector, &bytes[offset..]);
+        };
+        let end = offset + sector_size;
+        let mut altered = [0; BLOCK_SIZE];
+        let altered = &mut altered[..sector_size];
+        altered.copy_from_slice(&bytes[offset..end]);
+        flip.apply(altered);
+        write(sector, altered)?;
+        report(flip);
+        if end < bytes.len() {
+            write(sector + 1, &bytes[end..])?;
+        }
+        Ok(())
+    }
+
     pub(super) fn take(&self, sector: u64, sector_size: usize, is_data: bool) -> Option<Flip> {
         let per_block = (BLOCK_SIZE / sector_size) as u64;
         let block = sector / per_block;
