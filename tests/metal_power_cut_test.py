@@ -36,6 +36,26 @@ class PowerCutCliTest(unittest.TestCase):
                 expected = float(value) if flag == '--power-cut-after' else value
                 self.assertEqual(getattr(parsed, flag[2:].replace('-', '_')), expected)
 
+    def test_fault_launch_selects_matching_feature_and_intent(self):
+        run = load_script('metal-run')
+        for flags, feature, intent in (
+            (['--power-cut-window', 'node-writes'], 'breenfs_commit_window',
+             'breenfs_commit_window=node-writes breenfs_after_receipt=1'),
+            (['--breenfs-bit-flip'], 'breenfs_corrupt_inject',
+             'breenfs_corrupt_inject=first-data:64:0'),
+        ):
+            with self.subTest(flags=flags):
+                args = run.argument_parser().parse_args(
+                    ['boot', *CLI, '--case', 'power-cut/writer', *flags])
+                args.mode = 'suite'
+                run.metal_power_cut.validate(args)
+                self.assertEqual(run.metal_power_cut.kernel_fault(args), (feature, intent))
+                self.assertEqual(run.argument_parser().parse_args(
+                    ['_build', 'id', 'a' * 40, '--features', feature]).features, feature)
+                args.kernel_command_line = 'breenfs_commit_window=between-rings'
+                with self.assertRaises(ValueError):
+                    run.metal_power_cut.validate(args)
+
     def test_reject_unsafe_or_ambiguous_requests_before_launch(self):
         run = load_script('metal-run')
         parser = run.argument_parser()
