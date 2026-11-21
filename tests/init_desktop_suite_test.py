@@ -117,7 +117,7 @@ macro_rules! print { ($($arg:tt)*) => {{
 macro_rules! println { ($($arg:tt)*) => { print!("{}\n", format!($($arg)*)) } }
 fn run_boot_checks() { event("checks"); }
 fn reconcile_machine_state() { event("state"); }
-fn run_boot_script() { event("script"); }
+fn run_boot_script() -> Option<i32> { event("script"); None }
 fn finish_boot_checks() { event("finish"); }
 pub fn start_bounce() { panic!("suite must not launch an ambient desktop app") }
 fn check_test_controls(_: u64) { event("controls"); }
@@ -232,7 +232,9 @@ pub mod init_services {
    assert_eq!(name, "shares");
    Some(if self.ticks < 2 || crate::STALLED.load(crate::Ordering::Relaxed) { "running" } else { "done" })
   }
+  pub fn ssh_boot_oracle_reaped(&self) -> bool { true }
   pub fn tick_child(&mut self, pid: Option<i32>) -> Option<i32> {
+   if pid.is_none() { self.tick(); return None; }
    assert_eq!(pid, Some(9)); self.watched += 1; crate::event("supervise");
    if self.watched == 2 { Some(0) } else { None }
   }

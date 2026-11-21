@@ -365,7 +365,9 @@ fn completion_is_recorded_by_the_next_commit_and_survives_later_commit_and_recov
     // The split prepare/publish path used by the kernel preserves the same fields.
     let mut committer = Committer::new(recovered.clone());
     let mut files = Files::new(DeviceStore(&remounted), &recovered, 1, true).unwrap();
-    let prepared = committer.prepare_files(&remounted, &mut files).unwrap();
+    let frozen = committer.freeze().unwrap();
+    files.prepare_commit().unwrap();
+    let prepared = frozen.prepare_settled_files(&remounted, &mut files).unwrap();
     assert_eq!(
         (
             prepared.superblock().last_scrub_generation,

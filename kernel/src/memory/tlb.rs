@@ -566,7 +566,7 @@ mod shootdown {
             crate::task::cpu_progress::record_nmi(cpu, frame);
         }
         if pending & AHCI_LAPIC_SAMPLE != 0 {
-            crate::drivers::ahci::record_lapic_sample(cpu);
+            crate::drivers::ahci::record_lapic_sample(cpu, frame);
         }
     }
 

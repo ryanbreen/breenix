@@ -24,6 +24,8 @@ use gpu_abi::{test_control as tc_op, test_point, Plain, TcArm, TcFired};
 use crate::syscall::errno::{EFAULT, EINVAL, ENOSYS, EPERM};
 use crate::syscall::SyscallResult;
 
+mod resident_census;
+
 /// Whether test controls are enabled for this boot. Written once, by `latch_init_program`.
 static ENABLED: AtomicBool = AtomicBool::new(false);
 /// Whether the latch has been decided. The first designation decides it for the boot.
@@ -167,6 +169,9 @@ pub fn sys_test_control(op: u64, arg: u64, len: u64) -> SyscallResult {
     if !enabled() {
         return err(ENOSYS);
     }
+    if op == u64::from(tc_op::RESIDENT_CENSUS) {
+        return resident_census::control(arg, len);
+    }
     if !caller_is_root() {
         return err(EPERM);
     }
@@ -222,7 +227,7 @@ pub fn sys_test_control(op: u64, arg: u64, len: u64) -> SyscallResult {
                 Err(_) => err(EFAULT),
             }
         }
-        // There is no op that sets or clears the latch: 4 and everything above.
+        // Op 4 is reserved. There is no operation that changes the latch.
         _ => err(EINVAL),
     }
 }

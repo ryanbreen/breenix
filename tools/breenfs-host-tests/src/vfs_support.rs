@@ -23,11 +23,8 @@ pub mod vfs;
 pub mod fs {
     pub use crate::{attrs, errno, permissions, vfs};
 }
-pub mod time {
-    pub fn current_unix_time() -> u64 {
-        1
-    }
-}
+#[path = "test_clock.rs"]
+pub mod time;
 // The mapping fixture executes the production writeback traversal and copy.
 pub mod memory {
     pub fn physical_memory_offset() -> HostOffset { HostOffset }

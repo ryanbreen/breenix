@@ -29,7 +29,7 @@ class FreeCountDifferential(unittest.TestCase):
         unlink = source.split('fn descriptors_unlink_reclaim_breenfs()', 1)[1].split('\nfn descriptors_unlink_reclaim()', 1)[0]
         self.assertLess(unlink.index('markers::sample_root(index, false)'), unlink.index('sync_fd(marker.0.fd(), false)?;'))
         self.assertLess(unlink.index('sync_fd(marker.0.fd(), false)?;'), unlink.index('markers::sample_root(index, true)'))
-        report = (ROOT / 'kernel/src/fs/breenfs/vfs.rs').read_text()
+        report = function('kernel/src/fs/breenfs/vfs.rs', 'fn report(\n')
         self.assertIn('free_blocks={} pending_blocks={}', report)
 
     def test_files_io_cases_get_the_fork_shared_scope(self):
@@ -49,6 +49,7 @@ fn main() {
     assert_eq!(parse(&text), Some((19, 0, 42)));
     assert_eq!(parse("root ext2 free_blocks=3 pending_blocks=4"), None);
     assert_eq!(parse("root breenfs durable_generation=19 free_blocks=3"), None);
+    assert_eq!(parse("root breenfs durable_generation=19 free_blocks=3 pending_blocks=unavailable"), None);
     assert_eq!(parse(&format!("{root} free_blocks=8")), None);
     assert_eq!(parse(&format!("{root}\n{root}")), None);
 }

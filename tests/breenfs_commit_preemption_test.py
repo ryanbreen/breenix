@@ -23,7 +23,6 @@ MAX_WORK_ITEMS_PER_POINT = 256
 LOOPS = {
     'vfs.rs': {
         'mapped_nodes': ('for entry in state.nodes.values()',),
-        'retain_open': ('for times in batch.by_ref().take(RETAIN_OPEN_STEPS)',),
         'drain_pages': ('for &ino in &self.dirty_nodes',),
         'commit_generation_up_to': ('for ino in touched',
                                     'for (start, count) in prepared.data_ranges()',
@@ -129,6 +128,14 @@ class CommitPreemption(unittest.TestCase):
         commit = strip_comments((BREENFS / 'commit.rs').read_text())
         self.assertNotIn('txn.writes().clone()', function(commit, 'prepare'))
         vfs = strip_comments((BREENFS / 'vfs.rs').read_text())
+        retain_open = function(vfs, 'retain_open')
+        loop = re.search(r'\bfor _ in 0\.\.RETAIN_OPEN_STEPS\s*\{', retain_open)
+        self.assertIsNotNone(loop)
+        end = block_end(retain_open, loop.end())
+        self.assert_point_at_boundary(
+            retain_open[loop.end():end],
+            re.escape('let Some(times) = batch.next() else { break; };'),
+        )
         self.assertIn('preemption_point();', function(vfs, 'commit_due'))
         self.assertIn('preemption_point();', function(vfs, 'apply_touches'))
         # Points and calls into the instrumented core must not be under a

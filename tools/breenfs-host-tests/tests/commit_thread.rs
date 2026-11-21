@@ -76,7 +76,9 @@ mod hold {
                 .unwrap();
             let receipt = committer.waiter();
             let before = dev.events().len();
-            let prepared = committer.prepare_files(dev.as_ref(), &mut files).unwrap();
+            let frozen = committer.freeze().unwrap();
+            files.prepare_commit().unwrap();
+            let prepared = frozen.prepare_settled_files(dev.as_ref(), &mut files).unwrap();
             assert_eq!(dev.events().len(), before, "preparation issued I/O");
             let asked = Arc::new(AtomicBool::new(false));
             let callback = {
@@ -98,7 +100,8 @@ mod hold {
                 None,
                 "receipt completed before publication result"
             );
-            committer.complete(&prepared, result);
+            committer.install(prepared.superblock());
+            frozen.wake(result);
             assert_eq!(receipt.result(), Some(Ok(())));
             let events = dev.events();
             let events = &events[before..];
@@ -163,7 +166,9 @@ fn fsync_waits_for_the_generation_it_joined() {
     let mut files = Files::new(DeviceStore(&dev), &sb, 1, true).unwrap();
     files.create(2, b"first", 0o600, Time::default()).unwrap();
     let first = committer.waiter();
-    let prepared = committer.prepare_files(&dev, &mut files).unwrap();
+    let frozen = committer.freeze().unwrap();
+    files.prepare_commit().unwrap();
+    let prepared = frozen.prepare_settled_files(&dev, &mut files).unwrap();
     let second = committer.waiter();
     assert_eq!(first.generation(), 2);
     assert_eq!(second.generation(), 3);
@@ -172,24 +177,28 @@ fn fsync_waits_for_the_generation_it_joined() {
     let group = WriteGroup::hold(&dev, Arc::new(|| {}));
     let result = prepared.write_cached(&cache, &dev, &group);
     assert_eq!(result, Ok(()));
-    committer.complete(&prepared, result);
+    committer.install(prepared.superblock());
+    frozen.wake(result);
     assert_eq!(first.result(), Some(Ok(())));
     assert_eq!(second.result(), None, "G's flush acknowledged G+1");
     let mut files = Files::new(DeviceStore(&dev), prepared.superblock(), 1, true).unwrap();
     files.create(2, b"second", 0o600, Time::default()).unwrap();
-    let prepared = committer.prepare_files(&dev, &mut files).unwrap();
+    let frozen = committer.freeze().unwrap();
+    files.prepare_commit().unwrap();
+    let prepared = frozen.prepare_settled_files(&dev, &mut files).unwrap();
     let third = committer.waiter();
     dev.fail.store(true, Ordering::SeqCst);
     let result = prepared.write_cached(&cache, &dev, &group);
     assert_eq!(result, Err(Error::EIO));
     let issued = dev.disk.events().len();
-    committer.complete(&prepared, result);
+    committer.abandon();
+    frozen.wake(result);
     assert!(committer.read_only());
     assert_eq!(first.result(), Some(Ok(())));
     for receipt in [second, third, committer.waiter()] {
         assert_eq!(receipt.result(), Some(Err(Error::EIO)));
     }
-    assert!(committer.prepare_files(&dev, &mut files).is_err());
+    assert!(committer.freeze().is_err());
     assert_eq!(
         dev.disk.events().len(),
         issued,

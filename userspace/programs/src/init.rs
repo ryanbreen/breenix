@@ -192,7 +192,7 @@ fn main() {
 
     run_boot_checks();
     reconcile_machine_state();
-    run_boot_script();
+    let _ = run_boot_script();
     // The services start on the supervisor's first pass; the rest of the ARM64 start-up
     // follows it and does not wait on a service.
     let scope = if cfg!(target_arch = "aarch64") && mode.as_deref() != Some("full-console") {
@@ -357,7 +357,7 @@ fn run_desktop_mode() -> ! {
     if system {
         run_boot_checks();
         reconcile_machine_state();
-        run_boot_script();
+        let _ = run_boot_script();
     }
     let mut supervisor = init_services::Supervisor::load(init_services::Scope::Desktop, system);
     supervisor.tick();
@@ -393,11 +393,13 @@ fn run_desktop_suite(pid: u64, path: &str, args: Vec<String>) -> ! {
     let boot = std::env::args().nth(1).as_deref() != Some("sequence");
     // Match the runner: a selected case is not a sequence participant.
     let place = if args.iter().any(|arg| arg == "--case") { None } else { sequence::read("gui-apps") };
-    if boot {
+    let mut boot_child = if boot {
         run_boot_checks();
         reconcile_machine_state();
-        run_boot_script();
-    }
+        run_boot_script()
+    } else {
+        None
+    };
     if let Some((ids, index)) = &place {
         sequence::prepare_owner(ids, *index);
         if let Err(error) = sequence::activate_desktop_shares() {
@@ -408,7 +410,9 @@ fn run_desktop_suite(pid: u64, path: &str, args: Vec<String>) -> ! {
     if !boot { publish_log_boot_id(false); }
     // The per-case session supplies bwm. No production bwm or bterm competes for the display.
     let mut supervisor = init_services::Supervisor::load(init_services::Scope::Daemons, true);
-    supervisor.tick();
+    if supervisor.tick_child(boot_child).is_some() {
+        boot_child = None;
+    }
     if boot { finish_boot_checks(); }
     let start = std::time::Instant::now();
     let mut reported_second = None;
@@ -422,23 +426,31 @@ fn run_desktop_suite(pid: u64, path: &str, args: Vec<String>) -> ! {
             || std::fs::read_to_string("/run/breenix/ntp-state").ok()
                 .and_then(|state| state.split_whitespace().next()?.parse::<u64>().ok())
                 .is_some_and(|syncs| syncs > 0);
+        let boot_reaped = boot_child.is_none() && supervisor.ssh_boot_oracle_reaped();
         if !clock_ready && waited_ms >= 30_000 {
             print!("SUITE gui-apps ERROR initial clock synchronization incomplete waited_ms={}\n", waited_ms);
             supervisor.poweroff();
             supervisor.run()
         }
-        if clock_ready && desktop_suite_ready(pid, true, shares, waited_ms) {
+        if !boot_reaped && waited_ms >= 30_000 {
+            print!("SUITE gui-apps ERROR boot children still resident waited_ms={}\n", waited_ms);
+            supervisor.poweroff();
+            supervisor.run()
+        }
+        if clock_ready && boot_reaped && desktop_suite_ready(pid, true, shares, waited_ms) {
             print!("[init] shares startup state={} waited_ms={}{}\n", shares.unwrap_or("missing"),
                 waited_ms, if waited_ms >= 30_000 { " deadline expired; launching suite" } else { "" });
             break;
         }
         let second = waited_ms / 1000;
         if reported_second != Some(second) {
-            print!("[init] waiting for desktop services shares={} clock_ready={} waited_ms={} deadline_ms=30000\n",
-                shares.unwrap_or("missing"), clock_ready, waited_ms);
+            print!("[init] waiting for desktop services shares={} clock_ready={} boot_reaped={} waited_ms={} deadline_ms=30000\n",
+                shares.unwrap_or("missing"), clock_ready, boot_reaped, waited_ms);
             reported_second = Some(second);
         }
-        supervisor.tick();
+        if supervisor.tick_child(boot_child).is_some() {
+            boot_child = None;
+        }
         let _ = libbreenix::time::sleep_ms(50);
     }
     // Inherit serial directly: service log pipes must not swallow or prefix suite records.
@@ -758,48 +770,46 @@ fn console_text_mode() {
     }
 }
 
-fn run_boot_script() {
+// Return the finite ARM64 helper so the desktop-suite supervisor can wait for
+// its actual reap before the runner takes the memory baseline.
+fn run_boot_script() -> Option<i32> {
     #[cfg(target_arch = "aarch64")]
     {
         // Start background services before handing the splash to the console.
-        const SERVICES: &[&[u8]] = &[b"/usr/bin/xhci_counters\0"];
-        for path in SERVICES {
-            if let Err(e) = spawn(path) {
+        let child = match spawn(b"/usr/bin/xhci_counters\0") {
+            Ok(pid) => Some(pid.raw() as i32),
+            Err(e) => {
                 print!("[init] Warning: failed to spawn service: {}\n", e);
+                None
             }
-        }
+        };
         console_text_mode();
         // On ARM64 this stage marks services and KD_TEXT, before bwm is spawned.
         print!("[init] Boot script completed\n");
-        return;
+        child
     }
 
     #[cfg(not(target_arch = "aarch64"))]
-    let path = b"/bin/bsh\0";
-    #[cfg(not(target_arch = "aarch64"))]
-    let arg0 = b"bsh\0";
-    #[cfg(not(target_arch = "aarch64"))]
-    let arg1 = b"--init-shell\0";
-    #[cfg(not(target_arch = "aarch64"))]
-    let argv = [arg0.as_ptr(), arg1.as_ptr(), core::ptr::null()];
-    #[cfg(not(target_arch = "aarch64"))]
-    match spawnv(path, argv.as_ptr()) {
-        Ok(child_pid) => {
-            let child_raw = child_pid.raw() as i32;
-            let mut status: i32 = 0;
-            match waitpid(child_raw, &mut status as *mut i32, 0) {
-                Ok(_) if libbreenix::process::wifexited(status)
-                    && libbreenix::process::wexitstatus(status) == 0 => {
-                    console_text_mode();
-                    print!("[init] Boot script completed\n");
+    {
+        let path = b"/bin/bsh\0";
+        let argv = [b"bsh\0".as_ptr(), b"--init-shell\0".as_ptr(), core::ptr::null()];
+        match spawnv(path, argv.as_ptr()) {
+            Ok(child_pid) => {
+                let child_raw = child_pid.raw() as i32;
+                let mut status: i32 = 0;
+                match waitpid(child_raw, &mut status as *mut i32, 0) {
+                    Ok(_) if libbreenix::process::wifexited(status)
+                        && libbreenix::process::wexitstatus(status) == 0 => {
+                        console_text_mode();
+                        print!("[init] Boot script completed\n");
+                    }
+                    Ok(_) => print!("[init] Boot script failed with status {}\n", status),
+                    Err(e) => print!("[init] Boot script reap failed: {}\n", e),
                 }
-                Ok(_) => print!("[init] Boot script failed with status {}\n", status),
-                Err(e) => print!("[init] Boot script reap failed: {}\n", e),
             }
+            Err(e) => print!("[init] Failed to spawn boot script: {}\n", e),
         }
-        Err(e) => {
-            print!("[init] Failed to spawn boot script: {}\n", e);
-        }
+        None
     }
 }
 

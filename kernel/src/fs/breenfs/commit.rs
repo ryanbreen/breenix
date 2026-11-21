@@ -132,15 +132,29 @@ impl Committer {
     pub fn read_only(&self) -> bool {
         self.failed || self.durable.ro_compat != 0
     }
-    pub fn waiter(&mut self) -> Arc<FsyncWaiter> {
-        let w = Arc::new(FsyncWaiter {
+    fn new_waiter(&self) -> FsyncWaiter {
+        FsyncWaiter {
             generation: self.open_generation,
             status: AtomicU8::new(if self.read_only() { 2 } else { 0 }),
-        });
+        }
+    }
+    pub fn waiter(&mut self) -> Arc<FsyncWaiter> {
+        let w = Arc::new(self.new_waiter());
         if !self.read_only() {
             self.waiters.push(w.clone());
         }
         w
+    }
+    pub fn try_waiter(
+        &mut self,
+        allocate: impl FnOnce(FsyncWaiter) -> Option<Arc<FsyncWaiter>>,
+    ) -> Option<Arc<FsyncWaiter>> {
+        let w = allocate(self.new_waiter())?;
+        if !self.read_only() {
+            self.waiters.try_reserve(1).ok()?;
+            self.waiters.push(w.clone());
+        }
+        Some(w)
     }
     /// `data` contains private extents, keyed by their starting breenfs block.
     /// The transaction owns their allocated REF records and per-block CRCs.

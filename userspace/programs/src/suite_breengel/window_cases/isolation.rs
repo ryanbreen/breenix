@@ -1029,13 +1029,15 @@ fn isolation_quiet_errors() -> CaseResult {
 }
 
 fn isolation_controls_latched() -> CaseResult {
+    use libbreenix::gpu::abi;
+
     let state = test_control_state();
     ensure(state == 1, "21", format!(
         "test_control(STATE) {} in this suite boot, where PID 1 is /sbin/suite-breengel; the contract latches test controls on here, and STATE returns 1", outcome(state)))?;
-    for op in [4u64, 5, 100, u32::MAX as u64] {
+    for op in [4u64, u64::from(abi::test_control::RESIDENT_CENSUS) + 1, 100, u32::MAX as u64] {
         // SAFETY: these ops take no argument and must be refused before reading one.
         let r = unsafe { raw::syscall3(SYS_TEST_CONTROL, op, 0, 0) as i64 };
-        ensure(r == -22, "21", format!("test_control(op {op}) {}; no op sets or clears the latch, and every op above 3 fails with EINVAL", outcome(r)))?;
+        ensure(r == -22, "21", format!("test_control(op {op}) {}; reserved and undefined ops fail with EINVAL", outcome(r)))?;
     }
     libbreenix::test_control::disarm_all().map_err(|e| format!("DISARM_ALL: {e}")).cite("21")?;
     let state = test_control_state();

@@ -35,6 +35,10 @@ impl BlockDevice for Disk {
     fn flush(&self) -> Result<(), BlockError> { Ok(()) }
 }
 fn fixture() -> (Arc<BreenFs<NoWait>>, Arc<Disk>, Superblock, format::BlockPtr) {
+    fixture_with_files(0)
+}
+
+fn fixture_with_files(extra: u64) -> (Arc<BreenFs<NoWait>>, Arc<Disk>, Superblock, format::BlockPtr) {
     let disk = Arc::new(Disk { bytes: HostMutex::new(vec![0; 64 * 1024 * 1024]),
         fail_reads: core::sync::atomic::AtomicBool::new(false), read_error: HostMutex::new(None), writes: AtomicU64::new(0) });
     let sb = Superblock { fs_uuid: [0x6f; 16], generation: 1, slot: 1,
@@ -42,6 +46,9 @@ fn fixture() -> (Arc<BreenFs<NoWait>>, Arc<Disk>, Superblock, format::BlockPtr) 
         ..Superblock::default() };
     let mut files = Files::format(DeviceStore(disk.as_ref()), &sb).unwrap();
     files.create(2, b"cold", 0o600, Time::default()).unwrap();
+    for i in 0..extra {
+        files.create(2, alloc::format!("extra-{i:04}").as_bytes(), 0o600, Time::default()).unwrap();
+    }
     let sb = files.fsync(disk.as_ref(), &mut Committer::format(sb)).unwrap();
     drop(files);
     let root = recover::space_items(&DeviceStore(disk.as_ref()), &sb).unwrap()
@@ -143,15 +150,17 @@ fn ahci_media_error_on_metadata_latches_root() {
 
 #[test]
 fn node_buffer_enomem_returns_to_caller_without_latching() {
-    let (fs, disk, _, _) = fixture();
+    // Put the lookup on an interior leaf outside the mount's ORPHAN scan.
+    let (fs, disk, _, _) = fixture_with_files(256);
+    let ino = 16 + 128;
     let writes = disk.writes.load(Ordering::Relaxed);
-    let result = super::dirty_heap_bound::fail_allocation(NODE_SIZE, 1, || fs.getattr(16));
+    let result = super::dirty_heap_bound::fail_allocation(NODE_SIZE, 1, || fs.getattr(ino));
     assert_eq!(result, Err(Errno(ENOMEM)), "node allocation was treated as disk failure");
     assert_eq!(fs.failure(), None);
     assert_eq!(fs.read_only(), Ok(false));
     assert_eq!(disk.writes.load(Ordering::Relaxed), writes);
     // Retry the same cold lookup, then mutate and publish on the same mount.
-    assert_eq!(fs.getattr(16).unwrap().kind, NodeKind::Regular);
+    assert_eq!(fs.getattr(ino).unwrap().kind, NodeKind::Regular);
     fs.create(2, b"after-pressure", NewNode::Regular {
         attrs: InodeAttrs::new(0o600, 0, 0),
     }).unwrap();

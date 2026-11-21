@@ -2992,10 +2992,7 @@ fn metadata_ftruncate_large_open() -> CaseResult {
         )?;
     }
     let free = if let Some(marker) = &marker {
-        let before_fd = fs::open(path, O_RDONLY)?;
-        let free = marker.free(before_fd);
-        io::close(before_fd)?;
-        free?
+        marker.reclaim(None)?
     } else { root_free_blocks()? };
     let fd = fs::open(path, O_TRUNC | O_RDWR)?;
     let result = (|| -> CaseResult {
@@ -3004,10 +3001,7 @@ fn metadata_ftruncate_large_open() -> CaseResult {
             "open truncate retained allocated blocks",
         )?;
         if let Some(marker) = &marker {
-            check(
-                marker.free(fd)? >= free + 129,
-                "open truncate free counts lag",
-            )?;
+            marker.reclaim(Some((free, 129)))?;
         } else {
             check(
                 root_free_blocks()? == free + 130,
