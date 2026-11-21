@@ -1734,11 +1734,13 @@ manifest without collecting host evidence.
 The power-cut boot selects `--suite filesystem --case power-cut/writer` on a
 fresh disposable BreenFS root. The writer creates `/crash/log` and appends
 4,096-byte records until power is cut. Each record contains a little-endian
-64-bit sequence number starting at 1, 507 little-endian 64-bit payload words
+64-bit sequence number starting at 1, the 64-bit boot nonce from the writer START line,
+506 little-endian 64-bit payload words
 (`seq XOR index`, with indexes starting at 0), and the 32-byte SHA-256 of the
 preceding 4,064 bytes. After fsync succeeds, the writer emits
-`FSYNC <seq> <lowercase hex digest>` and flushes that line to serial.
-Score a cut with the BreenFS host tools from the matching build:
+`FSYNC <hex nonce> <seq> <lowercase hex digest>` and flushes that line to serial.
+Score a cut with the BreenFS host tools from the matching build. Keep the
+writer capture beside its driver run and event records.
 
 ```sh
 python3 scripts/metal/breenfs_replay.py replay SERIAL COLD_IMAGE --tools-dir BREENFS_TOOLS

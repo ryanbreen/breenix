@@ -11,21 +11,22 @@ import unittest
 
 
 CHECKER = Path(__file__).resolve().parents[1] / 'scripts/metal/breenfs_replay.py'
-START = b'SUITE filesystem START cases=1 only=power-cut/writer\n'
+NONCE = '0123456789abcdef'
+START = f'SUITE filesystem START cases=1 only=power-cut/writer nonce={NONCE}\n'.encode()
 INJECTION = b'[breenfs] corrupt-inject block=120 offset=14 bit=2\n'
 CRC_ERROR = b'error C1 block 120 (data REF 120+1): CRC 0x12345678, REF records 0x87654321\n'
 
 
-def record(seq, *, wrong_payload=False):
-    words = [seq ^ index for index in range(507)]
+def record(seq, *, wrong_payload=False, nonce=NONCE):
+    words = [seq ^ index for index in range(506)]
     if wrong_payload:
         words[0] ^= 1
-    body = struct.pack('<508Q', seq, *words)
+    body = struct.pack('<508Q', seq, int(nonce, 16), *words)
     return body + hashlib.sha256(body).digest()
 
 
 def ack(seq):
-    return f'FSYNC {seq} {record(seq)[-32:].hex()}\n'.encode()
+    return f'FSYNC {NONCE} {seq} {record(seq)[-32:].hex()}\n'.encode()
 
 
 class ColdReadbackTest(unittest.TestCase):
@@ -75,7 +76,7 @@ else:
         )
 
     def test_clean_prefix_includes_unacknowledged_complete_tail(self):
-        result = self.score('replay', START + ack(1) + b'FSYNC 2 123', record(1) + record(2))
+        result = self.score('replay', START + ack(1) + f'FSYNC {NONCE} 2 123'.encode(), record(1) + record(2))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('2 records, 1 acknowledged', result.stdout)
 
@@ -115,6 +116,10 @@ else:
         result = self.score('replay', START + ack(1), record(1), root_match=False)
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn('root identity', result.stderr)
+
+        result = self.score('replay', START + ack(1), record(1) + record(2, nonce='fedcba9876543210'))
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('writer nonce differs at sequence 2', result.stderr)
 
     def test_replay_requires_an_acknowledged_write(self):
         result = self.score('replay', START, record(1))

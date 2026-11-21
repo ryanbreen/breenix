@@ -296,10 +296,14 @@ fn power_cut_writer(root: filesystem_root::RootFs) -> CaseResult {
     root_is_breenfs()?;
     io(fs::create_dir("/crash"))?;
     let mut log = io(fs::OpenOptions::new().append(true).create_new(true).open("/crash/log"))?;
+    let mut nonce = [0; 8];
+    let received = libbreenix::crypto::rand::getrandom_bytes(&mut nonce);
+    check(received == Ok(nonce.len()), "could not get a power-cut writer nonce")?;
+    let nonce = u64::from_le_bytes(nonce);
     let mut serial = std::io::stdout().lock();
-    io(serial.write_all(b"\nSUITE filesystem START cases=1 only=power-cut/writer\n"))?;
+    io(writeln!(serial, "\nSUITE filesystem START cases=1 only=power-cut/writer nonce={nonce:016x}"))?;
     io(serial.flush())?;
-    io(filesystem_power_cut::write_records(&mut log, &mut serial, File::sync_all))?;
+    io(filesystem_power_cut::write_records(&mut log, &mut serial, nonce, File::sync_all))?;
     Ok(())
 }
 

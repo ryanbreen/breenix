@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import struct
@@ -17,8 +18,8 @@ CASES = (
     ('random-cuts', 'Random power cuts preserve acknowledged writes'),
     ('bit-flips', 'Reads reject the injected block and the checker identifies it'),
 )
-WRITER_START = b'SUITE filesystem START cases=1 only=power-cut/writer'
-ACK = re.compile(rb'FSYNC ([1-9][0-9]{0,19}) ([0-9a-f]{64})')
+WRITER_START = re.compile(rb'SUITE filesystem START cases=1 only=power-cut/writer nonce=([0-9a-f]{16})')
+ACK = re.compile(rb'FSYNC ([0-9a-f]{16}) ([1-9][0-9]{0,19}) ([0-9a-f]{64})')
 INJECTION = re.compile(rb'\[breenfs\] corrupt-inject block=([1-9][0-9]{0,19}) offset=([0-9]{1,4}) bit=[0-7]')
 READ_RESULT = re.compile(rb'\[breenfs\] corrupt-read block=([1-9][0-9]{0,19}) result=(\S+)')
 DATA_CRC = re.compile(rb'error C1 block ([1-9][0-9]{0,19}) \(data REF [0-9]+\+[0-9]+\): '
@@ -29,32 +30,64 @@ BODY = struct.Struct('<508Q')
 
 def receipts(serial):
     lines = serial.replace(b'\r\n', b'\n').split(b'\n')
-    if lines[:-1].count(WRITER_START) != 1:
+    starts = [(index, match[1]) for index, line in enumerate(lines[:-1])
+              if (match := WRITER_START.fullmatch(line))]
+    if len(starts) != 1:
         raise ValueError('expected one power-cut writer START in serial')
-    start = lines.index(WRITER_START)
+    start, nonce = starts[0]
     acknowledged = []
     for index, line in enumerate(lines):
         if line.startswith(b'SUITE filesystem ERROR '):
             raise ValueError(line.decode(errors='replace'))
-        if not line.startswith(b'FSYNC'):
+        if b'FSYNC ' not in line:
             continue
         match = ACK.fullmatch(line)
         if match is None and index == len(lines) - 1:
-            continue  # The cut may interrupt the last serial line.
-        if match is None or index < start:
+            prefix = f'FSYNC {nonce.decode()} {len(acknowledged) + 1} '.encode()
+            if prefix.startswith(line) or (line.startswith(prefix)
+                    and re.fullmatch(rb'[0-9a-f]{0,63}', line[len(prefix):])):
+                continue  # The cut may interrupt the last serial line.
+        if match is None or index < start or match[1] != nonce:
             raise ValueError(f'invalid FSYNC receipt at serial line {index + 1}')
-        seq = int(match[1])
+        seq = int(match[2])
         expected = len(acknowledged) + 1
         if seq != expected:
             raise ValueError(f'expected FSYNC sequence {expected}, found {seq}')
-        acknowledged.append(bytes.fromhex(match[2].decode('ascii')))
+        acknowledged.append(bytes.fromhex(match[3].decode('ascii')))
     if not acknowledged:
         raise ValueError("no acknowledged writes before the cut")
-    return acknowledged
+    return int(nonce, 16), acknowledged
 
 
-def replay(serial, extract, image):
-    acknowledged = receipts(serial)
+def cut_evidence(directory, nonce):
+    run = json.loads((directory / 'run.json').read_text())
+    events = [json.loads(line) for line in (directory / 'events.jsonl').read_text().splitlines()]
+    cut = run.get('powerCut') or {}
+    cut_at = cut.get('cutAt')
+    off = [event for event in events if event['event'] == 'power-off']
+    if (cut.get('powerOffConfirmed') is not True or type(cut_at) not in (int, float)
+            or not math.isfinite(cut_at) or len(off) != 1 or off[0].get('off') is not True
+            or not cut_at <= off[0]['t']):
+        raise ValueError('cut evidence requires confirmed power-off')
+    start = [event for event in events if event['event'] == 'power-cut-writer-start']
+    if (len(start) != 1 or start[0].get('nonce') != f'{nonce:016x}'
+            or not start[0]['t'] <= cut_at):
+        raise ValueError('writer START differs from the cut evidence')
+    if ((run.get('mode'), run.get('disk'), run.get('rootFs'), run.get('onlyCase'))
+            != ('suite', 'root', 'breenfs', 'power-cut/writer')
+            or not any(event['event'] == 'disk-root-record' and event.get('matchesLastInstall') is True
+                       and event.get('installedBy') == run['id'] and event['t'] <= start[0]['t']
+                       for event in events)):
+        raise ValueError('cut evidence requires verified test-root identity')
+    for event in events:
+        if event['event'] == 'console-gap-start' and start[0]['t'] <= event['t'] <= off[0]['t']:
+            raise ValueError('console gap could hide a write acknowledgement')
+    return cut
+
+
+def replay(serial_path, extract, image):
+    nonce, acknowledged = receipts(serial_path.read_bytes())
+    cut_evidence(serial_path.parent, nonce)
     # The extractor can emit a prefix before an error. Wait for its status
     # before judging any bytes and keep the binary log off the Python heap.
     with tempfile.TemporaryFile() as log:
@@ -68,9 +101,11 @@ def replay(serial, extract, image):
         for seq, record in enumerate(iter(lambda: log.read(RECORD_BYTES), b''), 1):
             if len(record) != RECORD_BYTES:
                 raise ValueError(f'torn record at sequence {seq}: {len(record)} bytes')
-            actual, *payload = BODY.unpack_from(record)
+            actual, record_nonce, *payload = BODY.unpack_from(record)
             if actual != seq:
                 raise ValueError(f'expected sequence {seq}, found {actual}')
+            if record_nonce != nonce:
+                raise ValueError(f'writer nonce differs at sequence {seq}')
             body = record[:BODY.size]
             digest = hashlib.sha256(body).digest()
             if digest != record[BODY.size:]:
@@ -142,7 +177,7 @@ def main():
             detail = (result.stdout + result.stderr).decode(errors='replace').strip()
             raise ValueError(f'breenfs-check --full exited {result.returncode}, expected {expected_exit}: {detail}')
         if args.mode == 'replay':
-            detail = replay(serial, tools / 'breenfs-extract', args.image)
+            detail = replay(args.serial, tools / 'breenfs-extract', args.image)
         else:
             detail = bit_flip(serial, result.stdout)
     except (OSError, ValueError, KeyError, TypeError) as error:

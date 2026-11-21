@@ -1281,6 +1281,10 @@ class Driver:
         seconds = round(observed_at - self.t0, 1) if self.t0 is not None else 0
         if self.t0 is None or not line.strip() or line.startswith('[SOL Session'):
             return
+        if self.power_cut is not None and (writer := re.fullmatch(
+                r'SUITE filesystem START cases=1 only=power-cut/writer nonce=([0-9a-f]{16})', line)):
+            self.suite_name = 'filesystem'
+            self.event('power-cut-writer-start', observed_at=observed_at, nonce=writer[1])
         cut = self.power_cut
         if (cut is not None and cut['window'] is not None and cut['cutAt'] is None
                 and self.suite_name == self.args.suite and 'disk-root-confirmed' in self.seen
