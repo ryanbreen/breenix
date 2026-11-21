@@ -300,6 +300,8 @@ struct Mount<W: Wait + 'static> {
     mapping_passes: AtomicU64,
     mapping_pages_evicted: AtomicU64,
     mapping_requests_dropped: AtomicU64,
+    #[cfg(any(feature = "breenfs_commit_window", feature = "breenfs_corrupt_inject"))]
+    commit_faults: Option<super::commit::faults::Faults>,
 }
 #[cfg(not(test))]
 struct ReportCount(Option<usize>);
@@ -1771,6 +1773,8 @@ impl<W: Wait + 'static> BreenFs<W> {
             mapping_passes: AtomicU64::new(0),
             mapping_pages_evicted: AtomicU64::new(0),
             mapping_requests_dropped: AtomicU64::new(0),
+            #[cfg(any(feature = "breenfs_commit_window", feature = "breenfs_corrupt_inject"))]
+            commit_faults: super::commit::faults::Faults::for_mount(boot && writable),
         })
         .map_err(|_| Errno(ENOMEM))?;
         Arc::try_new(Self { inner }).map_err(|_| Errno(ENOMEM))
@@ -2636,6 +2640,8 @@ impl<W: Wait + 'static> BreenFs<W> {
                 self.inner.cache.buffers(),
                 &self.inner.costs.device(self.inner.device.as_ref()),
                 &group,
+                #[cfg(any(feature = "breenfs_commit_window", feature = "breenfs_corrupt_inject"))]
+                self.inner.commit_faults.as_ref(),
             )
         };
         let FrozenGeneration { files: next, commit, pages, dirty_nodes, touched, grants, reap, mut ledger, .. } = frozen;

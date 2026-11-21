@@ -22,6 +22,10 @@ use alloc::{
 };
 use core::sync::atomic::{AtomicU8, Ordering};
 
+#[cfg(any(feature = "breenfs_commit_window", feature = "breenfs_corrupt_inject"))]
+#[path = "commit_faults.rs"]
+pub(super) mod faults;
+
 // Opt-in host observation; absent from kernel builds and inactive in other tests.
 #[cfg(test)]
 pub mod publication_measurement {
@@ -432,16 +436,35 @@ impl PreparedCommit {
         cache: &BufferCache<W>,
         device: &dyn BlockDevice,
         group: &WriteGroup,
+        #[cfg(any(feature = "breenfs_commit_window", feature = "breenfs_corrupt_inject"))]
+        faults: Option<&faults::Faults>,
     ) -> Result<(), Error> {
         if !matches!(group, WriteGroup::Hold(_)) {
             return Err(Error::EIO);
         }
         let sector = device.block_size();
+        #[cfg(feature = "breenfs_corrupt_inject")]
+        let mut altered = [0; BLOCK_SIZE];
         for (&addr, bytes) in self.nodes.iter().chain(self.data.iter()) {
             preemption_point();
             for (i, bytes) in bytes.chunks_exact(sector).enumerate() {
                 preemption_point();
                 let block = addr * (BLOCK_SIZE / sector) as u64 + i as u64;
+                // Stage the changed sector from a copy. The prepared bytes,
+                // extent CRCs and node pointers still describe the original.
+                #[cfg(feature = "breenfs_corrupt_inject")]
+                let flip = faults
+                    .and_then(|faults| faults.injection.as_ref())
+                    .and_then(|injection| injection.take(block, sector, self.data.contains_key(&addr)));
+                #[cfg(feature = "breenfs_corrupt_inject")]
+                let bytes = if let Some(flip) = &flip {
+                    let staged = &mut altered[..sector];
+                    staged.copy_from_slice(bytes);
+                    flip.apply(staged);
+                    staged
+                } else {
+                    bytes
+                };
                 match cache.write(device, group.clone(), block, bytes) {
                     Err(BlockError::OutOfMemory) => {
                         cache.submit(device, group).wait().map_err(|_| Error::EIO)?;
@@ -452,13 +475,34 @@ impl PreparedCommit {
                     }
                     result => result.map_err(|_| Error::EIO)?,
                 }
+                #[cfg(feature = "breenfs_corrupt_inject")]
+                if let Some(flip) = flip {
+                    crate::serial_println!(
+                        "\n[breenfs] corrupt-inject block={} offset={} bit={}",
+                        flip.block, flip.offset, flip.bit
+                    );
+                }
             }
         }
         cache.submit(device, group).wait().map_err(|_| Error::EIO)?;
+        #[cfg(feature = "breenfs_commit_window")]
+        if let Some(faults) = faults {
+            faults.window(faults::Window::NodeWrites);
+        }
         preemption_point();
         cache.flush(device).map_err(|_| Error::EIO)?;
+        #[cfg(feature = "breenfs_commit_window")]
+        if let Some(faults) = faults {
+            faults.window(faults::Window::FirstFlush);
+        }
         preemption_point();
         self.superblocks(|addr, bytes| {
+            #[cfg(feature = "breenfs_commit_window")]
+            if let Some(faults) = faults {
+                if addr == slot_block(self.sb.total_blocks, 1, self.sb.slot) {
+                    faults.window(faults::Window::BetweenRings);
+                }
+            }
             for (i, bytes) in bytes.chunks_exact(sector).enumerate() {
                 preemption_point();
                 cache
