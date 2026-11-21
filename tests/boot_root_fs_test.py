@@ -106,6 +106,38 @@ printf 'scratch:%s\n' "${BREENFS_SCRATCH_ARGS[*]}"
             self.assertLess(boot.index('${BREENFS_SCRATCH_ARGS[@]'), boot.index('${BREENFS_READ_ARGS[@]'))
             self.assertIn('--root-fs', boot)
 
+    def test_filesystem_scratch_drive_uses_the_shared_builder(self):
+        boot = (ROOT / 'scripts/boot-interactive.sh').read_text()
+        start = boot.index('\nBREENFS_CORRUPT_ARGS=()\n')
+        end = boot.index('\nroot_fs_scratch\n', start) + len('\nroot_fs_scratch\n')
+        stage = boot[start:end]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            scripts = root / 'scripts'
+            scripts.mkdir()
+            for name in ('breenfs-suite-fixtures.sh', 'lib'):
+                (scripts / name).symlink_to(ROOT / 'scripts' / name)
+            for name in ('breenfs-read-fixture.sh', 'breenfs-corrupt-fixture.sh', 'filesystem-suite.py'):
+                (scripts / name).touch()
+            mkfs = root / 'tools/release/breenfs-mkfs'
+            mkfs.parent.mkdir(parents=True)
+            # Record the formatter's arguments in the very file QEMU will attach.
+            mkfs.write_text('#!/bin/sh\n[ "$#" -eq 3 ] && printf "%s\\n" "$1" "$2" > "$3"\n')
+            mkfs.chmod(0o755)
+
+            run = 'run_build() { "$@"; }\n' + stage
+            run += 'printf "%s\\n" "${BREENFS_SCRATCH_ARGS[@]}"\n'
+            result = subprocess.run(['bash', '-euc', run], text=True, capture_output=True,
+                                    env=dict(os.environ, ROOT=str(root), ROOT_FS='ext2',
+                                             MODE='suite', SUITE='directories,filesystem,files-io',
+                                             SERIAL_LOG=str(root / 'serial.log'),
+                                             WRITABLE=str(root / 'root.img'),
+                                             CARGO_TARGET_DIR=str(root / 'tools')))
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            scratch = root / 'breenfs-scratch.img'
+            self.assertIn(f'if=none,id=breenfs-scratch,format=raw,file={scratch}', result.stdout.splitlines())
+            self.assertEqual(scratch.read_text(), '--size\n67108864\n')
+
 
 if __name__ == '__main__':
     unittest.main()
