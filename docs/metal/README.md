@@ -914,6 +914,34 @@ When they match, it publishes the two images in the private store at
 `/var/lib/breenix-metal/persistent-exports/<id>/`. It records the GUIDs, inclusive LBA ranges, byte counts and
 digests under `persistentExport` in `run.json`, with the index, byte offset, count and digest of each part.
 
+### BreenFS migration acceptance
+
+After the E24 coordinator opens acceptance, deploy the reviewed tools with `metal-deploy --restart`
+under the branch-tools lock. Pass the reviewed branch and commit as
+`--branch BRANCH --sha SHA` to each command. Follow each returned boot ID to successful
+completion before starting the next command.
+
+| Command | Evidence |
+|---|---|
+| `metal-run install-persistent --add-breenfs` | Firmware writes and reads back GPT entries 5 and 6 and their images. |
+| `metal-run migrate-persistent migrate` | The test root and the ext2 sources mount read-only. The migrator checks its two manifests and records their SHA-256 digests. |
+| `metal-run migrate-persistent readback` | Firmware uploads both BreenFS rings and the current allocation set. The host reconstructs sparse images and runs `breenfs-check --full` on both. It verifies the original 24.16 copy-off and the intervening boot records, then compares independent host manifests with both guest digests. |
+| `metal-run migrate-persistent cutover` | With matching manifests recorded, firmware stages the read-only ext2 rescue and the BreenFS candidate. The candidate boots from the test path and verifies over authenticated SSH before promotion. |
+| `metal-run migrate-persistent rescue` | The boot manager promotes the verified candidate and selects the previous, read-only ext2 rescue slot for this boot. SSH verifies the generation, mounts and home access. |
+| `metal-run migrate-persistent return` | The manager boots the promoted BreenFS slot and SSH verifies its generation, mounts and home access. |
+
+The final run stores `filesystem-persistent-root.json`. Each successful phase records confirmed
+power-off. The idle boot manager selects the test path even after the cycle closes. After a
+successful return, the cycle releases the gate on explicitly leased persistent boots.
+
+Keep the reviewed tools deployed through acceptance. Preserve a failed phase's records and get
+the coordinator's ruling before retrying it. The next attempt checks the failed boot's manager
+route and confirmed power-off, or that the attempt ended before power-on. Retrying add uses the
+same layout and can initialize the same two BreenFS volumes again before migration. Retrying
+rescue after confirmed promotion boots the previous slot without another slot action. Stop
+for recovery if the GPT copies or slot records disagree, migrated data is partially written, or
+the phase reports a manifest mismatch.
+
 ### Install and upgrade
 
 `metal-run install-persistent --sha <commit>` (with `--branch` for a pushed branch) installs or upgrades the

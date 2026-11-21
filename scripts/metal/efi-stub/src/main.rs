@@ -21,6 +21,8 @@ use metal_efi::com1::{self, Vendor};
 use metal_efi::say;
 use metal_efi::uefi::*;
 
+mod breenfs_allocation;
+mod breenfs_readback;
 mod persist;
 mod persistent_export;
 mod suite_disk;

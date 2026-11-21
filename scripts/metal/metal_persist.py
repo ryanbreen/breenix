@@ -435,11 +435,12 @@ def install_request(directory, the_layout, expect, files, slot, note, site, scra
     return request.finish(), request
 
 
-def add_breenfs_request(directory, layout):
+def add_breenfs_request(directory, layout, *, mkfs=None):
     """Build an add-breenfs request from the two exact-size sparse images."""
     check_layout(layout)
     if layout['version'] != 2:
         raise ValueError('adding breenfs requires a v2 layout')
+    mkfs = mkfs or m.TOOLS / 'breenfs-mkfs'
     request = Request(directory, 'add-breenfs')
     request.lines.append('expect-disk ' + layout['diskGuid'])
     with tempfile.TemporaryDirectory(prefix='breenfs-request-', dir=directory) as scratch:
@@ -448,7 +449,7 @@ def add_breenfs_request(directory, layout):
             request.lines.append(f"partition {part['number']} {part['type']} {part['guid']} {part['first']} {part['last']} {part['name']}")
             size = (part['last'] - part['first'] + 1) * SECTOR
             image = Path(scratch) / (role + '.img')
-            result = subprocess.run([str(m.TOOLS / 'breenfs-mkfs'), '--extents', '--size', str(size),
+            result = subprocess.run([str(mkfs), '--extents', '--size', str(size),
                                      '--uuid', uuid.UUID(part['guid']).hex, str(image)],
                                     check=True, capture_output=True, text=True)
             extents = []
@@ -466,7 +467,7 @@ def add_breenfs_request(directory, layout):
     return request
 
 
-def upgrade_request(directory, the_layout, files, slot, note, site):
+def upgrade_request(directory, the_layout, files, slot, note, site, *, rescue=None):
     """An upgrade: the staged slot, the manager and its configuration into the EFI system partition."""
     check_slot_capacity(the_layout, slot, files)
     request = Request(directory, 'upgrade')
@@ -474,11 +475,17 @@ def upgrade_request(directory, the_layout, files, slot, note, site):
     request.lines.append('disk ' + the_layout['diskGuid'])
     esp = the_layout['partitions']['esp']
     request.lines.append(f"esp {esp['guid']}")
+    if rescue is not None:
+        request.lines.append('migration-slots')
+        for path, source in zip(('efi/breenix/next.img', 'efi/breenix/next.txt'), rescue, strict=True):
+            request.esp_file(path, source)
+            request.lines[-1] = request.lines[-1].replace('esp-file ', 'rescue-file ', 1)
     for path, source in dict(files, **{'efi/breenix/next.img': slot, 'efi/breenix/next.txt': note}).items():
         request.esp_file(path, source)
-    for line in manager_config(site):
-        request.lines.append('manager-config ' + line)
-    request.lines.append('load-option ' + LOAD_OPTION)
+    if rescue is None:
+        for line in manager_config(site):
+            request.lines.append('manager-config ' + line)
+        request.lines.append('load-option ' + LOAD_OPTION)
     return request.finish(), request
 
 
@@ -497,3 +504,22 @@ def store_definition(build_definition, commit):
             os.replace(staged, target)
     return target
 
+
+
+def migration_intent(layout, phase, userland):
+    """Name only the partitions and write ranges used by this migration phase."""
+    check_layout(layout)
+    if layout['version'] != 2 or not userland:
+        raise ValueError('migration needs a v2 layout and an installed generation')
+    mount_sets = {
+        'migrate': (('test', '/', False), ('system', '/migrate/ext2-system', False),
+                    ('home', '/migrate/ext2-home', False),
+                    ('breenfs-system', '/migrate/system', True),
+                    ('breenfs-home', '/migrate/home', True)),
+        'rescue': (('system', '/', False), ('home', '/home', False)),
+        'cutover': (('breenfs-system', '/', True), ('breenfs-home', '/home', True)),
+    }
+    guids = {role: part['guid'] for role, part in layout['partitions'].items()}
+    mounts = [(guids[role], path, write) for role, path, write in mount_sets[phase]]
+    return intent('persistent-migrate' if phase == 'migrate' else 'persistent',
+                  userland=userland, mounts=mounts, mount_guids=guids)

@@ -90,6 +90,7 @@ struct Request<'t> {
     config: [&'t str; CONFIG_LINES],
     config_len: usize,
     load_option: Option<&'t str>,
+    migration_slots: bool,
 }
 
 fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
@@ -107,6 +108,7 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
         config: [""; CONFIG_LINES],
         config_len: 0,
         load_option: None,
+        migration_slots: false,
     };
     let mut action = None;
     for line in lines {
@@ -155,6 +157,8 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
                 request.config_len += 1;
             }
             "load-option" => request.load_option = Some(value),
+            "migration-slots" if value.is_empty() && !request.migration_slots => request.migration_slots = true,
+            "rescue-file" if !value.is_empty() => {}
             "extent" | "esp-file" if !value.is_empty() => {}
             _ => return Err(INVALID_PARAMETER),
         }
@@ -165,6 +169,21 @@ fn parse<'t>(text: &'t str) -> Result<Request<'t>, Status> {
         Some("add-breenfs") => Action::AddBreenfs,
         _ => return Err(INVALID_PARAMETER),
     };
+    let rescue_files = text.lines().filter_map(|line| line.strip_prefix("rescue-file "));
+    if request.migration_slots {
+        let files = rescue_files.map(|line| line.split(' ').next().unwrap_or(""));
+        let candidate = text.lines().filter_map(|line| line.strip_prefix("esp-file "))
+            .map(|line| line.split(' ').next().unwrap_or(""));
+        if request.action != Action::Upgrade || request.config_len != 0 || request.load_option.is_some()
+            || candidate.ne(["\\EFI\\BREENIX\\NEXT.IMG", "\\EFI\\BREENIX\\NEXT.TXT"])
+            || files.ne([
+            "\\EFI\\BREENIX\\NEXT.IMG", "\\EFI\\BREENIX\\NEXT.TXT",
+        ]) {
+            return Err(INVALID_PARAMETER);
+        }
+    } else if rescue_files.count() != 0 {
+        return Err(INVALID_PARAMETER);
+    }
     let (original, additions) = request.parts.split_at(ORIGINAL_PARTS);
     match request.action {
         Action::Install => {
@@ -716,6 +735,27 @@ unsafe fn load_option(boot: &BootServices, runtime: &RuntimeServices, esp: Handl
     Ok(())
 }
 
+unsafe fn write_esp_files(
+    boot: &BootServices, root: &files::Root, payload: *mut File, text: &str, prefix: &str,
+) -> Result<usize, Status> {
+    let mut written = 0;
+    for line in text.lines().filter_map(|line| line.strip_prefix(prefix)) {
+        let mut words = line.split(' ');
+        let name = words.next().ok_or(INVALID_PARAMETER)?;
+        let offset = number(words.next().ok_or(INVALID_PARAMETER)?)?;
+        let length = number(words.next().ok_or(INVALID_PARAMETER)?)? as usize;
+        let pages = length.div_ceil(4096).max(1);
+        let mut address = 0u64;
+        ok((boot.allocate_pages)(ALLOCATE_ANY_PAGES, LOADER_DATA, pages, &mut address))?;
+        let bytes = core::slice::from_raw_parts_mut(address as *mut u8, length);
+        let result = data(payload, offset, bytes).and_then(|()| root.write(name, bytes));
+        (boot.free_pages)(address, pages);
+        result?;
+        written += 1;
+    }
+    Ok(written)
+}
+
 /// Carries out persist.cfg when the boot disk has one.
 pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume: *const u8, image: Handle) -> Result<(), Status> {
     let mut path = volume;
@@ -737,7 +777,7 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
     if request.action == Action::AddBreenfs {
         add_breenfs(boot, &mut disk, &request, text, payload.handle(), delivered.size("persist.dat")?)?;
         say!("persistent install request complete");
-        return Ok(());
+        metal_efi::com1::halt();
     }
     if let Some(expected) = request.expect_record {
         if disk.read(0, 1)? != &expected[..] {
@@ -783,27 +823,20 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
     }
     metal_efi::slot_transaction::recover(&metal_efi::slot_store::SlotStore(&root))?;
     let http_option = if installing { boot_current } else { recorded_http_option(&root) };
-    let mut written = 0;
-    for line in text.lines().filter(|line| line.starts_with("esp-file ")) {
-        let mut words = line[9..].split(' ');
-        let name = words.next().ok_or(INVALID_PARAMETER)?;
-        let offset = number(words.next().ok_or(INVALID_PARAMETER)?)?;
-        let length = number(words.next().ok_or(INVALID_PARAMETER)?)? as usize;
-        let pages = length.div_ceil(4096).max(1);
-        let mut address = 0u64;
-        ok((boot.allocate_pages)(ALLOCATE_ANY_PAGES, LOADER_DATA, pages, &mut address))?;
-        let bytes = core::slice::from_raw_parts_mut(address as *mut u8, length);
-        let result = data(payload.handle(), offset, bytes).and_then(|()| root.write(name, bytes));
-        (boot.free_pages)(address, pages);
-        result?;
-        written += 1;
+    if request.migration_slots {
+        write_esp_files(boot, &root, payload.handle(), text, "rescue-file ")?;
+        metal_efi::slot_transaction::begin(&metal_efi::slot_store::SlotStore(&root), false)?;
+        say!("migration rescue slot installed");
     }
+    let written = write_esp_files(boot, &root, payload.handle(), text, "esp-file ")?;
     if written > 0 {
         say!("persistent install: EFI system partition files written: {}", written);
     }
-    write_config(boot, &root, &request, image, http_option)?;
-    if let Some(description) = request.load_option {
-        load_option(boot, runtime, esp, description, http_option)?;
+    if !request.migration_slots {
+        write_config(boot, &root, &request, image, http_option)?;
+        if let Some(description) = request.load_option {
+            load_option(boot, runtime, esp, description, http_option)?;
+        }
     }
     // Read embedded userland identities only after recovery and NEXT publication.
     // The host's disk.json is deliberately not an authority for reclamation.
@@ -830,7 +863,11 @@ pub(super) unsafe fn run(boot: &BootServices, runtime: &RuntimeServices, volume:
         let mut intent = [0u8; 1024];
         let len = slot_root.read("ramdisk", &mut intent)?;
         let text = core::str::from_utf8(&intent[..len]).map_err(|_| VOLUME_CORRUPTED)?;
-        if !text.starts_with("BREENIX-BOOT 2\n") { return Err(VOLUME_CORRUPTED); }
+        if !(text.starts_with("BREENIX-BOOT 2\n")
+            || request.migration_slots && text.starts_with("BREENIX-BOOT 3\n"))
+        {
+            return Err(VOLUME_CORRUPTED);
+        }
         let mut ids = text.lines().filter_map(|line| line.strip_prefix("userland "));
         let id = ids.next().unwrap_or("flat");
         if ids.next().is_some() { return Err(VOLUME_CORRUPTED); }

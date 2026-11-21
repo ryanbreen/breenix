@@ -132,9 +132,10 @@ pub(super) struct Append<'a> {
     entries: &'a [u8],
     primary: Header,
     backup: Header,
+    write_gpt: bool,
 }
 
-/// Check that both copies describe the same four-partition disk, then edit only entries 5 and 6.
+/// Check both GPT copies, and append or recognize the exact requested entries 5 and 6.
 pub(super) fn prepare<'a>(
     mut primary: Header,
     mut backup: Header,
@@ -176,9 +177,6 @@ pub(super) fn prepare<'a>(
         Ok(())
     };
     let (existing, empty) = entries.split_at_mut(ORIGINAL_PARTS * ENTRY);
-    if empty.iter().any(|&byte| byte != 0) {
-        return Err("expected only GPT entries 1 through 4 to be occupied");
-    }
     for (index, entry) in existing.chunks_exact(ENTRY).enumerate() {
         check(
             index + 1,
@@ -197,16 +195,26 @@ pub(super) fn prepare<'a>(
             part.last,
         )?;
     }
-    for (part, entry) in parts.iter().zip(empty.chunks_exact_mut(ENTRY)) {
+    let mut appended = [0; 2 * ENTRY];
+    for (part, entry) in parts.iter().zip(appended.chunks_exact_mut(ENTRY)) {
         part.encode(entry);
     }
-    let crc = crc32(entries);
-    primary.set_array_crc(crc);
-    backup.set_array_crc(crc);
+    let write_gpt = empty.iter().all(|&byte| byte == 0);
+    if write_gpt {
+        empty[..appended.len()].copy_from_slice(&appended);
+        let crc = crc32(entries);
+        primary.set_array_crc(crc);
+        backup.set_array_crc(crc);
+    } else if empty[..appended.len()] != appended
+        || empty[appended.len()..].iter().any(|&byte| byte != 0)
+    {
+        return Err("existing GPT entries differ from the add-breenfs request");
+    }
     Ok(Append {
         entries,
         primary,
         backup,
+        write_gpt,
     })
 }
 
@@ -224,9 +232,11 @@ impl Append<'_> {
         // The old GPT hides the images. The old primary survives the backup update,
         // and the flushed new backup survives the primary update.
         write_images(disk, write)?;
-        for header in [&self.backup, &self.primary] {
-            write(disk, header.array_lba(), self.entries)?;
-            write(disk, read_u64(&header.bytes, 24), &header.bytes)?;
+        if self.write_gpt {
+            for header in [&self.backup, &self.primary] {
+                write(disk, header.array_lba(), self.entries)?;
+                write(disk, read_u64(&header.bytes, 24), &header.bytes)?;
+            }
         }
         Ok(())
     }

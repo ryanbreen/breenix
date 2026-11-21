@@ -171,6 +171,38 @@ fn refuses_overlaps_out_of_range_and_repeated_guids() {
 }
 
 #[test]
+fn retries_the_same_partition_pair_without_rewriting_gpt() {
+    let mut disk = fixture();
+    let mut write = |disk: &mut Vec<u8>, lba: u64, bytes: &[u8]| -> Result<(), ()> {
+        let start = lba as usize * SECTOR;
+        disk[start..start + bytes.len()].copy_from_slice(bytes);
+        Ok(())
+    };
+    let mut entries = array(&disk, PRIMARY).to_vec();
+    prepare_fixture(&disk, &mut entries, GUID, additions())
+        .unwrap()
+        .write(&mut disk, |_, _| Ok(()), &mut write)
+        .unwrap();
+
+    let mut foreign = additions();
+    foreign[1].unique = [99; 16];
+    assert!(prepare_fixture(&disk, &mut entries, GUID, foreign).is_err());
+    let retry = prepare_fixture(&disk, &mut entries, GUID, additions()).unwrap();
+    let mut initialized = false;
+    retry
+        .write(
+            &mut disk,
+            |_, _| {
+                initialized = true;
+                Ok::<_, ()>(())
+            },
+            &mut |_, lba, _| panic!("retry rewrote GPT at LBA {lba}"),
+        )
+        .unwrap();
+    assert!(initialized);
+}
+
+#[test]
 fn every_sector_write_prefix_leaves_a_readable_old_or_complete_new_table() {
     // Distinct payloads in both images, including a multi-sector write and a cleared sector.
     let images = [

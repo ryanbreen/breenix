@@ -425,6 +425,15 @@ pub fn run(
     writeln!(out, "[migrate] manifests equal")
 }
 
+#[cfg(all(target_arch = "x86_64", target_os = "breenix"))]
+pub fn describe_receipt(evidence: &Path, mut out: impl Write) -> io::Result<()> {
+    let source = evidence.join("source.tsv");
+    let destination = evidence.join("destination.tsv");
+    writeln!(out, "[migrate] manifest sha256 source={} destination={}",
+        digest(&source, &fs::metadata(&source)?)?,
+        digest(&destination, &fs::metadata(&destination)?)?)
+}
+
 fn save(path: &Path, rows: Vec<manifest::Row>) -> io::Result<()> {
     let mut out = io::BufWriter::new(File::create(path)?);
     manifest::write(rows, &mut out)?;

@@ -348,6 +348,82 @@ class DriverPersistentTest(unittest.TestCase):
         with self.assertRaises(boot.Finish):
             d.on_slot_boot(f'breenix-manager: booting current {b}', 2)
 
+    def test_migration_boot_matches_the_staged_slot_commit_and_role(self):
+        d = self.driver
+        d.args.payload = 'persistent'
+        cycle, staged = 'a' * 40, 'b' * 40
+        d.migration = {'commit': cycle}
+        for commit in (cycle, staged):
+            (m.STATE / 'persistent' / commit / 'definition').mkdir(parents=True)
+
+        for phase, entry, kind, wrong_kind in (
+            ('rescue', 'previous', 'rescue', 'cutover'),
+            ('return', 'current', 'cutover', 'rescue'),
+        ):
+            d.migration_phase = phase
+            for recorded, role, booted, refusal in (
+                (cycle, kind, cycle, None),
+                (staged, kind, staged, None),
+                (cycle, wrong_kind, cycle, boot.BootManagerAbort),
+                (staged, kind, cycle, boot.Finish),
+            ):
+                with self.subTest(phase=phase, recorded=recorded, role=role, booted=booted):
+                    d.args.commit = recorded
+                    d.seen.discard('manager-slot')
+                    run = d.dir / 'run.json'
+                    m.write_json(run, {})
+                    metal_persist.update_disk(slots={entry: {'commit': recorded, 'migration': role}})
+                    line = f'breenix-manager: booting {entry} {booted}'
+                    if refusal:
+                        with self.assertRaises(refusal):
+                            d.on_slot_boot(line, 0)
+                        self.assertEqual(m.read_json(run), {})
+                        self.assertNotIn('manager-slot', d.seen)
+                    else:
+                        d.on_slot_boot(line, 0)
+                        self.assertEqual(m.read_json(run), {'entry': entry, 'bootedCommit': recorded})
+                        self.assertIn('manager-slot', d.seen)
+
+    def test_rescue_retry_boots_previous_without_promoting_again(self):
+        d = self.driver
+        d.args.payload = 'persistent'
+        d.args.entry, d.args.slot_action = 'previous', 'commit'
+        d.migration_phase = 'rescue'
+        staged = 'a' * 40
+        cutover = '20261121T100000Z-metal'
+        d.migration = {'boots': {'cutover': cutover}}
+        m.write_json(m.boot_dir(cutover) / 'run.json', {'commit': staged})
+        (m.STATE / 'persistent' / staged / 'definition').mkdir(parents=True)
+        metal_persist.update_disk(layout=metal_persist.add_breenfs_layout(metal_persist.new_layout()),
+                                  slots={'current': {'commit': staged, 'migration': 'cutover'},
+                                         'previous': {'commit': staged, 'migration': 'rescue'}})
+        m.write_json(m.STATE / m.LEASE, dict(id=d.id, state='claimed', kind='persistent',
+                                            entry='previous', slotAction='commit'))
+        d.prepare_persistent()
+        self.assertIsNone(m.read_lease()['slotAction'])
+        self.assertEqual(d.args.commit, staged)
+        d.on_manager_line(f'breenix-manager: lab answered: persistent {d.id} previous', 0, 0)
+        self.assertTrue(d.migration_answer)
+
+    def test_completed_migration_releases_only_explicit_persistent_boots(self):
+        d = self.driver
+        migration = boot.metal_migration
+        d.args.payload = 'persistent'
+        cycle = dict(add='20261121T100000Z-metal', boots={phase: phase for phase in migration.PHASES[:-1]})
+        migration.save(cycle)
+        with patch.object(d, 'prepare_persistent') as prepare:
+            with self.assertRaises(boot.Finish):
+                d.prepare_payload()
+            prepare.assert_not_called()
+            cycle['boots']['return'] = 'return'
+            migration.save(cycle)
+            d.prepare_payload()
+            prepare.assert_called_once()
+        self.assertEqual(http.manager_answer(), f"test {cycle['add']}")
+        metal_persist.update_disk(layout=metal_persist.add_breenfs_layout(metal_persist.new_layout()))
+        with self.assertRaisesRegex(boot.Finish, 'require a BreenFS install intent'):
+            d.prepare_install(None, None)
+
     def test_run_logs_in_types_each_command_at_a_fresh_prompt_and_logs_out(self):
         d = self.driver
         d.args.payload, d.args.mode, d.args.run = 'persistent', 'persistent', ['writeFile("/root/a", "1")', 'sync']

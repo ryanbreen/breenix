@@ -2012,7 +2012,8 @@ def probe_upgrade_attempt(args):
     receipt = dict(boot=args.boot, powerOn=power, passed=False, sshAttempts=0)
     try:
         lease = json.loads(remote('cat', runner['STATE'] + '/lease.json').stdout)
-        if lease.get('id') != args.boot or not boot.get('upgradeParent'):
+        phase = boot.get('migrationPhase')
+        if lease.get('id') != args.boot or not (boot.get('upgradeParent') or phase in ('cutover', 'rescue', 'return')):
             raise ValueError('S21 probe requires its live verification lease')
         site = remote('python3', '-c', 'import sys,json;sys.path.insert(0,"/opt/breenix-metal");'
                       'import metal_lib;s=metal_lib.load_site();'
@@ -2068,6 +2069,12 @@ def probe_upgrade_attempt(args):
                     row = services.get(name, {})
                     if row.get('starts', 0) < 1 or (name != 'ntp' and (row.get('state') != 'running' or not row.get('pid'))):
                         raise ValueError('service not started: ' + name)
+                if phase:
+                    mounts = probe.ssh('/bin/cat /proc/mounts')
+                    probe.require(mounts)
+                    probe.require(probe.ssh('/bin/ls -a "$HOME"'))
+                    probe.require(probe.ssh('/usr/bin/sync'))
+                    receipt.update(mounts=mounts.stdout, homeReadable=True)
                 receipt.update(authenticated=True, strictHostKey=True, servicesStarted=True,
                                generation=generation.stdout.strip(), fingerprint=fingerprint, serviceState=state.stdout)
                 if console or not cache.exists():
