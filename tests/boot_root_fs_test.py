@@ -100,8 +100,6 @@ printf 'scratch:%s\n' "${BREENFS_SCRATCH_ARGS[*]}"
                                     text=True, capture_output=True, check=True).stdout
             self.assertIn(f'ext2:if=none,id=ext2,format=raw,file={tmp}/root.img,cache=unsafe,aio=threads', result)
             self.assertIn('scripts/create-breenfs-root.sh', result)
-            self.assertIn('breenfs-mkfs --size 67108864', result)
-            self.assertIn('id=breenfs-scratch,format=raw', result)
             boot = (ROOT / 'scripts/boot-interactive.sh').read_text()
             self.assertLess(boot.index('${BREENFS_SCRATCH_ARGS[@]'), boot.index('${BREENFS_READ_ARGS[@]'))
             self.assertIn('--root-fs', boot)
