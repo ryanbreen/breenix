@@ -459,29 +459,6 @@ def finish_cycle(run, phase, exit_status):
         raise ValueError(f'{phase} boot did not supply its verification receipts')
 
 
-def shared_manifest(body):
-    prefixes = tuple(path.hex().encode('ascii') for path in (b'/.breenix-shared', b'/root'))
-    selected = []
-    first = {}
-    counts = {}
-    for line in body.splitlines():
-        row = line.split(b'\t')
-        path, group = row[0], row[5]
-        if path != b'2f' and not any(path == prefix or path.startswith(prefix + b'2f') for prefix in prefixes):
-            continue
-        if group != b'-':
-            first.setdefault(group, path)
-            counts[group] = counts.get(group, 0) + 1
-        selected.append(row)
-    if not all(any(row[0] == prefix for row in selected) for prefix in prefixes):
-        raise ValueError('ext2 system is missing shared state or root home')
-    for row in selected:
-        group = row[5]
-        if group != b'-':
-            row[5] = first[group] if counts[group] > 1 else b'-'
-    return b''.join(b'\t'.join(row) + b'\n' for row in selected)
-
-
 def compare_manifests(run, cycle, tools):
     frozen_ext2(run, cycle)
     for image in BREENFS_DISKS:
@@ -499,7 +476,7 @@ def compare_manifests(run, cycle, tools):
     for tree, source, destination in (
         ('generation', ext2('system.img', '--subtree', '/.breenix-generations/' + userland),
          breenfs('breenfs-system.img', '--root', 'gen-' + userland)),
-        ('shared root', shared_manifest(ext2('system.img')), breenfs('breenfs-system.img')),
+        ('shared root', ext2('system.img', '--shared'), breenfs('breenfs-system.img')),
         ('home', ext2('home.img'), breenfs('breenfs-home.img')),
     ):
         if not source.startswith(b'2f\t') or source != destination:

@@ -181,19 +181,48 @@ class Ext2:
             yield f"{path.hex()}\t{kind}\t{mode}\t{uid}\t{gid}\t{group}\t{size}\t{mtime}\t{digest}\n"
 
 
+def shared_manifest(body):
+    """Select the shared trees and label hard links by their retained paths."""
+    prefixes = tuple(path.hex().encode('ascii') for path in (b'/.breenix-shared', b'/root'))
+    selected = []
+    first = {}
+    counts = {}
+    for line in body.splitlines():
+        row = line.split(b'\t')
+        path, group = row[0], row[5]
+        if path != b'2f' and not any(path == prefix or path.startswith(prefix + b'2f') for prefix in prefixes):
+            continue
+        if group != b'-':
+            first.setdefault(group, path)
+            counts[group] = counts.get(group, 0) + 1
+        selected.append(row)
+    if not all(any(row[0] == prefix for row in selected) for prefix in prefixes):
+        raise ValueError('ext2 system is missing shared state or root home')
+    for row in selected:
+        group = row[5]
+        if group != b'-':
+            row[5] = first[group] if counts[group] > 1 else b'-'
+    return b''.join(b'\t'.join(row) + b'\n' for row in selected)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("filesystem", choices=["ext2"])
     parser.add_argument("image", type=Path)
-    parser.add_argument("--subtree", default="/", metavar="PATH")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--subtree", default="/", metavar="PATH")
+    selection.add_argument("--shared", action="store_true", help="select the shared system trees")
     args = parser.parse_args()
     try:
         if not args.image.is_file():
             raise ValueError("IMAGE must be a regular image file")
         debugfs, = require_e2fsprogs("debugfs")
         reader = Ext2(debugfs, args.image.resolve())
-        for row in reader.rows(os.fsencode(args.subtree)):
-            sys.stdout.buffer.write(row.encode("ascii"))
+        rows = (row.encode("ascii") for row in reader.rows(os.fsencode(args.subtree)))
+        if args.shared:
+            sys.stdout.buffer.write(shared_manifest(b"".join(rows)))
+        else:
+            sys.stdout.buffer.writelines(rows)
         sys.stdout.buffer.flush()
     except (OSError, ValueError) as error:
         parser.exit(1, f"migrate_manifest.py: {error}\n")

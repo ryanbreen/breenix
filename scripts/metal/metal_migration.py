@@ -11,7 +11,7 @@ import metal_export
 import metal_image
 import metal_lib as m
 import metal_persist
-from migrate_manifest import Ext2, require_e2fsprogs
+from migrate_manifest import Ext2, require_e2fsprogs, shared_manifest
 
 COPY_OFF = '20261121T094229Z-metal'
 BOOT_ID = re.compile(r'[0-9]{8}T[0-9]{6}Z-metal')
@@ -138,28 +138,6 @@ def unpack_sparse(stream, output, size, content_length):
                 raise OSError('short sparse readback image write')
             current = block + 1
     return digest.hexdigest()
-
-
-def shared_manifest(body):
-    prefixes = tuple(path.hex().encode('ascii') for path in (b'/.breenix-shared', b'/root'))
-    rows = {}
-    groups = {}
-    for line in body.splitlines():
-        row = line.split(b'\t')
-        path, group = row[0], row[5]
-        if group != b'-':
-            groups.setdefault(group, [group]).append(path)
-        if path == b'2f' or any(path == p or path.startswith(p + b'2f') for p in prefixes):
-            rows[path] = row
-    if not all(path in rows for path in prefixes):
-        raise ValueError('ext2 system is missing shared state or root home')
-    for members in groups.values():
-        kept = [rows[path] for path in members if path in rows]
-        if kept:
-            kept[0][5] = b'-'
-            for row in kept[1:]:
-                row[5] = kept[0][0]
-    return b''.join(b'\t'.join(row) + b'\n' for row in rows.values())
 
 
 def join_manifests(shared, generation, home, userland):
