@@ -88,6 +88,23 @@ class PersistentExportTest(existing.StateTest):
         self.assertRegex(source, r'\bread_blocks\b')
         self.assertNotRegex(source, r'(?i)\b(?:write_?blocks|flush_?blocks)\b\s*\)?\s*\(')
 
+    def test_firmware_export_disables_watchdog_before_read_blocks(self):
+        directory = existing.TOOLS / 'efi-stub/src'
+        main = (directory / 'main.rs').read_text()
+        source = (directory / 'persistent_export.rs').read_text()
+        self.assertIn('persistent_export::run(boot, volume, image)', main)
+        dispatch = source.split('unsafe fn run(', 1)[1].split('\n}', 1)[0]
+        transfer = source.split('unsafe fn export(', 1)[1].split('\n}', 1)[0]
+        self.assertRegex(transfer, r'\bread_blocks\)\s*\(')
+
+        before_first_export = dispatch.split('\n    export(', 1)[0]
+        self.assertNotEqual(before_first_export, dispatch)
+        self.assertRegex(
+            before_first_export,
+            r'(?m)^    ok\(\(boot\.set_watchdog_timer\)\(0,\s*0,\s*0,\s*null\(\)\)\)\?;',
+            'the export must successfully disable the UEFI watchdog before reading a partition',
+        )
+
     def test_firmware_export_transport_is_read_only(self):
         directory = existing.TOOLS / 'efi-stub/src'
         export = (directory / 'persistent_export.rs').read_text()
