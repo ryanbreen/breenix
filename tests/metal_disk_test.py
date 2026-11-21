@@ -401,6 +401,126 @@ class DiskTest(existing.StateTest):
         self.assertEqual(driver.payload_facts['path'].read_bytes(), retained.read_bytes())
         self.assertEqual(driver.recovery_expected, expected)
 
+    def test_recovery_requires_the_durable_repair_of_the_cold_missing_copy(self):
+        m, boot = existing.m, existing.boot
+        args = existing.SimpleNamespace(id='20261018T000002Z-metal', mode='suite',
+            payload='image', disk='root', suite='filesystem', inject=None, case='power-cut/recovery')
+        with patch.object(m, 'load_site', return_value={}):
+            driver = boot.Driver(args)
+        driver.dir.mkdir()
+        driver.t0 = 1
+        driver.seen.add('disk-root')
+        digest = 'e' * 64
+        driver.recovery_expected = dict(logBytes=4096, logSha256=digest,
+                                        coldState='ring-B-missing', missingRingB=dict(slot=1, generation=5))
+        driver.on_line(f'BREENFS POWER-CUT RECOVERY root-is-breenfs bytes=4096 sha256={digest}')
+        self.assertFalse(driver.disk_evidence_seen())
+        driver.on_line('[breenfs] recovered-superblock ring=B slot=1 generation=9')
+        self.assertFalse(driver.disk_evidence_seen())
+        driver.on_line('[breenfs] recovered-superblock ring=A slot=1 generation=5')
+        self.assertFalse(driver.disk_evidence_seen())
+        driver.on_line('[breenfs] recovered-superblock ring=B slot=1 generation=5')
+        self.assertTrue(driver.disk_evidence_seen())
+
+    def test_bit_flip_readback_admits_only_the_confirmed_disposable_root(self):
+        m = existing.m
+        source, facts = self.readback_source(m.EXIT_DONE, 'the mode and its kernel stages finished', provisional=True)
+        partition = '12345678-abcd-1234-abcd-000000000123'
+        facts.update(installedBy=source.name, partition=partition)
+        m.write_json(source / 'suite-disk.json', facts)
+        m.write_json(source / 'run.json', dict(id=source.name, disk='root', mode='suite', payload='image',
+            suite='filesystem', onlyCase='power-cut/writer', rootFs='breenfs', breenfsBitFlip=True))
+        m.write_json(m.STATE / 'disk.json', dict(facts, lastBoot=source.name))
+        events = [json.loads(line) for line in (source / 'events.jsonl').read_text().splitlines()]
+        events[0]['installedBy'] = source.name
+
+        def readback():
+            (source / 'events.jsonl').write_text(''.join(json.dumps(e) + '\n' for e in events))
+            return disk.prepare_readback(self.directory, self.inputs, source.name, 'b' * 40, 'readback',
+                                         self.site, self.inputs / 'stub.efi')
+
+        self.site['BOOT_URL'] = 'http://example.invalid/boot'
+        with patch.object(disk.metal_persist, 'layout', return_value={'partitions': {'test': {'guid': partition}}}), \
+             patch.object(disk.metal_image, 'assemble', side_effect=lambda image, _: image.touch()), \
+             patch.object(disk.metal_image, 'stub_efi', return_value={}):
+            readback()
+            request = disk.HEADER_2.unpack_from((self.inputs / 'suite-disk.cfg').read_bytes())
+            self.assertEqual(request[1], 2)
+            self.assertEqual(request[3], disk.uuid.UUID(partition).bytes_le)
+            self.assertEqual(request[4:6], (disk.record(facts), disk.record(facts)))
+            self.assertTrue(m.read_json(self.directory / 'readback.json')['bitFlip'])
+
+            events[2]['off'] = False
+            with self.assertRaisesRegex(ValueError, 'confirmed power-off'):
+                readback()
+            events[2]['off'] = True
+            m.write_json(m.STATE / 'disk.json', dict(facts, lastBoot='another-boot'))
+            with self.assertRaisesRegex(ValueError, 'replaced between'):
+                readback()
+
+    def test_bit_flip_completion_hands_off_readback_under_the_lease(self):
+        m, boot = existing.m, existing.boot
+        for confirmed_off in (True, False):
+            with self.subTest(confirmed_off=confirmed_off):
+                args = existing.SimpleNamespace(id='20261018T000002Z-metal', mode='suite', payload='image',
+                    disk='root', root_fs='breenfs', suite='filesystem', commit='b' * 40, inject=None,
+                    case='power-cut/writer', breenfs_bit_flip=True)
+                with patch.object(m, 'load_site', return_value={}):
+                    driver = boot.Driver(args)
+                driver.dir.mkdir(exist_ok=True)
+                driver.t0 = driver.kernel_started = 2
+                driver.seen.add('disk-root-confirmed')
+                for method in ('create_record', 'claim', 'prepare_payload', 'preflight', 'do_stage',
+                               'start_console', 'power_on', 'pump_serial', 'cleanup'):
+                    setattr(driver, method, Mock())
+                driver.power_off = Mock(return_value=confirmed_off)
+                driver.watch = Mock(side_effect=boot.Finish(m.EXIT_DONE, 'the mode and its kernel stages finished'))
+                driver.continue_disk_readback = Mock(return_value=m.EXIT_SHORT)
+                self.assertEqual(driver.run(), m.EXIT_SHORT if confirmed_off else m.EXIT_INCOMPLETE)
+                if confirmed_off:
+                    driver.cleanup.assert_called_once_with(m.EXIT_SHORT, keep_lease=True)
+                    driver.continue_disk_readback.assert_called_once()
+                else:
+                    driver.continue_disk_readback.assert_not_called()
+
+    def test_bit_flip_verdict_scores_the_cold_image_before_promoting_the_source(self):
+        m, boot = existing.m, existing.boot
+        source, _ = self.readback_source(m.EXIT_DONE, 'completed bit-flip probe', provisional=True)
+        (source / 'serial.txt').write_text('[breenfs] corrupt-inject block=120 offset=64 bit=0\n'
+                                        '[breenfs] corrupt-read block=120 result=ReadError::Data\n')
+        tools = source / 'breenfs-tools'
+        tools.mkdir()
+        checker = tools / 'breenfs-check'
+        args = existing.SimpleNamespace(id='20261018T000001Z-metal', mode='default', payload='disk-readback')
+        with patch.object(m, 'load_site', return_value={}):
+            driver = boot.Driver(args)
+        driver.dir.mkdir()
+        driver.t0 = 2
+        image = driver.dir / 'disk.img'
+        image.write_bytes(b'cold fixture')
+        digest = hashlib.sha256(image.read_bytes()).hexdigest()
+        m.write_json(driver.dir / 'readback.json', dict(source=source.name, bytes=image.stat().st_size,
+            rootRecord='record', suitePoweredOffAt=1, bitFlip=True, sourceProvisional=True))
+        m.write_json(driver.dir / 'disk-upload.json', dict(complete=True, sha256=digest, rootRecord='record'))
+
+        with patch.object(boot, 'verdict_command', side_effect=lambda root: (root, [sys.executable, '-I'])), \
+             patch.object(m, 'load_site', return_value={}), \
+             patch.object(boot.Driver, 'score_suite', side_effect=AssertionError('bit flip needs its diagnostic scorer')):
+            for block in (121, 120):
+                with self.subTest(block=block):
+                    checker.write_text(f'#!{sys.executable}\n'
+                        'from pathlib import Path\nimport sys\n'
+                        "assert sys.argv[1] == '--full' and Path(sys.argv[2]).read_bytes() == b'cold fixture'\n"
+                        f"print('error C1 block {block} (data REF 120+1): CRC 0x12345678, REF records 0x87654321')\n"
+                        'sys.exit(4)\n')
+                    passed = block == 120
+                    self.assertEqual(driver.finalize_disk_suite(), passed)
+                    result = m.read_json(source / 'bit-flip-readback.json')
+                    self.assertEqual((result['id'], result['sha256'], result['passed']), (driver.id, digest, passed))
+                    if passed:
+                        self.assertEqual(result['block'], block)
+                    self.assertEqual(int((source / 'exit-status').read_text()), m.EXIT_DONE if passed else m.EXIT_SHORT)
+
     def test_only_decided_failure_schedules_diagnostic_readback(self):
         m, boot = existing.m, existing.boot
         for minute, status, reason in [(0, m.EXIT_STOPPED, 'operator stop'),

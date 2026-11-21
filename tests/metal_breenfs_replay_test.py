@@ -15,6 +15,7 @@ NONCE = '0123456789abcdef'
 START = f'SUITE filesystem START cases=1 only=power-cut/writer nonce={NONCE}\n'.encode()
 INJECTION = b'[breenfs] corrupt-inject block=120 offset=14 bit=2\n'
 CRC_ERROR = b'error C1 block 120 (data REF 120+1): CRC 0x12345678, REF records 0x87654321\n'
+RING_B_MISSING = b'warning generation 5 has only its ring A copy, slot A1 (block 17)\n'
 
 
 def record(seq, *, wrong_payload=False, nonce=NONCE):
@@ -147,6 +148,30 @@ else:
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn('breenfs-check --full exited 1', result.stderr)
 
+    def test_replay_accepts_only_the_newest_unpaired_ring_a_generation(self):
+        # Use the checker's output contract and the generation fields from its validated slots.
+        with self.image.open('wb') as image:
+            for generation in (4, 5):
+                image.seek((16 + generation % 4) * 4096 + 32)
+                image.write(struct.pack('<Q', generation))
+            image.truncate(16384 * 4096)
+        for label, finding, check_status, log, accepted in (
+            ('latest ring B only', RING_B_MISSING, 1, record(1), True),
+            ('second warning', RING_B_MISSING + b'warning abandoned slot\n', 1, record(1), False),
+            ('additional error', RING_B_MISSING + CRC_ERROR, 4, record(1), False),
+            ('ring A missing', b'warning generation 5 has only its ring B copy, slot B1 (block 16381)\n',
+             1, record(1), False),
+            ('older ring B missing', b'warning generation 4 has only its ring A copy, slot A0 (block 16)\n',
+             1, record(1), False),
+            ('acknowledged record missing', RING_B_MISSING, 1, b'', False),
+        ):
+            with self.subTest(label=label):
+                result = self.score('replay', START + ack(1), log,
+                                    check_status=check_status, check_stdout=finding)
+                self.assertEqual(result.returncode, 0 if accepted else 1, result.stderr or result.stdout)
+                if accepted:
+                    self.assertIn('ring-B-missing', result.stdout)
+
     def test_bit_flip_requires_typed_failure_and_the_exact_checker_block(self):
         typed = b'[breenfs] corrupt-read block=120 result=ReadError::Data\n'
         bad_data = b'[breenfs] corrupt-read block=120 result=returned-data\n'
@@ -164,6 +189,18 @@ else:
                                     check_stdout=diagnostic)
                 self.assertEqual(result.returncode, status, result.stderr)
                 self.assertIn(message, result.stderr if status else result.stdout)
+
+    def test_bit_flip_rejects_other_errors_and_a_warning_exit(self):
+        typed = b'[breenfs] corrupt-read block=120 result=ReadError::Data\n'
+        for check_status, diagnostics in (
+            (4, CRC_ERROR + CRC_ERROR.replace(b'block 120 ', b'block 121 ')),
+            (4, CRC_ERROR + b'error S4 bad free count\n'),
+            (1, CRC_ERROR),
+        ):
+            with self.subTest(check_status=check_status, diagnostics=diagnostics):
+                result = self.score('bit-flip', INJECTION + typed, check_status=check_status,
+                                    check_stdout=diagnostics)
+                self.assertEqual(result.returncode, 1, result.stdout)
 
 
 if __name__ == '__main__':
