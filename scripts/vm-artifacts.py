@@ -410,7 +410,7 @@ def probe_cycle(run, identity, public_host_key):
             raise ValueError('SSH login returned the wrong operator UID')
         generation = ssh('cat /usr/share/factory/generation').decode().strip()
         mounts = ssh('cat /proc/mounts').decode()
-        sentinel = ssh('cat "$HOME/migration.txt"')
+        sentinel = ssh(f'cat /home/{user}/migration.txt')
         if sentinel != expected:
             raise ValueError('SSH home sentinel differs from the frozen ext2 home')
 

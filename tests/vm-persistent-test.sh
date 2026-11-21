@@ -422,7 +422,8 @@ if command == 'id -u':
     print('1234')
 elif command == 'cat /usr/share/factory/generation':
     print('gen-1')
-elif command == 'cat "$HOME/migration.txt"':
+# The guest's bsh passes shell variables literally to commands.
+elif command == 'cat /home/operator/migration.txt':
     print('wrong sentinel' if bad == 'sentinel' else 'migration sentinel')
 elif command == 'cat /proc/mounts':
     rescue = os.environ['STUB_SCENARIO'] == 'rescue'
