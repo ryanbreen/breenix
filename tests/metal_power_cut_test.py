@@ -142,6 +142,13 @@ class PowerCutDriverTest(StateTest):
         self.assertTrue(record['powerCut']['powerOffConfirmed'])
         self.assertIn('tail from the serial capture\n', (driver.dir / 'serial.txt').read_text())
 
+    def test_immediate_off_posts_before_querying_power_state(self):
+        requests = []
+        with patch.object(m, 'rf', side_effect=lambda *args, **kw: requests.append(args[0])), \
+             patch.object(m, 'power_state', side_effect=lambda **kw: requests.append('GET') or 'Off'):
+            self.assertTrue(m.force_off_and_wait(immediate=True))
+        self.assertEqual(requests, ['POST', 'GET'])
+
     def test_elapsed_seconds_trigger_at_power_on_deadline(self):
         driver = self.driver(power_cut_after=12.5)
         driver.t0 = 100.0

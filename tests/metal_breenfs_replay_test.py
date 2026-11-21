@@ -52,7 +52,7 @@ else:
 ''')
             tool.chmod(0o755)
 
-    def score(self, mode, serial, log=b'', *, check_status=0, check_stdout=b'', gap=False, off=True, root_match=True):
+    def score(self, mode, serial, log=b'', *, check_status=0, check_stdout=b'', gap=False, off=True, root_match=True, aimed=False):
         (self.work / 'crash-log').write_bytes(log)
         (self.work / 'serial.txt').write_bytes(serial)
         (self.work / 'check-stdout').write_bytes(check_stdout)
@@ -64,9 +64,14 @@ else:
         if gap:
             events.insert(2, dict(event='console-gap-start', t=3))
         (self.work / 'events.jsonl').write_text(''.join(json.dumps(event) + '\n' for event in events))
+        cut = dict(cutAt=4, powerOffConfirmed=off)
+        if aimed:
+            marker = b'[breenfs] commit-window first-flush'
+            cut.update(window='first-flush', triggerLine=marker.decode(),
+                       triggerSerialOffset=serial.index(marker), triggerObservedAt=3, powerOffAt=5)
         (self.work / 'run.json').write_text(json.dumps(dict(
             id='writer', rootFs='breenfs', disk='root', mode='suite',
-            onlyCase='power-cut/writer', powerCut=dict(cutAt=4, powerOffConfirmed=off),
+            onlyCase='power-cut/writer', powerCut=cut,
         )))
         (self.work / 'check-status').write_text(str(check_status))
         return subprocess.run(
@@ -120,6 +125,14 @@ else:
         result = self.score('replay', START + ack(1), record(1) + record(2, nonce='fedcba9876543210'))
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn('writer nonce differs at sequence 2', result.stderr)
+
+    def test_aimed_replay_refuses_publication_progress_after_the_trigger(self):
+        trigger = START + ack(1) + b'[breenfs] commit-window first-flush'
+        for tail in (b'[breenfs] commit-window first-flush released\n',
+                     b'[breenfs] commit-window between-rings\n', ack(2)):
+            result = self.score('replay', trigger + b'\n' + tail, record(1) + record(2), aimed=True)
+            self.assertEqual(result.returncode, 1, result.stdout)
+            self.assertIn('advanced past the cut trigger', result.stderr)
 
     def test_replay_requires_an_acknowledged_write(self):
         result = self.score('replay', START, record(1))
