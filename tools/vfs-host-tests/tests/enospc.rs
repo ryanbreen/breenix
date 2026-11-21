@@ -260,7 +260,13 @@ fn metadata_blocks(disk: &Disk) -> u64 {
 
 #[test]
 fn full_disk_namespace_refuses_atomically_and_deletes_use_reserve() {
-    use crate::breenfs::reserve::observation;
+    use crate::breenfs::{
+        commit::{Committer, DeviceStore},
+        format::{Time, BLOCK_SIZE},
+        ops::Files,
+        recover,
+        reserve::observation,
+    };
 
     crate::time::with_unix_time(10, || {
         let (disk, fs, fill) = fixture();
@@ -291,6 +297,33 @@ fn full_disk_namespace_refuses_atomically_and_deletes_use_reserve() {
                 }
             }
         }
+        // Even a one-block VFS write can refuse while its worst-case
+        // metadata budget leaves enough room for a create. Finish staging
+        // the disposable image with the offline writer, one block at a time.
+        // Leave room for its metadata before remounting through the VFS.
+        let available = fs.statfs().unwrap().available_blocks;
+        let fill_ino = fill.ino;
+        let truncate_ino = truncated.ino;
+        drop(fill);
+        drop(truncated);
+        drop(fs);
+        {
+            let sb = recover::recover(disk.as_ref(), false).unwrap();
+            let mut files = Files::new(DeviceStore(disk.as_ref()), &sb, 1, true).unwrap();
+            let block = [0x66; BLOCK_SIZE];
+            const METADATA_HEADROOM: u64 = 32;
+            for _ in METADATA_HEADROOM..available {
+                assert_eq!(files.write(disk.as_ref(), fill_ino, offset, &block, Time {
+                    seconds: 10, nanos: 0,
+                }).unwrap(), BLOCK_SIZE);
+                offset += BLOCK_SIZE as u64;
+            }
+            files.fsync(disk.as_ref(), &mut Committer::new(sb)).unwrap();
+        }
+        let fs = mount(disk.clone());
+        let fill = fs.open(fill_ino).unwrap();
+        let truncated = fs.open(truncate_ino).unwrap();
+        assert!(fs.statfs().unwrap().free_blocks >= 4096, "setup spent the global reserve");
         let before = namespace_manifest(fs.as_ref());
         crate::time::with_unix_time(20, || {
             for new in [NewNode::Directory { attrs }, NewNode::Regular { attrs },
@@ -319,8 +352,6 @@ fn full_disk_namespace_refuses_atomically_and_deletes_use_reserve() {
         assert_eq!(namespace_manifest(fs.as_ref()), before);
         assert_eq!(fs.read_only(), Ok(false));
         fs.fsync(&fill, false).unwrap();
-        let fill_ino = fill.ino;
-        let truncate_ino = truncated.ino;
         drop(fill); drop(truncated); drop(fs);
         let fs = mount(disk.clone());
         assert_eq!(namespace_manifest(fs.as_ref()), before, "refused mutation survived remount");

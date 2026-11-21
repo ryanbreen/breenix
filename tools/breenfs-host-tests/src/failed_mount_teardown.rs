@@ -296,11 +296,20 @@ fn failure_latch_error_arms_are_named() {
     let source = include_str!("../../../kernel/src/fs/breenfs/vfs.rs");
     assert_eq!(source.matches("self.failed = true;").count(), 1);
     assert!(!source.contains("state.failed = true;"));
-    for branch in ["observed-metadata", "edited", "write-read-metadata",
-        "resize-read-metadata", "writeback-read-metadata", "service-mappings",
-        "drain-dirty", "prepare-reap", "prepare-files", "open-next-generation",
-        "publish", "shutdown-sync"] {
+    for branch in ["observed-metadata", "edited", "service-mappings", "publish", "shutdown-sync"] {
         assert!(source.contains(&alloc::format!(".fail(\"{branch}\",")), "unnamed {branch}");
+    }
+    let edit_pages = source.split_once("fn edit_pages(").unwrap().1
+        .split_once("fn snapshot_request(").unwrap().0;
+    assert!(edit_pages.contains("state.fail(branch, Errno(EIO))"));
+    for branch in ["write-read-metadata", "resize-read-metadata", "writeback-read-metadata"] {
+        assert!(source.contains(&alloc::format!(".edit_pages(&mut state, node.ino, \"{branch}\",")),
+            "unnamed {branch}");
+    }
+    let abandon = source.split_once("fn abandon(").unwrap().1;
+    assert!(abandon.split("\n    fn ").next().unwrap().contains("state.fail(branch, error)"));
+    for branch in ["drain-dirty", "prepare-reap", "prepare-files", "open-next-generation"] {
+        assert!(source.contains(&alloc::format!(".abandon(frozen, \"{branch}\",")), "unnamed {branch}");
     }
     let mounts = include_str!("../../../kernel/src/fs/vfs/mount.rs");
     assert!(mounts.contains("append_failure_options(&mut options, fs.failure())"));
@@ -350,9 +359,11 @@ fn metadata_io_failure_latches_and_prevents_later_writes() {
         total_blocks: 16384, global_reserve: 4096, next_root_id: 2,
         ..Superblock::default() };
     let mut files = Files::format(super::super::commit::DeviceStore(disk.as_ref()), &sb).unwrap();
-    let mut last = 0;
+    let mut cold = 0;
     for i in 0..256 {
-        last = files.create(2, alloc::format!("populated-{i:04}").as_bytes(), 0o644, Time::default()).unwrap();
+        let ino = files.create(2, alloc::format!("populated-{i:04}").as_bytes(), 0o644, Time::default()).unwrap();
+        // The root inode and mount's ORPHAN scan warm the edge leaves.
+        if i == 128 { cold = ino; }
     }
     files.fsync(disk.as_ref(), &mut Committer::format(sb)).unwrap();
     drop(files);
@@ -360,7 +371,7 @@ fn metadata_io_failure_latches_and_prevents_later_writes() {
     let root = fs.open(2).unwrap();
     disk.fail_reads.store(true, Ordering::Release);
     let writes = disk.writes.load(Ordering::Relaxed);
-    assert_eq!(fs.getattr(last).map(|_| ()), Err(Errno(EIO)));
+    assert_eq!(fs.getattr(cold).map(|_| ()), Err(Errno(EIO)));
     assert_eq!(disk.failed_reads.load(Ordering::Relaxed), 1);
     assert_eq!(fs.failure(), Some(("observed-metadata", EIO)));
     assert_eq!(fs.create(2, b"after-failure", NewNode::Regular {
