@@ -28,6 +28,7 @@ MISSING_RING_B = re.compile(rb'warning generation ([1-9][0-9]{0,19}) has only it
                            rb'slot A([0-3]) \(block (1[6-9])\)')
 RING_A_FIRST = 16
 SLOTS_PER_RING = 4
+SUPERBLOCK_BYTES = 4096
 SUPERBLOCK_GENERATION = 32
 RECORD_BYTES = 4096
 BODY = struct.Struct('<508Q')
@@ -114,27 +115,70 @@ def verify_aimed_window(serial, cut, window):
         raise ValueError('publication advanced past the cut trigger')
 
 
+def valid_superblock_crc(data):
+    crc = 0xffffffff
+    for byte in data[12:]:
+        crc ^= byte
+        for _ in range(8):
+            crc = (crc >> 1) ^ (0x82f63b78 if crc & 1 else 0)
+    return (crc ^ 0xffffffff) == struct.unpack_from('<I', data, 8)[0]
+
+
+def missing_ring_b(findings, image):
+    if len(findings) not in (1, 2):
+        return None
+    match = MISSING_RING_B.fullmatch(findings[0])
+    if match is None:
+        return None
+    generation, slot, block = map(int, match.groups())
+    if slot != generation % SLOTS_PER_RING or block != RING_A_FIRST + slot:
+        return None
+
+    # The full check already validated each nonempty slot. Read both rings to
+    # identify the newest copy and verify what remains in its paired slot.
+    ring_bytes = SLOTS_PER_RING * SUPERBLOCK_BYTES
+    with image.open('rb') as disk:
+        ring_b_first = disk.seek(0, 2) // SUPERBLOCK_BYTES - SLOTS_PER_RING
+        if ring_b_first < RING_A_FIRST + SLOTS_PER_RING:
+            return None
+        disk.seek(RING_A_FIRST * SUPERBLOCK_BYTES)
+        ring_a = disk.read(ring_bytes)
+        disk.seek(ring_b_first * SUPERBLOCK_BYTES)
+        ring_b = disk.read(ring_bytes)
+    if len(ring_a) != ring_bytes or len(ring_b) != ring_bytes:
+        return None
+
+    generations_a = [struct.unpack_from('<Q', ring_a, offset + SUPERBLOCK_GENERATION)[0]
+                     for offset in range(0, ring_bytes, SUPERBLOCK_BYTES)]
+    if generations_a[slot] != generation or generation != max(generations_a):
+        return None
+    paired = ring_b[slot * SUPERBLOCK_BYTES:(slot + 1) * SUPERBLOCK_BYTES]
+    if len(findings) == 1:
+        if generation > SLOTS_PER_RING or any(paired):
+            return None
+    else:
+        previous = generation - SLOTS_PER_RING
+        warning = (f'warning generation {previous} has only its ring B copy, '
+                   f'slot B{slot} (block {ring_b_first + slot})').encode()
+        if previous <= 0 or findings[1] != warning:
+            return None
+        generations_b = [struct.unpack_from('<Q', ring_b, offset + SUPERBLOCK_GENERATION)[0]
+                         for offset in range(0, ring_bytes, SUPERBLOCK_BYTES)]
+        if (generations_b[slot] != previous or (generations_a + generations_b).count(previous) != 1
+                or not valid_superblock_crc(paired)):
+            return None
+    return dict(slot=slot, generation=generation)
+
+
 def cold_state(result, image):
     if result.returncode == 0 and not result.stdout and not result.stderr:
         return dict(coldState='clean')
-    findings = result.stdout.splitlines()
-    if result.returncode == 1 and not result.stderr and len(findings) == 1:
-        if match := MISSING_RING_B.fullmatch(findings[0]):
-            generation, slot, block = map(int, match.groups())
-            # A warning-only check has validated each nonempty slot. Read ring A's
-            # generation fields to distinguish the newest copy from an older one.
-            with image.open('rb') as disk:
-                disk.seek(RING_A_FIRST * RECORD_BYTES)
-                ring = disk.read(SLOTS_PER_RING * RECORD_BYTES)
-            if len(ring) == SLOTS_PER_RING * RECORD_BYTES:
-                generations = [struct.unpack_from('<Q', ring, index * RECORD_BYTES + SUPERBLOCK_GENERATION)[0]
-                               for index in range(SLOTS_PER_RING)]
-                if (slot == generation % SLOTS_PER_RING and block == RING_A_FIRST + slot
-                        and generations[slot] == generation == max(generations)):
-                    return dict(coldState='ring-B-missing', missingRingB=dict(slot=slot, generation=generation))
+    if result.returncode == 1 and not result.stderr:
+        if missing := missing_ring_b(result.stdout.splitlines(), image):
+            return dict(coldState='ring-B-missing', missingRingB=missing)
     detail = (result.stdout + result.stderr).decode(errors='replace').strip()
     raise ValueError(f'breenfs-check --full exited {result.returncode}, expected a clean image '
-                     f'or only the newest ring-B copy missing: {detail}')
+                     f'or only an interrupted ring-B publication: {detail}')
 
 
 def replay(serial_path, extract, image):

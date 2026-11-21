@@ -1747,9 +1747,11 @@ python3 scripts/metal/breenfs_replay.py replay SERIAL COLD_IMAGE --tools-dir BRE
 ```
 
 Replay reads `/crash/log` with `breenfs-extract` and records the cold state.
-It accepts `breenfs-check --full` exit 0 as `clean`, or exit 1 as `ring-B-missing`
-when the sole finding is the missing ring B copy of the newest valid ring A
-generation. Each record must match the writer's sequence, payload
+It accepts `breenfs-check --full` exit 0 as `clean`. Exit 1 is `ring-B-missing`
+only with empty stderr and a warning that the newest generation G has only its
+ring A copy. The paired ring B slot must either be empty before the first wrap
+or hold the only CRC-valid copy of G−4, with a matching ring-B-only warning.
+Any additional finding fails replay. Each record must match the writer's sequence, payload
 and digest, including a complete tail that reached disk before the cut but
 whose receipt did not reach serial. Replay fails on a missing acknowledged record,
 a receipt digest mismatch, a failed extraction or an incomplete disk record.
