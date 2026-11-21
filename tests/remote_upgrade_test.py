@@ -67,6 +67,18 @@ class UpgradeAssertions(unittest.TestCase):
 
 class UpgradePinRecovery(unittest.TestCase):
     def test_stale_pin_recovers_only_through_console_and_strict_authenticated_probe(self):
+        result, calls, pin = self.run_probe()
+        self.assertTrue(result['passed'], result)
+        self.assertEqual(calls[:2], [('id -u', 'old'), ('id -u', 'new')])
+        self.assertEqual(pin, 'new')
+
+    def test_migration_verification_syncs_using_installed_utility(self):
+        result, calls, _ = self.run_probe(phase='cutover')
+        self.assertTrue(result['passed'], result)
+        self.assertTrue(result['homeReadable'])
+        self.assertIn(('/usr/bin/sync', 'new'), calls)
+
+    def run_probe(self, phase=None):
         import hashlib
         import json
         import tempfile
@@ -84,6 +96,7 @@ class UpgradePinRecovery(unittest.TestCase):
             calls = []
             now = module['time'].time()
             boot_id = '20261023T000000Z-metal'
+            run = dict(migrationPhase=phase) if phase else dict(upgradeParent='parent')
             def remote(env, *cmd, **kw):
                 text = ' '.join(cmd)
                 if cmd[0] == 'python3':
@@ -92,7 +105,7 @@ class UpgradePinRecovery(unittest.TestCase):
                                   OPERATOR_SSH_PUBLIC_KEY='ssh-ed25519 public', CONSOLE_USER='root', CONSOLE_PASSWORD='secret'))
                     return SimpleNamespace(returncode=0, stdout=json.dumps(value))
                 name = Path(cmd[-1]).name
-                values = {'run.json': json.dumps(dict(upgradeParent='parent')),
+                values = {'run.json': json.dumps(run),
                           'lease.json': json.dumps(dict(id=boot_id)),
                           'events.jsonl': json.dumps(dict(event='power-on', t=now-1)),
                           'serial.txt': 'Jumping to kernel entry point at\nBreenix login: '}
@@ -101,15 +114,24 @@ class UpgradePinRecovery(unittest.TestCase):
                 def __init__(self, host, user, identity, directory):
                     self.known = directory / 'known_hosts'
                 def ssh(self, command, **kw):
-                    calls.append((command, self.known.read_text()))
-                    return SimpleNamespace(returncode=int(self.known.read_text() != 'new'),
-                                           stdout={'id -u':'1000', 'cat /usr/share/factory/generation':'generation',
-                                                   'cat /run/breenix/services':'services'}[command])
+                    pin = self.known.read_text()
+                    calls.append((command, pin))
+                    output = {
+                        'id -u': '1000',
+                        'cat /usr/share/factory/generation': 'generation',
+                        'cat /run/breenix/services': 'services',
+                        '/bin/cat /proc/mounts': 'mounts',
+                        '/bin/ls -a "$HOME"': '',
+                        '/usr/bin/sync': '',
+                    }
+                    if command not in output:
+                        return SimpleNamespace(returncode=127, stdout='')
+                    return SimpleNamespace(returncode=int(pin != 'new'), stdout=output[command])
                 def run_case(self, name, log):
                     if log != 'trusted': raise ValueError('untrusted console')
                     self.known.write_text('new')
                 def require(self, result, expected=None):
-                    if result.returncode: raise ValueError('strict SSH failed')
+                    module['Probe'].require(self, result, expected)
             class FakeConsole:
                 def __init__(self, *args): pass
                 def service_log(self, name): return 'trusted'
@@ -122,9 +144,7 @@ class UpgradePinRecovery(unittest.TestCase):
                  patch.object(Path, 'home', return_value=home), \
                  patch.object(module['re'], 'search', return_value=['', 'SHA256:new']):
                 result = fn(SimpleNamespace(boot=boot_id))
-            self.assertTrue(result['passed'], result)
-            self.assertEqual(calls[:2], [('id -u', 'old'), ('id -u', 'new')])
-            self.assertEqual(json.loads(cache.read_text())['known'], 'new')
+            return result, calls, json.loads(cache.read_text())['known']
 
 
 class UpgradeDriver(existing.StateTest):

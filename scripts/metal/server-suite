@@ -2073,7 +2073,7 @@ def probe_upgrade_attempt(args):
                     mounts = probe.ssh('/bin/cat /proc/mounts')
                     probe.require(mounts)
                     probe.require(probe.ssh('/bin/ls -a "$HOME"'))
-                    probe.require(probe.ssh('/bin/sync'))
+                    probe.require(probe.ssh('/usr/bin/sync'))
                     receipt.update(mounts=mounts.stdout, homeReadable=True)
                 receipt.update(authenticated=True, strictHostKey=True, servicesStarted=True,
                                generation=generation.stdout.strip(), fingerprint=fingerprint, serviceState=state.stdout)
