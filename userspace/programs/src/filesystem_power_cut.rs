@@ -10,6 +10,7 @@ pub(super) fn write_records<W: Write>(
     receipts: &mut impl Write,
     nonce: u64,
     mut sync: impl FnMut(&W) -> io::Result<()>,
+    mut after_receipt: impl FnMut(&mut W, u64) -> io::Result<()>,
 ) -> io::Result<()> {
     let mut record = [0; RECORD_BYTES];
     record[8..16].copy_from_slice(&nonce.to_le_bytes());
@@ -34,6 +35,7 @@ pub(super) fn write_records<W: Write>(
         let line = format!("\nFSYNC {nonce:016x} {seq} {hex}\n");
         receipts.write_all(line.as_bytes())?;
         receipts.flush()?;
+        after_receipt(log, seq)?;
         seq += 1;
     }
 }

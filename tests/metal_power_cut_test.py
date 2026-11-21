@@ -108,6 +108,8 @@ class PowerCutDriverTest(StateTest):
         def watch():
             raw.write_bytes(b'\r\n'.join(excerpt + [
                 b'',
+                b'SUITE filesystem START cases=1 only=power-cut/writer nonce=0123456789abcdef',
+                b'FSYNC 0123456789abcdef 1 ' + b'a' * 64,
                 b'[breenfs] commit-window node-writes',
                 b'echo ' + MARKER.encode(),
                 MARKER.encode() + b' trailing text',

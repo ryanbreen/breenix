@@ -2640,7 +2640,12 @@ impl<W: Wait + 'static> BreenFs<W> {
                 self.inner.cache.buffers(),
                 &self.inner.costs.device(self.inner.device.as_ref()),
                 &group,
-                #[cfg(any(feature = "breenfs_commit_window", feature = "breenfs_corrupt_inject"))]
+                #[cfg(feature = "breenfs_commit_window")]
+                self.inner.commit_faults.as_ref().and_then(|faults| {
+                    faults.take_window(|ino| frozen.pages.nodes.get(&ino)
+                        .is_some_and(|node| node.pages.bytes() != 0))
+                }),
+                #[cfg(feature = "breenfs_corrupt_inject")]
                 self.inner.commit_faults.as_ref(),
             )
         };
@@ -3150,6 +3155,11 @@ impl<W: Wait + 'static> FileSystem for BreenFs<W> {
     fn ioctl(&self, node: &VNode, request: u64, arg: u64) -> Result<u64, Errno> {
         self.check_node(node)?;
         match request {
+            #[cfg(feature = "breenfs_commit_window")]
+            super::commit::faults::abi::ARM_PUBLICATION => {
+                let faults = self.inner.commit_faults.as_ref().ok_or(Errno(ENOTTY))?;
+                faults.arm_window(node.ino, arg);
+            }
             SNAPSHOT_CREATE | SNAPSHOT_DELETE => {
                 let value = crate::syscall::userptr::copy_from_user(arg as *const SnapshotRequest)
                     .map_err(|error| Errno(error as i32))?;

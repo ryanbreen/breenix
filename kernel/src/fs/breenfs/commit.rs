@@ -436,7 +436,9 @@ impl PreparedCommit {
         cache: &BufferCache<W>,
         device: &dyn BlockDevice,
         group: &WriteGroup,
-        #[cfg(any(feature = "breenfs_commit_window", feature = "breenfs_corrupt_inject"))]
+        #[cfg(feature = "breenfs_commit_window")]
+        window: Option<faults::Window>,
+        #[cfg(feature = "breenfs_corrupt_inject")]
         faults: Option<&faults::Faults>,
     ) -> Result<(), Error> {
         if !matches!(group, WriteGroup::Hold(_)) {
@@ -486,21 +488,21 @@ impl PreparedCommit {
         }
         cache.submit(device, group).wait().map_err(|_| Error::EIO)?;
         #[cfg(feature = "breenfs_commit_window")]
-        if let Some(faults) = faults {
-            faults.window(faults::Window::NodeWrites);
+        if let Some(selected) = window {
+            faults::Faults::window(selected, faults::Window::NodeWrites);
         }
         preemption_point();
         cache.flush(device).map_err(|_| Error::EIO)?;
         #[cfg(feature = "breenfs_commit_window")]
-        if let Some(faults) = faults {
-            faults.window(faults::Window::FirstFlush);
+        if let Some(selected) = window {
+            faults::Faults::window(selected, faults::Window::FirstFlush);
         }
         preemption_point();
         self.superblocks(|addr, bytes| {
             #[cfg(feature = "breenfs_commit_window")]
-            if let Some(faults) = faults {
+            if let Some(selected) = window {
                 if addr == slot_block(self.sb.total_blocks, 1, self.sb.slot) {
-                    faults.window(faults::Window::BetweenRings);
+                    faults::Faults::window(selected, faults::Window::BetweenRings);
                 }
             }
             for (i, bytes) in bytes.chunks_exact(sector).enumerate() {

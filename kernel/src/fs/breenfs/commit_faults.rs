@@ -1,15 +1,45 @@
 //! Boot-only BreenFS publication faults for the disposable suite root.
 //!
 //! With the window feature enabled, `breenfs_commit_window=<window>` holds the
-//! named window for two seconds after its marker. Without a selection, the
-//! markers are emitted without a pause.
+//! named window for up to sixty seconds after its marker. Only the
+//! publication armed by the writer on its log descriptor emits markers.
 //!
 //! With the corruption feature enabled, `breenfs_corrupt_inject=<block>:<offset>:<bit>`
 //! selects a filesystem-relative block written by a commit. Use `first-data`
 //! in place of a block number to select the first data block staged for writing.
 
 #[cfg(any(test, feature = "breenfs_corrupt_inject"))]
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::AtomicBool;
+use core::sync::atomic::Ordering;
+
+#[cfg(any(test, feature = "breenfs_commit_window"))]
+use core::sync::atomic::AtomicU64;
+
+#[cfg(all(not(test), feature = "breenfs_commit_window"))]
+#[path = "fault_abi.rs"]
+pub(super) mod abi;
+
+#[cfg(any(test, feature = "breenfs_commit_window"))]
+pub(super) struct PublicationArm(AtomicU64);
+
+#[cfg(any(test, feature = "breenfs_commit_window"))]
+impl PublicationArm {
+    pub(super) const fn new() -> Self {
+        Self(AtomicU64::new(0))
+    }
+
+    pub(super) fn arm(&self, ino: u64) -> bool {
+        self.0.compare_exchange(0, ino, Ordering::AcqRel, Ordering::Acquire).is_ok()
+    }
+
+    pub(super) fn take_if(&self, contains: impl FnOnce(u64) -> bool) -> Option<u64> {
+        let ino = self.0.load(Ordering::Acquire);
+        if ino == 0 || ino == u64::MAX || !contains(ino) {
+            return None;
+        }
+        self.0.compare_exchange(ino, u64::MAX, Ordering::AcqRel, Ordering::Acquire).ok()
+    }
+}
 
 fn option<'a>(line: &'a str, name: &str) -> Option<&'a str> {
     let mut values = line
@@ -126,6 +156,10 @@ impl Flip {
 pub struct Faults {
     #[cfg(feature = "breenfs_commit_window")]
     pause: Option<Window>,
+    #[cfg(feature = "breenfs_commit_window")]
+    after_receipt: Option<u64>,
+    #[cfg(feature = "breenfs_commit_window")]
+    armed: PublicationArm,
     #[cfg(feature = "breenfs_corrupt_inject")]
     pub(super) injection: Option<Injection>,
 }
@@ -144,15 +178,33 @@ impl Faults {
         Some(Self {
             #[cfg(feature = "breenfs_commit_window")]
             pause: Window::from_command_line(line),
+            #[cfg(feature = "breenfs_commit_window")]
+            after_receipt: option(line, "breenfs_after_receipt=").and_then(|value| value.parse().ok()),
+            #[cfg(feature = "breenfs_commit_window")]
+            armed: PublicationArm::new(),
             #[cfg(feature = "breenfs_corrupt_inject")]
             injection: Injection::from_command_line(line),
         })
     }
 
     #[cfg(feature = "breenfs_commit_window")]
-    pub(super) fn window(&self, window: Window) {
+    pub(super) fn arm_window(&self, ino: u64, receipt: u64) {
+        if self.pause.is_some() && self.after_receipt == Some(receipt) {
+            self.armed.arm(ino);
+        }
+    }
+
+    #[cfg(feature = "breenfs_commit_window")]
+    pub(super) fn take_window(&self, contains: impl FnOnce(u64) -> bool) -> Option<Window> {
+        let selected = self.pause?;
+        self.armed.take_if(contains)?;
+        Some(selected)
+    }
+
+    #[cfg(feature = "breenfs_commit_window")]
+    pub(super) fn window(selected: Window, window: Window) {
         crate::serial_println!("\n{}", window.marker());
-        if self.pause == Some(window) {
+        if selected == window {
             use crate::fs::breenfs::commit_signal::monotonic_ns;
             const PAUSE_NS: u64 = 60_000_000_000;
             let end = monotonic_ns().saturating_add(PAUSE_NS);

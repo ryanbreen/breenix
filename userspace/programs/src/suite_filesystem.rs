@@ -4,6 +4,8 @@ mod filesystem_read;
 mod filesystem_checksum;
 mod filesystem_enospc;
 mod filesystem_power_cut;
+#[path = "../../../kernel/src/fs/breenfs/fault_abi.rs"]
+mod fault_abi;
 pub mod filesystem_root;
 pub mod root_expectations;
 mod filesystem_snapshots;
@@ -296,6 +298,9 @@ fn power_cut_writer(root: filesystem_root::RootFs) -> CaseResult {
     root_is_breenfs()?;
     io(fs::create_dir("/crash"))?;
     let mut log = io(fs::OpenOptions::new().append(true).create_new(true).open("/crash/log"))?;
+    io(log.sync_all())?;
+    io(File::open("/crash").and_then(|dir| dir.sync_all()))?;
+    io(File::open("/").and_then(|dir| dir.sync_all()))?;
     let mut nonce = [0; 8];
     let received = libbreenix::crypto::rand::getrandom_bytes(&mut nonce);
     check(received == Ok(nonce.len()), "could not get a power-cut writer nonce")?;
@@ -303,7 +308,14 @@ fn power_cut_writer(root: filesystem_root::RootFs) -> CaseResult {
     let mut serial = std::io::stdout().lock();
     io(writeln!(serial, "\nSUITE filesystem START cases=1 only=power-cut/writer nonce={nonce:016x}"))?;
     io(serial.flush())?;
-    io(filesystem_power_cut::write_records(&mut log, &mut serial, nonce, File::sync_all))?;
+    io(filesystem_power_cut::write_records(&mut log, &mut serial, nonce, File::sync_all, |log, seq| {
+        use libbreenix::syscall::{nr, raw};
+        let result = unsafe { raw::syscall3(nr::IOCTL, log.as_raw_fd() as u64, fault_abi::ARM_PUBLICATION, seq) } as i64;
+        match result {
+            0 | -25 => Ok(()), // ENOTTY on production kernels.
+            error => Err(std::io::Error::from_raw_os_error((-error) as i32)),
+        }
+    }))?;
     Ok(())
 }
 

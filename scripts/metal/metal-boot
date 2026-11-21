@@ -261,6 +261,8 @@ class Driver:
         self.tmux = ['tmux', '-L', 'metal-' + self.id]
         self.watchdog_trigger = None
         self.power_cut = None
+        self.writer_nonce = None
+        self.writer_acknowledged = False
         if metal_power_cut.options(args):
             self.power_cut = dict(window=args.power_cut_window, afterSeconds=args.power_cut_after,
                                   triggerLine=None, cutAt=None, powerOffConfirmed=False)
@@ -1286,9 +1288,12 @@ class Driver:
         if self.power_cut is not None and (writer := re.fullmatch(
                 r'SUITE filesystem START cases=1 only=power-cut/writer nonce=([0-9a-f]{16})', line)):
             self.suite_name = 'filesystem'
+            self.writer_nonce = writer[1]
             self.event('power-cut-writer-start', observed_at=observed_at, nonce=writer[1])
+        if self.writer_nonce and re.fullmatch(f'FSYNC {self.writer_nonce} 1 [0-9a-f]{{64}}', line):
+            self.writer_acknowledged = True
         cut = self.power_cut
-        if (cut is not None and cut['window'] is not None and cut['cutAt'] is None
+        if (cut is not None and self.writer_acknowledged and cut['window'] is not None and cut['cutAt'] is None
                 and self.suite_name == self.args.suite and 'disk-root-confirmed' in self.seen
                 and self.fatal_at is None and not self.gap
                 and line == f"[breenfs] commit-window {cut['window']}"):
