@@ -52,3 +52,27 @@ fn power_cut_writer_acknowledges_only_complete_synced_records() {
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
+
+#[test]
+fn corruption_probe_reads_the_synced_record_and_requires_eio() {
+    for (actual, success) in [
+        (Ok(4096), false),
+        (Ok(0), false),
+        (Err(io::Error::from_raw_os_error(2)), false),
+        (Err(io::Error::from_raw_os_error(5)), true),
+    ] {
+        let mut log = vec![0; 4096];
+        let synced = std::cell::Cell::new(false);
+        let result = writer::probe_record(&mut log, 0x0123456789abcdef, 2, |log| {
+            assert_eq!(log.len(), 8192);
+            synced.set(true);
+            Ok(())
+        }, |_, offset, buffer| {
+            assert!(synced.get());
+            assert_eq!(offset, 4096);
+            assert_eq!(buffer.len(), 4096);
+            actual
+        });
+        assert_eq!(result.is_ok(), success);
+    }
+}

@@ -135,3 +135,11 @@ fn publication_fault_arms_once_for_the_writers_dirty_inode() {
     assert_eq!(armed.take_if(|_| true), None);
     assert!(!armed.arm(42));
 }
+
+#[test]
+fn corruption_skips_other_data_in_the_same_publication() {
+    let injection = Injection::from_command_line("breenfs_corrupt_inject=first-data:64:0").unwrap();
+    assert!(injection.take_for(41, 40 * 8, 512).is_none());
+    assert!(injection.take_for(41, 41 * 8 + 1, 512).is_none());
+    assert_eq!(injection.take_for(41, 41 * 8, 512).unwrap().block, 41);
+}
