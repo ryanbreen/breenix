@@ -30,7 +30,7 @@ fn power_cut_writer_acknowledges_only_complete_synced_records() {
             return Err(io::Error::other("injected fsync failure"));
         }
         Ok(())
-    }, |_, _| Ok(()));
+    }, |_, _| Ok(false));
     assert_eq!(result.unwrap_err().to_string(), "injected fsync failure");
     assert_eq!(sync_calls, 3);
 

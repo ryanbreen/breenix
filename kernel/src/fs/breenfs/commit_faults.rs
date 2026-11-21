@@ -6,23 +6,20 @@
 //!
 //! With the corruption feature enabled, `breenfs_corrupt_inject=<block>:<offset>:<bit>`
 //! selects a filesystem-relative block written by a commit. Use `first-data`
-//! in place of a block number to select the first data block staged for writing.
+//! in place of a block number to select the block of the armed probe record.
 
 #[cfg(any(test, feature = "breenfs_corrupt_inject"))]
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering;
 
-#[cfg(any(test, feature = "breenfs_commit_window"))]
 use core::sync::atomic::AtomicU64;
 
-#[cfg(all(not(test), feature = "breenfs_commit_window"))]
+#[cfg(not(test))]
 #[path = "fault_abi.rs"]
 pub(super) mod abi;
 
-#[cfg(any(test, feature = "breenfs_commit_window"))]
 pub(super) struct PublicationArm(AtomicU64);
 
-#[cfg(any(test, feature = "breenfs_commit_window"))]
 impl PublicationArm {
     pub(super) const fn new() -> Self {
         Self(AtomicU64::new(0))
@@ -79,7 +76,7 @@ impl Window {
 
 #[cfg(any(test, feature = "breenfs_corrupt_inject"))]
 pub(super) struct Injection {
-    // A missing address selects the first data block in publication order.
+    // A missing address selects the probe record’s block.
     block: Option<u64>,
     offset: usize,
     bit: u8,
@@ -120,6 +117,13 @@ impl Injection {
         })
     }
 
+    pub(super) fn take_for(&self, target: u64, sector: u64, sector_size: usize) -> Option<Flip> {
+        if sector / (BLOCK_SIZE / sector_size) as u64 != target {
+            return None;
+        }
+        self.take(sector, sector_size, true)
+    }
+
     pub(super) fn take(&self, sector: u64, sector_size: usize, is_data: bool) -> Option<Flip> {
         let per_block = (BLOCK_SIZE / sector_size) as u64;
         let block = sector / per_block;
@@ -158,10 +162,9 @@ pub struct Faults {
     pause: Option<Window>,
     #[cfg(feature = "breenfs_commit_window")]
     after_receipt: Option<u64>,
-    #[cfg(feature = "breenfs_commit_window")]
     armed: PublicationArm,
     #[cfg(feature = "breenfs_corrupt_inject")]
-    pub(super) injection: Option<Injection>,
+    injection: Option<Injection>,
 }
 
 #[cfg(not(test))]
@@ -180,25 +183,36 @@ impl Faults {
             pause: Window::from_command_line(line),
             #[cfg(feature = "breenfs_commit_window")]
             after_receipt: option(line, "breenfs_after_receipt=").and_then(|value| value.parse().ok()),
-            #[cfg(feature = "breenfs_commit_window")]
             armed: PublicationArm::new(),
             #[cfg(feature = "breenfs_corrupt_inject")]
             injection: Injection::from_command_line(line),
         })
     }
 
-    #[cfg(feature = "breenfs_commit_window")]
-    pub(super) fn arm_window(&self, ino: u64, receipt: u64) {
+    pub(super) fn arm(&self, ino: u64, receipt: u64) -> u64 {
+        #[cfg(feature = "breenfs_corrupt_inject")]
+        if receipt == 1 && self.injection.is_some() && self.armed.arm(ino) {
+            return 1;
+        }
+        #[cfg(feature = "breenfs_commit_window")]
         if self.pause.is_some() && self.after_receipt == Some(receipt) {
             self.armed.arm(ino);
         }
+        0
+    }
+
+    pub(super) fn armed_inode(&self, contains: impl FnOnce(u64) -> bool) -> Option<u64> {
+        self.armed.take_if(contains)
     }
 
     #[cfg(feature = "breenfs_commit_window")]
-    pub(super) fn take_window(&self, contains: impl FnOnce(u64) -> bool) -> Option<Window> {
-        let selected = self.pause?;
-        self.armed.take_if(contains)?;
-        Some(selected)
+    pub(super) fn selected_window(&self) -> Option<Window> {
+        self.pause
+    }
+
+    #[cfg(feature = "breenfs_corrupt_inject")]
+    pub(super) fn injection(&self) -> Option<&Injection> {
+        self.injection.as_ref()
     }
 
     #[cfg(feature = "breenfs_commit_window")]

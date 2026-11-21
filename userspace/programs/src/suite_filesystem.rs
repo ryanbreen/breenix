@@ -16,7 +16,7 @@ use libbreenix::{fs as sysfs, io as sysio, types::Fd};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::{DirEntryExt, MetadataExt};
+use std::os::unix::fs::{DirEntryExt, FileExt, MetadataExt};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -297,7 +297,7 @@ fn power_cut_writer(root: filesystem_root::RootFs) -> CaseResult {
     check(root == filesystem_root::RootFs::Breenfs, "power-cut writer requires a breenfs test root")?;
     root_is_breenfs()?;
     io(fs::create_dir("/crash"))?;
-    let mut log = io(fs::OpenOptions::new().append(true).create_new(true).open("/crash/log"))?;
+    let mut log = io(fs::OpenOptions::new().read(true).append(true).create_new(true).open("/crash/log"))?;
     io(log.sync_all())?;
     io(File::open("/crash").and_then(|dir| dir.sync_all()))?;
     io(File::open("/").and_then(|dir| dir.sync_all()))?;
@@ -312,10 +312,17 @@ fn power_cut_writer(root: filesystem_root::RootFs) -> CaseResult {
         use libbreenix::syscall::{nr, raw};
         let result = unsafe { raw::syscall3(nr::IOCTL, log.as_raw_fd() as u64, fault_abi::ARM_PUBLICATION, seq) } as i64;
         match result {
-            0 | -25 => Ok(()), // ENOTTY on production kernels.
+            0 | -25 => Ok(false), // ENOTTY on production kernels.
+            1 => {
+                filesystem_power_cut::probe_record(log, nonce, seq + 1, File::sync_all,
+                    |file, offset, buf| file.read_at(buf, offset))?;
+                Ok(true)
+            }
             error => Err(std::io::Error::from_raw_os_error((-error) as i32)),
         }
     }))?;
+    io(writeln!(serial, "\nSUITE_SEQUENCE READY filesystem"))?;
+    io(serial.flush())?;
     Ok(())
 }
 

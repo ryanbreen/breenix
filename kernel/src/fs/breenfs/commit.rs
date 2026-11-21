@@ -439,7 +439,7 @@ impl PreparedCommit {
         #[cfg(feature = "breenfs_commit_window")]
         window: Option<faults::Window>,
         #[cfg(feature = "breenfs_corrupt_inject")]
-        faults: Option<&faults::Faults>,
+        injection: Option<(&faults::Injection, u64)>,
     ) -> Result<(), Error> {
         if !matches!(group, WriteGroup::Hold(_)) {
             return Err(Error::EIO);
@@ -455,9 +455,8 @@ impl PreparedCommit {
                 // Stage the changed sector from a copy. The prepared bytes,
                 // extent CRCs and node pointers still describe the original.
                 #[cfg(feature = "breenfs_corrupt_inject")]
-                let flip = faults
-                    .and_then(|faults| faults.injection.as_ref())
-                    .and_then(|injection| injection.take(block, sector, self.data.contains_key(&addr)));
+                let flip = injection.filter(|_| self.data.contains_key(&addr))
+                    .and_then(|(injection, target)| injection.take_for(target, block, sector));
                 #[cfg(feature = "breenfs_corrupt_inject")]
                 let bytes = if let Some(flip) = &flip {
                     let staged = &mut altered[..sector];

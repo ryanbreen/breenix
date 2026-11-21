@@ -975,6 +975,8 @@ impl<'a, S: NodeStore + 'a> Files<'a, S> {
             _ => ReadError::Data,
         })?;
         if crc32c::checksum(&bytes) != *expected {
+            #[cfg(feature = "breenfs_corrupt_inject")]
+            crate::serial_println!("\n[breenfs] corrupt-read block={addr} result=ReadError::Data");
             return Err(ReadError::Data);
         }
         Ok(bytes)
