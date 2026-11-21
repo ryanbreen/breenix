@@ -48,6 +48,8 @@ def receipts(serial):
         if seq != expected:
             raise ValueError(f'expected FSYNC sequence {expected}, found {seq}')
         acknowledged.append(bytes.fromhex(match[2].decode('ascii')))
+    if not acknowledged:
+        raise ValueError("no acknowledged writes before the cut")
     return acknowledged
 
 
