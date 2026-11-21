@@ -1125,6 +1125,15 @@ fn filesystem_cases_match_the_guest() {
 }
 
 #[test]
+fn filesystem_writer_dispatch_keeps_the_manifest_guard() {
+    let source = fs::read_to_string(repo_root().join("userspace/programs/src/suite_filesystem.rs")).unwrap();
+    source_suite(&source).expect("the selected writer leaves the guest table discoverable");
+    let bypass = source.replace("if writer_selected {", "if true {");
+    assert_ne!(bypass, source);
+    assert!(source_suite(&bypass).is_err(), "an unconditional writer would hide the guest suite");
+}
+
+#[test]
 fn sdk_record_tables_are_read_exactly() {
     let harness = "X = 1\nHOST_CASES = (\n    'a/b', 'c/d',\n    'e/f',\n)\nY = ('g/h',)\n";
     assert_eq!(sdk_harness_cases(harness), ["a/b", "c/d", "e/f"]);
