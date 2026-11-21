@@ -16,7 +16,7 @@ use core::sync::atomic::AtomicU64;
 
 #[cfg(not(test))]
 #[path = "fault_abi.rs"]
-pub(super) mod abi;
+pub(in crate::fs::breenfs) mod abi;
 
 pub(super) struct PublicationArm(AtomicU64);
 
@@ -48,7 +48,7 @@ fn option<'a>(line: &'a str, name: &str) -> Option<&'a str> {
 
 #[cfg(any(test, feature = "breenfs_commit_window"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum Window {
+pub enum Window {
     NodeWrites,
     FirstFlush,
     BetweenRings,
@@ -75,7 +75,7 @@ impl Window {
 }
 
 #[cfg(any(test, feature = "breenfs_corrupt_inject"))]
-pub(super) struct Injection {
+pub struct Injection {
     // A missing address selects the probe record’s block.
     block: Option<u64>,
     offset: usize,
@@ -189,7 +189,7 @@ impl Faults {
         })
     }
 
-    pub(super) fn arm(&self, ino: u64, receipt: u64) -> u64 {
+    pub(in crate::fs::breenfs) fn arm(&self, ino: u64, receipt: u64) -> u64 {
         #[cfg(feature = "breenfs_corrupt_inject")]
         if receipt == 1 && self.injection.is_some() && self.armed.arm(ino) {
             return 1;
@@ -201,17 +201,17 @@ impl Faults {
         0
     }
 
-    pub(super) fn armed_inode(&self, contains: impl FnOnce(u64) -> bool) -> Option<u64> {
+    pub(in crate::fs::breenfs) fn armed_inode(&self, contains: impl FnOnce(u64) -> bool) -> Option<u64> {
         self.armed.take_if(contains)
     }
 
     #[cfg(feature = "breenfs_commit_window")]
-    pub(super) fn selected_window(&self) -> Option<Window> {
+    pub(in crate::fs::breenfs) fn selected_window(&self) -> Option<Window> {
         self.pause
     }
 
     #[cfg(feature = "breenfs_corrupt_inject")]
-    pub(super) fn injection(&self) -> Option<&Injection> {
+    pub(in crate::fs::breenfs) fn injection(&self) -> Option<&Injection> {
         self.injection.as_ref()
     }
 
