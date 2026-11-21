@@ -1,7 +1,8 @@
-"""Score synthetic evidence through the cold-readback checker CLI."""
+"""Score cold readback evidence through the replay CLI."""
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import struct
 import subprocess
@@ -10,12 +11,30 @@ import tempfile
 import unittest
 
 
-CHECKER = Path(__file__).resolve().parents[1] / 'scripts/metal/breenfs_replay.py'
+ROOT = Path(__file__).resolve().parents[1]
+CHECKER = ROOT / 'scripts/metal/breenfs_replay.py'
+TOOLS = Path(os.environ.get('BREENFS_TOOLS_DIR', ROOT / 'tools/breenfs/target/release')).resolve()
 NONCE = '0123456789abcdef'
 START = f'SUITE filesystem START cases=1 only=power-cut/writer nonce={NONCE}\n'.encode()
 INJECTION = b'[breenfs] corrupt-inject block=120 offset=14 bit=2\n'
 CRC_ERROR = b'error C1 block 120 (data REF 120+1): CRC 0x12345678, REF records 0x87654321\n'
-RING_B_MISSING = b'warning generation 5 has only its ring A copy, slot A1 (block 17)\n'
+BLOCK_BYTES = 4096
+IMAGE_BYTES = 64 * 1024 * 1024
+RING_FIRST = (16, IMAGE_BYTES // BLOCK_BYTES - 4)
+
+
+def superblock(template, ring, generation, *, compat=0, torn=False):
+    data = bytearray(template)
+    slot = generation % 4
+    struct.pack_into('<QBB', data, 32, generation, ring, slot)
+    struct.pack_into('<Q', data, 64, compat)
+    crc = 0xffffffff
+    for byte in data[12:]:
+        crc ^= byte
+        for _ in range(8):
+            crc = (crc >> 1) ^ (0x82f63b78 if crc & 1 else 0)
+    struct.pack_into('<I', data, 8, crc ^ 0xffffffff ^ int(torn))
+    return RING_FIRST[ring] + slot, data
 
 
 def record(seq, *, wrong_payload=False, nonce=NONCE):
@@ -53,7 +72,8 @@ else:
 ''')
             tool.chmod(0o755)
 
-    def score(self, mode, serial, log=b'', *, check_status=0, check_stdout=b'', gap=False, off=True, root_match=True, aimed=False):
+    def score(self, mode, serial, log=b'', *, check_status=0, check_stdout=b'', gap=False, off=True,
+              root_match=True, aimed=False, tools_dir=None):
         (self.work / 'crash-log').write_bytes(log)
         (self.work / 'serial.txt').write_bytes(serial)
         (self.work / 'check-stdout').write_bytes(check_stdout)
@@ -77,7 +97,7 @@ else:
         (self.work / 'check-status').write_text(str(check_status))
         return subprocess.run(
             [sys.executable, str(CHECKER), mode, 'serial.txt', self.image.name,
-             '--tools-dir', str(self.work)], cwd=self.work,
+             '--tools-dir', str(self.work if tools_dir is None else tools_dir)], cwd=self.work,
             capture_output=True, text=True, timeout=5,
         )
 
@@ -148,29 +168,44 @@ else:
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn('breenfs-check --full exited 1', result.stderr)
 
-    def test_replay_accepts_only_the_newest_unpaired_ring_a_generation(self):
-        # Use the checker's output contract and the generation fields from its validated slots.
-        with self.image.open('wb') as image:
-            for generation in (4, 5):
-                image.seek((16 + generation % 4) * 4096 + 32)
-                image.write(struct.pack('<Q', generation))
-            image.truncate(16384 * 4096)
-        for label, finding, check_status, log, accepted in (
-            ('latest ring B only', RING_B_MISSING, 1, record(1), True),
-            ('second warning', RING_B_MISSING + b'warning abandoned slot\n', 1, record(1), False),
-            ('additional error', RING_B_MISSING + CRC_ERROR, 4, record(1), False),
-            ('ring A missing', b'warning generation 5 has only its ring B copy, slot B1 (block 16381)\n',
-             1, record(1), False),
-            ('older ring B missing', b'warning generation 4 has only its ring A copy, slot A0 (block 16)\n',
-             1, record(1), False),
-            ('acknowledged record missing', RING_B_MISSING, 1, b'', False),
+    def test_replay_accepts_only_the_interrupted_ring_b_publication(self):
+        tree = self.work / 'tree'
+        (tree / 'crash').mkdir(parents=True)
+        (tree / 'crash/log').write_bytes(record(1))
+        subprocess.run([TOOLS / 'breenfs-mkfs', '--populate', tree, '--size', str(IMAGE_BYTES), self.image],
+                       check=True, capture_output=True, timeout=5)
+        with self.image.open('r+b') as disk:
+            disk.seek((RING_FIRST[0] + 1) * BLOCK_BYTES)
+            template = disk.read(BLOCK_BYTES)
+        # Keep mkfs's valid roots and vary only the ring slots covering publication.
+        a1 = superblock(template, 0, 1)
+        a5 = superblock(template, 0, 5)
+        b1 = superblock(template, 1, 1)
+        serial = START + ack(1)
+        for label, slots, capture, status, detail in (
+            ('empty paired B', (a1,), serial, 0, 'ring-B-missing'),
+            ('previous paired B', (a5, b1), serial, 0, 'ring-B-missing'),
+            ('third finding', (a5, superblock(template, 1, 1, compat=2)), serial, 1, 'sets unknown compat'),
+            ('wrong generation in paired B', (superblock(template, 0, 9), b1), serial, 1,
+             'generation 1 has only its ring B copy'),
+            ('empty paired B after a wrap', (a5,), serial, 1, 'generation 5 has only its ring A copy'),
+            ('ring A missing', (b1,), serial, 1, 'generation 1 has only its ring B copy'),
+            ('torn paired slot', (a5, superblock(template, 1, 1, torn=True)), serial, 1, 'error S1 slot B1'),
+            ('older ring B missing', (a1, superblock(template, 0, 2), superblock(template, 1, 2)),
+             serial, 1, 'generation 1 has only its ring A copy'),
+            ('acknowledged record missing', (a1,), serial + ack(2), 1, 'acknowledged sequence 2 is missing'),
         ):
             with self.subTest(label=label):
-                result = self.score('replay', START + ack(1), log,
-                                    check_status=check_status, check_stdout=finding)
-                self.assertEqual(result.returncode, 0 if accepted else 1, result.stderr or result.stdout)
-                if accepted:
-                    self.assertIn('ring-B-missing', result.stdout)
+                with self.image.open('r+b') as disk:
+                    for start in RING_FIRST:
+                        disk.seek(start * BLOCK_BYTES)
+                        disk.write(bytes(4 * BLOCK_BYTES))
+                    for block, data in slots:
+                        disk.seek(block * BLOCK_BYTES)
+                        disk.write(data)
+                result = self.score('replay', capture, tools_dir=TOOLS)
+                self.assertEqual(result.returncode, status, result.stderr or result.stdout)
+                self.assertIn(detail, result.stderr if status else result.stdout)
 
     def test_bit_flip_requires_typed_failure_and_the_exact_checker_block(self):
         typed = b'[breenfs] corrupt-read block=120 result=ReadError::Data\n'
