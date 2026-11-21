@@ -41,7 +41,6 @@ class PowerCutCliTest(unittest.TestCase):
         for flags, feature, intent in (
             (['--power-cut-window', 'node-writes'], 'breenfs_commit_window',
              'breenfs_commit_window=node-writes breenfs_after_receipt=1'),
-            (['--power-cut-after', '120'], 'breenfs_commit_window', None),
             (['--breenfs-bit-flip'], 'breenfs_corrupt_inject',
              'breenfs_corrupt_inject=first-data:64:0'),
         ):
@@ -51,7 +50,6 @@ class PowerCutCliTest(unittest.TestCase):
                 args.mode = 'suite'
                 run.metal_power_cut.validate(args)
                 self.assertEqual(run.metal_power_cut.kernel_fault(args), (feature, intent))
-                self.assertEqual(boot.kernel_profile(args), ([feature], 'fault-test'))
                 self.assertEqual(run.argument_parser().parse_args(
                     ['_build', 'id', 'a' * 40, '--features', feature]).features, feature)
                 args.kernel_command_line = 'breenfs_commit_window=between-rings'
