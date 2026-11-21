@@ -840,7 +840,10 @@ class Driver:
         action = getattr(self.args, 'slot_action', None)
         entry = getattr(self.args, 'entry', None) or 'current'
         slot = ('next' if action == 'commit' and slots.get('next') else 'previous' if action == 'rollback' else entry)
-        return (slots.get(slot) or {}).get('commit')
+        selected = slots.get(slot) or {}
+        if selected.get('installedBy') == metal_migration.STOPPED_UPGRADE:
+            raise Finish(m.EXIT_CANCELLED, 'the stopped BreenFS install in NEXT must be replaced before verification')
+        return selected.get('commit')
 
     def prepare_persistent(self):
         """A persistent boot stages nothing: the manager boots a kernel slot from the disk. Its record carries the
@@ -967,10 +970,12 @@ class Driver:
         """The install boot (README, "Install and upgrade"): the request, the new kernel slot, the new userland on the
         test root, and the migration's intent. Returns the boot disk's files."""
         the_layout = metal_persist.layout()
+        slots = metal_persist.read_disk().get('slots') or {}
         breenfs = bool(the_layout and the_layout['version'] in (2, 3))
         if breenfs:
             try:
                 cycle = metal_migration.require_closed(the_layout)
+                metal_migration.require_upgrade_next(the_layout, slots)
             except ValueError as error:
                 raise Finish(m.EXIT_CANCELLED, str(error)) from error
             self.args.breenfs_upgrade = cycle['closed']
@@ -1017,7 +1022,7 @@ class Driver:
         intent.write_bytes(metal_persist.breenfs_upgrade_intent(the_layout, self.id) if breenfs else
                            metal_persist.intent('persistent-install', root=parts['test']['guid'],
                                                 home=parts['system']['guid'], userland=self.id,
-                                                previous_userland=(metal_persist.read_disk().get('slots', {}).get('current') or {}).get('installedBy')))
+                                                previous_userland=(slots.get('current') or {}).get('installedBy')))
         files['ramdisk'] = intent
         if action == 'install':
             config, request = metal_persist.install_request(scratch, the_layout, expect, manager_files, slot, note,
@@ -1032,7 +1037,7 @@ class Driver:
                         'request': {'extents': request.extents, 'bytes': request.written,
                                     'payload': request.data.stat().st_size}}
         if breenfs:
-            previous = (metal_persist.read_disk().get('slots') or {}).get('previous') or {}
+            previous = slots.get('previous') or {}
             if previous.get('migration') == 'rescue':
                 self.persist['rescue'] = previous
         m.write_json(self.dir / 'persist.json', self.persist)
@@ -1753,6 +1758,12 @@ class Driver:
         self.challenge_console(line, complete=True)
         # A prompt is often completed by the next kernel log line before the driver reads it unterminated.
         self.challenge_persistent(line)
+        if (self.args.mode == 'persistent-install' and getattr(self.args, 'breenfs_upgrade', None)
+                and metal_score.WRITE_FENCE in line):
+            if ('breenfs-install-fence' in self.seen
+                    or not metal_score.breenfs_fence_matches(line, self.persist['layout'])):
+                raise Finish(m.EXIT_SHORT, 'the install lacks the exact BreenFS system and home write fence')
+            self.seen.add('breenfs-install-fence')
         for stages in self.required_stages:
             if stages and marker_matches(stages[0], line):
                 stages.pop(0)

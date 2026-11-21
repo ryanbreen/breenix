@@ -4,11 +4,15 @@ import re
 import runpy
 from pathlib import Path
 
+from metal_persist import BREENFS_ROLES, check_layout
+
 
 # The test runner names the marker each test will print before the test runs; that promise reaches no stage.
 ANNOUNCEMENT = 'kernel::test_exec:'
 # Host records whose milestone differs from their suite/category name.
 HOST_MILESTONES = {'users-operator.json': 'users/operator-login'}
+WRITE_FENCE = '[block] write fence: '
+FENCE_RANGES = re.compile(r'(?:AHCI port [0-9]+|NVMe disk|VirtIO disk) LBA ([0-9]+-[0-9]+), ([0-9]+-[0-9]+)')
 
 EXT2_RESCUE_STAGES = (
     dict(name='Boot manager menu read back', marker='breenix-manager: screen read back identical: '),
@@ -44,12 +48,35 @@ def stages(milestone, mode, arch, *, breenfs=False, previous=False, rescue=False
         # The saved rescue contains a boot definition from before this lease
         # could select it. Match the format-3 read-only boot's own receipts.
         return EXT2_RESCUE_STAGES
+    if breenfs and mode == 'persistent-install' and 'breenfsInstallStages' in milestone:
+        return milestone['breenfsInstallStages']
     if breenfs and mode == 'persistent' and 'breenfsStages' in milestone:
         return [dict(stage, marker='breenix-manager: booting previous ')
                 if previous and stage.get('marker') == 'breenix-manager: booting current ' else stage
                 for stage in milestone['breenfsStages']]
     lists = milestone.get('stages', {})
     return lists.get(mode, lists.get(arch, []) if milestone.get('kernel') else [])
+
+
+def breenfs_fence_matches(line, layout):
+    """The sealed fence must name exactly the layout's two BreenFS ranges."""
+    _, marker, ranges = line.partition(WRITE_FENCE)
+    found = FENCE_RANGES.fullmatch(ranges) if marker else None
+    if not found or not isinstance(layout, dict):
+        return False
+    try:
+        if check_layout(layout)['version'] not in (2, 3):
+            return False
+        parts = layout['partitions']
+        expected = [f"{parts[role]['first']}-{parts[role]['last']}" for role in BREENFS_ROLES]
+    except (ValueError, TypeError):
+        return False
+    return sorted(found.groups()) == sorted(expected)
+
+
+def exact_breenfs_fence(lines, layout):
+    fences = [line for line in lines if WRITE_FENCE in line]
+    return len(fences) == 1 and breenfs_fence_matches(fences[0], layout)
 
 
 def require_suite_profile(run):
@@ -98,12 +125,22 @@ def score(directory):
                         rescue=run.get('entry') == 'rescue')
         if not listed:
             continue
+        if listed is milestone.get('breenfsInstallStages'):
+            try:
+                layout = read('persist.json').get('layout')
+            except (OSError, ValueError, AttributeError):
+                layout = None
+            fence_matches = exact_breenfs_fence(lines, layout)
+        else:
+            fence_matches = True
         cursor, reached = 0, 0
         for stage in listed:
             spec = catalog[stage] if isinstance(stage, str) else stage
             if 'host' in spec:
                 reached += host[spec['host']] in events
                 continue
+            if spec['marker'] == WRITE_FENCE and not fence_matches:
+                break
             alternatives = spec['marker'].split('|')
             for index in range(cursor, len(lines)):
                 if (lines[index] in alternatives if spec.get('match') == 'line'

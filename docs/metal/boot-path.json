@@ -458,6 +458,28 @@
       "id": "disk-filesystem",
       "title": "Booted from an ext2 root on the disk",
       "summary": "A boot delivered without a RAM disk finds the root record the install wrote, grants writes for that disk alone, mounts its ext2 filesystem as root and runs userspace from it: the probe's ext2 file and directory round trips pass on the disk.",
+      "breenfsInstallStages": [
+        {
+          "name": "Staging root record found",
+          "marker": "[storage] root record: installed by boot "
+        },
+        {
+          "name": "Staging root mounted from the disk",
+          "marker": "[fs] root mounted from the installed disk"
+        },
+        {
+          "name": "Staging root mounted read-only",
+          "marker": "[block] hardware disks read-only: "
+        },
+        {
+          "name": "Writes fenced to the BreenFS system and home ranges",
+          "marker": "[block] write fence: "
+        },
+        {
+          "name": "Installation complete",
+          "marker": "[persistent] install complete: "
+        }
+      ],
       "stages": {
         "probe": [
           {

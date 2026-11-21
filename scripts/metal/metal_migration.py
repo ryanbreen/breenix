@@ -11,6 +11,7 @@ import metal_export
 import metal_image
 import metal_lib as m
 import metal_persist
+import metal_score
 from migrate_manifest import Ext2, require_e2fsprogs, shared_manifest
 
 # E24 ledger 996 and 1007 distinguish the staged slots from the return tools.
@@ -18,6 +19,8 @@ RECORDED_RETURN = '20261121T172024Z-metal'
 RECORDED_CUTOVER_COMMIT = '94109fc7b3d95137cb91289f6a9f1321409cbcf6'
 RECORDED_RETURN_COMMIT = '250fb833de97abddbf4672dbfca1980cb370cfe3'
 CLOSURE_RECEIPT_SHA256 = 'b178a8933a3121390e9ca515c7d8cd23ead859bb4ff95152cff2678d9e20ed63'
+STOPPED_UPGRADE = '20261121T201545Z-metal'
+STOPPED_UPGRADE_COMMIT = '1a71e50d60315a94c4006e48e32740cfc762539c'
 PERSISTENT_ROOT_CASES = ('migrate-manifests-equal', 'host-manifests-equal',
                          'cutover-verified', 'rescue-and-return')
 TWO_UPGRADES = 'ext2-retired/two-upgrades'
@@ -509,6 +512,54 @@ def refused_before_power(boot, run, log):
                         or row['event'] == 'baseline' and row.get('power') != 'Off' for row in log))
 
 
+def stopped_upgrade_slot(layout):
+    """Return the exact staged slot admitted by E24 ledger line 1040."""
+    record = dict(ledgerLine=1040, boot=STOPPED_UPGRADE)
+    boot = m.boot_dir(STOPPED_UPGRADE)
+    try:
+        records = [json.loads(line) for line in (m.STATE / 'migration-carry-forward.jsonl').read_text().splitlines()]
+        if record not in records or not layout or layout.get('version') != 2:
+            return None
+        run = m.read_json(boot / 'run.json', {})
+        request = m.read_json(boot / 'persist.json', {})
+        slot = request.get('slot') or {}
+        log = events(boot)
+        if (not failed_retirement_operation(boot, run, log)
+                or run.get('mode') != 'persistent-install' or run.get('payload') != 'image'
+                or run.get('disk') != 'root' or run.get('breenfsUpgrade') != RECORDED_RETURN
+                or run.get('entry') or run.get('session') or run.get('resting')
+                or run.get('commit') != STOPPED_UPGRADE_COMMIT or run.get('toolsCommit') != STOPPED_UPGRADE_COMMIT
+                or request.get('action') != 'upgrade' or request.get('layout') != layout
+                or slot.get('installedBy') != STOPPED_UPGRADE or slot.get('commit') != STOPPED_UPGRADE_COMMIT
+                or (boot / 'exit-status').read_text().strip() != str(m.EXIT_STOPPED)
+                or (boot / 'ended-by').read_text().strip() != 'driver'
+                or log[-1].get('event') != 'closed'
+                or (boot / 'upgrade-result.json').exists()):
+            return None
+        receipts = [row for row in log if row['event'] in (
+            'power-on', 'manager-answer', 'persist-written', 'persistent-install-complete', 'power-off')]
+        if ([row['event'] for row in receipts] != [
+                'power-on', 'manager-answer', 'persist-written', 'persistent-install-complete', 'power-off']
+                or receipts[1].get('answer') != f'test {STOPPED_UPGRADE}'
+                or receipts[2].get('action') != 'upgrade' or receipts[2].get('commit') != STOPPED_UPGRADE_COMMIT
+                or receipts[4].get('off') is not True
+                or any(row['event'] in ('slot-boot', 'slots', 'power-on-error', 'capture-incomplete', 'console-gap',
+                                       'console-gap-start', 'fatal', 'watchdog-persistent',
+                                       'persistent-verification-next', 'persistent-rollback-next') for row in log)
+                or not metal_score.exact_breenfs_fence((boot / 'serial.txt').read_text().splitlines(), layout)):
+            return None
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return None
+    return slot
+
+
+def require_upgrade_next(layout, slots):
+    pending = slots.get('next')
+    if pending is not None and (not isinstance(pending, dict) or pending.get('installedBy') != STOPPED_UPGRADE
+                                or pending != stopped_upgrade_slot(layout)):
+        raise ValueError('BreenFS upgrade refuses to replace NEXT without the stopped install custody record')
+
+
 def upgrade_proof(first, second, commit):
     """Read the existing upgrade verifier's receipts from the service boot store."""
     from upgrade_cases import breenfs_pair
@@ -524,6 +575,8 @@ def upgrade_proof(first, second, commit):
         result = m.read_json(directory / 'upgrade-result.json', {})
         candidate = result.get('verification') or {}
         verification = candidate.get('boot') or ''
+        if STOPPED_UPGRADE in (install, verification):
+            raise ValueError('the stopped BreenFS install cannot count as a verified upgrade')
         if result.get('install') != install or not BOOT_ID.fullmatch(verification):
             raise ValueError('upgrade result does not name its install and verification boots')
         child = m.boot_dir(verification)
@@ -564,7 +617,10 @@ def upgrade_proof(first, second, commit):
             continue
         boot = m.boot_dir(ident)
         run = m.read_json(boot / 'run.json', {})
+        if ident == STOPPED_UPGRADE and stopped_upgrade_slot(cycle['layout']):
+            continue
         if (ident in expected or run.get('upgradeParent')
+                or ident == STOPPED_UPGRADE
                 or run.get('mode') == 'persistent-install' and not refused_before_power(boot, run, events(boot))):
             actual.append(ident)
     if actual != expected:
@@ -616,6 +672,10 @@ def reclaim_history(returned, active, upgrades):
         if (run.get('id') != ident or not (boot / 'ended').is_file() or len(closed) != 1
                 or run.get('bootManagerAbort') or any(row['event'] == 'capture-incomplete' for row in log)):
             raise ValueError(f'incomplete rescue-slot history after return: {ident}')
+        if ident == STOPPED_UPGRADE:
+            if ident not in upgrade_answers and stopped_upgrade_slot(state().get('layout')):
+                continue
+            raise ValueError(f'stopped install lacks custody in the rescue-slot history: {ident}')
         if ident not in upgrade_answers and refused_before_power(boot, run, log):
             continue
         if not power or power[-1] is not True:
