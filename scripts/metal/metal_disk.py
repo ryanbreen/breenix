@@ -157,6 +157,7 @@ def prepare_readback(directory, stage, source_id, commit, boot_id, site, stub):
               and any(event['event'] == 'disk-root-record' and event.get('matchesLastInstall') is True
                       for event in events))
     power_cut = bool(run.get('powerCut'))
+    bit_flip = run.get('breenfsBitFlip') is True
     if not common:
         raise ValueError('raw readback needs a completed disk suite boot with confirmed power-off and root identity')
     status = int((source / 'exit-status').read_text().strip())
@@ -172,6 +173,16 @@ def prepare_readback(directory, stage, source_id, commit, boot_id, site, stub):
         if (facts.get('installedBy') != source_id or status != m.EXIT_SHORT or ended_by != 'driver'
                 or decided.get('status') != m.EXIT_SHORT or decided.get('reason') != 'deliberate power cut'):
             raise ValueError('raw readback needs the completed deliberate cut of this root')
+    elif bit_flip:
+        require_test_partition(facts)
+        if (run.get('id') != source_id or facts.get('installedBy') != source_id
+                or run.get('payload') != 'image' or names != ['filesystem']
+                or run.get('rootFs') != 'breenfs' or run.get('onlyCase') != 'power-cut/writer'
+                or not any(event['event'] == 'disk-root-record' and event.get('matchesLastInstall') is True
+                           and event.get('installedBy') == source_id for event in events)
+                or status != m.EXIT_SHORT or ended_by != 'driver' or provisional is not True
+                or decided.get('status') != m.EXIT_DONE):
+            raise ValueError('raw readback needs the completed bit-flip probe on this root')
     elif (run.get('onlyCase') or not names[-1] or not readback_checks(source, names[-1])
             or status != m.EXIT_SHORT or ended_by != 'driver' or type(provisional) is not bool
             or decided.get('status') != (m.EXIT_DONE if provisional else m.EXIT_SHORT)):
@@ -191,7 +202,7 @@ def prepare_readback(directory, stage, source_id, commit, boot_id, site, stub):
     payload = metal_image.stub_efi(stub, image, output)
     image.unlink()
     m.write_json(directory / 'readback.json', dict(source=source_id, bytes=facts['bytes'], rootRecord=record(facts).hex(),
-        suitePoweredOffAt=off['t'], sourceStatus=status, sourceProvisional=provisional, powerCut=power_cut,
+        suitePoweredOffAt=off['t'], sourceStatus=status, sourceProvisional=provisional, powerCut=power_cut, bitFlip=bit_flip,
         sourceReason=decided['reason'], sourceEndedBy=ended_by))
     m.write_json(m.STATE / 'disk-upload.json', dict(id=boot_id, route=route, bytes=facts['bytes'],
                                                  rootRecord=record(facts).hex()))

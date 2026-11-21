@@ -1746,8 +1746,10 @@ writer capture beside its driver run and event records.
 python3 scripts/metal/breenfs_replay.py replay SERIAL COLD_IMAGE --tools-dir BREENFS_TOOLS
 ```
 
-The checker requires `breenfs-check --full` to exit 0 and reads `/crash/log`
-with `breenfs-extract`. Each record must match the writer's sequence, payload
+Replay reads `/crash/log` with `breenfs-extract` and records the cold state.
+It accepts `breenfs-check --full` exit 0 as `clean`, or exit 1 as `ring-B-missing`
+when the sole finding is the missing ring B copy of the newest valid ring A
+generation. Each record must match the writer's sequence, payload
 and digest, including a complete tail that reached disk before the cut but
 whose receipt did not reach serial. Replay fails on a missing acknowledged record,
 a receipt digest mismatch, a failed extraction or an incomplete disk record.
@@ -1761,12 +1763,17 @@ On metal, the cut driver reads the stopped test partition through the firmware
 under the same lease and runs the replay checker. A passing replay permits a
 no-restage recovery boot on that partition. It mounts the root and reads
 `/crash/log` through BreenFS. The driver requires the same byte length and
-SHA-256 as cold replay. A failed replay stops the cycle before recovery.
+SHA-256 as cold replay. For `ring-B-missing`, recovery must also report the
+repaired ring B slot and generation after flushing it. A failed replay stops
+the cycle before recovery.
 
-For the data bit-flip boot, use `bit-flip` in place of `replay`. The same serial
+The data bit-flip boot hands its recorded test root to firmware cold readback
+under the same lease after confirmed Off. To score that image directly, use
+`bit-flip` in place of `replay`. The same serial
 must report the injected block and then `[breenfs] corrupt-read block=N result=ReadError::Data`
 from the read probe. An absent result, a generic I/O error or returned data fails.
-The full checker must exit 4 with a C1 CRC error naming that exact block.
+The full checker must exit 4 with a C1 CRC error naming that exact block and
+no other error.
 These per-boot verdicts supply the `aimed-cuts`, `random-cuts` and `bit-flips`
 host records. The acceptance set supplies the complete category result.
 

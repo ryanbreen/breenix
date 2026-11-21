@@ -24,6 +24,11 @@ INJECTION = re.compile(rb'\[breenfs\] corrupt-inject block=([1-9][0-9]{0,19}) of
 READ_RESULT = re.compile(rb'\[breenfs\] corrupt-read block=([1-9][0-9]{0,19}) result=(\S+)')
 DATA_CRC = re.compile(rb'error C1 block ([1-9][0-9]{0,19}) \(data REF [0-9]+\+[0-9]+\): '
                       rb'CRC 0x[0-9a-f]{8}, REF records 0x[0-9a-f]{8}')
+MISSING_RING_B = re.compile(rb'warning generation ([1-9][0-9]{0,19}) has only its ring A copy, '
+                           rb'slot A([0-3]) \(block (1[6-9])\)')
+RING_A_FIRST = 16
+SLOTS_PER_RING = 4
+SUPERBLOCK_GENERATION = 32
 RECORD_BYTES = 4096
 BODY = struct.Struct('<508Q')
 
@@ -109,6 +114,29 @@ def verify_aimed_window(serial, cut, window):
         raise ValueError('publication advanced past the cut trigger')
 
 
+def cold_state(result, image):
+    if result.returncode == 0 and not result.stdout and not result.stderr:
+        return dict(coldState='clean')
+    findings = result.stdout.splitlines()
+    if result.returncode == 1 and not result.stderr and len(findings) == 1:
+        if match := MISSING_RING_B.fullmatch(findings[0]):
+            generation, slot, block = map(int, match.groups())
+            # A warning-only check has validated each nonempty slot. Read ring A's
+            # generation fields to distinguish the newest copy from an older one.
+            with image.open('rb') as disk:
+                disk.seek(RING_A_FIRST * RECORD_BYTES)
+                ring = disk.read(SLOTS_PER_RING * RECORD_BYTES)
+            if len(ring) == SLOTS_PER_RING * RECORD_BYTES:
+                generations = [struct.unpack_from('<Q', ring, index * RECORD_BYTES + SUPERBLOCK_GENERATION)[0]
+                               for index in range(SLOTS_PER_RING)]
+                if (slot == generation % SLOTS_PER_RING and block == RING_A_FIRST + slot
+                        and generations[slot] == generation == max(generations)):
+                    return dict(coldState='ring-B-missing', missingRingB=dict(slot=slot, generation=generation))
+    detail = (result.stdout + result.stderr).decode(errors='replace').strip()
+    raise ValueError(f'breenfs-check --full exited {result.returncode}, expected a clean image '
+                     f'or only the newest ring-B copy missing: {detail}')
+
+
 def replay(serial_path, extract, image):
     serial = serial_path.read_bytes()
     nonce, acknowledged = receipts(serial)
@@ -168,10 +196,13 @@ def bit_flip(serial, check_output):
         detail = lines[reads[0]].decode(errors='replace')
         raise ValueError(f'expected ReadError::Data for block {block}, got {detail}')
 
-    if not any(match and int(match[1]) == block
-               for match in map(DATA_CRC.fullmatch, check_output.splitlines())):
+    errors = [line for line in check_output.splitlines() if not line.startswith(b'warning ')]
+    if len(errors) > 1:
+        raise ValueError(f'breenfs-check --full reported additional findings beyond one C1 error for block {block}')
+    match = DATA_CRC.fullmatch(errors[0]) if errors else None
+    if match is None or int(match[1]) != block:
         raise ValueError(f'breenfs-check --full did not name injected block {block} in a C1 CRC error')
-    return f'block {block} returned ReadError::Data and failed C1'
+    return block
 
 
 def check_manifest(path):
@@ -190,7 +221,7 @@ def main():
         command.add_argument('serial', type=Path, help='boot driver serial.txt')
         command.add_argument('image', type=Path, help='cold test-root partition image')
         command.add_argument('--tools-dir', type=Path, required=True, help='matching build of the BreenFS tools')
-    commands.choices['replay'].add_argument('--json', action='store_true')
+        command.add_argument('--json', action='store_true')
     parser.add_argument('--check-manifest', type=Path)
     args = parser.parse_args()
     if bool(args.check_manifest) == bool(args.mode):
@@ -200,25 +231,23 @@ def main():
         if args.check_manifest:
             check_manifest(args.check_manifest)
             return 0
-        serial = args.serial.read_bytes()
         tools = args.tools_dir.resolve()
         result = subprocess.run([tools / 'breenfs-check', '--full', args.image], capture_output=True)
-        expected_exit = 0 if args.mode == 'replay' else 4
-        if result.returncode != expected_exit:
-            detail = (result.stdout + result.stderr).decode(errors='replace').strip()
-            raise ValueError(f'breenfs-check --full exited {result.returncode}, expected {expected_exit}: {detail}')
         if args.mode == 'replay':
-            record = replay(args.serial, tools / 'breenfs-extract', args.image)
-            if args.json:
-                print(json.dumps(record))
-                return 0
-            detail = f"{record['records']} records, {record['acknowledged']} acknowledged"
+            record = cold_state(result, args.image)
+            record.update(replay(args.serial, tools / 'breenfs-extract', args.image))
+            detail = f"{record['records']} records, {record['acknowledged']} acknowledged, {record['coldState']}"
         else:
-            detail = bit_flip(serial, result.stdout)
+            if result.returncode != 4 or result.stderr:
+                detail = (result.stdout + result.stderr).decode(errors='replace').strip()
+                raise ValueError(f'breenfs-check --full exited {result.returncode}, expected 4 and no stderr: {detail}')
+            block = bit_flip(args.serial.read_bytes(), result.stdout)
+            record = dict(block=block, breenfsCheckExit=result.returncode)
+            detail = f'block {block} returned ReadError::Data and failed C1'
     except (OSError, ValueError, KeyError, TypeError) as error:
         print(f'FAIL: {error}', file=sys.stderr)
         return 1
-    print(f'PASS: {detail}')
+    print(json.dumps(record) if args.json else f'PASS: {detail}')
     return 0
 
 

@@ -284,6 +284,7 @@ class Driver:
         self.tmux = ['tmux', '-L', 'metal-' + self.id]
         self.watchdog_trigger = None
         self.power_cut = None
+        self.bit_flip = bool(getattr(args, 'breenfs_bit_flip', False))
         self.writer_nonce = None
         self.writer_acknowledged = False
         self.recovery_expected = None
@@ -427,6 +428,8 @@ class Driver:
             run['rootFs'] = self.args.root_fs
         if self.power_cut is not None:
             run['powerCut'] = self.power_cut
+        if self.bit_flip:
+            run['breenfsBitFlip'] = True
         if getattr(self.args, 'screen_proof', False):
             run['screenProof'] = True
         if getattr(self.args, 'screen_known_json', None) is not None:
@@ -665,7 +668,7 @@ class Driver:
             self.assemble(inputs, files, extracted, root_ramdisk=False)
             return
         the_layout = metal_persist.layout()
-        if (self.power_cut is not None or getattr(self.args, 'breenfs_bit_flip', False)) and not the_layout:
+        if (self.power_cut is not None or self.bit_flip) and not the_layout:
             raise Finish(m.EXIT_CANCELLED, 'BreenFS faults require the disposable test partition')
         disk = getattr(self.args, 'disk', None)
         if disk != 'root':
@@ -701,7 +704,7 @@ class Driver:
             if self.power_cut is not None:
                 self.retain_cut_recovery_payload(inputs, files, facts)
             files.update(suite_files)
-            if self.power_cut is not None or (self.args.mode == 'suite'
+            if self.power_cut is not None or self.bit_flip or (self.args.mode == 'suite'
                     and metal_disk.readback_checks(self.dir, suites(self.args)[-1])):
                 shutil.copyfile(inputs / 'stub.efi', self.dir / 'readback-stub.efi')
         root_ramdisk = self.args.ramdisk and disk != 'root'
@@ -1191,30 +1194,34 @@ class Driver:
             self.event('suite-verdict', status=status)
             return status == 0
 
-    def score_cut_readback(self, source, image, upload):
-        with tempfile.TemporaryDirectory(prefix='metal-cut-replay-') as temporary:
+    def score_breenfs_readback(self, source, image, upload, mode):
+        bit_flip = mode == 'bit-flip'
+        with tempfile.TemporaryDirectory(prefix='metal-breenfs-readback-') as temporary:
             root = Path(temporary)
             root.chmod(0o755)
-            for name in ('run.json', 'events.jsonl', 'serial.txt'):
+            captures = ('serial.txt',) if bit_flip else ('run.json', 'events.jsonl', 'serial.txt')
+            for name in captures:
                 shutil.copyfile(source / name, root / name)
                 (root / name).chmod(0o644)
             shutil.copyfile(Path(__file__).with_name('breenfs_replay.py'), root / 'replay.py')
             (root / 'replay.py').chmod(0o644)
             shutil.copyfile(image, root / 'disk.img')
             (root / 'disk.img').chmod(0o644)
-            for name in ('breenfs-check', 'breenfs-extract'):
+            tools = ('breenfs-check',) if bit_flip else ('breenfs-check', 'breenfs-extract')
+            for name in tools:
                 shutil.copyfile(source / 'breenfs-tools' / name, root / name)
                 (root / name).chmod(0o755)
             sandbox, command = verdict_command(root)
-            command += [str(sandbox / 'replay.py'), 'replay', str(sandbox / 'serial.txt'),
+            command += [str(sandbox / 'replay.py'), mode, str(sandbox / 'serial.txt'),
                         str(sandbox / 'disk.img'), '--tools-dir', str(sandbox), '--json']
             result = subprocess.run(command, capture_output=True, text=True,
                                     timeout=SUITE_VERDICT_SECONDS + 5,
                                     env={'PATH': os.defpath, 'LANG': 'C.UTF-8'}, cwd='/')
         passed = result.returncode == 0
         details = json.loads(result.stdout) if passed else dict(reason=self.redact(result.stderr.strip()))
-        m.write_json(source / 'cut-readback.json', dict(details, id=self.id, passed=passed, sha256=upload['sha256']))
-        self.event('cut-replay-verdict', passed=passed)
+        name = 'bit-flip-readback' if bit_flip else 'cut-readback'
+        m.write_json(source / (name + '.json'), dict(details, id=self.id, passed=passed, sha256=upload['sha256']))
+        self.event('bit-flip-readback-verdict' if bit_flip else 'cut-replay-verdict', passed=passed)
         return passed
 
     def finalize_disk_suite(self):
@@ -1228,7 +1235,11 @@ class Driver:
                 or self.t0 <= readback['suitePoweredOffAt']):
             raise ValueError('cold raw disk evidence differs from the completed suite boot')
         if readback.get('powerCut'):
-            return self.score_cut_readback(source, image, upload)
+            return self.score_breenfs_readback(source, image, upload, 'replay')
+        if readback.get('bitFlip'):
+            passed = self.score_breenfs_readback(source, image, upload, 'bit-flip')
+            self.finish_readback_source(source, passed)
+            return passed
         run = m.read_json(source / 'run.json')
         args = argparse.Namespace(id=readback['source'], mode='suite', suite=','.join(run.get('suites') or [run['suite']]), payload='image',
                                   inject=None, milestone=run.get('milestone'))
@@ -1251,14 +1262,16 @@ class Driver:
         m.write_json(source / 'suite-readback.json', dict(receipt, id=self.id, bytes=image.stat().st_size,
             sha256=upload['sha256'], passed=passed, diskVerdict=disk_report))
         scorer.event('cold-disk-verdict', readback=self.id, passed=passed, sourceProvisional=provisional)
-        if not provisional:
-            return passed
+        if provisional:
+            self.finish_readback_source(source, passed)
+        return passed
+
+    def finish_readback_source(self, source, passed):
         with m.locked('finished'):
             m.write_text(source / 'exit-status', str(m.EXIT_DONE if passed else m.EXIT_SHORT) + '\n')
             finished = m.STATE / 'finished.jsonl'
             entries = [json.loads(line) for line in finished.read_text().splitlines()]
             m.append_jsonl(finished, dict(id=source.name, seq=max((e['seq'] for e in entries), default=0) + 1))
-        return passed
 
     def continue_disk_readback(self):
         """Cold readback is the next boot under this lease, before another disk user can run."""
@@ -1268,7 +1281,7 @@ class Driver:
             boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
         args = argparse.Namespace(**(vars(self.args) | dict(id=boot_id, mode='default', suite=None,
             payload='disk-readback', disk=None, source_boot=self.id, session=False, input=None,
-            case=None, root_fs=None, power_cut_window=None, power_cut_after=None)))
+            case=None, root_fs=None, power_cut_window=None, power_cut_after=None, breenfs_bit_flip=False)))
         child = Driver(args)
         # The same live transient unit owns both boots; the reaper follows the active record's id.
         child.unit = self.unit
@@ -1282,7 +1295,7 @@ class Driver:
         (inputs / 'ready').touch()
         self.event('cold-readback-next', readback=boot_id)
         child_status = child.run(inherited=self.id)
-        if self.power_cut is not None:
+        if self.power_cut is not None or self.bit_flip:
             return child_status
         return int((self.dir / 'exit-status').read_text().strip())
 
@@ -1389,7 +1402,7 @@ class Driver:
         seconds = round(observed_at - self.t0, 1) if self.t0 is not None else 0
         if self.t0 is None or not line.strip() or line.startswith('[SOL Session'):
             return
-        if (self.power_cut is not None or getattr(self.args, 'breenfs_bit_flip', False)):
+        if self.power_cut is not None or self.bit_flip:
             if writer := breenfs_replay.WRITER_START.fullmatch(line.encode()):
                 self.suite_name = 'filesystem'
                 self.writer_nonce = writer[1]
@@ -1535,6 +1548,10 @@ class Driver:
             self.seen.add('cut-recovery-verified')
             self.event('cut-recovery-verified', observed_at=observed_at,
                        bytes=int(recovered[1]), sha256=recovered[2])
+        if self.recovery_expected and (missing := self.recovery_expected.get('missingRingB')):
+            if line == f"[breenfs] recovered-superblock ring=B slot={missing['slot']} generation={missing['generation']}":
+                self.seen.add('cut-recovery-repaired')
+                self.event('cut-recovery-repaired', observed_at=observed_at, **missing)
         self.on_disk_line(line, observed_at)
         self.on_intent_line(line, observed_at)
         if getattr(self, 'hostkey_reader', None) is None:
@@ -1779,6 +1796,8 @@ class Driver:
             needed.add('console-intent')
         if self.recovery_expected:
             needed.add('cut-recovery-verified')
+            if self.recovery_expected.get('missingRingB'):
+                needed.add('cut-recovery-repaired')
         return needed <= self.seen
 
     def wait_replay_ack(self, sequence, kind="BXKEY"):
@@ -2431,6 +2450,10 @@ class Driver:
                 if (isinstance(finish, PowerCut) and off and status == m.EXIT_SHORT
                         and 'disk-root-confirmed' in self.seen and self.writer_acknowledged):
                     pending_readback = True
+                if self.bit_flip and off and status == m.EXIT_DONE and disk_source and 'disk-root-confirmed' in self.seen:
+                    self.event('suite-awaiting-disk-readback', provisional=True)
+                    pending_readback = provisional_readback = True
+                    status = m.EXIT_SHORT
                 if (self.power_cut is None and self.args.mode == 'suite' and getattr(self.args, 'case', None) is None
                         and (status == m.EXIT_DONE or several or (disk_source and status == m.EXIT_SHORT))
                         and status not in (m.EXIT_CANCELLED, m.EXIT_STOPPED, m.EXIT_INCOMPLETE)):
