@@ -3,6 +3,7 @@ mod cache_reread;
 mod filesystem_read;
 mod filesystem_checksum;
 mod filesystem_enospc;
+mod filesystem_power_cut;
 pub mod filesystem_root;
 pub mod root_expectations;
 mod filesystem_snapshots;
@@ -290,12 +291,34 @@ fn ino_consistent() -> CaseResult {
     result
 }
 
+fn power_cut_writer(root: filesystem_root::RootFs) -> CaseResult {
+    check(root == filesystem_root::RootFs::Breenfs, "power-cut writer requires a breenfs test root")?;
+    root_is_breenfs()?;
+    io(fs::create_dir("/crash"))?;
+    let mut log = io(fs::OpenOptions::new().append(true).create_new(true).open("/crash/log"))?;
+    let mut serial = std::io::stdout().lock();
+    io(serial.write_all(b"\nSUITE filesystem START cases=1 only=power-cut/writer\n"))?;
+    io(serial.flush())?;
+    io(filesystem_power_cut::write_records(&mut log, &mut serial, File::sync_all))?;
+    Ok(())
+}
+
 fn main() {
     let root = match filesystem_root::declared() {
         Ok(root) => root,
         Err(error) => { println!("SUITE filesystem ERROR {error}"); std::process::exit(1); }
     };
     println!("SUITE filesystem ROOT {}", root.name());
+    if std::env::args().skip(1).collect::<Vec<_>>().chunks_exact(2)
+        .any(|pair| pair[0] == "--case" && pair[1] == "power-cut/writer")
+    {
+        // The host cuts power while this workload runs and scores the cold readback.
+        if let Err(error) = power_cut_writer(root) {
+            println!("SUITE filesystem ERROR power-cut/writer: {error:?}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if root == filesystem_root::RootFs::Breenfs { SUITE.run(); }
     suite(SUITE.id, SUITE.title, &SUITE.categories[..SUITE.categories.len() - 1]).run()
 }

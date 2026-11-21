@@ -1730,6 +1730,17 @@ checks. Their former guest cases only read host result files; they are removed f
 guest table and manifest. `scripts/filesystem-suite.py` still stages the read fixture's
 manifest without collecting host evidence.
 
+## Filesystem power-cut writer
+
+The power-cut boot selects `--suite filesystem --case power-cut/writer` on a
+fresh disposable BreenFS root. The writer creates `/crash/log` and appends
+4,096-byte records until power is cut. Each record contains a little-endian
+64-bit sequence number starting at 1, 507 little-endian 64-bit payload words
+(`seq XOR index`, with indexes starting at 0), and the 32-byte SHA-256 of the
+preceding 4,064 bytes. After fsync succeeds, the writer emits
+`FSYNC <seq> <lowercase hex digest>` and flushes that line to serial.
+The host scores these receipts against the cold readback.
+
 ## Developer SDK
 
 `sdk` measures the Developer SDK effort in `docs/efforts/path.json`: our own applications

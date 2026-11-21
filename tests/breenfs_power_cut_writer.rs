@@ -43,7 +43,7 @@ fn power_cut_writer_acknowledges_only_complete_synced_records() {
     }
     assert_eq!(
         String::from_utf8(receipts).unwrap(),
-        format!("FSYNC 1 {}\nFSYNC 2 {}\n", DIGESTS[0], DIGESTS[1]),
+        format!("\nFSYNC 1 {}\n\nFSYNC 2 {}\n", DIGESTS[0], DIGESTS[1]),
     );
 }
 
