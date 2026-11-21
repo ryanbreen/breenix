@@ -13,7 +13,13 @@ if [ "$(uname -s)" = Darwin ]; then BUILD=(taskpolicy -b); fi
 "${BUILD[@]}" cargo build --release --manifest-path "$ROOT/tools/breenfs/Cargo.toml" \
     --bin breenfs-mkfs --bin breenfs-extract
 TARGET="${CARGO_TARGET_DIR:-$ROOT/tools/breenfs/target}"
-WORK=$(mktemp -d)
+# The formatter imports SEEK_DATA ranges. Use page-granular source holes on
+# Linux hosts whose build filesystem reports a larger allocation unit.
+if [ "$(uname -s)" = Linux ] && [ -d /dev/shm ] && [ -w /dev/shm ]; then
+    WORK=$(mktemp -d /dev/shm/breenfs-read.XXXXXXXX)
+else
+    WORK=$(mktemp -d)
+fi
 trap 'rm -rf "$WORK"' EXIT
 python3 - "$WORK/tree" "$ENTRIES" <<'PY'
 import ctypes
