@@ -6,7 +6,8 @@
                  [--ramdisk] [--mode default|shell|probe|suite|console|tests] [--disk install|root] [--session [--idle-minutes N]]
                  [--suite ID | --suite ID,ID,... | --suite all] [--catchup]
   metal-run boot --persistent [--entry previous] [--run CMD ...] [--verify]
-  metal-run install-persistent [--sha SHA | --branch NAME] | --rollback
+  metal-run install-persistent [--sha SHA | --branch NAME] [--add-breenfs] | --rollback
+  metal-run migrate-persistent migrate|readback|cutover|rescue|return --sha SHA --branch NAME
   metal-run export-persistent [--branch NAME] [--sha SHA] [--wait MIN]
   metal-run stop ID
   metal-run status
@@ -254,6 +255,10 @@ def install_persistent(args):
                   input=None, wait=None, session=False, idle_minutes=30, source_boot=None,
                   serve_as=None, content_type=None, linux_directory=None, catchup=False, run=None, verify=False,
                   entry=None, slot_action=None, persistent=False)
+    if getattr(args, 'add_breenfs', False):
+        if args.rollback or args.inject or not args.branch or not args.sha:
+            raise SystemExit('--add-breenfs needs a pinned branch and commit, without other install actions')
+        return migration_boot(args, 'add')
     if args.rollback:
         if args.sha or args.branch:
             raise SystemExit('--rollback boots the installed slots; it takes no commit')
@@ -268,6 +273,30 @@ def install_persistent(args):
         with (logs / (options.boot_id + '-upgrade.log')).open('w') as log:
             subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '_upgrade', options.boot_id],
                              stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    return status
+
+
+def migration_boot(args, phase):
+    if not re.fullmatch(r'metal-[a-z0-9_-]+/[a-zA-Z0-9_./-]+', args.branch or ''):
+        raise SystemExit('migration needs a pushed metal effort branch')
+    parser = argument_parser()
+    options = parser.parse_args(['boot'])
+    options.sha, options.branch = args.sha, args.branch
+    options.migration_phase = phase
+    if phase == 'readback':
+        options.payload = 'persistent-export'
+    elif phase in ('rescue', 'return'):
+        options.persistent = True
+        options.verify = True
+        options.entry = 'previous' if phase == 'rescue' else 'current'
+        options.slot_action = 'commit' if phase == 'rescue' else None
+    status = boot(options)
+    if status == 0 and phase in ('cutover', 'rescue', 'return'):
+        log = Path.home() / '.local/state/breenix-metal'
+        log.mkdir(parents=True, exist_ok=True)
+        with (log / (options.boot_id + '-migration.log')).open('w') as output:
+            subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '_verify-migration', options.boot_id],
+                             stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
     return status
 
 
@@ -347,7 +376,8 @@ def boot(args):
     tools_profiles = {'disk-readback': 'disk-readback', 'manager': 'boot-manager',
                       'persistent-export': 'persistent-export'}
     needs_build = payload == 'image' or payload in tools_profiles
-    if needs_build:
+    migration = getattr(args, 'migration_phase', None)
+    if needs_build or migration:
         if args.sha:
             verify_target(env, args.sha, args.branch or 'main')
             sha, target = args.sha, 'branch:' + args.branch if args.branch else 'main'
@@ -380,6 +410,8 @@ def boot(args):
     boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
     command = ['python3', f'{TOOLS}/metal-boot', 'launch', '--id', boot_id, '--payload', payload]
     command += ['--mode', args.mode, '--wait', str(wait)]
+    if migration:
+        command += ['--migration-phase', migration]
     if getattr(args, 'root_fs', None) is not None:
         command += ['--root-fs', args.root_fs]
     if getattr(args, 'build_choice', None) is not None:
@@ -474,10 +506,11 @@ def boot(args):
             build_command = (['_prebuilt', boot_id, sha, prebuilt, '--mode', args.mode] if prebuilt else
                              ['_build', boot_id, sha])
             subprocess.Popen([sys.executable, str(Path(__file__).resolve()), *build_command] + features + suite +
-                             tools_only + (['--smb-helper'] if smb else []) + (['--catchup'] if catchup else []),
+                             tools_only + (['--smb-helper'] if smb else []) + (['--catchup'] if catchup else [])
+                             + (['--migration-build'] if migration else []),
                              stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         print(json.dumps({'id': boot_id, 'build': 'started', 'commit': sha}), flush=True)
-    if not needs_build and '"status": "waiting"' in result.stdout:
+    if not needs_build and not migration and '"status": "waiting"' in result.stdout:
         try:
             runpy.run_path(str(HERE / 'resting_host.py'))['preempt'](boot_id, only_persistent=True)
         except Exception as error:
@@ -591,7 +624,8 @@ def stub_sources(stub):
         str(path.relative_to(stub)) for path in (stub / 'src').rglob('*.rs'))
 
 
-def build(boot_id, sha, features=None, suite=None, tools_profile=None, catchup=False, smb_helper=False):
+def build(boot_id, sha, features=None, suite=None, tools_profile=None, catchup=False, smb_helper=False,
+          migration=False):
     """Detached: build in the metal build container, stream the inputs into the boot's stage folder, signal the driver."""
     validate_id(boot_id)
     env = host_env()
@@ -612,7 +646,7 @@ def build(boot_id, sha, features=None, suite=None, tools_profile=None, catchup=F
         except Exception as error:
             preemption_errors.append(type(error).__name__ + ': ' + str(error))
     preemption = None
-    if tools_profile != 'persistent-export':
+    if not migration and tools_profile != 'persistent-export':
         preemption = threading.Thread(target=preempt, daemon=True)
         preemption.start()
     in_build(env, 'rm', '-rf', tools, check=True)
@@ -730,8 +764,13 @@ def argument_parser(automatic=False):
     p = sub.add_parser('install-persistent')
     p.add_argument('--sha')
     p.add_argument('--branch')
+    p.add_argument('--add-breenfs', action='store_true', help='append the two BreenFS GPT partitions')
     p.add_argument('--rollback', action='store_true', help='swap the current and previous kernel slots')
     p.add_argument('--inject', choices=('upgrade-no-ssh', 'upgrade-service-down'), help='stage an unbootable or bootable SSH-less candidate to exercise automatic rollback')
+    p = sub.add_parser('migrate-persistent', help='run one phase of the E24 persistent migration')
+    p.add_argument('phase', choices=('migrate', 'readback', 'cutover', 'rescue', 'return'))
+    p.add_argument('--sha', required=True)
+    p.add_argument('--branch', required=True)
     p = sub.add_parser('export-persistent', help='copy the recorded system and home partitions through read-only firmware')
     p.add_argument('--branch')
     p.add_argument('--sha')
@@ -747,6 +786,8 @@ def argument_parser(automatic=False):
     p.add_argument('--tools-profile', choices=('disk-readback', 'boot-manager', 'persistent-export'))
     p.add_argument('--smb-helper', action='store_true')
     p.add_argument('--catchup', action='store_true')
+    p.add_argument('--migration-build', action='store_true', help=argparse.SUPPRESS)
+    sub.add_parser('_verify-migration').add_argument('id')
     p = sub.add_parser('_prebuilt')
     p.add_argument('id')
     p.add_argument('sha')
@@ -767,6 +808,10 @@ def argument_parser(automatic=False):
 def main():
     parser = argument_parser()
     args = parser.parse_args()
+    if args.command == '_verify-migration':
+        return runpy.run_path(str(HERE / 'upgrade_probe.py'))['watch_migration'](globals(), validate_id(args.id))
+    if args.command == 'migrate-persistent':
+        return migration_boot(args, args.phase)
     if args.command == '_upgrade':
         return runpy.run_path(str(HERE / 'upgrade_probe.py'))['watch'](globals(), validate_id(args.id))
     if args.command == '_resume':
@@ -781,7 +826,8 @@ def main():
     if args.command == 'install-persistent':
         return install_persistent(args)
     if args.command == '_build':
-        return build(args.id, args.sha, args.features, args.suite, args.tools_profile, args.catchup, args.smb_helper)
+        return build(args.id, args.sha, args.features, args.suite, args.tools_profile, args.catchup, args.smb_helper,
+                     args.migration_build)
     if args.command == '_prebuilt':
         return deliver_prebuilt(args.id, args.sha, args.prebuilt, args.mode, args.features, args.suite, args.catchup, args.smb_helper)
     env = host_env()

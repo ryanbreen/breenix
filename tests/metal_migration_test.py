@@ -2,6 +2,7 @@
 import hashlib
 import io
 import struct
+from unittest.mock import patch
 import unittest
 
 import metal_tools_test as existing
@@ -67,6 +68,27 @@ class MetalMigrationTest(existing.StateTest):
         with self.assertRaises(ValueError):
             metal_migration.compare_guest_manifests(body, body.replace(b'0700', b'0777'),
                                                     dict(source=digest, destination=digest))
+
+    def test_cutover_requires_cold_proof_and_idle_manager_answers_test(self):
+        import metal_migration
+        from metal_persistent_test import http
+
+        boot = self._testMethodName
+        commit = 'a' * 40
+        layout = metal_persist.add_breenfs_layout(metal_persist.new_layout())
+        before = dict(commit=commit, userland='v1', add='20261121T101000Z-metal',
+                      boots=dict(add='a', migrate='b'), layout=layout)
+        metal_migration.save(before)
+        metal_persist.update_disk(layout=layout)
+        self.assertEqual(http.manager_answer(), 'test ' + before['add'])
+        with self.assertRaises(ValueError):
+            metal_migration.admit('cutover', boot, commit, commit)
+        with patch.object(metal_migration, 'backup') as backup:
+            before['boots']['readback'] = 'c'
+            metal_migration.save(before)
+            self.assertEqual(metal_migration.admit('cutover', boot, commit, commit), before)
+            backup.assert_called_once_with(layout, allowed={'a': 'add', 'b': 'migrate', 'c': 'readback'},
+                                           active=boot)
 
     def test_sparse_stream_preserves_offsets_and_rejects_truncation(self):
         import metal_migration

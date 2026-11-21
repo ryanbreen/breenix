@@ -10,6 +10,7 @@ use crate::suite_disk::{self, Buffer, CHUNK};
 
 const MAGIC: &[u8; 16] = b"BREENIX-EXPORT2\0";
 const ACTION: u64 = 3;
+const SPARSE_ACTION: u64 = 4;
 const RANGE_SIZE: usize = 32;
 const HEADER_SIZE: usize = 24 + 3 * RANGE_SIZE;
 const PART_BYTES: usize = 1 << 30;
@@ -62,7 +63,7 @@ pub(super) unsafe fn run(
     if length < HEADER_SIZE
         || length >= wire.len()
         || &wire[..16] != MAGIC
-        || number(&wire[16..24]) != ACTION
+        || !matches!(number(&wire[16..24]), ACTION | SPARSE_ACTION)
     {
         return Err(INVALID_PARAMETER);
     }
@@ -99,6 +100,21 @@ pub(super) unsafe fn run(
     // UEFI 2.10 §7.5.1 allows this long-running export to disable the boot-option watchdog.
     ok((boot.set_watchdog_timer)(0, 0, 0, null()))?;
     let [system_disk, home_disk] = select(boot, &wanted)?;
+    if number(&wire[16..24]) == SPARSE_ACTION {
+        for (role, disk, range, url) in [
+            ("breenfs-system", system_disk, system, system_url),
+            ("breenfs-home", home_disk, home, home_url),
+        ] {
+            let bytes = range.sectors().and_then(|n| n.checked_mul(SECTOR as u64))
+                .ok_or(INVALID_PARAMETER)?;
+            if bytes % 4096 != 0 || bytes > (256u64 << 30) {
+                return Err(INVALID_PARAMETER);
+            }
+            crate::breenfs_readback::export(boot, image, role, disk, (bytes / 4096) as usize, url)?;
+        }
+        say!("sparse export complete");
+        com1::halt();
+    }
     export(boot, image, "system", system_disk, system, system_url)?;
     export(boot, image, "home", home_disk, home, home_url)?;
     say!("persistent export complete");
@@ -130,10 +146,22 @@ unsafe fn partition_path(boot: &BootServices, handle: Handle) -> Option<(&[u8], 
 }
 
 #[derive(Clone, Copy)]
-struct Partition {
+pub(super) struct Partition {
     disk: *mut BlockIo,
     media_id: u32,
-    io_align: usize,
+    pub(super) io_align: usize,
+}
+
+impl Partition {
+    pub(super) unsafe fn read(self, block: usize, length: usize, buffer: &Buffer<'_>) -> Result<(), Status> {
+        ok(((*self.disk).read_blocks)(
+            self.disk,
+            self.media_id,
+            (block * (4096 / SECTOR)) as u64,
+            length,
+            buffer.data.cast(),
+        ))
+    }
 }
 
 unsafe fn select(boot: &BootServices, wanted: &[Range; 3]) -> Result<[Partition; 2], Status> {
@@ -276,7 +304,7 @@ unsafe fn export(
     Ok(())
 }
 
-fn encode_hex(bytes: &[u8], hex: &mut [u8]) {
+pub(super) fn encode_hex(bytes: &[u8], hex: &mut [u8]) {
     let alphabet = b"0123456789abcdef";
     for (pair, &byte) in hex.chunks_exact_mut(2).zip(bytes) {
         pair[0] = alphabet[(byte >> 4) as usize];

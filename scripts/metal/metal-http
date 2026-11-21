@@ -26,6 +26,7 @@ import metal_lib as m  # noqa: E402
 from metal_probe import PROBE_PATH, PROBE_BODY
 import gt710_upload
 import metal_disk
+import metal_migration
 import metal_export
 import metal_persist
 
@@ -77,6 +78,9 @@ def manager_answer():
     with m.locked('lease'):
         lease = m.read_lease()
     if not lease:
+        migration = metal_migration.state()
+        if migration.get('add'):
+            return f"test {migration['add']}"
         boot_id = adopt()
         return f'persistent {boot_id} current' if boot_id else None
     holder = lease.get('id', 'unknown')

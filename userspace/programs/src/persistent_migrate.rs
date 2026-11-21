@@ -29,6 +29,7 @@ const SOURCE_SYSTEM: &str = "/migrate/ext2-system";
 const SOURCE_HOME: &str = "/migrate/ext2-home";
 const SYSTEM: &str = "/migrate/system";
 const HOME: &str = "/migrate/home";
+const EVIDENCE: &str = "/run/persistent-migrate";
 
 struct BootMounts;
 
@@ -122,7 +123,7 @@ fn run() -> io::Result<()> {
         source_home: Path::new(SOURCE_HOME),
         system: Path::new(SYSTEM),
         home: Path::new(HOME),
-        evidence: Path::new("/run/persistent-migrate"),
+        evidence: Path::new(EVIDENCE),
     };
     migrate::run(
         &paths,
@@ -179,10 +180,17 @@ fn main() -> ExitCode {
 
 #[cfg(not(target_arch = "aarch64"))]
 fn main() -> ExitCode {
-    match run() {
-        Ok(()) => ExitCode::SUCCESS,
+    let result = run();
+    #[cfg(all(target_arch = "x86_64", target_os = "breenix"))]
+    let result = result.and_then(|()| migrate::describe_receipt(Path::new(EVIDENCE), io::stdout().lock()));
+    match result {
+        Ok(()) => {
+            println!("\n[migrate] exit code: 0");
+            ExitCode::SUCCESS
+        }
         Err(error) => {
             eprintln!("[migrate] failed: {}", error.to_string().escape_debug());
+            println!("\n[migrate] exit code: 1");
             ExitCode::FAILURE
         }
     }

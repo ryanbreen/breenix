@@ -22,6 +22,9 @@ PART_BYTES = 1 << 30
 RECEIPT = re.compile(r'metal-stub: persistent export (system|home)(?: part=([0-9]+))? '
                      r'bytes=([0-9]+) sha256=([0-9a-f]{64})')
 DONE = 'metal-stub: persistent export complete'
+SPARSE_DONE = 'metal-stub: sparse export complete'
+SPARSE_RECEIPT = re.compile(r'metal-stub: sparse export (breenfs-system|breenfs-home) '
+                            r'bytes=([0-9]+) sha256=([0-9a-f]{64})')
 HEADER = struct.Struct('<16sQ')
 RANGE = struct.Struct('<16sQQ')
 
@@ -39,13 +42,16 @@ def active(boot_id, state):
     return (lease.get('id') == boot_id and lease.get('state') == state and lease.get('payload') == PAYLOAD)
 
 
-def prepare(stage, boot_id, site, stub):
+def prepare(stage, boot_id, site, stub, *, sparse=False):
     """Stage a firmware-only request from the last install's layout, under the driver lease."""
     if not active(boot_id, 'claimed'):
         raise ValueError('persistent export needs its own machine lease')
     layout = metal_persist.layout()
     if not layout:
         raise ValueError('persistent export needs a recorded persistent install')
+    if sparse and layout['version'] != 2:
+        raise ValueError('sparse readback requires the recorded BreenFS layout')
+    roles = metal_persist.BREENFS_ROLES if sparse else ROLES
     parts = layout['partitions']
     guids = [uuid.UUID(part['guid']) for part in parts.values()]
     if len(set(guids)) != len(guids) or any(guid.int == 0 for guid in guids):
@@ -56,17 +62,20 @@ def prepare(stage, boot_id, site, stub):
 
     token = secrets.token_hex(32)
     rows = []
-    for role in ROLES:
+    for role in roles:
         part = parts[role]
         rows.append(dict(role=role, guid=part['guid'], firstLba=part['first'], lastLba=part['last'],
                          bytes=(part['last'] - part['first'] + 1) * metal_persist.SECTOR,
                          route=f"{PREFIX}{token}/{part['guid']}"))
-    wire = HEADER.pack(b'BREENIX-EXPORT2\0', 3)
-    for role in ('test', *ROLES):
+    if sparse:
+        for row in rows:
+            row['sparse'] = True
+    wire = HEADER.pack(b'BREENIX-EXPORT2\0', 4 if sparse else 3)
+    for role in ('test', *roles):
         part = parts[role]
         wire += RANGE.pack(uuid.UUID(part['guid']).bytes_le, part['first'], part['last'])
     for row in rows:
-        target = urlunsplit((url.scheme, url.netloc, row['route'], '', '')).encode('ascii')
+        target = urlunsplit((url.scheme, url.netloc, row['route'] + ('/sparse' if sparse else ''), '', '')).encode('ascii')
         if len(target) + len('/0000000000000000') > 2046:
             raise ValueError('the persistent export URL is too long for firmware')
         wire += target + b'\0'
@@ -76,7 +85,7 @@ def prepare(stage, boot_id, site, stub):
     info = root.lstat()
     if info.st_uid != os.geteuid() or info.st_mode != (stat.S_IFDIR | 0o700):
         raise ValueError('persistent export needs a private boot-host pool directory')
-    if shutil.disk_usage(root).free < sum(row['bytes'] for row in rows):
+    if not sparse and shutil.disk_usage(root).free < sum(row['bytes'] for row in rows):
         raise ValueError('the boot-host pool has insufficient space for the persistent export')
     if (root / boot_id).exists():
         raise ValueError('this persistent export was already published')
@@ -101,9 +110,11 @@ def receive(handler):
     lease = m.read_lease() or {}
     boot_id = lease.get('id', '')
     route, _, suffix = urlsplit(handler.path).path.rpartition('/')
+    if suffix == 'sparse':
+        return receive_sparse(handler, boot_id, route)
     with m.locked(PAYLOAD):
         rows = m.read_json(pending(boot_id) / 'request.json', []) if active(boot_id, 'powered') else []
-        row = next((row for row in rows if route.isascii() and secrets.compare_digest(route, row['route'])), None)
+        row = next((row for row in rows if not row.get('sparse') and route.isascii() and secrets.compare_digest(route, row['route'])), None)
         if row is None:
             handler.close_connection = True
             handler.send_error(404)
@@ -164,6 +175,73 @@ def receive(handler):
     handler.send_response(200)
     handler.send_header('Content-Length', '0')
     handler.end_headers()
+
+
+def receive_sparse(handler, boot_id, route):
+    from metal_migration import unpack_sparse
+
+    private = pending(boot_id)
+    with m.locked(PAYLOAD):
+        rows = m.read_json(private / 'request.json', []) if active(boot_id, 'powered') else []
+        row = next((row for row in rows if row.get('sparse') and route.isascii()
+                    and secrets.compare_digest(route, row['route'])), None)
+        if row is None:
+            handler.close_connection = True
+            handler.send_error(404)
+            return
+        path = private / (row['role'] + '.img')
+        try:
+            if handler.headers.get('Transfer-Encoding'):
+                raise ValueError('sparse export needs a content length')
+            count = int(handler.headers.get('Content-Length', '-1'))
+            if count > shutil.disk_usage(private).free:
+                raise ValueError('no room for the sparse export')
+            out = os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'wb')
+        except (OSError, ValueError):
+            handler.close_connection = True
+            handler.send_error(400, 'sparse upload refused')
+            return
+    try:
+        with out:
+            digest = unpack_sparse(handler.rfile, out, row['bytes'], count)
+            out.flush()
+            os.fsync(out.fileno())
+        with m.locked(PAYLOAD):
+            if not active(boot_id, 'powered') or not (private / 'request.json').is_file():
+                raise ValueError('sparse export lease expired')
+            m.write_json(private / (row['role'] + '.json'), dict(bytes=count, sha256=digest))
+    except (OSError, ValueError):
+        path.unlink(missing_ok=True)
+        handler.close_connection = True
+        handler.send_error(400, 'sparse upload failed')
+        return
+    handler.send_response(200)
+    handler.send_header('Content-Length', '0')
+    handler.end_headers()
+
+
+def publish_sparse(directory, boot_id, firmware):
+    with m.locked(PAYLOAD):
+        if not active(boot_id, 'powered'):
+            raise ValueError('sparse export lost its lease')
+        private = pending(boot_id)
+        rows = m.read_json(private / 'request.json', [])
+        roles = metal_persist.BREENFS_ROLES
+        if tuple(row['role'] for row in rows if row.get('sparse')) != roles or set(firmware) != set(roles):
+            raise ValueError('sparse export requires a receipt for both BreenFS partitions')
+        records = []
+        for row in rows:
+            role = row['role']
+            host = m.read_json(private / (role + '.json'), {})
+            if (host.get('bytes'), host.get('sha256')) != firmware[role]:
+                raise ValueError(f'sparse export {role} count or digest differs')
+            records.append({key: row[key] for key in ('role', 'guid', 'firstLba', 'lastLba', 'bytes')}
+                           | dict(streamBytes=host['bytes'], streamSha256=host['sha256']))
+        final = pool() / boot_id
+        private.rename(final)
+        (final / 'request.json').unlink()
+        m.write_json(directory / 'sparse-readback.json', dict(partitions=records))
+        return final
 
 
 def verify(boot_id, firmware):

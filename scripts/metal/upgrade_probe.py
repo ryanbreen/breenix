@@ -55,3 +55,17 @@ def watch(runner, install):
         if read(install, 'exit-status').strip() not in ('', '0'):
             return 1
         time.sleep(1)
+
+
+
+def watch_migration(runner, boot):
+    env = runner['host_env']()
+    path = runner['STATE'] + '/boots/' + boot
+    while runner['in_metal'](env, 'test', '!', '-e', path + '/ended').returncode == 0:
+        result = runner['in_metal'](env, 'cat', path + '/events.jsonl', capture_output=True, text=True)
+        if result.returncode == 0 and any(json.loads(line)['event'] == 'power-on'
+                                          for line in result.stdout.splitlines()):
+            return subprocess.run([sys.executable, str(Path(__file__).with_name('server-suite')),
+                                   '--probe-upgrade', '--boot', boot], timeout=610, check=False).returncode
+        time.sleep(1)
+    return 1

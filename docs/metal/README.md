@@ -914,6 +914,27 @@ When they match, it publishes the two images in the private store at
 `/var/lib/breenix-metal/persistent-exports/<id>/`. It records the GUIDs, inclusive LBA ranges, byte counts and
 digests under `persistentExport` in `run.json`, with the index, byte offset, count and digest of each part.
 
+### BreenFS migration acceptance
+
+After the E24 coordinator opens acceptance, deploy the reviewed tools with `metal-deploy --restart`
+under the branch-tools lock. Pass the reviewed branch and commit as
+`--branch BRANCH --sha SHA` to each command. Follow each returned boot ID to successful
+completion before starting the next command.
+
+| Command | Evidence |
+|---|---|
+| `metal-run install-persistent --add-breenfs` | Firmware writes and reads back GPT entries 5 and 6 and their images. |
+| `metal-run migrate-persistent migrate` | The test root and the ext2 sources mount read-only. The migrator checks its two manifests and records their SHA-256 digests. |
+| `metal-run migrate-persistent readback` | Firmware uploads both BreenFS rings and the current allocation set. The host reconstructs sparse images and runs `breenfs-check --full` on both. It verifies the original 24.16 copy-off and the intervening boot records, then compares independent host manifests with both guest digests. |
+| `metal-run migrate-persistent cutover` | With matching manifests recorded, firmware stages the read-only ext2 rescue and the BreenFS candidate. The candidate boots from the test path and verifies over authenticated SSH before promotion. |
+| `metal-run migrate-persistent rescue` | The boot manager promotes the verified candidate and selects the previous, read-only ext2 rescue slot for this boot. SSH verifies the generation, mounts and home access. |
+| `metal-run migrate-persistent return` | The manager boots the promoted BreenFS slot and SSH verifies its generation, mounts and home access. |
+
+The final run stores `filesystem-persistent-root.json`. Each successful phase records confirmed
+power-off. The boot manager selects the test path when the migration record is present and no
+lease is active. Keep the reviewed tools deployed through the acceptance and stop on a failed
+phase with its run records.
+
 ### Install and upgrade
 
 `metal-run install-persistent --sha <commit>` (with `--branch` for a pushed branch) installs or upgrades the

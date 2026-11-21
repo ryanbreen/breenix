@@ -44,6 +44,7 @@ import metal_root  # noqa: E402
 import metal_score  # noqa: E402
 import metal_disk  # noqa: E402
 import metal_export  # noqa: E402
+import metal_migration  # noqa: E402
 import metal_persist  # noqa: E402
 import breenfs_replay  # noqa: E402
 import metal_power_cut  # noqa: E402
@@ -172,8 +173,13 @@ def suites(args):
 
 
 def ceiling_seconds(args):
+    migration = getattr(args, 'migration_phase', None)
+    if migration == 'migrate':
+        return 3 * 60 * 60
     if args.payload == metal_export.PAYLOAD:
         total_bytes = sum(metal_persist.SIZES[role] for role in metal_export.ROLES)
+        if migration == 'readback':
+            total_bytes = 2 * metal_migration.MAX_DATA
         transfer_seconds = (total_bytes + EXPORT_BYTES_PER_SECOND - 1) // EXPORT_BYTES_PER_SECOND
         return transfer_seconds + EXPORT_OVERHEAD_SECONDS
     if args.mode == 'suite':
@@ -382,6 +388,11 @@ class Driver:
         self.post_budget = m.DEFAULT_POST_BUDGET
         self.stopping = threading.Event()
         self.census = metal_census.Census() if args.payload == 'linux' else None
+        self.migration_phase = getattr(args, 'migration_phase', None)
+        self.migration = None
+        self.migration_digests = None
+        self.migration_equal = False
+        self.migration_answer = False
         self.export_started = None
         self.export_receipts = {}
 
@@ -434,6 +445,8 @@ class Driver:
                'idleMinutes': getattr(self.args, 'idle_minutes', 30) if session(self.args) else None,
                'evidenceEligible': not fault and self.args.payload != metal_export.PAYLOAD
                and (persistent(self.args) or not session(self.args)) and getattr(self.args, 'case', None) is None}
+        if self.migration_phase:
+            run['migrationPhase'] = self.migration_phase
         if getattr(self.args, 'case', None) is not None:
             run['onlyCase'] = self.args.case
         if getattr(self.args, 'root_fs', None) is not None:
@@ -529,7 +542,12 @@ class Driver:
         if self.args.payload == 'none':
             self.event('nothing-staged')
             return
+        if self.migration_phase:
+            self.migration = metal_migration.admit(
+                self.migration_phase, self.id, self.args.commit, tools_commit())
         if persistent(self.args):
+            if not self.migration_phase and metal_migration.state():
+                raise Finish(m.EXIT_CANCELLED, 'the E24 migration has parked the persistent install in the test loop')
             self.prepare_persistent()
             return
         if self.args.payload.startswith('hang'):
@@ -586,7 +604,8 @@ class Driver:
                 raise Finish(m.EXIT_CANCELLED, 'the readback firmware differs from its build record')
             self.delivery['build'] = build
             if self.args.payload == metal_export.PAYLOAD:
-                facts, image = metal_export.prepare(self.stage, self.id, self.site, stub)
+                facts, image = metal_export.prepare(self.stage, self.id, self.site, stub,
+                                                    sparse=self.migration_phase == 'readback')
             else:
                 facts, image = metal_disk.prepare_readback(self.dir, self.stage, self.args.source_boot,
                                                            self.args.commit, self.id, self.site, stub)
@@ -675,7 +694,13 @@ class Driver:
                 raise Finish(m.EXIT_CANCELLED, 'the suite manifest is missing or differs')
         if len(suites(self.args)) > 1 and not (self.dir / 'definition/scripts/suite-sequence.py').is_file():
             raise Finish(m.EXIT_CANCELLED, 'the commit cannot score a multi-suite boot')
+        if self.migration_phase:
+            files, extracted = self.prepare_migration(inputs, build)
+            self.assemble(inputs, files, extracted, root_ramdisk=False)
+            return
         if self.args.mode == 'persistent-install':
+            if metal_migration.state():
+                raise Finish(m.EXIT_CANCELLED, 'the E24 migration has parked the persistent install in the test loop')
             files, extracted = self.prepare_install(inputs, build)
             self.assemble(inputs, files, extracted, root_ramdisk=False)
             return
@@ -819,6 +844,14 @@ class Driver:
         if not metal_persist.layout():
             raise Finish(m.EXIT_CANCELLED, 'the disk has no persistent install')
         commit = self.slot_commit()
+        if self.migration_phase in ('rescue', 'return'):
+            slots = metal_persist.read_disk().get('slots', {})
+            if self.migration_phase == 'rescue':
+                if ((slots.get('current') or {}).get('migration') != 'rescue'
+                        or (slots.get('next') or {}).get('migration') != 'cutover'):
+                    raise Finish(m.EXIT_CANCELLED, 'migration rescue needs the staged candidate and rescue slot')
+            elif (slots.get('current') or {}).get('migration') != 'cutover':
+                raise Finish(m.EXIT_CANCELLED, 'migration return needs the promoted BreenFS slot')
         if not commit:
             raise Finish(m.EXIT_CANCELLED, 'no kernel slot is recorded for this persistent boot')
         self.args.commit = commit
@@ -830,6 +863,48 @@ class Driver:
                    slotAction=getattr(self.args, 'slot_action', None), definition=kept.is_dir())
         m.unstage()
         self.load_definition()
+
+    def prepare_migration(self, inputs, build):
+        phase, cycle = self.migration_phase, self.migration
+        layout = cycle['layout']
+        scratch = self.stage / 'migration'
+        scratch.mkdir()
+        extracted = self.stage / 'esp'
+        files = metal_image.extract_esp(inputs / 'uefi.img', extracted)
+        if phase == 'add':
+            request = metal_persist.add_breenfs_request(scratch, layout, mkfs=inputs / 'breenfs-mkfs')
+            config = request.finish()
+        else:
+            intent = scratch / 'boot-intent'
+            intent.write_bytes(metal_persist.migration_intent(layout, phase, cycle['userland']))
+            files['ramdisk'] = intent
+            if phase == 'migrate':
+                facts, suite_files = metal_disk.stage(self.dir, inputs, self.id, self.args.commit, self.site,
+                                                      build, mode='persistent-migrate', the_layout=layout)
+                self.delivery['diskRoot'] = facts
+                files.update(suite_files)
+                return files, extracted
+            if phase != 'cutover':
+                raise ValueError('unexpected migration image phase')
+            candidates = dict()
+            slots = {}
+            for kind in ('rescue', 'cutover'):
+                image = scratch / (kind + '.img')
+                note = scratch / (kind + '.txt')
+                ramdisk = scratch / (kind + '-intent')
+                ramdisk.write_bytes(metal_persist.migration_intent(layout, kind, cycle['userland']))
+                metal_image.assemble(image, {name: files[name] for name in metal_image.ESP_FILES}
+                                     | {'ramdisk': ramdisk})
+                note.write_text(metal_persist.slot_note(self.args.commit, cycle['userland']))
+                slots[kind] = dict(metal_persist.file_facts(image), commit=self.args.commit,
+                                   installedBy=cycle['userland'], migration=kind)
+                candidates[kind] = (image, note)
+            config, request = metal_persist.upgrade_request(
+                scratch, layout, {}, *candidates['cutover'], self.site, rescue=candidates['rescue'])
+            self.migration_slots = slots
+            metal_persist.store_definition(self.dir / 'definition', self.args.commit)
+        files.update({'persist.cfg': config, 'persist.dat': request.data})
+        return files, extracted
 
     def prepare_install(self, inputs, build):
         """The install boot (README, "Install and upgrade"): the request, the new kernel slot, the new userland on the
@@ -918,6 +993,12 @@ class Driver:
             self.fatal_patterns = [re.compile(p) for p in main.get('fatal', [])]
             self.final_marker = (TESTS_DONE, 'contains')
             self.required_stages = []
+        if self.migration_phase in metal_migration.VERIFY_PHASES:
+            self.final_marker = ('Breenix login: ', 'contains')
+            self.required_stages = []
+        elif self.migration_phase:
+            self.final_marker = None
+            self.required_stages = []
         if self.args.mode == 'probe':
             self.final_marker = ('PROBE DONE ', 'contains')
         if self.args.mode == 'persistent-install':
@@ -959,8 +1040,8 @@ class Driver:
         self.post_code = baseline.get('postCode')
         self.progress_key = progress_key(baseline.get('bootProgress'))
         if baseline.get('power') != 'Off':
-            if self.args.payload == metal_export.PAYLOAD:
-                raise Finish(m.EXIT_CANCELLED, 'the persistent export requires a powered-off machine')
+            if self.args.payload == metal_export.PAYLOAD or self.migration_phase:
+                raise Finish(m.EXIT_CANCELLED, 'persistent export and migration require a powered-off machine')
             if getattr(self.args, 'resting', False):
                 raise Finish(m.EXIT_CANCELLED, 'an existing power-on is left for boot manager adoption')
             self.event('stray-power-on', power=baseline.get('power'))
@@ -1464,6 +1545,17 @@ class Driver:
                     raise Finish(m.EXIT_SHORT, 'the cold disk upload is missing')
                 raise Finish(m.EXIT_DONE, 'cold disk readback received')
         if self.args.payload == metal_export.PAYLOAD:
+            if self.migration_phase == 'readback':
+                if STUB_LINE in line and self.export_started is None:
+                    self.export_started = observed_at
+                if receipt := metal_export.SPARSE_RECEIPT.fullmatch(line):
+                    role, count, digest = receipt.groups()
+                    if role in self.export_receipts:
+                        raise Finish(m.EXIT_SHORT, 'duplicate sparse readback receipt')
+                    self.export_receipts[role] = (int(count), digest)
+                if line == metal_export.SPARSE_DONE and self.export_started is not None:
+                    raise Finish(m.EXIT_DONE, 'sparse readback firmware completed')
+                return
             if STUB_LINE in line and self.export_started is None:
                 self.export_started = observed_at
             if receipt := metal_export.RECEIPT.fullmatch(line):
@@ -1496,6 +1588,7 @@ class Driver:
             self.event('requested-reboot-ready', observed_at=observed_at, commit=self.args.commit)
             self.requested_reset_at = None
         self.on_watchdog_line(line, observed_at)
+        self.on_migration_line(line, observed_at)
         self.on_persist_line(line, observed_at)
         if BOOTLOADER_LINE in line and self.kernel_started is not None:
             self.on_reset(self.reset_time(observed_at))
@@ -1561,7 +1654,8 @@ class Driver:
             if line == f"[breenfs] recovered-superblock ring=B slot={missing['slot']} generation={missing['generation']}":
                 self.seen.add('cut-recovery-repaired')
                 self.event('cut-recovery-repaired', observed_at=observed_at, **missing)
-        self.on_disk_line(line, observed_at)
+        if self.migration_phase != 'cutover':
+            self.on_disk_line(line, observed_at)
         self.on_intent_line(line, observed_at)
         if getattr(self, 'hostkey_reader', None) is None:
             self.on_hostkey_line(line)
@@ -1589,6 +1683,7 @@ class Driver:
                 and (not getattr(self.args, 'run', None) or self.run_done)
                 and (self.args.mode != 'console' or self.console_done)
                 and (not getattr(self.args, 'upgrade_parent', None) or self.ssh_verified())
+                and (self.migration_phase not in metal_migration.VERIFY_PHASES or self.migration_verified())
                 and (self.fatal_at is None or self.panic_oracle) and not self.completion_reported):
             self.completion_reported = True
             self.event('final-marker', observed_at=observed_at, seconds=seconds)
@@ -1602,6 +1697,35 @@ class Driver:
             if self.probe_failed:
                 raise Finish(m.EXIT_SHORT, 'the production probe reported a failed check')
             raise Finish(m.EXIT_DONE, 'the mode and its kernel stages finished')
+
+    def on_migration_line(self, line, observed_at):
+        phase = self.migration_phase
+        if phase == 'add' and line == PERSIST_DONE and self.kernel_started is None:
+            metal_persist.update_disk(layout=self.migration['layout'])
+            raise Finish(m.EXIT_DONE, 'BreenFS GPT entries and images read back')
+        if phase == 'cutover' and line == 'metal-stub: migration rescue slot installed':
+            self.seen.add('migration-rescue-staged')
+        if phase == 'cutover' and line == PERSIST_DONE and self.kernel_started is None:
+            if 'migration-rescue-staged' not in self.seen:
+                raise Finish(m.EXIT_SHORT, 'the safe rescue slot was not confirmed before the candidate')
+            current = metal_persist.read_disk()['slots']['current']
+            metal_persist.update_disk(slots=dict(current=self.migration_slots['rescue'], previous=current,
+                                                 next=self.migration_slots['cutover']))
+            self.event('migration-slots-staged', observed_at=observed_at)
+        if phase != 'migrate' or self.kernel_started is None or self.fatal_at is not None:
+            return
+        found = re.fullmatch(r'\[migrate\] manifest sha256 source=([0-9a-f]{64}) destination=([0-9a-f]{64})', line)
+        if found:
+            if self.migration_digests is not None or found[1] != found[2]:
+                raise Finish(m.EXIT_SHORT, 'guest migration manifests are inconsistent')
+            self.migration_digests = dict(source=found[1], destination=found[2])
+        if line == '[migrate] manifests equal':
+            self.migration_equal = True
+        if line.startswith('[migrate] exit code:'):
+            if (line != '[migrate] exit code: 0' or not self.migration_equal
+                    or self.migration_digests is None or 'disk-fixture' not in self.seen):
+                raise Finish(m.EXIT_SHORT, 'migration has no successful guest manifest comparison')
+            raise Finish(m.EXIT_DONE, 'guest migration committed and both manifests agree')
 
     def on_persist_line(self, line, observed_at):
         """The install boot's request and migration (README, "Install and upgrade")."""
@@ -1682,6 +1806,11 @@ class Driver:
             return
         entry, commit = found.groups()
         slot = metal_persist.read_disk().get('slots', {}).get(entry, {})
+        if self.migration_phase in ('rescue', 'return'):
+            expected = 'previous' if self.migration_phase == 'rescue' else 'current'
+            kind = 'rescue' if self.migration_phase == 'rescue' else 'cutover'
+            if entry != expected or slot.get('migration') != kind or commit != self.migration['commit']:
+                raise BootManagerAbort(line, observed_at)
         kept = m.STATE / 'persistent' / commit / 'definition'
         if slot.get('commit') != commit or not kept.is_dir():
             raise Finish(m.EXIT_SHORT, "the booted slot has no matching commit and definition")
@@ -1776,6 +1905,12 @@ class Driver:
     def on_manager_line(self, line, observed_at, seconds):
         """The boot manager's start, the lab's answer it acted on, and a probe's end (README, "The boot manager")."""
         answer = MANAGER_ANSWER.search(line)
+        if self.migration_phase in ('rescue', 'return'):
+            entry = 'previous commit' if self.migration_phase == 'rescue' else 'current'
+            if ((answer and answer[1] != f'persistent {self.id} {entry}')
+                    or 'breenix-manager: the slot action failed' in line
+                    or 'breenix-manager: installed configuration unavailable' in line):
+                raise BootManagerAbort(line, observed_at)
         # An intentional watchdog recovery returns to the persistent slot.
         if not persistent(self.args) and self.watchdog_trigger is None and (
                 (answer and answer[1] != f'test {self.id}') or MANAGER_PERSISTENT_COUNTDOWN.search(line)
@@ -1795,6 +1930,8 @@ class Driver:
                 self.kernel_started = observed_at
                 self.last_stage = 'boot manager started'
         if answer:
+            if self.migration_phase:
+                self.migration_answer = True
             self.event('manager-answer', observed_at=observed_at, answer=answer[1][:120])
             self.phase('Boot manager: the lab answered ' + answer[1][:80])
         if MANAGER_PANIC in line:
@@ -1804,6 +1941,8 @@ class Driver:
 
     def disk_evidence_seen(self):
         """The disk's record, and on a disk-root console boot the kernel's account of this boot's intent."""
+        if self.migration_phase == 'cutover':
+            return getattr(self, 'migration_slots', None) is not None
         needed = {None: set(), 'install': {'disk-write'}, 'root': {'disk-root'}}[getattr(self.args, 'disk', None)]
         if persistent(self.args):
             needed.add('manager-slot')
@@ -2141,7 +2280,7 @@ class Driver:
         deadline after that, a check boot its mode deadline."""
         if self.requested_reset_at is not None and m.now() - self.requested_reset_at > 600:
             raise Finish(m.EXIT_HUNG, 'requested reboot did not return to SSH', hung=True)
-        if getattr(self.args, 'upgrade_parent', None):
+        if getattr(self.args, 'upgrade_parent', None) or self.migration_phase in metal_migration.VERIFY_PHASES:
             self.maybe_complete(m.now(), self.since_power())
             if self.t0 is not None and self.since_power() >= 600:
                 raise Finish(m.EXIT_SHORT, 'S21 SSH verification deadline passed')
@@ -2221,6 +2360,8 @@ class Driver:
         if persistent(self.args):
             return self.persistent_deadlines()
         elapsed = self.since_power()
+        if self.migration_phase == 'cutover':
+            self.maybe_complete(m.now(), elapsed)
         if self.lease_ceiling and m.now() >= self.lease_ceiling:
             raise Finish(m.EXIT_DONE if session(self.args) else m.EXIT_HUNG,
                          'console session ceiling passed' if session(self.args) else 'the attempt ceiling passed',
@@ -2245,13 +2386,18 @@ class Driver:
             if m.now() - self.first_byte_at > DOWNLOAD_SECONDS:
                 raise Finish(m.EXIT_DELIVERY, 'the transfer was too slow')
             return
+        if self.migration_phase in metal_migration.VERIFY_PHASES and elapsed >= 600:
+            raise Finish(m.EXIT_SHORT, 'migration SSH verification deadline passed')
+        if self.migration_phase == 'migrate' and self.kernel_started:
+            return
         if self.export_started is not None:
             if m.now() - max(self.last_serial or 0, self.export_started) > SILENCE_SECONDS:
                 raise Finish(m.EXIT_HUNG, 'persistent export stopped reporting progress')
             return
         if self.kernel_started is None:
             # An install's stub writes the layout and the test root first, reporting its progress.
-            limit = INSTALL_STUB_SECONDS if self.args.mode == 'persistent-install' else BOOTLOADER_SECONDS
+            limit = (INSTALL_STUB_SECONDS if self.args.mode == 'persistent-install' or self.migration_phase
+                     else BOOTLOADER_SECONDS)
             if 'bootloader' not in self.seen and m.now() - self.complete_at > limit:
                 raise Finish(m.EXIT_DELIVERY, 'no bootloader after the image arrived')
             quiet = m.now() - (self.last_serial or self.complete_at)
@@ -2515,7 +2661,13 @@ class Driver:
                     except Exception as error:
                         self.event('disk-suite-verdict-error', error=error.__class__.__name__)
                         status = m.EXIT_SHORT
-                if self.args.payload == metal_export.PAYLOAD and status == m.EXIT_DONE and off and not self.gap:
+                if self.migration_phase and status == m.EXIT_DONE and off and not self.gap:
+                    try:
+                        self.finish_migration()
+                    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+                        self.event('migration-evidence-failed', error=str(error))
+                        status = m.EXIT_SHORT
+                elif self.args.payload == metal_export.PAYLOAD and status == m.EXIT_DONE and off and not self.gap:
                     try:
                         metal_export.publish(self.dir, self.id, self.export_receipts)
                         self.event('persistent-export-published')
@@ -2544,7 +2696,7 @@ class Driver:
                 self.power_off(False)
             status = m.EXIT_INCOMPLETE if self.t0 is not None else m.EXIT_CANCELLED
         # Persistent sessions are scored like default boots; console sessions and fault tests never are.
-        scored = (self.power_cut is None and getattr(self.args, 'case', None) is None
+        scored = (not self.migration_phase and self.power_cut is None and getattr(self.args, 'case', None) is None
                   and (not session(self.args) or persistent(self.args)) and not xhci_fault(self.args)
                   and self.args.inject not in (FENCE_FAULT, 'panic-reboot', *WATCHDOG_FAULTS))
         if scored and (self.dir / 'definition/docs/metal/boot-path.json').is_file():
@@ -2598,6 +2750,41 @@ class Driver:
         self.claim_status('claimed')
         self.event('lease-adopted')
         threading.Thread(target=self.heartbeat, daemon=True).start()
+
+    def migration_verified(self):
+        if self.migration_phase == 'cutover' and (
+                not getattr(self, 'migration_slots', None)
+                or (metal_persist.read_disk().get('slots', {}).get('next') or {}) != self.migration_slots['cutover']):
+            return False
+        receipt = m.read_json(self.dir / 'ssh-verification.json', {}) or {}
+        if not receipt:
+            return False
+        if (receipt.get('boot') != self.id or receipt.get('powerOn') != round(self.t0, 3)
+                or not all(receipt.get(key) is True for key in ('passed', 'authenticated', 'strictHostKey',
+                                                                'servicesStarted', 'homeReadable'))
+                or receipt.get('generation') != self.migration['userland']
+                or not self.t0 < receipt.get('completedAt', 0) <= self.t0 + 600):
+            raise Finish(m.EXIT_SHORT, 'migration SSH proof failed')
+        metal_migration.verify_mounts(receipt.get('mounts', ''), self.migration_phase)
+        return True
+
+    def finish_migration(self):
+        if not self.migration_answer:
+            raise ValueError('migration phase is missing its boot-manager lease answer')
+        phase = self.migration_phase
+        if phase == 'migrate':
+            self.migration['guest'] = self.migration_digests
+        elif phase == 'readback':
+            cold = metal_export.publish_sparse(self.dir, self.id, self.export_receipts)
+            allowed = {ident: step for step, ident in self.migration['boots'].items()}
+            paths, history = metal_migration.backup(self.migration['layout'], allowed=allowed,
+                                                    active=self.id, verify_images=True)
+            m.write_json(self.dir / 'ext2-proof.json', dict(copyOff=metal_migration.COPY_OFF, boots=history))
+            tools = m.boot_dir(self.migration['boots']['migrate']) / 'breenfs-tools'
+            digests = metal_migration.score_manifests(paths, cold, self.migration['userland'],
+                                                       self.migration['guest'], tools)
+            m.write_json(self.dir / 'migration-manifests.json', digests)
+        metal_migration.record_phase(self.migration, phase, self.id)
 
     def ssh_verified(self):
         receipt = m.read_json(self.dir / 'ssh-verification.json', {}) or {}
@@ -2785,6 +2972,7 @@ def main():
         p.add_argument('--gt710-category', choices=('core', 'panic', 'clocks'))
         p.add_argument('--milestone')
         p.add_argument('--source-boot')
+        p.add_argument('--migration-phase', choices=metal_migration.PHASES, help=argparse.SUPPRESS)
         p.add_argument('--commit', default='')
         p.add_argument('--target', default='main')
         p.add_argument('--catchup', action='store_true')
@@ -2831,6 +3019,19 @@ def main():
                 args.disk or args.inject or args.nmi or args.source_boot or args.slot_action
                 or args.resting or not re.fullmatch(r'[0-9a-f]{40}', args.commit)):
             parser.error('persistent export needs a commit and a firmware-only boot')
+        if args.migration_phase:
+            phase = args.migration_phase
+            payload = ('persistent' if phase in ('rescue', 'return') else metal_export.PAYLOAD
+                       if phase == 'readback' else 'image')
+            entry = 'previous' if phase == 'rescue' else 'current' if phase == 'return' else None
+            if (args.payload != payload or args.mode != ('persistent' if entry else 'default')
+                    or args.entry != entry or args.slot_action != ('commit' if phase == 'rescue' else None)
+                    or args.verify != bool(entry) or args.session or args.run or args.inject or args.nmi
+                    or args.disk not in ((None, 'root') if payload == 'image' else (None,))
+                    or args.root_fs or args.resting or args.adopt or args.breenfs_bit_flip
+                    or args.power_cut_window or args.power_cut_after or args.gt710_category
+                    or args.source_boot or not re.fullmatch(r'[0-9a-f]{40}', args.commit)):
+                parser.error('invalid E24 migration phase arguments')
         try:
             metal_power_cut.validate(args)
             validate_xhci_fault(args)
