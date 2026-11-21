@@ -67,7 +67,8 @@ CEILING_SECONDS = {'default': 900, 'shell': 900, 'probe': 900, 'suite': 1320, 'c
 # The install boot's stub writes the layout and the test root before the bootloader starts (README, "Install and
 # upgrade"); it reports progress every 64 MiB.
 INSTALL_STUB_SECONDS = 1500
-EXPORT_CEILING_SECONDS = 3600  # Full system and home images share one firmware boot.
+EXPORT_BYTES_PER_SECOND = 2 << 20  # Conservative planning rate for firmware reads, hashing and uploads.
+EXPORT_OVERHEAD_SECONDS = 600  # Allow for POST, firmware setup and receipts.
 PERSIST_DONE = 'metal-stub: persistent install request complete'
 INSTALL_DONE = '[persistent] install complete: '
 INSTALL_FAILED = '[persistent] install failed: '
@@ -172,7 +173,9 @@ def suites(args):
 
 def ceiling_seconds(args):
     if args.payload == metal_export.PAYLOAD:
-        return EXPORT_CEILING_SECONDS
+        total_bytes = sum(metal_persist.SIZES[role] for role in metal_export.ROLES)
+        transfer_seconds = (total_bytes + EXPORT_BYTES_PER_SECOND - 1) // EXPORT_BYTES_PER_SECOND
+        return transfer_seconds + EXPORT_OVERHEAD_SECONDS
     if args.mode == 'suite':
         # The base includes startup and a 900-second first suite; longer suites need more time.
         names = suites(args)
