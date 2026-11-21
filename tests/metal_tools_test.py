@@ -1401,7 +1401,10 @@ class DriverTest(StateTest):
                        f'lab answered: busy {self.args.id}',
                        f'lab answered: persistent {self.args.id} current',
                        'menu: Starting Breenix in 5 s; any key stops the countdown.',
-                       'menu: Starting the previous kernel in 5 s; any key stops the countdown.')
+                       'menu: Starting the previous kernel in 5 s; any key stops the countdown.',
+                       'installed configuration unavailable; trying existing slots before returning to firmware',
+                       'booting current ' + 'a' * 40,
+                       'booting previous ' + 'b' * 40)
             for index, report in enumerate(reports):
                 with self.subTest(payload=payload, report=report):
                     args = SimpleNamespace(**vars(self.args))
