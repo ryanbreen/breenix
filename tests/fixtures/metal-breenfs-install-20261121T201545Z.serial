@@ -1,40 +1,40 @@
-INFO : UEFI bootloader started
-INFO : Jumping to kernel entry point at VirtAddr(0x80003ac650)
-[ INFO] kernel: Kernel entry point reached
-[ INFO] kernel: [console] uart 0x3f8 source=spcr
-[ INFO] kernel: [apic] handoff base=0xfee00000 mode=x2apic msr=0xfee00d00
-[ INFO] kernel: Serial port initialized and buffer flushed
-[ INFO] kernel: GDT and IDT initialized
-[ INFO] kernel: Physical memory offset available: 0x28000000000
-[ INFO] kernel::memory::frame_allocator: Frame allocator initialized with 8012 MiB of usable memory in 31 regions (floor=0x100000)
-[ INFO] kernel::memory::heap: Heap initialized at 0x444444440000 with size 65536 KiB
-[ INFO] kernel::arch_impl::x86_64::platform: [acpi] tables: XSDT FACP SSDT SSDT SSDT WD__ SLIC HPET APIC MCFG SSDT LPIT WSMT SSDT DBGP DBG2 DMAR HEST BERT ERST EINJ SPCR UEFI
-[ INFO] kernel::arch_impl::x86_64::timer: HAL_TIMER_CALIBRATED: TSC calibration via HAL complete
-[ INFO] kernel::arch_impl::x86_64::irq: Interrupt delivery: x2APIC + IOAPIC; 8259 masked
-[ INFO] kernel::drivers::pci: PCI: Enumeration complete. Found 20 devices (0 VirtIO block, 2 network)
-[ INFO] kernel::drivers::bcm5720: [bcm5720] found 04:00.0 rev 0 asic 0xf000 phy 0x03625f60 at address 1
-[ INFO] kernel::drivers::bcm5720: [bcm5720] reset complete: the bootcode answered in 117 ms
-[ INFO] kernel::time::timer: Timer initialized: LAPIC at 200 Hz, calibrated count 7502 (5ms per tick)
-[ INFO] kernel::arch_impl::x86_64::smp: [smp] every reported CPU is online (4 of 4)
-[ INFO] kernel::arch_impl::x86_64::smp: [smp] online=4 reported=4 source=madt
-[ INFO] kernel::drivers::xhci: [xhci] found 00:14.0 version=1.10 ports=26 slots=64 BAR0=65536 bytes
-[ INFO] kernel::drivers::xhci: [xhci] firmware handoff: released in 0 ms; SMI disabled, halted
-[ INFO] kernel::drivers::xhci: [xhci] running: scratchpads=34 context=32 page=4096 MSI=0x53 INTx-disabled
-[ INFO] kernel::drivers::bcm5720: [bcm5720] link up 1000 Mb/s full duplex, 3666 ms after PHY configuration
+UEFI bootloader started
+Jumping to kernel entry point at
+Kernel entry point reached
+[console] uart 0x3f8 source=
+[apic] handoff base=
+Serial port initialized and buffer flushed
+GDT and IDT initialized
+Physical memory offset available
+Frame allocator initialized with
+Heap initialized
+[acpi] tables:
+HAL_TIMER_CALIBRATED
++ IOAPIC; 8259 masked
+PCI: Enumeration complete
+[bcm5720] found fixture
+[bcm5720] reset complete
+Timer initialized
+[smp] every reported CPU is online
+[smp] online=4 reported=4
+[xhci] found fixture
+[xhci] firmware handoff: fixture
+[xhci] running: fixture
+[bcm5720] link up 1000 Mb/s full duplex
 [ INFO] kernel::block: [storage] root record: installed by boot 20261121T201545Z-metal, 303038464 bytes, sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-[ INFO] kernel::drivers::xhci: [xhci] no-op completed by MSI: interrupts=128 event-wraps=2
-[ INFO] kernel::drivers::xhci: [xhci] port census: ports=26 connected=2 enumerated=2; descriptors complete
+[xhci] no-op completed by MSI: fixture
+[xhci] port census: fixture
 [ INFO] kernel: [fs] root mounted from the installed disk
 [ INFO] kernel: [block] hardware disks read-only: detected=1 gated=1
 [ INFO] kernel::block::write_policy: [block] write fence: AHCI port 0 LBA 62916608-197134335, 197134336-734005247
-[ INFO] kernel: [metal] kernel idle
-[ INFO] kernel::arch_impl::x86_64::tick_census: [timer] tick rate agrees with the TSC: 4 CPU(s) at 200 Hz within 5000 ppm
-[ INFO] kernel::arch_impl::x86_64::tick_census: [smp] timer ticks on each online CPU (4 of 4)
-[bcm5720] frame sent: controller consumed and MAC counted the broadcast
+[metal] kernel idle
+[timer] tick rate agrees with the TSC
+[smp] timer ticks on each online CPU
+[bcm5720] frame sent: fixture
 [bcm5720] first frame received
-[ INFO] kernel::net::dhcp: [dhcp] lease acquired: address=192.0.2.1 t1=43212425297962 t2=75612425297962 expires=86412425297962 now=19492602096 ns
-[ INFO] kernel::drivers::bcm5720: [bcm5720] reply received: DHCP server acknowledged the requested lease
-NET: ARP resolved gateway MAC: 02:00:00:00:00:01
-NET: ICMP echo reply received from gateway
-[ INFO] kernel::net::dns_probe: [dns] answer received
+[dhcp] lease acquired
+[bcm5720] reply received: fixture
+NET: ARP resolved gateway MAC:
+NET: ICMP echo reply received from
+[dns] answer received
 [persistent] install complete: files=823 dirs=42 links=0 hard-links=200 bytes=206757857 left-out=1
