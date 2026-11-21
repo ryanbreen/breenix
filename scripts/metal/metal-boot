@@ -127,6 +127,8 @@ def kernel_profile(args):
         if category not in ('core', 'panic', 'clocks') or args.mode not in ('default', 'probe') or getattr(args, 'suite', None) or args.inject:
             raise ValueError('gt710 diagnostic needs a default/probe boot without suites or injection')
         return {'panic':(['capture_panic_oracle'],'gpu-panic'),'core':(['gt710_core_probe'],'gpu-core'),'clocks':(['gt710_clock_probe'],'gpu-clock')}[category]
+    if fault := metal_power_cut.kernel_fault(args):
+        return [fault[0]], 'fault-test'
     features = (['watchdog_fault_inject'] if args.inject in WATCHDOG_FAULTS else
                 ['xhci_fault_inject'] if xhci_fault(args) else
                 ['block_fence_inject'] if args.inject == FENCE_FAULT else
@@ -362,7 +364,7 @@ class Driver:
         target = {'main': {}}
         if self.args.target.startswith('branch:'):
             target = {'branch': {'name': self.args.target.split(':', 1)[1]}}
-        fault = self.power_cut is not None or xhci_fault(self.args) or self.args.inject in (FENCE_FAULT, 'panic-reboot', *WATCHDOG_FAULTS)
+        fault = self.power_cut is not None or metal_power_cut.kernel_fault(self.args) or xhci_fault(self.args) or self.args.inject in (FENCE_FAULT, 'panic-reboot', *WATCHDOG_FAULTS)
         kind = ('fault-test' if fault else 'persistent' if persistent(self.args)
                 else 'console-session' if session(self.args)
                 else {'image': 'boot', 'linux': 'platform-census'}.get(self.args.payload, 'fault-test'))
@@ -675,7 +677,8 @@ class Driver:
             intent = self.stage / 'boot-intent'
             # On the persistent layout the intent names the test root, the only partition a test boot is given.
             test_root = the_layout['partitions']['test']['guid'] if the_layout else None
-            command_line=getattr(self.args,'kernel_command_line',None)
+            fault = metal_power_cut.kernel_fault(self.args)
+            command_line = fault[1] if fault else getattr(self.args, 'kernel_command_line', None)
             if test_root or command_line is not None:
                 intent.write_bytes(metal_persist.intent(target, root=test_root, command_line=command_line))
             else:

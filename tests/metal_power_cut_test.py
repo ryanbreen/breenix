@@ -9,7 +9,7 @@ from unittest.mock import patch
 from metal_tools_test import StateTest, TOOLS, boot, load_script, m
 
 
-CLI = ['--suite', 'filesystem', '--disk', 'root', '--root-fs', 'breenfs']
+CLI = ['--suite', 'filesystem', '--disk', 'root', '--root-fs', 'breenfs', '--case', 'power-cut/writer']
 DRIVER = ['--mode', 'suite', *CLI]
 MARKER = '[breenfs] commit-window first-flush'
 
@@ -46,7 +46,7 @@ class PowerCutCliTest(unittest.TestCase):
         ):
             with self.subTest(flags=flags):
                 args = run.argument_parser().parse_args(
-                    ['boot', *CLI, '--case', 'power-cut/writer', *flags])
+                    ['boot', *CLI, *flags])
                 args.mode = 'suite'
                 run.metal_power_cut.validate(args)
                 self.assertEqual(run.metal_power_cut.kernel_fault(args), (feature, intent))

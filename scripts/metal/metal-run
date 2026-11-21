@@ -59,7 +59,7 @@ TESTING_FEATURE = 'testing'
 
 
 
-def kernel_features(mode, suites, inject, gt710_category=None, case=None):
+def kernel_features(mode, suites, inject, gt710_category=None, case=None, breenfs_fault=None):
     """Keep native suite evidence independent of the testing startup path."""
     if case is not None:
         if (mode != 'suite' or not suites or suites == 'all' or ',' in suites or inject or gt710_category
@@ -69,6 +69,8 @@ def kernel_features(mode, suites, inject, gt710_category=None, case=None):
         if gt710_category not in ('core', 'panic', 'clocks') or mode not in ('default', 'probe') or suites or inject:
             raise ValueError('gt710 diagnostic needs a default/probe boot without suites or injection')
         return ['--features', {'panic':'capture_panic_oracle','core':'gt710_core_probe','clocks':'gt710_clock_probe'}[gt710_category]]
+    if breenfs_fault:
+        return ['--features', breenfs_fault[0]]
     if inject in WATCHDOG_FAULTS:
         return ['--features', 'watchdog_fault_inject']
     if inject in XHCI_FAULTS:
@@ -419,6 +421,8 @@ def boot(args):
     if args.nmi:
         command.append('--nmi')
     command += metal_power_cut.options(args)
+    if getattr(args, 'breenfs_bit_flip', False):
+        command.append('--breenfs-bit-flip')
     if payload == 'linux' and not args.linux_directory:
         raise SystemExit('Linux payload needs --linux-directory')
     if args.serve_as:
@@ -458,7 +462,8 @@ def boot(args):
         logs = Path.home() / '.local/state/breenix-metal'
         logs.mkdir(parents=True, exist_ok=True)
         with (logs / f'{boot_id}.log').open('w') as log:
-            features = kernel_features(args.mode, args.suite, args.inject, category)
+            features = kernel_features(args.mode, args.suite, args.inject, category,
+                                       breenfs_fault=metal_power_cut.kernel_fault(args))
             # A suite boot's build stages the suite's host-side fixtures (the SDK suite's results).
             suite = ['--suite', args.suite] if args.suite else []
             tools_only = {'disk-readback': ['--tools-profile', 'disk-readback'],
@@ -531,7 +536,8 @@ def verify_prebuilt(env, artifact_id, sha, args):
                             capture_output=True, text=True).stdout.strip()
         if (HERE / 'COMMIT').read_text().strip() != deployed:
             raise ValueError('host and service toolsCommit differ')
-        features = kernel_features(args.mode, args.suite, args.inject, getattr(args, 'gt710_category', None))
+        features = kernel_features(args.mode, args.suite, args.inject, getattr(args, 'gt710_category', None),
+                                   breenfs_fault=metal_power_cut.kernel_fault(args))
         manifest = metal_prebuilt.verify(source, commit=sha, tools_commit=deployed, mode=args.mode,
                                          features=features[1:] if features else [], suite=args.suite)
         admit_prebuilt(env, sha, bool(getattr(args, 'catchup', False)) or catchup_from_env())
@@ -726,7 +732,7 @@ def argument_parser(automatic=False):
     p = sub.add_parser('_build')
     p.add_argument('id')
     p.add_argument('sha')
-    p.add_argument('--features', choices=(FAULT_FEATURE, FENCE_FEATURE, PANIC_FEATURE, TESTING_FEATURE, 'capture_panic_oracle', 'gt710_core_probe', 'gt710_clock_probe', 'watchdog_fault_inject'))
+    p.add_argument('--features', choices=(FAULT_FEATURE, FENCE_FEATURE, PANIC_FEATURE, TESTING_FEATURE, 'capture_panic_oracle', 'gt710_core_probe', 'gt710_clock_probe', 'watchdog_fault_inject', *metal_power_cut.FEATURES))
     p.add_argument('--suite')
     p.add_argument('--tools-profile', choices=('disk-readback', 'boot-manager'))
     p.add_argument('--smb-helper', action='store_true')

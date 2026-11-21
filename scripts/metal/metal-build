@@ -42,6 +42,7 @@ STUB_TARGET = 'x86_64-unknown-uefi'
 STUB_RELEASE = Path(STUB_TARGET) / 'release'
 # The kernel profile each --features value builds.
 PROFILES = {'watchdog_fault_inject': 'fault-test', '': 'production', 'xhci_fault_inject': 'fault-test', 'block_fence_inject': 'fault-test',
+            'breenfs_commit_window': 'fault-test', 'breenfs_corrupt_inject': 'fault-test',
             'server_reboot_fault': 'fault-test', 'testing': 'testing', 'gt710_core_probe': 'gpu-core', 'gt710_clock_probe': 'gpu-clock', 'capture_panic_oracle': 'gpu-panic'}
 # Deployed, the helpers sit beside this file; in a checkout they are in scripts/.
 TOOLS = Path(__file__).resolve().parent
