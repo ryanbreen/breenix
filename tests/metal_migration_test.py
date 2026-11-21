@@ -55,6 +55,20 @@ class MetalMigrationTest(existing.StateTest):
         with self.assertRaises(ValueError):
             metal_migration.prove_history(rows, boots, lambda _: events)
 
+    def test_backup_history_refuses_the_raw_write_fence_probe(self):
+        import metal_migration
+
+        child = '20261121T100000Z-metal'
+        rows = [dict(seq=40, id=metal_migration.COPY_OFF), dict(seq=41, id=child)]
+        boots = m.STATE / 'boots'
+        (boots / child).mkdir(parents=True)
+        (boots / child / 'ended').touch()
+        m.write_json(boots / child / 'run.json', dict(id=child, kind='fault-test', payload='image',
+                                                      mode='default', disk='root', inject='fence-out-of-partition'))
+        events = [dict(event='manager-answer', answer=f'test {child}'), dict(event='closed')]
+        with self.assertRaisesRegex(ValueError, 'could have reached the frozen ext2 partitions'):
+            metal_migration.prove_history(rows, boots, lambda _: events)
+
     def test_host_comparison_requires_both_guest_digests(self):
         import metal_migration
 

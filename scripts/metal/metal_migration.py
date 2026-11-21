@@ -45,6 +45,9 @@ def prove_history(index, boots, read_events, *, allowed=None, active=None):
         if (not (boot / 'ended').is_file() or record.get('id') != name
                 or not any(row['event'] == 'closed' for row in log)):
             raise ValueError(f'incomplete boot record after copy-off: {name}')
+        if record.get('inject') == 'fence-out-of-partition':
+            # This probe attempts a raw write immediately beyond the test partition.
+            raise ValueError(f'boot after copy-off could have reached the frozen ext2 partitions: {name}')
         if allowed and name in allowed:
             # Earlier phases have their own leases and are bound to the exact recorded boot.
             if (record.get('migrationPhase') != allowed[name] or (boot / 'exit-status').read_text().strip() != '0'
