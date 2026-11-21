@@ -77,16 +77,28 @@ fn key(ino: u64, ty: u8) -> Key {
     }
 }
 fn items(store: &impl NodeStore, ptr: BlockPtr) -> BTreeMap<Key, Vec<u8>> {
+    walk_items(store, ptr, None)
+}
+fn walk_items(
+    store: &impl NodeStore,
+    ptr: BlockPtr,
+    private_generation: Option<u64>,
+) -> BTreeMap<Key, Vec<u8>> {
     let bytes = store.get(ptr.addr).unwrap();
     let h = NodeHeader::decode(&bytes).unwrap();
     assert_eq!(
         (h.addr, h.generation, h.level),
         (ptr.addr, ptr.generation, ptr.level)
     );
-    assert_eq!(
-        ptr.csum,
+    if let Some(generation) = private_generation {
+        assert!(ptr.generation <= generation);
+    }
+    let expected_checksum = if private_generation == Some(ptr.generation) {
+        0
+    } else {
         u32::from_le_bytes(bytes[8..12].try_into().unwrap())
-    );
+    };
+    assert_eq!(ptr.csum, expected_checksum);
     let mut out = BTreeMap::new();
     for i in 0..h.nitems as usize {
         if h.level == 0 {
@@ -97,7 +109,7 @@ fn items(store: &impl NodeStore, ptr: BlockPtr) -> BTreeMap<Key, Vec<u8>> {
             );
         } else {
             let e = InternalEntry::decode(&bytes[48 + i * 37..85 + i * 37]).unwrap();
-            out.extend(items(
+            out.extend(walk_items(
                 store,
                 BlockPtr {
                     addr: e.child_addr,
@@ -105,6 +117,7 @@ fn items(store: &impl NodeStore, ptr: BlockPtr) -> BTreeMap<Key, Vec<u8>> {
                     csum: e.child_csum,
                     level: h.level - 1,
                 },
+                private_generation,
             ));
         }
     }
@@ -185,7 +198,7 @@ fn stage<'a>(
     }
     txn.update_root(1, r.clone()).unwrap();
     let expected = Expected {
-        tree: items(&txn.view(), r.root),
+        tree: walk_items(&txn.view(), r.root, Some(txn.generation())),
         file: payload.to_vec(),
     };
     (txn, BTreeMap::from([(addr, data)]), expected)
@@ -591,7 +604,9 @@ mod recover {
         let dev = RecordingDevice::new(bytes).unwrap();
         let (mut txn, data, expected) = stage(&base, &old, b"new");
         let sb = Committer::new(old).commit(&dev, &mut txn, &data).unwrap();
-        (dev.durable_image(), sb, expected)
+        let store = Image(dev.durable_image());
+        items(&store, root(&store, &sb).root);
+        (store.0, sb, expected)
     }
     #[test]
     fn read_error_preserves_acknowledged_slots() {
