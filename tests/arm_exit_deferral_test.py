@@ -9,12 +9,18 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class ArmExitDeferral(unittest.TestCase):
     def test_exit_hands_large_unmapped_root_to_bounded_reclaimer(self):
+        self.check_exit_receipt('aarch64', 'x86_64')
+
+    def test_x86_repeat_exit_does_not_issue_another_retirement_receipt(self):
+        self.check_exit_receipt('x86_64', 'aarch64')
+
+    def check_exit_receipt(self, arch, other_arch):
         source = (ROOT / 'kernel/src/task/process_task.rs').read_text()
         start = source.index('                    let retirement_receipt: Option<')
         end = source.index('                    // Keep termination after release/deferral.', start)
         branch = source[start:end].replace(
-            '#[cfg(target_arch = "aarch64")]', '#[cfg(all())]'
-        ).replace('#[cfg(target_arch = "x86_64")]', '#[cfg(any())]')
+            f'#[cfg(target_arch = "{arch}")]', '#[cfg(all())]'
+        ).replace(f'#[cfg(target_arch = "{other_arch}")]', '#[cfg(any())]')
         run_rust(self, r'''
 use std::sync::atomic::{AtomicUsize, Ordering};
 static WALKED: AtomicUsize = AtomicUsize::new(0);
@@ -52,7 +58,7 @@ fn zombie_publication_does_not_wait_for_leaf_release() {
         let mut process = Process { live_root, pages: 32768, receipts: 0 };
         let pending = exit(&mut process, false, false).expect("lost retirement receipt").0;
         assert_eq!(WALKED.load(Ordering::Relaxed), 0,
-            "ARM exit walked mapped leaves before its row became waitable");
+            "exit walked mapped leaves before its row became waitable");
         assert_eq!((process.pages, process.receipts, pending.pages), (0, 1, 32768),
             "receipt must retain the leaf custody for the existing bounded drain");
         assert!(exit(&mut process, true, false).is_none(), "repeat exit issued another receipt");
