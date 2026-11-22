@@ -1,0 +1,2 @@
+1Ex 1E1 0xe+e1 .5.e+x 0x1p-2 1.2.3
+"0xe+1" WRONG_Ex WRONG_E WRONG_e1 WRONG_x

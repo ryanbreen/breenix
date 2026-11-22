@@ -1,0 +1,2 @@
+#\
+  error spliced directive

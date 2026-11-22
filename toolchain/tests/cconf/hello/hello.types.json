@@ -1,0 +1,26 @@
+{
+  "records": [
+    {"what": "decl", "line": 1, "col": 5, "name": "puts",
+     "type": "int (const char *)", "linkage": "external", "definition": false,
+     "clause": "N1570 6.7.6.3p5, 6.7.6.3p6, 6.2.2p5: a prototype declarator without a storage-class specifier declares a function with external linkage"},
+    {"what": "decl", "line": 1, "col": 22, "name": "s",
+     "type": "const char *", "linkage": "none", "definition": false,
+     "clause": "N1570 6.7.6.1p1, 6.2.2p6, 6.2.1p4: a parameter in a prototype has prototype scope and no linkage"},
+    {"what": "decl", "line": 3, "col": 5, "name": "main",
+     "type": "int (void)", "linkage": "external", "definition": true,
+     "clause": "N1570 6.7.6.3p10, 6.9.1p7, 5.1.2.2.1p1: void as the only parameter means no parameters"},
+    {"what": "expr", "line": 5, "col": 5, "form": "identifier",
+     "type": "int (const char *)", "value": "function-designator",
+     "converted": "int (*)(const char *)",
+     "clause": "N1570 6.5.1p2, 6.3.2.1p4: a function designator converts to a pointer to the function"},
+    {"what": "expr", "line": 5, "col": 10, "form": "string-literal",
+     "type": "char [13]", "value": "lvalue", "converted": "char *",
+     "clause": "N1570 6.4.5p6, 6.5.1p4, 6.3.2.1p3: twelve characters plus the terminating null; the array converts to a pointer to its first element"},
+    {"what": "expr", "line": 5, "col": 5, "form": "call",
+     "type": "int", "value": "rvalue", "args": ["const char *"],
+     "clause": "N1570 6.5.2.2p5, 6.5.2.2p7, 6.5.16.1p1: the call has the return type and its argument is converted as if by assignment to the parameter type"},
+    {"what": "expr", "line": 6, "col": 12, "form": "integer-constant",
+     "type": "int", "value": "rvalue",
+     "clause": "N1570 6.4.4.1p5: an unsuffixed decimal constant has the first of int, long int, long long int that can represent it"}
+  ]
+}
