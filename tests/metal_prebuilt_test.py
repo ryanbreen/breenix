@@ -289,7 +289,7 @@ class HostRecordTest(StateTest):
 
 
 class PortableRootTest(unittest.TestCase):
-    def test_local_build_snapshot_resolves_the_stubs_committed_sha256_source(self):
+    def test_local_build_snapshot_resolves_the_stubs_committed_sources(self):
         local = load_script('metal-build-local')
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -298,23 +298,30 @@ class PortableRootTest(unittest.TestCase):
             subprocess.run(['git', 'init', '-q', '-b', 'main', str(repo)], check=True)
             stub = repo / 'scripts/metal/efi-stub/src'
             stub.mkdir(parents=True)
-            source = repo / 'libs/libbreenix/src/crypto/sha256.rs'
-            source.parent.mkdir(parents=True)
-            source.write_bytes(b'committed SHA-256 source\n')
-            (stub / 'sha256.rs').symlink_to('../../../../libs/libbreenix/src/crypto/sha256.rs')
+            sources = {
+                'sha256.rs': 'libs/libbreenix/src/crypto/sha256.rs',
+                'breenfs_crc32c.rs': 'kernel/src/fs/breenfs/crc32c.rs',
+            }
+            for name, relative in sources.items():
+                source = repo / relative
+                source.parent.mkdir(parents=True)
+                source.write_bytes(relative.encode())
+                (stub / name).symlink_to('../../../../' + relative)
             local.git(repo, 'add', '.')
             local.git(repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.com',
                       'commit', '-qm', 'stub source fixture')
             local.git(repo, 'remote', 'add', 'origin', str(repo))
-            source.write_bytes(b'dirty source must stay out\n')
+            for relative in sources.values():
+                (repo / relative).write_bytes(b'dirty source must stay out\n')
 
             class SnapshotChecked(Exception):
                 pass
 
             def inspect_snapshot(helper):
-                stub_source = helper.parent / 'efi-stub/src/sha256.rs'
-                self.assertTrue(stub_source.is_file(), 'the archived stub SHA-256 link must resolve')
-                self.assertEqual(stub_source.read_bytes(), b'committed SHA-256 source\n')
+                for name, relative in sources.items():
+                    stub_source = helper.parent / 'efi-stub/src' / name
+                    self.assertTrue(stub_source.is_file(), f'the archived stub {name} link must resolve')
+                    self.assertEqual(stub_source.read_bytes(), relative.encode())
                 raise SnapshotChecked
 
             args = SimpleNamespace(sha='HEAD', tools_commit='HEAD')
