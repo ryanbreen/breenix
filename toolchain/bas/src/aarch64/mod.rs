@@ -1,5 +1,7 @@
 //! A64 base instructions from Arm ARM DDI 0487 M.b, Chapter C6.
 
+mod integer;
+
 use bobj::elf::aarch64::{
     R_AARCH64_CALL26, R_AARCH64_CONDBR19, R_AARCH64_JUMP26, R_AARCH64_TSTBR14,
 };
@@ -10,6 +12,7 @@ use crate::{Location, Result};
 #[derive(Clone, Copy)]
 #[repr(u32)]
 pub(crate) enum BranchKind {
+    Adr = 0, // Local fixup only.
     Jump26 = R_AARCH64_JUMP26,
     Call26 = R_AARCH64_CALL26,
     Cond19 = R_AARCH64_CONDBR19,
@@ -24,6 +27,14 @@ impl BranchKind {
             Self::Jump26 | Self::Call26 => (26, 0),
             Self::Cond19 => (19, 5),
             Self::Test14 => (14, 5),
+            Self::Adr => {
+                // C6.2.12: signed byte displacement in immhi:immlo.
+                if !(-(1 << 20)..(1 << 20)).contains(&displacement) {
+                    return Err(at.error("ADR target out of range"));
+                }
+                let imm = displacement as u32 & 0x1f_ffff;
+                return Ok(word | ((imm & 3) << 29) | ((imm >> 2) << 5));
+            }
         };
         if displacement % 4 != 0 {
             return Err(at.error("branch target must be four-byte aligned"));
@@ -38,9 +49,12 @@ impl BranchKind {
     }
 }
 
+#[derive(Clone, Copy)]
 struct Register {
     number: u32,
     wide: bool,
+    stack: bool,
+    column: usize,
 }
 
 impl Register {
@@ -59,9 +73,27 @@ impl Register {
 
 fn register(p: &mut Parser<'_, '_>, wide_only: bool) -> Result<Register> {
     let token = p.word();
+    if matches!(token.text, "sp" | "wsp") || (wide_only && token.text.starts_with('w')) {
+        return Err(p.error(
+            token.column,
+            "expected an AArch64 register of the required width",
+        ));
+    }
+    parse_register(p, token)
+}
+
+fn parse_register(p: &Parser<'_, '_>, token: Token<'_>) -> Result<Register> {
+    if matches!(token.text, "sp" | "wsp") {
+        return Ok(Register {
+            number: 31,
+            wide: token.text == "sp",
+            stack: true,
+            column: token.column,
+        });
+    }
     let (name, wide) = if let Some(name) = token.text.strip_prefix('x') {
         (name, true)
-    } else if let Some(name) = token.text.strip_prefix('w').filter(|_| !wide_only) {
+    } else if let Some(name) = token.text.strip_prefix('w') {
         (name, false)
     } else {
         return Err(p.error(
@@ -77,7 +109,12 @@ fn register(p: &mut Parser<'_, '_>, wide_only: bool) -> Result<Register> {
             .filter(|&number| number < 31)
             .ok_or_else(|| p.error(token.column, "invalid AArch64 register"))?
     };
-    Ok(Register { number, wide })
+    Ok(Register {
+        number,
+        wide,
+        stack: false,
+        column: token.column,
+    })
 }
 
 fn immediate(p: &mut Parser<'_, '_>, max: u32) -> Result<u32> {
@@ -89,26 +126,6 @@ fn immediate(p: &mut Parser<'_, '_>, max: u32) -> Result<u32> {
         return Err(p.error(column, "immediate out of range"));
     }
     Ok(value as u32)
-}
-
-fn movz(p: &mut Parser<'_, '_>) -> Result<u32> {
-    // C6.2.284: sf, hw[22:21], imm16[20:5], Rd[4:0].
-    let rd = register(p, false)?;
-    p.expect(b',', "expected ',' before immediate")?;
-    let value = immediate(p, 0xffff)?;
-    let mut halfword = 0;
-    if p.take(b',') {
-        let shift = p.word();
-        if shift.text != "lsl" {
-            return Err(p.error(shift.column, "expected 'lsl'"));
-        }
-        let amount = immediate(p, rd.bits() - 16)?;
-        if amount % 16 != 0 {
-            return Err(p.error(shift.column, "MOVZ shift must be a multiple of 16"));
-        }
-        halfword = amount / 16;
-    }
-    Ok(0x5280_0000 | rd.sf() | (halfword << 21) | (value << 5) | rd.number)
 }
 
 fn condition(name: &str) -> Option<u32> {
@@ -133,7 +150,7 @@ fn branch(p: &mut Parser<'_, '_>, kind: BranchKind, word: u32) -> Result<()> {
 
 pub(crate) fn instruction(p: &mut Parser<'_, '_>, op: Token<'_>) -> Result<()> {
     let word = match op.text {
-        "movz" => movz(p)?,
+        "adr" => return integer::adr(p),
         "svc" => 0xd400_0001 | (immediate(p, 0xffff)? << 5), // C6.2.465
         "nop" => 0xd503_201f,                                // C6.2.298
         "br" => 0xd61f_0000 | (register(p, true)?.number << 5), // C6.2.46
@@ -175,12 +192,12 @@ pub(crate) fn instruction(p: &mut Parser<'_, '_>, op: Token<'_>) -> Result<()> {
             );
         }
         _ => {
-            let Some(suffix) = op.text.strip_prefix("b.") else {
-                return Err(p.error(op.column, "unknown AArch64 instruction"));
-            };
-            let cond = condition(suffix)
-                .ok_or_else(|| p.error(op.column, "unknown AArch64 branch condition"))?;
-            return branch(p, BranchKind::Cond19, 0x5400_0000 | cond);
+            if let Some(suffix) = op.text.strip_prefix("b.") {
+                let cond = condition(suffix)
+                    .ok_or_else(|| p.error(op.column, "unknown AArch64 branch condition"))?;
+                return branch(p, BranchKind::Cond19, 0x5400_0000 | cond);
+            }
+            integer::encode(p, op)?
         }
     };
     p.emit_aarch64(op.column, word)
