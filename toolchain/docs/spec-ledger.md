@@ -18,6 +18,7 @@ edition pin whose full publication has no digest recorded here.
 | [WG14 N2243](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n2243.htm) | C11 clarification requests, version 1.13, October 2017 | `61522ef6c63eb6e68964d8a6b5724c2f9ea3304437367195218f631eaa7998ba` |
 | [System V AMD64 psABI](https://raw.githubusercontent.com/wiki/hjl-tools/x86-psabi/x86-64-psABI-1.0.pdf) | AMD64 ABI Draft 1.0, 2018-01-28 | `f5c0e21542fc379090252e18ff3d083d2a5f51da8cca62b0fec41cc330a74641` |
 | [ELF gABI](https://gabi.xinuos.com/elf.pdf) | Xinuos ELF Object File Format, version 4.3 draft, 2025-09-04 | `e695f547dbb989e204dde79bc4dc6cfee7de7cca9b65a10208142932a216831b` |
+| [Linux Standard Base Core Specification](https://refspecs.linuxfoundation.org/LSB_5.0.0/LSB-Core-generic/LSB-Core-generic.pdf) | 5.0, Generic Part, chapter 11 (E25 ruling 8) | — |
 | [Intel SDM](https://cdrdv2-public.intel.com/812392/325462-sdm-vol-1-2abcd-3abcd-4.pdf) | Combined volumes 1–4, 325462-082US, December 2023 | `3b2551f01b4c91dc80e7f9cfb1e9790feeefe503cff15d2922ace049f4d8730f` |
 | [AMD APM](https://kib.kiev.ua/x86docs/AMD/AMD64/40332-r4.09.pdf) | AMD publication 40332, combined volumes 1–5, revision 4.09, March 2026, archived PDF | `ae18704f924bb80bc9bbfe9d3c33b97c16cdeaa9c7afccb033d136e86fd88a08` |
 | [AAPCS64](https://github.com/ARM-software/abi-aa/releases/download/2025Q1/aapcs64.pdf) | 2025Q1, 2025-04-07 | `11e6b27bb994b23e6a28b7ac27b1437591cfc13c2bf77262fb8f7ea2a0f254b8` |
@@ -82,7 +83,7 @@ operations in one thread.
 ## Object checker
 
 `toolchain/tests/elfcheck/` checks x86-64 ELF64 relocatable objects against
-the pinned gABI 4.3 and psABI 1.0 alone. It covers the ELF header, the section
+the pinned gABI 4.3 and psABI 1.0. It covers the ELF header, the section
 header table, string tables, the symbol table, RELA entries and section groups.
 With `--exec` it checks static executables: the program header table, PT_LOAD
 alignment, congruence, order and permissions, the headers in the first load,
@@ -92,8 +93,6 @@ cites the clause behind each of its 85 checks. Each check has a hand-built
 negative control in `fixtures.py` or `fixtures_exec.py`. bas output is checked
 against it from plan step 25.3a1, and bld output from 25.4a1.
 
-Gap: PT_GNU_STACK's `p_type` value is in neither pinned document nor the
-pinned GNU ld manual, whose PHDRS section numbers only PT_NULL through PT_TLS.
-elfcheck uses 0x6474e551, recorded from lld's black-box output for
-`userspace/programs/linker.ld`'s `PT_GNU_STACK` keyword. It is reported to the
-E25 coordinator for a pinned source or a ruling.
+Linux Standard Base Core 5.0 Table 11-1 assigns `PT_GNU_STACK` its `p_type`
+value, 0x6474e551. Section 11.2 defines `p_flags` as the stack permissions.
+bld emits a read-write stack and elfcheck checks that it lacks execute permission.
