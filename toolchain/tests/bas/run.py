@@ -9,6 +9,7 @@ import tempfile
 
 from aarch64_integer import INTEGER_ENCODINGS as AARCH64_INTEGER_ENCODINGS
 from aarch64_integer import INTEGER_REJECTIONS as AARCH64_INTEGER_REJECTIONS
+from aarch64_memory import MEMORY_ENCODINGS, MEMORY_REJECTIONS
 from integer import INTEGER_ENCODINGS, INTEGER_REJECTIONS
 
 
@@ -22,6 +23,7 @@ RELOCATION_CHECK = "bas::rela_pc32_for_external_call"
 INTEGER_CHECK = "bas::encode_mov_r64_imm32"
 AARCH64_CHECK = "bas::aarch64_exit42_object_passes_elfcheck"
 AARCH64_INTEGER_CHECK = "bas::aarch64_encode_add_imm"
+AARCH64_MEMORY_CHECK = "bas::aarch64_load_store_forms_match_arm_table"
 
 # Intel SDM Vol. 2 MOV opcode table B8+rd id, Table 2-4 REX.B,
 # and AMD APM Vol. 1 Figure 3-3 for the r32 register numbers.
@@ -258,7 +260,7 @@ def check_supplemental_encodings(bas, elfcheck, path):
                 f"wrong diagnostic for {line!r}: {result.stderr}")
 
 
-def check_aarch64_integer(bas, elfcheck, path):
+def check_aarch64_integer(bas, path, obj):
     source = AARCH64_CORPUS / "encodings.s"
     count = len(AARCH64_INTEGER_ENCODINGS)
     corpus_sources = [line.strip() for line in source.read_text().splitlines()]
@@ -274,7 +276,6 @@ def check_aarch64_integer(bas, elfcheck, path):
         require(corpus_word == f"{expected:08x} # DDI 0487 M.b {section} {assembly}",
                 f"corpus encoding or citation differs for {assembly!r}")
 
-    obj = read_object(bas, elfcheck, path, source, machine="aarch64")
     sections, contents, _, _ = obj
     words = list(struct.iter_unpack("<I", contents(sections[b".text"][1])))
     for (assembly, expected, section), (actual,) in zip(
@@ -286,6 +287,36 @@ def check_aarch64_integer(bas, elfcheck, path):
     source = path.with_suffix(".s")
     rejected = path.with_suffix(".rejected.o")
     for assembly, column, reason, section in AARCH64_INTEGER_REJECTIONS:
+        source.write_text(f".section .text\n{assembly}\n")
+        result = subprocess.run([bas, "--target", "aarch64", "-o", rejected, source],
+                                capture_output=True, text=True, timeout=10)
+        require(result.returncode == 1 and f"{source}:2:{column}:" in result.stderr
+                and reason in result.stderr and not rejected.exists(),
+                f"{assembly!r} (DDI 0487 M.b {section}): wrong diagnostic: {result.stderr}")
+
+
+def check_aarch64_memory(bas, elfcheck, path):
+    source = AARCH64_CORPUS / "encodings.s"
+    count = len(MEMORY_ENCODINGS)
+    corpus_sources = [line.strip() for line in source.read_text().splitlines()]
+    corpus_words = (AARCH64_CORPUS / "encodings.hex").read_text().splitlines()
+    obj = read_object(bas, elfcheck, path, source, machine="aarch64")
+    sections, contents, _, _ = obj
+    text = contents(sections[b".text"][1])
+    words = list(struct.iter_unpack("<I", text))
+    require(len(words) == len(corpus_words), "wrong AArch64 corpus word count")
+    for (assembly, expected, section), corpus_source, corpus_word, (actual,) in zip(
+        MEMORY_ENCODINGS, corpus_sources[-count:], corpus_words[-count:], words[-count:], strict=True
+    ):
+        require(corpus_source == assembly, f"corpus source differs for {assembly!r}")
+        require(corpus_word == f"{expected:08x} # DDI 0487 M.b {section} {assembly}",
+                f"corpus encoding or citation differs for {assembly!r}")
+        require(actual == expected,
+                f"{assembly!r} (DDI 0487 M.b {section}): got {actual:08x}, expected {expected:08x}")
+
+    source = path.with_suffix(".s")
+    rejected = path.with_suffix(".rejected.o")
+    for assembly, column, reason, section in MEMORY_REJECTIONS:
         source.write_text(f".section .text\n{assembly}\n")
         result = subprocess.run([bas, "--target", "aarch64", "-o", rejected, source],
                                 capture_output=True, text=True, timeout=10)
@@ -343,8 +374,11 @@ def main():
                       (ADDRESSING_CHECK, check_addressing), (CHECK, check_object))
             if args.machine == "aarch64":
                 path = directory / "aarch64.o"
+                check = AARCH64_MEMORY_CHECK
+                obj = check_aarch64_memory(args.bas, args.elfcheck, path)
+                print(f"{check} PASS", flush=True)
                 check = AARCH64_INTEGER_CHECK
-                obj = check_aarch64_integer(args.bas, args.elfcheck, path)
+                check_aarch64_integer(args.bas, path, obj)
                 print(f"{check} PASS", flush=True)
                 check = AARCH64_CHECK
                 check_aarch64(args.bas, path, obj)

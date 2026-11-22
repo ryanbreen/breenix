@@ -205,3 +205,254 @@ _start:
     uxth x1, w2
     uxtw x1, w2
     mov sp, #0xff
+
+// Memory, barriers and scalar floating point
+    ldr w1, [x2, #16380]
+    ldr w1, [sp, #-256]!
+    ldr w1, [x2], #255
+    ldur w1, [x2, #-7]
+    ldr w1, [x2, x3, lsl #2]
+    ldr x1, [x2, #296]
+    ldr x1, [sp, #-256]!
+    ldr x1, [x2], #255
+    ldur x1, [x2, #-7]
+    ldr x1, [x2, w3, uxtw #3]
+    str w1, [x2, #148]
+    str w1, [sp, #-256]!
+    str w1, [x2], #255
+    stur w1, [x2, #-7]
+    str w1, [x2, w3, sxtw #2]
+    str x1, [x2, #296]
+    str x1, [sp, #-256]!
+    str x1, [x2], #255
+    stur x1, [x2, #-7]
+    str x1, [x2, x3, sxtx #3]
+    ldrb w1, [x2, #37]
+    ldrb w1, [sp, #-256]!
+    ldrb w1, [x2], #255
+    ldurb w1, [x2, #-7]
+    ldrb w1, [x2, x3, lsl #0]
+    strb w1, [x2, #37]
+    strb w1, [sp, #-256]!
+    strb w1, [x2], #255
+    sturb w1, [x2, #-7]
+    strb w1, [x2, w3, uxtw #0]
+    ldrh w1, [x2, #74]
+    ldrh w1, [sp, #-256]!
+    ldrh w1, [x2], #255
+    ldurh w1, [x2, #-7]
+    ldrh w1, [x2, w3, sxtw #1]
+    strh w1, [x2, #74]
+    strh w1, [sp, #-256]!
+    strh w1, [x2], #255
+    sturh w1, [x2, #-7]
+    strh w1, [x2, x3, sxtx #1]
+    ldrsb w1, [x2, #37]
+    ldrsb w1, [sp, #-256]!
+    ldrsb w1, [x2], #255
+    ldursb w1, [x2, #-7]
+    ldrsb w1, [x2, x3, lsl #0]
+    ldrsb x1, [x2, #37]
+    ldrsb x1, [sp, #-256]!
+    ldrsb x1, [x2], #255
+    ldursb x1, [x2, #-7]
+    ldrsb x1, [x2, w3, uxtw #0]
+    ldrsh w1, [x2, #74]
+    ldrsh w1, [sp, #-256]!
+    ldrsh w1, [x2], #255
+    ldursh w1, [x2, #-7]
+    ldrsh w1, [x2, w3, sxtw #1]
+    ldrsh x1, [x2, #74]
+    ldrsh x1, [sp, #-256]!
+    ldrsh x1, [x2], #255
+    ldursh x1, [x2, #-7]
+    ldrsh x1, [x2, x3, sxtx #1]
+    ldrsw x1, [x2, #148]
+    ldrsw x1, [sp, #-256]!
+    ldrsw x1, [x2], #255
+    ldursw x1, [x2, #-7]
+    ldrsw x1, [x2, x3, lsl #2]
+    ldr s1, [x2, #148]
+    ldr s1, [sp, #-256]!
+    ldr s1, [x2], #255
+    ldur s1, [x2, #-7]
+    ldr s1, [x2, w3, uxtw #2]
+    ldr d1, [x2, #296]
+    ldr d1, [sp, #-256]!
+    ldr d1, [x2], #255
+    ldur d1, [x2, #-7]
+    ldr d1, [x2, w3, sxtw #3]
+    ldr q1, [x2, #592]
+    ldr q1, [sp, #-256]!
+    ldr q1, [x2], #255
+    ldur q1, [x2, #-7]
+    ldr q1, [x2, x3, sxtx #4]
+    str s1, [x2, #148]
+    str s1, [sp, #-256]!
+    str s1, [x2], #255
+    stur s1, [x2, #-7]
+    str s1, [x2, x3, lsl #2]
+    str d1, [x2, #296]
+    str d1, [sp, #-256]!
+    str d1, [x2], #255
+    stur d1, [x2, #-7]
+    str d1, [x2, w3, uxtw #3]
+    str q1, [x2, #592]
+    str q1, [sp, #-256]!
+    str q1, [x2], #255
+    stur q1, [x2, #-7]
+    str q1, [x2, w3, sxtw #4]
+    ldr xzr, [sp]
+    ldr w1, [x2, x3]
+    ldrsb w1, [x2, w3, sxtw]
+    ldrb w1, [x2, x3]
+    .Lmemory_back: ldr w1, .Lmemory_forward
+    .Lmemory_forward: ldr x2, .Lmemory_back
+    .Lmemory_simd: ldr q3, .Lmemory_simd
+    stp w1, w2, [x3, #-256]
+    stp w1, w2, [sp, #-12]!
+    stp w1, w2, [x3], #252
+    stp x1, x2, [x3, #-512]
+    stp x1, x2, [sp, #-24]!
+    stp x1, x2, [x3], #504
+    stp s1, s2, [x3, #-256]
+    stp s1, s2, [sp, #-12]!
+    stp s1, s2, [x3], #252
+    stp d1, d2, [x3, #-512]
+    stp d1, d2, [sp, #-24]!
+    stp d1, d2, [x3], #504
+    stp q1, q2, [x3, #-1024]
+    stp q1, q2, [sp, #-48]!
+    stp q1, q2, [x3], #1008
+    ldp w1, w2, [x3, #-256]
+    ldp w1, w2, [sp, #-12]!
+    ldp w1, w2, [x3], #252
+    ldp x1, x2, [x3, #-512]
+    ldp x1, x2, [sp, #-24]!
+    ldp x1, x2, [x3], #504
+    ldp s1, s2, [x3, #-256]
+    ldp s1, s2, [sp, #-12]!
+    ldp s1, s2, [x3], #252
+    ldp d1, d2, [x3, #-512]
+    ldp d1, d2, [sp, #-24]!
+    ldp d1, d2, [x3], #504
+    ldp q1, q2, [x3, #-1024]
+    ldp q1, q2, [sp, #-48]!
+    ldp q1, q2, [x3], #1008
+    ldpsw x1, x2, [x3, #-4]
+    ldpsw x1, x2, [x3, #-4]!
+    ldpsw x1, x2, [x3], #-4
+    ldp x1, xzr, [x1]
+    ldxrb w1, [x2]
+    ldxrh w1, [sp, #0]
+    ldxr w1, [x2]
+    ldxr x1, [x2]
+    stxrb w4, w1, [x2]
+    stxrh w4, w1, [sp, #0]
+    stxr w4, w1, [x2]
+    stxr w4, x1, [x2]
+    ldaxrb w1, [x2]
+    ldaxrh w1, [sp, #0]
+    ldaxr w1, [x2]
+    ldaxr x1, [x2]
+    stlxrb w4, w1, [x2]
+    stlxrh w4, w1, [sp, #0]
+    stlxr w4, w1, [x2]
+    stlxr w4, x1, [x2]
+    ldarb w1, [x2]
+    ldarh w1, [sp, #0]
+    ldar w1, [x2]
+    ldar x1, [x2]
+    stlrb w1, [x2]
+    stlrh w1, [sp, #0]
+    stlr w1, [x2]
+    stlr x1, [x2]
+    dmb oshld
+    dmb oshst
+    dmb osh
+    dmb nshld
+    dmb nshst
+    dmb nsh
+    dmb ishld
+    dmb ishst
+    dmb ish
+    dmb ld
+    dmb st
+    dmb sy
+    dmb #12
+    dsb oshld
+    dsb oshst
+    dsb osh
+    dsb nshld
+    dsb nshst
+    dsb nsh
+    dsb ishld
+    dsb ishst
+    dsb ish
+    dsb ld
+    dsb st
+    dsb sy
+    dsb #12
+    dsb oshnxs
+    dsb nshnxs
+    dsb ishnxs
+    dsb synxs
+    isb
+    isb sy
+    isb #7
+    fmov s1, s2
+    fabs s1, s2
+    fneg s1, s2
+    fsqrt s1, s2
+    fmul s1, s2, s3
+    fdiv s1, s2, s3
+    fadd s1, s2, s3
+    fsub s1, s2, s3
+    fmadd s1, s2, s3, s4
+    fcsel s1, s2, s3, lo
+    fcmp s2, s3
+    fcmp s2, #0.0
+    fcmpe s2, s3
+    fcmpe s2, #0.0
+    fcvt d1, s2
+    fmov s1, w2
+    fmov w1, s2
+    fmov s1, #0.1328125
+    fmov s1, #-31.0
+    fmov s1, #1.5e+0
+    fcvtzs w1, s2
+    fcvtzu w1, s2
+    scvtf s1, w2
+    ucvtf s1, w2
+    fcvtzs x1, s2
+    fcvtzu x1, s2
+    scvtf s1, x2
+    ucvtf s1, x2
+    fmov d1, d2
+    fabs d1, d2
+    fneg d1, d2
+    fsqrt d1, d2
+    fmul d1, d2, d3
+    fdiv d1, d2, d3
+    fadd d1, d2, d3
+    fsub d1, d2, d3
+    fmadd d1, d2, d3, d4
+    fcsel d1, d2, d3, lo
+    fcmp d2, d3
+    fcmp d2, #0.0
+    fcmpe d2, d3
+    fcmpe d2, #0.0
+    fcvt s1, d2
+    fmov d1, x2
+    fmov x1, d2
+    fmov d1, #0.1328125
+    fmov d1, #-31.0
+    fmov d1, #1.5e+0
+    fcvtzs w1, d2
+    fcvtzu w1, d2
+    scvtf d1, w2
+    ucvtf d1, w2
+    fcvtzs x1, d2
+    fcvtzu x1, d2
+    scvtf d1, x2
+    ucvtf d1, x2

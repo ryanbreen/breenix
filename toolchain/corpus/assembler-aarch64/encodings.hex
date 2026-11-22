@@ -200,3 +200,252 @@ dac00c41 # DDI 0487 M.b C6.2.341 rev x1, x2
 53003c41 # DDI 0487 M.b C6.2.500 uxth x1, w2
 d3407c41 # DDI 0487 M.b C6.2.486 uxtw x1, w2
 b2401fff # DDI 0487 M.b C6.2.280 mov sp, #0xff
+b97ffc41 # DDI 0487 M.b C6.2.215 ldr w1, [x2, #16380]
+b8500fe1 # DDI 0487 M.b C6.2.215 ldr w1, [sp, #-256]!
+b84ff441 # DDI 0487 M.b C6.2.215 ldr w1, [x2], #255
+b85f9041 # DDI 0487 M.b C6.2.258 ldur w1, [x2, #-7]
+b8637841 # DDI 0487 M.b C6.2.217 ldr w1, [x2, x3, lsl #2]
+f9409441 # DDI 0487 M.b C6.2.215 ldr x1, [x2, #296]
+f8500fe1 # DDI 0487 M.b C6.2.215 ldr x1, [sp, #-256]!
+f84ff441 # DDI 0487 M.b C6.2.215 ldr x1, [x2], #255
+f85f9041 # DDI 0487 M.b C6.2.258 ldur x1, [x2, #-7]
+f8635841 # DDI 0487 M.b C6.2.217 ldr x1, [x2, w3, uxtw #3]
+b9009441 # DDI 0487 M.b C6.2.414 str w1, [x2, #148]
+b8100fe1 # DDI 0487 M.b C6.2.414 str w1, [sp, #-256]!
+b80ff441 # DDI 0487 M.b C6.2.414 str w1, [x2], #255
+b81f9041 # DDI 0487 M.b C6.2.445 stur w1, [x2, #-7]
+b823d841 # DDI 0487 M.b C6.2.415 str w1, [x2, w3, sxtw #2]
+f9009441 # DDI 0487 M.b C6.2.414 str x1, [x2, #296]
+f8100fe1 # DDI 0487 M.b C6.2.414 str x1, [sp, #-256]!
+f80ff441 # DDI 0487 M.b C6.2.414 str x1, [x2], #255
+f81f9041 # DDI 0487 M.b C6.2.445 stur x1, [x2, #-7]
+f823f841 # DDI 0487 M.b C6.2.415 str x1, [x2, x3, sxtx #3]
+39409441 # DDI 0487 M.b C6.2.219 ldrb w1, [x2, #37]
+38500fe1 # DDI 0487 M.b C6.2.219 ldrb w1, [sp, #-256]!
+384ff441 # DDI 0487 M.b C6.2.219 ldrb w1, [x2], #255
+385f9041 # DDI 0487 M.b C6.2.259 ldurb w1, [x2, #-7]
+38637841 # DDI 0487 M.b C6.2.220 ldrb w1, [x2, x3, lsl #0]
+39009441 # DDI 0487 M.b C6.2.416 strb w1, [x2, #37]
+38100fe1 # DDI 0487 M.b C6.2.416 strb w1, [sp, #-256]!
+380ff441 # DDI 0487 M.b C6.2.416 strb w1, [x2], #255
+381f9041 # DDI 0487 M.b C6.2.446 sturb w1, [x2, #-7]
+38235841 # DDI 0487 M.b C6.2.417 strb w1, [x2, w3, uxtw #0]
+79409441 # DDI 0487 M.b C6.2.221 ldrh w1, [x2, #74]
+78500fe1 # DDI 0487 M.b C6.2.221 ldrh w1, [sp, #-256]!
+784ff441 # DDI 0487 M.b C6.2.221 ldrh w1, [x2], #255
+785f9041 # DDI 0487 M.b C6.2.260 ldurh w1, [x2, #-7]
+7863d841 # DDI 0487 M.b C6.2.222 ldrh w1, [x2, w3, sxtw #1]
+79009441 # DDI 0487 M.b C6.2.418 strh w1, [x2, #74]
+78100fe1 # DDI 0487 M.b C6.2.418 strh w1, [sp, #-256]!
+780ff441 # DDI 0487 M.b C6.2.418 strh w1, [x2], #255
+781f9041 # DDI 0487 M.b C6.2.447 sturh w1, [x2, #-7]
+7823f841 # DDI 0487 M.b C6.2.419 strh w1, [x2, x3, sxtx #1]
+39c09441 # DDI 0487 M.b C6.2.223 ldrsb w1, [x2, #37]
+38d00fe1 # DDI 0487 M.b C6.2.223 ldrsb w1, [sp, #-256]!
+38cff441 # DDI 0487 M.b C6.2.223 ldrsb w1, [x2], #255
+38df9041 # DDI 0487 M.b C6.2.261 ldursb w1, [x2, #-7]
+38e37841 # DDI 0487 M.b C6.2.224 ldrsb w1, [x2, x3, lsl #0]
+39809441 # DDI 0487 M.b C6.2.223 ldrsb x1, [x2, #37]
+38900fe1 # DDI 0487 M.b C6.2.223 ldrsb x1, [sp, #-256]!
+388ff441 # DDI 0487 M.b C6.2.223 ldrsb x1, [x2], #255
+389f9041 # DDI 0487 M.b C6.2.261 ldursb x1, [x2, #-7]
+38a35841 # DDI 0487 M.b C6.2.224 ldrsb x1, [x2, w3, uxtw #0]
+79c09441 # DDI 0487 M.b C6.2.225 ldrsh w1, [x2, #74]
+78d00fe1 # DDI 0487 M.b C6.2.225 ldrsh w1, [sp, #-256]!
+78cff441 # DDI 0487 M.b C6.2.225 ldrsh w1, [x2], #255
+78df9041 # DDI 0487 M.b C6.2.262 ldursh w1, [x2, #-7]
+78e3d841 # DDI 0487 M.b C6.2.226 ldrsh w1, [x2, w3, sxtw #1]
+79809441 # DDI 0487 M.b C6.2.225 ldrsh x1, [x2, #74]
+78900fe1 # DDI 0487 M.b C6.2.225 ldrsh x1, [sp, #-256]!
+788ff441 # DDI 0487 M.b C6.2.225 ldrsh x1, [x2], #255
+789f9041 # DDI 0487 M.b C6.2.262 ldursh x1, [x2, #-7]
+78a3f841 # DDI 0487 M.b C6.2.226 ldrsh x1, [x2, x3, sxtx #1]
+b9809441 # DDI 0487 M.b C6.2.227 ldrsw x1, [x2, #148]
+b8900fe1 # DDI 0487 M.b C6.2.227 ldrsw x1, [sp, #-256]!
+b88ff441 # DDI 0487 M.b C6.2.227 ldrsw x1, [x2], #255
+b89f9041 # DDI 0487 M.b C6.2.263 ldursw x1, [x2, #-7]
+b8a37841 # DDI 0487 M.b C6.2.229 ldrsw x1, [x2, x3, lsl #2]
+bd409441 # DDI 0487 M.b C7.2.230 ldr s1, [x2, #148]
+bc500fe1 # DDI 0487 M.b C7.2.230 ldr s1, [sp, #-256]!
+bc4ff441 # DDI 0487 M.b C7.2.230 ldr s1, [x2], #255
+bc5f9041 # DDI 0487 M.b C7.2.235 ldur s1, [x2, #-7]
+bc635841 # DDI 0487 M.b C7.2.232 ldr s1, [x2, w3, uxtw #2]
+fd409441 # DDI 0487 M.b C7.2.230 ldr d1, [x2, #296]
+fc500fe1 # DDI 0487 M.b C7.2.230 ldr d1, [sp, #-256]!
+fc4ff441 # DDI 0487 M.b C7.2.230 ldr d1, [x2], #255
+fc5f9041 # DDI 0487 M.b C7.2.235 ldur d1, [x2, #-7]
+fc63d841 # DDI 0487 M.b C7.2.232 ldr d1, [x2, w3, sxtw #3]
+3dc09441 # DDI 0487 M.b C7.2.230 ldr q1, [x2, #592]
+3cd00fe1 # DDI 0487 M.b C7.2.230 ldr q1, [sp, #-256]!
+3ccff441 # DDI 0487 M.b C7.2.230 ldr q1, [x2], #255
+3cdf9041 # DDI 0487 M.b C7.2.235 ldur q1, [x2, #-7]
+3ce3f841 # DDI 0487 M.b C7.2.232 ldr q1, [x2, x3, sxtx #4]
+bd009441 # DDI 0487 M.b C7.2.387 str s1, [x2, #148]
+bc100fe1 # DDI 0487 M.b C7.2.387 str s1, [sp, #-256]!
+bc0ff441 # DDI 0487 M.b C7.2.387 str s1, [x2], #255
+bc1f9041 # DDI 0487 M.b C7.2.391 stur s1, [x2, #-7]
+bc237841 # DDI 0487 M.b C7.2.388 str s1, [x2, x3, lsl #2]
+fd009441 # DDI 0487 M.b C7.2.387 str d1, [x2, #296]
+fc100fe1 # DDI 0487 M.b C7.2.387 str d1, [sp, #-256]!
+fc0ff441 # DDI 0487 M.b C7.2.387 str d1, [x2], #255
+fc1f9041 # DDI 0487 M.b C7.2.391 stur d1, [x2, #-7]
+fc235841 # DDI 0487 M.b C7.2.388 str d1, [x2, w3, uxtw #3]
+3d809441 # DDI 0487 M.b C7.2.387 str q1, [x2, #592]
+3c900fe1 # DDI 0487 M.b C7.2.387 str q1, [sp, #-256]!
+3c8ff441 # DDI 0487 M.b C7.2.387 str q1, [x2], #255
+3c9f9041 # DDI 0487 M.b C7.2.391 stur q1, [x2, #-7]
+3ca3d841 # DDI 0487 M.b C7.2.388 str q1, [x2, w3, sxtw #4]
+f94003ff # DDI 0487 M.b C6.2.215 ldr xzr, [sp]
+b8636841 # DDI 0487 M.b C6.2.217 ldr w1, [x2, x3]
+38e3c841 # DDI 0487 M.b C6.2.224 ldrsb w1, [x2, w3, sxtw]
+38636841 # DDI 0487 M.b C6.2.220 ldrb w1, [x2, x3]
+18000021 # DDI 0487 M.b C6.2.216 .Lmemory_back: ldr w1, .Lmemory_forward
+58ffffe2 # DDI 0487 M.b C6.2.216 .Lmemory_forward: ldr x2, .Lmemory_back
+9c000003 # DDI 0487 M.b C7.2.231 .Lmemory_simd: ldr q3, .Lmemory_simd
+29200861 # DDI 0487 M.b C6.2.413 stp w1, w2, [x3, #-256]
+29be8be1 # DDI 0487 M.b C6.2.413 stp w1, w2, [sp, #-12]!
+289f8861 # DDI 0487 M.b C6.2.413 stp w1, w2, [x3], #252
+a9200861 # DDI 0487 M.b C6.2.413 stp x1, x2, [x3, #-512]
+a9be8be1 # DDI 0487 M.b C6.2.413 stp x1, x2, [sp, #-24]!
+a89f8861 # DDI 0487 M.b C6.2.413 stp x1, x2, [x3], #504
+2d200861 # DDI 0487 M.b C7.2.386 stp s1, s2, [x3, #-256]
+2dbe8be1 # DDI 0487 M.b C7.2.386 stp s1, s2, [sp, #-12]!
+2c9f8861 # DDI 0487 M.b C7.2.386 stp s1, s2, [x3], #252
+6d200861 # DDI 0487 M.b C7.2.386 stp d1, d2, [x3, #-512]
+6dbe8be1 # DDI 0487 M.b C7.2.386 stp d1, d2, [sp, #-24]!
+6c9f8861 # DDI 0487 M.b C7.2.386 stp d1, d2, [x3], #504
+ad200861 # DDI 0487 M.b C7.2.386 stp q1, q2, [x3, #-1024]
+adbe8be1 # DDI 0487 M.b C7.2.386 stp q1, q2, [sp, #-48]!
+ac9f8861 # DDI 0487 M.b C7.2.386 stp q1, q2, [x3], #1008
+29600861 # DDI 0487 M.b C6.2.213 ldp w1, w2, [x3, #-256]
+29fe8be1 # DDI 0487 M.b C6.2.213 ldp w1, w2, [sp, #-12]!
+28df8861 # DDI 0487 M.b C6.2.213 ldp w1, w2, [x3], #252
+a9600861 # DDI 0487 M.b C6.2.213 ldp x1, x2, [x3, #-512]
+a9fe8be1 # DDI 0487 M.b C6.2.213 ldp x1, x2, [sp, #-24]!
+a8df8861 # DDI 0487 M.b C6.2.213 ldp x1, x2, [x3], #504
+2d600861 # DDI 0487 M.b C7.2.229 ldp s1, s2, [x3, #-256]
+2dfe8be1 # DDI 0487 M.b C7.2.229 ldp s1, s2, [sp, #-12]!
+2cdf8861 # DDI 0487 M.b C7.2.229 ldp s1, s2, [x3], #252
+6d600861 # DDI 0487 M.b C7.2.229 ldp d1, d2, [x3, #-512]
+6dfe8be1 # DDI 0487 M.b C7.2.229 ldp d1, d2, [sp, #-24]!
+6cdf8861 # DDI 0487 M.b C7.2.229 ldp d1, d2, [x3], #504
+ad600861 # DDI 0487 M.b C7.2.229 ldp q1, q2, [x3, #-1024]
+adfe8be1 # DDI 0487 M.b C7.2.229 ldp q1, q2, [sp, #-48]!
+acdf8861 # DDI 0487 M.b C7.2.229 ldp q1, q2, [x3], #1008
+697f8861 # DDI 0487 M.b C6.2.214 ldpsw x1, x2, [x3, #-4]
+69ff8861 # DDI 0487 M.b C6.2.214 ldpsw x1, x2, [x3, #-4]!
+68ff8861 # DDI 0487 M.b C6.2.214 ldpsw x1, x2, [x3], #-4
+a9407c21 # DDI 0487 M.b C6.2.213 ldp x1, xzr, [x1]
+085f7c41 # DDI 0487 M.b C6.2.266 ldxrb w1, [x2]
+485f7fe1 # DDI 0487 M.b C6.2.267 ldxrh w1, [sp, #0]
+885f7c41 # DDI 0487 M.b C6.2.265 ldxr w1, [x2]
+c85f7c41 # DDI 0487 M.b C6.2.265 ldxr x1, [x2]
+08047c41 # DDI 0487 M.b C6.2.450 stxrb w4, w1, [x2]
+48047fe1 # DDI 0487 M.b C6.2.451 stxrh w4, w1, [sp, #0]
+88047c41 # DDI 0487 M.b C6.2.449 stxr w4, w1, [x2]
+c8047c41 # DDI 0487 M.b C6.2.449 stxr w4, x1, [x2]
+085ffc41 # DDI 0487 M.b C6.2.197 ldaxrb w1, [x2]
+485fffe1 # DDI 0487 M.b C6.2.198 ldaxrh w1, [sp, #0]
+885ffc41 # DDI 0487 M.b C6.2.196 ldaxr w1, [x2]
+c85ffc41 # DDI 0487 M.b C6.2.196 ldaxr x1, [x2]
+0804fc41 # DDI 0487 M.b C6.2.410 stlxrb w4, w1, [x2]
+4804ffe1 # DDI 0487 M.b C6.2.411 stlxrh w4, w1, [sp, #0]
+8804fc41 # DDI 0487 M.b C6.2.409 stlxr w4, w1, [x2]
+c804fc41 # DDI 0487 M.b C6.2.409 stlxr w4, x1, [x2]
+08dffc41 # DDI 0487 M.b C6.2.192 ldarb w1, [x2]
+48dfffe1 # DDI 0487 M.b C6.2.193 ldarh w1, [sp, #0]
+88dffc41 # DDI 0487 M.b C6.2.191 ldar w1, [x2]
+c8dffc41 # DDI 0487 M.b C6.2.191 ldar x1, [x2]
+089ffc41 # DDI 0487 M.b C6.2.402 stlrb w1, [x2]
+489fffe1 # DDI 0487 M.b C6.2.403 stlrh w1, [sp, #0]
+889ffc41 # DDI 0487 M.b C6.2.401 stlr w1, [x2]
+c89ffc41 # DDI 0487 M.b C6.2.401 stlr x1, [x2]
+d50331bf # DDI 0487 M.b C6.2.150 dmb oshld
+d50332bf # DDI 0487 M.b C6.2.150 dmb oshst
+d50333bf # DDI 0487 M.b C6.2.150 dmb osh
+d50335bf # DDI 0487 M.b C6.2.150 dmb nshld
+d50336bf # DDI 0487 M.b C6.2.150 dmb nshst
+d50337bf # DDI 0487 M.b C6.2.150 dmb nsh
+d50339bf # DDI 0487 M.b C6.2.150 dmb ishld
+d5033abf # DDI 0487 M.b C6.2.150 dmb ishst
+d5033bbf # DDI 0487 M.b C6.2.150 dmb ish
+d5033dbf # DDI 0487 M.b C6.2.150 dmb ld
+d5033ebf # DDI 0487 M.b C6.2.150 dmb st
+d5033fbf # DDI 0487 M.b C6.2.150 dmb sy
+d5033cbf # DDI 0487 M.b C6.2.150 dmb #12
+d503319f # DDI 0487 M.b C6.2.152 dsb oshld
+d503329f # DDI 0487 M.b C6.2.152 dsb oshst
+d503339f # DDI 0487 M.b C6.2.152 dsb osh
+d503359f # DDI 0487 M.b C6.2.152 dsb nshld
+d503369f # DDI 0487 M.b C6.2.152 dsb nshst
+d503379f # DDI 0487 M.b C6.2.152 dsb nsh
+d503399f # DDI 0487 M.b C6.2.152 dsb ishld
+d5033a9f # DDI 0487 M.b C6.2.152 dsb ishst
+d5033b9f # DDI 0487 M.b C6.2.152 dsb ish
+d5033d9f # DDI 0487 M.b C6.2.152 dsb ld
+d5033e9f # DDI 0487 M.b C6.2.152 dsb st
+d5033f9f # DDI 0487 M.b C6.2.152 dsb sy
+d5033c9f # DDI 0487 M.b C6.2.152 dsb #12
+d503323f # DDI 0487 M.b C6.2.152 dsb oshnxs
+d503363f # DDI 0487 M.b C6.2.152 dsb nshnxs
+d5033a3f # DDI 0487 M.b C6.2.152 dsb ishnxs
+d5033e3f # DDI 0487 M.b C6.2.152 dsb synxs
+d5033fdf # DDI 0487 M.b C6.2.177 isb
+d5033fdf # DDI 0487 M.b C6.2.177 isb sy
+d50337df # DDI 0487 M.b C6.2.177 isb #7
+1e204041 # DDI 0487 M.b C7.2.156 fmov s1, s2
+1e20c041 # DDI 0487 M.b C7.2.48 fabs s1, s2
+1e214041 # DDI 0487 M.b C7.2.166 fneg s1, s2
+1e21c041 # DDI 0487 M.b C7.2.199 fsqrt s1, s2
+1e230841 # DDI 0487 M.b C7.2.162 fmul s1, s2, s3
+1e231841 # DDI 0487 M.b C7.2.114 fdiv s1, s2, s3
+1e232841 # DDI 0487 M.b C7.2.52 fadd s1, s2, s3
+1e233841 # DDI 0487 M.b C7.2.201 fsub s1, s2, s3
+1f031041 # DDI 0487 M.b C7.2.120 fmadd s1, s2, s3, s4
+1e233c41 # DDI 0487 M.b C7.2.72 fcsel s1, s2, s3, lo
+1e232040 # DDI 0487 M.b C7.2.70 fcmp s2, s3
+1e202048 # DDI 0487 M.b C7.2.70 fcmp s2, #0.0
+1e232050 # DDI 0487 M.b C7.2.71 fcmpe s2, s3
+1e202058 # DDI 0487 M.b C7.2.71 fcmpe s2, #0.0
+1e22c041 # DDI 0487 M.b C7.2.73 fcvt d1, s2
+1e270041 # DDI 0487 M.b C7.2.157 fmov s1, w2
+1e260041 # DDI 0487 M.b C7.2.157 fmov w1, s2
+1e283001 # DDI 0487 M.b C7.2.158/C2.2.3 fmov s1, #0.1328125
+1e37f001 # DDI 0487 M.b C7.2.158/C2.2.3 fmov s1, #-31.0
+1e2f1001 # DDI 0487 M.b C7.2.158/C2.2.3 fmov s1, #1.5e+0
+1e380041 # DDI 0487 M.b C7.2.106 fcvtzs w1, s2
+1e390041 # DDI 0487 M.b C7.2.111 fcvtzu w1, s2
+1e220041 # DDI 0487 M.b C7.2.279 scvtf s1, w2
+1e230041 # DDI 0487 M.b C7.2.413 ucvtf s1, w2
+9e380041 # DDI 0487 M.b C7.2.106 fcvtzs x1, s2
+9e390041 # DDI 0487 M.b C7.2.111 fcvtzu x1, s2
+9e220041 # DDI 0487 M.b C7.2.279 scvtf s1, x2
+9e230041 # DDI 0487 M.b C7.2.413 ucvtf s1, x2
+1e604041 # DDI 0487 M.b C7.2.156 fmov d1, d2
+1e60c041 # DDI 0487 M.b C7.2.48 fabs d1, d2
+1e614041 # DDI 0487 M.b C7.2.166 fneg d1, d2
+1e61c041 # DDI 0487 M.b C7.2.199 fsqrt d1, d2
+1e630841 # DDI 0487 M.b C7.2.162 fmul d1, d2, d3
+1e631841 # DDI 0487 M.b C7.2.114 fdiv d1, d2, d3
+1e632841 # DDI 0487 M.b C7.2.52 fadd d1, d2, d3
+1e633841 # DDI 0487 M.b C7.2.201 fsub d1, d2, d3
+1f431041 # DDI 0487 M.b C7.2.120 fmadd d1, d2, d3, d4
+1e633c41 # DDI 0487 M.b C7.2.72 fcsel d1, d2, d3, lo
+1e632040 # DDI 0487 M.b C7.2.70 fcmp d2, d3
+1e602048 # DDI 0487 M.b C7.2.70 fcmp d2, #0.0
+1e632050 # DDI 0487 M.b C7.2.71 fcmpe d2, d3
+1e602058 # DDI 0487 M.b C7.2.71 fcmpe d2, #0.0
+1e624041 # DDI 0487 M.b C7.2.73 fcvt s1, d2
+9e670041 # DDI 0487 M.b C7.2.157 fmov d1, x2
+9e660041 # DDI 0487 M.b C7.2.157 fmov x1, d2
+1e683001 # DDI 0487 M.b C7.2.158/C2.2.3 fmov d1, #0.1328125
+1e77f001 # DDI 0487 M.b C7.2.158/C2.2.3 fmov d1, #-31.0
+1e6f1001 # DDI 0487 M.b C7.2.158/C2.2.3 fmov d1, #1.5e+0
+1e780041 # DDI 0487 M.b C7.2.106 fcvtzs w1, d2
+1e790041 # DDI 0487 M.b C7.2.111 fcvtzu w1, d2
+1e620041 # DDI 0487 M.b C7.2.279 scvtf d1, w2
+1e630041 # DDI 0487 M.b C7.2.413 ucvtf d1, w2
+9e780041 # DDI 0487 M.b C7.2.106 fcvtzs x1, d2
+9e790041 # DDI 0487 M.b C7.2.111 fcvtzu x1, d2
+9e620041 # DDI 0487 M.b C7.2.279 scvtf d1, x2
+9e630041 # DDI 0487 M.b C7.2.413 ucvtf d1, x2
