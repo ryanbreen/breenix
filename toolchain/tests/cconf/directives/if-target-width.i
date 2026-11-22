@@ -1,0 +1,13 @@
+intmax_is_64_bits
+no_int_width_overflow
+no_32_bit_wrap
+minus_one_converts_to_uintmax
+hex_max_is_uintmax
+hex_top_bit_is_unsigned
+conditional_converts_to_unsigned
+unsigned_shift_63
+intmax_min
+unevaluated_division_by_zero
+identifiers_become_zero
+defined_forms
+elif_taken

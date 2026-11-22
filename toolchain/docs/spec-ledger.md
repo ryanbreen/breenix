@@ -138,3 +138,14 @@ GNU ld 2.45 §§2.1 and 3.6 describe `--gc-sections` and `KEEP`. Entry and
 selection and the retention of whole groups. AMD64 psABI §§4.4 and 10.3
 govern static relocation arithmetic, GOT slots without relaxation and
 variant-II TLS offsets. ELF gABI §7.7 describes the TLS template.
+
+## C conformance fixtures
+
+`toolchain/tests/cconf/` holds expected outputs for N1570 translation phases
+1-3 (§§5.1.1.2, 5.2.1.1, 6.4, 6.4.9) and clause 6.10, and the hello subset's
+types and constraint diagnostics. They were written from N1570 before bcc
+existed. Each fixture cites its clause. The one fixture whose result N1570
+leaves unspecified (6.10.3.4p4) lists both permitted results. Diagnostics follow bcc's
+`file:line:column` convention: physical lines and byte columns, and presumed
+names and lines after `#line`. `README.md` there gives the runner contract
+for the 25.5 units.
