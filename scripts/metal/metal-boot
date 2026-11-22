@@ -650,6 +650,9 @@ class Driver:
         build = m.read_json(inputs / 'build.json', {})
         features, profile = kernel_profile(self.args)
         prebuilt = (inputs / 'manifest.json').exists() or build.get('builder') == 'mac'
+        if getattr(self.args, 'milestone', None) == 'toolchain/cc-hello' and (
+                not prebuilt or build.get('toolchain', {}).get('candidateProducer') != 'mac-bcc'):
+            raise Finish(m.EXIT_CANCELLED, 'toolchain/cc-hello requires a Mac prebuilt with bcc candidates')
         if prebuilt:
             try:
                 manifest = metal_prebuilt.verify(inputs, commit=self.args.commit, tools_commit=tools_commit(),

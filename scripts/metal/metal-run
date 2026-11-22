@@ -406,6 +406,8 @@ def boot(args):
             if len(matches) != 1 or not matches[0].get('categories') or matches[0].get('suite') not in args.suite.split(','):
                 raise SystemExit('--milestone needs a listed suite measured by the commit milestone')
     prebuilt = getattr(args, 'prebuilt', None)
+    if milestone == 'toolchain/cc-hello' and not prebuilt:
+        raise SystemExit('toolchain/cc-hello requires a Mac --prebuilt payload')
     transfer = transfer_fixture.selected(args.suite)
     if transfer and (not prebuilt or args.mode != 'suite' or is_session or args.inject
                      or getattr(args, 'case', None) or args.disk == 'install'):
@@ -414,6 +416,10 @@ def boot(args):
         if payload != 'image':
             raise SystemExit('--prebuilt needs an image payload')
         manifest = verify_prebuilt(env, prebuilt, sha, args)
+        if milestone == 'toolchain/cc-hello':
+            build = json.loads((prebuilt_path(prebuilt) / 'build.json').read_text())
+            if build.get('toolchain', {}).get('candidateProducer') != 'mac-bcc':
+                raise SystemExit('toolchain/cc-hello requires Mac bcc candidates')
     transfer_input = None
     if transfer:
         facts = manifest['artifacts'].get(transfer_fixture.ARTIFACT)
