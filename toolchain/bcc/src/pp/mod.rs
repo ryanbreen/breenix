@@ -13,9 +13,15 @@ use std::ops::Range;
 use normalize::{normalize, phase_one, PhysicalCursor};
 use token::{token_prefix, LexContext};
 
-pub use directive::{preprocess, preprocess_source, Diagnostic, Options, Preprocessed, Target};
+pub(crate) use directive::read_preprocessed;
+pub use directive::{
+    preprocess, preprocess_source, Diagnostic, MacroOption, Options, Preprocessed, Target,
+};
 pub(crate) use expand::Lexeme;
 pub use expand::Position;
+pub(crate) fn character_bits(text: &str, target: Target) -> Option<u64> {
+    expression::character_bits(text, target)
+}
 pub(crate) use literal::{escape, integer_constant};
 
 /// A physical source position with a 1-based line and byte column.
@@ -150,15 +156,15 @@ fn scan_prefix(bytes: &[u8]) -> (Source, Option<Error>) {
 
 // N1570 6.10.9 starts destringized pragma text at phase 3.
 fn scan_pragma(text: String) -> Result<Source, Error> {
+    scan_string(text, LineContext::Pragma)
+}
+
+fn scan_string(text: String, context: LineContext) -> Result<Source, Error> {
     let origins = text
         .char_indices()
         .flat_map(|(offset, ch)| std::iter::repeat_n(offset, ch.len_utf8()))
         .collect();
-    let (source, error) = scan_tokens(
-        None,
-        normalize::Normalized { text, origins },
-        LineContext::Pragma,
-    );
+    let (source, error) = scan_tokens(None, normalize::Normalized { text, origins }, context);
     error.map_or(Ok(source), Err)
 }
 

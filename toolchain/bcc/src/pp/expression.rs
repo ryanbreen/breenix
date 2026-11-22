@@ -342,3 +342,7 @@ fn character(text: &str, target: Target) -> Option<Value> {
         _ => return None,
     })
 }
+
+pub(super) fn character_bits(text: &str, target: Target) -> Option<u64> {
+    character(text, target).map(|value| value.bits)
+}

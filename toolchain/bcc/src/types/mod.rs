@@ -76,6 +76,31 @@ impl Integer {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Float {
+    Single,
+    Double,
+}
+
+impl Float {
+    pub fn layout(self) -> Layout {
+        let size = match self {
+            Self::Single => 4,
+            Self::Double => 8,
+        };
+        Layout { size, align: size }
+    }
+}
+
+impl fmt::Display for Float {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        out.write_str(match self {
+            Self::Single => "float",
+            Self::Double => "double",
+        })
+    }
+}
+
 impl fmt::Display for Integer {
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
         out.write_str(match self {
@@ -103,6 +128,12 @@ pub struct Type {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Kind {
+    Float(Float),
+    LongDouble,
+    Record {
+        id: usize,
+        layout: Option<Layout>,
+    },
     Void,
     Integer(Integer),
     Pointer(Box<Type>),
@@ -110,6 +141,7 @@ pub enum Kind {
     Function {
         result: Box<Type>,
         params: Vec<Type>,
+        variadic: bool,
     },
 }
 
@@ -134,6 +166,12 @@ impl Type {
     pub fn layout(&self) -> Option<Layout> {
         match &self.kind {
             Kind::Integer(integer) => Some(integer.layout()),
+            Kind::Float(float) => Some(float.layout()),
+            Kind::LongDouble => Some(Layout {
+                size: 16,
+                align: 16,
+            }),
+            Kind::Record { layout, .. } => *layout,
             // AMD64 psABI Figure 3.1 and AAPCS64 Table 1 (64-bit pointer).
             Kind::Pointer(_) => Some(Layout { size: 8, align: 8 }),
             Kind::Array(element, count) => {
@@ -150,10 +188,17 @@ impl Type {
     // N1570 6.7.7: render a type name as a specifier and abstract declarator.
     fn declarator(&self, out: &mut fmt::Formatter<'_>, decl: &str) -> fmt::Result {
         match &self.kind {
-            Kind::Void | Kind::Integer(_) => {
+            Kind::Void
+            | Kind::Integer(_)
+            | Kind::Float(_)
+            | Kind::LongDouble
+            | Kind::Record { .. } => {
                 write!(out, "{}", self.qualifiers)?;
                 match self.kind {
                     Kind::Integer(integer) => write!(out, "{integer}")?,
+                    Kind::Float(float) => write!(out, "{float}")?,
+                    Kind::LongDouble => out.write_str("long double")?,
+                    Kind::Record { id, .. } => write!(out, "record {id}")?,
                     _ => out.write_str("void")?,
                 }
                 if !decl.is_empty() {
@@ -171,15 +216,19 @@ impl Type {
                 }
             }
             Kind::Array(element, len) => element.declarator(out, &format!("{decl}[{len}]")),
-            Kind::Function { result, params } => {
+            Kind::Function {
+                result,
+                params,
+                variadic,
+            } => {
                 let params = if params.is_empty() {
                     "void".into()
                 } else {
-                    params
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                    let mut names = params.iter().map(ToString::to_string).collect::<Vec<_>>();
+                    if *variadic {
+                        names.push("...".into());
+                    }
+                    names.join(", ")
                 };
                 result.declarator(out, &format!("{decl}({params})"))
             }

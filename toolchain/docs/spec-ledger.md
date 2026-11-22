@@ -149,3 +149,17 @@ leaves unspecified (6.10.3.4p4) lists both permitted results. Diagnostics follow
 `file:line:column` convention: physical lines and byte columns, and presumed
 names and lines after `#line`. `README.md` there gives the runner contract
 for the 25.5 units.
+
+## bcc 25.5c2
+
+| Feature | Specification |
+| --- | --- |
+| Scalar expressions, promotions and conversions | N1570 §§6.3, 6.4.4 and 6.5. The compiler rounds float and double constants to their target representations with integer arithmetic. |
+| Block scope, declarators, initializers and control flow | N1570 §§6.2.1, 6.7 and 6.8. |
+| Scalar call and return locations | AMD64 psABI §§3.1.2, 3.2.2 and 3.2.3. Integer and SSE register banks exhaust independently. Stack arguments follow source order, with padding at the high end of the argument area. |
+| Variadic calls | N1570 §6.5.2.2 and AMD64 psABI §3.2.3. Trailing arguments use default promotions. The caller puts the vector-register count in `%al`. |
+| Static library search | GNU ld 2.45 §2.1 for `-L` and `-l`. bcc resolves archive names for bld and preserves their order among the link inputs. |
+
+bcc emits AMD64 assembly for the 25.5 scalar subset. Variadic function
+definitions and `va_list` operations follow in 25.7b2, x87 `long double`
+lowering in 25.7b3, and AArch64 scalar code generation in A3.

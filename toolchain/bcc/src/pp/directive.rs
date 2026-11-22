@@ -29,6 +29,13 @@ pub struct Options {
     pub target: Target,
     pub include_dirs: Vec<PathBuf>,
     pub system_dirs: Vec<PathBuf>,
+    pub macros: Vec<MacroOption>,
+}
+
+#[derive(Debug)]
+pub enum MacroOption {
+    Define(String),
+    Undefine(String),
 }
 
 #[derive(Debug)]
@@ -141,8 +148,45 @@ pub fn preprocess_source(
         macros: Expander::new(options.target),
         output: Preprocessed::default(),
     };
+    for (index, option) in options.macros.iter().enumerate() {
+        processor.macro_option(option, index + 1)?;
+    }
     processor.file(path, bytes, 0)?;
     Ok(processor.output)
+}
+
+/// Read the serialized phase-4 output without running macros a second time.
+pub(crate) fn read_preprocessed(path: &Path) -> Result<Preprocessed, Diagnostic> {
+    let start = Position::new(path, Location { line: 1, column: 1 });
+    let bytes = fs::read(path).map_err(|error| Diagnostic::new(&start, error.to_string()))?;
+    let text =
+        String::from_utf8(bytes).map_err(|error| Diagnostic::new(&start, error.to_string()))?;
+    let source = super::scan_string(text, super::LineContext::Start)
+        .map_err(|error| Diagnostic::new(&Position::new(path, error.location), error.message))?;
+    let mut output = Preprocessed::default();
+    let tokens: Vec<_> = source.tokens().collect();
+    for row in tokens.split_inclusive(|token| token.kind == Kind::Newline) {
+        if matches!(row, [hash, pragma, ..] if hash.spelling == "#" && pragma.spelling == "pragma")
+        {
+            let text = row[2..]
+                .iter()
+                .filter(|token| token.kind != Kind::Newline)
+                .map(|token| token.spelling)
+                .collect::<Vec<_>>()
+                .join(" ");
+            output.0.push(Output::Pragma(text));
+        } else {
+            output.0.extend(row.iter().map(|token| {
+                Output::Token(Lexeme::new(
+                    token.spelling,
+                    token.kind,
+                    token.space_before,
+                    Position::new(path, token.begin),
+                ))
+            }));
+        }
+    }
+    Ok(output)
 }
 
 struct LineMap {
@@ -221,6 +265,44 @@ struct Processor<'a> {
 }
 
 impl Processor<'_> {
+    fn macro_option(&mut self, option: &MacroOption, line: usize) -> Result<(), Diagnostic> {
+        let (text, define) = match option {
+            MacroOption::Define(value) => {
+                let (name, replacement) = value.split_once('=').unwrap_or((value, "1"));
+                (format!("{name} {replacement}"), true)
+            }
+            MacroOption::Undefine(name) => (name.clone(), false),
+        };
+        let site = Position::new(Path::new("<command-line>"), Location { line, column: 1 });
+        if text.contains(['\n', '\r']) {
+            return Err(Diagnostic::new(&site, "macro option contains a newline"));
+        }
+        let directive = Lexeme::new(
+            if define { "define" } else { "undef" },
+            Kind::Identifier,
+            false,
+            site,
+        );
+        let source = super::scan_string(text, super::LineContext::Pragma)
+            .map_err(|error| Diagnostic::new(&directive.site, error.message))?;
+        let args: Vec<_> = source
+            .tokens()
+            .map(|token| {
+                let mut site = directive.site.clone();
+                site.loc.column = token.begin.column;
+                Lexeme::new(token.spelling, token.kind, token.space_before, site)
+            })
+            .collect();
+        if define {
+            if let Some(name) = args.first().filter(|token| token.kind == Kind::Identifier) {
+                self.macros.undefine(name)?;
+            }
+            self.macros.define(&directive, &args)
+        } else {
+            self.macros.undefine(identifier(&directive, &args)?)
+        }
+    }
+
     fn file(&mut self, path: &Path, bytes: &[u8], depth: usize) -> Result<(), Diagnostic> {
         let mut lines = LineMap {
             file: path.to_string_lossy().into(),

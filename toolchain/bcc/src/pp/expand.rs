@@ -459,9 +459,18 @@ fn builtin(name: &str, target: Target) -> Option<(&str, Kind)> {
         "__LINE__" => ("", Kind::Number),
         "__STDC__" => ("1", Kind::Number),
         "__STDC_VERSION__" => ("201112L", Kind::Number),
-        "__STDC_HOSTED__" => ("1", Kind::Number),
+        "__STDC_HOSTED__" | "__STRICT_ANSI__" => ("1", Kind::Number),
+        "__x86_64__" if target == Target::X86_64 => ("1", Kind::Number),
+        "__aarch64__" if target == Target::Aarch64 => ("1", Kind::Number),
         // The shipped limits.h selects CHAR_MIN and CHAR_MAX with this macro.
         "__CHAR_UNSIGNED__" if !target.signed_char() => ("1", Kind::Number),
+        // Breenix LP64 support headers select these target ABI types.
+        "__WCHAR_TYPE__" if target == Target::X86_64 => ("int", Kind::Identifier),
+        "__WCHAR_TYPE__" => ("unsigned", Kind::Identifier),
+        "__WCHAR_MAX__" if target == Target::X86_64 => ("2147483647", Kind::Number),
+        "__WCHAR_MAX__" | "__WINT_MAX__" => ("4294967295U", Kind::Number),
+        "__WCHAR_UNSIGNED__" if target == Target::Aarch64 => ("1", Kind::Number),
+        "__WINT_UNSIGNED__" => ("1", Kind::Number),
         "__STDC_NO_ATOMICS__"
         | "__STDC_NO_COMPLEX__"
         | "__STDC_NO_THREADS__"
