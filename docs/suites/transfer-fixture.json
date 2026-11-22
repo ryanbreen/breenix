@@ -4,6 +4,7 @@
   "area": "Networking",
   "summary": "An authenticated boot host completes a bounded test-boot SSH lease.",
   "binary": "/sbin/suite-transfer-fixture",
+  "timingSensitive": true,
   "categories": [
     {
       "id": "fixture",

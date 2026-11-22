@@ -549,7 +549,8 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
             if not installed.is_file() or installed.read_bytes()[:4] != b'\x7fELF':
                 raise ValueError('RAM disk has no selected PID 1 ELF')
     facts = {'mode': mode, 'suite': suite or None, 'siteFields': len(lines), 'writerSha256': writer_hash}
-    if mode == 'suite' and transfer_fixture.selected(suite):
+    if mode == 'suite' and (transfer_fixture.selected(suite) or (
+            case is None and install is None and transfer_fixture.toolchain_selected(suite))):
         uid = site.get(OPERATOR_UID_FIELD, '').strip()
         if not re.fullmatch(r'[0-9]{4,5}', uid) or int(uid) not in OPERATOR_UIDS:
             raise ValueError('transfer fixture needs an ordinary OPERATOR_UID')

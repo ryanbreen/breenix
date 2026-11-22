@@ -88,7 +88,7 @@ def seal(bundle, commit, arch, tool_record):
     sources[DEV / "linker.ld"] = ROOT / "userspace/programs/linker.ld"
     required = {SUITE, DEV / "lib/libc.a"} | {DEV / "bin" / tool for tool in TOOLS}
     if arch == "x86_64":
-        required.add(DEV / "bin/cc")
+        required |= {DEV / "bin" / tool for tool in ("cc", "as", "ld")}
     corpus = ROOT / "toolchain/corpus"
     names = check_corpus(corpus)
     for name in names:
@@ -98,6 +98,9 @@ def seal(bundle, commit, arch, tool_record):
             required.add(CORPUS / (name + suffix))
         required.add(CORPUS / "objs" / (name + ".o"))
     if arch == "x86_64":
+        for name in ("hello.c", "hello.expect", "diagnostic.c"):
+            path = Path("c-core") / name
+            sources[CORPUS / path] = corpus / path
         deferred = {"aggregate-copy", "bitfield-values", "varargs", "alignment", "atomics",
                     "compound-literal", "designated-init", "generic"}
         candidates = set(names) - deferred
@@ -141,6 +144,10 @@ def seal(bundle, commit, arch, tool_record):
                 or not SHA256.fullmatch(tool["rustc"]["sha256"])
                 or tool["sha256"] != digest(tree / DEV / "bin" / ("cc" if name == "bcc" else name))):
             raise ValueError(f"{name}: build record differs from the staged tool")
+    if arch == "x86_64":
+        for tool, alias in (("bas", "as"), ("bld", "ld")):
+            if digest(tree / DEV / "bin" / alias) != tools[tool]["sha256"]:
+                raise ValueError(f"{alias}: staged driver tool differs from {tool}")
     (tree / MANIFEST).write_bytes(manifest_bytes(tree, files))
     record_data = dict(commit=commit, arch=arch, tools=tools,
                        manifestSha256=digest(tree / MANIFEST))

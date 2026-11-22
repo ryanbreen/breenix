@@ -4,6 +4,7 @@
   "area": "Toolchain",
   "summary": "Breenix's own C compiler, assembler, static linker and make build and run programs on Breenix, rebuild themselves to identical bytes, and compile the libc suite and BusyBox.",
   "binary": "/sbin/suite-toolchain",
+  "timingSensitive": true,
   "categories": [
     {
       "id": "inputs",

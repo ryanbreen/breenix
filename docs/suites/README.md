@@ -152,7 +152,11 @@ suite's time limit is a FAIL whose message says so. The default is 10 seconds, w
 and a named 30-second allowance for `toolchain/linker/links-reference-objects` to
 link and run 30 programs in sequence on the R240. The 10-second watchdog stopped
 that case after 24 fresh executable loads in `20261122T102349Z-metal` and after 28
-in `20261122T104653Z-metal`. The suite also reports a FAIL for a case it cannot
+in `20261122T104653Z-metal`. `toolchain/c-core/corpus-three-producers` has a
+45-second allowance to compile and link the 22 inputs on the guest in sequence
+and run each producer's executable. `toolchain/c-core/hello-over-ssh` has a
+60-second allowance for the 45-second listener lease plus fixture setup,
+receipt verification and cleanup. The suite also reports a FAIL for a case it cannot
 start in a child. The suite goes on after a case fails. The suite waits on a case by
 polling, not sleeping, so a monotonic clock that stops is reported as a FAIL too. If the
 suite itself stops, the missing CASE lines show where.
@@ -1892,6 +1896,25 @@ two new threads. The two diagnostic cases require a failed link with a
 located error and no output, then repair the inputs and run a fresh link.
 AArch64 static links await ADRP/ADD relocations, veneers and variant-I TLS
 in A2.
+
+The `toolchain/cc-hello` milestone measures the five `c-core` cases on
+x86-64. The bundle stages Rust bcc as `cc` and byte-identical copies of
+`bas` and `bld` as its `as` and `ld`. The corpus case runs the Clang
+reference, Mac bcc candidate and fresh guest build for each of the 22
+named inputs and requires each run to match its own `.expect`. Ruling 15
+defers aggregate-copy and bitfield-values to 25.7b1, varargs to 25.7b2,
+and alignment, atomics, compound-literal, designated-init and generic to
+25.9. The reference corpus still covers 30 inputs.
+
+The guest builds and runs hello, compares assembly, object and executable
+bytes from the driver and separate stages, and checks a failed compilation
+for its file, line and column. For `hello-over-ssh`, the guest opens the
+transfer fixture's keys-only listener for the boot host on port 22. The
+boot host runs `cc` with PATH set to `/opt/breenix-dev/25.2/bin:/bin`.
+The guest checks the nonce, UID, executable path and SHA-256, stdout and
+exit status in the receipt before removing the fixture account.
+AArch64 needs the scalar AAPCS64 compiler backend and native C execution
+evidence in A3.
 
 ```bash
 scripts/boot-interactive.sh --mode suite --suite toolchain --milestone toolchain/sysroot-oracle
