@@ -8,7 +8,7 @@ pub(super) struct Normalized {
     pub origins: Vec<usize>,
 }
 
-pub(super) fn normalize(input: &str) -> Result<Normalized, Error> {
+pub(super) fn normalize(input: &str) -> (Normalized, Option<Error>) {
     let mut text = String::with_capacity(input.len());
     let mut origins = Vec::with_capacity(input.len());
     // UTF-8 is the input encoding. A leading signature is not part of the source.
@@ -16,10 +16,11 @@ pub(super) fn normalize(input: &str) -> Result<Normalized, Error> {
     while let Some((ch, width)) = phase_one(&input[offset..]) {
         let next = offset + width;
         if ch == '\0' {
-            return Err(Error {
+            let error = Error {
                 location: PhysicalCursor::new(input.as_bytes()).locate(offset),
                 message: "null byte in source",
-            });
+            };
+            return (Normalized { text, origins }, Some(error));
         }
         if ch == '\\' {
             // Neither a trigraph nor any other phase-1 replacement can create
@@ -33,7 +34,7 @@ pub(super) fn normalize(input: &str) -> Result<Normalized, Error> {
         origins.extend(std::iter::repeat_n(offset, ch.len_utf8()));
         offset = next;
     }
-    Ok(Normalized { text, origins })
+    (Normalized { text, origins }, None)
 }
 
 pub(super) fn phase_one(input: &str) -> Option<(char, usize)> {

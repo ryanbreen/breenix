@@ -1,5 +1,9 @@
-//! N1570 5.1.1.2 phases 1–3: source mapping, splicing and pp-tokens.
+//! N1570 5.1.1.2 phases 1–4: preprocessing tokens, macros and directives.
 
+mod directive;
+mod expand;
+mod expression;
+mod literal;
 mod normalize;
 mod token;
 
@@ -7,7 +11,9 @@ use std::io::{self, Write};
 use std::ops::Range;
 
 use normalize::{normalize, phase_one, PhysicalCursor};
-use token::token_prefix;
+use token::{token_prefix, LexContext};
+
+pub use directive::{preprocess, preprocess_source, Diagnostic, Options, Preprocessed, Target};
 
 /// A physical source position with a 1-based line and byte column.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -91,6 +97,7 @@ enum LineContext {
     Start,
     AfterHash,
     Include,
+    Pragma,
     Body,
 }
 
@@ -100,6 +107,8 @@ impl LineContext {
             (_, Kind::Newline, _) => Self::Start,
             (Self::Start, Kind::Punctuator, "#" | "%:") => Self::AfterHash,
             (Self::AfterHash, Kind::Identifier, "include") => Self::Include,
+            (Self::AfterHash, Kind::Identifier, "pragma") => Self::Pragma,
+            (Self::Pragma, _, _) => Self::Pragma,
             _ => Self::Body,
         }
     }
@@ -107,19 +116,63 @@ impl LineContext {
 
 /// Scan a UTF-8 source file through translation phase 3.
 pub fn scan(bytes: &[u8]) -> Result<Source, Error> {
-    let mut physical = PhysicalCursor::new(bytes);
-    let input = std::str::from_utf8(bytes).map_err(|error| Error {
-        location: physical.locate(error.valid_up_to()),
-        message: "invalid UTF-8 in source",
-    })?;
-    let normalized = normalize(input)?;
-    let text = normalized.text;
-    let origins = normalized.origins;
+    let (source, error) = scan_prefix(bytes);
+    error.map_or(Ok(source), Err)
+}
+
+// Keep completed lines available so phase 4 can apply preceding #line
+// directives before reporting a lexer error.
+fn scan_prefix(bytes: &[u8]) -> (Source, Option<Error>) {
+    let (input, encoding_error) = match std::str::from_utf8(bytes) {
+        Ok(input) => (input, None),
+        Err(error) => {
+            let offset = error.valid_up_to();
+            let diagnostic = Error {
+                location: PhysicalCursor::new(bytes).locate(offset),
+                message: "invalid UTF-8 in source",
+            };
+            (
+                std::str::from_utf8(&bytes[..offset]).unwrap_or_default(),
+                Some(diagnostic),
+            )
+        }
+    };
+    let (normalized, normalization_error) = normalize(input);
+    let (source, token_error) = scan_tokens(Some(input), normalized, LineContext::Start);
+    (
+        source,
+        encoding_error.or(normalization_error).or(token_error),
+    )
+}
+
+// N1570 6.10.9 starts destringized pragma text at phase 3.
+fn scan_pragma(text: String) -> Result<Source, Error> {
+    let origins = text
+        .char_indices()
+        .flat_map(|(offset, ch)| std::iter::repeat_n(offset, ch.len_utf8()))
+        .collect();
+    let (source, error) = scan_tokens(
+        None,
+        normalize::Normalized { text, origins },
+        LineContext::Pragma,
+    );
+    error.map_or(Ok(source), Err)
+}
+
+fn scan_tokens(
+    input: Option<&str>,
+    normalized: normalize::Normalized,
+    mut context: LineContext,
+) -> (Source, Option<Error>) {
+    let normalize::Normalized { text, origins } = normalized;
+    let mut physical = PhysicalCursor::new(input.unwrap_or(&text).as_bytes());
     let mut tokens = Vec::new();
-    let mut context = LineContext::Start;
     let mut space = false;
     let mut start = 0;
-    while start < text.len() {
+    let error = loop {
+        if start == text.len() {
+            break None;
+        }
         let rest = &text[start..];
         if rest.starts_with([' ', '\t', '\x0b', '\x0c']) {
             space = true;
@@ -134,25 +187,40 @@ pub fn scan(bytes: &[u8]) -> Result<Source, Error> {
             continue;
         }
         if let Some(body) = rest.strip_prefix("/*") {
-            let close = body.find("*/").ok_or_else(|| Error {
-                location: physical.locate(origins[start]),
-                message: "unterminated comment",
-            })?;
+            let Some(close) = body.find("*/") else {
+                break Some(Error {
+                    location: physical.locate(origins[start]),
+                    message: "unterminated comment",
+                });
+            };
             space = true;
             start += 2 + close + 2;
             continue;
         }
 
-        let (kind, width) =
-            token_prefix(rest, matches!(context, LineContext::Include)).map_err(|error| Error {
-                location: physical.locate(origins[start + error.offset]),
-                message: error.message,
-            })?;
+        let lex_context = match context {
+            LineContext::Include => LexContext::Include,
+            LineContext::Pragma => LexContext::Pragma,
+            _ => LexContext::Ordinary,
+        };
+        let (kind, width) = match token_prefix(rest, lex_context) {
+            Ok(token) => token,
+            Err(error) => {
+                break Some(Error {
+                    location: physical.locate(origins[start + error.offset]),
+                    message: error.message,
+                });
+            }
+        };
         let end = start + width;
         let last = origins[end - 1];
         // The end follows the last contributing physical character, before any
         // splice or whitespace between this token and the next one.
-        let last_width = phase_one(&input[last..]).map_or(0, |(_, width)| width);
+        let last_width = if let Some(input) = input {
+            phase_one(&input[last..]).map_or(0, |(_, width)| width)
+        } else {
+            text[last..].chars().next().map_or(0, char::len_utf8)
+        };
         tokens.push(TokenRecord {
             range: start..end,
             kind,
@@ -163,6 +231,6 @@ pub fn scan(bytes: &[u8]) -> Result<Source, Error> {
         context = context.after(kind, &text[start..end]);
         space = false;
         start = end;
-    }
-    Ok(Source { text, tokens })
+    };
+    (Source { text, tokens }, error)
 }

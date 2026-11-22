@@ -62,7 +62,11 @@ fn splice_inside_token() {
 #[test]
 fn pp_phases_is_error_not_panic() {
     let malformed = [
-        (b"one\\\r\n two /*/".as_slice(), (2, 6), "unterminated comment"),
+        (
+            b"one\\\r\n two /*/".as_slice(),
+            (2, 6),
+            "unterminated comment",
+        ),
         (b"??= L\"abc\\", (1, 6), "unterminated string literal"),
         (b"'\\x'\n", (1, 2), "invalid escape sequence"),
         (b"\r\n\xf0\x9f", (2, 1), "invalid UTF-8 in source"),
@@ -72,5 +76,33 @@ fn pp_phases_is_error_not_panic() {
         let error = pp::scan(input).expect_err("malformed source must return a diagnostic");
         assert_eq!(error.location, location(position), "{input:?}");
         assert_eq!(error.message, message, "{input:?}");
+    }
+}
+
+#[test]
+fn pp_directives_is_error_not_panic() {
+    let malformed = [
+        ("#define F(a,\n", "broken.c:1:9:"),
+        ("#define F(x) x\nF(\n", "broken.c:2:1:"),
+        ("#include <\n", "broken.c:1:10:"),
+        ("#if (1 << 64)\n#endif\n", "broken.c:1:8:"),
+        ("#if 1 ? 2\n#endif\n", "broken.c:1:7:"),
+        (
+            "#line 42 \"presumed.c\"\n_Pragma(123)\n",
+            "presumed.c:42:1:",
+        ),
+        ("#line 42 \"presumed.c\"\n  \"oops", "presumed.c:42:3:"),
+    ];
+    for (input, position) in malformed {
+        let error = pp::preprocess_source(
+            Path::new("broken.c"),
+            input.as_bytes(),
+            &pp::Options::default(),
+        )
+        .expect_err("malformed directive must return a diagnostic");
+        assert!(
+            error.to_string().starts_with(&format!("{position} error:")),
+            "{error}"
+        );
     }
 }

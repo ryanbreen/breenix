@@ -13,7 +13,14 @@ const PUNCTUATORS: &[&str] = &[
     "*=", "/=", "%=", "+=", "-=", "&=", "^=", "|=", "##", "<:", ":>", "<%", "%>", "%:",
 ];
 
-pub(super) fn token_prefix(text: &str, include: bool) -> Result<(Kind, usize), TokenError> {
+#[derive(Clone, Copy)]
+pub(super) enum LexContext {
+    Ordinary,
+    Include,
+    Pragma,
+}
+
+pub(super) fn token_prefix(text: &str, context: LexContext) -> Result<(Kind, usize), TokenError> {
     let Some(first) = text.chars().next() else {
         return Err(TokenError {
             offset: 0,
@@ -23,13 +30,15 @@ pub(super) fn token_prefix(text: &str, include: bool) -> Result<(Kind, usize), T
     if first == '\n' {
         return Ok((Kind::Newline, 1));
     }
-    if include {
+    if matches!(context, LexContext::Include) {
         if let Some(width) = header_width(text) {
             return Ok((Kind::Header, width));
         }
     }
     if let Some(opening) = literal_opening(text.as_bytes()) {
-        return literal(text, opening);
+        // A pragma may carry implementation-defined text, as in N1570 6.10.9's
+        // listing pragma. Its quoted path is not interpreted as a C string.
+        return literal(text, opening, matches!(context, LexContext::Pragma));
     }
 
     let bytes = text.as_bytes();
@@ -107,7 +116,7 @@ fn literal_opening(bytes: &[u8]) -> Option<usize> {
     }
 }
 
-fn literal(text: &str, opening: usize) -> Result<(Kind, usize), TokenError> {
+fn literal(text: &str, opening: usize, pragma: bool) -> Result<(Kind, usize), TokenError> {
     let quote = text.as_bytes()[opening];
     let (kind, unterminated) = if quote == b'"' {
         (Kind::String, "unterminated string literal")
@@ -125,11 +134,13 @@ fn literal(text: &str, opening: usize) -> Result<(Kind, usize), TokenError> {
             message: "empty character constant",
         });
     }
-    if let Some(offset) = invalid_escape(&content[..closing]) {
-        return Err(TokenError {
-            offset: opening + 1 + offset,
-            message: "invalid escape sequence",
-        });
+    if !pragma {
+        if let Some(offset) = invalid_escape(&content[..closing]) {
+            return Err(TokenError {
+                offset: opening + 1 + offset,
+                message: "invalid escape sequence",
+            });
+        }
     }
     Ok((kind, opening + 1 + closing + 1))
 }
