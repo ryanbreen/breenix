@@ -8,6 +8,8 @@
 #include "../common/elf64.h"
 #include "script.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <fnmatch.h>
 #include <inttypes.h>
 #include <stdlib.h>
@@ -200,18 +202,30 @@ static bool read_sections(struct object *object, uint64_t shoff, unsigned names)
 
 static bool read_file(struct link_input *input, size_t *length)
 {
-    FILE *file = fopen(input->path, "rb");
-    if (file == NULL) {
+    int fd = open(input->path, O_RDONLY);
+    if (fd < 0) {
         perror(input->path);
         return false;
     }
-    long size = fseek(file, 0, SEEK_END) == 0 ? ftell(file) : -1;
-    if (size >= 0 && (uint64_t)size < SIZE_MAX && fseek(file, 0, SEEK_SET) == 0) {
+    off_t size = lseek(fd, 0, SEEK_END);
+    if (size >= 0 && (uintmax_t)size < SIZE_MAX && lseek(fd, 0, SEEK_SET) == 0) {
         *length = (size_t)size;
         input->bytes = malloc(*length + 1);
     }
-    bool read_ok = input->bytes != NULL && fread(input->bytes, 1, *length, file) == *length;
-    if (fclose(file) != 0 || !read_ok) {
+    /* POSIX read permits short transfers and EINTR. A 64 KiB request also
+     * lets the Breenix ext2 reader batch contiguous blocks from an archive. */
+    const size_t chunk = 64 * 1024;
+    size_t received = 0;
+    while (input->bytes != NULL && received < *length) {
+        size_t remaining = *length - received;
+        ssize_t count = read(fd, input->bytes + received, remaining < chunk ? remaining : chunk);
+        if (count < 0 && errno == EINTR)
+            continue;
+        if (count <= 0)
+            break;
+        received += (size_t)count;
+    }
+    if (close(fd) != 0 || input->bytes == NULL || received != *length) {
         fprintf(stderr, "%s: cannot read link input\n", input->path);
         return false;
     }
