@@ -149,3 +149,28 @@ leaves unspecified (6.10.3.4p4) lists both permitted results. Diagnostics follow
 `file:line:column` convention: physical lines and byte columns, and presumed
 names and lines after `#line`. `README.md` there gives the runner contract
 for the 25.5 units.
+
+## Compiler translation phases 1–3
+
+`toolchain/bcc/pp.c` follows N1570 §§5.1.1.2 and 5.2.1.1 for newline
+normalization, trigraphs, splices and comments, and §§6.4–6.4.9 for
+preprocessing tokens. Its source encoding is UTF-8, with an optional
+leading byte order mark and LF, CRLF or CR line endings. Extended identifier
+spellings use universal character names. The lexer preserves their spelling
+and leaves code point validation and conversion to later interpretation.
+Physical ranges use 1-based byte columns in the original source, including
+bytes removed by trigraph replacement and splicing. The lexer records
+logical newline tokens and whether horizontal whitespace precedes a token.
+It recognizes header names after a leading `#include` or `%:include`.
+Macro replacement and directive execution are 25.5a2.
+
+Build the stage's `-E` entry point and run the independent fixtures with:
+
+```sh
+clang -std=c11 -Wall -Wextra -Werror -pedantic -fsanitize=address,undefined \
+  toolchain/bcc/bcc.c toolchain/bcc/pp.c -o /tmp/bcc
+python3 toolchain/tests/cconf/run.py --cc /tmp/bcc --mode E --stage a1
+```
+
+The direct lexer check uses the same flags and links
+`toolchain/tests/bcc/splice_inside_token.c` with `toolchain/bcc/pp.c`.
