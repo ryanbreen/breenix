@@ -25,11 +25,12 @@ static void parameter_types(FILE *out, const BccType *function)
 static void type_name(FILE *out, const BccType *type)
 {
     static const char *const scalars[] = {
-        [BCC_VOID] = "void", [BCC_CHAR] = "char", [BCC_SCHAR] = "signed char",
+        [BCC_VOID] = "void", [BCC_BOOL] = "_Bool", [BCC_CHAR] = "char", [BCC_SCHAR] = "signed char",
         [BCC_UCHAR] = "unsigned char", [BCC_SHORT] = "short", [BCC_USHORT] = "unsigned short",
         [BCC_INT] = "int", [BCC_UINT] = "unsigned int", [BCC_LONG] = "long",
         [BCC_ULONG] = "unsigned long", [BCC_LLONG] = "long long",
         [BCC_ULLONG] = "unsigned long long",
+        [BCC_FLOAT] = "float", [BCC_DOUBLE] = "double", [BCC_LDOUBLE] = "long double",
     };
 
     switch (type->kind) {
@@ -52,6 +53,11 @@ static void type_name(FILE *out, const BccType *type)
         type_name(out, type->base);
         fputc(' ', out);
         parameter_types(out, type);
+        break;
+    case BCC_RECORD:
+        fputs(type->record->is_union ? "union" : "struct", out);
+        if (type->record->name.kind == PP_IDENTIFIER)
+            fprintf(out, " %.*s", (int)type->record->name.length, type->record->name.text);
         break;
     default:
         if (type->is_const)
@@ -105,12 +111,23 @@ static void expression(FILE *out, const BccExpr *expr)
     static const char *const forms[] = {
         [BCC_IDENTIFIER] = "identifier", [BCC_STRING] = "string-literal",
         [BCC_INTEGER] = "integer-constant", [BCC_CALL] = "call",
+        [BCC_REAL] = "floating-constant", [BCC_UNARY] = "unary", [BCC_BINARY] = "binary",
+        [BCC_CAST] = "cast", [BCC_CONDITIONAL] = "conditional", [BCC_UPDATE] = "assignment",
+        [BCC_MEMBER] = "member",
     };
     static const char *const values[] = {
         [BCC_RVALUE] = "rvalue", [BCC_LVALUE] = "lvalue",
         [BCC_FUNCTION_DESIGNATOR] = "function-designator",
     };
-    if (expr->kind == BCC_CALL) {
+    if (expr->kind == BCC_MEMBER) {
+        expression(out, expr->as.member.object);
+    } else if (expr->kind >= BCC_UNARY && expr->kind <= BCC_UPDATE) {
+        expression(out, expr->as.operands.left);
+        if (expr->as.operands.right != NULL)
+            expression(out, expr->as.operands.right);
+        if (expr->as.operands.third != NULL)
+            expression(out, expr->as.operands.third);
+    } else if (expr->kind == BCC_CALL) {
         expression(out, expr->as.call.callee);
         for (const BccArg *arg = expr->as.call.args; arg != NULL; arg = arg->next)
             expression(out, arg->expression);

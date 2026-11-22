@@ -227,7 +227,7 @@ python3 toolchain/tests/bcc/hello_translation_unit_types.py /tmp/bcc
 python3 toolchain/tests/cconf/run.py --cc /tmp/bcc --mode syntax --stage b1
 ```
 
-## AMD64 hello code generation
+## AMD64 hello code generation (25.5c1)
 
 `bcc -S FILE` writes bas assembly to stdout. The emitter consumes the typed
 tree and handles parameterless `int` and `void` definitions, `int` constants,
@@ -241,9 +241,7 @@ call slots use RIP-relative addressing for the small code model (§3.5.1).
 For a Breenix executable, assemble the output with `bas -o FILE.o FILE.s`,
 then link with `bld -T userspace/programs/linker.ld --gc-sections -o FILE FILE.o libc.a`.
 Use Breenix's x86-64 C ABI archive for `libc.a`, which supplies `_start` and
-`puts`. The driver orchestration and wider scalar ABI lowering are 25.5c2.
-The AArch64 bcc executable currently provides the shared frontend. Emitting
-AArch64 code and running the ARM64 `cc-hello` acceptance are A3.
+`puts`.
 
 Run the host check on x86-64, or prefix `/usr/bin/python3` with `arch -x86_64`
 on an ARM64 Mac with Rosetta. Supply the host tools and the Breenix archive.
@@ -258,3 +256,34 @@ The host check calls the linked `main` in isolation and checks status 42. It
 also verifies both full static links with `elfcheck` and verifies that the
 hello object requires libc's `puts`. Guest startup and output are measured
 in 25.5d.
+
+## Driver and AMD64 scalar code generation (25.5c2)
+
+`bcc -E` writes preprocessed C and `bcc -S` writes bas assembly. Both default
+to stdout and accept `-o FILE`. `bcc -c` writes an object through bas. The
+default stage links through bld using the bundle's linker script and C ABI
+archive. The driver applies `-D` and `-U` in argument order, searches `-I` and
+`-L` directories in order, and resolves each `-l` to a static archive. Host
+checks can set `BCC_SYSROOT`, `BCC_AS` and `BCC_LD` to use local tool paths.
+`driver::stages_agree_bytewise` compares the assembly, object and ELF bytes
+from split and combined stages and checks that an unknown option reports its
+command-line location.
+
+The shared frontend and AMD64 `-O0` emitter cover integer and pointer
+expressions, float and double operations, ordinary arrays and members,
+scalar assignments, positional local initialization, and control flow
+(N1570 §§6.3, 6.5, 6.7.9, 6.8). AMD64 psABI §§3.2.1–3.2.3 govern the
+integer and SSE scalar register assignments, overflow arguments on the stack,
+call alignment and return values. Variadic calls apply default argument
+promotions (N1570 §6.5.2.2) and place the number of vector-register arguments
+in `%al` (AMD64 psABI §§3.2.3, 3.5.7).
+
+Aggregate argument and return lowering, bitfields and variadic definitions
+belong to 25.7. Designated initialization, compound literals, alignment
+specifiers, generic selection and atomics belong to 25.9. The AArch64 bcc
+executable provides the shared frontend. AArch64 code generation and the
+ARM64 `cc-hello` acceptance belong to A3.
+
+The freestanding runtime in `toolchain/rt/linux-test/` provides startup and
+the output calls used for x86-64 corpus development. Breenix startup, TLS
+and native linking are measured by the guest suite.

@@ -629,7 +629,7 @@ static bool process_file(PpUnit *pp, FILE *input, const char *path, const PpPoin
 bool pp_read(PpUnit *pp, const char *path)
 {
     PpPoint start = {path, {1, 1}, NULL};
-    if (!pp_predefine(pp, start))
+    if (!pp->options->preprocessed && !pp_predefine(pp, start))
         return false;
     FILE *input = fopen(path, "rb");
     if (input == NULL)

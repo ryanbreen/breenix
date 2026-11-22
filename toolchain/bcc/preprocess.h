@@ -9,10 +9,19 @@
 typedef enum { BCC_X86_64, BCC_AARCH64 } BccTarget;
 
 typedef struct {
+    const char *value;
+    size_t argument;
+    bool undefine;
+} PpCommandMacro;
+
+typedef struct {
     BccTarget target;
     const char *const *include_dirs;
     size_t include_count;
     const char *system_root;
+    const PpCommandMacro *macros;
+    size_t macro_count;
+    bool preprocessed;
 } PpOptions;
 
 /* Preprocess one file, writing phase-4 tokens and reporting located errors. */

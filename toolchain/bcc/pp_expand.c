@@ -226,6 +226,40 @@ static void translation_time(PpUnit *pp)
              utc->tm_sec);
 }
 
+static bool command_macro(PpUnit *pp, PpCommandMacro option)
+{
+    PpPoint where = {"<command-line>", {1, option.argument}, NULL};
+    const char *equals = strchr(option.value, '=');
+    size_t length = equals == NULL ? strlen(option.value) : (size_t)(equals - option.value);
+    PpLexeme name = {.text = option.value, .length = length, .location = where,
+                     .spelling = where, .end = where.at};
+    if (length == 0 || pp_token_prefix(name.text, length, false, &name.kind) != length ||
+        name.kind != PP_IDENTIFIER || (equals != NULL && option.undefine))
+        return pp_error(where, "expected a macro identifier");
+    if (option.undefine)
+        return pp_undef(pp, name);
+    const char *value = equals == NULL ? "1" : equals + 1;
+    PpList tokens = {0};
+    if (!pp_append(pp, &tokens, name))
+        return false;
+    while (*value != '\0') {
+        if (strchr(" \t\v\f", *value) != NULL) {
+            ++value;
+            continue;
+        }
+        PpLexeme token = name;
+        token.text = value;
+        token.space = true;
+        token.length = pp_token_prefix(value, strlen(value), false, &token.kind);
+        if (token.length == 0 || token.kind == PP_OTHER || token.kind == PP_NEWLINE)
+            return pp_error(where, "invalid command-line macro replacement");
+        if (!pp_append(pp, &tokens, token))
+            return false;
+        value += token.length;
+    }
+    return pp_define(pp, tokens.items, tokens.count);
+}
+
 bool pp_predefine(PpUnit *pp, PpPoint start)
 {
     static const struct { const char *name, *value; } shared[] = {
@@ -248,10 +282,15 @@ bool pp_predefine(PpUnit *pp, PpPoint start)
                 !predefine(pp, start, "__WCHAR_UNSIGNED__", "1", FIXED_MACRO)))
         return false;
     translation_time(pp);
-    return predefine(pp, start, "__DATE__", pp->date, FIXED_MACRO) &&
-           predefine(pp, start, "__TIME__", pp->time, FIXED_MACRO) &&
-           predefine(pp, start, "__FILE__", "", FILE_MACRO) &&
-           predefine(pp, start, "__LINE__", "", LINE_MACRO);
+    if (!predefine(pp, start, "__DATE__", pp->date, FIXED_MACRO) ||
+        !predefine(pp, start, "__TIME__", pp->time, FIXED_MACRO) ||
+        !predefine(pp, start, "__FILE__", "", FILE_MACRO) ||
+        !predefine(pp, start, "__LINE__", "", LINE_MACRO))
+        return false;
+    for (size_t i = 0; i < pp->options->macro_count; ++i)
+        if (!command_macro(pp, pp->options->macros[i]))
+            return false;
+    return true;
 }
 
 static bool hidden(const PpHide *set, const PpMacro *macro)
