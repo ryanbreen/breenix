@@ -13,6 +13,7 @@ import tempfile
 import time
 import uuid
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 PERSISTENT_ROOT_CASES = (
     ('migrate-manifests-equal', 'The migrator reports equal source and destination manifests'),
@@ -25,6 +26,7 @@ BREENFS_DISKS = ('breenfs-system.img', 'breenfs-home.img')
 MIGRATION_DISKS = (*BREENFS_DISKS, 'test-root.img')
 CYCLE_RECORD = 'migration-cycle.json'
 MIGRATION_PROBE = 'migration-ssh.json'
+RETIREMENT_RECORD = 'retirement.json'
 SHARED_BINDS = ('/root', '/etc', '/var', '/opt', '/srv', '/tmp', '/run')
 
 
@@ -196,11 +198,14 @@ def verify_slot(root, run, slot):
     return receipt
 
 
-def current_boot(run):
-    name = (run / 'current').read_text().strip()
+def named_boot(run, name):
     if not re.fullmatch(r'[0-9]{8}T[0-9]{6}Z-qemu', name):
         raise ValueError('invalid VM boot identity')
     return run / 'boots' / name
+
+
+def current_boot(run):
+    return named_boot(run, (run / 'current').read_text().strip())
 
 
 def shutdown_verified(events):
@@ -376,13 +381,16 @@ def probe_cycle(run, identity, public_host_key):
     """Capture a live, read-only operator SSH probe before guest poweroff."""
     import vm_site
 
-    cycle = cycle_state(run)
-    phase = cycle['phase']
-    if phase not in ('cutover', 'rescue', 'return') or not (run / 'boot.lock').is_dir():
-        raise ValueError('SSH verification needs a live cutover, rescue or return boot')
+    retirement = retirement_state(run) if (run / RETIREMENT_RECORD).is_file() else None
+    cycle = cycle_state(run) if retirement is None else None
+    phase = (retirement or cycle)['phase']
+    if phase not in ('cutover', 'rescue', 'return', 'verify', 'final') or not (run / 'boot.lock').is_dir():
+        raise ValueError('SSH verification needs a live migration or retirement verification boot')
     boot = current_boot(run)
     if (boot / 'ended').exists():
         raise ValueError('SSH verification needs a live boot')
+    if retirement is not None:
+        retirement_launch(boot, retirement)
     site = vm_site.site(run)
     user, uid = site['OPERATOR_USER'], site['OPERATOR_UID']
     if not re.fullmatch(r'[a-z_][a-z0-9_-]{0,31}', user) or not uid.isascii() or not uid.isdecimal() or int(uid) == 0:
@@ -391,10 +399,19 @@ def probe_cycle(run, identity, public_host_key):
     host_key = ' '.join(Path(public_host_key).read_text().split()[:2])
     if not re.fullmatch(r'ssh-ed25519 [A-Za-z0-9+/]+={0,2}', host_key):
         raise ValueError('expected the trusted guest Ed25519 public host key')
-    expected = subprocess.check_output(['debugfs', '-R', f'cat /{user}/migration.txt', run / 'home.img'],
-                                       stderr=subprocess.PIPE)
-    if not expected:
-        raise ValueError('frozen ext2 home has no nonempty operator migration.txt sentinel')
+    key_hash = hashlib.sha256(host_key.encode('ascii')).hexdigest()
+    if retirement is None:
+        expected = subprocess.check_output(['debugfs', '-R', f'cat /{user}/migration.txt', run / 'home.img'],
+                                           stderr=subprocess.PIPE)
+        if not expected:
+            raise ValueError('frozen ext2 home has no nonempty operator migration.txt sentinel')
+        expected_hash = hashlib.sha256(expected).hexdigest()
+        userland = cycle['userland']
+    else:
+        if key_hash != retirement['hostKeySha256']:
+            raise ValueError('trusted host key differs from the verified migration return')
+        expected_hash = retirement['sentinelSha256']
+        userland = retirement['pending']['generation']
 
     with tempfile.TemporaryDirectory(dir=boot) as directory:
         known = Path(directory) / 'known_hosts'
@@ -413,12 +430,13 @@ def probe_cycle(run, identity, public_host_key):
         generation = ssh('cat /usr/share/factory/generation').decode().strip()
         mounts = ssh('cat /proc/mounts').decode()
         sentinel = ssh(f'cat /home/{user}/migration.txt')
-        if sentinel != expected:
-            raise ValueError('SSH home sentinel differs from the frozen ext2 home')
+        sentinel_hash = hashlib.sha256(sentinel).hexdigest()
+        if (sentinel != expected if retirement is None else sentinel_hash != expected_hash):
+            raise ValueError('SSH home sentinel differs from the migration baseline')
 
     probe = dict(boot=boot.name, phase=phase, generation=generation, mounts=mounts,
-                 sentinelSha256=hashlib.sha256(sentinel).hexdigest())
-    validate_cycle_probe(probe, boot.name, phase, cycle['userland'])
+                 sentinelSha256=sentinel_hash, hostKeySha256=key_hash)
+    validate_cycle_probe(probe, boot.name, phase, userland)
     if current_boot(run) != boot or (boot / 'ended').exists():
         raise ValueError('boot changed during SSH verification')
     slots_module().write_json(boot / MIGRATION_PROBE, probe)
@@ -527,6 +545,279 @@ def check_manifests(run, tools):
         raise ValueError('missing guest migration equality receipt')
 
 
+def retirement_state(run):
+    return json.loads((run / RETIREMENT_RECORD).read_text())
+
+
+def retirement_build(root, run):
+    build = json.loads((run / 'build.json').read_text())
+    if (build.get('sourceBuilt') is not True or build.get('dirty') is not False
+            or not re.fullmatch(r'[0-9a-f]{40}', build.get('commit') or '')
+            or build['commit'] != git(root, 'rev-parse', 'HEAD') or git(root, 'status', '--porcelain')):
+        raise ValueError('retirement requires a disposable run built from the clean tools commit')
+    return build
+
+
+def clean_serial(boot):
+    lines = (boot / 'serial.txt').read_text(errors='replace').splitlines()
+    if (not (boot / 'ended').is_file()
+            or any('ROOT_MOUNT_FAILURE' in line or 'Kernel panic' in line for line in lines)):
+        raise ValueError('boot did not finish cleanly')
+    return lines
+
+
+def retirement_events(boot):
+    return [json.loads(line) for line in (boot / 'events.jsonl').read_text().splitlines()]
+
+
+def verify_retirement_boot(boot, phase, generation):
+    lines = clean_serial(boot)
+    probe = json.loads((boot / MIGRATION_PROBE).read_text()) if (boot / MIGRATION_PROBE).is_file() else None
+    if (not probe or '[boot] breenfs root filesystem mounted' not in lines
+            or 'bsshd: listening on 0.0.0.0:22' not in lines
+            or not shutdown_verified(retirement_events(boot))):
+        raise ValueError(f'{phase} boot did not supply its verification receipts')
+    validate_cycle_probe(probe, boot.name, phase, generation)
+    if not re.fullmatch(r'[0-9a-f]{64}', probe.get('hostKeySha256', '')):
+        raise ValueError('SSH evidence has no verified host key')
+    return probe
+
+
+def begin_retirement(root, run):
+    import vm_gpt
+
+    build = retirement_build(root, run)
+    cycle = cycle_state(run)
+    slots = slots_module()
+    record = slots.read(run)
+    boot = current_boot(run)
+    if ((run / RETIREMENT_RECORD).exists() or cycle['phase'] != 'return'
+            or cycle['boots'].get('return') != boot.name or record['next'] is not None
+            or not all(cycle['boots'].get(phase) for phase in ('migrate', 'cutover', 'rescue'))
+            or not cycle.get('compared')):
+        raise ValueError('retirement needs a completed, verified migration return with no staged slot')
+    current, rescue = (slots.select(run, slot) for slot in ('current', 'previous'))
+    if (current.get('layout') != 'breenfs' or rescue.get('layout') != 'ext2-rescue'
+            or current['userland'] != cycle['userland'] or rescue['userland'] != cycle['userland']):
+        raise ValueError('retirement needs the promoted BreenFS generation and its ext2 rescue')
+    metadata = json.loads((boot / 'run.json').read_text())
+    if (metadata['id'] != boot.name or metadata['target'] != 'qemu'
+            or metadata['bootedCommit'] != build['commit'] or metadata['toolsCommit'] != build['commit']):
+        raise ValueError('migration return belongs to another run or tools commit')
+    frozen_ext2(run, cycle)
+    if cycle['disks'] != disk_digests(run, MIGRATION_DISKS):
+        raise ValueError('migration images differ from their stopped seal')
+    probe = verify_retirement_boot(boot, 'return', current['userland'])
+    layout = vm_gpt.create(run, build['volumeGuids'])
+    state = dict(phase='ready', commit=build['commit'], migration=boot.name, lastBoot=boot.name,
+                 base=current['userland'], rescue=rescue, layout=layout, upgrades=[],
+                 sentinelSha256=probe['sentinelSha256'], hostKeySha256=probe['hostKeySha256'])
+    slots.write_json(run / RETIREMENT_RECORD, state)
+
+
+def retirement_intent(run, state, generation, install=False):
+    guids = {role: part[0] for role, part in state['layout']['parts'].items()}
+    guids['test-root'] = guids.pop('test')
+    rendered = slots_module().migration_intent('upgrade' if install else 'return', generation, guids)
+    (run / 'boot-intent').write_bytes(rendered)
+    return rendered
+
+
+def prepare_retirement(root, run, operation, slot):
+    import vm_gpt
+
+    state = retirement_state(run)
+    build = retirement_build(root, run)
+    slots = slots_module()
+    record = slots.read(run)
+    if (build['commit'] != state['commit'] or current_boot(run).name != state['lastBoot']):
+        raise ValueError('retirement build or last boot changed')
+    install = operation == 'install'
+    phase = state['phase']
+    if install and phase == 'ready' and len(state['upgrades']) < 2 and record['next'] is None:
+        phase = 'install'
+        current = slots.select(run, 'current')
+        previous = slots.select(run, 'previous')
+        if current.get('layout') != 'breenfs' or previous.get('layout') not in ('ext2-rescue', 'breenfs'):
+            raise ValueError('upgrade needs the retained BreenFS slots')
+        generation = 'vm-' + secrets.token_hex(16)
+        refs = [current['userland'],
+                previous['userland'] if previous.get('layout') == 'breenfs' else 'empty', generation]
+        (run / 'install-references').write_text(' '.join(refs), encoding='ascii')
+        selected = dict(kernel='kernel', kernelSha256=build['artifacts']['kernel'])
+    elif operation == 'boot' and (phase, slot) in (
+            ('next', 'next'), ('reclaimed', 'current'), ('done', 'current')):
+        phase = 'verify' if phase == 'next' else 'final'
+        selected = slots.select(run, slot)
+        if selected.get('layout') != 'breenfs':
+            raise ValueError('verification slot is not BreenFS')
+        generation = selected['userland']
+    else:
+        raise ValueError('retirement requires the next ordered install, NEXT verification, reclaim or CURRENT boot')
+    with vm_gpt.open_disk(run, state['layout']) as disk:
+        vm_gpt.readback(disk, state['layout'], phase == 'final')
+    receipt = verify(root, run, run / selected['kernel'],
+                     slot_digest=None if install else selected['kernelSha256'])
+    retirement_intent(run, state, generation, install)
+    pending = dict(phase=phase, generation=generation, launch=secrets.token_hex(16))
+    slots.write_json(run / 'verified-build.json', dict(receipt, retirement=pending))
+    return list(vm_gpt.drive_args(run, state['layout'], install))
+
+
+def start_retirement(run):
+    # Commit the request only when the launcher is about to hand QEMU the disk.
+    state = retirement_state(run)
+    pending = json.loads((run / 'verified-build.json').read_text())['retirement']
+    allowed = {'install': ('ready',), 'verify': ('next',), 'final': ('reclaimed', 'done')}
+    if state['phase'] not in allowed[pending['phase']] or current_boot(run).name != state['lastBoot']:
+        raise ValueError('retirement launch no longer follows the last boot')
+    state.update(phase=pending['phase'], pending=pending)
+    slots_module().write_json(run / RETIREMENT_RECORD, state)
+
+
+def retirement_launch(boot, state):
+    launch = json.loads((boot / 'run.json').read_text())
+    intervening = [entry for entry in boot.parent.iterdir()
+                   if state['lastBoot'] < entry.name <= boot.name and entry.is_dir()]
+    if (launch['id'] != boot.name or launch['target'] != 'qemu'
+            or launch['toolsCommit'] != state['commit'] or launch['bootedCommit'] != state['commit']
+            or launch.get('retirement') != state['pending']
+            or intervening != [boot]):
+        raise ValueError('boot is not the requested VM retirement launch')
+
+
+def verify_retirement_install(boot):
+    lines = clean_serial(boot)
+    expected = ('[boot] ext2 root filesystem mounted',
+                "[persistent] install starting: the test root's userland onto BreenFS",
+                '[persistent] recovered slot references needed', '[persistent] layout set-ID check passed')
+    receipts = [line for line in lines if line in expected or line.startswith('[persistent] install complete:')]
+    if (tuple(receipts[:-1]) != expected
+            or not re.fullmatch(r'\[persistent\] install complete: files=[1-9][0-9]* dirs=[0-9]+ '
+                                r'links=[0-9]+ hard-links=[0-9]+ bytes=[1-9][0-9]* left-out=[0-9]+',
+                                receipts[-1])
+            or any(line.startswith('[persistent] install failed:') for line in lines)
+            or [event.get('data', {}).get('reason') for event in retirement_events(boot)
+                if event.get('event') == 'SHUTDOWN'] != ['host-qmp-quit']):
+        raise ValueError('BreenFS install did not supply its completion and QMP shutdown receipts')
+
+
+def verify_retirement_probe(boot, state, phase, generation):
+    probe = verify_retirement_boot(boot, phase, generation)
+    if any(probe[key] != state[key] for key in ('hostKeySha256', 'sentinelSha256')):
+        raise ValueError('SSH evidence differs from the migration baseline')
+
+
+def retirement_slots(run, state):
+    slots = slots_module()
+    record = slots.read(run)
+    for row, slot in zip(reversed(state['upgrades']), ('current', 'previous'), strict=True):
+        selected = slots.select(run, slot)
+        if selected['userland'] != row['generation'] or selected.get('layout') != 'breenfs':
+            raise ValueError('slot does not name the verified BreenFS upgrade')
+    if record['next'] is not None:
+        raise ValueError('retirement requires both verified BreenFS slots with no pending NEXT')
+    return record['current']
+
+
+def retirement_proof(state, boot, case):
+    return dict(milestone='filesystem/ext2-retired', commit=state['commit'],
+                toolsCommit=state['commit'], migration=state['migration'], boot=boot,
+                upgrades=state['upgrades'], cleanup=True, consoleGaps=[],
+                cases=[dict(id='ext2-retired/' + case, result='PASS', ms=0)])
+
+
+def finish_retirement(run, exit_status, monitor_status):
+    import vm_gpt
+
+    slots = slots_module()
+    state = retirement_state(run)
+    phase, generation = (state['pending'][key] for key in ('phase', 'generation'))
+    boot = current_boot(run)
+    retirement_launch(boot, state)
+    if exit_status != 0 or monitor_status != 0:
+        raise ValueError(f'{phase} boot did not stop successfully')
+    with vm_gpt.open_disk(run, state['layout']) as disk:
+        gpt = vm_gpt.readback(disk, state['layout'], phase == 'final')
+    if phase == 'install':
+        verify_retirement_install(boot)
+        record = slots.read(run)
+        if record['next'] is not None:
+            raise ValueError('NEXT changed during installation')
+        sha = digest(run / 'boot-kernel')
+        if sha != json.loads((run / 'build.json').read_text())['artifacts']['kernel']:
+            raise ValueError('install kernel differs from its seal')
+        record['next'] = dict(kernel='kernel', kernelSha256=sha, userland=generation, layout='breenfs')
+        slots.write(run, record)
+        state.update(phase='next', install=boot.name)
+    else:
+        verify_retirement_probe(boot, state, phase, generation)
+        if phase == 'verify':
+            if slots.select(run, 'next')['userland'] != generation:
+                raise ValueError('NEXT changed during verification')
+            previous = slots.select(run, 'current')['userland']
+            state['upgrades'].append(dict(install=state.pop('install'), verification=boot.name,
+                                          generation=generation, previous=previous))
+            slots.promote(run)
+            state['phase'] = 'ready'
+        else:
+            current = retirement_slots(run, state)
+            if gpt != state['reclaimed']['after'] or generation != current['userland'] or 'rescue' in state:
+                raise ValueError('final boot does not match the reclaimed GPT and CURRENT')
+            answer = retirement_intent(run, state, current['userland'])
+            proof = retirement_proof(state, boot.name, 'reclaimed')
+            proof.update(state['reclaimed'], nextAnswer=dict(slot='current', userland=current['userland'],
+                         intentSha256=hashlib.sha256(answer).hexdigest()))
+            slots.write_json(run / 'filesystem-reclaimed.json', proof)
+            state['phase'] = 'done'
+    state['lastBoot'] = boot.name
+    del state['pending']
+    slots.write_json(run / RETIREMENT_RECORD, state)
+    if phase == 'verify' and len(state['upgrades']) == 2:
+        slots.write_json(run / 'filesystem-two-upgrades.json', retirement_proof(state, boot.name, 'two-upgrades'))
+
+
+def reclaim_retirement(root, run):
+    import vm_gpt
+
+    state = retirement_state(run)
+    build = retirement_build(root, run)
+    if (state['phase'] != 'ready' or len(state['upgrades']) != 2 or not state.get('rescue')
+            or build['commit'] != state['commit'] or current_boot(run).name != state['lastBoot']):
+        raise ValueError('reclaim needs two verified upgrades in the same stopped VM run')
+    last, generation = state['migration'], state['base']
+    for row in state['upgrades']:
+        install, verification = (named_boot(run, row[key]) for key in ('install', 'verification'))
+        if (not last < install.name < verification.name or generation != row['previous']
+                or generation == row['generation']):
+            raise ValueError('reclaim needs two successive verified upgrades')
+        for boot, phase in ((install, 'install'), (verification, 'verify')):
+            launch = json.loads((boot / 'run.json').read_text())['retirement']
+            if launch['generation'] != row['generation'] or launch['phase'] != phase:
+                raise ValueError('upgrade boot does not match its recorded phase and generation')
+            retirement_launch(boot, dict(state, pending=launch, lastBoot=last))
+            last = boot.name
+        verify_retirement_install(install)
+        verify_retirement_probe(verification, state, 'verify', row['generation'])
+        last, generation = verification.name, row['generation']
+    proof = json.loads((run / 'filesystem-two-upgrades.json').read_text())
+    if last != state['lastBoot'] or proof != retirement_proof(state, last, 'two-upgrades'):
+        raise ValueError('reclaim needs the matching two-upgrades receipt')
+    retirement_slots(run, state)
+    slots = slots_module()
+    layout = state['layout']
+    with vm_gpt.open_disk(run, layout, write=True) as disk:
+        before = vm_gpt.readback(disk, layout, False)
+        # Block the next launch before editing either GPT copy.
+        state['phase'] = 'reclaiming'
+        slots.write_json(run / RETIREMENT_RECORD, state)
+        vm_gpt.write_copies(disk, vm_gpt.tables(layout, True))
+        after = vm_gpt.readback(disk, layout, True)
+    del state['rescue']
+    state.update(phase='reclaimed', reclaimed=dict(before=before, after=after, clearedEntries=[3, 4]))
+    slots.write_json(run / RETIREMENT_RECORD, state)
+
+
 if __name__ == '__main__':
     if len(sys.argv) == 3 and sys.argv[1] == '--check-manifest':
         try:
@@ -535,6 +826,24 @@ if __name__ == '__main__':
             sys.exit(f'VM artifacts: {error}')
         sys.exit(0)
     operation, root, run, value, *extra = sys.argv[1:]
+    if operation in ('begin-retirement', 'reclaim-ext2', 'prepare-retirement', 'start-retirement', 'finish-retirement'):
+        run = Path(run)
+        try:
+            if operation == 'begin-retirement':
+                begin_retirement(root, run)
+            elif operation == 'reclaim-ext2':
+                reclaim_retirement(root, run)
+            elif operation == 'prepare-retirement':
+                action, slot = value.split(':')
+                print(*prepare_retirement(root, run, action, slot), sep='\n')
+            elif operation == 'start-retirement':
+                start_retirement(run)
+            else:
+                status, monitor = map(int, value.split(':'))
+                finish_retirement(run, status, monitor)
+        except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
+            sys.exit(f'VM retirement: {error}')
+        sys.exit(0)
     if operation == 'probe-cycle':
         if len(extra) != 1:
             sys.exit('SSH verification needs an identity and a trusted guest public host key')

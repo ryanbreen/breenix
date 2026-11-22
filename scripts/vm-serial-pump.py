@@ -37,6 +37,8 @@ def main(run, whole_path):
         record['kind'] = 'fault-test'
     if record['evidenceEligible']:
         record['artifacts'] = verified['artifacts']
+    if 'retirement' in verified:
+        record['retirement'] = verified['retirement']
     # Freeze the scoring definitions at the image's recorded build commit,
     # rather than consulting a later checkout when this run reboots.
     definition = {}
@@ -120,7 +122,10 @@ def main(run, whole_path):
         watchdog_triggered = False
         watchdog_reset = False
 
-    start_boot()
+    # The retirement monitor needs the console socket during preflight.
+    # Publish a boot only when QEMU connects, so preflight preserves CURRENT.
+    if 'retirement' not in record:
+        start_boot()
     def terminate(_signum, _frame):
         raise SystemExit(0)
     signal.signal(signal.SIGTERM, terminate)
@@ -153,6 +158,8 @@ def main(run, whole_path):
                     except (FileNotFoundError, ConnectionRefusedError):
                         candidate.close()
                     else:
+                        if directory is None:
+                            start_boot()
                         qmp = candidate
                         qmp.setblocking(False)
                         selector.register(qmp, selectors.EVENT_READ, 'qmp')
@@ -171,6 +178,8 @@ def main(run, whole_path):
                             if guest is not None:
                                 connection.close()
                                 continue
+                            if directory is None:
+                                start_boot()
                             guest = connection
                             selector.register(connection, selectors.EVENT_READ | (selectors.EVENT_WRITE if pending_guest else 0), 'guest-data')
                         else:

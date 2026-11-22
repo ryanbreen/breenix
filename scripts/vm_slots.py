@@ -62,6 +62,10 @@ def migration_intent(phase, userland, guids):
         mounts = [('test-root', '/', False), ('system', '/migrate/ext2-system', False),
                   ('home', '/migrate/ext2-home', False), ('breenfs-system', '/migrate/system', True),
                   ('breenfs-home', '/migrate/home', True)]
+    elif phase == 'upgrade':
+        target = 'persistent-install'
+        mounts = [('test-root', '/', False), ('breenfs-system', '/migrate/system', True),
+                  ('breenfs-home', '/migrate/home', True)]
     elif phase in ('cutover', 'return'):
         target = 'persistent'
         mounts = [('breenfs-system', '/', True), ('breenfs-home', '/home', True)]
