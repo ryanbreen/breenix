@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the 25.2 development bundle and reference corpus for one ELF target.
+# Build the development bundle and reference corpus for one ELF target.
 # The producer supplies absolute BREENIX_TOOLCHAIN_CLANG and BREENIX_TOOLCHAIN_LLD
 # paths with their corresponding *_SHA256 pins.
 set -euo pipefail
@@ -75,6 +75,8 @@ while IFS= read -r name; do
         -o "$corpus/$name.elf" --inventory "$corpus/$name.inventory.json" "$corpus/$name.c"
     chmod 0755 "$corpus/$name.elf"
 done < "$root/toolchain/corpus/cases"
+
+python3 "$root/scripts/toolchain-build-bas.py" "$arch" "$work/bas" "$dev" "$corpus"
 
 python3 "$root/scripts/toolchain-image.py" seal "$work/bundle" "$commit" "$arch"
 mv "$work/bundle" "$output"

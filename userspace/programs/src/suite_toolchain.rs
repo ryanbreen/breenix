@@ -1,4 +1,4 @@
-//! Run the sealed reference build's inputs against independently written expectations.
+//! Check the sealed reference inputs and assemble objects with the staged bas.
 
 use breenix_suite::suite::{case, case_diagnostic, category, suite, CaseResult, Suite};
 use libbreenix::crypto::sha256::{sha256, Sha256};
@@ -6,7 +6,8 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::Read;
-use std::path::{Component, Path};
+use std::os::unix::fs::DirBuilderExt;
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const DEV: &str = "opt/breenix-dev/25.2";
@@ -14,27 +15,52 @@ const CORPUS: &str = "usr/share/breenix/toolchain";
 const RUNNER: &str = "sbin/suite-toolchain";
 const MANIFEST: &str = "opt/breenix-dev/25.2/manifest.sha256";
 const RECORD: &str = "opt/breenix-dev/25.2/build.json";
+const BAS_PROGRAMS: &[&str] = &["sse-exit", "x87-exit"];
+const BAS_INPUTS: &[&str] = &["encodings.s", "encodings.hex", "bad-input.s"];
 const CASES: &str = include_str!("../../../toolchain/corpus/cases");
 
 static SUITE: Suite = suite(
     "toolchain",
     "Native C toolchain",
-    &[category(
-        "inputs",
-        "The sysroot inventory and the cross-built reference corpus",
-        &[
-            case(
-                "sysroot-manifest",
-                "Staged toolchain inputs match this image's build record",
-                sysroot_manifest,
-            ),
-            case(
-                "reference-corpus-runs",
-                "Each reference ELF produces its expected stdout and exit status",
-                reference_corpus_runs,
-            ),
-        ],
-    )],
+    &[
+        category(
+            "inputs",
+            "The sysroot inventory and the cross-built reference corpus",
+            &[
+                case(
+                    "sysroot-manifest",
+                    "Staged toolchain inputs match this image's build record",
+                    sysroot_manifest,
+                ),
+                case(
+                    "reference-corpus-runs",
+                    "Each reference ELF produces its expected stdout and exit status",
+                    reference_corpus_runs,
+                ),
+            ],
+        ),
+        category(
+            "assembler",
+            "Instruction encodings and ELF objects from our assembler",
+            &[
+                case(
+                    "encodings-match",
+                    "Assembler output matches the instruction encoding table",
+                    assembler_encodings_match,
+                ),
+                case(
+                    "object-runs",
+                    "Fresh objects match the recorded link inputs and both staged ELFs run",
+                    assembler_object_runs,
+                ),
+                case(
+                    "bad-input-located",
+                    "Malformed assembly fails with its source file and line number",
+                    assembler_bad_input_located,
+                ),
+            ],
+        ),
+    ],
 );
 
 fn main() {
@@ -138,10 +164,27 @@ fn sysroot_manifest() -> CaseResult {
             }
         }
     }
-    for relative in ["lib/libc.a", "linker.ld"] {
+    for relative in ["lib/libc.a", "linker.ld", "bin/bas"] {
         let path = format!("{DEV}/{relative}");
         if !listed.contains_key(path.as_str()) {
             return Err(format!("manifest omits {path}").into());
+        }
+    }
+
+    if arch == "x86_64" {
+        for name in BAS_INPUTS {
+            let path = format!("{CORPUS}/assembler/{name}");
+            if !listed.contains_key(path.as_str()) {
+                return Err(format!("manifest omits {path}").into());
+            }
+        }
+        for name in BAS_PROGRAMS {
+            for suffix in [".s", ".expect", ".elf", ".link.json"] {
+                let path = format!("{CORPUS}/assembler/{name}{suffix}");
+                if !listed.contains_key(path.as_str()) {
+                    return Err(format!("manifest omits {path}").into());
+                }
+            }
         }
     }
 
@@ -165,38 +208,206 @@ fn sysroot_manifest() -> CaseResult {
     Ok(())
 }
 
+fn run_expected(directory: &Path, name: &str) -> CaseResult {
+    let expect = directory.join(format!("{name}.expect"));
+    let bytes = io_at(&expect, fs::read(&expect))?;
+    let newline = bytes
+        .iter()
+        .position(|&byte| byte == b'\n')
+        .ok_or_else(|| format!("{name}: missing expected exit status"))?;
+    let status = std::str::from_utf8(&bytes[..newline])
+        .ok()
+        .and_then(|status| status.parse::<u8>().ok())
+        .ok_or_else(|| format!("{name}: invalid expected exit status"))?;
+    let binary = directory.join(format!("{name}.elf"));
+    let result = io_at(
+        &binary,
+        Command::new(&binary)
+            .env_clear()
+            .stdin(Stdio::null())
+            .output(),
+    )?;
+    if result.status.code() != Some(i32::from(status)) {
+        return Err(format!("{name}: expected exit {status}, got {}", result.status).into());
+    }
+    let expected = &bytes[newline + 1..];
+    if result.stdout != expected {
+        return Err(format!(
+            "{name}: stdout differs (expected {:?}, got {:?})",
+            expected, result.stdout
+        )
+        .into());
+    }
+    Ok(())
+}
+
 fn reference_corpus_runs() -> CaseResult {
     let corpus = Path::new("/").join(CORPUS);
     for name in CASES.lines() {
-        let expect = corpus.join(format!("{name}.expect"));
-        let bytes = io_at(&expect, fs::read(&expect))?;
-        let newline = bytes
-            .iter()
-            .position(|&byte| byte == b'\n')
-            .ok_or_else(|| format!("{name}: missing expected exit status"))?;
-        let status = std::str::from_utf8(&bytes[..newline])
-            .ok()
-            .and_then(|status| status.parse::<u8>().ok())
-            .ok_or_else(|| format!("{name}: invalid expected exit status"))?;
-        let binary = corpus.join(format!("{name}.elf"));
-        let result = io_at(
-            &binary,
-            Command::new(&binary)
+        run_expected(&corpus, name)?;
+    }
+    Ok(())
+}
+
+struct AssemblyCase {
+    corpus: PathBuf,
+    scratch: PathBuf,
+}
+
+impl AssemblyCase {
+    fn start() -> Result<Self, String> {
+        if std::env::consts::ARCH != "x86_64" {
+            return Err("AArch64 assembly and relocations are scheduled for A1".into());
+        }
+        let scratch = Path::new("/tmp").join(format!("toolchain-assembler-{}", std::process::id()));
+        io_at(&scratch, fs::DirBuilder::new().mode(0o700).create(&scratch))?;
+        Ok(Self {
+            corpus: Path::new("/").join(CORPUS).join("assembler"),
+            scratch,
+        })
+    }
+
+    fn run(&self, source: &Path, object: &Path) -> Result<std::process::Output, String> {
+        let bas = Path::new("/").join(DEV).join("bin/bas");
+        io_at(
+            &bas,
+            Command::new(&bas)
+                .arg("-o")
+                .arg(object)
+                .arg(source)
                 .env_clear()
                 .stdin(Stdio::null())
                 .output(),
-        )?;
-        if result.status.code() != Some(i32::from(status)) {
-            return Err(format!("{name}: expected exit {status}, got {}", result.status).into());
-        }
-        let expected = &bytes[newline + 1..];
-        if result.stdout != expected {
+        )
+    }
+
+    fn assemble(&self, name: &str) -> Result<PathBuf, String> {
+        let source = self.corpus.join(format!("{name}.s"));
+        let object = self.scratch.join(format!("{name}.o"));
+        let result = self.run(&source, &object)?;
+        if !result.status.success() {
             return Err(format!(
-                "{name}: stdout differs (expected {:?}, got {:?})",
-                expected, result.stdout
-            )
-            .into());
+                "{name}: bas exited {}: {}",
+                result.status,
+                String::from_utf8_lossy(&result.stderr).trim_end()
+            ));
         }
+        Ok(object)
+    }
+}
+
+impl Drop for AssemblyCase {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.scratch);
+    }
+}
+
+fn elf_field<const N: usize>(bytes: &[u8], offset: usize) -> Option<[u8; N]> {
+    bytes.get(offset..offset.checked_add(N)?)?.try_into().ok()
+}
+
+// ELF gABI Listings 2.1 and 3.1. Read named section bytes independently of bas.
+fn object_text(object: &[u8]) -> Option<&[u8]> {
+    if !object.starts_with(b"\x7fELF\x02\x01\x01")
+        || u16::from_le_bytes(elf_field(object, 16)?) != 1
+        || u16::from_le_bytes(elf_field(object, 18)?) != 62
+        || u16::from_le_bytes(elf_field(object, 58)?) != 64
+    {
+        return None;
+    }
+    let start = usize::try_from(u64::from_le_bytes(elf_field(object, 40)?)).ok()?;
+    let count = usize::from(u16::from_le_bytes(elf_field(object, 60)?));
+    let names = usize::from(u16::from_le_bytes(elf_field(object, 62)?));
+    let table = object.get(start..start.checked_add(64 * count)?)?;
+    let contents = |header: &[u8]| {
+        let offset = usize::try_from(u64::from_le_bytes(elf_field(header, 24)?)).ok()?;
+        let size = usize::try_from(u64::from_le_bytes(elf_field(header, 32)?)).ok()?;
+        object.get(offset..offset.checked_add(size)?)
+    };
+    let strings = contents(table.chunks_exact(64).nth(names)?)?;
+    let mut text = None;
+    for header in table.chunks_exact(64) {
+        let name = usize::try_from(u32::from_le_bytes(elf_field(header, 0)?)).ok()?;
+        if strings.get(name..)?.starts_with(b".text\0")
+            && (u32::from_le_bytes(elf_field(header, 4)?) != 1
+                || text.replace(contents(header)?).is_some())
+        {
+            return None;
+        }
+    }
+    text
+}
+
+fn assembler_encodings_match() -> CaseResult {
+    let case = AssemblyCase::start()?;
+    let object = case.assemble("encodings")?;
+    let bytes = io_at(&object, fs::read(&object))?;
+    let actual = object_text(&bytes).ok_or("bas object has no valid .text section")?;
+    let path = case.corpus.join("encodings.hex");
+    let hex_table = io_at(&path, fs::read_to_string(&path))?;
+    let expected = hex_table
+        .split_ascii_whitespace()
+        .map(|byte| u8::from_str_radix(byte, 16))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    if actual != expected || expected.is_empty() {
+        return Err("bas .text differs from the Intel SDM encoding table".into());
+    }
+    Ok(())
+}
+
+fn assembler_object_runs() -> CaseResult {
+    let case = AssemblyCase::start()?;
+    for name in BAS_PROGRAMS {
+        let object = case.assemble(name)?;
+        let object_name = format!("{name}.o");
+        let elf_name = format!("{name}.elf");
+        let elf = case.corpus.join(&elf_name);
+        let path = case.corpus.join(format!("{name}.link.json"));
+        let receipt: Value = serde_json::from_slice(&io_at(&path, fs::read(&path))?)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        let inputs = receipt["inputObjects"]
+            .as_object()
+            .filter(|inputs| inputs.len() == 1)
+            .ok_or_else(|| format!("{name}: expected one object in link receipt"))?;
+        let map = receipt["map"]
+            .as_str()
+            .ok_or_else(|| format!("{name}: missing lld map"))?;
+        let map_input = format!("{object_name}:(.text)");
+        if !map
+            .lines()
+            .any(|line| line.split_ascii_whitespace().last() == Some(map_input.as_str()))
+        {
+            return Err(format!("{name}: lld map does not name {object_name}").into());
+        }
+        if inputs.get(&object_name).and_then(Value::as_str) != Some(file_sha256(&object)?.as_str())
+        {
+            return Err(format!("{name}: fresh object differs from the recorded lld input").into());
+        }
+        if receipt["elf"]["name"] != elf_name || receipt["elf"]["sha256"] != file_sha256(&elf)? {
+            return Err(format!("{name}: staged ELF differs from the link receipt").into());
+        }
+        run_expected(&case.corpus, name)?;
+    }
+    Ok(())
+}
+
+fn assembler_bad_input_located() -> CaseResult {
+    let case = AssemblyCase::start()?;
+    let source = case.corpus.join("bad-input.s");
+    let object = case.scratch.join("bad-input.o");
+    let result = case.run(&source, &object)?;
+    let location = format!("{}:2:", source.display());
+    if !result.status.code().is_some_and(|code| code != 0)
+        || !String::from_utf8_lossy(&result.stderr).starts_with(&location)
+        || object.exists()
+    {
+        return Err(format!(
+            "expected nonzero exit and {location} with no output object, got {}: {}",
+            result.status,
+            String::from_utf8_lossy(&result.stderr).trim_end()
+        )
+        .into());
     }
     Ok(())
 }

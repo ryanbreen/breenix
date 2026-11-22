@@ -1857,7 +1857,18 @@ seed. Metal delivers a separate fixture root for the selected suite.
 The guest checks the staged file set and digests against the manifest and
 executes the listed reference ELFs against their independent `.expect` files. The scorer
 compares the guest's manifest digest with the retained build record for the
-boot's commit. Other toolchain categories remain planned.
+boot's commit.
+
+The `toolchain/assembler-object` milestone measures the three `assembler`
+cases on x86-64. They invoke `/opt/breenix-dev/25.2/bin/bas` and compare
+the resulting `.text` with the Intel SDM byte table, or check that malformed
+assembly exits nonzero and reports its file and line. For `object-runs`, the
+bundle builder assembles two programs with host bas and links them with the
+pinned lld. Each receipt retains the lld map, its input object name and
+SHA-256, and the executable name and SHA-256. The guest reassembles each
+source, checks the fresh object digest against the map's named link input,
+checks the staged executable's digest, and runs it against its `.expect`.
+AArch64 encoding and relocation output are scheduled for A1.
 
 ```bash
 scripts/boot-interactive.sh --mode suite --suite toolchain --milestone toolchain/sysroot-oracle

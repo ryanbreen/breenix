@@ -78,3 +78,12 @@ case crosses the integer argument register boundary and consumes a promoted
 floating argument from both the original and a copied list. The atomics
 case exercises scalar fetch, failed and successful compare-exchange, and flag
 operations in one thread.
+
+## Object checker
+
+`toolchain/tests/elfcheck/` checks x86-64 ELF64 relocatable objects against
+the pinned gABI 4.3 and psABI 1.0 alone. It covers the ELF header, the section
+header table, string tables, the symbol table, RELA entries and section groups.
+`README.md` there cites the clause behind each of its 64 checks. Each check
+has a hand-built negative control in `fixtures.py`. bas output is checked
+against it from plan step 25.3a1.
