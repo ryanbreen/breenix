@@ -1,16 +1,23 @@
-//! elfcheck: checks that an ELF64 x86-64 relocatable object, or a static
-//! executable, is well formed.
+//! elfcheck: checks that an ELF64 relocatable object, or a static
+//! executable, for x86-64 or AArch64 is well formed.
 //!
-//! Written from three pinned documents alone (digests in
+//! Written from four pinned documents alone (digests in
 //! toolchain/docs/spec-ledger.md): the ELF gABI (Xinuos ELF Object File
 //! Format, version 4.3 draft, 2025-09-04), the System V AMD64 psABI (Draft
-//! 1.0, 2018-01-28) and the Linux Standard Base Core Specification 5.0,
-//! Generic Part, chapter 11 (E25 ruling 8). No assembler, linker, archiver,
-//! loader or ELF library source was read, and this crate shares no code with
-//! the tools it checks (bobj, bas, bld, bar, bnm). Structure layouts follow
-//! gABI Listings 2.1 (Elf64_Ehdr), 3.1 (Elf64_Shdr), 5.1 (Elf64_Sym), 6.1
-//! (Elf64_Rela) and 7.1 (Elf64_Phdr). toolchain/tests/elfcheck/README.md
+//! 1.0, 2018-01-28), ELF for the Arm 64-bit Architecture (AAELF64, abi-aa
+//! 2025Q1, E25 ruling 29) and the Linux Standard Base Core Specification
+//! 5.0, Generic Part, chapter 11 (E25 ruling 8). No assembler, linker,
+//! archiver, loader or ELF library source was read, and this crate shares no
+//! code with the tools it checks (bobj, bas, bld, bar, bnm). Structure layouts
+//! follow gABI Listings 2.1 (Elf64_Ehdr), 3.1 (Elf64_Shdr), 5.1 (Elf64_Sym),
+//! 6.1 (Elf64_Rela) and 7.1 (Elf64_Phdr). toolchain/tests/elfcheck/README.md
 //! states each rule with its clause; the check ids are the ones listed there.
+//!
+//! The caller names the [`Machine`]. Its processor supplement (the psABI for
+//! x86-64, AAELF64 for AArch64) supplies e_machine, the e_flags rule, the
+//! processor-specific section types, section flags, st_other bits and
+//! segment types, and the relocation table. The rules and check ids are the
+//! same for both machines.
 //!
 //! Malformed input is reported rather than a panic: each rule that fails is a
 //! [`Finding`] located at its section, symbol, segment or relocation entry,
@@ -141,6 +148,34 @@ pub enum Kind {
     Executable,
 }
 
+/// The processor the file must be for; x86-64 unless the caller names another.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Machine {
+    /// EM_X86_64, checked against the System V AMD64 psABI.
+    #[default]
+    X86_64,
+    /// EM_AARCH64, checked against AAELF64.
+    Aarch64,
+}
+
+impl Machine {
+    /// The machines, in the order `elfcheck --machine` names them.
+    pub const ALL: &'static [Machine] = &[Machine::X86_64, Machine::Aarch64];
+
+    /// The name `elfcheck --machine` takes: `x86_64` or `aarch64`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Machine::X86_64 => "x86_64",
+            Machine::Aarch64 => "aarch64",
+        }
+    }
+
+    /// The machine called `name`, if there is one.
+    pub fn named(name: &str) -> Option<Machine> {
+        Machine::ALL.iter().copied().find(|m| m.name() == name)
+    }
+}
+
 /// Where in the file a finding is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Location {
@@ -207,9 +242,14 @@ pub struct Report {
     pub error: Option<ReadError>,
 }
 
-/// Checks `data` as the file type `kind` names.
+/// Checks `data` as the file type `kind` names, for x86-64.
 pub fn check(data: &[u8], kind: Kind) -> Report {
-    let mut checker = Checker::new(data, kind == Kind::Executable);
+    check_machine(data, kind, Machine::X86_64)
+}
+
+/// Checks `data` as the file type `kind` names, for `machine`.
+pub fn check_machine(data: &[u8], kind: Kind, machine: Machine) -> Report {
+    let mut checker = Checker::new(data, kind == Kind::Executable, machine);
     let error = checker.run().err();
     Report {
         findings: checker.findings,
@@ -225,19 +265,22 @@ const RELA_SIZE: u64 = 24;
 const PHDR_SIZE: u64 = 56;
 const GROUP_WORD: u64 = 4;
 
-// gABI Tables 2.1-2.6; psABI 4.1.1 and 4.1.2.
+// gABI Tables 2.1-2.6; psABI 4.1.1 and 4.1.2; AAELF64 5.2 (EM_AARCH64).
 const ELFCLASS64: u64 = 2;
 const ELFDATA2LSB: u64 = 1;
 const EV_CURRENT: u64 = 1;
 const ET_REL: u64 = 1;
 const ET_EXEC: u64 = 2;
 const EM_X86_64: u64 = 62;
+const EM_AARCH64: u64 = 183;
 const PN_XNUM: u64 = 0xffff;
 
-// psABI 3.3.3: the smallest page size a conforming system may use.
+// psABI 3.3.3: the smallest page size a conforming system may use. AArch64
+// uses the same floor, the Arm ARM's smallest translation granule (4 KB).
 const MIN_PAGE_SIZE: u64 = 4096;
 
-// gABI Table 3.2 (section types); psABI Table 4.2 (SHT_X86_64_UNWIND).
+// gABI Table 3.2 (section types); psABI Table 4.2 (SHT_X86_64_UNWIND);
+// AAELF64 5.3.2 (SHT_AARCH64_ATTRIBUTES).
 const SHT_NULL: u32 = 0;
 const SHT_PROGBITS: u32 = 1;
 const SHT_SYMTAB: u32 = 2;
@@ -253,9 +296,11 @@ const SHT_SYMTAB_SHNDX: u32 = 18;
 const SHT_LOOS: u32 = 0x6000_0000;
 const SHT_HIOS: u32 = 0x6fff_ffff;
 const SHT_X86_64_UNWIND: u32 = 0x7000_0001;
+const SHT_AARCH64_ATTRIBUTES: u32 = 0x7000_0003;
 const SHT_LOUSER: u32 = 0x8000_0000;
 
-// gABI Table 3.3 (section flags); psABI Table 4.1 (SHF_X86_64_LARGE).
+// gABI Table 3.3 (section flags); psABI Table 4.1 (SHF_X86_64_LARGE);
+// AAELF64 5.3.3 (SHF_AARCH64_PURECODE).
 const SHF_WRITE: u64 = 0x1;
 const SHF_ALLOC: u64 = 0x2;
 const SHF_EXECINSTR: u64 = 0x4;
@@ -269,7 +314,9 @@ const SHF_TLS: u64 = 0x400;
 const SHF_COMPRESSED: u64 = 0x800;
 const SHF_MASKOS: u64 = 0x0ff0_0000;
 const SHF_X86_64_LARGE: u64 = 0x1000_0000;
-const SHF_KNOWN: u64 = SHF_WRITE
+const SHF_AARCH64_PURECODE: u64 = 0x2000_0000;
+/// The gABI's flags; each machine adds its processor-specific ones.
+const SHF_GENERIC: u64 = SHF_WRITE
     | SHF_ALLOC
     | SHF_EXECINSTR
     | SHF_MERGE
@@ -280,8 +327,7 @@ const SHF_KNOWN: u64 = SHF_WRITE
     | SHF_GROUP
     | SHF_TLS
     | SHF_COMPRESSED
-    | SHF_MASKOS
-    | SHF_X86_64_LARGE;
+    | SHF_MASKOS;
 
 // gABI Table 3.1 (special section indexes).
 const SHN_UNDEF: u64 = 0;
@@ -303,9 +349,12 @@ const STT_COMMON: u64 = 5;
 const STT_TLS: u64 = 6;
 const STV_PROTECTED: u64 = 3;
 const STV_EXPORTED: u64 = 4;
+// AAELF64 5.5.1: the one processor-specific st_other bit.
+const STO_AARCH64_VARIANT_PCS: u64 = 0x80;
 
 // gABI Tables 7.1 and 7.2; psABI Table 5.1 (PT_GNU_EH_FRAME, PT_SUNW_UNWIND);
-// LSB Core 5.0 Generic Part Table 11-1 (PT_GNU_STACK).
+// LSB Core 5.0 Generic Part Table 11-1 (PT_GNU_EH_FRAME, PT_GNU_STACK), for
+// both machines; AAELF64 6.1 (the PT_AARCH64_* types).
 const PT_NULL: u32 = 0;
 const PT_LOAD: u32 = 1;
 const PT_DYNAMIC: u32 = 2;
@@ -317,6 +366,9 @@ const PT_TLS: u32 = 7;
 const PT_SUNW_UNWIND: u32 = 0x6464_e550;
 const PT_GNU_EH_FRAME: u32 = 0x6474_e550;
 const PT_GNU_STACK: u32 = 0x6474_e551;
+const PT_AARCH64_ARCHEXT: u32 = 0x7000_0000;
+const PT_AARCH64_UNWIND: u32 = 0x7000_0001;
+const PT_AARCH64_MEMTAG_MTE: u32 = 0x7000_0002;
 const PF_X: u32 = 0x1;
 const PF_W: u32 = 0x2;
 const PF_R: u32 = 0x4;
@@ -376,8 +428,12 @@ struct Segment {
     known: bool,
 }
 
-/// gABI 3.3 and psABI 4.2.2: the section types an object may use.
-fn type_allowed(kind: u32) -> bool {
+/// gABI 3.3, psABI 4.2.2 and AAELF64 5.3.2: the section types an object may use.
+fn type_allowed(kind: u32, machine: Machine) -> bool {
+    let processor = match machine {
+        Machine::X86_64 => kind == SHT_X86_64_UNWIND,
+        Machine::Aarch64 => kind == SHT_AARCH64_ATTRIBUTES,
+    };
     matches!(
         kind,
         SHT_NULL
@@ -391,23 +447,42 @@ fn type_allowed(kind: u32) -> bool {
             | SHT_FINI_ARRAY
             | SHT_PREINIT_ARRAY
             | SHT_GROUP
-            | SHT_X86_64_UNWIND
-    ) || (SHT_LOOS..=SHT_HIOS).contains(&kind)
+    ) || processor
+        || (SHT_LOOS..=SHT_HIOS).contains(&kind)
         || kind >= SHT_LOUSER
 }
 
-/// gABI 3.5 and 6.1: the types whose contents a relocation section may modify.
-fn relocatable_target(kind: u32) -> bool {
+/// gABI 3.5 and 6.1: the types whose contents a relocation section may
+/// modify. On x86-64 that includes SHT_X86_64_UNWIND. AAELF64's one
+/// processor-specific section type, SHT_AARCH64_ATTRIBUTES (5.3.2, 5.3.6),
+/// holds build attributes, which are not relocated.
+fn relocatable_target(kind: u32, machine: Machine) -> bool {
     matches!(
         kind,
-        SHT_PROGBITS
-            | SHT_NOTE
-            | SHT_INIT_ARRAY
-            | SHT_FINI_ARRAY
-            | SHT_PREINIT_ARRAY
-            | SHT_X86_64_UNWIND
-    ) || (SHT_LOOS..=SHT_HIOS).contains(&kind)
+        SHT_PROGBITS | SHT_NOTE | SHT_INIT_ARRAY | SHT_FINI_ARRAY | SHT_PREINIT_ARRAY
+    ) || (machine == Machine::X86_64 && kind == SHT_X86_64_UNWIND)
+        || (SHT_LOOS..=SHT_HIOS).contains(&kind)
         || kind >= SHT_LOUSER
+}
+
+/// gABI Table 3.3 with psABI Table 4.1 or AAELF64 5.3.3: the section flags
+/// a pinned document assigns.
+fn known_flags(machine: Machine) -> u64 {
+    SHF_GENERIC
+        | match machine {
+            Machine::X86_64 => SHF_X86_64_LARGE,
+            Machine::Aarch64 => SHF_AARCH64_PURECODE,
+        }
+}
+
+/// gABI 5 (visibility in the low bits) with AAELF64 5.5.1: the st_other bits
+/// a pinned document assigns: the three visibility bits, plus 0x80 on
+/// AArch64. psABI 1.0 adds no bit for x86-64.
+fn known_other(machine: Machine) -> u64 {
+    7 | match machine {
+        Machine::X86_64 => 0,
+        Machine::Aarch64 => STO_AARCH64_VARIANT_PCS,
+    }
 }
 
 /// The entry size a table section must have (gABI Listings 5.1, 6.1; 3.9), or 0.
@@ -419,32 +494,52 @@ fn table_entsize(kind: u32) -> u64 {
     }
 }
 
-/// A relocation type from psABI Tables 4.9 and 4.10 with its Figure 4.1
-/// field width for LP64, or the reason the type is refused.
+/// A relocation type with the width of the field it writes, or the reason
+/// the type is refused.
 struct RelocType {
     width: Option<u64>,
     tls: bool,
     reason: &'static str,
 }
 
-fn reloc_type(kind: u64) -> RelocType {
+impl RelocType {
+    fn ok(width: u64) -> RelocType {
+        RelocType {
+            width: Some(width),
+            tls: false,
+            reason: "",
+        }
+    }
+
+    fn tls(width: u64) -> RelocType {
+        RelocType {
+            width: Some(width),
+            tls: true,
+            reason: "",
+        }
+    }
+
+    fn refused(reason: &'static str) -> RelocType {
+        RelocType {
+            width: None,
+            tls: false,
+            reason,
+        }
+    }
+}
+
+fn reloc_type(kind: u64, machine: Machine) -> RelocType {
+    match machine {
+        Machine::X86_64 => reloc_type_x86_64(kind),
+        Machine::Aarch64 => reloc_type_aarch64(kind),
+    }
+}
+
+/// psABI Tables 4.9 and 4.10, with each type's Figure 4.1 field width for LP64.
+fn reloc_type_x86_64(kind: u64) -> RelocType {
     const PROFILE: &str = "a load-time relocation (profile)";
     const NONCONFORMING: &str = "not conformant to the psABI (4.4.1)";
-    let ok = |width: u64| RelocType {
-        width: Some(width),
-        tls: false,
-        reason: "",
-    };
-    let tls = |width: u64| RelocType {
-        width: Some(width),
-        tls: true,
-        reason: "",
-    };
-    let refused = |reason: &'static str| RelocType {
-        width: None,
-        tls: false,
-        reason,
-    };
+    let (ok, tls, refused) = (RelocType::ok, RelocType::tls, RelocType::refused);
     match kind {
         0 => ok(0),                        // NONE
         1 => ok(8),                        // 64
@@ -471,17 +566,57 @@ fn reloc_type(kind: u64) -> RelocType {
     }
 }
 
-/// gABI 7.2 and psABI Table 5.1: the reason a segment type is refused in a
-/// static executable; an accepted type has no reason.
-fn segment_type_refused(kind: u32) -> Option<&'static str> {
+/// AAELF64 5.7.4-5.7.16, ELF64 codes. A data relocation's width is the
+/// datum it writes (5.7.5, 5.7.6 GOT-relative data); the other accepted
+/// static relocations each patch one 4-byte A64 instruction. Codes 512-573 are the
+/// thread-local storage relocations of 5.7.11, each naming a TLS symbol.
+fn reloc_type_aarch64(kind: u64) -> RelocType {
+    let (ok, tls, refused) = (RelocType::ok, RelocType::tls, RelocType::refused);
     match kind {
-        PT_LOAD | PT_NOTE | PT_PHDR | PT_TLS | PT_SUNW_UNWIND | PT_GNU_EH_FRAME | PT_GNU_STACK => {
-            None
+        0 | 256 => ok(0),   // NONE; 256 is withdrawn and read as NONE (5.7.3.2, 5.7.4)
+        257 | 260 => ok(8), // ABS64, PREL64
+        258 | 261 => ok(4), // ABS32, PREL32
+        259 | 262 => ok(2), // ABS16, PREL16
+        // MOVW_UABS_G0-G3, MOVW_SABS_G0-G2, LD_PREL_LO19, ADR_PREL_LO21,
+        // ADR_PREL_PG_HI21(_NC), ADD_ABS_LO12_NC, LDST8_ABS_LO12_NC, TSTBR14, CONDBR19.
+        263..=280 => ok(4),
+        // JUMP26, CALL26, LDST16/32/64_ABS_LO12_NC, MOVW_PREL_G0-G3.
+        282..=293 => ok(4),
+        // LDST128_ABS_LO12_NC, MOVW_GOTOFF_G0-G3.
+        299..=306 => ok(4),
+        307 => ok(8), // GOTREL64
+        308 => ok(4), // GOTREL32
+        // GOT_LD_PREL19, LD64_GOTOFF_LO15, ADR_GOT_PAGE, LD64_GOT_LO12_NC, LD64_GOTPAGE_LO15.
+        309..=313 => ok(4),
+        314 | 315 => ok(4), // PLT32, GOTPCREL32 (4-byte data)
+        // General and local dynamic, initial and local exec, and descriptors.
+        512..=573 => tls(4),
+        580..=600 | 1040..=1060 => {
+            refused("reserved for the PAuth ABI extension, in Alpha (AAELF64 5.7.16)")
         }
-        PT_DYNAMIC | PT_INTERP => {
+        // COPY, GLOB_DAT, JUMP_SLOT, RELATIVE, TLS_IMPDEF1/2, TLS_TPREL, TLSDESC, IRELATIVE.
+        1024..=1032 => refused("a dynamic relocation (AAELF64 5.7.13; profile)"),
+        0xe000..=0xefff => refused("a private relocation for vendor experiments (AAELF64 5.7.14)"),
+        0xf000..=0xffff => refused("a platform ABI relocation (AAELF64 5.7.14)"),
+        _ => refused("not allocated by AAELF64 2025Q1 (5.7.15)"),
+    }
+}
+
+/// gABI 7.2, psABI Table 5.1, LSB Core 5.0 Table 11-1 and AAELF64 6.1: the
+/// reason a segment type is refused in a static executable; an accepted type
+/// has no reason.
+fn segment_type_refused(kind: u32, machine: Machine) -> Option<&'static str> {
+    match (kind, machine) {
+        (PT_LOAD | PT_NOTE | PT_PHDR | PT_TLS | PT_GNU_EH_FRAME | PT_GNU_STACK, _)
+        | (PT_SUNW_UNWIND, Machine::X86_64)
+        | (PT_AARCH64_UNWIND, Machine::Aarch64) => None,
+        (PT_AARCH64_ARCHEXT | PT_AARCH64_MEMTAG_MTE, Machine::Aarch64) => Some(
+            "an AArch64 segment type the static-executable profile does not use (AAELF64 6.1; profile)",
+        ),
+        (PT_DYNAMIC | PT_INTERP, _) => {
             Some("a dynamic linking segment in a static executable (profile)")
         }
-        PT_SHLIB => Some("PT_SHLIB does not conform to the ABI (gABI 7.2)"),
+        (PT_SHLIB, _) => Some("PT_SHLIB does not conform to the ABI (gABI 7.2)"),
         _ => Some("p_type is reserved, or OS- or processor-specific and not assigned"),
     }
 }
@@ -505,6 +640,7 @@ struct Checker<'a> {
     data: &'a [u8],
     size: u64,
     exec: bool,
+    machine: Machine,
     findings: Vec<Finding>,
     /// The section header table, when it could be read.
     sections: Option<Vec<Section>>,
@@ -522,11 +658,12 @@ struct Checker<'a> {
 }
 
 impl<'a> Checker<'a> {
-    fn new(data: &'a [u8], exec: bool) -> Checker<'a> {
+    fn new(data: &'a [u8], exec: bool, machine: Machine) -> Checker<'a> {
         Checker {
             data,
             size: data.len() as u64,
             exec,
+            machine,
             findings: Vec::new(),
             sections: None,
             shnames: 0,
@@ -667,8 +804,20 @@ impl<'a> Checker<'a> {
         if self.exec && e_type != ET_EXEC {
             self.report(EhdrType, f, "e_type is not ET_EXEC");
         }
-        if machine != EM_X86_64 {
-            self.report(EhdrMachine, f, "e_machine is not EM_X86_64");
+        let (em, em_detail, flags_detail) = match self.machine {
+            Machine::X86_64 => (
+                EM_X86_64,
+                "e_machine is not EM_X86_64",
+                "psABI 1.0 assigns no e_flags bits",
+            ),
+            Machine::Aarch64 => (
+                EM_AARCH64,
+                "e_machine is not EM_AARCH64",
+                "AAELF64 5.2 requires e_flags 0",
+            ),
+        };
+        if machine != em {
+            self.report(EhdrMachine, f, em_detail);
         }
         if version != EV_CURRENT {
             self.report(EhdrVersion, f, "e_version is not EV_CURRENT");
@@ -686,7 +835,7 @@ impl<'a> Checker<'a> {
             );
         }
         if flags != 0 {
-            self.report(EhdrFlags, f, "psABI 1.0 assigns no e_flags bits");
+            self.report(EhdrFlags, f, flags_detail);
         }
         if ehsize != EHDR_SIZE {
             self.report(EhdrEhsize, f, "e_ehsize is not 64");
@@ -911,10 +1060,10 @@ impl<'a> Checker<'a> {
                     at,
                     "SHT_SYMTAB_SHNDX is not supported",
                 );
-            } else if !type_allowed(s.kind) {
+            } else if !type_allowed(s.kind, self.machine) {
                 self.report(ShdrType, at, "sh_type is reserved or not allowed in ET_REL");
             }
-            if s.flags & !SHF_KNOWN != 0 {
+            if s.flags & !known_flags(self.machine) != 0 {
                 self.report(
                     ShdrFlags,
                     at,
@@ -1181,7 +1330,7 @@ impl<'a> Checker<'a> {
             if kind > STT_TLS {
                 self.report(SymType, at, "type is reserved, OS- or processor-specific");
             }
-            if other & !7 != 0 || other & 7 > STV_EXPORTED {
+            if other & !known_other(self.machine) != 0 || other & 7 > STV_EXPORTED {
                 self.report(SymOther, at, "st_other sets a reserved bit or visibility");
             }
             if bind == STB_LOCAL && other & 7 == STV_PROTECTED {
@@ -1278,7 +1427,7 @@ impl<'a> Checker<'a> {
             let target = if info == 0
                 || info >= shnum
                 || !self.sections()[info].active
-                || !relocatable_target(self.sections()[info].kind)
+                || !relocatable_target(self.sections()[info].kind, self.machine)
             {
                 self.report(
                     RelaInfo,
@@ -1300,7 +1449,7 @@ impl<'a> Checker<'a> {
                 let offset = self.read(e, 0, 8, what)?;
                 let info = self.read(e, 8, 8, what)?;
                 let (sym, kind) = (info >> 32, info & 0xffff_ffff);
-                let t = reloc_type(kind);
+                let t = reloc_type(kind, self.machine);
                 if t.width.is_none() {
                     self.report(RelaType, at, t.reason);
                 }
@@ -1428,7 +1577,7 @@ impl<'a> Checker<'a> {
             if p.kind == PT_NULL {
                 continue; // gABI 7.2: the other members are undefined.
             }
-            if let Some(reason) = segment_type_refused(p.kind) {
+            if let Some(reason) = segment_type_refused(p.kind, self.machine) {
                 self.report(PhdrType, at, reason);
                 continue;
             }
