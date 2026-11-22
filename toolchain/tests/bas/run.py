@@ -17,9 +17,6 @@ CHECK = "bas::exit42_object_passes_elfcheck"
 ADDRESSING_CHECK = "bas::sib_rip_forms_match_sdm_table"
 RELOCATION_CHECK = "bas::rela_pc32_for_external_call"
 INTEGER_CHECK = "bas::encode_mov_r64_imm32"
-# C oracle build inputs for parity.py during 25.R.
-SOURCES = [TOOLCHAIN / "bas/bas.c", TOOLCHAIN / "common/elf64.c"]
-STRICT = ["-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic"]
 
 # Intel SDM Vol. 2 MOV opcode table B8+rd id, Table 2-4 REX.B,
 # and AMD APM Vol. 1 Figure 3-3 for the r32 register numbers.

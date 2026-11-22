@@ -1,11 +1,12 @@
 # elfcheck
 
 `elfcheck` checks that an ELF64 relocatable object for x86-64 is well formed,
-and with `--exec` that a static x86-64 executable is. It is written from two
-pinned documents alone (digests in `toolchain/docs/spec-ledger.md`):
+and with `--exec` that a static x86-64 executable is. It is written from the
+following pinned documents (digests in `toolchain/docs/spec-ledger.md`):
 
 - gABI: Xinuos ELF Object File Format, version 4.3 draft, 2025-09-04;
-- psABI: System V AMD64 ABI, Draft 1.0, 2018-01-28.
+- psABI: System V AMD64 ABI, Draft 1.0, 2018-01-28;
+- Linux Standard Base Core 5.0, Table 11-1 and §11.2.
 
 No assembler, linker, archiver, loader or ELF library source was read to write
 it, its fixtures or its runner. bas (plan step 25.3) and bld (25.4) are checked
@@ -27,34 +28,20 @@ The caller names the file type it expects: an executable checked without
 
 ## The Rust elfcheck (plan step 25.R)
 
-`toolchain/elfcheck` is the same checker in Rust, written from the gABI, the
-psABI and LSB Core 5.0 alone (E25 ruling 8; it cites Table 11-1 for
-PT_GNU_STACK). It shares no code with bobj or the tools it checks, forbids
-`unsafe`, builds with overflow checks on, and reports malformed input as
-located findings rather than a panic. Until R4 deletes `elfcheck.c`, the C checker
-is its parity oracle:
-
-```sh
-cd toolchain && cargo test -p elfcheck
-```
-
-`elfcheck::verdicts_equal_c_elfcheck` builds `elfcheck.c` with `$CC` (default
-`cc`) under the strict flags below, writes the fixtures through
-`write_fixtures.py`, and requires the same exit status and check ids from both
-checkers, and the fixture's expectation, for the 2 baselines and 165 controls.
-`elfcheck::malformed_input_is_error_not_panic` truncates and corrupts those
-files and requires a report without a panic for each.
+The Cargo package at `toolchain/elfcheck` has no dependencies on the other tools.
+It forbids `unsafe` and builds with overflow checks. Its
+`elfcheck::malformed_input_is_error_not_panic` test truncates and corrupts
+the fixture files and checks that the reader returns a report without panicking.
 
 ## Running the checks
 
 ```sh
+(cd toolchain && cargo build --release -p elfcheck && cargo test -p elfcheck)
 python3 toolchain/tests/elfcheck/run.py --clang /absolute/path/to/clang \
-    --lld /absolute/path/to/ld.lld --host-arch arm64 --host-arch x86_64
+    --lld /absolute/path/to/ld.lld --elfcheck "$PWD/toolchain/target/release/elfcheck"
 ```
 
-The runner builds `elfcheck.c` under `-std=c11 -Wall -Wextra -Werror
--pedantic`, plainly and under ASan and UBSan, and on macOS once per
-`--host-arch`. Each build must:
+The runner checks the Cargo-built elfcheck. It must:
 
 - list exactly the check ids below;
 - accept the hand-built baseline object from `fixtures.py`, and with `--exec`
@@ -265,15 +252,10 @@ sections of type SHT_NOBITS.)" <!-- claim-lint:ok: quoted from gABI 4.3 section 
 
 ### Where PT_GNU_STACK's value comes from
 
-PT_GNU_STACK is not in gABI 4.3, psABI 1.0 or the pinned GNU ld manual: gABI
-Table 7.1 reserves 0x60000000-0x6fffffff for operating systems, psABI Table 5.1
-assigns only PT_GNU_EH_FRAME (0x6474e550) and PT_SUNW_UNWIND in that range, and
-the ld manual's PHDRS section gives numbers for PT_NULL through PT_TLS only.
-elfcheck uses 0x6474e551, recorded from black-box behaviour: given
-`linker.ld`'s `stack PT_GNU_STACK FLAGS(6)`, lld writes that `p_type`, and
-llvm-readelf names the entry GNU_STACK. The runner's lld executables pin it: a
-different value would make elfcheck reject them. The spec ledger records this
-gap for the E25 coordinator.
+Linux Standard Base Core 5.0 Table 11-1 assigns `PT_GNU_STACK` the value
+`0x6474e551`. Section 11.2 specifies the stack permissions in `p_flags`.
+The runner also checks the executable produced by lld with the Breenix linker
+script's stack declaration.
 
 ### What `--exec` does not check
 

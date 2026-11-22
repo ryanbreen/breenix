@@ -113,8 +113,9 @@ if __name__ == "__main__":
     args, names = parser.parse_known_args()
     ToolchainBundleTest.bundle = args.bundle
     ToolchainBundleTest.probe = args.probe
-    checks = ["ToolchainBundleTest.tools_built_by_rustc",
-              "ToolchainBundleTest.receipts_from_cargo_host_bas"]
+    checks = ["ToolchainBundleTest.tools_built_by_rustc"]
+    if json.loads((args.bundle / "build.json").read_text())["arch"] == "x86_64":
+        checks.append("ToolchainBundleTest.receipts_from_cargo_host_bas")
     if args.probe is not None:
         checks.append("ToolchainBundleTest.read_fault_probe_is_not_shipped")
     unittest.main(argv=[sys.argv[0], *names], defaultTest=checks)

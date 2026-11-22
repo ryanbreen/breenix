@@ -16,7 +16,6 @@ CHECK = "bld::pc32_is_s_plus_a_minus_p"
 ARCHIVE_CHECK = "bld::two_archive_cycle_needs_group"
 TLS_CHECK = "bld::tbss_takes_no_file_bytes"
 READ_CHECK = "bld::reads_large_archives_in_blocks"
-STRICT = ["-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic"]
 
 
 def require(condition, message):
