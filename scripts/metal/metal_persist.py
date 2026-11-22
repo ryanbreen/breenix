@@ -167,7 +167,7 @@ def manager_config(site, countdown=5):
 
 
 def intent(target, root=None, home=None, tests=None, userland=None, previous_userland=None,
-           command_line=None, mounts=None, mount_guids=None):
+           command_line=None, mounts=None, mount_guids=None, fixtures=None):
     """A boot intent. Writable mounts need the layout's role-to-GUID map."""
     if mounts is not None and (root is not None or home is not None):
         raise ValueError('mounts cannot be mixed with root or home')
@@ -213,8 +213,12 @@ def intent(target, root=None, home=None, tests=None, userland=None, previous_use
         lines.append('previous-userland ' + previous_userland)
     if tests is not None:
         lines.append(f'tests {tests[0]} {tests[1]}')
+    if fixtures:
+        if root is None or home is not None or mounts is not None or tests is not None or not target.startswith('suite '):
+            raise ValueError('filesystem fixtures need a test-root suite intent')
+        lines.extend(f"fixture {item['offset']} {item['length']} {item['role']}" for item in fixtures)
     result = ('\n'.join(lines) + '\n').encode('ascii')
-    if mounts is not None and len(result) > 1024:
+    if (mounts is not None or fixtures) and len(result) > 1024:
         raise ValueError('boot intent exceeds 1024 bytes')
     return result
 

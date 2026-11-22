@@ -19,10 +19,7 @@ root_fs_scratch() {
     BREENFS_SCRATCH_ARGS=()
     if [ "$MODE" = suite ] && [[ ",$SUITE," == *,filesystem,* ]]; then
         local scratch="${WRITABLE%/*}/breenfs-scratch.img"
-        local target="${CARGO_TARGET_DIR:-$ROOT/tools/breenfs/target}"
-        rm -f "$scratch"
-        run_build "$target/release/breenfs-mkfs" --size 67108864 "$scratch"
-        # QEMU allocates MMIO downward; discovery scans upward: root, read fixture, scratch.
+        # QEMU allocates MMIO downward, so discovery finds scratch after the other fixtures.
         BREENFS_SCRATCH_ARGS=(-device virtio-blk-device,drive=breenfs-scratch
             -drive "if=none,id=breenfs-scratch,format=raw,file=$scratch")
     fi

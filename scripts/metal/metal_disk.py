@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import shutil
 import struct
 from urllib.parse import urlsplit, urlunsplit
 
@@ -24,6 +25,75 @@ HEADER = struct.Struct('<16sQQ512s512s')
 MAGIC_2 = b'BREENIX-SUITE-2\0'
 HEADER_2 = struct.Struct('<16sQQ16s512s512s')
 UPLOAD_PREFIX = '/suite-disk/'
+FIXTURE_ROLES = ('read', 'corrupt-node', 'corrupt-data', 'scratch')
+FIXTURE_BYTES = 64 << 20
+MAX_U64 = (1 << 64) - 1
+
+
+def validate_fixture_slices(root_bytes, partition_bytes, slices):
+    """Check the contiguous, partition-relative byte ranges in ARM discovery order."""
+    sector = metal_image.SECTOR
+    if (not 0 < root_bytes <= partition_bytes <= MAX_U64 or root_bytes % sector
+            or partition_bytes % sector or len(slices) != len(FIXTURE_ROLES)):
+        raise ValueError('invalid filesystem fixture geometry')
+    end = root_bytes
+    for role, item in zip(FIXTURE_ROLES, slices):
+        offset, length = item['offset'], item['length']
+        if (item['role'] != role or length != FIXTURE_BYTES or offset < 0
+                or offset > MAX_U64 - length or offset != end or offset + length > partition_bytes):
+            raise ValueError(f'filesystem fixture {role} does not fit its recorded slice')
+        end = offset + length
+    return end
+
+
+def test_partition_bytes(layout, guid):
+    part = metal_persist.check_layout(layout)['partitions']['test']
+    if part['guid'] != guid:
+        raise ValueError('filesystem fixtures need the recorded test-root partition')
+    return (part['last'] - part['first'] + 1) * metal_image.SECTOR
+
+
+def append_fixtures(image, root_bytes, partition_bytes, inputs, built):
+    """Verify the build artifacts and bounds before extending the firmware delivery image."""
+    slices = [dict(role=role, offset=root_bytes + index * FIXTURE_BYTES, length=FIXTURE_BYTES)
+              for index, role in enumerate(FIXTURE_ROLES)]
+    size = validate_fixture_slices(root_bytes, partition_bytes, slices)
+    names = [f'breenfs-{role}.img' for role in FIXTURE_ROLES]
+    if set(built) != set(names):
+        raise ValueError('the build must supply the complete filesystem fixture set')
+    for name in names:
+        path = inputs / name
+        if (not path.is_file() or path.stat().st_size != FIXTURE_BYTES
+                or built[name] != dict(size=FIXTURE_BYTES, sha256=metal_image.sha256(path))):
+            raise ValueError(f'filesystem fixture differs from the build record: {name}')
+    with image.open('ab') as payload:
+        for name in names:
+            with (inputs / name).open('rb') as fixture:
+                shutil.copyfileobj(fixture, payload, 1 << 20)
+    if image.stat().st_size != size:
+        raise ValueError('filesystem fixture delivery length differs')
+    return size, slices
+
+
+def unpack_readback(image, root_bytes, slices):
+    """Keep the root's original geometry and derive the scorer's scratch companion from the cold upload."""
+    size = image.stat().st_size
+    if validate_fixture_slices(root_bytes, size, slices) != size:
+        raise ValueError('cold filesystem fixture payload length differs')
+    root = image.with_name('readback-root.img')
+    scratch = slices[-1]
+    with image.open('rb') as wire:
+        for path, offset, remaining in ((root, 0, root_bytes),
+                                        (image.with_name('breenfs-scratch.img'), scratch['offset'], scratch['length'])):
+            wire.seek(offset)
+            with path.open('wb') as target:
+                while remaining:
+                    chunk = wire.read(min(remaining, 1 << 20))
+                    if not chunk:
+                        raise ValueError('short cold filesystem fixture payload')
+                    target.write(chunk)
+                    remaining -= len(chunk)
+    return root
 
 
 def record(facts):
@@ -55,6 +125,11 @@ def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite
     install boot's request writes before the stub stages this root; otherwise the recorded one, if any."""
     the_layout = the_layout or metal_persist.layout()
     previous = metal_persist.test_root()
+    built_fixtures = build.get('filesystemFixtures')
+    use_fixtures = (built_fixtures is not None and mode == 'suite'
+                    and 'filesystem' in (suite or '').split(',') and not (case or '').startswith('power-cut/'))
+    if use_fixtures and not the_layout:
+        raise ValueError('filesystem fixtures require the disposable test-root partition')
     if not the_layout and not previous:
         raise ValueError('disk delivery needs a previously verified install to identify its owned disk')
     writer = Path(__file__).with_name('write-boot-target.sh')
@@ -100,7 +175,11 @@ def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite
     request = inputs / 'suite-disk.cfg'
     if the_layout:
         partition = the_layout['partitions']['test']['guid']
-        request.write_bytes(config_2(1, facts['bytes'], partition, bytes(512), root))
+        size = facts['bytes']
+        if use_fixtures:
+            size, slices = append_fixtures(image, size, test_partition_bytes(the_layout, partition), inputs, built_fixtures)
+            facts.update(fixtureSlices=slices, stagedBytes=size)
+        request.write_bytes(config_2(1, size, partition, bytes(512), root))
         facts['partition'] = partition
     else:
         request.write_bytes(config(1, facts['bytes'], record(previous), root))
@@ -114,10 +193,16 @@ def readback_checks(directory, suite):
     return m.read_json(directory / 'definition/docs/suites' / (suite + '.json'), {}).get('diskChecks', [])
 
 
+def needs_readback(directory, suites):
+    return bool(readback_checks(directory, suites[-1]) or (
+        'filesystem' in suites and m.read_json(directory / 'suite-disk.json', {}).get('fixtureSlices')
+    ))
+
+
 def verify_owned_root(source_id, facts):
     current = metal_persist.test_root() or {}
     if (current.get('lastBoot') != source_id or current.get('partition') != facts.get('partition')
-            or record(current) != record(facts)):
+            or record(current) != record(facts) or current.get('fixtureSlices') != facts.get('fixtureSlices')):
         raise ValueError('the owned disk was replaced between the writer and the next boot')
 
 
@@ -183,7 +268,7 @@ def prepare_readback(directory, stage, source_id, commit, boot_id, site, stub):
                 or status != m.EXIT_SHORT or ended_by != 'driver' or provisional is not True
                 or decided.get('status') != m.EXIT_DONE):
             raise ValueError('raw readback needs the completed bit-flip probe on this root')
-    elif (run.get('onlyCase') or not names[-1] or not readback_checks(source, names[-1])
+    elif (run.get('onlyCase') or not names[-1] or not needs_readback(source, names)
             or status != m.EXIT_SHORT or ended_by != 'driver' or type(provisional) is not bool
             or decided.get('status') != (m.EXIT_DONE if provisional else m.EXIT_SHORT)):
         raise ValueError('raw readback needs a provisional, failed or deadline-ended suite source')
@@ -192,8 +277,18 @@ def prepare_readback(directory, stage, source_id, commit, boot_id, site, stub):
     route = UPLOAD_PREFIX + secrets.token_hex(32)
     request = stage / 'suite-disk.cfg'
     target = urlunsplit((url.scheme, url.netloc, route, '', ''))
+    size = facts['bytes']
+    fixture_readback = {}
+    if slices := facts.get('fixtureSlices'):
+        layout = metal_persist.layout()
+        if not layout:
+            raise ValueError('cold filesystem fixtures need the recorded test-root partition')
+        size = validate_fixture_slices(size, test_partition_bytes(layout, facts['partition']), slices)
+        if size != facts.get('stagedBytes'):
+            raise ValueError('cold filesystem fixture layout differs from the staged payload')
+        fixture_readback.update(rootBytes=facts['bytes'], fixtureSlices=slices)
     if facts.get('partition'):
-        request.write_bytes(config_2(2, facts['bytes'], facts['partition'], record(facts), record(facts), target))
+        request.write_bytes(config_2(2, size, facts['partition'], record(facts), record(facts), target))
     else:
         request.write_bytes(config(2, facts['bytes'], record(facts), record(facts), target))
     image = stage / 'readback-disk.img'
@@ -201,10 +296,10 @@ def prepare_readback(directory, stage, source_id, commit, boot_id, site, stub):
     output = stage / 'boot.efi'
     payload = metal_image.stub_efi(stub, image, output)
     image.unlink()
-    m.write_json(directory / 'readback.json', dict(source=source_id, bytes=facts['bytes'], rootRecord=record(facts).hex(),
+    m.write_json(directory / 'readback.json', dict(source=source_id, bytes=size, rootRecord=record(facts).hex(),
         suitePoweredOffAt=off['t'], sourceStatus=status, sourceProvisional=provisional, powerCut=power_cut, bitFlip=bit_flip,
-        sourceReason=decided['reason'], sourceEndedBy=ended_by))
-    m.write_json(m.STATE / 'disk-upload.json', dict(id=boot_id, route=route, bytes=facts['bytes'],
+        sourceReason=decided['reason'], sourceEndedBy=ended_by, **fixture_readback))
+    m.write_json(m.STATE / 'disk-upload.json', dict(id=boot_id, route=route, bytes=size,
                                                  rootRecord=record(facts).hex()))
     return payload, output
 

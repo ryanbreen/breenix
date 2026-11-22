@@ -163,8 +163,11 @@ def inner(args):
                                str(clone / 'target')], check=True, capture_output=True, text=True).stdout.strip()
     os.environ['CARGO_HOME'] = home
     timings = {}
-    # The SDK suite's root is a staged copy; every other boot's is the built root as it is.
-    root = tmp / 'ext2-sdk.img' if 'sdk' in args.suite.split(',') else clone / 'testdata/ext2.img'
+    suites = args.suite.split(',')
+    seed = clone / 'testdata/ext2.img'
+    fixture_builder = clone / 'scripts/breenfs-suite-fixtures.sh'
+    build_fixtures = 'filesystem' in suites and fixture_builder.is_file()
+    root = tmp / 'ext2-staged.img' if 'sdk' in suites or build_fixtures else seed
     try:
         started = time.time()
         if not local:
@@ -245,9 +248,10 @@ def inner(args):
             timings['stub'] = round(time.time() - started)
             if not clean_build(status, log, 'stub', logs, out):
                 return 1
-            if 'sdk' in args.suite.split(','):
+            if root != seed:
+                shutil.copyfile(seed, root)
+            if 'sdk' in suites:
                 started = time.time()
-                shutil.copyfile(clone / 'testdata/ext2.img', root)
                 log = logs / 'sdk-suite.log'
                 # The harness fails a build output that holds the checkout's path or the builder's home, so its work
                 # folder is under /tmp: this boot's temporary folder starts with the clone's path and is in the home.
@@ -265,6 +269,18 @@ def inner(args):
                     keep_logs(logs, out)
                     print(f'[metal-build] the SDK suite could not stage the root: exit {status}', flush=True)
                     return 1
+            if build_fixtures:
+                started = time.time()
+                log = logs / 'filesystem-fixtures.log'
+                # These builders run natively, including when the other BreenFS
+                # tools are cross-compiled for the Linux service container.
+                env = dict(os.environ, CARGO_TARGET_DIR=str(tmp / 'fixture-target'))
+                with log.open('w') as output:
+                    status = subprocess.call(['bash', str(fixture_builder), str(root), str(out)],
+                                             cwd=clone, env=env, stdout=output, stderr=subprocess.STDOUT)
+                if not clean_build(status, log, 'filesystem fixtures', logs, out):
+                    return 1
+                timings['filesystem_fixtures'] = round(time.time() - started)
         finally:
             if not local:
                 subprocess.run([sys.executable, str(HELPER), 'release', 'metal-build'], check=True)
@@ -317,6 +333,11 @@ def inner(args):
         if breenfs_manifest.is_file():
             build['breenfsTools'] = {name: {'size': (out / name).stat().st_size, 'sha256': sha256(out / name)}
                                     for name in breenfs_tools}
+        if build_fixtures:
+            build['filesystemFixtures'] = {
+                path.name: {'size': path.stat().st_size, 'sha256': sha256(path)}
+                for path in sorted(out.glob('breenfs-*.img'))
+            }
         (out / 'build.json').write_text(json.dumps(build, indent=1) + '\n')
         print('[metal-build] inputs ready ' + json.dumps(timings), flush=True)
         return 0

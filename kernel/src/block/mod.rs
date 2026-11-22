@@ -47,6 +47,9 @@ const ROLE_TEST_ROOT: u8 = 1;
 #[cfg(target_arch = "x86_64")]
 const ROLE_SYSTEM: u8 = 2;
 
+#[cfg(target_arch = "x86_64")]
+static FIXTURE_DEVICES: spin::Once<alloc::vec::Vec<partition::Partition>> = spin::Once::new();
+
 /// Prefer a supplied bootloader RAM disk; on physical x86 otherwise mount exactly the partition the boot intent
 /// names, and refuse any other hardware root (issue #1702).
 #[cfg(target_arch = "x86_64")]
@@ -167,21 +170,57 @@ fn named_root() -> Option<alloc::boxed::Box<dyn BlockDevice>> {
         entry.last,
         hardware
     );
+    let full_partition = device.clone();
     if test_root {
         if let Err(why) = report_root_record(&mut device) {
             log::warn!("[storage] root refused: {}", why);
             return None;
         }
     }
+    let fixtures = match test_root_fixtures(&full_partition, device.num_blocks(), test_root) {
+        Ok(fixtures) => fixtures,
+        Err(why) => {
+            log::warn!("[storage] root refused: {}", why);
+            return None;
+        }
+    };
     if let Err(why) = fence_add(hardware, entry.first, entry.last) {
         log::warn!("[storage] root refused: {}", why);
         return None;
     }
     if test_root {
+        if !fixtures.is_empty() {
+            FIXTURE_DEVICES.call_once(|| fixtures);
+        }
         log::info!("[block] hardware disk writes granted: the root the storage lane installed");
     }
     ROOT_ROLE.store(if test_root { ROLE_TEST_ROOT } else { ROLE_SYSTEM }, core::sync::atomic::Ordering::Release);
     Some(alloc::boxed::Box::new(device))
+}
+
+/// A fixture intent only binds to a named GPT test root. The root view was
+/// narrowed to its installed image while this view still spans the partition.
+#[cfg(target_arch = "x86_64")]
+fn test_root_fixtures(
+    partition: &partition::Partition,
+    root_sectors: u64,
+    test_root: bool,
+) -> Result<alloc::vec::Vec<partition::Partition>, &'static str> {
+    let intent = crate::boot::intent::captured().ok_or("the boot intent is missing")?;
+    let sector = install::SECTOR as u64;
+    let partition_bytes = if test_root {
+        partition.num_blocks().checked_mul(sector).ok_or("test root size overflow")?
+    } else {
+        0
+    };
+    let root_bytes = if test_root {
+        root_sectors.checked_mul(sector).ok_or("root size overflow")?
+    } else {
+        0
+    };
+    intent.fixture_slices(root_bytes, partition_bytes)?.iter()
+        .map(|slice| partition.slice(slice.offset / sector, slice.length / sector))
+        .collect()
 }
 
 /// The storage record in the test root partition's first sector, which the delivery stub wrote last.
@@ -334,7 +373,16 @@ fn discovered() -> alloc::vec::Vec<alloc::boxed::Box<dyn BlockDevice>> {
 pub fn devices() -> alloc::vec::Vec<alloc::boxed::Box<dyn BlockDevice>> {
     let devices = discovered();
     if hardware_read_only() {
-        devices.into_iter().map(read_only::device).collect()
+        let mut devices: alloc::vec::Vec<_> = devices.into_iter().map(read_only::device).collect();
+        if let Some(fixtures) = FIXTURE_DEVICES.get() {
+            // As on ARM, the first fixture is read-only. The corruption and
+            // scratch volumes use the existing write grant for test-root.
+            devices.extend(fixtures.iter().enumerate().map(|(index, fixture)| {
+                let device: alloc::boxed::Box<dyn BlockDevice> = alloc::boxed::Box::new(fixture.clone());
+                if index == 0 { read_only::device(device) } else { device }
+            }));
+        }
+        devices
     } else {
         devices
     }

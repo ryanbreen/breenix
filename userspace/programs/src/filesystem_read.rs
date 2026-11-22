@@ -268,58 +268,60 @@ pub fn holes_and_tail() -> CaseResult {
 
 #[derive(Debug, PartialEq, Eq)]
 struct Entry {
-    name: Vec<u8>,
+    name: [u8; 5],
     ino: u64,
     cookie: u64,
 }
 
-fn batch(file: &File, size: usize) -> Result<Vec<Entry>, String> {
-    let mut buffer = vec![0; size];
-    let n = sysfs::getdents64(Fd::from_raw(file.as_raw_fd() as u64), &mut buffer)
-        .map_err(|error| error.to_string())?;
-    if n > size {
-        return Err("oversized getdents result".into());
-    }
-    let mut at = 0;
-    let mut entries = Vec::new();
-    while at < n {
-        if n - at < 24 {
-            return Err("truncated dirent".into());
-        }
-        let record = &buffer[at..n];
-        let len = u16::from_ne_bytes(record[16..18].try_into().unwrap()) as usize;
-        if len < 24 || len % 8 != 0 || len > record.len() {
-            return Err("invalid dirent length".into());
-        }
-        let end = record[19..len]
-            .iter()
-            .position(|&b| b == 0)
-            .ok_or("dirent lacks NUL")?
-            + 19;
-        let cookie = i64::from_ne_bytes(record[8..16].try_into().unwrap());
-        if cookie < 0 {
-            return Err("negative directory cookie".into());
-        }
-        entries.push(Entry {
-            name: record[19..end].to_vec(),
-            ino: u64::from_ne_bytes(record[..8].try_into().unwrap()),
-            cookie: cookie as u64,
-        });
-        at += len;
-    }
-    Ok(entries)
-}
+const MANY_NAMES: usize = 5000;
+const MAX_READ_ENTRIES: usize = MANY_NAMES + 2;
 
 fn remainder(file: &File, size: usize) -> Result<Vec<Entry>, String> {
-    let mut entries = Vec::new();
+    // Keep the small syscall buffers and full suffix comparisons. The fixture
+    // names fit inline, so the walk needs only one allocation for the results.
+    let mut buffer = [0; 128];
+    let mut entries = Vec::with_capacity(MAX_READ_ENTRIES);
     loop {
-        let batch = batch(file, size)?;
-        if batch.is_empty() {
+        let n = sysfs::getdents64(Fd::from_raw(file.as_raw_fd() as u64), &mut buffer[..size])
+            .map_err(|error| error.to_string())?;
+        if n == 0 {
             return Ok(entries);
         }
-        entries.extend(batch);
-        if entries.len() > 5002 {
-            return Err("directory stream did not terminate".into());
+        if n > size {
+            return Err("oversized getdents result".into());
+        }
+        let mut at = 0;
+        while at < n {
+            if n - at < 24 {
+                return Err("truncated dirent".into());
+            }
+            let record = &buffer[at..n];
+            let len = u16::from_ne_bytes(record[16..18].try_into().unwrap()) as usize;
+            if len < 24 || len % 8 != 0 || len > record.len() {
+                return Err("invalid dirent length".into());
+            }
+            let name_len = record[19..len]
+                .iter()
+                .position(|&b| b == 0)
+                .ok_or("dirent lacks NUL")?;
+            let mut name = [0; 5];
+            if name_len > name.len() {
+                return Err("unexpected directory entry name length".into());
+            }
+            name[..name_len].copy_from_slice(&record[19..19 + name_len]);
+            let cookie = i64::from_ne_bytes(record[8..16].try_into().unwrap());
+            if cookie < 0 {
+                return Err("negative directory cookie".into());
+            }
+            if entries.len() == MAX_READ_ENTRIES {
+                return Err("directory stream did not terminate".into());
+            }
+            entries.push(Entry {
+                name,
+                ino: u64::from_ne_bytes(record[..8].try_into().unwrap()),
+                cookie: cookie as u64,
+            });
+            at += len;
         }
     }
 }
@@ -328,17 +330,24 @@ pub fn readdir_resume() -> CaseResult {
     let fixture = Fixture::mount()?;
     let file = io(File::open(fixture.0.join("many")))?;
     let entries = remainder(&file, 128)?;
+    let dot = [b'.', 0, 0, 0, 0];
+    let dot_dot = [b'.', b'.', 0, 0, 0];
     let names: BTreeSet<_> = entries
         .iter()
-        .filter(|e| e.name != b"." && e.name != b"..")
-        .map(|e| e.name.clone())
+        .filter(|e| e.name != dot && e.name != dot_dot)
+        .map(|e| e.name)
         .collect();
-    let expected: BTreeSet<_> = (0..5000).map(|i| format!("n{i:04}").into_bytes()).collect();
+    let expected: BTreeSet<_> = (0..MANY_NAMES)
+        .map(|i| {
+            let [a, b, c, d] = [1000, 100, 10, 1].map(|place| b'0' + (i / place % 10) as u8);
+            [b'n', a, b, c, d]
+        })
+        .collect();
     check(
         names == expected
-            && entries.len() == 5002
-            && entries.iter().filter(|e| e.name == b".").count() == 1
-            && entries.iter().filter(|e| e.name == b"..").count() == 1,
+            && entries.len() == MAX_READ_ENTRIES
+            && entries.iter().filter(|e| e.name == dot).count() == 1
+            && entries.iter().filter(|e| e.name == dot_dot).count() == 1,
         "directory names missing or duplicated",
     )?;
     check(

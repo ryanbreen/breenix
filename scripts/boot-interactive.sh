@@ -474,19 +474,16 @@ fi
 BREENFS_CORRUPT_ARGS=()
 BREENFS_READ_ARGS=()
 if [ "$MODE" = suite ] && [[ ",$SUITE," == *,filesystem,* ]]; then
-    BREENFS_READ_IMAGE="$(dirname "$SERIAL_LOG")/breenfs-read.img"
-    BREENFS_READ_MANIFEST="$(dirname "$SERIAL_LOG")/breenfs-read.manifest"
-    run_build bash "$ROOT/scripts/breenfs-read-fixture.sh" "$BREENFS_READ_IMAGE" "$BREENFS_READ_MANIFEST"
-    BREENFS_DATA_IMAGE="$(dirname "$SERIAL_LOG")/breenfs-corrupt-data.img"
-    BREENFS_NODE_IMAGE="$(dirname "$SERIAL_LOG")/breenfs-corrupt-node.img"
-    BREENFS_CORRUPT_MANIFEST="$(dirname "$SERIAL_LOG")/breenfs-corrupt.manifest"
-    run_build bash "$ROOT/scripts/breenfs-corrupt-fixture.sh" "$BREENFS_DATA_IMAGE" "$BREENFS_NODE_IMAGE" "$BREENFS_CORRUPT_MANIFEST"
-    python3 "$ROOT/scripts/filesystem-suite.py" --image "$WRITABLE" --read-manifest "$BREENFS_READ_MANIFEST" --corrupt-manifest "$BREENFS_CORRUPT_MANIFEST"
+    FIXTURE_DIR="$(dirname "$SERIAL_LOG")"
+    run_build bash "$ROOT/scripts/breenfs-suite-fixtures.sh" "$WRITABLE" "$FIXTURE_DIR"
+    BREENFS_READ_IMAGE="$FIXTURE_DIR/breenfs-read.img"
+    BREENFS_DATA_IMAGE="$FIXTURE_DIR/breenfs-corrupt-data.img"
+    BREENFS_NODE_IMAGE="$FIXTURE_DIR/breenfs-corrupt-node.img"
     BREENFS_CORRUPT_ARGS=(-device virtio-blk-device,drive=breenfs-corrupt-data
         -drive "if=none,id=breenfs-corrupt-data,format=raw,file=$BREENFS_DATA_IMAGE"
         -device virtio-blk-device,drive=breenfs-corrupt-node
         -drive "if=none,id=breenfs-corrupt-node,format=raw,file=$BREENFS_NODE_IMAGE")
-    # First in descending MMIO allocation, last in disk discovery order.
+    # The read-only disk is discovered before the two corruption disks and scratch.
     BREENFS_READ_ARGS=(-device virtio-blk-device,drive=breenfs-read
         -drive "if=none,id=breenfs-read,format=raw,readonly=on,file=$BREENFS_READ_IMAGE")
 fi
