@@ -111,3 +111,19 @@ ordinary archive to a member-selection fixed point at that position and
 repeats that search for the archives between `--start-group` and `--end-group`.
 `--no-whole-archive` resets selection to the indexed search. ELF gABI §§5.2
 and 5.5 describe weak binding and common storage.
+
+## Static executable layout
+
+`bld -T` accepts the userspace `linker.ld` subset of GNU ld 2.45. It uses
+`ENTRY`, the RX/R/RW `PHDRS` with `FILEHDR`, `PHDRS` and `FLAGS`, optional
+`PT_TLS`, and a non-executable `PT_GNU_STACK`. `SECTIONS` starts at a
+page-aligned base plus `SIZEOF_HEADERS` and selects input section names
+with `*(pattern ...)`, `KEEP`, output `ALIGN` and explicit segment names.
+Unmatched allocated sections follow their type and flags into the
+executable, read-only, writable, TLS, or ordinary zero-fill region.
+
+GNU ld 2.45 §§2.1 and 3.6 describe `--gc-sections` and `KEEP`. Entry and
+`KEEP` sections root the relocation graph. ELF gABI §3.9 governs COMDAT
+selection and the retention of whole groups. AMD64 psABI §§4.4 and 10.3
+govern static relocation arithmetic, GOT slots without relaxation and
+variant-II TLS offsets. ELF gABI §7.7 describes the TLS template.
