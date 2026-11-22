@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check bld's single-object links without executing their AMD64 output."""
+"""Check bld's static links without executing their AMD64 output."""
 
 import argparse
 from pathlib import Path
@@ -11,6 +11,7 @@ import tempfile
 TESTS = Path(__file__).resolve().parents[1]
 TOOLCHAIN = TESTS.parent
 CHECK = "bld::pc32_is_s_plus_a_minus_p"
+ARCHIVE_CHECK = "bld::two_archive_cycle_needs_group"
 STRICT = ["-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic"]
 
 
@@ -137,10 +138,140 @@ def check_overflow(bld, root):
                 f"{name} overflow must be diagnosed and produce no output: {result.stderr}")
 
 
+def archive_bytes(members, width=4):
+    """Oracle Solaris ar(3HEAD): member headers, long names and symbol index."""
+    def record(name, payload):
+        header = f"{name:16}{0:<12}{0:<6}{0:<6}{0o644:<8o}{len(payload):<10}`\n"
+        return header.encode() + payload + b"\n" * (len(payload) % 2)
+
+    magic = b"!<arch>\n"
+    index_name = "/" if width == 4 else "/SYM64/"
+    names = bytearray()
+    records = []
+    for name, obj, symbol in members:
+        label = f"{name}/"
+        if len(label) > 16:
+            label = f"/{len(names)}"
+            names.extend(name.encode() + b"/\n")
+        records.append(record(label, obj.read_bytes()))
+    names_record = record("//", names) if names else b""
+    symbols = b"".join(symbol.encode() + b"\0" for _, _, symbol in members)
+    index_size = width * (1 + len(members)) + len(symbols)
+    offset = len(magic) + len(record(index_name, bytes(index_size))) + len(names_record)
+    index = bytearray(len(members).to_bytes(width, "big"))
+    for member in records:
+        index.extend(offset.to_bytes(width, "big"))
+        offset += len(member)
+    index.extend(symbols)
+    return magic + record(index_name, index) + names_record + b"".join(records)
+
+
+def check_archive_cycle(clang, bld, elfcheck, root):
+    def assemble(name, code):
+        obj = root / f"{name}.o"
+        subprocess.run([clang, "--target=x86_64-unknown-none-elf", "-x", "assembler",
+                        "-c", "-", "-o", obj], input=code, text=True, check=True, timeout=10)
+        return obj
+
+    start = assemble("start", """
+        .section .text.start,"ax"
+        .globl _start
+        _start: call a_entry
+        ret
+        .section .data.refs,"aw"
+        .weak optional
+        .quad optional
+    """)
+    a_entry = assemble("a_entry", """
+        .section .text.a_entry,"ax"
+        .globl a_entry
+        a_entry: call b_entry
+        ret
+    """)
+    a_tail = assemble("a_tail", """
+        .section .text.a_tail,"ax"
+        .globl a_tail
+        a_tail: ret
+    """)
+    b_entry = assemble("b_entry", """
+        .section .text.b_entry,"ax"
+        .globl b_entry
+        b_entry: call a_tail
+        call b_tail
+        ret
+    """)
+    b_tail = assemble("b_tail", """
+        .section .text.b_tail,"ax"
+        .weak b_tail
+        b_tail: ret
+    """)
+    optional = assemble("optional", """
+        .section .data.optional,"aw"
+        .globl optional
+        optional: .byte 42
+    """)
+    a, b = root / "liba.a", root / "libb.a"
+    a.write_bytes(archive_bytes([("entry with a long name.o", a_entry, "a_entry"),
+                                 ("tail with a long name.o", a_tail, "a_tail"),
+                                 ("optional.o", optional, "optional")]))
+    b.write_bytes(archive_bytes([("b_tail.o", b_tail, "b_tail"),
+                                 ("b_entry.o", b_entry, "b_entry")], width=8))
+
+    exe = root / "cycle"
+
+    def link(*inputs):
+        return subprocess.run([bld, "-o", exe, *inputs], capture_output=True,
+                              text=True, timeout=10)
+
+    result = link(start, a, b)
+    require(result.returncode == 1 and "libb.a(b_entry.o)" in result.stderr
+            and "a_tail: undefined symbol" in result.stderr and not exe.exists(),
+            f"ungrouped link must leave a_tail unresolved: {result.stderr.strip()}")
+    result = link(a, start, a_tail, b)
+    require(result.returncode == 1 and "a_entry: undefined symbol" in result.stderr
+            and not exe.exists(), f"early archive was searched again: {result.stderr.strip()}")
+
+    bad = root / "bad-index.a"
+    broken_index = bytearray(a.read_bytes())
+    struct.pack_into(">I", broken_index, 8 + 60 + 4, 9)
+    bad.write_bytes(broken_index)
+    result = link(start, bad)
+    require(result.returncode == 1 and "bad-index.a" in result.stderr
+            and "index" in result.stderr and not exe.exists(),
+            f"index pointing inside a header must fail: {result.stderr.strip()}")
+
+    def check_output(inputs, includes_optional):
+        result = link(*inputs)
+        require(result.returncode == 0, f"archive link failed: {result.stderr.strip()}")
+        subprocess.run([elfcheck, "--exec", exe], check=True, timeout=10)
+        blob = exe.read_bytes()
+        entry, _, sections = read_executable(blob)
+        require(entry == sections[b".text.start"][3], "wrong archive fixture entry")
+        for caller, field, callee in [(b"start", 1, b"a_entry"),
+                                      (b"a_entry", 1, b"b_entry"),
+                                      (b"b_entry", 1, b"a_tail"),
+                                      (b"b_entry", 6, b"b_tail")]:
+            src, dst = (sections[b".text." + name] for name in (caller, callee))
+            relative, = struct.unpack_from("<i", blob, src[4] + field)
+            require(src[3] + field + 4 + relative == dst[3],
+                    f"{caller!r} does not call {callee!r}")
+        optional_section = sections.get(b".data.optional")
+        require((optional_section is not None) == includes_optional,
+                "optional member must be selected only by whole-archive")
+        ref, = struct.unpack_from("<Q", blob, sections[b".data.refs"][4])
+        require(ref == (optional_section[3] if includes_optional else 0),
+                "wrong weak reference value")
+
+    check_output([start, "--start-group", a, b, "--end-group"], False)
+    check_output([start, a, b, a], False)
+    check_output([start, "--whole-archive", a, "--no-whole-archive", b], True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--clang", default="clang")
     parser.add_argument("--host-arch", choices=["arm64", "x86_64"], action="append")
+    parser.add_argument("--check", choices=["archive", "all"], default="all")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="bld-test-") as tmp:
         root = Path(tmp)
@@ -156,10 +287,16 @@ def main():
                                     ([TESTS / "elfcheck/elfcheck.c"], elfcheck)]:
                 subprocess.run([args.clang, *flags, *sources, "-o", output],
                                check=True, timeout=40)
-            check_link(bld, elfcheck, directory)
-            print(f"PASS {CHECK} ({arch})", flush=True)
-            check_overflow(bld, directory)
-            print(f"PASS bld::relocation_overflow_is_located ({arch})", flush=True)
+            try:
+                check_archive_cycle(args.clang, bld, elfcheck, directory)
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                raise SystemExit(f"FAIL {ARCHIVE_CHECK} ({arch}): {error}") from error
+            print(f"PASS {ARCHIVE_CHECK} ({arch})", flush=True)
+            if args.check == "all":
+                check_link(bld, elfcheck, directory)
+                print(f"PASS {CHECK} ({arch})", flush=True)
+                check_overflow(bld, directory)
+                print(f"PASS bld::relocation_overflow_is_located ({arch})", flush=True)
 
 
 if __name__ == "__main__":
