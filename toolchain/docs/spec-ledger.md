@@ -84,6 +84,16 @@ operations in one thread.
 `toolchain/tests/elfcheck/` checks x86-64 ELF64 relocatable objects against
 the pinned gABI 4.3 and psABI 1.0 alone. It covers the ELF header, the section
 header table, string tables, the symbol table, RELA entries and section groups.
-`README.md` there cites the clause behind each of its 64 checks. Each check
-has a hand-built negative control in `fixtures.py`. bas output is checked
-against it from plan step 25.3a1.
+With `--exec` it checks static executables: the program header table, PT_LOAD
+alignment, congruence, order and permissions, the headers in the first load,
+the entry point, section placement in loads, PT_PHDR, PT_GNU_STACK and the
+PT_TLS template (gABI 3.10, 7.1-7.7; psABI 3.3.3, 5.1). `README.md` there
+cites the clause behind each of its 85 checks. Each check has a hand-built
+negative control in `fixtures.py` or `fixtures_exec.py`. bas output is checked
+against it from plan step 25.3a1, and bld output from 25.4a1.
+
+Gap: PT_GNU_STACK's `p_type` value is in neither pinned document nor the
+pinned GNU ld manual, whose PHDRS section numbers only PT_NULL through PT_TLS.
+elfcheck uses 0x6474e551, recorded from lld's black-box output for
+`userspace/programs/linker.ld`'s `PT_GNU_STACK` keyword. It is reported to the
+E25 coordinator for a pinned source or a ruling.
