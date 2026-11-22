@@ -7,11 +7,14 @@ import struct
 import subprocess
 import tempfile
 
+from integer import INTEGER_ENCODINGS, INTEGER_REJECTIONS
+
 
 TESTS = Path(__file__).resolve().parents[1]
 TOOLCHAIN = TESTS.parent
 CHECK = "bas::exit42_object_passes_elfcheck"
 ADDRESSING_CHECK = "bas::sib_rip_forms_match_sdm_table"
+INTEGER_CHECK = "bas::encode_mov_r64_imm32"
 SOURCES = [TOOLCHAIN / "bas/bas.c", TOOLCHAIN / "common/elf64.c"]
 STRICT = ["-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic"]
 
@@ -140,6 +143,30 @@ def check_addressing(bas, elfcheck, path):
                 f"wrong diagnostic for {line!r}: {result.stderr}")
 
 
+def check_integer(bas, elfcheck, path):
+    source = path.with_suffix(".s")
+    source.write_text("\n".join(line for line, _ in INTEGER_ENCODINGS) + "\n")
+    sections, contents, _, _ = read_object(bas, elfcheck, path, source)
+    text = contents(sections[b".text"][1])
+    offset = 0
+    for line, encoding in INTEGER_ENCODINGS:
+        expected = bytes.fromhex(encoding)
+        actual = text[offset:offset + len(expected)]
+        require(actual == expected,
+                f"{line!r} at .text+{offset}: got {actual.hex(' ')}, expected {encoding}")
+        offset += len(expected)
+    require(offset == len(text), "unexpected trailing bytes in .text")
+
+    rejected = path.with_suffix(".rejected.o")
+    for line, reason in INTEGER_REJECTIONS:
+        source.write_text(f"section .text\n{line}\n")
+        result = subprocess.run([bas, "-o", rejected, source],
+                                capture_output=True, text=True, timeout=10)
+        require(result.returncode == 1 and f"{source}:2:" in result.stderr
+                and reason in result.stderr and not rejected.exists(),
+                f"wrong diagnostic for {line!r}: {result.stderr}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--clang", type=Path, required=True)
@@ -166,7 +193,8 @@ def main():
                 bas = directory / "bas"
                 subprocess.run([args.clang, *STRICT, *flags, *SOURCES, "-o", bas],
                                check=True, timeout=50)
-                for check, run in ((ADDRESSING_CHECK, check_addressing), (CHECK, check_object)):
+                for check, run in ((INTEGER_CHECK, check_integer),
+                                   (ADDRESSING_CHECK, check_addressing), (CHECK, check_object)):
                     run(bas, elfcheck, directory / f"{run.__name__}-{profile}.o")
                     print(f"{check} [{profile}] PASS", flush=True)
     except (KeyError, OSError, ValueError, struct.error, subprocess.SubprocessError) as error:
