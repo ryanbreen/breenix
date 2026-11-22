@@ -69,8 +69,29 @@
     },
     {
       "id": "c-core",
-      "title": "Preprocessor, parser, semantics and code generation for hello and its diagnostics",
-      "cases": []
+      "title": "Compile and run the core C subset",
+      "cases": [
+        {
+          "id": "hello",
+          "title": "Native cc builds and runs hello"
+        },
+        {
+          "id": "hello-over-ssh",
+          "title": "The fixture account builds and runs hello over the restricted SSH lease"
+        },
+        {
+          "id": "corpus-three-producers",
+          "title": "Reference, Mac candidate and native builds each match the expected results"
+        },
+        {
+          "id": "stages-agree",
+          "title": "Explicit compiler stages match the direct build byte for byte"
+        },
+        {
+          "id": "diagnostic-located",
+          "title": "An undeclared identifier fails compilation with a file, line and column"
+        }
+      ]
     },
     {
       "id": "make",

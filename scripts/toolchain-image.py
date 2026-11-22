@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEV = Path("opt/breenix-dev/25.2")
 CORPUS = Path("usr/share/breenix/toolchain")
 SUITE = Path("sbin/suite-toolchain")
-TOOLS = ("bas", "bld", "bar", "bnm")
+TOOLS = ("bas", "bld", "bar", "bnm", "cc", "as", "ld")
 TOOL_PATHS = {DEV / "bin" / tool for tool in TOOLS}
 LINKER_OBJECTS = ("got-main", "got-entry", "archive-value-with-long-name", "tls-template")
 MANIFEST = DEV / "manifest.sha256"
@@ -88,6 +88,12 @@ def seal(bundle, commit, arch):
     required = {SUITE, DEV / "lib/libc.a"} | TOOL_PATHS
     corpus = ROOT / "toolchain/corpus"
     names = check_corpus(corpus)
+    for name in ("hello.c", "hello.expect", "diagnostic.c"):
+        relative = Path("c-core") / name
+        sources[CORPUS / relative] = corpus / relative
+    mac_candidates = arch == "x86_64" and sys.platform == "darwin"
+    if mac_candidates:
+        required.update(CORPUS / "c-core/mac" / (name + ".elf") for name in names)
     for name in names:
         for suffix in (".c", ".expect"):
             sources[CORPUS / (name + suffix)] = corpus / (name + suffix)
@@ -118,8 +124,10 @@ def seal(bundle, commit, arch):
         if digest(obj) != receipt["object"]["sha256"]:
             raise ValueError(f"staged object differs from the reference link input: {name}")
     (tree / MANIFEST).write_bytes(manifest_bytes(tree, files))
-    record = json.dumps(dict(commit=commit, arch=arch, manifestSha256=digest(tree / MANIFEST)),
-                        indent=2) + "\n"
+    build = dict(commit=commit, arch=arch, manifestSha256=digest(tree / MANIFEST))
+    if mac_candidates:
+        build["candidateProducer"] = "mac-bcc"
+    record = json.dumps(build, indent=2) + "\n"
     (tree / RECORD).write_text(record)
     (bundle / "build.json").write_text(record)
 

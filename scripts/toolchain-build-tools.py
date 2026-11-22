@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build guest tools and prepare the x86 assembler and linker fixtures."""
+"""Build guest tools and prepare assembler, linker and C compiler fixtures."""
 
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
@@ -21,6 +21,10 @@ TOOLS = {
     "bld": ("bld/bld.c", "bld/script.c", "common/ar.c"),
     "bar": ("bar/bar.c", "common/ar.c", "common/elf_symbols.c"),
     "bnm": ("bnm/bnm.c", "common/ar.c", "common/elf_symbols.c"),
+    "cc": tuple(f"bcc/{name}.c" for name in (
+        "bcc", "codegen_x86", "pp", "pp_expand", "pp_expr", "preprocess",
+        "sema", "sema_dump", "types",
+    )),
 }
 LINKER_SOURCES = ("got-main.c", "got-entry.s", "archive-value-with-long-name.s", "tls-template.c")
 PROGRAMS = ("sse-exit", "x87-exit")
@@ -63,6 +67,9 @@ def build(arch, work, dev, corpus):
                 built[relative] = obj
             objects.append(built[relative])
         reference.run([*link, "-o", str(dev_bin / tool), *objects, str(dev / "lib/libc.a")], work)
+    for name, source in (("as", "bas"), ("ld", "bld")):
+        shutil.copyfile(dev_bin / source, dev_bin / name)
+        (dev_bin / name).chmod(0o755)
 
     if arch == "x86_64":
         # Host bas emits the exact objects linked by lld. Use relative input
@@ -97,6 +104,28 @@ def build(arch, work, dev, corpus):
                                                            encoding="utf-8")
 
         build_linker_objects(arch, clang, work, corpus)
+        if sys.platform == "darwin":
+            build_mac_candidates(clang, host_flags, work, dev, corpus, host_bas)
+
+
+def build_mac_candidates(clang, host_flags, work, dev, corpus, host_bas):
+    host_tools = {}
+    for tool in ("cc", "bld"):
+        binary = work / f"host-{tool}"
+        subprocess.run([*clang, *host_flags,
+                        *(str(ROOT / "toolchain" / source) for source in TOOLS[tool]),
+                        "-o", str(binary)], cwd=work, check=True)
+        host_tools[tool] = binary
+    destination = corpus / "c-core/mac"
+    destination.mkdir()
+    environment = dict(reference.TOOL_ENV, BCC_SYSROOT=str(dev), BCC_AS=str(host_bas),
+                       BCC_LD=str(host_tools["bld"]), TMPDIR=str(work))
+    for name in (ROOT / "toolchain/corpus/cases").read_text().splitlines():
+        source = corpus / f"{name}.c"
+        elf = destination / f"{name}.elf"
+        subprocess.run([str(host_tools["cc"]), "--target=x86_64", str(source), "-o", str(elf)],
+                       env=environment, cwd=work, check=True)
+        elf.chmod(0o755)
 
 
 def build_linker_objects(arch, clang, work, corpus):

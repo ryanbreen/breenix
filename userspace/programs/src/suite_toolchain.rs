@@ -1,4 +1,4 @@
-//! Check the sealed reference inputs, assemble objects and link executables.
+//! Check sealed reference inputs and exercise the native assembler, linker and compiler.
 
 use breenix_suite::suite::{case, case_diagnostic, category, suite, CaseResult, Suite};
 use libbreenix::crypto::sha256::{sha256, Sha256};
@@ -9,6 +9,9 @@ use std::io::Read;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+
+#[path = "fixture/ssh_lease.rs"]
+mod ssh_lease;
 
 const DEV: &str = "opt/breenix-dev/25.2";
 const CORPUS: &str = "usr/share/breenix/toolchain";
@@ -100,6 +103,33 @@ static SUITE: Suite = suite(
                     "duplicate-located",
                     "Duplicate definitions identify both objects before a repaired link runs",
                     duplicate_located,
+                ),
+            ],
+        ),
+        category(
+            "c-core",
+            "Compile and run the core C subset",
+            &[
+                case("hello", "Native cc builds and runs hello", cc_hello),
+                case(
+                    "hello-over-ssh",
+                    "The fixture account builds and runs hello over the restricted SSH lease",
+                    cc_hello_over_ssh,
+                ),
+                case(
+                    "corpus-three-producers",
+                    "Reference, Mac candidate and native builds each match the expected results",
+                    cc_corpus_three_producers,
+                ),
+                case(
+                    "stages-agree",
+                    "Explicit compiler stages match the direct build byte for byte",
+                    cc_stages_agree,
+                ),
+                case(
+                    "diagnostic-located",
+                    "An undeclared identifier fails compilation with a file, line and column",
+                    cc_diagnostic_located,
                 ),
             ],
         ),
@@ -220,6 +250,9 @@ fn sysroot_manifest() -> CaseResult {
         "bin/bld",
         "bin/bar",
         "bin/bnm",
+        "bin/cc",
+        "bin/as",
+        "bin/ld",
     ] {
         let path = format!("{DEV}/{relative}");
         if !listed.contains_key(path.as_str()) {
@@ -276,8 +309,8 @@ fn sysroot_manifest() -> CaseResult {
     Ok(())
 }
 
-fn run_expected(binary: &Path, expect: &Path) -> CaseResult {
-    let name = binary.display();
+fn expected_output(expect: &Path) -> Result<(u8, Vec<u8>), String> {
+    let name = expect.display();
     let bytes = io_at(expect, fs::read(expect))?;
     let newline = bytes
         .iter()
@@ -287,6 +320,12 @@ fn run_expected(binary: &Path, expect: &Path) -> CaseResult {
         .ok()
         .and_then(|status| status.parse::<u8>().ok())
         .ok_or_else(|| format!("{name}: invalid expected exit status"))?;
+    Ok((status, bytes[newline + 1..].to_vec()))
+}
+
+fn run_expected(binary: &Path, expect: &Path) -> CaseResult {
+    let name = binary.display();
+    let (status, expected) = expected_output(expect)?;
     let result = io_at(
         binary,
         Command::new(binary)
@@ -297,7 +336,6 @@ fn run_expected(binary: &Path, expect: &Path) -> CaseResult {
     if result.status.code() != Some(i32::from(status)) {
         return Err(format!("{name}: expected exit {status}, got {}", result.status).into());
     }
-    let expected = &bytes[newline + 1..];
     if result.stdout != expected {
         return Err(format!(
             "{name}: stdout differs (expected {:?}, got {:?})",
@@ -337,6 +375,166 @@ impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+fn native_cc_supported() -> CaseResult {
+    if std::env::consts::ARCH != "x86_64" {
+        return Err("AArch64 scalar C code generation is scheduled for A3".into());
+    }
+    Ok(())
+}
+
+fn c_core() -> PathBuf {
+    Path::new("/").join(CORPUS).join("c-core")
+}
+
+fn cc_tool(
+    scratch: &Scratch,
+    tool: &str,
+    args: &[&str],
+) -> Result<std::process::Output, String> {
+    let bin = Path::new("/").join(DEV).join("bin");
+    let executable = bin.join(tool);
+    io_at(
+        &executable,
+        Command::new(&executable)
+            .args(args)
+            .current_dir(&scratch.0)
+            .env_clear()
+            .env("PATH", format!("{}:/bin", bin.display()))
+            .stdin(Stdio::null())
+            .output(),
+    )
+}
+
+fn cc_checked(scratch: &Scratch, tool: &str, args: &[&str]) -> CaseResult {
+    let output = cc_tool(scratch, tool, args)?;
+    if !output.status.success() {
+        return Err(format!(
+            "{tool} {}: {}: {}",
+            args.join(" "),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim_end()
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn cc_hello() -> CaseResult {
+    native_cc_supported()?;
+    let scratch = Scratch::new("hello")?;
+    let fixture = c_core();
+    let source = fixture.join("hello.c");
+    cc_checked(&scratch, "cc", &[source.to_str().unwrap(), "-o", "hello"])?;
+    run_expected(&scratch.join("hello"), &fixture.join("hello.expect"))
+}
+
+fn cc_hello_over_ssh() -> CaseResult {
+    native_cc_supported()?;
+    ssh_lease::with_listener(
+        "SUITE toolchain HOSTSSH c-core/hello-over-ssh",
+        "TOOLCHAIN LEASE-END",
+        |account, nonce| {
+            let home = Path::new(&account.home);
+            let directory = home.join(format!(".toolchain-{nonce}"));
+            let binary = directory.join("hello");
+            let receipt = directory.join("result.json");
+            let record: Value = serde_json::from_slice(&io_at(&receipt, fs::read(&receipt))?)
+                .map_err(|error| format!("invalid toolchain SSH result: {error}"))?;
+            let (status, stdout) = expected_output(&c_core().join("hello.expect"))?;
+            if record["nonce"] != nonce || record["uid"] != account.uid {
+                return Err("toolchain SSH result has the wrong nonce or operator uid".into());
+            }
+            if record["path"].as_str() != binary.to_str() || record["sha256"] != file_sha256(&binary)? {
+                return Err("toolchain SSH binary differs from the recorded path or digest".into());
+            }
+            if record["status"] != status || record["stdoutHex"] != hex(&stdout) {
+                return Err("toolchain SSH program does not match hello.expect".into());
+            }
+            Ok(())
+        },
+    )
+}
+
+fn cc_corpus_three_producers() -> CaseResult {
+    native_cc_supported()?;
+    let scratch = Scratch::new("c-core")?;
+    let corpus = Path::new("/").join(CORPUS);
+    for name in CASES.lines() {
+        let expected = corpus.join(format!("{name}.expect"));
+        let source = corpus.join(format!("{name}.c"));
+        let elf = format!("{name}.elf");
+        run_expected(&corpus.join(&elf), &expected)?;
+        run_expected(&c_core().join("mac").join(&elf), &expected)?;
+        cc_checked(&scratch, "cc", &[source.to_str().unwrap(), "-o", &elf])?;
+        run_expected(&scratch.join(&elf), &expected)?;
+        let binary = scratch.join(&elf);
+        io_at(&binary, fs::remove_file(&binary))?;
+    }
+    Ok(())
+}
+
+fn equal_stage(scratch: &Scratch, direct: &str, explicit: &str) -> CaseResult {
+    let read = |name| {
+        let path = scratch.join(name);
+        io_at(&path, fs::read(&path))
+    };
+    if read(direct)? != read(explicit)? {
+        return Err(format!("compiler stages differ at {direct} and {explicit}").into());
+    }
+    Ok(())
+}
+
+fn cc_stages_agree() -> CaseResult {
+    native_cc_supported()?;
+    let scratch = Scratch::new("cc-stages")?;
+    let fixture = c_core();
+    let source = fixture.join("hello.c");
+    let source = source.to_str().unwrap();
+    for (tool, args) in [
+        ("cc", &["-E", "-o", "hello.i", source][..]),
+        ("cc", &["-S", "-o", "direct.s", source]),
+        ("cc", &["-S", "-o", "split.s", "hello.i"]),
+    ] {
+        cc_checked(&scratch, tool, args)?;
+    }
+    equal_stage(&scratch, "direct.s", "split.s")?;
+    cc_checked(&scratch, "cc", &["-c", "-o", "direct.o", source])?;
+    cc_checked(&scratch, "as", &["-o", "split.o", "split.s"])?;
+    equal_stage(&scratch, "direct.o", "split.o")?;
+
+    let dev = Path::new("/").join(DEV);
+    let linker = dev.join("linker.ld");
+    let archive = dev.join("lib/libc.a");
+    cc_checked(
+        &scratch,
+        "ld",
+        &[
+            "-T", linker.to_str().unwrap(), "--gc-sections", "-o", "split",
+            "split.o", archive.to_str().unwrap(),
+        ],
+    )?;
+    cc_checked(&scratch, "cc", &["-o", "direct", source])?;
+    equal_stage(&scratch, "direct", "split")?;
+    run_expected(&scratch.join("split"), &fixture.join("hello.expect"))
+}
+
+fn cc_diagnostic_located() -> CaseResult {
+    native_cc_supported()?;
+    let scratch = Scratch::new("cc-diagnostic")?;
+    let source = c_core().join("diagnostic.c");
+    let source = source.to_str().unwrap();
+    let output = cc_tool(&scratch, "cc", &[source, "-o", "unexpected"])?;
+    let expected = format!("{source}:4:12: error: use of undeclared identifier");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !matches!(output.status.code(), Some(1))
+        || scratch.join("unexpected").exists()
+        || !stderr.lines().any(|line| line == expected)
+    {
+        return Err(format!("cc did not report the undeclared identifier at 4:12: {stderr}").into());
+    }
+    Ok(())
 }
 
 struct AssemblyCase {

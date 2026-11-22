@@ -456,6 +456,11 @@ def verdict(manifest, records_log, logs, only=None, categories=None, disk=None, 
     if suite == "network-shares":
         shapes['SMBRESTART'] = re.compile(
             r"^SUITE network-shares SMBRESTART (smb/server-restart) seq=[0-9]{1,20}$")
+    if suite == "toolchain":
+        shapes["HOSTSSH"] = re.compile(
+            r"^SUITE toolchain HOSTSSH (c-core/hello-over-ssh) nonce=[0-9a-f]{32}"
+            r" fp=SHA256:[A-Za-z0-9+/]{43} peer=(?:[0-9]{1,3}\.){3}[0-9]{1,3}"
+            r" user=[a-z_][a-z0-9_-]{0,31} uid=[1-9][0-9]* gid=[1-9][0-9]*$")
     if suite in ("gpu", "breengel"):
         # Same wire shape as screen-verdict.py; keep the suite scorer self-contained.
         fields = (r'(?:phase=[1-4] sha256=[0-9a-f]{64} mode=[1-9][0-9]*x[1-9][0-9]*'

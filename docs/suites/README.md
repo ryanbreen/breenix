@@ -152,7 +152,10 @@ suite's time limit is a FAIL whose message says so. The default is 10 seconds, w
 and a named 30-second allowance for `toolchain/linker/links-reference-objects` to
 link and run 30 programs in sequence on the R240. The 10-second watchdog stopped
 that case after 24 fresh executable loads in `20261122T102349Z-metal` and after 28
-in `20261122T104653Z-metal`. The suite also reports a FAIL for a case it cannot
+in `20261122T104653Z-metal`. The `toolchain/c-core/corpus-three-producers` case
+allows 45 seconds for serial native builds and three sets of executions.
+The `toolchain/c-core/hello-over-ssh` case allows 60 seconds for account
+setup, the 45-second listener lease and cleanup. The suite also reports a FAIL for a case it cannot
 start in a child. The suite goes on after a case fails. The suite waits on a case by
 polling, not sleeping, so a monotonic clock that stops is reported as a FAIL too. If the
 suite itself stops, the missing CASE lines show where.
@@ -1889,6 +1892,27 @@ two new threads. The two diagnostic cases require a failed link with a
 located error and no output, then repair the inputs and run a fresh link.
 AArch64 static links await ADRP/ADD relocations, veneers and variant-I TLS
 in A2.
+
+The `toolchain/cc-hello` milestone measures the five `c-core` cases.
+The suite bundle installs bcc as `cc`, with `as` and `ld` backed by bas and
+bld. The corpus case runs the staged Clang ELFs, staged Mac-hosted
+bcc/bas/bld ELFs and fresh on-box builds against the same independent
+`.expect` files. The stage case compares assembly, object and executable
+bytes, then runs the result. The diagnostic case requires a source
+location and failed compilation.
+
+Build the metal fixture with `scripts/metal/metal-build-local --host HOST
+--sha SHA --mode suite --suite toolchain --jobs 4` and pass its uploaded ID
+to `metal-run boot --prebuilt ID --mode suite --suite toolchain --milestone
+toolchain/cc-hello --branch BRANCH --sha SHA`. The Mac build uses the
+same staged sysroot for the Clang reference and Mac-hosted compiler.
+The boot host answers the suite's `HOSTSSH` request with `transfer-hostssh`
+over the allowlisted port 22 lease. It pins the guest host key and runs
+`cc` under the disposable account with PATH set to
+`/opt/breenix-dev/25.2/bin:/bin`. The guest checks the nonce, account UID,
+output path and digest, stdout and status against the fresh binary and
+the independent hello expectation. AArch64 scalar code generation and
+cc-hello acceptance await A3.
 
 ```bash
 scripts/boot-interactive.sh --mode suite --suite toolchain --milestone toolchain/sysroot-oracle

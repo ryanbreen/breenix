@@ -41,7 +41,7 @@ commit=$(git -C "$root" rev-parse HEAD)
 guest="$work/bundle/root"
 dev="$guest/opt/breenix-dev/25.2"
 corpus="$guest/usr/share/breenix/toolchain"
-mkdir -p "$dev/lib" "$corpus/objs" "$guest/sbin"
+mkdir -p "$dev/lib" "$corpus/objs" "$corpus/c-core" "$guest/sbin"
 
 if [ -z "$archive" ]; then
     # Metal's ordinary userspace artifact cache does not export libc.a.
@@ -62,6 +62,9 @@ install -m 0755 "$binaries/suite-toolchain.elf" "$guest/sbin/suite-toolchain"
 mkdir -p "$dev/include" "$dev/include-support"
 cp -R "$root/libs/libbreenix-libc/include/." "$dev/include/"
 cp -R "$root/toolchain/include/." "$dev/include-support/"
+for fixture in hello.c hello.expect diagnostic.c; do
+    install -m 0644 "$root/toolchain/corpus/c-core/$fixture" "$corpus/c-core/$fixture"
+done
 
 # Check the source and expectation set before compiling. The same list is
 # built into suite-toolchain, independently of the generated bundle manifest.

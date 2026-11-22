@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish over a transfer fixture’s bounded SSH lease from its boot host.
+"""Answer a transfer or toolchain fixture over its bounded SSH lease.
 
 On metal, run beside the ordinary suite boot: transfer-hostssh --boot ID.
 The ARM launcher starts the same client with a private loopback forward.
@@ -131,11 +131,13 @@ class Client:
         return status
 
 
-def wait_ready(serial, ended, seconds):
+def wait_ready(serial, ended, seconds, toolchain=False):
     deadline = time.monotonic() + seconds
+    prefix = 'SUITE toolchain HOSTSSH ' if toolchain else 'TRANSFER READY '
+    pattern = transfer.TOOLCHAIN_READY if toolchain else transfer.READY
     while time.monotonic() < deadline and not ended():
         rows = (serial() or '').split('\n')[:-1]
-        requests = [transfer.READY.fullmatch(row.rstrip('\r')) for row in rows if row.startswith('TRANSFER READY ')]
+        requests = [pattern.fullmatch(row.rstrip('\r')) for row in rows if row.startswith(prefix)]
         if requests:
             if len(requests) != 1 or requests[0] is None:
                 raise ValueError('transfer fixture emitted invalid or duplicate readiness records')
@@ -156,35 +158,44 @@ def operator_key(public_key):
 def metal(args):
     server = runpy.run_path(str(Path(__file__).with_name('server-suite')))
     machine = server['MetalTarget'](args.boot)
-    request = wait_ready(lambda: machine.read('serial.txt', required=False), lambda: machine.ended(args.boot), args.wait)
+    request = wait_ready(lambda: machine.read('serial.txt', required=False), lambda: machine.ended(args.boot),
+                         args.wait, args.toolchain)
     boot = machine.identity()
-    facts = transfer.identity(boot, args.sha)
     if boot['id'] != args.boot or not machine.holds_lease():
         raise ValueError('transfer boot identity or lease changed')
+    site = machine.site(('SERVER_SSH_HOST', 'BOOT_URL', 'TRANSFER_SSH_PEER', 'OPERATOR_USER', 'OPERATOR_SSH_PUBLIC_KEY'))
+    host = str(ipaddress.IPv4Address(site['SERVER_SSH_HOST']))
+    client = Client(host, 22, site['OPERATOR_USER'], transfer.metal_peer(site),
+                    operator_key(site['OPERATOR_SSH_PUBLIC_KEY']), machine.holds_lease)
+    def retain(records):
+        filename = transfer.TOOLCHAIN_RECEIPT if args.toolchain else transfer.RECEIPT
+        if machine.write(filename, records).returncode:
+            raise ValueError('could not retain SSH fixture results')
+    if args.toolchain:
+        transfer.suite_identity(boot, args.sha, 'toolchain')
+        return complete_toolchain(client, request, retain)
+    facts = transfer.identity(boot, args.sha)
     prebuilt = facts.get('prebuilt', '')
     if not re.fullmatch(r'\d{8}T\d{6}Z-metal', prebuilt):
         raise ValueError('transfer launch record lacks a Mac upload ID')
     artifact = Path.home() / '.local/state/breenix-metal/prebuilt' / prebuilt / transfer.ARTIFACT
     if metal_prebuilt.facts(artifact) != {key: facts[key] for key in ('size', 'sha256')}:
         raise ValueError('boot host artifact differs from the Mac input digest')
-    site = machine.site(('SERVER_SSH_HOST', 'BOOT_URL', 'TRANSFER_SSH_PEER', 'OPERATOR_USER', 'OPERATOR_SSH_PUBLIC_KEY'))
-    host = str(ipaddress.IPv4Address(site['SERVER_SSH_HOST']))
-    client = Client(host, 22, site['OPERATOR_USER'], transfer.metal_peer(site),
-                    operator_key(site['OPERATOR_SSH_PUBLIC_KEY']), machine.holds_lease)
     if args.dest is not None and args.artifact_sha != facts['sha256']:
         raise ValueError('staged input differs from the Mac artifact')
-    def retain(records):
-        if machine.write(transfer.RECEIPT, records).returncode:
-            raise ValueError('could not retain transfer results')
     return complete(client, request, artifact, facts, boot, retain, args.dest, args.mode)
 
 
 def stage_qemu(args):
-    facts = metal_prebuilt.snapshot_transfer_input(args.artifact, args.run_dir / transfer.ARTIFACT)
+    suite = 'toolchain' if args.toolchain else transfer.SUITE
     boot = dict(id=time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-qemu', target='qemu', mode='suite',
-                suites=[transfer.SUITE], evidenceEligible=True, toolsCommit=args.sha,
-                build=dict(commit=args.sha, profile='production'), transferInput=facts)
-    transfer.identity(boot, args.sha)
+                suites=[suite], evidenceEligible=True, toolsCommit=args.sha,
+                build=dict(commit=args.sha, profile='production'))
+    if args.toolchain:
+        transfer.suite_identity(boot, args.sha, suite)
+    else:
+        boot['transferInput'] = metal_prebuilt.snapshot_transfer_input(args.artifact, args.run_dir / transfer.ARTIFACT)
+        transfer.identity(boot, args.sha)
     key = args.run_dir / 'identity'
     run([KEYGEN, '-q', '-t', 'ed25519', '-N', '', '-f', str(key)], check=True, stdin=subprocess.DEVNULL)
     user = 'breenix-transfer'
@@ -210,14 +221,55 @@ def watch_qemu(args):
 
     boot = json.loads((args.run_dir / 'run.json').read_text())
     config = json.loads((args.run_dir / 'client.json').read_text())
-    facts = transfer.identity(boot, boot['toolsCommit'])
-    if metal_prebuilt.facts(args.run_dir / transfer.ARTIFACT) != facts:
-        raise ValueError('QEMU transfer input differs from the launch record')
-    request = wait_ready(args.serial.read_text, lambda: not alive(), args.wait)
+    toolchain = boot['suites'] == ['toolchain']
+    if toolchain:
+        transfer.suite_identity(boot, boot['toolsCommit'], 'toolchain')
+    else:
+        facts = transfer.identity(boot, boot['toolsCommit'])
+        if metal_prebuilt.facts(args.run_dir / transfer.ARTIFACT) != facts:
+            raise ValueError('QEMU transfer input differs from the launch record')
+    request = wait_ready(args.serial.read_text, lambda: not alive(), args.wait, toolchain)
     client = Client(QEMU_HOST, config['port'], config['user'], QEMU_PEER, args.run_dir / 'identity', alive)
     def retain(records):
-        (args.run_dir / transfer.RECEIPT).write_text(json.dumps(records) + '\n')
+        filename = transfer.TOOLCHAIN_RECEIPT if toolchain else transfer.RECEIPT
+        (args.run_dir / filename).write_text(json.dumps(records) + '\n')
+    if toolchain:
+        return complete_toolchain(client, request, retain)
     return complete(client, request, args.run_dir / transfer.ARTIFACT, facts, boot, retain)
+
+
+def complete_toolchain(client, request, retain):
+    def work(known, nonce, uid, _gid, records):
+        dev = '/opt/breenix-dev/25.2/bin'
+        directory = f'/home/{client.user}/.toolchain-{nonce}'
+        binary = directory + '/hello'
+        # Request fields were validated before interpolation. The nonce is
+        # returned by the same exec channel that builds and runs the ELF.
+        script = (
+            f'export PATH={dev}:/bin\n'
+            'unset BCC_SYSROOT BCC_AS BCC_LD\n'
+            f'test "$(command -v cc)" = {dev}/cc && test ! -e /bin/cc && '
+            f'umask 077 && mkdir {directory} && cd {directory} && '
+            'cc /usr/share/breenix/toolchain/c-core/hello.c -o hello || exit 125\n'
+            f'hash=$(sha256sum < {binary}) || exit 125\n'
+            f'printf "%s\\n" {nonce} "$(id -u)" {binary} "${{hash%% *}}" || exit 125\n'
+            f'exec {binary}'
+        )
+        reply = client.ssh(known, script)
+        fields = reply.stdout.split(b'\n', 4)
+        if len(fields) != 5 or fields[0] != nonce.encode():
+            raise ValueError('toolchain SSH response lacks the guest nonce')
+        _, actual_uid, path, sha256, stdout = fields
+        if (actual_uid != str(uid).encode() or path != binary.encode()
+                or not re.fullmatch(rb'[0-9a-f]{64}', sha256)
+                or not 0 <= reply.returncode < 125 or reply.stderr):
+            raise ValueError('toolchain SSH response has invalid identity, digest, or exit status')
+        records.update(uid=uid, path=binary, sha256=sha256.decode(), stdoutHex=stdout.hex(),
+                       status=reply.returncode)
+        expect(client.ssh(known, f'umask 077 && cat > {directory}/result.json',
+                          data=(json.dumps(records) + '\n').encode()))
+
+    return client.complete(request, work, retain)
 
 
 def complete(client, request, artifact, facts, boot, retain, dest=None, mode='755'):
@@ -254,6 +306,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--boot')
     parser.add_argument('--sha')
+    parser.add_argument('--toolchain', action='store_true', help='answer toolchain hello-over-ssh')
     parser.add_argument('--dest', help='publish the staged file instead of running the suite cases')
     parser.add_argument('--mode', default='755', help='publication mode in octal')
     parser.add_argument('--artifact-sha', help='expected digest of the Mac artifact')
@@ -261,9 +314,9 @@ def main():
     sub = parser.add_subparsers(dest='command')
     stage = sub.add_parser('stage-qemu')
     stage.add_argument('--run-dir', type=Path, required=True)
-    stage.add_argument('--artifact', type=Path, required=True)
+    stage.add_argument('--artifact', type=Path)
     stage.add_argument('--image', type=Path, required=True)
-    stage.add_argument('--binary', type=Path, required=True)
+    stage.add_argument('--binary', type=Path)
     watch = sub.add_parser('watch-qemu')
     watch.add_argument('--run-dir', type=Path, required=True)
     watch.add_argument('--serial', type=Path, required=True)
@@ -272,6 +325,8 @@ def main():
     if not 1 <= args.wait <= 1320:
         parser.error('--wait must be from 1 through 1320 seconds')
     if args.command == 'stage-qemu':
+        if args.toolchain and (args.artifact or args.binary) or not args.toolchain and not (args.artifact and args.binary):
+            parser.error('QEMU transfer staging needs --artifact and --binary; toolchain stages settings only')
         stage_qemu(args)
     elif args.command == 'watch-qemu':
         # Interrupt subprocess.run so it kills and reaps its own OpenSSH child.
@@ -282,6 +337,8 @@ def main():
     else:
         if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.boot or '') or not re.fullmatch(r'[0-9a-f]{40}', args.sha or ''):
             parser.error('metal requires --boot ID and --sha COMMIT')
+        if args.toolchain and args.dest is not None:
+            parser.error('--toolchain cannot publish an artifact')
         if args.dest is not None:
             if not args.dest or not re.fullmatch(r'[a-f0-9]{64}', args.artifact_sha or ''):
                 parser.error('--dest requires --artifact-sha')

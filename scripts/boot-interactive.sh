@@ -245,6 +245,10 @@ if [[ ",$SUITE," == *,toolchain,* ]] && [ "$BUILD" -ne 1 ]; then
     echo "toolchain needs a built suite boot" >&2
     exit 2
 fi
+if [ "$MILESTONE" = toolchain/cc-hello ] && { [ "$SUITE" != toolchain ] || [ "$COLLAB_HOST" -ne 0 ]; }; then
+    echo "ARM cc-hello needs a standalone toolchain suite with its loopback-only SSH fixture" >&2
+    exit 2
+fi
 if [ -z "$MILESTONE" ] && [ "$BUILD_ONLY" -eq 0 ] && [ "$MODE" = suite ] && [ "$SUITE" != transfer-fixture ] && [ -z "$ONLY" ] && [ -z "${BREENIX_SUITE_ATTEMPT:-}" ]; then
     exec python3 "$ROOT/scripts/suite-sequence.py" run "$SUITE" "$SERIAL_LOG" bash "$ROOT/scripts/boot-interactive.sh" "${BOOT_ARGS[@]}"
 fi
@@ -465,7 +469,7 @@ if [ "$MODE" = suite ] && [[ ",$SUITE," == *",sdk,"* ]]; then
 fi
 
 host_slot_acquire mac-boot
-if [ "$SUITE" = transfer-fixture ]; then
+if [ "$SUITE" = transfer-fixture ] || [ "$MILESTONE" = toolchain/cc-hello ]; then
     TRANSFER_RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/breenix-transfer.XXXXXX")
     if [ "$SERIAL_REQUESTED" -eq 0 ]; then SERIAL_LOG="$TRANSFER_RUN_DIR/serial.txt"; fi
     echo "==> Transfer evidence: $TRANSFER_RUN_DIR"
@@ -514,13 +518,18 @@ fi
 TRANSFER_PORT=
 if [ -n "$TRANSFER_RUN_DIR" ]; then
     TRANSFER_SHA=${COMMIT_IDENTITY%% *}
-    TRANSFER_PORT=$(python3 "$ROOT/scripts/metal/transfer-hostssh" --sha "$TRANSFER_SHA" stage-qemu \
-        --run-dir "$TRANSFER_RUN_DIR" --artifact "$TRANSFER_ARTIFACT" --image "$WRITABLE" \
-        --binary "$ROOT/userspace/programs/aarch64/suite-transfer-fixture.elf")
-    for definition in docs/suites/server.json docs/efforts/path.json docs/boot-path.json; do
-        mkdir -p "$TRANSFER_RUN_DIR/definition/$(dirname "$definition")"
-        cp "$ROOT/$definition" "$TRANSFER_RUN_DIR/definition/$definition"
-    done
+    if [ "$SUITE" = transfer-fixture ]; then
+        TRANSFER_PORT=$(python3 "$ROOT/scripts/metal/transfer-hostssh" --sha "$TRANSFER_SHA" stage-qemu \
+            --run-dir "$TRANSFER_RUN_DIR" --artifact "$TRANSFER_ARTIFACT" --image "$WRITABLE" \
+            --binary "$ROOT/userspace/programs/aarch64/suite-transfer-fixture.elf")
+        for definition in docs/suites/server.json docs/efforts/path.json docs/boot-path.json; do
+            mkdir -p "$TRANSFER_RUN_DIR/definition/$(dirname "$definition")"
+            cp "$ROOT/$definition" "$TRANSFER_RUN_DIR/definition/$definition"
+        done
+    else
+        TRANSFER_PORT=$(python3 "$ROOT/scripts/metal/transfer-hostssh" --toolchain --sha "$TRANSFER_SHA" stage-qemu \
+            --run-dir "$TRANSFER_RUN_DIR" --image "$WRITABLE")
+    fi
 fi
 CAPTURE_ARGS=()
 if [ -n "$SCREEN_CAPTURE" ]; then

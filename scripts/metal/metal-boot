@@ -703,6 +703,9 @@ class Driver:
                 toolchain_evidence.build_identity(record, self.args.commit, 'x86_64')
                 if record.get('root') != metal_prebuilt.facts(fixture):
                     raise ValueError('fixture root differs from its toolchain build record')
+                if (getattr(self.args, 'milestone', None) == 'toolchain/cc-hello'
+                        and (not prebuilt or record.get('candidateProducer') != 'mac-bcc')):
+                    raise ValueError('cc-hello fixture lacks Mac-hosted bcc candidates')
             except (OSError, ValueError) as error:
                 raise Finish(m.EXIT_CANCELLED, str(error)) from None
             # ext2.img is the ordinary/persistent input. Only a toolchain
