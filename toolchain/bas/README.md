@@ -1,12 +1,14 @@
 # bas
 
 Build the Rust host tool with Cargo from the `toolchain` workspace.
-Run `bas -o OBJECT SOURCE` to write a little-endian x86-64 ELF relocatable object.
+Run `bas [--target x86_64|aarch64] -o OBJECT SOURCE` to write a little-endian
+ELF64 relocatable object. The default target is `x86_64` on either host.
 
 ## Input syntax
 
-Use lower-case Intel-style instructions and registers. A semicolon outside a
-string starts a comment. The initial section is `.text`, where instructions go.
+Use lower-case instructions and registers. The x86-64 backend uses Intel
+syntax. A semicolon outside a string starts a comment, and AArch64 also
+accepts `//`. The initial section is `.text`, where instructions go.
 `section NAME` selects `.text`, `.data`, `.rodata`, `.bss`, `.tdata` or `.tbss`.
 
 - `NAME:` defines a label at the current section offset. Labels are local
@@ -43,7 +45,7 @@ string starts a comment. The initial section is `.text`, where instructions go.
   and `\xHH`.
 - `.zero COUNT` fills `COUNT` bytes with `0x00`. `align BYTES[, FILL]` aligns
   to a positive power of two and raises the section's ELF alignment.
-  The default fill is `0x90` in `.text` and `0x00` elsewhere. For `.bss` and
+  The default fill is `0x90` in x86-64 `.text` and `0x00` elsewhere. For `.bss` and
   `.tbss`, use a fill of `0x00`. They record their sizes as `SHT_NOBITS`. <!-- claim-lint:ok: toolchain/tests/bas/run.py checks the .zero directive and NOBITS layout. -->
 - `.type NAME, @function`, `@object`, `@tls` or `@notype` sets the ELF symbol type.
   `.size NAME, SIZE` accepts a nonnegative integer or a difference between
@@ -95,7 +97,7 @@ string starts a comment. The initial section is `.text`, where instructions go.
   suffix `b`, `w`, `d` or `q` for implicit operands. Use `rep` for
   moves, stores and loads, and `repe` or `repne` for comparisons and scans.
 
-## Symbol expressions
+## x86-64 symbol expressions
 
 Fields support a symbol with a signed integer addend. Unmodified
 same-section PC-relative references are resolved while assembling.
@@ -116,8 +118,18 @@ the end of the instruction. Labels in `.tdata` and `.tbss` default to
 `STT_TLS`. Declare an undefined TLS symbol with `extern` and `.type NAME, @tls`
 before using `@tpoff`.
 
-The ARM64 host and guest builds emit x86-64 objects. AArch64 encodings,
-object metadata and relocations are A1 work.
+## AArch64 instructions
+
+`movz` takes a W or X register, a 16-bit immediate, and an optional
+`lsl #SHIFT` in steps of 16 within the register width. `svc` takes one
+16-bit immediate. Write immediates with `#`. `nop` has no operands.
+`br` and `blr` take an X register. `ret` defaults to `x30`.
+
+`b`, `bl`, `b.<cond>`, `cbz`/`cbnz`, and `tbz`/`tbnz` take a
+same-section label with an optional signed byte addend. The displacement
+is measured from the branch instruction and must fit its signed field in
+units of four bytes. Cross-section and external branches and symbolic data
+operands are deferred to A1-b1.
 
 ## Host checks
 
@@ -127,11 +139,11 @@ Build the native Rust binaries and pass their paths to the host runner.
 cd toolchain
 cargo build --release --locked -p bas -p elfcheck
 python3 tests/bas/run.py --bas "$PWD/target/release/bas" --elfcheck "$PWD/target/release/elfcheck"
+python3 tests/bas/run.py --machine aarch64 --bas "$PWD/target/release/bas" --elfcheck "$PWD/target/release/elfcheck"
 cargo test --locked -p bas
 ```
 
-The runner checks the exit42, addressing, integer, supplemental encoding and
-relocation fixtures with the independent elfcheck. The byte expectations cite
-the pinned ISA tables in `toolchain/tests/bas/`. The Rust tests also exercise
-malformed source and compare output and diagnostics with Breenix's C bas
-during 25.R.
+The runner checks the x86-64 fixtures and the AArch64 branch corpus with
+the independent elfcheck. The byte expectations cite the pinned ISA tables
+in `toolchain/tests/bas/` and `toolchain/corpus/assembler-aarch64/`. The Rust
+test exercises malformed source on both targets.

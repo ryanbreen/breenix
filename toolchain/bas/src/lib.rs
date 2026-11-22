@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
 
-//! Breenix's Intel-style assembler. The current backend emits AMD64 ELF64
-//! relocatable objects on either host architecture.
+//! Breenix's assembler for x86-64 and AArch64 ELF64 relocatable objects.
 
+mod aarch64;
 mod object;
 mod parser;
 mod x86;
@@ -38,9 +38,21 @@ impl std::error::Error for Diagnostic {}
 
 type Result<T> = std::result::Result<T, Diagnostic>;
 
-/// Assemble the source or return its first diagnostic.
+/// Architecture of the output object, independent of the host architecture.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Target {
+    X86_64,
+    Aarch64,
+}
+
+/// Assemble x86-64 source or return its first diagnostic.
 pub fn assemble(source: &[u8]) -> Result<Vec<u8>> {
-    let mut object = object::Object::new();
+    assemble_for(Target::X86_64, source)
+}
+
+/// Assemble for the selected target or return the first diagnostic.
+pub fn assemble_for(target: Target, source: &[u8]) -> Result<Vec<u8>> {
+    let mut object = object::Object::new(target);
     for (index, line) in source.split(|&byte| byte == b'\n').enumerate() {
         let line_number = index + 1;
         if let Some(index) = line.iter().position(|&byte| byte == 0) {

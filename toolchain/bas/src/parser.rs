@@ -4,7 +4,8 @@ use bobj::elf::amd64::{R_32, R_32S, R_64, R_GOTPCREL, R_PLT32, R_TPOFF32};
 use bobj::elf::{STT_FUNC, STT_NOTYPE, STT_OBJECT, STT_TLS};
 
 use crate::object::{Endpoint, Object};
-use crate::{Diagnostic, Location, Result};
+use crate::aarch64::BranchKind;
+use crate::{Diagnostic, Location, Result, Target};
 
 #[derive(Clone, Copy)]
 pub(crate) struct Token<'a> {
@@ -94,7 +95,13 @@ impl<'src, 'obj> Parser<'src, 'obj> {
     }
 
     pub(crate) fn at_end(&mut self) -> bool {
-        matches!(self.peek(), 0 | b';')
+        match self.peek() {
+            0 | b';' => true,
+            b'/' if self.object.target == Target::Aarch64 => {
+                self.line[self.column..].starts_with(b"//")
+            }
+            _ => false,
+        }
     }
 
     pub(crate) fn word(&mut self) -> Token<'src> {
@@ -225,6 +232,22 @@ impl<'src, 'obj> Parser<'src, 'obj> {
         self.object.emit_bytes(self.location(column), bytes)
     }
 
+    pub(crate) fn emit_aarch64(&mut self, column: usize, word: u32) -> Result<()> {
+        self.object.emit_aarch64(self.location(column), word)
+    }
+
+    pub(crate) fn branch_aarch64(
+        &mut self,
+        label: Token<'_>,
+        kind: BranchKind,
+        word: u32,
+    ) -> Result<()> {
+        let symbol = self.symbol(label)?;
+        let addend = self.addend()?;
+        self.object
+            .branch_aarch64(symbol, kind, addend, word, self.location(label.column))
+    }
+
     pub(crate) fn emit_word(&mut self, column: usize, value: u64, width: usize) -> Result<()> {
         self.emit(column, &value.to_le_bytes()[..width])
     }
@@ -285,6 +308,9 @@ impl<'src, 'obj> Parser<'src, 'obj> {
                 self.emit_word(column, value, width)?;
             } else {
                 let label = self.word();
+                if self.object.target == Target::Aarch64 {
+                    return Err(self.error(label.column, "AArch64 data relocations are unsupported"));
+                }
                 let kind = match (width, self.relocation_modifier()?) {
                     (8, 0) => R_64,
                     (4, 0) => R_32,
@@ -410,7 +436,10 @@ impl<'src, 'obj> Parser<'src, 'obj> {
                 continue;
             }
             if !self.directive(op)? {
-                crate::x86::instruction(self, op)?;
+                match self.object.target {
+                    Target::X86_64 => crate::x86::instruction(self, op)?,
+                    Target::Aarch64 => crate::aarch64::instruction(self, op)?,
+                }
             }
             if !self.at_end() {
                 return Err(self.error(self.column, "unexpected input after operands"));

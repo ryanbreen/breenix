@@ -1,15 +1,18 @@
 //! Section, symbol and fixup bookkeeping. ELF gABI chapters 3–6 and
-//! System V AMD64 psABI Table 4.9. bobj writes and lays out the ELF records.
+//! System V AMD64 psABI Table 4.9 and AAELF64 §§5.6.5, 5.7.6.
+//! bobj writes and lays out the ELF records.
 
 use std::collections::BTreeMap;
 
+use bobj::elf::aarch64::EM_AARCH64;
 use bobj::elf::amd64::{R_64, R_GOTPCREL, R_PC32, R_PLT32, R_TPOFF32};
 use bobj::elf::{
     write_rel, RelSection, RelSymbol, Rela, EM_X86_64, SHF_ALLOC, SHF_EXECINSTR, SHF_TLS,
     SHF_WRITE, SHN_UNDEF, SHT_NOBITS, SHT_PROGBITS, STB_GLOBAL, STB_LOCAL, STT_NOTYPE, STT_TLS,
 };
 
-use crate::{Location, Result};
+use crate::aarch64::BranchKind;
+use crate::{Location, Result, Target};
 
 const SECTIONS: &[(&str, u32, u64)] = &[
     (".text", SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR),
@@ -65,6 +68,14 @@ struct Reference {
     at: Location,
 }
 
+struct BranchFixup {
+    symbol: usize,
+    offset: usize,
+    kind: BranchKind,
+    addend: i64,
+    at: Location,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum Endpoint {
     Here,
@@ -80,23 +91,29 @@ struct SizeExpression {
 }
 
 pub(crate) struct Object {
+    pub(crate) target: Target,
     sections: Vec<Section>,
     current: usize,
     symbol_ids: BTreeMap<String, usize>,
     pub(crate) symbols: Vec<Symbol>,
     references: Vec<Reference>,
+    branches: Vec<BranchFixup>,
+    text_mappings: Vec<(u64, &'static [u8])>,
     sizes: Vec<SizeExpression>,
     last_output_at: Location,
 }
 
 impl Object {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(target: Target) -> Self {
         Self {
+            target,
             sections: vec![Section::new(SECTIONS[0])],
             current: 0,
             symbol_ids: BTreeMap::new(),
             symbols: Vec::new(),
             references: Vec::new(),
+            branches: Vec::new(),
+            text_mappings: Vec::new(),
             sizes: Vec::new(),
             last_output_at: Location { line: 1, column: 1 },
         }
@@ -155,6 +172,9 @@ impl Object {
     }
 
     pub(crate) fn fill(&mut self, at: Location, count: u64, byte: u8) -> Result<()> {
+        if count != 0 {
+            self.map_text(b"$d");
+        }
         let section = &mut self.sections[self.current];
         let end = section
             .size
@@ -182,6 +202,13 @@ impl Object {
     }
 
     pub(crate) fn emit_bytes(&mut self, at: Location, bytes: &[u8]) -> Result<()> {
+        if !bytes.is_empty() {
+            self.map_text(b"$d");
+        }
+        self.append_bytes(at, bytes)
+    }
+
+    fn append_bytes(&mut self, at: Location, bytes: &[u8]) -> Result<()> {
         let section = &mut self.sections[self.current];
         if section.kind == SHT_NOBITS {
             let fill = bytes.iter().copied().find(|&byte| byte != 0).unwrap_or(0);
@@ -198,11 +225,66 @@ impl Object {
     }
 
     pub(crate) fn default_fill(&self) -> u8 {
-        if self.sections[self.current].flags & SHF_EXECINSTR != 0 {
+        if self.target == Target::X86_64 && self.in_text() {
             0x90
         } else {
             0
         }
+    }
+
+    fn map_text(&mut self, name: &'static [u8]) {
+        if self.target == Target::Aarch64
+            && self.in_text()
+            && self.text_mappings.last().is_none_or(|&(_, previous)| previous != name)
+        {
+            self.text_mappings.push((self.sections[0].size, name));
+        }
+    }
+
+    pub(crate) fn emit_aarch64(&mut self, at: Location, word: u32) -> Result<()> {
+        if !self.in_text() {
+            return Err(at.error("instructions require .text"));
+        }
+        let text = &mut self.sections[0];
+        if text.size % 4 != 0 {
+            return Err(at.error("instruction must be four-byte aligned"));
+        }
+        text.alignment = text.alignment.max(4);
+        self.map_text(b"$x");
+        self.append_bytes(at, &word.to_le_bytes())
+    }
+
+    pub(crate) fn branch_aarch64(
+        &mut self,
+        symbol: usize,
+        kind: BranchKind,
+        addend: i64,
+        word: u32,
+        at: Location,
+    ) -> Result<()> {
+        let offset = self.sections[0].bytes.len();
+        self.emit_aarch64(at, word)?;
+        self.branches.push(BranchFixup { symbol, offset, kind, addend, at });
+        Ok(())
+    }
+
+    fn resolve_branches(&mut self) -> Result<()> {
+        let text = &mut self.sections[0].bytes;
+        for branch in &self.branches {
+            let target = &self.symbols[branch.symbol];
+            match target.section {
+                SHN_UNDEF => return Err(branch.at.error("undefined AArch64 branch target")),
+                1 => {} // Instructions are emitted only in .text.
+                _ => return Err(branch.at.error("cross-section AArch64 branch is unsupported")),
+            }
+            let displacement =
+                i128::from(target.value) + i128::from(branch.addend) - branch.offset as i128;
+            // The fixup was recorded after appending a full instruction word.
+            let field = &mut text[branch.offset..branch.offset + 4];
+            let word = u32::from_le_bytes([field[0], field[1], field[2], field[3]]);
+            field.copy_from_slice(&branch.kind.patch(word, displacement, branch.at)?.to_le_bytes());
+        }
+        Ok(())
     }
 
     pub(crate) fn align(&mut self, at: Location, alignment: u64, fill: u8) -> Result<()> {
@@ -336,7 +418,16 @@ impl Object {
     }
 
     fn object_symbols(&self) -> Result<Vec<RelSymbol<'_>>> {
-        let mut out = Vec::with_capacity(self.symbols.len());
+        let mut out = Vec::with_capacity(self.symbols.len() + self.text_mappings.len());
+        // AAELF64 §5.6.5: local STT_NOTYPE symbols delimit code and data.
+        out.extend(self.text_mappings.iter().map(|&(value, name)| RelSymbol {
+            name,
+            section: 1,
+            kind: STT_NOTYPE,
+            binding: STB_LOCAL,
+            value,
+            size: 0,
+        }));
         for symbol in &self.symbols {
             let size_at = symbol.size_at.unwrap_or(symbol.first_use);
             if symbol.section == SHN_UNDEF {
@@ -371,6 +462,7 @@ impl Object {
 
     pub(crate) fn finish(mut self) -> Result<Vec<u8>> {
         self.resolve_references()?;
+        self.resolve_branches()?;
         self.resolve_sizes()?;
         let symbols = self.object_symbols()?;
         let sections: Vec<_> = self
@@ -386,7 +478,11 @@ impl Object {
                 relocations: &section.relocations,
             })
             .collect();
-        write_rel(EM_X86_64, &sections, &symbols)
+        let machine = match self.target {
+            Target::X86_64 => EM_X86_64,
+            Target::Aarch64 => EM_AARCH64,
+        };
+        write_rel(machine, &sections, &symbols)
             .map_err(|error| self.last_output_at.error(error.message))
     }
 }
