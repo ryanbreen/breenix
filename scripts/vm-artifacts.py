@@ -660,10 +660,19 @@ def prepare_retirement(root, run, operation, slot):
                      slot_digest=None if install else selected['kernelSha256'])
     retirement_intent(run, state, generation, install)
     pending = dict(phase=phase, generation=generation, launch=secrets.token_hex(16))
-    state.update(phase=phase, pending=pending)
-    slots.write_json(run / RETIREMENT_RECORD, state)
     slots.write_json(run / 'verified-build.json', dict(receipt, retirement=pending))
     return list(vm_gpt.drive_args(run, state['layout'], install))
+
+
+def start_retirement(run):
+    # Commit the request only when the launcher is about to hand QEMU the disk.
+    state = retirement_state(run)
+    pending = json.loads((run / 'verified-build.json').read_text())['retirement']
+    allowed = {'install': ('ready',), 'verify': ('next',), 'final': ('reclaimed', 'done')}
+    if state['phase'] not in allowed[pending['phase']] or current_boot(run).name != state['lastBoot']:
+        raise ValueError('retirement launch no longer follows the last boot')
+    state.update(phase=pending['phase'], pending=pending)
+    slots_module().write_json(run / RETIREMENT_RECORD, state)
 
 
 def retirement_launch(boot, state):
@@ -817,7 +826,7 @@ if __name__ == '__main__':
             sys.exit(f'VM artifacts: {error}')
         sys.exit(0)
     operation, root, run, value, *extra = sys.argv[1:]
-    if operation in ('begin-retirement', 'reclaim-ext2', 'prepare-retirement', 'finish-retirement'):
+    if operation in ('begin-retirement', 'reclaim-ext2', 'prepare-retirement', 'start-retirement', 'finish-retirement'):
         run = Path(run)
         try:
             if operation == 'begin-retirement':
@@ -827,6 +836,8 @@ if __name__ == '__main__':
             elif operation == 'prepare-retirement':
                 action, slot = value.split(':')
                 print(*prepare_retirement(root, run, action, slot), sep='\n')
+            elif operation == 'start-retirement':
+                start_retirement(run)
             else:
                 status, monitor = map(int, value.split(':'))
                 finish_retirement(run, status, monitor)

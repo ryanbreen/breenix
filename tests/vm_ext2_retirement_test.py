@@ -95,6 +95,7 @@ class VmExt2Retirement(unittest.TestCase):
 
     def launch(self, index, phase, slot, *, probe=True):
         VM['prepare_retirement'](self.repo, self.run, 'install' if phase == 'install' else 'boot', slot)
+        VM['start_retirement'](self.run)
         pending = json.loads((self.run / 'verified-build.json').read_text())['retirement']
         ident = f'20261121T2000{index:02d}Z-qemu'
         self.boot(ident, phase, pending['generation'], pending, probe)

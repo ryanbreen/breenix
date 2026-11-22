@@ -336,7 +336,10 @@ mkdir -p "${TMPDIR:-/tmp}/breenix-boot"
 serial=$(mktemp "${TMPDIR:-/tmp}/breenix-boot/vm-persistent.XXXXXX")
 printf '%s\n' "$serial" > "$run/serial-path"
 host_slot_serial "$serial"
-if [ -f "$retirement" ]; then export BREENIX_QUIET=1 BREENIX_QUIET_MAX_LOAD=8; fi
+if [ -f "$retirement" ]; then
+    export BREENIX_QUIET=1 BREENIX_QUIET_MAX_LOAD=8
+    rm -f "$run/events.sock"
+fi
 host_slot_quiet
 rm -f "$run/serial.sock" "$run/console.sock"
 python3 "$ROOT/scripts/vm-serial-pump.py" "$run" "$serial" &
@@ -419,6 +422,10 @@ if [ "$op" = install ]; then
         sleep .05
     done
     [ -f "$run/install-monitor-ready" ] || { echo 'install monitor did not start' >&2; "$ROOT/scripts/vigil-record.sh" finish "$vigil" 1; exit 1; }
+fi
+if [ -f "$retirement" ] && ! python3 -B "$ROOT/scripts/vm-artifacts.py" start-retirement "$ROOT" "$run" ''; then
+    "$ROOT/scripts/vigil-record.sh" finish "$vigil" 1
+    exit 1
 fi
 set +e
 python3 "$ROOT/scripts/qemu-arm64.py" "$qemu" -rtc base=utc -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
