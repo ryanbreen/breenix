@@ -7526,7 +7526,10 @@ pub(crate) fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aar
                         setup_idle_return_arm64(frame);
                         crate::task::scheduler::switch_to_idle();
                     }
-                    crate::signal::delivery::SignalDeliveryResult::FrameFault => {
+                    crate::signal::delivery::SignalDeliveryResult::FrameFault
+                    | crate::signal::delivery::SignalDeliveryResult::DeferredExit => {
+                        // The scheduler thread has stopped. The exit drain
+                        // still needs the process row to release its resources.
                         crate::task::scheduler::set_need_resched();
                         setup_idle_return_arm64(frame);
                         crate::task::scheduler::switch_to_idle();
@@ -7550,7 +7553,6 @@ pub(crate) fn check_and_deliver_signals_for_current_thread_arm64(frame: &mut Aar
         if let Some(notification) = signal_termination_info {
             crate::signal::delivery::notify_parent_of_termination_deferred(&notification);
         }
-
     }
 }
 
