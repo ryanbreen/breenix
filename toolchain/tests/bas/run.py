@@ -7,6 +7,8 @@ import struct
 import subprocess
 import tempfile
 
+from aarch64_integer import INTEGER_ENCODINGS as AARCH64_INTEGER_ENCODINGS
+from aarch64_integer import INTEGER_REJECTIONS as AARCH64_INTEGER_REJECTIONS
 from integer import INTEGER_ENCODINGS, INTEGER_REJECTIONS
 
 
@@ -19,6 +21,7 @@ ADDRESSING_CHECK = "bas::sib_rip_forms_match_sdm_table"
 RELOCATION_CHECK = "bas::rela_pc32_for_external_call"
 INTEGER_CHECK = "bas::encode_mov_r64_imm32"
 AARCH64_CHECK = "bas::aarch64_exit42_object_passes_elfcheck"
+AARCH64_INTEGER_CHECK = "bas::aarch64_encode_add_imm"
 
 # Intel SDM Vol. 2 MOV opcode table B8+rd id, Table 2-4 REX.B,
 # and AMD APM Vol. 1 Figure 3-3 for the r32 register numbers.
@@ -255,9 +258,45 @@ def check_supplemental_encodings(bas, elfcheck, path):
                 f"wrong diagnostic for {line!r}: {result.stderr}")
 
 
-def check_aarch64(bas, elfcheck, path):
-    sections, contents, _, symbols = read_object(
-        bas, elfcheck, path, AARCH64_CORPUS / "encodings.s", machine="aarch64")
+def check_aarch64_integer(bas, elfcheck, path):
+    source = AARCH64_CORPUS / "encodings.s"
+    count = len(AARCH64_INTEGER_ENCODINGS)
+    corpus_sources = [line.strip() for line in source.read_text().splitlines()]
+    corpus_words = (AARCH64_CORPUS / "encodings.hex").read_text().splitlines()
+    first, word, section = AARCH64_INTEGER_ENCODINGS[0]
+    source_start = corpus_sources.index(first)
+    word_start = corpus_words.index(f"{word:08x} # DDI 0487 M.b {section} {first}")
+    for (assembly, expected, section), corpus_source, corpus_word in zip(
+        AARCH64_INTEGER_ENCODINGS, corpus_sources[source_start:source_start + count],
+        corpus_words[word_start:word_start + count], strict=True
+    ):
+        require(corpus_source == assembly, f"corpus source differs for {assembly!r}")
+        require(corpus_word == f"{expected:08x} # DDI 0487 M.b {section} {assembly}",
+                f"corpus encoding or citation differs for {assembly!r}")
+
+    obj = read_object(bas, elfcheck, path, source, machine="aarch64")
+    sections, contents, _, _ = obj
+    words = list(struct.iter_unpack("<I", contents(sections[b".text"][1])))
+    for (assembly, expected, section), (actual,) in zip(
+        AARCH64_INTEGER_ENCODINGS, words[word_start:word_start + count], strict=True
+    ):
+        require(actual == expected,
+                f"{assembly!r} (DDI 0487 M.b {section}): got {actual:08x}, expected {expected:08x}")
+
+    source = path.with_suffix(".s")
+    rejected = path.with_suffix(".rejected.o")
+    for assembly, column, reason, section in AARCH64_INTEGER_REJECTIONS:
+        source.write_text(f".section .text\n{assembly}\n")
+        result = subprocess.run([bas, "--target", "aarch64", "-o", rejected, source],
+                                capture_output=True, text=True, timeout=10)
+        require(result.returncode == 1 and f"{source}:2:{column}:" in result.stderr
+                and reason in result.stderr and not rejected.exists(),
+                f"{assembly!r} (DDI 0487 M.b {section}): wrong diagnostic: {result.stderr}")
+    return obj
+
+
+def check_aarch64(bas, path, obj):
+    sections, contents, _, symbols = obj
     text_index, text = sections[b".text"]
     require(text[1:3] == (1, 6) and text[8] == 4, "expected aligned executable .text")
     require(symbols.get(b"_start") == (0x10, 0, text_index, 0, 0), "expected global _start")
@@ -303,10 +342,17 @@ def main():
                       ("bas::supplemental_encodings", check_supplemental_encodings),
                       (ADDRESSING_CHECK, check_addressing), (CHECK, check_object))
             if args.machine == "aarch64":
-                checks = ((AARCH64_CHECK, check_aarch64),)
-            for check, run in checks:
-                run(args.bas, args.elfcheck, directory / f"{run.__name__}.o")
+                path = directory / "aarch64.o"
+                check = AARCH64_INTEGER_CHECK
+                obj = check_aarch64_integer(args.bas, args.elfcheck, path)
                 print(f"{check} PASS", flush=True)
+                check = AARCH64_CHECK
+                check_aarch64(args.bas, path, obj)
+                print(f"{check} PASS", flush=True)
+            else:
+                for check, run in checks:
+                    run(args.bas, args.elfcheck, directory / f"{run.__name__}.o")
+                    print(f"{check} PASS", flush=True)
     except (KeyError, OSError, ValueError, struct.error, subprocess.SubprocessError) as error:
         parser.exit(1, f"{check} FAIL ({error})\n")
 
