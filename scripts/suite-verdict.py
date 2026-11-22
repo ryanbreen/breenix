@@ -449,6 +449,11 @@ def verdict(manifest, records_log, logs, only=None, categories=None, disk=None, 
         "MEMORY": re.compile(rf"^SUITE {suite} MEMORY (before|after) free=(\d+) heap_free_kb=\d+(?: [a-z_]+=\d+)+$"),
         "RECLAIMED": re.compile(rf"^SUITE {suite} MEMORY reclaimed=(PASS|FAIL) free_before=(\d+) free_after=(\d+) allowance=(\d+)$"),
     }
+    if suite == "toolchain":
+        shapes["HOSTSSH"] = re.compile(
+            r"^SUITE toolchain HOSTSSH (c-core/hello-over-ssh) nonce=[0-9a-f]{32}"
+            r" fp=SHA256:[A-Za-z0-9+/]{43} peer=(?:[0-9]{1,3}\.){3}[0-9]{1,3}"
+            r" user=[a-z_][a-z0-9_-]{0,31} uid=[1-9][0-9]* gid=[1-9][0-9]*$")
     if suite == "gui-apps":
         for action in ("SMBSTOP", "SMBSTART"):
             shapes[action] = re.compile(
