@@ -19,8 +19,11 @@ INTEGER_ENCODINGS = (
     # CBW/CWDE/CDQE: 98; CWD/CDQ/CQO: 99, with operand-size selection.
     ("cbw", "66 98"), ("cwde", "98"), ("cdqe", "48 98"),
     ("cwd", "66 99"), ("cdq", "99"), ("cqo", "48 99"),
-    # ADD: 00/02 /r, 81/83 /0. The RIP displacement in the last ADD is
+    # ADD: 00/02 /r, 80/81/83 /0. REX selects SPL over AH for r/m=100.
+    # The RIP displacement in the last ADD is
     # zero because .Lnext follows the immediate, at the end of the instruction.
+    ("add ah, 1", "80 c4 01"),
+    ("add spl, 1", "40 80 c4 01"),
     ("add [r12], r9b", "45 00 0c 24"),
     ("add r9, [r12]", "4d 03 0c 24"),
     ("add r11w, 128", "66 41 81 c3 80 00"),
