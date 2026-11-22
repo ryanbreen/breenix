@@ -8,7 +8,6 @@ import struct
 import subprocess
 import tempfile
 
-ROOT = Path(__file__).resolve().parents[3]
 LONG_NAME = 'long-archive-fixture-member.o'
 
 
@@ -80,21 +79,16 @@ def rebuild_archive_indexes(bar, work):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--clang', default='clang')
-    parser.add_argument('--host-arch', action='append', default=[])
+    parser.add_argument('--bar', type=Path, required=True)
     args = parser.parse_args()
+    if not args.bar.is_absolute():
+        parser.error('--bar must be an absolute path')
     with tempfile.TemporaryDirectory(prefix='bar-test-') as temp:
-        for arch in args.host_arch or [None]:
-            work = Path(temp) / (arch or 'native')
-            work.mkdir()
-            bar = work / 'bar'
-            flags = ['-arch', arch] if arch else []
-            subprocess.run([args.clang, *flags, '-std=c11', '-Wall', '-Wextra', '-Werror',
-                            '-pedantic', '-fsanitize=address,undefined', '-fno-sanitize-recover=all',
-                            ROOT / 'toolchain/bar/bar.c', ROOT / 'toolchain/common/ar.c',
-                            ROOT / 'toolchain/common/elf_symbols.c', '-o', bar], check=True)
-            index_is_deterministic(args.clang, bar, work)
-            print(f'PASS bar::index_is_deterministic ({work.name})')
-            rebuild_archive_indexes(bar, work)
+        work = Path(temp) / 'native'
+        work.mkdir()
+        index_is_deterministic(args.clang, args.bar, work)
+        print(f'PASS bar::index_is_deterministic ({work.name})')
+        rebuild_archive_indexes(args.bar, work)
 
 
 if __name__ == '__main__':

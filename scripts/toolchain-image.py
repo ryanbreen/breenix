@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "metal"))
 from metal_root import require_e2fsprogs
@@ -72,7 +73,7 @@ def manifest_bytes(tree, files):
     return "".join(f"{digest(tree / path)}  {path.as_posix()}\n" for path in files).encode()
 
 
-def seal(bundle, commit, arch):
+def seal(bundle, commit, arch, tool_record):
     if not COMMIT.fullmatch(commit):
         raise ValueError("invalid toolchain build commit")
     tree = bundle / "root"
@@ -117,9 +118,19 @@ def seal(bundle, commit, arch):
         obj = tree / CORPUS / "objs" / (name + ".o")
         if digest(obj) != receipt["object"]["sha256"]:
             raise ValueError(f"staged object differs from the reference link input: {name}")
+    tools = json.loads(tool_record.read_text())
+    fork = tomllib.loads((ROOT / "rust-fork.toml").read_text())["commit"]
+    if set(tools) != set(TOOLS):
+        raise ValueError("toolchain build record differs from the staged tool set")
+    for name, tool in tools.items():
+        if (tool["cargoPackage"] != name or tool["target"] != f"{arch}-breenix"
+                or tool["rustForkCommit"] != fork or not tool["rustc"]["version"]
+                or not SHA256.fullmatch(tool["rustc"]["sha256"])
+                or tool["sha256"] != digest(tree / DEV / "bin" / name)):
+            raise ValueError(f"{name}: build record differs from the staged tool")
     (tree / MANIFEST).write_bytes(manifest_bytes(tree, files))
-    record = json.dumps(dict(commit=commit, arch=arch, manifestSha256=digest(tree / MANIFEST)),
-                        indent=2) + "\n"
+    record = json.dumps(dict(commit=commit, arch=arch, tools=tools,
+                             manifestSha256=digest(tree / MANIFEST)), indent=2) + "\n"
     (tree / RECORD).write_text(record)
     (bundle / "build.json").write_text(record)
 
@@ -209,6 +220,7 @@ def main():
     finalize.add_argument("bundle", type=Path)
     finalize.add_argument("commit")
     finalize.add_argument("arch", choices=("x86_64", "aarch64"))
+    finalize.add_argument("--tool-record", type=Path, required=True)
     copy = commands.add_parser("stage")
     copy.add_argument("base", type=Path)
     copy.add_argument("output", type=Path)
@@ -220,7 +232,7 @@ def main():
         if args.command == "check-corpus":
             check_corpus(args.corpus)
         elif args.command == "seal":
-            seal(args.bundle, args.commit, args.arch)
+            seal(args.bundle, args.commit, args.arch, args.tool_record)
         else:
             stage(args.base.resolve(strict=True), args.output.absolute(), args.suite, args.toolchain_bundle, args.arch)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:

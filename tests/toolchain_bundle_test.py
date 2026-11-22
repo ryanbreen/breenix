@@ -1,5 +1,6 @@
 """Check the producer record and receipts of a built toolchain bundle."""
 
+import argparse
 import hashlib
 import json
 import os
@@ -93,8 +94,27 @@ class ToolchainBundleTest(unittest.TestCase):
                     elf = assembler / f"{name}.elf"
                     self.assertEqual(receipt["elf"], {"name": elf.name, "sha256": digest(elf)})
 
+    def read_fault_probe_is_not_shipped(self):
+        self.assertIsNotNone(self.probe, "pass the guest-target bld-read-probe with --probe")
+        shipped = self.dev / "bin/bld"
+        probe = self.probe.read_bytes()
+        with shipped.open("rb") as file:
+            header = file.read(20)
+        self.assertEqual(probe[:20], header, "the probe must be for the same ELF target")
+        self.assertIn(b"read EINTR", probe)
+        self.assertIn(b"read short", probe)
+        self.assertNotEqual(digest(shipped), digest(self.probe))
+
 
 if __name__ == "__main__":
-    ToolchainBundleTest.bundle = Path(sys.argv.pop(1))
-    unittest.main(defaultTest=["ToolchainBundleTest.tools_built_by_rustc",
-                               "ToolchainBundleTest.receipts_from_cargo_host_bas"])
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("bundle", type=Path)
+    parser.add_argument("--probe", type=Path)
+    args, names = parser.parse_known_args()
+    ToolchainBundleTest.bundle = args.bundle
+    ToolchainBundleTest.probe = args.probe
+    checks = ["ToolchainBundleTest.tools_built_by_rustc",
+              "ToolchainBundleTest.receipts_from_cargo_host_bas"]
+    if args.probe is not None:
+        checks.append("ToolchainBundleTest.read_fault_probe_is_not_shipped")
+    unittest.main(argv=[sys.argv[0], *names], defaultTest=checks)

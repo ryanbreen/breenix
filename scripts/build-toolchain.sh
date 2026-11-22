@@ -79,5 +79,5 @@ done < "$root/toolchain/corpus/cases"
 
 python3 "$root/scripts/toolchain-build-tools.py" "$arch" "$work/tools" "$dev" "$corpus"
 
-python3 "$root/scripts/toolchain-image.py" seal "$work/bundle" "$commit" "$arch"
+python3 "$root/scripts/toolchain-image.py" seal "$work/bundle" "$commit" "$arch" --tool-record "$work/tools/tools.json"
 mv "$work/bundle" "$output"

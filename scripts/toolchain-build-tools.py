@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tomllib
 
 sys.dont_write_bytecode = True
 loader = SourceFileLoader("toolchain_ref_cc", str(Path(__file__).with_name("toolchain-ref-cc")))
@@ -16,19 +17,96 @@ reference = module_from_spec(spec_from_loader(loader.name, loader))
 loader.exec_module(reference)
 ROOT = reference.ROOT
 FIXTURES = ROOT / "toolchain/corpus/assembler"
-TOOLS = {
-    "bas": ("bas/bas.c", "common/elf64.c"),
-    "bld": ("bld/bld.c", "bld/script.c", "common/ar.c"),
-    "bar": ("bar/bar.c", "common/ar.c", "common/elf_symbols.c"),
-    "bnm": ("bnm/bnm.c", "common/ar.c", "common/elf_symbols.c"),
-}
+WORKSPACE = ROOT / "toolchain"
+TOOLS = ("bas", "bld", "bar", "bnm")
 LINKER_SOURCES = ("got-main.c", "got-entry.s", "archive-value-with-long-name.s", "tls-template.c")
 PROGRAMS = ("sse-exit", "x87-exit")
-STRICT = ("-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic")
 
 
 def digest(path):
     return reference.inventory.file_record(path)["sha256"]
+
+
+def cargo_environment():
+    channel = tomllib.loads((WORKSPACE / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
+    rustc = Path(subprocess.check_output(
+        ["rustup", "which", "--toolchain", channel, "rustc"], text=True,
+    ).strip())
+    env = dict(os.environ, RUSTC=str(rustc))
+    for key in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"):
+        env.pop(key, None)
+    version = subprocess.check_output([str(rustc), "-vV"], text=True)
+    host = next(line.removeprefix("host: ") for line in version.splitlines() if line.startswith("host: "))
+    rustc_record = {"version": version.splitlines()[0], "sha256": digest(rustc)}
+    return ["cargo", f"+{channel}", "build", "--release"], env, host, rustc_record
+
+
+def remap_flags(env):
+    if env.get("BREENIX_USERSPACE_REMAP") != "1":
+        return []
+    cargo_home = Path(env.get("CARGO_HOME", Path.home() / ".cargo"))
+    return [f"--remap-path-prefix={ROOT}=/breenix", f"--remap-path-prefix={cargo_home}=/cargo"]
+
+
+def cargo_tools(cargo, env, target, target_dir, packages, extra=()):
+    subprocess.run([
+        *cargo, "--locked", "--manifest-path", str(WORKSPACE / "Cargo.toml"),
+        "--target", str(target), "--target-dir", str(target_dir),
+        *(flag for package in packages for flag in ("-p", package, "--bin", package)),
+        *extra,
+    ], cwd=WORKSPACE, env=env, check=True)
+    return target_dir / Path(target).stem / "release"
+
+
+def build_guest_tools(arch, work, dev, clang, cargo, env, rustc_record):
+    library = Path(env.get("BREENIX_RUST_FORK_LIBRARY", ROOT / "rust-fork/library")).resolve()
+    subprocess.run([str(ROOT / "scripts/rust-fork.sh"), "verify"], env=env, check=True)
+    fork = tomllib.loads((ROOT / "rust-fork.toml").read_text())["commit"]
+    snapshot = library.parent / ".rust-fork-snapshot.json"
+    actual_fork = (json.loads(snapshot.read_text())["commit"] if snapshot.is_file() else
+                   subprocess.check_output(["git", "-C", str(library.parent), "rev-parse", "HEAD"],
+                                           text=True).strip())
+    if actual_fork != fork:
+        raise ValueError("the toolchain bundle requires the pinned Breenix Rust library")
+
+    target = f"{arch}-breenix"
+    target_json = ROOT / f"{target}.json"
+    remap = remap_flags(env)
+    libc = dev / "lib"
+    if arch == "x86_64":
+        # The C reference corpus uses the SysV float ABI. Rust tools use the
+        # soft-float target and the matching libc.a, as userspace/build.sh does.
+        libc_target = work / "rust-libc"
+        subprocess.run([
+            *cargo, "--target", str(target_json), "--target-dir", str(libc_target),
+        ], cwd=ROOT / "libs/libbreenix-libc",
+            env=dict(env, CARGO_ENCODED_RUSTFLAGS="\x1f".join(remap)), check=True)
+        libc = libc_target / target / "release"
+        subprocess.run([
+            sys.executable, str(ROOT / "scripts/libc-clean-archive.py"),
+            "--archive", str(libc / "libc.a"), "--tool-dir", str(Path(clang[0]).parent),
+        ], check=True)
+
+    flags = [
+        *remap, "-L", f"native={libc}", "-C", f"link-arg=-T{ROOT / 'userspace/programs/linker.ld'}",
+        "-C", "link-arg=--allow-multiple-definition", "-C", "default-linker-libraries=no",
+        "-C", f"metadata=breenix_std_{fork}",
+    ]
+    guest_env = dict(env, __CARGO_TESTS_ONLY_SRC_ROOT=str(library),
+                     CARGO_ENCODED_RUSTFLAGS="\x1f".join(flags))
+    binaries = cargo_tools(cargo, guest_env, target_json, work / "guest-target", TOOLS,
+                          ("-Z", "build-std=std,panic_abort", "-Z", "build-std-features=compiler-builtins-mem"))
+    dev_bin = dev / "bin"
+    dev_bin.mkdir()
+    tools = {}
+    for name in TOOLS:
+        executable = dev_bin / name
+        shutil.copy2(binaries / name, executable)
+        tools[name] = {
+            "cargoPackage": name, "target": target, "rustForkCommit": fork,
+            "rustc": rustc_record, "sha256": digest(executable),
+        }
+    return tools
 
 
 def build(arch, work, dev, corpus):
@@ -37,45 +115,19 @@ def build(arch, work, dev, corpus):
         Path(os.environ["BREENIX_TOOLCHAIN_CLANG"]),
         os.environ["BREENIX_TOOLCHAIN_CLANG_SHA256"], work,
     )
-    lld, _ = reference.pinned_tool(
-        Path(os.environ["BREENIX_TOOLCHAIN_LLD"]),
-        os.environ["BREENIX_TOOLCHAIN_LLD_SHA256"], work,
-    )
-
-    headers = (ROOT / "libs/libbreenix-libc/include", ROOT / "toolchain/include")
-    dev_bin = dev / "bin"
-    dev_bin.mkdir()
-    link = [*lld, "--fatal-warnings", "-static", "--gc-sections", "-T", str(dev / "linker.ld")]
-    built = {}
-    for tool, sources in TOOLS.items():
-        objects = []
-        for relative in sources:
-            if relative not in built:
-                source = ROOT / "toolchain" / relative
-                obj = relative.replace("/", "-") + ".o"
-                reference.run([
-                    *clang, "--no-default-config", f"--target={arch}-unknown-linux-gnu",
-                    "-Ulinux", "-U__linux", "-U__linux__", "-U__gnu_linux__", "-D__breenix__=1",
-                    *STRICT, "-nostdinc", "-isystem", str(headers[0]), "-isystem", str(headers[1]),
-                    "-fno-stack-protector", "-fno-pic", "-fno-pie", reference.ARCH_FLAGS[arch],
-                    "-c", str(source), "-o", obj,
-                ], work)
-                built[relative] = obj
-            objects.append(built[relative])
-        reference.run([*link, "-o", str(dev_bin / tool), *objects, str(dev / "lib/libc.a")], work)
+    cargo, env, host, rustc_record = cargo_environment()
+    tools = build_guest_tools(arch, work, dev, clang, cargo, env, rustc_record)
 
     if arch == "x86_64":
-        # Host bas emits the exact objects linked by lld. Use relative input
-        # names in the map so the receipt names no build directory.
-        host_bas = work / "host-bas"
-        host_flags = ["--no-default-config", *STRICT]
-        if sys.platform == "darwin":
-            sdk = subprocess.check_output(
-                ["/usr/bin/xcrun", "--sdk", "macosx", "--show-sdk-path"], text=True,
-            ).strip()
-            host_flags.extend(["-isysroot", sdk])
-        subprocess.run([*clang, *host_flags, *(str(ROOT / "toolchain" / source) for source in TOOLS["bas"]),
-                        "-o", str(host_bas)], cwd=work, check=True)
+        lld, _ = reference.pinned_tool(
+            Path(os.environ["BREENIX_TOOLCHAIN_LLD"]),
+            os.environ["BREENIX_TOOLCHAIN_LLD_SHA256"], work,
+        )
+        link = [*lld, "--fatal-warnings", "-static", "--gc-sections", "-T", str(dev / "linker.ld")]
+        # Use relative object names so the lld map names no build directory.
+        host_env = dict(env, CARGO_ENCODED_RUSTFLAGS="\x1f".join(remap_flags(env)))
+        host_bas = cargo_tools(cargo, host_env, host, work / "host-target", ("bas",)) / "bas"
+        producer = {"cargoPackage": "bas", "target": host, "sha256": digest(host_bas)}
         destination = corpus / "assembler"
         shutil.copytree(FIXTURES, destination)
         for name in PROGRAMS:
@@ -88,6 +140,7 @@ def build(arch, work, dev, corpus):
                     not any(line.split()[-1:] == [f"{obj}:(.text)"] for line in map_text.splitlines())):
                 raise ValueError(f"{elf}: lld trace or map differs from the expected input {obj}")
             receipt = {
+                "hostBas": producer,
                 "inputObjects": {obj: obj_hash},
                 "elf": {"name": elf, "sha256": digest(work / elf)},
                 "map": map_text,
@@ -97,6 +150,8 @@ def build(arch, work, dev, corpus):
                                                            encoding="utf-8")
 
         build_linker_objects(arch, clang, work, corpus)
+
+    (work / "tools.json").write_text(json.dumps(tools) + "\n", encoding="utf-8")
 
 
 def build_linker_objects(arch, clang, work, corpus):

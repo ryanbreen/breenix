@@ -7,7 +7,7 @@
 
 [workspace]
 resolver = "2"
-members = ["bas", "bld", "bobj", "elfcheck"]
+members = ["bar", "bas", "bld", "bnm", "bobj", "elfcheck"]
 
 [workspace.package]
 edition = "2021"

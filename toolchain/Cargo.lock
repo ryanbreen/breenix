@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "bar"
+version = "0.1.0"
+dependencies = [
+ "bobj",
+]
+
+[[package]]
 name = "bas"
 version = "0.1.0"
 dependencies = [
@@ -11,6 +18,13 @@ dependencies = [
 
 [[package]]
 name = "bld"
+version = "0.1.0"
+dependencies = [
+ "bobj",
+]
+
+[[package]]
+name = "bnm"
 version = "0.1.0"
 dependencies = [
  "bobj",

@@ -1867,20 +1867,26 @@ The `toolchain/assembler-object` milestone measures the three `assembler`
 cases on x86-64. They invoke `/opt/breenix-dev/25.2/bin/bas` and compare
 the resulting `.text` with the Intel SDM byte table, or check that malformed
 assembly exits nonzero and reports its file and line. For `object-runs`, the
-bundle builder assembles two programs with host bas and links them with the
-pinned lld. Each receipt retains the lld map, its input object name and
-SHA-256, and the executable name and SHA-256. The guest reassembles each
-source, checks the fresh object digest against the map's named link input,
-checks the staged executable's digest, and runs it against its `.expect`.
+bundle builder assembles two programs with Cargo-built host bas for the
+producer's target triple and links them with the pinned lld. Each receipt
+retains the Cargo package, target triple and SHA-256 of host bas, the lld map,
+its input object name and SHA-256, and the executable name and SHA-256. The
+guest reassembles each source, checks the fresh object digest against the
+map's named link input, checks the staged executable's digest, and runs it
+against its `.expect`.
 AArch64 encoding and relocation output are scheduled for A1.
 
 The `toolchain/static-link` milestone measures the six `linker` cases on
-x86-64. The suite-only bundle contains `bld`, `bar` and `bnm` alongside
-`bas`. The manifest hashes the Clang-built inputs under
+x86-64. Cargo builds the suite-only bundle's `bas`, `bld`, `bar` and
+`bnm` for the Breenix target. The image build record includes each tool's
+package and SHA-256, the Rust library fork commit, and the stage-0 rustc version
+and SHA-256. The manifest hashes the Clang-built inputs under
 `/usr/share/breenix/toolchain/objs/`. The reference corpus keeps the same
 objects its lld receipts identify. The linker cases use a fresh private
 directory and execute the ELF that `bld` writes there. The archive fixture
-exercises dependent members and a GOT slot. The TLS fixture checks template
+exercises dependent members and a GOT slot in the main thread and two new
+threads. The archive tools case checks that `bar s` rebuilds a missing or
+corrupt index to the original bytes. The TLS fixture checks template
 initialization, zero-fill, alignment and isolation in the main thread and
 two new threads. The two diagnostic cases require a failed link with a
 located error and no output, then repair the inputs and run a fresh link.
