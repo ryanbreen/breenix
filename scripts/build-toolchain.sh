@@ -59,9 +59,9 @@ fi
 install -m 0644 "$archive" "$dev/lib/libc.a"
 install -m 0644 "$root/userspace/programs/linker.ld" "$dev/linker.ld"
 install -m 0755 "$binaries/suite-toolchain.elf" "$guest/sbin/suite-toolchain"
-mkdir -p "$dev/include"
+mkdir -p "$dev/include" "$dev/include-support"
 cp -R "$root/libs/libbreenix-libc/include/." "$dev/include/"
-cp -R "$root/toolchain/include/." "$dev/include/"
+cp -R "$root/toolchain/include/." "$dev/include-support/"
 
 # Check the source and expectation set before compiling. The same list is
 # built into suite-toolchain, independently of the generated bundle manifest.

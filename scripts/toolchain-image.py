@@ -74,14 +74,13 @@ def seal(bundle, commit, arch):
         raise ValueError("invalid toolchain build commit")
     tree = bundle / "root"
     files = payload(tree)
-    # Derive the required names from the inputs, independently of the copy
-    # into the guest root. Compiler support headers take precedence in both
-    # the sealed include search and the installed include directory.
+    # Check both header roots independently of the copy into the guest root.
     sources = {}
-    for headers in (ROOT / "libs/libbreenix-libc/include", ROOT / "toolchain/include"):
+    for directory, headers in (("include", ROOT / "libs/libbreenix-libc/include"),
+                               ("include-support", ROOT / "toolchain/include")):
         for header in headers.rglob("*"):
             if header.is_file():
-                sources[DEV / "include" / header.relative_to(headers)] = header
+                sources[DEV / directory / header.relative_to(headers)] = header
     sources[DEV / "linker.ld"] = ROOT / "userspace/programs/linker.ld"
     required = {SUITE, DEV / "lib/libc.a"}
     corpus = ROOT / "toolchain/corpus"

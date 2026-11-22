@@ -64,6 +64,11 @@ belongs to 25.2b.
 
 ## Reference corpus
 
+The staged sysroot places libc headers in `include/` and C support headers in
+`include-support/` under `/opt/breenix-dev/25.2/`. With `-nostdinc`, add both as
+`-isystem` directories in that order so libc's `limits.h` can load the C limits
+before adding POSIX names when requested.
+
 Each translation unit in `toolchain/corpus/` names the N1570 clauses it
 exercises. The `cases` file lists the source stems in execution order. A
 case's `.expect` starts with its decimal exit status and a newline. The

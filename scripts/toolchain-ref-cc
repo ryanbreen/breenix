@@ -88,7 +88,7 @@ def build(args, work):
 
     headers = tuple(
         inventory.input_path(ROOT / path, (ROOT,))
-        for path in ("toolchain/include", "libs/libbreenix-libc/include")
+        for path in ("libs/libbreenix-libc/include", "toolchain/include")
     )
     include_roots = staged + headers
     link_script = inventory.input_path(ROOT / "userspace/programs/linker.ld", (ROOT,))

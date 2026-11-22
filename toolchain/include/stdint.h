@@ -2,7 +2,8 @@
 #ifndef BREENIX_TOOLCHAIN_STDINT_H
 #define BREENIX_TOOLCHAIN_STDINT_H
 
-#include <limits.h>
+/* These bounds come from the C support headers in this directory. */
+#include "limits.h"
 
 typedef signed char int8_t;
 typedef unsigned char uint8_t;
