@@ -12,6 +12,7 @@ TESTS = Path(__file__).resolve().parents[1]
 TOOLCHAIN = TESTS.parent
 CHECK = "bld::pc32_is_s_plus_a_minus_p"
 ARCHIVE_CHECK = "bld::two_archive_cycle_needs_group"
+TLS_CHECK = "bld::tbss_takes_no_file_bytes"
 STRICT = ["-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic"]
 
 
@@ -78,14 +79,14 @@ def check_link(bld, elfcheck, root):
     # Pinned AMD64 psABI §4.4.1, Table 4.9. P is the address of the
     # relocation field. Keep both signs of PC32 and use a nonzero addend.
     obj.write_bytes(object_bytes([
-        (3, 1, 2, -4),     # PC32: S + A - P, forward over load boundaries.
-        (12, 2, 2, 3),     # PC32: S + A - P, backward within text.
-        (16, 2, 4, -4),    # PLT32: L + A - P, direct to the static definition.
-        (24, 1, 1, 7),     # 64: S + A.
-        (32, 1, 10, 2),    # 32: S + A, zero-extension required.
-        (36, 1, 11, -0x50000000),  # 32S: S + A, sign-extension required.
-        (40, 2, 24, -5),   # PC64: S + A - P.
-        (8, 0, 0, 0),      # NONE: no calculation or field.
+        (3, 1, 2, -4),     # R_X86_64_PC32: S + A - P, forward over load boundaries.
+        (12, 2, 2, 3),     # R_X86_64_PC32: S + A - P, backward within text.
+        (16, 2, 4, -4),    # R_X86_64_PLT32: L + A - P, direct to the static definition.
+        (24, 1, 1, 7),     # R_X86_64_64: S + A.
+        (32, 1, 10, 2),    # R_X86_64_32: S + A, zero-extension required.
+        (36, 1, 11, -0x50000000),  # R_X86_64_32S: S + A, sign-extension required.
+        (40, 2, 24, -5),   # R_X86_64_PC64: S + A - P.
+        (8, 0, 0, 0),      # R_X86_64_NONE: no calculation or field.
     ]))
     subprocess.run([elfcheck, obj], check=True, timeout=10)
     subprocess.run([bld, "-o", exe, obj], check=True, timeout=10)
@@ -267,11 +268,146 @@ def check_archive_cycle(clang, bld, elfcheck, root):
     check_output([start, "--whole-archive", a, "--no-whole-archive", b], True)
 
 
+def assemble(clang, root, name, code):
+    obj = root / f"{name}.o"
+    subprocess.run([clang, "--target=x86_64-unknown-none-elf", "-x", "assembler",
+                    "-c", "-", "-o", obj], input=code, text=True, check=True, timeout=10)
+    return obj
+
+
+def checked_executable(bld, elfcheck, exe, *args):
+    subprocess.run([bld, "-o", exe, *args], check=True, timeout=10)
+    subprocess.run([elfcheck, "--exec", exe], check=True, timeout=10)
+    blob = exe.read_bytes()
+    return blob, *read_executable(blob)
+
+
+def tbss_takes_no_file_bytes(clang, bld, elfcheck, root):
+    script = TOOLCHAIN.parent / "userspace/programs/linker.ld"
+    results = []
+    for length in (13, 8193):
+        obj = assemble(clang, root, f"tls-{length}", f"""
+            .text
+            .globl _start
+            _start:
+            .long tls_zero@TPOFF
+            .quad tls_init@TPOFF
+            .section .tdata,"awT",@progbits
+            .p2align 3
+            .type tls_init,@tls_object
+            tls_init: .quad 0xa1b2c3d4e5f60708
+            .section .tbss,"awT",@nobits
+            .p2align 5
+            .type tls_zero,@tls_object
+            tls_zero: .zero {length}
+            .bss
+            .p2align 12
+            .space 17
+        """)
+        exe = root / "tls"
+        # First exercise the default link so a2 fails on TLS, then use the tree script.
+        for args in ((), ("-T", script)):
+            blob, _, segments, sections = checked_executable(bld, elfcheck, exe, *args, obj)
+            tdata, tbss, bss = (sections[name] for name in (b".tdata", b".tbss", b".bss"))
+            tls, = (ph for ph in segments if ph[0] == 7)
+            rw, = (ph for ph in segments if ph[0] == 1 and ph[1] == 6)
+            require(tls[1:] == (4, tdata[4], tdata[3], tdata[3], 8, 32 + length, 32),
+                    "PT_TLS must cover the initialization image and the aligned zero-fill")
+            require(tbss[1] == 8 and tbss[5] == length and tbss[3] == tdata[3] + 32,
+                    "the TLS zero-fill must be a separate aligned NOBITS section")
+            require(rw[2] + rw[5] == tdata[4] + 8 and bss[3] == (tdata[3] + 4095) & -4096
+                    and rw[3] + rw[6] == bss[3] + 17,
+                    ".tbss must not extend the load file range or move ordinary BSS")
+            require(struct.unpack_from("<Q", blob, tdata[4])[0] == 0xa1b2c3d4e5f60708,
+                    "initialized TLS bytes changed")
+            # AMD64 psABI §10.3 and Table 4.9: variant II uses aligned template size.
+            template = (32 + length + 31) & -32
+            tpoff32, tpoff64 = struct.unpack_from("<iq", blob, sections[b".text"][4])
+            require(tpoff32 == 32 - template, "R_X86_64_TPOFF32 has the wrong TP offset")
+            require(tpoff64 == -template, "R_X86_64_TPOFF64 has the wrong TP offset")
+            results.append((len(blob), rw[5:7], bss[3]))
+    require(results[0] == results[2] and results[1] == results[3],
+            "growing .tbss changed file size or ordinary load placement")
+
+
+def check_script_gc_comdat_got(clang, bld, elfcheck, root):
+    script = root / "layout.ld"
+    tree_script = TOOLCHAIN.parent / "userspace/programs/linker.ld"
+    script.write_text(tree_script.read_text().replace("ENTRY(_start)", "ENTRY(go)")
+                      .replace("0x40000000", "0x48000000").replace(".text : ALIGN(4K)",
+                                                                 ".text : ALIGN(8K)")
+                      .replace("*(.text .text.*)", "*(.entry .text .text.*)")
+                      .replace("*(.data .data.*)", "*(.data .data.*) KEEP(*(.saved))"))
+    entry = assemble(clang, root, "entry", """
+        .section .entry,"ax"
+        .globl go
+        go:
+        .long 0
+        .reloc go, R_X86_64_GOTPCREL, choice-4
+        .long 0
+        .reloc go+4, R_X86_64_GOTPCRELX, choice-4
+        .long 0
+        .reloc go+8, R_X86_64_REX_GOTPCRELX, choice-4
+        .quad immutable
+        .section .data.rel.ro.ptr,"aw"
+        immutable: .quad choice
+        .section .saved,"aw"
+        .quad 0xfedcba9876543210
+        .section .text.unused,"ax"
+        .quad only_referenced_from_dead_code
+    """)
+    choices = []
+    for count in (0x37, 0x48):
+        choices.append(assemble(clang, root, f"choice-{count}", f"""
+            .section .text.choice,"axG",@progbits,choice,comdat
+            .globl choice
+            choice: .byte {count}
+            .quad peer
+            .section .rodata.peer,"aG",@progbits,choice,comdat
+            peer: .long 0x11223344
+            .section .rodata.associated,"aG",@progbits,choice,comdat
+            .long 0x55667788
+        """))
+    exe = root / "selection"
+    blob, start, segments, sections = checked_executable(
+        bld, elfcheck, exe, "-T", script, "--gc-sections", entry, *choices)
+    text, rodata, data, got = (sections[name] for name in (b".text", b".rodata", b".data", b".got"))
+    require(start == text[3] == 0x48002000 and segments[0][2:4] == (0, 0x48000000),
+            "ENTRY, location counter, SIZEOF_HEADERS or ALIGN was not applied")
+    require(text[5] == 29 and blob[text[4] + 20] == 0x37, "GC or COMDAT selected the wrong code")
+    # G + GOT + A - P, with the same slot for each form and no instruction relaxation.
+    for i, name in enumerate(("R_X86_64_GOTPCREL", "R_X86_64_GOTPCRELX", "R_X86_64_REX_GOTPCRELX")):
+        displacement, = struct.unpack_from("<i", blob, text[4] + 4 * i)
+        require(text[3] + 4 * i + 4 + displacement == got[3], f"{name} missed the GOT slot")
+    require(got[5] == 8 and struct.unpack_from("<Q", blob, got[4])[0] == start + 20,
+            "GOT must have one real pointer to the selected COMDAT definition")
+    require(rodata[2] & 1 == 0 and any(ph[1] == 4 and ph[3] <= rodata[3] < ph[3] + ph[5]
+                                      for ph in segments if ph[0] == 1),
+            ".data.rel.ro must follow the read-only script selector")
+    require(struct.unpack_from("<IIQ", blob, rodata[4]) == (0x11223344, 0x55667788, start + 20)
+            and struct.unpack_from("<QQ", blob, text[4] + 12) == (rodata[3] + 8,
+                                                                  ((rodata[3] << 8) | 0x37)),
+            "section selection, COMDAT peers or relocated descriptors are wrong")
+    require(struct.unpack_from("<Q", blob, data[4])[0] == 0xfedcba9876543210,
+            "GC removed a KEEP root")
+
+
+def check_unsupported_relocation(bld, root):
+    obj, exe = root / "unsupported.o", root / "unsupported"
+    # AMD64 psABI Table 4.9 names TLSGD; numeric values outside that table have no name.
+    for kind, diagnostic in [(19, "R_X86_64_TLSGD"), (12345, "unknown AMD64 relocation (12345)")]:
+        obj.write_bytes(object_bytes([(3, 1, kind, 0)]))
+        result = subprocess.run([bld, "-o", exe, obj], capture_output=True,
+                                text=True, timeout=10)
+        require(result.returncode == 1 and diagnostic in result.stderr and not exe.exists(),
+                f"unsupported relocation diagnostic is missing: {result.stderr!r}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--clang", default="clang")
     parser.add_argument("--host-arch", choices=["arm64", "x86_64"], action="append")
-    parser.add_argument("--check", choices=["archive", "all"], default="all")
+    parser.add_argument("--check", choices=["archive", "tls", "all"], default="all")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="bld-test-") as tmp:
         root = Path(tmp)
@@ -287,12 +423,24 @@ def main():
                                     ([TESTS / "elfcheck/elfcheck.c"], elfcheck)]:
                 subprocess.run([args.clang, *flags, *sources, "-o", output],
                                check=True, timeout=40)
+            if args.check in ("tls", "all"):
+                try:
+                    tbss_takes_no_file_bytes(args.clang, bld, elfcheck, directory)
+                except (OSError, ValueError, subprocess.SubprocessError) as error:
+                    raise SystemExit(f"FAIL {TLS_CHECK} ({arch}): {error}") from error
+                print(f"PASS {TLS_CHECK} ({arch})", flush=True)
+            if args.check == "tls":
+                continue
             try:
                 check_archive_cycle(args.clang, bld, elfcheck, directory)
             except (OSError, ValueError, subprocess.SubprocessError) as error:
                 raise SystemExit(f"FAIL {ARCHIVE_CHECK} ({arch}): {error}") from error
             print(f"PASS {ARCHIVE_CHECK} ({arch})", flush=True)
             if args.check == "all":
+                check_script_gc_comdat_got(args.clang, bld, elfcheck, directory)
+                print(f"PASS bld::script_gc_comdat_and_got ({arch})", flush=True)
+                check_unsupported_relocation(bld, directory)
+                print(f"PASS bld::unsupported_relocation_named ({arch})", flush=True)
                 check_link(bld, elfcheck, directory)
                 print(f"PASS {CHECK} ({arch})", flush=True)
                 check_overflow(bld, directory)
