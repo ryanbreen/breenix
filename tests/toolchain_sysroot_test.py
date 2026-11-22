@@ -72,10 +72,14 @@ class toolchain_sysroot_test(unittest.TestCase):
                 record = json.loads(self.inventory.read_text())
                 self.assertEqual(record["arch"], arch)
                 self.assertEqual(record["elf"]["sha256"], digest(self.output))
-                self.assertEqual(record["includes"], [{
-                    "path": str(ROOT / "toolchain/include/stdint.h"),
-                    "sha256": digest(ROOT / "toolchain/include/stdint.h"),
-                }])
+                dependencies = [
+                    self.source,
+                    ROOT / "toolchain/include/stdint.h",
+                    ROOT / "toolchain/include/limits.h",
+                ]
+                self.assertCountEqual(record["includes"], [
+                    {"path": str(path), "sha256": digest(path)} for path in dependencies
+                ])
                 self.assertEqual(record["archives"], [{
                     "path": str(archive), "sha256": digest(archive),
                     "members": [{"name": member.name, "sha256": digest(member)}],
