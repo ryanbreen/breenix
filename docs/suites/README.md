@@ -1411,6 +1411,41 @@ scripts/boot-interactive.sh --mode suite --suite utilities
 swift run breenix-runs run x86 --mode suite --boots 1 --suite utilities --sha <pushed-sha>
 ```
 
+## Server transfer fixture
+
+The `transfer-fixture` suite stages `/sbin/suite-transfer-fixture` on its selected
+test root. The fixture creates a disposable, keys-only account with `/bin/bsh`,
+starts bsshd on port 22 with `--allow-peer`, and prints a fresh nonce and the
+Ed25519 host-key fingerprint to the boot capture. The listener closes on the
+authenticated host completion or after 45 seconds. Connections from other peers
+are closed before SSH key exchange and counted in the lease-end record.
+
+For acceptance, build `tests/fixtures/transfer-artifact.c` for the guest using the
+SDK's architecture-specific C driver. On metal, run
+`breenix-deliver stage --repo REPO --host BOOT_HOST --sha SHA FILE` on the Mac.
+Use the resulting `--prebuilt ID` on an
+ordinary `metal-run boot --mode suite --suite transfer-fixture,users`. The launch
+record carries the input digest and the upload ID. The private site fields
+`OPERATOR_USER`, `OPERATOR_UID` and `OPERATOR_SSH_PUBLIC_KEY` configure the account.
+`SERVER_SSH_HOST` names the guest IPv4 address, and the boot host's SSH source
+IPv4 address comes from `TRANSFER_SSH_PEER` or the IPv4 host in `BOOT_URL`.
+
+Run `transfer-hostssh --boot ID --sha SHA` on the boot host while the fixture is
+live. It verifies the uploaded file against the launch record and uses the
+matching local private key and strict host-key checking. The five cases check
+the published and executed artifact digest, separate streams and status, fixture
+UID, GID and HOME, checksum refusal, interrupted-upload cleanup and publication on
+reconnect, exact four-MiB backpressure, and located open and rename failures. After
+the boot ends, `server-suite --milestone server/transfer --boot ID --sha SHA`
+checks the ordered results in `server-transfer.json` against the guest's nonce,
+lease end and retained build and tools identity (S22).
+
+On ARM64 QEMU, use `boot-interactive.sh --mode suite --suite transfer-fixture
+--transfer-artifact FILE`. The launcher stages the fixture on a private disk copy,
+forwards a loopback-only host port to guest port 22, and runs the same client with
+a per-run key. It prints the retained directory, which can be scored with
+`server-suite --target qemu --run-dir DIR --milestone server/transfer --sha SHA`.
+
 ## Server: host-driven persistent categories
 
 The `server` manifest declares `hostRunner: true` and names its Python runner in

@@ -49,6 +49,7 @@ import metal_persist  # noqa: E402
 import breenfs_replay  # noqa: E402
 import metal_power_cut  # noqa: E402
 import metal_prebuilt  # noqa: E402
+import transfer_fixture  # noqa: E402
 from metal_score import boot_shape  # noqa: E402
 # Deployed, the host-key helper sits beside this file; in a checkout it is in scripts/.
 if not (Path(__file__).resolve().parent / 'hostkeys.py').is_file():
@@ -448,6 +449,8 @@ class Driver:
                and (persistent(self.args) or not session(self.args)) and getattr(self.args, 'case', None) is None}
         if self.migration_phase:
             run['migrationPhase'] = self.migration_phase
+        if transfer_input := getattr(self.args, 'transfer_input', None):
+            run['transferInput'] = transfer_input
         if closed := getattr(self.args, 'breenfs_upgrade', None):
             run['breenfsUpgrade'] = closed
         if getattr(self.args, 'case', None) is not None:
@@ -653,6 +656,10 @@ class Driver:
             except (ValueError, OSError, KeyError) as error:
                 self.event('prebuilt-refused', reason=str(error))
                 raise Finish(m.EXIT_CANCELLED, 'prebuilt refused: ' + str(error)) from None
+            if transfer_input := getattr(self.args, 'transfer_input', None):
+                facts = {key: transfer_input[key] for key in ('size', 'sha256')}
+                if facts != build.get('transferInput') or facts != manifest['artifacts'].get(transfer_fixture.ARTIFACT):
+                    raise Finish(m.EXIT_CANCELLED, 'hashed transfer input differs from the launch record')
             shutil.copyfile(inputs / 'manifest.json', self.dir / 'manifest.json')
             run = metal_prebuilt.record_builder(m.read_json(self.dir / 'run.json'), manifest)
             m.write_json(self.dir / 'run.json', run)
@@ -3130,6 +3137,7 @@ def main():
         p.add_argument('--target', default='main')
         p.add_argument('--catchup', action='store_true')
         p.add_argument('--build-choice', type=json.loads, help=argparse.SUPPRESS)
+        p.add_argument('--transfer-input', type=json.loads, help=argparse.SUPPRESS)
         p.add_argument('--task', default='')
         p.add_argument('--no-wait', action='store_true')
         p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read', 'disk-before-mount',
@@ -3161,6 +3169,17 @@ def main():
     sub.add_parser('status')
     args, _ = parser.parse_known_args()
     if args.command in ('launch', 'run'):
+        transfer = transfer_fixture.selected(args.suite)
+        if transfer:
+            facts = args.transfer_input
+            if (args.mode != 'suite' or args.payload != 'image' or args.session or args.case or args.inject
+                    or args.disk == 'install' or not isinstance(facts, dict)
+                    or not re.fullmatch(r'\d{8}T\d{6}Z-metal', facts.get('prebuilt', ''))
+                    or not re.fullmatch(r'[a-f0-9]{64}', facts.get('sha256', ''))
+                    or type(facts.get('size')) is not int or facts['size'] <= 0):
+                parser.error('transfer-fixture needs a bounded suite boot with a hashed Mac input')
+        elif args.transfer_input is not None:
+            parser.error('--transfer-input needs --suite transfer-fixture')
         if args.gt710_category and args.mode == 'default':
             args.mode = 'probe'
         if args.root_fs is not None and (

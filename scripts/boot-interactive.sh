@@ -43,6 +43,7 @@
 #   --no-build           boot the kernel and disk already in target/; tests mode first refuses a disk
 #                        that lacks one of the testing kernel's binaries (scripts/check-test-binaries.py)
 #   --build-only         build the selected mode and exit before starting a VM
+#   --transfer-artifact FILE  stage a hashed host input for --suite transfer-fixture
 #   --cpus N             guest processors, 1 to 8, the ARM64 kernel's MAX_CPUS (default 4); suite cases
 #                        needing more processors than this fail with their CPU prerequisite
 #   --accel hvf|tcg      ARM64 accelerator (default hvf on Apple Silicon, tcg elsewhere)
@@ -79,6 +80,8 @@ MODE=tests
 ROOT_FS=ext2
 PROGRAM=
 SUITE=
+TRANSFER_ARTIFACT=
+TRANSFER_RUN_DIR=
 ONLY=
 PACE=
 SCREEN_CHECKPOINTS=on
@@ -94,7 +97,7 @@ COLLAB_HOST_BIND=${BREENIX_COLLAB_HOST_BIND:-0.0.0.0}
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --mode|--root-fs|--program|--suite|--case|--screen-capture|--screen-checkpoints|--pace|--serial-log|--power-cut-after|--power-cut-window|--idle-exit|--gate-timeout|--qmp|--accel|--cpus|--cpu)
+        --mode|--root-fs|--program|--suite|--transfer-artifact|--case|--screen-capture|--screen-checkpoints|--pace|--serial-log|--power-cut-after|--power-cut-window|--idle-exit|--gate-timeout|--qmp|--accel|--cpus|--cpu)
             [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; } ;;
     esac
     case "$1" in
@@ -107,6 +110,7 @@ while [ "$#" -gt 0 ]; do
             COLLAB_HOST=1; COLLAB_HOST_PORT=7890; shift
             if [ "$#" -gt 0 ] && [[ "$1" != --* ]]; then COLLAB_HOST_PORT="$1"; shift; fi ;;
         --suite) SUITE="$2"; shift 2 ;;
+        --transfer-artifact) [ -n "$2" ] || { echo "--transfer-artifact needs a file" >&2; exit 2; }; TRANSFER_ARTIFACT="$2"; shift 2 ;;
         --case) [ -n "$2" ] || { echo "--case needs a category or category/case id" >&2; exit 2; }; ONLY="$2"; shift 2 ;;
         --screen-checkpoints) SCREEN_CHECKPOINTS="$2"; shift 2 ;;
         --screen-capture) SCREEN_CAPTURE="$2"; shift 2 ;;
@@ -215,7 +219,21 @@ if [ "$MODE" = suite ]; then
 elif [ -n "$SUITE" ]; then
     echo "--suite is only for --mode suite" >&2; exit 2
 fi
-if [ "$BUILD_ONLY" -eq 0 ] && [ "$MODE" = suite ] && [ -z "$ONLY" ] && [ -z "${BREENIX_SUITE_ATTEMPT:-}" ]; then
+if [[ ",$SUITE," == *,transfer-fixture,* ]]; then
+    if [ "$SUITE" != transfer-fixture ] || [ "$BUILD" -ne 1 ] || [ -n "$ONLY" ] || [ "$COLLAB_HOST" -ne 0 ]; then
+        echo "ARM transfer-fixture needs a standalone, built suite boot" >&2
+        exit 2
+    fi
+    if [ "$BUILD_ONLY" -eq 0 ] && [ ! -f "$TRANSFER_ARTIFACT" ]; then
+        echo "transfer-fixture needs --transfer-artifact FILE" >&2
+        exit 2
+    fi
+    case "$TRANSFER_ARTIFACT" in /*|'') ;; *) TRANSFER_ARTIFACT="$PWD/$TRANSFER_ARTIFACT" ;; esac
+elif [ -n "$TRANSFER_ARTIFACT" ]; then
+    echo "--transfer-artifact needs --suite transfer-fixture" >&2
+    exit 2
+fi
+if [ "$BUILD_ONLY" -eq 0 ] && [ "$MODE" = suite ] && [ "$SUITE" != transfer-fixture ] && [ -z "$ONLY" ] && [ -z "${BREENIX_SUITE_ATTEMPT:-}" ]; then
     exec python3 "$ROOT/scripts/suite-sequence.py" run "$SUITE" "$SERIAL_LOG" bash "$ROOT/scripts/boot-interactive.sh" "${BOOT_ARGS[@]}"
 fi
 if [ -n "$ONLY" ]; then
@@ -345,6 +363,10 @@ case "$SERIAL_LOG" in /*) ;; *) SERIAL_LOG="$PWD/$SERIAL_LOG" ;; esac
 cd "$ROOT"
 source "$ROOT/scripts/boot-commit.sh"
 COMMIT_IDENTITY=$(boot_commit) || exit 2
+if [ "$SUITE" = transfer-fixture ] && [ "$BUILD_ONLY" -eq 0 ] && [[ "$COMMIT_IDENTITY" != *' dirty=0' ]]; then
+    echo "transfer-fixture evidence needs a clean checkout" >&2
+    exit 2
+fi
 echo "==> Commit: $COMMIT_IDENTITY"
 KERNEL="$ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 DISK="$ROOT/target/ext2-aarch64.img"
@@ -427,6 +449,17 @@ if [ "$MODE" = suite ] && [[ ",$SUITE," == *",sdk,"* ]]; then
 fi
 
 host_slot_acquire mac-boot
+if [ "$SUITE" = transfer-fixture ]; then
+    TRANSFER_RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/breenix-transfer.XXXXXX")
+    if [ "$SERIAL_REQUESTED" -eq 0 ]; then SERIAL_LOG="$TRANSFER_RUN_DIR/serial.txt"; fi
+    echo "==> Transfer evidence: $TRANSFER_RUN_DIR"
+fi
+cleanup_transfer() {
+    if [ -n "$TRANSFER_RUN_DIR" ]; then
+        rm -f "$TRANSFER_RUN_DIR/identity" "$TRANSFER_RUN_DIR/identity.pub"
+    fi
+}
+trap cleanup_transfer EXIT
 if [ "$BREENFS_DIAGNOSTIC" -eq 1 ]; then
     if [ "$SERIAL_REQUESTED" -eq 1 ]; then
         mkdir -m 700 "$(dirname "$SERIAL_LOG")" || {
@@ -444,7 +477,19 @@ else
     : > "$SERIAL_LOG"
 fi
 WRITABLE="$(dirname "$SERIAL_LOG")/ext2-writable.img"
+if [ -n "$TRANSFER_RUN_DIR" ]; then WRITABLE="$TRANSFER_RUN_DIR/ext2-writable.img"; fi
 cp "$DISK" "$WRITABLE"
+TRANSFER_PORT=
+if [ -n "$TRANSFER_RUN_DIR" ]; then
+    TRANSFER_SHA=${COMMIT_IDENTITY%% *}
+    TRANSFER_PORT=$(python3 "$ROOT/scripts/metal/transfer-hostssh" --sha "$TRANSFER_SHA" stage-qemu \
+        --run-dir "$TRANSFER_RUN_DIR" --artifact "$TRANSFER_ARTIFACT" --image "$WRITABLE" \
+        --binary "$ROOT/userspace/programs/aarch64/suite-transfer-fixture.elf")
+    for definition in docs/suites/server.json docs/efforts/path.json docs/boot-path.json; do
+        mkdir -p "$TRANSFER_RUN_DIR/definition/$(dirname "$definition")"
+        cp "$ROOT/$definition" "$TRANSFER_RUN_DIR/definition/$definition"
+    done
+fi
 CAPTURE_ARGS=()
 if [ -n "$SCREEN_CAPTURE" ]; then
     python3 "$ROOT/scripts/screens/capture-disk.py" "$SCREEN_CAPTURE" "$WRITABLE"
@@ -477,7 +522,7 @@ PYSMB
     fi
 fi
 source "$ROOT/scripts/qemu-smb-forward.sh"
-trap qemu_smb_forward_stop EXIT
+trap 'qemu_smb_forward_stop; cleanup_transfer' EXIT
 if [ "$MODE" = suite ] && { [[ ",$SUITE," == *,gui-apps,* ]] || [[ ",$SUITE," == *,network-shares,* ]]; }; then
     qemu_smb_forward_start "$MODE" "$SUITE" "$ONLY"
     python3 "$ROOT/scripts/qemu-desktop-stage.py" "$WRITABLE" "$SUITE" "$ONLY" --forward-port "$SMB_FORWARD_PORT"
@@ -486,6 +531,7 @@ fi
 EVIDENCE_PID=
 cleanup_evidence() {
     qemu_smb_forward_stop
+    cleanup_transfer
     if [ -n "$EVIDENCE_PID" ]; then
         kill "$EVIDENCE_PID" 2>/dev/null || true
         wait "$EVIDENCE_PID" 2>/dev/null || true
@@ -510,6 +556,7 @@ if [ "$MODE" = suite ] && { [ "$SUITE" = ui-testing ] || [ "$SUITE" = gui-apps ]
 fi
 # The users suite's external-client cases need the boot host's real OpenSSH.
 NETDEV="user,id=net0"
+[ -z "$TRANSFER_PORT" ] || NETDEV+=",hostfwd=tcp:127.0.0.1:$TRANSFER_PORT-:22"
 [ -z "$COLLAB_HOST_PORT" ] || NETDEV+=",hostfwd=tcp:$COLLAB_HOST_BIND:$COLLAB_HOST_PORT-:7890"
 USERS_SSH_STATE=
 if [ "$MODE" = suite ] && [[ ",$SUITE," == *,users,* ]] && { [ -z "$ONLY" ] || [[ "$ONLY" == ssh || "$ONLY" == ssh/* ]]; }; then
@@ -716,6 +763,13 @@ python3 "$ROOT/scripts/watch-qemu.py" ${WATCH_READY_ARGS[@]+"${WATCH_READY_ARGS[
     -serial chardev:con -mon chardev=con,mode=readline <&3 &
 WATCHER_PID=$!
 qemu_host_lock_track_pid "$WATCHER_PID"
+TRANSFER_SSH_PID=
+if [ -n "$TRANSFER_PORT" ]; then
+    python3 "$ROOT/scripts/metal/transfer-hostssh" watch-qemu --run-dir "$TRANSFER_RUN_DIR" \
+        --serial "$SERIAL_LOG" --parent "$WATCHER_PID" > "$TRANSFER_RUN_DIR/transfer-hostssh.log" 2>&1 &
+    TRANSFER_SSH_PID=$!
+    qemu_host_lock_track_pid "$TRANSFER_SSH_PID"
+fi
 USERS_SSH_PID=
 if [ -n "$USERS_SSH_STATE" ]; then
     python3 "$ROOT/scripts/users-hostssh.py" watch --state "$USERS_SSH_STATE" --serial "$SERIAL_LOG" \
@@ -725,6 +779,11 @@ if [ -n "$USERS_SSH_STATE" ]; then
 fi
 wait "$WATCHER_PID"
 code=$?
+if [ -n "$TRANSFER_SSH_PID" ]; then
+    wait "$TRANSFER_SSH_PID"
+    ssh_code=$?
+    [ "$code" -ne 0 ] || code=$ssh_code
+fi
 if [ -n "$USERS_SSH_PID" ]; then
     wait "$USERS_SSH_PID"
     ssh_code=$?
@@ -737,6 +796,17 @@ cleanup_evidence
 echo
 echo "==> VM stopped (exit $code)"
 printf '\n==> Commit: %s\n' "$COMMIT_IDENTITY" >> "$SERIAL_LOG"
+if [ -n "$TRANSFER_RUN_DIR" ]; then
+    if [ "$SERIAL_LOG" != "$TRANSFER_RUN_DIR/serial.txt" ]; then
+        cp "$SERIAL_LOG" "$TRANSFER_RUN_DIR/serial.txt"
+    fi
+    printf '%s\n' "$code" > "$TRANSFER_RUN_DIR/exit-status"
+    touch "$TRANSFER_RUN_DIR/ended"
+    if [ "$code" -eq 0 ] && ! python3 "$ROOT/scripts/metal/server-suite" --target qemu \
+        --milestone server/transfer --run-dir "$TRANSFER_RUN_DIR" --sha "$TRANSFER_SHA"; then
+        code=1
+    fi
+fi
 if [ "$GPU_GL" -eq 1 ]; then
     [ -z "${SPICE_SOCKET:-}" ] || rm -f "$SPICE_SOCKET"
     if ! python3 "$ROOT/scripts/check-host-renderer.py" "$BREENIX_HOST_RENDERER_JSON" --serial "$SERIAL_LOG"; then

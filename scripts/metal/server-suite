@@ -115,9 +115,17 @@ RESTING = (
     ('returned-ssh', 'The returned current persistent install answers one strict authenticated SSH check'),
 )
 
-CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES, 'logs': LOGS, 'time': TIME, 'reboot': REBOOT, 'watchdog': WATCHDOG, 'resting-state': RESTING, 'remote-upgrade': REMOTE_UPGRADE, 'operator': OPERATOR, 'console-input': CONSOLE_INPUT}
-SUITES = {'ssh-keys': 'server', 'services': 'server', 'logs': 'server', 'time': 'server', 'reboot': 'server', 'remote-upgrade': 'server', 'watchdog': 'server', 'resting-state': 'server', 'operator': 'users', 'console-input': 'server'}
-MILESTONES = {'server/ssh-keys': 'ssh-keys', 'server/services': 'services', 'server/logs': 'logs',
+TRANSFER = (
+    ('mac-artifact-published', 'The Mac artifact is verified, published and executed as the fixture account'),
+    ('bad-checksum-refused', 'A bad digest leaves the old destination and removes the temporary file'),
+    ('interrupted-then-reconnect', 'A disconnected upload cleans up and a fresh upload publishes on reconnect'),
+    ('backpressure-exact', 'SSH carries exact output before consuming four MiB of stdin'),
+    ('publish-faults-located', 'Open and rename failures identify the failed operation and preserve the old state'),
+)
+
+CATEGORIES = {'ssh-keys': SSH_KEYS, 'transfer': TRANSFER, 'services': SERVICES, 'logs': LOGS, 'time': TIME, 'reboot': REBOOT, 'watchdog': WATCHDOG, 'resting-state': RESTING, 'remote-upgrade': REMOTE_UPGRADE, 'operator': OPERATOR, 'console-input': CONSOLE_INPUT}
+SUITES = {'ssh-keys': 'server', 'transfer': 'server', 'services': 'server', 'logs': 'server', 'time': 'server', 'reboot': 'server', 'remote-upgrade': 'server', 'watchdog': 'server', 'resting-state': 'server', 'operator': 'users', 'console-input': 'server'}
+MILESTONES = {'server/transfer': 'transfer', 'server/ssh-keys': 'ssh-keys', 'server/services': 'services', 'server/logs': 'logs',
               'server/time': 'time', 'server/reboot': 'reboot', 'server/remote-upgrade': 'remote-upgrade', 'server/watchdog': 'watchdog', 'server/resting-state': 'resting-state', 'users/operator-login': 'operator', 'server/console-input': 'console-input'}
 S27_SUSPENDS_PERSISTENT = True
 # The console lines the operator's console challenge leaves in the capture (docs/metal/boot-path.json, console-login).
@@ -182,6 +190,14 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
     if name not in MILESTONES:
         raise ValueError('host evidence names no milestone this runner measures')
     category = MILESTONES[name]
+    if category == 'transfer':
+        if manifest.get('id') != 'server' or not any(c['id'] == 'transfer' for c in manifest['categories']):
+            raise ValueError('transfer evidence needs the server manifest')
+        measure = next((m.get('measure') for effort in effort_path['efforts'] if effort['id'] == 'toolchain'
+                        for m in effort['milestones'] if m['id'] == 'deliver'), None)
+        if measure != {'suite': 'server', 'categories': ['transfer']}:
+            raise ValueError('deliver milestone does not measure server/transfer')
+        return transfer_fixture()['score'](boot, sha, records, serial, fatal_patterns, TRANSFER)
     suite = SUITES[category]
     if manifest.get('id') != suite:
         raise ValueError('host evidence for ' + name + ' needs the ' + suite + ' manifest')
@@ -277,6 +293,37 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
     if any(re.search(pattern, serial) for pattern in fatal_patterns):
         raise ValueError('fatal kernel output in the persistent boot')
     return 'PASS: ' + name + ' categories=' + category + ' cases=' + str(len(CATEGORIES[category]))
+
+
+def transfer_fixture():
+    return runpy.run_path(str(Path(__file__).with_name('transfer_fixture.py')))
+
+
+def score_transfer_run(args):
+    if args.target == 'metal':
+        machine = MetalTarget(args.boot)
+        if not machine.ended(args.boot):
+            raise ValueError('transfer verdict needs a completed test boot')
+        read = machine.read
+        boot = machine.identity()
+        events = (read('events.jsonl', required=False) or '').splitlines()
+        if any(json.loads(line)['event'] == 'console-gap' for line in events):
+            raise ValueError('transfer capture has a console gap')
+    else:
+        read = lambda name: (args.run_dir / name).read_text()
+        boot = json.loads(read('run.json'))
+        if boot.get('target') != 'qemu':
+            raise ValueError('run directory does not identify a QEMU transfer fixture')
+        if not (args.run_dir / 'ended').is_file() or read('exit-status').strip() != '0':
+            raise ValueError('transfer verdict needs a completed, successful QEMU fixture boot')
+    if args.boot and args.boot != boot.get('id'):
+        raise ValueError('transfer run directory belongs to another boot')
+    manifest = json.loads(read('definition/docs/suites/server.json'))
+    effort = json.loads(read('definition/docs/efforts/path.json'))
+    records = json.loads(read(transfer_fixture()['RECEIPT']))
+    fatal = json.loads(read('definition/docs/boot-path.json'))['fatal'] + [r'KERNEL PANIC:']
+    print(score(manifest, effort, records, read('serial.txt'), boot, args.sha, fatal))
+    return 0
 
 
 def command(args, **kwargs):
@@ -2234,9 +2281,17 @@ def main():
     boot_pattern = r'\d{8}T\d{6}Z-' + args.target
     if args.boot and not re.fullmatch(boot_pattern, args.boot):
         parser.error('invalid boot ID for --target ' + args.target)
-    # S27 suspends every host-driven category: all require a persistent session.
+    category = MILESTONES[args.milestone]
+    if category == 'transfer':
+        if not re.fullmatch(r'[a-f0-9]{40}', args.sha or ''):
+            parser.error('transfer needs --sha with the full commit')
+        if args.target == 'metal' and not args.boot:
+            parser.error('transfer needs --boot on metal')
+        if args.target == 'qemu' and args.run_dir is None:
+            parser.error('transfer needs --run-dir on QEMU')
+        return score_transfer_run(args)
+    # S27 suspends metal categories that need a persistent session.
     if S27_SUSPENDS_PERSISTENT and args.target == 'metal':
-        category = MILESTONES[args.milestone]
         for name, _ in CATEGORIES[category]:
             print(f'SKIP {SUITES[category]} {category}/{name}: S27 suspends persistent sessions')
         print('Not counted: S27 suspends persistent sessions')

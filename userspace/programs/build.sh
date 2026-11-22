@@ -470,6 +470,8 @@ STD_BINARIES=(
     "gpu-exec-probe"
     "suite-console"
     "suite-users"
+    "suite-transfer-fixture"
+    "bput"
     "users-exec_test"
     "users-login-probe_test"
     "console-login-shell"

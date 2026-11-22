@@ -70,7 +70,28 @@
     {
       "id": "transfer",
       "title": "Binary-safe exec stdin and verified uploads over SSH",
-      "cases": []
+      "cases": [
+        {
+          "id": "mac-artifact-published",
+          "title": "The Mac artifact is verified, published and executed as the fixture account"
+        },
+        {
+          "id": "bad-checksum-refused",
+          "title": "A bad digest leaves the old destination and removes the temporary file"
+        },
+        {
+          "id": "interrupted-then-reconnect",
+          "title": "A disconnected upload cleans up and a fresh upload publishes on reconnect"
+        },
+        {
+          "id": "backpressure-exact",
+          "title": "SSH carries exact output before consuming four MiB of stdin"
+        },
+        {
+          "id": "publish-faults-located",
+          "title": "Open and rename failures identify the failed operation and preserve the old state"
+        }
+      ]
     },
     {
       "id": "services",

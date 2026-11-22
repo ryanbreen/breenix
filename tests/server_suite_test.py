@@ -28,6 +28,8 @@ class SuspendedPersistentSuite(unittest.TestCase):
         import contextlib
         import io
         for milestone, category in host['MILESTONES'].items():
+            if category == 'transfer':
+                continue
             with self.subTest(milestone=milestone), patch.object(sys, 'argv', ['server-suite', '--milestone', milestone]):
                 output = io.StringIO()
                 with contextlib.redirect_stdout(output):
@@ -36,6 +38,110 @@ class SuspendedPersistentSuite(unittest.TestCase):
                 self.assertEqual(len(lines), len(host['CATEGORIES'][category]) + 1)
                 self.assertTrue(all(line.startswith('SKIP ') for line in lines[:-1]))
                 self.assertEqual(lines[-1], 'Not counted: S27 suspends persistent sessions')
+
+
+def transfer_test_boot_identity():
+    manifest = json.loads((ROOT / 'docs/suites/server.json').read_text())
+    path = json.loads((ROOT / 'docs/efforts/path.json').read_text())
+    sha, other = 'a' * 40, 'b' * 40
+    nonce, fingerprint, peer = 'c' * 32, 'SHA256:' + 'D' * 43, '192.0.2.1'
+    artifact = 'e' * 64
+    boot = dict(id='20261121T000000Z-metal', mode='suite', suites=['transfer-fixture', 'users'],
+                build=dict(commit=sha, profile='production'), toolsCommit=sha, evidenceEligible=True,
+                transferInput=dict(sha256=artifact, size=16))
+    records = dict(boot=boot['id'], commit=sha, milestone='server/transfer', nonce=nonce,
+                   fingerprint=fingerprint, peer=peer, artifactSha256=artifact, ready=True)
+    records['cases'] = [dict(id='transfer/' + case, result='PASS') for case, _ in host['CATEGORIES']['transfer']]
+    records['cases'][0].update(executedSha256=artifact, uid=1000, gid=1001, home='/home/fixture', status=42)
+    records['cases'][2].update(interruptedAfter=3, publishedSha256=artifact)
+    ready = f'TRANSFER READY nonce={nonce} fp={fingerprint} peer={peer} user=fixture uid=1000 gid=1001\n'
+    end = f'TRANSFER LEASE-END nonce={nonce} reason=done refused=0\n'
+    score = lambda run, capture, result=records: host['score'](manifest, path, result, capture, run, sha, [])
+    assert score(boot, ready + end) == 'PASS: server/transfer (5/5)'
+    assert score(dict(boot, id='20261121T000000Z-qemu', target='qemu'), ready + end,
+                 dict(records, boot='20261121T000000Z-qemu')) == 'PASS: server/transfer (5/5)'
+
+    check = unittest.TestCase()
+    for run, capture, result, error in (
+        (boot, ready + end, dict(records, milestone='server/ssh-keys'), 'persistent install'),
+        (dict(boot, build=dict(commit=other, profile='production'), bootedCommit=sha), ready + end, records, 'image commit'),
+        (dict(boot, toolsCommit=other), ready + end, records, 'tools commit'),
+        (boot, ready, records, 'lease-end'),
+        (boot, ready + end.replace('refused=0', 'refused=1'), records, 'non-allowed peer'),
+        (boot, ready + end, dict(records, peer='192.0.2.2'), 'readiness'),
+        (boot, ready + end, dict(records, cases=records['cases'][:-1]), 'missing, duplicated or out of order'),
+        (boot, ready + end, dict(records, cases=[dict(records['cases'][0], executedSha256=other)] + records['cases'][1:]),
+         'executed artifact'),
+    ):
+        with check.assertRaisesRegex(ValueError, error):
+            score(run, capture, result)
+
+
+    # Automatic capture scoring uses the retained image identity, like the CLI.
+    with tempfile.TemporaryDirectory() as scratch:
+        directory = Path(scratch)
+        def write(name, value):
+            dest = directory / name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(json.dumps(value))
+        write('run.json', boot)
+        write('definition/docs/metal/boot-path.json', dict(gateArch='x86_64', milestones=[]))
+        write('definition/tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json', dict(stages=[]))
+        write('definition/docs/suites/server.json', manifest)
+        write('definition/docs/efforts/path.json', path)
+        write('definition/docs/boot-path.json', dict(fatal=[]))
+        write('server-transfer.json', records)
+        (directory / 'serial.txt').write_text(ready + end)
+        (directory / 'events.jsonl').write_text('')
+        retained = directory / 'definition/scripts/metal'
+        retained.mkdir(parents=True)
+        for name in ('server-suite', 'transfer_fixture.py'):
+            shutil.copyfile(ROOT / 'scripts/metal' / name, retained / name)
+        scorer = runpy.run_path(str(ROOT / 'scripts/metal/metal_score.py'))['score']
+        assert scorer(directory)['milestones']['server/transfer']['passed']
+
+
+class TransferFixtureBoot(unittest.TestCase):
+    test_transfer_test_boot_identity = staticmethod(transfer_test_boot_identity)
+
+
+class TransferPublication(unittest.TestCase):
+    def test_lost_status_and_failed_readback_reconcile_without_reupload(self):
+        import transfer_cases
+
+        old, new = 'a' * 64, 'b' * 64
+        def hash_reply(digest):
+            return SimpleNamespace(returncode=0, stdout=f'{digest}  -\n'.encode(), stderr=b'')
+
+        scenarios = (
+            (255, [hash_reply(new)], (0, 'published')),
+            (255, [hash_reply(old)], (1, 'not published')),
+            (255, [hash_reply('c' * 64)], (2, 'unknown')),
+            (0, [None, hash_reply(new)], (0, 'published')),
+            (3, [hash_reply(new)], (3, 'published; directory sync failed')),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            artifact = Path(temporary) / 'artifact'
+            artifact.write_bytes(b'binary content')
+            for status, checks, (expected, message) in scenarios:
+                with self.subTest(status=status, expected=expected):
+                    steps = iter([hash_reply(old), SimpleNamespace(returncode=status), *checks])
+                    uploads = []
+                    def ssh(command, source=None):
+                        if source is not None:
+                            self.assertIn('/bin/bput', command)
+                            uploads.append(source.read())
+                        else:
+                            self.assertIn('sha256sum', command)
+                        reply = next(steps)
+                        if reply is None:
+                            raise subprocess.TimeoutExpired('fixture', 1)
+                        return reply
+                    result, actual = transfer_cases.deliver(ssh, artifact, 'dest', dict(size=14, sha256=new), '755')
+                    self.assertEqual(result, expected)
+                    self.assertTrue(actual.startswith(message))
+                    self.assertEqual(uploads, [b'binary content'])
+                    self.assertIsNone(next(steps, None))
 
 
 class RebootReadback(unittest.TestCase):

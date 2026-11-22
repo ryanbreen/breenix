@@ -289,6 +289,64 @@ class HostRecordTest(StateTest):
 
 
 class PortableRootTest(unittest.TestCase):
+    def test_mac_artifact_recipe_uses_guest_file_modes_under_private_umask(self):
+        builder = load_script('metal-build')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            clone, out, scratch = (root / name for name in ('clone', 'out', 'scratch'))
+            clone.mkdir()
+            recipe = root / 'artifact-recipe.py'
+            recipe.write_text("from pathlib import Path\nPath('passwd').write_text('fixture')\nraise SystemExit(1)\n")
+            args = SimpleNamespace(local=True, suite='transfer-fixture,users')
+            previous_umask = os.umask(0o077)
+            try:
+                with patch.object(builder, 'paths', return_value=(clone, out, scratch)), \
+                     patch.object(builder, 'ARTIFACTS', recipe), patch.dict(os.environ, CARGO_HOME=str(root)):
+                    # Exercise only the child process that builds the image inputs.
+                    self.assertEqual(builder.inner(args), 1)
+                self.assertEqual((clone / 'passwd').stat().st_mode & 0o777, 0o644)
+            finally:
+                os.umask(previous_umask)
+
+    def test_local_build_snapshot_resolves_the_stubs_committed_sources(self):
+        local = load_script('metal-build-local')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo, cache = root / 'repo', root / 'cache'
+            cache.mkdir()
+            subprocess.run(['git', 'init', '-q', '-b', 'main', str(repo)], check=True)
+            stub = repo / 'scripts/metal/efi-stub/src'
+            stub.mkdir(parents=True)
+            sources = {
+                'sha256.rs': 'libs/libbreenix/src/crypto/sha256.rs',
+                'breenfs_crc32c.rs': 'kernel/src/fs/breenfs/crc32c.rs',
+            }
+            for name, relative in sources.items():
+                source = repo / relative
+                source.parent.mkdir(parents=True)
+                source.write_bytes(relative.encode())
+                (stub / name).symlink_to('../../../../' + relative)
+            local.git(repo, 'add', '.')
+            local.git(repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.com',
+                      'commit', '-qm', 'stub source fixture')
+            local.git(repo, 'remote', 'add', 'origin', str(repo))
+            for relative in sources.values():
+                (repo / relative).write_bytes(b'dirty source must stay out\n')
+
+            class SnapshotChecked(Exception):
+                pass
+
+            def inspect_snapshot(helper):
+                for name, relative in sources.items():
+                    stub_source = helper.parent / 'efi-stub/src' / name
+                    self.assertTrue(stub_source.is_file(), f'the archived stub {name} link must resolve')
+                    self.assertEqual(stub_source.read_bytes(), relative.encode())
+                raise SnapshotChecked
+
+            args = SimpleNamespace(sha='HEAD', tools_commit='HEAD')
+            with patch.object(local, 'load_build', side_effect=inspect_snapshot), self.assertRaises(SnapshotChecked):
+                local.build(args, repo, cache)
+
     def test_local_resolver_uses_payload_definitions_for_all_and_named_lists(self):
         local = load_script('metal-build-local')
         repo = Path(__file__).resolve().parents[1]

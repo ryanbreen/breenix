@@ -1,0 +1,16 @@
+{
+  "id": "transfer-fixture",
+  "title": "Transfer fixture",
+  "area": "Networking",
+  "summary": "An authenticated boot host completes a bounded test-boot SSH lease.",
+  "binary": "/sbin/suite-transfer-fixture",
+  "categories": [
+    {
+      "id": "fixture",
+      "title": "Test-boot listener",
+      "cases": [
+        { "id": "listener-lease", "title": "The boot host completes the restricted SSH lease" }
+      ]
+    }
+  ]
+}
