@@ -25,6 +25,26 @@ finding, 1 when a rule fails and 2 for a usage error or an unreadable file.
 The caller names the file type it expects: an executable checked without
 `--exec` fails `ehdr.type`, and so does an object checked with it.
 
+## The Rust elfcheck (plan step 25.R)
+
+`toolchain/elfcheck` is the same checker in Rust, written from the gABI, the
+psABI and LSB Core 5.0 alone (E25 ruling 8; it cites Table 11-1 for
+PT_GNU_STACK). It shares no code with bobj or the tools it checks, forbids
+`unsafe`, builds with overflow checks on, and reports malformed input as
+located findings rather than a panic. Until R4 deletes `elfcheck.c`, the C checker
+is its parity oracle:
+
+```sh
+cd toolchain && cargo test -p elfcheck
+```
+
+`elfcheck::verdicts_equal_c_elfcheck` builds `elfcheck.c` with `$CC` (default
+`cc`) under the strict flags below, writes the fixtures through
+`write_fixtures.py`, and requires the same exit status and check ids from both
+checkers, and the fixture's expectation, for the 2 baselines and 165 controls.
+`elfcheck::malformed_input_is_error_not_panic` truncates and corrupts those
+files and requires a report without a panic for each.
+
 ## Running the checks
 
 ```sh

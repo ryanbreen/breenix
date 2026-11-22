@@ -24,7 +24,9 @@ fn toolchain() -> PathBuf {
 
 /// The quoted strings in `members = [...]` of the workspace manifest.
 fn members(manifest: &str) -> Vec<String> {
-    let start = manifest.find("members").expect("toolchain/Cargo.toml declares members");
+    let start = manifest
+        .find("members")
+        .expect("toolchain/Cargo.toml declares members");
     let rest = &manifest[start..];
     let open = rest.find('[').expect("members is an array");
     let close = rest[open..].find(']').expect("members array is closed") + open;
@@ -47,7 +49,8 @@ fn string_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
 fn lock_has_only_path_packages() {
     let root = toolchain();
     let manifest = fs::read_to_string(root.join("Cargo.toml")).expect("read toolchain/Cargo.toml");
-    let lock = fs::read_to_string(root.join("Cargo.lock")).expect("toolchain/Cargo.lock is committed");
+    let lock =
+        fs::read_to_string(root.join("Cargo.lock")).expect("toolchain/Cargo.lock is committed");
     let mut problems = Vec::new();
 
     let mut member_names = BTreeSet::new();
@@ -57,7 +60,10 @@ fn lock_has_only_path_packages() {
             .unwrap_or_else(|e| panic!("read member {member}'s Cargo.toml: {e}"));
         // Each table body follows a "\n[" (the newline added for a table on line 1).
         let text = format!("\n{text}");
-        let package = text.split("\n[").find(|t| t.starts_with("package]")).unwrap_or("");
+        let package = text
+            .split("\n[")
+            .find(|t| t.starts_with("package]"))
+            .unwrap_or("");
         match string_value(package, "name") {
             Some(name) => {
                 member_names.insert(name.to_string());
@@ -74,10 +80,14 @@ fn lock_has_only_path_packages() {
 
     let mut locked = BTreeSet::new();
     for block in lock.split("[[package]]").skip(1) {
-        let name = string_value(block, "name").unwrap_or("<unnamed>").to_string();
+        let name = string_value(block, "name")
+            .unwrap_or("<unnamed>")
+            .to_string();
         for key in ["source", "checksum"] {
             if string_value(block, key).is_some() {
-                problems.push(format!("locked package {name} has a {key}: it is not a path package"));
+                problems.push(format!(
+                    "locked package {name} has a {key}: it is not a path package"
+                ));
             }
         }
         locked.insert(name);
