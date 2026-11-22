@@ -4,7 +4,7 @@
 # holds the mac-boot lease. Stop from another terminal to remove the run.
 #
 # vm-persistent.sh qemu build --run-dir DIR [--system-image IMAGE] --operator-account FILE [--fault panic-reboot|watchdog]
-# vm-persistent.sh qemu boot --run-dir DIR --mode console|desktop [--kernel FILE] [--slot current|next]
+# vm-persistent.sh qemu boot --run-dir DIR --mode console|desktop [--no-display] [--kernel FILE] [--slot current|next]
 # vm-persistent.sh qemu promote|rollback --run-dir DIR
 # vm-persistent.sh qemu stage-candidate --run-dir DIR [--inject upgrade-no-ssh|upgrade-service-down]
 # vm-persistent.sh qemu install --run-dir DIR
@@ -19,12 +19,19 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 umask 077
-usage() { echo 'usage: vm-persistent.sh qemu build|boot|fault-boot|reboot|stop|promote|rollback|stage-candidate|install|migrate|check-manifests|cutover|rescue|return|probe-migration|begin-retirement|reclaim-ext2 --run-dir DIR [--operator-account FILE [--system-image IMAGE | --fault panic-reboot|watchdog] | --mode console|desktop [--kernel FILE] [--slot current|next] | --inject feeder-hang|health-hang|upgrade-no-ssh|upgrade-service-down | --identity FILE --host-key FILE]' >&2; exit 2; }
+usage() { echo 'usage: vm-persistent.sh qemu build|boot|fault-boot|reboot|stop|promote|rollback|stage-candidate|install|migrate|check-manifests|cutover|rescue|return|probe-migration|begin-retirement|reclaim-ext2 --run-dir DIR [--operator-account FILE [--system-image IMAGE | --fault panic-reboot|watchdog] | --mode console|desktop [--no-display] [--kernel FILE] [--slot current|next] | --inject feeder-hang|health-hang|upgrade-no-ssh|upgrade-service-down | --identity FILE --host-key FILE]' >&2; exit 2; }
 [ "$#" -ge 2 ] && [ "$1" = qemu ] || usage
 op=$2; shift 2
 case "$op" in build|boot|fault-boot|reboot|stop|promote|rollback|stage-candidate|install|migrate|check-manifests|cutover|rescue|return|probe-migration|begin-retirement|reclaim-ext2) ;; *) usage ;; esac
 run= system= account= kernel= mode= fault= inject= slot= identity= host_key=
+display_option=()
 while [ "$#" -gt 0 ]; do
+    if [ "$1" = --no-display ]; then
+        [ "$op" = boot ] && [ "${#display_option[@]}" -eq 0 ] || usage
+        display_option=(--no-display)
+        shift
+        continue
+    fi
     [ "$#" -ge 2 ] && [ -n "$2" ] || usage
     case "$1" in
         --run-dir) [ -z "$run" ] || usage; run=$2 ;;
@@ -261,7 +268,8 @@ if [ -z "${BREENIX_VM_PERSISTENT_SUPERVISED:-}" ]; then
     elif [ "$op" = install ]; then
         host_slots_start "$ROOT/scripts/vm-persistent.sh" qemu install --run-dir "$intent_run"
     else
-        host_slots_start "$ROOT/scripts/vm-persistent.sh" qemu boot --run-dir "$intent_run" --kernel "$kernel" --mode "$mode" --slot "$slot"
+        host_slots_start "$ROOT/scripts/vm-persistent.sh" qemu boot --run-dir "$intent_run" --kernel "$kernel" \
+            --mode "$mode" --slot "$slot" ${display_option[@]+"${display_option[@]}"}
     fi
 fi
 source "$ROOT/scripts/host-slots.sh"
@@ -336,8 +344,12 @@ mkdir -p "${TMPDIR:-/tmp}/breenix-boot"
 serial=$(mktemp "${TMPDIR:-/tmp}/breenix-boot/vm-persistent.XXXXXX")
 printf '%s\n' "$serial" > "$run/serial-path"
 host_slot_serial "$serial"
-if [ -f "$retirement" ]; then
+headless=0
+if [ -f "$retirement" ] || [ "${#display_option[@]}" -ne 0 ]; then
+    headless=1
     export BREENIX_QUIET=1 BREENIX_QUIET_MAX_LOAD=8
+fi
+if [ -f "$retirement" ]; then
     rm -f "$run/events.sock"
 fi
 host_slot_quiet
@@ -361,7 +373,7 @@ if [ "$(uname -s)" = Darwin ]; then
     # The QoS library selects a sleep-excluding clock for this QEMU process.
     export BREENIX_QEMU_SUSPEND_CLOCK=1
     export ANGLE_DEFAULT_PLATFORM="${ANGLE_DEFAULT_PLATFORM-metal}"
-    if [ ! -f "$retirement" ]; then
+    if [ "$headless" -eq 0 ]; then
         display=(-display cocoa,gl=es)
         gpu=(-device virtio-gpu-gl-pci)
     fi
@@ -369,7 +381,7 @@ fi
 profile=$(python3 "$ROOT/scripts/qemu-arm64.py" --print-profile "$qemu" -M virt,gic-version=3 -cpu max)
 printf '%s\n' "$profile" > "$run/qemu-profile"
 export BREENIX_VIGIL_ARCH=aarch64 BREENIX_VIGIL_DISPLAY=false
-if [ "$(uname -s)" = Darwin ] && [ ! -f "$retirement" ]; then export BREENIX_VIGIL_DISPLAY=true; fi
+if [ "$(uname -s)" = Darwin ] && [ "$headless" -eq 0 ]; then export BREENIX_VIGIL_DISPLAY=true; fi
 vigil=$("$ROOT/scripts/vigil-record.sh" start qemu "$mode" '' "$serial" '' "$profile")
 # On interruption stop and reap only this launch before releasing its run lock.
 child=
@@ -407,8 +419,8 @@ case "$cycle_phase" in
 esac
 action=(-device i6300esb -action watchdog=reset)
 if [ "$op" = fault-boot ] && [ "$fault_kind" = panic-reboot ]; then disks=(); action+=(-action reboot=shutdown); fi
-if [ -f "$retirement" ] && ! python3 -c 'import os, sys; sys.exit(os.getloadavg()[0] > 8)'; then
-    echo 'ext2 retirement requires host load at or below 8' >&2
+if [ "$headless" -eq 1 ] && ! python3 -c 'import os, sys; sys.exit(os.getloadavg()[0] > 8)'; then
+    echo 'headless VM boot requires host load at or below 8' >&2
     "$ROOT/scripts/vigil-record.sh" finish "$vigil" 1
     exit 1
 fi

@@ -46,8 +46,9 @@ exercise that predicate while satisfying the other lease conditions.
 ## BreenFS upgrades and ext2 retirement
 
 Build a fresh source-attested run and finish its disposable VM migration
-through the verified return to BreenFS. Use the same run directory, operator
-identity and trusted guest host key throughout retirement.
+through the verified return to BreenFS. Pass `--no-display` on each migration
+boot for a headless run with one-minute host load at or below 8. Use the same
+run directory, operator identity and trusted guest host key throughout retirement.
 
 ```sh
 scripts/vm-persistent.sh qemu begin-retirement --run-dir "$run"
