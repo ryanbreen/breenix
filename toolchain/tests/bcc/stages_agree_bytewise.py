@@ -49,7 +49,7 @@ def check(args, root):
 
     flags = ("-Iinc", "-D", "OFFSET=23", "-DUNUSED", "-U", "UNUSED")
     run(args.bcc, "-E", *flags, "-o", "main.i", "main.c")
-    if not re.search(rb"return\s+19\s*\+\s*23", (root / "main.i").read_bytes()):
+    if not re.search(rb"return\s+19\s*\+\s*23\b", (root / "main.i").read_bytes()):
         raise ValueError("-E output is missing the expanded include and command-line definition")
     run(args.bcc, "-S", *flags, "-o", "direct.s", "main.c")
     run(args.bcc, "-S", "-o", "split.s", "main.i")
