@@ -334,6 +334,36 @@ def tbss_takes_no_file_bytes(clang, bld, elfcheck, root):
             "growing .tbss changed file size or ordinary load placement")
 
 
+def check_tbss_without_tdata(clang, bld, elfcheck, root):
+    obj = assemble(clang, root, "tbss-only", """
+        .text
+        .globl _start
+        _start: .long tls_zero@TPOFF
+        .data
+        .byte 0xa5
+        .section .tbss,"awT",@nobits
+        .p2align 6
+        .type tls_zero,@tls_object
+        tls_zero: .zero 13
+        .bss
+        .space 1
+    """)
+    script = TOOLCHAIN.parent / "userspace/programs/linker.ld"
+    blob, _, segments, sections = checked_executable(
+        bld, elfcheck, root / "tbss-only", "-T", script, obj)
+    tls, = (ph for ph in segments if ph[0] == 7)
+    rw, = (ph for ph in segments if ph[0] == 1 and ph[1] == 6)
+    data, tbss, bss = (sections[name] for name in (b".data", b".tbss", b".bss"))
+    # gABI §§7.1 and 7.7: the zero-byte initialization image is aligned too.
+    require(tls[2] % 64 == 0 and tls[3] == tbss[3] and tls[5:] == (0, 13, 64),
+            "a .tbss-only PT_TLS must have a congruent, empty file image")
+    # userspace/programs/linker.ld:30–46 aligns ordinary BSS after .data.
+    require(rw[2] + rw[5] == data[4] + data[5] and bss[3] == (data[3] + data[5] + 4095) & -4096,
+            ".tbss-only storage changed the data load's file bytes or ordinary BSS address")
+    require(struct.unpack_from("<i", blob, sections[b".text"][4])[0] == -64,
+            "R_X86_64_TPOFF32 must include the aligned zero-fill template")
+
+
 def check_script_gc_comdat_got(clang, bld, elfcheck, root):
     script = root / "layout.ld"
     tree_script = TOOLCHAIN.parent / "userspace/programs/linker.ld"
@@ -398,8 +428,9 @@ def check_script_gc_comdat_got(clang, bld, elfcheck, root):
 
 def check_unsupported_relocation(bld, root):
     obj, exe = root / "unsupported.o", root / "unsupported"
-    # AMD64 psABI Table 4.9 names TLSGD; numeric values outside that table have no name.
-    for kind, diagnostic in [(19, "R_X86_64_TLSGD"), (12345, "unknown AMD64 relocation (12345)")]:
+    # AMD64 psABI Tables 4.9 and 4.10 assign names; unassigned numbers have no name.
+    for kind, diagnostic in [(19, "R_X86_64_TLSGD"), (27, "R_X86_64_GOT64"),
+                             (12345, "unknown AMD64 relocation (12345)")]:
         obj.write_bytes(object_bytes([(3, 1, kind, 0)]))
         result = subprocess.run([bld, "-o", exe, obj], capture_output=True,
                                 text=True, timeout=10)
@@ -430,6 +461,7 @@ def main():
             if args.check in ("tls", "all"):
                 try:
                     tbss_takes_no_file_bytes(args.clang, bld, elfcheck, directory)
+                    check_tbss_without_tdata(args.clang, bld, elfcheck, directory)
                 except (OSError, ValueError, subprocess.SubprocessError) as error:
                     raise SystemExit(f"FAIL {TLS_CHECK} ({arch}): {error}") from error
                 print(f"PASS {TLS_CHECK} ({arch})", flush=True)
