@@ -70,7 +70,28 @@
     {
       "id": "c-core",
       "title": "Preprocessor, parser, semantics and code generation for hello and its diagnostics",
-      "cases": []
+      "cases": [
+        {
+          "id": "hello",
+          "title": "The on-box C compiler builds and runs hello"
+        },
+        {
+          "id": "hello-over-ssh",
+          "title": "The leased SSH account builds and runs hello with the staged cc"
+        },
+        {
+          "id": "corpus-three-producers",
+          "title": "Clang, host bcc and guest cc each produce the expected corpus results"
+        },
+        {
+          "id": "stages-agree",
+          "title": "Separate compiler stages agree byte for byte with the driver"
+        },
+        {
+          "id": "diagnostic-located",
+          "title": "Invalid C fails with a source file, line and column"
+        }
+      ]
     },
     {
       "id": "make",
