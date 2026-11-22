@@ -1,0 +1,24 @@
+[package]
+name = "linux-test"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Freestanding x86-64 Linux runtime for bcc development checks"
+
+# Keep the Linux ABI and its runtime safety rules out of the guest workspace.
+[workspace]
+
+[lib]
+crate-type = ["staticlib"]
+test = false
+doctest = false
+
+[profile.dev]
+panic = "abort"
+overflow-checks = true
+
+[profile.release]
+panic = "abort"
+overflow-checks = true
+codegen-units = 1
+incremental = false
