@@ -199,7 +199,7 @@ fn map_range_with_reader(
         mapping.tree_reader = reader;
         vma.shm = Some(mapping);
         vma.shm_offset = offset;
-        process.vmas.push(vma);
+        process.push_vma(vma);
         crate::syscall::memory_advice::record_future(process, start, start + len);
         (
             start,

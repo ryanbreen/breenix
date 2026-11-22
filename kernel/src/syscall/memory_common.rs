@@ -140,9 +140,21 @@ pub fn cleanup_mapped_pages(
 /// a dropped placement still being mapped could be handed out again.
 pub fn place_below_hint(process: &mut crate::process::Process, length: u64) -> Option<u64> {
     use crate::memory::vma::{MMAP_REGION_END, MMAP_REGION_START};
+    if process.mmap_pending.try_reserve(1).is_err() {
+        return place_below(process, process.mmap_hint, length);
+    }
+    if let Some(gaps) = &process.mmap_gaps {
+        let candidate = gaps.highest_fit(length)?;
+        reserve_placement(process, candidate, length);
+        return Some(candidate);
+    }
+
+    // Reconstruct after fork, exec or a failed index allocation. Even if the
+    // index cannot be allocated, this sorted snapshot can still place a range.
     let mut taken: alloc::vec::Vec<(u64, u64)> = alloc::vec::Vec::new();
-    if taken.try_reserve_exact(process.vmas.len() + process.mmap_pending.len()).is_err()
-        || process.mmap_pending.try_reserve(1).is_err()
+    if taken
+        .try_reserve_exact(process.vmas.len() + process.mmap_pending.len())
+        .is_err()
     {
         // No room to sort the VMAs: place below the lowest placement instead,
         // which no pending placement lies under.
@@ -158,13 +170,15 @@ pub fn place_below_hint(process: &mut crate::process::Process, length: u64) -> O
     );
     // Highest first: the gaps are [end, top) between neighbours, from the top down.
     taken.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    process.mmap_gaps = MmapGaps::from_occupied(&taken);
     let mut top = MMAP_REGION_END;
-    for &(start, end) in taken.iter().chain(core::iter::once(&(0, MMAP_REGION_START))) {
+    for &(start, end) in taken
+        .iter()
+        .chain(core::iter::once(&(0, MMAP_REGION_START)))
+    {
         if let Some(candidate) = top.checked_sub(length).map(round_down_to_page) {
             if candidate >= end.max(MMAP_REGION_START) {
-                process.mmap_hint = process.mmap_hint.min(candidate);
-                // Room was reserved above.
-                process.mmap_pending.push((candidate, candidate + length));
+                reserve_placement(process, candidate, length);
                 return Some(candidate);
             }
         }
@@ -176,10 +190,26 @@ pub fn place_below_hint(process: &mut crate::process::Process, length: u64) -> O
     None
 }
 
+fn reserve_placement(process: &mut crate::process::Process, start: u64, length: u64) {
+    process.mmap_hint = process.mmap_hint.min(start);
+    let end = start + length;
+    // Room was reserved above.
+    process.mmap_pending.push((start, end));
+    MmapGaps::cover(&mut process.mmap_gaps, start, end);
+}
+
 /// Forget the pending placements overlapping `[start, end)`: the range is being
 /// published, or the mapping it was placed for failed. PROCESS_MANAGER held.
 pub fn release_placement(process: &mut crate::process::Process, start: u64, end: u64) {
-    process.mmap_pending.retain(|&(s, e)| e <= start || end <= s);
+    let gaps = &mut process.mmap_gaps;
+    process.mmap_pending.retain(|&(s, e)| {
+        if s < end && start < e {
+            MmapGaps::uncover(gaps, s, e);
+            false
+        } else {
+            true
+        }
+    });
 }
 
 /// Whether a pending placement overlaps `[start, end)`. PROCESS_MANAGER held.
@@ -211,6 +241,317 @@ fn place_below(process: &mut crate::process::Process, mut top: u64, length: u64)
                 return Some(start);
             }
         }
+    }
+}
+
+/// Free ranges in the mmap window, excluding both live VMAs and pending
+/// placements. This is a cache of their union's complement. Callers update it
+/// under PROCESS_MANAGER, or discard it if its bookkeeping runs out of memory.
+/// Splitting a VMA without changing what it covers needs no update.
+pub(crate) struct MmapGaps {
+    root: Option<usize>,
+    nodes: alloc::vec::Vec<GapNode>,
+    free: Option<usize>,
+}
+
+#[derive(Clone, Copy)]
+struct Gap {
+    start: u64,
+    end: u64,
+}
+
+impl Gap {
+    fn usable(self) -> u64 {
+        let first_page = round_down_to_page(self.start + PAGE_SIZE - 1);
+        self.end.saturating_sub(first_page)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum GapNode {
+    Leaf(Gap),
+    // `split` divides the addresses at their highest differing bit. The bit
+    // is the least significant set bit of `split`.
+    Branch {
+        split: u64,
+        low: usize,
+        high: usize,
+        largest: u64,
+    },
+    Free(Option<usize>),
+}
+
+impl MmapGaps {
+    fn from_occupied(taken: &[(u64, u64)]) -> Option<Self> {
+        use crate::memory::vma::{MMAP_REGION_END, MMAP_REGION_START};
+        let mut gaps = Self {
+            root: None,
+            nodes: alloc::vec::Vec::new(),
+            free: None,
+        };
+        let mut bottom = MMAP_REGION_START;
+        for &(start, end) in taken
+            .iter()
+            .rev()
+            .chain(core::iter::once(&(MMAP_REGION_END, MMAP_REGION_END)))
+        {
+            if bottom < start {
+                gaps.insert(Gap {
+                    start: bottom,
+                    end: start,
+                })?;
+            }
+            bottom = bottom.max(end);
+        }
+        Some(gaps)
+    }
+
+    fn highest_fit(&self, length: u64) -> Option<u64> {
+        let mut slot = self.root?;
+        if self.largest(slot) < length {
+            return None;
+        }
+        loop {
+            match self.nodes[slot] {
+                GapNode::Leaf(gap) => return Some(round_down_to_page(gap.end - length)),
+                GapNode::Branch { low, high, .. } => {
+                    slot = if self.largest(high) >= length {
+                        high
+                    } else {
+                        low
+                    };
+                }
+                GapNode::Free(_) => unreachable!(),
+            }
+        }
+    }
+
+    /// Occupy a range that was free. If it disagrees with the cache or the
+    /// cache cannot grow, the live VMA and pending lists remain authoritative.
+    pub(crate) fn cover(index: &mut Option<Self>, start: u64, end: u64) {
+        use crate::memory::vma::{MMAP_REGION_END, MMAP_REGION_START};
+        let (start, end) = (start.max(MMAP_REGION_START), end.min(MMAP_REGION_END));
+        if start >= end {
+            return;
+        }
+        if let Some(tree) = index {
+            if tree.cut(start, end).is_none() {
+                *index = None;
+            }
+        }
+    }
+
+    fn cut(&mut self, start: u64, end: u64) -> Option<()> {
+        let gap = self.neighbour(self.root?, start, false)?;
+        if gap.end < end {
+            return None;
+        }
+        self.remove(gap.start);
+        if gap.start < start {
+            self.insert(Gap {
+                start: gap.start,
+                end: start,
+            })?;
+        }
+        if end < gap.end {
+            self.insert(Gap {
+                start: end,
+                end: gap.end,
+            })?;
+        }
+        Some(())
+    }
+
+    /// Give back an occupied range, joining its free neighbours.
+    pub(crate) fn uncover(index: &mut Option<Self>, start: u64, end: u64) {
+        use crate::memory::vma::{MMAP_REGION_END, MMAP_REGION_START};
+        let (start, end) = (start.max(MMAP_REGION_START), end.min(MMAP_REGION_END));
+        if start >= end {
+            return;
+        }
+        if let Some(tree) = index {
+            if tree.join(start, end).is_none() {
+                *index = None;
+            }
+        }
+    }
+
+    fn join(&mut self, mut start: u64, mut end: u64) -> Option<()> {
+        if let Some(below) = self
+            .root
+            .and_then(|slot| self.neighbour(slot, start, false))
+        {
+            if below.end > start {
+                return None;
+            }
+            if below.end == start {
+                self.remove(below.start);
+                start = below.start;
+            }
+        }
+        if let Some(above) = self.root.and_then(|slot| self.neighbour(slot, start, true)) {
+            if above.start < end {
+                return None;
+            }
+            if above.start == end {
+                self.remove(above.start);
+                end = above.end;
+            }
+        }
+        self.insert(Gap { start, end })
+    }
+
+    /// Inclusive predecessor or successor by gap start.
+    fn neighbour(&self, slot: usize, key: u64, successor: bool) -> Option<Gap> {
+        match self.nodes[slot] {
+            GapNode::Leaf(gap) => {
+                ((gap.start >= key && successor) || (gap.start <= key && !successor)).then_some(gap)
+            }
+            GapNode::Branch {
+                split, low, high, ..
+            } if key < split => self
+                .neighbour(low, key, successor)
+                .or_else(|| successor.then(|| self.edge(high, false))),
+            GapNode::Branch { low, high, .. } => self
+                .neighbour(high, key, successor)
+                .or_else(|| (!successor).then(|| self.edge(low, true))),
+            GapNode::Free(_) => unreachable!(),
+        }
+    }
+
+    fn edge(&self, mut slot: usize, highest: bool) -> Gap {
+        loop {
+            match self.nodes[slot] {
+                GapNode::Leaf(gap) => return gap,
+                GapNode::Branch { low, high, .. } => slot = if highest { high } else { low },
+                GapNode::Free(_) => unreachable!(),
+            }
+        }
+    }
+
+    fn largest(&self, slot: usize) -> u64 {
+        match self.nodes[slot] {
+            GapNode::Leaf(gap) => gap.usable(),
+            GapNode::Branch { largest, .. } => largest,
+            GapNode::Free(_) => unreachable!(),
+        }
+    }
+
+    fn branch(&self, split: u64, low: usize, high: usize) -> GapNode {
+        GapNode::Branch {
+            split,
+            low,
+            high,
+            largest: self.largest(low).max(self.largest(high)),
+        }
+    }
+
+    fn alloc_slot(&mut self, node: GapNode) -> Option<usize> {
+        if let Some(slot) = self.free {
+            let GapNode::Free(next) = self.nodes[slot] else {
+                unreachable!()
+            };
+            self.free = next;
+            self.nodes[slot] = node;
+            Some(slot)
+        } else {
+            self.nodes.try_reserve(1).ok()?;
+            let slot = self.nodes.len();
+            self.nodes.push(node);
+            Some(slot)
+        }
+    }
+
+    fn free_slot(&mut self, slot: usize) {
+        self.nodes[slot] = GapNode::Free(self.free);
+        self.free = Some(slot);
+    }
+
+    fn insert(&mut self, gap: Gap) -> Option<()> {
+        let leaf = self.alloc_slot(GapNode::Leaf(gap))?;
+        let Some(root) = self.root else {
+            self.root = Some(leaf);
+            return Some(());
+        };
+        let mut slot = root;
+        while let GapNode::Branch {
+            split, low, high, ..
+        } = self.nodes[slot]
+        {
+            slot = if gap.start < split { low } else { high };
+        }
+        let GapNode::Leaf(other) = self.nodes[slot] else {
+            unreachable!()
+        };
+        let bit = 1 << (gap.start ^ other.start).checked_ilog2()?;
+        let split = gap.start.max(other.start) & !(bit - 1);
+        self.root = Some(self.graft(root, leaf, gap.start, split)?);
+        Some(())
+    }
+
+    fn graft(&mut self, slot: usize, leaf: usize, key: u64, new_split: u64) -> Option<usize> {
+        if let GapNode::Branch {
+            split,
+            mut low,
+            mut high,
+            ..
+        } = self.nodes[slot]
+        {
+            if split.trailing_zeros() > new_split.trailing_zeros() {
+                if key < split {
+                    low = self.graft(low, leaf, key, new_split)?;
+                } else {
+                    high = self.graft(high, leaf, key, new_split)?;
+                }
+                self.nodes[slot] = self.branch(split, low, high);
+                return Some(slot);
+            }
+        }
+        let (low, high) = if key < new_split {
+            (leaf, slot)
+        } else {
+            (slot, leaf)
+        };
+        self.alloc_slot(self.branch(new_split, low, high))
+    }
+
+    fn remove(&mut self, key: u64) {
+        if let Some(root) = self.root {
+            self.root = self.remove_from(root, key);
+        }
+    }
+
+    fn remove_from(&mut self, slot: usize, key: u64) -> Option<usize> {
+        match self.nodes[slot] {
+            GapNode::Leaf(gap) => {
+                debug_assert_eq!(gap.start, key);
+                self.free_slot(slot);
+                return None;
+            }
+            GapNode::Branch {
+                split,
+                mut low,
+                mut high,
+                ..
+            } => {
+                if key < split {
+                    if let Some(child) = self.remove_from(low, key) {
+                        low = child;
+                    } else {
+                        self.free_slot(slot);
+                        return Some(high);
+                    }
+                } else if let Some(child) = self.remove_from(high, key) {
+                    high = child;
+                } else {
+                    self.free_slot(slot);
+                    return Some(low);
+                }
+                self.nodes[slot] = self.branch(split, low, high);
+            }
+            GapNode::Free(_) => unreachable!(),
+        }
+        Some(slot)
     }
 }
 
@@ -337,7 +678,7 @@ pub fn map_prepared_frames(
                 return Err(errno);
             }
             // clear_for_mapping reserved room for the push and the lock.
-            process.vmas.push(vma);
+            process.push_vma(vma);
             crate::syscall::memory_advice::record_future(process, start, end);
             populate = process.memory_locks.future && !process.memory_locks.onfault;
         }
@@ -415,6 +756,7 @@ fn unmap_reservation(thread_id: u64, root: u64, token: u64, start: u64, count: u
             vmas,
             page_table,
             memory_locks,
+            mmap_gaps,
             ..
         } = process;
         let Some(page_table) = page_table
@@ -431,7 +773,14 @@ fn unmap_reservation(thread_id: u64, root: u64, token: u64, start: u64, count: u
                     memory_locks.remove(vma.start.as_u64(), vma.end.as_u64());
                 }
             }
-            vmas.retain(|v| v.reservation != token);
+            vmas.retain(|v| {
+                if v.reservation == token {
+                    MmapGaps::uncover(mmap_gaps, v.start.as_u64(), v.end.as_u64());
+                    false
+                } else {
+                    true
+                }
+            });
             return;
         }
         let chunk_end = (unmapped + MAP_CHUNK_PAGES).min(count);

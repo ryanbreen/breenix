@@ -301,7 +301,7 @@ pub fn sys_mmap(
             drop(guard);
             return give_back(errno);
         }
-        process.vmas.push(vma);
+        process.push_vma(vma);
         super::memory_advice::record_future(process, start_addr, end_addr);
         let eager = process.memory_locks.future && !process.memory_locks.onfault;
         drop(guard);
@@ -594,7 +594,7 @@ fn map_file(
                     Ok(binding) => vma.backing = Some(binding),
                     Err(_) => return Err(abandon(ErrorCode::OutOfMemory as u64)),
                 }
-                process.vmas.push(vma);
+                process.push_vma(vma);
                 super::memory_advice::record_future(process, start, end);
                 Ok((
                     start,
@@ -994,6 +994,11 @@ pub(crate) fn unmap_range(
         let suffix = (end_addr < end).then(|| vma.piece(VirtAddr::new(end_addr), vma.end));
         process.vmas.remove(index);
         process.vmas.extend(prefix.into_iter().chain(suffix));
+        super::memory_common::MmapGaps::uncover(
+            &mut process.mmap_gaps,
+            start.max(addr),
+            end.min(end_addr),
+        );
     }
 
     // Leaf invalidation is finished, and the surviving VMAs now define the
