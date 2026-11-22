@@ -1,4 +1,36 @@
 use bcc::pp::{self, Kind, Location, Token};
+use std::path::Path;
+use std::process::Command;
+
+#[test]
+fn n1570_6_10_3_5_example_3() {
+    let cconf = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/cconf");
+    let result = Command::new("python3")
+        .args([
+            "-B",
+            "-c",
+            r#"
+import sys
+from types import SimpleNamespace
+import run
+
+case, = (case for case in run.load_manifest(run.HERE / "cases.json")
+         if case["id"] == "macro-scope-example3" and case["mode"] == "E")
+reason = run.run_case(case, SimpleNamespace(cc=sys.argv[1], cc_arg=[], mode="E"))
+if reason is not None:
+    sys.exit(reason)
+"#,
+            env!("CARGO_BIN_EXE_bcc"),
+        ])
+        .current_dir(cconf)
+        .output()
+        .expect("run cconf's mode E comparison");
+    assert!(
+        result.status.success(),
+        "macro-scope-example3: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
 
 fn location((line, column): (usize, usize)) -> Location {
     Location { line, column }
