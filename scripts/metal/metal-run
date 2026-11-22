@@ -45,6 +45,7 @@ import threading
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import metal_prebuilt
 import metal_power_cut
+import transfer_fixture
 from metal_root import smb_gui_selection
 
 TOOLS = '/opt/breenix-metal'
@@ -405,10 +406,21 @@ def boot(args):
             if len(matches) != 1 or not matches[0].get('categories') or matches[0].get('suite') not in args.suite.split(','):
                 raise SystemExit('--milestone needs a listed suite measured by the commit milestone')
     prebuilt = getattr(args, 'prebuilt', None)
+    transfer = transfer_fixture.selected(args.suite)
+    if transfer and (not prebuilt or args.mode != 'suite' or is_session or args.inject
+                     or getattr(args, 'case', None) or args.disk == 'install'):
+        raise SystemExit('transfer-fixture needs an ordinary suite boot with --prebuilt ID and a hashed Mac input')
     if prebuilt:
         if payload != 'image':
             raise SystemExit('--prebuilt needs an image payload')
-        verify_prebuilt(env, prebuilt, sha, args)
+        manifest = verify_prebuilt(env, prebuilt, sha, args)
+    transfer_input = None
+    if transfer:
+        facts = manifest['artifacts'].get(transfer_fixture.ARTIFACT)
+        build = json.loads((prebuilt_path(prebuilt) / 'build.json').read_text())
+        if not facts or facts != build.get('transferInput') or not facts.get('size'):
+            raise SystemExit('prebuilt payload has no matching hashed transfer input')
+        transfer_input = dict(facts, prebuilt=prebuilt)
     smb = payload == 'image' and (args.mode == 'suite' and 'network-shares' in (args.suite or '').split(',')
                                   or smb_gui_selection(args.mode, args.suite, getattr(args, 'case', None)))
     if smb:
@@ -416,6 +428,8 @@ def boot(args):
     boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
     command = ['python3', f'{TOOLS}/metal-boot', 'launch', '--id', boot_id, '--payload', payload]
     command += ['--mode', args.mode, '--wait', str(wait)]
+    if transfer_input:
+        command += ['--transfer-input', json.dumps(transfer_input)]
     if migration:
         command += ['--migration-phase', migration]
     if payload == RECLAIM_PAYLOAD:
@@ -525,7 +539,7 @@ def boot(args):
             in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'stop', boot_id)
             raise SystemExit('persistent preemption failed: ' + type(error).__name__)
     args.boot_id = boot_id
-    if (args.mode == 'suite' and payload == 'image' and not getattr(args, 'resuming', False)
+    if (args.mode == 'suite' and payload == 'image' and not transfer and not getattr(args, 'resuming', False)
             and getattr(args, 'case', None) is None and not metal_power_cut.options(args)):
         # Pin the commit before detaching, so branch movement cannot change a resumed boot.
         args.sha = sha

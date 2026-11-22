@@ -19,11 +19,14 @@
 //!   groups, gid and uid, the umask from `/etc/login.defs`, the home directory,
 //!   shell and environment. Each session start is recorded in `/var/log/auth.log`.
 //!
-//! Usage: bsshd [port]
-//!   Default port: 22
+//! Usage: bsshd [port] | bsshd --allow-peer ADDR [--lease-done PATH]
+//! The restricted listener uses port 22 and expires after 45 seconds.
 
 use std::ffi::CString;
-use std::path::Path;
+use std::net::Ipv4Addr;
+use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use libbreenix::io;
 use libbreenix::process;
@@ -39,8 +42,68 @@ use libbreenix::types::Fd;
 
 const DEFAULT_PORT: u16 = 22;
 
+mod bsshd_peer;
+
 extern "C" {
     fn setsockopt(fd: i32, level: i32, name: i32, value: *const u8, length: u32) -> i32;
+}
+
+struct Lease {
+    peer: Ipv4Addr,
+    deadline: Instant,
+    done: Option<PathBuf>,
+    refused: u64,
+    active: u32,
+}
+
+impl Lease {
+    fn stop_reason(&self) -> Option<&'static str> {
+        if Instant::now() >= self.deadline {
+            Some("timeout")
+        } else if self.done.as_ref().is_some_and(|path| path.is_file()) {
+            Some("done")
+        } else {
+            None
+        }
+    }
+
+    fn reap(&mut self) {
+        while process::waitpid(-1, core::ptr::null_mut(), 1).is_ok_and(|pid| pid.raw() > 0) {
+            self.active -= 1;
+        }
+    }
+
+    fn finish(&mut self, listener: Fd, mut reason: &str) {
+        let _ = io::close(listener);
+        // Give the authenticated completion command time to send its SSH exit status.
+        while self.active > 0 && Instant::now() < self.deadline {
+            self.reap();
+            if self.active > 0 { std::thread::sleep(Duration::from_millis(20)); }
+        }
+        if self.active > 0 { reason = "timeout"; }
+        println!("bsshd: lease-end reason={reason} refused={}", self.refused);
+    }
+}
+
+fn options() -> Result<(u16, Option<Lease>), &'static str> {
+    let args: Vec<_> = std::env::args().skip(1).collect();
+    match args.as_slice() {
+        [flag, addr, ..] if flag == "--allow-peer" => {
+            let peer: Ipv4Addr = addr.parse().map_err(|_| "--allow-peer needs one IPv4 address")?;
+            if peer.is_unspecified() || peer.is_broadcast() || peer.is_multicast() {
+                return Err("--allow-peer needs a unicast address");
+            }
+            let done = match &args[2..] {
+                [] => None,
+                [flag, path] if flag == "--lease-done" && Path::new(path).is_absolute() => Some(PathBuf::from(path)),
+                _ => return Err("expected --lease-done with an absolute path"),
+            };
+            Ok((DEFAULT_PORT, Some(Lease { peer, deadline: Instant::now(), done, refused: 0, active: 0 })))
+        }
+        [] => Ok((DEFAULT_PORT, None)),
+        [port] if !port.starts_with('-') => Ok((port.parse().unwrap_or(DEFAULT_PORT), None)),
+        _ => Err("expected [port] or --allow-peer ADDR [--lease-done PATH]"),
+    }
 }
 
 /// Fill `buffer` from the kernel's random pool; getrandom without flags waits
@@ -99,10 +162,10 @@ fn enter_account(account: &Account, term: Option<&str>) -> Result<Vec<CString>, 
 }
 
 fn main() {
-    let port = std::env::args()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_PORT);
+    let (port, mut lease) = options().unwrap_or_else(|error| {
+        eprintln!("bsshd: {error}");
+        std::process::exit(2);
+    });
 
     println!("bsshd: starting on port {}", port);
 
@@ -131,6 +194,15 @@ fn main() {
         std::process::exit(1);
     }
 
+    // A leased listener must be able to close even if entropy or accept blocks.
+    let leased_key = lease.as_ref().map(|_| prepare());
+    if let Some(lease) = &mut lease {
+        lease.deadline = Instant::now() + Duration::from_secs(45);
+        if let Err(error) = io::fcntl_setfl(listen_fd, io::status_flags::O_NONBLOCK) {
+            eprintln!("bsshd: nonblocking listener: {error}");
+            std::process::exit(1);
+        }
+    }
     if let Err(e) = socket::listen(listen_fd, 5) {
         eprintln!("bsshd: listen() failed: {:?}", e);
         std::process::exit(1);
@@ -138,18 +210,40 @@ fn main() {
 
     // Listen before the host key is read or generated, which can wait for the
     // random pool: early clients queue in the backlog rather than being refused.
-    let host_key = prepare();
+    let host_key = leased_key.unwrap_or_else(prepare);
     println!("bsshd: listening on 0.0.0.0:{}", port);
 
     // Accept loop
     loop {
+        if let Some(lease) = &mut lease {
+            lease.reap();
+            if let Some(reason) = lease.stop_reason() {
+                lease.finish(listen_fd, reason);
+                return;
+            }
+        }
         let mut client_addr = SockAddrIn::default();
         let client_fd = match socket::accept(listen_fd, Some(&mut client_addr)) {
             Ok(fd) => fd,
+            Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EAGAIN)) if lease.is_some() => {
+                std::thread::sleep(Duration::from_millis(20));
+                continue;
+            }
             Err(e) => {
                 eprintln!("bsshd: accept() failed: {:?}", e);
                 continue;
             }
+        };
+
+        let client_fd = if let Some(lease) = &mut lease {
+            // SAFETY: accept returned a new descriptor that this process owns.
+            let client = unsafe { OwnedFd::from_raw_fd(client_fd.raw() as i32) };
+            let Some(client) = bsshd_peer::admit(client, client_addr.addr.into(), lease.peer, &mut lease.refused) else {
+                continue;
+            };
+            Fd::from_raw(client.into_raw_fd() as u64)
+        } else {
+            client_fd
         };
 
         println!(
@@ -170,7 +264,11 @@ fn main() {
             }
             Ok(process::ForkResult::Parent(_child_pid)) => {
                 let _ = io::close(client_fd);
-                let _ = process::waitpid(-1, core::ptr::null_mut(), 1); // WNOHANG
+                if let Some(lease) = &mut lease {
+                    lease.active += 1;
+                } else {
+                    let _ = process::waitpid(-1, core::ptr::null_mut(), 1); // WNOHANG
+                }
             }
             Err(e) => {
                 eprintln!("bsshd: fork() failed: {:?}", e);

@@ -206,6 +206,9 @@ def build(args, repo, cache):
         build_record = json.loads((out / 'build.json').read_text())
         build_record.update(builder='mac', toolsCommit=tools_commit, mode=args.mode, wallSeconds=elapsed,
                             catchup=bool(args.catchup), nice=os.getpriority(os.PRIO_PROCESS, 0))
+        if args.transfer_artifact:
+            facts = metal_prebuilt.snapshot_transfer_input(args.transfer_artifact, out / transfer_fixture.ARTIFACT)
+            build_record['transferInput'] = facts
         (out / 'build.json').write_text(json.dumps(build_record, indent=2) + '\n')
         metal_prebuilt.create(out, tools_commit, args.mode, identity, rust_pin, policy_commit)
         metal_prebuilt.verify(out, commit=commit, tools_commit=tools_commit, mode=args.mode,
@@ -214,6 +217,8 @@ def build(args, repo, cache):
         upload(out, args.host, artifact_id)
         receipt = dict(id=artifact_id, commit=commit, toolsCommit=tools_commit, builder='mac',
                        wallSeconds=elapsed, uploadSeconds=round(time.monotonic() - upload_started, 3), output=str(out))
+        if args.transfer_artifact:
+            receipt['transferInput'] = facts
         (out.parent / (artifact_id + '-receipt.json')).write_text(json.dumps(receipt, indent=2) + '\n')
         print(json.dumps(receipt), flush=True)
     finally:
@@ -231,6 +236,7 @@ def main():
     parser.add_argument('--tools-commit', default='HEAD')
     parser.add_argument('--mode', choices=('default', 'shell', 'probe', 'suite', 'console', 'tests'), default='default')
     parser.add_argument('--suite')
+    parser.add_argument('--transfer-artifact', type=Path, help='include a Mac artifact as a hashed transfer fixture boot input')
     parser.add_argument('--features', default='')
     parser.add_argument('--jobs', type=int, choices=range(1, 5), default=2)
     parser.add_argument('--rust-fork', default=str(Path(__file__).resolve().parents[2] / 'rust-fork'))
@@ -241,10 +247,11 @@ def main():
                          args.tools_commit + ':scripts/metal/' + name], capture_output=True).stdout
         if Path(__file__).with_name(name).read_bytes() != committed:
             raise ValueError('Mac tools must run from the selected committed snapshot: ' + name)
-    global metal_prebuilt, metal_root
+    global metal_prebuilt, metal_root, transfer_fixture
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import metal_prebuilt
     import metal_root
+    import transfer_fixture
     # Let each materialized workspace select its own checked-in compiler pin.
     os.environ.pop('RUSTUP_TOOLCHAIN', None)
     if not re.fullmatch(r'[A-Za-z0-9_.@-]+', args.host) or args.host.startswith('-'):
@@ -253,6 +260,8 @@ def main():
         parser.error('suite mode needs --suite ID[,ID...]')
     if args.suite and not re.fullmatch(r'[a-z0-9-]+(?:,[a-z0-9-]+)*', args.suite):
         parser.error('invalid suite list')
+    if bool(args.transfer_artifact) != transfer_fixture.selected(args.suite):
+        parser.error('--transfer-artifact and --suite transfer-fixture must be used together')
     if args.mode == 'tests':
         if args.features not in ('', 'testing'):
             parser.error('tests mode needs the testing feature')

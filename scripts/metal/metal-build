@@ -38,6 +38,9 @@ import sys
 import tempfile
 import time
 
+from metal_root import require_e2fsprogs
+import transfer_fixture
+
 STUB_TARGET = 'x86_64-unknown-uefi'
 STUB_RELEASE = Path(STUB_TARGET) / 'release'
 # The kernel profile each --features value builds.
@@ -167,7 +170,8 @@ def inner(args):
     seed = clone / 'testdata/ext2.img'
     fixture_builder = clone / 'scripts/breenfs-suite-fixtures.sh'
     build_fixtures = 'filesystem' in suites and fixture_builder.is_file()
-    root = tmp / 'ext2-staged.img' if 'sdk' in suites or build_fixtures else seed
+    transfer = transfer_fixture.selected(args.suite)
+    root = tmp / 'ext2-staged.img' if 'sdk' in suites or build_fixtures or transfer else seed
     try:
         started = time.time()
         if not local:
@@ -250,6 +254,9 @@ def inner(args):
                 return 1
             if root != seed:
                 shutil.copyfile(seed, root)
+            if transfer:
+                debugfs, = require_e2fsprogs('debugfs')
+                transfer_fixture.stage(root, debugfs, binary=clone / 'userspace/programs/suite-transfer-fixture.elf')
             if 'sdk' in suites:
                 started = time.time()
                 log = logs / 'sdk-suite.log'
@@ -298,6 +305,8 @@ def inner(args):
         copied = []
         definition_files = list(DEFINITION) + ['scripts/screen-verdict.py', 'docs/suites/frames/screens.json', 'scripts/suite-verdict.py', 'scripts/suite-sequence.py', 'scripts/metal/server-suite', 'scripts/metal/gt710-suite', 'scripts/check-gpu-panic.py', 'docs/efforts/metal.json', 'scripts/metal/server_reboot.py', 'scripts/metal/resting_cases.py', 'scripts/metal/upgrade_cases.py', 'docs/efforts/path.json']
         definition_files += ['libs/libbreenix/src/suite_memory.rs', 'scripts/metal/intent_manifest.py', 'scripts/metal/intent-pictures.tsv']
+        if transfer:
+            definition_files.append('scripts/metal/transfer_fixture.py')
         definition_files += [str(path.relative_to(clone)) for path in sorted((clone / 'docs/suites').glob('*.json'))]
         definition_files += ['docs/suites/frames/PROVENANCE.json', 'libs/libuitest/src/fixtures.rs']
         definition_files += [str(path.relative_to(clone)) for path in sorted((clone / 'docs/suites/frames/ui-testing').rglob('*')) if path.is_file()]

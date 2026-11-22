@@ -38,7 +38,9 @@ done < "$table"
 for elf in "$binaries"/*.elf; do
     [ -f "$elf" ] || continue
     name=${elf##*/}; name=${name%.elf}
-    [ "$name" = libc-busybox ] && continue
+    case "$name" in
+        libc-busybox|suite-transfer-fixture) continue ;;
+    esac
     while read -r kind pattern destination mode gid; do
         [ "$kind" = bin ] || continue
         case "$name" in

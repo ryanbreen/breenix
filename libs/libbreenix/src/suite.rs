@@ -545,6 +545,8 @@ pub const NAMED_CASE_ALLOWANCES: &[(&str, &str, u64)] = &[
     // Eighteen sequential launches share a case deadline below the suite stall watchdog.
     ("gui-apps", "desktop/launch-each", 80_000),
     ("time", "clocks/rate-counter", 25_000),
+    // E25 gives the restricted SSH listener 45 s plus setup and cleanup time.
+    ("transfer-fixture", "fixture/listener-lease", 60_000),
     ("breengel", "font-parser/corpus", 20_000),
     ("breengel", "inflate/byte-split", 20_000),
     ("breengel", "png-decode/independent-fixtures", 20_000),

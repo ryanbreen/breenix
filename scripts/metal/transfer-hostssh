@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""Confirm and end a transfer fixture's SSH lease from its boot host.
+
+On metal, run beside the ordinary suite boot: transfer-hostssh --boot ID.
+The ARM launcher starts the same client with a private loopback forward.
+"""
+import argparse
+import ipaddress
+import json
+import os
+from pathlib import Path
+import re
+import runpy
+import shlex
+import signal
+import socket
+import subprocess
+import tempfile
+import time
+
+import metal_prebuilt
+import transfer_fixture as transfer
+from metal_root import require_e2fsprogs
+
+SSH = '/usr/bin/ssh'
+KEYSCAN = '/usr/bin/ssh-keyscan'
+KEYGEN = '/usr/bin/ssh-keygen'
+QEMU_HOST = '127.0.0.1'
+QEMU_PEER = '10.0.2.2'  # Guest-visible source of a localhost SLIRP forward.
+
+
+def run(args, **kwargs):
+    return subprocess.run(args, text=True, capture_output=True, timeout=8, **kwargs)
+
+
+class Client:
+    def __init__(self, host, port, user, peer, identity, active):
+        self.host, self.port, self.user, self.peer = host, str(port), user, peer
+        self.identity, self.active = str(identity), active
+
+    def pin(self, fingerprint, destination):
+        if not self.active():
+            raise ValueError('transfer fixture no longer holds its boot lease')
+        result = run([KEYSCAN, '-T', '3', '-p', self.port, '-t', 'ed25519', self.host], stdin=subprocess.DEVNULL)
+        lines = [line for line in result.stdout.splitlines() if line and not line.startswith('#')]
+        if result.returncode or len(lines) != 1:
+            return False
+        scanned = run([KEYGEN, '-E', 'sha256', '-lf', '-'], input=lines[0] + '\n')
+        reported = scanned.stdout.split()
+        if scanned.returncode or len(reported) < 2 or reported[1] != fingerprint:
+            raise ValueError('OpenSSH did not find the Ed25519 host key from this boot')
+        destination.write_text(lines[0] + '\n')
+        return True
+
+    def ssh(self, known_hosts, script):
+        if not self.active():
+            raise ValueError('transfer fixture no longer holds its boot lease')
+        return run([SSH, '-F', '/dev/null', '-T', '-p', self.port,
+                    '-o', 'StrictHostKeyChecking=yes', '-o', f'UserKnownHostsFile={known_hosts}',
+                    '-o', 'GlobalKnownHostsFile=/dev/null', '-o', 'HostKeyAlgorithms=ssh-ed25519',
+                    '-o', 'IdentitiesOnly=yes', '-o', 'IdentityAgent=none', '-o', 'BatchMode=yes',
+                    '-o', 'PreferredAuthentications=publickey', '-o', 'ConnectTimeout=3',
+                    '-o', 'ClearAllForwardings=yes', '-o', 'ForwardAgent=no', '-o', 'ForwardX11=no',
+                    '-i', self.identity, f'{self.user}@{self.host}', 'sh -c ' + shlex.quote(script)],
+                   stdin=subprocess.DEVNULL)
+
+    def complete(self, request):
+        nonce, fingerprint, peer, user = request.groups()
+        if user != self.user or peer != self.peer:
+            raise ValueError('transfer readiness names a different peer or account')
+        with tempfile.TemporaryDirectory(prefix='transfer-known-hosts-') as scratch:
+            known = Path(scratch) / 'known_hosts'
+            deadline = time.monotonic() + 15
+            while not self.pin(fingerprint, known):
+                if time.monotonic() >= deadline:
+                    raise ValueError('boot host did not reach the fixture listener')
+                time.sleep(0.2)
+            result = self.ssh(known, f'test "$SHELL" = /bin/bsh && printf "%s\\n" {nonce}')
+            if result.returncode or result.stdout != nonce + '\n' or result.stderr:
+                raise ValueError('pinned OpenSSH did not return the nonce through the bsh exec path')
+            result = self.ssh(known, f'touch "$HOME/.transfer-done-{nonce}"')
+            if result.returncode or result.stdout or result.stderr:
+                raise ValueError('the host did not complete the authenticated SSH lease')
+        return dict(nonce=nonce, fingerprint=fingerprint, peer=peer, ready=True)
+
+
+def wait_ready(serial, ended, seconds):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline and not ended():
+        rows = (serial() or '').split('\n')[:-1]
+        requests = [transfer.READY.fullmatch(row.rstrip('\r')) for row in rows if row.startswith('TRANSFER READY ')]
+        if requests:
+            if len(requests) != 1 or requests[0] is None:
+                raise ValueError('transfer fixture emitted invalid or duplicate readiness records')
+            return requests[0]
+        time.sleep(0.25)
+    raise ValueError('boot ended or timed out without transfer fixture readiness')
+
+
+def operator_key(public_key):
+    fields = public_key.split()[:2]
+    for public in sorted((Path.home() / '.ssh').glob('*.pub')):
+        identity = public.with_suffix('')
+        if identity.is_file() and public.read_text().split()[:2] == fields:
+            return identity
+    raise ValueError('boot host has no private key matching the staged public key')
+
+
+def metal(args):
+    server = runpy.run_path(str(Path(__file__).with_name('server-suite')))
+    machine = server['MetalTarget'](args.boot)
+    request = wait_ready(lambda: machine.read('serial.txt', required=False), lambda: machine.ended(args.boot), args.wait)
+    boot = machine.identity()
+    facts = transfer.identity(boot, args.sha)
+    if boot['id'] != args.boot or not machine.holds_lease():
+        raise ValueError('transfer boot identity or lease changed')
+    prebuilt = facts.get('prebuilt', '')
+    if not re.fullmatch(r'\d{8}T\d{6}Z-metal', prebuilt):
+        raise ValueError('transfer launch record lacks a Mac upload ID')
+    artifact = Path.home() / '.local/state/breenix-metal/prebuilt' / prebuilt / transfer.ARTIFACT
+    if metal_prebuilt.facts(artifact) != {key: facts[key] for key in ('size', 'sha256')}:
+        raise ValueError('boot host artifact differs from the Mac input digest')
+    site = machine.site(('SERVER_SSH_HOST', 'BOOT_URL', 'TRANSFER_SSH_PEER', 'OPERATOR_USER', 'OPERATOR_SSH_PUBLIC_KEY'))
+    host = str(ipaddress.IPv4Address(site['SERVER_SSH_HOST']))
+    client = Client(host, 22, site['OPERATOR_USER'], transfer.metal_peer(site),
+                    operator_key(site['OPERATOR_SSH_PUBLIC_KEY']), machine.holds_lease)
+    result = client.complete(request)
+    records = dict(result, boot=args.boot, commit=args.sha, milestone='server/transfer', artifactSha256=facts['sha256'])
+    if machine.write(transfer.RECEIPT, records).returncode:
+        raise ValueError('could not retain transfer readiness evidence')
+
+
+def stage_qemu(args):
+    facts = metal_prebuilt.snapshot_transfer_input(args.artifact, args.run_dir / transfer.ARTIFACT)
+    boot = dict(id=time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-qemu', target='qemu', mode='suite',
+                suites=[transfer.SUITE], evidenceEligible=True, toolsCommit=args.sha,
+                build=dict(commit=args.sha, profile='production'), transferInput=facts)
+    transfer.identity(boot, args.sha)
+    key = args.run_dir / 'identity'
+    run([KEYGEN, '-q', '-t', 'ed25519', '-N', '', '-f', str(key)], check=True, stdin=subprocess.DEVNULL)
+    user = 'breenix-transfer'
+    public_key = ' '.join(key.with_suffix('.pub').read_text().split()[:2])
+    config = f'user {user}\nkey {public_key}\nuid 1000\npeer {QEMU_PEER}\n'
+    debugfs, = require_e2fsprogs('debugfs')
+    transfer.stage(args.image, debugfs, binary=args.binary, settings=config)
+    (args.run_dir / 'run.json').write_text(json.dumps(boot) + '\n')
+    with socket.socket() as listener:
+        listener.bind((QEMU_HOST, 0))
+        port = listener.getsockname()[1]
+    (args.run_dir / 'client.json').write_text(json.dumps(dict(user=user, port=port)) + '\n')
+    print(port)
+
+
+def watch_qemu(args):
+    def alive():
+        try:
+            os.kill(args.parent, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
+    boot = json.loads((args.run_dir / 'run.json').read_text())
+    config = json.loads((args.run_dir / 'client.json').read_text())
+    facts = transfer.identity(boot, boot['toolsCommit'])
+    if metal_prebuilt.facts(args.run_dir / transfer.ARTIFACT) != facts:
+        raise ValueError('QEMU transfer input differs from the launch record')
+    request = wait_ready(args.serial.read_text, lambda: not alive(), args.wait)
+    client = Client(QEMU_HOST, config['port'], config['user'], QEMU_PEER, args.run_dir / 'identity', alive)
+    result = client.complete(request)
+    records = dict(result, boot=boot['id'], commit=boot['toolsCommit'], milestone='server/transfer', artifactSha256=facts['sha256'])
+    (args.run_dir / transfer.RECEIPT).write_text(json.dumps(records) + '\n')
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--boot')
+    parser.add_argument('--sha')
+    parser.add_argument('--wait', type=int, default=1320, help='seconds to wait for boot and fixture readiness')
+    sub = parser.add_subparsers(dest='command')
+    stage = sub.add_parser('stage-qemu')
+    stage.add_argument('--run-dir', type=Path, required=True)
+    stage.add_argument('--artifact', type=Path, required=True)
+    stage.add_argument('--image', type=Path, required=True)
+    stage.add_argument('--binary', type=Path, required=True)
+    watch = sub.add_parser('watch-qemu')
+    watch.add_argument('--run-dir', type=Path, required=True)
+    watch.add_argument('--serial', type=Path, required=True)
+    watch.add_argument('--parent', type=int, required=True)
+    args = parser.parse_args()
+    if not 1 <= args.wait <= 1320:
+        parser.error('--wait must be from 1 through 1320 seconds')
+    if args.command == 'stage-qemu':
+        stage_qemu(args)
+    elif args.command == 'watch-qemu':
+        # Interrupt subprocess.run so it kills and reaps its own OpenSSH child.
+        def interrupted(*_):
+            raise KeyboardInterrupt
+        signal.signal(signal.SIGTERM, interrupted)
+        watch_qemu(args)
+    else:
+        if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.boot or '') or not re.fullmatch(r'[0-9a-f]{40}', args.sha or ''):
+            parser.error('metal requires --boot ID and --sha COMMIT')
+        metal(args)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        raise SystemExit('transfer-hostssh: ' + str(error)) from None
+    except KeyboardInterrupt:
+        raise SystemExit(130) from None

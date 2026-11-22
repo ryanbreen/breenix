@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 
 
 def facts(path):
@@ -14,6 +15,17 @@ def facts(path):
         while chunk := stream.read(1 << 20):
             digest.update(chunk)
     return dict(size=path.stat().st_size, sha256=digest.hexdigest())
+
+
+def snapshot_transfer_input(source, destination):
+    source = source.resolve(strict=True)
+    if not source.is_file():
+        raise ValueError('transfer input must be a regular file')
+    expected = facts(source)
+    shutil.copyfile(source, destination)
+    if not expected['size'] or facts(destination) != expected:
+        raise ValueError('transfer input is empty or changed while it was copied')
+    return expected
 
 
 def inventory(root, staged=False):
