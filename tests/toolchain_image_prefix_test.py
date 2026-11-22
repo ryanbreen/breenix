@@ -32,6 +32,9 @@ class ToolchainImagePrefixTest(unittest.TestCase):
                 "opt/breenix-dev/25.2/bin/bld": b"\x7fELF linker",
                 "opt/breenix-dev/25.2/bin/bar": b"\x7fELF archiver",
                 "opt/breenix-dev/25.2/bin/bnm": b"\x7fELF symbol reader",
+                "opt/breenix-dev/25.2/bin/cc": b"\x7fELF compiler driver",
+                "opt/breenix-dev/25.2/bin/as": b"\x7fELF assembler",
+                "opt/breenix-dev/25.2/bin/ld": b"\x7fELF linker",
                 "usr/share/breenix/toolchain/assembler/sse-exit.link.json": b"link receipt\n",
                 "usr/share/breenix/toolchain/objs/return.o": b"\x7fELF object",
                 "usr/share/breenix/toolchain/return.elf": b"\x7fELF reference",
@@ -106,14 +109,15 @@ class ToolchainImagePrefixTest(unittest.TestCase):
             self.assertEqual(ordinary, tree(stage("no-suite", "")))
             self.assertEqual(before, hashlib.sha256(seed.read_bytes()).digest())
             self.assertLess(ordinary.keys(), selected.keys())
-            self.assertEqual(stat.S_IMODE(selected["opt/breenix-dev/25.2/bin/bas"][0]), 0o755)
-            for tool in ("bld", "bar", "bnm"):
-                self.assertEqual(stat.S_IMODE(selected[f"opt/breenix-dev/25.2/bin/{tool}"][0]), 0o755)
             self.assertEqual(stat.S_IMODE(selected["usr/share/breenix/toolchain/objs/return.o"][0]), 0o644)
             self.assertEqual(ordinary, {key: selected[key] for key in ordinary})
             added = selected.keys() - ordinary.keys()
             self.assertEqual({key: selected[key][1] for key in added if selected[key][1] is not None},
                              fixtures)
+            for path, (mode, _) in selected.items():
+                if path.startswith("opt/breenix-dev/25.2/bin/") and stat.S_ISREG(mode):
+                    with self.subTest(path=path):
+                        self.assertEqual(f"{stat.S_IMODE(mode):04o}", "0755")
             prefixes = ("opt/breenix-dev", "usr/share/breenix/toolchain")
             for key in added - fixtures.keys():
                 self.assertTrue(any(key == prefix or key.startswith(prefix + "/")

@@ -34,7 +34,8 @@ class ToolchainBundleTest(unittest.TestCase):
     def tools_built_by_rustc(self):
         tools = self.record.get("tools")
         self.assertIsInstance(tools, dict, "bundle build record has no Cargo tool provenance")
-        self.assertEqual(set(tools), {"bas", "bld", "bar", "bnm"})
+        self.assertEqual(set(tools), {"bas", "bld", "bar", "bnm"} |
+                         ({"bcc"} if self.record["arch"] == "x86_64" else set()))
         self.assertEqual(self.record, json.loads((self.dev / "build.json").read_text()))
         arch = self.record["arch"]
         machine = {"x86_64": 62, "aarch64": 183}[arch]  # ELF gABI, e_machine.
@@ -45,18 +46,41 @@ class ToolchainBundleTest(unittest.TestCase):
         }
         for name, entry in tools.items():
             with self.subTest(tool=name):
-                program = self.dev / "bin" / name
-                self.assertEqual(entry, {
+                program = self.dev / "bin" / ("cc" if name == "bcc" else name)
+                expected = {
                     "cargoPackage": name,
                     "rustForkCommit": fork,
                     "rustc": rustc,
                     "target": f"{arch}-breenix",
                     "sha256": digest(program),
-                })
+                }
+                if name == "bcc":
+                    expected["path"] = "bin/cc"
+                self.assertEqual(entry, expected)
                 with program.open("rb") as file:
                     header = file.read(20)
                 self.assertEqual(header[:6], b"\x7fELF\x02\x01")
                 self.assertEqual(struct.unpack_from("<HH", header, 16), (2, machine))
+
+    def cc_built_by_rustc(self):
+        entry = self.record["tools"]["bcc"]
+        executable = self.dev / "bin/cc"
+        fork = tomllib.loads((ROOT / "rust-fork.toml").read_text())["commit"]
+        self.assertEqual(entry, {
+            "cargoPackage": "bcc",
+            "path": "bin/cc",
+            "rustForkCommit": fork,
+            "rustc": {"version": subprocess.check_output([self.rustc, "--version"], text=True).strip(),
+                      "sha256": digest(self.rustc)},
+            "target": "x86_64-breenix",
+            "sha256": digest(executable),
+        })
+        self.assertFalse(any(path.suffix == ".c" for path in (WORKSPACE / "bcc").rglob("*")))
+
+    def arm_bundle_unchanged_until_a3(self):
+        self.assertEqual(set(self.record["tools"]), {"bas", "bld", "bar", "bnm"})
+        self.assertEqual({path.name for path in (self.dev / "bin").iterdir()},
+                         {"bas", "bld", "bar", "bnm"})
 
     def receipts_from_cargo_host_bas(self):
         assembler = self.bundle / "root/usr/share/breenix/toolchain/assembler"
@@ -115,7 +139,10 @@ if __name__ == "__main__":
     ToolchainBundleTest.probe = args.probe
     checks = ["ToolchainBundleTest.tools_built_by_rustc"]
     if json.loads((args.bundle / "build.json").read_text())["arch"] == "x86_64":
-        checks.append("ToolchainBundleTest.receipts_from_cargo_host_bas")
+        checks.extend(["ToolchainBundleTest.receipts_from_cargo_host_bas",
+                       "ToolchainBundleTest.cc_built_by_rustc"])
+    else:
+        checks.append("ToolchainBundleTest.arm_bundle_unchanged_until_a3")
     if args.probe is not None:
         checks.append("ToolchainBundleTest.read_fault_probe_is_not_shipped")
     unittest.main(argv=[sys.argv[0], *names], defaultTest=checks)

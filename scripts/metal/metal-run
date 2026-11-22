@@ -406,7 +406,12 @@ def boot(args):
             if len(matches) != 1 or not matches[0].get('categories') or matches[0].get('suite') not in args.suite.split(','):
                 raise SystemExit('--milestone needs a listed suite measured by the commit milestone')
     prebuilt = getattr(args, 'prebuilt', None)
+    if milestone == 'toolchain/cc-hello' and not prebuilt:
+        raise SystemExit('toolchain/cc-hello requires a Mac --prebuilt payload')
     transfer = transfer_fixture.selected(args.suite)
+    toolchain_ssh = (payload == 'image' and transfer_fixture.toolchain_selected(args.suite)
+                     and args.mode == 'suite' and not is_session and not args.inject
+                     and not getattr(args, 'case', None) and args.disk != 'install')
     if transfer and (not prebuilt or args.mode != 'suite' or is_session or args.inject
                      or getattr(args, 'case', None) or args.disk == 'install'):
         raise SystemExit('transfer-fixture needs an ordinary suite boot with --prebuilt ID and a hashed Mac input')
@@ -414,6 +419,10 @@ def boot(args):
         if payload != 'image':
             raise SystemExit('--prebuilt needs an image payload')
         manifest = verify_prebuilt(env, prebuilt, sha, args)
+        if milestone == 'toolchain/cc-hello':
+            build = json.loads((prebuilt_path(prebuilt) / 'build.json').read_text())
+            if build.get('toolchain', {}).get('candidateProducer') != 'mac-bcc':
+                raise SystemExit('toolchain/cc-hello requires Mac bcc candidates')
     transfer_input = None
     if transfer:
         facts = manifest['artifacts'].get(transfer_fixture.ARTIFACT)
@@ -532,6 +541,11 @@ def boot(args):
                              + (['--migration-build'] if migration else []),
                              stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         print(json.dumps({'id': boot_id, 'build': 'started', 'commit': sha}), flush=True)
+        if toolchain_ssh:
+            with (logs / f'{boot_id}-toolchain-hostssh.log').open('w') as log:
+                subprocess.Popen([sys.executable, str(HERE / 'transfer-hostssh'), '--toolchain',
+                                  '--boot', boot_id, '--sha', sha], stdin=subprocess.DEVNULL,
+                                 stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     if not needs_build and not migration and '"status": "waiting"' in result.stdout:
         try:
             runpy.run_path(str(HERE / 'resting_host.py'))['preempt'](boot_id, only_persistent=True)

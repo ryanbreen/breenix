@@ -546,6 +546,8 @@ pub const NAMED_CASE_ALLOWANCES: &[(&str, &str, u64)] = &[
     ("gui-apps", "desktop/launch-each", 80_000),
     ("time", "clocks/rate-counter", 25_000),
     ("toolchain", "linker/links-reference-objects", 30_000),
+    ("toolchain", "c-core/corpus-three-producers", 45_000),
+    ("toolchain", "c-core/hello-over-ssh", 60_000),
     // E25 gives the restricted SSH listener 45 s plus setup and cleanup time.
     ("transfer-fixture", "fixture/listener-lease", 60_000),
     ("breengel", "font-parser/corpus", 20_000),

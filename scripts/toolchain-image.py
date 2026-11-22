@@ -19,7 +19,7 @@ DEV = Path("opt/breenix-dev/25.2")
 CORPUS = Path("usr/share/breenix/toolchain")
 SUITE = Path("sbin/suite-toolchain")
 TOOLS = ("bas", "bld", "bar", "bnm")
-TOOL_PATHS = {DEV / "bin" / tool for tool in TOOLS}
+TOOL_PATHS = {DEV / "bin" / tool for tool in (*TOOLS, "cc", "as", "ld")}
 LINKER_OBJECTS = ("got-main", "got-entry", "archive-value-with-long-name", "tls-template")
 MANIFEST = DEV / "manifest.sha256"
 RECORD = DEV / "build.json"
@@ -86,7 +86,9 @@ def seal(bundle, commit, arch, tool_record):
             if header.is_file():
                 sources[DEV / directory / header.relative_to(headers)] = header
     sources[DEV / "linker.ld"] = ROOT / "userspace/programs/linker.ld"
-    required = {SUITE, DEV / "lib/libc.a"} | TOOL_PATHS
+    required = {SUITE, DEV / "lib/libc.a"} | {DEV / "bin" / tool for tool in TOOLS}
+    if arch == "x86_64":
+        required |= {DEV / "bin" / tool for tool in ("cc", "as", "ld")}
     corpus = ROOT / "toolchain/corpus"
     names = check_corpus(corpus)
     for name in names:
@@ -96,6 +98,18 @@ def seal(bundle, commit, arch, tool_record):
             required.add(CORPUS / (name + suffix))
         required.add(CORPUS / "objs" / (name + ".o"))
     if arch == "x86_64":
+        for name in ("hello.c", "hello.expect", "diagnostic.c"):
+            path = Path("c-core") / name
+            sources[CORPUS / path] = corpus / path
+        deferred = {"aggregate-copy", "bitfield-values", "varargs", "alignment", "atomics",
+                    "compound-literal", "designated-init", "generic"}
+        candidates = set(names) - deferred
+        if len(candidates) != 22:
+            raise ValueError("unexpected C candidate corpus")
+        required |= {CORPUS / "c-core/mac" / (name + ".elf") for name in candidates}
+        actual = {path.name for path in (tree / CORPUS / "c-core/mac").iterdir()}
+        if actual != {name + ".elf" for name in candidates}:
+            raise ValueError("C candidate corpus differs from the selected cases")
         for name in LINKER_OBJECTS:
             required.add(CORPUS / "objs" / (name + ".o"))
         for name in ("got-main", "tls-template"):
@@ -120,17 +134,26 @@ def seal(bundle, commit, arch, tool_record):
             raise ValueError(f"staged object differs from the reference link input: {name}")
     tools = json.loads(tool_record.read_text())
     fork = tomllib.loads((ROOT / "rust-fork.toml").read_text())["commit"]
-    if set(tools) != set(TOOLS):
+    expected_tools = set(TOOLS) | ({"bcc"} if arch == "x86_64" else set())
+    if set(tools) != expected_tools:
         raise ValueError("toolchain build record differs from the staged tool set")
     for name, tool in tools.items():
-        if (tool["cargoPackage"] != name or tool["target"] != f"{arch}-breenix"
+        if (tool["cargoPackage"] != name or (name == "bcc" and tool.get("path") != "bin/cc")
+                or tool["target"] != f"{arch}-breenix"
                 or tool["rustForkCommit"] != fork or not tool["rustc"]["version"]
                 or not SHA256.fullmatch(tool["rustc"]["sha256"])
-                or tool["sha256"] != digest(tree / DEV / "bin" / name)):
+                or tool["sha256"] != digest(tree / DEV / "bin" / ("cc" if name == "bcc" else name))):
             raise ValueError(f"{name}: build record differs from the staged tool")
+    if arch == "x86_64":
+        for tool, alias in (("bas", "as"), ("bld", "ld")):
+            if digest(tree / DEV / "bin" / alias) != tools[tool]["sha256"]:
+                raise ValueError(f"{alias}: staged driver tool differs from {tool}")
     (tree / MANIFEST).write_bytes(manifest_bytes(tree, files))
-    record = json.dumps(dict(commit=commit, arch=arch, tools=tools,
-                             manifestSha256=digest(tree / MANIFEST)), indent=2) + "\n"
+    record_data = dict(commit=commit, arch=arch, tools=tools,
+                       manifestSha256=digest(tree / MANIFEST))
+    if arch == "x86_64":
+        record_data["candidateProducer"] = "mac-bcc" if sys.platform == "darwin" else "host-bcc"
+    record = json.dumps(record_data, indent=2) + "\n"
     (tree / RECORD).write_text(record)
     (bundle / "build.json").write_text(record)
 

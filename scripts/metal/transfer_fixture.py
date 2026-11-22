@@ -14,11 +14,29 @@ ELF = '/sbin/suite-transfer-fixture'
 
 READY = re.compile(r'TRANSFER READY nonce=([0-9a-f]{32}) fp=(SHA256:[A-Za-z0-9+/]{43})'
                    r' peer=([0-9.]+) user=([a-z_][a-z0-9_-]{0,31}) uid=([1-9][0-9]*) gid=([1-9][0-9]*)')
+TOOLCHAIN_READY = re.compile(r'SUITE toolchain HOSTSSH c-core/hello-over-ssh ' + READY.pattern.removeprefix('TRANSFER READY '))
+TOOLCHAIN_RECEIPT = 'toolchain-hostssh.json'
 ENDED = re.compile(r'TRANSFER LEASE-END nonce=([0-9a-f]{32}) reason=(done|timeout) refused=(\d+)')
 
 
 def selected(suites):
     return SUITE in (suites or '').split(',')
+
+
+def toolchain_selected(suites):
+    return 'toolchain' in (suites or '').split(',')
+
+def toolchain_identity(boot, sha):
+    suites = boot.get('suites') or (boot.get('suite') or '').split(',')
+    if (boot.get('mode') != 'suite' or 'toolchain' not in suites or boot.get('evidenceEligible') is not True
+            or boot.get('session') or boot.get('watch') or boot.get('onlyCase') or boot.get('inject')
+            or boot.get('kind') in ('persistent', 'fault-test', 'console-session')):
+        raise ValueError('toolchain needs an eligible, bounded suite boot')
+    if not re.fullmatch(r'[a-f0-9]{40}', sha or '') or boot.get('toolsCommit') != sha:
+        raise ValueError('toolchain tools commit differs from the requested commit')
+    build = boot.get('build', {})
+    if build.get('commit') != sha or build.get('profile') != 'production':
+        raise ValueError('toolchain image commit or production profile differs from the retained build')
 
 
 def metal_peer(site):

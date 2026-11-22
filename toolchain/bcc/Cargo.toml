@@ -1,0 +1,9 @@
+[package]
+name = "bcc"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+description = "Breenix C compiler"
+
+[lints]
+workspace = true

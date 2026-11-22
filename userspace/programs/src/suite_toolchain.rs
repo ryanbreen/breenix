@@ -1,4 +1,4 @@
-//! Check the sealed reference inputs, assemble objects and link executables.
+//! Check the sealed reference inputs and the native assembler, linker and C compiler.
 
 use breenix_suite::suite::{case, case_diagnostic, category, suite, CaseResult, Suite};
 use libbreenix::crypto::sha256::{sha256, Sha256};
@@ -9,6 +9,9 @@ use std::io::Read;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+
+#[path = "fixture/ssh_lease.rs"]
+mod ssh_lease;
 
 const DEV: &str = "opt/breenix-dev/25.2";
 const CORPUS: &str = "usr/share/breenix/toolchain";
@@ -25,6 +28,10 @@ const LINKER_OBJECTS: &[&str] = &[
 ];
 const ARCHIVE_MEMBERS: &[&str] = &["got-entry", "archive-value-with-long-name"];
 const CASES: &str = include_str!("../../../toolchain/corpus/cases");
+// E25 ruling 15 defers aggregate-copy and bitfield-values to 25.7b1,
+// varargs to 25.7b2, and alignment, atomics, compound-literal,
+// designated-init and generic to 25.9.
+const CC_CASES: &str = include_str!("fixture/toolchain-cc-cases");
 
 static SUITE: Suite = suite(
     "toolchain",
@@ -100,6 +107,37 @@ static SUITE: Suite = suite(
                     "duplicate-located",
                     "Duplicate definitions identify both objects before a repaired link runs",
                     duplicate_located,
+                ),
+            ],
+        ),
+        category(
+            "c-core",
+            "Preprocessor, parser, semantics and code generation for hello and its diagnostics",
+            &[
+                case(
+                    "hello",
+                    "The on-box C compiler builds and runs hello",
+                    cc_hello,
+                ),
+                case(
+                    "hello-over-ssh",
+                    "The leased SSH account builds and runs hello with the staged cc",
+                    cc_hello_over_ssh,
+                ),
+                case(
+                    "corpus-three-producers",
+                    "Clang, host bcc and guest cc each produce the expected corpus results",
+                    cc_corpus_three_producers,
+                ),
+                case(
+                    "stages-agree",
+                    "Separate compiler stages agree byte for byte with the driver",
+                    cc_stages_agree,
+                ),
+                case(
+                    "diagnostic-located",
+                    "Invalid C fails with a source file, line and column",
+                    cc_diagnostic_located,
                 ),
             ],
         ),
@@ -276,17 +314,22 @@ fn sysroot_manifest() -> CaseResult {
     Ok(())
 }
 
-fn run_expected(binary: &Path, expect: &Path) -> CaseResult {
-    let name = binary.display();
+fn expected_output(expect: &Path) -> Result<(i32, Vec<u8>), String> {
     let bytes = io_at(expect, fs::read(expect))?;
     let newline = bytes
         .iter()
         .position(|&byte| byte == b'\n')
-        .ok_or_else(|| format!("{name}: missing expected exit status"))?;
+        .ok_or_else(|| format!("{}: missing expected exit status", expect.display()))?;
     let status = std::str::from_utf8(&bytes[..newline])
         .ok()
         .and_then(|status| status.parse::<u8>().ok())
-        .ok_or_else(|| format!("{name}: invalid expected exit status"))?;
+        .ok_or_else(|| format!("{}: invalid expected exit status", expect.display()))?;
+    Ok((i32::from(status), bytes[newline + 1..].to_vec()))
+}
+
+fn run_expected(binary: &Path, expect: &Path) -> CaseResult {
+    let name = binary.display();
+    let (status, expected) = expected_output(expect)?;
     let result = io_at(
         binary,
         Command::new(binary)
@@ -294,10 +337,9 @@ fn run_expected(binary: &Path, expect: &Path) -> CaseResult {
             .stdin(Stdio::null())
             .output(),
     )?;
-    if result.status.code() != Some(i32::from(status)) {
+    if result.status.code() != Some(status) {
         return Err(format!("{name}: expected exit {status}, got {}", result.status).into());
     }
-    let expected = &bytes[newline + 1..];
     if result.stdout != expected {
         return Err(format!(
             "{name}: stdout differs (expected {:?}, got {:?})",
@@ -337,6 +379,159 @@ impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+fn c_core() -> Result<PathBuf, String> {
+    if std::env::consts::ARCH != "x86_64" {
+        return Err("AArch64 scalar C code generation is scheduled for A3".into());
+    }
+    Ok(Path::new("/").join(CORPUS).join("c-core"))
+}
+
+fn compiler_command(scratch: &Scratch, tool: &str) -> Command {
+    let bin = Path::new("/").join(DEV).join("bin");
+    let mut command = Command::new(bin.join(tool));
+    command
+        .current_dir(&scratch.0)
+        .env_clear()
+        .env("PATH", format!("{}:/bin", bin.display()))
+        .stdin(Stdio::null());
+    command
+}
+
+fn compiler_output(command: &mut Command) -> Result<std::process::Output, String> {
+    command
+        .output()
+        .map_err(|error| format!("{}: {error}", command.get_program().to_string_lossy()))
+}
+
+fn cc_stage(scratch: &Scratch, source: &Path, args: &[&str]) -> CaseResult {
+    let output = compiler_output(compiler_command(scratch, "cc").args(args).arg(source))?;
+    require_success(
+        &format!("cc {} {}", args.join(" "), source.display()),
+        output,
+    )?;
+    Ok(())
+}
+
+fn cc_hello() -> CaseResult {
+    let fixtures = c_core()?;
+    let scratch = Scratch::new("hello")?;
+    cc_stage(&scratch, &fixtures.join("hello.c"), &["-o", "hello"])?;
+    run_expected(&scratch.join("hello"), &fixtures.join("hello.expect"))
+}
+
+fn cc_hello_over_ssh() -> CaseResult {
+    let fixtures = c_core()?;
+    let (status, stdout) = expected_output(&fixtures.join("hello.expect"))?;
+    ssh_lease::with_listener(
+        "SUITE toolchain HOSTSSH c-core/hello-over-ssh",
+        "TOOLCHAIN LEASE-END",
+        |account, nonce| {
+            let directory = Path::new(&account.home).join(format!(".toolchain-{nonce}"));
+            let binary = directory.join("hello");
+            let receipt = directory.join("result.json");
+            let record: Value = serde_json::from_slice(&io_at(&receipt, fs::read(&receipt))?)
+                .map_err(|error| format!("invalid toolchain SSH result: {error}"))?;
+            if record["nonce"] != nonce || record["uid"] != account.uid {
+                return Err("toolchain SSH result has the wrong nonce or fixture uid".into());
+            }
+            if record["path"].as_str() != binary.to_str()
+                || record["sha256"] != file_sha256(&binary)?
+            {
+                return Err("toolchain SSH binary differs from the recorded path or digest".into());
+            }
+            if record["status"] != status || record["stdoutHex"] != hex(&stdout) {
+                return Err("toolchain SSH program does not match hello.expect".into());
+            }
+            Ok(())
+        },
+    )
+}
+
+fn cc_corpus_three_producers() -> CaseResult {
+    let fixtures = c_core()?;
+    let scratch = Scratch::new("c-core")?;
+    let corpus = Path::new("/").join(CORPUS);
+    for name in CC_CASES.lines() {
+        let expected = corpus.join(format!("{name}.expect"));
+        let source = corpus.join(format!("{name}.c"));
+        let elf = format!("{name}.elf");
+        run_expected(&corpus.join(&elf), &expected)?;
+        run_expected(&fixtures.join("mac").join(&elf), &expected)?;
+        cc_stage(&scratch, &source, &["-o", &elf])?;
+        let binary = scratch.join(&elf);
+        run_expected(&binary, &expected)?;
+        io_at(&binary, fs::remove_file(&binary))?;
+    }
+    Ok(())
+}
+
+fn equal_stage(scratch: &Scratch, direct: &str, explicit: &str) -> CaseResult {
+    let read = |name| {
+        let path = scratch.join(name);
+        io_at(&path, fs::read(&path))
+    };
+    if read(direct)? != read(explicit)? {
+        return Err(format!("compiler stages differ at {direct} and {explicit}").into());
+    }
+    Ok(())
+}
+
+fn cc_stages_agree() -> CaseResult {
+    let fixtures = c_core()?;
+    let scratch = Scratch::new("cc-stages")?;
+    let source = fixtures.join("hello.c");
+    cc_stage(&scratch, &source, &["-E", "-o", "hello.i"])?;
+    cc_stage(&scratch, &source, &["-S", "-o", "direct.s"])?;
+    cc_stage(&scratch, Path::new("hello.i"), &["-S", "-o", "split.s"])?;
+    equal_stage(&scratch, "direct.s", "split.s")?;
+
+    cc_stage(&scratch, &source, &["-c", "-o", "direct.o"])?;
+    require_success(
+        "as split.s",
+        compiler_output(compiler_command(&scratch, "as").args(["-o", "split.o", "split.s"]))?,
+    )?;
+    equal_stage(&scratch, "direct.o", "split.o")?;
+
+    let dev = Path::new("/").join(DEV);
+    require_success(
+        "ld split.o",
+        compiler_output(
+            compiler_command(&scratch, "ld")
+                .arg("-T")
+                .arg(dev.join("linker.ld"))
+                .args(["--gc-sections", "-o", "split", "split.o"])
+                .arg(dev.join("lib/libc.a")),
+        )?,
+    )?;
+    cc_stage(&scratch, &source, &["-o", "direct"])?;
+    equal_stage(&scratch, "direct", "split")?;
+    run_expected(&scratch.join("split"), &fixtures.join("hello.expect"))
+}
+
+fn cc_diagnostic_located() -> CaseResult {
+    let source = c_core()?.join("diagnostic.c");
+    let scratch = Scratch::new("cc-diagnostic")?;
+    let output = compiler_output(
+        compiler_command(&scratch, "cc")
+            .args(["-o", "unexpected"])
+            .arg(&source),
+    )?;
+    let expected = format!(
+        "{}:4:12: error: undeclared identifier 'undeclared'",
+        source.display()
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if output.status.code() != Some(1)
+        || scratch.join("unexpected").exists()
+        || !stderr.lines().any(|line| line == expected)
+    {
+        return Err(
+            format!("cc did not fail with the expected diagnostic at 4:12: {stderr}").into(),
+        );
+    }
+    Ok(())
 }
 
 struct AssemblyCase {
