@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build bas and check its relocatable objects with the independent elfcheck."""
+"""Check cargo-built bas objects with the independent elfcheck."""
 
 import argparse
 from pathlib import Path
@@ -17,8 +17,6 @@ CHECK = "bas::exit42_object_passes_elfcheck"
 ADDRESSING_CHECK = "bas::sib_rip_forms_match_sdm_table"
 RELOCATION_CHECK = "bas::rela_pc32_for_external_call"
 INTEGER_CHECK = "bas::encode_mov_r64_imm32"
-SOURCES = [TOOLCHAIN / "bas/bas.c", TOOLCHAIN / "common/elf64.c"]
-STRICT = ["-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic"]
 
 # Intel SDM Vol. 2 MOV opcode table B8+rd id, Table 2-4 REX.B,
 # and AMD APM Vol. 1 Figure 3-3 for the r32 register numbers.
@@ -254,36 +252,22 @@ def check_supplemental_encodings(bas, elfcheck, path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--clang", type=Path, required=True)
+    parser.add_argument("--bas", type=Path, required=True)
+    parser.add_argument("--elfcheck", type=Path, required=True)
     args = parser.parse_args()
-    if not args.clang.is_absolute():
-        parser.error("--clang must be an absolute path")
+    if not args.bas.is_absolute() or not args.elfcheck.is_absolute():
+        parser.error("--bas and --elfcheck must be absolute paths")
 
-    check = "bas build"
+    check = "bas host checks"
     try:
-        require(all(path.is_file() for path in SOURCES), "bas production sources are absent")
         with tempfile.TemporaryDirectory(prefix="breenix-bas-") as scratch:
             directory = Path(scratch)
-            elfcheck = directory / "elfcheck"
-            subprocess.run(
-                [args.clang, *STRICT, TESTS / "elfcheck/elfcheck.c", "-o", elfcheck],
-                check=True, timeout=50,
-            )
-            for profile, flags in (
-                ("arm64", ["-arch", "arm64"]),
-                ("x86_64", ["-arch", "x86_64"]),
-                ("ASan+UBSan", ["-g", "-fsanitize=address,undefined",
-                                "-fno-sanitize-recover=all"]),
-            ):
-                bas = directory / "bas"
-                subprocess.run([args.clang, *STRICT, *flags, *SOURCES, "-o", bas],
-                               check=True, timeout=50)
-                for check, run in ((RELOCATION_CHECK, check_relocations),
-                                   (INTEGER_CHECK, check_integer),
-                                   ("bas::supplemental_encodings", check_supplemental_encodings),
-                                   (ADDRESSING_CHECK, check_addressing), (CHECK, check_object)):
-                    run(bas, elfcheck, directory / f"{run.__name__}-{profile}.o")
-                    print(f"{check} [{profile}] PASS", flush=True)
+            for check, run in ((RELOCATION_CHECK, check_relocations),
+                               (INTEGER_CHECK, check_integer),
+                               ("bas::supplemental_encodings", check_supplemental_encodings),
+                               (ADDRESSING_CHECK, check_addressing), (CHECK, check_object)):
+                run(args.bas, args.elfcheck, directory / f"{run.__name__}.o")
+                print(f"{check} PASS", flush=True)
     except (KeyError, OSError, ValueError, struct.error, subprocess.SubprocessError) as error:
         parser.exit(1, f"{check} FAIL ({error})\n")
 

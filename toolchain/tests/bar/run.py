@@ -8,7 +8,6 @@ import struct
 import subprocess
 import tempfile
 
-ROOT = Path(__file__).resolve().parents[3]
 LONG_NAME = 'long-archive-fixture-member.o'
 
 
@@ -62,23 +61,34 @@ def index_is_deterministic(clang, bar, work):
     assert outputs[0] == outputs[1], 'directory, mode and timestamps must not affect archive bytes'
 
 
+def rebuild_archive_indexes(bar, work):
+    original = (work / '0' / 'library.a').read_bytes()
+    index, names, *_ = read_members(original)
+    first_offset = index[0] + 60 + 4
+    missing = original[:8] + original[names[0]:]
+    corrupt = original[:first_offset] + b'\0' * 4 + original[first_offset + 4:]
+    for label, damaged in [('missing', missing), ('corrupt', corrupt)]:
+        assert damaged != original
+        archive = work / f'{label}.a'
+        archive.write_bytes(damaged)
+        subprocess.run([bar, 's', archive], check=True)
+        assert archive.read_bytes() == original, f'bar s did not rebuild the {label} index'
+        print(f'PASS bar::rebuild_{label}_index ({work.name})', flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--clang', default='clang')
-    parser.add_argument('--host-arch', action='append', default=[])
+    parser.add_argument('--bar', type=Path, required=True)
     args = parser.parse_args()
+    if not args.bar.is_absolute():
+        parser.error('--bar must be an absolute path')
     with tempfile.TemporaryDirectory(prefix='bar-test-') as temp:
-        for arch in args.host_arch or [None]:
-            work = Path(temp) / (arch or 'native')
-            work.mkdir()
-            bar = work / 'bar'
-            flags = ['-arch', arch] if arch else []
-            subprocess.run([args.clang, *flags, '-std=c11', '-Wall', '-Wextra', '-Werror',
-                            '-pedantic', '-fsanitize=address,undefined', '-fno-sanitize-recover=all',
-                            ROOT / 'toolchain/bar/bar.c', ROOT / 'toolchain/common/ar.c',
-                            ROOT / 'toolchain/common/elf_symbols.c', '-o', bar], check=True)
-            index_is_deterministic(args.clang, bar, work)
-            print(f'PASS bar::index_is_deterministic ({work.name})')
+        work = Path(temp) / 'native'
+        work.mkdir()
+        index_is_deterministic(args.clang, args.bar, work)
+        print(f'PASS bar::index_is_deterministic ({work.name})')
+        rebuild_archive_indexes(args.bar, work)
 
 
 if __name__ == '__main__':

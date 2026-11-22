@@ -394,7 +394,7 @@ fn fbmmap(width_out: u64) -> SyscallResult {
         prot,
         MmapFlags::from_bits_truncate(0x21),
     );
-    process.vmas.push(vma);
+    process.push_vma(vma);
 
     // Store FbMmapInfo
     process.fb_mmap = Some(crate::process::process::FbMmapInfo {

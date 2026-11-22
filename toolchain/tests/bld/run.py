@@ -2,6 +2,7 @@
 """Check bld's static links without executing their AMD64 output."""
 
 import argparse
+import hashlib
 import math
 from pathlib import Path
 import struct
@@ -15,7 +16,7 @@ CHECK = "bld::pc32_is_s_plus_a_minus_p"
 ARCHIVE_CHECK = "bld::two_archive_cycle_needs_group"
 TLS_CHECK = "bld::tbss_takes_no_file_bytes"
 READ_CHECK = "bld::reads_large_archives_in_blocks"
-STRICT = ["-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic"]
+COMMON_CHECK = "bld::allocates_commons_in_name_order"
 
 
 def require(condition, message):
@@ -297,6 +298,33 @@ def assemble(clang, root, name, code):
     return obj
 
 
+def check_common_order(clang, bld, root):
+    obj = assemble(clang, root, "commons", """
+        .comm e,8,16
+        .comm a,8,8
+        .text
+        .globl _start
+        _start: .quad a, e
+    """)
+    exe = root / "commons"
+    script = TOOLCHAIN.parent / "userspace/programs/linker.ld"
+    subprocess.run([bld, "-o", exe, "-T", script, "--gc-sections", obj],
+                   check=True, timeout=10)
+
+    blob = exe.read_bytes()
+    _, _, sections = read_executable(blob)
+    bss = sections[b".bss"]
+    # linker.ld's .bss rule places the zero-fill storage. ELF gABI §5.5
+    # gives the common symbols' size and alignment. In bld's name order,
+    # a takes the first 8 bytes and e starts on the next 16-byte boundary.
+    require(bss[1] == 8 and bss[3] % 16 == 0 and bss[5] == 24,
+            f"expected 24 aligned NOBITS bytes for commons, got {bss}")
+    # AMD64 psABI §4.4.1: R_X86_64_64 writes S + A. Here both addends are 0.
+    addresses = struct.unpack_from("<QQ", blob, sections[b".text"][4])
+    require(addresses == (bss[3], bss[3] + 16),
+            f"expected name-ordered common addresses, got {addresses}")
+
+
 def checked_executable(bld, elfcheck, exe, *args):
     subprocess.run([bld, "-o", exe, *args], check=True, timeout=10)
     subprocess.run([elfcheck, "--exec", exe], check=True, timeout=10)
@@ -464,24 +492,36 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--clang", default="clang")
     parser.add_argument("--host-arch", choices=["arm64", "x86_64"], action="append")
-    parser.add_argument("--check", choices=["archive", "tls", "io", "all"], default="all")
+    parser.add_argument("--check", choices=["archive", "tls", "io", "common", "all"], default="all")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="bld-test-") as tmp:
         root = Path(tmp)
-        source = TOOLCHAIN / "bld/bld.c"
-        require(source.is_file(), "bld has no implementation")
         for arch in args.host_arch or ["native"]:
             directory = root / arch
             directory.mkdir()
-            bld, elfcheck = directory / "bld", directory / "elfcheck"
-            flags = STRICT + (["-arch", arch] if arch != "native" else [])
-            flags += ["-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all"]
-            bld_sources = [source, source.with_name("script.c"), TOOLCHAIN / "common/ar.c"]
+            target = {"arm64": "aarch64-apple-darwin", "x86_64": "x86_64-apple-darwin"}.get(arch)
+            flags = ["--target", target] if target else []
+            target_dir = TOOLCHAIN / "target"
+            cargo = ["cargo", "build", "--locked", "--release", "--target-dir", target_dir, *flags]
+            binaries = (target_dir / target if target else target_dir) / "release"
+            bld, elfcheck = binaries / "bld", binaries / "elfcheck"
+            subprocess.run([*cargo, "-p", "bld", "--bin", "bld"], cwd=TOOLCHAIN,
+                           check=True, timeout=60)
+            if args.check in ("common", "all"):
+                try:
+                    check_common_order(args.clang, bld, directory)
+                except (OSError, ValueError, subprocess.SubprocessError) as error:
+                    raise SystemExit(f"FAIL {COMMON_CHECK} ({arch}): {error}") from error
+                print(f"PASS {COMMON_CHECK} ({arch})", flush=True)
+            if args.check == "common":
+                continue
             if args.check in ("io", "all"):
-                io_bld = directory / "bld-io"
-                io_probe = Path(__file__).with_name("read_probe.c")
-                subprocess.run([args.clang, *flags, "-Dread=bld_test_read", *bld_sources,
-                                io_probe, "-o", io_bld], check=True, timeout=40)
+                io_bld = binaries / "bld-read-probe"
+                subprocess.run([*cargo, "-p", "bld", "--features", "read-fault-probe",
+                                "--bin", "bld-read-probe"], cwd=TOOLCHAIN, check=True, timeout=60)
+                require(hashlib.sha256(bld.read_bytes()).digest()
+                        != hashlib.sha256(io_bld.read_bytes()).digest(),
+                        "shipped bld and bld-read-probe have the same digest")
                 try:
                     check_archive_reads(io_bld, directory)
                 except (OSError, ValueError, subprocess.SubprocessError) as error:
@@ -489,10 +529,8 @@ def main():
                 print(f"PASS {READ_CHECK} ({arch})", flush=True)
             if args.check == "io":
                 continue
-            for sources, output in [(bld_sources, bld),
-                                    ([TESTS / "elfcheck/elfcheck.c"], elfcheck)]:
-                subprocess.run([args.clang, *flags, *sources, "-o", output],
-                               check=True, timeout=40)
+            subprocess.run([*cargo, "-p", "elfcheck", "--bin", "elfcheck"], cwd=TOOLCHAIN,
+                           check=True, timeout=60)
             if args.check in ("tls", "all"):
                 try:
                     tbss_takes_no_file_bytes(args.clang, bld, elfcheck, directory)

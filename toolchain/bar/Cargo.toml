@@ -1,0 +1,11 @@
+[package]
+name = "bar"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bobj = { path = "../bobj" }

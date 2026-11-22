@@ -634,6 +634,7 @@ pub(crate) fn defer_remaining_tables(
 ) -> Option<PendingProcessReclaim> {
     if process.page_table.is_none() && process.pending_old_page_tables.is_empty() {
         process.vmas.clear();
+        process.mmap_gaps = None;
         process.memory_locks.clear();
         return None;
     }
@@ -689,6 +690,7 @@ pub(crate) fn release_process_resources(process: &mut crate::process::Process) {
         page_table.abandon(AbandonReason::NoProofPipeline);
     }
     process.vmas.clear();
+    process.mmap_gaps = None;
     process.memory_locks.clear();
     #[cfg(target_arch = "x86_64")]
     debug_assert!(process.page_table.is_none());
@@ -713,6 +715,7 @@ pub(crate) fn defer_process_resources(
     // The mappings go with the table; their file bindings must not outlive
     // the row's address space in a zombie.
     process.vmas.clear();
+    process.mmap_gaps = None;
     process.memory_locks.clear();
     #[cfg(target_arch = "x86_64")]
     if let Some(page_table) = page_table.as_ref() {

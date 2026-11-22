@@ -36,6 +36,10 @@ pub mod process {
         pub fd_table: crate::ipc::fd::FdTable,
     }
     impl Process {
+        pub fn push_vma(&mut self, vma: crate::memory::vma::Vma) {
+            self.vmas.push(vma);
+        }
+
         pub fn new(id: u64) -> Self {
             Self {
                 id: ProcessId(id),

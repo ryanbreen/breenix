@@ -2645,6 +2645,7 @@ impl ProcessManager {
         let fb_mmap = from.fb_mmap.take();
         let (heap_start, heap_end, mmap_hint) = (from.heap_start, from.heap_end, from.mmap_hint);
         let mmap_pending = core::mem::take(&mut from.mmap_pending);
+        let mmap_gaps = from.mmap_gaps.take();
         let (stack_bottom, stack_top) = (from.user_stack_bottom, from.user_stack_top);
         let (image_size, image_data_size) = (from.image_size, from.image_data_size);
         from.address_space_release_deferred = false;
@@ -2662,6 +2663,7 @@ impl ProcessManager {
         to.heap_end = heap_end;
         to.mmap_hint = mmap_hint;
         to.mmap_pending = mmap_pending;
+        to.mmap_gaps = mmap_gaps;
         to.user_stack_bottom = stack_bottom;
         to.user_stack_top = stack_top;
         to.image_size = image_size;
@@ -4207,6 +4209,7 @@ impl ProcessManager {
         // Reset mmap state for the new address space
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
+        process.mmap_gaps = None;
         process.memory_locks.clear();
         // A table this row shares with a thread that does not exec
         // (CLONE_FILES) is copied first, so exec leaves that thread's
@@ -4662,6 +4665,7 @@ impl ProcessManager {
         process.signals.drop_timer_signals();
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
+        process.mmap_gaps = None;
         process.memory_locks.clear();
 
         // A table this row shares with a thread that does not exec
@@ -5069,6 +5073,7 @@ impl ProcessManager {
         process.signals.drop_timer_signals();
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
+        process.mmap_gaps = None;
         process.memory_locks.clear();
 
         // A table this row shares with a thread that does not exec
@@ -5406,6 +5411,7 @@ impl ProcessManager {
         process.signals.drop_timer_signals();
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
+        process.mmap_gaps = None;
         process.memory_locks.clear();
         // A table this row shares with a thread that does not exec
         // (CLONE_FILES) is copied first, so exec leaves that thread's

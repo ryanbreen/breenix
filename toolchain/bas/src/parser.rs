@@ -1,0 +1,422 @@
+//! The byte-oriented source grammar and directives documented in bas/README.md.
+
+use bobj::elf::amd64::{R_32, R_32S, R_64, R_GOTPCREL, R_PLT32, R_TPOFF32};
+use bobj::elf::{STT_FUNC, STT_NOTYPE, STT_OBJECT, STT_TLS};
+
+use crate::object::{Endpoint, Object};
+use crate::{Diagnostic, Location, Result};
+
+#[derive(Clone, Copy)]
+pub(crate) struct Token<'a> {
+    pub(crate) text: &'a str,
+    pub(crate) column: usize,
+}
+
+impl Token<'_> {
+    pub(crate) fn is_name(self) -> bool {
+        self.text != "."
+            && self
+                .text
+                .as_bytes()
+                .first()
+                .is_some_and(|byte| byte.is_ascii_alphabetic() || matches!(byte, b'_' | b'.'))
+    }
+}
+
+pub(crate) fn starts_number(byte: u8) -> bool {
+    byte.is_ascii_digit() || matches!(byte, b'+' | b'-')
+}
+
+pub(crate) fn signed_value(value: u64, negative: bool) -> Option<i64> {
+    if value > i64::MAX as u64 + u64::from(negative) {
+        return None;
+    }
+    Some(if negative {
+        value.wrapping_neg() as i64
+    } else {
+        value as i64
+    })
+}
+
+pub(crate) struct Parser<'src, 'obj> {
+    line: &'src [u8],
+    line_number: usize,
+    pub(crate) column: usize,
+    pub(crate) object: &'obj mut Object,
+}
+
+impl<'src, 'obj> Parser<'src, 'obj> {
+    pub(crate) fn new(line: &'src [u8], line_number: usize, object: &'obj mut Object) -> Self {
+        Self {
+            line,
+            line_number,
+            column: 0,
+            object,
+        }
+    }
+
+    fn location(&self, column: usize) -> Location {
+        Location {
+            line: self.line_number,
+            column: column + 1,
+        }
+    }
+
+    pub(crate) fn error(&self, column: usize, message: &'static str) -> Diagnostic {
+        self.location(column).error(message)
+    }
+
+    fn byte(&self) -> u8 {
+        self.line.get(self.column).copied().unwrap_or(0)
+    }
+
+    pub(crate) fn peek(&mut self) -> u8 {
+        while matches!(self.byte(), b' ' | b'\t'..=b'\r') {
+            self.column += 1;
+        }
+        self.byte()
+    }
+
+    pub(crate) fn take(&mut self, byte: u8) -> bool {
+        if self.peek() != byte {
+            return false;
+        }
+        self.column += 1;
+        true
+    }
+
+    pub(crate) fn expect(&mut self, byte: u8, message: &'static str) -> Result<()> {
+        if self.take(byte) {
+            Ok(())
+        } else {
+            Err(self.error(self.column, message))
+        }
+    }
+
+    pub(crate) fn at_end(&mut self) -> bool {
+        matches!(self.peek(), 0 | b';')
+    }
+
+    pub(crate) fn word(&mut self) -> Token<'src> {
+        self.peek();
+        let start = self.column;
+        while self.byte().is_ascii_alphanumeric() || matches!(self.byte(), b'_' | b'.' | b'$') {
+            self.column += 1;
+        }
+        let text = std::str::from_utf8(&self.line[start..self.column])
+            .expect("the tokenizer only accepts ASCII word bytes");
+        Token {
+            text,
+            column: start,
+        }
+    }
+
+    pub(crate) fn lookahead(&mut self) -> (Token<'src>, u8, Token<'src>) {
+        let start = self.column;
+        let name = self.word();
+        let next = self.peek();
+        let following = self.word();
+        self.column = start;
+        (name, next, following)
+    }
+
+    pub(crate) fn magnitude(&mut self) -> Result<u64> {
+        if !self.peek().is_ascii_digit() {
+            return Err(self.error(self.column, "expected an integer"));
+        }
+        let start = self.column;
+        let rest = &self.line[start..];
+        let (digits, radix) = match rest {
+            [b'0', b'x' | b'X', first, ..] if first.is_ascii_hexdigit() => (&rest[2..], 16),
+            _ => (rest, 10),
+        };
+        let mut value = 0u64;
+        let mut length = rest.len() - digits.len();
+        for &byte in digits {
+            let Some(digit) = char::from(byte).to_digit(radix) else {
+                break;
+            };
+            value = value
+                .checked_mul(u64::from(radix))
+                .and_then(|value| value.checked_add(u64::from(digit)))
+                .ok_or_else(|| self.error(start, "integer out of range"))?;
+            length += 1;
+        }
+        self.column = start + length;
+        Ok(value)
+    }
+
+    pub(crate) fn integer(&mut self, width: usize, signed_only: bool) -> Result<u64> {
+        self.peek();
+        let start = self.column;
+        let negative = self.take(b'-');
+        if !negative {
+            self.take(b'+');
+        }
+        let magnitude = self.magnitude()?;
+        let sign_bit = 1u64 << (width * 8 - 1);
+        let maximum = if negative {
+            sign_bit
+        } else if signed_only {
+            sign_bit - 1
+        } else {
+            (sign_bit - 1) * 2 + 1
+        };
+        if magnitude > maximum {
+            return Err(self.error(start, "integer out of range for operand width"));
+        }
+        Ok(if negative {
+            magnitude.wrapping_neg()
+        } else {
+            magnitude
+        })
+    }
+
+    pub(crate) fn count(&mut self) -> Result<u64> {
+        self.take(b'+');
+        self.magnitude()
+    }
+
+    pub(crate) fn addend(&mut self) -> Result<i64> {
+        let sign = self.peek();
+        if !matches!(sign, b'+' | b'-') {
+            return Ok(0);
+        }
+        let column = self.column;
+        self.column += 1;
+        signed_value(self.magnitude()?, sign == b'-')
+            .ok_or_else(|| self.error(column, "symbol addend out of range"))
+    }
+
+    pub(crate) fn relocation_modifier(&mut self) -> Result<u32> {
+        if !self.take(b'@') {
+            return Ok(0);
+        }
+        let name = self.word();
+        match name.text {
+            "plt" => Ok(R_PLT32),
+            "gotpcrel" => Ok(R_GOTPCREL),
+            "32s" => Ok(R_32S),
+            "tpoff" => Ok(R_TPOFF32),
+            _ => Err(self.error(name.column, "unknown relocation modifier")),
+        }
+    }
+
+    fn symbol(&mut self, name: Token<'_>) -> Result<usize> {
+        if !name.is_name() {
+            return Err(self.error(name.column, "expected a symbol name"));
+        }
+        Ok(self.object.symbol(name.text, self.location(name.column)))
+    }
+
+    pub(crate) fn reference(
+        &mut self,
+        label: Token<'_>,
+        kind: u32,
+        addend: i64,
+        trailing: usize,
+    ) -> Result<()> {
+        let symbol = self.symbol(label)?;
+        self.object
+            .reference(symbol, kind, addend, trailing, self.location(label.column))
+    }
+
+    pub(crate) fn emit(&mut self, column: usize, bytes: &[u8]) -> Result<()> {
+        self.object.emit_bytes(self.location(column), bytes)
+    }
+
+    pub(crate) fn emit_word(&mut self, column: usize, value: u64, width: usize) -> Result<()> {
+        self.emit(column, &value.to_le_bytes()[..width])
+    }
+
+    fn hex_digit(&mut self) -> Result<u8> {
+        let digit = char::from(self.byte())
+            .to_digit(16)
+            .ok_or_else(|| self.error(self.column, "expected two hex digits after \\x"))?;
+        self.column += 1;
+        Ok(digit as u8)
+    }
+
+    fn emit_string(&mut self, terminated: bool) -> Result<()> {
+        self.peek();
+        let start = self.column;
+        self.expect(b'"', "expected a quoted string")?;
+        while self.byte() != b'"' {
+            let mut byte = self.byte();
+            if byte == 0 {
+                return Err(self.error(self.column, "unterminated string"));
+            }
+            self.column += 1;
+            if byte == b'\\' {
+                let escape = self.byte();
+                byte = match escape {
+                    b'\\' | b'"' => escape,
+                    b'0' => 0,
+                    b'n' => b'\n',
+                    b'r' => b'\r',
+                    b't' => b'\t',
+                    b'x' => {
+                        self.column += 1;
+                        let high = self.hex_digit()?;
+                        let low = self.hex_digit()?;
+                        self.emit(start, &[(high << 4) | low])?;
+                        continue;
+                    }
+                    _ => return Err(self.error(self.column, "unsupported string escape")),
+                };
+                self.column += 1;
+            }
+            self.emit(start, &[byte])?;
+        }
+        self.column += 1;
+        if terminated {
+            self.emit(start, &[0])?;
+        }
+        Ok(())
+    }
+
+    fn emit_data_list(&mut self, width: usize) -> Result<()> {
+        loop {
+            if self.peek() == b'"' && width == 1 {
+                self.emit_string(false)?;
+            } else if starts_number(self.peek()) {
+                let column = self.column;
+                let value = self.integer(width, false)?;
+                self.emit_word(column, value, width)?;
+            } else {
+                let label = self.word();
+                let kind = match (width, self.relocation_modifier()?) {
+                    (8, 0) => R_64,
+                    (4, 0) => R_32,
+                    (4, R_32S) => R_32S,
+                    _ => {
+                        return Err(self.error(
+                            label.column,
+                            "unsupported absolute relocation for this field",
+                        ))
+                    }
+                };
+                let addend = self.addend()?;
+                self.reference(label, kind, addend, 0)?;
+            }
+            if !self.take(b',') {
+                return Ok(());
+            }
+        }
+    }
+
+    fn align(&mut self) -> Result<()> {
+        self.peek();
+        let column = self.column;
+        let alignment = self.count()?;
+        if !alignment.is_power_of_two() {
+            return Err(self.error(column, "alignment must be a positive power of two"));
+        }
+        let fill = if self.take(b',') {
+            self.integer(1, false)? as u8
+        } else {
+            self.object.default_fill()
+        };
+        self.object.align(self.location(column), alignment, fill)
+    }
+
+    fn set_type(&mut self) -> Result<()> {
+        let name = self.word();
+        let index = self.symbol(name)?;
+        self.expect(b',', "expected ',' before symbol type")?;
+        self.take(b'@');
+        let kind = self.word();
+        self.object.symbols[index].kind = match kind.text {
+            "function" | "func" => STT_FUNC,
+            "object" => STT_OBJECT,
+            "tls" => STT_TLS,
+            "notype" => STT_NOTYPE,
+            _ => return Err(self.error(kind.column, "unsupported symbol type")),
+        };
+        Ok(())
+    }
+
+    fn size_term(&mut self) -> Result<Endpoint> {
+        let term = self.word();
+        if term.text == "." {
+            Ok(Endpoint::Here)
+        } else {
+            self.symbol(term).map(Endpoint::Symbol)
+        }
+    }
+
+    fn set_size(&mut self) -> Result<()> {
+        let name = self.word();
+        let index = self.symbol(name)?;
+        let at = self.location(name.column);
+        if self.object.symbols[index].size_at.is_some() {
+            return Err(at.error("duplicate symbol size"));
+        }
+        self.object.symbols[index].size_at = Some(at);
+        self.expect(b',', "expected ',' before symbol size")?;
+        if starts_number(self.peek()) {
+            self.object.symbols[index].size = self.count()?;
+        } else {
+            let end = self.size_term()?;
+            self.expect(b'-', "expected 'END - START' after symbol name")?;
+            let start = self.size_term()?;
+            self.object.size_expression(index, end, start, at);
+        }
+        Ok(())
+    }
+
+    fn directive(&mut self, op: Token<'_>) -> Result<bool> {
+        let name = op.text.strip_prefix('.').unwrap_or(op.text);
+        match name {
+            "section" => {
+                let section = self.word();
+                self.object
+                    .select_section(section.text, self.location(section.column))?;
+            }
+            "global" | "globl" | "extern" => {
+                let name = self.word();
+                let index = self.symbol(name)?;
+                self.object.symbols[index].global = true;
+            }
+            "db" | "byte" => self.emit_data_list(1)?,
+            "dw" | "word" => self.emit_data_list(2)?,
+            "dd" | "long" => self.emit_data_list(4)?,
+            "dq" | "quad" => self.emit_data_list(8)?,
+            "ascii" | "asciz" => loop {
+                self.emit_string(name == "asciz")?;
+                if !self.take(b',') {
+                    break;
+                }
+            },
+            "zero" => {
+                let count = self.count()?;
+                let column = op.column + usize::from(op.text.starts_with('.'));
+                self.object.fill(self.location(column), count, 0)?;
+            }
+            "align" | "balign" => self.align()?,
+            "type" => self.set_type()?,
+            "size" => self.set_size()?,
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    pub(crate) fn assemble_line(&mut self) -> Result<()> {
+        while !self.at_end() {
+            let op = self.word();
+            if self.take(b':') {
+                let index = self.symbol(op)?;
+                self.object.define_label(index, self.location(op.column))?;
+                continue;
+            }
+            if !self.directive(op)? {
+                crate::x86::instruction(self, op)?;
+            }
+            if !self.at_end() {
+                return Err(self.error(self.column, "unexpected input after operands"));
+            }
+            break;
+        }
+        Ok(())
+    }
+}

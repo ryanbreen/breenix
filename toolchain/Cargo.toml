@@ -1,0 +1,25 @@
+# The E25 toolchain workspace (plan step 25.R, every tool in Rust).
+#
+# Rules (plan section 2): no dependency outside this workspace and std, so
+# Cargo.lock holds only path packages (toolchain_workspace::lock_has_only_path_packages);
+# no proc macros and no build.rs; #![forbid(unsafe_code)] in every tool crate;
+# overflow checks on in every profile, the shipped one included.
+
+[workspace]
+resolver = "2"
+members = ["bar", "bas", "bld", "bnm", "bobj", "elfcheck"]
+
+[workspace.package]
+edition = "2021"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[profile.dev]
+overflow-checks = true
+
+[profile.release]
+overflow-checks = true
+codegen-units = 1
+incremental = false

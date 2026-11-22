@@ -116,16 +116,14 @@ fn read() -> Result<Sample, String> {
     Ok(Sample { free, heap_free_kb, owners, receipts, reclaim_outstanding, settle_ms: 0 })
 }
 
-/// Give back the free blocks the C library's allocation cache keeps, so a sample
-/// counts the memory the runner uses and not free blocks it holds for reuse (up to
-/// 128 pages: 16 one-page blocks in each of 8 size classes).
+/// Return unused arena pages before counting the runner's resident memory.
 fn release_allocation_cache() {
     #[cfg(target_os = "breenix")]
     {
         extern "C" {
             fn __breenix_malloc_release_cached() -> usize;
         }
-        // SAFETY: the cache holds only freed blocks; no live allocation is touched.
+        // SAFETY: release works on pages outside the allocator's live slots.
         unsafe { __breenix_malloc_release_cached() };
     }
 }

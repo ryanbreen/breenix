@@ -16,6 +16,7 @@
 /target/
 Cargo.lock
 !scripts/metal/efi-stub/Cargo.lock
+!toolchain/Cargo.lock
 
 # Build directories
 build/

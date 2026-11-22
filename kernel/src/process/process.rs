@@ -404,6 +404,9 @@ pub struct Process {
     /// (`memory_common::place_below_hint`).
     pub mmap_pending: alloc::vec::Vec<(u64, u64)>,
 
+    /// Free space in the mmap window derived from `vmas` and `mmap_pending`.
+    pub(crate) mmap_gaps: Option<crate::syscall::memory_common::MmapGaps>,
+
     /// Signal handling state (pending, blocked, handlers)
     pub signals: SignalState,
 
@@ -587,6 +590,7 @@ impl Process {
             vmas: alloc::vec::Vec::new(),
             mmap_hint: crate::memory::vma::MMAP_REGION_END,
             mmap_pending: alloc::vec::Vec::new(),
+            mmap_gaps: None,
             signals: SignalState::default(),
             fd_table: FdTable::new(),
             pending_fifo_opens: Vec::new(),
@@ -1250,6 +1254,17 @@ impl Process {
     /// Get mutable access to VMA list
     #[allow(dead_code)]
     pub fn vma_list_mut(&mut self) -> &mut alloc::vec::Vec<crate::memory::vma::Vma> {
+        self.mmap_gaps = None;
         &mut self.vmas
+    }
+
+    /// Publish a VMA after taking any pending placement out of the list.
+    pub(crate) fn push_vma(&mut self, vma: crate::memory::vma::Vma) {
+        crate::syscall::memory_common::MmapGaps::cover(
+            &mut self.mmap_gaps,
+            vma.start.as_u64(),
+            vma.end.as_u64(),
+        );
+        self.vmas.push(vma);
     }
 }
