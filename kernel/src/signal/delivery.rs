@@ -55,8 +55,7 @@ pub enum SignalDeliveryResult {
     /// thread is no longer runnable and its SIGSEGV exit is deferred; the
     /// caller must not return it to user mode.
     FrameFault,
-    /// A fatal default action queued its exit; the thread must not resume.
-    #[cfg(target_arch = "x86_64")]
+    /// A fatal default action deferred its exit; the thread must not resume.
     DeferredExit,
 }
 
@@ -223,6 +222,7 @@ pub fn deliver_pending_signals(
                 // Default action may terminate/stop the process
                 match deliver_default_action(process, sig) {
                     DeliverResult::Delivered => return SignalDeliveryResult::Delivered,
+                    DeliverResult::DeferredExit => return SignalDeliveryResult::DeferredExit,
                     DeliverResult::Terminated(notification) => {
                         return SignalDeliveryResult::Terminated(notification)
                     }
@@ -269,7 +269,6 @@ pub enum DeliverResult {
     Ignored,
     /// Process was terminated - caller should notify parent after releasing lock
     Terminated(ParentNotification),
-    #[cfg(target_arch = "x86_64")]
     DeferredExit,
 }
 
@@ -363,87 +362,28 @@ fn write_signal_stack(
 /// Deliver a signal's default action
 /// Returns DeliverResult indicating what action was taken
 fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
-    #[cfg(target_arch = "x86_64")]
-    if fatal_exit_code(sig).is_some() {
-        let exit_code = signal_death_exit_code(process, sig);
-        if let Some(thread_id) = process.main_thread.as_ref().map(|thread| thread.id) {
-            // Interrupt return holds PM: do not close descriptors, walk CoW
-            // mappings or print before the parent can observe this death.
-            // The normal exit worker publishes status and defers reclamation.
-            if crate::task::process_task::defer_fault_exit(thread_id, exit_code) {
-                crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
+    match default_action(sig) {
+        SignalDefaultAction::Terminate | SignalDefaultAction::CoreDump => {
+            crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
+            let exit_code = signal_death_exit_code(process, sig);
+            if let Some(thread_id) = process.main_thread.as_ref().map(|thread| thread.id()) {
+                // Stop scheduling the thread now. The exit worker releases the
+                // directories and takes custody of files and mappings before it
+                // publishes termination. A parent can reap an already-published
+                // row and hide it from the worker.
+                if !crate::task::process_task::defer_fault_exit(thread_id, exit_code) {
+                    process.unqueued_fatal_exit = Some(exit_code);
+                    crate::task::process_task::note_unqueued_fatal_exit();
+                }
                 crate::task::scheduler::terminate_thread(thread_id);
                 return DeliverResult::DeferredExit;
             }
-            // An exhausted queue retains the existing synchronous exit below;
-            // never lose a death merely because deferred storage is unavailable.
-        }
-    }
-    match default_action(sig) {
-        SignalDefaultAction::Terminate => {
-            // Exit code for signal termination is typically 128 + signal number
-            // But we use negative signal number to indicate signal death
-            crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
-            let exit_code = signal_death_exit_code(process, sig);
-            // The row is reapable once PM is released: SEM_UNDO first.
+
+            // A row with no scheduler thread cannot use the thread exit worker.
             crate::ipc::sysv::row_dying_locked(process);
             process.terminate(exit_code);
-
-            // CRITICAL: Also mark the scheduler's copy of the thread as terminated.
-            // The process.terminate() call above marks process.main_thread, but
-            // the scheduler has its own copy of threads in its threads vector.
-            // Without this, the scheduler would keep scheduling the terminated thread!
-            if let Some(ref thread) = process.main_thread {
-                let thread_id = thread.id();
-                crate::task::scheduler::terminate_thread(thread_id);
-                // The action ends the whole process (#1033), and this may be an
-                // interrupt return, where nothing may be torn down: the rest of
-                // the thread group dies, and this row's exit hook runs, from
-                // the deferred-exit drain. An exit the drain's queue cannot
-                // take is left on the row, where the drain finds it.
-                if !crate::task::process_task::defer_fault_exit(thread_id, exit_code) {
-                    process.unqueued_fatal_exit = Some(exit_code);
-                    crate::task::process_task::note_unqueued_fatal_exit();
-                }
-            }
-
-            // Return notification info for parent - caller will notify after releasing lock
-            if let Some(notification) = notify_parent_of_termination(process) {
-                DeliverResult::Terminated(notification)
-            } else {
-                DeliverResult::Delivered
-            }
-        }
-        SignalDefaultAction::CoreDump => {
-            // Core dump not implemented, just terminate
-            // The 0x80 flag indicates core dump
-            crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
-            let exit_code = signal_death_exit_code(process, sig);
-            // The row is reapable once PM is released: SEM_UNDO first.
-            crate::ipc::sysv::row_dying_locked(process);
-            process.terminate(exit_code);
-
-            // CRITICAL: Also mark the scheduler's copy of the thread as terminated.
-            if let Some(ref thread) = process.main_thread {
-                let thread_id = thread.id();
-                crate::task::scheduler::terminate_thread(thread_id);
-                // The action ends the whole process (#1033), and this may be an
-                // interrupt return, where nothing may be torn down: the rest of
-                // the thread group dies, and this row's exit hook runs, from
-                // the deferred-exit drain. An exit the drain's queue cannot
-                // take is left on the row, where the drain finds it.
-                if !crate::task::process_task::defer_fault_exit(thread_id, exit_code) {
-                    process.unqueued_fatal_exit = Some(exit_code);
-                    crate::task::process_task::note_unqueued_fatal_exit();
-                }
-            }
-
-            // Return notification info for parent - caller will notify after releasing lock
-            if let Some(notification) = notify_parent_of_termination(process) {
-                DeliverResult::Terminated(notification)
-            } else {
-                DeliverResult::Delivered
-            }
+            notify_parent_of_termination(process)
+                .map_or(DeliverResult::Delivered, DeliverResult::Terminated)
         }
         // Unreached: delivery leaves a stop pending for `take_stop_locked`.
         SignalDefaultAction::Stop => DeliverResult::Ignored,

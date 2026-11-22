@@ -365,6 +365,12 @@ fn deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) -> bool {
                 signal_result,
                 crate::signal::delivery::SignalDeliveryResult::FrameFault
             );
+            if frame_fault || matches!(
+                signal_result,
+                crate::signal::delivery::SignalDeliveryResult::DeferredExit
+            ) {
+                crate::task::scheduler::set_need_resched();
+            }
 
             // Handle termination
             if let crate::signal::delivery::SignalDeliveryResult::Terminated(notification) =
@@ -380,7 +386,6 @@ fn deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) -> bool {
             }
             // The row's own exit is deferred; its thread group dies with it.
             if frame_fault {
-                crate::task::scheduler::set_need_resched();
                 group_death = Some((process.id, -(crate::signal::constants::SIGSEGV as i32)));
             }
         }
