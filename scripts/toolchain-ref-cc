@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""Build one Breenix C reference ELF and its SHA-256 inventory.
+
+Pass absolute --clang and --lld paths and their expected --clang-sha256 and
+--lld-sha256 pins from the producer's build configuration. --input-root may
+be repeated for staged sources and ordinary --archive inputs. The only
+include search directories added are the in-tree toolchain and libc headers.
+"""
+
+import argparse
+import importlib
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+
+
+sys.dont_write_bytecode = True
+inventory = importlib.import_module("toolchain-sysroot")
+ROOT = Path(__file__).resolve().parents[1]
+ARCH_FLAGS = {"x86_64": "-mno-red-zone", "aarch64": "-mno-outline-atomics"}
+TOOL_ENV = {"LC_ALL": "C", "PATH": ""}
+
+
+def run(command, directory):
+    result = subprocess.run(command, cwd=directory, env=TOOL_ENV, stdout=subprocess.PIPE)
+    result.check_returncode()
+    return os.fsdecode(result.stdout)
+
+
+def pinned_tool(path, pin, directory):
+    if not path.is_absolute():
+        raise ValueError(f"tool path must be absolute: {path}")
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", pin):
+        raise ValueError(f"invalid executable SHA-256 pin for {path}")
+    producer = inventory.file_record(path.resolve(strict=True))
+    if producer["sha256"] != pin.lower():
+        raise ValueError(f"executable SHA-256 mismatch for {path}: {producer['sha256']}")
+    # Keep argv[0] as supplied: the generic lld driver also supports a named
+    # ld.lld symlink, which selects ELF without -flavor.
+    command = [str(path)]
+    if path.name in {"lld", "rust-lld"}:
+        command.extend(["-flavor", "gnu"])
+    producer["version"] = run([*command, "--version"], directory).strip()
+    if not producer["version"]:
+        raise ValueError(f"no version reported by {path}")
+    return command, producer
+
+
+def write_include_overlay(path, roots):
+    # Map files to checked canonical paths so a staged symlink cannot expose
+    # another tree to the preprocessor.
+    files = {}
+    for root in dict.fromkeys(roots):
+        for directory, _, names in os.walk(root):
+            for name in names:
+                entry = Path(directory) / name
+                try:
+                    resolved = entry.resolve(strict=True)
+                except (FileNotFoundError, RuntimeError):
+                    continue
+                if resolved.is_file() and any(resolved.is_relative_to(root) for root in roots):
+                    files[str(entry)] = str(resolved)
+    path.write_text(json.dumps({
+        "version": 0,
+        "fallthrough": False,
+        "use-external-names": False,
+        "roots": [
+            {"name": name, "type": "file", "external-contents": files[name]}
+            for name in sorted(files)
+        ],
+    }), encoding="utf-8")
+
+
+def build(args, work):
+    staged = tuple(path.resolve(strict=True) for path in args.input_root)
+    if not all(path.is_dir() for path in staged):
+        raise ValueError("--input-root must name a directory")
+    source = inventory.input_path(args.source, staged)
+    archives = [inventory.input_path(path, staged) for path in args.archive]
+    for path in archives:
+        with path.open("rb") as f:
+            if f.read(8) != b"!<arch>\n":
+                raise ValueError(f"expected an ordinary archive: {path}")
+
+    headers = tuple(
+        inventory.input_path(ROOT / path, (ROOT,))
+        for path in ("toolchain/include", "libs/libbreenix-libc/include")
+    )
+    include_roots = staged + headers
+    link_script = inventory.input_path(ROOT / "userspace/programs/linker.ld", (ROOT,))
+    clang, clang_record = pinned_tool(args.clang, args.clang_sha256, work)
+    lld, lld_record = pinned_tool(args.lld, args.lld_sha256, work)
+
+    overlay = work / "includes.json"
+    write_include_overlay(overlay, include_roots)
+    object_file = work / "reference.o"
+    compile_deps = work / "compile.d"
+    clang_flags = [
+        "--no-default-config", f"--target={args.arch}-unknown-linux-gnu",
+        "-Ulinux", "-U__linux", "-U__linux__", "-U__gnu_linux__", "-D__breenix__=1",
+        "-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic",
+        "-nostdinc", "-ivfsoverlay", str(overlay),
+        "-isystem", str(headers[0]), "-isystem", str(headers[1]),
+        "-fno-stack-protector", "-fno-pic", "-fno-pie", "-fintegrated-as",
+        # Assembler .incbin inputs do not appear in the C dependency file.
+        "-fno-gnu-inline-asm", ARCH_FLAGS[args.arch],
+        "-MD", "-MF", str(compile_deps), "-MT", "reference.o",
+        "-x", "c", "-c", str(source), "-o", str(object_file),
+    ]
+    run([*clang, *clang_flags], work)
+    includes = inventory.include_records(compile_deps, source, include_roots)
+
+    elf = work / "reference.elf"
+    link_deps, link_map = work / "link.d", work / "link.map"
+    lld_flags = [
+        *lld[1:], "--fatal-warnings", "-static", "--gc-sections",
+        "-T", str(link_script), f"-Map={link_map}", "--trace",
+        f"--dependency-file={link_deps}", "-o", str(elf),
+        str(object_file), *map(str, archives),
+    ]
+    trace = run([lld[0], *lld_flags], work)
+    record = inventory.build_inventory(
+        args.arch, {"clang": clang_record, "lld": lld_record},
+        {"clang": [clang_flags], "lld": lld_flags},
+        includes, elf, object_file, archives, link_script, link_deps, link_map, trace,
+    )
+    return elf, record
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--arch", choices=ARCH_FLAGS, required=True)
+    parser.add_argument("--input-root", type=Path, action="append", required=True)
+    for tool in ("clang", "lld"):
+        parser.add_argument(f"--{tool}", type=Path, required=True)
+        parser.add_argument(f"--{tool}-sha256", required=True)
+    parser.add_argument("--archive", type=Path, action="append", default=[])
+    parser.add_argument("-o", type=Path, required=True)
+    parser.add_argument("--inventory", type=Path, required=True)
+    parser.add_argument("source", type=Path)
+    args = parser.parse_args()
+    try:
+        output, receipt = args.o.absolute(), args.inventory.absolute()
+        if output.resolve() == receipt.resolve():
+            raise ValueError("the ELF and inventory need distinct output paths")
+        with tempfile.TemporaryDirectory(prefix=".toolchain-ref-", dir=output.parent) as temp:
+            elf, record = build(args, Path(temp).resolve())
+            record["elf"]["path"] = str(output)
+            with tempfile.TemporaryDirectory(prefix=".toolchain-ref-", dir=receipt.parent) as dest:
+                manifest = Path(dest) / "inventory.json"
+                manifest.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+                elf.replace(output)
+                manifest.replace(receipt)
+    except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as error:
+        print(f"toolchain-ref-cc: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
