@@ -1,8 +1,18 @@
 //! Logical lines and target rules from POSIX.1-2024 make, "Makefile Syntax",
-//! "Target Rules" and "Macros". Macro expansion is deferred.
+//! "Target Rules", "Macros" and "Include Lines".
 
-use crate::{Error, Location};
-use std::{path::Path, str};
+use crate::{
+    r#macro::{separate_words, Automatic, Macros},
+    Error, Location,
+};
+use std::{
+    fs::File,
+    io::{self, Read},
+    path::{Path, PathBuf},
+    str,
+};
+
+const MAX_INCLUDE_DEPTH: usize = 64;
 
 #[derive(Debug, Default)]
 pub struct Makefile {
@@ -13,6 +23,7 @@ pub struct Makefile {
 pub enum Entry {
     Rule(Rule),
     Macro(SourceLine),
+    Include { paths: SourceLine, optional: bool },
 }
 
 #[derive(Debug)]
@@ -21,12 +32,113 @@ pub struct Rule {
     pub targets: Vec<String>,
     pub prerequisites: Vec<String>,
     pub recipes: Vec<SourceLine>,
+    pub(crate) inference: Option<Inference>,
 }
 
 #[derive(Debug)]
+pub(crate) struct Inference {
+    pub source: String,
+    pub stem: String,
+}
+
+#[derive(Clone, Debug)]
 pub struct SourceLine {
     pub location: Location,
     pub text: String,
+}
+
+/// Read makefiles in order, inserting includes where their directives appear.
+pub fn load(paths: &[PathBuf], macros: &mut Macros) -> Result<Makefile, Error> {
+    let mut makefile = Makefile::default();
+    for path in paths {
+        let location = Location {
+            path: path.as_path().into(),
+            line: 1,
+        };
+        let source = if path == Path::new("-") {
+            let mut bytes = Vec::new();
+            io::stdin()
+                .read_to_end(&mut bytes)
+                .map_err(|error| Error::new(&location, error.to_string()))?;
+            bytes
+        } else {
+            let file =
+                File::open(path).map_err(|error| Error::new(&location, error.to_string()))?;
+            read_source(file, &location)?
+        };
+        makefile.read_entries(path, &source, macros, 0)?;
+    }
+    Ok(makefile)
+}
+
+fn read_source(mut file: File, location: &Location) -> Result<Vec<u8>, Error> {
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|error| Error::new(location, error.to_string()))?;
+    Ok(bytes)
+}
+
+impl Makefile {
+    fn read_entries(
+        &mut self,
+        path: &Path,
+        bytes: &[u8],
+        macros: &mut Macros,
+        depth: usize,
+    ) -> Result<(), Error> {
+        let automatic = Automatic::default();
+        for entry in parse(path, bytes)?.entries {
+            match entry {
+                Entry::Macro(line) => macros.assign_makefile(&line.text, &line.location)?,
+                Entry::Rule(mut rule) => {
+                    for words in [&mut rule.targets, &mut rule.prerequisites] {
+                        let mut expanded = Vec::new();
+                        for word in words.iter() {
+                            let value = macros.expand(word, &rule.location, &automatic)?;
+                            expanded.extend(separate_words(&value).map(str::to_owned));
+                        }
+                        *words = expanded;
+                    }
+                    if rule.targets.is_empty() {
+                        return Err(Error::new(
+                            &rule.location,
+                            "missing target after macro expansion",
+                        ));
+                    }
+                    self.entries.push(Entry::Rule(rule));
+                }
+                Entry::Include { paths, optional } => {
+                    let expanded = macros.expand(&paths.text, &paths.location, &automatic)?;
+                    for name in separate_words(&expanded) {
+                        let file = match File::open(name) {
+                            Ok(file) => file,
+                            Err(_) if optional => continue,
+                            Err(error) => {
+                                return Err(Error::new(
+                                    &paths.location,
+                                    format!("include '{name}': {error}"),
+                                ))
+                            }
+                        };
+                        if depth >= MAX_INCLUDE_DEPTH {
+                            return Err(Error::new(
+                                &paths.location,
+                                format!("include nesting is too deep at '{name}'"),
+                            ));
+                        }
+                        let path = Path::new(name);
+                        let location = Location {
+                            path: path.into(),
+                            line: 1,
+                        };
+                        let source = read_source(file, &location)?;
+                        self.read_entries(path, &source, macros, depth + 1)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Read a makefile as UTF-8 text, retaining each entry's starting line.
@@ -87,6 +199,22 @@ fn take_logical_line<'a>(
 }
 
 fn read_entry(line: &str, location: Location) -> Result<Option<Entry>, Error> {
+    for (keyword, optional) in [("include", false), ("-include", true)] {
+        if let Some(paths) = line
+            .strip_prefix(keyword)
+            .filter(|rest| rest.starts_with(is_blank))
+        {
+            let paths = paths.split_once('#').map_or(paths, |(paths, _)| paths);
+            return Ok(Some(Entry::Include {
+                paths: SourceLine {
+                    text: fold_header(paths),
+                    location,
+                },
+                optional,
+            }));
+        }
+    }
+
     let mut colon = None;
     let mut assignment = false;
     let mut end = line.len();
@@ -131,6 +259,7 @@ fn read_entry(line: &str, location: Location) -> Result<Option<Entry>, Error> {
             targets,
             prerequisites,
             recipes,
+            inference: None,
         })))
     } else {
         let text = fold_header(&line[..end]);
@@ -183,7 +312,7 @@ fn words(text: &str) -> Vec<String> {
 
 // Unexpanded references can contain colons, equals signs and blanks, including
 // in a substitution or a nested reference. Comments still end the header.
-fn outside_macro_references(text: &str) -> impl Iterator<Item = (usize, char)> + '_ {
+pub(crate) fn outside_macro_references(text: &str) -> impl Iterator<Item = (usize, char)> + '_ {
     let mut characters = text.char_indices().peekable();
     let mut closing = Vec::new();
     std::iter::from_fn(move || {

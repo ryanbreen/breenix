@@ -31,6 +31,10 @@ impl<'a> Node<'a> {
     pub fn recipes(&self) -> &'a [SourceLine] {
         self.recipe_rule.map_or(&[], |rule| &rule.recipes)
     }
+
+    pub(crate) fn inference(&self) -> Option<&'a crate::reader::Inference> {
+        self.recipe_rule.and_then(|rule| rule.inference.as_ref())
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -42,6 +46,10 @@ enum Visit {
 
 impl<'a> Graph<'a> {
     pub fn from_makefile(makefile: &'a Makefile) -> Result<Self, Error> {
+        Self::for_targets(makefile, &[])
+    }
+
+    pub fn for_targets(makefile: &'a Makefile, targets: &'a [String]) -> Result<Self, Error> {
         let mut graph = Self {
             nodes: Vec::new(),
             indices: HashMap::new(),
@@ -52,7 +60,11 @@ impl<'a> Graph<'a> {
                 graph.add_rule(rule)?;
             }
         }
-        graph.default_build_order = graph.check_cycles()?;
+        let mut roots: Vec<_> = targets.iter().map(|target| graph.intern(target)).collect();
+        if roots.is_empty() && !graph.nodes.is_empty() {
+            roots.push(0);
+        }
+        graph.default_build_order = graph.check_cycles(&roots)?;
         Ok(graph)
     }
 
@@ -123,13 +135,15 @@ impl<'a> Graph<'a> {
         })
     }
 
-    fn check_cycles(&self) -> Result<Vec<usize>, Error> {
+    fn check_cycles(&self, roots: &[usize]) -> Result<Vec<usize>, Error> {
         let mut visits = vec![Visit::Unseen; self.nodes.len()];
         let mut default_build_order = Vec::new();
         // Each stack frame records a node and the next edge to visit. Use a
         // heap-backed stack so a long dependency chain cannot exhaust the call stack.
         let mut stack = Vec::new();
-        for root in 0..self.nodes.len() {
+        let selected = roots.iter().copied().map(|root| (root, true));
+        let remaining = (0..self.nodes.len()).map(|root| (root, false));
+        for (root, build) in selected.chain(remaining) {
             if !matches!(visits[root], Visit::Unseen) {
                 continue;
             }
@@ -138,8 +152,7 @@ impl<'a> Graph<'a> {
             while let Some((node, next_edge)) = stack.last_mut() {
                 let Some(edge) = self.nodes[*node].prerequisites.get(*next_edge) else {
                     visits[*node] = Visit::Done;
-                    // The first declared target is interned before any prerequisite.
-                    if root == 0 {
+                    if build {
                         default_build_order.push(*node);
                     }
                     stack.pop();

@@ -14,12 +14,7 @@ pub(crate) fn modified(name: &str) -> Result<Option<SystemTime>, String> {
         .map_err(|error| format!("'{name}': modification time: {error}"))
 }
 
-pub(crate) fn out_of_date(
-    target: Option<SystemTime>,
-    mut prerequisites: impl Iterator<Item = Option<SystemTime>>,
-) -> bool {
+pub(crate) fn newer(target: Option<SystemTime>, prerequisite: Option<SystemTime>) -> bool {
     // A prerequisite successfully made without a file is newer than its dependents.
-    target.is_none_or(|target| {
-        prerequisites.any(|prerequisite| prerequisite.is_none_or(|modified| modified > target))
-    })
+    target.is_none_or(|target| prerequisite.is_none_or(|modified| modified > target))
 }

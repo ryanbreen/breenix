@@ -168,8 +168,16 @@ fn macro_precedence_env_e() {
         ("environment", &[][..], "<makefile>\n"),
         ("environment", &["-e"][..], "<environment>\n"),
         ("", &["-e"][..], "<>\n"),
-        ("environment", &["BMAKE_TEST_ORIGIN=command"][..], "<command>\n"),
-        ("environment", &["-e", "BMAKE_TEST_ORIGIN=command"][..], "<command>\n"),
+        (
+            "environment",
+            &["BMAKE_TEST_ORIGIN=command"][..],
+            "<command>\n",
+        ),
+        (
+            "environment",
+            &["-e", "BMAKE_TEST_ORIGIN=command"][..],
+            "<command>\n",
+        ),
     ] {
         let output = project
             .command()
@@ -284,9 +292,7 @@ fn self_referencing_macro_is_error_not_panic() {
         ("A = $(A)\n", "A -> A"),
         ("A = ${B}\nB = $(A)\n", "A -> B -> A"),
     ] {
-        let project = Project::new(&format!(
-            "{definitions}all:\n\t@printf '%s' '$(A)'\n"
-        ));
+        let project = Project::new(&format!("{definitions}all:\n\t@printf '%s' '$(A)'\n"));
         let line = definitions.lines().count();
         project.expect_error(&format!("project.mk:{line}:"), cycle);
     }

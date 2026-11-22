@@ -163,3 +163,14 @@ for the 25.5 units.
 bcc emits AMD64 assembly for the 25.5 scalar subset. Variadic function
 definitions and `va_list` operations follow in 25.7b2, x87 `long double`
 lowering in 25.7b3, and AArch64 scalar code generation in A3.
+
+## bmake 25.6a2
+
+| Feature | Specification |
+| --- | --- |
+| Delayed expansion, substitution and assignment precedence | POSIX.1-2024 make, “Macros” and “Environment Variables”. Rule headers expand as read. Recipes expand when run. The `-e` option gives environment definitions precedence over makefile definitions. |
+| Automatic variables | POSIX.1-2024 make, “Internal Macros” and “Inference Rules”. The runner uses the inferred source and stem where applicable and compares prerequisite and target timestamps for `$?`. |
+| Includes and makefile selection | POSIX.1-2024 make, “Include Lines”, “Options” and “Extended Description”. Include paths resolve from the working directory and are read in order. The GNU make manual's “Summary of Options” specifies `-C`. |
+
+25.6c covers remaking includes, archive member timestamps, immediate
+assignments and recursive `MAKEFLAGS`.

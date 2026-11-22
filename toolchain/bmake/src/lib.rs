@@ -4,10 +4,15 @@
 
 use std::{fmt, path::Path, sync::Arc};
 
+mod cli;
 pub mod graph;
+mod inference;
+pub mod r#macro;
 pub mod reader;
-pub mod run;
+mod run;
 mod time;
+
+pub use cli::execute;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Location {
