@@ -315,7 +315,11 @@ def tbss_takes_no_file_bytes(clang, bld, elfcheck, root):
                     "PT_TLS must cover the initialization image and the aligned zero-fill")
             require(tbss[1] == 8 and tbss[5] == length and tbss[3] == tdata[3] + 32,
                     "the TLS zero-fill must be a separate aligned NOBITS section")
-            require(rw[2] + rw[5] == tdata[4] + 8 and bss[3] == (tdata[3] + 4095) & -4096
+            # userspace/programs/linker.ld:30–46 puts .tdata after .data,
+            # then TLS-only .tbss, then .bss aligned to 4 KiB. The last
+            # file-backed section in this fixture's data load is .tdata.
+            file_backed_end = tdata[3] + tdata[5]
+            require(rw[2] + rw[5] == tdata[4] + 8 and bss[3] == (file_backed_end + 4095) & -4096
                     and rw[3] + rw[6] == bss[3] + 17,
                     ".tbss must not extend the load file range or move ordinary BSS")
             require(struct.unpack_from("<Q", blob, tdata[4])[0] == 0xa1b2c3d4e5f60708,
