@@ -307,3 +307,28 @@ fn substitute(value: &str, old: &str, new: &str) -> String {
     }
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn archive_automatic_variables() {
+        let (target, member) = crate::inference::archive_parts("lib.a(member.o)");
+        let automatic = Automatic {
+            target,
+            member,
+            ..Automatic::default()
+        };
+        let location = Location {
+            path: Path::new("project.mk").into(),
+            line: 2,
+        };
+        assert_eq!(
+            Macros::default()
+                .expand("$@|$%", &location, &automatic)
+                .unwrap(),
+            "lib.a|member.o"
+        );
+    }
+}

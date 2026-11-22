@@ -218,10 +218,8 @@ fn automatic_variables() {
         ".src.obj:\n",
         "\t@printf 'inferred %s|%s|%s|%s\\n' '$@' '$<' '$?' '$*'\n",
         "\t@cp -p '$<' '$@'\n",
-        "all.obj: older equal newer sub/item.obj lib.a(member.o)\n",
+        "all.obj: older equal newer sub/item.obj\n",
         "\t@printf 'explicit %s|%s|%s|%s\\n' '$@' '$?' '$*' '$(?F)'\n",
-        "lib.a(member.o):\n",
-        "\t@printf 'archive %s|%s\\n' '$@' '$%'\n",
     ));
     fs::create_dir(project.0.join("sub")).unwrap();
     project.fixture("all.obj", "", 10);
@@ -233,8 +231,7 @@ fn automatic_variables() {
         project.build(),
         concat!(
             "inferred sub/item.obj|sub/item.src|sub/item.src|sub/item\n",
-            "archive lib.a|member.o\n",
-            "explicit all.obj|newer sub/item.obj lib.a(member.o)|all|newer item.obj lib.a(member.o)\n",
+            "explicit all.obj|newer sub/item.obj|all|newer item.obj\n",
         ),
     );
 }
@@ -295,5 +292,285 @@ fn self_referencing_macro_is_error_not_panic() {
         let project = Project::new(&format!("{definitions}all:\n\t@printf '%s' '$(A)'\n"));
         let line = definitions.lines().count();
         project.expect_error(&format!("project.mk:{line}:"), cycle);
+    }
+}
+
+#[test]
+fn suffix_inference_builds_object() {
+    let project = Project::new(concat!(
+        ".POSIX:\n",
+        "CC = /bin/sh record-cc.sh\n",
+        "AS = /bin/sh record-as.sh\n",
+        ".c.o:\n",
+        "\t@$(CC) -c $< -o $@\n",
+        "all: item.o app helper asm.o\n",
+    ));
+    project.fixture(
+        "record-cc.sh",
+        "printf '%s\\n' \"$*\" >> cc.log\n: > \"$4\"\n",
+        0,
+    );
+    project.fixture(
+        "record-as.sh",
+        "printf '%s\\n' \"$*\" > as.log\n: > \"$2\"\n",
+        0,
+    );
+    project.fixture("item.c", "int item;\n", 0);
+    project.fixture("app.c", "int main(void) { return 0; }\n", 0);
+    project.fixture("helper.sh", "echo helper\n", 0);
+    project.fixture("asm.s", "# assembly input\n", 0);
+    let output = project.build();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        fs::read_to_string(project.0.join("cc.log")).unwrap(),
+        "-c item.c -o item.o\n-O 1 -o app app.c\n"
+    );
+    assert_eq!(
+        fs::read_to_string(project.0.join("as.log")).unwrap(),
+        "-o asm.o asm.s\n"
+    );
+    for name in ["item.o", "app", "helper", "asm.o"] {
+        assert!(project.0.join(name).is_file(), "{name}");
+    }
+    assert_eq!(
+        fs::read_to_string(project.0.join("helper")).unwrap(),
+        "echo helper\n"
+    );
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(
+        fs::metadata(project.0.join("helper"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o111,
+        0o111
+    );
+
+    let project = Project::new(concat!(
+        ".SUFFIXES:\n",
+        ".SUFFIXES: .two .one .out\n",
+        ".one.out: ; @printf one > $@\n",
+        ".two.out: ; @printf two > $@\n",
+        "all: preferred.out\n",
+    ));
+    project.fixture("preferred.one", "", 0);
+    project.fixture("preferred.two", "", 0);
+    expect_stdout(project.build(), "");
+    assert_eq!(
+        fs::read_to_string(project.0.join("preferred.out")).unwrap(),
+        "two"
+    );
+    project.fixture("missing.c", "", 0);
+    let output = project
+        .command()
+        .args(["-f", "project.mk", "missing.o"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(!project.0.join("missing.o").exists());
+}
+
+#[test]
+fn phony_always_runs() {
+    let project = Project::new(concat!(
+        ".PHONY: all visit\n",
+        "all: visit fallback\n",
+        "\t@printf 'all\\n'\n",
+        "visit:\n",
+        "\t@printf 'visit\\n'\n",
+        "fallback: future\n",
+        ".DEFAULT: ; @printf 'default %s|%s\\n' '$@' '$<'\n",
+    ));
+    project.fixture("all", "", 0);
+    project.fixture("visit", "", 0);
+    for _ in 0..2 {
+        expect_stdout(project.build(), "visit\ndefault future|future\nall\n");
+    }
+    assert_eq!(fs::read_to_string(project.0.join("visit")).unwrap(), "");
+}
+
+#[test]
+fn dry_run_prints_without_running() {
+    let project = Project::new(
+        "all: input\n\t@printf 'new\\n' > all\ninput:\n\t@printf 'input\\n' > input\n",
+    );
+    project.fixture("all", "current\n", 10);
+    let output = project
+        .command()
+        .args(["-n", "-f", "project.mk"])
+        .output()
+        .unwrap();
+    expect_stdout(output, "printf 'input\\n' > input\nprintf 'new\\n' > all\n");
+    assert!(!project.0.join("input").exists());
+    assert_eq!(
+        fs::read_to_string(project.0.join("all")).unwrap(),
+        "current\n"
+    );
+}
+
+#[test]
+fn keep_going_builds_independent_targets_and_exits_2() {
+    let project = Project::new(concat!(
+        "all: dependent independent also\n",
+        "dependent: broken\n",
+        "\t@printf wrong > dependent\n",
+        "broken:\n",
+        "\t@exit 17\n",
+        "\t@printf wrong > broken\n",
+        "independent:\n",
+        "\t@printf built > independent\n",
+        "also: missing\n",
+        "\t@printf wrong > also\n",
+    ));
+    let output = project
+        .command()
+        .args(["-k", "-f", "project.mk"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("target 'broken': recipe exited with status 17"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("no rule to make prerequisite 'missing'"),
+        "{stderr}"
+    );
+    assert_eq!(
+        fs::read_to_string(project.0.join("independent")).unwrap(),
+        "built"
+    );
+    for name in ["all", "dependent", "broken", "also"] {
+        assert!(!project.0.join(name).exists(), "{name}");
+    }
+}
+
+#[test]
+fn ignore_errors_continues() {
+    for (special, flags) in [
+        ("", &["-i"][..]),
+        (".IGNORE: all\n", &[]),
+        (".IGNORE:\n", &[]),
+    ] {
+        let project = Project::new(&format!(
+            "{special}all:\n\t@exit 17\n\t@printf continued > all\n"
+        ));
+        let output = project
+            .command()
+            .args(flags)
+            .args(["-f", "project.mk"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("status 17"));
+        assert_eq!(
+            fs::read_to_string(project.0.join("all")).unwrap(),
+            "continued"
+        );
+    }
+}
+
+#[test]
+fn silent_suppresses_echo() {
+    for (special, flags) in [
+        ("", &["-s"][..]),
+        (".SILENT: all\n", &[]),
+        (".SILENT:\n", &[]),
+    ] {
+        let project = Project::new(&format!("{special}all:\n\tprintf 'ran\\n'\n"));
+        let output = project
+            .command()
+            .args(flags)
+            .args(["-f", "project.mk"])
+            .output()
+            .unwrap();
+        expect_stdout(output, "ran\n");
+    }
+}
+
+#[test]
+fn precious_preserves_an_interrupted_output() {
+    let project = Project::new(concat!(
+        ".PRECIOUS: keep\n",
+        "keep discard:\n",
+        "\t@printf partial > $@; kill -TERM $$$$\n",
+    ));
+    let output = project
+        .command()
+        .args(["-k", "-f", "project.mk", "keep", "discard"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    for target in ["keep", "discard"] {
+        assert!(
+            stderr.contains(&format!(
+                "target '{target}': recipe terminated by signal 15"
+            )),
+            "{stderr}"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(project.0.join("keep")).unwrap(),
+        "partial"
+    );
+    assert!(!project.0.join("discard").exists());
+}
+
+#[test]
+fn unsupported_25_6c_construct_is_located_error() {
+    for (makefile, line, construct) in [
+        ("all: lib.a(member.o)\n", 1, "lib.a(member.o)"),
+        ("\nlib.a(member.o):\n\t@printf wrong > ran\n", 2, "lib.a(member.o)"),
+        ("X ::= value\nall:\n", 1, "::="),
+        ("X :::= value\nall:\n", 1, ":::="),
+        ("all: .WAIT\n", 1, ".WAIT"),
+        (".WAIT:\nall:\n", 1, ".WAIT"),
+        ("all:\n.NOTPARALLEL:\n", 2, ".NOTPARALLEL"),
+        ("MAKEFLAGS = -s\nall:\n", 1, "MAKEFLAGS"),
+        ("all:\n\t@printf '%s' '$(MAKEFLAGS)'\n", 2, "MAKEFLAGS"),
+        (
+            "all:\n\t@printf wrong > ran\n-include generated.mk\ngenerated.mk:\n\t@printf wrong > generated.mk\n",
+            3,
+            "generated.mk",
+        ),
+    ] {
+        let project = Project::new(makefile);
+        let output = project.build();
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains(&format!("project.mk:{line}:")), "{stderr}");
+        assert!(stderr.contains(construct), "{stderr}");
+        assert!(stderr.contains("not supported until 25.6c"), "{stderr}");
+        assert!(!project.0.join("ran").exists());
+        assert!(!project.0.join("generated.mk").exists());
+    }
+
+    let project = Project::new("all:\n\t@printf wrong > ran\n");
+    for (arguments, variable, location, construct) in [
+        (&["-j2"][..], None, "<command line>:1:", "-j"),
+        (
+            &["lib.a(member.o)"][..],
+            None,
+            "<command line>:1:",
+            "lib.a(member.o)",
+        ),
+        (&[][..], Some("-k"), "<environment>:1:", "MAKEFLAGS"),
+    ] {
+        let mut command = project.command();
+        command.args(["-f", "project.mk"]).args(arguments);
+        if let Some(value) = variable {
+            command.env("MAKEFLAGS", value);
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains(location), "{stderr}");
+        assert!(stderr.contains(construct), "{stderr}");
+        assert!(stderr.contains("not supported until 25.6c"), "{stderr}");
+        assert!(!project.0.join("ran").exists());
     }
 }
