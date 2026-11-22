@@ -1,4 +1,4 @@
-//! Makefile reader and dependency graph for Breenix's serial make subset.
+//! Makefile reader, dependency graph and recipe runner for Breenix's serial make subset.
 
 #![forbid(unsafe_code)]
 
@@ -6,6 +6,8 @@ use std::{fmt, path::Path, sync::Arc};
 
 pub mod graph;
 pub mod reader;
+pub mod run;
+mod time;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Location {

@@ -10,11 +10,13 @@ use std::collections::HashMap;
 pub struct Graph<'a> {
     nodes: Vec<Node<'a>>,
     indices: HashMap<&'a str, usize>,
+    default_build_order: Vec<usize>,
 }
 
 #[derive(Debug)]
 pub struct Node<'a> {
-    name: &'a str,
+    pub(crate) name: &'a str,
+    pub(crate) has_rule: bool,
     prerequisites: Vec<Edge<'a>>,
     recipe_rule: Option<&'a Rule>,
 }
@@ -43,13 +45,14 @@ impl<'a> Graph<'a> {
         let mut graph = Self {
             nodes: Vec::new(),
             indices: HashMap::new(),
+            default_build_order: Vec::new(),
         };
         for entry in &makefile.entries {
             if let Entry::Rule(rule) = entry {
                 graph.add_rule(rule)?;
             }
         }
-        graph.check_cycles()?;
+        graph.default_build_order = graph.check_cycles()?;
         Ok(graph)
     }
 
@@ -58,12 +61,22 @@ impl<'a> Graph<'a> {
     }
 
     pub fn prerequisites(&self, name: &str) -> Option<impl Iterator<Item = &'a str> + '_> {
-        Some(
-            self.node(name)?
-                .prerequisites
-                .iter()
-                .map(|edge| self.nodes[edge.target].name),
-        )
+        Some(self.prerequisites_of(self.node(name)?))
+    }
+
+    pub(crate) fn prerequisites_of<'g>(
+        &'g self,
+        node: &'g Node<'a>,
+    ) -> impl Iterator<Item = &'a str> + 'g {
+        node.prerequisites
+            .iter()
+            .map(|edge| self.nodes[edge.target].name)
+    }
+
+    pub(crate) fn default_build_order(&self) -> impl Iterator<Item = &Node<'a>> {
+        self.default_build_order
+            .iter()
+            .map(|&index| &self.nodes[index])
     }
 
     fn add_rule(&mut self, rule: &'a Rule) -> Result<(), Error> {
@@ -75,6 +88,7 @@ impl<'a> Graph<'a> {
             .collect();
         for target in targets {
             let node = &mut self.nodes[target];
+            node.has_rule = true;
             if !rule.recipes.is_empty() {
                 if let Some(previous) = node.recipe_rule {
                     if !std::ptr::eq(previous, rule) {
@@ -101,6 +115,7 @@ impl<'a> Graph<'a> {
             let index = self.nodes.len();
             self.nodes.push(Node {
                 name,
+                has_rule: false,
                 prerequisites: Vec::new(),
                 recipe_rule: None,
             });
@@ -108,8 +123,9 @@ impl<'a> Graph<'a> {
         })
     }
 
-    fn check_cycles(&self) -> Result<(), Error> {
+    fn check_cycles(&self) -> Result<Vec<usize>, Error> {
         let mut visits = vec![Visit::Unseen; self.nodes.len()];
+        let mut default_build_order = Vec::new();
         // Each stack frame records a node and the next edge to visit. Use a
         // heap-backed stack so a long dependency chain cannot exhaust the call stack.
         let mut stack = Vec::new();
@@ -122,6 +138,10 @@ impl<'a> Graph<'a> {
             while let Some((node, next_edge)) = stack.last_mut() {
                 let Some(edge) = self.nodes[*node].prerequisites.get(*next_edge) else {
                     visits[*node] = Visit::Done;
+                    // The first declared target is interned before any prerequisite.
+                    if root == 0 {
+                        default_build_order.push(*node);
+                    }
                     stack.pop();
                     continue;
                 };
@@ -146,6 +166,6 @@ impl<'a> Graph<'a> {
                 }
             }
         }
-        Ok(())
+        Ok(default_build_order)
     }
 }
