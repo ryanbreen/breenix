@@ -123,7 +123,20 @@
     {
       "id": "project",
       "title": "A multi-file C and assembly project: build, no-op and header-triggered rebuild",
-      "cases": []
+      "cases": [
+        {
+          "id": "builds-and-runs",
+          "title": "Make builds and runs the C and assembly project from clean inputs"
+        },
+        {
+          "id": "noop-rebuild",
+          "title": "A second make runs no recipe and preserves output bytes and mtimes"
+        },
+        {
+          "id": "header-rebuild",
+          "title": "A newer header rebuilds only its dependent objects and the executable"
+        }
+      ]
     },
     {
       "id": "bootstrap",
