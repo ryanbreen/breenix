@@ -471,6 +471,7 @@ STD_BINARIES=(
     "suite-console"
     "suite-users"
     "suite-transfer-fixture"
+    "suite-toolchain"
     "bput"
     "users-exec_test"
     "users-login-probe_test"

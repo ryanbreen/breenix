@@ -44,6 +44,63 @@ machine = load_script('metal-machine')
 boot = load_script('metal-boot')
 
 
+class ToolchainRootTest(unittest.TestCase):
+    def test_only_toolchain_suite_admits_fixture_root(self):
+        class ReachedStaging(Exception):
+            pass
+
+        for mode, suite, disk, refusal in (
+            ('default', None, None, 'a toolchain fixture needs a suite boot'),
+            ('persistent-install', None, None, 'a toolchain fixture needs a suite boot'),
+            ('probe', None, 'install', 'a toolchain fixture needs a suite boot'),
+            ('suite', 'toolchain', 'install', 'a toolchain fixture cannot be an install image'),
+            ('suite', 'files-io', None, 'a toolchain fixture needs the toolchain suite'),
+            ('suite', 'toolchain', None, None),
+        ):
+            with self.subTest(mode=mode, suite=suite, disk=disk), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                args = SimpleNamespace(id='20261121T000000Z-metal', mode=mode, suite=suite, disk=disk,
+                                       payload='image', commit='a' * 40, inject=None)
+                with patch.object(m, 'STATE', directory / 'state'), \
+                     patch.object(m, 'boot_dir', return_value=directory), \
+                     patch.object(m, 'stage_dir', return_value=directory / 'stage'), \
+                     patch.object(m, 'load_site', return_value={}):
+                    driver = boot.Driver(args)
+                inputs = driver.stage / 'inputs'
+                inputs.mkdir(parents=True)
+                (inputs / 'ready').touch()
+                seed = inputs / 'ext2.img'
+                seed.write_bytes(b'ordinary root')
+                fixture = inputs / 'toolchain-root.img'
+                fixture.write_bytes(b'toolchain fixture root')
+                definition = inputs / 'definition/docs/suites'
+                definition.mkdir(parents=True)
+                if suite:
+                    m.write_json(definition / (suite + '.json'), {'id': suite})
+                root_facts = boot.metal_prebuilt.facts(fixture)
+                m.write_json(inputs / 'build.json', {
+                    'commit': args.commit, 'profile': 'production', 'features': [], 'suite': suite,
+                    'toolchain': {'commit': args.commit, 'arch': 'x86_64', 'manifestSha256': 'b' * 64,
+                                  'root': root_facts},
+                })
+                # Run the real input-admission path up to the first root consumer.
+                with patch.object(boot.metal_migration, 'in_progress', return_value=False), \
+                     patch.object(driver, 'prepare_install', side_effect=ReachedStaging), \
+                     patch.object(boot.metal_persist, 'layout', return_value=None), \
+                     patch.object(boot.metal_root, 'stage_root', side_effect=ReachedStaging):
+                    if refusal:
+                        with self.assertRaisesRegex(boot.Finish, refusal) as rejected:
+                            driver.prepare_payload()
+                        self.assertEqual(rejected.exception.status, m.EXIT_CANCELLED)
+                        self.assertEqual(seed.read_bytes(), b'ordinary root')
+                        self.assertEqual(fixture.read_bytes(), b'toolchain fixture root')
+                    else:
+                        with self.assertRaises(ReachedStaging):
+                            driver.prepare_payload()
+                        self.assertEqual(seed.read_bytes(), b'toolchain fixture root')
+                        self.assertEqual(driver.delivery['build']['ext2'], root_facts)
+
+
 class StateTest(unittest.TestCase):
     """Points the library's state and run folders at a private temporary directory."""
 

@@ -20,6 +20,7 @@
 #   --root-fs ext2|breenfs  root filesystem (default ext2)
 #   --power-cut-after S | --power-cut-window node-writes|first-flush|between-rings | --breenfs-bit-flip
 #                        headless filesystem power-cut/writer on a disposable BreenFS root
+#   --milestone EFFORT/ID  score a built suite boot against that commit's measured categories
 #   --case CATEGORY[/CASE]       for --mode suite: run one category or case (not full-suite evidence; not filed in Vigil)
 #   --suite ID           for --mode suite: the effort suite (docs/suites/ID.json) run as PID 1, /sbin/suite-ID
 #                        console selects --gpu-gl for its display-owner and scanout cases
@@ -80,6 +81,7 @@ MODE=tests
 ROOT_FS=ext2
 PROGRAM=
 SUITE=
+MILESTONE=
 TRANSFER_ARTIFACT=
 TRANSFER_RUN_DIR=
 ONLY=
@@ -97,7 +99,7 @@ COLLAB_HOST_BIND=${BREENIX_COLLAB_HOST_BIND:-0.0.0.0}
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --mode|--root-fs|--program|--suite|--transfer-artifact|--case|--screen-capture|--screen-checkpoints|--pace|--serial-log|--power-cut-after|--power-cut-window|--idle-exit|--gate-timeout|--qmp|--accel|--cpus|--cpu)
+        --mode|--root-fs|--program|--suite|--milestone|--transfer-artifact|--case|--screen-capture|--screen-checkpoints|--pace|--serial-log|--power-cut-after|--power-cut-window|--idle-exit|--gate-timeout|--qmp|--accel|--cpus|--cpu)
             [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; } ;;
     esac
     case "$1" in
@@ -110,6 +112,7 @@ while [ "$#" -gt 0 ]; do
             COLLAB_HOST=1; COLLAB_HOST_PORT=7890; shift
             if [ "$#" -gt 0 ] && [[ "$1" != --* ]]; then COLLAB_HOST_PORT="$1"; shift; fi ;;
         --suite) SUITE="$2"; shift 2 ;;
+        --milestone) [ -n "$2" ] || { echo "--milestone needs EFFORT/ID" >&2; exit 2; }; MILESTONE="$2"; shift 2 ;;
         --transfer-artifact) [ -n "$2" ] || { echo "--transfer-artifact needs a file" >&2; exit 2; }; TRANSFER_ARTIFACT="$2"; shift 2 ;;
         --case) [ -n "$2" ] || { echo "--case needs a category or category/case id" >&2; exit 2; }; ONLY="$2"; shift 2 ;;
         --screen-checkpoints) SCREEN_CHECKPOINTS="$2"; shift 2 ;;
@@ -233,7 +236,16 @@ elif [ -n "$TRANSFER_ARTIFACT" ]; then
     echo "--transfer-artifact needs --suite transfer-fixture" >&2
     exit 2
 fi
-if [ "$BUILD_ONLY" -eq 0 ] && [ "$MODE" = suite ] && [ "$SUITE" != transfer-fixture ] && [ -z "$ONLY" ] && [ -z "${BREENIX_SUITE_ATTEMPT:-}" ]; then
+if [ -n "$MILESTONE" ] && { [ "$MODE" != suite ] || [ -n "$ONLY" ] || [ "$BUILD" -ne 1 ] ||
+        [[ ",$SUITE," == *,transfer-fixture,* ]]; }; then
+    echo "--milestone needs a built suite boot without --case or transfer-fixture" >&2
+    exit 2
+fi
+if [[ ",$SUITE," == *,toolchain,* ]] && [ "$BUILD" -ne 1 ]; then
+    echo "toolchain needs a built suite boot" >&2
+    exit 2
+fi
+if [ -z "$MILESTONE" ] && [ "$BUILD_ONLY" -eq 0 ] && [ "$MODE" = suite ] && [ "$SUITE" != transfer-fixture ] && [ -z "$ONLY" ] && [ -z "${BREENIX_SUITE_ATTEMPT:-}" ]; then
     exec python3 "$ROOT/scripts/suite-sequence.py" run "$SUITE" "$SERIAL_LOG" bash "$ROOT/scripts/boot-interactive.sh" "${BOOT_ARGS[@]}"
 fi
 if [ -n "$ONLY" ]; then
@@ -367,6 +379,10 @@ if [ "$SUITE" = transfer-fixture ] && [ "$BUILD_ONLY" -eq 0 ] && [[ "$COMMIT_IDE
     echo "transfer-fixture evidence needs a clean checkout" >&2
     exit 2
 fi
+if [ -n "$MILESTONE" ] && [[ "$COMMIT_IDENTITY" != *' dirty=0' ]]; then
+    echo "--milestone needs a clean checkout" >&2
+    exit 2
+fi
 echo "==> Commit: $COMMIT_IDENTITY"
 KERNEL="$ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 DISK="$ROOT/target/ext2-aarch64.img"
@@ -478,7 +494,23 @@ else
 fi
 WRITABLE="$(dirname "$SERIAL_LOG")/ext2-writable.img"
 if [ -n "$TRANSFER_RUN_DIR" ]; then WRITABLE="$TRANSFER_RUN_DIR/ext2-writable.img"; fi
-cp "$DISK" "$WRITABLE"
+TOOLCHAIN_RECORD=
+if [[ ",$SUITE," == *,toolchain,* ]]; then
+    echo "==> Building and staging the reference toolchain corpus"
+    (
+        toolchain_scratch=$(mktemp -d "$(dirname "$WRITABLE")/.toolchain.XXXXXX")
+        trap 'rm -rf "$toolchain_scratch"' EXIT
+        bundle="$toolchain_scratch/bundle"
+        run_build "$ROOT/scripts/build-toolchain.sh" --arch aarch64 --output "$bundle" \
+            --libc "$ROOT/libs/libbreenix-libc/target/aarch64-breenix/release/libc.a"
+        "$ROOT/scripts/create_ext2_disk.sh" --arch aarch64 --stage-from "$DISK" --output "$WRITABLE" \
+            --suite "$SUITE" --toolchain-bundle "$bundle"
+        cp "$bundle/build.json" "$SERIAL_LOG.toolchain-build.json"
+    )
+    TOOLCHAIN_RECORD="$SERIAL_LOG.toolchain-build.json"
+else
+    cp "$DISK" "$WRITABLE"
+fi
 TRANSFER_PORT=
 if [ -n "$TRANSFER_RUN_DIR" ]; then
     TRANSFER_SHA=${COMMIT_IDENTITY%% *}
@@ -737,6 +769,11 @@ if [ "$MODE" = program ] && [ -n "$TERMINAL_PROFILE" ]; then
 fi
 WATCH_READY_ARGS=()
 [ "$UNTIL_DESKTOP_READY" -eq 0 ] || WATCH_READY_ARGS=(--until-desktop-ready)
+[ -z "$MILESTONE" ] || WATCH_READY_ARGS+=(--milestone "$MILESTONE" --commit "${COMMIT_IDENTITY%% *}")
+if [ -n "$TOOLCHAIN_RECORD" ] && [ -z "$ONLY" ]; then
+    WATCH_READY_ARGS+=(--toolchain-build "$TOOLCHAIN_RECORD")
+    [ -n "$MILESTONE" ] || WATCH_READY_ARGS+=(--commit "${COMMIT_IDENTITY%% *}")
+fi
 python3 "$ROOT/scripts/watch-qemu.py" ${WATCH_READY_ARGS[@]+"${WATCH_READY_ARGS[@]}"} --serial "$SERIAL_LOG" --mode "$WATCH_MODE" \
     --suite "$SUITE" --case "$ONLY" --idle-exit "$IDLE_EXIT" --gate-timeout "$GATE_TIMEOUT" --disk "$WRITABLE" -- python3 "$ROOT/scripts/qemu-arm64.py" "$QEMU" \
     -rtc base=utc "${QEMU_PROFILE_ARGS[@]}" -m 512 -smp "$CPUS" \

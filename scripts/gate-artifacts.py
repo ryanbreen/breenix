@@ -41,7 +41,7 @@ def digest(path):
 def key(repo):
     result = hashlib.sha256(b'breenix-x86-userspace-v1\0')
     paths = subprocess.check_output(['git', '-C', str(repo), 'ls-files', '-z', '--',
-        'userspace', 'libs', 'fonts', 'vendor/busybox', 'xtask',
+        'userspace', 'libs', 'toolchain/corpus/cases', 'fonts', 'vendor/busybox', 'xtask',
         'rust-fork.toml', 'scripts/rust-fork.sh', 'scripts/gate-artifacts.py', 'scripts/create_ext2_disk.sh', 'scripts/install-libc-busybox.sh',
         'scripts/install-layout.sh', 'scripts/check-layout.py',
         '.cargo', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'x86_64-breenix.json',
@@ -290,7 +290,7 @@ def metal_source_times(repo, targets):
     record = targets / 'source-times.json'
     previous = json.loads(record.read_text()) if record.exists() else {}
     names = subprocess.check_output(['git', '-C', str(repo), 'ls-files', '-z', '--',
-                                    'userspace', 'libs', '.cargo', 'Cargo.toml', 'Cargo.lock',
+                                    'userspace', 'libs', 'toolchain/corpus/cases', '.cargo', 'Cargo.toml', 'Cargo.lock',
                                     'rust-fork.toml', 'rust-toolchain.toml',
                                     'x86_64-breenix.json', 'x86_64-breenix-c.json', *CONSOLE_PICTURE_SOURCES]).split(b'\0')
     inputs = {repo / os.fsdecode(name) for name in names if name}

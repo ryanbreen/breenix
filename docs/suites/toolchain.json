@@ -8,7 +8,16 @@
     {
       "id": "inputs",
       "title": "The sysroot inventory and the cross-built reference corpus",
-      "cases": []
+      "cases": [
+        {
+          "id": "sysroot-manifest",
+          "title": "Staged toolchain inputs match this image's build record"
+        },
+        {
+          "id": "reference-corpus-runs",
+          "title": "Each reference ELF produces its expected stdout and exit status"
+        }
+      ]
     },
     {
       "id": "assembler",

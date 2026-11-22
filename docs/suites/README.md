@@ -1839,6 +1839,30 @@ no other error.
 These per-boot verdicts supply the `aimed-cuts`, `random-cuts` and `bit-flips`
 host records. The acceptance set supplies the complete category result.
 
+## Native C toolchain
+
+The `toolchain/sysroot-oracle` milestone measures the `inputs` category.
+The reference builder links the clause-based C corpus against Breenix's C ABI
+archive with the userspace linker script. It takes absolute
+`BREENIX_TOOLCHAIN_CLANG` and `BREENIX_TOOLCHAIN_LLD` paths and the corresponding
+`BREENIX_TOOLCHAIN_CLANG_SHA256` and `BREENIX_TOOLCHAIN_LLD_SHA256` executable
+pins from the producer's environment. On metal these may come from the boot
+host's private `host.env`; the paths identify tools in the build container.
+The Clang tool directory also supplies the LLVM executables used to audit the
+metal builder's private libc archive.
+
+Suite selection stages the bundle at `/opt/breenix-dev/25.2/` and the corpus
+at `/usr/share/breenix/toolchain/`. ARM64 stages a writable copy of the ext2
+seed. Metal delivers a separate fixture root for the selected suite.
+The guest checks the staged file set and digests against the manifest and
+executes the listed reference ELFs against their independent `.expect` files. The scorer
+compares the guest's manifest digest with the retained build record for the
+boot's commit. Other toolchain categories remain planned.
+
+```bash
+scripts/boot-interactive.sh --mode suite --suite toolchain --milestone toolchain/sysroot-oracle
+```
+
 ## Developer SDK
 
 `sdk` measures the Developer SDK effort in `docs/efforts/path.json`: our own applications

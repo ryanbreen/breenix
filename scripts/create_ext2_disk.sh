@@ -13,6 +13,11 @@
 #   ./scripts/create_ext2_disk.sh
 #   ./scripts/create_ext2_disk.sh --arch aarch64
 #   ./scripts/create_ext2_disk.sh --arch aarch64 --size 128
+#   ./scripts/create_ext2_disk.sh --stage-from SEED --output WORK_IMAGE --suite ID[,ID...]
+#       [--arch aarch64] [--toolchain-bundle BUNDLE]
+#
+# Suite staging makes a separate work image from the ordinary seed and
+# reserves target/ext2*.img and testdata/ext2*.img for the seed builder.
 #
 # --size below what the current userspace binaries + fonts payload needs is
 # rejected up front with the computed shortfall (#850) rather than failing
@@ -32,8 +37,17 @@ SIZE_EXPLICIT=0
 
 DNS_SERVER="10.0.2.3"
 ARCH="x86_64"
+STAGE_FROM=
+STAGE_OUTPUT=
+STAGE_SUITE=
+TOOLCHAIN_BUNDLE=
 while [[ $# -gt 0 ]]; do
+    [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; }
     case "$1" in
+        --stage-from) STAGE_FROM="$2"; shift 2 ;;
+        --output) STAGE_OUTPUT="$2"; shift 2 ;;
+        --suite) STAGE_SUITE="$2"; shift 2 ;;
+        --toolchain-bundle) TOOLCHAIN_BUNDLE="$2"; shift 2 ;;
         --arch)
             ARCH="$2"
             shift 2
@@ -48,11 +62,27 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         *)
-            echo "Usage: $0 [--arch x86_64|aarch64] [--size MB]"
+            echo "Usage: $0 [--arch x86_64|aarch64] [--size MB]" >&2
+            echo "       $0 --stage-from SEED --output WORK_IMAGE --suite SUITES [--toolchain-bundle BUNDLE]" >&2
             exit 1
             ;;
     esac
 done
+
+if [ -n "$STAGE_FROM" ]; then
+    [ -n "$STAGE_OUTPUT" ] && [ "$SIZE_EXPLICIT" -eq 0 ] || {
+        echo "--stage-from needs --output and uses the seed's size" >&2
+        exit 2
+    }
+    bundle=()
+    [ -z "$TOOLCHAIN_BUNDLE" ] || bundle=(--toolchain-bundle "$TOOLCHAIN_BUNDLE")
+    exec python3 "$SCRIPT_DIR/toolchain-image.py" stage "$STAGE_FROM" "$STAGE_OUTPUT" \
+        --arch "$ARCH" --suite "$STAGE_SUITE" ${bundle[@]+"${bundle[@]}"}
+fi
+[ -z "$STAGE_OUTPUT$STAGE_SUITE$TOOLCHAIN_BUNDLE" ] || {
+    echo "suite staging options need --stage-from" >&2
+    exit 2
+}
 
 if [[ "$ARCH" == "aarch64" ]]; then
     USERSPACE_DIR="$PROJECT_ROOT/userspace/programs/aarch64"

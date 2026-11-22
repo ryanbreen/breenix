@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DONE = runpy.run_path(str(ROOT / "scripts/wait-boot-done.py"))
 VERDICT = runpy.run_path(str(ROOT / "scripts/suite-verdict.py"))
 SEQUENCE = runpy.run_path(str(ROOT / "scripts/suite-sequence.py"))
+TOOLCHAIN = runpy.run_path(str(ROOT / "scripts/metal/toolchain_evidence.py"))
 
 
 def stop(process):
@@ -142,6 +143,18 @@ def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clo
     return "cancelled"
 
 
+def milestone_scope(suites, milestone):
+    path = json.loads((ROOT / "docs/efforts/path.json").read_text())
+    for effort in path["efforts"]:
+        for item in effort["milestones"]:
+            if effort["id"] + "/" + item["id"] == milestone:
+                suite = item["measure"].get("suite")
+                if suite in suites:
+                    return suite, VERDICT["milestone_categories"](path, milestone, suite)
+                raise ValueError(f"{milestone} does not measure a selected suite")
+    raise ValueError(f"unknown milestone {milestone}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--serial", type=Path, required=True)
@@ -153,12 +166,33 @@ def main():
     parser.add_argument("--suite-hold", type=float, default=float(os.environ.get("BREENIX_SUITE_HOLD", "5")))
     parser.add_argument("--until-desktop-ready", action="store_true")
     parser.add_argument("--disk")
+    parser.add_argument("--milestone")
+    parser.add_argument("--commit")
+    parser.add_argument("--toolchain-build", type=Path)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.idle_exit < 0 or args.gate_timeout <= 0 or args.suite_hold < 0:
         parser.error("idle exit and suite hold must be nonnegative; gate timeout must be positive")
     if args.until_desktop_ready and args.mode != "desktop":
         parser.error("--until-desktop-ready requires desktop mode")
+    suites = args.suite.split(",")
+    scoped, categories, toolchain_build = None, None, None
+    if args.milestone and (args.mode != "suite" or args.only or not args.commit):
+        parser.error("--milestone needs a full suite boot and its commit")
+    if args.commit:
+        current = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
+        if args.commit != current or not re.fullmatch(r"[0-9a-f]{40}", args.commit):
+            parser.error("verdict commit differs from the checkout")
+    try:
+        if args.milestone:
+            scoped, categories = milestone_scope(suites, args.milestone)
+        if args.mode == "suite" and "toolchain" in suites and not args.only:
+            if not args.toolchain_build:
+                raise ValueError("toolchain verdict needs the retained image build record")
+            toolchain_build = json.loads(args.toolchain_build.read_text())
+            TOOLCHAIN["build_identity"](toolchain_build, args.commit, "aarch64")
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if not command:
         parser.error("a QEMU command is required after --")
@@ -187,9 +221,23 @@ def main():
     if args.mode in COMPLETING_MODES:
         clock_ok, clock_reason = clock.verdict()
         print(clock_reason, flush=True)
+    if args.milestone:
+        current = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
+        dirty = subprocess.check_output(["git", "-C", str(ROOT), "status", "--porcelain"], text=True)
+        if current != args.commit or dirty:
+            print("FAIL: checkout changed during milestone boot", flush=True)
+            return 1
+        print(f"==> Milestone {args.milestone} commit={args.commit}", flush=True)
+    if toolchain_build is not None:
+        try:
+            TOOLCHAIN["verify_sysroot"](args.serial.read_text(errors="replace"), toolchain_build, args.commit, "aarch64")
+        except (OSError, ValueError) as error:
+            print(f"FAIL: {error}", flush=True)
+            return 1
     if args.mode == "suite" and "," in args.suite:
         # Each suite's result, whether the sequence finished or the boot was stopped part way.
-        ok, rows = SEQUENCE["score"](args.suite.split(","), args.serial, [args.serial], args.disk)
+        milestones = {scoped: args.milestone} if scoped else None
+        ok, rows = SEQUENCE["score"](suites, args.serial, [args.serial], args.disk, milestones=milestones)
         for suite, status, detail in rows:
             print(f"{status} {suite}: {detail}", flush=True)
         passed = sum(status == "PASS" for _, status, _ in rows)
@@ -208,7 +256,8 @@ def main():
         return 0 if result and result[0] and clock_ok else 1
     if args.mode == "suite":
         serial = args.serial.read_bytes().decode("utf-8", errors="replace") if args.serial.exists() else ""
-        result = DONE["completion"](serial, args.mode, args.suite, args.only)
+        result = DONE["completion"](serial, args.mode, args.suite, args.only,
+                                    allow_failed_cases=categories is not None)
         if result is None:
             print(f"FAIL: no complete SUITE {args.suite} DONE before {reason}", flush=True)
             return 1
@@ -218,13 +267,13 @@ def main():
         manifest = json.loads((ROOT / f"docs/suites/{args.suite}.json").read_text())
         uploads = Path(str(args.serial) + ".evidence") if args.suite == "ui-testing" else None
         ok, detail = VERDICT["verdict"](manifest, args.serial, [args.serial], only=args.only,
-                                        disk=args.disk, uploads=uploads)
+                                        categories=categories, disk=args.disk, uploads=uploads)
         if ok and not args.only:
             ok, disk_detail = VERDICT["disk_verdict"](manifest.get("diskChecks", []), args.disk)
             if disk_detail:
                 detail += f"; {disk_detail}"
         print(f"{'PASS' if ok else 'FAIL'}: {detail}", flush=True)
-        return 0 if ok and clock_ok else 1
+        return 0 if ok and clock_ok and reason == "done" else 1
     if reason == "idle":
         return 0
     return process.returncode if process.returncode >= 0 else 128 - process.returncode
