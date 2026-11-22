@@ -1,0 +1,209 @@
+//! Logical lines and target rules from POSIX.1-2024 make, "Makefile Syntax",
+//! "Target Rules" and "Macros". Macro expansion is deferred.
+
+use crate::{Error, Location};
+use std::{path::Path, str};
+
+#[derive(Debug, Default)]
+pub struct Makefile {
+    pub entries: Vec<Entry>,
+}
+
+#[derive(Debug)]
+pub enum Entry {
+    Rule(Rule),
+    Macro(SourceLine),
+}
+
+#[derive(Debug)]
+pub struct Rule {
+    pub location: Location,
+    pub targets: Vec<String>,
+    pub prerequisites: Vec<String>,
+    pub recipes: Vec<SourceLine>,
+}
+
+#[derive(Debug)]
+pub struct SourceLine {
+    pub location: Location,
+    pub text: String,
+}
+
+/// Read a makefile as UTF-8 text, retaining each entry's starting line.
+pub fn parse(path: impl AsRef<Path>, source: &[u8]) -> Result<Makefile, Error> {
+    let mut location = Location {
+        path: path.as_ref().into(),
+        line: 1,
+    };
+    let mut remaining = str::from_utf8(source).map_err(|error| {
+        location.line += source[..error.valid_up_to()]
+            .iter()
+            .filter(|&&byte| byte == b'\n')
+            .count();
+        Error::new(&location, "invalid UTF-8")
+    })?;
+    let mut makefile = Makefile::default();
+
+    while !remaining.is_empty() {
+        let starting_location = location.clone();
+        let line = take_logical_line(&mut remaining, &mut location)?;
+
+        if let Some(recipe) = line.strip_prefix('\t') {
+            if let Some(Entry::Rule(rule)) = makefile.entries.last_mut() {
+                rule.recipes.push(recipe_line(starting_location, recipe));
+            } else if !recipe.trim_matches(is_blank).is_empty() {
+                return Err(Error::new(&starting_location, "recipe before any rule"));
+            }
+        } else if let Some(entry) = read_entry(line, starting_location)? {
+            makefile.entries.push(entry);
+        }
+    }
+    Ok(makefile)
+}
+
+fn take_logical_line<'a>(
+    remaining: &mut &'a str,
+    location: &mut Location,
+) -> Result<&'a str, Error> {
+    let start = *remaining;
+    let starting_location = location.clone();
+    loop {
+        let (line, rest) = remaining
+            .split_once('\n')
+            .ok_or_else(|| Error::new(location, "missing newline at end of makefile"))?;
+        if line.contains('\0') {
+            return Err(Error::new(location, "NUL byte in makefile"));
+        }
+        *remaining = rest;
+        location.line += 1;
+
+        if !line.ends_with('\\') {
+            return Ok(&start[..start.len() - rest.len() - 1]);
+        }
+        if rest.is_empty() {
+            return Err(Error::new(&starting_location, "unfinished continuation"));
+        }
+    }
+}
+
+fn read_entry(line: &str, location: Location) -> Result<Option<Entry>, Error> {
+    let mut colon = None;
+    let mut assignment = false;
+    let mut end = line.len();
+    let mut recipe = None;
+
+    for (index, character) in outside_macro_references(line) {
+        match character {
+            '#' => {
+                end = index;
+                break;
+            }
+            '=' if colon.is_none() => assignment = true,
+            ':' if colon.is_none() && !assignment => {
+                // The colon characters in these assignment operators belong to the macro.
+                if line[index..].starts_with("::=") || line[index..].starts_with(":::=") {
+                    assignment = true;
+                } else {
+                    colon = Some(index);
+                }
+            }
+            ';' if colon.is_some() => {
+                recipe = Some(&line[index + 1..]);
+                end = index;
+                break;
+            }
+            _ => (),
+        }
+    }
+
+    if let Some(colon) = colon {
+        let targets = words(&fold_header(&line[..colon]));
+        if targets.is_empty() {
+            return Err(Error::new(&location, "missing target before ':'"));
+        }
+        let prerequisites = words(&fold_header(&line[colon + 1..end]));
+        let recipes = recipe
+            .map(|text| recipe_line(location.clone(), text))
+            .into_iter()
+            .collect();
+        Ok(Some(Entry::Rule(Rule {
+            location,
+            targets,
+            prerequisites,
+            recipes,
+        })))
+    } else {
+        let text = fold_header(&line[..end]);
+        if assignment {
+            Ok(Some(Entry::Macro(SourceLine { location, text })))
+        } else if text.trim_matches(is_blank).is_empty() {
+            Ok(None)
+        } else {
+            Err(Error::new(&location, "missing ':' in target rule"))
+        }
+    }
+}
+
+fn recipe_line(location: Location, text: &str) -> SourceLine {
+    // Preserve the shell's escaped newline, dropping one leading recipe tab.
+    SourceLine {
+        location,
+        text: text.replace("\\\n\t", "\\\n"),
+    }
+}
+
+fn fold_header(text: &str) -> String {
+    let mut physical_lines = text.split("\\\n");
+    let mut folded = physical_lines.next().unwrap_or_default().to_owned();
+    for line in physical_lines {
+        folded.push(' ');
+        folded.push_str(line.trim_start_matches(is_blank));
+    }
+    folded
+}
+
+fn is_blank(character: char) -> bool {
+    matches!(character, ' ' | '\t')
+}
+
+fn words(text: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut start = 0;
+    for (index, _) in outside_macro_references(text).filter(|&(_, character)| is_blank(character)) {
+        if start < index {
+            words.push(text[start..index].to_owned());
+        }
+        start = index + 1;
+    }
+    if start < text.len() {
+        words.push(text[start..].to_owned());
+    }
+    words
+}
+
+// Unexpanded references can contain colons, equals signs and blanks, including
+// in a substitution or a nested reference. Comments still end the header.
+fn outside_macro_references(text: &str) -> impl Iterator<Item = (usize, char)> + '_ {
+    let mut characters = text.char_indices().peekable();
+    let mut closing = Vec::new();
+    std::iter::from_fn(move || {
+        while let Some((index, character)) = characters.next() {
+            if character == '$' {
+                match characters.peek().map(|&(_, next)| next) {
+                    Some('(') => closing.push(')'),
+                    Some('{') => closing.push('}'),
+                    Some('$') => (),
+                    _ => continue,
+                }
+                characters.next();
+            } else if character == '#' {
+                return Some((index, character));
+            } else if closing.last() == Some(&character) {
+                closing.pop();
+            } else if closing.is_empty() {
+                return Some((index, character));
+            }
+        }
+        None
+    })
+}
