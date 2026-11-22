@@ -289,6 +289,38 @@ class HostRecordTest(StateTest):
 
 
 class PortableRootTest(unittest.TestCase):
+    def test_local_build_snapshot_resolves_the_stubs_committed_sha256_source(self):
+        local = load_script('metal-build-local')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo, cache = root / 'repo', root / 'cache'
+            cache.mkdir()
+            subprocess.run(['git', 'init', '-q', '-b', 'main', str(repo)], check=True)
+            stub = repo / 'scripts/metal/efi-stub/src'
+            stub.mkdir(parents=True)
+            source = repo / 'libs/libbreenix/src/crypto/sha256.rs'
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b'committed SHA-256 source\n')
+            (stub / 'sha256.rs').symlink_to('../../../../libs/libbreenix/src/crypto/sha256.rs')
+            local.git(repo, 'add', '.')
+            local.git(repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.com',
+                      'commit', '-qm', 'stub source fixture')
+            local.git(repo, 'remote', 'add', 'origin', str(repo))
+            source.write_bytes(b'dirty source must stay out\n')
+
+            class SnapshotChecked(Exception):
+                pass
+
+            def inspect_snapshot(helper):
+                stub_source = helper.parent / 'efi-stub/src/sha256.rs'
+                self.assertTrue(stub_source.is_file(), 'the archived stub SHA-256 link must resolve')
+                self.assertEqual(stub_source.read_bytes(), b'committed SHA-256 source\n')
+                raise SnapshotChecked
+
+            args = SimpleNamespace(sha='HEAD', tools_commit='HEAD')
+            with patch.object(local, 'load_build', side_effect=inspect_snapshot), self.assertRaises(SnapshotChecked):
+                local.build(args, repo, cache)
+
     def test_local_resolver_uses_payload_definitions_for_all_and_named_lists(self):
         local = load_script('metal-build-local')
         repo = Path(__file__).resolve().parents[1]
