@@ -35,7 +35,7 @@ class ToolchainBundleTest(unittest.TestCase):
         tools = self.record.get("tools")
         self.assertIsInstance(tools, dict, "bundle build record has no Cargo tool provenance")
         self.assertEqual(set(tools), {"bas", "bld", "bar", "bnm"} |
-                         ({"bcc"} if self.record["arch"] == "x86_64" else set()))
+                         ({"bcc", "bmake"} if self.record["arch"] == "x86_64" else set()))
         self.assertEqual(self.record, json.loads((self.dev / "build.json").read_text()))
         arch = self.record["arch"]
         machine = {"x86_64": 62, "aarch64": 183}[arch]  # ELF gABI, e_machine.
@@ -46,7 +46,7 @@ class ToolchainBundleTest(unittest.TestCase):
         }
         for name, entry in tools.items():
             with self.subTest(tool=name):
-                program = self.dev / "bin" / ("cc" if name == "bcc" else name)
+                program = self.dev / "bin" / {"bcc": "cc", "bmake": "make"}.get(name, name)
                 expected = {
                     "cargoPackage": name,
                     "rustForkCommit": fork,
@@ -54,8 +54,8 @@ class ToolchainBundleTest(unittest.TestCase):
                     "target": f"{arch}-breenix",
                     "sha256": digest(program),
                 }
-                if name == "bcc":
-                    expected["path"] = "bin/cc"
+                if name in ("bcc", "bmake"):
+                    expected["path"] = f"bin/{program.name}"
                 self.assertEqual(entry, expected)
                 with program.open("rb") as file:
                     header = file.read(20)
@@ -76,6 +76,15 @@ class ToolchainBundleTest(unittest.TestCase):
             "sha256": digest(executable),
         })
         self.assertFalse(any(path.suffix == ".c" for path in (WORKSPACE / "bcc").rglob("*")))
+
+    def make_built_by_rustc(self):
+        entry = self.record["tools"]["bmake"]
+        executable = self.dev / "bin/make"
+        self.assertEqual(entry["path"], "bin/make")
+        self.assertEqual(entry["sha256"], digest(executable))
+        self.assertIn(f"{digest(executable)}  opt/breenix-dev/25.2/bin/make\n",
+                      (self.dev / "manifest.sha256").read_text())
+        self.assertFalse(any(path.suffix == ".c" for path in (WORKSPACE / "bmake").rglob("*")))
 
     def arm_bundle_unchanged_until_a3(self):
         self.assertEqual(set(self.record["tools"]), {"bas", "bld", "bar", "bnm"})
@@ -140,7 +149,8 @@ if __name__ == "__main__":
     checks = ["ToolchainBundleTest.tools_built_by_rustc"]
     if json.loads((args.bundle / "build.json").read_text())["arch"] == "x86_64":
         checks.extend(["ToolchainBundleTest.receipts_from_cargo_host_bas",
-                       "ToolchainBundleTest.cc_built_by_rustc"])
+                       "ToolchainBundleTest.cc_built_by_rustc",
+                       "ToolchainBundleTest.make_built_by_rustc"])
     else:
         checks.append("ToolchainBundleTest.arm_bundle_unchanged_until_a3")
     if args.probe is not None:
