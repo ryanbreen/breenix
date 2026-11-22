@@ -52,8 +52,12 @@ def child(path):
                 os.close(fd)
         try:
             while process.poll() is None:
-                if select.select([channel], [], [], 0.1)[0] and not channel.recv(1):
-                    return 143
+                if select.select([channel], [], [], 0.1)[0]:
+                    request_byte = channel.recv(1)
+                    if not request_byte:
+                        return 143
+                    if request_byte == b"K" and env.get("BREENIX_QEMU_HARD_CUT") == "1":
+                        process.kill()
             channel.sendall(f"{process.returncode}\n".encode())
         finally:
             if process.poll() is None:
@@ -85,6 +89,10 @@ def supervise(argv):
                 subprocess.run(["/bin/launchctl", "bootstrap", domain, str(job)], check=True)
                 channel, _ = listener.accept()
                 with channel:
+                    if os.environ.get("BREENIX_QEMU_HARD_CUT") == "1":
+                        # The watcher owns this supervisor, and the launchd
+                        # child owns the QEMU process to which it relays the cut.
+                        signal.signal(signal.SIGUSR1, lambda *_: channel.sendall(b"K"))
                     descriptors = array.array("i", [0, 1, 2])
                     channel.sendmsg([b"F"], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, descriptors)])
                     channel.sendall(json.dumps({"argv": argv, "env": dict(os.environ)}).encode() + b"\n")

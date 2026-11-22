@@ -18,6 +18,8 @@
 #   BREENIX_COLLAB_HOST_BIND=127.0.0.1 limits that forward to this host for collab-pair.py;
 #                        the operator's default is 0.0.0.0 for LAN sharing.
 #   --root-fs ext2|breenfs  root filesystem (default ext2)
+#   --power-cut-after S | --power-cut-window node-writes|first-flush|between-rings | --breenfs-bit-flip
+#                        headless filesystem power-cut/writer on a disposable BreenFS root
 #   --case CATEGORY[/CASE]       for --mode suite: run one category or case (not full-suite evidence; not filed in Vigil)
 #   --suite ID           for --mode suite: the effort suite (docs/suites/ID.json) run as PID 1, /sbin/suite-ID
 #                        console selects --gpu-gl for its display-owner and scanout cases
@@ -65,7 +67,8 @@ source "$ROOT/scripts/host-slots.sh"
 host_slots_start "$ROOT/scripts/$(basename "${BASH_SOURCE[0]}")" "$@"
 BOOT_ARGS=("$@")
 SERIAL_LOG="${TMPDIR:-/tmp}/breenix-boot/serial-$(date -u +%Y%m%dT%H%M%SZ)-$$.txt"
-SERIAL_EXPLICIT=0
+SERIAL_REQUESTED=0
+BREENFS_FAULT_ARGS=()
 IDLE_EXIT=300
 GATE_TIMEOUT=1800
 DISPLAY_MODE=
@@ -94,7 +97,7 @@ COLLAB_HOST_BIND=${BREENIX_COLLAB_HOST_BIND:-0.0.0.0}
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --mode|--root-fs|--program|--suite|--transfer-artifact|--case|--screen-capture|--screen-checkpoints|--pace|--serial-log|--idle-exit|--gate-timeout|--qmp|--accel|--cpus|--cpu)
+        --mode|--root-fs|--program|--suite|--transfer-artifact|--case|--screen-capture|--screen-checkpoints|--pace|--serial-log|--power-cut-after|--power-cut-window|--idle-exit|--gate-timeout|--qmp|--accel|--cpus|--cpu)
             [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; } ;;
     esac
     case "$1" in
@@ -114,7 +117,13 @@ while [ "$#" -gt 0 ]; do
         --screen-proof) SCREEN_PROOF=1; shift ;;
         --pace) [ -n "$2" ] || { echo "--pace needs milliseconds" >&2; exit 2; }; PACE="$2"; shift 2 ;;
         --qmp) QMP_SOCKET="$2"; QMP_REQUESTED=1; shift 2 ;;
-        --serial-log) SERIAL_LOG="$2"; SERIAL_EXPLICIT=1; shift 2 ;;
+        --serial-log) SERIAL_LOG="$2"; SERIAL_REQUESTED=1; shift 2 ;;
+        --power-cut-after|--power-cut-window)
+            [ "${#BREENFS_FAULT_ARGS[@]}" -eq 0 ] || { echo "select one BreenFS diagnostic" >&2; exit 2; }
+            BREENFS_FAULT_ARGS=("$1" "$2"); shift 2 ;;
+        --breenfs-bit-flip)
+            [ "${#BREENFS_FAULT_ARGS[@]}" -eq 0 ] || { echo "select one BreenFS diagnostic" >&2; exit 2; }
+            BREENFS_FAULT_ARGS=("$1"); shift ;;
         --idle-exit) IDLE_EXIT="$2"; shift 2 ;;
         --gate-timeout) GATE_TIMEOUT="$2"; shift 2 ;;
         --display) DISPLAY_MODE=cocoa; shift ;;
@@ -135,6 +144,34 @@ case "$MODE" in
     tests|probe|shell|desktop|program|suite) ;;
     *) echo "unknown mode: $MODE (expected tests, probe, shell, desktop, program or suite)" >&2; exit 2 ;;
 esac
+BREENFS_DIAGNOSTIC=0
+if [ "${#BREENFS_FAULT_ARGS[@]}" -ne 0 ]; then
+    [ "$MODE/$SUITE/$ONLY/$ROOT_FS" = suite/filesystem/power-cut/writer/breenfs ] || {
+        echo "BreenFS diagnostics need --mode suite --suite filesystem --case power-cut/writer --root-fs breenfs" >&2
+        exit 2
+    }
+    if [ "$GPU_GL" -eq 1 ] || [ "$DISPLAY_MODE" = cocoa ] || [ "$QMP_REQUESTED" -eq 1 ] ||
+        [ -n "$PACE${BREENIX_KERNEL_FEATURES:-}" ]; then
+        echo "BreenFS diagnostics use their own headless profile and kernel features" >&2
+        exit 2
+    fi
+    PYTHONPATH="$ROOT/scripts" python3 - "$GATE_TIMEOUT" "${BREENFS_FAULT_ARGS[@]}" <<'PYFAULT'
+import argparse
+from metal import metal_power_cut
+
+parser = argparse.ArgumentParser(prog="boot-interactive.sh")
+parser.add_argument("timeout", type=metal_power_cut.positive_seconds)
+metal_power_cut.add_options(parser)
+args = parser.parse_args()
+if args.power_cut_after is not None and args.power_cut_after >= args.timeout:
+    parser.error("--power-cut-after must be less than --gate-timeout")
+PYFAULT
+    BREENFS_DIAGNOSTIC=1
+    DISPLAY_MODE=none
+elif [ "$SUITE" = filesystem ] && [[ "$ONLY" == power-cut/* ]]; then
+    echo "BreenFS writer and recovery require a power-cut or bit-flip cycle" >&2
+    exit 2
+fi
 if [ "$COLLAB_HOST" -eq 1 ]; then
     [ "$MODE" = desktop ] || [ "$MODE" = program ] || { echo "--collab-host requires desktop or program mode" >&2; exit 2; }
     COLLAB_HOST_PORT=$(python3 - "$COLLAB_HOST_PORT" "$COLLAB_HOST_BIND" <<'PY'
@@ -333,6 +370,13 @@ fi
 echo "==> Commit: $COMMIT_IDENTITY"
 KERNEL="$ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 DISK="$ROOT/target/ext2-aarch64.img"
+KERNEL_BUILD_ARGS=()
+if [ "$BREENFS_DIAGNOSTIC" -eq 1 ]; then
+    KERNEL_TARGET="$ROOT/target/qemu-breenfs-faults"
+    KERNEL_BUILD_ARGS=(--target-dir "$KERNEL_TARGET")
+    KERNEL_FEATURES=(--features "breenfs_commit_window,breenfs_corrupt_inject")
+    KERNEL="$KERNEL_TARGET/aarch64-breenix-kernel/release/kernel-aarch64"
+fi
 
 case "$MODE" in
     program) echo "==> Mode: program $PROGRAM" ;;
@@ -358,8 +402,9 @@ if [ "$BUILD" -eq 1 ]; then
     else
         echo "==> Building the production kernel"
     fi
-    # The production build is the prod-profile gate's command: no features at all.
-    run_build cargo build --release ${KERNEL_FEATURES[@]+"${KERNEL_FEATURES[@]}"} --target aarch64-breenix-kernel.json \
+    # Ordinary production boots use the prod-profile gate's feature set.
+    run_build cargo build --release ${KERNEL_BUILD_ARGS[@]+"${KERNEL_BUILD_ARGS[@]}"} \
+        ${KERNEL_FEATURES[@]+"${KERNEL_FEATURES[@]}"} --target aarch64-breenix-kernel.json \
         -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64
     "$ROOT/scripts/check-kernel-no-neon.sh" "$KERNEL"
 fi
@@ -406,7 +451,7 @@ fi
 host_slot_acquire mac-boot
 if [ "$SUITE" = transfer-fixture ]; then
     TRANSFER_RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/breenix-transfer.XXXXXX")
-    if [ "$SERIAL_EXPLICIT" -eq 0 ]; then SERIAL_LOG="$TRANSFER_RUN_DIR/serial.txt"; fi
+    if [ "$SERIAL_REQUESTED" -eq 0 ]; then SERIAL_LOG="$TRANSFER_RUN_DIR/serial.txt"; fi
     echo "==> Transfer evidence: $TRANSFER_RUN_DIR"
 fi
 cleanup_transfer() {
@@ -415,9 +460,22 @@ cleanup_transfer() {
     fi
 }
 trap cleanup_transfer EXIT
-host_slot_serial "$SERIAL_LOG"
-mkdir -p "$(dirname "$SERIAL_LOG")"
-: > "$SERIAL_LOG"
+if [ "$BREENFS_DIAGNOSTIC" -eq 1 ]; then
+    if [ "$SERIAL_REQUESTED" -eq 1 ]; then
+        mkdir -m 700 "$(dirname "$SERIAL_LOG")" || {
+            echo "BreenFS diagnostics need a fresh --serial-log directory" >&2
+            exit 2
+        }
+    else
+        mkdir -p "$(dirname "$SERIAL_LOG")"
+        RUN_DIR=$(mktemp -d "$(dirname "$SERIAL_LOG")/power-cut.XXXXXXXX")
+        SERIAL_LOG="$RUN_DIR/serial.txt"
+    fi
+else
+    host_slot_serial "$SERIAL_LOG"
+    mkdir -p "$(dirname "$SERIAL_LOG")"
+    : > "$SERIAL_LOG"
+fi
 WRITABLE="$(dirname "$SERIAL_LOG")/ext2-writable.img"
 if [ -n "$TRANSFER_RUN_DIR" ]; then WRITABLE="$TRANSFER_RUN_DIR/ext2-writable.img"; fi
 cp "$DISK" "$WRITABLE"
@@ -518,6 +576,35 @@ fi
 if [ "$GPU_GL" -eq 1 ]; then
     export BREENIX_HOST_RENDERER_JSON="$(dirname "$SERIAL_LOG")/host-renderer.json"
     rm -f "$BREENIX_HOST_RENDERER_JSON"
+fi
+if [ "$BREENFS_DIAGNOSTIC" -eq 1 ]; then
+    BREENFS_TOOLS_TARGET="$ROOT/tools/breenfs/target"
+    run_build cargo build --locked --release --manifest-path "$ROOT/tools/breenfs/Cargo.toml" \
+        --target-dir "$BREENFS_TOOLS_TARGET" --bin breenfs-check --bin breenfs-extract
+    source "$ROOT/scripts/lib/root-fs.sh"
+    root_fs_prepare
+    source "$ROOT/docker/qemu/lib/qemu-host-lock.sh"
+    qemu_host_lock_acquire
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    export BREENIX_QUIET=1 BREENIX_QUIET_MAX_LOAD=8
+    if [ "$CPUS" != 4 ]; then export BREENIX_VIGIL_CPUS="$CPUS"; fi
+    QEMU_PROFILE_ARGS=(-M "virt,gic-version=3" -cpu "$CPU")
+    QEMU_PROFILE=$(python3 "$ROOT/scripts/qemu-arm64.py" --print-profile "$QEMU" "${QEMU_PROFILE_ARGS[@]}")
+    exec 3<&0
+    python3 "$ROOT/scripts/qemu-power-cut.py" "${BREENFS_FAULT_ARGS[@]}" \
+        --serial "$SERIAL_LOG" --disk "$WRITABLE" --tools-dir "$BREENFS_TOOLS_TARGET/release" \
+        --gate-timeout "$GATE_TIMEOUT" --profile "$QEMU_PROFILE" -- \
+        python3 "$ROOT/scripts/qemu-arm64.py" "$QEMU" -rtc base=utc "${QEMU_PROFILE_ARGS[@]}" \
+        -m 512 -smp "$CPUS" -kernel "$KERNEL" "${DISPLAY_ARGS[@]}" -no-reboot \
+        -fw_cfg name=opt/breenix/mode,string=suite -fw_cfg name=opt/breenix/suite,string=filesystem \
+        -device virtio-gpu-device -device virtio-rng-device \
+        -device virtio-net-device,netdev=net0 -netdev "$NETDEV" <&3 &
+    WATCHER_PID=$!
+    qemu_host_lock_track_pid "$WATCHER_PID"
+    wait "$WATCHER_PID"
+    exit
 fi
 BREENFS_CORRUPT_ARGS=()
 BREENFS_READ_ARGS=()

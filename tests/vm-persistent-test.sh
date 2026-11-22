@@ -115,6 +115,7 @@ cat > "$fixture/scripts/vigil-record.sh" <<'SH'
 #!/bin/sh
 if [ "$1" = start ]; then
     printf '%s\n' "$@" > "$CAPTURE/vigil-args"
+    printf '%s\n' "${BREENIX_VIGIL_DISPLAY:-}" > "$CAPTURE/vigil-display"
     echo fixture-boot
 fi
 SH
@@ -495,7 +496,26 @@ fi
 grep -q 'migrate boot did not supply its verification receipts' "$fixture/migrate-failure.log" || fail 'failed migration did not reach stock finish'
 grep -Fxq '[migrate] exit code: 1' "$run/boots/$(cat "$run/current")/serial.txt" || fail 'missing failed migration receipt'
 record_is FAIL FAIL FAIL FAIL
-STUB_SCENARIO=migrate MIGRATE_TREE=migration-ok boot_fixture --mode console
+host_python=$(command -v python3)
+cat > "$fixture/bin/python3" <<PY
+#!/bin/sh
+if [ "\$1" = -c ] && printf '%s' "\$2" | grep -q 'os.getloadavg'; then
+    exit "\${FIXTURE_LOAD_REFUSED:-0}"
+fi
+exec "$host_python" "\$@"
+PY
+chmod +x "$fixture/bin/python3"
+rm -f "$fixture/qemu-args"
+if FIXTURE_LOAD_REFUSED=1 STUB_SCENARIO=migrate MIGRATE_TREE=migration-ok \
+    boot_fixture --mode console --no-display > "$fixture/quiet-failure.log" 2>&1; then
+    fail 'headless migration launched above the load ceiling'
+fi
+grep -q 'requires host load at or below 8' "$fixture/quiet-failure.log" || fail 'missing headless load refusal'
+[ ! -e "$fixture/qemu-args" ] || fail 'high load reached QEMU'
+STUB_SCENARIO=migrate MIGRATE_TREE=migration-ok boot_fixture --mode console --no-display
+[ "$(cat "$fixture/vigil-display")" = false ] || fail 'headless migration recorded a window'
+[ "$(awk 'previous == "-display" { print } { previous = $0 }' "$fixture/qemu-args")" = none ] \
+    || fail 'headless migration opened a window'
 [ -f "$fixture/migration-ok/poweroff-requested" ] || fail 'successful migration did not power off'
 cp "$fixture/home.tsv" "$fixture/home-good.tsv"
 sed '1s/0755/0700/' "$fixture/home-good.tsv" > "$fixture/home.tsv"

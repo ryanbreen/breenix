@@ -42,3 +42,39 @@ its capture, with `scripts/vm-persistent.sh qemu stop --run-dir PRIVATE_RUN`.
 The offline auditor's inactive-run receipt tests lease refusal with no live
 machine. It does not isolate the ended marker. The target's focused host checks
 exercise that predicate while satisfying the other lease conditions.
+
+## BreenFS upgrades and ext2 retirement
+
+Build a fresh source-attested run and finish its disposable VM migration
+through the verified return to BreenFS. Pass `--no-display` on each migration
+boot for a headless run with one-minute host load at or below 8. Use the same
+run directory, operator identity and trusted guest host key throughout retirement.
+
+```sh
+scripts/vm-persistent.sh qemu begin-retirement --run-dir "$run"
+scripts/vm-persistent.sh qemu install --run-dir "$run"
+scripts/vm-persistent.sh qemu boot --run-dir "$run" --mode console --slot next
+```
+
+During the verification boot, run `probe-migration` with the operator
+identity and trusted host key from another terminal, then request guest
+poweroff. The launcher promotes NEXT after it verifies the generation,
+BreenFS mounts, unchanged home sentinel and authenticated shutdown. Repeat
+the install and NEXT verification once. Each install copies the sealed
+staging image into a new generation.
+
+```sh
+scripts/vm-persistent.sh qemu reclaim-ext2 --run-dir "$run"
+scripts/vm-persistent.sh qemu boot --run-dir "$run" --mode console --slot current
+```
+
+Probe the final boot and request guest poweroff in the same way. The run
+directory retains `filesystem-two-upgrades.json`, `filesystem-reclaimed.json`,
+its boot captures and `retirement.img`. The last record includes the offline
+CURRENT selection and intent digest for the next launch.
+
+QEMU receives bounded views of the BreenFS partitions on the disposable GPT
+image and a read-only staging partition during install. The stopped host edit
+checks both GPT copies against the packed layout, clears entries 3 and 4 and
+reads both copies back. The retired ext2 data blocks retain their bytes.
+Retirement launches run headless with the Mac boot slot.

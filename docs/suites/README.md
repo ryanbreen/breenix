@@ -1805,7 +1805,31 @@ SHA-256 as cold replay. For `ring-B-missing`, recovery must also report the
 repaired ring B slot and generation after flushing it. A failed replay stops
 the cycle before recovery.
 
-The data bit-flip boot hands its recorded test root to firmware cold readback
+On ARM64 QEMU, select the writer and one trigger through the interactive
+runner. Each invocation stages a fresh disposable raw BreenFS image.
+
+```sh
+scripts/boot-interactive.sh --no-display --mode suite --suite filesystem \
+    --case power-cut/writer --root-fs breenfs --power-cut-window between-rings
+```
+
+Use `--power-cut-window node-writes|first-flush|between-rings` for an aimed
+cut, `--power-cut-after S` for a timer started when QEMU reports its PID, or
+`--breenfs-bit-flip` for the data-corruption probe. The runner keeps the
+mac-boot slot through the cut, direct replay of the stopped raw disk, and
+recovery on that same image. QEMU honors guest flushes, and its host page cache
+survives SIGKILL. The cut therefore tests ARM64 guest-side ordering. The metal
+power-cut set covers loss of drive power.
+
+The runner prints each boot's serial path and Vigil ID. For a cut, the
+writer's directory holds `run.json`, `events.jsonl`, the cold
+`cut-readback.json` verdict, and the recovery capture and `cut-cycle.json`
+verdict. The bit-flip run stops after the typed read receipt and checks the
+raw disk directly, recording `bit-flip-readback.json`. To choose a directory,
+pass `--serial-log /existing/parent/new-directory/serial.txt`; the runner
+requires that `new-directory` is absent and creates it for this cycle.
+
+On metal, the data bit-flip boot hands its recorded test root to firmware cold readback
 under the same lease after confirmed Off. To score that image directly, use
 `bit-flip` in place of `replay`. The same serial
 must report the injected block and then `[breenfs] corrupt-read block=N result=ReadError::Data`
