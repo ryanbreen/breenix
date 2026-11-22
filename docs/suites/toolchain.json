@@ -97,7 +97,28 @@
     {
       "id": "make",
       "title": "POSIX make: graphs, timestamps, inference, macros and exit status",
-      "cases": []
+      "cases": [
+        {
+          "id": "graph-order",
+          "title": "Prerequisites run before their dependents and a shared prerequisite runs once"
+        },
+        {
+          "id": "noop-when-current",
+          "title": "An equal-time prerequisite leaves the target unchanged and a newer one rebuilds it"
+        },
+        {
+          "id": "suffix-inference",
+          "title": "A suffix rule builds the requested file with the inferred source and stem"
+        },
+        {
+          "id": "macro-precedence",
+          "title": "Makefile, environment and command-line macros follow POSIX precedence"
+        },
+        {
+          "id": "failure-status",
+          "title": "A failing shell recipe reports its status and stops the build"
+        }
+      ]
     },
     {
       "id": "project",
