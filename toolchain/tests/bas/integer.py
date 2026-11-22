@@ -3,7 +3,7 @@
 # The mnemonic headings below name the Vol. 2 opcode tables. Vol. 2A
 # Tables 2-2 through 2-7 give ModR/M, SIB, REX and register field encodings.
 INTEGER_ENCODINGS = (
-    # MOV: C7 /0 id sign-extends to 64 bits; B8+rd io copies all 64 bits.
+    # MOV: C7 /0 id sign-extends to 64 bits. B8+rd io copies an imm64.
     ("mov r9, -2147483648", "49 c7 c1 00 00 00 80"),
     ("mov r15, 2147483647", "49 c7 c7 ff ff ff 7f"),
     ("mov r8, 0xffffffff", "49 b8 ff ff ff ff 00 00 00 00"),

@@ -1,5 +1,6 @@
-/* Intel SDM Vol. 2A §§2.1–2.2, Tables 2-2–2-5 and 2-7, and the MOV,
- * CALL, JMP, Jcc, NOP, RET and SYSCALL opcode tables. ELF gABI §§3 and 5.
+/* Intel SDM Vol. 2A §§2.1–2.2, Tables 2-2–2-5 and 2-7.
+ * Vol. 2 instruction tables are cited alongside the encoders.
+ * ELF gABI §§3 and 5 describe the object metadata.
  */
 #include "../common/elf64.h"
 
@@ -562,6 +563,43 @@ static struct operand operand(struct parser *p)
     return result;
 }
 
+static unsigned width_of(const struct operand *op)
+{
+    return op->reg.width ? op->reg.width : op->memory.width;
+}
+
+static unsigned require_width(struct parser *p, const struct operand *op)
+{
+    unsigned width = width_of(op);
+    if (width == 0)
+        source_error(p->as, op->at.at, "memory operand requires an explicit width");
+    return width;
+}
+
+static void match_width(struct parser *p, const struct operand *op, unsigned width)
+{
+    unsigned actual = width_of(op);
+    if (actual != 0 && actual != width)
+        source_error(p->as, op->at.at, "operand widths differ");
+}
+
+static bool fits_sign_extended(uint64_t value, unsigned from, unsigned to)
+{
+    /* Compare bit patterns at the destination width, including hex literals. */
+    unsigned shift = (8 - from) * 8;
+    uint64_t low = (value << shift) >> shift;
+    uint64_t sign = UINT64_C(1) << (from * 8 - 1);
+    uint64_t extended = (low ^ sign) - sign;
+    return ((value ^ extended) << ((8 - to) * 8)) == 0;
+}
+
+static void emit_opcode(struct bytes *text, unsigned opcode)
+{
+    if (opcode > 0xff)
+        append(text, (unsigned char)(opcode >> 8));
+    append(text, (unsigned char)opcode);
+}
+
 static bool needs_rex_byte(struct reg reg)
 {
     return reg.width == 1 && reg.number >= 4 && !reg.high_byte;
@@ -586,7 +624,7 @@ static void prefixes(struct assembler *as, const char *at, struct reg reg,
     }
 }
 
-static void modrm(struct assembler *as, unsigned char opcode, struct reg reg,
+static void modrm(struct assembler *as, unsigned opcode, struct reg reg,
                   const struct operand *rm, unsigned trailing)
 {
     struct bytes *text = &as->contents[as->current];
@@ -597,7 +635,7 @@ static void modrm(struct assembler *as, unsigned char opcode, struct reg reg,
         if (rm->reg.number >= 8)
             rex |= 1;
         prefixes(as, rm->at.at, reg, rm, rex);
-        append(text, opcode);
+        emit_opcode(text, opcode);
         append(text, (unsigned char)(0xc0 | reg_field | (rm->reg.number & 7)));
         return;
     }
@@ -619,7 +657,7 @@ static void modrm(struct assembler *as, unsigned char opcode, struct reg reg,
     if (addr->index >= 8)
         rex |= 2;
     prefixes(as, rm->at.at, reg, rm, rex);
-    append(text, opcode);
+    emit_opcode(text, opcode);
     append(text, (unsigned char)((mode << 6) | reg_field | (sib ? 4 : base)));
     if (sib)
         append(text, (unsigned char)((addr->scale << 6) | (index << 3) | base));
@@ -629,24 +667,26 @@ static void modrm(struct assembler *as, unsigned char opcode, struct reg reg,
         emit_word(text, (uint64_t)addr->displacement, disp_width);
 }
 
+/* MOV: B0/B8+rd, C6/C7 /0, 88–8B /r. */
 static void encode_mov_immediate(struct parser *p, const struct operand *dest)
 {
     struct assembler *as = p->as;
     struct bytes *text = &as->contents[as->current];
-    unsigned width = dest->reg.width != 0 ? dest->reg.width : dest->memory.width;
-    if (width == 0 || width == 8)
-        source_error(as, dest->at.at, "immediate move requires a byte, word or dword destination");
+    unsigned width = require_width(p, dest);
     uint64_t value = integer(p, width, false);
-    if (dest->reg.width != 0) {
+    bool imm32 = width == 8 && fits_sign_extended(value, 4, 8);
+    unsigned immediate = imm32 ? 4 : width;
+    if (dest->reg.width != 0 && !imm32) {
         unsigned char rex = dest->reg.number >= 8 ? 1 : 0;
         prefixes(as, dest->at.at, dest->reg, dest, rex);
         unsigned base = width == 1 ? 0xb0 : 0xb8;
         append(text, (unsigned char)(base | (dest->reg.number & 7)));
     } else {
-        unsigned char opcode = width == 1 ? 0xc6 : 0xc7;
-        modrm(as, opcode, (struct reg){.width = width}, dest, width);
+        if (immediate == 8)
+            source_error(as, dest->at.at, "qword memory move requires a sign-extended imm32");
+        modrm(as, width == 1 ? 0xc6 : 0xc7, (struct reg){.width = width}, dest, immediate);
     }
-    emit_word(text, value, width);
+    emit_word(text, value, immediate);
 }
 
 static void encode_mov(struct parser *p)
@@ -662,45 +702,191 @@ static void encode_mov(struct parser *p)
     bool load = src.reg.width == 0;
     struct reg reg = load ? dest.reg : src.reg;
     const struct operand *rm = load ? &src : &dest;
-    unsigned rm_width = rm->reg.width != 0 ? rm->reg.width : rm->memory.width;
     if (reg.width == 0)
         source_error(p->as, src.at.at, "mov requires a register operand");
-    if (rm_width != 0 && rm_width != reg.width)
-        source_error(p->as, rm->at.at, "mov operand widths differ");
+    match_width(p, rm, reg.width);
     unsigned opcode = load ? 0x8a : 0x88;
-    modrm(p->as, (unsigned char)(opcode + (reg.width != 1)), reg, rm, 0);
+    modrm(p->as, opcode + (reg.width != 1), reg, rm, 0);
 }
 
-static bool encode_branch(struct parser *p, struct token op)
+/* MOVZX/MOVSX: 0F B6/B7 and 0F BE/BF; MOVSXD: REX.W + 63. */
+static void encode_extend(struct parser *p, struct token op)
 {
-    static const struct {
-        const char *name;
-        unsigned char condition;
-    } conditions[] = {
-        {"jo", 0}, {"jno", 1}, {"jb", 2}, {"jc", 2}, {"jnae", 2},
-        {"jae", 3}, {"jnb", 3}, {"jnc", 3}, {"je", 4}, {"jz", 4},
-        {"jne", 5}, {"jnz", 5}, {"jbe", 6}, {"jna", 6}, {"ja", 7},
-        {"jnbe", 7}, {"js", 8}, {"jns", 9}, {"jp", 10}, {"jpe", 10},
-        {"jnp", 11}, {"jpo", 11}, {"jl", 12}, {"jnge", 12},
-        {"jge", 13}, {"jnl", 13}, {"jle", 14}, {"jng", 14}, {"jg", 15}, {"jnle", 15}
-    };
+    struct operand dest = operand(p);
+    expect(p, ',', "expected ',' before extension source");
+    struct operand src = operand(p);
+    unsigned width = require_width(p, &src);
+    unsigned opcode;
+    if (is(op, "movsxd")) {
+        if (dest.reg.width != 8 || width != 4)
+            source_error(p->as, op.at, "movsxd requires a 64-bit register and 32-bit source");
+        opcode = 0x63;
+    } else {
+        if (dest.reg.width <= width || width > 2)
+            source_error(p->as, op.at, "extension requires a byte or word source and a wider register");
+        opcode = (is(op, "movzx") ? 0x0fb6 : 0x0fbe) + (width == 2);
+    }
+    modrm(p->as, opcode, dest.reg, &src, 0);
+}
+
+static unsigned full_immediate_width(struct parser *p, const char *at, uint64_t value,
+                                     unsigned width)
+{
+    if (width != 8)
+        return width;
+    if (!fits_sign_extended(value, 4, 8))
+        source_error(p->as, at, "64-bit operand requires a sign-extended imm32");
+    return 4;
+}
+
+/* ADD/OR/ADC/SBB/AND/SUB/XOR/CMP: 00–3B /r and 80/81/83 /digit.
+ * TEST: 84/85 /r and F6/F7 /0 (no sign-extended imm8 form).
+ */
+static void encode_binary(struct parser *p, unsigned group, bool test)
+{
+    struct operand dest = operand(p);
+    expect(p, ',', "expected ',' between operands");
+    if (starts_number(peek(p))) {
+        unsigned width = require_width(p, &dest);
+        const char *at = p->at;
+        uint64_t value = integer(p, width, false);
+        unsigned immediate = full_immediate_width(p, at, value, width);
+        unsigned opcode = test ? 0xf6 + (width != 1) : 0x80 + (width != 1);
+        if (!test && width != 1 && fits_sign_extended(value, 1, width)) {
+            opcode = 0x83;
+            immediate = 1;
+        }
+        modrm(p->as, opcode, (struct reg){.number = group, .width = width}, &dest, immediate);
+        emit_word(&p->as->contents[p->as->current], value, immediate);
+        return;
+    }
+
+    struct operand src = operand(p);
+    bool load = src.reg.width == 0 && !test;
+    struct reg reg = load ? dest.reg : src.reg;
+    const struct operand *rm = load ? &src : &dest;
+    if (reg.width == 0)
+        source_error(p->as, src.at.at, "expected a register operand");
+    match_width(p, rm, reg.width);
+    unsigned opcode = test ? 0x84 : group * 8 + (load ? 2 : 0);
+    modrm(p->as, opcode + (reg.width != 1), reg, rm, 0);
+}
+
+static void encode_unary(struct parser *p, unsigned opcode, unsigned digit,
+                         const struct operand *rm)
+{
+    unsigned width = require_width(p, rm);
+    modrm(p->as, opcode + (width != 1), (struct reg){.number = digit, .width = width}, rm, 0);
+}
+
+/* SAL/SAR/SHL/SHR and RCL/RCR/ROL/ROR: C0/C1, D0–D3 /digit. */
+static void encode_shift(struct parser *p, unsigned digit)
+{
+    struct operand dest = operand(p);
+    unsigned width = require_width(p, &dest);
+    expect(p, ',', "expected a shift count after ','");
+    unsigned opcode = 0xd2;
+    unsigned immediate = 0;
+    uint64_t value = 0;
+    if (starts_number(peek(p))) {
+        const char *at = p->at;
+        value = count(p);
+        if (value > UINT8_MAX)
+            source_error(p->as, at, "shift count out of imm8 range");
+        opcode = value == 1 ? 0xd0 : 0xc0;
+        immediate = value != 1;
+    } else {
+        struct token cl = word(p);
+        if (!is(cl, "cl"))
+            source_error(p->as, cl.at, "shift count must be an immediate or cl");
+    }
+    modrm(p->as, opcode + (width != 1), (struct reg){.number = digit, .width = width},
+          &dest, immediate);
+    emit_word(&p->as->contents[p->as->current], value, immediate);
+}
+
+/* IMUL: F6/F7 /5, 0F AF /r, and 69/6B /r with immediate. */
+static void encode_imul(struct parser *p)
+{
+    struct operand dest = operand(p);
+    if (!take(p, ',')) {
+        encode_unary(p, 0xf6, 5, &dest);
+        return;
+    }
+    unsigned width = dest.reg.width;
+    if (width < 2)
+        source_error(p->as, dest.at.at, "imul destination requires a register width of 16, 32 or 64 bits");
+
+    /* In the register/immediate shorthand the register is also the source. */
+    bool has_immediate = starts_number(peek(p));
+    struct operand src = has_immediate ? dest : operand(p);
+    match_width(p, &src, width);
+    if (!has_immediate && !take(p, ',')) {
+        modrm(p->as, 0x0faf, dest.reg, &src, 0);
+        return;
+    }
+    peek(p);
+    const char *at = p->at;
+    uint64_t value = integer(p, width, false);
+    unsigned immediate = full_immediate_width(p, at, value, width);
+    if (fits_sign_extended(value, 1, width))
+        immediate = 1;
+    modrm(p->as, immediate == 1 ? 0x6b : 0x69, dest.reg, &src, immediate);
+    emit_word(&p->as->contents[p->as->current], value, immediate);
+}
+
+/* LEA: 8D /r. */
+static void encode_lea(struct parser *p)
+{
+    struct operand dest = operand(p);
+    if (dest.reg.width < 2)
+        source_error(p->as, dest.at.at, "lea requires a 16-, 32- or 64-bit register");
+    expect(p, ',', "expected ',' before lea address");
+    struct operand src = operand(p);
+    if (src.reg.width != 0)
+        source_error(p->as, src.at.at, "lea requires a memory operand");
+    match_width(p, &src, dest.reg.width);
+    modrm(p->as, 0x8d, dest.reg, &src, 0);
+}
+
+/* PUSH/POP: 50/58+rd, FF /6, 8F /0 and PUSH 6A ib or 68 id. */
+static void encode_stack(struct parser *p, bool push)
+{
     struct assembler *as = p->as;
     struct bytes *text = &as->contents[as->current];
-    if (is(op, "call") || is(op, "jmp")) {
-        append(text, is(op, "call") ? 0xe8 : 0xe9);
-    } else {
-        size_t i = 0;
-        while (i < sizeof conditions / sizeof conditions[0] && !is(op, conditions[i].name))
-            ++i;
-        if (i == sizeof conditions / sizeof conditions[0])
-            return false;
-        append(text, 0x0f);
-        append(text, (unsigned char)(0x80 | conditions[i].condition));
+    if (push && starts_number(peek(p))) {
+        uint64_t value = integer(p, 4, true);
+        unsigned immediate = fits_sign_extended(value, 1, 4) ? 1 : 4;
+        append(text, immediate == 1 ? 0x6a : 0x68);
+        emit_word(text, value, immediate);
+        return;
     }
+    struct operand op = operand(p);
+    unsigned width = width_of(&op);
+    if (width != 0 && width != 2 && width != 8)
+        source_error(as, op.at.at, "push/pop requires a 16- or 64-bit operand width");
+    if (op.reg.width != 0) {
+        if (width == 2)
+            append(text, 0x66);
+        if (op.reg.number >= 8)
+            append(text, 0x41);
+        append(text, (unsigned char)((push ? 0x50 : 0x58) + (op.reg.number & 7)));
+    } else {
+        /* The long-mode default is 64 bits without REX.W. */
+        struct reg digit = {.number = push ? 6 : 0, .width = width == 2 ? 2 : 0};
+        modrm(as, push ? 0xff : 0x8f, digit, &op, 0);
+    }
+}
+
+static void branch_displacement(struct parser *p)
+{
+    struct assembler *as = p->as;
     if (starts_number(peek(p))) {
-        emit_word(text, integer(p, 4, true), 4);
+        emit_word(&as->contents[as->current], integer(p, 4, true), 4);
     } else {
         struct token label = word(p);
+        if (!is_name(label))
+            source_error(as, label.at, "expected a branch label or displacement");
         int64_t addend = 0;
         char sign = peek(p);
         if (sign == '+' || sign == '-') {
@@ -711,6 +897,80 @@ static bool encode_branch(struct parser *p, struct token op)
             addend = signed_value(offset, sign == '-');
         }
         emit_relative(as, label, addend, 0);
+    }
+}
+
+/* Near CALL/JMP: E8/E9 cd, or FF /2 or /4 with a 64-bit operand. */
+static void encode_transfer(struct parser *p, bool call)
+{
+    struct parser lookahead = *p;
+    struct token name = word(&lookahead);
+    char next = peek(&lookahead);
+    if ((name.length == 0 && peek(&lookahead) == '[') ||
+        (operand_width(name) != 0 && (next == '[' || is_name(word(&lookahead)))) ||
+        (segment_prefix(name) != 0 && next == ':') ||
+        register_named(name).width != 0) {
+        struct operand dest = operand(p);
+        unsigned width = width_of(&dest);
+        if (width != 0 && width != 8)
+            source_error(p->as, dest.at.at, "near call/jmp requires a 64-bit operand width");
+        modrm(p->as, 0xff, (struct reg){.number = call ? 2 : 4}, &dest, 0);
+    } else {
+        append(&p->as->contents[p->as->current], call ? 0xe8 : 0xe9);
+        branch_displacement(p);
+    }
+}
+
+/* Jcc, SETcc, CMOVcc use the same condition numbers and aliases. */
+static int condition_named(struct token suffix)
+{
+    static const char *const names[16][3] = {
+        {"o"}, {"no"}, {"b", "c", "nae"}, {"ae", "nb", "nc"},
+        {"e", "z"}, {"ne", "nz"}, {"be", "na"}, {"a", "nbe"},
+        {"s"}, {"ns"}, {"p", "pe"}, {"np", "po"},
+        {"l", "nge"}, {"ge", "nl"}, {"le", "ng"}, {"g", "nle"}
+    };
+    for (unsigned cc = 0; cc < sizeof names / sizeof names[0]; ++cc)
+        for (unsigned alias = 0; alias < 3 && names[cc][alias]; ++alias)
+            if (is(suffix, names[cc][alias]))
+                return (int)cc;
+    return -1;
+}
+
+static bool encode_condition(struct parser *p, struct token op)
+{
+    unsigned prefix;
+    if (*op.at == 'j') {
+        prefix = 1;
+    } else if (op.length > 3 && memcmp(op.at, "set", 3) == 0) {
+        prefix = 3;
+    } else if (op.length > 4 && memcmp(op.at, "cmov", 4) == 0) {
+        prefix = 4;
+    } else {
+        return false;
+    }
+    int cc = condition_named((struct token){op.at + prefix, op.length - prefix});
+    if (cc < 0)
+        return false;
+    unsigned code = (unsigned)cc;
+    struct assembler *as = p->as;
+    if (prefix == 1) {
+        emit_opcode(&as->contents[as->current], 0x0f80 + code);
+        branch_displacement(p);
+    } else if (prefix == 3) {
+        struct operand dest = operand(p);
+        unsigned width = width_of(&dest);
+        if (width != 0 && width != 1)
+            source_error(as, dest.at.at, "setcc requires a byte operand");
+        modrm(as, 0x0f90 + code, (struct reg){.width = 1}, &dest, 0);
+    } else {
+        struct operand dest = operand(p);
+        if (dest.reg.width < 2)
+            source_error(as, dest.at.at, "cmovcc destination requires a register width of 16, 32 or 64 bits");
+        expect(p, ',', "expected ',' before cmovcc source");
+        struct operand src = operand(p);
+        match_width(p, &src, dest.reg.width);
+        modrm(as, 0x0f40 + code, dest.reg, &src, 0);
     }
     return true;
 }
@@ -903,18 +1163,89 @@ static bool directive(struct parser *p, struct token op)
 
 static void instruction(struct parser *p, struct token op)
 {
+    static const char *const binary[] = {"add", "or", "adc", "sbb", "and", "sub", "xor", "cmp"};
+    static const struct {
+        const char *name;
+        unsigned digit;
+    } shifts[] = {
+        {"rol", 0}, {"ror", 1}, {"rcl", 2}, {"rcr", 3},
+        {"shl", 4}, {"sal", 4}, {"shr", 5}, {"sar", 7}
+    };
+    /* INC, DEC: FE/FF. NOT, NEG, MUL, DIV, IDIV: F6/F7. */
+    static const struct {
+        const char *name;
+        unsigned opcode;
+        unsigned digit;
+    } unary[] = {
+        {"inc", 0xfe, 0}, {"dec", 0xfe, 1}, {"not", 0xf6, 2}, {"neg", 0xf6, 3},
+        {"mul", 0xf6, 4}, {"div", 0xf6, 6}, {"idiv", 0xf6, 7}
+    };
+    /* CBW/CWDE/CDQE, CWD/CDQ/CQO, LEAVE, CLD, STD, NOP and SYSCALL. */
+    static const struct {
+        const char *name;
+        unsigned opcode;
+    } fixed[] = {
+        {"cbw", 0x6698}, {"cwde", 0x98}, {"cdqe", 0x4898},
+        {"cwd", 0x6699}, {"cdq", 0x99}, {"cqo", 0x4899},
+        {"leave", 0xc9}, {"cld", 0xfc}, {"std", 0xfd}, {"nop", 0x90},
+        {"syscall", 0x0f05}
+    };
     struct assembler *as = p->as;
     struct bytes *text = &as->contents[as->current];
     if (as->current != 0)
         source_error(as, op.at, "instructions require .text");
     if (is(op, "mov")) {
         encode_mov(p);
+    } else if (is(op, "movsx") || is(op, "movzx") || is(op, "movsxd")) {
+        encode_extend(p, op);
+    } else if (is(op, "test")) {
+        encode_binary(p, 0, true);
+    } else if (is(op, "imul")) {
+        encode_imul(p);
+    } else if (is(op, "lea")) {
+        encode_lea(p);
+    } else if (is(op, "push") || is(op, "pop")) {
+        encode_stack(p, is(op, "push"));
+    } else if (is(op, "call") || is(op, "jmp")) {
+        encode_transfer(p, is(op, "call"));
     } else if (is(op, "ret")) {
-        append(text, 0xc3);
-    } else if (is(op, "syscall")) {
-        append(text, 0x0f);
-        append(text, 0x05);
-    } else if (!encode_branch(p, op)) {
+        /* RET: C3 or C2 iw for an unsigned stack adjustment. */
+        if (at_end(p)) {
+            append(text, 0xc3);
+        } else {
+            const char *at = p->at;
+            if (peek(p) == '-')
+                source_error(as, at, "ret requires an unsigned imm16");
+            uint64_t size = integer(p, 2, false);
+            append(text, 0xc2);
+            emit_word(text, size, 2);
+        }
+    } else if (!encode_condition(p, op)) {
+        for (unsigned i = 0; i < sizeof binary / sizeof binary[0]; ++i) {
+            if (is(op, binary[i])) {
+                encode_binary(p, i, false);
+                return;
+            }
+        }
+        for (size_t i = 0; i < sizeof shifts / sizeof shifts[0]; ++i) {
+            if (is(op, shifts[i].name)) {
+                encode_shift(p, shifts[i].digit);
+                return;
+            }
+        }
+        for (size_t i = 0; i < sizeof unary / sizeof unary[0]; ++i) {
+            if (is(op, unary[i].name)) {
+                struct operand rm = operand(p);
+                encode_unary(p, unary[i].opcode, unary[i].digit, &rm);
+                return;
+            }
+        }
+        for (size_t i = 0; i < sizeof fixed / sizeof fixed[0]; ++i) {
+            if (is(op, fixed[i].name)) {
+                emit_opcode(text, fixed[i].opcode);
+                return;
+            }
+        }
         source_error(as, op.at, "unsupported instruction or directive");
     }
 }
