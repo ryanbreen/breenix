@@ -171,6 +171,8 @@ def inner(args):
     fixture_builder = clone / 'scripts/breenfs-suite-fixtures.sh'
     build_fixtures = 'filesystem' in suites and fixture_builder.is_file()
     transfer = transfer_fixture.selected(args.suite)
+    toolchain = 'toolchain' in suites
+    toolchain_build = None
     root = tmp / 'ext2-staged.img' if 'sdk' in suites or build_fixtures or transfer else seed
     try:
         started = time.time()
@@ -290,6 +292,26 @@ def inner(args):
                 if not clean_build(status, log, 'filesystem fixtures', logs, out):
                     return 1
                 timings['filesystem_fixtures'] = round(time.time() - started)
+            if toolchain:
+                started = time.time()
+                bundle = tmp / 'toolchain-bundle'
+                fixture = out / 'toolchain-root.img'
+                script = clone / 'scripts'
+                log = logs / 'toolchain-build.log'
+                with log.open('w') as output:
+                    status = subprocess.call([str(script / 'build-toolchain.sh'), '--arch', 'x86_64',
+                                              '--output', str(bundle)], cwd=clone,
+                                             stdout=output, stderr=subprocess.STDOUT)
+                if not clean_build(status, log, 'reference toolchain bundle', logs, out):
+                    return 1
+                subprocess.run([str(script / 'create_ext2_disk.sh'), '--stage-from', str(root),
+                                '--output', str(fixture), '--suite', args.suite,
+                                '--toolchain-bundle', str(bundle)], cwd=clone, check=True)
+                toolchain_build = json.loads((bundle / 'build.json').read_text())
+                if toolchain_build['commit'] != args.sha:
+                    raise ValueError('toolchain build record differs from the image commit')
+                toolchain_build['root'] = {'size': fixture.stat().st_size, 'sha256': sha256(fixture)}
+                timings['toolchain_suite'] = round(time.time() - started)
         finally:
             if not local:
                 subprocess.run([sys.executable, str(HELPER), 'release', 'metal-build'], check=True)
@@ -335,6 +357,8 @@ def inner(args):
                  'stub': {'size': (out / 'stub.efi').stat().st_size, 'sha256': sha256(out / 'stub.efi')},
                  'manager': {'size': (out / 'manager.efi').stat().st_size, 'sha256': sha256(out / 'manager.efi')},
                  'ext2': {'size': (out / 'ext2.img').stat().st_size, 'sha256': sha256(out / 'ext2.img')}}
+        if toolchain_build is not None:
+            build['toolchain'] = toolchain_build
         if (out / 'test-binaries.img').is_file():
             build['testBinaries'] = {'size': (out / 'test-binaries.img').stat().st_size,
                                      'sha256': sha256(out / 'test-binaries.img')}

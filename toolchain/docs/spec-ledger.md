@@ -61,3 +61,15 @@ compiles `lp64_static_asserts.c` for both ELF targets under strict C11 warnings
 with `-nostdinc`. The native ASan and UBSan run exercises the varargs and
 scalar atomic interfaces. Guest execution of the AMD64 and AAPCS64 corpus
 belongs to 25.2b.
+
+## Reference corpus
+
+Each translation unit in `toolchain/corpus/` names the N1570 clauses it
+exercises. The `cases` file lists the source stems in execution order. A
+case's `.expect` starts with its decimal exit status and a newline. The
+remaining bytes are its expected stdout, which can be empty or contain NUL.
+Expectations are written from the clauses before compilation. The variadic
+case crosses the integer argument register boundary and consumes a promoted
+floating argument from both the original and a copied list. The atomics
+case exercises scalar fetch, failed and successful compare-exchange, and flag
+operations in one thread.

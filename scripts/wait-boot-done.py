@@ -26,7 +26,7 @@ SUITE_DEATH = re.compile(r"panicked at kernel/src/|KERNEL PANIC[:!]|!!! SOFT LOC
                          r"\[(?:DATA|INSTRUCTION)_ABORT\].*from_el0=0|memory allocation of \d+ bytes failed|allocation error:")
 
 
-def completion(serial, mode, suite, only=None):
+def completion(serial, mode, suite, only=None, *, allow_failed_cases=False):
     """Return None while waiting, or (success, reason) for a completed verdict."""
     # A logfile write can stop anywhere in a record; wait for its newline.
     lines = [line.rstrip("\r") for line in serial.split("\n")[:-1]]
@@ -65,7 +65,7 @@ def completion(serial, mode, suite, only=None):
     match = re.fullmatch(shape, done[0])
     if not match:
         return False, f"malformed completion record: {done[0]}"
-    return int(match[2]) == 0, done[0]
+    return allow_failed_cases or int(match[2]) == 0, done[0]
 
 
 def main():

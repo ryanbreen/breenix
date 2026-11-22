@@ -732,6 +732,10 @@ name = "suite-transfer-fixture"
 path = "src/suite_transfer_fixture.rs"
 
 [[bin]]
+name = "suite-toolchain"
+path = "src/suite_toolchain.rs"
+
+[[bin]]
 name = "users-exec_test"
 path = "src/users_exec.rs"
 

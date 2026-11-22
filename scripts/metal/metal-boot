@@ -50,6 +50,7 @@ import breenfs_replay  # noqa: E402
 import metal_power_cut  # noqa: E402
 import metal_prebuilt  # noqa: E402
 import transfer_fixture  # noqa: E402
+import toolchain_evidence  # noqa: E402
 from metal_score import boot_shape  # noqa: E402
 # Deployed, the host-key helper sits beside this file; in a checkout it is in scripts/.
 if not (Path(__file__).resolve().parent / 'hostkeys.py').is_file():
@@ -693,9 +694,28 @@ class Driver:
             raise Finish(m.EXIT_CANCELLED, 'the test-binary disk differs from its build record')
         if not prebuilt and build.get('suite') != (getattr(self.args, 'suite', None) if self.args.mode == 'suite' else None):
             raise Finish(m.EXIT_CANCELLED, 'the build staged fixtures for a different suite')
+        fixture = inputs / 'toolchain-root.img'
+        if 'toolchain' in suites(self.args):
+            if getattr(self.args, 'disk', None) == 'install':
+                raise Finish(m.EXIT_CANCELLED, 'a toolchain fixture cannot be an install image')
+            record = build.get('toolchain')
+            try:
+                toolchain_evidence.build_identity(record, self.args.commit, 'x86_64')
+                if record.get('root') != metal_prebuilt.facts(fixture):
+                    raise ValueError('fixture root differs from its toolchain build record')
+            except (OSError, ValueError) as error:
+                raise Finish(m.EXIT_CANCELLED, str(error)) from None
+            # ext2.img is the ordinary/persistent input. Only a toolchain
+            # suite request replaces that private staged copy with its fixture.
+            fixture.replace(inputs / 'ext2.img')
+            build['ext2'] = record['root']
+        elif self.args.mode != 'suite' and ('toolchain' in build or fixture.exists()):
+            raise Finish(m.EXIT_CANCELLED, 'a toolchain fixture needs a suite boot')
         self.delivery['build'] = build
         run = m.read_json(self.dir / 'run.json', {})
         run['build'] = {key: build[key] for key in ('commit', 'profile', 'features')}
+        if 'toolchain' in suites(self.args):
+            run['build']['toolchain'] = build['toolchain']
         m.write_json(self.dir / 'run.json', run)
         self.event('build-delivered', commit=build.get('commit'), guard=build.get('guardTarget'))
         if run.get('builder') == 'mac' or 'buildChoice' in run:
@@ -830,7 +850,7 @@ class Driver:
         image = self.stage / 'boot.efi'
         wrapped = metal_image.stub_efi(inputs / 'stub.efi', disk, image)
         disk.unlink()
-        for name in ('uefi.img', 'ext2.img', 'stub.efi', 'test-binaries.img', 'manager.efi'):
+        for name in ('uefi.img', 'ext2.img', 'toolchain-root.img', 'stub.efi', 'test-binaries.img', 'manager.efi'):
             (inputs / name).unlink(missing_ok=True)
         shutil.rmtree(self.stage / 'persist', ignore_errors=True)
         self.payload_facts = {'path': image, 'size': wrapped['size'], 'sha256': wrapped['sha256'],
@@ -1312,7 +1332,11 @@ class Driver:
         run = m.read_json(self.dir / 'run.json', {})
         try:
             metal_score.require_suite_profile(run)
-        except ValueError as error:
+            if 'toolchain' in suites(self.args) and not getattr(self.args, 'case', None):
+                toolchain_evidence.verify_sysroot(
+                    (self.dir / 'serial.txt').read_text(errors='replace'),
+                    run.get('build', {}).get('toolchain'), self.args.commit, 'x86_64')
+        except (OSError, ValueError) as error:
             self.event('suite-verdict', status=1, reason=str(error))
             m.write_text(self.dir / 'suite-verdict.txt', 'FAIL: ' + str(error) + '\n')
             return False
