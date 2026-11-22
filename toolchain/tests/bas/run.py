@@ -12,6 +12,7 @@ from integer import INTEGER_ENCODINGS, INTEGER_REJECTIONS
 
 TESTS = Path(__file__).resolve().parents[1]
 TOOLCHAIN = TESTS.parent
+ASSEMBLER_CORPUS = TOOLCHAIN / "corpus/assembler"
 CHECK = "bas::exit42_object_passes_elfcheck"
 ADDRESSING_CHECK = "bas::sib_rip_forms_match_sdm_table"
 RELOCATION_CHECK = "bas::rela_pc32_for_external_call"
@@ -218,6 +219,39 @@ def check_relocations(bas, elfcheck, path):
             "external is an undefined global")
 
 
+def check_supplemental_encodings(bas, elfcheck, path):
+    fixture = ASSEMBLER_CORPUS / "encodings.s"
+    sections, contents, _, _ = read_object(bas, elfcheck, path, fixture)
+    expected_rows = (ASSEMBLER_CORPUS / "encodings.hex").read_text().splitlines()
+    instructions = [line for line in fixture.read_text().splitlines() if not line.startswith(";")]
+    require(len(instructions) == len(expected_rows), "encoding corpus and table length differ")
+    actual = contents(sections[b".text"][1])
+    offset = 0
+    for line, row in zip(instructions, expected_rows):
+        expected = bytes.fromhex(row)
+        encoded = actual[offset:offset + len(expected)]
+        require(encoded == expected, f"{line}: got {encoded.hex(' ')}, expected {row}")
+        offset += len(expected)
+    require(offset == len(actual), "encoding corpus has trailing output bytes")
+
+    for line, reason in (
+        ("lock cmp dword [rax], 1", "does not accept lock"),
+        ("lock add eax, [rax]", "requires a memory destination"),
+        ("repne stosb", "conflicts"),
+        ("movss xmm1, eax", "XMM"),
+        ("fld byte [rax]", "x87 memory width"),
+        ("mov eax, [rip + symbol@tpoff]", "conflicts"),
+        ("mov eax, [symbol@tpoff]\nsymbol:", "requires a TLS symbol"),
+    ):
+        source = path.with_suffix(".s")
+        source.write_text(f"section .text\n{line}\n")
+        rejected = path.with_suffix(".rejected.o")
+        result = subprocess.run([bas, "-o", rejected, source], capture_output=True, text=True, timeout=10)
+        require(result.returncode == 1 and f"{source}:2:" in result.stderr
+                and reason in result.stderr and not rejected.exists(),
+                f"wrong diagnostic for {line!r}: {result.stderr}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--clang", type=Path, required=True)
@@ -246,6 +280,7 @@ def main():
                                check=True, timeout=50)
                 for check, run in ((RELOCATION_CHECK, check_relocations),
                                    (INTEGER_CHECK, check_integer),
+                                   ("bas::supplemental_encodings", check_supplemental_encodings),
                                    (ADDRESSING_CHECK, check_addressing), (CHECK, check_object)):
                     run(bas, elfcheck, directory / f"{run.__name__}-{profile}.o")
                     print(f"{check} [{profile}] PASS", flush=True)

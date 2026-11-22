@@ -11,6 +11,9 @@ enum {
     ELF_HEADER_SIZE = 64,
     SECTION_HEADER_SIZE = 64,
     SYMBOL_SIZE = 24,
+    RELA_SIZE = 24,
+    SHT_RELA = 4,
+    SHF_INFO_LINK = 0x40,
     SHT_SYMTAB = 2,
     SHT_STRTAB = 3,
     SHN_LORESERVE = 0xff00,
@@ -147,8 +150,25 @@ static bool write_symbols(FILE *out, const struct elf64_symbol *symbols, size_t 
     return true;
 }
 
+static bool write_relocations(FILE *out, const struct elf64_section *target,
+                              const uint32_t *indices)
+{
+    /* gABI §5.6: r_info joins the sorted symbol index and relocation type. */
+    for (size_t i = 0; i < target->relocation_count; ++i) {
+        const struct elf64_relocation *rel = &target->relocations[i];
+        unsigned char bytes[RELA_SIZE];
+        store_le(bytes, 8, rel->offset);
+        store_le(bytes + 8, 8, ((uint64_t)indices[rel->symbol] << 32) | rel->type);
+        store_le(bytes + 16, 8, (uint64_t)rel->addend);
+        if (!write_bytes(out, bytes, sizeof bytes))
+            return false;
+    }
+    return true;
+}
+
 static bool write_object(FILE *out, const struct elf64_section *sections,
-                         const struct section_header *headers, uint16_t count,
+                         size_t section_count, const struct section_header *headers,
+                         uint16_t count, const uint32_t *indices,
                          const struct elf64_symbol *symbols, size_t symbol_count,
                          uint64_t header_offset)
 {
@@ -166,9 +186,12 @@ static bool write_object(FILE *out, const struct elf64_section *sections,
         position = header->offset;
         if (header->type == ELF64_NOBITS)
             continue;
-        if (i < symtab) {
+        if (i <= section_count) {
             const struct elf64_section *section = &sections[i - 1];
             if (!write_bytes(out, section->data, section->size))
+                return false;
+        } else if (header->type == SHT_RELA) {
+            if (!write_relocations(out, &sections[header->info - 1], indices))
                 return false;
         } else if (i == symtab) {
             if (!write_symbols(out, symbols, symbol_count))
@@ -182,9 +205,12 @@ static bool write_object(FILE *out, const struct elf64_section *sections,
         } else {
             if (fputc(0, out) == EOF)
                 return false;
-            for (uint16_t j = 1; j < count; ++j)
+            for (uint16_t j = 1; j < count; ++j) {
+                if (headers[j].type == SHT_RELA && !write_bytes(out, ".rela", 5))
+                    return false;
                 if (!write_name(out, headers[j].name))
                     return false;
+            }
         }
         position += header->size;
     }
@@ -198,7 +224,7 @@ static bool write_object(FILE *out, const struct elf64_section *sections,
 }
 
 static bool layout(struct section_header *headers, uint16_t count,
-                   const struct elf64_section *sections,
+                   const struct elf64_section *sections, size_t section_count,
                    const struct elf64_symbol *symbols, size_t symbol_count,
                    uint64_t *header_offset)
 {
@@ -214,12 +240,25 @@ static bool layout(struct section_header *headers, uint16_t count,
             ++first_global;
     }
 
-    for (uint16_t i = 1; i < symtab; ++i) {
+    uint16_t rela = (uint16_t)(section_count + 1);
+    for (uint16_t i = 1; i <= section_count; ++i) {
         const struct elf64_section *section = &sections[i - 1];
         headers[i] = (struct section_header){
             .name = section->name, .type = section->type, .flags = section->flags,
             .size = section->size, .alignment = section->alignment
         };
+        if (section->relocation_count != 0) {
+            if (section->relocation_count > UINT64_MAX / RELA_SIZE)
+                return false;
+            for (size_t j = 0; j < section->relocation_count; ++j)
+                if (section->relocations[j].symbol >= symbol_count)
+                    return false;
+            headers[rela++] = (struct section_header){
+                .name = section->name, .type = SHT_RELA, .flags = SHF_INFO_LINK,
+                .size = section->relocation_count * (uint64_t)RELA_SIZE,
+                .alignment = 8, .entry_size = RELA_SIZE, .link = symtab, .info = i
+            };
+        }
     }
     headers[symtab] = (struct section_header){
         .name = ".symtab", .type = SHT_SYMTAB, .alignment = 8, .entry_size = SYMBOL_SIZE,
@@ -235,6 +274,11 @@ static bool layout(struct section_header *headers, uint16_t count,
     uint32_t section_names_size = 1;
     for (uint16_t i = 1; i < count; ++i) {
         headers[i].name_offset = section_names_size;
+        if (headers[i].type == SHT_RELA) {
+            if (section_names_size > UINT32_MAX - 5)
+                return false;
+            section_names_size += 5;
+        }
         if (!add_name(&section_names_size, headers[i].name))
             return false;
     }
@@ -263,17 +307,40 @@ bool elf64_write_rel(FILE *out, const struct elf64_section *sections,
         errno = EFBIG;
         return false;
     }
-    uint16_t count = (uint16_t)(section_count + 4);
+    size_t rela_count = 0;
+    for (size_t i = 0; i < section_count; ++i)
+        rela_count += sections[i].relocation_count != 0;
+    if (section_count + rela_count >= SHN_LORESERVE - 4) {
+        errno = EFBIG;
+        return false;
+    }
+    uint16_t count = (uint16_t)(section_count + rela_count + 4);
     struct section_header *headers = calloc(count, sizeof *headers);
     if (headers == NULL)
         return false;
 
     uint64_t header_offset;
-    bool ok = layout(headers, count, sections, symbols, symbol_count, &header_offset);
-    if (ok)
-        ok = write_object(out, sections, headers, count, symbols, symbol_count, header_offset);
-    else
+    bool ok = layout(headers, count, sections, section_count, symbols, symbol_count,
+                     &header_offset);
+    if (!ok)
         errno = EFBIG;
+
+    uint32_t *indices = NULL;
+    if (ok && rela_count != 0) {
+        indices = malloc(symbol_count * sizeof *indices);
+        if (indices == NULL) {
+            ok = false;
+        } else {
+            uint32_t local = 1;
+            uint32_t global = headers[count - 3].info;
+            for (size_t i = 0; i < symbol_count; ++i)
+                indices[i] = symbols[i].global ? global++ : local++;
+        }
+    }
+    if (ok)
+        ok = write_object(out, sections, section_count, headers, count, indices,
+                          symbols, symbol_count, header_offset);
+    free(indices);
     free(headers);
     return ok;
 }

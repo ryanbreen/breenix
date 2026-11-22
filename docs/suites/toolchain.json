@@ -22,7 +22,20 @@
     {
       "id": "assembler",
       "title": "Instruction encodings and ELF objects from our assembler",
-      "cases": []
+      "cases": [
+        {
+          "id": "encodings-match",
+          "title": "Assembler output matches the instruction encoding table"
+        },
+        {
+          "id": "object-runs",
+          "title": "Fresh objects match the recorded link inputs and both staged ELFs run"
+        },
+        {
+          "id": "bad-input-located",
+          "title": "Malformed assembly fails with its source file and line number"
+        }
+      ]
     },
     {
       "id": "linker",

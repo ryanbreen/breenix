@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEV = Path("opt/breenix-dev/25.2")
 CORPUS = Path("usr/share/breenix/toolchain")
 SUITE = Path("sbin/suite-toolchain")
+BAS = DEV / "bin/bas"
 MANIFEST = DEV / "manifest.sha256"
 RECORD = DEV / "build.json"
 PREFIXES = (Path("opt/breenix-dev"), CORPUS)
@@ -82,13 +83,21 @@ def seal(bundle, commit, arch):
             if header.is_file():
                 sources[DEV / directory / header.relative_to(headers)] = header
     sources[DEV / "linker.ld"] = ROOT / "userspace/programs/linker.ld"
-    required = {SUITE, DEV / "lib/libc.a"}
+    required = {SUITE, DEV / "lib/libc.a", BAS}
     corpus = ROOT / "toolchain/corpus"
     for name in check_corpus(corpus):
         for suffix in (".c", ".expect"):
             sources[CORPUS / (name + suffix)] = corpus / (name + suffix)
         for suffix in (".elf", ".inventory.json"):
             required.add(CORPUS / (name + suffix))
+    if arch == "x86_64":
+        fixtures = corpus / "assembler"
+        for source in fixtures.iterdir():
+            if source.is_file():
+                sources[CORPUS / "assembler" / source.name] = source
+        for name in ("sse-exit", "x87-exit"):
+            for suffix in (".elf", ".link.json"):
+                required.add(CORPUS / "assembler" / (name + suffix))
     if missing := (sources.keys() | required) - set(files):
         raise ValueError(f"toolchain fixture omits {min(missing)}")
     for path, source in sources.items():
@@ -110,6 +119,10 @@ def stat_path(debugfs, image, path):
     return None
 
 
+def fixture_mode(path):
+    return 0o755 if path in (SUITE, BAS) or path.suffix == ".elf" else 0o644
+
+
 def install(debugfs, image, bundle, arch, scratch):
     tree = bundle / "root"
     files = payload(tree)
@@ -129,7 +142,7 @@ def install(debugfs, image, bundle, arch, scratch):
                 for path in directories if stat_path(debugfs, image, path) is None]
     # Use paths relative to the trusted fixture tree for debugfs's host reads.
     for path in files:
-        mode = "0100755" if path == SUITE or path.suffix == ".elf" else "0100644"
+        mode = f"0{0o100000 | fixture_mode(path):o}"
         commands.append(f"write {path} /{path}\nset_inode_field /{path} mode {mode}\n"
                         f"set_inode_field /{path} uid 0\nset_inode_field /{path} gid 0\n")
     command_file = scratch / "debugfs.commands"
@@ -149,8 +162,7 @@ def install(debugfs, image, bundle, arch, scratch):
     if payload(readback) != files or manifest_bytes(readback, files) != manifest_bytes(tree, files):
         raise ValueError("staged toolchain fixture differs from its source tree")
     for path in files:
-        expected = 0o755 if path == SUITE or path.suffix == ".elf" else 0o644
-        if (readback / path).stat().st_mode & 0o777 != expected:
+        if (readback / path).stat().st_mode & 0o777 != fixture_mode(path):
             raise ValueError(f"staged mode differs for /{path}")
 
 

@@ -28,6 +28,8 @@ class ToolchainImagePrefixTest(unittest.TestCase):
             # verifies and inventories real reference ELFs.
             fixtures = {
                 "opt/breenix-dev/25.2/include/stddef.h": b"support header\n",
+                "opt/breenix-dev/25.2/bin/bas": b"\x7fELF assembler",
+                "usr/share/breenix/toolchain/assembler/sse-exit.link.json": b"link receipt\n",
                 "usr/share/breenix/toolchain/return.elf": b"\x7fELF reference",
                 "usr/share/breenix/toolchain/return.expect": b"42\n",
                 "sbin/suite-toolchain": b"\x7fELF suite",
@@ -49,7 +51,8 @@ class ToolchainImagePrefixTest(unittest.TestCase):
                 target = bundle / "root" / path
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(data)
-                target.chmod(0o755 if path.endswith(".elf") or path.startswith("sbin/") else 0o644)
+                target.chmod(0o755 if path.endswith((".elf", "/bin/bas"))
+                             or path.startswith("sbin/") else 0o644)
             (binaries / "suite-toolchain.elf").write_bytes(fixtures["sbin/suite-toolchain"])
             (binaries / "suite-files-io.elf").write_bytes(b"\x7fELF unrelated suite")
             subprocess.run(
@@ -99,6 +102,7 @@ class ToolchainImagePrefixTest(unittest.TestCase):
             self.assertEqual(ordinary, tree(stage("no-suite", "")))
             self.assertEqual(before, hashlib.sha256(seed.read_bytes()).digest())
             self.assertLess(ordinary.keys(), selected.keys())
+            self.assertEqual(stat.S_IMODE(selected["opt/breenix-dev/25.2/bin/bas"][0]), 0o755)
             self.assertEqual(ordinary, {key: selected[key] for key in ordinary})
             added = selected.keys() - ordinary.keys()
             self.assertEqual({key: selected[key][1] for key in added if selected[key][1] is not None},

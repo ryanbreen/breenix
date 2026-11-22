@@ -7,12 +7,13 @@ Run `bas -o OBJECT SOURCE` to write a little-endian x86-64 ELF relocatable objec
 
 Use lower-case Intel-style instructions and registers. A semicolon outside a
 string starts a comment. The initial section is `.text`, where instructions go.
-`section NAME` selects `.text`, `.data`, `.rodata` or `.bss`.
+`section NAME` selects `.text`, `.data`, `.rodata`, `.bss`, `.tdata` or `.tbss`.
 
 - `NAME:` defines a label at the current section offset. Labels are local
   by default and can have names like `.Lloop`. Use `global NAME` anywhere to
   give a symbol global binding. A global declaration without a definition
-  produces an undefined ELF symbol.
+  produces an undefined ELF symbol. `extern NAME` also declares a global
+  symbol for references resolved at link time.
 - `mov` supports 8-, 16-, 32- and 64-bit GPR pairs and GPR loads and stores.
   A register implies the memory width. Write `byte`, `word`, `dword` or
   `qword` before the address to make that width explicit. An optional `ptr`
@@ -26,13 +27,14 @@ string starts a comment. The initial section is `.text`, where instructions go.
   segment base. The other four segment prefixes encode but have no effect
   on ordinary memory addresses in 64-bit mode.
 - `[rip + DISP]` uses a literal displacement. `[rip + LABEL + ADDEND]`
-  computes the displacement from the end of the instruction to a label in
-  the same section. `eip` selects the 32-bit address-size override.
+  computes the displacement from the end of the instruction to the label.
+  `eip` selects the 32-bit address-size override.
 - Direct `call`, `jmp` and the flag-based conditional jumps use rel32.
   An integer is the signed displacement from the end of the instruction.
   A label with an optional signed addend can refer forward or backward
-  within the same section. Indirect `call` and `jmp` take a 64-bit register or
-  memory operand. `ret` optionally takes an unsigned 16-bit stack adjustment.
+  within the same section or refer to a symbol resolved at link time.
+  Indirect `call` and `jmp` take a 64-bit register or memory operand.
+  `ret` optionally takes an unsigned 16-bit stack adjustment.
 - `db`, `dw`, `dd` and `dq` emit lists of 1-, 2-, 4- and 8-byte
   little-endian integers, respectively. The aliases are `.byte`, `.word`,
   `.long` and `.quad`. Integers accept decimal and `0x` hexadecimal.
@@ -41,9 +43,9 @@ string starts a comment. The initial section is `.text`, where instructions go.
   and `\xHH`.
 - `.zero COUNT` fills `COUNT` bytes with `0x00`. `align BYTES[, FILL]` aligns
   to a positive power of two and raises the section's ELF alignment.
-  The default fill is `0x90` in `.text` and `0x00` elsewhere. `.bss` accepts
-  `0x00` data and records its size as `SHT_NOBITS` in the object. <!-- claim-lint:ok: toolchain/tests/bas/run.py checks the fixture using this directive. -->
-- `.type NAME, @function`, `@object` or `@notype` sets the ELF symbol type.
+  The default fill is `0x90` in `.text` and `0x00` elsewhere. For `.bss` and
+  `.tbss`, use a fill of `0x00`. They record their sizes as `SHT_NOBITS`. <!-- claim-lint:ok: toolchain/tests/bas/run.py checks the .zero directive and NOBITS layout. -->
+- `.type NAME, @function`, `@object`, `@tls` or `@notype` sets the ELF symbol type.
   `.size NAME, SIZE` accepts a nonnegative integer or a difference between
   offsets in one section, such as `. - NAME`. A dot in that expression
   denotes the directive's offset.
@@ -74,15 +76,54 @@ string starts a comment. The initial section is `.text`, where instructions go.
   a 16-, 32- or 64-bit register. `leave`, `nop`, `cld`, `std` and
   `syscall` take no operands.
 
-bas resolves same-section references while writing the object.
-External references and references between sections require the relocations
-scheduled for 25.3b. The ARM64 host build emits x86-64 objects. AArch64
-instruction encoding, object metadata and relocations are A1 work.
+## Floating point, synchronization and strings
+
+- SSE/SSE2 accepts `xmm0` through `xmm15`, scalar `ss`/`sd` and packed
+  `ps`/`pd` operations, and aligned and unaligned moves. The supported forms
+  cover arithmetic, comparisons, scalar conversions, register transfers,
+  shuffles and common packed integer operations. Use `xmmword` for explicit
+  128-bit memory operands and `dword` or `qword` to select an integer source
+  width for `cvtsi2ss` and `cvtsi2sd`.
+- x87 uses `st(0)` through `st(7)` (also `st0` through `st7`). It supports
+  stack and memory loads and stores, arithmetic, comparisons, integer
+  conversions, and control and status words. Use `tbyte` for an 80-bit
+  memory operand and an explicit width where the opcode depends on it.
+- `lock` applies to the memory-destination forms of the supported
+  read-modify-write instructions, including `cmpxchg`, `xadd` and `xchg`.
+  `lfence`, `sfence` and `mfence` have no operands.
+- String instructions `movs`, `stos`, `lods`, `cmps` and `scas` use the
+  suffix `b`, `w`, `d` or `q` for implicit operands. Use `rep` for
+  moves, stores and loads, and `repe` or `repne` for comparisons and scans.
+
+## Symbol expressions
+
+Fields support a symbol with a signed integer addend. Unmodified
+same-section PC-relative references are resolved while assembling.
+Cross-section and undefined global references create ELF64 RELA records.
+
+| Form | Relocation |
+| --- | --- |
+| `dq symbol` | `R_X86_64_64` |
+| `dd symbol` or an absolute address with a 32-bit base/index | `R_X86_64_32` |
+| `dd symbol@32s` or an absolute address with default 64-bit address size | `R_X86_64_32S` |
+| `call symbol`, `jmp symbol`, conditional branch, or `[rip + symbol]` | `R_X86_64_PC32` |
+| `call symbol@plt` or `jmp symbol@plt` | `R_X86_64_PLT32` |
+| `[rip + symbol@gotpcrel]` | `R_X86_64_GOTPCREL` |
+| `fs:[symbol@tpoff]` | `R_X86_64_TPOFF32` |
+
+The PC-relative addend accounts for the bytes from the relocated field to
+the end of the instruction. Labels in `.tdata` and `.tbss` default to
+`STT_TLS`. Declare an undefined TLS symbol with `extern` and `.type NAME, @tls`
+before using `@tpoff`.
+
+The ARM64 host and guest builds emit x86-64 objects. AArch64 encodings,
+object metadata and relocations are A1 work.
 
 ## Host checks
 
 Run `python3 toolchain/tests/bas/run.py --clang /absolute/path/to/clang` on
-macOS. The runner checks the exit42, addressing and integer fixtures on both
-host architectures and under ASan and UBSan. The independent elfcheck validates
+macOS. The runner checks the exit42, addressing, integer, supplemental encoding
+and relocation fixtures on both host architectures and under ASan and UBSan.
+The independent elfcheck validates
 the resulting objects. The byte expectations cite the pinned ISA tables in
 `toolchain/tests/bas/`.
