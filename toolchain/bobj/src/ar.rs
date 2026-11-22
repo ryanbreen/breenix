@@ -15,6 +15,7 @@ const TRAILER: &[u8; 2] = b"`\n";
 #[derive(Debug)]
 pub struct Member<'a> {
     pub header_offset: usize,
+    pub data_offset: usize,
     pub name: &'a [u8],
     pub bytes: &'a [u8],
 }
@@ -169,6 +170,7 @@ fn scan(bytes: &[u8]) -> Result<Scan<'_>, Error> {
                 )?;
                 members.push(Member {
                     header_offset: pos,
+                    data_offset: payload_start,
                     name,
                     bytes: payload,
                 });

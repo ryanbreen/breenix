@@ -12,6 +12,9 @@ dependencies = [
 [[package]]
 name = "bld"
 version = "0.1.0"
+dependencies = [
+ "bobj",
+]
 
 [[package]]
 name = "bobj"

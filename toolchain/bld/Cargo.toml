@@ -7,3 +7,14 @@ description = "Breenix static linker"
 
 [lints]
 workspace = true
+
+[dependencies]
+bobj = { path = "../bobj" }
+
+[features]
+read-fault-probe = []
+
+[[bin]]
+name = "bld-read-probe"
+path = "src/bin/read_probe.rs"
+required-features = ["read-fault-probe"]

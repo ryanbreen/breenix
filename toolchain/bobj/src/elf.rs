@@ -34,7 +34,7 @@ pub const SHF_GROUP: u64 = 0x200;
 pub const SHF_TLS: u64 = 0x400;
 
 pub const SHN_UNDEF: u16 = 0;
-const SHN_LORESERVE: u16 = 0xff00;
+pub const SHN_LORESERVE: u16 = 0xff00;
 pub const SHN_ABS: u16 = 0xfff1;
 pub const SHN_COMMON: u16 = 0xfff2;
 const SHN_XINDEX: u16 = 0xffff;
@@ -127,6 +127,14 @@ record! {
 }
 
 impl Header {
+    pub fn new(file_type: u16, machine: u16) -> Self {
+        Self {
+            file_type,
+            machine,
+            ..Self::default()
+        }
+    }
+
     /// Encode a System V ELF header, filling in the identification and sizes.
     pub fn to_bytes(self) -> [u8; Self::SIZE] {
         let mut bytes = Self {

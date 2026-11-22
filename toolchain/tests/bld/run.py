@@ -2,6 +2,7 @@
 """Check bld's static links without executing their AMD64 output."""
 
 import argparse
+import hashlib
 import math
 from pathlib import Path
 import struct
@@ -468,20 +469,24 @@ def main():
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="bld-test-") as tmp:
         root = Path(tmp)
-        source = TOOLCHAIN / "bld/bld.c"
-        require(source.is_file(), "bld has no implementation")
         for arch in args.host_arch or ["native"]:
             directory = root / arch
             directory.mkdir()
-            bld, elfcheck = directory / "bld", directory / "elfcheck"
-            flags = STRICT + (["-arch", arch] if arch != "native" else [])
-            flags += ["-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all"]
-            bld_sources = [source, source.with_name("script.c"), TOOLCHAIN / "common/ar.c"]
+            target = {"arm64": "aarch64-apple-darwin", "x86_64": "x86_64-apple-darwin"}.get(arch)
+            flags = ["--target", target] if target else []
+            target_dir = TOOLCHAIN / "target"
+            cargo = ["cargo", "build", "--locked", "--release", "--target-dir", target_dir, *flags]
+            binaries = (target_dir / target if target else target_dir) / "release"
+            bld, elfcheck = binaries / "bld", binaries / "elfcheck"
+            subprocess.run([*cargo, "-p", "bld", "--bin", "bld"], cwd=TOOLCHAIN,
+                           check=True, timeout=60)
             if args.check in ("io", "all"):
-                io_bld = directory / "bld-io"
-                io_probe = Path(__file__).with_name("read_probe.c")
-                subprocess.run([args.clang, *flags, "-Dread=bld_test_read", *bld_sources,
-                                io_probe, "-o", io_bld], check=True, timeout=40)
+                io_bld = binaries / "bld-read-probe"
+                subprocess.run([*cargo, "-p", "bld", "--features", "read-fault-probe",
+                                "--bin", "bld-read-probe"], cwd=TOOLCHAIN, check=True, timeout=60)
+                require(hashlib.sha256(bld.read_bytes()).digest()
+                        != hashlib.sha256(io_bld.read_bytes()).digest(),
+                        "shipped bld and bld-read-probe have the same digest")
                 try:
                     check_archive_reads(io_bld, directory)
                 except (OSError, ValueError, subprocess.SubprocessError) as error:
@@ -489,10 +494,8 @@ def main():
                 print(f"PASS {READ_CHECK} ({arch})", flush=True)
             if args.check == "io":
                 continue
-            for sources, output in [(bld_sources, bld),
-                                    ([TESTS / "elfcheck/elfcheck.c"], elfcheck)]:
-                subprocess.run([args.clang, *flags, *sources, "-o", output],
-                               check=True, timeout=40)
+            subprocess.run([*cargo, "-p", "elfcheck", "--bin", "elfcheck"], cwd=TOOLCHAIN,
+                           check=True, timeout=60)
             if args.check in ("tls", "all"):
                 try:
                     tbss_takes_no_file_bytes(args.clang, bld, elfcheck, directory)
