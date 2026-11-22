@@ -1,81 +1,60 @@
-/* N1570 §5.1.1.2 phases 1–3: expose the preprocessing token stream with -E. */
-#include "pp.h"
+/* N1570 §5.1.1.2 phases 1–4: expose preprocessing with -E. */
+#include "preprocess.h"
 
-#include <errno.h>
-#include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-static const char *read_input(FILE *input, char **bytes, size_t *length)
-{
-    size_t capacity = 0;
-    *bytes = NULL;
-    *length = 0;
-    for (;;) {
-        if (capacity > SIZE_MAX / 2)
-            return "source file is too large";
-        capacity = capacity == 0 ? 4096 : capacity * 2;
-        void *data = realloc(*bytes, capacity);
-        if (data == NULL)
-            return "cannot allocate input buffer";
-        *bytes = data;
-        size_t available = capacity - *length;
-        size_t n = fread(*bytes + *length, 1, available, input);
-        *length += n;
-        if (n != available)
-            return ferror(input) ? "cannot read source file" : NULL;
-    }
-}
+#ifndef BCC_SYSTEM_ROOT
+#define BCC_SYSTEM_ROOT "/opt/breenix-dev/25.2"
+#endif
 
-static bool write_tokens(const PpSource *source)
+static int usage(void)
 {
-    for (size_t i = 0; i < source->count; ++i) {
-        const PpToken *token = &source->tokens[i];
-        if (token->space_before && putchar(' ') == EOF)
-            return false;
-        if (fwrite(source->text + token->offset, 1, token->length, stdout) != token->length)
-            return false;
-    }
-    return fflush(stdout) == 0;
+    fprintf(stderr, "usage: bcc -E [-I DIR] [--target=x86_64|aarch64] FILE\n");
+    return 2;
 }
 
 int main(int argc, char **argv)
 {
-    if (argc != 3 || strcmp(argv[1], "-E") != 0) {
-        fprintf(stderr, "usage: bcc -E FILE\n");
-        return 2;
-    }
-    const char *path = argv[2];
-    FILE *input = fopen(path, "rb");
-    if (input == NULL) {
-        fprintf(stderr, "%s:1:1: error: %s\n", path, strerror(errno));
+    const char **dirs = calloc((size_t)argc, sizeof *dirs);
+    if (dirs == NULL) {
+        fprintf(stderr, "bcc: error: cannot allocate include path\n");
         return 1;
     }
-    char *bytes;
-    size_t length;
-    const char *read_error = read_input(input, &bytes, &length);
-    if (fclose(input) != 0 && read_error == NULL)
-        read_error = "cannot close source file";
-    if (read_error != NULL) {
-        fprintf(stderr, "%s:1:1: error: %s\n", path, read_error);
-        free(bytes);
-        return 1;
+    PpOptions options = {
+        .target = BCC_X86_64, .include_dirs = dirs, .system_root = BCC_SYSTEM_ROOT
+    };
+    bool preprocess = false, operands = false, valid = true;
+    const char *path = NULL;
+    for (int i = 1; valid && i < argc; ++i) {
+        const char *arg = argv[i];
+        if (!operands && strcmp(arg, "--") == 0) {
+            operands = true;
+        } else if (!operands && strcmp(arg, "-E") == 0) {
+            preprocess = true;
+        } else if (!operands && strncmp(arg, "-I", 2) == 0) {
+            const char *dir = arg + 2;
+            if (*dir == '\0' && ++i < argc)
+                dir = argv[i];
+            if (*dir == '\0')
+                valid = false;
+            else
+                dirs[options.include_count++] = dir;
+        } else if (!operands && strcmp(arg, "--target=x86_64") == 0) {
+            options.target = BCC_X86_64;
+        } else if (!operands && strcmp(arg, "--target=aarch64") == 0) {
+            options.target = BCC_AARCH64;
+        } else if ((operands || *arg != '-') && path == NULL) {
+            path = arg;
+        } else {
+            valid = false;
+        }
     }
-
-    PpSource source;
-    PpError error;
-    bool ok = pp_scan(&source, path, bytes, length, &error);
-    free(bytes);
-    if (!ok) {
-        fprintf(stderr, "%s:%zu:%zu: error: %s\n", path, error.location.line,
-                error.location.column, error.message);
-        return 1;
-    }
-
-    ok = write_tokens(&source);
-    pp_free(&source);
-    if (!ok)
-        fprintf(stderr, "bcc: error: cannot write preprocessed output\n");
-    return ok ? 0 : 1;
+    int status;
+    if (valid && preprocess && path != NULL)
+        status = pp_preprocess(&options, path, stdout) ? 0 : 1;
+    else
+        status = usage();
+    free(dirs);
+    return status;
 }

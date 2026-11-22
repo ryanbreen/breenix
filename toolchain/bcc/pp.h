@@ -45,4 +45,13 @@ bool pp_scan(PpSource *source, const char *path, const char *bytes, size_t size,
              PpError *error);
 void pp_free(PpSource *source);
 
+/* As pp_scan, but keep complete logical lines before a phase-3 error so
+ * phase 4 can apply any preceding #line directives to the diagnostic. */
+bool pp_scan_prefix(PpSource *source, const char *path, const char *bytes, size_t size,
+                    PpError *error);
+
+/* Lex the first token in a NUL-terminated spelling without phases 1 and 2,
+ * comment removal or directive recognition. Return zero for an invalid prefix. */
+size_t pp_token_prefix(const char *text, size_t length, bool pragma, PpKind *kind);
+
 #endif

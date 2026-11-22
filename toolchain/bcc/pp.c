@@ -272,18 +272,94 @@ static const char *header_end(const char *p)
     return NULL;
 }
 
-typedef enum { LINE_START, AFTER_HASH, INCLUDE_OPERAND, IN_LINE } LineContext;
+/* Recognize a token after phases 1 and 2. Pasting uses the same grammar
+ * without the source-file contexts or comment recognition. */
+static const char *scan_token(const char *p, const char *limit, bool include,
+                              bool pragma, PpKind *kind, const char **bad,
+                              const char **message)
+{
+    const char *end = include ? header_end(p) : NULL;
+    const char *quote = literal_quote(p);
+    if (*p == '\n') {
+        *kind = PP_NEWLINE;
+        return p + 1;
+    }
+    if (end != NULL) {
+        *kind = PP_HEADER;
+        return end;
+    }
+    if (quote != NULL) {
+        *kind = *quote == '"' ? PP_STRING : PP_CHARACTER;
+        end = literal_end(quote);
+        if (end == NULL) {
+            *bad = quote;
+            *message = *kind == PP_STRING ? "unterminated string literal" :
+                                            "unterminated character constant";
+            return NULL;
+        }
+        if (*kind == PP_CHARACTER && end == quote + 2) {
+            *bad = quote;
+            *message = "empty character constant";
+            return NULL;
+        }
+        /* N1570 §6.10.9 uses a pragma-specific literal spelling. */
+        if (!pragma && (*bad = invalid_escape(quote + 1, end - 1)) != NULL) {
+            *message = "invalid escape sequence";
+            return NULL;
+        }
+        return end;
+    }
+    if (digit(*p) || (*p == '.' && digit(p[1]))) {
+        *kind = PP_NUMBER;
+        return number_end(p);
+    }
+
+    size_t width = nondigit_width(p);
+    if (width != 0) {
+        *kind = PP_IDENTIFIER;
+        end = p + width;
+        while ((width = digit(*end) ? 1 : nondigit_width(end)) != 0)
+            end += width;
+        return end;
+    }
+    width = punctuator_width(p);
+    *kind = width != 0 ? PP_PUNCTUATOR : PP_OTHER;
+    if (width == 0)
+        width = utf8_width((const unsigned char *)p, (size_t)(limit - p));
+    if (width == 0) {
+        *bad = p;
+        *message = "invalid UTF-8 in token";
+        return NULL;
+    }
+    return p + width;
+}
+
+size_t pp_token_prefix(const char *text, size_t length, bool pragma, PpKind *kind)
+{
+    const char *bad, *message;
+    if (length == 0 || strchr(" \t\v\f\r\n", *text) != NULL)
+        return 0;
+    const char *end = scan_token(text, text + length, false, pragma, kind, &bad, &message);
+    return end == NULL ? 0 : (size_t)(end - text);
+}
+
+typedef enum { LINE_START, AFTER_HASH, INCLUDE_OPERAND, PRAGMA_OPERAND, IN_LINE } LineContext;
 
 static LineContext next_context(LineContext context, PpKind kind, const char *p, size_t width)
 {
     if (kind == PP_NEWLINE)
         return LINE_START;
+    if (context == PRAGMA_OPERAND)
+        return PRAGMA_OPERAND;
     if (context == LINE_START && kind == PP_PUNCTUATOR &&
         ((width == 1 && *p == '#') || (width == 2 && p[0] == '%' && p[1] == ':')))
         return AFTER_HASH;
-    if (context == AFTER_HASH && kind == PP_IDENTIFIER && width == 7 &&
-        memcmp(p, "include", 7) == 0)
-        return INCLUDE_OPERAND;
+    if (context == AFTER_HASH && kind == PP_IDENTIFIER) {
+        if (width == 7 && memcmp(p, "include", 7) == 0)
+            return INCLUDE_OPERAND;
+        if (width == 6 && memcmp(p, "pragma", 6) == 0)
+            return PRAGMA_OPERAND;
+    }
     return IN_LINE;
 }
 
@@ -336,46 +412,11 @@ static bool tokenize(PpSource *source, const char *bytes, size_t size, const siz
         }
 
         PpKind kind;
-        const char *end = context == INCLUDE_OPERAND ? header_end(p) : NULL;
-        const char *quote = literal_quote(p);
-        if (*p == '\n') {
-            kind = PP_NEWLINE;
-            end = p + 1;
-        } else if (end != NULL) {
-            kind = PP_HEADER;
-        } else if (quote != NULL) {
-            kind = *quote == '"' ? PP_STRING : PP_CHARACTER;
-            end = literal_end(quote);
-            if (end == NULL) {
-                const char *message = kind == PP_STRING ? "unterminated string literal" :
-                                                        "unterminated character constant";
-                return fail(error, locate(&physical, origins[quote - text]), message);
-            }
-            if (kind == PP_CHARACTER && end == quote + 2)
-                return fail(error, locate(&physical, origins[quote - text]),
-                            "empty character constant");
-            const char *bad_escape = invalid_escape(quote + 1, end - 1);
-            if (bad_escape != NULL)
-                return fail(error, locate(&physical, origins[bad_escape - text]),
-                            "invalid escape sequence");
-        } else if (digit(*p) || (*p == '.' && digit(p[1]))) {
-            kind = PP_NUMBER;
-            end = number_end(p);
-        } else {
-            size_t width = nondigit_width(p);
-            if (width != 0) {
-                kind = PP_IDENTIFIER;
-                end = p + width;
-                while ((width = digit(*end) ? 1 : nondigit_width(end)) != 0)
-                    end += width;
-            } else {
-                width = punctuator_width(p);
-                kind = width != 0 ? PP_PUNCTUATOR : PP_OTHER;
-                if (width == 0)
-                    width = utf8_width((const unsigned char *)p, (size_t)(limit - p));
-                end = p + width;
-            }
-        }
+        const char *bad, *message;
+        const char *end = scan_token(p, limit, context == INCLUDE_OPERAND,
+                                     context == PRAGMA_OPERAND, &kind, &bad, &message);
+        if (end == NULL)
+            return fail(error, locate(&physical, origins[bad - text]), message);
 
         size_t first = origins[p - text];
         size_t last = origins[end - text - 1];
@@ -399,8 +440,8 @@ static bool tokenize(PpSource *source, const char *bytes, size_t size, const siz
     return true;
 }
 
-bool pp_scan(PpSource *source, const char *path, const char *bytes, size_t size,
-             PpError *error)
+static bool scan_source(PpSource *source, const char *path, const char *bytes, size_t size,
+                        PpError *error, bool retain_prefix)
 {
     *source = (PpSource){.path = path};
     PpLocation start = {1, 1};
@@ -415,12 +456,31 @@ bool pp_scan(PpSource *source, const char *path, const char *bytes, size_t size,
         return fail(error, start, "cannot allocate source buffer");
     }
     size_t length;
-    bool ok = normalize(bytes, size, source->text, origins, &length, error) &&
-              tokenize(source, bytes, size, origins, length, error);
+    bool normalized = normalize(bytes, size, source->text, origins, &length, error);
+    bool ok = normalized && tokenize(source, bytes, size, origins, length, error);
     free(origins);
-    if (!ok)
-        pp_free(source);
+    if (!ok) {
+        if (normalized && retain_prefix) {
+            /* The unfinished logical line may itself be a broken directive. */
+            while (source->count > 0 && source->tokens[source->count - 1].kind != PP_NEWLINE)
+                --source->count;
+        } else {
+            pp_free(source);
+        }
+    }
     return ok;
+}
+
+bool pp_scan(PpSource *source, const char *path, const char *bytes, size_t size,
+             PpError *error)
+{
+    return scan_source(source, path, bytes, size, error, false);
+}
+
+bool pp_scan_prefix(PpSource *source, const char *path, const char *bytes, size_t size,
+                    PpError *error)
+{
+    return scan_source(source, path, bytes, size, error, true);
 }
 
 void pp_free(PpSource *source)

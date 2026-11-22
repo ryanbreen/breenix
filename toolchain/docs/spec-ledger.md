@@ -162,14 +162,39 @@ Physical ranges use 1-based byte columns in the original source, including
 bytes removed by trigraph replacement and splicing. The lexer records
 logical newline tokens and whether horizontal whitespace precedes a token.
 It recognizes header names after a leading `#include` or `%:include`.
-Macro replacement and directive execution are 25.5a2.
 
-Build the stage's `-E` entry point and run the independent fixtures with:
+## Compiler translation phase 4
+
+`toolchain/bcc/pp_expand.c` implements N1570 §§6.10.3–6.10.3.5 and
+6.10.8. Arguments used by `#` or `##` retain their spelling. Other arguments
+are expanded before substitution. Rescanning uses per-token suppression
+sets and includes the remaining source tokens. Token pasting evaluates
+left to right, one of the orders allowed by §6.10.3.3p3.
+
+`toolchain/bcc/pp_expr.c` evaluates §6.10.1 expressions with 64-bit
+`intmax_t` and `uintmax_t` rules on both LP64 targets. Plain `char` is signed
+for x86-64 and unsigned for AArch64, following the AMD64 psABI §3.1.2 and
+AAPCS64 §§5.1, 10.1. The execution character encoding is UTF-8. Signed
+right shifts sign-extend, and ordinary multibyte character constants pack
+their bytes into a target `int`.
+
+`toolchain/bcc/preprocess.c` handles directive and include state under
+N1570 §§6.10–6.10.7 and 6.10.9. Quoted includes look next to the current
+physical file first. Both forms then search `-I` directories in order and
+the bundle's `include-support` and `include` directories. The compiled
+bundle root defaults to `/opt/breenix-dev/25.2` and can be set with
+`BCC_SYSTEM_ROOT` when building bcc. Phase 4 keeps pragmas in the `-E` token
+stream. It retains the original spelling location and the presumed
+location used by `#line`, with include notes on diagnostics.
+
+Build the `-E` entry point and run the independent fixtures with:
 
 ```sh
 clang -std=c11 -Wall -Wextra -Werror -pedantic -fsanitize=address,undefined \
-  toolchain/bcc/bcc.c toolchain/bcc/pp.c -o /tmp/bcc
-python3 toolchain/tests/cconf/run.py --cc /tmp/bcc --mode E --stage a1
+  toolchain/bcc/*.c -o /tmp/bcc
+python3 toolchain/tests/cconf/run.py --cc /tmp/bcc --mode E --stage a1 --stage a2
+python3 toolchain/tests/cconf/run.py --cc /tmp/bcc --mode E --stage a1 --stage a2 \
+  --target aarch64 --cc-arg=--target=aarch64
 ```
 
 The direct lexer check uses the same flags and links
