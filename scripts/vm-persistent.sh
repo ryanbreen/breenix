@@ -10,6 +10,7 @@
 # vm-persistent.sh qemu install --run-dir DIR
 # vm-persistent.sh qemu migrate|check-manifests|cutover|rescue|return --run-dir DIR
 # vm-persistent.sh qemu probe-migration --run-dir DIR --identity FILE --host-key FILE
+# vm-persistent.sh qemu begin-retirement|reclaim-ext2 --run-dir DIR
 # Each migration action stages the next boot. Cold-check the stopped migration
 # before cutover, then promote a verified NEXT before staging rescue and return.
 # vm-persistent.sh qemu fault-boot --run-dir DIR [--inject feeder-hang|health-hang]
@@ -18,10 +19,10 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 umask 077
-usage() { echo 'usage: vm-persistent.sh qemu build|boot|fault-boot|reboot|stop|promote|rollback|stage-candidate|install|migrate|check-manifests|cutover|rescue|return|probe-migration --run-dir DIR [--operator-account FILE [--system-image IMAGE | --fault panic-reboot|watchdog] | --mode console|desktop [--kernel FILE] [--slot current|next] | --inject feeder-hang|health-hang|upgrade-no-ssh|upgrade-service-down | --identity FILE --host-key FILE]' >&2; exit 2; }
+usage() { echo 'usage: vm-persistent.sh qemu build|boot|fault-boot|reboot|stop|promote|rollback|stage-candidate|install|migrate|check-manifests|cutover|rescue|return|probe-migration|begin-retirement|reclaim-ext2 --run-dir DIR [--operator-account FILE [--system-image IMAGE | --fault panic-reboot|watchdog] | --mode console|desktop [--kernel FILE] [--slot current|next] | --inject feeder-hang|health-hang|upgrade-no-ssh|upgrade-service-down | --identity FILE --host-key FILE]' >&2; exit 2; }
 [ "$#" -ge 2 ] && [ "$1" = qemu ] || usage
 op=$2; shift 2
-case "$op" in build|boot|fault-boot|reboot|stop|promote|rollback|stage-candidate|install|migrate|check-manifests|cutover|rescue|return|probe-migration) ;; *) usage ;; esac
+case "$op" in build|boot|fault-boot|reboot|stop|promote|rollback|stage-candidate|install|migrate|check-manifests|cutover|rescue|return|probe-migration|begin-retirement|reclaim-ext2) ;; *) usage ;; esac
 run= system= account= kernel= mode= fault= inject= slot= identity= host_key=
 while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] && [ -n "$2" ] || usage
@@ -55,7 +56,7 @@ case "$op" in
                      case "$inject" in ""|upgrade-no-ssh|upgrade-service-down) ;; *) usage ;; esac ;;
     probe-migration) [ -z "$inject$fault$system$account$kernel$mode$slot" ] || usage
                      [ -f "$identity" ] && [ -f "$host_key" ] || usage ;;
-    reboot|stop|promote|rollback|install|migrate|check-manifests|cutover|rescue|return)
+    reboot|stop|promote|rollback|install|migrate|check-manifests|cutover|rescue|return|begin-retirement|reclaim-ext2)
         [ -z "$inject$fault$system$account$kernel$mode$slot" ] || usage ;;
 esac
 # debugfs command files and QEMU comma-separated options cannot safely encode
@@ -141,17 +142,23 @@ fi
 # Existing disk, socket and kernel arguments continue to use physical paths.
 intent_run=$run
 run=$(cd "$run" && pwd -P)
+retirement="$run/retirement.json"
+outside_retirement() {
+    [ ! -e "$retirement" ] || { echo 'operation unavailable during ext2 retirement' >&2; exit 1; }
+}
 case "$op" in
     probe-migration)
         export PATH="$PATH:/opt/homebrew/opt/e2fsprogs/sbin:/usr/local/opt/e2fsprogs/sbin"
         exec python3 -B "$ROOT/scripts/vm-artifacts.py" probe-cycle "$ROOT" "$run" "$identity" "$host_key" ;;
-    migrate|check-manifests|cutover|rescue|return)
+    migrate|check-manifests|cutover|rescue|return|begin-retirement|reclaim-ext2)
         mkdir "$run/boot.lock" || { echo 'run is already booting or staging' >&2; exit 1; }
         trap 'rmdir "$run/boot.lock"' EXIT
+        case "$op" in begin-retirement|reclaim-ext2) ;; *) outside_retirement ;; esac
         python3 -B "$ROOT/scripts/vm-artifacts.py" "$op" "$ROOT" "$run" "$breenfs_tools"
         exit 0 ;;
-    stage-candidate|install|fault-boot)
+    stage-candidate|fault-boot)
         [ ! -e "$run/migration-cycle.json" ] || { echo 'operation unavailable after the ext2 images are frozen' >&2; exit 1; } ;;
+    reboot) outside_retirement ;;
 esac
 if [ "$op" = stage-candidate ]; then
     mkdir "$run/boot.lock" || { echo 'run is already booting or staging' >&2; exit 1; }
@@ -196,6 +203,7 @@ fi
 if [ "$op" = promote ] || [ "$op" = rollback ]; then
     mkdir "$run/boot.lock" || { echo 'run is already booting' >&2; exit 1; }
     trap 'rmdir "$run/boot.lock"' EXIT
+    outside_retirement
     if [ -f "$run/migration-cycle.json" ]; then
         python3 -B "$ROOT/scripts/vm-artifacts.py" "$op-cycle" "$ROOT" "$run" ''
     else
@@ -272,14 +280,22 @@ cleanup() {
     rmdir "$run/boot.lock" 2>/dev/null || true; }
 trap cleanup EXIT
 case "$op" in
-    install|fault-boot)
+    fault-boot)
         [ ! -e "$run/migration-cycle.json" ] || { echo 'the ext2 images are frozen' >&2; exit 1; } ;;
+    install)
+        [ ! -e "$run/migration-cycle.json" ] || [ -f "$retirement" ] || { echo 'the ext2 images are frozen' >&2; exit 1; } ;;
 esac
 verify=verify
 if [ "$op" = fault-boot ]; then verify=verify-fault; fi
 slot_args=()
 cycle_phase=
-if [ "$op" = boot ] && [ -f "$run/migration-cycle.json" ]; then
+retirement_drives=()
+if [ -f "$retirement" ]; then
+    [ "$mode" = console ] || { echo 'ext2 retirement uses console mode' >&2; exit 1; }
+    drive_args=$(python3 -B "$ROOT/scripts/vm-artifacts.py" prepare-retirement "$ROOT" "$run" "$op:$slot")
+    while IFS= read -r arg; do retirement_drives+=("$arg"); done <<< "$drive_args"
+    slot_args=(-fw_cfg "name=opt/breenix/intent,file=$intent_run/boot-intent")
+elif [ "$op" = boot ] && [ -f "$run/migration-cycle.json" ]; then
     cycle_phase=$(python3 -B "$ROOT/scripts/vm-artifacts.py" verify-cycle "$ROOT" "$run" '')
     slot_args=(-fw_cfg "name=opt/breenix/intent,file=$intent_run/boot-intent")
 elif [ "$op" = boot ] && { [ -e "$run/slots.json" ] || [ -L "$run/slots.json" ]; }; then
@@ -289,7 +305,7 @@ else
     [ -f "$kernel" ] || { echo 'missing kernel' >&2; exit 1; }
     python3 "$ROOT/scripts/vm-artifacts.py" "$verify" "$ROOT" "$run" "$kernel"
 fi
-if [ "$op" = install ]; then
+if [ "$op" = install ] && [ ! -f "$retirement" ]; then
     python3 "$ROOT/scripts/vm_install.py" prepare "$run"
     slot_args=(-fw_cfg "name=opt/breenix/intent,file=$intent_run/boot-intent")
 fi
@@ -320,6 +336,7 @@ mkdir -p "${TMPDIR:-/tmp}/breenix-boot"
 serial=$(mktemp "${TMPDIR:-/tmp}/breenix-boot/vm-persistent.XXXXXX")
 printf '%s\n' "$serial" > "$run/serial-path"
 host_slot_serial "$serial"
+if [ -f "$retirement" ]; then export BREENIX_QUIET=1 BREENIX_QUIET_MAX_LOAD=8; fi
 host_slot_quiet
 rm -f "$run/serial.sock" "$run/console.sock"
 python3 "$ROOT/scripts/vm-serial-pump.py" "$run" "$serial" &
@@ -341,13 +358,15 @@ if [ "$(uname -s)" = Darwin ]; then
     # The QoS library selects a sleep-excluding clock for this QEMU process.
     export BREENIX_QEMU_SUSPEND_CLOCK=1
     export ANGLE_DEFAULT_PLATFORM="${ANGLE_DEFAULT_PLATFORM-metal}"
-    display=(-display cocoa,gl=es)
-    gpu=(-device virtio-gpu-gl-pci)
+    if [ ! -f "$retirement" ]; then
+        display=(-display cocoa,gl=es)
+        gpu=(-device virtio-gpu-gl-pci)
+    fi
 fi
 profile=$(python3 "$ROOT/scripts/qemu-arm64.py" --print-profile "$qemu" -M virt,gic-version=3 -cpu max)
 printf '%s\n' "$profile" > "$run/qemu-profile"
 export BREENIX_VIGIL_ARCH=aarch64 BREENIX_VIGIL_DISPLAY=false
-[ "$(uname -s)" != Darwin ] || export BREENIX_VIGIL_DISPLAY=true
+if [ "$(uname -s)" = Darwin ] && [ ! -f "$retirement" ]; then export BREENIX_VIGIL_DISPLAY=true; fi
 vigil=$("$ROOT/scripts/vigil-record.sh" start qemu "$mode" '' "$serial" '' "$profile")
 # On interruption stop and reap only this launch before releasing its run lock.
 child=
@@ -363,7 +382,9 @@ stop_child() {
 trap stop_child TERM HUP INT
 disks=(-device virtio-blk-device,drive=home -drive "if=none,id=home,format=raw,file=$run/home.img"
        -device virtio-blk-device,drive=ext2 -drive "if=none,id=ext2,format=raw,file=$run/system.img")
-if [ "$op" = install ]; then
+if [ -f "$retirement" ]; then
+    disks=("${retirement_drives[@]}")
+elif [ "$op" = install ]; then
     disks=(-device virtio-blk-device,drive=home -drive "if=none,id=home,format=raw,file=$run/system.img"
            -device virtio-blk-device,drive=ext2 -drive "if=none,id=ext2,format=raw,file=$run/install-root.img")
 fi
@@ -383,6 +404,11 @@ case "$cycle_phase" in
 esac
 action=(-device i6300esb -action watchdog=reset)
 if [ "$op" = fault-boot ] && [ "$fault_kind" = panic-reboot ]; then disks=(); action+=(-action reboot=shutdown); fi
+if [ -f "$retirement" ] && ! python3 -c 'import os, sys; sys.exit(os.getloadavg()[0] > 8)'; then
+    echo 'ext2 retirement requires host load at or below 8' >&2
+    "$ROOT/scripts/vigil-record.sh" finish "$vigil" 1
+    exit 1
+fi
 if [ "$op" = install ]; then
     rm -f "$run/install-monitor-ready" "$run/install-qemu-pid"
     python3 "$ROOT/scripts/vm_install.py" monitor "$run" &
@@ -424,7 +450,10 @@ fi
 wait "$pump" 2>/dev/null || true
 pump=
 set -e
-if [ "$op" = install ]; then
+if [ -f "$retirement" ]; then
+    python3 -B "$ROOT/scripts/vm-artifacts.py" finish-retirement "$ROOT" "$run" "$code:$install_code" || code=1
+    rm -f "$run/install-references" "$run/install-monitor-ready" "$run/install-qemu-pid"
+elif [ "$op" = install ]; then
     # The installer may have written the system disk even on failure.
     python3 "$ROOT/scripts/vm-artifacts.py" stage-intent "$ROOT" "$run" '' || code=1
     if [ "$code" -eq 0 ] && [ "$install_code" -eq 0 ]; then
@@ -442,7 +471,7 @@ if [ "$op" = install ]; then
 fi
 if [ -n "$cycle_phase" ]; then
     python3 -B "$ROOT/scripts/vm-artifacts.py" finish-cycle "$ROOT" "$run" "$cycle_phase:$code" || code=1
-elif [ "$code" -eq 0 ] && [ "$op" = boot ]; then
+elif [ ! -f "$retirement" ] && [ "$code" -eq 0 ] && [ "$op" = boot ]; then
     python3 "$ROOT/scripts/vm-artifacts.py" continuation "$ROOT" "$run" ""
 fi
 host_slot_header "$serial"

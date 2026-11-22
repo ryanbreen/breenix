@@ -37,6 +37,8 @@ def main(run, whole_path):
         record['kind'] = 'fault-test'
     if record['evidenceEligible']:
         record['artifacts'] = verified['artifacts']
+    if 'retirement' in verified:
+        record['retirement'] = verified['retirement']
     # Freeze the scoring definitions at the image's recorded build commit,
     # rather than consulting a later checkout when this run reboots.
     definition = {}
