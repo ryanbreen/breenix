@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Build elfcheck and score it against its hand-built controls.
 
-Usage: run.py --clang /absolute/path/to/clang [--host-arch ARCH ...]
+Usage: run.py --clang /absolute/path/to/clang --lld /absolute/path/to/lld
+              [--host-arch ARCH ...]
 
 The clang named here builds elfcheck under -std=c11 -Wall -Wextra -Werror
 -pedantic, once plainly and once under ASan and UBSan, and cross-compiles the
-black-box C and C++ sources to x86-64 ELF relocatable objects. On macOS each
+black-box C and C++ sources to x86-64 ELF relocatable objects. The lld named
+here links blackbox/program.c's objects through userspace/programs/linker.ld
+into static executables, which `elfcheck --exec` must accept. On macOS each
 --host-arch (arm64, x86_64) adds a strict build for that architecture whose
 binary runs every control as well; Rosetta runs the x86_64 binary on arm64.
 
@@ -22,12 +25,16 @@ import sys
 import tempfile
 
 HERE = Path(__file__).resolve().parent
+ROOT = HERE.parents[2]
 sys.path.insert(0, str(HERE))
 import fixtures  # noqa: E402
+import fixtures_exec  # noqa: E402
 
 STRICT = ["-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic"]
 SANITIZE = ["-O1", "-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all"]
-FINDING = re.compile(r"^(?P<file>.+): (?P<check>(?:ehdr|shdr|strtab|symtab|sym|rela|group|limit)\.[a-z0-9-]+): ")
+FINDING = re.compile(r"^(?P<file>.+): (?P<check>(?:ehdr|shdr|strtab|symtab|sym|rela|group|limit"
+                     r"|phdr|load|tls)\.[a-z0-9-]+): ")
+ALL_CHECKS = fixtures.CHECKS + fixtures_exec.CHECKS
 BLACKBOX = [
     ("objects.c", ["-O0"]),
     ("objects.c", ["-O2", "-fPIC"]),
@@ -35,6 +42,14 @@ BLACKBOX = [
     ("objects.c", ["-O2", "-ffunction-sections", "-fdata-sections"]),
     ("comdat.cc", ["-O0", "-fno-exceptions"]),
 ]
+# program.c compile flags, then extra lld flags; each link uses linker.ld.
+BLACKBOX_EXEC = [
+    (["-O0"], []),
+    (["-O2"], []),
+    (["-O2", "-fPIE"], []),
+    (["-O2", "-ffunction-sections", "-fdata-sections"], ["--gc-sections"]),
+]
+LINKER_SCRIPT = ROOT / "userspace" / "programs" / "linker.ld"
 
 
 class Runner:
@@ -52,8 +67,8 @@ class Runner:
         result = subprocess.run(command, capture_output=True, text=True, timeout=60)
         return result.returncode == 0 and not result.stderr.strip(), result.stderr.strip()
 
-    def findings(self, binary, path):
-        result = subprocess.run([*binary, str(path)], capture_output=True, text=True, timeout=10)
+    def findings(self, binary, path, mode=()):
+        result = subprocess.run([*binary, *mode, str(path)], capture_output=True, text=True, timeout=10)
         found = set()
         for line in result.stdout.splitlines():
             match = FINDING.match(line)
@@ -62,24 +77,30 @@ class Runner:
         return result, found
 
 
-def score(runner, label, binary, baseline, controls):
-    listing = subprocess.run([*binary, "--list"], capture_output=True, text=True, timeout=10)
-    listed = listing.stdout.split()
-    runner.result(f"check_ids_match[{label}]",
-                  listing.returncode == 0 and sorted(listed) == sorted(fixtures.CHECKS)
-                  and len(set(listed)) == len(listed),
-                  f"elfcheck --list differs from fixtures.CHECKS: {sorted(set(listed) ^ set(fixtures.CHECKS))}")
-
-    result, found = runner.findings(binary, baseline)
-    runner.result(f"baseline_passes[{label}]", result.returncode == 0 and not found,
+def score_controls(runner, label, binary, mode, baseline, controls, table):
+    prefix = "exec_" if mode else ""
+    result, found = runner.findings(binary, baseline, mode)
+    runner.result(f"{prefix}baseline_passes[{label}]", result.returncode == 0 and not found,
                   f"exit {result.returncode}, findings {sorted(found)}, stderr {result.stderr.strip()!r}")
 
     for name, path in controls.items():
-        expected = fixtures.CONTROLS[name][0]
-        result, found = runner.findings(binary, path)
-        runner.result(f"control[{label}][{name}]", result.returncode == 1 and found == expected,
+        expected = table[name][0]
+        result, found = runner.findings(binary, path, mode)
+        runner.result(f"{prefix}control[{label}][{name}]", result.returncode == 1 and found == expected,
                       f"exit {result.returncode}, expected {sorted(expected)}, found {sorted(found)}"
                       + (f", stderr {result.stderr.strip()!r}" if result.stderr.strip() else ""))
+
+
+def score(runner, label, binary, rel_set, exec_set):
+    listing = subprocess.run([*binary, "--list"], capture_output=True, text=True, timeout=10)
+    listed = listing.stdout.split()
+    runner.result(f"check_ids_match[{label}]",
+                  listing.returncode == 0 and sorted(listed) == sorted(ALL_CHECKS)
+                  and len(set(listed)) == len(listed),
+                  f"elfcheck --list differs from the fixtures' CHECKS: {sorted(set(listed) ^ set(ALL_CHECKS))}")
+
+    score_controls(runner, label, binary, (), *rel_set, fixtures.CONTROLS)
+    score_controls(runner, label, binary, ("--exec",), *exec_set, fixtures_exec.CONTROLS)
 
     missing = runner.scratch / "absent.o"
     result = subprocess.run([*binary, str(missing)], capture_output=True, text=True, timeout=10)
@@ -90,23 +111,29 @@ def score(runner, label, binary, baseline, controls):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--clang", type=Path, required=True)
+    parser.add_argument("--lld", type=Path, required=True)
     parser.add_argument("--host-arch", action="append", default=[], choices=["arm64", "x86_64"])
     options = parser.parse_args()
-    if not options.clang.is_absolute() or not os.access(options.clang, os.X_OK):
-        parser.error("--clang requires an absolute executable path")
+    for flag, tool in (("--clang", options.clang), ("--lld", options.lld)):
+        if not tool.is_absolute() or not os.access(tool, os.X_OK):
+            parser.error(f"{flag} requires an absolute executable path")
     if options.host_arch and platform.system() != "Darwin":
         parser.error("--host-arch uses the macOS -arch driver option")
+    # The generic lld driver needs its ELF flavor named; an ld.lld name selects it.
+    lld = [str(options.lld)] + (["-flavor", "gnu"] if options.lld.name in {"lld", "rust-lld"} else [])
 
     with tempfile.TemporaryDirectory(prefix="elfcheck.") as scratch:
         scratch = Path(scratch)
         runner = Runner(options.clang, scratch)
 
-        uncovered = set(fixtures.CHECKS) - set().union(*(e for e, _ in fixtures.CONTROLS.values()))
-        unknown = set().union(*(e for e, _ in fixtures.CONTROLS.values())) - set(fixtures.CHECKS)
+        expected = [e for e, _ in fixtures.CONTROLS.values()] + [e for e, _ in fixtures_exec.CONTROLS.values()]
+        uncovered = set(ALL_CHECKS) - set().union(*expected)
+        unknown = set().union(*expected) - set(ALL_CHECKS)
         runner.result("every_check_has_a_control", not uncovered and not unknown,
                       f"uncovered {sorted(uncovered)}, unknown {sorted(unknown)}")
 
-        baseline, controls = fixtures.write(scratch / "controls")
+        rel_set = fixtures.write(scratch / "controls")
+        exec_set = fixtures_exec.write(scratch / "exec-controls")
 
         binaries = []
         ok, stderr = runner.compile(scratch / "elfcheck", ["-O2"])
@@ -123,7 +150,7 @@ def main():
                 binaries.append((arch, [*launcher, str(output)]))
 
         for label, binary in binaries:
-            score(runner, label, binary, baseline, controls)
+            score(runner, label, binary, rel_set, exec_set)
 
         if binaries:
             # Real compiler output runs through the sanitized build when it exists.
@@ -138,6 +165,26 @@ def main():
                 if not runner.result(name + "[compiles]", built.returncode == 0, built.stderr.strip()):
                     continue
                 result, found = runner.findings(binary, output)
+                runner.result(name, result.returncode == 0 and not found,
+                              f"exit {result.returncode}, findings {sorted(found)}: {result.stdout.strip()}")
+
+            for flags, link_flags in BLACKBOX_EXEC:
+                tag = "".join(flags + link_flags)
+                obj, exe = scratch / f"program{tag}.o", scratch / f"program{tag}"
+                name = f"lld_executable_passes[{label}][program.c {' '.join(flags + link_flags)}]"
+                built = subprocess.run(
+                    [str(options.clang), "--target=x86_64-unknown-linux-gnu", "-ffreestanding", "-nostdinc",
+                     "-fno-addrsig", "-mno-red-zone", *flags, "-c", "-o", str(obj),
+                     str(HERE / "blackbox" / "program.c")],
+                    capture_output=True, text=True, timeout=30)
+                if not runner.result(name + "[compiles]", built.returncode == 0, built.stderr.strip()):
+                    continue
+                linked = subprocess.run([*lld, "-static", "-T", str(LINKER_SCRIPT), *link_flags,
+                                         "-o", str(exe), str(obj)],
+                                        capture_output=True, text=True, timeout=30)
+                if not runner.result(name + "[links]", linked.returncode == 0, linked.stderr.strip()):
+                    continue
+                result, found = runner.findings(binary, exe, ("--exec",))
                 runner.result(name, result.returncode == 0 and not found,
                               f"exit {result.returncode}, findings {sorted(found)}: {result.stdout.strip()}")
 
