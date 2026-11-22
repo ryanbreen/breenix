@@ -289,6 +289,25 @@ class HostRecordTest(StateTest):
 
 
 class PortableRootTest(unittest.TestCase):
+    def test_mac_artifact_recipe_uses_guest_file_modes_under_private_umask(self):
+        builder = load_script('metal-build')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            clone, out, scratch = (root / name for name in ('clone', 'out', 'scratch'))
+            clone.mkdir()
+            recipe = root / 'artifact-recipe.py'
+            recipe.write_text("from pathlib import Path\nPath('passwd').write_text('fixture')\nraise SystemExit(1)\n")
+            args = SimpleNamespace(local=True, suite='transfer-fixture,users')
+            previous_umask = os.umask(0o077)
+            try:
+                with patch.object(builder, 'paths', return_value=(clone, out, scratch)), \
+                     patch.object(builder, 'ARTIFACTS', recipe), patch.dict(os.environ, CARGO_HOME=str(root)):
+                    # Stop after the image inputs so this check never needs Cargo or a guest.
+                    self.assertEqual(builder.inner(args), 1)
+                self.assertEqual((clone / 'passwd').stat().st_mode & 0o777, 0o644)
+            finally:
+                os.umask(previous_umask)
+
     def test_local_build_snapshot_resolves_the_stubs_committed_sources(self):
         local = load_script('metal-build-local')
         with tempfile.TemporaryDirectory() as temporary:
