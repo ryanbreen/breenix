@@ -1,6 +1,8 @@
-//! A64 base instructions from Arm ARM DDI 0487 M.b, Chapter C6.
+//! A64 instructions from Arm ARM DDI 0487 M.b, Chapters C6 and C7.
 
+mod fp;
 mod integer;
+mod memory;
 
 use bobj::elf::aarch64::{
     R_AARCH64_CALL26, R_AARCH64_CONDBR19, R_AARCH64_JUMP26, R_AARCH64_TSTBR14,
@@ -12,7 +14,8 @@ use crate::{Location, Result};
 #[derive(Clone, Copy)]
 #[repr(u32)]
 pub(crate) enum BranchKind {
-    Adr = 0, // Local fixup only.
+    Adr = 0,     // Local fixup only.
+    Literal = 1, // Local fixup only.
     Jump26 = R_AARCH64_JUMP26,
     Call26 = R_AARCH64_CALL26,
     Cond19 = R_AARCH64_CONDBR19,
@@ -25,7 +28,7 @@ impl BranchKind {
         // into the instruction's immediate field.
         let (width, shift) = match self {
             Self::Jump26 | Self::Call26 => (26, 0),
-            Self::Cond19 => (19, 5),
+            Self::Cond19 | Self::Literal => (19, 5),
             Self::Test14 => (14, 5),
             Self::Adr => {
                 // C6.2.12: signed byte displacement in immhi:immlo.
@@ -36,13 +39,25 @@ impl BranchKind {
                 return Ok(word | ((imm & 3) << 29) | ((imm >> 2) << 5));
             }
         };
+        let (alignment_error, range_error) = if matches!(self, Self::Literal) {
+            // C6.2.216 and C7.2.231: signed imm19 scaled by four.
+            (
+                "literal target must be four-byte aligned",
+                "literal target out of range",
+            )
+        } else {
+            (
+                "branch target must be four-byte aligned",
+                "branch target out of range",
+            )
+        };
         if displacement % 4 != 0 {
-            return Err(at.error("branch target must be four-byte aligned"));
+            return Err(at.error(alignment_error));
         }
         let scaled = displacement / 4;
         let limit = 1i128 << (width - 1);
         if !(-limit..limit).contains(&scaled) {
-            return Err(at.error("branch target out of range"));
+            return Err(at.error(range_error));
         }
         let mask = (1u32 << width) - 1;
         Ok((word & !(mask << shift)) | ((scaled as u32 & mask) << shift))
@@ -151,6 +166,19 @@ fn branch(p: &mut Parser<'_, '_>, kind: BranchKind, word: u32) -> Result<()> {
 pub(crate) fn instruction(p: &mut Parser<'_, '_>, op: Token<'_>) -> Result<()> {
     let word = match op.text {
         "adr" => return integer::adr(p),
+        "ldr" | "str" | "ldur" | "stur" | "ldrb" | "strb" | "ldurb" | "sturb" | "ldrh" | "strh"
+        | "ldurh" | "sturh" | "ldrsb" | "ldursb" | "ldrsh" | "ldursh" | "ldrsw" | "ldursw" => {
+            return memory::single(p, op)
+        }
+        "ldp" | "stp" | "ldpsw" => memory::pair(p, op)?,
+        "ldxr" | "ldxrb" | "ldxrh" | "stxr" | "stxrb" | "stxrh" | "ldaxr" | "ldaxrb" | "ldaxrh"
+        | "stlxr" | "stlxrb" | "stlxrh" | "ldar" | "ldarb" | "ldarh" | "stlr" | "stlrb"
+        | "stlrh" => memory::atomic(p, op)?,
+        "dmb" | "dsb" | "isb" => memory::barrier(p, op)?,
+        "fmov" | "fadd" | "fsub" | "fmul" | "fdiv" | "fneg" | "fabs" | "fsqrt" | "fmadd"
+        | "fcmp" | "fcmpe" | "fcvt" | "fcvtzs" | "fcvtzu" | "scvtf" | "ucvtf" | "fcsel" => {
+            fp::encode(p, op)?
+        }
         "svc" => 0xd400_0001 | (immediate(p, 0xffff)? << 5), // C6.2.465
         "nop" => 0xd503_201f,                                // C6.2.298
         "br" => 0xd61f_0000 | (register(p, true)?.number << 5), // C6.2.46
