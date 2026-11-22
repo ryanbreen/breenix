@@ -144,12 +144,16 @@ when other output on the same serial port (the x86-64 scheduler's COM1 breadcrum
 line unfinished; a reader takes the lines that start with `SUITE <id> ` and ignores blank
 lines.
 
-Each case runs in a forked child whose stdout and stderr go to `/dev/null`, so nothing a
-case prints can look like a suite line; only the VALUE and WAIT records below, which the
-runner writes for it, reach the serial while a case runs. A case that crashes or runs past the suite's time
-limit (10 seconds, with a named 25-second allowance for `time/clocks/rate-counter`
-to bound the RTC measurement) is a FAIL whose message says so, and so is
-one that cannot be started in a child; the suite goes on. The suite waits on a case by
+Each case runs in a forked child whose stdout and stderr go to `/dev/null` to keep
+case output out of the suite record stream. The runner writes the VALUE and WAIT
+records below to serial while the case runs. A case that crashes or runs past the
+suite's time limit is a FAIL whose message says so. The default is 10 seconds, with a named
+25-second allowance for `time/clocks/rate-counter` to bound the RTC measurement
+and a named 30-second allowance for `toolchain/linker/links-reference-objects` to
+link and run 30 programs in sequence on the R240. The 10-second watchdog stopped
+that case after 24 fresh executable loads in `20261122T102349Z-metal` and after 28
+in `20261122T104653Z-metal`. The suite also reports a FAIL for a case it cannot
+start in a child. The suite goes on after a case fails. The suite waits on a case by
 polling, not sleeping, so a monotonic clock that stops is reported as a FAIL too. If the
 suite itself stops, the missing CASE lines show where.
 
