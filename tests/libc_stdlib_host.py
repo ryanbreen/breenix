@@ -67,6 +67,34 @@ mod stdlib {
     #[path="__TMP__/rand.rs"] pub mod rand;
 }
 #[test]
+fn thousands_of_live_small_blocks_share_backing_mappings() {
+    use stdlib::malloc::{malloc, free, __breenix_malloc_release_cached};
+    const BLOCKS: usize = 4096;
+    const MAX_MAPPINGS: usize = 128;
+    unsafe {
+        let blocks: Vec<_> = (0..BLOCKS).map(|i| {
+            let size = [16, 31, 47, 63][i % 4];
+            let p = malloc(size);
+            assert!(!p.is_null());
+            assert_eq!(p as usize % 16, 0);
+            p.cast::<usize>().write(i);
+            p.add(size - 1).write(0xa5);
+            p
+        }).collect();
+        for (i, &p) in blocks.iter().enumerate() {
+            assert_eq!(p.cast::<usize>().read(), i);
+            assert_eq!(p.add([16, 31, 47, 63][i % 4] - 1).read(), 0xa5);
+        }
+        let mappings = MAPPINGS.lock().unwrap().len();
+        for p in blocks { free(p); }
+        __breenix_malloc_release_cached();
+        assert!(MAPPINGS.lock().unwrap().is_empty());
+        assert!(mappings <= MAX_MAPPINGS,
+                "{BLOCKS} live allocations used {mappings} mappings (limit {MAX_MAPPINGS})");
+        eprintln!("{BLOCKS} live allocations used {mappings} mappings (limit {MAX_MAPPINGS})");
+    }
+}
+#[test]
 fn alignment_overflow_preserves_output_and_errno() {
     unsafe {
         let mut p = 123usize as *mut u8;
