@@ -17,7 +17,9 @@ ROOT = Path(__file__).resolve().parents[1]
 DEV = Path("opt/breenix-dev/25.2")
 CORPUS = Path("usr/share/breenix/toolchain")
 SUITE = Path("sbin/suite-toolchain")
-BAS = DEV / "bin/bas"
+TOOLS = ("bas", "bld", "bar", "bnm")
+TOOL_PATHS = {DEV / "bin" / tool for tool in TOOLS}
+LINKER_OBJECTS = ("got-main", "got-entry", "archive-value-with-long-name", "tls-template")
 MANIFEST = DEV / "manifest.sha256"
 RECORD = DEV / "build.json"
 PREFIXES = (Path("opt/breenix-dev"), CORPUS)
@@ -83,14 +85,21 @@ def seal(bundle, commit, arch):
             if header.is_file():
                 sources[DEV / directory / header.relative_to(headers)] = header
     sources[DEV / "linker.ld"] = ROOT / "userspace/programs/linker.ld"
-    required = {SUITE, DEV / "lib/libc.a", BAS}
+    required = {SUITE, DEV / "lib/libc.a"} | TOOL_PATHS
     corpus = ROOT / "toolchain/corpus"
-    for name in check_corpus(corpus):
+    names = check_corpus(corpus)
+    for name in names:
         for suffix in (".c", ".expect"):
             sources[CORPUS / (name + suffix)] = corpus / (name + suffix)
         for suffix in (".elf", ".inventory.json"):
             required.add(CORPUS / (name + suffix))
+        required.add(CORPUS / "objs" / (name + ".o"))
     if arch == "x86_64":
+        for name in LINKER_OBJECTS:
+            required.add(CORPUS / "objs" / (name + ".o"))
+        for name in ("got-main", "tls-template"):
+            path = Path("linker") / (name + ".expect")
+            sources[CORPUS / path] = corpus / path
         fixtures = corpus / "assembler"
         for source in fixtures.iterdir():
             if source.is_file():
@@ -103,6 +112,11 @@ def seal(bundle, commit, arch):
     for path, source in sources.items():
         if digest(tree / path) != digest(source):
             raise ValueError(f"staged bytes differ from the source for {path}")
+    for name in names:
+        receipt = json.loads((tree / CORPUS / (name + ".inventory.json")).read_text())
+        obj = tree / CORPUS / "objs" / (name + ".o")
+        if digest(obj) != receipt["object"]["sha256"]:
+            raise ValueError(f"staged object differs from the reference link input: {name}")
     (tree / MANIFEST).write_bytes(manifest_bytes(tree, files))
     record = json.dumps(dict(commit=commit, arch=arch, manifestSha256=digest(tree / MANIFEST)),
                         indent=2) + "\n"
@@ -120,7 +134,7 @@ def stat_path(debugfs, image, path):
 
 
 def fixture_mode(path):
-    return 0o755 if path in (SUITE, BAS) or path.suffix == ".elf" else 0o644
+    return 0o755 if path == SUITE or path in TOOL_PATHS or path.suffix == ".elf" else 0o644
 
 
 def install(debugfs, image, bundle, arch, scratch):

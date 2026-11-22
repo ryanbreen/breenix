@@ -41,7 +41,7 @@ commit=$(git -C "$root" rev-parse HEAD)
 guest="$work/bundle/root"
 dev="$guest/opt/breenix-dev/25.2"
 corpus="$guest/usr/share/breenix/toolchain"
-mkdir -p "$dev/lib" "$corpus" "$guest/sbin"
+mkdir -p "$dev/lib" "$corpus/objs" "$guest/sbin"
 
 if [ -z "$archive" ]; then
     # Metal's ordinary userspace artifact cache does not export libc.a.
@@ -72,11 +72,12 @@ while IFS= read -r name; do
     "$root/scripts/toolchain-ref-cc" --arch "$arch" \
         --clang "$clang" --clang-sha256 "$clang_pin" --lld "$lld" --lld-sha256 "$lld_pin" \
         --input-root "$corpus" --input-root "$dev/lib" --archive "$dev/lib/libc.a" \
+        --object-output "$corpus/objs/$name.o" \
         -o "$corpus/$name.elf" --inventory "$corpus/$name.inventory.json" "$corpus/$name.c"
     chmod 0755 "$corpus/$name.elf"
 done < "$root/toolchain/corpus/cases"
 
-python3 "$root/scripts/toolchain-build-bas.py" "$arch" "$work/bas" "$dev" "$corpus"
+python3 "$root/scripts/toolchain-build-tools.py" "$arch" "$work/tools" "$dev" "$corpus"
 
 python3 "$root/scripts/toolchain-image.py" seal "$work/bundle" "$commit" "$arch"
 mv "$work/bundle" "$output"

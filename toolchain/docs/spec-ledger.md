@@ -18,6 +18,7 @@ edition pin whose full publication has no digest recorded here.
 | [WG14 N2243](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n2243.htm) | C11 clarification requests, version 1.13, October 2017 | `61522ef6c63eb6e68964d8a6b5724c2f9ea3304437367195218f631eaa7998ba` |
 | [System V AMD64 psABI](https://raw.githubusercontent.com/wiki/hjl-tools/x86-psabi/x86-64-psABI-1.0.pdf) | AMD64 ABI Draft 1.0, 2018-01-28 | `f5c0e21542fc379090252e18ff3d083d2a5f51da8cca62b0fec41cc330a74641` |
 | [ELF gABI](https://gabi.xinuos.com/elf.pdf) | Xinuos ELF Object File Format, version 4.3 draft, 2025-09-04 | `e695f547dbb989e204dde79bc4dc6cfee7de7cca9b65a10208142932a216831b` |
+| [Linux Standard Base Core Specification](https://refspecs.linuxfoundation.org/LSB_5.0.0/LSB-Core-generic/LSB-Core-generic.pdf) | 5.0, Generic Part, chapter 11 (E25 ruling 8) | — |
 | [Intel SDM](https://cdrdv2-public.intel.com/812392/325462-sdm-vol-1-2abcd-3abcd-4.pdf) | Combined volumes 1–4, 325462-082US, December 2023 | `3b2551f01b4c91dc80e7f9cfb1e9790feeefe503cff15d2922ace049f4d8730f` |
 | [AMD APM](https://kib.kiev.ua/x86docs/AMD/AMD64/40332-r4.09.pdf) | AMD publication 40332, combined volumes 1–5, revision 4.09, March 2026, archived PDF | `ae18704f924bb80bc9bbfe9d3c33b97c16cdeaa9c7afccb033d136e86fd88a08` |
 | [AAPCS64](https://github.com/ARM-software/abi-aa/releases/download/2025Q1/aapcs64.pdf) | 2025Q1, 2025-04-07 | `11e6b27bb994b23e6a28b7ac27b1437591cfc13c2bf77262fb8f7ea2a0f254b8` |
@@ -26,7 +27,8 @@ edition pin whose full publication has no digest recorded here.
 | [GNU make manual](https://www.gnu.org/software/make//manual/make.pdf) | Edition 0.77, GNU make 4.4.1, 2023-02-26 | `a4bc06026984382815e392159e60a4bc356cac6c5b81e5ae84fa4f58f621f4d3` |
 | [GNU C extensions](https://gcc.gnu.org/onlinedocs/gcc-15.2.0/gcc/C-Extensions.html) | GCC 15.2.0 manual, GNU C extensions chapter | `4965dab10bf21e0147e86aa80fca2a92da2c099393f34d0325c913aa3be871f2` |
 | [NASM manual](https://www.nasm.us/xdoc/3.02/nasmdoc.pdf) | NASM 3.02, reserved for 25.12 | `a4d1766c9d640663569bcf93feac0657732fe52017002f1dbc797353f6aed34f` |
-| [GNU ld manual](https://sourceware.org/binutils/docs-2.45/ld.html) | GNU Binutils 2.45, linker script syntax | `f219c3b05e197308c5b60fc2d4dbfc302617389ca5c21501de58a90b3d052e06` |
+| [GNU ld manual](https://sourceware.org/binutils/docs-2.45/ld.html) | GNU Binutils 2.45, command-line options and linker script syntax | `f219c3b05e197308c5b60fc2d4dbfc302617389ca5c21501de58a90b3d052e06` |
+| [Oracle Solaris `ar(3HEAD)`](https://docs.oracle.com/cd/E86824_01/html/E54772/ar.h-3head.html) | Oracle Solaris 11.3, archive file format | — |
 | [Clang Language Extensions](https://releases.llvm.org/22.1.0/tools/clang/docs/LanguageExtensions.html) | Clang 22.1 release manual, builtin varargs, C11 atomics, `offsetof` and floating rounding | `66bb3c0e28f15608750483506cb079d421f9cfb5e01d25b838d921f7efabf860` |
 
 ## Support headers
@@ -82,8 +84,57 @@ operations in one thread.
 ## Object checker
 
 `toolchain/tests/elfcheck/` checks x86-64 ELF64 relocatable objects against
-the pinned gABI 4.3 and psABI 1.0 alone. It covers the ELF header, the section
+the pinned gABI 4.3 and psABI 1.0. It covers the ELF header, the section
 header table, string tables, the symbol table, RELA entries and section groups.
-`README.md` there cites the clause behind each of its 64 checks. Each check
-has a hand-built negative control in `fixtures.py`. bas output is checked
-against it from plan step 25.3a1.
+With `--exec` it checks static executables: the program header table, PT_LOAD
+alignment, congruence, order and permissions, the headers in the first load,
+the entry point, section placement in loads, PT_PHDR, PT_GNU_STACK and the
+PT_TLS template (gABI 3.10, 7.1-7.7; psABI 3.3.3, 5.1). `README.md` there
+cites the clause behind each of its 85 checks. Each check has a hand-built
+negative control in `fixtures.py` or `fixtures_exec.py`. bas output is checked
+against it from plan step 25.3a1, and bld output from 25.4a1.
+
+Linux Standard Base Core 5.0 Table 11-1 assigns `PT_GNU_STACK` its `p_type`
+value, 0x6474e551. Section 11.2 defines `p_flags` as the stack permissions.
+bld emits a read-write stack and elfcheck checks that it lacks execute permission.
+
+## Static archive inputs
+
+The archive reader accepts the common archive format documented in Solaris
+`ar(3HEAD)`, including the `//` long-name table and `/` and `/SYM64/` symbol
+indexes. An ordinary nonempty archive needs an index. `--whole-archive`
+includes its members in archive order and can read an archive without an index.
+
+`bar r[c][s]` replaces members by basename and appends new members in operand
+order. `bar s` rebuilds the index. The writer uses the Solaris ar(3HEAD)
+32-bit big-endian index and the long-name table. The index follows member
+and ELF symbol-table order and contains named global and weak definitions.
+The writer puts `0` in the timestamp, UID and GID fields and `0644` in
+the mode field. An
+archive that exceeds the 32-bit format limit is rejected. `bnm` reads the
+ELF gABI static symbol table in a little-endian ELF64 file or common archive,
+with `-A` for input prefixes, `-g` for external symbols, `-P` for
+name-first output and `-u` for undefined symbols.
+
+GNU ld 2.45 §2.1 describes the command-line ordering, group and whole-archive
+options. bld visits input paths in command-line order. It searches each
+ordinary archive to a member-selection fixed point at that position and
+repeats that search for the archives between `--start-group` and `--end-group`.
+`--no-whole-archive` resets selection to the indexed search. ELF gABI §§5.2
+and 5.5 describe weak binding and common storage.
+
+## Static executable layout
+
+`bld -T` accepts the userspace `linker.ld` subset of GNU ld 2.45. It uses
+`ENTRY`, the RX/R/RW `PHDRS` with `FILEHDR`, `PHDRS` and `FLAGS`, optional
+`PT_TLS`, and a non-executable `PT_GNU_STACK`. `SECTIONS` starts at a
+page-aligned base plus `SIZEOF_HEADERS` and selects input section names
+with `*(pattern ...)`, `KEEP`, output `ALIGN` and explicit segment names.
+Unmatched allocated sections follow their type and flags into the
+executable, read-only, writable, TLS, or ordinary zero-fill region.
+
+GNU ld 2.45 §§2.1 and 3.6 describe `--gc-sections` and `KEEP`. Entry and
+`KEEP` sections root the relocation graph. ELF gABI §3.9 governs COMDAT
+selection and the retention of whole groups. AMD64 psABI §§4.4 and 10.3
+govern static relocation arithmetic, GOT slots without relaxation and
+variant-II TLS offsets. ELF gABI §7.7 describes the TLS template.

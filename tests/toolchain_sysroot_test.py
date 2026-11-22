@@ -28,6 +28,7 @@ class toolchain_sysroot_test(unittest.TestCase):
         self.stage = self.root / "staged"
         self.stage.mkdir()
         self.output = self.root / "reference.elf"
+        self.object = self.root / "reference.o"
         self.inventory = self.root / "inventory.json"
         self.source = self.stage / "reference.c"
 
@@ -36,7 +37,8 @@ class toolchain_sysroot_test(unittest.TestCase):
             [sys.executable, DRIVER, "--arch", arch, "--input-root", self.stage,
              "--clang", self.clang, "--clang-sha256", self.clang_pin,
              "--lld", self.lld, "--lld-sha256", self.lld_pin,
-             "-o", self.output, "--inventory", self.inventory, *args, self.source],
+             "-o", self.output, "--inventory", self.inventory, "--object-output", self.object,
+             *args, self.source],
             capture_output=True, text=True, timeout=15, env=env,
         )
 
@@ -51,6 +53,7 @@ class toolchain_sysroot_test(unittest.TestCase):
                 self.assertIn(str(outside), result.stderr)
                 self.assertFalse(self.inventory.exists())
                 self.assertFalse(self.output.exists())
+                self.assertFalse(self.object.exists())
 
     def test_reference_inventory(self):
         self.source.write_text(
@@ -72,6 +75,12 @@ class toolchain_sysroot_test(unittest.TestCase):
                 record = json.loads(self.inventory.read_text())
                 self.assertEqual(record["arch"], arch)
                 self.assertEqual(record["elf"]["sha256"], digest(self.output))
+                obj = self.object.read_bytes()
+                self.assertEqual(obj[:4], b"\x7fELF")
+                self.assertEqual(int.from_bytes(obj[16:20], "little"), 1 | (machine << 16))
+                self.assertEqual(record["object"], {
+                    "path": str(self.object), "sha256": digest(self.object),
+                })
                 dependencies = [
                     self.source,
                     ROOT / "toolchain/include/stdint.h",
@@ -108,6 +117,7 @@ class toolchain_sysroot_test(unittest.TestCase):
         self.assertIn(str(outside), result.stderr)
         self.assertFalse(self.inventory.exists())
         self.assertFalse(self.output.exists())
+        self.assertFalse(self.object.exists())
 
     def check_header_consumer(self, source):
         self.source.write_text(source)

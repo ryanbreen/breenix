@@ -1,4 +1,4 @@
-//! Check the sealed reference inputs and assemble objects with the staged bas.
+//! Check the sealed reference inputs, assemble objects and link executables.
 
 use breenix_suite::suite::{case, case_diagnostic, category, suite, CaseResult, Suite};
 use libbreenix::crypto::sha256::{sha256, Sha256};
@@ -17,6 +17,13 @@ const MANIFEST: &str = "opt/breenix-dev/25.2/manifest.sha256";
 const RECORD: &str = "opt/breenix-dev/25.2/build.json";
 const BAS_PROGRAMS: &[&str] = &["sse-exit", "x87-exit"];
 const BAS_INPUTS: &[&str] = &["encodings.s", "encodings.hex", "bad-input.s"];
+const LINKER_OBJECTS: &[&str] = &[
+    "got-main",
+    "got-entry",
+    "archive-value-with-long-name",
+    "tls-template",
+];
+const ARCHIVE_MEMBERS: &[&str] = &["got-entry", "archive-value-with-long-name"];
 const CASES: &str = include_str!("../../../toolchain/corpus/cases");
 
 static SUITE: Suite = suite(
@@ -57,6 +64,42 @@ static SUITE: Suite = suite(
                     "bad-input-located",
                     "Malformed assembly fails with its source file and line number",
                     assembler_bad_input_located,
+                ),
+            ],
+        ),
+        category(
+            "linker",
+            "Static links of our libc archive: GOT, archives, linker script and TLS",
+            &[
+                case(
+                    "links-reference-objects",
+                    "On-box links of the reference objects match their expectations",
+                    links_reference_objects,
+                ),
+                case(
+                    "got-and-archives",
+                    "A fresh link resolves the GOT and pulls dependent archive members",
+                    got_and_archives,
+                ),
+                case(
+                    "tls-template",
+                    "A fresh link initializes aligned TLS in the main thread and two new threads",
+                    tls_template,
+                ),
+                case(
+                    "archive-tools",
+                    "Deterministic archives expose symbols and supply a runnable link",
+                    archive_tools,
+                ),
+                case(
+                    "undefined-located",
+                    "Undefined references identify their relocation before a repaired link runs",
+                    undefined_located,
+                ),
+                case(
+                    "duplicate-located",
+                    "Duplicate definitions identify both objects before a repaired link runs",
+                    duplicate_located,
                 ),
             ],
         ),
@@ -154,17 +197,30 @@ fn sysroot_manifest() -> CaseResult {
         }
     }
     // This catalog is compiled into PID 1 from the independent source list.
-    // Dropping a C file, expectation, executable or inventory from both the
+    // Dropping a C file, expectation, object, executable or inventory from both the
     // staged tree and its generated manifest still fails here.
     for name in CASES.lines() {
-        for suffix in [".c", ".expect", ".elf", ".inventory.json"] {
-            let path = format!("{CORPUS}/{name}{suffix}");
+        for (prefix, suffix) in [
+            ("", ".c"),
+            ("", ".expect"),
+            ("", ".elf"),
+            ("", ".inventory.json"),
+            ("objs/", ".o"),
+        ] {
+            let path = format!("{CORPUS}/{prefix}{name}{suffix}");
             if !listed.contains_key(path.as_str()) {
                 return Err(format!("manifest omits {path}").into());
             }
         }
     }
-    for relative in ["lib/libc.a", "linker.ld", "bin/bas"] {
+    for relative in [
+        "lib/libc.a",
+        "linker.ld",
+        "bin/bas",
+        "bin/bld",
+        "bin/bar",
+        "bin/bnm",
+    ] {
         let path = format!("{DEV}/{relative}");
         if !listed.contains_key(path.as_str()) {
             return Err(format!("manifest omits {path}").into());
@@ -172,6 +228,18 @@ fn sysroot_manifest() -> CaseResult {
     }
 
     if arch == "x86_64" {
+        for name in LINKER_OBJECTS {
+            let path = format!("{CORPUS}/objs/{name}.o");
+            if !listed.contains_key(path.as_str()) {
+                return Err(format!("manifest omits {path}").into());
+            }
+        }
+        for name in ["got-main", "tls-template"] {
+            let path = format!("{CORPUS}/linker/{name}.expect");
+            if !listed.contains_key(path.as_str()) {
+                return Err(format!("manifest omits {path}").into());
+            }
+        }
         for name in BAS_INPUTS {
             let path = format!("{CORPUS}/assembler/{name}");
             if !listed.contains_key(path.as_str()) {
@@ -208,9 +276,9 @@ fn sysroot_manifest() -> CaseResult {
     Ok(())
 }
 
-fn run_expected(directory: &Path, name: &str) -> CaseResult {
-    let expect = directory.join(format!("{name}.expect"));
-    let bytes = io_at(&expect, fs::read(&expect))?;
+fn run_expected(binary: &Path, expect: &Path) -> CaseResult {
+    let name = binary.display();
+    let bytes = io_at(expect, fs::read(expect))?;
     let newline = bytes
         .iter()
         .position(|&byte| byte == b'\n')
@@ -219,10 +287,9 @@ fn run_expected(directory: &Path, name: &str) -> CaseResult {
         .ok()
         .and_then(|status| status.parse::<u8>().ok())
         .ok_or_else(|| format!("{name}: invalid expected exit status"))?;
-    let binary = directory.join(format!("{name}.elf"));
     let result = io_at(
-        &binary,
-        Command::new(&binary)
+        binary,
+        Command::new(binary)
             .env_clear()
             .stdin(Stdio::null())
             .output(),
@@ -244,14 +311,37 @@ fn run_expected(directory: &Path, name: &str) -> CaseResult {
 fn reference_corpus_runs() -> CaseResult {
     let corpus = Path::new("/").join(CORPUS);
     for name in CASES.lines() {
-        run_expected(&corpus, name)?;
+        run_expected(
+            &corpus.join(format!("{name}.elf")),
+            &corpus.join(format!("{name}.expect")),
+        )?;
     }
     Ok(())
 }
 
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(category: &str) -> Result<Self, String> {
+        let path = Path::new("/tmp").join(format!("toolchain-{category}-{}", std::process::id()));
+        io_at(&path, fs::DirBuilder::new().mode(0o700).create(&path))?;
+        Ok(Self(path))
+    }
+
+    fn join(&self, name: impl AsRef<Path>) -> PathBuf {
+        self.0.join(name)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 struct AssemblyCase {
     corpus: PathBuf,
-    scratch: PathBuf,
+    scratch: Scratch,
 }
 
 impl AssemblyCase {
@@ -259,11 +349,9 @@ impl AssemblyCase {
         if std::env::consts::ARCH != "x86_64" {
             return Err("AArch64 assembly and relocations are scheduled for A1".into());
         }
-        let scratch = Path::new("/tmp").join(format!("toolchain-assembler-{}", std::process::id()));
-        io_at(&scratch, fs::DirBuilder::new().mode(0o700).create(&scratch))?;
         Ok(Self {
             corpus: Path::new("/").join(CORPUS).join("assembler"),
-            scratch,
+            scratch: Scratch::new("assembler")?,
         })
     }
 
@@ -293,12 +381,6 @@ impl AssemblyCase {
             ));
         }
         Ok(object)
-    }
-}
-
-impl Drop for AssemblyCase {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.scratch);
     }
 }
 
@@ -387,7 +469,7 @@ fn assembler_object_runs() -> CaseResult {
         if receipt["elf"]["name"] != elf_name || receipt["elf"]["sha256"] != file_sha256(&elf)? {
             return Err(format!("{name}: staged ELF differs from the link receipt").into());
         }
-        run_expected(&case.corpus, name)?;
+        run_expected(&elf, &case.corpus.join(format!("{name}.expect")))?;
     }
     Ok(())
 }
@@ -410,4 +492,197 @@ fn assembler_bad_input_located() -> CaseResult {
         .into());
     }
     Ok(())
+}
+
+struct LinkerCase {
+    dev: PathBuf,
+    corpus: PathBuf,
+    scratch: Scratch,
+}
+
+impl LinkerCase {
+    fn start() -> Result<Self, String> {
+        if std::env::consts::ARCH != "x86_64" {
+            return Err("AArch64 static linking is scheduled for A2".into());
+        }
+        Ok(Self {
+            dev: Path::new("/").join(DEV),
+            corpus: Path::new("/").join(CORPUS),
+            scratch: Scratch::new("linker")?,
+        })
+    }
+
+    fn object(&self, name: &str) -> PathBuf {
+        self.corpus.join("objs").join(format!("{name}.o"))
+    }
+
+    fn tool(
+        &self,
+        tool: &str,
+        args: impl IntoIterator<Item = impl AsRef<std::ffi::OsStr>>,
+    ) -> Result<std::process::Output, String> {
+        let binary = self.dev.join("bin").join(tool);
+        io_at(
+            &binary,
+            Command::new(&binary)
+                .args(args)
+                .env_clear()
+                .stdin(Stdio::null())
+                .output(),
+        )
+    }
+
+    fn link(&self, output: &Path, inputs: &[&Path]) -> Result<std::process::Output, String> {
+        self.tool(
+            "bld",
+            [
+                Path::new("-T"),
+                &self.dev.join("linker.ld"),
+                Path::new("--gc-sections"),
+                Path::new("-o"),
+                output,
+            ]
+            .into_iter()
+            .chain(inputs.iter().copied())
+            .chain([self.dev.join("lib/libc.a").as_path()]),
+        )
+    }
+
+    fn link_and_run(&self, name: &str, expect: &Path, inputs: &[&Path]) -> CaseResult {
+        let output = self.scratch.join(format!("{name}.elf"));
+        require_success("bld", self.link(&output, inputs)?)?;
+        run_expected(&output, expect)
+    }
+
+    fn make_archive(&self, name: &str) -> Result<PathBuf, String> {
+        let archive = self.scratch.join(name);
+        let members = ARCHIVE_MEMBERS.iter().map(|name| self.object(name));
+        let args = [PathBuf::from("rcs"), archive.clone()]
+            .into_iter()
+            .chain(members);
+        require_success("bar", self.tool("bar", args)?)?;
+        Ok(archive)
+    }
+
+    fn run_got(&self, archive: &Path) -> CaseResult {
+        self.link_and_run(
+            "got-main",
+            &self.corpus.join("linker/got-main.expect"),
+            &[&self.object("got-main"), archive],
+        )
+    }
+}
+
+fn require_success(tool: &str, result: std::process::Output) -> Result<Vec<u8>, String> {
+    if result.status.success() {
+        Ok(result.stdout)
+    } else {
+        Err(format!(
+            "{tool} exited {}: {}",
+            result.status,
+            String::from_utf8_lossy(&result.stderr).trim_end()
+        ))
+    }
+}
+
+fn links_reference_objects() -> CaseResult {
+    let case = LinkerCase::start()?;
+    for name in CASES.lines() {
+        case.link_and_run(
+            name,
+            &case.corpus.join(format!("{name}.expect")),
+            &[&case.object(name)],
+        )?;
+    }
+    Ok(())
+}
+
+fn got_and_archives() -> CaseResult {
+    let case = LinkerCase::start()?;
+    let archive = case.make_archive("got.a")?;
+    case.run_got(&archive)
+}
+
+fn tls_template() -> CaseResult {
+    let case = LinkerCase::start()?;
+    case.link_and_run(
+        "tls-template",
+        &case.corpus.join("linker/tls-template.expect"),
+        &[&case.object("tls-template")],
+    )
+}
+
+fn archive_tools() -> CaseResult {
+    let case = LinkerCase::start()?;
+    let archive = case.make_archive("first.a")?;
+    let second = case.make_archive("second.a")?;
+    require_success("bar", case.tool("bar", [Path::new("s"), &second])?)?;
+    if io_at(&archive, fs::read(&archive))? != io_at(&second, fs::read(&second))? {
+        return Err("bar produced different archive bytes after reindexing".into());
+    }
+    let symbols = require_success("bnm", case.tool("bnm", [Path::new("-Pg"), &second])?)?;
+    let expected = format!(
+        "{0}[got-entry.o]:\narchive_cell U\narchive_entry T 0 17\narchive_value U\n\
+         {0}[archive-value-with-long-name.o]:\narchive_cell R 0 4\narchive_value T 0 6\n",
+        second.display()
+    );
+    if symbols != expected.as_bytes() {
+        return Err(format!(
+            "bnm returned unexpected symbols: {}",
+            String::from_utf8_lossy(&symbols)
+        )
+        .into());
+    }
+    case.run_got(&second)
+}
+
+fn check_link_failure(result: std::process::Output, output: &Path, diagnostic: &str) -> CaseResult {
+    if result.status.code() != Some(1)
+        || output.exists()
+        || !String::from_utf8_lossy(&result.stderr)
+            .lines()
+            .any(|line| line.contains(diagnostic))
+    {
+        return Err(format!(
+            "expected bld exit 1, no output, and {diagnostic:?}; got {}: {}",
+            result.status,
+            String::from_utf8_lossy(&result.stderr).trim_end()
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn undefined_located() -> CaseResult {
+    let case = LinkerCase::start()?;
+    let output = case.scratch.join("undefined.elf");
+    let main = case.object("got-main");
+    let result = case.link(&output, &[&main])?;
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    let location = format!("{}: .text+0x", main.display());
+    if !stderr.lines().any(|line| {
+        line.starts_with(&location) && line.ends_with(" archive_entry: undefined symbol")
+    }) {
+        return Err(format!("bld did not locate the reference to archive_entry: {stderr}").into());
+    }
+    check_link_failure(result, &output, "R_X86_64_PLT32")?;
+    let archive = case.make_archive("resolved.a")?;
+    case.run_got(&archive)
+}
+
+fn duplicate_located() -> CaseResult {
+    let case = LinkerCase::start()?;
+    let output = case.scratch.join("duplicate.elf");
+    let entry = case.object("got-entry");
+    let duplicate = case.scratch.join("duplicate-entry.o");
+    io_at(&duplicate, fs::copy(&entry, &duplicate))?;
+    let result = case.link(&output, &[&case.object("got-main"), &entry, &duplicate])?;
+    let diagnostic = format!(
+        "{}: archive_entry: duplicate definition (first defined in {})",
+        duplicate.display(),
+        entry.display()
+    );
+    check_link_failure(result, &output, &diagnostic)?;
+    let archive = case.make_archive("deduplicated.a")?;
+    case.run_got(&archive)
 }

@@ -1,14 +1,16 @@
 /*
- * elfcheck: check that an ELF64 x86-64 relocatable object is well formed.
+ * elfcheck: check that an ELF64 x86-64 relocatable object, or with --exec a
+ * static executable, is well formed.
  *
  * Written from the ELF gABI (Xinuos ELF Object File Format, version 4.3
  * draft, 2025-09-04) and the System V AMD64 psABI (Draft 1.0, 2018-01-28)
- * alone, both pinned in toolchain/docs/spec-ledger.md. No assembler, linker
- * or ELF library source was read. Structure layouts follow gABI Listings 2.1
- * (Elf64_Ehdr), 3.1 (Elf64_Shdr), 5.1 (Elf64_Sym) and 6.1 (Elf64_Rela); each
- * rule's clause is cited where it is checked and in README.md.
+ * alone, both pinned in toolchain/docs/spec-ledger.md. No assembler, linker,
+ * archiver, loader or ELF library source was read. Structure layouts follow
+ * gABI Listings 2.1 (Elf64_Ehdr), 3.1 (Elf64_Shdr), 5.1 (Elf64_Sym), 6.1
+ * (Elf64_Rela) and 7.1 (Elf64_Phdr); each rule's clause is cited where it is
+ * checked and in README.md.
  *
- * Usage: elfcheck FILE...   |   elfcheck --list
+ * Usage: elfcheck [--exec] FILE...   |   elfcheck --list
  * A failed rule prints `FILE: CHECK-ID: detail` on stdout. Exit status 0
  * means no finding, 1 means a rule failed, 2 means a usage or read error.
  *
@@ -37,14 +39,44 @@ static const char *const check_ids[] = {
     "rela.link", "rela.info", "rela.type", "rela.symbol", "rela.offset", "rela.tls",
     "group.header", "group.flags", "group.members", "group.unique",
     "limit.extended-numbering", "limit.compressed",
+    /* --exec only. */
+    "phdr.table-present", "phdr.entsize", "phdr.table-align", "phdr.table-bounds",
+    "phdr.type", "phdr.flags", "phdr.align", "phdr.bounds", "phdr.phdr", "phdr.gnu-stack",
+    "load.filesz", "load.order", "load.align", "load.congruent", "load.headers",
+    "load.entry", "load.sections", "load.wx",
+    "tls.segment", "tls.size", "tls.sections",
 };
 
 /* gABI Tables 2.1-2.6, 3.1-3.3, 3.7, 5.2-5.4; psABI Tables 4.1, 4.2. */
 enum {
     EHDR_SIZE = 64, SHDR_SIZE = 64, SYM_SIZE = 24, RELA_SIZE = 24, GROUP_WORD = 4,
-    ET_REL = 1, EM_X86_64 = 62, EV_CURRENT = 1, ELFCLASS64 = 2, ELFDATA2LSB = 1,
-    PHDR64_SIZE = 56
+    ET_REL = 1, ET_EXEC = 2, EM_X86_64 = 62, EV_CURRENT = 1, ELFCLASS64 = 2, ELFDATA2LSB = 1,
+    PHDR64_SIZE = 56, PN_XNUM = 0xffff
 };
+
+/* psABI 3.3.3: the smallest page size a conforming system may use. */
+#define MIN_PAGE_SIZE 4096u
+
+/* gABI Tables 7.1 and 7.2; psABI Table 5.1. PT_GNU_STACK is assigned by
+ * Linux Standard Base Core Specification 5.0, Generic Part, Table 11-1. */
+#define PT_NULL 0u
+#define PT_LOAD 1u
+#define PT_DYNAMIC 2u
+#define PT_INTERP 3u
+#define PT_NOTE 4u
+#define PT_SHLIB 5u
+#define PT_PHDR 6u
+#define PT_TLS 7u
+#define PT_SUNW_UNWIND 0x6464e550u
+#define PT_GNU_EH_FRAME 0x6474e550u
+#define PT_GNU_STACK 0x6474e551u
+#define PF_X 0x1u
+#define PF_W 0x2u
+#define PF_R 0x4u
+
+#define SHF_WRITE 0x1u
+#define SHF_ALLOC 0x2u
+#define SHF_EXECINSTR 0x4u
 
 #define SHT_NULL 0u
 #define SHT_PROGBITS 1u
@@ -72,7 +104,7 @@ enum {
 #define SHF_COMPRESSED 0x800u
 #define SHF_MASKOS 0x0ff00000u
 #define SHF_X86_64_LARGE 0x10000000u
-#define SHF_KNOWN (0x1u | 0x2u | 0x4u | SHF_MERGE | SHF_STRINGS | SHF_INFO_LINK | \
+#define SHF_KNOWN (SHF_WRITE | SHF_ALLOC | SHF_EXECINSTR | SHF_MERGE | SHF_STRINGS | SHF_INFO_LINK | \
                    SHF_LINK_ORDER | 0x100u | SHF_GROUP | SHF_TLS | SHF_COMPRESSED | \
                    SHF_MASKOS | SHF_X86_64_LARGE)
 
@@ -104,16 +136,28 @@ struct section {
     int readable;  /* in bounds and, for a table, with its entry size */
 };
 
+/* gABI Listing 7.1, Elf64_Phdr. */
+struct segment {
+    uint32_t type, flags;
+    uint64_t offset, vaddr, filesz, memsz, align;
+    int known; /* a type this profile accepts */
+};
+
 struct object {
     const char *path;
     const unsigned char *data;
     uint64_t size;
     unsigned long findings;
+    int exec;                /* checked as an ET_EXEC executable (--exec) */
     unsigned shnum;
     struct section *sec;
+    unsigned shnames;        /* usable section name table, or 0 */
     unsigned symtab;         /* index of the checked SHT_SYMTAB, 0 if none */
     uint64_t nsyms;          /* entries in it when readable, else 0 */
     unsigned char *sym_type; /* STT_* of each symbol */
+    uint64_t phoff;          /* program header table, when it can be read */
+    unsigned phnum;
+    struct segment *seg;
 };
 
 static int known_check(const char *id)
@@ -192,16 +236,20 @@ static int check_header(struct object *o)
             report(o, "ehdr.pad", NULL, 0, 0, "an EI_PAD byte is not 0");
             break;
         }
-    if (le(e + 16, 2) != ET_REL)
+    if (!o->exec && le(e + 16, 2) != ET_REL)
         report(o, "ehdr.type", NULL, 0, 0, "e_type is not ET_REL");
+    if (o->exec && le(e + 16, 2) != ET_EXEC)
+        report(o, "ehdr.type", NULL, 0, 0, "e_type is not ET_EXEC");
     if (le(e + 18, 2) != EM_X86_64)
         report(o, "ehdr.machine", NULL, 0, 0, "e_machine is not EM_X86_64");
     if (le(e + 20, 4) != EV_CURRENT)
         report(o, "ehdr.version", NULL, 0, 0, "e_version is not EV_CURRENT");
-    if (le(e + 24, 8) != 0)
+    /* An executable's entry point and program header table are checked by
+     * load.entry and the phdr.* checks instead. */
+    if (!o->exec && le(e + 24, 8) != 0)
         report(o, "ehdr.entry", NULL, 0, 0, "a relocatable file has e_entry 0");
-    if (le(e + 32, 8) != 0 || le(e + 56, 2) != 0 ||
-        (le(e + 54, 2) != 0 && le(e + 54, 2) != PHDR64_SIZE))
+    if (!o->exec && (le(e + 32, 8) != 0 || le(e + 56, 2) != 0 ||
+                     (le(e + 54, 2) != 0 && le(e + 54, 2) != PHDR64_SIZE)))
         report(o, "ehdr.phdr", NULL, 0, 0, "a relocatable file has no program header table");
     if (le(e + 48, 4) != 0)
         report(o, "ehdr.flags", NULL, 0, 0, "psABI 1.0 assigns no e_flags bits");
@@ -255,6 +303,56 @@ static int load_sections(struct object *o)
         s->info = (uint32_t)le(h + 44, 4);
         s->addralign = le(h + 48, 8);
         s->entsize = le(h + 56, 8);
+    }
+    return 1;
+}
+
+/* gABI 1.1, 1.2, 2.1 and 7; psABI 4.1.2. Returns 0 when no entry can be read. */
+static int load_program_headers(struct object *o)
+{
+    uint64_t phoff = le(o->data + 32, 8);
+    unsigned phentsize = (unsigned)le(o->data + 54, 2);
+    unsigned phnum = (unsigned)le(o->data + 56, 2);
+    unsigned i;
+
+    if (phoff == 0 || phnum == 0) {
+        report(o, "phdr.table-present", NULL, 0, 0,
+               "an executable has no program header table (e_phoff or e_phnum is 0)");
+        return 0;
+    }
+    if (phnum == PN_XNUM) {
+        report(o, "limit.extended-numbering", NULL, 0, 0,
+               "e_phnum is PN_XNUM (the count is in section header 0)");
+        return 0;
+    }
+    if (phentsize != PHDR64_SIZE) {
+        report(o, "phdr.entsize", NULL, 0, 0, "e_phentsize is not 56, the Elf64_Phdr size");
+        return 0;
+    }
+    if (phoff % 8 != 0)
+        report(o, "phdr.table-align", NULL, 0, 0, "e_phoff is not a multiple of 8");
+    if (phoff < EHDR_SIZE || !fits(phoff, (uint64_t)phnum * PHDR64_SIZE, o->size)) {
+        report(o, "phdr.table-bounds", NULL, 0, 0,
+               "the program header table overlaps the ELF header or passes the end of the file");
+        return 0;
+    }
+    o->phoff = phoff;
+    o->phnum = phnum;
+    o->seg = calloc(phnum, sizeof *o->seg);
+    if (o->seg == NULL) {
+        fprintf(stderr, "elfcheck: out of memory\n");
+        exit(2);
+    }
+    for (i = 0; i < phnum; i++) {
+        const unsigned char *h = o->data + phoff + (uint64_t)i * PHDR64_SIZE;
+        struct segment *s = &o->seg[i];
+        s->type = (uint32_t)le(h, 4);
+        s->flags = (uint32_t)le(h + 4, 4);
+        s->offset = le(h + 8, 8);
+        s->vaddr = le(h + 16, 8);
+        s->filesz = le(h + 32, 8);
+        s->memsz = le(h + 40, 8);
+        s->align = le(h + 48, 8);
     }
     return 1;
 }
@@ -315,6 +413,7 @@ struct span {
 
 #define WHO_EHDR 0x100000000ull
 #define WHO_TABLE 0x100000001ull
+#define WHO_PHDRS 0x100000002ull
 
 static int span_order(const void *a, const void *b)
 {
@@ -322,10 +421,11 @@ static int span_order(const void *a, const void *b)
     return x->start < y->start ? -1 : x->start > y->start ? 1 : 0;
 }
 
-/* gABI 3: "Sections in a file may not overlap." */
+/* gABI 3: "Sections in a file may not overlap." An executable's program
+ * header table is a header too (gABI 7), so it joins the spans with --exec. */
 static void check_overlap(struct object *o)
 {
-    struct span *spans = calloc((size_t)o->shnum + 2, sizeof *spans);
+    struct span *spans = calloc((size_t)o->shnum + 3, sizeof *spans);
     size_t n = 0, i, widest = 0;
     unsigned s;
 
@@ -339,6 +439,11 @@ static void check_overlap(struct object *o)
     spans[n].start = le(o->data + 40, 8);
     spans[n].end = spans[n].start + (uint64_t)o->shnum * SHDR_SIZE;
     spans[n++].who = WHO_TABLE;
+    if (o->seg != NULL) {
+        spans[n].start = o->phoff;
+        spans[n].end = o->phoff + (uint64_t)o->phnum * PHDR64_SIZE;
+        spans[n++].who = WHO_PHDRS;
+    }
     for (s = 1; s < o->shnum; s++) {
         const struct section *sec = &o->sec[s];
         if (sec->active && has_file_data(sec) && sec->in_bounds && sec->size > 0) {
@@ -354,9 +459,13 @@ static void check_overlap(struct object *o)
             const struct span *other = later == &spans[i] ? &spans[widest] : &spans[i];
             const char *what = other->who == WHO_EHDR ? "overlaps the ELF header"
                              : other->who == WHO_TABLE ? "overlaps the section header table"
+                             : other->who == WHO_PHDRS ? "overlaps the program header table"
                              : "overlaps another section";
             if (later->who < WHO_EHDR)
                 report(o, "shdr.overlap", "section", later->who, 0, what);
+            else if (later->who == WHO_PHDRS || other->who == WHO_PHDRS)
+                report(o, "shdr.overlap", NULL, 0, 0,
+                       "the program header table overlaps the section header table");
             else
                 report(o, "shdr.overlap", NULL, 0, 0, "the section header table overlaps the ELF header");
         }
@@ -389,6 +498,7 @@ static void check_sections(struct object *o)
     names = names_table(o);
     if (names != 0 && !o->sec[names].in_bounds)
         names = 0;
+    o->shnames = names;
 
     for (i = 1; i < o->shnum; i++) {
         struct section *s = &o->sec[i];
@@ -404,8 +514,14 @@ static void check_sections(struct object *o)
             report(o, "shdr.flags", "section", i, 0, "sh_flags sets a bit no pinned document assigns");
         if ((s->flags & SHF_COMPRESSED) != 0)
             report(o, "limit.compressed", "section", i, 0, "SHF_COMPRESSED sections are not supported");
-        if (s->addr != 0)
+        if (!o->exec && s->addr != 0)
             report(o, "shdr.addr", "section", i, 0, "sh_addr is not 0 in a relocatable file");
+        /* gABI 3.2: a section outside the memory image has sh_addr 0, and
+         * sh_addr is congruent to 0 modulo sh_addralign. */
+        if (o->exec && (s->flags & SHF_ALLOC) == 0 && s->addr != 0)
+            report(o, "shdr.addr", "section", i, 0, "a section without SHF_ALLOC has sh_addr other than 0");
+        else if (o->exec && power_of_two(s->addralign) && s->addr % s->addralign != 0)
+            report(o, "shdr.addr", "section", i, 0, "sh_addr is not a multiple of sh_addralign");
         if (s->addralign != 0 && !power_of_two(s->addralign))
             report(o, "shdr.align", "section", i, 0, "sh_addralign is not 0 or a power of two");
         if (!s->in_bounds)
@@ -523,15 +639,17 @@ static void check_symbols(struct object *o)
             report(o, "sym.section", "symbol", i, 0, "an STT_SECTION symbol is not in a section");
         if (type == STT_FILE && (bind != STB_LOCAL || shndx != SHN_ABS))
             report(o, "sym.file", "symbol", i, 0, "an STT_FILE symbol is not local and SHN_ABS");
-        if (type == STT_COMMON && shndx != SHN_COMMON)
+        /* gABI 5.3 and 5.7 state these four rules for relocatable files; in an
+         * executable st_value is a virtual address, so --exec skips them. */
+        if (!o->exec && type == STT_COMMON && shndx != SHN_COMMON)
             report(o, "sym.common-index", "symbol", i, 0, "an STT_COMMON symbol is not SHN_COMMON");
-        if (shndx == SHN_COMMON && !power_of_two(value))
+        if (!o->exec && shndx == SHN_COMMON && !power_of_two(value))
             report(o, "sym.common-align", "symbol", i, 0, "a common symbol's alignment is not a power of two");
         if (defined) {
             const struct section *in = &o->sec[shndx];
-            if (value > in->size)
+            if (!o->exec && value > in->size)
                 report(o, "sym.value", "symbol", i, 0, "st_value passes the end of its section");
-            else if (type != STT_SECTION && type != STT_FILE && size > in->size - value)
+            else if (!o->exec && type != STT_SECTION && type != STT_FILE && size > in->size - value)
                 report(o, "sym.size", "symbol", i, 0, "the symbol passes the end of its section");
             if (type == STT_TLS && (in->flags & SHF_TLS) == 0)
                 report(o, "sym.tls-section", "symbol", i, 0, "an STT_TLS symbol is in a section without SHF_TLS");
@@ -695,6 +813,245 @@ static void check_groups(struct object *o)
     free(members);
 }
 
+/* gABI 7.2 and psABI Table 5.1: the segment types a static executable may
+ * use. Returns why a type is refused, or NULL. */
+static const char *segment_type_refused(uint32_t type)
+{
+    switch (type) {
+    case PT_LOAD: case PT_NOTE: case PT_PHDR: case PT_TLS:
+    case PT_SUNW_UNWIND: case PT_GNU_EH_FRAME: case PT_GNU_STACK:
+        return NULL;
+    case PT_DYNAMIC: case PT_INTERP:
+        return "a dynamic linking segment in a static executable (profile)";
+    case PT_SHLIB:
+        return "PT_SHLIB does not conform to the ABI (gABI 7.2)";
+    default:
+        return "p_type is reserved, or OS- or processor-specific and not assigned";
+    }
+}
+
+/* Whether [addr, addr + size) lies inside [base, base + limit). */
+static int inside(uint64_t addr, uint64_t size, uint64_t base, uint64_t limit)
+{
+    return addr >= base && fits(addr - base, size, limit);
+}
+
+/* A section's name, or NULL when the name table cannot supply one. */
+static const char *section_name(const struct object *o, const struct section *s)
+{
+    const struct section *names;
+    const unsigned char *start;
+
+    if (o->shnames == 0)
+        return NULL;
+    names = &o->sec[o->shnames];
+    if (s->name >= names->size)
+        return NULL;
+    start = o->data + names->offset + s->name;
+    return memchr(start, 0, (size_t)(names->size - s->name)) == NULL ? NULL : (const char *)start;
+}
+
+/* gABI 7.4 and 7.5: whether a PT_LOAD maps the section at its address, holds
+ * its file bytes at the matching file offset, and grants the write and
+ * execute access its flags need. */
+static int section_loaded(const struct object *o, const struct section *s)
+{
+    unsigned i;
+    for (i = 0; i < o->phnum; i++) {
+        const struct segment *p = &o->seg[i];
+        if (!p->known || p->type != PT_LOAD || !inside(s->addr, s->size, p->vaddr, p->memsz))
+            continue;
+        if (has_file_data(s) && (s->offset < p->offset || s->offset - p->offset != s->addr - p->vaddr ||
+                                 !fits(s->offset - p->offset, s->size, p->filesz)))
+            continue;
+        if (((s->flags & SHF_WRITE) != 0 && (p->flags & PF_W) == 0) ||
+            ((s->flags & SHF_EXECINSTR) != 0 && (p->flags & PF_X) == 0))
+            continue;
+        return 1;
+    }
+    return 0;
+}
+
+/* gABI 3.10 and 7.7: the TLS template is formed from the SHF_TLS sections;
+ * PT_TLS's file size is its initialization image and its memory size the
+ * whole template. */
+static void check_tls(struct object *o, unsigned segments, unsigned index)
+{
+    const uint64_t tls_flags = SHF_ALLOC | SHF_WRITE | SHF_TLS;
+    const struct segment *t = segments > 0 ? &o->seg[index] : NULL;
+    uint64_t start = UINT64_MAX, end = 0, init_end = 0, init_addr = UINT64_MAX, init_offset = 0;
+    uint64_t align = 1;
+    unsigned i, sections = 0;
+    int overflow = 0;
+
+    for (i = 1; i < o->shnum; i++) {
+        const struct section *s = &o->sec[i];
+        const char *name = s->active ? section_name(o, s) : NULL;
+
+        if (name != NULL && (strcmp(name, ".tdata") == 0 || strcmp(name, ".tbss") == 0) &&
+            (s->type != (name[2] == 'd' ? SHT_PROGBITS : SHT_NOBITS) || (s->flags & tls_flags) != tls_flags))
+            report(o, "tls.sections", "section", i, 0,
+                   name[2] == 'd' ? ".tdata is not SHT_PROGBITS with SHF_ALLOC+SHF_WRITE+SHF_TLS"
+                                  : ".tbss is not SHT_NOBITS with SHF_ALLOC+SHF_WRITE+SHF_TLS");
+        if (!s->active || (s->flags & SHF_TLS) == 0)
+            continue;
+        sections++;
+        if (s->size > UINT64_MAX - s->addr) {
+            overflow = 1;
+            continue;
+        }
+        if (s->addr < start)
+            start = s->addr;
+        if (s->addr + s->size > end)
+            end = s->addr + s->size;
+        if (power_of_two(s->addralign) && s->addralign > align)
+            align = s->addralign;
+        if (has_file_data(s)) {
+            if (s->addr + s->size > init_end)
+                init_end = s->addr + s->size;
+            if (s->addr < init_addr) {
+                init_addr = s->addr;
+                init_offset = s->offset;
+            }
+        }
+    }
+
+    if (sections == 0 && segments > 0)
+        report(o, "tls.segment", "segment", index, 0, "a PT_TLS segment but no SHF_TLS section");
+    if (sections > 0 && segments == 0)
+        report(o, "tls.segment", NULL, 0, 0, "SHF_TLS sections but no PT_TLS segment");
+    if (segments > 1)
+        report(o, "tls.segment", NULL, 0, 0, "more than one PT_TLS segment");
+    if (t != NULL && t->flags != PF_R)
+        report(o, "tls.segment", "segment", index, 0, "PT_TLS p_flags is not PF_R (gABI Table 7.4)");
+    if (t != NULL && sections > 0 && t->align != align && !(align == 1 && t->align == 0))
+        report(o, "tls.segment", "segment", index, 0,
+               "PT_TLS p_align is not the largest SHF_TLS section alignment");
+    if (segments != 1 || sections == 0 || overflow)
+        return;
+    if (init_end < start)
+        init_end = start; /* no initialized TLS section: an empty image */
+    if (t->vaddr != start || t->filesz != init_end - start || t->memsz != end - start ||
+        (t->filesz != 0 && t->offset != init_offset - (init_addr - start)))
+        report(o, "tls.size", "segment", index, 0,
+               "PT_TLS does not start at the template, or its file size is not the initialized "
+               "sections' extent, or its memory size is not the whole template's");
+}
+
+/* gABI 7.1-7.5; psABI 3.3.3 and 5.1. */
+static void check_segments(struct object *o)
+{
+    const uint64_t phsize = (uint64_t)o->phnum * PHDR64_SIZE, entry = le(o->data + 24, 8);
+    unsigned i, first = 0, phdrs = 0, stacks = 0, tls = 0, tls_index = 0;
+    uint64_t previous = 0;
+    int loads = 0, entered = 0;
+
+    for (i = 0; i < o->phnum; i++) {
+        struct segment *p = &o->seg[i];
+        const char *refused;
+
+        if (p->type == PT_NULL)
+            continue; /* gABI 7.2: the other members are undefined */
+        refused = segment_type_refused(p->type);
+        if (refused != NULL) {
+            report(o, "phdr.type", "segment", i, 0, refused);
+            continue;
+        }
+        p->known = 1;
+        if ((p->flags & ~(uint32_t)(PF_X | PF_W | PF_R)) != 0)
+            report(o, "phdr.flags", "segment", i, 0, "p_flags sets a bit other than PF_R, PF_W and PF_X");
+        if (p->align != 0 && !power_of_two(p->align))
+            report(o, "phdr.align", "segment", i, 0, "p_align is not 0 or a power of two");
+        if (!fits(p->offset, p->filesz, o->size))
+            report(o, "phdr.bounds", "segment", i, 0, "the segment's file image passes the end of the file");
+
+        switch (p->type) {
+        case PT_LOAD:
+            if (p->filesz > p->memsz)
+                report(o, "load.filesz", "segment", i, 0, "p_filesz is larger than p_memsz");
+            if (p->align == 0 || (power_of_two(p->align) && p->align < MIN_PAGE_SIZE))
+                report(o, "load.align", "segment", i, 0, "p_align is not a page size of at least 4096");
+            if (power_of_two(p->align) && ((p->vaddr - p->offset) & (p->align - 1)) != 0)
+                report(o, "load.congruent", "segment", i, 0, "p_vaddr is not congruent to p_offset modulo p_align");
+            if (loads > 0 && p->vaddr < previous)
+                report(o, "load.order", "segment", i, 0, "PT_LOAD entries are not in ascending p_vaddr order");
+            if ((p->flags & (PF_W | PF_X)) == (PF_W | PF_X))
+                report(o, "load.wx", "segment", i, 0, "a PT_LOAD is both writable and executable");
+            if (loads++ == 0)
+                first = i;
+            previous = p->vaddr;
+            break;
+        case PT_PHDR:
+            if (++phdrs > 1)
+                report(o, "phdr.phdr", "segment", i, 0, "a second PT_PHDR");
+            if (loads > 0)
+                report(o, "phdr.phdr", "segment", i, 0, "PT_PHDR follows a loadable segment");
+            if (p->offset != o->phoff || p->filesz != phsize || p->memsz != phsize)
+                report(o, "phdr.phdr", "segment", i, 0, "PT_PHDR does not describe the program header table");
+            break;
+        case PT_TLS:
+            if (tls++ == 0)
+                tls_index = i;
+            break;
+        case PT_GNU_STACK:
+            stacks++;
+            if ((p->flags & PF_X) != 0)
+                report(o, "phdr.gnu-stack", "segment", i, 0, "PT_GNU_STACK makes the stack executable");
+            break;
+        default:
+            break;
+        }
+    }
+
+    if (loads == 0)
+        report(o, "load.headers", NULL, 0, 0, "no PT_LOAD maps the ELF header and program header table");
+    else if (o->seg[first].offset != 0 || o->seg[first].filesz < EHDR_SIZE ||
+             o->seg[first].filesz < o->phoff + phsize)
+        report(o, "load.headers", "segment", first, 0,
+               "the first PT_LOAD does not map the ELF header and program header table");
+
+    for (i = 0; i < o->phnum; i++) {
+        const struct segment *p = &o->seg[i];
+        unsigned k;
+        int mapped = 0;
+
+        if (p->known && p->type == PT_LOAD && (p->flags & PF_X) != 0 && inside(entry, 1, p->vaddr, p->filesz))
+            entered = 1;
+        if (!p->known || p->type != PT_PHDR)
+            continue;
+        /* gABI 7.2: PT_PHDR "may occur only if the program header table is
+         * part of the memory image of the program". */
+        for (k = 0; k < o->phnum; k++) {
+            const struct segment *l = &o->seg[k];
+            if (l->known && l->type == PT_LOAD && p->offset >= l->offset &&
+                fits(p->offset - l->offset, p->filesz, l->filesz) &&
+                p->vaddr - l->vaddr == p->offset - l->offset && p->vaddr >= l->vaddr)
+                mapped = 1;
+        }
+        if (!mapped)
+            report(o, "phdr.phdr", "segment", i, 0, "no PT_LOAD maps PT_PHDR's bytes at its address");
+    }
+    if (!entered)
+        report(o, "load.entry", NULL, 0, 0, "e_entry is not inside the file image of an executable PT_LOAD");
+    if (stacks != 1)
+        report(o, "phdr.gnu-stack", NULL, 0, 0,
+               stacks == 0 ? "no PT_GNU_STACK segment (profile)" : "more than one PT_GNU_STACK segment");
+
+    if (o->sec == NULL)
+        return; /* no section header table: shdr.table-present reported it */
+    for (i = 1; i < o->shnum; i++) {
+        const struct section *s = &o->sec[i];
+        /* A TLS SHT_NOBITS section occupies template space, not load space (gABI 7.7). */
+        if (!s->active || (s->flags & SHF_ALLOC) == 0 || s->size == 0 ||
+            ((s->flags & SHF_TLS) != 0 && s->type == SHT_NOBITS))
+            continue;
+        if (!section_loaded(o, s))
+            report(o, "load.sections", "section", i, 0,
+                   "no PT_LOAD maps the section at its address and file offset with the access its flags need");
+    }
+    check_tls(o, tls, tls_index);
+}
+
 static unsigned char *read_file(const char *path, uint64_t *size)
 {
     FILE *f = fopen(path, "rb");
@@ -731,27 +1088,37 @@ static unsigned char *read_file(const char *path, uint64_t *size)
     return data;
 }
 
-static int check_file(const char *path)
+static int check_file(const char *path, int exec)
 {
     struct object o;
     unsigned char *data;
 
     memset(&o, 0, sizeof o);
     o.path = path;
+    o.exec = exec;
     data = read_file(path, &o.size);
     if (data == NULL) {
         fprintf(stderr, "elfcheck: %s: cannot read the file\n", path);
         return 2;
     }
     o.data = data;
-    if (check_header(&o) && load_sections(&o)) {
-        check_sections(&o);
-        check_symbols(&o);
-        check_relocations(&o);
-        check_groups(&o);
+    if (check_header(&o)) {
+        int segments = exec && load_program_headers(&o);
+        if (load_sections(&o)) {
+            check_sections(&o);
+            check_symbols(&o);
+            /* An executable's r_offset is a virtual address (gABI 6.1); the
+             * relocation rules here are written for relocatable files. */
+            if (!exec)
+                check_relocations(&o);
+            check_groups(&o);
+        }
+        if (segments)
+            check_segments(&o);
     }
     if (o.findings == 0)
         printf("%s: ok\n", path);
+    free(o.seg);
     free(o.sym_type);
     free(o.sec);
     free(data);
@@ -760,7 +1127,7 @@ static int check_file(const char *path)
 
 int main(int argc, char **argv)
 {
-    int status = 0, i;
+    int status = 0, exec = 0, first = 1, i;
 
     if (argc == 2 && strcmp(argv[1], "--list") == 0) {
         size_t k;
@@ -768,12 +1135,16 @@ int main(int argc, char **argv)
             puts(check_ids[k]);
         return 0;
     }
-    if (argc < 2 || argv[1][0] == '-') {
-        fprintf(stderr, "usage: elfcheck FILE...\n       elfcheck --list\n");
+    if (argc > 1 && strcmp(argv[1], "--exec") == 0) {
+        exec = 1;
+        first = 2;
+    }
+    if (argc <= first || argv[first][0] == '-') {
+        fprintf(stderr, "usage: elfcheck [--exec] FILE...\n       elfcheck --list\n");
         return 2;
     }
-    for (i = 1; i < argc; i++) {
-        int result = check_file(argv[i]);
+    for (i = first; i < argc; i++) {
+        int result = check_file(argv[i], exec);
         if (result > status)
             status = result;
     }

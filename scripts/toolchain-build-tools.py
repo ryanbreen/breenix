@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cross-build bas and link the x86 assembler fixtures with retained receipts."""
+"""Build guest tools and prepare the x86 assembler and linker fixtures."""
 
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
@@ -16,7 +16,13 @@ reference = module_from_spec(spec_from_loader(loader.name, loader))
 loader.exec_module(reference)
 ROOT = reference.ROOT
 FIXTURES = ROOT / "toolchain/corpus/assembler"
-SOURCES = (ROOT / "toolchain/bas/bas.c", ROOT / "toolchain/common/elf64.c")
+TOOLS = {
+    "bas": ("bas/bas.c", "common/elf64.c"),
+    "bld": ("bld/bld.c", "bld/script.c", "common/ar.c"),
+    "bar": ("bar/bar.c", "common/ar.c", "common/elf_symbols.c"),
+    "bnm": ("bnm/bnm.c", "common/ar.c", "common/elf_symbols.c"),
+}
+LINKER_SOURCES = ("got-main.c", "got-entry.s", "archive-value-with-long-name.s", "tls-template.c")
 PROGRAMS = ("sse-exit", "x87-exit")
 STRICT = ("-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic")
 
@@ -37,22 +43,26 @@ def build(arch, work, dev, corpus):
     )
 
     headers = (ROOT / "libs/libbreenix-libc/include", ROOT / "toolchain/include")
-    objects = []
-    for source in SOURCES:
-        obj = source.with_suffix(".o").name
-        reference.run([
-            *clang, "--no-default-config", f"--target={arch}-unknown-linux-gnu",
-            "-Ulinux", "-U__linux", "-U__linux__", "-U__gnu_linux__", "-D__breenix__=1",
-            *STRICT, "-nostdinc", "-isystem", str(headers[0]), "-isystem", str(headers[1]),
-            "-fno-stack-protector", "-fno-pic", "-fno-pie", reference.ARCH_FLAGS[arch],
-            "-c", str(source), "-o", obj,
-        ], work)
-        objects.append(obj)
-
     dev_bin = dev / "bin"
     dev_bin.mkdir()
     link = [*lld, "--fatal-warnings", "-static", "--gc-sections", "-T", str(dev / "linker.ld")]
-    reference.run([*link, "-o", str(dev_bin / "bas"), *objects, str(dev / "lib/libc.a")], work)
+    built = {}
+    for tool, sources in TOOLS.items():
+        objects = []
+        for relative in sources:
+            if relative not in built:
+                source = ROOT / "toolchain" / relative
+                obj = relative.replace("/", "-") + ".o"
+                reference.run([
+                    *clang, "--no-default-config", f"--target={arch}-unknown-linux-gnu",
+                    "-Ulinux", "-U__linux", "-U__linux__", "-U__gnu_linux__", "-D__breenix__=1",
+                    *STRICT, "-nostdinc", "-isystem", str(headers[0]), "-isystem", str(headers[1]),
+                    "-fno-stack-protector", "-fno-pic", "-fno-pie", reference.ARCH_FLAGS[arch],
+                    "-c", str(source), "-o", obj,
+                ], work)
+                built[relative] = obj
+            objects.append(built[relative])
+        reference.run([*link, "-o", str(dev_bin / tool), *objects, str(dev / "lib/libc.a")], work)
 
     if arch == "x86_64":
         # Host bas emits the exact objects linked by lld. Use relative input
@@ -64,7 +74,7 @@ def build(arch, work, dev, corpus):
                 ["/usr/bin/xcrun", "--sdk", "macosx", "--show-sdk-path"], text=True,
             ).strip()
             host_flags.extend(["-isysroot", sdk])
-        subprocess.run([*clang, *host_flags, *map(str, SOURCES),
+        subprocess.run([*clang, *host_flags, *(str(ROOT / "toolchain" / source) for source in TOOLS["bas"]),
                         "-o", str(host_bas)], cwd=work, check=True)
         destination = corpus / "assembler"
         shutil.copytree(FIXTURES, destination)
@@ -86,9 +96,30 @@ def build(arch, work, dev, corpus):
             (destination / f"{name}.link.json").write_text(json.dumps(receipt, indent=2) + "\n",
                                                            encoding="utf-8")
 
+        build_linker_objects(arch, clang, work, corpus)
+
+
+def build_linker_objects(arch, clang, work, corpus):
+    sources = ROOT / "toolchain/corpus/linker"
+    destination = corpus / "linker"
+    destination.mkdir()
+    for name in ("got-main", "tls-template"):
+        shutil.copyfile(sources / f"{name}.expect", destination / f"{name}.expect")
+    for name in LINKER_SOURCES:
+        source = sources / name
+        obj = corpus / "objs" / (source.stem + ".o")
+        if source.suffix == ".c":
+            compiled, _, _ = reference.compile_c(arch, clang, source, (sources,), work)
+            compiled.rename(obj)
+        else:
+            reference.run([
+                *clang, "--no-default-config", "--target=x86_64-unknown-none-elf",
+                "-Werror", "-fintegrated-as", "-x", "assembler", "-c", str(source), "-o", str(obj),
+            ], work)
+
 
 if __name__ == "__main__":
     try:
         build(sys.argv[1], *map(Path, sys.argv[2:]))
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
-        sys.exit(f"toolchain-build-bas: {error}")
+        sys.exit(f"toolchain-build-tools: {error}")
