@@ -2,6 +2,7 @@
 use std::alloc::{GlobalAlloc, Layout};
 use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+extern crate self as libbreenix;
 
 #[allow(dead_code)] // The probe uses only the C entry points Rust's allocator needs.
 mod stdlib {
@@ -28,7 +29,21 @@ mod native {
         pub fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, off: i64)
             -> *mut u8;
         pub fn munmap(addr: *mut u8, len: usize) -> i32;
+        pub fn madvise(addr: *mut u8, len: usize, advice: i32) -> i32;
         pub fn getpid() -> i32;
+    }
+}
+
+pub mod syscall {
+    pub mod nr {
+        pub const MADVISE: u64 = 0;
+    }
+}
+
+pub mod raw {
+    pub unsafe fn syscall3(number: u64, addr: u64, len: u64, advice: u64) -> u64 {
+        assert_eq!(number, crate::syscall::nr::MADVISE);
+        crate::native::madvise(addr as *mut u8, len as usize, advice as i32) as u64
     }
 }
 
