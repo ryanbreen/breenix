@@ -109,6 +109,63 @@ class toolchain_sysroot_test(unittest.TestCase):
         self.assertFalse(self.inventory.exists())
         self.assertFalse(self.output.exists())
 
+    def check_header_consumer(self, source):
+        self.source.write_text(source)
+        for arch in TARGETS:
+            with self.subTest(arch=arch):
+                result = self.build(arch)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr, "")
+
+    def test_posix_limits(self):
+        self.check_header_consumer("""
+#define _POSIX_C_SOURCE 202405L
+#include <stdint.h>
+#include <limits.h>
+_Static_assert(PATH_MAX >= _POSIX_PATH_MAX, "pathname limit");
+_Static_assert(NAME_MAX >= _POSIX_NAME_MAX, "filename limit");
+_Static_assert(SSIZE_MAX == INT64_MAX && CHAR_BIT == 8, "LP64 limits");
+void _start(void) {}
+""")
+
+    def test_wchar_varargs(self):
+        self.check_header_consumer("""
+#include <wchar.h>
+#ifdef va_start
+#error Strict C wchar.h must not expose the stdarg macros
+#endif
+#include <stdarg.h>
+void check(wchar_t *buffer, va_list args) {
+    _Static_assert(sizeof(vswprintf(buffer, 1, L"%d", args)) == sizeof(int),
+                   "vswprintf accepts the platform va_list");
+}
+void _start(void) {}
+""")
+
+    def test_fast_integer_formats(self):
+        self.check_header_consumer("""
+#include <inttypes.h>
+#include <stdio.h>
+int sscanf(const char *restrict, const char *restrict, ...)
+    __attribute__((format(scanf, 2, 3)));
+int printf(const char *restrict, ...) __attribute__((format(printf, 1, 2)));
+void check(const char *input) {
+    int_fast8_t i8;
+    int_fast16_t i16;
+    uint_fast8_t u8;
+    uint_fast16_t u16;
+    (void)sizeof(sscanf(input, "%" SCNdFAST8 " %" SCNdFAST16 " %" SCNuFAST8 " %" SCNuFAST16,
+                        &i8, &i16, &u8, &u16));
+    (void)sizeof(printf("%" PRIdFAST8 " %" PRIdFAST16 " %" PRIuFAST8 " %" PRIuFAST16,
+                        i8, i16, u8, u16));
+}
+_Static_assert(INT_FAST8_MIN == -128 && INT_FAST8_MAX == 127 && UINT_FAST8_MAX == 255,
+               "fast 8-bit limits");
+_Static_assert(INT_FAST16_MIN == -32768 && INT_FAST16_MAX == 32767 && UINT_FAST16_MAX == 65535,
+               "fast 16-bit limits");
+void _start(void) {}
+""")
+
     def archive(self, arch):
         objects = []
         for name, source in [("long_archive_member_name", "int answer(void) { return 42; }"),
