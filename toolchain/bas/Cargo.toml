@@ -1,0 +1,9 @@
+[package]
+name = "bas"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+description = "Breenix assembler"
+
+[lints]
+workspace = true
