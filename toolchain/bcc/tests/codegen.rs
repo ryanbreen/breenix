@@ -1,5 +1,61 @@
+use std::fs;
 use std::path::Path;
 use std::process::Command;
+
+use bcc::{codegen, pp, sema};
+
+#[test]
+fn double_literal_bits() {
+    // N1570 6.4.4.2 and Annex F.5. These binary64 encodings follow from
+    // rounding the exact decimal or hexadecimal rational to nearest/even.
+    let cases = [
+        ("0.1", 0x3fb9_9999_9999_999au64),
+        ("1e23", 0x44b5_2d02_c7e1_4af6),
+        ("9007199254740993.0", 0x4340_0000_0000_0000),
+        ("0x1p-1074", 0x0000_0000_0000_0001),
+        ("0x1.00000000000008p0", 0x3ff0_0000_0000_0000),
+        ("0x1.00000000000018p0", 0x3ff0_0000_0000_0002),
+    ];
+    let path = Path::new("double-literal.c");
+    let options = pp::Options {
+        target: pp::Target::X86_64,
+        ..pp::Options::default()
+    };
+    for (literal, bits) in cases {
+        let c = format!("double value(void) {{ return {literal}; }}");
+        let input = pp::preprocess_source(path, c.as_bytes(), &options).unwrap();
+        let unit = sema::analyze(&input, path, options.target).unwrap();
+        let assembly = codegen::emit_assembly(&unit, path, options.target).unwrap();
+        let load = format!("    mov rax, 0x{bits:x}\n    movq xmm0, rax\n");
+        assert!(
+            assembly.contains(&load),
+            "{literal} expected {bits:#018x}\n{assembly}"
+        );
+    }
+}
+
+#[test]
+fn bcc_has_no_host_float_parse() {
+    let mut directories = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+    while let Some(directory) = directories.pop() {
+        for entry in fs::read_dir(directory).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if entry.file_type().unwrap().is_dir() {
+                directories.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let source = fs::read_to_string(&path).unwrap();
+                for forbidden in ["parse::<f64>", "as f64", "f64::from"] {
+                    assert!(
+                        !source.contains(forbidden),
+                        "{} contains {forbidden:?}",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
+}
 
 // Build bas, bld and elfcheck in the same Cargo target/profile as bcc before
 // running this test, and build libbreenix-libc for x86_64-breenix-c in release.
