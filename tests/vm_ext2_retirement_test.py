@@ -135,6 +135,8 @@ class VmExt2Retirement(unittest.TestCase):
         self.assertEqual([row['result'] for row in proof['cases']], ['PASS'])
         self.assertEqual([row['result'] for row in
                           json.loads((self.run / 'filesystem-two-upgrades.json').read_text())['cases']], ['PASS'])
+        VM['prepare_retirement'](self.repo, self.run, 'boot', 'current')
+        self.assertEqual(VM['digest'](self.run / 'boot-intent'), proof['nextAnswer']['intentSha256'])
 
     def test_failed_candidate_never_reclaims(self):
         disk = self.begin()
