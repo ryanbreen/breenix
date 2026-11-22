@@ -261,7 +261,12 @@ static int update(const char *path, bool replace, char **inputs, size_t input_co
         size_t size;
         mode = st.st_mode & 0777;
         bytes = tool_read_file(path, &size);
-        error = bytes == NULL ? "cannot read archive" : ar_read(&original, bytes, size);
+        if (bytes == NULL) {
+            error = "cannot read archive";
+            goto done;
+        }
+        error = replace ? ar_read(&original, bytes, size)
+                        : ar_read_members(&original, bytes, size);
         if (error != NULL)
             goto done;
     } else if (errno == ENOENT && replace) {

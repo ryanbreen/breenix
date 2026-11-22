@@ -1880,7 +1880,10 @@ x86-64. The suite-only bundle contains `bld`, `bar` and `bnm` alongside
 `/usr/share/breenix/toolchain/objs/`. The reference corpus keeps the same
 objects its lld receipts identify. The linker cases use a fresh private
 directory and execute the ELF that `bld` writes there. The archive fixture
-exercises dependent members and a GOT slot. The TLS fixture checks template
+exercises dependent members and a GOT slot in the main thread and two new
+threads. `archive-tools` compares the complete archive bytes after `bar s`
+processes intact, missing and corrupt indexes, then checks `bnm` output and
+runs a fresh link against the repaired archive. The TLS fixture checks template
 initialization, zero-fill, alignment and isolation in the main thread and
 two new threads. The two diagnostic cases require a failed link with a
 located error and no output, then repair the inputs and run a fresh link.

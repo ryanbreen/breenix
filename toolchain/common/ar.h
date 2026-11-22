@@ -31,6 +31,9 @@ bool ar_has_magic(const unsigned char *bytes, size_t size);
 /* On failure return a diagnostic. The caller disposes the archive either
  * way. The supplied bytes outlive the member and symbol views. */
 const char *ar_read(struct ar_archive *archive, const unsigned char *bytes, size_t size);
+/* For index reconstruction: validate member framing and names without
+ * interpreting the old symbol index payload. */
+const char *ar_read_members(struct ar_archive *archive, const unsigned char *bytes, size_t size);
 void ar_dispose(struct ar_archive *archive);
 
 #endif

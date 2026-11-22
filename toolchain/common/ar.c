@@ -122,7 +122,8 @@ static bool read_name(struct ar_member *member, const unsigned char *header, siz
     return true;
 }
 
-const char *ar_read(struct ar_archive *archive, const unsigned char *bytes, size_t size)
+static const char *read_archive(struct ar_archive *archive, const unsigned char *bytes,
+                                size_t size, bool read_symbols)
 {
     if (!ar_has_magic(bytes, size))
         return "expected a common archive";
@@ -175,7 +176,18 @@ const char *ar_read(struct ar_archive *archive, const unsigned char *bytes, size
         }
         pos = next;
     }
-    return index == NULL ? NULL : read_index(archive, index, index_size, index_width);
+    return read_symbols && index != NULL
+        ? read_index(archive, index, index_size, index_width) : NULL;
+}
+
+const char *ar_read(struct ar_archive *archive, const unsigned char *bytes, size_t size)
+{
+    return read_archive(archive, bytes, size, true);
+}
+
+const char *ar_read_members(struct ar_archive *archive, const unsigned char *bytes, size_t size)
+{
+    return read_archive(archive, bytes, size, false);
 }
 
 void ar_dispose(struct ar_archive *archive)
