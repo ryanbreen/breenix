@@ -105,6 +105,17 @@ The archive reader accepts the common archive format documented in Solaris
 indexes. An ordinary nonempty archive needs an index. `--whole-archive`
 includes its members in archive order and can read an archive without an index.
 
+`bar r[c][s]` replaces members by basename and appends new members in operand
+order. `bar s` rebuilds the index. The writer uses the Solaris ar(3HEAD)
+32-bit big-endian index and the long-name table. The index follows member
+and ELF symbol-table order and contains named global and weak definitions.
+The writer puts `0` in the timestamp, UID and GID fields and `0644` in
+the mode field. An
+archive that exceeds the 32-bit format limit is rejected. `bnm` reads the
+ELF gABI static symbol table in a little-endian ELF64 file or common archive,
+with `-A` for input prefixes, `-g` for external symbols, `-P` for
+name-first output and `-u` for undefined symbols.
+
 GNU ld 2.45 §2.1 describes the command-line ordering, group and whole-archive
 options. bld visits input paths in command-line order. It searches each
 ordinary archive to a member-selection fixed point at that position and

@@ -40,7 +40,32 @@
     {
       "id": "linker",
       "title": "Static links of our libc archive: GOT, archives, linker script and TLS",
-      "cases": []
+      "cases": [
+        {
+          "id": "links-reference-objects",
+          "title": "On-box links of the reference objects match their expectations"
+        },
+        {
+          "id": "got-and-archives",
+          "title": "A fresh link resolves the GOT and pulls dependent archive members"
+        },
+        {
+          "id": "tls-template",
+          "title": "A fresh link initializes aligned TLS in the main thread and two new threads"
+        },
+        {
+          "id": "archive-tools",
+          "title": "Deterministic archives expose symbols and supply a runnable link"
+        },
+        {
+          "id": "undefined-located",
+          "title": "Undefined references identify their relocation before a repaired link runs"
+        },
+        {
+          "id": "duplicate-located",
+          "title": "Duplicate definitions identify both objects before a repaired link runs"
+        }
+      ]
     },
     {
       "id": "c-core",

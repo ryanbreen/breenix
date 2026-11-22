@@ -29,7 +29,11 @@ class ToolchainImagePrefixTest(unittest.TestCase):
             fixtures = {
                 "opt/breenix-dev/25.2/include/stddef.h": b"support header\n",
                 "opt/breenix-dev/25.2/bin/bas": b"\x7fELF assembler",
+                "opt/breenix-dev/25.2/bin/bld": b"\x7fELF linker",
+                "opt/breenix-dev/25.2/bin/bar": b"\x7fELF archiver",
+                "opt/breenix-dev/25.2/bin/bnm": b"\x7fELF symbol reader",
                 "usr/share/breenix/toolchain/assembler/sse-exit.link.json": b"link receipt\n",
+                "usr/share/breenix/toolchain/objs/return.o": b"\x7fELF object",
                 "usr/share/breenix/toolchain/return.elf": b"\x7fELF reference",
                 "usr/share/breenix/toolchain/return.expect": b"42\n",
                 "sbin/suite-toolchain": b"\x7fELF suite",
@@ -51,7 +55,7 @@ class ToolchainImagePrefixTest(unittest.TestCase):
                 target = bundle / "root" / path
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(data)
-                target.chmod(0o755 if path.endswith((".elf", "/bin/bas"))
+                target.chmod(0o755 if path.endswith(".elf") or "/bin/" in path
                              or path.startswith("sbin/") else 0o644)
             (binaries / "suite-toolchain.elf").write_bytes(fixtures["sbin/suite-toolchain"])
             (binaries / "suite-files-io.elf").write_bytes(b"\x7fELF unrelated suite")
@@ -103,6 +107,9 @@ class ToolchainImagePrefixTest(unittest.TestCase):
             self.assertEqual(before, hashlib.sha256(seed.read_bytes()).digest())
             self.assertLess(ordinary.keys(), selected.keys())
             self.assertEqual(stat.S_IMODE(selected["opt/breenix-dev/25.2/bin/bas"][0]), 0o755)
+            for tool in ("bld", "bar", "bnm"):
+                self.assertEqual(stat.S_IMODE(selected[f"opt/breenix-dev/25.2/bin/{tool}"][0]), 0o755)
+            self.assertEqual(stat.S_IMODE(selected["usr/share/breenix/toolchain/objs/return.o"][0]), 0o644)
             self.assertEqual(ordinary, {key: selected[key] for key in ordinary})
             added = selected.keys() - ordinary.keys()
             self.assertEqual({key: selected[key][1] for key in added if selected[key][1] is not None},
