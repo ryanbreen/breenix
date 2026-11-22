@@ -57,8 +57,8 @@ enum {
 /* psABI 3.3.3: the smallest page size a conforming system may use. */
 #define MIN_PAGE_SIZE 4096u
 
-/* gABI Tables 7.1 and 7.2; psABI Table 5.1. PT_GNU_STACK is in neither
- * document; README.md records where its value comes from. */
+/* gABI Tables 7.1 and 7.2; psABI Table 5.1. PT_GNU_STACK is assigned by
+ * Linux Standard Base Core Specification 5.0, Generic Part, Table 11-1. */
 #define PT_NULL 0u
 #define PT_LOAD 1u
 #define PT_DYNAMIC 2u
