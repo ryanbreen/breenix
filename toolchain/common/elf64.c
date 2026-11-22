@@ -1,4 +1,4 @@
-/* ELF gABI Listings 2.1, 3.1, 5.1, §§3.5–3.6, 4, 5.2, 5.6–5.7.
+/* ELF gABI Listings 2.1, 3.1, 5.1, §§3.5–3.6, 4, 5.1–5.3, 5.6–5.7.
  * AMD64 psABI §4.1 fixes the class, endianness and machine.
  */
 #include "elf64.h"
@@ -14,6 +14,7 @@ enum {
     SHT_SYMTAB = 2,
     SHT_STRTAB = 3,
     SHN_LORESERVE = 0xff00,
+    STB_LOCAL = 0,
     STB_GLOBAL = 1,
     ET_REL = 1,
     EM_X86_64 = 62,
@@ -121,27 +122,34 @@ static bool write_section_header(FILE *out, const struct section_header *section
     return write_bytes(out, bytes, sizeof bytes);
 }
 
-static bool write_symbols(FILE *out, const struct elf64_global *globals, size_t count)
+static bool write_symbols(FILE *out, const struct elf64_symbol *symbols, size_t count)
 {
     unsigned char bytes[SYMBOL_SIZE] = {0};
     if (!write_bytes(out, bytes, sizeof bytes))
         return false;
-    uint32_t offset = 1;
-    for (size_t i = 0; i < count; ++i) {
-        store_le(bytes, 4, offset);
-        bytes[4] = STB_GLOBAL << 4; /* STT_NOTYPE, default visibility. */
-        store_le(bytes + 6, 2, globals[i].section);
-        store_le(bytes + 8, 8, globals[i].value);
-        if (!write_bytes(out, bytes, sizeof bytes))
-            return false;
-        offset += (uint32_t)strlen(globals[i].name) + 1;
+    /* gABI §5.2 orders locals before globals. Names remain in input order. */
+    for (unsigned binding = STB_LOCAL; binding <= STB_GLOBAL; ++binding) {
+        uint32_t offset = 1;
+        for (size_t i = 0; i < count; ++i) {
+            const struct elf64_symbol *symbol = &symbols[i];
+            if (symbol->global == (binding == STB_GLOBAL)) {
+                store_le(bytes, 4, offset);
+                bytes[4] = (unsigned char)((binding << 4) | symbol->type);
+                store_le(bytes + 6, 2, symbol->section);
+                store_le(bytes + 8, 8, symbol->value);
+                store_le(bytes + 16, 8, symbol->size);
+                if (!write_bytes(out, bytes, sizeof bytes))
+                    return false;
+            }
+            offset += (uint32_t)strlen(symbol->name) + 1;
+        }
     }
     return true;
 }
 
 static bool write_object(FILE *out, const struct elf64_section *sections,
                          const struct section_header *headers, uint16_t count,
-                         const struct elf64_global *globals, size_t global_count,
+                         const struct elf64_symbol *symbols, size_t symbol_count,
                          uint64_t header_offset)
 {
     uint16_t shstrtab = count - 1;
@@ -163,13 +171,13 @@ static bool write_object(FILE *out, const struct elf64_section *sections,
             if (!write_bytes(out, section->data, section->size))
                 return false;
         } else if (i == symtab) {
-            if (!write_symbols(out, globals, global_count))
+            if (!write_symbols(out, symbols, symbol_count))
                 return false;
         } else if (i == strtab) {
             if (fputc(0, out) == EOF)
                 return false;
-            for (size_t j = 0; j < global_count; ++j)
-                if (!write_name(out, globals[j].name))
+            for (size_t j = 0; j < symbol_count; ++j)
+                if (!write_name(out, symbols[j].name))
                     return false;
         } else {
             if (fputc(0, out) == EOF)
@@ -191,16 +199,20 @@ static bool write_object(FILE *out, const struct elf64_section *sections,
 
 static bool layout(struct section_header *headers, uint16_t count,
                    const struct elf64_section *sections,
-                   const struct elf64_global *globals, size_t global_count,
+                   const struct elf64_symbol *symbols, size_t symbol_count,
                    uint64_t *header_offset)
 {
     uint16_t shstrtab = count - 1;
     uint16_t strtab = count - 2;
     uint16_t symtab = count - 3;
     uint32_t strings_size = 1;
-    for (size_t i = 0; i < global_count; ++i)
-        if (!add_name(&strings_size, globals[i].name))
+    uint32_t first_global = 1; /* Skip the reserved null symbol. */
+    for (size_t i = 0; i < symbol_count; ++i) {
+        if (!add_name(&strings_size, symbols[i].name))
             return false;
+        if (!symbols[i].global)
+            ++first_global;
+    }
 
     for (uint16_t i = 1; i < symtab; ++i) {
         const struct elf64_section *section = &sections[i - 1];
@@ -211,7 +223,7 @@ static bool layout(struct section_header *headers, uint16_t count,
     }
     headers[symtab] = (struct section_header){
         .name = ".symtab", .type = SHT_SYMTAB, .alignment = 8, .entry_size = SYMBOL_SIZE,
-        .link = strtab, .info = 1, .size = (global_count + 1) * SYMBOL_SIZE
+        .link = strtab, .info = first_global, .size = (symbol_count + 1) * SYMBOL_SIZE
     };
     headers[strtab] = (struct section_header){
         .name = ".strtab", .type = SHT_STRTAB, .alignment = 1, .size = strings_size
@@ -242,11 +254,12 @@ static bool layout(struct section_header *headers, uint16_t count,
 }
 
 bool elf64_write_rel(FILE *out, const struct elf64_section *sections,
-                     size_t section_count, const struct elf64_global *globals,
-                     size_t global_count)
+                     size_t section_count, const struct elf64_symbol *symbols,
+                     size_t symbol_count)
 {
     /* The null section and the three tables also occupy section indices. */
-    if (section_count >= SHN_LORESERVE - 4 || global_count >= SIZE_MAX / SYMBOL_SIZE) {
+    if (section_count >= SHN_LORESERVE - 4 || symbol_count >= SIZE_MAX / SYMBOL_SIZE ||
+        symbol_count >= UINT32_MAX) {
         errno = EFBIG;
         return false;
     }
@@ -256,9 +269,9 @@ bool elf64_write_rel(FILE *out, const struct elf64_section *sections,
         return false;
 
     uint64_t header_offset;
-    bool ok = layout(headers, count, sections, globals, global_count, &header_offset);
+    bool ok = layout(headers, count, sections, symbols, symbol_count, &header_offset);
     if (ok)
-        ok = write_object(out, sections, headers, count, globals, global_count, header_offset);
+        ok = write_object(out, sections, headers, count, symbols, symbol_count, header_offset);
     else
         errno = EFBIG;
     free(headers);

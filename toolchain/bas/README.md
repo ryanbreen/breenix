@@ -1,27 +1,59 @@
 # bas
 
 Build the host tool from `bas.c` and `../common/elf64.c` with a C11 compiler.
-Run it as `bas -o OBJECT SOURCE`. Output is a little-endian x86-64 ELF
-relocatable object.
+Run `bas -o OBJECT SOURCE` to write a little-endian x86-64 ELF relocatable object.
 
-The 25.3a1 dialect uses lower-case Intel-style register and instruction
-names. Semicolons introduce comments. `section .text`, `section .data`,
-`section .rodata`, and `section .bss` select a section by name. The initial
-section is `.text`. Instructions go in `.text`. Write `global NAME` before
-`NAME:` to give a label global binding. A declaration without a label produces
-an undefined global symbol.
+## 25.3a2 input syntax
 
-- `mov r32, IMM` loads a 32-bit immediate into a general-purpose register.
-  Literals can be signed or unsigned decimal or hexadecimal with a `0x` prefix.
-- `call DISP` takes a signed 32-bit byte displacement from the following
-  instruction. Write it as a decimal or hexadecimal integer.
-- `ret` and `syscall` take no operands.
+Use lower-case Intel-style instructions and registers. A semicolon outside a
+string starts a comment. The initial section is `.text`, where instructions go.
+`section NAME` selects `.text`, `.data`, `.rodata` or `.bss`.
 
-Local labels, symbolic calls, more operand widths, data directives and
-relocations belong to the later assembler slices. The ARM64 host build
-still targets x86-64. AArch64 instruction encoding, object metadata and
-relocations are A1 work.
+- `NAME:` defines a label at the current section offset. Labels are local
+  by default and can have names like `.Lloop`. Use `global NAME` anywhere to
+  give a symbol global binding. A global declaration without a definition
+  produces an undefined ELF symbol.
+- `mov` supports 8-, 16-, 32- and 64-bit GPR pairs and GPR loads and stores.
+  A register implies the memory width. Write `byte`, `word`, `dword` or
+  `qword` before the address to make that width explicit. An optional `ptr`
+  can follow the width. Immediate moves support 8-, 16- and 32-bit destinations.
+  Use an explicit width for an immediate store.
+- Write addresses as `[BASE + INDEX*SCALE + DISP]`, with any of those terms
+  omitted. Scales are 1, 2, 4 or 8. Address registers are uniformly 64-bit or
+  uniformly 32-bit within an address. Write `fs:[...]` or `gs:[...]` for a
+  segment base. The other four segment prefixes encode but have no effect
+  on ordinary memory addresses in 64-bit mode.
+- `[rip + DISP]` uses a literal displacement. `[rip + LABEL + ADDEND]`
+  computes the displacement from the end of the instruction to a label in
+  the same section. `eip` selects the 32-bit address-size override.
+- Direct `call`, `jmp` and the flag-based conditional jumps use rel32.
+  An integer is the signed displacement from the end of the instruction.
+  A label with an optional signed addend can refer forward or backward
+  within the same section. `ret` and `syscall` take no operands.
+- `db`, `dw`, `dd` and `dq` emit lists of 1-, 2-, 4- and 8-byte
+  little-endian integers, respectively. The aliases are `.byte`, `.word`,
+  `.long` and `.quad`. Integers accept decimal and `0x` hexadecimal.
+  Byte lists and `.ascii` can emit quoted strings. `.asciz` adds a
+  NUL after each string. Escapes are `\\`, `\"`, `\0`, `\n`, `\r`, `\t`
+  and `\xHH`.
+- `.zero COUNT` fills `COUNT` bytes with `0x00`. `align BYTES[, FILL]` aligns
+  to a positive power of two and raises the section's ELF alignment.
+  The default fill is `0x90` in `.text` and `0x00` elsewhere. `.bss` accepts
+  `0x00` data and records its size as `SHT_NOBITS` in the object. <!-- claim-lint:ok: toolchain/tests/bas/run.py checks the fixture using this directive. -->
+- `.type NAME, @function`, `@object` or `@notype` sets the ELF symbol type.
+  `.size NAME, SIZE` accepts a nonnegative integer or a difference between
+  offsets in one section, such as `. - NAME`. A dot in that expression
+  denotes the directive's offset.
+
+The a2 slice resolves same-section references while writing the object.
+External references and references between sections require the relocations
+scheduled for 25.3b. The ARM64 host build emits x86-64 objects. AArch64
+instruction encoding, object metadata and relocations are A1 work.
+
+## Host checks
 
 Run `python3 toolchain/tests/bas/run.py --clang /absolute/path/to/clang` on
-macOS to assemble the fixture and check its bytes, sections and global symbols.
-The runner also passes bas's object to the independent elfcheck.
+macOS. The runner checks the exit42 and addressing fixtures on both host
+architectures and under ASan and UBSan. The independent elfcheck validates
+the resulting six objects. The byte expectations cite the pinned ISA tables
+in the runner.
