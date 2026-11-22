@@ -36,11 +36,18 @@ typedef struct {
 typedef struct {
     const PpOptions *options;
     FILE *output;
+    PpList tokens; /* Collected when output is NULL, with newlines removed. */
+    PpPoint eof;
     PpBlock *blocks;
     PpMacro *macros[256];
     bool output_has_tokens;
     char date[16], time[12];
 } PpUnit;
+
+/* The unit owns collected tokens, their locations and arena allocations until
+ * pp_dispose. A caller initializes the unit with options and optional output. */
+bool pp_read(PpUnit *pp, const char *path);
+void pp_dispose(PpUnit *pp);
 
 void *pp_alloc(PpUnit *pp, size_t count, size_t width, PpPoint where);
 char *pp_copy(PpUnit *pp, const char *text, size_t length, PpPoint where);
@@ -65,5 +72,16 @@ bool pp_condition(PpUnit *pp, const PpLexeme *tokens, size_t count, PpPoint end,
  * The lexer has checked delimiter and escape syntax. */
 bool pp_character(const char **p, const char *end, uint32_t *value);
 size_t pp_utf8(uint32_t value, char bytes[4]);
+
+typedef struct {
+    uint64_t bits;
+    unsigned base, long_count;
+    bool uns;
+} PpInteger;
+
+typedef enum { PP_INTEGER_OK, PP_INTEGER_SYNTAX, PP_INTEGER_RANGE } PpIntegerStatus;
+
+/* N1570 §6.4.4.1 spelling, before either phase's type selection. */
+PpIntegerStatus pp_integer(PpLexeme token, PpInteger *out);
 
 #endif

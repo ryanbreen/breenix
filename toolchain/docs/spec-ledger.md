@@ -199,3 +199,30 @@ python3 toolchain/tests/cconf/run.py --cc /tmp/bcc --mode E --stage a1 --stage a
 
 The direct lexer check uses the same flags and links
 `toolchain/tests/bcc/splice_inside_token.c` with `toolchain/bcc/pp.c`.
+
+## Hello-subset parser and semantics
+
+`bcc -fsyntax-only` parses the located phase-4 tokens directly.
+`--dump-types` adds the JSON-lines type records used by
+`toolchain/tests/cconf/`. The same typed tree is available for code
+generation while the translation-unit arena lives.
+
+| Feature | N1570 clause |
+| --- | --- |
+| Integer and void specifiers, const-qualified types and pointer declarators | §§6.7.2, 6.7.3, 6.7.6.1 |
+| File-scope function prototypes and definitions, parameter scope, linkage and redeclarations | §§6.2.1, 6.2.2, 6.2.7, 6.7.6.3, 6.9.1 |
+| LP64 integer-constant types and concatenated ordinary UTF-8 strings | §§5.1.1.2, 6.4.4.1, 6.4.5 |
+| Identifier and parenthesized expressions, function and array decay, lvalue conversion, prototyped calls and argument conversions | §§6.3.1.1, 6.3.2.1, 6.5.1, 6.5.2.2, 6.5.16.1 |
+| Compound, null, expression and return statements | §§6.8.2, 6.8.3, 6.8.6.4 |
+
+The hello subset uses explicit prototypes, including variadic declarations
+for calls, and reports the first error. Local and global objects, typedefs,
+aggregate and grouped declarators, old-style functions, variadic definitions,
+operators, character and floating constants, and wide strings are later
+language work. Both target profiles share the frontend. ARM64 machine code
+and its on-box acceptance wait for A3.
+
+```sh
+python3 toolchain/tests/bcc/hello_translation_unit_types.py /tmp/bcc
+python3 toolchain/tests/cconf/run.py --cc /tmp/bcc --mode syntax --stage b1
+```

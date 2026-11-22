@@ -38,7 +38,7 @@ void *pp_alloc(PpUnit *pp, size_t count, size_t width, PpPoint where)
 {
     size_t alignment = _Alignof(max_align_t);
     if (count > (SIZE_MAX - alignment - sizeof(PpBlock)) / width) {
-        pp_error(where, "preprocessing allocation is too large");
+        pp_error(where, "translation-unit allocation is too large");
         return NULL;
     }
     size_t size = count * width;
@@ -48,7 +48,7 @@ void *pp_alloc(PpUnit *pp, size_t count, size_t width, PpPoint where)
         size_t capacity = size > 16384 ? size : 16384;
         block = malloc(sizeof *block + capacity);
         if (block == NULL) {
-            pp_error(where, "cannot allocate preprocessing data");
+            pp_error(where, "cannot allocate translation-unit data");
             return NULL;
         }
         block->next = pp->blocks;
@@ -151,6 +151,8 @@ static bool write(PpUnit *pp, const char *text, size_t length, PpPoint at)
 
 static bool write_token(PpUnit *pp, PpLexeme token)
 {
+    if (pp->output == NULL)
+        return token.kind == PP_NEWLINE || pp_append(pp, &pp->tokens, token);
     if (token.kind != PP_NEWLINE && pp->output_has_tokens &&
         !write(pp, " ", 1, token.location))
         return false;
@@ -160,6 +162,9 @@ static bool write_token(PpUnit *pp, PpLexeme token)
 
 static bool write_pragma(PpUnit *pp, PpPoint where, const PpLexeme *tokens, size_t count)
 {
+    /* The hello subset has no recognized pragmas (6.10.6p1). */
+    if (pp->output == NULL)
+        return true;
     if ((pp->output_has_tokens && !write(pp, "\n", 1, where)) ||
         !write(pp, "#pragma", sizeof "#pragma" - 1, where))
         return false;
@@ -609,6 +614,8 @@ static bool process_file(PpUnit *pp, FILE *input, const char *path, const PpPoin
         ok = pp_error(presumed(&file, lex_error.location), lex_error.message);
     if (ok && file.group_count != 0)
         ok = pp_error(file.groups[file.group_count - 1].if_location, "unterminated #if group");
+    if (depth == 0)
+        pp->eof = presumed(&file, source.eof);
     pp_free(&source);
     /* The parent's next text must start on a separate logical line even if
      * this implementation accepts an included file without a final newline. */
@@ -619,22 +626,32 @@ static bool process_file(PpUnit *pp, FILE *input, const char *path, const PpPoin
     return ok;
 }
 
+bool pp_read(PpUnit *pp, const char *path)
+{
+    PpPoint start = {path, {1, 1}, NULL};
+    if (!pp_predefine(pp, start))
+        return false;
+    FILE *input = fopen(path, "rb");
+    if (input == NULL)
+        return pp_error(start, strerror(errno));
+    return process_file(pp, input, path, NULL, 0);
+}
+
+void pp_dispose(PpUnit *pp)
+{
+    while (pp->blocks != NULL) {
+        PpBlock *block = pp->blocks;
+        pp->blocks = block->next;
+        free(block);
+    }
+}
+
 bool pp_preprocess(const PpOptions *options, const char *path, FILE *output)
 {
     PpUnit pp = {.options = options, .output = output};
-    PpPoint start = {path, {1, 1}, NULL};
-    bool ok = pp_predefine(&pp, start);
-    if (ok) {
-        FILE *input = fopen(path, "rb");
-        ok = input == NULL ? pp_error(start, strerror(errno)) :
-                             process_file(&pp, input, path, NULL, 0);
-    }
+    bool ok = pp_read(&pp, path);
     if (ok && fflush(output) != 0)
-        ok = pp_error(start, "cannot write preprocessed output");
-    while (pp.blocks != NULL) {
-        PpBlock *block = pp.blocks;
-        pp.blocks = block->next;
-        free(block);
-    }
+        ok = pp_error((PpPoint){path, {1, 1}, NULL}, "cannot write preprocessed output");
+    pp_dispose(&pp);
     return ok;
 }

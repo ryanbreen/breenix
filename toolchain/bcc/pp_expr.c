@@ -115,7 +115,7 @@ static bool take_unsigned(const char **p, const char *end)
     return true;
 }
 
-static bool number(PpLexeme token, Integer *out)
+PpIntegerStatus pp_integer(PpLexeme token, PpInteger *out)
 {
     const char *p = token.text;
     const char *end = p + token.length;
@@ -132,24 +132,41 @@ static bool number(PpLexeme token, Integer *out)
         if (digit < 0 || (unsigned)digit >= base)
             break;
         if (bits > (UINT64_MAX - (unsigned)digit) / base)
-            return pp_token_error(token, "integer in conditional exceeds uintmax_t");
+            return PP_INTEGER_RANGE;
         bits = bits * base + (unsigned)digit;
         ++p;
     }
+    if (p == first)
+        return PP_INTEGER_SYNTAX;
     bool uns = take_unsigned(&p, end);
+    unsigned long_count = 0;
     if (p != end && (*p == 'l' || *p == 'L')) {
         char long_suffix = *p++;
-        if (p != end && *p == long_suffix)
+        long_count = 1;
+        if (p != end && *p == long_suffix) {
             ++p;
+            ++long_count;
+        }
         if (!uns)
             uns = take_unsigned(&p, end);
     }
-    if (first == end || hex_value(*first) < 0 || (unsigned)hex_value(*first) >= base ||
-        p != end)
+    if (p != end)
+        return PP_INTEGER_SYNTAX;
+    *out = (PpInteger){bits, base, long_count, uns};
+    return PP_INTEGER_OK;
+}
+
+static bool number(PpLexeme token, Integer *out)
+{
+    PpInteger integer;
+    PpIntegerStatus status = pp_integer(token, &integer);
+    if (status == PP_INTEGER_RANGE)
+        return pp_token_error(token, "integer in conditional exceeds uintmax_t");
+    if (status == PP_INTEGER_SYNTAX)
         return pp_token_error(token, "expected an integer constant in conditional");
-    if (!uns && base == 10 && negative(bits))
+    if (!integer.uns && integer.base == 10 && negative(integer.bits))
         return pp_token_error(token, "decimal integer in conditional exceeds intmax_t");
-    *out = (Integer){bits, uns || negative(bits)};
+    *out = (Integer){integer.bits, integer.uns || negative(integer.bits)};
     return true;
 }
 
