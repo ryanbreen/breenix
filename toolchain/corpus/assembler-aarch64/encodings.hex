@@ -1,0 +1,17 @@
+d2800540 # DDI 0487 M.b C6.2.284 MOVZ: sf=1, hw=0, imm16=42, Rd=0
+d2800ba8 # DDI 0487 M.b C6.2.284 MOVZ: sf=1, hw=0, imm16=93, Rd=8
+d4000001 # DDI 0487 M.b C6.2.465 SVC: imm16=0
+d503201f # DDI 0487 M.b C6.2.298 NOP
+1400000a # DDI 0487 M.b C6.2.35 B: imm26=(56-16)/4
+97fffffe # DDI 0487 M.b C6.2.43 BL: imm26=(12-20)/4
+54000101 # DDI 0487 M.b C6.2.34 B.cond: imm19=(56-24)/4, cond=1
+34ffff83 # DDI 0487 M.b C6.2.78 CBZ: sf=0, imm19=(12-28)/4, Rt=3
+b50000c5 # DDI 0487 M.b C6.2.77 CBNZ: sf=1, imm19=(56-32)/4, Rt=5
+36ffff47 # DDI 0487 M.b C6.2.478 TBZ: b5:b40=31, imm14=(12-36)/4, Rt=7
+b7f80089 # DDI 0487 M.b C6.2.477 TBNZ: b5:b40=63, imm14=(56-40)/4, Rt=9
+d61f0200 # DDI 0487 M.b C6.2.46 BR: Rn=16
+d63f0220 # DDI 0487 M.b C6.2.44 BLR: Rn=17
+d65f0260 # DDI 0487 M.b C6.2.337 RET: Rn=19
+d65f03c0 # DDI 0487 M.b C6.2.337 RET: default Rn=30
+52a2468b # DDI 0487 M.b C6.2.284 MOVZ: sf=0, hw=1, imm16=0x1234, Rd=11
+d2ffffff # DDI 0487 M.b C6.2.284 MOVZ: sf=1, hw=3, imm16=0xffff, Rd=31

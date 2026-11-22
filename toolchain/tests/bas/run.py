@@ -13,10 +13,12 @@ from integer import INTEGER_ENCODINGS, INTEGER_REJECTIONS
 TESTS = Path(__file__).resolve().parents[1]
 TOOLCHAIN = TESTS.parent
 ASSEMBLER_CORPUS = TOOLCHAIN / "corpus/assembler"
+AARCH64_CORPUS = TOOLCHAIN / "corpus/assembler-aarch64"
 CHECK = "bas::exit42_object_passes_elfcheck"
 ADDRESSING_CHECK = "bas::sib_rip_forms_match_sdm_table"
 RELOCATION_CHECK = "bas::rela_pc32_for_external_call"
 INTEGER_CHECK = "bas::encode_mov_r64_imm32"
+AARCH64_CHECK = "bas::aarch64_exit42_object_passes_elfcheck"
 
 # Intel SDM Vol. 2 MOV opcode table B8+rd id, Table 2-4 REX.B,
 # and AMD APM Vol. 1 Figure 3-3 for the r32 register numbers.
@@ -37,9 +39,12 @@ def require(condition, reason):
         raise ValueError(reason)
 
 
-def read_object(bas, elfcheck, path, fixture):
-    subprocess.run([bas, "-o", path, TESTS / "bas" / fixture], check=True, timeout=10)
-    subprocess.run([elfcheck, path], check=True, timeout=10)
+def read_object(bas, elfcheck, path, fixture, *, machine=None):
+    target_args = ["--target", machine] if machine else []
+    machine_args = ["--machine", machine] if machine else []
+    subprocess.run([bas, *target_args, "-o", path, TESTS / "bas" / fixture],
+                   check=True, timeout=10)
+    subprocess.run([elfcheck, *machine_args, path], check=True, timeout=10)
 
     # elfcheck validates the structure. Read the fields that identify this
     # particular program (ELF gABI Listings 2.1, 3.1 and 5.1).
@@ -250,10 +255,42 @@ def check_supplemental_encodings(bas, elfcheck, path):
                 f"wrong diagnostic for {line!r}: {result.stderr}")
 
 
+def check_aarch64(bas, elfcheck, path):
+    sections, contents, _, symbols = read_object(
+        bas, elfcheck, path, AARCH64_CORPUS / "encodings.s", machine="aarch64")
+    text_index, text = sections[b".text"]
+    require(text[1:3] == (1, 6) and text[8] == 4, "expected aligned executable .text")
+    require(symbols.get(b"_start") == (0x10, 0, text_index, 0, 0), "expected global _start")
+    # AAELF64 2025Q1 §5.6.5 starts the instruction range with a local $x.
+    require(symbols.get(b"$x") == (0, 0, text_index, 0, 0), "expected a .text code mapping")
+    rows = (AARCH64_CORPUS / "encodings.hex").read_text().splitlines()
+    expected = [int(row.split("#", 1)[0], 16) for row in rows]
+    actual = [word for (word,) in struct.iter_unpack("<I", contents(text))]
+    require(actual == expected, f".text words were {actual!r}, expected {expected!r}")
+    require(all(header[1] not in (4, 9) for _, header in sections.values()),
+            "same-section labels must resolve without relocations")
+
+    source = path.with_suffix(".s")
+    rejected = path.with_suffix(".rejected.o")
+    for assembly, location, reason in (
+        # TBZ's largest positive displacement is 32764 (DDI 0487 M.b C6.2.478).
+        ("    tbz x0, #0, .Lfar\n.zero 32764\n.Lfar: nop\n", "1:17", "out of range"),
+        ("    b .Ldata\n.section .data\n.Ldata: .long 0\n", "1:7", "cross-section"),
+        ("    b .Ldata\n.byte 0\n.Ldata:\n", "1:7", "aligned"),
+    ):
+        source.write_text(assembly)
+        result = subprocess.run([bas, "--target", "aarch64", "-o", rejected, source],
+                                capture_output=True, text=True, timeout=10)
+        require(result.returncode == 1 and f"{source}:{location}:" in result.stderr
+                and reason in result.stderr and not rejected.exists(),
+                f"wrong diagnostic for {assembly!r}: {result.stderr}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bas", type=Path, required=True)
     parser.add_argument("--elfcheck", type=Path, required=True)
+    parser.add_argument("--machine", choices=("x86_64", "aarch64"), default="x86_64")
     args = parser.parse_args()
     if not args.bas.is_absolute() or not args.elfcheck.is_absolute():
         parser.error("--bas and --elfcheck must be absolute paths")
@@ -262,10 +299,12 @@ def main():
     try:
         with tempfile.TemporaryDirectory(prefix="breenix-bas-") as scratch:
             directory = Path(scratch)
-            for check, run in ((RELOCATION_CHECK, check_relocations),
-                               (INTEGER_CHECK, check_integer),
-                               ("bas::supplemental_encodings", check_supplemental_encodings),
-                               (ADDRESSING_CHECK, check_addressing), (CHECK, check_object)):
+            checks = ((RELOCATION_CHECK, check_relocations), (INTEGER_CHECK, check_integer),
+                      ("bas::supplemental_encodings", check_supplemental_encodings),
+                      (ADDRESSING_CHECK, check_addressing), (CHECK, check_object))
+            if args.machine == "aarch64":
+                checks = ((AARCH64_CHECK, check_aarch64),)
+            for check, run in checks:
                 run(args.bas, args.elfcheck, directory / f"{run.__name__}.o")
                 print(f"{check} PASS", flush=True)
     except (KeyError, OSError, ValueError, struct.error, subprocess.SubprocessError) as error:
