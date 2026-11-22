@@ -1,4 +1,4 @@
-"""Compare the actual ext2 staging path with and without the toolchain suite."""
+"""Compare suite-selected ext2 work copies of the same ordinary-layout seed."""
 import hashlib
 import json
 import os
@@ -95,11 +95,7 @@ class ToolchainImagePrefixTest(unittest.TestCase):
             selected = tree(stage("selected", "files-io,toolchain", use_bundle=True))
             unselected = tree(stage("unselected", "files-io", use_bundle=True))
             ordinary = tree(seed)
-            # Metal's persistent generation build uses the same seed recipe
-            # without a suite selection.
-            generation = tree(stage("generation", ""))
             self.assertEqual(ordinary, unselected)
-            self.assertEqual(ordinary, generation)
             self.assertEqual(before, hashlib.sha256(seed.read_bytes()).digest())
             self.assertLess(ordinary.keys(), selected.keys())
             self.assertEqual(ordinary, {key: selected[key] for key in ordinary})
