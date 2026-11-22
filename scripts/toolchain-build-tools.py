@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build guest tools and prepare the x86 assembler, linker and C fixtures."""
+"""Build guest tools and prepare the x86 assembler, linker, C and make fixtures."""
 
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
@@ -125,6 +125,7 @@ def build(arch, work, dev, corpus):
         for tool, alias in (("bas", "as"), ("bld", "ld")):
             shutil.copy2(dev / "bin" / tool, dev / "bin" / alias)
         shutil.copytree(WORKSPACE / "corpus/c-core", corpus / "c-core")
+        shutil.copytree(WORKSPACE / "corpus/make", corpus / "make")
         lld, _ = reference.pinned_tool(
             Path(os.environ["BREENIX_TOOLCHAIN_LLD"]),
             os.environ["BREENIX_TOOLCHAIN_LLD_SHA256"], work,

@@ -1,4 +1,4 @@
-//! Check the sealed reference inputs and the native assembler, linker and C compiler.
+//! Check the sealed reference inputs and the native assembler, linker, C compiler and make.
 
 use breenix_suite::suite::{case, case_diagnostic, category, suite, CaseResult, Suite};
 use libbreenix::crypto::sha256::{sha256, Sha256};
@@ -138,6 +138,37 @@ static SUITE: Suite = suite(
                     "diagnostic-located",
                     "Invalid C fails with a source file, line and column",
                     cc_diagnostic_located,
+                ),
+            ],
+        ),
+        category(
+            "make",
+            "POSIX make: graphs, timestamps, inference, macros and exit status",
+            &[
+                case(
+                    "graph-order",
+                    "Prerequisites run before their dependents and a shared prerequisite runs once",
+                    make_graph_order,
+                ),
+                case(
+                    "noop-when-current",
+                    "An equal-time prerequisite leaves the target unchanged and a newer one rebuilds it",
+                    make_noop_when_current,
+                ),
+                case(
+                    "suffix-inference",
+                    "A suffix rule builds the requested file with the inferred source and stem",
+                    make_suffix_inference,
+                ),
+                case(
+                    "macro-precedence",
+                    "Makefile, environment and command-line macros follow POSIX precedence",
+                    make_macro_precedence,
+                ),
+                case(
+                    "failure-status",
+                    "A failing shell recipe reports its status and stops the build",
+                    make_failure_status,
                 ),
             ],
         ),
@@ -388,7 +419,7 @@ fn c_core() -> Result<PathBuf, String> {
     Ok(Path::new("/").join(CORPUS).join("c-core"))
 }
 
-fn compiler_command(scratch: &Scratch, tool: &str) -> Command {
+fn bundle_command(scratch: &Scratch, tool: &str) -> Command {
     let bin = Path::new("/").join(DEV).join("bin");
     let mut command = Command::new(bin.join(tool));
     command
@@ -399,14 +430,14 @@ fn compiler_command(scratch: &Scratch, tool: &str) -> Command {
     command
 }
 
-fn compiler_output(command: &mut Command) -> Result<std::process::Output, String> {
+fn command_output(command: &mut Command) -> Result<std::process::Output, String> {
     command
         .output()
         .map_err(|error| format!("{}: {error}", command.get_program().to_string_lossy()))
 }
 
 fn cc_stage(scratch: &Scratch, source: &Path, args: &[&str]) -> CaseResult {
-    let output = compiler_output(compiler_command(scratch, "cc").args(args).arg(source))?;
+    let output = command_output(bundle_command(scratch, "cc").args(args).arg(source))?;
     require_success(
         &format!("cc {} {}", args.join(" "), source.display()),
         output,
@@ -490,15 +521,15 @@ fn cc_stages_agree() -> CaseResult {
     cc_stage(&scratch, &source, &["-c", "-o", "direct.o"])?;
     require_success(
         "as split.s",
-        compiler_output(compiler_command(&scratch, "as").args(["-o", "split.o", "split.s"]))?,
+        command_output(bundle_command(&scratch, "as").args(["-o", "split.o", "split.s"]))?,
     )?;
     equal_stage(&scratch, "direct.o", "split.o")?;
 
     let dev = Path::new("/").join(DEV);
     require_success(
         "ld split.o",
-        compiler_output(
-            compiler_command(&scratch, "ld")
+        command_output(
+            bundle_command(&scratch, "ld")
                 .arg("-T")
                 .arg(dev.join("linker.ld"))
                 .args(["--gc-sections", "-o", "split", "split.o"])
@@ -513,8 +544,8 @@ fn cc_stages_agree() -> CaseResult {
 fn cc_diagnostic_located() -> CaseResult {
     let source = c_core()?.join("diagnostic.c");
     let scratch = Scratch::new("cc-diagnostic")?;
-    let output = compiler_output(
-        compiler_command(&scratch, "cc")
+    let output = command_output(
+        bundle_command(&scratch, "cc")
             .args(["-o", "unexpected"])
             .arg(&source),
     )?;
@@ -530,6 +561,145 @@ fn cc_diagnostic_located() -> CaseResult {
         return Err(
             format!("cc did not fail with the expected diagnostic at 4:12: {stderr}").into(),
         );
+    }
+    Ok(())
+}
+
+fn make_corpus() -> PathBuf {
+    Path::new("/").join(CORPUS).join("make")
+}
+
+fn make_fixture(name: &str) -> Result<Scratch, String> {
+    if std::env::consts::ARCH != "x86_64" {
+        return Err("The ARM64 make bundle and project evidence are scheduled for A3".into());
+    }
+    let scratch = Scratch::new(name)?;
+    let source = make_corpus().join(format!("{name}.mk"));
+    io_at(&source, fs::copy(&source, scratch.join("Makefile")))?;
+    Ok(scratch)
+}
+
+fn make_graph_order() -> CaseResult {
+    let scratch = make_fixture("graph-order")?;
+    let stdout = require_success(
+        "make",
+        command_output(&mut bundle_command(&scratch, "make"))?,
+    )?;
+    if stdout != b"shared\nleft\nright\nall\n" {
+        return Err(format!(
+            "unexpected recipe order: {:?}",
+            String::from_utf8_lossy(&stdout)
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn touch_make_files(scratch: &Scratch, date: &str, files: &[&str]) -> CaseResult {
+    let output = command_output(
+        Command::new("/bin/touch")
+            .current_dir(&scratch.0)
+            .env_clear()
+            .env("TZ", "UTC0")
+            .args(["-d", date])
+            .args(files),
+    )?;
+    require_success(&format!("touch -d {date} {}", files.join(" ")), output)?;
+    Ok(())
+}
+
+fn make_noop_when_current() -> CaseResult {
+    let scratch = make_fixture("noop-when-current")?;
+    let input = scratch.join("input");
+    let output = scratch.join("output");
+    io_at(&input, fs::write(&input, b"rebuilt\n"))?;
+    io_at(&output, fs::write(&output, b"current\n"))?;
+
+    touch_make_files(&scratch, "2000-01-01 00:00:00", &["input", "output"])?;
+    let mtime = |path: &Path| io_at(path, fs::metadata(path).and_then(|meta| meta.modified()));
+    let current = mtime(&output)?;
+    if mtime(&input)? != current {
+        return Err("touch -d did not give input and output equal mtimes".into());
+    }
+    require_success(
+        "make",
+        command_output(&mut bundle_command(&scratch, "make"))?,
+    )?;
+    if mtime(&output)? != current || io_at(&output, fs::read(&output))? != b"current\n" {
+        return Err("make changed output with an equal-time prerequisite".into());
+    }
+
+    touch_make_files(&scratch, "2000-01-02 00:00:00", &["input"])?;
+    if mtime(&input)? <= current {
+        return Err("touch -d did not make input newer than output".into());
+    }
+    require_success(
+        "make",
+        command_output(&mut bundle_command(&scratch, "make"))?,
+    )?;
+    if io_at(&output, fs::read(&output))? != b"rebuilt\n" {
+        return Err("make did not rebuild output from its newer prerequisite".into());
+    }
+    Ok(())
+}
+
+fn make_suffix_inference() -> CaseResult {
+    let scratch = make_fixture("suffix-inference")?;
+    let source = make_corpus().join("sample.src");
+    io_at(&source, fs::copy(&source, scratch.join("sample.src")))?;
+    require_success(
+        "make sample.out",
+        command_output(bundle_command(&scratch, "make").arg("sample.out"))?,
+    )?;
+    let output = scratch.join("sample.out");
+    if io_at(&output, fs::read(&output))? != b"sample\nsource payload\n" {
+        return Err("suffix rule wrote the wrong stem or source bytes to sample.out".into());
+    }
+    Ok(())
+}
+
+fn make_macro_precedence() -> CaseResult {
+    let scratch = make_fixture("macro-precedence")?;
+    for (args, expected) in [
+        (&[][..], "makefile\n"),
+        (&["-e"][..], "environment\n"),
+        (&["-e", "VALUE=command-line"][..], "command-line\n"),
+    ] {
+        let label = format!("make {args:?}");
+        let stdout = require_success(
+            &label,
+            command_output(
+                bundle_command(&scratch, "make")
+                    .env("VALUE", "environment")
+                    .args(args),
+            )?,
+        )?;
+        if stdout != expected.as_bytes() {
+            return Err(format!(
+                "{label}: expected {expected:?}, got {:?}",
+                String::from_utf8_lossy(&stdout)
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+fn make_failure_status() -> CaseResult {
+    let scratch = make_fixture("failure-status")?;
+    let output = command_output(&mut bundle_command(&scratch, "make"))?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if output.status.code() != Some(2)
+        || output.stdout != b"before failure\n"
+        || !stderr.contains("target 'fail': recipe exited with status 7")
+    {
+        return Err(format!(
+            "make returned {}; stdout {:?}; stderr {:?}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            stderr.trim_end()
+        )
+        .into());
     }
     Ok(())
 }
