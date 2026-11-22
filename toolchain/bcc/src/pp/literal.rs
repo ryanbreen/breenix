@@ -1,4 +1,50 @@
-//! Escape sequences from N1570 6.4.4.4 and pragma destringizing from 6.10.9.
+//! Integer and escape spellings from N1570 6.4.4, and 6.10.9 destringizing.
+
+pub(crate) struct IntegerConstant {
+    pub value: u64,
+    pub decimal: bool,
+    pub unsigned: bool,
+    pub longs: usize,
+}
+
+// N1570 6.4.4.1: separate the spelling from the context's candidate types.
+pub(crate) fn integer_constant(text: &str) -> Option<IntegerConstant> {
+    let (radix, text) =
+        if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+            (16, hex)
+        } else if text.starts_with('0') {
+            (8, text)
+        } else {
+            (10, text)
+        };
+    let width = text
+        .bytes()
+        .take_while(|byte| match radix {
+            16 => byte.is_ascii_hexdigit(),
+            8 => matches!(byte, b'0'..=b'7'),
+            _ => byte.is_ascii_digit(),
+        })
+        .count();
+    let (digits, suffix) = text.split_at(width);
+    let value = u64::from_str_radix(digits, radix).ok()?;
+    let unsigned = suffix.starts_with(['u', 'U']) || suffix.ends_with(['u', 'U']);
+    let longs = suffix
+        .strip_prefix(['u', 'U'])
+        .or_else(|| suffix.strip_suffix(['u', 'U']))
+        .unwrap_or(suffix);
+    let longs = match longs {
+        "" => 0,
+        "l" | "L" => 1,
+        "ll" | "LL" => 2,
+        _ => return None,
+    };
+    Some(IntegerConstant {
+        value,
+        decimal: radix == 10,
+        unsigned,
+        longs,
+    })
+}
 
 pub(super) fn escape_into(out: &mut String, text: &str) {
     for ch in text.chars() {
@@ -59,12 +105,12 @@ pub(super) fn decode(text: &str) -> Option<String> {
     Some(out)
 }
 
-pub(super) struct Escape {
+pub(crate) struct Escape {
     pub value: u32,
     pub numeric: bool,
 }
 
-pub(super) fn escape(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<Escape> {
+pub(crate) fn escape(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Option<Escape> {
     let lead = chars.next()?;
     let value = match lead {
         '\'' | '"' | '?' | '\\' => u32::from(lead),

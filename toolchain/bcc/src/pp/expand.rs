@@ -10,13 +10,13 @@ use super::token::{token_prefix, LexContext};
 use super::{Kind, Location};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct Position {
+pub struct Position {
     pub file: Rc<str>,
     pub loc: Location,
 }
 
 impl Position {
-    pub(super) fn new(path: &Path, loc: Location) -> Self {
+    pub(crate) fn new(path: &Path, loc: Location) -> Self {
         Self {
             file: path.to_string_lossy().into(),
             loc,
@@ -31,7 +31,7 @@ impl fmt::Display for Position {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct Lexeme {
+pub(crate) struct Lexeme {
     pub text: Rc<str>,
     pub kind: Kind,
     pub space_before: bool,
@@ -57,11 +57,11 @@ impl Lexeme {
         }
     }
 
-    pub(super) fn is(&self, text: &str) -> bool {
+    pub(crate) fn is(&self, text: &str) -> bool {
         self.text.as_ref() == text
     }
 
-    pub(super) fn error(&self, message: impl Into<String>) -> Diagnostic {
+    pub(crate) fn error(&self, message: impl Into<String>) -> Diagnostic {
         let mut diagnostic = Diagnostic::new(&self.site, message);
         if self.site != self.origin {
             diagnostic.spelled_at = Some(self.origin.clone());

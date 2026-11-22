@@ -14,6 +14,9 @@ use normalize::{normalize, phase_one, PhysicalCursor};
 use token::{token_prefix, LexContext};
 
 pub use directive::{preprocess, preprocess_source, Diagnostic, Options, Preprocessed, Target};
+pub(crate) use expand::Lexeme;
+pub use expand::Position;
+pub(crate) use literal::{escape, integer_constant};
 
 /// A physical source position with a 1-based line and byte column.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

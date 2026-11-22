@@ -288,37 +288,14 @@ fn shift(
 // N1570 6.4.4.1 integer candidates at intmax_t and uintmax_t width
 // per 6.10.1p4.
 fn integer(text: &str) -> Option<Value> {
-    let (radix, text) =
-        if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
-            (16, hex)
-        } else if text.starts_with('0') {
-            (8, text)
-        } else {
-            (10, text)
-        };
-    let width = text
-        .bytes()
-        .take_while(|byte| match radix {
-            16 => byte.is_ascii_hexdigit(),
-            8 => matches!(byte, b'0'..=b'7'),
-            _ => byte.is_ascii_digit(),
-        })
-        .count();
-    let (digits, suffix) = text.split_at(width);
-    let bits = u64::from_str_radix(digits, radix).ok()?;
-    let explicit_unsigned = match suffix {
-        "" | "l" | "L" | "ll" | "LL" => false,
-        "u" | "U" | "ul" | "uL" | "Ul" | "UL" | "lu" | "lU" | "Lu" | "LU" | "ull" | "uLL"
-        | "Ull" | "ULL" | "llu" | "llU" | "LLu" | "LLU" => true,
-        _ => return None,
-    };
-    let exceeds_signed = bits > i64::MAX as u64;
-    if radix == 10 && exceeds_signed && !explicit_unsigned {
+    let literal = literal::integer_constant(text)?;
+    let exceeds_signed = literal.value > i64::MAX as u64;
+    if literal.decimal && exceeds_signed && !literal.unsigned {
         return None;
     }
     Some(Value {
-        bits,
-        unsigned: explicit_unsigned || exceeds_signed,
+        bits: literal.value,
+        unsigned: literal.unsigned || exceeds_signed,
     })
 }
 

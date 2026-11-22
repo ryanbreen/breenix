@@ -19,7 +19,7 @@ impl Target {
     // The Breenix C targets are LP64 in the SysV AMD64 psABI and AAPCS64.
     pub(super) const INTMAX_BITS: u32 = 64;
 
-    pub(super) fn signed_char(self) -> bool {
+    pub(crate) fn signed_char(self) -> bool {
         self == Self::X86_64
     }
 }
@@ -40,7 +40,7 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
-    pub(super) fn new(site: &Position, message: impl Into<String>) -> Self {
+    pub(crate) fn new(site: &Position, message: impl Into<String>) -> Self {
         Self {
             site: site.clone(),
             message: message.into(),
@@ -75,6 +75,13 @@ enum Output {
 pub struct Preprocessed(Vec<Output>);
 
 impl Preprocessed {
+    pub(crate) fn tokens(&self) -> impl Iterator<Item = &Lexeme> {
+        self.0.iter().filter_map(|item| match item {
+            Output::Token(token) if token.kind != Kind::Newline => Some(token),
+            _ => None,
+        })
+    }
+
     /// Write the phase-4 result with separators that preserve token boundaries.
     pub fn write(&self, mut out: impl Write) -> io::Result<()> {
         let mut in_line = false;

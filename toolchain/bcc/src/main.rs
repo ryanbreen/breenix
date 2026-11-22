@@ -6,16 +6,27 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use bcc::pp::{self, Options, Target};
+use bcc::sema;
 
-fn arguments() -> Result<(PathBuf, Options), String> {
+enum Mode {
+    Preprocess,
+    Syntax,
+    DumpTypes,
+}
+
+fn arguments() -> Result<(PathBuf, Options, Mode), String> {
     let mut options = Options::default();
     let mut args = env::args_os().skip(1);
     let mut file = None;
     let mut preprocess = false;
+    let mut syntax = false;
+    let mut dump_types = false;
     let mut positional = false;
     while let Some(arg) = args.next() {
         match arg.to_str().filter(|_| !positional) {
             Some("-E") => preprocess = true,
+            Some("-fsyntax-only") => syntax = true,
+            Some("--dump-types") => dump_types = true,
             Some("-I") => {
                 let dir = args.next().ok_or("-I requires a directory")?;
                 options.include_dirs.push(dir.into());
@@ -31,9 +42,14 @@ fn arguments() -> Result<(PathBuf, Options), String> {
             _ => file = Some(PathBuf::from(arg)),
         }
     }
-    let file = file
-        .filter(|_| preprocess)
-        .ok_or("expected -E and one source file")?;
+    let mode = match (preprocess, syntax, dump_types) {
+        (true, false, false) => Mode::Preprocess,
+        (false, _, true) => Mode::DumpTypes,
+        (false, true, false) => Mode::Syntax,
+        (false, false, false) => return Err("expected a compilation mode".into()),
+        _ => return Err("-E cannot be combined with syntax checking".into()),
+    };
+    let file = file.ok_or("expected one source file")?;
     // The installed bundle puts its compiler headers and libc headers beside
     // bin/. Keep the build host's system headers out of a cross-target build.
     if let Ok(executable) = env::current_exe() {
@@ -43,27 +59,38 @@ fn arguments() -> Result<(PathBuf, Options), String> {
                 .extend([bundle.join("include-support"), bundle.join("include")]);
         }
     }
-    Ok((file, options))
+    Ok((file, options, mode))
 }
 
-fn run(file: PathBuf, options: &Options) -> Result<(), String> {
+fn run(file: PathBuf, options: &Options, mode: Mode) -> Result<(), String> {
     let source = pp::preprocess(&file, options).map_err(|error| error.to_string())?;
     let mut out = BufWriter::new(io::stdout().lock());
-    source
-        .write(&mut out)
+    let result = match mode {
+        Mode::Preprocess => source.write(&mut out),
+        Mode::Syntax | Mode::DumpTypes => {
+            let unit =
+                sema::analyze(&source, &file, options.target).map_err(|error| error.to_string())?;
+            if matches!(mode, Mode::DumpTypes) {
+                unit.write_types(&mut out)
+            } else {
+                Ok(())
+            }
+        }
+    };
+    result
         .and_then(|()| out.flush())
-        .map_err(|error| format!("bcc: error writing preprocessed output: {error}"))
+        .map_err(|error| format!("bcc: error writing output: {error}"))
 }
 
 fn main() -> ExitCode {
-    let (file, options) = match arguments() {
+    let (file, options, mode) = match arguments() {
         Ok(args) => args,
         Err(error) => {
-            eprintln!("bcc: {error}\nusage: bcc -E [--target=x86_64|aarch64] [-I DIR] FILE");
+            eprintln!("bcc: {error}\nusage: bcc (-E|-fsyntax-only|--dump-types) [--target=x86_64|aarch64] [-I DIR] FILE");
             return ExitCode::from(2);
         }
     };
-    match run(file, &options) {
+    match run(file, &options, mode) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
