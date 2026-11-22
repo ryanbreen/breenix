@@ -2,6 +2,7 @@
 """Check bld's static links without executing their AMD64 output."""
 
 import argparse
+import math
 from pathlib import Path
 import struct
 import subprocess
@@ -13,6 +14,7 @@ TOOLCHAIN = TESTS.parent
 CHECK = "bld::pc32_is_s_plus_a_minus_p"
 ARCHIVE_CHECK = "bld::two_archive_cycle_needs_group"
 TLS_CHECK = "bld::tbss_takes_no_file_bytes"
+READ_CHECK = "bld::reads_large_archives_in_blocks"
 STRICT = ["-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic"]
 
 
@@ -21,7 +23,7 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def object_bytes(relocations):
+def object_bytes(relocations, rodata=b"fixed\0"):
     """Make an independent ET_REL from ELF gABI Listings 2.1, 3.1, 5.1 and 6.1."""
     blob = bytearray(64)
     headers = [bytes(64)]
@@ -39,7 +41,7 @@ def object_bytes(relocations):
                                    size, link, info, align, entsize))
 
     section(".text", 1, 6, bytes([0xCC]) * 48, 16)
-    section(".rodata", 1, 2, b"fixed\0", 16)
+    section(".rodata", 1, 2, rodata, 16)
     section(".data", 1, 3, b"\x11\x22\x33\x44" * 4, 32)
     section(".bss", 8, 3, 23, 64)
     section(".strtab", 3, 0, b"\0_start\0data_symbol\0", 1)
@@ -165,6 +167,26 @@ def archive_bytes(members, width=4):
         offset += len(member)
     index.extend(symbols)
     return magic + record(index_name, index) + names_record + b"".join(records)
+
+
+def check_archive_reads(bld, root):
+    payload = bytes(range(256)) * 1024
+    obj, archive, exe = (root / name for name in ("bulk.o", "bulk.a", "bulk"))
+    obj.write_bytes(object_bytes([], payload))
+    archive.write_bytes(archive_bytes([("bulk.o", obj, "_start")]))
+    result = subprocess.run([bld, "-o", exe, archive], capture_output=True,
+                            text=True, timeout=10)
+    require(result.returncode == 0, f"archive link failed: {result.stderr}")
+    records = result.stderr.splitlines()
+    require(records[:2] == ["read EINTR", "read short"],
+            f"large archive did not exercise bulk reads and retries: {records!r}")
+    require(len(records) <= math.ceil(archive.stat().st_size / 65536) + 2,
+            f"archive used too many read requests: {len(records)}")
+    blob = exe.read_bytes()
+    _, _, sections = read_executable(blob)
+    rodata = sections[b".rodata"]
+    require(blob[rodata[4]:rodata[4] + rodata[5]] == payload,
+            "archive data changed after interrupted and short reads")
 
 
 def check_archive_cycle(clang, bld, elfcheck, root):
@@ -442,7 +464,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--clang", default="clang")
     parser.add_argument("--host-arch", choices=["arm64", "x86_64"], action="append")
-    parser.add_argument("--check", choices=["archive", "tls", "all"], default="all")
+    parser.add_argument("--check", choices=["archive", "tls", "io", "all"], default="all")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="bld-test-") as tmp:
         root = Path(tmp)
@@ -454,7 +476,20 @@ def main():
             bld, elfcheck = directory / "bld", directory / "elfcheck"
             flags = STRICT + (["-arch", arch] if arch != "native" else [])
             flags += ["-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all"]
-            for sources, output in [([source, source.with_name("script.c"), TOOLCHAIN / "common/ar.c"], bld),
+            bld_sources = [source, source.with_name("script.c"), TOOLCHAIN / "common/ar.c"]
+            if args.check in ("io", "all"):
+                io_bld = directory / "bld-io"
+                io_probe = Path(__file__).with_name("read_probe.c")
+                subprocess.run([args.clang, *flags, "-Dread=bld_test_read", *bld_sources,
+                                io_probe, "-o", io_bld], check=True, timeout=40)
+                try:
+                    check_archive_reads(io_bld, directory)
+                except (OSError, ValueError, subprocess.SubprocessError) as error:
+                    raise SystemExit(f"FAIL {READ_CHECK} ({arch}): {error}") from error
+                print(f"PASS {READ_CHECK} ({arch})", flush=True)
+            if args.check == "io":
+                continue
+            for sources, output in [(bld_sources, bld),
                                     ([TESTS / "elfcheck/elfcheck.c"], elfcheck)]:
                 subprocess.run([args.clang, *flags, *sources, "-o", output],
                                check=True, timeout=40)
