@@ -551,8 +551,6 @@ fn run_exec_command(session: &mut ServerSession, account: &Account, command: &st
             let _ = io::close(error_write);
             let _ = io::close(input_read);
             let relay = exec_shuttle(session, [read_fd, error_read], input_write);
-            let _ = io::close(read_fd);
-            let _ = io::close(error_read);
 
             let mut status = 0i32;
             let status = match process::waitpid(child_pid.raw() as i32, &mut status as *mut i32, 0) {
@@ -665,6 +663,9 @@ fn exec_shuttle(session: &mut ServerSession, outputs: [Fd; 2], input: Fd) -> Res
             }
         }
     })();
+    // Close readers first so a publisher can distinguish an aborted relay
+    // from a normal channel EOF, even after receiving the advertised length.
+    for fd in outputs { let _ = io::close(fd); }
     if input_open { let _ = io::close(input); }
     result
 }

@@ -724,6 +724,10 @@ name = "suite-users"
 path = "src/suite_users.rs"
 
 [[bin]]
+name = "bput"
+path = "src/bput.rs"
+
+[[bin]]
 name = "suite-transfer-fixture"
 path = "src/suite_transfer_fixture.rs"
 

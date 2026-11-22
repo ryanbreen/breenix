@@ -8,12 +8,12 @@ from urllib.parse import urlsplit
 
 SUITE = 'transfer-fixture'
 ARTIFACT = 'transfer-artifact'
-RECEIPT = 'transfer-fixture.json'
+RECEIPT = 'server-transfer.json'
 SETTINGS = '/etc/breenix/test-ssh/transfer'
 ELF = '/sbin/suite-transfer-fixture'
 
 READY = re.compile(r'TRANSFER READY nonce=([0-9a-f]{32}) fp=(SHA256:[A-Za-z0-9+/]{43})'
-                   r' peer=([0-9.]+) user=([a-z_][a-z0-9_-]{0,31})')
+                   r' peer=([0-9.]+) user=([a-z_][a-z0-9_-]{0,31}) uid=([1-9][0-9]*) gid=([1-9][0-9]*)')
 ENDED = re.compile(r'TRANSFER LEASE-END nonce=([0-9a-f]{32}) reason=(done|timeout) refused=(\d+)')
 
 
@@ -78,7 +78,7 @@ def identity(boot, sha):
     return facts
 
 
-def score(boot, sha, records, serial, fatal_patterns):
+def score(boot, sha, records, serial, fatal_patterns, case_table):
     facts = identity(boot, sha)
     if records.get('boot') != boot['id'] or records.get('commit') != sha:
         raise ValueError('transfer evidence belongs to another boot or commit')
@@ -101,4 +101,20 @@ def score(boot, sha, records, serial, fatal_patterns):
         raise ValueError('transfer lease ended without host completion')
     if records.get('consoleGaps') or any(re.search(pattern, serial) for pattern in fatal_patterns):
         raise ValueError('transfer boot has a console gap or fatal kernel output')
-    return 'READY: server/transfer fixture'
+    cases = records.get('cases')
+    if (not isinstance(cases, list) or not all(isinstance(row, dict) for row in cases)
+            or [row.get('id') for row in cases] != ['transfer/' + case for case, _ in case_table]):
+        raise ValueError('transfer results are missing, duplicated or out of order')
+    for row in cases:
+        if row.get('result') != 'PASS':
+            raise ValueError(f"{row['id']} failed: {row.get('reason', 'no passing result')}")
+    first, _, interrupted, _, _ = cases
+    user, uid, gid = ready[0][1].group(4, 5, 6)
+    if (first.get('executedSha256'), first.get('uid'), first.get('gid'), first.get('home'),
+            first.get('status')) != (facts['sha256'], int(uid), int(gid), f'/home/{user}', 42):
+        raise ValueError('executed artifact or SSH identity differs from the boot inputs')
+    progress = interrupted.get('interruptedAfter')
+    if (type(progress) is not int or not 0 < progress <= 3
+            or interrupted.get('publishedSha256') != facts['sha256']):
+        raise ValueError('interrupted upload lacks progress or verified reconnect evidence')
+    return 'PASS: server/transfer (5/5)'

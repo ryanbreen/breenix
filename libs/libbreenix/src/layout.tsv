@@ -54,6 +54,7 @@ bin persistent-migrate sbin 0755 0
 bin etc-reconcile sbin 0755 0
 bin probe sbin 0755 0
 bin suite-* sbin 0755 0
+bin bput bin 0755 0
 bin bsshd usr/sbin 0755 0
 bin blogd usr/sbin 0755 0
 bin ntp_client usr/sbin 0755 0

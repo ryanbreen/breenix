@@ -78,6 +78,24 @@ A no_std project depends on `libbreenix = { version = "0.1", features = ["runtim
 the template defines `main(argc, argv)` and a panic handler. libbreenix supplies
 `_start` and exits with main's return value.
 
+### breenix-deliver
+
+`breenix-deliver stage --repo REPO --host BOOT_HOST --sha SHA FILE` hashes the
+Mac artifact and uploads it as a prebuilt `transfer-fixture,users` boot input.
+The final line is the prebuilt ID. With an ordinary suite boot using that input,
+`breenix-deliver publish --host BOOT_HOST --sha SHA --boot ID --dest PATH FILE`
+asks the boot host to publish the file over the fixture's leased SSH listener.
+Relative paths are resolved in the fixture account's home. The default mode is
+0755 and `--mode` accepts permission bits in octal.
+
+`bput` verifies length and SHA-256, sets the mode and syncs the temporary file
+before renaming it over the destination. The SDK reports `published` for verified
+destination bytes and `not published` for a refusal or an unchanged destination.
+Exit 3 reports that rename completed and the directory sync failed. If SSH
+loses status or readback fails, the boot host reconnects and hashes the
+destination. An unresolved outcome exits 2 with `unknown`. Readback records
+the live destination digest.
+
 ## Disk tools
 
 `breenix-image install --image IMG [--mode OCTAL] [--name NAME] FILE` installs an

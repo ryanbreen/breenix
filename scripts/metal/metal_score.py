@@ -249,6 +249,11 @@ def score(directory):
             fatal = read('definition/docs/boot-path.json')['fatal'] + [r'KERNEL PANIC:']
             effort = 'metal.json' if suite == 'gt710' else 'path.json'
             sha = (directory / 'commit').read_text().strip() if suite == 'gt710' else run.get('bootedCommit')
+            if suite == 'server' and category == 'transfer':
+                # S22: the boot driver validated the retained image build.
+                sha = run.get('build', {}).get('commit')
+                if 'console-gap' in events:
+                    raise ValueError('transfer capture has a console gap')
             if suite == 'gt710' and (not (directory / 'ended').exists()
                     or (directory / 'exit-status').read_text().strip() != '0'
                     or (directory / 'dirty').read_text().strip() != '0' or 'console-gap' in events):

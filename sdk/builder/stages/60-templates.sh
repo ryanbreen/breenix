@@ -1,9 +1,9 @@
 #!/bin/sh
-# TEMPLATES owns project creation, builds and SDK documentation.
+# TEMPLATES owns project creation, builds, delivery and SDK documentation.
 set -eu
 install -d "$SDK_STAGE/bin" "$SDK_STAGE/share/breenix-sdk/libexec" \
     "$SDK_STAGE/share/breenix-sdk/templates" "$SDK_STAGE/share/doc/breenix-sdk"
-for tool in new build; do
+for tool in new build deliver; do
     install -m 755 "$SDK_ROOT/sdk/libexec/$tool.py" "$SDK_STAGE/share/breenix-sdk/libexec/$tool.py"
     cat > "$SDK_STAGE/bin/breenix-$tool" <<EOF
 #!/usr/bin/env python3

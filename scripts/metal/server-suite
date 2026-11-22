@@ -115,8 +115,16 @@ RESTING = (
     ('returned-ssh', 'The returned current persistent install answers one strict authenticated SSH check'),
 )
 
-CATEGORIES = {'ssh-keys': SSH_KEYS, 'services': SERVICES, 'logs': LOGS, 'time': TIME, 'reboot': REBOOT, 'watchdog': WATCHDOG, 'resting-state': RESTING, 'remote-upgrade': REMOTE_UPGRADE, 'operator': OPERATOR, 'console-input': CONSOLE_INPUT}
-SUITES = {'ssh-keys': 'server', 'services': 'server', 'logs': 'server', 'time': 'server', 'reboot': 'server', 'remote-upgrade': 'server', 'watchdog': 'server', 'resting-state': 'server', 'operator': 'users', 'console-input': 'server'}
+TRANSFER = (
+    ('mac-artifact-published', 'The Mac artifact is verified, published and executed as the fixture account'),
+    ('bad-checksum-refused', 'A bad digest leaves the old destination and removes the temporary file'),
+    ('interrupted-then-reconnect', 'A disconnected upload cleans up and a fresh upload publishes on reconnect'),
+    ('backpressure-exact', 'SSH carries exact output before consuming four MiB of stdin'),
+    ('publish-faults-located', 'Open and rename failures identify the failed operation and preserve the old state'),
+)
+
+CATEGORIES = {'ssh-keys': SSH_KEYS, 'transfer': TRANSFER, 'services': SERVICES, 'logs': LOGS, 'time': TIME, 'reboot': REBOOT, 'watchdog': WATCHDOG, 'resting-state': RESTING, 'remote-upgrade': REMOTE_UPGRADE, 'operator': OPERATOR, 'console-input': CONSOLE_INPUT}
+SUITES = {'ssh-keys': 'server', 'transfer': 'server', 'services': 'server', 'logs': 'server', 'time': 'server', 'reboot': 'server', 'remote-upgrade': 'server', 'watchdog': 'server', 'resting-state': 'server', 'operator': 'users', 'console-input': 'server'}
 MILESTONES = {'server/transfer': 'transfer', 'server/ssh-keys': 'ssh-keys', 'server/services': 'services', 'server/logs': 'logs',
               'server/time': 'time', 'server/reboot': 'reboot', 'server/remote-upgrade': 'remote-upgrade', 'server/watchdog': 'watchdog', 'server/resting-state': 'resting-state', 'users/operator-login': 'operator', 'server/console-input': 'console-input'}
 S27_SUSPENDS_PERSISTENT = True
@@ -189,7 +197,7 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
                         for m in effort['milestones'] if m['id'] == 'deliver'), None)
         if measure != {'suite': 'server', 'categories': ['transfer']}:
             raise ValueError('deliver milestone does not measure server/transfer')
-        return transfer_fixture()['score'](boot, sha, records, serial, fatal_patterns)
+        return transfer_fixture()['score'](boot, sha, records, serial, fatal_patterns, TRANSFER)
     suite = SUITES[category]
     if manifest.get('id') != suite:
         raise ValueError('host evidence for ' + name + ' needs the ' + suite + ' manifest')

@@ -61,11 +61,14 @@ def prerequisites():
 def upload(out, host, artifact_id):
     # Publish atomically only after the entire stream arrived. No Incus, service,
     # deployed tools or machine lease is touched by this build-only command.
-    command = 'python3 -c ' + shlex.quote(UPLOAD) + ' ' + shlex.quote(artifact_id)
+    script = shlex.join(('exec', 'python3', '-c', UPLOAD, artifact_id))
+    command = 'sh -c ' + shlex.quote(script)
     sender = subprocess.Popen(['tar', '-C', str(out), '-cf', '-', '.'], stdout=subprocess.PIPE,
                               env=dict(os.environ, COPYFILE_DISABLE='1'))
     try:
-        receiver = subprocess.run(['ssh', '-o', 'BatchMode=yes', host, command], stdin=sender.stdout)
+        receiver = subprocess.run(['/usr/bin/ssh', '-T', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes',
+                                   '-o', 'ForwardAgent=no', '-o', 'ClearAllForwardings=yes',
+                                   host, command], stdin=sender.stdout)
     finally:
         sender.stdout.close()
         sender_status = sender.wait()

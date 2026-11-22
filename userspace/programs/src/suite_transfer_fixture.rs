@@ -107,8 +107,8 @@ fn observe(
                     .as_deref()
                     .ok_or("bsshd did not report its host key")?;
                 case_diagnostic(&format!(
-                    "TRANSFER READY nonce={nonce} fp={fp} peer={peer} user={}",
-                    account.name
+                    "TRANSFER READY nonce={nonce} fp={fp} peer={peer} user={} uid={} gid={}",
+                    account.name, account.uid, account.gid
                 ));
             } else if let Some(record) = line.strip_prefix("bsshd: lease-end ") {
                 end = Some(record.trim_end().to_owned());

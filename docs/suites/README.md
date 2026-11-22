@@ -1420,8 +1420,10 @@ Ed25519 host-key fingerprint to the boot capture. The listener closes on the
 authenticated host completion or after 45 seconds. Connections from other peers
 are closed before SSH key exchange and counted in the lease-end record.
 
-On metal, add `--transfer-artifact FILE` to the Mac's `metal-build-local --mode suite
---suite transfer-fixture,users` invocation. Use the resulting `--prebuilt ID` on an
+For acceptance, build `tests/fixtures/transfer-artifact.c` for the guest using the
+SDK's architecture-specific C driver. On metal, run
+`breenix-deliver stage --repo REPO --host BOOT_HOST --sha SHA FILE` on the Mac.
+Use the resulting `--prebuilt ID` on an
 ordinary `metal-run boot --mode suite --suite transfer-fixture,users`. The launch
 record carries the input digest and the upload ID. The private site fields
 `OPERATOR_USER`, `OPERATOR_UID` and `OPERATOR_SSH_PUBLIC_KEY` configure the account.
@@ -1430,11 +1432,13 @@ IPv4 address comes from `TRANSFER_SSH_PEER` or the IPv4 host in `BOOT_URL`.
 
 Run `transfer-hostssh --boot ID --sha SHA` on the boot host while the fixture is
 live. It verifies the uploaded file against the launch record and uses the
-matching local private key and strict host-key checking. After the boot ends,
-`server-suite --milestone server/transfer --boot ID --sha SHA` checks that receipt
-against the guest's nonce, lease end and retained build and tools identity (S22).
-The fixture reports readiness for 25.1a. The transfer cases carry the deliver
-milestone in 25.1b.
+matching local private key and strict host-key checking. The five cases check
+the published and executed artifact digest, separate streams and status, fixture
+UID, GID and HOME, checksum refusal, interrupted-upload cleanup and publication on
+reconnect, exact four-MiB backpressure, and located open and rename failures. After
+the boot ends, `server-suite --milestone server/transfer --boot ID --sha SHA`
+checks the ordered results in `server-transfer.json` against the guest's nonce,
+lease end and retained build and tools identity (S22).
 
 On ARM64 QEMU, use `boot-interactive.sh --mode suite --suite transfer-fixture
 --transfer-artifact FILE`. The launcher stages the fixture on a private disk copy,
