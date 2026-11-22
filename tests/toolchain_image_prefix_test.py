@@ -111,6 +111,8 @@ class ToolchainImagePrefixTest(unittest.TestCase):
                 self.assertTrue(any(key == prefix or key.startswith(prefix + "/")
                                     for prefix in prefixes), key)
 
+    test_only_declared_paths_differ = only_declared_paths_differ
+
 
 if __name__ == "__main__":
     unittest.main(defaultTest="ToolchainImagePrefixTest.only_declared_paths_differ")
