@@ -362,24 +362,35 @@ fn write_signal_stack(
 /// Deliver a signal's default action
 /// Returns DeliverResult indicating what action was taken
 fn deliver_default_action(process: &mut Process, sig: u32) -> DeliverResult {
-    match default_action(sig) {
-        SignalDefaultAction::Terminate | SignalDefaultAction::CoreDump => {
-            crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
+    let action = default_action(sig);
+    if matches!(action, SignalDefaultAction::Terminate | SignalDefaultAction::CoreDump) {
+        crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_SIGNAL);
+        if let Some(thread_id) = process.main_thread.as_ref().map(|thread| thread.id()) {
             let exit_code = signal_death_exit_code(process, sig);
-            if let Some(thread_id) = process.main_thread.as_ref().map(|thread| thread.id()) {
-                // Stop scheduling the thread now. The exit worker releases the
-                // directories and takes custody of files and mappings before it
-                // publishes termination. A parent can reap an already-published
-                // row and hide it from the worker.
-                if !crate::task::process_task::defer_fault_exit(thread_id, exit_code) {
-                    process.unqueued_fatal_exit = Some(exit_code);
-                    crate::task::process_task::note_unqueued_fatal_exit();
-                }
-                crate::task::scheduler::terminate_thread(thread_id);
-                return DeliverResult::DeferredExit;
+            // Stop the scheduler thread under PM. The row becomes waitable
+            // only after the worker releases cwd/root and takes custody of
+            // descriptors and mappings. Reaping hides it from the worker.
+            crate::task::scheduler::terminate_thread(thread_id);
+            if !crate::task::process_task::defer_fault_exit(thread_id, exit_code) {
+                process.unqueued_fatal_exit = Some(exit_code);
+                crate::task::process_task::note_unqueued_fatal_exit();
             }
+            return DeliverResult::DeferredExit;
+        }
+    }
 
-            // A row with no scheduler thread cannot use the thread exit worker.
+    // Rows without a thread cannot use the thread exit worker.
+    match action {
+        SignalDefaultAction::Terminate => {
+            let exit_code = signal_death_exit_code(process, sig);
+            crate::ipc::sysv::row_dying_locked(process);
+            process.terminate(exit_code);
+            notify_parent_of_termination(process)
+                .map_or(DeliverResult::Delivered, DeliverResult::Terminated)
+        }
+        SignalDefaultAction::CoreDump => {
+            // Core dumps are unimplemented. Report the core-dump status.
+            let exit_code = signal_death_exit_code(process, sig);
             crate::ipc::sysv::row_dying_locked(process);
             process.terminate(exit_code);
             notify_parent_of_termination(process)

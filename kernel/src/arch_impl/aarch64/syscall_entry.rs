@@ -361,32 +361,26 @@ fn deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) -> bool {
                 }
             }
 
-            let frame_fault = matches!(
-                signal_result,
-                crate::signal::delivery::SignalDeliveryResult::FrameFault
-            );
-            if frame_fault || matches!(
-                signal_result,
-                crate::signal::delivery::SignalDeliveryResult::DeferredExit
-            ) {
-                crate::task::scheduler::set_need_resched();
-            }
-
-            // Handle termination
-            if let crate::signal::delivery::SignalDeliveryResult::Terminated(notification) =
-                signal_result
-            {
-                // Process was terminated by signal - switch to idle
-                crate::task::scheduler::set_need_resched();
-                // Save notification to notify parent after releasing lock
-                signal_termination_info = Some(notification);
-            }
+            use crate::signal::delivery::SignalDeliveryResult;
             if let crate::process::ProcessState::Terminated(code) = process.state {
                 group_death = Some((process.id, code));
             }
-            // The row's own exit is deferred; its thread group dies with it.
-            if frame_fault {
-                group_death = Some((process.id, -(crate::signal::constants::SIGSEGV as i32)));
+            match signal_result {
+                SignalDeliveryResult::Terminated(notification) => {
+                    crate::task::scheduler::set_need_resched();
+                    signal_termination_info = Some(notification);
+                }
+                SignalDeliveryResult::DeferredExit => {
+                    // A fatal default action can follow an ignored signal.
+                    // Switch away at the assembly reschedule check before ERET.
+                    // The exit drain handles the row and its thread group.
+                    crate::task::scheduler::set_need_resched();
+                }
+                SignalDeliveryResult::FrameFault => {
+                    crate::task::scheduler::set_need_resched();
+                    group_death = Some((process.id, -(crate::signal::constants::SIGSEGV as i32)));
+                }
+                SignalDeliveryResult::NoAction | SignalDeliveryResult::Delivered => {}
             }
         }
     }
@@ -398,8 +392,6 @@ fn deliver_signals_aarch64(frame: &mut Aarch64ExceptionFrame) -> bool {
     if let Some(notification) = signal_termination_info {
         crate::signal::delivery::notify_parent_of_termination_deferred(&notification);
     }
-
-
     if let Some((pid, exit_code)) = group_death {
         crate::signal::delivery::terminate_thread_group_peers(pid, exit_code);
     }
