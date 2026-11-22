@@ -62,6 +62,21 @@ def index_is_deterministic(clang, bar, work):
     assert outputs[0] == outputs[1], 'directory, mode and timestamps must not affect archive bytes'
 
 
+def rebuild_archive_indexes(bar, work):
+    original = (work / '0' / 'library.a').read_bytes()
+    index, names, *_ = read_members(original)
+    first_offset = index[0] + 60 + 4
+    missing = original[:8] + original[names[0]:]
+    corrupt = original[:first_offset] + b'\0' * 4 + original[first_offset + 4:]
+    for label, damaged in [('missing', missing), ('corrupt', corrupt)]:
+        assert damaged != original
+        archive = work / f'{label}.a'
+        archive.write_bytes(damaged)
+        subprocess.run([bar, 's', archive], check=True)
+        assert archive.read_bytes() == original, f'bar s did not rebuild the {label} index'
+        print(f'PASS bar::rebuild_{label}_index ({work.name})', flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--clang', default='clang')
@@ -79,6 +94,7 @@ def main():
                             ROOT / 'toolchain/common/elf_symbols.c', '-o', bar], check=True)
             index_is_deterministic(args.clang, bar, work)
             print(f'PASS bar::index_is_deterministic ({work.name})')
+            rebuild_archive_indexes(bar, work)
 
 
 if __name__ == '__main__':

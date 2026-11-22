@@ -612,14 +612,55 @@ fn tls_template() -> CaseResult {
     )
 }
 
+fn check_archive_index_rebuilds(case: &LinkerCase, archive: &Path, expected: &[u8]) -> CaseResult {
+    // Solaris ar(3HEAD): the first member is the 32-bit symbol index. Keep
+    // the long-name table, object members and their padding in both fixtures.
+    const MAGIC: &[u8] = b"!<arch>\n";
+    const INDEX_DATA: usize = MAGIC.len() + 60;
+    let header = expected
+        .strip_prefix(MAGIC)
+        .and_then(|members| members.get(..60))
+        .filter(|header| header.starts_with(b"/               ") && header.ends_with(b"`\n"))
+        .ok_or("bar did not write a leading 32-bit index")?;
+    let size = std::str::from_utf8(&header[48..58])
+        .ok()
+        .and_then(|field| field.trim_end().parse::<usize>().ok())
+        .filter(|&size| (8..=expected.len() - INDEX_DATA).contains(&size))
+        .ok_or("bar wrote an invalid index size")?;
+    let remaining = expected
+        .get(INDEX_DATA + size + size % 2..)
+        .ok_or("bar wrote a truncated index member")?;
+    let mut missing = MAGIC.to_vec();
+    missing.extend_from_slice(remaining);
+    let mut corrupt = expected.to_vec();
+    // After the count, the first offset must locate an object member header.
+    corrupt[INDEX_DATA + 4..INDEX_DATA + 8].fill(0);
+    for (label, bytes) in [("missing", missing), ("corrupt", corrupt)] {
+        if bytes == expected {
+            return Err(format!("archive fixture did not create a {label} index").into());
+        }
+        io_at(archive, fs::write(archive, bytes))?;
+        require_success(
+            &format!("bar s ({label} index)"),
+            case.tool("bar", [Path::new("s"), archive])?,
+        )?;
+        if io_at(archive, fs::read(archive))? != expected {
+            return Err(format!("bar s did not rebuild the {label} index").into());
+        }
+    }
+    Ok(())
+}
+
 fn archive_tools() -> CaseResult {
     let case = LinkerCase::start()?;
     let archive = case.make_archive("first.a")?;
     let second = case.make_archive("second.a")?;
     require_success("bar", case.tool("bar", [Path::new("s"), &second])?)?;
-    if io_at(&archive, fs::read(&archive))? != io_at(&second, fs::read(&second))? {
+    let original = io_at(&archive, fs::read(&archive))?;
+    if original != io_at(&second, fs::read(&second))? {
         return Err("bar produced different archive bytes after reindexing".into());
     }
+    check_archive_index_rebuilds(&case, &second, &original)?;
     let symbols = require_success("bnm", case.tool("bnm", [Path::new("-Pg"), &second])?)?;
     let expected = format!(
         "{0}[got-entry.o]:\narchive_cell U\narchive_entry T 0 17\narchive_value U\n\
