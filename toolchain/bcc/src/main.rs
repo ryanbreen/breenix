@@ -6,12 +6,13 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use bcc::pp::{self, Options, Target};
-use bcc::sema;
+use bcc::{codegen, sema};
 
 enum Mode {
     Preprocess,
     Syntax,
     DumpTypes,
+    Assembly,
 }
 
 fn arguments() -> Result<(PathBuf, Options, Mode), String> {
@@ -21,12 +22,14 @@ fn arguments() -> Result<(PathBuf, Options, Mode), String> {
     let mut preprocess = false;
     let mut syntax = false;
     let mut dump_types = false;
+    let mut assembly = false;
     let mut positional = false;
     while let Some(arg) = args.next() {
         match arg.to_str().filter(|_| !positional) {
             Some("-E") => preprocess = true,
             Some("-fsyntax-only") => syntax = true,
             Some("--dump-types") => dump_types = true,
+            Some("-S") => assembly = true,
             Some("-I") => {
                 let dir = args.next().ok_or("-I requires a directory")?;
                 options.include_dirs.push(dir.into());
@@ -42,11 +45,13 @@ fn arguments() -> Result<(PathBuf, Options, Mode), String> {
             _ => file = Some(PathBuf::from(arg)),
         }
     }
-    let mode = match (preprocess, syntax, dump_types) {
-        (true, false, false) => Mode::Preprocess,
-        (false, _, true) => Mode::DumpTypes,
-        (false, true, false) => Mode::Syntax,
-        (false, false, false) => return Err("expected a compilation mode".into()),
+    let mode = match (assembly, preprocess, syntax, dump_types) {
+        (true, false, false, false) => Mode::Assembly,
+        (true, _, _, _) => return Err("-S cannot be combined with other compilation modes".into()),
+        (false, true, false, false) => Mode::Preprocess,
+        (false, false, _, true) => Mode::DumpTypes,
+        (false, false, true, false) => Mode::Syntax,
+        (false, false, false, false) => return Err("expected a compilation mode".into()),
         _ => return Err("-E cannot be combined with syntax checking".into()),
     };
     let file = file.ok_or("expected one source file")?;
@@ -67,13 +72,18 @@ fn run(file: PathBuf, options: &Options, mode: Mode) -> Result<(), String> {
     let mut out = BufWriter::new(io::stdout().lock());
     let result = match mode {
         Mode::Preprocess => source.write(&mut out),
-        Mode::Syntax | Mode::DumpTypes => {
+        Mode::Syntax | Mode::DumpTypes | Mode::Assembly => {
             let unit =
                 sema::analyze(&source, &file, options.target).map_err(|error| error.to_string())?;
-            if matches!(mode, Mode::DumpTypes) {
-                unit.write_types(&mut out)
-            } else {
-                Ok(())
+            match mode {
+                Mode::Syntax => Ok(()),
+                Mode::DumpTypes => unit.write_types(&mut out),
+                Mode::Assembly => {
+                    let assembly = codegen::emit_assembly(&unit, &file, options.target)
+                        .map_err(|error| error.to_string())?;
+                    out.write_all(assembly.as_bytes())
+                }
+                Mode::Preprocess => unreachable!(),
             }
         }
     };
@@ -86,7 +96,7 @@ fn main() -> ExitCode {
     let (file, options, mode) = match arguments() {
         Ok(args) => args,
         Err(error) => {
-            eprintln!("bcc: {error}\nusage: bcc (-E|-fsyntax-only|--dump-types) [--target=x86_64|aarch64] [-I DIR] FILE");
+            eprintln!("bcc: {error}\nusage: bcc (-E|-S|-fsyntax-only|--dump-types) [--target=x86_64|aarch64] [-I DIR] FILE");
             return ExitCode::from(2);
         }
     };
