@@ -14,6 +14,7 @@ TESTS = Path(__file__).resolve().parents[1]
 TOOLCHAIN = TESTS.parent
 CHECK = "bas::exit42_object_passes_elfcheck"
 ADDRESSING_CHECK = "bas::sib_rip_forms_match_sdm_table"
+RELOCATION_CHECK = "bas::rela_pc32_for_external_call"
 INTEGER_CHECK = "bas::encode_mov_r64_imm32"
 SOURCES = [TOOLCHAIN / "bas/bas.c", TOOLCHAIN / "common/elf64.c"]
 STRICT = ["-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic"]
@@ -167,6 +168,56 @@ def check_integer(bas, elfcheck, path):
                 f"wrong diagnostic for {line!r}: {result.stderr}")
 
 
+def check_relocations(bas, elfcheck, path):
+    source = path.with_suffix(".s")
+    source.write_text("call external\nglobal external\n")
+    sections, contents, _, _ = read_object(bas, elfcheck, path, source)
+    require(contents(sections[b".rela.text"][1]) == struct.pack("<QQq", 1, (1 << 32) | 2, -4),
+            "external call must have PC32 at the rel32 field with addend -4")
+
+    sections, contents, symtab, symbols = read_object(bas, elfcheck, path, "relocations.s")
+    # ELF gABI Listing 5.1 and AMD64 psABI Table 4.9 give the RELA layout and
+    # numbers. P is the field address, so A subtracts the distance to next IP.
+    expected = {
+        b".text": [
+            (1, 2, b"external", -4),
+            (6, 4, b"external", -4),
+            (13, 2, b"payload", -1),
+            (20, 9, b"external", -4),
+            (26, 11, b"payload", -2),
+            (34, 23, b"tls", 0),
+            (40, 2, b"external", 0),
+        ],
+        b".data": [
+            (0, 1, b"external", 7),
+            (8, 10, b"payload", 0),
+            (12, 11, b"external", -3),
+        ],
+    }
+    strings = contents(sections[b".strtab"][1])
+    names = [strings[name:strings.index(0, name)]
+             for (name,) in struct.iter_unpack("<I20x", contents(symtab))]
+    require({name for name, (_, hdr) in sections.items() if hdr[1] == 4}
+            == {b".rela" + name for name in expected}, "unexpected RELA section set")
+    for name, rows in expected.items():
+        _, rela = sections[b".rela" + name]
+        source_index, source = sections[name]
+        require(rela[6] == sections[b".symtab"][0] and rela[7] == source_index
+                and rela[8:10] == (8, 24), f"wrong RELA links or layout for {name!r}")
+        actual = [(offset, info & 0xffffffff, names[info >> 32], addend)
+                  for offset, info, addend in struct.iter_unpack("<QQq", contents(rela))]
+        require(actual == rows, f"{name!r} RELA was {actual!r}, expected {rows!r}")
+        for offset, kind, _, _ in rows:
+            width = 8 if kind == 1 else 4
+            require(contents(source)[offset:offset + width] == bytes(width),
+                    f"nonzero RELA placeholder in {name!r} at {offset}")
+    tls_index, tls = sections[b".tdata"]
+    require(tls[2] == 0x403 and symbols[b"tls"] == (6, 0, tls_index, 0, 0),
+            "local-exec TLS needs SHF_TLS and STT_TLS")
+    require(symbols[b"external"] == (0x10, 0, 0, 0, 0),
+            "external is an undefined global")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--clang", type=Path, required=True)
@@ -193,7 +244,8 @@ def main():
                 bas = directory / "bas"
                 subprocess.run([args.clang, *STRICT, *flags, *SOURCES, "-o", bas],
                                check=True, timeout=50)
-                for check, run in ((INTEGER_CHECK, check_integer),
+                for check, run in ((RELOCATION_CHECK, check_relocations),
+                                   (INTEGER_CHECK, check_integer),
                                    (ADDRESSING_CHECK, check_addressing), (CHECK, check_object)):
                     run(bas, elfcheck, directory / f"{run.__name__}-{profile}.o")
                     print(f"{check} [{profile}] PASS", flush=True)
