@@ -302,7 +302,7 @@ class PortableRootTest(unittest.TestCase):
             try:
                 with patch.object(builder, 'paths', return_value=(clone, out, scratch)), \
                      patch.object(builder, 'ARTIFACTS', recipe), patch.dict(os.environ, CARGO_HOME=str(root)):
-                    # Stop after the image inputs so this check never needs Cargo or a guest.
+                    # Exercise only the child process that builds the image inputs.
                     self.assertEqual(builder.inner(args), 1)
                 self.assertEqual((clone / 'passwd').stat().st_mode & 0o777, 0o644)
             finally:

@@ -179,7 +179,9 @@ def inner(args):
         timings['slot_wait'] = round(time.time() - started)
         try:
             started = time.time()
-            if subprocess.call([sys.executable, str(ARTIFACTS), '--metal', str(clone), str(logs)], cwd=clone) != 0:
+            # Use the guest image's standard file creation mask for the Mac recipe.
+            artifact_command = [sys.executable, str(ARTIFACTS), '--metal', str(clone), str(logs)]
+            if subprocess.call(artifact_command, cwd=clone, umask=0o022 if local else -1) != 0:
                 keep_logs(logs, out)
                 return 1
             timings['userspace'] = round(time.time() - started)
