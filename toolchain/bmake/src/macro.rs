@@ -34,7 +34,17 @@ pub(crate) struct Automatic<'a> {
     pub member: Option<&'a str>,
 }
 
-impl Automatic<'_> {
+impl<'a> Automatic<'a> {
+    pub(crate) fn for_target(name: &'a str) -> Self {
+        let archive = name.strip_suffix(')').and_then(|name| name.split_once('('));
+        let (target, member) = archive.map_or((name, None), |(file, member)| (file, Some(member)));
+        Self {
+            target,
+            member,
+            ..Self::default()
+        }
+    }
+
     fn get(&self, name: &str) -> Option<String> {
         let (name, part) = match name.strip_suffix(['D', 'F']) {
             Some(short) => (short, name.chars().last()),
@@ -84,6 +94,26 @@ impl Macros {
         };
         macros.define("SHELL", "/bin/sh".into(), &location, Origin::Default);
         macros.define("CURDIR", directory, &location, Origin::Default);
+        let defaults = Location {
+            path: Path::new("<default rules>").into(),
+            line: 1,
+        };
+        // POSIX.1-2024 make, "Default Rules", plus the assembler macros.
+        for (name, value) in [
+            ("AR", "ar"),
+            ("ARFLAGS", "-rv"),
+            ("AS", "as"),
+            ("ASFLAGS", ""),
+            ("CC", "c17"),
+            ("CFLAGS", "-O 1"),
+            ("YACC", "yacc"),
+            ("YFLAGS", ""),
+            ("LEX", "lex"),
+            ("LFLAGS", ""),
+            ("LDFLAGS", ""),
+        ] {
+            macros.define(name, value.into(), &defaults, Origin::Default);
+        }
         for (name, value) in environment {
             if matches!(name.as_str(), "SHELL" | "MAKEFLAGS")
                 || (name == "CURDIR" && !environment_overrides)
@@ -121,8 +151,17 @@ impl Macros {
         else {
             return Err(Error::new(location, "missing '=' in macro definition"));
         };
-        let name = self.expand(&assignment[..equals], location, &Automatic::default())?;
+        let raw_name = &assignment[..equals];
+        for operator in [":::", "::"] {
+            if raw_name.ends_with(operator) {
+                return Err(Error::deferred(location, &format!("{operator}=")));
+            }
+        }
+        let name = self.expand(raw_name, location, &Automatic::default())?;
         let name = name.trim_matches([' ', '\t']);
+        if name == "MAKEFLAGS" {
+            return Err(Error::deferred(location, name));
+        }
         if name.is_empty()
             || name.contains(|ch: char| ch.is_whitespace() || ch.is_control() || ch == '=')
         {
@@ -250,6 +289,9 @@ impl Expansion<'_, '_> {
     }
 
     fn value(&mut self, name: &str, location: &Location, depth: usize) -> Result<String, Error> {
+        if matches!(name, "MAKEFLAGS" | "MAKE") {
+            return Err(Error::deferred(location, name));
+        }
         if let Some(value) = self.automatic.get(name) {
             return Ok(value);
         }
@@ -314,12 +356,7 @@ mod tests {
 
     #[test]
     fn archive_automatic_variables() {
-        let (target, member) = crate::inference::archive_parts("lib.a(member.o)");
-        let automatic = Automatic {
-            target,
-            member,
-            ..Automatic::default()
-        };
+        let automatic = Automatic::for_target("lib.a(member.o)");
         let location = Location {
             path: Path::new("project.mk").into(),
             line: 2,

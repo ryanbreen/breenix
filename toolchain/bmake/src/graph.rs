@@ -55,14 +55,18 @@ impl<'a> Graph<'a> {
             indices: HashMap::new(),
             default_build_order: Vec::new(),
         };
+        let mut default_target = None;
         for entry in &makefile.entries {
             if let Entry::Rule(rule) = entry {
+                if rule.inference.is_none() && default_target.is_none() {
+                    default_target = rule.targets.first().map(String::as_str);
+                }
                 graph.add_rule(rule)?;
             }
         }
         let mut roots: Vec<_> = targets.iter().map(|target| graph.intern(target)).collect();
-        if roots.is_empty() && !graph.nodes.is_empty() {
-            roots.push(0);
+        if let Some(target) = default_target.filter(|_| roots.is_empty()) {
+            roots.push(graph.indices[target]);
         }
         graph.default_build_order = graph.check_cycles(&roots)?;
         Ok(graph)

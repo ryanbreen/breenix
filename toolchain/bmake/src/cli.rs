@@ -1,4 +1,7 @@
-use crate::{graph::Graph, inference::Suffixes, r#macro::Macros, reader, run};
+use crate::{
+    graph::Graph, inference::Suffixes, r#macro::Macros, reader, run, special::Specials, Error,
+    Location,
+};
 use std::{
     env,
     ffi::OsString,
@@ -8,6 +11,7 @@ use std::{
 #[derive(Default)]
 struct Options {
     environment_overrides: bool,
+    execution: run::Options,
     makefiles: Vec<PathBuf>,
     assignments: Vec<String>,
     targets: Vec<String>,
@@ -31,6 +35,11 @@ impl Options {
                     for (index, flag) in flags.char_indices() {
                         match flag {
                             'e' => options.environment_overrides = true,
+                            'n' => options.execution.dry_run = true,
+                            'k' => options.execution.keep_going = true,
+                            's' => options.execution.silent = true,
+                            'i' => options.execution.ignore = true,
+                            'j' => return Err(Error::deferred(&command_line(), "-j").to_string()),
                             'f' | 'C' => {
                                 let tail = &flags[index + 1..];
                                 let path = if tail.is_empty() {
@@ -59,6 +68,7 @@ impl Options {
             if text.contains('=') {
                 options.assignments.push(text.to_owned());
             } else {
+                reader::check_target(text, &command_line()).map_err(|error| error.to_string())?;
                 options.targets.push(text.to_owned());
             }
         }
@@ -89,6 +99,13 @@ impl Options {
     }
 }
 
+fn command_line() -> Location {
+    Location {
+        path: Path::new("<command line>").into(),
+        line: 1,
+    }
+}
+
 /// Parse bmake's command-line arguments, change to the requested directory,
 /// read the makefiles and build the selected targets.
 pub fn execute(arguments: impl IntoIterator<Item = OsString>) -> Result<(), String> {
@@ -97,6 +114,13 @@ pub fn execute(arguments: impl IntoIterator<Item = OsString>) -> Result<(), Stri
     let directory = directory.to_string_lossy().into_owned();
     let environment = env::vars_os()
         .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)));
+    if env::var_os("MAKEFLAGS").is_some_and(|value| !value.is_empty()) {
+        let location = Location {
+            path: Path::new("<environment>").into(),
+            line: 1,
+        };
+        return Err(Error::deferred(&location, "MAKEFLAGS").to_string());
+    }
     let mut macros = Macros::new(options.environment_overrides, directory, environment);
     for assignment in &options.assignments {
         macros
@@ -106,8 +130,19 @@ pub fn execute(arguments: impl IntoIterator<Item = OsString>) -> Result<(), Stri
 
     let mut makefile =
         reader::load(&options.makefiles, &mut macros).map_err(|error| error.to_string())?;
-    let suffixes = Suffixes::resolve(&mut makefile, &options.targets);
+    let specials = Specials::take(&mut makefile).map_err(|error| error.to_string())?;
+    let suffixes = Suffixes::resolve(&mut makefile, &options.targets, &specials)
+        .map_err(|error| error.to_string())?;
+    if !makefile.includes.is_empty() {
+        let includes: Vec<_> = makefile
+            .includes
+            .iter()
+            .map(|file| file.name.clone())
+            .collect();
+        let graph = Graph::for_targets(&makefile, &includes).map_err(|error| error.to_string())?;
+        run::check_includes(&graph, &makefile.includes, &specials)?;
+    }
     let graph =
         Graph::for_targets(&makefile, &options.targets).map_err(|error| error.to_string())?;
-    run::build(&graph, &macros, &suffixes)
+    run::build(&graph, &macros, &suffixes, &specials, options.execution)
 }

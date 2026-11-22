@@ -10,6 +10,7 @@ mod inference;
 pub mod r#macro;
 pub mod reader;
 mod run;
+mod special;
 mod time;
 
 pub use cli::execute;
@@ -38,6 +39,12 @@ impl Error {
             location: location.clone(),
             message: message.into(),
         }
+    }
+}
+
+impl Error {
+    fn deferred(location: &Location, construct: &str) -> Self {
+        Self::new(location, format!("{construct} not supported until 25.6c"))
     }
 }
 

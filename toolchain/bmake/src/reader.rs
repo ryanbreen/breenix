@@ -17,6 +17,15 @@ const MAX_INCLUDE_DEPTH: usize = 64;
 #[derive(Debug, Default)]
 pub struct Makefile {
     pub entries: Vec<Entry>,
+    pub(crate) includes: Vec<IncludeFile>,
+}
+
+#[derive(Debug)]
+pub(crate) struct IncludeFile {
+    pub name: String,
+    pub location: Location,
+    pub optional: bool,
+    pub missing: bool,
 }
 
 #[derive(Debug)]
@@ -71,6 +80,13 @@ pub fn load(paths: &[PathBuf], macros: &mut Macros) -> Result<Makefile, Error> {
     Ok(makefile)
 }
 
+pub(crate) fn check_target(name: &str, location: &Location) -> Result<(), Error> {
+    if matches!(name, ".WAIT" | ".NOTPARALLEL") || name.contains(['(', ')']) {
+        return Err(Error::deferred(location, name));
+    }
+    Ok(())
+}
+
 fn read_source(mut file: File, location: &Location) -> Result<Vec<u8>, Error> {
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
@@ -97,6 +113,9 @@ impl Makefile {
                             let value = macros.expand(word, &rule.location, &automatic)?;
                             expanded.extend(separate_words(&value).map(str::to_owned));
                         }
+                        for word in &expanded {
+                            check_target(word, &rule.location)?;
+                        }
                         *words = expanded;
                     }
                     if rule.targets.is_empty() {
@@ -110,8 +129,10 @@ impl Makefile {
                 Entry::Include { paths, optional } => {
                     let expanded = macros.expand(&paths.text, &paths.location, &automatic)?;
                     for name in separate_words(&expanded) {
+                        check_target(name, &paths.location)?;
                         let file = match File::open(name) {
-                            Ok(file) => file,
+                            Ok(file) => Some(file),
+                            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
                             Err(_) if optional => continue,
                             Err(error) => {
                                 return Err(Error::new(
@@ -119,6 +140,15 @@ impl Makefile {
                                     format!("include '{name}': {error}"),
                                 ))
                             }
+                        };
+                        self.includes.push(IncludeFile {
+                            name: name.to_owned(),
+                            location: paths.location.clone(),
+                            optional,
+                            missing: file.is_none(),
+                        });
+                        let Some(file) = file else {
+                            continue;
                         };
                         if depth >= MAX_INCLUDE_DEPTH {
                             return Err(Error::new(
