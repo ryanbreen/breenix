@@ -3,5 +3,9 @@
 version = 4
 
 [[package]]
+name = "bobj"
+version = "0.1.0"
+
+[[package]]
 name = "elfcheck"
 version = "0.1.0"
