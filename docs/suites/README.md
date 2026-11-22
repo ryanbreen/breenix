@@ -1895,10 +1895,15 @@ in A2.
 
 The `toolchain/cc-hello` milestone measures the five `c-core` cases.
 The suite bundle installs bcc as `cc`, with `as` and `ld` backed by bas and
-bld. The corpus case runs the staged Clang ELFs, staged Mac-hosted
-bcc/bas/bld ELFs and fresh on-box builds against the same independent
-`.expect` files. The stage case compares assembly, object and executable
-bytes, then runs the result. The diagnostic case requires a source
+bld. The corpus case runs 22 named programs from
+`userspace/programs/src/fixture/toolchain-cc-cases`. For each, the staged
+Clang ELF, staged Mac-hosted bcc/bas/bld ELF and fresh on-box build run
+against the independent `.expect` file. The Clang reference builder and
+`inputs/reference-corpus-runs` cover the full 30-entry catalog. Three-producer
+coverage for `aggregate-copy` and `bitfield-values` awaits 25.7b1, and
+`varargs` awaits 25.7b2. `alignment`, `atomics`, `compound-literal`,
+`designated-init` and `generic` await 25.9. The stage case compares assembly,
+object and executable bytes, then runs the result. The diagnostic case requires a source
 location and failed compilation.
 
 Build the metal fixture with `scripts/metal/metal-build-local --host HOST

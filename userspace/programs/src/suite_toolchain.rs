@@ -28,6 +28,11 @@ const LINKER_OBJECTS: &[&str] = &[
 ];
 const ARCHIVE_MEMBERS: &[&str] = &["got-entry", "archive-value-with-long-name"];
 const CASES: &str = include_str!("../../../toolchain/corpus/cases");
+// This is the fixed 25.5 three-producer list, also used by the bundle builder.
+// Deferred to 25.7b1: aggregate-copy, bitfield-values.
+// Deferred to 25.7b2: varargs.
+// Deferred to 25.9: alignment, atomics, compound-literal, designated-init, generic.
+const CC_CASES: &str = include_str!("fixture/toolchain-cc-cases");
 
 static SUITE: Suite = suite(
     "toolchain",
@@ -461,7 +466,7 @@ fn cc_corpus_three_producers() -> CaseResult {
     native_cc_supported()?;
     let scratch = Scratch::new("c-core")?;
     let corpus = Path::new("/").join(CORPUS);
-    for name in CASES.lines() {
+    for name in CC_CASES.lines() {
         let expected = corpus.join(format!("{name}.expect"));
         let source = corpus.join(format!("{name}.c"));
         let elf = format!("{name}.elf");

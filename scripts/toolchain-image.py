@@ -93,7 +93,16 @@ def seal(bundle, commit, arch):
         sources[CORPUS / relative] = corpus / relative
     mac_candidates = arch == "x86_64" and sys.platform == "darwin"
     if mac_candidates:
-        required.update(CORPUS / "c-core/mac" / (name + ".elf") for name in names)
+        candidate_list = ROOT / "userspace/programs/src/fixture/toolchain-cc-cases"
+        candidate_names = candidate_list.read_text().splitlines()
+        if (not candidate_names or candidate_names != sorted(set(candidate_names))
+                or not set(candidate_names).issubset(names)):
+            raise ValueError("invalid three-producer case list")
+        candidate_dir = CORPUS / "c-core/mac"
+        expected_candidates = {candidate_dir / (name + ".elf") for name in candidate_names}
+        if extra := {path for path in files if path.is_relative_to(candidate_dir)} - expected_candidates:
+            raise ValueError(f"unexpected Mac candidate {min(extra)}")
+        required.update(expected_candidates)
     for name in names:
         for suffix in (".c", ".expect"):
             sources[CORPUS / (name + suffix)] = corpus / (name + suffix)

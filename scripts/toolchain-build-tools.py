@@ -120,7 +120,7 @@ def build_mac_candidates(clang, host_flags, work, dev, corpus, host_bas):
     destination.mkdir()
     environment = dict(reference.TOOL_ENV, BCC_SYSROOT=str(dev), BCC_AS=str(host_bas),
                        BCC_LD=str(host_tools["bld"]), TMPDIR=str(work))
-    for name in (ROOT / "toolchain/corpus/cases").read_text().splitlines():
+    for name in (ROOT / "userspace/programs/src/fixture/toolchain-cc-cases").read_text().splitlines():
         source = corpus / f"{name}.c"
         elf = destination / f"{name}.elf"
         subprocess.run([str(host_tools["cc"]), "--target=x86_64", str(source), "-o", str(elf)],
