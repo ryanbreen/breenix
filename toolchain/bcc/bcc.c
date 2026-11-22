@@ -1,5 +1,5 @@
-/* N1570 §5.1.1.2 phases 1–7: preprocessing and hello-subset syntax analysis. */
-#include "sema.h"
+/* N1570 §5.1.1.2 phases 1–7: preprocessing, analysis and hello code generation. */
+#include "codegen.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -10,12 +10,12 @@
 
 static int usage(void)
 {
-    fprintf(stderr, "usage: bcc (-E | -fsyntax-only [--dump-types]) "
+    fprintf(stderr, "usage: bcc (-E | -S | -fsyntax-only [--dump-types]) "
                     "[-I DIR] [--target=x86_64|aarch64] FILE\n");
     return 2;
 }
 
-static bool analyze(const PpOptions *options, const char *path, bool dump_types)
+static bool compile(const PpOptions *options, const char *path, bool dump_types, bool assembly)
 {
     PpUnit unit = {.options = options};
     BccAst tree = {0};
@@ -24,6 +24,8 @@ static bool analyze(const PpOptions *options, const char *path, bool dump_types)
         fprintf(stderr, "bcc: error: cannot write type records\n");
         ok = false;
     }
+    if (ok && assembly)
+        ok = bcc_emit_x86(&tree, stdout);
     pp_dispose(&unit);
     return ok;
 }
@@ -38,7 +40,7 @@ int main(int argc, char **argv)
     PpOptions options = {
         .target = BCC_X86_64, .include_dirs = dirs, .system_root = BCC_SYSTEM_ROOT
     };
-    bool preprocess = false, syntax = false, dump_types = false;
+    bool preprocess = false, syntax = false, assembly = false, dump_types = false;
     bool operands = false, valid = true;
     const char *path = NULL;
     for (int i = 1; valid && i < argc; ++i) {
@@ -47,6 +49,8 @@ int main(int argc, char **argv)
             operands = true;
         } else if (!operands && strcmp(arg, "-E") == 0) {
             preprocess = true;
+        } else if (!operands && strcmp(arg, "-S") == 0) {
+            assembly = true;
         } else if (!operands && strcmp(arg, "-fsyntax-only") == 0) {
             syntax = true;
         } else if (!operands && strcmp(arg, "--dump-types") == 0) {
@@ -70,11 +74,15 @@ int main(int argc, char **argv)
         }
     }
     int status;
-    if (!valid || path == NULL || preprocess == syntax || (dump_types && !syntax))
+    if (!valid || path == NULL || preprocess + syntax + assembly != 1 || (dump_types && !syntax)) {
         status = usage();
-    else
+    } else if (assembly && options.target != BCC_X86_64) {
+        fputs("bcc: error: -S currently supports only x86_64\n", stderr);
+        status = 1;
+    } else {
         status = (preprocess ? pp_preprocess(&options, path, stdout) :
-                               analyze(&options, path, dump_types)) ? 0 : 1;
+                               compile(&options, path, dump_types, assembly)) ? 0 : 1;
+    }
     free(dirs);
     return status;
 }

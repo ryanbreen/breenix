@@ -226,3 +226,35 @@ and its on-box acceptance wait for A3.
 python3 toolchain/tests/bcc/hello_translation_unit_types.py /tmp/bcc
 python3 toolchain/tests/cconf/run.py --cc /tmp/bcc --mode syntax --stage b1
 ```
+
+## AMD64 hello code generation
+
+`bcc -S FILE` writes bas assembly to stdout. The emitter consumes the typed
+tree and handles parameterless `int` and `void` definitions, `int` constants,
+and non-variadic calls with an empty argument list or a single string literal.
+N1570 §§5.1.2.2.3 and 6.8.6.4 govern returns, including falling off `main`.
+String bytes come from the front end under §6.4.5. Under AMD64 psABI §§3.2.1–3.2.3,
+the frame saves `rbp`, the stack is aligned at each call, the string address
+goes in `rdi`, and the `int` result comes back in `eax`. String addresses and
+call slots use RIP-relative addressing for the small code model (§3.5.1).
+
+For a Breenix executable, assemble the output with `bas -o FILE.o FILE.s`,
+then link with `bld -T userspace/programs/linker.ld --gc-sections -o FILE FILE.o libc.a`.
+Use Breenix's x86-64 C ABI archive for `libc.a`, which supplies `_start` and
+`puts`. The driver orchestration and wider scalar ABI lowering are 25.5c2.
+The AArch64 bcc executable currently provides the shared frontend. Emitting
+AArch64 code and running the ARM64 `cc-hello` acceptance are A3.
+
+Run the host check on x86-64, or prefix `/usr/bin/python3` with `arch -x86_64`
+on an ARM64 Mac with Rosetta. Supply the host tools and the Breenix archive.
+
+```sh
+python3 toolchain/tests/bcc/return_42_exit_status.py \
+  --bcc /tmp/bcc --bas /tmp/bas --bld /tmp/bld --elfcheck /tmp/elfcheck \
+  --libc /path/to/breenix-x86-64/libc.a
+```
+
+The host check calls the linked `main` in isolation and checks status 42. It
+also verifies both full static links with `elfcheck` and verifies that the
+hello object requires libc's `puts`. Guest startup and output are measured
+in 25.5d.
