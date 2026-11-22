@@ -1,6 +1,6 @@
 # bas
 
-Build the host tool from `bas.c` and `../common/elf64.c` with a C11 compiler.
+Build the Rust host tool with Cargo from the `toolchain` workspace.
 Run `bas -o OBJECT SOURCE` to write a little-endian x86-64 ELF relocatable object.
 
 ## Input syntax
@@ -39,7 +39,7 @@ string starts a comment. The initial section is `.text`, where instructions go.
   little-endian integers, respectively. The aliases are `.byte`, `.word`,
   `.long` and `.quad`. Integers accept decimal and `0x` hexadecimal.
   Byte lists and `.ascii` can emit quoted strings. `.asciz` adds a
-  NUL after each string. Escapes are `\\`, `\"`, `\0`, `\n`, `\r`, `\t`
+  NUL after each string. Escapes are `\`, `\"`, `\0`, `\n`, `\r`, `\t`
   and `\xHH`.
 - `.zero COUNT` fills `COUNT` bytes with `0x00`. `align BYTES[, FILL]` aligns
   to a positive power of two and raises the section's ELF alignment.
@@ -121,9 +121,17 @@ object metadata and relocations are A1 work.
 
 ## Host checks
 
-Run `python3 toolchain/tests/bas/run.py --clang /absolute/path/to/clang` on
-macOS. The runner checks the exit42, addressing, integer, supplemental encoding
-and relocation fixtures on both host architectures and under ASan and UBSan.
-The independent elfcheck validates
-the resulting objects. The byte expectations cite the pinned ISA tables in
-`toolchain/tests/bas/`.
+Build the native Rust binaries and pass their paths to the host runner.
+
+```sh
+cd toolchain
+cargo build --release --locked -p bas -p elfcheck
+python3 tests/bas/run.py --bas "$PWD/target/release/bas" --elfcheck "$PWD/target/release/elfcheck"
+cargo test --locked -p bas
+```
+
+The runner checks the exit42, addressing, integer, supplemental encoding and
+relocation fixtures with the independent elfcheck. The byte expectations cite
+the pinned ISA tables in `toolchain/tests/bas/`. The Rust tests also exercise
+malformed source and compare output and diagnostics with Breenix's C bas
+during 25.R.

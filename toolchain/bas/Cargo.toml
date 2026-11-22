@@ -7,3 +7,6 @@ description = "Breenix assembler"
 
 [lints]
 workspace = true
+
+[dependencies]
+bobj = { path = "../bobj" }
