@@ -1,8 +1,10 @@
 /* ELF gABI §§2–7 and AMD64 psABI §§4.1, 4.4.1 (spec-ledger.md).
- * This slice links one AMD64 LP64 ET_REL to a static ET_EXEC.
+ * Static AMD64 LP64 links from ET_REL objects and common archives.
+ * GNU ld 2.45 manual §2.1: archive order, groups and whole-archive.
  */
 #define _POSIX_C_SOURCE 200809L
 
+#include "../common/ar.h"
 #include "../common/elf64.h"
 
 #include <inttypes.h>
@@ -17,7 +19,8 @@ enum {
     SHT_SYMTAB = 2, SHT_STRTAB = 3, SHT_RELA = 4, SHT_REL = 9, SHT_GROUP = 17,
     SHT_X86_64_UNWIND = 0x70000001,
     SHF_MERGE = 0x10, SHF_STRINGS = 0x20,
-    SHN_LORESERVE = 0xff00, SHN_ABS = 0xfff1, STB_WEAK = 2,
+    SHN_LORESERVE = 0xff00, SHN_ABS = 0xfff1, SHN_COMMON = 0xfff2,
+    STB_LOCAL = 0, STB_GLOBAL = 1, STB_WEAK = 2,
     R_X86_64_NONE = 0, R_X86_64_PC64 = 24,
     PT_LOAD = 1, PF_X = 1, PF_W = 2, PF_R = 4,
     /* Linux Standard Base Core Specification 5.0, Generic Part, Table 11-1. */
@@ -36,10 +39,39 @@ struct input_section {
 
 struct object {
     const char *path;
-    unsigned char *bytes;
+    const unsigned char *bytes;
     size_t size;
     struct input_section *sections;
     unsigned count, symtab;
+    char *member_path;
+};
+
+struct link_input {
+    const char *path;
+    size_t group_end;
+    bool whole_archive, is_archive;
+    unsigned char *bytes;
+    struct ar_archive archive;
+    bool *selected;
+};
+
+enum definition { UNDEFINED, WEAK, COMMON, STRONG };
+
+struct global_symbol {
+    const char *name;
+    enum definition definition;
+    bool required;
+    const struct object *object;
+    const unsigned char *symbol;
+    uint64_t common_size, common_align, common_offset;
+};
+
+struct link {
+    struct object **objects;
+    size_t count, capacity;
+    struct global_symbol *globals;
+    size_t global_count, global_capacity;
+    struct input_section *common;
 };
 
 struct load {
@@ -138,26 +170,32 @@ static bool read_sections(struct object *object, uint64_t shoff, unsigned names)
     return true;
 }
 
-static bool read_object(struct object *object)
+static bool read_file(struct link_input *input, size_t *length)
 {
-    FILE *input = fopen(object->path, "rb");
-    if (input == NULL) {
-        perror(object->path);
+    FILE *file = fopen(input->path, "rb");
+    if (file == NULL) {
+        perror(input->path);
         return false;
     }
-    long size = fseek(input, 0, SEEK_END) == 0 ? ftell(input) : -1;
-    if (size >= EHDR_SIZE && fseek(input, 0, SEEK_SET) == 0) {
-        object->size = (size_t)size;
-        object->bytes = malloc(object->size);
+    long size = fseek(file, 0, SEEK_END) == 0 ? ftell(file) : -1;
+    if (size >= 0 && (uint64_t)size <= SIZE_MAX && fseek(file, 0, SEEK_SET) == 0) {
+        *length = (size_t)size;
+        input->bytes = malloc(size == 0 ? 1 : *length);
     }
-    bool read_ok = object->bytes != NULL &&
-                   fread(object->bytes, 1, object->size, input) == object->size;
-    if (fclose(input) != 0 || !read_ok)
-        return object_error(object, "cannot read ELF object");
+    bool read_ok = input->bytes != NULL && fread(input->bytes, 1, *length, file) == *length;
+    if (fclose(file) != 0 || !read_ok) {
+        fprintf(stderr, "%s: cannot read link input\n", input->path);
+        return false;
+    }
+    return true;
+}
 
+static bool read_object(struct object *object)
+{
     const unsigned char ident[] = {0x7f, 'E', 'L', 'F', 2, 1, 1};
     const unsigned char *bytes = object->bytes;
-    if (memcmp(bytes, ident, sizeof ident) != 0 || load_le(bytes + 16, 2) != ET_REL ||
+    if (object->size < EHDR_SIZE || memcmp(bytes, ident, sizeof ident) != 0 ||
+        load_le(bytes + 16, 2) != ET_REL ||
         load_le(bytes + 18, 2) != EM_X86_64 || load_le(bytes + 20, 4) != 1 ||
         load_le(bytes + 32, 8) != 0 || load_le(bytes + 48, 4) != 0 ||
         load_le(bytes + 56, 2) != 0 ||
@@ -173,12 +211,290 @@ static bool read_object(struct object *object)
     return read_sections(object, shoff, names);
 }
 
+static struct global_symbol *symbol_slot(struct global_symbol *table, size_t capacity,
+                                         const char *name)
+{
+    uint64_t hash = UINT64_C(14695981039346656037);
+    for (const unsigned char *p = (const unsigned char *)name; *p != '\0'; ++p)
+        hash = (hash ^ *p) * UINT64_C(1099511628211);
+    size_t i = (size_t)hash & (capacity - 1);
+    while (table[i].name != NULL && strcmp(table[i].name, name) != 0)
+        i = (i + 1) & (capacity - 1);
+    return &table[i];
+}
+
+static const struct global_symbol *find_global(const struct link *link, const char *name)
+{
+    struct global_symbol *slot = symbol_slot(link->globals, link->global_capacity, name);
+    return slot->name == NULL ? NULL : slot;
+}
+
+static struct global_symbol *add_global(struct link *link, const char *name)
+{
+    if (link->global_capacity != 0) {
+        struct global_symbol *slot = symbol_slot(link->globals, link->global_capacity, name);
+        if (slot->name != NULL)
+            return slot;
+    }
+    if (link->global_count == link->global_capacity / 2) {
+        if (link->global_capacity > SIZE_MAX / sizeof *link->globals / 2)
+            return NULL;
+        size_t capacity = link->global_capacity == 0 ? 64 : link->global_capacity * 2;
+        struct global_symbol *table = calloc(capacity, sizeof *table);
+        if (table == NULL)
+            return NULL;
+        for (size_t i = 0; i < link->global_capacity; ++i) {
+            const struct global_symbol *old = &link->globals[i];
+            if (old->name != NULL)
+                *symbol_slot(table, capacity, old->name) = *old;
+        }
+        free(link->globals);
+        link->globals = table;
+        link->global_capacity = capacity;
+    }
+    struct global_symbol *slot = symbol_slot(link->globals, link->global_capacity, name);
+    slot->name = name;
+    ++link->global_count;
+    return slot;
+}
+
+static bool register_symbols(struct link *link, const struct object *object, const char *indexed)
+{
+    const struct input_section *table = &object->sections[object->symtab];
+    const struct input_section *strings = &object->sections[table->link];
+    bool found = indexed == NULL;
+    for (uint64_t i = SYM_SIZE; i < table->size; i += SYM_SIZE) {
+        const unsigned char *symbol = object->bytes + table->offset + i;
+        unsigned bind = symbol[4] >> 4;
+        if (bind == STB_LOCAL)
+            continue;
+        if (bind != STB_GLOBAL && bind != STB_WEAK)
+            return object_error(object, "unsupported symbol binding");
+        const char *name = string_at(object, strings, load_le(symbol, 4));
+        if (name == NULL || *name == '\0')
+            return object_error(object, "invalid global symbol name");
+        struct global_symbol *global = add_global(link, name);
+        if (global == NULL)
+            return object_error(object, "cannot allocate global symbol table");
+        unsigned index = (unsigned)load_le(symbol + 6, 2);
+        if (index == 0) {
+            if (bind == STB_GLOBAL)
+                global->required = true;
+            continue;
+        }
+        if (!found && strcmp(name, indexed) == 0)
+            found = true;
+        /* ELF gABI §§5.2, 5.5. A strong definition overrides common or weak.
+         * Coalesced commons need the maximum size and alignment independently. */
+        enum definition definition = bind == STB_WEAK ? WEAK : STRONG;
+        if (index == SHN_COMMON) {
+            definition = COMMON;
+            uint64_t align = load_le(symbol + 8, 8);
+            uint64_t size = load_le(symbol + 16, 8);
+            if (align == 0 || (align & (align - 1)) != 0 || align > IMAGE_BASE) {
+                fprintf(stderr, "%s: %s: invalid common symbol alignment\n", object->path, name);
+                return false;
+            }
+            if (align > global->common_align)
+                global->common_align = align;
+            if (size > global->common_size)
+                global->common_size = size;
+        }
+        if (definition == STRONG && global->definition == STRONG) {
+            fprintf(stderr, "%s: %s: duplicate definition (first defined in %s)\n",
+                    object->path, name, global->object->path);
+            return false;
+        }
+        if (definition > global->definition) {
+            global->definition = definition;
+            global->object = object;
+            global->symbol = symbol;
+        }
+    }
+    if (!found) {
+        fprintf(stderr, "%s: archive index names missing definition %s\n", object->path, indexed);
+        return false;
+    }
+    return true;
+}
+
+static struct object *append_object(struct link *link)
+{
+    if (link->count == link->capacity) {
+        if (link->capacity > SIZE_MAX / sizeof *link->objects / 2)
+            return NULL;
+        size_t capacity = link->capacity == 0 ? 16 : link->capacity * 2;
+        struct object **objects = realloc(link->objects, capacity * sizeof *objects);
+        if (objects == NULL)
+            return NULL;
+        link->objects = objects;
+        link->capacity = capacity;
+    }
+    struct object *object = calloc(1, sizeof *object);
+    if (object != NULL)
+        link->objects[link->count++] = object;
+    return object;
+}
+
+static bool include_member(struct link *link, struct link_input *input, size_t member_index,
+                           const char *indexed)
+{
+    const struct ar_member *member = &input->archive.members[member_index];
+    size_t length = strlen(input->path);
+    struct object *object = append_object(link);
+    if (object == NULL || length > SIZE_MAX - 3 || member->name_length > SIZE_MAX - length - 3 ||
+        (object->member_path = malloc(length + member->name_length + 3)) == NULL) {
+        fprintf(stderr, "%s: cannot allocate archive member\n", input->path);
+        return false;
+    }
+    char *path = object->member_path;
+    memcpy(path, input->path, length);
+    path[length++] = '(';
+    memcpy(path + length, member->name, member->name_length);
+    memcpy(path + length + member->name_length, ")", 2);
+    object->path = path;
+    object->bytes = member->bytes;
+    object->size = member->size;
+    input->selected[member_index] = true;
+    return read_object(object) && register_symbols(link, object, indexed);
+}
+
+static bool search_archive(struct link *link, struct link_input *input)
+{
+    const struct ar_archive *archive = &input->archive;
+    if (input->whole_archive) {
+        for (size_t i = 0; i < archive->member_count; ++i) {
+            if (!input->selected[i] && !include_member(link, input, i, NULL))
+                return false;
+        }
+        return true;
+    }
+
+    /* An extraction can create references to earlier entries. Revisit this
+     * archive until it adds no members. Weak undefineds do not trigger loads
+     * (ELF gABI §5.2). */
+    size_t before;
+    do {
+        before = link->count;
+        for (size_t i = 0; i < archive->symbol_count; ++i) {
+            const struct ar_symbol *symbol = &archive->symbols[i];
+            if (input->selected[symbol->member])
+                continue;
+            const struct global_symbol *global = find_global(link, symbol->name);
+            if (global != NULL && global->required && global->definition == UNDEFINED &&
+                !include_member(link, input, symbol->member, symbol->name))
+                return false;
+        }
+    } while (link->count != before);
+    return true;
+}
+
+static bool include_input(struct link *link, struct link_input *input)
+{
+    size_t size = 0;
+    if (!read_file(input, &size))
+        return false;
+    input->is_archive = ar_has_magic(input->bytes, size);
+    if (!input->is_archive) {
+        struct object *object = append_object(link);
+        if (object == NULL) {
+            fprintf(stderr, "%s: cannot allocate input object\n", input->path);
+            return false;
+        }
+        object->path = input->path;
+        object->bytes = input->bytes;
+        object->size = size;
+        return read_object(object) && register_symbols(link, object, NULL);
+    }
+    const char *error = ar_read(&input->archive, input->bytes, size);
+    if (error == NULL && input->archive.member_count != 0) {
+        if (!input->whole_archive && !input->archive.indexed) {
+            error = "archive has no symbol index";
+        } else {
+            input->selected = calloc(input->archive.member_count, sizeof *input->selected);
+            if (input->selected == NULL)
+                error = "cannot allocate archive selection table";
+        }
+    }
+    if (error != NULL) {
+        fprintf(stderr, "%s: %s\n", input->path, error);
+        return false;
+    }
+    return search_archive(link, input);
+}
+
+static bool include_inputs(struct link *link, struct link_input *inputs, size_t count)
+{
+    struct global_symbol *entry = add_global(link, "_start");
+    if (entry == NULL) {
+        fputs("bld: cannot allocate global symbol table\n", stderr);
+        return false;
+    }
+    entry->required = true;
+    for (size_t i = 0; i < count;) {
+        size_t end = inputs[i].group_end;
+        if (end == 0) {
+            if (!include_input(link, &inputs[i++]))
+                return false;
+            continue;
+        }
+
+        /* A group alone reopens earlier archives when a later input adds a
+         * reference. Ordinary object inputs enter the link just once. */
+        ++i;
+        size_t before = link->count;
+        for (size_t j = i; j < end; ++j) {
+            if (!include_input(link, &inputs[j]))
+                return false;
+        }
+        while (link->count != before) {
+            before = link->count;
+            for (size_t j = i; j < end; ++j) {
+                if (inputs[j].is_archive && !search_archive(link, &inputs[j]))
+                    return false;
+            }
+        }
+        i = end;
+    }
+    return true;
+}
+
 static bool align_up(uint64_t *position, uint64_t align)
 {
     uint64_t pad = align == 0 ? 0 : (0 - *position) & (align - 1);
     if (pad > UINT64_MAX - *position)
         return false;
     *position += pad;
+    return true;
+}
+
+static bool allocate_common(struct link *link)
+{
+    struct input_section common = {.name = ".bss", .type = ELF64_NOBITS,
+                                   .flags = ELF64_ALLOC | ELF64_WRITE};
+    for (size_t i = 0; i < link->global_capacity; ++i) {
+        struct global_symbol *symbol = &link->globals[i];
+        if (symbol->definition != COMMON)
+            continue;
+        if (!align_up(&common.size, symbol->common_align) ||
+            !fits(common.size, symbol->common_size, UINT64_MAX))
+            return object_error(symbol->object, "common storage layout overflow");
+        symbol->common_offset = common.size;
+        common.size += symbol->common_size;
+        if (symbol->common_align > common.align)
+            common.align = symbol->common_align;
+    }
+    if (common.align != 0) {
+        struct object *object = append_object(link);
+        if (object == NULL || (object->sections = calloc(2, sizeof *object->sections)) == NULL) {
+            fputs("bld: cannot allocate common storage section\n", stderr);
+            return false;
+        }
+        object->path = "bld (common storage)";
+        object->count = 2;
+        object->sections[1] = common;
+        link->common = &object->sections[1];
+    }
     return true;
 }
 
@@ -189,10 +505,8 @@ static unsigned section_load(const struct input_section *section)
     return (section->flags & ELF64_WRITE) != 0 ? RW_LOAD : R_LOAD;
 }
 
-static bool layout(struct object *object, struct executable *exe)
+static bool select_sections(struct object *object, struct executable *exe)
 {
-    exe->strings_size = sizeof "\0.shstrtab";
-    exe->section_count = 2; /* Null section and section-name table. */
     for (unsigned i = 1; i < object->count; ++i) {
         struct input_section *section = &object->sections[i];
         if (section->type == SHT_GROUP)
@@ -212,30 +526,47 @@ static bool layout(struct object *object, struct executable *exe)
         size_t length = strlen(section->name) + 1;
         if (!fits(exe->strings_size, length, UINT32_MAX))
             return section_error(object, section, "section names exceed string table limit");
+        if (exe->section_count == SHN_LORESERVE - 1)
+            return section_error(object, section, "executable section count exceeds limit");
         section->output_name = (uint32_t)exe->strings_size;
         exe->strings_size += length;
         ++exe->section_count;
     }
+    return true;
+}
 
+static bool layout(const struct link *link, struct executable *exe)
+{
+    exe->strings_size = sizeof "\0.shstrtab";
+    exe->section_count = 2; /* Null section and section-name table. */
+    for (size_t i = 0; i < link->count; ++i) {
+        if (!select_sections(link->objects[i], exe))
+            return false;
+    }
     uint64_t position = EHDR_SIZE + PHDR_COUNT * PHDR_SIZE;
     for (unsigned load_index = 0; load_index < LOAD_COUNT; ++load_index) {
         struct load *load = &exe->loads[load_index];
-        if (!align_up(&position, PAGE_SIZE))
-            return object_error(object, "load layout overflow");
+        if (!align_up(&position, PAGE_SIZE)) {
+            fputs("bld: load layout overflow\n", stderr);
+            return false;
+        }
         load->offset = load_index == RX_LOAD ? 0 : position;
 
         /* NOBITS comes last so the gap through the end of BSS is memory only. */
         for (unsigned nobits = 0; nobits <= 1; ++nobits) {
-            for (unsigned i = 1; i < object->count; ++i) {
-                struct input_section *section = &object->sections[i];
-                if (section->output_name == 0 || section_load(section) != load_index ||
-                    (section->type == ELF64_NOBITS) != (nobits != 0))
-                    continue;
-                if (section->align > IMAGE_BASE || !align_up(&position, section->align) ||
-                    !fits(position, section->size, UINT64_MAX - IMAGE_BASE))
-                    return section_error(object, section, "section layout overflow");
-                section->output_offset = position;
-                position += section->size;
+            for (size_t i = 0; i < link->count; ++i) {
+                const struct object *object = link->objects[i];
+                for (unsigned j = 1; j < object->count; ++j) {
+                    struct input_section *section = &object->sections[j];
+                    if (section->output_name == 0 || section_load(section) != load_index ||
+                        (section->type == ELF64_NOBITS) != (nobits != 0))
+                        continue;
+                    if (section->align > IMAGE_BASE || !align_up(&position, section->align) ||
+                        !fits(position, section->size, UINT64_MAX - IMAGE_BASE))
+                        return section_error(object, section, "section layout overflow");
+                    section->output_offset = position;
+                    position += section->size;
+                }
             }
             if (nobits == 0)
                 load->file_end = position;
@@ -243,65 +574,79 @@ static bool layout(struct object *object, struct executable *exe)
         load->memory_end = position;
     }
     exe->strings = exe->loads[RW_LOAD].file_end;
-    if (!fits(exe->strings, exe->strings_size, SIZE_MAX))
-        return object_error(object, "executable string table overflow");
+    if (!fits(exe->strings, exe->strings_size, SIZE_MAX)) {
+        fputs("bld: executable string table overflow\n", stderr);
+        return false;
+    }
     exe->headers = exe->strings + exe->strings_size;
     if (!align_up(&exe->headers, 8) ||
-        !fits(exe->headers, exe->section_count * SHDR_SIZE, SIZE_MAX))
-        return object_error(object, "executable section table overflow");
+        !fits(exe->headers, exe->section_count * SHDR_SIZE, SIZE_MAX)) {
+        fputs("bld: executable section table overflow\n", stderr);
+        return false;
+    }
     exe->size = (size_t)(exe->headers + exe->section_count * SHDR_SIZE);
     exe->bytes = calloc(exe->size, 1);
-    if (exe->bytes == NULL)
-        return object_error(object, "cannot allocate executable");
-    for (unsigned i = 1; i < object->count; ++i) {
-        const struct input_section *section = &object->sections[i];
-        if (section->output_name != 0 && section->type != ELF64_NOBITS)
-            memcpy(exe->bytes + section->output_offset, object->bytes + section->offset, section->size);
+    if (exe->bytes == NULL) {
+        fputs("bld: cannot allocate executable\n", stderr);
+        return false;
+    }
+    for (size_t i = 0; i < link->count; ++i) {
+        const struct object *object = link->objects[i];
+        for (unsigned j = 1; j < object->count; ++j) {
+            const struct input_section *section = &object->sections[j];
+            if (section->output_name != 0 && section->type != ELF64_NOBITS)
+                memcpy(exe->bytes + section->output_offset, object->bytes + section->offset,
+                       section->size);
+        }
     }
     return true;
 }
 
-static bool entry_address(const struct object *object, uint64_t *entry)
+static bool entry_address(const struct link *link, uint64_t *entry)
 {
-    const struct input_section *table = &object->sections[object->symtab];
-    for (uint64_t i = SYM_SIZE; i < table->size; i += SYM_SIZE) {
-        const unsigned char *symbol = object->bytes + table->offset + i;
-        const char *name = string_at(object, &object->sections[table->link], load_le(symbol, 4));
-        if (name == NULL)
-            return object_error(object, "invalid symbol name");
-        uint64_t index = load_le(symbol + 6, 2);
-        if (index == 0 || strcmp(name, "_start") != 0 || (symbol[4] >> 4) == 0)
-            continue;
-        uint64_t value = load_le(symbol + 8, 8);
-        if (index >= object->count || object->sections[index].output_name == 0 ||
-            section_load(&object->sections[index]) != RX_LOAD ||
-            value >= object->sections[index].size)
-            return object_error(object, "_start is outside executable code");
-        if (*entry != 0)
-            return object_error(object, "duplicate _start definition");
-        *entry = IMAGE_BASE + object->sections[index].output_offset + value;
+    const struct global_symbol *start = find_global(link, "_start");
+    if (start->definition == UNDEFINED) {
+        fputs("bld: missing _start definition\n", stderr);
+        return false;
     }
-    return *entry != 0 || object_error(object, "missing _start definition");
+    const struct object *object = start->object;
+    unsigned index = (unsigned)load_le(start->symbol + 6, 2);
+    uint64_t value = load_le(start->symbol + 8, 8);
+    if (index >= object->count || object->sections[index].output_name == 0 ||
+        section_load(&object->sections[index]) != RX_LOAD || value >= object->sections[index].size)
+        return object_error(object, "_start is outside executable code");
+    *entry = IMAGE_BASE + object->sections[index].output_offset + value;
+    return true;
 }
 
-static const char *symbol_address(const struct object *object, const unsigned char *symbol,
-                                  uint64_t *value)
+static const char *symbol_address(const struct link *link, const struct object *object,
+                                  const unsigned char *symbol, const char *name, uint64_t *value)
 {
     if (symbol == NULL) {
         *value = 0; /* ELF gABI §6.1: STN_UNDEF uses symbol value zero. */
         return NULL;
     }
+    unsigned bind = symbol[4] >> 4;
+    if (bind != STB_LOCAL) {
+        const struct global_symbol *global = find_global(link, name);
+        if (global == NULL || global->definition == UNDEFINED) {
+            if (bind != STB_WEAK)
+                return "undefined symbol";
+            *value = 0; /* ELF gABI §5.2: unresolved weak references have value zero. */
+            return NULL;
+        }
+        if (global->definition == COMMON) {
+            *value = IMAGE_BASE + link->common->output_offset + global->common_offset;
+            return NULL;
+        }
+        object = global->object;
+        symbol = global->symbol;
+    }
     unsigned index = (unsigned)load_le(symbol + 6, 2);
     *value = load_le(symbol + 8, 8);
     if (index == SHN_ABS)
         return NULL;
-    if (index == 0) {
-        if ((symbol[4] >> 4) != STB_WEAK)
-            return "undefined symbol";
-        *value = 0; /* ELF gABI §5.2: unresolved weak references have value zero. */
-        return NULL;
-    }
-    if (index >= object->count || object->sections[index].output_name == 0)
+    if (index == 0 || index >= object->count || object->sections[index].output_name == 0)
         return "symbol has no allocated section";
     if (*value > object->sections[index].size)
         return "symbol offset outside section";
@@ -327,9 +672,10 @@ static const char *relocation_name(uint32_t type)
     }
 }
 
-static const char *apply_relocation(const struct object *object, struct executable *exe,
+static const char *apply_relocation(const struct link *link, const struct object *object,
+                                    struct executable *exe,
                                     const struct input_section *target, const unsigned char *rela,
-                                    const unsigned char *symbol, uint32_t type)
+                                    const unsigned char *symbol, const char *name, uint32_t type)
 {
     /* psABI Table 4.9. For a symbol bound in the static executable the
      * PLT32 call goes directly to S instead of through a PLT entry at L.
@@ -356,7 +702,7 @@ static const char *apply_relocation(const struct object *object, struct executab
     if (target->type == ELF64_NOBITS || !fits(offset, width, target->size))
         return "relocation field outside section bytes";
     uint64_t value;
-    const char *error = symbol_address(object, symbol, &value);
+    const char *error = symbol_address(link, object, symbol, name, &value);
     if (error != NULL)
         return error;
     uint64_t field = target->output_offset + offset;
@@ -372,7 +718,7 @@ static const char *apply_relocation(const struct object *object, struct executab
     return NULL;
 }
 
-static bool relocate(const struct object *object, struct executable *exe)
+static bool relocate(const struct link *link, const struct object *object, struct executable *exe)
 {
     const struct input_section *symbols = &object->sections[object->symtab];
     const struct input_section *strings = &object->sections[symbols->link];
@@ -397,8 +743,8 @@ static bool relocate(const struct object *object, struct executable *exe)
             const char *name = string_at(object, strings, load_le(symbol, 4));
             if (name == NULL)
                 return section_error(object, section, "invalid relocation symbol name");
-            const char *error = apply_relocation(object, exe, target, rela,
-                                                 index == 0 ? NULL : symbol, type);
+            const char *error = apply_relocation(link, object, exe, target, rela,
+                                                 index == 0 ? NULL : symbol, name, type);
             if (error != NULL) {
                 fprintf(stderr, "%s: %s+0x%" PRIx64 ": %s (%" PRIu32 ") %s: %s\n",
                         object->path, target->name, load_le(rela, 8), relocation_name(type),
@@ -424,7 +770,7 @@ static void section_header(unsigned char *header, uint32_t name, uint32_t type,
     store_le(header + 56, 8, entsize);
 }
 
-static void write_headers(const struct object *object, struct executable *exe)
+static void write_headers(const struct link *link, struct executable *exe)
 {
     /* ELF gABI Listings 2.1, 3.1 and 7.1. The buffer starts zero-filled. */
     unsigned char *bytes = exe->bytes;
@@ -464,15 +810,19 @@ static void write_headers(const struct object *object, struct executable *exe)
 
     memcpy(bytes + exe->strings + 1, ".shstrtab", sizeof ".shstrtab");
     unsigned char *header = bytes + exe->headers + SHDR_SIZE;
-    for (unsigned i = 1; i < object->count; ++i) {
-        const struct input_section *section = &object->sections[i];
-        if (section->output_name == 0)
-            continue;
-        memcpy(bytes + exe->strings + section->output_name, section->name, strlen(section->name) + 1);
-        section_header(header, section->output_name, section->type, section->flags,
-                       IMAGE_BASE + section->output_offset, section->output_offset,
-                       section->size, section->align, section->entsize);
-        header += SHDR_SIZE;
+    for (size_t i = 0; i < link->count; ++i) {
+        const struct object *object = link->objects[i];
+        for (unsigned j = 1; j < object->count; ++j) {
+            const struct input_section *section = &object->sections[j];
+            if (section->output_name == 0)
+                continue;
+            memcpy(bytes + exe->strings + section->output_name, section->name,
+                   strlen(section->name) + 1);
+            section_header(header, section->output_name, section->type, section->flags,
+                           IMAGE_BASE + section->output_offset, section->output_offset,
+                           section->size, section->align, section->entsize);
+            header += SHDR_SIZE;
+        }
     }
     section_header(header, 1, SHT_STRTAB, 0, 0, exe->strings, exe->strings_size, 1, 0);
 }
@@ -509,26 +859,85 @@ static bool write_executable(const char *path, const struct executable *exe)
     return ok;
 }
 
+static bool parse_args(int argc, char **argv, struct link_input *inputs,
+                       size_t *count, const char **output)
+{
+    bool whole_archive = false;
+    size_t group = SIZE_MAX, files = 0;
+    for (int i = 1; i < argc; ++i) {
+        const char *arg = argv[i];
+        if (strcmp(arg, "-o") == 0) {
+            if (*output != NULL || i + 1 == argc || argv[i + 1][0] == '\0')
+                return false;
+            *output = argv[++i];
+        } else if (strcmp(arg, "--whole-archive") == 0) {
+            whole_archive = true;
+        } else if (strcmp(arg, "--no-whole-archive") == 0) {
+            whole_archive = false;
+        } else if (strcmp(arg, "--start-group") == 0 || strcmp(arg, "-(") == 0) {
+            if (group != SIZE_MAX)
+                return false;
+            group = (*count)++;
+        } else if (strcmp(arg, "--end-group") == 0 || strcmp(arg, "-)") == 0) {
+            if (group == SIZE_MAX)
+                return false;
+            inputs[group].group_end = *count;
+            group = SIZE_MAX;
+        } else if (arg[0] == '-' || arg[0] == '\0') {
+            fprintf(stderr, "bld: invalid link input or option: %s\n", arg);
+            return false;
+        } else {
+            inputs[*count].path = arg;
+            inputs[*count].whole_archive = whole_archive;
+            ++*count;
+            ++files;
+        }
+    }
+    return *output != NULL && group == SIZE_MAX && files != 0;
+}
+
 int main(int argc, char **argv)
 {
-    if (argc != 4 || strcmp(argv[1], "-o") != 0 || argv[2][0] == '\0' ||
-        argv[3][0] == '\0' || argv[3][0] == '-') {
-        fputs("usage: bld -o OUTPUT OBJECT\n", stderr);
+    struct link_input *inputs = calloc((size_t)argc, sizeof *inputs);
+    if (inputs == NULL) {
+        fputs("bld: cannot allocate link inputs\n", stderr);
         return 1;
     }
-    struct object object = {.path = argv[3]};
+    struct link link = {0};
     struct executable exe = {0};
-    bool ok = read_object(&object) && layout(&object, &exe) &&
-              entry_address(&object, &exe.entry) && relocate(&object, &exe);
+    const char *output = NULL;
+    size_t count = 0;
+    bool ok = parse_args(argc, argv, inputs, &count, &output);
+    if (!ok)
+        fputs("usage: bld -o OUTPUT [--whole-archive | --no-whole-archive |\n"
+              "       --start-group | --end-group | OBJECT | ARCHIVE] ...\n", stderr);
+    ok = ok && include_inputs(&link, inputs, count) && allocate_common(&link) &&
+         layout(&link, &exe) && entry_address(&link, &exe.entry);
+    for (size_t i = 0; ok && i < link.count; ++i) {
+        const struct object *object = link.objects[i];
+        if (object->symtab != 0)
+            ok = relocate(&link, object, &exe);
+    }
     if (ok) {
-        write_headers(&object, &exe);
-        if (!write_executable(argv[2], &exe)) {
-            fprintf(stderr, "%s: cannot write executable\n", argv[2]);
+        write_headers(&link, &exe);
+        if (!write_executable(output, &exe)) {
+            fprintf(stderr, "%s: cannot write executable\n", output);
             ok = false;
         }
     }
     free(exe.bytes);
-    free(object.sections);
-    free(object.bytes);
+    for (size_t i = 0; i < link.count; ++i) {
+        free(link.objects[i]->member_path);
+        free(link.objects[i]->sections);
+        free(link.objects[i]);
+    }
+    free(link.objects);
+    free(link.globals);
+    for (size_t i = 0; i < count; ++i) {
+        free(inputs[i].selected);
+        ar_dispose(&inputs[i].archive);
+        free(inputs[i].bytes);
+    }
+    free(inputs);
     return ok ? 0 : 1;
 }

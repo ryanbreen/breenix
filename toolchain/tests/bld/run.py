@@ -283,7 +283,7 @@ def main():
             bld, elfcheck = directory / "bld", directory / "elfcheck"
             flags = STRICT + (["-arch", arch] if arch != "native" else [])
             flags += ["-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all"]
-            for sources, output in [([source], bld),
+            for sources, output in [([source, TOOLCHAIN / "common/ar.c"], bld),
                                     ([TESTS / "elfcheck/elfcheck.c"], elfcheck)]:
                 subprocess.run([args.clang, *flags, *sources, "-o", output],
                                check=True, timeout=40)

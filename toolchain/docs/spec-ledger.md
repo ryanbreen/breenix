@@ -27,7 +27,8 @@ edition pin whose full publication has no digest recorded here.
 | [GNU make manual](https://www.gnu.org/software/make//manual/make.pdf) | Edition 0.77, GNU make 4.4.1, 2023-02-26 | `a4bc06026984382815e392159e60a4bc356cac6c5b81e5ae84fa4f58f621f4d3` |
 | [GNU C extensions](https://gcc.gnu.org/onlinedocs/gcc-15.2.0/gcc/C-Extensions.html) | GCC 15.2.0 manual, GNU C extensions chapter | `4965dab10bf21e0147e86aa80fca2a92da2c099393f34d0325c913aa3be871f2` |
 | [NASM manual](https://www.nasm.us/xdoc/3.02/nasmdoc.pdf) | NASM 3.02, reserved for 25.12 | `a4d1766c9d640663569bcf93feac0657732fe52017002f1dbc797353f6aed34f` |
-| [GNU ld manual](https://sourceware.org/binutils/docs-2.45/ld.html) | GNU Binutils 2.45, linker script syntax | `f219c3b05e197308c5b60fc2d4dbfc302617389ca5c21501de58a90b3d052e06` |
+| [GNU ld manual](https://sourceware.org/binutils/docs-2.45/ld.html) | GNU Binutils 2.45, command-line options and linker script syntax | `f219c3b05e197308c5b60fc2d4dbfc302617389ca5c21501de58a90b3d052e06` |
+| [Oracle Solaris `ar(3HEAD)`](https://docs.oracle.com/cd/E86824_01/html/E54772/ar.h-3head.html) | Oracle Solaris 11.3, archive file format | — |
 | [Clang Language Extensions](https://releases.llvm.org/22.1.0/tools/clang/docs/LanguageExtensions.html) | Clang 22.1 release manual, builtin varargs, C11 atomics, `offsetof` and floating rounding | `66bb3c0e28f15608750483506cb079d421f9cfb5e01d25b838d921f7efabf860` |
 
 ## Support headers
@@ -96,3 +97,17 @@ against it from plan step 25.3a1, and bld output from 25.4a1.
 Linux Standard Base Core 5.0 Table 11-1 assigns `PT_GNU_STACK` its `p_type`
 value, 0x6474e551. Section 11.2 defines `p_flags` as the stack permissions.
 bld emits a read-write stack and elfcheck checks that it lacks execute permission.
+
+## Static archive inputs
+
+The archive reader accepts the common archive format documented in Solaris
+`ar(3HEAD)`, including the `//` long-name table and `/` and `/SYM64/` symbol
+indexes. An ordinary nonempty archive needs an index. `--whole-archive`
+includes its members in archive order and can read an archive without an index.
+
+GNU ld 2.45 §2.1 describes the command-line ordering, group and whole-archive
+options. bld visits input paths in command-line order. It searches each
+ordinary archive to a member-selection fixed point at that position and
+repeats that search for the archives between `--start-group` and `--end-group`.
+`--no-whole-archive` resets selection to the indexed search. ELF gABI §§5.2
+and 5.5 describe weak binding and common storage.
