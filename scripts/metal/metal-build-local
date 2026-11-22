@@ -157,8 +157,10 @@ def build(args, repo, cache):
         git(repo, 'clone', '--shared', '--quiet', str(repo), str(clone))
         git(clone, 'checkout', '--quiet', '--detach', commit)
         git(clone, 'remote', 'set-url', 'origin', git(repo, 'remote', 'get-url', 'origin'))
-        # Build recipes and EFI sources come from the explicit tools commit.
-        archive = subprocess.Popen(['git', '-C', str(repo), 'archive', tools_commit, 'scripts'], stdout=subprocess.PIPE)
+        # Include the EFI stub's shared hash sources so its symlinks resolve within the tools snapshot.
+        archive = subprocess.Popen(['git', '-C', str(repo), 'archive', tools_commit, 'scripts',
+                                    'libs/libbreenix/src/crypto/sha256.rs', 'kernel/src/fs/breenfs/crc32c.rs'],
+                                   stdout=subprocess.PIPE)
         extracted = subprocess.run(['tar', '-C', str(tools), '-xf', '-'], stdin=archive.stdout)
         archive.stdout.close()
         if archive.wait() or extracted.returncode:
