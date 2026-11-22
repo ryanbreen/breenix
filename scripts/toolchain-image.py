@@ -19,7 +19,7 @@ DEV = Path("opt/breenix-dev/25.2")
 CORPUS = Path("usr/share/breenix/toolchain")
 SUITE = Path("sbin/suite-toolchain")
 TOOLS = ("bas", "bld", "bar", "bnm")
-TOOL_PATHS = {DEV / "bin" / tool for tool in (*TOOLS, "cc", "as", "ld")}
+TOOL_PATHS = {DEV / "bin" / tool for tool in (*TOOLS, "cc", "make", "as", "ld")}
 LINKER_OBJECTS = ("got-main", "got-entry", "archive-value-with-long-name", "tls-template")
 MANIFEST = DEV / "manifest.sha256"
 RECORD = DEV / "build.json"
@@ -88,7 +88,7 @@ def seal(bundle, commit, arch, tool_record):
     sources[DEV / "linker.ld"] = ROOT / "userspace/programs/linker.ld"
     required = {SUITE, DEV / "lib/libc.a"} | {DEV / "bin" / tool for tool in TOOLS}
     if arch == "x86_64":
-        required |= {DEV / "bin" / tool for tool in ("cc", "as", "ld")}
+        required |= {DEV / "bin" / tool for tool in ("cc", "make", "as", "ld")}
     corpus = ROOT / "toolchain/corpus"
     names = check_corpus(corpus)
     for name in names:
@@ -134,15 +134,16 @@ def seal(bundle, commit, arch, tool_record):
             raise ValueError(f"staged object differs from the reference link input: {name}")
     tools = json.loads(tool_record.read_text())
     fork = tomllib.loads((ROOT / "rust-fork.toml").read_text())["commit"]
-    expected_tools = set(TOOLS) | ({"bcc"} if arch == "x86_64" else set())
+    expected_tools = set(TOOLS) | ({"bcc", "bmake"} if arch == "x86_64" else set())
     if set(tools) != expected_tools:
         raise ValueError("toolchain build record differs from the staged tool set")
     for name, tool in tools.items():
-        if (tool["cargoPackage"] != name or (name == "bcc" and tool.get("path") != "bin/cc")
+        filename = {"bcc": "cc", "bmake": "make"}.get(name, name)
+        if (tool["cargoPackage"] != name or (name in ("bcc", "bmake") and tool.get("path") != f"bin/{filename}")
                 or tool["target"] != f"{arch}-breenix"
                 or tool["rustForkCommit"] != fork or not tool["rustc"]["version"]
                 or not SHA256.fullmatch(tool["rustc"]["sha256"])
-                or tool["sha256"] != digest(tree / DEV / "bin" / ("cc" if name == "bcc" else name))):
+                or tool["sha256"] != digest(tree / DEV / "bin" / filename)):
             raise ValueError(f"{name}: build record differs from the staged tool")
     if arch == "x86_64":
         for tool, alias in (("bas", "as"), ("bld", "ld")):

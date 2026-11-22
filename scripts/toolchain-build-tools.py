@@ -94,21 +94,21 @@ def build_guest_tools(arch, work, dev, clang, cargo, env, rustc_record):
     ]
     guest_env = dict(env, __CARGO_TESTS_ONLY_SRC_ROOT=str(library),
                      CARGO_ENCODED_RUSTFLAGS="\x1f".join(flags))
-    packages = (*TOOLS, "bcc")
+    packages = (*TOOLS, "bcc", *(('bmake',) if arch == 'x86_64' else ()))
     binaries = cargo_tools(cargo, guest_env, target_json, ROOT / "target/toolchain-bundle/guest", packages,
                           ("-Z", "build-std=std,panic_abort", "-Z", "build-std-features=compiler-builtins-mem"))
     dev_bin = dev / "bin"
     dev_bin.mkdir()
     tools = {}
     for name in (packages if arch == "x86_64" else TOOLS):
-        executable = dev_bin / ("cc" if name == "bcc" else name)
+        executable = dev_bin / {"bcc": "cc", "bmake": "make"}.get(name, name)
         shutil.copy2(binaries / name, executable)
         tools[name] = {
             "cargoPackage": name, "target": target, "rustForkCommit": fork,
             "rustc": rustc_record, "sha256": digest(executable),
         }
-        if name == "bcc":
-            tools[name]["path"] = "bin/cc"
+        if name in ("bcc", "bmake"):
+            tools[name]["path"] = f"bin/{executable.name}"
     return tools
 
 
