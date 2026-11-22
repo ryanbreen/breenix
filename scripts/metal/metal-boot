@@ -709,8 +709,10 @@ class Driver:
             # suite request replaces that private staged copy with its fixture.
             fixture.replace(inputs / 'ext2.img')
             build['ext2'] = record['root']
-        elif self.args.mode != 'suite' and ('toolchain' in build or fixture.exists()):
-            raise Finish(m.EXIT_CANCELLED, 'a toolchain fixture needs a suite boot')
+        elif 'toolchain' in build or fixture.exists():
+            if self.args.mode != 'suite':
+                raise Finish(m.EXIT_CANCELLED, 'a toolchain fixture needs a suite boot')
+            raise Finish(m.EXIT_CANCELLED, 'a toolchain fixture needs the toolchain suite')
         self.delivery['build'] = build
         run = m.read_json(self.dir / 'run.json', {})
         run['build'] = {key: build[key] for key in ('commit', 'profile', 'features')}

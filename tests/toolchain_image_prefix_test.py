@@ -96,6 +96,7 @@ class ToolchainImagePrefixTest(unittest.TestCase):
             unselected = tree(stage("unselected", "files-io", use_bundle=True))
             ordinary = tree(seed)
             self.assertEqual(ordinary, unselected)
+            self.assertEqual(ordinary, tree(stage("no-suite", "")))
             self.assertEqual(before, hashlib.sha256(seed.read_bytes()).digest())
             self.assertLess(ordinary.keys(), selected.keys())
             self.assertEqual(ordinary, {key: selected[key] for key in ordinary})
