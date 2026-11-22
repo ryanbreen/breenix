@@ -38,11 +38,13 @@ impl Project {
     }
 
     fn build(&self) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_bmake"))
-            .arg("project.mk")
-            .current_dir(&self.0)
-            .output()
-            .unwrap()
+        self.command().arg("project.mk").output().unwrap()
+    }
+
+    fn command(&self) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_bmake"));
+        command.current_dir(&self.0);
+        command
     }
 
     fn expect_error(&self, target: &str, reason: &str) {
@@ -149,4 +151,143 @@ fn signalled_recipe_reported() {
 fn cycle_exits_2() {
     let project = Project::new("first: second\nsecond: first\n");
     project.expect_error("project.mk:2:", "first -> second -> first");
+}
+
+fn expect_stdout(output: Output, expected: &str) {
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+    assert!(output.stderr.is_empty(), "{:?}", output.stderr);
+}
+
+#[test]
+fn macro_precedence_env_e() {
+    let project = Project::new(
+        "BMAKE_TEST_ORIGIN = makefile\nall:\n\t@printf '<%s>\\n' '$(BMAKE_TEST_ORIGIN)'\n",
+    );
+    for (environment, options, expected) in [
+        ("environment", &[][..], "<makefile>\n"),
+        ("environment", &["-e"][..], "<environment>\n"),
+        ("", &["-e"][..], "<>\n"),
+        ("environment", &["BMAKE_TEST_ORIGIN=command"][..], "<command>\n"),
+        ("environment", &["-e", "BMAKE_TEST_ORIGIN=command"][..], "<command>\n"),
+    ] {
+        let output = project
+            .command()
+            .args(["-f", "project.mk"])
+            .args(options)
+            .env("BMAKE_TEST_ORIGIN", environment)
+            .output()
+            .unwrap();
+        expect_stdout(output, expected);
+    }
+}
+
+#[test]
+fn substitution_reference() {
+    let project = Project::new(concat!(
+        "FILES = dir/input.c  untouched  not.c.bak\n",
+        "NAME = FILES\n",
+        "SUFFIX = .o\n",
+        "all: ${$(NAME):.c=$(SUFFIX)}\n",
+        "\t@printf '%s|%s|%s\\n' '$(FILES:.c=$(SUFFIX))' '${FILES:.bak=}' '$$HOME'\n",
+        "SUFFIX = .obj\n",
+    ));
+    fs::create_dir(project.0.join("dir")).unwrap();
+    project.fixture("untouched", "", 0);
+    project.fixture("not.c.bak", "", 0);
+    project.fixture("dir/input.o", "", 0);
+    expect_stdout(
+        project.build(),
+        "dir/input.obj  untouched  not.c.bak|dir/input.c  untouched  not.c|$HOME\n",
+    );
+}
+
+#[test]
+fn automatic_variables() {
+    let project = Project::new(concat!(
+        ".POSIX:\n",
+        ".SUFFIXES: .src .obj\n",
+        ".src.obj:\n",
+        "\t@printf 'inferred %s|%s|%s|%s\\n' '$@' '$<' '$?' '$*'\n",
+        "\t@cp -p '$<' '$@'\n",
+        "all.obj: older equal newer sub/item.obj lib.a(member.o)\n",
+        "\t@printf 'explicit %s|%s|%s|%s\\n' '$@' '$?' '$*' '$(?F)'\n",
+        "lib.a(member.o):\n",
+        "\t@printf 'archive %s|%s\\n' '$@' '$%'\n",
+    ));
+    fs::create_dir(project.0.join("sub")).unwrap();
+    project.fixture("all.obj", "", 10);
+    project.fixture("older", "", 0);
+    project.fixture("equal", "", 10);
+    project.fixture("newer", "", 20);
+    project.fixture("sub/item.src", "", 20);
+    expect_stdout(
+        project.build(),
+        concat!(
+            "inferred sub/item.obj|sub/item.src|sub/item.src|sub/item\n",
+            "archive lib.a|member.o\n",
+            "explicit all.obj|newer sub/item.obj lib.a(member.o)|all|newer item.obj lib.a(member.o)\n",
+        ),
+    );
+}
+
+#[test]
+fn include_reads_in_order() {
+    let project = Project::new(concat!(
+        "all:\n",
+        "\t@printf '%s|%s\\n' '$(VALUE)' '$(LAST)'\n",
+        "VALUE = outer\n",
+        "INCLUDES = sub/first.mk tail.mk\n",
+        "include $(INCLUDES) # read in this order\n",
+        "-include missing.mk good.mk\n",
+        "LAST = final\n",
+    ));
+    fs::create_dir(project.0.join("sub")).unwrap();
+    project.fixture("sub/first.mk", "include nested.mk\n", 0);
+    project.fixture("nested.mk", "VALUE = nested\n", 0);
+    project.fixture("tail.mk", "VALUE = tail-$(LAST)\n", 0);
+    project.fixture(
+        "good.mk",
+        "all: included\nincluded:\n\t@printf 'included\\n'\n",
+        0,
+    );
+    expect_stdout(project.build(), "included\ntail-final|final\n");
+
+    fs::remove_file(project.0.join("nested.mk")).unwrap();
+    project.expect_error("sub/first.mk:1:", "nested.mk");
+}
+
+#[test]
+#[allow(non_snake_case, reason = "The check name preserves the case of -C")]
+fn option_C_and_f() {
+    let project = Project::new("all:\n\t@printf wrong\n");
+    fs::create_dir(project.0.join("sub")).unwrap();
+    project.fixture("sub/Makefile", "all:\n\t@printf wrong\n", 0);
+    project.fixture("sub/settings.mk", "TEXT = first\n", 0);
+    project.fixture(
+        "sub/rules.mk",
+        "unused:\n\t@printf wrong\nall:\n\t@printf '%s:' '$(TEXT)'\n\t@cat input\n",
+        0,
+    );
+    project.fixture("sub/input", "changed directory\n", 0);
+    let output = project
+        .command()
+        .args(["-f", "settings.mk", "-C", "sub", "-f", "rules.mk", "all"])
+        .output()
+        .unwrap();
+    expect_stdout(output, "first:changed directory\n");
+}
+
+#[test]
+fn self_referencing_macro_is_error_not_panic() {
+    for (definitions, cycle) in [
+        ("A = $(A)\n", "A -> A"),
+        ("A = ${B}\nB = $(A)\n", "A -> B -> A"),
+    ] {
+        let project = Project::new(&format!(
+            "{definitions}all:\n\t@printf '%s' '$(A)'\n"
+        ));
+        let line = definitions.lines().count();
+        project.expect_error(&format!("project.mk:{line}:"), cycle);
+    }
 }
