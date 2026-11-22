@@ -1,9 +1,12 @@
 """Exercise disposable VM upgrade and GPT retirement with retained boot receipts."""
 import json
+import os
 from pathlib import Path
 import runpy
+import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import unittest
 import uuid
@@ -102,6 +105,113 @@ class VmExt2Retirement(unittest.TestCase):
         for index in (1, 3):
             self.launch(index, 'install', 'current')
             self.launch(index + 1, 'verify', 'next')
+
+    def test_install_retries_after_prelaunch_refusals(self):
+        definitions = ('docs/suites/server.json', 'docs/suites/users.json',
+                       'docs/efforts/path.json', 'docs/boot-path.json')
+        for name in definitions:
+            destination = self.repo / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / name, destination)
+        git = ['git', '-C', str(self.repo)]
+        subprocess.run([*git, 'add', *definitions], check=True)
+        subprocess.run([*git, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                        'commit', '-qm', 'capture definitions'], check=True)
+        self.commit = subprocess.check_output([*git, 'rev-parse', 'HEAD'], text=True).strip()
+        VM['seal'](self.repo, self.run, self.commit)
+        self.write(f'boots/{RETURN}/run.json', dict(id=RETURN, target='qemu',
+                                                   bootedCommit=self.commit, toolsCommit=self.commit))
+        (self.repo / '.git/info/exclude').write_text('scripts/\n')
+        scripts = self.repo / 'scripts'
+        scripts.mkdir()
+        (scripts / 'metal').symlink_to(ROOT / 'scripts/metal')
+        for name in ('vm-persistent.sh', 'vm-artifacts.py', 'vm_slots.py', 'vm_gpt.py',
+                     'vm_install.py', 'vm-serial-pump.py'):
+            shutil.copy2(ROOT / 'scripts' / name, scripts / name)
+        (scripts / 'host-slots.sh').write_text('''
+host_slot_acquire() { :; }
+host_slot_serial() { :; }
+host_slot_quiet() { :; }
+host_slot_header() { :; }
+''')
+        vigil = scripts / 'vigil-record.sh'
+        vigil.write_text('#!/bin/sh\necho fixture\n')
+        vigil.chmod(0o700)
+        python = scripts / 'python3'
+        python.write_text(f'''#!/bin/bash
+if [ "$1" = -c ] && [[ "$2" == *os.getloadavg* ]]; then
+    [ "$VM_PREFLIGHT_FAILURE" != load ]; exit $?
+fi
+if [[ "$1" == */vm_install.py ]] && [ "$2" = monitor ] && [ "$VM_PREFLIGHT_FAILURE" = monitor ]; then
+    exit 1
+fi
+exec "{sys.executable}" "$@"
+''')
+        python.chmod(0o700)
+        defaults = scripts / 'defaults'
+        defaults.write_text('#!/bin/sh\nexit 0\n')
+        defaults.chmod(0o700)
+        # The only launcher target is this socket-speaking stand-in.
+        (scripts / 'qemu-arm64.py').write_text('''
+import json, os, socket, sys
+from pathlib import Path
+
+if sys.argv[1] == '--print-profile':
+    print('fixture')
+    sys.exit(0)
+run = Path(os.environ['VM_FIXTURE_RUN'])
+(run / 'fixture-launched').touch()
+lines = json.loads(os.environ['VM_INSTALL_LINES'])
+with socket.socket(socket.AF_UNIX) as serial, socket.socket(socket.AF_UNIX) as events, socket.socket(socket.AF_UNIX) as control:
+    for listener, name in ((events, 'events.sock'), (control, 'qmp.sock')):
+        listener.settimeout(5)
+        listener.bind(str(run / name))
+        listener.listen()
+    serial.settimeout(5)
+    serial.connect(str(run / 'serial.sock'))
+    with events.accept()[0] as event:
+        event.sendall(b'{"QMP":{}}\\n')
+        event.recv(4096)
+        serial.sendall(('\\n'.join(lines[:3]) + '\\n').encode())
+        reply = bytearray()
+        while not reply.endswith(b'\\r'):
+            chunk = serial.recv(1024)
+            assert chunk
+            reply.extend(chunk)
+        assert reply.split()[0] == b'BREENIX-SLOTS-1'
+        serial.sendall(('\\n'.join(lines[3:]) + '\\n').encode())
+        with control.accept()[0] as qmp, qmp.makefile('rwb', buffering=0) as stream:
+            stream.write(b'{"QMP":{}}\\n')
+            for command in ('qmp_capabilities', 'quit'):
+                assert json.loads(stream.readline()) == {'execute': command}
+                stream.write(b'{"return":{}}\\n')
+        event.sendall(b'{"event":"SHUTDOWN","data":{"reason":"host-qmp-quit"}}\\n')
+''')
+        self.begin()
+        command = [scripts / 'vm-persistent.sh', 'qemu', 'install', '--run-dir', self.run]
+        env = dict(os.environ, PATH=f'{scripts}:{os.environ["PATH"]}', TMPDIR=str(self.run),
+                   BREENIX_VM_PERSISTENT_SUPERVISED='1', BREENIX_QEMU_GL_BINARY='fixture',
+                   VM_FIXTURE_RUN=str(self.run), VM_INSTALL_LINES=json.dumps(INSTALL_LINES))
+        for failure, diagnostic in (('load', 'requires host load at or below 8'),
+                                    ('monitor', 'install monitor exited')):
+            with self.subTest(failure=failure):
+                result = subprocess.run(command, env=dict(env, VM_PREFLIGHT_FAILURE=failure),
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 1, result)
+                self.assertIn(diagnostic, result.stderr)
+                self.assertFalse((self.run / 'fixture-launched').exists())
+                self.assertEqual((self.run / 'current').read_text().strip(), RETURN)
+                self.assertEqual([boot.name for boot in (self.run / 'boots').iterdir()], [RETURN])
+                self.assertFalse((self.run / 'boot.lock').exists())
+
+        result = subprocess.run(command, env=dict(env, VM_PREFLIGHT_FAILURE=''),
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result)
+        self.assertTrue((self.run / 'fixture-launched').is_file())
+        state = json.loads((self.run / 'retirement.json').read_text())
+        self.assertEqual(state['phase'], 'next')
+        self.assertEqual(state['install'], (self.run / 'current').read_text().strip())
+        self.assertIsNotNone(json.loads((self.run / 'slots.json').read_text())['next'])
 
     def test_upgrade_twice_then_reclaim_and_verify_current(self):
         disk = self.begin()
