@@ -47,13 +47,16 @@ class ToolchainBundleTest(unittest.TestCase):
         for name, entry in tools.items():
             with self.subTest(tool=name):
                 program = self.dev / "bin" / ("cc" if name == "bcc" else name)
-                self.assertEqual(entry, {
+                expected = {
                     "cargoPackage": name,
                     "rustForkCommit": fork,
                     "rustc": rustc,
                     "target": f"{arch}-breenix",
                     "sha256": digest(program),
-                })
+                }
+                if name == "bcc":
+                    expected["path"] = "bin/cc"
+                self.assertEqual(entry, expected)
                 with program.open("rb") as file:
                     header = file.read(20)
                 self.assertEqual(header[:6], b"\x7fELF\x02\x01")
@@ -65,6 +68,7 @@ class ToolchainBundleTest(unittest.TestCase):
         fork = tomllib.loads((ROOT / "rust-fork.toml").read_text())["commit"]
         self.assertEqual(entry, {
             "cargoPackage": "bcc",
+            "path": "bin/cc",
             "rustForkCommit": fork,
             "rustc": {"version": subprocess.check_output([self.rustc, "--version"], text=True).strip(),
                       "sha256": digest(self.rustc)},
