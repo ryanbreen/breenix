@@ -204,6 +204,25 @@ int main(void) {
     assert_runs_to_42(result);
 }
 
+#[test]
+fn atomic_store_seq_cst_uses_xchg() {
+    use bcc::{codegen, pp, sema};
+
+    let path = Path::new("atomic-store.c");
+    let options = pp::Options::default();
+    let source = b"
+static _Atomic int value;
+void publish(int next) { __c11_atomic_store(&value, next, 5); }
+";
+    let input = pp::preprocess_source(path, source, &options).unwrap();
+    let unit = sema::analyze(&input, path, options.target).unwrap();
+    let assembly = codegen::emit_assembly(&unit, path, options.target).unwrap();
+    assert!(
+        assembly.lines().any(|line| line.trim() == "xchg dword ptr [r11], edx"),
+        "{assembly}"
+    );
+}
+
 // Linux is a development executor. The bounded Rust driver links one
 // bcc/bas object and the Cargo-built runtime for the same host triple.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
