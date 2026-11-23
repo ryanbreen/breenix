@@ -28,8 +28,8 @@ struct Pair exhausted(int, int, int, int, int, int, struct Pair, long);
 struct Pair rollback(int, int, int, int, int, struct Pair, long);
 """
 
-# Finite nonzero floating values have unique representations. These comparisons
-# check every value byte of each record, excluding unspecified struct padding.
+# These finite nonzero floating values have unique representations, so comparing
+# fields checks their value bytes. C can leave padding bytes unspecified.
 CALLEE = """\
 struct Mixed mixed(struct Mixed x)
 {

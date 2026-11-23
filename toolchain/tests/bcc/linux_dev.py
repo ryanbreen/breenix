@@ -18,10 +18,11 @@ from tempfile import TemporaryDirectory
 
 ROOT = Path(__file__).resolve().parents[3]
 CASES = ("byte-output", "literal-output")
-# Ruling 15 fixes this set. Aggregate-copy and bitfield-values wait for
-# 25.7b1, varargs for 25.7b2, and alignment, atomics, compound-literal,
-# designated-init and generic for 25.9.
+# The development list adds aggregate-copy in 25.7b1. Bitfield-values
+# still waits for bit-fields, varargs for 25.7b2, and alignment, atomics,
+# compound-literal, designated-init and generic for 25.9.
 CORPUS = (
+    "aggregate-copy",
     "array-index",
     "bitwise-shifts",
     "boolean-tokens",
