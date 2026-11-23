@@ -82,6 +82,17 @@ class ToolchainBundleTest(unittest.TestCase):
         self.assertEqual({path.name for path in (self.dev / "bin").iterdir()},
                          {"bas", "bld", "bar", "bnm"})
 
+    def arm_encoding_inputs_are_staged(self):
+        relative = Path("usr/share/breenix/toolchain/assembler")
+        manifest = (self.dev / "manifest.sha256").read_text().splitlines()
+        for name in ("encodings.s", "encodings.hex"):
+            with self.subTest(file=name):
+                source = WORKSPACE / "corpus/assembler-aarch64" / name
+                staged = self.bundle / "root" / relative / name
+                self.assertTrue(staged.is_file(), f"ARM bundle is missing {relative / name}")
+                self.assertEqual(staged.read_bytes(), source.read_bytes())
+                self.assertIn(f"{digest(source)}  {relative / name}", manifest)
+
     def receipts_from_cargo_host_bas(self):
         assembler = self.bundle / "root/usr/share/breenix/toolchain/assembler"
         names = (("sse-exit", "x87-exit") if self.record["arch"] == "x86_64"
@@ -163,7 +174,8 @@ if __name__ == "__main__":
     if json.loads((args.bundle / "build.json").read_text())["arch"] == "x86_64":
         checks.append("ToolchainBundleTest.cc_built_by_rustc")
     else:
-        checks.append("ToolchainBundleTest.arm_bundle_unchanged_until_a3")
+        checks.extend(["ToolchainBundleTest.arm_bundle_unchanged_until_a3",
+                       "ToolchainBundleTest.arm_encoding_inputs_are_staged"])
     if args.baseline is not None:
         checks.append("ToolchainBundleTest.x86_artifacts_equal_baseline")
     if args.probe is not None:
