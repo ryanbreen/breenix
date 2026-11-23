@@ -55,6 +55,21 @@ pub(super) fn constant_bits(expr: &Expression<'_>, dest: &Kind, target: Target) 
             if source == dest {
                 return Some(bits);
             }
+            let fraction = bits & ((1 << source_format.fraction) - 1);
+            let exponent_mask = source_format.exponent_mask();
+            if bits & exponent_mask == exponent_mask && fraction != 0 {
+                let payload = fraction & ((1 << (source_format.fraction - 1)) - 1);
+                let payload = if format.fraction >= source_format.fraction {
+                    payload << (format.fraction - source_format.fraction)
+                } else {
+                    payload >> (source_format.fraction - format.fraction)
+                };
+                return Some(format.quiet_nan(payload) | if bits & source_format.sign_bit() != 0 {
+                    format.sign_bit()
+                } else {
+                    0
+                });
+            }
             source_format.unpack(bits)
         }
         _ => return None,
@@ -226,8 +241,13 @@ impl FloatFormat {
         )
     }
 
-    fn infinity(&self) -> u128 {
-        self.pack(2 * self.bias + 1, 1 << self.fraction)
+    pub(super) fn infinity(&self) -> u128 {
+        self.exponent_mask() | (u128::from(self.explicit_integer) << self.fraction)
+    }
+
+    pub(super) fn quiet_nan(&self, payload: u128) -> u128 {
+        let quiet = 1 << (self.fraction - 1);
+        self.infinity() | quiet | (payload & (quiet - 1))
     }
 
     fn round(&self, mut numerator: Big, mut denominator: Big, bits: i32) -> u128 {

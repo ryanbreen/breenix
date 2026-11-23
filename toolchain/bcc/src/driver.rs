@@ -17,7 +17,7 @@ pub use native_target::default_target;
 
 const USAGE: &str = "usage: bcc [-E|-S|-c|-fsyntax-only|--dump-types] [-o FILE] \
     [-I DIR] [-D NAME[=VALUE]] [-U NAME] [-L DIR] [-l NAME] [-B DIR] \
-    [-std=c11|-std=c17] [-fno-builtin] [-Wall] [-Werror] [-w] \
+    [-std=c11|-std=c17] [-fno-builtin] [-frounding-math] [-Wall] [-Werror] [-w] \
     [--target=x86_64|aarch64] INPUT ...";
 
 type Result<T> = std::result::Result<T, String>;
@@ -103,10 +103,12 @@ impl Options {
                 Some("-std=c17") => options.pp.standard = Standard::C17,
                 // Ordinary library names are already compiled as calls.
                 Some("-fno-builtin") => {}
+                // The -O0 emitter uses the live rounding mode for runtime FP.
+                Some("-frounding-math") => {}
                 Some("-Wall") => options.pp.warn_unknown_pragmas = true,
                 Some("-Werror") => options.warnings_as_errors = true,
                 Some("-w") => options.suppress_warnings = true,
-                Some("-O2" | "-frounding-math") => codegen_options.push((index, arg)),
+                Some("-O2") => codegen_options.push((index, arg)),
                 Some("-E" | "-S" | "-c" | "-fsyntax-only" | "--dump-types" | "-O0") => {
                     let mut stage = match arg.to_str() {
                         Some("-E") => Stage::Preprocess,
@@ -166,7 +168,7 @@ impl Options {
             }
         }
         // The libc recipe is usable for front-end checks before the
-        // companion optimization and rounding code-generation units land.
+        // companion optimization unit lands.
         if !matches!(options.stage, Stage::Syntax | Stage::Types) {
             if let Some((index, arg)) = codegen_options.first() {
                 return Err(format!(

@@ -36,9 +36,11 @@ impl<'a> FunctionBody<'a, '_> {
         expr: parse::Expression<'a>,
     ) -> Result<Expression<'a>, Diagnostic> {
         let locals = self.locals.len();
+        let has_alloca = self.has_alloca;
         let literals = self.static_literals.as_ref().map(|(_, saved)| saved.len());
         let result = self.expression(expr);
         self.locals.truncate(locals);
+        self.has_alloca = has_alloca;
         if let Some((_, saved)) = &mut self.static_literals {
             saved.truncate(literals.unwrap());
         }

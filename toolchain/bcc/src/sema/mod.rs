@@ -57,6 +57,7 @@ pub struct Function<'a> {
     pub params: Vec<Parameter<'a>>,
     pub noreturn: bool,
     pub returns_twice: bool,
+    pub has_alloca: bool,
     pub body: Option<Vec<Statement<'a>>>,
     pub locals: Vec<Local<'a>>,
 }
@@ -224,6 +225,13 @@ pub enum ExpressionKind<'a> {
     },
     VaEnd(Box<Expression<'a>>),
     FltRounds,
+    FloatClass {
+        operand: Box<Expression<'a>>,
+        // GCC §7.2.1 order: FP_NAN, FP_INFINITE, FP_NORMAL, FP_SUBNORMAL, FP_ZERO.
+        values: [i32; 5],
+    },
+    SignBit(Box<Expression<'a>>),
+    Alloca(Box<Expression<'a>>),
     Atomic {
         op: AtomicOp,
         arguments: Vec<Argument<'a>>,
@@ -285,7 +293,7 @@ impl Expression<'_> {
         }
     }
 
-    fn lvalue(&self) -> bool {
+    pub(crate) fn lvalue(&self) -> bool {
         if matches!(self.ty.kind, Kind::Function { .. }) {
             return false;
         }
@@ -768,7 +776,7 @@ fn function<'a>(
             returns_twice,
         },
     );
-    let (body, locals) = if let Some(statements) = body {
+    let (body, locals, has_alloca) = if let Some(statements) = body {
         let mut context = FunctionBody::new(
             symbols,
             &result,
@@ -783,9 +791,9 @@ fn function<'a>(
         }
         let body = context.statements(statements)?;
         context.validate_labels()?;
-        (Some(body), context.locals)
+        (Some(body), context.locals, context.has_alloca)
     } else {
-        (None, Vec::new())
+        (None, Vec::new(), false)
     };
     Ok(Function {
         name: &name.text,
@@ -795,6 +803,7 @@ fn function<'a>(
         params,
         noreturn,
         returns_twice,
+        has_alloca,
         body,
         locals,
     })
@@ -834,6 +843,7 @@ struct FunctionBody<'a, 's> {
     // in blocks that are outside each other's lexical scope.
     block_externs: &'s mut HashMap<&'a str, Type>,
     locals: Vec<Local<'a>>,
+    has_alloca: bool,
     // Present only while analyzing file-scope initializers.
     static_literals: Option<(usize, Vec<StaticLiteral<'a>>)>,
     scopes: Vec<HashMap<&'a str, usize>>,
@@ -881,7 +891,7 @@ impl<'a> FunctionBody<'a, '_> {
         let (kind, mut ty) = match expression.kind {
             Syntax::Identifier => {
                 let name = site.text.as_ref();
-                if let Some(builtin) = builtins::memory_builtin(name) {
+                if let Some(builtin) = builtins::library_builtin(name) {
                     builtin
                 } else if let Some(id) = self.scopes.iter().rev().find_map(|scope| scope.get(name)) {
                     let local = &self.locals[*id];
@@ -1147,8 +1157,8 @@ impl<'a> FunctionBody<'a, '_> {
         close: &Lexeme,
     ) -> Result<(ExpressionKind<'a>, Type), Diagnostic> {
         if matches!(callee.kind, parse::ExpressionKind::Identifier) {
-            if callee.site.is("__builtin_popcountl") {
-                return self.popcount_long(callee.site, arguments);
+            if let Some(builtin) = builtins::Builtin::named(&callee.site.text) {
+                return self.builtin(callee.site, builtin, arguments);
             }
             if let Some(op) = AtomicOp::from_name(&callee.site.text) {
                 return self.atomic_builtin(callee.site, op, arguments);

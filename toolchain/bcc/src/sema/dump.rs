@@ -175,6 +175,12 @@ fn expression(out: &mut impl Write, expr: &Expression<'_>) -> io::Result<()> {
         ExpressionKind::StaticLiteral(_) => ("compound-literal", "lvalue"),
         ExpressionKind::Integer(_) => ("integer-constant", "rvalue"),
         ExpressionKind::Float(_) => ("floating-constant", "rvalue"),
+        ExpressionKind::FloatClass { operand, .. }
+        | ExpressionKind::SignBit(operand)
+        | ExpressionKind::Alloca(operand) => {
+            expression(out, operand)?;
+            (expr.site.text.as_ref(), "rvalue")
+        }
         ExpressionKind::FltRounds => ("__builtin_flt_rounds", "rvalue"),
         ExpressionKind::Atomic { arguments, .. } => {
             for argument in arguments {

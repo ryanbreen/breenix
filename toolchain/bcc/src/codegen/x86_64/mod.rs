@@ -15,6 +15,7 @@ mod abi;
 mod atomic;
 mod atomic_runtime;
 mod bit_field;
+mod builtins;
 mod flow;
 mod thread;
 mod varargs;
@@ -40,6 +41,8 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
         frame: 0,
         aligned_frame: 0,
         frame_alignment: 16,
+        alloca_base: None,
+        call_alignment: 16,
         locals: Vec::new(),
         variadic: None,
         flow_labels: HashMap::new(),
@@ -141,6 +144,8 @@ struct Emitter<'unit, 'src> {
     frame: usize,
     aligned_frame: usize,
     frame_alignment: usize,
+    alloca_base: Option<Slot>,
+    call_alignment: usize,
     locals: Vec<Slot>,
     variadic: Option<VariadicFrame>,
     flow_labels: HashMap<usize, String>,
@@ -190,6 +195,11 @@ impl<'src> Emitter<'_, 'src> {
             }
         }
         self.layout(function)?;
+        self.alloca_base = if function.has_alloca {
+            Some(self.frame_slot(Layout { size: 8, align: 8 }, function.site)?)
+        } else {
+            None
+        };
         let record_result = self.record_abi(result);
         let sret = if matches!(record_result, Some(RecordAbi::Memory)) {
             Some(self.frame_slot(Layout { size: 8, align: 8 }, function.site)?)
@@ -208,6 +218,9 @@ impl<'src> Emitter<'_, 'src> {
         // keep spills above RSP.
         self.text.push_str("    push rbp\n    mov rbp, rsp\n");
         let stack_adjustment = self.text.len();
+        if let Some(base) = &self.alloca_base {
+            writeln!(self.text, "    mov qword {}, rsp", base.memory(0)).unwrap();
+        }
 
         let save = if *variadic {
             Some(self.save_variadic_registers(function.site)?)
@@ -476,6 +489,9 @@ impl<'src> Emitter<'_, 'src> {
             // AMD64 va_end has no resources to release. Evaluate the operand.
             ExpressionKind::VaEnd(list) => self.value(list)?,
             ExpressionKind::FltRounds => self.flt_rounds(),
+            ExpressionKind::FloatClass { operand, values } => self.float_class(operand, *values)?,
+            ExpressionKind::SignBit(operand) => self.float_sign(operand)?,
+            ExpressionKind::Alloca(size) => self.alloca(size)?,
             ExpressionKind::Atomic { op, arguments } => self.atomic_builtin(*op, arguments)?,
             ExpressionKind::Call { callee, arguments } => {
                 self.call(callee, arguments, &expr.ty)?;
@@ -793,12 +809,19 @@ impl<'src> Emitter<'_, 'src> {
         if realign {
             writeln!(
                 self.text,
-                "    and rsp, -{}
-    mov qword [rsp + {end}], r11",
+                "    and rsp, -{}",
                 layout.stack_alignment
             )
             .unwrap();
+            if self.alloca_base.is_some() {
+                // A nested alloca can move the outgoing area. Save the
+                // adjustment rather than the former absolute stack address.
+                self.text.push_str("    sub r11, rsp\n");
+            }
+            writeln!(self.text, "    mov qword [rsp + {end}], r11").unwrap();
         }
+        let outer_alignment = self.call_alignment;
+        self.call_alignment = self.call_alignment.max(layout.stack_alignment);
         if direct.is_none() {
             self.value(callee)?;
             writeln!(self.text, "    mov qword [rsp + {callee_slot}], rax").unwrap();
@@ -814,6 +837,7 @@ impl<'src> Emitter<'_, 'src> {
                 self.store(&arg.ty, &dest);
             }
         }
+        self.call_alignment = outer_alignment;
         if sret {
             let address = result_slot.as_ref().unwrap().memory(0);
             writeln!(self.text, "    lea rdi, {address}").unwrap();
@@ -853,7 +877,8 @@ impl<'src> Emitter<'_, 'src> {
             writeln!(self.text, "    call qword [rsp + {callee_slot}]").unwrap();
         }
         if realign {
-            writeln!(self.text, "    mov rsp, qword [rsp + {end}]").unwrap();
+            let restore = if self.alloca_base.is_some() { "add" } else { "mov" };
+            writeln!(self.text, "    {restore} rsp, qword [rsp + {end}]").unwrap();
         } else {
             self.adjust_stack("add", reserve);
         }

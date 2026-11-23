@@ -48,6 +48,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
             symbols,
             block_externs,
             locals,
+            has_alloca: false,
             static_literals: None,
             scopes: vec![scope],
             labels: HashMap::new(),

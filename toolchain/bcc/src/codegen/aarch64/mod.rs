@@ -16,6 +16,7 @@ use crate::types::{Float, Integer, Kind, Layout, Record, Type};
 
 mod abi;
 mod binary128;
+mod builtins;
 mod float;
 mod flow;
 mod record;
@@ -28,7 +29,7 @@ use varargs::VariadicFrame;
 
 const ARGUMENT_REGISTERS: usize = 8;
 const FRAME_RECORD: usize = 16;
-const DEFERRED_ATOMICS: &str = "atomic accesses are deferred to ARM 25.9d";
+const DEFERRED_ATOMICS: &str = "atomic accesses are deferred to ARM 25.9d, a prerequisite for ARM 25.10b";
 
 pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
     let mut functions = HashMap::new();
@@ -285,6 +286,11 @@ impl<'src> Emitter<'_, 'src> {
             }
             ExpressionKind::Atomic { .. } => {
                 return Err(Diagnostic::new(expr.position(), DEFERRED_ATOMICS));
+            }
+            ExpressionKind::FloatClass { operand, values } => self.float_class(operand, *values)?,
+            ExpressionKind::SignBit(operand) => self.float_sign(operand)?,
+            ExpressionKind::Alloca(_) => {
+                return Err(Diagnostic::new(expr.position(), "__builtin_alloca lowering is deferred to ARM 25.10b"));
             }
             ExpressionKind::VaStart(list) => self.va_start(list)?,
             ExpressionKind::VaArg(list) => self.va_arg(list, &expr.ty, expr.position())?,

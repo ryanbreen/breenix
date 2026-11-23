@@ -30,9 +30,6 @@ impl<'src> Emitter<'_, 'src> {
                 LocalStorage::Thread(_) => Slot::Thread(self.label()),
                 LocalStorage::Static(initializer) => {
                     let label = self.label();
-                    if initializer.is_some() && object.ty.kind != Kind::LongDouble {
-                        return Err(Diagnostic::new(object.site, "AArch64 C11 object lowering is deferred to 25.9"));
-                    }
                     if initializer.is_none() {
                         let layout = object.ty.layout().unwrap();
                         writeln!(
