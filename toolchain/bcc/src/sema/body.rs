@@ -860,6 +860,9 @@ pub(super) fn canonical(value: u64, ty: &Type, target: Target) -> u64 {
     }
 }
 
+// This is the 6.6 integer constant expression evaluator. Runtime optimization
+// must consult TranslationUnit::preserves_float_environment before replacing
+// expressions, including integer results of floating-point conversions.
 pub(super) fn constant_integer(expr: &Expression<'_>, target: Target) -> Option<u64> {
     use Binary::*;
     let Kind::Integer(integer) = expr.ty.kind else {

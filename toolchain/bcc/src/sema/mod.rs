@@ -30,10 +30,22 @@ pub struct TranslationUnit<'a> {
     pub static_literals: Vec<StaticLiteral<'a>>,
     pub thread_objects: Vec<ThreadObject<'a>>,
     pub records: Vec<Record<'a>>,
+    rounding_math: bool,
     deferred_atomic_type: Option<&'a Lexeme>,
 }
 
 impl TranslationUnit<'_> {
+    /// Consult before any runtime FP optimization, including constant
+    /// propagation, CSE, and code motion. When true, preserve operations
+    /// whose rounding or exceptions are observable in the live environment.
+    /// Preserve FP grouping in either case (N1570 5.1.2.3p14, 7.6.1 and F.9).
+    pub fn preserves_float_environment(&self) -> bool {
+        // As documented by Preprocessed::tokens, bcc currently uses
+        // FENV_ACCESS ON semantics throughout the translation unit.
+        const CONSERVATIVE_FENV_ACCESS: bool = true;
+        self.rounding_math || CONSERVATIVE_FENV_ACCESS
+    }
+
     pub(crate) fn check_target_types(&self) -> Result<(), Diagnostic> {
         match self.deferred_atomic_type {
             Some(token) => Err(token.error("atomic types are deferred to ARM 25.9d")),
@@ -328,6 +340,15 @@ pub fn analyze<'a>(
     path: &Path,
     target: Target,
 ) -> Result<TranslationUnit<'a>, Diagnostic> {
+    analyze_with_rounding_math(source, path, target, false)
+}
+
+pub(crate) fn analyze_with_rounding_math<'a>(
+    source: &'a Preprocessed,
+    path: &Path,
+    target: Target,
+    rounding_math: bool,
+) -> Result<TranslationUnit<'a>, Diagnostic> {
     let standard = source.standard;
     let mut symbols = HashMap::new();
     let mut functions = Vec::new();
@@ -588,6 +609,7 @@ pub fn analyze<'a>(
         static_literals,
         thread_objects: thread_objects.definitions,
         records,
+        rounding_math,
         deferred_atomic_type,
     })
 }

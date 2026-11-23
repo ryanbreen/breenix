@@ -431,8 +431,22 @@ bits, including the x87 explicit integer bit and AArch64 binary128.
 On AMD64, `__builtin_alloca` uses the aligned stack in the caller, with
 allocation lifetime through function return (GCC Stack Allocation and AMD64
 psABI §3.2.2). AArch64 stack allocation is deferred to ARM 25.10b.
-At `-O0`, accepting `-frounding-math` selects the existing FP behavior
-described in the preprocessor's handling of `FENV_ACCESS` (N1570 §7.6.1).
+
+### Rounding mode and expression grouping (25.10a2)
+
+`-frounding-math` records that executable floating-point expressions
+must respect the live rounding mode. bcc also conservatively treats
+`FENV_ACCESS` as ON throughout the translation unit. The 25.10a3 passes
+must consult `TranslationUnit::preserves_float_environment` before
+folding or otherwise transforming executable floating-point operations,
+including operations that yield an integer. Keep the grouping of the typed
+expression tree regardless of the flag (N1570 §§5.1.2.3p14, 7.6.1 and F.9).
+
+N1570 §§6.6, F.8.2, F.8.4 and F.8.5 govern translation-time expressions.
+The flag leaves integer constant expressions and static or thread storage
+initializers in translation-time evaluation. Static floating-point
+arithmetic rounds each intermediate to its target format in the default
+rounding direction.
 
 The host libc recipe check uses bcc, bas, bld, bnm and elfcheck built for
 the host. It reads the x86 C-ABI `libc.a` from the same path as

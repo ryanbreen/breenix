@@ -51,6 +51,7 @@ struct Options {
     output: Option<PathBuf>,
     tools: Option<PathBuf>,
     pp: pp::Options,
+    rounding_math: bool,
     warnings_as_errors: bool,
     suppress_warnings: bool,
     libraries: Vec<PathBuf>,
@@ -71,6 +72,7 @@ impl Options {
                 },
                 ..pp::Options::default()
             },
+            rounding_math: false,
             warnings_as_errors: false,
             suppress_warnings: false,
             libraries: Vec::new(),
@@ -103,8 +105,7 @@ impl Options {
                 Some("-std=c17") => options.pp.standard = Standard::C17,
                 // Ordinary library names are already compiled as calls.
                 Some("-fno-builtin") => {}
-                // The -O0 emitter uses the live rounding mode for runtime FP.
-                Some("-frounding-math") => {}
+                Some("-frounding-math") => options.rounding_math = true,
                 Some("-Wall") => options.pp.warn_unknown_pragmas = true,
                 Some("-Werror") => options.warnings_as_errors = true,
                 Some("-w") => options.suppress_warnings = true,
@@ -255,7 +256,8 @@ impl Driver {
             return Ok(bytes);
         }
         let target = self.options.pp.target;
-        let unit = sema::analyze(&input, path, target).map_err(|error| error.to_string())?;
+        let unit = sema::analyze_with_rounding_math(&input, path, target, self.options.rounding_math)
+            .map_err(|error| error.to_string())?;
         if matches!(stage, Stage::Syntax | Stage::Types) {
             unit.check_target_types().map_err(|error| error.to_string())?;
         }
