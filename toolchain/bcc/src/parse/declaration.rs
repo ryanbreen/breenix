@@ -1,12 +1,18 @@
 //! N1570 6.7.6: declarator modifiers are ordered outward from the name.
 
 use super::*;
-use crate::types::Layout;
+use crate::types::{Layout, Member, RecordDefinition, RecordKind, RecordType};
 
 enum Modifier<'a> {
     Pointer(Qualifiers),
     Array(usize),
-    Function(Vec<Parameter<'a>>, bool),
+    Function(Parameters<'a>),
+}
+
+struct Parameters<'a> {
+    items: Vec<Parameter<'a>>,
+    variadic: bool,
+    tags: HashMap<&'a str, Tag>,
 }
 
 struct Declarator<'a> {
@@ -32,14 +38,18 @@ impl<'a> Declarator<'a> {
                     }
                     ty
                 }
-                Modifier::Function(params, variadic) => {
+                Modifier::Function(params) => {
                     if matches!(ty.kind, TypeKind::Array(..) | TypeKind::Function { .. }) {
                         return Err(site.error("invalid function result type"));
                     }
                     Type::new(TypeKind::Function {
                         result: Box::new(ty),
-                        params: params.iter().map(|param| param.ty.unqualified()).collect(),
-                        variadic: *variadic,
+                        params: params
+                            .items
+                            .iter()
+                            .map(|param| param.ty.unqualified())
+                            .collect(),
+                        variadic: params.variadic,
                     })
                 }
             };
@@ -62,8 +72,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 let TypeKind::Function { result, .. } = ty.kind else {
                     unreachable!()
                 };
-                let Some(Modifier::Function(params, variadic)) = first.modifiers.into_iter().next()
-                else {
+                let Some(Modifier::Function(params)) = first.modifiers.into_iter().next() else {
                     unreachable!()
                 };
                 self.name(name, Name::Ordinary);
@@ -72,7 +81,8 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 } else {
                     self.expect("{", "expected ';' or a function body")?;
                     Some(self.scope(|parser| {
-                        for param in &params {
+                        *parser.tags.last_mut().unwrap() = params.tags;
+                        for param in &params.items {
                             if let Some(name) = param.name {
                                 parser.name(name, Name::Ordinary);
                             }
@@ -83,8 +93,8 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 return Ok(vec![Declaration::Function(Function {
                     name,
                     result: *result,
-                    params,
-                    variadic,
+                    params: params.items,
+                    variadic: params.variadic,
                     storage,
                     body,
                 })]);
@@ -208,10 +218,17 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 };
                 declarator.modifiers.push(Modifier::Array(size));
             } else if self.eat("(").is_some() {
-                let (params, variadic) = self.parameters(depth + 1)?;
-                declarator
-                    .modifiers
-                    .push(Modifier::Function(params, variadic));
+                // N1570 §6.2.1p4: prototype tags are visible through this
+                // function declarator. A definition carries them into its body.
+                let params = self.scope(|parser| {
+                    let (items, variadic) = parser.parameters(depth + 1)?;
+                    Ok(Parameters {
+                        items,
+                        variadic,
+                        tags: std::mem::take(parser.tags.last_mut().unwrap()),
+                    })
+                })?;
+                declarator.modifiers.push(Modifier::Function(params));
             } else {
                 break;
             }
@@ -245,6 +262,9 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 TypeKind::Void => return Err(start.error("parameter has void type")),
                 _ => ty,
             };
+            if let Some(name) = name {
+                self.name(name, Name::Ordinary);
+            }
             params.push(Parameter { start, name, ty });
             if self.eat(",").is_none() {
                 self.expect(")", "expected ',' or ')' after the parameter")?;
@@ -283,9 +303,16 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                         .rev()
                         .find_map(|scope| scope.get(name.text.as_ref()))
                 })
-                .filter(|found| **found == ty)
-                .cloned()
+                .filter(|found| matches!(found, Tag::Enum))
+                .map(|_| ty)
                 .ok_or_else(|| keyword.error("unknown enumeration tag"));
+        }
+        if let Some(tag) = tag {
+            let scope = self.tags.last_mut().unwrap();
+            if scope.contains_key(tag.text.as_ref()) {
+                return Err(tag.error("tag is already declared in this scope"));
+            }
+            scope.insert(&tag.text, Tag::Enum);
         }
         let mut next = Some(0i32);
         loop {
@@ -310,83 +337,142 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 break;
             }
         }
-        if let Some(tag) = tag {
-            self.tags.last_mut().unwrap().insert(&tag.text, ty.clone());
-        }
         Ok(ty)
     }
 
-    pub(super) fn record(&mut self, keyword: &Lexeme, depth: usize) -> Result<Type, Diagnostic> {
+    pub(super) fn record(&mut self, keyword: &'a Lexeme, depth: usize) -> Result<Type, Diagnostic> {
         if depth >= MAX_NESTING {
             return Err(keyword.error("record nesting limit exceeded"));
         }
+        let kind = if keyword.is("struct") {
+            RecordKind::Struct
+        } else {
+            RecordKind::Union
+        };
         let tag = self.identifier();
-        let definition = self.eat("{").is_some();
-        if !definition {
-            let tag = tag.ok_or_else(|| keyword.error("expected a record tag or definition"))?;
-            if let Some(ty) = self
-                .tags
-                .iter()
-                .rev()
-                .find_map(|scope| scope.get(tag.text.as_ref()))
-            {
-                if !matches!(ty.kind, TypeKind::Record { .. }) {
-                    return Err(tag.error("tag does not name a record"));
-                }
-                return Ok(ty.clone());
+        let open = self.eat("{");
+        if tag.is_none() && open.is_none() {
+            return Err(keyword.error("expected a record tag or definition"));
+        }
+
+        // N1570 §6.7.2.3p4–8: a definition or bare forward declaration
+        // binds in this scope. A use with a declarator searches outward.
+        let current_scope = open.is_some() || self.peek().is_some_and(|token| token.is(";"));
+        let existing = tag.and_then(|name| {
+            if current_scope {
+                self.tags.last().unwrap().get(name.text.as_ref())
+            } else {
+                self.tags
+                    .iter()
+                    .rev()
+                    .find_map(|scope| scope.get(name.text.as_ref()))
             }
-        }
-        let id = self.next_record;
-        self.next_record += 1;
-        let mut ty = Type::new(TypeKind::Record { id, layout: None });
-        if let Some(tag) = tag {
-            self.tags.last_mut().unwrap().insert(&tag.text, ty.clone());
-        }
-        if definition {
-            let mut layout = Layout { size: 0, align: 1 };
-            loop {
-                let (base, _) = self.specifiers_at_depth(false, depth + 1)?;
-                loop {
-                    let member = self.declarator(false, depth + 1)?;
-                    let site = member.name.unwrap();
-                    let member = member
-                        .ty(base.clone(), site)?
-                        .layout()
-                        .filter(|member| member.size != 0)
-                        .ok_or_else(|| site.error("record member type is incomplete"))?;
-                    layout.align = layout.align.max(member.align);
-                    if keyword.is("union") {
-                        layout.size = layout.size.max(member.size);
-                    } else {
-                        layout.size = layout
-                            .size
-                            .checked_next_multiple_of(member.align)
-                            .and_then(|offset| offset.checked_add(member.size))
-                            .ok_or_else(|| {
-                                site.error("record size exceeds the target address space")
-                            })?;
-                    }
-                    if self.eat(",").is_none() {
-                        break;
-                    }
+        });
+        let id = match existing {
+            Some(&Tag::Record(id)) if self.records[id].kind == kind => id,
+            Some(_) => return Err(tag.unwrap().error("tag was declared with a different kind")),
+            None => {
+                let id = self.records.len();
+                self.records.push(Record {
+                    kind,
+                    tag: tag.map(|name| name.text.as_ref()),
+                    definition: None,
+                });
+                if let Some(tag) = tag {
+                    self.tags
+                        .last_mut()
+                        .unwrap()
+                        .insert(&tag.text, Tag::Record(id));
                 }
-                self.expect(";", "expected ';' after the record member")?;
-                if self.eat("}").is_some() {
+                id
+            }
+        };
+        if let Some(open) = open {
+            if self.records[id].definition.is_some() {
+                return Err(keyword.error("record type is already defined"));
+            }
+            let definition = self.record_definition(kind, open, depth)?;
+            // Specifiers inside the member list share its surrounding tag
+            // scope. A nested definition of this same tag is a redefinition.
+            if self.records[id].definition.is_some() {
+                return Err(keyword.error("record type is already defined"));
+            }
+            self.records[id].definition = Some(definition);
+        }
+        let layout = self.records[id].definition.as_ref().map(|def| def.layout);
+        Ok(Type::new(TypeKind::Record(RecordType { id, layout })))
+    }
+
+    fn record_definition(
+        &mut self,
+        kind: RecordKind,
+        open: &'a Lexeme,
+        depth: usize,
+    ) -> Result<RecordDefinition<'a>, Diagnostic> {
+        let mut layout = Layout { size: 0, align: 1 };
+        let mut members = Vec::new();
+        let mut names = std::collections::HashSet::new();
+        let mut has_const_member = false;
+        let end = loop {
+            let (base, _) = self.specifiers_at_depth(false, depth + 1)?;
+            loop {
+                if let Some(colon) = self.eat(":") {
+                    return Err(colon.error("bit-fields are deferred to 25.7b1"));
+                }
+                let member = self.declarator(false, depth + 1)?;
+                let site = member.name.unwrap();
+                if let Some(colon) = self.eat(":") {
+                    return Err(colon.error("bit-fields are deferred to 25.7b1"));
+                }
+                if !names.insert(site.text.as_ref()) {
+                    return Err(site.error("duplicate record member"));
+                }
+                let ty = member.ty(base.clone(), site)?;
+                let field = ty
+                    .layout()
+                    .filter(|field| field.size != 0)
+                    .ok_or_else(|| site.error("record member type is incomplete"))?;
+
+                // AMD64 psABI §3.1.2 and AAPCS64 §5.10: each member
+                // has its natural alignment and the record has the maximum.
+                layout.align = layout.align.max(field.align);
+                let offset = if kind == RecordKind::Union {
+                    layout.size = layout.size.max(field.size);
+                    0
+                } else {
+                    let aligned = layout.size.checked_next_multiple_of(field.align);
+                    let Some((offset, size)) =
+                        aligned.and_then(|offset| Some((offset, offset.checked_add(field.size)?)))
+                    else {
+                        return Err(site.error("record size exceeds the target address space"));
+                    };
+                    layout.size = size;
+                    offset
+                };
+                has_const_member |= ty.contains_const(&self.records);
+                members.push(Member {
+                    name: &site.text,
+                    ty,
+                    offset,
+                });
+                if self.eat(",").is_none() {
                     break;
                 }
             }
-            layout.size = layout
-                .size
-                .checked_next_multiple_of(layout.align)
-                .ok_or_else(|| keyword.error("record size exceeds the target address space"))?;
-            ty.kind = TypeKind::Record {
-                id,
-                layout: Some(layout),
-            };
-            if let Some(tag) = tag {
-                self.tags.last_mut().unwrap().insert(&tag.text, ty.clone());
+            self.expect(";", "expected ';' after the record member")?;
+            if let Some(end) = self.eat("}") {
+                break end;
             }
-        }
-        Ok(ty)
+        };
+        layout.size = layout
+            .size
+            .checked_next_multiple_of(layout.align)
+            .ok_or_else(|| open.error("record size exceeds the target address space"))?;
+        Ok(RecordDefinition {
+            layout,
+            members,
+            end,
+            has_const_member,
+        })
     }
 }

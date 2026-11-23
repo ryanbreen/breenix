@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::parse::{self, Storage};
 use crate::pp::{self, Diagnostic, Lexeme, Position, Preprocessed, Target};
-use crate::types::{Float, Integer, Kind, Type};
+use crate::types::{Float, Integer, Kind, Record, Type};
 pub use parse::{Binary, Unary};
 
 mod body;
@@ -15,6 +15,7 @@ mod float;
 pub struct TranslationUnit<'a> {
     pub functions: Vec<Function<'a>>,
     pub objects: Vec<Object<'a>>,
+    pub records: Vec<Record<'a>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -132,6 +133,10 @@ pub enum ExpressionKind<'a> {
         increment: bool,
         postfix: bool,
     },
+    Member {
+        base: Box<Expression<'a>>,
+        offset: usize,
+    },
     String(Vec<u8>),
     Call {
         callee: Box<Expression<'a>>,
@@ -165,18 +170,24 @@ impl Expression<'_> {
     }
 
     fn lvalue(&self) -> bool {
-        !matches!(self.ty.kind, Kind::Function { .. })
-            && matches!(
-                self.kind,
-                ExpressionKind::Identifier(_)
-                    | ExpressionKind::Local(_)
-                    | ExpressionKind::String(_)
-                    | ExpressionKind::Unary(Unary::Dereference, _)
-            )
+        if matches!(self.ty.kind, Kind::Function { .. }) {
+            return false;
+        }
+        match &self.kind {
+            ExpressionKind::Identifier(_)
+            | ExpressionKind::Local(_)
+            | ExpressionKind::String(_)
+            | ExpressionKind::Unary(Unary::Dereference, _) => true,
+            ExpressionKind::Member { base, .. } => base.lvalue(),
+            _ => false,
+        }
     }
 
-    fn modifiable(&self) -> bool {
-        self.lvalue() && !self.ty.qualifiers.constant && is_scalar(&self.ty)
+    fn modifiable(&self, records: &[Record<'_>]) -> bool {
+        self.lvalue()
+            && !self.ty.contains_const(records)
+            && (is_scalar(&self.ty)
+                || matches!(&self.ty.kind, Kind::Record(record) if record.layout.is_some()))
     }
 
     fn value_type(&self) -> Type {
@@ -192,10 +203,38 @@ pub fn analyze<'a>(
     let mut symbols = HashMap::new();
     let mut functions = Vec::new();
     let mut objects = Vec::new();
-    for declaration in parse::translation_unit(source, path)? {
+    let mut declarations = parse::translation_unit(source, path)?;
+    let records_begin = declarations
+        .iter()
+        .position(|declaration| matches!(declaration, parse::Declaration::Record(_)))
+        .unwrap_or(declarations.len());
+    let records: Vec<_> = declarations
+        .drain(records_begin..)
+        .map(|decl| {
+            let parse::Declaration::Record(record) = decl else {
+                unreachable!()
+            };
+            record
+        })
+        .collect();
+    let token_order = if records.is_empty() {
+        HashMap::new()
+    } else {
+        source
+            .tokens()
+            .enumerate()
+            .map(|(index, token)| (std::ptr::from_ref(token), index))
+            .collect()
+    };
+    let record_scope = RecordScope {
+        records: &records,
+        token_order,
+    };
+    for declaration in declarations {
         match declaration {
+            parse::Declaration::Record(_) => unreachable!(),
             parse::Declaration::Function(declaration) => {
-                functions.push(function(declaration, &mut symbols, target)?);
+                functions.push(function(declaration, &mut symbols, target, &record_scope)?);
             }
             parse::Declaration::Object(variable) => {
                 let name = variable.name;
@@ -230,7 +269,29 @@ pub fn analyze<'a>(
             }
         }
     }
-    Ok(TranslationUnit { functions, objects })
+    Ok(TranslationUnit {
+        functions,
+        objects,
+        records,
+    })
+}
+
+struct RecordScope<'a, 'r> {
+    records: &'r [Record<'a>],
+    token_order: HashMap<*const Lexeme, usize>,
+}
+
+impl RecordScope<'_, '_> {
+    // A tag becomes complete at its closing brace, even when analysis runs
+    // after parsing. Token order also works across macro expansions/includes.
+    fn resolve(&self, ty: &mut Type, site: &Lexeme) {
+        ty.resolve_records(&|id| {
+            let def = self.records.get(id)?.definition.as_ref()?;
+            let end = self.token_order[&std::ptr::from_ref(def.end)];
+            let use_at = self.token_order[&std::ptr::from_ref(site)];
+            (end < use_at).then_some(def.layout)
+        });
+    }
 }
 
 struct Symbol {
@@ -243,6 +304,7 @@ fn function<'a>(
     declaration: parse::Function<'a>,
     symbols: &mut HashMap<&'a str, Symbol>,
     target: Target,
+    records: &RecordScope<'a, '_>,
 ) -> Result<Function<'a>, Diagnostic> {
     let parse::Function {
         name,
@@ -256,10 +318,16 @@ fn function<'a>(
     if defined && variadic {
         return Err(name.error("variadic function definitions are deferred to 25.7b2"));
     }
+    if defined && matches!(result.kind, Kind::Record(_)) {
+        return Err(name.error(RECORD_CALL));
+    }
     let mut names = HashSet::new();
     let params: Vec<_> = params
         .into_iter()
         .map(|param| {
+            if defined && matches!(param.ty.kind, Kind::Record(_)) {
+                return Err(param.start.error(RECORD_CALL));
+            }
             if let Some(token) = param.name {
                 if !names.insert(token.text.as_ref()) {
                     return Err(token.error("duplicate parameter name"));
@@ -307,7 +375,7 @@ fn function<'a>(
         },
     );
     let (body, locals) = if let Some(statements) = body {
-        let mut context = FunctionBody::new(symbols, &result, target, &params);
+        let mut context = FunctionBody::new(symbols, &result, target, &params, records);
         let body = context.statements(statements)?;
         context.validate_labels()?;
         (Some(body), context.locals)
@@ -336,6 +404,7 @@ struct FunctionBody<'a, 's> {
     switches: Vec<body::Switch>,
     result: &'s Type,
     target: Target,
+    records: &'s RecordScope<'a, 's>,
 }
 
 impl<'a> FunctionBody<'a, '_> {
@@ -364,7 +433,7 @@ impl<'a> FunctionBody<'a, '_> {
     fn expression(&self, expression: parse::Expression<'a>) -> Result<Expression<'a>, Diagnostic> {
         use parse::ExpressionKind as Syntax;
         let site = expression.site;
-        let (kind, ty) = match expression.kind {
+        let (kind, mut ty) = match expression.kind {
             Syntax::Identifier => {
                 let name = site.text.as_ref();
                 if let Some(id) = self.scopes.iter().rev().find_map(|scope| scope.get(name)) {
@@ -481,13 +550,54 @@ impl<'a> FunctionBody<'a, '_> {
                     ty,
                 )
             }
+            Syntax::Member {
+                base,
+                name,
+                indirect,
+            } => {
+                let mut base = self.expression(*base)?;
+                if indirect {
+                    let Kind::Pointer(mut pointee) = base.value_type().kind else {
+                        return Err(site.error("'->' requires a pointer to a record"));
+                    };
+                    self.records.resolve(&mut pointee, site);
+                    base = Expression {
+                        site,
+                        ty: *pointee,
+                        kind: ExpressionKind::Unary(Unary::Dereference, Box::new(base)),
+                    };
+                }
+                let Kind::Record(record) = &base.ty.kind else {
+                    return Err(site.error("member access requires a struct or union"));
+                };
+                if record.layout.is_none() {
+                    return Err(site.error("member access requires a complete record type"));
+                }
+                let members = &self.records.records[record.id]
+                    .definition
+                    .as_ref()
+                    .unwrap()
+                    .members;
+                let member = members
+                    .iter()
+                    .find(|member| member.name == name.text.as_ref())
+                    .ok_or_else(|| name.error(format!("no member named '{}'", name.text)))?;
+                let mut ty = member.ty.clone();
+                // N1570 §6.5.2.3p3–4 and §6.7.3p9.
+                ty.qualify_member(base.ty.qualifiers);
+                (
+                    ExpressionKind::Member {
+                        base: Box::new(base),
+                        offset: member.offset,
+                    },
+                    ty,
+                )
+            }
             Syntax::Assignment(op, left, right) => {
                 let left = self.expression(*left)?;
                 let right = self.expression(*right)?;
-                if !left.modifiable() {
-                    return Err(left
-                        .site
-                        .error("assignment requires a modifiable scalar lvalue"));
+                if !left.modifiable(self.records.records) {
+                    return Err(left.site.error("assignment requires a modifiable lvalue"));
                 }
                 let operation = if let Some(op) = op {
                     let (a, b, result) = binary_types(op, &left, &right, self.target)
@@ -520,7 +630,8 @@ impl<'a> FunctionBody<'a, '_> {
                 postfix,
             } => {
                 let operand = self.expression(*operand)?;
-                if !operand.modifiable()
+                if !is_scalar(&operand.ty)
+                    || !operand.modifiable(self.records.records)
                     || matches!(&operand.ty.kind,
                     Kind::Pointer(ty) if ty.layout().is_none_or(|layout| layout.size == 0))
                 {
@@ -555,6 +666,7 @@ impl<'a> FunctionBody<'a, '_> {
                 close,
             } => self.call(*callee, arguments, close)?,
         };
+        self.records.resolve(&mut ty, site);
         Ok(Expression { site, kind, ty })
     }
 
@@ -579,6 +691,13 @@ impl<'a> FunctionBody<'a, '_> {
             return Err(callee.site.error("called expression is not a function"));
         };
 
+        if matches!(result.kind, Kind::Record(_))
+            || params
+                .iter()
+                .any(|param| matches!(param.kind, Kind::Record(_)))
+        {
+            return Err(close.error(RECORD_CALL));
+        }
         // N1570 6.5.2.2p2, p5 and p7: check the prototype and convert each
         // argument as if assigned to its unqualified parameter type.
         let mut converted_arguments = Vec::new();
@@ -587,6 +706,9 @@ impl<'a> FunctionBody<'a, '_> {
                 return Err(argument.site.error("too many arguments"));
             }
             let expr = self.expression(argument)?;
+            if matches!(expr.ty.kind, Kind::Record(_)) {
+                return Err(expr.site.error(RECORD_CALL));
+            }
             let ty = if let Some(parameter) = params.get(index) {
                 if !assignable(parameter, &expr) {
                     return Err(expr
@@ -619,6 +741,8 @@ impl<'a> FunctionBody<'a, '_> {
         ))
     }
 }
+
+const RECORD_CALL: &str = "passing or returning a record by value is deferred to 25.7b1";
 
 fn is_scalar(ty: &Type) -> bool {
     matches!(
@@ -800,6 +924,9 @@ fn conditional_type(yes: &Expression<'_>, no: &Expression<'_>, target: Target) -
     if yes.ty.kind == Kind::Void && no.ty.kind == Kind::Void {
         return Some(yes.ty.clone());
     }
+    if matches!(yes.ty.kind, Kind::Record(_)) && yes.ty.kind == no.ty.kind {
+        return Some(yes.ty.unqualified());
+    }
     compatible_pointer(yes, no).or_else(|| {
         if matches!(yes.ty.kind, Kind::Integer(_) | Kind::Float(_))
             && matches!(no.ty.kind, Kind::Integer(_) | Kind::Float(_))
@@ -815,13 +942,14 @@ fn is_null(expr: &Expression<'_>) -> bool {
     matches!(expr.ty.kind, Kind::Integer(_)) && body::constant_integer(expr) == Some(0)
 }
 
-// N1570 6.5.16.1p1 and 6.3.2.3p3 for scalar assignment and null pointers.
+// N1570 6.5.16.1p1 and 6.3.2.3p3 for assignment and null pointers.
 fn assignable(destination: &Type, expr: &Expression<'_>) -> bool {
     let converted = expr.converted_type();
     let source = converted.as_ref().unwrap_or(&expr.ty);
     match (&destination.kind, &source.kind) {
         (Kind::Integer(_) | Kind::Float(_), Kind::Integer(_) | Kind::Float(_))
         | (Kind::Integer(Integer::Bool), Kind::Pointer(_)) => true,
+        (Kind::Record(to), Kind::Record(from)) => to == from && to.layout.is_some(),
         (Kind::Pointer(_), Kind::Integer(_)) => is_null(expr),
         (Kind::Pointer(to), Kind::Pointer(from)) => {
             if !to.qualifiers.contains(from.qualifiers) {

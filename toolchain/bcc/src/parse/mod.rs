@@ -4,12 +4,12 @@ use std::iter::Peekable;
 use std::path::Path;
 
 use crate::pp::{Diagnostic, Kind, Lexeme, Location, Position, Preprocessed};
-use crate::types::{Integer, Kind as TypeKind, Qualifiers, Type};
+use crate::types::{Integer, Kind as TypeKind, Qualifiers, Record, Type};
 
 mod declaration;
 mod specifiers;
 
-const MAX_NESTING: usize = 128;
+pub(super) const MAX_NESTING: usize = 128;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) enum Storage {
@@ -24,6 +24,7 @@ pub(super) enum Storage {
 pub(super) enum Declaration<'a> {
     Function(Function<'a>),
     Object(Variable<'a>),
+    Record(Record<'a>),
 }
 
 #[derive(Debug)]
@@ -94,7 +95,11 @@ impl<'a> Expression<'a> {
     fn new(site: &'a Lexeme, kind: ExpressionKind<'a>) -> Result<Self, Diagnostic> {
         use ExpressionKind::*;
         let child_height = match &kind {
-            Unary(_, expr) | Cast(_, expr) | Sizeof(expr) | Update { operand: expr, .. } => {
+            Unary(_, expr)
+            | Cast(_, expr)
+            | Sizeof(expr)
+            | Update { operand: expr, .. }
+            | Member { base: expr, .. } => {
                 expr.height
             }
             Binary(_, a, b) | Assignment(_, a, b) => a.height.max(b.height),
@@ -140,6 +145,11 @@ pub(super) enum ExpressionKind<'a> {
         operand: Box<Expression<'a>>,
         increment: bool,
         postfix: bool,
+    },
+    Member {
+        base: Box<Expression<'a>>,
+        name: &'a Lexeme,
+        indirect: bool,
     },
     String(Vec<&'a Lexeme>),
     Call {
@@ -225,7 +235,7 @@ fn parse_tokens<'a>(
         path,
         names: vec![HashMap::new()],
         tags: vec![HashMap::new()],
-        next_record: 0,
+        records: Vec::new(),
     };
     let mut declarations = Vec::new();
     if parser.peek().is_none() {
@@ -234,6 +244,9 @@ fn parse_tokens<'a>(
     while parser.peek().is_some() {
         declarations.extend(parser.external()?);
     }
+    // The type table includes records declared in any scope. Their ids
+    // follow allocation order, independent of the object declaration list.
+    declarations.extend(parser.records.into_iter().map(Declaration::Record));
     Ok(declarations)
 }
 
@@ -242,8 +255,14 @@ struct Parser<'a, 'p, I: Iterator<Item = &'a Lexeme>> {
     previous: Option<&'a Lexeme>,
     path: &'p Path,
     names: Vec<HashMap<&'a str, Name>>,
-    tags: Vec<HashMap<&'a str, Type>>,
-    next_record: usize,
+    tags: Vec<HashMap<&'a str, Tag>>,
+    records: Vec<Record<'a>>,
+}
+
+#[derive(Clone, Copy)]
+enum Tag {
+    Enum,
+    Record(usize),
 }
 
 enum Name {
@@ -667,7 +686,12 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             self.primary()?
         };
         let mut count = 0;
-        while let Some(open) = self.eat("(").or_else(|| self.eat("[")) {
+        while let Some(open) = self
+            .eat("(")
+            .or_else(|| self.eat("["))
+            .or_else(|| self.eat("."))
+            .or_else(|| self.eat("->"))
+        {
             if depth + count == MAX_NESTING {
                 return Err(open.error("expression nesting limit exceeded"));
             }
@@ -686,6 +710,20 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 continue;
             }
             count += 1;
+            if open.is(".") || open.is("->") {
+                let name = self
+                    .identifier()
+                    .ok_or_else(|| self.error("expected a member name"))?;
+                callee = Expression::new(
+                    open,
+                    ExpressionKind::Member {
+                        base: Box::new(callee),
+                        name,
+                        indirect: open.is("->"),
+                    },
+                )?;
+                continue;
+            }
             let mut arguments = Vec::new();
             let close = if let Some(close) = self.eat(")") {
                 close

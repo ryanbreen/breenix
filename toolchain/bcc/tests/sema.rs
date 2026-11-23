@@ -58,7 +58,7 @@ fn record_layout_psabi() {
     let unit = sema::analyze(&input, path, options.target).unwrap();
     // AMD64 psABI §3.1.2 and Figure 3.1. Round each struct member's
     // offset up to its alignment, then round the total span up to the
-    // strictest alignment. Union members all start at offset zero.
+    // strictest alignment. Union layout overlays its members.
     let expected: &[(&str, usize, usize, &[usize])] = &[
         ("Bytes", 2, 1, &[0, 1]),
         ("Padded", 24, 8, &[0, 8, 16]),
@@ -73,7 +73,11 @@ fn record_layout_psabi() {
         assert_eq!(definition.layout.size, size, "{tag} size");
         assert_eq!(definition.layout.align, align, "{tag} alignment");
         assert_eq!(
-            definition.members.iter().map(|member| member.offset).collect::<Vec<_>>(),
+            definition
+                .members
+                .iter()
+                .map(|member| member.offset)
+                .collect::<Vec<_>>(),
             offsets,
             "{tag} member offsets",
         );

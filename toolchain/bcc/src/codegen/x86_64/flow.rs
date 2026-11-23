@@ -206,6 +206,19 @@ impl<'src> Emitter<'_, 'src> {
             ExpressionKind::Local(id) => self.locals[*id].memory(0),
             ExpressionKind::String(bytes) => format!("[rip + {}]", self.emit_string(bytes)),
             ExpressionKind::Unary(Unary::Dereference, operand) => return self.value(operand),
+            ExpressionKind::Member { base, offset } => {
+                self.value(base)?;
+                if *offset != 0 {
+                    // A legal member offset can exceed a signed immediate for
+                    // an externally defined record.
+                    if *offset <= i32::MAX as usize {
+                        writeln!(self.text, "    add rax, {offset}").unwrap();
+                    } else {
+                        writeln!(self.text, "    mov r10, {offset}\n    add rax, r10").unwrap();
+                    }
+                }
+                return Ok(());
+            }
             _ => unreachable!("sema must supply an addressable expression"),
         };
         writeln!(self.text, "    lea rax, {memory}").unwrap();
@@ -298,6 +311,17 @@ impl<'src> Emitter<'_, 'src> {
                 return;
             }
             Kind::Pointer(_) => ("qword", "rax"),
+            Kind::Record(record) => {
+                // N1570 §6.5.16.1p3 permits exact overlap for compatible
+                // records. Keep the destination address as the result.
+                // AMD64 psABI §3.2.1 requires DF clear at function boundaries.
+                let size = record.layout.unwrap().size;
+                writeln!(
+                    self.text,
+                    "    mov rsi, rax\n    lea rdi, {address}\n    mov rax, rdi\n    mov rcx, {size}\n    rep movsb"
+                ).unwrap();
+                return;
+            }
             _ => unreachable!(),
         };
         writeln!(self.text, "    mov {width} {address}, {register}").unwrap();

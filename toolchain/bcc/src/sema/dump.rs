@@ -159,6 +159,10 @@ fn expression(out: &mut impl Write, expr: &Expression<'_>) -> io::Result<()> {
             expression(out, operand)?;
             ("update", "rvalue")
         }
+        ExpressionKind::Member { base, .. } => {
+            expression(out, base)?;
+            ("member", if expr.lvalue() { "lvalue" } else { "rvalue" })
+        }
         ExpressionKind::String(_) => ("string-literal", "lvalue"),
         ExpressionKind::Call { callee, arguments } => {
             expression(out, callee)?;

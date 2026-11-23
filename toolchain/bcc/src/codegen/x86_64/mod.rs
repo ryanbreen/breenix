@@ -182,9 +182,9 @@ impl<'src> Emitter<'_, 'src> {
     }
 
     // Canonical value locations: a normalized integer or pointer in RAX,
-    // or a float of its declared width in XMM0.
+    // a float of its declared width in XMM0, or a record's address in RAX.
     fn value(&mut self, expr: &Expression<'src>) -> Result<(), Diagnostic> {
-        if matches!(expr.ty.kind, Kind::Record { .. } | Kind::LongDouble) {
+        if matches!(expr.ty.kind, Kind::LongDouble) {
             return Err(Diagnostic::new(
                 expr.position(),
                 "value is outside the scalar code generation subset",
@@ -203,7 +203,8 @@ impl<'src> Emitter<'_, 'src> {
             }
             ExpressionKind::String(_)
             | ExpressionKind::Identifier(_)
-            | ExpressionKind::Local(_) => {
+            | ExpressionKind::Local(_)
+            | ExpressionKind::Member { .. } => {
                 self.address(expr)?;
                 self.load(&expr.ty, "[rax]");
             }
@@ -544,8 +545,8 @@ impl<'src> Emitter<'_, 'src> {
             Kind::Pointer(_) => "mov rax, qword",
             Kind::Float(Float::Single) => "movss xmm0,",
             Kind::Float(Float::Double) => "movsd xmm0,",
-            Kind::Function { .. } | Kind::Array(..) => return,
-            Kind::Void | Kind::LongDouble | Kind::Record { .. } => unreachable!(),
+            Kind::Function { .. } | Kind::Array(..) | Kind::Record(_) => return,
+            Kind::Void | Kind::LongDouble => unreachable!(),
         };
         writeln!(self.text, "    {instruction} {address}").unwrap();
     }

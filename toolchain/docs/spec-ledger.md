@@ -164,6 +164,17 @@ bcc emits AMD64 assembly for the 25.5 scalar subset. Variadic function
 definitions and `va_list` operations follow in 25.7b2, x87 `long double`
 lowering in 25.7b3, and AArch64 scalar code generation in A3.
 
+## bcc 25.7 record objects
+
+| Feature | Specification |
+| --- | --- |
+| Record identity, tag scope and completion | N1570 §§6.2.1, 6.2.3 and 6.7.2.3. |
+| Member offsets, alignment and tail padding | AMD64 psABI §3.1.2 and AAPCS64 §§5.10.1–5.10.2. |
+| Member access, addresses, record assignment and initialization | N1570 §§6.5.2.3, 6.5.3.2, 6.5.16.1 and 6.7.9. The AMD64 backend copies the record's object representation. |
+
+By-value record calls and bit-fields follow in 25.7b1. AArch64 bcc
+code generation follows in A3 and A4.
+
 ## bmake 25.6a2
 
 | Feature | Specification |

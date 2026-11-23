@@ -1,5 +1,6 @@
 //! N1570 6.7.1–6.7.3: specifier order is independent of type identity.
 use super::*;
+use crate::types::RecordType;
 
 #[derive(Default)]
 struct Specifiers {
@@ -160,10 +161,10 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                         // Declaration-only representation pending the target va_list
                         // implementation in 25.7b2.
                         Some(
-                            Type::new(TypeKind::Record {
+                            Type::new(TypeKind::Record(RecordType {
                                 id: usize::MAX,
                                 layout: None,
-                            })
+                            }))
                             .pointer_to(),
                         )
                     }
@@ -196,13 +197,9 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 start.error(message)
             }
         })?;
-        Ok((
-            Type {
-                kind,
-                qualifiers: specs.qualifiers,
-            },
-            specs.storage,
-        ))
+        let mut ty = Type { kind, qualifiers: specs.qualifiers };
+        ty.resolve_records(&|id| self.records.get(id)?.definition.as_ref().map(|def| def.layout));
+        Ok((ty, specs.storage))
     }
 
     pub(super) fn qualifier(&mut self, qualifiers: &mut Qualifiers) -> bool {

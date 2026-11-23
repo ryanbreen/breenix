@@ -1,6 +1,9 @@
 //! Block scopes, control-flow targets and initializers for unoptimized code.
 
 use super::*;
+use crate::types::RecordKind;
+use std::iter::Peekable;
+use std::vec::IntoIter;
 
 pub(super) struct Label<'a> {
     id: usize,
@@ -20,6 +23,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
         result: &'s Type,
         target: Target,
         params: &[Parameter<'a>],
+        records: &'s RecordScope<'a, 's>,
     ) -> Self {
         let mut scope = HashMap::new();
         let locals = params
@@ -49,6 +53,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
             switches: Vec::new(),
             result,
             target,
+            records,
         }
     }
 
@@ -241,7 +246,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
             *count = values.len();
         }
         if !supported_object(&ty) {
-            return Err(name.error("expected a scalar or an array of scalars"));
+            return Err(name.error("expected a supported object type"));
         }
         let size = ty
             .layout()
@@ -271,8 +276,12 @@ impl<'a, 's> FunctionBody<'a, 's> {
         });
         if let Some(initializer) = initializer {
             let mut values = Vec::new();
-            self.initialize(initializer, &ty, 0, &mut values)?;
-            let zero_bytes = if matches!(ty.kind, Kind::Array(..)) {
+            let input = self.initializer_input(initializer)?;
+            let braced = matches!(input, InitializerInput::List(..));
+            self.initialize(input, &ty, 0, &mut values)?;
+            let zero_bytes = if matches!(ty.kind, Kind::Array(..))
+                || braced && matches!(ty.kind, Kind::Record(_))
+            {
                 size
             } else {
                 0
@@ -287,32 +296,48 @@ impl<'a, 's> FunctionBody<'a, 's> {
         }
     }
 
-    fn initialize(
+    fn initializer_input(
         &self,
         initializer: parse::Initializer<'a>,
+    ) -> Result<InitializerInput<'a>, Diagnostic> {
+        Ok(match initializer {
+            parse::Initializer::Expression(expr) => InitializerInput::Expression(self.expression(expr)?),
+            parse::Initializer::List(site, list) => InitializerInput::List(
+                site,
+                list.into_iter()
+                    .map(|init| self.initializer_input(init))
+                    .collect::<Result<_, _>>()?,
+            ),
+        })
+    }
+
+    fn initialize(
+        &self,
+        input: InitializerInput<'a>,
         ty: &Type,
         offset: usize,
         values: &mut Vec<Initializer<'a>>,
     ) -> Result<(), Diagnostic> {
-        use parse::Initializer as Syntax;
-        match (initializer, &ty.kind) {
-            (Syntax::List(site, list), Kind::Array(element, length)) => {
-                if list.len() > *length {
-                    return Err(site.error("too many array initializers"));
+        match input {
+            InitializerInput::List(site, list) => {
+                let mut list = list.into_iter().peekable();
+                if aggregate(ty) {
+                    self.initialize_subobjects(&mut list, ty, offset, values, 0)?;
+                    if list.next().is_some() {
+                        let message = if matches!(ty.kind, Kind::Array(..)) {
+                            "too many array initializers"
+                        } else {
+                            "too many record initializers"
+                        };
+                        return Err(site.error(message));
+                    }
+                } else if list.len() == 1 {
+                    self.initialize(list.next().unwrap(), ty, offset, values)?;
+                } else {
+                    return Err(site.error("scalar initializer requires one value"));
                 }
-                let size = element.layout().unwrap().size;
-                for (index, element_init) in list.into_iter().enumerate() {
-                    self.initialize(element_init, element, offset + index * size, values)?;
-                }
             }
-            (Syntax::List(_, mut list), _) if list.len() == 1 => {
-                self.initialize(list.pop().unwrap(), ty, offset, values)?;
-            }
-            (Syntax::List(site, _), _) => {
-                return Err(site.error("scalar initializer requires one value"))
-            }
-            (Syntax::Expression(expr), _) => {
-                let value = self.expression(expr)?;
+            InitializerInput::Expression(value) => {
                 if !assignable(ty, &value) {
                     return Err(value
                         .site
@@ -327,11 +352,82 @@ impl<'a, 's> FunctionBody<'a, 's> {
         }
         Ok(())
     }
+
+    fn initialize_subobjects(
+        &self,
+        list: &mut InitializerList<'a>,
+        ty: &Type,
+        offset: usize,
+        values: &mut Vec<Initializer<'a>>,
+        depth: usize,
+    ) -> Result<(), Diagnostic> {
+        // N1570 §6.7.9p17–21: a union selects its first member, and an
+        // unbraced subaggregate takes as much of the enclosing list as it needs.
+        match &ty.kind {
+            Kind::Array(element, length) => {
+                let size = element.layout().unwrap().size;
+                for index in 0..*length {
+                    if list.peek().is_none() {
+                        break;
+                    }
+                    self.initialize_next(list, element, offset + index * size, values, depth)?;
+                }
+            }
+            Kind::Record(record) => {
+                let record = &self.records.records[record.id];
+                let members = &record.definition.as_ref().unwrap().members;
+                let count = if record.kind == RecordKind::Union {
+                    1
+                } else {
+                    members.len()
+                };
+                for member in &members[..count] {
+                    if list.peek().is_none() {
+                        break;
+                    }
+                    self.initialize_next(list, &member.ty, offset + member.offset, values, depth)?;
+                }
+            }
+            _ => unreachable!(),
+        }
+        Ok(())
+    }
+
+    fn initialize_next(
+        &self,
+        list: &mut InitializerList<'a>,
+        ty: &Type,
+        offset: usize,
+        values: &mut Vec<Initializer<'a>>,
+        depth: usize,
+    ) -> Result<(), Diagnostic> {
+        if let Some(InitializerInput::Expression(value)) = list.peek() {
+            if aggregate(ty) && !assignable(ty, value) {
+                if depth == parse::MAX_NESTING {
+                    return Err(value.site.error("initializer nesting limit exceeded"));
+                }
+                return self.initialize_subobjects(list, ty, offset, values, depth + 1);
+            }
+        }
+        self.initialize(list.next().unwrap(), ty, offset, values)
+    }
+}
+
+enum InitializerInput<'a> {
+    Expression(Expression<'a>),
+    List(&'a Lexeme, Vec<Self>),
+}
+
+type InitializerList<'a> = Peekable<IntoIter<InitializerInput<'a>>>;
+
+fn aggregate(ty: &Type) -> bool {
+    matches!(ty.kind, Kind::Array(..) | Kind::Record(_))
 }
 
 fn supported_object(ty: &Type) -> bool {
     match &ty.kind {
         Kind::Array(element, _) => supported_object(element),
+        Kind::Record(_) => true,
         _ => is_scalar(ty),
     }
 }
