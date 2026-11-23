@@ -26,7 +26,7 @@ const fn power(exponent: i32) -> u128 {
 fn f128_add_rounds_per_direction() {
     use f128::{Rounding, INEXACT};
 
-    // IEEE 754-2019 §§4.3, 6.3 and 7.6: ties, their negative mirrors, and exact zero.
+    // IEEE 754-2019 §§4.3, 6.3 and 7.6: ties, their negative mirrors, and cancellation.
     for (rounding, positive, negative, zero) in [
         (Rounding::NearestEven, ONE, SIGN | ONE, 0),
         (Rounding::Upward, ONE + 1, SIGN | ONE, 0),

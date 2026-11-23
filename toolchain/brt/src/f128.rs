@@ -1,9 +1,8 @@
 //! Integer arithmetic and conversions on IEEE 754-2019 binary128 encodings.
 //!
 //! IEEE 754-2019 §§3.4, 4.3, 5.4, 5.8 and 6–7 specify the encodings and results.
-//! Floating-point results use roundTiesToEven. Arithmetic returns a default
-//! quiet NaN for NaN inputs and invalid operations.
-//! The interface exposes result bits and has no floating-point status flags.
+//! Arithmetic returns a default quiet NaN for NaN inputs and invalid operations.
+//! The value-only interface uses roundTiesToEven for floating-point results.
 
 #![forbid(unsafe_code)]
 
@@ -15,12 +14,50 @@ const HIDDEN_BIT: u128 = 1 << FRACTION_BITS;
 const FRACTION_MASK: u128 = HIDDEN_BIT - 1;
 const SIGN: u128 = 1 << 127;
 const INF: u128 = 0x7fff << FRACTION_BITS;
-const NAN: u128 = INF | (HIDDEN_BIT >> 1);
+const QUIET_BIT: u128 = HIDDEN_BIT >> 1;
+const NAN: u128 = INF | QUIET_BIT;
 const BIAS: i32 = 16383;
 const MIN_EXPONENT: i32 = 1 - BIAS;
-const MAX_EXPONENT: i32 = BIAS;
 const ROUND_BITS: u32 = 3;
 const EXTENDED_HIDDEN_BIT: u128 = HIDDEN_BIT << ROUND_BITS;
+
+/// IEEE 754-2019 §4.3 rounding directions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Rounding {
+    NearestEven,
+    Upward,
+    Downward,
+    TowardZero,
+}
+
+impl Rounding {
+    fn rounds_away_from_zero(self, negative: bool) -> bool {
+        matches!(
+            (self, negative),
+            (Self::Upward, false) | (Self::Downward, true)
+        )
+    }
+}
+
+// IEEE 754-2019 §7 flags, in the bit positions of Arm DDI 0487 M.b §C5.2.10.
+pub const INVALID: u8 = 1 << 0;
+pub const DIVIDE_BY_ZERO: u8 = 1 << 1;
+pub const OVERFLOW: u8 = 1 << 2;
+pub const UNDERFLOW: u8 = 1 << 3;
+pub const INEXACT: u8 = 1 << 4;
+
+/// A result and the cumulative exception bits raised by this operation.
+pub type Outcome<T> = (T, u8);
+
+// IEEE 754-2019 §7.2: a signaling NaN raises invalid, a quiet NaN propagates.
+fn nan_flags(a: u128, b: u128) -> u8 {
+    let signaling = |magnitude| magnitude > INF && magnitude & QUIET_BIT == 0;
+    if signaling(a) || signaling(b) {
+        INVALID
+    } else {
+        0
+    }
+}
 
 struct Finite {
     // Value of the magnitude is significand * 2^(exponent - FRACTION_BITS).
@@ -58,34 +95,62 @@ fn shift_right_sticky(value: u128, shift: u32) -> u128 {
     }
 }
 
-fn round_significand(extended: u128) -> u128 {
+fn round_significand(extended: u128, negative: bool, rounding: Rounding) -> Outcome<u128> {
     let significand = extended >> ROUND_BITS;
     let tail = extended & ((1 << ROUND_BITS) - 1);
+    if tail == 0 {
+        return (significand, 0);
+    }
     let halfway = 1 << (ROUND_BITS - 1);
-    significand + u128::from(tail > halfway || (tail == halfway && significand & 1 != 0))
+    let increment = if rounding == Rounding::NearestEven {
+        tail > halfway || (tail == halfway && significand & 1 != 0)
+    } else {
+        rounding.rounds_away_from_zero(negative)
+    };
+    (significand + u128::from(increment), INEXACT)
 }
 
-// The leading one is at EXTENDED_HIDDEN_BIT and the low bits carry the
+// The leading one is at fraction_bits + ROUND_BITS. The low bits carry the
 // guard, round and sticky information. Round once, including at underflow.
-fn round_and_pack(sign: u128, mut exponent: i32, mut extended: u128) -> u128 {
-    if exponent < MIN_EXPONENT {
-        extended = shift_right_sticky(extended, (MIN_EXPONENT - exponent) as u32);
-        exponent = MIN_EXPONENT;
+fn round_and_pack(
+    negative: bool,
+    exponent: i32,
+    mut extended: u128,
+    rounding: Rounding,
+    fraction_bits: u32,
+    bias: i32,
+) -> Outcome<u128> {
+    let min_exponent = 1 - bias;
+    // IEEE §7.5 permits tininess before rounding. Use it for both arithmetic
+    // and conversions, as Arm DDI 0487 M.b §J1.4.3.193 does with FPCR.AH clear.
+    let tiny = exponent < min_exponent;
+    if tiny {
+        extended = shift_right_sticky(extended, (min_exponent - exponent) as u32);
     }
-    let mut significand = round_significand(extended);
-    if significand == HIDDEN_BIT << 1 {
-        significand >>= 1;
-        exponent += 1;
-    }
-    if exponent > MAX_EXPONENT {
-        return sign | INF;
-    }
-    let field = if significand >= HIDDEN_BIT {
-        (exponent + BIAS) as u128
+    let exponent = exponent.max(min_exponent);
+    let (significand, mut flags) = round_significand(extended, negative, rounding);
+    let infinity = ((2 * bias + 1) as u128) << fraction_bits;
+    let sign = if negative {
+        infinity + (1 << fraction_bits)
     } else {
         0
     };
-    sign | (field << FRACTION_BITS) | (significand & FRACTION_MASK)
+    // Adding the significand encodes the hidden bit, with a carry advancing
+    // the exponent when a subnormal becomes normal or a normal rounds up.
+    let magnitude = (((exponent + bias - 1) as u128) << fraction_bits) + significand;
+    if magnitude >= infinity {
+        let magnitude =
+            if rounding == Rounding::NearestEven || rounding.rounds_away_from_zero(negative) {
+                infinity
+            } else {
+                infinity - 1
+            };
+        return (sign | magnitude, OVERFLOW | INEXACT);
+    }
+    if tiny && flags == INEXACT {
+        flags |= UNDERFLOW;
+    }
+    (sign | magnitude, flags)
 }
 
 // The input has at most 64 significant bits. The scale for each input format
@@ -122,19 +187,27 @@ pub fn from_u64(value: u64) -> u128 {
 }
 
 // i128 can hold both signs of a 64-bit magnitude. Larger magnitudes and
-// nonfinite encodings map to the same fallback as an out-of-range checked cast.
-fn truncated_integer(bits: u128) -> i128 {
+// nonfinite encodings are out of range for each of the integer destinations.
+// N1570 §6.3.1.4 discards the fractional part. Report IEEE §5.8 exceptions.
+pub(crate) fn to_integer<T: TryFrom<i128> + Default>(bits: u128) -> Outcome<T> {
     let magnitude = bits & !SIGN;
     let exponent = (magnitude >> FRACTION_BITS) as i32 - BIAS;
-    if !(0..64).contains(&exponent) {
-        return 0;
+    if exponent >= 64 {
+        return (T::default(), INVALID);
+    }
+    if exponent < 0 {
+        return (T::default(), if magnitude != 0 { INEXACT } else { 0 });
     }
     let significand = HIDDEN_BIT | (magnitude & FRACTION_MASK);
-    let integer = (significand >> (FRACTION_BITS - exponent as u32)) as i128;
-    if bits & SIGN != 0 {
-        -integer
-    } else {
-        integer
+    let shift = FRACTION_BITS - exponent as u32;
+    let integer = (significand >> shift) as i128;
+    let signed = if bits & SIGN != 0 { -integer } else { integer };
+    match T::try_from(signed) {
+        Ok(value) => {
+            let fractional = significand & ((1 << shift) - 1) != 0;
+            (value, if fractional { INEXACT } else { 0 })
+        }
+        Err(_) => (T::default(), INVALID),
     }
 }
 
@@ -143,25 +216,25 @@ fn truncated_integer(bits: u128) -> i128 {
 
 /// Convert binary128 to i32 with roundTowardZero. Invalid conversions return 0.
 pub fn to_i32(bits: u128) -> i32 {
-    i32::try_from(truncated_integer(bits)).unwrap_or_default()
+    to_integer(bits).0
 }
 
 /// Convert binary128 to i64 with roundTowardZero. Invalid conversions return 0.
 pub fn to_i64(bits: u128) -> i64 {
-    i64::try_from(truncated_integer(bits)).unwrap_or_default()
+    to_integer(bits).0
 }
 
 /// Convert binary128 to u32 with roundTowardZero. Invalid conversions return 0.
 pub fn to_u32(bits: u128) -> u32 {
-    u32::try_from(truncated_integer(bits)).unwrap_or_default()
+    to_integer(bits).0
 }
 
 /// Convert binary128 to u64 with roundTowardZero. Invalid conversions return 0.
 pub fn to_u64(bits: u128) -> u64 {
-    u64::try_from(truncated_integer(bits)).unwrap_or_default()
+    to_integer(bits).0
 }
 
-fn widen(bits: u64, fraction_bits: u32, bias: i32) -> u128 {
+fn widen(bits: u64, fraction_bits: u32, bias: i32) -> Outcome<u128> {
     let max_field = (2 * bias + 1) as u64;
     let exponent_and_sign = bits >> fraction_bits;
     let sign = if exponent_and_sign & (max_field + 1) != 0 {
@@ -174,12 +247,18 @@ fn widen(bits: u64, fraction_bits: u32, bias: i32) -> u128 {
     let fraction = bits & (hidden_bit - 1);
     if field == max_field {
         if fraction == 0 {
-            return sign | INF;
+            return (sign | INF, 0);
         }
-        let payload = fraction & ((hidden_bit >> 1) - 1);
-        return sign | NAN | u128::from(payload);
+        let quiet_bit = hidden_bit >> 1;
+        let payload = fraction & (quiet_bit - 1);
+        let flags = if fraction & quiet_bit == 0 {
+            INVALID
+        } else {
+            0
+        };
+        return (sign | NAN | u128::from(payload), flags);
     }
-    if field == 0 {
+    let result = if field == 0 {
         from_scaled_integer(sign, fraction, 1 - bias - fraction_bits as i32)
     } else {
         from_scaled_integer(
@@ -187,22 +266,32 @@ fn widen(bits: u64, fraction_bits: u32, bias: i32) -> u128 {
             hidden_bit | fraction,
             field as i32 - bias - fraction_bits as i32,
         )
-    }
+    };
+    (result, 0)
 }
 
 /// Widen binary32 bits exactly to binary128, quieting NaNs and preserving their payloads.
 pub fn from_f32_bits(bits: u32) -> u128 {
-    widen(u64::from(bits), 23, 127)
+    from_f32_bits_with_flags(bits).0
 }
 
 /// Widen binary64 bits exactly to binary128, quieting NaNs and preserving their payloads.
 pub fn from_f64_bits(bits: u64) -> u128 {
+    from_f64_bits_with_flags(bits).0
+}
+
+pub(crate) fn from_f32_bits_with_flags(bits: u32) -> Outcome<u128> {
+    widen(u64::from(bits), 23, 127)
+}
+
+pub(crate) fn from_f64_bits_with_flags(bits: u64) -> Outcome<u128> {
     widen(bits, 52, 1023)
 }
 
-fn narrow(bits: u128, fraction_bits: u32, bias: i32) -> u64 {
+fn narrow(bits: u128, fraction_bits: u32, bias: i32, rounding: Rounding) -> Outcome<u64> {
     let max_field = (2 * bias + 1) as u64;
-    let sign = if bits & SIGN != 0 {
+    let negative = bits & SIGN != 0;
+    let sign = if negative {
         (max_field + 1) << fraction_bits
     } else {
         0
@@ -213,41 +302,59 @@ fn narrow(bits: u128, fraction_bits: u32, bias: i32) -> u64 {
         let quiet_bit = 1 << (fraction_bits - 1);
         // Keep the low payload bits, including the entire payload when it fits.
         let payload = magnitude as u64 & (quiet_bit - 1);
-        return sign | infinity | quiet_bit | payload;
+        return (
+            sign | infinity | quiet_bit | payload,
+            nan_flags(magnitude, 0),
+        );
     }
     if magnitude == INF {
-        return sign | infinity;
+        return (sign | infinity, 0);
     }
     if magnitude == 0 {
-        return sign;
+        return (sign, 0);
     }
 
     let finite = Finite::decode_nonzero(magnitude);
-    if finite.exponent > bias {
-        return sign | infinity;
-    }
-    let exponent = finite.exponent.max(1 - bias);
-    // Include the subnormal shift before rounding to avoid double rounding.
-    let shift = FRACTION_BITS - fraction_bits - ROUND_BITS + (exponent - finite.exponent) as u32;
-    let rounded = round_significand(shift_right_sticky(finite.significand, shift)) as u64;
-    // Leave room for the hidden bit to increment the exponent field. A carry
-    // can also move a subnormal to normal or the largest finite value to infinity.
-    let exponent_base = ((exponent + bias - 1) as u64) << fraction_bits;
-    sign | (exponent_base + rounded)
+    let shift = FRACTION_BITS - fraction_bits - ROUND_BITS;
+    let (rounded, flags) = round_and_pack(
+        negative,
+        finite.exponent,
+        shift_right_sticky(finite.significand, shift),
+        rounding,
+        fraction_bits,
+        bias,
+    );
+    (rounded as u64, flags)
 }
 
 /// Narrow binary128 to binary32 bits with roundTiesToEven and quiet NaNs.
 pub fn to_f32_bits(bits: u128) -> u32 {
-    narrow(bits, 23, 127) as u32
+    to_f32_bits_rounded(bits, Rounding::NearestEven).0
 }
 
 /// Narrow binary128 to binary64 bits with roundTiesToEven and quiet NaNs.
 pub fn to_f64_bits(bits: u128) -> u64 {
-    narrow(bits, 52, 1023)
+    to_f64_bits_rounded(bits, Rounding::NearestEven).0
+}
+
+/// Narrow binary128 to binary32 with the supplied rounding direction.
+pub fn to_f32_bits_rounded(bits: u128, rounding: Rounding) -> Outcome<u32> {
+    let (rounded, flags) = narrow(bits, 23, 127, rounding);
+    (rounded as u32, flags)
+}
+
+/// Narrow binary128 to binary64 with the supplied rounding direction.
+pub fn to_f64_bits_rounded(bits: u128, rounding: Rounding) -> Outcome<u64> {
+    narrow(bits, 52, 1023, rounding)
 }
 
 /// Add two binary128 encodings.
-pub fn add(mut a: u128, mut b: u128) -> u128 {
+pub fn add(a: u128, b: u128) -> u128 {
+    add_rounded(a, b, Rounding::NearestEven).0
+}
+
+/// Add two binary128 encodings with the supplied rounding direction.
+pub fn add_rounded(mut a: u128, mut b: u128, rounding: Rounding) -> Outcome<u128> {
     // Absolute-value encodings are ordered by magnitude for numeric inputs.
     if a & !SIGN < b & !SIGN {
         swap(&mut a, &mut b);
@@ -255,19 +362,32 @@ pub fn add(mut a: u128, mut b: u128) -> u128 {
     let a_mag = a & !SIGN;
     let b_mag = b & !SIGN;
     let opposite = (a ^ b) & SIGN != 0;
-    if a_mag > INF || (a_mag == INF && b_mag == INF && opposite) {
-        return NAN;
+    if a_mag > INF {
+        return (NAN, nan_flags(a_mag, b_mag));
     }
     if a_mag == INF {
-        return a;
+        return if b_mag == INF && opposite {
+            (NAN, INVALID)
+        } else {
+            (a, 0)
+        };
+    }
+    // IEEE §6.3 gives an exact cancellation the sign of roundTowardNegative.
+    // Equal-sign zeros keep their sign.
+    if opposite && a_mag == b_mag {
+        return (
+            if rounding == Rounding::Downward {
+                SIGN
+            } else {
+                0
+            },
+            0,
+        );
     }
     if b_mag == 0 {
-        return if a_mag == 0 { a & b } else { a };
+        return (a, 0);
     }
-    if opposite && a_mag == b_mag {
-        return 0;
-    }
-    let sign = a & SIGN;
+    let negative = a & SIGN != 0;
     let a = Finite::decode_nonzero(a_mag);
     let b = Finite::decode_nonzero(b_mag);
     let mut exponent = a.exponent;
@@ -292,12 +412,17 @@ pub fn add(mut a: u128, mut b: u128) -> u128 {
             sum
         }
     };
-    round_and_pack(sign, exponent, extended)
+    round_and_pack(negative, exponent, extended, rounding, FRACTION_BITS, BIAS)
 }
 
 /// Subtract two binary128 encodings.
 pub fn sub(a: u128, b: u128) -> u128 {
-    add(a, b ^ SIGN)
+    sub_rounded(a, b, Rounding::NearestEven).0
+}
+
+/// Subtract two binary128 encodings with the supplied rounding direction.
+pub fn sub_rounded(a: u128, b: u128, rounding: Rounding) -> Outcome<u128> {
+    add_rounded(a, b ^ SIGN, rounding)
 }
 
 // Form the 226-bit product in two u128 words using four 64-bit limb products.
@@ -315,17 +440,25 @@ fn significand_product(a: u128, b: u128) -> (u128, u128) {
 
 /// Multiply two binary128 encodings.
 pub fn mul(a: u128, b: u128) -> u128 {
+    mul_rounded(a, b, Rounding::NearestEven).0
+}
+
+/// Multiply two binary128 encodings with the supplied rounding direction.
+pub fn mul_rounded(a: u128, b: u128, rounding: Rounding) -> Outcome<u128> {
     let sign = (a ^ b) & SIGN;
     let a = a & !SIGN;
     let b = b & !SIGN;
-    if a > INF || b > INF || (a == INF && b == 0) || (b == INF && a == 0) {
-        return NAN;
+    if a > INF || b > INF {
+        return (NAN, nan_flags(a, b));
+    }
+    if (a == INF && b == 0) || (b == INF && a == 0) {
+        return (NAN, INVALID);
     }
     if a == INF || b == INF {
-        return sign | INF;
+        return (sign | INF, 0);
     }
     if a == 0 || b == 0 {
-        return sign;
+        return (sign, 0);
     }
 
     let a = Finite::decode_nonzero(a);
@@ -338,25 +471,39 @@ pub fn mul(a: u128, b: u128) -> u128 {
     let from_low = low >> shift;
     let sticky = u128::from(low << (128 - shift) != 0);
     round_and_pack(
-        sign,
+        sign != 0,
         a.exponent + b.exponent + product_carry as i32,
         from_high | from_low | sticky,
+        rounding,
+        FRACTION_BITS,
+        BIAS,
     )
 }
 
 /// Divide two binary128 encodings.
 pub fn div(a: u128, b: u128) -> u128 {
+    div_rounded(a, b, Rounding::NearestEven).0
+}
+
+/// Divide two binary128 encodings with the supplied rounding direction.
+pub fn div_rounded(a: u128, b: u128, rounding: Rounding) -> Outcome<u128> {
     let sign = (a ^ b) & SIGN;
     let a = a & !SIGN;
     let b = b & !SIGN;
-    if a > INF || b > INF || (a == INF && b == INF) || (a == 0 && b == 0) {
-        return NAN;
+    if a > INF || b > INF {
+        return (NAN, nan_flags(a, b));
     }
-    if a == INF || b == 0 {
-        return sign | INF;
+    if (a == INF && b == INF) || (a == 0 && b == 0) {
+        return (NAN, INVALID);
+    }
+    if a == INF {
+        return (sign | INF, 0);
+    }
+    if b == 0 {
+        return (sign | INF, DIVIDE_BY_ZERO);
     }
     if a == 0 || b == INF {
-        return sign;
+        return (sign, 0);
     }
 
     let a = Finite::decode_nonzero(a);
@@ -375,9 +522,12 @@ pub fn div(a: u128, b: u128) -> u128 {
         }
     }
     round_and_pack(
-        sign,
+        sign != 0,
         a.exponent - b.exponent - scale as i32,
         quotient | u128::from(remainder != 0),
+        rounding,
+        FRACTION_BITS,
+        BIAS,
     )
 }
 
@@ -392,13 +542,17 @@ pub enum Comparison {
 
 /// Compare two binary128 encodings, treating signed zeros as equal.
 pub fn compare(a: u128, b: u128) -> Comparison {
+    compare_with_flags(a, b).0
+}
+
+pub(crate) fn compare_with_flags(a: u128, b: u128) -> Outcome<Comparison> {
     let a_mag = a & !SIGN;
     let b_mag = b & !SIGN;
     if a_mag > INF || b_mag > INF {
-        return Comparison::Unordered;
+        return (Comparison::Unordered, nan_flags(a_mag, b_mag));
     }
     if a_mag | b_mag == 0 {
-        return Comparison::Equal;
+        return (Comparison::Equal, 0);
     }
 
     let ordering = match (a & SIGN != 0, b & SIGN != 0) {
@@ -407,9 +561,10 @@ pub fn compare(a: u128, b: u128) -> Comparison {
         (true, true) => b_mag.cmp(&a_mag),
         (false, false) => a_mag.cmp(&b_mag),
     };
-    match ordering {
+    let result = match ordering {
         Ordering::Less => Comparison::Less,
         Ordering::Equal => Comparison::Equal,
         Ordering::Greater => Comparison::Greater,
-    }
+    };
+    (result, 0)
 }
