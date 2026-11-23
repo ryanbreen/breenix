@@ -23,7 +23,7 @@
       "sha-drop-sha512-rotate.patch": "d993c4f4847c86107675554245f0f6d2ad0a7c7c5bb46db99a8ba683763f06ad",
       "list-drop-installer-paths.patch": "656b5604783b43ca795b763ddc7a90d170853eec1c00f1888dadd852840e4f7c",
       "host-drop-docproc.patch": "0ae2b34beda59f0e1f0d27461d5ab457fa729b9d3ae2a032ddf5094e995341a8",
-      "free-breenix-sysinfo.patch": "ab72c7350a18cfb74db90a7ffc3f7eed6d389c627f4fbc5347bcc9f429f1541a"
+      "free-breenix-sysinfo.patch": "c16f3a7a97f30df90d4ccdef5dc73355899f0ede2d7671e1932ff58521df5553"
     }
   },
   "files": [
