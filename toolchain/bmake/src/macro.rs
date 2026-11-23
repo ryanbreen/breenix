@@ -1,6 +1,6 @@
 //! Assignment, expansion and internal macros from POSIX.1-2024 make.
 
-use crate::{reader::outside_macro_references, Error, Location};
+use crate::{graph::archive_member, reader::outside_macro_references, Error, Location};
 use std::{
     collections::HashMap,
     io::{self, Write},
@@ -69,8 +69,8 @@ pub(crate) struct Automatic<'a> {
 
 impl<'a> Automatic<'a> {
     pub(crate) fn for_target(name: &'a str) -> Self {
-        let archive = name.strip_suffix(')').and_then(|name| name.split_once('('));
-        let (target, member) = archive.map_or((name, None), |(file, member)| (file, Some(member)));
+        let (target, member) =
+            archive_member(name).map_or((name, None), |(file, member)| (file, Some(member)));
         Self {
             target,
             member,

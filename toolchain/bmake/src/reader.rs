@@ -2,6 +2,7 @@
 //! "Target Rules", "Macros" and "Include Lines".
 
 use crate::{
+    graph::archive_member,
     r#macro::{separate_words, Automatic, Macros},
     Error, Location,
 };
@@ -101,8 +102,14 @@ pub(crate) fn reload(
 }
 
 pub(crate) fn check_target(name: &str, location: &Location) -> Result<(), Error> {
-    if matches!(name, ".WAIT" | ".NOTPARALLEL") || name.contains(['(', ')']) {
+    if matches!(name, ".WAIT" | ".NOTPARALLEL") {
         return Err(Error::deferred(location, name));
+    }
+    if name.contains(['(', ')']) && archive_member(name).is_none() {
+        return Err(Error::new(
+            location,
+            format!("invalid archive member '{name}'"),
+        ));
     }
     Ok(())
 }

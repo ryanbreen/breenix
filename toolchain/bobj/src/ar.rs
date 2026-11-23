@@ -8,6 +8,7 @@ use crate::Error;
 const MAGIC: &[u8; 8] = b"!<arch>\n";
 const HEADER: usize = 60;
 const NAME_WIDTH: usize = 16;
+const DATE_WIDTH: usize = 12;
 const SIZE_OFFSET: usize = 48;
 const SIZE_WIDTH: usize = 10;
 const TRAILER: &[u8; 2] = b"`\n";
@@ -18,6 +19,20 @@ pub struct Member<'a> {
     pub data_offset: usize,
     pub name: &'a [u8],
     pub bytes: &'a [u8],
+    date: &'a [u8],
+}
+
+impl Member<'_> {
+    /// Solaris ar(3HEAD) stores the member's modification date in `ar_date`.
+    pub fn timestamp(&self) -> Result<i64, Error> {
+        std::str::from_utf8(self.date)
+            .ok()
+            .and_then(|date| date.trim_end_matches(' ').parse().ok())
+            .ok_or(Error::new(
+                self.header_offset + NAME_WIDTH,
+                "invalid archive member timestamp",
+            ))
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -173,6 +188,7 @@ fn scan(bytes: &[u8]) -> Result<Scan<'_>, Error> {
                     data_offset: payload_start,
                     name,
                     bytes: payload,
+                    date: &header[NAME_WIDTH..NAME_WIDTH + DATE_WIDTH],
                 });
             }
         }

@@ -1,9 +1,9 @@
 //! Serial recipes and file freshness for POSIX.1-2024 make.
 
 use crate::{
-    graph::{Graph, Node},
+    graph::{archive_member, Graph, Node},
     inference::Suffixes,
-    r#macro::{Automatic, Macros},
+    r#macro::{Automatic, MacroSource, Macros},
     reader::{Entry, IncludeFile, Makefile, SourceLine},
     special::Specials,
     time, Error,
@@ -137,9 +137,18 @@ pub(crate) fn build(
     }
 }
 
-fn target_time(target: &str, specials: &Specials) -> Result<Option<SystemTime>, String> {
+fn target_time(node: &Node<'_>, specials: &Specials) -> Result<Option<SystemTime>, String> {
+    let target = node.name;
     if specials.phony.contains(target) {
         Ok(None)
+    } else if let Some((archive, member)) = archive_member(target) {
+        time::member_modified(archive, member).map_err(|reason| {
+            let location = node
+                .location
+                .cloned()
+                .unwrap_or_else(|| MacroSource::CommandLine.location());
+            Error::new(&location, format!("target '{target}': {reason}")).to_string()
+        })
     } else {
         time::modified(target)
     }
@@ -156,7 +165,7 @@ fn update(
 ) -> Result<Option<SystemTime>, String> {
     let target = node.name;
     let phony = specials.phony.contains(target);
-    let modified = target_time(target, specials)?;
+    let modified = target_time(node, specials)?;
     if modified.is_none() && !phony && !node.has_rule {
         return Err(format!("no rule to make prerequisite '{target}'"));
     }
@@ -174,7 +183,10 @@ fn update(
     let inference = node.inference();
     let mut automatic = Automatic::for_target(target);
     automatic.source = inference.map(|rule| rule.source.as_str());
-    automatic.stem = inference.map_or_else(|| suffixes.stem(target), |rule| &rule.stem);
+    automatic.stem = inference.map_or_else(
+        || suffixes.stem(automatic.member.unwrap_or(target)),
+        |rule| &rule.stem,
+    );
     let newer = newer.join(" ");
     automatic.newer = &newer;
 
@@ -192,6 +204,7 @@ fn update(
                 if failure.interrupted
                     && (!mode.dry_run || mode.remaking)
                     && !phony
+                    && automatic.member.is_none()
                     && !specials.precious.contains(target)
                 {
                     if let Err(cleanup) = remove_interrupted_target(target, modified) {
@@ -205,7 +218,7 @@ fn update(
     if skipped {
         Ok(None)
     } else {
-        target_time(target, specials)
+        target_time(node, specials)
     }
 }
 

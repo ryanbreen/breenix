@@ -824,20 +824,15 @@ fn unsupported_25_6c_construct_is_located_error() {
     }
 
     let project = Project::new("all:\n\t@printf wrong > ran\n");
-    for (arguments, variable, location, construct) in [
-        (&["-j2"][..], None::<&str>, "<command line>:1:", "-j"),
-    ] {
-        let mut command = project.command();
-        command.args(["-f", "project.mk"]).args(arguments);
-        if let Some(value) = variable {
-            command.env("MAKEFLAGS", value);
-        }
-        let output = command.output().unwrap();
-        assert_eq!(output.status.code(), Some(2), "{output:?}");
-        let stderr = String::from_utf8(output.stderr).unwrap();
-        assert!(stderr.contains(location), "{stderr}");
-        assert!(stderr.contains(construct), "{stderr}");
-        assert!(stderr.contains("not supported until 25.6c"), "{stderr}");
-        assert!(!project.0.join("ran").exists());
-    }
+    let output = project
+        .command()
+        .args(["-f", "project.mk", "-j2"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("<command line>:1:"), "{stderr}");
+    assert!(stderr.contains("-j"), "{stderr}");
+    assert!(stderr.contains("not supported until 25.6c"), "{stderr}");
+    assert!(!project.0.join("ran").exists());
 }

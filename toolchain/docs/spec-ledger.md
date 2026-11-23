@@ -222,7 +222,7 @@ lane operations and intrinsics are outside this subset.
 | Automatic variables | POSIX.1-2024 make, “Internal Macros” and “Inference Rules”. The runner uses the inferred source and stem where applicable and compares prerequisite and target timestamps for `$?`. |
 | Includes and makefile selection | POSIX.1-2024 make, “Include Lines”, “Options” and “Extended Description”. Include paths resolve from the working directory and are read in order. The GNU make manual's “Summary of Options” specifies `-C`. |
 | Graph traversal and freshness | POSIX.1-2024 make, “Extended Description”, “Target Rules” and “Exit Status”. Dependencies are updated in makefile order. Only a strictly newer prerequisite makes an existing file stale. |
-| Suffix inference | POSIX.1-2024 make, “Inference Rules” and “Default Rules”. `.SUFFIXES` appends to or clears the ordered search list. The built-in rules cover `.c`, `.sh`, `.c.o`, `.y.o`, `.l.o`, `.y.c` and `.l.c`. The `.c.a` rule belongs to archive-member inference in 25.6c. XSI/SCCS rules are outside the serial subset. Breenix adds `.s.o` with overrideable `AS` and `ASFLAGS`. |
+| Suffix inference | POSIX.1-2024 make, “Inference Rules” and “Default Rules”. `.SUFFIXES` appends to or clears the ordered search list. The built-in rules cover `.c`, `.sh`, `.c.o`, `.y.o`, `.l.o`, `.y.c` and `.l.c`. The 25.6c `.c.a` rule compiles the member's `.c` source, inserts the object into the archive, then removes the standalone object. XSI/SCCS rules are outside the serial subset. Breenix adds `.s.o` with overrideable `AS` and `ASFLAGS`. |
 | Special targets | POSIX.1-2024 make, “Target Rules”. `.PHONY` opts targets into a rebuild on each invocation, `.DEFAULT` supplies a fallback recipe, and `.IGNORE` and `.SILENT` scope recipe error handling and echo. `.POSIX` declares the serial semantics bmake uses by default. `.PRECIOUS` preserves output when a recipe shell reports an interruption. |
 | Recipe options | POSIX.1-2024 make, “Options”, “Makefile Execution” and “Exit Status”. `-n` prints pending recipes, with the `+` prefix still forcing execution. `-k` skips dependents of failures and attempts independent work before returning 2. `-i` continues after command errors and `-s` suppresses recipe echo. |
 
@@ -261,9 +261,14 @@ allows delayed remaking. bmake reads the rules before updating includes,
 executes include recipes even under `-n`, and rereads the makefiles when an
 include's contents change.
 
-25.6c also covers archive members and their timestamps, the `.WAIT` barrier,
-`.NOTPARALLEL`, the `-j` job pool, and target cleanup when a signal stops bmake
-itself.
+25.6c archive targets and prerequisites follow POSIX.1-2024 make's
+[Libraries, Internal Macros and Default Rules](https://pubs.opengroup.org/onlinepubs/9799919799/utilities/make.html#tag_20_76_13_07).
+For `lib(member.o)`, `$@` is `lib` and `$%` is `member.o`. Freshness uses the
+member's `ar_date` as read by `bobj` from the common archive header. The
+`ar_date` value `0` emitted by deterministic `bar` represents the Unix epoch.
+
+25.6c also covers the `.WAIT` barrier, `.NOTPARALLEL`, the `-j` job pool, and
+target cleanup when a signal stops bmake itself.
 
 ### AMD64 variadic definitions (25.7b2)
 

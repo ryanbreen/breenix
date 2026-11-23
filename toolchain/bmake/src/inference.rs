@@ -1,8 +1,8 @@
 //! Single-step suffix inference from POSIX.1-2024 make, "Inference Rules"
-//! and "Default Rules". Archive-member inference and XSI/SCCS are outside
-//! this slice. The assembler rule is a Breenix extension.
+//! and "Default Rules". The assembler rule is a Breenix extension.
 
 use crate::{
+    graph::archive_member,
     reader::{Entry, Inference, Makefile, Rule, SourceLine},
     special::Specials,
     Error, Location,
@@ -38,6 +38,14 @@ const DEFAULT_RULES: &[(&str, &[&str])] = &[
     ),
     (".y.c", &["$(YACC) $(YFLAGS) $<", "mv y.tab.c $@"]),
     (".l.c", &["$(LEX) $(LFLAGS) $<", "mv lex.yy.c $@"]),
+    (
+        ".c.a",
+        &[
+            "$(CC) -c $(CFLAGS) $<",
+            "$(AR) $(ARFLAGS) $@ $*.o",
+            "rm -f $*.o",
+        ],
+    ),
     (".s.o", &["$(AS) $(ASFLAGS) -o $@ $<"]),
 ];
 
@@ -195,7 +203,14 @@ impl Suffixes {
     }
 
     fn infer(&self, target: &str, has_rule: bool, rules: &HashMap<String, Rule>) -> Option<Rule> {
-        let (stem, suffix) = if let Some(parts) = self.suffix(target) {
+        // POSIX Libraries: .s2.a uses the member stem for the source and
+        // applies only to archive-member targets.
+        let (stem, suffix) = if let Some((_, member)) = archive_member(target) {
+            if !self.known(".a") {
+                return None;
+            }
+            (member.strip_suffix(".o")?, ".a")
+        } else if let Some(parts) = self.suffix(target).filter(|&(_, suffix)| suffix != ".a") {
             parts
         } else if !has_rule
             && target
@@ -207,10 +222,6 @@ impl Suffixes {
         } else {
             return None;
         };
-        // The POSIX .s2.a rules operate on an archive member.
-        if suffix == ".a" {
-            return None;
-        }
         for source_suffix in &self.0 {
             let Some(rule) = rules.get(&format!("{source_suffix}{suffix}")) else {
                 continue;

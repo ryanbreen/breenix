@@ -16,9 +16,20 @@ pub struct Graph<'a> {
 #[derive(Debug)]
 pub struct Node<'a> {
     pub(crate) name: &'a str,
+    pub(crate) location: Option<&'a Location>,
     pub(crate) has_rule: bool,
     prerequisites: Vec<Edge<'a>>,
     recipe_rule: Option<&'a Rule>,
+}
+
+/// Split a library target or prerequisite into its archive and member names.
+pub(crate) fn archive_member(name: &str) -> Option<(&str, &str)> {
+    let (archive, member) = name.strip_suffix(')')?.split_once('(')?;
+    (!archive.is_empty()
+        && !member.is_empty()
+        && !archive.contains(')')
+        && !member.contains(['(', ')']))
+    .then_some((archive, member))
 }
 
 #[derive(Debug)]
@@ -64,7 +75,10 @@ impl<'a> Graph<'a> {
                 graph.add_rule(rule)?;
             }
         }
-        let mut roots: Vec<_> = targets.iter().map(|target| graph.intern(target)).collect();
+        let mut roots: Vec<_> = targets
+            .iter()
+            .map(|target| graph.intern(target, None))
+            .collect();
         if let Some(target) = default_target.filter(|_| roots.is_empty()) {
             roots.push(graph.indices[target]);
         }
@@ -96,11 +110,18 @@ impl<'a> Graph<'a> {
     }
 
     fn add_rule(&mut self, rule: &'a Rule) -> Result<(), Error> {
-        let targets: Vec<_> = rule.targets.iter().map(|name| self.intern(name)).collect();
+        // Derived rules point to the inference recipe, not the reference to
+        // the target. Direct command-line goals have no makefile location.
+        let location = rule.inference.is_none().then_some(&rule.location);
+        let targets: Vec<_> = rule
+            .targets
+            .iter()
+            .map(|name| self.intern(name, location))
+            .collect();
         let prerequisites: Vec<_> = rule
             .prerequisites
             .iter()
-            .map(|name| self.intern(name))
+            .map(|name| self.intern(name, location))
             .collect();
         for target in targets {
             let node = &mut self.nodes[target];
@@ -126,11 +147,12 @@ impl<'a> Graph<'a> {
         Ok(())
     }
 
-    fn intern(&mut self, name: &'a str) -> usize {
+    fn intern(&mut self, name: &'a str, location: Option<&'a Location>) -> usize {
         *self.indices.entry(name).or_insert_with(|| {
             let index = self.nodes.len();
             self.nodes.push(Node {
                 name,
+                location,
                 has_rule: false,
                 prerequisites: Vec::new(),
                 recipe_rule: None,
