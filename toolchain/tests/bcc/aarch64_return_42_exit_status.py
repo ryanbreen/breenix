@@ -66,6 +66,22 @@ def main():
             probe = work / "probe.s"
             probe.write_text(PROBE)
             sources.append(probe)
+        script = work / "main.ld"
+        script_text = LINKER_SCRIPT.read_text().replace("ENTRY(_start)", "ENTRY(main)")
+        if source_texts and mmap.PAGESIZE > 4096:
+            # bld starts the following load at a 4 KiB boundary. End the
+            # executable load on a host page boundary so the runner can
+            # protect it separately from writable data on 16 KiB macOS.
+            padding = work / "host-padding.s"
+            padding.write_text(
+                f".section .text.host_padding\n.balign {mmap.PAGESIZE}\n"
+                f".zero {mmap.PAGESIZE}\n"
+            )
+            sources.append(padding)
+            script_text = script_text.replace(
+                "*(.text .text.*)", "*(.text) KEEP(*(.text.host_padding))"
+            )
+        script.write_text(script_text)
         objects = []
         for path in sources:
             assembly = path.with_suffix(".s")
@@ -74,13 +90,6 @@ def main():
             obj = assembly.with_suffix(".o")
             checked(bas, "--target", "aarch64", "-o", obj, assembly)
             objects.append(obj)
-        script = work / "main.ld"
-        # The native runner maps each segment with the host page protections.
-        script.write_text(
-            LINKER_SCRIPT.read_text()
-            .replace("ENTRY(_start)", "ENTRY(main)")
-            .replace("ALIGN(4K)", f"ALIGN({mmap.PAGESIZE})")
-        )
         executable = work / "main"
         checked(bld, "-T", script, "--gc-sections", "-o", executable, *objects)
         result = run(sys.executable, HERE / "return_42_exit_status.py", "--call-entry", executable)
