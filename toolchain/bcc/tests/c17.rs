@@ -93,25 +93,65 @@ fn dr_correction_465() {
     // WG14 N2244 DR 465: the pointed-to type determines the result,
     // including for a null pointer. Preserve evaluation of the argument.
     let source = Source::new("dr465");
-    let prefix = r"
+    let code = r"
 #include <stdatomic.h>
 struct one_int { int value; };
-atomic_int *get_pointer(void);
+static int calls;
+static atomic_int *get_pointer(void) { ++calls; return (atomic_int *)0; }
+int main(void) {
+    _Atomic(struct one_int) record;
+    if (!atomic_is_lock_free(get_pointer()) || calls != 1)
+        return 1;
+    if (!atomic_is_lock_free((atomic_int *)0))
+        return 2;
+    if (atomic_is_lock_free(&record))
+        return 3;
+    return 0;
+}
 ";
-    let actual = r"
-int scalar(void) { return atomic_is_lock_free(get_pointer()); }
-int null_scalar(void) { return atomic_is_lock_free((atomic_int *)0); }
-int record(_Atomic(struct one_int) *p) { return atomic_is_lock_free(p); }
-";
-    let expected = r"
-int scalar(void) { return (get_pointer(), (_Bool)1); }
-int null_scalar(void) { return ((atomic_int *)0, (_Bool)1); }
-int record(_Atomic(struct one_int) *p) { return (p, (_Bool)0); }
-";
-    assert_eq!(
-        success(source.compile(&format!("{prefix}{actual}"), "-S")),
-        success(source.compile(&format!("{prefix}{expected}"), "-S")),
+    let assembly = source.0.with_extension("s");
+    let object = source.0.with_extension("o");
+    let executable = source.0.with_extension("elf");
+    fs::write(&assembly, success(source.compile(code, "-S"))).unwrap();
+    let bcc = Path::new(env!("CARGO_BIN_EXE_bcc"));
+    success(
+        Command::new(bcc.with_file_name("bas"))
+            .args(["--target", "x86_64", "-o"])
+            .arg(&object)
+            .arg(&assembly)
+            .output()
+            .unwrap(),
     );
+    let toolchain = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let script = fs::read_to_string(toolchain.join("../userspace/programs/linker.ld")).unwrap();
+    let entry_script = source.0.with_extension("ld");
+    fs::write(&entry_script, script.replace("ENTRY(_start)", "ENTRY(main)")).unwrap();
+    success(
+        Command::new(bcc.with_file_name("bld"))
+            .arg("-T")
+            .arg(&entry_script)
+            .args(["--gc-sections", "-o"])
+            .arg(&executable)
+            .arg(&object)
+            .output()
+            .unwrap(),
+    );
+    let mut python = if cfg!(target_os = "macos") {
+        let mut command = Command::new("arch");
+        command.args(["-x86_64", "/usr/bin/python3"]);
+        command
+    } else {
+        Command::new("python3")
+    };
+    let stdout = success(
+        python
+            .arg(toolchain.join("tests/bcc/return_42_exit_status.py"))
+            .arg("--call-entry")
+            .arg(executable)
+            .output()
+            .unwrap(),
+    );
+    assert!(stdout.is_empty());
 }
 
 #[test]
