@@ -1,8 +1,8 @@
-//! Unoptimized AArch64 integer assembly for bas.
+//! Unoptimized AArch64 scalar assembly for bas.
 //!
 //! AAPCS64 2025Q1 §§6.1, 6.4.5–6.4.6, 6.8–6.9 and §10.1.1 Table 3
 //! define the register, stack and C type conventions. A64 instructions
-//! and their operand forms follow Arm DDI 0487 M.b §C6.2.
+//! and their operand forms follow Arm DDI 0487 M.b Chapters C6–C7.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write;
@@ -12,10 +12,13 @@ use crate::sema::{
     Argument, Binary, Expression, ExpressionKind, Function, Linkage, Statement, TranslationUnit,
     Unary,
 };
-use crate::types::{Integer, Kind, Type};
+use crate::types::{Float, Integer, Kind, Type};
 
+mod abi;
+mod float;
 mod flow;
 
+use abi::{ArgumentLocation, ArgumentSlots};
 use flow::Slot;
 
 const ARGUMENT_REGISTERS: usize = 8;
@@ -98,16 +101,18 @@ impl<'src> Emitter<'_, 'src> {
             .push_str("    stp x29, x30, [sp, #-16]!\n    mov x29, sp\n");
         self.adjust_stack("sub", frame);
 
+        let mut slots = ArgumentSlots::default();
         for (index, param) in function.params.iter().enumerate() {
             self.local_address(index, 0, "x10");
-            if index < ARGUMENT_REGISTERS {
-                self.store_object(&param.ty, index, "x10");
-            } else {
-                let offset = FRAME_RECORD + (index - ARGUMENT_REGISTERS) * 8;
-                self.offset_address("x9", "x29", offset as i64);
-                self.load(&param.ty, "x9");
-                self.store_object(&param.ty, 0, "x10");
-            }
+            let register = match slots.next(&param.ty) {
+                ArgumentLocation::Register { index, .. } => index,
+                ArgumentLocation::Stack(offset) => {
+                    self.offset_address("x9", "x29", (FRAME_RECORD + offset) as i64);
+                    self.load(&param.ty, "x9");
+                    0
+                }
+            };
+            self.store_object(&param.ty, register, "x10");
         }
         self.statements(body, result, &epilogue)?;
         if function.linkage == Linkage::External
@@ -124,8 +129,8 @@ impl<'src> Emitter<'_, 'src> {
         Ok(())
     }
 
-    // x0 holds the address or a value extended to 64 bits according to
-    // its C type. Spill values that must survive recursive evaluation.
+    // Values use s0/d0 for float/double and x0 for addresses and integers
+    // extended according to their C type. Spill across recursive evaluation.
     fn value(&mut self, expr: &Expression<'src>) -> Result<(), Diagnostic> {
         match expr.ty.kind {
             Kind::Void | Kind::Array(..) | Kind::Function { .. } => {}
@@ -136,7 +141,7 @@ impl<'src> Emitter<'_, 'src> {
                 constant(&mut self.text, "x0", *bits);
                 self.normalize(&expr.ty);
             }
-            ExpressionKind::Float(_) => unreachable!("floating-point value rejected above"),
+            ExpressionKind::Float(bits) => self.float_constant(&expr.ty, *bits),
             ExpressionKind::String(_)
             | ExpressionKind::Identifier(_)
             | ExpressionKind::Local(_) => {
@@ -167,7 +172,7 @@ impl<'src> Emitter<'_, 'src> {
             ExpressionKind::Conditional { condition, yes, no } => {
                 let otherwise = self.label();
                 let end = self.label();
-                self.jump_if(condition, "cbz", &otherwise)?;
+                self.jump_if(condition, false, &otherwise)?;
                 self.converted(yes, &expr.ty)?;
                 writeln!(self.text, "    b {end}\n{otherwise}:").unwrap();
                 self.converted(no, &expr.ty)?;
@@ -204,12 +209,20 @@ impl<'src> Emitter<'_, 'src> {
             Unary::Address => self.address(operand)?,
             Unary::Not => {
                 self.value(operand)?;
-                self.text.push_str("    cmp x0, #0\n    cset w0, eq\n");
+                self.compare_zero(&operand.ty);
+                self.text.push_str("    cset w0, eq\n");
             }
             Unary::Plus | Unary::Minus | Unary::Complement => {
                 self.converted(operand, result)?;
                 match op {
-                    Unary::Minus => self.text.push_str("    sub x0, xzr, x0\n"),
+                    Unary::Minus => {
+                        if let Kind::Float(precision) = result.kind {
+                            let fp = float::prefix(precision);
+                            writeln!(self.text, "    fneg {fp}0, {fp}0").unwrap();
+                        } else {
+                            self.text.push_str("    sub x0, xzr, x0\n");
+                        }
+                    }
                     Unary::Complement => self.text.push_str("    mvn x0, x0\n"),
                     _ => return Ok(()),
                 }
@@ -234,22 +247,26 @@ impl<'src> Emitter<'_, 'src> {
                 "cbnz"
             };
             self.value(left)?;
-            self.boolean();
+            self.boolean(&left.ty);
             writeln!(self.text, "    {branch} w0, {end}").unwrap();
             self.value(right)?;
-            self.boolean();
+            self.boolean(&right.ty);
             writeln!(self.text, "{end}:").unwrap();
         } else {
             self.converted(left, left_ty)?;
-            self.push_value();
+            self.push_value(value_prefix(left_ty));
             self.converted(right, right_ty)?;
             self.combine(op, left_ty, right_ty, result);
         }
         Ok(())
     }
 
-    // Consume the spilled left operand, leaving the right operand in x9.
+    // Consume the spilled left operand and combine it with the right operand.
     fn combine(&mut self, op: Binary, left: &Type, right: &Type, result: &Type) {
+        if let Kind::Float(precision) = left.kind {
+            self.float_binary(op, precision);
+            return;
+        }
         self.text
             .push_str("    mov x9, x0\n    ldr x0, [sp], #16\n");
         match (&left.kind, &right.kind, op) {
@@ -327,73 +344,8 @@ impl<'src> Emitter<'_, 'src> {
         writeln!(self.text, "    {instruction} x0, x0, x9").unwrap();
     }
 
-    fn call(
-        &mut self,
-        callee: &Expression<'src>,
-        arguments: &[Argument<'src>],
-    ) -> Result<(), Diagnostic> {
-        let direct = match (&callee.ty.kind, &callee.kind) {
-            (Kind::Function { .. }, ExpressionKind::Identifier(name)) => Some(*name),
-            _ => None,
-        };
-        let register_count = arguments.len().min(ARGUMENT_REGISTERS);
-        let stack_bytes = (arguments.len() - register_count) * 8;
-        let callee_slot = arguments.len() * 8;
-        let reserve = (callee_slot + usize::from(direct.is_none()) * 8).next_multiple_of(16);
-        self.adjust_stack("sub", reserve);
-        if let Some(name) = direct {
-            self.use_symbol(name, callee.position())?;
-        } else {
-            self.value(callee)?;
-            self.store_call_slot(callee_slot);
-        }
-
-        // AAPCS64 §6.8.2 C.9, C.14–C.17. Integer and pointer arguments
-        // use the same locations whether named or anonymous. Keep register
-        // arguments above the outgoing stack area during argument evaluation.
-        for (index, arg) in arguments.iter().enumerate() {
-            self.converted(&arg.expr, &arg.ty)?;
-            let offset = if index < register_count {
-                stack_bytes + index * 8
-            } else {
-                (index - register_count) * 8
-            };
-            self.store_call_slot(offset);
-        }
-        for register in 0..register_count {
-            let offset = stack_bytes + register * 8;
-            self.load_call_slot(register, offset);
-        }
-        if let Some(name) = direct {
-            writeln!(self.text, "    bl {name}").unwrap();
-        } else {
-            self.load_call_slot(16, callee_slot);
-            self.text.push_str("    blr x16\n");
-        }
-        self.adjust_stack("add", reserve);
-        Ok(())
-    }
-
-    fn store_call_slot(&mut self, offset: usize) {
-        if offset <= 4095 * 8 {
-            writeln!(self.text, "    str x0, [sp, #{offset}]").unwrap();
-        } else {
-            self.offset_address("x9", "sp", offset as i64);
-            self.text.push_str("    str x0, [x9]\n");
-        }
-    }
-
-    fn load_call_slot(&mut self, register: usize, offset: usize) {
-        if offset <= 4095 * 8 {
-            writeln!(self.text, "    ldr x{register}, [sp, #{offset}]").unwrap();
-        } else {
-            self.offset_address("x9", "sp", offset as i64);
-            writeln!(self.text, "    ldr x{register}, [x9]").unwrap();
-        }
-    }
-
-    fn push_value(&mut self) {
-        self.text.push_str("    str x0, [sp, #-16]!\n");
+    fn push_value(&mut self, register: char) {
+        writeln!(self.text, "    str {register}0, [sp, #-16]!").unwrap();
     }
 
     fn adjust_stack(&mut self, instruction: &str, bytes: usize) {
@@ -424,32 +376,37 @@ impl<'src> Emitter<'_, 'src> {
     }
 
     fn load(&mut self, ty: &Type, address: &str) {
-        let (op, register) = match ty.kind {
+        let (op, width) = match ty.kind {
             Kind::Integer(integer) => {
                 match (integer.layout().size, integer.is_signed(Target::Aarch64)) {
-                    (1, false) => ("ldrb", "w0"),
-                    (2, false) => ("ldrh", "w0"),
-                    (4, false) => ("ldr", "w0"),
-                    (1, true) => ("ldrsb", "x0"),
-                    (2, true) => ("ldrsh", "x0"),
-                    (4, true) => ("ldrsw", "x0"),
-                    _ => ("ldr", "x0"),
+                    (1, false) => ("ldrb", 'w'),
+                    (2, false) => ("ldrh", 'w'),
+                    (4, false) => ("ldr", 'w'),
+                    (1, true) => ("ldrsb", 'x'),
+                    (2, true) => ("ldrsh", 'x'),
+                    (4, true) => ("ldrsw", 'x'),
+                    _ => ("ldr", 'x'),
                 }
             }
-            Kind::Pointer(_) => ("ldr", "x0"),
+            Kind::Float(precision) => ("ldr", float::prefix(precision)),
+            Kind::Pointer(_) => ("ldr", 'x'),
             Kind::Array(..) | Kind::Function { .. } => return,
             _ => unreachable!(),
         };
-        writeln!(self.text, "    {op} {register}, [{address}]").unwrap();
+        writeln!(self.text, "    {op} {width}0, [{address}]").unwrap();
     }
 
     fn store_object(&mut self, ty: &Type, register: usize, address: &str) {
-        let (op, width) = match ty.layout().unwrap().size {
-            1 => ("strb", 'w'),
-            2 => ("strh", 'w'),
-            4 => ("str", 'w'),
-            8 => ("str", 'x'),
-            _ => unreachable!(),
+        let (op, width) = if let Kind::Float(precision) = ty.kind {
+            ("str", float::prefix(precision))
+        } else {
+            match ty.layout().unwrap().size {
+                1 => ("strb", 'w'),
+                2 => ("strh", 'w'),
+                4 => ("str", 'w'),
+                8 => ("str", 'x'),
+                _ => unreachable!(),
+            }
         };
         writeln!(self.text, "    {op} {width}{register}, [{address}]").unwrap();
     }
@@ -471,17 +428,51 @@ impl<'src> Emitter<'_, 'src> {
     }
 
     fn convert(&mut self, source: &Type, dest: &Type) {
-        if source.kind != dest.kind {
-            if dest.kind == Kind::Integer(Integer::Bool) {
-                self.boolean();
-            } else {
+        if source.kind == dest.kind {
+            return;
+        }
+        match (&source.kind, &dest.kind) {
+            (_, Kind::Integer(Integer::Bool)) => self.boolean(source),
+            (Kind::Integer(integer), Kind::Float(precision)) => {
+                let op = if integer.is_signed(Target::Aarch64) {
+                    "scvtf"
+                } else {
+                    "ucvtf"
+                };
+                let fp = float::prefix(*precision);
+                writeln!(self.text, "    {op} {fp}0, x0").unwrap();
+            }
+            (Kind::Float(precision), Kind::Integer(integer)) => {
+                let op = if integer.is_signed(Target::Aarch64) {
+                    "fcvtzs"
+                } else {
+                    "fcvtzu"
+                };
+                let fp = float::prefix(*precision);
+                writeln!(self.text, "    {op} x0, {fp}0").unwrap();
                 self.normalize(dest);
             }
+            (Kind::Float(from), Kind::Float(to)) => {
+                let from = float::prefix(*from);
+                let to = float::prefix(*to);
+                writeln!(self.text, "    fcvt {to}0, {from}0").unwrap();
+            }
+            _ => self.normalize(dest),
         }
     }
 
-    fn boolean(&mut self) {
-        self.text.push_str("    cmp x0, #0\n    cset w0, ne\n");
+    fn compare_zero(&mut self, ty: &Type) {
+        if let Kind::Float(precision) = ty.kind {
+            let fp = float::prefix(precision);
+            writeln!(self.text, "    fcmp {fp}0, #0.0").unwrap();
+        } else {
+            self.text.push_str("    cmp x0, #0\n");
+        }
+    }
+
+    fn boolean(&mut self, ty: &Type) {
+        self.compare_zero(ty);
+        self.text.push_str("    cset w0, ne\n");
     }
 
     fn label(&mut self) -> String {
@@ -519,13 +510,23 @@ fn check_symbol(name: &str, site: &Position) -> Result<(), Diagnostic> {
 }
 
 fn require_scalar(ty: &Type, site: &Position) -> Result<(), Diagnostic> {
-    if matches!(ty.kind, Kind::Integer(_) | Kind::Pointer(_)) {
+    if matches!(
+        ty.kind,
+        Kind::Integer(_) | Kind::Pointer(_) | Kind::Float(_)
+    ) {
         Ok(())
     } else {
         Err(Diagnostic::new(
             site,
-            "value is outside the AArch64 integer and pointer subset",
+            "value is outside the AArch64 scalar subset",
         ))
+    }
+}
+
+fn value_prefix(ty: &Type) -> char {
+    match ty.kind {
+        Kind::Float(precision) => float::prefix(precision),
+        _ => 'x',
     }
 }
 

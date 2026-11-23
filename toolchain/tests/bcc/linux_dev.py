@@ -65,11 +65,6 @@ def run_tool(name, command):
         raise ValueError(f"{name} exited {result.returncode}: {stderr}")
 
 
-# A3-u2 uses the same sealed set except for floating-point code generation,
-# which is the next A3 unit. Keep the x86 corpus on the full ruling 15 list.
-ARM_INTEGER_CORPUS = tuple(name for name in CORPUS if name != "floating-conversion")
-
-
 def compile_object(args, source, work):
     assembly = work / source.with_suffix(".s").name
     obj = work / source.with_suffix(".o").name
@@ -149,9 +144,7 @@ def main():
         print("codegen::aapcs64_scalar_calls PASS")
         return 0
 
-    cases = CASES
-    if args.corpus:
-        cases = ARM_INTEGER_CORPUS if args.arch == "aarch64" else CORPUS
+    cases = CORPUS if args.corpus else CASES
     passed = 0
     with TemporaryDirectory(prefix="bcc-linux-dev-") as work:
         for name in cases:

@@ -89,7 +89,7 @@ impl<'src> Emitter<'_, 'src> {
             }
             Statement::If { condition, yes, no } => {
                 let otherwise = self.label();
-                self.jump_if(condition, "cbz", &otherwise)?;
+                self.jump_if(condition, false, &otherwise)?;
                 self.statement(yes, result, epilogue)?;
                 if let Some(no) = no {
                     let end = self.label();
@@ -113,7 +113,7 @@ impl<'src> Emitter<'_, 'src> {
                 let end = self.flow_label(*break_to);
                 writeln!(self.text, "{start}:").unwrap();
                 if let Some(test) = condition.as_ref().filter(|_| !*post_test) {
-                    self.jump_if(test, "cbz", &end)?;
+                    self.jump_if(test, false, &end)?;
                 }
                 self.statement(body, result, epilogue)?;
                 writeln!(self.text, "{next}:").unwrap();
@@ -121,7 +121,7 @@ impl<'src> Emitter<'_, 'src> {
                     self.value(increment)?;
                 }
                 if let Some(test) = condition.as_ref().filter(|_| *post_test) {
-                    self.jump_if(test, "cbnz", &start)?;
+                    self.jump_if(test, true, &start)?;
                 } else {
                     writeln!(self.text, "    b {start}").unwrap();
                 }
@@ -175,11 +175,18 @@ impl<'src> Emitter<'_, 'src> {
     pub(super) fn jump_if(
         &mut self,
         condition: &Expression<'src>,
-        jump: &str,
+        branch_on_true: bool,
         label: &str,
     ) -> Result<(), Diagnostic> {
         self.value(condition)?;
-        writeln!(self.text, "    {jump} x0, {label}").unwrap();
+        if matches!(condition.ty.kind, Kind::Float(_)) {
+            self.compare_zero(&condition.ty);
+            let condition = if branch_on_true { "ne" } else { "eq" };
+            writeln!(self.text, "    b.{condition} {label}").unwrap();
+        } else {
+            let jump = if branch_on_true { "cbnz" } else { "cbz" };
+            writeln!(self.text, "    {jump} x0, {label}").unwrap();
+        }
         Ok(())
     }
 
@@ -222,11 +229,11 @@ impl<'src> Emitter<'_, 'src> {
         operation: Option<&(Binary, Type, Type)>,
     ) -> Result<(), Diagnostic> {
         self.address(left)?;
-        self.push_value();
+        self.push_value('x');
         if let Some((op, a, b)) = operation {
             self.load(&left.ty, "x0");
             self.convert(&left.ty, a);
-            self.push_value();
+            self.push_value(value_prefix(a));
             self.converted(right, b)?;
             self.combine(*op, a, b, a);
             self.convert(a, &left.ty);
@@ -248,6 +255,10 @@ impl<'src> Emitter<'_, 'src> {
         self.text.push_str("    mov x9, x0\n");
         let ty = &operand.ty;
         self.load(ty, "x9");
+        if let Kind::Float(precision) = ty.kind {
+            self.float_update(precision, increment, postfix);
+            return Ok(());
+        }
         if postfix {
             self.text.push_str("    mov x10, x0\n");
         }
@@ -258,7 +269,7 @@ impl<'src> Emitter<'_, 'src> {
         };
         self.add_sub_offset(op, "x0", "x0", step as u64);
         if ty.kind == Kind::Integer(Integer::Bool) {
-            self.boolean();
+            self.boolean(ty);
         } else {
             self.normalize(ty);
         }
