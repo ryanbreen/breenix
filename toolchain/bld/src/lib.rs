@@ -9,12 +9,14 @@ mod relocate;
 mod script;
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::fs::File;
+use std::io::{self, BufWriter, Write};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use bobj::elf::{aarch64::EM_AARCH64, EM_X86_64};
 use input::{FileSource, ReadSource};
-use object::Link;
+use object::{Definition, Link};
 use script::Script;
 
 type Result<T> = std::result::Result<T, String>;
@@ -52,7 +54,7 @@ impl Machine {
     }
 }
 
-const USAGE: &str = "usage: bld -o OUTPUT [-T SCRIPT] [--gc-sections]\n\
+const USAGE: &str = "usage: bld -o OUTPUT [-T SCRIPT] [-Map FILE] [--gc-sections]\n\
        \x20      [--whole-archive | --no-whole-archive | --start-group |\n\
        \x20       --end-group | OBJECT | ARCHIVE] ...";
 
@@ -65,6 +67,7 @@ struct Input {
 struct Options {
     output: PathBuf,
     script: Option<PathBuf>,
+    map: Option<PathBuf>,
     inputs: Vec<Vec<Input>>,
     gc: bool,
 }
@@ -81,7 +84,10 @@ impl Options {
                 b"-T" | b"--script" if options.script.is_none() => {
                     options.script.insert(PathBuf::new())
                 }
-                b"-o" | b"-T" | b"--script" => return Err(USAGE.into()),
+                // GNU ld 2.45 §2.1 names the map option. bld writes
+                // selected symbol, binding and input path as TSV.
+                b"-Map" if options.map.is_none() => options.map.insert(PathBuf::new()),
+                b"-o" | b"-T" | b"--script" | b"-Map" => return Err(USAGE.into()),
                 b"--gc-sections" => {
                     options.gc = true;
                     continue;
@@ -137,6 +143,9 @@ impl Options {
         if group.is_some() || options.output.as_os_str().is_empty() || options.inputs.is_empty() {
             return Err(USAGE.into());
         }
+        if options.map.as_ref() == Some(&options.output) {
+            return Err("bld: map and executable must have different paths".into());
+        }
         Ok(options)
     }
 }
@@ -148,6 +157,29 @@ fn align_up(value: u64, align: u64) -> Option<u64> {
 
 fn display(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
     String::from_utf8_lossy(bytes)
+}
+
+fn write_map(path: &Path, link: &Link) -> io::Result<()> {
+    let mut out = BufWriter::new(File::create(path)?);
+    let mut globals: Vec<_> = link.globals.iter().collect();
+    globals.sort_unstable_by_key(|(name, _)| *name);
+    for (name, global) in globals {
+        let binding = match global.definition {
+            Definition::Weak => "weak",
+            Definition::Strong => "strong",
+            Definition::Common => "common",
+            Definition::Undefined => continue,
+        };
+        let (input, symbol) = global.origin;
+        let object = &link.objects[input];
+        let section = usize::from(object.symbols[symbol].section);
+        if object.sections.get(section).is_some_and(|section| !section.live) {
+            continue;
+        }
+        out.write_all(name)?;
+        writeln!(out, "\t{binding}\t{}", object.path)?;
+    }
+    out.flush()
 }
 
 fn link(options: Options, source: &mut dyn ReadSource) -> Result<()> {
@@ -166,6 +198,10 @@ fn link(options: Options, source: &mut dyn ReadSource) -> Result<()> {
     let entry = link.entry_address()?;
     link.relocate(&mut image)?;
     image.write_headers(&link, entry);
+    if let Some(path) = options.map {
+        write_map(&path, &link)
+            .map_err(|error| format!("{}: cannot write link map: {error}", path.display()))?;
+    }
     input::write_executable(&options.output, &image.bytes).map_err(|error| {
         format!(
             "{}: cannot write executable: {error}",

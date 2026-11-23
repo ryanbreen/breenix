@@ -56,6 +56,7 @@ def fixture(config, work, source, functions, mode="", members=None):
     suite = work / "userspace/libc-suite"
     suite.mkdir(parents=True)
     (suite / "math.c").write_text(source)
+    (suite / "case.h").touch()
     (suite / "abi_check.c").write_text('_Static_assert(sizeof(long) == 8, "LP64");\n')
     (suite / "harness.c").write_text("void libc_case_missing(const char *name) { (void)name; }\n")
     (suite / "categories").write_text(f"math{mode}\n")
@@ -171,8 +172,8 @@ def bnm_audit_matches_llvm_nm(config, _work):
 
 
 def public_functions():
-    # Reuse the reference recipe's declaration discovery. The guest consumes
-    # this inventory as an input and never needs clang or Python.
+    # Discover declarations on the host. The guest recipe reads the staged
+    # inventory as a plain text input.
     script = ROOT / "scripts/libc-symbol-audit.py"
     spec = importlib.util.spec_from_file_location("libc_symbol_audit", script)
     module = importlib.util.module_from_spec(spec)
