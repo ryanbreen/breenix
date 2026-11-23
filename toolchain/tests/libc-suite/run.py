@@ -230,7 +230,8 @@ def linked_functions_come_from_breenix(config, work):
                 continue
             rows = path.read_bytes().count(b"\n")
             assert rows <= object_rows, f"{path.name}: {rows} rows for {object_rows} object symbols"
-    run(config.tools / "elfcheck", out / "abi_check.o", out / "harness.o")
+    run(config.tools / "elfcheck", *( ["--machine", "aarch64"] if arch == "aarch64" else [] ),
+        out / "abi_check.o", out / "harness.o")
 
 
 def aarch64_bnm_audit_matches_llvm_nm(config, work):

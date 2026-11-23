@@ -62,12 +62,6 @@ def compile_suite(bcc, work, target):
         source = SUITE / (name.replace("-", "_") + ".c")
         obj = objects / f"{name}.o"
         result = run(bcc, *flags, "-B", tools, "-c", source, "-o", obj)
-        if target == "aarch64" and result.returncode == 1:
-            # Ruling 37 placeholders require a located compiler diagnostic.
-            if re.fullmatch(r".+:\d+:\d+: error: [^\n]*ARM 25\.10b[^\n]*\n", result.stderr):
-                assert not obj.exists() and not result.stdout
-                print(f"{name}: {result.stderr.strip()}")
-                continue
         try:
             require(result)
             assert obj.is_file(), f"{name} produced no object"
@@ -77,9 +71,10 @@ def compile_suite(bcc, work, target):
     return flags, tools, categories, objects
 
 
-def link_suite(bcc, recipe):
+def link_suite(bcc, recipe, target):
     flags, tools, categories, objects = recipe
-    libc = LIBC / "target/x86_64-breenix-c/release/libc.a"
+    libc_target = "aarch64-breenix" if target == "aarch64" else "x86_64-breenix-c"
+    libc = LIBC / f"target/{libc_target}/release/libc.a"
     nm = bcc.with_name("bnm")
     elfcheck = bcc.with_name("elfcheck")
     libc_defined, _ = symbols(nm, libc)
@@ -87,7 +82,7 @@ def link_suite(bcc, recipe):
     # atomics, including pthread.c's load through an atomic pointer.
     brt = Path(os.environ.get(
         "BREENIX_LIBC_SUITE_BRT",
-        bcc.parent.parent / "x86_64-breenix/release/libbrt.a",
+        bcc.parent.parent / f"{target}-breenix/release/libbrt.a",
     ))
     brt_defined, _ = symbols(nm, brt)
     atomic_helpers = {
@@ -95,7 +90,8 @@ def link_suite(bcc, recipe):
     }
     harness = objects / "harness.o"
     harness_defined, harness_undefined = symbols(nm, harness)
-    require(run(elfcheck, objects / "abi-check.o", harness))
+    machine = ["--machine", "aarch64"] if target == "aarch64" else []
+    require(run(elfcheck, *machine, objects / "abi-check.o", harness))
     for category, *mode in categories:
         assert mode in ([], ["complete"]), (category, mode)
         obj = objects / f"{category}.o"
@@ -124,7 +120,7 @@ def link_suite(bcc, recipe):
         elf = objects / f"{category}.elf"
         require(run(bcc.with_name("bld"), "-T", LINKER_SCRIPT, "--gc-sections",
                     "-o", elf, *inputs, brt, libc))
-        require(run(elfcheck, "--exec", elf))
+        require(run(elfcheck, *machine, "--exec", elf))
         print(f"{category}: ELF valid, stand-ins {', '.join(sorted(missing)) or 'none'}")
 
 
@@ -133,7 +129,5 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="bcc-libc-suite-") as directory:
         bcc = Path(sys.argv[1]).resolve()
         work = Path(directory)
-        if sys.argv[2] == "x86_64":
-            link_suite(bcc, compile_suite(bcc, work, "x86_64"))
-        else:
-            compile_suite(bcc, work, "aarch64")
+        target = sys.argv[2]
+        link_suite(bcc, compile_suite(bcc, work, target), target)
