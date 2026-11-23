@@ -22,10 +22,7 @@ const RECORD: &str = "opt/breenix-dev/25.2/build.json";
 const BAS_PROGRAMS: &[&str] = &["sse-exit", "x87-exit"];
 #[cfg(target_arch = "aarch64")]
 const BAS_PROGRAMS: &[&str] = &["fp-exit", "call-exit"];
-#[cfg(target_arch = "x86_64")]
 const BAS_INPUTS: &[&str] = &["encodings.s", "encodings.hex", "bad-input.s"];
-#[cfg(target_arch = "aarch64")]
-const BAS_INPUTS: &[&str] = &["bad-input.s"];
 const LINKER_OBJECTS: &[&str] = &[
     "got-main",
     "got-entry",
@@ -636,13 +633,37 @@ fn assembler_encodings_match() -> CaseResult {
     let actual = object_text(&bytes).ok_or("bas object has no valid .text section")?;
     let path = case.corpus.join("encodings.hex");
     let hex_table = io_at(&path, fs::read_to_string(&path))?;
-    let expected = hex_table
-        .split_ascii_whitespace()
-        .map(|byte| u8::from_str_radix(byte, 16))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let expected = if cfg!(target_arch = "aarch64") {
+        let mut bytes = Vec::new();
+        for (index, row) in hex_table.lines().enumerate() {
+            let word = row.split_once('#').map_or(row, |(word, _)| word).trim();
+            if !lower_hex(word, 8) {
+                return Err(format!(
+                    "{}:{}: expected an eight-digit instruction word",
+                    path.display(),
+                    index + 1
+                )
+                .into());
+            }
+            let word = u32::from_str_radix(word, 16)
+                .map_err(|error| format!("{}:{}: {error}", path.display(), index + 1))?;
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        bytes
+    } else {
+        hex_table
+            .split_ascii_whitespace()
+            .map(|byte| u8::from_str_radix(byte, 16))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("{}: {error}", path.display()))?
+    };
     if actual != expected || expected.is_empty() {
-        return Err("bas .text differs from the Intel SDM encoding table".into());
+        let spec = if cfg!(target_arch = "aarch64") {
+            "Arm ARM"
+        } else {
+            "Intel SDM"
+        };
+        return Err(format!("bas .text differs from the {spec} encoding table").into());
     }
     Ok(())
 }

@@ -185,7 +185,8 @@ def build(arch, work, dev, corpus):
         destination = corpus / "assembler"
         destination.mkdir()
         fixtures = WORKSPACE / "corpus/assembler-aarch64"
-        for name in ("bad-input.s", "fp-exit.s", "fp-exit.expect", "call-exit.s", "call-exit.expect"):
+        for name in ("encodings.s", "encodings.hex", "bad-input.s", "fp-exit.s", "fp-exit.expect",
+                     "call-exit.s", "call-exit.expect"):
             shutil.copy2(fixtures / name, destination / name)
         for name in ("fp-exit", "call-exit"):
             obj, elf, link_map = (f"{name}.{ext}" for ext in ("o", "elf", "map"))
