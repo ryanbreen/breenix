@@ -13,6 +13,7 @@ impl<'src> Emitter<'_, 'src> {
         let mut frame = 0usize;
         for local in &function.locals {
             let object = &local.object;
+            require_nonatomic(&object.ty, object.site)?;
             let layout = object.ty.layout().unwrap();
             if matches!(local.storage, LocalStorage::Thread(_) | LocalStorage::ThreadExtern(_)) {
                 return Err(Diagnostic::new(object.site, "AArch64 C TLS is deferred to A4"));
@@ -245,6 +246,7 @@ impl<'src> Emitter<'_, 'src> {
         right: &Expression<'src>,
         operation: Option<&(Binary, Type, Type)>,
     ) -> Result<(), Diagnostic> {
+        require_nonatomic(&left.ty, left.position())?;
         self.address(left)?;
         self.push_value('x');
         if let Some((op, a, b)) = operation {
@@ -268,6 +270,7 @@ impl<'src> Emitter<'_, 'src> {
         increment: bool,
         postfix: bool,
     ) -> Result<(), Diagnostic> {
+        require_nonatomic(&operand.ty, operand.position())?;
         self.address(operand)?;
         self.text.push_str("    mov x9, x0\n");
         let ty = &operand.ty;
@@ -308,6 +311,70 @@ impl<'src> Emitter<'_, 'src> {
             self.rodata.push_str("\"\n");
         }
         label
+    }
+
+    // N1570 6.7.9 and 6.9.2: file-scope initializers supply static bytes
+    // and addresses, and tentative definitions end up zero-initialized.
+    pub(super) fn object_definition(
+        &mut self,
+        definition: &StaticObject<'src>,
+    ) -> Result<(), Diagnostic> {
+        let object = &definition.object;
+        let name = object.name;
+        check_symbol(name, object.site)?;
+        let layout = object.layout().unwrap();
+        let mut data = String::new();
+        if definition.linkage == Linkage::External {
+            writeln!(data, ".global {name}").unwrap();
+        }
+        writeln!(
+            data,
+            ".type {name}, @object\n    .balign {}\n{name}:",
+            layout.align
+        )
+        .unwrap();
+        let mut cursor = 0;
+        if let Some(initializer) = &definition.initializer {
+            require_nonatomic(&object.ty, object.site)?;
+            for (&offset, value) in initializer {
+                if offset > cursor {
+                    writeln!(data, "    .zero {}", offset - cursor).unwrap();
+                }
+                cursor = offset + match value {
+                    ThreadData::Byte(byte) => {
+                        writeln!(data, "    .byte {byte}").unwrap();
+                        1
+                    }
+                    ThreadData::Address(address, addend) => {
+                        let target = match address {
+                            StaticAddress::Symbol(symbol, site) => {
+                                self.use_symbol(symbol, site)?;
+                                (*symbol).to_owned()
+                            }
+                            StaticAddress::String(bytes) => self.emit_string(bytes),
+                            StaticAddress::Literal(_) | StaticAddress::Local(_) => {
+                                return Err(Diagnostic::new(
+                                    object.site,
+                                    "AArch64 static initializer address is deferred to ARM 25.9d",
+                                ));
+                            }
+                        };
+                        writeln!(data, "    .quad {target}{addend:+}").unwrap();
+                        8
+                    }
+                };
+            }
+        }
+        if cursor < layout.size {
+            writeln!(data, "    .zero {}", layout.size - cursor).unwrap();
+        }
+        writeln!(data, ".size {name}, {}", layout.size).unwrap();
+        if definition.initializer.is_some() {
+            self.data.push_str(&data);
+        } else {
+            self.bss.push_str(&data);
+        }
+        Ok(())
     }
 }
 
