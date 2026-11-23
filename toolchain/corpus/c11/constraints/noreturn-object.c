@@ -1,0 +1,1 @@
+_Noreturn int x;

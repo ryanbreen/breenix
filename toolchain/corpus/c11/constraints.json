@@ -1,0 +1,506 @@
+{
+  "fixtures": [
+    {
+      "clause": "6.4p2",
+      "file": "constraints/invalid-token.c",
+      "diagnostic": "constraints/invalid-token.c:1:9: error: invalid token @"
+    },
+    {
+      "clause": "6.4.3p2",
+      "file": "constraints/universal-character-name.c",
+      "diagnostic": "constraints/universal-character-name.c:1:12: error: invalid universal character name"
+    },
+    {
+      "clause": "6.4.4p2",
+      "file": "constraints/integer-out-of-range.c",
+      "diagnostic": "constraints/integer-out-of-range.c:1:24: error: invalid integer constant"
+    },
+    {
+      "clause": "6.4.4.4p9",
+      "file": "constraints/escape-out-of-range.c",
+      "diagnostic": "constraints/escape-out-of-range.c:1:9: error: invalid character constant"
+    },
+    {
+      "clause": "6.5.1.1p2",
+      "file": "constraints/generic-duplicate-compatible.c",
+      "diagnostic": "constraints/generic-duplicate-compatible.c:1:42: error: duplicate compatible generic association"
+    },
+    {
+      "clause": "6.5.2.1p1",
+      "file": "constraints/invalid-subscript.c",
+      "diagnostic": "constraints/invalid-subscript.c:1:33: error: invalid binary operands of type int [1] and double"
+    },
+    {
+      "clause": "6.5.2.2p1",
+      "file": "constraints/call-non-function.c",
+      "diagnostic": "constraints/call-non-function.c:1:23: error: called expression is not a function"
+    },
+    {
+      "clause": "6.5.2.2p2",
+      "file": "constraints/call-wrong-arity.c",
+      "diagnostic": "constraints/call-wrong-arity.c:2:18: error: too few arguments"
+    },
+    {
+      "clause": "6.5.2.3p1",
+      "file": "constraints/dot-non-record.c",
+      "diagnostic": "constraints/dot-non-record.c:1:31: error: member access requires a struct or union"
+    },
+    {
+      "clause": "6.5.2.3p2",
+      "file": "constraints/arrow-non-pointer.c",
+      "diagnostic": "constraints/arrow-non-pointer.c:1:30: error: '->' requires a pointer to a record"
+    },
+    {
+      "clause": "6.5.2.4p1",
+      "file": "constraints/postfix-non-lvalue.c",
+      "diagnostic": "constraints/postfix-non-lvalue.c:1:17: error: increment or decrement requires a modifiable scalar lvalue"
+    },
+    {
+      "clause": "6.5.2.5p1",
+      "file": "constraints/incomplete-compound-literal.c",
+      "diagnostic": "constraints/incomplete-compound-literal.c:2:32: error: expected a complete object type"
+    },
+    {
+      "clause": "6.5.2.5p2",
+      "file": "constraints/compound-literal-excess.c",
+      "diagnostic": "constraints/compound-literal-excess.c:1:30: error: too many array initializers"
+    },
+    {
+      "clause": "6.5.3.1p1",
+      "file": "constraints/prefix-non-lvalue.c",
+      "diagnostic": "constraints/prefix-non-lvalue.c:1:16: error: increment or decrement requires a modifiable scalar lvalue"
+    },
+    {
+      "clause": "6.5.3.2p1",
+      "file": "constraints/address-of-bit-field.c",
+      "diagnostic": "constraints/address-of-bit-field.c:2:22: error: cannot take the address of a bit-field"
+    },
+    {
+      "clause": "6.5.3.2p2",
+      "file": "constraints/dereference-integer.c",
+      "diagnostic": "constraints/dereference-integer.c:1:22: error: invalid unary operand of type int"
+    },
+    {
+      "clause": "6.5.3.3p1",
+      "file": "constraints/complement-float.c",
+      "diagnostic": "constraints/complement-float.c:1:22: error: invalid unary operand of type double"
+    },
+    {
+      "clause": "6.5.3.4p1",
+      "file": "constraints/sizeof-bit-field.c",
+      "diagnostic": "constraints/sizeof-bit-field.c:2:22: error: sizeof cannot be applied to a bit-field"
+    },
+    {
+      "clause": "6.5.4p2",
+      "file": "constraints/cast-to-record.c",
+      "diagnostic": "constraints/cast-to-record.c:2:22: error: cannot cast int to record 0"
+    },
+    {
+      "clause": "6.5.4p3",
+      "file": "constraints/implicit-int-to-pointer.c",
+      "diagnostic": "constraints/implicit-int-to-pointer.c:1:24: error: cannot return int as void *"
+    },
+    {
+      "clause": "6.5.4p4",
+      "file": "constraints/pointer-to-float.c",
+      "diagnostic": "constraints/pointer-to-float.c:1:29: error: cannot cast int * to float"
+    },
+    {
+      "clause": "6.5.5p2",
+      "file": "constraints/remainder-float.c",
+      "diagnostic": "constraints/remainder-float.c:1:25: error: invalid binary operands of type int and double"
+    },
+    {
+      "clause": "6.5.6p2",
+      "file": "constraints/add-two-pointers.c",
+      "diagnostic": "constraints/add-two-pointers.c:1:33: error: invalid binary operands of type int * and int *"
+    },
+    {
+      "clause": "6.5.6p3",
+      "file": "constraints/subtract-from-integer-pointer.c",
+      "diagnostic": "constraints/subtract-from-integer-pointer.c:1:32: error: invalid binary operands of type int and int *"
+    },
+    {
+      "clause": "6.5.7p2",
+      "file": "constraints/shift-float.c",
+      "diagnostic": "constraints/shift-float.c:1:25: error: invalid binary operands of type int and double"
+    },
+    {
+      "clause": "6.5.8p2",
+      "file": "constraints/relational-int-pointer.c",
+      "diagnostic": "constraints/relational-int-pointer.c:1:32: error: invalid binary operands of type int and int *"
+    },
+    {
+      "clause": "6.5.9p2",
+      "file": "constraints/equality-nonzero-int-pointer.c",
+      "diagnostic": "constraints/equality-nonzero-int-pointer.c:1:32: error: invalid binary operands of type int and int *"
+    },
+    {
+      "clause": "6.5.10p2",
+      "file": "constraints/and-float.c",
+      "diagnostic": "constraints/and-float.c:1:25: error: invalid binary operands of type int and double"
+    },
+    {
+      "clause": "6.5.11p2",
+      "file": "constraints/xor-float.c",
+      "diagnostic": "constraints/xor-float.c:1:25: error: invalid binary operands of type int and double"
+    },
+    {
+      "clause": "6.5.12p2",
+      "file": "constraints/or-float.c",
+      "diagnostic": "constraints/or-float.c:1:25: error: invalid binary operands of type int and double"
+    },
+    {
+      "clause": "6.5.13p2",
+      "file": "constraints/logical-and-record.c",
+      "diagnostic": "constraints/logical-and-record.c:1:54: error: invalid binary operands of type record 0 and int"
+    },
+    {
+      "clause": "6.5.14p2",
+      "file": "constraints/logical-or-record.c",
+      "diagnostic": "constraints/logical-or-record.c:1:54: error: invalid binary operands of type int and record 0"
+    },
+    {
+      "clause": "6.5.15p2",
+      "file": "constraints/conditional-record-test.c",
+      "diagnostic": "constraints/conditional-record-test.c:1:52: error: condition requires a scalar expression"
+    },
+    {
+      "clause": "6.5.15p3",
+      "file": "constraints/conditional-int-pointer.c",
+      "diagnostic": "constraints/conditional-int-pointer.c:1:32: error: incompatible conditional operands"
+    },
+    {
+      "clause": "6.5.16p2",
+      "file": "constraints/assign-const.c",
+      "diagnostic": "constraints/assign-const.c:1:33: error: assignment requires a modifiable lvalue"
+    },
+    {
+      "clause": "6.5.16.1p1",
+      "file": "constraints/assign-incompatible-record.c",
+      "diagnostic": "constraints/assign-incompatible-record.c:1:72: error: cannot assign record 1 to record 0"
+    },
+    {
+      "clause": "6.5.16.2p1",
+      "file": "constraints/compound-add-pointer-to-int.c",
+      "diagnostic": "constraints/compound-add-pointer-to-int.c:1:29: error: invalid compound pointer assignment"
+    },
+    {
+      "clause": "6.5.16.2p2",
+      "file": "constraints/compound-remainder-float.c",
+      "diagnostic": "constraints/compound-remainder-float.c:1:29: error: invalid compound assignment operands"
+    },
+    {
+      "clause": "6.6p3",
+      "file": "constraints/constant-expression-call.c",
+      "diagnostic": "constraints/constant-expression-call.c:2:16: error: expected an integer constant expression"
+    },
+    {
+      "clause": "6.7p3",
+      "file": "constraints/duplicate-local.c",
+      "diagnostic": "constraints/duplicate-local.c:1:27: error: duplicate local declaration"
+    },
+    {
+      "clause": "6.7p4",
+      "file": "constraints/conflicting-object-types.c",
+      "diagnostic": "constraints/conflicting-object-types.c:2:6: error: incompatible redeclaration"
+    },
+    {
+      "clause": "6.7.1p2",
+      "file": "constraints/conflicting-storage.c",
+      "diagnostic": "constraints/conflicting-storage.c:1:8: error: conflicting declaration specifiers"
+    },
+    {
+      "clause": "6.7.1p3",
+      "file": "constraints/missing-thread-storage.c",
+      "diagnostic": "constraints/missing-thread-storage.c:1:34: error: a block-scope _Thread_local object requires static or extern"
+    },
+    {
+      "clause": "6.7.1p4",
+      "file": "constraints/thread-local-function.c",
+      "diagnostic": "constraints/thread-local-function.c:1:19: error: a function cannot be _Thread_local"
+    },
+    {
+      "clause": "6.7.2p2",
+      "file": "constraints/missing-type.c",
+      "diagnostic": "constraints/missing-type.c:1:1: error: expected a valid type specifier"
+    },
+    {
+      "clause": "6.7.2p3",
+      "file": "constraints/unsupported-complex.c",
+      "diagnostic": "constraints/unsupported-complex.c:1:8: error: _Complex is not supported by bcc"
+    },
+    {
+      "clause": "6.7.2.1p2",
+      "file": "constraints/member-without-declarator.c",
+      "diagnostic": "constraints/member-without-declarator.c:1:12: error: unnamed member requires an untagged struct or union definition"
+    },
+    {
+      "clause": "6.7.2.1p3",
+      "file": "constraints/flexible-not-last.c",
+      "diagnostic": "constraints/flexible-not-last.c:1:27: error: a flexible array member must follow another named member and end a struct"
+    },
+    {
+      "clause": "6.7.2.1p4",
+      "file": "constraints/named-zero-bit-field.c",
+      "diagnostic": "constraints/named-zero-bit-field.c:1:21: error: a zero-width bit-field must be unnamed"
+    },
+    {
+      "clause": "6.7.2.1p5",
+      "file": "constraints/floating-bit-field.c",
+      "diagnostic": "constraints/floating-bit-field.c:1:19: error: bit-fields require an integer type"
+    },
+    {
+      "clause": "6.7.2.2p2",
+      "file": "constraints/enumerator-out-of-range.c",
+      "diagnostic": "constraints/enumerator-out-of-range.c:1:17: error: enumerator must fit in int"
+    },
+    {
+      "clause": "6.7.2.3p1",
+      "file": "constraints/record-redefinition.c",
+      "diagnostic": "constraints/record-redefinition.c:2:1: error: record type is already defined"
+    },
+    {
+      "clause": "6.7.2.3p2",
+      "file": "constraints/tag-kind-conflict.c",
+      "diagnostic": "constraints/tag-kind-conflict.c:2:7: error: tag was declared with a different kind"
+    },
+    {
+      "clause": "6.7.2.3p3",
+      "file": "constraints/enum-before-definition.c",
+      "diagnostic": "constraints/enum-before-definition.c:1:1: error: unknown enumeration tag"
+    },
+    {
+      "clause": "6.7.2.4p3",
+      "file": "constraints/atomic-qualified-type.c",
+      "diagnostic": "constraints/atomic-qualified-type.c:1:1: error: _Atomic type specifier requires an unqualified type"
+    },
+    {
+      "clause": "6.7.3p3",
+      "file": "constraints/atomic-array-qualifier.c",
+      "diagnostic": "constraints/atomic-array-qualifier.c:2:1: error: _Atomic requires a non-array object type"
+    },
+    {
+      "clause": "6.7.4p2",
+      "file": "constraints/noreturn-object.c",
+      "diagnostic": "constraints/noreturn-object.c:1:15: error: _Noreturn requires a function declaration"
+    },
+    {
+      "clause": "6.7.5p2",
+      "file": "constraints/aligned-function.c",
+      "diagnostic": "constraints/aligned-function.c:1:19: error: _Alignas requires a non-register object or member"
+    },
+    {
+      "clause": "6.7.5p3",
+      "file": "constraints/invalid-alignment.c",
+      "diagnostic": "constraints/invalid-alignment.c:1:1: error: unsupported alignment; expected zero or a power of two up to 4096"
+    },
+    {
+      "clause": "6.7.5p4",
+      "file": "constraints/weak-alignment.c",
+      "diagnostic": "constraints/weak-alignment.c:1:17: error: specified alignment is weaker than the required alignment"
+    },
+    {
+      "clause": "6.7.6.2p1",
+      "file": "constraints/array-zero-bound.c",
+      "diagnostic": "constraints/array-zero-bound.c:1:9: error: array bound must be positive"
+    },
+    {
+      "clause": "6.7.6.3p1",
+      "file": "constraints/function-returning-array.c",
+      "diagnostic": "constraints/function-returning-array.c:1:5: error: invalid function result type"
+    },
+    {
+      "clause": "6.7.6.3p2",
+      "file": "constraints/static-parameter.c",
+      "diagnostic": "constraints/static-parameter.c:1:7: error: invalid declaration specifier for a parameter"
+    },
+    {
+      "clause": "6.7.6.3p3",
+      "file": "constraints/nonempty-identifier-list.c",
+      "diagnostic": "constraints/nonempty-identifier-list.c:1:5: error: an identifier list requires a function definition"
+    },
+    {
+      "clause": "6.7.6.3p4",
+      "file": "constraints/incomplete-parameter.c",
+      "diagnostic": "constraints/incomplete-parameter.c:2:8: error: parameter has an incomplete record type"
+    },
+    {
+      "clause": "6.7.9p2",
+      "file": "constraints/initializer-out-of-bounds.c",
+      "diagnostic": "constraints/initializer-out-of-bounds.c:1:20: error: array designator is outside the object bounds"
+    },
+    {
+      "clause": "6.7.9p3",
+      "file": "constraints/initialize-incomplete-type.c",
+      "diagnostic": "constraints/initialize-incomplete-type.c:2:10: error: expected a complete object type"
+    },
+    {
+      "clause": "6.7.9p4",
+      "file": "constraints/static-initializer-call.c",
+      "diagnostic": "constraints/static-initializer-call.c:2:16: error: expected a supported constant in static initializer"
+    },
+    {
+      "clause": "6.7.9p5",
+      "file": "constraints/local-extern-initializer.c",
+      "diagnostic": "constraints/local-extern-initializer.c:1:41: error: a block-scope extern _Thread_local object cannot have an initializer"
+    },
+    {
+      "clause": "6.7.10p2",
+      "file": "constraints/static-assertion-failed.c",
+      "diagnostic": "constraints/static-assertion-failed.c:1:1: error: static assertion failed: expected nonzero"
+    },
+    {
+      "clause": "6.8.1p2",
+      "file": "constraints/case-outside-switch.c",
+      "diagnostic": "constraints/case-outside-switch.c:1:16: error: case label is outside a switch"
+    },
+    {
+      "clause": "6.8.1p3",
+      "file": "constraints/duplicate-label.c",
+      "diagnostic": "constraints/duplicate-label.c:3:2: error: duplicate label"
+    },
+    {
+      "clause": "6.8.4.1p1",
+      "file": "constraints/if-non-scalar.c",
+      "diagnostic": "constraints/if-non-scalar.c:1:49: error: condition requires a scalar expression"
+    },
+    {
+      "clause": "6.8.4.2p1",
+      "file": "constraints/switch-float.c",
+      "diagnostic": "constraints/switch-float.c:1:24: error: switch requires an integer expression"
+    },
+    {
+      "clause": "6.8.4.2p3",
+      "file": "constraints/duplicate-case-value.c",
+      "diagnostic": "constraints/duplicate-case-value.c:4:2: error: duplicate case value or default"
+    },
+    {
+      "clause": "6.8.5p2",
+      "file": "constraints/while-non-scalar.c",
+      "diagnostic": "constraints/while-non-scalar.c:1:52: error: condition requires a scalar expression"
+    },
+    {
+      "clause": "6.8.5p3",
+      "file": "constraints/for-thread-local.c",
+      "diagnostic": "constraints/for-thread-local.c:1:46: error: a for initializer cannot declare a _Thread_local object"
+    },
+    {
+      "clause": "6.8.6.1p1",
+      "file": "constraints/undefined-label.c",
+      "diagnostic": "constraints/undefined-label.c:1:21: error: undefined label 'next'"
+    },
+    {
+      "clause": "6.8.6.2p1",
+      "file": "constraints/continue-outside-loop.c",
+      "diagnostic": "constraints/continue-outside-loop.c:1:16: error: continue is outside a loop"
+    },
+    {
+      "clause": "6.8.6.3p1",
+      "file": "constraints/break-outside-loop.c",
+      "diagnostic": "constraints/break-outside-loop.c:1:16: error: break is outside a loop or switch"
+    },
+    {
+      "clause": "6.8.6.4p1",
+      "file": "constraints/void-return-value.c",
+      "diagnostic": "constraints/void-return-value.c:1:23: error: void function cannot return a value"
+    },
+    {
+      "clause": "6.9p2",
+      "file": "constraints/file-register.c",
+      "diagnostic": "constraints/file-register.c:1:14: error: invalid file-scope storage class"
+    },
+    {
+      "clause": "6.9p3",
+      "file": "constraints/duplicate-definition.c",
+      "diagnostic": "constraints/duplicate-definition.c:2:5: error: object already defined"
+    },
+    {
+      "clause": "6.9.1p3",
+      "file": "constraints/incomplete-function-result.c",
+      "diagnostic": "constraints/incomplete-function-result.c:2:10: error: function definition has an incomplete record result"
+    },
+    {
+      "clause": "6.9.1p5",
+      "file": "constraints/unnamed-parameter.c",
+      "diagnostic": "constraints/unnamed-parameter.c:1:7: error: parameter needs a name in a function definition"
+    },
+    {
+      "clause": "6.9.1p6",
+      "file": "constraints/old-style-parameter-not-in-list.c",
+      "diagnostic": "constraints/old-style-parameter-not-in-list.c:2:9: error: parameter is absent from the identifier list"
+    },
+    {
+      "clause": "6.10.1p1",
+      "file": "constraints/noninteger-if-expression.c",
+      "diagnostic": "constraints/noninteger-if-expression.c:1:5: error: invalid integer constant in preprocessing expression"
+    },
+    {
+      "clause": "6.10.1p2",
+      "file": "constraints/non-c-token-if-expression.c",
+      "diagnostic": "constraints/non-c-token-if-expression.c:1:5: error: expected an integer operand in preprocessing expression"
+    },
+    {
+      "clause": "6.10.2p1",
+      "file": "constraints/missing-header.c",
+      "diagnostic": "constraints/missing-header.c:1:10: error: header constraint-fixture-does-not-exist.h not found"
+    },
+    {
+      "clause": "6.10.3p1",
+      "file": "constraints/macro-redefinition-spacing.c",
+      "diagnostic": "constraints/macro-redefinition-spacing.c:2:9: error: different redefinition of EXPR"
+    },
+    {
+      "clause": "6.10.3p2",
+      "file": "constraints/macro-redefinition.c",
+      "diagnostic": "constraints/macro-redefinition.c:2:9: error: different redefinition of ANSWER"
+    },
+    {
+      "clause": "6.10.3p3",
+      "file": "constraints/macro-missing-space.c",
+      "diagnostic": "constraints/macro-missing-space.c:1:15: error: expected whitespace after object-like macro name"
+    },
+    {
+      "clause": "6.10.3p4",
+      "file": "constraints/macro-wrong-arity.c",
+      "diagnostic": "constraints/macro-wrong-arity.c:2:9: error: wrong number of macro arguments"
+    },
+    {
+      "clause": "6.10.3p5",
+      "file": "constraints/va-args-outside-replacement.c",
+      "diagnostic": "constraints/va-args-outside-replacement.c:1:16: error: __VA_ARGS__ requires a variadic macro"
+    },
+    {
+      "clause": "6.10.3p6",
+      "file": "constraints/macro-duplicate-parameter.c",
+      "diagnostic": "constraints/macro-duplicate-parameter.c:1:17: error: duplicate macro parameter"
+    },
+    {
+      "clause": "6.10.3.2p1",
+      "file": "constraints/stringify-non-parameter.c",
+      "diagnostic": "constraints/stringify-non-parameter.c:1:22: error: # must be followed by a macro parameter"
+    },
+    {
+      "clause": "6.10.3.3p1",
+      "file": "constraints/paste-without-operand.c",
+      "diagnostic": "constraints/paste-without-operand.c:1:17: error: ## cannot begin or end a replacement list"
+    },
+    {
+      "clause": "6.10.4p1",
+      "file": "constraints/wide-line-filename.c",
+      "diagnostic": "constraints/wide-line-filename.c:1:10: error: expected an ordinary string literal for the file name"
+    }
+  ],
+  "guest": {
+    "lexical": "constraints/universal-character-name.c",
+    "preprocessing": "constraints/macro-duplicate-parameter.c",
+    "expressions": "constraints/compound-add-pointer-to-int.c",
+    "generic-selection": "constraints/generic-duplicate-compatible.c",
+    "initializers": "constraints/initializer-out-of-bounds.c",
+    "declarations": "constraints/flexible-not-last.c",
+    "alignment": "constraints/weak-alignment.c",
+    "atomics": "constraints/atomic-qualified-type.c",
+    "static-assertions": "constraints/static-assertion-failed.c",
+    "control-flow": "constraints/duplicate-case-value.c"
+  }
+}

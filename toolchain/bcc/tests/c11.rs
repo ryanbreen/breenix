@@ -2,6 +2,35 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+#[test]
+fn constraint_paragraphs_located() {
+    let toolchain = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    checked(
+        Command::new("python3")
+            .arg(toolchain.join("tests/bcc/constraint_paragraphs.py"))
+            .arg(env!("CARGO_BIN_EXE_bcc")),
+    );
+}
+
+#[test]
+fn profile_macros_truthful() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../corpus/c11/profile-macros.c");
+    for target in ["--target=x86_64", "--target=aarch64"] {
+        let result = Command::new(env!("CARGO_BIN_EXE_bcc"))
+            .args([target, "-E"])
+            .arg(&fixture)
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{target}: {result:?}");
+        assert!(result.stderr.is_empty(), "{target}: {result:?}");
+        let source = String::from_utf8(result.stdout).unwrap();
+        assert!(
+            source.lines().any(|line| line == "int profile_macros_verified;"),
+            "{target}: {source}"
+        );
+    }
+}
+
 // N1570 6.5.2.4, 6.5.16.2 and 7.17; Intel SDM Vol. 3, memory ordering.
 #[test]
 fn atomic_fetch_add_seq_cst() {
