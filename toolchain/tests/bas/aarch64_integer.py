@@ -220,7 +220,6 @@ INTEGER_REJECTIONS = (
     ('ccmn w0, w1, #16, ne', 15, "immediate out of range", "C6.2.80"),
     ('adr w0, .Ladr', 5, "register width mismatch", "C6.2.12"),
     ('.Ladr: adr x0, .Ladr+1048576', 16, "out of range", "C6.2.12"),
-    ('adr x0, .Ladr\n.section .data\n.Ladr: .long 0', 9, "cross-section", "C6.2.12"),
     ('adr x0, .Lmissing', 9, "undefined", "C6.2.12"),
     ('uxtw w1, w2', 6, "register width mismatch", "C6.2.486"),
 )

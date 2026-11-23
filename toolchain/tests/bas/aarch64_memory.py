@@ -283,7 +283,6 @@ MEMORY_REJECTIONS = (
     ('.Llimit: ldr x0, .Llimit+1048576', 18, "out of range", "C6.2.216"),
     ('.Lunaligned: ldr s0, .Lunaligned+2', 22, "aligned", "C7.2.231"),
     ('ldr x0, .Lmissing', 9, "undefined", "C6.2.216"),
-    ('ldr x0, .Ldata\n.section .data\n.Ldata: .long 0', 9, "cross-section", "C6.2.216"),
     ('dmb #16', 6, "immediate out of range", "C6.2.150"),
     ('isb ish', 5, "invalid barrier option", "C6.2.177"),
     ('fmov x0, s1', 10, "register width mismatch", "C7.2.157"),

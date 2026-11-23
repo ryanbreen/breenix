@@ -403,12 +403,18 @@ def check_aarch64_relocations(bas, elfcheck, path):
         bas, elfcheck, path, source,
         {b".text": [(0, 283, "CALL26", b"external", 4)]}, (0x94000000,),
     )
-    # Replace the former cross-section rejection with its exact positive row.
-    source.write_text("    b .Ldata\n.section .data\n.Ldata: .long 0\n")
-    check_aarch64_rela_object(
-        bas, elfcheck, path, source,
-        {b".text": [(0, 282, "JUMP26", b".Ldata", 0)]}, (0x14000000,),
-    )
+    # E25 rulings 31–32 replace the three cross-section refusals with exact
+    # positive rows. AAELF64 §5.7.6 defines the relocation for each field.
+    for instruction, symbol, kind, name, word in (
+        ("b", ".Ldata", 282, "JUMP26", 0x14000000),
+        ("adr x0,", ".Ladr", 274, "ADR_PREL_LO21", 0x10000000),
+        ("ldr x0,", ".Ldata", 273, "LD_PREL_LO19", 0x58000000),
+    ):
+        source.write_text(f"    {instruction} {symbol}\n.section .data\n{symbol}: .long 0\n")
+        check_aarch64_rela_object(
+            bas, elfcheck, path, source,
+            {b".text": [(0, kind, name, symbol.encode(), 0)]}, (word,),
+        )
     check_aarch64_rela_object(bas, elfcheck, path, "aarch64_relocations.s", expected, words)
 
     rejected = path.with_suffix(".rejected.o")
