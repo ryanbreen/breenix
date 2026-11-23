@@ -114,6 +114,39 @@ class BusyBoxStagingTest(unittest.TestCase):
 
 
 class ToolchainGuestBuildTest(unittest.TestCase):
+    def test_busybox_bundle_has_executable_archive_and_symbol_tools(self):
+        class ReachedCorpus(Exception):
+            pass
+
+        with mock.patch.object(sys, "path", [str(ROOT / "scripts"), *sys.path]):
+            builder = importlib.import_module("toolchain-build-tools")
+            image = importlib.import_module("toolchain-image")
+            for arch in ("x86_64", "aarch64"):
+                for milestone in (None, "toolchain/busybox-on-box"):
+                    with self.subTest(arch=arch, milestone=milestone), tempfile.TemporaryDirectory() as temp:
+                        root = Path(temp)
+                        dev = root / image.DEV
+                        bindir = dev / "bin"
+                        bindir.mkdir(parents=True)
+                        for tool in builder.TOOLS:
+                            (bindir / tool).write_bytes(tool.encode())
+                        with (mock.patch.dict(os.environ, BREENIX_TOOLCHAIN_CLANG="/fixture/clang",
+                                              BREENIX_TOOLCHAIN_CLANG_SHA256="a" * 64),
+                              mock.patch.object(builder.reference, "pinned_tool", return_value=([], None)),
+                              mock.patch.object(builder, "cargo_environment", return_value=([], {}, "host", {})),
+                              mock.patch.object(builder, "build_guest_tools", return_value={}),
+                              mock.patch.object(builder.shutil, "copytree", side_effect=ReachedCorpus),
+                              self.assertRaises(ReachedCorpus)):
+                            builder.build(arch, root / "work", dev, root / image.CORPUS, milestone)
+                        for tool, alias in (("bar", "ar"), ("bnm", "nm")):
+                            path = bindir / alias
+                            if milestone is None:
+                                self.assertFalse(path.exists(), path)
+                            else:
+                                self.assertTrue(path.is_file(), f"missing bundle executable: {alias}")
+                                self.assertEqual(digest(path), digest(bindir / tool))
+                                self.assertEqual(image.fixture_mode(path.relative_to(root)), 0o755)
+
     def test_arm_guest_link_inputs_are_keyed_by_content(self):
         script = ROOT / "scripts/toolchain-build-tools.py"
         spec = importlib.util.spec_from_file_location("toolchain_build_tools", script)
