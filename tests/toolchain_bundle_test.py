@@ -187,6 +187,45 @@ class ToolchainBundleTest(unittest.TestCase):
                 self.assertEqual(staged.read_bytes(), source.read_bytes())
                 self.assertIn(f"{digest(source)}  {relative / name}", manifest)
 
+    def aarch64_stages_linker_objects(self):
+        self.assertEqual(self.record["arch"], "aarch64")
+        corpus = self.bundle / "root/usr/share/breenix/toolchain"
+        manifest = (self.dev / "manifest.sha256").read_text().splitlines()
+        for name in ("got-main", "got-entry", "archive-value-with-long-name", "tls-template"):
+            path = corpus / "objs" / (name + ".o")
+            self.assertTrue(path.is_file(), str(path))
+            self.assertEqual(struct.unpack_from("<H", path.read_bytes(), 18)[0], 183)
+            self.assertIn(f"{digest(path)}  usr/share/breenix/toolchain/objs/{name}.o", manifest)
+        for name in ("got-main", "tls-template"):
+            path = corpus / "linker" / (name + ".expect")
+            source = WORKSPACE / "corpus/linker" / path.name
+            self.assertEqual(path.read_bytes(), source.read_bytes())
+            self.assertIn(f"{digest(path)}  usr/share/breenix/toolchain/linker/{path.name}", manifest)
+
+    def aarch64_host_bld_links_staged_objects(self):
+        self.assertEqual(self.record["arch"], "aarch64")
+        corpus = self.bundle / "root/usr/share/breenix/toolchain"
+        names = (WORKSPACE / "corpus/cases").read_text().splitlines()
+        self.assertEqual(len(names), 30)
+        with tempfile.TemporaryDirectory(prefix="toolchain-arm-host-link-") as temp:
+            env = dict(os.environ, RUSTC=str(self.rustc))
+            subprocess.run(["cargo", f"+{CHANNEL}", "build", "--release", "--locked",
+                            "--manifest-path", WORKSPACE / "Cargo.toml", "--target-dir", temp,
+                            "-p", "bld", "-p", "elfcheck"], env=env, check=True)
+            bld, elfcheck = (Path(temp) / "release" / name for name in ("bld", "elfcheck"))
+            obj = corpus / "objs"
+            groups = [(name, [obj / (name + ".o")]) for name in names]
+            groups += [("got-main", [obj / (name + ".o") for name in
+                                      ("got-main", "got-entry", "archive-value-with-long-name")]),
+                       ("tls-template", [obj / "tls-template.o"])]
+            for name, inputs in groups:
+                with self.subTest(program=name):
+                    output = Path(temp) / (name + ".elf")
+                    subprocess.run([bld, "-T", self.dev / "linker.ld", "--gc-sections", "-o", output,
+                                    *inputs, self.dev / "lib/libc.a"], check=True, timeout=60)
+                    subprocess.run([elfcheck, "--machine", "aarch64", "--exec", output],
+                                   check=True, timeout=10)
+
     def receipts_from_cargo_host_bas(self):
         assembler = self.bundle / "root/usr/share/breenix/toolchain/assembler"
         names = (("sse-exit", "x87-exit") if self.record["arch"] == "x86_64"
@@ -271,7 +310,9 @@ if __name__ == "__main__":
                        "ToolchainBundleTest.bootstrap_abi_tls_inputs_staged"])
     else:
         checks.extend(["ToolchainBundleTest.arm_bundle_unchanged_until_a3",
-                       "ToolchainBundleTest.arm_encoding_inputs_are_staged"])
+                       "ToolchainBundleTest.arm_encoding_inputs_are_staged",
+                       "ToolchainBundleTest.aarch64_stages_linker_objects",
+                       "ToolchainBundleTest.aarch64_host_bld_links_staged_objects"])
     if args.baseline is not None:
         checks.append("ToolchainBundleTest.x86_artifacts_equal_baseline")
     if args.probe is not None:

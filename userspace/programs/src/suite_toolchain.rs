@@ -1018,6 +1018,13 @@ fn assembler_bad_input_located() -> CaseResult {
     Ok(())
 }
 
+#[cfg(target_arch = "x86_64")]
+const LINKER_UNDEFINED_RELOCATION: &str = "R_X86_64_PLT32";
+#[cfg(target_arch = "aarch64")]
+const LINKER_UNDEFINED_RELOCATION: &str = "R_AARCH64_CALL26";
+#[cfg(target_arch = "aarch64")]
+const LINKER_BNM_SYMBOLS: &str = "{0}[got-entry.o]:\narchive_cell U\narchive_entry T 0 20\narchive_value U\n{0}[archive-value-with-long-name.o]:\narchive_cell R 0 4\narchive_value T 0 8\n";
+
 struct LinkerCase {
     dev: PathBuf,
     corpus: PathBuf,
@@ -1026,9 +1033,6 @@ struct LinkerCase {
 
 impl LinkerCase {
     fn start() -> Result<Self, String> {
-        if std::env::consts::ARCH != "x86_64" {
-            return Err("AArch64 static linking is scheduled for A2".into());
-        }
         Ok(Self {
             dev: Path::new("/").join(DEV),
             corpus: Path::new("/").join(CORPUS),
@@ -1186,11 +1190,14 @@ fn archive_tools() -> CaseResult {
     }
     check_archive_index_rebuilds(&case, &second, &original)?;
     let symbols = require_success("bnm", case.tool("bnm", [Path::new("-Pg"), &second])?)?;
+    #[cfg(target_arch = "x86_64")]
     let expected = format!(
         "{0}[got-entry.o]:\narchive_cell U\narchive_entry T 0 17\narchive_value U\n\
          {0}[archive-value-with-long-name.o]:\narchive_cell R 0 4\narchive_value T 0 6\n",
         second.display()
     );
+    #[cfg(target_arch = "aarch64")]
+    let expected = LINKER_BNM_SYMBOLS.replace("{0}", &second.display().to_string());
     if symbols != expected.as_bytes() {
         return Err(format!(
             "bnm returned unexpected symbols: {}",
@@ -1230,7 +1237,7 @@ fn undefined_located() -> CaseResult {
     }) {
         return Err(format!("bld did not locate the reference to archive_entry: {stderr}").into());
     }
-    check_link_failure(result, &output, "R_X86_64_PLT32")?;
+    check_link_failure(result, &output, LINKER_UNDEFINED_RELOCATION)?;
     let archive = case.make_archive("resolved.a")?;
     case.run_got(&archive)
 }

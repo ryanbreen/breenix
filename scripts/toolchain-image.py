@@ -132,11 +132,6 @@ def seal(bundle, commit, arch, tool_record):
         actual = {path.name for path in (tree / CORPUS / "c-core/mac").iterdir()}
         if actual != {name + ".elf" for name in candidates}:
             raise ValueError("C candidate corpus differs from the selected cases")
-        for name in LINKER_OBJECTS:
-            required.add(CORPUS / "objs" / (name + ".o"))
-        for name in ("got-main", "tls-template"):
-            path = Path("linker") / (name + ".expect")
-            sources[CORPUS / path] = corpus / path
         fixtures = corpus / "assembler"
         for source in fixtures.iterdir():
             if source.is_file():
@@ -152,6 +147,11 @@ def seal(bundle, commit, arch, tool_record):
         for name in ("fp-exit", "call-exit"):
             for suffix in (".elf", ".link.json"):
                 required.add(CORPUS / "assembler" / (name + suffix))
+    for name in LINKER_OBJECTS:
+        required.add(CORPUS / "objs" / (name + ".o"))
+    for name in ("got-main", "tls-template"):
+        path = Path("linker") / (name + ".expect")
+        sources[CORPUS / path] = corpus / path
     if missing := (sources.keys() | required) - set(files):
         raise ValueError(f"toolchain fixture omits {min(missing)}")
     for path, source in sources.items():
