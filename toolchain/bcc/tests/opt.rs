@@ -57,6 +57,29 @@ fn function<'a>(assembly: &'a str, name: &str) -> &'a str {
 }
 
 #[test]
+fn zero_bitmask_removes_unreachable_branch() {
+    // N1570 6.5.10 and 6.8.4.1. A mask of zero has no set bits.
+    let source = Source::new(
+        "zero-bitmask",
+        r"
+extern void unavailable(void);
+extern volatile unsigned input;
+int plain(unsigned features) {
+    if (features & 0u) unavailable();
+    return 42;
+}
+int volatile_read(void) {
+    if (input & 0u) unavailable();
+    return 42;
+}
+",
+    );
+    let assembly = source.assembly("--target=x86_64", &["-O2"]);
+    assert!(!function(&assembly, "plain").contains("unavailable"), "{assembly}");
+    assert!(function(&assembly, "volatile_read").contains("input"), "{assembly}");
+}
+
+#[test]
 fn rounding_math_blocks_fp_fold() {
     // N1570 7.6.1 and F.8.2. The flag protects runtime arithmetic even
     // without a pragma, and FENV_ACCESS ON also works on its own.
