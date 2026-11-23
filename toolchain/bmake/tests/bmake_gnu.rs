@@ -142,6 +142,15 @@ all:
     let fatal = run_make("$(error stop here)\nall: ; @:\n", &[], &[]);
     assert_eq!(fatal.status.code(), Some(2), "{fatal:?}");
     assert_eq!(fatal.stderr, b"fixture.mk:1: stop here\n");
+
+    let fatal = run_make(
+        "all: broken later\nbroken: ; $(error stop here)\nlater: ; @echo unexpected\n",
+        &["-k"],
+        &[],
+    );
+    assert_eq!(fatal.status.code(), Some(2), "{fatal:?}");
+    assert_eq!(fatal.stderr, b"fixture.mk:2: stop here\n");
+    assert!(fatal.stdout.is_empty(), "{fatal:?}");
 }
 
 #[test]
