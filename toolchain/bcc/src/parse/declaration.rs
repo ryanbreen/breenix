@@ -20,6 +20,7 @@ struct Parameters<'a> {
 struct Declarator<'a> {
     name: Option<&'a Lexeme>,
     modifiers: Vec<Modifier<'a>>,
+    standard: Standard,
 }
 
 struct Field<'a> {
@@ -56,6 +57,10 @@ impl<'a> Declarator<'a> {
                 Modifier::Function(params) => {
                     if matches!(ty.kind, TypeKind::Array(..) | TypeKind::Function { .. }) {
                         return Err(site.error("invalid function result type"));
+                    }
+                    // WG14 N2244 DR 423, C17 6.7.6.3p5.
+                    if self.standard == Standard::C17 {
+                        ty.qualifiers = Qualifiers::default();
                     }
                     Type::new(TypeKind::Function {
                         result: Box::new(ty),
@@ -366,6 +371,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             Declarator {
                 name,
                 modifiers: Vec::new(),
+                standard: self.standard,
             }
         };
         loop {
@@ -579,7 +585,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             };
             (name, ty)
         });
-        crate::sema::layout_constant(expression, self.target, &self.records, names)
+        crate::sema::layout_constant(expression, self.target, self.standard, &self.records, names)
     }
 
     fn literal_integer(&mut self) -> Result<(i128, &'a Lexeme), Diagnostic> {

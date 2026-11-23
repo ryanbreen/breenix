@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::parse::{self, Storage};
-use crate::pp::{self, Diagnostic, Lexeme, Position, Preprocessed, Target};
+use crate::pp::{self, Diagnostic, Lexeme, Position, Preprocessed, Standard, Target};
 use crate::types::{BitField, Float, Integer, Kind, Record, Type};
 pub use parse::{Binary, Unary};
 
@@ -318,6 +318,7 @@ pub fn analyze<'a>(
     path: &Path,
     target: Target,
 ) -> Result<TranslationUnit<'a>, Diagnostic> {
+    let standard = source.standard;
     let mut symbols = HashMap::new();
     let mut functions = Vec::new();
     let mut objects = Vec::new();
@@ -362,6 +363,7 @@ pub fn analyze<'a>(
                     &symbols,
                     &result,
                     target,
+                    standard,
                     &[],
                     &record_scope,
                     &mut block_externs,
@@ -373,6 +375,7 @@ pub fn analyze<'a>(
                     declaration,
                     &mut symbols,
                     target,
+                    standard,
                     &record_scope,
                     &mut block_externs,
                 )?);
@@ -421,6 +424,7 @@ pub fn analyze<'a>(
                         &symbols,
                         &result,
                         target,
+                        standard,
                         &[],
                         &record_scope,
                         &mut block_externs,
@@ -485,6 +489,7 @@ pub fn analyze<'a>(
                             &symbols,
                             &result,
                             target,
+                            standard,
                             &[],
                             &record_scope,
                             &mut block_externs,
@@ -611,6 +616,7 @@ struct Symbol {
 pub(super) fn layout_constant<'a, 't>(
     expression: parse::Expression<'a>,
     target: Target,
+    standard: Standard,
     records: &[Record<'a>],
     names: impl Iterator<Item = (&'a str, Option<&'t Type>)>,
 ) -> Result<u64, Diagnostic> {
@@ -642,6 +648,7 @@ pub(super) fn layout_constant<'a, 't>(
         &symbols,
         &result,
         target,
+        standard,
         &[],
         &record_scope,
         &mut block_externs,
@@ -655,6 +662,7 @@ fn function<'a>(
     declaration: parse::Function<'a>,
     symbols: &mut HashMap<&'a str, Symbol>,
     target: Target,
+    standard: Standard,
     records: &RecordScope<'a, '_>,
     block_externs: &mut HashMap<&'a str, Type>,
 ) -> Result<Function<'a>, Diagnostic> {
@@ -751,8 +759,15 @@ fn function<'a>(
         },
     );
     let (body, locals) = if let Some(statements) = body {
-        let mut context =
-            FunctionBody::new(symbols, &result, target, &params, records, block_externs);
+        let mut context = FunctionBody::new(
+            symbols,
+            &result,
+            target,
+            standard,
+            &params,
+            records,
+            block_externs,
+        );
         if variadic {
             context.last_named_parameter = params.len().checked_sub(1);
         }
@@ -819,6 +834,7 @@ struct FunctionBody<'a, 's> {
     result: &'s Type,
     last_named_parameter: Option<usize>,
     target: Target,
+    standard: Standard,
     records: &'s RecordScope<'a, 's>,
 }
 
@@ -956,7 +972,11 @@ impl<'a> FunctionBody<'a, '_> {
                 let ty = right.value_type();
                 (ExpressionKind::Comma(Box::new(left), Box::new(right)), ty)
             }
-            Syntax::Cast(ty, expr) => {
+            Syntax::Cast(mut ty, expr) => {
+                // WG14 N2244 DR 423, C17 6.5.4p5.
+                if self.standard == Standard::C17 {
+                    ty.qualifiers = Default::default();
+                }
                 let expr = self.expression(*expr)?;
                 let source = expr.converted_type().unwrap_or_else(|| expr.ty.clone());
                 if ty.kind != Kind::Void

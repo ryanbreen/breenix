@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{self, Command, ExitCode};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::pp::{self, MacroOption, Target};
+use crate::pp::{self, MacroOption, Standard, Target};
 use crate::{codegen, sema};
 
 #[path = "../../bas/src/default_target.rs"]
@@ -17,6 +17,7 @@ pub use native_target::default_target;
 
 const USAGE: &str = "usage: bcc [-E|-S|-c|-fsyntax-only|--dump-types] [-o FILE] \
     [-I DIR] [-D NAME[=VALUE]] [-U NAME] [-L DIR] [-l NAME] [-B DIR] \
+    [-std=c11|-std=c17] [-fno-builtin] [-Wall] [-Werror] [-w] \
     [--target=x86_64|aarch64] INPUT ...";
 
 type Result<T> = std::result::Result<T, String>;
@@ -50,6 +51,8 @@ struct Options {
     output: Option<PathBuf>,
     tools: Option<PathBuf>,
     pp: pp::Options,
+    warnings_as_errors: bool,
+    suppress_warnings: bool,
     libraries: Vec<PathBuf>,
     inputs: Vec<Input>,
 }
@@ -68,6 +71,8 @@ impl Options {
                 },
                 ..pp::Options::default()
             },
+            warnings_as_errors: false,
+            suppress_warnings: false,
             libraries: Vec::new(),
             inputs: Vec::new(),
         };
@@ -93,6 +98,13 @@ impl Options {
                 Some("--") => positional = true,
                 Some("--target=x86_64") => options.pp.target = Target::X86_64,
                 Some("--target=aarch64") => options.pp.target = Target::Aarch64,
+                Some("-std=c11") => options.pp.standard = Standard::C11,
+                Some("-std=c17") => options.pp.standard = Standard::C17,
+                // Ordinary library names are already compiled as calls.
+                Some("-fno-builtin") => {}
+                Some("-Wall") => options.pp.warn_unknown_pragmas = true,
+                Some("-Werror") => options.warnings_as_errors = true,
+                Some("-w") => options.suppress_warnings = true,
                 Some("-E" | "-S" | "-c" | "-fsyntax-only" | "--dump-types" | "-O0") => {
                     let mut stage = match arg.to_str() {
                         Some("-E") => Stage::Preprocess,
@@ -199,11 +211,29 @@ impl Driver {
     }
 
     fn compile(&self, path: &Path, kind: InputKind, stage: Stage) -> Result<Vec<u8>> {
+        let mut errors = Vec::new();
+        let mut warn = |warning: pp::Diagnostic| {
+            if self.options.suppress_warnings {
+                return;
+            }
+            if self.options.warnings_as_errors {
+                errors.push(warning.to_string());
+            } else {
+                eprintln!("{}", warning.as_warning());
+            }
+        };
         let input = match kind {
-            InputKind::Preprocessed => pp::read_preprocessed(path),
-            _ => pp::preprocess(path, &self.options.pp),
-        }
-        .map_err(|error| error.to_string())?;
+            InputKind::Preprocessed => pp::read_preprocessed(path, self.options.pp.standard),
+            _ => pp::preprocess_with_warnings(path, &self.options.pp, &mut warn),
+        };
+        let input = match input {
+            Ok(input) if errors.is_empty() => input,
+            Ok(_) => return Err(errors.join("\n")),
+            Err(error) => {
+                errors.push(error.to_string());
+                return Err(errors.join("\n"));
+            }
+        };
         let mut bytes = Vec::new();
         if stage == Stage::Preprocess {
             input.write(&mut bytes).map_err(|error| error.to_string())?;

@@ -16,6 +16,7 @@ edition pin whose full publication has no digest recorded here.
 | [WG14 N1570](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf) | C11 committee draft, 2011-04-12 | `208969fec021e4f4ce87a1873765298c73e7bbb5209b1c5868967c7adfc8492e` |
 | [ISO/IEC 9899:2018](https://www.iso.org/standard/74528.html) | C17, edition 4, 2018-06 | — |
 | [WG14 N2243](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n2243.htm) | C11 clarification requests, version 1.13, October 2017 | `61522ef6c63eb6e68964d8a6b5724c2f9ea3304437367195218f631eaa7998ba` |
+| [WG14 N2244](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n2244.htm) | C11 clarification request summary with C17 dispositions, version 1.13, October 2017 | `7fa6be89b5a9a8407f5a26cc18ad86cef52d2c9683094f968bf916dba07bb0d4` |
 | [System V AMD64 psABI](https://raw.githubusercontent.com/wiki/hjl-tools/x86-psabi/x86-64-psABI-1.0.pdf) | AMD64 ABI Draft 1.0, 2018-01-28 | `f5c0e21542fc379090252e18ff3d083d2a5f51da8cca62b0fec41cc330a74641` |
 | [ELF gABI](https://gabi.xinuos.com/elf.pdf) | Xinuos ELF Object File Format, version 4.3 draft, 2025-09-04 | `e695f547dbb989e204dde79bc4dc6cfee7de7cca9b65a10208142932a216831b` |
 | [Linux Standard Base Core Specification](https://refspecs.linuxfoundation.org/LSB_5.0.0/LSB-Core-generic/LSB-Core-generic.pdf) | 5.0, Generic Part, chapter 11 (E25 ruling 8) | — |
@@ -28,6 +29,7 @@ edition pin whose full publication has no digest recorded here.
 | [POSIX make](https://pubs.opengroup.org/onlinepubs/9799919799.2024edition/utilities/make.html) | POSIX.1-2024, Issue 8, `make` utility | `86663126116573d3b62d89a86807e205030bd2e161beeeddfbdab7c7d25d52b4` |
 | [GNU make manual](https://www.gnu.org/software/make//manual/make.pdf) | Edition 0.77, GNU make 4.4.1, 2023-02-26 | `a4bc06026984382815e392159e60a4bc356cac6c5b81e5ae84fa4f58f621f4d3` |
 | [GNU C extensions](https://gcc.gnu.org/onlinedocs/gcc-15.2.0/gcc/C-Extensions.html) | GCC 15.2.0 manual, GNU C extensions chapter | `4965dab10bf21e0147e86aa80fca2a92da2c099393f34d0325c913aa3be871f2` |
+| [GNU CPP Diagnostics](https://gcc.gnu.org/onlinedocs/gcc-15.2.0/cpp/Diagnostics.html) | GCC 15.2.0 manual, §5, `#warning` spelling and behavior | `fbd550c2e99d404c1f8184df32389be1011514b1d95cd0e1ff0eb8e47ca6c37e` |
 | [GNU C vector extensions](https://gcc.gnu.org/onlinedocs/gcc-15.2.0/gcc/Vector-Extensions.html) | GCC 15.2.0 manual, §7.8, `vector_size` typedef spelling | `bb7f699ab3937eefe69960c5a6bbe6fae9fb58c02aa534bec65caca4c57942e6` |
 | [GCC Common Type Attributes](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Common-Attributes.html#Common-Type-Attributes) | GCC 16.2.0 manual, 2026-08-07, 209636 bytes. E25 ruling 37 pins only the meaning of the record type attribute `__attribute__((packed))`. | `ab4a0dcc40060e309f2d126d3bbd8a10b2d596084d32371b8642d76b33e0d33f` |
 | [NASM manual](https://www.nasm.us/xdoc/3.02/nasmdoc.pdf) | NASM 3.02, reserved for 25.12 | `a4d1766c9d640663569bcf93feac0657732fe52017002f1dbc797353f6aed34f` |
@@ -363,3 +365,22 @@ gABI §§3.10, 5.2 and 7.7 describe `SHF_TLS`, `STT_TLS` and the
 local-exec address and value sequences, using Breenix's self-pointer at
 `FS:0` and `R_X86_64_TPOFF32` relocations. A4 implements AArch64 local-exec
 TLS using TPIDR_EL0 and the AAELF64 TLS relocations and stages its suite inputs.
+
+### C17 mode and warnings (25.10a1)
+
+`-std=c17` defines `__STDC_VERSION__` as `201710L` (ISO C17 §6.10.8.1).
+`-std=c11` and the default define it as `201112L` (N1570 §6.10.8.1).
+
+| WG14 N2244 report | bcc behavior |
+| --- | --- |
+| DR 412, §6.10.1p6 | After a taken conditional, skip the remaining `#elif` expressions. |
+| DR 423, §§6.5.4p5 and 6.7.6.3p5 | In C17 mode, discard top-level qualifiers from cast types and function result types. |
+| DR 444, §§6.7.2.1 and 6.7.5 | Existing support for alignment specifiers on members. |
+| DR 465, §7.17.5.1 | On AMD64 in C17 mode, evaluate the pointer argument once and determine the lock-free result from its pointed-to type, including for a null pointer. AArch64 atomic lowering remains ARM 25.9d work. |
+| DR 481, §6.5.1.1p2 | Use lvalue, array-to-pointer and function-to-pointer conversions when selecting a generic association. The controlling expression stays unevaluated. |
+
+`#warning` emits a located diagnostic. `-Wall` also enables warnings
+for unrecognized source pragmas under §6.10.6. `-Werror` promotes bcc
+warnings to errors and `-w` suppresses warnings, even with `-Werror`.
+`-fno-builtin` is accepted because bcc already compiles ordinary library
+names as calls. Explicit compiler intrinsics remain available.

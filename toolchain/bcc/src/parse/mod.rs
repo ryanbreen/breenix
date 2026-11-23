@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::iter::Peekable;
 use std::path::Path;
 
-use crate::pp::{Diagnostic, Kind, Lexeme, Location, Position, Preprocessed, Target};
+use crate::pp::{Diagnostic, Kind, Lexeme, Location, Position, Preprocessed, Standard, Target};
 use crate::types::{amd64_va_list, Integer, Kind as TypeKind, Qualifiers, Record, Type};
 
 mod declaration;
@@ -286,19 +286,21 @@ pub(super) fn translation_unit<'a>(
     path: &Path,
     target: Target,
 ) -> Result<Vec<Declaration<'a>>, Diagnostic> {
-    parse_tokens(source.tokens(), path, target)
+    parse_tokens(source.tokens(), path, target, source.standard)
 }
 
 fn parse_tokens<'a>(
     tokens: impl Iterator<Item = &'a Lexeme>,
     path: &Path,
     target: Target,
+    standard: Standard,
 ) -> Result<Vec<Declaration<'a>>, Diagnostic> {
     let mut parser = Parser {
         tokens: tokens.peekable(),
         previous: None,
         path,
         target,
+        standard,
         names: vec![HashMap::new()],
         tags: vec![HashMap::new()],
         records: Vec::new(),
@@ -322,6 +324,7 @@ struct Parser<'a, 'p, I: Iterator<Item = &'a Lexeme>> {
     previous: Option<&'a Lexeme>,
     path: &'p Path,
     target: Target,
+    standard: Standard,
     names: Vec<HashMap<&'a str, Name>>,
     tags: Vec<HashMap<&'a str, Tag>>,
     records: Vec<Record<'a>>,
@@ -1042,7 +1045,12 @@ mod tests {
         .unwrap();
         let token_count = source.tokens().count();
         for count in 0..token_count {
-            let parsed = parse_tokens(source.tokens().take(count), path, Target::X86_64);
+            let parsed = parse_tokens(
+                source.tokens().take(count),
+                path,
+                Target::X86_64,
+                source.standard,
+            );
             if count == 9 {
                 // A complete prototype on its own is a valid translation unit.
                 assert_eq!(parsed.unwrap().len(), 1);

@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use crate::types::{Float, FloatFormat, Kind as TypeKind};
 
-use super::directive::{Diagnostic, Target};
+use super::directive::{Diagnostic, Standard, Target};
 use super::literal;
 use super::token::{token_prefix, LexContext};
 use super::{Kind, Location};
@@ -89,6 +89,7 @@ impl Lexeme {
 
 pub(super) struct Expander {
     target: Target,
+    standard: Standard,
     definitions: HashMap<Rc<str>, Macro>,
 }
 
@@ -218,9 +219,10 @@ struct Invocation {
 }
 
 impl Expander {
-    pub(super) fn new(target: Target) -> Self {
+    pub(super) fn new(target: Target, standard: Standard) -> Self {
         Self {
             target,
+            standard,
             definitions: HashMap::new(),
         }
     }
@@ -297,7 +299,7 @@ impl Expander {
                 result.push(token);
                 continue;
             }
-            if expand_builtin(&token, self.target, &mut result) {
+            if expand_builtin(&token, self.target, self.standard, &mut result) {
                 continue;
             }
             let Some(mac) = self.definitions.get(&token.text) else {
@@ -457,9 +459,8 @@ fn validate_token(text: &str, at: &Lexeme, context: LexContext) -> Result<Kind, 
 fn builtin(name: &str, target: Target) -> Option<(&str, Kind)> {
     let entry = match name {
         "__FILE__" => ("", Kind::String),
-        "__LINE__" => ("", Kind::Number),
+        "__LINE__" | "__STDC_VERSION__" => ("", Kind::Number),
         "__STDC__" => ("1", Kind::Number),
-        "__STDC_VERSION__" => ("201112L", Kind::Number),
         "__STDC_HOSTED__" | "__STRICT_ANSI__" => ("1", Kind::Number),
         "__x86_64__" if target == Target::X86_64 => ("1", Kind::Number),
         "__aarch64__" if target == Target::Aarch64 => ("1", Kind::Number),
@@ -535,11 +536,17 @@ fn is_builtin(name: &str, target: Target) -> bool {
     builtin(name, target).is_some() || float_builtin(name, target).is_some()
 }
 
-fn expand_builtin(token: &Lexeme, target: Target, result: &mut Vec<Lexeme>) -> bool {
+fn expand_builtin(
+    token: &Lexeme,
+    target: Target,
+    standard: Standard,
+    result: &mut Vec<Lexeme>,
+) -> bool {
     if let Some((text, kind)) = builtin(&token.text, target) {
         result.push(match token.text.as_ref() {
             "__FILE__" => token.respell(literal::quote(&token.site.file), kind),
             "__LINE__" => token.respell(token.site.loc.line.to_string(), kind),
+            "__STDC_VERSION__" => token.respell(standard.version(), kind),
             _ => token.respell(text, kind),
         });
     } else if let Some(text) = float_builtin(&token.text, target) {

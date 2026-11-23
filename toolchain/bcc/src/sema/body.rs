@@ -21,6 +21,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
         symbols: &'s HashMap<&'a str, Symbol>,
         result: &'s Type,
         target: Target,
+        standard: Standard,
         params: &[Parameter<'a>],
         records: &'s RecordScope<'a, 's>,
         block_externs: &'s mut HashMap<&'a str, Type>,
@@ -57,6 +58,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
             result,
             last_named_parameter: None,
             target,
+            standard,
             records,
         }
     }

@@ -13,9 +13,9 @@ use std::ops::Range;
 use normalize::{normalize, phase_one, PhysicalCursor};
 use token::{token_prefix, LexContext};
 
-pub(crate) use directive::read_preprocessed;
+pub(crate) use directive::{preprocess_with_warnings, read_preprocessed};
 pub use directive::{
-    preprocess, preprocess_source, Diagnostic, MacroOption, Options, Preprocessed, Target,
+    preprocess, preprocess_source, Diagnostic, MacroOption, Options, Preprocessed, Standard, Target,
 };
 pub(crate) use expand::Lexeme;
 pub use expand::Position;
