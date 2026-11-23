@@ -8,8 +8,9 @@ use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bobj::elf::{
-    write_rel, Elf, RelSection, RelSymbol, Rela, EM_X86_64, PF_X, PT_LOAD, SHF_ALLOC,
-    SHF_EXECINSTR, SHF_WRITE, SHN_ABS, SHT_PROGBITS, STB_GLOBAL, STT_FUNC, STT_OBJECT,
+    write_rel, Elf, RelSection, RelSymbol, Rela, EM_X86_64, PF_W, PF_X, PT_LOAD, PT_TLS, SHF_ALLOC,
+    SHF_EXECINSTR, SHF_TLS, SHF_WRITE, SHN_ABS, SHT_NOBITS, SHT_PROGBITS, STB_GLOBAL, STT_FUNC,
+    STT_OBJECT, STT_TLS,
 };
 
 const EM_AARCH64: u16 = 183;
@@ -340,6 +341,124 @@ fn code_section<'a>(bytes: &'a [u8], relocations: &'a [Rela]) -> RelSection<'a> 
         size: bytes.len() as u64,
         relocations,
     }
+}
+
+#[test]
+fn aarch64_tprel_is_tcb_plus_template_offset() {
+    let scratch = Scratch::new("aarch64-tprel");
+    const SYMBOL_OFFSET: u64 = 0xf70;
+    const ADDEND: i64 = 0x23;
+    // ADD x3, x3, #0, LSL #12; ADD x3, x3, #0; RET.
+    let code = [0x9140_0063u32, 0x9100_0063, 0xd65f_03c0];
+    let text: Vec<_> = code.into_iter().flat_map(u32::to_le_bytes).collect();
+    let tdata = [0xabu8; 32];
+    let fixture = |symbol, addend| {
+        // AAELF64 2025Q1 §5.7.11.4, Local Exec TLS relocations.
+        let relocations = [rela(0, 549, symbol, addend), rela(4, 551, symbol, addend)];
+        write_rel(
+            EM_AARCH64,
+            &[
+                code_section(&text, &relocations),
+                RelSection {
+                    name: b".tdata",
+                    kind: SHT_PROGBITS,
+                    flags: SHF_ALLOC | SHF_WRITE | SHF_TLS,
+                    alignment: 32,
+                    bytes: &tdata,
+                    size: tdata.len() as u64,
+                    relocations: &[],
+                },
+                RelSection {
+                    name: b".tbss",
+                    kind: SHT_NOBITS,
+                    flags: SHF_ALLOC | SHF_WRITE | SHF_TLS,
+                    alignment: 64,
+                    bytes: &[],
+                    size: 0x1000,
+                    relocations: &[],
+                },
+            ],
+            &[
+                RelSymbol {
+                    name: b"_start",
+                    section: 1,
+                    kind: STT_FUNC,
+                    binding: STB_GLOBAL,
+                    value: 0,
+                    size: text.len() as u64,
+                },
+                RelSymbol {
+                    name: b"tls_var",
+                    section: 3,
+                    kind: STT_TLS,
+                    binding: STB_GLOBAL,
+                    value: SYMBOL_OFFSET,
+                    size: 64,
+                },
+            ],
+        )
+        .unwrap()
+    };
+    fs::write(scratch.0.join("tls.o"), fixture(1, ADDEND)).unwrap();
+    let output = scratch.link(&["tls.o"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let bytes = fs::read(scratch.0.join("image.elf")).unwrap();
+    let elf = Elf::parse(&bytes).unwrap();
+    let programs = || (0..elf.program_count()).map(|index| elf.program(index).unwrap());
+    let tls = programs().find(|header| header.kind == PT_TLS).unwrap();
+    let data_load = programs()
+        .find(|header| header.kind == PT_LOAD && header.flags & PF_W != 0)
+        .unwrap();
+    let (tdata_address, template) = section(&elf, b".tdata");
+    let tbss_index = (1..elf.section_count())
+        .find(|&index| elf.section_name(index).unwrap() == b".tbss")
+        .unwrap();
+    let tbss = elf.section(tbss_index).unwrap();
+
+    // gABI §§3.10 and 7.7. The default layout puts .tdata at the start
+    // of PT_TLS and .tbss after it, at the next 64-byte boundary.
+    assert_eq!(tls.alignment, 64);
+    assert_eq!(tls.virtual_address, tdata_address as u64);
+    assert_eq!(template, tdata);
+    assert_eq!(tls.file_size, tdata.len() as u64);
+    assert_eq!(tbss.address, tls.virtual_address + 64);
+    assert_eq!(tbss.kind, SHT_NOBITS);
+    assert!(elf.section_data(tbss_index).unwrap().is_none());
+    assert_eq!(tls.memory_size, 64 + 0x1000);
+    assert_eq!(
+        data_load.offset + data_load.file_size,
+        tls.offset + tls.file_size
+    );
+
+    let (_, linked_text) = section(&elf, b".text");
+    let hi = word(linked_text, 0);
+    let lo = word(linked_text, 4);
+    let immediate = |instruction: u32| i64::from((instruction >> 10) & 0xfff);
+    assert_eq!(hi & !0x003f_fc00, code[0]);
+    assert_eq!(lo & !0x003f_fc00, code[1]);
+    // Breenix pthread.rs aligns TP + 16 to the template alignment.
+    let tcb = 16u64.div_ceil(tls.alignment) * tls.alignment;
+    let symbol_address = tbss.address + SYMBOL_OFFSET;
+    let expected = (tcb + (symbol_address - tls.virtual_address)) as i64 + ADDEND;
+    assert_eq!((immediate(hi) << 12) + immediate(lo), expected);
+
+    let overflow_addend = ADDEND + (1 << 24) - expected;
+    fs::write(scratch.0.join("overflow.o"), fixture(1, overflow_addend)).unwrap();
+    assert_error(
+        scratch.link(&["overflow.o"]),
+        "overflow.o: .text+0x0: R_AARCH64_TLSLE_ADD_TPREL_HI12 (549) tls_var",
+        "relocation overflow",
+    );
+    fs::write(scratch.0.join("not-tls.o"), fixture(0, 0)).unwrap();
+    assert_error(
+        scratch.link(&["not-tls.o"]),
+        "not-tls.o: .text+0x0: R_AARCH64_TLSLE_ADD_TPREL_HI12 (549) _start",
+        "incompatible TLS types",
+    );
 }
 
 #[test]
