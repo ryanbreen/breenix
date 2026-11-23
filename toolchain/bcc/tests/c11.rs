@@ -15,43 +15,11 @@ fn constraint_paragraphs_located() {
 #[test]
 fn profile_macros_truthful() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../corpus/c11/profile-macros.c");
-    let scratch = Scratch(std::env::temp_dir().join(format!(
-        "breenix-bcc-c11-{}-profile",
-        std::process::id()
-    )));
-    fs::create_dir(&scratch.0).unwrap();
-    let arm_fixture = scratch.0.join("arm-profile.c");
-    // Mirror the guest fixture with the ARM exception from E25 ruling 47.
-    fs::write(
-        &arm_fixture,
-        r#"
-#if !defined(__STDC_NO_VLA__) || __STDC_NO_VLA__ != 1
-#error expected __STDC_NO_VLA__ to be defined as 1
-#endif
-#if !defined(__STDC_NO_COMPLEX__) || __STDC_NO_COMPLEX__ != 1
-#error expected __STDC_NO_COMPLEX__ to be defined as 1
-#endif
-#if defined(__STDC_IEC_559_COMPLEX__)
-#error expected __STDC_IEC_559_COMPLEX__ to be absent
-#endif
-#if !defined(__STDC_NO_ATOMICS__) || __STDC_NO_ATOMICS__ != 1
-#error expected __STDC_NO_ATOMICS__ to be defined as 1 on ARM
-#endif
-#if !defined(__STDC_NO_THREADS__) || __STDC_NO_THREADS__ != 1
-#error expected __STDC_NO_THREADS__ to be defined as 1
-#endif
-int profile_macros_verified;
-"#,
-    )
-    .unwrap();
+    // Ruling 49 retires the ARM exception from ruling 47.
     for target in ["--target=x86_64", "--target=aarch64"] {
         let result = Command::new(env!("CARGO_BIN_EXE_bcc"))
             .args([target, "-E"])
-            .arg(if target == "--target=aarch64" {
-                &arm_fixture
-            } else {
-                &fixture
-            })
+            .arg(&fixture)
             .output()
             .unwrap();
         assert!(result.status.success(), "{target}: {result:?}");
@@ -64,97 +32,157 @@ int profile_macros_verified;
     }
 }
 
+#[cfg(target_arch = "aarch64")]
 #[test]
-fn aarch64_defers_atomic_accesses() {
+fn aarch64_atomic_fetch_add_seq_cst() {
+    aarch64_atomic_check(&[SCALAR_ATOMICS]);
+}
+
+#[test]
+fn aarch64_atomic_memory_order_instructions() {
     use bcc::{codegen, pp, sema};
+    use std::fmt::Write;
 
-    let path = Path::new("atomic-arm.c");
-    let options = pp::Options {
-        target: pp::Target::Aarch64,
-        ..pp::Options::default()
-    };
-    let mut mismatches = Vec::new();
-    for source in [
-        "_Atomic int object;\nint f(void) { return object; }",
-        "_Atomic int object;\nvoid f(void) { object = 4; }",
-        "_Atomic int object;\nint f(void) { return object++; }",
-        "int f(_Atomic(int) *p) {\n return *p; }",
-        "void f(_Atomic(int) *p) {\n *p = 4; }",
-        "void f(_Atomic(int) *p) {\n *p += 4; }",
-        "void f(_Atomic(int) *p) {\n ++*p; }",
-        "int f(_Atomic(int) *p) {\n return __c11_atomic_load(p, 5); }",
-        "int f(void) {\n _Atomic int local = 4; return 0; }",
-        "extern _Atomic int object;\n_Atomic int object = 4;",
-    ] {
-        let input = pp::preprocess_source(path, source.as_bytes(), &options).unwrap();
-        let unit = sema::analyze(&input, path, options.target).unwrap();
-        let diagnostic = codegen::emit_assembly(&unit, path, options.target)
-            .err()
-            .map(|error| error.to_string());
-        let located = diagnostic.as_deref().is_some_and(|message| {
-            message
-                .strip_prefix("atomic-arm.c:2:")
-                .and_then(|rest| rest.split_once(": error: "))
-                .is_some_and(|(column, reason)| {
-                    column.parse::<usize>().is_ok() && reason.contains("ARM 25.9d")
-                })
-        });
-        if !located {
-            mismatches.push(format!("{source}: {diagnostic:?}"));
+    let mut source = String::from("static _Atomic int value;\n");
+    let mut checks = Vec::new();
+    // N1570 §7.17.3. bcc implements consume as acquire.
+    let orders: [(_, Option<&[_]>, Option<&[_]>, &[_], _, &[_]); 6] = [
+        ("relaxed", Some(&["ldr"]), Some(&["str"]), &["ldxr", "stxr"], "relaxed", &[]),
+        ("consume", Some(&["ldar"]), None, &["ldaxr", "stxr"], "consume", &["dmb ishld"]),
+        ("acquire", Some(&["ldar"]), None, &["ldaxr", "stxr"], "acquire", &["dmb ishld"]),
+        ("release", None, Some(&["stlr"]), &["ldxr", "stlxr"], "relaxed", &["dmb ish"]),
+        ("acq_rel", None, None, &["ldaxr", "stlxr"], "relaxed", &["dmb ish"]),
+        (
+            "seq_cst",
+            Some(&["ldar"]),
+            Some(&["stlr", "dmb ish"]),
+            &["ldaxr", "stlxr"],
+            "seq_cst",
+            &["dmb ish"],
+        ),
+    ];
+    for (order, load, store, rmw, failure, fence) in orders {
+        let success_order = format!("__ATOMIC_{}", order.to_ascii_uppercase());
+        let failure_order = format!("__ATOMIC_{}", failure.to_ascii_uppercase());
+        let mut check = |op: &str, args: &str, expected| {
+            let name = format!("{op}_{order}");
+            writeln!(source, "void {name}(int *expected) {{ __c11_atomic_{op}({args}); }}").unwrap();
+            checks.push((name, expected));
+        };
+        if let Some(expected) = load {
+            check("load", &format!("&value, {success_order}"), expected);
         }
+        if let Some(expected) = store {
+            check("store", &format!("&value, 1, {success_order}"), expected);
+        }
+        for op in ["fetch_add", "exchange"] {
+            check(op, &format!("&value, 1, {success_order}"), rmw);
+        }
+        for op in ["compare_exchange_strong", "compare_exchange_weak"] {
+            check(op, &format!("&value, expected, 1, {success_order}, {failure_order}"), rmw);
+        }
+        check("thread_fence", &success_order, fence);
+        check("signal_fence", &success_order, &[]);
     }
-    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+
+    let path = Path::new("atomic-memory-orders.c");
+    let options = pp::Options { target: pp::Target::Aarch64, ..pp::Options::default() };
+    let input = pp::preprocess_source(path, source.as_bytes(), &options).unwrap();
+    let unit = sema::analyze(&input, path, options.target).unwrap();
+    let assembly = codegen::emit_assembly(&unit, path, options.target).unwrap();
+
+    for (name, expected) in checks {
+        let (_, body) = assembly.split_once(&format!("\n{name}:\n")).expect(&name);
+        let (body, _) = body.split_once(&format!("\n.size {name},")).expect(&name);
+        // x11 addresses the atomic object. Exclude stack and value-buffer accesses.
+        let instructions: Vec<_> = body
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                let (op, operands) = line.split_once(' ')?;
+                if matches!(op, "dmb" | "dsb" | "isb") {
+                    Some(line)
+                } else {
+                    operands.ends_with("[x11]").then_some(op)
+                }
+            })
+            .collect();
+        assert_eq!(instructions, expected, "{name}:\n{body}");
+        assert!(!body.contains("__atomic_"), "{name}:\n{body}");
+    }
 }
 
+#[cfg(target_arch = "aarch64")]
 #[test]
-fn aarch64_diagnoses_unused_atomic_types() {
-    let scratch = Scratch(std::env::temp_dir().join(format!(
-        "breenix-bcc-c11-{}-atomic-types",
-        std::process::id()
-    )));
-    fs::create_dir(&scratch.0).unwrap();
-    let source = scratch.0.join("atomic-type.c");
-    let assembly = scratch.0.join("atomic-type.s");
-    let mut mismatches = Vec::new();
-    for declaration in [
-        "_Atomic int counter;",
-        "int f(_Atomic(int) *);",
-        "typedef _Atomic(int) Counter;",
-    ] {
-        fs::write(&source, declaration).unwrap();
-        let column = declaration.find("_Atomic").unwrap() + 1;
-        let expected = format!(
-            "{}:1:{column}: error: atomic types are deferred to ARM 25.9d\n",
-            source.display()
-        );
-        for stage in ["-S", "-fsyntax-only", "--dump-types"] {
-            let mut command = Command::new(env!("CARGO_BIN_EXE_bcc"));
-            command.args(["--target=aarch64", stage]).arg(&source);
-            if stage == "-S" {
-                command.arg("-o").arg(&assembly);
-            }
-            let output = command.output().unwrap();
-            if output.status.code() != Some(1)
-                || !output.stdout.is_empty()
-                || output.stderr != expected.as_bytes()
-                || assembly.exists()
-            {
-                mismatches.push(format!("{stage} {declaration}: {output:?}"));
-            }
-            if assembly.exists() {
-                fs::remove_file(&assembly).unwrap();
-            }
-        }
-    }
-    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
-}
-
-// N1570 6.5.2.4, 6.5.16.2 and 7.17; Intel SDM Vol. 3, memory ordering.
-#[test]
-fn atomic_fetch_add_seq_cst() {
-    let result = build_and_check(
-        "atomic",
+fn aarch64_atomic_rmw_contended() {
+    aarch64_atomic_check(&[
+        "--threads",
         r"
+#include <stdatomic.h>
+static atomic_long counter = 0;
+int main(int count) {
+    if (!count)
+        return counter == 8 * 16384 ? 42 : 1;
+    for (int i = 0; i < count; ++i) {
+        counter++;
+        atomic_fetch_add_explicit(&counter, 1, memory_order_relaxed);
+    }
+    return 0;
+}
+",
+    ]);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn aarch64_aggregate_atomic_cas_under_contention() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("aarch64-atomic-brt");
+    checked(
+        Command::new(env!("CARGO"))
+            .current_dir(root.join("toolchain"))
+            .args(["build", "--offline", "--locked", "--release", "-p", "brt"])
+            .args(["--features", "exports", "--target"])
+            .arg(root.join("aarch64-breenix.json"))
+            .arg("--target-dir")
+            .arg(&target)
+            .args(["-Z", "build-std=core", "-Z", "build-std-features=compiler-builtins-mem"]),
+    );
+    let archive = target.join("aarch64-breenix/release/libbrt.a");
+    aarch64_atomic_check(&[
+        "--atomic-runtime",
+        archive.to_str().unwrap(),
+        include_str!("../../tests/bcc/aggregate_atomic_worker.c"),
+        r"
+int initialize(void);
+int worker(unsigned int);
+int verify(unsigned long);
+
+int main(int iterations) {
+    if (iterations < 0)
+        return initialize();
+    if (iterations)
+        return worker(iterations);
+    return verify(8 * 8192UL) == 0 ? 42 : 1;
+}
+",
+    ]);
+}
+
+#[cfg(target_arch = "aarch64")]
+fn aarch64_atomic_check(args: &[&str]) {
+    let toolchain = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let bcc = Path::new(env!("CARGO_BIN_EXE_bcc"));
+    checked(
+        Command::new("python3")
+            .arg(toolchain.join("tests/bcc/aarch64_return_42_exit_status.py"))
+            .args([bcc, &bcc.with_file_name("bas"), &bcc.with_file_name("bld")])
+            .args(args),
+    );
+}
+
+// N1570 6.5.2.4, 6.5.16.2 and 7.17.
+const SCALAR_ATOMICS: &str = r"
 #include <stdatomic.h>
 int main(void) {
     volatile _Atomic(unsigned char) byte;
@@ -190,8 +218,11 @@ int main(void) {
     atomic_signal_fence(memory_order_seq_cst);
     return atomic_load(&word) + 2;
 }
-",
-    );
+";
+
+#[test]
+fn atomic_fetch_add_seq_cst() {
+    let result = build_and_check("atomic", SCALAR_ATOMICS);
     let assembly = fs::read_to_string(result.0.join("c11.s")).unwrap();
     let (_, main) = assembly.split_once("\nmain:\n").expect("main label");
     let (main, _) = main.split_once("\n.size main,").expect("main size");

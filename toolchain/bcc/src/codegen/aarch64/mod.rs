@@ -9,12 +9,13 @@ use std::fmt::Write;
 
 use crate::pp::{Diagnostic, Position, Target};
 use crate::sema::{
-    Argument, Binary, Expression, ExpressionKind, Function, InitValue, Linkage, LocalStorage,
-    Object, Statement, StaticAddress, ThreadData, ThreadInitializer, TranslationUnit, Unary,
+    Argument, Binary, Expression, ExpressionKind, Function, Linkage, LocalStorage, Object,
+    Statement, TranslationUnit, Unary,
 };
 use crate::types::{Float, Integer, Kind, Layout, Record, Type};
 
 mod abi;
+mod atomic;
 mod binary128;
 mod builtins;
 mod float;
@@ -29,7 +30,7 @@ use varargs::VariadicFrame;
 
 const ARGUMENT_REGISTERS: usize = 8;
 const FRAME_RECORD: usize = 16;
-const DEFERRED_ATOMICS: &str = "atomic accesses are deferred to ARM 25.9d, a prerequisite for ARM 25.10b";
+const STACK_ALIGNMENT: usize = 16;
 
 pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
     let mut functions = HashMap::new();
@@ -44,6 +45,8 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
         records: &unit.records,
         locals: Vec::new(),
         frame: 0,
+        aligned_frame: 0,
+        frame_alignment: STACK_ALIGNMENT,
         variadic: None,
         flow_labels: HashMap::new(),
         object_definitions: unit
@@ -66,6 +69,19 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
         tbss: String::new(),
         next_label: 0,
     };
+    // N1570 6.5.2.5p5: file-scope compound literals have static storage.
+    for (id, literal) in unit.static_literals.iter().enumerate() {
+        let label = flow::literal_label(id);
+        let object = Object {
+            name: &label,
+            site: literal.site,
+            ty: literal.ty.clone(),
+            alignment: None,
+        };
+        emitter.object_definition(
+            &object, &label, Linkage::Internal, Some(&literal.initializer),
+        )?;
+    }
     for definition in &unit.static_objects {
         emitter.object_definition(
             &definition.object,
@@ -116,6 +132,8 @@ struct Emitter<'unit, 'src> {
     records: &'unit [Record<'src>],
     locals: Vec<Slot>,
     frame: usize,
+    aligned_frame: usize,
+    frame_alignment: usize,
     variadic: Option<VariadicFrame>,
     flow_labels: HashMap<usize, String>,
     object_definitions: BTreeSet<&'src str>,
@@ -192,7 +210,20 @@ impl<'src> Emitter<'_, 'src> {
         self.statements(body, result, &epilogue)?;
         // Record-valued calls in the body reserve fixed frame slots.
         let tail = self.text.len();
-        self.adjust_stack("sub", self.frame.next_multiple_of(16));
+        let frame = self.frame.next_multiple_of(STACK_ALIGNMENT);
+        self.adjust_stack("sub", frame);
+        let realign = self.frame_alignment > STACK_ALIGNMENT;
+        if realign {
+            // AAPCS64 §§6.1.1, 6.4.5–6.4.6. Keep x29 at the frame
+            // record and use a preserved base for the over-aligned area.
+            let mask = !((self.frame_alignment - 1) as u64);
+            writeln!(
+                self.text,
+                "    str x19, [sp, #-16]!\n    mov x19, sp\n    and x19, x19, #{mask:#x}"
+            )
+            .unwrap();
+            self.add_sub_offset("sub", "sp", "x19", self.aligned_frame as u64);
+        }
         let adjustment = self.text.split_off(tail);
         self.text.insert_str(stack_adjustment, &adjustment);
         if function.linkage == Linkage::External
@@ -209,6 +240,10 @@ impl<'src> Emitter<'_, 'src> {
         } else {
             writeln!(self.text, "{epilogue}:").unwrap();
         }
+        if realign {
+            self.offset_address("x9", "x29", -((frame + STACK_ALIGNMENT) as i64));
+            self.text.push_str("    ldr x19, [x9]\n");
+        }
         writeln!(
             self.text,
             "    mov sp, x29\n    ldp x29, x30, [sp], #16\n    ret\n.size {name}, . - {name}"
@@ -220,7 +255,6 @@ impl<'src> Emitter<'_, 'src> {
     // Floating values use s0/d0/q0. x0 holds addresses, aggregate/vector
     // representations in memory, and integers extended to their C type.
     fn value(&mut self, expr: &Expression<'src>) -> Result<(), Diagnostic> {
-        require_nonatomic(&expr.ty, expr.position())?;
         match expr.ty.kind {
             Kind::Void | Kind::Array(..) | Kind::Function { .. } => {}
             _ => require_value(&expr.ty, expr.position())?,
@@ -241,9 +275,18 @@ impl<'src> Emitter<'_, 'src> {
             | ExpressionKind::Identifier(_)
             | ExpressionKind::Local(_)
             | ExpressionKind::ThreadLocal(_)
+            | ExpressionKind::CompoundLiteral { .. }
+            | ExpressionKind::StaticLiteral(_)
             | ExpressionKind::Member { .. } => {
-                self.address(expr)?;
-                self.load_value(&expr.ty, expr.bit_field(), "x0");
+                if expr.ty.qualifiers.atomic {
+                    self.atomic_plain_load(expr)?;
+                } else {
+                    self.address(expr)?;
+                    self.load_value(&expr.ty, expr.bit_field(), "x0");
+                }
+            }
+            ExpressionKind::Unary(Unary::Dereference, _) if expr.ty.qualifiers.atomic => {
+                self.atomic_plain_load(expr)?;
             }
             ExpressionKind::Unary(op, operand) => self.unary(*op, operand, &expr.ty)?,
             ExpressionKind::Binary {
@@ -279,13 +322,13 @@ impl<'src> Emitter<'_, 'src> {
                 self.value(left)?;
                 self.value(right)?;
             }
-            ExpressionKind::CompoundLiteral { .. }
-            | ExpressionKind::StaticLiteral(_)
-            | ExpressionKind::FltRounds => {
-                return Err(Diagnostic::new(expr.position(), "AArch64 C11 lowering is deferred to 25.9"));
+            ExpressionKind::FltRounds => {
+                // DDI 0487 M.b C5.2.8 FPCR.RMode [23:22] is nearest, +infinity,
+                // -infinity, toward 0; N1570 5.2.4.2.2 maps these to 1, 2, 3, 0.
+                self.text.push_str("    mrs x0, fpcr\n    lsr x0, x0, #22\n    and x0, x0, #3\n    add x0, x0, x0\n    mov x1, #57\n    lsr x0, x1, x0\n    and x0, x0, #3\n");
             }
-            ExpressionKind::Atomic { .. } => {
-                return Err(Diagnostic::new(expr.position(), DEFERRED_ATOMICS));
+            ExpressionKind::Atomic { op, weak, arguments } => {
+                self.atomic_builtin(*op, *weak, arguments)?;
             }
             ExpressionKind::FloatClass { operand, values } => self.float_class(operand, *values)?,
             ExpressionKind::SignBit(operand) => self.float_sign(operand)?,
@@ -667,14 +710,6 @@ fn require_value(ty: &Type, site: &Position) -> Result<(), Diagnostic> {
             site,
             "value is outside the supported AArch64 subset",
         ))
-    }
-}
-
-fn require_nonatomic(ty: &Type, site: &Position) -> Result<(), Diagnostic> {
-    if ty.qualifiers.atomic {
-        Err(Diagnostic::new(site, DEFERRED_ATOMICS))
-    } else {
-        Ok(())
     }
 }
 

@@ -1930,11 +1930,11 @@ the first build. `header-rebuild` uses `touch -d` to make `util.h` newer and req
 The host project check also validates the linked ELF with `elfcheck`.
 ARM64 bundle staging and guest execution are scheduled for A3.
 
-The `toolchain/c11` milestone measures the six `c11` cases. On x86-64
+The `toolchain/c11` milestone measures the six `c11` cases. On both targets
 the bundle's `cc` compiles and links the positive fixtures on the guest.
 The runner compares their exit status and stdout with the staged `.expect`
 files. The floating fixture checks four rounding modes, including narrowing
-and x87 arithmetic, and checks `FE_INEXACT` and `FE_DIVBYZERO`.
+and long double arithmetic (x87 on x86-64, binary128 on ARM64), and checks `FE_INEXACT` and `FE_DIVBYZERO`.
 The atomic fixture uses two threads for 256 release/acquire handshakes,
 256 sequentially consistent store-buffering rounds and 512 aggregate
 CAS updates through the bundle's `libbrt.a`.
@@ -1942,7 +1942,7 @@ CAS updates through the bundle's `libbrt.a`.
 The diagnostic case makes ten compile-only invocations from the constraint
 manifest's guest subset and checks the exit status, exact located stderr and
 absence of an output object. The six cases use the default 10-second
-watchdog. On ARM64 they fail as scheduled for ARM 25.9 after A4.
+watchdog. ARM64 guest acceptance remains pending.
 
 ```bash
 scripts/boot-interactive.sh --mode suite --suite toolchain --milestone toolchain/sysroot-oracle

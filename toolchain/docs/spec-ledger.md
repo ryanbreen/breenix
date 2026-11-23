@@ -331,7 +331,8 @@ The pinned Clang Language Extensions document the spelling and return
 values of `__builtin_flt_rounds()`. On AMD64 the builtin uses
 `STMXCSR` and maps RC bits 14:13 to the C values. Intel SDM Vol. 1
 §§4.8.4, 8.1.5 and 10.2.3.2 specify the x87 and SSE rounding controls.
-The AArch64 backend still needs to lower the rounding query to FPCR.
+On AArch64 the builtin reads FPCR.RMode [23:22] and maps it to the C
+values; Arm DDI 0487 M.b §C5.2.8 specifies the rounding control.
 
 ### AMD64 scalar atomics (25.9c1)
 

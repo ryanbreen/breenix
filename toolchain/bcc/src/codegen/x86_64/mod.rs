@@ -529,7 +529,7 @@ impl<'src> Emitter<'_, 'src> {
             ExpressionKind::FloatClass { operand, values } => self.float_class(operand, *values)?,
             ExpressionKind::SignBit(operand) => self.float_sign(operand)?,
             ExpressionKind::Alloca(size) => self.alloca(size)?,
-            ExpressionKind::Atomic { op, arguments } => self.atomic_builtin(*op, arguments)?,
+            ExpressionKind::Atomic { op, arguments, .. } => self.atomic_builtin(*op, arguments)?,
             ExpressionKind::Call { callee, arguments } => {
                 self.call(callee, arguments, &expr.ty)?;
                 self.normalize_integer(&expr.ty);

@@ -2,10 +2,12 @@
 
 use super::thread::thread_address;
 use super::*;
+use crate::sema::{InitValue, ObjectInitializer, StaticAddress, ThreadData, ThreadInitializer};
 use crate::types::Layout;
 
 pub(super) enum Slot {
     Frame(usize),
+    Aligned(usize),
     Static(String),
     Thread(String),
     ThreadExtern,
@@ -19,36 +21,30 @@ impl<'src> Emitter<'_, 'src> {
     ) -> Result<(), Diagnostic> {
         self.locals.clear();
         self.frame = 0;
+        self.aligned_frame = 0;
+        self.frame_alignment = STACK_ALIGNMENT;
         for (index, local) in function.locals.iter().enumerate() {
             let object = &local.object;
-            require_nonatomic(&object.ty, object.site)?;
-            if object.alignment.is_some() {
-                return Err(Diagnostic::new(object.site, "AArch64 C11 object lowering is deferred to 25.9"));
-            }
             let slot = match &local.storage {
                 LocalStorage::ThreadExtern(_) | LocalStorage::Function(_) => Slot::ThreadExtern,
                 LocalStorage::Thread(_) => Slot::Thread(self.label()),
-                LocalStorage::Static(initializer) => {
-                    let label = self.label();
-                    if initializer.is_none() {
-                        let layout = object.ty.layout().unwrap();
-                        writeln!(
-                            self.bss,
-                            "    .balign {}\n{label}:\n    .zero {}",
-                            layout.align, layout.size
-                        )
-                        .unwrap();
-                    }
-                    Slot::Static(label)
-                }
+                LocalStorage::Static(_) => Slot::Static(self.label()),
                 LocalStorage::Automatic => {
                     let layout = match parameters.get(index) {
                         Some((Some(value), ArgumentLocation::Register(_))) if !value.indirect() => {
                             value.slot()
                         }
-                        _ => object.ty.layout().unwrap(),
+                        _ => object.layout().unwrap(),
                     };
-                    Slot::Frame(self.frame_slot(layout, object.site)?)
+                    // N1570 6.7.5: align the allocated object itself, even
+                    // when the incoming stack is only 16-byte aligned.
+                    if layout.align > STACK_ALIGNMENT {
+                        self.frame_alignment = self.frame_alignment.max(layout.align);
+                        self.aligned_frame = next_frame_slot(self.aligned_frame, layout, object.site)?;
+                        Slot::Aligned(self.aligned_frame)
+                    } else {
+                        Slot::Frame(self.frame_slot(layout, object.site)?)
+                    }
                 }
             };
             self.locals.push(slot);
@@ -60,23 +56,18 @@ impl<'src> Emitter<'_, 'src> {
                 let label = label.clone();
                 self.thread_definition(&local.object, &label, Linkage::Internal, init.as_ref())?;
             }
-            if let (LocalStorage::Static(Some(init)), Slot::Static(label)) =
+            if let (LocalStorage::Static(init), Slot::Static(label)) =
                 (&local.storage, &self.locals[index])
             {
                 let label = label.clone();
-                self.object_definition(&local.object, &label, Linkage::Internal, Some(init))?;
+                self.object_definition(&local.object, &label, Linkage::Internal, init.as_ref())?;
             }
         }
         Ok(())
     }
 
     pub(super) fn frame_slot(&mut self, layout: Layout, site: &Position) -> Result<usize, Diagnostic> {
-        self.frame = self
-            .frame
-            .checked_add(layout.size)
-            .and_then(|end| end.checked_next_multiple_of(layout.align))
-            .filter(|&end| end <= i32::MAX as usize - 15)
-            .ok_or_else(|| Diagnostic::new(site, "stack frame exceeds the addressable range"))?;
+        self.frame = next_frame_slot(self.frame, layout, site)?;
         Ok(self.frame)
     }
 
@@ -102,16 +93,7 @@ impl<'src> Emitter<'_, 'src> {
             Statement::Block(body) => self.statements(body, result, epilogue)?,
             Statement::Empty => {}
             Statement::Initialize { local, initializer } => {
-                self.zero_local(*local, 0, initializer.zero_bytes);
-                for init in &initializer.values {
-                    let InitValue::Expression(value) = &init.value else {
-                        self.zero_local(*local, init.offset, init.ty.layout().unwrap().size);
-                        continue;
-                    };
-                    self.converted(value, &init.ty)?;
-                    self.local_address(*local, init.offset, "x9");
-                    self.store_value(&init.ty, init.bit_field);
-                }
+                self.initialize(*local, initializer)?;
             }
             Statement::Expression(expr) => self.value(expr)?,
             Statement::Return(expr) => {
@@ -196,6 +178,28 @@ impl<'src> Emitter<'_, 'src> {
         Ok(())
     }
 
+    fn initialize(
+        &mut self,
+        local: usize,
+        initializer: &ObjectInitializer<'src>,
+    ) -> Result<(), Diagnostic> {
+        self.zero_local(local, 0, initializer.zero_bytes);
+        for init in &initializer.values {
+            let InitValue::Expression(value) = &init.value else {
+                self.zero_local(local, init.offset, init.ty.layout().unwrap().size);
+                continue;
+            };
+            self.converted(value, &init.ty)?;
+            if init.ty.qualifiers.atomic && matches!(init.ty.kind, Kind::Record(_)) {
+                self.atomic_record_initialize(&init.ty, local, init.offset);
+            } else {
+                self.local_address(local, init.offset, "x9");
+                self.store_value(&init.ty, init.bit_field);
+            }
+        }
+        Ok(())
+    }
+
     fn zero_local(&mut self, local: usize, offset: usize, len: usize) {
         if len == 0 {
             return;
@@ -244,6 +248,13 @@ impl<'src> Emitter<'_, 'src> {
                 symbol_address(&mut self.text, "x0", name);
             }
             ExpressionKind::Local(id) => self.local_address(*id, 0, "x0"),
+            ExpressionKind::CompoundLiteral { local, initializer } => {
+                self.initialize(*local, initializer)?;
+                self.local_address(*local, 0, "x0");
+            }
+            ExpressionKind::StaticLiteral(id) => {
+                symbol_address(&mut self.text, "x0", &literal_label(*id));
+            }
             ExpressionKind::String(bytes) => {
                 let label = self.emit_string(bytes);
                 symbol_address(&mut self.text, "x0", &label);
@@ -271,6 +282,10 @@ impl<'src> Emitter<'_, 'src> {
                 let displacement = -((distance - offset) as i64);
                 self.offset_address(register, "x29", displacement);
             }
+            Slot::Aligned(distance) => {
+                let displacement = -((distance - offset) as i64);
+                self.offset_address(register, "x19", displacement);
+            }
             Slot::Static(name) => {
                 symbol_address(&mut self.text, register, name);
                 if offset != 0 {
@@ -293,7 +308,9 @@ impl<'src> Emitter<'_, 'src> {
         right: &Expression<'src>,
         operation: Option<&(Binary, Type, Type)>,
     ) -> Result<(), Diagnostic> {
-        require_nonatomic(&left.ty, left.position())?;
+        if left.ty.qualifiers.atomic {
+            return self.atomic_assignment(left, right, operation);
+        }
         self.address(left)?;
         self.push_value('x');
         let field = left.bit_field();
@@ -318,7 +335,9 @@ impl<'src> Emitter<'_, 'src> {
         increment: bool,
         postfix: bool,
     ) -> Result<(), Diagnostic> {
-        require_nonatomic(&operand.ty, operand.position())?;
+        if operand.ty.qualifiers.atomic {
+            return self.atomic_update(operand, increment, postfix);
+        }
         self.address(operand)?;
         self.text.push_str("    mov x9, x0\n");
         let ty = &operand.ty;
@@ -366,11 +385,11 @@ impl<'src> Emitter<'_, 'src> {
         label
     }
 
-    // N1570 6.7.9 and 6.9.2: file-scope initializers supply static bytes
-    // and addresses, and tentative definitions end up zero-initialized.
+    // N1570 6.7.9 and 6.9.2: static initializers supply bytes and
+    // addresses, and definitions without an initializer are zero-initialized.
     pub(super) fn object_definition(
         &mut self,
-        object: &Object<'src>,
+        object: &Object<'_>,
         name: &str,
         linkage: Linkage,
         initializer: Option<&ThreadInitializer<'src>>,
@@ -387,41 +406,7 @@ impl<'src> Emitter<'_, 'src> {
             layout.align
         )
         .unwrap();
-        let mut cursor = 0;
-        if let Some(initializer) = initializer {
-            require_nonatomic(&object.ty, object.site)?;
-            for (&offset, value) in initializer {
-                if offset > cursor {
-                    writeln!(data, "    .zero {}", offset - cursor).unwrap();
-                }
-                cursor = offset + match value {
-                    ThreadData::Byte(byte) => {
-                        writeln!(data, "    .byte {byte}").unwrap();
-                        1
-                    }
-                    ThreadData::Address(address, addend) => {
-                        let target = match address {
-                            StaticAddress::Symbol(symbol, site) => {
-                                self.use_symbol(symbol, site)?;
-                                (*symbol).to_owned()
-                            }
-                            StaticAddress::String(bytes) => self.emit_string(bytes),
-                            StaticAddress::Literal(_) | StaticAddress::Local(_) => {
-                                return Err(Diagnostic::new(
-                                    object.site,
-                                    "AArch64 static initializer address is deferred to ARM 25.9d",
-                                ));
-                            }
-                        };
-                        writeln!(data, "    .quad {target}{addend:+}").unwrap();
-                        8
-                    }
-                };
-            }
-        }
-        if cursor < layout.size {
-            writeln!(data, "    .zero {}", layout.size - cursor).unwrap();
-        }
+        self.emit_initializer(&mut data, initializer, layout.size)?;
         writeln!(data, ".size {name}, {}", layout.size).unwrap();
         if initializer.is_some() {
             self.data.push_str(&data);
@@ -430,6 +415,62 @@ impl<'src> Emitter<'_, 'src> {
         }
         Ok(())
     }
+
+    // N1570 6.6p7,9 and 6.7.9p4: static and TLS initializers both
+    // admit address constants. AAELF64 §5.7.5 defines the ABS64 relocation.
+    pub(super) fn emit_initializer(
+        &mut self,
+        data: &mut String,
+        initializer: Option<&ThreadInitializer<'src>>,
+        size: usize,
+    ) -> Result<(), Diagnostic> {
+        let mut cursor = 0;
+        for (&offset, value) in initializer.into_iter().flatten() {
+            if offset > cursor {
+                writeln!(data, "    .zero {}", offset - cursor).unwrap();
+            }
+            cursor = offset + match value {
+                ThreadData::Byte(byte) => {
+                    writeln!(data, "    .byte {byte}").unwrap();
+                    1
+                }
+                ThreadData::Address(address, addend) => {
+                    let target = match address {
+                        StaticAddress::Symbol(symbol, site) => {
+                            self.use_symbol(symbol, site)?;
+                            (*symbol).to_owned()
+                        }
+                        StaticAddress::String(bytes) => self.emit_string(bytes),
+                        StaticAddress::Literal(id) => literal_label(*id),
+                        StaticAddress::Local(index) => {
+                            let Slot::Static(label) = &self.locals[*index] else {
+                                unreachable!("initializer addresses name ordinary static locals");
+                            };
+                            label.clone()
+                        }
+                    };
+                    writeln!(data, "    .quad {target}{addend:+}").unwrap();
+                    8
+                }
+            };
+        }
+        if cursor < size {
+            writeln!(data, "    .zero {}", size - cursor).unwrap();
+        }
+        Ok(())
+    }
+}
+
+fn next_frame_slot(frame: usize, layout: Layout, site: &Position) -> Result<usize, Diagnostic> {
+    frame
+        .checked_add(layout.size)
+        .and_then(|end| end.checked_next_multiple_of(layout.align))
+        .filter(|&end| end <= i32::MAX as usize - (STACK_ALIGNMENT - 1))
+        .ok_or_else(|| Diagnostic::new(site, "stack frame exceeds the addressable range"))
+}
+
+pub(super) fn literal_label(id: usize) -> String {
+    format!(".L.init.{id}")
 }
 
 pub(super) fn symbol_address(out: &mut String, register: &str, name: &str) {

@@ -249,9 +249,6 @@ impl Driver {
         let target = self.options.pp.target;
         let mut unit = sema::analyze_with_rounding_math(&input, path, target, self.options.rounding_math)
             .map_err(|error| error.to_string())?;
-        if matches!(stage, Stage::Syntax | Stage::Types) {
-            unit.check_target_types().map_err(|error| error.to_string())?;
-        }
         match stage {
             Stage::Syntax => Ok(bytes),
             Stage::Types => {

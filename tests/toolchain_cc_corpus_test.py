@@ -17,33 +17,7 @@ CORPUS = ROOT / "toolchain/corpus"
 ARCH = os.environ.get("BREENIX_TOOLCHAIN_TEST_ARCH", "x86_64")
 LIBC_TARGET = "x86_64-breenix-c" if ARCH == "x86_64" else "aarch64-breenix"
 LIBC = ROOT / "libs/libbreenix-libc/target" / LIBC_TARGET / "release/libc.a"
-EXPECTED = """
-aggregate-copy
-array-index
-bitfield-values
-bitwise-shifts
-boolean-tokens
-byte-output
-conditional
-floating-conversion
-function-pointer
-goto
-integer-arithmetic
-integer-promotions
-literal-output
-loops
-macros
-pointer-distance
-recursion
-return-status
-scope-shadow
-short-circuit
-static-duration
-switch-enum
-unsigned-wrap
-usual-conversions
-varargs
-""".split()
+
 
 
 class ToolchainCcCorpusTest(unittest.TestCase):
@@ -60,7 +34,7 @@ class ToolchainCcCorpusTest(unittest.TestCase):
         ))
         catalog = (CORPUS / "cases").read_text().splitlines()
         self.assertEqual(len(catalog), 30)
-        for arch, expected in (("aarch64", EXPECTED), ("x86_64", catalog)):
+        for arch, expected in (("aarch64", catalog), ("x86_64", catalog)):
             with self.subTest(arch=arch):
                 fixture = includes.get(arch, includes.get(""))
                 self.assertIsNotNone(fixture)
@@ -81,7 +55,7 @@ class ToolchainCcCorpusTest(unittest.TestCase):
             self.assertEqual(record["candidateProducer"], "mac-bcc")
             staged = output / "root/usr/share/breenix/toolchain"
             reference = (CORPUS / "cases").read_text().splitlines()
-            expected = EXPECTED if ARCH == "aarch64" else reference
+            expected = reference
             self.assertEqual(sorted(path.name for path in (staged / "c-core/mac").iterdir()),
                              [name + ".elf" for name in expected])
             self.assertEqual(len(reference), 30)

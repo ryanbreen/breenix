@@ -20,6 +20,7 @@ pub(crate) use body::{canonical, constant_integer};
 pub(super) use c11::{check_static_assertion, type_alignment};
 
 pub use atomic::AtomicOp;
+pub(crate) use body::constant_integer;
 pub(crate) use atomic::SEQ_CST;
 pub use thread::{StaticAddress, ThreadData, ThreadInitializer, ThreadObject};
 
@@ -32,7 +33,6 @@ pub struct TranslationUnit<'a> {
     pub thread_objects: Vec<ThreadObject<'a>>,
     pub records: Vec<Record<'a>>,
     rounding_math: bool,
-    deferred_atomic_type: Option<&'a Lexeme>,
 }
 
 impl TranslationUnit<'_> {
@@ -45,13 +45,6 @@ impl TranslationUnit<'_> {
         // FENV_ACCESS ON semantics throughout the translation unit.
         const CONSERVATIVE_FENV_ACCESS: bool = true;
         self.rounding_math || CONSERVATIVE_FENV_ACCESS
-    }
-
-    pub(crate) fn check_target_types(&self) -> Result<(), Diagnostic> {
-        match self.deferred_atomic_type {
-            Some(token) => Err(token.error("atomic types are deferred to ARM 25.9d")),
-            None => Ok(()),
-        }
     }
 }
 
@@ -247,6 +240,7 @@ pub enum ExpressionKind<'a> {
     Alloca(Box<Expression<'a>>),
     Atomic {
         op: AtomicOp,
+        weak: bool,
         arguments: Vec<Argument<'a>>,
     },
     Call {
@@ -595,14 +589,6 @@ pub(crate) fn analyze_with_rounding_math<'a>(
             .resolve_records(&|id| records[id].definition.as_ref().map(|d| d.layout));
         thread::check_layout(&thread.object.ty, thread.object.site)?;
     }
-    // N1570 6.7.2.4p2 and 6.10.8.3: the ARM profile lacks atomic
-    // types. Preserve ordinary constraint diagnostics and let the backend
-    // name the access site before falling back to the keyword location.
-    let deferred_atomic_type = if target == Target::Aarch64 {
-        source.tokens().find(|token| token.text.as_ref() == "_Atomic")
-    } else {
-        None
-    };
     Ok(TranslationUnit {
         functions,
         objects,
@@ -611,7 +597,6 @@ pub(crate) fn analyze_with_rounding_math<'a>(
         thread_objects: thread_objects.definitions,
         records,
         rounding_math,
-        deferred_atomic_type,
     })
 }
 
