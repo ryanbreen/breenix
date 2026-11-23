@@ -11,6 +11,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::pp::{self, MacroOption, Target};
 use crate::{codegen, sema};
 
+#[path = "../../bas/src/default_target.rs"]
+mod native_target;
+pub use native_target::default_target;
+
 const USAGE: &str = "usage: bcc [-E|-S|-c|-fsyntax-only|--dump-types] [-o FILE] \
     [-I DIR] [-D NAME[=VALUE]] [-U NAME] [-L DIR] [-l NAME] [-B DIR] \
     [--target=x86_64|aarch64] INPUT ...";
@@ -56,7 +60,14 @@ impl Options {
             stage: Stage::Link,
             output: None,
             tools: None,
-            pp: pp::Options::default(),
+            pp: pp::Options {
+                target: if default_target(env::consts::OS, env::consts::ARCH) == "aarch64" {
+                    Target::Aarch64
+                } else {
+                    Target::X86_64
+                },
+                ..pp::Options::default()
+            },
             libraries: Vec::new(),
             inputs: Vec::new(),
         };
@@ -223,6 +234,11 @@ impl Driver {
         };
         run_tool(
             Command::new(self.tools.join("as"))
+                .arg("--target")
+                .arg(match self.options.pp.target {
+                    Target::X86_64 => "x86_64",
+                    Target::Aarch64 => "aarch64",
+                })
                 .arg("-o")
                 .arg(output)
                 .arg(assembly),
@@ -251,10 +267,6 @@ impl Driver {
 
     fn execute(&self) -> Result<()> {
         let stage = self.options.stage;
-        if self.options.pp.target == Target::Aarch64 && matches!(stage, Stage::Object | Stage::Link)
-        {
-            return Err("bcc: error: assembly and linking for aarch64 are not implemented".into());
-        }
         let output = self.options.output.as_deref();
         let work = matches!(stage, Stage::Object | Stage::Link)
             .then(WorkDir::create)

@@ -3,7 +3,7 @@ name = "linux-test"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Freestanding x86-64 Linux runtime for bcc development checks"
+description = "Freestanding Linux runtime for bcc development checks"
 
 # Keep the Linux ABI and its runtime safety rules out of the guest workspace.
 [workspace]

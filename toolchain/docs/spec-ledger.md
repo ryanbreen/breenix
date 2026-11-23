@@ -168,9 +168,9 @@ for the 25.5 units.
 | Variadic calls | N1570 §6.5.2.2 and AMD64 psABI §3.2.3. Trailing arguments use default promotions. The caller puts the vector-register count in `%al`. |
 | Static library search | GNU ld 2.45 §2.1 for `-L` and `-l`. bcc resolves archive names for bld and preserves their order among the link inputs. |
 
-bcc emits AMD64 assembly for the 25.5 scalar subset. Variadic function
-definitions and `va_list` operations follow in 25.7b2, x87 `long double`
-lowering in 25.7b3, and AArch64 scalar code generation in A3.
+bcc emits AMD64 and AArch64 assembly for the 25.5 scalar subset. Variadic function
+definitions and `va_list` operations follow in 25.7b2, and x87 `long double`
+lowering in 25.7b3. AArch64 aggregates, variadics, binary128 and C TLS follow in A4.
 
 ## bcc 25.7 record objects
 
@@ -192,8 +192,8 @@ definition. Packing preserves nested types' internal layouts and the
 zero-width separator's alignment rule. The AMD64 psABI §3.2.3 classifies
 a packed aggregate with an unaligned field as MEMORY.
 
-AArch64 bcc code emission is scheduled for A3. AAPCS64 record layout for
-bit-fields and aggregate calling conventions are scheduled for A4.
+A3 adds AArch64 scalar code emission. AAPCS64 record layout for bit-fields
+and aggregate calling conventions are scheduled for A4.
 
 ## bmake 25.6a2
 
@@ -246,8 +246,8 @@ to nearest with ties to even, including the 64th significand bit and the
 subnormal range. Intel SDM Vol. 1 Table 4-3 and Figure 8-13 define the
 value encoding. The instruction forms come from Vol. 2. Integer
 conversion truncates with a temporary x87 control word and restores
-the saved control word. AArch64 code emission is scheduled for A3 and
-AAPCS64 binary128 `long double` lowering for A4.
+the saved control word. AAPCS64 binary128 `long double` lowering is
+scheduled for A4.
 
 ### Floating limits and environment (25.9b)
 

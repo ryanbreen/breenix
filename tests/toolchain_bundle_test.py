@@ -2,6 +2,7 @@
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ import sys
 import tempfile
 import tomllib
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +24,53 @@ CHANNEL = tomllib.loads((WORKSPACE / "rust-toolchain.toml").read_text())["toolch
 def digest(path):
     with path.open("rb") as file:
         return hashlib.file_digest(file, "sha256").hexdigest()
+
+
+class ToolchainGuestBuildTest(unittest.TestCase):
+    def test_arm_guest_link_inputs_are_keyed_by_content(self):
+        script = ROOT / "scripts/toolchain-build-tools.py"
+        spec = importlib.util.spec_from_file_location("toolchain_build_tools", script)
+        builder = importlib.util.module_from_spec(spec)
+        with mock.patch.object(sys, "path", [str(script.parent), *sys.path]):
+            spec.loader.exec_module(builder)
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fork = root / "rust-fork"
+            fork.mkdir()
+            (fork / ".rust-fork-snapshot.json").write_text('{"commit": "test-pin"}')
+            (root / "rust-fork.toml").write_text('commit = "test-pin"\n')
+            linker = root / "userspace/programs/linker.ld"
+            linker.parent.mkdir(parents=True)
+            binaries = root / "binaries"
+            binaries.mkdir()
+            for name in (*builder.TOOLS, "bcc", "bmake"):
+                (binaries / name).write_bytes(name.encode())
+
+            with (mock.patch.object(builder, "ROOT", root),
+                  mock.patch.object(builder.subprocess, "run"),
+                  mock.patch.object(builder, "cargo_tools", return_value=binaries) as cargo):
+                def build(name, archive, script):
+                    dev = root / name
+                    (dev / "lib").mkdir(parents=True)
+                    (dev / "lib/libc.a").write_bytes(archive)
+                    linker.write_bytes(script)
+                    builder.build_guest_tools("aarch64", root / "work", dev, [], [], {}, {})
+                    _, env, _, target_dir, *_ = cargo.call_args.args
+                    flags = env["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")
+                    library = next(flag.removeprefix("native=") for flag in flags if flag.startswith("native="))
+                    script_path = next(flag.removeprefix("link-arg=-T") for flag in flags
+                                       if flag.startswith("link-arg=-T"))
+                    self.assertEqual((Path(library) / "libc.a").read_bytes(), archive)
+                    self.assertEqual(Path(script_path).read_bytes(), script)
+                    return target_dir, flags, Path(library) / "libc.a", Path(script_path)
+
+                first = build("first", b"guest libc", b"guest script")
+                self.assertEqual(build("same", b"guest libc", b"guest script"), first)
+                self.assertNotEqual(build("changed-libc", b"updated libc", b"guest script")[0], first[0])
+                self.assertNotEqual(build("changed-script", b"guest libc", b"updated script")[0], first[0])
+                self.assertEqual(first[2].read_bytes(), b"guest libc")
+                self.assertEqual(first[3].read_bytes(), b"guest script")
 
 
 class ToolchainBundleTest(unittest.TestCase):
@@ -36,7 +85,7 @@ class ToolchainBundleTest(unittest.TestCase):
         tools = self.record.get("tools")
         self.assertIsInstance(tools, dict, "bundle build record has no Cargo tool provenance")
         self.assertEqual(set(tools), {"bas", "bld", "bar", "bnm"} |
-                         ({"bcc", "bmake"} if self.record["arch"] == "x86_64" else set()))
+                         {"bcc", "bmake"})
         self.assertEqual(self.record, json.loads((self.dev / "build.json").read_text()))
         arch = self.record["arch"]
         machine = {"x86_64": 62, "aarch64": 183}[arch]  # ELF gABI, e_machine.
@@ -73,7 +122,7 @@ class ToolchainBundleTest(unittest.TestCase):
             "rustForkCommit": fork,
             "rustc": {"version": subprocess.check_output([self.rustc, "--version"], text=True).strip(),
                       "sha256": digest(self.rustc)},
-            "target": "x86_64-breenix",
+            "target": f"{self.record['arch']}-breenix",
             "sha256": digest(executable),
         })
         self.assertFalse(any(path.suffix == ".c" for path in (WORKSPACE / "bcc").rglob("*")))
@@ -87,6 +136,8 @@ class ToolchainBundleTest(unittest.TestCase):
         self.assertIn(f"{digest(executable)}  opt/breenix-dev/25.2/bin/make\n", manifest)
         for category in ("make", "project"):
             for source in (WORKSPACE / "corpus" / category).iterdir():
+                if category == "project" and source.name == "value.s" and self.record["arch"] == "aarch64":
+                    source = WORKSPACE / "corpus/project-aarch64/value.s"
                 with self.subTest(fixture=source.name):
                     path = f"usr/share/breenix/toolchain/{category}/{source.name}"
                     self.assertEqual(digest(self.bundle / "root" / path), digest(source))
@@ -105,15 +156,18 @@ class ToolchainBundleTest(unittest.TestCase):
             tool_record.write_text(json.dumps(self.record["tools"]))
             sealed = subprocess.run([
                 sys.executable, ROOT / "scripts/toolchain-image.py", "seal", bundle,
-                self.record["commit"], "x86_64", "--tool-record", tool_record,
+                self.record["commit"], self.record["arch"], "--tool-record", tool_record,
             ], capture_output=True, text=True, timeout=10)
             self.assertEqual(sealed.returncode, 1, sealed.stderr)
             self.assertIn(f"staged bytes differ from the source for {stale}", sealed.stderr)
 
-    def arm_bundle_unchanged_until_a3(self):
-        self.assertEqual(set(self.record["tools"]), {"bas", "bld", "bar", "bnm"})
+    def arm_bundle_has_cc_and_make(self):
+        self.assertEqual(set(self.record["tools"]), {"bas", "bld", "bar", "bnm", "bcc", "bmake"})
         self.assertEqual({path.name for path in (self.dev / "bin").iterdir()},
-                         {"bas", "bld", "bar", "bnm"})
+                         {"bas", "bld", "bar", "bnm", "cc", "make", "as", "ld"})
+        for tool, alias in (("bas", "as"), ("bld", "ld")):
+            self.assertEqual(digest(self.dev / "bin" / tool), digest(self.dev / "bin" / alias))
+        self.assertEqual(self.record["candidateProducer"], "mac-bcc" if sys.platform == "darwin" else "host-bcc")
 
     def bootstrap_abi_tls_inputs_staged(self):
         root = self.bundle / "root"
@@ -304,12 +358,12 @@ if __name__ == "__main__":
     ToolchainBundleTest.baseline = args.baseline
     checks = ["ToolchainBundleTest.tools_built_by_rustc",
               "ToolchainBundleTest.receipts_from_cargo_host_bas"]
+    checks.extend(["ToolchainBundleTest.cc_built_by_rustc",
+                   "ToolchainBundleTest.make_built_by_rustc"])
     if json.loads((args.bundle / "build.json").read_text())["arch"] == "x86_64":
-        checks.extend(["ToolchainBundleTest.cc_built_by_rustc",
-                       "ToolchainBundleTest.make_built_by_rustc",
-                       "ToolchainBundleTest.bootstrap_abi_tls_inputs_staged"])
+        checks.append("ToolchainBundleTest.bootstrap_abi_tls_inputs_staged")
     else:
-        checks.extend(["ToolchainBundleTest.arm_bundle_unchanged_until_a3",
+        checks.extend(["ToolchainBundleTest.arm_bundle_has_cc_and_make",
                        "ToolchainBundleTest.arm_encoding_inputs_are_staged",
                        "ToolchainBundleTest.aarch64_stages_linker_objects",
                        "ToolchainBundleTest.aarch64_host_bld_links_staged_objects"])

@@ -537,7 +537,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
                     // Brace elision descends into the first subobject until
                     // the expression can initialize a whole object.
                     while aggregate(slot.ty)
-                        && !assignable(slot.ty, &value)
+                        && !assignable(slot.ty, &value, self.target)
                         && !(char_array(slot.ty) && matches!(value.kind, ExpressionKind::String(_)))
                     {
                         if start + selected.len() >= parse::MAX_NESTING {
@@ -685,7 +685,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
                 return Ok(());
             }
         }
-        if !assignable(slot.ty, &value) {
+        if !assignable(slot.ty, &value, self.target) {
             return Err(value
                 .site
                 .error(format!("cannot initialize {} with {}", slot.ty, value.ty)));

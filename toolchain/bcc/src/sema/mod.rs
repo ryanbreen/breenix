@@ -815,7 +815,7 @@ impl<'a> FunctionBody<'a, '_> {
             (Some(expr), Kind::Void) => Err(expr.site.error("void function cannot return a value")),
             (Some(expr), _) => {
                 let expr = self.expression(expr)?;
-                if !assignable(self.result, &expr) {
+                if !assignable(self.result, &expr, self.target) {
                     return Err(expr
                         .site
                         .error(format!("cannot return {} as {}", expr.ty, self.result)));
@@ -1024,7 +1024,7 @@ impl<'a> FunctionBody<'a, '_> {
                     }
                     Some((op, a, b))
                 } else {
-                    if !assignable(&left.ty, &right) {
+                    if !assignable(&left.ty, &right, self.target) {
                         return Err(right
                             .site
                             .error(format!("cannot assign {} to {}", right.ty, left.ty)));
@@ -1136,7 +1136,7 @@ impl<'a> FunctionBody<'a, '_> {
             }
             let expr = self.expression(argument)?;
             let ty = if let Some(parameter) = params.get(index) {
-                if !assignable(parameter, &expr) {
+                if !assignable(parameter, &expr, self.target) {
                     return Err(expr
                         .site
                         .error(format!("cannot pass {} as {parameter}", expr.ty)));
@@ -1232,7 +1232,7 @@ fn binary_types(
         op,
         Less | LessEqual | Greater | GreaterEqual | Equal | NotEqual
     );
-    if let Some(ty) = pointer_binary(op, left_value, right_value, &left, &right) {
+    if let Some(ty) = pointer_binary(op, left_value, right_value, &left, &right, target) {
         return Some(ty);
     }
     let common = match (&left.kind, &right.kind) {
@@ -1292,6 +1292,7 @@ fn pointer_binary(
     b: &Expression<'_>,
     left: &Type,
     right: &Type,
+    target: Target,
 ) -> Option<(Type, Type, Type)> {
     use Binary::*;
     let int = || Type::new(Kind::Integer(Integer::Int));
@@ -1320,14 +1321,18 @@ fn pointer_binary(
             Some((left.clone(), right.clone(), int()))
         }
         _ if matches!(op, Equal | NotEqual) => {
-            let ptr = compatible_pointer(a, b)?;
+            let ptr = compatible_pointer(a, b, target)?;
             Some((ptr.clone(), ptr, int()))
         }
         _ => None,
     }
 }
 
-fn compatible_pointer(left: &Expression<'_>, right: &Expression<'_>) -> Option<Type> {
+fn compatible_pointer(
+    left: &Expression<'_>,
+    right: &Expression<'_>,
+    target: Target,
+) -> Option<Type> {
     let a = left.value_type();
     let b = right.value_type();
     match (&a.kind, &b.kind) {
@@ -1361,8 +1366,8 @@ fn compatible_pointer(left: &Expression<'_>, right: &Expression<'_>) -> Option<T
                 .pointer_to(),
             )
         }
-        (Kind::Pointer(_), Kind::Integer(_)) if is_null(right) => Some(a),
-        (Kind::Integer(_), Kind::Pointer(_)) if is_null(left) => Some(b),
+        (Kind::Pointer(_), Kind::Integer(_)) if is_null(right, target) => Some(a),
+        (Kind::Integer(_), Kind::Pointer(_)) if is_null(left, target) => Some(b),
         _ => None,
     }
 }
@@ -1374,7 +1379,7 @@ fn conditional_type(yes: &Expression<'_>, no: &Expression<'_>, target: Target) -
     if matches!(yes.ty.kind, Kind::Record(_)) && yes.ty.kind == no.ty.kind {
         return Some(yes.ty.unqualified());
     }
-    compatible_pointer(yes, no).or_else(|| {
+    compatible_pointer(yes, no, target).or_else(|| {
         if is_arithmetic(&yes.ty) && is_arithmetic(&no.ty) {
             binary_types(Binary::Add, yes, no, target).map(|(_, _, result)| result)
         } else {
@@ -1383,20 +1388,19 @@ fn conditional_type(yes: &Expression<'_>, no: &Expression<'_>, target: Target) -
     })
 }
 
-fn is_null(expr: &Expression<'_>) -> bool {
-    matches!(expr.ty.kind, Kind::Integer(_))
-        && body::constant_integer(expr, Target::X86_64) == Some(0)
+fn is_null(expr: &Expression<'_>, target: Target) -> bool {
+    matches!(expr.ty.kind, Kind::Integer(_)) && body::constant_integer(expr, target) == Some(0)
 }
 
 // N1570 6.5.16.1p1 and 6.3.2.3p3 for assignment and null pointers.
-fn assignable(destination: &Type, expr: &Expression<'_>) -> bool {
+fn assignable(destination: &Type, expr: &Expression<'_>, target: Target) -> bool {
     let converted = expr.converted_type();
     let source = converted.as_ref().unwrap_or(&expr.ty);
     match (&destination.kind, &source.kind) {
         _ if is_arithmetic(destination) && is_arithmetic(source) => true,
         (Kind::Integer(Integer::Bool), Kind::Pointer(_)) => true,
         (Kind::Record(to), Kind::Record(from)) => to == from && to.layout.is_some(),
-        (Kind::Pointer(_), Kind::Integer(_)) => is_null(expr),
+        (Kind::Pointer(_), Kind::Integer(_)) => is_null(expr, target),
         (Kind::Pointer(to), Kind::Pointer(from)) => {
             if !to.qualifiers.contains(from.qualifiers) {
                 return false;
