@@ -170,3 +170,32 @@ for the 25.5 units.
 bcc emits AMD64 assembly for the 25.5 scalar subset. Variadic function
 definitions and `va_list` operations follow in 25.7b2, x87 `long double`
 lowering in 25.7b3, and AArch64 scalar code generation in A3.
+
+## bmake 25.6a2
+
+| Feature | Specification |
+| --- | --- |
+| Delayed expansion, substitution and assignment precedence | POSIX.1-2024 make, “Macros” and “Environment Variables”. Rule headers expand as read. Recipes expand when run. The `-e` option gives environment definitions precedence over makefile definitions. |
+| Automatic variables | POSIX.1-2024 make, “Internal Macros” and “Inference Rules”. The runner uses the inferred source and stem where applicable and compares prerequisite and target timestamps for `$?`. |
+| Includes and makefile selection | POSIX.1-2024 make, “Include Lines”, “Options” and “Extended Description”. Include paths resolve from the working directory and are read in order. The GNU make manual's “Summary of Options” specifies `-C`. |
+| Graph traversal and freshness | POSIX.1-2024 make, “Extended Description”, “Target Rules” and “Exit Status”. Dependencies are updated in makefile order. Only a strictly newer prerequisite makes an existing file stale. |
+| Suffix inference | POSIX.1-2024 make, “Inference Rules” and “Default Rules”. `.SUFFIXES` appends to or clears the ordered search list. The built-in rules cover `.c`, `.sh`, `.c.o`, `.y.o`, `.l.o`, `.y.c` and `.l.c`. The `.c.a` rule belongs to archive-member inference in 25.6c. XSI/SCCS rules are outside the serial subset. Breenix adds `.s.o` with overrideable `AS` and `ASFLAGS`. |
+| Special targets | POSIX.1-2024 make, “Target Rules”. `.PHONY` opts targets into a rebuild on each invocation, `.DEFAULT` supplies a fallback recipe, and `.IGNORE` and `.SILENT` scope recipe error handling and echo. `.POSIX` declares the serial semantics bmake uses by default. `.PRECIOUS` preserves output when a recipe shell reports an interruption. |
+| Recipe options | POSIX.1-2024 make, “Options”, “Makefile Execution” and “Exit Status”. `-n` prints pending recipes, with the `+` prefix still forcing execution. `-k` skips dependents of failures and attempts independent work before returning 2. `-i` continues after command errors and `-s` suppresses recipe echo. |
+
+The serial runner can observe a signal reported in a recipe's wait status.
+Under E25 ruling 31, 25.6 defers cleanup when a signal stops bmake itself, as
+described in “Asynchronous Events”. A partly written non-precious target can
+be left with a fresh modification time, so a later invocation can treat it as
+up to date.
+
+Ordinary makefiles default to `CC=cc` and empty `CFLAGS` so the built-in C
+rules use the compiler shipped in the bundle. A leading `.POSIX:` selects
+the standard compiler defaults (`c17` and `-O 1`). On Breenix, makefiles that
+declare `.POSIX:` can set `CC=cc` and `CFLAGS=` to use the bundled compiler's
+current language and optimization subset.
+
+25.6c covers archive members and their timestamps, remaking include files,
+recursive `MAKEFLAGS` and `$(MAKE)`, assignment operators `::=`, `:::=`, `+=`,
+`?=` and `!=`, the `.WAIT` barrier, `.NOTPARALLEL`, the `-j` job pool, and
+target cleanup when a signal stops bmake itself.

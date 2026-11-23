@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import struct
 import subprocess
 import sys
@@ -35,7 +36,7 @@ class ToolchainBundleTest(unittest.TestCase):
         tools = self.record.get("tools")
         self.assertIsInstance(tools, dict, "bundle build record has no Cargo tool provenance")
         self.assertEqual(set(tools), {"bas", "bld", "bar", "bnm"} |
-                         ({"bcc"} if self.record["arch"] == "x86_64" else set()))
+                         ({"bcc", "bmake"} if self.record["arch"] == "x86_64" else set()))
         self.assertEqual(self.record, json.loads((self.dev / "build.json").read_text()))
         arch = self.record["arch"]
         machine = {"x86_64": 62, "aarch64": 183}[arch]  # ELF gABI, e_machine.
@@ -46,7 +47,7 @@ class ToolchainBundleTest(unittest.TestCase):
         }
         for name, entry in tools.items():
             with self.subTest(tool=name):
-                program = self.dev / "bin" / ("cc" if name == "bcc" else name)
+                program = self.dev / "bin" / {"bcc": "cc", "bmake": "make"}.get(name, name)
                 expected = {
                     "cargoPackage": name,
                     "rustForkCommit": fork,
@@ -54,8 +55,8 @@ class ToolchainBundleTest(unittest.TestCase):
                     "target": f"{arch}-breenix",
                     "sha256": digest(program),
                 }
-                if name == "bcc":
-                    expected["path"] = "bin/cc"
+                if name in ("bcc", "bmake"):
+                    expected["path"] = f"bin/{program.name}"
                 self.assertEqual(entry, expected)
                 with program.open("rb") as file:
                     header = file.read(20)
@@ -76,6 +77,38 @@ class ToolchainBundleTest(unittest.TestCase):
             "sha256": digest(executable),
         })
         self.assertFalse(any(path.suffix == ".c" for path in (WORKSPACE / "bcc").rglob("*")))
+
+    def make_built_by_rustc(self):
+        entry = self.record["tools"]["bmake"]
+        executable = self.dev / "bin/make"
+        self.assertEqual(entry["path"], "bin/make")
+        self.assertEqual(entry["sha256"], digest(executable))
+        manifest = (self.dev / "manifest.sha256").read_text()
+        self.assertIn(f"{digest(executable)}  opt/breenix-dev/25.2/bin/make\n", manifest)
+        for category in ("make", "project"):
+            for source in (WORKSPACE / "corpus" / category).iterdir():
+                with self.subTest(fixture=source.name):
+                    path = f"usr/share/breenix/toolchain/{category}/{source.name}"
+                    self.assertEqual(digest(self.bundle / "root" / path), digest(source))
+                    self.assertIn(f"{digest(source)}  {path}\n", manifest)
+        self.assertFalse(any(path.suffix == ".c" for path in (WORKSPACE / "bmake").rglob("*")))
+
+        with tempfile.TemporaryDirectory(prefix="toolchain-stale-make-") as temp:
+            bundle = Path(temp)
+            tree = bundle / "root"
+            shutil.copytree(self.bundle / "root", tree)
+            for generated in ("manifest.sha256", "build.json"):
+                (tree / "opt/breenix-dev/25.2" / generated).unlink()
+            stale = "usr/share/breenix/toolchain/make/sample.src"
+            (tree / stale).write_text("stale fixture\n")
+            tool_record = bundle / "tools.json"
+            tool_record.write_text(json.dumps(self.record["tools"]))
+            sealed = subprocess.run([
+                sys.executable, ROOT / "scripts/toolchain-image.py", "seal", bundle,
+                self.record["commit"], "x86_64", "--tool-record", tool_record,
+            ], capture_output=True, text=True, timeout=10)
+            self.assertEqual(sealed.returncode, 1, sealed.stderr)
+            self.assertIn(f"staged bytes differ from the source for {stale}", sealed.stderr)
 
     def arm_bundle_unchanged_until_a3(self):
         self.assertEqual(set(self.record["tools"]), {"bas", "bld", "bar", "bnm"})
@@ -172,7 +205,8 @@ if __name__ == "__main__":
     checks = ["ToolchainBundleTest.tools_built_by_rustc",
               "ToolchainBundleTest.receipts_from_cargo_host_bas"]
     if json.loads((args.bundle / "build.json").read_text())["arch"] == "x86_64":
-        checks.append("ToolchainBundleTest.cc_built_by_rustc")
+        checks.extend(["ToolchainBundleTest.cc_built_by_rustc",
+                       "ToolchainBundleTest.make_built_by_rustc"])
     else:
         checks.extend(["ToolchainBundleTest.arm_bundle_unchanged_until_a3",
                        "ToolchainBundleTest.arm_encoding_inputs_are_staged"])

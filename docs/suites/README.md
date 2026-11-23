@@ -1919,6 +1919,17 @@ exit status in the receipt before removing the fixture account.
 AArch64 needs the scalar AAPCS64 compiler backend and native C execution
 evidence in A3.
 
+The `toolchain/make-project` milestone measures five `make` cases and three
+`project` cases for the serial subset on x86-64. The project uses the staged
+Rust tools to compile two C files through a `.c.o` rule, assemble a third
+object and link a program in a private scratch directory. `builds-and-runs`
+checks its exit status and stdout against `project.expect`. `noop-rebuild`
+checks for an empty recipe trace and compares output bytes and mtimes with
+the first build. `header-rebuild` uses `touch -d` to make `util.h` newer and requires
+`main.o`, `util.o` and the executable to rebuild while `value.o` stays intact.
+The host project check also validates the linked ELF with `elfcheck`.
+ARM64 bundle staging and guest execution are scheduled for A3.
+
 ```bash
 scripts/boot-interactive.sh --mode suite --suite toolchain --milestone toolchain/sysroot-oracle
 ```
