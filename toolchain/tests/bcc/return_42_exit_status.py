@@ -49,7 +49,7 @@ def read_main(path):
     return image, entry, loads
 
 
-def exit_from_main(path, *, link_at=None):
+def exit_from_main(path, *, link_at=None, invoke=None):
     # Use a common bias for the loads. Linking at the reserved address
     # lets initialized absolute pointers name the mapped data.
     image, entry, loads = read_main(path)
@@ -79,8 +79,10 @@ def exit_from_main(path, *, link_at=None):
             page_start = start & -page
             if protect(base + page_start, start + memsz - page_start, prot) != 0:
                 raise OSError(ctypes.get_errno(), "mprotect")
-        main = ctypes.CFUNCTYPE(ctypes.c_int)(base + entry - origin)
-        os._exit(main())
+        address = base + entry - origin
+        if invoke is None:
+            os._exit(ctypes.CFUNCTYPE(ctypes.c_int)(address)())
+        os._exit(invoke(address))
 
 
 def assemble(args, source, work):

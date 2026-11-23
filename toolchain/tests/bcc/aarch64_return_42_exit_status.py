@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Call a freestanding AArch64 ELF entry on the native ARM64 host."""
 
+from concurrent.futures import ThreadPoolExecutor
+import ctypes
 import mmap
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
+from threading import Barrier
 
-from return_42_exit_status import HERE, LINKER_SCRIPT, checked, exit_from_main, run
+from return_42_exit_status import HERE, LINKER_SCRIPT, TOOLCHAIN, checked, exit_from_main, run
 
 
 SOURCE = """\
@@ -56,7 +59,23 @@ def link(bld, script, executable, objects):
     checked(bld, "-T", script, "--gc-sections", "-o", executable, *objects)
 
 
-def call_entry(bld, script, executable, objects):
+def run_threads(address):
+    # CFUNCTYPE releases the GIL around the native call.
+    entry = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int)(address)
+    start = Barrier(8)
+
+    def worker():
+        start.wait()
+        return entry(8192)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        workers = [pool.submit(worker) for _ in range(8)]
+        if any(worker.result() != 0 for worker in workers):
+            raise ValueError("atomic worker failed")
+    return entry(0)
+
+
+def call_entry(bld, script, executable, objects, *, threads=False):
     def link_at(address):
         # Resolve initialized absolute pointers in the static link, using
         # the address the host loader reserved for this process.
@@ -66,12 +85,15 @@ def call_entry(bld, script, executable, objects):
         script.write_text(layout)
         link(bld, script, executable, objects)
 
-    exit_from_main(executable, link_at=link_at)
+    exit_from_main(executable, link_at=link_at, invoke=run_threads if threads else None)
 
 
 def main():
     bcc, bas, bld = map(Path, sys.argv[1:4])
     source_texts = sys.argv[4:]
+    threads = source_texts[:1] == ["--threads"]
+    if threads:
+        source_texts = source_texts[1:]
     with TemporaryDirectory() as directory:
         work = Path(directory)
         sources = []
@@ -103,14 +125,16 @@ def main():
         for path in sources:
             assembly = path.with_suffix(".s")
             if path.suffix == ".c":
-                assembly.write_bytes(checked(bcc, "--target=aarch64", "-S", path))
+                assembly.write_bytes(checked(bcc, "--target=aarch64", "-I", TOOLCHAIN / "include",
+                                             "-S", path))
             obj = assembly.with_suffix(".o")
             checked(bas, "--target", "aarch64", "-o", obj, assembly)
             objects.append(obj)
         executable = work / "main"
         link(bld, script, executable, objects)
         if source_texts:
-            result = run(sys.executable, __file__, "--call-entry", bld, script, executable, *objects)
+            mode = "--call-threads" if threads else "--call-entry"
+            result = run(sys.executable, __file__, mode, bld, script, executable, *objects)
         else:
             result = run(sys.executable, HERE / "return_42_exit_status.py", "--call-entry", executable)
         if (result.returncode, result.stdout, result.stderr) != (42, b"", b""):
@@ -119,7 +143,7 @@ def main():
 
 
 if __name__ == "__main__":
-    if len(sys.argv) >= 6 and sys.argv[1] == "--call-entry":
+    if len(sys.argv) >= 6 and sys.argv[1] in ("--call-entry", "--call-threads"):
         bld, script, executable, *objects = map(Path, sys.argv[2:])
-        call_entry(bld, script, executable, objects)
+        call_entry(bld, script, executable, objects, threads=sys.argv[1] == "--call-threads")
     main()
