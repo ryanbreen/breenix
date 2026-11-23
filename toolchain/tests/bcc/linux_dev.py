@@ -6,7 +6,7 @@ These checks are development only and are never Breenix evidence.
 
 Pass the Cargo-built bld binary and liblinux_test.a. For the sealed-object
 check pass the reference corpus directory (receipts and objs/*.o outputs).
-For --corpus also pass the Cargo-built bcc and bas binaries.
+For --corpus or --aapcs64-scalar-calls also pass the Cargo-built bcc and bas binaries.
 """
 
 import argparse
@@ -70,28 +70,35 @@ def run_tool(name, command):
 ARM_INTEGER_CORPUS = tuple(name for name in CORPUS if name != "floating-conversion")
 
 
-def compile_object(args, name, work):
-    source = ROOT / "toolchain/corpus" / f"{name}.c"
-    assembly = work / f"{name}.s"
-    obj = work / f"{name}.o"
+def compile_object(args, source, work):
+    assembly = work / source.with_suffix(".s").name
+    obj = work / source.with_suffix(".o").name
     run_tool("bcc", [args.bcc, f"--target={args.arch}", "-S",
                      "-I", ROOT / "toolchain/include",
                      "-I", ROOT / "libs/libbreenix-libc/include",
                      "-o", assembly, source])
-    target = ["--target", "aarch64"] if args.arch == "aarch64" else []
-    run_tool("bas", [args.bas, *target, "-o", obj, assembly])
+    assemble(args, assembly, obj)
     return obj
 
 
-def check(args, name, work):
-    obj = compile_object(args, name, work) if args.corpus else reference_object(args, name)
-    executable = work / name
+def assemble(args, assembly, obj):
+    target = ["--target", "aarch64"] if args.arch == "aarch64" else []
+    run_tool("bas", [args.bas, *target, "-o", obj, assembly])
+
+
+def execute(args, executable, *objects):
     run_tool(
         "bld",
         [args.bld, "-T", ROOT / "userspace/programs/linker.ld", "--gc-sections",
-         "-o", executable, obj, args.runtime],
+         "-o", executable, *objects, args.runtime],
     )
-    actual = subprocess.run([executable], capture_output=True, timeout=10)
+    return subprocess.run([executable], capture_output=True, timeout=10)
+
+
+def check(args, name, work):
+    source = ROOT / "toolchain/corpus" / f"{name}.c"
+    obj = compile_object(args, source, work) if args.corpus else reference_object(args, name)
+    actual = execute(args, work / name, obj)
     status, _, stdout = (ROOT / "toolchain/corpus" / f"{name}.expect").read_bytes().partition(b"\n")
     if (actual.returncode, actual.stdout) != (int(status), stdout):
         raise ValueError(
@@ -101,9 +108,22 @@ def check(args, name, work):
         )
 
 
+def aapcs64_scalar_calls(args, work):
+    fixtures = Path(__file__).with_name("aapcs64")
+    probe = work / "probe.o"
+    assemble(args, fixtures / "probe.s", probe)
+    caller = compile_object(args, fixtures / "scalar.c", work)
+    actual = execute(args, work / "scalar-calls", caller, probe)
+    if (actual.returncode, actual.stdout, actual.stderr) != (42, b"", b""):
+        raise ValueError(f"expected exit 42 with empty streams, got exit {actual.returncode}, "
+                         f"stdout={actual.stdout!r}, stderr={actual.stderr!r}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--corpus", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--corpus", action="store_true")
+    mode.add_argument("--aapcs64-scalar-calls", action="store_true")
     parser.add_argument("--arch", choices=("x86_64", "aarch64"), default="x86_64")
     for option in ("bld", "runtime", "reference-corpus", "bcc", "bas"):
         parser.add_argument(f"--{option}", required=option in ("bld", "runtime"),
@@ -111,10 +131,23 @@ def main():
     args = parser.parse_args()
     if (platform.system(), platform.machine()) != ("Linux", args.arch):
         parser.error(f"run in a Linux/{args.arch} build container")
-    if args.corpus and (args.bcc is None or args.bas is None):
-        parser.error("--corpus requires --bcc and --bas")
-    if not args.corpus and args.reference_corpus is None:
+    if args.aapcs64_scalar_calls and args.arch != "aarch64":
+        parser.error("--aapcs64-scalar-calls requires --arch aarch64")
+    if args.corpus or args.aapcs64_scalar_calls:
+        if args.bcc is None or args.bas is None:
+            parser.error("compiler checks require --bcc and --bas")
+    elif args.reference_corpus is None:
         parser.error("the sealed-object check requires --reference-corpus")
+
+    if args.aapcs64_scalar_calls:
+        with TemporaryDirectory(prefix="bcc-linux-dev-") as work:
+            try:
+                aapcs64_scalar_calls(args, Path(work))
+            except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+                print(f"codegen::aapcs64_scalar_calls FAIL ({error})", file=sys.stderr)
+                return 1
+        print("codegen::aapcs64_scalar_calls PASS")
+        return 0
 
     cases = CASES
     if args.corpus:
