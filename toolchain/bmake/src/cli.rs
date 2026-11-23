@@ -16,6 +16,7 @@ use std::{
 
 #[derive(Default)]
 struct Options {
+    inventory: bool,
     environment_overrides: bool,
     execution: run::Options,
     stop_on_error: bool,
@@ -39,6 +40,10 @@ impl Options {
                 format!("invalid UTF-8 argument '{}'", argument.to_string_lossy())
             })?;
             if parse_options {
+                if text == "--inventory" && source == MacroSource::CommandLine {
+                    self.inventory = true;
+                    continue;
+                }
                 if text == "--" {
                     parse_options = false;
                     continue;
@@ -264,6 +269,9 @@ pub fn execute(arguments: impl IntoIterator<Item = OsString>) -> Result<(), Stri
     let inherited = std::mem::take(&mut options.assignments);
     options.parse(arguments, MacroSource::CommandLine)?;
     options.select_makefile()?;
+    if options.inventory {
+        return crate::inventory::print(&options.makefiles);
+    }
     let _signals = signals::Handlers::install()
         .map_err(|error| format!("could not install signal handlers: {error}"))?;
     let pool = options

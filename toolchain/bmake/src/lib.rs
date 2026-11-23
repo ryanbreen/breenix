@@ -12,6 +12,8 @@ pub mod graph;
 #[forbid(unsafe_code)]
 mod inference;
 #[forbid(unsafe_code)]
+mod inventory;
+#[forbid(unsafe_code)]
 mod job_pool;
 #[forbid(unsafe_code)]
 pub mod r#macro;
