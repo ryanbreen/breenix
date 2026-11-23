@@ -23,7 +23,7 @@ edition pin whose full publication has no digest recorded here.
 | [AMD APM](https://kib.kiev.ua/x86docs/AMD/AMD64/40332-r4.09.pdf) | AMD publication 40332, combined volumes 1–5, revision 4.09, March 2026, archived PDF | `ae18704f924bb80bc9bbfe9d3c33b97c16cdeaa9c7afccb033d136e86fd88a08` |
 | [AAPCS64](https://github.com/ARM-software/abi-aa/releases/download/2025Q1/aapcs64.pdf) | 2025Q1, 2025-04-07 | `11e6b27bb994b23e6a28b7ac27b1437591cfc13c2bf77262fb8f7ea2a0f254b8` |
 | [ELF for the Arm 64-bit Architecture (AArch64)](https://github.com/ARM-software/abi-aa/releases/download/2025Q1/aaelf64.pdf) | 2025Q1, 2025-04-07 (E25 ruling 29) | `bb30810c55b8fe80badf897c9dc82bb2de1d042b14d35190669cd021cc1240f2` |
-| [Arm Architecture Reference Manual](https://developer.arm.com/documentation/ddi0487/mb/) | Arm A-profile, DDI 0487, revision M.b | — |
+| [Arm Architecture Reference Manual](https://documentation-service.arm.com/static/69d7cbfc3fb3b839f93e5b1e?token=) | Arm A-profile, DDI 0487, revision M.b (E25 ruling 31) | `0df13f5972e76226f19c1105934172e71008debd73ecff566da93ccea10cbcbf` |
 | [POSIX make](https://pubs.opengroup.org/onlinepubs/9799919799.2024edition/utilities/make.html) | POSIX.1-2024, Issue 8, `make` utility | `86663126116573d3b62d89a86807e205030bd2e161beeeddfbdab7c7d25d52b4` |
 | [GNU make manual](https://www.gnu.org/software/make//manual/make.pdf) | Edition 0.77, GNU make 4.4.1, 2023-02-26 | `a4bc06026984382815e392159e60a4bc356cac6c5b81e5ae84fa4f58f621f4d3` |
 | [GNU C extensions](https://gcc.gnu.org/onlinedocs/gcc-15.2.0/gcc/C-Extensions.html) | GCC 15.2.0 manual, GNU C extensions chapter | `4965dab10bf21e0147e86aa80fca2a92da2c099393f34d0325c913aa3be871f2` |

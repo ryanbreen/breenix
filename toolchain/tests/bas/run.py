@@ -23,6 +23,7 @@ RELOCATION_CHECK = "bas::rela_pc32_for_external_call"
 INTEGER_CHECK = "bas::encode_mov_r64_imm32"
 AARCH64_CHECK = "bas::aarch64_exit42_object_passes_elfcheck"
 AARCH64_INTEGER_CHECK = "bas::aarch64_encode_add_imm"
+AARCH64_RELOCATION_CHECK = "bas::aarch64_rela_call26_for_external_call"
 AARCH64_MEMORY_CHECK = "bas::aarch64_load_store_forms_match_arm_table"
 
 # Intel SDM Vol. 2 MOV opcode table B8+rd id, Table 2-4 REX.B,
@@ -345,7 +346,6 @@ def check_aarch64(bas, path, obj):
     for assembly, location, reason in (
         # TBZ's largest positive displacement is 32764 (DDI 0487 M.b C6.2.478).
         ("    tbz x0, #0, .Lfar\n.zero 32764\n.Lfar: nop\n", "1:17", "out of range"),
-        ("    b .Ldata\n.section .data\n.Ldata: .long 0\n", "1:7", "cross-section"),
         ("    b .Ldata\n.byte 0\n.Ldata:\n", "1:7", "aligned"),
     ):
         source.write_text(assembly)
@@ -354,6 +354,101 @@ def check_aarch64(bas, path, obj):
         require(result.returncode == 1 and f"{source}:{location}:" in result.stderr
                 and reason in result.stderr and not rejected.exists(),
                 f"wrong diagnostic for {assembly!r}: {result.stderr}")
+
+
+
+def check_aarch64_relocations(bas, elfcheck, path):
+    # AAELF64 2025Q1 §§5.7.5–5.7.8 give these type numbers. Each row names
+    # the relocation place, type, original target symbol and explicit addend.
+    expected = {
+        b".text": [
+            (0, 283, "CALL26", b"external", 4),
+            (4, 282, "JUMP26", b".Ldata", 0),
+            (8, 280, "CONDBR19", b"external", -4),
+            (12, 280, "CONDBR19", b"external", 0),
+            (16, 280, "CONDBR19", b".Ldata", 4),
+            (20, 279, "TSTBR14", b"external", 0),
+            (24, 279, "TSTBR14", b".Ldata", 0),
+            (28, 273, "LD_PREL_LO19", b".Ldata", 8),
+            (32, 275, "ADR_PREL_PG_HI21", b".Llocal", 4),
+            (36, 277, "ADD_ABS_LO12_NC", b".Llocal", 4),
+            (40, 278, "LDST8_ABS_LO12_NC", b".Ldata", 1),
+            (44, 284, "LDST16_ABS_LO12_NC", b".Ldata", 2),
+            (48, 285, "LDST32_ABS_LO12_NC", b".Ldata", 4),
+            (52, 286, "LDST64_ABS_LO12_NC", b".Ldata", 8),
+            (56, 299, "LDST128_ABS_LO12_NC", b".Ldata", 16),
+            (60, 311, "ADR_GOT_PAGE", b"external", 0),
+            (64, 312, "LD64_GOT_LO12_NC", b"external", 0),
+            (68, 549, "TLSLE_ADD_TPREL_HI12", b"tls", 8),
+            (72, 551, "TLSLE_ADD_TPREL_LO12_NC", b"tls", 8),
+        ],
+        b".data": [
+            (16, 257, "ABS64", b"external", 7),
+            (24, 258, "ABS32", b".Llocal", -3),
+            (28, 261, "PREL32", b"external", 0),
+        ],
+    }
+    # DDI 0487 M.b chapters C6/C7. These include the relocation fields,
+    # which remain unpatched, and the fixed shift bit of the high TLS ADD.
+    words = (
+        0x94000000, 0x14000000, 0x54000001, 0x34000001, 0xB5000002,
+        0xB6280003, 0x37300004, 0x58000005, 0x90000006, 0x910000C6,
+        0x394000C7, 0x790000C8, 0xB94000C9, 0xF90000CA, 0x3DC000CB,
+        0x9000000C, 0xF940018C, 0x914001AD, 0x910001AD, 0xD503201F,
+    )
+
+    source = path.with_suffix(".s")
+    source.write_text("bl external+4\n.global external\n")
+    check_aarch64_rela_object(
+        bas, elfcheck, path, source,
+        {b".text": [(0, 283, "CALL26", b"external", 4)]}, (0x94000000,),
+    )
+    # Replace the former cross-section rejection with its exact positive row.
+    source.write_text("    b .Ldata\n.section .data\n.Ldata: .long 0\n")
+    check_aarch64_rela_object(
+        bas, elfcheck, path, source,
+        {b".text": [(0, 282, "JUMP26", b".Ldata", 0)]}, (0x14000000,),
+    )
+    check_aarch64_rela_object(bas, elfcheck, path, "aarch64_relocations.s", expected, words)
+
+    rejected = path.with_suffix(".rejected.o")
+    for operand, suffix, location, reason in (
+        ("add x0, x0, :tprel_hi12:ordinary", ".data", "1:25", "TLS symbol"),
+        ("add x0, x0, :tprel_lo12_nc:ordinary", ".data", "1:28", "TLS symbol"),
+        ("adrp x0, :got:ordinary+8", ".data", "1:15", "zero addend"),
+        ("ldr w0, [x1, :got_lo12:ordinary]", ".data", "1:15", "64-bit"),
+    ):
+        source.write_text(f"{operand}\n.section {suffix}\nordinary: .quad 0\n")
+        result = subprocess.run([bas, "--target", "aarch64", "-o", rejected, source],
+                                capture_output=True, text=True, timeout=10)
+        require(result.returncode == 1 and f"{source}:{location}:" in result.stderr
+                and reason in result.stderr and not rejected.exists(),
+                f"wrong diagnostic for {operand!r}: {result.stderr}")
+
+
+def check_aarch64_rela_object(bas, elfcheck, path, fixture, expected, words):
+    sections, contents, symtab, _ = read_object(bas, elfcheck, path, fixture, machine="aarch64")
+    strings = contents(sections[b".strtab"][1])
+    names = [strings[name:strings.index(0, name)]
+             for (name,) in struct.iter_unpack("<I20x", contents(symtab))]
+    require({name for name, (_, hdr) in sections.items() if hdr[1] in (4, 9)}
+            == {b".rela" + name for name in expected}, "unexpected AArch64 RELA section set")
+    for name, rows in expected.items():
+        _, rela = sections[b".rela" + name]
+        index, _ = sections[name]
+        require(rela[6] == sections[b".symtab"][0] and rela[7] == index
+                and rela[8:10] == (8, 24), f"wrong RELA links or layout for {name!r}")
+        actual = list(struct.iter_unpack("<QQq", contents(rela)))
+        require(len(actual) == len(rows), f"wrong RELA count for {name!r}: {len(actual)}")
+        for (offset, info, addend), (place, kind, type_name, symbol, a) in zip(actual, rows):
+            row = (offset, info & 0xffffffff, names[info >> 32], addend)
+            require(row == (place, kind, symbol, a),
+                    f"{name!r}+{place}: expected R_AARCH64_{type_name} {symbol!r} {a}, got {row}")
+    text = contents(sections[b".text"][1])
+    require(text == struct.pack(f"<{len(words)}I", *words), f"wrong instruction words: {text.hex()}")
+    if b".data" in sections:
+        data = contents(sections[b".data"][1])
+        require(data == bytes(32 if b".data" in expected else 4), "relocated data must be zero")
 
 
 def main():
@@ -374,6 +469,9 @@ def main():
                       (ADDRESSING_CHECK, check_addressing), (CHECK, check_object))
             if args.machine == "aarch64":
                 path = directory / "aarch64.o"
+                check = AARCH64_RELOCATION_CHECK
+                check_aarch64_relocations(args.bas, args.elfcheck, path)
+                print(f"{check} PASS", flush=True)
                 check = AARCH64_MEMORY_CHECK
                 obj = check_aarch64_memory(args.bas, args.elfcheck, path)
                 print(f"{check} PASS", flush=True)
