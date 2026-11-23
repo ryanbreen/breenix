@@ -1,9 +1,9 @@
 //! ELF gABI §§2, 3 and 7: static executable sections and program headers.
 
 use bobj::elf::{
-    Header, ProgramHeader, SectionHeader, EM_X86_64, ET_EXEC, PF_R, PF_W, PF_X, PT_GNU_STACK,
-    PT_LOAD, PT_TLS, SHF_ALLOC, SHF_EXECINSTR, SHF_GROUP, SHF_TLS, SHF_WRITE, SHN_LORESERVE,
-    SHT_NOBITS, SHT_PROGBITS, SHT_STRTAB,
+    Header, ProgramHeader, SectionHeader, ET_EXEC, PF_R, PF_W, PF_X, PT_GNU_STACK, PT_LOAD, PT_TLS,
+    SHF_ALLOC, SHF_EXECINSTR, SHF_GROUP, SHF_TLS, SHF_WRITE, SHN_LORESERVE, SHT_NOBITS,
+    SHT_PROGBITS, SHT_STRTAB,
 };
 
 use crate::object::{Link, Section, SectionId};
@@ -401,7 +401,7 @@ impl Image {
     pub(crate) fn write_headers(&mut self, link: &Link, entry: u64) {
         let base = link.script.base;
         let count = self.layout.section_count;
-        let mut header = Header::new(ET_EXEC, EM_X86_64);
+        let mut header = Header::new(ET_EXEC, link.machine().elf());
         header.entry = entry;
         header.program_offset = Header::SIZE as u64;
         header.program_count = (LOAD_COUNT + 1 + usize::from(self.tls.is_some())) as u16;
