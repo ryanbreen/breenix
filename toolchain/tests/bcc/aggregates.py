@@ -92,31 +92,45 @@ struct Pair rollback(int a, int b, int c, int d, int e, struct Pair x, long tail
 }
 """
 
+# Use separate field stores so Clang does not materialize aggregate initializer
+# addresses in the fixed-address ELF that the Rosetta runner maps elsewhere.
 CALLER = """\
 int main(void)
 {
-    struct Mixed m = {0x12345678, 0x1.23456789abcdep+3};
+    struct Mixed m;
+    m.i = 0x12345678;
+    m.d = 0x1.23456789abcdep+3;
     struct Mixed mr = mixed(m);
     if (mr.i != 0x76543210 || mr.d != -0x1.edcba98765432p-5)
         return 1;
 
-    struct Doubles d = {0x1.13579bdf2468ap+9, -0x1.2468ace13579bp-4};
+    struct Doubles d;
+    d.first = 0x1.13579bdf2468ap+9;
+    d.second = -0x1.2468ace13579bp-4;
     struct Doubles dr = doubles(d);
     if (dr.first != 0x1.fedcba9876543p-7 || dr.second != 0x1.1020304050607p+11)
         return 2;
 
-    struct Large l = {0x1122334455667788L, 0x123456789abcdef0L, 0x7f6e5d4c3b2a1908L};
+    struct Large l;
+    l.first = 0x1122334455667788L;
+    l.second = 0x123456789abcdef0L;
+    l.third = 0x7f6e5d4c3b2a1908L;
     struct Large lr = large(17, l, 23);
     if (lr.first != 0x21436587a9cbed0fL || lr.second != 0x1029384756abcdfeL ||
         lr.third != 0x6f5e4d3c2b1a0987L)
         return 3;
 
-    struct Bytes b = {{0x12, 0x45, 0x78}};
+    struct Bytes b;
+    b.bytes[0] = 0x12;
+    b.bytes[1] = 0x45;
+    b.bytes[2] = 0x78;
     struct Bytes br = bytes(b);
     if (br.bytes[0] != 0x21 || br.bytes[1] != 0x54 || br.bytes[2] != 0x76)
         return 4;
 
-    struct Pair p = {0x1020304050607080L, 0x7a6b5c4d3e2f1908L};
+    struct Pair p;
+    p.first = 0x1020304050607080L;
+    p.second = 0x7a6b5c4d3e2f1908L;
     struct Pair pr = exhausted(1, 2, 3, 4, 5, 6, p, 37);
     if (pr.first != 0x7766554433221100L || pr.second != 0x0123456789abcdefL)
         return 5;
