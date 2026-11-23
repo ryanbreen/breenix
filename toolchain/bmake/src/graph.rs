@@ -33,10 +33,11 @@ pub(crate) fn archive_member(name: &str) -> Option<(&str, &str)> {
     .then_some((archive, member))
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct Edge<'a> {
     pub(crate) target: Option<usize>,
     location: &'a Location,
+    pub(crate) order_only: bool,
 }
 
 impl<'a> Node<'a> {
@@ -97,13 +98,34 @@ impl<'a> Graph<'a> {
         Some(self.prerequisites_of(self.node(name)?))
     }
 
-    pub(crate) fn prerequisites_of<'g>(
+    fn prerequisites_of<'g>(&'g self, node: &'g Node<'a>) -> impl Iterator<Item = &'a str> + 'g {
+        self.prerequisite_names(node.prerequisites.iter())
+    }
+
+    pub(crate) fn normal_prerequisites<'g>(
         &'g self,
         node: &'g Node<'a>,
     ) -> impl Iterator<Item = &'a str> + 'g {
-        node.prerequisites
-            .iter()
-            .filter_map(|edge| edge.target.map(|target| self.nodes[target].name))
+        self.prerequisite_names(node.prerequisites.iter().filter(|edge| !edge.order_only))
+    }
+
+    pub(crate) fn order_only_prerequisites(&self, node: &Node<'a>) -> String {
+        if !node.prerequisites.iter().any(|edge| edge.order_only) {
+            return String::new();
+        }
+        let normal: std::collections::HashSet<_> = self.normal_prerequisites(node).collect();
+        let mut seen = std::collections::HashSet::new();
+        self.prerequisite_names(node.prerequisites.iter().filter(|edge| edge.order_only))
+            .filter(|name| !normal.contains(name) && seen.insert(*name))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn prerequisite_names<'g>(
+        &'g self,
+        edges: impl Iterator<Item = &'g Edge<'a>> + 'g,
+    ) -> impl Iterator<Item = &'a str> + 'g {
+        edges.filter_map(|edge| edge.target.map(|target| self.nodes[target].name))
     }
 
     pub(crate) fn nodes(&self) -> &[Node<'a>] {
@@ -126,7 +148,13 @@ impl<'a> Graph<'a> {
         let prerequisites: Vec<_> = rule
             .prerequisites
             .iter()
-            .map(|name| (name != ".WAIT").then(|| self.intern(name, location)))
+            .map(|name| (name, false))
+            .chain(rule.order_only.iter().map(|name| (name, true)))
+            .map(|(name, order_only)| Edge {
+                target: (name != ".WAIT").then(|| self.intern(name, location)),
+                location: &rule.location,
+                order_only,
+            })
             .collect();
         for target in targets {
             let node = &mut self.nodes[target];
@@ -143,11 +171,7 @@ impl<'a> Graph<'a> {
                 }
                 node.recipe_rule = Some(rule);
             }
-            node.prerequisites
-                .extend(prerequisites.iter().map(|&target| Edge {
-                    target,
-                    location: &rule.location,
-                }));
+            node.prerequisites.extend(prerequisites.iter().copied());
         }
         Ok(())
     }

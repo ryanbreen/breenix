@@ -128,7 +128,12 @@ impl Suffixes {
         let mut candidates = HashSet::new();
         for entry in &entries {
             if let Entry::Rule(rule) = entry {
-                candidates.extend(rule.prerequisites.iter().map(String::as_str));
+                candidates.extend(
+                    rule.prerequisites
+                        .iter()
+                        .chain(&rule.order_only)
+                        .map(String::as_str),
+                );
                 for target in &rule.targets {
                     let has_recipe = targets.entry(target.as_str()).or_insert(false);
                     *has_recipe |= !rule.recipes.is_empty();
@@ -255,6 +260,7 @@ fn builtin_rules() -> HashMap<String, Rule> {
                     location: location.clone(),
                     targets: vec![name.into()],
                     prerequisites: Vec::new(),
+                    order_only: Vec::new(),
                     recipes: commands
                         .iter()
                         .map(|text| SourceLine {
@@ -280,6 +286,7 @@ fn derived_rule(
         location: rule.location.clone(),
         targets: vec![target.into()],
         prerequisites,
+        order_only: Vec::new(),
         recipes: rule.recipes.clone(),
         inference: Some(Inference {
             source,

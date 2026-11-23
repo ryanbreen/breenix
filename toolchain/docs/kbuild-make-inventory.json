@@ -90,7 +90,7 @@
       "applets/built-in.o"
     ],
     "status": 2,
-    "first_failure": "Makefile:35: missing ':' in target rule"
+    "first_failure": "Makefile:133: GNU make function 'if' is deferred to the 25.11c function units"
   },
   "chapters": {
     "3 Writing Makefiles": [
@@ -98,6 +98,7 @@
         "kind": "directive",
         "construct": "-include",
         "unit": "directives",
+        "supported": true,
         "locations": [
           "Makefile:434",
           "Makefile:503",
@@ -117,6 +118,7 @@
         "kind": "directive",
         "construct": "include",
         "unit": "directives",
+        "supported": true,
         "locations": [
           "Makefile:279",
           "Makefile:515",
@@ -182,9 +184,19 @@
         ]
       },
       {
+        "kind": "prerequisite",
+        "construct": "order-only",
+        "unit": "directives",
+        "supported": true,
+        "locations": [
+          "Makefile:521"
+        ]
+      },
+      {
         "kind": "special-target",
         "construct": ".PHONY",
-        "unit": "control",
+        "unit": "directives",
+        "supported": true,
         "locations": [
           "Makefile:1329",
           "Makefile.custom:13",
@@ -210,6 +222,7 @@
         "kind": "directive",
         "construct": "export",
         "unit": "directives",
+        "supported": true,
         "locations": [
           "Makefile:142",
           "Makefile:227",
@@ -237,6 +250,7 @@
         "kind": "assignment",
         "construct": "+=",
         "unit": "directives",
+        "supported": true,
         "locations": [
           "Makefile:14",
           "Makefile:109",
@@ -1185,6 +1199,7 @@
         "kind": "assignment",
         "construct": ":=",
         "unit": "directives",
+        "supported": true,
         "locations": [
           "Makefile:64",
           "Makefile:93",
@@ -1484,6 +1499,7 @@
         "kind": "assignment",
         "construct": "=",
         "unit": "directives",
+        "supported": true,
         "locations": [
           "Makefile:1",
           "Makefile:2",
@@ -1719,6 +1735,7 @@
         "kind": "assignment",
         "construct": "?=",
         "unit": "directives",
+        "supported": true,
         "locations": [
           "Makefile:60",
           "Makefile:164",
@@ -1739,6 +1756,7 @@
         "kind": "directive",
         "construct": "define",
         "unit": "directives",
+        "supported": true,
         "locations": [
           "Makefile:627",
           "Makefile:660",
@@ -1756,6 +1774,7 @@
         "kind": "directive",
         "construct": "endef",
         "unit": "directives",
+        "supported": true,
         "locations": [
           "Makefile:631",
           "Makefile:668",
@@ -1768,6 +1787,40 @@
           "scripts/Kbuild.include:46",
           "scripts/Makefile.build:192"
         ]
+      },
+      {
+        "kind": "target-variable",
+        "construct": "target-specific",
+        "unit": "directives",
+        "supported": true,
+        "locations": [
+          "Makefile:993",
+          "Makefile:994",
+          "Makefile:1010",
+          "Makefile:1017",
+          "Makefile:1018",
+          "Makefile:1139",
+          "Makefile.custom:52",
+          "scripts/Makefile.build:112",
+          "scripts/Makefile.build:113",
+          "scripts/Makefile.build:114",
+          "scripts/Makefile.build:115",
+          "scripts/Makefile.build:117",
+          "scripts/Makefile.build:118",
+          "scripts/Makefile.build:119",
+          "scripts/Makefile.build:120",
+          "scripts/Makefile.build:122",
+          "scripts/Makefile.build:127",
+          "scripts/Makefile.build:128",
+          "scripts/Makefile.build:129",
+          "scripts/Makefile.build:130",
+          "scripts/Makefile.build:131",
+          "scripts/Makefile.build:132",
+          "scripts/Makefile.build:133",
+          "scripts/Makefile.build:134",
+          "scripts/Makefile.build:220",
+          "scripts/Makefile.build:221"
+        ]
       }
     ],
     "7 Conditional Parts of Makefiles": [
@@ -1775,6 +1828,7 @@
         "kind": "directive",
         "construct": "else",
         "unit": "directives",
+        "supported": true,
         "locations": [
           "Makefile:129",
           "Makefile:182",
@@ -1807,6 +1861,7 @@
         "kind": "directive",
         "construct": "endif",
         "unit": "directives",
+        "supported": true,
         "locations": [
           "Makefile:38",
           "Makefile:39",
@@ -1944,6 +1999,7 @@
         "kind": "directive",
         "construct": "ifdef",
         "unit": "directives",
+        "supported": true,
         "locations": [
           "Makefile:35",
           "Makefile:47",
@@ -1971,6 +2027,7 @@
         "kind": "directive",
         "construct": "ifeq",
         "unit": "directives",
+        "supported": true,
         "locations": [
           "Makefile:36",
           "Makefile:48",
@@ -2043,6 +2100,7 @@
         "kind": "directive",
         "construct": "ifndef",
         "unit": "directives",
+        "supported": true,
         "locations": [
           "Makefile:40",
           "Makefile:52",
@@ -2056,6 +2114,7 @@
         "kind": "directive",
         "construct": "ifneq",
         "unit": "directives",
+        "supported": true,
         "locations": [
           "Makefile:101",
           "Makefile:180",

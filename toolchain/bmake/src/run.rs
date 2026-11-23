@@ -4,7 +4,7 @@ use crate::{
     graph::{archive_member, Graph, Node},
     inference::Suffixes,
     job_pool::{JobPool, Token},
-    r#macro::{Automatic, MacroSource, Macros},
+    r#macro::{Automatic, Bindings, MacroSource, Macros, Values},
     reader::{Entry, IncludeFile, Makefile, SourceLine},
     signals,
     special::Specials,
@@ -18,6 +18,7 @@ use std::{
     os::unix::process::{CommandExt, ExitStatusExt},
     path::Path,
     process::{Child, Command, ExitStatus},
+    rc::Rc,
     thread,
     time::{Duration, Instant, SystemTime},
 };
@@ -55,12 +56,21 @@ pub(crate) fn remake_includes<'a>(
     let targets: Vec<_> = makefile
         .includes
         .iter()
-        .filter(|include| rule_targets.contains(include.name.as_str()))
+        .filter(|include| {
+            rule_targets.contains(include.name.as_str()) && !specials.phony.contains(&include.name)
+        })
         .map(|include| include.name.clone())
         .collect();
     if !targets.is_empty() {
         let graph = Graph::for_targets(makefile, &targets).map_err(|error| error.to_string())?;
-        // -n still executes the commands needed to remake includes.
+        let required: HashSet<_> = makefile
+            .includes
+            .iter()
+            .filter(|include| !include.optional)
+            .map(|include| include.name.as_str())
+            .collect();
+        // -n still executes the commands needed to remake includes. Failure
+        // on an optional include does not stop the other include remakes.
         build(
             &graph,
             macros,
@@ -68,9 +78,11 @@ pub(crate) fn remake_includes<'a>(
             specials,
             Options {
                 remaking: true,
+                keep_going: true,
                 ..options
             },
             pool,
+            Some(&required),
         )?;
         for include in &makefile.includes {
             let current = fs::metadata(&include.name).and_then(|metadata| {
@@ -119,6 +131,7 @@ pub(crate) fn build(
     specials: &Specials,
     options: Options,
     pool: Option<&JobPool>,
+    required_includes: Option<&HashSet<&str>>,
 ) -> Result<(), String> {
     Build {
         graph,
@@ -128,12 +141,14 @@ pub(crate) fn build(
         options,
         own_group: !io::stdin().is_terminal(),
     }
-    .run(pool)
+    .run(pool, required_includes)
 }
 
 #[derive(Default)]
 struct Pending {
     requested: bool,
+    scope: Option<Rc<Bindings>>,
+    child_scope: Option<Rc<Bindings>>,
     result: Option<bool>,
     parents: Vec<usize>,
     next_edge: usize,
@@ -152,6 +167,7 @@ enum Event {
 // independently. A .WAIT marker affects scheduling for its own rule.
 struct Ready<'g, 'a> {
     graph: &'g Graph<'a>,
+    macros: &'g Macros,
     pending: Vec<Pending>,
     ranks: Vec<usize>,
     ready: BinaryHeap<Reverse<usize>>,
@@ -159,7 +175,7 @@ struct Ready<'g, 'a> {
 }
 
 impl<'g, 'a> Ready<'g, 'a> {
-    fn new(graph: &'g Graph<'a>) -> Self {
+    fn new(graph: &'g Graph<'a>, macros: &'g Macros) -> Self {
         let mut ranks = vec![0; graph.nodes().len()];
         for (rank, &index) in graph.default_build_order().iter().enumerate() {
             ranks[index] = rank;
@@ -172,6 +188,7 @@ impl<'g, 'a> Ready<'g, 'a> {
             .collect();
         Self {
             graph,
+            macros,
             pending: (0..graph.nodes().len())
                 .map(|_| Pending::default())
                 .collect(),
@@ -185,15 +202,22 @@ impl<'g, 'a> Ready<'g, 'a> {
         while let Some(event) = self.events.pop() {
             match event {
                 Event::Request(index, parent) => {
-                    let state = &mut self.pending[index];
                     if let Some(parent) = parent {
-                        if let Some(success) = state.result {
+                        if let Some(success) = self.pending[index].result {
                             self.events.push(Event::PrerequisiteDone(parent, success));
                             continue;
                         }
-                        state.parents.push(parent);
+                        self.pending[index].parents.push(parent);
                     }
-                    if !state.requested {
+                    if !self.pending[index].requested {
+                        let inherited =
+                            parent.and_then(|parent| self.pending[parent].child_scope.as_ref());
+                        let (scope, child_scope) = self
+                            .macros
+                            .target_scope(self.graph.nodes()[index].name, inherited);
+                        let state = &mut self.pending[index];
+                        state.scope = scope;
+                        state.child_scope = child_scope;
                         state.requested = true;
                         self.events.push(Event::Advance(index));
                     }
@@ -274,6 +298,8 @@ enum Update {
 struct Job {
     before: Option<SystemTime>,
     newer: String,
+    order_only: String,
+    scope: Option<Rc<Bindings>>,
     next_recipe: usize,
     skipped: bool,
 }
@@ -286,13 +312,17 @@ struct Active {
 }
 
 impl<'a> Build<'_, 'a> {
-    fn run(&self, pool: Option<&JobPool>) -> Result<(), String> {
+    fn run(
+        &self,
+        pool: Option<&JobPool>,
+        required_includes: Option<&HashSet<&str>>,
+    ) -> Result<(), String> {
         let limit = if self.specials.not_parallel {
             1
         } else {
             self.options.jobs.unwrap_or(1)
         };
-        let mut ready = Ready::new(self.graph);
+        let mut ready = Ready::new(self.graph, self.macros);
         let mut mtimes = HashMap::new();
         let mut active: Vec<Active> = Vec::new();
         let mut errors = Vec::new();
@@ -367,7 +397,7 @@ impl<'a> Build<'_, 'a> {
                 };
                 let index = ready.pop().expect("ready target");
                 let node = &self.graph.nodes()[index];
-                let result = match self.prepare(node, &mtimes) {
+                let result = match self.prepare(node, &mtimes, ready.pending[index].scope.clone()) {
                     Ok(Update::Recipes(mut job)) => match self.advance(node, &mut job) {
                         Ok(Some(recipe)) => {
                             active.push(Active {
@@ -396,7 +426,15 @@ impl<'a> Build<'_, 'a> {
             thread::sleep(Duration::from_millis(1));
         }
 
-        if errors.is_empty() {
+        if errors.is_empty()
+            || (interrupted.is_none()
+                && required_includes.is_some_and(|required| {
+                    self.graph.roots.iter().all(|&index| {
+                        let name = self.graph.nodes()[index].name;
+                        !required.contains(name) || ready.pending[index].result == Some(true)
+                    })
+                }))
+        {
             Ok(())
         } else {
             Err(errors.join("\n"))
@@ -425,6 +463,7 @@ impl<'a> Build<'_, 'a> {
         &self,
         node: &Node<'_>,
         mtimes: &HashMap<&str, Option<SystemTime>>,
+        scope: Option<Rc<Bindings>>,
     ) -> Result<Update, String> {
         let target = node.name;
         let modified = target_time(node, self.specials)?;
@@ -436,7 +475,7 @@ impl<'a> Build<'_, 'a> {
         }
         let newer: Vec<_> = self
             .graph
-            .prerequisites_of(node)
+            .normal_prerequisites(node)
             .filter(|name| time::newer(modified, mtimes[name]))
             .collect();
         if modified.is_some() && newer.is_empty() {
@@ -445,6 +484,8 @@ impl<'a> Build<'_, 'a> {
         Ok(Update::Recipes(Job {
             before: modified,
             newer: newer.join(" "),
+            order_only: self.graph.order_only_prerequisites(node),
+            scope,
             next_recipe: 0,
             skipped: false,
         }))
@@ -467,6 +508,7 @@ impl<'a> Build<'_, 'a> {
             |rule| &rule.stem,
         );
         automatic.newer = &job.newer;
+        automatic.order_only = &job.order_only;
 
         let mode = RecipeMode {
             dry_run: self.options.dry_run,
@@ -479,7 +521,7 @@ impl<'a> Build<'_, 'a> {
             match start_recipe(
                 target,
                 recipe,
-                self.macros,
+                self.macros.view(job.scope.as_deref()),
                 &automatic,
                 mode,
                 self.own_group,
@@ -620,7 +662,7 @@ impl RunningRecipe {
 fn start_recipe(
     target: &str,
     recipe: &SourceLine,
-    macros: &Macros,
+    macros: Values<'_>,
     automatic: &Automatic<'_>,
     mode: RecipeMode,
     own_group: bool,
@@ -656,7 +698,7 @@ fn start_recipe(
     let shell_flag = if ignore { "-c" } else { "-ec" };
     let mut shell = Command::new("/bin/sh");
     macros
-        .set_recipe_environment(&mut shell, &recipe.location)
+        .set_recipe_environment(&mut shell, &recipe.location, automatic)
         .map_err(|error| RecipeFailure {
             message: error.to_string(),
             interrupted: false,

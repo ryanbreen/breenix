@@ -24,13 +24,17 @@ CLASSIFICATIONS = (
     ("3 Writing Makefiles", "directive", "directives", "include -include sinclude"),
     ("4 Writing Rules", "directive", "patterns-text", "vpath"),
     ("4 Writing Rules", "pattern-rule", "patterns-text", "static"),
+    ("4 Writing Rules", "prerequisite", "directives", "order-only"),
+    ("4 Writing Rules", "special-target", "directives", ".PHONY"),
     ("4 Writing Rules", "special-target", "control",
-     ".PHONY .DEFAULT .PRECIOUS .INTERMEDIATE .NOTINTERMEDIATE .SECONDARY "
+     ".DEFAULT .PRECIOUS .INTERMEDIATE .NOTINTERMEDIATE .SECONDARY "
      ".SECONDEXPANSION .DELETE_ON_ERROR .IGNORE .LOW_RESOLUTION_TIME .SILENT "
      ".EXPORT_ALL_VARIABLES .NOTPARALLEL .ONESHELL .POSIX"),
     ("5 Writing Recipes in Rules", "special-target", "control", ".WAIT"),
     ("6 How to Use Variables", "assignment", "directives", "= := ::= :::= += ?= !="),
-    ("6 How to Use Variables", "directive", "directives", "define endef override undefine private"),
+    ("6 How to Use Variables", "directive", "directives", "define endef override private"),
+    ("6 How to Use Variables", "directive", "control", "undefine"),
+    ("6 How to Use Variables", "target-variable", "directives", "target-specific"),
     ("5 Writing Recipes in Rules", "directive", "directives", "export unexport"),
     ("7 Conditional Parts of Makefiles", "directive", "directives", "ifeq ifneq ifdef ifndef else endif"),
     ("8 Functions for Transforming Text", "function", "patterns-text",
@@ -126,9 +130,11 @@ def inventory(source, files, bmake):
     chapters = {}
     for (kind, name), locations in sorted(occurrences.items()):
         chapter, unit = CONSTRUCTS.get((kind, name), ("Unclassified", "unassigned"))
-        chapters.setdefault(chapter, []).append({
-            "kind": kind, "construct": name, "unit": unit, "locations": locations,
-        })
+        construct = {"kind": kind, "construct": name, "unit": unit}
+        if unit == "directives":
+            construct["supported"] = True
+        construct["locations"] = locations
+        chapters.setdefault(chapter, []).append(construct)
     return dict(sorted(chapters.items(), key=lambda item: int(item[0].split()[0])
                        if item[0] != "Unclassified" else float("inf")))
 

@@ -684,3 +684,18 @@ porting notes](https://gcc.gnu.org/gcc-14/porting_to.html).
 The host replay uses the same libc and compiler-support include order
 as the sealed reference. The GNU host dialect exposes Breenix's existing
 declarations for POSIX.1-2024 XSH `popen`, `pclose` and `strdup`.
+
+## bmake 25.11c directives
+
+The GNU make 4.4.1 manual above is the edition 0.77 pin for the following
+sections. The Kbuild inventory records literal directives and assignments
+separately from its dry-run result.
+
+| Feature | GNU make manual section |
+| --- | --- |
+| `-include` and `sinclude` | §§3.3 and 3.5. Both spellings use the existing include-and-remake flow and permit missing optional files. |
+| Order-only prerequisites and phony targets | §§4.3, 4.6 and 10.5.3. Order-only edges participate in scheduling and appear in `$\|`. Normal edges determine freshness and populate `$?`. |
+| Export and unexport | §5.7.2. The directives control the environment of recipe commands, with values expanded in the recipe's variable scope. |
+| `:=`, override and multiline definitions | §§6.2.2, 6.7 and 6.8. `:=` uses the same immediate expansion as POSIX `::=`. |
+| Target-specific assignments | §§6.11 and 6.13. A prerequisite takes its variable scope from the first target that requests it. `private` keeps a binding local to its target. |
+| Conditional directives | §7.2. Each makefile has its own conditional stack. An enclosing inactive branch suppresses nested tests and assignments. |

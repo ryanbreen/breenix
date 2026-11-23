@@ -338,6 +338,7 @@ pub fn execute(arguments: impl IntoIterator<Item = OsString>) -> Result<(), Stri
             &specials,
             options.execution,
             pool.as_ref(),
+            None,
         );
     }
 }

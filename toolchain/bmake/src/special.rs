@@ -56,7 +56,7 @@ impl Specials {
                 entries.push(entry);
                 continue;
             };
-            if rule.targets.len() != 1 || !rule.recipes.is_empty() {
+            if rule.targets.len() != 1 || !rule.recipes.is_empty() || !rule.order_only.is_empty() {
                 return Err(Error::new(
                     &rule.location,
                     format!("{name} must stand alone and have no recipe"),

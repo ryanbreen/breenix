@@ -2,10 +2,11 @@
 
 use crate::{graph::archive_member, reader::outside_macro_references, Error, Location};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::{self, Write},
     path::Path,
     process::{Command, Stdio},
+    rc::Rc,
 };
 
 const MAX_EXPANSION_DEPTH: usize = 128;
@@ -17,6 +18,7 @@ enum Origin {
     Makefile,
     Makeflags,
     CommandLine,
+    Override,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -45,16 +47,57 @@ enum Flavor {
 }
 
 #[derive(Clone)]
-struct Definition {
+pub(crate) struct Definition {
     value: String,
     flavor: Flavor,
     location: Location,
     origin: Origin,
+    export: Option<bool>,
+    private: bool,
+    append: bool,
+    parent: Option<Rc<Definition>>,
+}
+
+pub(crate) type Bindings = HashMap<String, Definition>;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Modifiers {
+    pub overriding: bool,
+    pub export: Option<bool>,
+    pub private: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct Assignment<'a> {
+    pub name: &'a str,
+    pub operator: &'a str,
+    pub value: &'a str,
+}
+
+impl<'a> Assignment<'a> {
+    pub fn parse(text: &'a str) -> Option<Self> {
+        let (equals, _) = outside_macro_references(text).find(|&(_, ch)| ch == '=')?;
+        let raw_name = &text[..equals];
+        let (name, operator) = [":::", "::", ":", "+", "?", "!"]
+            .into_iter()
+            .find_map(|operator| raw_name.strip_suffix(operator).map(|name| (name, operator)))
+            .unwrap_or((raw_name, ""));
+        Some(Self {
+            name,
+            operator,
+            value: text[equals + 1..].trim_start_matches([' ', '\t']),
+        })
+    }
 }
 
 #[derive(Clone, Default)]
 pub struct Macros {
-    definitions: HashMap<String, Definition>,
+    definitions: Bindings,
+    target_variables: HashMap<String, Bindings>,
+    environment_names: HashSet<String>,
+    exports: HashMap<String, bool>,
+    export_all: bool,
+    gnu_environment: bool,
     environment_overrides: bool,
 }
 
@@ -63,6 +106,7 @@ pub(crate) struct Automatic<'a> {
     pub target: &'a str,
     pub source: Option<&'a str>,
     pub newer: &'a str,
+    pub order_only: &'a str,
     pub stem: &'a str,
     pub member: Option<&'a str>,
 }
@@ -87,6 +131,7 @@ impl<'a> Automatic<'a> {
             "@" => self.target,
             "<" => self.source.unwrap_or_default(),
             "?" => self.newer,
+            "|" => self.order_only,
             "*" => self.stem,
             "%" => self.member.unwrap_or_default(),
             _ => return None,
@@ -171,6 +216,7 @@ impl Macros {
             {
                 continue;
             }
+            macros.environment_names.insert(name.clone());
             macros.define(
                 &name,
                 value,
@@ -215,7 +261,17 @@ impl Macros {
             MacroSource::Makeflags => Origin::Makeflags,
             MacroSource::CommandLine => Origin::CommandLine,
         };
-        self.assign(assignment, &source.location(), origin)
+        let location = source.location();
+        let assignment = Assignment::parse(assignment)
+            .ok_or_else(|| Error::new(&location, "missing '=' in macro definition"))?;
+        let values = self.view(None);
+        let name = values.assignment_name(assignment.name, &location)?;
+        if let Some(definition) =
+            values.assigned(&name, assignment, &location, origin, Modifiers::default())?
+        {
+            self.definitions.insert(name, definition);
+        }
+        Ok(())
     }
 
     pub(crate) fn assign_makefile(
@@ -223,26 +279,193 @@ impl Macros {
         assignment: &str,
         location: &Location,
     ) -> Result<(), Error> {
-        self.assign(assignment, location, Origin::Makefile)
+        let assignment = Assignment::parse(assignment)
+            .ok_or_else(|| Error::new(location, "missing '=' in macro definition"))?;
+        self.assign_directive(None, assignment, Modifiers::default(), location)
     }
 
-    fn assign(
+    pub(crate) fn assign_directive(
         &mut self,
-        assignment: &str,
+        target: Option<&str>,
+        assignment: Assignment<'_>,
+        modifiers: Modifiers,
+        location: &Location,
+    ) -> Result<(), Error> {
+        self.gnu_environment |=
+            target.is_some() || modifiers.export.is_some() || modifiers.overriding;
+        let origin = if modifiers.overriding {
+            Origin::Override
+        } else {
+            Origin::Makefile
+        };
+        let scope = target.and_then(|target| self.target_variables.get(target));
+        let values = Values {
+            macros: self,
+            scope,
+            target_assignment: target.is_some(),
+        };
+        let name = values.assignment_name(assignment.name, location)?;
+        let definition = values.assigned(&name, assignment, location, origin, modifiers)?;
+        if let Some(target) = target {
+            if let Some(definition) = definition {
+                self.target_variables
+                    .entry(target.to_owned())
+                    .or_default()
+                    .insert(name, definition);
+            } else if let Some(export) = modifiers.export {
+                // A command-line or -e value can win while this target
+                // still sets its export policy.
+                if let Some(mut definition) = values.get(&name).cloned() {
+                    definition.export = Some(export);
+                    definition.private = modifiers.private;
+                    self.target_variables
+                        .entry(target.to_owned())
+                        .or_default()
+                        .insert(name, definition);
+                }
+            }
+        } else {
+            if let Some(export) = modifiers.export {
+                self.exports.insert(name.clone(), export);
+            }
+            if let Some(definition) = definition {
+                self.definitions.insert(name, definition);
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn set_export(
+        &mut self,
+        names: &str,
+        export: bool,
+        location: &Location,
+    ) -> Result<(), Error> {
+        self.gnu_environment = true;
+        if names.is_empty() {
+            self.export_all = export;
+        } else {
+            let names = self.expand(names, location, &Automatic::default())?;
+            for name in separate_words(&names) {
+                if name.contains(['=', '\0']) {
+                    return Err(Error::new(
+                        location,
+                        format!("invalid export name '{name}'"),
+                    ));
+                }
+                self.exports.insert(name.to_owned(), export);
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn has_value(&self, name: &str) -> bool {
+        self.definitions
+            .get(name)
+            .is_some_and(|definition| !definition.value.is_empty())
+    }
+
+    pub(crate) fn target_scope(
+        &self,
+        target: &str,
+        inherited: Option<&Rc<Bindings>>,
+    ) -> (Option<Rc<Bindings>>, Option<Rc<Bindings>>) {
+        let Some(local) = self.target_variables.get(target) else {
+            return (inherited.cloned(), inherited.cloned());
+        };
+        let mut recipe = inherited.map_or_else(Bindings::new, |scope| (**scope).clone());
+        let mut descendants = None;
+        for (name, local) in local {
+            let mut definition = local.clone();
+            let parent = inherited.and_then(|scope| scope.get(name));
+            definition.export = definition
+                .export
+                .or_else(|| parent.and_then(|parent| parent.export));
+            if definition.append {
+                definition.parent = parent.cloned().map(Rc::new);
+            }
+            recipe.insert(name.clone(), definition);
+            if local.private {
+                descendants.get_or_insert_with(Vec::new).push(name);
+            }
+        }
+        let descendant_scope = descendants.map(|private| {
+            let mut scope = recipe.clone();
+            for name in private {
+                if let Some(previous) = inherited.and_then(|scope| scope.get(name)) {
+                    scope.insert(name.clone(), previous.clone());
+                } else {
+                    scope.remove(name);
+                }
+            }
+            Rc::new(scope)
+        });
+        let recipe = Rc::new(recipe);
+        let descendants = descendant_scope.unwrap_or_else(|| Rc::clone(&recipe));
+        (Some(recipe), Some(descendants))
+    }
+
+    fn define(
+        &mut self,
+        name: &str,
+        value: String,
+        flavor: Flavor,
         location: &Location,
         origin: Origin,
-    ) -> Result<(), Error> {
-        let Some((equals, _)) = outside_macro_references(assignment).find(|&(_, ch)| ch == '=')
-        else {
-            return Err(Error::new(location, "missing '=' in macro definition"));
-        };
-        let raw_name = &assignment[..equals];
-        let (raw_name, operator) = [":::", "::", "+", "?", "!"]
-            .into_iter()
-            .find_map(|operator| raw_name.strip_suffix(operator).map(|name| (name, operator)))
-            .unwrap_or((raw_name, ""));
-        let automatic = Automatic::default();
-        let name = self.expand(raw_name, location, &automatic)?;
+    ) {
+        self.definitions.insert(
+            name.to_owned(),
+            Definition {
+                value,
+                flavor,
+                location: location.clone(),
+                origin,
+                export: None,
+                private: false,
+                append: false,
+                parent: None,
+            },
+        );
+    }
+
+    pub(crate) fn view<'a>(&'a self, scope: Option<&'a Bindings>) -> Values<'a> {
+        Values {
+            macros: self,
+            scope,
+            target_assignment: false,
+        }
+    }
+
+    pub(crate) fn expand(
+        &self,
+        text: &str,
+        location: &Location,
+        automatic: &Automatic<'_>,
+    ) -> Result<String, Error> {
+        self.view(None).expand(text, location, automatic)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct Values<'a> {
+    macros: &'a Macros,
+    scope: Option<&'a Bindings>,
+    target_assignment: bool,
+}
+
+impl<'a> Values<'a> {
+    fn get(self, name: &str) -> Option<&'a Definition> {
+        self.entry(name).map(|(_, definition)| definition)
+    }
+
+    fn entry(self, name: &str) -> Option<(&'a String, &'a Definition)> {
+        self.scope
+            .and_then(|scope| scope.get_key_value(name))
+            .or_else(|| self.macros.definitions.get_key_value(name))
+    }
+
+    fn assignment_name(self, raw_name: &str, location: &Location) -> Result<String, Error> {
+        let name = self.expand(raw_name, location, &Automatic::default())?;
         let name = name.trim_matches([' ', '\t']);
         if name.is_empty()
             || name.contains(|ch: char| ch.is_whitespace() || ch.is_control() || ch == '=')
@@ -255,22 +478,49 @@ impl Macros {
                 "unsupported macro assignment operator",
             ));
         }
-        let previous = self.definitions.get(name);
+        Ok(name.to_owned())
+    }
+
+    fn assigned(
+        self,
+        name: &str,
+        assignment: Assignment<'_>,
+        location: &Location,
+        origin: Origin,
+        modifiers: Modifiers,
+    ) -> Result<Option<Definition>, Error> {
+        let Assignment {
+            operator, value, ..
+        } = assignment;
+        let previous = self.get(name);
+        let local = self.scope.and_then(|scope| scope.get(name));
         if previous.is_some_and(|previous| {
             operator == "?"
                 || (origin == Origin::Makefile
                     && (matches!(previous.origin, Origin::CommandLine | Origin::Makeflags)
+                        || (previous.origin == Origin::Override
+                            && (!self.target_assignment || local.is_some()))
                         || (previous.origin == Origin::Environment
-                            && self.environment_overrides
+                            && self.macros.environment_overrides
                             && name != "MAKE")))
         }) {
-            return Ok(());
+            return Ok(None);
         }
-        let value = assignment[equals + 1..].trim_start_matches([' ', '\t']);
+        let append = if self.target_assignment && operator == "+" {
+            local.is_none_or(|definition| definition.append)
+        } else {
+            false
+        };
+        let previous = if self.target_assignment && operator == "+" {
+            local
+        } else {
+            previous
+        };
+        let automatic = Automatic::default();
         let (value, flavor) = match (operator, previous) {
-            ("::", _) => (self.expand(value, location, &automatic)?, Flavor::Immediate),
+            (":" | "::", _) => (self.expand(value, location, &automatic)?, Flavor::Immediate),
             (":::", _) => (
-                self.expand_with_dollar_pairs(value, location, &automatic, true)?,
+                Expansion::new(self, &automatic, true).text(value, location, 0)?,
                 Flavor::Delayed,
             ),
             ("!", _) => {
@@ -286,13 +536,23 @@ impl Macros {
             }
             _ => (value.to_owned(), Flavor::Delayed),
         };
-        self.define(name, value, flavor, location, origin);
-        Ok(())
+        Ok(Some(Definition {
+            value,
+            flavor,
+            origin,
+            location: location.clone(),
+            export: modifiers
+                .export
+                .or_else(|| local.and_then(|definition| definition.export)),
+            private: modifiers.private,
+            append,
+            parent: None,
+        }))
     }
 
-    fn shell_assignment(&self, command: &str, location: &Location) -> Result<String, Error> {
+    fn shell_assignment(self, command: &str, location: &Location) -> Result<String, Error> {
         let mut shell = Command::new("/bin/sh");
-        self.set_recipe_environment(&mut shell, location)?;
+        self.set_recipe_environment(&mut shell, location, &Automatic::default())?;
         let output = shell
             .args(["-c", command])
             .stdin(Stdio::inherit())
@@ -317,42 +577,69 @@ impl Macros {
             .replace('\n', " "))
     }
 
-    fn define(
-        &mut self,
-        name: &str,
-        value: String,
-        flavor: Flavor,
-        location: &Location,
-        origin: Origin,
-    ) {
-        self.definitions.insert(
-            name.to_owned(),
-            Definition {
-                value,
-                flavor,
-                location: location.clone(),
-                origin,
-            },
-        );
-    }
-
     pub(crate) fn set_recipe_environment(
-        &self,
+        self,
         command: &mut Command,
         location: &Location,
+        automatic: &Automatic<'_>,
     ) -> Result<(), Error> {
-        let flags = self.expand("$(MAKEFLAGS)", location, &Automatic::default())?;
-        command.env("MAKEFLAGS", flags);
-        command.envs(self.definitions.iter().filter_map(|(name, definition)| {
-            (definition.origin == Origin::CommandLine
-                && !matches!(name.as_str(), "SHELL" | "MAKEFLAGS"))
-            .then_some((name.as_str(), definition.value.as_str()))
-        }));
+        if !self.macros.gnu_environment {
+            let flags = self.expand("$(MAKEFLAGS)", location, automatic)?;
+            command.env("MAKEFLAGS", flags);
+            command.envs(
+                self.macros
+                    .definitions
+                    .iter()
+                    .filter_map(|(name, definition)| {
+                        (definition.origin == Origin::CommandLine
+                            && !matches!(name.as_str(), "SHELL" | "MAKEFLAGS"))
+                        .then_some((name.as_str(), definition.value.as_str()))
+                    }),
+            );
+            return Ok(());
+        }
+
+        for (name, export) in &self.macros.exports {
+            if !export {
+                command.env_remove(name);
+            }
+        }
+        let names = self.macros.definitions.keys().chain(
+            self.scope
+                .into_iter()
+                .flat_map(|scope| scope.keys())
+                .filter(|name| !self.macros.definitions.contains_key(*name)),
+        );
+        for name in names {
+            let definition = self.get(name).expect("known variable");
+            let policy = definition
+                .export
+                .or_else(|| self.macros.exports.get(name).copied());
+            if policy == Some(false) {
+                command.env_remove(name);
+                continue;
+            }
+            let by_default = matches!(name.as_str(), "MAKEFLAGS" | "MAKEFILES")
+                || (name != "SHELL"
+                    && name
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                    && (self.macros.environment_names.contains(name)
+                        || matches!(
+                            definition.origin,
+                            Origin::Environment | Origin::Makeflags | Origin::CommandLine
+                        )
+                        || (self.macros.export_all && definition.origin != Origin::Default)));
+            if policy == Some(true) || by_default {
+                let value = Expansion::new(self, automatic, false).value(name, location, 0)?;
+                command.env(name, value);
+            }
+        }
         Ok(())
     }
 
-    pub(crate) fn expand(
-        &self,
+    fn expand(
+        self,
         text: &str,
         location: &Location,
         automatic: &Automatic<'_>,
@@ -362,7 +649,7 @@ impl Macros {
     }
 
     pub(crate) fn expand_recipe(
-        &self,
+        self,
         text: &str,
         location: &Location,
         automatic: &Automatic<'_>,
@@ -371,20 +658,10 @@ impl Macros {
         let text = expansion.text(text, location, 0)?;
         Ok((text, expansion.expanded_make))
     }
-
-    fn expand_with_dollar_pairs(
-        &self,
-        text: &str,
-        location: &Location,
-        automatic: &Automatic<'_>,
-        preserve_dollar_pairs: bool,
-    ) -> Result<String, Error> {
-        Expansion::new(self, automatic, preserve_dollar_pairs).text(text, location, 0)
-    }
 }
 
 struct Expansion<'a, 'b> {
-    macros: &'a Macros,
+    values: Values<'a>,
     automatic: &'a Automatic<'b>,
     preserve_dollar_pairs: bool,
     active: Vec<&'a str>,
@@ -392,9 +669,9 @@ struct Expansion<'a, 'b> {
 }
 
 impl<'a, 'b> Expansion<'a, 'b> {
-    fn new(macros: &'a Macros, automatic: &'a Automatic<'b>, preserve_dollar_pairs: bool) -> Self {
+    fn new(values: Values<'a>, automatic: &'a Automatic<'b>, preserve_dollar_pairs: bool) -> Self {
         Self {
-            macros,
+            values,
             automatic,
             preserve_dollar_pairs,
             active: Vec::new(),
@@ -450,6 +727,14 @@ impl<'a, 'b> Expansion<'a, 'b> {
         location: &Location,
         depth: usize,
     ) -> Result<String, Error> {
+        if let Some((name, _)) = reference.split_once([' ', '\t']) {
+            if crate::inventory::FUNCTIONS.contains(&name) {
+                return Err(Error::new(
+                    location,
+                    format!("GNU make function '{name}' is deferred to the 25.11c function units"),
+                ));
+            }
+        }
         let colon = outside_macro_references(reference).find(|&(_, ch)| ch == ':');
         let name_end = colon.map_or(reference.len(), |(index, _)| index);
         let name = self.text(&reference[..name_end], location, depth)?;
@@ -471,12 +756,9 @@ impl<'a, 'b> Expansion<'a, 'b> {
         if let Some(value) = self.automatic.get(name) {
             return Ok(value);
         }
-        let Some((name, definition)) = self.macros.definitions.get_key_value(name) else {
+        let Some((name, definition)) = self.values.entry(name) else {
             return Ok(String::new());
         };
-        if definition.flavor == Flavor::Immediate {
-            return Ok(definition.value.clone());
-        }
         if let Some(start) = self.active.iter().position(|&active| active == name) {
             let mut cycle = self.active[start..].to_vec();
             cycle.push(name);
@@ -486,9 +768,42 @@ impl<'a, 'b> Expansion<'a, 'b> {
             ));
         }
         self.active.push(name);
-        let expanded = self.text(&definition.value, &definition.location, depth);
+        let mut value = String::new();
+        let result = self.expand_definition(name, definition, &mut value, depth);
         self.active.pop();
-        expanded
+        result.map(|()| value)
+    }
+
+    fn expand_definition(
+        &mut self,
+        name: &str,
+        definition: &Definition,
+        result: &mut String,
+        depth: usize,
+    ) -> Result<(), Error> {
+        let mut appends = Vec::new();
+        let mut current = Some(definition);
+        while let Some(definition) = current {
+            appends.push(definition);
+            if !definition.append {
+                break;
+            }
+            current = definition
+                .parent
+                .as_deref()
+                .or_else(|| self.values.macros.definitions.get(name));
+        }
+        for definition in appends.into_iter().rev() {
+            if !result.is_empty() && !definition.value.is_empty() {
+                result.push(' ');
+            }
+            if definition.flavor == Flavor::Immediate {
+                result.push_str(&definition.value);
+            } else {
+                result.push_str(&self.text(&definition.value, &definition.location, depth)?);
+            }
+        }
+        Ok(())
     }
 }
 

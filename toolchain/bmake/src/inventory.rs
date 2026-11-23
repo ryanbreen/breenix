@@ -14,7 +14,7 @@ const DIRECTIVES: &[&str] = &[
     "define", "endef", "ifdef", "ifndef", "ifeq", "ifneq", "else", "endif", "include", "-include",
     "sinclude", "override", "export", "unexport", "private", "vpath", "undefine", "load", "-load",
 ];
-const FUNCTIONS: &[&str] = &[
+pub(crate) const FUNCTIONS: &[&str] = &[
     "subst",
     "patsubst",
     "strip",
@@ -221,7 +221,7 @@ fn scan_lexemes<'a>(
             if byte == b'\\'
                 && matches!(
                     bytes.get(index + 1),
-                    Some(b'\\' | b'#' | b':' | b'%' | b';' | b' ')
+                    Some(b'\\' | b'#' | b':' | b'%' | b';' | b'|' | b' ')
                 )
             {
                 width = 2;
@@ -315,6 +315,9 @@ impl Context {
         let prereqs = &rest[at + width..];
         let prereq_base = base + at + width;
         if let Some((at, name)) = target_assignment(prereqs) {
+            if !targets.contains('%') {
+                hit(prereq_base + at, "target-variable", "target-specific");
+            }
             let mut modifiers = prereqs;
             while let Some((name, args)) =
                 directive(modifiers).filter(|(name, _)| MODIFIERS.contains(name))
@@ -338,6 +341,9 @@ impl Context {
             if SPECIALS.contains(&target) {
                 hit(offset_of(target, &code), "special-target", target);
             }
+        }
+        if let Some(pipe) = prereqs.find('|') {
+            hit(prereq_base + pipe, "prerequisite", "order-only");
         }
         for prerequisite in prereqs.split([' ', '\t', '|']) {
             if prerequisite == ".WAIT" {
