@@ -263,7 +263,7 @@ impl Driver {
                 if self.options.optimize {
                     opt::run(&mut unit, target);
                 }
-                codegen::emit_assembly(&unit, path, target)
+                codegen::emit_with_options(&unit, target, self.options.optimize)
                     .map(String::into_bytes)
                     .map_err(|error| error.to_string())
             }

@@ -108,6 +108,7 @@ impl<'src> Emitter<'_, 'src> {
         writeln!(self.text, "{done}:").unwrap();
     }
 
+    // The caller saves allocated registers before loading helper arguments.
     fn brt_call(&mut self, symbol: &'static str, size: usize) {
         self.externs.insert(symbol);
         writeln!(
@@ -115,6 +116,7 @@ impl<'src> Emitter<'_, 'src> {
             "    mov rdi, {size}\n    mov rsi, qword [rsp]\n    call {symbol}@plt"
         )
         .unwrap();
+        self.restore_callers();
     }
 
     fn atomic_buffer(&mut self, object: &Type, site: &Position) -> Result<String, Diagnostic> {
@@ -166,6 +168,7 @@ impl<'src> Emitter<'_, 'src> {
                         "    lea rdx, {result}\n    mov ecx, {SEQ_CST}"
                     )
                     .unwrap();
+                    emitter.save_callers();
                     emitter.brt_call("__atomic_load", object.layout().unwrap().size);
                     emitter.read_atomic_buffer(object, &result);
                 }
@@ -197,6 +200,7 @@ impl<'src> Emitter<'_, 'src> {
                     emitter.atomic_inline(AtomicOp::Store, object, width, Some(true));
                 } else {
                     writeln!(emitter.text, "    lea rdx, {value}\n    mov ecx, {SEQ_CST}").unwrap();
+                    emitter.save_callers();
                     emitter.brt_call("__atomic_store", size);
                 }
             },
@@ -317,6 +321,7 @@ impl<'src> Emitter<'_, 'src> {
                     emitter.write_atomic_inline_result(object, width, result);
                 }
             } else {
+                emitter.save_callers();
                 let symbol = match op {
                     Load => {
                         let result = result.as_ref().unwrap();
@@ -439,8 +444,10 @@ impl<'src> Emitter<'_, 'src> {
             self.use_symbol("feholdexcept", place.position())?;
             self.use_symbol("feclearexcept", place.position())?;
             self.use_symbol("feupdateenv", place.position())?;
+            self.save_callers();
             self.text
                 .push_str("    lea rdi, [rsp + 64]\n    call feholdexcept@plt\n");
+            self.restore_callers();
         }
         let expected = "[rsp + 32]";
         let desired = "[rsp + 48]";
@@ -455,6 +462,7 @@ impl<'src> Emitter<'_, 'src> {
                 // A relaxed initial read suffices. The successful RMW
                 // carries the requested order and failures retry relaxed.
                 writeln!(emitter.text, "    lea rdx, {expected}\n    xor ecx, ecx").unwrap();
+                emitter.save_callers();
                 emitter.brt_call("__atomic_load", size);
             }
         });
@@ -466,7 +474,7 @@ impl<'src> Emitter<'_, 'src> {
         self.adjust_stack("sub", 16);
         self.store(lhs_type, "[rsp]");
         self.load(rhs_type, "[rsp + 32]");
-        self.combine(op, lhs_type, rhs_type, lhs_type);
+        self.combine(op, lhs_type, rhs_type, lhs_type, None);
         self.convert(lhs_type, object);
         self.write_atomic_buffer(object, desired);
 
@@ -478,6 +486,7 @@ impl<'src> Emitter<'_, 'src> {
                 )
                 .unwrap();
             } else {
+                emitter.save_callers();
                 writeln!(
                     emitter.text,
                     "    lea rdx, {expected}\n    lea rcx, {desired}\n    mov r8d, dword [rsp + 8]\n    xor r9d, r9d"
@@ -489,13 +498,17 @@ impl<'src> Emitter<'_, 'src> {
         });
         if fp {
             // As on the inline path, discard exceptions from failed attempts.
+            self.save_callers();
             self.text
                 .push_str("    mov edi, 0x3d\n    call feclearexcept@plt\n");
+            self.restore_callers();
         }
         writeln!(self.text, "    jmp {retry}\n{success}:").unwrap();
         if fp {
+            self.save_callers();
             self.text
                 .push_str("    lea rdi, [rsp + 64]\n    call feupdateenv@plt\n");
+            self.restore_callers();
         }
         self.load(object, if return_old { expected } else { desired });
         self.adjust_stack("add", frame);

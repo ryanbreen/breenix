@@ -470,3 +470,17 @@ the host. It reads the x86 C-ABI `libc.a` from the same path as
 the compiler-generated atomic helpers. Set `BREENIX_LIBC_SUITE_BRT` if
 that archive was built outside Cargo's target directory. The check uses
 the category file's complete flags and its recipe's data-symbol policy.
+
+### AMD64 scalar register allocation (25.10a4)
+
+At `-O2`, the AMD64 emitter records scalar local accesses and integer or
+pointer expression temporaries. Address-taken, volatile and atomic objects
+use memory (N1570 §§6.5.3.2, 6.7.3 and 7.17). A linear scan extends local
+intervals across backward edges and spills the interval ending last when
+registers run out.
+
+AMD64 psABI §§3.2.1–3.2.3 and Figure 3.4 govern the register bank. The
+emitter saves live R8 and R9 values before loading outgoing arguments and
+reloads them after the call. The prologue saves each allocated RBX or
+R12–R14, and the epilogue restores it. R15 remains the aligned-frame
+anchor.
