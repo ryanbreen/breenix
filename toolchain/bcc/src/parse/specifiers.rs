@@ -186,7 +186,13 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 specs.qualifiers.atomic = true;
                 continue;
             }
-            if self.qualifier(&mut specs.qualifiers) {
+            if self.eat("__extension__").is_some() || self.qualifier(&mut specs.qualifiers) {
+                continue;
+            }
+            if token.is("__attribute__") {
+                for (site, attribute) in self.attributes(depth)? {
+                    specs.storage.apply_attribute(site, attribute)?;
+                }
                 continue;
             }
             if token.is("_Alignas") {
@@ -203,7 +209,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 specs.storage.noreturn = true;
                 continue;
             }
-            if token.is("inline") {
+            if matches!(token.text.as_ref(), "inline" | "__inline" | "__inline__") {
                 self.take();
                 if !allow_storage {
                     return Err(token.error("inline requires a function declaration"));
@@ -355,7 +361,11 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         } else if self.eat("volatile").is_some() {
             qualifiers.volatile = true;
             true
-        } else if self.eat("restrict").is_some() {
+        } else if self
+            .peek()
+            .is_some_and(|token| matches!(token.text.as_ref(), "restrict" | "__restrict" | "__restrict__"))
+        {
+            self.take();
             qualifiers.restricted = true;
             true
         } else {

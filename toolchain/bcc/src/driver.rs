@@ -78,6 +78,7 @@ impl Options {
         };
         let mut args = args.into_iter().enumerate();
         let mut positional = false;
+        let mut codegen_options = Vec::new();
         while let Some((index, arg)) = args.next() {
             let usage =
                 |message: String| format!("<command-line>:1:{}: error: {message}", index + 1);
@@ -105,6 +106,7 @@ impl Options {
                 Some("-Wall") => options.pp.warn_unknown_pragmas = true,
                 Some("-Werror") => options.warnings_as_errors = true,
                 Some("-w") => options.suppress_warnings = true,
+                Some("-O2" | "-frounding-math") => codegen_options.push((index, arg)),
                 Some("-E" | "-S" | "-c" | "-fsyntax-only" | "--dump-types" | "-O0") => {
                     let mut stage = match arg.to_str() {
                         Some("-E") => Stage::Preprocess,
@@ -161,6 +163,17 @@ impl Options {
                         _ => unreachable!(),
                     }
                 }
+            }
+        }
+        // The libc recipe is usable for front-end checks before the
+        // companion optimization and rounding code-generation units land.
+        if !matches!(options.stage, Stage::Syntax | Stage::Types) {
+            if let Some((index, arg)) = codegen_options.first() {
+                return Err(format!(
+                    "<command-line>:1:{}: error: unknown option '{}'",
+                    index + 1,
+                    arg.to_string_lossy()
+                ));
             }
         }
         if options.inputs.is_empty() {

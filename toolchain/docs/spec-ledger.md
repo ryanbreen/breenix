@@ -31,7 +31,12 @@ edition pin whose full publication has no digest recorded here.
 | [GNU C extensions](https://gcc.gnu.org/onlinedocs/gcc-15.2.0/gcc/C-Extensions.html) | GCC 15.2.0 manual, GNU C extensions chapter | `4965dab10bf21e0147e86aa80fca2a92da2c099393f34d0325c913aa3be871f2` |
 | [GNU CPP Diagnostics](https://gcc.gnu.org/onlinedocs/gcc-15.2.0/cpp/Diagnostics.html) | GCC 15.2.0 manual, §5, `#warning` spelling and behavior | `fbd550c2e99d404c1f8184df32389be1011514b1d95cd0e1ff0eb8e47ca6c37e` |
 | [GNU C vector extensions](https://gcc.gnu.org/onlinedocs/gcc-15.2.0/gcc/Vector-Extensions.html) | GCC 15.2.0 manual, §7.8, `vector_size` typedef spelling | `bb7f699ab3937eefe69960c5a6bbe6fae9fb58c02aa534bec65caca4c57942e6` |
-| [GCC Common Type Attributes](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Common-Attributes.html#Common-Type-Attributes) | GCC 16.2.0 manual, 2026-08-07, 209636 bytes. E25 ruling 37 pins only the meaning of the record type attribute `__attribute__((packed))`. | `ab4a0dcc40060e309f2d126d3bbd8a10b2d596084d32371b8642d76b33e0d33f` |
+| [GCC Common Predefined Macros](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/cpp/Common-Predefined-Macros.html) | GCC 16.2.0 manual, 2026-08-07, §3.7.2, 37380 bytes. The pin covers predefined type macro names. | `9d68defcfa4ed119d2c5f6386b37d49584d7f5354b334008bbae1a2b7ea74904` |
+| [GCC Wrapper Headers](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/cpp/Wrapper-Headers.html) | GCC 16.2.0 manual, 2026-08-07, §2.7, 6361 bytes. The pin covers `#include_next`. | `2070d0294cb6d1436e610e6e59d7735e456c57dbc4610b093fbc1ced833848fb` |
+| [GCC Alternate Keywords](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Alternate-Keywords.html) | GCC 16.2.0 manual, 2026-08-07, §6.12.23, 5255 bytes. The pin covers alternate keywords and `__extension__`. | `e03f023a80ef4e52463455c9434f29df78d8d75d7738dad1b538d9dec4a7e30f` |
+| [GCC Library Builtins](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Library-Builtins.html) | GCC 16.2.0 manual, 2026-08-07, §7.1, 42770 bytes. The pin covers `__builtin_memset` and `__builtin_memcmp`. | `3defeda60e43356ae0b0f30ea0d80c744b92c974cecc5a60a6f4eb49a46b96c1` |
+| [GCC Bit Operation Builtins](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Bit-Operation-Builtins.html) | GCC 16.2.0 manual, 2026-08-07, §7.2.2, 33645 bytes. The pin covers `__builtin_popcountl`. | `d81a8fb713a88f96dd40547e171f74281b6c02794a53056eb72ce18b031a0e58` |
+| [GCC Common Attributes](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Common-Attributes.html) | GCC 16.2.0 manual, 2026-08-07, 209636 bytes. E25 ruling 37 and 25.10 cover `packed`, `aligned`, `noreturn` and `returns_twice`. | `ab4a0dcc40060e309f2d126d3bbd8a10b2d596084d32371b8642d76b33e0d33f` |
 | [NASM manual](https://www.nasm.us/xdoc/3.02/nasmdoc.pdf) | NASM 3.02, reserved for 25.12 | `a4d1766c9d640663569bcf93feac0657732fe52017002f1dbc797353f6aed34f` |
 | [GNU ld manual](https://sourceware.org/binutils/docs-2.45/ld.html) | GNU Binutils 2.45, command-line options and linker script syntax | `f219c3b05e197308c5b60fc2d4dbfc302617389ca5c21501de58a90b3d052e06` |
 | [Oracle Solaris `ar(3HEAD)`](https://docs.oracle.com/cd/E86824_01/html/E54772/ar.h-3head.html) | Oracle Solaris 11.3, archive file format | — |
@@ -384,3 +389,25 @@ for unrecognized source pragmas under §6.10.6. `-Werror` promotes bcc
 warnings to errors and `-w` suppresses warnings, even with `-Werror`.
 `-fno-builtin` is accepted because bcc already compiles ordinary library
 names as calls. Explicit compiler intrinsics remain available.
+
+### Front-end support for the Breenix libc headers
+
+The predefined type macro names come from GCC Common Predefined Macros.
+Their types match the Breenix LP64 header definitions, the AMD64 psABI
+§3.1.2 and AAPCS64 §§5.1, 10.1. The Common Attributes pin supplies record
+and member alignment and packing, and the two function annotations.
+`returns_twice` is retained on the typed function for optimization.
+The alternate keywords use the existing C parser rules for `inline` and
+`restrict`, and `__extension__` has no effect on a supported expression.
+
+Wide string literals use the target's `wchar_t` type and 32-bit Unicode
+code units. N1570 §§6.4.5 and 6.7.9p15 specify concatenation, the terminator
+and array initialization. N1570 §§6.5.3.4, 6.6 and 6.7.6.2 govern
+constant array bounds using `sizeof`. N1570 §6.3.2.3p3 permits casting an
+integer constant expression equal to `0` to `void *` as a null pointer constant.
+
+The libc limits wrapper's `#include_next` follows GCC CPP Wrapper Headers
+§2.7. The explicit memory builtin names follow GCC Library Builtins §7.1
+and use the libc calls and prototypes from N1570 §§7.24.4.1 and 7.24.6.1.
+`__builtin_popcountl` uses ordinary unsigned LP64 operations to implement
+the count specified by GCC Bit Operation Builtins §7.2.2.

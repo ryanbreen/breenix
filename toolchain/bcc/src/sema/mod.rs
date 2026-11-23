@@ -9,6 +9,7 @@ pub use parse::{Binary, Unary};
 
 mod atomic;
 mod body;
+mod builtins;
 mod c11;
 mod dump;
 mod float;
@@ -55,6 +56,7 @@ pub struct Function<'a> {
     pub linkage: Linkage,
     pub params: Vec<Parameter<'a>>,
     pub noreturn: bool,
+    pub returns_twice: bool,
     pub body: Option<Vec<Statement<'a>>>,
     pub locals: Vec<Local<'a>>,
 }
@@ -441,6 +443,7 @@ pub fn analyze<'a>(
                             thread_local: true,
                             alignment: alignment.or(previous.and_then(|prior| prior.alignment)),
                             noreturn: false,
+                            returns_twice: false,
                         },
                     );
                     if thread_objects.defines(key) {
@@ -481,6 +484,7 @@ pub fn analyze<'a>(
                             defined: explicit || previous.is_some_and(|symbol| symbol.defined),
                             alignment: alignment.or(previous.and_then(|prior| prior.alignment)),
                             noreturn: false,
+                            returns_twice: false,
                         },
                     );
                     if let Some(initializer) = variable.initializer {
@@ -547,6 +551,7 @@ pub fn analyze<'a>(
     }
     for function in &mut functions {
         function.noreturn = symbols[function.name].noreturn;
+        function.returns_twice = symbols[function.name].returns_twice;
     }
     for thread in &mut thread_objects.definitions {
         // N1570 6.9.2: a remaining external tentative array with no bound
@@ -609,6 +614,7 @@ struct Symbol {
     thread_local: bool,
     alignment: Option<usize>,
     noreturn: bool,
+    returns_twice: bool,
 }
 
 /// Evaluate a layout constant while parsing a record. The parser's record
@@ -632,6 +638,7 @@ pub(super) fn layout_constant<'a, 't>(
                     thread_local: false,
                     alignment: None,
                     noreturn: false,
+                    returns_twice: false,
                 },
             );
         } else {
@@ -673,6 +680,7 @@ fn function<'a>(
         variadic,
         prototype,
         noreturn,
+        returns_twice,
         storage,
         body,
     } = declaration;
@@ -747,6 +755,7 @@ fn function<'a>(
         .map_or(&ty, |symbol| &symbol.ty)
         .clone();
     let noreturn = noreturn || previous.is_some_and(|symbol| symbol.noreturn);
+    let returns_twice = returns_twice || previous.is_some_and(|symbol| symbol.returns_twice);
     symbols.insert(
         &name.text,
         Symbol {
@@ -756,6 +765,7 @@ fn function<'a>(
             thread_local: false,
             alignment: None,
             noreturn,
+            returns_twice,
         },
     );
     let (body, locals) = if let Some(statements) = body {
@@ -784,6 +794,7 @@ fn function<'a>(
         linkage,
         params,
         noreturn,
+        returns_twice,
         body,
         locals,
     })
@@ -870,7 +881,9 @@ impl<'a> FunctionBody<'a, '_> {
         let (kind, mut ty) = match expression.kind {
             Syntax::Identifier => {
                 let name = site.text.as_ref();
-                if let Some(id) = self.scopes.iter().rev().find_map(|scope| scope.get(name)) {
+                if let Some(builtin) = builtins::memory_builtin(name) {
+                    builtin
+                } else if let Some(id) = self.scopes.iter().rev().find_map(|scope| scope.get(name)) {
                     let local = &self.locals[*id];
                     let kind = match local.storage {
                         LocalStorage::ThreadExtern(_) => ExpressionKind::ThreadLocal(name),
@@ -916,7 +929,7 @@ impl<'a> FunctionBody<'a, '_> {
                 let ty = match site.text.as_bytes()[0] {
                     b'u' => Integer::UnsignedShort,
                     b'U' => Integer::UnsignedInt,
-                    b'L' if self.target == Target::Aarch64 => Integer::UnsignedInt,
+                    b'L' => wchar_type(self.target),
                     _ => Integer::Int,
                 };
                 (ExpressionKind::Integer(value), Type::new(Kind::Integer(ty)))
@@ -1112,14 +1125,8 @@ impl<'a> FunctionBody<'a, '_> {
                 )
             }
             Syntax::String(tokens) => {
-                let mut bytes = Vec::new();
-                for token in tokens {
-                    decode_string(token, &mut bytes)?;
-                }
-                // N1570 6.4.5p5–p6: concatenate, then append one terminating byte.
-                bytes.push(0);
-                let element = Type::new(Kind::Integer(Integer::Char));
-                let ty = Type::new(Kind::Array(Box::new(element), bytes.len()));
+                let (element, bytes, count) = string_literal(&tokens, self.target)?;
+                let ty = Type::new(Kind::Array(Box::new(Type::new(Kind::Integer(element))), count));
                 (ExpressionKind::String(bytes), ty)
             }
             Syntax::VaArg(list, ty) => self.va_arg(site, *list, ty)?,
@@ -1140,6 +1147,9 @@ impl<'a> FunctionBody<'a, '_> {
         close: &Lexeme,
     ) -> Result<(ExpressionKind<'a>, Type), Diagnostic> {
         if matches!(callee.kind, parse::ExpressionKind::Identifier) {
+            if callee.site.is("__builtin_popcountl") {
+                return self.popcount_long(callee.site, arguments);
+            }
             if let Some(op) = AtomicOp::from_name(&callee.site.text) {
                 return self.atomic_builtin(callee.site, op, arguments);
             }
@@ -1381,6 +1391,12 @@ fn compatible_pointer(
 ) -> Option<Type> {
     let a = left.value_type();
     let b = right.value_type();
+    if matches!(a.kind, Kind::Pointer(_)) && is_null(right, target) {
+        return Some(a);
+    }
+    if matches!(b.kind, Kind::Pointer(_)) && is_null(left, target) {
+        return Some(b);
+    }
     match (&a.kind, &b.kind) {
         (Kind::Pointer(a), Kind::Pointer(b)) => {
             let kind = if a
@@ -1412,8 +1428,6 @@ fn compatible_pointer(
                 .pointer_to(),
             )
         }
-        (Kind::Pointer(_), Kind::Integer(_)) if is_null(right, target) => Some(a),
-        (Kind::Integer(_), Kind::Pointer(_)) if is_null(left, target) => Some(b),
         _ => None,
     }
 }
@@ -1437,7 +1451,17 @@ fn conditional_type(yes: &Expression<'_>, no: &Expression<'_>, target: Target) -
 }
 
 fn is_null(expr: &Expression<'_>, target: Target) -> bool {
-    matches!(expr.ty.kind, Kind::Integer(_)) && body::constant_integer(expr, target) == Some(0)
+    // N1570 6.3.2.3p3 includes casting an integer constant expression equal
+    // to 0 to void *, including when it is converted to a function pointer.
+    let integer = match (&expr.ty.kind, &expr.kind) {
+        (Kind::Pointer(pointee), ExpressionKind::Cast(operand))
+            if pointee.kind == Kind::Void && pointee.qualifiers == Default::default() =>
+        {
+            operand
+        }
+        _ => expr,
+    };
+    body::constant_integer(integer, target) == Some(0)
 }
 
 // N1570 6.5.16.1p1 and 6.3.2.3p3 for assignment and null pointers.
@@ -1449,7 +1473,7 @@ fn assignable(destination: &Type, expr: &Expression<'_>, target: Target) -> bool
         (Kind::Integer(Integer::Bool), Kind::Pointer(_)) => true,
         (Kind::Record(to), Kind::Record(from)) => to == from && to.layout.is_some(),
         (to @ Kind::ShortVector { .. }, from) => to == from,
-        (Kind::Pointer(_), Kind::Integer(_)) => is_null(expr, target),
+        (Kind::Pointer(_), Kind::Integer(_) | Kind::Pointer(_)) if is_null(expr, target) => true,
         (Kind::Pointer(to), Kind::Pointer(from)) => {
             if !to.qualifiers.contains(from.qualifiers) {
                 return false;
@@ -1484,11 +1508,57 @@ fn integer_literal(token: &Lexeme, target: Target) -> Result<(u64, Integer), Dia
     Err(token.error("integer constant does not fit an available type"))
 }
 
-// N1570 5.1.1.2 phases 5–6 and 6.4.5. Ordinary strings use UTF-8;
-// numeric escapes encode one byte, including an embedded null.
+fn wchar_type(target: Target) -> Integer {
+    match target {
+        Target::X86_64 => Integer::Int,
+        Target::Aarch64 => Integer::UnsignedInt,
+    }
+}
+
+fn string_element(tokens: &[&Lexeme], target: Target) -> Integer {
+    if tokens.iter().any(|token| token.text.starts_with("L\"")) {
+        wchar_type(target)
+    } else {
+        Integer::Char
+    }
+}
+
+pub(super) fn string_literal(
+    tokens: &[&Lexeme],
+    target: Target,
+) -> Result<(Integer, Vec<u8>, usize), Diagnostic> {
+    let element = string_element(tokens, target);
+    let width = element.layout().size;
+    let mut bytes = Vec::new();
+    for token in tokens {
+        decode_literal(token, width != 1, &mut bytes)?;
+    }
+    bytes.resize(bytes.len() + width, 0);
+    let count = bytes.len() / width;
+    Ok((element, bytes, count))
+}
+
+// N1570 6.7.9p14–15: ordinary strings initialize character arrays,
+// and wide strings initialize arrays with a wchar_t-compatible element type.
+pub(super) fn string_initializes(element: &Type, literal: Integer) -> bool {
+    matches!(element.kind, Kind::Integer(integer)
+        if integer == literal || literal == Integer::Char
+            && matches!(integer, Integer::SignedChar | Integer::UnsignedChar))
+}
+
 pub(super) fn decode_string(token: &Lexeme, bytes: &mut Vec<u8>) -> Result<(), Diagnostic> {
-    let body = token
-        .text
+    decode_literal(token, false, bytes)
+}
+
+// N1570 5.1.1.2 phases 5–6 and 6.4.5. The ordinary execution
+// encoding is UTF-8 and the wide encoding uses 32-bit Unicode values.
+fn decode_literal(token: &Lexeme, wide: bool, bytes: &mut Vec<u8>) -> Result<(), Diagnostic> {
+    let spelling = if wide {
+        token.text.strip_prefix('L').unwrap_or(&token.text)
+    } else {
+        &token.text
+    };
+    let body = spelling
         .strip_prefix('"')
         .and_then(|body| body.strip_suffix('"'))
         .ok_or_else(|| token.error("expected an ordinary string literal"))?;
@@ -1499,9 +1569,13 @@ pub(super) fn decode_string(token: &Lexeme, bytes: &mut Vec<u8>) -> Result<(), D
             let code =
                 pp::escape(&mut chars).ok_or_else(|| token.error("invalid string escape"))?;
             if code.numeric {
-                let byte = u8::try_from(code.value)
-                    .map_err(|_| token.error("string escape exceeds unsigned char range"))?;
-                bytes.push(byte);
+                if wide {
+                    bytes.extend_from_slice(&code.value.to_le_bytes());
+                } else {
+                    let byte = u8::try_from(code.value)
+                        .map_err(|_| token.error("string escape exceeds unsigned char range"))?;
+                    bytes.push(byte);
+                }
                 continue;
             }
             let ch =
@@ -1514,8 +1588,12 @@ pub(super) fn decode_string(token: &Lexeme, bytes: &mut Vec<u8>) -> Result<(), D
         } else {
             ch
         };
-        let mut encoded = [0; 4];
-        bytes.extend_from_slice(ch.encode_utf8(&mut encoded).as_bytes());
+        if wide {
+            bytes.extend_from_slice(&u32::from(ch).to_le_bytes());
+        } else {
+            let mut encoded = [0; 4];
+            bytes.extend_from_slice(ch.encode_utf8(&mut encoded).as_bytes());
+        }
     }
     Ok(())
 }

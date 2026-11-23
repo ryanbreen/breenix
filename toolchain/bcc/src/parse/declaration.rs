@@ -1,5 +1,6 @@
 //! N1570 6.7.6: declarator modifiers are ordered outward from the name.
 
+use super::attribute::Attribute;
 use super::*;
 use crate::types::{BitField, BitFieldContainer, Layout, Member, RecordDefinition, RecordKind, RecordType};
 
@@ -29,6 +30,8 @@ struct Field<'a> {
     ty: Type,
     width: Option<u8>,
     alignment: Option<usize>,
+    gnu_alignment: usize,
+    packed: bool,
 }
 
 impl<'a> Declarator<'a> {
@@ -99,6 +102,10 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             && storage.class != Storage::Typedef
         {
             let name = first.name.unwrap();
+            let mut storage = storage;
+            for (site, attribute) in self.attributes(0)? {
+                storage.apply_attribute(site, attribute)?;
+            }
             let ty = first.ty(base, name, &self.records)?;
             storage.check(name, &ty)?;
             let TypeKind::Function { ref result, .. } = ty.kind else {
@@ -160,6 +167,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 variadic,
                 prototype,
                 noreturn: storage.noreturn,
+                returns_twice: storage.returns_twice,
                 storage: storage.class,
                 body,
             })]);
@@ -189,6 +197,20 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         loop {
             let name = declarator.name.unwrap();
             let mut ty = declarator.ty(base.clone(), name, &self.records)?;
+            let mut storage = storage;
+            for (site, attribute) in self.attributes(0)? {
+                if let Attribute::VectorSize(bytes) = attribute {
+                    let TypeKind::Float(element) = ty.kind else {
+                        return Err(site.error("AArch64 short vectors require float or double elements"));
+                    };
+                    if storage.class != Storage::Typedef {
+                        return Err(site.error("vector_size requires a typedef"));
+                    }
+                    ty.kind = TypeKind::ShortVector { element, bytes };
+                } else {
+                    storage.apply_attribute(site, attribute)?;
+                }
+            }
             storage.check(name, &ty)?;
             if declarator.modifiers.iter().any(|modifier| {
                 matches!(modifier, Modifier::Function(params)
@@ -197,9 +219,6 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 return Err(name.error("an identifier list requires a function definition"));
             }
             if storage.class == Storage::Typedef {
-                if self.target == Target::Aarch64 {
-                    self.short_vector_typedef(&mut ty)?;
-                }
                 if let Some(previous) = self.names.last().unwrap().get(name.text.as_ref()) {
                     if !matches!(previous, Name::Typedef(previous, _) if *previous == ty) {
                         return Err(name.error("conflicting typedef declaration"));
@@ -213,12 +232,25 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 } else {
                     None
                 };
+                if let Some(initializer) = &initializer {
+                    let mut complete = ty.clone();
+                    if let TypeKind::Array(element, count @ 0) = &mut complete.kind {
+                        if let Some(tokens) = string_initializer(initializer) {
+                            let (literal, _, length) = crate::sema::string_literal(tokens, self.target)?;
+                            if crate::sema::string_initializes(element, literal) {
+                                *count = length;
+                                self.name(name, Name::Ordinary(complete));
+                            }
+                        }
+                    }
+                }
+                let alignment = storage.object_alignment(&ty);
                 variables.push(Variable {
                     name,
                     ty,
                     storage: storage.class,
                     thread_local: storage.thread_local,
-                    alignment: storage.alignment,
+                    alignment,
                     initializer,
                 });
             }
@@ -228,31 +260,6 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             }
             declarator = self.declarator(false, 0)?;
         }
-    }
-
-    // GNU C 15.2 §7.8 supplies the typedef spelling. AAPCS64 §5.5
-    // supplies the short-vector sizes and alignment.
-    fn short_vector_typedef(&mut self, ty: &mut Type) -> Result<(), Diagnostic> {
-        let Some(site) = self.eat("__attribute__") else {
-            return Ok(());
-        };
-        self.expect("(", "expected '(' after __attribute__")?;
-        self.expect("(", "expected '(' before the typedef attribute")?;
-        self.expect("vector_size", "expected the vector_size typedef attribute")?;
-        self.expect("(", "expected '(' after vector_size")?;
-        let bytes = match self.literal_integer()?.0 {
-            8 => 8,
-            16 => 16,
-            _ => return Err(site.error("AArch64 short vectors must occupy 8 or 16 bytes")),
-        };
-        self.expect(")", "expected ')' after the vector size")?;
-        self.expect(")", "expected ')' after the vector_size attribute")?;
-        self.expect(")", "expected ')' after the attribute list")?;
-        let TypeKind::Float(element) = ty.kind else {
-            return Err(site.error("AArch64 short vectors require float or double elements"));
-        };
-        ty.kind = TypeKind::ShortVector { element, bytes };
-        Ok(())
     }
 
     fn initializer(&mut self, depth: usize) -> Result<Initializer<'a>, Diagnostic> {
@@ -326,9 +333,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             .peek()
             .ok_or_else(|| self.error("expected a type name"))?;
         let (base, storage, _) = self.specifiers_at_depth(false, depth)?;
-        if storage.alignment.is_some() {
-            return Err(start.error("_Alignas cannot appear in a type name"));
-        }
+        storage.require_declarator(start)?;
         let declarator = self.declarator(true, depth)?;
         if let Some(name) = declarator.name {
             return Err(name.error("a type name cannot declare an identifier"));
@@ -382,11 +387,15 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 let size = if self.eat("]").is_some() {
                     0
                 } else {
-                    let size = self.literal_integer()?.0;
+                    // N1570 6.7.6.2 and 6.6: evaluate an integer constant
+                    // expression with the current types, without array decay
+                    // inside sizeof or a runtime VLA bound.
+                    let bound = self.conditional(depth + 1)?;
+                    let size = self.layout_constant(bound)?;
                     self.expect("]", "expected ']' after the array bound")?;
                     usize::try_from(size)
                         .ok()
-                        .filter(|&size| size != 0)
+                        .filter(|&size| (1..=isize::MAX as usize).contains(&size))
                         .ok_or_else(|| self.error("array bound must be positive"))?
                 };
                 declarator.modifiers.push(Modifier::Array(size));
@@ -577,7 +586,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         })
     }
 
-    fn layout_constant(&self, expression: Expression<'a>) -> Result<u64, Diagnostic> {
+    pub(super) fn layout_constant(&self, expression: Expression<'a>) -> Result<u64, Diagnostic> {
         let names = self.names.iter().flatten().map(|(&name, entry)| {
             let ty = match entry {
                 Name::Ordinary(ty) => Some(ty),
@@ -660,11 +669,11 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         } else {
             RecordKind::Union
         };
-        let packed = self.packed_attribute()?;
+        let attributes = self.attributes(depth)?;
         let tag = self.identifier();
         let open = self.eat("{");
-        if packed && open.is_none() {
-            return Err(keyword.error("packed requires a record definition"));
+        if let (None, Some((site, _))) = (open, attributes.first()) {
+            return Err(site.error("attribute requires a record definition"));
         }
         if tag.is_none() && open.is_none() {
             return Err(keyword.error("expected a record tag or definition"));
@@ -706,7 +715,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             if self.records[id].definition.is_some() {
                 return Err(keyword.error("record type is already defined"));
             }
-            let definition = self.record_definition(kind, packed, open, depth)?;
+            let definition = self.record_definition(kind, attributes, open, depth)?;
             // Specifiers inside the member list share its surrounding tag
             // scope. A nested definition of this same tag is a redefinition.
             if self.records[id].definition.is_some() {
@@ -718,27 +727,10 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         Ok(Type::new(TypeKind::Record(RecordType { id, layout })))
     }
 
-    fn packed_attribute(&mut self) -> Result<bool, Diagnostic> {
-        if self.eat("__attribute__").is_none() {
-            return Ok(false);
-        }
-        self.expect("(", "expected '(' after __attribute__")?;
-        self.expect("(", "expected '(' before the record type attribute")?;
-        let attribute = self
-            .identifier()
-            .ok_or_else(|| self.error("expected a record type attribute"))?;
-        if !matches!(attribute.text.as_ref(), "packed" | "__packed__") {
-            return Err(attribute.error("unsupported record type attribute"));
-        }
-        self.expect(")", "expected ')' after the packed attribute")?;
-        self.expect(")", "expected ')' after the attribute list")?;
-        Ok(true)
-    }
-
     fn record_definition(
         &mut self,
         kind: RecordKind,
-        packed: bool,
+        mut attributes: Vec<(&'a Lexeme, Attribute)>,
         open: &'a Lexeme,
         depth: usize,
     ) -> Result<RecordDefinition<'a>, Diagnostic> {
@@ -761,6 +753,9 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 .peek()
                 .ok_or_else(|| self.error("expected a record member"))?;
             let (base, storage, signed) = self.specifiers_at_depth(false, depth + 1)?;
+            if storage.noreturn || storage.returns_twice {
+                return Err(start.error("function attribute cannot apply to a record member"));
+            }
             if self.eat(";").is_some() {
                 if !storage.anonymous_record {
                     return Err(start
@@ -773,6 +768,8 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     ty: base,
                     width: None,
                     alignment: storage.alignment,
+                    gnu_alignment: storage.gnu_alignment,
+                    packed: false,
                 });
                 continue;
             }
@@ -789,12 +786,24 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     )
                 };
                 let site = name.or(colon).unwrap();
+                let mut alignment = storage.gnu_alignment;
+                let mut packed = false;
+                for (site, attribute) in self.attributes(depth)? {
+                    match attribute {
+                        Attribute::Aligned(value) => alignment = alignment.max(value),
+                        Attribute::Packed => packed = true,
+                        _ => return Err(site.error("attribute does not apply to a record member")),
+                    }
+                }
                 let width = if let Some(colon) = colon {
                     if ty.qualifiers.atomic {
                         return Err(colon.error("atomic bit-fields are not supported"));
                     }
                     if storage.alignment.is_some() {
                         return Err(colon.error("_Alignas cannot apply to a bit-field"));
+                    }
+                    if alignment != 0 {
+                        return Err(colon.error("aligned bit-fields are not supported"));
                     }
                     let TypeKind::Integer(integer) = &mut ty.kind else {
                         return Err(colon.error("bit-fields require an integer type"));
@@ -830,6 +839,8 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     ty,
                     width,
                     alignment: storage.alignment,
+                    gnu_alignment: alignment,
+                    packed,
                 });
                 if self.eat(",").is_none() {
                     break;
@@ -837,8 +848,17 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             }
             self.expect(";", "expected ';' after the record member")?;
         };
-        let packed = packed | self.packed_attribute()?;
-        self.layout_record(kind, packed, fields, open, end)
+        attributes.extend(self.attributes(depth)?);
+        let mut packed = false;
+        let mut alignment = 1;
+        for (site, attribute) in attributes {
+            match attribute {
+                Attribute::Aligned(value) => alignment = alignment.max(value),
+                Attribute::Packed => packed = true,
+                _ => return Err(site.error("attribute does not apply to a record type")),
+            }
+        }
+        self.layout_record(kind, (packed, alignment), fields, open, end)
     }
 
     fn add_anonymous_member_names(
@@ -865,7 +885,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
     fn layout_record(
         &self,
         kind: RecordKind,
-        packed: bool,
+        (packed, mut align): (bool, usize),
         fields: Vec<Field<'a>>,
         open: &'a Lexeme,
         end: &'a Lexeme,
@@ -873,7 +893,6 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         // A cursor in bits represents both sub-byte fields and byte objects.
         // The wider cursor keeps the full range of byte sizes on LP64.
         let mut size_bits = 0u128;
-        let mut align = 1;
         let mut members = Vec::new();
         let mut has_const_member = false;
         let arm_containers = self.target == Target::Aarch64 && !packed;
@@ -885,8 +904,11 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             ty,
             width,
             alignment,
+            gnu_alignment,
+            packed: member_packed,
         }) = fields.next()
         {
+            let packed = packed || member_packed;
             // N1570 §6.7.2.1p3,18: retain the aligned offset but allocate
             // no elements for the flexible tail.
             let flexible = matches!(ty.kind, TypeKind::Array(_, 0));
@@ -915,7 +937,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             if let Some(requested) = alignment {
                 check_alignment(site, requested, natural)?;
             }
-            let alignment = natural.max(alignment.unwrap_or(0));
+            let alignment = natural.max(alignment.unwrap_or(0)).max(gnu_alignment);
             let (start, width, bit_field) = if let Some(width) = width {
                 let unit = (field.size * 8) as u128;
                 // AMD64 psABI §3.1.2 and AAPCS64 §10.1.8.1 place ordinary
@@ -929,7 +951,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 let bit_field = BitField {
                     shift: (start % 8) as u8,
                     width,
-                    container: arm_containers.then_some(BitFieldContainer {
+                    container: (arm_containers && !member_packed).then_some(BitFieldContainer {
                         back: (start % unit / 8) as u8,
                         bytes: field.size as u8,
                     }),
@@ -1010,12 +1032,25 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
     }
 }
 
+fn string_initializer<'a, 'i>(initializer: &'i Initializer<'a>) -> Option<&'i [&'a Lexeme]> {
+    match initializer {
+        Initializer::Expression(Expression { kind: ExpressionKind::String(tokens), .. }) => Some(tokens),
+        Initializer::List(_, entries) if entries.len() == 1 && entries[0].designators.is_empty() => {
+            match &entries[0].value {
+                Initializer::Expression(Expression { kind: ExpressionKind::String(tokens), .. }) => Some(tokens),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 impl DeclStorage {
     fn require_declarator(self, site: &Lexeme) -> Result<(), Diagnostic> {
         if self.thread_local {
             return Err(site.error("_Thread_local requires an object declarator"));
         }
-        if self.alignment.is_some() || self.noreturn || self.inline {
+        if self.alignment.is_some() || self.gnu_alignment != 0 || self.noreturn || self.returns_twice || self.inline {
             return Err(site.error("declaration specifier requires a declarator"));
         }
         Ok(())
@@ -1025,6 +1060,12 @@ impl DeclStorage {
         let function = matches!(ty.kind, TypeKind::Function { .. });
         if self.thread_local && function {
             return Err(site.error("a function cannot be _Thread_local"));
+        }
+        if self.returns_twice && (!function || self.class == Storage::Typedef) {
+            return Err(site.error("returns_twice requires a function declaration"));
+        }
+        if self.gnu_alignment != 0 && (function || matches!(self.class, Storage::Typedef | Storage::Register)) {
+            return Err(site.error("aligned requires a non-register object, record or member"));
         }
         if self.noreturn && (!function || self.class == Storage::Typedef) {
             return Err(site.error("_Noreturn requires a function declaration"));
@@ -1047,12 +1088,23 @@ impl DeclStorage {
         Ok(())
     }
 
+    fn object_alignment(self, ty: &Type) -> Option<usize> {
+        if self.gnu_alignment == 0 {
+            self.alignment
+        } else {
+            let natural = ty.layout().map_or(1, |layout| layout.align);
+            Some(natural.max(self.gnu_alignment).max(self.alignment.unwrap_or(0)))
+        }
+    }
+
     fn check_parameter(self, site: &Lexeme) -> Result<(), Diagnostic> {
         if self.thread_local {
             return Err(site.error("_Thread_local requires an object declaration"));
         }
         if !matches!(self.class, Storage::Unspecified | Storage::Register)
             || self.alignment.is_some()
+            || self.gnu_alignment != 0
+            || self.returns_twice
             || self.noreturn
             || self.inline
         {

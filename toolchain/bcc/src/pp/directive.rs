@@ -207,7 +207,7 @@ fn process_source(
     for (index, option) in options.macros.iter().enumerate() {
         processor.macro_option(option, index + 1)?;
     }
-    processor.file(path, bytes, 0)?;
+    processor.file(path, bytes, 0, None)?;
     Ok(Preprocessed {
         output: processor.output,
         standard: options.standard,
@@ -363,7 +363,13 @@ impl Processor<'_> {
         }
     }
 
-    fn file(&mut self, path: &Path, bytes: &[u8], depth: usize) -> Result<(), Diagnostic> {
+    fn file(
+        &mut self,
+        path: &Path,
+        bytes: &[u8],
+        depth: usize,
+        include_index: Option<usize>,
+    ) -> Result<(), Diagnostic> {
         let mut lines = LineMap {
             file: path.to_string_lossy().into(),
             physical_base: 1,
@@ -437,7 +443,9 @@ impl Processor<'_> {
                 _ if !active => {}
                 "define" => self.macros.define(name, args)?,
                 "undef" => self.macros.undefine(identifier(name, args)?)?,
-                "include" => self.include(path, name, args, depth)?,
+                "include" | "include_next" => {
+                    self.include(path, name, args, depth, include_index)?;
+                }
                 "line" => {
                     let args = self.macros.expand(args.to_vec())?;
                     lines.change(&args, name, next_physical)?;
@@ -480,6 +488,7 @@ impl Processor<'_> {
         directive: &Lexeme,
         args: &[Lexeme],
         depth: usize,
+        include_index: Option<usize>,
     ) -> Result<(), Diagnostic> {
         let original = args
             .first()
@@ -490,20 +499,30 @@ impl Processor<'_> {
         if depth >= 64 {
             return Err(original.error("include nesting limit exceeded"));
         }
-        let local = path.parent().filter(|_| quoted);
-        let dirs = local.into_iter().chain(
+        // GNU CPP Wrapper Headers §2.7: #include_next resumes after
+        // the configured entry that provided this file, even for quotes.
+        let next = directive.is("include_next");
+        let local = path.parent().filter(|_| quoted && !next);
+        let start = if next {
+            include_index.map_or(0, |index| index + 1)
+        } else {
+            0
+        };
+        let dirs = local.into_iter().map(|dir| (None, dir)).chain(
             self.options
                 .include_dirs
                 .iter()
                 .chain(&self.options.system_dirs)
-                .map(PathBuf::as_path),
+                .enumerate()
+                .skip(start)
+                .map(|(index, dir)| (Some(index), dir.as_path())),
         );
-        for dir in dirs {
+        for (index, dir) in dirs {
             let candidate = dir.join(&name);
             match fs::read(&candidate) {
                 Ok(bytes) => {
                     return self
-                        .file(&candidate, &bytes, depth + 1)
+                        .file(&candidate, &bytes, depth + 1, index)
                         .map_err(|mut error| {
                             error.included_from.push(original.site.clone());
                             error

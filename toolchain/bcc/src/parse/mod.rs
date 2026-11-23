@@ -6,6 +6,7 @@ use std::path::Path;
 use crate::pp::{Diagnostic, Kind, Lexeme, Location, Position, Preprocessed, Standard, Target};
 use crate::types::{amd64_va_list, Integer, Kind as TypeKind, Qualifiers, Record, Type};
 
+mod attribute;
 mod declaration;
 mod specifiers;
 
@@ -27,6 +28,8 @@ struct DeclStorage {
     class: Storage,
     thread_local: bool,
     alignment: Option<usize>,
+    gnu_alignment: usize,
+    returns_twice: bool,
     noreturn: bool,
     inline: bool,
     anonymous_record: bool,
@@ -83,6 +86,7 @@ pub(super) struct Function<'a> {
     pub variadic: bool,
     pub prototype: bool,
     pub noreturn: bool,
+    pub returns_twice: bool,
     pub storage: Storage,
     pub body: Option<Vec<Statement<'a>>>,
 }
@@ -434,6 +438,8 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 | "const"
                 | "volatile"
                 | "restrict"
+                | "__restrict"
+                | "__restrict__"
                 | "_Atomic"
                 | "struct"
                 | "union"
@@ -452,6 +458,9 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     | "auto"
                     | "register"
                     | "inline"
+                    | "__inline"
+                    | "__inline__"
+                    | "__attribute__"
                     | "_Thread_local"
                     | "_Alignas"
                     | "_Noreturn"
@@ -710,6 +719,9 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
     fn unary(&mut self, depth: usize) -> Result<Expression<'a>, Diagnostic> {
         if depth >= MAX_NESTING {
             return Err(self.error("expression nesting limit exceeded"));
+        }
+        if self.eat("__extension__").is_some() {
+            return self.unary(depth + 1);
         }
         if let Some(site) = self.eat("++").or_else(|| self.eat("--")) {
             let operand = Box::new(self.unary(depth + 1)?);
@@ -995,10 +1007,16 @@ fn is_identifier(token: &Lexeme) -> bool {
                 | "goto"
                 | "if"
                 | "inline"
+                | "__inline"
+                | "__inline__"
+                | "__extension__"
+                | "__attribute__"
                 | "int"
                 | "long"
                 | "register"
                 | "restrict"
+                | "__restrict"
+                | "__restrict__"
                 | "return"
                 | "short"
                 | "signed"

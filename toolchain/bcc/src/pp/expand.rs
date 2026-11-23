@@ -467,8 +467,6 @@ fn builtin(name: &str, target: Target) -> Option<(&str, Kind)> {
         // The shipped limits.h selects CHAR_MIN and CHAR_MAX with this macro.
         "__CHAR_UNSIGNED__" if !target.signed_char() => ("1", Kind::Number),
         // Breenix LP64 support headers select these target ABI types.
-        "__WCHAR_TYPE__" if target == Target::X86_64 => ("int", Kind::Identifier),
-        "__WCHAR_TYPE__" => ("unsigned", Kind::Identifier),
         "__WCHAR_MAX__" if target == Target::X86_64 => ("2147483647", Kind::Number),
         "__WCHAR_MAX__" | "__WINT_MAX__" => ("4294967295U", Kind::Number),
         "__WCHAR_UNSIGNED__" if target == Target::Aarch64 => ("1", Kind::Number),
@@ -532,8 +530,31 @@ fn float_builtin(name: &str, target: Target) -> Option<String> {
     Some(value.to_string())
 }
 
+// GCC Common Predefined Macros names the typedefs. The Breenix LP64
+// types follow AMD64 psABI §3.1.2, AAPCS64 §§5.1, 10.1 and our headers.
+fn type_builtin(name: &str, target: Target) -> Option<&'static str> {
+    Some(match name {
+        "__WCHAR_TYPE__" if target == Target::X86_64 => "int",
+        "__WCHAR_TYPE__" | "__WINT_TYPE__" => "unsigned int",
+        "__SIZE_TYPE__" | "__UINTPTR_TYPE__" | "__UINTMAX_TYPE__" => "unsigned long",
+        "__PTRDIFF_TYPE__" | "__INTPTR_TYPE__" | "__INTMAX_TYPE__" => "long",
+        "__SIG_ATOMIC_TYPE__" => "int",
+        "__INT8_TYPE__" | "__INT_LEAST8_TYPE__" | "__INT_FAST8_TYPE__" => "signed char",
+        "__UINT8_TYPE__" | "__UINT_LEAST8_TYPE__" | "__UINT_FAST8_TYPE__" => "unsigned char",
+        "__INT16_TYPE__" | "__INT_LEAST16_TYPE__" | "__INT_FAST16_TYPE__" => "short",
+        "__UINT16_TYPE__" | "__UINT_LEAST16_TYPE__" | "__UINT_FAST16_TYPE__" => "unsigned short",
+        "__INT32_TYPE__" | "__INT_LEAST32_TYPE__" | "__INT_FAST32_TYPE__" => "int",
+        "__UINT32_TYPE__" | "__UINT_LEAST32_TYPE__" | "__UINT_FAST32_TYPE__" => "unsigned int",
+        "__INT64_TYPE__" | "__INT_LEAST64_TYPE__" | "__INT_FAST64_TYPE__" => "long",
+        "__UINT64_TYPE__" | "__UINT_LEAST64_TYPE__" | "__UINT_FAST64_TYPE__" => "unsigned long",
+        _ => return None,
+    })
+}
+
 fn is_builtin(name: &str, target: Target) -> bool {
-    builtin(name, target).is_some() || float_builtin(name, target).is_some()
+    builtin(name, target).is_some()
+        || type_builtin(name, target).is_some()
+        || float_builtin(name, target).is_some()
 }
 
 fn expand_builtin(
@@ -549,6 +570,12 @@ fn expand_builtin(
             "__STDC_VERSION__" => token.respell(standard.version(), kind),
             _ => token.respell(text, kind),
         });
+    } else if let Some(text) = type_builtin(&token.text, target) {
+        for (index, word) in text.split_ascii_whitespace().enumerate() {
+            let mut part = token.respell(word, Kind::Identifier);
+            part.space_before = index != 0 || token.space_before;
+            result.push(part);
+        }
     } else if let Some(text) = float_builtin(&token.text, target) {
         if let Some(magnitude) = text.strip_prefix('-') {
             result.push(token.respell("(", Kind::Punctuator));
