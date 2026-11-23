@@ -20,7 +20,6 @@ pub(crate) use body::{canonical, constant_integer};
 pub(super) use c11::{check_static_assertion, type_alignment};
 
 pub use atomic::AtomicOp;
-pub(crate) use body::constant_integer;
 pub(crate) use atomic::SEQ_CST;
 pub use thread::{StaticAddress, ThreadData, ThreadInitializer, ThreadObject};
 

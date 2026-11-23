@@ -478,7 +478,7 @@ fn builtin(name: &str, target: Target) -> Option<(&str, Kind)> {
         "__ATOMIC_ACQ_REL" => ("4", Kind::Number),
         "__ATOMIC_SEQ_CST" => ("5", Kind::Number),
         "__BREENIX_BCC__" => ("1", Kind::Number),
-        // N1570 6.10.8.3. Native ARM atomics are scheduled for ARM 25.9d.
+        // N1570 6.10.8.3: report the remaining conditional features.
         "__STDC_NO_COMPLEX__" | "__STDC_NO_THREADS__" | "__STDC_NO_VLA__" => ("1", Kind::Number),
         // Use N1570 6.10.8.1's fallback when translation time is unavailable.
         "__DATE__" => ("\"Jan  1 1970\"", Kind::String),
