@@ -92,6 +92,52 @@ fn capital_s_preprocesses_before_assembly() {
 }
 
 #[test]
+fn function_sections_allow_discarding_an_unused_dependency() {
+    use bobj::elf::Elf;
+    use std::fs;
+
+    let bcc = Path::new(env!("CARGO_BIN_EXE_bcc"));
+    let root = std::env::temp_dir().join(format!("bcc-function-sections-{}", std::process::id()));
+    fs::create_dir(&root).unwrap();
+    fs::copy(bcc.with_file_name("bas"), root.join("as")).unwrap();
+    fs::write(
+        root.join("input.c"),
+        concat!(
+            "extern int unavailable(void);\n",
+            "int unused(void) { return unavailable(); }\n",
+            "static int helper(void) { return 42; }\n",
+            "int _start(void) { return helper(); }\n",
+        ),
+    )
+    .unwrap();
+    let run = |tool: &Path, args: &[&str]| {
+        let output = Command::new(tool).current_dir(&root).args(args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+    };
+    for target in ["--target=x86_64", "--target=aarch64"] {
+        run(bcc, &[target, "-B", ".", "-ffunction-sections", "-c", "input.c"]);
+        let bytes = fs::read(root.join("input.o")).unwrap();
+        let elf = Elf::parse(&bytes).unwrap();
+        for section in [b".text.unused".as_slice(), b".text.helper", b".text._start"] {
+            assert!(
+                (1..elf.section_count()).any(|index| elf.section_name(index).unwrap() == section),
+                "{target}: missing {}",
+                String::from_utf8_lossy(section)
+            );
+        }
+        run(
+            &bcc.with_file_name("bld"),
+            &["--gc-sections", "-o", "linked.elf", "input.o"],
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn b_dir_pins_as_and_ld() {
     check("b_dir_pins_as_and_ld");
 }
