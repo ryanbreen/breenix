@@ -74,6 +74,7 @@ fn section<'a>(
 
 fn symbol(name: &[u8], section: u16, value: u64, binding: u8) -> RelSymbol<'_> {
     RelSymbol {
+        other: 0,
         name,
         section,
         kind: STT_NOTYPE,

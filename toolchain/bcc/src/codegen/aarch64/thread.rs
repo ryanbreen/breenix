@@ -22,6 +22,22 @@ impl<'src> Emitter<'_, 'src> {
         linkage: Linkage,
         initializer: Option<&ThreadInitializer<'src>>,
     ) -> Result<(), Diagnostic> {
+        let data = self.thread_data(object, label, linkage, initializer)?;
+        if initializer.is_some() {
+            self.tdata.push_str(&data);
+        } else {
+            self.tbss.push_str(&data);
+        }
+        Ok(())
+    }
+
+    pub(super) fn thread_data(
+        &mut self,
+        object: &Object<'src>,
+        label: &str,
+        linkage: Linkage,
+        initializer: Option<&ThreadInitializer<'src>>,
+    ) -> Result<String, Diagnostic> {
         check_symbol(label, object.site)?;
         let layout = object.layout().unwrap();
         let mut data = String::new();
@@ -36,11 +52,6 @@ impl<'src> Emitter<'_, 'src> {
         .unwrap();
         self.emit_initializer(&mut data, initializer, layout.size)?;
         writeln!(data, ".size {label}, {}", layout.size).unwrap();
-        if initializer.is_some() {
-            self.tdata.push_str(&data);
-        } else {
-            self.tbss.push_str(&data);
-        }
-        Ok(())
+        Ok(data)
     }
 }

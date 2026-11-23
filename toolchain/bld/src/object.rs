@@ -735,6 +735,7 @@ mod tests {
             }],
         };
         let entry = RelSymbol {
+            other: 0,
             name: b"_start",
             section: 1,
             kind: STT_FUNC,

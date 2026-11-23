@@ -8,7 +8,7 @@ use bobj::elf::aarch64::EM_AARCH64;
 use bobj::elf::amd64::{R_64, R_GOTPCREL, R_PC32, R_PLT32, R_TPOFF32};
 use bobj::elf::{
     write_rel, RelSection, RelSymbol, Rela, EM_X86_64, SHF_ALLOC, SHF_EXECINSTR, SHF_TLS,
-    SHF_WRITE, SHN_UNDEF, SHT_NOBITS, SHT_PROGBITS, STB_GLOBAL, STB_LOCAL, STT_NOTYPE, STT_TLS,
+    SHF_WRITE, SHN_UNDEF, SHT_NOBITS, SHT_PROGBITS, STB_LOCAL, STB_WEAK, STT_NOTYPE, STT_TLS,
 };
 
 use crate::aarch64::Relocation;
@@ -52,7 +52,9 @@ pub(crate) struct Symbol {
     section: u16,
     value: u64,
     pub(crate) kind: u8,
-    pub(crate) global: bool,
+    pub(crate) binding: u8,
+    pub(crate) visibility: u8,
+    alias: Option<(usize, Location)>,
     pub(crate) size: u64,
     pub(crate) size_at: Option<Location>,
     first_use: Location,
@@ -114,14 +116,22 @@ impl Object {
         }
     }
 
-    pub(crate) fn select_section(&mut self, name: &str, at: Location) -> Result<()> {
+    pub(crate) fn select_section(
+        &mut self,
+        name: &str,
+        attributes: Option<(u32, u64)>,
+        at: Location,
+    ) -> Result<()> {
         self.current = if let Some(index) = self.sections.iter().position(|s| s.name == name) {
+            let section = &self.sections[index];
+            if attributes.is_some_and(|pair| pair != (section.kind, section.flags)) {
+                return Err(at.error("conflicting section attributes"));
+            }
             index
         } else {
-            let descriptor = SECTIONS
-                .iter()
-                .find(|entry| entry.0 == name)
-                .copied()
+            let descriptor = attributes
+                .map(|(kind, flags)| (name, kind, flags))
+                .or_else(|| SECTIONS.iter().find(|entry| entry.0 == name).copied())
                 .or_else(|| {
                     (self.target == Target::Aarch64
                         && name.starts_with(".text.")
@@ -130,6 +140,9 @@ impl Object {
                 })
                 .ok_or_else(|| at.error("unsupported section"))?;
             let index = self.sections.len();
+            if index >= usize::from(bobj::elf::SHN_LORESERVE) - 1 {
+                return Err(at.error("too many sections"));
+            }
             self.sections.push(Section::new(descriptor));
             index
         };
@@ -137,7 +150,7 @@ impl Object {
     }
 
     pub(crate) fn in_text(&self) -> bool {
-        self.current == 0
+        self.sections[self.current].flags & SHF_EXECINSTR != 0
     }
 
     pub(crate) fn symbol(&mut self, name: &str, at: Location) -> usize {
@@ -151,7 +164,9 @@ impl Object {
             section: SHN_UNDEF,
             value: 0,
             kind: STT_NOTYPE,
-            global: false,
+            binding: STB_LOCAL,
+            visibility: 0,
+            alias: None,
             size: 0,
             size_at: None,
             first_use: at,
@@ -161,7 +176,7 @@ impl Object {
 
     pub(crate) fn define_label(&mut self, index: usize, at: Location) -> Result<()> {
         let symbol = &mut self.symbols[index];
-        if symbol.section != SHN_UNDEF {
+        if symbol.section != SHN_UNDEF || symbol.alias.is_some() {
             return Err(at.error("duplicate label"));
         }
         let section = &self.sections[self.current];
@@ -169,6 +184,44 @@ impl Object {
         symbol.value = section.size;
         if symbol.kind == STT_NOTYPE && section.flags & SHF_TLS != 0 {
             symbol.kind = STT_TLS;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn define_alias(&mut self, index: usize, target: usize, at: Location) -> Result<()> {
+        let symbol = &mut self.symbols[index];
+        if symbol.section != SHN_UNDEF || symbol.alias.is_some() {
+            return Err(at.error("duplicate label"));
+        }
+        symbol.alias = Some((target, at));
+        Ok(())
+    }
+
+    fn resolve_aliases(&mut self) -> Result<()> {
+        let mut chain = Vec::new();
+        for start in 0..self.symbols.len() {
+            let Some((_, at)) = self.symbols[start].alias else {
+                continue;
+            };
+            let mut current = start;
+            // Consuming links keeps each alias linear in the number of
+            // symbols. An undefined terminal is either missing or cyclic.
+            while let Some((target, _)) = self.symbols[current].alias.take() {
+                chain.push(current);
+                current = target;
+            }
+            let target = &self.symbols[current];
+            if target.section == SHN_UNDEF {
+                return Err(at.error("alias requires a defined target and must not form a cycle"));
+            }
+            let (section, value, size, kind) = (target.section, target.value, target.size, target.kind);
+            for index in chain.drain(..) {
+                let alias = &mut self.symbols[index];
+                alias.section = section;
+                alias.value = value;
+                alias.size = size;
+                alias.kind = kind;
+            }
         }
         Ok(())
     }
@@ -357,10 +410,11 @@ impl Object {
                 at,
             } = *reference;
             let target = &self.symbols[symbol];
-            if target.section == SHN_UNDEF && !target.global {
+            if target.section == SHN_UNDEF && target.binding == STB_LOCAL {
                 return Err(at.error("undefined label in symbol expression"));
             }
-            let same_section = usize::from(target.section) == section + 1;
+            let same_section = target.binding != STB_WEAK
+                && usize::from(target.section) == section + 1;
             let contents = &mut self.sections[section];
             let (kind, addend) = match kind {
                 ReferenceKind::X86 { kind, next_ip } => {
@@ -459,6 +513,7 @@ impl Object {
                     section: section as u16 + 1,
                     kind: STT_NOTYPE,
                     binding: STB_LOCAL,
+                    other: 0,
                     value,
                     size: 0,
                 }),
@@ -466,7 +521,7 @@ impl Object {
         for symbol in &self.symbols {
             let size_at = symbol.size_at.unwrap_or(symbol.first_use);
             if symbol.section == SHN_UNDEF {
-                if !symbol.global {
+                if symbol.binding == STB_LOCAL {
                     return Err(symbol.first_use.error("undefined local symbol"));
                 }
                 if symbol.size != 0 {
@@ -487,7 +542,8 @@ impl Object {
                 name: symbol.name.as_bytes(),
                 section: symbol.section,
                 kind: symbol.kind,
-                binding: if symbol.global { STB_GLOBAL } else { STB_LOCAL },
+                binding: symbol.binding,
+                other: symbol.visibility,
                 value: symbol.value,
                 size: symbol.size,
             });
@@ -496,8 +552,9 @@ impl Object {
     }
 
     pub(crate) fn finish(mut self) -> Result<Vec<u8>> {
-        self.resolve_references()?;
         self.resolve_sizes()?;
+        self.resolve_aliases()?;
+        self.resolve_references()?;
         let symbols = self.object_symbols()?;
         let sections: Vec<_> = self
             .sections

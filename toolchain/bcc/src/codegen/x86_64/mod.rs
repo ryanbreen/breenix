@@ -37,6 +37,7 @@ pub(super) fn emit(unit: &TranslationUnit<'_>, optimize: bool) -> Result<String,
         }
     }
 
+    let mut custom_data = String::new();
     let mut emitter = Emitter {
         functions,
         records: &unit.records,
@@ -59,6 +60,7 @@ pub(super) fn emit(unit: &TranslationUnit<'_>, optimize: bool) -> Result<String,
             .static_objects
             .iter()
             .map(|def| def.object.name)
+            .chain(unit.aliases.keys().copied())
             .collect(),
         tdata: String::new(),
         tbss: String::new(),
@@ -68,6 +70,7 @@ pub(super) fn emit(unit: &TranslationUnit<'_>, optimize: bool) -> Result<String,
             .thread_objects
             .iter()
             .map(|thread| thread.object.name)
+            .chain(unit.aliases.keys().copied())
             .collect(),
         text: String::from("section .text\n"),
         rodata: String::new(),
@@ -92,36 +95,54 @@ pub(super) fn emit(unit: &TranslationUnit<'_>, optimize: bool) -> Result<String,
         emitter.initialized_data.push_str(&data);
     }
     for definition in &unit.static_objects {
+        let object = &definition.object;
+        let section = unit.symbol_attributes.get(object.name).and_then(|attrs| attrs.section.as_deref());
         let data = emitter.object_definition(
-            &definition.object,
-            definition.object.name,
+            object,
+            object.name,
             definition.linkage,
             definition.initializer.as_ref(),
             false,
         )?;
-        if definition.initializer.is_some() {
+        if let Some(section) = section {
+            super::object_section(&mut custom_data, section, object, false);
+            custom_data.push_str(&data);
+        } else if definition.initializer.is_some() {
             emitter.initialized_data.push_str(&data);
         } else {
             emitter.data.push_str(&data);
         }
     }
     for thread in &unit.thread_objects {
-        emitter.thread_definition(
-            &thread.object,
-            thread.object.name,
-            thread.linkage,
-            thread.initializer.as_ref(),
-        )?;
+        let object = &thread.object;
+        if let Some(section) = unit.symbol_attributes.get(object.name).and_then(|attrs| attrs.section.as_deref()) {
+            super::object_section(&mut custom_data, section, object, true);
+            let data = emitter.object_definition(
+                object, object.name, thread.linkage, thread.initializer.as_ref(), true,
+            )?;
+            custom_data.push_str(&data);
+        } else {
+            emitter.thread_definition(
+                object, object.name, thread.linkage, thread.initializer.as_ref(),
+            )?;
+        }
     }
     for function in &unit.functions {
         if let Some(body) = &function.body {
+            let section = unit.symbol_attributes.get(function.name).and_then(|attrs| attrs.section.as_deref());
+            if let Some(section) = section {
+                super::select_section(&mut emitter.text, section, "ax", "progbits");
+            }
             emitter.function(function, body)?;
+            if section.is_some() {
+                emitter.text.push_str("\n.section .text\n");
+            }
         }
     }
-    for name in emitter.externs {
+    for name in &emitter.externs {
         writeln!(emitter.text, "extern {name}").unwrap();
     }
-    for name in emitter.thread_externs {
+    for name in &emitter.thread_externs {
         writeln!(emitter.text, "extern {name}\n.type {name}, @tls").unwrap();
     }
     if !emitter.rodata.is_empty() {
@@ -142,6 +163,8 @@ pub(super) fn emit(unit: &TranslationUnit<'_>, optimize: bool) -> Result<String,
             emitter.text.push_str(&data);
         }
     }
+    emitter.text.push_str(&custom_data);
+    super::emit_symbol_attributes(&mut emitter.text, unit, &emitter.externs, &emitter.thread_externs);
     Ok(emitter.text)
 }
 

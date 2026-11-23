@@ -17,6 +17,7 @@ pub struct RelSection<'a> {
 
 /// A symbol with a one-based section index or a special SHN_* value.
 pub struct RelSymbol<'a> {
+    pub other: u8,
     pub name: &'a [u8],
     pub section: u16,
     pub kind: u8,
@@ -163,7 +164,7 @@ pub fn write_rel(
             name: symbol.name,
             binding: symbol.binding,
             kind: symbol.kind,
-            other: 0,
+            other: symbol.other,
             section: symbol.section,
             value: symbol.value,
             size: symbol.size,

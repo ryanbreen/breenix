@@ -54,7 +54,7 @@ edition pin whose full publication has no digest recorded here.
 | [GCC Code Gen Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Code-Gen-Options.html) | GCC 16.2.0 manual, 2026-08-07, 46930 bytes, unwind table options | `163e1cb6c36175ef9bac620811850bc0df34d7f0941be517647536c3c94bb253` |
 | [GCC Directory Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Directory-Options.html) | GCC 16.2.0 manual, 2026-08-07, 21327 bytes, include search | `4b8877054b41d2ca1b02276f5006d8cdffb43c241deb4a1196bfc1111bdecaa5` |
 | [GCC Overall Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Overall-Options.html) | GCC 16.2.0 manual, 2026-08-07, 48576 bytes, compilation stages and output paths | `0cad1ca693e3c992e0f35d890753c9e591d91a21ebeb8f8b65734a5a85b49ad0` |
-| [GCC Common Attributes](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Common-Attributes.html) | GCC 16.2.0 manual, 2026-08-07, 209636 bytes. E25 ruling 37 and 25.10 cover `packed`, `aligned`, `noreturn` and `returns_twice`. | `ab4a0dcc40060e309f2d126d3bbd8a10b2d596084d32371b8642d76b33e0d33f` |
+| [GCC Common Attributes](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Common-Attributes.html) | GCC 16.2.0 manual, 2026-08-07, 209636 bytes. E25 ruling 37 and 25.10 cover `packed`, `aligned`, `noreturn` and `returns_twice`. 25.11b uses the function, variable and type attributes below. | `ab4a0dcc40060e309f2d126d3bbd8a10b2d596084d32371b8642d76b33e0d33f` |
 | [NASM manual](https://www.nasm.us/xdoc/3.02/nasmdoc.pdf) | NASM 3.02, reserved for 25.12 | `a4d1766c9d640663569bcf93feac0657732fe52017002f1dbc797353f6aed34f` |
 | [GNU ld manual](https://sourceware.org/binutils/docs-2.45/ld.html) | GNU Binutils 2.45, command-line options and linker script syntax | `f219c3b05e197308c5b60fc2d4dbfc302617389ca5c21501de58a90b3d052e06` |
 | [Oracle Solaris `ar(3HEAD)`](https://docs.oracle.com/cd/E86824_01/html/E54772/ar.h-3head.html) | Oracle Solaris 11.3, archive file format | — |
@@ -587,3 +587,25 @@ emitter saves live R8 and R9 values before loading outgoing arguments and
 reloads them after the call. The prologue saves each allocated RBX or
 R12–R14, and the epilogue restores it. R15 remains the aligned-frame
 anchor.
+
+
+### 25.11b GNU declaration attributes
+
+`section`, `weak`, `visibility` and `alias` use the pinned GNU Common
+Attributes page and ELF gABI §§3, 5 and 6. bcc preserves these attributes
+across file-scope redeclarations. bas writes the requested section,
+`STB_WEAK` and `st_other`, and defines aliases at the target's section and
+value with its type and size. A reference to a weak symbol remains
+relocatable so the linker can choose a stronger definition.
+
+`may_alias` permits access through a pointer to an annotated type without
+the N1570 §6.5p7 effective-type restriction. Its layout and C type
+compatibility are unchanged. The optimizer limits value reuse to
+non-escaping local objects and performs no type-based alias analysis.
+
+`used` is satisfied by bcc's existing emission of unreferenced definitions.
+`unused`, `format`, `deprecated` and `warn_unused_result` are recognized
+declaration syntax. bcc has no corresponding use-site warnings today.
+`noinline`, `always_inline`, `const`, `pure`, `malloc` and `cold` are
+recognized function attributes. The current pipeline leaves calls in place
+and performs no attribute-driven inlining, call elimination or cold layout.

@@ -15,7 +15,16 @@ accepts `//`. The initial section is `.text`, where instructions go.
   by default and can have names like `.Lloop`. Use `global NAME` anywhere to
   give a symbol global binding. A global declaration without a definition
   produces an undefined ELF symbol. `extern NAME` also declares a global
-  symbol for references resolved at link time.
+  symbol for references resolved at link time. `.weak NAME` requests weak
+  binding for a definition or reference. `.internal`, `.hidden` and
+  `.protected NAME` set the ELF visibility (gABI §5.4).
+- `.section "NAME", FLAGS, @TYPE` selects a named section with explicit ELF
+  attributes. Use `a` for allocated data, `aw` for writable data, `ax` for
+  executable code or `awT` for thread-local data. The type is `progbits`
+  or `nobits`. Repeated explicit selections must agree.
+- `.alias NAME, TARGET` defines an additional symbol at the target's section
+  and offset, with the target's type and size. The alias carries its own
+  binding and visibility. The target must resolve to a label in the object.
 - `mov` supports 8-, 16-, 32- and 64-bit GPR pairs and GPR loads and stores.
   A register implies the memory width. Write `byte`, `word`, `dword` or
   `qword` before the address to make that width explicit. An optional `ptr`
@@ -45,7 +54,7 @@ accepts `//`. The initial section is `.text`, where instructions go.
   and `\xHH`.
 - `.zero COUNT` fills `COUNT` bytes with `0x00`. `align BYTES[, FILL]` aligns
   to a positive power of two and raises the section's ELF alignment.
-  The default fill is `0x90` in x86-64 `.text` and `0x00` elsewhere. For `.bss` and
+  The default fill is `0x90` in executable x86-64 sections and `0x00` elsewhere. For `.bss` and
   `.tbss`, use a fill of `0x00`. They record their sizes as `SHT_NOBITS`. <!-- claim-lint:ok: toolchain/tests/bas/run.py checks the .zero directive and NOBITS layout. -->
 - `.type NAME, @function`, `@object`, `@tls` or `@notype` sets the ELF symbol type.
   `.size NAME, SIZE` accepts a nonnegative integer or a difference between

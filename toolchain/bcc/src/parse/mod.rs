@@ -7,6 +7,7 @@ use crate::pp::{Diagnostic, Kind, Lexeme, Location, Position, Preprocessed, Stan
 use crate::types::{amd64_va_list, Integer, Kind as TypeKind, Qualifiers, Record, Type};
 
 mod attribute;
+pub(crate) use attribute::SymbolAttributes;
 mod declaration;
 mod specifiers;
 
@@ -23,7 +24,7 @@ pub(super) enum Storage {
     Register,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct DeclStorage {
     class: Storage,
     thread_local: bool,
@@ -33,6 +34,9 @@ struct DeclStorage {
     noreturn: bool,
     inline: bool,
     anonymous_record: bool,
+    may_alias: bool,
+    function_hint: Option<&'static str>,
+    symbol: SymbolAttributes,
 }
 
 #[derive(Debug)]
@@ -58,6 +62,7 @@ pub(super) struct Variable<'a> {
     pub thread_local: bool,
     pub alignment: Option<usize>,
     pub initializer: Option<Initializer<'a>>,
+    pub symbol: SymbolAttributes,
 }
 
 #[derive(Clone, Debug)]
@@ -90,6 +95,7 @@ pub(super) struct Function<'a> {
     pub returns_twice: bool,
     pub storage: Storage,
     pub body: Option<Vec<Statement<'a>>>,
+    pub symbol: SymbolAttributes,
 }
 
 #[derive(Debug)]
@@ -485,6 +491,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     | "__inline"
                     | "__inline__"
                     | "__attribute__"
+                    | "__attribute"
                     | "_Thread_local"
                     | "_Alignas"
                     | "_Noreturn"

@@ -189,7 +189,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             if self.eat("__extension__").is_some() || self.qualifier(&mut specs.qualifiers) {
                 continue;
             }
-            if token.is("__attribute__") {
+            if matches!(token.text.as_ref(), "__attribute__" | "__attribute") {
                 for (site, attribute) in self.attributes(depth)? {
                     specs.storage.apply_attribute(site, attribute)?;
                 }
@@ -263,6 +263,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     specs.qualifiers.volatile |= ty.qualifiers.volatile;
                     specs.qualifiers.atomic |= ty.qualifiers.atomic;
                     specs.qualifiers.restricted |= ty.qualifiers.restricted;
+                    specs.qualifiers.may_alias |= ty.qualifiers.may_alias;
                     specs.named = Some(ty);
                     continue;
                 }
@@ -350,6 +351,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     members,
                     end: None,
                     has_const_member: false,
+                    may_alias: false,
                 }),
             });
             self.va_list_record = Some(id);

@@ -6,12 +6,24 @@ use crate::pp::{Lexeme, Target};
 mod float;
 pub(crate) use float::{floor_log10_pow2, FloatFormat};
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq)]
 pub struct Qualifiers {
     pub constant: bool,
     pub volatile: bool,
     pub atomic: bool,
     pub restricted: bool,
+    // GNU may_alias affects access through a pointer to this type. It
+    // does not qualify the C type for compatibility or change its layout.
+    pub may_alias: bool,
+}
+
+impl PartialEq for Qualifiers {
+    fn eq(&self, other: &Self) -> bool {
+        self.constant == other.constant
+            && self.volatile == other.volatile
+            && self.atomic == other.atomic
+            && self.restricted == other.restricted
+    }
 }
 
 impl Qualifiers {
@@ -123,6 +135,7 @@ pub struct RecordDefinition<'a> {
     pub members: Vec<Member<'a>>,
     pub(crate) end: Option<&'a Lexeme>,
     pub(crate) has_const_member: bool,
+    pub(crate) may_alias: bool,
 }
 
 impl RecordDefinition<'_> {
@@ -306,7 +319,9 @@ impl Type {
     }
 
     pub(crate) fn unqualified(&self) -> Self {
-        Self::new(self.kind.clone())
+        let mut ty = Self::new(self.kind.clone());
+        ty.qualifiers.may_alias = self.qualifiers.may_alias;
+        ty
     }
 
     // Atomic and ordinary objects have distinct types (N1570 6.2.6.1p9).
@@ -403,6 +418,7 @@ impl Type {
         } else {
             self.qualifiers.constant |= qualifiers.constant;
             self.qualifiers.volatile |= qualifiers.volatile;
+            self.qualifiers.may_alias |= qualifiers.may_alias;
         }
     }
 

@@ -1,8 +1,8 @@
 //! Typed translation units for the hello subset of N1570.
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
-use crate::parse::{self, Storage};
+use crate::parse::{self, Storage, SymbolAttributes};
 use crate::pp::{self, Diagnostic, Lexeme, Position, Preprocessed, Standard, Target};
 use crate::types::{BitField, Float, Integer, Kind, Record, Type};
 pub use parse::{Binary, Unary};
@@ -31,6 +31,8 @@ pub struct TranslationUnit<'a> {
     pub static_literals: Vec<StaticLiteral<'a>>,
     pub thread_objects: Vec<ThreadObject<'a>>,
     pub records: Vec<Record<'a>>,
+    pub(crate) symbol_attributes: BTreeMap<&'a str, SymbolAttributes>,
+    pub(crate) aliases: BTreeMap<&'a str, Linkage>,
     rounding_math: bool,
 }
 
@@ -363,6 +365,8 @@ pub(crate) fn analyze_with_rounding_math<'a>(
 ) -> Result<TranslationUnit<'a>, Diagnostic> {
     let standard = source.standard;
     let mut symbols = HashMap::new();
+    let mut symbol_attributes = BTreeMap::<&str, SymbolAttributes>::new();
+    let mut attribute_sites = HashMap::new();
     let mut functions = Vec::new();
     let mut objects = Vec::new();
     let mut static_objects = Vec::new();
@@ -413,9 +417,21 @@ pub(crate) fn analyze_with_rounding_math<'a>(
                 );
                 context.static_assertion(assertion)?;
             }
-            parse::Declaration::Function(declaration) => {
+            parse::Declaration::Function(mut declaration) => {
+                let site = declaration.name;
+                let key = site.text.as_ref();
+                let attributes = std::mem::take(&mut declaration.symbol);
+                let alias = attributes.alias.is_some();
+                if attributes != SymbolAttributes::default() {
+                    attribute_sites.insert(key, site);
+                    symbol_attributes.entry(key).or_default().merge(attributes, site)?;
+                }
+                if alias && declaration.body.is_some() {
+                    return Err(site.error("function alias cannot have a body"));
+                }
                 functions.push(function(
                     declaration,
+                    alias,
                     &mut symbols,
                     target,
                     standard,
@@ -427,6 +443,15 @@ pub(crate) fn analyze_with_rounding_math<'a>(
                 let name = variable.name;
                 let key = name.text.as_ref();
                 let previous = symbols.get(key);
+                let alias = variable.symbol.alias.is_some();
+                if variable.symbol != SymbolAttributes::default() {
+                    attribute_sites.insert(key, name);
+                    symbol_attributes.entry(key).or_default()
+                        .merge(std::mem::take(&mut variable.symbol), name)?;
+                }
+                if alias && (variable.initializer.is_some() || variable.storage != Storage::Extern) {
+                    return Err(name.error("object alias requires extern with no initializer"));
+                }
                 let explicit = variable.initializer.is_some();
                 let definition = explicit || variable.storage != Storage::Extern;
                 let alignment = variable.alignment.filter(|&align| align != 0);
@@ -480,7 +505,7 @@ pub(crate) fn analyze_with_rounding_math<'a>(
                         Symbol {
                             ty: variable.ty.clone(),
                             linkage,
-                            defined,
+                            defined: defined || alias || previous.is_some_and(|symbol| symbol.defined),
                             thread_local: true,
                             alignment: alignment.or(previous.and_then(|prior| prior.alignment)),
                             noreturn: false,
@@ -509,7 +534,7 @@ pub(crate) fn analyze_with_rounding_math<'a>(
                         }
                         thread::merge_types(&mut variable.ty, &symbol.ty)
                             .ok_or_else(|| name.error("incompatible redeclaration"))?;
-                        if explicit && symbol.defined {
+                        if (explicit || alias) && symbol.defined {
                             return Err(name.error("object already defined"));
                         }
                     }
@@ -522,7 +547,7 @@ pub(crate) fn analyze_with_rounding_math<'a>(
                             ty: variable.ty.clone(),
                             linkage,
                             thread_local: false,
-                            defined: explicit || previous.is_some_and(|symbol| symbol.defined),
+                            defined: explicit || alias || previous.is_some_and(|symbol| symbol.defined),
                             alignment: alignment.or(previous.and_then(|prior| prior.alignment)),
                             noreturn: false,
                             returns_twice: false,
@@ -567,6 +592,9 @@ pub(crate) fn analyze_with_rounding_math<'a>(
         }
     }
     for (key, site) in tentative {
+        if symbol_attributes.get(key).is_some_and(|attrs| attrs.alias.is_some()) {
+            return Err(site.error("object alias cannot have a tentative definition"));
+        }
         let symbol = symbols.get_mut(key).unwrap();
         if symbol.defined {
             continue;
@@ -606,6 +634,7 @@ pub(crate) fn analyze_with_rounding_math<'a>(
             .resolve_records(&|id| records[id].definition.as_ref().map(|d| d.layout));
         thread::check_layout(&thread.object.ty, thread.object.site)?;
     }
+    let aliases = validate_symbol_attributes(&symbol_attributes, &attribute_sites, &symbols)?;
     Ok(TranslationUnit {
         functions,
         objects,
@@ -613,8 +642,49 @@ pub(crate) fn analyze_with_rounding_math<'a>(
         static_literals,
         thread_objects: thread_objects.definitions,
         records,
+        symbol_attributes,
+        aliases,
         rounding_math,
     })
+}
+
+// GNU Common Attributes: aliases denote definitions in this translation
+// unit and share the target's type and storage. gABI §§5.2–5.4 supply
+// external linkage for weak binding and non-default visibility.
+fn validate_symbol_attributes<'a>(
+    attributes: &BTreeMap<&'a str, SymbolAttributes>,
+    sites: &HashMap<&str, &Lexeme>,
+    symbols: &HashMap<&str, Symbol>,
+) -> Result<BTreeMap<&'a str, Linkage>, Diagnostic> {
+    let mut aliases = BTreeMap::new();
+    for (&name, attrs) in attributes {
+        let symbol = &symbols[name];
+        let site = sites[name];
+        if symbol.linkage == Linkage::Internal && (attrs.weak || attrs.visibility.is_some()) {
+            return Err(site.error("weak and visibility attributes require external linkage"));
+        }
+        let Some(target) = &attrs.alias else {
+            continue;
+        };
+        if attrs.section.is_some() {
+            return Err(site.error("an alias takes its section from its target"));
+        }
+        let target_symbol = symbols.get(target.as_str()).filter(|symbol| symbol.defined)
+            .ok_or_else(|| site.error(format!("alias target '{target}' is not defined in this translation unit")))?;
+        if symbol.thread_local != target_symbol.thread_local || !symbol.ty.compatible(&target_symbol.ty) {
+            return Err(site.error(format!("alias target '{target}' has an incompatible type")));
+        }
+        let mut current = target.as_str();
+        let mut seen = HashSet::from([name]);
+        while let Some(next) = attributes.get(current).and_then(|attrs| attrs.alias.as_deref()) {
+            if !seen.insert(current) {
+                return Err(site.error("alias cycle"));
+            }
+            current = next;
+        }
+        aliases.insert(name, symbol.linkage);
+    }
+    Ok(aliases)
 }
 
 struct RecordScope<'a, 'r> {
@@ -735,6 +805,7 @@ pub(super) fn typeof_expression<'a>(
 
 fn function<'a>(
     declaration: parse::Function<'a>,
+    alias: bool,
     symbols: &mut HashMap<&'a str, Symbol>,
     target: Target,
     standard: Standard,
@@ -751,6 +822,7 @@ fn function<'a>(
         returns_twice,
         storage,
         body,
+        ..
     } = declaration;
     let defined = body.is_some();
     if defined && matches!(result.kind, Kind::Record(record) if record.layout.is_none()) {
@@ -814,7 +886,7 @@ fn function<'a>(
         {
             return Err(name.error("incompatible redeclaration"));
         }
-        if symbol.defined && defined {
+        if symbol.defined && (defined || alias) {
             return Err(name.error("function already defined"));
         }
     }
@@ -829,7 +901,7 @@ fn function<'a>(
         Symbol {
             ty: visible_type,
             linkage,
-            defined: defined || previous.is_some_and(|s| s.defined),
+            defined: defined || alias || previous.is_some_and(|s| s.defined),
             thread_local: false,
             alignment: None,
             noreturn,
@@ -1513,6 +1585,7 @@ fn compatible_pointer(
                         volatile: a.qualifiers.volatile || b.qualifiers.volatile,
                         atomic: a.qualifiers.atomic && b.qualifiers.atomic,
                         restricted: a.qualifiers.restricted || b.qualifiers.restricted,
+                        may_alias: a.qualifiers.may_alias || b.qualifiers.may_alias,
                     },
                 }
                 .pointer_to(),

@@ -405,6 +405,18 @@ impl<'src> Emitter<'_, 'src> {
         linkage: Linkage,
         initializer: Option<&ThreadInitializer<'src>>,
     ) -> Result<(), Diagnostic> {
+        let data = self.object_data(object, name, linkage, initializer)?;
+        self.push_object_data(initializer.is_some(), &data);
+        Ok(())
+    }
+
+    pub(super) fn object_data(
+        &mut self,
+        object: &Object<'_>,
+        name: &str,
+        linkage: Linkage,
+        initializer: Option<&ThreadInitializer<'src>>,
+    ) -> Result<String, Diagnostic> {
         check_symbol(name, object.site)?;
         let layout = object.layout().unwrap();
         let mut data = String::new();
@@ -419,12 +431,15 @@ impl<'src> Emitter<'_, 'src> {
         .unwrap();
         self.emit_initializer(&mut data, initializer, layout.size)?;
         writeln!(data, ".size {name}, {}", layout.size).unwrap();
-        if initializer.is_some() {
-            self.data.push_str(&data);
+        Ok(data)
+    }
+
+    pub(super) fn push_object_data(&mut self, initialized: bool, data: &str) {
+        if initialized {
+            self.data.push_str(data);
         } else {
-            self.bss.push_str(&data);
+            self.bss.push_str(data);
         }
-        Ok(())
     }
 
     // N1570 6.6p7,9 and 6.7.9p4: static and TLS initializers both

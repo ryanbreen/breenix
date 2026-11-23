@@ -97,6 +97,7 @@ fn object(machine: u16, text_relocs: &[Rela], data_relocs: &[Rela]) -> Vec<u8> {
         ],
         &[
             RelSymbol {
+                other: 0,
                 name: b"_start",
                 section: 1,
                 kind: STT_FUNC,
@@ -105,6 +106,7 @@ fn object(machine: u16, text_relocs: &[Rela], data_relocs: &[Rela]) -> Vec<u8> {
                 size: text.len() as u64,
             },
             RelSymbol {
+                other: 0,
                 name: b"target",
                 section: 2,
                 kind: STT_OBJECT,
@@ -380,6 +382,7 @@ fn aarch64_tprel_is_tcb_plus_template_offset() {
             ],
             &[
                 RelSymbol {
+                    other: 0,
                     name: b"_start",
                     section: 1,
                     kind: STT_FUNC,
@@ -388,6 +391,7 @@ fn aarch64_tprel_is_tcb_plus_template_offset() {
                     size: text.len() as u64,
                 },
                 RelSymbol {
+                    other: 0,
                     name: b"tls_var",
                     section: 3,
                     kind: STT_TLS,
@@ -485,6 +489,7 @@ fn aarch64_got_slot_holds_symbol_address() {
         ],
         &[
             RelSymbol {
+                other: 0,
                 name: b"_start",
                 section: 1,
                 kind: STT_FUNC,
@@ -493,6 +498,7 @@ fn aarch64_got_slot_holds_symbol_address() {
                 size: text.len() as u64,
             },
             RelSymbol {
+                other: 0,
                 name: b"target",
                 section: 2,
                 kind: STT_OBJECT,
@@ -535,6 +541,7 @@ fn branch_object(code: &[u32], relocations: &[Rela], target_section: u16, target
         &[code_section(&text, relocations)],
         &[
             RelSymbol {
+                other: 0,
                 name: b"_start",
                 section: 1,
                 kind: STT_FUNC,
@@ -543,6 +550,7 @@ fn branch_object(code: &[u32], relocations: &[Rela], target_section: u16, target
                 size: text.len() as u64,
             },
             RelSymbol {
+                other: 0,
                 name: b"target",
                 section: target_section,
                 kind: STT_FUNC,

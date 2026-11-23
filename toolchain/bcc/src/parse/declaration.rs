@@ -173,6 +173,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 returns_twice: storage.returns_twice,
                 storage: storage.class,
                 body,
+                symbol: storage.symbol,
             })]);
         }
         self.variables(base, storage, signed, first)
@@ -200,7 +201,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         loop {
             let name = declarator.name.unwrap();
             let mut ty = declarator.ty(base.clone(), name, &self.records)?;
-            let mut storage = storage;
+            let mut storage = storage.clone();
             for (site, attribute) in self.attributes(0)? {
                 if let Attribute::VectorSize(bytes) = attribute {
                     let TypeKind::Float(element) = ty.kind else {
@@ -214,7 +215,13 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     storage.apply_attribute(site, attribute)?;
                 }
             }
+            if storage.may_alias {
+                ty.qualifiers.may_alias = true;
+            }
             storage.check(name, &ty)?;
+            if self.in_function && storage.symbol != SymbolAttributes::default() {
+                return Err(name.error("ELF symbol attributes require a file-scope declaration"));
+            }
             if declarator.modifiers.iter().any(|modifier| {
                 matches!(modifier, Modifier::Function(params)
                     if params.identifiers.as_ref().is_some_and(|names| !names.is_empty()))
@@ -255,6 +262,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     thread_local: storage.thread_local,
                     alignment,
                     initializer,
+                    symbol: storage.symbol,
                 });
             }
             if self.eat(",").is_none() {
@@ -467,9 +475,12 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             let start = self
                 .peek()
                 .ok_or_else(|| self.error("expected a parameter type"))?;
-            let (base, storage, _) = self.specifiers_at_depth(true, depth)?;
-            storage.check_parameter(start)?;
+            let (base, mut storage, _) = self.specifiers_at_depth(true, depth)?;
             let declarator = self.declarator(true, depth)?;
+            for (site, attribute) in self.attributes(depth)? {
+                storage.apply_attribute(site, attribute)?;
+            }
+            storage.check_parameter(start)?;
             let ty = declarator.ty(base, start, &self.records)?;
             let name = declarator.name;
             if ty.kind == TypeKind::Void
@@ -743,8 +754,11 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             }
             self.records[id].definition = Some(definition);
         }
-        let layout = self.records[id].definition.as_ref().map(|def| def.layout);
-        Ok(Type::new(TypeKind::Record(RecordType { id, layout })))
+        let definition = self.records[id].definition.as_ref();
+        let layout = definition.map(|def| def.layout);
+        let mut ty = Type::new(TypeKind::Record(RecordType { id, layout }));
+        ty.qualifiers.may_alias = definition.is_some_and(|def| def.may_alias);
+        Ok(ty)
     }
 
     fn record_definition(
@@ -812,6 +826,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     match attribute {
                         Attribute::Aligned(value) => alignment = alignment.max(value),
                         Attribute::Packed => packed = true,
+                        Attribute::Unused | Attribute::Deprecated => {}
                         _ => return Err(site.error("attribute does not apply to a record member")),
                     }
                 }
@@ -871,14 +886,19 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         attributes.extend(self.attributes(depth)?);
         let mut packed = false;
         let mut alignment = 1;
+        let mut may_alias = false;
         for (site, attribute) in attributes {
             match attribute {
                 Attribute::Aligned(value) => alignment = alignment.max(value),
                 Attribute::Packed => packed = true,
+                Attribute::MayAlias => may_alias = true,
+                Attribute::Unused | Attribute::Deprecated => {}
                 _ => return Err(site.error("attribute does not apply to a record type")),
             }
         }
-        self.layout_record(kind, (packed, alignment), fields, open, end)
+        let mut definition = self.layout_record(kind, (packed, alignment), fields, open, end)?;
+        definition.may_alias = may_alias;
+        Ok(definition)
     }
 
     fn add_anonymous_member_names(
@@ -1028,6 +1048,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             members,
             end: Some(end),
             has_const_member,
+            may_alias: false,
         })
     }
 
@@ -1075,8 +1096,21 @@ impl DeclStorage {
         Ok(())
     }
 
-    fn check(self, site: &Lexeme, ty: &Type) -> Result<(), Diagnostic> {
+    fn check(&self, site: &Lexeme, ty: &Type) -> Result<(), Diagnostic> {
         let function = matches!(ty.kind, TypeKind::Function { .. });
+        let function_pointer = matches!(&ty.kind, TypeKind::Pointer(inner)
+            if matches!(inner.kind, TypeKind::Function { .. }));
+        if let Some(attribute) = self.function_hint {
+            if !(function || attribute == "format" && function_pointer) {
+                return Err(site.error(format!("{attribute} requires a function declaration")));
+            }
+        }
+        if self.may_alias && function {
+            return Err(site.error("may_alias requires an object type"));
+        }
+        if self.symbol != SymbolAttributes::default() && self.class == Storage::Typedef {
+            return Err(site.error("ELF symbol attributes require a function or object declaration"));
+        }
         if self.thread_local && function {
             return Err(site.error("a function cannot be _Thread_local"));
         }
@@ -1107,7 +1141,7 @@ impl DeclStorage {
         Ok(())
     }
 
-    fn object_alignment(self, ty: &Type) -> Option<usize> {
+    fn object_alignment(&self, ty: &Type) -> Option<usize> {
         if self.gnu_alignment == 0 {
             self.alignment
         } else {
@@ -1116,7 +1150,7 @@ impl DeclStorage {
         }
     }
 
-    fn check_parameter(self, site: &Lexeme) -> Result<(), Diagnostic> {
+    fn check_parameter(&self, site: &Lexeme) -> Result<(), Diagnostic> {
         if self.thread_local {
             return Err(site.error("_Thread_local requires an object declaration"));
         }
@@ -1126,6 +1160,8 @@ impl DeclStorage {
             || self.returns_twice
             || self.noreturn
             || self.inline
+            || self.function_hint.is_some()
+            || self.symbol != SymbolAttributes::default()
         {
             return Err(site.error("invalid declaration specifier for a parameter"));
         }
