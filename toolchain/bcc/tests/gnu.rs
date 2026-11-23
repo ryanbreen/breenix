@@ -220,3 +220,13 @@ fn gnu_wide_enum_and_pointer_assignment() {
 fn gnu_static_null_record_offset() {
     check_on_both_targets("gnu_static_null_record_offset");
 }
+
+#[test]
+fn alloca_is_builtin_in_gnu_mode() {
+    check("alloca_is_builtin_in_gnu_mode");
+}
+
+#[test]
+fn alloca_external_under_strict_iso() {
+    check("alloca_external_under_strict_iso");
+}

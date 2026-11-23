@@ -27,3 +27,21 @@ fn refuses_digest_mismatch() {
 fn mac_hosted_build_lists_same_applets() {
     run("mac_hosted_build_lists_same_applets");
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn phases_chain_from_predecessor_hashes() {
+    run("phases_chain_from_predecessor_hashes");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn phase_refuses_missing_or_altered_predecessor() {
+    run("phase_refuses_missing_or_altered_predecessor");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn object_group_chain_equals_directory_goal() {
+    run("object_group_chain_equals_directory_goal");
+}

@@ -2118,3 +2118,33 @@ fn arm_selection_unchanged() {
     let source = fs::read_to_string(repo_root().join("userspace/programs/src/fixture/toolchain-cc-cases-aarch64")).unwrap();
     assert_eq!(source.lines().count(), 30);
 }
+
+#[test]
+fn toolchain_manifest_registers_busybox_chain() {
+    let root = repo_root();
+    let mut errors = Vec::new();
+    let manifest = read_manifest(&root.join("docs/suites/toolchain.json"), &mut errors).unwrap();
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+    let (_, files) = suite_files(&root, "toolchain").unwrap();
+    let (_, guest) = source_suite_files(&files).unwrap();
+    for (id, expected) in [
+        ("gnu-workloads", &["gnu-c-extensions", "gnu-make-features", "kbuild-host-programs"][..]),
+        ("busybox", &[
+            "unpack", "patch", "generators", "configure",
+            "build-libbb-1", "build-libbb-2", "build-libbb-3", "build-libbb-4",
+            "build-applets-1", "build-applets-2", "build-applets-3",
+            "link-and-list", "required-usage",
+        ][..]),
+    ] {
+        let category = manifest.categories.iter().find(|category| category.entry.id == id).unwrap();
+        assert_eq!(category.cases.iter().map(|case| case.id.as_str()).collect::<Vec<_>>(), expected);
+        assert_eq!(guest.iter().find(|category| category.entry.id == id), Some(category));
+    }
+    let make = manifest.categories.iter().find(|category| category.entry.id == "make").unwrap();
+    assert_eq!(
+        make.cases.iter().map(|case| case.id.as_str()).collect::<Vec<_>>(),
+        ["graph-order", "noop-when-current", "suffix-inference", "macro-precedence",
+         "failure-status", "archive-members", "include-remake", "recursive-makeflags"],
+    );
+    assert_eq!(guest.iter().find(|category| category.entry.id == "make"), Some(make));
+}

@@ -2092,6 +2092,20 @@ class DriverTest(StateTest):
         self.assertEqual(boot.mode_deadline_seconds(d.args), 300)
         self.assertEqual(boot.ceiling_seconds(d.args), 900)
 
+    def test_busybox_sizing_and_sequence_deadlines(self):
+        args = self.driver.args
+        args.mode = 'suite'
+        args.milestone = 'toolchain/busybox-on-box'
+        args.suite = 'toolchain'
+        self.assertEqual(boot.mode_deadline_seconds(args), 1969)
+        self.assertGreaterEqual(boot.ceiling_seconds(args), 1969 + 420)
+        args.suite = 'toolchain,libc,utilities'
+        self.assertEqual([boot.mode_deadline_seconds(args, name) for name in args.suite.split(',')],
+                         [1969, 3250, 2425])
+        self.assertGreaterEqual(boot.ceiling_seconds(args), 7644 + 420)
+        args.milestone = 'toolchain/c17-libc-suite'
+        self.assertEqual(boot.mode_deadline_seconds(args), 420)
+
     def test_ui_testing_deadline_ceiling_and_start(self):
         d = self.driver
         d.args.mode, d.args.suite = 'suite', 'ui-testing'
