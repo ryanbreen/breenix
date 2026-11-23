@@ -2090,3 +2090,31 @@ fn toolchain_manifest_registers_c11_cases() {
         Some(category),
     );
 }
+
+#[test]
+fn toolchain_manifest_registers_c17_libc_cases() {
+    let root = repo_root();
+    let mut errors = Vec::new();
+    let manifest = read_manifest(&root.join("docs/suites/toolchain.json"), &mut errors).unwrap();
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+    let (_, files) = suite_files(&root, "toolchain").unwrap();
+    let (_, guest) = source_suite_files(&files).unwrap();
+    let categories = fs::read_to_string(root.join("userspace/libc-suite/categories")).unwrap();
+    let libc: Vec<_> = categories.lines().filter(|line| !line.trim().is_empty() && !line.starts_with('#'))
+        .map(|line| line.split_whitespace().next().unwrap()).collect();
+    for (id, expected) in [("c17", vec!["corrections", "o2-expect", "rounding-math"]), ("libc-suite", libc)] {
+        let category = manifest.categories.iter().find(|category| category.entry.id == id).unwrap();
+        assert_eq!(category.cases.iter().map(|case| case.id.as_str()).collect::<Vec<_>>(), expected);
+        assert_eq!(guest.iter().find(|category| category.entry.id == id), Some(category));
+    }
+}
+
+#[test]
+fn arm_selection_unchanged() {
+    let path: Value = serde_json::from_str(&fs::read_to_string(repo_root().join("docs/efforts/path.json")).unwrap()).unwrap();
+    let effort = path["efforts"].as_array().unwrap().iter().find(|e| e["id"] == "toolchain").unwrap();
+    let c11 = effort["milestones"].as_array().unwrap().iter().find(|m| m["id"] == "c11").unwrap();
+    assert_eq!(c11["measure"]["categories"], serde_json::json!(["c11"]));
+    let source = fs::read_to_string(repo_root().join("userspace/programs/src/fixture/toolchain-cc-cases-aarch64")).unwrap();
+    assert_eq!(source.lines().count(), 30);
+}
