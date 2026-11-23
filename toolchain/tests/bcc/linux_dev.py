@@ -55,7 +55,7 @@ CORPUS = (
     "usual-conversions",
     "varargs",
 )
-ABI_CASES = ("aggregates-exhaustion", "sse-float", "varargs")
+ABI_CASES = ("aggregates-exhaustion", "sse-float", "varargs", "x87-long-double")
 
 
 def reference_object(args, name):
@@ -71,6 +71,7 @@ def run_tool(name, command):
     if result.returncode:
         stderr = result.stderr.decode(errors="replace").strip()
         raise ValueError(f"{name} exited {result.returncode}: {stderr}")
+    return result.stdout
 
 
 def compile_object(args, source, work):
@@ -89,11 +90,11 @@ def assemble(args, assembly, obj):
     run_tool("bas", [args.bas, *target, "-o", obj, assembly])
 
 
-def execute(args, executable, *objects):
+def execute(args, executable, *objects, archives=()):
     run_tool(
         "bld",
         [args.bld, "-T", ROOT / "userspace/programs/linker.ld", "--gc-sections",
-         "-o", executable, *objects, args.runtime],
+         "-o", executable, *objects, *archives, args.runtime],
     )
     return subprocess.run([executable], capture_output=True, timeout=10)
 
@@ -132,12 +133,27 @@ def aapcs64_abi_case(args, work):
         source = fixtures / f"{name}-{half}.c"
         sealed[half], _, _ = reference.compile_c(args.arch, clang, source, (fixtures,), directory)
 
+    binary128 = name == "x87-long-double"
+    allowed_undefined = {
+        "caller": {"bias", "turn", "many", "variadic", "conversions", "puts"},
+        "callee": set(),
+    }
+    helpers = set()
     passed = 0
     for bcc_half, clang_half in (("caller", "callee"), ("callee", "caller")):
         label = f"abi::{name} bcc-{bcc_half}/clang-{clang_half}"
         try:
             obj = compile_object(args, fixtures / f"{name}-{bcc_half}.c", work)
-            actual = execute(args, work / f"bcc-{bcc_half}", obj, sealed[clang_half])
+            if binary128:
+                names = {line.split()[0] for line in run_tool(
+                    "bnm", [args.bnm, "-uP", obj]).decode().splitlines()}
+                runtime = {symbol for symbol in names if symbol.startswith("__brt_tf_")}
+                unexpected = names - allowed_undefined[bcc_half] - runtime
+                if unexpected:
+                    raise ValueError(f"unexpected undefined bcc symbols: {sorted(unexpected)}")
+                helpers.update(runtime)
+            actual = execute(args, work / f"bcc-{bcc_half}", obj, sealed[clang_half],
+                             archives=(args.brt,) if binary128 else ())
             check_output(fixtures / f"{name}.expect", actual, require_empty_stderr=True)
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             print(f"{label} FAIL ({error})", file=sys.stderr)
@@ -146,6 +162,13 @@ def aapcs64_abi_case(args, work):
             passed += 1
     if passed != 2:
         raise ValueError(f"{passed}/2 mixed links matched {name}.expect")
+    if binary128:
+        operations = {"add", "sub", "mul", "div", "cmp"}
+        operations.update(f"{direction}_{kind}" for direction in ("from", "to")
+                          for kind in ("i32", "i64", "u32", "u64", "f32", "f64"))
+        expected = {f"__brt_tf_{operation}" for operation in operations}
+        if helpers != expected:
+            raise ValueError(f"expected {sorted(expected)}, got {sorted(helpers)}")
 
 
 def aapcs64_scalar_calls(args, work):
@@ -180,7 +203,7 @@ def main():
     mode.add_argument("--abi-case", choices=ABI_CASES,
                       help="cross-call with BREENIX_TOOLCHAIN_CLANG and its SHA-256 pin")
     parser.add_argument("--arch", choices=("x86_64", "aarch64"), default="x86_64")
-    for option in ("bld", "runtime", "reference-corpus", "bcc", "bas"):
+    for option in ("bld", "runtime", "reference-corpus", "bcc", "bas", "brt", "bnm"):
         parser.add_argument(f"--{option}", required=option in ("bld", "runtime"),
                             type=lambda path: Path(path).resolve())
     args = parser.parse_args()
@@ -191,6 +214,8 @@ def main():
                      aapcs64_abi_case if args.abi_case else None)
     if aapcs64_check and args.arch != "aarch64":
         parser.error("AAPCS64 checks require --arch aarch64")
+    if args.abi_case == "x87-long-double" and (args.brt is None or args.bnm is None):
+        parser.error("x87-long-double requires --brt built with exports, and --bnm")
     if args.corpus or aapcs64_check:
         if args.bcc is None or args.bas is None:
             parser.error("compiler checks require --bcc and --bas")
