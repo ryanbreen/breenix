@@ -8,7 +8,7 @@ requirements may have additional untested or unimplemented cases.
 
 ## Guest corpus
 
-The toolchain milestone selects the three-producer corpus and six C11 cases on both targets. ARM64 guest acceptance remains pending.
+The toolchain milestone selects the three-producer corpus and six C11 cases on both targets. ARM64 guest acceptance passed (c11 6/6 in boot 20261123T110734Z-qemu-27986), as x86 did in 20261123T083957Z-metal.
 The corpus grew to 30 inputs with alignment, atomics, compound literals,
 designated initializers and generic selection.
 
@@ -93,4 +93,4 @@ header root. bcc currently fails to compile its dependency chain at the
 The conditional threads macro describes support for using the header
 with the compiler in this profile.
 
-The ARM64 floating fixture uses binary128 precision and the same expected output as x86. ARM64 guest execution and acceptance remain open; the host results do not establish guest coverage.
+The ARM64 floating fixture uses binary128 precision and the same expected output as x86. ARM64 guest acceptance passed (c11 6/6 in boot 20261123T110734Z-qemu-27986), as x86 did in 20261123T083957Z-metal.
