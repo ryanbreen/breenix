@@ -162,3 +162,23 @@ fn attribute_section_weak_visibility_in_object() {
 fn may_alias_type_rule() {
     check("may_alias_type_rule");
 }
+
+#[test]
+fn named_variadic_and_comma_deletion() {
+    check("named_variadic_and_comma_deletion");
+}
+
+#[test]
+fn builtins_fold_and_lower() {
+    check("builtins_fold_and_lower");
+}
+
+#[test]
+fn enumerators_use_integer_constant_expressions() {
+    check("enumerators_use_integer_constant_expressions");
+}
+
+#[test]
+fn nostdinc_uses_only_explicit_header_paths() {
+    check("nostdinc_uses_only_explicit_header_paths");
+}

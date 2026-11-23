@@ -1,0 +1,1 @@
+#define WRAPPED_VALUE 42
