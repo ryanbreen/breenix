@@ -83,6 +83,32 @@ impl<'src> Emitter<'_, 'src> {
         Ok(())
     }
 
+    fn inline_asm(&mut self, asm: &crate::sema::InlineAsm<'src>) -> Result<(), Diagnostic> {
+        for (index, operand) in asm.registers.iter().enumerate().filter(|(_, operand)| operand.input) {
+            self.address(&operand.slot)?;
+            let register = crate::sema::asm_register(Target::Aarch64, index, 8);
+            writeln!(self.text, "    ldr {register}, [x0]").unwrap();
+        }
+        writeln!(self.text, "{}", asm.template).unwrap();
+        for (index, operand) in asm.registers.iter().enumerate().filter(|(_, operand)| operand.output) {
+            self.address(&operand.slot)?;
+            let register = crate::sema::asm_register(Target::Aarch64, index, 8);
+            writeln!(self.text, "    str {register}, [x0]").unwrap();
+        }
+        Ok(())
+    }
+
+    fn vla_stack(&mut self, mark: usize, restore: bool) {
+        self.local_address(mark, 0, "x0");
+        let base = self.alloca_base.unwrap();
+        self.offset_address("x9", "x29", -(base as i64));
+        if restore {
+            self.text.push_str("    ldr x10, [x0]\n    mov sp, x10\n    str x10, [x9]\n");
+        } else {
+            self.text.push_str("    ldr x10, [x9]\n    str x10, [x0]\n");
+        }
+    }
+
     fn statement(
         &mut self,
         statement: &Statement<'src>,
@@ -92,6 +118,7 @@ impl<'src> Emitter<'_, 'src> {
         match statement {
             Statement::Block(body) => self.statements(body, result, epilogue)?,
             Statement::Empty => {}
+            Statement::InlineAsm(asm) => self.inline_asm(asm)?,
             Statement::Initialize { local, initializer } => {
                 self.initialize(*local, initializer)?;
             }
@@ -181,7 +208,13 @@ impl<'src> Emitter<'_, 'src> {
                 writeln!(self.text, "{label}:").unwrap();
                 self.statement(body, result, epilogue)?;
             }
-            Statement::Jump(id) => {
+            Statement::SaveVlaStack(mark) => self.vla_stack(*mark, false),
+            Statement::RestoreVlaStack(mark) => self.vla_stack(*mark, true),
+            Statement::Jump(id, scopes) => {
+                let depth = self.vla_targets.get(id).copied().unwrap_or(0);
+                if let Some(&mark) = scopes.get(depth) {
+                    self.vla_stack(mark, true);
+                }
                 let label = self.flow_label(*id);
                 writeln!(self.text, "    b {label}").unwrap();
             }

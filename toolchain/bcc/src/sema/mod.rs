@@ -13,13 +13,17 @@ mod builtins;
 mod c11;
 mod dump;
 mod float;
+mod inline_asm;
 mod thread;
 mod varargs;
+mod vla;
 
 pub(crate) use body::{canonical, constant_integer};
 pub(super) use c11::{check_static_assertion, type_alignment};
 
 pub use atomic::AtomicOp;
+pub use inline_asm::{AsmRegister, InlineAsm};
+pub(crate) use inline_asm::asm_register;
 pub(crate) use atomic::SEQ_CST;
 pub use thread::{StaticAddress, ThreadData, ThreadInitializer, ThreadObject};
 
@@ -67,6 +71,7 @@ pub struct Function<'a> {
     pub has_alloca: bool,
     pub(crate) has_statement_expressions: bool,
     pub(crate) jump_regions: HashMap<usize, usize>,
+    pub(crate) vla_targets: HashMap<usize, usize>,
     pub body: Option<Vec<Statement<'a>>>,
     pub locals: Vec<Local<'a>>,
 }
@@ -151,6 +156,7 @@ pub enum Statement<'a> {
         initializer: ObjectInitializer<'a>,
     },
     Expression(Expression<'a>),
+    InlineAsm(InlineAsm<'a>),
     Return(Option<Expression<'a>>),
     If {
         condition: Expression<'a>,
@@ -173,7 +179,9 @@ pub enum Statement<'a> {
         break_to: usize,
     },
     Label(usize, Box<Self>),
-    Jump(usize),
+    Jump(usize, Vec<usize>),
+    SaveVlaStack(usize),
+    RestoreVlaStack(usize),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -813,21 +821,20 @@ pub(super) fn layout_constant<'a>(
         .ok_or_else(|| expr.site.error("expected an integer constant expression"))
 }
 
-// N1570 §6.7.2.2: each enumerator has an integer constant expression
-// representable as int. Preserve the initializer's signedness for this check.
+// N1570 §6.7.2.2: each enumerator has an integer constant expression.
+// Preserve the initializer's signedness before selecting the enum type.
 pub(super) fn enumerator_constant<'a>(
     expression: parse::Expression<'a>,
     scope: ParserExpressionScope<'a, '_>,
-) -> Result<i32, Diagnostic> {
+) -> Result<i128, Diagnostic> {
     let expr = scope.expression(expression)?;
     let bits = body::constant_integer(&expr, scope.target)
         .ok_or_else(|| expr.site.error("expected an integer constant expression"))?;
-    let value = if matches!(expr.ty.kind, Kind::Integer(ty) if ty.is_signed(scope.target)) {
-        i32::try_from(bits as i64)
+    Ok(if matches!(expr.ty.kind, Kind::Integer(ty) if ty.is_signed(scope.target)) {
+        i128::from(bits as i64)
     } else {
-        i32::try_from(bits)
-    };
-    value.map_err(|_| expr.site.error("enumerator must fit in int"))
+        i128::from(bits)
+    })
 }
 
 pub(super) fn typeof_expression<'a>(
@@ -946,7 +953,7 @@ fn function<'a>(
             returns_twice,
         },
     );
-    let (body, locals, has_alloca, has_statement_expressions, jump_regions) =
+    let (body, locals, has_alloca, has_statement_expressions, jump_regions, vla_targets) =
         if let Some(statements) = body {
             let mut context = FunctionBody::new(
                 symbols,
@@ -968,9 +975,10 @@ fn function<'a>(
                 context.has_alloca,
                 context.has_statement_expressions,
                 context.jump_regions,
+                context.vla_targets,
             )
         } else {
-            (None, Vec::new(), false, false, HashMap::new())
+            (None, Vec::new(), false, false, HashMap::new(), HashMap::new())
         };
     Ok(Function {
         name: &name.text,
@@ -983,6 +991,7 @@ fn function<'a>(
         has_alloca,
         has_statement_expressions,
         jump_regions,
+        vla_targets,
         body,
         locals,
     })
@@ -1023,6 +1032,7 @@ struct FunctionBody<'a, 's> {
     block_externs: &'s mut HashMap<&'a str, Type>,
     locals: Vec<Local<'a>>,
     has_alloca: bool,
+    static_initialization: bool,
     // Present only while analyzing file-scope initializers.
     static_literals: Option<(usize, Vec<StaticLiteral<'a>>)>,
     scopes: Vec<HashMap<&'a str, usize>>,
@@ -1034,6 +1044,9 @@ struct FunctionBody<'a, 's> {
     statement_regions: Vec<usize>,
     has_statement_expressions: bool,
     jump_regions: HashMap<usize, usize>,
+    vla_scopes: Vec<usize>,
+    vla_targets: HashMap<usize, usize>,
+    vla_locals: HashMap<usize, vla::Array>,
     result: &'s Type,
     last_named_parameter: Option<usize>,
     target: Target,
@@ -1054,7 +1067,7 @@ impl<'a> FunctionBody<'a, '_> {
             (Some(expr), Kind::Void) => Err(expr.site.error("void function cannot return a value")),
             (Some(expr), _) => {
                 let expr = self.expression(expr)?;
-                if !assignable(self.result, &expr, self.target) {
+                if !assignable(self.result, &expr, self.target, self.standard) {
                     return Err(expr
                         .site
                         .error(format!("cannot return {} as {}", expr.ty, self.result)));
@@ -1077,6 +1090,9 @@ impl<'a> FunctionBody<'a, '_> {
                     builtin
                 } else if let Some(id) = self.scopes.iter().rev().find_map(|scope| scope.get(name)) {
                     let local = &self.locals[*id];
+                    if let Some(array) = self.vla_locals.get(id) {
+                        return Ok(array.reference(site, *id, &local.object.ty));
+                    }
                     let kind = match local.storage {
                         LocalStorage::ThreadExtern(_) => ExpressionKind::ThreadLocal(name),
                         LocalStorage::Function(_) => ExpressionKind::Identifier(name),
@@ -1096,9 +1112,9 @@ impl<'a> FunctionBody<'a, '_> {
                     (kind, symbol.ty.clone())
                 }
             }
-            Syntax::Enumerator(value) => (
-                ExpressionKind::Integer(value as u64),
-                Type::new(Kind::Integer(Integer::Int)),
+            Syntax::Enumerator(value, integer) => (
+                ExpressionKind::Integer(value),
+                Type::new(Kind::Integer(integer)),
             ),
             Syntax::Number => {
                 if let Some((bits, ty)) = float::literal(&site.text, self.target) {
@@ -1195,7 +1211,15 @@ impl<'a> FunctionBody<'a, '_> {
                 {
                     return Err(site.error(format!("cannot cast {source} to {ty}")));
                 }
-                (ExpressionKind::Cast(Box::new(expr)), ty)
+                let kind = if self.standard.is_gnu() && self.static_initialization
+                    && matches!(ty.kind, Kind::Integer(_))
+                {
+                    builtins::null_record_offset(&expr, self.target)
+                        .map_or_else(|| ExpressionKind::Cast(Box::new(expr)), ExpressionKind::Integer)
+                } else {
+                    ExpressionKind::Cast(Box::new(expr))
+                };
+                (kind, ty)
             }
             Syntax::CompoundLiteral(ty, initializer) => {
                 self.compound_literal(site, ty, *initializer)?
@@ -1215,7 +1239,11 @@ impl<'a> FunctionBody<'a, '_> {
                 if expr.bit_field().is_some() {
                     return Err(site.error("sizeof cannot be applied to a bit-field"));
                 }
-                sizeof(site, &expr.ty)?
+                if let Some(size) = self.vla_size(&expr) {
+                    (ExpressionKind::Local(size), self.locals[size].object.ty.clone())
+                } else {
+                    sizeof(site, &expr.ty)?
+                }
             }
             Syntax::StatementExpression(statements) => {
                 return self.statement_expression(site, statements);
@@ -1284,7 +1312,7 @@ impl<'a> FunctionBody<'a, '_> {
                     }
                     Some((op, a, b))
                 } else {
-                    if !assignable(&left.ty, &right, self.target) {
+                    if !assignable(&left.ty, &right, self.target, self.standard) {
                         return Err(right
                             .site
                             .error(format!("cannot assign {} to {}", right.ty, left.ty)));
@@ -1396,7 +1424,7 @@ impl<'a> FunctionBody<'a, '_> {
             }
             let expr = self.expression(argument)?;
             let ty = if let Some(parameter) = params.get(index) {
-                if !assignable(parameter, &expr, self.target) {
+                if !assignable(parameter, &expr, self.target, self.standard) {
                     return Err(expr
                         .site
                         .error(format!("cannot pass {} as {parameter}", expr.ty)));
@@ -1670,7 +1698,7 @@ fn is_null(expr: &Expression<'_>, target: Target) -> bool {
 }
 
 // N1570 6.5.16.1p1 and 6.3.2.3p3 for assignment and null pointers.
-fn assignable(destination: &Type, expr: &Expression<'_>, target: Target) -> bool {
+fn assignable(destination: &Type, expr: &Expression<'_>, target: Target, standard: Standard) -> bool {
     let converted = expr.converted_type();
     let source = converted.as_ref().unwrap_or(&expr.ty);
     match (&destination.kind, &source.kind) {
@@ -1685,8 +1713,8 @@ fn assignable(destination: &Type, expr: &Expression<'_>, target: Target) -> bool
             }
             to.unqualified_except_atomic()
                 .compatible(&from.unqualified_except_atomic())
-                || (to.kind == Kind::Void && !matches!(from.kind, Kind::Function { .. }))
-                || (from.kind == Kind::Void && !matches!(to.kind, Kind::Function { .. }))
+                || (to.kind == Kind::Void && (standard.is_gnu() || !matches!(from.kind, Kind::Function { .. })))
+                || (from.kind == Kind::Void && (standard.is_gnu() || !matches!(to.kind, Kind::Function { .. })))
         }
         _ => false,
     }

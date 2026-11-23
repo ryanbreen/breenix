@@ -98,7 +98,12 @@ fn walk_blocks<'a>(body: &mut [Statement<'a>], pass: &mut impl BlockPass<'a>) {
                 }
                 pass.boundary();
             }
-            Statement::Jump(_) => pass.boundary(),
+            // A "memory" clobber is a compiler barrier. Clear local facts at asm boundaries,
+            // including facts about the output slots.
+            Statement::InlineAsm(_)
+            | Statement::SaveVlaStack(_)
+            | Statement::RestoreVlaStack(_)
+            | Statement::Jump(..) => pass.boundary(),
             Statement::Empty => {}
         }
     }

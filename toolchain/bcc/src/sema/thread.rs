@@ -335,7 +335,7 @@ pub(super) fn encode_initializer<'a>(
     Ok(data)
 }
 
-fn null_address(expr: &Expression<'_>, target: Target) -> bool {
+pub(super) fn null_address(expr: &Expression<'_>, target: Target) -> bool {
     match (&expr.ty.kind, &expr.kind) {
         (Kind::Pointer(_), ExpressionKind::Cast(operand)) => null_address(operand, target),
         (

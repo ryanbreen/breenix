@@ -141,7 +141,7 @@ fn statements(out: &mut impl Write, body: &[Statement<'_>]) -> io::Result<()> {
                 statements(out, std::slice::from_ref(body))?;
             }
             Statement::Label(_, body) => statements(out, std::slice::from_ref(body))?,
-            Statement::Empty | Statement::Return(None) | Statement::Jump(_) => {}
+            Statement::InlineAsm(_) | Statement::Empty | Statement::Return(None) | Statement::Jump(..) | Statement::SaveVlaStack(_) | Statement::RestoreVlaStack(_) => {}
         }
     }
     Ok(())

@@ -242,8 +242,8 @@ def inventory(bcc, clang, inputs):
     by_kind = {kind: {"commands": 0, "passed": 0} for kind in ("host", "target")}
     commands = compile_commands(clang)
     headers = [
-        "-nostdinc", "-I", str(ROOT / "toolchain/include"),
-        "-I", str(ROOT / "libs/libbreenix-libc/include"),
+        "-nostdinc", "-I", str(ROOT / "libs/libbreenix-libc/include"),
+        "-I", str(ROOT / "toolchain/include"),
     ]
     with tempfile.TemporaryDirectory() as scratch:
         for cmd in commands:
@@ -259,6 +259,10 @@ def inventory(bcc, clang, inputs):
                 # default is strict C11; use its supported GNU C11 mode.
                 flags.insert(0, "-std=gnu11")
             flags += headers
+            if cmd.kind == "target":
+                # These are part of the reference target wrapper, not the
+                # saved Kbuild command line. bcc supplies no Linux defines.
+                flags.append("-D__breenix__=1")
             result = subprocess.run(
                 [str(bcc), "-fsyntax-only", "--target=x86_64", *flags],
                 cwd=SRC, capture_output=True, text=True, timeout=10, check=False,

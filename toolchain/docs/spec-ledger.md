@@ -39,10 +39,17 @@ edition pin whose full publication has no digest recorded here.
 | [GCC Referring to a Type with typeof](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Typeof.html) | GCC 16.2.0 manual, 2026-08-07, §6.12.5, 9961 bytes. Type-name and expression operands, including unevaluated fixed types. | `8fe4b4cbe70530b12931eda0b7dafbcb053c15cc5c0b673ea1bc7bdb4c304910` |
 | [GCC Conditionals with Omitted Operands](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Conditionals.html) | GCC 16.2.0 manual, 2026-08-07, §6.12.13, 4373 bytes. Reuse of the tested value without a second evaluation. | `e1d7b3ea98256ef2512083a139054cec83884926711e22e227bfbe2217fb2672` |
 | [GCC Case Ranges](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Case-Ranges.html) | GCC 16.2.0 manual, 2026-08-07, §6.12.14, 4122 bytes. Inclusive integer case ranges. | `b868b9414f530a2cf97c1459487cd5e1d8f75d7acd1e5151e5915c3301b859b9` |
+| [GCC Variable Length](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Variable-Length.html) | GCC 16.2.0 manual, 2026-08-07, §6.2.1, 7074 bytes. | `b7a9571f295795787cfd7c7d014051e81b4113c46c0ddb29558d631e8c92c562` |
+| [GCC Enumeration representation](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Structures-unions-enumerations-and-bit-fields-implementation.html) | GCC 16.2.0 manual, 2026-08-07, §4.10, 6493 bytes. | `d916c4119438ffdbf6a04a610231689fbc7848ad9ee1ea7cd5e3150733fbea40` |
 | [GCC zero-length arrays](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Zero-Length.html) | GCC 16.2.0 manual, 2026-08-07, §6.2.2, 10326 bytes. Size, element alignment and record padding for a `[0]` bound. | `939209609ba8072cb465f22060829649ef183877360092c5a8f7b007a71c7ecd` |
 | [GCC Designated Initializers](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Designated-Inits.html) | GCC 16.2.0 manual, 2026-08-07, §6.2.11, 9175 bytes. Inclusive range designators, evaluation once and override order. | `1aed4f2be02d14e8ccc71244aafa0df3eff08b325ef0c91894c75ccec4fd3d42` |
 | [GCC Library Builtins](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Library-Builtins.html) | GCC 16.2.0 manual, 2026-08-07, §7.1, 42770 bytes. The pin covers explicit memory and string calls and the names of the floating classification and comparison builtins. | `3defeda60e43356ae0b0f30ea0d80c744b92c974cecc5a60a6f4eb49a46b96c1` |
 | [GCC Bit Operation Builtins](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Bit-Operation-Builtins.html) | GCC 16.2.0 manual, 2026-08-07, §7.2.2, 33645 bytes. The pin covers `__builtin_popcountl`. | `d81a8fb713a88f96dd40547e171f74281b6c02794a53056eb72ce18b031a0e58` |
+| [GCC Basic Asm](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Basic-Asm.html) | GCC 16.2.0 manual, 2026-08-07, §6.11.1, 11543 bytes. | `f4f6ff9d8b7f6cfa0bd8e6ead55be987d8517950bd9c8a8dbe80fbabf1719b6a` |
+| [GCC Extended Asm](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Extended-Asm.html) | GCC 16.2.0 manual, 2026-08-07, §6.11.2 and its qualifier, template, operand and clobber subsections, 91255 bytes. | `e90ade05f7d8c9453f71405e83f6f478839699e6047883202d29f647ba0abd7b` |
+| [GCC Simple Constraints](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Simple-Constraints.html) | GCC 16.2.0 manual, 2026-08-07, §6.11.3.1, 17168 bytes. | `224a6ff02ccb3dd24777ce2068083a6f2ac1c528d812ba3d6899ccd3459d4670` |
+| [GCC Constraint Modifiers](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Modifiers.html) | GCC 16.2.0 manual, 2026-08-07, §6.11.3.3, 8925 bytes. | `8ddfc4f214da8368ff1e35257e7582bd2c7ee99d9fe2cfb0a9eb84d0a22c9489` |
+| [GCC Machine Constraints](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Machine-Constraints.html) | GCC 16.2.0 manual, 2026-08-07, §6.11.3.4, AMD64 and AArch64, 89486 bytes. | `140b6125f2329ec39c5e55da950998284f0c78047328a219f5f8e7e47b1ebd72` |
 | [GCC Other Builtins](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Other-Builtins.html) | GCC 16.2.0 manual, 2026-08-07, §7.12, 51552 bytes. The numeric and allocation builtins are documented in their own sections in this edition. | `92e8e5a16b1a305e2fce2b8e2c0b88cacea13231107e524cb55a628d569822f4` |
 | [GCC Floating-Point Format Builtins](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Floating-Point-Format-Builtins.html) | GCC 16.2.0 manual, 2026-08-07, §7.2.1, 25130 bytes. Infinity constants, NaN tags and `__builtin_fpclassify`. | `9fdeb40c0bae754c0c4c9c3de744370ffcd7583ce450aa05ec805e252a0b7ce5` |
 | [GCC Byte-Swapping Builtins](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Byte-Swapping-Builtins.html) | GCC 16.2.0 manual, 2026-08-07, §7.2.3, 5377 bytes. | `e894e257f7a741c62e6c9a85440a8841aa4a9243aba7aca6e824ee6aed033fca` |
@@ -627,7 +634,7 @@ the first expect operand and does not use its hint to lay out branches.
 The constant query is resolved during semantic analysis without
 evaluating its operand. The compatibility result compares unqualified
 types. The unreachable expression emits AMD64 UD2 (Intel SDM Vol. 2)
-or AArch64 BRK #0 (Arm DDI 0487 M.b §C6.2.35).
+or AArch64 BRK #0 (Arm DDI 0487 M.b, the BRK instruction).
 
 GCC Numeric Builtins §§7.2.2–7.2.3 specify the widths and results of
 bit counts and byte swaps. Both targets use unsigned C operations to
@@ -635,3 +642,44 @@ lower dynamic counts and swaps, including arguments with side effects.
 The existing offset operation uses the pinned GCC Offsetof Support
 grammar. N1570 §§6.7.2.2 and 6.7.9p22 specify enum constant expressions
 and completion of an array by its initializer.
+
+### 25.11b GNU C inline assembly
+
+The Basic and Extended Asm sections specify literal templates, the
+volatile spelling, numeric operand substitution and the `memory` and
+`cc` clobbers. bcc copies block-scope basic templates verbatim.
+Extended templates represent scalar integer and pointer operands with
+`=r`, `+r`, `r` and a numeric matching input. bcc evaluates operand
+expressions and output addresses once and stages them before emitting the
+template. The selected register bank is call-clobbered per AMD64 psABI
+§3.2.1 and AAPCS64 §6.1.1. The x86 output uses bas's Intel-style dialect;
+AArch64 uses A64 syntax. bas accepts full-line hash comments alongside
+A64's hash-prefixed instruction immediates.
+
+Both optimizers preserve asm statements and invalidate their local facts
+across them. The memory clobber is a compiler barrier and emits no
+processor fence. bcc reports unsupported qualifiers, constraints,
+clobbers and template placeholders at the source site. File-scope asm
+and asm goto are outside this subset.
+
+### 25.11b workload replay
+
+Under N1570 §§6.2.4 and 6.7.6.2 and GCC §6.2.1, automatic
+arrays with a runtime outer bound evaluate the bound once. `sizeof`
+uses the recorded byte count, and control flow restores the dynamic
+stack on scope exit. The GNU modes accept these local arrays with
+fixed-layout elements. Runtime inner bounds, over-alignment, and
+mixing these arrays with function-lifetime stack allocation require
+additional lowering.
+
+GNU enumerators that exceed `int` retain a type wide enough for their
+value on the target LP64 ABI. GNU static initializers can use the integer
+address of a member relative to a null record pointer as an offset
+(N1570 §6.6p10 and the same record layouts used by `__builtin_offsetof`).
+The GNU assignment conversion between `void *` and function pointers
+uses the shared pointer representation, as described by the [GCC
+porting notes](https://gcc.gnu.org/gcc-14/porting_to.html).
+
+The host replay uses the same libc and compiler-support include order
+as the sealed reference. The GNU host dialect exposes Breenix's existing
+declarations for POSIX.1-2024 XSH `popen`, `pclose` and `strdup`.

@@ -7,7 +7,8 @@ use std::collections::BTreeMap;
 pub(super) struct Label<'a> {
     id: usize,
     definition: Option<Vec<usize>>,
-    uses: Vec<(&'a Lexeme, Vec<usize>)>,
+    uses: Vec<(&'a Lexeme, Vec<usize>, Vec<usize>)>,
+    vla_scope: Vec<usize>,
     site: &'a Lexeme,
 }
 
@@ -17,6 +18,7 @@ pub(super) struct Switch {
     ranges: BTreeMap<u64, u64>,
     has_default: bool,
     region: Option<usize>,
+    vla_depth: usize,
 }
 
 impl Switch {
@@ -95,6 +97,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
             block_externs,
             locals,
             has_alloca: false,
+            static_initialization: false,
             static_literals: None,
             scopes: vec![scope],
             labels: HashMap::new(),
@@ -105,6 +108,9 @@ impl<'a, 's> FunctionBody<'a, 's> {
             statement_regions: Vec::new(),
             has_statement_expressions: false,
             jump_regions: HashMap::new(),
+            vla_scopes: Vec::new(),
+            vla_targets: HashMap::new(),
+            vla_locals: HashMap::new(),
             result,
             last_named_parameter: None,
             target,
@@ -117,10 +123,16 @@ impl<'a, 's> FunctionBody<'a, 's> {
         &mut self,
         statements: Vec<parse::Statement<'a>>,
     ) -> Result<Vec<Statement<'a>>, Diagnostic> {
-        statements
+        let depth = self.vla_scopes.len();
+        let mut body = statements
             .into_iter()
             .map(|statement| self.statement(statement))
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        if let Some(&mark) = self.vla_scopes.get(depth) {
+            body.push(Statement::RestoreVlaStack(mark));
+            self.vla_scopes.truncate(depth);
+        }
+        Ok(body)
     }
 
     fn next_label(&mut self) -> usize {
@@ -131,6 +143,11 @@ impl<'a, 's> FunctionBody<'a, 's> {
     }
 
     fn record_label_region(&mut self, id: usize) {
+        if self.vla_scopes.is_empty() {
+            self.vla_targets.remove(&id);
+        } else {
+            self.vla_targets.insert(id, self.vla_scopes.len());
+        }
         if let Some(&region) = self.statement_regions.last() {
             self.jump_regions.insert(id, region);
         } else {
@@ -151,12 +168,13 @@ impl<'a, 's> FunctionBody<'a, 's> {
         }
         for label in self.labels.values() {
             if let Some(definition) = &label.definition {
-                if let Some((site, _)) = label
-                    .uses
-                    .iter()
-                    .find(|(_, region)| !region.starts_with(definition))
-                {
-                    return Err(site.error("goto cannot enter a statement expression"));
+                for (site, region, vla) in &label.uses {
+                    if !region.starts_with(definition) {
+                        return Err(site.error("goto cannot enter a statement expression"));
+                    }
+                    if !vla.starts_with(&label.vla_scope) {
+                        return Err(site.error("goto cannot enter the scope of a variable length array"));
+                    }
                 }
             }
         }
@@ -170,8 +188,9 @@ impl<'a, 's> FunctionBody<'a, 's> {
             }
             if definition {
                 label.definition = Some(self.statement_regions.clone());
+                label.vla_scope.clone_from(&self.vla_scopes);
             } else {
-                label.uses.push((token, self.statement_regions.clone()));
+                label.uses.push((token, self.statement_regions.clone(), self.vla_scopes.clone()));
             }
             let id = label.id;
             if definition {
@@ -188,8 +207,9 @@ impl<'a, 's> FunctionBody<'a, 's> {
                 uses: if definition {
                     Vec::new()
                 } else {
-                    vec![(token, self.statement_regions.clone())]
+                    vec![(token, self.statement_regions.clone(), self.vla_scopes.clone())]
                 },
+                vla_scope: if definition { self.vla_scopes.clone() } else { Vec::new() },
                 site: token,
             },
         );
@@ -229,6 +249,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
                 Statement::Block(initializers)
             }
             Syntax::Expression(expr) => Statement::Expression(self.expression(expr)?),
+            Syntax::InlineAsm(asm) => self.inline_asm(asm)?,
             Syntax::Return(keyword, expr) => Statement::Return(self.return_value(keyword, expr)?),
             Syntax::If { condition, yes, no } => Statement::If {
                 condition: self.condition(condition)?,
@@ -275,6 +296,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
                     ranges: BTreeMap::new(),
                     has_default: false,
                     region: self.statement_regions.last().copied(),
+                    vla_depth: self.vla_scopes.len(),
                 });
                 let body = Box::new(self.statement(*body)?);
                 let cases = self.switches.pop().unwrap().cases;
@@ -303,6 +325,9 @@ impl<'a, 's> FunctionBody<'a, 's> {
                 if switch.region != self.statement_regions.last().copied() {
                     return Err(site.error("case label cannot enter a statement expression"));
                 }
+                if switch.vla_depth != self.vla_scopes.len() {
+                    return Err(site.error("case label cannot enter the scope of a variable length array"));
+                }
                 let value = low.map(|low| CaseRange {
                     low: canonical(low, &switch.ty, self.target),
                     high: canonical(high.unwrap_or(low), &switch.ty, self.target),
@@ -314,14 +339,16 @@ impl<'a, 's> FunctionBody<'a, 's> {
                 self.label(site, true)?,
                 Box::new(self.statement(*statement)?),
             ),
-            Syntax::Goto(site) => Statement::Jump(self.label(site, false)?),
+            Syntax::Goto(site) => Statement::Jump(self.label(site, false)?, self.vla_scopes.clone()),
             Syntax::Break(site) => Statement::Jump(
                 self.exit
                     .ok_or_else(|| site.error("break is outside a loop or switch"))?,
+                self.vla_scopes.clone(),
             ),
             Syntax::Continue(site) => Statement::Jump(
                 self.repeat
                     .ok_or_else(|| site.error("continue is outside a loop"))?,
+                self.vla_scopes.clone(),
             ),
         })
     }
@@ -428,8 +455,12 @@ impl<'a, 's> FunctionBody<'a, 's> {
             storage,
             initializer,
             alignment,
+            variable_bound,
             ..
         } = variable;
+        if let Some(bound) = variable_bound {
+            return self.variable_array(name, ty, alignment, bound);
+        }
         if matches!(ty.kind, Kind::Function { .. }) {
             return self.block_function(name, ty, storage, initializer);
         }
@@ -747,7 +778,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
                 let value = self.initializer_expression(expression, plan)?;
                 // Descend through brace elision as far as the initializer's type requires.
                 while aggregate(slot.ty)
-                    && !assignable(slot.ty, &value, self.target)
+                    && !assignable(slot.ty, &value, self.target, self.standard)
                     && !string_array_initializer(slot.ty, &value)
                 {
                     if start + selected.len() >= parse::MAX_NESTING {
@@ -775,15 +806,19 @@ impl<'a, 's> FunctionBody<'a, 's> {
         expression: parse::Expression<'a>,
         plan: &mut InitPlan<'a>,
     ) -> Result<Expression<'a>, Diagnostic> {
-        if !plan.in_range {
-            return self.expression(expression);
-        }
         let key = std::ptr::from_ref(expression.site);
-        if let Some(value) = plan.range_values.get(&key) {
-            return Ok(value.clone());
+        if plan.in_range {
+            if let Some(value) = plan.range_values.get(&key) {
+                return Ok(value.clone());
+            }
         }
-        let value = self.expression(expression)?;
-        plan.range_values.insert(key, value.clone());
+        let previous = std::mem::replace(&mut self.static_initialization, plan.static_duration);
+        let value = self.expression(expression);
+        self.static_initialization = previous;
+        let value = value?;
+        if plan.in_range {
+            plan.range_values.insert(key, value.clone());
+        }
         Ok(value)
     }
 
@@ -1001,7 +1036,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
             }
             return Ok(());
         }
-        if !assignable(slot.ty, &value, self.target) {
+        if !assignable(slot.ty, &value, self.target, self.standard) {
             return Err(value
                 .site
                 .error(format!("cannot initialize {} with {}", slot.ty, value.ty)));

@@ -521,6 +521,10 @@ impl<'src, 'obj> Parser<'src, 'obj> {
     }
 
     pub(crate) fn assemble_line(&mut self) -> Result<()> {
+        // A standalone hash comment, without affecting A64 #immediates.
+        if self.peek() == b'#' {
+            return Ok(());
+        }
         while !self.at_end() {
             let op = self.word();
             if self.take(b':') {

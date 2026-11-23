@@ -62,8 +62,8 @@ fn prune(statement: &mut Statement<'_>) -> bool {
             true
         }
         Label(_, body) => prune(body),
-        Return(_) | Jump(_) => false,
-        Empty | Expression(_) | Initialize { .. } => true,
+        Return(_) | Jump(..) => false,
+        Empty | InlineAsm(_) | Expression(_) | Initialize { .. } | SaveVlaStack(_) | RestoreVlaStack(_) => true,
     }
 }
 
@@ -76,6 +76,6 @@ fn has_label(statement: &Statement<'_>) -> bool {
         Block(body) => body.iter().any(has_label),
         If { yes, no, .. } => has_label(yes) || no.as_deref().is_some_and(has_label),
         Loop { body, .. } | Switch { body, .. } => has_label(body),
-        Empty | Expression(_) | Initialize { .. } | Return(_) | Jump(_) => false,
+        Empty | InlineAsm(_) | Expression(_) | Initialize { .. } | SaveVlaStack(_) | RestoreVlaStack(_) | Return(_) | Jump(..) => false,
     }
 }

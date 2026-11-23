@@ -9,6 +9,7 @@ use crate::types::{amd64_va_list, Integer, Kind as TypeKind, Qualifiers, Record,
 mod attribute;
 pub(crate) use attribute::SymbolAttributes;
 mod declaration;
+pub(super) mod inline_asm;
 mod specifiers;
 
 pub(super) const MAX_NESTING: usize = 128;
@@ -62,6 +63,7 @@ pub(super) struct Variable<'a> {
     pub thread_local: bool,
     pub alignment: Option<usize>,
     pub initializer: Option<Initializer<'a>>,
+    pub variable_bound: Option<Expression<'a>>,
     pub symbol: SymbolAttributes,
 }
 
@@ -111,6 +113,7 @@ pub(super) enum Statement<'a> {
     Empty,
     Declaration(Vec<Variable<'a>>),
     StaticAssert(StaticAssertion<'a>),
+    InlineAsm(inline_asm::InlineAsm<'a>),
     Expression(Expression<'a>),
     Return(&'a Lexeme, Option<Expression<'a>>),
     If {
@@ -194,7 +197,7 @@ impl<'a> Expression<'a> {
 #[derive(Clone, Debug)]
 pub(super) enum ExpressionKind<'a> {
     Identifier,
-    Enumerator(i32),
+    Enumerator(u64, Integer),
     Number,
     Character,
     Unary(Unary, Box<Expression<'a>>),
@@ -358,14 +361,14 @@ struct Parser<'a, 'p, I: Iterator<Item = &'a Lexeme>> {
 
 #[derive(Clone, Copy)]
 enum Tag {
-    Enum,
+    Enum(Integer),
     Record(usize),
 }
 
 enum Name {
     Ordinary(Type),
     Typedef(Type, bool),
-    Enumerator(i32),
+    Enumerator(u64, Integer),
 }
 
 impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
@@ -545,6 +548,9 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         if self.eat(";").is_some() {
             return Ok(Statement::Empty);
         }
+        if self.peek().is_some_and(|token| self.asm_keyword(token)) {
+            return self.inline_asm(depth).map(Statement::InlineAsm);
+        }
         if let Some(keyword) = self.eat("return") {
             return Ok(Statement::Return(keyword, self.optional_expression(";")?));
         }
@@ -627,7 +633,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         let expr = self.expression(0)?;
         if matches!(
             expr.kind,
-            ExpressionKind::Identifier | ExpressionKind::Enumerator(_)
+            ExpressionKind::Identifier | ExpressionKind::Enumerator(..)
         ) && self.eat(":").is_some()
         {
             return Ok(Statement::Label(
@@ -1054,7 +1060,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             Kind::Identifier if is_identifier(site) && !self.is_typeof(site) => {
                 self.take();
                 match self.lookup(&site.text) {
-                    Some(Name::Enumerator(value)) => ExpressionKind::Enumerator(*value),
+                    Some(Name::Enumerator(value, ty)) => ExpressionKind::Enumerator(*value, *ty),
                     _ => ExpressionKind::Identifier,
                 }
             }

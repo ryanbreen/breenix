@@ -150,7 +150,7 @@ impl<'a> FunctionBody<'a, '_> {
                         }
                         _ => value.clone(),
                     };
-                    if !assignable(&ty, &expr, self.target) {
+                    if !assignable(&ty, &expr, self.target, self.standard) {
                         return Err(expr
                             .site
                             .error(format!("cannot convert {} to {ty}", expr.ty)));

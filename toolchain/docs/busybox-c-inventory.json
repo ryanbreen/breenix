@@ -17,15 +17,15 @@
     }
   },
   "commands": 227,
-  "passed": 5,
+  "passed": 225,
   "by_kind": {
     "host": {
       "commands": 9,
-      "passed": 0
+      "passed": 7
     },
     "target": {
       "commands": 218,
-      "passed": 5
+      "passed": 218
     }
   },
   "flags": {
@@ -115,37 +115,19 @@
       "assignment": "25.11b Kbuild driver options"
     },
     "other": {
-      "count": 222,
+      "count": 2,
       "examples": [
-        {
-          "translation_unit": "applets/applet_tables.c",
-          "kind": "host",
-          "location": "applets/applet_tables.c:10",
-          "diagnostic": "applets/applet_tables.c:10:10: error: header sys/types.h not found"
-        },
-        {
-          "translation_unit": "applets/usage.c",
-          "kind": "host",
-          "location": "applets/usage.c:7",
-          "diagnostic": "applets/usage.c:7:10: error: header unistd.h not found"
-        },
-        {
-          "translation_unit": "applets/usage_pod.c",
-          "kind": "host",
-          "location": "applets/usage_pod.c:7",
-          "diagnostic": "applets/usage_pod.c:7:10: error: header unistd.h not found"
-        },
         {
           "translation_unit": "scripts/basic/fixdep.c",
           "kind": "host",
-          "location": "scripts/basic/fixdep.c:105",
-          "diagnostic": "scripts/basic/fixdep.c:105:10: error: header sys/types.h not found"
+          "location": "scripts/basic/fixdep.c:207",
+          "diagnostic": "scripts/basic/fixdep.c:207:12: error: undeclared identifier 'alloca'"
         },
         {
-          "translation_unit": "scripts/basic/split-include.c",
+          "translation_unit": "scripts/kconfig/zconf.tab.c",
           "kind": "host",
-          "location": "scripts/basic/split-include.c:22",
-          "diagnostic": "scripts/basic/split-include.c:22:10: error: header sys/stat.h not found"
+          "location": "scripts/kconfig/lex.zconf.c:2245",
+          "diagnostic": "scripts/kconfig/lex.zconf.c:2245:21: error: undeclared identifier 'alloca'"
         }
       ],
       "assignment": "unassigned"

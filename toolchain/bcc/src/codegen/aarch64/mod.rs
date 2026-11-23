@@ -51,6 +51,7 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
         alloca_base: None,
         variadic: None,
         flow_labels: HashMap::new(),
+        vla_targets: HashMap::new(),
         object_definitions: unit
             .static_objects
             .iter()
@@ -161,6 +162,7 @@ struct Emitter<'unit, 'src> {
     alloca_base: Option<usize>,
     variadic: Option<VariadicFrame>,
     flow_labels: HashMap<usize, String>,
+    vla_targets: HashMap<usize, usize>,
     object_definitions: BTreeSet<&'src str>,
     externs: BTreeSet<&'src str>,
     thread_externs: BTreeSet<&'src str>,
@@ -207,6 +209,7 @@ impl<'src> Emitter<'_, 'src> {
             None
         };
         self.flow_labels.clear();
+        self.vla_targets.clone_from(&function.vla_targets);
         let epilogue = self.label();
         self.text.push('\n');
         if function.linkage == Linkage::External {

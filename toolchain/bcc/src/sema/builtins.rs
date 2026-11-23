@@ -180,7 +180,13 @@ impl<'a> FunctionBody<'a, '_> {
         }
         let mut arguments = arguments
             .into_iter()
-            .map(|arg| self.expression(arg))
+            .map(|arg| {
+                if matches!(builtin, Builtin::ConstantP) {
+                    self.unevaluated(arg)
+                } else {
+                    self.expression(arg)
+                }
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let int = integer(Integer::Int);
         match builtin {
@@ -205,7 +211,7 @@ impl<'a> FunctionBody<'a, '_> {
                     unreachable!()
                 };
                 let param = params[0].clone();
-                if !assignable(&param, &arg, self.target) {
+                if !assignable(&param, &arg, self.target, self.standard) {
                     return Err(arg
                         .site
                         .error("__builtin_nanf requires a character pointer"));
@@ -284,10 +290,13 @@ impl<'a> FunctionBody<'a, '_> {
                 }
                 let size = integer(Integer::UnsignedLong);
                 let operand = arguments.pop().unwrap();
-                if !assignable(&size, &operand, self.target) {
+                if !assignable(&size, &operand, self.target, self.standard) {
                     return Err(operand
                         .site
                         .error("__builtin_alloca requires a size argument"));
+                }
+                if !self.vla_locals.is_empty() {
+                    return Err(site.error("mixing alloca and variable length arrays is unsupported"));
                 }
                 self.has_alloca = true;
                 Ok((
@@ -439,7 +448,7 @@ impl<'a> FunctionBody<'a, '_> {
         } else {
             input.clone()
         };
-        if !assignable(&input, &argument, self.target) {
+        if !assignable(&input, &argument, self.target, self.standard) {
             return Err(argument
                 .site
                 .error(format!("{} requires an arithmetic argument", site.text)));
@@ -499,14 +508,14 @@ impl<'a> FunctionBody<'a, '_> {
         let mut value = assign(argument);
         match builtin {
             Builtin::BitCount(_, BitCount::LeadingZeros) => {
-                // Turn every position below the highest set bit into a one.
+                // Fill the bits below the highest set bit.
                 for &shift in shifts {
                     let low = binary(Binary::ShiftRight, temp(), literal(shift));
                     value = comma(value, assign(binary(Binary::BitOr, temp(), low)));
                 }
             }
             Builtin::BitCount(_, BitCount::TrailingZeros) => {
-                // Subtract one, then remove all positions originally set.
+                // Subtract one and clear the originally set bits.
                 let low = binary(
                     Binary::BitAnd,
                     binary(Binary::Subtract, temp(), literal(1)),
@@ -534,5 +543,27 @@ impl<'a> FunctionBody<'a, '_> {
             temp()
         };
         Ok((ExpressionKind::Cast(Box::new(comma(value, count))), result))
+    }
+}
+
+// GNU constant initializers may express a record offset as the integer
+// address of a member rooted at a null record pointer.
+pub(super) fn null_record_offset(expr: &Expression<'_>, target: Target) -> Option<u64> {
+    fn member_offset(expr: &Expression<'_>, target: Target) -> Option<u64> {
+        match &expr.kind {
+            ExpressionKind::Member { base, offset, bit_field: None } =>
+                member_offset(base, target)?.checked_add(*offset as u64),
+            ExpressionKind::Unary(Unary::Dereference, pointer)
+                if matches!(expr.ty.kind, Kind::Record(_)) && thread::null_address(pointer, target) =>
+                Some(0),
+            _ => None,
+        }
+    }
+
+    match &expr.kind {
+        ExpressionKind::Unary(Unary::Address, operand)
+            if matches!(operand.kind, ExpressionKind::Member { .. }) =>
+            member_offset(operand, target),
+        _ => None,
     }
 }

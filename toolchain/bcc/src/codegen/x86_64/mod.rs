@@ -51,6 +51,7 @@ pub(super) fn emit(unit: &TranslationUnit<'_>, optimize: bool) -> Result<String,
         locals: Vec::new(),
         variadic: None,
         flow_labels: HashMap::new(),
+        vla_targets: HashMap::new(),
         return_context: None,
         statement_base: None,
         statement_stack: Vec::new(),
@@ -181,6 +182,7 @@ struct Emitter<'unit, 'src> {
     locals: Vec<Slot>,
     variadic: Option<VariadicFrame>,
     flow_labels: HashMap<usize, String>,
+    vla_targets: HashMap<usize, usize>,
     return_context: Option<(&'unit Function<'src>, String)>,
     statement_base: Option<Slot>,
     statement_stack: Vec<(usize, Slot)>,
@@ -247,6 +249,7 @@ impl<'unit, 'src> Emitter<'unit, 'src> {
             None
         };
         self.flow_labels.clear();
+        self.vla_targets.clone_from(&function.vla_targets);
         let epilogue = self.label();
         self.text.push('\n');
         if function.linkage == Linkage::External {

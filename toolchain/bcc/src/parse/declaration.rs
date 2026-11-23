@@ -7,6 +7,7 @@ use crate::types::{BitField, BitFieldContainer, Layout, Member, RecordDefinition
 enum Modifier<'a> {
     Pointer(Qualifiers),
     Array(Option<usize>),
+    VariableArray(Expression<'a>),
     Function(Parameters<'a>),
 }
 
@@ -57,6 +58,11 @@ impl<'a> Declarator<'a> {
                     }
                     ty
                 }
+                Modifier::VariableArray(bound) => {
+                    return Err(bound.site.error(
+                        "variable length is supported only for the outer bound of a block-scope array object",
+                    ));
+                }
                 Modifier::Function(params) => {
                     if matches!(ty.kind, TypeKind::Array(..) | TypeKind::Function { .. }) {
                         return Err(site.error("invalid function result type"));
@@ -84,6 +90,9 @@ impl<'a> Declarator<'a> {
 
 impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
     pub(super) fn external(&mut self) -> Result<Vec<Declaration<'a>>, Diagnostic> {
+        if let Some(token) = self.peek().filter(|token| self.asm_keyword(token)) {
+            return Err(token.error("unsupported file-scope asm"));
+        }
         if let Some(site) = self.eat("_Static_assert") {
             return Ok(vec![Declaration::StaticAssert(
                 self.static_assertion(site, 0)?,
@@ -200,6 +209,22 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         let mut variables = Vec::new();
         loop {
             let name = declarator.name.unwrap();
+            let variable_bound = match declarator.modifiers.first_mut() {
+                Some(modifier @ Modifier::VariableArray(_)) => {
+                    let Modifier::VariableArray(bound) =
+                        std::mem::replace(modifier, Modifier::Array(None))
+                    else {
+                        unreachable!()
+                    };
+                    if !self.in_function || storage.thread_local
+                        || !matches!(storage.class, Storage::Unspecified | Storage::Auto)
+                    {
+                        return Err(bound.site.error("variable length requires an automatic array object"));
+                    }
+                    Some(bound)
+                }
+                _ => None,
+            };
             let mut ty = declarator.ty(base.clone(), name, &self.records)?;
             let mut storage = storage.clone();
             for (site, attribute) in self.attributes(0)? {
@@ -242,6 +267,9 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 } else {
                     None
                 };
+                if variable_bound.is_some() && initializer.is_some() {
+                    return Err(name.error("variable length array cannot be initialized"));
+                }
                 if let (TypeKind::Array(_, None), Some(initializer)) = (&ty.kind, &initializer) {
                     let complete = crate::sema::complete_initializer_array(
                         name,
@@ -259,6 +287,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     thread_local: storage.thread_local,
                     alignment,
                     initializer,
+                    variable_bound,
                     symbol: storage.symbol,
                 });
             }
@@ -401,25 +430,27 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 return Err(self.error("declarator nesting limit exceeded"));
             }
             if self.eat("[").is_some() {
-                let size = if self.eat("]").is_some() {
-                    None
+                let modifier = if self.eat("]").is_some() {
+                    Modifier::Array(None)
                 } else {
-                    // N1570 6.7.6.2 and 6.6: evaluate an integer constant
-                    // expression with the current types, without array decay
-                    // inside sizeof or a runtime VLA bound.
                     let bound = self.conditional(depth + 1)?;
-                    let size = self.layout_constant(bound)?;
                     self.expect("]", "expected ']' after the array bound")?;
-                    Some(
-                        usize::try_from(size)
-                            .ok()
-                            .filter(|&size| {
-                                size <= isize::MAX as usize && (size != 0 || self.standard.is_gnu())
-                            })
-                            .ok_or_else(|| self.error("array bound must be positive"))?,
-                    )
+                    match self.layout_constant(bound.clone()) {
+                        Ok(size) => Modifier::Array(Some(
+                            usize::try_from(size)
+                                .ok()
+                                .filter(|&size| {
+                                    size <= isize::MAX as usize && (size != 0 || self.standard.is_gnu())
+                                })
+                                .ok_or_else(|| self.error("array bound must be positive"))?,
+                        )),
+                        Err(_) if self.in_function && self.standard.is_gnu() => {
+                            Modifier::VariableArray(bound)
+                        }
+                        Err(error) => return Err(error),
+                    }
                 };
-                declarator.modifiers.push(Modifier::Array(size));
+                declarator.modifiers.push(modifier);
             } else if self.eat("(").is_some() {
                 // N1570 §6.2.1p4: prototype tags are visible through this
                 // function declarator. A definition carries them into its body.
@@ -631,7 +662,6 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         depth: usize,
     ) -> Result<Type, Diagnostic> {
         let tag = self.identifier();
-        let ty = Type::new(TypeKind::Integer(Integer::Int));
         if self.eat("{").is_none() {
             return tag
                 .and_then(|name| {
@@ -640,39 +670,58 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                         .rev()
                         .find_map(|scope| scope.get(name.text.as_ref()))
                 })
-                .filter(|found| matches!(found, Tag::Enum))
-                .map(|_| ty)
+                .and_then(|found| match found {
+                    Tag::Enum(integer) => Some(Type::new(TypeKind::Integer(*integer))),
+                    _ => None,
+                })
                 .ok_or_else(|| keyword.error("unknown enumeration tag"));
         }
         if let Some(tag) = tag {
-            let scope = self.tags.last_mut().unwrap();
-            if scope.contains_key(tag.text.as_ref()) {
+            if self.tags.last().unwrap().contains_key(tag.text.as_ref()) {
                 return Err(tag.error("tag is already declared in this scope"));
             }
-            scope.insert(&tag.text, Tag::Enum);
         }
-        let mut next = Some(0i32);
+        let mut next = 0;
+        let mut min = 0;
+        let mut max = 0;
         loop {
             let name = self
                 .identifier()
                 .ok_or_else(|| self.error("expected an enumerator name"))?;
-            let value = if self.eat("=").is_some() {
+            let (value, value_site) = if self.eat("=").is_some() {
                 let expression = self.conditional(depth + 1)?;
-                crate::sema::enumerator_constant(expression, self.expression_scope())?
+                let value_site = match &expression.kind {
+                    ExpressionKind::Unary(Unary::Minus, operand) => operand.site,
+                    _ => expression.site,
+                };
+                (crate::sema::enumerator_constant(expression, self.expression_scope())?, value_site)
             } else {
-                next.ok_or_else(|| name.error("enumerator must fit in int"))?
+                (next, name)
             };
+            let integer = enum_integer(value.min(0), value.max(0)).ok_or_else(|| {
+                value_site.error("enumerator value is outside the supported integer range")
+            })?;
+            if !self.standard.is_gnu() && integer != Integer::Int {
+                return Err(value_site.error("enumerator must fit in int"));
+            }
             if self.names.last().unwrap().contains_key(name.text.as_ref()) {
                 return Err(name.error("duplicate enumerator name"));
             }
-            self.name(name, Name::Enumerator(value));
-            next = value.checked_add(1);
+            self.name(name, Name::Enumerator(value as u64, integer));
+            min = min.min(value);
+            max = max.max(value);
+            next = value + 1;
             if self.eat(",").is_none() || self.peek().is_some_and(|t| t.is("}")) {
                 self.expect("}", "expected '}' after the enumerators")?;
                 break;
             }
         }
-        Ok(ty)
+        let integer = enum_integer(min, max)
+            .ok_or_else(|| keyword.error("no integer type can represent all enumerators"))?;
+        if let Some(tag) = tag {
+            self.tags.last_mut().unwrap().insert(&tag.text, Tag::Enum(integer));
+        }
+        Ok(Type::new(TypeKind::Integer(integer)))
     }
 
     pub(super) fn record(&mut self, keyword: &'a Lexeme, depth: usize) -> Result<Type, Diagnostic> {
@@ -1056,7 +1105,6 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
     }
 }
 
-
 impl DeclStorage {
     fn require_declarator(self, site: &Lexeme) -> Result<(), Diagnostic> {
         if self.thread_local {
@@ -1182,4 +1230,18 @@ fn contains_flexible_member(ty: &Type, records: &[Record<'_>]) -> bool {
         }
     }
     false
+}
+
+fn enum_integer(min: i128, max: i128) -> Option<Integer> {
+    if i32::try_from(min).is_ok() && i32::try_from(max).is_ok() {
+        Some(Integer::Int)
+    } else if min == 0 && u32::try_from(max).is_ok() {
+        Some(Integer::UnsignedInt)
+    } else if i64::try_from(min).is_ok() && i64::try_from(max).is_ok() {
+        Some(Integer::Long)
+    } else if min == 0 && u64::try_from(max).is_ok() {
+        Some(Integer::UnsignedLong)
+    } else {
+        None
+    }
 }
