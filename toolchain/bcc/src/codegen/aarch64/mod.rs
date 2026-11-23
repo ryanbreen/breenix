@@ -49,6 +49,9 @@ pub(super) fn emit(unit: &TranslationUnit<'_>, options: super::Options) -> Resul
         aligned_frame: 0,
         frame_alignment: STACK_ALIGNMENT,
         alloca_base: None,
+        statement_base: None,
+        statement_stack: Vec::new(),
+        return_context: None,
         variadic: None,
         flow_labels: HashMap::new(),
         vla_targets: HashMap::new(),
@@ -159,6 +162,9 @@ struct Emitter<'unit, 'src> {
     aligned_frame: usize,
     frame_alignment: usize,
     alloca_base: Option<usize>,
+    statement_base: Option<usize>,
+    statement_stack: Vec<(usize, usize)>,
+    return_context: Option<(&'unit Function<'src>, String)>,
     variadic: Option<VariadicFrame>,
     flow_labels: HashMap<usize, String>,
     vla_targets: HashMap<usize, usize>,
@@ -175,10 +181,10 @@ struct Emitter<'unit, 'src> {
     next_label: usize,
 }
 
-impl<'src> Emitter<'_, 'src> {
+impl<'unit, 'src> Emitter<'unit, 'src> {
     fn function(
         &mut self,
-        function: &Function<'src>,
+        function: &'unit Function<'src>,
         body: &[Statement<'src>],
     ) -> Result<(), Diagnostic> {
         let name = function.name;
@@ -201,6 +207,10 @@ impl<'src> Emitter<'_, 'src> {
             Some(self.frame_slot(Layout { size: 8, align: 8 }, function.site)?)
         } else {
             None
+        };
+        self.statement_base = match (function.has_statement_expressions, self.alloca_base) {
+            (true, None) => Some(self.frame_slot(Layout { size: 8, align: 8 }, function.site)?),
+            (_, base) => base,
         };
         let indirect_result = if object_result.is_some_and(CallObject::indirect) {
             Some(self.frame_slot(Layout { size: 8, align: 8 }, function.site)?)
@@ -239,7 +249,9 @@ impl<'src> Emitter<'_, 'src> {
                 }
             }
         }
+        self.return_context = Some((function, epilogue.clone()));
         self.statements(body, result, &epilogue)?;
+        self.return_context = None;
         // Record-valued calls in the body reserve fixed frame slots.
         let tail = self.text.len();
         let frame = self.frame.next_multiple_of(STACK_ALIGNMENT);
@@ -256,7 +268,7 @@ impl<'src> Emitter<'_, 'src> {
             .unwrap();
             self.add_sub_offset("sub", "sp", "x19", self.aligned_frame as u64);
         }
-        if let Some(distance) = self.alloca_base {
+        if let Some(distance) = self.statement_base {
             // Record the bottom of the fixed frame after any x19 realignment.
             self.offset_address("x9", "x29", -(distance as i64));
             self.text.push_str("    mov x10, sp\n    str x10, [x9]\n");
@@ -336,11 +348,8 @@ impl<'src> Emitter<'_, 'src> {
                 self.binary(*op, (left, left_type), (right, right_type), &expr.ty)?;
             }
             ExpressionKind::Cast(operand) => self.converted(operand, &expr.ty)?,
-            ExpressionKind::StatementExpression { .. } => {
-                return Err(Diagnostic::new(
-                    expr.position(),
-                    "statement expression lowering is deferred to ARM 25.11d2",
-                ));
+            ExpressionKind::StatementExpression { region, statements, value } => {
+                self.statement_expression(*region, statements, value.as_deref(), expr)?;
             }
             ExpressionKind::Assignment {
                 left,

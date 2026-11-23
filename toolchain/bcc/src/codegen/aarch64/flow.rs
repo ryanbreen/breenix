@@ -215,11 +215,59 @@ impl<'src> Emitter<'_, 'src> {
                 if let Some(&mark) = scopes.get(depth) {
                     self.vla_stack(mark, true);
                 }
+                self.restore_statement_stack(*id);
                 let label = self.flow_label(*id);
                 writeln!(self.text, "    b {label}").unwrap();
             }
         }
         Ok(())
+    }
+
+    pub(super) fn statement_expression(
+        &mut self,
+        region: usize,
+        statements: &[Statement<'src>],
+        value: Option<&Expression<'src>>,
+        expr: &Expression<'src>,
+    ) -> Result<(), Diagnostic> {
+        // GNU C §6.12.1 permits jumps out of a statement expression.
+        // Record live spill depth separately from the base moved by alloca.
+        let slot = self.frame_slot(Layout { size: 8, align: 8 }, expr.position())?;
+        let base = self.statement_base.unwrap();
+        self.offset_address("x9", "x29", -(base as i64));
+        self.text.push_str("    ldr x10, [x9]\n    mov x11, sp\n    sub x11, x11, x10\n");
+        self.offset_address("x9", "x29", -(slot as i64));
+        self.text.push_str("    str x11, [x9]\n");
+
+        self.statement_stack.push((region, slot));
+        let (function, epilogue) = self.return_context.as_ref().unwrap();
+        let (function, epilogue) = (*function, epilogue.clone());
+        let Kind::Function { result, .. } = &function.ty.kind else { unreachable!() };
+        self.statements(statements, result, &epilogue)?;
+        if let Some(value) = value {
+            self.converted(value, &expr.ty)?;
+        }
+        self.statement_stack.pop();
+        Ok(())
+    }
+
+    fn restore_statement_stack(&mut self, id: usize) {
+        let Some((current, _)) = self.statement_stack.last() else { return };
+        let (function, _) = self.return_context.as_ref().unwrap();
+        let target = function.jump_regions.get(&id);
+        if target == Some(current) {
+            return;
+        }
+
+        let base = self.statement_base.unwrap();
+        self.offset_address("x9", "x29", -(base as i64));
+        self.text.push_str("    ldr x10, [x9]\n");
+        if let Some(target) = target {
+            let (_, slot) = self.statement_stack.iter().find(|(region, _)| region == target).unwrap();
+            self.offset_address("x9", "x29", -(*slot as i64));
+            self.text.push_str("    ldr x11, [x9]\n    add x10, x10, x11\n");
+        }
+        self.text.push_str("    mov sp, x10\n");
     }
 
     fn initialize(
