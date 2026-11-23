@@ -74,6 +74,15 @@ pub mod amd64 {
     pub const R_REX_GOTPCRELX: u32 = 42;
 }
 
+/// AAELF64 2025Q1 §5.2 and §5.7.6, control-flow relocations.
+pub mod aarch64 {
+    pub const EM_AARCH64: u16 = 183;
+    pub const R_AARCH64_TSTBR14: u32 = 279;
+    pub const R_AARCH64_CONDBR19: u32 = 280;
+    pub const R_AARCH64_JUMP26: u32 = 282;
+    pub const R_AARCH64_CALL26: u32 = 283;
+}
+
 // Keep each fixed record's wire offsets in one place for both directions.
 // The reader passes fixed-size arrays obtained from validated file ranges.
 macro_rules! record {

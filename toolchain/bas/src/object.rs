@@ -1,15 +1,18 @@
 //! Section, symbol and fixup bookkeeping. ELF gABI chapters 3–6 and
-//! System V AMD64 psABI Table 4.9. bobj writes and lays out the ELF records.
+//! System V AMD64 psABI Table 4.9 and AAELF64 §§5.6.5, 5.7.6.
+//! bobj writes and lays out the ELF records.
 
 use std::collections::BTreeMap;
 
+use bobj::elf::aarch64::EM_AARCH64;
 use bobj::elf::amd64::{R_64, R_GOTPCREL, R_PC32, R_PLT32, R_TPOFF32};
 use bobj::elf::{
     write_rel, RelSection, RelSymbol, Rela, EM_X86_64, SHF_ALLOC, SHF_EXECINSTR, SHF_TLS,
     SHF_WRITE, SHN_UNDEF, SHT_NOBITS, SHT_PROGBITS, STB_GLOBAL, STB_LOCAL, STT_NOTYPE, STT_TLS,
 };
 
-use crate::{Location, Result};
+use crate::aarch64::Relocation;
+use crate::{Location, Result, Target};
 
 const SECTIONS: &[(&str, u32, u64)] = &[
     (".text", SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR),
@@ -21,7 +24,7 @@ const SECTIONS: &[(&str, u32, u64)] = &[
 ];
 
 struct Section {
-    name: &'static str,
+    name: String,
     kind: u32,
     flags: u64,
     alignment: u64,
@@ -31,9 +34,9 @@ struct Section {
 }
 
 impl Section {
-    fn new((name, kind, flags): (&'static str, u32, u64)) -> Self {
+    fn new((name, kind, flags): (&str, u32, u64)) -> Self {
         Self {
-            name,
+            name: name.into(),
             kind,
             flags,
             alignment: 1,
@@ -59,10 +62,15 @@ struct Reference {
     symbol: usize,
     section: usize,
     field: usize,
-    next_ip: usize,
-    kind: u32,
+    kind: ReferenceKind,
     addend: i64,
     at: Location,
+}
+
+#[derive(Clone, Copy)]
+enum ReferenceKind {
+    X86 { kind: u32, next_ip: usize },
+    Aarch64(Relocation),
 }
 
 #[derive(Clone, Copy)]
@@ -80,23 +88,27 @@ struct SizeExpression {
 }
 
 pub(crate) struct Object {
+    pub(crate) target: Target,
     sections: Vec<Section>,
     current: usize,
     symbol_ids: BTreeMap<String, usize>,
     pub(crate) symbols: Vec<Symbol>,
     references: Vec<Reference>,
+    text_mappings: Vec<(usize, u64, &'static [u8])>,
     sizes: Vec<SizeExpression>,
     last_output_at: Location,
 }
 
 impl Object {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(target: Target) -> Self {
         Self {
+            target,
             sections: vec![Section::new(SECTIONS[0])],
             current: 0,
             symbol_ids: BTreeMap::new(),
             symbols: Vec::new(),
             references: Vec::new(),
+            text_mappings: Vec::new(),
             sizes: Vec::new(),
             last_output_at: Location { line: 1, column: 1 },
         }
@@ -109,9 +121,16 @@ impl Object {
             let descriptor = SECTIONS
                 .iter()
                 .find(|entry| entry.0 == name)
+                .copied()
+                .or_else(|| {
+                    (self.target == Target::Aarch64
+                        && name.starts_with(".text.")
+                        && name.len() > ".text.".len())
+                    .then_some((name, SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR))
+                })
                 .ok_or_else(|| at.error("unsupported section"))?;
             let index = self.sections.len();
-            self.sections.push(Section::new(*descriptor));
+            self.sections.push(Section::new(descriptor));
             index
         };
         Ok(())
@@ -155,6 +174,9 @@ impl Object {
     }
 
     pub(crate) fn fill(&mut self, at: Location, count: u64, byte: u8) -> Result<()> {
+        if count != 0 {
+            self.map_text(b"$d");
+        }
         let section = &mut self.sections[self.current];
         let end = section
             .size
@@ -182,6 +204,13 @@ impl Object {
     }
 
     pub(crate) fn emit_bytes(&mut self, at: Location, bytes: &[u8]) -> Result<()> {
+        if !bytes.is_empty() {
+            self.map_text(b"$d");
+        }
+        self.append_bytes(at, bytes)
+    }
+
+    fn append_bytes(&mut self, at: Location, bytes: &[u8]) -> Result<()> {
         let section = &mut self.sections[self.current];
         if section.kind == SHT_NOBITS {
             let fill = bytes.iter().copied().find(|&byte| byte != 0).unwrap_or(0);
@@ -198,11 +227,68 @@ impl Object {
     }
 
     pub(crate) fn default_fill(&self) -> u8 {
-        if self.sections[self.current].flags & SHF_EXECINSTR != 0 {
+        if self.target == Target::X86_64 && self.in_text() {
             0x90
         } else {
             0
         }
+    }
+
+    fn map_text(&mut self, name: &'static [u8]) {
+        if self.target == Target::Aarch64
+            && self.sections[self.current].flags & SHF_EXECINSTR != 0
+            && self
+                .text_mappings
+                .iter()
+                .rev()
+                .find(|&&(section, _, _)| section == self.current)
+                .is_none_or(|&(_, _, previous)| previous != name)
+        {
+            self.text_mappings
+                .push((self.current, self.sections[self.current].size, name));
+        }
+    }
+
+    pub(crate) fn emit_aarch64(&mut self, at: Location, word: u32) -> Result<()> {
+        if self.sections[self.current].flags & SHF_EXECINSTR == 0 {
+            return Err(at.error("instructions require .text"));
+        }
+        let text = &mut self.sections[self.current];
+        if text.size % 4 != 0 {
+            return Err(at.error("instruction must be four-byte aligned"));
+        }
+        text.alignment = text.alignment.max(4);
+        self.map_text(b"$x");
+        self.append_bytes(at, &word.to_le_bytes())
+    }
+
+    pub(crate) fn aarch64_reference(
+        &mut self,
+        symbol: usize,
+        kind: Relocation,
+        addend: i64,
+        instruction: Option<u32>,
+        at: Location,
+    ) -> Result<()> {
+        let section = &self.sections[self.current];
+        let field = section.bytes.len();
+        if let Some(word) = instruction {
+            self.emit_aarch64(at, word)?;
+        } else {
+            if section.kind == SHT_NOBITS {
+                return Err(at.error("relocation requires a section with file contents"));
+            }
+            self.fill(at, kind.width() as u64, 0)?;
+        }
+        self.references.push(Reference {
+            symbol,
+            section: self.current,
+            field,
+            kind: ReferenceKind::Aarch64(kind),
+            addend,
+            at,
+        });
+        Ok(())
     }
 
     pub(crate) fn align(&mut self, at: Location, alignment: u64, fill: u8) -> Result<()> {
@@ -237,8 +323,7 @@ impl Object {
             symbol,
             section: self.current,
             field,
-            next_ip,
-            kind,
+            kind: ReferenceKind::X86 { kind, next_ip },
             addend,
             at,
         });
@@ -267,7 +352,6 @@ impl Object {
                 symbol,
                 section,
                 field,
-                next_ip,
                 kind,
                 addend,
                 at,
@@ -276,34 +360,63 @@ impl Object {
             if target.section == SHN_UNDEF && !target.global {
                 return Err(at.error("undefined label in symbol expression"));
             }
-            if (kind == R_TPOFF32) != (target.kind == STT_TLS) {
-                return Err(at.error("TPOFF32 requires a TLS symbol and vice versa"));
-            }
-
+            let same_section = usize::from(target.section) == section + 1;
             let contents = &mut self.sections[section];
-            if kind == R_PC32 && usize::from(target.section) == section + 1 {
-                let displacement = i64::try_from(i128::from(target.value) - next_ip as i128)
-                    .ok()
-                    .and_then(|distance| distance.checked_add(addend))
-                    .and_then(|value| i32::try_from(value).ok())
-                    .ok_or_else(|| at.error("relative displacement out of rel32 range"))?;
-                contents.bytes[field..field + 4].copy_from_slice(&displacement.to_le_bytes());
-            } else {
-                // The psABI uses P (the field address) while the ISA uses next IP.
-                let addend = if matches!(kind, R_PC32 | R_PLT32 | R_GOTPCREL) {
-                    addend
-                        .checked_sub((next_ip - field) as i64)
-                        .ok_or_else(|| at.error("relative relocation addend out of range"))?
-                } else {
-                    addend
-                };
-                contents.relocations.push(Rela {
-                    offset: field as u64,
-                    symbol: u32::try_from(symbol).map_err(|_| at.error("too many symbols"))?,
-                    kind,
-                    addend,
-                });
-            }
+            let (kind, addend) = match kind {
+                ReferenceKind::X86 { kind, next_ip } => {
+                    if (kind == R_TPOFF32) != (target.kind == STT_TLS) {
+                        return Err(at.error("TPOFF32 requires a TLS symbol and vice versa"));
+                    }
+                    if kind == R_PC32 && same_section {
+                        let displacement =
+                            i64::try_from(i128::from(target.value) - next_ip as i128)
+                                .ok()
+                                .and_then(|distance| distance.checked_add(addend))
+                                .and_then(|value| i32::try_from(value).ok())
+                                .ok_or_else(|| {
+                                    at.error("relative displacement out of rel32 range")
+                                })?;
+                        contents.bytes[field..field + 4]
+                            .copy_from_slice(&displacement.to_le_bytes());
+                        continue;
+                    }
+                    // The psABI uses P (the field address) while the ISA uses next IP.
+                    let addend = if matches!(kind, R_PC32 | R_PLT32 | R_GOTPCREL) {
+                        addend
+                            .checked_sub((next_ip - field) as i64)
+                            .ok_or_else(|| at.error("relative relocation addend out of range"))?
+                    } else {
+                        addend
+                    };
+                    (kind, addend)
+                }
+                ReferenceKind::Aarch64(kind) => {
+                    if kind.uses_tls() != (target.kind == STT_TLS) {
+                        return Err(
+                            at.error("AArch64 TLS relocation requires a TLS symbol and vice versa")
+                        );
+                    }
+                    if same_section
+                        && kind.patch_local(
+                            &mut contents.bytes[field..field + 4],
+                            i128::from(target.value) + i128::from(addend) - field as i128,
+                            at,
+                        )?
+                    {
+                        continue;
+                    }
+                    (kind as u32, addend)
+                }
+            };
+            contents.relocations.push(Rela {
+                offset: field as u64,
+                // object_symbols prepends the AArch64 mapping symbols before
+                // bobj assigns the final ELF symbol indices.
+                symbol: u32::try_from(self.text_mappings.len() + symbol)
+                    .map_err(|_| at.error("too many symbols"))?,
+                kind,
+                addend,
+            });
         }
         Ok(())
     }
@@ -336,7 +449,20 @@ impl Object {
     }
 
     fn object_symbols(&self) -> Result<Vec<RelSymbol<'_>>> {
-        let mut out = Vec::with_capacity(self.symbols.len());
+        let mut out = Vec::with_capacity(self.symbols.len() + self.text_mappings.len());
+        // AAELF64 §5.6.5: local STT_NOTYPE symbols delimit code and data.
+        out.extend(
+            self.text_mappings
+                .iter()
+                .map(|&(section, value, name)| RelSymbol {
+                    name,
+                    section: section as u16 + 1,
+                    kind: STT_NOTYPE,
+                    binding: STB_LOCAL,
+                    value,
+                    size: 0,
+                }),
+        );
         for symbol in &self.symbols {
             let size_at = symbol.size_at.unwrap_or(symbol.first_use);
             if symbol.section == SHN_UNDEF {
@@ -386,7 +512,11 @@ impl Object {
                 relocations: &section.relocations,
             })
             .collect();
-        write_rel(EM_X86_64, &sections, &symbols)
+        let machine = match self.target {
+            Target::X86_64 => EM_X86_64,
+            Target::Aarch64 => EM_AARCH64,
+        };
+        write_rel(machine, &sections, &symbols)
             .map_err(|error| self.last_output_at.error(error.message))
     }
 }

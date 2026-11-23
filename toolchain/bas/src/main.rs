@@ -7,22 +7,35 @@ use std::io;
 use std::path::Path;
 use std::process::ExitCode;
 
-fn assemble_file(output: &Path, source: &Path) -> Result<(), String> {
+use bas::Target;
+
+const USAGE: &str = "usage: bas [--target x86_64|aarch64] -o OBJECT SOURCE";
+
+fn assemble_file(target: Target, args: &[OsString]) -> Result<(), String> {
+    let [option, output, source] = args else {
+        return Err(USAGE.into());
+    };
+    if option != "-o" || source.as_encoded_bytes().starts_with(b"-") {
+        return Err(USAGE.into());
+    }
+    let output = Path::new(output);
+    let source = Path::new(source);
     let io_error = |path: &Path, error: io::Error| format!("{}: {error}", path.display());
     let bytes = fs::read(source).map_err(|error| io_error(source, error))?;
-    let object = bas::assemble(&bytes).map_err(|error| format!("{}:{error}", source.display()))?;
+    let object = bas::assemble_for(target, &bytes)
+        .map_err(|error| format!("{}:{error}", source.display()))?;
     fs::write(output, object).map_err(|error| io_error(output, error))
 }
 
 fn main() -> ExitCode {
     let args: Vec<OsString> = env::args_os().skip(1).collect();
     let result = match args.as_slice() {
-        [option, output, source]
-            if option == "-o" && !source.as_encoded_bytes().starts_with(b"-") =>
-        {
-            assemble_file(Path::new(output), Path::new(source))
-        }
-        _ => Err("usage: bas -o OBJECT SOURCE".into()),
+        [flag, name, rest @ ..] if flag == "--target" => match name.to_str() {
+            Some("aarch64") => assemble_file(Target::Aarch64, rest),
+            Some("x86_64") => assemble_file(Target::X86_64, rest),
+            _ => Err(USAGE.into()),
+        },
+        _ => assemble_file(Target::X86_64, &args),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

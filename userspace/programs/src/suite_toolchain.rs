@@ -19,7 +19,10 @@ const CORPUS: &str = "usr/share/breenix/toolchain";
 const RUNNER: &str = "sbin/suite-toolchain";
 const MANIFEST: &str = "opt/breenix-dev/25.2/manifest.sha256";
 const RECORD: &str = "opt/breenix-dev/25.2/build.json";
+#[cfg(target_arch = "x86_64")]
 const BAS_PROGRAMS: &[&str] = &["sse-exit", "x87-exit"];
+#[cfg(target_arch = "aarch64")]
+const BAS_PROGRAMS: &[&str] = &["fp-exit", "call-exit"];
 const BAS_INPUTS: &[&str] = &["encodings.s", "encodings.hex", "bad-input.s"];
 const LINKER_OBJECTS: &[&str] = &[
     "got-main",
@@ -331,6 +334,8 @@ fn sysroot_manifest() -> CaseResult {
                 return Err(format!("manifest omits {path}").into());
             }
         }
+    }
+    {
         for name in BAS_INPUTS {
             let path = format!("{CORPUS}/assembler/{name}");
             if !listed.contains_key(path.as_str()) {
@@ -835,9 +840,6 @@ struct AssemblyCase {
 
 impl AssemblyCase {
     fn start() -> Result<Self, String> {
-        if std::env::consts::ARCH != "x86_64" {
-            return Err("AArch64 assembly and relocations are scheduled for A1".into());
-        }
         Ok(Self {
             corpus: Path::new("/").join(CORPUS).join("assembler"),
             scratch: Scratch::new("assembler")?,
@@ -846,9 +848,13 @@ impl AssemblyCase {
 
     fn run(&self, source: &Path, object: &Path) -> Result<std::process::Output, String> {
         let bas = Path::new("/").join(DEV).join("bin/bas");
+        let mut command = Command::new(&bas);
+        if std::env::consts::ARCH == "aarch64" {
+            command.args(["--target", "aarch64"]);
+        }
         io_at(
             &bas,
-            Command::new(&bas)
+            command
                 .arg("-o")
                 .arg(object)
                 .arg(source)
@@ -881,7 +887,12 @@ fn elf_field<const N: usize>(bytes: &[u8], offset: usize) -> Option<[u8; N]> {
 fn object_text(object: &[u8]) -> Option<&[u8]> {
     if !object.starts_with(b"\x7fELF\x02\x01\x01")
         || u16::from_le_bytes(elf_field(object, 16)?) != 1
-        || u16::from_le_bytes(elf_field(object, 18)?) != 62
+        || u16::from_le_bytes(elf_field(object, 18)?)
+            != if cfg!(target_arch = "aarch64") {
+                183
+            } else {
+                62
+            }
         || u16::from_le_bytes(elf_field(object, 58)?) != 64
     {
         return None;
@@ -916,13 +927,37 @@ fn assembler_encodings_match() -> CaseResult {
     let actual = object_text(&bytes).ok_or("bas object has no valid .text section")?;
     let path = case.corpus.join("encodings.hex");
     let hex_table = io_at(&path, fs::read_to_string(&path))?;
-    let expected = hex_table
-        .split_ascii_whitespace()
-        .map(|byte| u8::from_str_radix(byte, 16))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let expected = if cfg!(target_arch = "aarch64") {
+        let mut bytes = Vec::new();
+        for (index, row) in hex_table.lines().enumerate() {
+            let word = row.split_once('#').map_or(row, |(word, _)| word).trim();
+            if !lower_hex(word, 8) {
+                return Err(format!(
+                    "{}:{}: expected an eight-digit instruction word",
+                    path.display(),
+                    index + 1
+                )
+                .into());
+            }
+            let word = u32::from_str_radix(word, 16)
+                .map_err(|error| format!("{}:{}: {error}", path.display(), index + 1))?;
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        bytes
+    } else {
+        hex_table
+            .split_ascii_whitespace()
+            .map(|byte| u8::from_str_radix(byte, 16))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("{}: {error}", path.display()))?
+    };
     if actual != expected || expected.is_empty() {
-        return Err("bas .text differs from the Intel SDM encoding table".into());
+        let spec = if cfg!(target_arch = "aarch64") {
+            "Arm ARM"
+        } else {
+            "Intel SDM"
+        };
+        return Err(format!("bas .text differs from the {spec} encoding table").into());
     }
     Ok(())
 }

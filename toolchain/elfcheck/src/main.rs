@@ -1,8 +1,9 @@
-//! elfcheck [--exec] FILE...   |   elfcheck --list
+//! elfcheck [--machine x86_64|aarch64] [--exec] FILE...   |   elfcheck --list
 //!
-//! A failed rule prints `FILE: CHECK-ID: detail` on stdout and a file with no
-//! finding prints `FILE: ok`. Exit status 0 means no finding, 1 means a rule
-//! failed, 2 means a usage error, an unreadable file or a failed write.
+//! `--machine` names the processor the files must be for; it defaults to
+//! x86_64. A failed rule prints `FILE: CHECK-ID: detail` on stdout and a file
+//! with no finding prints `FILE: ok`. Exit status 0 means no finding, 1 means
+//! a rule failed, 2 means a usage error, an unreadable file or a failed write.
 
 #![forbid(unsafe_code)]
 
@@ -13,12 +14,13 @@ use std::io::{self, BufWriter, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
-use elfcheck::{Check, Kind};
+use elfcheck::{Check, Kind, Machine};
 
-const USAGE: &str = "usage: elfcheck [--exec] FILE...\n       elfcheck --list\n";
+const USAGE: &str = "usage: elfcheck [--machine x86_64|aarch64] [--exec] FILE...\n       \
+                     elfcheck --list\n";
 
 /// Checks one file and writes its report; returns the file's exit status.
-fn check_file(out: &mut impl Write, path: &Path, kind: Kind) -> io::Result<u8> {
+fn check_file(out: &mut impl Write, path: &Path, kind: Kind, machine: Machine) -> io::Result<u8> {
     let data = match fs::read(path) {
         Ok(data) => data,
         Err(error) => {
@@ -30,7 +32,7 @@ fn check_file(out: &mut impl Write, path: &Path, kind: Kind) -> io::Result<u8> {
             return Ok(2);
         }
     };
-    let report = elfcheck::check(&data, kind);
+    let report = elfcheck::check_machine(&data, kind, machine);
     for finding in &report.findings {
         writeln!(out, "{}: {finding}", path.display())?;
     }
@@ -52,10 +54,30 @@ fn run(args: &[OsString], out: &mut impl Write) -> io::Result<u8> {
         }
         return Ok(0);
     }
-    let (kind, files) = match args.split_first() {
-        Some((first, rest)) if first == "--exec" => (Kind::Executable, rest),
-        _ => (Kind::Relocatable, args),
-    };
+    let mut kind = Kind::Relocatable;
+    let mut machine = Machine::default();
+    let mut files = args;
+    loop {
+        match files {
+            [flag, rest @ ..] if flag == "--exec" && kind == Kind::Relocatable => {
+                kind = Kind::Executable;
+                files = rest;
+            }
+            [flag, name, rest @ ..] if flag == "--machine" => {
+                let Some(named) = name.to_str().and_then(Machine::named) else {
+                    let _ = writeln!(
+                        io::stderr(),
+                        "elfcheck: unknown machine {name:?}; expected x86_64 or aarch64"
+                    );
+                    let _ = io::stderr().write_all(USAGE.as_bytes());
+                    return Ok(2);
+                };
+                machine = named;
+                files = rest;
+            }
+            _ => break,
+        }
+    }
     if files
         .first()
         .is_none_or(|first| first.to_string_lossy().starts_with('-'))
@@ -65,7 +87,7 @@ fn run(args: &[OsString], out: &mut impl Write) -> io::Result<u8> {
     }
     let mut status = 0;
     for file in files {
-        status = status.max(check_file(out, Path::new(file), kind)?);
+        status = status.max(check_file(out, Path::new(file), kind, machine)?);
     }
     Ok(status)
 }
