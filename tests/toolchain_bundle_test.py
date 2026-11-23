@@ -2,6 +2,7 @@
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ import sys
 import tempfile
 import tomllib
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +24,53 @@ CHANNEL = tomllib.loads((WORKSPACE / "rust-toolchain.toml").read_text())["toolch
 def digest(path):
     with path.open("rb") as file:
         return hashlib.file_digest(file, "sha256").hexdigest()
+
+
+class ToolchainGuestBuildTest(unittest.TestCase):
+    def test_arm_guest_link_inputs_are_keyed_by_content(self):
+        script = ROOT / "scripts/toolchain-build-tools.py"
+        spec = importlib.util.spec_from_file_location("toolchain_build_tools", script)
+        builder = importlib.util.module_from_spec(spec)
+        with mock.patch.object(sys, "path", [str(script.parent), *sys.path]):
+            spec.loader.exec_module(builder)
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fork = root / "rust-fork"
+            fork.mkdir()
+            (fork / ".rust-fork-snapshot.json").write_text('{"commit": "test-pin"}')
+            (root / "rust-fork.toml").write_text('commit = "test-pin"\n')
+            linker = root / "userspace/programs/linker.ld"
+            linker.parent.mkdir(parents=True)
+            binaries = root / "binaries"
+            binaries.mkdir()
+            for name in (*builder.TOOLS, "bcc", "bmake"):
+                (binaries / name).write_bytes(name.encode())
+
+            with (mock.patch.object(builder, "ROOT", root),
+                  mock.patch.object(builder.subprocess, "run"),
+                  mock.patch.object(builder, "cargo_tools", return_value=binaries) as cargo):
+                def build(name, archive, script):
+                    dev = root / name
+                    (dev / "lib").mkdir(parents=True)
+                    (dev / "lib/libc.a").write_bytes(archive)
+                    linker.write_bytes(script)
+                    builder.build_guest_tools("aarch64", root / "work", dev, [], [], {}, {})
+                    _, env, _, target_dir, *_ = cargo.call_args.args
+                    flags = env["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")
+                    library = next(flag.removeprefix("native=") for flag in flags if flag.startswith("native="))
+                    script_path = next(flag.removeprefix("link-arg=-T") for flag in flags
+                                       if flag.startswith("link-arg=-T"))
+                    self.assertEqual((Path(library) / "libc.a").read_bytes(), archive)
+                    self.assertEqual(Path(script_path).read_bytes(), script)
+                    return target_dir, flags, Path(library) / "libc.a", Path(script_path)
+
+                first = build("first", b"guest libc", b"guest script")
+                self.assertEqual(build("same", b"guest libc", b"guest script"), first)
+                self.assertNotEqual(build("changed-libc", b"updated libc", b"guest script")[0], first[0])
+                self.assertNotEqual(build("changed-script", b"guest libc", b"updated script")[0], first[0])
+                self.assertEqual(first[2].read_bytes(), b"guest libc")
+                self.assertEqual(first[3].read_bytes(), b"guest script")
 
 
 class ToolchainBundleTest(unittest.TestCase):
