@@ -109,11 +109,19 @@ double result(void) { return d + grouped + product; }
             ("grouped", 0),
             ("product", 0x4012_0000_0000_0000),
         ] {
-            let data = bits.to_le_bytes().map(|byte| format!("    .byte {byte}\n"));
-            assert!(
-                assembly.contains(&format!("\n{name}:\n{}", data.concat())),
-                "{assembly}"
-            );
+            let (_, data) = assembly.split_once(&format!("\n{name}:\n")).unwrap();
+            let (directives, _) = data.split_once(&format!(".size {name}, 8\n")).unwrap();
+            let mut bytes = Vec::new();
+            for directive in directives.lines().map(str::trim) {
+                if let Some(byte) = directive.strip_prefix(".byte ") {
+                    bytes.push(byte.parse::<u8>().unwrap());
+                } else if let Some(count) = directive.strip_prefix(".zero ") {
+                    bytes.extend(std::iter::repeat_n(0, count.parse().unwrap()));
+                } else {
+                    panic!("unexpected data directive for {name}: {directive}");
+                }
+            }
+            assert_eq!(bytes, bits.to_le_bytes(), "{target} {name}");
         }
     }
 }
