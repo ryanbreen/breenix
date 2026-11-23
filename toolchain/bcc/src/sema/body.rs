@@ -263,7 +263,10 @@ impl<'a, 's> FunctionBody<'a, 's> {
                 name.error("block-scope extern declarations are outside the current subset")
             );
         }
-        if storage == Storage::Static && initializer.is_some() {
+        if storage == Storage::Static
+            && initializer.is_some()
+            && !(self.target == Target::Aarch64 && ty.kind == Kind::LongDouble)
+        {
             return Err(name.error("initialized static objects are outside the current subset"));
         }
         if let Kind::Array(_, count @ 0) = &mut ty.kind {
@@ -300,11 +303,16 @@ impl<'a, 's> FunctionBody<'a, 's> {
                 ty: ty.clone(),
             },
             storage: if storage == Storage::Static {
-                LocalStorage::Static
+                LocalStorage::Static(None)
             } else {
                 LocalStorage::Automatic
             },
         });
+        if storage == Storage::Static {
+            let bits = self.binary128_initializer(&ty, initializer)?;
+            self.locals[local].storage = LocalStorage::Static(bits);
+            return Ok(Statement::Empty);
+        }
         if let Some(initializer) = initializer {
             let mut values = Vec::new();
             let input = self.initializer_input(initializer)?;
@@ -325,6 +333,25 @@ impl<'a, 's> FunctionBody<'a, 's> {
         } else {
             Ok(Statement::Empty)
         }
+    }
+
+    pub(super) fn binary128_initializer(
+        &self,
+        ty: &Type,
+        initializer: Option<parse::Initializer<'a>>,
+    ) -> Result<Option<u128>, Diagnostic> {
+        let Some(initializer) = initializer else {
+            return Ok(None);
+        };
+        let input = self.initializer_input(initializer)?;
+        let mut values = Vec::new();
+        self.initialize(input, ty, (0, None), &mut values)?;
+        let value = &values[0].value;
+        float::constant_bits(value, &ty.kind, self.target)
+            .map(Some)
+            .ok_or_else(|| {
+                Diagnostic::new(value.position(), "unsupported binary128 static initializer")
+            })
     }
 
     pub(super) fn thread_initializer(

@@ -25,13 +25,13 @@ impl ArgumentSlots {
         // B.3–B.6: retain homogeneous objects, replace large ordinary
         // composites with a pointer and round ordinary direct values to words.
         let direct = object.filter(|value| !value.indirect());
-        let layout = direct.map_or(Layout { size: 8, align: 8 }, CallObject::slot);
+        let layout = direct.map_or_else(|| scalar_slot(ty), CallObject::slot);
         let (bank, count, register_align) = match direct {
             Some(CallObject {
                 layout,
                 class: ObjectClass::Simd(base),
             }) => (&mut self.simd, layout.size / base.bytes(), 1),
-            _ if matches!(ty.kind, Kind::Float(_)) => (&mut self.simd, 1, 1),
+            _ if value_prefix(ty) != 'x' => (&mut self.simd, 1, 1),
             _ => (&mut self.general, layout.size / 8, layout.align / 8),
         };
         // C.1–C.6 and C.9–C.17: allocate the whole value in one bank
@@ -47,6 +47,14 @@ impl ArgumentSlots {
             self.stack_bytes = offset + layout.size;
             ArgumentLocation::Stack(offset)
         }
+    }
+}
+
+pub(super) fn scalar_slot(ty: &Type) -> Layout {
+    if ty.kind == Kind::LongDouble {
+        ty.layout().unwrap()
+    } else {
+        Layout { size: 8, align: 8 }
     }
 }
 
@@ -139,12 +147,6 @@ impl<'src> Emitter<'_, 'src> {
             .homogeneous_base(ty)
             .filter(|base| layout.size <= 4 * base.bytes())
         {
-            Some(SimdBase::Binary128) => {
-                return Err(Diagnostic::new(
-                    site,
-                    "AArch64 homogeneous binary128 aggregate calls are deferred to A4",
-                ));
-            }
             Some(base) => ObjectClass::Simd(base),
             None if layout.size > 16 => ObjectClass::Indirect,
             None => ObjectClass::General,
@@ -299,19 +301,22 @@ impl<'src> Emitter<'_, 'src> {
             staged.push((slots.next(&arg.ty, object), object, 0));
         }
         let mut cursor = slots.stack_bytes;
-        for (location, object, offset) in &mut staged {
+        for (arg, (location, object, offset)) in arguments.iter().zip(&mut staged) {
             *offset = match location {
                 ArgumentLocation::Stack(outgoing) if !object.is_some_and(CallObject::indirect) => {
                     *outgoing
                 }
                 _ => {
-                    let layout = object.map_or(Layout { size: 8, align: 8 }, |object| {
-                        if object.indirect() {
-                            object.layout
-                        } else {
-                            object.slot()
-                        }
-                    });
+                    let layout = object.map_or_else(
+                        || scalar_slot(&arg.ty),
+                        |object| {
+                            if object.indirect() {
+                                object.layout
+                            } else {
+                                object.slot()
+                            }
+                        },
+                    );
                     let start = cursor.next_multiple_of(layout.align.max(8));
                     cursor = checked_end(start, layout.size, site)?;
                     start

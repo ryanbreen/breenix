@@ -258,14 +258,26 @@ to nearest with ties to even, including the 64th significand bit and the
 subnormal range. Intel SDM Vol. 1 Table 4-3 and Figure 8-13 define the
 value encoding. The instruction forms come from Vol. 2. Integer
 conversion truncates with a temporary x87 control word and restores
-the saved control word. AAPCS64 binary128 `long double` lowering is
-scheduled for A4.
+the saved control word.
 
-### AArch64 binary128 arithmetic and conversions (A4)
+### AArch64 binary128 literals, ABI and runtime (A4)
 
 IEEE 754-2019 §3.4 and Table 3.5 define the binary128 encoding. Sections
-4.3, 5.11, 6 and 7 govern rounding, comparison and special results. The
-runtime uses roundTiesToEven and returns the positive quiet NaN with
+4.3, 5.5.1, 5.11, 6 and 7 govern rounding, negation, comparison and special
+results. bcc rounds literals from their exact integer ratios under N1570
+§6.4.4.2. Static binary128 objects use 16-byte-aligned data or zero-filled
+storage, with the literal and cast forms supported by constant initialization.
+Negation flips the sign bit.
+
+AAPCS64 2025Q1 §§5.5, 5.10.5, 6.8.2 (C.1–C.4), 6.9 and 14 place
+binary128 arguments, results and homogeneous aggregate members in Q registers.
+Stack arguments align to 16 bytes, and variadic arguments consume full
+16-byte slots in the SIMD/FP save area before using the stack.
+Arm DDI 0487 M.b §§C7.2.230 and C7.2.387 describe the Q load/store forms.
+Section C7.2.157 defines the FMOV transfers between the SIMD register's
+halves and the integer registers used at the brt call boundary.
+
+The runtime uses roundTiesToEven and returns the positive quiet NaN with
 its payload bits clear for invalid results and NaN inputs. It does not update
 floating-point exception flags.
 

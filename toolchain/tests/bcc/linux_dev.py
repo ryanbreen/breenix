@@ -7,6 +7,12 @@ These checks are development only and are never Breenix evidence.
 Pass the Cargo-built bld binary and liblinux_test.a. For the sealed-object
 check pass the reference corpus directory (receipts and objs/*.o outputs).
 For compiler checks also pass the Cargo-built bcc and bas binaries.
+
+For x87-long-double, pass the Cargo-built bnm and the brt code object as
+--brt. Build brt for the same Linux target with --features exports and
+-C panic=abort, and emit the object with cargo rustc -- --emit=obj. Link
+that object alongside liblinux_test.a, which owns startup, panic and
+the compiler builtins used by the Clang objects.
 """
 
 import argparse
@@ -90,11 +96,11 @@ def assemble(args, assembly, obj):
     run_tool("bas", [args.bas, *target, "-o", obj, assembly])
 
 
-def execute(args, executable, *objects, archives=()):
+def execute(args, executable, *objects):
     run_tool(
         "bld",
         [args.bld, "-T", ROOT / "userspace/programs/linker.ld", "--gc-sections",
-         "-o", executable, *objects, *archives, args.runtime],
+         "-o", executable, *objects, args.runtime],
     )
     return subprocess.run([executable], capture_output=True, timeout=10)
 
@@ -152,8 +158,9 @@ def aapcs64_abi_case(args, work):
                 if unexpected:
                     raise ValueError(f"unexpected undefined bcc symbols: {sorted(unexpected)}")
                 helpers.update(runtime)
+            runtime_objects = (args.brt,) if binary128 else ()
             actual = execute(args, work / f"bcc-{bcc_half}", obj, sealed[clang_half],
-                             archives=(args.brt,) if binary128 else ())
+                             *runtime_objects)
             check_output(fixtures / f"{name}.expect", actual, require_empty_stderr=True)
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             print(f"{label} FAIL ({error})", file=sys.stderr)
@@ -215,7 +222,7 @@ def main():
     if aapcs64_check and args.arch != "aarch64":
         parser.error("AAPCS64 checks require --arch aarch64")
     if args.abi_case == "x87-long-double" and (args.brt is None or args.bnm is None):
-        parser.error("x87-long-double requires --brt built with exports, and --bnm")
+        parser.error("x87-long-double requires --brt (the brt exports object) and --bnm")
     if args.corpus or aapcs64_check:
         if args.bcc is None or args.bas is None:
             parser.error("compiler checks require --bcc and --bas")

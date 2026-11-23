@@ -19,6 +19,7 @@ pub use thread::{StaticAddress, ThreadData, ThreadInitializer, ThreadObject};
 pub struct TranslationUnit<'a> {
     pub functions: Vec<Function<'a>>,
     pub objects: Vec<Object<'a>>,
+    pub binary128_statics: Vec<Binary128Static<'a>>,
     pub thread_objects: Vec<ThreadObject<'a>>,
     pub records: Vec<Record<'a>>,
 }
@@ -60,9 +61,17 @@ pub struct Local<'a> {
 }
 
 #[derive(Debug)]
+pub struct Binary128Static<'a> {
+    pub name: &'a str,
+    pub site: &'a Position,
+    pub linkage: Linkage,
+    pub initializer: Option<u128>,
+}
+
+#[derive(Debug)]
 pub enum LocalStorage<'a> {
     Automatic,
-    Static,
+    Static(Option<u128>),
     Thread(Option<ThreadInitializer<'a>>),
     ThreadExtern(Linkage),
 }
@@ -254,6 +263,8 @@ pub fn analyze<'a>(
     let mut symbols = HashMap::new();
     let mut functions = Vec::new();
     let mut objects = Vec::new();
+    let mut binary128_statics: Vec<Binary128Static<'_>> = Vec::new();
+    let mut binary128_indices: HashMap<&str, usize> = HashMap::new();
     let mut thread_objects = thread::ThreadObjects::default();
     let mut block_externs = HashMap::new();
     let mut declarations = parse::translation_unit(source, path, target)?;
@@ -341,6 +352,59 @@ pub fn analyze<'a>(
                     if thread_objects.defines(key) {
                         continue;
                     }
+                } else if target == Target::Aarch64 && variable.ty.kind == Kind::LongDouble {
+                    let linkage = match variable.storage {
+                        Storage::Static => Linkage::Internal,
+                        Storage::Extern => {
+                            previous.map_or(Linkage::External, |symbol| symbol.linkage)
+                        }
+                        _ => Linkage::External,
+                    };
+                    if previous
+                        .is_some_and(|symbol| symbol.ty != variable.ty || symbol.linkage != linkage)
+                    {
+                        return Err(name.error("incompatible redeclaration"));
+                    }
+                    let defined = previous.is_some_and(|symbol| symbol.defined);
+                    let result = Type::new(Kind::Void);
+                    let context = FunctionBody::new(
+                        &symbols,
+                        &result,
+                        target,
+                        &[],
+                        &record_scope,
+                        &mut block_externs,
+                    );
+                    let initializer =
+                        context.binary128_initializer(&variable.ty, variable.initializer)?;
+                    if initializer.is_some() && defined {
+                        return Err(name.error("object already defined"));
+                    }
+                    if let Some(&index) = binary128_indices.get(key) {
+                        if initializer.is_some() {
+                            binary128_statics[index].initializer = initializer;
+                        }
+                    } else if variable.storage != Storage::Extern || initializer.is_some() {
+                        binary128_indices.insert(key, binary128_statics.len());
+                        binary128_statics.push(Binary128Static {
+                            name: key,
+                            site: &name.site,
+                            linkage,
+                            initializer,
+                        });
+                    }
+                    symbols.insert(
+                        key,
+                        Symbol {
+                            ty: variable.ty.clone(),
+                            linkage,
+                            defined: defined || initializer.is_some(),
+                            thread_local: false,
+                        },
+                    );
+                    if binary128_indices.contains_key(key) {
+                        continue;
+                    }
                 } else {
                     if variable.storage != Storage::Extern || variable.initializer.is_some() {
                         return Err(name.error(
@@ -390,6 +454,7 @@ pub fn analyze<'a>(
     Ok(TranslationUnit {
         functions,
         objects,
+        binary128_statics,
         thread_objects: thread_objects.definitions,
         records,
     })
@@ -642,10 +707,7 @@ impl<'a> FunctionBody<'a, '_> {
                 Type::new(Kind::Integer(Integer::Int)),
             ),
             Syntax::Number => {
-                if let Some((bits, ty)) = float::literal(&site.text) {
-                    if ty == Kind::LongDouble && self.target != Target::X86_64 {
-                        return Err(site.error("binary128 literals require the AArch64 backend"));
-                    }
+                if let Some((bits, ty)) = float::literal(&site.text, self.target) {
                     (ExpressionKind::Float(bits), Type::new(ty))
                 } else {
                     let (value, integer) = integer_literal(site, self.target)?;

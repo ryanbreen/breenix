@@ -1,5 +1,6 @@
 //! N1570 6.4.4.2. Round the literal's exact ratio once, to nearest/even.
 //! The Intel SDM Vol. 1 Table 4-3 and Fig. 8-13 specify the x87 encoding.
+//! IEEE 754-2019 §3.4 and Table 3.5 specify AArch64's binary128 encoding.
 
 use std::cmp::Ordering;
 
@@ -11,10 +12,7 @@ use crate::types::{Float, Integer, Kind, Type};
 
 // Static initialization uses the same rounding as literal translation.
 pub(super) fn constant_bits(expr: &Expression<'_>, dest: &Kind, target: Target) -> Option<u128> {
-    if *dest == Kind::LongDouble && target != Target::X86_64 {
-        return None;
-    }
-    let format = Format::of(dest);
+    let format = Format::of(dest, target);
     let (negative, significand, exponent) = match &expr.ty.kind {
         Kind::Integer(integer) => {
             let bits = constant_integer(expr, target)
@@ -22,12 +20,16 @@ pub(super) fn constant_bits(expr: &Expression<'_>, dest: &Kind, target: Target) 
             let negative = integer.is_signed(target) && (bits as i64) < 0;
             (
                 negative,
-                Some(if negative { bits.wrapping_neg() } else { bits }),
+                Some(u128::from(if negative {
+                    bits.wrapping_neg()
+                } else {
+                    bits
+                })),
                 0,
             )
         }
         source @ (Kind::Float(_) | Kind::LongDouble) => {
-            let source_format = Format::of(source);
+            let source_format = Format::of(source, target);
             let bits = match &expr.kind {
                 ExpressionKind::Float(bits) => *bits,
                 ExpressionKind::Unary(op @ (Unary::Plus | Unary::Minus), operand) => {
@@ -82,14 +84,14 @@ pub(super) fn constant_to_integer(
         return None;
     }
     let bits = constant_bits(expr, &expr.ty.kind, target)?;
-    let (negative, significand, exponent) = Format::of(&expr.ty.kind).unpack(bits);
+    let (negative, significand, exponent) = Format::of(&expr.ty.kind, target).unpack(bits);
     if dest == Integer::Bool {
         return Some(u64::from(significand != Some(0)));
     }
-    let value = u128::from(significand?);
+    let value = significand?;
     let truncated = if exponent < 0 {
         value.checked_shr(exponent.unsigned_abs()).unwrap_or(0)
-    } else if exponent <= 63 {
+    } else if exponent <= 63 && value <= u128::from(u64::MAX) >> exponent {
         value << exponent
     } else {
         return None;
@@ -113,7 +115,7 @@ pub(super) fn constant_to_integer(
     })
 }
 
-pub(super) fn literal(text: &str) -> Option<(u128, Kind)> {
+pub(super) fn literal(text: &str, target: Target) -> Option<(u128, Kind)> {
     let (text, ty) = if let Some(text) = text.strip_suffix(['f', 'F']) {
         (text, Kind::Float(Float::Single))
     } else if let Some(text) = text.strip_suffix(['l', 'L']) {
@@ -121,7 +123,7 @@ pub(super) fn literal(text: &str) -> Option<(u128, Kind)> {
     } else {
         (text, Kind::Float(Float::Double))
     };
-    let format = Format::of(&ty);
+    let format = Format::of(&ty, target);
     let hex = text.starts_with("0x") || text.starts_with("0X");
     let (mantissa, exponent) = if hex {
         let (mantissa, exponent) = text[2..].split_once(['p', 'P'])?;
@@ -198,7 +200,7 @@ struct Format {
 }
 
 impl Format {
-    fn of(ty: &Kind) -> Self {
+    fn of(ty: &Kind, target: Target) -> Self {
         match ty {
             Kind::Float(Float::Single) => Self {
                 fraction: 23,
@@ -213,6 +215,13 @@ impl Format {
                 explicit_integer: false,
                 decimal_min: -325,
                 decimal_max: 310,
+            },
+            Kind::LongDouble if target == Target::Aarch64 => Self {
+                fraction: 112,
+                bias: 16383,
+                explicit_integer: false,
+                decimal_min: -4966,
+                decimal_max: 4934,
             },
             Kind::LongDouble => Self {
                 fraction: 63,
@@ -235,9 +244,9 @@ impl Format {
         1 << (self.fraction + u32::from(self.explicit_integer) + exponent_width)
     }
 
-    // Decode a binary32, binary64 or x87 literal as a signed integer
+    // Decode a floating literal as a signed integer
     // significand times a power of two. A missing significand is infinity.
-    fn unpack(&self, bits: u128) -> (bool, Option<u64>, i32) {
+    fn unpack(&self, bits: u128) -> (bool, Option<u128>, i32) {
         let width = self.fraction + u32::from(self.explicit_integer);
         let exponent_mask = (2 * self.bias + 1) as u128;
         let exponent = ((bits >> width) & exponent_mask) as i32;
@@ -245,7 +254,7 @@ impl Format {
         if exponent as u128 == exponent_mask {
             return (negative, None, 0);
         }
-        let mut significand = (bits & ((1 << width) - 1)) as u64;
+        let mut significand = bits & ((1 << width) - 1);
         if exponent != 0 && !self.explicit_integer {
             significand |= 1 << self.fraction;
         }
@@ -314,10 +323,11 @@ impl Format {
 struct Big(Vec<u32>);
 
 impl Big {
-    fn from_integer(value: u64) -> Self {
-        let mut words = vec![value as u32];
-        if value > u64::from(u32::MAX) {
-            words.push((value >> 32) as u32);
+    fn from_integer(mut value: u128) -> Self {
+        let mut words = Vec::new();
+        while value != 0 {
+            words.push(value as u32);
+            value >>= 32;
         }
         Self(words)
     }

@@ -1,8 +1,8 @@
 //! AAPCS64 2025Q1 §§6.8.2 and 14.1–14.4, little-endian LP64.
 
 use super::{
-    ArgumentSlots, CallObject, Diagnostic, Emitter, Expression, Kind, Layout, Position, Type,
-    ARGUMENT_REGISTERS, FRAME_RECORD,
+    abi::scalar_slot, value_prefix, ArgumentSlots, CallObject, Diagnostic, Emitter, Expression,
+    Layout, Position, Type, ARGUMENT_REGISTERS, FRAME_RECORD,
 };
 use crate::types::aarch64_va_list::{GR_OFFS, GR_TOP, LAYOUT, STACK, VR_OFFS, VR_TOP};
 use std::fmt::Write;
@@ -11,7 +11,6 @@ const GP_STRIDE: usize = 8;
 const SIMD_STRIDE: usize = 16;
 const GP_BYTES: usize = ARGUMENT_REGISTERS * GP_STRIDE;
 const SAVE_BYTES: usize = GP_BYTES + ARGUMENT_REGISTERS * SIMD_STRIDE;
-const WORD_SLOT: Layout = Layout { size: 8, align: 8 };
 
 pub(super) struct VariadicFrame {
     // The 16-byte-aligned GP area starts here, followed by the SIMD area.
@@ -86,9 +85,9 @@ impl<'src> Emitter<'_, 'src> {
         // §6.8.2 B.4 replaces an ordinary large composite with a pointer
         // before assigning a register or stack slot.
         let direct = object.filter(|value| !value.indirect());
-        let slot = direct.map_or(WORD_SLOT, CallObject::slot);
+        let slot = direct.map_or_else(|| scalar_slot(ty), CallObject::slot);
         let simd_parts = direct.and_then(CallObject::simd_parts);
-        let in_simd = simd_parts.is_some() || matches!(ty.kind, Kind::Float(_));
+        let in_simd = simd_parts.is_some() || value_prefix(ty) != 'x';
         let (top_field, offset_field, consumed) = if in_simd {
             let count = simd_parts.map_or(1, |(_, _, count)| count);
             (VR_TOP, VR_OFFS, count * SIMD_STRIDE)

@@ -184,12 +184,33 @@ fn move_register(p: &mut Parser<'_, '_>) -> Result<u32> {
     if dest.text.starts_with(['w', 'x']) {
         let gp = general(p, dest)?;
         comma(p)?;
-        let fp = FpRegister::next(p)?;
+        let source = p.word();
+        if source.text.starts_with('v') {
+            let lane = high_lane(p, source)?;
+            if !gp.wide {
+                return Err(p.error(gp.column, "register width mismatch"));
+            }
+            // C7.2.157: sf=1, ftype=10, rmode=01, opcode=110.
+            return Ok(0x9eae_0000 | (lane << 5) | gp.number);
+        }
+        let fp = FpRegister::scalar(p, source)?;
         if gp.wide != (fp.precision == Precision::Double) {
             return Err(p.error(fp.column, "register width mismatch"));
         }
         // C7.2.157: sf, ftype, rmode=00, opcode=110 (FP to GPR).
         return Ok(0x1e26_0000 | gp.sf() | fp.ftype() | (fp.number << 5) | gp.number);
+    }
+
+    if dest.text.starts_with('v') {
+        let lane = high_lane(p, dest)?;
+        comma(p)?;
+        let source = p.word();
+        let gp = general(p, source)?;
+        if !gp.wide {
+            return Err(p.error(gp.column, "register width mismatch"));
+        }
+        // C7.2.157: opcode=111 (GPR to upper FP lane).
+        return Ok(0x9eaf_0000 | (gp.number << 5) | lane);
     }
 
     let fp = FpRegister::scalar(p, dest)?;
@@ -213,6 +234,23 @@ fn move_register(p: &mut Parser<'_, '_>) -> Result<u32> {
         }
         Ok(0x1e20_4000 | fp.ftype() | (other.number << 5) | fp.number)
     }
+}
+
+fn high_lane(p: &mut Parser<'_, '_>, token: Token<'_>) -> Result<u32> {
+    let register = token
+        .text
+        .strip_prefix('v')
+        .and_then(|name| name.strip_suffix(".d"))
+        .and_then(|number| number.parse::<u32>().ok())
+        .filter(|&number| number < 32)
+        .ok_or_else(|| p.error(token.column, "expected V register with a D lane"))?;
+    p.expect(b'[', "expected '[' before lane index")?;
+    let index = p.word();
+    if index.text != "1" {
+        return Err(p.error(index.column, "FMOV requires the upper D lane"));
+    }
+    p.expect(b']', "expected ']' after lane index")?;
+    Ok(register)
 }
 
 fn convert(p: &mut Parser<'_, '_>, op: Token<'_>) -> Result<u32> {

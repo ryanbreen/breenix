@@ -22,14 +22,18 @@ impl<'src> Emitter<'_, 'src> {
             if matches!(local.storage, LocalStorage::Thread(_) | LocalStorage::ThreadExtern(_)) {
                 return Err(Diagnostic::new(object.site, DEFERRED_TLS));
             }
-            let slot = if matches!(local.storage, LocalStorage::Static) {
+            let slot = if let LocalStorage::Static(initializer) = local.storage {
                 let label = self.label();
-                writeln!(
-                    self.bss,
-                    "    .balign {}\n{label}:\n    .zero {}",
-                    layout.align, layout.size
-                )
-                .unwrap();
+                if initializer.is_some() {
+                    self.binary128_static(&label, Linkage::Internal, initializer);
+                } else {
+                    writeln!(
+                        self.bss,
+                        "    .balign {}\n{label}:\n    .zero {}",
+                        layout.align, layout.size
+                    )
+                    .unwrap();
+                }
                 Slot::Static(label)
             } else {
                 let layout = match parameters.get(index) {
@@ -196,7 +200,7 @@ impl<'src> Emitter<'_, 'src> {
         label: &str,
     ) -> Result<(), Diagnostic> {
         self.value(condition)?;
-        if matches!(condition.ty.kind, Kind::Float(_)) {
+        if matches!(condition.ty.kind, Kind::Float(_) | Kind::LongDouble) {
             self.compare_zero(&condition.ty);
             let condition = if branch_on_true { "ne" } else { "eq" };
             writeln!(self.text, "    b.{condition} {label}").unwrap();
@@ -281,6 +285,10 @@ impl<'src> Emitter<'_, 'src> {
         let ty = &operand.ty;
         let field = operand.bit_field();
         self.load_value(ty, field, "x9");
+        if ty.kind == Kind::LongDouble {
+            self.binary128_update(increment, postfix);
+            return Ok(());
+        }
         if let Kind::Float(precision) = ty.kind {
             self.float_update(precision, increment, postfix);
             return Ok(());
@@ -320,7 +328,7 @@ impl<'src> Emitter<'_, 'src> {
     }
 }
 
-fn symbol_address(out: &mut String, register: &str, name: &str) {
+pub(super) fn symbol_address(out: &mut String, register: &str, name: &str) {
     writeln!(
         out,
         "    adrp {register}, {name}\n    add {register}, {register}, :lo12:{name}"

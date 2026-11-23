@@ -15,6 +15,7 @@ use crate::sema::{
 use crate::types::{Float, Integer, Kind, Layout, Record, Type};
 
 mod abi;
+mod binary128;
 mod float;
 mod flow;
 mod record;
@@ -44,11 +45,21 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
         variadic: None,
         flow_labels: HashMap::new(),
         externs: BTreeSet::new(),
+        binary128_statics: unit
+            .binary128_statics
+            .iter()
+            .map(|value| value.name)
+            .collect(),
         text: String::from(".section .text\n"),
         rodata: String::new(),
+        data: String::new(),
         bss: String::new(),
         next_label: 0,
     };
+    for value in &unit.binary128_statics {
+        check_symbol(value.name, value.site)?;
+        emitter.binary128_static(value.name, value.linkage, value.initializer);
+    }
     for function in &unit.functions {
         if let Some(body) = &function.body {
             emitter.function(function, body)?;
@@ -61,9 +72,11 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
         emitter.text.push_str("\n.section .rodata\n");
         emitter.text.push_str(&emitter.rodata);
     }
-    if !emitter.bss.is_empty() {
-        emitter.text.push_str("\n.section .bss\n");
-        emitter.text.push_str(&emitter.bss);
+    for (section, body) in [(".data", emitter.data), (".bss", emitter.bss)] {
+        if !body.is_empty() {
+            writeln!(emitter.text, "\n.section {section}").unwrap();
+            emitter.text.push_str(&body);
+        }
     }
     Ok(emitter.text)
 }
@@ -76,8 +89,10 @@ struct Emitter<'unit, 'src> {
     variadic: Option<VariadicFrame>,
     flow_labels: HashMap<usize, String>,
     externs: BTreeSet<&'src str>,
+    binary128_statics: BTreeSet<&'src str>,
     text: String,
     rodata: String,
+    data: String,
     bss: String,
     next_label: usize,
 }
@@ -168,8 +183,8 @@ impl<'src> Emitter<'_, 'src> {
         Ok(())
     }
 
-    // Values use s0/d0 for float/double and x0 for addresses, aggregate/vector
-    // representations in memory and integers extended to their C type.
+    // Floating values use s0/d0/q0. x0 holds addresses, aggregate/vector
+    // representations in memory, and integers extended to their C type.
     fn value(&mut self, expr: &Expression<'src>) -> Result<(), Diagnostic> {
         match expr.ty.kind {
             Kind::Void | Kind::Array(..) | Kind::Function { .. } => {}
@@ -180,7 +195,13 @@ impl<'src> Emitter<'_, 'src> {
                 constant(&mut self.text, "x0", *bits);
                 self.normalize(&expr.ty);
             }
-            ExpressionKind::Float(bits) => self.float_constant(&expr.ty, *bits as u64),
+            ExpressionKind::Float(bits) => {
+                if expr.ty.kind == Kind::LongDouble {
+                    self.binary128_constant(*bits);
+                } else {
+                    self.float_constant(&expr.ty, *bits as u64);
+                }
+            }
             ExpressionKind::String(_)
             | ExpressionKind::Identifier(_)
             | ExpressionKind::Local(_)
@@ -263,14 +284,14 @@ impl<'src> Emitter<'_, 'src> {
             Unary::Plus | Unary::Minus | Unary::Complement => {
                 self.converted(operand, result)?;
                 match op {
-                    Unary::Minus => {
-                        if let Kind::Float(precision) = result.kind {
+                    Unary::Minus => match result.kind {
+                        Kind::LongDouble => self.negate_binary128(),
+                        Kind::Float(precision) => {
                             let fp = float::prefix(precision);
                             writeln!(self.text, "    fneg {fp}0, {fp}0").unwrap();
-                        } else {
-                            self.text.push_str("    sub x0, xzr, x0\n");
                         }
-                    }
+                        _ => self.text.push_str("    sub x0, xzr, x0\n"),
+                    },
                     Unary::Complement => self.text.push_str("    mvn x0, x0\n"),
                     _ => return Ok(()),
                 }
@@ -313,6 +334,10 @@ impl<'src> Emitter<'_, 'src> {
     fn combine(&mut self, op: Binary, left: &Type, right: &Type, result: &Type) {
         if let Kind::Float(precision) = left.kind {
             self.float_binary(op, precision);
+            return;
+        }
+        if left.kind == Kind::LongDouble {
+            self.binary128_binary(op);
             return;
         }
         self.text
@@ -437,6 +462,7 @@ impl<'src> Emitter<'_, 'src> {
                 }
             }
             Kind::Float(precision) => ("ldr", float::prefix(precision)),
+            Kind::LongDouble => ("ldr", 'q'),
             Kind::Pointer(_) => ("ldr", 'x'),
             Kind::Array(..) | Kind::Function { .. } => return,
             Kind::Record(_) | Kind::ShortVector { .. } => {
@@ -451,16 +477,16 @@ impl<'src> Emitter<'_, 'src> {
     }
 
     fn store_object(&mut self, ty: &Type, register: usize, address: &str) {
-        let (op, width) = if let Kind::Float(precision) = ty.kind {
-            ("str", float::prefix(precision))
-        } else {
-            match ty.layout().unwrap().size {
+        let (op, width) = match ty.kind {
+            Kind::Float(precision) => ("str", float::prefix(precision)),
+            Kind::LongDouble => ("str", 'q'),
+            _ => match ty.layout().unwrap().size {
                 1 => ("strb", 'w'),
                 2 => ("strh", 'w'),
                 4 => ("str", 'w'),
                 8 => ("str", 'x'),
                 _ => unreachable!(),
-            }
+            },
         };
         writeln!(self.text, "    {op} {width}{register}, [{address}]").unwrap();
     }
@@ -487,6 +513,13 @@ impl<'src> Emitter<'_, 'src> {
         }
         match (&source.kind, &dest.kind) {
             (_, Kind::Integer(Integer::Bool)) => self.boolean(source),
+            (scalar @ (Kind::Integer(_) | Kind::Float(_)), Kind::LongDouble) => {
+                self.widen_binary128(scalar);
+            }
+            (Kind::LongDouble, scalar @ (Kind::Integer(_) | Kind::Float(_))) => {
+                self.narrow_binary128(scalar);
+                self.normalize(dest);
+            }
             (Kind::Integer(integer), Kind::Float(precision)) => {
                 let op = if integer.is_signed(Target::Aarch64) {
                     "scvtf"
@@ -516,11 +549,13 @@ impl<'src> Emitter<'_, 'src> {
     }
 
     fn compare_zero(&mut self, ty: &Type) {
-        if let Kind::Float(precision) = ty.kind {
-            let fp = float::prefix(precision);
-            writeln!(self.text, "    fcmp {fp}0, #0.0").unwrap();
-        } else {
-            self.text.push_str("    cmp x0, #0\n");
+        match ty.kind {
+            Kind::LongDouble => self.compare_binary128_zero(),
+            Kind::Float(precision) => {
+                let fp = float::prefix(precision);
+                writeln!(self.text, "    fcmp {fp}0, #0.0").unwrap();
+            }
+            _ => self.text.push_str("    cmp x0, #0\n"),
         }
     }
 
@@ -537,6 +572,9 @@ impl<'src> Emitter<'_, 'src> {
 
     fn use_symbol(&mut self, name: &'src str, site: &Position) -> Result<(), Diagnostic> {
         check_symbol(name, site)?;
+        if self.binary128_statics.contains(name) {
+            return Ok(());
+        }
         match self.functions.get(name) {
             Some(function) if function.body.is_some() => {}
             Some(function) if function.linkage == Linkage::Internal => {
@@ -566,8 +604,13 @@ fn check_symbol(name: &str, site: &Position) -> Result<(), Diagnostic> {
 fn require_value(ty: &Type, site: &Position) -> Result<(), Diagnostic> {
     if matches!(
         ty.kind,
-        Kind::Integer(_) | Kind::Pointer(_) | Kind::Float(_) | Kind::ShortVector { .. }
-    ) || matches!(ty.kind, Kind::Record(record) if record.layout.is_some()) {
+        Kind::Integer(_)
+            | Kind::Pointer(_)
+            | Kind::Float(_)
+            | Kind::LongDouble
+            | Kind::ShortVector { .. }
+    ) || matches!(ty.kind, Kind::Record(record) if record.layout.is_some())
+    {
         Ok(())
     } else {
         Err(Diagnostic::new(
@@ -580,6 +623,7 @@ fn require_value(ty: &Type, site: &Position) -> Result<(), Diagnostic> {
 fn value_prefix(ty: &Type) -> char {
     match ty.kind {
         Kind::Float(precision) => float::prefix(precision),
+        Kind::LongDouble => 'q',
         _ => 'x',
     }
 }
