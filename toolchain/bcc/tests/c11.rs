@@ -198,6 +198,10 @@ int main(void) {
 }
 ",
     );
+    assert_runs_to_42(result);
+}
+
+fn assert_runs_to_42(result: Scratch) {
     let toolchain = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut python = if cfg!(target_os = "macos") {
         let mut command = Command::new("arch");
@@ -214,4 +218,90 @@ int main(void) {
         .unwrap();
     assert_eq!(output.status.code(), Some(42), "{output:?}");
     assert!(output.stdout.is_empty() && output.stderr.is_empty());
+}
+
+// N1570 6.7.5, 6.7.2.1p13, 6.7.10, 6.9.1 and 6.5.2.2p6.
+#[test]
+fn aligned_anonymous_members_and_old_style_parameters() {
+    assert_runs_to_42(build_and_check(
+        "declarations",
+        r#"
+struct Slot {
+    char tag;
+    union {
+        struct { _Alignas(64) int value; int extra; };
+        long other;
+    };
+    _Static_assert(_Alignof(long) >= _Alignof(char), "member assertion");
+};
+_Static_assert(_Alignof(struct Slot) == 64, "file assertion");
+_Alignas(32) static int file = 2;
+static _Noreturn void halt(void) { for (;;) {} }
+
+static int old();
+static int old(a, b, c, d, e, f, g, x)
+    int b, a, c, d, e, f;
+    short g;
+    register float x;
+{
+    return a + b + c + d + e + f + g + (int)(x * 2);
+}
+
+int main(void) {
+    _Static_assert(_Alignof(struct Slot[2]) == 64, "block assertion");
+    static _Alignas(64) int local_static;
+    _Alignas(struct Slot) int local = 5;
+    struct Slot item = { .other = 99, .value = 8, 6 };
+    struct Slot *p = &item;
+    if (((unsigned long)&file % 32) || ((unsigned long)&local_static % 64) ||
+        ((unsigned long)&local % 64) || ((unsigned long)&p->value % 64) ||
+        p->value != 8 || p->extra != 6)
+        return 1;
+    if (0) halt();
+    local_static = 3;
+    return old(1, 2, 3, 4, 0, 0, (short)5, 1.5f)
+        + file + local_static + local + item.value + item.extra;
+}
+"#,
+    ));
+}
+
+#[test]
+fn c11_constraints_have_located_diagnostics() {
+    use bcc::{pp, sema};
+    let path = Path::new("constraint.c");
+    let options = pp::Options::default();
+    for (line, source, message) in [
+        (
+            2,
+            "int f(void) {\n return _Generic(0, long: 0); }",
+            "no matching generic association",
+        ),
+        (
+            2,
+            "typedef int I;\nint f(void) { return _Generic(0, int: 0, I: 1); }",
+            "duplicate compatible generic association",
+        ),
+        (
+            2,
+            "struct S {\n _Static_assert(0, \"member fails\"); int i; };",
+            "member fails",
+        ),
+        (
+            2,
+            "int f(void) {\n _Static_assert(0, \"block fails\"); }",
+            "block fails",
+        ),
+        (1, "_Static_assert(0, \"file fails\");", "file fails"),
+    ] {
+        let input = pp::preprocess_source(path, source.as_bytes(), &options).unwrap();
+        let diagnostic = sema::analyze(&input, path, options.target)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            diagnostic.starts_with(&format!("constraint.c:{line}:"))
+                && diagnostic.contains(message),
+            "{diagnostic}"
+        );
+    }
 }
