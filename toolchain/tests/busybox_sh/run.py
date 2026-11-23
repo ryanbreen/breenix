@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[3]
 DRIVER = ROOT / "toolchain/corpus/busybox.sh"
 VENDOR = "vendor/busybox"
 ARCHIVE = "busybox-1.37.0.tar.bz2"
-REFERENCE = ROOT / "target/libc-busybox/x86_64/applets.json"
+REFERENCE = ROOT / "target/libc-busybox-reference/x86_64/applets.json"
 
 
 def run_driver(fixture, output, env, phase=None):

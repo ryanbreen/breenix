@@ -10,6 +10,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 
 from run import DRIVER, ROOT, VENDOR, run_phase_command
 
@@ -93,12 +94,15 @@ def unresolved_tools(bundle, applets, calls, tools, output, source, host_make):
             generated = path if path.is_absolute() else source / path
             if not (generated.is_file() and os.access(generated, os.X_OK)):
                 missing.append(f"{command} (workload script or generated executable)")
-        elif path.name not in applets or (path.is_absolute() and path.parent != Path("/bin")):
-            missing.append(f"{command} (image BusyBox applet)")
+        else:
+            applet = applets / path.name
+            if not (applet.is_file() and os.access(applet, os.X_OK)
+                    and (not path.is_absolute() or path.parent == Path("/bin"))):
+                missing.append(f"{command} (image BusyBox applet)")
     return missing
 
 
-def capture(directory, sealed_bundle, host_tools):
+def capture(directory, arch, sealed_bundle, host_tools):
     fixture = directory / "fixture"
     shutil.copytree(ROOT / VENDOR, fixture / VENDOR)
     bundle = fixture / "bundle"
@@ -114,8 +118,9 @@ def capture(directory, sealed_bundle, host_tools):
         else:
             shutil.copy2(staged, bundle / name)
 
-    # Read every actual driver invocation through bmake -n for both targets.
-    # The host build uses native Clang only to run the generators on the Mac.
+    # Record the guest binding before building the predecessor files on the Mac.
+    # The host execution uses native Clang for runnable generators and the x86
+    # toolchain for target objects used only as prerequisite files by this check.
     output = directory / "build"
     dry = directory / "dry"
     dry.mkdir()
@@ -123,18 +128,22 @@ def capture(directory, sealed_bundle, host_tools):
     (tools / "make").write_text(f"""#!{sys.executable}
 import os, pathlib, subprocess, sys, tempfile
 args = sys.argv[1:]
-for arch in {ARCHES!r}:
-    bound = [arg.replace("x86_64", arch) if arg.startswith(("ARCH=", "CC=")) else arg for arg in args]
-    if '-n' not in bound:
-        bound.insert(0, '-n')
-    with tempfile.NamedTemporaryFile(dir={str(dry)!r}, prefix=arch + '-', delete=False) as trace:
-        result = subprocess.run([{str(host_make)!r}, *bound], stdout=trace)
-        if result.returncode:
-            sys.exit(result.returncode)
-    if '-n' in args and arch == 'x86_64':
-        sys.stdout.buffer.write(pathlib.Path(trace.name).read_bytes())
-if '-n' not in args:
-    native = ['HOSTCC=' + {str(clang)!r} if arg.startswith('HOSTCC=') else arg for arg in args]
+assert 'ARCH=' + {arch!r} in args
+bound = args if '-n' in args else ['-n', *args]
+with tempfile.NamedTemporaryFile(dir={str(dry)!r}, prefix={arch!r} + '-', delete=False) as trace:
+    result = subprocess.run([{str(host_make)!r}, *bound], stdout=trace)
+    if result.returncode:
+        sys.exit(result.returncode)
+if '-n' in args:
+    sys.stdout.buffer.write(pathlib.Path(trace.name).read_bytes())
+else:
+    native = []
+    for arg in args:
+        if arg.startswith('HOSTCC='):
+            arg = 'HOSTCC=' + {str(clang)!r}
+        elif arg.startswith('CC='):
+            arg = arg.replace('--target=aarch64', '--target=x86_64')
+        native.append(arg)
     os.execv({str(host_make)!r}, [{str(host_make)!r}, *native])
 """)
     (tools / "make").chmod(0o755)
@@ -142,14 +151,14 @@ if '-n' not in args:
     source = output / "busybox-1.37.0"
     for phase in PHASES:
         result = run_phase_command(
-            ["/bin/sh", "-x", str(DRIVER), phase, str(fixture), str(output), "x86_64"],
+            ["/bin/sh", "-x", str(DRIVER), phase, str(fixture), str(output), arch],
             output, env,
         )
         assert result.returncode == 0, f"{phase}: {result.stderr[-5000:]}"
         (directory / f"{phase}.trace").write_text(result.stderr)
 
 
-def every_invoked_tool_is_in_the_sealed_bundle(directory, bundles, host_tools):
+def phase_tools(directory, arch, host_make):
     tools = directory / "fixture/bundle/bin"
     output = directory / "build"
     source = output / "busybox-1.37.0"
@@ -165,41 +174,50 @@ def every_invoked_tool_is_in_the_sealed_bundle(directory, bundles, host_tools):
     host_calls.update(traced_tools("+ " + hostcc.read_text().splitlines()[-1], set()))
     host_calls.update(str(tools / name) for name in ("as", "ld"))
 
+    shell_scripts = set()
+    found_hostcc = False
+    compile_goals = set()
+    for trace in sorted((directory / "dry").glob(arch + "-*")):
+        for line in trace.read_text().splitlines():
+            for argv in commands(line):
+                host_calls.update(invoked_tools(argv, set()))
+                found_hostcc |= argv[0] == str(hostcc)
+                if argv[0] == str(tools / "cc") and "-c" in argv and "-o" in argv:
+                    assert f"--target={arch}" in argv, argv[:4]
+                    compile_goals.add(argv[argv.index("-o") + 1])
+                path = source / argv[0]
+                if path != hostcc and path.is_file():
+                    with path.open("rb") as executable:
+                        if executable.read(10) == b"#!/bin/sh\n":
+                            shell_scripts.add(tuple(argv))
+    assert found_hostcc and f"--target={arch}" in hostcc.read_text(), f"{arch}: no guest HOSTCC recipes"
+    expected = {"applets/applets.o", *(output / "libbb.goals").read_text().split(),
+                *(output / "applets.goals").read_text().split()}
+    assert expected <= compile_goals, f"{arch}: dry runs missed {sorted(expected - compile_goals)}"
+    for command in sorted(shell_scripts):
+        result = subprocess.run(["/bin/sh", "-x", *command], cwd=source,
+                                env={"PATH": os.defpath, "LC_ALL": "C"},
+                                check=True, capture_output=True, text=True, timeout=8)
+        functions = set(re.findall(r"^\s*(\w+)\(\)\s*\{", (source / command[0]).read_text(), re.M))
+        host_calls.update(traced_tools(result.stderr, functions))
+    print(f"{arch}: {len(compile_goals)} object recipes, {len(host_calls)} command paths")
+    return host_calls, tools, output, source, host_make
+
+
+def every_invoked_tool_is_in_the_sealed_bundle(directory, bundles, host_tools):
     missing = {}
     for arch, staged in zip(ARCHES, bundles, strict=True):
-        calls = host_calls.copy()
-        shell_scripts = set()
-        found_hostcc = False
-        compile_goals = set()
-        for trace in sorted((directory / "dry").glob(arch + "-*")):
-            for line in trace.read_text().splitlines():
-                for argv in commands(line):
-                    calls.update(invoked_tools(argv, set()))
-                    found_hostcc |= argv[0] == str(hostcc)
-                    if argv[0] == str(tools / "cc") and "-c" in argv and "-o" in argv:
-                        compile_goals.add(argv[argv.index("-o") + 1])
-                    path = source / argv[0]
-                    if path.is_file():
-                        with path.open("rb") as executable:
-                            if executable.read(10) == b"#!/bin/sh\n":
-                                shell_scripts.add(tuple(argv))
-        assert found_hostcc, f"{arch}: no HOSTCC recipes"
-        expected = {"applets/applets.o", *(output / "libbb.goals").read_text().split(),
-                    *(output / "applets.goals").read_text().split()}
-        assert expected <= compile_goals, f"{arch}: dry runs missed {sorted(expected - compile_goals)}"
-        for command in sorted(shell_scripts):
-            result = subprocess.run(["/bin/sh", "-x", *command], cwd=source,
-                                    env={"PATH": os.defpath, "LC_ALL": "C"},
-                                    check=True, capture_output=True, text=True, timeout=8)
-            functions = set(re.findall(r"^\s*(\w+)\(\)\s*\{", (source / command[0]).read_text(), re.M))
-            calls.update(traced_tools(result.stderr, functions))
+        staged_driver = staged / "root/usr/share/breenix/toolchain/busybox/busybox.sh"
+        assert staged_driver.read_bytes() == DRIVER.read_bytes(), f"{arch}: mismatched BusyBox driver"
+        calls = phase_tools((directory / arch).resolve(), arch, host_tools / "bmake")
         image_dir = ROOT / "userspace/programs"
         if arch == "aarch64":
             image_dir /= arch
-        applets = set((image_dir / "libc-busybox.links").read_text().splitlines())
-        missing[arch] = unresolved_tools(staged, applets, calls, tools, output, source,
-                                         host_tools / "bmake")
-        print(f"{arch}: {len(compile_goals)} object recipes, {len(calls)} command paths")
+        with tempfile.TemporaryDirectory(dir=directory) as installed:
+            image = Path(installed)
+            subprocess.run([ROOT / "scripts/install-libc-busybox.sh", image_dir,
+                            ROOT / VENDOR / "required-applets", image], check=True, timeout=5)
+            missing[arch] = unresolved_tools(staged, image / "bin", *calls)
     assert not any(missing.values()), f"unresolved BusyBox commands: {missing}"
 
 
@@ -210,10 +228,11 @@ if __name__ == "__main__":
     parser.add_argument("host_tools", type=Path)
     parser.add_argument("x86_64_bundle", type=Path)
     parser.add_argument("aarch64_bundle", type=Path, nargs="?")
+    parser.add_argument("--arch", choices=ARCHES, default="x86_64", help="target for capture")
     args = parser.parse_args()
     directory, host_tools, x86 = (p.resolve() for p in (args.directory, args.host_tools, args.x86_64_bundle))
     if args.mode == "capture":
-        capture(directory, x86, host_tools)
+        capture(directory / args.arch, args.arch, x86, host_tools)
     else:
         if args.aarch64_bundle is None:
             parser.error("check needs both sealed bundles")

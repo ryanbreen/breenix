@@ -69,7 +69,7 @@ class BusyBoxStagingTest(unittest.TestCase):
             Path("vendor/busybox/breenix-libc.config"): vendor / "breenix-libc.config",
             **{Path("vendor/busybox/patches") / path.name: path
                for path in (vendor / "patches").iterdir()},
-            Path("mac-applets.txt"): ROOT / "userspace/programs/libc-busybox.links",
+            Path("mac-applets.txt"): ROOT / "target/libc-busybox-reference/x86_64/out/libc-busybox.links",
         }
         expected = {str(self.prefix / name): digest(source) for name, source in sources.items()}
         self.assertEqual(record.get("busyboxInputs"), expected)

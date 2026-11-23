@@ -14,7 +14,7 @@ import tempfile
 from typing import NamedTuple
 
 ROOT = Path(__file__).resolve().parents[1]
-WORK = ROOT / "target/libc-busybox/x86_64"
+WORK = ROOT / "target/libc-busybox-reference/x86_64"
 SRC = WORK / "busybox-1.37.0"
 VENDOR = ROOT / "vendor/busybox"
 BCC = ROOT / "toolchain/target/debug/bcc"
