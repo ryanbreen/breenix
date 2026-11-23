@@ -15,9 +15,9 @@ pub(super) enum ArgumentLocation {
 
 #[derive(Default)]
 pub(super) struct ArgumentSlots {
-    general: usize,
-    simd: usize,
-    stack_bytes: usize,
+    pub(super) general: usize,
+    pub(super) simd: usize,
+    pub(super) stack_bytes: usize,
 }
 
 impl ArgumentSlots {
@@ -97,6 +97,16 @@ impl CallObject {
         Layout {
             size: self.layout.size.next_multiple_of(8),
             align: self.layout.align.max(8),
+        }
+    }
+
+    pub(super) fn simd_parts(self) -> Option<(char, usize, usize)> {
+        match self.class {
+            ObjectClass::Simd(base) => {
+                let bytes = base.bytes();
+                Some((base.prefix(), bytes, self.layout.size / bytes))
+            }
+            _ => None,
         }
     }
 

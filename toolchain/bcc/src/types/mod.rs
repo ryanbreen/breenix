@@ -90,6 +90,19 @@ pub(crate) mod amd64_va_list {
     pub(crate) const LAYOUT: Layout = Layout { size: 24, align: 8 };
 }
 
+// AAPCS64 2025Q1 §10.1.5 Table 6 and §10.1.1 Table 3 (LP64).
+pub(crate) mod aarch64_va_list {
+    use super::Layout;
+
+    pub(crate) const NAME: &str = "__va_list";
+    pub(crate) const STACK: usize = 0;
+    pub(crate) const GR_TOP: usize = 8;
+    pub(crate) const VR_TOP: usize = 16;
+    pub(crate) const GR_OFFS: usize = 24;
+    pub(crate) const VR_OFFS: usize = 28;
+    pub(crate) const LAYOUT: Layout = Layout { size: 32, align: 8 };
+}
+
 #[derive(Debug)]
 pub struct RecordDefinition<'a> {
     pub layout: Layout,

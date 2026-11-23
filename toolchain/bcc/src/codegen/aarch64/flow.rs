@@ -20,7 +20,7 @@ impl<'src> Emitter<'_, 'src> {
             let object = &local.object;
             let layout = object.ty.layout().unwrap();
             if matches!(local.storage, LocalStorage::Thread(_) | LocalStorage::ThreadExtern(_)) {
-                return Err(Diagnostic::new(object.site, "AArch64 C TLS is deferred to A4"));
+                return Err(Diagnostic::new(object.site, DEFERRED_TLS));
             }
             let slot = if matches!(local.storage, LocalStorage::Static) {
                 let label = self.label();
@@ -224,7 +224,7 @@ impl<'src> Emitter<'_, 'src> {
                 self.add_sub_offset("add", "x0", "x0", *offset as u64);
             }
             ExpressionKind::ThreadLocal(_) => {
-                return Err(Diagnostic::new(expr.position(), DEFERRED_A4));
+                return Err(Diagnostic::new(expr.position(), DEFERRED_TLS));
             }
             _ => unreachable!("sema must supply an addressable expression"),
         }

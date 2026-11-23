@@ -18,13 +18,15 @@ mod abi;
 mod float;
 mod flow;
 mod record;
+mod varargs;
 
 use abi::{ArgumentLocation, ArgumentSlots, CallObject};
 use flow::Slot;
+use varargs::VariadicFrame;
 
 const ARGUMENT_REGISTERS: usize = 8;
 const FRAME_RECORD: usize = 16;
-const DEFERRED_A4: &str = "AArch64 variadic functions and C TLS are deferred to A4";
+const DEFERRED_TLS: &str = "AArch64 C TLS is deferred to A4";
 
 pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
     let mut functions = HashMap::new();
@@ -39,6 +41,7 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
         records: &unit.records,
         locals: Vec::new(),
         frame: 0,
+        variadic: None,
         flow_labels: HashMap::new(),
         externs: BTreeSet::new(),
         text: String::from(".section .text\n"),
@@ -70,6 +73,7 @@ struct Emitter<'unit, 'src> {
     records: &'unit [Record<'src>],
     locals: Vec<Slot>,
     frame: usize,
+    variadic: Option<VariadicFrame>,
     flow_labels: HashMap<usize, String>,
     externs: BTreeSet<&'src str>,
     text: String,
@@ -86,7 +90,10 @@ impl<'src> Emitter<'_, 'src> {
     ) -> Result<(), Diagnostic> {
         let name = function.name;
         check_symbol(name, function.site)?;
-        let Kind::Function { result, .. } = &function.ty.kind else {
+        let Kind::Function {
+            result, variadic, ..
+        } = &function.ty.kind
+        else {
             unreachable!()
         };
         let object_result = self.call_object(result, function.site)?;
@@ -112,6 +119,11 @@ impl<'src> Emitter<'_, 'src> {
         self.text
             .push_str("    stp x29, x30, [sp, #-16]!\n    mov x29, sp\n");
         let stack_adjustment = self.text.len();
+        self.variadic = if *variadic {
+            Some(self.save_variadic_arguments(slots, function.site)?)
+        } else {
+            None
+        };
         if let Some(distance) = indirect_result {
             self.offset_address("x9", "x29", -(distance as i64));
             self.text.push_str("    str x8, [x9]\n");
@@ -206,13 +218,14 @@ impl<'src> Emitter<'_, 'src> {
                 self.converted(no, &expr.ty)?;
                 writeln!(self.text, "{end}:").unwrap();
             }
-            ExpressionKind::ThreadLocal(_)
-            | ExpressionKind::VaStart(_)
-            | ExpressionKind::VaArg(_)
-            | ExpressionKind::VaCopy { .. }
-            | ExpressionKind::VaEnd(_) => {
-                return Err(Diagnostic::new(expr.position(), DEFERRED_A4));
+            ExpressionKind::ThreadLocal(_) => {
+                return Err(Diagnostic::new(expr.position(), DEFERRED_TLS));
             }
+            ExpressionKind::VaStart(list) => self.va_start(list)?,
+            ExpressionKind::VaArg(list) => self.va_arg(list, &expr.ty, expr.position())?,
+            ExpressionKind::VaCopy { dest, source } => self.va_copy(dest, source)?,
+            // There is no runtime cleanup, but evaluating the operand can have side effects.
+            ExpressionKind::VaEnd(list) => self.value(list)?,
             ExpressionKind::Call { callee, arguments } => {
                 self.call(callee, arguments, &expr.ty)?;
                 self.normalize(&expr.ty);

@@ -235,7 +235,14 @@ Figure 3.34 gives the one-element array type and its 24-byte record.
 The prologue uses the save offsets in Figure 3.33 and guards XMM spills
 with AL. The usable SSE bank ends at offset 176 because §3.2.3 assigns
 only XMM0–7 to arguments. Register-class selection and whole-record
-overflow follow §3.2.3. AAPCS64 varargs are scheduled for A4.
+overflow follow §3.2.3.
+
+On AArch64, AAPCS64 2025Q1 §10.1.5 Table 6 defines the five-field
+`va_list` structure and §14 defines the register save areas and cursors.
+Named arguments advance the cursors using §6.8.2. Anonymous arguments use
+the same classification, including a pointer slot for a large ordinary
+composite under B.4. Register-resident homogeneous composites are gathered
+from separate 16-byte slots.
 
 ### AMD64 extended precision (25.7b3)
 
