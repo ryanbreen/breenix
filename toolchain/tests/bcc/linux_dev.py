@@ -6,7 +6,7 @@ These checks are development only and are never Breenix evidence.
 
 Pass the Cargo-built bld binary and liblinux_test.a. For the sealed-object
 check pass the reference corpus directory (receipts and objs/*.o outputs).
-For --corpus or --aapcs64-scalar-calls also pass the Cargo-built bcc and bas binaries.
+For compiler checks also pass the Cargo-built bcc and bas binaries.
 """
 
 import argparse
@@ -17,6 +17,8 @@ import platform
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+
+import records
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -50,6 +52,8 @@ CORPUS = (
     "usual-conversions",
     "varargs",
 )
+# A4 adds the record cases before it adds variadic definitions.
+AARCH64_CORPUS = tuple(name for name in CORPUS if name != "varargs")
 
 
 def reference_object(args, name):
@@ -116,11 +120,24 @@ def aapcs64_scalar_calls(args, work):
                          f"stdout={actual.stdout!r}, stderr={actual.stderr!r}")
 
 
+def aapcs64_records(args, work):
+    for name, contents, status in (("records", records.SOURCE, 31),
+                                   ("record-layout", records.AAPCS64_LAYOUT, 42)):
+        source = work / f"{name}.c"
+        source.write_text(contents)
+        actual = execute(args, work / name, compile_object(args, source, work))
+        if (actual.returncode, actual.stdout, actual.stderr) != (status, b"", b""):
+            raise ValueError(f"{name}: expected exit {status} with empty streams, "
+                             f"got exit {actual.returncode}, stdout={actual.stdout!r}, "
+                             f"stderr={actual.stderr!r}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--corpus", action="store_true")
     mode.add_argument("--aapcs64-scalar-calls", action="store_true")
+    mode.add_argument("--aapcs64-records", action="store_true")
     parser.add_argument("--arch", choices=("x86_64", "aarch64"), default="x86_64")
     for option in ("bld", "runtime", "reference-corpus", "bcc", "bas"):
         parser.add_argument(f"--{option}", required=option in ("bld", "runtime"),
@@ -128,25 +145,30 @@ def main():
     args = parser.parse_args()
     if (platform.system(), platform.machine()) != ("Linux", args.arch):
         parser.error(f"run in a Linux/{args.arch} build container")
-    if args.aapcs64_scalar_calls and args.arch != "aarch64":
-        parser.error("--aapcs64-scalar-calls requires --arch aarch64")
-    if args.corpus or args.aapcs64_scalar_calls:
+    aapcs64_check = (aapcs64_scalar_calls if args.aapcs64_scalar_calls else
+                     aapcs64_records if args.aapcs64_records else None)
+    if aapcs64_check and args.arch != "aarch64":
+        parser.error(f"--{aapcs64_check.__name__.replace('_', '-')} requires --arch aarch64")
+    if args.corpus or aapcs64_check:
         if args.bcc is None or args.bas is None:
             parser.error("compiler checks require --bcc and --bas")
     elif args.reference_corpus is None:
         parser.error("the sealed-object check requires --reference-corpus")
 
-    if args.aapcs64_scalar_calls:
+    if aapcs64_check:
+        label = f"codegen::{aapcs64_check.__name__}"
         with TemporaryDirectory(prefix="bcc-linux-dev-") as work:
             try:
-                aapcs64_scalar_calls(args, Path(work))
+                aapcs64_check(args, Path(work))
             except (OSError, ValueError, subprocess.TimeoutExpired) as error:
-                print(f"codegen::aapcs64_scalar_calls FAIL ({error})", file=sys.stderr)
+                print(f"{label} FAIL ({error})", file=sys.stderr)
                 return 1
-        print("codegen::aapcs64_scalar_calls PASS")
+        print(f"{label} PASS")
         return 0
 
-    cases = CORPUS if args.corpus else CASES
+    cases = CASES
+    if args.corpus:
+        cases = AARCH64_CORPUS if args.arch == "aarch64" else CORPUS
     passed = 0
     with TemporaryDirectory(prefix="bcc-linux-dev-") as work:
         for name in cases:

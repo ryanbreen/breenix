@@ -158,29 +158,16 @@ fn aarch64_reports_deferred_lvalue() {
         target: pp::Target::Aarch64,
         ..pp::Options::default()
     };
-    for (source, location) in [
-        (
-            concat!(
-                "struct pair { int first; int second; };\n",
-                "int *address(struct pair *value) { return &value->second; }",
-            ),
-            "deferred-lvalue.c:2:49: error: ",
-        ),
-        (
-            "extern _Thread_local int data;\nint *address(void) { return &data; }",
-            "deferred-lvalue.c:2:30: error: ",
-        ),
-    ] {
-        let input = pp::preprocess_source(path, source.as_bytes(), &options).unwrap();
-        let unit = sema::analyze(&input, path, options.target).unwrap();
-        let error = codegen::emit_assembly(&unit, path, options.target)
-            .unwrap_err()
-            .to_string();
-        let message = error
-            .strip_prefix(location)
-            .unwrap_or_else(|| panic!("{error}"));
-        assert!(message.contains("deferred to A4"), "{error}");
-    }
+    let source = b"extern _Thread_local int data;\nint *address(void) { return &data; }";
+    let input = pp::preprocess_source(path, source, &options).unwrap();
+    let unit = sema::analyze(&input, path, options.target).unwrap();
+    let error = codegen::emit_assembly(&unit, path, options.target)
+        .unwrap_err()
+        .to_string();
+    let message = error
+        .strip_prefix("deferred-lvalue.c:2:30: error: ")
+        .unwrap_or_else(|| panic!("{error}"));
+    assert!(message.contains("deferred to A4"), "{error}");
 }
 
 #[test]
