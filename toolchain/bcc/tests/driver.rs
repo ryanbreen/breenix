@@ -15,6 +15,8 @@ fn check(case: &str) {
         .arg(bcc.with_file_name("bld"))
         .arg("--bar")
         .arg(bcc.with_file_name("bar"))
+        .arg("--bmake")
+        .arg(bcc.with_file_name("bmake"))
         .output()
         .expect("run the driver harness");
     assert!(
@@ -33,6 +35,16 @@ fn stages_agree_bytewise() {
 #[test]
 fn unknown_option_rejected() {
     check("unknown_option_rejected");
+}
+
+#[test]
+fn md_writes_make_dependencies() {
+    check("md_writes_make_dependencies");
+}
+
+#[test]
+fn gnu_mode_and_include_flags() {
+    check("gnu_mode_and_include_flags");
 }
 
 #[test]

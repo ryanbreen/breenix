@@ -2,6 +2,7 @@
 """Compare bcc's independent driver paths through bas and bld."""
 
 import argparse
+import os
 import re
 import shutil
 from pathlib import Path
@@ -11,11 +12,97 @@ from tempfile import TemporaryDirectory
 
 from return_42_exit_status import LINKER_SCRIPT
 
+
+def md_writes_make_dependencies(args, root, bcc, run):
+    shutil.copy2(args.bas, bcc.with_name("as"))
+    (root / "inc").mkdir()
+    (root / "obj").mkdir()
+    (root / "inc/outer.h").write_text('#include "inner.h"\n')
+    header = root / "inc/inner.h"
+    header.write_text("#define VALUE 19\n")
+    (root / "main.c").write_text(
+        '#include <outer.h>\n#include <outer.h>\n'
+        '#if 0\n#include "missing.h"\n#endif\n'
+        'int main(void) { return VALUE; }\n'
+    )
+    for flags, dependency in (
+        (("-MD",), "obj/main.d"),
+        (("-MD", "-MF", "explicit.d"), "explicit.d"),
+        (("-Wp,-MD,kbuild.d",), "kbuild.d"),
+    ):
+        run(bcc, "-c", "-Iinc", "-o", "obj/main.o", *flags, "main.c")
+        rule = (root / dependency).read_text().replace("\\\n", " ")
+        target, prerequisites = rule.split(":", 1)
+        if target != "obj/main.o" or sorted(prerequisites.split()) != [
+            "inc/inner.h", "inc/outer.h", "main.c",
+        ]:
+            raise ValueError(f"{dependency}: wrong dependency rule {rule!r}")
+
+    (root / "Makefile").write_text(
+        'include kbuild.d\n'
+        'obj/main.o: main.c\n'
+        '\t@bin/bcc -c -Iinc -o obj/main.o -Wp,-MD,kbuild.d main.c\n'
+    )
+    obj = root / "obj/main.o"
+    before = obj.read_bytes()
+    os.utime(obj, (200, 200))
+    for path in ("main.c", "inc/outer.h", "inc/inner.h"):
+        os.utime(root / path, (100, 100))
+    run(args.bmake, "obj/main.o")
+    if obj.stat().st_mtime != 200:
+        raise ValueError("bmake rebuilt a current object")
+    header.write_text("#define VALUE 23\n")
+    os.utime(header, (300, 300))
+    run(args.bmake, "obj/main.o")
+    if obj.read_bytes() == before:
+        raise ValueError("bmake did not recompile after a transitive header changed")
+
+
+def gnu_mode_and_include_flags(root, bcc, run):
+    (root / "src").mkdir()
+    (root / "inc").mkdir()
+    (root / "src/first.h").write_text('#error searched source directory first\n')
+    (root / "inc/first.h").write_text('#error searched -I before the working directory\n')
+    (root / "first.h").write_text('#define FIRST COMMAND_LINE\n')
+    (root / "inc/second.h").write_text(
+        '#ifndef FIRST\n#error forced include order\n#endif\n'
+        '#include "nested.h"\n'
+    )
+    (root / "inc/nested.h").write_text('#define SECOND 23\n')
+    (root / "src/main.c").write_text(
+        '#ifdef __STRICT_ANSI__\n#error GNU mode is strict\n#endif\n'
+        '__STDC_VERSION__ FIRST SECOND\n'
+    )
+    for standards, expected in (
+        (("-std=gnu99",), b"199901L 19 23"),
+        (("-std=gnu99", "-std=gnu11"), b"201112L 19 23"),
+    ):
+        result = run(
+            bcc, "-E", *standards, "-include", "first.h", "-include", "second.h",
+            "-Iinc", "-DCOMMAND_LINE=19", "src/main.c",
+        )
+        if result.strip() != expected:
+            raise ValueError(f"{standards}: expected {expected!r}, got {result!r}")
+
+
 def check(args, root):
     bin_dir = root / "bin"
     bin_dir.mkdir()
     bcc = bin_dir / "bcc"
     shutil.copy2(args.bcc, bcc)
+
+    def run(*command):
+        result = subprocess.run(command, cwd=root, capture_output=True, timeout=10)
+        if result.returncode:
+            raise ValueError(f"{' '.join(map(str, command))}: {result.stderr.decode(errors='replace')}")
+        return result.stdout
+
+    if args.case == "md_writes_make_dependencies":
+        md_writes_make_dependencies(args, root, bcc, run)
+        return
+    if args.case == "gnu_mode_and_include_flags":
+        gnu_mode_and_include_flags(root, bcc, run)
+        return
 
     if args.case == "unknown_option_rejected":
         result = subprocess.run(
@@ -36,12 +123,6 @@ def check(args, root):
         tool_flags = ("-B", str(tool_dir))
     shutil.copy2(args.bas, tool_dir / "as")
     shutil.copy2(args.bld, tool_dir / "ld")
-
-    def run(*command):
-        result = subprocess.run(command, cwd=root, capture_output=True, timeout=10)
-        if result.returncode:
-            raise ValueError(f"{' '.join(map(str, command))}: {result.stderr.decode(errors='replace')}")
-        return result.stdout
 
     def equal(a, b):
         if (root / a).read_bytes() != (root / b).read_bytes():
@@ -91,6 +172,7 @@ def main():
     parser.add_argument("case")
     for name in ("bcc", "bas", "bld", "bar"):
         parser.add_argument(f"--{name}", required=True, type=lambda value: Path(value).resolve())
+    parser.add_argument("--bmake", type=lambda value: Path(value).resolve())
     args = parser.parse_args()
     case = f"driver::{args.case}"
     try:
