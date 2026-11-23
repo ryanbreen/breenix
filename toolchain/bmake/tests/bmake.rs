@@ -806,7 +806,7 @@ fn member_archive(seconds: u64) -> String {
 }
 
 // Each append is one short record. Files gate the recipes; the clock only
-// bounds a fixture whose peer never starts.
+// sets the deadline for the handshake.
 const RECORD_JOB: &str = r#"
 set -eu
 printf '+ %s\n' "$1" >> jobs.log

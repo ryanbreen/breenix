@@ -148,6 +148,9 @@ impl Suffixes {
         candidates.sort_unstable();
         let mut derived = Vec::new();
         for target in candidates {
+            if target == ".WAIT" {
+                continue;
+            }
             let has_recipe = targets.get(target).copied();
             if has_recipe == Some(true) || specials.phony.contains(target) {
                 continue;

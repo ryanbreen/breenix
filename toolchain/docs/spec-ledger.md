@@ -226,12 +226,6 @@ lane operations and intrinsics are outside this subset.
 | Special targets | POSIX.1-2024 make, “Target Rules”. `.PHONY` opts targets into a rebuild on each invocation, `.DEFAULT` supplies a fallback recipe, and `.IGNORE` and `.SILENT` scope recipe error handling and echo. `.POSIX` declares the serial semantics bmake uses by default. `.PRECIOUS` preserves output when a recipe shell reports an interruption. |
 | Recipe options | POSIX.1-2024 make, “Options”, “Makefile Execution” and “Exit Status”. `-n` prints pending recipes, with the `+` prefix still forcing execution. `-k` skips dependents of failures and attempts independent work before returning 2. `-i` continues after command errors and `-s` suppresses recipe echo. |
 
-The serial runner can observe a signal reported in a recipe's wait status.
-Under E25 ruling 31, 25.6 defers cleanup when a signal stops bmake itself, as
-described in “Asynchronous Events”. A partly written non-precious target can
-be left with a fresh modification time, so a later invocation can treat it as
-up to date.
-
 Ordinary makefiles default to `CC=cc` and empty `CFLAGS` so the built-in C
 rules use the compiler shipped in the bundle. A leading `.POSIX:` selects
 the standard compiler defaults (`c17` and `-O 1`). On Breenix, makefiles that
@@ -267,8 +261,37 @@ For `lib(member.o)`, `$@` is `lib` and `$%` is `member.o`. Freshness uses the
 member's `ar_date` as read by `bobj` from the common archive header. The
 `ar_date` value `0` emitted by deterministic `bar` represents the Unix epoch.
 
-25.6c also covers the `.WAIT` barrier, `.NOTPARALLEL`, the `-j` job pool, and
-target cleanup when a signal stops bmake itself.
+25.6c parallel scheduling follows [POSIX.1-2024 make, “Options” and “Target
+Rules”](https://pubs.opengroup.org/onlinepubs/9799919799.2024edition/utilities/make.html).
+`.WAIT` separates groups in a target's prerequisite list. The scheduler
+requests the next group only after the preceding group succeeds. Another
+dependency path can request the same prerequisite independently. A standalone
+`.WAIT:` has no effect. `.NOTPARALLEL:` gives the local scheduler one slot and
+preserves `-j N` for recursive invocations.
+
+The pool protocol is bmake's design. The top-level invocation creates a
+private temporary directory and includes `BMAKE_JOB_POOL=N:<absolute-directory>`
+as a quoted word in `MAKEFLAGS` beside `-j N`. A recursive bmake with the same
+inherited job count joins that directory. An explicit command-line `-j`
+selects its own limit and pool. Each invocation can run one target using its
+implicit slot, lent by the invoking recipe during a synchronous sub-make.
+Each additional target claims a token by creating one of the directories
+numbered from 1 through N−1. A token stays claimed across successive recipe lines
+for that target and is released on completion or failure. The pool owner
+removes the directory on normal exit or after handled interruption. An
+uncatchable termination can leave claims or the pool directory behind. POSIX leaves multiple asynchronous
+sub-makes from one recipe unspecified.
+
+For signal handling, [POSIX.1-2024 make, “Asynchronous
+Events”](https://pubs.opengroup.org/onlinepubs/9799919799.2024edition/utilities/make.html)
+names HUP, INT, QUIT and TERM. Under E25 ruling 31, a Rust callback records
+the interruption for the scheduler. It stops launching recipes, signals and
+reaps active recipe shells, reports their exit statuses, and removes changed
+targets under the POSIX exceptions for dry runs, directories, `.PHONY` and
+`.PRECIOUS`. Archive member interruption leaves the containing archive in
+place. Recipe shells without terminal input run in their own process group
+so the scheduler can signal the shell and commands in its group. Foreground
+recipes retain terminal access.
 
 ### AMD64 variadic definitions (25.7b2)
 

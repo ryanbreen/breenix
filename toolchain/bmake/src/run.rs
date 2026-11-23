@@ -1,21 +1,25 @@
-//! Serial recipes and file freshness for POSIX.1-2024 make.
+//! Schedule recipes and check file freshness for POSIX.1-2024 make.
 
 use crate::{
     graph::{archive_member, Graph, Node},
     inference::Suffixes,
+    job_pool::{JobPool, Token},
     r#macro::{Automatic, MacroSource, Macros},
     reader::{Entry, IncludeFile, Makefile, SourceLine},
+    signals,
     special::Specials,
     time, Error,
 };
 use std::{
-    collections::{HashMap, HashSet},
+    cmp::Reverse,
+    collections::{BinaryHeap, HashMap, HashSet},
     fs,
-    io::{self, Write},
-    os::unix::process::ExitStatusExt,
+    io::{self, IsTerminal, Write},
+    os::unix::process::{CommandExt, ExitStatusExt},
     path::Path,
-    process::Command,
-    time::SystemTime,
+    process::{Child, Command, ExitStatus},
+    thread,
+    time::{Duration, Instant, SystemTime},
 };
 
 #[derive(Clone, Copy, Default)]
@@ -25,6 +29,7 @@ pub(crate) struct Options {
     pub silent: bool,
     pub ignore: bool,
     pub remaking: bool,
+    pub jobs: Option<usize>,
 }
 
 /// Delayed remaking, as specified by POSIX.1-2024 make, "Include Lines".
@@ -35,6 +40,7 @@ pub(crate) fn remake_includes<'a>(
     suffixes: &Suffixes,
     specials: &Specials,
     options: Options,
+    pool: Option<&JobPool>,
 ) -> Result<Option<&'a IncludeFile>, String> {
     if makefile.includes.is_empty() {
         return Ok(None);
@@ -64,6 +70,7 @@ pub(crate) fn remake_includes<'a>(
                 remaking: true,
                 ..options
             },
+            pool,
         )?;
         for include in &makefile.includes {
             let current = fs::metadata(&include.name).and_then(|metadata| {
@@ -111,29 +118,407 @@ pub(crate) fn build(
     suffixes: &Suffixes,
     specials: &Specials,
     options: Options,
+    pool: Option<&JobPool>,
 ) -> Result<(), String> {
-    let mut mtimes = HashMap::new();
-    let mut errors = Vec::new();
-    for node in graph.default_build_order() {
-        // A failed or skipped prerequisite has no entry. Its dependents cannot run.
-        if graph
-            .prerequisites_of(node)
-            .any(|name| !mtimes.contains_key(name))
-        {
-            continue;
+    Build {
+        graph,
+        macros,
+        suffixes,
+        specials,
+        options,
+        own_group: !io::stdin().is_terminal(),
+    }
+    .run(pool)
+}
+
+#[derive(Default)]
+struct Pending {
+    requested: bool,
+    result: Option<bool>,
+    parents: Vec<usize>,
+    next_edge: usize,
+    remaining: usize,
+    failed: bool,
+}
+
+enum Event {
+    Request(usize, Option<usize>),
+    Advance(usize),
+    PrerequisiteDone(usize, bool),
+}
+
+// A target requests the next group of its own prerequisites only once the
+// current group succeeds. Another active rule can request the same targets
+// independently. A .WAIT marker affects scheduling for its own rule.
+struct Ready<'g, 'a> {
+    graph: &'g Graph<'a>,
+    pending: Vec<Pending>,
+    ranks: Vec<usize>,
+    ready: BinaryHeap<Reverse<usize>>,
+    events: Vec<Event>,
+}
+
+impl<'g, 'a> Ready<'g, 'a> {
+    fn new(graph: &'g Graph<'a>) -> Self {
+        let mut ranks = vec![0; graph.nodes().len()];
+        for (rank, &index) in graph.default_build_order().iter().enumerate() {
+            ranks[index] = rank;
         }
-        match update(node, graph, &mtimes, macros, suffixes, specials, &options) {
-            Ok(modified) => {
-                mtimes.insert(node.name, modified);
-            }
-            Err(error) if options.keep_going => errors.push(error),
-            Err(error) => return Err(error),
+        let events = graph
+            .roots
+            .iter()
+            .rev()
+            .map(|&index| Event::Request(index, None))
+            .collect();
+        Self {
+            graph,
+            pending: (0..graph.nodes().len())
+                .map(|_| Pending::default())
+                .collect(),
+            ranks,
+            ready: BinaryHeap::new(),
+            events,
         }
     }
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors.join("\n"))
+
+    fn settle(&mut self) {
+        while let Some(event) = self.events.pop() {
+            match event {
+                Event::Request(index, parent) => {
+                    let state = &mut self.pending[index];
+                    if let Some(parent) = parent {
+                        if let Some(success) = state.result {
+                            self.events.push(Event::PrerequisiteDone(parent, success));
+                            continue;
+                        }
+                        state.parents.push(parent);
+                    }
+                    if !state.requested {
+                        state.requested = true;
+                        self.events.push(Event::Advance(index));
+                    }
+                }
+                Event::Advance(index) => self.advance(index),
+                Event::PrerequisiteDone(parent, success) => {
+                    let state = &mut self.pending[parent];
+                    state.failed |= !success;
+                    state.remaining -= 1;
+                    if state.remaining == 0 {
+                        if state.failed {
+                            self.complete(parent, false);
+                        } else {
+                            self.events.push(Event::Advance(parent));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn advance(&mut self, index: usize) {
+        let state = &mut self.pending[index];
+        let edges = &self.graph.nodes()[index].prerequisites;
+        while state.next_edge < edges.len() {
+            let start = state.next_edge;
+            let count = edges[start..]
+                .iter()
+                .take_while(|edge| edge.target.is_some())
+                .count();
+            state.next_edge = (start + count + 1).min(edges.len());
+            if count > 0 {
+                state.remaining = count;
+                self.events.extend(
+                    edges[start..start + count]
+                        .iter()
+                        .rev()
+                        .filter_map(|edge| edge.target)
+                        .map(|child| Event::Request(child, Some(index))),
+                );
+                return;
+            }
+        }
+        self.ready.push(Reverse(self.ranks[index]));
+    }
+
+    fn complete(&mut self, index: usize, success: bool) {
+        let state = &mut self.pending[index];
+        state.result = Some(success);
+        self.events.extend(
+            state
+                .parents
+                .drain(..)
+                .map(|parent| Event::PrerequisiteDone(parent, success)),
+        );
+    }
+
+    fn pop(&mut self) -> Option<usize> {
+        let Reverse(rank) = self.ready.pop()?;
+        Some(self.graph.default_build_order()[rank])
+    }
+}
+
+struct Build<'g, 'a> {
+    graph: &'g Graph<'a>,
+    macros: &'g Macros,
+    suffixes: &'g Suffixes,
+    specials: &'g Specials,
+    options: Options,
+    own_group: bool,
+}
+
+enum Update {
+    Current(Option<SystemTime>),
+    Recipes(Job),
+}
+
+struct Job {
+    before: Option<SystemTime>,
+    newer: String,
+    next_recipe: usize,
+    skipped: bool,
+}
+
+struct Active {
+    index: usize,
+    job: Job,
+    token: Option<Token>,
+    recipe: RunningRecipe,
+}
+
+impl<'a> Build<'_, 'a> {
+    fn run(&self, pool: Option<&JobPool>) -> Result<(), String> {
+        let limit = if self.specials.not_parallel {
+            1
+        } else {
+            self.options.jobs.unwrap_or(1)
+        };
+        let mut ready = Ready::new(self.graph);
+        let mut mtimes = HashMap::new();
+        let mut active: Vec<Active> = Vec::new();
+        let mut errors = Vec::new();
+        let mut interrupted = None;
+        let mut stopped = false;
+
+        loop {
+            if let Some(number) = signals::pending() {
+                if interrupted.is_none() {
+                    errors.push(format!("bmake: interrupted by signal {number}"));
+                    interrupted = Some((number, Instant::now()));
+                }
+                stopped = true;
+            }
+
+            let mut i = 0;
+            while i < active.len() {
+                let recipe = &mut active[i].recipe;
+                if let Some((number, since)) = interrupted {
+                    recipe.interrupt(number, since.elapsed(), self.own_group);
+                }
+                let status = match recipe.child.try_wait() {
+                    Ok(None) => {
+                        i += 1;
+                        continue;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    status => status,
+                };
+                let mut work = active.swap_remove(i);
+                let node = &self.graph.nodes()[work.index];
+                let result = match work.recipe.finish(status) {
+                    Ok(()) => self.advance(node, &mut work.job),
+                    Err(failure) => Err(failure),
+                };
+                match result {
+                    Ok(Some(recipe)) => {
+                        work.recipe = recipe;
+                        active.push(work);
+                        // This is a new line for a target already in flight.
+                        // Check the other children before polling it again.
+                        i += 1;
+                    }
+                    finished => {
+                        let result = self.finish(node, work.job, finished.map(|_| ()));
+                        stopped |= result.is_err() && !self.options.keep_going;
+                        self.record(&mut ready, &mut mtimes, &mut errors, work.index, result);
+                    }
+                }
+            }
+
+            while !stopped && signals::pending().is_none() && active.len() < limit {
+                ready.settle();
+                if ready.ready.is_empty() {
+                    break;
+                }
+
+                // The implicit slot is available as soon as its own job ends,
+                // even if other local jobs still hold tokens.
+                let token = if active.iter().any(|work| work.token.is_none()) {
+                    match pool.expect("parallel build has a token pool").try_acquire() {
+                        Ok(Some(token)) => Some(token),
+                        Ok(None) => break,
+                        Err(error) => {
+                            errors.push(format!("job pool: {error}"));
+                            stopped = true;
+                            break;
+                        }
+                    }
+                } else {
+                    None
+                };
+                let index = ready.pop().expect("ready target");
+                let node = &self.graph.nodes()[index];
+                let result = match self.prepare(node, &mtimes) {
+                    Ok(Update::Recipes(mut job)) => match self.advance(node, &mut job) {
+                        Ok(Some(recipe)) => {
+                            active.push(Active {
+                                index,
+                                job,
+                                token,
+                                recipe,
+                            });
+                            continue;
+                        }
+                        finished => self.finish(node, job, finished.map(|_| ())),
+                    },
+                    Ok(Update::Current(modified)) => Ok(modified),
+                    Err(error) => Err(error),
+                };
+                stopped |= result.is_err() && !self.options.keep_going;
+                self.record(&mut ready, &mut mtimes, &mut errors, index, result);
+            }
+
+            if active.is_empty() {
+                if interrupted.is_none() && signals::pending().is_some() {
+                    continue;
+                }
+                break;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("\n"))
+        }
+    }
+
+    fn record(
+        &self,
+        ready: &mut Ready<'_, '_>,
+        mtimes: &mut HashMap<&'a str, Option<SystemTime>>,
+        errors: &mut Vec<String>,
+        index: usize,
+        result: Result<Option<SystemTime>, String>,
+    ) {
+        let success = result.is_ok();
+        match result {
+            Ok(modified) => {
+                mtimes.insert(self.graph.nodes()[index].name, modified);
+            }
+            Err(error) => errors.push(error),
+        }
+        ready.complete(index, success);
+    }
+
+    fn prepare(
+        &self,
+        node: &Node<'_>,
+        mtimes: &HashMap<&str, Option<SystemTime>>,
+    ) -> Result<Update, String> {
+        let target = node.name;
+        let modified = target_time(node, self.specials)?;
+        if modified.is_none() && !self.specials.phony.contains(target) && !node.has_rule {
+            return Err(format!("no rule to make prerequisite '{target}'"));
+        }
+        if node.recipes().is_empty() {
+            return Ok(Update::Current(modified));
+        }
+        let newer: Vec<_> = self
+            .graph
+            .prerequisites_of(node)
+            .filter(|name| time::newer(modified, mtimes[name]))
+            .collect();
+        if modified.is_some() && newer.is_empty() {
+            return Ok(Update::Current(modified));
+        }
+        Ok(Update::Recipes(Job {
+            before: modified,
+            newer: newer.join(" "),
+            next_recipe: 0,
+            skipped: false,
+        }))
+    }
+
+    fn advance(
+        &self,
+        node: &Node<'_>,
+        job: &mut Job,
+    ) -> Result<Option<RunningRecipe>, RecipeFailure> {
+        if signals::pending().is_some() {
+            return Ok(None);
+        }
+        let target = node.name;
+        let inference = node.inference();
+        let mut automatic = Automatic::for_target(target);
+        automatic.source = inference.map(|rule| rule.source.as_str());
+        automatic.stem = inference.map_or_else(
+            || self.suffixes.stem(automatic.member.unwrap_or(target)),
+            |rule| &rule.stem,
+        );
+        automatic.newer = &job.newer;
+
+        let mode = RecipeMode {
+            dry_run: self.options.dry_run,
+            remaking: self.options.remaking,
+            ignore: self.options.ignore || self.specials.ignore.contains(target),
+            silent: self.options.silent || self.specials.silent.contains(target),
+        };
+        while let Some(recipe) = node.recipes().get(job.next_recipe) {
+            job.next_recipe += 1;
+            match start_recipe(
+                target,
+                recipe,
+                self.macros,
+                &automatic,
+                mode,
+                self.own_group,
+            )? {
+                Recipe::Empty => (),
+                Recipe::Skipped => job.skipped = true,
+                Recipe::Running(running) => return Ok(Some(running)),
+            }
+        }
+        Ok(None)
+    }
+
+    fn finish(
+        &self,
+        node: &Node<'_>,
+        job: Job,
+        result: Result<(), RecipeFailure>,
+    ) -> Result<Option<SystemTime>, String> {
+        let interrupted = signals::pending().is_some();
+        let child_interrupted = result.as_ref().is_err_and(|failure| failure.interrupted);
+        let target = node.name;
+        let cleanup = if ((interrupted && !self.options.dry_run)
+            || (child_interrupted && (!self.options.dry_run || self.options.remaking)))
+            && job.next_recipe != 0
+            && !self.specials.phony.contains(target)
+            && archive_member(target).is_none()
+            && !self.specials.precious.contains(target)
+        {
+            remove_interrupted_target(target, job.before)
+        } else {
+            Ok(())
+        };
+        match (result, cleanup) {
+            (Err(failure), Err(cleanup)) => Err(format!("{}\n{cleanup}", failure.message)),
+            (Err(failure), Ok(())) => Err(failure.message),
+            (Ok(()), Err(cleanup)) => Err(cleanup),
+            (Ok(()), Ok(())) if job.skipped || interrupted => Ok(None),
+            (Ok(()), Ok(())) => target_time(node, self.specials),
+        }
     }
 }
 
@@ -151,74 +536,6 @@ fn target_time(node: &Node<'_>, specials: &Specials) -> Result<Option<SystemTime
         })
     } else {
         time::modified(target)
-    }
-}
-
-fn update(
-    node: &Node<'_>,
-    graph: &Graph<'_>,
-    mtimes: &HashMap<&str, Option<SystemTime>>,
-    macros: &Macros,
-    suffixes: &Suffixes,
-    specials: &Specials,
-    options: &Options,
-) -> Result<Option<SystemTime>, String> {
-    let target = node.name;
-    let phony = specials.phony.contains(target);
-    let modified = target_time(node, specials)?;
-    if modified.is_none() && !phony && !node.has_rule {
-        return Err(format!("no rule to make prerequisite '{target}'"));
-    }
-    if node.recipes().is_empty() {
-        return Ok(modified);
-    }
-    let newer: Vec<_> = graph
-        .prerequisites_of(node)
-        .filter(|name| time::newer(modified, mtimes[name]))
-        .collect();
-    if modified.is_some() && newer.is_empty() {
-        return Ok(modified);
-    }
-
-    let inference = node.inference();
-    let mut automatic = Automatic::for_target(target);
-    automatic.source = inference.map(|rule| rule.source.as_str());
-    automatic.stem = inference.map_or_else(
-        || suffixes.stem(automatic.member.unwrap_or(target)),
-        |rule| &rule.stem,
-    );
-    let newer = newer.join(" ");
-    automatic.newer = &newer;
-
-    let mode = RecipeMode {
-        dry_run: options.dry_run,
-        remaking: options.remaking,
-        ignore: options.ignore || specials.ignore.contains(target),
-        silent: options.silent || specials.silent.contains(target),
-    };
-    let mut skipped = false;
-    for recipe in node.recipes() {
-        match run_recipe(target, recipe, macros, &automatic, mode) {
-            Ok(command_skipped) => skipped |= command_skipped,
-            Err(failure) => {
-                if failure.interrupted
-                    && (!mode.dry_run || mode.remaking)
-                    && !phony
-                    && automatic.member.is_none()
-                    && !specials.precious.contains(target)
-                {
-                    if let Err(cleanup) = remove_interrupted_target(target, modified) {
-                        return Err(format!("{}\n{cleanup}", failure.message));
-                    }
-                }
-                return Err(failure.message);
-            }
-        }
-    }
-    if skipped {
-        Ok(None)
-    } else {
-        target_time(node, specials)
     }
 }
 
@@ -244,13 +561,70 @@ struct RecipeFailure {
     interrupted: bool,
 }
 
-fn run_recipe(
+enum Recipe {
+    Empty,
+    Skipped,
+    Running(RunningRecipe),
+}
+
+struct RunningRecipe {
+    child: Child,
+    location: String,
+    ignore: bool,
+    sent_interrupt: bool,
+    sent_kill: bool,
+}
+
+impl RunningRecipe {
+    fn interrupt(&mut self, number: i32, elapsed: Duration, own_group: bool) {
+        let force = elapsed >= Duration::from_secs(1);
+        let sent = if force {
+            &mut self.sent_kill
+        } else {
+            &mut self.sent_interrupt
+        };
+        if !*sent {
+            // A shell that exited since the last poll no longer needs the signal.
+            let _ = signals::interrupt_child(self.child.id(), own_group, number, force);
+            *sent = true;
+        }
+    }
+
+    fn finish(&self, status: io::Result<Option<ExitStatus>>) -> Result<(), RecipeFailure> {
+        let (reason, interrupted) = match status {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => match (status.code(), status.signal()) {
+                (Some(code), _) => (format!("recipe exited with status {code}"), false),
+                (_, Some(signal)) => (
+                    format!("recipe terminated by signal {signal}"),
+                    signals::interrupts_recipe(signal),
+                ),
+                _ => (format!("recipe failed: {status}"), false),
+            },
+            Ok(None) => unreachable!("running recipe is not finished"),
+            Err(error) => (format!("could not wait for /bin/sh: {error}"), false),
+        };
+        let message = format!("{}: {reason}", self.location);
+        if self.ignore {
+            let _ = writeln!(io::stderr(), "{message} (ignored)");
+            Ok(())
+        } else {
+            Err(RecipeFailure {
+                message,
+                interrupted,
+            })
+        }
+    }
+}
+
+fn start_recipe(
     target: &str,
     recipe: &SourceLine,
     macros: &Macros,
     automatic: &Automatic<'_>,
     mode: RecipeMode,
-) -> Result<bool, RecipeFailure> {
+    own_group: bool,
+) -> Result<Recipe, RecipeFailure> {
     let (expanded, expanded_make) = macros
         .expand_recipe(&recipe.text, &recipe.location, automatic)
         .map_err(|error| RecipeFailure {
@@ -260,7 +634,7 @@ fn run_recipe(
     let line = expanded.trim_start_matches([' ', '\t', '-', '@', '+']);
     let prefixes = &expanded[..expanded.len() - line.len()];
     if line.is_empty() {
-        return Ok(false);
+        return Ok(Recipe::Empty);
     }
     let skip = mode.dry_run && !mode.remaking && !expanded_make && !prefixes.contains('+');
     let diagnostic = |reason| format!("{}: target '{target}': {reason}", recipe.location);
@@ -275,7 +649,7 @@ fn run_recipe(
             })?;
     }
     if skip {
-        return Ok(true);
+        return Ok(Recipe::Skipped);
     }
 
     let ignore = mode.ignore || prefixes.contains('-');
@@ -287,27 +661,28 @@ fn run_recipe(
             message: error.to_string(),
             interrupted: false,
         })?;
-    let (reason, interrupted) = match shell.args([shell_flag, line]).status() {
-        Ok(status) if status.success() => return Ok(false),
-        Ok(status) => match (status.code(), status.signal()) {
-            (Some(code), _) => (format!("recipe exited with status {code}"), false),
-            (_, Some(signal)) => (
-                format!("recipe terminated by signal {signal}"),
-                // SIGHUP, SIGINT, SIGQUIT and SIGTERM on the supported Unix hosts.
-                matches!(signal, 1 | 2 | 3 | 15),
-            ),
-            _ => (format!("recipe failed: {status}"), false),
-        },
-        Err(error) => (format!("could not run /bin/sh: {error}"), false),
-    };
-    let message = diagnostic(reason);
-    if ignore {
-        let _ = writeln!(io::stderr(), "{message} (ignored)");
-        Ok(false)
-    } else {
-        Err(RecipeFailure {
-            message,
-            interrupted,
-        })
+    if own_group {
+        shell.process_group(0);
     }
+    let child = match shell.args([shell_flag, line]).spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            let message = diagnostic(format!("could not run /bin/sh: {error}"));
+            if ignore {
+                let _ = writeln!(io::stderr(), "{message} (ignored)");
+                return Ok(Recipe::Empty);
+            }
+            return Err(RecipeFailure {
+                message,
+                interrupted: false,
+            });
+        }
+    };
+    Ok(Recipe::Running(RunningRecipe {
+        child,
+        location: format!("{}: target '{target}'", recipe.location),
+        ignore,
+        sent_interrupt: false,
+        sent_kill: false,
+    }))
 }

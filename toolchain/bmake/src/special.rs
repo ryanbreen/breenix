@@ -1,4 +1,4 @@
-//! POSIX.1-2024 make special targets that control the serial runner.
+//! POSIX.1-2024 make special targets that control recipe execution.
 
 use crate::{
     reader::{Entry, Makefile},
@@ -12,6 +12,7 @@ pub(crate) struct Specials {
     pub ignore: Targets,
     pub silent: Targets,
     pub precious: Targets,
+    pub not_parallel: bool,
 }
 
 #[derive(Default)]
@@ -43,7 +44,13 @@ impl Specials {
             let Some(name) = rule.targets.iter().find(|name| {
                 matches!(
                     name.as_str(),
-                    ".POSIX" | ".PHONY" | ".IGNORE" | ".SILENT" | ".PRECIOUS"
+                    ".POSIX"
+                        | ".PHONY"
+                        | ".IGNORE"
+                        | ".SILENT"
+                        | ".PRECIOUS"
+                        | ".NOTPARALLEL"
+                        | ".WAIT"
                 )
             }) else {
                 entries.push(entry);
@@ -61,12 +68,13 @@ impl Specials {
                 ".SILENT" => specials.silent.add(&rule.prerequisites),
                 ".PRECIOUS" => specials.precious.add(&rule.prerequisites),
                 // The supported rules are used with or without a .POSIX declaration.
-                ".POSIX" if !rule.prerequisites.is_empty() => {
+                ".POSIX" | ".NOTPARALLEL" | ".WAIT" if !rule.prerequisites.is_empty() => {
                     return Err(Error::new(
                         &rule.location,
-                        ".POSIX must have no prerequisites",
+                        format!("{name} must have no prerequisites"),
                     ));
                 }
+                ".NOTPARALLEL" => specials.not_parallel = true,
                 _ => (),
             }
         }

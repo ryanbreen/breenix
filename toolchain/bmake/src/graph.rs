@@ -10,6 +10,7 @@ use std::collections::HashMap;
 pub struct Graph<'a> {
     nodes: Vec<Node<'a>>,
     indices: HashMap<&'a str, usize>,
+    pub(crate) roots: Vec<usize>,
     default_build_order: Vec<usize>,
 }
 
@@ -18,7 +19,7 @@ pub struct Node<'a> {
     pub(crate) name: &'a str,
     pub(crate) location: Option<&'a Location>,
     pub(crate) has_rule: bool,
-    prerequisites: Vec<Edge<'a>>,
+    pub(crate) prerequisites: Vec<Edge<'a>>,
     recipe_rule: Option<&'a Rule>,
 }
 
@@ -33,8 +34,8 @@ pub(crate) fn archive_member(name: &str) -> Option<(&str, &str)> {
 }
 
 #[derive(Debug)]
-struct Edge<'a> {
-    target: usize,
+pub(crate) struct Edge<'a> {
+    pub(crate) target: Option<usize>,
     location: &'a Location,
 }
 
@@ -64,6 +65,7 @@ impl<'a> Graph<'a> {
         let mut graph = Self {
             nodes: Vec::new(),
             indices: HashMap::new(),
+            roots: Vec::new(),
             default_build_order: Vec::new(),
         };
         let mut default_target = None;
@@ -83,6 +85,7 @@ impl<'a> Graph<'a> {
             roots.push(graph.indices[target]);
         }
         graph.default_build_order = graph.check_cycles(&roots)?;
+        graph.roots = roots;
         Ok(graph)
     }
 
@@ -100,13 +103,15 @@ impl<'a> Graph<'a> {
     ) -> impl Iterator<Item = &'a str> + 'g {
         node.prerequisites
             .iter()
-            .map(|edge| self.nodes[edge.target].name)
+            .filter_map(|edge| edge.target.map(|target| self.nodes[target].name))
     }
 
-    pub(crate) fn default_build_order(&self) -> impl Iterator<Item = &Node<'a>> {
-        self.default_build_order
-            .iter()
-            .map(|&index| &self.nodes[index])
+    pub(crate) fn nodes(&self) -> &[Node<'a>] {
+        &self.nodes
+    }
+
+    pub(crate) fn default_build_order(&self) -> &[usize] {
+        &self.default_build_order
     }
 
     fn add_rule(&mut self, rule: &'a Rule) -> Result<(), Error> {
@@ -121,7 +126,7 @@ impl<'a> Graph<'a> {
         let prerequisites: Vec<_> = rule
             .prerequisites
             .iter()
-            .map(|name| self.intern(name, location))
+            .map(|name| (name != ".WAIT").then(|| self.intern(name, location)))
             .collect();
         for target in targets {
             let node = &mut self.nodes[target];
@@ -185,16 +190,19 @@ impl<'a> Graph<'a> {
                     continue;
                 };
                 *next_edge += 1;
-                match visits[edge.target] {
+                let Some(target) = edge.target else {
+                    continue;
+                };
+                match visits[target] {
                     Visit::Unseen => {
-                        visits[edge.target] = Visit::Active(stack.len());
-                        stack.push((edge.target, 0));
+                        visits[target] = Visit::Active(stack.len());
+                        stack.push((target, 0));
                     }
                     Visit::Active(start) => {
                         let cycle: Vec<_> = stack[start..]
                             .iter()
                             .map(|&(node, _)| self.nodes[node].name)
-                            .chain(std::iter::once(self.nodes[edge.target].name))
+                            .chain(std::iter::once(self.nodes[target].name))
                             .collect();
                         return Err(Error::new(
                             edge.location,

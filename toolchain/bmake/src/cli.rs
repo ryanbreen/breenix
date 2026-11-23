@@ -1,8 +1,9 @@
 use crate::{
     graph::Graph,
     inference::Suffixes,
+    job_pool::{JobPool, FLAG_PREFIX},
     r#macro::{MacroSource, Macros},
-    reader, run,
+    reader, run, signals,
     special::Specials,
     Error,
 };
@@ -18,6 +19,7 @@ struct Options {
     environment_overrides: bool,
     execution: run::Options,
     stop_on_error: bool,
+    job_pool: Option<String>,
     makefiles: Vec<PathBuf>,
     assignments: Vec<String>,
     targets: Vec<String>,
@@ -52,7 +54,26 @@ impl Options {
                             }
                             's' => self.execution.silent = true,
                             'i' => self.execution.ignore = true,
-                            'j' => return Err(Error::deferred(&location, "-j").to_string()),
+                            'j' => {
+                                let tail = &flags[index + 1..];
+                                let jobs = if tail.is_empty() {
+                                    arguments.next().and_then(|value| value.into_string().ok())
+                                } else {
+                                    Some(tail.to_owned())
+                                };
+                                self.execution.jobs = Some(
+                                    jobs.as_deref()
+                                        .and_then(|text| text.parse::<usize>().ok())
+                                        .filter(|&jobs| jobs > 0)
+                                        .ok_or_else(|| {
+                                            format!("{location}: -j requires a positive job count")
+                                        })?,
+                                );
+                                if source == MacroSource::CommandLine {
+                                    self.job_pool = None;
+                                }
+                                break;
+                            }
                             'f' | 'C' if source == MacroSource::CommandLine => {
                                 let tail = &flags[index + 1..];
                                 let path = if tail.is_empty() {
@@ -77,7 +98,12 @@ impl Options {
                     continue;
                 }
             }
-            if text.contains('=') {
+            if let Some(pool) = text
+                .strip_prefix(FLAG_PREFIX)
+                .filter(|_| source == MacroSource::Makeflags)
+            {
+                self.job_pool = Some(pool.to_owned());
+            } else if text.contains('=') {
                 self.assignments.push(text.to_owned());
             } else if source == MacroSource::Makeflags {
                 return Err(format!("{location}: invalid MAKEFLAGS operand '{text}'"));
@@ -92,7 +118,7 @@ impl Options {
         Ok(())
     }
 
-    fn makeflags(&self, inherited: &[String]) -> String {
+    fn makeflags(&self, inherited: &[String], pool: Option<&JobPool>) -> String {
         let mut words: Vec<_> = [
             (self.environment_overrides, "-e"),
             (self.execution.ignore, "-i"),
@@ -105,16 +131,15 @@ impl Options {
         .filter(|&(enabled, _)| enabled)
         .map(|(_, option)| option.to_owned())
         .collect();
+        if let Some(jobs) = self.execution.jobs {
+            words.push(format!("-j {jobs}"));
+        }
+        if let Some(pool) = pool {
+            words.push(quote_makeflags_word(&pool.makeflags_word()));
+        }
         for assignment in inherited.iter().chain(&self.assignments) {
             if !assignment.starts_with("MAKEFLAGS=") {
-                let mut word = String::new();
-                for ch in assignment.chars() {
-                    if matches!(ch, '\'' | '"' | '\\' | ' ' | '\t') {
-                        word.push('\\');
-                    }
-                    word.push(ch);
-                }
-                words.push(word);
+                words.push(quote_makeflags_word(assignment));
             }
         }
         words.join(" ")
@@ -141,6 +166,17 @@ impl Options {
         }
         Err("no makefile found (tried makefile and Makefile)".into())
     }
+}
+
+fn quote_makeflags_word(value: &str) -> String {
+    let mut word = String::new();
+    for ch in value.chars() {
+        if matches!(ch, '\'' | '"' | '\\' | ' ' | '\t') {
+            word.push('\\');
+        }
+        word.push(ch);
+    }
+    word
 }
 
 // POSIX.1-2024 make, "Environment Variables": tokenize without carrying out
@@ -228,12 +264,21 @@ pub fn execute(arguments: impl IntoIterator<Item = OsString>) -> Result<(), Stri
     let inherited = std::mem::take(&mut options.assignments);
     options.parse(arguments, MacroSource::CommandLine)?;
     options.select_makefile()?;
+    let _signals = signals::Handlers::install()
+        .map_err(|error| format!("could not install signal handlers: {error}"))?;
+    let pool = options
+        .execution
+        .jobs
+        .filter(|&jobs| jobs > 1)
+        .map(|jobs| JobPool::open(jobs, options.job_pool.as_deref()))
+        .transpose()
+        .map_err(|error| format!("job pool: {error}"))?;
     let directory = env::current_dir().map_err(|error| format!("current directory: {error}"))?;
     let directory = directory.to_string_lossy().into_owned();
     let environment = env::vars_os()
         .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)));
     let mut initial = Macros::new(options.environment_overrides, directory, environment);
-    initial.set_make_defaults(make, options.makeflags(&inherited));
+    initial.set_make_defaults(make, options.makeflags(&inherited, pool.as_ref()));
     for (assignments, source) in [
         (&inherited, MacroSource::Makeflags),
         (&options.assignments, MacroSource::CommandLine),
@@ -256,9 +301,14 @@ pub fn execute(arguments: impl IntoIterator<Item = OsString>) -> Result<(), Stri
         let specials = Specials::take(&mut makefile).map_err(|error| error.to_string())?;
         let suffixes = Suffixes::resolve(&mut makefile, &options.targets, &specials)
             .map_err(|error| error.to_string())?;
-        if let Some(include) =
-            run::remake_includes(&makefile, &macros, &suffixes, &specials, options.execution)?
-        {
+        if let Some(include) = run::remake_includes(
+            &makefile,
+            &macros,
+            &suffixes,
+            &specials,
+            options.execution,
+            pool.as_ref(),
+        )? {
             restarts_left = restarts_left.checked_sub(1).ok_or_else(|| {
                 Error::new(
                     &include.location,
@@ -273,6 +323,13 @@ pub fn execute(arguments: impl IntoIterator<Item = OsString>) -> Result<(), Stri
         }
         let graph =
             Graph::for_targets(&makefile, &options.targets).map_err(|error| error.to_string())?;
-        return run::build(&graph, &macros, &suffixes, &specials, options.execution);
+        return run::build(
+            &graph,
+            &macros,
+            &suffixes,
+            &specials,
+            options.execution,
+            pool.as_ref(),
+        );
     }
 }

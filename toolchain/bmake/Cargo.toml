@@ -7,5 +7,6 @@ publish.workspace = true
 [dependencies]
 bobj = { path = "../bobj" }
 
-[lints]
-workspace = true
+# E25 ruling 31 permits FFI only in bmake's signals module.
+[lints.rust]
+unsafe_code = "deny"
