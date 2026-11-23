@@ -296,6 +296,30 @@ fn self_referencing_macro_is_error_not_panic() {
 }
 
 #[test]
+fn default_c_inference_uses_bundle_compiler_options() {
+    let project = Project::new("all: app item.o\n");
+    project.fixture("app.c", "int main(void) { return 0; }\n", 0);
+    project.fixture("item.c", "int item;\n", 0);
+    let output = project
+        .command()
+        .env_remove("CC")
+        .env_remove("CFLAGS")
+        .args(["-n", "-f", "project.mk"])
+        .output()
+        .unwrap();
+    let recipes: Vec<_> = std::str::from_utf8(&output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| line.split_ascii_whitespace().collect::<Vec<_>>())
+        .collect();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        recipes,
+        [vec!["cc", "-o", "app", "app.c"], vec!["cc", "-c", "item.c"]]
+    );
+}
+
+#[test]
 fn suffix_inference_builds_object() {
     let project = Project::new(concat!(
         ".POSIX:\n",

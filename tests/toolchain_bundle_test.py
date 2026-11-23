@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import struct
 import subprocess
 import sys
@@ -82,9 +83,32 @@ class ToolchainBundleTest(unittest.TestCase):
         executable = self.dev / "bin/make"
         self.assertEqual(entry["path"], "bin/make")
         self.assertEqual(entry["sha256"], digest(executable))
-        self.assertIn(f"{digest(executable)}  opt/breenix-dev/25.2/bin/make\n",
-                      (self.dev / "manifest.sha256").read_text())
+        manifest = (self.dev / "manifest.sha256").read_text()
+        self.assertIn(f"{digest(executable)}  opt/breenix-dev/25.2/bin/make\n", manifest)
+        for category in ("make", "project"):
+            for source in (WORKSPACE / "corpus" / category).iterdir():
+                with self.subTest(fixture=source.name):
+                    path = f"usr/share/breenix/toolchain/{category}/{source.name}"
+                    self.assertEqual(digest(self.bundle / "root" / path), digest(source))
+                    self.assertIn(f"{digest(source)}  {path}\n", manifest)
         self.assertFalse(any(path.suffix == ".c" for path in (WORKSPACE / "bmake").rglob("*")))
+
+        with tempfile.TemporaryDirectory(prefix="toolchain-stale-make-") as temp:
+            bundle = Path(temp)
+            tree = bundle / "root"
+            shutil.copytree(self.bundle / "root", tree)
+            for generated in ("manifest.sha256", "build.json"):
+                (tree / "opt/breenix-dev/25.2" / generated).unlink()
+            stale = "usr/share/breenix/toolchain/make/sample.src"
+            (tree / stale).write_text("stale fixture\n")
+            tool_record = bundle / "tools.json"
+            tool_record.write_text(json.dumps(self.record["tools"]))
+            sealed = subprocess.run([
+                sys.executable, ROOT / "scripts/toolchain-image.py", "seal", bundle,
+                self.record["commit"], "x86_64", "--tool-record", tool_record,
+            ], capture_output=True, text=True, timeout=10)
+            self.assertEqual(sealed.returncode, 1, sealed.stderr)
+            self.assertIn(f"staged bytes differ from the source for {stale}", sealed.stderr)
 
     def arm_bundle_unchanged_until_a3(self):
         self.assertEqual(set(self.record["tools"]), {"bas", "bld", "bar", "bnm"})
