@@ -31,7 +31,7 @@ def checked(*command):
     return result.stdout
 
 
-def exit_from_main(path):
+def read_main(path):
     # gABI 2.1, 7.1 and 7.2. elfcheck has validated this ET_EXEC, linked
     # with main as its entry. Only this freestanding main is called here.
     image = Path(path).read_bytes()
@@ -46,15 +46,26 @@ def exit_from_main(path):
     if not any(flags & 1 and address <= entry < address + memsz
                for flags, _, address, _, memsz in loads):
         raise ValueError("main is outside the executable load")
+    return image, entry, loads
 
-    # Load the segments at a common bias so RIP-relative references still
-    # reach .data and zero-filled .bss. Give each load its ELF permissions.
+
+def exit_from_main(path, *, link_at=None):
+    # Use a common bias for the loads. Linking at the reserved address
+    # lets initialized absolute pointers name the mapped data.
+    image, entry, loads = read_main(path)
     page = mmap.PAGESIZE
     origin = min(address for _, _, address, _, _ in loads) & -page
     limit = max(address + memsz for _, _, address, _, memsz in loads)
     with mmap.mmap(-1, limit - origin, flags=mmap.MAP_PRIVATE | mmap.MAP_ANON,
                    prot=mmap.PROT_READ | mmap.PROT_WRITE) as memory:
         base = ctypes.addressof(ctypes.c_char.from_buffer(memory))
+        if link_at is not None:
+            link_at(base)
+            image, entry, loads = read_main(path)
+            origin = min(address for _, _, address, _, _ in loads)
+            limit = max(address + memsz for _, _, address, _, memsz in loads)
+            if origin != base or limit - origin > len(memory):
+                raise ValueError("relinked ELF does not fit the reserved mapping")
         protect = ctypes.CDLL(None, use_errno=True).mprotect
         protect.argtypes = (ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int)
         for _, offset, address, filesz, _ in loads:

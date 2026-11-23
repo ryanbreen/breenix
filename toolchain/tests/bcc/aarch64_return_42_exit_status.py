@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
 
-from return_42_exit_status import HERE, LINKER_SCRIPT, checked, run
+from return_42_exit_status import HERE, LINKER_SCRIPT, checked, exit_from_main, run
 
 
 SOURCE = """\
@@ -52,6 +52,23 @@ probe:
 """
 
 
+def link(bld, script, executable, objects):
+    checked(bld, "-T", script, "--gc-sections", "-o", executable, *objects)
+
+
+def call_entry(bld, script, executable, objects):
+    def link_at(address):
+        # Resolve initialized absolute pointers in the static link, using
+        # the address the host loader reserved for this process.
+        layout = script.read_text().replace(
+            "0x40000000 + SIZEOF_HEADERS", f"{address:#x} + SIZEOF_HEADERS"
+        )
+        script.write_text(layout)
+        link(bld, script, executable, objects)
+
+    exit_from_main(executable, link_at=link_at)
+
+
 def main():
     bcc, bas, bld = map(Path, sys.argv[1:4])
     source_texts = sys.argv[4:]
@@ -91,12 +108,18 @@ def main():
             checked(bas, "--target", "aarch64", "-o", obj, assembly)
             objects.append(obj)
         executable = work / "main"
-        checked(bld, "-T", script, "--gc-sections", "-o", executable, *objects)
-        result = run(sys.executable, HERE / "return_42_exit_status.py", "--call-entry", executable)
+        link(bld, script, executable, objects)
+        if source_texts:
+            result = run(sys.executable, __file__, "--call-entry", bld, script, executable, *objects)
+        else:
+            result = run(sys.executable, HERE / "return_42_exit_status.py", "--call-entry", executable)
         if (result.returncode, result.stdout, result.stderr) != (42, b"", b""):
             raise ValueError(f"expected exit 42, got {result.returncode}: "
                              f"stdout={result.stdout!r}, stderr={result.stderr!r}")
 
 
 if __name__ == "__main__":
+    if len(sys.argv) >= 6 and sys.argv[1] == "--call-entry":
+        bld, script, executable, *objects = map(Path, sys.argv[2:])
+        call_entry(bld, script, executable, objects)
     main()
