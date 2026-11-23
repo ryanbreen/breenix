@@ -41,7 +41,7 @@ fn staged_consumers_require_record_and_prefer_new_applets() {
     fs::create_dir(&root).unwrap();
     let result = (|| {
         let record = root.join("busybox-under-test");
-        let fixture = root.join("busybox.sh");
+        let fixture = root.join(Path::new(under_test::FIXTURE).file_name().unwrap());
         let output = root.join("run");
         fs::create_dir(&output).unwrap();
         let binary = output.join("busybox.elf");

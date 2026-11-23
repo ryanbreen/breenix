@@ -8,6 +8,7 @@ use std::path::Path;
 /// 25.11d2 publishes this record on the mounted scratch fixture. Suite sequence
 /// reset leaves the contents of a separate filesystem in place.
 pub const RECORD: &str = "/mnt/breenix-toolchain/busybox-under-test";
+pub const FIXTURE: &str = "/usr/share/breenix/toolchain/busybox/busybox.sh";
 
 #[derive(Clone, Copy)]
 pub enum Suite {
@@ -24,6 +25,22 @@ pub struct Paths {
 }
 
 impl Paths {
+    pub fn load_for_fixture(record: &Path, fixture: &Path, suite: Suite) -> Result<Self, String> {
+        let mut paths = Self::load(record, suite)?;
+        let staged = fixture.try_exists()
+            .map_err(|error| format!("{}: cannot inspect fixture: {error}", fixture.display()))?;
+        if staged {
+            if !paths.selected {
+                return Err(format!("{}: missing record for the staged BusyBox build", record.display()));
+            }
+            if matches!(suite, Suite::Utilities) {
+                // getconf is a platform utility. Resolve the rebuilt applets first.
+                paths.path.to_mut().push_str(":/bin:/usr/bin");
+            }
+        }
+        Ok(paths)
+    }
+
     pub fn load(record: &Path, suite: Suite) -> Result<Self, String> {
         let located = |error| format!("{}: {error}", record.display());
         // A dangling record symlink is a present but unreadable record.

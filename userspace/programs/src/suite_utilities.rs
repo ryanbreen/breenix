@@ -1333,7 +1333,9 @@ fn proc_getconf_names() -> CaseResult {
 }
 
 fn proc_command_v() -> CaseResult {
-    let paths = under_test::Paths::load(under_test::RECORD.as_ref(), under_test::Suite::Utilities)?;
+    let paths = under_test::Paths::load_for_fixture(
+        under_test::RECORD.as_ref(), under_test::FIXTURE.as_ref(), under_test::Suite::Utilities,
+    )?;
     let expected = if paths.selected {
         let sh = on_path("sh", &paths.path)
             .ok_or_else(|| format!("{}: sh is not on PATH {}", under_test::RECORD, paths.path))?;
@@ -1882,7 +1884,9 @@ impl Run {
     /// Pass when the program exits with `status` (or any non-zero status for NONZERO),
     /// prints exactly `stdout`, and writes to stderr exactly when `stderr` says so.
     fn expect(self, stdout: &str, status: i32, stderr: Stderr) -> CaseResult {
-        let paths = under_test::Paths::load(under_test::RECORD.as_ref(), under_test::Suite::Utilities)?;
+        let paths = under_test::Paths::load_for_fixture(
+            under_test::RECORD.as_ref(), under_test::FIXTURE.as_ref(), under_test::Suite::Utilities,
+        )?;
         self.expect_with_paths(&paths, stdout, status, stderr)
     }
 

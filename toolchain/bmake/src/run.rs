@@ -139,7 +139,9 @@ pub(crate) fn build(
         suffixes,
         specials,
         options,
-        own_group: !io::stdin().is_terminal(),
+        // A phase supervisor can own the group for the whole build tree.
+        own_group: !io::stdin().is_terminal()
+            && std::env::var_os("BMAKE_INHERIT_PROCESS_GROUP").is_none_or(|value| value != "1"),
     }
     .run(pool, required_includes)
 }

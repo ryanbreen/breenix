@@ -105,6 +105,7 @@ source_receipt() {
 make_busybox() {
     # Clear environment variables that could inject options or host inputs.
     env -i PATH="$PATH:$bin" LC_ALL=C TMPDIR="$output/tmp" \
+        BMAKE_INHERIT_PROCESS_GROUP="${BMAKE_INHERIT_PROCESS_GROUP:-0}" \
         "$bin/make" -f Makefile "$@" "ARCH=$arch" "srctree=$source" "objtree=$source" \
         "CC=$bin/cc --target=$arch" "HOSTCC=$output/hostcc" \
         "LD=$bin/ld" "AR=$bin/ar" "NM=$bin/nm" \

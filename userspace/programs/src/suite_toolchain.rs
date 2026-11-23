@@ -1865,7 +1865,7 @@ fn busybox_mount() -> Result<(), String> {
     use libbreenix::fs as sysfs;
 
     io_at(Path::new(BUSYBOX_MOUNT), fs::create_dir_all(BUSYBOX_MOUNT))?;
-    let mut empty = Vec::new();
+    let mut companions = Vec::new();
     for disk in io_at(Path::new("/dev"), fs::read_dir("/dev"))? {
         let disk = io_at(Path::new("/dev"), disk)?;
         let name = disk.file_name();
@@ -1876,18 +1876,19 @@ fn busybox_mount() -> Result<(), String> {
         }
         let path = disk.path();
         let device = path.to_str().ok_or("invalid scratch disk path")?;
-        // Probe under MS_RDONLY before accepting a blank BreenFS fixture.
+        // Probe read-only before binding the selected disk for writes.
         if unsafe { sysfs::mount(device, BUSYBOX_MOUNT, "breenfs", 1, std::ptr::null()) }.is_err() {
             continue;
         }
-        let entries = fs::read_dir(BUSYBOX_MOUNT).and_then(|mut list| list.next().transpose());
+        let marker = Path::new(BUSYBOX_MOUNT).join("busybox-scratch");
+        let matches = fs::read(marker).is_ok_and(|bytes| bytes == b"toolchain/busybox-on-box\n");
         sysfs::umount2(BUSYBOX_MOUNT, 0).map_err(|error| format!("detach {device}: {error}"))?;
-        if io_at(Path::new(BUSYBOX_MOUNT), entries)?.is_none() {
-            empty.push(path);
+        if matches {
+            companions.push(path);
         }
     }
-    let [disk] = empty.as_slice() else {
-        return Err(format!("expected one empty BreenFS scratch companion, found {empty:?}"));
+    let [disk] = companions.as_slice() else {
+        return Err(format!("expected one BusyBox scratch companion, found {companions:?}"));
     };
     let device = disk.to_str().ok_or("invalid scratch disk path")?;
     unsafe { sysfs::mount(device, BUSYBOX_MOUNT, "breenfs", 0, std::ptr::null()) }
@@ -1911,6 +1912,7 @@ fn busybox_driver(phase: &str, run: &Path) -> CaseResult {
     command
         .env_clear()
         .env("BUSYBOX_BUNDLE", Path::new("/").join(DEV))
+        .env("BMAKE_INHERIT_PROCESS_GROUP", "1")
         .args([driver.as_os_str(), phase.as_ref(), fixture.as_os_str(), run.join("build").as_os_str(), arch.as_ref()])
         .stdin(Stdio::null());
     build_in_group_at(&run.join(format!("{phase}.log")), &mut command, phase, true)

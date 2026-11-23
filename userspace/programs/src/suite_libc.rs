@@ -608,7 +608,9 @@ fn c_case() -> CaseResult {
 
 /// Run a BusyBox applet in `scratch` with `args` and `input` on stdin.
 fn busybox(scratch: &Scratch, args: &[&str], input: &str) -> Result<Ran, CaseError> {
-    let paths = under_test::Paths::load(under_test::RECORD.as_ref(), under_test::Suite::Libc)?;
+    let paths = under_test::Paths::load_for_fixture(
+        under_test::RECORD.as_ref(), under_test::FIXTURE.as_ref(), under_test::Suite::Libc,
+    )?;
     if !paths.selected && fs::access(&paths.busybox, fs::X_OK).is_err() {
         return Err(format!("{} is not installed: BusyBox is not yet built against Breenix's own C library", paths.busybox).into());
     }

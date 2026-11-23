@@ -163,8 +163,10 @@ def format_busybox_scratch(path):
     target = tools / "target"
     subprocess.run(["cargo", "build", "--locked", "--release", "--quiet", "--bin", "breenfs-mkfs",
                     "--target-dir", str(target)], cwd=tools, check=True)
-    subprocess.run([str(target / "release/breenfs-mkfs"), "--size",
-                    str(BUSYBOX_SCRATCH_BYTES), str(path)], check=True)
+    with tempfile.TemporaryDirectory(prefix="busybox-scratch-") as contents:
+        (Path(contents) / "busybox-scratch").write_bytes(b"toolchain/busybox-on-box\n")
+        subprocess.run([str(target / "release/breenfs-mkfs"), "--size",
+                        str(BUSYBOX_SCRATCH_BYTES), "--populate", contents, str(path)], check=True)
 
 
 def busybox_scratch_record(path):
