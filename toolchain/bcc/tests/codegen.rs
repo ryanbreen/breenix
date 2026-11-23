@@ -239,6 +239,69 @@ int read_other(void) { return private[1]; }
 }
 
 #[cfg(target_arch = "aarch64")]
+#[test]
+fn aarch64_c11_objects_link_and_run() {
+    // N1570 6.5.2.5p5, 6.7.5 and 6.7.9. The ninth argument also
+    // checks that stack arguments survive realignment (AAPCS64 §6.8.2).
+    aarch64_check_exit(&[
+        r"
+int static_literal(void);
+int static_local(void);
+
+static int aligned(long a, long b, long c, long d, long e,
+                   long f, long g, long h, long i) {
+    _Alignas(32) int value = 17;
+    if (((unsigned long)&value & 31) != 0) return 1;
+    if (i != 9 || a + b + c + d + e + f + g + h != 36) return 2;
+    return value;
+}
+
+int main(void) {
+    if (aligned(1, 2, 3, 4, 5, 6, 7, 8, 9) != 17) return 3;
+    if (static_literal() != 20) return 4;
+    if (static_local() != 10 || static_local() != 11) return 5;
+    int sum = 0;
+    for (int i = 1; i <= 3; ++i)
+        sum += ((int[]){i, i + 1})[1];
+    return 33 + sum;
+}
+",
+        r"
+static int *value = (int[]){ 2, 19 } + 1;
+int static_literal(void) { return ++*value; }
+",
+        r"
+int static_local(void) {
+    static int values[2] = { 8, 9 };
+    static int *value = &values[1];
+    return ++*value;
+}
+",
+    ]);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn aarch64_flt_rounds_tracks_fpcr() {
+    // DDI 0487 M.b C5.2.8 FPCR.RMode [23:22]; N1570 5.2.4.2.2.
+    // Save and restore the entire control register even on a mismatch.
+    let mut assembly = String::from(".section .text\n.global main\n.extern rounds\nmain:\n    stp x19, x30, [sp, #-16]!\n    mrs x19, fpcr\n    mov x10, #3\n    lsl x10, x10, #22\n");
+    for (mode, expected) in [(0, 1), (1, 2), (2, 3), (3, 0)] {
+        assembly.push_str(&format!("    bic x9, x19, x10\n    mov x11, #{mode}\n    lsl x11, x11, #22\n    orr x9, x9, x11\n    .long 0xd51b4409\n    bl rounds\n    cmp w0, #{expected}\n    b.ne .Lfailure\n    mov x10, #3\n    lsl x10, x10, #22\n"));
+    }
+    assembly.push_str("    mov w0, #42\n    b .Lrestore\n.Lfailure:\n    mov w0, #1\n.Lrestore:\n    .long 0xd51b4413\n    ldp x19, x30, [sp], #16\n    ret\n");
+    let toolchain = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let bcc = Path::new(env!("CARGO_BIN_EXE_bcc"));
+    let result = Command::new("python3")
+        .arg(toolchain.join("tests/bcc/aarch64_return_42_exit_status.py"))
+        .args([bcc, &bcc.with_file_name("bas"), &bcc.with_file_name("bld")])
+        .args(["--asm", &assembly, "int rounds(void) { return __builtin_flt_rounds(); }"])
+        .output().expect("run native FPCR harness");
+    assert!(result.status.success(), "{}\n{}{}", result.status,
+        String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
+}
+
+#[cfg(target_arch = "aarch64")]
 fn aarch64_check_exit(sources: &[&str]) {
     let toolchain = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let bcc = Path::new(env!("CARGO_BIN_EXE_bcc"));

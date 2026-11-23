@@ -1,8 +1,8 @@
 //! AArch64 local-exec TLS (AAELF64 2025Q1 §5.7.11.4).
 
-use super::{check_symbol, Emitter, Linkage, Slot};
+use super::{check_symbol, Emitter, Linkage};
 use crate::pp::Diagnostic;
-use crate::sema::{Object, StaticAddress, ThreadData, ThreadInitializer};
+use crate::sema::{Object, ThreadInitializer};
 use std::fmt::Write;
 
 pub(super) fn thread_address(out: &mut String, register: &str, name: &str) {
@@ -23,7 +23,7 @@ impl<'src> Emitter<'_, 'src> {
         initializer: Option<&ThreadInitializer<'src>>,
     ) -> Result<(), Diagnostic> {
         check_symbol(label, object.site)?;
-        let layout = object.ty.layout().unwrap();
+        let layout = object.layout().unwrap();
         let mut data = String::new();
         if linkage == Linkage::External {
             writeln!(data, ".global {label}").unwrap();
@@ -34,47 +34,7 @@ impl<'src> Emitter<'_, 'src> {
             layout.align
         )
         .unwrap();
-        let mut cursor = 0;
-        if let Some(initializer) = initializer {
-            for (&offset, value) in initializer {
-                if offset > cursor {
-                    writeln!(data, "    .zero {}", offset - cursor).unwrap();
-                }
-                let size = match value {
-                    ThreadData::Byte(byte) => {
-                        writeln!(data, "    .byte {byte}").unwrap();
-                        1
-                    }
-                    ThreadData::Address(address, addend) => {
-                        let name = match address {
-                            StaticAddress::Symbol(name, site) => {
-                                self.use_symbol(name, site)?;
-                                (*name).to_owned()
-                            }
-                            StaticAddress::Local(index) => {
-                                let Slot::Static(label) = &self.locals[*index] else {
-                                    unreachable!("initializer addresses name ordinary static locals");
-                                };
-                                label.clone()
-                            }
-                            StaticAddress::String(bytes) => self.emit_string(bytes),
-                            StaticAddress::Literal(_) => {
-                                return Err(Diagnostic::new(
-                                    object.site,
-                                    "AArch64 static initializer address is deferred to ARM 25.9d",
-                                ));
-                            }
-                        };
-                        writeln!(data, "    .quad {name}{addend:+}").unwrap();
-                        8
-                    }
-                };
-                cursor = offset + size;
-            }
-        }
-        if cursor < layout.size {
-            writeln!(data, "    .zero {}", layout.size - cursor).unwrap();
-        }
+        self.emit_initializer(&mut data, initializer, layout.size)?;
         writeln!(data, ".size {label}, {}", layout.size).unwrap();
         if initializer.is_some() {
             self.tdata.push_str(&data);

@@ -57,6 +57,12 @@ pub struct Layout {
     pub align: usize,
 }
 
+impl Layout {
+    pub(crate) fn is_lock_free_atomic(self) -> bool {
+        matches!(self.size, 1 | 2 | 4 | 8) && self.align >= self.size
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecordKind {
     Struct,

@@ -481,7 +481,6 @@ fn builtin(name: &str, target: Target) -> Option<(&str, Kind)> {
         "__BREENIX_BCC__" => ("1", Kind::Number),
         // N1570 6.10.8.3. Native ARM atomics are scheduled for ARM 25.9d.
         "__STDC_NO_COMPLEX__" | "__STDC_NO_THREADS__" | "__STDC_NO_VLA__" => ("1", Kind::Number),
-        "__STDC_NO_ATOMICS__" if target == Target::Aarch64 => ("1", Kind::Number),
         // Use N1570 6.10.8.1's fallback when translation time is unavailable.
         "__DATE__" => ("\"Jan  1 1970\"", Kind::String),
         "__TIME__" => ("\"00:00:00\"", Kind::String),

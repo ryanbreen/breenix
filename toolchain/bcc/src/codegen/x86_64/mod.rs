@@ -476,7 +476,7 @@ impl<'src> Emitter<'_, 'src> {
             // AMD64 va_end has no resources to release. Evaluate the operand.
             ExpressionKind::VaEnd(list) => self.value(list)?,
             ExpressionKind::FltRounds => self.flt_rounds(),
-            ExpressionKind::Atomic { op, arguments } => self.atomic_builtin(*op, arguments)?,
+            ExpressionKind::Atomic { op, arguments, .. } => self.atomic_builtin(*op, arguments)?,
             ExpressionKind::Call { callee, arguments } => {
                 self.call(callee, arguments, &expr.ty)?;
                 self.normalize_integer(&expr.ty);

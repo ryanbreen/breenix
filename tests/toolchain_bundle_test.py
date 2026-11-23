@@ -204,8 +204,8 @@ class ToolchainBundleTest(unittest.TestCase):
                 "rustc": self.record["tools"]["bcc"]["rustc"], "sha256": digest(archive),
             })
         names = (WORKSPACE / "corpus/cases").read_text().splitlines()
-        expected = set(names) - {"alignment", "atomics", "compound-literal", "designated-init", "generic"}
-        self.assertEqual(len(expected), 25)
+        expected = set(names)
+        self.assertEqual(len(expected), 30)
         candidates = root / corpus / "c-core/mac"
         self.assertEqual({p.name for p in candidates.iterdir()}, {f"{n}.elf" for n in expected})
         for path in candidates.iterdir():
@@ -286,15 +286,14 @@ class ToolchainBundleTest(unittest.TestCase):
                   *(f"{name}.{suffix}" for name in programs for suffix in ("c", "expect"))}
         manifest = set((self.dev / "manifest.sha256").read_text().splitlines())
         staged = root / corpus / "c11"
-        if self.record["arch"] == "aarch64":
-            self.assertFalse(staged.exists(), "ARM C11 inputs are scheduled after A4")
-            return
         self.assertEqual({path.relative_to(staged).as_posix() for path in staged.rglob("*")
                           if path.is_file()}, inputs)
         for path in sorted(inputs):
             with self.subTest(path=path):
-                self.assertEqual((staged / path).read_bytes(), (c11 / path).read_bytes())
-                self.assertIn(f"{digest(c11 / path)}  {corpus / 'c11' / path}", manifest)
+                source = (WORKSPACE / "corpus/c11-aarch64/floating.c"
+                          if self.record["arch"] == "aarch64" and path == "floating.c" else c11 / path)
+                self.assertEqual((staged / path).read_bytes(), source.read_bytes())
+                self.assertIn(f"{digest(source)}  {corpus / 'c11' / path}", manifest)
         for path in (corpus / "tls/threads.h", Path("opt/breenix-dev/25.2/lib/libbrt.a")):
             self.assertIn(f"{digest(root / path)}  {path}", manifest)
 

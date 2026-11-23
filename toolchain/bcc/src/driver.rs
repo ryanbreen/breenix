@@ -211,9 +211,6 @@ impl Driver {
         }
         let target = self.options.pp.target;
         let unit = sema::analyze(&input, path, target).map_err(|error| error.to_string())?;
-        if matches!(stage, Stage::Syntax | Stage::Types) {
-            unit.check_target_types().map_err(|error| error.to_string())?;
-        }
         match stage {
             Stage::Syntax => Ok(bytes),
             Stage::Types => {

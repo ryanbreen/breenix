@@ -189,13 +189,11 @@ def build(arch, work, dev, corpus):
         shutil.copy2(host_bins / package, host_dev / "bin" / name)
     candidates = corpus / "c-core/mac"
     candidates.mkdir(parents=True)
-    deferred = {"alignment", "atomics", "compound-literal", "designated-init", "generic"} if arch == "aarch64" else set()
     names = (ROOT / "toolchain/corpus/cases").read_text().splitlines()
-    if len(names) != 30 or not deferred.issubset(names):
+    if len(names) != 30:
         raise ValueError("unexpected C corpus")
     for name in names:
-        if name not in deferred:
-            reference.run([str(host_dev / "bin/cc"), *(["--target=aarch64"] if arch == "aarch64" else []),
+        reference.run([str(host_dev / "bin/cc"), *(["--target=aarch64"] if arch == "aarch64" else []),
                            "-o", str(candidates / (name + ".elf")), str(corpus / (name + ".c"))], work)
 
     stage_bootstrap_abi_tls(arch, clang, work, corpus)

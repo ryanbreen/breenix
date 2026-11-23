@@ -159,6 +159,7 @@ impl<'a> FunctionBody<'a, '_> {
         Ok((
             ExpressionKind::Atomic {
                 op,
+                weak: site.is("__c11_atomic_compare_exchange_weak"),
                 arguments: typed,
             },
             result,

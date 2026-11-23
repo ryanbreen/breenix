@@ -136,11 +136,19 @@ pub(crate) fn instruction(p: &mut Parser<'_, '_>, op: Token<'_>) -> Result<()> {
             let rt = register(p, true)?;
             p.expect(b',', "expected ',' before system register")?;
             let system = p.word();
-            if !system.text.eq_ignore_ascii_case("tpidr_el0") {
+            let encoding = if system.text.eq_ignore_ascii_case("tpidr_el0") {
+                // DDI 0487 M.b C6.2.286, D24.2.203: op0=3, op1=3, CRn=13, CRm=0, op2=2.
+                0xd53b_d040
+            } else if system.text.eq_ignore_ascii_case("fpcr") {
+                // DDI 0487 M.b C6.2.286, C5.2.8: op0=3, op1=3, CRn=4, CRm=4, op2=0.
+                0xd53b_4400
+            } else if system.text.eq_ignore_ascii_case("fpsr") {
+                // DDI 0487 M.b C6.2.286, C5.2.10: op0=3, op1=3, CRn=4, CRm=4, op2=1.
+                0xd53b_4420
+            } else {
                 return Err(p.error(system.column, "unsupported MRS system register"));
-            }
-            // C6.2.286 and D24.2.203: op0=3, op1=3, CRn=13, CRm=0, op2=2.
-            0xd53b_d040 | rt.number
+            };
+            encoding | rt.number
         }
         "svc" => 0xd400_0001 | (immediate(p, 0xffff)? << 5), // C6.2.465
         "nop" => 0xd503_201f,                                // C6.2.298
