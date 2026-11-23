@@ -177,7 +177,8 @@ def build(arch, work, dev, corpus, milestone=None):
     cargo, env, host, rustc_record = cargo_environment()
     tools = build_guest_tools(arch, work, dev, clang, cargo, env, rustc_record)
 
-    for tool, alias in (("bas", "as"), ("bld", "ld")):
+    image = import_module("toolchain-image")
+    for tool, alias in image.driver_tool_aliases(milestone):
         shutil.copy2(dev / "bin" / tool, dev / "bin" / alias)
     for category in ("c-core", "make", "project"):
         shutil.copytree(WORKSPACE / "corpus" / category, corpus / category)
@@ -262,8 +263,7 @@ def build(arch, work, dev, corpus, milestone=None):
 
         build_linker_objects(arch, clang, work, corpus)
 
-    if milestone == "toolchain/busybox-on-box":
-        image = import_module("toolchain-image")
+    if milestone == image.BUSYBOX_MILESTONE:
         for path, source in image.busybox_inputs().items():
             destination = corpus / path.relative_to(image.CORPUS)
             destination.parent.mkdir(parents=True, exist_ok=True)
