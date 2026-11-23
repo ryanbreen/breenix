@@ -617,7 +617,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
         Ok(size)
     }
 
-    fn object_initializer(
+    pub(super) fn object_initializer(
         &mut self,
         site: &'a Lexeme,
         ty: &mut Type,

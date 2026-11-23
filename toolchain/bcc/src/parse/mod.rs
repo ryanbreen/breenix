@@ -208,6 +208,7 @@ pub(super) enum ExpressionKind<'a> {
     Alignof(Type),
     Generic(Box<Expression<'a>>, Vec<Association<'a>>),
     Offsetof(Type, Vec<Designator<'a>>),
+    TypesCompatible(Type, Type),
     Sizeof(Box<Expression<'a>>),
     VaArg(Box<Expression<'a>>, Type),
     FltRounds,
@@ -1013,6 +1014,15 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 self.expect(")", "expected ')' after generic associations")?;
                 ExpressionKind::Generic(Box::new(control), associations)
             }
+            Kind::Identifier if site.is("__builtin_types_compatible_p") => {
+                self.take();
+                self.expect("(", "expected '(' after __builtin_types_compatible_p")?;
+                let left = self.type_name(depth + 1)?;
+                self.expect(",", "expected ',' between the type names")?;
+                let right = self.type_name(depth + 1)?;
+                self.expect(")", "expected ')' after the type names")?;
+                ExpressionKind::TypesCompatible(left, right)
+            }
             Kind::Identifier if site.is("__builtin_offsetof") => {
                 self.take();
                 self.expect("(", "expected '(' after __builtin_offsetof")?;
@@ -1130,6 +1140,7 @@ fn is_identifier(token: &Lexeme) -> bool {
                 | amd64_va_list::NAME
                 | "__builtin_va_arg"
                 | "__builtin_offsetof"
+                | "__builtin_types_compatible_p"
                 | "__builtin_flt_rounds"
         )
 }

@@ -573,6 +573,7 @@ impl<'unit, 'src> Emitter<'unit, 'src> {
             ExpressionKind::VaCopy { dest, source } => self.va_copy(dest, source)?,
             // AMD64 va_end has no resources to release. Evaluate the operand.
             ExpressionKind::VaEnd(list) => self.value(list)?,
+            ExpressionKind::Unreachable => writeln!(self.text, "    .byte 0x0f, 0x0b").unwrap(),
             ExpressionKind::FltRounds => self.flt_rounds(),
             ExpressionKind::FloatClass { operand, values } => self.float_class(operand, *values)?,
             ExpressionKind::SignBit(operand) => self.float_sign(operand)?,

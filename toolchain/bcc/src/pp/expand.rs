@@ -96,14 +96,14 @@ pub(super) struct Expander {
 #[derive(PartialEq, Eq)]
 struct Parameters {
     fixed: Vec<Rc<str>>,
-    variadic: bool,
+    variadic: Option<Rc<str>>,
 }
 
 impl Parameters {
-    fn parse(mut tokens: &[Lexeme], name: &Lexeme) -> Result<(Self, usize), Diagnostic> {
+    fn parse(mut tokens: &[Lexeme], name: &Lexeme, gnu: bool) -> Result<(Self, usize), Diagnostic> {
         let total = tokens.len();
         let mut fixed = Vec::new();
-        let mut variadic = false;
+        let mut variadic = None;
         if tokens.first().is_some_and(|token| !token.is(")")) {
             loop {
                 let (first, rest) = tokens
@@ -111,7 +111,7 @@ impl Parameters {
                     .ok_or_else(|| name.error("unterminated macro parameter list"))?;
                 tokens = rest;
                 if first.is("...") {
-                    variadic = true;
+                    variadic = Some(Rc::from("__VA_ARGS__"));
                     break;
                 }
                 if first.kind != Kind::Identifier || first.is("__VA_ARGS__") {
@@ -119,6 +119,11 @@ impl Parameters {
                 }
                 if fixed.contains(&first.text) {
                     return Err(first.error("duplicate macro parameter"));
+                }
+                if gnu && tokens.first().is_some_and(|token| token.is("...")) {
+                    variadic = Some(Rc::clone(&first.text));
+                    tokens = &tokens[1..];
+                    break;
                 }
                 fixed.push(Rc::clone(&first.text));
                 if let Some(rest) = tokens
@@ -141,7 +146,7 @@ impl Parameters {
     }
 
     fn index(&self, token: &Lexeme) -> Option<usize> {
-        if self.variadic && token.is("__VA_ARGS__") {
+        if self.variadic.as_ref() == Some(&token.text) {
             Some(self.fixed.len())
         } else {
             self.fixed.iter().position(|name| *name == token.text)
@@ -152,6 +157,7 @@ impl Parameters {
         &self,
         input: &mut VecDeque<Lexeme>,
         name: &Lexeme,
+        gnu: bool,
     ) -> Result<Invocation, Diagnostic> {
         let mut parens = 0usize;
         let mut args = vec![Vec::new()];
@@ -168,7 +174,7 @@ impl Parameters {
                 "(" => parens += 1,
                 ")" if parens == 0 => break token,
                 ")" => parens -= 1,
-                "," if parens == 0 && (!self.variadic || args.len() <= self.fixed.len()) => {
+                "," if parens == 0 && (self.variadic.is_none() || args.len() <= self.fixed.len()) => {
                     args.push(Vec::new());
                     spaced = false;
                     continue;
@@ -181,13 +187,22 @@ impl Parameters {
                 arg.push(token);
             }
         };
-        if self.fixed.is_empty() && !self.variadic && args.len() == 1 && args[0].is_empty() {
+        if self.fixed.is_empty() && self.variadic.is_none() && args.len() == 1 && args[0].is_empty() {
             args.clear();
         }
-        if args.len() != self.fixed.len() + usize::from(self.variadic) {
+        let mut variadic_omitted = false;
+        if gnu && self.variadic.is_some() {
+            if args.len() == self.fixed.len() {
+                args.push(Vec::new());
+                variadic_omitted = true;
+            } else if self.fixed.is_empty() && args[0].is_empty() {
+                variadic_omitted = true;
+            }
+        }
+        if args.len() != self.fixed.len() + usize::from(self.variadic.is_some()) {
             return Err(name.error("wrong number of macro arguments"));
         }
-        Ok(Invocation { args, closing })
+        Ok(Invocation { args, closing, variadic_omitted })
     }
 }
 
@@ -216,6 +231,7 @@ impl Macro {
 struct Invocation {
     args: Vec<Vec<Lexeme>>,
     closing: Lexeme,
+    variadic_omitted: bool,
 }
 
 impl Expander {
@@ -241,7 +257,7 @@ impl Expander {
         check_macro_name(name, self.target, self.standard)?;
         let parameters = match replacement.first() {
             Some(first) if first.is("(") && !first.space_before => {
-                let (parameters, length) = Parameters::parse(&replacement[1..], name)?;
+                let (parameters, length) = Parameters::parse(&replacement[1..], name, self.standard.is_gnu())?;
                 replacement = &replacement[1 + length..];
                 Some(parameters)
             }
@@ -307,24 +323,24 @@ impl Expander {
                 continue;
             };
             let mut hidden = token.hidden.clone();
-            let args = if let Some(parameters) = &mac.parameters {
+            let (args, variadic_omitted) = if let Some(parameters) = &mac.parameters {
                 let next = input.iter().position(|token| token.kind != Kind::Newline);
                 let Some(open) = next.filter(|i| input[*i].is("(")) else {
                     result.push(token);
                     continue;
                 };
                 input.drain(..=open);
-                let invocation = parameters.arguments(&mut input, &token)?;
+                let invocation = parameters.arguments(&mut input, &token, self.standard.is_gnu())?;
                 // The closing token marks how far the replacement's rescan reached.
                 // A name suppressed throughout both ends stays suppressed inside.
                 hidden.retain(|name| invocation.closing.hidden.contains(name));
-                invocation.args
+                (invocation.args, invocation.variadic_omitted)
             } else {
-                Vec::new()
+                (Vec::new(), false)
             };
             hidden.push(Rc::clone(&token.text));
 
-            let replacement = self.substitute(mac, &token, &args, depth)?;
+            let replacement = self.substitute(mac, &token, &args, variadic_omitted, depth)?;
             if replacement.is_empty() && token.space_before {
                 if let Some(next) = input.front_mut() {
                     next.space_before = true;
@@ -350,6 +366,7 @@ impl Expander {
         mac: &Macro,
         invocation: &Lexeme,
         args: &[Vec<Lexeme>],
+        variadic_omitted: bool,
         depth: usize,
     ) -> Result<Vec<Lexeme>, Diagnostic> {
         let mut result = Vec::new();
@@ -363,6 +380,22 @@ impl Expander {
                 }
                 paste = true;
                 continue;
+            }
+            // GNU CPP §3.6: a literal comma before ## and the variadic
+            // parameter is a separator, not a token to paste. Only omission
+            // removes it; a supplied argument with no tokens retains it.
+            if self.standard.is_gnu()
+                && original.is(",")
+                && !paste
+                && mac.replacement.get(index + 1).is_some_and(Lexeme::paste)
+                && mac.parameters.as_ref().and_then(|p| p.variadic.as_ref())
+                    == mac.replacement.get(index + 2).map(|token| &token.text)
+            {
+                replacement.next();
+                if variadic_omitted {
+                    replacement.next();
+                    continue;
+                }
             }
             let mut at_call = original.clone();
             at_call.site = invocation.site.clone();

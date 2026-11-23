@@ -250,6 +250,7 @@ pub enum ExpressionKind<'a> {
     },
     VaEnd(Box<Expression<'a>>),
     FltRounds,
+    Unreachable,
     FloatClass {
         operand: Box<Expression<'a>>,
         // GCC §7.2.1 order: FP_NAN, FP_INFINITE, FP_NORMAL, FP_SUBNORMAL, FP_ZERO.
@@ -763,7 +764,10 @@ impl<'a, 'r> ParserExpressionScope<'a, 'r> {
         }
     }
 
-    fn expression(&self, expression: parse::Expression<'a>) -> Result<Expression<'a>, Diagnostic> {
+    fn with_body<T>(
+        &self,
+        evaluate: impl FnOnce(&mut FunctionBody<'a, '_>) -> Result<T, Diagnostic>,
+    ) -> Result<T, Diagnostic> {
         let record_scope = RecordScope {
             records: self.records,
             token_order: None,
@@ -779,8 +783,25 @@ impl<'a, 'r> ParserExpressionScope<'a, 'r> {
             &record_scope,
             &mut block_externs,
         );
-        context.expression(expression)
+        evaluate(&mut context)
     }
+
+    fn expression(&self, expression: parse::Expression<'a>) -> Result<Expression<'a>, Diagnostic> {
+        self.with_body(|body| body.expression(expression))
+    }
+
+}
+
+// N1570 §6.7.9p22 completes an array at the end of its initializer.
+// Later parser-time constant evaluation (e.g. sizeof in an enum) needs it.
+pub(super) fn complete_initializer_array<'a>(
+    site: &'a Lexeme,
+    mut ty: Type,
+    initializer: parse::Initializer<'a>,
+    scope: ParserExpressionScope<'a, '_>,
+) -> Result<Type, Diagnostic> {
+    scope.with_body(|body| body.object_initializer(site, &mut ty, initializer, false))?;
+    Ok(ty)
 }
 
 pub(super) fn layout_constant<'a>(
@@ -790,6 +811,23 @@ pub(super) fn layout_constant<'a>(
     let expr = scope.expression(expression)?;
     body::constant_integer(&expr, scope.target)
         .ok_or_else(|| expr.site.error("expected an integer constant expression"))
+}
+
+// N1570 §6.7.2.2: each enumerator has an integer constant expression
+// representable as int. Preserve the initializer's signedness for this check.
+pub(super) fn enumerator_constant<'a>(
+    expression: parse::Expression<'a>,
+    scope: ParserExpressionScope<'a, '_>,
+) -> Result<i32, Diagnostic> {
+    let expr = scope.expression(expression)?;
+    let bits = body::constant_integer(&expr, scope.target)
+        .ok_or_else(|| expr.site.error("expected an integer constant expression"))?;
+    let value = if matches!(expr.ty.kind, Kind::Integer(ty) if ty.is_signed(scope.target)) {
+        i32::try_from(bits as i64)
+    } else {
+        i32::try_from(bits)
+    };
+    value.map_err(|_| expr.site.error("enumerator must fit in int"))
 }
 
 pub(super) fn typeof_expression<'a>(
@@ -1164,6 +1202,10 @@ impl<'a> FunctionBody<'a, '_> {
             }
             Syntax::Alignof(ty) => size_constant(type_alignment(&ty, site)?),
             Syntax::Offsetof(ty, path) => size_constant(self.offsetof(site, ty, path)?),
+            Syntax::TypesCompatible(left, right) => (
+                ExpressionKind::Integer(u64::from(left.unqualified().compatible(&right.unqualified()))),
+                Type::new(Kind::Integer(Integer::Int)),
+            ),
             Syntax::Generic(control, associations) => {
                 return self.generic(site, *control, associations)
             }

@@ -241,7 +241,10 @@ def inventory(bcc, clang, inputs):
     }
     by_kind = {kind: {"commands": 0, "passed": 0} for kind in ("host", "target")}
     commands = compile_commands(clang)
-    headers = ["-I", str(ROOT / "toolchain/include"), "-I", str(ROOT / "libs/libbreenix-libc/include")]
+    headers = [
+        "-nostdinc", "-I", str(ROOT / "toolchain/include"),
+        "-I", str(ROOT / "libs/libbreenix-libc/include"),
+    ]
     with tempfile.TemporaryDirectory() as scratch:
         for cmd in commands:
             by_kind[cmd.kind]["commands"] += 1
@@ -251,8 +254,11 @@ def inventory(bcc, clang, inputs):
             flags = [flag for flag in cmd.flags if flag != "-c"]
             if any(flag == "-MD" or flag.startswith("-Wp,-MD,") for flag in flags):
                 flags += ["-MF", str(Path(scratch) / "unit.d")]
-            if cmd.kind == "target":
-                flags += headers
+            if cmd.kind == "host" and not any(flag.startswith("-std=") for flag in flags):
+                # The reference HOSTCC defaults to a GNU dialect. bcc's
+                # default is strict C11; use its supported GNU C11 mode.
+                flags.insert(0, "-std=gnu11")
+            flags += headers
             result = subprocess.run(
                 [str(bcc), "-fsyntax-only", "--target=x86_64", *flags],
                 cwd=SRC, capture_output=True, text=True, timeout=10, check=False,

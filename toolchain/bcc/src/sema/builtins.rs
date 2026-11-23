@@ -51,8 +51,18 @@ pub(super) enum Builtin {
     Sign,
     Compare(Option<Binary>),
     ByteSwap(Integer),
-    Popcount,
+    BitCount(Integer, BitCount),
+    Expect,
+    ConstantP,
+    Unreachable,
     Alloca,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum BitCount {
+    Population,
+    LeadingZeros,
+    TrailingZeros,
 }
 
 impl Builtin {
@@ -77,7 +87,18 @@ impl Builtin {
             "__builtin_bswap16" => Self::ByteSwap(Integer::UnsignedShort),
             "__builtin_bswap32" => Self::ByteSwap(Integer::UnsignedInt),
             "__builtin_bswap64" => Self::ByteSwap(Integer::UnsignedLong),
-            "__builtin_popcountl" => Self::Popcount,
+            "__builtin_popcount" => Self::BitCount(Integer::UnsignedInt, BitCount::Population),
+            "__builtin_popcountl" => Self::BitCount(Integer::UnsignedLong, BitCount::Population),
+            "__builtin_popcountll" => Self::BitCount(Integer::UnsignedLongLong, BitCount::Population),
+            "__builtin_clz" => Self::BitCount(Integer::UnsignedInt, BitCount::LeadingZeros),
+            "__builtin_clzl" => Self::BitCount(Integer::UnsignedLong, BitCount::LeadingZeros),
+            "__builtin_clzll" => Self::BitCount(Integer::UnsignedLongLong, BitCount::LeadingZeros),
+            "__builtin_ctz" => Self::BitCount(Integer::UnsignedInt, BitCount::TrailingZeros),
+            "__builtin_ctzl" => Self::BitCount(Integer::UnsignedLong, BitCount::TrailingZeros),
+            "__builtin_ctzll" => Self::BitCount(Integer::UnsignedLongLong, BitCount::TrailingZeros),
+            "__builtin_expect" => Self::Expect,
+            "__builtin_constant_p" => Self::ConstantP,
+            "__builtin_unreachable" => Self::Unreachable,
             "__builtin_alloca" => Self::Alloca,
             _ => return None,
         })
@@ -85,8 +106,8 @@ impl Builtin {
 
     fn arity(&self) -> usize {
         match self {
-            Self::Infinity(_) => 0,
-            Self::Compare(_) => 2,
+            Self::Infinity(_) | Self::Unreachable => 0,
+            Self::Compare(_) | Self::Expect => 2,
             Self::Classify => 6,
             _ => 1,
         }
@@ -230,7 +251,30 @@ impl<'a> FunctionBody<'a, '_> {
                 let left = arguments.pop().unwrap();
                 self.quiet_compare(site, left, right, op)
             }
-            Builtin::Popcount | Builtin::ByteSwap(_) => {
+            Builtin::Expect => {
+                let expected = arguments.pop().unwrap();
+                if body::constant_integer(&expected, self.target).is_none() {
+                    return Err(expected.site.error("__builtin_expect requires an integer constant hint"));
+                }
+                let value = arguments.pop().unwrap();
+                if !matches!(value.ty.kind, Kind::Integer(_)) {
+                    return Err(value.site.error("__builtin_expect requires an integer operand"));
+                }
+                Ok((ExpressionKind::Cast(Box::new(value)), integer(Integer::Long)))
+            }
+            Builtin::ConstantP => {
+                let value = arguments.pop().unwrap();
+                let known = match value.ty.kind {
+                    Kind::Integer(_) => body::constant_integer(&value, self.target).is_some(),
+                    Kind::Float(_) | Kind::LongDouble => {
+                        float::constant_bits(&value, &value.ty.kind, self.target).is_some()
+                    }
+                    _ => matches!(value.kind, ExpressionKind::String(_)),
+                };
+                Ok((ExpressionKind::Integer(u64::from(known)), int))
+            }
+            Builtin::Unreachable => Ok((ExpressionKind::Unreachable, Type::new(Kind::Void))),
+            Builtin::BitCount(..) | Builtin::ByteSwap(_) => {
                 let argument = arguments.pop().unwrap();
                 self.swap_or_count(site, argument, builtin)
             }
@@ -382,15 +426,15 @@ impl<'a> FunctionBody<'a, '_> {
                 &[8, 16, 32][..value.layout().size.trailing_zeros() as usize],
                 Binary::BitOr,
             ),
-            Builtin::Popcount => (
-                Integer::UnsignedLong,
-                &[1, 2, 4, 8, 16, 32][..],
+            Builtin::BitCount(width, _) => (
+                width,
+                &[1, 2, 4, 8, 16, 32][..width.layout().size.trailing_zeros() as usize + 3],
                 Binary::Add,
             ),
             _ => unreachable!(),
         };
         let input = integer(width);
-        let result = if matches!(builtin, Builtin::Popcount) {
+        let result = if matches!(builtin, Builtin::BitCount(..)) {
             integer(Integer::Int)
         } else {
             input.clone()
@@ -400,12 +444,18 @@ impl<'a> FunctionBody<'a, '_> {
                 .site
                 .error(format!("{} requires an arithmetic argument", site.text)));
         }
+        let bit_width = width.layout().size * 8;
         if let Some(bits) = body::constant_integer(&argument, self.target) {
+            let bits = bits & (u64::MAX >> (64 - bit_width));
             let value = match builtin {
-                Builtin::ByteSwap(Integer::UnsignedShort) => u64::from((bits as u16).swap_bytes()),
-                Builtin::ByteSwap(Integer::UnsignedInt) => u64::from((bits as u32).swap_bytes()),
-                Builtin::ByteSwap(_) => bits.swap_bytes(),
-                Builtin::Popcount => bits.count_ones().into(),
+                Builtin::ByteSwap(_) => bits.swap_bytes() >> (64 - bit_width),
+                Builtin::BitCount(_, BitCount::Population) => u64::from(bits.count_ones()),
+                Builtin::BitCount(_, BitCount::LeadingZeros) => {
+                    u64::from(bits.leading_zeros()) - (64 - bit_width) as u64
+                }
+                Builtin::BitCount(_, BitCount::TrailingZeros) => {
+                    u64::from(bits.trailing_zeros()).min(bit_width as u64)
+                }
                 _ => unreachable!(),
             };
             return Ok((ExpressionKind::Integer(value), result));
@@ -437,7 +487,7 @@ impl<'a> FunctionBody<'a, '_> {
             })
         };
         let comma = |left, right| expr(ExpressionKind::Comma(Box::new(left), Box::new(right)));
-        let argument = if matches!(builtin, Builtin::Popcount) {
+        let argument = if width == Integer::UnsignedLong {
             argument
         } else {
             Expression {
@@ -447,6 +497,25 @@ impl<'a> FunctionBody<'a, '_> {
             }
         };
         let mut value = assign(argument);
+        match builtin {
+            Builtin::BitCount(_, BitCount::LeadingZeros) => {
+                // Turn every position below the highest set bit into a one.
+                for &shift in shifts {
+                    let low = binary(Binary::ShiftRight, temp(), literal(shift));
+                    value = comma(value, assign(binary(Binary::BitOr, temp(), low)));
+                }
+            }
+            Builtin::BitCount(_, BitCount::TrailingZeros) => {
+                // Subtract one, then remove all positions originally set.
+                let low = binary(
+                    Binary::BitAnd,
+                    binary(Binary::Subtract, temp(), literal(1)),
+                    binary(Binary::BitXor, temp(), literal(u64::MAX >> (64 - bit_width))),
+                );
+                value = comma(value, assign(low));
+            }
+            _ => {}
+        }
         for &shift in shifts {
             let mask = u64::MAX / ((1u64 << shift) + 1);
             let low = binary(Binary::BitAnd, temp(), literal(mask));
@@ -459,6 +528,11 @@ impl<'a> FunctionBody<'a, '_> {
             };
             value = comma(value, assign(binary(op, low, high)));
         }
-        Ok((ExpressionKind::Cast(Box::new(comma(value, temp()))), result))
+        let count = if matches!(builtin, Builtin::BitCount(_, BitCount::LeadingZeros)) {
+            binary(Binary::Subtract, literal(bit_width as u64), temp())
+        } else {
+            temp()
+        };
+        Ok((ExpressionKind::Cast(Box::new(comma(value, count))), result))
     }
 }

@@ -36,8 +36,8 @@ pub(super) fn token_prefix(text: &str, context: LexContext) -> Result<(Kind, usi
         }
     }
     if let Some(opening) = literal_opening(text.as_bytes()) {
-        // A pragma may carry implementation-defined text, as in N1570 6.10.9's
-        // listing pragma. Its quoted path is not interpreted as a C string.
+        // Directive messages and implementation-defined pragma text (N1570
+        // §§6.10.5–6.10.6) do not interpret quoted text as C string values.
         return literal(text, opening, matches!(context, LexContext::Pragma));
     }
 

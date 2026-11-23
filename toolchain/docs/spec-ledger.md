@@ -32,6 +32,7 @@ edition pin whose full publication has no digest recorded here.
 | [GNU CPP Diagnostics](https://gcc.gnu.org/onlinedocs/gcc-15.2.0/cpp/Diagnostics.html) | GCC 15.2.0 manual, §5, `#warning` spelling and behavior | `fbd550c2e99d404c1f8184df32389be1011514b1d95cd0e1ff0eb8e47ca6c37e` |
 | [GNU C vector extensions](https://gcc.gnu.org/onlinedocs/gcc-15.2.0/gcc/Vector-Extensions.html) | GCC 15.2.0 manual, §7.8, `vector_size` typedef spelling | `bb7f699ab3937eefe69960c5a6bbe6fae9fb58c02aa534bec65caca4c57942e6` |
 | [GCC Common Predefined Macros](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/cpp/Common-Predefined-Macros.html) | GCC 16.2.0 manual, 2026-08-07, §3.7.2, 37380 bytes. Covers predefined type macro names and `__STRICT_ANSI__`. | `9d68defcfa4ed119d2c5f6386b37d49584d7f5354b334008bbae1a2b7ea74904` |
+| [GCC Variadic Macros](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/cpp/Variadic-Macros.html) | GCC 16.2.0 manual, 2026-08-07, §3.6, 9784 bytes. | `ea8d59878d95fd0625789968fcebd3c7fecbd84ab18b4c1ed322b612dcbb3bf6` |
 | [GCC Wrapper Headers](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/cpp/Wrapper-Headers.html) | GCC 16.2.0 manual, 2026-08-07, §2.7, 6361 bytes. The pin covers `#include_next`. | `2070d0294cb6d1436e610e6e59d7735e456c57dbc4610b093fbc1ced833848fb` |
 | [GCC Alternate Keywords](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Alternate-Keywords.html) | GCC 16.2.0 manual, 2026-08-07, §6.12.23, 5255 bytes. The pin covers alternate keywords and `__extension__`. | `e03f023a80ef4e52463455c9434f29df78d8d75d7738dad1b538d9dec4a7e30f` |
 | [GCC Statements and Declarations in Expressions](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Statement-Exprs.html) | GCC 16.2.0 manual, 2026-08-07, §6.12.1, 10580 bytes. Compound statement expressions, trailing values and control flow. | `0c2c44bd6374986edc6ece1431fd4da37db132b5a65c3546992eea13b486b942` |
@@ -609,3 +610,28 @@ declaration syntax. bcc has no corresponding use-site warnings today.
 `noinline`, `always_inline`, `const`, `pure`, `malloc` and `cold` are
 recognized function attributes. The current pipeline leaves calls in place
 and performs no attribute-driven inlining, call elimination or cold layout.
+
+### 25.11b GNU preprocessing and builtins
+
+GNU CPP §3.6 specifies named variadic parameters and removal of the
+comma in `, ##args` when the argument is omitted in GNU mode. An
+explicitly empty argument retains the comma. The wrapper-header check
+uses the existing §2.7 search order with both quoted and computed
+header names. `-nostdinc` suppresses implicit bundle include directories
+while preserving explicit include paths, per GCC Directory Options.
+
+GCC Other Builtins §7.12 specifies `__builtin_expect`,
+`__builtin_constant_p`, `__builtin_types_compatible_p` and
+`__builtin_unreachable`. bcc keeps the value and single evaluation of
+the first expect operand and does not use its hint to lay out branches.
+The constant query is resolved during semantic analysis without
+evaluating its operand. The compatibility result compares unqualified
+types. The unreachable expression emits AMD64 UD2 (Intel SDM Vol. 2)
+or AArch64 BRK #0 (Arm DDI 0487 M.b §C6.2.35).
+
+GCC Numeric Builtins §§7.2.2–7.2.3 specify the widths and results of
+bit counts and byte swaps. Both targets use unsigned C operations to
+lower dynamic counts and swaps, including arguments with side effects.
+The existing offset operation uses the pinned GCC Offsetof Support
+grammar. N1570 §§6.7.2.2 and 6.7.9p22 specify enum constant expressions
+and completion of an array by its initializer.

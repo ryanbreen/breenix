@@ -17,7 +17,7 @@ mod native_target;
 pub use native_target::default_target;
 
 const USAGE: &str = "usage: bcc [-E|-S|-c|-fsyntax-only|--dump-types] [-o FILE] \
-    [-I DIR] [-include FILE] [-D NAME[=VALUE]] [-U NAME] [-L DIR] [-l NAME] [-B DIR] \
+    [-I DIR] [-nostdinc] [-include FILE] [-D NAME[=VALUE]] [-U NAME] [-L DIR] [-l NAME] [-B DIR] \
     [-MD [-MF FILE] | -Wp,-MD,FILE] [-std=c11|c17|gnu99|gnu11] \
     [-O0|-O1|-O2] [-fno-builtin] [-frounding-math] [-Wall] [-Werror] [-w] \
     [--target=x86_64|aarch64] INPUT ...";
@@ -55,6 +55,7 @@ struct Options {
     forwarded_dependency_file: Option<PathBuf>,
     tools: Option<PathBuf>,
     pp: pp::Options,
+    no_standard_includes: bool,
     rounding_math: bool,
     optimize: bool,
     warnings_as_errors: bool,
@@ -79,6 +80,7 @@ impl Options {
                 },
                 ..pp::Options::default()
             },
+            no_standard_includes: false,
             rounding_math: false,
             optimize: false,
             warnings_as_errors: false,
@@ -112,6 +114,7 @@ impl Options {
                 Some("-std=c17") => options.pp.standard = Standard::C17,
                 Some("-std=gnu99") => options.pp.standard = Standard::Gnu99,
                 Some("-std=gnu11") => options.pp.standard = Standard::Gnu11,
+                Some("-nostdinc") => options.no_standard_includes = true,
                 Some("-MD") => options.pp.track_includes = true,
                 Some(flag @ ("-MF" | "-include")) => {
                     let path = args
@@ -289,10 +292,12 @@ impl Driver {
             .parent()
             .ok_or("bcc: cannot locate executable directory")?;
         let bundle = bin.parent().ok_or("bcc: cannot locate bundle directory")?;
-        options
-            .pp
-            .system_dirs
-            .extend([bundle.join("include-support"), bundle.join("include")]);
+        if !options.no_standard_includes {
+            options
+                .pp
+                .system_dirs
+                .extend([bundle.join("include-support"), bundle.join("include")]);
+        }
         options.libraries.push(bundle.join("lib"));
         Ok(Self {
             tools: options.tools.take().unwrap_or_else(|| bin.to_path_buf()),

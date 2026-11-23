@@ -242,17 +242,14 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 } else {
                     None
                 };
-                if let Some(initializer) = &initializer {
-                    let mut complete = ty.clone();
-                    if let TypeKind::Array(element, count @ None) = &mut complete.kind {
-                        if let Some(tokens) = string_initializer(initializer) {
-                            let (literal, _, length) = crate::sema::string_literal(tokens, self.target)?;
-                            if crate::sema::string_initializes(element, literal) {
-                                *count = Some(length);
-                                self.name(name, Name::Ordinary(complete));
-                            }
-                        }
-                    }
+                if let (TypeKind::Array(_, None), Some(initializer)) = (&ty.kind, &initializer) {
+                    let complete = crate::sema::complete_initializer_array(
+                        name,
+                        ty.clone(),
+                        initializer.clone(),
+                        self.expression_scope(),
+                    )?;
+                    self.name(name, Name::Ordinary(complete));
                 }
                 let alignment = storage.object_alignment(&ty);
                 variables.push(Variable {
@@ -628,22 +625,11 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         crate::sema::ParserExpressionScope::new(self.target, self.standard, &self.records, names)
     }
 
-    fn literal_integer(&mut self) -> Result<(i128, &'a Lexeme), Diagnostic> {
-        let token = self
-            .take()
-            .ok_or_else(|| self.error("expected an integer constant"))?;
-        let value = match self.lookup(&token.text) {
-            Some(Name::Enumerator(value)) => Some(i128::from(*value)),
-            _ => {
-                crate::pp::integer_constant(&token.text).map(|constant| i128::from(constant.value))
-            }
-        };
-        value
-            .map(|value| (value, token))
-            .ok_or_else(|| token.error("expected an integer constant"))
-    }
-
-    pub(super) fn enumeration(&mut self, keyword: &Lexeme) -> Result<Type, Diagnostic> {
+    pub(super) fn enumeration(
+        &mut self,
+        keyword: &Lexeme,
+        depth: usize,
+    ) -> Result<Type, Diagnostic> {
         let tag = self.identifier();
         let ty = Type::new(TypeKind::Integer(Integer::Int));
         if self.eat("{").is_none() {
@@ -671,10 +657,8 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 .identifier()
                 .ok_or_else(|| self.error("expected an enumerator name"))?;
             let value = if self.eat("=").is_some() {
-                let negative = self.eat("-").is_some();
-                let (value, site) = self.literal_integer()?;
-                let value = if negative { -value } else { value };
-                i32::try_from(value).map_err(|_| site.error("enumerator must fit in int"))?
+                let expression = self.conditional(depth + 1)?;
+                crate::sema::enumerator_constant(expression, self.expression_scope())?
             } else {
                 next.ok_or_else(|| name.error("enumerator must fit in int"))?
             };
@@ -1072,18 +1056,6 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
     }
 }
 
-fn string_initializer<'a, 'i>(initializer: &'i Initializer<'a>) -> Option<&'i [&'a Lexeme]> {
-    match initializer {
-        Initializer::Expression(Expression { kind: ExpressionKind::String(tokens), .. }) => Some(tokens),
-        Initializer::List(_, entries) if entries.len() == 1 && entries[0].designators.is_empty() => {
-            match &entries[0].value {
-                Initializer::Expression(Expression { kind: ExpressionKind::String(tokens), .. }) => Some(tokens),
-                _ => None,
-            }
-        }
-        _ => None,
-    }
-}
 
 impl DeclStorage {
     fn require_declarator(self, site: &Lexeme) -> Result<(), Diagnostic> {

@@ -365,6 +365,7 @@ impl<'src> Emitter<'_, 'src> {
                 self.value(left)?;
                 self.value(right)?;
             }
+            ExpressionKind::Unreachable => writeln!(self.text, "    .long 0xd4200000").unwrap(),
             ExpressionKind::FltRounds => {
                 // DDI 0487 M.b C5.2.8 FPCR.RMode [23:22] is nearest, +infinity,
                 // -infinity, toward 0; N1570 5.2.4.2.2 maps these to 1, 2, 3, 0.

@@ -242,7 +242,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     }
                     "enum" => {
                         self.take();
-                        Some(self.enumeration(token)?)
+                        Some(self.enumeration(token, depth)?)
                     }
                     amd64_va_list::NAME => {
                         self.take();

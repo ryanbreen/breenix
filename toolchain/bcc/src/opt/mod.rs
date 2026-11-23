@@ -191,6 +191,7 @@ fn children<'a>(expr: &mut Expression<'a>, mut visit: impl FnMut(&mut Expression
         | Integer(_)
         | Float(_)
         | String(_)
+        | Unreachable
         | FltRounds
         | StatementExpression { .. } => {}
     }

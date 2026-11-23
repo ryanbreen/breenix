@@ -192,6 +192,7 @@ fn expression(out: &mut impl Write, expr: &Expression<'_>) -> io::Result<()> {
             expression(out, operand)?;
             (expr.site.text.as_ref(), "rvalue")
         }
+        ExpressionKind::Unreachable => ("__builtin_unreachable", "rvalue"),
         ExpressionKind::FltRounds => ("__builtin_flt_rounds", "rvalue"),
         ExpressionKind::Atomic { arguments, .. } => {
             for argument in arguments {
