@@ -57,8 +57,6 @@ pub struct Layout {
     pub align: usize,
 }
 
-pub(crate) const ARM_ATOMIC_RUNTIME: &str = "non-lock-free atomic objects are deferred to ARM 25.9d u3";
-
 impl Layout {
     pub(crate) fn is_lock_free_atomic(self) -> bool {
         matches!(self.size, 1 | 2 | 4 | 8) && self.align >= self.size
@@ -329,25 +327,6 @@ impl Type {
             }
             _ => Ok(()),
         }
-    }
-
-    pub(crate) fn check_atomic_layout(
-        &self,
-        target: Target,
-        site: &crate::pp::Position,
-    ) -> Result<(), crate::pp::Diagnostic> {
-        if target != Target::Aarch64 {
-            return Ok(());
-        }
-        if self.qualifiers.atomic
-            && self.layout().is_some_and(|layout| !layout.is_lock_free_atomic())
-        {
-            return Err(crate::pp::Diagnostic::new(site, ARM_ATOMIC_RUNTIME));
-        }
-        if let Kind::Array(element, _) = &self.kind {
-            element.check_atomic_layout(target, site)?;
-        }
-        Ok(())
     }
 
     // N1570 6.2.7, 6.7.3p10, 6.7.6.2p6, and 6.7.6.3p15.

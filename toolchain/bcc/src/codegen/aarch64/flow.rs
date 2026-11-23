@@ -25,7 +25,6 @@ impl<'src> Emitter<'_, 'src> {
         self.frame_alignment = STACK_ALIGNMENT;
         for (index, local) in function.locals.iter().enumerate() {
             let object = &local.object;
-            object.ty.check_atomic_layout(Target::Aarch64, object.site)?;
             let slot = match &local.storage {
                 LocalStorage::ThreadExtern(_) | LocalStorage::Function(_) => Slot::ThreadExtern,
                 LocalStorage::Thread(_) => Slot::Thread(self.label()),
@@ -407,7 +406,6 @@ impl<'src> Emitter<'_, 'src> {
             layout.align
         )
         .unwrap();
-        object.ty.check_atomic_layout(Target::Aarch64, object.site)?;
         self.emit_initializer(&mut data, initializer, layout.size)?;
         writeln!(data, ".size {name}, {}", layout.size).unwrap();
         if initializer.is_some() {

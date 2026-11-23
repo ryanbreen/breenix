@@ -64,13 +64,7 @@ impl Emitter<'_, '_> {
         if postfix {
             self.push_value('q');
         }
-        self.push_value('q');
-        self.binary128_constant(ONE);
-        self.binary128_binary(if increment {
-            Binary::Add
-        } else {
-            Binary::Subtract
-        });
+        self.binary128_step(increment);
         let address_offset = if postfix { 16 } else { 0 };
         writeln!(
             self.text,
@@ -81,6 +75,16 @@ impl Emitter<'_, '_> {
             self.text.push_str("    ldr q0, [sp], #16\n");
         }
         self.adjust_stack("add", 16);
+    }
+
+    pub(super) fn binary128_step(&mut self, increment: bool) {
+        self.push_value('q');
+        self.binary128_constant(ONE);
+        self.binary128_binary(if increment {
+            Binary::Add
+        } else {
+            Binary::Subtract
+        });
     }
 
     pub(super) fn compare_binary128_zero(&mut self) {

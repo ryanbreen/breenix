@@ -53,10 +53,12 @@ one per feature area.
 
 [profile-macros.c](../corpus/c11/profile-macros.c) exercises §6.10.8.3p1–2.
 `__STDC_NO_VLA__`, `__STDC_NO_COMPLEX__` and `__STDC_NO_THREADS__` expand to
-`1`. The x86 profile leaves `__STDC_NO_ATOMICS__` undefined because 25.9c
-implements scalar and aggregate atomics with [stdatomic.h](../include/stdatomic.h).
-The ARM profile defines it as `1` and diagnoses atomic types and accesses
-until ARM 25.9d.
+`1`. Both profiles leave `__STDC_NO_ATOMICS__` undefined and implement
+scalar and aggregate atomics with [stdatomic.h](../include/stdatomic.h).
+AArch64 uses native instructions for naturally aligned 1-, 2-, 4- and
+8-byte objects. Wider and misaligned accesses use the generic size-first
+`libbrt.a` calls. The AArch64 host harness runs the bcc-compiled,
+bld-linked aggregate compare-exchange fixture from eight threads.
 The profile also leaves `__STDC_IEC_559_COMPLEX__` undefined.
 
 ## Host constraints and open coverage
@@ -92,6 +94,5 @@ The conditional threads macro describes support for using the header
 with the compiler in this profile.
 
 The shared front end and preprocessor cover both target profiles. ARM64
-native execution of the 25.9 runtime cases still needs AArch64
-floating-environment and atomic lowering, C11 guest fixture staging and
-acceptance.
+still needs floating-environment lowering, C11 guest fixture staging and
+guest acceptance.

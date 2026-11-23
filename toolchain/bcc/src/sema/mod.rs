@@ -519,7 +519,6 @@ pub fn analyze<'a>(
         }
         ty.resolve_records(&|id| records[id].definition.as_ref().map(|d| d.layout));
         thread::check_layout(&ty, &site.site)?;
-        ty.check_atomic_layout(target, &site.site)?;
         let alignment = symbol.alignment;
         symbol.defined = true;
         static_objects.push(StaticObject {
@@ -547,7 +546,6 @@ pub fn analyze<'a>(
             .ty
             .resolve_records(&|id| records[id].definition.as_ref().map(|d| d.layout));
         thread::check_layout(&thread.object.ty, thread.object.site)?;
-        thread.object.ty.check_atomic_layout(target, thread.object.site)?;
     }
     Ok(TranslationUnit {
         functions,
