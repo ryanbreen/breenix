@@ -28,7 +28,7 @@ use regalloc::{Access, ValueId};
 use thread::ThreadPlace;
 use varargs::VariadicFrame;
 
-pub(super) fn emit(unit: &TranslationUnit<'_>, optimize: bool) -> Result<String, Diagnostic> {
+pub(super) fn emit(unit: &TranslationUnit<'_>, options: super::Options) -> Result<String, Diagnostic> {
     let mut functions = HashMap::new();
     for function in &unit.functions {
         let entry = functions.entry(function.name).or_insert(function);
@@ -41,7 +41,7 @@ pub(super) fn emit(unit: &TranslationUnit<'_>, optimize: bool) -> Result<String,
     let mut emitter = Emitter {
         functions,
         records: &unit.records,
-        optimize,
+        optimize: options.optimize,
         scan: regalloc::Scan::default(),
         frame: 0,
         aligned_frame: 0,
@@ -130,12 +130,11 @@ pub(super) fn emit(unit: &TranslationUnit<'_>, optimize: bool) -> Result<String,
     }
     for function in &unit.functions {
         if let Some(body) = &function.body {
-            let section = unit.symbol_attributes.get(function.name).and_then(|attrs| attrs.section.as_deref());
-            if let Some(section) = section {
-                super::select_section(&mut emitter.text, section, "ax", "progbits");
-            }
+            let custom_section = super::function_section(
+                &mut emitter.text, unit, function.name, options.function_sections,
+            );
             emitter.function(function, body)?;
-            if section.is_some() {
+            if custom_section {
                 emitter.text.push_str("\n.section .text\n");
             }
         }

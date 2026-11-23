@@ -58,7 +58,7 @@ fn function<'a>(assembly: &'a str, name: &str) -> &'a str {
 
 #[test]
 fn zero_bitmask_removes_unreachable_branch() {
-    // N1570 6.5.10 and 6.8.4.1. A mask of zero has no set bits.
+    // N1570 6.5.10 and 6.8.4.1. A constant mask disables the branch.
     let source = Source::new(
         "zero-bitmask",
         r"
@@ -81,7 +81,7 @@ int volatile_read(void) {
 
 #[test]
 fn constant_conditional_discards_unselected_call() {
-    // N1570 6.5.15p4. The unselected operand is never evaluated.
+    // N1570 6.5.15p4 governs which conditional operand is evaluated.
     let source = Source::new(
         "constant-conditional",
         r"

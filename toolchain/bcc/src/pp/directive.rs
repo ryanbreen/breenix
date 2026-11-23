@@ -138,7 +138,17 @@ impl Preprocessed {
     }
 
     /// Write the phase-4 result with separators that preserve token boundaries.
-    pub fn write(&self, mut out: impl Write) -> io::Result<()> {
+    pub fn write(&self, out: impl Write) -> io::Result<()> {
+        self.write_tokens(out, false)
+    }
+
+    /// Preserve adjacency that belongs to the assembler's syntax, such
+    /// as the dot in a section name or a directive.
+    pub(crate) fn write_assembly(&self, out: impl Write) -> io::Result<()> {
+        self.write_tokens(out, true)
+    }
+
+    fn write_tokens(&self, mut out: impl Write, assembly: bool) -> io::Result<()> {
         let mut in_line = false;
         let mut backslash = false;
         for item in &self.output {
@@ -149,7 +159,7 @@ impl Preprocessed {
                     backslash = false;
                 }
                 Output::Token(token) => {
-                    if in_line {
+                    if in_line && (!assembly || token.space_before) {
                         out.write_all(b" ")?;
                     }
                     out.write_all(token.text.as_bytes())?;

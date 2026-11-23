@@ -55,7 +55,7 @@ impl Machine {
     }
 }
 
-const USAGE: &str = "usage: bld -o OUTPUT [-r | [-T SCRIPT] [--gc-sections]] [-Map FILE]\n\
+const USAGE: &str = "usage: bld -o OUTPUT [-nostdlib] [-r | [-T SCRIPT] [--gc-sections]] [-Map FILE]\n\
        \x20      [--whole-archive | --no-whole-archive | --start-group |\n\
        \x20       --end-group | OBJECT | ARCHIVE] ...";
 
@@ -94,6 +94,9 @@ impl Options {
                     options.relocatable = true;
                     continue;
                 }
+                // GNU ld 2.45 §2.1 disables implicit library search.
+                // bld opens only the input paths provided on the command line.
+                b"-nostdlib" => continue,
                 b"--gc-sections" => {
                     options.gc = true;
                     continue;

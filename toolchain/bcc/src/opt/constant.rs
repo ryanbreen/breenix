@@ -2,7 +2,7 @@
 
 use super::{children, initializer_expressions, walk_blocks, BlockPass};
 use crate::pp::Target;
-use crate::sema::Binary::{LogicalAnd, LogicalOr};
+use crate::sema::Binary::{BitAnd, LogicalAnd, LogicalOr};
 use crate::sema::Unary::Address;
 use crate::sema::{canonical, constant_integer, Expression, ExpressionKind, InitValue};
 use crate::sema::{ObjectInitializer, Statement};
@@ -104,6 +104,18 @@ impl Propagate<'_> {
             }
             Unary(_, operand) if literal(operand).is_some() => constant_integer(expr, self.target),
             Binary {
+                op: BitAnd,
+                left,
+                right,
+                ..
+            } if (literal(right) == Some(0) && ordinary_local_read(left))
+                || (literal(left) == Some(0) && ordinary_local_read(right)) =>
+            {
+                // N1570 6.5.10. Fold the mask after checking that the
+                // dropped local read has no observable effect.
+                Some(0)
+            }
+            Binary {
                 op, left, right, ..
             } if literal(left).is_some_and(|value| {
                 literal(right).is_some()
@@ -113,6 +125,17 @@ impl Propagate<'_> {
             {
                 constant_integer(expr, self.target)
             }
+            Conditional { condition, yes, no } => literal(condition).and_then(|value| {
+                let (taken, discarded) = if value == 0 { (no, yes) } else { (yes, no) };
+                // N1570 6.5.15p4. Omit a nonconstant arm that cannot execute
+                // when the other arm produces an integer literal.
+                if literal(discarded).is_none() {
+                    literal(taken)?;
+                    constant_integer(expr, self.target)
+                } else {
+                    None
+                }
+            }),
             _ => None,
         };
         if let Some(value) = value {
@@ -127,6 +150,12 @@ fn literal(expr: &Expression<'_>) -> Option<u64> {
         ExpressionKind::Integer(bits) => Some(bits),
         _ => None,
     }
+}
+
+fn ordinary_local_read(expr: &Expression<'_>) -> bool {
+    matches!(expr.kind, ExpressionKind::Local(_))
+        && !expr.ty.qualifiers.volatile
+        && !expr.ty.qualifiers.atomic
 }
 
 fn has_write(expr: &mut Expression<'_>) -> bool {

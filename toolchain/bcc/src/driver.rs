@@ -39,6 +39,7 @@ enum InputKind {
     C,
     Preprocessed,
     Assembly,
+    AssemblyWithCpp,
     Object,
     Archive,
 }
@@ -58,6 +59,7 @@ struct Options {
     no_standard_includes: bool,
     rounding_math: bool,
     optimize: bool,
+    function_sections: bool,
     warnings_as_errors: bool,
     suppress_warnings: bool,
     libraries: Vec<PathBuf>,
@@ -83,6 +85,7 @@ impl Options {
             no_standard_includes: false,
             rounding_math: false,
             optimize: false,
+            function_sections: false,
             warnings_as_errors: false,
             suppress_warnings: false,
             libraries: Vec::new(),
@@ -99,6 +102,9 @@ impl Options {
                     Some("c") => InputKind::C,
                     Some("i") => InputKind::Preprocessed,
                     Some("s") => InputKind::Assembly,
+                    // GCC Overall Options describes .S as assembler input
+                    // that runs through the preprocessor before assembly.
+                    Some("S") => InputKind::AssemblyWithCpp,
                     Some("o") => InputKind::Object,
                     Some("a") => InputKind::Archive,
                     _ => return Err(usage(format!("unknown input type '{}'", path.display()))),
@@ -144,6 +150,8 @@ impl Options {
                 Some("-w") => options.suppress_warnings = true,
                 Some("-O0" | "-O1") => options.optimize = false,
                 Some("-O2") => options.optimize = true,
+                Some("-ffunction-sections") => options.function_sections = true,
+                Some("-fno-function-sections") => options.function_sections = false,
                 // Exact spellings from the staged BusyBox command receipts.
                 // The scope and effects of these no-ops are in the spec ledger.
                 Some(
@@ -163,7 +171,6 @@ impl Options {
                     | "-Wno-string-plus-int"
                     | "-Wno-constant-logical-operand"
                     | "-fomit-frame-pointer"
-                    | "-ffunction-sections"
                     | "-fdata-sections"
                     | "-funsigned-char"
                     | "-falign-functions=1"
@@ -245,7 +252,10 @@ impl Options {
                 .filter(|input| {
                     matches!(
                         input,
-                        Input::File(_, InputKind::C | InputKind::Preprocessed)
+                        Input::File(
+                            _,
+                            InputKind::C | InputKind::Preprocessed | InputKind::AssemblyWithCpp
+                        )
                     )
                 })
                 .count()
@@ -261,6 +271,9 @@ impl Options {
                 let valid = match input {
                     Input::File(_, InputKind::C | InputKind::Preprocessed) => true,
                     Input::File(_, InputKind::Assembly) => options.stage == Stage::Object,
+                    Input::File(_, InputKind::AssemblyWithCpp) => {
+                        matches!(options.stage, Stage::Preprocess | Stage::Object)
+                    }
                     _ => false,
                 };
                 if !valid {
@@ -334,6 +347,12 @@ impl Driver {
             self.write_dependencies(path, &input.includes)?;
         }
         let mut bytes = Vec::new();
+        if matches!(kind, InputKind::AssemblyWithCpp) {
+            input
+                .write_assembly(&mut bytes)
+                .map_err(|error| error.to_string())?;
+            return Ok(bytes);
+        }
         if stage == Stage::Preprocess {
             input.write(&mut bytes).map_err(|error| error.to_string())?;
             return Ok(bytes);
@@ -353,7 +372,10 @@ impl Driver {
                 if self.options.optimize {
                     opt::run(&mut unit, target);
                 }
-                codegen::emit_with_options(&unit, target, self.options.optimize)
+                codegen::emit_with_options(&unit, target, codegen::Options {
+                    optimize: self.options.optimize,
+                    function_sections: self.options.function_sections,
+                })
                     .map(String::into_bytes)
                     .map_err(|error| error.to_string())
             }

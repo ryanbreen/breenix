@@ -241,7 +241,8 @@ listed spellings for this workload and rejects unrecognized options.
 | `-fno-builtin-strlen`, `-fno-builtin-printf` | No-ops. Ordinary calls to these library names already use external symbols. | [C Dialect Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/C-Dialect-Options.html#index-fno-builtin) |
 | `-funsigned-char` | No-op for driver compatibility. Plain `char` retains bcc's target default (signed on AMD64 and unsigned on AArch64). | [C Dialect Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/C-Dialect-Options.html#index-funsigned-char) |
 | `-O2` | Select bcc's existing 25.10 optimization pipeline. | [Optimize Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Optimize-Options.html) |
-| `-Oz`, `-fomit-frame-pointer`, `-ffunction-sections`, `-fdata-sections`, `-falign-functions=1` | No-ops for driver compatibility. bcc keeps its selected optimization level, frame setup, section layout and function alignment. | [Optimize Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Optimize-Options.html) |
+| `-ffunction-sections`, `-fno-function-sections` | Place each function in an executable `.text.<name>` section or restore the default `.text` placement. An explicit section attribute takes precedence. | [Optimize Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Optimize-Options.html) |
+| `-Oz`, `-fomit-frame-pointer`, `-fdata-sections`, `-falign-functions=1` | No-ops for driver compatibility. bcc keeps its selected optimization level, frame setup, data layout and function alignment. | [Optimize Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Optimize-Options.html) |
 | `-fno-unwind-tables`, `-fno-asynchronous-unwind-tables` | No-ops. bcc already omits unwind tables. | [Code Gen Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Code-Gen-Options.html) |
 
 ## bcc 25.7 record objects

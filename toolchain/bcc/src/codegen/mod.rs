@@ -10,23 +10,47 @@ use crate::sema::{Linkage, Object, TranslationUnit};
 mod aarch64;
 mod x86_64;
 
+#[derive(Default)]
+pub(crate) struct Options {
+    pub optimize: bool,
+    pub function_sections: bool,
+}
+
 pub fn emit_assembly(
     unit: &TranslationUnit<'_>,
     _source: &Path,
     target: Target,
 ) -> Result<String, Diagnostic> {
-    emit_with_options(unit, target, false)
+    emit_with_options(unit, target, Options::default())
 }
 
 pub(crate) fn emit_with_options(
     unit: &TranslationUnit<'_>,
     target: Target,
-    optimize: bool,
+    options: Options,
 ) -> Result<String, Diagnostic> {
     match target {
-        Target::X86_64 => x86_64::emit(unit, optimize),
-        Target::Aarch64 => aarch64::emit(unit),
+        Target::X86_64 => x86_64::emit(unit, options),
+        Target::Aarch64 => aarch64::emit(unit, options),
     }
+}
+
+fn function_section(
+    out: &mut String,
+    unit: &TranslationUnit<'_>,
+    name: &str,
+    separate: bool,
+) -> bool {
+    if let Some(section) = unit.symbol_attributes.get(name).and_then(|attrs| attrs.section.as_deref()) {
+        select_section(out, section, "ax", "progbits");
+    } else if separate {
+        // GCC Optimize Options, -ffunction-sections. Use the bas section
+        // directive with an explicit executable flag on both targets.
+        select_section(out, &format!(".text.{name}"), "ax", "progbits");
+    } else {
+        return false;
+    }
+    true
 }
 
 // bas/README.md documents this section and ELF symbol directive dialect.

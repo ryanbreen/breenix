@@ -1,10 +1,12 @@
 """Exercise the POSIX BusyBox build driver with the pinned workload."""
 
+import hashlib
 import json
 import os
 from pathlib import Path
 import runpy
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -18,10 +20,28 @@ REFERENCE = ROOT / "target/libc-busybox/x86_64/applets.json"
 
 
 def run_driver(fixture, output, env):
-    return subprocess.run(
-        ["/bin/sh", str(DRIVER), str(fixture), str(output), "x86_64"],
-        env=env, text=True, capture_output=True, timeout=60,
-    )
+    args = ["/bin/sh", str(DRIVER), str(fixture), str(output), "x86_64"]
+    with subprocess.Popen(
+        args, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        start_new_session=True,
+    ) as child:
+        try:
+            stdout, stderr = child.communicate(timeout=57)
+        except subprocess.TimeoutExpired as timeout:
+            os.killpg(child.pid, signal.SIGTERM)
+            try:
+                stdout, stderr = child.communicate(timeout=1)
+            except subprocess.TimeoutExpired:
+                os.killpg(child.pid, signal.SIGKILL)
+                stdout, stderr = child.communicate()
+            print(stdout, end="")
+            for name in ("config.log", "compile.log", "link.log"):
+                log = output / name
+                if log.is_file():
+                    print(f"{name}:\n" + "\n".join(log.read_text().splitlines()[-12:]),
+                          file=sys.stderr)
+            raise TimeoutError(f"BusyBox driver exceeded its deadline\n{stderr}") from timeout
+        return subprocess.CompletedProcess(args, child.returncode, stdout, stderr)
 
 
 def refuses_digest_mismatch(directory):
@@ -41,8 +61,13 @@ def refuses_digest_mismatch(directory):
 
 
 def mac_hosted_build_lists_same_applets(directory):
+    pin = os.environ["BREENIX_TOOLCHAIN_CLANG_SHA256"]
+    compiler = Path(os.environ["BREENIX_TOOLCHAIN_CLANG"])
+    assert compiler.is_absolute() and hashlib.sha256(compiler.read_bytes()).hexdigest() == pin
+    os.environ["BREENIX_CC_CLANG"] = str(compiler)
     reference = runpy.run_path(str(ROOT / "scripts/toolchain-busybox-c-inventory.py"))
     clang, _ = reference["verify_inputs"]()
+    assert clang.samefile(compiler), "the reference and Mac build selected different Clangs"
     expected = json.loads(REFERENCE.read_text())
     assert expected["compile_ok"] and expected["core"]["links"] and expected["applets"]
     fixture = directory / "fixture"
@@ -64,6 +89,7 @@ def mac_hosted_build_lists_same_applets(directory):
     output = directory / "build"
     result = run_driver(fixture, output, {
         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LC_ALL": "C", "HOSTCC": str(clang),
+        "BUSYBOX_JOBS": "8",
     })
     print(result.stdout, end="")
     assert result.returncode == 0, result.stderr
@@ -74,6 +100,7 @@ def mac_hosted_build_lists_same_applets(directory):
         f"extra={sorted(report['applets'].keys() - expected['applets'].keys())}"
     )
     assert (output / "busybox.elf").is_file(), "completed build has no BusyBox ELF"
+    print(f"Matched {len(report['applets'])} reference applets")
 
 
 with tempfile.TemporaryDirectory(prefix="breenix-busybox-check-") as temporary:
