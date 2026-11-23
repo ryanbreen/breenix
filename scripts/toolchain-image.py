@@ -88,8 +88,8 @@ def seal(bundle, commit, arch, tool_record):
     sources[DEV / "linker.ld"] = ROOT / "userspace/programs/linker.ld"
     required = {SUITE, DEV / "lib/libc.a"} | {DEV / "bin" / tool for tool in TOOLS}
     required |= {DEV / "bin" / tool for tool in ("cc", "make", "as", "ld")}
-    if arch == "x86_64":
-        required.add(DEV / "lib/libinterop.a")
+    archive_targets = {"interop": "x86_64-breenix-c", "brt": "x86_64-breenix"} if arch == "x86_64" else {}
+    required |= {DEV / "lib" / f"lib{name}.a" for name in archive_targets}
     corpus = ROOT / "toolchain/corpus"
     names = check_corpus(corpus)
     for name in names:
@@ -109,12 +109,12 @@ def seal(bundle, commit, arch, tool_record):
         path = Path("project") / name
         sources[CORPUS / path] = (corpus / "project-aarch64/value.s"
                                   if arch == "aarch64" and name == "value.s" else corpus / path)
-    deferred = {"aggregate-copy", "bitfield-values", "varargs", "alignment", "atomics",
-                "compound-literal", "designated-init", "generic"}
-    if arch == "x86_64":
-        deferred -= {"aggregate-copy", "bitfield-values", "varargs"}
+    deferred = {
+        "aggregate-copy", "bitfield-values", "varargs", "alignment", "atomics",
+        "compound-literal", "designated-init", "generic",
+    } if arch == "aarch64" else set()
     candidates = set(names) - deferred
-    if len(candidates) != (25 if arch == "x86_64" else 22):
+    if len(candidates) != (30 if arch == "x86_64" else 22):
         raise ValueError("unexpected C candidate corpus")
     required |= {CORPUS / "c-core/mac" / (name + ".elf") for name in candidates}
     actual = {path.name for path in (tree / CORPUS / "c-core/mac").iterdir()}
@@ -169,7 +169,7 @@ def seal(bundle, commit, arch, tool_record):
             raise ValueError(f"staged object differs from the reference link input: {name}")
     tools = json.loads(tool_record.read_text())
     fork = tomllib.loads((ROOT / "rust-fork.toml").read_text())["commit"]
-    interop = tools.pop("interop", None) if arch == "x86_64" else None
+    archives = {name: tools.pop(name, None) for name in archive_targets}
     expected_tools = set(TOOLS) | {"bcc", "bmake"}
     if set(tools) != expected_tools:
         raise ValueError("toolchain build record differs from the staged tool set")
@@ -181,13 +181,13 @@ def seal(bundle, commit, arch, tool_record):
                 or not SHA256.fullmatch(tool["rustc"]["sha256"])
                 or tool["sha256"] != digest(tree / DEV / "bin" / filename)):
             raise ValueError(f"{name}: build record differs from the staged tool")
-    if arch == "x86_64":
-        path = "lib/libinterop.a"
-        if interop != {
-                "cargoPackage": "interop", "path": path, "target": "x86_64-breenix-c",
+    for name, target in archive_targets.items():
+        path = f"lib/lib{name}.a"
+        if archives[name] != {
+                "cargoPackage": name, "path": path, "target": target,
                 "rustForkCommit": fork, "rustc": tools["bcc"]["rustc"],
                 "sha256": digest(tree / DEV / path)}:
-            raise ValueError("interop build record differs from the staged archive")
+            raise ValueError(f"{name}: build record differs from the staged archive")
     for tool, alias in (("bas", "as"), ("bld", "ld")):
         if digest(tree / DEV / "bin" / alias) != tools[tool]["sha256"]:
             raise ValueError(f"{alias}: staged driver tool differs from {tool}")
@@ -195,8 +195,7 @@ def seal(bundle, commit, arch, tool_record):
     record_data = dict(commit=commit, arch=arch, tools=tools,
                        manifestSha256=digest(tree / MANIFEST))
     record_data["candidateProducer"] = "mac-bcc" if sys.platform == "darwin" else "host-bcc"
-    if arch == "x86_64":
-        record_data["interop"] = interop
+    record_data.update(archives)
     record = json.dumps(record_data, indent=2) + "\n"
     (tree / RECORD).write_text(record)
     (bundle / "build.json").write_text(record)

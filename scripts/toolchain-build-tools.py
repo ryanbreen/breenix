@@ -126,26 +126,31 @@ def build_guest_tools(arch, work, dev, clang, cargo, env, rustc_record):
     tools = {}
     if arch == "x86_64":
         # The interop fixture crosses the C ABI, including SSE float registers.
-        interop_target = ROOT / "x86_64-breenix-c.json"
-        interop_dir = ROOT / "target/toolchain-bundle/interop"
-        manifest = WORKSPACE / "corpus/interop/rust/Cargo.toml"
-        interop_flags = [*remap, "-C", f"metadata=breenix_std_{fork}"]
-        subprocess.run([
-            *cargo, "--manifest-path", str(manifest),
-            "--target", str(interop_target), "--target-dir", str(interop_dir),
-            "-Z", "build-std=core",
-        ], cwd=WORKSPACE, env=dict(env, __CARGO_TESTS_ONLY_SRC_ROOT=str(library),
-                                  CARGO_ENCODED_RUSTFLAGS="\x1f".join(interop_flags)), check=True)
-        destination = dev / "lib" / "libinterop.a"
-        shutil.copy2(interop_dir / interop_target.stem / "release/libinterop.a", destination)
-        tools["interop"] = {
-            "cargoPackage": tomllib.loads(manifest.read_text())["package"]["name"],
-            "path": destination.relative_to(dev).as_posix(),
-            "target": interop_target.stem,
-            "rustForkCommit": fork,
-            "rustc": rustc_record,
-            "sha256": digest(destination),
-        }
+        archives = (
+            ("interop", ROOT / "x86_64-breenix-c.json", WORKSPACE / "corpus/interop/rust/Cargo.toml", ()),
+            ("brt", target_json, WORKSPACE / "Cargo.toml", ("--locked", "-p", "brt", "--lib")),
+        )
+        archive_flags = [*remap, "-C", f"metadata=breenix_std_{fork}"]
+        archive_env = dict(env, __CARGO_TESTS_ONLY_SRC_ROOT=str(library),
+                           CARGO_ENCODED_RUSTFLAGS="\x1f".join(archive_flags))
+        for package, archive_target, manifest, selection in archives:
+            archive_dir = ROOT / "target/toolchain-bundle" / package
+            subprocess.run([
+                *cargo, "--manifest-path", str(manifest), *selection,
+                "--target", str(archive_target), "--target-dir", str(archive_dir),
+                "-Z", "build-std=core",
+            ], cwd=WORKSPACE, env=archive_env, check=True)
+            filename = f"lib{package}.a"
+            destination = dev / "lib" / filename
+            shutil.copy2(archive_dir / archive_target.stem / "release" / filename, destination)
+            tools[package] = {
+                "cargoPackage": package,
+                "path": destination.relative_to(dev).as_posix(),
+                "target": archive_target.stem,
+                "rustForkCommit": fork,
+                "rustc": rustc_record,
+                "sha256": digest(destination),
+            }
     dev_bin = dev / "bin"
     dev_bin.mkdir()
     for name in packages:
@@ -183,10 +188,10 @@ def build(arch, work, dev, corpus):
         shutil.copy2(host_bins / package, host_dev / "bin" / name)
     candidates = corpus / "c-core/mac"
     candidates.mkdir(parents=True)
-    deferred = {"aggregate-copy", "bitfield-values", "varargs", "alignment", "atomics",
-                "compound-literal", "designated-init", "generic"}
-    if arch == "x86_64":
-        deferred -= {"aggregate-copy", "bitfield-values", "varargs"}
+    deferred = {
+        "aggregate-copy", "bitfield-values", "varargs", "alignment", "atomics",
+        "compound-literal", "designated-init", "generic",
+    } if arch == "aarch64" else set()
     names = (ROOT / "toolchain/corpus/cases").read_text().splitlines()
     if len(names) != 30 or not deferred.issubset(names):
         raise ValueError("unexpected C corpus")

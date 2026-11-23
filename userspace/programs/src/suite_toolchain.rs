@@ -32,10 +32,10 @@ const LINKER_OBJECTS: &[&str] = &[
 ];
 const ARCHIVE_MEMBERS: &[&str] = &["got-entry", "archive-value-with-long-name"];
 const CASES: &str = include_str!("../../../toolchain/corpus/cases");
-// E25 ruling 15 defers aggregate-copy and bitfield-values to 25.7b1,
-// varargs to 25.7b2, and alignment, atomics, compound-literal,
-// designated-init and generic to 25.9.
-const CC_CASES: &str = include_str!("fixture/toolchain-cc-cases");
+#[cfg(target_arch = "x86_64")]
+const CC_CASES: &str = include_str!("fixture/toolchain-cc-cases"); // 25.9d stages every x86 C11 case.
+#[cfg(target_arch = "aarch64")]
+const CC_CASES: &str = include_str!("fixture/toolchain-cc-cases-aarch64");
 
 static SUITE: Suite = suite(
     "toolchain",
