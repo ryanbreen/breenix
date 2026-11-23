@@ -4,6 +4,7 @@ Build suite-toolchain and the x86-64 C ABI archive first, then supply the
 stage-0 executable pins required by scripts/build-toolchain.sh.
 """
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -13,7 +14,9 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 SUITE = ROOT / "userspace/programs/src/suite_toolchain.rs"
 CORPUS = ROOT / "toolchain/corpus"
-LIBC = ROOT / "libs/libbreenix-libc/target/x86_64-breenix-c/release/libc.a"
+ARCH = os.environ.get("BREENIX_TOOLCHAIN_TEST_ARCH", "x86_64")
+LIBC_TARGET = "x86_64-breenix-c" if ARCH == "x86_64" else "aarch64-breenix"
+LIBC = ROOT / "libs/libbreenix-libc/target" / LIBC_TARGET / "release/libc.a"
 EXPECTED = """
 array-index
 bitwise-shifts
@@ -56,7 +59,7 @@ class ToolchainCcCorpusTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="toolchain-cc-corpus-") as temporary:
             output = Path(temporary) / "bundle"
             result = subprocess.run(
-                [ROOT / "scripts/build-toolchain.sh", "--arch", "x86_64",
+                [ROOT / "scripts/build-toolchain.sh", "--arch", ARCH,
                  "--output", output, "--libc", LIBC],
                 cwd=ROOT, capture_output=True, text=True, timeout=55,
             )

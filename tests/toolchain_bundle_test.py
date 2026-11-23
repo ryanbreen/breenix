@@ -36,7 +36,7 @@ class ToolchainBundleTest(unittest.TestCase):
         tools = self.record.get("tools")
         self.assertIsInstance(tools, dict, "bundle build record has no Cargo tool provenance")
         self.assertEqual(set(tools), {"bas", "bld", "bar", "bnm"} |
-                         ({"bcc", "bmake"} if self.record["arch"] == "x86_64" else set()))
+                         {"bcc", "bmake"})
         self.assertEqual(self.record, json.loads((self.dev / "build.json").read_text()))
         arch = self.record["arch"]
         machine = {"x86_64": 62, "aarch64": 183}[arch]  # ELF gABI, e_machine.
@@ -73,7 +73,7 @@ class ToolchainBundleTest(unittest.TestCase):
             "rustForkCommit": fork,
             "rustc": {"version": subprocess.check_output([self.rustc, "--version"], text=True).strip(),
                       "sha256": digest(self.rustc)},
-            "target": "x86_64-breenix",
+            "target": f"{self.record['arch']}-breenix",
             "sha256": digest(executable),
         })
         self.assertFalse(any(path.suffix == ".c" for path in (WORKSPACE / "bcc").rglob("*")))
@@ -87,6 +87,8 @@ class ToolchainBundleTest(unittest.TestCase):
         self.assertIn(f"{digest(executable)}  opt/breenix-dev/25.2/bin/make\n", manifest)
         for category in ("make", "project"):
             for source in (WORKSPACE / "corpus" / category).iterdir():
+                if category == "project" and source.name == "value.s" and self.record["arch"] == "aarch64":
+                    source = WORKSPACE / "corpus/project-aarch64/value.s"
                 with self.subTest(fixture=source.name):
                     path = f"usr/share/breenix/toolchain/{category}/{source.name}"
                     self.assertEqual(digest(self.bundle / "root" / path), digest(source))
@@ -105,15 +107,18 @@ class ToolchainBundleTest(unittest.TestCase):
             tool_record.write_text(json.dumps(self.record["tools"]))
             sealed = subprocess.run([
                 sys.executable, ROOT / "scripts/toolchain-image.py", "seal", bundle,
-                self.record["commit"], "x86_64", "--tool-record", tool_record,
+                self.record["commit"], self.record["arch"], "--tool-record", tool_record,
             ], capture_output=True, text=True, timeout=10)
             self.assertEqual(sealed.returncode, 1, sealed.stderr)
             self.assertIn(f"staged bytes differ from the source for {stale}", sealed.stderr)
 
-    def arm_bundle_unchanged_until_a3(self):
-        self.assertEqual(set(self.record["tools"]), {"bas", "bld", "bar", "bnm"})
+    def arm_bundle_has_cc_and_make(self):
+        self.assertEqual(set(self.record["tools"]), {"bas", "bld", "bar", "bnm", "bcc", "bmake"})
         self.assertEqual({path.name for path in (self.dev / "bin").iterdir()},
-                         {"bas", "bld", "bar", "bnm"})
+                         {"bas", "bld", "bar", "bnm", "cc", "make", "as", "ld"})
+        for tool, alias in (("bas", "as"), ("bld", "ld")):
+            self.assertEqual(digest(self.dev / "bin" / tool), digest(self.dev / "bin" / alias))
+        self.assertEqual(self.record["candidateProducer"], "mac-bcc" if sys.platform == "darwin" else "host-bcc")
 
     def arm_encoding_inputs_are_staged(self):
         relative = Path("usr/share/breenix/toolchain/assembler")
@@ -243,11 +248,10 @@ if __name__ == "__main__":
     ToolchainBundleTest.baseline = args.baseline
     checks = ["ToolchainBundleTest.tools_built_by_rustc",
               "ToolchainBundleTest.receipts_from_cargo_host_bas"]
-    if json.loads((args.bundle / "build.json").read_text())["arch"] == "x86_64":
-        checks.extend(["ToolchainBundleTest.cc_built_by_rustc",
-                       "ToolchainBundleTest.make_built_by_rustc"])
-    else:
-        checks.extend(["ToolchainBundleTest.arm_bundle_unchanged_until_a3",
+    checks.extend(["ToolchainBundleTest.cc_built_by_rustc",
+                   "ToolchainBundleTest.make_built_by_rustc"])
+    if json.loads((args.bundle / "build.json").read_text())["arch"] == "aarch64":
+        checks.extend(["ToolchainBundleTest.arm_bundle_has_cc_and_make",
                        "ToolchainBundleTest.arm_encoding_inputs_are_staged",
                        "ToolchainBundleTest.aarch64_stages_linker_objects",
                        "ToolchainBundleTest.aarch64_host_bld_links_staged_objects"])
