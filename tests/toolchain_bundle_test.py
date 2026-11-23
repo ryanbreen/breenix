@@ -33,9 +33,9 @@ class BusyBoxStagingTest(unittest.TestCase):
     def setUp(self):
         script = ROOT / "scripts/toolchain-image.py"
         spec = importlib.util.spec_from_file_location("toolchain_image", script)
-        image = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(image)
-        self.mkfs, self.debugfs = image.require_e2fsprogs("mke2fs", "debugfs")
+        self.image = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.image)
+        self.mkfs, self.debugfs = self.image.require_e2fsprogs("mke2fs", "debugfs")
         self.directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.seed = self.directory / "seed.img"
         subprocess.run([self.mkfs, "-q", "-F", "-t", "ext2", self.seed, "96M"],
@@ -50,6 +50,15 @@ class BusyBoxStagingTest(unittest.TestCase):
         if milestone is not None:
             command.extend(["--milestone", milestone])
         return output, subprocess.run(command, text=True, capture_output=True)
+
+    def test_scratch_image_identifies_busybox_fixture(self):
+        scratch = self.directory / "scratch.img"
+        self.image.format_busybox_scratch(scratch)
+        extract = ROOT / "tools/breenfs/target/release/breenfs-extract"
+        result = subprocess.run([extract, scratch, "cat", "/busybox-scratch"],
+                                capture_output=True, timeout=3)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, b"toolchain/busybox-on-box\n")
 
     def busybox_inputs_staged_with_digests(self):
         record = json.loads((self.bundle / "build.json").read_text())
