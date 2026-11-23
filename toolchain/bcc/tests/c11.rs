@@ -118,6 +118,10 @@ impl Drop for Scratch {
 }
 
 fn build_and_check(case: &str, input: &str) -> Scratch {
+    build_with_libraries(case, input, &[])
+}
+
+fn build_with_libraries(case: &str, input: &str, libraries: &[&Path]) -> Scratch {
     let scratch = Scratch(
         std::env::temp_dir().join(format!("breenix-bcc-c11-{}-{case}", std::process::id())),
     );
@@ -140,7 +144,11 @@ fn build_and_check(case: &str, input: &str) -> Scratch {
     .unwrap();
     checked(
         Command::new(bcc)
-            .args(["-S", "-o"])
+            .args(["-S", "-I"])
+            .arg(toolchain.join("include"))
+            .arg("-I")
+            .arg(toolchain.join("../libs/libbreenix-libc/include"))
+            .arg("-o")
             .arg(&assembly)
             .arg(source),
     );
@@ -156,7 +164,8 @@ fn build_and_check(case: &str, input: &str) -> Scratch {
             .arg(&script)
             .args(["--gc-sections", "-o"])
             .arg(&executable)
-            .arg(object),
+            .arg(object)
+            .args(libraries),
     );
     checked(
         Command::new(bcc.with_file_name("elfcheck"))
@@ -304,4 +313,159 @@ fn c11_constraints_have_located_diagnostics() {
             "{diagnostic}"
         );
     }
+}
+
+// N1570 5.2.4.2.2 and 6.4.4.2, AMD64 psABI 3.1.2, and AAPCS64 5.1.
+#[test]
+fn decimal_0_1_rounds_to_0x3fb999999999999a() {
+    use bcc::{pp, sema};
+    let path = Path::new("float-limits.c");
+    let include = Path::new(env!("CARGO_MANIFEST_DIR")).join("../include");
+    for (target, long_double) in [
+        (
+            pp::Target::X86_64,
+            [
+                0x3fc0_8000_0000_0000_0000_u128,
+                0x0001_8000_0000_0000_0000,
+                0x7ffe_ffff_ffff_ffff_ffff,
+                1,
+                0x3ffb_cccc_cccc_cccc_cccd,
+                0x7fff_8000_0000_0000_0000,
+            ],
+        ),
+        (
+            pp::Target::Aarch64,
+            [
+                0x3f8f_0000_0000_0000_0000_0000_0000_0000,
+                0x0001_0000_0000_0000_0000_0000_0000_0000,
+                0x7ffe_ffff_ffff_ffff_ffff_ffff_ffff_ffff,
+                1,
+                0x3ffb_9999_9999_9999_9999_9999_9999_999a,
+                0x7fff_0000_0000_0000_0000_0000_0000_0000,
+            ],
+        ),
+    ] {
+        let options = pp::Options {
+            target,
+            system_dirs: vec![include.clone()],
+            ..pp::Options::default()
+        };
+        let input = pp::preprocess_source(
+            path,
+            br#"
+#include <float.h>
+_Static_assert(DBL_MANT_DIG == 53, "binary64 precision");
+_Static_assert(FLT_EVAL_METHOD == 0, "evaluate at source precision");
+#if FLT_RADIX != 2 || FLT_MANT_DIG != 24 || FLT_DIG != 6 || DBL_DIG != 15 || \
+    FLT_DECIMAL_DIG != 9 || DBL_DECIMAL_DIG != 17 || FLT_MIN_EXP != -125 || \
+    DBL_MIN_EXP != -1021 || FLT_MAX_EXP != 128 || DBL_MAX_EXP != 1024 || \
+    FLT_MIN_10_EXP != -37 || DBL_MIN_10_EXP != -307 || \
+    FLT_MAX_10_EXP != 38 || DBL_MAX_10_EXP != 308 || \
+    FLT_HAS_SUBNORM != 1 || DBL_HAS_SUBNORM != 1 || LDBL_HAS_SUBNORM != 1 || \
+    LDBL_MIN_EXP != -16381 || LDBL_MAX_EXP != 16384 || \
+    LDBL_MIN_10_EXP != -4931 || LDBL_MAX_10_EXP != 4932
+#error wrong floating type characteristics
+#endif
+#if defined(__x86_64__)
+_Static_assert(LDBL_MANT_DIG == 64 && LDBL_DIG == 18 &&
+               LDBL_DECIMAL_DIG == 21 && DECIMAL_DIG == 21, "x87 extended");
+#else
+_Static_assert(LDBL_MANT_DIG == 113 && LDBL_DIG == 33 &&
+               LDBL_DECIMAL_DIG == 36 && DECIMAL_DIG == 36, "binary128");
+#endif
+float single[] = { FLT_EPSILON, FLT_MIN, FLT_MAX, FLT_TRUE_MIN };
+double binary64[] = { DBL_EPSILON, DBL_MIN, DBL_MAX, DBL_TRUE_MIN, 0.1 };
+#if defined(__x86_64__)
+long double extended[] = { LDBL_EPSILON, LDBL_MIN, LDBL_MAX, LDBL_TRUE_MIN, 0.1L,
+                           0x1.ffffffffffffffffp16383L };
+#else
+long double extended[] = { LDBL_EPSILON, LDBL_MIN, LDBL_MAX, LDBL_TRUE_MIN, 0.1L,
+                           0x1.ffffffffffffffffffffffffffff8p16383L };
+#endif
+"#,
+            &options,
+        )
+        .unwrap();
+        let unit = sema::analyze(&input, path, target).unwrap();
+        for (name, width, expected) in [
+            ("single", 4, &[0x3400_0000, 0x0080_0000, 0x7f7f_ffff, 1][..]),
+            (
+                "binary64",
+                8,
+                &[
+                    0x3cb0_0000_0000_0000,
+                    0x0010_0000_0000_0000,
+                    0x7fef_ffff_ffff_ffff,
+                    1,
+                    0x3fb9_9999_9999_999a,
+                ][..],
+            ),
+            ("extended", 16, &long_double[..]),
+        ] {
+            let object = unit
+                .static_objects
+                .iter()
+                .find(|global| global.object.name == name)
+                .unwrap();
+            let mut bytes = vec![0; expected.len() * width];
+            for (&offset, value) in object.initializer.as_ref().unwrap() {
+                let sema::ThreadData::Byte(byte) = value else {
+                    panic!("{name} should contain floating data");
+                };
+                bytes[offset] = *byte;
+            }
+            for (actual, expected) in bytes.chunks_exact(width).zip(expected) {
+                assert_eq!(
+                    actual,
+                    &expected.to_le_bytes()[..width],
+                    "{target:?} {name}"
+                );
+            }
+        }
+    }
+}
+
+// N1570 5.2.4.2.2, 7.6, F.3 and F.8.4. Link Breenix's C ABI libc as
+// tls.rs does and call the linked main with the existing host runner.
+#[test]
+fn flt_rounds_follows_fesetround() {
+    let libc = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../libs/libbreenix-libc/target/x86_64-breenix-c/release/libc.a");
+    assert_runs_to_42(build_with_libraries(
+        "fenv",
+        r"
+#include <float.h>
+#include <fenv.h>
+#pragma STDC FENV_ACCESS ON
+int main(void) {
+    int modes[] = { FE_TONEAREST, FE_DOWNWARD, FE_UPWARD, FE_TOWARDZERO };
+    int rounds[] = { 1, 3, 2, 0 };
+    for (int i = 0; i < 4; ++i) {
+        if (fesetround(modes[i]) || FLT_ROUNDS != rounds[i])
+            return 1;
+        if (feclearexcept(FE_ALL_EXCEPT))
+            return 2;
+        double sum = 1.0 + 0x1p-53;
+        double expected = i == 2 ? 0x1.0000000000001p0 : 1.0;
+        if (sum != expected || fetestexcept(FE_ALL_EXCEPT) != FE_INEXACT)
+            return 3;
+        volatile double halfway = 0x1.000001p0;
+        float narrow = (float)halfway;
+        if (narrow != (i == 2 ? 0x1.000002p0f : 1.0f))
+            return 4;
+        long double extended = 1.0L + 0x1p-64L;
+        if (extended != (i == 2 ? 0x1.0000000000000002p0L : 1.0L))
+            return 5;
+        if ((int)-1.75L != -1 || FLT_ROUNDS != rounds[i])
+            return 6;
+    }
+    if (fesetround(FE_TONEAREST) || feclearexcept(FE_ALL_EXCEPT))
+        return 7;
+    volatile double zero = 0.0;
+    volatile double quotient = 1.0 / zero;
+    return fetestexcept(FE_ALL_EXCEPT) == FE_DIVBYZERO ? 42 : 8;
+}
+",
+        &[&libc],
+    ));
 }
