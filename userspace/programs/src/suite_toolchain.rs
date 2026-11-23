@@ -1022,8 +1022,6 @@ fn assembler_bad_input_located() -> CaseResult {
 const LINKER_UNDEFINED_RELOCATION: &str = "R_X86_64_PLT32";
 #[cfg(target_arch = "aarch64")]
 const LINKER_UNDEFINED_RELOCATION: &str = "R_AARCH64_CALL26";
-#[cfg(target_arch = "x86_64")]
-const LINKER_BNM_SYMBOLS: &str = "{0}[got-entry.o]:\narchive_cell U\narchive_entry T 0 17\narchive_value U\n{0}[archive-value-with-long-name.o]:\narchive_cell R 0 4\narchive_value T 0 6\n";
 #[cfg(target_arch = "aarch64")]
 const LINKER_BNM_SYMBOLS: &str = "{0}[got-entry.o]:\narchive_cell U\narchive_entry T 0 20\narchive_value U\n{0}[archive-value-with-long-name.o]:\narchive_cell R 0 4\narchive_value T 0 8\n";
 
@@ -1192,6 +1190,13 @@ fn archive_tools() -> CaseResult {
     }
     check_archive_index_rebuilds(&case, &second, &original)?;
     let symbols = require_success("bnm", case.tool("bnm", [Path::new("-Pg"), &second])?)?;
+    #[cfg(target_arch = "x86_64")]
+    let expected = format!(
+        "{0}[got-entry.o]:\narchive_cell U\narchive_entry T 0 17\narchive_value U\n\
+         {0}[archive-value-with-long-name.o]:\narchive_cell R 0 4\narchive_value T 0 6\n",
+        second.display()
+    );
+    #[cfg(target_arch = "aarch64")]
     let expected = LINKER_BNM_SYMBOLS.replace("{0}", &second.display().to_string());
     if symbols != expected.as_bytes() {
         return Err(format!(
