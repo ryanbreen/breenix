@@ -124,6 +124,11 @@ static int use_buffer(int first, unsigned char *p, int last) {
     p[last] = 8;
     return p[0] + p[last];
 }
+struct aligned_value { _Alignas(32) unsigned char value; };
+static int use_aligned(struct aligned_value v, unsigned char *p) {
+    p[0] = v.value;
+    return p[0];
+}
 struct pair { char first; int second; };
 _Static_assert(offsetof(struct pair, second) == 4, "AMD64 int member alignment");
 
@@ -141,8 +146,11 @@ int main(void) {
         !islessequal(negzero, 0.0) || !islessgreater(1.0, 2.0) || isunordered(1.0, 2.0))
         return 3;
     volatile unsigned long bits = 0x8000000000000003UL;
-    if (bswap_16(0x1234) != 0x3412 || bswap_32(0x12345678U) != 0x78563412U ||
-        bswap_64(0x0123456789abcdefUL) != 0xefcdab8967452301UL ||
+    volatile unsigned short short_word = 0x1234;
+    volatile unsigned int int_word = 0x12345678U;
+    volatile unsigned long long_word = 0x0123456789abcdefUL;
+    if (bswap_16(short_word) != 0x3412 || bswap_32(int_word) != 0x78563412U ||
+        bswap_64(long_word) != 0xefcdab8967452301UL ||
         __builtin_popcountl(bits++) != 3 || bits != 0x8000000000000004UL)
         return 4;
     volatile unsigned long count = 65;
@@ -150,6 +158,9 @@ int main(void) {
     p[64] = 5;
     if (p[64] + use_buffer(13, alloca(count), 64) != 26 || p[64] != 5)
         return 5;
+    struct aligned_value value = {7};
+    if (use_aligned(value, alloca(count)) != 7 || p[64] != 5)
+        return 6;
     return 0;
 }
 "#,

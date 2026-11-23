@@ -5,6 +5,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -17,7 +18,9 @@ DATA = set("stdin stdout stderr optind optarg opterr optopt signgam environ time
 
 
 def run(*args):
-    return subprocess.run(args, capture_output=True, text=True, timeout=10)
+    return subprocess.run(
+        args, capture_output=True, text=True, timeout=min(10, max(0, DEADLINE - time.monotonic()))
+    )
 
 
 def require(result):
@@ -126,6 +129,7 @@ def link_suite(bcc, recipe):
 
 
 if __name__ == "__main__":
+    DEADLINE = time.monotonic() + 55
     with tempfile.TemporaryDirectory(prefix="bcc-libc-suite-") as directory:
         bcc = Path(sys.argv[1]).resolve()
         work = Path(directory)
