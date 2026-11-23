@@ -2,6 +2,60 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+// N1570 6.5.2.4, 6.5.16.2 and 7.17; Intel SDM Vol. 3, memory ordering.
+#[test]
+fn atomic_fetch_add_seq_cst() {
+    let result = build_and_check(
+        "atomic",
+        r"
+#include <stdatomic.h>
+int main(void) {
+    volatile _Atomic(unsigned char) byte;
+    _Atomic short half = 6;
+    atomic_int word;
+    long numbers[4];
+    long * _Atomic address = numbers;
+    atomic_init(&byte, 255);
+    atomic_init(&word, 19);
+    int old = atomic_fetch_add(&word, 23);
+    if (old != 19 || word != 42 || !atomic_is_lock_free(&word))
+        return 1;
+    if (byte++ != 255 || byte != 0 || --half != 5 || (half *= 3) != 15)
+        return 2;
+    if (atomic_fetch_sub(&half, 1) != 15 ||
+        atomic_fetch_or(&half, 1) != 14 ||
+        atomic_fetch_xor(&half, 4) != 15 ||
+        atomic_fetch_and(&half, 9) != 11 || half != 9)
+        return 3;
+    if (atomic_fetch_add(&address, 2) != numbers ||
+        (address -= 1) != numbers + 1 || address != numbers + 1)
+        return 4;
+    int expected = 0;
+    if (atomic_compare_exchange_strong(&word, &expected, 10) || expected != 42)
+        return 5;
+    while (!atomic_compare_exchange_weak(&word, &expected, 10)) {
+        if (expected != 42) return 6;
+    }
+    if (atomic_exchange(&word, 20) != 10)
+        return 7;
+    atomic_store(&word, 40);
+    atomic_thread_fence(memory_order_seq_cst);
+    atomic_signal_fence(memory_order_seq_cst);
+    return atomic_load(&word) + 2;
+}
+",
+    );
+    let assembly = fs::read_to_string(result.0.join("c11.s")).unwrap();
+    let (_, main) = assembly.split_once("\nmain:\n").expect("main label");
+    let (main, _) = main.split_once("\n.size main,").expect("main size");
+    assert!(
+        main.lines()
+            .any(|line| line.trim_start().starts_with("lock xadd dword ptr ")),
+        "{main}"
+    );
+    assert_runs_to_42(result);
+}
+
 // N1570 6.7.9p17–22, 6.5.2.5p4–5, and 6.7.2.1p18.
 #[test]
 fn designated_init_last_wins() {
