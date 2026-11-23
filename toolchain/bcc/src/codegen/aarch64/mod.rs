@@ -322,10 +322,9 @@ impl<'src> Emitter<'_, 'src> {
                 self.value(right)?;
             }
             ExpressionKind::FltRounds => {
-                return Err(Diagnostic::new(
-                    expr.position(),
-                    "AArch64 floating rounding mode lowering is deferred to ARM 25.9d",
-                ));
+                // DDI 0487 M.b C5.2.8 FPCR.RMode [23:22] is nearest, +infinity,
+                // -infinity, toward 0; N1570 5.2.4.2.2 maps these to 1, 2, 3, 0.
+                self.text.push_str("    mrs x0, fpcr\n    lsr x0, x0, #22\n    and x0, x0, #3\n    add x0, x0, x0\n    mov x1, #57\n    lsr x0, x1, x0\n    and x0, x0, #3\n");
             }
             ExpressionKind::Atomic { op, weak, arguments } => {
                 self.atomic_builtin(*op, *weak, arguments)?;
