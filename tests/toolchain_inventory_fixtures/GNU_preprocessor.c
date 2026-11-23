@@ -1,1 +1,1 @@
-#include_next <x.h>
+#define pack(args...) args
