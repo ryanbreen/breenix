@@ -15,43 +15,11 @@ fn constraint_paragraphs_located() {
 #[test]
 fn profile_macros_truthful() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../corpus/c11/profile-macros.c");
-    let scratch = Scratch(std::env::temp_dir().join(format!(
-        "breenix-bcc-c11-{}-profile",
-        std::process::id()
-    )));
-    fs::create_dir(&scratch.0).unwrap();
-    let arm_fixture = scratch.0.join("arm-profile.c");
-    // Mirror the guest fixture with the ARM exception from E25 ruling 47.
-    fs::write(
-        &arm_fixture,
-        r#"
-#if !defined(__STDC_NO_VLA__) || __STDC_NO_VLA__ != 1
-#error expected __STDC_NO_VLA__ to be defined as 1
-#endif
-#if !defined(__STDC_NO_COMPLEX__) || __STDC_NO_COMPLEX__ != 1
-#error expected __STDC_NO_COMPLEX__ to be defined as 1
-#endif
-#if defined(__STDC_IEC_559_COMPLEX__)
-#error expected __STDC_IEC_559_COMPLEX__ to be absent
-#endif
-#if !defined(__STDC_NO_ATOMICS__) || __STDC_NO_ATOMICS__ != 1
-#error expected __STDC_NO_ATOMICS__ to be defined as 1 on ARM
-#endif
-#if !defined(__STDC_NO_THREADS__) || __STDC_NO_THREADS__ != 1
-#error expected __STDC_NO_THREADS__ to be defined as 1
-#endif
-int profile_macros_verified;
-"#,
-    )
-    .unwrap();
+    // Ruling 49 retires the ARM exception from ruling 47.
     for target in ["--target=x86_64", "--target=aarch64"] {
         let result = Command::new(env!("CARGO_BIN_EXE_bcc"))
             .args([target, "-E"])
-            .arg(if target == "--target=aarch64" {
-                &arm_fixture
-            } else {
-                &fixture
-            })
+            .arg(&fixture)
             .output()
             .unwrap();
         assert!(result.status.success(), "{target}: {result:?}");
@@ -86,6 +54,42 @@ int main(int count) {
         atomic_fetch_add_explicit(&counter, 1, memory_order_relaxed);
     }
     return 0;
+}
+",
+    ]);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn aarch64_aggregate_atomic_cas_under_contention() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("aarch64-atomic-brt");
+    checked(
+        Command::new(env!("CARGO"))
+            .current_dir(root.join("toolchain"))
+            .args(["build", "--offline", "--locked", "--release", "-p", "brt"])
+            .args(["--features", "exports", "--target"])
+            .arg(root.join("aarch64-breenix.json"))
+            .arg("--target-dir")
+            .arg(&target)
+            .args(["-Z", "build-std=core", "-Z", "build-std-features=compiler-builtins-mem"]),
+    );
+    let archive = target.join("aarch64-breenix/release/libbrt.a");
+    aarch64_atomic_check(&[
+        "--atomic-runtime",
+        archive.to_str().unwrap(),
+        include_str!("../../tests/bcc/aggregate_atomic_worker.c"),
+        r"
+int initialize(void);
+int worker(unsigned int);
+int verify(unsigned long);
+
+int main(int iterations) {
+    if (iterations < 0)
+        return initialize();
+    if (iterations)
+        return worker(iterations);
+    return verify(8 * 8192UL) == 0 ? 42 : 1;
 }
 ",
     ]);

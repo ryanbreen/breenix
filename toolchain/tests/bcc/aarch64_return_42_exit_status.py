@@ -3,6 +3,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 import ctypes
+from functools import partial
 import mmap
 from pathlib import Path
 import sys
@@ -59,9 +60,11 @@ def link(bld, script, executable, objects):
     checked(bld, "-T", script, "--gc-sections", "-o", executable, *objects)
 
 
-def run_threads(address):
+def run_threads(address, *, setup=False):
     # CFUNCTYPE releases the GIL around the native call.
     entry = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int)(address)
+    if setup and (status := entry(-1)) != 0:
+        raise ValueError(f"atomic setup failed: {status}")
     start = Barrier(8)
 
     def worker():
@@ -75,7 +78,7 @@ def run_threads(address):
     return entry(0)
 
 
-def call_entry(bld, script, executable, objects, *, threads=False):
+def call_entry(bld, script, executable, objects, mode):
     def link_at(address):
         # Resolve initialized absolute pointers in the static link, using
         # the address the host loader reserved for this process.
@@ -85,15 +88,24 @@ def call_entry(bld, script, executable, objects, *, threads=False):
         script.write_text(layout)
         link(bld, script, executable, objects)
 
-    exit_from_main(executable, link_at=link_at, invoke=run_threads if threads else None)
+    invoke = None
+    if mode != "--call-entry":
+        invoke = partial(run_threads, setup=mode == "--call-atomic-runtime")
+    exit_from_main(executable, link_at=link_at, invoke=invoke)
 
 
 def main():
     bcc, bas, bld = map(Path, sys.argv[1:4])
     source_texts = sys.argv[4:]
-    threads = source_texts[:1] == ["--threads"]
-    if threads:
+    archive = None
+    mode = "--call-entry"
+    if source_texts[:1] == ["--atomic-runtime"]:
+        archive = Path(source_texts[1])
+        source_texts = source_texts[2:]
+        mode = "--call-atomic-runtime"
+    elif source_texts[:1] == ["--threads"]:
         source_texts = source_texts[1:]
+        mode = "--call-threads"
     with TemporaryDirectory() as directory:
         work = Path(directory)
         sources = []
@@ -105,6 +117,12 @@ def main():
             probe = work / "probe.s"
             probe.write_text(PROBE)
             sources.append(probe)
+        if archive is not None:
+            # This freestanding link has no libc. Fail the native subprocess
+            # if brt calls abort (DDI 0487 M.b, BRK #0).
+            abort = work / "abort.s"
+            abort.write_text(".section .text\n.global abort\nabort:\n    .long 0xd4200000\n")
+            sources.append(abort)
         script = work / "main.ld"
         script_text = LINKER_SCRIPT.read_text().replace("ENTRY(_start)", "ENTRY(main)")
         if source_texts and mmap.PAGESIZE > 4096:
@@ -113,12 +131,12 @@ def main():
             # protect it separately from writable data on 16 KiB macOS.
             padding = work / "host-padding.s"
             padding.write_text(
-                f".section .text.host_padding\n.balign {mmap.PAGESIZE}\n"
+                f".section .text.0host_padding\n.balign {mmap.PAGESIZE}\n"
                 f".zero {mmap.PAGESIZE}\n"
             )
             sources.append(padding)
             script_text = script_text.replace(
-                "*(.text .text.*)", "*(.text) KEEP(*(.text.host_padding))"
+                "*(.text .text.*)", "*(.text .text.[!0]*) KEEP(*(.text.0host_padding))"
             )
         script.write_text(script_text)
         objects = []
@@ -130,10 +148,11 @@ def main():
             obj = assembly.with_suffix(".o")
             checked(bas, "--target", "aarch64", "-o", obj, assembly)
             objects.append(obj)
+        if archive is not None:
+            objects.append(archive)
         executable = work / "main"
         link(bld, script, executable, objects)
         if source_texts:
-            mode = "--call-threads" if threads else "--call-entry"
             result = run(sys.executable, __file__, mode, bld, script, executable, *objects)
         else:
             result = run(sys.executable, HERE / "return_42_exit_status.py", "--call-entry", executable)
@@ -143,7 +162,7 @@ def main():
 
 
 if __name__ == "__main__":
-    if len(sys.argv) >= 6 and sys.argv[1] in ("--call-entry", "--call-threads"):
+    if len(sys.argv) >= 6 and sys.argv[1] in ("--call-entry", "--call-threads", "--call-atomic-runtime"):
         bld, script, executable, *objects = map(Path, sys.argv[2:])
-        call_entry(bld, script, executable, objects, threads=sys.argv[1] == "--call-threads")
+        call_entry(bld, script, executable, objects, sys.argv[1])
     main()
