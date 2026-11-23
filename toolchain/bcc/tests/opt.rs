@@ -324,6 +324,42 @@ int main(void) {
 }
 
 #[test]
+fn disabled_block_with_internal_goto_is_unreachable() {
+    // N1570 6.8.6.1 permits an entry by goto from outside the block.
+    // N1570 6.8.4.2 permits entry by the enclosing switch.
+    let source = Source::new(
+        "internal-goto",
+        r"
+extern void unavailable(void);
+extern void live(void);
+void internal(int p) {
+    if (0) {
+        if (p) goto repeat;
+        unavailable();
+    repeat:
+        unavailable();
+    }
+}
+void external(void) {
+    goto entry;
+    if (0) { entry: live(); }
+}
+void dispatched(int p) {
+    switch (p) {
+        if (0) { case 42: live(); }
+    }
+}
+",
+    );
+    let assembly = source.assembly("--target=x86_64", &["-O2"]);
+    let internal = function(&assembly, "internal");
+    assert!(!internal.contains("unavailable"), "{internal}");
+    for name in ["external", "dispatched"] {
+        assert!(function(&assembly, name).contains("call live@plt"), "{assembly}");
+    }
+}
+
+#[test]
 fn cse_keeps_volatile() {
     // N1570 5.1.2.3p6 and 6.7.3p7. The two volatile reads are observable.
     let source = Source::new(
