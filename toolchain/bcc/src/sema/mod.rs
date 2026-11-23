@@ -10,12 +10,16 @@ pub use parse::{Binary, Unary};
 mod body;
 mod dump;
 mod float;
+mod thread;
 mod varargs;
+
+pub use thread::{StaticAddress, ThreadData, ThreadInitializer, ThreadObject};
 
 #[derive(Debug)]
 pub struct TranslationUnit<'a> {
     pub functions: Vec<Function<'a>>,
     pub objects: Vec<Object<'a>>,
+    pub thread_objects: Vec<ThreadObject<'a>>,
     pub records: Vec<Record<'a>>,
 }
 
@@ -52,7 +56,15 @@ pub struct Object<'a> {
 #[derive(Debug)]
 pub struct Local<'a> {
     pub object: Object<'a>,
-    pub static_storage: bool,
+    pub storage: LocalStorage<'a>,
+}
+
+#[derive(Debug)]
+pub enum LocalStorage<'a> {
+    Automatic,
+    Static,
+    Thread(Option<ThreadInitializer<'a>>),
+    ThreadExtern(Linkage),
 }
 
 #[derive(Debug)]
@@ -108,6 +120,7 @@ pub struct Expression<'a> {
 #[derive(Debug)]
 pub enum ExpressionKind<'a> {
     Identifier(&'a str),
+    ThreadLocal(&'a str),
     Local(usize),
     Integer(u64),
     Float(u128),
@@ -211,6 +224,7 @@ impl Expression<'_> {
         }
         match &self.kind {
             ExpressionKind::Identifier(_)
+            | ExpressionKind::ThreadLocal(_)
             | ExpressionKind::Local(_)
             | ExpressionKind::String(_)
             | ExpressionKind::Unary(Unary::Dereference, _) => true,
@@ -239,6 +253,8 @@ pub fn analyze<'a>(
     let mut symbols = HashMap::new();
     let mut functions = Vec::new();
     let mut objects = Vec::new();
+    let mut thread_objects = thread::ThreadObjects::default();
+    let mut block_externs = HashMap::new();
     let mut declarations = parse::translation_unit(source, path, target)?;
     let records_begin = declarations
         .iter()
@@ -270,33 +286,86 @@ pub fn analyze<'a>(
         match declaration {
             parse::Declaration::Record(_) => unreachable!(),
             parse::Declaration::Function(declaration) => {
-                functions.push(function(declaration, &mut symbols, target, &record_scope)?);
+                functions.push(function(
+                    declaration,
+                    &mut symbols,
+                    target,
+                    &record_scope,
+                    &mut block_externs,
+                )?);
             }
-            parse::Declaration::Object(variable) => {
+            parse::Declaration::Object(mut variable) => {
                 let name = variable.name;
-                if variable.storage != Storage::Extern || variable.initializer.is_some() {
+                let key = name.text.as_ref();
+                let previous = symbols.get(key);
+                if previous.is_some_and(|symbol| symbol.thread_local != variable.thread_local)
+                    || !variable.thread_local && block_externs.contains_key(key)
+                {
                     return Err(
-                        name.error("file-scope object definitions are outside the current subset")
+                        name.error("_Thread_local must appear in every declaration of the object")
                     );
                 }
-                if variable.ty.kind == Kind::Void
-                    || matches!(variable.ty.kind, Kind::Function { .. })
-                {
-                    return Err(name.error("invalid object type"));
-                }
-                if let Some(symbol) = symbols.get(name.text.as_ref()) {
-                    if symbol.ty != variable.ty || symbol.linkage != Linkage::External {
-                        return Err(name.error("incompatible redeclaration"));
+                if variable.thread_local {
+                    let linkage = match variable.storage {
+                        Storage::Static => Linkage::Internal,
+                        Storage::Extern => {
+                            previous.map_or(Linkage::External, |symbol| symbol.linkage)
+                        }
+                        _ => Linkage::External,
+                    };
+                    if previous.is_some_and(|symbol| symbol.linkage != linkage)
+                        || linkage == Linkage::Internal && block_externs.contains_key(key)
+                    {
+                        return Err(name.error("conflicting linkage for _Thread_local object"));
                     }
+                    let result = Type::new(Kind::Void);
+                    let context = FunctionBody::new(
+                        &symbols,
+                        &result,
+                        target,
+                        &[],
+                        &record_scope,
+                        &mut block_externs,
+                    );
+                    let defined = thread_objects.declare(&mut variable, linkage, &context)?;
+                    symbols.insert(
+                        key,
+                        Symbol {
+                            ty: variable.ty.clone(),
+                            linkage,
+                            defined,
+                            thread_local: true,
+                        },
+                    );
+                    if thread_objects.defines(key) {
+                        continue;
+                    }
+                } else {
+                    if variable.storage != Storage::Extern || variable.initializer.is_some() {
+                        return Err(name.error(
+                            "file-scope object definitions are outside the current subset",
+                        ));
+                    }
+                    if variable.ty.kind == Kind::Void
+                        || matches!(variable.ty.kind, Kind::Function { .. })
+                    {
+                        return Err(name.error("invalid object type"));
+                    }
+                    if let Some(symbol) = symbols.get(name.text.as_ref()) {
+                        if symbol.ty != variable.ty || symbol.linkage != Linkage::External {
+                            return Err(name.error("incompatible redeclaration"));
+                        }
+                    }
+                    symbols.insert(
+                        &name.text,
+                        Symbol {
+                            ty: variable.ty.clone(),
+                            linkage: Linkage::External,
+                            defined: false,
+                            thread_local: false,
+                        },
+                    );
                 }
-                symbols.insert(
-                    &name.text,
-                    Symbol {
-                        ty: variable.ty.clone(),
-                        linkage: Linkage::External,
-                        defined: false,
-                    },
-                );
                 objects.push(Object {
                     name: &name.text,
                     site: &name.site,
@@ -305,9 +374,22 @@ pub fn analyze<'a>(
             }
         }
     }
+    for thread in &mut thread_objects.definitions {
+        // N1570 6.9.2: a remaining external tentative array with no bound
+        // is completed as a one-element array at the end of the unit.
+        if let Kind::Array(_, count @ 0) = &mut thread.object.ty.kind {
+            *count = 1;
+        }
+        thread
+            .object
+            .ty
+            .resolve_records(&|id| records[id].definition.as_ref().map(|d| d.layout));
+        thread::check_layout(&thread.object.ty, thread.object.site)?;
+    }
     Ok(TranslationUnit {
         functions,
         objects,
+        thread_objects: thread_objects.definitions,
         records,
     })
 }
@@ -339,6 +421,7 @@ struct Symbol {
     ty: Type,
     linkage: Linkage,
     defined: bool,
+    thread_local: bool,
 }
 
 /// Evaluate a layout constant while parsing a record. The parser's record
@@ -358,6 +441,7 @@ pub(super) fn layout_constant<'a, 't>(
                     ty: ty.clone(),
                     linkage: Linkage::External,
                     defined: false,
+                    thread_local: false,
                 },
             );
         } else {
@@ -369,7 +453,15 @@ pub(super) fn layout_constant<'a, 't>(
         token_order: None,
     };
     let result = Type::new(Kind::Void);
-    let context = FunctionBody::new(&symbols, &result, target, &[], &record_scope);
+    let mut block_externs = HashMap::new();
+    let context = FunctionBody::new(
+        &symbols,
+        &result,
+        target,
+        &[],
+        &record_scope,
+        &mut block_externs,
+    );
     let expr = context.expression(expression)?;
     body::constant_integer(&expr, target)
         .ok_or_else(|| expr.site.error("expected an integer constant expression"))
@@ -380,6 +472,7 @@ fn function<'a>(
     symbols: &mut HashMap<&'a str, Symbol>,
     target: Target,
     records: &RecordScope<'a, '_>,
+    block_externs: &mut HashMap<&'a str, Type>,
 ) -> Result<Function<'a>, Diagnostic> {
     let parse::Function {
         name,
@@ -423,6 +516,11 @@ fn function<'a>(
         variadic,
     });
     let previous = symbols.get(name.text.as_ref());
+    if previous.is_some_and(|symbol| symbol.thread_local)
+        || block_externs.contains_key(name.text.as_ref())
+    {
+        return Err(name.error("a function cannot redeclare a _Thread_local object"));
+    }
     // N1570 6.2.2p3–p5: a declaration with extern linkage rules inherits
     // the linkage of a visible declaration.
     let linkage = match (storage, previous) {
@@ -444,10 +542,12 @@ fn function<'a>(
             ty: ty.clone(),
             linkage,
             defined: defined || previous.is_some_and(|s| s.defined),
+            thread_local: false,
         },
     );
     let (body, locals) = if let Some(statements) = body {
-        let mut context = FunctionBody::new(symbols, &result, target, &params, records);
+        let mut context =
+            FunctionBody::new(symbols, &result, target, &params, records, block_externs);
         if variadic {
             context.last_named_parameter = params.len().checked_sub(1);
         }
@@ -470,6 +570,9 @@ fn function<'a>(
 
 struct FunctionBody<'a, 's> {
     symbols: &'s HashMap<&'a str, Symbol>,
+    // Declarations with external linkage must agree even when they occur
+    // in blocks that are outside each other's lexical scope.
+    block_externs: &'s mut HashMap<&'a str, Type>,
     locals: Vec<Local<'a>>,
     scopes: Vec<HashMap<&'a str, usize>>,
     labels: HashMap<&'a str, body::Label<'a>>,
@@ -513,17 +616,24 @@ impl<'a> FunctionBody<'a, '_> {
             Syntax::Identifier => {
                 let name = site.text.as_ref();
                 if let Some(id) = self.scopes.iter().rev().find_map(|scope| scope.get(name)) {
-                    (
-                        ExpressionKind::Local(*id),
-                        self.locals[*id].object.ty.clone(),
-                    )
+                    let local = &self.locals[*id];
+                    let kind = if matches!(local.storage, LocalStorage::ThreadExtern(_)) {
+                        ExpressionKind::ThreadLocal(name)
+                    } else {
+                        ExpressionKind::Local(*id)
+                    };
+                    (kind, local.object.ty.clone())
                 } else {
-                    let ty = self
+                    let symbol = self
                         .symbols
                         .get(name)
-                        .map(|symbol| symbol.ty.clone())
                         .ok_or_else(|| site.error(format!("undeclared identifier '{name}'")))?;
-                    (ExpressionKind::Identifier(name), ty)
+                    let kind = if symbol.thread_local {
+                        ExpressionKind::ThreadLocal(name)
+                    } else {
+                        ExpressionKind::Identifier(name)
+                    };
+                    (kind, symbol.ty.clone())
                 }
             }
             Syntax::Enumerator(value) => (

@@ -5,19 +5,21 @@ use std::fmt::Write;
 
 use crate::pp::{Diagnostic, Position, Target};
 use crate::sema::{
-    Argument, Binary, Expression, ExpressionKind, Function, Linkage, Statement, TranslationUnit,
-    Unary,
+    Argument, Binary, Expression, ExpressionKind, Function, Linkage, LocalStorage, Object,
+    Statement, StaticAddress, ThreadData, ThreadInitializer, TranslationUnit, Unary,
 };
 use crate::types::{BitField, Float, Integer, Kind, Layout, Record, Type};
 
 mod abi;
 mod bit_field;
 mod flow;
+mod thread;
 mod varargs;
 mod x87;
 
 use abi::{CallLayout, Place, RecordAbi, RecordRegisters, Register};
 use flow::Slot;
+use thread::ThreadPlace;
 use varargs::VariadicFrame;
 
 pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
@@ -37,12 +39,28 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
         variadic: None,
         flow_labels: HashMap::new(),
         data: String::new(),
+        tdata: String::new(),
+        tbss: String::new(),
         externs: BTreeSet::new(),
+        thread_externs: BTreeSet::new(),
+        thread_definitions: unit
+            .thread_objects
+            .iter()
+            .map(|thread| thread.object.name)
+            .collect(),
         text: String::from("section .text\n"),
         rodata: String::new(),
         string_count: 0,
         next_label: 0,
     };
+    for thread in &unit.thread_objects {
+        emitter.thread_definition(
+            &thread.object,
+            thread.object.name,
+            thread.linkage,
+            thread.initializer.as_ref(),
+        )?;
+    }
     for function in &unit.functions {
         if let Some(body) = &function.body {
             emitter.function(function, body)?;
@@ -51,6 +69,9 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
     for name in emitter.externs {
         writeln!(emitter.text, "extern {name}").unwrap();
     }
+    for name in emitter.thread_externs {
+        writeln!(emitter.text, "extern {name}\n.type {name}, @tls").unwrap();
+    }
     if !emitter.rodata.is_empty() {
         emitter.text.push_str("\nsection .rodata\n");
         emitter.text.push_str(&emitter.rodata);
@@ -58,6 +79,12 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
     if !emitter.data.is_empty() {
         emitter.text.push_str("\nsection .bss\n");
         emitter.text.push_str(&emitter.data);
+    }
+    for (section, data) in [(".tdata", emitter.tdata), (".tbss", emitter.tbss)] {
+        if !data.is_empty() {
+            writeln!(emitter.text, "\nsection {section}").unwrap();
+            emitter.text.push_str(&data);
+        }
     }
     Ok(emitter.text)
 }
@@ -70,7 +97,11 @@ struct Emitter<'unit, 'src> {
     variadic: Option<VariadicFrame>,
     flow_labels: HashMap<usize, String>,
     data: String,
+    tdata: String,
+    tbss: String,
     externs: BTreeSet<&'src str>,
+    thread_externs: BTreeSet<&'src str>,
+    thread_definitions: BTreeSet<&'src str>,
     text: String,
     rodata: String,
     string_count: usize,
@@ -248,10 +279,14 @@ impl<'src> Emitter<'_, 'src> {
             },
             ExpressionKind::String(_)
             | ExpressionKind::Identifier(_)
+            | ExpressionKind::ThreadLocal(_)
             | ExpressionKind::Local(_)
             | ExpressionKind::Member { .. } => {
-                self.address(expr)?;
-                self.load_lvalue(expr);
+                let place = self.thread_scalar_place(expr)?;
+                if place.is_none() {
+                    self.address(expr)?;
+                }
+                self.load_lvalue(expr, place.as_ref());
             }
             ExpressionKind::Unary(op, operand) => self.unary(*op, operand, &expr.ty)?,
             ExpressionKind::Binary {

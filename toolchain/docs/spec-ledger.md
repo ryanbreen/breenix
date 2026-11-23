@@ -248,3 +248,13 @@ value encoding. The instruction forms come from Vol. 2. Integer
 conversion truncates with a temporary x87 control word and restores
 the saved control word. AArch64 code emission is scheduled for A3 and
 AAPCS64 binary128 `long double` lowering for A4.
+
+### AMD64 local-exec thread storage (25.7c)
+
+N1570 §§6.2.2, 6.2.4, 6.7.1, 6.7.9 and 6.9.2 govern linkage, storage
+duration, declarations, initialization and tentative definitions. ELF
+gABI §§3.10, 5.2 and 7.7 describe `SHF_TLS`, `STT_TLS` and the
+`PT_TLS` template. AMD64 psABI §10.3.2 Tables 10.7 and 10.10 give the
+local-exec address and value sequences, using Breenix's self-pointer at
+`FS:0` and `R_X86_64_TPOFF32` relocations. AArch64 TLS lowering is
+scheduled for A4.

@@ -4,7 +4,7 @@ use std::iter::Peekable;
 use std::path::Path;
 
 use crate::pp::{Diagnostic, Kind, Lexeme, Location, Position, Preprocessed, Target};
-use crate::types::{Integer, Kind as TypeKind, Qualifiers, Record, Type, amd64_va_list};
+use crate::types::{amd64_va_list, Integer, Kind as TypeKind, Qualifiers, Record, Type};
 
 mod declaration;
 mod specifiers;
@@ -20,6 +20,12 @@ pub(super) enum Storage {
     Typedef,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct DeclStorage {
+    class: Storage,
+    thread_local: bool,
+}
+
 #[derive(Debug)]
 pub(super) enum Declaration<'a> {
     Function(Function<'a>),
@@ -32,6 +38,7 @@ pub(super) struct Variable<'a> {
     pub name: &'a Lexeme,
     pub ty: Type,
     pub storage: Storage,
+    pub thread_local: bool,
     pub initializer: Option<Initializer<'a>>,
 }
 
@@ -378,7 +385,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         self.starts_type(token)
             || matches!(
                 token.text.as_ref(),
-                "extern" | "static" | "typedef" | "auto" | "register"
+                "extern" | "static" | "typedef" | "auto" | "register" | "_Thread_local"
             )
     }
 
@@ -519,7 +526,13 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             .peek()
             .is_some_and(|token| self.starts_declaration(token))
         {
-            Statement::Declaration(self.declaration()?)
+            let variables = self.declaration()?;
+            if let Some(variable) = variables.iter().find(|variable| variable.thread_local) {
+                return Err(variable
+                    .name
+                    .error("a for initializer cannot declare a _Thread_local object"));
+            }
+            Statement::Declaration(variables)
         } else {
             self.optional_expression(";")?
                 .map_or(Statement::Empty, Statement::Expression)

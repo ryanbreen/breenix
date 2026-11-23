@@ -24,6 +24,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
         target: Target,
         params: &[Parameter<'a>],
         records: &'s RecordScope<'a, 's>,
+        block_externs: &'s mut HashMap<&'a str, Type>,
     ) -> Self {
         let mut scope = HashMap::new();
         let locals = params
@@ -38,12 +39,13 @@ impl<'a, 's> FunctionBody<'a, 's> {
                         site,
                         ty: param.ty.clone(),
                     },
-                    static_storage: false,
+                    storage: LocalStorage::Automatic,
                 }
             })
             .collect();
         Self {
             symbols,
+            block_externs,
             locals,
             scopes: vec![scope],
             labels: HashMap::new(),
@@ -226,13 +228,37 @@ impl<'a, 's> FunctionBody<'a, 's> {
     }
 
     fn local(&mut self, variable: parse::Variable<'a>) -> Result<Statement<'a>, Diagnostic> {
+        if variable.thread_local {
+            return self.thread_local(variable);
+        }
         let parse::Variable {
             name,
             mut ty,
             storage,
             initializer,
+            ..
         } = variable;
         if storage == Storage::Extern {
+            let key = name.text.as_ref();
+            if self
+                .scopes
+                .iter()
+                .rev()
+                .find_map(|scope| scope.get(key))
+                .map_or_else(
+                    || {
+                        self.symbols
+                            .get(key)
+                            .is_some_and(|symbol| symbol.thread_local)
+                    },
+                    |&id| matches!(self.locals[id].storage, LocalStorage::ThreadExtern(_)),
+                )
+                || self.block_externs.contains_key(key)
+            {
+                return Err(
+                    name.error("_Thread_local must appear in every declaration of the object")
+                );
+            }
             return Err(
                 name.error("block-scope extern declarations are outside the current subset")
             );
@@ -273,7 +299,11 @@ impl<'a, 's> FunctionBody<'a, 's> {
                 site: &name.site,
                 ty: ty.clone(),
             },
-            static_storage: storage == Storage::Static,
+            storage: if storage == Storage::Static {
+                LocalStorage::Static
+            } else {
+                LocalStorage::Automatic
+            },
         });
         if let Some(initializer) = initializer {
             let mut values = Vec::new();
@@ -295,6 +325,20 @@ impl<'a, 's> FunctionBody<'a, 's> {
         } else {
             Ok(Statement::Empty)
         }
+    }
+
+    pub(super) fn thread_initializer(
+        &self,
+        ty: &Type,
+        initializer: Option<parse::Initializer<'a>>,
+    ) -> Result<Option<ThreadInitializer<'a>>, Diagnostic> {
+        let Some(initializer) = initializer else {
+            return Ok(None);
+        };
+        let input = self.initializer_input(initializer)?;
+        let mut values = Vec::new();
+        self.initialize(input, ty, (0, None), &mut values)?;
+        thread::encode_initializer(values, self.target, &self.locals).map(Some)
     }
 
     fn initializer_input(
@@ -451,7 +495,7 @@ fn supported_object(ty: &Type) -> bool {
 
 // Use the target's integer width when comparing case values or evaluating an
 // integer constant expression. These ELF targets both use two's complement.
-fn canonical(value: u64, ty: &Type, target: Target) -> u64 {
+pub(super) fn canonical(value: u64, ty: &Type, target: Target) -> u64 {
     let Kind::Integer(integer) = ty.kind else {
         return value;
     };

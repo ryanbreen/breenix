@@ -68,12 +68,21 @@ impl<'a> Declarator<'a> {
 impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
     pub(super) fn external(&mut self) -> Result<Vec<Declaration<'a>>, Diagnostic> {
         let (base, storage, signed) = self.specifiers_at_depth(true, 0)?;
-        if self.eat(";").is_some() {
+        if let Some(end) = self.eat(";") {
+            if storage.thread_local {
+                return Err(end.error("_Thread_local requires an object declarator"));
+            }
             return Ok(Vec::new());
         }
         let first = self.declarator(false, 0)?;
         if let Some(Modifier::Function(..)) = first.modifiers.first() {
-            if storage != Storage::Typedef {
+            if storage.thread_local {
+                return Err(first
+                    .name
+                    .unwrap()
+                    .error("a function cannot be _Thread_local"));
+            }
+            if storage.class != Storage::Typedef {
                 let name = first.name.unwrap();
                 let ty = first.ty(base, name)?;
                 let TypeKind::Function { result, .. } = &ty.kind else {
@@ -102,7 +111,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     result: result.as_ref().clone(),
                     params: params.items,
                     variadic: params.variadic,
-                    storage,
+                    storage: storage.class,
                     body,
                 })]);
             }
@@ -113,7 +122,10 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
 
     pub(super) fn declaration(&mut self) -> Result<Vec<Variable<'a>>, Diagnostic> {
         let (base, storage, signed) = self.specifiers_at_depth(true, 0)?;
-        if self.eat(";").is_some() {
+        if let Some(end) = self.eat(";") {
+            if storage.thread_local {
+                return Err(end.error("_Thread_local requires an object declarator"));
+            }
             return Ok(Vec::new());
         }
         let first = self.declarator(false, 0)?;
@@ -123,7 +135,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
     fn variables(
         &mut self,
         base: Type,
-        storage: Storage,
+        storage: DeclStorage,
         signed: bool,
         mut declarator: Declarator<'a>,
     ) -> Result<Vec<Variable<'a>>, Diagnostic> {
@@ -131,7 +143,10 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         loop {
             let name = declarator.name.unwrap();
             let ty = declarator.ty(base.clone(), name)?;
-            if storage == Storage::Typedef {
+            if storage.thread_local && matches!(ty.kind, TypeKind::Function { .. }) {
+                return Err(name.error("a function cannot be _Thread_local"));
+            }
+            if storage.class == Storage::Typedef {
                 if let Some(previous) = self.names.last().unwrap().get(name.text.as_ref()) {
                     if !matches!(previous, Name::Typedef(previous, _) if *previous == ty) {
                         return Err(name.error("conflicting typedef declaration"));
@@ -148,7 +163,8 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 variables.push(Variable {
                     name,
                     ty,
-                    storage,
+                    storage: storage.class,
+                    thread_local: storage.thread_local,
                     initializer,
                 });
             }

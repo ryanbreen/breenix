@@ -3,7 +3,115 @@
 
 use std::cmp::Ordering;
 
-use crate::types::{Float, Kind};
+use super::{
+    body::{canonical, constant_integer},
+    Expression, ExpressionKind, Target, Unary,
+};
+use crate::types::{Float, Integer, Kind, Type};
+
+// Static initialization uses the same rounding as literal translation.
+pub(super) fn constant_bits(expr: &Expression<'_>, dest: &Kind, target: Target) -> Option<u128> {
+    if *dest == Kind::LongDouble && target != Target::X86_64 {
+        return None;
+    }
+    let format = Format::of(dest);
+    let (negative, significand, exponent) = match &expr.ty.kind {
+        Kind::Integer(integer) => {
+            let bits = constant_integer(expr, target)
+                .or_else(|| constant_to_integer(expr, *integer, target))?;
+            let negative = integer.is_signed(target) && (bits as i64) < 0;
+            (
+                negative,
+                Some(if negative { bits.wrapping_neg() } else { bits }),
+                0,
+            )
+        }
+        source @ (Kind::Float(_) | Kind::LongDouble) => {
+            let source_format = Format::of(source);
+            let bits = match &expr.kind {
+                ExpressionKind::Float(bits) => *bits,
+                ExpressionKind::Unary(op @ (Unary::Plus | Unary::Minus), operand) => {
+                    let operand = constant_bits(operand, source, target)?;
+                    let sign = if *op == Unary::Minus {
+                        source_format.sign_bit()
+                    } else {
+                        0
+                    };
+                    operand ^ sign
+                }
+                ExpressionKind::Cast(operand) => constant_bits(operand, source, target)?,
+                ExpressionKind::Conditional { condition, yes, no } => {
+                    let value = if constant_integer(condition, target)? != 0 {
+                        yes
+                    } else {
+                        no
+                    };
+                    constant_bits(value, source, target)?
+                }
+                _ => return None,
+            };
+            if source == dest {
+                return Some(bits);
+            }
+            source_format.unpack(bits)
+        }
+        _ => return None,
+    };
+    let bits = match significand {
+        None => format.infinity(),
+        Some(0) => 0,
+        Some(value) => format.round(Big::from_integer(value), Big(vec![1]), exponent),
+    };
+    Some(bits | if negative { format.sign_bit() } else { 0 })
+}
+
+pub(super) fn constant_to_integer(
+    expr: &Expression<'_>,
+    dest: Integer,
+    target: Target,
+) -> Option<u64> {
+    if !matches!(expr.ty.kind, Kind::Float(_) | Kind::LongDouble) {
+        if let ExpressionKind::Cast(operand) = &expr.kind {
+            let Kind::Integer(integer) = expr.ty.kind else {
+                return None;
+            };
+            let value = constant_to_integer(operand, integer, target)?;
+            let value = canonical(value, &expr.ty, target);
+            return Some(canonical(value, &Type::new(Kind::Integer(dest)), target));
+        }
+        return None;
+    }
+    let bits = constant_bits(expr, &expr.ty.kind, target)?;
+    let (negative, significand, exponent) = Format::of(&expr.ty.kind).unpack(bits);
+    if dest == Integer::Bool {
+        return Some(u64::from(significand != Some(0)));
+    }
+    let value = u128::from(significand?);
+    let truncated = if exponent < 0 {
+        value.checked_shr(exponent.unsigned_abs()).unwrap_or(0)
+    } else if exponent <= 63 {
+        value << exponent
+    } else {
+        return None;
+    };
+    let width = dest.layout().size * 8;
+    let limit = if dest.is_signed(target) {
+        (1_u128 << (width - 1)) - u128::from(!negative)
+    } else if negative {
+        0
+    } else {
+        (1_u128 << width) - 1
+    };
+    if truncated > limit {
+        return None;
+    }
+    let value = truncated as u64;
+    Some(if negative {
+        value.wrapping_neg()
+    } else {
+        value
+    })
+}
 
 pub(super) fn literal(text: &str) -> Option<(u128, Kind)> {
     let (text, ty) = if let Some(text) = text.strip_suffix(['f', 'F']) {
@@ -122,6 +230,32 @@ impl Format {
         (exponent as u128) << width | (significand & ((1 << width) - 1))
     }
 
+    fn sign_bit(&self) -> u128 {
+        let exponent_width = self.bias.count_ones() + 1;
+        1 << (self.fraction + u32::from(self.explicit_integer) + exponent_width)
+    }
+
+    // Decode a binary32, binary64 or x87 literal as a signed integer
+    // significand times a power of two. A missing significand is infinity.
+    fn unpack(&self, bits: u128) -> (bool, Option<u64>, i32) {
+        let width = self.fraction + u32::from(self.explicit_integer);
+        let exponent_mask = (2 * self.bias + 1) as u128;
+        let exponent = ((bits >> width) & exponent_mask) as i32;
+        let negative = bits & self.sign_bit() != 0;
+        if exponent as u128 == exponent_mask {
+            return (negative, None, 0);
+        }
+        let mut significand = (bits & ((1 << width) - 1)) as u64;
+        if exponent != 0 && !self.explicit_integer {
+            significand |= 1 << self.fraction;
+        }
+        (
+            negative,
+            Some(significand),
+            exponent.max(1) - self.bias - self.fraction as i32,
+        )
+    }
+
     fn infinity(&self) -> u128 {
         self.pack(2 * self.bias + 1, 1 << self.fraction)
     }
@@ -180,6 +314,14 @@ impl Format {
 struct Big(Vec<u32>);
 
 impl Big {
+    fn from_integer(value: u64) -> Self {
+        let mut words = vec![value as u32];
+        if value > u64::from(u32::MAX) {
+            words.push((value >> 32) as u32);
+        }
+        Self(words)
+    }
+
     fn multiply(&mut self, factor: u32, add: u32) {
         let mut carry = u64::from(add);
         for word in &mut self.0 {

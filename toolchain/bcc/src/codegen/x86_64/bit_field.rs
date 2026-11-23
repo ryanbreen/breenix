@@ -3,14 +3,22 @@
 use super::*;
 
 impl<'src> Emitter<'_, 'src> {
-    pub(super) fn load_lvalue(&mut self, expr: &Expression<'src>) {
+    pub(super) fn load_lvalue(&mut self, expr: &Expression<'src>, thread: Option<&ThreadPlace>) {
         let Some(field) = expr.bit_field() else {
-            self.load(&expr.ty, "[rax]");
+            match thread {
+                Some(thread) => self.load(&expr.ty, &thread.memory(0)),
+                None => self.load(&expr.ty, "[rax]"),
+            }
             return;
         };
-        self.text.push_str("    mov r10, rax\n    xor eax, eax\n");
+        if thread.is_none() {
+            self.text.push_str("    mov r10, rax\n");
+        }
+        self.text.push_str("    xor eax, eax\n");
         for (byte, (shift, used, mask)) in field.bytes().enumerate() {
-            writeln!(self.text, "    movzx edx, byte [r10 + {byte}]").unwrap();
+            let memory =
+                thread.map_or_else(|| format!("[r10 + {byte}]"), |thread| thread.memory(byte));
+            writeln!(self.text, "    movzx edx, byte {memory}").unwrap();
             if shift != 0 {
                 writeln!(self.text, "    shr edx, {shift}").unwrap();
             }
@@ -25,9 +33,11 @@ impl<'src> Emitter<'_, 'src> {
         self.normalize_bit_field(field, &expr.ty);
     }
 
-    pub(super) fn store_lvalue(&mut self, expr: &Expression<'src>) {
+    pub(super) fn store_lvalue(&mut self, expr: &Expression<'src>, thread: Option<&ThreadPlace>) {
         if let Some(field) = expr.bit_field() {
-            self.store_bit_field(field, &expr.ty);
+            self.store_bit_field(field, &expr.ty, thread);
+        } else if let Some(thread) = thread {
+            self.store_object(&expr.ty, &thread.memory(0));
         } else {
             self.store_object(&expr.ty, "[r11]");
         }
@@ -36,7 +46,12 @@ impl<'src> Emitter<'_, 'src> {
     // R11 addresses the destination and RAX carries the converted RHS.
     // Touch only bytes within the field's extent, preserving neighboring
     // fields and regular members that share its first or last byte.
-    pub(super) fn store_bit_field(&mut self, field: BitField, ty: &Type) {
+    pub(super) fn store_bit_field(
+        &mut self,
+        field: BitField,
+        ty: &Type,
+        thread: Option<&ThreadPlace>,
+    ) {
         for (byte, (shift, used, mask)) in field.bytes().enumerate() {
             self.text.push_str("    mov rdx, rax\n");
             if used != 0 {
@@ -49,14 +64,16 @@ impl<'src> Emitter<'_, 'src> {
                 writeln!(self.text, "    shl edx, {shift}").unwrap();
             }
             let keep = !(mask << shift);
+            let memory =
+                thread.map_or_else(|| format!("[r11 + {byte}]"), |thread| thread.memory(byte));
             if keep != 0 {
                 writeln!(
                     self.text,
-                    "    movzx ecx, byte [r11 + {byte}]\n    and ecx, {keep}\n    or edx, ecx"
+                    "    movzx ecx, byte {memory}\n    and ecx, {keep}\n    or edx, ecx"
                 )
                 .unwrap();
             }
-            writeln!(self.text, "    mov byte [r11 + {byte}], dl").unwrap();
+            writeln!(self.text, "    mov byte {memory}, dl").unwrap();
         }
         // An assignment or prefix update evaluates to the stored value.
         self.normalize_bit_field(field, ty);

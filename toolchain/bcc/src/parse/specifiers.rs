@@ -1,6 +1,6 @@
 //! N1570 6.7.1–6.7.3: specifier order is independent of type identity.
 use super::*;
-use crate::types::{Member, RecordDefinition, RecordKind, RecordType, amd64_va_list};
+use crate::types::{amd64_va_list, Member, RecordDefinition, RecordKind, RecordType};
 
 #[derive(Default)]
 struct Specifiers {
@@ -10,7 +10,7 @@ struct Specifiers {
     unsigned: Option<bool>,
     longs: usize,
     qualifiers: Qualifiers,
-    storage: Storage,
+    storage: DeclStorage,
 }
 
 impl Specifiers {
@@ -22,16 +22,34 @@ impl Specifiers {
             }
             "signed" | "unsigned" => self.unsigned.replace(token.is("unsigned")).is_none(),
             "extern" | "static" | "typedef" => {
-                if !allow_storage || self.storage != Storage::Unspecified {
+                if self.storage.thread_local && token.is("typedef") {
+                    return Err(
+                        token.error("_Thread_local may only be combined with static or extern")
+                    );
+                }
+                if !allow_storage || self.storage.class != Storage::Unspecified {
                     false
                 } else {
-                    self.storage = match token.text.as_ref() {
+                    self.storage.class = match token.text.as_ref() {
                         "extern" => Storage::Extern,
                         "static" => Storage::Static,
                         _ => Storage::Typedef,
                     };
                     true
                 }
+            }
+            "_Thread_local" => {
+                if !allow_storage {
+                    return Err(token.error("_Thread_local requires an object declaration"));
+                }
+                if self.storage.thread_local || self.storage.class == Storage::Typedef {
+                    return Err(token.error("conflicting _Thread_local storage specifiers"));
+                }
+                self.storage.thread_local = true;
+                true
+            }
+            "auto" | "register" if self.storage.thread_local => {
+                return Err(token.error("_Thread_local may only be combined with static or extern"));
             }
             "void" => self.base.replace("void").is_none(),
             "float" => self.base.replace("float").is_none(),
@@ -129,7 +147,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
     pub(super) fn specifiers(
         &mut self,
         allow_storage: bool,
-    ) -> Result<(Type, Storage), Diagnostic> {
+    ) -> Result<(Type, DeclStorage), Diagnostic> {
         self.specifiers_at_depth(allow_storage, 0)
             .map(|(ty, storage, _)| (ty, storage))
     }
@@ -138,7 +156,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         &mut self,
         allow_storage: bool,
         depth: usize,
-    ) -> Result<(Type, Storage, bool), Diagnostic> {
+    ) -> Result<(Type, DeclStorage, bool), Diagnostic> {
         let start = self
             .peek()
             .ok_or_else(|| self.error("expected a type specifier"))?;
