@@ -7,21 +7,38 @@ use crate::pp::{self, Diagnostic, Lexeme, Position, Preprocessed, Target};
 use crate::types::{BitField, Float, Integer, Kind, Record, Type};
 pub use parse::{Binary, Unary};
 
+mod atomic;
 mod body;
+mod c11;
 mod dump;
 mod float;
 mod thread;
 mod varargs;
 
+pub(super) use c11::{check_static_assertion, type_alignment};
+
+pub use atomic::AtomicOp;
+pub(crate) use atomic::SEQ_CST;
 pub use thread::{StaticAddress, ThreadData, ThreadInitializer, ThreadObject};
 
 #[derive(Debug)]
 pub struct TranslationUnit<'a> {
     pub functions: Vec<Function<'a>>,
     pub objects: Vec<Object<'a>>,
-    pub binary128_statics: Vec<Binary128Static<'a>>,
+    pub static_objects: Vec<StaticObject<'a>>,
+    pub static_literals: Vec<StaticLiteral<'a>>,
     pub thread_objects: Vec<ThreadObject<'a>>,
     pub records: Vec<Record<'a>>,
+    deferred_atomic_type: Option<&'a Lexeme>,
+}
+
+impl TranslationUnit<'_> {
+    pub(crate) fn check_target_types(&self) -> Result<(), Diagnostic> {
+        match self.deferred_atomic_type {
+            Some(token) => Err(token.error("atomic types are deferred to ARM 25.9d")),
+            None => Ok(()),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -37,6 +54,7 @@ pub struct Function<'a> {
     pub ty: Type,
     pub linkage: Linkage,
     pub params: Vec<Parameter<'a>>,
+    pub noreturn: bool,
     pub body: Option<Vec<Statement<'a>>>,
     pub locals: Vec<Local<'a>>,
 }
@@ -52,6 +70,29 @@ pub struct Object<'a> {
     pub name: &'a str,
     pub site: &'a Position,
     pub ty: Type,
+    pub alignment: Option<usize>,
+}
+
+impl Object<'_> {
+    pub(crate) fn layout(&self) -> Option<crate::types::Layout> {
+        let mut layout = self.ty.layout()?;
+        layout.align = layout.align.max(self.alignment.unwrap_or(0));
+        Some(layout)
+    }
+}
+
+#[derive(Debug)]
+pub struct StaticObject<'a> {
+    pub object: Object<'a>,
+    pub linkage: Linkage,
+    pub initializer: Option<ThreadInitializer<'a>>,
+}
+
+#[derive(Debug)]
+pub struct StaticLiteral<'a> {
+    pub ty: Type,
+    pub site: &'a Position,
+    pub initializer: ThreadInitializer<'a>,
 }
 
 #[derive(Debug)]
@@ -61,17 +102,10 @@ pub struct Local<'a> {
 }
 
 #[derive(Debug)]
-pub struct Binary128Static<'a> {
-    pub name: &'a str,
-    pub site: &'a Position,
-    pub linkage: Linkage,
-    pub initializer: Option<u128>,
-}
-
-#[derive(Debug)]
 pub enum LocalStorage<'a> {
     Automatic,
-    Static(Option<u128>),
+    Static(Option<ThreadInitializer<'a>>),
+    Function(Linkage),
     Thread(Option<ThreadInitializer<'a>>),
     ThreadExtern(Linkage),
 }
@@ -80,8 +114,20 @@ pub enum LocalStorage<'a> {
 pub struct Initializer<'a> {
     pub offset: usize,
     pub bit_field: Option<BitField>,
-    pub value: Expression<'a>,
+    pub value: InitValue<'a>,
     pub ty: Type,
+}
+
+#[derive(Debug)]
+pub enum InitValue<'a> {
+    Expression(Expression<'a>),
+    Zero,
+}
+
+#[derive(Debug)]
+pub struct ObjectInitializer<'a> {
+    pub values: Vec<Initializer<'a>>,
+    pub zero_bytes: usize,
 }
 
 #[derive(Debug)]
@@ -90,8 +136,7 @@ pub enum Statement<'a> {
     Empty,
     Initialize {
         local: usize,
-        values: Vec<Initializer<'a>>,
-        zero_bytes: usize,
+        initializer: ObjectInitializer<'a>,
     },
     Expression(Expression<'a>),
     Return(Option<Expression<'a>>),
@@ -131,6 +176,11 @@ pub enum ExpressionKind<'a> {
     Identifier(&'a str),
     ThreadLocal(&'a str),
     Local(usize),
+    CompoundLiteral {
+        local: usize,
+        initializer: ObjectInitializer<'a>,
+    },
+    StaticLiteral(usize),
     Integer(u64),
     Float(u128),
     Unary(Unary, Box<Expression<'a>>),
@@ -141,6 +191,7 @@ pub enum ExpressionKind<'a> {
         left_type: Type,
         right_type: Type,
     },
+    Comma(Box<Expression<'a>>, Box<Expression<'a>>),
     Cast(Box<Expression<'a>>),
     Conditional {
         condition: Box<Expression<'a>>,
@@ -170,6 +221,11 @@ pub enum ExpressionKind<'a> {
         source: Box<Expression<'a>>,
     },
     VaEnd(Box<Expression<'a>>),
+    FltRounds,
+    Atomic {
+        op: AtomicOp,
+        arguments: Vec<Argument<'a>>,
+    },
     Call {
         callee: Box<Expression<'a>>,
         arguments: Vec<Argument<'a>>,
@@ -223,7 +279,7 @@ impl Expression<'_> {
         if integer == Integer::UnsignedInt && field.is_some_and(|field| field.width < 32) {
             Integer::Int
         } else {
-            promote(integer)
+            integer.promoted()
         }
     }
 
@@ -235,6 +291,8 @@ impl Expression<'_> {
             ExpressionKind::Identifier(_)
             | ExpressionKind::ThreadLocal(_)
             | ExpressionKind::Local(_)
+            | ExpressionKind::CompoundLiteral { .. }
+            | ExpressionKind::StaticLiteral(_)
             | ExpressionKind::String(_)
             | ExpressionKind::Unary(Unary::Dereference, _) => true,
             ExpressionKind::Member { base, .. } => base.lvalue(),
@@ -263,8 +321,9 @@ pub fn analyze<'a>(
     let mut symbols = HashMap::new();
     let mut functions = Vec::new();
     let mut objects = Vec::new();
-    let mut binary128_statics: Vec<Binary128Static<'_>> = Vec::new();
-    let mut binary128_indices: HashMap<&str, usize> = HashMap::new();
+    let mut static_objects = Vec::new();
+    let mut tentative = Vec::new();
+    let mut static_literals = Vec::new();
     let mut thread_objects = thread::ThreadObjects::default();
     let mut block_externs = HashMap::new();
     let mut declarations = parse::translation_unit(source, path, target)?;
@@ -297,6 +356,18 @@ pub fn analyze<'a>(
     for declaration in declarations {
         match declaration {
             parse::Declaration::Record(_) => unreachable!(),
+            parse::Declaration::StaticAssert(assertion) => {
+                let result = Type::new(Kind::Void);
+                let mut context = FunctionBody::new(
+                    &symbols,
+                    &result,
+                    target,
+                    &[],
+                    &record_scope,
+                    &mut block_externs,
+                );
+                context.static_assertion(assertion)?;
+            }
             parse::Declaration::Function(declaration) => {
                 functions.push(function(
                     declaration,
@@ -310,6 +381,21 @@ pub fn analyze<'a>(
                 let name = variable.name;
                 let key = name.text.as_ref();
                 let previous = symbols.get(key);
+                let explicit = variable.initializer.is_some();
+                let definition = explicit || variable.storage != Storage::Extern;
+                let alignment = variable.alignment.filter(|&align| align != 0);
+                if let Some(prior) =
+                    previous.filter(|prior| !matches!(prior.ty.kind, Kind::Function { .. }))
+                {
+                    if alignment.is_some()
+                        && prior.alignment.is_some()
+                        && alignment != prior.alignment
+                        || explicit && prior.alignment.is_some() && alignment.is_none()
+                        || prior.defined && prior.alignment.is_none() && alignment.is_some()
+                    {
+                        return Err(name.error("conflicting object alignment declarations"));
+                    }
+                }
                 if previous.is_some_and(|symbol| symbol.thread_local != variable.thread_local)
                     || !variable.thread_local && block_externs.contains_key(key)
                 {
@@ -331,7 +417,7 @@ pub fn analyze<'a>(
                         return Err(name.error("conflicting linkage for _Thread_local object"));
                     }
                     let result = Type::new(Kind::Void);
-                    let context = FunctionBody::new(
+                    let mut context = FunctionBody::new(
                         &symbols,
                         &result,
                         target,
@@ -339,7 +425,9 @@ pub fn analyze<'a>(
                         &record_scope,
                         &mut block_externs,
                     );
-                    let defined = thread_objects.declare(&mut variable, linkage, &context)?;
+                    context.static_literals = Some((static_literals.len(), Vec::new()));
+                    let defined = thread_objects.declare(&mut variable, linkage, &mut context)?;
+                    static_literals.extend(context.static_literals.take().unwrap().1);
                     symbols.insert(
                         key,
                         Symbol {
@@ -347,97 +435,113 @@ pub fn analyze<'a>(
                             linkage,
                             defined,
                             thread_local: true,
+                            alignment: alignment.or(previous.and_then(|prior| prior.alignment)),
+                            noreturn: false,
                         },
                     );
                     if thread_objects.defines(key) {
                         continue;
                     }
-                } else if target == Target::Aarch64 && variable.ty.kind == Kind::LongDouble {
-                    let linkage = match variable.storage {
-                        Storage::Static => Linkage::Internal,
-                        Storage::Extern => {
-                            previous.map_or(Linkage::External, |symbol| symbol.linkage)
-                        }
-                        _ => Linkage::External,
-                    };
-                    if previous
-                        .is_some_and(|symbol| symbol.ty != variable.ty || symbol.linkage != linkage)
+                } else {
+                    if variable.ty.kind == Kind::Void
+                        || matches!(variable.ty.kind, Kind::Function { .. })
                     {
-                        return Err(name.error("incompatible redeclaration"));
+                        return Err(name.error("invalid object type"));
                     }
-                    let defined = previous.is_some_and(|symbol| symbol.defined);
-                    let result = Type::new(Kind::Void);
-                    let context = FunctionBody::new(
-                        &symbols,
-                        &result,
-                        target,
-                        &[],
-                        &record_scope,
-                        &mut block_externs,
-                    );
-                    let initializer =
-                        context.binary128_initializer(&variable.ty, variable.initializer)?;
-                    if initializer.is_some() && defined {
-                        return Err(name.error("object already defined"));
-                    }
-                    if let Some(&index) = binary128_indices.get(key) {
-                        if initializer.is_some() {
-                            binary128_statics[index].initializer = initializer;
+                    let linkage = match (variable.storage, previous) {
+                        (Storage::Static, _) => Linkage::Internal,
+                        (_, Some(symbol)) => symbol.linkage,
+                        (_, None) => Linkage::External,
+                    };
+                    if let Some(symbol) = previous {
+                        if symbol.linkage != linkage
+                            || matches!(symbol.ty.kind, Kind::Function { .. })
+                        {
+                            return Err(name.error("incompatible redeclaration"));
                         }
-                    } else if variable.storage != Storage::Extern || initializer.is_some() {
-                        binary128_indices.insert(key, binary128_statics.len());
-                        binary128_statics.push(Binary128Static {
-                            name: key,
-                            site: &name.site,
-                            linkage,
-                            initializer,
-                        });
+                        thread::merge_types(&mut variable.ty, &symbol.ty)
+                            .ok_or_else(|| name.error("incompatible redeclaration"))?;
+                        if explicit && symbol.defined {
+                            return Err(name.error("object already defined"));
+                        }
+                    }
+                    if !explicit && definition {
+                        tentative.push((key, name));
                     }
                     symbols.insert(
                         key,
                         Symbol {
                             ty: variable.ty.clone(),
                             linkage,
-                            defined: defined || initializer.is_some(),
                             thread_local: false,
+                            defined: explicit || previous.is_some_and(|symbol| symbol.defined),
+                            alignment: alignment.or(previous.and_then(|prior| prior.alignment)),
+                            noreturn: false,
                         },
                     );
-                    if binary128_indices.contains_key(key) {
+                    if let Some(initializer) = variable.initializer {
+                        let result = Type::new(Kind::Void);
+                        let mut context = FunctionBody::new(
+                            &symbols,
+                            &result,
+                            target,
+                            &[],
+                            &record_scope,
+                            &mut block_externs,
+                        );
+                        context.static_literals = Some((static_literals.len(), Vec::new()));
+                        let initializer =
+                            context.static_initializer(name, &mut variable.ty, initializer)?;
+                        static_literals.extend(context.static_literals.take().unwrap().1);
+                        symbols.get_mut(key).unwrap().ty = variable.ty.clone();
+                        static_objects.push(StaticObject {
+                            object: Object {
+                                name: key,
+                                site: &name.site,
+                                ty: variable.ty,
+                                alignment,
+                            },
+                            linkage,
+                            initializer: Some(initializer),
+                        });
                         continue;
                     }
-                } else {
-                    if variable.storage != Storage::Extern || variable.initializer.is_some() {
-                        return Err(name.error(
-                            "file-scope object definitions are outside the current subset",
-                        ));
-                    }
-                    if variable.ty.kind == Kind::Void
-                        || matches!(variable.ty.kind, Kind::Function { .. })
-                    {
-                        return Err(name.error("invalid object type"));
-                    }
-                    if let Some(symbol) = symbols.get(name.text.as_ref()) {
-                        if symbol.ty != variable.ty || symbol.linkage != Linkage::External {
-                            return Err(name.error("incompatible redeclaration"));
-                        }
-                    }
-                    symbols.insert(
-                        &name.text,
-                        Symbol {
-                            ty: variable.ty.clone(),
-                            linkage: Linkage::External,
-                            defined: false,
-                            thread_local: false,
-                        },
-                    );
                 }
                 objects.push(Object {
                     name: &name.text,
                     site: &name.site,
                     ty: variable.ty,
+                    alignment,
                 });
             }
         }
+    }
+    for (key, site) in tentative {
+        let symbol = symbols.get_mut(key).unwrap();
+        if symbol.defined {
+            continue;
+        }
+        let mut ty = symbol.ty.clone();
+        if let Kind::Array(_, count @ 0) = &mut ty.kind {
+            *count = 1;
+        }
+        ty.resolve_records(&|id| records[id].definition.as_ref().map(|d| d.layout));
+        thread::check_layout(&ty, &site.site)?;
+        let alignment = symbol.alignment;
+        symbol.defined = true;
+        static_objects.push(StaticObject {
+            object: Object {
+                name: key,
+                site: &site.site,
+                ty,
+                alignment,
+            },
+            linkage: symbol.linkage,
+            initializer: None,
+        });
+    }
+    for function in &mut functions {
+        function.noreturn = symbols[function.name].noreturn;
     }
     for thread in &mut thread_objects.definitions {
         // N1570 6.9.2: a remaining external tentative array with no bound
@@ -451,12 +555,22 @@ pub fn analyze<'a>(
             .resolve_records(&|id| records[id].definition.as_ref().map(|d| d.layout));
         thread::check_layout(&thread.object.ty, thread.object.site)?;
     }
+    // N1570 6.7.2.4p2 and 6.10.8.3: the ARM profile lacks atomic
+    // types. Preserve ordinary constraint diagnostics and let the backend
+    // name the access site before falling back to the keyword location.
+    let deferred_atomic_type = if target == Target::Aarch64 {
+        source.tokens().find(|token| token.text.as_ref() == "_Atomic")
+    } else {
+        None
+    };
     Ok(TranslationUnit {
         functions,
         objects,
-        binary128_statics,
+        static_objects,
+        static_literals,
         thread_objects: thread_objects.definitions,
         records,
+        deferred_atomic_type,
     })
 }
 
@@ -488,6 +602,8 @@ struct Symbol {
     linkage: Linkage,
     defined: bool,
     thread_local: bool,
+    alignment: Option<usize>,
+    noreturn: bool,
 }
 
 /// Evaluate a layout constant while parsing a record. The parser's record
@@ -508,6 +624,8 @@ pub(super) fn layout_constant<'a, 't>(
                     linkage: Linkage::External,
                     defined: false,
                     thread_local: false,
+                    alignment: None,
+                    noreturn: false,
                 },
             );
         } else {
@@ -520,7 +638,7 @@ pub(super) fn layout_constant<'a, 't>(
     };
     let result = Type::new(Kind::Void);
     let mut block_externs = HashMap::new();
-    let context = FunctionBody::new(
+    let mut context = FunctionBody::new(
         &symbols,
         &result,
         target,
@@ -545,6 +663,8 @@ fn function<'a>(
         result,
         params,
         variadic,
+        prototype,
+        noreturn,
         storage,
         body,
     } = declaration;
@@ -578,8 +698,18 @@ fn function<'a>(
         result: Box::new(result.clone()),
         // N1570 6.7.6.3p15: qualifiers on the parameter itself do not
         // participate in function type compatibility.
-        params: params.iter().map(|param| param.ty.unqualified()).collect(),
+        params: params
+            .iter()
+            .map(|param| {
+                if prototype {
+                    param.ty.unqualified()
+                } else {
+                    param.ty.default_argument_type()
+                }
+            })
+            .collect(),
         variadic,
+        prototype,
     });
     let previous = symbols.get(name.text.as_ref());
     if previous.is_some_and(|symbol| symbol.thread_local)
@@ -595,20 +725,29 @@ fn function<'a>(
         (_, None) => Linkage::External,
     };
     if let Some(symbol) = previous {
-        if symbol.ty != ty || symbol.linkage != linkage {
+        if !compatible_function_declaration(&ty, defined, &symbol.ty, symbol.defined)
+            || symbol.linkage != linkage
+        {
             return Err(name.error("incompatible redeclaration"));
         }
         if symbol.defined && defined {
             return Err(name.error("function already defined"));
         }
     }
+    let visible_type = previous
+        .filter(|symbol| !prototype && (has_prototype(&symbol.ty) || symbol.defined && !defined))
+        .map_or(&ty, |symbol| &symbol.ty)
+        .clone();
+    let noreturn = noreturn || previous.is_some_and(|symbol| symbol.noreturn);
     symbols.insert(
         &name.text,
         Symbol {
-            ty: ty.clone(),
+            ty: visible_type,
             linkage,
             defined: defined || previous.is_some_and(|s| s.defined),
             thread_local: false,
+            alignment: None,
+            noreturn,
         },
     );
     let (body, locals) = if let Some(statements) = body {
@@ -629,9 +768,38 @@ fn function<'a>(
         ty,
         linkage,
         params,
+        noreturn,
         body,
         locals,
     })
+}
+
+fn has_prototype(ty: &Type) -> bool {
+    matches!(
+        ty.kind,
+        Kind::Function {
+            prototype: true,
+            ..
+        }
+    )
+}
+
+fn compatible_function_declaration(a: &Type, a_defined: bool, b: &Type, b_defined: bool) -> bool {
+    let (
+        Kind::Function {
+            params: a_params, ..
+        },
+        Kind::Function {
+            params: b_params, ..
+        },
+    ) = (&a.kind, &b.kind)
+    else {
+        return false;
+    };
+    a.compatible(b)
+        && (!(a_defined && !has_prototype(a) && has_prototype(b)
+            || b_defined && !has_prototype(b) && has_prototype(a))
+            || a_params.len() == b_params.len())
 }
 
 struct FunctionBody<'a, 's> {
@@ -640,6 +808,8 @@ struct FunctionBody<'a, 's> {
     // in blocks that are outside each other's lexical scope.
     block_externs: &'s mut HashMap<&'a str, Type>,
     locals: Vec<Local<'a>>,
+    // Present only while analyzing file-scope initializers.
+    static_literals: Option<(usize, Vec<StaticLiteral<'a>>)>,
     scopes: Vec<HashMap<&'a str, usize>>,
     labels: HashMap<&'a str, body::Label<'a>>,
     next_label: usize,
@@ -654,7 +824,7 @@ struct FunctionBody<'a, 's> {
 
 impl<'a> FunctionBody<'a, '_> {
     fn return_value(
-        &self,
+        &mut self,
         keyword: &Lexeme,
         value: Option<parse::Expression<'a>>,
     ) -> Result<Option<Expression<'a>>, Diagnostic> {
@@ -675,7 +845,10 @@ impl<'a> FunctionBody<'a, '_> {
         }
     }
 
-    fn expression(&self, expression: parse::Expression<'a>) -> Result<Expression<'a>, Diagnostic> {
+    fn expression(
+        &mut self,
+        expression: parse::Expression<'a>,
+    ) -> Result<Expression<'a>, Diagnostic> {
         use parse::ExpressionKind as Syntax;
         let site = expression.site;
         let (kind, mut ty) = match expression.kind {
@@ -683,10 +856,10 @@ impl<'a> FunctionBody<'a, '_> {
                 let name = site.text.as_ref();
                 if let Some(id) = self.scopes.iter().rev().find_map(|scope| scope.get(name)) {
                     let local = &self.locals[*id];
-                    let kind = if matches!(local.storage, LocalStorage::ThreadExtern(_)) {
-                        ExpressionKind::ThreadLocal(name)
-                    } else {
-                        ExpressionKind::Local(*id)
+                    let kind = match local.storage {
+                        LocalStorage::ThreadExtern(_) => ExpressionKind::ThreadLocal(name),
+                        LocalStorage::Function(_) => ExpressionKind::Identifier(name),
+                        _ => ExpressionKind::Local(*id),
                     };
                     (kind, local.object.ty.clone())
                 } else {
@@ -717,6 +890,10 @@ impl<'a> FunctionBody<'a, '_> {
                     )
                 }
             }
+            Syntax::FltRounds => (
+                ExpressionKind::FltRounds,
+                Type::new(Kind::Integer(Integer::Int)),
+            ),
             Syntax::Character => {
                 let value = pp::character_bits(&site.text, self.target)
                     .ok_or_else(|| site.error("invalid character constant"))?;
@@ -773,6 +950,12 @@ impl<'a> FunctionBody<'a, '_> {
                     result,
                 )
             }
+            Syntax::Comma(left, right) => {
+                let left = self.expression(*left)?;
+                let right = self.expression(*right)?;
+                let ty = right.value_type();
+                (ExpressionKind::Comma(Box::new(left), Box::new(right)), ty)
+            }
             Syntax::Cast(ty, expr) => {
                 let expr = self.expression(*expr)?;
                 let source = expr.converted_type().unwrap_or_else(|| expr.ty.clone());
@@ -789,9 +972,17 @@ impl<'a> FunctionBody<'a, '_> {
                 }
                 (ExpressionKind::Cast(Box::new(expr)), ty)
             }
+            Syntax::CompoundLiteral(ty, initializer) => {
+                self.compound_literal(site, ty, *initializer)?
+            }
+            Syntax::Alignof(ty) => size_constant(type_alignment(&ty, site)?),
+            Syntax::Offsetof(ty, path) => size_constant(self.offsetof(site, ty, path)?),
+            Syntax::Generic(control, associations) => {
+                return self.generic(site, *control, associations)
+            }
             Syntax::SizeofType(ty) => sizeof(site, &ty)?,
             Syntax::Sizeof(expr) => {
-                let expr = self.expression(*expr)?;
+                let expr = self.unevaluated(*expr)?;
                 if expr.bit_field().is_some() {
                     return Err(site.error("sizeof cannot be applied to a bit-field"));
                 }
@@ -829,29 +1020,12 @@ impl<'a> FunctionBody<'a, '_> {
                         kind: ExpressionKind::Unary(Unary::Dereference, Box::new(base)),
                     };
                 }
-                let Kind::Record(record) = &base.ty.kind else {
-                    return Err(site.error("member access requires a struct or union"));
-                };
-                if record.layout.is_none() {
-                    return Err(site.error("member access requires a complete record type"));
-                }
-                let members = &self.records.records[record.id]
-                    .definition
-                    .as_ref()
-                    .unwrap()
-                    .members;
-                let member = members
-                    .iter()
-                    .find(|member| member.name == name.text.as_ref())
-                    .ok_or_else(|| name.error(format!("no member named '{}'", name.text)))?;
-                let mut ty = member.ty.clone();
-                // N1570 §6.5.2.3p3–4 and §6.7.3p9.
-                ty.qualify_member(base.ty.qualifiers);
+                let (offset, ty, bit_field) = self.record_member(&base.ty, name)?;
                 (
                     ExpressionKind::Member {
                         base: Box::new(base),
-                        offset: member.offset,
-                        bit_field: member.bit_field,
+                        offset,
+                        bit_field,
                     },
                     ty,
                 )
@@ -865,7 +1039,12 @@ impl<'a> FunctionBody<'a, '_> {
                 let operation = if let Some(op) = op {
                     let (a, b, result) = binary_types(op, &left, &right, self.target)
                         .ok_or_else(|| site.error("invalid compound assignment operands"))?;
-                    if matches!(left.ty.kind, Kind::Pointer(_)) && left.ty.kind != result.kind {
+                    // N1570 6.5.16.2p1 allows pointer arithmetic here only
+                    // when the left operand is the pointer and the right is an integer.
+                    if (matches!(left.ty.kind, Kind::Pointer(_))
+                        || matches!(result.kind, Kind::Pointer(_)))
+                        && left.ty.kind != result.kind
+                    {
                         return Err(site.error("invalid compound pointer assignment"));
                     }
                     Some((op, a, b))
@@ -935,11 +1114,16 @@ impl<'a> FunctionBody<'a, '_> {
     }
 
     fn call(
-        &self,
+        &mut self,
         callee: parse::Expression<'a>,
         arguments: Vec<parse::Expression<'a>>,
         close: &Lexeme,
     ) -> Result<(ExpressionKind<'a>, Type), Diagnostic> {
+        if matches!(callee.kind, parse::ExpressionKind::Identifier) {
+            if let Some(op) = AtomicOp::from_name(&callee.site.text) {
+                return self.atomic_builtin(callee.site, op, arguments);
+            }
+        }
         if matches!(callee.kind, parse::ExpressionKind::Identifier)
             && matches!(
                 callee.site.text.as_ref(),
@@ -958,6 +1142,7 @@ impl<'a> FunctionBody<'a, '_> {
             result,
             params,
             variadic,
+            prototype,
         } = &function.kind
         else {
             return Err(callee.site.error("called expression is not a function"));
@@ -968,9 +1153,10 @@ impl<'a> FunctionBody<'a, '_> {
         }
         // N1570 6.5.2.2p2, p5 and p7: check the prototype and convert each
         // argument as if assigned to its unqualified parameter type.
+        let params = if *prototype { params.as_slice() } else { &[] };
         let mut converted_arguments = Vec::new();
         for (index, argument) in arguments.into_iter().enumerate() {
-            if index >= params.len() && !variadic {
+            if *prototype && index >= params.len() && !variadic {
                 return Err(argument.site.error("too many arguments"));
             }
             let expr = self.expression(argument)?;
@@ -988,8 +1174,7 @@ impl<'a> FunctionBody<'a, '_> {
                     Kind::Integer(integer) => {
                         Type::new(Kind::Integer(expr.promoted_integer(integer)))
                     }
-                    Kind::Float(Float::Single) => Type::new(Kind::Float(Float::Double)),
-                    _ if is_scalar(&ty) => ty,
+                    _ if is_scalar(&ty) => ty.default_argument_type(),
                     Kind::ShortVector { .. } => ty,
                     Kind::Record(record) if record.layout.is_some() => ty,
                     _ => {
@@ -1024,14 +1209,6 @@ fn is_arithmetic(ty: &Type) -> bool {
         ty.kind,
         Kind::Integer(_) | Kind::Float(_) | Kind::LongDouble
     )
-}
-
-fn promote(integer: Integer) -> Integer {
-    if integer.layout().size < 4 {
-        Integer::Int
-    } else {
-        integer
-    }
 }
 
 // N1570 6.3.1.8: arithmetic type for both operands after promotion.
@@ -1125,10 +1302,14 @@ fn sizeof<'a>(site: &Lexeme, ty: &Type) -> Result<(ExpressionKind<'a>, Type), Di
         .filter(|layout| layout.size != 0)
         .ok_or_else(|| site.error("sizeof requires a complete object type"))?
         .size;
-    Ok((
-        ExpressionKind::Integer(size as u64),
+    Ok(size_constant(size))
+}
+
+fn size_constant<'a>(value: usize) -> (ExpressionKind<'a>, Type) {
+    (
+        ExpressionKind::Integer(value as u64),
         Type::new(Kind::Integer(Integer::UnsignedLong)),
-    ))
+    )
 }
 
 fn pointer_binary(
@@ -1151,12 +1332,17 @@ fn pointer_binary(
             Some((index(), right.clone(), right.clone()))
         }
         (Kind::Pointer(a), Kind::Pointer(b))
-            if op == Subtract && a.kind == b.kind && sized(left) =>
+            if op == Subtract
+                && a.kind == b.kind
+                && a.qualifiers.atomic == b.qualifiers.atomic
+                && sized(left) =>
         {
             Some((left.clone(), right.clone(), index()))
         }
         (Kind::Pointer(a), Kind::Pointer(b))
-            if matches!(op, Less | LessEqual | Greater | GreaterEqual) && a.kind == b.kind =>
+            if matches!(op, Less | LessEqual | Greater | GreaterEqual)
+                && a.kind == b.kind
+                && a.qualifiers.atomic == b.qualifiers.atomic =>
         {
             Some((left.clone(), right.clone(), int()))
         }
@@ -1177,8 +1363,15 @@ fn compatible_pointer(
     let b = right.value_type();
     match (&a.kind, &b.kind) {
         (Kind::Pointer(a), Kind::Pointer(b)) => {
-            let kind = if a.kind == b.kind {
-                a.kind.clone()
+            let kind = if a
+                .unqualified_except_atomic()
+                .compatible(&b.unqualified_except_atomic())
+            {
+                if has_prototype(b) {
+                    b.kind.clone()
+                } else {
+                    a.kind.clone()
+                }
             } else if a.kind == Kind::Void && !matches!(b.kind, Kind::Function { .. })
                 || b.kind == Kind::Void && !matches!(a.kind, Kind::Function { .. })
             {
@@ -1192,6 +1385,8 @@ fn compatible_pointer(
                     qualifiers: crate::types::Qualifiers {
                         constant: a.qualifiers.constant || b.qualifiers.constant,
                         volatile: a.qualifiers.volatile || b.qualifiers.volatile,
+                        atomic: a.qualifiers.atomic && b.qualifiers.atomic,
+                        restricted: a.qualifiers.restricted || b.qualifiers.restricted,
                     },
                 }
                 .pointer_to(),
@@ -1239,7 +1434,8 @@ fn assignable(destination: &Type, expr: &Expression<'_>, target: Target) -> bool
             if !to.qualifiers.contains(from.qualifiers) {
                 return false;
             }
-            to.kind == from.kind
+            to.unqualified_except_atomic()
+                .compatible(&from.unqualified_except_atomic())
                 || (to.kind == Kind::Void && !matches!(from.kind, Kind::Function { .. }))
                 || (from.kind == Kind::Void && !matches!(to.kind, Kind::Function { .. }))
         }
@@ -1270,7 +1466,7 @@ fn integer_literal(token: &Lexeme, target: Target) -> Result<(u64, Integer), Dia
 
 // N1570 5.1.1.2 phases 5–6 and 6.4.5. Ordinary strings use UTF-8;
 // numeric escapes encode one byte, including an embedded null.
-fn decode_string(token: &Lexeme, bytes: &mut Vec<u8>) -> Result<(), Diagnostic> {
+pub(super) fn decode_string(token: &Lexeme, bytes: &mut Vec<u8>) -> Result<(), Diagnostic> {
     let body = token
         .text
         .strip_prefix('"')

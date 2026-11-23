@@ -9,8 +9,8 @@ use std::fmt::Write;
 
 use crate::pp::{Diagnostic, Position, Target};
 use crate::sema::{
-    Argument, Binary, Expression, ExpressionKind, Function, Linkage, LocalStorage, Statement,
-    TranslationUnit, Unary,
+    Argument, Binary, Expression, ExpressionKind, Function, InitValue, Linkage, LocalStorage,
+    Object, Statement, StaticAddress, ThreadData, ThreadInitializer, TranslationUnit, Unary,
 };
 use crate::types::{Float, Integer, Kind, Layout, Record, Type};
 
@@ -28,6 +28,7 @@ use varargs::VariadicFrame;
 
 const ARGUMENT_REGISTERS: usize = 8;
 const FRAME_RECORD: usize = 16;
+const DEFERRED_ATOMICS: &str = "atomic accesses are deferred to ARM 25.9d";
 
 pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
     let mut functions = HashMap::new();
@@ -44,17 +45,17 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
         frame: 0,
         variadic: None,
         flow_labels: HashMap::new(),
+        object_definitions: unit
+            .static_objects
+            .iter()
+            .map(|def| def.object.name)
+            .collect(),
         externs: BTreeSet::new(),
         thread_externs: BTreeSet::new(),
         thread_definitions: unit
             .thread_objects
             .iter()
             .map(|thread| thread.object.name)
-            .collect(),
-        binary128_statics: unit
-            .binary128_statics
-            .iter()
-            .map(|value| value.name)
             .collect(),
         text: String::from(".section .text\n"),
         rodata: String::new(),
@@ -64,9 +65,13 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
         tbss: String::new(),
         next_label: 0,
     };
-    for value in &unit.binary128_statics {
-        check_symbol(value.name, value.site)?;
-        emitter.binary128_static(value.name, value.linkage, value.initializer);
+    for definition in &unit.static_objects {
+        emitter.object_definition(
+            &definition.object,
+            definition.object.name,
+            definition.linkage,
+            definition.initializer.as_ref(),
+        )?;
     }
     for thread in &unit.thread_objects {
         emitter.thread_definition(
@@ -112,10 +117,10 @@ struct Emitter<'unit, 'src> {
     frame: usize,
     variadic: Option<VariadicFrame>,
     flow_labels: HashMap<usize, String>,
+    object_definitions: BTreeSet<&'src str>,
     externs: BTreeSet<&'src str>,
     thread_externs: BTreeSet<&'src str>,
     thread_definitions: BTreeSet<&'src str>,
-    binary128_statics: BTreeSet<&'src str>,
     text: String,
     rodata: String,
     data: String,
@@ -134,7 +139,7 @@ impl<'src> Emitter<'_, 'src> {
         let name = function.name;
         check_symbol(name, function.site)?;
         let Kind::Function {
-            result, variadic, ..
+            result, params: abi_params, variadic, ..
         } = &function.ty.kind
         else {
             unreachable!()
@@ -142,9 +147,9 @@ impl<'src> Emitter<'_, 'src> {
         let object_result = self.call_object(result, function.site)?;
         let mut slots = ArgumentSlots::default();
         let mut parameters = Vec::with_capacity(function.params.len());
-        for param in &function.params {
-            let object = self.call_object(&param.ty, param.name.unwrap().1)?;
-            parameters.push((object, slots.next(&param.ty, object)));
+        for (param, incoming) in function.params.iter().zip(abi_params) {
+            let object = self.call_object(incoming, param.name.unwrap().1)?;
+            parameters.push((object, slots.next(incoming, object)));
         }
         self.layout(function, &parameters)?;
         let indirect_result = if object_result.is_some_and(CallObject::indirect) {
@@ -179,7 +184,7 @@ impl<'src> Emitter<'_, 'src> {
                 parameters.iter().zip(&function.params).enumerate()
             {
                 if matches!(location, ArgumentLocation::Stack(_)) == on_stack {
-                    self.receive_parameter(index, &param.ty, object, location);
+                    self.receive_parameter(index, &param.ty, &abi_params[index], object, location);
                 }
             }
         }
@@ -214,6 +219,7 @@ impl<'src> Emitter<'_, 'src> {
     // Floating values use s0/d0/q0. x0 holds addresses, aggregate/vector
     // representations in memory, and integers extended to their C type.
     fn value(&mut self, expr: &Expression<'src>) -> Result<(), Diagnostic> {
+        require_nonatomic(&expr.ty, expr.position())?;
         match expr.ty.kind {
             Kind::Void | Kind::Array(..) | Kind::Function { .. } => {}
             _ => require_value(&expr.ty, expr.position())?,
@@ -267,6 +273,18 @@ impl<'src> Emitter<'_, 'src> {
                 writeln!(self.text, "    b {end}\n{otherwise}:").unwrap();
                 self.converted(no, &expr.ty)?;
                 writeln!(self.text, "{end}:").unwrap();
+            }
+            ExpressionKind::Comma(left, right) => {
+                self.value(left)?;
+                self.value(right)?;
+            }
+            ExpressionKind::CompoundLiteral { .. }
+            | ExpressionKind::StaticLiteral(_)
+            | ExpressionKind::FltRounds => {
+                return Err(Diagnostic::new(expr.position(), "AArch64 C11 lowering is deferred to 25.9"));
+            }
+            ExpressionKind::Atomic { .. } => {
+                return Err(Diagnostic::new(expr.position(), DEFERRED_ATOMICS));
             }
             ExpressionKind::VaStart(list) => self.va_start(list)?,
             ExpressionKind::VaArg(list) => self.va_arg(list, &expr.ty, expr.position())?,
@@ -598,7 +616,7 @@ impl<'src> Emitter<'_, 'src> {
 
     fn use_symbol(&mut self, name: &'src str, site: &Position) -> Result<(), Diagnostic> {
         check_symbol(name, site)?;
-        if self.binary128_statics.contains(name) {
+        if self.object_definitions.contains(name) {
             return Ok(());
         }
         match self.functions.get(name) {
@@ -643,6 +661,14 @@ fn require_value(ty: &Type, site: &Position) -> Result<(), Diagnostic> {
             site,
             "value is outside the supported AArch64 subset",
         ))
+    }
+}
+
+fn require_nonatomic(ty: &Type, site: &Position) -> Result<(), Diagnostic> {
+    if ty.qualifiers.atomic {
+        Err(Diagnostic::new(site, DEFERRED_ATOMICS))
+    } else {
+        Ok(())
     }
 }
 

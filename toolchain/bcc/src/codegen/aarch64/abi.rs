@@ -2,7 +2,7 @@
 
 use super::{
     require_value, value_prefix, Argument, Diagnostic, Emitter, Expression, ExpressionKind, Float,
-    Kind, Layout, Position, Type, ARGUMENT_REGISTERS, FRAME_RECORD,
+    Integer, Kind, Layout, Position, Type, ARGUMENT_REGISTERS, FRAME_RECORD,
 };
 use crate::types::RecordKind;
 use std::fmt::Write;
@@ -187,6 +187,7 @@ impl<'src> Emitter<'_, 'src> {
         &mut self,
         local: usize,
         ty: &Type,
+        incoming: &Type,
         object: Option<CallObject>,
         location: ArgumentLocation,
     ) {
@@ -215,10 +216,21 @@ impl<'src> Emitter<'_, 'src> {
                 ArgumentLocation::Register(index) => index,
                 ArgumentLocation::Stack(offset) => {
                     self.offset_address("x9", "x29", (FRAME_RECORD + offset) as i64);
-                    self.load(ty, "x9");
+                    self.load(incoming, "x9");
                     0
                 }
             };
+            // N1570 §§6.5.2.2p6 and 6.9.1p10: assign promoted
+            // identifier-list arguments to the declared parameter type.
+            match (&incoming.kind, &ty.kind) {
+                (Kind::Float(Float::Double), Kind::Float(Float::Single)) => {
+                    writeln!(self.text, "    fcvt s{register}, d{register}").unwrap();
+                }
+                (Kind::Integer(Integer::Int), Kind::Integer(Integer::Bool)) => {
+                    writeln!(self.text, "    cmp w{register}, #0\n    cset w{register}, ne").unwrap();
+                }
+                _ => {}
+            }
             self.store_object(ty, register, "x10");
         }
     }

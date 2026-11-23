@@ -17,9 +17,11 @@ publish = false
 unsafe_code = "forbid"
 
 [profile.dev]
+panic = "abort"
 overflow-checks = true
 
 [profile.release]
+panic = "abort"
 overflow-checks = true
 codegen-units = 1
 incremental = false

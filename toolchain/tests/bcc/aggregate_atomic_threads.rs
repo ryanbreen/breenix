@@ -1,0 +1,35 @@
+// Cargo-built Linux development driver for the bcc-produced worker.
+use std::sync::{Arc, Barrier};
+
+extern "C" {
+    fn initialize() -> i32;
+    fn worker(iterations: u32) -> i32;
+    fn verify(expected: u64) -> i32;
+}
+
+fn main() {
+    const THREADS: usize = 8;
+    const ITERATIONS: u32 = 2_000;
+
+    // SAFETY: Initialize the fixture before any worker runs.
+    assert_eq!(unsafe { initialize() }, 0);
+    let start = Arc::new(Barrier::new(THREADS));
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..THREADS)
+            .map(|_| {
+                let start = Arc::clone(&start);
+                scope.spawn(move || {
+                    start.wait();
+                    // SAFETY: The C worker accesses the shared object only
+                    // through atomic operations and owns its other storage.
+                    assert_eq!(unsafe { worker(ITERATIONS) }, 0);
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+    });
+    // SAFETY: The join loop completed before this call, and the fixture is live.
+    assert_eq!(unsafe { verify(THREADS as u64 * u64::from(ITERATIONS)) }, 0);
+}

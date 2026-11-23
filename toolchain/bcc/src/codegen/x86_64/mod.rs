@@ -5,12 +5,15 @@ use std::fmt::Write;
 
 use crate::pp::{Diagnostic, Position, Target};
 use crate::sema::{
-    Argument, Binary, Expression, ExpressionKind, Function, Linkage, LocalStorage, Object,
-    Statement, StaticAddress, ThreadData, ThreadInitializer, TranslationUnit, Unary,
+    Argument, AtomicOp, Binary, Expression, ExpressionKind, Function, InitValue, Linkage, LocalStorage,
+    Object, ObjectInitializer, Statement, StaticAddress, ThreadData, ThreadInitializer,
+    TranslationUnit, Unary,
 };
 use crate::types::{BitField, Float, Integer, Kind, Layout, Record, Type};
 
 mod abi;
+mod atomic;
+mod atomic_runtime;
 mod bit_field;
 mod flow;
 mod thread;
@@ -35,10 +38,18 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
         functions,
         records: &unit.records,
         frame: 0,
+        aligned_frame: 0,
+        frame_alignment: 16,
         locals: Vec::new(),
         variadic: None,
         flow_labels: HashMap::new(),
         data: String::new(),
+        initialized_data: String::new(),
+        object_definitions: unit
+            .static_objects
+            .iter()
+            .map(|def| def.object.name)
+            .collect(),
         tdata: String::new(),
         tbss: String::new(),
         externs: BTreeSet::new(),
@@ -53,6 +64,37 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
         string_count: 0,
         next_label: 0,
     };
+    for (id, literal) in unit.static_literals.iter().enumerate() {
+        let name = literal_label(id);
+        let object = Object {
+            name: &name,
+            site: literal.site,
+            ty: literal.ty.clone(),
+            alignment: None,
+        };
+        let data = emitter.object_definition(
+            &object,
+            &name,
+            Linkage::Internal,
+            Some(&literal.initializer),
+            false,
+        )?;
+        emitter.initialized_data.push_str(&data);
+    }
+    for definition in &unit.static_objects {
+        let data = emitter.object_definition(
+            &definition.object,
+            definition.object.name,
+            definition.linkage,
+            definition.initializer.as_ref(),
+            false,
+        )?;
+        if definition.initializer.is_some() {
+            emitter.initialized_data.push_str(&data);
+        } else {
+            emitter.data.push_str(&data);
+        }
+    }
     for thread in &unit.thread_objects {
         emitter.thread_definition(
             &thread.object,
@@ -76,6 +118,10 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
         emitter.text.push_str("\nsection .rodata\n");
         emitter.text.push_str(&emitter.rodata);
     }
+    if !emitter.initialized_data.is_empty() {
+        emitter.text.push_str("\nsection .data\n");
+        emitter.text.push_str(&emitter.initialized_data);
+    }
     if !emitter.data.is_empty() {
         emitter.text.push_str("\nsection .bss\n");
         emitter.text.push_str(&emitter.data);
@@ -93,10 +139,14 @@ struct Emitter<'unit, 'src> {
     functions: HashMap<&'src str, &'unit Function<'src>>,
     records: &'unit [Record<'src>],
     frame: usize,
+    aligned_frame: usize,
+    frame_alignment: usize,
     locals: Vec<Slot>,
     variadic: Option<VariadicFrame>,
     flow_labels: HashMap<usize, String>,
     data: String,
+    initialized_data: String,
+    object_definitions: BTreeSet<&'src str>,
     tdata: String,
     tbss: String,
     externs: BTreeSet<&'src str>,
@@ -117,7 +167,10 @@ impl<'src> Emitter<'_, 'src> {
         let name = function.name;
         self.check_symbol(name, function.site)?;
         let Kind::Function {
-            result, variadic, ..
+            result,
+            variadic,
+            prototype,
+            params: abi_params,
         } = &function.ty.kind
         else {
             unreachable!()
@@ -167,9 +220,25 @@ impl<'src> Emitter<'_, 'src> {
             layout.integers = 1;
         }
         let mut stack_records = Vec::new();
-        for (index, param) in function.params.iter().enumerate() {
+        for (index, (param, incoming)) in function.params.iter().zip(abi_params).enumerate() {
             let memory = self.locals[index].memory(0);
-            match layout.place(&param.ty, self.records, param.name.unwrap().1)? {
+            match layout.place(incoming, self.records, param.name.unwrap().1)? {
+                Place::Integer(reg) if !prototype && incoming.kind != param.ty.kind => {
+                    writeln!(self.text, "    mov rax, {reg}").unwrap();
+                    self.normalize_integer(incoming);
+                    self.convert(incoming, &param.ty);
+                    writeln!(self.text, "    mov qword {memory}, rax").unwrap();
+                }
+                Place::Vector(reg, Float::Double)
+                    if param.ty.kind == Kind::Float(Float::Single) =>
+                {
+                    writeln!(
+                        self.text,
+                        "    cvtsd2ss xmm8, xmm{reg}
+    movss {memory}, xmm8"
+                    )
+                    .unwrap();
+                }
                 Place::Integer(reg) => {
                     writeln!(self.text, "    mov qword {memory}, {reg}").unwrap()
                 }
@@ -185,6 +254,22 @@ impl<'src> Emitter<'_, 'src> {
                 }
                 Place::Stack(offset) if matches!(param.ty.kind, Kind::Record(_)) => {
                     stack_records.push((index, offset, param.ty.layout().unwrap().size));
+                }
+                Place::Stack(offset) if !prototype && incoming.kind != param.ty.kind => {
+                    let source = offset + 16;
+                    if incoming.kind == Kind::Float(Float::Double) {
+                        writeln!(
+                            self.text,
+                            "    cvtsd2ss xmm8, [rbp + {source}]
+    movss {memory}, xmm8"
+                        )
+                        .unwrap();
+                    } else {
+                        writeln!(self.text, "    mov eax, dword [rbp + {source}]").unwrap();
+                        self.normalize_integer(incoming);
+                        self.convert(incoming, &param.ty);
+                        writeln!(self.text, "    mov qword {memory}, rax").unwrap();
+                    }
                 }
                 Place::Stack(offset) if param.ty.kind == Kind::LongDouble => {
                     let source = offset + 16;
@@ -223,9 +308,48 @@ impl<'src> Emitter<'_, 'src> {
         self.statements(body, result, &epilogue)?;
         // Calls in the body allocate result temporaries in the fixed frame.
         let frame = self.frame.next_multiple_of(16);
-        if frame != 0 {
-            self.text
-                .insert_str(stack_adjustment, &format!("    sub rsp, {frame}\n"));
+        let saved_r15 = if self.frame_alignment > 16 {
+            // Keep the incoming RSP and ordinary slots RBP-relative. R15
+            // anchors the separately aligned region across nested calls.
+            let fixed = abi::checked_stack_end(frame, 16, function.site)?;
+            let saved = frame + 8;
+            let aligned = self.aligned_frame.next_multiple_of(16);
+            let alignment = self.frame_alignment;
+            self.text.insert_str(
+                stack_adjustment,
+                &format!(
+                    "    sub rsp, {fixed}
+    mov qword [rbp - {saved}], r15
+    and rsp, -{alignment}
+    mov r15, rsp
+    sub rsp, {aligned}
+"
+                ),
+            );
+            Some(saved)
+        } else {
+            if frame != 0 {
+                self.text.insert_str(
+                    stack_adjustment,
+                    &format!(
+                        "    sub rsp, {frame}
+"
+                    ),
+                );
+            }
+            None
+        };
+        if function.noreturn {
+            // N1570 6.7.4p8. Trap if execution leaves a noreturn function.
+            // Intel SDM Vol. 2, UD2 (0F 0B).
+            writeln!(
+                self.text,
+                "{epilogue}:
+    .byte 0x0f, 0x0b
+.size {name}, . - {name}"
+            )
+            .unwrap();
+            return Ok(());
         }
         if name == "main"
             && function.linkage == Linkage::External
@@ -258,7 +382,16 @@ impl<'src> Emitter<'_, 'src> {
         } else {
             writeln!(self.text, "{epilogue}:").unwrap();
         }
-        writeln!(self.text, "    leave\n    ret\n.size {name}, . - {name}").unwrap();
+        if let Some(saved) = saved_r15 {
+            writeln!(self.text, "    mov r15, qword [rbp - {saved}]").unwrap();
+        }
+        writeln!(
+            self.text,
+            "    leave
+    ret
+.size {name}, . - {name}"
+        )
+        .unwrap();
         Ok(())
     }
 
@@ -281,14 +414,25 @@ impl<'src> Emitter<'_, 'src> {
             | ExpressionKind::Identifier(_)
             | ExpressionKind::ThreadLocal(_)
             | ExpressionKind::Local(_)
+            | ExpressionKind::CompoundLiteral { .. }
+            | ExpressionKind::StaticLiteral(_)
             | ExpressionKind::Member { .. } => {
+                if Self::atomic_needs_storage(expr) {
+                    self.address(expr)?;
+                    self.atomic_load_with_storage(
+                        &expr.ty,
+                        Self::atomic_lvalue_alignment(expr),
+                        expr.position(),
+                    )?;
+                    return Ok(());
+                }
                 let place = self.thread_scalar_place(expr)?;
                 if place.is_none() {
                     self.address(expr)?;
                 }
                 self.load_lvalue(expr, place.as_ref());
             }
-            ExpressionKind::Unary(op, operand) => self.unary(*op, operand, &expr.ty)?,
+            ExpressionKind::Unary(op, operand) => self.unary(*op, operand, expr)?,
             ExpressionKind::Binary {
                 op,
                 left,
@@ -297,6 +441,10 @@ impl<'src> Emitter<'_, 'src> {
                 right_type,
             } => {
                 self.binary(*op, (left, left_type), (right, right_type), &expr.ty)?;
+            }
+            ExpressionKind::Comma(left, right) => {
+                self.discard(left)?;
+                self.converted(right, &expr.ty)?;
             }
             ExpressionKind::Cast(operand) => self.converted(operand, &expr.ty)?,
             ExpressionKind::Assignment {
@@ -327,6 +475,8 @@ impl<'src> Emitter<'_, 'src> {
             ExpressionKind::VaCopy { dest, source } => self.va_copy(dest, source)?,
             // AMD64 va_end has no resources to release. Evaluate the operand.
             ExpressionKind::VaEnd(list) => self.value(list)?,
+            ExpressionKind::FltRounds => self.flt_rounds(),
+            ExpressionKind::Atomic { op, arguments } => self.atomic_builtin(*op, arguments)?,
             ExpressionKind::Call { callee, arguments } => {
                 self.call(callee, arguments, &expr.ty)?;
                 self.normalize_integer(&expr.ty);
@@ -349,12 +499,21 @@ impl<'src> Emitter<'_, 'src> {
         &mut self,
         op: Unary,
         operand: &Expression<'src>,
-        result: &Type,
+        expr: &Expression<'src>,
     ) -> Result<(), Diagnostic> {
+        let result = &expr.ty;
         match op {
             Unary::Dereference => {
                 self.value(operand)?;
-                self.load(result, "[rax]");
+                if Self::atomic_needs_storage(expr) {
+                    self.atomic_load_with_storage(
+                        result,
+                        Self::atomic_pointer_alignment(operand),
+                        expr.position(),
+                    )?;
+                } else {
+                    self.load(result, "[rax]");
+                }
             }
             Unary::Address => self.address(operand)?,
             Unary::Not => {
@@ -576,7 +735,12 @@ impl<'src> Emitter<'_, 'src> {
             Kind::Pointer(function) => (function.as_ref(), None),
             _ => unreachable!(),
         };
-        let Kind::Function { variadic, .. } = &function.kind else {
+        let Kind::Function {
+            variadic,
+            prototype,
+            ..
+        } = &function.kind
+        else {
             unreachable!()
         };
         if let Some(name) = direct {
@@ -615,9 +779,26 @@ impl<'src> Emitter<'_, 'src> {
             };
             staged.push((place, offset));
         }
-        let reserve = abi::checked_stack_end(callee_slot, usize::from(direct.is_none()) * 8, site)?
-            .next_multiple_of(16);
+        let end = abi::checked_stack_end(callee_slot, usize::from(direct.is_none()) * 8, site)?;
+        let realign = layout.stack_alignment > 16;
+        let reserve =
+            abi::checked_stack_end(end, usize::from(realign) * 8, site)?.next_multiple_of(16);
+        if realign {
+            self.text.push_str(
+                "    mov r11, rsp
+",
+            );
+        }
         self.adjust_stack("sub", reserve);
+        if realign {
+            writeln!(
+                self.text,
+                "    and rsp, -{}
+    mov qword [rsp + {end}], r11",
+                layout.stack_alignment
+            )
+            .unwrap();
+        }
         if direct.is_none() {
             self.value(callee)?;
             writeln!(self.text, "    mov qword [rsp + {callee_slot}], rax").unwrap();
@@ -661,7 +842,7 @@ impl<'src> Emitter<'_, 'src> {
                 }
             }
         }
-        if *variadic {
+        if *variadic || !prototype {
             // SysV AMD64 psABI §3.2.3: AL gives an upper bound on the vector
             // registers used in this call, including the named arguments.
             writeln!(self.text, "    mov eax, {}", layout.vectors).unwrap();
@@ -671,7 +852,11 @@ impl<'src> Emitter<'_, 'src> {
         } else {
             writeln!(self.text, "    call qword [rsp + {callee_slot}]").unwrap();
         }
-        self.adjust_stack("add", reserve);
+        if realign {
+            writeln!(self.text, "    mov rsp, qword [rsp + {end}]").unwrap();
+        } else {
+            self.adjust_stack("add", reserve);
+        }
         if let Some((registers, slot)) = record_result
             .and_then(RecordAbi::result_registers)
             .zip(result_slot)
@@ -876,6 +1061,22 @@ impl<'src> Emitter<'_, 'src> {
         .unwrap();
     }
 
+    fn flt_rounds(&mut self) {
+        // Intel SDM Vol. 1 §§4.8.4 and 10.2.3.2: MXCSR.RC bits 14:13
+        // encode nearest, down, up, and truncation. N1570 5.2.4.2.2 encodes
+        // those as 1, 3, 2, 0, packed here as two bits per RC value.
+        const C_ROUNDS: u8 = 1 | (3 << 2) | (2 << 4);
+        self.adjust_stack("sub", 16);
+        self.text
+            .push_str("    stmxcsr dword [rsp]\n    mov ecx, dword [rsp]\n");
+        self.adjust_stack("add", 16);
+        writeln!(
+            self.text,
+            "    shr ecx, 13\n    and ecx, 3\n    add ecx, ecx\n    mov eax, {C_ROUNDS}\n    shr eax, cl\n    and eax, 3"
+        )
+        .unwrap();
+    }
+
     fn label(&mut self) -> String {
         let label = format!(".L.bcc.{}", self.next_label);
         self.next_label += 1;
@@ -900,6 +1101,9 @@ impl<'src> Emitter<'_, 'src> {
 
     fn use_symbol(&mut self, name: &'src str, site: &Position) -> Result<(), Diagnostic> {
         self.check_symbol(name, site)?;
+        if self.object_definitions.contains(name) {
+            return Ok(());
+        }
         match self.functions.get(name) {
             Some(function) if function.body.is_some() => {}
             Some(function) if function.linkage == Linkage::Internal => {
@@ -928,6 +1132,10 @@ impl<'src> Emitter<'_, 'src> {
         }
         label
     }
+}
+
+fn literal_label(id: usize) -> String {
+    format!(".L.init.{id}")
 }
 
 fn supported_abi_type(ty: &Type) -> bool {

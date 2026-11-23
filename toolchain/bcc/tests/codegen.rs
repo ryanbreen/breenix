@@ -173,6 +173,90 @@ fn aarch64_return_42_exit_status() {
     );
 }
 
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn aarch64_narrows_promoted_identifier_list_float() {
+    // N1570 6.5.2.2p6 and 6.9.1p10. Exercise both a SIMD register
+    // argument and the first floating argument spilled to the stack.
+    aarch64_check_exit(&[
+        r"
+static int old(a, b, c, d, e, f, g, h, i)
+    float a, b, c, d, e, f, g, h, i;
+{
+    if (a != 1.5f) return 1;
+    if (h != 2.5f) return 2;
+    if (i != 3.5f) return 3;
+    return 42;
+}
+int main(void) {
+    return old(1.5f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 2.5f, 3.5f);
+}
+",
+    ]);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn aarch64_normalizes_promoted_identifier_list_bool() {
+    // N1570 6.3.1.2p1, 6.5.2.2p6 and 6.9.1p10. Neither the register
+    // nor the stack argument can be converted by truncating its low byte.
+    aarch64_check_exit(&[r"
+static int old(a, b, c, d, e, f, g, h, i)
+    _Bool a, i;
+    int b, c, d, e, f, g, h;
+{
+    if (a != 1) return 1;
+    if (i != 1) return 2;
+    return 42;
+}
+int main(void) {
+    return old(2, 0, 0, 0, 0, 0, 0, 0, 256);
+}
+"]);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn aarch64_links_and_runs_initialized_file_scope_objects() {
+    // N1570 6.7.9 and 6.9.2. Cross a translation-unit boundary for
+    // external data and read a privately bound array in its defining file.
+    aarch64_check_exit(&[
+        r"
+extern int global;
+int read_other(void);
+int main(void) {
+    if (global != 40 || read_other() != 2) return 1;
+    global += read_other();
+    return global;
+}
+",
+        r"
+int global = 40;
+static int private[2] = { 1, 2 };
+int read_other(void) { return private[1]; }
+",
+    ]);
+}
+
+#[cfg(target_arch = "aarch64")]
+fn aarch64_check_exit(sources: &[&str]) {
+    let toolchain = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let bcc = Path::new(env!("CARGO_BIN_EXE_bcc"));
+    let result = Command::new("python3")
+        .arg(toolchain.join("tests/bcc/aarch64_return_42_exit_status.py"))
+        .args([bcc, &bcc.with_file_name("bas"), &bcc.with_file_name("bld")])
+        .args(sources)
+        .output()
+        .expect("run the ARM64 codegen harness with native Python");
+    assert!(
+        result.status.success(),
+        "{}\n{}{}",
+        result.status,
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+}
+
 #[test]
 fn sysv_scalar_calls() {
     let toolchain = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");

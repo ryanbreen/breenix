@@ -21,14 +21,19 @@ impl<'src> Emitter<'_, 'src> {
         self.frame = 0;
         for (index, local) in function.locals.iter().enumerate() {
             let object = &local.object;
-            let slot = match local.storage {
-                LocalStorage::ThreadExtern(_) => Slot::ThreadExtern,
+            require_nonatomic(&object.ty, object.site)?;
+            if object.alignment.is_some() {
+                return Err(Diagnostic::new(object.site, "AArch64 C11 object lowering is deferred to 25.9"));
+            }
+            let slot = match &local.storage {
+                LocalStorage::ThreadExtern(_) | LocalStorage::Function(_) => Slot::ThreadExtern,
                 LocalStorage::Thread(_) => Slot::Thread(self.label()),
                 LocalStorage::Static(initializer) => {
                     let label = self.label();
-                    if initializer.is_some() {
-                        self.binary128_static(&label, Linkage::Internal, initializer);
-                    } else {
+                    if initializer.is_some() && object.ty.kind != Kind::LongDouble {
+                        return Err(Diagnostic::new(object.site, "AArch64 C11 object lowering is deferred to 25.9"));
+                    }
+                    if initializer.is_none() {
                         let layout = object.ty.layout().unwrap();
                         writeln!(
                             self.bss,
@@ -57,6 +62,12 @@ impl<'src> Emitter<'_, 'src> {
             {
                 let label = label.clone();
                 self.thread_definition(&local.object, &label, Linkage::Internal, init.as_ref())?;
+            }
+            if let (LocalStorage::Static(Some(init)), Slot::Static(label)) =
+                (&local.storage, &self.locals[index])
+            {
+                let label = label.clone();
+                self.object_definition(&local.object, &label, Linkage::Internal, Some(init))?;
             }
         }
         Ok(())
@@ -93,23 +104,14 @@ impl<'src> Emitter<'_, 'src> {
         match statement {
             Statement::Block(body) => self.statements(body, result, epilogue)?,
             Statement::Empty => {}
-            Statement::Initialize {
-                local,
-                values,
-                zero_bytes,
-            } => {
-                if *zero_bytes != 0 {
-                    self.local_address(*local, 0, "x9");
-                    constant(&mut self.text, "x10", *zero_bytes as u64);
-                    let clear = self.label();
-                    writeln!(
-                        self.text,
-                        "{clear}:\n    strb wzr, [x9], #1\n    subs x10, x10, #1\n    b.ne {clear}"
-                    )
-                    .unwrap();
-                }
-                for init in values {
-                    self.converted(&init.value, &init.ty)?;
+            Statement::Initialize { local, initializer } => {
+                self.zero_local(*local, 0, initializer.zero_bytes);
+                for init in &initializer.values {
+                    let InitValue::Expression(value) = &init.value else {
+                        self.zero_local(*local, init.offset, init.ty.layout().unwrap().size);
+                        continue;
+                    };
+                    self.converted(value, &init.ty)?;
                     self.local_address(*local, init.offset, "x9");
                     self.store_value(&init.ty, init.bit_field);
                 }
@@ -197,6 +199,20 @@ impl<'src> Emitter<'_, 'src> {
         Ok(())
     }
 
+    fn zero_local(&mut self, local: usize, offset: usize, len: usize) {
+        if len == 0 {
+            return;
+        }
+        self.local_address(local, offset, "x9");
+        constant(&mut self.text, "x10", len as u64);
+        let clear = self.label();
+        writeln!(
+            self.text,
+            "{clear}:\n    strb wzr, [x9], #1\n    subs x10, x10, #1\n    b.ne {clear}"
+        )
+        .unwrap();
+    }
+
     fn flow_label(&mut self, id: usize) -> String {
         if let Some(label) = self.flow_labels.get(&id) {
             return label.clone();
@@ -280,6 +296,7 @@ impl<'src> Emitter<'_, 'src> {
         right: &Expression<'src>,
         operation: Option<&(Binary, Type, Type)>,
     ) -> Result<(), Diagnostic> {
+        require_nonatomic(&left.ty, left.position())?;
         self.address(left)?;
         self.push_value('x');
         let field = left.bit_field();
@@ -304,6 +321,7 @@ impl<'src> Emitter<'_, 'src> {
         increment: bool,
         postfix: bool,
     ) -> Result<(), Diagnostic> {
+        require_nonatomic(&operand.ty, operand.position())?;
         self.address(operand)?;
         self.text.push_str("    mov x9, x0\n");
         let ty = &operand.ty;
@@ -349,6 +367,71 @@ impl<'src> Emitter<'_, 'src> {
             self.rodata.push_str("\"\n");
         }
         label
+    }
+
+    // N1570 6.7.9 and 6.9.2: file-scope initializers supply static bytes
+    // and addresses, and tentative definitions end up zero-initialized.
+    pub(super) fn object_definition(
+        &mut self,
+        object: &Object<'src>,
+        name: &str,
+        linkage: Linkage,
+        initializer: Option<&ThreadInitializer<'src>>,
+    ) -> Result<(), Diagnostic> {
+        check_symbol(name, object.site)?;
+        let layout = object.layout().unwrap();
+        let mut data = String::new();
+        if linkage == Linkage::External {
+            writeln!(data, ".global {name}").unwrap();
+        }
+        writeln!(
+            data,
+            ".type {name}, @object\n    .balign {}\n{name}:",
+            layout.align
+        )
+        .unwrap();
+        let mut cursor = 0;
+        if let Some(initializer) = initializer {
+            require_nonatomic(&object.ty, object.site)?;
+            for (&offset, value) in initializer {
+                if offset > cursor {
+                    writeln!(data, "    .zero {}", offset - cursor).unwrap();
+                }
+                cursor = offset + match value {
+                    ThreadData::Byte(byte) => {
+                        writeln!(data, "    .byte {byte}").unwrap();
+                        1
+                    }
+                    ThreadData::Address(address, addend) => {
+                        let target = match address {
+                            StaticAddress::Symbol(symbol, site) => {
+                                self.use_symbol(symbol, site)?;
+                                (*symbol).to_owned()
+                            }
+                            StaticAddress::String(bytes) => self.emit_string(bytes),
+                            StaticAddress::Literal(_) | StaticAddress::Local(_) => {
+                                return Err(Diagnostic::new(
+                                    object.site,
+                                    "AArch64 static initializer address is deferred to ARM 25.9d",
+                                ));
+                            }
+                        };
+                        writeln!(data, "    .quad {target}{addend:+}").unwrap();
+                        8
+                    }
+                };
+            }
+        }
+        if cursor < layout.size {
+            writeln!(data, "    .zero {}", layout.size - cursor).unwrap();
+        }
+        writeln!(data, ".size {name}, {}", layout.size).unwrap();
+        if initializer.is_some() {
+            self.data.push_str(&data);
+        } else {
+            self.bss.push_str(&data);
+        }
+        Ok(())
     }
 }
 

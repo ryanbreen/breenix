@@ -8,11 +8,11 @@ use super::{
     body::{canonical, constant_integer},
     Expression, ExpressionKind, Target, Unary,
 };
-use crate::types::{Float, Integer, Kind, Type};
+use crate::types::{floor_log10_pow2, Float, FloatFormat, Integer, Kind, Type};
 
 // Static initialization uses the same rounding as literal translation.
 pub(super) fn constant_bits(expr: &Expression<'_>, dest: &Kind, target: Target) -> Option<u128> {
-    let format = Format::of(dest, target);
+    let format = FloatFormat::of(dest, target);
     let (negative, significand, exponent) = match &expr.ty.kind {
         Kind::Integer(integer) => {
             let bits = constant_integer(expr, target)
@@ -29,7 +29,7 @@ pub(super) fn constant_bits(expr: &Expression<'_>, dest: &Kind, target: Target) 
             )
         }
         source @ (Kind::Float(_) | Kind::LongDouble) => {
-            let source_format = Format::of(source, target);
+            let source_format = FloatFormat::of(source, target);
             let bits = match &expr.kind {
                 ExpressionKind::Float(bits) => *bits,
                 ExpressionKind::Unary(op @ (Unary::Plus | Unary::Minus), operand) => {
@@ -84,18 +84,11 @@ pub(super) fn constant_to_integer(
         return None;
     }
     let bits = constant_bits(expr, &expr.ty.kind, target)?;
-    let (negative, significand, exponent) = Format::of(&expr.ty.kind, target).unpack(bits);
+    let (negative, significand, exponent) = FloatFormat::of(&expr.ty.kind, target).unpack(bits);
     if dest == Integer::Bool {
         return Some(u64::from(significand != Some(0)));
     }
     let value = significand?;
-    let truncated = if exponent < 0 {
-        value.checked_shr(exponent.unsigned_abs()).unwrap_or(0)
-    } else if exponent <= 63 && value <= u128::from(u64::MAX) >> exponent {
-        value << exponent
-    } else {
-        return None;
-    };
     let width = dest.layout().size * 8;
     let limit = if dest.is_signed(target) {
         (1_u128 << (width - 1)) - u128::from(!negative)
@@ -103,6 +96,16 @@ pub(super) fn constant_to_integer(
         0
     } else {
         (1_u128 << width) - 1
+    };
+    let truncated = if exponent < 0 {
+        value.checked_shr(exponent.unsigned_abs()).unwrap_or(0)
+    } else {
+        let shift = exponent as u32;
+        // Check the magnitude before shifting a binary128 significand.
+        if value > limit.checked_shr(shift).unwrap_or(0) {
+            return None;
+        }
+        value.checked_shl(shift)?
     };
     if truncated > limit {
         return None;
@@ -123,7 +126,7 @@ pub(super) fn literal(text: &str, target: Target) -> Option<(u128, Kind)> {
     } else {
         (text, Kind::Float(Float::Double))
     };
-    let format = Format::of(&ty, target);
+    let format = FloatFormat::of(&ty, target);
     let hex = text.starts_with("0x") || text.starts_with("0X");
     let (mantissa, exponent) = if hex {
         let (mantissa, exponent) = text[2..].split_once(['p', 'P'])?;
@@ -155,10 +158,11 @@ pub(super) fn literal(text: &str, target: Target) -> Option<(u128, Kind)> {
     } else {
         let exponent = exponent - fraction.len() as i32;
         let decimal_order = digits.trim_start_matches('0').len() as i32 + exponent;
-        if decimal_order > format.decimal_max {
+        if decimal_order > format.max_decimal_exponent() + 2 {
             return Some((format.infinity(), ty));
         }
-        if decimal_order < format.decimal_min {
+        // A conservative cutoff below half the smallest subnormal.
+        if decimal_order < -floor_log10_pow2(1 - format.min_subnormal_exponent()) - 1 {
             return Some((0, ty));
         }
         let scaled = if exponent < 0 {
@@ -190,50 +194,7 @@ fn parse_exponent(text: &str) -> Option<i32> {
     Some(if negative { -magnitude } else { magnitude })
 }
 
-struct Format {
-    fraction: u32,
-    bias: i32,
-    explicit_integer: bool,
-    // Conservative decimal-order bounds before constructing powers of five.
-    decimal_min: i32,
-    decimal_max: i32,
-}
-
-impl Format {
-    fn of(ty: &Kind, target: Target) -> Self {
-        match ty {
-            Kind::Float(Float::Single) => Self {
-                fraction: 23,
-                bias: 127,
-                explicit_integer: false,
-                decimal_min: -46,
-                decimal_max: 39,
-            },
-            Kind::Float(Float::Double) => Self {
-                fraction: 52,
-                bias: 1023,
-                explicit_integer: false,
-                decimal_min: -325,
-                decimal_max: 310,
-            },
-            Kind::LongDouble if target == Target::Aarch64 => Self {
-                fraction: 112,
-                bias: 16383,
-                explicit_integer: false,
-                decimal_min: -4966,
-                decimal_max: 4934,
-            },
-            Kind::LongDouble => Self {
-                fraction: 63,
-                bias: 16383,
-                explicit_integer: true,
-                decimal_min: -4952,
-                decimal_max: 4934,
-            },
-            _ => unreachable!(),
-        }
-    }
-
+impl FloatFormat {
     fn pack(&self, exponent: i32, significand: u128) -> u128 {
         let width = self.fraction + u32::from(self.explicit_integer);
         (exponent as u128) << width | (significand & ((1 << width) - 1))
@@ -244,7 +205,7 @@ impl Format {
         1 << (self.fraction + u32::from(self.explicit_integer) + exponent_width)
     }
 
-    // Decode a floating literal as a signed integer
+    // Decode a floating constant as a signed integer
     // significand times a power of two. A missing significand is infinity.
     fn unpack(&self, bits: u128) -> (bool, Option<u128>, i32) {
         let width = self.fraction + u32::from(self.explicit_integer);
@@ -277,11 +238,11 @@ impl Format {
             numerator.shift(-ratio).compare(&denominator) == Ordering::Less
         };
         let mut exponent = bits + ratio - i32::from(below_power);
-        let minimum = 1 - self.bias;
+        let minimum = self.min_exponent();
         if exponent > self.bias {
             return self.infinity();
         }
-        if exponent < minimum - self.fraction as i32 - 1 {
+        if exponent < self.min_subnormal_exponent() - 1 {
             return 0;
         }
         let scale = bits + self.fraction as i32 - exponent.max(minimum);
@@ -312,6 +273,9 @@ impl Format {
             return self.pack(i32::from(significand == integer_bit), significand);
         }
         if significand == integer_bit << 1 {
+            if exponent == self.bias {
+                return self.infinity();
+            }
             significand = integer_bit;
             exponent += 1;
         }

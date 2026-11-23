@@ -71,8 +71,25 @@ impl<'src> Emitter<'_, 'src> {
         linkage: Linkage,
         initializer: Option<&ThreadInitializer<'src>>,
     ) -> Result<(), Diagnostic> {
+        let data = self.object_definition(object, label, linkage, initializer, true)?;
+        if initializer.is_some() {
+            self.tdata.push_str(&data);
+        } else {
+            self.tbss.push_str(&data);
+        }
+        Ok(())
+    }
+
+    pub(super) fn object_definition(
+        &mut self,
+        object: &Object<'_>,
+        label: &str,
+        linkage: Linkage,
+        initializer: Option<&ThreadInitializer<'src>>,
+        tls: bool,
+    ) -> Result<String, Diagnostic> {
         self.check_symbol(label, object.site)?;
-        let layout = object.ty.layout().unwrap();
+        let layout = object.layout().unwrap();
         // AMD64 psABI §3.1.2 gives array variables of at least 16 bytes
         // extra alignment independently of their element type.
         let align = if matches!(object.ty.kind, Kind::Array(..)) && layout.size >= 16 {
@@ -84,7 +101,8 @@ impl<'src> Emitter<'_, 'src> {
         if linkage == Linkage::External {
             writeln!(data, "global {label}").unwrap();
         }
-        writeln!(data, ".type {label}, @tls\n    .align {align}\n{label}:").unwrap();
+        let kind = if tls { "tls" } else { "object" };
+        writeln!(data, ".type {label}, @{kind}\n    .align {align}\n{label}:").unwrap();
         let mut cursor = 0;
         if let Some(initializer) = initializer {
             for (&offset, value) in initializer {
@@ -110,6 +128,7 @@ impl<'src> Emitter<'_, 'src> {
                                 };
                                 label.clone()
                             }
+                            StaticAddress::Literal(id) => literal_label(*id),
                             StaticAddress::String(bytes) => self.emit_string(bytes),
                         };
                         writeln!(data, "    .quad {name}{addend:+}").unwrap();
@@ -123,11 +142,6 @@ impl<'src> Emitter<'_, 'src> {
             writeln!(data, "    .zero {}", layout.size - cursor).unwrap();
         }
         writeln!(data, ".size {label}, {}", layout.size).unwrap();
-        if initializer.is_some() {
-            self.tdata.push_str(&data);
-        } else {
-            self.tbss.push_str(&data);
-        }
-        Ok(())
+        Ok(data)
     }
 }

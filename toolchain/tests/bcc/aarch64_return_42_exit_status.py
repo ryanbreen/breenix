@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Call a freestanding AArch64 ELF entry on the native ARM64 host."""
 
+import mmap
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
@@ -52,21 +53,43 @@ probe:
 
 
 def main():
-    bcc, bas, bld = map(Path, sys.argv[1:])
+    bcc, bas, bld = map(Path, sys.argv[1:4])
+    source_texts = sys.argv[4:]
     with TemporaryDirectory() as directory:
         work = Path(directory)
-        source, assembly = work / "main.c", work / "main.s"
-        probe = work / "probe.s"
-        source.write_text(SOURCE)
-        probe.write_text(PROBE)
-        assembly.write_bytes(checked(bcc, "--target=aarch64", "-S", source))
-        objects = []
-        for path in (assembly, probe):
-            obj = path.with_suffix(".o")
-            checked(bas, "--target", "aarch64", "-o", obj, path)
-            objects.append(obj)
+        sources = []
+        for index, text in enumerate(source_texts or [SOURCE]):
+            source = work / f"input-{index}.c"
+            source.write_text(text)
+            sources.append(source)
+        if not source_texts:
+            probe = work / "probe.s"
+            probe.write_text(PROBE)
+            sources.append(probe)
         script = work / "main.ld"
-        script.write_text(LINKER_SCRIPT.read_text().replace("ENTRY(_start)", "ENTRY(main)"))
+        script_text = LINKER_SCRIPT.read_text().replace("ENTRY(_start)", "ENTRY(main)")
+        if source_texts and mmap.PAGESIZE > 4096:
+            # bld starts the following load at a 4 KiB boundary. End the
+            # executable load on a host page boundary so the runner can
+            # protect it separately from writable data on 16 KiB macOS.
+            padding = work / "host-padding.s"
+            padding.write_text(
+                f".section .text.host_padding\n.balign {mmap.PAGESIZE}\n"
+                f".zero {mmap.PAGESIZE}\n"
+            )
+            sources.append(padding)
+            script_text = script_text.replace(
+                "*(.text .text.*)", "*(.text) KEEP(*(.text.host_padding))"
+            )
+        script.write_text(script_text)
+        objects = []
+        for path in sources:
+            assembly = path.with_suffix(".s")
+            if path.suffix == ".c":
+                assembly.write_bytes(checked(bcc, "--target=aarch64", "-S", path))
+            obj = assembly.with_suffix(".o")
+            checked(bas, "--target", "aarch64", "-o", obj, assembly)
+            objects.append(obj)
         executable = work / "main"
         checked(bld, "-T", script, "--gc-sections", "-o", executable, *objects)
         result = run(sys.executable, HERE / "return_42_exit_status.py", "--call-entry", executable)

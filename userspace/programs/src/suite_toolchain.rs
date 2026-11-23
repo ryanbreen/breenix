@@ -32,10 +32,10 @@ const LINKER_OBJECTS: &[&str] = &[
 ];
 const ARCHIVE_MEMBERS: &[&str] = &["got-entry", "archive-value-with-long-name"];
 const CASES: &str = include_str!("../../../toolchain/corpus/cases");
-// E25 25.7 and A4 include aggregate-copy, bitfield-values and varargs.
-// Alignment, atomics, compound-literal, designated-init and generic
-// remain deferred to 25.9.
-const CC_CASES: &str = include_str!("fixture/toolchain-cc-cases");
+#[cfg(target_arch = "x86_64")]
+const CC_CASES: &str = include_str!("fixture/toolchain-cc-cases"); // 25.9d stages every x86 C11 case.
+#[cfg(target_arch = "aarch64")]
+const CC_CASES: &str = include_str!("fixture/toolchain-cc-cases-aarch64");
 
 static SUITE: Suite = suite(
     "toolchain",
@@ -222,6 +222,42 @@ static SUITE: Suite = suite(
                 case("template-init-zero-fill-aligned", "TLS initializes aligned templates and zero-filled storage per thread", template_init_zero_fill_aligned),
                 case("errno-per-thread", "Errno has independent storage in each thread", errno_per_thread),
                 case("tls-across-fork-exec", "TLS survives fork and is reinitialized on exec", tls_across_fork_exec),
+            ],
+        ),
+        category(
+            "c11",
+            "The declared C11 feature profile and its diagnostics",
+            &[
+                case(
+                    "declarations-initializers",
+                    "Designated initialization, compound literals and flexible array members",
+                    c11_declarations_initializers,
+                ),
+                case(
+                    "generic-static-assert-alignment",
+                    "Generic selection, static assertions and aligned anonymous members",
+                    c11_generic_static_assert_alignment,
+                ),
+                case(
+                    "floating",
+                    "Rounding modes affect arithmetic and conversions and raise the expected flags",
+                    c11_floating,
+                ),
+                case(
+                    "atomics",
+                    "Threads exercise release/acquire, sequential consistency and aggregate CAS",
+                    c11_atomics,
+                ),
+                case(
+                    "constraint-diagnostics",
+                    "The guest constraint subset fails with the expected located diagnostics",
+                    c11_constraint_diagnostics,
+                ),
+                case(
+                    "profile-macros",
+                    "The compiler advertises its implemented C11 feature profile",
+                    c11_profile_macros,
+                ),
             ],
         ),
     ],
@@ -1328,3 +1364,95 @@ fn x87_long_double() -> CaseResult { abi_case("x87-long-double") }
 fn template_init_zero_fill_aligned() -> CaseResult { tls_case("template-init-zero-fill-aligned") }
 fn errno_per_thread() -> CaseResult { tls_case("errno-per-thread") }
 fn tls_across_fork_exec() -> CaseResult { tls_case("tls-across-fork-exec") }
+
+fn c11_fixtures() -> Result<PathBuf, String> {
+    if cfg!(target_arch = "aarch64") {
+        return Err("scheduled for ARM 25.9 after A4".into());
+    }
+    Ok(Path::new("/").join(CORPUS).join("c11"))
+}
+
+fn c11_program(name: &str) -> CaseResult {
+    let fixtures = c11_fixtures()?;
+    let scratch = Scratch::new(name)?;
+    cc_stage(&scratch, &fixtures.join(format!("{name}.c")), &["-o", name])?;
+    run_expected(&scratch.join(name), &fixtures.join(format!("{name}.expect")))
+}
+
+fn c11_declarations_initializers() -> CaseResult {
+    c11_program("declarations-initializers")
+}
+
+fn c11_generic_static_assert_alignment() -> CaseResult {
+    c11_program("generic-static-assert-alignment")
+}
+
+fn c11_floating() -> CaseResult {
+    c11_program("floating")
+}
+
+fn c11_atomics() -> CaseResult {
+    c11_program("atomics")
+}
+
+fn c11_constraint_diagnostics() -> CaseResult {
+    let fixtures = c11_fixtures()?;
+    let path = fixtures.join("constraints.json");
+    let manifest: Value = serde_json::from_slice(&io_at(&path, fs::read(&path))?)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let mut guest = manifest["guest"]
+        .as_object()
+        .ok_or("missing C11 guest constraint subset")?
+        .values()
+        .map(|file| file.as_str().ok_or("invalid C11 guest constraint filename"))
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    let constraints = manifest["fixtures"]
+        .as_array()
+        .ok_or("missing C11 constraint fixtures")?;
+
+    let (status, expected) = expected_output(&fixtures.join("constraint-diagnostics.expect"))?;
+    let scratch = Scratch::new("constraint-diagnostics")?;
+    let object = scratch.join("unexpected.o");
+    let mut diagnostics = Vec::new();
+    for constraint in constraints {
+        let file = constraint["file"].as_str().ok_or("missing C11 constraint filename")?;
+        if !guest.remove(file) {
+            continue;
+        }
+        let diagnostic = constraint["diagnostic"]
+            .as_str()
+            .ok_or_else(|| format!("{file}: missing expected diagnostic"))?;
+        let result = command_output(
+            bundle_command(&scratch, "cc")
+                .current_dir(&fixtures)
+                .arg("-c")
+                .arg("-o")
+                .arg(&object)
+                .arg(file),
+        )?;
+        if result.status.code() != Some(status)
+            || !result.stdout.is_empty()
+            || result.stderr != format!("{diagnostic}\n").as_bytes()
+            || io_at(&object, object.try_exists())?
+        {
+            return Err(format!(
+                "{file}: expected exit {status}, empty stdout, no object and {diagnostic:?}; got {}, stdout {:?}, stderr {:?}",
+                result.status,
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr),
+            ).into());
+        }
+        diagnostics.extend(result.stderr);
+    }
+    if !guest.is_empty() {
+        return Err(format!("C11 guest constraints missing from the manifest: {guest:?}").into());
+    }
+    if diagnostics != expected {
+        return Err("guest diagnostics differ from constraint-diagnostics.expect".into());
+    }
+    Ok(())
+}
+
+fn c11_profile_macros() -> CaseResult {
+    c11_program("profile-macros")
+}

@@ -54,10 +54,17 @@ class ToolchainCcCorpusTest(unittest.TestCase):
         self.assertIsNotNone(case)
         loop = re.search(r"for name in (\w+)\.lines\(\) \{", case[1])
         self.assertIsNotNone(loop)
-        include = re.search(rf'const {loop[1]}: &str = include_str!\("([^"]+)"\);', source)
-        self.assertIsNotNone(include)
-        names = (SUITE.parent / include[1]).read_text().splitlines()
-        self.assertEqual(EXPECTED, names)
+        includes = dict(re.findall(
+            rf'(?:^#\[cfg\(target_arch = "(\w+)"\)\]\n)?'
+            rf'^const {loop[1]}: &str = include_str!\("([^"]+)"\);', source, re.MULTILINE,
+        ))
+        catalog = (CORPUS / "cases").read_text().splitlines()
+        self.assertEqual(len(catalog), 30)
+        for arch, expected in (("aarch64", EXPECTED), ("x86_64", catalog)):
+            with self.subTest(arch=arch):
+                fixture = includes.get(arch, includes.get(""))
+                self.assertIsNotNone(fixture)
+                self.assertEqual((SUITE.parent / fixture).read_text().splitlines(), expected)
         self.assertNotIn('matches!(name, "aggregate-copy" | "bitfield-values" | "varargs")', case[1])
 
     def test_mac_bundle_builds_exact_candidate_corpus(self):
@@ -73,9 +80,10 @@ class ToolchainCcCorpusTest(unittest.TestCase):
             record = json.loads((output / "build.json").read_text())
             self.assertEqual(record["candidateProducer"], "mac-bcc")
             staged = output / "root/usr/share/breenix/toolchain"
-            self.assertEqual(sorted(path.name for path in (staged / "c-core/mac").iterdir()),
-                             [name + ".elf" for name in EXPECTED])
             reference = (CORPUS / "cases").read_text().splitlines()
+            expected = EXPECTED if ARCH == "aarch64" else reference
+            self.assertEqual(sorted(path.name for path in (staged / "c-core/mac").iterdir()),
+                             [name + ".elf" for name in expected])
             self.assertEqual(len(reference), 30)
             self.assertEqual(sorted(path.stem for path in staged.glob("*.elf")), reference)
 

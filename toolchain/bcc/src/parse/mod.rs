@@ -18,19 +18,33 @@ pub(super) enum Storage {
     Extern,
     Static,
     Typedef,
+    Auto,
+    Register,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 struct DeclStorage {
     class: Storage,
     thread_local: bool,
+    alignment: Option<usize>,
+    noreturn: bool,
+    inline: bool,
+    anonymous_record: bool,
 }
 
 #[derive(Debug)]
 pub(super) enum Declaration<'a> {
     Function(Function<'a>),
     Object(Variable<'a>),
+    StaticAssert(StaticAssertion<'a>),
     Record(Record<'a>),
+}
+
+#[derive(Debug)]
+pub(super) struct StaticAssertion<'a> {
+    pub site: &'a Lexeme,
+    pub expression: Expression<'a>,
+    pub message: String,
 }
 
 #[derive(Debug)]
@@ -39,13 +53,26 @@ pub(super) struct Variable<'a> {
     pub ty: Type,
     pub storage: Storage,
     pub thread_local: bool,
+    pub alignment: Option<usize>,
     pub initializer: Option<Initializer<'a>>,
 }
 
 #[derive(Debug)]
 pub(super) enum Initializer<'a> {
     Expression(Expression<'a>),
-    List(&'a Lexeme, Vec<Initializer<'a>>),
+    List(&'a Lexeme, Vec<InitializerEntry<'a>>),
+}
+
+#[derive(Debug)]
+pub(super) struct InitializerEntry<'a> {
+    pub designators: Vec<Designator<'a>>,
+    pub value: Initializer<'a>,
+}
+
+#[derive(Debug)]
+pub(super) enum Designator<'a> {
+    Index(Expression<'a>),
+    Member(&'a Lexeme),
 }
 
 #[derive(Debug)]
@@ -54,6 +81,8 @@ pub(super) struct Function<'a> {
     pub result: Type,
     pub params: Vec<Parameter<'a>>,
     pub variadic: bool,
+    pub prototype: bool,
+    pub noreturn: bool,
     pub storage: Storage,
     pub body: Option<Vec<Statement<'a>>>,
 }
@@ -70,6 +99,7 @@ pub(super) enum Statement<'a> {
     Block(Vec<Self>),
     Empty,
     Declaration(Vec<Variable<'a>>),
+    StaticAssert(StaticAssertion<'a>),
     Expression(Expression<'a>),
     Return(&'a Lexeme, Option<Expression<'a>>),
     If {
@@ -108,8 +138,21 @@ impl<'a> Expression<'a> {
             | VaArg(expr, _)
             | Update { operand: expr, .. }
             | Member { base: expr, .. } => expr.height,
-            Binary(_, a, b) | Assignment(_, a, b) => a.height.max(b.height),
+            Binary(_, a, b) | Assignment(_, a, b) | Comma(a, b) => a.height.max(b.height),
             Conditional(a, b, c) => a.height.max(b.height).max(c.height),
+            Generic(control, associations) => associations
+                .iter()
+                .fold(control.height, |height, association| {
+                    height.max(association.expression.height)
+                }),
+            Offsetof(_, designators) => designators
+                .iter()
+                .filter_map(|designator| match designator {
+                    Designator::Index(index) => Some(index.height),
+                    Designator::Member(_) => None,
+                })
+                .max()
+                .unwrap_or(0),
             Call {
                 callee, arguments, ..
             } => arguments
@@ -138,10 +181,16 @@ pub(super) enum ExpressionKind<'a> {
     Character,
     Unary(Unary, Box<Expression<'a>>),
     Binary(Binary, Box<Expression<'a>>, Box<Expression<'a>>),
+    Comma(Box<Expression<'a>>, Box<Expression<'a>>),
     Cast(Type, Box<Expression<'a>>),
+    CompoundLiteral(Type, Box<Initializer<'a>>),
     SizeofType(Type),
+    Alignof(Type),
+    Generic(Box<Expression<'a>>, Vec<Association<'a>>),
+    Offsetof(Type, Vec<Designator<'a>>),
     Sizeof(Box<Expression<'a>>),
     VaArg(Box<Expression<'a>>, Type),
+    FltRounds,
     Conditional(
         Box<Expression<'a>>,
         Box<Expression<'a>>,
@@ -164,6 +213,13 @@ pub(super) enum ExpressionKind<'a> {
         arguments: Vec<Expression<'a>>,
         close: &'a Lexeme,
     },
+}
+
+#[derive(Debug)]
+pub(super) struct Association<'a> {
+    pub site: &'a Lexeme,
+    pub ty: Option<Type>,
+    pub expression: Expression<'a>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -371,9 +427,11 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 | "unsigned"
                 | "float"
                 | "double"
+                | "_Complex"
                 | "const"
                 | "volatile"
                 | "restrict"
+                | "_Atomic"
                 | "struct"
                 | "union"
                 | "enum"
@@ -385,21 +443,16 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         self.starts_type(token)
             || matches!(
                 token.text.as_ref(),
-                "extern" | "static" | "typedef" | "auto" | "register" | "_Thread_local"
+                "extern"
+                    | "static"
+                    | "typedef"
+                    | "auto"
+                    | "register"
+                    | "inline"
+                    | "_Thread_local"
+                    | "_Alignas"
+                    | "_Noreturn"
             )
-    }
-
-    fn pointers(&mut self, mut ty: Type) -> Result<Type, Diagnostic> {
-        let mut depth = 0;
-        while let Some(star) = self.eat("*") {
-            if depth == MAX_NESTING {
-                return Err(star.error("pointer declarator nesting limit exceeded"));
-            }
-            ty = ty.pointer_to();
-            while self.qualifier(&mut ty.qualifiers) {}
-            depth += 1;
-        }
-        Ok(ty)
     }
 
     // N1570 6.8.2: a block has its own identifier scope.
@@ -410,7 +463,9 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
     fn block_items(&mut self, depth: usize) -> Result<Vec<Statement<'a>>, Diagnostic> {
         let mut statements = Vec::new();
         while self.eat("}").is_none() {
-            if self
+            if let Some(site) = self.eat("_Static_assert") {
+                statements.push(Statement::StaticAssert(self.static_assertion(site, depth)?));
+            } else if self
                 .peek()
                 .is_some_and(|token| self.starts_declaration(token))
             {
@@ -575,6 +630,17 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
     }
 
     fn expression(&mut self, depth: usize) -> Result<Expression<'a>, Diagnostic> {
+        // N1570 6.5.17: comma sequences assignment expressions. A comma
+        // separating arguments, initializers or associations is not an operator.
+        let mut left = self.assignment(depth)?;
+        while let Some(comma) = self.eat(",") {
+            let right = self.assignment(depth)?;
+            left = Expression::new(comma, ExpressionKind::Comma(Box::new(left), Box::new(right)))?;
+        }
+        Ok(left)
+    }
+
+    fn assignment(&mut self, depth: usize) -> Result<Expression<'a>, Diagnostic> {
         let left = self.conditional(depth)?;
         let Some(token) = self.peek() else {
             return Ok(left);
@@ -594,7 +660,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             _ => return Ok(left),
         };
         self.take();
-        let right = self.expression(depth + 1)?;
+        let right = self.assignment(depth + 1)?;
         Expression::new(
             token,
             ExpressionKind::Assignment(op, Box::new(left), Box::new(right)),
@@ -653,13 +719,23 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 },
             );
         }
+        if let Some(site) = self.eat("_Alignof") {
+            self.expect("(", "expected '(' after _Alignof")?;
+            let ty = self.type_name(depth + 1)?;
+            self.expect(")", "expected ')' after the _Alignof type")?;
+            return Expression::new(site, ExpressionKind::Alignof(ty));
+        }
         if let Some(site) = self.eat("sizeof") {
             let kind = if self.eat("(").is_some() {
                 if self.peek().is_some_and(|token| self.starts_type(token)) {
-                    let (ty, _, _) = self.specifiers_at_depth(false, depth + 1)?;
-                    let ty = self.pointers(ty)?;
+                    let ty = self.type_name(depth + 1)?;
                     self.expect(")", "expected ')' after the sizeof type")?;
-                    ExpressionKind::SizeofType(ty)
+                    if let Some(open) = self.eat("{") {
+                        let literal = self.compound_literal(open, ty, depth + 1)?;
+                        ExpressionKind::Sizeof(Box::new(self.postfix(literal, depth + 1)?))
+                    } else {
+                        ExpressionKind::SizeofType(ty)
+                    }
                 } else {
                     let expression = self.expression(depth + 1)?;
                     self.expect(")", "expected ')' after the sizeof operand")?;
@@ -688,22 +764,44 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 ExpressionKind::Unary(op, Box::new(self.unary(depth + 1)?)),
             );
         }
-        let mut callee = if let Some(site) = self.eat("(") {
+        let callee = if let Some(site) = self.eat("(") {
             if self.peek().is_some_and(|token| self.starts_type(token)) {
-                let (ty, _, _) = self.specifiers_at_depth(false, depth + 1)?;
-                let ty = self.pointers(ty)?;
+                let ty = self.type_name(depth + 1)?;
                 self.expect(")", "expected ')' after the cast type")?;
-                return Expression::new(
-                    site,
-                    ExpressionKind::Cast(ty, Box::new(self.unary(depth + 1)?)),
-                );
+                if let Some(open) = self.eat("{") {
+                    self.compound_literal(open, ty, depth + 1)?
+                } else {
+                    return Expression::new(
+                        site,
+                        ExpressionKind::Cast(ty, Box::new(self.unary(depth + 1)?)),
+                    );
+                }
+            } else {
+                let expr = self.expression(depth + 1)?;
+                self.expect(")", "expected ')' after the expression")?;
+                expr
             }
-            let expr = self.expression(depth + 1)?;
-            self.expect(")", "expected ')' after the expression")?;
-            expr
         } else {
             self.primary(depth)?
         };
+        self.postfix(callee, depth)
+    }
+
+    fn compound_literal(
+        &mut self,
+        open: &'a Lexeme,
+        ty: Type,
+        depth: usize,
+    ) -> Result<Expression<'a>, Diagnostic> {
+        let init = self.initializer_list(open, depth)?;
+        Expression::new(open, ExpressionKind::CompoundLiteral(ty, Box::new(init)))
+    }
+
+    fn postfix(
+        &mut self,
+        mut callee: Expression<'a>,
+        depth: usize,
+    ) -> Result<Expression<'a>, Diagnostic> {
         let mut count = 0;
         while let Some(open) = self
             .eat("(")
@@ -762,7 +860,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 close
             } else {
                 loop {
-                    arguments.push(self.expression(depth + count)?);
+                    arguments.push(self.assignment(depth + count)?);
                     if self.eat(",").is_none() {
                         break self.expect(")", "expected ',' or ')' after the argument")?;
                     }
@@ -785,14 +883,61 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             .peek()
             .ok_or_else(|| self.error("expected an expression"))?;
         let kind = match site.kind {
+            Kind::Identifier if site.is("_Generic") => {
+                self.take();
+                self.expect("(", "expected '(' after _Generic")?;
+                let control = self.assignment(depth + 1)?;
+                self.expect(",", "expected ',' before generic associations")?;
+                let mut associations = Vec::new();
+                loop {
+                    let site = self
+                        .peek()
+                        .ok_or_else(|| self.error("expected a generic association"))?;
+                    let ty = if self.eat("default").is_some() {
+                        None
+                    } else {
+                        Some(self.type_name(depth + 1)?)
+                    };
+                    self.expect(":", "expected ':' in the generic association")?;
+                    associations.push(Association {
+                        site,
+                        ty,
+                        expression: self.assignment(depth + 1)?,
+                    });
+                    if self.eat(",").is_none() {
+                        break;
+                    }
+                }
+                self.expect(")", "expected ')' after generic associations")?;
+                ExpressionKind::Generic(Box::new(control), associations)
+            }
+            Kind::Identifier if site.is("__builtin_offsetof") => {
+                self.take();
+                self.expect("(", "expected '(' after __builtin_offsetof")?;
+                let ty = self.type_name(depth + 1)?;
+                self.expect(",", "expected ',' before the member designator")?;
+                let field = self
+                    .identifier()
+                    .ok_or_else(|| self.error("expected a member name"))?;
+                let mut path = vec![Designator::Member(field)];
+                self.designators(&mut path, site, depth + 1)?;
+                self.expect(")", "expected ')' after the member designator")?;
+                ExpressionKind::Offsetof(ty, path)
+            }
             Kind::Identifier if site.is("__builtin_va_arg") => {
                 self.take();
                 self.expect("(", "expected '(' after __builtin_va_arg")?;
-                let list = self.expression(depth + 1)?;
+                let list = self.assignment(depth + 1)?;
                 self.expect(",", "expected ',' before the va_arg type")?;
                 let ty = self.type_name(depth + 1)?;
                 self.expect(")", "expected ')' after the va_arg type")?;
                 ExpressionKind::VaArg(Box::new(list), ty)
+            }
+            Kind::Identifier if site.is("__builtin_flt_rounds") => {
+                self.take();
+                self.expect("(", "expected '(' after __builtin_flt_rounds")?;
+                self.expect(")", "__builtin_flt_rounds takes no arguments")?;
+                ExpressionKind::FltRounds
             }
             Kind::Identifier if is_identifier(site) => {
                 self.take();
@@ -876,6 +1021,8 @@ fn is_identifier(token: &Lexeme) -> bool {
                 | "_Thread_local"
                 | amd64_va_list::NAME
                 | "__builtin_va_arg"
+                | "__builtin_offsetof"
+                | "__builtin_flt_rounds"
         )
 }
 

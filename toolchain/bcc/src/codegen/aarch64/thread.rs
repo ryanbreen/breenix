@@ -58,6 +58,12 @@ impl<'src> Emitter<'_, 'src> {
                                 label.clone()
                             }
                             StaticAddress::String(bytes) => self.emit_string(bytes),
+                            StaticAddress::Literal(_) => {
+                                return Err(Diagnostic::new(
+                                    object.site,
+                                    "AArch64 static initializer address is deferred to ARM 25.9d",
+                                ));
+                            }
                         };
                         writeln!(data, "    .quad {name}{addend:+}").unwrap();
                         8

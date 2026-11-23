@@ -80,11 +80,11 @@ fn aarch64_va_list_layout() {
     assert_eq!(
         members.collect::<Vec<_>>(),
         [
-            ("__stack", 0),
-            ("__gr_top", 8),
-            ("__vr_top", 16),
-            ("__gr_offs", 24),
-            ("__vr_offs", 28),
+            (Some("__stack"), 0),
+            (Some("__gr_top"), 8),
+            (Some("__vr_top"), 16),
+            (Some("__gr_offs"), 24),
+            (Some("__vr_offs"), 28),
         ]
     );
 }

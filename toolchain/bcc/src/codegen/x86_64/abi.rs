@@ -79,6 +79,10 @@ fn classify_fields(
     records: &[Record<'_>],
     classes: &mut [Class; 2],
 ) -> bool {
+    // N1570 §6.7.2.1p18: the flexible member contributes no data.
+    if matches!(ty.kind, Kind::Array(_, 0)) {
+        return true;
+    }
     let layout = ty.layout().unwrap();
     if !offset.is_multiple_of(layout.align) {
         return false;
@@ -143,6 +147,7 @@ pub(super) struct CallLayout {
     pub(super) integers: usize,
     pub(super) vectors: usize,
     pub(super) stack: usize,
+    pub(super) stack_alignment: usize,
 }
 
 impl CallLayout {
@@ -178,6 +183,7 @@ impl CallLayout {
             .layout()
             .unwrap_or(crate::types::Layout { size: 8, align: 8 });
         let size = eightbyte_size(layout.size, site)?;
+        self.stack_alignment = self.stack_alignment.max(layout.align);
         let offset = self.stack.next_multiple_of(layout.align.max(8));
         self.stack = checked_stack_end(offset, size, site)?;
         Ok(Place::Stack(offset))

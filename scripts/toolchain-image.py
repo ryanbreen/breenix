@@ -49,6 +49,23 @@ def check_corpus(corpus):
     return names
 
 
+def c11_inputs():
+    source = ROOT / "toolchain/corpus/c11"
+    constraints = json.loads((source / "constraints.json").read_text())
+    programs = ("declarations-initializers", "generic-static-assert-alignment",
+                "floating", "atomics", "profile-macros")
+    names = ["constraints.json", "constraint-diagnostics.expect", *constraints["guest"].values(),
+             *(f"{name}.{suffix}" for name in programs for suffix in ("c", "expect"))]
+    return {Path("c11") / name: source / name for name in names}
+
+
+def stage_c11(corpus):
+    for path, source in c11_inputs().items():
+        destination = corpus / path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+
+
 def payload(tree):
     files = []
     for path in sorted(tree.rglob("*")):
@@ -88,9 +105,11 @@ def seal(bundle, commit, arch, tool_record):
     sources[DEV / "linker.ld"] = ROOT / "userspace/programs/linker.ld"
     required = {SUITE, DEV / "lib/libc.a"} | {DEV / "bin" / tool for tool in TOOLS}
     required |= {DEV / "bin" / tool for tool in ("cc", "make", "as", "ld")}
-    required.add(DEV / "lib/libinterop.a")
-    if arch == "aarch64":
-        required.add(DEV / "lib/libbrt.a")
+    archive_targets = {
+        "interop": "x86_64-breenix-c" if arch == "x86_64" else "aarch64-breenix",
+        "brt": f"{arch}-breenix",
+    }
+    required |= {DEV / "lib" / f"lib{name}.a" for name in archive_targets}
     corpus = ROOT / "toolchain/corpus"
     names = check_corpus(corpus)
     for name in names:
@@ -110,9 +129,9 @@ def seal(bundle, commit, arch, tool_record):
         path = Path("project") / name
         sources[CORPUS / path] = (corpus / "project-aarch64/value.s"
                                   if arch == "aarch64" and name == "value.s" else corpus / path)
-    deferred = {"alignment", "atomics", "compound-literal", "designated-init", "generic"}
+    deferred = {"alignment", "atomics", "compound-literal", "designated-init", "generic"} if arch == "aarch64" else set()
     candidates = set(names) - deferred
-    if len(candidates) != 25:
+    if len(candidates) != (30 if arch == "x86_64" else 25):
         raise ValueError("unexpected C candidate corpus")
     required |= {CORPUS / "c-core/mac" / (name + ".elf") for name in candidates}
     actual = {path.name for path in (tree / CORPUS / "c-core/mac").iterdir()}
@@ -135,6 +154,8 @@ def seal(bundle, commit, arch, tool_record):
                 path = Path(category) / (name + suffix)
                 sources[CORPUS / path] = corpus / path
     sources[CORPUS / "tls/threads.h"] = corpus / "tls/threads.h"
+    if arch == "x86_64":
+        sources.update({CORPUS / path: source for path, source in c11_inputs().items()})
 
     if arch == "x86_64":
         fixtures = corpus / "assembler"
@@ -169,8 +190,7 @@ def seal(bundle, commit, arch, tool_record):
             raise ValueError(f"staged object differs from the reference link input: {name}")
     tools = json.loads(tool_record.read_text())
     fork = tomllib.loads((ROOT / "rust-fork.toml").read_text())["commit"]
-    interop = tools.pop("interop", None)
-    brt = tools.pop("brt", None) if arch == "aarch64" else None
+    archives = {name: tools.pop(name, None) for name in archive_targets}
     expected_tools = set(TOOLS) | {"bcc", "bmake"}
     if set(tools) != expected_tools:
         raise ValueError("toolchain build record differs from the staged tool set")
@@ -182,19 +202,13 @@ def seal(bundle, commit, arch, tool_record):
                 or not SHA256.fullmatch(tool["rustc"]["sha256"])
                 or tool["sha256"] != digest(tree / DEV / "bin" / filename)):
             raise ValueError(f"{name}: build record differs from the staged tool")
-    path = "lib/libinterop.a"
-    if interop != {
-            "cargoPackage": "interop", "path": path,
-            "target": "x86_64-breenix-c" if arch == "x86_64" else "aarch64-breenix",
-            "rustForkCommit": fork, "rustc": tools["bcc"]["rustc"],
-            "sha256": digest(tree / DEV / path)}:
-        raise ValueError("interop build record differs from the staged archive")
-    if arch == "aarch64":
-        path = "lib/libbrt.a"
-        if brt != {"cargoPackage": "brt", "path": path, "target": "aarch64-breenix",
-                   "rustForkCommit": fork, "rustc": tools["bcc"]["rustc"],
-                   "sha256": digest(tree / DEV / path)}:
-            raise ValueError("brt build record differs from the staged archive")
+    for name, target in archive_targets.items():
+        path = f"lib/lib{name}.a"
+        if archives[name] != {
+                "cargoPackage": name, "path": path, "target": target,
+                "rustForkCommit": fork, "rustc": tools["bcc"]["rustc"],
+                "sha256": digest(tree / DEV / path)}:
+            raise ValueError(f"{name}: build record differs from the staged archive")
     for tool, alias in (("bas", "as"), ("bld", "ld")):
         if digest(tree / DEV / "bin" / alias) != tools[tool]["sha256"]:
             raise ValueError(f"{alias}: staged driver tool differs from {tool}")
@@ -202,9 +216,7 @@ def seal(bundle, commit, arch, tool_record):
     record_data = dict(commit=commit, arch=arch, tools=tools,
                        manifestSha256=digest(tree / MANIFEST))
     record_data["candidateProducer"] = "mac-bcc" if sys.platform == "darwin" else "host-bcc"
-    record_data["interop"] = interop
-    if arch == "aarch64":
-        record_data["brt"] = brt
+    record_data.update(archives)
     record = json.dumps(record_data, indent=2) + "\n"
     (tree / RECORD).write_text(record)
     (bundle / "build.json").write_text(record)
@@ -291,6 +303,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("check-corpus").add_argument("corpus", type=Path)
+    commands.add_parser("stage-c11").add_argument("corpus", type=Path)
     finalize = commands.add_parser("seal")
     finalize.add_argument("bundle", type=Path)
     finalize.add_argument("commit")
@@ -306,6 +319,8 @@ def main():
     try:
         if args.command == "check-corpus":
             check_corpus(args.corpus)
+        elif args.command == "stage-c11":
+            stage_c11(args.corpus)
         elif args.command == "seal":
             seal(args.bundle, args.commit, args.arch, args.tool_record)
         else:

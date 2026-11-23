@@ -4,6 +4,7 @@ use super::*;
 
 pub(super) enum Slot {
     Frame(usize),
+    Aligned(usize),
     Static(String),
     Thread(String),
     ThreadExtern,
@@ -13,6 +14,7 @@ impl Slot {
     pub(super) fn memory(&self, offset: usize) -> String {
         match self {
             Self::Frame(base) => format!("[rbp - {}]", base - offset),
+            Self::Aligned(base) => format!("[r15 - {}]", base - offset),
             Self::Static(name) => format!("[rip + {name}]"),
             Self::Thread(_) | Self::ThreadExtern => {
                 unreachable!("thread objects use a TP-relative slot")
@@ -25,12 +27,15 @@ impl<'src> Emitter<'_, 'src> {
     pub(super) fn layout(&mut self, function: &Function<'src>) -> Result<(), Diagnostic> {
         self.locals.clear();
         self.frame = 0;
+        self.aligned_frame = 0;
+        self.frame_alignment = 16;
         for (index, local) in function.locals.iter().enumerate() {
             let slot = match local.storage {
-                LocalStorage::ThreadExtern(_) => Slot::ThreadExtern,
+                LocalStorage::ThreadExtern(_) | LocalStorage::Function(_) => Slot::ThreadExtern,
                 LocalStorage::Thread(_) => Slot::Thread(self.label()),
-                LocalStorage::Static(_) => {
-                    let layout = local.object.ty.layout().unwrap();
+                LocalStorage::Static(Some(_)) => Slot::Static(self.label()),
+                LocalStorage::Static(None) => {
+                    let layout = local.object.layout().unwrap();
                     let label = self.label();
                     writeln!(
                         self.data,
@@ -41,7 +46,7 @@ impl<'src> Emitter<'_, 'src> {
                     Slot::Static(label)
                 }
                 LocalStorage::Automatic => {
-                    let mut layout = local.object.ty.layout().unwrap();
+                    let mut layout = local.object.layout().unwrap();
                     // A parameter spill may store a whole register or eightbyte.
                     if index < function.params.len() {
                         layout.size = abi::eightbyte_size(layout.size, local.object.site)?;
@@ -52,11 +57,28 @@ impl<'src> Emitter<'_, 'src> {
             self.locals.push(slot);
         }
         for (index, local) in function.locals.iter().enumerate() {
-            if let (LocalStorage::Thread(init), Slot::Thread(label)) =
-                (&local.storage, &self.locals[index])
-            {
-                let label = label.clone();
-                self.thread_definition(&local.object, &label, Linkage::Internal, init.as_ref())?;
+            match (&local.storage, &self.locals[index]) {
+                (LocalStorage::Thread(init), Slot::Thread(label)) => {
+                    let label = label.clone();
+                    self.thread_definition(
+                        &local.object,
+                        &label,
+                        Linkage::Internal,
+                        init.as_ref(),
+                    )?;
+                }
+                (LocalStorage::Static(Some(init)), Slot::Static(label)) => {
+                    let label = label.clone();
+                    let data = self.object_definition(
+                        &local.object,
+                        &label,
+                        Linkage::Internal,
+                        Some(init),
+                        false,
+                    )?;
+                    self.initialized_data.push_str(&data);
+                }
+                _ => {}
             }
         }
         Ok(())
@@ -67,9 +89,20 @@ impl<'src> Emitter<'_, 'src> {
         layout: Layout,
         site: &Position,
     ) -> Result<Slot, Diagnostic> {
-        let end = abi::checked_stack_end(self.frame, layout.size, site)?;
-        self.frame = abi::checked_stack_end(end.next_multiple_of(layout.align), 0, site)?;
-        Ok(Slot::Frame(self.frame))
+        let aligned = layout.align > 16;
+        let frame = if aligned {
+            &mut self.aligned_frame
+        } else {
+            &mut self.frame
+        };
+        let end = abi::checked_stack_end(*frame, layout.size, site)?;
+        *frame = abi::checked_stack_end(end.next_multiple_of(layout.align), 0, site)?;
+        if aligned {
+            self.frame_alignment = self.frame_alignment.max(layout.align);
+            Ok(Slot::Aligned(*frame))
+        } else {
+            Ok(Slot::Frame(*frame))
+        }
     }
 
     pub(super) fn statements(
@@ -93,28 +126,7 @@ impl<'src> Emitter<'_, 'src> {
         match statement {
             Statement::Block(body) => self.statements(body, result, epilogue)?,
             Statement::Empty => {}
-            Statement::Initialize {
-                local,
-                values,
-                zero_bytes,
-            } => {
-                // N1570 6.7.9p21: elements omitted from an aggregate
-                // initializer are initialized as if they had static storage.
-                if *zero_bytes != 0 {
-                    let memory = self.locals[*local].memory(0);
-                    writeln!(self.text, "    lea rdi, {memory}\n    mov rcx, {zero_bytes}\n    xor eax, eax\n    rep stosb").unwrap();
-                }
-                for init in values {
-                    self.converted(&init.value, &init.ty)?;
-                    let memory = self.locals[*local].memory(init.offset);
-                    if let Some(field) = init.bit_field {
-                        writeln!(self.text, "    lea r11, {memory}").unwrap();
-                        self.store_bit_field(field, &init.ty, None);
-                    } else {
-                        self.store_object(&init.ty, &memory);
-                    }
-                }
-            }
+            Statement::Initialize { local, initializer } => self.initialize(*local, initializer)?,
             Statement::Expression(expr) => self.discard(expr)?,
             Statement::Return(expr) => {
                 if let Some(expr) = expr {
@@ -219,6 +231,42 @@ impl<'src> Emitter<'_, 'src> {
         Ok(())
     }
 
+    fn initialize(
+        &mut self,
+        local: usize,
+        initializer: &ObjectInitializer<'src>,
+    ) -> Result<(), Diagnostic> {
+        // N1570 6.7.9p19,21: omitted subobjects have static-storage defaults.
+        if initializer.zero_bytes != 0 {
+            self.zero(local, 0, initializer.zero_bytes);
+        }
+        for init in &initializer.values {
+            match &init.value {
+                InitValue::Zero => self.zero(local, init.offset, init.ty.layout().unwrap().size),
+                InitValue::Expression(value) => {
+                    self.converted(value, &init.ty)?;
+                    let memory = self.locals[local].memory(init.offset);
+                    if let Some(field) = init.bit_field {
+                        writeln!(self.text, "    lea r11, {memory}").unwrap();
+                        self.store_bit_field(field, &init.ty, None);
+                    } else {
+                        self.store_object(&init.ty, &memory);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn zero(&mut self, local: usize, offset: usize, bytes: usize) {
+        let memory = self.locals[local].memory(offset);
+        writeln!(
+            self.text,
+            "    lea rdi, {memory}\n    mov rcx, {bytes}\n    xor eax, eax\n    rep stosb"
+        )
+        .unwrap();
+    }
+
     pub(super) fn address(&mut self, expr: &Expression<'src>) -> Result<(), Diagnostic> {
         if let Some(place) = self.thread_place(expr)? {
             // AMD64 psABI §10.3.2, Table 10.7. The Breenix TCB stores its
@@ -237,6 +285,11 @@ impl<'src> Emitter<'_, 'src> {
                 format!("[rip + {name}]")
             }
             ExpressionKind::Local(id) => self.locals[*id].memory(0),
+            ExpressionKind::CompoundLiteral { local, initializer } => {
+                self.initialize(*local, initializer)?;
+                self.locals[*local].memory(0)
+            }
+            ExpressionKind::StaticLiteral(id) => format!("[rip + {}]", literal_label(*id)),
             ExpressionKind::String(bytes) => format!("[rip + {}]", self.emit_string(bytes)),
             ExpressionKind::Unary(Unary::Dereference, operand) => return self.value(operand),
             ExpressionKind::Member { base, offset, .. } => {
@@ -264,6 +317,22 @@ impl<'src> Emitter<'_, 'src> {
         right: &Expression<'src>,
         operation: Option<&(Binary, Type, Type)>,
     ) -> Result<(), Diagnostic> {
+        if left.ty.qualifiers.atomic {
+            if let Some((op, a, b)) = operation {
+                return self.atomic_rmw(left, Some(right), *op, (a, b), false);
+            }
+            if Self::atomic_needs_storage(left) {
+                return self.atomic_store_with_storage(left, right);
+            }
+            self.address(left)?;
+            self.adjust_stack("sub", 16);
+            self.text.push_str("    mov qword [rsp], rax\n");
+            self.converted(right, &left.ty)?;
+            self.text.push_str("    mov r11, qword [rsp]\n");
+            self.atomic_assign(&left.ty);
+            self.adjust_stack("add", 16);
+            return Ok(());
+        }
         let place = self.thread_scalar_place(left)?;
         if place.is_none() {
             self.address(left)?;
@@ -301,6 +370,19 @@ impl<'src> Emitter<'_, 'src> {
         postfix: bool,
     ) -> Result<(), Diagnostic> {
         let ty = &operand.ty;
+        if ty.qualifiers.atomic {
+            let left = match ty.kind {
+                Kind::Integer(integer) => Type::new(Kind::Integer(integer.promoted())),
+                _ => ty.unqualified(),
+            };
+            let right = if matches!(ty.kind, Kind::Pointer(_)) {
+                Type::new(Kind::Integer(Integer::Long))
+            } else {
+                left.clone()
+            };
+            let op = if increment { Binary::Add } else { Binary::Subtract };
+            return self.atomic_rmw(operand, None, op, (&left, &right), postfix);
+        }
         let extended = ty.kind == Kind::LongDouble;
         let reserve = if postfix && extended { 32 } else { 16 };
         let place = self.thread_scalar_place(operand)?;
@@ -385,6 +467,11 @@ impl<'src> Emitter<'_, 'src> {
                 let size = record.layout.unwrap().size;
                 writeln!(self.text, "    mov rsi, rax\n    lea rdi, {address}").unwrap();
                 self.copy_record(size);
+                // The source is an ordinary record value. Only the
+                // destination has the extra bytes of the atomic type.
+                for offset in 0..ty.layout().unwrap().size - size {
+                    writeln!(self.text, "    mov byte ptr [rdi + {offset}], 0").unwrap();
+                }
                 return;
             }
             _ => unreachable!(),

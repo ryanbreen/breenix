@@ -211,6 +211,9 @@ impl Driver {
         }
         let target = self.options.pp.target;
         let unit = sema::analyze(&input, path, target).map_err(|error| error.to_string())?;
+        if matches!(stage, Stage::Syntax | Stage::Types) {
+            unit.check_target_types().map_err(|error| error.to_string())?;
+        }
         match stage {
             Stage::Syntax => Ok(bytes),
             Stage::Types => {
@@ -292,8 +295,9 @@ impl Driver {
                 };
                 linker.arg(object);
             }
-            if self.options.pp.target == Target::Aarch64 {
-                linker.arg(self.bundle.join("lib/libbrt.a"));
+            let runtime = self.bundle.join("lib/libbrt.a");
+            if self.options.pp.target == Target::Aarch64 || runtime.is_file() {
+                linker.arg(runtime);
             }
             return run_tool(linker.arg(self.bundle.join("lib/libc.a")));
         }

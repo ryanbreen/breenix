@@ -3,7 +3,7 @@
 //! C values use Q registers. brt accepts their encodings as AAPCS64
 //! unsigned 128-bit integers in consecutive GPRs, low half first.
 
-use super::{flow::symbol_address, Binary, Emitter, Float, Kind, Linkage, Target};
+use super::{flow::symbol_address, Binary, Emitter, Float, Kind, Target};
 use std::fmt::Write;
 
 const ONE: u128 = 0x3fff_u128 << 112;
@@ -15,24 +15,6 @@ impl Emitter<'_, '_> {
         write_bits(&mut self.rodata, bits);
         symbol_address(&mut self.text, "x9", &label);
         self.text.push_str("    ldr q0, [x9]\n");
-    }
-
-    pub(super) fn binary128_static(&mut self, name: &str, linkage: Linkage, bits: Option<u128>) {
-        let out = if bits.is_some() {
-            &mut self.data
-        } else {
-            &mut self.bss
-        };
-        if linkage == Linkage::External {
-            writeln!(out, ".global {name}").unwrap();
-        }
-        writeln!(out, "    .balign 16\n.type {name}, @object\n{name}:").unwrap();
-        if let Some(bits) = bits {
-            write_bits(out, bits);
-        } else {
-            out.push_str("    .zero 16\n");
-        }
-        writeln!(out, ".size {name}, . - {name}").unwrap();
     }
 
     pub(super) fn negate_binary128(&mut self) {

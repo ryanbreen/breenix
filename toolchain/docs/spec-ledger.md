@@ -34,6 +34,7 @@ edition pin whose full publication has no digest recorded here.
 | [GNU ld manual](https://sourceware.org/binutils/docs-2.45/ld.html) | GNU Binutils 2.45, command-line options and linker script syntax | `f219c3b05e197308c5b60fc2d4dbfc302617389ca5c21501de58a90b3d052e06` |
 | [Oracle Solaris `ar(3HEAD)`](https://docs.oracle.com/cd/E86824_01/html/E54772/ar.h-3head.html) | Oracle Solaris 11.3, archive file format | — |
 | [Clang Language Extensions](https://releases.llvm.org/22.1.0/tools/clang/docs/LanguageExtensions.html) | Clang 22.1 release manual, builtin varargs, C11 atomics, `offsetof` and floating rounding | `66bb3c0e28f15608750483506cb079d421f9cfb5e01d25b838d921f7efabf860` |
+| [LLVM Atomic Instructions and Concurrency Guide](https://releases.llvm.org/22.1.0/docs/Atomics.html#libcalls-atomic) | LLVM 22.1.0, “Libcalls: `__atomic_*`”, generic size-first runtime signatures (E25 ruling 43) | `b41cc8044842f85aeaa59feff9377a271fae5a80110c1f06ad8082183bb31bd7` |
 
 ## AArch64 assembler dialect
 
@@ -300,6 +301,58 @@ return `0` for NaN, infinity or an unrepresentable truncated value
 With `exports`, `__brt_tf_from_*` and `__brt_tf_to_*` use x0–x1 for the
 binary128 side and w0 or x0 for the 32-bit or 64-bit side. The `f32` and
 `f64` symbols take and return the binary encoding as an unsigned integer.
+
+### Floating limits and environment (25.9b)
+
+N1570 §§5.2.4.2.2, 6.3.1.4–5 and 6.4.4.2 define the limits,
+conversions and literals. The preprocessor and constant evaluator use the
+same target format. They compute the limits and round literals using
+integer arithmetic, with x87 extended precision on AMD64 and binary128
+on AArch64. `FLT_EVAL_METHOD` is 0.
+
+N1570 §7.6 and Annex F describe floating-state access. bcc accepts
+`#pragma STDC FENV_ACCESS` and uses conservative ON behavior throughout
+the translation unit. Arithmetic and conversions in executable code use
+the live environment, including expressions with only literal operands.
+The pinned Clang Language Extensions document the spelling and return
+values of `__builtin_flt_rounds()`. On AMD64 the builtin uses
+`STMXCSR` and maps RC bits 14:13 to the C values. Intel SDM Vol. 1
+§§4.8.4, 8.1.5 and 10.2.3.2 specify the x87 and SSE rounding controls.
+The AArch64 backend still needs to lower the rounding query to FPCR.
+
+### AMD64 scalar atomics (25.9c1)
+
+N1570 §§6.2.6.1p9, 6.3.2.1, 6.5.2.4, 6.5.16, 6.7.2.4, 6.7.3
+and 7.17 define atomic types, value conversion and operations. The pinned
+Clang Language Extensions define the `__c11_atomic_*` interface.
+N1570 §§6.5.17 and 6.7.4 cover the comma expression and internal-linkage
+inline functions that the existing `stdatomic.h` uses.
+
+Intel SDM Vol. 3A §§9.1.1–9.1.2 and 9.2.2–9.2.3 in the pinned
+December 2023 edition specify aligned scalar access and memory ordering.
+bcc uses MOV for atomic loads and relaxed or release stores, memory
+XCHG for sequentially consistent stores and exchanges, LOCK XADD or
+LOCK CMPXCHG for read-modify-writes, and MFENCE for sequentially
+consistent thread fences. Signal fences and other thread fences rely
+on bcc preserving the order of emitted accesses. Floating compound
+operations use Breenix's `fenv.h` functions to retain the floating-point
+exceptions of the successful compare-exchange attempt.
+
+AArch64 atomic instruction selection and ordering await the AArch64
+backend.
+
+### AMD64 aggregate and under-aligned atomics (25.9c2)
+
+The generic ABI follows the pinned LLVM Atomic Instructions and Concurrency
+Guide, “Libcalls: __atomic_*”. bcc passes the object size and address,
+separate value or result buffers, and the supplied memory orders. A
+compare-exchange passes the caller's expected pointer and can implement
+the weak form with the same strong helper. Natural alignment is required
+for inline operations on objects of size 1, 2, 4 or 8. bcc checks an
+address at runtime when it cannot establish that alignment. The Clang
+size-only builtin reports support for naturally aligned objects of the
+given size. bcc's implementation of the C11 `atomic_is_lock_free` macro
+also checks the address so that packed members report the selected path.
 
 ### AMD64 local-exec thread storage (25.7c)
 

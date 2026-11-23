@@ -2,8 +2,7 @@
 
 use super::*;
 use crate::types::RecordKind;
-use std::iter::Peekable;
-use std::vec::IntoIter;
+use std::collections::BTreeMap;
 
 pub(super) struct Label<'a> {
     id: usize,
@@ -38,6 +37,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
                         name,
                         site,
                         ty: param.ty.clone(),
+                        alignment: None,
                     },
                     storage: LocalStorage::Automatic,
                 }
@@ -47,6 +47,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
             symbols,
             block_externs,
             locals,
+            static_literals: None,
             scopes: vec![scope],
             labels: HashMap::new(),
             next_label: 0,
@@ -111,7 +112,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
     }
 
     pub(super) fn condition(
-        &self,
+        &mut self,
         expr: parse::Expression<'a>,
     ) -> Result<Expression<'a>, Diagnostic> {
         let expr = self.expression(expr)?;
@@ -131,6 +132,10 @@ impl<'a, 's> FunctionBody<'a, 's> {
                 Statement::Block(inner)
             }
             Syntax::Empty => Statement::Empty,
+            Syntax::StaticAssert(assertion) => {
+                self.static_assertion(assertion)?;
+                Statement::Empty
+            }
             Syntax::Declaration(vars) => {
                 let initializers = vars
                     .into_iter()
@@ -236,8 +241,12 @@ impl<'a, 's> FunctionBody<'a, 's> {
             mut ty,
             storage,
             initializer,
+            alignment,
             ..
         } = variable;
+        if matches!(ty.kind, Kind::Function { .. }) {
+            return self.block_function(name, ty, storage, initializer);
+        }
         if storage == Storage::Extern {
             let key = name.text.as_ref();
             if self
@@ -263,29 +272,6 @@ impl<'a, 's> FunctionBody<'a, 's> {
                 name.error("block-scope extern declarations are outside the current subset")
             );
         }
-        if storage == Storage::Static
-            && initializer.is_some()
-            && !(self.target == Target::Aarch64 && ty.kind == Kind::LongDouble)
-        {
-            return Err(name.error("initialized static objects are outside the current subset"));
-        }
-        if let Kind::Array(_, count @ 0) = &mut ty.kind {
-            let Some(parse::Initializer::List(_, values)) = &initializer else {
-                return Err(name.error("incomplete array requires an initializer list"));
-            };
-            *count = values.len();
-        }
-        if !supported_object(&ty) {
-            return Err(name.error("expected a supported object type"));
-        }
-        let size = ty
-            .layout()
-            .filter(|layout| layout.size != 0)
-            .ok_or_else(|| name.error("expected a complete object type"))?
-            .size;
-        if size > i32::MAX as usize {
-            return Err(name.error("object exceeds the addressable stack or data range"));
-        }
         let local = self.locals.len();
         if self
             .scopes
@@ -301,6 +287,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
                 name: &name.text,
                 site: &name.site,
                 ty: ty.clone(),
+                alignment,
             },
             storage: if storage == Storage::Static {
                 LocalStorage::Static(None)
@@ -309,207 +296,534 @@ impl<'a, 's> FunctionBody<'a, 's> {
             },
         });
         if storage == Storage::Static {
-            let bits = self.binary128_initializer(&ty, initializer)?;
-            self.locals[local].storage = LocalStorage::Static(bits);
+            let encoded = initializer
+                .map(|init| self.static_initializer(name, &mut ty, init))
+                .transpose()?;
+            self.object_size(name, &ty)?;
+            self.locals[local].object.ty = ty;
+            self.locals[local].storage = LocalStorage::Static(encoded);
             return Ok(Statement::Empty);
         }
-        if let Some(initializer) = initializer {
-            let mut values = Vec::new();
-            let input = self.initializer_input(initializer)?;
-            let braced = matches!(input, InitializerInput::List(..));
-            self.initialize(input, &ty, (0, None), &mut values)?;
-            let zero_bytes = if matches!(ty.kind, Kind::Array(..))
-                || braced && matches!(ty.kind, Kind::Record(_))
-            {
-                size
-            } else {
-                0
-            };
-            Ok(Statement::Initialize {
+        let initializer = initializer
+            .map(|init| self.object_initializer(name, &mut ty, init, false))
+            .transpose()?;
+        self.object_size(name, &ty)?;
+        self.locals[local].object.ty = ty;
+        Ok(
+            initializer.map_or(Statement::Empty, |initializer| Statement::Initialize {
                 local,
-                values,
-                zero_bytes,
-            })
-        } else {
-            Ok(Statement::Empty)
+                initializer,
+            }),
+        )
+    }
+
+    fn block_function(
+        &mut self,
+        name: &'a Lexeme,
+        mut ty: Type,
+        storage: Storage,
+        initializer: Option<parse::Initializer<'a>>,
+    ) -> Result<Statement<'a>, Diagnostic> {
+        if !matches!(storage, Storage::Extern | Storage::Unspecified) || initializer.is_some() {
+            return Err(name.error("invalid block-scope function declaration"));
         }
-    }
-
-    pub(super) fn binary128_initializer(
-        &self,
-        ty: &Type,
-        initializer: Option<parse::Initializer<'a>>,
-    ) -> Result<Option<u128>, Diagnostic> {
-        let Some(initializer) = initializer else {
-            return Ok(None);
+        let key = name.text.as_ref();
+        let visible = self.scopes.iter().rev().find_map(|scope| scope.get(key));
+        let prior = match visible.map(|&id| &self.locals[id]) {
+            Some(Local {
+                storage: LocalStorage::Function(linkage),
+                object,
+            }) => Some((&object.ty, *linkage, false)),
+            None => self
+                .symbols
+                .get(key)
+                .map(|symbol| (&symbol.ty, symbol.linkage, symbol.defined)),
+            _ => None,
         };
-        let input = self.initializer_input(initializer)?;
-        let mut values = Vec::new();
-        self.initialize(input, ty, (0, None), &mut values)?;
-        let value = &values[0].value;
-        float::constant_bits(value, &ty.kind, self.target)
-            .map(Some)
-            .ok_or_else(|| {
-                Diagnostic::new(value.position(), "unsupported binary128 static initializer")
-            })
-    }
-
-    pub(super) fn thread_initializer(
-        &self,
-        ty: &Type,
-        initializer: Option<parse::Initializer<'a>>,
-    ) -> Result<Option<ThreadInitializer<'a>>, Diagnostic> {
-        let Some(initializer) = initializer else {
-            return Ok(None);
-        };
-        let input = self.initializer_input(initializer)?;
-        let mut values = Vec::new();
-        self.initialize(input, ty, (0, None), &mut values)?;
-        thread::encode_initializer(values, self.target, &self.locals).map(Some)
-    }
-
-    fn initializer_input(
-        &self,
-        initializer: parse::Initializer<'a>,
-    ) -> Result<InitializerInput<'a>, Diagnostic> {
-        Ok(match initializer {
-            parse::Initializer::Expression(expr) => {
-                InitializerInput::Expression(self.expression(expr)?)
+        let linkage = if let Some((prior, linkage, defined)) = prior {
+            if !compatible_function_declaration(&ty, false, prior, defined) {
+                return Err(name.error("incompatible function declaration"));
             }
-            parse::Initializer::List(site, list) => InitializerInput::List(
-                site,
-                list.into_iter()
-                    .map(|init| self.initializer_input(init))
-                    .collect::<Result<_, _>>()?,
-            ),
+            if has_prototype(prior) {
+                ty = prior.clone();
+            }
+            linkage
+        } else {
+            Linkage::External
+        };
+        let scope = self.scopes.last_mut().unwrap();
+        if scope
+            .get(key)
+            .is_some_and(|&id| !matches!(self.locals[id].storage, LocalStorage::Function(_)))
+        {
+            return Err(name.error("duplicate local declaration"));
+        }
+        scope.insert(key, self.locals.len());
+        self.locals.push(Local {
+            object: Object {
+                name: key,
+                site: &name.site,
+                ty,
+                alignment: None,
+            },
+            storage: LocalStorage::Function(linkage),
+        });
+        Ok(Statement::Empty)
+    }
+
+    pub(super) fn static_initializer(
+        &mut self,
+        site: &'a Lexeme,
+        ty: &mut Type,
+        initializer: parse::Initializer<'a>,
+    ) -> Result<ThreadInitializer<'a>, Diagnostic> {
+        let init = self.object_initializer(site, ty, initializer, true)?;
+        thread::encode_initializer(init.values, self.target, &self.locals)
+    }
+
+    pub(super) fn compound_literal(
+        &mut self,
+        site: &'a Lexeme,
+        mut ty: Type,
+        init: parse::Initializer<'a>,
+    ) -> Result<(ExpressionKind<'a>, Type), Diagnostic> {
+        // N1570 §6.5.2.5p4–6: the same object is used on each evaluation
+        // within its lifetime, with its initializer evaluated at the use.
+        self.records.resolve(&mut ty, site);
+        let kind = if let Some((base, _)) = self.static_literals {
+            let initializer = self.static_initializer(site, &mut ty, init)?;
+            let (_, literals) = self.static_literals.as_mut().unwrap();
+            let id = base + literals.len();
+            literals.push(StaticLiteral {
+                ty: ty.clone(),
+                site: &site.site,
+                initializer,
+            });
+            ExpressionKind::StaticLiteral(id)
+        } else {
+            let initializer = self.object_initializer(site, &mut ty, init, false)?;
+            let local = self.locals.len();
+            self.locals.push(Local {
+                object: Object {
+                    name: "",
+                    site: &site.site,
+                    ty: ty.clone(),
+                    alignment: None,
+                },
+                storage: LocalStorage::Automatic,
+            });
+            ExpressionKind::CompoundLiteral { local, initializer }
+        };
+        Ok((kind, ty))
+    }
+
+    fn object_size(&self, site: &Lexeme, ty: &Type) -> Result<usize, Diagnostic> {
+        if !supported_object(ty) {
+            return Err(site.error("expected a supported object type"));
+        }
+        let size = ty
+            .layout()
+            .filter(|layout| layout.size != 0)
+            .ok_or_else(|| site.error("expected a complete object type"))?
+            .size;
+        if size > i32::MAX as usize {
+            return Err(site.error("object exceeds the addressable stack or data range"));
+        }
+        Ok(size)
+    }
+
+    fn object_initializer(
+        &mut self,
+        site: &'a Lexeme,
+        ty: &mut Type,
+        input: parse::Initializer<'a>,
+        static_duration: bool,
+    ) -> Result<ObjectInitializer<'a>, Diagnostic> {
+        let incomplete_array = matches!(ty.kind, Kind::Array(_, 0));
+        if !incomplete_array {
+            self.object_size(site, ty)?;
+        }
+        let clear = matches!(ty.kind, Kind::Array(..))
+            || matches!(ty.kind, Kind::Record(_)) && matches!(input, parse::Initializer::List(..));
+        let mut plan = InitPlan {
+            static_duration,
+            ..InitPlan::default()
+        };
+        let root = InitSlot {
+            ty,
+            offset: 0,
+            bit_field: None,
+        };
+        self.initialize(input, root, &mut Vec::new(), &mut plan)?;
+        if let Kind::Array(_, count @ 0) = &mut ty.kind {
+            *count = plan.array_bound;
+        }
+        let size = self.object_size(site, ty)?;
+        Ok(ObjectInitializer {
+            values: plan.writes.into_iter().flatten().collect(),
+            zero_bytes: if clear { size } else { 0 },
         })
     }
 
     fn initialize(
-        &self,
-        input: InitializerInput<'a>,
-        ty: &Type,
-        destination: (usize, Option<BitField>),
-        values: &mut Vec<Initializer<'a>>,
+        &mut self,
+        input: parse::Initializer<'a>,
+        slot: InitSlot<'_>,
+        path: &mut Vec<usize>,
+        plan: &mut InitPlan<'a>,
     ) -> Result<(), Diagnostic> {
-        let (offset, bit_field) = destination;
         match input {
-            InitializerInput::List(site, list) => {
-                let mut list = list.into_iter().peekable();
-                if aggregate(ty) {
-                    self.initialize_subobjects(&mut list, ty, offset, values, 0)?;
-                    if list.next().is_some() {
-                        let message = if matches!(ty.kind, Kind::Array(..)) {
-                            "too many array initializers"
-                        } else {
-                            "too many record initializers"
-                        };
-                        return Err(site.error(message));
+            parse::Initializer::List(site, mut entries) if !aggregate(slot.ty) => {
+                if entries.len() != 1 || !entries[0].designators.is_empty() {
+                    return Err(site.error("scalar initializer requires one undesignated value"));
+                }
+                self.initialize(entries.pop().unwrap().value, slot, path, plan)
+            }
+            parse::Initializer::List(site, entries) => {
+                if char_array(slot.ty)
+                    && entries.len() == 1
+                    && entries[0].designators.is_empty()
+                    && matches!(&entries[0].value, parse::Initializer::Expression(expr)
+                        if matches!(expr.kind, parse::ExpressionKind::String(_)))
+                {
+                    return self.initialize(
+                        entries.into_iter().next().unwrap().value,
+                        slot,
+                        path,
+                        plan,
+                    );
+                }
+                self.initialize_list(site, entries, slot, path, plan)
+            }
+            parse::Initializer::Expression(value) => {
+                let value = self.expression(value)?;
+                self.initialize_value(value, slot, path, plan)
+            }
+        }
+    }
+
+    fn initialize_list(
+        &mut self,
+        site: &'a Lexeme,
+        entries: Vec<parse::InitializerEntry<'a>>,
+        root: InitSlot<'_>,
+        path: &mut Vec<usize>,
+        plan: &mut InitPlan<'a>,
+    ) -> Result<(), Diagnostic> {
+        // N1570 §6.7.9p17–21: each brace pair starts its own current
+        // object. A designation restarts at this root, and a positional
+        // entry resumes at the next sibling, climbing out as needed.
+        plan.replace(path, root, true);
+        let mut current = root.child(0, self.records.records).map(|_| vec![0]);
+        for entry in entries {
+            let mut selected = if entry.designators.is_empty() {
+                current.take().ok_or_else(|| {
+                    site.error(if matches!(root.ty.kind, Kind::Array(..)) {
+                        "too many array initializers"
+                    } else if root.has_flexible_tail(self.records.records) {
+                        "cannot initialize a flexible array member"
+                    } else {
+                        "too many record initializers"
+                    })
+                })?
+            } else {
+                self.designated(root, entry.designators)?
+            };
+            let mut slot = root.at(&selected, self.records.records);
+            let start = path.len();
+            let entry_value = match entry.value {
+                parse::Initializer::Expression(value) => {
+                    let value = self.expression(value)?;
+                    // Brace elision descends into the first subobject until
+                    // the expression can initialize a whole object.
+                    while aggregate(slot.ty)
+                        && !assignable(slot.ty, &value, self.target)
+                        && !(char_array(slot.ty) && matches!(value.kind, ExpressionKind::String(_)))
+                    {
+                        if start + selected.len() >= parse::MAX_NESTING {
+                            return Err(value.site.error("initializer nesting limit exceeded"));
+                        }
+                        slot = slot
+                            .child(0, self.records.records)
+                            .ok_or_else(|| value.site.error("initializer has no subobject"))?;
+                        selected.push(0);
                     }
-                } else if list.len() == 1 {
-                    self.initialize(list.next().unwrap(), ty, destination, values)?;
-                } else {
-                    return Err(site.error("scalar initializer requires one value"));
+                    Some(value)
+                }
+                list => {
+                    self.select(root, &selected, path, plan);
+                    self.initialize(list, slot, path, plan)?;
+                    None
+                }
+            };
+            if let Some(value) = entry_value {
+                self.select(root, &selected, path, plan);
+                self.initialize_value(value, slot, path, plan)?;
+            }
+            path.truncate(start);
+            current = root.next(selected, self.records.records);
+        }
+        Ok(())
+    }
+
+    fn designated(
+        &mut self,
+        root: InitSlot<'_>,
+        designators: Vec<parse::Designator<'a>>,
+    ) -> Result<Vec<usize>, Diagnostic> {
+        let mut slot = root;
+        let mut path = Vec::new();
+        for designator in designators {
+            let (index, site) = match designator {
+                parse::Designator::Index(index) => {
+                    if !matches!(slot.ty.kind, Kind::Array(..)) {
+                        return Err(index.site.error("array designator requires an array"));
+                    }
+                    let index = self.expression(index)?;
+                    let value = constant_integer(&index, self.target)
+                        .filter(|&i| {
+                            !matches!(index.ty.kind, Kind::Integer(integer)
+                            if integer.is_signed(self.target) && (i as i64) < 0)
+                        })
+                        .and_then(|i| usize::try_from(i).ok())
+                        .ok_or_else(|| {
+                            index
+                                .site
+                                .error("array designator requires a nonnegative integer constant")
+                        })?;
+                    (value, index.site)
+                }
+                parse::Designator::Member(name) => {
+                    let Kind::Record(record) = slot.ty.kind else {
+                        return Err(name.error("member designator requires a struct or union"));
+                    };
+                    let records = self.records.records;
+                    let definition = records[record.id].definition.as_ref().unwrap();
+                    let member_path = definition
+                        .member_path(&name.text, records)
+                        .ok_or_else(|| name.error(format!("no member named '{}'", name.text)))?;
+                    for index in member_path {
+                        slot = slot.child(index, records).ok_or_else(|| {
+                            name.error("cannot initialize a flexible array member")
+                        })?;
+                        path.push(index);
+                    }
+                    continue;
+                }
+            };
+            slot = slot
+                .child(index, self.records.records)
+                .ok_or_else(|| site.error("array designator is outside the object bounds"))?;
+            path.push(index);
+        }
+        Ok(path)
+    }
+
+    fn select<'t>(
+        &'t self,
+        mut root: InitSlot<'t>,
+        selected: &[usize],
+        path: &mut Vec<usize>,
+        plan: &mut InitPlan<'a>,
+    ) {
+        if path.is_empty() && matches!(root.ty.kind, Kind::Array(_, 0)) {
+            plan.array_bound = plan.array_bound.max(selected[0] + 1);
+        }
+        for &index in selected {
+            if root.is_union(self.records.records) {
+                let prior = plan.nodes.get(path).and_then(|node| node.union_member);
+                if prior != Some(index) {
+                    plan.replace(path, root, true);
+                    plan.nodes.entry(path.clone()).or_default().union_member = Some(index);
                 }
             }
-            InitializerInput::Expression(value) => {
-                if !assignable(ty, &value, self.target) {
+            root = root.child(index, self.records.records).unwrap();
+            path.push(index);
+        }
+    }
+
+    fn initialize_value(
+        &self,
+        value: Expression<'a>,
+        slot: InitSlot<'_>,
+        path: &[usize],
+        plan: &mut InitPlan<'a>,
+    ) -> Result<(), Diagnostic> {
+        if let (Kind::Array(element, count), ExpressionKind::String(bytes)) =
+            (&slot.ty.kind, &value.kind)
+        {
+            if char_array(slot.ty) {
+                let count = if *count == 0 {
+                    plan.array_bound = bytes.len();
+                    bytes.len()
+                } else {
+                    *count
+                };
+                if bytes.len() - 1 > count {
                     return Err(value
                         .site
-                        .error(format!("cannot initialize {ty} with {}", value.ty)));
+                        .error("string initializer is too long for the array"));
                 }
-                values.push(Initializer {
-                    offset,
-                    bit_field,
-                    value,
-                    ty: ty.clone(),
-                });
+                plan.replace(path, slot, true);
+                for (index, &byte) in bytes.iter().take(count).enumerate() {
+                    let mut byte_path = path.to_vec();
+                    byte_path.push(index);
+                    plan.write(
+                        &byte_path,
+                        InitSlot {
+                            ty: element,
+                            offset: slot.offset + index,
+                            bit_field: None,
+                        },
+                        InitValue::Expression(Expression {
+                            site: value.site,
+                            ty: element.as_ref().clone(),
+                            kind: ExpressionKind::Integer(u64::from(byte)),
+                        }),
+                    );
+                }
+                return Ok(());
             }
         }
+        if !assignable(slot.ty, &value, self.target) {
+            return Err(value
+                .site
+                .error(format!("cannot initialize {} with {}", slot.ty, value.ty)));
+        }
+        if plan.static_duration {
+            thread::constant_initializer_value(&value, slot.ty, self.target, &self.locals)?;
+        }
+        plan.replace(path, slot, false);
+        plan.write(path, slot, InitValue::Expression(value));
         Ok(())
-    }
-
-    fn initialize_subobjects(
-        &self,
-        list: &mut InitializerList<'a>,
-        ty: &Type,
-        offset: usize,
-        values: &mut Vec<Initializer<'a>>,
-        depth: usize,
-    ) -> Result<(), Diagnostic> {
-        // N1570 §6.7.9p17–21: a union selects its first member, and an
-        // unbraced subaggregate takes as much of the enclosing list as it needs.
-        match &ty.kind {
-            Kind::Array(element, length) => {
-                let size = element.layout().unwrap().size;
-                for index in 0..*length {
-                    if list.peek().is_none() {
-                        break;
-                    }
-                    self.initialize_next(
-                        list,
-                        element,
-                        (offset + index * size, None),
-                        values,
-                        depth,
-                    )?;
-                }
-            }
-            Kind::Record(record) => {
-                let record = &self.records.records[record.id];
-                let members = &record.definition.as_ref().unwrap().members;
-                let count = if record.kind == RecordKind::Union {
-                    members.len().min(1)
-                } else {
-                    members.len()
-                };
-                for member in &members[..count] {
-                    if list.peek().is_none() {
-                        break;
-                    }
-                    self.initialize_next(
-                        list,
-                        &member.ty,
-                        (offset + member.offset, member.bit_field),
-                        values,
-                        depth,
-                    )?;
-                }
-            }
-            _ => unreachable!(),
-        }
-        Ok(())
-    }
-
-    fn initialize_next(
-        &self,
-        list: &mut InitializerList<'a>,
-        ty: &Type,
-        destination: (usize, Option<BitField>),
-        values: &mut Vec<Initializer<'a>>,
-        depth: usize,
-    ) -> Result<(), Diagnostic> {
-        if let Some(InitializerInput::Expression(value)) = list.peek() {
-            if aggregate(ty) && !assignable(ty, value, self.target) {
-                if depth == parse::MAX_NESTING {
-                    return Err(value.site.error("initializer nesting limit exceeded"));
-                }
-                return self.initialize_subobjects(list, ty, destination.0, values, depth + 1);
-            }
-        }
-        self.initialize(list.next().unwrap(), ty, destination, values)
     }
 }
 
-enum InitializerInput<'a> {
-    Expression(Expression<'a>),
-    List(&'a Lexeme, Vec<Self>),
+#[derive(Clone, Copy)]
+struct InitSlot<'t> {
+    ty: &'t Type,
+    offset: usize,
+    bit_field: Option<BitField>,
 }
 
-type InitializerList<'a> = Peekable<IntoIter<InitializerInput<'a>>>;
+impl<'t> InitSlot<'t> {
+    fn members(self, records: &'t [Record<'_>]) -> Option<&'t [crate::types::Member<'t>]> {
+        let Kind::Record(record) = self.ty.kind else {
+            return None;
+        };
+        Some(&records[record.id].definition.as_ref()?.members)
+    }
+
+    fn has_flexible_tail(self, records: &'t [Record<'_>]) -> bool {
+        self.members(records)
+            .and_then(|members| members.last())
+            .is_some_and(|member| matches!(member.ty.kind, Kind::Array(_, 0)))
+    }
+
+    fn is_union(self, records: &[Record<'_>]) -> bool {
+        matches!(self.ty.kind, Kind::Record(record) if records[record.id].kind == RecordKind::Union)
+    }
+
+    fn child(self, index: usize, records: &'t [Record<'_>]) -> Option<Self> {
+        if let Kind::Array(element, count) = &self.ty.kind {
+            let size = element.layout()?.size;
+            let end = index
+                .checked_add(1)?
+                .checked_mul(size)?
+                .checked_add(self.offset)?;
+            return ((index < *count || *count == 0) && end <= i32::MAX as usize).then_some(Self {
+                ty: element,
+                offset: end - size,
+                bit_field: None,
+            });
+        }
+        let member = self.members(records)?.get(index)?;
+        (!matches!(member.ty.kind, Kind::Array(_, 0))).then_some(Self {
+            ty: &member.ty,
+            offset: self.offset + member.offset,
+            bit_field: member.bit_field,
+        })
+    }
+
+    fn at(self, path: &[usize], records: &'t [Record<'_>]) -> Self {
+        path.iter()
+            .fold(self, |slot, &index| slot.child(index, records).unwrap())
+    }
+
+    fn next(self, mut path: Vec<usize>, records: &'t [Record<'_>]) -> Option<Vec<usize>> {
+        while let Some(index) = path.pop() {
+            let parent = self.at(&path, records);
+            if !parent.is_union(records) && parent.child(index + 1, records).is_some() {
+                path.push(index + 1);
+                return Some(path);
+            }
+        }
+        None
+    }
+}
+
+#[derive(Default)]
+struct InitNode {
+    write: Option<usize>,
+    union_member: Option<usize>,
+}
+
+#[derive(Default)]
+struct InitPlan<'a> {
+    // Keep source order for stores and index them by subobject so replacement
+    // touches only the affected subtree, even for large sparse arrays.
+    writes: Vec<Option<Initializer<'a>>>,
+    nodes: BTreeMap<Vec<usize>, InitNode>,
+    array_bound: usize,
+    static_duration: bool,
+}
+
+impl<'a> InitPlan<'a> {
+    fn replace(&mut self, path: &[usize], slot: InitSlot<'_>, clear: bool) {
+        let previous: Vec<_> = self
+            .nodes
+            .range(path.to_vec()..)
+            .take_while(|(key, _)| key.starts_with(path))
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in previous {
+            if let Some(index) = self.nodes.remove(&key).unwrap().write {
+                self.writes[index] = None;
+            }
+        }
+        // A retained aggregate copy can still supply bytes for this
+        // subobject. Restore the implicit initialization required by §6.7.9p19.
+        if clear
+            && (0..path.len()).any(|len| {
+                self.nodes
+                    .get(&path[..len])
+                    .and_then(|node| node.write)
+                    .and_then(|index| self.writes[index].as_ref())
+                    .is_some_and(|write| matches!(write.value, InitValue::Expression(_)))
+            })
+        {
+            self.write(path, slot, InitValue::Zero);
+        }
+    }
+
+    fn write(&mut self, path: &[usize], slot: InitSlot<'_>, value: InitValue<'a>) {
+        self.nodes.entry(path.to_vec()).or_default().write = Some(self.writes.len());
+        self.writes.push(Some(Initializer {
+            offset: slot.offset,
+            bit_field: slot.bit_field,
+            ty: slot.ty.clone(),
+            value,
+        }));
+    }
+}
 
 fn aggregate(ty: &Type) -> bool {
     matches!(ty.kind, Kind::Array(..) | Kind::Record(_))
+}
+
+fn char_array(ty: &Type) -> bool {
+    matches!(&ty.kind, Kind::Array(element, _) if matches!(element.kind,
+        Kind::Integer(Integer::Char | Integer::SignedChar | Integer::UnsignedChar)))
 }
 
 fn supported_object(ty: &Type) -> bool {
@@ -538,12 +852,16 @@ pub(super) fn canonical(value: u64, ty: &Type, target: Target) -> u64 {
 
 pub(super) fn constant_integer(expr: &Expression<'_>, target: Target) -> Option<u64> {
     use Binary::*;
-    if !matches!(expr.ty.kind, Kind::Integer(_)) {
+    let Kind::Integer(integer) = expr.ty.kind else {
         return None;
-    }
+    };
     let value = match &expr.kind {
         ExpressionKind::Integer(value) => *value,
-        ExpressionKind::Cast(operand) => constant_integer(operand, target)?,
+        ExpressionKind::Cast(operand) => constant_integer(operand, target).or_else(|| {
+            matches!(operand.kind, ExpressionKind::Float(_))
+                .then(|| float::constant_to_integer(operand, integer, target))
+                .flatten()
+        })?,
         ExpressionKind::Unary(op, operand) => {
             let value = constant_integer(operand, target)?;
             match op {

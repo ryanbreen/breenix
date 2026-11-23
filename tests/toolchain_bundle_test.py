@@ -260,17 +260,97 @@ class ToolchainBundleTest(unittest.TestCase):
         })
         self.assertEqual(self.record, json.loads((self.dev / "build.json").read_text()))
 
-        names = (source / "cases").read_text().splitlines()
-        deferred = {"alignment", "atomics", "compound-literal", "designated-init", "generic"}
-        expected = [name for name in names if name not in deferred]
-        self.assertEqual(len(expected), 25)
-        case_list = ROOT / "userspace/programs/src/fixture/toolchain-cc-cases"
-        self.assertEqual(case_list.read_text().splitlines(), expected)
-        mac = corpus / "c-core/mac"
+    def x86_candidates_cover_full_corpus(self):
+        root = self.bundle / "root"
+        expected = (WORKSPACE / "corpus/cases").read_text().splitlines()
+        self.assertEqual(len(expected), 30)
+        mac = Path("usr/share/breenix/toolchain/c-core/mac")
         candidates = {f"{name}.elf" for name in expected}
         self.assertEqual({path.name for path in (root / mac).iterdir()}, candidates)
+        case_list = ROOT / "userspace/programs/src/fixture/toolchain-cc-cases"
+        self.assertEqual(case_list.read_text().splitlines(), expected)
+        manifest = set((self.dev / "manifest.sha256").read_text().splitlines())
         for name in sorted(candidates):
-            staged(mac / name)
+            relative = mac / name
+            self.assertIn(f"{digest(root / relative)}  {relative}", manifest)
+
+    def c11_inputs_staged(self):
+        root = self.bundle / "root"
+        corpus = Path("usr/share/breenix/toolchain")
+        c11 = WORKSPACE / "corpus/c11"
+        constraints = json.loads((c11 / "constraints.json").read_text())
+        programs = ("declarations-initializers", "generic-static-assert-alignment",
+                    "floating", "atomics", "profile-macros")
+        inputs = {"constraints.json", "constraint-diagnostics.expect",
+                  *constraints["guest"].values(),
+                  *(f"{name}.{suffix}" for name in programs for suffix in ("c", "expect"))}
+        manifest = set((self.dev / "manifest.sha256").read_text().splitlines())
+        staged = root / corpus / "c11"
+        if self.record["arch"] == "aarch64":
+            self.assertFalse(staged.exists(), "ARM C11 inputs are scheduled after A4")
+            return
+        self.assertEqual({path.relative_to(staged).as_posix() for path in staged.rglob("*")
+                          if path.is_file()}, inputs)
+        for path in sorted(inputs):
+            with self.subTest(path=path):
+                self.assertEqual((staged / path).read_bytes(), (c11 / path).read_bytes())
+                self.assertIn(f"{digest(c11 / path)}  {corpus / 'c11' / path}", manifest)
+        for path in (corpus / "tls/threads.h", Path("opt/breenix-dev/25.2/lib/libbrt.a")):
+            self.assertIn(f"{digest(root / path)}  {path}", manifest)
+
+    def brt_built_by_rustc(self):
+        path = "lib/libbrt.a"
+        archive = self.dev / path
+        self.assertTrue(archive.is_file(), f"fixture is missing {path}")
+        self.assertEqual(archive.read_bytes()[:8], b"!<arch>\n")
+        fork = tomllib.loads((ROOT / "rust-fork.toml").read_text())["commit"]
+        self.assertTrue(fork.startswith("666252fd"))
+        self.assertEqual(self.record.get("brt"), {
+            "cargoPackage": "brt",
+            "path": path,
+            "rustForkCommit": fork,
+            "rustc": {"version": subprocess.check_output([self.rustc, "--version"], text=True).strip(),
+                      "sha256": digest(self.rustc)},
+            "target": "x86_64-breenix",
+            "sha256": digest(archive),
+        })
+        manifest = (self.dev / "manifest.sha256").read_text().splitlines()
+        self.assertIn(f"{digest(archive)}  opt/breenix-dev/25.2/{path}", manifest)
+
+    def bcc_links_aggregate_atomic(self):
+        version = subprocess.check_output([self.rustc, "-vV"], text=True)
+        host = next(line.removeprefix("host: ") for line in version.splitlines() if line.startswith("host: "))
+        host_bins = ROOT / "target/toolchain-bundle/host" / host / "release"
+        self.assertEqual(digest(self.dev / "bin/ld"), self.record["tools"]["bld"]["sha256"])
+        with tempfile.TemporaryDirectory(prefix="toolchain-aggregate-atomic-") as temporary:
+            work = Path(temporary)
+            dev = work / "dev"
+            shutil.copytree(self.dev, dev)
+            # Run the same Cargo packages as the guest aliases, using the staged sysroot.
+            for package, alias in (("bcc", "cc"), ("bas", "as"), ("bld", "ld")):
+                shutil.copy2(host_bins / package, dev / "bin" / alias)
+            source = work / "atomic.c"
+            source.write_text("""
+#include <stdatomic.h>
+struct counters { long count, sum, inverse; };
+static _Atomic(struct counters) totals;
+int main(void) {
+    struct counters snapshot = atomic_load(&totals);
+    return (int)snapshot.count;
+}
+""")
+            cc, ld = dev / "bin/cc", dev / "bin/ld"
+            obj, binary = work / "atomic.o", work / "atomic"
+            subprocess.run([cc, "-c", source, "-o", obj], check=True, timeout=10)
+            link = [ld, "-T", dev / "linker.ld", "--gc-sections", "-o", work / "direct", obj]
+            libc, brt = dev / "lib/libc.a", dev / "lib/libbrt.a"
+            control = subprocess.run([*link, libc], capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(control.returncode, 0)
+            self.assertIn("__atomic_load", control.stderr)
+            result = subprocess.run([cc, source, "-o", binary], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            subprocess.run([*link, brt, libc], check=True, timeout=10)
+            self.assertEqual(binary.read_bytes(), (work / "direct").read_bytes())
 
     def arm_encoding_inputs_are_staged(self):
         relative = Path("usr/share/breenix/toolchain/assembler")
@@ -399,11 +479,15 @@ if __name__ == "__main__":
     ToolchainBundleTest.probe = args.probe
     ToolchainBundleTest.baseline = args.baseline
     checks = ["ToolchainBundleTest.tools_built_by_rustc",
-              "ToolchainBundleTest.receipts_from_cargo_host_bas"]
+              "ToolchainBundleTest.receipts_from_cargo_host_bas",
+              "ToolchainBundleTest.c11_inputs_staged"]
     checks.extend(["ToolchainBundleTest.cc_built_by_rustc",
                    "ToolchainBundleTest.make_built_by_rustc"])
     if json.loads((args.bundle / "build.json").read_text())["arch"] == "x86_64":
-        checks.append("ToolchainBundleTest.bootstrap_abi_tls_inputs_staged")
+        checks.extend(["ToolchainBundleTest.bootstrap_abi_tls_inputs_staged",
+                       "ToolchainBundleTest.x86_candidates_cover_full_corpus",
+                       "ToolchainBundleTest.brt_built_by_rustc",
+                       "ToolchainBundleTest.bcc_links_aggregate_atomic"])
     else:
         checks.extend(["ToolchainBundleTest.arm_bundle_has_cc_and_make",
                        "ToolchainBundleTest.arm_bundle_stages_language_abi",

@@ -5,7 +5,7 @@ use crate::types::{aarch64_va_list, amd64_va_list};
 
 impl<'a> FunctionBody<'a, '_> {
     fn va_operand(
-        &self,
+        &mut self,
         operand: parse::Expression<'a>,
         writable: bool,
     ) -> Result<Box<Expression<'a>>, Diagnostic> {
@@ -36,14 +36,14 @@ impl<'a> FunctionBody<'a, '_> {
     }
 
     pub(super) fn va_arg(
-        &self,
+        &mut self,
         site: &Lexeme,
         list: parse::Expression<'a>,
         ty: Type,
     ) -> Result<(ExpressionKind<'a>, Type), Diagnostic> {
         let list = self.va_operand(list, true)?;
         match ty.kind {
-            Kind::Integer(integer) if integer == promote(integer) => {}
+            Kind::Integer(integer) if integer == integer.promoted() => {}
             Kind::Pointer(_) | Kind::Float(Float::Double) | Kind::LongDouble => {}
             Kind::Record(record) if record.layout.is_some() => {}
             _ => return Err(site.error("va_arg requires a complete argument type after promotion")),
@@ -52,7 +52,7 @@ impl<'a> FunctionBody<'a, '_> {
     }
 
     pub(super) fn va_control(
-        &self,
+        &mut self,
         site: &'a Lexeme,
         arguments: Vec<parse::Expression<'a>>,
     ) -> Result<(ExpressionKind<'a>, Type), Diagnostic> {
@@ -75,7 +75,7 @@ impl<'a> FunctionBody<'a, '_> {
                         .error("va_start requires the last named variadic parameter"));
                 }
                 let stable_type = match last.ty.kind {
-                    Kind::Integer(integer) => promote(integer) == integer,
+                    Kind::Integer(integer) => integer.promoted() == integer,
                     Kind::Float(Float::Single) => false,
                     _ => true,
                 };
