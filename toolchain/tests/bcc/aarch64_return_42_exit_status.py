@@ -28,7 +28,7 @@ int main(void) {
 # and Table 3. The variadic caller promotes byte to int. The ninth
 # argument is a long at SP, and the tenth an int at SP+8.
 PROBE = """\
-.text
+.section .text
 .global probe
 .type probe, @function
 probe:
