@@ -8,11 +8,11 @@ requirements may have additional untested or unimplemented cases.
 
 ## Guest corpus
 
-These inputs belong to the existing toolchain corpus. The five inputs
-deferred from the three-producer case join it in the 25.9 milestone wiring.
-The two planned runtime cases below need their own bounded guest inputs.
+The x86 toolchain milestone runs the three-producer corpus and six C11 cases.
+The corpus grew to 30 inputs with alignment, atomics, compound literals,
+designated initializers and generic selection.
 
-| Input or planned case | N1570 clauses exercised |
+| Three-producer input | N1570 clauses exercised |
 | --- | --- |
 | [designated-init.c](../corpus/designated-init.c) | §6.7.9p17–21, array designators and initialization of omitted elements to 0. |
 | [compound-literal.c](../corpus/compound-literal.c) | §6.5.2.5p4–6 and §6.7.9, a mutable, addressable block-scope compound literal with member designators. |
@@ -20,12 +20,23 @@ The two planned runtime cases below need their own bounded guest inputs.
 | [alignment.c](../corpus/alignment.c) | §§6.5.3.4, 6.7.5, 6.7.10, 7.15 and 7.19, member and object alignment, member offset and successful static assertions. |
 | [floating-conversion.c](../corpus/floating-conversion.c) | §§6.3.1.4 and 6.5.5, floating division and floating-to-integer conversion that discards the fractional part. |
 | [atomics.c](../corpus/atomics.c) | §§7.17.2–3 and 7.17.7–8, initialization, fetch, compare-exchange, load and flag operations. |
-| Planned floating runtime case | §§5.2.4.2.2, 7.6 and Annex F, the active rounding mode and raised exception flags. |
-| Planned atomics runtime case | §§5.1.2.4, 6.7.2.4 and 7.17, release/acquire message passing, sequentially consistent store buffering and aggregate compare-exchange under contention. |
 
-The [constraint manifest](../corpus/c11/constraints.json) names the
-compile-fail inputs selected for the planned guest diagnostic case in its
-`guest` object. The selection uses one fixture per feature area.
+| C11 guest case | N1570 clauses exercised |
+| --- | --- |
+| [declarations-initializers](../corpus/c11/declarations-initializers.c) | §§6.5.2.5p5, 6.7.2.1p18–20 and 6.7.9p17–21, compound literals, flexible members and designated initializers. |
+| [generic-static-assert-alignment](../corpus/c11/generic-static-assert-alignment.c) | §§6.5.1.1, 6.5.2.2p6, 6.7.2.1p13, 6.7.4, 6.7.5, 6.7.10 and 6.9.1, generic selection, anonymous members, function specifiers, alignment, static assertions and identifier-list definitions. |
+| [floating](../corpus/c11/floating.c) | §§5.2.4.2.2, 7.6, F.3, F.7 and F.8.4, dynamic rounding, conversions and exception flags. |
+| [atomics](../corpus/c11/atomics.c) | §§5.1.2.4, 7.17.3 and 7.17.7.4, release/acquire message passing, sequentially consistent store buffering and contended aggregate compare-exchange. |
+| [constraint-diagnostics](../corpus/c11/constraints.json) | The constraint paragraphs in the table below. |
+| [profile-macros](../corpus/c11/profile-macros.c) | §6.10.8.3p1–2, conditional feature macros. |
+
+On x86, release stores and acquire loads use the same instructions as relaxed
+stores and loads. The message-passing case exercises the thread protocol.
+The host assembly check independently requires the locked exchange for a
+sequentially consistent store.
+
+The constraint manifest lists the selected compile-fail fixtures under `guest`,
+one per feature area.
 
 | Feature area | Selected N1570 Constraints paragraph |
 | --- | --- |
@@ -81,7 +92,6 @@ The conditional threads macro describes support for using the header
 with the compiler in this profile.
 
 The shared front end and preprocessor cover both target profiles. ARM64
-native execution of the 25.9 runtime cases still needs A4's aggregate ABI,
-varargs, binary128 `long double` and TLS, plus AArch64 floating-environment
-and atomic lowering. Guest fixture staging and acceptance belong to
-the milestone.
+native execution of the 25.9 runtime cases still needs AArch64
+floating-environment and atomic lowering, C11 guest fixture staging and
+acceptance.
