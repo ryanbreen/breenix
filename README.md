@@ -58,7 +58,7 @@ E25 is a C toolchain written in Rust that is built for and runs on Breenix.
 It includes `bcc` (C compiler), `bas` (assembler), `bld` (static linker),
 `bar` (archiver), `bnm` (symbol listing), `bmake` (build tool), and `brt`
 (compiler runtime). Recent changes added native builds of small C projects
-and C11 coverage on both architectures.
+on both architectures; C11 coverage (25.9) is under way.
 [Toolchain workspace](toolchain/Cargo.toml) · [C11 coverage](toolchain/docs/c11-coverage.md)
 
 ## Build and boot ARM64
