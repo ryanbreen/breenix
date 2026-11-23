@@ -193,19 +193,23 @@ def metal(args):
 
 
 def stage_qemu(args):
-    facts = metal_prebuilt.snapshot_transfer_input(args.artifact, args.run_dir / transfer.ARTIFACT)
-    boot = dict(id=time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-qemu', target='qemu', mode='suite',
+    if not args.toolchain:
+        facts = metal_prebuilt.snapshot_transfer_input(args.artifact, args.run_dir / transfer.ARTIFACT)
+        boot = dict(id=time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-qemu', target='qemu', mode='suite',
                 suites=[transfer.SUITE], evidenceEligible=True, toolsCommit=args.sha,
                 build=dict(commit=args.sha, profile='production'), transferInput=facts)
-    transfer.identity(boot, args.sha)
+        transfer.identity(boot, args.sha)
     key = args.run_dir / 'identity'
     run([KEYGEN, '-q', '-t', 'ed25519', '-N', '', '-f', str(key)], check=True, stdin=subprocess.DEVNULL)
     user = 'breenix-transfer'
     public_key = ' '.join(key.with_suffix('.pub').read_text().split()[:2])
     config = f'user {user}\nkey {public_key}\nuid 1000\npeer {QEMU_PEER}\n'
     debugfs, = require_e2fsprogs('debugfs')
-    transfer.stage(args.image, debugfs, binary=args.binary, settings=config)
-    (args.run_dir / 'run.json').write_text(json.dumps(boot) + '\n')
+    if args.toolchain:
+        transfer.stage(args.image, debugfs, settings=config)
+    else:
+        transfer.stage(args.image, debugfs, binary=args.binary, settings=config)
+        (args.run_dir / 'run.json').write_text(json.dumps(boot) + '\n')
     with socket.socket() as listener:
         listener.bind((QEMU_HOST, 0))
         port = listener.getsockname()[1]
@@ -221,8 +225,14 @@ def watch_qemu(args):
             return False
         return True
 
-    boot = json.loads((args.run_dir / 'run.json').read_text())
     config = json.loads((args.run_dir / 'client.json').read_text())
+    if args.toolchain:
+        request = wait_ready(args.serial.read_text, lambda: not alive(), args.wait, toolchain=True)
+        client = Client(QEMU_HOST, config['port'], config['user'], QEMU_PEER, args.run_dir / 'identity', alive)
+        def retain_toolchain(records):
+            (args.run_dir / transfer.TOOLCHAIN_RECEIPT).write_text(json.dumps(records) + '\n')
+        return complete_toolchain(client, request, retain_toolchain)
+    boot = json.loads((args.run_dir / 'run.json').read_text())
     facts = transfer.identity(boot, boot['toolsCommit'])
     if metal_prebuilt.facts(args.run_dir / transfer.ARTIFACT) != facts:
         raise ValueError('QEMU transfer input differs from the launch record')
@@ -303,10 +313,12 @@ def main():
     sub = parser.add_subparsers(dest='command')
     stage = sub.add_parser('stage-qemu')
     stage.add_argument('--run-dir', type=Path, required=True)
-    stage.add_argument('--artifact', type=Path, required=True)
+    stage.add_argument('--toolchain', action='store_true')
+    stage.add_argument('--artifact', type=Path)
     stage.add_argument('--image', type=Path, required=True)
-    stage.add_argument('--binary', type=Path, required=True)
+    stage.add_argument('--binary', type=Path)
     watch = sub.add_parser('watch-qemu')
+    watch.add_argument('--toolchain', action='store_true')
     watch.add_argument('--run-dir', type=Path, required=True)
     watch.add_argument('--serial', type=Path, required=True)
     watch.add_argument('--parent', type=int, required=True)
@@ -314,6 +326,10 @@ def main():
     if not 1 <= args.wait <= 1320:
         parser.error('--wait must be from 1 through 1320 seconds')
     if args.command == 'stage-qemu':
+        if not args.toolchain and (args.artifact is None or args.binary is None):
+            parser.error('stage-qemu requires --artifact and --binary unless --toolchain is selected')
+        if args.toolchain and (args.artifact is not None or args.binary is not None):
+            parser.error('stage-qemu --toolchain takes no artifact or binary')
         stage_qemu(args)
     elif args.command == 'watch-qemu':
         # Interrupt subprocess.run so it kills and reaps its own OpenSSH child.

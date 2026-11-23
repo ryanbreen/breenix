@@ -132,6 +132,57 @@ fn return_42_exit_status() {
     );
 }
 
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn aarch64_return_42_exit_status() {
+    let toolchain = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let bcc = Path::new(env!("CARGO_BIN_EXE_bcc"));
+    let result = Command::new("python3")
+        .arg(toolchain.join("tests/bcc/aarch64_return_42_exit_status.py"))
+        .args([bcc, &bcc.with_file_name("bas"), &bcc.with_file_name("bld")])
+        .output()
+        .expect("run the ARM64 codegen harness with native Python");
+    assert!(
+        result.status.success(),
+        "{}\n{}{}",
+        result.status,
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+}
+
+#[test]
+fn aarch64_reports_deferred_lvalue() {
+    let path = Path::new("deferred-lvalue.c");
+    let options = pp::Options {
+        target: pp::Target::Aarch64,
+        ..pp::Options::default()
+    };
+    for (source, location) in [
+        (
+            concat!(
+                "struct pair { int first; int second; };\n",
+                "int *address(struct pair *value) { return &value->second; }",
+            ),
+            "deferred-lvalue.c:2:49: error: ",
+        ),
+        (
+            "extern _Thread_local int data;\nint *address(void) { return &data; }",
+            "deferred-lvalue.c:2:30: error: ",
+        ),
+    ] {
+        let input = pp::preprocess_source(path, source.as_bytes(), &options).unwrap();
+        let unit = sema::analyze(&input, path, options.target).unwrap();
+        let error = codegen::emit_assembly(&unit, path, options.target)
+            .unwrap_err()
+            .to_string();
+        let message = error
+            .strip_prefix(location)
+            .unwrap_or_else(|| panic!("{error}"));
+        assert!(message.contains("deferred to A4"), "{error}");
+    }
+}
+
 #[test]
 fn sysv_scalar_calls() {
     let toolchain = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");

@@ -386,7 +386,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
                 }
             }
             InitializerInput::Expression(value) => {
-                if !assignable(ty, &value) {
+                if !assignable(ty, &value, self.target) {
                     return Err(value
                         .site
                         .error(format!("cannot initialize {ty} with {}", value.ty)));
@@ -463,7 +463,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
         depth: usize,
     ) -> Result<(), Diagnostic> {
         if let Some(InitializerInput::Expression(value)) = list.peek() {
-            if aggregate(ty) && !assignable(ty, value) {
+            if aggregate(ty) && !assignable(ty, value, self.target) {
                 if depth == parse::MAX_NESTING {
                     return Err(value.site.error("initializer nesting limit exceeded"));
                 }
