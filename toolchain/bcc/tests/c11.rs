@@ -223,6 +223,46 @@ void publish(int next) { __c11_atomic_store(&value, next, 5); }
     );
 }
 
+// Layout values observed with the stage-0 x86-64 Clang.
+#[test]
+fn atomic_record_layout_and_value_buffers() {
+    assert_runs_to_42(build_and_check(
+        "atomic-record-layout",
+        r#"
+struct Three { char a, b, c; };
+struct Eight { int a, b; };
+struct Nine { char bytes[9]; };
+struct Large { long a, b, c; };
+struct Holder { char tag; _Atomic(struct Eight) value; };
+_Static_assert(_Alignof(_Atomic(struct Eight)) == 8, "eight-byte atomic alignment");
+_Static_assert(__builtin_offsetof(struct Holder, value) == 8, "member offset");
+_Static_assert(sizeof(_Atomic(struct Three)) == 4, "three-byte atomic size");
+_Static_assert(_Alignof(_Atomic(struct Three)) == 4, "three-byte atomic alignment");
+_Static_assert(sizeof(_Atomic(struct Nine)) == 16, "nine-byte atomic size");
+_Static_assert(_Alignof(_Atomic(struct Nine)) == 16, "nine-byte atomic alignment");
+_Static_assert(sizeof(_Atomic(struct Large)) == 24, "large atomic size");
+_Static_assert(_Alignof(_Atomic(struct Large)) == 8, "large atomic alignment");
+
+int main(void) {
+    struct Three before = { 1, 2, 3 };
+    struct Three after = { 4, 5, 6 };
+    _Atomic(struct Three) value = before;
+    struct { struct Three value; unsigned char guard; } expected = {{0, 0, 0}, 99};
+    if (!__builtin_bcc_atomic_is_lock_free(&value))
+        return 1;
+    if (__c11_atomic_compare_exchange_strong(&value, &expected.value, after, 5, 5))
+        return 2;
+    if (expected.value.c != 3 || expected.guard != 99)
+        return 3;
+    if (!__c11_atomic_compare_exchange_strong(&value, &expected.value, after, 5, 5))
+        return 4;
+    struct Three result = value;
+    return result.a + result.b + result.c + 27;
+}
+"#,
+    ));
+}
+
 // Linux is a development executor. The bounded Rust driver links one
 // bcc/bas object and the Cargo-built runtime for the same host triple.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
