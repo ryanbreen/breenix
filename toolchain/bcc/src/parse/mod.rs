@@ -45,7 +45,19 @@ pub(super) struct Variable<'a> {
 #[derive(Debug)]
 pub(super) enum Initializer<'a> {
     Expression(Expression<'a>),
-    List(&'a Lexeme, Vec<Initializer<'a>>),
+    List(&'a Lexeme, Vec<InitializerEntry<'a>>),
+}
+
+#[derive(Debug)]
+pub(super) struct InitializerEntry<'a> {
+    pub designators: Vec<Designator<'a>>,
+    pub value: Initializer<'a>,
+}
+
+#[derive(Debug)]
+pub(super) enum Designator<'a> {
+    Index(Expression<'a>),
+    Member(&'a Lexeme),
 }
 
 #[derive(Debug)]
@@ -139,6 +151,7 @@ pub(super) enum ExpressionKind<'a> {
     Unary(Unary, Box<Expression<'a>>),
     Binary(Binary, Box<Expression<'a>>, Box<Expression<'a>>),
     Cast(Type, Box<Expression<'a>>),
+    CompoundLiteral(Type, Box<Initializer<'a>>),
     SizeofType(Type),
     Sizeof(Box<Expression<'a>>),
     VaArg(Box<Expression<'a>>, Type),
@@ -387,19 +400,6 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 token.text.as_ref(),
                 "extern" | "static" | "typedef" | "auto" | "register" | "_Thread_local"
             )
-    }
-
-    fn pointers(&mut self, mut ty: Type) -> Result<Type, Diagnostic> {
-        let mut depth = 0;
-        while let Some(star) = self.eat("*") {
-            if depth == MAX_NESTING {
-                return Err(star.error("pointer declarator nesting limit exceeded"));
-            }
-            ty = ty.pointer_to();
-            while self.qualifier(&mut ty.qualifiers) {}
-            depth += 1;
-        }
-        Ok(ty)
     }
 
     // N1570 6.8.2: a block has its own identifier scope.
@@ -656,10 +656,14 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         if let Some(site) = self.eat("sizeof") {
             let kind = if self.eat("(").is_some() {
                 if self.peek().is_some_and(|token| self.starts_type(token)) {
-                    let (ty, _, _) = self.specifiers_at_depth(false, depth + 1)?;
-                    let ty = self.pointers(ty)?;
+                    let ty = self.type_name(depth + 1)?;
                     self.expect(")", "expected ')' after the sizeof type")?;
-                    ExpressionKind::SizeofType(ty)
+                    if let Some(open) = self.eat("{") {
+                        let literal = self.compound_literal(open, ty, depth + 1)?;
+                        ExpressionKind::Sizeof(Box::new(self.postfix(literal, depth + 1)?))
+                    } else {
+                        ExpressionKind::SizeofType(ty)
+                    }
                 } else {
                     let expression = self.expression(depth + 1)?;
                     self.expect(")", "expected ')' after the sizeof operand")?;
@@ -688,22 +692,44 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 ExpressionKind::Unary(op, Box::new(self.unary(depth + 1)?)),
             );
         }
-        let mut callee = if let Some(site) = self.eat("(") {
+        let callee = if let Some(site) = self.eat("(") {
             if self.peek().is_some_and(|token| self.starts_type(token)) {
-                let (ty, _, _) = self.specifiers_at_depth(false, depth + 1)?;
-                let ty = self.pointers(ty)?;
+                let ty = self.type_name(depth + 1)?;
                 self.expect(")", "expected ')' after the cast type")?;
-                return Expression::new(
-                    site,
-                    ExpressionKind::Cast(ty, Box::new(self.unary(depth + 1)?)),
-                );
+                if let Some(open) = self.eat("{") {
+                    self.compound_literal(open, ty, depth + 1)?
+                } else {
+                    return Expression::new(
+                        site,
+                        ExpressionKind::Cast(ty, Box::new(self.unary(depth + 1)?)),
+                    );
+                }
+            } else {
+                let expr = self.expression(depth + 1)?;
+                self.expect(")", "expected ')' after the expression")?;
+                expr
             }
-            let expr = self.expression(depth + 1)?;
-            self.expect(")", "expected ')' after the expression")?;
-            expr
         } else {
             self.primary(depth)?
         };
+        self.postfix(callee, depth)
+    }
+
+    fn compound_literal(
+        &mut self,
+        open: &'a Lexeme,
+        ty: Type,
+        depth: usize,
+    ) -> Result<Expression<'a>, Diagnostic> {
+        let init = self.initializer_list(open, depth)?;
+        Expression::new(open, ExpressionKind::CompoundLiteral(ty, Box::new(init)))
+    }
+
+    fn postfix(
+        &mut self,
+        mut callee: Expression<'a>,
+        depth: usize,
+    ) -> Result<Expression<'a>, Diagnostic> {
         let mut count = 0;
         while let Some(open) = self
             .eat("(")

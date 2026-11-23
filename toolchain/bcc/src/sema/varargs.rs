@@ -5,7 +5,7 @@ use crate::types::amd64_va_list;
 
 impl<'a> FunctionBody<'a, '_> {
     fn va_operand(
-        &self,
+        &mut self,
         operand: parse::Expression<'a>,
         writable: bool,
     ) -> Result<Box<Expression<'a>>, Diagnostic> {
@@ -32,7 +32,7 @@ impl<'a> FunctionBody<'a, '_> {
     }
 
     pub(super) fn va_arg(
-        &self,
+        &mut self,
         site: &Lexeme,
         list: parse::Expression<'a>,
         ty: Type,
@@ -48,7 +48,7 @@ impl<'a> FunctionBody<'a, '_> {
     }
 
     pub(super) fn va_control(
-        &self,
+        &mut self,
         site: &'a Lexeme,
         arguments: Vec<parse::Expression<'a>>,
     ) -> Result<(ExpressionKind<'a>, Type), Diagnostic> {

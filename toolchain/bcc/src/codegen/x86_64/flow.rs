@@ -93,28 +93,7 @@ impl<'src> Emitter<'_, 'src> {
         match statement {
             Statement::Block(body) => self.statements(body, result, epilogue)?,
             Statement::Empty => {}
-            Statement::Initialize {
-                local,
-                values,
-                zero_bytes,
-            } => {
-                // N1570 6.7.9p21: elements omitted from an aggregate
-                // initializer are initialized as if they had static storage.
-                if *zero_bytes != 0 {
-                    let memory = self.locals[*local].memory(0);
-                    writeln!(self.text, "    lea rdi, {memory}\n    mov rcx, {zero_bytes}\n    xor eax, eax\n    rep stosb").unwrap();
-                }
-                for init in values {
-                    self.converted(&init.value, &init.ty)?;
-                    let memory = self.locals[*local].memory(init.offset);
-                    if let Some(field) = init.bit_field {
-                        writeln!(self.text, "    lea r11, {memory}").unwrap();
-                        self.store_bit_field(field, &init.ty, None);
-                    } else {
-                        self.store_object(&init.ty, &memory);
-                    }
-                }
-            }
+            Statement::Initialize { local, initializer } => self.initialize(*local, initializer)?,
             Statement::Expression(expr) => self.discard(expr)?,
             Statement::Return(expr) => {
                 if let Some(expr) = expr {
@@ -219,6 +198,42 @@ impl<'src> Emitter<'_, 'src> {
         Ok(())
     }
 
+    fn initialize(
+        &mut self,
+        local: usize,
+        initializer: &ObjectInitializer<'src>,
+    ) -> Result<(), Diagnostic> {
+        // N1570 6.7.9p19,21: omitted subobjects have static-storage defaults.
+        if initializer.zero_bytes != 0 {
+            self.zero(local, 0, initializer.zero_bytes);
+        }
+        for init in &initializer.values {
+            match &init.value {
+                InitValue::Zero => self.zero(local, init.offset, init.ty.layout().unwrap().size),
+                InitValue::Expression(value) => {
+                    self.converted(value, &init.ty)?;
+                    let memory = self.locals[local].memory(init.offset);
+                    if let Some(field) = init.bit_field {
+                        writeln!(self.text, "    lea r11, {memory}").unwrap();
+                        self.store_bit_field(field, &init.ty, None);
+                    } else {
+                        self.store_object(&init.ty, &memory);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn zero(&mut self, local: usize, offset: usize, bytes: usize) {
+        let memory = self.locals[local].memory(offset);
+        writeln!(
+            self.text,
+            "    lea rdi, {memory}\n    mov rcx, {bytes}\n    xor eax, eax\n    rep stosb"
+        )
+        .unwrap();
+    }
+
     pub(super) fn address(&mut self, expr: &Expression<'src>) -> Result<(), Diagnostic> {
         if let Some(place) = self.thread_place(expr)? {
             // AMD64 psABI §10.3.2, Table 10.7. The Breenix TCB stores its
@@ -237,6 +252,11 @@ impl<'src> Emitter<'_, 'src> {
                 format!("[rip + {name}]")
             }
             ExpressionKind::Local(id) => self.locals[*id].memory(0),
+            ExpressionKind::CompoundLiteral { local, initializer } => {
+                self.initialize(*local, initializer)?;
+                self.locals[*local].memory(0)
+            }
+            ExpressionKind::StaticLiteral(id) => format!("[rip + {}]", literal_label(*id)),
             ExpressionKind::String(bytes) => format!("[rip + {}]", self.emit_string(bytes)),
             ExpressionKind::Unary(Unary::Dereference, operand) => return self.value(operand),
             ExpressionKind::Member { base, offset, .. } => {

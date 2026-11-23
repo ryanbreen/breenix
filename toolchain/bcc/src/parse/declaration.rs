@@ -28,7 +28,7 @@ struct Field<'a> {
 }
 
 impl<'a> Declarator<'a> {
-    fn ty(&self, mut ty: Type, site: &Lexeme) -> Result<Type, Diagnostic> {
+    fn ty(&self, mut ty: Type, site: &Lexeme, records: &[Record<'_>]) -> Result<Type, Diagnostic> {
         for modifier in self.modifiers.iter().rev() {
             ty = match modifier {
                 Modifier::Pointer(qualifiers) => Type {
@@ -36,8 +36,13 @@ impl<'a> Declarator<'a> {
                     qualifiers: *qualifiers,
                 },
                 Modifier::Array(size) => {
-                    if ty.layout().is_none() {
+                    if ty.layout().is_none_or(|layout| layout.size == 0) {
                         return Err(site.error("array element type is incomplete"));
+                    }
+                    if contains_flexible_member(&ty, records) {
+                        return Err(
+                            site.error("array element type contains a flexible array member")
+                        );
                     }
                     let ty = Type::new(TypeKind::Array(Box::new(ty), *size));
                     if ty.layout().is_none() {
@@ -84,7 +89,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             }
             if storage.class != Storage::Typedef {
                 let name = first.name.unwrap();
-                let ty = first.ty(base, name)?;
+                let ty = first.ty(base, name, &self.records)?;
                 let TypeKind::Function { result, .. } = &ty.kind else {
                     unreachable!()
                 };
@@ -142,7 +147,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         let mut variables = Vec::new();
         loop {
             let name = declarator.name.unwrap();
-            let ty = declarator.ty(base.clone(), name)?;
+            let ty = declarator.ty(base.clone(), name, &self.records)?;
             if storage.thread_local && matches!(ty.kind, TypeKind::Function { .. }) {
                 return Err(name.error("a function cannot be _Thread_local"));
             }
@@ -177,21 +182,59 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
     }
 
     fn initializer(&mut self, depth: usize) -> Result<Initializer<'a>, Diagnostic> {
+        if let Some(site) = self.eat("{") {
+            self.initializer_list(site, depth)
+        } else {
+            Ok(Initializer::Expression(self.expression(depth)?))
+        }
+    }
+
+    // N1570 §6.7.9: a designation belongs to one entry of a braced list.
+    pub(super) fn initializer_list(
+        &mut self,
+        site: &'a Lexeme,
+        depth: usize,
+    ) -> Result<Initializer<'a>, Diagnostic> {
         if depth >= MAX_NESTING {
-            return Err(self.error("initializer nesting limit exceeded"));
+            return Err(site.error("initializer nesting limit exceeded"));
         }
-        let Some(site) = self.eat("{") else {
-            return Ok(Initializer::Expression(self.expression(0)?));
-        };
-        let mut values = vec![self.initializer(depth + 1)?];
-        while self.eat(",").is_some() {
-            if self.eat("}").is_some() {
-                return Ok(Initializer::List(site, values));
+        let mut entries = Vec::new();
+        loop {
+            let mut designators = Vec::new();
+            loop {
+                let designator = if self.eat("[").is_some() {
+                    let index = self.conditional(depth + 1)?;
+                    self.expect("]", "expected ']' after the array designator")?;
+                    Designator::Index(index)
+                } else if self.eat(".").is_some() {
+                    Designator::Member(
+                        self.identifier()
+                            .ok_or_else(|| self.error("expected a member name after '.'"))?,
+                    )
+                } else {
+                    break;
+                };
+                if designators.len() == MAX_NESTING {
+                    return Err(site.error("designator nesting limit exceeded"));
+                }
+                designators.push(designator);
             }
-            values.push(self.initializer(depth + 1)?);
+            if !designators.is_empty() {
+                self.expect("=", "expected '=' after the designation")?;
+            }
+            entries.push(InitializerEntry {
+                designators,
+                value: self.initializer(depth + 1)?,
+            });
+            if self.eat(",").is_none() {
+                self.expect("}", "expected '}' after initializer list")?;
+                break;
+            }
+            if self.eat("}").is_some() {
+                break;
+            }
         }
-        self.expect("}", "expected '}' after initializer list")?;
-        Ok(Initializer::List(site, values))
+        Ok(Initializer::List(site, entries))
     }
 
     pub(super) fn type_name(&mut self, depth: usize) -> Result<Type, Diagnostic> {
@@ -203,7 +246,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         if let Some(name) = declarator.name {
             return Err(name.error("a type name cannot declare an identifier"));
         }
-        declarator.ty(base, start)
+        declarator.ty(base, start, &self.records)
     }
 
     fn declarator(
@@ -281,7 +324,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 .ok_or_else(|| self.error("expected a parameter type"))?;
             let (base, _) = self.specifiers(false)?;
             let declarator = self.declarator(true, depth)?;
-            let mut ty = declarator.ty(base, start)?;
+            let mut ty = declarator.ty(base, start, &self.records)?;
             let name = declarator.name;
             // N1570 6.7.6.3p7–10: adjust array and function parameter types.
             ty = match ty.kind {
@@ -479,7 +522,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     let name = declarator.name.unwrap();
                     (
                         Some(name),
-                        declarator.ty(base.clone(), name)?,
+                        declarator.ty(base.clone(), name, &self.records)?,
                         self.eat(":"),
                     )
                 };
@@ -546,16 +589,32 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         let mut align = 1;
         let mut members = Vec::new();
         let mut has_const_member = false;
-        for Field {
+        let mut fields = fields.into_iter().peekable();
+        while let Some(Field {
             name,
             site,
             ty,
             width,
-        } in fields
+        }) = fields.next()
         {
+            // N1570 §6.7.2.1p3,18: retain the aligned offset but allocate
+            // no elements for the flexible tail.
+            let flexible = matches!(ty.kind, TypeKind::Array(_, 0));
+            if flexible
+                && (kind != RecordKind::Struct || members.is_empty() || fields.peek().is_some())
+            {
+                return Err(site.error(
+                    "a flexible array member must follow another named member and end a struct",
+                ));
+            }
+            if kind == RecordKind::Struct && contains_flexible_member(&ty, &self.records) {
+                return Err(
+                    site.error("a struct member type cannot contain a flexible array member")
+                );
+            }
             let field = ty
                 .layout()
-                .filter(|field| field.size != 0)
+                .filter(|field| flexible || field.size != 0)
                 .ok_or_else(|| site.error("record member type is incomplete"))?;
             let start = if kind == RecordKind::Struct {
                 size_bits
@@ -638,4 +697,30 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             .filter(|width| usize::from(*width) <= limit)
             .ok_or_else(|| colon.error("bit-field width is outside the range of its type"))
     }
+}
+
+fn contains_flexible_member(ty: &Type, records: &[Record<'_>]) -> bool {
+    let mut pending = vec![ty];
+    let mut visited = std::collections::HashSet::new();
+    while let Some(ty) = pending.pop() {
+        let TypeKind::Record(record) = ty.kind else {
+            continue;
+        };
+        if !visited.insert(record.id) {
+            continue;
+        }
+        if let Some(def) = &records[record.id].definition {
+            if def
+                .members
+                .last()
+                .is_some_and(|last| matches!(last.ty.kind, TypeKind::Array(_, 0)))
+            {
+                return true;
+            }
+            if records[record.id].kind == RecordKind::Union {
+                pending.extend(def.members.iter().map(|member| &member.ty));
+            }
+        }
+    }
+    false
 }

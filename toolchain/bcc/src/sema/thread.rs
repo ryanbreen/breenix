@@ -22,6 +22,7 @@ pub enum ThreadData<'a> {
 pub enum StaticAddress<'a> {
     Symbol(&'a str, &'a Position),
     Local(usize),
+    Literal(usize),
     String(Vec<u8>),
 }
 
@@ -40,7 +41,7 @@ impl<'a> ThreadObjects<'a> {
         &mut self,
         variable: &mut parse::Variable<'a>,
         linkage: Linkage,
-        context: &FunctionBody<'a, '_>,
+        context: &mut FunctionBody<'a, '_>,
     ) -> Result<bool, Diagnostic> {
         let name = variable.name;
         let key = name.text.as_ref();
@@ -49,22 +50,23 @@ impl<'a> ThreadObjects<'a> {
         if explicit && previous.is_some_and(|symbol| symbol.defined) {
             return Err(name.error("_Thread_local object already defined"));
         }
-        if explicit {
-            infer_array_bound(&mut variable.ty, variable.initializer.as_ref());
-        }
         if let Some(prior_type) = previous
             .map(|symbol| &symbol.ty)
             .or_else(|| context.block_externs.get(key))
         {
             merge_type(name, &mut variable.ty, prior_type)?;
         }
+        check_type(name, &variable.ty)?;
+        let initializer = variable
+            .initializer
+            .take()
+            .map(|init| context.static_initializer(name, &mut variable.ty, init))
+            .transpose()?;
         let ty = &variable.ty;
-        check_type(name, ty)?;
         let definition = explicit || variable.storage != Storage::Extern;
         if explicit || definition && linkage == Linkage::Internal {
             check_layout(ty, &name.site)?;
         }
-        let initializer = context.thread_initializer(ty, variable.initializer.take())?;
         if let Some(&index) = self.indices.get(key) {
             let thread = &mut self.definitions[index];
             thread.object.ty = ty.clone();
@@ -108,8 +110,9 @@ impl<'a> FunctionBody<'a, '_> {
                 if current.is_some() {
                     return Err(name.error("duplicate local declaration"));
                 }
-                infer_array_bound(&mut ty, initializer.as_ref());
-                check_layout(&ty, &name.site)?;
+                if initializer.is_none() {
+                    check_layout(&ty, &name.site)?;
+                }
                 LocalStorage::Thread(None)
             }
             Storage::Extern => {
@@ -182,9 +185,10 @@ impl<'a> FunctionBody<'a, '_> {
             },
             storage: local_storage,
         });
-        if initializer.is_some() {
-            let initializer = self.thread_initializer(&ty, initializer)?;
-            self.locals[id].storage = LocalStorage::Thread(initializer);
+        if let Some(initializer) = initializer {
+            let initializer = self.static_initializer(name, &mut ty, initializer)?;
+            self.locals[id].object.ty = ty;
+            self.locals[id].storage = LocalStorage::Thread(Some(initializer));
         }
         Ok(Statement::Empty)
     }
@@ -218,8 +222,12 @@ pub(super) fn check_layout(ty: &Type, site: &Position) -> Result<(), Diagnostic>
 }
 
 fn merge_type(name: &Lexeme, ty: &mut Type, previous: &Type) -> Result<(), Diagnostic> {
+    merge_types(ty, previous).ok_or_else(|| name.error("incompatible _Thread_local redeclaration"))
+}
+
+pub(super) fn merge_types(ty: &mut Type, previous: &Type) -> Option<()> {
     if ty == previous {
-        return Ok(());
+        return Some(());
     }
     if ty.qualifiers == previous.qualifiers {
         if let (Kind::Array(element, count), Kind::Array(prior_element, prior_count)) =
@@ -227,19 +235,51 @@ fn merge_type(name: &Lexeme, ty: &mut Type, previous: &Type) -> Result<(), Diagn
         {
             if element == prior_element && (*count == 0 || *prior_count == 0) {
                 *count = (*count).max(*prior_count);
-                return Ok(());
+                return Some(());
             }
         }
     }
-    Err(name.error("incompatible _Thread_local redeclaration"))
+    None
 }
 
-fn infer_array_bound(ty: &mut Type, initializer: Option<&parse::Initializer<'_>>) {
-    if let (Kind::Array(_, count @ 0), Some(parse::Initializer::List(_, elements))) =
-        (&mut ty.kind, initializer)
-    {
-        *count = elements.len();
-    }
+pub(super) enum StaticValue<'a> {
+    Bits(u128),
+    Address(StaticAddress<'a>, i64),
+}
+
+pub(super) fn constant_initializer_value<'a>(
+    value: &Expression<'a>,
+    ty: &Type,
+    target: Target,
+    locals: &[Local<'a>],
+) -> Result<StaticValue<'a>, Diagnostic> {
+    let bits = match ty.kind {
+        Kind::Integer(integer) => {
+            let bits = body::constant_integer(value, target)
+                .or_else(|| float::constant_to_integer(value, integer, target));
+            bits.map(|bits| {
+                if integer == Integer::Bool {
+                    u64::from(bits != 0)
+                } else {
+                    bits
+                }
+            })
+            .map(u128::from)
+        }
+        Kind::Float(_) | Kind::LongDouble => float::constant_bits(value, &ty.kind, target),
+        Kind::Pointer(_) => {
+            if let Some((address, addend)) = address_constant(value, target, locals) {
+                return Ok(StaticValue::Address(address, addend));
+            }
+            null_address(value, target).then_some(0)
+        }
+        _ => None,
+    };
+    bits.map(StaticValue::Bits).ok_or_else(|| {
+        value
+            .site
+            .error("expected a supported constant in static initializer")
+    })
 }
 
 pub(super) fn encode_initializer<'a>(
@@ -249,36 +289,18 @@ pub(super) fn encode_initializer<'a>(
 ) -> Result<ThreadInitializer<'a>, Diagnostic> {
     let mut data = ThreadInitializer::default();
     for init in values {
-        let bits = match init.ty.kind {
-            Kind::Integer(integer) => {
-                let bits = body::constant_integer(&init.value, target)
-                    .or_else(|| float::constant_to_integer(&init.value, integer, target));
-                bits.map(|bits| {
-                    if integer == Integer::Bool {
-                        u64::from(bits != 0)
-                    } else {
-                        bits
-                    }
-                })
-                .map(u128::from)
+        let size = init.ty.layout().unwrap().size;
+        let InitValue::Expression(value) = init.value else {
+            data.retain(|&offset, _| !(init.offset..init.offset + size).contains(&offset));
+            continue;
+        };
+        let bits = match constant_initializer_value(&value, &init.ty, target, locals)? {
+            StaticValue::Bits(bits) => bits,
+            StaticValue::Address(address, addend) => {
+                data.insert(init.offset, ThreadData::Address(address, addend));
+                continue;
             }
-            Kind::Float(_) | Kind::LongDouble => {
-                float::constant_bits(&init.value, &init.ty.kind, target)
-            }
-            Kind::Pointer(_) => {
-                if let Some((address, addend)) = address_constant(&init.value, target, locals) {
-                    data.insert(init.offset, ThreadData::Address(address, addend));
-                    continue;
-                }
-                null_address(&init.value, target).then_some(0)
-            }
-            _ => None,
-        }
-        .ok_or_else(|| {
-            init.value
-                .site
-                .error("expected a supported constant in _Thread_local initializer")
-        })?;
+        };
 
         if let Some(field) = init.bit_field {
             for (index, (shift, used, mask)) in field.bytes().enumerate() {
@@ -366,6 +388,7 @@ fn object_address<'a>(
 ) -> Option<(StaticAddress<'a>, i64)> {
     match &expr.kind {
         ExpressionKind::Identifier(name) => Some((StaticAddress::Symbol(name, &expr.site.site), 0)),
+        ExpressionKind::StaticLiteral(id) => Some((StaticAddress::Literal(*id), 0)),
         ExpressionKind::Local(id) if matches!(locals[*id].storage, LocalStorage::Static) => {
             Some((StaticAddress::Local(*id), 0))
         }

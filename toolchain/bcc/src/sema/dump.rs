@@ -2,7 +2,8 @@
 use std::io::{self, Write};
 
 use super::{
-    Expression, ExpressionKind, Linkage, LocalStorage, Position, Statement, TranslationUnit, Type,
+    Expression, ExpressionKind, InitValue, Linkage, LocalStorage, ObjectInitializer, Position,
+    Statement, TranslationUnit, Type,
 };
 
 impl TranslationUnit<'_> {
@@ -15,6 +16,17 @@ impl TranslationUnit<'_> {
                 &object.ty,
                 "external",
                 false,
+            )?;
+        }
+        for definition in &self.static_objects {
+            let object = &definition.object;
+            declaration(
+                &mut out,
+                object.site,
+                object.name,
+                &object.ty,
+                linkage_name(definition.linkage),
+                true,
             )?;
         }
         for thread in &self.thread_objects {
@@ -44,6 +56,9 @@ impl TranslationUnit<'_> {
             }
             for local in function.locals.iter().skip(function.params.len()) {
                 let obj = &local.object;
+                if obj.name.is_empty() {
+                    continue; // Compound literals appear as expressions, not declarations.
+                }
                 let (linkage, definition) = match local.storage {
                     LocalStorage::ThreadExtern(linkage) => (linkage_name(linkage), false),
                     _ => ("none", true),
@@ -97,11 +112,7 @@ fn statements(out: &mut impl Write, body: &[Statement<'_>]) -> io::Result<()> {
         match statement {
             Statement::Block(inner) => statements(out, inner)?,
             Statement::Expression(expr) | Statement::Return(Some(expr)) => expression(out, expr)?,
-            Statement::Initialize { values, .. } => {
-                for initializer in values {
-                    expression(out, &initializer.value)?;
-                }
-            }
+            Statement::Initialize { initializer, .. } => expressions(out, initializer)?,
             Statement::If { condition, yes, no } => {
                 expression(out, condition)?;
                 statements(out, std::slice::from_ref(yes))?;
@@ -134,6 +145,15 @@ fn statements(out: &mut impl Write, body: &[Statement<'_>]) -> io::Result<()> {
     Ok(())
 }
 
+fn expressions(out: &mut impl Write, initializer: &ObjectInitializer<'_>) -> io::Result<()> {
+    for write in &initializer.values {
+        if let InitValue::Expression(value) = &write.value {
+            expression(out, value)?;
+        }
+    }
+    Ok(())
+}
+
 fn expression(out: &mut impl Write, expr: &Expression<'_>) -> io::Result<()> {
     let (form, value) = match &expr.kind {
         ExpressionKind::Identifier(_)
@@ -146,6 +166,11 @@ fn expression(out: &mut impl Write, expr: &Expression<'_>) -> io::Result<()> {
             };
             ("identifier", category)
         }
+        ExpressionKind::CompoundLiteral { initializer, .. } => {
+            expressions(out, initializer)?;
+            ("compound-literal", "lvalue")
+        }
+        ExpressionKind::StaticLiteral(_) => ("compound-literal", "lvalue"),
         ExpressionKind::Integer(_) => ("integer-constant", "rvalue"),
         ExpressionKind::Float(_) => ("floating-constant", "rvalue"),
         ExpressionKind::Unary(op, operand) => {

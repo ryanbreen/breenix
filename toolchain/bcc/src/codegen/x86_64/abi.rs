@@ -79,6 +79,10 @@ fn classify_fields(
     records: &[Record<'_>],
     classes: &mut [Class; 2],
 ) -> bool {
+    // N1570 §6.7.2.1p18: the flexible member contributes no data.
+    if matches!(ty.kind, Kind::Array(_, 0)) {
+        return true;
+    }
     let layout = ty.layout().unwrap();
     if !offset.is_multiple_of(layout.align) {
         return false;

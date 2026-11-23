@@ -19,6 +19,8 @@ pub use thread::{StaticAddress, ThreadData, ThreadInitializer, ThreadObject};
 pub struct TranslationUnit<'a> {
     pub functions: Vec<Function<'a>>,
     pub objects: Vec<Object<'a>>,
+    pub static_objects: Vec<StaticObject<'a>>,
+    pub static_literals: Vec<StaticLiteral<'a>>,
     pub thread_objects: Vec<ThreadObject<'a>>,
     pub records: Vec<Record<'a>>,
 }
@@ -54,6 +56,20 @@ pub struct Object<'a> {
 }
 
 #[derive(Debug)]
+pub struct StaticObject<'a> {
+    pub object: Object<'a>,
+    pub linkage: Linkage,
+    pub initializer: ThreadInitializer<'a>,
+}
+
+#[derive(Debug)]
+pub struct StaticLiteral<'a> {
+    pub ty: Type,
+    pub site: &'a Position,
+    pub initializer: ThreadInitializer<'a>,
+}
+
+#[derive(Debug)]
 pub struct Local<'a> {
     pub object: Object<'a>,
     pub storage: LocalStorage<'a>,
@@ -71,8 +87,20 @@ pub enum LocalStorage<'a> {
 pub struct Initializer<'a> {
     pub offset: usize,
     pub bit_field: Option<BitField>,
-    pub value: Expression<'a>,
+    pub value: InitValue<'a>,
     pub ty: Type,
+}
+
+#[derive(Debug)]
+pub enum InitValue<'a> {
+    Expression(Expression<'a>),
+    Zero,
+}
+
+#[derive(Debug)]
+pub struct ObjectInitializer<'a> {
+    pub values: Vec<Initializer<'a>>,
+    pub zero_bytes: usize,
 }
 
 #[derive(Debug)]
@@ -81,8 +109,7 @@ pub enum Statement<'a> {
     Empty,
     Initialize {
         local: usize,
-        values: Vec<Initializer<'a>>,
-        zero_bytes: usize,
+        initializer: ObjectInitializer<'a>,
     },
     Expression(Expression<'a>),
     Return(Option<Expression<'a>>),
@@ -122,6 +149,11 @@ pub enum ExpressionKind<'a> {
     Identifier(&'a str),
     ThreadLocal(&'a str),
     Local(usize),
+    CompoundLiteral {
+        local: usize,
+        initializer: ObjectInitializer<'a>,
+    },
+    StaticLiteral(usize),
     Integer(u64),
     Float(u128),
     Unary(Unary, Box<Expression<'a>>),
@@ -226,6 +258,8 @@ impl Expression<'_> {
             ExpressionKind::Identifier(_)
             | ExpressionKind::ThreadLocal(_)
             | ExpressionKind::Local(_)
+            | ExpressionKind::CompoundLiteral { .. }
+            | ExpressionKind::StaticLiteral(_)
             | ExpressionKind::String(_)
             | ExpressionKind::Unary(Unary::Dereference, _) => true,
             ExpressionKind::Member { base, .. } => base.lvalue(),
@@ -253,6 +287,8 @@ pub fn analyze<'a>(
     let mut symbols = HashMap::new();
     let mut functions = Vec::new();
     let mut objects = Vec::new();
+    let mut static_objects = Vec::new();
+    let mut static_literals = Vec::new();
     let mut thread_objects = thread::ThreadObjects::default();
     let mut block_externs = HashMap::new();
     let mut declarations = parse::translation_unit(source, path, target)?;
@@ -319,7 +355,7 @@ pub fn analyze<'a>(
                         return Err(name.error("conflicting linkage for _Thread_local object"));
                     }
                     let result = Type::new(Kind::Void);
-                    let context = FunctionBody::new(
+                    let mut context = FunctionBody::new(
                         &symbols,
                         &result,
                         target,
@@ -327,7 +363,9 @@ pub fn analyze<'a>(
                         &record_scope,
                         &mut block_externs,
                     );
-                    let defined = thread_objects.declare(&mut variable, linkage, &context)?;
+                    context.static_literals = Some((static_literals.len(), Vec::new()));
+                    let defined = thread_objects.declare(&mut variable, linkage, &mut context)?;
+                    static_literals.extend(context.static_literals.take().unwrap().1);
                     symbols.insert(
                         key,
                         Symbol {
@@ -341,30 +379,69 @@ pub fn analyze<'a>(
                         continue;
                     }
                 } else {
-                    if variable.storage != Storage::Extern || variable.initializer.is_some() {
-                        return Err(name.error(
-                            "file-scope object definitions are outside the current subset",
-                        ));
-                    }
                     if variable.ty.kind == Kind::Void
                         || matches!(variable.ty.kind, Kind::Function { .. })
                     {
                         return Err(name.error("invalid object type"));
                     }
-                    if let Some(symbol) = symbols.get(name.text.as_ref()) {
-                        if symbol.ty != variable.ty || symbol.linkage != Linkage::External {
+                    let linkage = match (variable.storage, previous) {
+                        (Storage::Static, _) => Linkage::Internal,
+                        (_, Some(symbol)) => symbol.linkage,
+                        (_, None) => Linkage::External,
+                    };
+                    let defined = variable.initializer.is_some();
+                    if !defined && variable.storage != Storage::Extern {
+                        return Err(
+                            name.error("tentative definitions are outside the current subset")
+                        );
+                    }
+                    if let Some(symbol) = previous {
+                        if symbol.linkage != linkage
+                            || matches!(symbol.ty.kind, Kind::Function { .. })
+                        {
                             return Err(name.error("incompatible redeclaration"));
+                        }
+                        thread::merge_types(&mut variable.ty, &symbol.ty)
+                            .ok_or_else(|| name.error("incompatible redeclaration"))?;
+                        if defined && symbol.defined {
+                            return Err(name.error("object already defined"));
                         }
                     }
                     symbols.insert(
-                        &name.text,
+                        key,
                         Symbol {
                             ty: variable.ty.clone(),
-                            linkage: Linkage::External,
-                            defined: false,
+                            linkage,
                             thread_local: false,
+                            defined: defined || previous.is_some_and(|symbol| symbol.defined),
                         },
                     );
+                    if let Some(initializer) = variable.initializer {
+                        let result = Type::new(Kind::Void);
+                        let mut context = FunctionBody::new(
+                            &symbols,
+                            &result,
+                            target,
+                            &[],
+                            &record_scope,
+                            &mut block_externs,
+                        );
+                        context.static_literals = Some((static_literals.len(), Vec::new()));
+                        let initializer =
+                            context.static_initializer(name, &mut variable.ty, initializer)?;
+                        static_literals.extend(context.static_literals.take().unwrap().1);
+                        symbols.get_mut(key).unwrap().ty = variable.ty.clone();
+                        static_objects.push(StaticObject {
+                            object: Object {
+                                name: key,
+                                site: &name.site,
+                                ty: variable.ty,
+                            },
+                            linkage,
+                            initializer,
+                        });
+                        continue;
+                    }
                 }
                 objects.push(Object {
                     name: &name.text,
@@ -389,6 +466,8 @@ pub fn analyze<'a>(
     Ok(TranslationUnit {
         functions,
         objects,
+        static_objects,
+        static_literals,
         thread_objects: thread_objects.definitions,
         records,
     })
@@ -454,7 +533,7 @@ pub(super) fn layout_constant<'a, 't>(
     };
     let result = Type::new(Kind::Void);
     let mut block_externs = HashMap::new();
-    let context = FunctionBody::new(
+    let mut context = FunctionBody::new(
         &symbols,
         &result,
         target,
@@ -574,6 +653,8 @@ struct FunctionBody<'a, 's> {
     // in blocks that are outside each other's lexical scope.
     block_externs: &'s mut HashMap<&'a str, Type>,
     locals: Vec<Local<'a>>,
+    // Present only while analyzing file-scope initializers.
+    static_literals: Option<(usize, Vec<StaticLiteral<'a>>)>,
     scopes: Vec<HashMap<&'a str, usize>>,
     labels: HashMap<&'a str, body::Label<'a>>,
     next_label: usize,
@@ -588,7 +669,7 @@ struct FunctionBody<'a, 's> {
 
 impl<'a> FunctionBody<'a, '_> {
     fn return_value(
-        &self,
+        &mut self,
         keyword: &Lexeme,
         value: Option<parse::Expression<'a>>,
     ) -> Result<Option<Expression<'a>>, Diagnostic> {
@@ -609,7 +690,10 @@ impl<'a> FunctionBody<'a, '_> {
         }
     }
 
-    fn expression(&self, expression: parse::Expression<'a>) -> Result<Expression<'a>, Diagnostic> {
+    fn expression(
+        &mut self,
+        expression: parse::Expression<'a>,
+    ) -> Result<Expression<'a>, Diagnostic> {
         use parse::ExpressionKind as Syntax;
         let site = expression.site;
         let (kind, mut ty) = match expression.kind {
@@ -725,6 +809,9 @@ impl<'a> FunctionBody<'a, '_> {
                     return Err(site.error(format!("cannot cast {source} to {ty}")));
                 }
                 (ExpressionKind::Cast(Box::new(expr)), ty)
+            }
+            Syntax::CompoundLiteral(ty, initializer) => {
+                self.compound_literal(site, ty, *initializer)?
             }
             Syntax::SizeofType(ty) => sizeof(site, &ty)?,
             Syntax::Sizeof(expr) => {
@@ -872,7 +959,7 @@ impl<'a> FunctionBody<'a, '_> {
     }
 
     fn call(
-        &self,
+        &mut self,
         callee: parse::Expression<'a>,
         arguments: Vec<parse::Expression<'a>>,
         close: &Lexeme,

@@ -5,8 +5,9 @@ use std::fmt::Write;
 
 use crate::pp::{Diagnostic, Position, Target};
 use crate::sema::{
-    Argument, Binary, Expression, ExpressionKind, Function, Linkage, LocalStorage, Object,
-    Statement, StaticAddress, ThreadData, ThreadInitializer, TranslationUnit, Unary,
+    Argument, Binary, Expression, ExpressionKind, Function, InitValue, Linkage, LocalStorage,
+    Object, ObjectInitializer, Statement, StaticAddress, ThreadData, ThreadInitializer,
+    TranslationUnit, Unary,
 };
 use crate::types::{BitField, Float, Integer, Kind, Layout, Record, Type};
 
@@ -39,6 +40,12 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
         variadic: None,
         flow_labels: HashMap::new(),
         data: String::new(),
+        initialized_data: String::new(),
+        object_definitions: unit
+            .static_objects
+            .iter()
+            .map(|def| def.object.name)
+            .collect(),
         tdata: String::new(),
         tbss: String::new(),
         externs: BTreeSet::new(),
@@ -53,6 +60,32 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
         string_count: 0,
         next_label: 0,
     };
+    for (id, literal) in unit.static_literals.iter().enumerate() {
+        let name = literal_label(id);
+        let object = Object {
+            name: &name,
+            site: literal.site,
+            ty: literal.ty.clone(),
+        };
+        let data = emitter.object_definition(
+            &object,
+            &name,
+            Linkage::Internal,
+            Some(&literal.initializer),
+            false,
+        )?;
+        emitter.initialized_data.push_str(&data);
+    }
+    for definition in &unit.static_objects {
+        let data = emitter.object_definition(
+            &definition.object,
+            definition.object.name,
+            definition.linkage,
+            Some(&definition.initializer),
+            false,
+        )?;
+        emitter.initialized_data.push_str(&data);
+    }
     for thread in &unit.thread_objects {
         emitter.thread_definition(
             &thread.object,
@@ -76,6 +109,10 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
         emitter.text.push_str("\nsection .rodata\n");
         emitter.text.push_str(&emitter.rodata);
     }
+    if !emitter.initialized_data.is_empty() {
+        emitter.text.push_str("\nsection .data\n");
+        emitter.text.push_str(&emitter.initialized_data);
+    }
     if !emitter.data.is_empty() {
         emitter.text.push_str("\nsection .bss\n");
         emitter.text.push_str(&emitter.data);
@@ -97,6 +134,8 @@ struct Emitter<'unit, 'src> {
     variadic: Option<VariadicFrame>,
     flow_labels: HashMap<usize, String>,
     data: String,
+    initialized_data: String,
+    object_definitions: BTreeSet<&'src str>,
     tdata: String,
     tbss: String,
     externs: BTreeSet<&'src str>,
@@ -281,6 +320,8 @@ impl<'src> Emitter<'_, 'src> {
             | ExpressionKind::Identifier(_)
             | ExpressionKind::ThreadLocal(_)
             | ExpressionKind::Local(_)
+            | ExpressionKind::CompoundLiteral { .. }
+            | ExpressionKind::StaticLiteral(_)
             | ExpressionKind::Member { .. } => {
                 let place = self.thread_scalar_place(expr)?;
                 if place.is_none() {
@@ -899,6 +940,9 @@ impl<'src> Emitter<'_, 'src> {
 
     fn use_symbol(&mut self, name: &'src str, site: &Position) -> Result<(), Diagnostic> {
         self.check_symbol(name, site)?;
+        if self.object_definitions.contains(name) {
+            return Ok(());
+        }
         match self.functions.get(name) {
             Some(function) if function.body.is_some() => {}
             Some(function) if function.linkage == Linkage::Internal => {
@@ -927,6 +971,10 @@ impl<'src> Emitter<'_, 'src> {
         }
         label
     }
+}
+
+fn literal_label(id: usize) -> String {
+    format!(".L.init.{id}")
 }
 
 fn supported_abi_type(ty: &Type) -> bool {
