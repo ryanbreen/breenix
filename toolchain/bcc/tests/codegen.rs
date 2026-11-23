@@ -174,25 +174,6 @@ fn aarch64_return_42_exit_status() {
 }
 
 #[test]
-fn aarch64_reports_deferred_lvalue() {
-    let path = Path::new("deferred-lvalue.c");
-    let options = pp::Options {
-        target: pp::Target::Aarch64,
-        ..pp::Options::default()
-    };
-    let source = b"extern _Thread_local int data;\nint *address(void) { return &data; }";
-    let input = pp::preprocess_source(path, source, &options).unwrap();
-    let unit = sema::analyze(&input, path, options.target).unwrap();
-    let error = codegen::emit_assembly(&unit, path, options.target)
-        .unwrap_err()
-        .to_string();
-    let message = error
-        .strip_prefix("deferred-lvalue.c:2:30: error: ")
-        .unwrap_or_else(|| panic!("{error}"));
-    assert!(message.contains("deferred to A4"), "{error}");
-}
-
-#[test]
 fn sysv_scalar_calls() {
     let toolchain = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let bcc = Path::new(env!("CARGO_BIN_EXE_bcc"));

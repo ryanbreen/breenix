@@ -27,6 +27,22 @@ fn aarch64_binary128_load_store_encodings() {
 }
 
 #[test]
+fn aarch64_reads_tpidr_el0() {
+    // DDI 0487 M.b §§C6.2.286 and D24.2.203: MRS with
+    // op0=3, op1=3, CRn=13, CRm=0, op2=2, and Rt in bits [4:0].
+    let text = aarch64_text("mrs x0, tpidr_el0\nmrs x19, TPIDR_EL0\nmrs xzr, tpidr_el0");
+    assert_eq!(
+        text,
+        [0xd53b_d040u32, 0xd53b_d053, 0xd53b_d05f]
+            .map(u32::to_le_bytes)
+            .concat()
+    );
+    for invalid in ["mrs w0, tpidr_el0", "mrs sp, tpidr_el0", "mrs x0, tpidr_el1"] {
+        assert!(assemble_for(Target::Aarch64, invalid.as_bytes()).is_err(), "{invalid}");
+    }
+}
+
+#[test]
 fn aarch64_binary128_lane_move_encodings() {
     // DDI 0487 M.b §C7.2.157: sf=1, ftype=10, rmode=01,
     // opcode=110 (to X) or 111 (from X).
