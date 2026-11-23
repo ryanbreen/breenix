@@ -22,6 +22,86 @@ const fn power(exponent: i32) -> u128 {
     ((exponent + 16383) as u128) << 112
 }
 
+#[test]
+fn f128_conversion_vectors() {
+    // IEEE 754-2019 §§3.4 and 5.4.1: these integers fit in 113 bits exactly.
+    assert_eq!(f128::from_i32(i32::MIN), SIGN | power(31));
+    assert_eq!(f128::from_i64(i64::MIN), SIGN | power(63));
+    assert_eq!(f128::from_u32(u32::MAX), power(32) - (1 << 81));
+    assert_eq!(f128::from_u64(1 << 63), power(63));
+    let uint64_max = power(64) - (1 << 49);
+    assert_eq!(f128::from_u64(u64::MAX), uint64_max);
+    assert_eq!(f128::to_u64(uint64_max), u64::MAX);
+    assert_eq!(f128::to_i64(SIGN | power(63)), i64::MIN);
+    assert_eq!(f128::to_i32(SIGN | power(31)), i32::MIN);
+
+    // Truncate before checking the range (IEEE §5.8, N1570 §6.3.1.4).
+    assert_eq!(f128::to_i32(SIGN | ONE_AND_HALF), -1);
+    assert_eq!(f128::to_i64(ONE_AND_HALF), 1);
+    assert_eq!(f128::to_u32(power(32) - 1), u32::MAX);
+    assert_eq!(f128::to_u32(ONE_AND_HALF), 1);
+    assert_eq!(f128::to_i64(SIGN | (power(63) + 1)), i64::MIN);
+    assert_eq!(f128::to_u64(SIGN | HALF), 0);
+    for bits in [NAN, INF, SIGN | INF, power(64), power(16383)] {
+        assert_eq!(f128::to_i32(bits), 0);
+        assert_eq!(f128::to_i64(bits), 0);
+        assert_eq!(f128::to_u32(bits), 0);
+        assert_eq!(f128::to_u64(bits), 0);
+    }
+    assert_eq!(f128::to_i64(power(63)), 0);
+    assert_eq!(f128::to_u32(power(32)), 0);
+    assert_eq!(f128::to_u64(SIGN | ONE), 0);
+
+    // IEEE §§3.4, 5.4.2 and 6.3: widening preserves each finite value and sign.
+    assert_eq!(f128::from_f32_bits(0x8000_0000), SIGN);
+    assert_eq!(f128::from_f64_bits(0x8000_0000_0000_0000), SIGN);
+    assert_eq!(f128::to_f32_bits(SIGN), 0x8000_0000);
+    assert_eq!(f128::to_f64_bits(SIGN), 0x8000_0000_0000_0000);
+    assert_eq!(f128::from_f32_bits(1), power(-149));
+    assert_eq!(f128::from_f64_bits(1), power(-1074));
+    assert_eq!(f128::from_f32_bits(0x3fc0_0000), ONE_AND_HALF);
+    assert_eq!(f128::from_f64_bits(0xfff0_0000_0000_0000), SIGN | INF);
+    assert_eq!(f128::to_f32_bits(SIGN | INF), 0xff80_0000);
+
+    // IEEE §§4.3.1, 7.4 and 7.5: halfway cases round once, including at both ends.
+    let f64_overflow = power(1024) - (1 << 59);
+    assert_eq!(f128::to_f64_bits(f64_overflow - 1), 0x7fef_ffff_ffff_ffff);
+    assert_eq!(f128::to_f64_bits(f64_overflow), 0x7ff0_0000_0000_0000);
+    assert_eq!(
+        f128::to_f64_bits(SIGN | power(-1075)),
+        0x8000_0000_0000_0000
+    );
+    assert_eq!(f128::to_f64_bits(power(-1075) + 1), 1);
+    assert_eq!(
+        f128::to_f64_bits(power(-1022) - (1 << 59)),
+        0x0010_0000_0000_0000
+    );
+    assert_eq!(f128::to_f32_bits(power(-150)), 0);
+    assert_eq!(f128::to_f32_bits(power(-150) + 1), 1);
+    assert_eq!(f128::to_f32_bits(ONE + (1 << 88)), 0x3f80_0000);
+    assert_eq!(f128::to_f32_bits(ONE + (3 << 88)), 0x3f80_0002);
+    assert_eq!(f128::to_f32_bits(power(128) - (1 << 88)), 0x7f80_0000);
+
+    // Quiet signaling NaNs and retain the sign and representable payload (§6.2).
+    assert_eq!(f128::to_f32_bits(SIGN | INF | 1), 0xffc0_0001);
+    assert_eq!(f128::to_f64_bits(INF | (1 << 110)), 0x7ff8_0000_0000_0000);
+    assert_eq!(f128::from_f64_bits(0xfff8_0000_0000_0001), SIGN | NAN | 1);
+
+    let mut bits = 0x9e37_79b9_7f4a_7c15u64;
+    for _ in 0..1024 {
+        bits ^= bits << 13;
+        bits ^= bits >> 7;
+        bits ^= bits << 17;
+        if bits & 0x7ff0_0000_0000_0000 == 0x7ff0_0000_0000_0000 {
+            continue;
+        }
+        let wide = f128::from_f64_bits(bits);
+        let narrow = f128::to_f64_bits(wide);
+        assert_eq!(narrow, bits, "binary64 {bits:#018x}");
+        assert_eq!(f128::from_f64_bits(narrow), wide);
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Op {
     Add,
