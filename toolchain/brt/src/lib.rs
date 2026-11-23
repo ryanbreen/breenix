@@ -229,3 +229,6 @@ mod tests;
 
 #[cfg(test)]
 mod binary128_tests;
+
+#[cfg(all(test, feature = "exports", target_arch = "aarch64"))]
+mod fpcr_tests;

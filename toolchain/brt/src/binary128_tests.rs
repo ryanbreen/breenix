@@ -23,6 +23,71 @@ const fn power(exponent: i32) -> u128 {
 }
 
 #[test]
+fn f128_add_rounds_per_direction() {
+    use f128::{Rounding, INEXACT};
+
+    // IEEE 754-2019 §§4.3, 6.3 and 7.6: ties, their negative mirrors, and exact zero.
+    for (rounding, positive, negative, zero) in [
+        (Rounding::NearestEven, ONE, SIGN | ONE, 0),
+        (Rounding::Upward, ONE + 1, SIGN | ONE, 0),
+        (Rounding::Downward, ONE, SIGN | (ONE + 1), SIGN),
+        (Rounding::TowardZero, ONE, SIGN | ONE, 0),
+    ] {
+        assert_eq!(
+            f128::add_rounded(ONE, HALF_ULP, rounding),
+            (positive, INEXACT)
+        );
+        assert_eq!(
+            f128::add_rounded(SIGN | ONE, SIGN | HALF_ULP, rounding),
+            (negative, INEXACT),
+        );
+        assert_eq!(f128::add_rounded(ONE, SIGN | ONE, rounding), (zero, 0));
+        assert_eq!(f128::add_rounded(SIGN, 0, rounding), (zero, 0));
+        assert_eq!(f128::add_rounded(SIGN, SIGN, rounding), (SIGN, 0));
+    }
+}
+
+#[test]
+fn f128_raises_ieee_flags() {
+    use f128::{Rounding::*, DIVIDE_BY_ZERO, INEXACT, INVALID, OVERFLOW, UNDERFLOW};
+
+    // IEEE 754-2019 §§7.2–7.6: overflow, tiny inexact vs exact, and special operands.
+    for (rounding, overflow, negative_overflow, tiny) in [
+        (NearestEven, INF, SIGN | INF, 0),
+        (Upward, INF, SIGN | MAX, 1),
+        (Downward, MAX, SIGN | INF, 0),
+        (TowardZero, MAX, SIGN | MAX, 0),
+    ] {
+        assert_eq!(
+            f128::mul_rounded(MAX, TWO, rounding),
+            (overflow, OVERFLOW | INEXACT)
+        );
+        assert_eq!(
+            f128::mul_rounded(SIGN | MAX, TWO, rounding),
+            (negative_overflow, OVERFLOW | INEXACT),
+        );
+        assert_eq!(
+            f128::div_rounded(1, TWO, rounding),
+            (tiny, UNDERFLOW | INEXACT)
+        );
+        assert_eq!(
+            f128::div_rounded(MIN_NORMAL, TWO, rounding),
+            (MIN_NORMAL / 2, 0)
+        );
+        assert_eq!(f128::div_rounded(ONE, 0, rounding), (INF, DIVIDE_BY_ZERO));
+        assert_eq!(f128::div_rounded(INF, 0, rounding), (INF, 0));
+        assert_eq!(f128::div_rounded(0, 0, rounding), (NAN, INVALID));
+        assert_eq!(f128::add_rounded(INF | 1, ONE, rounding), (NAN, INVALID));
+        assert_eq!(f128::add_rounded(NAN, ONE, rounding), (NAN, 0));
+    }
+    assert_eq!(
+        f128::mul_rounded(MIN_NORMAL, ONE - 1, NearestEven),
+        (MIN_NORMAL, UNDERFLOW | INEXACT)
+    );
+    assert_eq!(f128::add_rounded(MAX, ONE, TowardZero), (MAX, INEXACT));
+}
+
+#[test]
 fn f128_conversion_vectors() {
     // IEEE 754-2019 §§3.4 and 5.4.1: these integers fit in 113 bits exactly.
     assert_eq!(f128::from_i32(i32::MIN), SIGN | power(31));
