@@ -103,12 +103,13 @@ def build_guest_tools(arch, work, dev, clang, cargo, env, rustc_record):
         interop_target = ROOT / "x86_64-breenix-c.json"
         interop_dir = ROOT / "target/toolchain-bundle/interop"
         manifest = WORKSPACE / "corpus/interop/rust/Cargo.toml"
+        interop_flags = [*remap, "-C", f"metadata=breenix_std_{fork}"]
         subprocess.run([
             *cargo, "--manifest-path", str(manifest),
             "--target", str(interop_target), "--target-dir", str(interop_dir),
             "-Z", "build-std=core",
         ], cwd=WORKSPACE, env=dict(env, __CARGO_TESTS_ONLY_SRC_ROOT=str(library),
-                                  CARGO_ENCODED_RUSTFLAGS="\x1f".join(remap)), check=True)
+                                  CARGO_ENCODED_RUSTFLAGS="\x1f".join(interop_flags)), check=True)
         destination = dev / "lib" / "libinterop.a"
         shutil.copy2(interop_dir / interop_target.stem / "release/libinterop.a", destination)
         tools["interop"] = {
