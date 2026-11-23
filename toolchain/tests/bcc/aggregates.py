@@ -146,7 +146,121 @@ FAILURES = ("mixed", "two SSE eightbytes", "sret", "three-byte array",
             "stack order after six integer arguments", "rollback with one integer register left")
 
 
-def check(bcc, bas, bld, work):
+# AMD64 psABI §3.1.2: the 7-bit field moves to the next int unit.
+# The zero-width field starts a new unit without being an initializer slot.
+BITFIELD_TYPES = """\
+struct Bits {
+    unsigned int head : 28;
+    signed int delta : 7;
+    unsigned int mode : 3;
+    unsigned int : 0;
+    unsigned int tail : 4;
+    unsigned char marker;
+};
+struct Bits change_bits(struct Bits *, struct Bits);
+"""
+
+BITFIELD_CALLEE = """\
+struct Bits change_bits(struct Bits *out, struct Bits in)
+{
+    if (in.head != 0x0fedcba9U || in.delta != -37 || in.mode - 6 >= 0 ||
+        in.tail != 9 || in.marker != 71)
+        return in;
+    out->mode += 7;
+    out->tail ^= 3;
+    in.delta -= 4;
+    in.head = 0x0abcdef0U;
+    return in;
+}
+"""
+
+BITFIELD_CALLER = """\
+int main(void)
+{
+    struct Bits in;
+    in.head = 0x0fedcba9U;
+    in.delta = -37;
+    in.mode = 3;
+    in.tail = 9;
+    in.marker = 71;
+    struct Bits out = in;
+    struct Bits result = change_bits(&out, in);
+    if (sizeof(in) != 12 || (char *)&in.marker - (char *)&in != 9 ||
+        out.mode != 2 || out.tail != 10 || out.delta != -37 ||
+        out.head != 0x0fedcba9U || out.marker != 71 ||
+        result.head != 0x0abcdef0U || result.delta != -41 ||
+        result.mode != 3 || result.tail != 9 || result.marker != 71)
+        return 1;
+
+    unsigned int first = 5;
+    struct Bits init = {first, -7, 4, 6};
+    struct Bits *ptr = &init;
+    unsigned int wide = 11;
+    if (ptr++->mode++ != 4 || ptr != &init + 1 || init.mode != 5 ||
+        (init.mode = wide) != 3 || init.delta != -7 || init.tail != 6 ||
+        init.head != 5 || init.marker != 0)
+        return 2;
+    return 42;
+}
+"""
+
+# The packed 9-bit field straddles a natural int unit. The zero-width field
+# still aligns to the next unit. The int at offset 9 forces MEMORY for both
+# argument and return (AMD64 psABI §3.2.3) even though the record is 13 bytes.
+PACKED_TYPES = """\
+struct __attribute__((packed)) Packed {
+    unsigned int head : 28;
+    signed int cross : 9;
+    unsigned int : 0;
+    unsigned char tag;
+    int payload;
+};
+struct Packed change_packed(struct Packed *, struct Packed, int);
+"""
+
+PACKED_CALLEE = """\
+struct Packed change_packed(struct Packed *out, struct Packed in, int key)
+{
+    if (in.head != 0x0abcdef0U || in.cross != -143 || in.tag != 55 ||
+        in.payload != 0x12345678 || key != 19)
+        return in;
+    out->cross += 17;
+    out->payload ^= 0x0000ff00;
+    in.cross = -211;
+    in.tag = 91;
+    return in;
+}
+"""
+
+PACKED_CALLER = """\
+int main(void)
+{
+    struct Packed in;
+    in.head = 0x0abcdef0U;
+    in.cross = -143;
+    in.tag = 55;
+    in.payload = 0x12345678;
+    struct Packed out = in;
+    struct Packed result = change_packed(&out, in, 19);
+    if (sizeof(in) != 13 || (char *)&in.tag - (char *)&in != 8 ||
+        out.head != 0x0abcdef0U || out.cross != -126 || out.tag != 55 ||
+        out.payload != 0x1234a978 || result.head != 0x0abcdef0U ||
+        result.cross != -211 || result.tag != 91 || result.payload != 0x12345678)
+        return 1;
+    return 42;
+}
+"""
+
+CASES = {
+    "aggregates": (TYPES, CALLER, CALLEE, FAILURES),
+    "bitfields": (BITFIELD_TYPES, BITFIELD_CALLER, BITFIELD_CALLEE,
+                  ("pointer/by-value bit-fields", "bit-field initializer and assignment values")),
+    "packed": (PACKED_TYPES, PACKED_CALLER, PACKED_CALLEE,
+               ("packed fields and MEMORY argument/result",)),
+}
+
+
+def check(bcc, bas, bld, work, cases):
     scripts = HERE.parents[2] / "scripts"
     sys.path.insert(0, str(scripts))
     loader = SourceFileLoader("toolchain_ref_cc", str(scripts / "toolchain-ref-cc"))
@@ -159,17 +273,29 @@ def check(bcc, bas, bld, work):
     script = work / "main.ld"
     script.write_text(LINKER_SCRIPT.read_text().replace("ENTRY(_start)", "ENTRY(main)"))
 
+    for name in cases:
+        case = work / name
+        case.mkdir()
+        cross_call(reference, clang, bcc, bas, bld, script, case, CASES[name])
+        if name == "packed":
+            print("abi::bitfields_and_packed_bcc_to_clang packed PASS")
+        elif name == "bitfields":
+            print("abi::bitfields_and_packed_bcc_to_clang bitfields PASS")
+
+
+def cross_call(reference, clang, bcc, bas, bld, script, work, fixture):
+    types, caller, callee, failures = fixture
     for direction, clang_half, bcc_half in (
-        ("bcc-to-clang", ("callee", CALLEE), ("caller", CALLER)),
-        ("clang-to-bcc", ("caller", CALLER), ("callee", CALLEE)),
+        ("bcc-to-clang", ("callee", callee), ("caller", caller)),
+        ("clang-to-bcc", ("caller", caller), ("callee", callee)),
     ):
         case = work / direction
         case.mkdir()
         clang_source = case / (clang_half[0] + ".c")
-        clang_source.write_text(TYPES + clang_half[1])
+        clang_source.write_text(types + clang_half[1])
         clang_obj, _, _ = reference.compile_c("x86_64", clang, clang_source, (case,), case)
         source = case / (bcc_half[0] + ".c")
-        source.write_text(TYPES + bcc_half[1])
+        source.write_text(types + bcc_half[1])
         assembly = source.with_suffix(".s")
         assembly.write_bytes(checked(bcc, "-S", source))
         obj = source.with_suffix(".o")
@@ -179,7 +305,7 @@ def check(bcc, bas, bld, work):
         result = run(sys.executable, HERE / "return_42_exit_status.py", "--call-entry", executable)
         if (result.returncode, result.stdout, result.stderr) != (42, b"", b""):
             status = result.returncode
-            detail = FAILURES[status - 1] if 1 <= status <= len(FAILURES) else "execution"
+            detail = failures[status - 1] if 1 <= status <= len(failures) else "execution"
             raise ValueError(f"{direction} failed {detail}: {status}, "
                              f"stdout={result.stdout!r}, stderr={result.stderr!r}")
         print(f"{direction} PASS")
@@ -188,8 +314,12 @@ def check(bcc, bas, bld, work):
 if __name__ == "__main__":
     if platform.machine() != "x86_64":
         sys.exit("run with x86-64 Python")
+    args = sys.argv[1:]
+    cases = args[3:] or CASES
+    if any(case not in CASES for case in cases):
+        sys.exit(f"expected case names from {', '.join(CASES)}")
     try:
         with TemporaryDirectory() as temp:
-            check(*map(Path, sys.argv[1:]), Path(temp).resolve())
+            check(*map(Path, args[:3]), Path(temp).resolve(), cases)
     except (KeyError, OSError, ValueError, subprocess.SubprocessError) as error:
         sys.exit(str(error))
