@@ -24,6 +24,14 @@ impl FloatFormat {
         }
     }
 
+    pub(crate) fn exponent_shift(&self) -> u32 {
+        self.fraction + u32::from(self.explicit_integer)
+    }
+
+    pub(crate) fn exponent_mask(&self) -> u128 {
+        ((2 * self.bias + 1) as u128) << self.exponent_shift()
+    }
+
     pub(crate) fn min_exponent(&self) -> i32 {
         1 - self.bias
     }

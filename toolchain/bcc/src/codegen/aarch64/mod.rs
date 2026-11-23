@@ -17,6 +17,7 @@ use crate::types::{Float, Integer, Kind, Layout, Record, Type};
 mod abi;
 mod atomic;
 mod binary128;
+mod builtins;
 mod float;
 mod flow;
 mod record;
@@ -328,6 +329,11 @@ impl<'src> Emitter<'_, 'src> {
             }
             ExpressionKind::Atomic { op, weak, arguments } => {
                 self.atomic_builtin(*op, *weak, arguments)?;
+            }
+            ExpressionKind::FloatClass { operand, values } => self.float_class(operand, *values)?,
+            ExpressionKind::SignBit(operand) => self.float_sign(operand)?,
+            ExpressionKind::Alloca(_) => {
+                return Err(Diagnostic::new(expr.position(), "__builtin_alloca lowering is deferred to ARM 25.10b"));
             }
             ExpressionKind::VaStart(list) => self.va_start(list)?,
             ExpressionKind::VaArg(list) => self.va_arg(list, &expr.ty, expr.position())?,

@@ -2,7 +2,9 @@
 
 use super::*;
 
+#[derive(Clone)]
 pub(super) enum Slot {
+    Virtual(ValueId),
     Frame(usize),
     Aligned(usize),
     Static(String),
@@ -16,6 +18,7 @@ impl Slot {
             Self::Frame(base) => format!("[rbp - {}]", base - offset),
             Self::Aligned(base) => format!("[r15 - {}]", base - offset),
             Self::Static(name) => format!("[rip + {name}]"),
+            Self::Virtual(_) => unreachable!("virtual locals use scalar accesses"),
             Self::Thread(_) | Self::ThreadExtern => {
                 unreachable!("thread objects use a TP-relative slot")
             }
@@ -47,11 +50,20 @@ impl<'src> Emitter<'_, 'src> {
                 }
                 LocalStorage::Automatic => {
                     let mut layout = local.object.layout().unwrap();
-                    // A parameter spill may store a whole register or eightbyte.
-                    if index < function.params.len() {
-                        layout.size = abi::eightbyte_size(layout.size, local.object.site)?;
+                    let ty = &local.object.ty;
+                    if self.optimize
+                        && matches!(ty.kind, Kind::Integer(_) | Kind::Pointer(_))
+                        && !ty.qualifiers.volatile
+                        && !ty.qualifiers.atomic
+                    {
+                        Slot::Virtual(self.scan.local(ty, layout))
+                    } else {
+                        // A parameter spill may store a whole register or eightbyte.
+                        if index < function.params.len() {
+                            layout.size = abi::eightbyte_size(layout.size, local.object.site)?;
+                        }
+                        self.frame_slot(layout, local.object.site)?
                     }
-                    self.frame_slot(layout, local.object.site)?
                 }
             };
             self.locals.push(slot);
@@ -155,6 +167,7 @@ impl<'src> Emitter<'_, 'src> {
                 break_to,
                 continue_to,
             } => {
+                let loop_start = self.scan.point();
                 let start = self.label();
                 let next = self.flow_label(*continue_to);
                 let end = self.flow_label(*break_to);
@@ -171,6 +184,9 @@ impl<'src> Emitter<'_, 'src> {
                     self.jump_if(test, "jz", &end)?;
                 }
                 writeln!(self.text, "    jmp {start}\n{end}:").unwrap();
+                if self.optimize {
+                    self.scan.loop_back(loop_start);
+                }
             }
             Statement::Switch {
                 value,
@@ -199,11 +215,17 @@ impl<'src> Emitter<'_, 'src> {
                 writeln!(self.text, "{end}:").unwrap();
             }
             Statement::Label(id, body) => {
+                if self.optimize {
+                    self.scan.label(*id);
+                }
                 let label = self.flow_label(*id);
                 writeln!(self.text, "{label}:").unwrap();
                 self.statement(body, result, epilogue)?;
             }
             Statement::Jump(id) => {
+                if self.optimize {
+                    self.scan.jump(*id);
+                }
                 let label = self.flow_label(*id);
                 writeln!(self.text, "    jmp {label}").unwrap();
             }
@@ -245,6 +267,10 @@ impl<'src> Emitter<'_, 'src> {
                 InitValue::Zero => self.zero(local, init.offset, init.ty.layout().unwrap().size),
                 InitValue::Expression(value) => {
                     self.converted(value, &init.ty)?;
+                    if let Slot::Virtual(id) = self.locals[local] {
+                        self.scalar_access(id, Access::Write);
+                        continue;
+                    }
                     let memory = self.locals[local].memory(init.offset);
                     if let Some(field) = init.bit_field {
                         writeln!(self.text, "    lea r11, {memory}").unwrap();
@@ -259,12 +285,30 @@ impl<'src> Emitter<'_, 'src> {
     }
 
     fn zero(&mut self, local: usize, offset: usize, bytes: usize) {
+        if let Slot::Virtual(id) = self.locals[local] {
+            self.text.push_str("    xor eax, eax\n");
+            self.scalar_access(id, Access::Write);
+            return;
+        }
         let memory = self.locals[local].memory(offset);
         writeln!(
             self.text,
             "    lea rdi, {memory}\n    mov rcx, {bytes}\n    xor eax, eax\n    rep stosb"
         )
         .unwrap();
+    }
+
+    pub(super) fn virtual_local(&self, expr: &Expression<'src>) -> Option<ValueId> {
+        if let ExpressionKind::Local(local) = expr.kind {
+            if let Slot::Virtual(id) = self.locals[local] {
+                return Some(id);
+            }
+        }
+        None
+    }
+
+    pub(super) fn scalar_access(&mut self, id: ValueId, access: Access) {
+        self.scan.access(self.text.len(), id, access);
     }
 
     pub(super) fn address(&mut self, expr: &Expression<'src>) -> Result<(), Diagnostic> {
@@ -279,6 +323,10 @@ impl<'src> Emitter<'_, 'src> {
             .unwrap();
             return Ok(());
         }
+        if let Some(id) = self.virtual_local(expr) {
+            self.scalar_access(id, Access::Address);
+            return Ok(());
+        }
         let memory = match &expr.kind {
             ExpressionKind::Identifier(name) => {
                 self.use_symbol(name, expr.position())?;
@@ -287,6 +335,10 @@ impl<'src> Emitter<'_, 'src> {
             ExpressionKind::Local(id) => self.locals[*id].memory(0),
             ExpressionKind::CompoundLiteral { local, initializer } => {
                 self.initialize(*local, initializer)?;
+                if let Slot::Virtual(id) = self.locals[*local] {
+                    self.scalar_access(id, Access::Address);
+                    return Ok(());
+                }
                 self.locals[*local].memory(0)
             }
             ExpressionKind::StaticLiteral(id) => format!("[rip + {}]", literal_label(*id)),
@@ -317,6 +369,20 @@ impl<'src> Emitter<'_, 'src> {
         right: &Expression<'src>,
         operation: Option<&(Binary, Type, Type)>,
     ) -> Result<(), Diagnostic> {
+        if let Some(id) = self.virtual_local(left) {
+            if let Some((op, a, b)) = operation {
+                self.scalar_access(id, Access::Read);
+                self.convert(&left.ty, a);
+                let saved = self.save_operand(a);
+                self.converted(right, b)?;
+                self.combine(*op, a, b, a, saved);
+                self.convert(a, &left.ty);
+            } else {
+                self.converted(right, &left.ty)?;
+            }
+            self.scalar_access(id, Access::Write);
+            return Ok(());
+        }
         if left.ty.qualifiers.atomic {
             if let Some((op, a, b)) = operation {
                 return self.atomic_rmw(left, Some(right), *op, (a, b), false);
@@ -342,10 +408,9 @@ impl<'src> Emitter<'_, 'src> {
         if let Some((op, a, b)) = operation {
             self.load_lvalue(left, place.as_ref());
             self.convert(&left.ty, a);
-            self.adjust_stack("sub", 16);
-            self.store(a, "[rsp]");
+            let saved = self.save_operand(a);
             self.converted(right, b)?;
-            self.combine(*op, a, b, a);
+            self.combine(*op, a, b, a, saved);
             self.convert(a, &left.ty);
         } else {
             self.converted(right, &left.ty)?;
@@ -380,8 +445,22 @@ impl<'src> Emitter<'_, 'src> {
             } else {
                 left.clone()
             };
-            let op = if increment { Binary::Add } else { Binary::Subtract };
+            let op = if increment {
+                Binary::Add
+            } else {
+                Binary::Subtract
+            };
             return self.atomic_rmw(operand, None, op, (&left, &right), postfix);
+        }
+        if let Some(id) = self.virtual_local(operand) {
+            self.scalar_access(id, Access::Read);
+            let saved = postfix.then(|| self.scan.temporary(self.text.len()));
+            self.step_scalar(ty, increment, postfix);
+            self.scalar_access(id, Access::Write);
+            if let Some(saved) = saved {
+                self.scalar_access(saved, Access::Read);
+            }
+            return Ok(());
         }
         let extended = ty.kind == Kind::LongDouble;
         let reserve = if postfix && extended { 32 } else { 16 };
@@ -400,6 +479,19 @@ impl<'src> Emitter<'_, 'src> {
             }
             self.store(ty, "[rsp + 8]");
         }
+        self.step_scalar(ty, increment, postfix);
+        if place.is_none() {
+            self.text.push_str("    mov r11, qword [rsp]\n");
+        }
+        self.store_lvalue(operand, place.as_ref());
+        if postfix {
+            self.load(ty, "[rsp + 8]");
+        }
+        self.adjust_stack("add", reserve);
+        Ok(())
+    }
+
+    fn step_scalar(&mut self, ty: &Type, increment: bool, postfix: bool) {
         let op = if increment { "add" } else { "sub" };
         match &ty.kind {
             Kind::LongDouble => {
@@ -432,15 +524,6 @@ impl<'src> Emitter<'_, 'src> {
             }
             _ => unreachable!(),
         }
-        if place.is_none() {
-            self.text.push_str("    mov r11, qword [rsp]\n");
-        }
-        self.store_lvalue(operand, place.as_ref());
-        if postfix {
-            self.load(ty, "[rsp + 8]");
-        }
-        self.adjust_stack("add", reserve);
-        Ok(())
     }
 
     pub(super) fn store_object(&mut self, ty: &Type, address: &str) {

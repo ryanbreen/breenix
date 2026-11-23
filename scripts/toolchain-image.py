@@ -2,6 +2,7 @@
 """Seal and stage the toolchain suite's files on a private ext2 work copy."""
 import argparse
 import hashlib
+from importlib.util import module_from_spec, spec_from_file_location
 import json
 from pathlib import Path
 import re
@@ -18,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEV = Path("opt/breenix-dev/25.2")
 CORPUS = Path("usr/share/breenix/toolchain")
 SUITE = Path("sbin/suite-toolchain")
+LIBEXEC = Path("usr/libexec/breenix")
 TOOLS = ("bas", "bld", "bar", "bnm")
 TOOL_PATHS = {DEV / "bin" / tool for tool in (*TOOLS, "cc", "make", "as", "ld")}
 LINKER_OBJECTS = ("got-main", "got-entry", "archive-value-with-long-name", "tls-template")
@@ -69,17 +71,61 @@ def stage_c11(corpus, arch):
         shutil.copyfile(source, destination)
 
 
+def c17_libc_inputs():
+    inputs = {Path("c17") / p.name: p for p in (ROOT / "toolchain/corpus/c17").iterdir() if p.is_file()}
+    inputs[Path("libc-suite.mk")] = ROOT / "toolchain/corpus/libc-suite.mk"
+    inputs.update({Path("libc-suite") / p.name: p for p in (ROOT / "userspace/libc-suite").iterdir()
+                   if p.suffix in (".c", ".h") or p.name == "categories"})
+    inputs[Path("libc-suite/libc.json")] = ROOT / "docs/suites/libc.json"
+    return inputs
+
+
+def libc_references():
+    source = ROOT / "userspace/libc-suite/categories"
+    categories = [line.split()[0] for line in source.read_text().splitlines()
+                  if line.strip() and not line.lstrip().startswith("#")]
+    if not categories or len(set(categories)) != len(categories) or any(not NAME.fullmatch(c) for c in categories):
+        raise ValueError(f"invalid category list in {source}")
+    return tuple(LIBEXEC / f"libc-{category}_test.elf" for category in categories)
+
+
+def stage_c17_libc(tree, binaries, arch, clang):
+    corpus = tree / CORPUS
+    for path, source in c17_libc_inputs().items():
+        destination = corpus / path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+    for path in libc_references():
+        destination = tree / path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(binaries / path.name, destination)
+
+    # Use the same declaration inventory as the reference suite's provenance audit.
+    spec = spec_from_file_location("libc_symbol_audit", ROOT / "scripts/libc-symbol-audit.py")
+    audit = module_from_spec(spec)
+    spec.loader.exec_module(audit)
+    compiler = [str(clang), "--no-default-config", f"--target={arch}-unknown-linux-gnu",
+                "-Ulinux", "-U__linux", "-U__linux__", "-U__gnu_linux__", "-D__breenix__=1",
+                "-nostdinc", "-isystem", str(audit.INCLUDE),
+                "-isystem", str(ROOT / "toolchain/include")]
+    functions = audit.declared_functions(arch, audit.public_headers(), compiler=compiler)
+    if not functions:
+        raise ValueError("empty libc declaration inventory")
+    (corpus / "libc-functions.txt").write_text("".join(f"{name}\n" for name in sorted(functions)))
+
+
 def payload(tree):
     files = []
+    references = libc_references()
     for path in sorted(tree.rglob("*")):
         relative = path.relative_to(tree)
         if path.is_symlink() or not GUEST_PATH.fullmatch(relative.as_posix()):
             raise ValueError(f"invalid fixture path: {relative}")
         if path.is_dir():
             if not any(relative.is_relative_to(prefix) or relative in prefix.parents
-                       for prefix in (DEV, CORPUS, SUITE)):
+                       for prefix in (DEV, CORPUS, SUITE, *references)):
                 raise ValueError(f"unexpected fixture directory: {relative}")
-        elif path.is_file() and (relative == SUITE or
+        elif path.is_file() and (relative == SUITE or relative in references or
                                 any(relative.is_relative_to(prefix) for prefix in (DEV, CORPUS))):
             files.append(relative)
         else:
@@ -157,6 +203,8 @@ def seal(bundle, commit, arch, tool_record):
                 sources[CORPUS / path] = corpus / path
     sources[CORPUS / "tls/threads.h"] = corpus / "tls/threads.h"
     sources.update({CORPUS / path: source for path, source in c11_inputs(arch).items()})
+    sources.update({CORPUS / path: source for path, source in c17_libc_inputs().items()})
+    required.update((*libc_references(), CORPUS / "libc-functions.txt"))
 
     if arch == "x86_64":
         fixtures = corpus / "assembler"
@@ -239,6 +287,7 @@ def fixture_mode(path):
 def install(debugfs, image, bundle, arch, scratch):
     tree = bundle / "root"
     files = payload(tree)
+    references = libc_references()
     record = json.loads((bundle / "build.json").read_text())
     if (not COMMIT.fullmatch(record.get("commit", "")) or record.get("arch") != arch
             or not SHA256.fullmatch(record.get("manifestSha256", ""))
@@ -255,6 +304,10 @@ def install(debugfs, image, bundle, arch, scratch):
                 for path in directories if stat_path(debugfs, image, path) is None]
     # Use paths relative to the trusted fixture tree for debugfs's host reads.
     for path in files:
+        # An image may already hold the exact reference name. Readback below
+        # checks its bytes and mode against the reference in the bundle.
+        if path in references and stat_path(debugfs, image, path) is not None:
+            continue
         mode = f"0{0o100000 | fixture_mode(path):o}"
         commands.append(f"write {path} /{path}\nset_inode_field /{path} mode {mode}\n"
                         f"set_inode_field /{path} uid 0\nset_inode_field /{path} gid 0\n")
@@ -265,7 +318,7 @@ def install(debugfs, image, bundle, arch, scratch):
 
     readback = scratch / "readback"
     readback.mkdir()
-    for prefix in (*PREFIXES, SUITE):
+    for prefix in (*PREFIXES, SUITE, *references):
         # Avoid extracting unrelated image files, including names the host
         # filesystem cannot represent.
         extracted = readback / prefix.parent
@@ -304,6 +357,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("check-corpus").add_argument("corpus", type=Path)
+    c17 = commands.add_parser("stage-c17-libc")
+    c17.add_argument("tree", type=Path)
+    c17.add_argument("binaries", type=Path)
+    c17.add_argument("arch", choices=("x86_64", "aarch64"))
+    c17.add_argument("clang", type=Path)
     c11 = commands.add_parser("stage-c11")
     c11.add_argument("corpus", type=Path)
     c11.add_argument("arch", choices=("x86_64", "aarch64"))
@@ -322,6 +380,8 @@ def main():
     try:
         if args.command == "check-corpus":
             check_corpus(args.corpus)
+        elif args.command == "stage-c17-libc":
+            stage_c17_libc(args.tree, args.binaries, args.arch, args.clang)
         elif args.command == "stage-c11":
             stage_c11(args.corpus, args.arch)
         elif args.command == "seal":

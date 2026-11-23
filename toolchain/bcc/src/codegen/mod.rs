@@ -13,8 +13,16 @@ pub fn emit_assembly(
     _source: &Path,
     target: Target,
 ) -> Result<String, Diagnostic> {
+    emit_with_options(unit, target, false)
+}
+
+pub(crate) fn emit_with_options(
+    unit: &TranslationUnit<'_>,
+    target: Target,
+    optimize: bool,
+) -> Result<String, Diagnostic> {
     match target {
-        Target::X86_64 => x86_64::emit(unit),
+        Target::X86_64 => x86_64::emit(unit, optimize),
         Target::Aarch64 => aarch64::emit(unit),
     }
 }

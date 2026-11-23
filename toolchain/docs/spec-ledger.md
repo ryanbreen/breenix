@@ -16,6 +16,7 @@ edition pin whose full publication has no digest recorded here.
 | [WG14 N1570](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf) | C11 committee draft, 2011-04-12 | `208969fec021e4f4ce87a1873765298c73e7bbb5209b1c5868967c7adfc8492e` |
 | [ISO/IEC 9899:2018](https://www.iso.org/standard/74528.html) | C17, edition 4, 2018-06 | — |
 | [WG14 N2243](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n2243.htm) | C11 clarification requests, version 1.13, October 2017 | `61522ef6c63eb6e68964d8a6b5724c2f9ea3304437367195218f631eaa7998ba` |
+| [WG14 N2244](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n2244.htm) | C11 clarification request summary with C17 dispositions, version 1.13, October 2017 | `7fa6be89b5a9a8407f5a26cc18ad86cef52d2c9683094f968bf916dba07bb0d4` |
 | [System V AMD64 psABI](https://raw.githubusercontent.com/wiki/hjl-tools/x86-psabi/x86-64-psABI-1.0.pdf) | AMD64 ABI Draft 1.0, 2018-01-28 | `f5c0e21542fc379090252e18ff3d083d2a5f51da8cca62b0fec41cc330a74641` |
 | [ELF gABI](https://gabi.xinuos.com/elf.pdf) | Xinuos ELF Object File Format, version 4.3 draft, 2025-09-04 | `e695f547dbb989e204dde79bc4dc6cfee7de7cca9b65a10208142932a216831b` |
 | [Linux Standard Base Core Specification](https://refspecs.linuxfoundation.org/LSB_5.0.0/LSB-Core-generic/LSB-Core-generic.pdf) | 5.0, Generic Part, chapter 11 (E25 ruling 8) | — |
@@ -28,8 +29,20 @@ edition pin whose full publication has no digest recorded here.
 | [POSIX make](https://pubs.opengroup.org/onlinepubs/9799919799.2024edition/utilities/make.html) | POSIX.1-2024, Issue 8, `make` utility | `86663126116573d3b62d89a86807e205030bd2e161beeeddfbdab7c7d25d52b4` |
 | [GNU make manual](https://www.gnu.org/software/make//manual/make.pdf) | Edition 0.77, GNU make 4.4.1, 2023-02-26 | `a4bc06026984382815e392159e60a4bc356cac6c5b81e5ae84fa4f58f621f4d3` |
 | [GNU C extensions](https://gcc.gnu.org/onlinedocs/gcc-15.2.0/gcc/C-Extensions.html) | GCC 15.2.0 manual, GNU C extensions chapter | `4965dab10bf21e0147e86aa80fca2a92da2c099393f34d0325c913aa3be871f2` |
+| [GNU CPP Diagnostics](https://gcc.gnu.org/onlinedocs/gcc-15.2.0/cpp/Diagnostics.html) | GCC 15.2.0 manual, §5, `#warning` spelling and behavior | `fbd550c2e99d404c1f8184df32389be1011514b1d95cd0e1ff0eb8e47ca6c37e` |
 | [GNU C vector extensions](https://gcc.gnu.org/onlinedocs/gcc-15.2.0/gcc/Vector-Extensions.html) | GCC 15.2.0 manual, §7.8, `vector_size` typedef spelling | `bb7f699ab3937eefe69960c5a6bbe6fae9fb58c02aa534bec65caca4c57942e6` |
-| [GCC Common Type Attributes](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Common-Attributes.html#Common-Type-Attributes) | GCC 16.2.0 manual, 2026-08-07, 209636 bytes. E25 ruling 37 pins only the meaning of the record type attribute `__attribute__((packed))`. | `ab4a0dcc40060e309f2d126d3bbd8a10b2d596084d32371b8642d76b33e0d33f` |
+| [GCC Common Predefined Macros](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/cpp/Common-Predefined-Macros.html) | GCC 16.2.0 manual, 2026-08-07, §3.7.2, 37380 bytes. The pin covers predefined type macro names. | `9d68defcfa4ed119d2c5f6386b37d49584d7f5354b334008bbae1a2b7ea74904` |
+| [GCC Wrapper Headers](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/cpp/Wrapper-Headers.html) | GCC 16.2.0 manual, 2026-08-07, §2.7, 6361 bytes. The pin covers `#include_next`. | `2070d0294cb6d1436e610e6e59d7735e456c57dbc4610b093fbc1ced833848fb` |
+| [GCC Alternate Keywords](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Alternate-Keywords.html) | GCC 16.2.0 manual, 2026-08-07, §6.12.23, 5255 bytes. The pin covers alternate keywords and `__extension__`. | `e03f023a80ef4e52463455c9434f29df78d8d75d7738dad1b538d9dec4a7e30f` |
+| [GCC Library Builtins](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Library-Builtins.html) | GCC 16.2.0 manual, 2026-08-07, §7.1, 42770 bytes. The pin covers explicit memory and string calls and the names of the floating classification and comparison builtins. | `3defeda60e43356ae0b0f30ea0d80c744b92c974cecc5a60a6f4eb49a46b96c1` |
+| [GCC Bit Operation Builtins](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Bit-Operation-Builtins.html) | GCC 16.2.0 manual, 2026-08-07, §7.2.2, 33645 bytes. The pin covers `__builtin_popcountl`. | `d81a8fb713a88f96dd40547e171f74281b6c02794a53056eb72ce18b031a0e58` |
+| [GCC Other Builtins](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Other-Builtins.html) | GCC 16.2.0 manual, 2026-08-07, §7.12, 51552 bytes. The numeric and allocation builtins are documented in their own sections in this edition. | `92e8e5a16b1a305e2fce2b8e2c0b88cacea13231107e524cb55a628d569822f4` |
+| [GCC Floating-Point Format Builtins](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Floating-Point-Format-Builtins.html) | GCC 16.2.0 manual, 2026-08-07, §7.2.1, 25130 bytes. Infinity constants, NaN tags and `__builtin_fpclassify`. | `9fdeb40c0bae754c0c4c9c3de744370ffcd7583ce450aa05ec805e252a0b7ce5` |
+| [GCC Byte-Swapping Builtins](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Byte-Swapping-Builtins.html) | GCC 16.2.0 manual, 2026-08-07, §7.2.3, 5377 bytes. | `e894e257f7a741c62e6c9a85440a8841aa4a9243aba7aca6e824ee6aed033fca` |
+| [GCC Stack Allocation](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Stack-Allocation.html) | GCC 16.2.0 manual, 2026-08-07, §7.3, 10257 bytes. The pin covers `__builtin_alloca`. | `ac4877e6c1263d823ada457b6a06822aee2523ef7da4c91e86308cf97db65a06` |
+| [GCC Offsetof Support](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Offsetof.html) | GCC 16.2.0 manual, 2026-08-07, 4227 bytes. N1570 §7.19 supplies the C constant-expression contract. | `09bcdd2e8175185eddfb97ff5d03431bd37a29e5d88ed002578c3adeb087569d` |
+| [GCC Optimize Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Optimize-Options.html#index-frounding-math) | GCC 16.2.0 manual, 2026-08-07, 216577 bytes. The pin covers `-frounding-math`. | `2accdebdce3192e6efdff6c1cb87dd5ac739085ea8bd4bef96d4863e71cae0f5` |
+| [GCC Common Attributes](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Common-Attributes.html) | GCC 16.2.0 manual, 2026-08-07, 209636 bytes. E25 ruling 37 and 25.10 cover `packed`, `aligned`, `noreturn` and `returns_twice`. | `ab4a0dcc40060e309f2d126d3bbd8a10b2d596084d32371b8642d76b33e0d33f` |
 | [NASM manual](https://www.nasm.us/xdoc/3.02/nasmdoc.pdf) | NASM 3.02, reserved for 25.12 | `a4d1766c9d640663569bcf93feac0657732fe52017002f1dbc797353f6aed34f` |
 | [GNU ld manual](https://sourceware.org/binutils/docs-2.45/ld.html) | GNU Binutils 2.45, command-line options and linker script syntax | `f219c3b05e197308c5b60fc2d4dbfc302617389ca5c21501de58a90b3d052e06` |
 | [Oracle Solaris `ar(3HEAD)`](https://docs.oracle.com/cd/E86824_01/html/E54772/ar.h-3head.html) | Oracle Solaris 11.3, archive file format | — |
@@ -364,3 +377,111 @@ gABI §§3.10, 5.2 and 7.7 describe `SHF_TLS`, `STT_TLS` and the
 local-exec address and value sequences, using Breenix's self-pointer at
 `FS:0` and `R_X86_64_TPOFF32` relocations. A4 implements AArch64 local-exec
 TLS using TPIDR_EL0 and the AAELF64 TLS relocations and stages its suite inputs.
+
+### C17 mode and warnings (25.10a1)
+
+`-std=c17` defines `__STDC_VERSION__` as `201710L` (ISO C17 §6.10.8.1).
+`-std=c11` and the default define it as `201112L` (N1570 §6.10.8.1).
+
+| WG14 N2244 report | bcc behavior |
+| --- | --- |
+| DR 412, §6.10.1p6 | After a taken conditional, skip the remaining `#elif` expressions. |
+| DR 423, §§6.5.4p5 and 6.7.6.3p5 | In C17 mode, discard top-level qualifiers from cast types and function result types. |
+| DR 444, §§6.7.2.1 and 6.7.5 | Existing support for alignment specifiers on members. |
+| DR 465, §7.17.5.1 | On AMD64 in C17 mode, evaluate the pointer argument once and determine the lock-free result from its pointed-to type, including for a null pointer. AArch64 atomic lowering remains ARM 25.9d work. |
+| DR 481, §6.5.1.1p2 | Use lvalue, array-to-pointer and function-to-pointer conversions when selecting a generic association. The controlling expression stays unevaluated. |
+
+`#warning` emits a located diagnostic. `-Wall` also enables warnings
+for unrecognized source pragmas under §6.10.6. `-Werror` promotes bcc
+warnings to errors and `-w` suppresses warnings, even with `-Werror`.
+`-fno-builtin` is accepted because bcc already compiles ordinary library
+names as calls. Explicit compiler intrinsics remain available.
+
+### Front-end support for the Breenix libc headers
+
+The predefined type macro names come from GCC Common Predefined Macros.
+Their types match the Breenix LP64 header definitions, the AMD64 psABI
+§3.1.2 and AAPCS64 §§5.1, 10.1. The Common Attributes pin supplies record
+and member alignment and packing, and the two function annotations.
+`returns_twice` is retained on the typed function for optimization.
+The alternate keywords use the existing C parser rules for `inline` and
+`restrict`, and `__extension__` has no effect on a supported expression.
+
+Wide string literals use the target's `wchar_t` type and 32-bit Unicode
+code units. N1570 §§6.4.5 and 6.7.9p15 specify concatenation, the terminator
+and array initialization. N1570 §§6.5.3.4, 6.6 and 6.7.6.2 govern
+constant array bounds using `sizeof`. N1570 §6.3.2.3p3 permits casting an
+integer constant expression equal to `0` to `void *` as a null pointer constant.
+
+The libc limits wrapper's `#include_next` follows GCC CPP Wrapper Headers
+§2.7. The explicit memory builtin names follow GCC Library Builtins §7.1
+and use the libc calls and prototypes from N1570 §§7.24.4.1 and 7.24.6.1.
+`__builtin_popcountl` uses ordinary unsigned LP64 operations to implement
+the count specified by GCC Bit Operation Builtins §7.2.2.
+
+### Libc suite builtins (25.10)
+
+N1570 §§7.12.3 and 7.12.14 specify the classification and quiet comparison
+macros. GCC Library Builtins and Floating-Point Format Builtins supply
+their explicit spellings and the order of the `fpclassify` result codes.
+The compiler uses the semantic operand format before arithmetic conversions
+for classification. The comparison macros check for NaNs before comparing
+the saved operands. Infinity and quiet NaN initializers use target-format
+bits, including the x87 explicit integer bit and AArch64 binary128.
+
+On AMD64, `__builtin_alloca` uses the aligned stack in the caller, with
+allocation lifetime through function return (GCC Stack Allocation and AMD64
+psABI §3.2.2). AArch64 stack allocation is deferred to ARM 25.10b.
+
+### Rounding mode and expression grouping (25.10a2)
+
+`-frounding-math` records that executable floating-point expressions
+must respect the live rounding mode. bcc also conservatively treats
+`FENV_ACCESS` as ON throughout the translation unit. The 25.10a3 passes
+must consult `TranslationUnit::preserves_float_environment` before
+folding or otherwise transforming executable floating-point operations,
+including operations that yield an integer. Keep the grouping of the typed
+expression tree regardless of the flag (N1570 §§5.1.2.3p14, 7.6.1 and F.9).
+
+N1570 §§6.6, F.8.2, F.8.4 and F.8.5 govern translation-time expressions.
+The flag leaves integer constant expressions and static or thread storage
+initializers in translation-time evaluation. Static floating-point
+arithmetic rounds each intermediate to its target format in the default
+rounding direction.
+
+### Typed AST optimization (25.10a3)
+
+The driver accepts `-O0`, `-O1` and `-O2`. The last optimization flag
+selects the level. `-O1` uses the default emission path. At `-O2`, bcc
+propagates integer constants and reuses integer computations over automatic
+locals without address-taking uses. Facts reset at control flow joins,
+and common subexpressions use the original integer types and conversions
+(N1570 §§6.3.1 and 6.5). The passes preserve volatile and atomic accesses,
+and leave runtime floating-point operations under the rounding policy above
+(N1570 §§5.1.2.3 and 7.6.1).
+
+Unreachable statements can be dropped after a jump or return and in an
+untaken branch with an integer constant condition. The optimizer retains
+alternate entries through C labels and switch case labels (N1570 §§6.8.1,
+6.8.4 and 6.8.6).
+
+The host libc recipe check uses bcc, bas, bld, bnm and elfcheck built for
+the host. It reads the x86 C-ABI `libc.a` from the same path as
+`userspace/libc-suite/build.sh`, and uses the guest's x86 `libbrt.a` for
+the compiler-generated atomic helpers. Set `BREENIX_LIBC_SUITE_BRT` if
+that archive was built outside Cargo's target directory. The check uses
+the category file's complete flags and its recipe's data-symbol policy.
+
+### AMD64 scalar register allocation (25.10a4)
+
+At `-O2`, the AMD64 emitter records scalar local accesses and integer or
+pointer expression temporaries. Address-taken, volatile and atomic objects
+use memory (N1570 §§6.5.3.2, 6.7.3 and 7.17). A linear scan extends local
+intervals across backward edges and spills the interval ending last when
+registers run out.
+
+AMD64 psABI §§3.2.1–3.2.3 and Figure 3.4 govern the register bank. The
+emitter saves live R8 and R9 values before loading outgoing arguments and
+reloads them after the call. The prologue saves each allocated RBX or
+R12–R14, and the epilogue restores it. R15 remains the aligned-frame
+anchor.

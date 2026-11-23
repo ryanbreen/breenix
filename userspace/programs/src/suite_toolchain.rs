@@ -1,15 +1,20 @@
 //! Check the sealed reference inputs and the native assembler, linker, C compiler and make.
 
-use breenix_suite::suite::{case, case_diagnostic, category, suite, CaseError, CaseResult, Suite};
+use breenix_suite::suite::{case, case_diagnostic, case_ms_left, category, running_case, suite, CaseError, CaseResult, Suite};
+use libbreenix::crypto::rand::getrandom_bytes;
 use libbreenix::crypto::sha256::{sha256, Sha256};
+use libbreenix::{io, signal, types::Fd};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::Read;
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::SystemTime;
+use std::sync::OnceLock;
+use std::time::{Duration, SystemTime};
 
 #[path = "fixture/ssh_lease.rs"]
 mod ssh_lease;
@@ -19,6 +24,9 @@ const CORPUS: &str = "usr/share/breenix/toolchain";
 const RUNNER: &str = "sbin/suite-toolchain";
 const MANIFEST: &str = "opt/breenix-dev/25.2/manifest.sha256";
 const RECORD: &str = "opt/breenix-dev/25.2/build.json";
+const LIBC_REFERENCE_DIR: &str = "usr/libexec/breenix";
+const LIBC_PREREQUISITES: [&str; 2] = ["abi_check.o", "harness.o"];
+static LIBC_NONCE: OnceLock<[u8; 16]> = OnceLock::new();
 #[cfg(target_arch = "x86_64")]
 const BAS_PROGRAMS: &[&str] = &["sse-exit", "x87-exit"];
 #[cfg(target_arch = "aarch64")]
@@ -260,10 +268,36 @@ static SUITE: Suite = suite(
                 ),
             ],
         ),
+        category(
+            "c17",
+            "C17 corrections and the small optimization pipeline",
+            &[
+                case("corrections", "C17 corrections at O0 and O2 match their independent expectation", c17_program),
+                case("o2-expect", "Optimized and unoptimized output match the independent expectation", c17_program),
+                case("rounding-math", "Both optimization levels honor rounding modes and match the independent expectation", c17_program),
+            ],
+        ),
+        category(
+            "libc-suite",
+            "The libc suite's C sources compiled on the box, compared case by case",
+            &[
+                case("dirent-glob", "Build dirent-glob and compare each result with the reference", libc_category),
+                case("getopt-env", "Build getopt-env and compare each result with the reference", libc_category),
+                case("locale-wchar", "Build locale-wchar and compare each result with the reference", libc_category),
+                case("math", "Build math and compare each result with the reference", libc_category),
+                case("pthread", "Build pthread and compare each result with the reference", libc_category),
+                case("stdio", "Build stdio and compare each result with the reference", libc_category),
+                case("string-stdlib", "Build string-stdlib and compare each result with the reference", libc_category),
+            ],
+        ),
     ],
 );
 
 fn main() {
+    let mut nonce = [0; 16];
+    if getrandom_bytes(&mut nonce) == Ok(nonce.len()) {
+        let _ = LIBC_NONCE.set(nonce);
+    }
     SUITE.run()
 }
 
@@ -321,7 +355,8 @@ fn fixture_path(name: &str) -> bool {
         .all(|component| matches!(component, Component::Normal(_)))
         && (name == RUNNER
             || (path != Path::new(DEV) && path.starts_with(DEV))
-            || (path != Path::new(CORPUS) && path.starts_with(CORPUS)))
+            || (path != Path::new(CORPUS) && path.starts_with(CORPUS))
+            || libc_cases().iter().any(|case| libc_reference(case.id) == path))
         && name != MANIFEST
         && name != RECORD
         && name.bytes().all(|byte| {
@@ -419,6 +454,9 @@ fn sysroot_manifest() -> CaseResult {
     for path in [DEV, CORPUS, RUNNER] {
         tree_files(&root.join(path), &mut staged)?;
     }
+    for case in libc_cases() {
+        tree_files(&root.join(libc_reference(case.id)), &mut staged)?;
+    }
     let declared: BTreeSet<_> = listed.keys().copied().collect();
     let present: BTreeSet<_> = staged.iter().map(String::as_str).collect();
     if let Some(path) = declared.symmetric_difference(&present).next() {
@@ -487,6 +525,10 @@ struct Scratch(PathBuf);
 impl Scratch {
     fn new(category: &str) -> Result<Self, String> {
         let path = Path::new("/tmp").join(format!("toolchain-{category}-{}", std::process::id()));
+        Self::create(path)
+    }
+
+    fn create(path: PathBuf) -> Result<Self, String> {
         io_at(&path, fs::DirBuilder::new().mode(0o700).create(&path))?;
         Ok(Self(path))
     }
@@ -1452,4 +1494,180 @@ fn c11_constraint_diagnostics() -> CaseResult {
 
 fn c11_profile_macros() -> CaseResult {
     c11_program("profile-macros")
+}
+
+fn c17_program() -> CaseResult {
+    let name = running_case().and_then(|case| case.strip_prefix("c17/"))
+        .ok_or("missing C17 case name")?;
+    let fixtures = Path::new("/").join(CORPUS).join("c17");
+    let source = fixtures.join(format!("{name}.c"));
+    let expect = fixtures.join(format!("{name}.expect"));
+    let scratch = Scratch::new(name)?;
+    for level in ["-O0", "-O2"] {
+        let output = scratch.join(format!("{name}{level}.elf"));
+        let mut command = bundle_command(&scratch, "cc");
+        command.args(["-std=c17", level]);
+        if name == "rounding-math" {
+            command.arg("-frounding-math");
+        }
+        command.arg("-o").arg(&output).arg(&source);
+        build_in_group(&scratch, &mut command, &format!("cc {level} {name}"))?;
+        run_expected(&output, &expect)?;
+    }
+    Ok(())
+}
+
+fn build_in_group(scratch: &Scratch, command: &mut Command, description: &str) -> CaseResult {
+    let path = scratch.join("build.log");
+    let log = io_at(&path, File::create(&path))?;
+    command.process_group(0).stdout(io_at(&path, log.try_clone())?).stderr(log);
+    let mut child = command.spawn().map_err(|error| format!("{description}: {error}"))?;
+    loop {
+        if let Some(status) = child.try_wait().map_err(|error| format!("{description}: {error}"))? {
+            if status.success() {
+                return Ok(());
+            }
+            let log = io_at(&path, fs::read_to_string(&path))?;
+            // Make echoes the recipes, so keep the tail containing the tool's diagnostic.
+            let tail = log.lines().rev().take(6).collect::<Vec<_>>();
+            return Err(format!("{description}: {status}: {}", tail.iter().rev().copied().collect::<Vec<_>>().join(" | ")).into());
+        }
+        if case_ms_left() < 500 {
+            signal::kill(-(child.id() as i32), signal::SIGKILL)
+                .map_err(|error| format!("{description}: time limit reached, group kill failed: {error}"))?;
+            child.wait().map_err(|error| format!("{description}: reaping timed-out build: {error}"))?;
+            return Err(format!("{description}: timed out and its process group was killed").into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn libc_cases() -> &'static [breenix_suite::suite::Case] {
+    SUITE.categories.iter().find(|category| category.id == "libc-suite").unwrap().cases
+}
+
+fn libc_reference(category: &str) -> PathBuf {
+    Path::new(LIBC_REFERENCE_DIR).join(format!("libc-{category}_test.elf"))
+}
+
+fn libc_make(scratch: &Scratch, category: &str, targets: &[&str]) -> CaseResult {
+    let corpus = Path::new("/").join(CORPUS);
+    let dev = Path::new("/").join(DEV);
+    let mut command = bundle_command(scratch, "make");
+    command.arg("-f").arg(corpus.join("libc-suite.mk")).args([
+        "BUILD=.".to_string(),
+        format!("ARCH={}", std::env::consts::ARCH),
+        format!("CATEGORY={category}"),
+        format!("SUITE={}", corpus.join("libc-suite").display()),
+        format!("INCLUDE={}", dev.join("include").display()),
+        format!("CC_INCLUDE={}", dev.join("include-support").display()),
+        format!("LINKER_SCRIPT={}", dev.join("linker.ld").display()),
+        format!("LIBC={}", dev.join("lib/libc.a").display()),
+        format!("BRT={}", dev.join("lib/libbrt.a").display()),
+        format!("FUNCTIONS={}", corpus.join("libc-functions.txt").display()),
+        "NM=bnm".to_string(),
+    ]).args(targets);
+    build_in_group(scratch, &mut command, &format!("bmake {category}"))
+}
+
+fn libc_prerequisite_hashes(directory: &Path) -> Result<String, String> {
+    let mut hashes = String::new();
+    for name in LIBC_PREREQUISITES {
+        hashes.push_str(&format!("{}  {name}\n", file_sha256(&directory.join(name))?));
+    }
+    Ok(hashes)
+}
+
+fn libc_category() -> CaseResult {
+    let category = running_case().and_then(|case| case.strip_prefix("libc-suite/"))
+        .ok_or("missing libc category name")?;
+    let nonce = LIBC_NONCE.get().ok_or("could not obtain libc build nonce")?;
+    let chain = Path::new("/tmp").join(format!("toolchain-libc-{}", hex(nonce)));
+    let prereqs = chain.join("prerequisites");
+    let receipt = chain.join("prerequisites.sha256");
+    if libc_cases().first().is_some_and(|case| case.id == category) {
+        io_at(&chain, fs::DirBuilder::new().mode(0o700).create(&chain))?;
+        let build = Scratch::create(prereqs.clone())?;
+        libc_make(&build, category, &["./abi_check.o", "./harness.o"])?;
+        io_at(&receipt, fs::write(&receipt, libc_prerequisite_hashes(&prereqs)?))?;
+        // The remaining cases consume these two objects under this boot's nonce.
+        std::mem::forget(build);
+    }
+    let _cleanup = libc_cases().last().filter(|case| case.id == category)
+        .map(|_| Scratch(chain.clone()));
+    let scratch = Scratch::create(chain.join(category))?;
+    let expected = io_at(&receipt, fs::read_to_string(&receipt))?;
+    if libc_prerequisite_hashes(&prereqs)? != expected {
+        return Err("libc prerequisite hashes differ from the first case's receipt".into());
+    }
+    for name in LIBC_PREREQUISITES {
+        let path = scratch.join(name);
+        io_at(&path, fs::copy(prereqs.join(name), &path))?;
+    }
+    libc_make(&scratch, category, &["all"])?;
+    if libc_prerequisite_hashes(&scratch.0)? != expected {
+        return Err("libc category build changed its prerequisite objects".into());
+    }
+    compare_libc_results(&scratch, category)
+}
+
+fn compare_libc_results(scratch: &Scratch, category: &str) -> CaseResult {
+    let path = Path::new("/").join(CORPUS).join("libc-suite/libc.json");
+    let manifest: Value = serde_json::from_slice(&io_at(&path, fs::read(&path))?)
+        .map_err(|error| format!("invalid libc manifest: {error}"))?;
+    let cases = manifest["categories"].as_array()
+        .and_then(|categories| categories.iter().find(|entry| entry["id"] == category))
+        .and_then(|entry| entry["cases"].as_array()).filter(|cases| !cases.is_empty())
+        .ok_or_else(|| format!("no libc cases declared for {category}"))?;
+    let reference = Path::new("/").join(libc_reference(category));
+    let candidate = scratch.join(format!("libc-{category}_test.elf"));
+    let mut failures = Vec::new();
+    for case in cases {
+        let id = case["id"].as_str().ok_or("missing libc case ID")?;
+        let reference = libc_result(scratch, &reference, id)?;
+        let candidate = libc_result(scratch, &candidate, id)?;
+        if reference != candidate {
+            failures.push(format!("{id}: reference {reference:?}, native {candidate:?}"));
+        } else if reference != "PASS" {
+            failures.push(format!("{id}: both builds reported {reference}"));
+        }
+    }
+    if failures.is_empty() {
+        return Ok(());
+    }
+    for failure in &failures {
+        case_diagnostic(failure);
+    }
+    Err(format!("{category}: {} of {} cases failed, first: {}", failures.len(), cases.len(), failures[0]).into())
+}
+
+fn libc_result(scratch: &Scratch, binary: &Path, id: &str) -> Result<String, CaseError> {
+    // Keep the result descriptor outside the case's working directory. Some
+    // cases count directory entries and the two producers need separate fixtures.
+    let directory = Scratch::create(scratch.join("run"))?;
+    let path = scratch.join("result");
+    let report = io_at(&path, File::create(&path))?;
+    let fd = report.as_raw_fd();
+    io::fcntl_setfd(Fd::from_raw(fd as u64), 0)
+        .map_err(|error| format!("libc result fd: {error}"))?;
+    let result = Command::new(binary)
+        .arg0(binary.file_stem().ok_or("libc ELF is missing a name")?)
+        .arg(id).arg(fd.to_string())
+        .current_dir(&directory.0)
+        .env_clear().env("PATH", "/usr/libexec/breenix/libc/bin")
+        .env("HOME", "/tmp").env("LIBC_SUITE", "1")
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+        .status();
+    drop(report);
+    let status = io_at(binary, result)?;
+    let report = io_at(&path, fs::read_to_string(&path))?;
+    // OBS lines describe timing phases, separate from the harness's verdict.
+    let mut verdicts = report.lines().filter(|line| !line.starts_with("OBS "));
+    let verdict = verdicts.next().unwrap_or_default();
+    if !status.success() || !report.ends_with('\n') || verdicts.next().is_some()
+        || !(verdict == "PASS" || verdict.starts_with("FAIL "))
+    {
+        return Err(format!("{} {id}: {status}, invalid result {report:?}", binary.display()).into());
+    }
+    Ok(verdict.to_string())
 }

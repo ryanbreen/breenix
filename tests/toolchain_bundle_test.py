@@ -297,6 +297,19 @@ class ToolchainBundleTest(unittest.TestCase):
         for path in (corpus / "tls/threads.h", Path("opt/breenix-dev/25.2/lib/libbrt.a")):
             self.assertIn(f"{digest(root / path)}  {path}", manifest)
 
+    def c17_libc_inputs_staged(self):
+        root = self.bundle / "root"
+        corpus = Path("usr/share/breenix/toolchain")
+        sources = {corpus / "c17" / path.name: path for path in (WORKSPACE / "corpus/c17").iterdir() if path.is_file()}
+        sources[corpus / "libc-suite.mk"] = WORKSPACE / "corpus/libc-suite.mk"
+        sources.update({corpus / "libc-suite" / path.name: path for path in (ROOT / "userspace/libc-suite").iterdir()
+                        if path.suffix in (".c", ".h") or path.name == "categories"})
+        manifest = set((self.dev / "manifest.sha256").read_text().splitlines())
+        for path, source in sources.items():
+            with self.subTest(path=path):
+                self.assertEqual((root / path).read_bytes(), source.read_bytes())
+                self.assertIn(f"{digest(source)}  {path}", manifest)
+
     def brt_built_by_rustc(self):
         path = "lib/libbrt.a"
         archive = self.dev / path
@@ -479,7 +492,8 @@ if __name__ == "__main__":
     ToolchainBundleTest.baseline = args.baseline
     checks = ["ToolchainBundleTest.tools_built_by_rustc",
               "ToolchainBundleTest.receipts_from_cargo_host_bas",
-              "ToolchainBundleTest.c11_inputs_staged"]
+              "ToolchainBundleTest.c11_inputs_staged",
+              "ToolchainBundleTest.c17_libc_inputs_staged"]
     checks.extend(["ToolchainBundleTest.cc_built_by_rustc",
                    "ToolchainBundleTest.make_built_by_rustc"])
     if json.loads((args.bundle / "build.json").read_text())["arch"] == "x86_64":

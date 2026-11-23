@@ -27,9 +27,27 @@ impl Target {
 #[derive(Debug, Default)]
 pub struct Options {
     pub target: Target,
+    pub standard: Standard,
     pub include_dirs: Vec<PathBuf>,
     pub system_dirs: Vec<PathBuf>,
     pub macros: Vec<MacroOption>,
+    pub warn_unknown_pragmas: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Standard {
+    #[default]
+    C11,
+    C17,
+}
+
+impl Standard {
+    pub(super) fn version(self) -> &'static str {
+        match self {
+            Self::C11 => "201112L",
+            Self::C17 => "201710L",
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -55,11 +73,19 @@ impl Diagnostic {
             included_from: Vec::new(),
         }
     }
-}
 
-impl fmt::Display for Diagnostic {
-    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(out, "{}: error: {}", self.site, self.message)?;
+    pub(crate) fn as_warning(&self) -> impl fmt::Display + '_ {
+        struct Warning<'a>(&'a Diagnostic);
+        impl fmt::Display for Warning<'_> {
+            fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.format(out, "warning")
+            }
+        }
+        Warning(self)
+    }
+
+    fn format(&self, out: &mut fmt::Formatter<'_>, severity: &str) -> fmt::Result {
+        write!(out, "{}: {severity}: {}", self.site, self.message)?;
         if let Some(site) = &self.spelled_at {
             write!(out, "\n{site}: note: macro token spelled here")?;
         }
@@ -67,6 +93,12 @@ impl fmt::Display for Diagnostic {
             write!(out, "\n{site}: note: included from here")?;
         }
         Ok(())
+    }
+}
+
+impl fmt::Display for Diagnostic {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.format(out, "error")
     }
 }
 
@@ -79,14 +111,17 @@ enum Output {
 }
 
 #[derive(Debug, Default)]
-pub struct Preprocessed(Vec<Output>);
+pub struct Preprocessed {
+    output: Vec<Output>,
+    pub(crate) standard: Standard,
+}
 
 impl Preprocessed {
     pub(crate) fn tokens(&self) -> impl Iterator<Item = &Lexeme> {
         // Keep pragmas in serialized preprocessing output. For STDC
         // FENV_ACCESS, bcc uses the conservative ON behavior throughout:
         // runtime FP operations stay in execution order under the live mode.
-        self.0.iter().filter_map(|item| match item {
+        self.output.iter().filter_map(|item| match item {
             Output::Token(token) if token.kind != Kind::Newline => Some(token),
             _ => None,
         })
@@ -96,7 +131,7 @@ impl Preprocessed {
     pub fn write(&self, mut out: impl Write) -> io::Result<()> {
         let mut in_line = false;
         let mut backslash = false;
-        for item in &self.0 {
+        for item in &self.output {
             match item {
                 Output::Token(token) if token.kind == Kind::Newline => {
                     end_line(&mut out, backslash)?;
@@ -135,9 +170,17 @@ fn end_line(out: &mut impl Write, backslash: bool) -> io::Result<()> {
 
 /// Preprocess a translation unit and its includes using only the supplied search paths.
 pub fn preprocess(path: &Path, options: &Options) -> Result<Preprocessed, Diagnostic> {
+    preprocess_with_warnings(path, options, &mut |_| {})
+}
+
+pub(crate) fn preprocess_with_warnings(
+    path: &Path,
+    options: &Options,
+    warn: &mut dyn FnMut(Diagnostic),
+) -> Result<Preprocessed, Diagnostic> {
     let start = Position::new(path, Location { line: 1, column: 1 });
     let bytes = fs::read(path).map_err(|error| Diagnostic::new(&start, error.to_string()))?;
-    preprocess_source(path, &bytes, options)
+    process_source(path, &bytes, options, warn)
 }
 
 /// Preprocess source bytes named by `path`, which also anchors quoted includes.
@@ -146,27 +189,40 @@ pub fn preprocess_source(
     bytes: &[u8],
     options: &Options,
 ) -> Result<Preprocessed, Diagnostic> {
+    process_source(path, bytes, options, &mut |_| {})
+}
+
+fn process_source(
+    path: &Path,
+    bytes: &[u8],
+    options: &Options,
+    warn: &mut dyn FnMut(Diagnostic),
+) -> Result<Preprocessed, Diagnostic> {
     let mut processor = Processor {
         options,
-        macros: Expander::new(options.target),
-        output: Preprocessed::default(),
+        macros: Expander::new(options.target, options.standard),
+        output: Vec::new(),
+        warn,
     };
     for (index, option) in options.macros.iter().enumerate() {
         processor.macro_option(option, index + 1)?;
     }
-    processor.file(path, bytes, 0)?;
-    Ok(processor.output)
+    processor.file(path, bytes, 0, None)?;
+    Ok(Preprocessed {
+        output: processor.output,
+        standard: options.standard,
+    })
 }
 
 /// Read the serialized phase-4 output without running macros a second time.
-pub(crate) fn read_preprocessed(path: &Path) -> Result<Preprocessed, Diagnostic> {
+pub(crate) fn read_preprocessed(path: &Path, standard: Standard) -> Result<Preprocessed, Diagnostic> {
     let start = Position::new(path, Location { line: 1, column: 1 });
     let bytes = fs::read(path).map_err(|error| Diagnostic::new(&start, error.to_string()))?;
     let text =
         String::from_utf8(bytes).map_err(|error| Diagnostic::new(&start, error.to_string()))?;
     let source = super::scan_string(text, super::LineContext::Start)
         .map_err(|error| Diagnostic::new(&Position::new(path, error.location), error.message))?;
-    let mut output = Preprocessed::default();
+    let mut output = Vec::new();
     let tokens: Vec<_> = source.tokens().collect();
     for row in tokens.split_inclusive(|token| token.kind == Kind::Newline) {
         if matches!(row, [hash, pragma, ..] if hash.spelling == "#" && pragma.spelling == "pragma")
@@ -177,9 +233,9 @@ pub(crate) fn read_preprocessed(path: &Path) -> Result<Preprocessed, Diagnostic>
                 .map(|token| token.spelling)
                 .collect::<Vec<_>>()
                 .join(" ");
-            output.0.push(Output::Pragma(text));
+            output.push(Output::Pragma(text));
         } else {
-            output.0.extend(row.iter().map(|token| {
+            output.extend(row.iter().map(|token| {
                 Output::Token(Lexeme::new(
                     token.spelling,
                     token.kind,
@@ -189,7 +245,7 @@ pub(crate) fn read_preprocessed(path: &Path) -> Result<Preprocessed, Diagnostic>
             }));
         }
     }
-    Ok(output)
+    Ok(Preprocessed { output, standard })
 }
 
 struct LineMap {
@@ -264,7 +320,8 @@ struct Conditional {
 struct Processor<'a> {
     options: &'a Options,
     macros: Expander,
-    output: Preprocessed,
+    output: Vec<Output>,
+    warn: &'a mut dyn FnMut(Diagnostic),
 }
 
 impl Processor<'_> {
@@ -306,7 +363,13 @@ impl Processor<'_> {
         }
     }
 
-    fn file(&mut self, path: &Path, bytes: &[u8], depth: usize) -> Result<(), Diagnostic> {
+    fn file(
+        &mut self,
+        path: &Path,
+        bytes: &[u8],
+        depth: usize,
+        include_index: Option<usize>,
+    ) -> Result<(), Diagnostic> {
         let mut lines = LineMap {
             file: path.to_string_lossy().into(),
             physical_base: 1,
@@ -380,13 +443,16 @@ impl Processor<'_> {
                 _ if !active => {}
                 "define" => self.macros.define(name, args)?,
                 "undef" => self.macros.undefine(identifier(name, args)?)?,
-                "include" => self.include(path, name, args, depth)?,
+                "include" | "include_next" => {
+                    self.include(path, name, args, depth, include_index)?;
+                }
                 "line" => {
                     let args = self.macros.expand(args.to_vec())?;
                     lines.change(&args, name, next_physical)?;
                 }
                 "error" => return Err(name.error(spell(args))),
-                "pragma" => self.output.0.push(Output::Pragma(spell(args))),
+                "warning" => self.warning(name, spell(args)),
+                "pragma" => self.pragma(name, spell(args)),
                 _ => return Err(name.error("unknown preprocessing directive")),
             }
         }
@@ -422,6 +488,7 @@ impl Processor<'_> {
         directive: &Lexeme,
         args: &[Lexeme],
         depth: usize,
+        include_index: Option<usize>,
     ) -> Result<(), Diagnostic> {
         let original = args
             .first()
@@ -432,20 +499,30 @@ impl Processor<'_> {
         if depth >= 64 {
             return Err(original.error("include nesting limit exceeded"));
         }
-        let local = path.parent().filter(|_| quoted);
-        let dirs = local.into_iter().chain(
+        // GNU CPP Wrapper Headers §2.7: #include_next resumes after
+        // the configured entry that provided this file, even for quotes.
+        let next = directive.is("include_next");
+        let local = path.parent().filter(|_| quoted && !next);
+        let start = if next {
+            include_index.map_or(0, |index| index + 1)
+        } else {
+            0
+        };
+        let dirs = local.into_iter().map(|dir| (None, dir)).chain(
             self.options
                 .include_dirs
                 .iter()
                 .chain(&self.options.system_dirs)
-                .map(PathBuf::as_path),
+                .enumerate()
+                .skip(start)
+                .map(|(index, dir)| (Some(index), dir.as_path())),
         );
-        for dir in dirs {
+        for (index, dir) in dirs {
             let candidate = dir.join(&name);
             match fs::read(&candidate) {
                 Ok(bytes) => {
                     return self
-                        .file(&candidate, &bytes, depth + 1)
+                        .file(&candidate, &bytes, depth + 1, index)
                         .map_err(|mut error| {
                             error.included_from.push(original.site.clone());
                             error
@@ -465,7 +542,7 @@ impl Processor<'_> {
         let mut cursor = tokens.into_iter().peekable();
         while let Some(token) = cursor.next() {
             if !token.is("_Pragma") {
-                self.output.0.push(Output::Token(token));
+                self.output.push(Output::Token(token));
                 continue;
             }
             // N1570 6.10.3.4p3 and 6.10.9: process the operator after replacement.
@@ -485,9 +562,26 @@ impl Processor<'_> {
                 .map(|t| t.spelling)
                 .collect::<Vec<_>>()
                 .join(" ");
-            self.output.0.push(Output::Pragma(contents));
+            self.pragma(&token, contents);
         }
         Ok(())
+    }
+
+    fn warning(&mut self, token: &Lexeme, message: impl Into<String>) {
+        (self.warn)(token.error(message));
+    }
+
+    fn pragma(&mut self, token: &Lexeme, text: String) {
+        let mut words = text.split_whitespace();
+        if self.options.warn_unknown_pragmas
+            && !matches!(
+                (words.next(), words.next()),
+                (Some("STDC"), Some("FENV_ACCESS"))
+            )
+        {
+            self.warning(token, format!("unknown pragma '{text}'"));
+        }
+        self.output.push(Output::Pragma(text));
     }
 }
 

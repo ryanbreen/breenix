@@ -161,23 +161,26 @@ class ProgressTest(unittest.TestCase):
             self.assertGreater(limit, 10_000)
             self.assertLess(limit, monitor['STALL_SECONDS'] * 1000)
 
-    def test_toolchain_links_reference_objects_has_named_allowance(self):
+    def test_toolchain_reference_links_and_libc_have_named_allowances(self):
         runner = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
         self.assertIn('pub const DEFAULT_CASE_LIMIT_MS: u64 = 10_000;', runner)
         table = runner.split('pub const NAMED_CASE_ALLOWANCES:', 1)[1].split(';', 1)[0]
         table = re.sub(r'//[^\n]*|/\*.*?\*/', '', table.split('= &[', 1)[1], flags=re.S)
         entries = re.findall(r'\(\s*"([^"]+)"\s*,\s*"([^"]+)"\s*,\s*([\d_]+)\s*\)', table)
-        case = 'linker/links-reference-objects'
-        limits = [int(limit.replace('_', '')) for suite, name, limit in entries
-                  if (suite, name) == ('toolchain', case)]
-        self.assertEqual(limits, [30_000])
         manifest = json.loads((ROOT / 'docs/suites/toolchain.json').read_text())
         names = {f"{category['id']}/{item['id']}" for category in manifest['categories']
                  for item in category['cases']}
-        self.assertIn(case, names)
         monitor = runpy.run_path(str(ROOT / 'scripts/boot_progress.py'))
-        self.assertGreater(limits[0], 10_000)
-        self.assertLess(limits[0], monitor['STALL_SECONDS'] * 1000)
+        for case in ('linker/links-reference-objects', 'libc-suite/dirent-glob',
+                     'libc-suite/getopt-env', 'libc-suite/locale-wchar', 'libc-suite/math',
+                     'libc-suite/pthread', 'libc-suite/stdio', 'libc-suite/string-stdlib'):
+            with self.subTest(case=case):
+                limits = [int(limit.replace('_', '')) for suite, name, limit in entries
+                          if (suite, name) == ('toolchain', case)]
+                self.assertEqual(limits, [30_000])
+                self.assertIn(case, names)
+                self.assertGreater(limits[0], 10_000)
+                self.assertLess(limits[0], monitor['STALL_SECONDS'] * 1000)
 
     def test_unknown_unlabelled_kernel_print_is_not_progress(self):
         self.feed('SUITE smoke START cases=5\n', 0)

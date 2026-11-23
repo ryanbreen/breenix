@@ -86,8 +86,27 @@ impl<'a> FunctionBody<'a, '_> {
                         .error("atomic operation requires a pointer to an atomic object"));
                 }
                 object.check_atomic(first.site)?;
-                if object.layout().is_none() {
-                    return Err(first.site.error("atomic operation requires a complete object type"));
+                let layout = object.layout().ok_or_else(|| {
+                    first.site.error("atomic operation requires a complete object type")
+                })?;
+                // WG14 N2244 DR 465, C17 7.17.5.1. The pointed-to type
+                // determines the result. Evaluate the pointer for its effects.
+                if op == IsLockFreeAt
+                    && self.standard == Standard::C17
+                    && self.target == Target::X86_64
+                {
+                    let lock_free = matches!(layout.size, 1 | 2 | 4 | 8)
+                        && layout.align >= layout.size
+                        && !matches!(object.kind, Kind::Record(_));
+                    let result = Expression {
+                        site,
+                        kind: ExpressionKind::Integer(u64::from(lock_free)),
+                        ty: boolean.clone(),
+                    };
+                    return Ok((
+                        ExpressionKind::Comma(Box::new(first), Box::new(result)),
+                        boolean,
+                    ));
                 }
                 if !matches!(op, Load | IsLockFreeAt) && object.qualifiers.constant {
                     return Err(first

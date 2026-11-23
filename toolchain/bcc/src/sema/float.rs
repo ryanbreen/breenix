@@ -6,11 +6,12 @@ use std::cmp::Ordering;
 
 use super::{
     body::{canonical, constant_integer},
-    Expression, ExpressionKind, Target, Unary,
+    Binary, Expression, ExpressionKind, Target, Unary,
 };
 use crate::types::{floor_log10_pow2, Float, FloatFormat, Integer, Kind, Type};
 
-// Static initialization uses the same rounding as literal translation.
+// Static initialization uses default rounding at each operation (N1570
+// F.8.2, F.8.4 and F.8.5). Runtime expressions use the typed tree instead.
 pub(super) fn constant_bits(expr: &Expression<'_>, dest: &Kind, target: Target) -> Option<u128> {
     let format = FloatFormat::of(dest, target);
     let (negative, significand, exponent) = match &expr.ty.kind {
@@ -42,6 +43,17 @@ pub(super) fn constant_bits(expr: &Expression<'_>, dest: &Kind, target: Target) 
                     operand ^ sign
                 }
                 ExpressionKind::Cast(operand) => constant_bits(operand, source, target)?,
+                ExpressionKind::Binary {
+                    op: op @ (Binary::Add | Binary::Subtract | Binary::Multiply | Binary::Divide),
+                    left,
+                    right,
+                    left_type,
+                    right_type,
+                } => source_format.arithmetic(
+                    *op,
+                    constant_bits(left, &left_type.kind, target)?,
+                    constant_bits(right, &right_type.kind, target)?,
+                ),
                 ExpressionKind::Conditional { condition, yes, no } => {
                     let value = if constant_integer(condition, target)? != 0 {
                         yes
@@ -54,6 +66,21 @@ pub(super) fn constant_bits(expr: &Expression<'_>, dest: &Kind, target: Target) 
             };
             if source == dest {
                 return Some(bits);
+            }
+            let fraction = bits & ((1 << source_format.fraction) - 1);
+            let exponent_mask = source_format.exponent_mask();
+            if bits & exponent_mask == exponent_mask && fraction != 0 {
+                let payload = fraction & ((1 << (source_format.fraction - 1)) - 1);
+                let payload = if format.fraction >= source_format.fraction {
+                    payload << (format.fraction - source_format.fraction)
+                } else {
+                    payload >> (source_format.fraction - format.fraction)
+                };
+                return Some(format.quiet_nan(payload) | if bits & source_format.sign_bit() != 0 {
+                    format.sign_bit()
+                } else {
+                    0
+                });
             }
             source_format.unpack(bits)
         }
@@ -195,6 +222,85 @@ fn parse_exponent(text: &str) -> Option<i32> {
 }
 
 impl FloatFormat {
+    fn arithmetic(&self, op: Binary, left: u128, right: u128) -> u128 {
+        let fraction_mask = (1 << self.fraction) - 1;
+        for bits in [left, right] {
+            let exponent = self.exponent_mask();
+            if bits & exponent == exponent && bits & fraction_mask != 0 {
+                return bits | (1 << (self.fraction - 1));
+            }
+        }
+        let (left_negative, left, left_exponent) = self.unpack(left);
+        let (right_negative, right, right_exponent) = self.unpack(right);
+        let (negative, bits) = match op {
+            Binary::Add | Binary::Subtract => {
+                let right_negative = right_negative ^ (op == Binary::Subtract);
+                match (left, right) {
+                    (None, None) if left_negative != right_negative => (false, self.quiet_nan(0)),
+                    (None, _) => (left_negative, self.infinity()),
+                    (_, None) => (right_negative, self.infinity()),
+                    (Some(left), Some(right)) => {
+                        // Align exact significands before rounding the sum.
+                        let exponent = left_exponent.min(right_exponent);
+                        let mut left = Big::from_integer(left).shift(left_exponent - exponent);
+                        let mut right = Big::from_integer(right).shift(right_exponent - exponent);
+                        let negative = if left_negative == right_negative {
+                            left.add(&right);
+                            left_negative
+                        } else {
+                            match left.compare(&right) {
+                                Ordering::Less => {
+                                    right.subtract(&left);
+                                    left = right;
+                                    right_negative
+                                }
+                                Ordering::Equal => return 0,
+                                Ordering::Greater => {
+                                    left.subtract(&right);
+                                    left_negative
+                                }
+                            }
+                        };
+                        let bits = if left.0.is_empty() {
+                            0
+                        } else {
+                            self.round(left, Big(vec![1]), exponent)
+                        };
+                        (negative, bits)
+                    }
+                }
+            }
+            Binary::Multiply => {
+                let bits = match (left, right) {
+                    (None, Some(0)) | (Some(0), None) => return self.quiet_nan(0),
+                    (None, _) | (_, None) => self.infinity(),
+                    (Some(0), _) | (_, Some(0)) => 0,
+                    (Some(left), Some(right)) => self.round(
+                        Big::product(left, right),
+                        Big(vec![1]),
+                        left_exponent + right_exponent,
+                    ),
+                };
+                (left_negative ^ right_negative, bits)
+            }
+            Binary::Divide => {
+                let bits = match (left, right) {
+                    (None, None) | (Some(0), Some(0)) => return self.quiet_nan(0),
+                    (None, _) | (_, Some(0)) => self.infinity(),
+                    (_, None) | (Some(0), _) => 0,
+                    (Some(left), Some(right)) => self.round(
+                        Big::from_integer(left),
+                        Big::from_integer(right),
+                        left_exponent - right_exponent,
+                    ),
+                };
+                (left_negative ^ right_negative, bits)
+            }
+            _ => unreachable!("only floating arithmetic operators reach static evaluation"),
+        };
+        bits | if negative { self.sign_bit() } else { 0 }
+    }
+
     fn pack(&self, exponent: i32, significand: u128) -> u128 {
         let width = self.fraction + u32::from(self.explicit_integer);
         (exponent as u128) << width | (significand & ((1 << width) - 1))
@@ -226,8 +332,13 @@ impl FloatFormat {
         )
     }
 
-    fn infinity(&self) -> u128 {
-        self.pack(2 * self.bias + 1, 1 << self.fraction)
+    pub(super) fn infinity(&self) -> u128 {
+        self.exponent_mask() | (u128::from(self.explicit_integer) << self.fraction)
+    }
+
+    pub(super) fn quiet_nan(&self, payload: u128) -> u128 {
+        let quiet = 1 << (self.fraction - 1);
+        self.infinity() | quiet | (payload & (quiet - 1))
     }
 
     fn round(&self, mut numerator: Big, mut denominator: Big, bits: i32) -> u128 {
@@ -294,6 +405,32 @@ impl Big {
             value >>= 32;
         }
         Self(words)
+    }
+
+    fn product(left: u128, right: u128) -> Self {
+        let mut product = Self::default();
+        for (index, word) in Self::from_integer(right).0.into_iter().enumerate() {
+            if word == 0 {
+                continue;
+            }
+            let mut part = Self::from_integer(left);
+            part.multiply(word, 0);
+            product.add(&part.shift(index as i32 * 32));
+        }
+        product
+    }
+
+    fn add(&mut self, other: &Self) {
+        self.0.resize(self.0.len().max(other.0.len()), 0);
+        let mut carry = 0;
+        for (index, word) in self.0.iter_mut().enumerate() {
+            carry += u64::from(*word) + u64::from(other.0.get(index).copied().unwrap_or(0));
+            *word = carry as u32;
+            carry >>= 32;
+        }
+        if carry != 0 {
+            self.0.push(carry as u32);
+        }
     }
 
     fn multiply(&mut self, factor: u32, add: u32) {

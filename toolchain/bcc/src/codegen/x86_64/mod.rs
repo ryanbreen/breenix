@@ -1,4 +1,4 @@
-//! Unoptimized SysV AMD64 assembly in bas's Intel-style syntax.
+//! SysV AMD64 assembly in bas's Intel-style syntax.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write;
@@ -15,17 +15,20 @@ mod abi;
 mod atomic;
 mod atomic_runtime;
 mod bit_field;
+mod builtins;
 mod flow;
+mod regalloc;
 mod thread;
 mod varargs;
 mod x87;
 
 use abi::{CallLayout, Place, RecordAbi, RecordRegisters, Register};
 use flow::Slot;
+use regalloc::{Access, ValueId};
 use thread::ThreadPlace;
 use varargs::VariadicFrame;
 
-pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
+pub(super) fn emit(unit: &TranslationUnit<'_>, optimize: bool) -> Result<String, Diagnostic> {
     let mut functions = HashMap::new();
     for function in &unit.functions {
         let entry = functions.entry(function.name).or_insert(function);
@@ -37,9 +40,13 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
     let mut emitter = Emitter {
         functions,
         records: &unit.records,
+        optimize,
+        scan: regalloc::Scan::default(),
         frame: 0,
         aligned_frame: 0,
         frame_alignment: 16,
+        alloca_base: None,
+        call_alignment: 16,
         locals: Vec::new(),
         variadic: None,
         flow_labels: HashMap::new(),
@@ -138,9 +145,13 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
 struct Emitter<'unit, 'src> {
     functions: HashMap<&'src str, &'unit Function<'src>>,
     records: &'unit [Record<'src>],
+    optimize: bool,
+    scan: regalloc::Scan,
     frame: usize,
     aligned_frame: usize,
     frame_alignment: usize,
+    alloca_base: Option<Slot>,
+    call_alignment: usize,
     locals: Vec<Slot>,
     variadic: Option<VariadicFrame>,
     flow_labels: HashMap<usize, String>,
@@ -190,6 +201,11 @@ impl<'src> Emitter<'_, 'src> {
             }
         }
         self.layout(function)?;
+        self.alloca_base = if function.has_alloca {
+            Some(self.frame_slot(Layout { size: 8, align: 8 }, function.site)?)
+        } else {
+            None
+        };
         let record_result = self.record_abi(result);
         let sret = if matches!(record_result, Some(RecordAbi::Memory)) {
             Some(self.frame_slot(Layout { size: 8, align: 8 }, function.site)?)
@@ -208,6 +224,9 @@ impl<'src> Emitter<'_, 'src> {
         // keep spills above RSP.
         self.text.push_str("    push rbp\n    mov rbp, rsp\n");
         let stack_adjustment = self.text.len();
+        if let Some(base) = &self.alloca_base {
+            writeln!(self.text, "    mov qword {}, rsp", base.memory(0)).unwrap();
+        }
 
         let save = if *variadic {
             Some(self.save_variadic_registers(function.site)?)
@@ -220,8 +239,19 @@ impl<'src> Emitter<'_, 'src> {
             layout.integers = 1;
         }
         let mut stack_records = Vec::new();
+        let mut scalar_parameters = Vec::new();
         for (index, (param, incoming)) in function.params.iter().zip(abi_params).enumerate() {
-            let memory = self.locals[index].memory(0);
+            let memory = if let Slot::Virtual(id) = self.locals[index] {
+                let mut layout = function.locals[index].object.layout().unwrap();
+                let site = param.name.unwrap().1;
+                layout.size = abi::eightbyte_size(layout.size, site)?;
+                let slot = self.frame_slot(layout, site)?;
+                let memory = slot.memory(0);
+                scalar_parameters.push((id, slot));
+                memory
+            } else {
+                self.locals[index].memory(0)
+            };
             match layout.place(incoming, self.records, param.name.unwrap().1)? {
                 Place::Integer(reg) if !prototype && incoming.kind != param.ty.kind => {
                     writeln!(self.text, "    mov rax, {reg}").unwrap();
@@ -305,7 +335,20 @@ impl<'src> Emitter<'_, 'src> {
             .unwrap();
             self.copy_record(size);
         }
+        for (id, slot) in scalar_parameters {
+            self.scan.parameter(self.text.len(), id, slot);
+        }
         self.statements(body, result, &epilogue)?;
+        let callee_saves = if self.optimize {
+            std::mem::take(&mut self.scan).render(self, stack_adjustment, function.site)?
+        } else {
+            Vec::new()
+        };
+        let mut saves = String::new();
+        for (reg, slot) in &callee_saves {
+            writeln!(saves, "    mov qword {}, {reg}", slot.memory(0)).unwrap();
+        }
+        self.text.insert_str(stack_adjustment, &saves);
         // Calls in the body allocate result temporaries in the fixed frame.
         let frame = self.frame.next_multiple_of(16);
         let saved_r15 = if self.frame_alignment > 16 {
@@ -382,6 +425,9 @@ impl<'src> Emitter<'_, 'src> {
         } else {
             writeln!(self.text, "{epilogue}:").unwrap();
         }
+        for (reg, slot) in callee_saves {
+            writeln!(self.text, "    mov {reg}, qword {}", slot.memory(0)).unwrap();
+        }
         if let Some(saved) = saved_r15 {
             writeln!(self.text, "    mov r15, qword [rbp - {saved}]").unwrap();
         }
@@ -400,6 +446,10 @@ impl<'src> Emitter<'_, 'src> {
     // entry in ST(0). Spill or consume that entry before evaluating another
     // expression so no x87 temporaries are live across calls.
     fn value(&mut self, expr: &Expression<'src>) -> Result<(), Diagnostic> {
+        if let Some(id) = self.virtual_local(expr) {
+            self.scalar_access(id, Access::Read);
+            return Ok(());
+        }
         match &expr.kind {
             ExpressionKind::Integer(value) => {
                 writeln!(self.text, "    mov rax, 0x{value:x}").unwrap();
@@ -476,6 +526,9 @@ impl<'src> Emitter<'_, 'src> {
             // AMD64 va_end has no resources to release. Evaluate the operand.
             ExpressionKind::VaEnd(list) => self.value(list)?,
             ExpressionKind::FltRounds => self.flt_rounds(),
+            ExpressionKind::FloatClass { operand, values } => self.float_class(operand, *values)?,
+            ExpressionKind::SignBit(operand) => self.float_sign(operand)?,
+            ExpressionKind::Alloca(size) => self.alloca(size)?,
             ExpressionKind::Atomic { op, arguments, .. } => self.atomic_builtin(*op, arguments)?,
             ExpressionKind::Call { callee, arguments } => {
                 self.call(callee, arguments, &expr.ty)?;
@@ -587,17 +640,32 @@ impl<'src> Emitter<'_, 'src> {
         }
 
         self.converted(left, left_ty)?;
-        self.adjust_stack("sub", 16);
-        self.store(left_ty, "[rsp]");
+        let saved = self.save_operand(left_ty);
         self.converted(right, right_ty)?;
-        self.combine(op, left_ty, right_ty, result);
+        self.combine(op, left_ty, right_ty, result, saved);
         Ok(())
     }
 
-    // The left operand is saved in an aligned slot above the right operand's
-    // expression stack. Consume that slot and leave the result in its
-    // canonical location.
-    fn combine(&mut self, op: Binary, left: &Type, right: &Type, result: &Type) {
+    fn save_operand(&mut self, ty: &Type) -> Option<ValueId> {
+        if self.optimize && matches!(ty.kind, Kind::Integer(_) | Kind::Pointer(_)) {
+            Some(self.scan.temporary(self.text.len()))
+        } else {
+            self.adjust_stack("sub", 16);
+            self.store(ty, "[rsp]");
+            None
+        }
+    }
+
+    // Consume the saved left operand and leave the result in its canonical
+    // location. Floating-point operands continue to use the expression stack.
+    fn combine(
+        &mut self,
+        op: Binary,
+        left: &Type,
+        right: &Type,
+        result: &Type,
+        saved: Option<ValueId>,
+    ) {
         if left.kind == Kind::LongDouble {
             self.load(left, "[rsp]");
             self.adjust_stack("add", 16);
@@ -611,9 +679,13 @@ impl<'src> Emitter<'_, 'src> {
             self.float_binary(op, float);
             return;
         }
-        self.text
-            .push_str("    mov rcx, rax\n    mov rax, qword [rsp]\n");
-        self.adjust_stack("add", 16);
+        self.text.push_str("    mov rcx, rax\n");
+        if let Some(id) = saved {
+            self.scalar_access(id, Access::Read);
+        } else {
+            self.text.push_str("    mov rax, qword [rsp]\n");
+            self.adjust_stack("add", 16);
+        }
         match (&left.kind, &right.kind, op) {
             (Kind::Pointer(element), Kind::Integer(_), Binary::Add | Binary::Subtract) => {
                 self.scale_pointer_index("rcx", element);
@@ -793,12 +865,19 @@ impl<'src> Emitter<'_, 'src> {
         if realign {
             writeln!(
                 self.text,
-                "    and rsp, -{}
-    mov qword [rsp + {end}], r11",
+                "    and rsp, -{}",
                 layout.stack_alignment
             )
             .unwrap();
+            if self.alloca_base.is_some() {
+                // A nested alloca can move the outgoing area. Save the
+                // adjustment rather than the former absolute stack address.
+                self.text.push_str("    sub r11, rsp\n");
+            }
+            writeln!(self.text, "    mov qword [rsp + {end}], r11").unwrap();
         }
+        let outer_alignment = self.call_alignment;
+        self.call_alignment = self.call_alignment.max(layout.stack_alignment);
         if direct.is_none() {
             self.value(callee)?;
             writeln!(self.text, "    mov qword [rsp + {callee_slot}], rax").unwrap();
@@ -814,6 +893,8 @@ impl<'src> Emitter<'_, 'src> {
                 self.store(&arg.ty, &dest);
             }
         }
+        self.call_alignment = outer_alignment;
+        self.save_callers();
         if sret {
             let address = result_slot.as_ref().unwrap().memory(0);
             writeln!(self.text, "    lea rdi, {address}").unwrap();
@@ -852,8 +933,10 @@ impl<'src> Emitter<'_, 'src> {
         } else {
             writeln!(self.text, "    call qword [rsp + {callee_slot}]").unwrap();
         }
+        self.restore_callers();
         if realign {
-            writeln!(self.text, "    mov rsp, qword [rsp + {end}]").unwrap();
+            let restore = if self.alloca_base.is_some() { "add" } else { "mov" };
+            writeln!(self.text, "    {restore} rsp, qword [rsp + {end}]").unwrap();
         } else {
             self.adjust_stack("add", reserve);
         }
@@ -866,6 +949,18 @@ impl<'src> Emitter<'_, 'src> {
         }
         // A MEMORY callee already leaves its return buffer address in RAX.
         Ok(())
+    }
+
+    fn save_callers(&mut self) {
+        if self.optimize {
+            self.scan.before_call(self.text.len());
+        }
+    }
+
+    fn restore_callers(&mut self) {
+        if self.optimize {
+            self.scan.after_call(self.text.len());
+        }
     }
 
     fn record_abi(&self, ty: &Type) -> Option<RecordAbi> {

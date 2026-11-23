@@ -70,12 +70,15 @@ class Declarations:
             self.functions.setdefault(node['name'], file_at_decl)
 
 
-def declared_functions(arch, headers):
+def declared_functions(arch, headers, compiler=None):
     source = ''.join(f'#include <{header}>\n' for header in headers)
+    env = {} if compiler is not None else None
+    if compiler is None:
+        compiler = [str(CC), '--arch', arch]
     result = subprocess.run(
-        [str(CC), '--arch', arch, '-std=gnu17', '-D_GNU_SOURCE', '-fsyntax-only',
+        [*compiler, '-std=gnu17', '-D_GNU_SOURCE', '-fsyntax-only',
          '-Xclang', '-ast-dump=json', '-x', 'c', '-'],
-        input=source.encode(), capture_output=True)
+        input=source.encode(), capture_output=True, env=env)
     if result.returncode != 0:
         sys.exit(f'libc-symbol-audit: the headers do not compile together for {arch}:\n'
                  + result.stderr.decode(errors='replace'))

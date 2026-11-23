@@ -230,12 +230,54 @@
     {
       "id": "c17",
       "title": "C17 corrections and the small optimization pipeline",
-      "cases": []
+      "cases": [
+        {
+          "id": "corrections",
+          "title": "C17 corrections at O0 and O2 match their independent expectation"
+        },
+        {
+          "id": "o2-expect",
+          "title": "Optimized and unoptimized output match the independent expectation"
+        },
+        {
+          "id": "rounding-math",
+          "title": "Both optimization levels honor rounding modes and match the independent expectation"
+        }
+      ]
     },
     {
       "id": "libc-suite",
       "title": "The libc suite's C sources compiled on the box, compared case by case",
-      "cases": []
+      "cases": [
+        {
+          "id": "dirent-glob",
+          "title": "Build dirent-glob and compare each result with the reference"
+        },
+        {
+          "id": "getopt-env",
+          "title": "Build getopt-env and compare each result with the reference"
+        },
+        {
+          "id": "locale-wchar",
+          "title": "Build locale-wchar and compare each result with the reference"
+        },
+        {
+          "id": "math",
+          "title": "Build math and compare each result with the reference"
+        },
+        {
+          "id": "pthread",
+          "title": "Build pthread and compare each result with the reference"
+        },
+        {
+          "id": "stdio",
+          "title": "Build stdio and compare each result with the reference"
+        },
+        {
+          "id": "string-stdlib",
+          "title": "Build string-stdlib and compare each result with the reference"
+        }
+      ]
     },
     {
       "id": "gnu-workloads",

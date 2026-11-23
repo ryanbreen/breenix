@@ -3,9 +3,10 @@ use std::collections::HashMap;
 use std::iter::Peekable;
 use std::path::Path;
 
-use crate::pp::{Diagnostic, Kind, Lexeme, Location, Position, Preprocessed, Target};
+use crate::pp::{Diagnostic, Kind, Lexeme, Location, Position, Preprocessed, Standard, Target};
 use crate::types::{amd64_va_list, Integer, Kind as TypeKind, Qualifiers, Record, Type};
 
+mod attribute;
 mod declaration;
 mod specifiers;
 
@@ -27,6 +28,8 @@ struct DeclStorage {
     class: Storage,
     thread_local: bool,
     alignment: Option<usize>,
+    gnu_alignment: usize,
+    returns_twice: bool,
     noreturn: bool,
     inline: bool,
     anonymous_record: bool,
@@ -83,6 +86,7 @@ pub(super) struct Function<'a> {
     pub variadic: bool,
     pub prototype: bool,
     pub noreturn: bool,
+    pub returns_twice: bool,
     pub storage: Storage,
     pub body: Option<Vec<Statement<'a>>>,
 }
@@ -222,7 +226,7 @@ pub(super) struct Association<'a> {
     pub expression: Expression<'a>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Unary {
     Plus,
     Minus,
@@ -232,7 +236,7 @@ pub enum Unary {
     Address,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Binary {
     Add,
     Subtract,
@@ -286,19 +290,21 @@ pub(super) fn translation_unit<'a>(
     path: &Path,
     target: Target,
 ) -> Result<Vec<Declaration<'a>>, Diagnostic> {
-    parse_tokens(source.tokens(), path, target)
+    parse_tokens(source.tokens(), path, target, source.standard)
 }
 
 fn parse_tokens<'a>(
     tokens: impl Iterator<Item = &'a Lexeme>,
     path: &Path,
     target: Target,
+    standard: Standard,
 ) -> Result<Vec<Declaration<'a>>, Diagnostic> {
     let mut parser = Parser {
         tokens: tokens.peekable(),
         previous: None,
         path,
         target,
+        standard,
         names: vec![HashMap::new()],
         tags: vec![HashMap::new()],
         records: Vec::new(),
@@ -322,6 +328,7 @@ struct Parser<'a, 'p, I: Iterator<Item = &'a Lexeme>> {
     previous: Option<&'a Lexeme>,
     path: &'p Path,
     target: Target,
+    standard: Standard,
     names: Vec<HashMap<&'a str, Name>>,
     tags: Vec<HashMap<&'a str, Tag>>,
     records: Vec<Record<'a>>,
@@ -431,6 +438,8 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 | "const"
                 | "volatile"
                 | "restrict"
+                | "__restrict"
+                | "__restrict__"
                 | "_Atomic"
                 | "struct"
                 | "union"
@@ -449,6 +458,9 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     | "auto"
                     | "register"
                     | "inline"
+                    | "__inline"
+                    | "__inline__"
+                    | "__attribute__"
                     | "_Thread_local"
                     | "_Alignas"
                     | "_Noreturn"
@@ -707,6 +719,9 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
     fn unary(&mut self, depth: usize) -> Result<Expression<'a>, Diagnostic> {
         if depth >= MAX_NESTING {
             return Err(self.error("expression nesting limit exceeded"));
+        }
+        if self.eat("__extension__").is_some() {
+            return self.unary(depth + 1);
         }
         if let Some(site) = self.eat("++").or_else(|| self.eat("--")) {
             let operand = Box::new(self.unary(depth + 1)?);
@@ -992,10 +1007,16 @@ fn is_identifier(token: &Lexeme) -> bool {
                 | "goto"
                 | "if"
                 | "inline"
+                | "__inline"
+                | "__inline__"
+                | "__extension__"
+                | "__attribute__"
                 | "int"
                 | "long"
                 | "register"
                 | "restrict"
+                | "__restrict"
+                | "__restrict__"
                 | "return"
                 | "short"
                 | "signed"
@@ -1042,7 +1063,12 @@ mod tests {
         .unwrap();
         let token_count = source.tokens().count();
         for count in 0..token_count {
-            let parsed = parse_tokens(source.tokens().take(count), path, Target::X86_64);
+            let parsed = parse_tokens(
+                source.tokens().take(count),
+                path,
+                Target::X86_64,
+                source.standard,
+            );
             if count == 9 {
                 // A complete prototype on its own is a valid translation unit.
                 assert_eq!(parsed.unwrap().len(), 1);

@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use crate::types::{Float, FloatFormat, Kind as TypeKind};
 
-use super::directive::{Diagnostic, Target};
+use super::directive::{Diagnostic, Standard, Target};
 use super::literal;
 use super::token::{token_prefix, LexContext};
 use super::{Kind, Location};
@@ -89,6 +89,7 @@ impl Lexeme {
 
 pub(super) struct Expander {
     target: Target,
+    standard: Standard,
     definitions: HashMap<Rc<str>, Macro>,
 }
 
@@ -218,9 +219,10 @@ struct Invocation {
 }
 
 impl Expander {
-    pub(super) fn new(target: Target) -> Self {
+    pub(super) fn new(target: Target, standard: Standard) -> Self {
         Self {
             target,
+            standard,
             definitions: HashMap::new(),
         }
     }
@@ -297,7 +299,7 @@ impl Expander {
                 result.push(token);
                 continue;
             }
-            if expand_builtin(&token, self.target, &mut result) {
+            if expand_builtin(&token, self.target, self.standard, &mut result) {
                 continue;
             }
             let Some(mac) = self.definitions.get(&token.text) else {
@@ -457,17 +459,14 @@ fn validate_token(text: &str, at: &Lexeme, context: LexContext) -> Result<Kind, 
 fn builtin(name: &str, target: Target) -> Option<(&str, Kind)> {
     let entry = match name {
         "__FILE__" => ("", Kind::String),
-        "__LINE__" => ("", Kind::Number),
+        "__LINE__" | "__STDC_VERSION__" => ("", Kind::Number),
         "__STDC__" => ("1", Kind::Number),
-        "__STDC_VERSION__" => ("201112L", Kind::Number),
         "__STDC_HOSTED__" | "__STRICT_ANSI__" => ("1", Kind::Number),
         "__x86_64__" if target == Target::X86_64 => ("1", Kind::Number),
         "__aarch64__" if target == Target::Aarch64 => ("1", Kind::Number),
         // The shipped limits.h selects CHAR_MIN and CHAR_MAX with this macro.
         "__CHAR_UNSIGNED__" if !target.signed_char() => ("1", Kind::Number),
         // Breenix LP64 support headers select these target ABI types.
-        "__WCHAR_TYPE__" if target == Target::X86_64 => ("int", Kind::Identifier),
-        "__WCHAR_TYPE__" => ("unsigned", Kind::Identifier),
         "__WCHAR_MAX__" if target == Target::X86_64 => ("2147483647", Kind::Number),
         "__WCHAR_MAX__" | "__WINT_MAX__" => ("4294967295U", Kind::Number),
         "__WCHAR_UNSIGNED__" if target == Target::Aarch64 => ("1", Kind::Number),
@@ -479,7 +478,7 @@ fn builtin(name: &str, target: Target) -> Option<(&str, Kind)> {
         "__ATOMIC_ACQ_REL" => ("4", Kind::Number),
         "__ATOMIC_SEQ_CST" => ("5", Kind::Number),
         "__BREENIX_BCC__" => ("1", Kind::Number),
-        // N1570 6.10.8.3. Native ARM atomics are scheduled for ARM 25.9d.
+        // N1570 6.10.8.3: report the remaining conditional features.
         "__STDC_NO_COMPLEX__" | "__STDC_NO_THREADS__" | "__STDC_NO_VLA__" => ("1", Kind::Number),
         // Use N1570 6.10.8.1's fallback when translation time is unavailable.
         "__DATE__" => ("\"Jan  1 1970\"", Kind::String),
@@ -530,17 +529,52 @@ fn float_builtin(name: &str, target: Target) -> Option<String> {
     Some(value.to_string())
 }
 
-fn is_builtin(name: &str, target: Target) -> bool {
-    builtin(name, target).is_some() || float_builtin(name, target).is_some()
+// GCC Common Predefined Macros names the typedefs. The Breenix LP64
+// types follow AMD64 psABI §3.1.2, AAPCS64 §§5.1, 10.1 and our headers.
+fn type_builtin(name: &str, target: Target) -> Option<&'static str> {
+    Some(match name {
+        "__WCHAR_TYPE__" if target == Target::X86_64 => "int",
+        "__WCHAR_TYPE__" | "__WINT_TYPE__" => "unsigned int",
+        "__SIZE_TYPE__" | "__UINTPTR_TYPE__" | "__UINTMAX_TYPE__" => "unsigned long",
+        "__PTRDIFF_TYPE__" | "__INTPTR_TYPE__" | "__INTMAX_TYPE__" => "long",
+        "__SIG_ATOMIC_TYPE__" => "int",
+        "__INT8_TYPE__" | "__INT_LEAST8_TYPE__" | "__INT_FAST8_TYPE__" => "signed char",
+        "__UINT8_TYPE__" | "__UINT_LEAST8_TYPE__" | "__UINT_FAST8_TYPE__" => "unsigned char",
+        "__INT16_TYPE__" | "__INT_LEAST16_TYPE__" | "__INT_FAST16_TYPE__" => "short",
+        "__UINT16_TYPE__" | "__UINT_LEAST16_TYPE__" | "__UINT_FAST16_TYPE__" => "unsigned short",
+        "__INT32_TYPE__" | "__INT_LEAST32_TYPE__" | "__INT_FAST32_TYPE__" => "int",
+        "__UINT32_TYPE__" | "__UINT_LEAST32_TYPE__" | "__UINT_FAST32_TYPE__" => "unsigned int",
+        "__INT64_TYPE__" | "__INT_LEAST64_TYPE__" | "__INT_FAST64_TYPE__" => "long",
+        "__UINT64_TYPE__" | "__UINT_LEAST64_TYPE__" | "__UINT_FAST64_TYPE__" => "unsigned long",
+        _ => return None,
+    })
 }
 
-fn expand_builtin(token: &Lexeme, target: Target, result: &mut Vec<Lexeme>) -> bool {
+fn is_builtin(name: &str, target: Target) -> bool {
+    builtin(name, target).is_some()
+        || type_builtin(name, target).is_some()
+        || float_builtin(name, target).is_some()
+}
+
+fn expand_builtin(
+    token: &Lexeme,
+    target: Target,
+    standard: Standard,
+    result: &mut Vec<Lexeme>,
+) -> bool {
     if let Some((text, kind)) = builtin(&token.text, target) {
         result.push(match token.text.as_ref() {
             "__FILE__" => token.respell(literal::quote(&token.site.file), kind),
             "__LINE__" => token.respell(token.site.loc.line.to_string(), kind),
+            "__STDC_VERSION__" => token.respell(standard.version(), kind),
             _ => token.respell(text, kind),
         });
+    } else if let Some(text) = type_builtin(&token.text, target) {
+        for (index, word) in text.split_ascii_whitespace().enumerate() {
+            let mut part = token.respell(word, Kind::Identifier);
+            part.space_before = index != 0 || token.space_before;
+            result.push(part);
+        }
     } else if let Some(text) = float_builtin(&token.text, target) {
         if let Some(magnitude) = text.strip_prefix('-') {
             result.push(token.respell("(", Kind::Punctuator));

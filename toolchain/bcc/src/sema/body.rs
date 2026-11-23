@@ -21,6 +21,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
         symbols: &'s HashMap<&'a str, Symbol>,
         result: &'s Type,
         target: Target,
+        standard: Standard,
         params: &[Parameter<'a>],
         records: &'s RecordScope<'a, 's>,
         block_externs: &'s mut HashMap<&'a str, Type>,
@@ -47,6 +48,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
             symbols,
             block_externs,
             locals,
+            has_alloca: false,
             static_literals: None,
             scopes: vec![scope],
             labels: HashMap::new(),
@@ -57,6 +59,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
             result,
             last_named_parameter: None,
             target,
+            standard,
             records,
         }
     }
@@ -480,11 +483,12 @@ impl<'a, 's> FunctionBody<'a, 's> {
                 self.initialize(entries.pop().unwrap().value, slot, path, plan)
             }
             parse::Initializer::List(site, entries) => {
-                if char_array(slot.ty)
-                    && entries.len() == 1
+                if entries.len() == 1
                     && entries[0].designators.is_empty()
-                    && matches!(&entries[0].value, parse::Initializer::Expression(expr)
-                        if matches!(expr.kind, parse::ExpressionKind::String(_)))
+                    && matches!((&slot.ty.kind, &entries[0].value),
+                        (Kind::Array(element, _), parse::Initializer::Expression(expr))
+                        if matches!(&expr.kind, parse::ExpressionKind::String(tokens)
+                            if string_initializes(element, string_element(tokens, self.target))))
                 {
                     return self.initialize(
                         entries.into_iter().next().unwrap().value,
@@ -538,7 +542,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
                     // the expression can initialize a whole object.
                     while aggregate(slot.ty)
                         && !assignable(slot.ty, &value, self.target)
-                        && !(char_array(slot.ty) && matches!(value.kind, ExpressionKind::String(_)))
+                        && !string_array_initializer(slot.ty, &value)
                     {
                         if start + selected.len() >= parse::MAX_NESTING {
                             return Err(value.site.error("initializer nesting limit exceeded"));
@@ -649,41 +653,44 @@ impl<'a, 's> FunctionBody<'a, 's> {
         path: &[usize],
         plan: &mut InitPlan<'a>,
     ) -> Result<(), Diagnostic> {
-        if let (Kind::Array(element, count), ExpressionKind::String(bytes)) =
-            (&slot.ty.kind, &value.kind)
-        {
-            if char_array(slot.ty) {
-                let count = if *count == 0 {
-                    plan.array_bound = bytes.len();
-                    bytes.len()
-                } else {
-                    *count
-                };
-                if bytes.len() - 1 > count {
-                    return Err(value
-                        .site
-                        .error("string initializer is too long for the array"));
-                }
-                plan.replace(path, slot, true);
-                for (index, &byte) in bytes.iter().take(count).enumerate() {
-                    let mut byte_path = path.to_vec();
-                    byte_path.push(index);
-                    plan.write(
-                        &byte_path,
-                        InitSlot {
-                            ty: element,
-                            offset: slot.offset + index,
-                            bit_field: None,
-                        },
-                        InitValue::Expression(Expression {
-                            site: value.site,
-                            ty: element.as_ref().clone(),
-                            kind: ExpressionKind::Integer(u64::from(byte)),
-                        }),
-                    );
-                }
-                return Ok(());
+        if string_array_initializer(slot.ty, &value) {
+            let (Kind::Array(element, count), ExpressionKind::String(bytes)) =
+                (&slot.ty.kind, &value.kind)
+            else {
+                unreachable!()
+            };
+            let width = element.layout().unwrap().size;
+            let units = bytes.len() / width;
+            let count = if *count == 0 {
+                plan.array_bound = units;
+                units
+            } else {
+                *count
+            };
+            if units - 1 > count {
+                return Err(value.site.error("string initializer is too long for the array"));
             }
+            plan.replace(path, slot, true);
+            for (index, unit) in bytes.chunks_exact(width).take(count).enumerate() {
+                let mut bits = [0; 8];
+                bits[..width].copy_from_slice(unit);
+                let mut element_path = path.to_vec();
+                element_path.push(index);
+                plan.write(
+                    &element_path,
+                    InitSlot {
+                        ty: element,
+                        offset: slot.offset + index * width,
+                        bit_field: None,
+                    },
+                    InitValue::Expression(Expression {
+                        site: value.site,
+                        ty: element.as_ref().clone(),
+                        kind: ExpressionKind::Integer(u64::from_le_bytes(bits)),
+                    }),
+                );
+            }
+            return Ok(());
         }
         if !assignable(slot.ty, &value, self.target) {
             return Err(value
@@ -821,9 +828,12 @@ fn aggregate(ty: &Type) -> bool {
     matches!(ty.kind, Kind::Array(..) | Kind::Record(_))
 }
 
-fn char_array(ty: &Type) -> bool {
-    matches!(&ty.kind, Kind::Array(element, _) if matches!(element.kind,
-        Kind::Integer(Integer::Char | Integer::SignedChar | Integer::UnsignedChar)))
+fn string_array_initializer(ty: &Type, value: &Expression<'_>) -> bool {
+    matches!(
+        (&ty.kind, &value.ty.kind, &value.kind),
+        (Kind::Array(element, _), Kind::Array(literal, _), ExpressionKind::String(_))
+        if matches!(literal.kind, Kind::Integer(integer) if string_initializes(element, integer))
+    )
 }
 
 fn supported_object(ty: &Type) -> bool {
@@ -836,7 +846,7 @@ fn supported_object(ty: &Type) -> bool {
 
 // Use the target's integer width when comparing case values or evaluating an
 // integer constant expression. These ELF targets both use two's complement.
-pub(super) fn canonical(value: u64, ty: &Type, target: Target) -> u64 {
+pub(crate) fn canonical(value: u64, ty: &Type, target: Target) -> u64 {
     let Kind::Integer(integer) = ty.kind else {
         return value;
     };
@@ -850,6 +860,9 @@ pub(super) fn canonical(value: u64, ty: &Type, target: Target) -> u64 {
     }
 }
 
+// This is the 6.6 integer constant expression evaluator. Runtime optimization
+// must consult TranslationUnit::preserves_float_environment before replacing
+// expressions, including integer results of floating-point conversions.
 pub(crate) fn constant_integer(expr: &Expression<'_>, target: Target) -> Option<u64> {
     use Binary::*;
     let Kind::Integer(integer) = expr.ty.kind else {

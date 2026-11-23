@@ -548,6 +548,15 @@ pub const NAMED_CASE_ALLOWANCES: &[(&str, &str, u64)] = &[
     ("toolchain", "linker/links-reference-objects", 30_000),
     ("toolchain", "c-core/corpus-three-producers", 45_000),
     ("toolchain", "c-core/hello-over-ssh", 60_000),
+    // E25 ruling 55: shared object builds, the category build and both execution sets.
+    ("toolchain", "libc-suite/dirent-glob", 30_000),
+    // E25 ruling 56: projected native build and execution times exceed five seconds.
+    ("toolchain", "libc-suite/getopt-env", 30_000),
+    ("toolchain", "libc-suite/locale-wchar", 30_000),
+    ("toolchain", "libc-suite/math", 30_000),
+    ("toolchain", "libc-suite/pthread", 30_000),
+    ("toolchain", "libc-suite/stdio", 30_000),
+    ("toolchain", "libc-suite/string-stdlib", 30_000),
     // E25 gives the restricted SSH listener 45 s plus setup and cleanup time.
     ("transfer-fixture", "fixture/listener-lease", 60_000),
     ("breengel", "font-parser/corpus", 20_000),
