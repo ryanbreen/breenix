@@ -14,7 +14,10 @@ impl<'src> Emitter<'_, 'src> {
         for local in &function.locals {
             let object = &local.object;
             let layout = object.ty.layout().unwrap();
-            let slot = if local.static_storage {
+            if matches!(local.storage, LocalStorage::Thread(_) | LocalStorage::ThreadExtern(_)) {
+                return Err(Diagnostic::new(object.site, "AArch64 C TLS is deferred to A4"));
+            }
+            let slot = if matches!(local.storage, LocalStorage::Static) {
                 let label = self.label();
                 writeln!(
                     self.bss,

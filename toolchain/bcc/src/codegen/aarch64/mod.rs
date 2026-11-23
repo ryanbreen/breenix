@@ -9,7 +9,7 @@ use std::fmt::Write;
 
 use crate::pp::{Diagnostic, Position, Target};
 use crate::sema::{
-    Argument, Binary, Expression, ExpressionKind, Function, Linkage, Statement, TranslationUnit,
+    Argument, Binary, Expression, ExpressionKind, Function, Linkage, LocalStorage, Statement, TranslationUnit,
     Unary,
 };
 use crate::types::{Float, Integer, Kind, Type};
@@ -141,7 +141,7 @@ impl<'src> Emitter<'_, 'src> {
                 constant(&mut self.text, "x0", *bits);
                 self.normalize(&expr.ty);
             }
-            ExpressionKind::Float(bits) => self.float_constant(&expr.ty, *bits),
+            ExpressionKind::Float(bits) => self.float_constant(&expr.ty, *bits as u64),
             ExpressionKind::String(_)
             | ExpressionKind::Identifier(_)
             | ExpressionKind::Local(_) => {
@@ -177,6 +177,17 @@ impl<'src> Emitter<'_, 'src> {
                 writeln!(self.text, "    b {end}\n{otherwise}:").unwrap();
                 self.converted(no, &expr.ty)?;
                 writeln!(self.text, "{end}:").unwrap();
+            }
+            ExpressionKind::ThreadLocal(_)
+            | ExpressionKind::Member { .. }
+            | ExpressionKind::VaStart(_)
+            | ExpressionKind::VaArg(_)
+            | ExpressionKind::VaCopy { .. }
+            | ExpressionKind::VaEnd(_) => {
+                return Err(Diagnostic::new(
+                    expr.position(),
+                    "AArch64 aggregate, variadic and C TLS support is deferred to A4",
+                ));
             }
             ExpressionKind::Call { callee, arguments } => {
                 self.call(callee, arguments)?;

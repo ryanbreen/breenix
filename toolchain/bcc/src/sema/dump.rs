@@ -1,7 +1,9 @@
 //! Write the cconf type record format from the typed translation unit.
 use std::io::{self, Write};
 
-use super::{Expression, ExpressionKind, Linkage, Position, Statement, TranslationUnit, Type};
+use super::{
+    Expression, ExpressionKind, Linkage, LocalStorage, Position, Statement, TranslationUnit, Type,
+};
 
 impl TranslationUnit<'_> {
     pub fn write_types(&self, mut out: impl Write) -> io::Result<()> {
@@ -15,17 +17,24 @@ impl TranslationUnit<'_> {
                 false,
             )?;
         }
+        for thread in &self.thread_objects {
+            let object = &thread.object;
+            declaration(
+                &mut out,
+                object.site,
+                object.name,
+                &object.ty,
+                linkage_name(thread.linkage),
+                true,
+            )?;
+        }
         for function in &self.functions {
-            let linkage = match function.linkage {
-                Linkage::Internal => "internal",
-                Linkage::External => "external",
-            };
             declaration(
                 &mut out,
                 function.site,
                 function.name,
                 &function.ty,
-                linkage,
+                linkage_name(function.linkage),
                 function.body.is_some(),
             )?;
             for param in &function.params {
@@ -35,13 +44,24 @@ impl TranslationUnit<'_> {
             }
             for local in function.locals.iter().skip(function.params.len()) {
                 let obj = &local.object;
-                declaration(&mut out, obj.site, obj.name, &obj.ty, "none", true)?;
+                let (linkage, definition) = match local.storage {
+                    LocalStorage::ThreadExtern(linkage) => (linkage_name(linkage), false),
+                    _ => ("none", true),
+                };
+                declaration(&mut out, obj.site, obj.name, &obj.ty, linkage, definition)?;
             }
             if let Some(body) = &function.body {
                 statements(&mut out, body)?;
             }
         }
         Ok(())
+    }
+}
+
+fn linkage_name(linkage: Linkage) -> &'static str {
+    match linkage {
+        Linkage::Internal => "internal",
+        Linkage::External => "external",
     }
 }
 
@@ -116,7 +136,9 @@ fn statements(out: &mut impl Write, body: &[Statement<'_>]) -> io::Result<()> {
 
 fn expression(out: &mut impl Write, expr: &Expression<'_>) -> io::Result<()> {
     let (form, value) = match &expr.kind {
-        ExpressionKind::Identifier(_) | ExpressionKind::Local(_) => {
+        ExpressionKind::Identifier(_)
+        | ExpressionKind::ThreadLocal(_)
+        | ExpressionKind::Local(_) => {
             let category = if matches!(expr.ty.kind, crate::types::Kind::Function { .. }) {
                 "function-designator"
             } else {
@@ -159,7 +181,22 @@ fn expression(out: &mut impl Write, expr: &Expression<'_>) -> io::Result<()> {
             expression(out, operand)?;
             ("update", "rvalue")
         }
+        ExpressionKind::Member { base, .. } => {
+            expression(out, base)?;
+            ("member", if expr.lvalue() { "lvalue" } else { "rvalue" })
+        }
         ExpressionKind::String(_) => ("string-literal", "lvalue"),
+        ExpressionKind::VaStart(list)
+        | ExpressionKind::VaArg(list)
+        | ExpressionKind::VaEnd(list) => {
+            expression(out, list)?;
+            (expr.site.text.as_ref(), "rvalue")
+        }
+        ExpressionKind::VaCopy { dest, source } => {
+            expression(out, dest)?;
+            expression(out, source)?;
+            ("__builtin_va_copy", "rvalue")
+        }
         ExpressionKind::Call { callee, arguments } => {
             expression(out, callee)?;
             for argument in arguments {

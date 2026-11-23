@@ -3,13 +3,13 @@ use std::collections::HashMap;
 use std::iter::Peekable;
 use std::path::Path;
 
-use crate::pp::{Diagnostic, Kind, Lexeme, Location, Position, Preprocessed};
-use crate::types::{Integer, Kind as TypeKind, Qualifiers, Type};
+use crate::pp::{Diagnostic, Kind, Lexeme, Location, Position, Preprocessed, Target};
+use crate::types::{amd64_va_list, Integer, Kind as TypeKind, Qualifiers, Record, Type};
 
 mod declaration;
 mod specifiers;
 
-const MAX_NESTING: usize = 128;
+pub(super) const MAX_NESTING: usize = 128;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) enum Storage {
@@ -20,10 +20,17 @@ pub(super) enum Storage {
     Typedef,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct DeclStorage {
+    class: Storage,
+    thread_local: bool,
+}
+
 #[derive(Debug)]
 pub(super) enum Declaration<'a> {
     Function(Function<'a>),
     Object(Variable<'a>),
+    Record(Record<'a>),
 }
 
 #[derive(Debug)]
@@ -31,6 +38,7 @@ pub(super) struct Variable<'a> {
     pub name: &'a Lexeme,
     pub ty: Type,
     pub storage: Storage,
+    pub thread_local: bool,
     pub initializer: Option<Initializer<'a>>,
 }
 
@@ -94,9 +102,12 @@ impl<'a> Expression<'a> {
     fn new(site: &'a Lexeme, kind: ExpressionKind<'a>) -> Result<Self, Diagnostic> {
         use ExpressionKind::*;
         let child_height = match &kind {
-            Unary(_, expr) | Cast(_, expr) | Sizeof(expr) | Update { operand: expr, .. } => {
-                expr.height
-            }
+            Unary(_, expr)
+            | Cast(_, expr)
+            | Sizeof(expr)
+            | VaArg(expr, _)
+            | Update { operand: expr, .. }
+            | Member { base: expr, .. } => expr.height,
             Binary(_, a, b) | Assignment(_, a, b) => a.height.max(b.height),
             Conditional(a, b, c) => a.height.max(b.height).max(c.height),
             Call {
@@ -130,6 +141,7 @@ pub(super) enum ExpressionKind<'a> {
     Cast(Type, Box<Expression<'a>>),
     SizeofType(Type),
     Sizeof(Box<Expression<'a>>),
+    VaArg(Box<Expression<'a>>, Type),
     Conditional(
         Box<Expression<'a>>,
         Box<Expression<'a>>,
@@ -140,6 +152,11 @@ pub(super) enum ExpressionKind<'a> {
         operand: Box<Expression<'a>>,
         increment: bool,
         postfix: bool,
+    },
+    Member {
+        base: Box<Expression<'a>>,
+        name: &'a Lexeme,
+        indirect: bool,
     },
     String(Vec<&'a Lexeme>),
     Call {
@@ -211,21 +228,25 @@ impl Binary {
 pub(super) fn translation_unit<'a>(
     source: &'a Preprocessed,
     path: &Path,
+    target: Target,
 ) -> Result<Vec<Declaration<'a>>, Diagnostic> {
-    parse_tokens(source.tokens(), path)
+    parse_tokens(source.tokens(), path, target)
 }
 
 fn parse_tokens<'a>(
     tokens: impl Iterator<Item = &'a Lexeme>,
     path: &Path,
+    target: Target,
 ) -> Result<Vec<Declaration<'a>>, Diagnostic> {
     let mut parser = Parser {
         tokens: tokens.peekable(),
         previous: None,
         path,
+        target,
         names: vec![HashMap::new()],
         tags: vec![HashMap::new()],
-        next_record: 0,
+        records: Vec::new(),
+        va_list_record: None,
     };
     let mut declarations = Vec::new();
     if parser.peek().is_none() {
@@ -234,6 +255,9 @@ fn parse_tokens<'a>(
     while parser.peek().is_some() {
         declarations.extend(parser.external()?);
     }
+    // The type table includes records declared in any scope. Their ids
+    // follow allocation order, independent of the object declaration list.
+    declarations.extend(parser.records.into_iter().map(Declaration::Record));
     Ok(declarations)
 }
 
@@ -241,14 +265,22 @@ struct Parser<'a, 'p, I: Iterator<Item = &'a Lexeme>> {
     tokens: Peekable<I>,
     previous: Option<&'a Lexeme>,
     path: &'p Path,
+    target: Target,
     names: Vec<HashMap<&'a str, Name>>,
-    tags: Vec<HashMap<&'a str, Type>>,
-    next_record: usize,
+    tags: Vec<HashMap<&'a str, Tag>>,
+    records: Vec<Record<'a>>,
+    va_list_record: Option<usize>,
+}
+
+#[derive(Clone, Copy)]
+enum Tag {
+    Enum,
+    Record(usize),
 }
 
 enum Name {
-    Ordinary,
-    Typedef(Type),
+    Ordinary(Type),
+    Typedef(Type, bool),
     Enumerator(i32),
 }
 
@@ -345,15 +377,15 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 | "struct"
                 | "union"
                 | "enum"
-                | "__builtin_va_list"
-        ) || matches!(self.lookup(&token.text), Some(Name::Typedef(_)))
+                | amd64_va_list::NAME
+        ) || matches!(self.lookup(&token.text), Some(Name::Typedef(..)))
     }
 
     fn starts_declaration(&self, token: &Lexeme) -> bool {
         self.starts_type(token)
             || matches!(
                 token.text.as_ref(),
-                "extern" | "static" | "typedef" | "auto" | "register"
+                "extern" | "static" | "typedef" | "auto" | "register" | "_Thread_local"
             )
     }
 
@@ -494,7 +526,13 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             .peek()
             .is_some_and(|token| self.starts_declaration(token))
         {
-            Statement::Declaration(self.declaration()?)
+            let variables = self.declaration()?;
+            if let Some(variable) = variables.iter().find(|variable| variable.thread_local) {
+                return Err(variable
+                    .name
+                    .error("a for initializer cannot declare a _Thread_local object"));
+            }
+            Statement::Declaration(variables)
         } else {
             self.optional_expression(";")?
                 .map_or(Statement::Empty, Statement::Expression)
@@ -618,7 +656,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         if let Some(site) = self.eat("sizeof") {
             let kind = if self.eat("(").is_some() {
                 if self.peek().is_some_and(|token| self.starts_type(token)) {
-                    let (ty, _) = self.specifiers(false)?;
+                    let (ty, _, _) = self.specifiers_at_depth(false, depth + 1)?;
                     let ty = self.pointers(ty)?;
                     self.expect(")", "expected ')' after the sizeof type")?;
                     ExpressionKind::SizeofType(ty)
@@ -652,7 +690,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         }
         let mut callee = if let Some(site) = self.eat("(") {
             if self.peek().is_some_and(|token| self.starts_type(token)) {
-                let (ty, _) = self.specifiers(false)?;
+                let (ty, _, _) = self.specifiers_at_depth(false, depth + 1)?;
                 let ty = self.pointers(ty)?;
                 self.expect(")", "expected ')' after the cast type")?;
                 return Expression::new(
@@ -664,12 +702,31 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             self.expect(")", "expected ')' after the expression")?;
             expr
         } else {
-            self.primary()?
+            self.primary(depth)?
         };
         let mut count = 0;
-        while let Some(open) = self.eat("(").or_else(|| self.eat("[")) {
+        while let Some(open) = self
+            .eat("(")
+            .or_else(|| self.eat("["))
+            .or_else(|| self.eat("."))
+            .or_else(|| self.eat("->"))
+            .or_else(|| self.eat("++"))
+            .or_else(|| self.eat("--"))
+        {
             if depth + count == MAX_NESTING {
                 return Err(open.error("expression nesting limit exceeded"));
+            }
+            if open.is("++") || open.is("--") {
+                callee = Expression::new(
+                    open,
+                    ExpressionKind::Update {
+                        operand: Box::new(callee),
+                        increment: open.is("++"),
+                        postfix: true,
+                    },
+                )?;
+                count += 1;
+                continue;
             }
             if open.is("[") {
                 let right = self.expression(depth + count + 1)?;
@@ -686,6 +743,20 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 continue;
             }
             count += 1;
+            if open.is(".") || open.is("->") {
+                let name = self
+                    .identifier()
+                    .ok_or_else(|| self.error("expected a member name"))?;
+                callee = Expression::new(
+                    open,
+                    ExpressionKind::Member {
+                        base: Box::new(callee),
+                        name,
+                        indirect: open.is("->"),
+                    },
+                )?;
+                continue;
+            }
             let mut arguments = Vec::new();
             let close = if let Some(close) = self.eat(")") {
                 close
@@ -706,24 +777,23 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 },
             )?;
         }
-        if let Some(site) = self.eat("++").or_else(|| self.eat("--")) {
-            return Expression::new(
-                site,
-                ExpressionKind::Update {
-                    operand: Box::new(callee),
-                    increment: site.is("++"),
-                    postfix: true,
-                },
-            );
-        }
         Ok(callee)
     }
 
-    fn primary(&mut self) -> Result<Expression<'a>, Diagnostic> {
+    fn primary(&mut self, depth: usize) -> Result<Expression<'a>, Diagnostic> {
         let site = self
             .peek()
             .ok_or_else(|| self.error("expected an expression"))?;
         let kind = match site.kind {
+            Kind::Identifier if site.is("__builtin_va_arg") => {
+                self.take();
+                self.expect("(", "expected '(' after __builtin_va_arg")?;
+                let list = self.expression(depth + 1)?;
+                self.expect(",", "expected ',' before the va_arg type")?;
+                let ty = self.type_name(depth + 1)?;
+                self.expect(")", "expected ')' after the va_arg type")?;
+                ExpressionKind::VaArg(Box::new(list), ty)
+            }
             Kind::Identifier if is_identifier(site) => {
                 self.take();
                 match self.lookup(&site.text) {
@@ -804,6 +874,8 @@ fn is_identifier(token: &Lexeme) -> bool {
                 | "_Noreturn"
                 | "_Static_assert"
                 | "_Thread_local"
+                | amd64_va_list::NAME
+                | "__builtin_va_arg"
         )
 }
 
@@ -823,7 +895,7 @@ mod tests {
         .unwrap();
         let token_count = source.tokens().count();
         for count in 0..token_count {
-            let parsed = parse_tokens(source.tokens().take(count), path);
+            let parsed = parse_tokens(source.tokens().take(count), path, Target::X86_64);
             if count == 9 {
                 // A complete prototype on its own is a valid translation unit.
                 assert_eq!(parsed.unwrap().len(), 1);
@@ -833,6 +905,11 @@ mod tests {
                 assert!(error.contains("unexpected end of input"), "{error}");
             }
         }
-        assert_eq!(translation_unit(&source, path).unwrap().len(), 2);
+        assert_eq!(
+            translation_unit(&source, path, Target::X86_64)
+                .unwrap()
+                .len(),
+            2
+        );
     }
 }

@@ -88,6 +88,8 @@ def seal(bundle, commit, arch, tool_record):
     sources[DEV / "linker.ld"] = ROOT / "userspace/programs/linker.ld"
     required = {SUITE, DEV / "lib/libc.a"} | {DEV / "bin" / tool for tool in TOOLS}
     required |= {DEV / "bin" / tool for tool in ("cc", "make", "as", "ld")}
+    if arch == "x86_64":
+        required.add(DEV / "lib/libinterop.a")
     corpus = ROOT / "toolchain/corpus"
     names = check_corpus(corpus)
     for name in names:
@@ -109,14 +111,32 @@ def seal(bundle, commit, arch, tool_record):
                                   if arch == "aarch64" and name == "value.s" else corpus / path)
     deferred = {"aggregate-copy", "bitfield-values", "varargs", "alignment", "atomics",
                 "compound-literal", "designated-init", "generic"}
+    if arch == "x86_64":
+        deferred -= {"aggregate-copy", "bitfield-values", "varargs"}
     candidates = set(names) - deferred
-    if len(candidates) != 22:
+    if len(candidates) != (25 if arch == "x86_64" else 22):
         raise ValueError("unexpected C candidate corpus")
     required |= {CORPUS / "c-core/mac" / (name + ".elf") for name in candidates}
     actual = {path.name for path in (tree / CORPUS / "c-core/mac").iterdir()}
     if actual != {name + ".elf" for name in candidates}:
         raise ValueError("C candidate corpus differs from the selected cases")
     if arch == "x86_64":
+        for name in ("aggregates-exhaustion", "varargs", "sse-float", "x87-long-double"):
+            path = Path("abi") / (name + ".expect")
+            sources[CORPUS / path] = corpus / path
+            for half in ("caller", "callee"):
+                path = Path("abi") / f"{name}-{half}.c"
+                sources[CORPUS / path] = corpus / path
+                required.add(CORPUS / path.with_suffix(".o"))
+        for category, names_in_category in (
+                ("tls", ("template-init-zero-fill-aligned", "errno-per-thread", "tls-across-fork-exec")),
+                ("interop", ("c-calls-rust", "rust-calls-c"))):
+            for name in names_in_category:
+                for suffix in (".c", ".expect"):
+                    path = Path(category) / (name + suffix)
+                    sources[CORPUS / path] = corpus / path
+        sources[CORPUS / "tls/threads.h"] = corpus / "tls/threads.h"
+
         fixtures = corpus / "assembler"
         for source in fixtures.iterdir():
             if source.is_file():
@@ -149,6 +169,7 @@ def seal(bundle, commit, arch, tool_record):
             raise ValueError(f"staged object differs from the reference link input: {name}")
     tools = json.loads(tool_record.read_text())
     fork = tomllib.loads((ROOT / "rust-fork.toml").read_text())["commit"]
+    interop = tools.pop("interop", None) if arch == "x86_64" else None
     expected_tools = set(TOOLS) | {"bcc", "bmake"}
     if set(tools) != expected_tools:
         raise ValueError("toolchain build record differs from the staged tool set")
@@ -160,6 +181,13 @@ def seal(bundle, commit, arch, tool_record):
                 or not SHA256.fullmatch(tool["rustc"]["sha256"])
                 or tool["sha256"] != digest(tree / DEV / "bin" / filename)):
             raise ValueError(f"{name}: build record differs from the staged tool")
+    if arch == "x86_64":
+        path = "lib/libinterop.a"
+        if interop != {
+                "cargoPackage": "interop", "path": path, "target": "x86_64-breenix-c",
+                "rustForkCommit": fork, "rustc": tools["bcc"]["rustc"],
+                "sha256": digest(tree / DEV / path)}:
+            raise ValueError("interop build record differs from the staged archive")
     for tool, alias in (("bas", "as"), ("bld", "ld")):
         if digest(tree / DEV / "bin" / alias) != tools[tool]["sha256"]:
             raise ValueError(f"{alias}: staged driver tool differs from {tool}")
@@ -167,6 +195,8 @@ def seal(bundle, commit, arch, tool_record):
     record_data = dict(commit=commit, arch=arch, tools=tools,
                        manifestSha256=digest(tree / MANIFEST))
     record_data["candidateProducer"] = "mac-bcc" if sys.platform == "darwin" else "host-bcc"
+    if arch == "x86_64":
+        record_data["interop"] = interop
     record = json.dumps(record_data, indent=2) + "\n"
     (tree / RECORD).write_text(record)
     (bundle / "build.json").write_text(record)

@@ -53,7 +53,10 @@ class ToolchainCcCorpusTest(unittest.TestCase):
         self.assertIsNotNone(loop)
         include = re.search(rf'const {loop[1]}: &str = include_str!\("([^"]+)"\);', source)
         self.assertIsNotNone(include)
-        self.assertEqual((SUITE.parent / include[1]).read_text().splitlines(), EXPECTED)
+        names = (SUITE.parent / include[1]).read_text().splitlines()
+        deferred = {"aggregate-copy", "bitfield-values", "varargs"}
+        self.assertEqual(sorted(deferred | set(EXPECTED)), names)
+        self.assertIn('matches!(name, "aggregate-copy" | "bitfield-values" | "varargs")', case[1])
 
     def test_mac_bundle_builds_exact_candidate_corpus(self):
         with tempfile.TemporaryDirectory(prefix="toolchain-cc-corpus-") as temporary:
@@ -68,8 +71,9 @@ class ToolchainCcCorpusTest(unittest.TestCase):
             record = json.loads((output / "build.json").read_text())
             self.assertEqual(record["candidateProducer"], "mac-bcc")
             staged = output / "root/usr/share/breenix/toolchain"
+            expected = EXPECTED if ARCH == "aarch64" else sorted(EXPECTED + ["aggregate-copy", "bitfield-values", "varargs"])
             self.assertEqual(sorted(path.name for path in (staged / "c-core/mac").iterdir()),
-                             [name + ".elf" for name in EXPECTED])
+                             [name + ".elf" for name in expected])
             reference = (CORPUS / "cases").read_text().splitlines()
             self.assertEqual(len(reference), 30)
             self.assertEqual(sorted(path.stem for path in staged.glob("*.elf")), reference)

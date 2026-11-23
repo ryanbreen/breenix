@@ -5,6 +5,8 @@ use super::*;
 pub(super) enum Slot {
     Frame(usize),
     Static(String),
+    Thread(String),
+    ThreadExtern,
 }
 
 impl Slot {
@@ -12,47 +14,62 @@ impl Slot {
         match self {
             Self::Frame(base) => format!("[rbp - {}]", base - offset),
             Self::Static(name) => format!("[rip + {name}]"),
+            Self::Thread(_) | Self::ThreadExtern => {
+                unreachable!("thread objects use a TP-relative slot")
+            }
         }
     }
 }
 
 impl<'src> Emitter<'_, 'src> {
-    pub(super) fn layout(&mut self, function: &Function<'src>) -> Result<usize, Diagnostic> {
+    pub(super) fn layout(&mut self, function: &Function<'src>) -> Result<(), Diagnostic> {
         self.locals.clear();
-        let mut frame = 0usize;
+        self.frame = 0;
         for (index, local) in function.locals.iter().enumerate() {
-            let layout = local.object.ty.layout().unwrap();
-            let slot = if local.static_storage {
-                let label = self.label();
-                writeln!(
-                    self.data,
-                    "    .align {}\n{label}:\n    .zero {}",
-                    layout.align, layout.size
-                )
-                .unwrap();
-                Slot::Static(label)
-            } else {
-                // A parameter spill may store a whole register or eightbyte.
-                let size = if index < function.params.len() {
-                    8
-                } else {
-                    layout.size
-                };
-                frame = frame
-                    .checked_add(size)
-                    .and_then(|frame| frame.checked_next_multiple_of(layout.align))
-                    .filter(|&frame| frame <= i32::MAX as usize - 15)
-                    .ok_or_else(|| {
-                        Diagnostic::new(
-                            local.object.site,
-                            "stack frame exceeds the addressable range",
-                        )
-                    })?;
-                Slot::Frame(frame)
+            let slot = match local.storage {
+                LocalStorage::ThreadExtern(_) => Slot::ThreadExtern,
+                LocalStorage::Thread(_) => Slot::Thread(self.label()),
+                LocalStorage::Static => {
+                    let layout = local.object.ty.layout().unwrap();
+                    let label = self.label();
+                    writeln!(
+                        self.data,
+                        "    .align {}\n{label}:\n    .zero {}",
+                        layout.align, layout.size
+                    )
+                    .unwrap();
+                    Slot::Static(label)
+                }
+                LocalStorage::Automatic => {
+                    let mut layout = local.object.ty.layout().unwrap();
+                    // A parameter spill may store a whole register or eightbyte.
+                    if index < function.params.len() {
+                        layout.size = abi::eightbyte_size(layout.size, local.object.site)?;
+                    }
+                    self.frame_slot(layout, local.object.site)?
+                }
             };
             self.locals.push(slot);
         }
-        Ok(frame.next_multiple_of(16))
+        for (index, local) in function.locals.iter().enumerate() {
+            if let (LocalStorage::Thread(init), Slot::Thread(label)) =
+                (&local.storage, &self.locals[index])
+            {
+                let label = label.clone();
+                self.thread_definition(&local.object, &label, Linkage::Internal, init.as_ref())?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn frame_slot(
+        &mut self,
+        layout: Layout,
+        site: &Position,
+    ) -> Result<Slot, Diagnostic> {
+        let end = abi::checked_stack_end(self.frame, layout.size, site)?;
+        self.frame = abi::checked_stack_end(end.next_multiple_of(layout.align), 0, site)?;
+        Ok(Slot::Frame(self.frame))
     }
 
     pub(super) fn statements(
@@ -90,10 +107,15 @@ impl<'src> Emitter<'_, 'src> {
                 for init in values {
                     self.converted(&init.value, &init.ty)?;
                     let memory = self.locals[*local].memory(init.offset);
-                    self.store_object(&init.ty, &memory);
+                    if let Some(field) = init.bit_field {
+                        writeln!(self.text, "    lea r11, {memory}").unwrap();
+                        self.store_bit_field(field, &init.ty, None);
+                    } else {
+                        self.store_object(&init.ty, &memory);
+                    }
                 }
             }
-            Statement::Expression(expr) => self.value(expr)?,
+            Statement::Expression(expr) => self.discard(expr)?,
             Statement::Return(expr) => {
                 if let Some(expr) = expr {
                     self.converted(expr, result)?;
@@ -131,7 +153,7 @@ impl<'src> Emitter<'_, 'src> {
                 self.statement(body, result, epilogue)?;
                 writeln!(self.text, "{next}:").unwrap();
                 if let Some(increment) = increment {
-                    self.value(increment)?;
+                    self.discard(increment)?;
                 }
                 if let Some(test) = condition.as_ref().filter(|_| *post_test) {
                     self.jump_if(test, "jz", &end)?;
@@ -198,6 +220,17 @@ impl<'src> Emitter<'_, 'src> {
     }
 
     pub(super) fn address(&mut self, expr: &Expression<'src>) -> Result<(), Diagnostic> {
+        if let Some(place) = self.thread_place(expr)? {
+            // AMD64 psABI §10.3.2, Table 10.7. The Breenix TCB stores its
+            // own address in FS:0.
+            writeln!(
+                self.text,
+                "    mov rax, qword fs:[0]\n    lea rax, {}",
+                place.address_operand(),
+            )
+            .unwrap();
+            return Ok(());
+        }
         let memory = match &expr.kind {
             ExpressionKind::Identifier(name) => {
                 self.use_symbol(name, expr.position())?;
@@ -206,6 +239,19 @@ impl<'src> Emitter<'_, 'src> {
             ExpressionKind::Local(id) => self.locals[*id].memory(0),
             ExpressionKind::String(bytes) => format!("[rip + {}]", self.emit_string(bytes)),
             ExpressionKind::Unary(Unary::Dereference, operand) => return self.value(operand),
+            ExpressionKind::Member { base, offset, .. } => {
+                self.value(base)?;
+                if *offset != 0 {
+                    // A legal member offset can exceed a signed immediate for
+                    // an externally defined record.
+                    if *offset <= i32::MAX as usize {
+                        writeln!(self.text, "    add rax, {offset}").unwrap();
+                    } else {
+                        writeln!(self.text, "    mov r10, {offset}\n    add rax, r10").unwrap();
+                    }
+                }
+                return Ok(());
+            }
             _ => unreachable!("sema must supply an addressable expression"),
         };
         writeln!(self.text, "    lea rax, {memory}").unwrap();
@@ -218,11 +264,14 @@ impl<'src> Emitter<'_, 'src> {
         right: &Expression<'src>,
         operation: Option<&(Binary, Type, Type)>,
     ) -> Result<(), Diagnostic> {
-        self.address(left)?;
-        self.adjust_stack("sub", 16);
-        self.text.push_str("    mov qword [rsp], rax\n");
+        let place = self.thread_scalar_place(left)?;
+        if place.is_none() {
+            self.address(left)?;
+            self.adjust_stack("sub", 16);
+            self.text.push_str("    mov qword [rsp], rax\n");
+        }
         if let Some((op, a, b)) = operation {
-            self.load(&left.ty, "[rax]");
+            self.load_lvalue(left, place.as_ref());
             self.convert(&left.ty, a);
             self.adjust_stack("sub", 16);
             self.store(a, "[rsp]");
@@ -232,9 +281,16 @@ impl<'src> Emitter<'_, 'src> {
         } else {
             self.converted(right, &left.ty)?;
         }
-        self.text.push_str("    mov r11, qword [rsp]\n");
-        self.store_object(&left.ty, "[r11]");
-        self.adjust_stack("add", 16);
+        if left.ty.kind == Kind::LongDouble {
+            self.text.push_str("    fld st(0)\n");
+        }
+        if place.is_none() {
+            self.text.push_str("    mov r11, qword [rsp]\n");
+        }
+        self.store_lvalue(left, place.as_ref());
+        if place.is_none() {
+            self.adjust_stack("add", 16);
+        }
         Ok(())
     }
 
@@ -244,16 +300,34 @@ impl<'src> Emitter<'_, 'src> {
         increment: bool,
         postfix: bool,
     ) -> Result<(), Diagnostic> {
-        self.address(operand)?;
-        self.adjust_stack("sub", 16);
-        self.text.push_str("    mov qword [rsp], rax\n");
         let ty = &operand.ty;
-        self.load(ty, "[rax]");
+        let extended = ty.kind == Kind::LongDouble;
+        let reserve = if postfix && extended { 32 } else { 16 };
+        let place = self.thread_scalar_place(operand)?;
+        if place.is_none() {
+            self.address(operand)?;
+        }
+        self.adjust_stack("sub", reserve);
+        if place.is_none() {
+            self.text.push_str("    mov qword [rsp], rax\n");
+        }
+        self.load_lvalue(operand, place.as_ref());
         if postfix {
+            if extended {
+                self.text.push_str("    fld st(0)\n");
+            }
             self.store(ty, "[rsp + 8]");
         }
         let op = if increment { "add" } else { "sub" };
         match &ty.kind {
+            Kind::LongDouble => {
+                self.text.push_str("    fld1\n");
+                let op = if increment { "faddp" } else { "fsubp" };
+                writeln!(self.text, "    {op} st(1), st(0)").unwrap();
+                if !postfix {
+                    self.text.push_str("    fld st(0)\n");
+                }
+            }
             Kind::Float(float) => {
                 let one = match float {
                     Float::Single => 0x3f80_0000,
@@ -276,16 +350,18 @@ impl<'src> Emitter<'_, 'src> {
             }
             _ => unreachable!(),
         }
-        self.text.push_str("    mov r11, qword [rsp]\n");
-        self.store_object(ty, "[r11]");
+        if place.is_none() {
+            self.text.push_str("    mov r11, qword [rsp]\n");
+        }
+        self.store_lvalue(operand, place.as_ref());
         if postfix {
             self.load(ty, "[rsp + 8]");
         }
-        self.adjust_stack("add", 16);
+        self.adjust_stack("add", reserve);
         Ok(())
     }
 
-    fn store_object(&mut self, ty: &Type, address: &str) {
+    pub(super) fn store_object(&mut self, ty: &Type, address: &str) {
         let (width, register) = match ty.kind {
             Kind::Integer(integer) => match integer.layout().size {
                 1 => ("byte", "al"),
@@ -297,9 +373,30 @@ impl<'src> Emitter<'_, 'src> {
                 writeln!(self.text, "    {} {address}, xmm0", float_move(float)).unwrap();
                 return;
             }
+            Kind::LongDouble => {
+                self.store(ty, address);
+                return;
+            }
             Kind::Pointer(_) => ("qword", "rax"),
+            Kind::Record(record) => {
+                // N1570 §6.5.16.1p3 permits exact overlap for compatible
+                // records. Keep the destination address as the result.
+                // AMD64 psABI §3.2.1 requires DF clear at function boundaries.
+                let size = record.layout.unwrap().size;
+                writeln!(self.text, "    mov rsi, rax\n    lea rdi, {address}").unwrap();
+                self.copy_record(size);
+                return;
+            }
             _ => unreachable!(),
         };
         writeln!(self.text, "    mov {width} {address}, {register}").unwrap();
+    }
+
+    pub(super) fn copy_record(&mut self, size: usize) {
+        writeln!(
+            self.text,
+            "    mov rax, rdi\n    mov rcx, {size}\n    rep movsb"
+        )
+        .unwrap();
     }
 }

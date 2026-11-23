@@ -16,7 +16,7 @@
 compile_error!("linux-test requires the x86-64 or aarch64 Linux LP64 ABI");
 
 use core::arch::{asm, global_asm};
-use core::ffi::{c_char, c_int, c_uint, c_void};
+use core::ffi::{c_char, c_int, c_long, c_uint, c_void};
 use core::{ptr, slice};
 
 #[cfg(target_arch = "x86_64")]
@@ -261,13 +261,10 @@ unsafe extern "C" fn printf(format: *const c_char, mut args: ...) -> c_int {
                 let value = unsafe { args.arg::<c_uint>() };
                 (decimal(u64::from(value), false, &mut digits), rest)
             }
-            [b'%', b't', b'd', rest @ ..] => {
-                // SAFETY: %td requires a ptrdiff_t argument (signed 64-bit here).
-                let value = unsafe { args.arg::<isize>() };
-                (
-                    decimal(value.unsigned_abs() as u64, value < 0, &mut digits),
-                    rest,
-                )
+            [b'%', b'l' | b't', b'd', rest @ ..] => {
+                // SAFETY: %ld takes long; Breenix's LP64 ptrdiff_t is also long.
+                let value = unsafe { args.arg::<c_long>() };
+                (decimal(value.unsigned_abs(), value < 0, &mut digits), rest)
             }
             [b'%', b's', rest @ ..] => {
                 // SAFETY: %s requires a pointer to a C string.
