@@ -310,6 +310,67 @@ class ToolchainBundleTest(unittest.TestCase):
                 self.assertEqual((root / path).read_bytes(), source.read_bytes())
                 self.assertIn(f"{digest(source)}  {path}", manifest)
 
+    def arm_bundle_stages_c17_libc(self):
+        self.assertEqual(self.record["arch"], "aarch64")
+        root = self.bundle / "root"
+        corpus = Path("usr/share/breenix/toolchain")
+        manifest = set((self.dev / "manifest.sha256").read_text().splitlines())
+        sources = {corpus / "c17" / p.name: p for p in (WORKSPACE / "corpus/c17").iterdir() if p.is_file()}
+        sources[corpus / "libc-suite.mk"] = WORKSPACE / "corpus/libc-suite.mk"
+        sources[corpus / "libc-suite/libc.json"] = ROOT / "docs/suites/libc.json"
+        sources.update({corpus / "libc-suite" / p.name: p for p in (ROOT / "userspace/libc-suite").iterdir()
+                        if p.suffix in (".c", ".h") or p.name == "categories"})
+        for relative, source in sources.items():
+            with self.subTest(path=relative):
+                self.assertEqual((root / relative).read_bytes(), source.read_bytes())
+                self.assertIn(f"{digest(source)}  {relative}", manifest)
+
+        spec = importlib.util.spec_from_file_location("libc_symbol_audit", ROOT / "scripts/libc-symbol-audit.py")
+        audit = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(audit)
+        clang = Path(os.environ["BREENIX_TOOLCHAIN_CLANG"])
+        compiler = [str(clang), "--no-default-config", "--target=aarch64-unknown-linux-gnu",
+                    "-Ulinux", "-U__linux", "-U__linux__", "-U__gnu_linux__", "-D__breenix__=1",
+                    "-nostdinc", "-isystem", str(audit.INCLUDE), "-isystem", str(WORKSPACE / "include")]
+        functions = audit.declared_functions("aarch64", audit.public_headers(), compiler=compiler)
+        inventory = corpus / "libc-functions.txt"
+        self.assertEqual((root / inventory).read_text().splitlines(), sorted(functions))
+        self.assertTrue(functions)
+        self.assertIn(f"{digest(root / inventory)}  {inventory}", manifest)
+
+        for name in ("libc.a", "libbrt.a"):
+            relative = Path("opt/breenix-dev/25.2/lib") / name
+            data = (root / relative).read_bytes()
+            self.assertIn(f"{digest(root / relative)}  {relative}", manifest)
+            self.assertEqual(data[:8], b"!<arch>\n")
+            offset, objects = 8, 0
+            while offset < len(data):
+                header = data[offset:offset + 60]
+                self.assertEqual(header[58:60], b"`\n")
+                size = int(header[48:58])
+                member = data[offset + 60:offset + 60 + size]
+                if header[:3] == b"#1/":
+                    member = member[int(header[:16].decode().strip()[3:]):]
+                if member.startswith(b"\x7fELF"):
+                    self.assertEqual(member[:6], b"\x7fELF\x02\x01")
+                    self.assertEqual(struct.unpack_from("<H", member, 18)[0], 183)
+                    objects += 1
+                offset += 60 + size + (size & 1)
+            self.assertEqual(offset, len(data))
+            self.assertGreater(objects, 0)
+
+        categories = [line.split()[0] for line in (ROOT / "userspace/libc-suite/categories").read_text().splitlines()
+                      if line.strip() and not line.lstrip().startswith("#")]
+        self.assertEqual(len(categories), 7)
+        for category in categories:
+            name = f"libc-{category}_test.elf"
+            relative = Path("usr/libexec/breenix") / name
+            data = (root / relative).read_bytes()
+            self.assertEqual(data, (ROOT / "userspace/programs/aarch64" / name).read_bytes())
+            self.assertEqual(data[:6], b"\x7fELF\x02\x01")
+            self.assertEqual(struct.unpack_from("<HH", data, 16), (2, 183))
+            self.assertIn(f"{digest(root / relative)}  {relative}", manifest)
+
     def brt_built_by_rustc(self):
         path = "lib/libbrt.a"
         archive = self.dev / path
@@ -502,7 +563,8 @@ if __name__ == "__main__":
                        "ToolchainBundleTest.brt_built_by_rustc",
                        "ToolchainBundleTest.bcc_links_aggregate_atomic"])
     else:
-        checks.extend(["ToolchainBundleTest.arm_bundle_has_cc_and_make",
+        checks.extend(["ToolchainBundleTest.arm_bundle_stages_c17_libc",
+                       "ToolchainBundleTest.arm_bundle_has_cc_and_make",
                        "ToolchainBundleTest.arm_bundle_stages_language_abi",
                        "ToolchainBundleTest.arm_encoding_inputs_are_staged",
                        "ToolchainBundleTest.aarch64_stages_linker_objects",

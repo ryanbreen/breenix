@@ -47,6 +47,7 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
         frame: 0,
         aligned_frame: 0,
         frame_alignment: STACK_ALIGNMENT,
+        alloca_base: None,
         variadic: None,
         flow_labels: HashMap::new(),
         object_definitions: unit
@@ -134,6 +135,7 @@ struct Emitter<'unit, 'src> {
     frame: usize,
     aligned_frame: usize,
     frame_alignment: usize,
+    alloca_base: Option<usize>,
     variadic: Option<VariadicFrame>,
     flow_labels: HashMap<usize, String>,
     object_definitions: BTreeSet<&'src str>,
@@ -171,6 +173,11 @@ impl<'src> Emitter<'_, 'src> {
             parameters.push((object, slots.next(incoming, object)));
         }
         self.layout(function, &parameters)?;
+        self.alloca_base = if function.has_alloca {
+            Some(self.frame_slot(Layout { size: 8, align: 8 }, function.site)?)
+        } else {
+            None
+        };
         let indirect_result = if object_result.is_some_and(CallObject::indirect) {
             Some(self.frame_slot(Layout { size: 8, align: 8 }, function.site)?)
         } else {
@@ -223,6 +230,11 @@ impl<'src> Emitter<'_, 'src> {
             )
             .unwrap();
             self.add_sub_offset("sub", "sp", "x19", self.aligned_frame as u64);
+        }
+        if let Some(distance) = self.alloca_base {
+            // Record the bottom of the fixed frame after any x19 realignment.
+            self.offset_address("x9", "x29", -(distance as i64));
+            self.text.push_str("    mov x10, sp\n    str x10, [x9]\n");
         }
         let adjustment = self.text.split_off(tail);
         self.text.insert_str(stack_adjustment, &adjustment);
@@ -332,9 +344,7 @@ impl<'src> Emitter<'_, 'src> {
             }
             ExpressionKind::FloatClass { operand, values } => self.float_class(operand, *values)?,
             ExpressionKind::SignBit(operand) => self.float_sign(operand)?,
-            ExpressionKind::Alloca(_) => {
-                return Err(Diagnostic::new(expr.position(), "__builtin_alloca lowering is deferred to ARM 25.10b"));
-            }
+            ExpressionKind::Alloca(size) => self.alloca(size)?,
             ExpressionKind::VaStart(list) => self.va_start(list)?,
             ExpressionKind::VaArg(list) => self.va_arg(list, &expr.ty, expr.position())?,
             ExpressionKind::VaCopy { dest, source } => self.va_copy(dest, source)?,

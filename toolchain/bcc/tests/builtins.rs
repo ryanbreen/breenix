@@ -106,9 +106,98 @@ fn predicates_and_integer_builtins_execute() {
 
 fn execute_builtins(bcc: &Path, root: &Path, scratch: &Path) -> Result<(), String> {
     let source = scratch.join("predicates.c");
+    fs::write(&source, PREDICATES).unwrap();
+    let assembly = scratch.join("predicates.s");
+    let object = scratch.join("predicates.o");
+    let executable = scratch.join("predicates.elf");
+    let script = scratch.join("entry.ld");
     fs::write(
-        &source,
-        r#"
+        &script,
+        fs::read_to_string(root.join("userspace/programs/linker.ld"))
+            .unwrap()
+            .replace("ENTRY(_start)", "ENTRY(main)"),
+    )
+    .unwrap();
+    check(
+        Command::new(bcc)
+            .args(["--target=x86_64", "-std=c17", "-fno-builtin", "-S", "-I"])
+            .arg(root.join("libs/libbreenix-libc/include"))
+            .arg("-I")
+            .arg(root.join("toolchain/include"))
+            .arg("-o")
+            .arg(&assembly)
+            .arg(source),
+    )?;
+    check(
+        Command::new(bcc.with_file_name("bas"))
+            .arg("-o")
+            .arg(&object)
+            .arg(assembly),
+    )?;
+    check(
+        Command::new(bcc.with_file_name("bld"))
+            .arg("-T")
+            .arg(script)
+            .arg("-o")
+            .arg(&executable)
+            .arg(object),
+    )?;
+    let mut python = if cfg!(target_os = "macos") {
+        let mut command = Command::new("arch");
+        command.args(["-x86_64", "/usr/bin/python3"]);
+        command
+    } else {
+        Command::new("python3")
+    };
+    check(
+        python
+            .arg(root.join("toolchain/tests/bcc/return_42_exit_status.py"))
+            .arg("--call-entry")
+            .arg(executable),
+    )
+}
+
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn aarch64_predicates_and_integer_builtins_execute() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let bcc = Path::new(env!("CARGO_BIN_EXE_bcc"));
+    let target = Path::new(env!("CARGO_TARGET_TMPDIR")).join("aarch64-builtins-brt");
+    check(
+        Command::new(env!("CARGO"))
+            .current_dir(root.join("toolchain"))
+            .args(["build", "--quiet", "--offline", "--locked", "--release", "-p", "brt"])
+            .args(["--features", "exports", "--target"])
+            .arg(root.join("aarch64-breenix.json"))
+            .arg("--target-dir")
+            .arg(&target)
+            .args(["-Z", "build-std=core", "-Z", "build-std-features=compiler-builtins-mem"]),
+    )
+    .unwrap();
+    let archive = target.join("aarch64-breenix/release/libbrt.a");
+    for optimization in ["--cc-flag=-O0", "--cc-flag=-O2"] {
+        check(
+            Command::new("python3")
+                .arg(root.join("toolchain/tests/bcc/aarch64_return_42_exit_status.py"))
+                .args([bcc, &bcc.with_file_name("bas"), &bcc.with_file_name("bld")])
+                .args([
+                    "--expected-exit",
+                    "0",
+                    "--cc-flag=-std=c17",
+                    "--cc-flag=-fno-builtin",
+                    optimization,
+                    "--cc-flag=-I",
+                ])
+                .arg(format!("--cc-flag={}", root.join("libs/libbreenix-libc/include").display()))
+                .arg("--archive")
+                .arg(&archive)
+                .arg(PREDICATES),
+        )
+        .unwrap();
+    }
+}
+
+const PREDICATES: &str = r#"
 #include <alloca.h>
 #include <byteswap.h>
 #include <math.h>
@@ -163,58 +252,7 @@ int main(void) {
         return 6;
     return 0;
 }
-"#,
-    )
-    .unwrap();
-    let assembly = scratch.join("predicates.s");
-    let object = scratch.join("predicates.o");
-    let executable = scratch.join("predicates.elf");
-    let script = scratch.join("entry.ld");
-    fs::write(
-        &script,
-        fs::read_to_string(root.join("userspace/programs/linker.ld"))
-            .unwrap()
-            .replace("ENTRY(_start)", "ENTRY(main)"),
-    )
-    .unwrap();
-    check(
-        Command::new(bcc)
-            .args(["--target=x86_64", "-std=c17", "-fno-builtin", "-S", "-I"])
-            .arg(root.join("libs/libbreenix-libc/include"))
-            .arg("-I")
-            .arg(root.join("toolchain/include"))
-            .arg("-o")
-            .arg(&assembly)
-            .arg(source),
-    )?;
-    check(
-        Command::new(bcc.with_file_name("bas"))
-            .arg("-o")
-            .arg(&object)
-            .arg(assembly),
-    )?;
-    check(
-        Command::new(bcc.with_file_name("bld"))
-            .arg("-T")
-            .arg(script)
-            .arg("-o")
-            .arg(&executable)
-            .arg(object),
-    )?;
-    let mut python = if cfg!(target_os = "macos") {
-        let mut command = Command::new("arch");
-        command.args(["-x86_64", "/usr/bin/python3"]);
-        command
-    } else {
-        Command::new("python3")
-    };
-    check(
-        python
-            .arg(root.join("toolchain/tests/bcc/return_42_exit_status.py"))
-            .arg("--call-entry")
-            .arg(executable),
-    )
-}
+"#;
 
 fn check(command: &mut Command) -> Result<(), String> {
     let output = command.output().unwrap();

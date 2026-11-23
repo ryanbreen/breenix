@@ -97,12 +97,22 @@ def call_entry(bld, script, executable, objects, mode):
 def main():
     bcc, bas, bld = map(Path, sys.argv[1:4])
     source_texts = sys.argv[4:]
+    expected_exit = 42
+    if source_texts[:1] == ["--expected-exit"]:
+        expected_exit = int(source_texts[1])
+        source_texts = source_texts[2:]
+    cc_flags = []
+    while source_texts and source_texts[0].startswith("--cc-flag="):
+        cc_flags.append(source_texts.pop(0).split("=", 1)[1])
     assembly_text = None
     if source_texts[:1] == ["--asm"]:
         assembly_text, source_texts = source_texts[1], source_texts[2:]
     archive = None
     mode = "--call-entry"
-    if source_texts[:1] == ["--atomic-runtime"]:
+    if source_texts[:1] == ["--archive"]:
+        archive = Path(source_texts[1])
+        source_texts = source_texts[2:]
+    elif source_texts[:1] == ["--atomic-runtime"]:
         archive = Path(source_texts[1])
         source_texts = source_texts[2:]
         mode = "--call-atomic-runtime"
@@ -151,7 +161,7 @@ def main():
             assembly = path.with_suffix(".s")
             if path.suffix == ".c":
                 assembly.write_bytes(checked(bcc, "--target=aarch64", "-I", TOOLCHAIN / "include",
-                                             "-S", path))
+                                             *cc_flags, "-S", path))
             obj = assembly.with_suffix(".o")
             checked(bas, "--target", "aarch64", "-o", obj, assembly)
             objects.append(obj)
@@ -163,8 +173,8 @@ def main():
             result = run(sys.executable, __file__, mode, bld, script, executable, *objects)
         else:
             result = run(sys.executable, HERE / "return_42_exit_status.py", "--call-entry", executable)
-        if (result.returncode, result.stdout, result.stderr) != (42, b"", b""):
-            raise ValueError(f"expected exit 42, got {result.returncode}: "
+        if (result.returncode, result.stdout, result.stderr) != (expected_exit, b"", b""):
+            raise ValueError(f"expected exit {expected_exit}, got {result.returncode}: "
                              f"stdout={result.stdout!r}, stderr={result.stderr!r}")
 
 
