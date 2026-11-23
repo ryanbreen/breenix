@@ -1,7 +1,7 @@
 //! N1570 §7.16.1 variable argument list access macros.
 
 use super::*;
-use crate::types::amd64_va_list;
+use crate::types::{aarch64_va_list, amd64_va_list};
 
 impl<'a> FunctionBody<'a, '_> {
     fn va_operand(
@@ -10,19 +10,23 @@ impl<'a> FunctionBody<'a, '_> {
         writable: bool,
     ) -> Result<Box<Expression<'a>>, Diagnostic> {
         let operand = self.expression(operand)?;
-        if self.target != Target::X86_64 {
-            return Err(operand
-                .site
-                .error("variadic builtins require the AMD64 backend"));
-        }
-        // An array object decays just as a va_list parameter adjusts to a pointer.
-        if let Kind::Pointer(element) = operand.value_type().kind {
-            let is_list = matches!(element.kind, Kind::Record(record)
+        let is_list = |ty: &Type, name| {
+            matches!(ty.kind, Kind::Record(record)
                 if self.records.records.get(record.id).is_some_and(|entry|
-                    entry.tag == Some(amd64_va_list::NAME)));
-            if is_list && (!writable || !element.qualifiers.constant) {
-                return Ok(Box::new(operand));
+                    entry.tag == Some(name)))
+        };
+        let valid = match self.target {
+            Target::Aarch64 => {
+                is_list(&operand.ty, aarch64_va_list::NAME)
+                    && (!writable || operand.modifiable(self.records.records))
             }
+            // Array objects decay just as va_list parameters adjust to pointers.
+            Target::X86_64 => matches!(operand.value_type().kind, Kind::Pointer(element)
+                if is_list(&element, amd64_va_list::NAME)
+                    && (!writable || !element.qualifiers.constant)),
+        };
+        if valid {
+            return Ok(Box::new(operand));
         }
         Err(operand.site.error(if writable {
             "expected a writable va_list"

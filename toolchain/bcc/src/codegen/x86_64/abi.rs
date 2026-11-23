@@ -121,6 +121,7 @@ fn classify_fields(
                 && merge_class(&mut classes[offset / 8 + 1], Class::X87Up);
         }
         Kind::Void | Kind::Function { .. } => unreachable!(),
+        Kind::ShortVector { .. } => unreachable!("short-vector typedefs are AArch64-only"),
     };
     merge_class(&mut classes[offset / 8], class)
 }

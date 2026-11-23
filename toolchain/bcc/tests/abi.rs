@@ -52,3 +52,39 @@ fn run_harness(script: &str, args: &[&str]) {
         String::from_utf8_lossy(&result.stderr),
     );
 }
+
+#[test]
+fn aarch64_va_list_layout() {
+    use bcc::{pp, sema, types::Kind};
+
+    let path = Path::new("aarch64-va-list.c");
+    let options = pp::Options {
+        target: pp::Target::Aarch64,
+        ..pp::Options::default()
+    };
+    let source = b"extern __builtin_va_list list;";
+    let input = pp::preprocess_source(path, source, &options).unwrap();
+    let unit = sema::analyze(&input, path, options.target).unwrap();
+
+    // AAPCS64 2025Q1 §10.1.5 Table 6 and the LP64 sizes in Table 3.
+    let Kind::Record(record) = unit.objects[0].ty.kind else {
+        panic!("va_list must be a struct");
+    };
+    let layout = record.layout.unwrap();
+    assert_eq!((layout.size, layout.align), (32, 8));
+    let definition = unit.records[record.id].definition.as_ref().unwrap();
+    let members = definition
+        .members
+        .iter()
+        .map(|member| (member.name, member.offset));
+    assert_eq!(
+        members.collect::<Vec<_>>(),
+        [
+            (Some("__stack"), 0),
+            (Some("__gr_top"), 8),
+            (Some("__vr_top"), 16),
+            (Some("__gr_offs"), 24),
+            (Some("__vr_offs"), 28),
+        ]
+    );
+}

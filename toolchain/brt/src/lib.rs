@@ -9,6 +9,11 @@
 #![cfg_attr(not(test), no_std)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+pub mod f128;
+
+#[cfg(feature = "exports")]
+mod exports;
+
 use core::ffi::{c_int, c_void};
 use core::hint::spin_loop;
 use core::ptr;
@@ -221,3 +226,6 @@ pub unsafe extern "C" fn __atomic_compare_exchange(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod binary128_tests;

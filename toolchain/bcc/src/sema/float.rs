@@ -1,5 +1,6 @@
 //! N1570 6.4.4.2. Round the literal's exact ratio once, to nearest/even.
 //! The Intel SDM Vol. 1 Table 4-3 and Fig. 8-13 specify the x87 encoding.
+//! IEEE 754-2019 §3.4 and Table 3.5 specify AArch64's binary128 encoding.
 
 use std::cmp::Ordering;
 

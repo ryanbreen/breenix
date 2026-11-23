@@ -132,6 +132,16 @@ pub(crate) fn instruction(p: &mut Parser<'_, '_>, op: Token<'_>) -> Result<()> {
         | "fcmp" | "fcmpe" | "fcvt" | "fcvtzs" | "fcvtzu" | "scvtf" | "ucvtf" | "fcsel" => {
             fp::encode(p, op)?
         }
+        "mrs" => {
+            let rt = register(p, true)?;
+            p.expect(b',', "expected ',' before system register")?;
+            let system = p.word();
+            if !system.text.eq_ignore_ascii_case("tpidr_el0") {
+                return Err(p.error(system.column, "unsupported MRS system register"));
+            }
+            // C6.2.286 and D24.2.203: op0=3, op1=3, CRn=13, CRm=0, op2=2.
+            0xd53b_d040 | rt.number
+        }
         "svc" => 0xd400_0001 | (immediate(p, 0xffff)? << 5), // C6.2.465
         "nop" => 0xd503_201f,                                // C6.2.298
         "br" => 0xd61f_0000 | (register(p, true)?.number << 5), // C6.2.46

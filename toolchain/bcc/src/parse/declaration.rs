@@ -1,7 +1,7 @@
 //! N1570 6.7.6: declarator modifiers are ordered outward from the name.
 
 use super::*;
-use crate::types::{BitField, Layout, Member, RecordDefinition, RecordKind, RecordType};
+use crate::types::{BitField, BitFieldContainer, Layout, Member, RecordDefinition, RecordKind, RecordType};
 
 enum Modifier<'a> {
     Pointer(Qualifiers),
@@ -183,7 +183,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         let mut variables = Vec::new();
         loop {
             let name = declarator.name.unwrap();
-            let ty = declarator.ty(base.clone(), name, &self.records)?;
+            let mut ty = declarator.ty(base.clone(), name, &self.records)?;
             storage.check(name, &ty)?;
             if declarator.modifiers.iter().any(|modifier| {
                 matches!(modifier, Modifier::Function(params)
@@ -192,6 +192,9 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 return Err(name.error("an identifier list requires a function definition"));
             }
             if storage.class == Storage::Typedef {
+                if self.target == Target::Aarch64 {
+                    self.short_vector_typedef(&mut ty)?;
+                }
                 if let Some(previous) = self.names.last().unwrap().get(name.text.as_ref()) {
                     if !matches!(previous, Name::Typedef(previous, _) if *previous == ty) {
                         return Err(name.error("conflicting typedef declaration"));
@@ -220,6 +223,31 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             }
             declarator = self.declarator(false, 0)?;
         }
+    }
+
+    // GNU C 15.2 §7.8 supplies the typedef spelling. AAPCS64 §5.5
+    // supplies the short-vector sizes and alignment.
+    fn short_vector_typedef(&mut self, ty: &mut Type) -> Result<(), Diagnostic> {
+        let Some(site) = self.eat("__attribute__") else {
+            return Ok(());
+        };
+        self.expect("(", "expected '(' after __attribute__")?;
+        self.expect("(", "expected '(' before the typedef attribute")?;
+        self.expect("vector_size", "expected the vector_size typedef attribute")?;
+        self.expect("(", "expected '(' after vector_size")?;
+        let bytes = match self.literal_integer()?.0 {
+            8 => 8,
+            16 => 16,
+            _ => return Err(site.error("AArch64 short vectors must occupy 8 or 16 bytes")),
+        };
+        self.expect(")", "expected ')' after the vector size")?;
+        self.expect(")", "expected ')' after the vector_size attribute")?;
+        self.expect(")", "expected ')' after the attribute list")?;
+        let TypeKind::Float(element) = ty.kind else {
+            return Err(site.error("AArch64 short vectors require float or double elements"));
+        };
+        ty.kind = TypeKind::ShortVector { element, bytes };
+        Ok(())
     }
 
     fn initializer(&mut self, depth: usize) -> Result<Initializer<'a>, Diagnostic> {
@@ -842,6 +870,8 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         let mut align = 1;
         let mut members = Vec::new();
         let mut has_const_member = false;
+        let arm_containers = self.target == Target::Aarch64 && !packed;
+        let mut separate_locations = Vec::new();
         let mut fields = fields.into_iter().peekable();
         while let Some(Field {
             name,
@@ -882,9 +912,9 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             let alignment = natural.max(alignment.unwrap_or(0));
             let (start, width, bit_field) = if let Some(width) = width {
                 let unit = (field.size * 8) as u128;
-                // psABI §3.1.2: ordinary fields must fit in an aligned
-                // unit of their declared type. Packed fields can straddle
-                // that boundary, but the zero-width separator still aligns.
+                // AMD64 psABI §3.1.2 and AAPCS64 §10.1.8.1 place ordinary
+                // fields within a container of their declared type. Our
+                // packed layout allows straddling and aligns zero-width fields.
                 let start = if width == 0 || !packed && start % unit + u128::from(width) > unit {
                     start.next_multiple_of(unit)
                 } else {
@@ -893,6 +923,10 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 let bit_field = BitField {
                     shift: (start % 8) as u8,
                     width,
+                    container: arm_containers.then_some(BitFieldContainer {
+                        back: (start % unit / 8) as u8,
+                        bytes: field.size as u8,
+                    }),
                 };
                 (start, u128::from(width), Some(bit_field))
             } else {
@@ -903,7 +937,10 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 )
             };
             size_bits = size_bits.max(start + width);
-            if name.is_some() || bit_field.is_none() {
+            if arm_containers && (bit_field.is_none() || width == 0) {
+                separate_locations.push((start, start + width));
+            }
+            if name.is_some() || bit_field.is_none() || arm_containers {
                 align = align.max(alignment);
                 let offset = usize::try_from(start / 8)
                     .map_err(|_| site.error("record size exceeds the target address space"))?;
@@ -914,6 +951,25 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     offset,
                     bit_field,
                 });
+            }
+        }
+        // AAPCS64 §10.1.8.5 permits narrower accesses when the container
+        // crosses another C memory location. Preserve only usable containers.
+        for member in &mut members {
+            if let Some(bit_field) = &mut member.bit_field {
+                if let Some(container) = bit_field.container {
+                    let low = (member.offset - usize::from(container.back)) as u128 * 8;
+                    let high = low + u128::from(container.bytes) * 8;
+                    if separate_locations.iter().any(|&(start, end)| {
+                        if start == end {
+                            low < start && start < high
+                        } else {
+                            start < high && low < end
+                        }
+                    }) {
+                        bit_field.container = None;
+                    }
+                }
             }
         }
         let size = usize::try_from(size_bits.div_ceil(8))

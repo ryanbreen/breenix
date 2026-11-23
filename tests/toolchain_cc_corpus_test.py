@@ -1,6 +1,6 @@
-"""Check the 25.5 guest case and a real Mac-built x86-64 toolchain bundle.
+"""Check the C corpus guest case and a real Mac-built toolchain bundle.
 
-Build suite-toolchain and the x86-64 C ABI archive first, then supply the
+Build suite-toolchain and the target's C ABI archive first, then supply the
 stage-0 executable pins required by scripts/build-toolchain.sh.
 """
 import json
@@ -18,7 +18,9 @@ ARCH = os.environ.get("BREENIX_TOOLCHAIN_TEST_ARCH", "x86_64")
 LIBC_TARGET = "x86_64-breenix-c" if ARCH == "x86_64" else "aarch64-breenix"
 LIBC = ROOT / "libs/libbreenix-libc/target" / LIBC_TARGET / "release/libc.a"
 EXPECTED = """
+aggregate-copy
 array-index
+bitfield-values
 bitwise-shifts
 boolean-tokens
 byte-output
@@ -40,6 +42,7 @@ static-duration
 switch-enum
 unsigned-wrap
 usual-conversions
+varargs
 """.split()
 
 
@@ -55,15 +58,14 @@ class ToolchainCcCorpusTest(unittest.TestCase):
             rf'(?:^#\[cfg\(target_arch = "(\w+)"\)\]\n)?'
             rf'^const {loop[1]}: &str = include_str!\("([^"]+)"\);', source, re.MULTILINE,
         ))
-        arm_skips = {"aggregate-copy", "bitfield-values", "varargs"}
         catalog = (CORPUS / "cases").read_text().splitlines()
         self.assertEqual(len(catalog), 30)
-        for arch, expected in (("aarch64", sorted(arm_skips | set(EXPECTED))), ("x86_64", catalog)):
+        for arch, expected in (("aarch64", EXPECTED), ("x86_64", catalog)):
             with self.subTest(arch=arch):
                 fixture = includes.get(arch, includes.get(""))
                 self.assertIsNotNone(fixture)
                 self.assertEqual((SUITE.parent / fixture).read_text().splitlines(), expected)
-        self.assertIn('matches!(name, "aggregate-copy" | "bitfield-values" | "varargs")', case[1])
+        self.assertNotIn('matches!(name, "aggregate-copy" | "bitfield-values" | "varargs")', case[1])
 
     def test_mac_bundle_builds_exact_candidate_corpus(self):
         with tempfile.TemporaryDirectory(prefix="toolchain-cc-corpus-") as temporary:

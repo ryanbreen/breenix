@@ -572,11 +572,6 @@ fn cc_corpus_three_producers() -> CaseResult {
     let scratch = Scratch::new("c-core")?;
     let corpus = Path::new("/").join(CORPUS);
     for name in CC_CASES.lines() {
-        if cfg!(target_arch = "aarch64")
-            && matches!(name, "aggregate-copy" | "bitfield-values" | "varargs")
-        {
-            continue;
-        }
         let expected = corpus.join(format!("{name}.expect"));
         let source = corpus.join(format!("{name}.c"));
         let elf = format!("{name}.elf");
@@ -1319,10 +1314,9 @@ fn duplicate_located() -> CaseResult {
 }
 
 fn language_case(category: &str) -> Result<(LinkerCase, PathBuf), String> {
-    if std::env::consts::ARCH != "x86_64" {
-        return Err("AArch64 aggregate, variadic and TLS C code generation is scheduled for A4".into());
-    }
     let case = LinkerCase::start()?;
+    #[cfg(target_arch = "aarch64")]
+    let category = if category == "abi" { "abi-aarch64" } else { category };
     let fixtures = case.corpus.join(category);
     Ok((case, fixtures))
 }
@@ -1340,8 +1334,16 @@ fn abi_case(name: &str) -> CaseResult {
     for (compiled, staged) in [("caller", "callee"), ("callee", "caller")] {
         let object = case.scratch.join("compiled.o");
         cc_stage(&case.scratch, &fixtures.join(format!("{name}-{compiled}.c")), &["-c", "-o", "compiled.o"])?;
-        case.link_and_run(name, &fixtures.join(format!("{name}.expect")),
-            &[&object, &fixtures.join(format!("{name}-{staged}.o"))])?;
+        let staged_object = fixtures.join(format!("{name}-{staged}.o"));
+        #[cfg(target_arch = "aarch64")]
+        let brt = case.dev.join("lib/libbrt.a");
+        let inputs: &[&Path] = &[
+            &object,
+            &staged_object,
+            #[cfg(target_arch = "aarch64")]
+            &brt,
+        ];
+        case.link_and_run(name, &fixtures.join(format!("{name}.expect")), inputs)?;
     }
     Ok(())
 }

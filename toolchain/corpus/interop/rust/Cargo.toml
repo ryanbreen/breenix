@@ -11,6 +11,9 @@ crate-type = ["staticlib"]
 test = false
 doctest = false
 
+[target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dependencies]
+linux-test = { path = "../../../rt/linux-test" }
+
 [profile.dev]
 panic = "abort"
 

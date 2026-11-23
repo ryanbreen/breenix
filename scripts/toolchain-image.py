@@ -105,7 +105,10 @@ def seal(bundle, commit, arch, tool_record):
     sources[DEV / "linker.ld"] = ROOT / "userspace/programs/linker.ld"
     required = {SUITE, DEV / "lib/libc.a"} | {DEV / "bin" / tool for tool in TOOLS}
     required |= {DEV / "bin" / tool for tool in ("cc", "make", "as", "ld")}
-    archive_targets = {"interop": "x86_64-breenix-c", "brt": "x86_64-breenix"} if arch == "x86_64" else {}
+    archive_targets = {
+        "interop": "x86_64-breenix-c" if arch == "x86_64" else "aarch64-breenix",
+        "brt": f"{arch}-breenix",
+    }
     required |= {DEV / "lib" / f"lib{name}.a" for name in archive_targets}
     corpus = ROOT / "toolchain/corpus"
     names = check_corpus(corpus)
@@ -126,35 +129,35 @@ def seal(bundle, commit, arch, tool_record):
         path = Path("project") / name
         sources[CORPUS / path] = (corpus / "project-aarch64/value.s"
                                   if arch == "aarch64" and name == "value.s" else corpus / path)
-    deferred = {
-        "aggregate-copy", "bitfield-values", "varargs", "alignment", "atomics",
-        "compound-literal", "designated-init", "generic",
-    } if arch == "aarch64" else set()
+    deferred = {"alignment", "atomics", "compound-literal", "designated-init", "generic"} if arch == "aarch64" else set()
     candidates = set(names) - deferred
-    if len(candidates) != (30 if arch == "x86_64" else 22):
+    if len(candidates) != (30 if arch == "x86_64" else 25):
         raise ValueError("unexpected C candidate corpus")
     required |= {CORPUS / "c-core/mac" / (name + ".elf") for name in candidates}
     actual = {path.name for path in (tree / CORPUS / "c-core/mac").iterdir()}
     if actual != {name + ".elf" for name in candidates}:
         raise ValueError("C candidate corpus differs from the selected cases")
-    if arch == "x86_64":
-        for name in ("aggregates-exhaustion", "varargs", "sse-float", "x87-long-double"):
-            path = Path("abi") / (name + ".expect")
+    abi_dir = "abi" if arch == "x86_64" else "abi-aarch64"
+    for name in ("aggregates-exhaustion", "varargs", "sse-float", "x87-long-double"):
+        for suffix in ((".expect", ".h") if arch == "aarch64" else (".expect",)):
+            path = Path(abi_dir) / (name + suffix)
             sources[CORPUS / path] = corpus / path
-            for half in ("caller", "callee"):
-                path = Path("abi") / f"{name}-{half}.c"
+        for half in ("caller", "callee"):
+            path = Path(abi_dir) / f"{name}-{half}.c"
+            sources[CORPUS / path] = corpus / path
+            required.add(CORPUS / path.with_suffix(".o"))
+    for category, names_in_category in (
+            ("tls", ("template-init-zero-fill-aligned", "errno-per-thread", "tls-across-fork-exec")),
+            ("interop", ("c-calls-rust", "rust-calls-c"))):
+        for name in names_in_category:
+            for suffix in (".c", ".expect"):
+                path = Path(category) / (name + suffix)
                 sources[CORPUS / path] = corpus / path
-                required.add(CORPUS / path.with_suffix(".o"))
-        for category, names_in_category in (
-                ("tls", ("template-init-zero-fill-aligned", "errno-per-thread", "tls-across-fork-exec")),
-                ("interop", ("c-calls-rust", "rust-calls-c"))):
-            for name in names_in_category:
-                for suffix in (".c", ".expect"):
-                    path = Path(category) / (name + suffix)
-                    sources[CORPUS / path] = corpus / path
-        sources[CORPUS / "tls/threads.h"] = corpus / "tls/threads.h"
+    sources[CORPUS / "tls/threads.h"] = corpus / "tls/threads.h"
+    if arch == "x86_64":
         sources.update({CORPUS / path: source for path, source in c11_inputs().items()})
 
+    if arch == "x86_64":
         fixtures = corpus / "assembler"
         for source in fixtures.iterdir():
             if source.is_file():

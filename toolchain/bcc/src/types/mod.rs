@@ -98,6 +98,19 @@ pub(crate) mod amd64_va_list {
     pub(crate) const LAYOUT: Layout = Layout { size: 24, align: 8 };
 }
 
+// AAPCS64 2025Q1 §10.1.5 Table 6 and §10.1.1 Table 3 (LP64).
+pub(crate) mod aarch64_va_list {
+    use super::Layout;
+
+    pub(crate) const NAME: &str = "__va_list";
+    pub(crate) const STACK: usize = 0;
+    pub(crate) const GR_TOP: usize = 8;
+    pub(crate) const VR_TOP: usize = 16;
+    pub(crate) const GR_OFFS: usize = 24;
+    pub(crate) const VR_OFFS: usize = 28;
+    pub(crate) const LAYOUT: Layout = Layout { size: 32, align: 8 };
+}
+
 #[derive(Debug)]
 pub struct RecordDefinition<'a> {
     pub layout: Layout,
@@ -142,6 +155,13 @@ pub struct Member<'a> {
 pub struct BitField {
     pub shift: u8,
     pub width: u8,
+    pub(crate) container: Option<BitFieldContainer>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BitFieldContainer {
+    pub(crate) back: u8,
+    pub(crate) bytes: u8,
 }
 
 impl BitField {
@@ -256,6 +276,7 @@ pub struct Type {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Kind {
     Float(Float),
+    ShortVector { element: Float, bytes: usize },
     LongDouble,
     Record(RecordType),
     Void,
@@ -397,6 +418,10 @@ impl Type {
         match &self.kind {
             Kind::Integer(integer) => Some(integer.layout()),
             Kind::Float(float) => Some(float.layout()),
+            Kind::ShortVector { bytes, .. } => Some(Layout {
+                size: *bytes,
+                align: *bytes,
+            }),
             Kind::LongDouble => Some(Layout {
                 size: 16,
                 align: 16,
@@ -427,11 +452,19 @@ impl Type {
     // N1570 6.7.7: render a type name as a specifier and abstract declarator.
     fn declarator(&self, out: &mut fmt::Formatter<'_>, decl: &str) -> fmt::Result {
         match &self.kind {
-            Kind::Void | Kind::Integer(_) | Kind::Float(_) | Kind::LongDouble | Kind::Record(_) => {
+            Kind::Void
+            | Kind::Integer(_)
+            | Kind::Float(_)
+            | Kind::ShortVector { .. }
+            | Kind::LongDouble
+            | Kind::Record(_) => {
                 write!(out, "{}", self.qualifiers)?;
                 match self.kind {
                     Kind::Integer(integer) => write!(out, "{integer}")?,
                     Kind::Float(float) => write!(out, "{float}")?,
+                    Kind::ShortVector { element, bytes } => {
+                        write!(out, "{element} __attribute__((vector_size({bytes})))")?
+                    }
                     Kind::LongDouble => out.write_str("long double")?,
                     Kind::Record(ref record) => write!(out, "record {}", record.id)?,
                     _ => out.write_str("void")?,

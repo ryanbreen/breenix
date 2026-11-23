@@ -304,6 +304,7 @@ impl Expression<'_> {
         self.lvalue()
             && !self.ty.contains_const(records)
             && (is_scalar(&self.ty)
+                || matches!(self.ty.kind, Kind::ShortVector { .. })
                 || matches!(&self.ty.kind, Kind::Record(record) if record.layout.is_some()))
     }
 
@@ -1174,6 +1175,7 @@ impl<'a> FunctionBody<'a, '_> {
                         Type::new(Kind::Integer(expr.promoted_integer(integer)))
                     }
                     _ if is_scalar(&ty) => ty.default_argument_type(),
+                    Kind::ShortVector { .. } => ty,
                     Kind::Record(record) if record.layout.is_some() => ty,
                     _ => {
                         return Err(expr
@@ -1400,7 +1402,9 @@ fn conditional_type(yes: &Expression<'_>, no: &Expression<'_>, target: Target) -
     if yes.ty.kind == Kind::Void && no.ty.kind == Kind::Void {
         return Some(yes.ty.clone());
     }
-    if matches!(yes.ty.kind, Kind::Record(_)) && yes.ty.kind == no.ty.kind {
+    if matches!(yes.ty.kind, Kind::Record(_) | Kind::ShortVector { .. })
+        && yes.ty.kind == no.ty.kind
+    {
         return Some(yes.ty.unqualified());
     }
     compatible_pointer(yes, no, target).or_else(|| {
@@ -1424,6 +1428,7 @@ fn assignable(destination: &Type, expr: &Expression<'_>, target: Target) -> bool
         _ if is_arithmetic(destination) && is_arithmetic(source) => true,
         (Kind::Integer(Integer::Bool), Kind::Pointer(_)) => true,
         (Kind::Record(to), Kind::Record(from)) => to == from && to.layout.is_some(),
+        (to @ Kind::ShortVector { .. }, from) => to == from,
         (Kind::Pointer(_), Kind::Integer(_)) => is_null(expr, target),
         (Kind::Pointer(to), Kind::Pointer(from)) => {
             if !to.qualifiers.contains(from.qualifiers) {

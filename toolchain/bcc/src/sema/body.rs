@@ -829,7 +829,7 @@ fn char_array(ty: &Type) -> bool {
 fn supported_object(ty: &Type) -> bool {
     match &ty.kind {
         Kind::Array(element, _) => supported_object(element),
-        Kind::Record(_) => true,
+        Kind::Record(_) | Kind::ShortVector { .. } => true,
         _ => is_scalar(ty),
     }
 }

@@ -8,6 +8,52 @@ fn aarch64_project_value_assembles() {
     assemble_for(Target::Aarch64, source).expect("assemble the ARM64 project fixture");
 }
 
+fn aarch64_text(source: &str) -> Vec<u8> {
+    let bytes = assemble_for(Target::Aarch64, source.as_bytes()).unwrap();
+    let elf = bobj::elf::Elf::parse(&bytes).unwrap();
+    let section = (0..elf.section_count())
+        .find(|&index| elf.section_name(index).unwrap() == b".text")
+        .unwrap();
+    elf.section_data(section).unwrap().unwrap().to_vec()
+}
+
+#[test]
+fn aarch64_binary128_load_store_encodings() {
+    // DDI 0487 M.b §§C7.2.230, C7.2.387: size=00, opc=11/10 and
+    // an unsigned offset scaled by 16, or an unscaled writeback immediate.
+    let text = aarch64_text("ldr q7, [x9, #32]\nstr q0, [sp, #-16]!\nldr q1, [sp], #16");
+    let expected = [0x3dc0_0927u32, 0x3c9f_0fe0, 0x3cc1_07e1];
+    assert_eq!(text, expected.map(u32::to_le_bytes).concat());
+}
+
+#[test]
+fn aarch64_reads_tpidr_el0() {
+    // DDI 0487 M.b §§C6.2.286 and D24.2.203: MRS with
+    // op0=3, op1=3, CRn=13, CRm=0, op2=2, and Rt in bits [4:0].
+    let text = aarch64_text("mrs x0, tpidr_el0\nmrs x19, TPIDR_EL0\nmrs xzr, tpidr_el0");
+    assert_eq!(
+        text,
+        [0xd53b_d040u32, 0xd53b_d053, 0xd53b_d05f]
+            .map(u32::to_le_bytes)
+            .concat()
+    );
+    for invalid in ["mrs w0, tpidr_el0", "mrs sp, tpidr_el0", "mrs x0, tpidr_el1"] {
+        assert!(assemble_for(Target::Aarch64, invalid.as_bytes()).is_err(), "{invalid}");
+    }
+}
+
+#[test]
+fn aarch64_binary128_lane_move_encodings() {
+    // DDI 0487 M.b §C7.2.157: sf=1, ftype=10, rmode=01,
+    // opcode=110 (to X) or 111 (from X).
+    let text = aarch64_text("fmov x3, v7.d[1]\nfmov v5.d[1], x12");
+    let expected = [0x9eae_00e3u32, 0x9eaf_0185];
+    assert_eq!(text, expected.map(u32::to_le_bytes).concat());
+    for invalid in ["fmov w3, v7.d[1]", "fmov v5.d[0], x12", "fmov x3, v32.d[1]"] {
+        assert!(assemble_for(Target::Aarch64, invalid.as_bytes()).is_err(), "{invalid}");
+    }
+}
+
 #[test]
 fn malformed_input_is_error_not_panic() {
     let instruction = b"mov rax, qword ptr fs:[r12 + r9 * 8 + 0x12]";
