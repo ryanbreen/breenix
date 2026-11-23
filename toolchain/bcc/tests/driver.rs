@@ -284,6 +284,28 @@ fn preprocess_fixture(name: &str, source: &str, args: &[&str]) -> std::process::
 }
 
 #[test]
+fn target_endian_macros_select_little_endian() {
+    let include = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../libs/libbreenix-libc/include");
+    let source = r#"
+        #include <endian.h>
+        #if BYTE_ORDER == BIG_ENDIAN || BYTE_ORDER == PDP_ENDIAN || BYTE_ORDER != LITTLE_ENDIAN
+        #error Breenix requires the little-endian branch
+        #endif
+        #if !defined(__BYTE_ORDER__) || !defined(__ORDER_LITTLE_ENDIAN__) || \
+            !defined(__ORDER_BIG_ENDIAN__) || !defined(__ORDER_PDP_ENDIAN__)
+        #error missing predefined byte order macro
+        #endif
+    "#;
+    for target in ["--target=x86_64", "--target=aarch64"] {
+        let output = preprocess_fixture(
+            "endian", source, &[target, "-std=gnu11", "-I", include.to_str().unwrap()],
+        );
+        assert!(output.status.success() && output.stderr.is_empty(), "{target}: {output:?}");
+    }
+}
+
+#[test]
 fn std_c17_sets_version_201710() {
     for (flags, expected) in [
         (&[][..], "201112L"),
