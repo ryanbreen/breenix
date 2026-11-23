@@ -1,4 +1,6 @@
+aggregate-copy
 array-index
+bitfield-values
 bitwise-shifts
 boolean-tokens
 byte-output
@@ -20,3 +22,4 @@ static-duration
 switch-enum
 unsigned-wrap
 usual-conversions
+varargs
