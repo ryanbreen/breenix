@@ -17,6 +17,9 @@ const GOT_ENTRY_SIZE: u64 = 8;
 // AAELF64 2025Q1 §5.7.6, GOT-relative instruction relocations.
 const R_AARCH64_ADR_GOT_PAGE: u32 = 311;
 const R_AARCH64_LD64_GOT_LO12_NC: u32 = 312;
+// AAELF64 2025Q1 §5.7.11.4, Local Exec TLS relocations.
+const R_AARCH64_TLSLE_ADD_TPREL_HI12: u32 = 549;
+const R_AARCH64_TLSLE_ADD_TPREL_LO12_NC: u32 = 551;
 
 pub(crate) const VENEER_SIZE: u64 = 12;
 const ADR_MASK: u32 = 0x60ff_ffe0;
@@ -496,7 +499,9 @@ impl Link {
             | R_AARCH64_LDST64_ABS_LO12_NC
             | R_AARCH64_LDST128_ABS_LO12_NC
             | R_AARCH64_ADR_GOT_PAGE
-            | R_AARCH64_LD64_GOT_LO12_NC => (4, true, false),
+            | R_AARCH64_LD64_GOT_LO12_NC
+            | R_AARCH64_TLSLE_ADD_TPREL_HI12
+            | R_AARCH64_TLSLE_ADD_TPREL_LO12_NC => (4, true, false),
             R_AARCH64_ADR_PREL_PG_HI21
             | R_AARCH64_ADR_PREL_LO21
             | R_AARCH64_CALL26
@@ -512,7 +517,11 @@ impl Link {
             return Err("relocation instruction is not 4-byte aligned");
         }
         let range = offset as usize..(offset + width) as usize;
-        let symbol = self.symbol_address(input.0, rela.symbol, false)?;
+        let tls = matches!(
+            kind,
+            R_AARCH64_TLSLE_ADD_TPREL_HI12 | R_AARCH64_TLSLE_ADD_TPREL_LO12_NC
+        );
+        let symbol = self.symbol_address(input.0, rela.symbol, tls)?;
         if symbol.is_none() && kind == R_AARCH64_CALL26 {
             // AAELF64 §5.7.7: an unresolved weak call falls through.
             image.bytes[range].copy_from_slice(&0xd503_201fu32.to_le_bytes()); // NOP
@@ -524,6 +533,9 @@ impl Link {
         let sum = if aarch64_got(kind) {
             let slot = self.write_got_slot(image, input.0, rela.symbol, address)?;
             i128::from(self.script.base + slot)
+        } else if tls {
+            let tp = image.thread_pointer().ok_or("missing TLS template")?;
+            i128::from(address) - i128::from(tp) + i128::from(rela.addend)
         } else {
             i128::from(address) + i128::from(rela.addend)
         };
@@ -559,6 +571,15 @@ impl Link {
             R_AARCH64_TSTBR14 => {
                 let imm = signed_immediate(sum - place, 14, 2)?;
                 write_immediate(field, 0x0007_ffe0, imm << 5);
+            }
+            R_AARCH64_TLSLE_ADD_TPREL_HI12 => {
+                if !(0..(1 << 24)).contains(&sum) {
+                    return Err("relocation overflow (unsigned 24-bit TLS offset)");
+                }
+                write_immediate(field, LO12_MASK, ((sum >> 12) as u32) << 10);
+            }
+            R_AARCH64_TLSLE_ADD_TPREL_LO12_NC => {
+                write_immediate(field, LO12_MASK, ((sum as u32) & 0xfff) << 10);
             }
             _ => {
                 let shift = match kind {

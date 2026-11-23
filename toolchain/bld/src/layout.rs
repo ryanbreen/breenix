@@ -254,8 +254,18 @@ impl Layout {
             file_end,
             memory_end: cursor,
         };
-        let block_size = align_up(cursor - offset, self.tls_align).ok_or(overflow)?;
-        let thread_pointer = start.checked_add(block_size).ok_or(overflow)?;
+        let thread_pointer = match link.machine() {
+            Machine::Amd64 => {
+                let block_size = align_up(cursor - offset, self.tls_align).ok_or(overflow)?;
+                start.checked_add(block_size).ok_or(overflow)?
+            }
+            Machine::Aarch64 => {
+                // Breenix's Variant I runtime aligns TP + 16 to place the template
+                // after the two reserved words (libbreenix-libc/src/pthread.rs).
+                let tcb_size = align_up(16, self.tls_align).ok_or(overflow)?;
+                start.checked_sub(tcb_size).ok_or(overflow)?
+            }
+        };
         Ok(Some(Tls {
             load,
             alignment: self.tls_align,
