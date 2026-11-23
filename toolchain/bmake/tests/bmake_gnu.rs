@@ -77,7 +77,9 @@ fn run_make(makefile: &str, args: &[&str], files: &[(&str, &str)]) -> std::proce
     };
     fs::write(dir.join("fixture.mk"), makefile).unwrap();
     for (name, contents) in files {
-        fs::write(dir.join(name), contents).unwrap();
+        let path = dir.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, contents).unwrap();
     }
     let output = Command::new(env!("CARGO_BIN_EXE_bmake"))
         .current_dir(&dir)
@@ -180,5 +182,100 @@ sibling:
         output.stdout,
         b"global-parent:parent-only\nglobal-parent:parent-only\nglobal:early:unset\ncommand forced\n# keep this text\nlate\ndefine INNER\nliteral\nendef\n"
     );
+    assert!(output.stderr.is_empty(), "{output:?}");
+}
+
+#[test]
+fn pattern_rule_with_patsubst() {
+    // GNU make 4.4.1 §§4.11, 6.3.1, 8.2 and 10.5.
+    let output = run_make(
+        r#"SOURCES = src/alpha.c
+OBJECTS := $(patsubst %.c,%.obj,$(SOURCES))
+GENERATED = src/beta.gen
+TARGETS := $(GENERATED:%.gen=%.out)
+
+%.obj: %.c missing
+	@printf 'unusable pattern\n'
+%.obj: %.c
+	@printf 'generic pattern\n'
+src/%.obj: src/%.c src/common.h src/common.h | stamp
+	@printf '%s\n' '$@|$<|$*|$(@D)|$(@F)|$(<D)|$(<F)' '$(^D)|$(^F)|$(+D)|$(+F)|$(?D)|$(?F)|$|'
+
+all: $(OBJECTS) $(TARGETS) posix.o
+$(TARGETS): %.out: %.gen
+	@printf '%s\n' '$@|$<|$*|$(*D)|$(*F)'
+.c.o:
+	@printf '%s\n' 'suffix:$<'
+%.o: %.c
+	@printf 'pattern shadows suffix\n'
+"#,
+        &[],
+        &[
+            ("src/alpha.c", ""),
+            ("src/common.h", ""),
+            ("src/beta.gen", ""),
+            ("posix.c", ""),
+            ("stamp", ""),
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        output.stdout,
+        b"src/alpha.obj|src/alpha.c|alpha|src|alpha.obj|src|alpha.c\nsrc src|alpha.c common.h|src src src|alpha.c common.h common.h|src src|alpha.c common.h|stamp\nsrc/beta.out|src/beta.gen|src/beta|src|beta\nsuffix:posix.c\n"
+    );
+    assert!(output.stderr.is_empty(), "{output:?}");
+}
+
+#[test]
+fn text_and_filename_functions() {
+    // GNU make 4.4.1 §§4.4.3, 6.3.1, 8.2 and 8.3.
+    let cases = [
+        (r"$(subst ee,EE,feet on the street)", "fEEt on the strEEt"),
+        (r"$(subst $(space),$(comma),a b c)", "a,b,c"),
+        (r"$(subst a,b,a(a),a)", "b(b),b"),
+        (r"$(patsubst %.c,%.o, x.c.c   bar.c )", "x.c.o bar.o"),
+        (r"$(patsubst \%.c,yes,%.c bar.c)", "yes bar.c"),
+        (r"$(patsubst %.c,\%-%,bar.c)", "%-bar"),
+        (r"$(objects:%.o=%.c)", "foo.c main1.c bar.c main2.c"),
+        (r"$(strip   a  b    c  )", "a b c"),
+        (r"$(findstring a,a b c)|$(findstring a,b c)", "a|"),
+        (r"$(filter %.c %.s,foo.c bar.c baz.s ugh.h)", "foo.c bar.c baz.s"),
+        (r"$(filter-out $(mains),$(objects))", "foo.o bar.o"),
+        (r"$(sort foo bar lose foo)", "bar foo lose"),
+        (r"$(word 2, foo bar baz)|$(word 4,foo bar baz)", "bar|"),
+        (r"$(wordlist 2, 3, foo bar baz)", "bar baz"),
+        (r"$(wordlist 3,0,foo bar baz)", ""),
+        (r"$(words foo bar baz)", "3"),
+        (r"$(firstword foo bar)|$(lastword foo bar)", "foo|bar"),
+        (r"$(dir src/foo.c hacks)", "src/ ./"),
+        (r"$(notdir src/foo.c hacks)", "foo.c hacks"),
+        (r"$(suffix src/foo.c src-1.0/bar.c hacks)", ".c .c"),
+        (r"$(basename src/foo.c src-1.0/bar hacks)", "src/foo src-1.0/bar hacks"),
+        (r"$(addsuffix .c,foo bar)", "foo.c bar.c"),
+        (r"$(addprefix src/,foo bar)", "src/foo src/bar"),
+        (r"$(join a b c,.c .o)", "a.c b.o c"),
+        (r"$(wildcard ./[ab]?.c *.h none*)", "./a1.c ./b2.c one.h"),
+        (r"$(abspath /a//b/../missing /..)", "/a/missing /"),
+        (r"$(realpath /./ bmake-no-such-file)", "/"),
+    ];
+    let mut makefile = String::from(
+        "empty :=\nspace := $(empty) $(empty)\ncomma := ,\n\
+         objects := foo.o   main1.o bar.o main2.o\nmains := main1.o main2.o\nall:\n",
+    );
+    for (expression, _) in cases {
+        makefile.push_str(&format!("\t@printf '<%s>\\n' '{expression}'\n"));
+    }
+    let output = run_make(
+        &makefile,
+        &[],
+        &[("b2.c", ""), ("a1.c", ""), ("one.h", ""), (".a0.c", "")],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let stdout = std::str::from_utf8(&output.stdout).unwrap();
+    let actual: Vec<_> = stdout.lines().collect();
+    assert_eq!(actual.len(), cases.len());
+    for ((expression, expected), actual) in cases.into_iter().zip(actual) {
+        assert_eq!(actual, format!("<{expected}>"), "{expression}");
+    }
     assert!(output.stderr.is_empty(), "{output:?}");
 }
