@@ -102,8 +102,13 @@ fn front_end_extensions_and_constraints() {
         ),
         (
             "unsupported attribute",
-            "void f(void) __attribute__((unused));",
+            "void f(void) __attribute__((breenix_unknown_attribute));",
             Some("headers.c:1:29: error:"),
+        ),
+        (
+            "unused attribute",
+            "void f(void) __attribute__((unused));",
+            None,
         ),
     ];
     let mut failures = Vec::new();
