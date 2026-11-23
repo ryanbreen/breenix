@@ -204,6 +204,8 @@ def build(arch, work, dev, corpus):
             (work / elf).rename(destination / elf)
             (destination / f"{name}.link.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
 
+        build_linker_objects(arch, clang, work, corpus)
+
     (work / "tools.json").write_text(json.dumps(tools) + "\n", encoding="utf-8")
 
 
@@ -214,14 +216,15 @@ def build_linker_objects(arch, clang, work, corpus):
     for name in ("got-main", "tls-template"):
         shutil.copyfile(sources / f"{name}.expect", destination / f"{name}.expect")
     for name in LINKER_SOURCES:
-        source = sources / name
+        source = (WORKSPACE / "corpus/linker-aarch64" / name
+                  if arch == "aarch64" and name.endswith(".s") else sources / name)
         obj = corpus / "objs" / (source.stem + ".o")
         if source.suffix == ".c":
             compiled, _, _ = reference.compile_c(arch, clang, source, (sources,), work)
             compiled.rename(obj)
         else:
             reference.run([
-                *clang, "--no-default-config", "--target=x86_64-unknown-none-elf",
+                *clang, "--no-default-config", f"--target={arch}-unknown-none-elf",
                 "-Werror", "-fintegrated-as", "-x", "assembler", "-c", str(source), "-o", str(obj),
             ], work)
 
