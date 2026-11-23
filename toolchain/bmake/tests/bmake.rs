@@ -720,10 +720,94 @@ fn include_remade_then_reread() {
 }
 
 #[test]
+fn archive_member_rebuilt_when_source_newer() {
+    let project = Project::new(concat!(
+        "CC = sh compile.sh\n",
+        "CFLAGS = -DARCHIVE\n",
+        "AR = sh archive.sh\n",
+        "ARFLAGS = -rv\n",
+        "lib.a: lib.a(member.o)\n",
+    ));
+    project.fixture("member.c", "updated source", 10);
+    project.fixture("lib.a", &member_archive(0), 30);
+    project.fixture("rebuilt.a", &member_archive(20), 30);
+    project.fixture(
+        "compile.sh",
+        "test \"$*\" = '-c -DARCHIVE member.c' && cp member.c member.o",
+        0,
+    );
+    project.fixture(
+        "archive.sh",
+        "test \"$*\" = '-rv lib.a member.o' && cmp member.o member.c && cp -p rebuilt.a lib.a",
+        0,
+    );
+
+    expect_stdout(
+        project.build(),
+        "sh compile.sh -c -DARCHIVE member.c\nsh archive.sh -rv lib.a member.o\nrm -f member.o\n",
+    );
+    assert_eq!(
+        fs::read_to_string(project.0.join("lib.a")).unwrap(),
+        member_archive(20)
+    );
+    assert!(!project.0.join("member.o").exists());
+    expect_stdout(project.build(), "");
+}
+
+#[test]
+fn archive_member_time_from_header() {
+    let project = Project::new(concat!(
+        "output: lib.a(member.o)\n",
+        "\t@printf '%s\\n' '$?' > output\n",
+        "lib.a(member.o): trigger\n",
+        "\t@printf '%s\\n' '$@|$%' > names\n",
+    ));
+    project.fixture("output", "old", 10);
+    project.fixture("trigger", "", 0);
+    project.fixture("lib.a", &member_archive(20), 0);
+
+    expect_stdout(project.build(), "");
+    assert_eq!(
+        fs::read_to_string(project.0.join("output")).unwrap(),
+        "lib.a(member.o)\n"
+    );
+    assert!(!project.0.join("names").exists());
+    assert!(!project.0.join("member.o").exists());
+
+    project.fixture("trigger", "", 30);
+    let goal = || {
+        project
+            .command()
+            .args(["-f", "project.mk", "lib.a(member.o)"])
+            .output()
+            .unwrap()
+    };
+    expect_stdout(goal(), "");
+    assert_eq!(
+        fs::read_to_string(project.0.join("names")).unwrap(),
+        "lib.a|member.o\n"
+    );
+
+    let mut corrupt = member_archive(20);
+    corrupt.replace_range(24..36, "invalid     ");
+    project.fixture("lib.a", &corrupt, 0);
+    let output = project.build();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("project.mk:1:"), "{stderr}");
+    assert!(stderr.contains("lib.a(member.o)"), "{stderr}");
+    assert!(stderr.contains("invalid archive member timestamp"), "{stderr}");
+}
+
+// Common ar header from Solaris ar(3HEAD), with a fixed date and two data bytes.
+fn member_archive(seconds: u64) -> String {
+    let date = 1_700_000_000 + seconds;
+    format!("!<arch>\n{:<16}{date:<12}{:<6}{:<6}{:<8}{:<10}`\nxx", "member.o/", 0, 0, 644, 2)
+}
+
+#[test]
 fn unsupported_25_6c_construct_is_located_error() {
     for (makefile, line, construct) in [
-        ("all: lib.a(member.o)\n", 1, "lib.a(member.o)"),
-        ("\nlib.a(member.o):\n\t@printf wrong > ran\n", 2, "lib.a(member.o)"),
         ("all: .WAIT\n", 1, ".WAIT"),
         (".WAIT:\nall:\n", 1, ".WAIT"),
         ("all:\n.NOTPARALLEL:\n", 2, ".NOTPARALLEL"),
@@ -742,12 +826,6 @@ fn unsupported_25_6c_construct_is_located_error() {
     let project = Project::new("all:\n\t@printf wrong > ran\n");
     for (arguments, variable, location, construct) in [
         (&["-j2"][..], None::<&str>, "<command line>:1:", "-j"),
-        (
-            &["lib.a(member.o)"][..],
-            None,
-            "<command line>:1:",
-            "lib.a(member.o)",
-        ),
     ] {
         let mut command = project.command();
         command.args(["-f", "project.mk"]).args(arguments);
