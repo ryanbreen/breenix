@@ -30,6 +30,6 @@ fn main() {
             worker.join().unwrap();
         }
     });
-    // SAFETY: All workers have joined, and the fixture remains live.
+    // SAFETY: The join loop completed before this call, and the fixture is live.
     assert_eq!(unsafe { verify(THREADS as u64 * u64::from(ITERATIONS)) }, 0);
 }

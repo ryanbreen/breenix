@@ -292,6 +292,10 @@ impl Driver {
                 };
                 linker.arg(object);
             }
+            let runtime = self.bundle.join("lib/libbrt.a");
+            if runtime.is_file() {
+                linker.arg(runtime);
+            }
             return run_tool(linker.arg(self.bundle.join("lib/libc.a")));
         }
 

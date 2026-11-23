@@ -15,10 +15,14 @@ pub enum AtomicOp {
     ThreadFence,
     SignalFence,
     IsLockFree,
+    IsLockFreeAt,
 }
 
 impl AtomicOp {
     pub(super) fn from_name(name: &str) -> Option<Self> {
+        if name == "__builtin_bcc_atomic_is_lock_free" {
+            return Some(Self::IsLockFreeAt);
+        }
         Some(match name.strip_prefix("__c11_atomic_")? {
             "init" => Self::Init,
             "load" => Self::Load,
@@ -47,7 +51,7 @@ impl<'a> FunctionBody<'a, '_> {
     ) -> Result<(ExpressionKind<'a>, Type), Diagnostic> {
         use AtomicOp::*;
         let arity = match op {
-            ThreadFence | SignalFence | IsLockFree => 1,
+            ThreadFence | SignalFence | IsLockFree | IsLockFreeAt => 1,
             Init | Load => 2,
             Store | Exchange | Fetch(_) => 3,
             CompareExchange => 5,
@@ -82,7 +86,10 @@ impl<'a> FunctionBody<'a, '_> {
                         .error("atomic operation requires a pointer to an atomic object"));
                 }
                 object.check_atomic(first.site)?;
-                if op != Load && object.qualifiers.constant {
+                if object.layout().is_none() {
+                    return Err(first.site.error("atomic operation requires a complete object type"));
+                }
+                if !matches!(op, Load | IsLockFreeAt) && object.qualifiers.constant {
                     return Err(first
                         .site
                         .error("atomic operation requires a modifiable atomic object"));
@@ -106,7 +113,7 @@ impl<'a> FunctionBody<'a, '_> {
                         ty: pointer,
                     });
                 }
-                if op != Load {
+                if !matches!(op, Load | IsLockFreeAt) {
                     let expr = self.expression(args.next().unwrap())?;
                     let ty = match (op, &value.kind) {
                         (Fetch(Binary::Add | Binary::Subtract), Kind::Pointer(element))
@@ -144,7 +151,7 @@ impl<'a> FunctionBody<'a, '_> {
                 }
                 match op {
                     Init | Store => void,
-                    CompareExchange => boolean,
+                    CompareExchange | IsLockFreeAt => boolean,
                     _ => value,
                 }
             }

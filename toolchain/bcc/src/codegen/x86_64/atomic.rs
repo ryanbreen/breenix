@@ -5,26 +5,27 @@
 use super::*;
 use crate::sema::SEQ_CST;
 
-struct Width {
-    memory: &'static str,
-    accumulator: &'static str,
-    data: &'static str,
+#[derive(Clone, Copy)]
+pub(super) struct Width {
+    pub(super) memory: &'static str,
+    pub(super) accumulator: &'static str,
+    pub(super) data: &'static str,
 }
 
 impl Width {
-    fn of(ty: &Type) -> Self {
-        let (memory, accumulator, data) = match ty.layout().unwrap().size {
+    pub(super) fn of(size: usize) -> Option<Self> {
+        let (memory, accumulator, data) = match size {
             1 => ("byte", "al", "dl"),
             2 => ("word", "ax", "dx"),
             4 => ("dword", "eax", "edx"),
             8 => ("qword", "rax", "rdx"),
-            _ => unreachable!("sema checks atomic widths"),
+            _ => return None,
         };
-        Self {
+        Some(Self {
             memory,
             accumulator,
             data,
-        }
+        })
     }
 }
 
@@ -45,17 +46,19 @@ impl<'src> Emitter<'_, 'src> {
                 );
                 return Ok(());
             }
+            IsLockFreeAt => return self.atomic_is_lock_free_at(&args[0]),
             _ => {}
         }
         let Kind::Pointer(object) = &args[0].ty.kind else {
             unreachable!("sema checks atomic pointer arguments");
         };
-        let width = Width::of(object);
-        let Width {
-            memory,
-            accumulator,
-            data,
-        } = width;
+        let size = object.layout().unwrap().size;
+        let alignment = Self::atomic_pointer_alignment(&args[0].expr);
+        let width = Width::of(size);
+        if alignment < size || width.is_none() || matches!(object.kind, Kind::Record(_)) {
+            return self.atomic_builtin_with_storage(op, object, alignment, args);
+        }
+        let width = width.unwrap();
 
         self.value(&args[0].expr)?;
         self.adjust_stack("sub", 32);
@@ -77,10 +80,31 @@ impl<'src> Emitter<'_, 'src> {
             seq_cst = self.atomic_order(order)?;
         }
         self.text.push_str("    mov r11, qword [rsp]\n");
+        self.atomic_inline(op, object, width, seq_cst);
+        self.adjust_stack("add", 32);
+        Ok(())
+    }
+
+    pub(super) fn atomic_inline(
+        &mut self,
+        op: AtomicOp,
+        object: &Type,
+        width: Width,
+        seq_cst: Option<bool>,
+    ) {
+        use AtomicOp::*;
+        let Width {
+            memory,
+            accumulator,
+            data,
+        } = width;
         match op {
             Init | Store => {
                 self.text.push_str("    mov rdx, qword [rsp + 8]\n");
                 self.atomic_store(width, seq_cst);
+            }
+            Load if matches!(object.kind, Kind::Record(_)) => {
+                writeln!(self.text, "    mov {accumulator}, {memory} ptr [r11]").unwrap();
             }
             Load => self.load(object, "[r11]"),
             Exchange => {
@@ -122,10 +146,8 @@ impl<'src> Emitter<'_, 'src> {
                 }
                 self.atomic_bits_to_value(object);
             }
-            ThreadFence | SignalFence | IsLockFree => unreachable!(),
+            ThreadFence | SignalFence | IsLockFree | IsLockFreeAt => unreachable!(),
         }
-        self.adjust_stack("add", 32);
-        Ok(())
     }
 
     fn atomic_order(&mut self, order: &Argument<'src>) -> Result<Option<bool>, Diagnostic> {
@@ -201,97 +223,10 @@ impl<'src> Emitter<'_, 'src> {
             Kind::Float(Float::Double) => self.text.push_str("    movq rdx, xmm0\n"),
             _ => self.text.push_str("    mov rdx, rax\n"),
         }
-        self.atomic_store(Width::of(ty), Some(true));
+        self.atomic_store(Width::of(ty.layout().unwrap().size).unwrap(), Some(true));
     }
 
-    pub(super) fn atomic_rmw(
-        &mut self,
-        left: &Expression<'src>,
-        right: Option<&Expression<'src>>,
-        op: Binary,
-        (left_ty, right_ty): (&Type, &Type),
-        postfix: bool,
-    ) -> Result<(), Diagnostic> {
-        let object = &left.ty;
-        let Width {
-            memory,
-            accumulator,
-            data,
-        } = Width::of(object);
-        let fp = [object, left_ty, right_ty]
-            .iter()
-            .any(|ty| matches!(ty.kind, Kind::Float(_) | Kind::LongDouble));
-        // Address, converted RHS, observed bits, and (for floating
-        // operations) the AMD64 fenv_t from our libc's fenv.h.
-        let frame = if fp { 80 } else { 48 };
-        self.address(left)?;
-        self.adjust_stack("sub", frame);
-        self.text.push_str("    mov qword [rsp], rax\n");
-        if let Some(right) = right {
-            self.converted(right, right_ty)?;
-        } else if let Kind::Float(float) = right_ty.kind {
-            let bits = match float {
-                Float::Single => 0x3f80_0000,
-                Float::Double => 0x3ff0_0000_0000_0000,
-            };
-            self.float_constant(bits, float, 0);
-        } else {
-            self.text.push_str("    mov eax, 1\n");
-        }
-        self.store(right_ty, "[rsp + 16]");
-        if fp {
-            // N1570 6.5.16.2p3 note 113: an unsuccessful attempt must
-            // discard its exceptions without changing the live rounding mode.
-            self.use_symbol("feholdexcept", left.position())?;
-            self.use_symbol("feclearexcept", left.position())?;
-            self.use_symbol("feupdateenv", left.position())?;
-            self.text
-                .push_str("    lea rdi, [rsp + 48]\n    call feholdexcept@plt\n");
-        }
-        let retry = self.label();
-        writeln!(
-            self.text,
-            "    mov r11, qword [rsp]\n    mov {accumulator}, {memory} ptr [r11]\n{retry}:\n    mov qword [rsp + 32], rax",
-        )
-        .unwrap();
-        self.load(object, "[rsp + 32]");
-        self.convert(object, left_ty);
-        self.adjust_stack("sub", 16);
-        self.store(left_ty, "[rsp]");
-        self.load(right_ty, "[rsp + 32]");
-        self.combine(op, left_ty, right_ty, left_ty);
-        self.convert(left_ty, object);
-        self.atomic_value_to_bits(object);
-        writeln!(
-            self.text,
-            "    mov rdx, rax\n    mov rax, qword [rsp + 32]\n    mov r11, qword [rsp]\n    lock cmpxchg {memory} ptr [r11], {data}",
-        )
-        .unwrap();
-        if fp {
-            let success = self.label();
-            // FE_ALL_EXCEPT is 0x3d on x86-64 (Breenix fenv.h).
-            writeln!(
-                self.text,
-                "    je {success}\n    mov qword [rsp + 32], rax\n    mov edi, 0x3d\n    call feclearexcept@plt\n    mov rax, qword [rsp + 32]\n    jmp {retry}\n{success}:",
-            )
-            .unwrap();
-        } else {
-            writeln!(self.text, "    jne {retry}").unwrap();
-        }
-        if !postfix {
-            self.text.push_str("    mov rax, rdx\n");
-        }
-        if fp {
-            self.text.push_str(
-                "    mov qword [rsp + 32], rax\n    lea rdi, [rsp + 48]\n    call feupdateenv@plt\n    mov rax, qword [rsp + 32]\n",
-            );
-        }
-        self.atomic_bits_to_value(object);
-        self.adjust_stack("add", frame);
-        Ok(())
-    }
-
-    fn atomic_value_to_bits(&mut self, ty: &Type) {
+    pub(super) fn atomic_value_to_bits(&mut self, ty: &Type) {
         match ty.kind {
             Kind::Float(Float::Single) => self.text.push_str("    movd eax, xmm0\n"),
             Kind::Float(Float::Double) => self.text.push_str("    movq rax, xmm0\n"),

@@ -321,6 +321,9 @@ impl<'src> Emitter<'_, 'src> {
             if let Some((op, a, b)) = operation {
                 return self.atomic_rmw(left, Some(right), *op, (a, b), false);
             }
+            if Self::atomic_needs_storage(left) {
+                return self.atomic_store_with_storage(left, right);
+            }
             self.address(left)?;
             self.adjust_stack("sub", 16);
             self.text.push_str("    mov qword [rsp], rax\n");

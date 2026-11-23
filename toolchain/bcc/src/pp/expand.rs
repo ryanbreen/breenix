@@ -478,6 +478,7 @@ fn builtin(name: &str, target: Target) -> Option<(&str, Kind)> {
         "__ATOMIC_RELEASE" => ("3", Kind::Number),
         "__ATOMIC_ACQ_REL" => ("4", Kind::Number),
         "__ATOMIC_SEQ_CST" => ("5", Kind::Number),
+        "__BREENIX_BCC__" => ("1", Kind::Number),
         "__STDC_NO_ATOMICS__"
         | "__STDC_NO_COMPLEX__"
         | "__STDC_NO_THREADS__"

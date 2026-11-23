@@ -289,6 +289,19 @@ exceptions of the successful compare-exchange attempt.
 AArch64 atomic instruction selection and ordering await the AArch64
 backend.
 
+### AMD64 aggregate and under-aligned atomics (25.9c2)
+
+The generic ABI follows the pinned LLVM Atomic Instructions and Concurrency
+Guide, “Libcalls: __atomic_*”. bcc passes the object size and address,
+separate value or result buffers, and the supplied memory orders. A
+compare-exchange passes the caller's expected pointer and can implement
+the weak form with the same strong helper. Natural alignment is required
+for inline operations on objects of size 1, 2, 4 or 8. bcc checks an
+address at runtime when it cannot establish that alignment. The Clang
+size-only builtin reports support for naturally aligned objects of the
+given size. bcc's implementation of the C11 `atomic_is_lock_free` macro
+also checks the address so that packed members report the selected path.
+
 ### AMD64 local-exec thread storage (25.7c)
 
 N1570 §§6.2.2, 6.2.4, 6.7.1, 6.7.9 and 6.9.2 govern linkage, storage

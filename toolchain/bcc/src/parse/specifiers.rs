@@ -317,7 +317,6 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     members,
                     end: None,
                     has_const_member: false,
-                    atomic_alignment: 1,
                 }),
             });
             self.va_list_record = Some(id);

@@ -13,6 +13,7 @@ use crate::types::{BitField, Float, Integer, Kind, Layout, Record, Type};
 
 mod abi;
 mod atomic;
+mod atomic_runtime;
 mod bit_field;
 mod flow;
 mod thread;
@@ -416,13 +417,22 @@ impl<'src> Emitter<'_, 'src> {
             | ExpressionKind::CompoundLiteral { .. }
             | ExpressionKind::StaticLiteral(_)
             | ExpressionKind::Member { .. } => {
+                if Self::atomic_needs_storage(expr) {
+                    self.address(expr)?;
+                    self.atomic_load_with_storage(
+                        &expr.ty,
+                        Self::atomic_lvalue_alignment(expr),
+                        expr.position(),
+                    )?;
+                    return Ok(());
+                }
                 let place = self.thread_scalar_place(expr)?;
                 if place.is_none() {
                     self.address(expr)?;
                 }
                 self.load_lvalue(expr, place.as_ref());
             }
-            ExpressionKind::Unary(op, operand) => self.unary(*op, operand, &expr.ty)?,
+            ExpressionKind::Unary(op, operand) => self.unary(*op, operand, expr)?,
             ExpressionKind::Binary {
                 op,
                 left,
@@ -489,12 +499,21 @@ impl<'src> Emitter<'_, 'src> {
         &mut self,
         op: Unary,
         operand: &Expression<'src>,
-        result: &Type,
+        expr: &Expression<'src>,
     ) -> Result<(), Diagnostic> {
+        let result = &expr.ty;
         match op {
             Unary::Dereference => {
                 self.value(operand)?;
-                self.load(result, "[rax]");
+                if Self::atomic_needs_storage(expr) {
+                    self.atomic_load_with_storage(
+                        result,
+                        Self::atomic_pointer_alignment(operand),
+                        expr.position(),
+                    )?;
+                } else {
+                    self.load(result, "[rax]");
+                }
             }
             Unary::Address => self.address(operand)?,
             Unary::Not => {

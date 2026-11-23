@@ -21,7 +21,9 @@ int initialize(void) {
     struct Counts seed = {1, 3, ~1UL};
     shared = seed;
     struct Counts old = atomic_exchange_explicit(&shared, zero, memory_order_acq_rel);
-    if (atomic_is_lock_free(&shared) || old.count != 1 ||
+    volatile unsigned long bytes = sizeof shared;
+    if (__c11_atomic_is_lock_free(bytes) || !__c11_atomic_is_lock_free(8) ||
+        atomic_is_lock_free(&shared) || old.count != 1 ||
         old.sum != 3 || old.inverse != ~1UL)
         return 1;
 

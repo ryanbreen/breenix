@@ -842,7 +842,6 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         let mut align = 1;
         let mut members = Vec::new();
         let mut has_const_member = false;
-        let mut atomic_alignment = 1;
         let mut fields = fields.into_iter().peekable();
         while let Some(Field {
             name,
@@ -881,11 +880,6 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 check_alignment(site, requested, natural)?;
             }
             let alignment = natural.max(alignment.unwrap_or(0));
-            let member_atomic_alignment = ty.atomic_alignment(&self.records);
-            if alignment < member_atomic_alignment {
-                return Err(site.error("unaligned atomic members are scheduled for 25.9c2"));
-            }
-            atomic_alignment = atomic_alignment.max(member_atomic_alignment);
             let (start, width, bit_field) = if let Some(width) = width {
                 let unit = (field.size * 8) as u128;
                 // psABI §3.1.2: ordinary fields must fit in an aligned
@@ -931,7 +925,6 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             members,
             end: Some(end),
             has_const_member,
-            atomic_alignment,
         })
     }
 

@@ -81,7 +81,7 @@ fn aggregate_atomic_cas_under_contention() {
             .arg(&bin)
             .arg("-o")
             .arg(&object)
-            .arg(package.join("tests/aggregate_atomic_worker.c")),
+            .arg(package.join("../tests/bcc/aggregate_atomic_worker.c")),
     );
 
     let cargo = env!("CARGO");
@@ -95,6 +95,19 @@ fn aggregate_atomic_cas_under_contention() {
             .arg(&target),
     );
     let archive = target.join(triple).join("release/libbrt.a");
+    // brt owns a no_std panic handler. Keep the finished archive in the
+    // worker library so it does not collide with the thread driver's std.
+    checked(
+        Command::new("cc")
+            .args([
+                "-shared",
+                "-Wl,-z,defs,-z,noexecstack,-Bsymbolic,--gc-sections,--exclude-libs,ALL",
+                "-o",
+            ])
+            .arg(work.join("libatomic_worker.so"))
+            .arg(object)
+            .arg(archive),
+    );
     fs::write(
         work.join("Cargo.toml"),
         "[package]\nname = \"atomic-threads\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\
@@ -103,7 +116,7 @@ fn aggregate_atomic_cas_under_contention() {
     .unwrap();
     fs::write(
         work.join("main.rs"),
-        include_str!("aggregate_atomic_threads.rs.in"),
+        include_str!("../../tests/bcc/aggregate_atomic_threads.rs"),
     )
     .unwrap();
     checked(
@@ -114,11 +127,14 @@ fn aggregate_atomic_cas_under_contention() {
             .arg("--manifest-path")
             .arg(work.join("Cargo.toml"))
             .arg("--")
-            .arg(format!("-Clink-arg={}", object.display()))
-            .arg(format!("-Clink-arg={}", archive.display())),
+            .arg("-L")
+            .arg(format!("native={}", work.display()))
+            .arg("-l")
+            .arg("atomic_worker"),
     );
     checked(
         Command::new("timeout")
+            .env("LD_LIBRARY_PATH", work)
             .arg("10s")
             .arg(target.join(triple).join("debug/atomic-threads")),
     );

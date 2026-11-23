@@ -82,9 +82,14 @@ static inline void atomic_signal_fence(memory_order order)
     __c11_atomic_signal_fence(order);
 }
 
+#ifdef __BREENIX_BCC__
+/* Packed members can have a lock-free size at an unaligned address. */
+#define atomic_is_lock_free(object) __builtin_bcc_atomic_is_lock_free(object)
+#else
 /* The builtin queries the atomic type's size. Evaluate the pointer once. */
 #define atomic_is_lock_free(object) \
     ((void)(object), __c11_atomic_is_lock_free(sizeof *(object)))
+#endif
 
 #define atomic_store_explicit(object, value, order) \
     __c11_atomic_store((object), (value), (order))
