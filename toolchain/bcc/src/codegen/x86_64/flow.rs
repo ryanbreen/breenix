@@ -17,11 +17,11 @@ impl Slot {
 }
 
 impl<'src> Emitter<'_, 'src> {
-    pub(super) fn layout(&mut self, function: &Function<'src>) -> Result<usize, Diagnostic> {
+    pub(super) fn layout(&mut self, function: &Function<'src>) -> Result<(), Diagnostic> {
         self.locals.clear();
-        let mut frame = 0usize;
+        self.frame = 0;
         for (index, local) in function.locals.iter().enumerate() {
-            let layout = local.object.ty.layout().unwrap();
+            let mut layout = local.object.ty.layout().unwrap();
             let slot = if local.static_storage {
                 let label = self.label();
                 writeln!(
@@ -33,26 +33,24 @@ impl<'src> Emitter<'_, 'src> {
                 Slot::Static(label)
             } else {
                 // A parameter spill may store a whole register or eightbyte.
-                let size = if index < function.params.len() {
-                    8
-                } else {
-                    layout.size
-                };
-                frame = frame
-                    .checked_add(size)
-                    .and_then(|frame| frame.checked_next_multiple_of(layout.align))
-                    .filter(|&frame| frame <= i32::MAX as usize - 15)
-                    .ok_or_else(|| {
-                        Diagnostic::new(
-                            local.object.site,
-                            "stack frame exceeds the addressable range",
-                        )
-                    })?;
-                Slot::Frame(frame)
+                if index < function.params.len() {
+                    layout.size = abi::eightbyte_size(layout.size, local.object.site)?;
+                }
+                self.frame_slot(layout, local.object.site)?
             };
             self.locals.push(slot);
         }
-        Ok(frame.next_multiple_of(16))
+        Ok(())
+    }
+
+    pub(super) fn frame_slot(
+        &mut self,
+        layout: Layout,
+        site: &Position,
+    ) -> Result<Slot, Diagnostic> {
+        let end = abi::checked_stack_end(self.frame, layout.size, site)?;
+        self.frame = abi::checked_stack_end(end.next_multiple_of(layout.align), 0, site)?;
+        Ok(Slot::Frame(self.frame))
     }
 
     pub(super) fn statements(
@@ -298,7 +296,7 @@ impl<'src> Emitter<'_, 'src> {
         Ok(())
     }
 
-    fn store_object(&mut self, ty: &Type, address: &str) {
+    pub(super) fn store_object(&mut self, ty: &Type, address: &str) {
         let (width, register) = match ty.kind {
             Kind::Integer(integer) => match integer.layout().size {
                 1 => ("byte", "al"),
@@ -316,14 +314,20 @@ impl<'src> Emitter<'_, 'src> {
                 // records. Keep the destination address as the result.
                 // AMD64 psABI §3.2.1 requires DF clear at function boundaries.
                 let size = record.layout.unwrap().size;
-                writeln!(
-                    self.text,
-                    "    mov rsi, rax\n    lea rdi, {address}\n    mov rax, rdi\n    mov rcx, {size}\n    rep movsb"
-                ).unwrap();
+                writeln!(self.text, "    mov rsi, rax\n    lea rdi, {address}").unwrap();
+                self.copy_record(size);
                 return;
             }
             _ => unreachable!(),
         };
         writeln!(self.text, "    mov {width} {address}, {register}").unwrap();
+    }
+
+    pub(super) fn copy_record(&mut self, size: usize) {
+        writeln!(
+            self.text,
+            "    mov rax, rdi\n    mov rcx, {size}\n    rep movsb"
+        )
+        .unwrap();
     }
 }

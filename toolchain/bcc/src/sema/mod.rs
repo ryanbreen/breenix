@@ -318,15 +318,15 @@ fn function<'a>(
     if defined && variadic {
         return Err(name.error("variadic function definitions are deferred to 25.7b2"));
     }
-    if defined && matches!(result.kind, Kind::Record(_)) {
-        return Err(name.error(RECORD_CALL));
+    if defined && matches!(result.kind, Kind::Record(record) if record.layout.is_none()) {
+        return Err(name.error("function definition has an incomplete record result"));
     }
     let mut names = HashSet::new();
     let params: Vec<_> = params
         .into_iter()
         .map(|param| {
-            if defined && matches!(param.ty.kind, Kind::Record(_)) {
-                return Err(param.start.error(RECORD_CALL));
+            if defined && matches!(param.ty.kind, Kind::Record(record) if record.layout.is_none()) {
+                return Err(param.start.error("parameter has an incomplete record type"));
             }
             if let Some(token) = param.name {
                 if !names.insert(token.text.as_ref()) {
@@ -691,12 +691,8 @@ impl<'a> FunctionBody<'a, '_> {
             return Err(callee.site.error("called expression is not a function"));
         };
 
-        if matches!(result.kind, Kind::Record(_))
-            || params
-                .iter()
-                .any(|param| matches!(param.kind, Kind::Record(_)))
-        {
-            return Err(close.error(RECORD_CALL));
+        if matches!(result.kind, Kind::Record(record) if record.layout.is_none()) {
+            return Err(close.error("call has an incomplete record result"));
         }
         // N1570 6.5.2.2p2, p5 and p7: check the prototype and convert each
         // argument as if assigned to its unqualified parameter type.
@@ -706,9 +702,6 @@ impl<'a> FunctionBody<'a, '_> {
                 return Err(argument.site.error("too many arguments"));
             }
             let expr = self.expression(argument)?;
-            if matches!(expr.ty.kind, Kind::Record(_)) {
-                return Err(expr.site.error(RECORD_CALL));
-            }
             let ty = if let Some(parameter) = params.get(index) {
                 if !assignable(parameter, &expr) {
                     return Err(expr
@@ -723,7 +716,12 @@ impl<'a> FunctionBody<'a, '_> {
                     Kind::Integer(integer) => Type::new(Kind::Integer(promote(integer))),
                     Kind::Float(Float::Single) => Type::new(Kind::Float(Float::Double)),
                     _ if is_scalar(&ty) => ty,
-                    _ => return Err(expr.site.error("expected a scalar variadic argument")),
+                    Kind::Record(record) if record.layout.is_some() => ty,
+                    _ => {
+                        return Err(expr
+                            .site
+                            .error("expected a scalar or complete record argument"))
+                    }
                 }
             };
             converted_arguments.push(Argument { expr, ty });
@@ -741,8 +739,6 @@ impl<'a> FunctionBody<'a, '_> {
         ))
     }
 }
-
-const RECORD_CALL: &str = "passing or returning a record by value is deferred to 25.7b1";
 
 fn is_scalar(ty: &Type) -> bool {
     matches!(

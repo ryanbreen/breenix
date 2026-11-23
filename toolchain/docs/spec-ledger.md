@@ -171,9 +171,10 @@ lowering in 25.7b3, and AArch64 scalar code generation in A3.
 | Record identity, tag scope and completion | N1570 §§6.2.1, 6.2.3 and 6.7.2.3. |
 | Member offsets, alignment and tail padding | AMD64 psABI §3.1.2 and AAPCS64 §§5.10.1–5.10.2. |
 | Member access, addresses, record assignment and initialization | N1570 §§6.5.2.3, 6.5.3.2, 6.5.16.1 and 6.7.9. The AMD64 backend copies the record's object representation. |
+| By-value record arguments and results | AMD64 psABI §3.2.3 and N1570 §§6.5.2.2 and 6.8.6.4. Classify record, union and array fields recursively, allocate INTEGER and SSE registers together, and pass MEMORY records in source order. MEMORY results use a hidden first argument returned in RAX. |
 
-By-value record calls and bit-fields follow in 25.7b1. AArch64 bcc
-code generation follows in A3 and A4.
+Packed records and bit-fields follow in 25.7b1. AArch64 bcc code
+generation follows in A3 and A4.
 
 ## bmake 25.6a2
 

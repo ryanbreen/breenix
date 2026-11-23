@@ -8,50 +8,13 @@ use crate::sema::{
     Argument, Binary, Expression, ExpressionKind, Function, Linkage, Statement, TranslationUnit,
     Unary,
 };
-use crate::types::{Float, Integer, Kind, Type};
+use crate::types::{Float, Integer, Kind, Layout, Record, Type};
 
+mod abi;
 mod flow;
 
+use abi::{CallLayout, Place, RecordAbi, RecordRegisters, Register};
 use flow::Slot;
-
-const INTEGER_REGS: [&str; 6] = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
-
-#[derive(Clone, Copy)]
-enum Place {
-    Integer(&'static str),
-    Vector(usize, Float),
-    Stack(usize),
-}
-
-#[derive(Default)]
-struct CallLayout {
-    integers: usize,
-    vectors: usize,
-    stack: usize,
-}
-
-impl CallLayout {
-    // AMD64 psABI §3.2.3. Scalar INTEGER and SSE arguments consume
-    // registers independently and fall back to ordered stack eightbytes.
-    fn place(&mut self, ty: &Type) -> Place {
-        match ty.kind {
-            Kind::Float(float) if self.vectors < 8 => {
-                let index = self.vectors;
-                self.vectors += 1;
-                return Place::Vector(index, float);
-            }
-            Kind::Integer(_) | Kind::Pointer(_) if self.integers < INTEGER_REGS.len() => {
-                let reg = INTEGER_REGS[self.integers];
-                self.integers += 1;
-                return Place::Integer(reg);
-            }
-            _ => {}
-        }
-        let offset = self.stack;
-        self.stack += 8;
-        Place::Stack(offset)
-    }
-}
 
 pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
     let mut functions = HashMap::new();
@@ -64,6 +27,8 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
 
     let mut emitter = Emitter {
         functions,
+        records: &unit.records,
+        frame: 0,
         locals: Vec::new(),
         flow_labels: HashMap::new(),
         data: String::new(),
@@ -94,6 +59,8 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
 
 struct Emitter<'unit, 'src> {
     functions: HashMap<&'src str, &'unit Function<'src>>,
+    records: &'unit [Record<'src>],
+    frame: usize,
     locals: Vec<Slot>,
     flow_labels: HashMap<usize, String>,
     data: String,
@@ -115,21 +82,27 @@ impl<'src> Emitter<'_, 'src> {
         let Kind::Function { result, .. } = &function.ty.kind else {
             unreachable!()
         };
-        if result.kind != Kind::Void && !abi_scalar(result) {
+        if result.kind != Kind::Void && !supported_abi_type(result) {
             return Err(Diagnostic::new(
                 function.site,
-                "function result is outside the scalar ABI subset",
+                "function result is outside the supported AMD64 ABI subset",
             ));
         }
         for param in &function.params {
-            if !abi_scalar(&param.ty) {
+            if !supported_abi_type(&param.ty) {
                 return Err(Diagnostic::new(
                     param.name.unwrap().1,
-                    "parameter is outside the scalar ABI subset",
+                    "parameter is outside the supported AMD64 ABI subset",
                 ));
             }
         }
-        let frame = self.layout(function)?;
+        self.layout(function)?;
+        let record_result = self.record_abi(result, function.site)?;
+        let sret = if matches!(record_result, Some(RecordAbi::Memory)) {
+            Some(self.frame_slot(Layout { size: 8, align: 8 }, function.site)?)
+        } else {
+            None
+        };
         self.flow_labels.clear();
         let epilogue = self.label();
         self.text.push('\n');
@@ -141,18 +114,32 @@ impl<'src> Emitter<'_, 'src> {
         // aligns RSP for calls. Round stack allocations to 16 bytes and
         // keep spills above RSP.
         self.text.push_str("    push rbp\n    mov rbp, rsp\n");
-        self.adjust_stack("sub", frame);
+        let stack_adjustment = self.text.len();
 
         let mut layout = CallLayout::default();
+        if let Some(slot) = &sret {
+            writeln!(self.text, "    mov qword {}, rdi", slot.memory(0)).unwrap();
+            layout.integers = 1;
+        }
+        let mut stack_records = Vec::new();
         for (index, param) in function.params.iter().enumerate() {
             let memory = self.locals[index].memory(0);
-            match layout.place(&param.ty) {
+            match layout.place(&param.ty, self.records, param.name.unwrap().1)? {
                 Place::Integer(reg) => {
                     writeln!(self.text, "    mov qword {memory}, {reg}").unwrap()
                 }
                 Place::Vector(reg, float) => {
                     let instruction = float_move(float);
                     writeln!(self.text, "    {instruction} {memory}, xmm{reg}").unwrap();
+                }
+                Place::Record(registers) => {
+                    let slot = &self.locals[index];
+                    Self::save_record_registers(&mut self.text, registers, |piece| {
+                        slot.memory(piece)
+                    });
+                }
+                Place::Stack(offset) if matches!(param.ty.kind, Kind::Record(_)) => {
+                    stack_records.push((index, offset, param.ty.layout().unwrap().size));
                 }
                 Place::Stack(offset) => {
                     // The saved RBP and return address precede the input area.
@@ -165,7 +152,24 @@ impl<'src> Emitter<'_, 'src> {
                 }
             }
         }
+        // Spill register inputs before rep movsb reuses argument registers.
+        for (index, offset, size) in stack_records {
+            let source = offset + 16;
+            let dest = self.locals[index].memory(0);
+            writeln!(
+                self.text,
+                "    lea rsi, [rbp + {source}]\n    lea rdi, {dest}"
+            )
+            .unwrap();
+            self.copy_record(size);
+        }
         self.statements(body, result, &epilogue)?;
+        // Calls in the body allocate result temporaries in the fixed frame.
+        let frame = self.frame.next_multiple_of(16);
+        if frame != 0 {
+            self.text
+                .insert_str(stack_adjustment, &format!("    sub rsp, {frame}\n"));
+        }
         if name == "main"
             && function.linkage == Linkage::External
             && result.kind == Kind::Integer(Integer::Int)
@@ -173,11 +177,31 @@ impl<'src> Emitter<'_, 'src> {
             // N1570 §5.1.2.2.3 specifies the result when int main falls through.
             self.text.push_str("    mov eax, 0\n");
         }
-        writeln!(
-            self.text,
-            "{epilogue}:\n    leave\n    ret\n.size {name}, . - {name}"
-        )
-        .unwrap();
+        if let Some(abi) = record_result {
+            // Only explicit returns have a record address in RAX.
+            let leave = self.label();
+            writeln!(self.text, "    jmp {leave}\n{epilogue}:").unwrap();
+            if let Some(slot) = sret {
+                writeln!(
+                    self.text,
+                    "    mov rsi, rax\n    mov rdi, qword {}",
+                    slot.memory(0)
+                )
+                .unwrap();
+                self.copy_record(result.layout().unwrap().size);
+            } else {
+                self.text.push_str("    mov r11, rax\n");
+                self.load_record_registers(
+                    abi.result_registers().unwrap(),
+                    result.layout().unwrap().size,
+                    |piece| format!("[r11 + {piece}]"),
+                );
+            }
+            writeln!(self.text, "{leave}:").unwrap();
+        } else {
+            writeln!(self.text, "{epilogue}:").unwrap();
+        }
+        writeln!(self.text, "    leave\n    ret\n.size {name}, . - {name}").unwrap();
         Ok(())
     }
 
@@ -243,7 +267,7 @@ impl<'src> Emitter<'_, 'src> {
                 writeln!(self.text, "{end}:").unwrap();
             }
             ExpressionKind::Call { callee, arguments } => {
-                self.call(callee, arguments)?;
+                self.call(callee, arguments, &expr.ty)?;
                 self.normalize_integer(&expr.ty);
             }
         }
@@ -464,6 +488,7 @@ impl<'src> Emitter<'_, 'src> {
         &mut self,
         callee: &Expression<'src>,
         arguments: &[Argument<'src>],
+        result: &Type,
     ) -> Result<(), Diagnostic> {
         let (function, direct) = match &callee.ty.kind {
             Kind::Function { .. } => {
@@ -482,24 +507,62 @@ impl<'src> Emitter<'_, 'src> {
         if let Some(name) = direct {
             self.use_symbol(name, callee.position())?;
         }
-        let mut layout = CallLayout::default();
-        let places: Vec<_> = arguments.iter().map(|arg| layout.place(&arg.ty)).collect();
-        let callee_slot = layout.stack + arguments.len() * 8;
-        let reserve = (callee_slot + usize::from(direct.is_none()) * 8).next_multiple_of(16);
+        let site = callee.position();
+        let record_result = self.record_abi(result, site)?;
+        let result_slot = if record_result.is_some() {
+            let mut layout = result.layout().unwrap();
+            layout.size = abi::eightbyte_size(layout.size, site)?;
+            Some(self.frame_slot(layout, site)?)
+        } else {
+            None
+        };
+        let sret = matches!(record_result, Some(RecordAbi::Memory));
+        let mut layout = CallLayout {
+            integers: usize::from(sret),
+            ..CallLayout::default()
+        };
+        let places = arguments
+            .iter()
+            .map(|arg| layout.place(&arg.ty, self.records, arg.expr.position()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut callee_slot = layout.stack;
+        let mut staged = Vec::with_capacity(arguments.len());
+        for (arg, place) in arguments.iter().zip(places) {
+            let offset = match place {
+                Place::Stack(slot) if matches!(arg.ty.kind, Kind::Record(_)) => slot,
+                _ => {
+                    let offset = callee_slot;
+                    let bytes = arg.ty.layout().map_or(8, |layout| layout.size);
+                    callee_slot =
+                        abi::checked_stack_end(offset, abi::eightbyte_size(bytes, site)?, site)?;
+                    offset
+                }
+            };
+            staged.push((place, offset));
+        }
+        let reserve = abi::checked_stack_end(callee_slot, usize::from(direct.is_none()) * 8, site)?
+            .next_multiple_of(16);
         self.adjust_stack("sub", reserve);
         if direct.is_none() {
             self.value(callee)?;
             writeln!(self.text, "    mov qword [rsp + {callee_slot}], rax").unwrap();
         }
-        // Stage the values after the outgoing stack area, where nested
-        // calls cannot clobber them or the final argument registers.
-        for (index, arg) in arguments.iter().enumerate() {
+        // Stage values before loading any registers. Nested calls use the
+        // stack below RSP, leaving both the outgoing area and spills intact.
+        for (arg, &(_, offset)) in arguments.iter().zip(&staged) {
             self.converted(&arg.expr, &arg.ty)?;
-            let offset = layout.stack + index * 8;
-            self.store(&arg.ty, &format!("[rsp + {offset}]"));
+            let dest = format!("[rsp + {offset}]");
+            if matches!(arg.ty.kind, Kind::Record(_)) {
+                self.store_object(&arg.ty, &dest);
+            } else {
+                self.store(&arg.ty, &dest);
+            }
         }
-        for (index, place) in places.into_iter().enumerate() {
-            let offset = layout.stack + index * 8;
+        if sret {
+            let address = result_slot.as_ref().unwrap().memory(0);
+            writeln!(self.text, "    lea rdi, {address}").unwrap();
+        }
+        for (arg, (place, offset)) in arguments.iter().zip(staged) {
             match place {
                 Place::Integer(reg) => {
                     writeln!(self.text, "    mov {reg}, qword [rsp + {offset}]").unwrap();
@@ -508,8 +571,14 @@ impl<'src> Emitter<'_, 'src> {
                     let instruction = float_move(float);
                     writeln!(self.text, "    {instruction} xmm{reg}, [rsp + {offset}]").unwrap();
                 }
+                Place::Record(registers) => {
+                    self.load_record_registers(registers, arg.ty.layout().unwrap().size, |piece| {
+                        format!("[rsp + {}]", offset + piece)
+                    });
+                }
+                Place::Stack(_) if matches!(arg.ty.kind, Kind::Record(_)) => {}
                 Place::Stack(slot) => {
-                    let (reg, size) = match arguments[index].ty.kind {
+                    let (reg, size) = match arg.ty.kind {
                         Kind::Float(Float::Single) => ("eax", "dword"),
                         _ => ("rax", "qword"),
                     };
@@ -528,7 +597,85 @@ impl<'src> Emitter<'_, 'src> {
             writeln!(self.text, "    call qword [rsp + {callee_slot}]").unwrap();
         }
         self.adjust_stack("add", reserve);
+        if let Some((registers, slot)) = record_result
+            .and_then(RecordAbi::result_registers)
+            .zip(result_slot)
+        {
+            Self::save_record_registers(&mut self.text, registers, |piece| slot.memory(piece));
+            writeln!(self.text, "    lea rax, {}", slot.memory(0)).unwrap();
+        }
+        // A MEMORY callee already leaves its return buffer address in RAX.
         Ok(())
+    }
+
+    fn record_abi(&self, ty: &Type, site: &Position) -> Result<Option<RecordAbi>, Diagnostic> {
+        if matches!(ty.kind, Kind::Record(_)) {
+            Ok(Some(RecordAbi::classify(ty, self.records, site)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // The receiving frame slots are rounded up to full eightbytes.
+    fn save_record_registers(
+        text: &mut String,
+        registers: RecordRegisters,
+        address: impl Fn(usize) -> String,
+    ) {
+        for (index, reg) in registers.into_iter().enumerate() {
+            let Some(reg) = reg else { continue };
+            let dest = address(index * 8);
+            match reg {
+                Register::Integer(reg) => writeln!(text, "    mov qword {dest}, {reg}").unwrap(),
+                Register::Sse(reg) => writeln!(text, "    movsd {dest}, xmm{reg}").unwrap(),
+            }
+        }
+    }
+
+    fn load_record_registers(
+        &mut self,
+        registers: RecordRegisters,
+        size: usize,
+        address: impl Fn(usize) -> String,
+    ) {
+        for (index, reg) in registers.into_iter().enumerate() {
+            let Some(reg) = reg else { continue };
+            let offset = index * 8;
+            let bytes = (size - offset).min(8);
+            let source = address(offset);
+            match reg {
+                Register::Integer(reg) if bytes == 8 => {
+                    writeln!(self.text, "    mov {reg}, qword {source}").unwrap();
+                }
+                Register::Integer(reg) => {
+                    self.load_integer_tail(reg, bytes, |tail| address(offset + tail))
+                }
+                Register::Sse(reg) => {
+                    let instruction = if bytes == 4 { "movss" } else { "movsd" };
+                    writeln!(self.text, "    {instruction} xmm{reg}, {source}").unwrap();
+                }
+            }
+        }
+    }
+
+    fn load_integer_tail(&mut self, reg: &str, bytes: usize, address: impl Fn(usize) -> String) {
+        // Load only the object bytes, even if the source ends at a page boundary.
+        writeln!(self.text, "    xor {reg}, {reg}").unwrap();
+        let mut consumed = 0;
+        for (width, load) in [
+            (4, "mov r10d, dword"),
+            (2, "movzx r10d, word"),
+            (1, "movzx r10d, byte"),
+        ] {
+            if bytes - consumed >= width {
+                writeln!(self.text, "    {load} {}", address(consumed)).unwrap();
+                if consumed != 0 {
+                    writeln!(self.text, "    shl r10, {}", consumed * 8).unwrap();
+                }
+                writeln!(self.text, "    or {reg}, r10").unwrap();
+                consumed += width;
+            }
+        }
     }
 
     fn load(&mut self, ty: &Type, address: &str) {
@@ -701,10 +848,10 @@ impl<'src> Emitter<'_, 'src> {
     }
 }
 
-fn abi_scalar(ty: &Type) -> bool {
+fn supported_abi_type(ty: &Type) -> bool {
     matches!(
         ty.kind,
-        Kind::Integer(_) | Kind::Float(_) | Kind::Pointer(_)
+        Kind::Integer(_) | Kind::Float(_) | Kind::Pointer(_) | Kind::Record(_)
     )
 }
 
