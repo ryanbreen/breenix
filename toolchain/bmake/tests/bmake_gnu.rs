@@ -175,6 +175,26 @@ out: FORCE
 }
 
 #[test]
+fn recursive_kbuild_flags() {
+    // GNU make 4.4.1 §§3.3, 5.7.3 and 9.8.
+    let output = run_make(
+        r#"MAKEFLAGS += --no-print-directory --include-dir=includes -rR
+all:
+	@$(MAKE) -f child.mk check
+"#,
+        &["-n"],
+        &[
+            ("child.mk", "include values.mk\ncheck: ; @echo $(VALUE) $(origin CC)\n"),
+            ("includes/values.mk", "VALUE = inherited\n"),
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let stdout = std::str::from_utf8(&output.stdout).unwrap();
+    assert_eq!(stdout.lines().last(), Some("echo inherited undefined"));
+    assert!(output.stderr.is_empty(), "{output:?}");
+}
+
+#[test]
 fn conditional_directives_nest() {
     let output = run_make(
         r#"MODE = active
