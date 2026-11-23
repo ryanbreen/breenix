@@ -35,7 +35,18 @@ fn headers_type_check() {
                 .arg(suite.join(file))
                 .output()
                 .unwrap();
-            if !output.status.success() || !output.stdout.is_empty() || !output.stderr.is_empty() {
+            let matches = if target == "aarch64" && file == "pthread.c" {
+                // E25 rulings 37 and 50: retire this placeholder when ARM 25.9d lands here.
+                let header = root.join("toolchain/include/stdatomic.h");
+                let expected = format!(
+                    "{}:30:9: error: atomic types are deferred to ARM 25.9d\n",
+                    header.display()
+                );
+                output.status.code() == Some(1) && output.stderr == expected.as_bytes()
+            } else {
+                output.status.success() && output.stderr.is_empty()
+            };
+            if !matches || !output.stdout.is_empty() {
                 failures.push(format!(
                     "{target} {file}: {}\n{}{}",
                     output.status,
