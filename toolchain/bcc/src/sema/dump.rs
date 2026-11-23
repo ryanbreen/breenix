@@ -60,7 +60,9 @@ impl TranslationUnit<'_> {
                     continue; // Compound literals appear as expressions, not declarations.
                 }
                 let (linkage, definition) = match local.storage {
-                    LocalStorage::ThreadExtern(linkage) => (linkage_name(linkage), false),
+                    LocalStorage::ThreadExtern(linkage) | LocalStorage::Function(linkage) => {
+                        (linkage_name(linkage), false)
+                    }
                     _ => ("none", true),
                 };
                 declaration(&mut out, obj.site, obj.name, &obj.ty, linkage, definition)?;

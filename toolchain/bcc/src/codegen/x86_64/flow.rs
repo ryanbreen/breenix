@@ -4,6 +4,7 @@ use super::*;
 
 pub(super) enum Slot {
     Frame(usize),
+    Aligned(usize),
     Static(String),
     Thread(String),
     ThreadExtern,
@@ -13,6 +14,7 @@ impl Slot {
     pub(super) fn memory(&self, offset: usize) -> String {
         match self {
             Self::Frame(base) => format!("[rbp - {}]", base - offset),
+            Self::Aligned(base) => format!("[r15 - {}]", base - offset),
             Self::Static(name) => format!("[rip + {name}]"),
             Self::Thread(_) | Self::ThreadExtern => {
                 unreachable!("thread objects use a TP-relative slot")
@@ -25,12 +27,15 @@ impl<'src> Emitter<'_, 'src> {
     pub(super) fn layout(&mut self, function: &Function<'src>) -> Result<(), Diagnostic> {
         self.locals.clear();
         self.frame = 0;
+        self.aligned_frame = 0;
+        self.frame_alignment = 16;
         for (index, local) in function.locals.iter().enumerate() {
             let slot = match local.storage {
-                LocalStorage::ThreadExtern(_) => Slot::ThreadExtern,
+                LocalStorage::ThreadExtern(_) | LocalStorage::Function(_) => Slot::ThreadExtern,
                 LocalStorage::Thread(_) => Slot::Thread(self.label()),
-                LocalStorage::Static => {
-                    let layout = local.object.ty.layout().unwrap();
+                LocalStorage::Static(Some(_)) => Slot::Static(self.label()),
+                LocalStorage::Static(None) => {
+                    let layout = local.object.layout().unwrap();
                     let label = self.label();
                     writeln!(
                         self.data,
@@ -41,7 +46,7 @@ impl<'src> Emitter<'_, 'src> {
                     Slot::Static(label)
                 }
                 LocalStorage::Automatic => {
-                    let mut layout = local.object.ty.layout().unwrap();
+                    let mut layout = local.object.layout().unwrap();
                     // A parameter spill may store a whole register or eightbyte.
                     if index < function.params.len() {
                         layout.size = abi::eightbyte_size(layout.size, local.object.site)?;
@@ -52,11 +57,28 @@ impl<'src> Emitter<'_, 'src> {
             self.locals.push(slot);
         }
         for (index, local) in function.locals.iter().enumerate() {
-            if let (LocalStorage::Thread(init), Slot::Thread(label)) =
-                (&local.storage, &self.locals[index])
-            {
-                let label = label.clone();
-                self.thread_definition(&local.object, &label, Linkage::Internal, init.as_ref())?;
+            match (&local.storage, &self.locals[index]) {
+                (LocalStorage::Thread(init), Slot::Thread(label)) => {
+                    let label = label.clone();
+                    self.thread_definition(
+                        &local.object,
+                        &label,
+                        Linkage::Internal,
+                        init.as_ref(),
+                    )?;
+                }
+                (LocalStorage::Static(Some(init)), Slot::Static(label)) => {
+                    let label = label.clone();
+                    let data = self.object_definition(
+                        &local.object,
+                        &label,
+                        Linkage::Internal,
+                        Some(init),
+                        false,
+                    )?;
+                    self.initialized_data.push_str(&data);
+                }
+                _ => {}
             }
         }
         Ok(())
@@ -67,9 +89,20 @@ impl<'src> Emitter<'_, 'src> {
         layout: Layout,
         site: &Position,
     ) -> Result<Slot, Diagnostic> {
-        let end = abi::checked_stack_end(self.frame, layout.size, site)?;
-        self.frame = abi::checked_stack_end(end.next_multiple_of(layout.align), 0, site)?;
-        Ok(Slot::Frame(self.frame))
+        let aligned = layout.align > 16;
+        let frame = if aligned {
+            &mut self.aligned_frame
+        } else {
+            &mut self.frame
+        };
+        let end = abi::checked_stack_end(*frame, layout.size, site)?;
+        *frame = abi::checked_stack_end(end.next_multiple_of(layout.align), 0, site)?;
+        if aligned {
+            self.frame_alignment = self.frame_alignment.max(layout.align);
+            Ok(Slot::Aligned(*frame))
+        } else {
+            Ok(Slot::Frame(*frame))
+        }
     }
 
     pub(super) fn statements(

@@ -18,19 +18,32 @@ pub(super) enum Storage {
     Extern,
     Static,
     Typedef,
+    Auto,
+    Register,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 struct DeclStorage {
     class: Storage,
     thread_local: bool,
+    alignment: Option<usize>,
+    noreturn: bool,
+    anonymous_record: bool,
 }
 
 #[derive(Debug)]
 pub(super) enum Declaration<'a> {
     Function(Function<'a>),
     Object(Variable<'a>),
+    StaticAssert(StaticAssertion<'a>),
     Record(Record<'a>),
+}
+
+#[derive(Debug)]
+pub(super) struct StaticAssertion<'a> {
+    pub site: &'a Lexeme,
+    pub expression: Expression<'a>,
+    pub message: String,
 }
 
 #[derive(Debug)]
@@ -39,6 +52,7 @@ pub(super) struct Variable<'a> {
     pub ty: Type,
     pub storage: Storage,
     pub thread_local: bool,
+    pub alignment: Option<usize>,
     pub initializer: Option<Initializer<'a>>,
 }
 
@@ -66,6 +80,8 @@ pub(super) struct Function<'a> {
     pub result: Type,
     pub params: Vec<Parameter<'a>>,
     pub variadic: bool,
+    pub prototype: bool,
+    pub noreturn: bool,
     pub storage: Storage,
     pub body: Option<Vec<Statement<'a>>>,
 }
@@ -82,6 +98,7 @@ pub(super) enum Statement<'a> {
     Block(Vec<Self>),
     Empty,
     Declaration(Vec<Variable<'a>>),
+    StaticAssert(StaticAssertion<'a>),
     Expression(Expression<'a>),
     Return(&'a Lexeme, Option<Expression<'a>>),
     If {
@@ -122,6 +139,19 @@ impl<'a> Expression<'a> {
             | Member { base: expr, .. } => expr.height,
             Binary(_, a, b) | Assignment(_, a, b) => a.height.max(b.height),
             Conditional(a, b, c) => a.height.max(b.height).max(c.height),
+            Generic(control, associations) => associations
+                .iter()
+                .fold(control.height, |height, association| {
+                    height.max(association.expression.height)
+                }),
+            Offsetof(_, designators) => designators
+                .iter()
+                .filter_map(|designator| match designator {
+                    Designator::Index(index) => Some(index.height),
+                    Designator::Member(_) => None,
+                })
+                .max()
+                .unwrap_or(0),
             Call {
                 callee, arguments, ..
             } => arguments
@@ -153,6 +183,9 @@ pub(super) enum ExpressionKind<'a> {
     Cast(Type, Box<Expression<'a>>),
     CompoundLiteral(Type, Box<Initializer<'a>>),
     SizeofType(Type),
+    Alignof(Type),
+    Generic(Box<Expression<'a>>, Vec<Association<'a>>),
+    Offsetof(Type, Vec<Designator<'a>>),
     Sizeof(Box<Expression<'a>>),
     VaArg(Box<Expression<'a>>, Type),
     Conditional(
@@ -177,6 +210,13 @@ pub(super) enum ExpressionKind<'a> {
         arguments: Vec<Expression<'a>>,
         close: &'a Lexeme,
     },
+}
+
+#[derive(Debug)]
+pub(super) struct Association<'a> {
+    pub site: &'a Lexeme,
+    pub ty: Option<Type>,
+    pub expression: Expression<'a>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -398,7 +438,14 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         self.starts_type(token)
             || matches!(
                 token.text.as_ref(),
-                "extern" | "static" | "typedef" | "auto" | "register" | "_Thread_local"
+                "extern"
+                    | "static"
+                    | "typedef"
+                    | "auto"
+                    | "register"
+                    | "_Thread_local"
+                    | "_Alignas"
+                    | "_Noreturn"
             )
     }
 
@@ -410,7 +457,9 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
     fn block_items(&mut self, depth: usize) -> Result<Vec<Statement<'a>>, Diagnostic> {
         let mut statements = Vec::new();
         while self.eat("}").is_none() {
-            if self
+            if let Some(site) = self.eat("_Static_assert") {
+                statements.push(Statement::StaticAssert(self.static_assertion(site, depth)?));
+            } else if self
                 .peek()
                 .is_some_and(|token| self.starts_declaration(token))
             {
@@ -653,6 +702,12 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 },
             );
         }
+        if let Some(site) = self.eat("_Alignof") {
+            self.expect("(", "expected '(' after _Alignof")?;
+            let ty = self.type_name(depth + 1)?;
+            self.expect(")", "expected ')' after the _Alignof type")?;
+            return Expression::new(site, ExpressionKind::Alignof(ty));
+        }
         if let Some(site) = self.eat("sizeof") {
             let kind = if self.eat("(").is_some() {
                 if self.peek().is_some_and(|token| self.starts_type(token)) {
@@ -811,6 +866,47 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             .peek()
             .ok_or_else(|| self.error("expected an expression"))?;
         let kind = match site.kind {
+            Kind::Identifier if site.is("_Generic") => {
+                self.take();
+                self.expect("(", "expected '(' after _Generic")?;
+                let control = self.expression(depth + 1)?;
+                self.expect(",", "expected ',' before generic associations")?;
+                let mut associations = Vec::new();
+                loop {
+                    let site = self
+                        .peek()
+                        .ok_or_else(|| self.error("expected a generic association"))?;
+                    let ty = if self.eat("default").is_some() {
+                        None
+                    } else {
+                        Some(self.type_name(depth + 1)?)
+                    };
+                    self.expect(":", "expected ':' in the generic association")?;
+                    associations.push(Association {
+                        site,
+                        ty,
+                        expression: self.expression(depth + 1)?,
+                    });
+                    if self.eat(",").is_none() {
+                        break;
+                    }
+                }
+                self.expect(")", "expected ')' after generic associations")?;
+                ExpressionKind::Generic(Box::new(control), associations)
+            }
+            Kind::Identifier if site.is("__builtin_offsetof") => {
+                self.take();
+                self.expect("(", "expected '(' after __builtin_offsetof")?;
+                let ty = self.type_name(depth + 1)?;
+                self.expect(",", "expected ',' before the member designator")?;
+                let field = self
+                    .identifier()
+                    .ok_or_else(|| self.error("expected a member name"))?;
+                let mut path = vec![Designator::Member(field)];
+                self.designators(&mut path, site, depth + 1)?;
+                self.expect(")", "expected ')' after the member designator")?;
+                ExpressionKind::Offsetof(ty, path)
+            }
             Kind::Identifier if site.is("__builtin_va_arg") => {
                 self.take();
                 self.expect("(", "expected '(' after __builtin_va_arg")?;
@@ -902,6 +998,7 @@ fn is_identifier(token: &Lexeme) -> bool {
                 | "_Thread_local"
                 | amd64_va_list::NAME
                 | "__builtin_va_arg"
+                | "__builtin_offsetof"
         )
 }
 

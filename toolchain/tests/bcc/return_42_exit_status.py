@@ -34,23 +34,42 @@ def checked(*command):
 def exit_from_main(path):
     # gABI 2.1, 7.1 and 7.2. elfcheck has validated this ET_EXEC, linked
     # with main as its entry. Only this freestanding main is called here.
-    with open(path, "rb") as image:
-        code = mmap.mmap(image.fileno(), 0, access=mmap.ACCESS_COPY)
-        entry, phoff = struct.unpack_from("<QQ", code, 24)
-        phentsize, phnum = struct.unpack_from("<HH", code, 54)
-        for index in range(phnum):
-            kind, flags, offset, address, _, size = struct.unpack_from(
-                "<IIQQQQ", code, phoff + index * phentsize
-            )
-            if kind == 1 and flags == 5 and address <= entry < address + size:
-                base = ctypes.addressof(ctypes.c_char.from_buffer(code))
-                protect = ctypes.CDLL(None, use_errno=True).mprotect
-                protect.argtypes = (ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int)
-                if protect(base, len(code), mmap.PROT_READ | mmap.PROT_EXEC) != 0:
-                    raise OSError(ctypes.get_errno(), "mprotect")
-                main = ctypes.CFUNCTYPE(ctypes.c_int)(base + offset + entry - address)
-                os._exit(main())
-    raise ValueError("main is outside the executable load")
+    image = Path(path).read_bytes()
+    entry, phoff = struct.unpack_from("<QQ", image, 24)
+    phentsize, phnum = struct.unpack_from("<HH", image, 54)
+    loads = []
+    for index in range(phnum):
+        ph = struct.unpack_from("<IIQQQQQ", image, phoff + index * phentsize)
+        kind, flags, offset, address, _, filesz, memsz = ph
+        if kind == 1 and memsz:
+            loads.append((flags, offset, address, filesz, memsz))
+    if not any(flags & 1 and address <= entry < address + memsz
+               for flags, _, address, _, memsz in loads):
+        raise ValueError("main is outside the executable load")
+
+    # Load the segments at a common bias so RIP-relative references still
+    # reach .data and zero-filled .bss. Give each load its ELF permissions.
+    page = mmap.PAGESIZE
+    origin = min(address for _, _, address, _, _ in loads) & -page
+    limit = max(address + memsz for _, _, address, _, memsz in loads)
+    with mmap.mmap(-1, limit - origin, flags=mmap.MAP_PRIVATE | mmap.MAP_ANON,
+                   prot=mmap.PROT_READ | mmap.PROT_WRITE) as memory:
+        base = ctypes.addressof(ctypes.c_char.from_buffer(memory))
+        protect = ctypes.CDLL(None, use_errno=True).mprotect
+        protect.argtypes = (ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int)
+        for _, offset, address, filesz, _ in loads:
+            start = address - origin
+            memory[start:start + filesz] = image[offset:offset + filesz]
+        for flags, _, address, _, memsz in loads:
+            prot = ((mmap.PROT_READ if flags & 4 else 0)
+                    | (mmap.PROT_WRITE if flags & 2 else 0)
+                    | (mmap.PROT_EXEC if flags & 1 else 0))
+            start = address - origin
+            page_start = start & -page
+            if protect(base + page_start, start + memsz - page_start, prot) != 0:
+                raise OSError(ctypes.get_errno(), "mprotect")
+        main = ctypes.CFUNCTYPE(ctypes.c_int)(base + entry - origin)
+        os._exit(main())
 
 
 def assemble(args, source, work):

@@ -155,7 +155,14 @@ impl<'src> Emitter<'_, 'src> {
 
         writeln!(self.text, "    mov rax, qword [r11 + {OVERFLOW_ARG_AREA}]").unwrap();
         if layout.align > 8 {
-            self.text.push_str("    add rax, 15\n    and rax, -16\n");
+            let alignment = layout.align.max(16);
+            writeln!(
+                self.text,
+                "    add rax, {}
+    and rax, -{alignment}",
+                alignment - 1
+            )
+            .unwrap();
         }
         let step = abi::checked_stack_end(0, abi::eightbyte_size(layout.size, site)?, site)?;
         writeln!(

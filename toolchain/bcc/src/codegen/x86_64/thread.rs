@@ -89,7 +89,7 @@ impl<'src> Emitter<'_, 'src> {
         tls: bool,
     ) -> Result<String, Diagnostic> {
         self.check_symbol(label, object.site)?;
-        let layout = object.ty.layout().unwrap();
+        let layout = object.layout().unwrap();
         // AMD64 psABI §3.1.2 gives array variables of at least 16 bytes
         // extra alignment independently of their element type.
         let align = if matches!(object.ty.kind, Kind::Array(..)) && layout.size >= 16 {

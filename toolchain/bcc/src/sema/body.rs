@@ -37,6 +37,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
                         name,
                         site,
                         ty: param.ty.clone(),
+                        alignment: None,
                     },
                     storage: LocalStorage::Automatic,
                 }
@@ -131,6 +132,10 @@ impl<'a, 's> FunctionBody<'a, 's> {
                 Statement::Block(inner)
             }
             Syntax::Empty => Statement::Empty,
+            Syntax::StaticAssert(assertion) => {
+                self.static_assertion(assertion)?;
+                Statement::Empty
+            }
             Syntax::Declaration(vars) => {
                 let initializers = vars
                     .into_iter()
@@ -236,8 +241,12 @@ impl<'a, 's> FunctionBody<'a, 's> {
             mut ty,
             storage,
             initializer,
+            alignment,
             ..
         } = variable;
+        if matches!(ty.kind, Kind::Function { .. }) {
+            return self.block_function(name, ty, storage, initializer);
+        }
         if storage == Storage::Extern {
             let key = name.text.as_ref();
             if self
@@ -263,9 +272,6 @@ impl<'a, 's> FunctionBody<'a, 's> {
                 name.error("block-scope extern declarations are outside the current subset")
             );
         }
-        if storage == Storage::Static && initializer.is_some() {
-            return Err(name.error("initialized static objects are outside the current subset"));
-        }
         let local = self.locals.len();
         if self
             .scopes
@@ -281,13 +287,23 @@ impl<'a, 's> FunctionBody<'a, 's> {
                 name: &name.text,
                 site: &name.site,
                 ty: ty.clone(),
+                alignment,
             },
             storage: if storage == Storage::Static {
-                LocalStorage::Static
+                LocalStorage::Static(None)
             } else {
                 LocalStorage::Automatic
             },
         });
+        if storage == Storage::Static {
+            let encoded = initializer
+                .map(|init| self.static_initializer(name, &mut ty, init))
+                .transpose()?;
+            self.object_size(name, &ty)?;
+            self.locals[local].object.ty = ty;
+            self.locals[local].storage = LocalStorage::Static(encoded);
+            return Ok(Statement::Empty);
+        }
         let initializer = initializer
             .map(|init| self.object_initializer(name, &mut ty, init, false))
             .transpose()?;
@@ -299,6 +315,60 @@ impl<'a, 's> FunctionBody<'a, 's> {
                 initializer,
             }),
         )
+    }
+
+    fn block_function(
+        &mut self,
+        name: &'a Lexeme,
+        mut ty: Type,
+        storage: Storage,
+        initializer: Option<parse::Initializer<'a>>,
+    ) -> Result<Statement<'a>, Diagnostic> {
+        if !matches!(storage, Storage::Extern | Storage::Unspecified) || initializer.is_some() {
+            return Err(name.error("invalid block-scope function declaration"));
+        }
+        let key = name.text.as_ref();
+        let visible = self.scopes.iter().rev().find_map(|scope| scope.get(key));
+        let prior = match visible.map(|&id| &self.locals[id]) {
+            Some(Local {
+                storage: LocalStorage::Function(linkage),
+                object,
+            }) => Some((&object.ty, *linkage, false)),
+            None => self
+                .symbols
+                .get(key)
+                .map(|symbol| (&symbol.ty, symbol.linkage, symbol.defined)),
+            _ => None,
+        };
+        let linkage = if let Some((prior, linkage, defined)) = prior {
+            if !compatible_function_declaration(&ty, false, prior, defined) {
+                return Err(name.error("incompatible function declaration"));
+            }
+            if has_prototype(prior) {
+                ty = prior.clone();
+            }
+            linkage
+        } else {
+            Linkage::External
+        };
+        let scope = self.scopes.last_mut().unwrap();
+        if scope
+            .get(key)
+            .is_some_and(|&id| !matches!(self.locals[id].storage, LocalStorage::Function(_)))
+        {
+            return Err(name.error("duplicate local declaration"));
+        }
+        scope.insert(key, self.locals.len());
+        self.locals.push(Local {
+            object: Object {
+                name: key,
+                site: &name.site,
+                ty,
+                alignment: None,
+            },
+            storage: LocalStorage::Function(linkage),
+        });
+        Ok(Statement::Empty)
     }
 
     pub(super) fn static_initializer(
@@ -338,6 +408,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
                     name: "",
                     site: &site.site,
                     ty: ty.clone(),
+                    alignment: None,
                 },
                 storage: LocalStorage::Automatic,
             });
@@ -523,17 +594,21 @@ impl<'a, 's> FunctionBody<'a, 's> {
                     (value, index.site)
                 }
                 parse::Designator::Member(name) => {
-                    let Some(members) = slot.members(self.records.records) else {
+                    let Kind::Record(record) = slot.ty.kind else {
                         return Err(name.error("member designator requires a struct or union"));
                     };
-                    let index = members
-                        .iter()
-                        .position(|member| member.name == name.text.as_ref())
+                    let records = self.records.records;
+                    let definition = records[record.id].definition.as_ref().unwrap();
+                    let member_path = definition
+                        .member_path(&name.text, records)
                         .ok_or_else(|| name.error(format!("no member named '{}'", name.text)))?;
-                    if matches!(members[index].ty.kind, Kind::Array(_, 0)) {
-                        return Err(name.error("cannot initialize a flexible array member"));
+                    for index in member_path {
+                        slot = slot.child(index, records).ok_or_else(|| {
+                            name.error("cannot initialize a flexible array member")
+                        })?;
+                        path.push(index);
                     }
-                    (index, name)
+                    continue;
                 }
             };
             slot = slot
@@ -777,12 +852,16 @@ pub(super) fn canonical(value: u64, ty: &Type, target: Target) -> u64 {
 
 pub(super) fn constant_integer(expr: &Expression<'_>, target: Target) -> Option<u64> {
     use Binary::*;
-    if !matches!(expr.ty.kind, Kind::Integer(_)) {
+    let Kind::Integer(integer) = expr.ty.kind else {
         return None;
-    }
+    };
     let value = match &expr.kind {
         ExpressionKind::Integer(value) => *value,
-        ExpressionKind::Cast(operand) => constant_integer(operand, target)?,
+        ExpressionKind::Cast(operand) => constant_integer(operand, target).or_else(|| {
+            matches!(operand.kind, ExpressionKind::Float(_))
+                .then(|| float::constant_to_integer(operand, integer, target))
+                .flatten()
+        })?,
         ExpressionKind::Unary(op, operand) => {
             let value = constant_integer(operand, target)?;
             match op {

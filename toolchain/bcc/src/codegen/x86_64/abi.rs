@@ -146,6 +146,7 @@ pub(super) struct CallLayout {
     pub(super) integers: usize,
     pub(super) vectors: usize,
     pub(super) stack: usize,
+    pub(super) stack_alignment: usize,
 }
 
 impl CallLayout {
@@ -181,6 +182,7 @@ impl CallLayout {
             .layout()
             .unwrap_or(crate::types::Layout { size: 8, align: 8 });
         let size = eightbyte_size(layout.size, site)?;
+        self.stack_alignment = self.stack_alignment.max(layout.align);
         let offset = self.stack.next_multiple_of(layout.align.max(8));
         self.stack = checked_stack_end(offset, size, site)?;
         Ok(Place::Stack(offset))

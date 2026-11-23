@@ -98,9 +98,31 @@ pub struct RecordDefinition<'a> {
     pub(crate) has_const_member: bool,
 }
 
+impl RecordDefinition<'_> {
+    // N1570 6.7.2.1p13. Keep the path so initializers can still see
+    // subobject boundaries and replace the correct union member.
+    pub(crate) fn member_path(&self, name: &str, records: &[Record<'_>]) -> Option<Vec<usize>> {
+        for (index, member) in self.members.iter().enumerate() {
+            if member.name == Some(name) {
+                return Some(vec![index]);
+            }
+            if let (None, Kind::Record(record)) = (member.name, &member.ty.kind) {
+                let nested = records[record.id].definition.as_ref().unwrap();
+                if let Some(mut path) = nested.member_path(name, records) {
+                    path.insert(0, index);
+                    return Some(path);
+                }
+            }
+        }
+        None
+    }
+}
+
 #[derive(Debug)]
 pub struct Member<'a> {
-    pub name: &'a str,
+    // A nameless entry is an anonymous struct or union. Unnamed bit-field
+    // padding is consumed by layout and does not appear in this list.
+    pub name: Option<&'a str>,
     pub ty: Type,
     pub offset: usize,
     pub bit_field: Option<BitField>,
@@ -153,6 +175,18 @@ impl Integer {
             Self::Long | Self::UnsignedLong | Self::LongLong | Self::UnsignedLongLong => 8,
         };
         Layout { size, align: size }
+    }
+
+    pub(crate) fn promoted(self) -> Self {
+        match self {
+            Self::Bool
+            | Self::Char
+            | Self::SignedChar
+            | Self::UnsignedChar
+            | Self::Short
+            | Self::UnsignedShort => Self::Int,
+            _ => self,
+        }
     }
 
     pub(crate) fn represents(self, value: u64, target: Target) -> bool {
@@ -224,6 +258,7 @@ pub enum Kind {
         result: Box<Type>,
         params: Vec<Type>,
         variadic: bool,
+        prototype: bool,
     },
 }
 
@@ -237,6 +272,56 @@ impl Type {
 
     pub(crate) fn unqualified(&self) -> Self {
         Self::new(self.kind.clone())
+    }
+
+    // N1570 6.2.7, 6.7.3p10, 6.7.6.2p6, and 6.7.6.3p15.
+    pub(crate) fn compatible(&self, other: &Self) -> bool {
+        if self.qualifiers != other.qualifiers {
+            return false;
+        }
+        match (&self.kind, &other.kind) {
+            (Kind::Pointer(a), Kind::Pointer(b)) => a.compatible(b),
+            (Kind::Array(a, m), Kind::Array(b, n)) => {
+                (*m == 0 || *n == 0 || m == n) && a.compatible(b)
+            }
+            (
+                Kind::Function {
+                    result: a,
+                    params: ap,
+                    variadic: av,
+                    prototype: ax,
+                },
+                Kind::Function {
+                    result: b,
+                    params: bp,
+                    variadic: bv,
+                    prototype: bx,
+                },
+            ) => {
+                if !a.compatible(b) {
+                    return false;
+                }
+                match (ax, bx) {
+                    (false, false) => true,
+                    (true, true) => {
+                        av == bv
+                            && ap.len() == bp.len()
+                            && ap.iter().zip(bp).all(|(a, b)| a.compatible(b))
+                    }
+                    (true, false) => prototype_matches_old_style(ap, *av, bp),
+                    (false, true) => prototype_matches_old_style(bp, *bv, ap),
+                }
+            }
+            _ => self.kind == other.kind,
+        }
+    }
+
+    pub(crate) fn default_argument_type(&self) -> Self {
+        match self.kind {
+            Kind::Integer(integer) => Self::new(Kind::Integer(integer.promoted())),
+            Kind::Float(Float::Single) => Self::new(Kind::Float(Float::Double)),
+            _ => self.unqualified(),
+        }
     }
 
     pub(crate) fn pointer_to(self) -> Self {
@@ -333,8 +418,11 @@ impl Type {
                 result,
                 params,
                 variadic,
+                prototype,
             } => {
-                let params = if params.is_empty() {
+                let params = if !prototype {
+                    String::new()
+                } else if params.is_empty() {
                     "void".into()
                 } else {
                     let mut names = params.iter().map(ToString::to_string).collect::<Vec<_>>();
@@ -347,6 +435,17 @@ impl Type {
             }
         }
     }
+}
+
+fn prototype_matches_old_style(prototype: &[Type], variadic: bool, old: &[Type]) -> bool {
+    !variadic
+        && if old.is_empty() {
+            prototype
+                .iter()
+                .all(|ty| ty.compatible(&ty.default_argument_type()))
+        } else {
+            prototype.len() == old.len() && prototype.iter().zip(old).all(|(a, b)| a.compatible(b))
+        }
 }
 
 impl fmt::Display for Type {

@@ -39,7 +39,7 @@ impl<'a> FunctionBody<'a, '_> {
     ) -> Result<(ExpressionKind<'a>, Type), Diagnostic> {
         let list = self.va_operand(list, true)?;
         match ty.kind {
-            Kind::Integer(integer) if integer == promote(integer) => {}
+            Kind::Integer(integer) if integer == integer.promoted() => {}
             Kind::Pointer(_) | Kind::Float(Float::Double) | Kind::LongDouble => {}
             Kind::Record(record) if record.layout.is_some() => {}
             _ => return Err(site.error("va_arg requires a complete argument type after promotion")),
@@ -71,7 +71,7 @@ impl<'a> FunctionBody<'a, '_> {
                         .error("va_start requires the last named variadic parameter"));
                 }
                 let stable_type = match last.ty.kind {
-                    Kind::Integer(integer) => promote(integer) == integer,
+                    Kind::Integer(integer) => integer.promoted() == integer,
                     Kind::Float(Float::Single) => false,
                     _ => true,
                 };

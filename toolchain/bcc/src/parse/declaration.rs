@@ -9,9 +9,11 @@ enum Modifier<'a> {
     Function(Parameters<'a>),
 }
 
+#[derive(Default)]
 struct Parameters<'a> {
     items: Vec<Parameter<'a>>,
     variadic: bool,
+    identifiers: Option<Vec<&'a Lexeme>>,
     tags: HashMap<&'a str, Tag>,
 }
 
@@ -25,6 +27,7 @@ struct Field<'a> {
     site: &'a Lexeme,
     ty: Type,
     width: Option<u8>,
+    alignment: Option<usize>,
 }
 
 impl<'a> Declarator<'a> {
@@ -62,6 +65,7 @@ impl<'a> Declarator<'a> {
                             .map(|param| param.ty.unqualified())
                             .collect(),
                         variadic: params.variadic,
+                        prototype: params.identifiers.is_none(),
                     })
                 }
             };
@@ -72,54 +76,88 @@ impl<'a> Declarator<'a> {
 
 impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
     pub(super) fn external(&mut self) -> Result<Vec<Declaration<'a>>, Diagnostic> {
+        if let Some(site) = self.eat("_Static_assert") {
+            return Ok(vec![Declaration::StaticAssert(
+                self.static_assertion(site, 0)?,
+            )]);
+        }
         let (base, storage, signed) = self.specifiers_at_depth(true, 0)?;
+        if matches!(storage.class, Storage::Auto | Storage::Register) {
+            return Err(self.error("invalid file-scope storage class"));
+        }
         if let Some(end) = self.eat(";") {
-            if storage.thread_local {
-                return Err(end.error("_Thread_local requires an object declarator"));
-            }
+            storage.require_declarator(end)?;
             return Ok(Vec::new());
         }
         let first = self.declarator(false, 0)?;
-        if let Some(Modifier::Function(..)) = first.modifiers.first() {
-            if storage.thread_local {
-                return Err(first
-                    .name
-                    .unwrap()
-                    .error("a function cannot be _Thread_local"));
+        if matches!(first.modifiers.first(), Some(Modifier::Function(_)))
+            && storage.class != Storage::Typedef
+        {
+            let name = first.name.unwrap();
+            let ty = first.ty(base, name, &self.records)?;
+            storage.check(name, &ty)?;
+            let TypeKind::Function { ref result, .. } = ty.kind else {
+                unreachable!()
+            };
+            let result = result.as_ref().clone();
+            let Some(Modifier::Function(params)) = first.modifiers.into_iter().next() else {
+                unreachable!()
+            };
+            let prototype = params.identifiers.is_none();
+            let variadic = params.variadic;
+            // A visible prototype still applies after an identifier-list declaration.
+            if prototype
+                || !matches!(
+                    self.lookup(&name.text),
+                    Some(Name::Ordinary(Type {
+                        kind: TypeKind::Function {
+                            prototype: true,
+                            ..
+                        },
+                        ..
+                    }))
+                )
+            {
+                self.name(name, Name::Ordinary(ty));
             }
-            if storage.class != Storage::Typedef {
-                let name = first.name.unwrap();
-                let ty = first.ty(base, name, &self.records)?;
-                let TypeKind::Function { result, .. } = &ty.kind else {
-                    unreachable!()
-                };
-                let Some(Modifier::Function(params)) = first.modifiers.into_iter().next() else {
-                    unreachable!()
-                };
-                self.name(name, Name::Ordinary(ty.clone()));
-                let body = if self.eat(";").is_some() {
-                    None
-                } else {
-                    self.expect("{", "expected ';' or a function body")?;
-                    Some(self.scope(|parser| {
-                        *parser.tags.last_mut().unwrap() = params.tags;
+            let (params, body) = if self.eat(";").is_some() {
+                if params
+                    .identifiers
+                    .as_ref()
+                    .is_some_and(|names| !names.is_empty())
+                {
+                    return Err(name.error("an identifier list requires a function definition"));
+                }
+                (params.items, None)
+            } else {
+                let (items, body) = self.scope(|parser| {
+                    *parser.tags.last_mut().unwrap() = params.tags;
+                    let items = if let Some(identifiers) = params.identifiers {
+                        parser.old_style_parameters(identifiers)?
+                    } else {
                         for param in &params.items {
                             if let Some(name) = param.name {
                                 parser.name(name, Name::Ordinary(param.ty.clone()));
                             }
                         }
-                        parser.block_items(0)
-                    })?)
-                };
-                return Ok(vec![Declaration::Function(Function {
-                    name,
-                    result: result.as_ref().clone(),
-                    params: params.items,
-                    variadic: params.variadic,
-                    storage: storage.class,
-                    body,
-                })]);
-            }
+                        params.items
+                    };
+                    parser.expect("{", "expected ';' or a function body")?;
+                    let body = parser.block_items(0)?;
+                    Ok((items, body))
+                })?;
+                (items, Some(body))
+            };
+            return Ok(vec![Declaration::Function(Function {
+                name,
+                result,
+                params,
+                variadic,
+                prototype,
+                noreturn: storage.noreturn,
+                storage: storage.class,
+                body,
+            })]);
         }
         self.variables(base, storage, signed, first)
             .map(|vars| vars.into_iter().map(Declaration::Object).collect())
@@ -128,9 +166,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
     pub(super) fn declaration(&mut self) -> Result<Vec<Variable<'a>>, Diagnostic> {
         let (base, storage, signed) = self.specifiers_at_depth(true, 0)?;
         if let Some(end) = self.eat(";") {
-            if storage.thread_local {
-                return Err(end.error("_Thread_local requires an object declarator"));
-            }
+            storage.require_declarator(end)?;
             return Ok(Vec::new());
         }
         let first = self.declarator(false, 0)?;
@@ -148,8 +184,12 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         loop {
             let name = declarator.name.unwrap();
             let ty = declarator.ty(base.clone(), name, &self.records)?;
-            if storage.thread_local && matches!(ty.kind, TypeKind::Function { .. }) {
-                return Err(name.error("a function cannot be _Thread_local"));
+            storage.check(name, &ty)?;
+            if declarator.modifiers.iter().any(|modifier| {
+                matches!(modifier, Modifier::Function(params)
+                    if params.identifiers.as_ref().is_some_and(|names| !names.is_empty()))
+            }) {
+                return Err(name.error("an identifier list requires a function definition"));
             }
             if storage.class == Storage::Typedef {
                 if let Some(previous) = self.names.last().unwrap().get(name.text.as_ref()) {
@@ -170,6 +210,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     ty,
                     storage: storage.class,
                     thread_local: storage.thread_local,
+                    alignment: storage.alignment,
                     initializer,
                 });
             }
@@ -201,24 +242,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         let mut entries = Vec::new();
         loop {
             let mut designators = Vec::new();
-            loop {
-                let designator = if self.eat("[").is_some() {
-                    let index = self.conditional(depth + 1)?;
-                    self.expect("]", "expected ']' after the array designator")?;
-                    Designator::Index(index)
-                } else if self.eat(".").is_some() {
-                    Designator::Member(
-                        self.identifier()
-                            .ok_or_else(|| self.error("expected a member name after '.'"))?,
-                    )
-                } else {
-                    break;
-                };
-                if designators.len() == MAX_NESTING {
-                    return Err(site.error("designator nesting limit exceeded"));
-                }
-                designators.push(designator);
-            }
+            self.designators(&mut designators, site, depth + 1)?;
             if !designators.is_empty() {
                 self.expect("=", "expected '=' after the designation")?;
             }
@@ -237,11 +261,41 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         Ok(Initializer::List(site, entries))
     }
 
+    pub(super) fn designators(
+        &mut self,
+        designators: &mut Vec<Designator<'a>>,
+        site: &'a Lexeme,
+        depth: usize,
+    ) -> Result<(), Diagnostic> {
+        loop {
+            let designator = if self.eat("[").is_some() {
+                let index = self.conditional(depth)?;
+                self.expect("]", "expected ']' after the array designator")?;
+                Designator::Index(index)
+            } else if self.eat(".").is_some() {
+                Designator::Member(
+                    self.identifier()
+                        .ok_or_else(|| self.error("expected a member name after '.'"))?,
+                )
+            } else {
+                break;
+            };
+            if designators.len() == MAX_NESTING {
+                return Err(site.error("designator nesting limit exceeded"));
+            }
+            designators.push(designator);
+        }
+        Ok(())
+    }
+
     pub(super) fn type_name(&mut self, depth: usize) -> Result<Type, Diagnostic> {
         let start = self
             .peek()
             .ok_or_else(|| self.error("expected a type name"))?;
-        let (base, _, _) = self.specifiers_at_depth(false, depth)?;
+        let (base, storage, _) = self.specifiers_at_depth(false, depth)?;
+        if storage.alignment.is_some() {
+            return Err(start.error("_Alignas cannot appear in a type name"));
+        }
         let declarator = self.declarator(true, depth)?;
         if let Some(name) = declarator.name {
             return Err(name.error("a type name cannot declare an identifier"));
@@ -300,12 +354,9 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 // N1570 §6.2.1p4: prototype tags are visible through this
                 // function declarator. A definition carries them into its body.
                 let params = self.scope(|parser| {
-                    let (items, variadic) = parser.parameters(depth + 1)?;
-                    Ok(Parameters {
-                        items,
-                        variadic,
-                        tags: std::mem::take(parser.tags.last_mut().unwrap()),
-                    })
+                    let mut params = parser.parameters(depth + 1)?;
+                    params.tags = std::mem::take(parser.tags.last_mut().unwrap());
+                    Ok(params)
                 })?;
                 declarator.modifiers.push(Modifier::Function(params));
             } else {
@@ -316,44 +367,185 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         Ok(declarator)
     }
 
-    fn parameters(&mut self, depth: usize) -> Result<(Vec<Parameter<'a>>, bool), Diagnostic> {
-        let mut params = Vec::new();
+    fn parameters(&mut self, depth: usize) -> Result<Parameters<'a>, Diagnostic> {
+        let mut params = Parameters::default();
+        if self.eat(")").is_some() {
+            params.identifiers = Some(Vec::new());
+            return Ok(params);
+        }
+        if self
+            .peek()
+            .is_some_and(|token| is_identifier(token) && !self.starts_type(token))
+        {
+            let mut names = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            loop {
+                let name = self
+                    .identifier()
+                    .ok_or_else(|| self.error("expected a parameter name"))?;
+                if matches!(self.lookup(&name.text), Some(Name::Typedef(..))) {
+                    return Err(name.error("a typedef name cannot occur in an identifier list"));
+                }
+                if !seen.insert(name.text.as_ref()) {
+                    return Err(name.error("duplicate parameter name"));
+                }
+                names.push(name);
+                if self.eat(",").is_none() {
+                    break;
+                }
+            }
+            self.expect(")", "expected ')' after the identifier list")?;
+            params.identifiers = Some(names);
+            return Ok(params);
+        }
         loop {
             let start = self
                 .peek()
                 .ok_or_else(|| self.error("expected a parameter type"))?;
-            let (base, _) = self.specifiers(false)?;
+            let (base, storage, _) = self.specifiers_at_depth(true, depth)?;
+            storage.check_parameter(start)?;
             let declarator = self.declarator(true, depth)?;
-            let mut ty = declarator.ty(base, start, &self.records)?;
+            let ty = declarator.ty(base, start, &self.records)?;
             let name = declarator.name;
-            // N1570 6.7.6.3p7–10: adjust array and function parameter types.
-            ty = match ty.kind {
-                TypeKind::Array(element, _) => element.pointer_to(),
-                TypeKind::Function { .. } => ty.pointer_to(),
-                TypeKind::Void
-                    if params.is_empty()
-                        && name.is_none()
-                        && ty.qualifiers == Qualifiers::default() =>
-                {
-                    self.expect(")", "expected ')' after 'void'")?;
-                    return Ok((params, false));
-                }
-                TypeKind::Void => return Err(start.error("parameter has void type")),
-                _ => ty,
-            };
+            if ty.kind == TypeKind::Void
+                && ty.qualifiers == Qualifiers::default()
+                && storage.class == Storage::Unspecified
+                && params.items.is_empty()
+                && name.is_none()
+            {
+                self.expect(")", "expected ')' after 'void'")?;
+                return Ok(params);
+            }
+            let ty = parameter_type(start, ty)?;
             if let Some(name) = name {
                 self.name(name, Name::Ordinary(ty.clone()));
             }
-            params.push(Parameter { start, name, ty });
+            params.items.push(Parameter { start, name, ty });
             if self.eat(",").is_none() {
                 self.expect(")", "expected ',' or ')' after the parameter")?;
-                return Ok((params, false));
+                return Ok(params);
             }
             if self.eat("...").is_some() {
                 self.expect(")", "expected ')' after '...'")?;
-                return Ok((params, true));
+                params.variadic = true;
+                return Ok(params);
             }
         }
+    }
+
+    // N1570 6.9.1p6–7: the declaration list may reorder or group
+    // declarators, but the identifier list determines the calling order.
+    fn old_style_parameters(
+        &mut self,
+        identifiers: Vec<&'a Lexeme>,
+    ) -> Result<Vec<Parameter<'a>>, Diagnostic> {
+        let mut parameters: HashMap<_, _> = identifiers
+            .iter()
+            .map(|name| (name.text.as_ref(), None))
+            .collect();
+        while !identifiers.is_empty()
+            && self
+                .peek()
+                .is_some_and(|site| self.starts_declaration(site))
+        {
+            let start = self.peek().unwrap();
+            let (base, storage, _) = self.specifiers_at_depth(true, 0)?;
+            storage.check_parameter(start)?;
+            loop {
+                let declarator = self.declarator(false, 0)?;
+                let name = declarator.name.unwrap();
+                let parameter = parameters
+                    .get_mut(name.text.as_ref())
+                    .ok_or_else(|| name.error("parameter is absent from the identifier list"))?;
+                if parameter.is_some() {
+                    return Err(name.error("duplicate parameter declaration"));
+                }
+                let ty = parameter_type(name, declarator.ty(base.clone(), name, &self.records)?)?;
+                self.name(name, Name::Ordinary(ty.clone()));
+                *parameter = Some(ty);
+                if self.eat(",").is_none() {
+                    break;
+                }
+            }
+            self.expect(";", "expected ';' after the parameter declaration")?;
+        }
+
+        identifiers
+            .into_iter()
+            .map(|name| {
+                let ty = parameters
+                    .remove(name.text.as_ref())
+                    .flatten()
+                    .ok_or_else(|| {
+                        name.error("identifier-list parameter requires a declaration")
+                    })?;
+                Ok(Parameter {
+                    start: name,
+                    name: Some(name),
+                    ty,
+                })
+            })
+            .collect()
+    }
+
+    // N1570 6.7.5 and 6.5.3.4. Support fundamental and extended
+    // alignments through the 4 KiB alignment of the target ELF image.
+    pub(super) fn alignment_specifier(
+        &mut self,
+        site: &'a Lexeme,
+        depth: usize,
+    ) -> Result<usize, Diagnostic> {
+        self.expect("(", "expected '(' after _Alignas")?;
+        let alignment = if self.peek().is_some_and(|token| self.starts_type(token)) {
+            let ty = self.type_name(depth)?;
+            crate::sema::type_alignment(&ty, site)? as u64
+        } else {
+            let expression = self.conditional(depth)?;
+            self.layout_constant(expression)?
+        };
+        self.expect(")", "expected ')' after the alignment specifier")?;
+        if alignment != 0 && (!alignment.is_power_of_two() || alignment > 4096) {
+            return Err(
+                site.error("unsupported alignment; expected zero or a power of two up to 4096")
+            );
+        }
+        Ok(alignment as usize)
+    }
+
+    pub(super) fn static_assertion(
+        &mut self,
+        site: &'a Lexeme,
+        depth: usize,
+    ) -> Result<StaticAssertion<'a>, Diagnostic> {
+        self.expect("(", "expected '(' after _Static_assert")?;
+        let expression = self.conditional(depth)?;
+        self.expect(",", "expected ',' before the static assertion message")?;
+        if !self.peek().is_some_and(|token| token.kind == Kind::String) {
+            return Err(self.error("expected a string literal in the static assertion"));
+        }
+        let mut message = Vec::new();
+        while let Some(token) = self.peek().filter(|token| token.kind == Kind::String) {
+            self.take();
+            crate::sema::decode_string(token, &mut message)?;
+        }
+        self.expect(")", "expected ')' after the static assertion message")?;
+        self.expect(";", "expected ';' after the static assertion")?;
+        Ok(StaticAssertion {
+            site,
+            expression,
+            message: String::from_utf8_lossy(&message).into_owned(),
+        })
+    }
+
+    fn layout_constant(&self, expression: Expression<'a>) -> Result<u64, Diagnostic> {
+        let names = self.names.iter().flatten().map(|(&name, entry)| {
+            let ty = match entry {
+                Name::Ordinary(ty) => Some(ty),
+                _ => None,
+            };
+            (name, ty)
+        });
+        crate::sema::layout_constant(expression, self.target, &self.records, names)
     }
 
     fn literal_integer(&mut self) -> Result<(i128, &'a Lexeme), Diagnostic> {
@@ -513,7 +705,37 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         let mut fields = Vec::new();
         let mut names = std::collections::HashSet::new();
         let end = loop {
-            let (base, _, signed) = self.specifiers_at_depth(false, depth + 1)?;
+            if let Some(end) = self.eat("}") {
+                if fields.is_empty() {
+                    return Err(end.error("expected a record member"));
+                }
+                break end;
+            }
+            if let Some(site) = self.eat("_Static_assert") {
+                let assertion = self.static_assertion(site, depth + 1)?;
+                let value = self.layout_constant(assertion.expression)?;
+                crate::sema::check_static_assertion(site, &assertion.message, value)?;
+                continue;
+            }
+            let start = self
+                .peek()
+                .ok_or_else(|| self.error("expected a record member"))?;
+            let (base, storage, signed) = self.specifiers_at_depth(false, depth + 1)?;
+            if self.eat(";").is_some() {
+                if !storage.anonymous_record {
+                    return Err(start
+                        .error("unnamed member requires an untagged struct or union definition"));
+                }
+                self.add_anonymous_member_names(&base, &mut names, start)?;
+                fields.push(Field {
+                    name: None,
+                    site: start,
+                    ty: base,
+                    width: None,
+                    alignment: storage.alignment,
+                });
+                continue;
+            }
             loop {
                 let (name, mut ty, colon) = if let Some(colon) = self.eat(":") {
                     (None, base.clone(), Some(colon))
@@ -528,6 +750,9 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 };
                 let site = name.or(colon).unwrap();
                 let width = if let Some(colon) = colon {
+                    if storage.alignment.is_some() {
+                        return Err(colon.error("_Alignas cannot apply to a bit-field"));
+                    }
                     let TypeKind::Integer(integer) = &mut ty.kind else {
                         return Err(colon.error("bit-fields require an integer type"));
                     };
@@ -561,18 +786,37 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     site,
                     ty,
                     width,
+                    alignment: storage.alignment,
                 });
                 if self.eat(",").is_none() {
                     break;
                 }
             }
             self.expect(";", "expected ';' after the record member")?;
-            if let Some(end) = self.eat("}") {
-                break end;
-            }
         };
         let packed = packed | self.packed_attribute()?;
         self.layout_record(kind, packed, fields, open, end)
+    }
+
+    fn add_anonymous_member_names(
+        &self,
+        ty: &Type,
+        names: &mut std::collections::HashSet<&'a str>,
+        site: &Lexeme,
+    ) -> Result<(), Diagnostic> {
+        let TypeKind::Record(record) = ty.kind else {
+            unreachable!()
+        };
+        for member in &self.records[record.id].definition.as_ref().unwrap().members {
+            if let Some(name) = member.name {
+                if !names.insert(name) {
+                    return Err(site.error(format!("duplicate record member '{name}'")));
+                }
+            } else {
+                self.add_anonymous_member_names(&member.ty, names, site)?;
+            }
+        }
+        Ok(())
     }
 
     fn layout_record(
@@ -595,6 +839,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             site,
             ty,
             width,
+            alignment,
         }) = fields.next()
         {
             // N1570 §6.7.2.1p3,18: retain the aligned offset but allocate
@@ -621,6 +866,11 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             } else {
                 0
             };
+            let natural = if packed { 1 } else { field.align };
+            if let Some(requested) = alignment {
+                check_alignment(site, requested, natural)?;
+            }
+            let alignment = natural.max(alignment.unwrap_or(0));
             let (start, width, bit_field) = if let Some(width) = width {
                 let unit = (field.size * 8) as u128;
                 // psABI §3.1.2: ordinary fields must fit in an aligned
@@ -637,7 +887,6 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 };
                 (start, u128::from(width), Some(bit_field))
             } else {
-                let alignment = if packed { 1 } else { field.align };
                 (
                     start.next_multiple_of((alignment * 8) as u128),
                     field.size as u128 * 8,
@@ -645,15 +894,13 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 )
             };
             size_bits = size_bits.max(start + width);
-            if let Some(name) = name {
-                if !packed {
-                    align = align.max(field.align);
-                }
+            if name.is_some() || bit_field.is_none() {
+                align = align.max(alignment);
                 let offset = usize::try_from(start / 8)
                     .map_err(|_| site.error("record size exceeds the target address space"))?;
                 has_const_member |= ty.contains_const(&self.records);
                 members.push(Member {
-                    name: &name.text,
+                    name: name.map(|token| token.text.as_ref()),
                     ty,
                     offset,
                     bit_field,
@@ -679,23 +926,79 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         depth: usize,
     ) -> Result<u8, Diagnostic> {
         let expr = self.conditional(depth)?;
-        let names = self.names.iter().flatten().map(|(&name, entry)| {
-            let ty = match entry {
-                Name::Ordinary(ty) => Some(ty),
-                _ => None,
-            };
-            (name, ty)
-        });
         let limit = if integer == Integer::Bool {
             1
         } else {
             integer.layout().size * 8
         };
-        let width = crate::sema::layout_constant(expr, self.target, &self.records, names)?;
+        let width = self.layout_constant(expr)?;
         u8::try_from(width)
             .ok()
             .filter(|width| usize::from(*width) <= limit)
             .ok_or_else(|| colon.error("bit-field width is outside the range of its type"))
+    }
+}
+
+impl DeclStorage {
+    fn require_declarator(self, site: &Lexeme) -> Result<(), Diagnostic> {
+        if self.thread_local {
+            return Err(site.error("_Thread_local requires an object declarator"));
+        }
+        if self.alignment.is_some() || self.noreturn {
+            return Err(site.error("declaration specifier requires a declarator"));
+        }
+        Ok(())
+    }
+
+    fn check(self, site: &Lexeme, ty: &Type) -> Result<(), Diagnostic> {
+        let function = matches!(ty.kind, TypeKind::Function { .. });
+        if self.thread_local && function {
+            return Err(site.error("a function cannot be _Thread_local"));
+        }
+        if self.noreturn && (!function || self.class == Storage::Typedef) {
+            return Err(site.error("_Noreturn requires a function declaration"));
+        }
+        if let Some(alignment) = self.alignment {
+            if function || matches!(self.class, Storage::Typedef | Storage::Register) {
+                return Err(site.error("_Alignas requires a non-register object or member"));
+            }
+            check_alignment(
+                site,
+                alignment,
+                ty.layout().map_or(1, |layout| layout.align),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn check_parameter(self, site: &Lexeme) -> Result<(), Diagnostic> {
+        if self.thread_local {
+            return Err(site.error("_Thread_local requires an object declaration"));
+        }
+        if !matches!(self.class, Storage::Unspecified | Storage::Register)
+            || self.alignment.is_some()
+            || self.noreturn
+        {
+            return Err(site.error("invalid declaration specifier for a parameter"));
+        }
+        Ok(())
+    }
+}
+
+fn check_alignment(site: &Lexeme, requested: usize, natural: usize) -> Result<(), Diagnostic> {
+    if requested != 0 && requested < natural {
+        return Err(site.error("specified alignment is weaker than the required alignment"));
+    }
+    Ok(())
+}
+
+fn parameter_type(site: &Lexeme, ty: Type) -> Result<Type, Diagnostic> {
+    // N1570 6.7.6.3p7–8 and 6.9.1p7.
+    match ty.kind {
+        TypeKind::Array(element, _) => Ok(element.pointer_to()),
+        TypeKind::Function { .. } => Ok(ty.pointer_to()),
+        TypeKind::Void => Err(site.error("parameter has void type")),
+        _ => Ok(ty),
     }
 }
 

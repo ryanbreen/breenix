@@ -70,6 +70,10 @@ impl<'a> ThreadObjects<'a> {
         if let Some(&index) = self.indices.get(key) {
             let thread = &mut self.definitions[index];
             thread.object.ty = ty.clone();
+            thread.object.alignment = variable
+                .alignment
+                .filter(|&align| align != 0)
+                .or(thread.object.alignment);
             if explicit {
                 thread.object.site = &name.site;
                 thread.initializer = initializer;
@@ -81,6 +85,7 @@ impl<'a> ThreadObjects<'a> {
                     name: key,
                     site: &name.site,
                     ty: ty.clone(),
+                    alignment: variable.alignment,
                 },
                 linkage,
                 initializer,
@@ -100,6 +105,7 @@ impl<'a> FunctionBody<'a, '_> {
             mut ty,
             storage,
             initializer,
+            alignment,
             ..
         } = variable;
         check_type(name, &ty)?;
@@ -182,6 +188,7 @@ impl<'a> FunctionBody<'a, '_> {
                 name: key,
                 site: &name.site,
                 ty: ty.clone(),
+                alignment,
             },
             storage: local_storage,
         });
@@ -389,7 +396,7 @@ fn object_address<'a>(
     match &expr.kind {
         ExpressionKind::Identifier(name) => Some((StaticAddress::Symbol(name, &expr.site.site), 0)),
         ExpressionKind::StaticLiteral(id) => Some((StaticAddress::Literal(*id), 0)),
-        ExpressionKind::Local(id) if matches!(locals[*id].storage, LocalStorage::Static) => {
+        ExpressionKind::Local(id) if matches!(locals[*id].storage, LocalStorage::Static(_)) => {
             Some((StaticAddress::Local(*id), 0))
         }
         ExpressionKind::String(bytes) => Some((StaticAddress::String(bytes.clone()), 0)),

@@ -21,8 +21,9 @@ impl Specifiers {
                 self.longs <= 2
             }
             "signed" | "unsigned" => self.unsigned.replace(token.is("unsigned")).is_none(),
-            "extern" | "static" | "typedef" => {
-                if self.storage.thread_local && token.is("typedef") {
+            "extern" | "static" | "typedef" | "auto" | "register" => {
+                if self.storage.thread_local && !matches!(token.text.as_ref(), "extern" | "static")
+                {
                     return Err(
                         token.error("_Thread_local may only be combined with static or extern")
                     );
@@ -33,7 +34,9 @@ impl Specifiers {
                     self.storage.class = match token.text.as_ref() {
                         "extern" => Storage::Extern,
                         "static" => Storage::Static,
-                        _ => Storage::Typedef,
+                        "typedef" => Storage::Typedef,
+                        "auto" => Storage::Auto,
+                        _ => Storage::Register,
                     };
                     true
                 }
@@ -42,14 +45,16 @@ impl Specifiers {
                 if !allow_storage {
                     return Err(token.error("_Thread_local requires an object declaration"));
                 }
-                if self.storage.thread_local || self.storage.class == Storage::Typedef {
+                if self.storage.thread_local
+                    || !matches!(
+                        self.storage.class,
+                        Storage::Unspecified | Storage::Extern | Storage::Static
+                    )
+                {
                     return Err(token.error("conflicting _Thread_local storage specifiers"));
                 }
                 self.storage.thread_local = true;
                 true
-            }
-            "auto" | "register" if self.storage.thread_local => {
-                return Err(token.error("_Thread_local may only be combined with static or extern"));
             }
             "void" => self.base.replace("void").is_none(),
             "float" => self.base.replace("float").is_none(),
@@ -144,14 +149,6 @@ impl Specifiers {
 }
 
 impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
-    pub(super) fn specifiers(
-        &mut self,
-        allow_storage: bool,
-    ) -> Result<(Type, DeclStorage), Diagnostic> {
-        self.specifiers_at_depth(allow_storage, 0)
-            .map(|(ty, storage, _)| (ty, storage))
-    }
-
     pub(super) fn specifiers_at_depth(
         &mut self,
         allow_storage: bool,
@@ -166,11 +163,30 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             if self.qualifier(&mut specs.qualifiers) {
                 continue;
             }
+            if token.is("_Alignas") {
+                self.take();
+                let alignment = self.alignment_specifier(token, depth + 1)?;
+                specs.storage.alignment = Some(specs.storage.alignment.unwrap_or(0).max(alignment));
+                continue;
+            }
+            if token.is("_Noreturn") {
+                self.take();
+                if !allow_storage {
+                    return Err(token.error("_Noreturn requires a function declaration"));
+                }
+                specs.storage.noreturn = true;
+                continue;
+            }
             if specs.can_take_type_name() {
                 let ty = match token.text.as_ref() {
                     "struct" | "union" => {
                         self.take();
-                        Some(self.record(token, depth)?)
+                        let ty = self.record(token, depth)?;
+                        let TypeKind::Record(record) = ty.kind else {
+                            unreachable!()
+                        };
+                        specs.storage.anonymous_record = self.records[record.id].tag.is_none();
+                        Some(ty)
                     }
                     "enum" => {
                         self.take();
@@ -254,7 +270,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             ]
             .into_iter()
             .map(|(name, ty, offset)| Member {
-                name,
+                name: Some(name),
                 ty,
                 offset,
                 bit_field: None,
