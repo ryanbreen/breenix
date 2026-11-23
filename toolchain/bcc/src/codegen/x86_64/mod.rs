@@ -768,6 +768,7 @@ impl<'src> Emitter<'_, 'src> {
             Kind::Function { .. } | Kind::Array(..) | Kind::Record(_) => return,
             Kind::LongDouble => "fld tbyte",
             Kind::Void => unreachable!(),
+            Kind::ShortVector { .. } => unreachable!("short-vector typedefs are AArch64-only"),
         };
         writeln!(self.text, "    {instruction} {address}").unwrap();
     }

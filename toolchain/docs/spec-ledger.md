@@ -21,12 +21,14 @@ edition pin whose full publication has no digest recorded here.
 | [Linux Standard Base Core Specification](https://refspecs.linuxfoundation.org/LSB_5.0.0/LSB-Core-generic/LSB-Core-generic.pdf) | 5.0, Generic Part, chapter 11 (E25 ruling 8) | — |
 | [Intel SDM](https://cdrdv2-public.intel.com/812392/325462-sdm-vol-1-2abcd-3abcd-4.pdf) | Combined volumes 1–4, 325462-082US, December 2023 | `3b2551f01b4c91dc80e7f9cfb1e9790feeefe503cff15d2922ace049f4d8730f` |
 | [AMD APM](https://kib.kiev.ua/x86docs/AMD/AMD64/40332-r4.09.pdf) | AMD publication 40332, combined volumes 1–5, revision 4.09, March 2026, archived PDF | `ae18704f924bb80bc9bbfe9d3c33b97c16cdeaa9c7afccb033d136e86fd88a08` |
+| [IEEE Std 754](https://standards.ieee.org/ieee/754/6210/) | IEEE 754-2019, 2019-07-22 (E25 ruling 44) | — |
 | [AAPCS64](https://github.com/ARM-software/abi-aa/releases/download/2025Q1/aapcs64.pdf) | 2025Q1, 2025-04-07 | `11e6b27bb994b23e6a28b7ac27b1437591cfc13c2bf77262fb8f7ea2a0f254b8` |
 | [ELF for the Arm 64-bit Architecture (AArch64)](https://github.com/ARM-software/abi-aa/releases/download/2025Q1/aaelf64.pdf) | 2025Q1, 2025-04-07 (E25 ruling 29) | `bb30810c55b8fe80badf897c9dc82bb2de1d042b14d35190669cd021cc1240f2` |
 | [Arm Architecture Reference Manual](https://documentation-service.arm.com/static/69d7cbfc3fb3b839f93e5b1e?token=) | Arm A-profile, DDI 0487, revision M.b (E25 ruling 31) | `0df13f5972e76226f19c1105934172e71008debd73ecff566da93ccea10cbcbf` |
 | [POSIX make](https://pubs.opengroup.org/onlinepubs/9799919799.2024edition/utilities/make.html) | POSIX.1-2024, Issue 8, `make` utility | `86663126116573d3b62d89a86807e205030bd2e161beeeddfbdab7c7d25d52b4` |
 | [GNU make manual](https://www.gnu.org/software/make//manual/make.pdf) | Edition 0.77, GNU make 4.4.1, 2023-02-26 | `a4bc06026984382815e392159e60a4bc356cac6c5b81e5ae84fa4f58f621f4d3` |
 | [GNU C extensions](https://gcc.gnu.org/onlinedocs/gcc-15.2.0/gcc/C-Extensions.html) | GCC 15.2.0 manual, GNU C extensions chapter | `4965dab10bf21e0147e86aa80fca2a92da2c099393f34d0325c913aa3be871f2` |
+| [GNU C vector extensions](https://gcc.gnu.org/onlinedocs/gcc-15.2.0/gcc/Vector-Extensions.html) | GCC 15.2.0 manual, §7.8, `vector_size` typedef spelling | `bb7f699ab3937eefe69960c5a6bbe6fae9fb58c02aa534bec65caca4c57942e6` |
 | [GCC Common Type Attributes](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Common-Attributes.html#Common-Type-Attributes) | GCC 16.2.0 manual, 2026-08-07, 209636 bytes. E25 ruling 37 pins only the meaning of the record type attribute `__attribute__((packed))`. | `ab4a0dcc40060e309f2d126d3bbd8a10b2d596084d32371b8642d76b33e0d33f` |
 | [NASM manual](https://www.nasm.us/xdoc/3.02/nasmdoc.pdf) | NASM 3.02, reserved for 25.12 | `a4d1766c9d640663569bcf93feac0657732fe52017002f1dbc797353f6aed34f` |
 | [GNU ld manual](https://sourceware.org/binutils/docs-2.45/ld.html) | GNU Binutils 2.45, command-line options and linker script syntax | `f219c3b05e197308c5b60fc2d4dbfc302617389ca5c21501de58a90b3d052e06` |
@@ -192,8 +194,11 @@ definition. Packing preserves nested types' internal layouts and the
 zero-width separator's alignment rule. The AMD64 psABI §3.2.3 classifies
 a packed aggregate with an unaligned field as MEMORY.
 
-A3 adds AArch64 scalar code emission. AAPCS64 record layout for bit-fields
-and aggregate calling conventions are scheduled for A4.
+AAPCS64 §§5.5, 5.10.5, 6.8.2 and 6.9 cover AArch64 short vectors,
+homogeneous aggregates, composite arguments and results. The AArch64
+`vector_size` typedef subset supports 8- and 16-byte float and double
+vectors as opaque values for assignment and ABI transfers. SIMD arithmetic,
+lane operations and intrinsics are outside this subset.
 
 ## bmake 25.6a2
 
@@ -231,7 +236,14 @@ Figure 3.34 gives the one-element array type and its 24-byte record.
 The prologue uses the save offsets in Figure 3.33 and guards XMM spills
 with AL. The usable SSE bank ends at offset 176 because §3.2.3 assigns
 only XMM0–7 to arguments. Register-class selection and whole-record
-overflow follow §3.2.3. AAPCS64 varargs are scheduled for A4.
+overflow follow §3.2.3.
+
+On AArch64, AAPCS64 2025Q1 §10.1.5 Table 6 defines the five-field
+`va_list` structure and §14 defines the register save areas and cursors.
+Named arguments advance the cursors using §6.8.2. Anonymous arguments use
+the same classification, including a pointer slot for a large ordinary
+composite under B.4. Register-resident homogeneous composites are gathered
+from separate 16-byte slots.
 
 ### AMD64 extended precision (25.7b3)
 
@@ -246,8 +258,48 @@ to nearest with ties to even, including the 64th significand bit and the
 subnormal range. Intel SDM Vol. 1 Table 4-3 and Figure 8-13 define the
 value encoding. The instruction forms come from Vol. 2. Integer
 conversion truncates with a temporary x87 control word and restores
-the saved control word. AAPCS64 binary128 `long double` lowering is
-scheduled for A4.
+the saved control word.
+
+### AArch64 binary128 literals, ABI and runtime (A4)
+
+IEEE 754-2019 §3.4 and Table 3.5 define the binary128 encoding. Sections
+4.3, 5.5.1, 5.11, 6 and 7 govern rounding, negation, comparison and special
+results. bcc rounds literals from their exact integer ratios under N1570
+§6.4.4.2. Static binary128 objects use 16-byte-aligned data or zero-filled
+storage, with the literal and cast forms supported by constant initialization.
+Negation flips the sign bit.
+
+AAPCS64 2025Q1 §§5.5, 5.10.5, 6.8.2 (C.1–C.4), 6.9 and 14 place
+binary128 arguments, results and homogeneous aggregate members in Q registers.
+Stack arguments align to 16 bytes, and variadic arguments consume full
+16-byte slots in the SIMD/FP save area before using the stack.
+Arm DDI 0487 M.b §§C7.2.230 and C7.2.387 describe the Q load/store forms.
+Section C7.2.157 defines the FMOV transfers between the SIMD register's
+halves and the integer registers used at the brt call boundary.
+
+The runtime uses roundTiesToEven and returns the positive quiet NaN with
+its payload bits clear for invalid results and NaN inputs. It does not update
+floating-point exception flags.
+
+With the `exports` feature, `libbrt.a` provides `__brt_tf_add`,
+`__brt_tf_sub`, `__brt_tf_mul`, `__brt_tf_div` and `__brt_tf_cmp`. Each
+takes two unsigned 128-bit integers and returns one. AAPCS64 2025Q1
+§§5.1, 6.8.2 (C.10–C.11) and 6.9 place the inputs in x0–x1 and x2–x3,
+and the result in x0–x1. Compare returns the unsigned encodings of −1,
+0, 1 and 2 for less, equal, greater and unordered, respectively.
+
+IEEE 754-2019 §§5.4, 5.8, 6.2 and 7 define the conversion results. The
+32-bit and 64-bit signed and unsigned integers and finite binary32 and
+binary64 values widen exactly. Narrowing to binary32 or binary64 uses
+roundTiesToEven, including subnormal results and overflow to infinity.
+Floating-point conversions preserve the sign and quiet NaNs, keeping the
+low payload bits that fit. Integer results use roundTowardZero and
+return `0` for NaN, infinity or an unrepresentable truncated value
+(N1570 §6.3.1.4).
+
+With `exports`, `__brt_tf_from_*` and `__brt_tf_to_*` use x0–x1 for the
+binary128 side and w0 or x0 for the 32-bit or 64-bit side. The `f32` and
+`f64` symbols take and return the binary encoding as an unsigned integer.
 
 ### AMD64 local-exec thread storage (25.7c)
 
@@ -256,5 +308,5 @@ duration, declarations, initialization and tentative definitions. ELF
 gABI §§3.10, 5.2 and 7.7 describe `SHF_TLS`, `STT_TLS` and the
 `PT_TLS` template. AMD64 psABI §10.3.2 Tables 10.7 and 10.10 give the
 local-exec address and value sequences, using Breenix's self-pointer at
-`FS:0` and `R_X86_64_TPOFF32` relocations. AArch64 TLS lowering is
-scheduled for A4.
+`FS:0` and `R_X86_64_TPOFF32` relocations. A4 implements AArch64 local-exec
+TLS using TPIDR_EL0 and the AAELF64 TLS relocations and stages its suite inputs.

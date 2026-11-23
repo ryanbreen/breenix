@@ -9,7 +9,7 @@ description = "Freestanding Linux runtime for bcc development checks"
 [workspace]
 
 [lib]
-crate-type = ["staticlib"]
+crate-type = ["staticlib", "rlib"]
 test = false
 doctest = false
 

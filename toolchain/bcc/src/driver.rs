@@ -292,6 +292,9 @@ impl Driver {
                 };
                 linker.arg(object);
             }
+            if self.options.pp.target == Target::Aarch64 {
+                linker.arg(self.bundle.join("lib/libbrt.a"));
+            }
             return run_tool(linker.arg(self.bundle.join("lib/libc.a")));
         }
 

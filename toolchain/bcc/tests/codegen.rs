@@ -66,6 +66,28 @@ fn long_double_literal_bits() {
 }
 
 #[test]
+fn aarch64_binary128_literal_bits() {
+    // IEEE 754-2019 §3.4, Table 3.5: 15 exponent and 112 fraction bits.
+    // The repeating expansion of 1/10 rounds up in the last fraction bit.
+    let cases = [
+        ("0.1L", 0x3ffb_9999_9999_9999_9999_9999_9999_999au128),
+        ("0x1.0000000000000000000000000001p0L", 0x3fff_0000_0000_0000_0000_0000_0000_0001),
+        ("0x1p-16494L", 1),
+        ("0x1.ffffffffffffffffffffffffffffp16383L", 0x7ffe_ffff_ffff_ffff_ffff_ffff_ffff_ffff),
+    ];
+    let path = Path::new("binary128-literal.c");
+    let options = pp::Options { target: pp::Target::Aarch64, ..pp::Options::default() };
+    for (literal, bits) in cases {
+        let c = format!("long double value(void) {{ return {literal}; }}");
+        let input = pp::preprocess_source(path, c.as_bytes(), &options).unwrap();
+        let unit = sema::analyze(&input, path, options.target).unwrap();
+        let assembly = codegen::emit_assembly(&unit, path, options.target).unwrap();
+        let words = format!("    .quad 0x{:x}\n    .quad 0x{:x}\n", bits as u64, bits >> 64);
+        assert!(assembly.contains(&words), "{literal} expected {words}\n{assembly}");
+    }
+}
+
+#[test]
 fn bcc_has_no_host_float_parse() {
     let mut directories = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
     while let Some(directory) = directories.pop() {
@@ -149,38 +171,6 @@ fn aarch64_return_42_exit_status() {
         String::from_utf8_lossy(&result.stdout),
         String::from_utf8_lossy(&result.stderr),
     );
-}
-
-#[test]
-fn aarch64_reports_deferred_lvalue() {
-    let path = Path::new("deferred-lvalue.c");
-    let options = pp::Options {
-        target: pp::Target::Aarch64,
-        ..pp::Options::default()
-    };
-    for (source, location) in [
-        (
-            concat!(
-                "struct pair { int first; int second; };\n",
-                "int *address(struct pair *value) { return &value->second; }",
-            ),
-            "deferred-lvalue.c:2:49: error: ",
-        ),
-        (
-            "extern _Thread_local int data;\nint *address(void) { return &data; }",
-            "deferred-lvalue.c:2:30: error: ",
-        ),
-    ] {
-        let input = pp::preprocess_source(path, source.as_bytes(), &options).unwrap();
-        let unit = sema::analyze(&input, path, options.target).unwrap();
-        let error = codegen::emit_assembly(&unit, path, options.target)
-            .unwrap_err()
-            .to_string();
-        let message = error
-            .strip_prefix(location)
-            .unwrap_or_else(|| panic!("{error}"));
-        assert!(message.contains("deferred to A4"), "{error}");
-    }
 }
 
 #[test]

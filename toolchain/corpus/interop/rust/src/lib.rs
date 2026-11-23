@@ -1,9 +1,9 @@
 #![no_std]
 
-use core::panic::PanicInfo;
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+extern crate linux_test;
 
 extern "C" {
-    fn abort() -> !;
     fn c_interop(
         tag: i32,
         scale: f64,
@@ -13,7 +13,11 @@ extern "C" {
 }
 
 #[panic_handler]
-fn panic(_info: &PanicInfo<'_>) -> ! {
+#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
+fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
+    extern "C" {
+        fn abort() -> !;
+    }
     // SAFETY: libc's abort has no preconditions and does not return.
     unsafe { abort() }
 }

@@ -1,4 +1,4 @@
-//! Unoptimized AArch64 scalar assembly for bas.
+//! Unoptimized AArch64 assembly for bas.
 //!
 //! AAPCS64 2025Q1 §§6.1, 6.4.5–6.4.6, 6.8–6.9 and §10.1.1 Table 3
 //! define the register, stack and C type conventions. A64 instructions
@@ -9,21 +9,25 @@ use std::fmt::Write;
 
 use crate::pp::{Diagnostic, Position, Target};
 use crate::sema::{
-    Argument, Binary, Expression, ExpressionKind, Function, Linkage, LocalStorage, Statement, TranslationUnit,
-    Unary,
+    Argument, Binary, Expression, ExpressionKind, Function, Linkage, LocalStorage, Statement,
+    TranslationUnit, Unary,
 };
-use crate::types::{Float, Integer, Kind, Type};
+use crate::types::{Float, Integer, Kind, Layout, Record, Type};
 
 mod abi;
+mod binary128;
 mod float;
 mod flow;
+mod record;
+mod thread;
+mod varargs;
 
-use abi::{ArgumentLocation, ArgumentSlots};
+use abi::{ArgumentLocation, ArgumentSlots, CallObject};
 use flow::Slot;
+use varargs::VariadicFrame;
 
 const ARGUMENT_REGISTERS: usize = 8;
 const FRAME_RECORD: usize = 16;
-const DEFERRED_A4: &str = "AArch64 aggregate, variadic and C TLS support is deferred to A4";
 
 pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
     let mut functions = HashMap::new();
@@ -35,14 +39,43 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
     }
     let mut emitter = Emitter {
         functions,
+        records: &unit.records,
         locals: Vec::new(),
+        frame: 0,
+        variadic: None,
         flow_labels: HashMap::new(),
         externs: BTreeSet::new(),
+        thread_externs: BTreeSet::new(),
+        thread_definitions: unit
+            .thread_objects
+            .iter()
+            .map(|thread| thread.object.name)
+            .collect(),
+        binary128_statics: unit
+            .binary128_statics
+            .iter()
+            .map(|value| value.name)
+            .collect(),
         text: String::from(".section .text\n"),
         rodata: String::new(),
+        data: String::new(),
         bss: String::new(),
+        tdata: String::new(),
+        tbss: String::new(),
         next_label: 0,
     };
+    for value in &unit.binary128_statics {
+        check_symbol(value.name, value.site)?;
+        emitter.binary128_static(value.name, value.linkage, value.initializer);
+    }
+    for thread in &unit.thread_objects {
+        emitter.thread_definition(
+            &thread.object,
+            thread.object.name,
+            thread.linkage,
+            thread.initializer.as_ref(),
+        )?;
+    }
     for function in &unit.functions {
         if let Some(body) = &function.body {
             emitter.function(function, body)?;
@@ -51,25 +84,44 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
     for name in emitter.externs {
         writeln!(emitter.text, ".extern {name}").unwrap();
     }
+    for name in emitter.thread_externs {
+        writeln!(emitter.text, ".extern {name}\n.type {name}, @tls").unwrap();
+    }
     if !emitter.rodata.is_empty() {
         emitter.text.push_str("\n.section .rodata\n");
         emitter.text.push_str(&emitter.rodata);
     }
-    if !emitter.bss.is_empty() {
-        emitter.text.push_str("\n.section .bss\n");
-        emitter.text.push_str(&emitter.bss);
+    for (section, body) in [
+        (".data", emitter.data),
+        (".bss", emitter.bss),
+        (".tdata", emitter.tdata),
+        (".tbss", emitter.tbss),
+    ] {
+        if !body.is_empty() {
+            writeln!(emitter.text, "\n.section {section}").unwrap();
+            emitter.text.push_str(&body);
+        }
     }
     Ok(emitter.text)
 }
 
 struct Emitter<'unit, 'src> {
     functions: HashMap<&'src str, &'unit Function<'src>>,
+    records: &'unit [Record<'src>],
     locals: Vec<Slot>,
+    frame: usize,
+    variadic: Option<VariadicFrame>,
     flow_labels: HashMap<usize, String>,
     externs: BTreeSet<&'src str>,
+    thread_externs: BTreeSet<&'src str>,
+    thread_definitions: BTreeSet<&'src str>,
+    binary128_statics: BTreeSet<&'src str>,
     text: String,
     rodata: String,
+    data: String,
     bss: String,
+    tdata: String,
+    tbss: String,
     next_label: usize,
 }
 
@@ -81,16 +133,25 @@ impl<'src> Emitter<'_, 'src> {
     ) -> Result<(), Diagnostic> {
         let name = function.name;
         check_symbol(name, function.site)?;
-        let Kind::Function { result, .. } = &function.ty.kind else {
+        let Kind::Function {
+            result, variadic, ..
+        } = &function.ty.kind
+        else {
             unreachable!()
         };
-        if result.kind != Kind::Void {
-            require_scalar(result, function.site)?;
-        }
+        let object_result = self.call_object(result, function.site)?;
+        let mut slots = ArgumentSlots::default();
+        let mut parameters = Vec::with_capacity(function.params.len());
         for param in &function.params {
-            require_scalar(&param.ty, param.name.unwrap().1)?;
+            let object = self.call_object(&param.ty, param.name.unwrap().1)?;
+            parameters.push((object, slots.next(&param.ty, object)));
         }
-        let frame = self.layout(function)?;
+        self.layout(function, &parameters)?;
+        let indirect_result = if object_result.is_some_and(CallObject::indirect) {
+            Some(self.frame_slot(Layout { size: 8, align: 8 }, function.site)?)
+        } else {
+            None
+        };
         self.flow_labels.clear();
         let epilogue = self.label();
         self.text.push('\n');
@@ -100,54 +161,82 @@ impl<'src> Emitter<'_, 'src> {
         writeln!(self.text, ".type {name}, @function\n{name}:").unwrap();
         self.text
             .push_str("    stp x29, x30, [sp, #-16]!\n    mov x29, sp\n");
-        self.adjust_stack("sub", frame);
+        let stack_adjustment = self.text.len();
+        self.variadic = if *variadic {
+            Some(self.save_variadic_arguments(slots, function.site)?)
+        } else {
+            None
+        };
+        if let Some(distance) = indirect_result {
+            self.offset_address("x9", "x29", -(distance as i64));
+            self.text.push_str("    str x8, [x9]\n");
+        }
 
-        let mut slots = ArgumentSlots::default();
-        for (index, param) in function.params.iter().enumerate() {
-            self.local_address(index, 0, "x10");
-            let register = match slots.next(&param.ty) {
-                ArgumentLocation::Register { index, .. } => index,
-                ArgumentLocation::Stack(offset) => {
-                    self.offset_address("x9", "x29", (FRAME_RECORD + offset) as i64);
-                    self.load(&param.ty, "x9");
-                    0
+        // A stack argument can precede a register argument from the other
+        // bank. Save incoming registers before the stack copies use x0 or v0.
+        for on_stack in [false, true] {
+            for (index, (&(object, location), param)) in
+                parameters.iter().zip(&function.params).enumerate()
+            {
+                if matches!(location, ArgumentLocation::Stack(_)) == on_stack {
+                    self.receive_parameter(index, &param.ty, object, location);
                 }
-            };
-            self.store_object(&param.ty, register, "x10");
+            }
         }
         self.statements(body, result, &epilogue)?;
+        // Record-valued calls in the body reserve fixed frame slots.
+        let tail = self.text.len();
+        self.adjust_stack("sub", self.frame.next_multiple_of(16));
+        let adjustment = self.text.split_off(tail);
+        self.text.insert_str(stack_adjustment, &adjustment);
         if function.linkage == Linkage::External
             && name == "main"
             && result.kind == Kind::Integer(Integer::Int)
         {
             self.text.push_str("    mov w0, #0\n");
         }
+        if let Some(object) = object_result {
+            let leave = self.label();
+            writeln!(self.text, "    b {leave}\n{epilogue}:").unwrap();
+            self.return_object(object, indirect_result);
+            writeln!(self.text, "{leave}:").unwrap();
+        } else {
+            writeln!(self.text, "{epilogue}:").unwrap();
+        }
         writeln!(
             self.text,
-            "{epilogue}:\n    mov sp, x29\n    ldp x29, x30, [sp], #16\n    ret\n.size {name}, . - {name}"
+            "    mov sp, x29\n    ldp x29, x30, [sp], #16\n    ret\n.size {name}, . - {name}"
         )
         .unwrap();
         Ok(())
     }
 
-    // Values use s0/d0 for float/double and x0 for addresses and integers
-    // extended according to their C type. Spill across recursive evaluation.
+    // Floating values use s0/d0/q0. x0 holds addresses, aggregate/vector
+    // representations in memory, and integers extended to their C type.
     fn value(&mut self, expr: &Expression<'src>) -> Result<(), Diagnostic> {
         match expr.ty.kind {
             Kind::Void | Kind::Array(..) | Kind::Function { .. } => {}
-            _ => require_scalar(&expr.ty, expr.position())?,
+            _ => require_value(&expr.ty, expr.position())?,
         }
         match &expr.kind {
             ExpressionKind::Integer(bits) => {
                 constant(&mut self.text, "x0", *bits);
                 self.normalize(&expr.ty);
             }
-            ExpressionKind::Float(bits) => self.float_constant(&expr.ty, *bits as u64),
+            ExpressionKind::Float(bits) => {
+                if expr.ty.kind == Kind::LongDouble {
+                    self.binary128_constant(*bits);
+                } else {
+                    self.float_constant(&expr.ty, *bits as u64);
+                }
+            }
             ExpressionKind::String(_)
             | ExpressionKind::Identifier(_)
-            | ExpressionKind::Local(_) => {
+            | ExpressionKind::Local(_)
+            | ExpressionKind::ThreadLocal(_)
+            | ExpressionKind::Member { .. } => {
                 self.address(expr)?;
-                self.load(&expr.ty, "x0");
+                self.load_value(&expr.ty, expr.bit_field(), "x0");
             }
             ExpressionKind::Unary(op, operand) => self.unary(*op, operand, &expr.ty)?,
             ExpressionKind::Binary {
@@ -179,16 +268,13 @@ impl<'src> Emitter<'_, 'src> {
                 self.converted(no, &expr.ty)?;
                 writeln!(self.text, "{end}:").unwrap();
             }
-            ExpressionKind::ThreadLocal(_)
-            | ExpressionKind::Member { .. }
-            | ExpressionKind::VaStart(_)
-            | ExpressionKind::VaArg(_)
-            | ExpressionKind::VaCopy { .. }
-            | ExpressionKind::VaEnd(_) => {
-                return Err(Diagnostic::new(expr.position(), DEFERRED_A4));
-            }
+            ExpressionKind::VaStart(list) => self.va_start(list)?,
+            ExpressionKind::VaArg(list) => self.va_arg(list, &expr.ty, expr.position())?,
+            ExpressionKind::VaCopy { dest, source } => self.va_copy(dest, source)?,
+            // There is no runtime cleanup, but evaluating the operand can have side effects.
+            ExpressionKind::VaEnd(list) => self.value(list)?,
             ExpressionKind::Call { callee, arguments } => {
-                self.call(callee, arguments)?;
+                self.call(callee, arguments, &expr.ty)?;
                 self.normalize(&expr.ty);
             }
         }
@@ -197,7 +283,7 @@ impl<'src> Emitter<'_, 'src> {
 
     fn converted(&mut self, expr: &Expression<'src>, dest: &Type) -> Result<(), Diagnostic> {
         if dest.kind != Kind::Void {
-            require_scalar(dest, expr.position())?;
+            require_value(dest, expr.position())?;
         }
         self.value(expr)?;
         self.convert(&expr.ty, dest);
@@ -224,14 +310,14 @@ impl<'src> Emitter<'_, 'src> {
             Unary::Plus | Unary::Minus | Unary::Complement => {
                 self.converted(operand, result)?;
                 match op {
-                    Unary::Minus => {
-                        if let Kind::Float(precision) = result.kind {
+                    Unary::Minus => match result.kind {
+                        Kind::LongDouble => self.negate_binary128(),
+                        Kind::Float(precision) => {
                             let fp = float::prefix(precision);
                             writeln!(self.text, "    fneg {fp}0, {fp}0").unwrap();
-                        } else {
-                            self.text.push_str("    sub x0, xzr, x0\n");
                         }
-                    }
+                        _ => self.text.push_str("    sub x0, xzr, x0\n"),
+                    },
                     Unary::Complement => self.text.push_str("    mvn x0, x0\n"),
                     _ => return Ok(()),
                 }
@@ -274,6 +360,10 @@ impl<'src> Emitter<'_, 'src> {
     fn combine(&mut self, op: Binary, left: &Type, right: &Type, result: &Type) {
         if let Kind::Float(precision) = left.kind {
             self.float_binary(op, precision);
+            return;
+        }
+        if left.kind == Kind::LongDouble {
+            self.binary128_binary(op);
             return;
         }
         self.text
@@ -398,24 +488,31 @@ impl<'src> Emitter<'_, 'src> {
                 }
             }
             Kind::Float(precision) => ("ldr", float::prefix(precision)),
+            Kind::LongDouble => ("ldr", 'q'),
             Kind::Pointer(_) => ("ldr", 'x'),
             Kind::Array(..) | Kind::Function { .. } => return,
+            Kind::Record(_) | Kind::ShortVector { .. } => {
+                if address != "x0" {
+                    writeln!(self.text, "    mov x0, {address}").unwrap();
+                }
+                return;
+            }
             _ => unreachable!(),
         };
         writeln!(self.text, "    {op} {width}0, [{address}]").unwrap();
     }
 
     fn store_object(&mut self, ty: &Type, register: usize, address: &str) {
-        let (op, width) = if let Kind::Float(precision) = ty.kind {
-            ("str", float::prefix(precision))
-        } else {
-            match ty.layout().unwrap().size {
+        let (op, width) = match ty.kind {
+            Kind::Float(precision) => ("str", float::prefix(precision)),
+            Kind::LongDouble => ("str", 'q'),
+            _ => match ty.layout().unwrap().size {
                 1 => ("strb", 'w'),
                 2 => ("strh", 'w'),
                 4 => ("str", 'w'),
                 8 => ("str", 'x'),
                 _ => unreachable!(),
-            }
+            },
         };
         writeln!(self.text, "    {op} {width}{register}, [{address}]").unwrap();
     }
@@ -442,6 +539,13 @@ impl<'src> Emitter<'_, 'src> {
         }
         match (&source.kind, &dest.kind) {
             (_, Kind::Integer(Integer::Bool)) => self.boolean(source),
+            (scalar @ (Kind::Integer(_) | Kind::Float(_)), Kind::LongDouble) => {
+                self.widen_binary128(scalar);
+            }
+            (Kind::LongDouble, scalar @ (Kind::Integer(_) | Kind::Float(_))) => {
+                self.narrow_binary128(scalar);
+                self.normalize(dest);
+            }
             (Kind::Integer(integer), Kind::Float(precision)) => {
                 let op = if integer.is_signed(Target::Aarch64) {
                     "scvtf"
@@ -471,11 +575,13 @@ impl<'src> Emitter<'_, 'src> {
     }
 
     fn compare_zero(&mut self, ty: &Type) {
-        if let Kind::Float(precision) = ty.kind {
-            let fp = float::prefix(precision);
-            writeln!(self.text, "    fcmp {fp}0, #0.0").unwrap();
-        } else {
-            self.text.push_str("    cmp x0, #0\n");
+        match ty.kind {
+            Kind::LongDouble => self.compare_binary128_zero(),
+            Kind::Float(precision) => {
+                let fp = float::prefix(precision);
+                writeln!(self.text, "    fcmp {fp}0, #0.0").unwrap();
+            }
+            _ => self.text.push_str("    cmp x0, #0\n"),
         }
     }
 
@@ -492,6 +598,9 @@ impl<'src> Emitter<'_, 'src> {
 
     fn use_symbol(&mut self, name: &'src str, site: &Position) -> Result<(), Diagnostic> {
         check_symbol(name, site)?;
+        if self.binary128_statics.contains(name) {
+            return Ok(());
+        }
         match self.functions.get(name) {
             Some(function) if function.body.is_some() => {}
             Some(function) if function.linkage == Linkage::Internal => {
@@ -518,16 +627,21 @@ fn check_symbol(name: &str, site: &Position) -> Result<(), Diagnostic> {
     Ok(())
 }
 
-fn require_scalar(ty: &Type, site: &Position) -> Result<(), Diagnostic> {
+fn require_value(ty: &Type, site: &Position) -> Result<(), Diagnostic> {
     if matches!(
         ty.kind,
-        Kind::Integer(_) | Kind::Pointer(_) | Kind::Float(_)
-    ) {
+        Kind::Integer(_)
+            | Kind::Pointer(_)
+            | Kind::Float(_)
+            | Kind::LongDouble
+            | Kind::ShortVector { .. }
+    ) || matches!(ty.kind, Kind::Record(record) if record.layout.is_some())
+    {
         Ok(())
     } else {
         Err(Diagnostic::new(
             site,
-            "value is outside the AArch64 scalar subset",
+            "value is outside the supported AArch64 subset",
         ))
     }
 }
@@ -535,6 +649,7 @@ fn require_scalar(ty: &Type, site: &Position) -> Result<(), Diagnostic> {
 fn value_prefix(ty: &Type) -> char {
     match ty.kind {
         Kind::Float(precision) => float::prefix(precision),
+        Kind::LongDouble => 'q',
         _ => 'x',
     }
 }

@@ -366,7 +366,7 @@ fn object_address<'a>(
 ) -> Option<(StaticAddress<'a>, i64)> {
     match &expr.kind {
         ExpressionKind::Identifier(name) => Some((StaticAddress::Symbol(name, &expr.site.site), 0)),
-        ExpressionKind::Local(id) if matches!(locals[*id].storage, LocalStorage::Static) => {
+        ExpressionKind::Local(id) if matches!(locals[*id].storage, LocalStorage::Static(_)) => {
             Some((StaticAddress::Local(*id), 0))
         }
         ExpressionKind::String(bytes) => Some((StaticAddress::String(bytes.clone()), 0)),

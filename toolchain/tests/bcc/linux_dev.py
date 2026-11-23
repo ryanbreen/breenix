@@ -6,17 +6,28 @@ These checks are development only and are never Breenix evidence.
 
 Pass the Cargo-built bld binary and liblinux_test.a. For the sealed-object
 check pass the reference corpus directory (receipts and objs/*.o outputs).
-For --corpus or --aapcs64-scalar-calls also pass the Cargo-built bcc and bas binaries.
+For compiler checks also pass the Cargo-built bcc and bas binaries.
+
+For x87-long-double, pass the Cargo-built bnm and the brt code object as
+--brt. Build brt for the same Linux target with --features exports and
+-C panic=abort, and emit the object with cargo rustc -- --emit=obj. Link
+that object alongside liblinux_test.a, which owns startup, panic and
+the compiler builtins used by the Clang objects.
 """
 
 import argparse
 import hashlib
+from importlib.machinery import SourceFileLoader
+from importlib.util import module_from_spec, spec_from_loader
 import json
+import os
 from pathlib import Path
 import platform
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+
+import records
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -50,6 +61,7 @@ CORPUS = (
     "usual-conversions",
     "varargs",
 )
+ABI_CASES = ("aggregates-exhaustion", "sse-float", "varargs", "x87-long-double")
 
 
 def reference_object(args, name):
@@ -65,6 +77,7 @@ def run_tool(name, command):
     if result.returncode:
         stderr = result.stderr.decode(errors="replace").strip()
         raise ValueError(f"{name} exited {result.returncode}: {stderr}")
+    return result.stdout
 
 
 def compile_object(args, source, work):
@@ -92,17 +105,77 @@ def execute(args, executable, *objects):
     return subprocess.run([executable], capture_output=True, timeout=10)
 
 
-def check(args, name, work):
-    source = ROOT / "toolchain/corpus" / f"{name}.c"
-    obj = compile_object(args, source, work) if args.corpus else reference_object(args, name)
-    actual = execute(args, work / name, obj)
-    status, _, stdout = (ROOT / "toolchain/corpus" / f"{name}.expect").read_bytes().partition(b"\n")
-    if (actual.returncode, actual.stdout) != (int(status), stdout):
+def check_output(expect, actual, *, require_empty_stderr=False):
+    status, _, stdout = expect.read_bytes().partition(b"\n")
+    if ((actual.returncode, actual.stdout) != (int(status), stdout)
+            or (require_empty_stderr and actual.stderr)):
         raise ValueError(
             f"expected status {int(status)} and stdout {stdout!r}, "
             f"got status {actual.returncode} and stdout {actual.stdout!r}; "
             f"stderr={actual.stderr!r}"
         )
+
+
+def check(args, name, work):
+    source = ROOT / "toolchain/corpus" / f"{name}.c"
+    obj = compile_object(args, source, work) if args.corpus else reference_object(args, name)
+    check_output(source.with_suffix(".expect"), execute(args, work / name, obj))
+
+
+def aapcs64_abi_case(args, work):
+    fixtures = ROOT / "toolchain/corpus/abi-aarch64"
+    name = args.abi_case
+    scripts = ROOT / "scripts"
+    sys.path.insert(0, str(scripts))
+    loader = SourceFileLoader("toolchain_ref_cc", str(scripts / "toolchain-ref-cc"))
+    reference = module_from_spec(spec_from_loader(loader.name, loader))
+    loader.exec_module(reference)
+    clang, _ = reference.pinned_tool(Path(os.environ["BREENIX_TOOLCHAIN_CLANG"]),
+                                     os.environ["BREENIX_TOOLCHAIN_CLANG_SHA256"], work)
+    sealed = {}
+    for half in ("caller", "callee"):
+        directory = work / half
+        directory.mkdir()
+        source = fixtures / f"{name}-{half}.c"
+        sealed[half], _, _ = reference.compile_c(args.arch, clang, source, (fixtures,), directory)
+
+    binary128 = name == "x87-long-double"
+    allowed_undefined = {
+        "caller": {"bias", "turn", "many", "variadic", "conversions", "puts"},
+        "callee": set(),
+    }
+    helpers = set()
+    passed = 0
+    for bcc_half, clang_half in (("caller", "callee"), ("callee", "caller")):
+        label = f"abi::{name} bcc-{bcc_half}/clang-{clang_half}"
+        try:
+            obj = compile_object(args, fixtures / f"{name}-{bcc_half}.c", work)
+            if binary128:
+                names = {line.split()[0] for line in run_tool(
+                    "bnm", [args.bnm, "-uP", obj]).decode().splitlines()}
+                runtime = {symbol for symbol in names if symbol.startswith("__brt_tf_")}
+                unexpected = names - allowed_undefined[bcc_half] - runtime
+                if unexpected:
+                    raise ValueError(f"unexpected undefined bcc symbols: {sorted(unexpected)}")
+                helpers.update(runtime)
+            runtime_objects = (args.brt,) if binary128 else ()
+            actual = execute(args, work / f"bcc-{bcc_half}", obj, sealed[clang_half],
+                             *runtime_objects)
+            check_output(fixtures / f"{name}.expect", actual, require_empty_stderr=True)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            print(f"{label} FAIL ({error})", file=sys.stderr)
+        else:
+            print(f"{label} PASS")
+            passed += 1
+    if passed != 2:
+        raise ValueError(f"{passed}/2 mixed links matched {name}.expect")
+    if binary128:
+        operations = {"add", "sub", "mul", "div", "cmp"}
+        operations.update(f"{direction}_{kind}" for direction in ("from", "to")
+                          for kind in ("i32", "i64", "u32", "u64", "f32", "f64"))
+        expected = {f"__brt_tf_{operation}" for operation in operations}
+        if helpers != expected:
+            raise ValueError(f"expected {sorted(expected)}, got {sorted(helpers)}")
 
 
 def aapcs64_scalar_calls(args, work):
@@ -116,37 +189,60 @@ def aapcs64_scalar_calls(args, work):
                          f"stdout={actual.stdout!r}, stderr={actual.stderr!r}")
 
 
+def aapcs64_records(args, work):
+    for name, contents, status in (("records", records.SOURCE, 31),
+                                   ("record-layout", records.AAPCS64_LAYOUT, 42)):
+        source = work / f"{name}.c"
+        source.write_text(contents)
+        actual = execute(args, work / name, compile_object(args, source, work))
+        if (actual.returncode, actual.stdout, actual.stderr) != (status, b"", b""):
+            raise ValueError(f"{name}: expected exit {status} with empty streams, "
+                             f"got exit {actual.returncode}, stdout={actual.stdout!r}, "
+                             f"stderr={actual.stderr!r}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--corpus", action="store_true")
     mode.add_argument("--aapcs64-scalar-calls", action="store_true")
+    mode.add_argument("--aapcs64-records", action="store_true")
+    mode.add_argument("--abi-case", choices=ABI_CASES,
+                      help="cross-call with BREENIX_TOOLCHAIN_CLANG and its SHA-256 pin")
     parser.add_argument("--arch", choices=("x86_64", "aarch64"), default="x86_64")
-    for option in ("bld", "runtime", "reference-corpus", "bcc", "bas"):
+    for option in ("bld", "runtime", "reference-corpus", "bcc", "bas", "brt", "bnm"):
         parser.add_argument(f"--{option}", required=option in ("bld", "runtime"),
                             type=lambda path: Path(path).resolve())
     args = parser.parse_args()
     if (platform.system(), platform.machine()) != ("Linux", args.arch):
         parser.error(f"run in a Linux/{args.arch} build container")
-    if args.aapcs64_scalar_calls and args.arch != "aarch64":
-        parser.error("--aapcs64-scalar-calls requires --arch aarch64")
-    if args.corpus or args.aapcs64_scalar_calls:
+    aapcs64_check = (aapcs64_scalar_calls if args.aapcs64_scalar_calls else
+                     aapcs64_records if args.aapcs64_records else
+                     aapcs64_abi_case if args.abi_case else None)
+    if aapcs64_check and args.arch != "aarch64":
+        parser.error("AAPCS64 checks require --arch aarch64")
+    if args.abi_case == "x87-long-double" and (args.brt is None or args.bnm is None):
+        parser.error("x87-long-double requires --brt (the brt exports object) and --bnm")
+    if args.corpus or aapcs64_check:
         if args.bcc is None or args.bas is None:
             parser.error("compiler checks require --bcc and --bas")
     elif args.reference_corpus is None:
         parser.error("the sealed-object check requires --reference-corpus")
 
-    if args.aapcs64_scalar_calls:
+    if aapcs64_check:
+        label = f"codegen::{aapcs64_check.__name__}"
         with TemporaryDirectory(prefix="bcc-linux-dev-") as work:
             try:
-                aapcs64_scalar_calls(args, Path(work))
-            except (OSError, ValueError, subprocess.TimeoutExpired) as error:
-                print(f"codegen::aapcs64_scalar_calls FAIL ({error})", file=sys.stderr)
+                aapcs64_check(args, Path(work))
+            except (KeyError, OSError, ValueError, subprocess.SubprocessError) as error:
+                print(f"{label} FAIL ({error})", file=sys.stderr)
                 return 1
-        print("codegen::aapcs64_scalar_calls PASS")
+        print(f"{label} PASS")
         return 0
 
-    cases = CORPUS if args.corpus else CASES
+    cases = CASES
+    if args.corpus:
+        cases = CORPUS
     passed = 0
     with TemporaryDirectory(prefix="bcc-linux-dev-") as work:
         for name in cases:

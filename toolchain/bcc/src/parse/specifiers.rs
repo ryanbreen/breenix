@@ -1,6 +1,6 @@
 //! N1570 6.7.1–6.7.3: specifier order is independent of type identity.
 use super::*;
-use crate::types::{amd64_va_list, Member, RecordDefinition, RecordKind, RecordType};
+use crate::types::{aarch64_va_list, amd64_va_list, Member, RecordDefinition, RecordKind, RecordType};
 
 #[derive(Default)]
 struct Specifiers {
@@ -229,29 +229,40 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
     }
 
     fn va_list_type(&mut self) -> Type {
-        use amd64_va_list as abi;
-        if self.target == Target::Aarch64 {
-            // A4 supplies the AAPCS64 representation. Declarations can
-            // still refer to an opaque list on that target.
-            return Type::new(TypeKind::Record(RecordType {
-                id: usize::MAX,
-                layout: None,
-            }))
-            .pointer_to();
-        }
+        use aarch64_va_list as arm;
+        use amd64_va_list as x86;
+        let (name, layout) = match self.target {
+            Target::Aarch64 => (arm::NAME, arm::LAYOUT),
+            Target::X86_64 => (x86::NAME, x86::LAYOUT),
+        };
 
         let id = if let Some(id) = self.va_list_record {
             id
         } else {
             let id = self.records.len();
-            let unsigned = Type::new(TypeKind::Integer(Integer::UnsignedInt));
             let pointer = Type::new(TypeKind::Void).pointer_to();
-            let members = [
-                ("gp_offset", unsigned.clone(), abi::GP_OFFSET),
-                ("fp_offset", unsigned, abi::FP_OFFSET),
-                ("overflow_arg_area", pointer.clone(), abi::OVERFLOW_ARG_AREA),
-                ("reg_save_area", pointer, abi::REG_SAVE_AREA),
-            ]
+            let fields = match self.target {
+                Target::Aarch64 => {
+                    let int = Type::new(TypeKind::Integer(Integer::Int));
+                    vec![
+                        ("__stack", pointer.clone(), arm::STACK),
+                        ("__gr_top", pointer.clone(), arm::GR_TOP),
+                        ("__vr_top", pointer, arm::VR_TOP),
+                        ("__gr_offs", int.clone(), arm::GR_OFFS),
+                        ("__vr_offs", int, arm::VR_OFFS),
+                    ]
+                }
+                Target::X86_64 => {
+                    let unsigned = Type::new(TypeKind::Integer(Integer::UnsignedInt));
+                    vec![
+                        ("gp_offset", unsigned.clone(), x86::GP_OFFSET),
+                        ("fp_offset", unsigned, x86::FP_OFFSET),
+                        ("overflow_arg_area", pointer.clone(), x86::OVERFLOW_ARG_AREA),
+                        ("reg_save_area", pointer, x86::REG_SAVE_AREA),
+                    ]
+                }
+            };
+            let members = fields
             .into_iter()
             .map(|(name, ty, offset)| Member {
                 name,
@@ -262,9 +273,9 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             .collect();
             self.records.push(Record {
                 kind: RecordKind::Struct,
-                tag: Some(abi::NAME),
+                tag: Some(name),
                 definition: Some(RecordDefinition {
-                    layout: abi::LAYOUT,
+                    layout,
                     members,
                     end: None,
                     has_const_member: false,
@@ -276,9 +287,12 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
 
         let record = Type::new(TypeKind::Record(RecordType {
             id,
-            layout: Some(abi::LAYOUT),
+            layout: Some(layout),
         }));
-        Type::new(TypeKind::Array(Box::new(record), 1))
+        match self.target {
+            Target::Aarch64 => record,
+            Target::X86_64 => Type::new(TypeKind::Array(Box::new(record), 1)),
+        }
     }
 
     pub(super) fn qualifier(&mut self, qualifiers: &mut Qualifiers) -> bool {

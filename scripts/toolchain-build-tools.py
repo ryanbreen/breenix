@@ -124,24 +124,40 @@ def build_guest_tools(arch, work, dev, clang, cargo, env, rustc_record):
     binaries = cargo_tools(cargo, guest_env, target_json, target_dir, packages,
                           ("-Z", "build-std=std,panic_abort", "-Z", "build-std-features=compiler-builtins-mem"))
     tools = {}
-    if arch == "x86_64":
-        # The interop fixture crosses the C ABI, including SSE float registers.
-        interop_target = ROOT / "x86_64-breenix-c.json"
-        interop_dir = ROOT / "target/toolchain-bundle/interop"
-        manifest = WORKSPACE / "corpus/interop/rust/Cargo.toml"
-        interop_flags = [*remap, "-C", f"metadata=breenix_std_{fork}"]
+    archive_env = dict(env, __CARGO_TESTS_ONLY_SRC_ROOT=str(library),
+                       CARGO_ENCODED_RUSTFLAGS="\x1f".join([*remap, "-C", f"metadata=breenix_std_{fork}"]))
+    # x86 interop uses the C ABI. ARM's ordinary target already uses it.
+    interop_target = ROOT / "x86_64-breenix-c.json" if arch == "x86_64" else target_json
+    interop_dir = ROOT / "target/toolchain-bundle/interop"
+    manifest = WORKSPACE / "corpus/interop/rust/Cargo.toml"
+    subprocess.run([
+        *cargo, "--manifest-path", str(manifest),
+        "--target", str(interop_target), "--target-dir", str(interop_dir),
+        "-Z", "build-std=core",
+    ], cwd=WORKSPACE, env=archive_env, check=True)
+    destination = dev / "lib/libinterop.a"
+    shutil.copy2(interop_dir / interop_target.stem / "release/libinterop.a", destination)
+    tools["interop"] = {
+        "cargoPackage": tomllib.loads(manifest.read_text())["package"]["name"],
+        "path": destination.relative_to(dev).as_posix(),
+        "target": interop_target.stem,
+        "rustForkCommit": fork,
+        "rustc": rustc_record,
+        "sha256": digest(destination),
+    }
+    if arch == "aarch64":
+        brt_dir = ROOT / "target/toolchain-bundle/brt"
         subprocess.run([
-            *cargo, "--manifest-path", str(manifest),
-            "--target", str(interop_target), "--target-dir", str(interop_dir),
-            "-Z", "build-std=core",
-        ], cwd=WORKSPACE, env=dict(env, __CARGO_TESTS_ONLY_SRC_ROOT=str(library),
-                                  CARGO_ENCODED_RUSTFLAGS="\x1f".join(interop_flags)), check=True)
-        destination = dev / "lib" / "libinterop.a"
-        shutil.copy2(interop_dir / interop_target.stem / "release/libinterop.a", destination)
-        tools["interop"] = {
-            "cargoPackage": tomllib.loads(manifest.read_text())["package"]["name"],
+            *cargo, "--locked", "--manifest-path", str(WORKSPACE / "Cargo.toml"),
+            "-p", "brt", "--features", "exports", "--target", str(target_json),
+            "--target-dir", str(brt_dir), "-Z", "build-std=core",
+        ], cwd=WORKSPACE, env=archive_env, check=True)
+        destination = dev / "lib/libbrt.a"
+        shutil.copy2(brt_dir / target / "release/libbrt.a", destination)
+        tools["brt"] = {
+            "cargoPackage": "brt",
             "path": destination.relative_to(dev).as_posix(),
-            "target": interop_target.stem,
+            "target": target,
             "rustForkCommit": fork,
             "rustc": rustc_record,
             "sha256": digest(destination),
@@ -183,10 +199,7 @@ def build(arch, work, dev, corpus):
         shutil.copy2(host_bins / package, host_dev / "bin" / name)
     candidates = corpus / "c-core/mac"
     candidates.mkdir(parents=True)
-    deferred = {"aggregate-copy", "bitfield-values", "varargs", "alignment", "atomics",
-                "compound-literal", "designated-init", "generic"}
-    if arch == "x86_64":
-        deferred -= {"aggregate-copy", "bitfield-values", "varargs"}
+    deferred = {"alignment", "atomics", "compound-literal", "designated-init", "generic"}
     names = (ROOT / "toolchain/corpus/cases").read_text().splitlines()
     if len(names) != 30 or not deferred.issubset(names):
         raise ValueError("unexpected C corpus")
@@ -195,8 +208,8 @@ def build(arch, work, dev, corpus):
             reference.run([str(host_dev / "bin/cc"), *(["--target=aarch64"] if arch == "aarch64" else []),
                            "-o", str(candidates / (name + ".elf")), str(corpus / (name + ".c"))], work)
 
+    stage_bootstrap_abi_tls(arch, clang, work, corpus)
     if arch == "x86_64":
-        stage_bootstrap_abi_tls(arch, clang, work, corpus)
         lld, _ = reference.pinned_tool(
             Path(os.environ["BREENIX_TOOLCHAIN_LLD"]),
             os.environ["BREENIX_TOOLCHAIN_LLD_SHA256"], work,
@@ -264,15 +277,17 @@ def build(arch, work, dev, corpus):
 
 def stage_bootstrap_abi_tls(arch, clang, work, corpus):
     for category in ("abi", "tls", "interop"):
-        source_dir = WORKSPACE / "corpus" / category
-        destination = corpus / category
+        name = "abi-aarch64" if arch == "aarch64" and category == "abi" else category
+        source_dir = WORKSPACE / "corpus" / name
+        destination = corpus / name
         destination.mkdir()
         for source in sorted(source_dir.iterdir()):
             if not source.is_file() or source.suffix not in {".c", ".expect", ".h"}:
                 continue
             staged = destination / source.name
             shutil.copy2(source, staged)
-            if category == "abi" and source.suffix == ".c":
+        if category == "abi":
+            for staged in sorted(destination.glob("*.c")):
                 compiled, _, _ = reference.compile_c(arch, clang, staged, (destination,), work)
                 compiled.rename(staged.with_suffix(".o"))
 

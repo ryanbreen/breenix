@@ -29,7 +29,7 @@ impl<'src> Emitter<'_, 'src> {
             let slot = match local.storage {
                 LocalStorage::ThreadExtern(_) => Slot::ThreadExtern,
                 LocalStorage::Thread(_) => Slot::Thread(self.label()),
-                LocalStorage::Static => {
+                LocalStorage::Static(_) => {
                     let layout = local.object.ty.layout().unwrap();
                     let label = self.label();
                     writeln!(
