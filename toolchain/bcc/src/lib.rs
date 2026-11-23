@@ -2,6 +2,7 @@
 
 pub mod codegen;
 pub mod driver;
+mod opt;
 mod parse;
 pub mod pp;
 pub mod sema;

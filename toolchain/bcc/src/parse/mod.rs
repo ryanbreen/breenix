@@ -226,7 +226,7 @@ pub(super) struct Association<'a> {
     pub expression: Expression<'a>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Unary {
     Plus,
     Minus,
@@ -236,7 +236,7 @@ pub enum Unary {
     Address,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Binary {
     Add,
     Subtract,

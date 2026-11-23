@@ -448,6 +448,22 @@ initializers in translation-time evaluation. Static floating-point
 arithmetic rounds each intermediate to its target format in the default
 rounding direction.
 
+### Typed AST optimization (25.10a3)
+
+The driver accepts `-O0`, `-O1` and `-O2`. The last optimization flag
+selects the level. `-O1` uses the default emission path. At `-O2`, bcc
+propagates integer constants and reuses integer computations over automatic
+locals without address-taking uses. Facts reset at control flow joins,
+and common subexpressions use the original integer types and conversions
+(N1570 §§6.3.1 and 6.5). The passes preserve volatile and atomic accesses,
+and leave runtime floating-point operations under the rounding policy above
+(N1570 §§5.1.2.3 and 7.6.1).
+
+Unreachable statements can be dropped after a jump or return and in an
+untaken branch with an integer constant condition. The optimizer retains
+alternate entries through C labels and switch case labels (N1570 §§6.8.1,
+6.8.4 and 6.8.6).
+
 The host libc recipe check uses bcc, bas, bld, bnm and elfcheck built for
 the host. It reads the x86 C-ABI `libc.a` from the same path as
 `userspace/libc-suite/build.sh`, and uses the guest's x86 `libbrt.a` for

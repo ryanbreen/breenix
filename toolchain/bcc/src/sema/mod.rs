@@ -16,6 +16,7 @@ mod float;
 mod thread;
 mod varargs;
 
+pub(crate) use body::{canonical, constant_integer};
 pub(super) use c11::{check_static_assertion, type_alignment};
 
 pub use atomic::AtomicOp;
@@ -181,7 +182,7 @@ pub enum Statement<'a> {
 
 #[derive(Debug)]
 pub struct Expression<'a> {
-    site: &'a Lexeme,
+    pub(crate) site: &'a Lexeme,
     pub kind: ExpressionKind<'a>,
     pub ty: Type,
 }

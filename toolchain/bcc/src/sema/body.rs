@@ -846,7 +846,7 @@ fn supported_object(ty: &Type) -> bool {
 
 // Use the target's integer width when comparing case values or evaluating an
 // integer constant expression. These ELF targets both use two's complement.
-pub(super) fn canonical(value: u64, ty: &Type, target: Target) -> u64 {
+pub(crate) fn canonical(value: u64, ty: &Type, target: Target) -> u64 {
     let Kind::Integer(integer) = ty.kind else {
         return value;
     };
@@ -863,7 +863,7 @@ pub(super) fn canonical(value: u64, ty: &Type, target: Target) -> u64 {
 // This is the 6.6 integer constant expression evaluator. Runtime optimization
 // must consult TranslationUnit::preserves_float_environment before replacing
 // expressions, including integer results of floating-point conversions.
-pub(super) fn constant_integer(expr: &Expression<'_>, target: Target) -> Option<u64> {
+pub(crate) fn constant_integer(expr: &Expression<'_>, target: Target) -> Option<u64> {
     use Binary::*;
     let Kind::Integer(integer) = expr.ty.kind else {
         return None;

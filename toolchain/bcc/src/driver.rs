@@ -9,7 +9,7 @@ use std::process::{self, Command, ExitCode};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::pp::{self, MacroOption, Standard, Target};
-use crate::{codegen, sema};
+use crate::{codegen, opt, sema};
 
 #[path = "../../bas/src/default_target.rs"]
 mod native_target;
@@ -17,7 +17,7 @@ pub use native_target::default_target;
 
 const USAGE: &str = "usage: bcc [-E|-S|-c|-fsyntax-only|--dump-types] [-o FILE] \
     [-I DIR] [-D NAME[=VALUE]] [-U NAME] [-L DIR] [-l NAME] [-B DIR] \
-    [-std=c11|-std=c17] [-fno-builtin] [-frounding-math] [-Wall] [-Werror] [-w] \
+    [-std=c11|-std=c17] [-O0|-O1|-O2] [-fno-builtin] [-frounding-math] [-Wall] [-Werror] [-w] \
     [--target=x86_64|aarch64] INPUT ...";
 
 type Result<T> = std::result::Result<T, String>;
@@ -52,6 +52,7 @@ struct Options {
     tools: Option<PathBuf>,
     pp: pp::Options,
     rounding_math: bool,
+    optimize: bool,
     warnings_as_errors: bool,
     suppress_warnings: bool,
     libraries: Vec<PathBuf>,
@@ -73,6 +74,7 @@ impl Options {
                 ..pp::Options::default()
             },
             rounding_math: false,
+            optimize: false,
             warnings_as_errors: false,
             suppress_warnings: false,
             libraries: Vec::new(),
@@ -80,7 +82,6 @@ impl Options {
         };
         let mut args = args.into_iter().enumerate();
         let mut positional = false;
-        let mut codegen_options = Vec::new();
         while let Some((index, arg)) = args.next() {
             let usage =
                 |message: String| format!("<command-line>:1:{}: error: {message}", index + 1);
@@ -109,8 +110,9 @@ impl Options {
                 Some("-Wall") => options.pp.warn_unknown_pragmas = true,
                 Some("-Werror") => options.warnings_as_errors = true,
                 Some("-w") => options.suppress_warnings = true,
-                Some("-O2") => codegen_options.push((index, arg)),
-                Some("-E" | "-S" | "-c" | "-fsyntax-only" | "--dump-types" | "-O0") => {
+                Some("-O0" | "-O1") => options.optimize = false,
+                Some("-O2") => options.optimize = true,
+                Some("-E" | "-S" | "-c" | "-fsyntax-only" | "--dump-types") => {
                     let mut stage = match arg.to_str() {
                         Some("-E") => Stage::Preprocess,
                         Some("-S") => Stage::Assembly,
@@ -166,17 +168,6 @@ impl Options {
                         _ => unreachable!(),
                     }
                 }
-            }
-        }
-        // The libc recipe is usable for front-end checks before the
-        // companion optimization unit lands.
-        if !matches!(options.stage, Stage::Syntax | Stage::Types) {
-            if let Some((index, arg)) = codegen_options.first() {
-                return Err(format!(
-                    "<command-line>:1:{}: error: unknown option '{}'",
-                    index + 1,
-                    arg.to_string_lossy()
-                ));
             }
         }
         if options.inputs.is_empty() {
@@ -256,7 +247,7 @@ impl Driver {
             return Ok(bytes);
         }
         let target = self.options.pp.target;
-        let unit = sema::analyze_with_rounding_math(&input, path, target, self.options.rounding_math)
+        let mut unit = sema::analyze_with_rounding_math(&input, path, target, self.options.rounding_math)
             .map_err(|error| error.to_string())?;
         if matches!(stage, Stage::Syntax | Stage::Types) {
             unit.check_target_types().map_err(|error| error.to_string())?;
@@ -268,9 +259,14 @@ impl Driver {
                     .map_err(|error| error.to_string())?;
                 Ok(bytes)
             }
-            _ => codegen::emit_assembly(&unit, path, target)
-                .map(String::into_bytes)
-                .map_err(|error| error.to_string()),
+            _ => {
+                if self.options.optimize {
+                    opt::run(&mut unit, target);
+                }
+                codegen::emit_assembly(&unit, path, target)
+                    .map(String::into_bytes)
+                    .map_err(|error| error.to_string())
+            }
         }
     }
 
