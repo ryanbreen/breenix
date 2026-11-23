@@ -2515,6 +2515,23 @@ class SetupOriginalsTest(StateTest):
 
 
 class StagingTest(unittest.TestCase):
+    def test_single_attempt_launches_without_a_resume_collector(self):
+        run = load_script('metal-run')
+        suite = 'libc,utilities'
+        for options, processes in (([], ['_build', '_resume']), (['--single-attempt'], ['_build'])):
+            with self.subTest(options=options), tempfile.TemporaryDirectory() as temporary, \
+                 patch.object(run.Path, 'home', return_value=Path(temporary)), \
+                 patch.object(run, 'host_env', return_value={}), \
+                 patch.object(run, 'resolve', return_value='a' * 40), \
+                 patch.object(run, 'resolve_suites', return_value=suite), \
+                 patch.object(run, 'in_metal', return_value=SimpleNamespace(returncode=0, stdout='{}')) as launch, \
+                 patch.object(run.subprocess, 'Popen') as spawn:
+                args = run.argument_parser().parse_args(['boot', '--suite', suite, *options])
+                self.assertEqual(run.boot(args), 0)
+                self.assertEqual(launch.call_count, 1)
+                self.assertIn(suite, launch.call_args.args)
+                self.assertEqual([call.args[0][2] for call in spawn.call_args_list], processes)
+
     def test_screen_known_survives_suite_sequence_handoff(self):
         run = load_script('metal-run')
         args = run.argument_parser().parse_args([
