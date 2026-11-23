@@ -2106,6 +2106,29 @@ class DriverTest(StateTest):
         args.milestone = 'toolchain/c17-libc-suite'
         self.assertEqual(boot.mode_deadline_seconds(args), 420)
 
+    def test_busybox_sequence_gate_covers_registered_case_allowances(self):
+        root = TOOLS.parents[1]
+        runner = (root / 'libs/libbreenix/src/suite.rs').read_text()
+        default = int(re.search(r'DEFAULT_CASE_LIMIT_MS: u64 = ([\d_]+);', runner)[1])
+        table = runner.split('pub const NAMED_CASE_ALLOWANCES', 1)[1].split('];', 1)[0]
+        named = {(suite, case): int(ms) for suite, case, ms in
+                 re.findall(r'\("([^"]+)", "([^"]+)", ([\d_]+)\)', table)}
+        args = self.driver.args
+        args.mode = 'suite'
+        args.milestone = 'toolchain/busybox-on-box'
+        args.suite = 'toolchain,libc,utilities'
+        sequence_ms = 0
+        for suite in boot.suites(args):
+            manifest = json.loads((root / f'docs/suites/{suite}.json').read_text())
+            cases = {f'{category["id"]}/{case["id"]}' for category in manifest['categories']
+                     for case in category['cases']}
+            suite_ms = sum(named.get((suite, case), default) for case in cases)
+            self.assertTrue({case for name, case in named if name == suite} <= cases)
+            sequence_ms += suite_ms
+            minimum_s = (suite_ms * 5 + 3999) // 4000
+            self.assertGreaterEqual(boot.mode_deadline_seconds(args, suite), minimum_s, suite)
+        self.assertGreaterEqual(boot.ceiling_seconds(args), (sequence_ms * 5 + 3999) // 4000)
+
     def test_ui_testing_deadline_ceiling_and_start(self):
         d = self.driver
         d.args.mode, d.args.suite = 'suite', 'ui-testing'

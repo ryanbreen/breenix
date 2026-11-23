@@ -11,7 +11,6 @@ import subprocess
 import sys
 import tempfile
 
-BMAKE = Path(sys.argv[2]).resolve()
 ROOT = Path(__file__).resolve().parents[3]
 DRIVER = ROOT / "toolchain/corpus/busybox.sh"
 VENDOR = "vendor/busybox"
@@ -23,6 +22,10 @@ def run_driver(fixture, output, env, phase=None):
     args = ["/bin/sh", str(DRIVER), str(fixture), str(output), "x86_64"]
     if phase is not None:
         args.insert(2, phase)
+    return run_phase_command(args, output, env)
+
+
+def run_phase_command(args, output, env):
     with subprocess.Popen(
         args, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         start_new_session=True,
@@ -171,5 +174,7 @@ def object_group_chain_equals_directory_goal(directory):
     assert actual == expected, sorted(name for name, digest in expected.items() if actual.get(name) != digest)
 
 
-with tempfile.TemporaryDirectory(prefix="breenix-busybox-check-") as temporary:
-    globals()[sys.argv[1]](Path(temporary))
+if __name__ == "__main__":
+    BMAKE = Path(sys.argv[2]).resolve()
+    with tempfile.TemporaryDirectory(prefix="breenix-busybox-check-") as temporary:
+        globals()[sys.argv[1]](Path(temporary))
