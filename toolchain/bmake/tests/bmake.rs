@@ -191,6 +191,79 @@ fn macro_precedence_env_e() {
 }
 
 #[test]
+fn assignment_operators_posix_2024() {
+    let immediate = Project::new(concat!(
+        "INPUT = early\n",
+        "VALUE ::= $(INPUT) $$(INPUT)\n",
+        "INPUT = late\n",
+        "all:\n\t@printf '<%s>\\n' '$(VALUE)'\n",
+    ));
+    let expanded_delayed = Project::new(concat!(
+        "INPUT = early\n",
+        "ESCAPED = $$(INPUT)\n",
+        "VALUE :::= $(INPUT) $(ESCAPED)\n",
+        "INPUT = late\n",
+        "all:\n\t@printf '<%s>\\n' '$(VALUE)'\n",
+    ));
+    let append = Project::new(concat!(
+        "INPUT = early\n",
+        "IMMEDIATE ::= start\n",
+        "DELAYED = start\n",
+        "IMMEDIATE += $(INPUT)\n",
+        "DELAYED += $(INPUT)\n",
+        "BMAKE_TEST_NEW_APPEND += $(INPUT)\n",
+        "INPUT = late\n",
+        "all:\n",
+        "\t@printf '<%s>\\n' '$(IMMEDIATE)' '$(DELAYED)' '$(BMAKE_TEST_NEW_APPEND)'\n",
+    ));
+    let conditional = Project::new(concat!(
+        "INPUT = early\n",
+        "EMPTY =\n",
+        "EMPTY ?= ignored\n",
+        "BMAKE_TEST_NEW_CONDITIONAL ?= $(INPUT)\n",
+        "BMAKE_TEST_NEW_CONDITIONAL ?= ignored\n",
+        "INPUT = late\n",
+        "all:\n\t@printf '<%s>\\n' '$(EMPTY)' '$(BMAKE_TEST_NEW_CONDITIONAL)'\n",
+    ));
+    let shell = Project::new(concat!(
+        "INPUT = early\n",
+        "VALUE != v=$(INPUT); printf ' \\t\\n%s\\n%s\\n\\n' \"$$v\" second; printf x >> calls\n",
+        "FAILED != printf '\\044(INPUT)\\n'; exit 7\n",
+        "INPUT = late\n",
+        "all:\n\t@printf '<%s>\\n' '$(VALUE)' '$(VALUE)' '$(FAILED)'\n",
+    ));
+
+    expect_stdout(immediate.build(), "<early $(INPUT)>\n");
+    expect_stdout(expanded_delayed.build(), "<early $(INPUT)>\n");
+    expect_stdout(
+        append
+            .command()
+            .arg("project.mk")
+            .env_remove("BMAKE_TEST_NEW_APPEND")
+            .output()
+            .unwrap(),
+        "<start early>\n<start late>\n<late>\n",
+    );
+    expect_stdout(
+        conditional
+            .command()
+            .arg("project.mk")
+            .env_remove("BMAKE_TEST_NEW_CONDITIONAL")
+            .output()
+            .unwrap(),
+        "<>\n<late>\n",
+    );
+
+    let output = shell.build();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"<early second >\n<early second >\n<late>\n");
+    let diagnostic = String::from_utf8(output.stderr).unwrap();
+    assert!(diagnostic.contains("project.mk:3:"), "{diagnostic}");
+    assert!(diagnostic.contains("exited with status 7"), "{diagnostic}");
+    assert_eq!(fs::read(shell.0.join("calls")).unwrap(), b"x");
+}
+
+#[test]
 fn substitution_reference() {
     let project = Project::new(concat!(
         "FILES = dir/input.c  untouched  not.c.bak\n",
@@ -549,11 +622,6 @@ fn unsupported_25_6c_construct_is_located_error() {
     for (makefile, line, construct) in [
         ("all: lib.a(member.o)\n", 1, "lib.a(member.o)"),
         ("\nlib.a(member.o):\n\t@printf wrong > ran\n", 2, "lib.a(member.o)"),
-        ("X ::= value\nall:\n", 1, "::="),
-        ("X :::= value\nall:\n", 1, ":::="),
-        ("CFLAGS += -O\nall:\n", 1, "+="),
-        ("CC ?= cc\nall:\n", 1, "?="),
-        ("STAMP != touch ran\nall:\n", 1, "!="),
         ("all: .WAIT\n", 1, ".WAIT"),
         (".WAIT:\nall:\n", 1, ".WAIT"),
         ("all:\n.NOTPARALLEL:\n", 2, ".NOTPARALLEL"),
