@@ -10,11 +10,12 @@
 //! <fd>; case.h describes the contract. Until a category's program is built against
 //! Breenix's libc and installed, each of its cases fails saying so.
 //!
-//! The busybox cases run applets of a BusyBox built against Breenix's libc, installed as
+//! By default the busybox cases run applets of a BusyBox built against Breenix's libc, installed as
 //! /usr/libexec/breenix/libc/bin/busybox with its applets linked beside it. The /bin BusyBox is the same
 //! clean-room-libc build; the suite uses its own applet-link directory on PATH.
 //! Until that BusyBox is installed, each busybox case fails saying so; an applet the
 //! build left out fails with what BusyBox printed.
+//! The under-test record can select a different BusyBox, shell and applet PATH.
 //!
 //! Each case runs in its own forked child under the runner's default 10-second limit.
 //! The program it starts gets until 1.5 seconds before that limit; one still running
@@ -30,11 +31,12 @@ use libbreenix::error::Error;
 use libbreenix::Errno;
 use std::ffi::CString;
 
+#[path = "suite_support/under_test.rs"]
+pub mod under_test;
+
 /// Where the C case programs are installed.
 const CASE_DIR: &str = "/usr/libexec/breenix";
-/// BusyBox built against Breenix's libc.
-const BUSYBOX: &str = "/usr/libexec/breenix/libc/bin/busybox";
-/// The whole environment every program the suite starts receives.
+/// The C case environment with the installed libc applet directory.
 const ENV: &[&str] = &["PATH=/usr/libexec/breenix/libc/bin", "HOME=/tmp", "LIBC_SUITE=1"];
 /// An argument replaced by the number of the descriptor the C program reports on.
 const RESULT_FD: &str = "{result-fd}";
@@ -429,7 +431,7 @@ fn nonblocking(fd: Fd) {
 /// Run `path` with `args` (an argument equal to RESULT_FD names the result pipe) in
 /// `dir`, feeding it `input` and collecting its stdout, stderr and result pipe until it
 /// exits, or killing it 1.5 seconds before the case's limit.
-fn run(path: &str, args: &[&str], dir: &str, input: &[u8]) -> Result<Ran, CaseError> {
+fn run(path: &str, args: &[&str], dir: &str, input: &[u8], env: &[&str]) -> Result<Ran, CaseError> {
     let (in_r, in_w) = pipe()?;
     let (out_r, out_w) = pipe()?;
     let (err_r, err_w) = pipe()?;
@@ -438,7 +440,7 @@ fn run(path: &str, args: &[&str], dir: &str, input: &[u8]) -> Result<Ran, CaseEr
     let argv: Vec<String> = args.iter()
         .map(|a| if *a == RESULT_FD { res_w.raw().to_string() } else { a.to_string() })
         .collect();
-    let env: Vec<String> = ENV.iter().map(|e| e.to_string()).collect();
+    let env: Vec<String> = env.iter().map(|e| e.to_string()).collect();
     let (_argv_owned, argv_ptrs) = cstrings(&argv);
     let (_env_owned, env_ptrs) = cstrings(&env);
     let cpath = CString::new(path).map_err(|_| "program path holds a NUL")?;
@@ -586,7 +588,7 @@ fn c_case() -> CaseResult {
         return fail(format!("{path} is not installed: the C cases are not yet built against Breenix's own C library"));
     }
     let scratch = Scratch::new()?;
-    let ran = run(&path, &[&program, id, RESULT_FD], &scratch.dir, b"")?;
+    let ran = run(&path, &[&program, id, RESULT_FD], &scratch.dir, b"", ENV)?;
     let report = String::from_utf8_lossy(&ran.result).into_owned();
     let line = report.lines().find(|line| !line.starts_with("OBS ")).unwrap_or("");
     if line == "PASS" {
@@ -606,12 +608,18 @@ fn c_case() -> CaseResult {
 
 /// Run a BusyBox applet in `scratch` with `args` and `input` on stdin.
 fn busybox(scratch: &Scratch, args: &[&str], input: &str) -> Result<Ran, CaseError> {
-    if fs::access(BUSYBOX, fs::X_OK).is_err() {
-        return Err(format!("{BUSYBOX} is not installed: BusyBox is not yet built against Breenix's own C library").into());
+    let paths = under_test::Paths::load(under_test::RECORD.as_ref(), under_test::Suite::Libc)?;
+    if !paths.selected && fs::access(&paths.busybox, fs::X_OK).is_err() {
+        return Err(format!("{} is not installed: BusyBox is not yet built against Breenix's own C library", paths.busybox).into());
+    }
+    let path_env = format!("PATH={}", paths.path);
+    let env = &[&path_env, "HOME=/tmp", "LIBC_SUITE=1"];
+    if paths.selected && args.first() == Some(&"sh") {
+        return run(&paths.sh, args, &scratch.dir, input.as_bytes(), env);
     }
     let mut argv = vec!["busybox"];
     argv.extend_from_slice(args);
-    run(BUSYBOX, &argv, &scratch.dir, input.as_bytes())
+    run(&paths.busybox, &argv, &scratch.dir, input.as_bytes(), env)
 }
 
 /// Pass when the applet exited with `status` and printed exactly `stdout`.
