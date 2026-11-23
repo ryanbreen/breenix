@@ -307,6 +307,8 @@ static SUITE: Suite = suite("libc", "C library", &[
         case("tr", "tr a-z A-Z translates a range", tr),
         case("find", "find . -name '*.txt' finds files in subdirectories", find),
         case("tar", "tar creates an archive, extracts it and lists it", tar),
+        case("bunzip2", "bunzip2 decompresses a fixed bzip2 fixture", bunzip2),
+        case("patch", "patch applies two hunks and rejects a conflict", patch),
         case("xargs", "xargs passes standard input as arguments to echo", xargs),
         case("printf", "printf formats %s, %d and %5.2f", printf),
         case("expr", "expr evaluates 6 * 7", expr),
@@ -796,6 +798,45 @@ fn tar() -> CaseResult {
     scratch.write("f", "tar me\n")?;
     let ran = busybox(&scratch, &["sh", "-c", "tar cf a.tar f && rm f && tar xf a.tar && cat f && tar tf a.tar"], "")?;
     expect("tar cf, xf and tf", &ran, "tar me\nf\n", 0)
+}
+
+// Generated with the Mac bzip2 executable from "Breenix bunzip2 fixture\nsecond line\n".
+const BZIP2_FIXTURE: &[u8] = &[
+    0x42, 0x5a, 0x68, 0x39, 0x31, 0x41, 0x59, 0x26, 0x53, 0x59, 0x6d, 0x0c,
+    0xa5, 0x83, 0x00, 0x00, 0x03, 0x5d, 0x80, 0x00, 0x10, 0x40, 0x00, 0x10,
+    0x00, 0x10, 0x00, 0x1f, 0x25, 0xde, 0x50, 0x20, 0x00, 0x22, 0x21, 0x93,
+    0x20, 0x69, 0xa6, 0x21, 0x4c, 0x26, 0x9a, 0x03, 0x4c, 0x44, 0x08, 0x2c,
+    0x76, 0xe6, 0x6a, 0x0d, 0xea, 0x89, 0x34, 0x9b, 0x13, 0xba, 0x4c, 0x0d,
+    0x9d, 0x5e, 0x24, 0xc3, 0x9f, 0x17, 0x72, 0x45, 0x38, 0x50, 0x90, 0x6d,
+    0x0c, 0xa5, 0x83,
+];
+
+fn bunzip2() -> CaseResult {
+    let scratch = Scratch::new()?;
+    std::fs::write(scratch.path("fixture.bz2"), BZIP2_FIXTURE)
+        .map_err(|e| format!("could not write bzip2 fixture: {e}"))?;
+    let ran = busybox(&scratch, &["bunzip2", "-c", "fixture.bz2"], "")?;
+    expect("bunzip2", &ran, "Breenix bunzip2 fixture\nsecond line\n", 0)
+}
+
+fn patch() -> CaseResult {
+    let scratch = Scratch::new()?;
+    let original = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\n";
+    let diff = "--- a/file\n+++ b/file\n@@ -1,3 +1,3 @@\n one\n-two\n+TWO\n three\n@@ -7,3 +7,3 @@\n seven\n-eight\n+EIGHT\n nine\n";
+    scratch.write("file", original)?;
+    let ran = busybox(&scratch, &["patch", "-p1"], diff)?;
+    if !process::wifexited(ran.status) || process::wexitstatus(ran.status) != 0 {
+        return fail(format!("patch ended with {} ({})", ran.ended(), ran.err_text()));
+    }
+    if scratch.read("file").as_deref() != Some("one\nTWO\nthree\nfour\nfive\nsix\nseven\nEIGHT\nnine\n") {
+        return fail("patch produced unexpected file contents");
+    }
+    scratch.write("file", "conflict\n")?;
+    let conflict = busybox(&scratch, &["patch", "-p1"], diff)?;
+    if !process::wifexited(conflict.status) || process::wexitstatus(conflict.status) == 0 {
+        return fail(format!("conflicting patch ended with {}", conflict.ended()));
+    }
+    Ok(())
 }
 
 fn xargs() -> CaseResult { bb(&["xargs", "echo"], "a\nb\n", "a b\n", 0) }

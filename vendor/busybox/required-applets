@@ -2,6 +2,7 @@
 ash
 awk
 basename
+bunzip2
 cat
 chgrp
 chmod
@@ -38,6 +39,7 @@ nice
 nohup
 od
 paste
+patch
 printf
 ps
 readlink
