@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build guest tools and prepare the x86 assembler, linker, C and make fixtures."""
+"""Build guest tools and prepare the assembler, linker, C and make fixtures."""
 
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 
 sys.dont_write_bytecode = True
@@ -58,6 +59,25 @@ def cargo_tools(cargo, env, target, target_dir, packages, extra=()):
     return target_dir / Path(target).stem / "release"
 
 
+def arm_guest_link_inputs(target_dir, archive, linker):
+    # The bundle uses a temporary staging path. Keep Cargo's flags stable for
+    # identical inputs and use separate outputs when either input changes.
+    inputs = [(source, digest(source)) for source in (archive, linker)]
+    target_dir = target_dir / "arm-link" / "-".join(sha256 for _, sha256 in inputs)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for source, sha256 in inputs:
+        destination = target_dir / source.name
+        if destination.is_file() and digest(destination) == sha256:
+            continue
+        with tempfile.TemporaryDirectory(dir=target_dir) as temp:
+            staged = Path(temp) / source.name
+            shutil.copyfile(source, staged)
+            if digest(staged) != sha256:
+                raise ValueError(f"link input changed while staging: {source}")
+            staged.replace(destination)
+    return target_dir
+
+
 def build_guest_tools(arch, work, dev, clang, cargo, env, rustc_record):
     library = Path(env.get("BREENIX_RUST_FORK_LIBRARY", ROOT / "rust-fork/library")).resolve()
     subprocess.run([str(ROOT / "scripts/rust-fork.sh"), "verify"], env=env, check=True)
@@ -73,6 +93,12 @@ def build_guest_tools(arch, work, dev, clang, cargo, env, rustc_record):
     target_json = ROOT / f"{target}.json"
     remap = remap_flags(env)
     libc = dev / "lib"
+    linker = ROOT / "userspace/programs/linker.ld"
+    target_dir = ROOT / "target/toolchain-bundle/guest"
+    if arch == "aarch64":
+        target_dir = arm_guest_link_inputs(target_dir, libc / "libc.a", linker)
+        libc = target_dir
+        linker = target_dir / linker.name
     if arch == "x86_64":
         # The C reference corpus uses the SysV float ABI. Rust tools use the
         # soft-float target and the matching libc.a, as userspace/build.sh does.
@@ -88,14 +114,14 @@ def build_guest_tools(arch, work, dev, clang, cargo, env, rustc_record):
         ], check=True)
 
     flags = [
-        *remap, "-L", f"native={libc}", "-C", f"link-arg=-T{ROOT / 'userspace/programs/linker.ld'}",
+        *remap, "-L", f"native={libc}", "-C", f"link-arg=-T{linker}",
         "-C", "link-arg=--allow-multiple-definition", "-C", "default-linker-libraries=no",
         "-C", f"metadata=breenix_std_{fork}",
     ]
     guest_env = dict(env, __CARGO_TESTS_ONLY_SRC_ROOT=str(library),
                      CARGO_ENCODED_RUSTFLAGS="\x1f".join(flags))
     packages = (*TOOLS, "bcc", "bmake")
-    binaries = cargo_tools(cargo, guest_env, target_json, ROOT / "target/toolchain-bundle/guest", packages,
+    binaries = cargo_tools(cargo, guest_env, target_json, target_dir, packages,
                           ("-Z", "build-std=std,panic_abort", "-Z", "build-std-features=compiler-builtins-mem"))
     tools = {}
     if arch == "x86_64":
@@ -209,8 +235,7 @@ def build(arch, work, dev, corpus):
             os.environ["BREENIX_TOOLCHAIN_LLD_SHA256"], work,
         )
         link = [*lld, "--fatal-warnings", "-static", "--gc-sections", "-T", str(dev / "linker.ld")]
-        host_env = dict(env, CARGO_ENCODED_RUSTFLAGS="\x1f".join(remap_flags(env)))
-        host_bas = cargo_tools(cargo, host_env, host, ROOT / "target/toolchain-bundle/host", ("bas",)) / "bas"
+        host_bas = host_bins / "bas"
         producer = {"cargoPackage": "bas", "target": host, "sha256": digest(host_bas)}
         destination = corpus / "assembler"
         destination.mkdir()

@@ -192,8 +192,8 @@ definition. Packing preserves nested types' internal layouts and the
 zero-width separator's alignment rule. The AMD64 psABI §3.2.3 classifies
 a packed aggregate with an unaligned field as MEMORY.
 
-AArch64 bcc code emission is scheduled for A3. AAPCS64 record layout for
-bit-fields and aggregate calling conventions are scheduled for A4.
+A3 adds AArch64 scalar code emission. AAPCS64 record layout for bit-fields
+and aggregate calling conventions are scheduled for A4.
 
 ## bmake 25.6a2
 
@@ -246,8 +246,8 @@ to nearest with ties to even, including the 64th significand bit and the
 subnormal range. Intel SDM Vol. 1 Table 4-3 and Figure 8-13 define the
 value encoding. The instruction forms come from Vol. 2. Integer
 conversion truncates with a temporary x87 control word and restores
-the saved control word. AArch64 code emission is scheduled for A3 and
-AAPCS64 binary128 `long double` lowering for A4.
+the saved control word. AAPCS64 binary128 `long double` lowering is
+scheduled for A4.
 
 ### AMD64 local-exec thread storage (25.7c)
 
