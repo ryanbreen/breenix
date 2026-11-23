@@ -63,6 +63,14 @@ fn inventory_respects_make_syntax_context() {
 }
 
 fn run_make(makefile: &str, args: &[&str], files: &[(&str, &str)]) -> std::process::Output {
+    with_makefile(makefile, files, |make, _| make.args(args).output().unwrap())
+}
+
+fn with_makefile<T>(
+    makefile: &str,
+    files: &[(&str, &str)],
+    run: impl FnOnce(&mut Command, &std::path::Path) -> T,
+) -> T {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -81,17 +89,89 @@ fn run_make(makefile: &str, args: &[&str], files: &[(&str, &str)]) -> std::proce
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, contents).unwrap();
     }
-    let output = Command::new(env!("CARGO_BIN_EXE_bmake"))
-        .current_dir(&dir)
+    let mut make = Command::new(env!("CARGO_BIN_EXE_bmake"));
+    make.current_dir(&dir)
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("HIDDEN", "from environment")
-        .args(["-f", "fixture.mk"])
-        .args(args)
-        .output()
-        .unwrap();
+        .args(["-f", "fixture.mk"]);
+    let output = run(&mut make, &dir);
     fs::remove_dir_all(dir).unwrap();
     output
+}
+
+#[test]
+fn call_eval_foreach() {
+    // GNU make 4.4.1 §§8.4–8.6 and 8.8–8.14, with explicit goals from §9.2.
+    let output = run_make(
+        r#"item = outside
+raw = $(item)
+simple := initial
+override forced = yes
+define rule
+$(1): ; @printf '%s\n' '$$@|$$(item)|$$(origin @)'
+endef
+all: $(if $(filter all,$(MAKECMDGOALS)),alpha beta,$(error missing goal))
+$(foreach item,alpha beta,$(eval $(call rule,$(item))))
+define raw_definition
+FROM_EVAL := $(item)
+endef
+$(eval $(value raw_definition))
+before := $(FROM_EVAL)
+change := $(eval FROM_EVAL := good)$(FROM_EVAL)
+short := $(or ,chosen,$(error dead or))|$(and yes,,$(error dead and))|$(if ,$(error dead if),safe)
+captured := $(shell printf 'a\r\nb\n\n'; exit 7)
+status := $(.SHELLSTATUS)
+$(info $(before)|$(change)|$(short)|$(captured)|$(status))
+$(warning continuing)
+all:
+	@printf '%s\n' '$(value raw)|$(flavor raw)|$(flavor simple)|$(flavor missing)'
+	@printf '%s\n' '$(call origin,CC)|$(origin HIDDEN)|$(origin CLI)|$(origin forced)'
+"#,
+        &["CLI=argument", "all"],
+        &[],
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        output.stdout,
+        b"outside|good|chosen||safe|a b|7\nalpha|outside|automatic\nbeta|outside|automatic\n$(item)|recursive|simple|undefined\ndefault|environment|command line|override\n"
+    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(stderr, "fixture.mk:20: continuing\n");
+
+    let fatal = run_make("$(error stop here)\nall: ; @:\n", &[], &[]);
+    assert_eq!(fatal.status.code(), Some(2), "{fatal:?}");
+    assert_eq!(fatal.stderr, b"fixture.mk:1: stop here\n");
+}
+
+#[test]
+fn command_change_rebuilds() {
+    // GNU make 4.4.1 §§4.7, 8.4 and 8.7. Compare the recorded command on
+    // each invocation, and write its replacement only when the recipe runs.
+    let makefile = r#"TEXT = first
+command = printf '%s\n' $(TEXT) > $@
+out: FORCE
+	$(if $(findstring |$(command)|,|$(file <$@.cmd)|),,$(command))
+	@$(if $(findstring |$(command)|,|$(file <$@.cmd)|),,$(file >$@.cmd,$(command)))
+.PHONY: FORCE
+"#;
+    with_makefile(makefile, &[], |make, dir| {
+        let first = make.output().unwrap();
+        assert!(first.status.success(), "{first:?}");
+        assert_eq!(first.stdout, b"printf '%s\\n' first > out\n");
+        assert_eq!(fs::read(dir.join("out")).unwrap(), b"first\n");
+        assert_eq!(fs::read(dir.join("out.cmd")).unwrap(), first.stdout);
+
+        let unchanged = make.output().unwrap();
+        assert!(unchanged.status.success(), "{unchanged:?}");
+        assert!(unchanged.stdout.is_empty(), "{unchanged:?}");
+
+        let changed = make.arg("TEXT=second").output().unwrap();
+        assert!(changed.status.success(), "{changed:?}");
+        assert_eq!(changed.stdout, b"printf '%s\\n' second > out\n");
+        assert_eq!(fs::read(dir.join("out")).unwrap(), b"second\n");
+        assert_eq!(fs::read(dir.join("out.cmd")).unwrap(), changed.stdout);
+    });
 }
 
 #[test]
