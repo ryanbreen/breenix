@@ -8,8 +8,8 @@ use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bobj::elf::{
-    write_rel, Elf, RelSection, RelSymbol, Rela, EM_X86_64, SHF_ALLOC, SHF_EXECINSTR, SHT_PROGBITS,
-    STB_GLOBAL, STT_FUNC, STT_OBJECT,
+    write_rel, Elf, RelSection, RelSymbol, Rela, EM_X86_64, PF_X, PT_LOAD, SHF_ALLOC,
+    SHF_EXECINSTR, SHF_WRITE, SHN_ABS, SHT_PROGBITS, STB_GLOBAL, STT_FUNC, STT_OBJECT,
 };
 
 const EM_AARCH64: u16 = 183;
@@ -328,4 +328,192 @@ fn aarch64_unknown_relocation_named() {
     fs::write(scratch.0.join("x86.o"), object(EM_X86_64, &[], &[])).unwrap();
     assert_error(scratch.link(&["arm.o", "x86.o"]), "x86.o:", "machine");
     assert_error(scratch.link(&["x86.o", "arm.o"]), "arm.o:", "machine");
+}
+
+fn code_section<'a>(bytes: &'a [u8], relocations: &'a [Rela]) -> RelSection<'a> {
+    RelSection {
+        name: b".text",
+        kind: SHT_PROGBITS,
+        flags: SHF_ALLOC | SHF_EXECINSTR,
+        alignment: 4,
+        bytes,
+        size: bytes.len() as u64,
+        relocations,
+    }
+}
+
+#[test]
+fn aarch64_got_slot_holds_symbol_address() {
+    let scratch = Scratch::new("aarch64-got");
+    // AAELF64 §5.7.6: ADR_GOT_PAGE and LD64_GOT_LO12_NC. The LDR
+    // uses an 8-byte slot at a nonzero offset in the addressed page.
+    let code = [0x9000_0003u32, 0xf940_0062, 0xd65f_03c0]; // ADRP x3; LDR x2, [x3]; RET.
+    let text: Vec<_> = code.into_iter().flat_map(u32::to_le_bytes).collect();
+    let data = [0xabu8; 16];
+    let object = write_rel(
+        EM_AARCH64,
+        &[
+            code_section(&text, &[rela(0, 311, 1, 0), rela(4, 312, 1, 0)]),
+            RelSection {
+                name: b".data",
+                kind: SHT_PROGBITS,
+                flags: SHF_ALLOC | SHF_WRITE,
+                alignment: 8,
+                bytes: &data,
+                size: data.len() as u64,
+                relocations: &[],
+            },
+        ],
+        &[
+            RelSymbol {
+                name: b"_start",
+                section: 1,
+                kind: STT_FUNC,
+                binding: STB_GLOBAL,
+                value: 0,
+                size: text.len() as u64,
+            },
+            RelSymbol {
+                name: b"target",
+                section: 2,
+                kind: STT_OBJECT,
+                binding: STB_GLOBAL,
+                value: 8,
+                size: 8,
+            },
+        ],
+    )
+    .unwrap();
+    fs::write(scratch.0.join("got.o"), object).unwrap();
+    let output = scratch.link(&["got.o"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let bytes = fs::read(scratch.0.join("image.elf")).unwrap();
+    let elf = Elf::parse(&bytes).unwrap();
+    let (text_address, text) = section(&elf, b".text");
+    let (data_address, _) = section(&elf, b".data");
+    let (got_address, got) = section(&elf, b".got");
+    let adrp = word(text, 0);
+    let ldr = word(text, 4);
+    assert_eq!(adrp & !0x60ff_ffe0, code[0]);
+    assert_eq!(ldr & !0x003f_fc00, code[1]);
+    assert_eq!(got_address & 7, 0);
+    assert_ne!(got_address & 0xfff, 0);
+    assert_eq!(
+        (text_address & !0xfff) + adr_immediate(adrp) * 4096 + i64::from((ldr >> 10) & 0xfff) * 8,
+        got_address
+    );
+    assert_eq!(got, (data_address + 8).to_le_bytes());
+}
+
+fn branch_object(code: &[u32], relocations: &[Rela], target_section: u16, target: u64) -> Vec<u8> {
+    let text: Vec<_> = code.iter().copied().flat_map(u32::to_le_bytes).collect();
+    write_rel(
+        EM_AARCH64,
+        &[code_section(&text, relocations)],
+        &[
+            RelSymbol {
+                name: b"_start",
+                section: 1,
+                kind: STT_FUNC,
+                binding: STB_GLOBAL,
+                value: 0,
+                size: text.len() as u64,
+            },
+            RelSymbol {
+                name: b"target",
+                section: target_section,
+                kind: STT_FUNC,
+                binding: STB_GLOBAL,
+                value: target,
+                size: 0,
+            },
+        ],
+    )
+    .unwrap()
+}
+
+#[test]
+fn aarch64_call26_out_of_range_gets_veneer() {
+    let scratch = Scratch::new("aarch64-veneer");
+    let image = scratch.0.join("image.elf");
+    let ret = 0xd65f_03c0;
+    let bl = 0x9400_0000;
+    let b = 0x1400_0000;
+    // The default script's base is 0x40000000. AAELF64 §5.7.7 permits
+    // veneers for CALL26 and JUMP26 to the absolute STT_FUNC definition.
+    let far: u64 = 0x4000_0000 + (256 << 20);
+    let link = |name, object| {
+        fs::write(scratch.0.join(name), object).unwrap();
+        scratch.link(&[name])
+    };
+    let linked_image = |name, object| {
+        let output = link(name, object);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        fs::read(&image).unwrap()
+    };
+
+    // Hand-encoding BL +4 gives a full-ELF comparison without branch relocation.
+    let direct = linked_image("direct.o", branch_object(&[bl | 1, ret], &[], 1, 4));
+    let near = linked_image(
+        "near.o",
+        branch_object(&[bl, ret], &[rela(0, 283, 1, 0)], 1, 4),
+    );
+    assert_eq!(near, direct);
+
+    for (instruction, kind, relocation) in [
+        (0x5400_0001, 280, "R_AARCH64_CONDBR19"),
+        (0x3628_0002, 279, "R_AARCH64_TSTBR14"),
+    ] {
+        assert_error(
+            link(
+                "short.o",
+                branch_object(&[instruction], &[rela(0, kind, 1, 0)], SHN_ABS, far),
+            ),
+            &format!("short.o: .text+0x0: {relocation} ({kind}) target"),
+            "relocation overflow",
+        );
+    }
+
+    let bytes = linked_image(
+        "far.o",
+        branch_object(
+            &[bl, b],
+            &[rela(0, 283, 1, 0), rela(4, 282, 1, 0x124)],
+            SHN_ABS,
+            far,
+        ),
+    );
+    let elf = Elf::parse(&bytes).unwrap();
+    let (text_address, text) = section(&elf, b".text");
+    let exec = (0..elf.program_count())
+        .map(|index| elf.program(index).unwrap())
+        .find(|program| program.kind == PT_LOAD && program.flags & PF_X != 0)
+        .unwrap();
+    for (offset, opcode, target) in [(0, bl, far), (4, b, far + 0x124)] {
+        let branch = word(text, offset);
+        assert_eq!(branch & 0xfc00_0000, opcode);
+        let veneer = text_address + offset as i64 + signed(branch & 0x03ff_ffff, 26) * 4;
+        assert!(veneer >= text_address + 8);
+        let load_offset = u64::try_from(veneer - exec.virtual_address as i64).unwrap();
+        assert!(load_offset + 12 <= exec.file_size);
+        let at = (exec.offset + load_offset) as usize;
+        let adrp = word(&bytes, at);
+        let add = word(&bytes, at + 4);
+        // Arm ARM C6.2.5, C6.2.13 and C6.2.46, AAPCS64 §6.5.1 (IP0).
+        assert_eq!(adrp & !0x60ff_ffe0, 0x9000_0010); // ADRP x16
+        assert_eq!(add & !0x003f_fc00, 0x9100_0210); // ADD x16, x16, #imm12
+        assert_eq!(word(&bytes, at + 8), 0xd61f_0200); // BR x16
+        assert_eq!(
+            (veneer & !0xfff) + adr_immediate(adrp) * 4096 + i64::from((add >> 10) & 0xfff),
+            target as i64
+        );
+    }
 }
