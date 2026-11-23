@@ -556,6 +556,7 @@ def boot(args):
             raise SystemExit('persistent preemption failed: ' + type(error).__name__)
     args.boot_id = boot_id
     if (args.mode == 'suite' and payload == 'image' and not transfer and not getattr(args, 'resuming', False)
+            and not getattr(args, 'single_attempt', False)
             and getattr(args, 'case', None) is None and not metal_power_cut.options(args)):
         # Pin the commit before detaching, so branch movement cannot change a resumed boot.
         args.sha = sha
@@ -800,6 +801,7 @@ def argument_parser(automatic=False):
     p.add_argument('--branch')
     p.add_argument('--catchup', action='store_true', help='admit pushed effort history for landing')
     p.add_argument('--no-wait', action='store_true', help='return after launch; the detached driver still queues')
+    p.add_argument('--single-attempt', action='store_true', help='score this suite boot without retrying unreached suites')
     p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read', 'disk-before-mount',
                                         FENCE_FAULT, 'panic-reboot', *WATCHDOG_FAULTS))
     p.add_argument('--nmi', action='store_true', help='NMI a started kernel before power-off even when it finished')
