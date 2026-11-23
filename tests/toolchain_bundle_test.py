@@ -169,6 +169,44 @@ class ToolchainBundleTest(unittest.TestCase):
             self.assertEqual(digest(self.dev / "bin" / tool), digest(self.dev / "bin" / alias))
         self.assertEqual(self.record["candidateProducer"], "mac-bcc" if sys.platform == "darwin" else "host-bcc")
 
+    def arm_bundle_stages_language_abi(self):
+        self.assertEqual(self.record["arch"], "aarch64")
+        root = self.bundle / "root"
+        corpus = Path("usr/share/breenix/toolchain")
+        manifest = set((self.dev / "manifest.sha256").read_text().splitlines())
+        for category in ("abi", "tls", "interop"):
+            source = WORKSPACE / "corpus" / ("abi-aarch64" if category == "abi" else category)
+            for path in source.iterdir():
+                if not path.is_file() or path.suffix not in (".c", ".h", ".expect"):
+                    continue
+                relative = corpus / category / path.name
+                staged = root / relative
+                self.assertEqual(staged.read_bytes(), path.read_bytes())
+                self.assertIn(f"{digest(staged)}  {relative}", manifest)
+                if category == "abi" and path.suffix == ".c":
+                    obj = relative.with_suffix(".o")
+                    header = (root / obj).read_bytes()[:20]
+                    self.assertEqual(header[:6], b"\x7fELF\x02\x01")
+                    self.assertEqual(struct.unpack_from("<HH", header, 16), (1, 183))
+                    self.assertIn(f"{digest(root / obj)}  {obj}", manifest)
+        for name in ("interop", "brt"):
+            path = f"lib/lib{name}.a"
+            archive = self.dev / path
+            self.assertEqual(archive.read_bytes()[:8], b"!<arch>\n")
+            self.assertIn(f"{digest(archive)}  opt/breenix-dev/25.2/{path}", manifest)
+            self.assertEqual(self.record[name], {
+                "cargoPackage": name, "path": path, "target": "aarch64-breenix",
+                "rustForkCommit": tomllib.loads((ROOT / "rust-fork.toml").read_text())["commit"],
+                "rustc": self.record["tools"]["bcc"]["rustc"], "sha256": digest(archive),
+            })
+        names = (WORKSPACE / "corpus/cases").read_text().splitlines()
+        expected = set(names) - {"alignment", "atomics", "compound-literal", "designated-init", "generic"}
+        self.assertEqual(len(expected), 25)
+        candidates = root / corpus / "c-core/mac"
+        self.assertEqual({p.name for p in candidates.iterdir()}, {f"{n}.elf" for n in expected})
+        for path in candidates.iterdir():
+            self.assertIn(f"{digest(path)}  {corpus / 'c-core/mac' / path.name}", manifest)
+
     def bootstrap_abi_tls_inputs_staged(self):
         root = self.bundle / "root"
         corpus = Path("usr/share/breenix/toolchain")
@@ -364,6 +402,7 @@ if __name__ == "__main__":
         checks.append("ToolchainBundleTest.bootstrap_abi_tls_inputs_staged")
     else:
         checks.extend(["ToolchainBundleTest.arm_bundle_has_cc_and_make",
+                       "ToolchainBundleTest.arm_bundle_stages_language_abi",
                        "ToolchainBundleTest.arm_encoding_inputs_are_staged",
                        "ToolchainBundleTest.aarch64_stages_linker_objects",
                        "ToolchainBundleTest.aarch64_host_bld_links_staged_objects"])

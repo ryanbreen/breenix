@@ -50,6 +50,29 @@ fn default_target_helper() {
 }
 
 #[test]
+fn aarch64_links_brt_before_libc() {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!("bcc-arm-link-order-{}", std::process::id()));
+    fs::create_dir_all(root.join("bin")).unwrap();
+    let ld = root.join("bin/ld");
+    fs::write(&ld, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$BCC_LINK_ARGS\"\n").unwrap();
+    fs::set_permissions(&ld, fs::Permissions::from_mode(0o755)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_bcc"))
+        .args(["--target=aarch64", "-B"]).arg(root.join("bin"))
+        .arg("user.o").env("BCC_LINK_ARGS", root.join("args"))
+        .output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let args = fs::read_to_string(root.join("args")).unwrap();
+    let lines: Vec<_> = args.lines().collect();
+    let user = lines.iter().position(|s| s.ends_with("user.o")).unwrap();
+    let brt = lines.iter().position(|s| s.ends_with("lib/libbrt.a")).unwrap();
+    let libc = lines.iter().position(|s| s.ends_with("lib/libc.a")).unwrap();
+    assert!(user < brt && brt < libc, "{args}");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn aarch64_stages_agree_bytewise() {
     use std::fs;
     let bcc = Path::new(env!("CARGO_BIN_EXE_bcc"));
