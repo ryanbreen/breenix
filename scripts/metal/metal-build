@@ -178,6 +178,7 @@ def inner(args):
     if busybox and not toolchain:
         raise ValueError('toolchain/busybox-on-box requires the toolchain suite')
     toolchain_build = None
+    build_companions = build_fixtures or busybox
     root = tmp / 'ext2-staged.img' if 'sdk' in suites or build_fixtures or transfer else seed
     try:
         started = time.time()
@@ -285,15 +286,18 @@ def inner(args):
                     keep_logs(logs, out)
                     print(f'[metal-build] the SDK suite could not stage the root: exit {status}', flush=True)
                     return 1
-            if build_fixtures:
+            if build_companions:
                 started = time.time()
                 log = logs / 'filesystem-fixtures.log'
                 # These builders run natively, including when the other BreenFS
                 # tools are cross-compiled for the Linux service container.
                 env = dict(os.environ, CARGO_TARGET_DIR=str(tmp / 'fixture-target'))
                 with log.open('w') as output:
-                    status = subprocess.call(['bash', str(fixture_builder), str(root), str(out)],
-                                             cwd=clone, env=env, stdout=output, stderr=subprocess.STDOUT)
+                    arguments = ['bash', str(fixture_builder), str(root), str(out)]
+                    if busybox and not build_fixtures:
+                        arguments.append('--toolchain-companions')
+                    status = subprocess.call(arguments, cwd=clone, env=env, stdout=output,
+                                             stderr=subprocess.STDOUT)
                 if not clean_build(status, log, 'filesystem fixtures', logs, out):
                     return 1
                 timings['filesystem_fixtures'] = round(time.time() - started)
@@ -379,7 +383,7 @@ def inner(args):
         if breenfs_manifest.is_file():
             build['breenfsTools'] = {name: {'size': (out / name).stat().st_size, 'sha256': sha256(out / name)}
                                     for name in breenfs_tools}
-        if build_fixtures:
+        if build_companions:
             build['filesystemFixtures'] = {
                 path.name: {'size': path.stat().st_size, 'sha256': sha256(path)}
                 for path in sorted(out.glob('breenfs-*.img'))

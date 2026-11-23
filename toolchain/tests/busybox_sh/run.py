@@ -116,7 +116,11 @@ def mac_hosted_build_lists_same_applets(directory):
 def phases_chain_from_predecessor_hashes(directory):
     fixture, env, expected = mac_fixture(directory)
     output = directory / "build"
-    for phase in ("unpack-configure", "build-libbb", "build-applets", "link-and-list"):
+    for phase in (
+        "unpack", "patch", "generators", "configure",
+        "build-libbb-1", "build-libbb-2", "build-libbb-3", "build-libbb-4",
+        "build-applets-1", "build-applets-2", "build-applets-3", "link-and-list",
+    ):
         pass_phase(fixture, output, env, phase)
     assert json.loads((output / "applets.json").read_text()) == expected
     assert (output / "busybox.elf").stat().st_size > 0
@@ -128,7 +132,7 @@ def phase_refuses_missing_or_altered_predecessor(directory):
     tools = fixture / "bundle/bin"
     tools.mkdir(parents=True)
     for tool in ("cc", "as", "ld", "ar", "nm", "make"):
-        (tools / tool).symlink_to("/bin/false")
+        (tools / tool).symlink_to("/bin/sh")
     env = {"PATH": os.defpath, "LC_ALL": "C"}
     output = directory / "build"
     missing = run_driver(fixture, output, env, "patch")
@@ -145,21 +149,26 @@ def phase_refuses_missing_or_altered_predecessor(directory):
 def object_group_chain_equals_directory_goal(directory):
     fixture, env, _ = mac_fixture(directory)
     output = directory / "build"
-    for phase in ("unpack-configure", "build-libbb-1", "build-libbb-2",
-                  "build-libbb-3", "build-libbb-4"):
+    pass_phase(fixture, output, env, "unpack-configure")
+    baseline = directory / "configured"
+    shutil.copytree(output, baseline, symlinks=True)
+    for phase in ("build-libbb-1", "build-libbb-2", "build-libbb-3", "build-libbb-4"):
         pass_phase(fixture, output, env, phase)
     source = output / "busybox-1.37.0"
-    objects = sorted((source / "libbb").glob("*.o"))
-    assert len(objects) == 129, len(objects)
-    expected = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in objects}
+    def directory_outputs():
+        objects = sorted((source / "libbb").glob("*.o"))
+        assert len(objects) == 129, len(objects)
+        archive = source / "libbb/lib.a"
+        return {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in [*objects, archive]}
+
+    expected = directory_outputs()
     # Replay from clean inputs at the same path so compile-time paths and
     # recorded build options stay fixed.
     output.rename(directory / "split")
-    pass_phase(fixture, output, env, "unpack-configure")
+    baseline.rename(output)
     pass_phase(fixture, output, env, "build-libbb")
-    actual = {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-              for path in (source / "libbb").glob("*.o")}
-    assert actual == expected
+    actual = directory_outputs()
+    assert actual == expected, sorted(name for name, digest in expected.items() if actual.get(name) != digest)
 
 
 with tempfile.TemporaryDirectory(prefix="breenix-busybox-check-") as temporary:

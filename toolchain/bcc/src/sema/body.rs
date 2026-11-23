@@ -69,7 +69,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
         symbols: &'s HashMap<&'a str, Symbol>,
         result: &'s Type,
         target: Target,
-        standard: Standard,
+        language: Language,
         params: &[Parameter<'a>],
         records: &'s RecordScope<'a, 's>,
         block_externs: &'s mut HashMap<&'a str, Type>,
@@ -97,6 +97,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
             block_externs,
             locals,
             has_alloca: false,
+            alloca_alias: language.alloca_alias,
             static_initialization: false,
             static_literals: None,
             scopes: vec![scope],
@@ -114,7 +115,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
             result,
             last_named_parameter: None,
             target,
-            standard,
+            standard: language.standard,
             records,
         }
     }

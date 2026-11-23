@@ -372,7 +372,10 @@ pub(crate) fn analyze_with_rounding_math<'a>(
     target: Target,
     rounding_math: bool,
 ) -> Result<TranslationUnit<'a>, Diagnostic> {
-    let standard = source.standard;
+    let language = Language {
+        standard: source.standard,
+        alloca_alias: source.standard.is_gnu() && !source.no_builtin_alloca,
+    };
     let mut symbols = HashMap::new();
     let mut symbol_attributes = BTreeMap::<&str, SymbolAttributes>::new();
     let mut attribute_sites = HashMap::new();
@@ -419,7 +422,7 @@ pub(crate) fn analyze_with_rounding_math<'a>(
                     &symbols,
                     &result,
                     target,
-                    standard,
+                    language,
                     &[],
                     &record_scope,
                     &mut block_externs,
@@ -443,7 +446,7 @@ pub(crate) fn analyze_with_rounding_math<'a>(
                     alias,
                     &mut symbols,
                     target,
-                    standard,
+                    language,
                     &record_scope,
                     &mut block_externs,
                 )?);
@@ -501,7 +504,7 @@ pub(crate) fn analyze_with_rounding_math<'a>(
                         &symbols,
                         &result,
                         target,
-                        standard,
+                        language,
                         &[],
                         &record_scope,
                         &mut block_externs,
@@ -568,7 +571,7 @@ pub(crate) fn analyze_with_rounding_math<'a>(
                             &symbols,
                             &result,
                             target,
-                            standard,
+                            language,
                             &[],
                             &record_scope,
                             &mut block_externs,
@@ -786,7 +789,7 @@ impl<'a, 'r> ParserExpressionScope<'a, 'r> {
             &self.symbols,
             &result,
             self.target,
-            self.standard,
+            Language { standard: self.standard, alloca_alias: false },
             &[],
             &record_scope,
             &mut block_externs,
@@ -853,7 +856,7 @@ fn function<'a>(
     alias: bool,
     symbols: &mut HashMap<&'a str, Symbol>,
     target: Target,
-    standard: Standard,
+    language: Language,
     records: &RecordScope<'a, '_>,
     block_externs: &mut HashMap<&'a str, Type>,
 ) -> Result<Function<'a>, Diagnostic> {
@@ -959,7 +962,7 @@ fn function<'a>(
                 symbols,
                 &result,
                 target,
-                standard,
+                language,
                 &params,
                 records,
                 block_externs,
@@ -1025,6 +1028,12 @@ fn compatible_function_declaration(a: &Type, a_defined: bool, b: &Type, b_define
             || a_params.len() == b_params.len())
 }
 
+#[derive(Clone, Copy)]
+struct Language {
+    standard: Standard,
+    alloca_alias: bool,
+}
+
 struct FunctionBody<'a, 's> {
     symbols: &'s HashMap<&'a str, Symbol>,
     // Declarations with external linkage must agree even when they occur
@@ -1032,6 +1041,7 @@ struct FunctionBody<'a, 's> {
     block_externs: &'s mut HashMap<&'a str, Type>,
     locals: Vec<Local<'a>>,
     has_alloca: bool,
+    alloca_alias: bool,
     static_initialization: bool,
     // Present only while analyzing file-scope initializers.
     static_literals: Option<(usize, Vec<StaticLiteral<'a>>)>,
@@ -1380,7 +1390,17 @@ impl<'a> FunctionBody<'a, '_> {
         close: &Lexeme,
     ) -> Result<(ExpressionKind<'a>, Type), Diagnostic> {
         if matches!(callee.kind, parse::ExpressionKind::Identifier) {
-            if let Some(builtin) = builtins::Builtin::named(&callee.site.text) {
+            let name = callee.site.text.as_ref();
+            // The GNU library spelling uses the same caller-frame operation
+            // as the explicit builtin. A local function pointer can shadow it.
+            if name == "alloca" && self.alloca_alias
+                && self.scopes.iter().rev().find_map(|scope| scope.get(name))
+                    .is_none_or(|id| matches!(self.locals[*id].storage, LocalStorage::Function(_)))
+                && self.symbols.get(name).is_none_or(|symbol| matches!(symbol.ty.kind, Kind::Function { .. }))
+            {
+                return self.builtin(callee.site, builtins::Builtin::Alloca, arguments);
+            }
+            if let Some(builtin) = builtins::Builtin::named(name) {
                 return self.builtin(callee.site, builtin, arguments);
             }
             if let Some(op) = AtomicOp::from_name(&callee.site.text) {

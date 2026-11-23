@@ -11,7 +11,7 @@ fn busybox_chain_writes_under_test_record() {
     let root = std::env::temp_dir().join(format!("suite-toolchain-record-{}", std::process::id()));
     fs::create_dir(&root).unwrap();
     let result = (|| {
-        let record = root.join("busybox-under-test");
+        let record = root.join(std::path::Path::new(under_test::RECORD).file_name().unwrap());
         let output = root.join("run");
         fs::create_dir(&output).unwrap();
         let binary = output.join("busybox.elf");

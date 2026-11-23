@@ -19,7 +19,7 @@ pub use native_target::default_target;
 const USAGE: &str = "usage: bcc [-E|-S|-c|-fsyntax-only|--dump-types] [-o FILE] \
     [-I DIR] [-nostdinc] [-include FILE] [-D NAME[=VALUE]] [-U NAME] [-L DIR] [-l NAME] [-B DIR] \
     [-MD [-MF FILE] | -Wp,-MD,FILE] [-std=c11|c17|gnu99|gnu11] \
-    [-O0|-O1|-O2] [-fno-builtin] [-frounding-math] [-Wall] [-Werror] [-w] \
+    [-O0|-O1|-O2] [-fno-builtin|-fno-builtin-alloca] [-frounding-math] [-Wall] [-Werror] [-w] \
     [--target=x86_64|aarch64] INPUT ...";
 
 type Result<T> = std::result::Result<T, String>;
@@ -60,6 +60,7 @@ struct Options {
     rounding_math: bool,
     optimize: bool,
     function_sections: bool,
+    no_builtin_alloca: bool,
     warnings_as_errors: bool,
     suppress_warnings: bool,
     libraries: Vec<PathBuf>,
@@ -86,6 +87,7 @@ impl Options {
             rounding_math: false,
             optimize: false,
             function_sections: false,
+            no_builtin_alloca: false,
             warnings_as_errors: false,
             suppress_warnings: false,
             libraries: Vec::new(),
@@ -142,8 +144,9 @@ impl Options {
                     options.pp.track_includes = true;
                     options.forwarded_dependency_file = Some(path.into());
                 }
-                // Ordinary library names are already compiled as calls.
-                Some("-fno-builtin" | "-fno-builtin-printf" | "-fno-builtin-strlen") => {}
+                Some("-fno-builtin" | "-fno-builtin-alloca") => options.no_builtin_alloca = true,
+                // These library names are already compiled as calls.
+                Some("-fno-builtin-printf" | "-fno-builtin-strlen") => {}
                 Some("-frounding-math") => options.rounding_math = true,
                 Some("-Wall") => options.pp.warn_unknown_pragmas = true,
                 Some("-Werror") => options.warnings_as_errors = true,
@@ -335,7 +338,7 @@ impl Driver {
             InputKind::Preprocessed => pp::read_preprocessed(path, self.options.pp.standard),
             _ => pp::preprocess_with_warnings(path, &self.options.pp, &mut warn),
         };
-        let input = match input {
+        let mut input = match input {
             Ok(input) if errors.is_empty() => input,
             Ok(_) => return Err(errors.join("\n")),
             Err(error) => {
@@ -358,6 +361,7 @@ impl Driver {
             return Ok(bytes);
         }
         let target = self.options.pp.target;
+        input.no_builtin_alloca = self.options.no_builtin_alloca;
         let mut unit =
             sema::analyze_with_rounding_math(&input, path, target, self.options.rounding_math)
                 .map_err(|error| error.to_string())?;

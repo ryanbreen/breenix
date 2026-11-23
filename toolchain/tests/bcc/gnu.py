@@ -53,7 +53,7 @@ def check_alloca(bcc, name, work):
         for header in ([], ["-DUSE_ALLOCA_HEADER"]):
             for target in ("x86_64", "aarch64"):
                 asm.write_bytes(host.checked(bcc, f"--target={target}", flag, "-O2", *header,
-                                             "-I", include, "-S", source))
+                                             "-I", include, "-I", host.TOOLCHAIN / "include", "-S", source))
                 host.checked(bcc.with_name("bas"), "--target", target, "-o", obj, asm)
                 host.checked(bld, "-T", script, "--gc-sections", "-o", binary, obj)
                 if target == "x86_64":

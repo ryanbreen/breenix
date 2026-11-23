@@ -123,6 +123,7 @@ enum Output {
 pub struct Preprocessed {
     output: Vec<Output>,
     pub(crate) standard: Standard,
+    pub(crate) no_builtin_alloca: bool,
     pub(crate) includes: Vec<PathBuf>,
 }
 
@@ -249,6 +250,7 @@ fn process_source(
         output: processor.output,
         standard: options.standard,
         includes: processor.includes,
+        no_builtin_alloca: false,
     })
 }
 
@@ -290,6 +292,7 @@ pub(crate) fn read_preprocessed(
         output,
         standard,
         includes: Vec::new(),
+        no_builtin_alloca: false,
     })
 }
 

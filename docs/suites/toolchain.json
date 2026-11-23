@@ -117,6 +117,18 @@
         {
           "id": "failure-status",
           "title": "A failing shell recipe reports its status and stops the build"
+        },
+        {
+          "id": "archive-members",
+          "title": "Make builds and names an archive member"
+        },
+        {
+          "id": "include-remake",
+          "title": "Make remakes and rereads a missing include"
+        },
+        {
+          "id": "recursive-makeflags",
+          "title": "Submake inherits command options and macros"
         }
       ]
     },
@@ -280,14 +292,80 @@
       ]
     },
     {
-      "id": "gnu-workloads",
-      "title": "The GNU C and make extensions BusyBox's build needs",
-      "cases": []
-    },
-    {
       "id": "busybox",
       "title": "BusyBox rebuilt offline on the box with its required applets",
-      "cases": []
+      "cases": [
+        {
+          "id": "unpack",
+          "title": "Verify and unpack the pinned BusyBox archive"
+        },
+        {
+          "id": "patch",
+          "title": "Apply the pinned patch series"
+        },
+        {
+          "id": "generators",
+          "title": "Build and run the native Kbuild configuration programs"
+        },
+        {
+          "id": "configure",
+          "title": "Apply the config and generate the applet build inputs"
+        },
+        {
+          "id": "build-libbb-1",
+          "title": "Build libbb object group 1"
+        },
+        {
+          "id": "build-libbb-2",
+          "title": "Build libbb object group 2"
+        },
+        {
+          "id": "build-libbb-3",
+          "title": "Build libbb object group 3"
+        },
+        {
+          "id": "build-libbb-4",
+          "title": "Build libbb object group 4"
+        },
+        {
+          "id": "build-applets-1",
+          "title": "Build applet object group 1"
+        },
+        {
+          "id": "build-applets-2",
+          "title": "Build applet object group 2"
+        },
+        {
+          "id": "build-applets-3",
+          "title": "Build applet object group 3"
+        },
+        {
+          "id": "link-and-list",
+          "title": "Link BusyBox, compare its applets and publish its paths"
+        },
+        {
+          "id": "required-usage",
+          "title": "Run required applets through the newly linked BusyBox"
+        }
+      ]
+    },
+    {
+      "id": "gnu-workloads",
+      "title": "The GNU C and make extensions BusyBox's build needs",
+      "cases": [
+        {
+          "id": "gnu-c-extensions",
+          "title": "Build and run a program using GNU C extensions"
+        },
+        {
+          "id": "gnu-make-features",
+          "title": "Build and run recipes using GNU make extensions"
+        },
+        {
+          "id": "kbuild-host-programs",
+          "title": "Run the newly built Kbuild host generators"
+        }
+      ]
     },
     {
       "id": "kernel-asm",

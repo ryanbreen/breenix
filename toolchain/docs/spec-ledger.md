@@ -545,6 +545,12 @@ frame and the x19-based over-aligned area stay in place. The stack
 adjustment and copy use the A64 forms in Arm DDI 0487 M.b §§C6.2.5,
 C6.2.14, C6.2.213, C6.2.413 and C6.2.455.
 
+In GNU99 and GNU11 mode, a direct call spelled `alloca` uses the same
+caller-frame operation, including when the source declares it itself (E25
+ruling 63, GCC Other Builtins and Stack Allocation). In C11 and C17, or with
+`-fno-builtin` or `-fno-builtin-alloca`, the plain name remains an ordinary
+function call. Explicit `__builtin_alloca` remains available in those modes.
+
 ### Rounding mode and expression grouping (25.10a2)
 
 `-frounding-math` records that executable floating-point expressions
