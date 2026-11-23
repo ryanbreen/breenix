@@ -3,6 +3,12 @@
 use bas::{assemble, assemble_for, Target};
 
 #[test]
+fn aarch64_project_value_assembles() {
+    let source = include_bytes!("../../corpus/project-aarch64/value.s");
+    assemble_for(Target::Aarch64, source).expect("assemble the ARM64 project fixture");
+}
+
+#[test]
 fn malformed_input_is_error_not_panic() {
     let instruction = b"mov rax, qword ptr fs:[r12 + r9 * 8 + 0x12]";
     assert!(assemble(instruction).is_ok());
