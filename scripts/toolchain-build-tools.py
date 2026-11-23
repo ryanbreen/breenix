@@ -97,6 +97,18 @@ def build_guest_tools(arch, work, dev, clang, cargo, env, rustc_record):
     packages = (*TOOLS, "bcc", *(('bmake',) if arch == 'x86_64' else ()))
     binaries = cargo_tools(cargo, guest_env, target_json, ROOT / "target/toolchain-bundle/guest", packages,
                           ("-Z", "build-std=std,panic_abort", "-Z", "build-std-features=compiler-builtins-mem"))
+    if arch == "x86_64":
+        # The interop fixture crosses the C ABI, including SSE float registers.
+        interop_target = ROOT / "x86_64-breenix-c.json"
+        interop_dir = ROOT / "target/toolchain-bundle/interop"
+        subprocess.run([
+            *cargo, "--manifest-path", str(WORKSPACE / "corpus/interop/rust/Cargo.toml"),
+            "--target", str(interop_target), "--target-dir", str(interop_dir),
+            "-Z", "build-std=core",
+        ], cwd=WORKSPACE, env=dict(env, __CARGO_TESTS_ONLY_SRC_ROOT=str(library),
+                                  CARGO_ENCODED_RUSTFLAGS="\x1f".join(remap)), check=True)
+        destination = dev / "lib" / "libinterop.a"
+        shutil.copy2(interop_dir / interop_target.stem / "release/libinterop.a", destination)
     dev_bin = dev / "bin"
     dev_bin.mkdir()
     tools = {}
