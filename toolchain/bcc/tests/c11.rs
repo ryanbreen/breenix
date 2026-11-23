@@ -53,7 +53,75 @@ int main(void) {
             .any(|line| line.trim_start().starts_with("lock xadd dword ptr ")),
         "{main}"
     );
+    assert!(!main.contains("__atomic_"), "{main}");
     assert_runs_to_42(result);
+}
+
+// Linux is a development executor. The bounded Rust driver links one
+// bcc/bas object and the Cargo-built runtime for the same host triple.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn aggregate_atomic_cas_under_contention() {
+    let scratch = Scratch(
+        std::env::temp_dir().join(format!("breenix-bcc-c11-{}-contention", std::process::id())),
+    );
+    let work = &scratch.0;
+    fs::create_dir(work).unwrap();
+    let package = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let compiler = Path::new(env!("CARGO_BIN_EXE_bcc"));
+    let bin = work.join("bin");
+    fs::create_dir(&bin).unwrap();
+    fs::copy(compiler.with_file_name("bas"), bin.join("as")).unwrap();
+    let object = work.join("worker.o");
+    checked(
+        Command::new(compiler)
+            .args(["-c", "-I"])
+            .arg(package.join("../include"))
+            .arg("-B")
+            .arg(&bin)
+            .arg("-o")
+            .arg(&object)
+            .arg(package.join("tests/aggregate_atomic_worker.c")),
+    );
+
+    let cargo = env!("CARGO");
+    let triple = "x86_64-unknown-linux-gnu";
+    let target = work.join("target");
+    checked(
+        Command::new(cargo)
+            .current_dir(package)
+            .args(["build", "--offline", "--release", "-p", "brt", "--target", triple])
+            .arg("--target-dir")
+            .arg(&target),
+    );
+    let archive = target.join(triple).join("release/libbrt.a");
+    fs::write(
+        work.join("Cargo.toml"),
+        "[package]\nname = \"atomic-threads\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\
+         [[bin]]\nname = \"atomic-threads\"\npath = \"main.rs\"\n",
+    )
+    .unwrap();
+    fs::write(
+        work.join("main.rs"),
+        include_str!("aggregate_atomic_threads.rs.in"),
+    )
+    .unwrap();
+    checked(
+        Command::new(cargo)
+            .current_dir(package)
+            .args(["rustc", "--offline", "--target", triple, "--target-dir"])
+            .arg(&target)
+            .arg("--manifest-path")
+            .arg(work.join("Cargo.toml"))
+            .arg("--")
+            .arg(format!("-Clink-arg={}", object.display()))
+            .arg(format!("-Clink-arg={}", archive.display())),
+    );
+    checked(
+        Command::new("timeout")
+            .arg("10s")
+            .arg(target.join(triple).join("debug/atomic-threads")),
+    );
 }
 
 // N1570 6.7.9p17–22, 6.5.2.5p4–5, and 6.7.2.1p18.

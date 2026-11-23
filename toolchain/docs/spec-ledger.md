@@ -286,7 +286,6 @@ on bcc preserving the order of emitted accesses. Floating compound
 operations use Breenix's `fenv.h` functions to retain the floating-point
 exceptions of the successful compare-exchange attempt.
 
-Aggregate atomics and wider scalar objects are scheduled for 25.9c2.
 AArch64 atomic instruction selection and ordering await the AArch64
 backend.
 
