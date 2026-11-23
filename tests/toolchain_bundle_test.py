@@ -232,6 +232,30 @@ class ToolchainBundleTest(unittest.TestCase):
             relative = mac / name
             self.assertIn(f"{digest(root / relative)}  {relative}", manifest)
 
+    def c11_inputs_staged(self):
+        root = self.bundle / "root"
+        corpus = Path("usr/share/breenix/toolchain")
+        c11 = WORKSPACE / "corpus/c11"
+        constraints = json.loads((c11 / "constraints.json").read_text())
+        programs = ("declarations-initializers", "generic-static-assert-alignment",
+                    "floating", "atomics", "profile-macros")
+        inputs = {"constraints.json", "constraint-diagnostics.expect",
+                  *constraints["guest"].values(),
+                  *(f"{name}.{suffix}" for name in programs for suffix in ("c", "expect"))}
+        manifest = set((self.dev / "manifest.sha256").read_text().splitlines())
+        staged = root / corpus / "c11"
+        if self.record["arch"] == "aarch64":
+            self.assertFalse(staged.exists(), "ARM C11 inputs are scheduled after A4")
+            return
+        self.assertEqual({path.relative_to(staged).as_posix() for path in staged.rglob("*")
+                          if path.is_file()}, inputs)
+        for path in sorted(inputs):
+            with self.subTest(path=path):
+                self.assertEqual((staged / path).read_bytes(), (c11 / path).read_bytes())
+                self.assertIn(f"{digest(c11 / path)}  {corpus / 'c11' / path}", manifest)
+        for path in (corpus / "tls/threads.h", Path("opt/breenix-dev/25.2/lib/libbrt.a")):
+            self.assertIn(f"{digest(root / path)}  {path}", manifest)
+
     def brt_built_by_rustc(self):
         path = "lib/libbrt.a"
         archive = self.dev / path
@@ -413,7 +437,8 @@ if __name__ == "__main__":
     ToolchainBundleTest.probe = args.probe
     ToolchainBundleTest.baseline = args.baseline
     checks = ["ToolchainBundleTest.tools_built_by_rustc",
-              "ToolchainBundleTest.receipts_from_cargo_host_bas"]
+              "ToolchainBundleTest.receipts_from_cargo_host_bas",
+              "ToolchainBundleTest.c11_inputs_staged"]
     checks.extend(["ToolchainBundleTest.cc_built_by_rustc",
                    "ToolchainBundleTest.make_built_by_rustc"])
     if json.loads((args.bundle / "build.json").read_text())["arch"] == "x86_64":

@@ -2059,3 +2059,34 @@ fn toolchain_manifest_registers_bootstrap_abi_tls_cases() {
         assert_eq!(guest.iter().find(|category| category.entry.id == id), Some(category));
     }
 }
+
+#[test]
+fn toolchain_manifest_registers_c11_cases() {
+    let root = repo_root();
+    let path = root.join("docs/suites/toolchain.json");
+    let mut errors = Vec::new();
+    let manifest = read_manifest(&path, &mut errors).expect("toolchain manifest");
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+    let (_, files) = suite_files(&root, "toolchain").expect("toolchain source");
+    let (_, guest) = source_suite_files(&files).expect("toolchain guest table");
+    let category = manifest
+        .categories
+        .iter()
+        .find(|category| category.entry.id == "c11")
+        .expect("C11 manifest category");
+    assert_eq!(
+        category.cases.iter().map(|case| case.id.as_str()).collect::<Vec<_>>(),
+        [
+            "declarations-initializers",
+            "generic-static-assert-alignment",
+            "floating",
+            "atomics",
+            "constraint-diagnostics",
+            "profile-macros",
+        ],
+    );
+    assert_eq!(
+        guest.iter().find(|category| category.entry.id == "c11"),
+        Some(category),
+    );
+}
