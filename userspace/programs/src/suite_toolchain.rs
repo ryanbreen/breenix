@@ -1366,9 +1366,6 @@ fn errno_per_thread() -> CaseResult { tls_case("errno-per-thread") }
 fn tls_across_fork_exec() -> CaseResult { tls_case("tls-across-fork-exec") }
 
 fn c11_fixtures() -> Result<PathBuf, String> {
-    if cfg!(target_arch = "aarch64") {
-        return Err("scheduled for ARM 25.9 after A4".into());
-    }
     Ok(Path::new("/").join(CORPUS).join("c11"))
 }
 

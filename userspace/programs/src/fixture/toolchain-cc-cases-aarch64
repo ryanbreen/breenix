@@ -1,12 +1,17 @@
 aggregate-copy
+alignment
 array-index
+atomics
 bitfield-values
 bitwise-shifts
 boolean-tokens
 byte-output
+compound-literal
 conditional
+designated-init
 floating-conversion
 function-pointer
+generic
 goto
 integer-arithmetic
 integer-promotions
