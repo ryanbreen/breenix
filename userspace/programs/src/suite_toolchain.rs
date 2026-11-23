@@ -18,8 +18,14 @@ const CORPUS: &str = "usr/share/breenix/toolchain";
 const RUNNER: &str = "sbin/suite-toolchain";
 const MANIFEST: &str = "opt/breenix-dev/25.2/manifest.sha256";
 const RECORD: &str = "opt/breenix-dev/25.2/build.json";
+#[cfg(target_arch = "x86_64")]
 const BAS_PROGRAMS: &[&str] = &["sse-exit", "x87-exit"];
+#[cfg(target_arch = "aarch64")]
+const BAS_PROGRAMS: &[&str] = &["fp-exit", "call-exit"];
+#[cfg(target_arch = "x86_64")]
 const BAS_INPUTS: &[&str] = &["encodings.s", "encodings.hex", "bad-input.s"];
+#[cfg(target_arch = "aarch64")]
+const BAS_INPUTS: &[&str] = &["bad-input.s"];
 const LINKER_OBJECTS: &[&str] = &[
     "got-main",
     "got-entry",
@@ -278,6 +284,8 @@ fn sysroot_manifest() -> CaseResult {
                 return Err(format!("manifest omits {path}").into());
             }
         }
+    }
+    {
         for name in BAS_INPUTS {
             let path = format!("{CORPUS}/assembler/{name}");
             if !listed.contains_key(path.as_str()) {
@@ -541,9 +549,6 @@ struct AssemblyCase {
 
 impl AssemblyCase {
     fn start() -> Result<Self, String> {
-        if std::env::consts::ARCH != "x86_64" {
-            return Err("AArch64 assembly and relocations are scheduled for A1".into());
-        }
         Ok(Self {
             corpus: Path::new("/").join(CORPUS).join("assembler"),
             scratch: Scratch::new("assembler")?,
@@ -552,9 +557,13 @@ impl AssemblyCase {
 
     fn run(&self, source: &Path, object: &Path) -> Result<std::process::Output, String> {
         let bas = Path::new("/").join(DEV).join("bin/bas");
+        let mut command = Command::new(&bas);
+        if std::env::consts::ARCH == "aarch64" {
+            command.args(["--target", "aarch64"]);
+        }
         io_at(
             &bas,
-            Command::new(&bas)
+            command
                 .arg("-o")
                 .arg(object)
                 .arg(source)
@@ -587,7 +596,12 @@ fn elf_field<const N: usize>(bytes: &[u8], offset: usize) -> Option<[u8; N]> {
 fn object_text(object: &[u8]) -> Option<&[u8]> {
     if !object.starts_with(b"\x7fELF\x02\x01\x01")
         || u16::from_le_bytes(elf_field(object, 16)?) != 1
-        || u16::from_le_bytes(elf_field(object, 18)?) != 62
+        || u16::from_le_bytes(elf_field(object, 18)?)
+            != if cfg!(target_arch = "aarch64") {
+                183
+            } else {
+                62
+            }
         || u16::from_le_bytes(elf_field(object, 58)?) != 64
     {
         return None;

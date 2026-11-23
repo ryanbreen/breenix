@@ -352,9 +352,10 @@ impl<'src, 'obj> Parser<'src, 'obj> {
             (4, false) => Relocation::Abs32,
             (4, true) => Relocation::Prel32,
             _ => {
-                return Err(
-                    self.error(label.column, "unsupported AArch64 data relocation for this field")
-                )
+                return Err(self.error(
+                    label.column,
+                    "unsupported AArch64 data relocation for this field",
+                ))
             }
         };
         let addend = self.addend()?;

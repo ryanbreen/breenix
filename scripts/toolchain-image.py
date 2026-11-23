@@ -122,6 +122,13 @@ def seal(bundle, commit, arch, tool_record):
         for name in ("sse-exit", "x87-exit"):
             for suffix in (".elf", ".link.json"):
                 required.add(CORPUS / "assembler" / (name + suffix))
+    else:
+        fixtures = corpus / "assembler-aarch64"
+        for name in ("bad-input.s", "fp-exit.s", "fp-exit.expect", "call-exit.s", "call-exit.expect"):
+            sources[CORPUS / "assembler" / name] = fixtures / name
+        for name in ("fp-exit", "call-exit"):
+            for suffix in (".elf", ".link.json"):
+                required.add(CORPUS / "assembler" / (name + suffix))
     if missing := (sources.keys() | required) - set(files):
         raise ValueError(f"toolchain fixture omits {min(missing)}")
     for path, source in sources.items():

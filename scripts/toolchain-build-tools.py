@@ -173,6 +173,34 @@ def build(arch, work, dev, corpus):
 
         build_linker_objects(arch, clang, work, corpus)
 
+    if arch == "aarch64":
+        lld, _ = reference.pinned_tool(
+            Path(os.environ["BREENIX_TOOLCHAIN_LLD"]),
+            os.environ["BREENIX_TOOLCHAIN_LLD_SHA256"], work,
+        )
+        link = [*lld, "--fatal-warnings", "-static", "--gc-sections", "-T", str(dev / "linker.ld")]
+        host_env = dict(env, CARGO_ENCODED_RUSTFLAGS="\x1f".join(remap_flags(env)))
+        host_bas = cargo_tools(cargo, host_env, host, ROOT / "target/toolchain-bundle/host", ("bas",)) / "bas"
+        producer = {"cargoPackage": "bas", "target": host, "sha256": digest(host_bas)}
+        destination = corpus / "assembler"
+        destination.mkdir()
+        fixtures = WORKSPACE / "corpus/assembler-aarch64"
+        for name in ("bad-input.s", "fp-exit.s", "fp-exit.expect", "call-exit.s", "call-exit.expect"):
+            shutil.copy2(fixtures / name, destination / name)
+        for name in ("fp-exit", "call-exit"):
+            obj, elf, link_map = (f"{name}.{ext}" for ext in ("o", "elf", "map"))
+            reference.run([str(host_bas), "--target", "aarch64", "-o", obj, str(destination / f"{name}.s")], work)
+            obj_hash = digest(work / obj)
+            trace = reference.run([*link, "--trace", f"-Map={link_map}", "-o", elf, obj], work)
+            map_text = (work / link_map).read_text(encoding="utf-8")
+            if (trace.splitlines() != [obj] or digest(work / obj) != obj_hash or
+                    not any(line.split()[-1:] == [f"{obj}:(.text)"] for line in map_text.splitlines())):
+                raise ValueError(f"{elf}: lld trace or map differs from the expected input {obj}")
+            receipt = {"hostBas": producer, "inputObjects": {obj: obj_hash},
+                       "elf": {"name": elf, "sha256": digest(work / elf)}, "map": map_text}
+            (work / elf).rename(destination / elf)
+            (destination / f"{name}.link.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+
     (work / "tools.json").write_text(json.dumps(tools) + "\n", encoding="utf-8")
 
 

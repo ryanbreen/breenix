@@ -24,7 +24,7 @@ const SECTIONS: &[(&str, u32, u64)] = &[
 ];
 
 struct Section {
-    name: &'static str,
+    name: String,
     kind: u32,
     flags: u64,
     alignment: u64,
@@ -34,9 +34,9 @@ struct Section {
 }
 
 impl Section {
-    fn new((name, kind, flags): (&'static str, u32, u64)) -> Self {
+    fn new((name, kind, flags): (&str, u32, u64)) -> Self {
         Self {
-            name,
+            name: name.into(),
             kind,
             flags,
             alignment: 1,
@@ -94,7 +94,7 @@ pub(crate) struct Object {
     symbol_ids: BTreeMap<String, usize>,
     pub(crate) symbols: Vec<Symbol>,
     references: Vec<Reference>,
-    text_mappings: Vec<(u64, &'static [u8])>,
+    text_mappings: Vec<(usize, u64, &'static [u8])>,
     sizes: Vec<SizeExpression>,
     last_output_at: Location,
 }
@@ -121,9 +121,16 @@ impl Object {
             let descriptor = SECTIONS
                 .iter()
                 .find(|entry| entry.0 == name)
+                .copied()
+                .or_else(|| {
+                    (self.target == Target::Aarch64
+                        && name.starts_with(".text.")
+                        && name.len() > ".text.".len())
+                    .then_some((name, SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR))
+                })
                 .ok_or_else(|| at.error("unsupported section"))?;
             let index = self.sections.len();
-            self.sections.push(Section::new(*descriptor));
+            self.sections.push(Section::new(descriptor));
             index
         };
         Ok(())
@@ -229,18 +236,24 @@ impl Object {
 
     fn map_text(&mut self, name: &'static [u8]) {
         if self.target == Target::Aarch64
-            && self.in_text()
-            && self.text_mappings.last().is_none_or(|&(_, previous)| previous != name)
+            && self.sections[self.current].flags & SHF_EXECINSTR != 0
+            && self
+                .text_mappings
+                .iter()
+                .rev()
+                .find(|&&(section, _, _)| section == self.current)
+                .is_none_or(|&(_, _, previous)| previous != name)
         {
-            self.text_mappings.push((self.sections[0].size, name));
+            self.text_mappings
+                .push((self.current, self.sections[self.current].size, name));
         }
     }
 
     pub(crate) fn emit_aarch64(&mut self, at: Location, word: u32) -> Result<()> {
-        if !self.in_text() {
+        if self.sections[self.current].flags & SHF_EXECINSTR == 0 {
             return Err(at.error("instructions require .text"));
         }
-        let text = &mut self.sections[0];
+        let text = &mut self.sections[self.current];
         if text.size % 4 != 0 {
             return Err(at.error("instruction must be four-byte aligned"));
         }
@@ -355,12 +368,16 @@ impl Object {
                         return Err(at.error("TPOFF32 requires a TLS symbol and vice versa"));
                     }
                     if kind == R_PC32 && same_section {
-                        let displacement = i64::try_from(i128::from(target.value) - next_ip as i128)
-                            .ok()
-                            .and_then(|distance| distance.checked_add(addend))
-                            .and_then(|value| i32::try_from(value).ok())
-                            .ok_or_else(|| at.error("relative displacement out of rel32 range"))?;
-                        contents.bytes[field..field + 4].copy_from_slice(&displacement.to_le_bytes());
+                        let displacement =
+                            i64::try_from(i128::from(target.value) - next_ip as i128)
+                                .ok()
+                                .and_then(|distance| distance.checked_add(addend))
+                                .and_then(|value| i32::try_from(value).ok())
+                                .ok_or_else(|| {
+                                    at.error("relative displacement out of rel32 range")
+                                })?;
+                        contents.bytes[field..field + 4]
+                            .copy_from_slice(&displacement.to_le_bytes());
                         continue;
                     }
                     // The psABI uses P (the field address) while the ISA uses next IP.
@@ -375,9 +392,9 @@ impl Object {
                 }
                 ReferenceKind::Aarch64(kind) => {
                     if kind.uses_tls() != (target.kind == STT_TLS) {
-                        return Err(at.error(
-                            "AArch64 TLS relocation requires a TLS symbol and vice versa",
-                        ));
+                        return Err(
+                            at.error("AArch64 TLS relocation requires a TLS symbol and vice versa")
+                        );
                     }
                     if same_section
                         && kind.patch_local(
@@ -434,14 +451,18 @@ impl Object {
     fn object_symbols(&self) -> Result<Vec<RelSymbol<'_>>> {
         let mut out = Vec::with_capacity(self.symbols.len() + self.text_mappings.len());
         // AAELF64 §5.6.5: local STT_NOTYPE symbols delimit code and data.
-        out.extend(self.text_mappings.iter().map(|&(value, name)| RelSymbol {
-            name,
-            section: 1,
-            kind: STT_NOTYPE,
-            binding: STB_LOCAL,
-            value,
-            size: 0,
-        }));
+        out.extend(
+            self.text_mappings
+                .iter()
+                .map(|&(section, value, name)| RelSymbol {
+                    name,
+                    section: section as u16 + 1,
+                    kind: STT_NOTYPE,
+                    binding: STB_LOCAL,
+                    value,
+                    size: 0,
+                }),
+        );
         for symbol in &self.symbols {
             let size_at = symbol.size_at.unwrap_or(symbol.first_use);
             if symbol.section == SHN_UNDEF {

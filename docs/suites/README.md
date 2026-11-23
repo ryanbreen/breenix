@@ -1878,7 +1878,10 @@ its input object name and SHA-256, and the executable name and SHA-256. The
 guest reassembles each source, checks the fresh object digest against the
 map's named link input, checks the staged executable's digest, and runs it
 against its `.expect`.
-AArch64 encoding and relocation output are scheduled for A1.
+AArch64 stages `fp-exit` (an ADRP and low-12 load followed by a
+binary64-to-integer conversion) and `call-exit` (a cross-section call and
+conditional branch), with receipts produced by host bas targeting AArch64.
+The ARM encoding table and acceptance boot remain for the rest of A1.
 
 The `toolchain/static-link` milestone measures the six `linker` cases on
 x86-64. Cargo builds the suite-only bundle's `bas`, `bld`, `bar` and
