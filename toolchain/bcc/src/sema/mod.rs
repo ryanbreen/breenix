@@ -18,6 +18,7 @@ mod varargs;
 pub(super) use c11::{check_static_assertion, type_alignment};
 
 pub use atomic::AtomicOp;
+pub(crate) use body::constant_integer;
 pub(crate) use atomic::SEQ_CST;
 pub use thread::{StaticAddress, ThreadData, ThreadInitializer, ThreadObject};
 
@@ -29,16 +30,6 @@ pub struct TranslationUnit<'a> {
     pub static_literals: Vec<StaticLiteral<'a>>,
     pub thread_objects: Vec<ThreadObject<'a>>,
     pub records: Vec<Record<'a>>,
-    deferred_atomic_type: Option<&'a Lexeme>,
-}
-
-impl TranslationUnit<'_> {
-    pub(crate) fn check_target_types(&self) -> Result<(), Diagnostic> {
-        match self.deferred_atomic_type {
-            Some(token) => Err(token.error("atomic types are deferred to ARM 25.9d")),
-            None => Ok(()),
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -224,6 +215,7 @@ pub enum ExpressionKind<'a> {
     FltRounds,
     Atomic {
         op: AtomicOp,
+        weak: bool,
         arguments: Vec<Argument<'a>>,
     },
     Call {
@@ -527,6 +519,7 @@ pub fn analyze<'a>(
         }
         ty.resolve_records(&|id| records[id].definition.as_ref().map(|d| d.layout));
         thread::check_layout(&ty, &site.site)?;
+        ty.check_atomic_layout(target, &site.site)?;
         let alignment = symbol.alignment;
         symbol.defined = true;
         static_objects.push(StaticObject {
@@ -554,15 +547,8 @@ pub fn analyze<'a>(
             .ty
             .resolve_records(&|id| records[id].definition.as_ref().map(|d| d.layout));
         thread::check_layout(&thread.object.ty, thread.object.site)?;
+        thread.object.ty.check_atomic_layout(target, thread.object.site)?;
     }
-    // N1570 6.7.2.4p2 and 6.10.8.3: the ARM profile lacks atomic
-    // types. Preserve ordinary constraint diagnostics and let the backend
-    // name the access site before falling back to the keyword location.
-    let deferred_atomic_type = if target == Target::Aarch64 {
-        source.tokens().find(|token| token.text.as_ref() == "_Atomic")
-    } else {
-        None
-    };
     Ok(TranslationUnit {
         functions,
         objects,
@@ -570,7 +556,6 @@ pub fn analyze<'a>(
         static_literals,
         thread_objects: thread_objects.definitions,
         records,
-        deferred_atomic_type,
     })
 }
 

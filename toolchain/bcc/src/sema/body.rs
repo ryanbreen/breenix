@@ -850,7 +850,7 @@ pub(super) fn canonical(value: u64, ty: &Type, target: Target) -> u64 {
     }
 }
 
-pub(super) fn constant_integer(expr: &Expression<'_>, target: Target) -> Option<u64> {
+pub(crate) fn constant_integer(expr: &Expression<'_>, target: Target) -> Option<u64> {
     use Binary::*;
     let Kind::Integer(integer) = expr.ty.kind else {
         return None;

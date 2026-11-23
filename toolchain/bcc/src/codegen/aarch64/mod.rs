@@ -15,6 +15,7 @@ use crate::sema::{
 use crate::types::{Float, Integer, Kind, Layout, Record, Type};
 
 mod abi;
+mod atomic;
 mod binary128;
 mod float;
 mod flow;
@@ -29,7 +30,6 @@ use varargs::VariadicFrame;
 const ARGUMENT_REGISTERS: usize = 8;
 const FRAME_RECORD: usize = 16;
 const STACK_ALIGNMENT: usize = 16;
-const DEFERRED_ATOMICS: &str = "atomic accesses are deferred to ARM 25.9d";
 
 pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
     let mut functions = HashMap::new();
@@ -254,7 +254,6 @@ impl<'src> Emitter<'_, 'src> {
     // Floating values use s0/d0/q0. x0 holds addresses, aggregate/vector
     // representations in memory, and integers extended to their C type.
     fn value(&mut self, expr: &Expression<'src>) -> Result<(), Diagnostic> {
-        require_nonatomic(&expr.ty, expr.position())?;
         match expr.ty.kind {
             Kind::Void | Kind::Array(..) | Kind::Function { .. } => {}
             _ => require_value(&expr.ty, expr.position())?,
@@ -278,8 +277,15 @@ impl<'src> Emitter<'_, 'src> {
             | ExpressionKind::CompoundLiteral { .. }
             | ExpressionKind::StaticLiteral(_)
             | ExpressionKind::Member { .. } => {
-                self.address(expr)?;
-                self.load_value(&expr.ty, expr.bit_field(), "x0");
+                if expr.ty.qualifiers.atomic {
+                    self.atomic_plain_load(expr)?;
+                } else {
+                    self.address(expr)?;
+                    self.load_value(&expr.ty, expr.bit_field(), "x0");
+                }
+            }
+            ExpressionKind::Unary(Unary::Dereference, _) if expr.ty.qualifiers.atomic => {
+                self.atomic_plain_load(expr)?;
             }
             ExpressionKind::Unary(op, operand) => self.unary(*op, operand, &expr.ty)?,
             ExpressionKind::Binary {
@@ -321,8 +327,8 @@ impl<'src> Emitter<'_, 'src> {
                     "AArch64 floating rounding mode lowering is deferred to ARM 25.9d",
                 ));
             }
-            ExpressionKind::Atomic { .. } => {
-                return Err(Diagnostic::new(expr.position(), DEFERRED_ATOMICS));
+            ExpressionKind::Atomic { op, weak, arguments } => {
+                self.atomic_builtin(*op, *weak, arguments)?;
             }
             ExpressionKind::VaStart(list) => self.va_start(list)?,
             ExpressionKind::VaArg(list) => self.va_arg(list, &expr.ty, expr.position())?,
@@ -699,14 +705,6 @@ fn require_value(ty: &Type, site: &Position) -> Result<(), Diagnostic> {
             site,
             "value is outside the supported AArch64 subset",
         ))
-    }
-}
-
-fn require_nonatomic(ty: &Type, site: &Position) -> Result<(), Diagnostic> {
-    if ty.qualifiers.atomic {
-        Err(Diagnostic::new(site, DEFERRED_ATOMICS))
-    } else {
-        Ok(())
     }
 }
 

@@ -15,10 +15,6 @@ pub fn emit_assembly(
 ) -> Result<String, Diagnostic> {
     match target {
         Target::X86_64 => x86_64::emit(unit),
-        Target::Aarch64 => {
-            let assembly = aarch64::emit(unit)?;
-            unit.check_target_types()?;
-            Ok(assembly)
-        }
+        Target::Aarch64 => aarch64::emit(unit),
     }
 }

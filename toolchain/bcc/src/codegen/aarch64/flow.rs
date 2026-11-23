@@ -25,7 +25,7 @@ impl<'src> Emitter<'_, 'src> {
         self.frame_alignment = STACK_ALIGNMENT;
         for (index, local) in function.locals.iter().enumerate() {
             let object = &local.object;
-            require_nonatomic(&object.ty, object.site)?;
+            object.ty.check_atomic_layout(Target::Aarch64, object.site)?;
             let slot = match &local.storage {
                 LocalStorage::ThreadExtern(_) | LocalStorage::Function(_) => Slot::ThreadExtern,
                 LocalStorage::Thread(_) => Slot::Thread(self.label()),
@@ -191,8 +191,12 @@ impl<'src> Emitter<'_, 'src> {
                 continue;
             };
             self.converted(value, &init.ty)?;
-            self.local_address(local, init.offset, "x9");
-            self.store_value(&init.ty, init.bit_field);
+            if init.ty.qualifiers.atomic && matches!(init.ty.kind, Kind::Record(_)) {
+                self.atomic_record_initialize(&init.ty, local, init.offset);
+            } else {
+                self.local_address(local, init.offset, "x9");
+                self.store_value(&init.ty, init.bit_field);
+            }
         }
         Ok(())
     }
@@ -305,7 +309,9 @@ impl<'src> Emitter<'_, 'src> {
         right: &Expression<'src>,
         operation: Option<&(Binary, Type, Type)>,
     ) -> Result<(), Diagnostic> {
-        require_nonatomic(&left.ty, left.position())?;
+        if left.ty.qualifiers.atomic {
+            return self.atomic_assignment(left, right, operation);
+        }
         self.address(left)?;
         self.push_value('x');
         let field = left.bit_field();
@@ -330,7 +336,9 @@ impl<'src> Emitter<'_, 'src> {
         increment: bool,
         postfix: bool,
     ) -> Result<(), Diagnostic> {
-        require_nonatomic(&operand.ty, operand.position())?;
+        if operand.ty.qualifiers.atomic {
+            return self.atomic_update(operand, increment, postfix);
+        }
         self.address(operand)?;
         self.text.push_str("    mov x9, x0\n");
         let ty = &operand.ty;
@@ -399,9 +407,7 @@ impl<'src> Emitter<'_, 'src> {
             layout.align
         )
         .unwrap();
-        if initializer.is_some() {
-            require_nonatomic(&object.ty, object.site)?;
-        }
+        object.ty.check_atomic_layout(Target::Aarch64, object.site)?;
         self.emit_initializer(&mut data, initializer, layout.size)?;
         writeln!(data, ".size {name}, {}", layout.size).unwrap();
         if initializer.is_some() {

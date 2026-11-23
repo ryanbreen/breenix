@@ -274,6 +274,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 .map(|def| def.layout)
         });
         ty.check_atomic(start)?;
+        ty.check_atomic_layout(self.target, &start.site)?;
         Ok((
             ty,
             specs.storage,
