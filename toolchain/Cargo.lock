@@ -28,6 +28,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "bmake"
+version = "0.1.0"
+
+[[package]]
 name = "bnm"
 version = "0.1.0"
 dependencies = [
