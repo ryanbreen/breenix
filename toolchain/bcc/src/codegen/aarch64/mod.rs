@@ -9,8 +9,8 @@ use std::fmt::Write;
 
 use crate::pp::{Diagnostic, Position, Target};
 use crate::sema::{
-    Argument, Binary, Expression, ExpressionKind, Function, Linkage, LocalStorage, Statement, TranslationUnit,
-    Unary,
+    Argument, Binary, Expression, ExpressionKind, Function, Linkage, LocalStorage, Statement,
+    TranslationUnit, Unary,
 };
 use crate::types::{Float, Integer, Kind, Layout, Record, Type};
 
@@ -19,6 +19,7 @@ mod binary128;
 mod float;
 mod flow;
 mod record;
+mod thread;
 mod varargs;
 
 use abi::{ArgumentLocation, ArgumentSlots, CallObject};
@@ -27,7 +28,6 @@ use varargs::VariadicFrame;
 
 const ARGUMENT_REGISTERS: usize = 8;
 const FRAME_RECORD: usize = 16;
-const DEFERRED_TLS: &str = "AArch64 C TLS is deferred to A4";
 
 pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
     let mut functions = HashMap::new();
@@ -45,6 +45,12 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
         variadic: None,
         flow_labels: HashMap::new(),
         externs: BTreeSet::new(),
+        thread_externs: BTreeSet::new(),
+        thread_definitions: unit
+            .thread_objects
+            .iter()
+            .map(|thread| thread.object.name)
+            .collect(),
         binary128_statics: unit
             .binary128_statics
             .iter()
@@ -54,11 +60,21 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
         rodata: String::new(),
         data: String::new(),
         bss: String::new(),
+        tdata: String::new(),
+        tbss: String::new(),
         next_label: 0,
     };
     for value in &unit.binary128_statics {
         check_symbol(value.name, value.site)?;
         emitter.binary128_static(value.name, value.linkage, value.initializer);
+    }
+    for thread in &unit.thread_objects {
+        emitter.thread_definition(
+            &thread.object,
+            thread.object.name,
+            thread.linkage,
+            thread.initializer.as_ref(),
+        )?;
     }
     for function in &unit.functions {
         if let Some(body) = &function.body {
@@ -68,11 +84,19 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
     for name in emitter.externs {
         writeln!(emitter.text, ".extern {name}").unwrap();
     }
+    for name in emitter.thread_externs {
+        writeln!(emitter.text, ".extern {name}\n.type {name}, @tls").unwrap();
+    }
     if !emitter.rodata.is_empty() {
         emitter.text.push_str("\n.section .rodata\n");
         emitter.text.push_str(&emitter.rodata);
     }
-    for (section, body) in [(".data", emitter.data), (".bss", emitter.bss)] {
+    for (section, body) in [
+        (".data", emitter.data),
+        (".bss", emitter.bss),
+        (".tdata", emitter.tdata),
+        (".tbss", emitter.tbss),
+    ] {
         if !body.is_empty() {
             writeln!(emitter.text, "\n.section {section}").unwrap();
             emitter.text.push_str(&body);
@@ -89,11 +113,15 @@ struct Emitter<'unit, 'src> {
     variadic: Option<VariadicFrame>,
     flow_labels: HashMap<usize, String>,
     externs: BTreeSet<&'src str>,
+    thread_externs: BTreeSet<&'src str>,
+    thread_definitions: BTreeSet<&'src str>,
     binary128_statics: BTreeSet<&'src str>,
     text: String,
     rodata: String,
     data: String,
     bss: String,
+    tdata: String,
+    tbss: String,
     next_label: usize,
 }
 
@@ -205,6 +233,7 @@ impl<'src> Emitter<'_, 'src> {
             ExpressionKind::String(_)
             | ExpressionKind::Identifier(_)
             | ExpressionKind::Local(_)
+            | ExpressionKind::ThreadLocal(_)
             | ExpressionKind::Member { .. } => {
                 self.address(expr)?;
                 self.load_value(&expr.ty, expr.bit_field(), "x0");
@@ -238,9 +267,6 @@ impl<'src> Emitter<'_, 'src> {
                 writeln!(self.text, "    b {end}\n{otherwise}:").unwrap();
                 self.converted(no, &expr.ty)?;
                 writeln!(self.text, "{end}:").unwrap();
-            }
-            ExpressionKind::ThreadLocal(_) => {
-                return Err(Diagnostic::new(expr.position(), DEFERRED_TLS));
             }
             ExpressionKind::VaStart(list) => self.va_start(list)?,
             ExpressionKind::VaArg(list) => self.va_arg(list, &expr.ty, expr.position())?,

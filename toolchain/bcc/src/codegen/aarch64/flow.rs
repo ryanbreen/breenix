@@ -1,11 +1,14 @@
 //! Frame slots, lvalues and statement lowering.
 
+use super::thread::thread_address;
 use super::*;
 use crate::types::Layout;
 
 pub(super) enum Slot {
     Frame(usize),
     Static(String),
+    Thread(String),
+    ThreadExtern,
 }
 
 impl<'src> Emitter<'_, 'src> {
@@ -18,33 +21,43 @@ impl<'src> Emitter<'_, 'src> {
         self.frame = 0;
         for (index, local) in function.locals.iter().enumerate() {
             let object = &local.object;
-            let layout = object.ty.layout().unwrap();
-            if matches!(local.storage, LocalStorage::Thread(_) | LocalStorage::ThreadExtern(_)) {
-                return Err(Diagnostic::new(object.site, DEFERRED_TLS));
-            }
-            let slot = if let LocalStorage::Static(initializer) = local.storage {
-                let label = self.label();
-                if initializer.is_some() {
-                    self.binary128_static(&label, Linkage::Internal, initializer);
-                } else {
-                    writeln!(
-                        self.bss,
-                        "    .balign {}\n{label}:\n    .zero {}",
-                        layout.align, layout.size
-                    )
-                    .unwrap();
-                }
-                Slot::Static(label)
-            } else {
-                let layout = match parameters.get(index) {
-                    Some((Some(value), ArgumentLocation::Register(_))) if !value.indirect() => {
-                        value.slot()
+            let slot = match local.storage {
+                LocalStorage::ThreadExtern(_) => Slot::ThreadExtern,
+                LocalStorage::Thread(_) => Slot::Thread(self.label()),
+                LocalStorage::Static(initializer) => {
+                    let label = self.label();
+                    if initializer.is_some() {
+                        self.binary128_static(&label, Linkage::Internal, initializer);
+                    } else {
+                        let layout = object.ty.layout().unwrap();
+                        writeln!(
+                            self.bss,
+                            "    .balign {}\n{label}:\n    .zero {}",
+                            layout.align, layout.size
+                        )
+                        .unwrap();
                     }
-                    _ => layout,
-                };
-                Slot::Frame(self.frame_slot(layout, object.site)?)
+                    Slot::Static(label)
+                }
+                LocalStorage::Automatic => {
+                    let layout = match parameters.get(index) {
+                        Some((Some(value), ArgumentLocation::Register(_))) if !value.indirect() => {
+                            value.slot()
+                        }
+                        _ => object.ty.layout().unwrap(),
+                    };
+                    Slot::Frame(self.frame_slot(layout, object.site)?)
+                }
             };
             self.locals.push(slot);
+        }
+        for (index, local) in function.locals.iter().enumerate() {
+            if let (LocalStorage::Thread(init), Slot::Thread(label)) =
+                (&local.storage, &self.locals[index])
+            {
+                let label = label.clone();
+                self.thread_definition(&local.object, &label, Linkage::Internal, init.as_ref())?;
+            }
         }
         Ok(())
     }
@@ -227,8 +240,12 @@ impl<'src> Emitter<'_, 'src> {
                 self.value(base)?;
                 self.add_sub_offset("add", "x0", "x0", *offset as u64);
             }
-            ExpressionKind::ThreadLocal(_) => {
-                return Err(Diagnostic::new(expr.position(), DEFERRED_TLS));
+            ExpressionKind::ThreadLocal(name) => {
+                check_symbol(name, expr.position())?;
+                if !self.thread_definitions.contains(name) {
+                    self.thread_externs.insert(name);
+                }
+                thread_address(&mut self.text, "x0", name);
             }
             _ => unreachable!("sema must supply an addressable expression"),
         }
@@ -247,6 +264,13 @@ impl<'src> Emitter<'_, 'src> {
                     self.offset_address(register, register, offset as i64);
                 }
             }
+            Slot::Thread(name) => {
+                thread_address(&mut self.text, register, name);
+                if offset != 0 {
+                    self.offset_address(register, register, offset as i64);
+                }
+            }
+            Slot::ThreadExtern => unreachable!("sema uses a named TLS reference"),
         }
     }
 
@@ -314,7 +338,7 @@ impl<'src> Emitter<'_, 'src> {
         Ok(())
     }
 
-    fn emit_string(&mut self, bytes: &[u8]) -> String {
+    pub(super) fn emit_string(&mut self, bytes: &[u8]) -> String {
         let label = self.label();
         writeln!(self.rodata, "{label}:").unwrap();
         for chunk in bytes.chunks(16) {
