@@ -219,6 +219,14 @@ def linked_functions_come_from_breenix(config, work):
         run(config.tools / "elfcheck", "--exec", out / f"libc-{category}_test.elf")
         assert (out / f"{category}.map").stat().st_size
         assert (out / f"{category}-missing.txt").read_text() == "", category
+        # Category-local symbol work should scale with its own objects. The
+        # archive inventory and link map are evidence and have separate checks.
+        object_rows = (out / f"{category}.symbols").read_bytes().count(b"\n")
+        for path in out.glob(f"{category}.*"):
+            if path.suffix in {".o", ".s", ".map", ".brt"}:
+                continue
+            rows = path.read_bytes().count(b"\n")
+            assert rows <= object_rows, f"{path.name}: {rows} rows for {object_rows} object symbols"
     run(config.tools / "elfcheck", out / "abi_check.o", out / "harness.o")
 
 
