@@ -21,22 +21,32 @@ fn profile_macros_truthful() {
     )));
     fs::create_dir(&scratch.0).unwrap();
     let arm_fixture = scratch.0.join("arm-profile.c");
-    // Check the ARM exception, then reuse every check in the guest fixture.
+    // Mirror the guest fixture with the ARM exception from E25 ruling 47.
     fs::write(
         &arm_fixture,
-        r#"#if !defined(__STDC_NO_ATOMICS__) || __STDC_NO_ATOMICS__ != 1
+        r#"
+#if !defined(__STDC_NO_VLA__) || __STDC_NO_VLA__ != 1
+#error expected __STDC_NO_VLA__ to be defined as 1
+#endif
+#if !defined(__STDC_NO_COMPLEX__) || __STDC_NO_COMPLEX__ != 1
+#error expected __STDC_NO_COMPLEX__ to be defined as 1
+#endif
+#if defined(__STDC_IEC_559_COMPLEX__)
+#error expected __STDC_IEC_559_COMPLEX__ to be absent
+#endif
+#if !defined(__STDC_NO_ATOMICS__) || __STDC_NO_ATOMICS__ != 1
 #error expected __STDC_NO_ATOMICS__ to be defined as 1 on ARM
 #endif
-#undef __STDC_NO_ATOMICS__
-#include "profile-macros.c"
+#if !defined(__STDC_NO_THREADS__) || __STDC_NO_THREADS__ != 1
+#error expected __STDC_NO_THREADS__ to be defined as 1
+#endif
+int profile_macros_verified;
 "#,
     )
     .unwrap();
     for target in ["--target=x86_64", "--target=aarch64"] {
         let result = Command::new(env!("CARGO_BIN_EXE_bcc"))
             .args([target, "-E"])
-            .arg("-I")
-            .arg(fixture.parent().unwrap())
             .arg(if target == "--target=aarch64" {
                 &arm_fixture
             } else {
