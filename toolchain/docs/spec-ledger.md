@@ -261,7 +261,7 @@ conversion truncates with a temporary x87 control word and restores
 the saved control word. AAPCS64 binary128 `long double` lowering is
 scheduled for A4.
 
-### AArch64 binary128 arithmetic (A4)
+### AArch64 binary128 arithmetic and conversions (A4)
 
 IEEE 754-2019 §3.4 and Table 3.5 define the binary128 encoding. Sections
 4.3, 5.11, 6 and 7 govern rounding, comparison and special results. The
@@ -275,6 +275,19 @@ takes two unsigned 128-bit integers and returns one. AAPCS64 2025Q1
 §§5.1, 6.8.2 (C.10–C.11) and 6.9 place the inputs in x0–x1 and x2–x3,
 and the result in x0–x1. Compare returns the unsigned encodings of −1,
 0, 1 and 2 for less, equal, greater and unordered, respectively.
+
+IEEE 754-2019 §§5.4, 5.8, 6.2 and 7 define the conversion results. The
+32-bit and 64-bit signed and unsigned integers and finite binary32 and
+binary64 values widen exactly. Narrowing to binary32 or binary64 uses
+roundTiesToEven, including subnormal results and overflow to infinity.
+Floating-point conversions preserve the sign and quiet NaNs, keeping the
+low payload bits that fit. Integer results use roundTowardZero and
+return `0` for NaN, infinity or an unrepresentable truncated value
+(N1570 §6.3.1.4).
+
+With `exports`, `__brt_tf_from_*` and `__brt_tf_to_*` use x0–x1 for the
+binary128 side and w0 or x0 for the 32-bit or 64-bit side. The `f32` and
+`f64` symbols take and return the binary encoding as an unsigned integer.
 
 ### AMD64 local-exec thread storage (25.7c)
 
