@@ -153,6 +153,20 @@ repeats that search for the archives between `--start-group` and `--end-group`.
 `--no-whole-archive` resets selection to the indexed search. ELF gABI §§5.2
 and 5.5 describe weak binding and common storage.
 
+## Relocatable links
+
+GNU ld 2.45 §2.1 describes `-r` (`--relocatable`). bld applies its usual
+archive search without an entry-point root. It concatenates compatible
+sections by name in input order, honoring alignment and keeping zero-fill
+sections out of the file payload (ELF gABI §§3.3 and 3.8). It keeps retained
+groups separate, remaps their signatures and members, and retains undefined
+symbols and common alignment and size for the next link (§§3.9 and 5.2–5.7).
+Section-relative symbol values and RELA offsets move by their input
+section's placement. The relocation kind and addend travel unchanged
+(§6.1). A partial link uses these section rules without a linker script or
+section garbage collection. Metadata with opaque table references needs
+format-specific remapping and receives a located diagnostic.
+
 ## Static executable layout
 
 `bld -T` accepts the userspace `linker.ld` subset of GNU ld 2.45. It uses

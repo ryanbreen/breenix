@@ -74,11 +74,11 @@ impl ReadSource for FaultSource {
     }
 }
 
-pub(crate) fn write_executable(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn write_output(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
     let parent = path.parent().unwrap_or_else(|| Path::new(""));
     // Build inside a private directory on the destination filesystem. Creating
-    // the file with mode 0777 leaves the caller's umask in effect.
+    // the file with the requested mode leaves the caller's umask in effect.
     let directory = loop {
         let sequence = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
         let candidate = parent.join(format!(".bld-{}-{sequence}", std::process::id()));
@@ -93,7 +93,7 @@ pub(crate) fn write_executable(path: &Path, bytes: &[u8]) -> io::Result<()> {
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
-            .mode(0o777)
+            .mode(mode)
             .open(&temporary)?;
         file.write_all(bytes)?;
         drop(file);

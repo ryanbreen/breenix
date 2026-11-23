@@ -23,8 +23,8 @@ pub(crate) struct Section {
     pub(crate) output_name: u32,
     pub(crate) output_offset: u64,
     pub(crate) live: bool,
-    discarded: bool,
-    group: Option<usize>,
+    pub(crate) discarded: bool,
+    pub(crate) group: Option<usize>,
     pub(crate) relocation_tables: Vec<usize>,
 }
 
@@ -38,9 +38,10 @@ pub(crate) struct ObjectSymbol {
     pub(crate) name: Box<[u8]>,
     pub(crate) binding: u8,
     pub(crate) kind: u8,
+    pub(crate) other: u8,
     pub(crate) section: u16,
     pub(crate) value: u64,
-    size: u64,
+    pub(crate) size: u64,
 }
 
 impl From<Symbol<'_>> for ObjectSymbol {
@@ -49,6 +50,7 @@ impl From<Symbol<'_>> for ObjectSymbol {
             name: symbol.name.into(),
             binding: symbol.binding,
             kind: symbol.kind,
+            other: symbol.other,
             section: symbol.section,
             value: symbol.value,
             size: symbol.size,
@@ -57,13 +59,18 @@ impl From<Symbol<'_>> for ObjectSymbol {
 }
 
 pub(crate) struct RelocationTable {
+    pub(crate) section: usize,
     pub(crate) target: usize,
     pub(crate) entries: Vec<Rela>,
 }
 
-struct Group {
-    members: Vec<usize>,
-    signature: Option<usize>,
+const GRP_COMDAT: u32 = 1;
+
+pub(crate) struct Group {
+    pub(crate) section: usize,
+    pub(crate) members: Vec<usize>,
+    pub(crate) signature: usize,
+    pub(crate) flags: u32,
 }
 
 pub(crate) struct Object {
@@ -72,7 +79,8 @@ pub(crate) struct Object {
     pub(crate) sections: Vec<Section>,
     pub(crate) symbols: Vec<ObjectSymbol>,
     pub(crate) relocations: Vec<RelocationTable>,
-    groups: Vec<Group>,
+    pub(crate) groups: Vec<Group>,
+    pub(crate) string_tables: [usize; 2],
     backing: Option<(Rc<Vec<u8>>, usize)>,
 }
 
@@ -113,6 +121,10 @@ impl Object {
         let symbols = (0..symbols.len())
             .map(|index| symbols.get(index).map(ObjectSymbol::from).map_err(located))
             .collect::<Result<_>>()?;
+        let string_tables = [
+            header.section_names as usize,
+            sections[symtab].header.link as usize,
+        ];
         let mut object = Self {
             path,
             machine,
@@ -120,6 +132,7 @@ impl Object {
             symbols,
             relocations: Vec::new(),
             groups: Vec::new(),
+            string_tables,
             backing: None,
         };
         object.read_groups(&elf, symtab)?;
@@ -130,7 +143,6 @@ impl Object {
 
     fn read_groups(&mut self, elf: &Elf<'_>, symtab: usize) -> Result<()> {
         // ELF gABI §3.9: the first COMDAT signature wins and each group is indivisible.
-        const GRP_COMDAT: u32 = 1;
         for index in 1..self.sections.len() {
             let section = &self.sections[index];
             let header = section.header;
@@ -178,8 +190,10 @@ impl Object {
                 members.push(member_index);
             }
             self.groups.push(Group {
+                section: index,
                 members,
-                signature: (flags == GRP_COMDAT).then_some(header.info as usize),
+                signature: header.info as usize,
+                flags,
             });
         }
         for section in &self.sections {
@@ -192,10 +206,10 @@ impl Object {
 
     fn select_groups(&mut self, signatures: &mut HashSet<Box<[u8]>>) {
         for group in &self.groups {
-            if group
-                .signature
-                .is_some_and(|index| !signatures.insert(self.symbols[index].name.clone()))
+            if group.flags == GRP_COMDAT
+                && !signatures.insert(self.symbols[group.signature].name.clone())
             {
+                self.sections[group.section].discarded = true;
                 for &member in &group.members {
                     self.sections[member].discarded = true;
                 }
@@ -232,7 +246,11 @@ impl Object {
             self.sections[target]
                 .relocation_tables
                 .push(self.relocations.len());
-            self.relocations.push(RelocationTable { target, entries });
+            self.relocations.push(RelocationTable {
+                section: index,
+                target,
+                entries,
+            });
         }
         Ok(())
     }
@@ -359,8 +377,8 @@ pub(crate) struct Global {
     pub(crate) origin: (usize, usize),
     pub(crate) required: bool,
     live_common: bool,
-    common_align: u64,
-    common_size: u64,
+    pub(crate) common_align: u64,
+    pub(crate) common_size: u64,
     pub(crate) common_offset: u64,
 }
 
@@ -382,15 +400,17 @@ pub(crate) enum SymbolKey {
 }
 
 impl Link {
-    pub(crate) fn new(script: Script, gc: bool) -> Self {
+    pub(crate) fn new(script: Script, gc: bool, relocatable: bool) -> Self {
         let mut globals = HashMap::new();
-        globals.insert(
-            script.entry.as_slice().into(),
-            Global {
-                required: true,
-                ..Global::default()
-            },
-        );
+        if !relocatable {
+            globals.insert(
+                script.entry.as_slice().into(),
+                Global {
+                    required: true,
+                    ..Global::default()
+                },
+            );
+        }
         Self {
             script,
             gc,
@@ -644,6 +664,7 @@ impl Link {
             symbols: Vec::new(),
             relocations: Vec::new(),
             groups: Vec::new(),
+            string_tables: [0; 2],
             backing: None,
         });
         id
