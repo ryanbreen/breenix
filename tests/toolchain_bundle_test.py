@@ -179,7 +179,7 @@ class ToolchainBundleTest(unittest.TestCase):
             for path in source.iterdir():
                 if not path.is_file() or path.suffix not in (".c", ".h", ".expect"):
                     continue
-                relative = corpus / category / path.name
+                relative = corpus / ("abi-aarch64" if category == "abi" else category) / path.name
                 staged = root / relative
                 self.assertEqual(staged.read_bytes(), path.read_bytes())
                 self.assertIn(f"{digest(staged)}  {relative}", manifest)
