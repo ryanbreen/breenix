@@ -166,3 +166,79 @@ fn aarch64_stages_agree_bytewise() {
     );
     fs::remove_dir_all(root).unwrap();
 }
+
+fn preprocess_fixture(name: &str, source: &str, args: &[&str]) -> std::process::Output {
+    let dir = std::env::temp_dir().join(format!("breenix-bcc-{name}-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("input.c");
+    std::fs::write(&path, source).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_bcc"))
+        .current_dir(&dir)
+        .args(args)
+        .args(["-E", "input.c"])
+        .output();
+    std::fs::remove_dir_all(&dir).unwrap();
+    output.unwrap()
+}
+
+#[test]
+fn std_c17_sets_version_201710() {
+    for (flags, expected) in [
+        (&[][..], "201112L"),
+        (&["-std=c11"][..], "201112L"),
+        (&["-std=c17"][..], "201710L"),
+        (&["-std=c17", "-std=c11"][..], "201112L"),
+    ] {
+        let out = preprocess_fixture("standard", "__STDC_VERSION__\n", flags);
+        assert!(out.status.success(), "{flags:?}: {out:?}");
+        assert!(out.stderr.is_empty(), "{flags:?}: {out:?}");
+        assert_eq!(String::from_utf8(out.stdout).unwrap().trim(), expected);
+    }
+}
+
+#[test]
+fn unknown_std_rejected() {
+    let out = Command::new(env!("CARGO_BIN_EXE_bcc"))
+        .args(["-std=gnu17", "-E", "unused.c"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "{out:?}");
+    assert!(out.stdout.is_empty(), "{out:?}");
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.starts_with("<command-line>:1:1: error: ") && stderr.contains("-std=gnu17"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn warning_flags() {
+    let source = "#warning marker\n#pragma vendor_option\nint x;\n";
+    for (flags, succeeds, severity, wall) in [
+        (&["-fno-builtin"][..], true, Some("warning"), false),
+        (&["-Wall"][..], true, Some("warning"), true),
+        (&["-Wall", "-Werror"][..], false, Some("error"), true),
+        (&["-w", "-Wall", "-Werror"][..], true, None, false),
+    ] {
+        let out = preprocess_fixture("warnings", source, flags);
+        assert_eq!(out.status.success(), succeeds, "{flags:?}: {out:?}");
+        assert_eq!(out.stdout.is_empty(), !succeeds, "{flags:?}: {out:?}");
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        if let Some(severity) = severity {
+            assert!(
+                stderr.starts_with(&format!("input.c:1:2: {severity}: marker\n")),
+                "{flags:?}: {stderr}"
+            );
+            assert_eq!(
+                stderr.contains(&format!("input.c:2:2: {severity}: unknown pragma")),
+                wall,
+                "{flags:?}: {stderr}"
+            );
+        } else {
+            assert!(stderr.is_empty(), "{flags:?}: {stderr}");
+        }
+    }
+    let fatal = preprocess_fixture("fatal", "#error fatal\n", &["-w"]);
+    assert!(!fatal.status.success(), "{fatal:?}");
+    assert_eq!(fatal.stderr, b"input.c:1:2: error: fatal\n");
+}
