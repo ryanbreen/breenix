@@ -101,6 +101,9 @@ def seal(bundle, commit, arch, tool_record):
         for name in ("hello.c", "hello.expect", "diagnostic.c"):
             path = Path("c-core") / name
             sources[CORPUS / path] = corpus / path
+        for name in ("Makefile", "main.c", "util.c", "util.h", "value.s", "project.expect"):
+            path = Path("project") / name
+            sources[CORPUS / path] = corpus / path
         deferred = {"aggregate-copy", "bitfield-values", "varargs", "alignment", "atomics",
                     "compound-literal", "designated-init", "generic"}
         candidates = set(names) - deferred

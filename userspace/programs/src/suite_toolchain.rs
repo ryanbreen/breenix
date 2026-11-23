@@ -1,6 +1,6 @@
 //! Check the sealed reference inputs and the native assembler, linker, C compiler and make.
 
-use breenix_suite::suite::{case, case_diagnostic, category, suite, CaseResult, Suite};
+use breenix_suite::suite::{case, case_diagnostic, category, suite, CaseError, CaseResult, Suite};
 use libbreenix::crypto::sha256::{sha256, Sha256};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -9,6 +9,7 @@ use std::io::Read;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::SystemTime;
 
 #[path = "fixture/ssh_lease.rs"]
 mod ssh_lease;
@@ -169,6 +170,27 @@ static SUITE: Suite = suite(
                     "failure-status",
                     "A failing shell recipe reports its status and stops the build",
                     make_failure_status,
+                ),
+            ],
+        ),
+        category(
+            "project",
+            "A multi-file C and assembly project: build, no-op and header-triggered rebuild",
+            &[
+                case(
+                    "builds-and-runs",
+                    "Make builds and runs the C and assembly project from clean inputs",
+                    project_builds_and_runs,
+                ),
+                case(
+                    "noop-rebuild",
+                    "A second make runs no recipe and preserves output bytes and mtimes",
+                    project_noop_rebuild,
+                ),
+                case(
+                    "header-rebuild",
+                    "A newer header rebuilds only its dependent objects and the executable",
+                    project_header_rebuild,
                 ),
             ],
         ),
@@ -700,6 +722,108 @@ fn make_failure_status() -> CaseResult {
             stderr.trim_end()
         )
         .into());
+    }
+    Ok(())
+}
+
+const PROJECT_INPUTS: &[&str] = &[
+    "Makefile",
+    "main.c",
+    "util.c",
+    "util.h",
+    "value.s",
+    "project.expect",
+];
+const PROJECT_OUTPUTS: &[&str] = &["main.o", "util.o", "value.o", "project"];
+const PROJECT_CC_MAIN: &str = "cc -c -o main.o main.c\n";
+const PROJECT_CC_UTIL: &str = "cc -c -o util.o util.c\n";
+const PROJECT_AS: &str = "as -o value.o value.s\n";
+const PROJECT_LINK: &str = "cc -o project main.o util.o value.o\n";
+
+fn project_make(scratch: &Scratch, recipes: &[&str]) -> CaseResult {
+    let stdout = require_success(
+        "make",
+        command_output(&mut bundle_command(scratch, "make"))?,
+    )?;
+    let expected = recipes.concat();
+    if stdout != expected.as_bytes() {
+        return Err(format!(
+            "make recipes: expected {expected:?}, got {:?}",
+            String::from_utf8_lossy(&stdout)
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn project_clean_build(case: &str) -> Result<Scratch, CaseError> {
+    if std::env::consts::ARCH != "x86_64" {
+        return Err("The ARM64 make bundle and project evidence are scheduled for A3".into());
+    }
+    let scratch = Scratch::new(case)?;
+    let fixture = Path::new("/").join(CORPUS).join("project");
+    for name in PROJECT_INPUTS {
+        let source = fixture.join(name);
+        io_at(&source, fs::copy(&source, scratch.join(name)))?;
+    }
+    project_make(
+        &scratch,
+        &[PROJECT_CC_MAIN, PROJECT_CC_UTIL, PROJECT_AS, PROJECT_LINK],
+    )?;
+    Ok(scratch)
+}
+
+fn project_snapshot(scratch: &Scratch, name: &str) -> Result<(Vec<u8>, SystemTime), String> {
+    let path = scratch.join(name);
+    let bytes = io_at(&path, fs::read(&path))?;
+    let modified = io_at(&path, fs::metadata(&path).and_then(|meta| meta.modified()))?;
+    Ok((bytes, modified))
+}
+
+fn project_builds_and_runs() -> CaseResult {
+    let scratch = project_clean_build("builds-and-runs")?;
+    run_expected(&scratch.join("project"), &scratch.join("project.expect"))
+}
+
+fn project_noop_rebuild() -> CaseResult {
+    let scratch = project_clean_build("noop-rebuild")?;
+    let before = PROJECT_OUTPUTS
+        .iter()
+        .map(|name| project_snapshot(&scratch, name))
+        .collect::<Result<Vec<_>, _>>()?;
+    project_make(&scratch, &[])?;
+    for (name, snapshot) in PROJECT_OUTPUTS.iter().zip(before) {
+        if project_snapshot(&scratch, name)? != snapshot {
+            return Err(format!("no-op rebuild changed bytes or mtime of {name}").into());
+        }
+    }
+    Ok(())
+}
+
+fn project_header_rebuild() -> CaseResult {
+    let scratch = project_clean_build("header-rebuild")?;
+    touch_make_files(&scratch, "2000-01-01 00:00:00", PROJECT_INPUTS)?;
+    touch_make_files(&scratch, "2000-01-01 00:00:00", PROJECT_OUTPUTS)?;
+    let before = PROJECT_OUTPUTS
+        .iter()
+        .map(|name| project_snapshot(&scratch, name))
+        .collect::<Result<Vec<_>, _>>()?;
+    touch_make_files(&scratch, "2000-01-02 00:00:00", &["util.h"])?;
+    let (_, header_time) = project_snapshot(&scratch, "util.h")?;
+    if before.iter().any(|(_, modified)| header_time <= *modified) {
+        return Err("touch -d did not make util.h newer than the build outputs".into());
+    }
+
+    project_make(&scratch, &[PROJECT_CC_MAIN, PROJECT_CC_UTIL, PROJECT_LINK])?;
+    for (name, snapshot) in PROJECT_OUTPUTS.iter().copied().zip(before) {
+        let current = project_snapshot(&scratch, name)?;
+        if name == "value.o" {
+            if current != snapshot {
+                return Err("header rebuild changed bytes or mtime of value.o".into());
+            }
+        } else if current.1 <= snapshot.1 {
+            return Err(format!("header rebuild did not update {name}").into());
+        }
     }
     Ok(())
 }

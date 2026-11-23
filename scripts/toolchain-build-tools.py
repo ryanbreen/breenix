@@ -126,6 +126,7 @@ def build(arch, work, dev, corpus):
             shutil.copy2(dev / "bin" / tool, dev / "bin" / alias)
         shutil.copytree(WORKSPACE / "corpus/c-core", corpus / "c-core")
         shutil.copytree(WORKSPACE / "corpus/make", corpus / "make")
+        shutil.copytree(WORKSPACE / "corpus/project", corpus / "project")
         lld, _ = reference.pinned_tool(
             Path(os.environ["BREENIX_TOOLCHAIN_LLD"]),
             os.environ["BREENIX_TOOLCHAIN_LLD_SHA256"], work,
