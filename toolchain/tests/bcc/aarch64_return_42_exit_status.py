@@ -97,6 +97,9 @@ def call_entry(bld, script, executable, objects, mode):
 def main():
     bcc, bas, bld = map(Path, sys.argv[1:4])
     source_texts = sys.argv[4:]
+    assembly_text = None
+    if source_texts[:1] == ["--asm"]:
+        assembly_text, source_texts = source_texts[1], source_texts[2:]
     archive = None
     mode = "--call-entry"
     if source_texts[:1] == ["--atomic-runtime"]:
@@ -113,6 +116,10 @@ def main():
             source = work / f"input-{index}.c"
             source.write_text(text)
             sources.append(source)
+        if assembly_text is not None:
+            assembly = work / "caller.s"
+            assembly.write_text(assembly_text)
+            sources.append(assembly)
         if not source_texts:
             probe = work / "probe.s"
             probe.write_text(PROBE)

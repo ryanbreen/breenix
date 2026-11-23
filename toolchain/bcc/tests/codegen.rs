@@ -281,6 +281,27 @@ int static_local(void) {
 }
 
 #[cfg(target_arch = "aarch64")]
+#[test]
+fn aarch64_flt_rounds_tracks_fpcr() {
+    // DDI 0487 M.b FPCR.RMode [23:22]; N1570 5.2.4.2.2.
+    // Save and restore the entire control register even on a mismatch.
+    let mut assembly = String::from(".text\n.global main\nmain:\n    stp x19, x30, [sp, #-16]!\n    mrs x19, fpcr\n    mov x10, #3\n    lsl x10, x10, #22\n");
+    for (mode, expected) in [(0, 1), (1, 2), (2, 3), (3, 0)] {
+        assembly.push_str(&format!("    bic x9, x19, x10\n    mov x11, #{mode}\n    lsl x11, x11, #22\n    orr x9, x9, x11\n    .long 0xd51b4409\n    bl rounds\n    cmp w0, #{expected}\n    b.ne .Lfailure\n    mov x10, #3\n    lsl x10, x10, #22\n"));
+    }
+    assembly.push_str("    mov w0, #42\n    b .Lrestore\n.Lfailure:\n    mov w0, #1\n.Lrestore:\n    .long 0xd51b4413\n    ldp x19, x30, [sp], #16\n    ret\n");
+    let toolchain = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let bcc = Path::new(env!("CARGO_BIN_EXE_bcc"));
+    let result = Command::new("python3")
+        .arg(toolchain.join("tests/bcc/aarch64_return_42_exit_status.py"))
+        .args([bcc, &bcc.with_file_name("bas"), &bcc.with_file_name("bld")])
+        .args(["--asm", &assembly, "int rounds(void) { return __builtin_flt_rounds(); }"])
+        .output().expect("run native FPCR harness");
+    assert!(result.status.success(), "{}\n{}{}", result.status,
+        String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
+}
+
+#[cfg(target_arch = "aarch64")]
 fn aarch64_check_exit(sources: &[&str]) {
     let toolchain = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let bcc = Path::new(env!("CARGO_BIN_EXE_bcc"));
