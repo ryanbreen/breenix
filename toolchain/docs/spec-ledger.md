@@ -181,6 +181,12 @@ Handling signals delivered directly to bmake, as described in “Asynchronous
 Events”, requires a signal API beyond the toolchain's safe Rust standard
 library interface.
 
+Ordinary makefiles default to `CC=cc` and empty `CFLAGS` so the built-in C
+rules use the compiler shipped in the bundle. A leading `.POSIX:` selects
+the standard compiler defaults (`c17` and `-O 1`). On Breenix, makefiles that
+declare `.POSIX:` can set `CC=cc` and `CFLAGS=` to use the bundled compiler's
+current language and optimization subset.
+
 25.6c covers archive members and their timestamps, remaking include files,
 recursive `MAKEFLAGS` and `$(MAKE)`, immediate assignment operators `::=`
 and `:::=`, the `.WAIT` barrier, `.NOTPARALLEL` and the `-j` job pool.

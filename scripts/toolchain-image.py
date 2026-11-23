@@ -101,6 +101,10 @@ def seal(bundle, commit, arch, tool_record):
         for name in ("hello.c", "hello.expect", "diagnostic.c"):
             path = Path("c-core") / name
             sources[CORPUS / path] = corpus / path
+        for name in ("failure-status.mk", "graph-order.mk", "macro-precedence.mk",
+                     "noop-when-current.mk", "sample.src", "suffix-inference.mk"):
+            path = Path("make") / name
+            sources[CORPUS / path] = corpus / path
         for name in ("Makefile", "main.c", "util.c", "util.h", "value.s", "project.expect"):
             path = Path("project") / name
             sources[CORPUS / path] = corpus / path

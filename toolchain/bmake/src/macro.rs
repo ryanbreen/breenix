@@ -104,8 +104,8 @@ impl Macros {
             ("ARFLAGS", "-rv"),
             ("AS", "as"),
             ("ASFLAGS", ""),
-            ("CC", "c17"),
-            ("CFLAGS", "-O 1"),
+            ("CC", "cc"),
+            ("CFLAGS", ""),
             ("YACC", "yacc"),
             ("YFLAGS", ""),
             ("LEX", "lex"),
@@ -123,6 +123,16 @@ impl Macros {
             macros.define(&name, value, &location, Origin::Environment);
         }
         macros
+    }
+
+    pub(crate) fn use_posix_compiler_defaults(&mut self) {
+        for (name, value) in [("CC", "c17"), ("CFLAGS", "-O 1")] {
+            if let Some(definition) = self.definitions.get_mut(name) {
+                if definition.origin == Origin::Default {
+                    definition.value = value.into();
+                }
+            }
+        }
     }
 
     pub(crate) fn assign_command_line(&mut self, assignment: &str) -> Result<(), Error> {

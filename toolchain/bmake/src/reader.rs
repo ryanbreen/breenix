@@ -102,8 +102,14 @@ impl Makefile {
         macros: &mut Macros,
         depth: usize,
     ) -> Result<(), Error> {
+        let parsed = parse(path, bytes)?;
+        if depth == 0
+            && matches!(parsed.entries.first(), Some(Entry::Rule(rule)) if rule.targets == [".POSIX"])
+        {
+            macros.use_posix_compiler_defaults();
+        }
         let automatic = Automatic::default();
-        for entry in parse(path, bytes)?.entries {
+        for entry in parsed.entries {
             match entry {
                 Entry::Macro(line) => macros.assign_makefile(&line.text, &line.location)?,
                 Entry::Rule(mut rule) => {
