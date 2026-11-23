@@ -223,3 +223,12 @@ current language and optimization subset.
 recursive `MAKEFLAGS` and `$(MAKE)`, assignment operators `::=`, `:::=`, `+=`,
 `?=` and `!=`, the `.WAIT` barrier, `.NOTPARALLEL`, the `-j` job pool, and
 target cleanup when a signal stops bmake itself.
+
+### AMD64 variadic definitions (25.7b2)
+
+N1570 §7.16.1 governs the four `stdarg.h` builtins. AMD64 psABI §3.5.7
+Figure 3.34 gives the one-element array type and its 24-byte record.
+The prologue uses the save offsets in Figure 3.33 and guards XMM spills
+with AL. The usable SSE bank ends at offset 176 because §3.2.3 assigns
+only XMM0–7 to arguments. Register-class selection and whole-record
+overflow follow §3.2.3. AAPCS64 varargs are scheduled for A4.

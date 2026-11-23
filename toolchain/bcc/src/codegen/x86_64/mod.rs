@@ -13,9 +13,11 @@ use crate::types::{BitField, Float, Integer, Kind, Layout, Record, Type};
 mod abi;
 mod bit_field;
 mod flow;
+mod varargs;
 
 use abi::{CallLayout, Place, RecordAbi, RecordRegisters, Register};
 use flow::Slot;
+use varargs::VariadicFrame;
 
 pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
     let mut functions = HashMap::new();
@@ -31,6 +33,7 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
         records: &unit.records,
         frame: 0,
         locals: Vec::new(),
+        variadic: None,
         flow_labels: HashMap::new(),
         data: String::new(),
         externs: BTreeSet::new(),
@@ -63,6 +66,7 @@ struct Emitter<'unit, 'src> {
     records: &'unit [Record<'src>],
     frame: usize,
     locals: Vec<Slot>,
+    variadic: Option<VariadicFrame>,
     flow_labels: HashMap<usize, String>,
     data: String,
     externs: BTreeSet<&'src str>,
@@ -80,7 +84,9 @@ impl<'src> Emitter<'_, 'src> {
     ) -> Result<(), Diagnostic> {
         let name = function.name;
         self.check_symbol(name, function.site)?;
-        let Kind::Function { result, .. } = &function.ty.kind else {
+        let Kind::Function {
+            result, variadic, ..
+        } = &function.ty.kind else {
             unreachable!()
         };
         if result.kind != Kind::Void && !supported_abi_type(result) {
@@ -117,6 +123,11 @@ impl<'src> Emitter<'_, 'src> {
         self.text.push_str("    push rbp\n    mov rbp, rsp\n");
         let stack_adjustment = self.text.len();
 
+        let save = if *variadic {
+            Some(self.save_variadic_registers(function.site)?)
+        } else {
+            None
+        };
         let mut layout = CallLayout::default();
         if let Some(slot) = &sret {
             writeln!(self.text, "    mov qword {}, rdi", slot.memory(0)).unwrap();
@@ -153,6 +164,7 @@ impl<'src> Emitter<'_, 'src> {
                 }
             }
         }
+        self.variadic = save.map(|save| VariadicFrame { save, named: layout });
         // Spill register inputs before rep movsb reuses argument registers.
         for (index, offset, size) in stack_records {
             let source = offset + 16;
@@ -267,6 +279,11 @@ impl<'src> Emitter<'_, 'src> {
                 self.converted(no, &expr.ty)?;
                 writeln!(self.text, "{end}:").unwrap();
             }
+            ExpressionKind::VaStart(list) => self.va_start(list)?,
+            ExpressionKind::VaArg(list) => self.va_arg(list, &expr.ty, expr.position())?,
+            ExpressionKind::VaCopy { dest, source } => self.va_copy(dest, source)?,
+            // AMD64 va_end has no resources to release. Evaluate the operand.
+            ExpressionKind::VaEnd(list) => self.value(list)?,
             ExpressionKind::Call { callee, arguments } => {
                 self.call(callee, arguments, &expr.ty)?;
                 self.normalize_integer(&expr.ty);

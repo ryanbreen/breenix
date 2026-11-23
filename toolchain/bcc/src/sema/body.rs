@@ -52,6 +52,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
             repeat: None,
             switches: Vec::new(),
             result,
+            last_named_parameter: None,
             target,
             records,
         }

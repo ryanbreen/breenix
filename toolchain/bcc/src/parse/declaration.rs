@@ -178,6 +178,18 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         Ok(Initializer::List(site, values))
     }
 
+    pub(super) fn type_name(&mut self, depth: usize) -> Result<Type, Diagnostic> {
+        let start = self
+            .peek()
+            .ok_or_else(|| self.error("expected a type name"))?;
+        let (base, _, _) = self.specifiers_at_depth(false, depth)?;
+        let declarator = self.declarator(true, depth)?;
+        if let Some(name) = declarator.name {
+            return Err(name.error("a type name cannot declare an identifier"));
+        }
+        declarator.ty(base, start)
+    }
+
     fn declarator(
         &mut self,
         abstract_ok: bool,
@@ -580,7 +592,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         Ok(RecordDefinition {
             layout: Layout { size, align },
             members,
-            end,
+            end: Some(end),
             has_const_member,
         })
     }

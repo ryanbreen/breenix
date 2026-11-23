@@ -78,11 +78,23 @@ pub struct Record<'a> {
     pub definition: Option<RecordDefinition<'a>>,
 }
 
+// AMD64 psABI §3.5.7, Figure 3.34.
+pub(crate) mod amd64_va_list {
+    use super::Layout;
+
+    pub(crate) const NAME: &str = "__builtin_va_list";
+    pub(crate) const GP_OFFSET: usize = 0;
+    pub(crate) const FP_OFFSET: usize = 4;
+    pub(crate) const OVERFLOW_ARG_AREA: usize = 8;
+    pub(crate) const REG_SAVE_AREA: usize = 16;
+    pub(crate) const LAYOUT: Layout = Layout { size: 24, align: 8 };
+}
+
 #[derive(Debug)]
 pub struct RecordDefinition<'a> {
     pub layout: Layout,
     pub members: Vec<Member<'a>>,
-    pub(crate) end: &'a Lexeme,
+    pub(crate) end: Option<&'a Lexeme>,
     pub(crate) has_const_member: bool,
 }
 

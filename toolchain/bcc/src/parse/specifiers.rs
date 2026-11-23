@@ -1,6 +1,6 @@
 //! N1570 6.7.1–6.7.3: specifier order is independent of type identity.
 use super::*;
-use crate::types::RecordType;
+use crate::types::{Member, RecordDefinition, RecordKind, RecordType, amd64_va_list};
 
 #[derive(Default)]
 struct Specifiers {
@@ -158,17 +158,9 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                         self.take();
                         Some(self.enumeration(token)?)
                     }
-                    "__builtin_va_list" => {
+                    amd64_va_list::NAME => {
                         self.take();
-                        // Declaration-only representation pending the target va_list
-                        // implementation in 25.7b2.
-                        Some(
-                            Type::new(TypeKind::Record(RecordType {
-                                id: usize::MAX,
-                                layout: None,
-                            }))
-                            .pointer_to(),
-                        )
+                        Some(self.va_list_type())
                     }
                     name => match self.lookup(name) {
                         Some(Name::Typedef(ty, signed)) => {
@@ -216,6 +208,59 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             specs.storage,
             specs.unsigned == Some(false) || typedef_signed,
         ))
+    }
+
+    fn va_list_type(&mut self) -> Type {
+        use amd64_va_list as abi;
+        if self.target == Target::Aarch64 {
+            // A4 supplies the AAPCS64 representation. Declarations can
+            // still refer to an opaque list on that target.
+            return Type::new(TypeKind::Record(RecordType {
+                id: usize::MAX,
+                layout: None,
+            }))
+            .pointer_to();
+        }
+
+        let id = if let Some(id) = self.va_list_record {
+            id
+        } else {
+            let id = self.records.len();
+            let unsigned = Type::new(TypeKind::Integer(Integer::UnsignedInt));
+            let pointer = Type::new(TypeKind::Void).pointer_to();
+            let members = [
+                ("gp_offset", unsigned.clone(), abi::GP_OFFSET),
+                ("fp_offset", unsigned, abi::FP_OFFSET),
+                ("overflow_arg_area", pointer.clone(), abi::OVERFLOW_ARG_AREA),
+                ("reg_save_area", pointer, abi::REG_SAVE_AREA),
+            ]
+            .into_iter()
+            .map(|(name, ty, offset)| Member {
+                name,
+                ty,
+                offset,
+                bit_field: None,
+            })
+            .collect();
+            self.records.push(Record {
+                kind: RecordKind::Struct,
+                tag: Some(abi::NAME),
+                definition: Some(RecordDefinition {
+                    layout: abi::LAYOUT,
+                    members,
+                    end: None,
+                    has_const_member: false,
+                }),
+            });
+            self.va_list_record = Some(id);
+            id
+        };
+
+        let record = Type::new(TypeKind::Record(RecordType {
+            id,
+            layout: Some(abi::LAYOUT),
+        }));
+        Type::new(TypeKind::Array(Box::new(record), 1))
     }
 
     pub(super) fn qualifier(&mut self, qualifiers: &mut Qualifiers) -> bool {

@@ -4,6 +4,7 @@ use crate::pp::{Diagnostic, Position};
 use crate::types::{Float, Kind, Record, Type};
 
 pub(super) const INTEGER_REGS: [&str; 6] = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
+pub(super) const VECTOR_ARG_REGS: usize = 8;
 const INTEGER_RESULTS: [&str; 2] = ["rax", "rdx"];
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -137,12 +138,12 @@ impl CallLayout {
         match ty.kind {
             Kind::Record(_) => {
                 if let RecordAbi::Registers(classes) = RecordAbi::classify(ty, records, site)? {
-                    if let Some(registers) = self.allocate(classes, &INTEGER_REGS, 8) {
+                    if let Some(registers) = self.allocate(classes, &INTEGER_REGS, VECTOR_ARG_REGS) {
                         return Ok(Place::Record(registers));
                     }
                 }
             }
-            Kind::Float(float) if self.vectors < 8 => {
+            Kind::Float(float) if self.vectors < VECTOR_ARG_REGS => {
                 let index = self.vectors;
                 self.vectors += 1;
                 return Ok(Place::Vector(index, float));

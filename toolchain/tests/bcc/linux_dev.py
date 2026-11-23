@@ -18,9 +18,8 @@ from tempfile import TemporaryDirectory
 
 ROOT = Path(__file__).resolve().parents[3]
 CASES = ("byte-output", "literal-output")
-# The development list adds aggregate-copy and bitfield-values in 25.7b1.
-# Varargs waits for 25.7b2. Alignment, atomics,
-# compound-literal, designated-init and generic wait for 25.9.
+# The development list adds aggregate-copy, bitfield-values and varargs in 25.7.
+# Alignment, atomics, compound-literal, designated-init and generic wait for 25.9.
 CORPUS = (
     "aggregate-copy",
     "array-index",
@@ -46,6 +45,7 @@ CORPUS = (
     "switch-enum",
     "unsigned-wrap",
     "usual-conversions",
+    "varargs",
 )
 
 

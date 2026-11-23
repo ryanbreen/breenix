@@ -164,6 +164,15 @@ fn expression(out: &mut impl Write, expr: &Expression<'_>) -> io::Result<()> {
             ("member", if expr.lvalue() { "lvalue" } else { "rvalue" })
         }
         ExpressionKind::String(_) => ("string-literal", "lvalue"),
+        ExpressionKind::VaStart(list) | ExpressionKind::VaArg(list) | ExpressionKind::VaEnd(list) => {
+            expression(out, list)?;
+            (expr.site.text.as_ref(), "rvalue")
+        }
+        ExpressionKind::VaCopy { dest, source } => {
+            expression(out, dest)?;
+            expression(out, source)?;
+            ("__builtin_va_copy", "rvalue")
+        }
         ExpressionKind::Call { callee, arguments } => {
             expression(out, callee)?;
             for argument in arguments {

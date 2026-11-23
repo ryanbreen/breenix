@@ -10,6 +10,7 @@ pub use parse::{Binary, Unary};
 mod body;
 mod dump;
 mod float;
+mod varargs;
 
 #[derive(Debug)]
 pub struct TranslationUnit<'a> {
@@ -140,6 +141,13 @@ pub enum ExpressionKind<'a> {
         bit_field: Option<BitField>,
     },
     String(Vec<u8>),
+    VaStart(Box<Expression<'a>>),
+    VaArg(Box<Expression<'a>>),
+    VaCopy {
+        dest: Box<Expression<'a>>,
+        source: Box<Expression<'a>>,
+    },
+    VaEnd(Box<Expression<'a>>),
     Call {
         callee: Box<Expression<'a>>,
         arguments: Vec<Argument<'a>>,
@@ -315,8 +323,8 @@ impl RecordScope<'_, '_> {
     fn resolve(&self, ty: &mut Type, site: &Lexeme) {
         ty.resolve_records(&|id| {
             let def = self.records.get(id)?.definition.as_ref()?;
-            if let Some(order) = self.token_order {
-                let end = order[&std::ptr::from_ref(def.end)];
+            if let (Some(order), Some(end)) = (self.token_order, def.end) {
+                let end = order[&std::ptr::from_ref(end)];
                 let use_at = order[&std::ptr::from_ref(site)];
                 if end >= use_at {
                     return None;
@@ -382,9 +390,6 @@ fn function<'a>(
         body,
     } = declaration;
     let defined = body.is_some();
-    if defined && variadic {
-        return Err(name.error("variadic function definitions are deferred to 25.7b2"));
-    }
     if defined && matches!(result.kind, Kind::Record(record) if record.layout.is_none()) {
         return Err(name.error("function definition has an incomplete record result"));
     }
@@ -443,6 +448,9 @@ fn function<'a>(
     );
     let (body, locals) = if let Some(statements) = body {
         let mut context = FunctionBody::new(symbols, &result, target, &params, records);
+        if variadic {
+            context.last_named_parameter = params.len().checked_sub(1);
+        }
         let body = context.statements(statements)?;
         context.validate_labels()?;
         (Some(body), context.locals)
@@ -470,6 +478,7 @@ struct FunctionBody<'a, 's> {
     repeat: Option<usize>,
     switches: Vec<body::Switch>,
     result: &'s Type,
+    last_named_parameter: Option<usize>,
     target: Target,
     records: &'s RecordScope<'a, 's>,
 }
@@ -737,6 +746,7 @@ impl<'a> FunctionBody<'a, '_> {
                 let ty = Type::new(Kind::Array(Box::new(element), bytes.len()));
                 (ExpressionKind::String(bytes), ty)
             }
+            Syntax::VaArg(list, ty) => self.va_arg(site, *list, ty)?,
             Syntax::Call {
                 callee,
                 arguments,
@@ -753,6 +763,14 @@ impl<'a> FunctionBody<'a, '_> {
         arguments: Vec<parse::Expression<'a>>,
         close: &Lexeme,
     ) -> Result<(ExpressionKind<'a>, Type), Diagnostic> {
+        if matches!(callee.kind, parse::ExpressionKind::Identifier)
+            && matches!(
+                callee.site.text.as_ref(),
+                "__builtin_va_start" | "__builtin_va_copy" | "__builtin_va_end"
+            )
+        {
+            return self.va_control(callee.site, arguments);
+        }
         let callee = self.expression(callee)?;
         let converted = callee.converted_type();
         let ty = converted.as_ref().unwrap_or(&callee.ty);

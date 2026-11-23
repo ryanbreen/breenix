@@ -4,7 +4,7 @@ use std::iter::Peekable;
 use std::path::Path;
 
 use crate::pp::{Diagnostic, Kind, Lexeme, Location, Position, Preprocessed, Target};
-use crate::types::{Integer, Kind as TypeKind, Qualifiers, Record, Type};
+use crate::types::{Integer, Kind as TypeKind, Qualifiers, Record, Type, amd64_va_list};
 
 mod declaration;
 mod specifiers;
@@ -98,6 +98,7 @@ impl<'a> Expression<'a> {
             Unary(_, expr)
             | Cast(_, expr)
             | Sizeof(expr)
+            | VaArg(expr, _)
             | Update { operand: expr, .. }
             | Member { base: expr, .. } => expr.height,
             Binary(_, a, b) | Assignment(_, a, b) => a.height.max(b.height),
@@ -133,6 +134,7 @@ pub(super) enum ExpressionKind<'a> {
     Cast(Type, Box<Expression<'a>>),
     SizeofType(Type),
     Sizeof(Box<Expression<'a>>),
+    VaArg(Box<Expression<'a>>, Type),
     Conditional(
         Box<Expression<'a>>,
         Box<Expression<'a>>,
@@ -237,6 +239,7 @@ fn parse_tokens<'a>(
         names: vec![HashMap::new()],
         tags: vec![HashMap::new()],
         records: Vec::new(),
+        va_list_record: None,
     };
     let mut declarations = Vec::new();
     if parser.peek().is_none() {
@@ -259,6 +262,7 @@ struct Parser<'a, 'p, I: Iterator<Item = &'a Lexeme>> {
     names: Vec<HashMap<&'a str, Name>>,
     tags: Vec<HashMap<&'a str, Tag>>,
     records: Vec<Record<'a>>,
+    va_list_record: Option<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -366,7 +370,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 | "struct"
                 | "union"
                 | "enum"
-                | "__builtin_va_list"
+                | amd64_va_list::NAME
         ) || matches!(self.lookup(&token.text), Some(Name::Typedef(..)))
     }
 
@@ -685,7 +689,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             self.expect(")", "expected ')' after the expression")?;
             expr
         } else {
-            self.primary()?
+            self.primary(depth)?
         };
         let mut count = 0;
         while let Some(open) = self
@@ -763,11 +767,20 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         Ok(callee)
     }
 
-    fn primary(&mut self) -> Result<Expression<'a>, Diagnostic> {
+    fn primary(&mut self, depth: usize) -> Result<Expression<'a>, Diagnostic> {
         let site = self
             .peek()
             .ok_or_else(|| self.error("expected an expression"))?;
         let kind = match site.kind {
+            Kind::Identifier if site.is("__builtin_va_arg") => {
+                self.take();
+                self.expect("(", "expected '(' after __builtin_va_arg")?;
+                let list = self.expression(depth + 1)?;
+                self.expect(",", "expected ',' before the va_arg type")?;
+                let ty = self.type_name(depth + 1)?;
+                self.expect(")", "expected ')' after the va_arg type")?;
+                ExpressionKind::VaArg(Box::new(list), ty)
+            }
             Kind::Identifier if is_identifier(site) => {
                 self.take();
                 match self.lookup(&site.text) {
@@ -848,6 +861,8 @@ fn is_identifier(token: &Lexeme) -> bool {
                 | "_Noreturn"
                 | "_Static_assert"
                 | "_Thread_local"
+                | amd64_va_list::NAME
+                | "__builtin_va_arg"
         )
 }
 
