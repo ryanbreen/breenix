@@ -93,12 +93,19 @@ $(ELF): $(BUILD)/abi_check.o $(BUILD)/harness.o $(BUILD)/$(CATEGORY).o $(BUILD)/
 	"$(NM)" -gP "$$base.o" "$(BUILD)/harness.o" > "$$base.symbols"; \
 	"$(NM)" -gP "$(BRT)" > "$$base.brt"; \
 	awk '$$2 ~ /^(U|w|v)$$/ { print $$1 }' "$$base.symbols" > "$$base.undefined"; \
-	awk 'NF == 4 { print $$1 }' "$$base.symbols" > "$$base.defined"; \
-	awk 'NF == 4 { print $$NF }' "$(BUILD)/libc-nm.txt" >> "$$base.defined"; \
-	awk 'NF == 4 && $$1 ~ /^__atomic_(load|store|exchange|compare_exchange|is_lock_free)$$/ { print $$1 }' "$$base.brt" >> "$$base.defined"; \
 	sort -u -o "$$base.undefined" "$$base.undefined"; \
-	sort -u -o "$$base.defined" "$$base.defined"; \
-	comm -23 "$$base.undefined" "$$base.defined" > "$$base-missing.txt"; \
+	awk '\
+	    FILENAME == ARGV[1] { needed[$$1] = 1; next } \
+	    NF != 4 { next } \
+	    FILENAME == ARGV[2] { delete needed[$$1]; next } \
+	    FILENAME == ARGV[3] { \
+	        if ($$1 ~ /^__atomic_(load|store|exchange|compare_exchange|is_lock_free)$$/) delete needed[$$1]; \
+	        next; \
+	    } \
+	    { delete needed[$$NF] } \
+	    END { for (name in needed) print name }' \
+	    "$$base.undefined" "$$base.symbols" "$$base.brt" "$(BUILD)/libc-nm.txt" > "$$base-missing.txt"; \
+	sort -u -o "$$base-missing.txt" "$$base-missing.txt"; \
 	missing_data=$$(awk -v data="$(DATA)" 'BEGIN { n = split(data, names); for (i = 1; i <= n; i++) known[names[i]] = 1 } $$1 in known { print }' "$$base-missing.txt"); \
 	if [ -n "$$missing_data" ]; then \
 	    printf '%s\n' "libc-suite: $(CATEGORY) uses data Breenix's C library does not define: $$(printf '%s\n' "$$missing_data" | paste -s -d ' ' -)" >&2; exit 1; \
