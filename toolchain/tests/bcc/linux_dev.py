@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Run bcc development checks in the x86-64 Linux build container.
+"""Run bcc development checks in the Linux build container.
+
+Use --arch aarch64 in the linux/arm64 container (Linux/aarch64).
+These checks are development only and are never Breenix evidence.
 
 Pass the Cargo-built bld binary and liblinux_test.a. For the sealed-object
 check pass the reference corpus directory (receipts and objs/*.o outputs).
@@ -95,12 +98,15 @@ def check(args, name, work):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--corpus", action="store_true")
+    parser.add_argument("--arch", choices=("x86_64", "aarch64"), default="x86_64")
     for option in ("bld", "runtime", "reference-corpus", "bcc", "bas"):
         parser.add_argument(f"--{option}", required=option in ("bld", "runtime"),
                             type=lambda path: Path(path).resolve())
     args = parser.parse_args()
-    if (platform.system(), platform.machine()) != ("Linux", "x86_64"):
-        parser.error("run in the x86-64 Linux build container")
+    if (platform.system(), platform.machine()) != ("Linux", args.arch):
+        parser.error(f"run in a Linux/{args.arch} build container")
+    if args.corpus and args.arch != "x86_64":
+        parser.error("--corpus currently requires x86_64")
     if args.corpus and (args.bcc is None or args.bas is None):
         parser.error("--corpus requires --bcc and --bas")
     if not args.corpus and args.reference_corpus is None:

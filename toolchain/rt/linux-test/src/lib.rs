@@ -10,15 +10,16 @@
 
 #[cfg(not(all(
     target_os = "linux",
-    target_arch = "x86_64",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
     target_pointer_width = "64"
 )))]
-compile_error!("linux-test requires the x86-64 Linux LP64 ABI");
+compile_error!("linux-test requires the x86-64 or aarch64 Linux LP64 ABI");
 
 use core::arch::{asm, global_asm};
 use core::ffi::{c_char, c_int, c_uint, c_void};
 use core::{ptr, slice};
 
+#[cfg(target_arch = "x86_64")]
 // AMD64 psABI §3.4.1 and §3.2.3 describe the initial stack and the C call.
 // SAFETY: The entry point reads argc/argv/envp from that stack, aligns RSP
 // for both calls, and hands main's integer result to the non-returning exit.
@@ -39,6 +40,26 @@ global_asm!(
     exit = sym exit,
 );
 
+// AAPCS64 §6.4.5 requires a 16-byte aligned stack at public interfaces.
+// The Linux initial stack starts with argc followed by argv and envp.
+// SAFETY: The entry point derives argv and envp from the initial stack and
+// passes main's result to the non-returning exit function.
+#[cfg(target_arch = "aarch64")]
+global_asm!(
+    ".section .text._start,\"ax\",@progbits",
+    ".globl _start",
+    ".type _start,@function",
+    "_start:",
+    "ldr x0, [sp]",
+    "add x1, sp, #8",
+    "add x2, x1, x0, lsl #3",
+    "add x2, x2, #8",
+    "bl main",
+    "bl {exit}",
+    ".size _start, . - _start",
+    exit = sym exit,
+);
+
 #[repr(transparent)]
 struct Stream(c_int);
 
@@ -48,10 +69,18 @@ static STDOUT: Stream = Stream(1);
 #[no_mangle]
 static mut stdout: *const Stream = &STDOUT;
 
+#[cfg(target_arch = "x86_64")]
 const SYS_WRITE: isize = 1;
+#[cfg(target_arch = "x86_64")]
 const SYS_EXIT: isize = 60;
+// libs/libbreenix/src/syscall.rs:281,301 (E25 ruling 40).
+#[cfg(target_arch = "aarch64")]
+const SYS_WRITE: isize = 64;
+#[cfg(target_arch = "aarch64")]
+const SYS_EXIT: isize = 93;
 const EINTR: isize = 4;
 
+#[cfg(target_arch = "x86_64")]
 // The AMD64 psABI appendix A.2.1 describes Linux's syscall ABI.
 unsafe fn sys_write(fd: c_int, data: *const u8, len: usize) -> isize {
     let result;
@@ -72,6 +101,23 @@ unsafe fn sys_write(fd: c_int, data: *const u8, len: usize) -> isize {
     result
 }
 
+#[cfg(target_arch = "aarch64")]
+unsafe fn sys_write(fd: c_int, data: *const u8, len: usize) -> isize {
+    let result;
+    // SAFETY: The caller supplies a readable buffer, consumed synchronously.
+    unsafe {
+        asm!(
+            "svc #0",
+            in("x8") SYS_WRITE,
+            inlateout("x0") fd as isize => result,
+            in("x1") data,
+            in("x2") len,
+            options(nostack),
+        );
+    }
+    result
+}
+
 #[no_mangle]
 unsafe extern "C" fn write(fd: c_int, data: *const c_void, len: usize) -> isize {
     // SAFETY: The C caller supplies a buffer readable for len bytes.
@@ -79,6 +125,7 @@ unsafe extern "C" fn write(fd: c_int, data: *const c_void, len: usize) -> isize 
     result.max(-1)
 }
 
+#[cfg(target_arch = "x86_64")]
 #[no_mangle]
 extern "C" fn exit(status: c_int) -> ! {
     // SAFETY: The Linux exit syscall takes only the status. If the syscall
@@ -91,6 +138,17 @@ extern "C" fn exit(status: c_int) -> ! {
             in("rdi") status,
             options(nostack, noreturn),
         );
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+#[no_mangle]
+extern "C" fn exit(status: c_int) -> ! {
+    // SAFETY: The exit syscall consumes the status and does not return;
+    // brk traps if it unexpectedly does.
+    unsafe {
+        asm!("svc #0", "brk #0", in("x8") SYS_EXIT, in("x0") status,
+             options(nostack, noreturn));
     }
 }
 
