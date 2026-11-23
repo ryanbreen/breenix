@@ -358,7 +358,7 @@ def check_aarch64(bas, path, obj):
 
 
 def check_aarch64_relocations(bas, elfcheck, path):
-    # AAELF64 2025Q1 §§5.7.5–5.7.8 give these type numbers. Each row names
+    # AAELF64 2025Q1 §§5.7.5–5.7.8 and 5.7.11.4 give these type numbers. Each row names
     # the relocation place, type, original target symbol and explicit addend.
     expected = {
         b".text": [

@@ -1,7 +1,7 @@
 //! Load/store addressing and synchronization encodings from DDI 0487 M.b.
 
 use super::fp::{FpRegister, Precision};
-use super::{branch, immediate, parse_register, BranchKind, Register};
+use super::{branch, immediate, modifier, parse_register, Register, Relocation};
 use crate::parser::{Parser, Token};
 use crate::Result;
 
@@ -223,7 +223,7 @@ pub(super) fn single(p: &mut Parser<'_, '_>, op: Token<'_>) -> Result<()> {
         };
         return branch(
             p,
-            BranchKind::Literal,
+            Relocation::Literal,
             0x1800_0000 | (opc << 30) | (v << 26) | rt.number(),
         );
     }
@@ -247,6 +247,39 @@ pub(super) fn single(p: &mut Parser<'_, '_>, op: Token<'_>) -> Result<()> {
         }
     };
     let base = base_register(p)?;
+    let word =
+        (size << 30) | 0x3800_0000 | (v << 26) | (opc << 22) | (base.number << 5) | rt.number();
+    let offset_start = p.column;
+    let has_comma = p.take(b',');
+    if p.peek() == b':' {
+        let column = p.column;
+        let name = modifier(p)?;
+        if unscaled {
+            return Err(p.error(column, "relocation requires an unsigned scaled offset"));
+        }
+        let kind = match name.text {
+            "lo12" if has_comma => match scale {
+                0 => Relocation::Ldst8AbsLo12Nc,
+                1 => Relocation::Ldst16AbsLo12Nc,
+                2 => Relocation::Ldst32AbsLo12Nc,
+                3 => Relocation::Ldst64AbsLo12Nc,
+                4 => Relocation::Ldst128AbsLo12Nc,
+                _ => unreachable!("single load/store access size"),
+            },
+            // AAELF64 §5.7.9 writes the GOT offset without a comma.
+            "got_lo12" => {
+                if op.text != "ldr" || !matches!(rt, Transfer::General(reg) if reg.wide) {
+                    return Err(p.error(name.column, "GOT offset requires a 64-bit LDR"));
+                }
+                Relocation::Ld64GotLo12Nc
+            }
+            _ => return Err(p.error(column, "unsupported load/store relocation modifier")),
+        };
+        let label = p.word();
+        p.emit_aarch64_reference(label, kind, word | (1 << 24))?;
+        return p.expect(b']', "expected ']' after address");
+    }
+    p.column = offset_start;
     let mode = AddressMode::parse(p, base, (!unscaled).then_some(scale))?;
     if unscaled && mode.writes_back() {
         return Err(p.error(base.column, "unscaled load/store does not write back"));
@@ -263,14 +296,7 @@ pub(super) fn single(p: &mut Parser<'_, '_>, op: Token<'_>) -> Result<()> {
         AddressMode::PostIndex(offset) => (offset.field(p, 0, -256, 255)? & 0x1ff) << 12 | 1 << 10,
         AddressMode::Register(index) => 1 << 21 | index | 2 << 10,
     };
-    let word = (size << 30)
-        | 0x3800_0000
-        | (v << 26)
-        | (opc << 22)
-        | address
-        | (base.number << 5)
-        | rt.number();
-    p.emit_aarch64(op.column, word)
+    p.emit_aarch64(op.column, word | address)
 }
 
 pub(super) fn pair(p: &mut Parser<'_, '_>, op: Token<'_>) -> Result<u32> {

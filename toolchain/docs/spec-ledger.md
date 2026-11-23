@@ -32,6 +32,12 @@ edition pin whose full publication has no digest recorded here.
 | [Oracle Solaris `ar(3HEAD)`](https://docs.oracle.com/cd/E86824_01/html/E54772/ar.h-3head.html) | Oracle Solaris 11.3, archive file format | — |
 | [Clang Language Extensions](https://releases.llvm.org/22.1.0/tools/clang/docs/LanguageExtensions.html) | Clang 22.1 release manual, builtin varargs, C11 atomics, `offsetof` and floating rounding | `66bb3c0e28f15608750483506cb079d421f9cfb5e01d25b838d921f7efabf860` |
 
+## AArch64 assembler dialect
+
+AAELF64 2025Q1 §§5.7.5–5.7.8 and 5.7.11.4 define the relocation codes and
+relocated fields. Ruling 31 specifies bas's `:lo12:` load/store spelling and
+`:tprel_hi12:` and `:tprel_lo12_nc:` spellings for the local-exec TLS ADD pair.
+
 ## Support headers
 
 The two ELF targets use 8-bit bytes, 32-bit `int`, and 64-bit `long` and

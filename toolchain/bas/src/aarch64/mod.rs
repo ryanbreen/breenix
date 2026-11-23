@@ -3,66 +3,12 @@
 mod fp;
 mod integer;
 mod memory;
+mod relocation;
 
-use bobj::elf::aarch64::{
-    R_AARCH64_CALL26, R_AARCH64_CONDBR19, R_AARCH64_JUMP26, R_AARCH64_TSTBR14,
-};
+pub(crate) use relocation::Relocation;
 
 use crate::parser::{Parser, Token};
-use crate::{Location, Result};
-
-#[derive(Clone, Copy)]
-#[repr(u32)]
-pub(crate) enum BranchKind {
-    Adr = 0,     // Local fixup only.
-    Literal = 1, // Local fixup only.
-    Jump26 = R_AARCH64_JUMP26,
-    Call26 = R_AARCH64_CALL26,
-    Cond19 = R_AARCH64_CONDBR19,
-    Test14 = R_AARCH64_TSTBR14,
-}
-
-impl BranchKind {
-    pub(crate) fn patch(self, word: u32, displacement: i128, at: Location) -> Result<u32> {
-        // AAELF64 §5.7.6: signed S + A - P, scaled by four and inserted
-        // into the instruction's immediate field.
-        let (width, shift) = match self {
-            Self::Jump26 | Self::Call26 => (26, 0),
-            Self::Cond19 | Self::Literal => (19, 5),
-            Self::Test14 => (14, 5),
-            Self::Adr => {
-                // C6.2.12: signed byte displacement in immhi:immlo.
-                if !(-(1 << 20)..(1 << 20)).contains(&displacement) {
-                    return Err(at.error("ADR target out of range"));
-                }
-                let imm = displacement as u32 & 0x1f_ffff;
-                return Ok(word | ((imm & 3) << 29) | ((imm >> 2) << 5));
-            }
-        };
-        let (alignment_error, range_error) = if matches!(self, Self::Literal) {
-            // C6.2.216 and C7.2.231: signed imm19 scaled by four.
-            (
-                "literal target must be four-byte aligned",
-                "literal target out of range",
-            )
-        } else {
-            (
-                "branch target must be four-byte aligned",
-                "branch target out of range",
-            )
-        };
-        if displacement % 4 != 0 {
-            return Err(at.error(alignment_error));
-        }
-        let scaled = displacement / 4;
-        let limit = 1i128 << (width - 1);
-        if !(-limit..limit).contains(&scaled) {
-            return Err(at.error(range_error));
-        }
-        let mask = (1u32 << width) - 1;
-        Ok((word & !(mask << shift)) | ((scaled as u32 & mask) << shift))
-    }
-}
+use crate::Result;
 
 #[derive(Clone, Copy)]
 struct Register {
@@ -158,14 +104,21 @@ fn condition(name: &str) -> Option<u32> {
     }
 }
 
-fn branch(p: &mut Parser<'_, '_>, kind: BranchKind, word: u32) -> Result<()> {
+fn modifier<'src>(p: &mut Parser<'src, '_>) -> Result<Token<'src>> {
+    p.expect(b':', "expected ':' before relocation modifier")?;
+    let name = p.word();
+    p.expect(b':', "expected ':' after relocation modifier")?;
+    Ok(name)
+}
+
+fn branch(p: &mut Parser<'_, '_>, kind: Relocation, word: u32) -> Result<()> {
     let label = p.word();
-    p.branch_aarch64(label, kind, word)
+    p.emit_aarch64_reference(label, kind, word)
 }
 
 pub(crate) fn instruction(p: &mut Parser<'_, '_>, op: Token<'_>) -> Result<()> {
     let word = match op.text {
-        "adr" => return integer::adr(p),
+        "adr" | "adrp" => return integer::adr(p, op),
         "ldr" | "str" | "ldur" | "stur" | "ldrb" | "strb" | "ldurb" | "sturb" | "ldrh" | "strh"
         | "ldurh" | "sturh" | "ldrsb" | "ldursb" | "ldrsh" | "ldursh" | "ldrsw" | "ldursw" => {
             return memory::single(p, op)
@@ -192,8 +145,8 @@ pub(crate) fn instruction(p: &mut Parser<'_, '_>, op: Token<'_>) -> Result<()> {
             };
             0xd65f_0000 | (rn << 5)
         }
-        "b" => return branch(p, BranchKind::Jump26, 0x1400_0000), // C6.2.35
-        "bl" => return branch(p, BranchKind::Call26, 0x9400_0000), // C6.2.43
+        "b" => return branch(p, Relocation::Jump26, 0x1400_0000), // C6.2.35
+        "bl" => return branch(p, Relocation::Call26, 0x9400_0000), // C6.2.43
         "cbz" | "cbnz" => {
             // C6.2.78 / C6.2.77: sf, op[24], imm19[23:5], Rt[4:0].
             let rt = register(p, false)?;
@@ -201,7 +154,7 @@ pub(crate) fn instruction(p: &mut Parser<'_, '_>, op: Token<'_>) -> Result<()> {
             let nonzero = u32::from(op.text == "cbnz") << 24;
             return branch(
                 p,
-                BranchKind::Cond19,
+                Relocation::Cond19,
                 0x3400_0000 | rt.sf() | nonzero | rt.number,
             );
         }
@@ -215,7 +168,7 @@ pub(crate) fn instruction(p: &mut Parser<'_, '_>, op: Token<'_>) -> Result<()> {
             let bit_field = ((bit >> 5) << 31) | ((bit & 31) << 19);
             return branch(
                 p,
-                BranchKind::Test14,
+                Relocation::Test14,
                 0x3600_0000 | bit_field | nonzero | rt.number,
             );
         }
@@ -223,9 +176,9 @@ pub(crate) fn instruction(p: &mut Parser<'_, '_>, op: Token<'_>) -> Result<()> {
             if let Some(suffix) = op.text.strip_prefix("b.") {
                 let cond = condition(suffix)
                     .ok_or_else(|| p.error(op.column, "unknown AArch64 branch condition"))?;
-                return branch(p, BranchKind::Cond19, 0x5400_0000 | cond);
+                return branch(p, Relocation::Cond19, 0x5400_0000 | cond);
             }
-            integer::encode(p, op)?
+            return integer::encode(p, op);
         }
     };
     p.emit_aarch64(op.column, word)

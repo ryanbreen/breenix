@@ -3,8 +3,8 @@
 use bobj::elf::amd64::{R_32, R_32S, R_64, R_GOTPCREL, R_PLT32, R_TPOFF32};
 use bobj::elf::{STT_FUNC, STT_NOTYPE, STT_OBJECT, STT_TLS};
 
+use crate::aarch64::Relocation;
 use crate::object::{Endpoint, Object};
-use crate::aarch64::BranchKind;
 use crate::{Diagnostic, Location, Result, Target};
 
 #[derive(Clone, Copy)]
@@ -236,16 +236,24 @@ impl<'src, 'obj> Parser<'src, 'obj> {
         self.object.emit_aarch64(self.location(column), word)
     }
 
-    pub(crate) fn branch_aarch64(
+    pub(crate) fn emit_aarch64_reference(
         &mut self,
         label: Token<'_>,
-        kind: BranchKind,
+        kind: Relocation,
         word: u32,
     ) -> Result<()> {
         let symbol = self.symbol(label)?;
         let addend = self.addend()?;
-        self.object
-            .branch_aarch64(symbol, kind, addend, word, self.location(label.column))
+        if matches!(kind, Relocation::AdrGotPage | Relocation::Ld64GotLo12Nc) && addend != 0 {
+            return Err(self.error(label.column, "GOT relocation requires a zero addend"));
+        }
+        self.object.aarch64_reference(
+            symbol,
+            kind,
+            addend,
+            Some(word),
+            self.location(label.column),
+        )
     }
 
     pub(crate) fn emit_word(&mut self, column: usize, value: u64, width: usize) -> Result<()> {
@@ -306,11 +314,10 @@ impl<'src, 'obj> Parser<'src, 'obj> {
                 let column = self.column;
                 let value = self.integer(width, false)?;
                 self.emit_word(column, value, width)?;
+            } else if self.object.target == Target::Aarch64 {
+                self.emit_aarch64_data_reference(width)?;
             } else {
                 let label = self.word();
-                if self.object.target == Target::Aarch64 {
-                    return Err(self.error(label.column, "AArch64 data relocations are unsupported"));
-                }
                 let kind = match (width, self.relocation_modifier()?) {
                     (8, 0) => R_64,
                     (4, 0) => R_32,
@@ -329,6 +336,30 @@ impl<'src, 'obj> Parser<'src, 'obj> {
                 return Ok(());
             }
         }
+    }
+
+    fn emit_aarch64_data_reference(&mut self, width: usize) -> Result<()> {
+        let label = self.word();
+        let symbol = self.symbol(label)?;
+        // AAELF64 §5.7.5: P is the address of the data field, denoted by '.'.
+        let after_label = self.column;
+        let relative = self.take(b'-') && self.word().text == ".";
+        if !relative {
+            self.column = after_label;
+        }
+        let kind = match (width, relative) {
+            (8, false) => Relocation::Abs64,
+            (4, false) => Relocation::Abs32,
+            (4, true) => Relocation::Prel32,
+            _ => {
+                return Err(
+                    self.error(label.column, "unsupported AArch64 data relocation for this field")
+                )
+            }
+        };
+        let addend = self.addend()?;
+        self.object
+            .aarch64_reference(symbol, kind, addend, None, self.location(label.column))
     }
 
     fn align(&mut self) -> Result<()> {

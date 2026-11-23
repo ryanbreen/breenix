@@ -1,4 +1,4 @@
-// AAELF64 2025Q1 §§5.7.5–5.7.8. The expected RELA records are in run.py.
+// AAELF64 2025Q1 §§5.7.5–5.7.8 and 5.7.11.4. The expected RELA records are in run.py.
 .section .text
 .global external
 bl external+4

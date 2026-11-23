@@ -1,17 +1,17 @@
 //! A64 integer instruction encodings from DDI 0487 M.b C6.2.
 
-use super::{condition, immediate, parse_register, BranchKind, Register};
+use super::{condition, immediate, modifier, parse_register, Register, Relocation};
 use crate::parser::{Parser, Token};
 use crate::Result;
 
-pub(super) fn encode(p: &mut Parser<'_, '_>, op: Token<'_>) -> Result<u32> {
-    match op.text {
-        "add" => add_sub(p, 0, false),
-        "adds" => add_sub(p, 1, false),
-        "sub" => add_sub(p, 2, false),
-        "subs" => add_sub(p, 3, false),
-        "cmp" => add_sub(p, 3, true),
-        "cmn" => add_sub(p, 1, true),
+pub(super) fn encode(p: &mut Parser<'_, '_>, op: Token<'_>) -> Result<()> {
+    let word = match op.text {
+        "add" => return add_sub(p, op.column, 0, false),
+        "adds" => return add_sub(p, op.column, 1, false),
+        "sub" => return add_sub(p, op.column, 2, false),
+        "subs" => return add_sub(p, op.column, 3, false),
+        "cmp" => return add_sub(p, op.column, 3, true),
+        "cmn" => return add_sub(p, op.column, 1, true),
         "and" => logical(p, 0, false, op.text),
         "orr" => logical(p, 1, false, op.text),
         "eor" => logical(p, 2, false, op.text),
@@ -58,7 +58,8 @@ pub(super) fn encode(p: &mut Parser<'_, '_>, op: Token<'_>) -> Result<u32> {
         "ccmp" => compare(p, 0x7a40_0000),
         "rbit" | "rev" | "clz" => unary(p, op.text),
         _ => Err(p.error(op.column, "unknown AArch64 instruction")),
-    }
+    }?;
+    p.emit_aarch64(op.column, word)
 }
 
 #[derive(Clone, Copy)]
@@ -142,7 +143,7 @@ fn extension(name: &str) -> Option<u32> {
     .map(|option| option as u32)
 }
 
-fn add_sub(p: &mut Parser<'_, '_>, op: u32, alias: bool) -> Result<u32> {
+fn add_sub(p: &mut Parser<'_, '_>, column: usize, op: u32, alias: bool) -> Result<()> {
     // C6.2.4–6, .9–11, .455–457, .462–464 (CMN/CMP fix Rd to ZR).
     let first = reg(p)?;
     let (rd, rn) = if alias {
@@ -153,6 +154,20 @@ fn add_sub(p: &mut Parser<'_, '_>, op: u32, alias: bool) -> Result<u32> {
     };
     rn.check_width(p, first.wide)?;
     comma(p)?;
+    if op == 0 && p.peek() == b':' {
+        rn.check_31(p, Stack)?;
+        first.check_31(p, Stack)?;
+        let name = modifier(p)?;
+        let (kind, shift) = match name.text {
+            "lo12" => (Relocation::AddAbsLo12Nc, 0),
+            "tprel_hi12" => (Relocation::TlsleAddTprelHi12, 1),
+            "tprel_lo12_nc" => (Relocation::TlsleAddTprelLo12Nc, 0),
+            _ => return Err(p.error(name.column, "unsupported ADD relocation modifier")),
+        };
+        let word = first.sf() | 0x1100_0000 | (shift << 22) | (rn.number << 5) | first.number;
+        let label = p.word();
+        return p.emit_aarch64_reference(label, kind, word);
+    }
     let flags = op & 1 != 0;
     let has_sp = rn.stack || rd.is_some_and(|rd| rd.stack);
     let (enc, rn31, rd31) = if p.peek() == b'#' {
@@ -213,7 +228,8 @@ fn add_sub(p: &mut Parser<'_, '_>, op: u32, alias: bool) -> Result<u32> {
     } else {
         31
     };
-    Ok(first.sf() | (op << 29) | enc | (rn.number << 5) | rd)
+    let word = first.sf() | (op << 29) | enc | (rn.number << 5) | rd;
+    p.emit_aarch64(column, word)
 }
 
 fn literal(p: &mut Parser<'_, '_>, width: u32) -> Result<(u64, usize)> {
@@ -514,10 +530,24 @@ fn unary(p: &mut Parser<'_, '_>, op: &str) -> Result<u32> {
     Ok(0x5ac0_0000 | rd.sf() | (opcode << 10) | (rn << 5) | rd.number)
 }
 
-pub(super) fn adr(p: &mut Parser<'_, '_>) -> Result<()> {
+pub(super) fn adr(p: &mut Parser<'_, '_>, op: Token<'_>) -> Result<()> {
     let rd = general(p)?;
     rd.check_width(p, true)?;
     comma(p)?;
+    let (kind, opcode) = if op.text == "adr" {
+        (Relocation::Adr, 0x1000_0000)
+    } else {
+        let kind = if p.peek() == b':' {
+            let name = modifier(p)?;
+            if name.text != "got" {
+                return Err(p.error(name.column, "unsupported ADRP relocation modifier"));
+            }
+            Relocation::AdrGotPage
+        } else {
+            Relocation::AdrPrelPgHi21
+        };
+        (kind, 0x9000_0000)
+    };
     let label = p.word();
-    p.branch_aarch64(label, BranchKind::Adr, 0x1000_0000 | rd.number)
+    p.emit_aarch64_reference(label, kind, opcode | rd.number)
 }
