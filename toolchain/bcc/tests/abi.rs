@@ -21,6 +21,11 @@ fn va_arg_after_gp_exhaustion() {
     run_harness("varargs.py", &[]);
 }
 
+#[test]
+fn x87_return_roundtrip() {
+    run_harness("x87.py", &[]);
+}
+
 fn run_harness(script: &str, args: &[&str]) {
     let toolchain = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let bcc = Path::new(env!("CARGO_BIN_EXE_bcc"));

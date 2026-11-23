@@ -35,6 +35,34 @@ fn double_literal_bits() {
 }
 
 #[test]
+fn long_double_literal_bits() {
+    // Intel SDM Vol. 1 §4.2.2/Table 4-3 and Fig. 8-13. The first
+    // eight bytes contain the explicit integer bit and 63 fraction bits;
+    // the next two contain the sign and the exponent biased by 16383.
+    let cases = [
+        ("0.1L", 0xcccc_cccc_cccc_cccdu64, 0x3ffb),
+        ("18446744073709551615.0l", 0xffff_ffff_ffff_ffff, 0x403e),
+        ("0x1.0000000000000001p0L", 0x8000_0000_0000_0000, 0x3fff),
+        ("0x1.0000000000000003p0L", 0x8000_0000_0000_0002, 0x3fff),
+        ("0x1p-16445L", 1, 0),
+        ("0x0.ffffffffffffffffp-16382L", 0x8000_0000_0000_0000, 1),
+    ];
+    let path = Path::new("long-double-literal.c");
+    let options = pp::Options {
+        target: pp::Target::X86_64,
+        ..pp::Options::default()
+    };
+    for (literal, significand, sign_exponent) in cases {
+        let c = format!("long double value(void) {{ return {literal}; }}");
+        let input = pp::preprocess_source(path, c.as_bytes(), &options).unwrap();
+        let unit = sema::analyze(&input, path, options.target).unwrap();
+        let assembly = codegen::emit_assembly(&unit, path, options.target).unwrap();
+        let words = format!("    .quad 0x{significand:x}\n    .word 0x{sign_exponent:x}\n");
+        assert!(assembly.contains(&words), "{literal} expected {words}\n{assembly}");
+    }
+}
+
+#[test]
 fn bcc_has_no_host_float_parse() {
     let mut directories = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
     while let Some(directory) = directories.pop() {
