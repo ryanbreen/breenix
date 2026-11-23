@@ -228,7 +228,7 @@ $(TARGETS): %.out: %.gen
 
 #[test]
 fn text_and_filename_functions() {
-    // GNU make 4.4.1 §§4.4.3, 6.3.1, 8.2 and 8.3.
+    // GNU make 4.4.1 §§4.3.3, 6.3.1, 8.2 and 8.3.
     let cases = [
         (r"$(subst ee,EE,feet on the street)", "fEEt on the strEEt"),
         (r"$(subst $(space),$(comma),a b c)", "a,b,c"),

@@ -481,9 +481,15 @@ impl<'a> Build<'_, 'a> {
         if modified.is_some() && newer.is_empty() {
             return Ok(Update::Current(modified));
         }
+        let mut seen = HashSet::new();
+        let newer = newer
+            .into_iter()
+            .filter(|name| seen.insert(*name))
+            .collect::<Vec<_>>()
+            .join(" ");
         Ok(Update::Recipes(Job {
             before: modified,
-            newer: newer.join(" "),
+            newer,
             order_only: self.graph.order_only_prerequisites(node),
             scope,
             next_recipe: 0,
@@ -502,7 +508,11 @@ impl<'a> Build<'_, 'a> {
         let target = node.name;
         let inference = node.inference();
         let mut automatic = Automatic::for_target(target);
-        automatic.source = inference.map(|rule| rule.source.as_str());
+        let prerequisites: Vec<_> = self.graph.normal_prerequisites(node).collect();
+        automatic.source = inference
+            .map(|rule| rule.source.as_str())
+            .or_else(|| prerequisites.first().copied());
+        automatic.prerequisites = &prerequisites;
         automatic.stem = inference.map_or_else(
             || self.suffixes.stem(automatic.member.unwrap_or(target)),
             |rule| &rule.stem,

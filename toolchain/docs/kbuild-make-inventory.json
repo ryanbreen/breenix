@@ -169,6 +169,7 @@
         "kind": "pattern-rule",
         "construct": "static",
         "unit": "patterns-text",
+        "supported": true,
         "locations": [
           "Makefile:686",
           "scripts/Makefile.build:202",
@@ -2163,6 +2164,7 @@
         "kind": "function",
         "construct": "addprefix",
         "unit": "patterns-text",
+        "supported": true,
         "locations": [
           "Makefile:995",
           "Makefile:1019",
@@ -2322,6 +2324,7 @@
         "kind": "function",
         "construct": "dir",
         "unit": "patterns-text",
+        "supported": true,
         "locations": [
           "Makefile:1262",
           "Makefile:1263",
@@ -2356,6 +2359,7 @@
         "kind": "function",
         "construct": "filter",
         "unit": "patterns-text",
+        "supported": true,
         "locations": [
           "Makefile:219",
           "Makefile:402",
@@ -2385,6 +2389,7 @@
         "kind": "function",
         "construct": "filter-out",
         "unit": "patterns-text",
+        "supported": true,
         "locations": [
           "Makefile:111",
           "Makefile:403",
@@ -2415,6 +2420,7 @@
         "kind": "function",
         "construct": "findstring",
         "unit": "patterns-text",
+        "supported": true,
         "locations": [
           "Makefile:264",
           "Makefile:760",
@@ -2427,6 +2433,7 @@
         "kind": "function",
         "construct": "firstword",
         "unit": "patterns-text",
+        "supported": true,
         "locations": [
           "Makefile:344"
         ]
@@ -2530,6 +2537,7 @@
         "kind": "function",
         "construct": "lastword",
         "unit": "patterns-text",
+        "supported": true,
         "locations": [
           "Makefile.flags:51",
           "Makefile.flags:69",
@@ -2540,6 +2548,7 @@
         "kind": "function",
         "construct": "notdir",
         "unit": "patterns-text",
+        "supported": true,
         "locations": [
           "Makefile:1059",
           "Makefile:1271",
@@ -2570,6 +2579,7 @@
         "kind": "function",
         "construct": "patsubst",
         "unit": "patterns-text",
+        "supported": true,
         "locations": [
           "Makefile:564",
           "Makefile:566",
@@ -2668,6 +2678,7 @@
         "kind": "function",
         "construct": "sort",
         "unit": "patterns-text",
+        "supported": true,
         "locations": [
           "Makefile:566",
           "Makefile:734",
@@ -2725,6 +2736,7 @@
         "kind": "function",
         "construct": "strip",
         "unit": "patterns-text",
+        "supported": true,
         "locations": [
           "Makefile:936",
           "Makefile:1124",
@@ -2755,6 +2767,7 @@
         "kind": "function",
         "construct": "subst",
         "unit": "patterns-text",
+        "supported": true,
         "locations": [
           "Makefile:169",
           "Makefile:170",
@@ -2797,6 +2810,7 @@
         "kind": "function",
         "construct": "wildcard",
         "unit": "patterns-text",
+        "supported": true,
         "locations": [
           "Makefile:364",
           "Makefile:521",
@@ -2826,6 +2840,7 @@
         "kind": "function",
         "construct": "words",
         "unit": "patterns-text",
+        "supported": true,
         "locations": [
           "scripts/Makefile.lib:86"
         ]
@@ -2836,6 +2851,7 @@
         "kind": "pattern-rule",
         "construct": "%",
         "unit": "patterns-text",
+        "supported": true,
         "locations": [
           "Makefile:360",
           "Makefile:374",

@@ -22,7 +22,7 @@ OUTPUT = ROOT / "toolchain/docs/kbuild-make-inventory.json"
 # Chapter, construct kind, implementation unit, and spellings in the manual.
 CLASSIFICATIONS = (
     ("3 Writing Makefiles", "directive", "directives", "include -include sinclude"),
-    ("4 Writing Rules", "directive", "patterns-text", "vpath"),
+    ("4 Writing Rules", "directive", "unassigned", "vpath"),
     ("4 Writing Rules", "pattern-rule", "patterns-text", "static"),
     ("4 Writing Rules", "prerequisite", "directives", "order-only"),
     ("4 Writing Rules", "special-target", "directives", ".PHONY"),
@@ -131,7 +131,7 @@ def inventory(source, files, bmake):
     for (kind, name), locations in sorted(occurrences.items()):
         chapter, unit = CONSTRUCTS.get((kind, name), ("Unclassified", "unassigned"))
         construct = {"kind": kind, "construct": name, "unit": unit}
-        if unit == "directives":
+        if unit in ("directives", "patterns-text"):
             construct["supported"] = True
         construct["locations"] = locations
         chapters.setdefault(chapter, []).append(construct)

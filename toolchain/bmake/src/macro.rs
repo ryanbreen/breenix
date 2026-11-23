@@ -1,6 +1,12 @@
 //! Assignment, expansion and internal macros from POSIX.1-2024 make.
 
-use crate::{graph::archive_member, reader::outside_macro_references, Error, Location};
+use crate::{
+    graph::archive_member,
+    inference::Pattern,
+    make_functions,
+    reader::{outside_macro_references, reference_level},
+    Error, Location,
+};
 use std::{
     collections::{HashMap, HashSet},
     io::{self, Write},
@@ -105,6 +111,7 @@ pub struct Macros {
 pub(crate) struct Automatic<'a> {
     pub target: &'a str,
     pub source: Option<&'a str>,
+    pub prerequisites: &'a [&'a str],
     pub newer: &'a str,
     pub order_only: &'a str,
     pub stem: &'a str,
@@ -127,6 +134,7 @@ impl<'a> Automatic<'a> {
             Some(short) => (short, name.chars().last()),
             None => (name, None),
         };
+        let list;
         let value = match name {
             "@" => self.target,
             "<" => self.source.unwrap_or_default(),
@@ -134,16 +142,27 @@ impl<'a> Automatic<'a> {
             "|" => self.order_only,
             "*" => self.stem,
             "%" => self.member.unwrap_or_default(),
+            "^" | "+" => {
+                let mut seen = HashSet::new();
+                let keep_duplicates = name == "+";
+                list = self
+                    .prerequisites
+                    .iter()
+                    .copied()
+                    .filter(|name| keep_duplicates || seen.insert(*name))
+                    .map(|name| archive_member(name).map_or(name, |(_, member)| member))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                &list
+            }
             _ => return None,
         };
         Some(match part {
             Some('D') => separate_words(value)
-                .map(|word| {
-                    Path::new(word)
-                        .parent()
-                        .and_then(Path::to_str)
-                        .filter(|part| !part.is_empty())
-                        .unwrap_or(".")
+                .map(|word| match word.rsplit_once('/') {
+                    Some(("", _)) => "/",
+                    Some((directory, _)) => directory,
+                    None => ".",
                 })
                 .collect::<Vec<_>>()
                 .join(" "),
@@ -700,14 +719,15 @@ impl<'a, 'b> Expansion<'a, 'b> {
             }
             if matches!(next, '(' | '{') {
                 let close = if next == '(' { ')' } else { '}' };
-                let Some((end, _)) = outside_macro_references(text).find(|&(_, ch)| ch == close)
+                let Some((end, _)) =
+                    reference_level(text, Some(close)).find(|&(_, ch)| ch == close)
                 else {
                     return Err(Error::new(
                         location,
                         format!("missing '{close}' in macro reference"),
                     ));
                 };
-                expanded.push_str(&self.reference(&text[..end], location, depth + 1)?);
+                expanded.push_str(&self.reference(&text[..end], close, location, depth + 1)?);
                 text = &text[end + 1..];
             } else {
                 expanded.push_str(&self.value(
@@ -724,10 +744,31 @@ impl<'a, 'b> Expansion<'a, 'b> {
     fn reference(
         &mut self,
         reference: &str,
+        close: char,
         location: &Location,
         depth: usize,
     ) -> Result<String, Error> {
-        if let Some((name, _)) = reference.split_once([' ', '\t']) {
+        if let Some((name, arguments)) = reference.split_once([' ', '\t']) {
+            if let Some(arity) = make_functions::arity(name) {
+                let arguments = arguments.trim_start_matches([' ', '\t']);
+                let mut start = 0;
+                let mut values = Vec::with_capacity(arity);
+                for (end, _) in reference_level(arguments, Some(close))
+                    .filter(|&(_, ch)| ch == ',')
+                    .take(arity - 1)
+                {
+                    values.push(self.text(&arguments[start..end], location, depth)?);
+                    start = end + 1;
+                }
+                if values.len() != arity - 1 {
+                    return Err(Error::new(
+                        location,
+                        format!("too few arguments to '{name}'"),
+                    ));
+                }
+                values.push(self.text(&arguments[start..], location, depth)?);
+                return make_functions::evaluate(name, &values, location);
+            }
             if crate::inventory::FUNCTIONS.contains(&name) {
                 return Err(Error::new(
                     location,
@@ -813,30 +854,19 @@ pub(crate) fn separate_words(text: &str) -> impl Iterator<Item = &str> {
 }
 
 fn substitute(value: &str, old: &str, new: &str) -> String {
-    let pattern = old.split_once('%');
+    let pattern = Pattern::parse(old);
+    if pattern.has_stem() {
+        return make_functions::patsubst(&pattern, new, value);
+    }
     let mut result = String::new();
     for part in value.split_inclusive([' ', '\t', '\n']) {
         let word = part.trim_end_matches([' ', '\t', '\n']);
         if !word.is_empty() {
-            match pattern {
-                Some((prefix, suffix)) => {
-                    if let Some(stem) = word
-                        .strip_prefix(prefix)
-                        .and_then(|rest| rest.strip_suffix(suffix))
-                    {
-                        result.push_str(&new.replacen('%', stem, 1));
-                    } else {
-                        result.push_str(word);
-                    }
-                }
-                None => {
-                    if let Some(stem) = word.strip_suffix(old) {
-                        result.push_str(stem);
-                        result.push_str(new);
-                    } else {
-                        result.push_str(word);
-                    }
-                }
+            if let Some(stem) = word.strip_suffix(old) {
+                result.push_str(stem);
+                result.push_str(new);
+            } else {
+                result.push_str(word);
             }
         }
         result.push_str(&part[word.len()..]);

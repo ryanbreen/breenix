@@ -3,6 +3,7 @@
 
 use crate::{
     graph::archive_member,
+    inference::static_rules,
     r#macro::{separate_words, Assignment, Automatic, Macros, Modifiers},
     Error, Location,
 };
@@ -58,6 +59,8 @@ pub struct Rule {
     pub prerequisites: Vec<String>,
     pub order_only: Vec<String>,
     pub recipes: Vec<SourceLine>,
+    pub(crate) pattern: Option<String>,
+    pub(crate) terminal: bool,
     pub(crate) inference: Option<Inference>,
 }
 
@@ -65,6 +68,7 @@ pub struct Rule {
 pub(crate) struct Inference {
     pub source: String,
     pub stem: String,
+    pub implicit: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -185,6 +189,12 @@ impl Makefile {
                         &mut rule.order_only,
                     ] {
                         expand_words(words, macros, &rule.location)?;
+                    }
+                    if let Some(pattern) = rule.pattern.take() {
+                        let pattern = macros.expand(&pattern, &rule.location, &automatic)?;
+                        self.entries
+                            .extend(static_rules(rule, &pattern)?.map(Entry::Rule));
+                        continue;
                     }
                     if rule.targets.is_empty() {
                         return Err(Error::new(
@@ -696,7 +706,8 @@ fn read_entry(line: &str, location: Location) -> Result<Option<Entry>, Error> {
         if targets.is_empty() {
             return Err(Error::new(&location, "missing target before ':'"));
         }
-        let contents = fold_header(&line[colon + 1..end]);
+        let terminal = line[colon + 1..end].starts_with(':');
+        let contents = fold_header(&line[colon + 1 + usize::from(terminal)..end]);
         let (modifiers, text) = split_modifiers(&contents);
         if let Some(assignment) = Assignment::parse(text).filter(|assignment| {
             let name = assignment.name.trim_matches(is_blank);
@@ -712,10 +723,15 @@ fn read_entry(line: &str, location: Location) -> Result<Option<Entry>, Error> {
                 targets, assignment, value, modifiers, location,
             )));
         }
-        let separator = outside_macro_references(&contents).find(|&(_, ch)| ch == '|');
+        let (pattern, contents) =
+            match outside_macro_references(&contents).find(|&(_, ch)| ch == ':') {
+                Some((at, _)) => (Some(contents[..at].trim().to_owned()), &contents[at + 1..]),
+                None => (None, contents.as_str()),
+            };
+        let separator = outside_macro_references(contents).find(|&(_, ch)| ch == '|');
         let (prerequisites, order_only) = match separator {
             Some((at, _)) => (words(&contents[..at]), words(&contents[at + 1..])),
-            None => (words(&contents), Vec::new()),
+            None => (words(contents), Vec::new()),
         };
         let recipes = recipe
             .map(|text| recipe_line(location.clone(), text))
@@ -727,6 +743,8 @@ fn read_entry(line: &str, location: Location) -> Result<Option<Entry>, Error> {
             prerequisites,
             order_only,
             recipes,
+            pattern,
+            terminal,
             inference: None,
         })))
     } else {
@@ -781,6 +799,15 @@ fn words(text: &str) -> Vec<String> {
 // Unexpanded references can contain colons, equals signs and blanks, including
 // in a substitution or a nested reference. Comments still end the header.
 pub(crate) fn outside_macro_references(text: &str) -> impl Iterator<Item = (usize, char)> + '_ {
+    reference_level(text, None)
+}
+
+// With a function delimiter, report separators and the closing delimiter at
+// that level. Raw matching pairs inside a function can protect commas too.
+pub(crate) fn reference_level(
+    text: &str,
+    delimiter: Option<char>,
+) -> impl Iterator<Item = (usize, char)> + '_ {
     let mut characters = text.char_indices().peekable();
     let mut closing = Vec::new();
     std::iter::from_fn(move || {
@@ -793,10 +820,15 @@ pub(crate) fn outside_macro_references(text: &str) -> impl Iterator<Item = (usiz
                     _ => continue,
                 }
                 characters.next();
-            } else if character == '#' {
-                return Some((index, character));
             } else if closing.last() == Some(&character) {
                 closing.pop();
+            } else if let Some(close) = closing
+                .last()
+                .copied()
+                .or(delimiter)
+                .filter(|&close| matches!((character, close), ('(', ')') | ('{', '}')))
+            {
+                closing.push(close);
             } else if closing.is_empty() {
                 return Some((index, character));
             }

@@ -699,3 +699,14 @@ separately from its dry-run result.
 | `:=`, override and multiline definitions | §§6.2.2, 6.7 and 6.8. `:=` uses the same immediate expansion as POSIX `::=`. |
 | Target-specific assignments | §§6.11 and 6.13. A prerequisite takes its variable scope from the first target that requests it. `private` keeps a binding local to its target. |
 | Conditional directives | §7.2. Each makefile has its own conditional stack. An enclosing inactive branch suppresses nested tests and assignments. |
+
+## bmake 25.11c patterns and text
+
+The GNU make 4.4.1 manual pin covers the following behavior on both guest
+targets.
+
+| Feature | GNU make manual section |
+| --- | --- |
+| Static and implicit pattern rules | §§4.11, 10.5 and 10.8. Static patterns provide per-target prerequisites and stems. Implicit search prefers directly available prerequisites and then the shortest stem. Single-target terminal patterns require available prerequisites. Caller-defined POSIX suffix inference retains precedence when selected by the suffix list. |
+| Automatic variables | §10.5.3. Directory and filename variants apply to individual names in each automatic variable, including the prerequisite lists with and without repeated entries. |
+| Substitution references, text functions and file-name functions | §§4.3.3, 6.3.1 and 8.1–8.3. Percent substitution and filtering share pattern matching. Wildcard matches are sorted by input pattern. Absolute paths normalize lexically and real paths resolve existing filesystem entries. |

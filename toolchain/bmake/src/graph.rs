@@ -72,7 +72,9 @@ impl<'a> Graph<'a> {
         let mut default_target = None;
         for entry in &makefile.entries {
             if let Entry::Rule(rule) = entry {
-                if rule.inference.is_none() && default_target.is_none() {
+                if !rule.inference.as_ref().is_some_and(|rule| rule.implicit)
+                    && default_target.is_none()
+                {
                     default_target = rule.targets.first().map(String::as_str);
                 }
                 graph.add_rule(rule)?;
@@ -139,7 +141,8 @@ impl<'a> Graph<'a> {
     fn add_rule(&mut self, rule: &'a Rule) -> Result<(), Error> {
         // Derived rules point to the inference recipe, not the reference to
         // the target. Direct command-line goals have no makefile location.
-        let location = rule.inference.is_none().then_some(&rule.location);
+        let location =
+            (!rule.inference.as_ref().is_some_and(|rule| rule.implicit)).then_some(&rule.location);
         let targets: Vec<_> = rule
             .targets
             .iter()

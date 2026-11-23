@@ -18,6 +18,8 @@ mod job_pool;
 #[forbid(unsafe_code)]
 pub mod r#macro;
 #[forbid(unsafe_code)]
+mod make_functions;
+#[forbid(unsafe_code)]
 pub mod reader;
 #[forbid(unsafe_code)]
 mod run;
