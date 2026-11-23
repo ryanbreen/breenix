@@ -87,7 +87,9 @@ double pragma_third(void) { return 1.0 / 3.0; }
 round_up:
     stp x19, x30, [sp, #-16]!
     mrs x19, fpcr
-    bic x9, x19, #0xc00000
+    mov x10, #3
+    lsl x10, x10, #22
+    bic x9, x19, x10
     orr x9, x9, #0x400000
     .long 0xd51b4409
     blr x0
