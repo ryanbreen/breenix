@@ -15,7 +15,27 @@ enum Origin {
     Default,
     Environment,
     Makefile,
+    Makeflags,
     CommandLine,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MacroSource {
+    Makeflags,
+    CommandLine,
+}
+
+impl MacroSource {
+    pub(crate) fn location(self) -> Location {
+        let path = match self {
+            Self::Makeflags => "<environment>",
+            Self::CommandLine => "<command line>",
+        };
+        Location {
+            path: Path::new(path).into(),
+            line: 1,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -24,6 +44,7 @@ enum Flavor {
     Immediate,
 }
 
+#[derive(Clone)]
 struct Definition {
     value: String,
     flavor: Flavor,
@@ -31,7 +52,7 @@ struct Definition {
     origin: Origin,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Macros {
     definitions: HashMap<String, Definition>,
     environment_overrides: bool,
@@ -171,12 +192,30 @@ impl Macros {
         }
     }
 
-    pub(crate) fn assign_command_line(&mut self, assignment: &str) -> Result<(), Error> {
-        let location = Location {
-            path: Path::new("<command line>").into(),
-            line: 1,
+    pub(crate) fn set_make_defaults(&mut self, make: String, flags: String) {
+        let location = MacroSource::Makeflags.location();
+        if !self.definitions.contains_key("MAKE") {
+            self.define("MAKE", make, Flavor::Immediate, &location, Origin::Default);
+        }
+        self.define(
+            "MAKEFLAGS",
+            flags,
+            Flavor::Immediate,
+            &location,
+            Origin::Default,
+        );
+    }
+
+    pub(crate) fn assign_operand(
+        &mut self,
+        assignment: &str,
+        source: MacroSource,
+    ) -> Result<(), Error> {
+        let origin = match source {
+            MacroSource::Makeflags => Origin::Makeflags,
+            MacroSource::CommandLine => Origin::CommandLine,
         };
-        self.assign(assignment, &location, Origin::CommandLine)
+        self.assign(assignment, &source.location(), origin)
     }
 
     pub(crate) fn assign_makefile(
@@ -205,9 +244,6 @@ impl Macros {
         let automatic = Automatic::default();
         let name = self.expand(raw_name, location, &automatic)?;
         let name = name.trim_matches([' ', '\t']);
-        if name == "MAKEFLAGS" {
-            return Err(Error::deferred(location, name));
-        }
         if name.is_empty()
             || name.contains(|ch: char| ch.is_whitespace() || ch.is_control() || ch == '=')
         {
@@ -223,8 +259,10 @@ impl Macros {
         if previous.is_some_and(|previous| {
             operator == "?"
                 || (origin == Origin::Makefile
-                    && (previous.origin == Origin::CommandLine
-                        || (previous.origin == Origin::Environment && self.environment_overrides)))
+                    && (matches!(previous.origin, Origin::CommandLine | Origin::Makeflags)
+                        || (previous.origin == Origin::Environment
+                            && self.environment_overrides
+                            && name != "MAKE")))
         }) {
             return Ok(());
         }
@@ -253,9 +291,10 @@ impl Macros {
     }
 
     fn shell_assignment(&self, command: &str, location: &Location) -> Result<String, Error> {
-        let output = Command::new("/bin/sh")
+        let mut shell = Command::new("/bin/sh");
+        self.set_recipe_environment(&mut shell, location)?;
+        let output = shell
             .args(["-c", command])
-            .envs(self.recipe_environment())
             .stdin(Stdio::inherit())
             .stderr(Stdio::inherit())
             .output()
@@ -297,12 +336,19 @@ impl Macros {
         );
     }
 
-    pub(crate) fn recipe_environment(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.definitions.iter().filter_map(|(name, definition)| {
+    pub(crate) fn set_recipe_environment(
+        &self,
+        command: &mut Command,
+        location: &Location,
+    ) -> Result<(), Error> {
+        let flags = self.expand("$(MAKEFLAGS)", location, &Automatic::default())?;
+        command.env("MAKEFLAGS", flags);
+        command.envs(self.definitions.iter().filter_map(|(name, definition)| {
             (definition.origin == Origin::CommandLine
                 && !matches!(name.as_str(), "SHELL" | "MAKEFLAGS"))
             .then_some((name.as_str(), definition.value.as_str()))
-        })
+        }));
+        Ok(())
     }
 
     pub(crate) fn expand(
@@ -311,7 +357,19 @@ impl Macros {
         location: &Location,
         automatic: &Automatic<'_>,
     ) -> Result<String, Error> {
-        self.expand_with_dollar_pairs(text, location, automatic, false)
+        self.expand_recipe(text, location, automatic)
+            .map(|(text, _)| text)
+    }
+
+    pub(crate) fn expand_recipe(
+        &self,
+        text: &str,
+        location: &Location,
+        automatic: &Automatic<'_>,
+    ) -> Result<(String, bool), Error> {
+        let mut expansion = Expansion::new(self, automatic, false);
+        let text = expansion.text(text, location, 0)?;
+        Ok((text, expansion.expanded_make))
     }
 
     fn expand_with_dollar_pairs(
@@ -321,13 +379,7 @@ impl Macros {
         automatic: &Automatic<'_>,
         preserve_dollar_pairs: bool,
     ) -> Result<String, Error> {
-        Expansion {
-            macros: self,
-            automatic,
-            preserve_dollar_pairs,
-            active: Vec::new(),
-        }
-        .text(text, location, 0)
+        Expansion::new(self, automatic, preserve_dollar_pairs).text(text, location, 0)
     }
 }
 
@@ -336,9 +388,20 @@ struct Expansion<'a, 'b> {
     automatic: &'a Automatic<'b>,
     preserve_dollar_pairs: bool,
     active: Vec<&'a str>,
+    expanded_make: bool,
 }
 
-impl Expansion<'_, '_> {
+impl<'a, 'b> Expansion<'a, 'b> {
+    fn new(macros: &'a Macros, automatic: &'a Automatic<'b>, preserve_dollar_pairs: bool) -> Self {
+        Self {
+            macros,
+            automatic,
+            preserve_dollar_pairs,
+            active: Vec::new(),
+            expanded_make: false,
+        }
+    }
+
     fn text(&mut self, mut text: &str, location: &Location, depth: usize) -> Result<String, Error> {
         if depth > MAX_EXPANSION_DEPTH {
             return Err(Error::new(location, "macro expansion nesting is too deep"));
@@ -404,9 +467,7 @@ impl Expansion<'_, '_> {
     }
 
     fn value(&mut self, name: &str, location: &Location, depth: usize) -> Result<String, Error> {
-        if matches!(name, "MAKEFLAGS" | "MAKE") {
-            return Err(Error::deferred(location, name));
-        }
+        self.expanded_make |= name == "MAKE";
         if let Some(value) = self.automatic.get(name) {
             return Ok(value);
         }

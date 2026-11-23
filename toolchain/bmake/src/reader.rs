@@ -6,6 +6,7 @@ use crate::{
     Error, Location,
 };
 use std::{
+    collections::HashMap,
     fs::File,
     io::{self, Read},
     path::{Path, PathBuf},
@@ -25,7 +26,7 @@ pub(crate) struct IncludeFile {
     pub name: String,
     pub location: Location,
     pub optional: bool,
-    pub missing: bool,
+    pub contents: Option<Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -58,24 +59,43 @@ pub struct SourceLine {
 
 /// Read makefiles in order, inserting includes where their directives appear.
 pub fn load(paths: &[PathBuf], macros: &mut Macros) -> Result<Makefile, Error> {
+    reload(paths, macros, &mut HashMap::new())
+}
+
+pub(crate) fn reload(
+    paths: &[PathBuf],
+    macros: &mut Macros,
+    streams: &mut HashMap<PathBuf, Vec<u8>>,
+) -> Result<Makefile, Error> {
     let mut makefile = Makefile::default();
     for path in paths {
+        if let Some(source) = streams.get(path) {
+            makefile.read_entries(path, source, macros, 0)?;
+            continue;
+        }
         let location = Location {
             path: path.as_path().into(),
             line: 1,
         };
-        let source = if path == Path::new("-") {
+        let (source, stream) = if path == Path::new("-") {
             let mut bytes = Vec::new();
             io::stdin()
                 .read_to_end(&mut bytes)
                 .map_err(|error| Error::new(&location, error.to_string()))?;
-            bytes
+            (bytes, true)
         } else {
             let file =
                 File::open(path).map_err(|error| Error::new(&location, error.to_string()))?;
-            read_source(file, &location)?
+            let stream = !file
+                .metadata()
+                .map_err(|error| Error::new(&location, error.to_string()))?
+                .is_file();
+            (read_source(file, &location)?, stream)
         };
         makefile.read_entries(path, &source, macros, 0)?;
+        if stream {
+            streams.insert(path.clone(), source);
+        }
     }
     Ok(makefile)
 }
@@ -147,11 +167,12 @@ impl Makefile {
                                 ))
                             }
                         };
+                        let index = self.includes.len();
                         self.includes.push(IncludeFile {
                             name: name.to_owned(),
                             location: paths.location.clone(),
                             optional,
-                            missing: file.is_none(),
+                            contents: None,
                         });
                         let Some(file) = file else {
                             continue;
@@ -169,6 +190,7 @@ impl Makefile {
                         };
                         let source = read_source(file, &location)?;
                         self.read_entries(path, &source, macros, depth + 1)?;
+                        self.includes[index].contents = Some(source);
                     }
                 }
             }

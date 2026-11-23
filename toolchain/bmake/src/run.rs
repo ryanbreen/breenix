@@ -4,7 +4,7 @@ use crate::{
     graph::{Graph, Node},
     inference::Suffixes,
     r#macro::{Automatic, Macros},
-    reader::{IncludeFile, SourceLine},
+    reader::{Entry, IncludeFile, Makefile, SourceLine},
     special::Specials,
     time, Error,
 };
@@ -18,47 +18,83 @@ use std::{
     time::SystemTime,
 };
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub(crate) struct Options {
     pub dry_run: bool,
     pub keep_going: bool,
     pub silent: bool,
     pub ignore: bool,
+    pub remaking: bool,
 }
 
-/// Flag includes that would need an update, without executing any recipe.
-pub(crate) fn check_includes(
-    graph: &Graph<'_>,
-    includes: &[IncludeFile],
+/// Delayed remaking, as specified by POSIX.1-2024 make, "Include Lines".
+/// Return the first changed include so the caller can read the new contents.
+pub(crate) fn remake_includes<'a>(
+    makefile: &'a Makefile,
+    macros: &Macros,
+    suffixes: &Suffixes,
     specials: &Specials,
-) -> Result<(), String> {
-    let mut mtimes = HashMap::new();
-    let mut would_run = HashSet::new();
-    for node in graph.default_build_order() {
-        let modified = target_time(node.name, specials)?;
-        let runs_recipe = !node.recipes().is_empty()
-            && (modified.is_none()
-                || graph
-                    .prerequisites_of(node)
-                    .any(|name| time::newer(modified, mtimes[name])));
-        if runs_recipe
-            || graph
-                .prerequisites_of(node)
-                .any(|name| would_run.contains(name))
-        {
-            would_run.insert(node.name);
-        }
-        mtimes.insert(node.name, if runs_recipe { None } else { modified });
+    options: Options,
+) -> Result<Option<&'a IncludeFile>, String> {
+    if makefile.includes.is_empty() {
+        return Ok(None);
     }
-    for include in includes {
-        if would_run.contains(include.name.as_str()) {
-            return Err(Error::deferred(
-                &include.location,
-                &format!("remaking include '{}'", include.name),
-            )
-            .to_string());
+
+    let mut rule_targets = HashSet::new();
+    for entry in &makefile.entries {
+        if let Entry::Rule(rule) = entry {
+            rule_targets.extend(rule.targets.iter().map(String::as_str));
         }
-        if include.missing && !include.optional {
+    }
+    let targets: Vec<_> = makefile
+        .includes
+        .iter()
+        .filter(|include| rule_targets.contains(include.name.as_str()))
+        .map(|include| include.name.clone())
+        .collect();
+    if !targets.is_empty() {
+        let graph = Graph::for_targets(makefile, &targets).map_err(|error| error.to_string())?;
+        // -n still executes the commands needed to remake includes.
+        build(
+            &graph,
+            macros,
+            suffixes,
+            specials,
+            Options {
+                remaking: true,
+                ..options
+            },
+        )?;
+        for include in &makefile.includes {
+            let current = fs::metadata(&include.name).and_then(|metadata| {
+                if metadata.is_file() {
+                    fs::read(&include.name).map(Some)
+                } else {
+                    // Do not reopen a stream to check for changes.
+                    Ok(None)
+                }
+            });
+            let changed = match current {
+                Ok(Some(contents)) => include.contents.as_deref() != Some(&contents),
+                Ok(None) => false,
+                Err(error) if error.kind() == io::ErrorKind::NotFound || include.optional => {
+                    include.contents.is_some()
+                }
+                Err(error) => {
+                    return Err(Error::new(
+                        &include.location,
+                        format!("include '{}': {error}", include.name),
+                    )
+                    .to_string())
+                }
+            };
+            if changed {
+                return Ok(Some(include));
+            }
+        }
+    }
+    for include in &makefile.includes {
+        if include.contents.is_none() && !include.optional {
             return Err(Error::new(
                 &include.location,
                 format!("include '{}': file not found", include.name),
@@ -66,7 +102,7 @@ pub(crate) fn check_includes(
             .to_string());
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 pub(crate) fn build(
@@ -144,6 +180,7 @@ fn update(
 
     let mode = RecipeMode {
         dry_run: options.dry_run,
+        remaking: options.remaking,
         ignore: options.ignore || specials.ignore.contains(target),
         silent: options.silent || specials.silent.contains(target),
     };
@@ -153,7 +190,7 @@ fn update(
             Ok(command_skipped) => skipped |= command_skipped,
             Err(failure) => {
                 if failure.interrupted
-                    && !mode.dry_run
+                    && (!mode.dry_run || mode.remaking)
                     && !phony
                     && !specials.precious.contains(target)
                 {
@@ -184,6 +221,7 @@ fn remove_interrupted_target(target: &str, before: Option<SystemTime>) -> Result
 #[derive(Clone, Copy)]
 struct RecipeMode {
     dry_run: bool,
+    remaking: bool,
     ignore: bool,
     silent: bool,
 }
@@ -200,8 +238,8 @@ fn run_recipe(
     automatic: &Automatic<'_>,
     mode: RecipeMode,
 ) -> Result<bool, RecipeFailure> {
-    let expanded = macros
-        .expand(&recipe.text, &recipe.location, automatic)
+    let (expanded, expanded_make) = macros
+        .expand_recipe(&recipe.text, &recipe.location, automatic)
         .map_err(|error| RecipeFailure {
             message: error.to_string(),
             interrupted: false,
@@ -211,7 +249,7 @@ fn run_recipe(
     if line.is_empty() {
         return Ok(false);
     }
-    let skip = mode.dry_run && !prefixes.contains('+');
+    let skip = mode.dry_run && !mode.remaking && !expanded_make && !prefixes.contains('+');
     let diagnostic = |reason| format!("{}: target '{target}': {reason}", recipe.location);
 
     if skip || (!mode.silent && (mode.dry_run || !prefixes.contains('@'))) {
@@ -229,11 +267,14 @@ fn run_recipe(
 
     let ignore = mode.ignore || prefixes.contains('-');
     let shell_flag = if ignore { "-c" } else { "-ec" };
-    let (reason, interrupted) = match Command::new("/bin/sh")
-        .args([shell_flag, line])
-        .envs(macros.recipe_environment())
-        .status()
-    {
+    let mut shell = Command::new("/bin/sh");
+    macros
+        .set_recipe_environment(&mut shell, &recipe.location)
+        .map_err(|error| RecipeFailure {
+            message: error.to_string(),
+            interrupted: false,
+        })?;
+    let (reason, interrupted) = match shell.args([shell_flag, line]).status() {
         Ok(status) if status.success() => return Ok(false),
         Ok(status) => match (status.code(), status.signal()) {
             (Some(code), _) => (format!("recipe exited with status {code}"), false),

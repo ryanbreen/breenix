@@ -248,9 +248,22 @@ It removes leading whitespace and one trailing newline from stdout, then replace
 remaining newlines with spaces before storing a delayed macro. A nonzero command
 status produces a located diagnostic while retaining the captured value.
 
-25.6c also covers archive members and their timestamps, remaking include files,
-recursive `MAKEFLAGS` and `$(MAKE)`, the `.WAIT` barrier, `.NOTPARALLEL`, the
-`-j` job pool, and target cleanup when a signal stops bmake itself.
+25.6c recursive make follows POSIX.1-2024 make's [Options, Environment Variables,
+and Macros](https://pubs.opengroup.org/onlinepubs/9799919799.2024edition/utilities/make.html).
+bmake reads inherited options before command-line options, and command-line
+macro values take precedence over inherited values. It passes supported flags
+and macro operands through `MAKEFLAGS` to recipes. A makefile assignment to
+`MAKEFLAGS` sets the recipe value. A recipe that expands `MAKE` executes under
+`-n`, and the child receives the dry-run flag.
+
+[Include Lines](https://pubs.opengroup.org/onlinepubs/9799919799.2024edition/utilities/make.html#tag_20_76_13_02)
+allows delayed remaking. bmake reads the rules before updating includes,
+executes include recipes even under `-n`, and rereads the makefiles when an
+include's contents change.
+
+25.6c also covers archive members and their timestamps, the `.WAIT` barrier,
+`.NOTPARALLEL`, the `-j` job pool, and target cleanup when a signal stops bmake
+itself.
 
 ### AMD64 variadic definitions (25.7b2)
 
