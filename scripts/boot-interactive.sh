@@ -508,10 +508,16 @@ if [[ ",$SUITE," == *,toolchain,* ]]; then
         toolchain_scratch=$(mktemp -d "$(dirname "$WRITABLE")/.toolchain.XXXXXX")
         trap 'rm -rf "$toolchain_scratch"' EXIT
         bundle="$toolchain_scratch/bundle"
+        milestone_args=()
+        [ -z "$MILESTONE" ] || milestone_args=(--milestone "$MILESTONE")
         run_build "$ROOT/scripts/build-toolchain.sh" --arch aarch64 --output "$bundle" \
-            --libc "$ROOT/libs/libbreenix-libc/target/aarch64-breenix/release/libc.a"
+            --libc "$ROOT/libs/libbreenix-libc/target/aarch64-breenix/release/libc.a" \
+            ${milestone_args[@]+"${milestone_args[@]}"}
         "$ROOT/scripts/create_ext2_disk.sh" --arch aarch64 --stage-from "$DISK" --output "$WRITABLE" \
-            --suite "$SUITE" --toolchain-bundle "$bundle"
+            --suite "$SUITE" --toolchain-bundle "$bundle" ${milestone_args[@]+"${milestone_args[@]}"}
+        if [ "$MILESTONE" = toolchain/busybox-on-box ]; then
+            mv "$bundle/toolchain-scratch.img" "$(dirname "$WRITABLE")/toolchain-scratch.img"
+        fi
         cp "$bundle/build.json" "$SERIAL_LOG.toolchain-build.json"
     )
     TOOLCHAIN_RECORD="$SERIAL_LOG.toolchain-build.json"

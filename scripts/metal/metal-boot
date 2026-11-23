@@ -698,6 +698,7 @@ class Driver:
         if not prebuilt and build.get('suite') != (getattr(self.args, 'suite', None) if self.args.mode == 'suite' else None):
             raise Finish(m.EXIT_CANCELLED, 'the build staged fixtures for a different suite')
         fixture = inputs / 'toolchain-root.img'
+        scratch = inputs / 'toolchain-scratch.img'
         if 'toolchain' in suites(self.args):
             if getattr(self.args, 'disk', None) == 'install':
                 raise Finish(m.EXIT_CANCELLED, 'a toolchain fixture cannot be an install image')
@@ -706,13 +707,18 @@ class Driver:
                 toolchain_evidence.build_identity(record, self.args.commit, 'x86_64')
                 if record.get('root') != metal_prebuilt.facts(fixture):
                     raise ValueError('fixture root differs from its toolchain build record')
+                if getattr(self.args, 'milestone', None) == 'toolchain/busybox-on-box':
+                    if not record.get('busyboxInputs') or record.get('busyboxScratch') != metal_prebuilt.facts(scratch):
+                        raise ValueError('BusyBox fixture differs from its toolchain build record')
+                elif 'busyboxInputs' in record or 'busyboxScratch' in record or scratch.exists():
+                    raise ValueError('BusyBox fixture requires toolchain/busybox-on-box')
             except (OSError, ValueError) as error:
                 raise Finish(m.EXIT_CANCELLED, str(error)) from None
             # ext2.img is the ordinary/persistent input. Only a toolchain
             # suite request replaces that private staged copy with its fixture.
             fixture.replace(inputs / 'ext2.img')
             build['ext2'] = record['root']
-        elif 'toolchain' in build or fixture.exists():
+        elif 'toolchain' in build or fixture.exists() or scratch.exists():
             if self.args.mode != 'suite':
                 raise Finish(m.EXIT_CANCELLED, 'a toolchain fixture needs a suite boot')
             raise Finish(m.EXIT_CANCELLED, 'a toolchain fixture needs the toolchain suite')

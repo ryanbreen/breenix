@@ -8,12 +8,14 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 arch=
 output=
 archive=
+selection=()
 while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; }
     case "$1" in
         --arch) arch=$2 ;;
         --output) output=$2 ;;
         --libc) archive=$2 ;;
+        --milestone) selection=(--milestone "$2") ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
     shift 2
@@ -77,9 +79,11 @@ while IFS= read -r name; do
     chmod 0755 "$corpus/$name.elf"
 done < "$root/toolchain/corpus/cases"
 
-python3 "$root/scripts/toolchain-build-tools.py" "$arch" "$work/tools" "$dev" "$corpus"
+python3 "$root/scripts/toolchain-build-tools.py" "$arch" "$work/tools" "$dev" "$corpus" \
+    ${selection[@]+"${selection[@]}"}
 python3 "$root/scripts/toolchain-image.py" stage-c11 "$corpus" "$arch"
 python3 "$root/scripts/toolchain-image.py" stage-c17-libc "$guest" "$binaries" "$arch" "$clang"
 
-python3 "$root/scripts/toolchain-image.py" seal "$work/bundle" "$commit" "$arch" --tool-record "$work/tools/tools.json"
+python3 "$root/scripts/toolchain-image.py" seal "$work/bundle" "$commit" "$arch" \
+    --tool-record "$work/tools/tools.json" ${selection[@]+"${selection[@]}"}
 mv "$work/bundle" "$output"

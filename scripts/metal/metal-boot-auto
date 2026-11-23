@@ -178,6 +178,8 @@ def main():
         command += features
         if args.suite:
             command += ['--suite', args.suite]
+        if args.milestone:
+            command += ['--milestone', args.milestone]
         if args.catchup:
             command.append('--catchup')
         # Stream build progress while retaining the final JSON receipt.

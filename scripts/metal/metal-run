@@ -533,10 +533,12 @@ def boot(args):
                                        breenfs_fault=metal_power_cut.kernel_fault(args))
             # A suite boot's build stages the suite's host-side fixtures (the SDK suite's results).
             suite = ['--suite', args.suite] if args.suite else []
+            build_selection = ['--milestone', milestone] if milestone and not prebuilt else []
             tools_only = ['--tools-profile', tools_profiles[payload]] if payload in tools_profiles else []
             build_command = (['_prebuilt', boot_id, sha, prebuilt, '--mode', args.mode] if prebuilt else
                              ['_build', boot_id, sha])
             subprocess.Popen([sys.executable, str(Path(__file__).resolve()), *build_command] + features + suite +
+                             build_selection +
                              tools_only + (['--smb-helper'] if smb else []) + (['--catchup'] if catchup else [])
                              + (['--migration-build'] if migration else []),
                              stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
@@ -661,7 +663,7 @@ def stub_sources(stub):
 
 
 def build(boot_id, sha, features=None, suite=None, tools_profile=None, catchup=False, smb_helper=False,
-          migration=False):
+          migration=False, milestone=None):
     """Detached: build in the metal build container, stream the inputs into the boot's stage folder, signal the driver."""
     validate_id(boot_id)
     env = host_env()
@@ -711,6 +713,7 @@ def build(boot_id, sha, features=None, suite=None, tools_profile=None, catchup=F
                       '--cache', env['BUILD_CACHE'], '--root', env['BUILD_ROOT'],
                       '--stub', f'{tools}/efi-stub', *(['--features', features] if features else []),
                       *(['--suite', suite] if suite else []),
+                      *(['--milestone', milestone] if milestone else []),
                       *(['--stub-only', '--tools-profile', tools_profile] if tools_profile else []),
                       *(['--catchup'] if catchup else [])).returncode
     print(f'[metal-run] build exit {status} after {time.time() - started:.0f} s', flush=True)
@@ -836,6 +839,7 @@ def argument_parser(automatic=False):
     p.add_argument('sha')
     p.add_argument('--features', choices=(FAULT_FEATURE, FENCE_FEATURE, PANIC_FEATURE, TESTING_FEATURE, 'capture_panic_oracle', 'gt710_core_probe', 'gt710_clock_probe', 'watchdog_fault_inject', *metal_power_cut.FEATURES))
     p.add_argument('--suite')
+    p.add_argument('--milestone')
     p.add_argument('--tools-profile', choices=('disk-readback', 'boot-manager', 'persistent-export', RECLAIM_PAYLOAD))
     p.add_argument('--smb-helper', action='store_true')
     p.add_argument('--catchup', action='store_true')
@@ -898,7 +902,7 @@ def main():
         return install_persistent(args)
     if args.command == '_build':
         return build(args.id, args.sha, args.features, args.suite, args.tools_profile, args.catchup, args.smb_helper,
-                     args.migration_build)
+                     args.migration_build, args.milestone)
     if args.command == '_prebuilt':
         return deliver_prebuilt(args.id, args.sha, args.prebuilt, args.mode, args.features, args.suite, args.catchup, args.smb_helper)
     env = host_env()
