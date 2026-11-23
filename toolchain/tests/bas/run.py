@@ -7,16 +7,24 @@ import struct
 import subprocess
 import tempfile
 
+from aarch64_integer import INTEGER_ENCODINGS as AARCH64_INTEGER_ENCODINGS
+from aarch64_integer import INTEGER_REJECTIONS as AARCH64_INTEGER_REJECTIONS
+from aarch64_memory import MEMORY_ENCODINGS, MEMORY_REJECTIONS
 from integer import INTEGER_ENCODINGS, INTEGER_REJECTIONS
 
 
 TESTS = Path(__file__).resolve().parents[1]
 TOOLCHAIN = TESTS.parent
 ASSEMBLER_CORPUS = TOOLCHAIN / "corpus/assembler"
+AARCH64_CORPUS = TOOLCHAIN / "corpus/assembler-aarch64"
 CHECK = "bas::exit42_object_passes_elfcheck"
 ADDRESSING_CHECK = "bas::sib_rip_forms_match_sdm_table"
 RELOCATION_CHECK = "bas::rela_pc32_for_external_call"
 INTEGER_CHECK = "bas::encode_mov_r64_imm32"
+AARCH64_CHECK = "bas::aarch64_exit42_object_passes_elfcheck"
+AARCH64_INTEGER_CHECK = "bas::aarch64_encode_add_imm"
+AARCH64_RELOCATION_CHECK = "bas::aarch64_rela_call26_for_external_call"
+AARCH64_MEMORY_CHECK = "bas::aarch64_load_store_forms_match_arm_table"
 
 # Intel SDM Vol. 2 MOV opcode table B8+rd id, Table 2-4 REX.B,
 # and AMD APM Vol. 1 Figure 3-3 for the r32 register numbers.
@@ -37,9 +45,12 @@ def require(condition, reason):
         raise ValueError(reason)
 
 
-def read_object(bas, elfcheck, path, fixture):
-    subprocess.run([bas, "-o", path, TESTS / "bas" / fixture], check=True, timeout=10)
-    subprocess.run([elfcheck, path], check=True, timeout=10)
+def read_object(bas, elfcheck, path, fixture, *, machine=None):
+    target_args = ["--target", machine] if machine else []
+    machine_args = ["--machine", machine] if machine else []
+    subprocess.run([bas, *target_args, "-o", path, TESTS / "bas" / fixture],
+                   check=True, timeout=10)
+    subprocess.run([elfcheck, *machine_args, path], check=True, timeout=10)
 
     # elfcheck validates the structure. Read the fields that identify this
     # particular program (ELF gABI Listings 2.1, 3.1 and 5.1).
@@ -250,10 +261,223 @@ def check_supplemental_encodings(bas, elfcheck, path):
                 f"wrong diagnostic for {line!r}: {result.stderr}")
 
 
+def check_aarch64_integer(bas, path, obj):
+    source = AARCH64_CORPUS / "encodings.s"
+    count = len(AARCH64_INTEGER_ENCODINGS)
+    corpus_sources = [line.strip() for line in source.read_text().splitlines()]
+    corpus_words = (AARCH64_CORPUS / "encodings.hex").read_text().splitlines()
+    first, word, section = AARCH64_INTEGER_ENCODINGS[0]
+    source_start = corpus_sources.index(first)
+    word_start = corpus_words.index(f"{word:08x} # DDI 0487 M.b {section} {first}")
+    for (assembly, expected, section), corpus_source, corpus_word in zip(
+        AARCH64_INTEGER_ENCODINGS, corpus_sources[source_start:source_start + count],
+        corpus_words[word_start:word_start + count], strict=True
+    ):
+        require(corpus_source == assembly, f"corpus source differs for {assembly!r}")
+        require(corpus_word == f"{expected:08x} # DDI 0487 M.b {section} {assembly}",
+                f"corpus encoding or citation differs for {assembly!r}")
+
+    sections, contents, _, _ = obj
+    words = list(struct.iter_unpack("<I", contents(sections[b".text"][1])))
+    for (assembly, expected, section), (actual,) in zip(
+        AARCH64_INTEGER_ENCODINGS, words[word_start:word_start + count], strict=True
+    ):
+        require(actual == expected,
+                f"{assembly!r} (DDI 0487 M.b {section}): got {actual:08x}, expected {expected:08x}")
+
+    source = path.with_suffix(".s")
+    rejected = path.with_suffix(".rejected.o")
+    for assembly, column, reason, section in AARCH64_INTEGER_REJECTIONS:
+        source.write_text(f".section .text\n{assembly}\n")
+        result = subprocess.run([bas, "--target", "aarch64", "-o", rejected, source],
+                                capture_output=True, text=True, timeout=10)
+        require(result.returncode == 1 and f"{source}:2:{column}:" in result.stderr
+                and reason in result.stderr and not rejected.exists(),
+                f"{assembly!r} (DDI 0487 M.b {section}): wrong diagnostic: {result.stderr}")
+
+
+def check_aarch64_memory(bas, elfcheck, path):
+    source = AARCH64_CORPUS / "encodings.s"
+    count = len(MEMORY_ENCODINGS)
+    corpus_sources = [line.strip() for line in source.read_text().splitlines()]
+    corpus_words = (AARCH64_CORPUS / "encodings.hex").read_text().splitlines()
+    obj = read_object(bas, elfcheck, path, source, machine="aarch64")
+    sections, contents, _, _ = obj
+    text = contents(sections[b".text"][1])
+    words = list(struct.iter_unpack("<I", text))
+    require(len(words) == len(corpus_words), "wrong AArch64 corpus word count")
+    for (assembly, expected, section), corpus_source, corpus_word, (actual,) in zip(
+        MEMORY_ENCODINGS, corpus_sources[-count:], corpus_words[-count:], words[-count:], strict=True
+    ):
+        require(corpus_source == assembly, f"corpus source differs for {assembly!r}")
+        require(corpus_word == f"{expected:08x} # DDI 0487 M.b {section} {assembly}",
+                f"corpus encoding or citation differs for {assembly!r}")
+        require(actual == expected,
+                f"{assembly!r} (DDI 0487 M.b {section}): got {actual:08x}, expected {expected:08x}")
+
+    source = path.with_suffix(".s")
+    rejected = path.with_suffix(".rejected.o")
+    for assembly, column, reason, section in MEMORY_REJECTIONS:
+        source.write_text(f".section .text\n{assembly}\n")
+        result = subprocess.run([bas, "--target", "aarch64", "-o", rejected, source],
+                                capture_output=True, text=True, timeout=10)
+        require(result.returncode == 1 and f"{source}:2:{column}:" in result.stderr
+                and reason in result.stderr and not rejected.exists(),
+                f"{assembly!r} (DDI 0487 M.b {section}): wrong diagnostic: {result.stderr}")
+    return obj
+
+
+def check_aarch64(bas, path, obj):
+    sections, contents, _, symbols = obj
+    text_index, text = sections[b".text"]
+    require(text[1:3] == (1, 6) and text[8] == 4, "expected aligned executable .text")
+    require(symbols.get(b"_start") == (0x10, 0, text_index, 0, 0), "expected global _start")
+    # AAELF64 2025Q1 §5.6.5 starts the instruction range with a local $x.
+    require(symbols.get(b"$x") == (0, 0, text_index, 0, 0), "expected a .text code mapping")
+    rows = (AARCH64_CORPUS / "encodings.hex").read_text().splitlines()
+    expected = [int(row.split("#", 1)[0], 16) for row in rows]
+    actual = [word for (word,) in struct.iter_unpack("<I", contents(text))]
+    require(actual == expected, f".text words were {actual!r}, expected {expected!r}")
+    require(all(header[1] not in (4, 9) for _, header in sections.values()),
+            "same-section labels must resolve without relocations")
+
+    source = path.with_suffix(".s")
+    rejected = path.with_suffix(".rejected.o")
+    for assembly, location, reason in (
+        # TBZ's largest positive displacement is 32764 (DDI 0487 M.b C6.2.478).
+        ("    tbz x0, #0, .Lfar\n.zero 32764\n.Lfar: nop\n", "1:17", "out of range"),
+        ("    b .Ldata\n.byte 0\n.Ldata:\n", "1:7", "aligned"),
+    ):
+        source.write_text(assembly)
+        result = subprocess.run([bas, "--target", "aarch64", "-o", rejected, source],
+                                capture_output=True, text=True, timeout=10)
+        require(result.returncode == 1 and f"{source}:{location}:" in result.stderr
+                and reason in result.stderr and not rejected.exists(),
+                f"wrong diagnostic for {assembly!r}: {result.stderr}")
+
+
+
+def check_aarch64_relocations(bas, elfcheck, path):
+    # AAELF64 2025Q1 §§5.7.5–5.7.8 and 5.7.11.4 give these type numbers. Each row names
+    # the relocation place, type, original target symbol and explicit addend.
+    expected = {
+        b".text": [
+            (0, 283, "CALL26", b"external", 4),
+            (4, 282, "JUMP26", b".Ldata", 0),
+            (8, 280, "CONDBR19", b"external", -4),
+            (12, 280, "CONDBR19", b"external", 0),
+            (16, 280, "CONDBR19", b".Ldata", 4),
+            (20, 279, "TSTBR14", b"external", 0),
+            (24, 279, "TSTBR14", b".Ldata", 0),
+            (28, 273, "LD_PREL_LO19", b".Ldata", 8),
+            (32, 275, "ADR_PREL_PG_HI21", b".Llocal", 4),
+            (36, 277, "ADD_ABS_LO12_NC", b".Llocal", 4),
+            (40, 278, "LDST8_ABS_LO12_NC", b".Ldata", 1),
+            (44, 284, "LDST16_ABS_LO12_NC", b".Ldata", 2),
+            (48, 285, "LDST32_ABS_LO12_NC", b".Ldata", 4),
+            (52, 286, "LDST64_ABS_LO12_NC", b".Ldata", 8),
+            (56, 299, "LDST128_ABS_LO12_NC", b".Ldata", 16),
+            (60, 311, "ADR_GOT_PAGE", b"external", 0),
+            (64, 312, "LD64_GOT_LO12_NC", b"external", 0),
+            (68, 549, "TLSLE_ADD_TPREL_HI12", b"tls", 8),
+            (72, 551, "TLSLE_ADD_TPREL_LO12_NC", b"tls", 8),
+        ],
+        b".data": [
+            (16, 257, "ABS64", b"external", 7),
+            (24, 258, "ABS32", b".Llocal", -3),
+            (28, 261, "PREL32", b"external", 0),
+        ],
+    }
+    # DDI 0487 M.b chapters C6/C7. These include the relocation fields,
+    # which remain unpatched, and the fixed shift bit of the high TLS ADD.
+    words = (
+        0x94000000, 0x14000000, 0x54000001, 0x34000001, 0xB5000002,
+        0xB6280003, 0x37300004, 0x58000005, 0x90000006, 0x910000C6,
+        0x394000C7, 0x790000C8, 0xB94000C9, 0xF90000CA, 0x3DC000CB,
+        0x9000000C, 0xF940018C, 0x914001AD, 0x910001AD, 0xD503201F,
+    )
+
+    source = path.with_suffix(".s")
+    source.write_text("bl external+4\n.global external\n")
+    check_aarch64_rela_object(
+        bas, elfcheck, path, source,
+        {b".text": [(0, 283, "CALL26", b"external", 4)]}, (0x94000000,),
+    )
+    # AAELF64 §§5.6.5, 5.7.6: code in a separate executable section
+    # has its own mapping symbols and a cross-section call relocation.
+    source.write_text(".global answer\nbl answer\n.section .text.answer\nanswer: ret\n")
+    sections, contents, symtab, _ = read_object(bas, elfcheck, path, source, machine="aarch64")
+    answer_index, answer = sections[b".text.answer"]
+    require(answer[2] == 6 and contents(answer) == struct.pack("<I", 0xd65f03c0),
+            "executable subsection has wrong flags or instruction")
+    strings = contents(sections[b".strtab"][1])
+    symbols = list(struct.iter_unpack("<IBBHQQ", contents(symtab)))
+    names = [strings[row[0]:strings.index(0, row[0])] for row in symbols]
+    require(any(name == b"$x" and row[3] == answer_index and row[4] == 0
+                for name, row in zip(names, symbols)), "missing subsection code mapping")
+    rela = list(struct.iter_unpack("<QQq", contents(sections[b".rela.text"][1])))
+    require(len(rela) == 1 and (rela[0][0], rela[0][1] & 0xffffffff,
+            names[rela[0][1] >> 32], rela[0][2]) == (0, 283, b"answer", 0),
+            "cross-section BL must carry R_AARCH64_CALL26 answer + 0")
+    # E25 rulings 31–32 replace the three cross-section refusals with exact
+    # positive rows. AAELF64 §5.7.6 defines the relocation for each field.
+    for instruction, symbol, kind, name, word in (
+        ("b", ".Ldata", 282, "JUMP26", 0x14000000),
+        ("adr x0,", ".Ladr", 274, "ADR_PREL_LO21", 0x10000000),
+        ("ldr x0,", ".Ldata", 273, "LD_PREL_LO19", 0x58000000),
+    ):
+        source.write_text(f"    {instruction} {symbol}\n.section .data\n{symbol}: .long 0\n")
+        check_aarch64_rela_object(
+            bas, elfcheck, path, source,
+            {b".text": [(0, kind, name, symbol.encode(), 0)]}, (word,),
+        )
+    check_aarch64_rela_object(bas, elfcheck, path, "aarch64_relocations.s", expected, words)
+
+    rejected = path.with_suffix(".rejected.o")
+    for operand, suffix, location, reason in (
+        ("add x0, x0, :tprel_hi12:ordinary", ".data", "1:25", "TLS symbol"),
+        ("add x0, x0, :tprel_lo12_nc:ordinary", ".data", "1:28", "TLS symbol"),
+        ("adrp x0, :got:ordinary+8", ".data", "1:15", "zero addend"),
+        ("ldr w0, [x1, :got_lo12:ordinary]", ".data", "1:15", "64-bit"),
+    ):
+        source.write_text(f"{operand}\n.section {suffix}\nordinary: .quad 0\n")
+        result = subprocess.run([bas, "--target", "aarch64", "-o", rejected, source],
+                                capture_output=True, text=True, timeout=10)
+        require(result.returncode == 1 and f"{source}:{location}:" in result.stderr
+                and reason in result.stderr and not rejected.exists(),
+                f"wrong diagnostic for {operand!r}: {result.stderr}")
+
+
+def check_aarch64_rela_object(bas, elfcheck, path, fixture, expected, words):
+    sections, contents, symtab, _ = read_object(bas, elfcheck, path, fixture, machine="aarch64")
+    strings = contents(sections[b".strtab"][1])
+    names = [strings[name:strings.index(0, name)]
+             for (name,) in struct.iter_unpack("<I20x", contents(symtab))]
+    require({name for name, (_, hdr) in sections.items() if hdr[1] in (4, 9)}
+            == {b".rela" + name for name in expected}, "unexpected AArch64 RELA section set")
+    for name, rows in expected.items():
+        _, rela = sections[b".rela" + name]
+        index, _ = sections[name]
+        require(rela[6] == sections[b".symtab"][0] and rela[7] == index
+                and rela[8:10] == (8, 24), f"wrong RELA links or layout for {name!r}")
+        actual = list(struct.iter_unpack("<QQq", contents(rela)))
+        require(len(actual) == len(rows), f"wrong RELA count for {name!r}: {len(actual)}")
+        for (offset, info, addend), (place, kind, type_name, symbol, a) in zip(actual, rows):
+            row = (offset, info & 0xffffffff, names[info >> 32], addend)
+            require(row == (place, kind, symbol, a),
+                    f"{name!r}+{place}: expected R_AARCH64_{type_name} {symbol!r} {a}, got {row}")
+    text = contents(sections[b".text"][1])
+    require(text == struct.pack(f"<{len(words)}I", *words), f"wrong instruction words: {text.hex()}")
+    if b".data" in sections:
+        data = contents(sections[b".data"][1])
+        require(data == bytes(32 if b".data" in expected else 4), "relocated data must be zero")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bas", type=Path, required=True)
     parser.add_argument("--elfcheck", type=Path, required=True)
+    parser.add_argument("--machine", choices=("x86_64", "aarch64"), default="x86_64")
     args = parser.parse_args()
     if not args.bas.is_absolute() or not args.elfcheck.is_absolute():
         parser.error("--bas and --elfcheck must be absolute paths")
@@ -262,12 +486,27 @@ def main():
     try:
         with tempfile.TemporaryDirectory(prefix="breenix-bas-") as scratch:
             directory = Path(scratch)
-            for check, run in ((RELOCATION_CHECK, check_relocations),
-                               (INTEGER_CHECK, check_integer),
-                               ("bas::supplemental_encodings", check_supplemental_encodings),
-                               (ADDRESSING_CHECK, check_addressing), (CHECK, check_object)):
-                run(args.bas, args.elfcheck, directory / f"{run.__name__}.o")
+            checks = ((RELOCATION_CHECK, check_relocations), (INTEGER_CHECK, check_integer),
+                      ("bas::supplemental_encodings", check_supplemental_encodings),
+                      (ADDRESSING_CHECK, check_addressing), (CHECK, check_object))
+            if args.machine == "aarch64":
+                path = directory / "aarch64.o"
+                check = AARCH64_RELOCATION_CHECK
+                check_aarch64_relocations(args.bas, args.elfcheck, path)
                 print(f"{check} PASS", flush=True)
+                check = AARCH64_MEMORY_CHECK
+                obj = check_aarch64_memory(args.bas, args.elfcheck, path)
+                print(f"{check} PASS", flush=True)
+                check = AARCH64_INTEGER_CHECK
+                check_aarch64_integer(args.bas, path, obj)
+                print(f"{check} PASS", flush=True)
+                check = AARCH64_CHECK
+                check_aarch64(args.bas, path, obj)
+                print(f"{check} PASS", flush=True)
+            else:
+                for check, run in checks:
+                    run(args.bas, args.elfcheck, directory / f"{run.__name__}.o")
+                    print(f"{check} PASS", flush=True)
     except (KeyError, OSError, ValueError, struct.error, subprocess.SubprocessError) as error:
         parser.exit(1, f"{check} FAIL ({error})\n")
 

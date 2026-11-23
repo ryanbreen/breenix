@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use bas::assemble;
+use bas::{assemble, assemble_for, Target};
 
 #[test]
 fn malformed_input_is_error_not_panic() {
@@ -32,5 +32,33 @@ fn malformed_input_is_error_not_panic() {
     ] {
         let error = assemble(source.as_bytes()).expect_err("reject numeric overflow");
         assert_eq!(error.to_string(), expected);
+    }
+
+    let branch = b"tbz x0, #63, .Ltarget";
+    let with_target = |line: &[u8]| [line, b"\n.Ltarget: nop"].concat();
+    assert!(assemble_for(Target::Aarch64, &with_target(branch)).is_ok());
+
+    for end in 1..branch.len() {
+        let error = assemble_for(Target::Aarch64, &with_target(&branch[..end]))
+            .expect_err("reject truncated AArch64 branch");
+        assert!(error.to_string().starts_with("1:"));
+    }
+    for index in 0..branch.len() {
+        let mut corrupt = *branch;
+        corrupt[index] = 0;
+        let error = assemble_for(Target::Aarch64, &with_target(&corrupt))
+            .expect_err("reject NUL in AArch64 source");
+        assert_eq!(error.to_string(), format!("1:{}: NUL in source", index + 1));
+    }
+    for source in [
+        "movz x0, #18446744073709551616",
+        "movz w0, #1, lsl #32",
+        "tbz w0, #32, .Ltarget\n.Ltarget: nop",
+        "b .Ltarget+9223372036854775808\n.Ltarget: nop",
+    ] {
+        assert!(assemble_for(Target::Aarch64, source.as_bytes())
+            .expect_err("reject out-of-range AArch64 operand")
+            .to_string()
+            .starts_with("1:"));
     }
 }

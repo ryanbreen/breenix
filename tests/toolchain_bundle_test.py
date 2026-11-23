@@ -115,9 +115,21 @@ class ToolchainBundleTest(unittest.TestCase):
         self.assertEqual({path.name for path in (self.dev / "bin").iterdir()},
                          {"bas", "bld", "bar", "bnm"})
 
+    def arm_encoding_inputs_are_staged(self):
+        relative = Path("usr/share/breenix/toolchain/assembler")
+        manifest = (self.dev / "manifest.sha256").read_text().splitlines()
+        for name in ("encodings.s", "encodings.hex"):
+            with self.subTest(file=name):
+                source = WORKSPACE / "corpus/assembler-aarch64" / name
+                staged = self.bundle / "root" / relative / name
+                self.assertTrue(staged.is_file(), f"ARM bundle is missing {relative / name}")
+                self.assertEqual(staged.read_bytes(), source.read_bytes())
+                self.assertIn(f"{digest(source)}  {relative / name}", manifest)
+
     def receipts_from_cargo_host_bas(self):
         assembler = self.bundle / "root/usr/share/breenix/toolchain/assembler"
-        names = ("sse-exit", "x87-exit")
+        names = (("sse-exit", "x87-exit") if self.record["arch"] == "x86_64"
+                 else ("fp-exit", "call-exit"))
         receipts = {name: json.loads((assembler / f"{name}.link.json").read_text()) for name in names}
         for name, receipt in receipts.items():
             self.assertIn("hostBas", receipt, f"{name} has no Cargo host bas provenance")
@@ -146,10 +158,28 @@ class ToolchainBundleTest(unittest.TestCase):
                 with self.subTest(program=name):
                     self.assertEqual(receipt["hostBas"], producer)
                     obj = Path(temp) / f"{name}.o"
-                    subprocess.run([bas, "-o", obj, assembler / f"{name}.s"], check=True, timeout=10)
+                    subprocess.run([bas, *(["--target", "aarch64"] if self.record["arch"] == "aarch64" else []),
+                                    "-o", obj, assembler / f"{name}.s"], check=True, timeout=10)
                     self.assertEqual(receipt["inputObjects"], {obj.name: digest(obj)})
                     elf = assembler / f"{name}.elf"
                     self.assertEqual(receipt["elf"], {"name": elf.name, "sha256": digest(elf)})
+
+    def x86_artifacts_equal_baseline(self):
+        self.assertEqual(self.record["arch"], "x86_64")
+        self.assertIsNotNone(self.baseline, "pass an origin/main x86 bundle with --baseline")
+        self.assertEqual(json.loads((self.baseline / "build.json").read_text())["arch"], "x86_64")
+        relative = "root/usr/share/breenix/toolchain/assembler"
+        actual, expected = self.bundle / relative, self.baseline / relative
+        self.assertEqual({p.name for p in actual.iterdir()}, {p.name for p in expected.iterdir()})
+        for path in actual.iterdir():
+            with self.subTest(artifact=path.name):
+                if path.name.endswith(".link.json"):
+                    receipt = json.loads(path.read_text())
+                    baseline = json.loads((expected / path.name).read_text())
+                    for field in ("inputObjects", "elf", "map"):
+                        self.assertEqual(receipt[field], baseline[field])
+                else:
+                    self.assertEqual(path.read_bytes(), (expected / path.name).read_bytes())
 
     def read_fault_probe_is_not_shipped(self):
         self.assertIsNotNone(self.probe, "pass the guest-target bld-read-probe with --probe")
@@ -167,16 +197,21 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("bundle", type=Path)
     parser.add_argument("--probe", type=Path)
+    parser.add_argument("--baseline", type=Path)
     args, names = parser.parse_known_args()
     ToolchainBundleTest.bundle = args.bundle
     ToolchainBundleTest.probe = args.probe
-    checks = ["ToolchainBundleTest.tools_built_by_rustc"]
+    ToolchainBundleTest.baseline = args.baseline
+    checks = ["ToolchainBundleTest.tools_built_by_rustc",
+              "ToolchainBundleTest.receipts_from_cargo_host_bas"]
     if json.loads((args.bundle / "build.json").read_text())["arch"] == "x86_64":
-        checks.extend(["ToolchainBundleTest.receipts_from_cargo_host_bas",
-                       "ToolchainBundleTest.cc_built_by_rustc",
+        checks.extend(["ToolchainBundleTest.cc_built_by_rustc",
                        "ToolchainBundleTest.make_built_by_rustc"])
     else:
-        checks.append("ToolchainBundleTest.arm_bundle_unchanged_until_a3")
+        checks.extend(["ToolchainBundleTest.arm_bundle_unchanged_until_a3",
+                       "ToolchainBundleTest.arm_encoding_inputs_are_staged"])
+    if args.baseline is not None:
+        checks.append("ToolchainBundleTest.x86_artifacts_equal_baseline")
     if args.probe is not None:
         checks.append("ToolchainBundleTest.read_fault_probe_is_not_shipped")
     unittest.main(argv=[sys.argv[0], *names], defaultTest=checks)
