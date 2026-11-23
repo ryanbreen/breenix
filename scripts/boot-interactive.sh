@@ -470,9 +470,16 @@ if [ "$SUITE" = transfer-fixture ]; then
     if [ "$SERIAL_REQUESTED" -eq 0 ]; then SERIAL_LOG="$TRANSFER_RUN_DIR/serial.txt"; fi
     echo "==> Transfer evidence: $TRANSFER_RUN_DIR"
 fi
+TOOLCHAIN_SSH_DIR=
+if [ "$MODE" = suite ] && [[ ",$SUITE," == *,toolchain,* ]] && [ -z "$ONLY" ] && [ "$BUILD_ONLY" -eq 0 ]; then
+    TOOLCHAIN_SSH_DIR=$(mktemp -d "${TMPDIR:-/tmp}/breenix-toolchain-ssh.XXXXXX")
+fi
 cleanup_transfer() {
     if [ -n "$TRANSFER_RUN_DIR" ]; then
         rm -f "$TRANSFER_RUN_DIR/identity" "$TRANSFER_RUN_DIR/identity.pub"
+    fi
+    if [ -n "$TOOLCHAIN_SSH_DIR" ]; then
+        rm -f "$TOOLCHAIN_SSH_DIR/identity" "$TOOLCHAIN_SSH_DIR/identity.pub"
     fi
 }
 trap cleanup_transfer EXIT
@@ -521,6 +528,11 @@ if [ -n "$TRANSFER_RUN_DIR" ]; then
         mkdir -p "$TRANSFER_RUN_DIR/definition/$(dirname "$definition")"
         cp "$ROOT/$definition" "$TRANSFER_RUN_DIR/definition/$definition"
     done
+fi
+TOOLCHAIN_SSH_PORT=
+if [ -n "$TOOLCHAIN_SSH_DIR" ]; then
+    TOOLCHAIN_SSH_PORT=$(python3 "$ROOT/scripts/metal/transfer-hostssh" stage-qemu --toolchain \
+        --run-dir "$TOOLCHAIN_SSH_DIR" --image "$WRITABLE")
 fi
 CAPTURE_ARGS=()
 if [ -n "$SCREEN_CAPTURE" ]; then
@@ -588,6 +600,7 @@ if [ "$MODE" = suite ] && { [ "$SUITE" = ui-testing ] || [ "$SUITE" = gui-apps ]
 fi
 # The users suite's external-client cases need the boot host's real OpenSSH.
 NETDEV="user,id=net0"
+[ -z "$TOOLCHAIN_SSH_PORT" ] || NETDEV+=",hostfwd=tcp:127.0.0.1:$TOOLCHAIN_SSH_PORT-:22"
 [ -z "$TRANSFER_PORT" ] || NETDEV+=",hostfwd=tcp:127.0.0.1:$TRANSFER_PORT-:22"
 [ -z "$COLLAB_HOST_PORT" ] || NETDEV+=",hostfwd=tcp:$COLLAB_HOST_BIND:$COLLAB_HOST_PORT-:7890"
 USERS_SSH_STATE=
@@ -807,6 +820,13 @@ if [ -n "$TRANSFER_PORT" ]; then
     TRANSFER_SSH_PID=$!
     qemu_host_lock_track_pid "$TRANSFER_SSH_PID"
 fi
+TOOLCHAIN_SSH_PID=
+if [ -n "$TOOLCHAIN_SSH_PORT" ]; then
+    python3 "$ROOT/scripts/metal/transfer-hostssh" watch-qemu --toolchain --run-dir "$TOOLCHAIN_SSH_DIR" \
+        --serial "$SERIAL_LOG" --parent "$WATCHER_PID" > "$(dirname "$SERIAL_LOG")/toolchain-hostssh.log" 2>&1 &
+    TOOLCHAIN_SSH_PID=$!
+    qemu_host_lock_track_pid "$TOOLCHAIN_SSH_PID"
+fi
 USERS_SSH_PID=
 if [ -n "$USERS_SSH_STATE" ]; then
     python3 "$ROOT/scripts/users-hostssh.py" watch --state "$USERS_SSH_STATE" --serial "$SERIAL_LOG" \
@@ -820,6 +840,14 @@ if [ -n "$TRANSFER_SSH_PID" ]; then
     wait "$TRANSFER_SSH_PID"
     ssh_code=$?
     [ "$code" -ne 0 ] || code=$ssh_code
+fi
+if [ -n "$TOOLCHAIN_SSH_PID" ]; then
+    wait "$TOOLCHAIN_SSH_PID"
+    ssh_code=$?
+    [ "$code" -ne 0 ] || code=$ssh_code
+    if [ -f "$TOOLCHAIN_SSH_DIR/toolchain-hostssh.json" ]; then
+        cp "$TOOLCHAIN_SSH_DIR/toolchain-hostssh.json" "$(dirname "$SERIAL_LOG")/toolchain-hostssh.json"
+    fi
 fi
 if [ -n "$USERS_SSH_PID" ]; then
     wait "$USERS_SSH_PID"

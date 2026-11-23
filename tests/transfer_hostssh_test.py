@@ -1,6 +1,7 @@
 """Exercise the host SSH adapter without opening a network connection."""
 
 import json
+import os
 import subprocess
 import unittest
 import tempfile
@@ -43,7 +44,7 @@ class TransferHostSsh(unittest.TestCase):
             serial = root / "serial.txt"
             serial.write_text(f"SUITE toolchain HOSTSSH c-core/hello-over-ssh nonce={nonce} "
                               f"fp={fingerprint} peer=10.0.2.2 user={user} uid=1000 gid=1001\n")
-            args = SimpleNamespace(run_dir=root, serial=serial, parent=1, wait=1, toolchain=True)
+            args = SimpleNamespace(run_dir=root, serial=serial, parent=os.getpid(), wait=1, toolchain=True)
             client = host.Client("127.0.0.1", 12345, user, "10.0.2.2", root / "identity", lambda: True)
             client.pin = Mock(return_value=True)
             client.ssh = Mock(side_effect=[
