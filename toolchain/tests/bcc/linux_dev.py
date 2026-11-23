@@ -65,15 +65,21 @@ def run_tool(name, command):
         raise ValueError(f"{name} exited {result.returncode}: {stderr}")
 
 
+# A3-u2 uses the same sealed set except for floating-point code generation,
+# which is the next A3 unit. Keep the x86 corpus on the full ruling 15 list.
+ARM_INTEGER_CORPUS = tuple(name for name in CORPUS if name != "floating-conversion")
+
+
 def compile_object(args, name, work):
     source = ROOT / "toolchain/corpus" / f"{name}.c"
     assembly = work / f"{name}.s"
     obj = work / f"{name}.o"
-    run_tool("bcc", [args.bcc, "--target=x86_64", "-S",
+    run_tool("bcc", [args.bcc, f"--target={args.arch}", "-S",
                      "-I", ROOT / "toolchain/include",
                      "-I", ROOT / "libs/libbreenix-libc/include",
                      "-o", assembly, source])
-    run_tool("bas", [args.bas, "-o", obj, assembly])
+    target = ["--target", "aarch64"] if args.arch == "aarch64" else []
+    run_tool("bas", [args.bas, *target, "-o", obj, assembly])
     return obj
 
 
@@ -105,14 +111,14 @@ def main():
     args = parser.parse_args()
     if (platform.system(), platform.machine()) != ("Linux", args.arch):
         parser.error(f"run in a Linux/{args.arch} build container")
-    if args.corpus and args.arch != "x86_64":
-        parser.error("--corpus currently requires x86_64")
     if args.corpus and (args.bcc is None or args.bas is None):
         parser.error("--corpus requires --bcc and --bas")
     if not args.corpus and args.reference_corpus is None:
         parser.error("the sealed-object check requires --reference-corpus")
 
-    cases = CORPUS if args.corpus else CASES
+    cases = CASES
+    if args.corpus:
+        cases = ARM_INTEGER_CORPUS if args.arch == "aarch64" else CORPUS
     passed = 0
     with TemporaryDirectory(prefix="bcc-linux-dev-") as work:
         for name in cases:

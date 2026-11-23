@@ -187,7 +187,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
                 let value = expr
                     .map(|expr| {
                         let expr = self.expression(expr)?;
-                        constant_integer(&expr).ok_or_else(|| {
+                        constant_integer(&expr, self.target).ok_or_else(|| {
                             expr.site.error("expected an integer constant case value")
                         })
                     })
@@ -196,7 +196,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
                 let Some(switch) = self.switches.last_mut() else {
                     return Err(site.error("case label is outside a switch"));
                 };
-                let value = value.map(|value| canonical(value, &switch.ty));
+                let value = value.map(|value| canonical(value, &switch.ty, self.target));
                 if !switch.values.insert(value) {
                     return Err(site.error("duplicate case value or default"));
                 }
@@ -313,7 +313,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
             }
             (Syntax::Expression(expr), _) => {
                 let value = self.expression(expr)?;
-                if !assignable(ty, &value) {
+                if !assignable(ty, &value, self.target) {
                     return Err(value
                         .site
                         .error(format!("cannot initialize {ty} with {}", value.ty)));
@@ -338,30 +338,30 @@ fn supported_object(ty: &Type) -> bool {
 
 // Use the target's integer width when comparing case values or evaluating an
 // integer constant expression. These ELF targets both use two's complement.
-fn canonical(value: u64, ty: &Type) -> u64 {
+fn canonical(value: u64, ty: &Type, target: Target) -> u64 {
     let Kind::Integer(integer) = ty.kind else {
         return value;
     };
     let shift = 64 - integer.layout().size * 8;
     if integer == Integer::Bool {
         u64::from(value != 0)
-    } else if integer.is_signed(Target::X86_64) {
+    } else if integer.is_signed(target) {
         (((value << shift) as i64) >> shift) as u64
     } else {
         (value << shift) >> shift
     }
 }
 
-pub(super) fn constant_integer(expr: &Expression<'_>) -> Option<u64> {
+pub(super) fn constant_integer(expr: &Expression<'_>, target: Target) -> Option<u64> {
     use Binary::*;
     if !matches!(expr.ty.kind, Kind::Integer(_)) {
         return None;
     }
     let value = match &expr.kind {
         ExpressionKind::Integer(value) => *value,
-        ExpressionKind::Cast(operand) => constant_integer(operand)?,
+        ExpressionKind::Cast(operand) => constant_integer(operand, target)?,
         ExpressionKind::Unary(op, operand) => {
-            let value = constant_integer(operand)?;
+            let value = constant_integer(operand, target)?;
             match op {
                 Unary::Plus => value,
                 Unary::Minus => value.wrapping_neg(),
@@ -377,12 +377,13 @@ pub(super) fn constant_integer(expr: &Expression<'_>) -> Option<u64> {
             left_type,
             right_type,
         } => {
-            let a = canonical(constant_integer(left)?, left_type);
-            let signed = matches!(left_type.kind, Kind::Integer(integer) if integer.is_signed(Target::X86_64));
+            let a = canonical(constant_integer(left, target)?, left_type, target);
+            let signed =
+                matches!(left_type.kind, Kind::Integer(integer) if integer.is_signed(target));
             if (*op == LogicalAnd && a == 0) || (*op == LogicalOr && a != 0) {
                 return Some(u64::from(a != 0));
             }
-            let b = canonical(constant_integer(right)?, right_type);
+            let b = canonical(constant_integer(right, target)?, right_type, target);
             let order = if signed {
                 (a as i64).cmp(&(b as i64))
             } else {
@@ -411,14 +412,15 @@ pub(super) fn constant_integer(expr: &Expression<'_>) -> Option<u64> {
                 LogicalAnd | LogicalOr => u64::from(b != 0),
             }
         }
-        ExpressionKind::Conditional { condition, yes, no } => {
-            constant_integer(if constant_integer(condition)? != 0 {
+        ExpressionKind::Conditional { condition, yes, no } => constant_integer(
+            if constant_integer(condition, target)? != 0 {
                 yes
             } else {
                 no
-            })?
-        }
+            },
+            target,
+        )?,
         _ => return None,
     };
-    Some(canonical(value, &expr.ty))
+    Some(canonical(value, &expr.ty, target))
 }
