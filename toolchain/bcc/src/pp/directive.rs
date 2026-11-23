@@ -30,6 +30,8 @@ pub struct Options {
     pub standard: Standard,
     pub include_dirs: Vec<PathBuf>,
     pub system_dirs: Vec<PathBuf>,
+    pub forced_includes: Vec<PathBuf>,
+    pub track_includes: bool,
     pub macros: Vec<MacroOption>,
     pub warn_unknown_pragmas: bool,
 }
@@ -39,14 +41,21 @@ pub enum Standard {
     #[default]
     C11,
     C17,
+    Gnu99,
+    Gnu11,
 }
 
 impl Standard {
     pub(super) fn version(self) -> &'static str {
         match self {
-            Self::C11 => "201112L",
+            Self::C11 | Self::Gnu11 => "201112L",
             Self::C17 => "201710L",
+            Self::Gnu99 => "199901L",
         }
+    }
+
+    pub(super) fn is_gnu(self) -> bool {
+        matches!(self, Self::Gnu99 | Self::Gnu11)
     }
 }
 
@@ -114,6 +123,7 @@ enum Output {
 pub struct Preprocessed {
     output: Vec<Output>,
     pub(crate) standard: Standard,
+    pub(crate) includes: Vec<PathBuf>,
 }
 
 impl Preprocessed {
@@ -202,20 +212,41 @@ fn process_source(
         options,
         macros: Expander::new(options.target, options.standard),
         output: Vec::new(),
+        includes: Vec::new(),
         warn,
     };
     for (index, option) in options.macros.iter().enumerate() {
         processor.macro_option(option, index + 1)?;
     }
+    for (index, name) in options.forced_includes.iter().enumerate() {
+        let origin = Lexeme::new(
+            "-include",
+            Kind::Identifier,
+            false,
+            Position::new(
+                Path::new("<command-line>"),
+                Location {
+                    line: 1,
+                    column: index + 1,
+                },
+            ),
+        );
+        // GCC Preprocessor Options: search the working directory before -I.
+        processor.include_file(name, &origin, 0, Some(Path::new("")), 0)?;
+    }
     processor.file(path, bytes, 0, None)?;
     Ok(Preprocessed {
         output: processor.output,
         standard: options.standard,
+        includes: processor.includes,
     })
 }
 
 /// Read the serialized phase-4 output without running macros a second time.
-pub(crate) fn read_preprocessed(path: &Path, standard: Standard) -> Result<Preprocessed, Diagnostic> {
+pub(crate) fn read_preprocessed(
+    path: &Path,
+    standard: Standard,
+) -> Result<Preprocessed, Diagnostic> {
     let start = Position::new(path, Location { line: 1, column: 1 });
     let bytes = fs::read(path).map_err(|error| Diagnostic::new(&start, error.to_string()))?;
     let text =
@@ -245,7 +276,11 @@ pub(crate) fn read_preprocessed(path: &Path, standard: Standard) -> Result<Prepr
             }));
         }
     }
-    Ok(Preprocessed { output, standard })
+    Ok(Preprocessed {
+        output,
+        standard,
+        includes: Vec::new(),
+    })
 }
 
 struct LineMap {
@@ -321,6 +356,7 @@ struct Processor<'a> {
     options: &'a Options,
     macros: Expander,
     output: Vec<Output>,
+    includes: Vec<PathBuf>,
     warn: &'a mut dyn FnMut(Diagnostic),
 }
 
@@ -496,9 +532,6 @@ impl Processor<'_> {
         let expanded = self.macros.expand(args.to_vec())?;
         let (name, quoted) =
             header_name(&expanded).ok_or_else(|| original.error("expected a header name"))?;
-        if depth >= 64 {
-            return Err(original.error("include nesting limit exceeded"));
-        }
         // GNU CPP Wrapper Headers §2.7: #include_next resumes after
         // the configured entry that provided this file, even for quotes.
         let next = directive.is("include_next");
@@ -508,6 +541,20 @@ impl Processor<'_> {
         } else {
             0
         };
+        self.include_file(Path::new(&name), original, depth, local, start)
+    }
+
+    fn include_file(
+        &mut self,
+        name: &Path,
+        origin: &Lexeme,
+        depth: usize,
+        local: Option<&Path>,
+        start: usize,
+    ) -> Result<(), Diagnostic> {
+        if depth >= 64 {
+            return Err(origin.error("include nesting limit exceeded"));
+        }
         let dirs = local.into_iter().map(|dir| (None, dir)).chain(
             self.options
                 .include_dirs
@@ -518,23 +565,28 @@ impl Processor<'_> {
                 .map(|(index, dir)| (Some(index), dir.as_path())),
         );
         for (index, dir) in dirs {
-            let candidate = dir.join(&name);
+            let candidate = dir.join(name);
             match fs::read(&candidate) {
                 Ok(bytes) => {
+                    if self.options.track_includes {
+                        self.includes.push(candidate.clone());
+                    }
                     return self
                         .file(&candidate, &bytes, depth + 1, index)
                         .map_err(|mut error| {
-                            error.included_from.push(original.site.clone());
+                            error.included_from.push(origin.site.clone());
                             error
                         });
                 }
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(error) => {
-                    return Err(original.error(format!("cannot read header {name}: {error}")))
+                    return Err(
+                        origin.error(format!("cannot read header {}: {error}", name.display()))
+                    )
                 }
             }
         }
-        Err(original.error(format!("header {name} not found")))
+        Err(origin.error(format!("header {} not found", name.display())))
     }
 
     fn flush(&mut self, body: &mut Vec<Lexeme>) -> Result<(), Diagnostic> {

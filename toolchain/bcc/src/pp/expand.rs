@@ -228,7 +228,7 @@ impl Expander {
     }
 
     pub(super) fn is_defined(&self, name: &str) -> bool {
-        is_builtin(name, self.target) || self.definitions.contains_key(name)
+        is_builtin(name, self.target, self.standard) || self.definitions.contains_key(name)
     }
 
     pub(super) fn define(&mut self, directive: &Lexeme, args: &[Lexeme]) -> Result<(), Diagnostic> {
@@ -238,7 +238,7 @@ impl Expander {
         if name.kind != Kind::Identifier {
             return Err(name.error("expected a macro name"));
         }
-        check_macro_name(name, self.target)?;
+        check_macro_name(name, self.target, self.standard)?;
         let parameters = match replacement.first() {
             Some(first) if first.is("(") && !first.space_before => {
                 let (parameters, length) = Parameters::parse(&replacement[1..], name)?;
@@ -282,7 +282,7 @@ impl Expander {
     }
 
     pub(super) fn undefine(&mut self, name: &Lexeme) -> Result<(), Diagnostic> {
-        check_macro_name(name, self.target)?;
+        check_macro_name(name, self.target, self.standard)?;
         self.definitions.remove(&name.text);
         Ok(())
     }
@@ -456,12 +456,13 @@ fn validate_token(text: &str, at: &Lexeme, context: LexContext) -> Result<Kind, 
     }
 }
 
-fn builtin(name: &str, target: Target) -> Option<(&str, Kind)> {
+fn builtin(name: &str, target: Target, standard: Standard) -> Option<(&str, Kind)> {
     let entry = match name {
         "__FILE__" => ("", Kind::String),
         "__LINE__" | "__STDC_VERSION__" => ("", Kind::Number),
         "__STDC__" => ("1", Kind::Number),
-        "__STDC_HOSTED__" | "__STRICT_ANSI__" => ("1", Kind::Number),
+        "__STDC_HOSTED__" => ("1", Kind::Number),
+        "__STRICT_ANSI__" if !standard.is_gnu() => ("1", Kind::Number),
         "__x86_64__" if target == Target::X86_64 => ("1", Kind::Number),
         "__aarch64__" if target == Target::Aarch64 => ("1", Kind::Number),
         // The shipped limits.h selects CHAR_MIN and CHAR_MAX with this macro.
@@ -550,8 +551,8 @@ fn type_builtin(name: &str, target: Target) -> Option<&'static str> {
     })
 }
 
-fn is_builtin(name: &str, target: Target) -> bool {
-    builtin(name, target).is_some()
+fn is_builtin(name: &str, target: Target, standard: Standard) -> bool {
+    builtin(name, target, standard).is_some()
         || type_builtin(name, target).is_some()
         || float_builtin(name, target).is_some()
 }
@@ -562,7 +563,7 @@ fn expand_builtin(
     standard: Standard,
     result: &mut Vec<Lexeme>,
 ) -> bool {
-    if let Some((text, kind)) = builtin(&token.text, target) {
+    if let Some((text, kind)) = builtin(&token.text, target, standard) {
         result.push(match token.text.as_ref() {
             "__FILE__" => token.respell(literal::quote(&token.site.file), kind),
             "__LINE__" => token.respell(token.site.loc.line.to_string(), kind),
@@ -596,8 +597,8 @@ fn expand_builtin(
     true
 }
 
-fn check_macro_name(name: &Lexeme, target: Target) -> Result<(), Diagnostic> {
-    if is_builtin(&name.text, target)
+fn check_macro_name(name: &Lexeme, target: Target, standard: Standard) -> Result<(), Diagnostic> {
+    if is_builtin(&name.text, target, standard)
         || matches!(name.text.as_ref(), "defined" | "__VA_ARGS__" | "_Pragma")
     {
         return Err(name.error("reserved preprocessing identifier"));

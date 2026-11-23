@@ -180,18 +180,18 @@ def verify_inputs():
     }
 
 
-def replay_flags(args):
-    flags = []
+def flag_names(args):
     operands = iter(args)
     for arg in operands:
-        if arg in ("-I", "-D", "-include"):
-            value = next(operands, None)
-            if value is None:
-                raise ValueError(f"missing operand for {arg}")
-            flags.extend((arg, value))
+        if arg in ("-I", "-D", "-include", "-o", "-MF"):
+            next(operands)
+            yield arg
+        elif arg.startswith("-Wp,-MD,"):
+            yield "-Wp,-MD,FILE"
         elif arg.startswith(("-I", "-D")):
-            flags.append(arg)
-    return flags
+            yield arg[:2]
+        elif arg.startswith("-"):
+            yield arg
 
 
 def compile_commands(clang):
@@ -226,7 +226,7 @@ def compile_commands(clang):
             if kind == "target":
                 covered.add(key[1])
             if source.endswith(".c"):
-                commands.append(Compile(kind, output, source, replay_flags(args[1:])))
+                commands.append(Compile(kind, output, source, args[1:]))
     if covered != objects:
         raise ValueError(f"target compile receipts differ from objects.txt: {sorted(covered ^ objects)}")
     if {cmd.kind for cmd in commands} != {"host", "target"}:
@@ -241,41 +241,56 @@ def inventory(bcc, clang, inputs):
     }
     by_kind = {kind: {"commands": 0, "passed": 0} for kind in ("host", "target")}
     commands = compile_commands(clang)
-    for cmd in commands:
-        by_kind[cmd.kind]["commands"] += 1
-        result = subprocess.run(
-            [str(bcc), "-fsyntax-only", "--target=x86_64", *cmd.flags, cmd.source],
-            cwd=SRC, capture_output=True, text=True, timeout=10, check=False,
-        )
-        if result.returncode == 0:
-            by_kind[cmd.kind]["passed"] += 1
-            continue
-        diagnostic = next((line for line in result.stderr.splitlines() if LOCATED.fullmatch(line)), None)
-        if result.returncode != 1 or diagnostic is None:
-            raise ValueError(f"{cmd.output}: bcc exited {result.returncode}: {result.stderr.strip()}")
-        name = classify_diagnostic(diagnostic, SRC)
-        bucket = classes[name]
-        bucket["count"] += 1
-        if len(bucket["examples"]) < 5:
-            located = LOCATED.fullmatch(diagnostic)
-            file = Path(located["file"])
-            if file.is_absolute():
-                file = file.relative_to(SRC) if file.is_relative_to(SRC) else Path(file.name)
-            bucket["examples"].append({
-                "translation_unit": cmd.source,
-                "kind": cmd.kind,
-                "location": f"{file}:{located['line']}",
-                "diagnostic": f"{file}{diagnostic[located.end('file'):]}",
-            })
+    headers = ["-I", str(ROOT / "toolchain/include"), "-I", str(ROOT / "libs/libbreenix-libc/include")]
+    with tempfile.TemporaryDirectory() as scratch:
+        for cmd in commands:
+            by_kind[cmd.kind]["commands"] += 1
+            # Replace -c (and the host commands' default link stage) with
+            # syntax checking. Preserve the other recorded options and route
+            # their dependency side effect to scratch.
+            flags = [flag for flag in cmd.flags if flag != "-c"]
+            if any(flag == "-MD" or flag.startswith("-Wp,-MD,") for flag in flags):
+                flags += ["-MF", str(Path(scratch) / "unit.d")]
+            if cmd.kind == "target":
+                flags += headers
+            result = subprocess.run(
+                [str(bcc), "-fsyntax-only", "--target=x86_64", *flags],
+                cwd=SRC, capture_output=True, text=True, timeout=10, check=False,
+            )
+            if result.returncode == 0:
+                by_kind[cmd.kind]["passed"] += 1
+                continue
+            diagnostic = next((line for line in result.stderr.splitlines() if LOCATED.fullmatch(line)), None)
+            if result.returncode != 1 or diagnostic is None:
+                raise ValueError(f"{cmd.output}: bcc exited {result.returncode}: {result.stderr.strip()}")
+            name = classify_diagnostic(diagnostic, SRC)
+            bucket = classes[name]
+            bucket["count"] += 1
+            if len(bucket["examples"]) < 5:
+                located = LOCATED.fullmatch(diagnostic)
+                file = Path(located["file"])
+                if file.is_absolute():
+                    file = file.relative_to(SRC) if file.is_relative_to(SRC) else Path(file.name)
+                bucket["examples"].append({
+                    "translation_unit": cmd.source,
+                    "kind": cmd.kind,
+                    "location": f"{file}:{located['line']}",
+                    "diagnostic": f"{file}{diagnostic[located.end('file'):]}",
+                })
     return {
         "inputs": inputs,
         "commands": len(commands),
         "passed": sum(kind["passed"] for kind in by_kind.values()),
         "by_kind": by_kind,
+        "flags": {
+            kind: sorted({flag for cmd in commands if cmd.kind == kind for flag in flag_names(cmd.flags)})
+            for kind in by_kind
+        },
         "classes": classes,
         "scope": (
             "First located bcc diagnostic per failed clang command replay. "
-            "Replay preserves recorded -I, -D and -include flags and adds no Mac SDK headers. "
+            "Replay selects syntax checking, routes dependency files to scratch, and uses the "
+            "Breenix toolchain and libc headers for target commands. No Mac SDK headers are added. "
             "An earlier driver or header failure can mask constructs in the same translation unit. "
             "Zero counts mean no first diagnostic of that class was observed."
         ),

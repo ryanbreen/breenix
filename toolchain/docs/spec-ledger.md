@@ -31,7 +31,7 @@ edition pin whose full publication has no digest recorded here.
 | [GNU C extensions](https://gcc.gnu.org/onlinedocs/gcc-15.2.0/gcc/C-Extensions.html) | GCC 15.2.0 manual, GNU C extensions chapter | `4965dab10bf21e0147e86aa80fca2a92da2c099393f34d0325c913aa3be871f2` |
 | [GNU CPP Diagnostics](https://gcc.gnu.org/onlinedocs/gcc-15.2.0/cpp/Diagnostics.html) | GCC 15.2.0 manual, §5, `#warning` spelling and behavior | `fbd550c2e99d404c1f8184df32389be1011514b1d95cd0e1ff0eb8e47ca6c37e` |
 | [GNU C vector extensions](https://gcc.gnu.org/onlinedocs/gcc-15.2.0/gcc/Vector-Extensions.html) | GCC 15.2.0 manual, §7.8, `vector_size` typedef spelling | `bb7f699ab3937eefe69960c5a6bbe6fae9fb58c02aa534bec65caca4c57942e6` |
-| [GCC Common Predefined Macros](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/cpp/Common-Predefined-Macros.html) | GCC 16.2.0 manual, 2026-08-07, §3.7.2, 37380 bytes. The pin covers predefined type macro names. | `9d68defcfa4ed119d2c5f6386b37d49584d7f5354b334008bbae1a2b7ea74904` |
+| [GCC Common Predefined Macros](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/cpp/Common-Predefined-Macros.html) | GCC 16.2.0 manual, 2026-08-07, §3.7.2, 37380 bytes. Covers predefined type macro names and `__STRICT_ANSI__`. | `9d68defcfa4ed119d2c5f6386b37d49584d7f5354b334008bbae1a2b7ea74904` |
 | [GCC Wrapper Headers](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/cpp/Wrapper-Headers.html) | GCC 16.2.0 manual, 2026-08-07, §2.7, 6361 bytes. The pin covers `#include_next`. | `2070d0294cb6d1436e610e6e59d7735e456c57dbc4610b093fbc1ced833848fb` |
 | [GCC Alternate Keywords](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Alternate-Keywords.html) | GCC 16.2.0 manual, 2026-08-07, §6.12.23, 5255 bytes. The pin covers alternate keywords and `__extension__`. | `e03f023a80ef4e52463455c9434f29df78d8d75d7738dad1b538d9dec4a7e30f` |
 | [GCC Library Builtins](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Library-Builtins.html) | GCC 16.2.0 manual, 2026-08-07, §7.1, 42770 bytes. The pin covers explicit memory and string calls and the names of the floating classification and comparison builtins. | `3defeda60e43356ae0b0f30ea0d80c744b92c974cecc5a60a6f4eb49a46b96c1` |
@@ -41,7 +41,13 @@ edition pin whose full publication has no digest recorded here.
 | [GCC Byte-Swapping Builtins](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Byte-Swapping-Builtins.html) | GCC 16.2.0 manual, 2026-08-07, §7.2.3, 5377 bytes. | `e894e257f7a741c62e6c9a85440a8841aa4a9243aba7aca6e824ee6aed033fca` |
 | [GCC Stack Allocation](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Stack-Allocation.html) | GCC 16.2.0 manual, 2026-08-07, §7.3, 10257 bytes. The pin covers `__builtin_alloca`. | `ac4877e6c1263d823ada457b6a06822aee2523ef7da4c91e86308cf97db65a06` |
 | [GCC Offsetof Support](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Offsetof.html) | GCC 16.2.0 manual, 2026-08-07, 4227 bytes. N1570 §7.19 supplies the C constant-expression contract. | `09bcdd2e8175185eddfb97ff5d03431bd37a29e5d88ed002578c3adeb087569d` |
-| [GCC Optimize Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Optimize-Options.html#index-frounding-math) | GCC 16.2.0 manual, 2026-08-07, 216577 bytes. The pin covers `-frounding-math`. | `2accdebdce3192e6efdff6c1cb87dd5ac739085ea8bd4bef96d4863e71cae0f5` |
+| [GCC Optimize Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Optimize-Options.html) | GCC 16.2.0 manual, 2026-08-07, 216577 bytes. Covers `-frounding-math` and the listed Kbuild optimization options. | `2accdebdce3192e6efdff6c1cb87dd5ac739085ea8bd4bef96d4863e71cae0f5` |
+| [GCC Preprocessor Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Preprocessor-Options.html) | GCC 16.2.0 manual, 2026-08-07, 42467 bytes, dependency and forced-include options | `1c2878dd4eb6db32e9ecfbe8c314cb698cd70e08a6bdcb2b233b22b3b8c702be` |
+| [GCC C Dialect Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/C-Dialect-Options.html) | GCC 16.2.0 manual, 2026-08-07, 36403 bytes, language modes, builtin suppression and plain char | `23c71c380776e1d128564430afe08290ed4b7a4b6a56fdf1116765de76c1e3ab` |
+| [GCC Warning Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Warning-Options.html) | GCC 16.2.0 manual, 2026-08-07, 290232 bytes, warning switches and negative warning options | `f2551f87050bb7f48c256347c915abd88202872e309e9479ea21892d69f893d3` |
+| [GCC Code Gen Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Code-Gen-Options.html) | GCC 16.2.0 manual, 2026-08-07, 46930 bytes, unwind table options | `163e1cb6c36175ef9bac620811850bc0df34d7f0941be517647536c3c94bb253` |
+| [GCC Directory Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Directory-Options.html) | GCC 16.2.0 manual, 2026-08-07, 21327 bytes, include search | `4b8877054b41d2ca1b02276f5006d8cdffb43c241deb4a1196bfc1111bdecaa5` |
+| [GCC Overall Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Overall-Options.html) | GCC 16.2.0 manual, 2026-08-07, 48576 bytes, compilation stages and output paths | `0cad1ca693e3c992e0f35d890753c9e591d91a21ebeb8f8b65734a5a85b49ad0` |
 | [GCC Common Attributes](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Common-Attributes.html) | GCC 16.2.0 manual, 2026-08-07, 209636 bytes. E25 ruling 37 and 25.10 cover `packed`, `aligned`, `noreturn` and `returns_twice`. | `ab4a0dcc40060e309f2d126d3bbd8a10b2d596084d32371b8642d76b33e0d33f` |
 | [NASM manual](https://www.nasm.us/xdoc/3.02/nasmdoc.pdf) | NASM 3.02, reserved for 25.12 | `a4d1766c9d640663569bcf93feac0657732fe52017002f1dbc797353f6aed34f` |
 | [GNU ld manual](https://sourceware.org/binutils/docs-2.45/ld.html) | GNU Binutils 2.45, command-line options and linker script syntax | `f219c3b05e197308c5b60fc2d4dbfc302617389ca5c21501de58a90b3d052e06` |
@@ -187,6 +193,28 @@ for the 25.5 units.
 bcc emits AMD64 and AArch64 assembly for the 25.5 scalar subset. Variadic function
 definitions and `va_list` operations follow in 25.7b2, and x87 `long double`
 lowering in 25.7b3. AArch64 aggregates, variadics, binary128 and C TLS follow in A4.
+
+## bcc 25.11b Kbuild driver flags
+
+The staged command spellings are recorded by kind in
+[`busybox-c-inventory.json`](busybox-c-inventory.json). bcc accepts the
+listed spellings for this workload and rejects unrecognized options.
+
+| Options | bcc behavior | GCC 16.2.0 option page |
+| --- | --- | --- |
+| `-c`, `-o FILE` | Compile to an object and select the output path. The inventory uses `-fsyntax-only` to replay the front end. | [Overall Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Overall-Options.html) |
+| `-I DIR` | Add a header search directory. | [Directory Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Directory-Options.html#index-I) |
+| `-D NAME[=VALUE]`, `-include FILE` | Process command-line macro options, then forced headers in argument order. Search the working directory first for a forced header, then the configured include paths. | [Preprocessor Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Preprocessor-Options.html#index-include) |
+| `-MD`, `-MF FILE`, `-Wp,-MD,FILE` | Emit one make rule per C input with the source and resolved headers in first-seen order, including forced, transitive and system headers. By default the depfile uses the output stem, or the source basename, with suffix `.d`. An explicit `-MF` overrides the forwarded or default file. With `-E -MD` and no explicit depfile, `-o` names the depfile and preprocessed text goes to stdout. The Kbuild forwarding spelling is the sole supported `-Wp` form. | [Preprocessor Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Preprocessor-Options.html#index-MD). The workload specifies the forwarded CPP operand. |
+| `-std=gnu99`, `-std=gnu11` | Last dialect option wins. GNU modes omit `__STRICT_ANSI__` and set `__STDC_VERSION__` to `199901L` or `201112L`. GNU syntax coverage grows in the construct units. | [C Dialect Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/C-Dialect-Options.html), [Common Predefined Macros](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/cpp/Common-Predefined-Macros.html) |
+| `-Wall`, `-Werror` | Enable bcc's existing unknown-pragma warning and promote emitted warnings to errors, respectively. | [Warning Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Warning-Options.html) |
+| `-Wshadow`, `-Wwrite-strings`, `-Wundef`, `-Wstrict-prototypes`, `-Wunused`, `-Wunused-parameter`, `-Wunused-function`, `-Wunused-value`, `-Wmissing-prototypes`, `-Wmissing-declarations`, `-Wno-format-security`, `-Wdeclaration-after-statement`, `-Wold-style-definition` | No-ops for the staged build. bcc has no corresponding optional warning passes and retains its ordinary C string literal types. | [Warning Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Warning-Options.html) |
+| `-Wno-string-plus-int`, `-Wno-constant-logical-operand` | No-ops for the two warning suppressions in the Clang command records. bcc uses an explicit list for the staged build. | [Warning Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Warning-Options.html), compatibility behavior for unrecognized negative warning options |
+| `-fno-builtin-strlen`, `-fno-builtin-printf` | No-ops. Ordinary calls to these library names already use external symbols. | [C Dialect Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/C-Dialect-Options.html#index-fno-builtin) |
+| `-funsigned-char` | No-op for driver compatibility. Plain `char` retains bcc's target default (signed on AMD64 and unsigned on AArch64). | [C Dialect Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/C-Dialect-Options.html#index-funsigned-char) |
+| `-O2` | Select bcc's existing 25.10 optimization pipeline. | [Optimize Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Optimize-Options.html) |
+| `-Oz`, `-fomit-frame-pointer`, `-ffunction-sections`, `-fdata-sections`, `-falign-functions=1` | No-ops for driver compatibility. bcc keeps its selected optimization level, frame setup, section layout and function alignment. | [Optimize Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Optimize-Options.html) |
+| `-fno-unwind-tables`, `-fno-asynchronous-unwind-tables` | No-ops. bcc already omits unwind tables. | [Code Gen Options](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Code-Gen-Options.html) |
 
 ## bcc 25.7 record objects
 

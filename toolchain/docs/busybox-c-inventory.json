@@ -17,7 +17,7 @@
     }
   },
   "commands": 227,
-  "passed": 0,
+  "passed": 5,
   "by_kind": {
     "host": {
       "commands": 9,
@@ -25,8 +25,58 @@
     },
     "target": {
       "commands": 218,
-      "passed": 0
+      "passed": 5
     }
+  },
+  "flags": {
+    "host": [
+      "-D",
+      "-I",
+      "-O2",
+      "-Wall",
+      "-Wp,-MD,FILE",
+      "-Wstrict-prototypes",
+      "-c",
+      "-fomit-frame-pointer",
+      "-o"
+    ],
+    "target": [
+      "-D",
+      "-I",
+      "-Oz",
+      "-Wall",
+      "-Wdeclaration-after-statement",
+      "-Werror",
+      "-Wmissing-declarations",
+      "-Wmissing-prototypes",
+      "-Wno-constant-logical-operand",
+      "-Wno-format-security",
+      "-Wno-string-plus-int",
+      "-Wold-style-definition",
+      "-Wp,-MD,FILE",
+      "-Wshadow",
+      "-Wstrict-prototypes",
+      "-Wundef",
+      "-Wunused",
+      "-Wunused-function",
+      "-Wunused-parameter",
+      "-Wunused-value",
+      "-Wwrite-strings",
+      "-c",
+      "-falign-functions=1",
+      "-fdata-sections",
+      "-ffunction-sections",
+      "-fno-asynchronous-unwind-tables",
+      "-fno-builtin-printf",
+      "-fno-builtin-strlen",
+      "-fno-unwind-tables",
+      "-fomit-frame-pointer",
+      "-funsigned-char",
+      "-include",
+      "-o",
+      "-std=gnu11",
+      "-std=gnu99"
+    ]
   },
   "classes": {
     "statement expression": {
@@ -60,43 +110,12 @@
       "assignment": "25.11b inline assembly"
     },
     "unknown option": {
-      "count": 218,
-      "examples": [
-        {
-          "translation_unit": "applets/applets.c",
-          "kind": "target",
-          "location": "<command-line>:1",
-          "diagnostic": "<command-line>:1:5: error: unknown option '-include'"
-        },
-        {
-          "translation_unit": "archival/bbunzip.c",
-          "kind": "target",
-          "location": "<command-line>:1",
-          "diagnostic": "<command-line>:1:5: error: unknown option '-include'"
-        },
-        {
-          "translation_unit": "archival/chksum_and_xwrite_tar_header.c",
-          "kind": "target",
-          "location": "<command-line>:1",
-          "diagnostic": "<command-line>:1:5: error: unknown option '-include'"
-        },
-        {
-          "translation_unit": "archival/libarchive/common.c",
-          "kind": "target",
-          "location": "<command-line>:1",
-          "diagnostic": "<command-line>:1:5: error: unknown option '-include'"
-        },
-        {
-          "translation_unit": "archival/libarchive/data_align.c",
-          "kind": "target",
-          "location": "<command-line>:1",
-          "diagnostic": "<command-line>:1:5: error: unknown option '-include'"
-        }
-      ],
+      "count": 0,
+      "examples": [],
       "assignment": "25.11b Kbuild driver options"
     },
     "other": {
-      "count": 9,
+      "count": 222,
       "examples": [
         {
           "translation_unit": "applets/applet_tables.c",
@@ -132,5 +151,5 @@
       "assignment": "unassigned"
     }
   },
-  "scope": "First located bcc diagnostic per failed clang command replay. Replay preserves recorded -I, -D and -include flags and adds no Mac SDK headers. An earlier driver or header failure can mask constructs in the same translation unit. Zero counts mean no first diagnostic of that class was observed."
+  "scope": "First located bcc diagnostic per failed clang command replay. Replay selects syntax checking, routes dependency files to scratch, and uses the Breenix toolchain and libc headers for target commands. No Mac SDK headers are added. An earlier driver or header failure can mask constructs in the same translation unit. Zero counts mean no first diagnostic of that class was observed."
 }
