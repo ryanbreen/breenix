@@ -140,18 +140,57 @@
     },
     {
       "id": "bootstrap",
-      "title": "The language subset the tools' own sources use",
-      "cases": []
+      "title": "C and Rust in one program",
+      "cases": [
+        {
+          "id": "c-calls-rust",
+          "title": "C calls Rust with scalars, an aggregate and a callback"
+        },
+        {
+          "id": "rust-calls-c",
+          "title": "Rust calls C with scalars, an aggregate and a callback"
+        }
+      ]
     },
     {
       "id": "abi",
       "title": "System V x86-64 calling convention: aggregates, varargs, SSE and x87",
-      "cases": []
+      "cases": [
+        {
+          "id": "aggregates-exhaustion",
+          "title": "Aggregate arguments and returns survive register exhaustion in both directions"
+        },
+        {
+          "id": "varargs",
+          "title": "Variadic calls pass arguments correctly in both directions"
+        },
+        {
+          "id": "sse-float",
+          "title": "SSE floating-point arguments and returns work in both directions"
+        },
+        {
+          "id": "x87-long-double",
+          "title": "x87 long double arguments and returns work in both directions"
+        }
+      ]
     },
     {
       "id": "tls",
       "title": "Thread-local storage and per-thread errno",
-      "cases": []
+      "cases": [
+        {
+          "id": "template-init-zero-fill-aligned",
+          "title": "TLS initializes aligned templates and zero-filled storage per thread"
+        },
+        {
+          "id": "errno-per-thread",
+          "title": "Errno has independent storage in each thread"
+        },
+        {
+          "id": "tls-across-fork-exec",
+          "title": "TLS survives fork and is reinitialized on exec"
+        }
+      ]
     },
     {
       "id": "self-host",
