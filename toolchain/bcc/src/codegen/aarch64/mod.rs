@@ -23,6 +23,7 @@ use flow::Slot;
 
 const ARGUMENT_REGISTERS: usize = 8;
 const FRAME_RECORD: usize = 16;
+const DEFERRED_A4: &str = "AArch64 aggregate, variadic and C TLS support is deferred to A4";
 
 pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
     let mut functions = HashMap::new();
@@ -184,10 +185,7 @@ impl<'src> Emitter<'_, 'src> {
             | ExpressionKind::VaArg(_)
             | ExpressionKind::VaCopy { .. }
             | ExpressionKind::VaEnd(_) => {
-                return Err(Diagnostic::new(
-                    expr.position(),
-                    "AArch64 aggregate, variadic and C TLS support is deferred to A4",
-                ));
+                return Err(Diagnostic::new(expr.position(), DEFERRED_A4));
             }
             ExpressionKind::Call { callee, arguments } => {
                 self.call(callee, arguments)?;

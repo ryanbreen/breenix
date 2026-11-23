@@ -205,6 +205,9 @@ impl<'src> Emitter<'_, 'src> {
                 symbol_address(&mut self.text, "x0", &label);
             }
             ExpressionKind::Unary(Unary::Dereference, operand) => self.value(operand)?,
+            ExpressionKind::ThreadLocal(_) | ExpressionKind::Member { .. } => {
+                return Err(Diagnostic::new(expr.position(), DEFERRED_A4));
+            }
             _ => unreachable!("sema must supply an addressable expression"),
         }
         Ok(())
