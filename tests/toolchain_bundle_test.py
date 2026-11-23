@@ -46,6 +46,10 @@ class ToolchainGuestBuildTest(unittest.TestCase):
             binaries.mkdir()
             for name in (*builder.TOOLS, "bcc", "bmake"):
                 (binaries / name).write_bytes(name.encode())
+            for name in ("interop", "brt"):
+                archive = root / f"target/toolchain-bundle/{name}/aarch64-breenix/release/lib{name}.a"
+                archive.parent.mkdir(parents=True)
+                archive.write_bytes(name.encode())
 
             with (mock.patch.object(builder, "ROOT", root),
                   mock.patch.object(builder.subprocess, "run"),

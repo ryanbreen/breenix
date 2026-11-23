@@ -85,6 +85,8 @@ fn aarch64_stages_agree_bytewise() {
     fs::copy(bcc.with_file_name("bas"), root.join("bin/as")).unwrap();
     fs::copy(bcc.with_file_name("bld"), root.join("bin/ld")).unwrap();
     fs::copy(&libc, root.join("lib/libc.a")).expect("build the ARM libc archive");
+    // This program uses no brt helpers. The driver still opens the archive.
+    fs::write(root.join("lib/libbrt.a"), b"!<arch>\n").unwrap();
     fs::copy(
         toolchain.join("../userspace/programs/linker.ld"),
         root.join("linker.ld"),

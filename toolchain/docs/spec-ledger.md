@@ -308,5 +308,5 @@ duration, declarations, initialization and tentative definitions. ELF
 gABI §§3.10, 5.2 and 7.7 describe `SHF_TLS`, `STT_TLS` and the
 `PT_TLS` template. AMD64 psABI §10.3.2 Tables 10.7 and 10.10 give the
 local-exec address and value sequences, using Breenix's self-pointer at
-`FS:0` and `R_X86_64_TPOFF32` relocations. AArch64 TLS lowering is
-scheduled for A4.
+`FS:0` and `R_X86_64_TPOFF32` relocations. A4 implements AArch64 local-exec
+TLS using TPIDR_EL0 and the AAELF64 TLS relocations and stages its suite inputs.

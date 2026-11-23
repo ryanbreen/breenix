@@ -19,4 +19,5 @@ On x86-64, floating-point fields cross this boundary only when the Rust side is
 built for `x86_64-breenix-c.json`, whose SSE and SysV float ABI match bcc.
 The ordinary `x86_64-breenix.json` target uses the soft-float Rust ABI and is
 not interchangeable for this interface. AArch64 uses its C-compatible target;
-its bcc emission remains scheduled for A3 and A4.
+A3 and A4 implemented its scalar and aggregate calling conventions, and A4
+stages the interop archive for the guest suite.

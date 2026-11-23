@@ -1,6 +1,6 @@
-"""Check the 25.5 guest case and a real Mac-built x86-64 toolchain bundle.
+"""Check the C corpus guest case and a real Mac-built toolchain bundle.
 
-Build suite-toolchain and the x86-64 C ABI archive first, then supply the
+Build suite-toolchain and the target's C ABI archive first, then supply the
 stage-0 executable pins required by scripts/build-toolchain.sh.
 """
 import json
@@ -18,7 +18,9 @@ ARCH = os.environ.get("BREENIX_TOOLCHAIN_TEST_ARCH", "x86_64")
 LIBC_TARGET = "x86_64-breenix-c" if ARCH == "x86_64" else "aarch64-breenix"
 LIBC = ROOT / "libs/libbreenix-libc/target" / LIBC_TARGET / "release/libc.a"
 EXPECTED = """
+aggregate-copy
 array-index
+bitfield-values
 bitwise-shifts
 boolean-tokens
 byte-output
@@ -40,6 +42,7 @@ static-duration
 switch-enum
 unsigned-wrap
 usual-conversions
+varargs
 """.split()
 
 
@@ -54,9 +57,8 @@ class ToolchainCcCorpusTest(unittest.TestCase):
         include = re.search(rf'const {loop[1]}: &str = include_str!\("([^"]+)"\);', source)
         self.assertIsNotNone(include)
         names = (SUITE.parent / include[1]).read_text().splitlines()
-        deferred = {"aggregate-copy", "bitfield-values", "varargs"}
-        self.assertEqual(sorted(deferred | set(EXPECTED)), names)
-        self.assertIn('matches!(name, "aggregate-copy" | "bitfield-values" | "varargs")', case[1])
+        self.assertEqual(EXPECTED, names)
+        self.assertNotIn('matches!(name, "aggregate-copy" | "bitfield-values" | "varargs")', case[1])
 
     def test_mac_bundle_builds_exact_candidate_corpus(self):
         with tempfile.TemporaryDirectory(prefix="toolchain-cc-corpus-") as temporary:
@@ -71,9 +73,8 @@ class ToolchainCcCorpusTest(unittest.TestCase):
             record = json.loads((output / "build.json").read_text())
             self.assertEqual(record["candidateProducer"], "mac-bcc")
             staged = output / "root/usr/share/breenix/toolchain"
-            expected = EXPECTED if ARCH == "aarch64" else sorted(EXPECTED + ["aggregate-copy", "bitfield-values", "varargs"])
             self.assertEqual(sorted(path.name for path in (staged / "c-core/mac").iterdir()),
-                             [name + ".elf" for name in expected])
+                             [name + ".elf" for name in EXPECTED])
             reference = (CORPUS / "cases").read_text().splitlines()
             self.assertEqual(len(reference), 30)
             self.assertEqual(sorted(path.stem for path in staged.glob("*.elf")), reference)
