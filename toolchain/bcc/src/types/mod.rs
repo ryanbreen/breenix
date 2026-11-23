@@ -401,7 +401,16 @@ impl Type {
                 size: 16,
                 align: 16,
             }),
-            Kind::Record(record) => record.layout,
+            Kind::Record(record) => record.layout.map(|layout| {
+                // Match stage-0 AMD64 Clang's atomic record layout. Larger
+                // records keep the representation used by generic libcalls.
+                if self.qualifiers.atomic && (1..=16).contains(&layout.size) {
+                    let size = layout.size.next_power_of_two();
+                    Layout { size, align: size }
+                } else {
+                    layout
+                }
+            }),
             // AMD64 psABI Figure 3.1 and AAPCS64 Table 1 (64-bit pointer).
             Kind::Pointer(_) => Some(Layout { size: 8, align: 8 }),
             Kind::Array(element, count) => {

@@ -291,6 +291,20 @@ impl<'src> Emitter<'_, 'src> {
             writeln!(self.text, "    mov dword [rsp + {}], eax", 24 + index * 8).unwrap();
         }
 
+        let expected_ty = object.unqualified();
+        let expected_size = expected_ty.layout().unwrap().size;
+        let padded_expected = op == CompareExchange && expected_size != size;
+        if padded_expected {
+            // The expected pointer names a value of the ordinary type.
+            // Compare the whole atomic representation in a temporary.
+            let expected = self.atomic_buffer(object, site)?;
+            self.text.push_str(
+                "    mov rax, qword [rsp + 8]\n    mov qword [rsp + 40], rax\n",
+            );
+            self.write_atomic_buffer(object, &expected);
+            self.text.push_str("    mov qword [rsp + 8], rax\n");
+        }
+
         self.atomic_access(size, alignment, |emitter, width| {
             if let Some(width) = width {
                 if let Some(value) = &value {
@@ -335,6 +349,16 @@ impl<'src> Emitter<'_, 'src> {
                 }
             }
         });
+        if padded_expected {
+            let done = self.label();
+            writeln!(
+                self.text,
+                "    test eax, eax\n    jne {done}\n    mov rsi, qword [rsp + 8]\n    mov rdi, qword [rsp + 40]"
+            )
+            .unwrap();
+            self.copy_record(expected_size);
+            writeln!(self.text, "    xor eax, eax\n{done}:").unwrap();
+        }
         self.adjust_stack("add", 48);
         Ok(())
     }

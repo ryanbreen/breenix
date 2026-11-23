@@ -467,6 +467,11 @@ impl<'src> Emitter<'_, 'src> {
                 let size = record.layout.unwrap().size;
                 writeln!(self.text, "    mov rsi, rax\n    lea rdi, {address}").unwrap();
                 self.copy_record(size);
+                // The source is an ordinary record value. Only the
+                // destination has the extra bytes of the atomic type.
+                for offset in 0..ty.layout().unwrap().size - size {
+                    writeln!(self.text, "    mov byte ptr [rdi + {offset}], 0").unwrap();
+                }
                 return;
             }
             _ => unreachable!(),
