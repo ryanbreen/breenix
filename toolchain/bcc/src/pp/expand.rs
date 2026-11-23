@@ -498,6 +498,10 @@ fn builtin(name: &str, target: Target, standard: Standard) -> Option<(&str, Kind
         "__STRICT_ANSI__" if !standard.is_gnu() => ("1", Kind::Number),
         "__x86_64__" if target == Target::X86_64 => ("1", Kind::Number),
         "__aarch64__" if target == Target::Aarch64 => ("1", Kind::Number),
+        // GCC Common Predefined Macros §3.7.2. Both targets are little-endian.
+        "__BYTE_ORDER__" | "__ORDER_LITTLE_ENDIAN__" => ("1234", Kind::Number),
+        "__ORDER_BIG_ENDIAN__" => ("4321", Kind::Number),
+        "__ORDER_PDP_ENDIAN__" => ("3412", Kind::Number),
         // The shipped limits.h selects CHAR_MIN and CHAR_MAX with this macro.
         "__CHAR_UNSIGNED__" if !target.signed_char() => ("1", Kind::Number),
         // Breenix LP64 support headers select these target ABI types.

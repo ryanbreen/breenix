@@ -515,6 +515,11 @@ and member alignment and packing, and the two function annotations.
 The alternate keywords use the existing C parser rules for `inline` and
 `restrict`, and `__extension__` has no effect on a supported expression.
 
+GCC Common Predefined Macros §3.7.2 also defines the byte-order selectors
+used by Breenix's `endian.h`. bcc sets `__BYTE_ORDER__` to the value of
+`__ORDER_LITTLE_ENDIAN__` for both Breenix targets. The big-endian and
+PDP-endian tags each have distinct values.
+
 Wide string literals use the target's `wchar_t` type and 32-bit Unicode
 code units. N1570 §§6.4.5 and 6.7.9p15 specify concatenation, the terminator
 and array initialization. N1570 §§6.5.3.4, 6.6 and 6.7.6.2 govern
