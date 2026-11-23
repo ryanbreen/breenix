@@ -239,6 +239,48 @@ int read_other(void) { return private[1]; }
 }
 
 #[cfg(target_arch = "aarch64")]
+#[test]
+fn aarch64_c11_objects_link_and_run() {
+    // N1570 6.5.2.5p5, 6.7.5 and 6.7.9. The ninth argument also
+    // checks that stack arguments survive realignment (AAPCS64 §6.8.2).
+    aarch64_check_exit(&[
+        r"
+int static_literal(void);
+int static_local(void);
+
+static int aligned(long a, long b, long c, long d, long e,
+                   long f, long g, long h, long i) {
+    _Alignas(32) int value = 17;
+    if (((unsigned long)&value & 31) != 0) return 1;
+    if (i != 9 || a + b + c + d + e + f + g + h != 36) return 2;
+    return value;
+}
+
+int main(void) {
+    if (aligned(1, 2, 3, 4, 5, 6, 7, 8, 9) != 17) return 3;
+    if (static_literal() != 20) return 4;
+    if (static_local() != 10 || static_local() != 11) return 5;
+    int sum = 0;
+    for (int i = 1; i <= 3; ++i)
+        sum += ((int[]){i, i + 1})[1];
+    return 33 + sum;
+}
+",
+        r"
+static int *value = (int[]){ 2, 19 } + 1;
+int static_literal(void) { return ++*value; }
+",
+        r"
+int static_local(void) {
+    static int values[2] = { 8, 9 };
+    static int *value = &values[1];
+    return ++*value;
+}
+",
+    ]);
+}
+
+#[cfg(target_arch = "aarch64")]
 fn aarch64_check_exit(sources: &[&str]) {
     let toolchain = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let bcc = Path::new(env!("CARGO_BIN_EXE_bcc"));
