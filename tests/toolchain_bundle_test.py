@@ -84,7 +84,8 @@ class ToolchainBundleTest(unittest.TestCase):
 
     def receipts_from_cargo_host_bas(self):
         assembler = self.bundle / "root/usr/share/breenix/toolchain/assembler"
-        names = ("sse-exit", "x87-exit")
+        names = (("sse-exit", "x87-exit") if self.record["arch"] == "x86_64"
+                 else ("fp-exit", "call-exit"))
         receipts = {name: json.loads((assembler / f"{name}.link.json").read_text()) for name in names}
         for name, receipt in receipts.items():
             self.assertIn("hostBas", receipt, f"{name} has no Cargo host bas provenance")
@@ -113,7 +114,8 @@ class ToolchainBundleTest(unittest.TestCase):
                 with self.subTest(program=name):
                     self.assertEqual(receipt["hostBas"], producer)
                     obj = Path(temp) / f"{name}.o"
-                    subprocess.run([bas, "-o", obj, assembler / f"{name}.s"], check=True, timeout=10)
+                    subprocess.run([bas, *(["--target", "aarch64"] if self.record["arch"] == "aarch64" else []),
+                                    "-o", obj, assembler / f"{name}.s"], check=True, timeout=10)
                     self.assertEqual(receipt["inputObjects"], {obj.name: digest(obj)})
                     elf = assembler / f"{name}.elf"
                     self.assertEqual(receipt["elf"], {"name": elf.name, "sha256": digest(elf)})
@@ -137,10 +139,10 @@ if __name__ == "__main__":
     args, names = parser.parse_known_args()
     ToolchainBundleTest.bundle = args.bundle
     ToolchainBundleTest.probe = args.probe
-    checks = ["ToolchainBundleTest.tools_built_by_rustc"]
+    checks = ["ToolchainBundleTest.tools_built_by_rustc",
+              "ToolchainBundleTest.receipts_from_cargo_host_bas"]
     if json.loads((args.bundle / "build.json").read_text())["arch"] == "x86_64":
-        checks.extend(["ToolchainBundleTest.receipts_from_cargo_host_bas",
-                       "ToolchainBundleTest.cc_built_by_rustc"])
+        checks.append("ToolchainBundleTest.cc_built_by_rustc")
     else:
         checks.append("ToolchainBundleTest.arm_bundle_unchanged_until_a3")
     if args.probe is not None:
