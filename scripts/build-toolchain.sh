@@ -79,6 +79,7 @@ done < "$root/toolchain/corpus/cases"
 
 python3 "$root/scripts/toolchain-build-tools.py" "$arch" "$work/tools" "$dev" "$corpus"
 python3 "$root/scripts/toolchain-image.py" stage-c11 "$corpus" "$arch"
+python3 "$root/scripts/toolchain-image.py" stage-c17-libc "$guest" "$binaries" "$arch" "$clang"
 
 python3 "$root/scripts/toolchain-image.py" seal "$work/bundle" "$commit" "$arch" --tool-record "$work/tools/tools.json"
 mv "$work/bundle" "$output"
