@@ -55,9 +55,7 @@ CORPUS = (
     "usual-conversions",
     "varargs",
 )
-# A4 adds the record cases before it adds variadic definitions.
-AARCH64_CORPUS = tuple(name for name in CORPUS if name != "varargs")
-ABI_CASES = ("aggregates-exhaustion", "sse-float")
+ABI_CASES = ("aggregates-exhaustion", "sse-float", "varargs")
 
 
 def reference_object(args, name):
@@ -212,7 +210,7 @@ def main():
 
     cases = CASES
     if args.corpus:
-        cases = AARCH64_CORPUS if args.arch == "aarch64" else CORPUS
+        cases = CORPUS
     passed = 0
     with TemporaryDirectory(prefix="bcc-linux-dev-") as work:
         for name in cases:
