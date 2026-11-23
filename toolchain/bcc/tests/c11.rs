@@ -175,3 +175,43 @@ fn checked(command: &mut Command) {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+// N1570 6.5.1.1: type selection preserves the chosen expression's lvalue
+// and evaluates neither the controlling expression nor unselected arms.
+#[test]
+fn generic_selects_compatible() {
+    let result = build_and_check(
+        "generic",
+        r"
+typedef int Number;
+static int next(int *calls) { return ++*calls; }
+int main(void) {
+    const volatile Number n = 42;
+    int calls = 0;
+    int selected = 0;
+    _Generic(n, int: selected, default: calls) = n;
+    if (_Generic(next(&calls), Number: selected, default: next(&calls)) != 42)
+        return 1;
+    if (_Generic(1.0, int: next(&calls), default: 42) != 42 || calls)
+        return 2;
+    return selected;
+}
+",
+    );
+    let toolchain = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut python = if cfg!(target_os = "macos") {
+        let mut command = Command::new("arch");
+        command.args(["-x86_64", "/usr/bin/python3"]);
+        command
+    } else {
+        Command::new("python3")
+    };
+    let output = python
+        .arg(toolchain.join("tests/bcc/return_42_exit_status.py"))
+        .arg("--call-entry")
+        .arg(result.0.join("c11.elf"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(42), "{output:?}");
+    assert!(output.stdout.is_empty() && output.stderr.is_empty());
+}

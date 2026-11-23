@@ -19,9 +19,10 @@ from tempfile import TemporaryDirectory
 ROOT = Path(__file__).resolve().parents[3]
 CASES = ("byte-output", "literal-output")
 # The development list adds aggregate-copy, bitfield-values and varargs in 25.7.
-# Alignment, atomics and generic wait for 25.9.
+# Atomics wait for 25.9c.
 CORPUS = (
     "aggregate-copy",
+    "alignment",
     "array-index",
     "bitfield-values",
     "bitwise-shifts",
@@ -32,6 +33,7 @@ CORPUS = (
     "designated-init",
     "floating-conversion",
     "function-pointer",
+    "generic",
     "goto",
     "integer-arithmetic",
     "integer-promotions",
