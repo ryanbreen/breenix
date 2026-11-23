@@ -200,6 +200,21 @@ fn r_keeps_relocations_rebased() {
     }
 }
 
+#[test]
+fn relocatable_nostdlib_keeps_explicit_archive_inputs() {
+    let root = Scratch::new();
+    write_parts(&root, b"first");
+    let baseline = root.linked(
+        &["-r", "-o", "baseline.o", "first.o", "parts.a"],
+        "baseline.o",
+    );
+    let kbuild = root.linked(
+        &["-nostdlib", "-r", "-o", "kbuild.o", "first.o", "parts.a"],
+        "kbuild.o",
+    );
+    assert_eq!(kbuild, baseline);
+}
+
 // Make one group from a gABI §3.9 flag word and member indexes, using the
 // ordinary writer only to supply the enclosing fixture's ELF records.
 fn group(fill: u8) -> Vec<u8> {
