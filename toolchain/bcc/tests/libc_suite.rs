@@ -140,3 +140,30 @@ fn front_end_extensions_and_constraints() {
     std::fs::remove_dir_all(&scratch).unwrap();
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+#[test]
+fn every_tu_links_at_o0() {
+    suite_recipe("x86_64");
+}
+
+#[test]
+fn arm_translation_units_at_o0() {
+    suite_recipe("aarch64");
+}
+
+fn suite_recipe(target: &str) {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/bcc/libc_suite.py");
+    let output = Command::new("python3")
+        .arg(script)
+        .arg(env!("CARGO_BIN_EXE_bcc"))
+        .arg(target)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    print!("{}", String::from_utf8_lossy(&output.stdout));
+}
