@@ -48,6 +48,50 @@ fn gnu_mode_and_include_flags() {
 }
 
 #[test]
+fn capital_s_preprocesses_before_assembly() {
+    use bobj::elf::Elf;
+    use std::fs;
+
+    let bcc = Path::new(env!("CARGO_BIN_EXE_bcc"));
+    let root = std::env::temp_dir().join(format!("bcc-capital-s-{}", std::process::id()));
+    fs::create_dir(&root).unwrap();
+    fs::copy(bcc.with_file_name("bas"), root.join("as")).unwrap();
+    fs::write(root.join("constant.h"), "#define VALUE 42\n").unwrap();
+    fs::write(
+        root.join("entry.S"),
+        concat!(
+            "#include \"constant.h\"\n#ifdef BUILD_ENTRY\nsection .text\nglobal entry\n",
+            "entry:\n    mov eax, VALUE\n    ret\n#endif\n",
+        ),
+    )
+    .unwrap();
+
+    let output = Command::new(bcc)
+        .current_dir(&root)
+        .args([
+            "--target=x86_64", "-B", ".", "-c", "-DBUILD_ENTRY", "-Wp,-MD,entry.d", "entry.S",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let bytes = fs::read(root.join("entry.o")).unwrap();
+    let elf = Elf::parse(&bytes).unwrap();
+    let text = (1..elf.section_count())
+        .find(|&index| elf.section_name(index).unwrap() == b".text")
+        .unwrap();
+    assert_eq!(elf.section_data(text).unwrap().unwrap(), [0xb8, 42, 0, 0, 0, 0xc3]);
+    assert_eq!(
+        fs::read_to_string(root.join("entry.d")).unwrap(),
+        "entry.o: entry.S constant.h\n",
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn b_dir_pins_as_and_ld() {
     check("b_dir_pins_as_and_ld");
 }
