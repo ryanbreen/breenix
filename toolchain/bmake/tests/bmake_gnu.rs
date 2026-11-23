@@ -193,7 +193,10 @@ all:
 "#,
         &["-n"],
         &[
-            ("child.mk", "include values.mk\ncheck: ; @echo $(VALUE) $(origin CC)\n"),
+            (
+                "child.mk",
+                "include values.mk\ncheck: ; @echo $(VALUE) $(origin CC)\n",
+            ),
             ("includes/values.mk", "VALUE = inherited\n"),
         ],
     );

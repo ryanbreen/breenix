@@ -17,13 +17,13 @@ use std::{
 
 const MAX_INCLUDE_DEPTH: usize = 64;
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Makefile {
     pub entries: Vec<Entry>,
     pub(crate) includes: Vec<IncludeFile>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct IncludeFile {
     pub name: String,
     pub location: Location,
@@ -31,10 +31,11 @@ pub(crate) struct IncludeFile {
     pub contents: Option<Vec<u8>>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Entry {
     Rule(Rule),
     Macro(SourceLine),
+    Expansion(SourceLine),
     Include {
         paths: SourceLine,
         optional: bool,
@@ -52,7 +53,7 @@ pub enum Entry {
     },
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Rule {
     pub location: Location,
     pub targets: Vec<String>,
@@ -64,7 +65,7 @@ pub struct Rule {
     pub(crate) inference: Option<Inference>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Inference {
     pub source: String,
     pub stem: String,
@@ -87,16 +88,17 @@ pub(crate) fn reload(
     macros: &mut Macros,
     streams: &mut HashMap<PathBuf, Vec<u8>>,
 ) -> Result<Makefile, Error> {
+    macros.set_reading(true);
     let mut makefile = Makefile::default();
     for path in paths {
-        if let Some(source) = streams.get(path) {
-            makefile.read_entries(path, source, macros, 0)?;
-            continue;
-        }
         let location = Location {
             path: path.as_path().into(),
             line: 1,
         };
+        if let Some(source) = streams.get(path) {
+            makefile.read_entries(&location, source, macros, 0)?;
+            continue;
+        }
         let (source, stream) = if path == Path::new("-") {
             let mut bytes = Vec::new();
             io::stdin()
@@ -112,11 +114,12 @@ pub(crate) fn reload(
                 .is_file();
             (read_source(file, &location)?, stream)
         };
-        makefile.read_entries(path, &source, macros, 0)?;
+        makefile.read_entries(&location, &source, macros, 0)?;
         if stream {
             streams.insert(path.clone(), source);
         }
     }
+    macros.set_reading(false);
     Ok(makefile)
 }
 
@@ -137,20 +140,53 @@ fn read_source(mut file: File, location: &Location) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
+fn open_include(name: &str, directories: &[PathBuf]) -> io::Result<Option<(PathBuf, File)>> {
+    let direct = Path::new(name);
+    let search = directories
+        .iter()
+        .filter(|_| direct.is_relative())
+        .map(|dir| dir.join(name));
+    for path in std::iter::once(direct.to_owned()).chain(search) {
+        match File::open(&path) {
+            Ok(file) => return Ok(Some((path, file))),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(None)
+}
+
 impl Makefile {
-    fn read_entries(
+    pub(crate) fn append(&mut self, mut other: Self) {
+        self.entries.append(&mut other.entries);
+        self.includes.append(&mut other.includes);
+    }
+
+    pub(crate) fn read_entries(
         &mut self,
-        path: &Path,
+        location: &Location,
         bytes: &[u8],
-        macros: &mut Macros,
+        macros: &Macros,
         depth: usize,
     ) -> Result<(), Error> {
-        let mut source = SourceReader::new(path, bytes)?;
+        let mut source = SourceReader::new(location.clone(), bytes)?;
         let mut leading_posix = depth == 0;
         let automatic = Automatic::default();
-        while let Some(entry) = source.next(macros, leading_posix)? {
+        while let Some(mut entry) = source.next(macros, leading_posix)? {
             leading_posix = false;
+            self.append(macros.take_eval());
+            if let Entry::Expansion(line) = entry {
+                let expanded = macros.expand(&line.text, &line.location, &automatic)?;
+                self.append(macros.take_eval());
+                if expanded.trim_matches(is_blank).is_empty() {
+                    continue;
+                }
+                entry = read_entry(&expanded, line.location.clone())?
+                    .filter(|entry| !matches!(entry, Entry::Expansion(_)))
+                    .ok_or_else(|| Error::new(&line.location, "missing ':' in target rule"))?;
+            }
             match entry {
+                Entry::Expansion(_) => unreachable!(),
                 Entry::Macro(line) => macros.assign_makefile(&line.text, &line.location)?,
                 Entry::Export { names, export } => {
                     macros.set_export(&names.text, export, &names.location)?;
@@ -190,27 +226,26 @@ impl Makefile {
                     ] {
                         expand_words(words, macros, &rule.location)?;
                     }
+                    self.append(macros.take_eval());
+                    if rule.targets.is_empty() {
+                        continue;
+                    }
                     if let Some(pattern) = rule.pattern.take() {
                         let pattern = macros.expand(&pattern, &rule.location, &automatic)?;
+                        self.append(macros.take_eval());
                         self.entries
                             .extend(static_rules(rule, &pattern)?.map(Entry::Rule));
                         continue;
-                    }
-                    if rule.targets.is_empty() {
-                        return Err(Error::new(
-                            &rule.location,
-                            "missing target after macro expansion",
-                        ));
                     }
                     self.entries.push(Entry::Rule(rule));
                 }
                 Entry::Include { paths, optional } => {
                     let expanded = macros.expand(&paths.text, &paths.location, &automatic)?;
+                    self.append(macros.take_eval());
                     for name in separate_words(&expanded) {
                         check_target(name, &paths.location)?;
-                        let file = match File::open(name) {
-                            Ok(file) => Some(file),
-                            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+                        let file = match open_include(name, &macros.include_dirs) {
+                            Ok(file) => file,
                             Err(_) if optional => continue,
                             Err(error) => {
                                 return Err(Error::new(
@@ -221,12 +256,14 @@ impl Makefile {
                         };
                         let index = self.includes.len();
                         self.includes.push(IncludeFile {
-                            name: name.to_owned(),
+                            name: file.as_ref().map_or_else(
+                                || name.to_owned(), |(path, _)| path.to_string_lossy().into_owned(),
+                            ),
                             location: paths.location.clone(),
                             optional,
                             contents: None,
                         });
-                        let Some(file) = file else {
+                        let Some((path, file)) = file else {
                             continue;
                         };
                         if depth >= MAX_INCLUDE_DEPTH {
@@ -235,18 +272,18 @@ impl Makefile {
                                 format!("include nesting is too deep at '{name}'"),
                             ));
                         }
-                        let path = Path::new(name);
                         let location = Location {
-                            path: path.into(),
+                            path: path.as_path().into(),
                             line: 1,
                         };
                         let source = read_source(file, &location)?;
-                        self.read_entries(path, &source, macros, depth + 1)?;
+                        self.read_entries(&location, &source, macros, depth + 1)?;
                         self.includes[index].contents = Some(source);
                     }
                 }
             }
         }
+        self.append(macros.take_eval());
         Ok(())
     }
 }
@@ -270,10 +307,14 @@ fn expand_words(
 
 /// Read unexpanded entries from a makefile without opening includes.
 pub fn parse(path: impl AsRef<Path>, source: &[u8]) -> Result<Makefile, Error> {
-    let mut source = SourceReader::new(path.as_ref(), source)?;
-    let mut macros = Macros::default();
+    let location = Location {
+        path: path.as_ref().into(),
+        line: 1,
+    };
+    let mut source = SourceReader::new(location, source)?;
+    let macros = Macros::default();
     let mut makefile = Makefile::default();
-    while let Some(entry) = source.next(&mut macros, false)? {
+    while let Some(entry) = source.next(&macros, false)? {
         makefile.entries.push(entry);
     }
     Ok(makefile)
@@ -287,11 +328,7 @@ struct SourceReader<'a> {
 }
 
 impl<'a> SourceReader<'a> {
-    fn new(path: &Path, source: &'a [u8]) -> Result<Self, Error> {
-        let mut location = Location {
-            path: path.into(),
-            line: 1,
-        };
+    fn new(mut location: Location, source: &'a [u8]) -> Result<Self, Error> {
         let remaining = str::from_utf8(source).map_err(|error| {
             location.line += source[..error.valid_up_to()]
                 .iter()
@@ -317,7 +354,7 @@ impl<'a> SourceReader<'a> {
         self.conditionals.last().is_none_or(|frame| frame.active)
     }
 
-    fn next(&mut self, macros: &mut Macros, leading_posix: bool) -> Result<Option<Entry>, Error> {
+    fn next(&mut self, macros: &Macros, leading_posix: bool) -> Result<Option<Entry>, Error> {
         if self.pending.is_some() && !matches!(self.pending, Some(Entry::Rule(_))) {
             return Ok(self.pending.take());
         }
@@ -753,6 +790,8 @@ fn read_entry(line: &str, location: Location) -> Result<Option<Entry>, Error> {
             Ok(Some(Entry::Macro(SourceLine { location, text })))
         } else if text.trim_matches(is_blank).is_empty() {
             Ok(None)
+        } else if text.contains('$') {
+            Ok(Some(Entry::Expansion(SourceLine { location, text })))
         } else {
             Err(Error::new(&location, "missing ':' in target rule"))
         }

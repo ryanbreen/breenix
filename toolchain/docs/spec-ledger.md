@@ -710,3 +710,13 @@ targets.
 | Static and implicit pattern rules | §§4.11, 10.5 and 10.8. Static patterns provide per-target prerequisites and stems. Implicit search prefers directly available prerequisites and then the shortest stem. Single-target terminal patterns require available prerequisites. Caller-defined POSIX suffix inference retains precedence when selected by the suffix list. |
 | Automatic variables | §10.5.3. Directory and filename variants apply to individual names in each automatic variable, including the prerequisite lists with and without repeated entries. |
 | Substitution references, text functions and file-name functions | §§4.3.3, 6.3.1 and 8.1–8.3. Percent substitution and filtering share pattern matching. Wildcard matches are sorted by input pattern. Absolute paths normalize lexically and real paths resolve existing filesystem entries. |
+
+## bmake 25.11c control functions
+
+| Feature | GNU make 4.4.1 manual section |
+| --- | --- |
+| `if`, `and`, `or` | §8.4. Expand the selected branch or arguments up to the first result that determines the outcome. |
+| `foreach`, `call`, `value`, `eval` | §§8.6 and 8.8–8.10. Loop variables and positional parameters are temporary. `value` returns the stored text. `eval` expands its operand and reads the result as makefile syntax. |
+| `file` | §8.7. Read a command record, replace it, or append text. Missing input reads as empty. |
+| `origin`, `flavor`, `error`, `warning`, `info`, `shell` | §§8.11–8.14. Variable queries use the current scope. `shell` folds line endings and saves the exit status in `.SHELLSTATUS`. |
+| `MAKECMDGOALS` and recursive flags | §§3.3, 5.7.3, 9.2 and 9.8. Explicit goals populate `MAKECMDGOALS`. Kbuild sub-makes inherit include directories and the flags that disable built-in rules and variables. |

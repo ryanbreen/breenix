@@ -1,16 +1,20 @@
-//! Assignment, expansion and internal macros from POSIX.1-2024 make.
+//! Variable expansion from POSIX.1-2024 and GNU make 4.4.1, chapters 6 and 8.
 
 use crate::{
     graph::archive_member,
     inference::Pattern,
     make_functions,
-    reader::{outside_macro_references, reference_level},
+    reader::{outside_macro_references, reference_level, Makefile},
     Error, Location,
 };
 use std::{
+    borrow::Cow,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
+    fs::{self, OpenOptions},
     io::{self, Write},
-    path::Path,
+    os::unix::process::ExitStatusExt,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     rc::Rc,
 };
@@ -25,6 +29,7 @@ enum Origin {
     Makeflags,
     CommandLine,
     Override,
+    Automatic,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -98,13 +103,27 @@ impl<'a> Assignment<'a> {
 
 #[derive(Clone, Default)]
 pub struct Macros {
-    definitions: Bindings,
-    target_variables: HashMap<String, Bindings>,
-    environment_names: HashSet<String>,
-    exports: HashMap<String, bool>,
-    export_all: bool,
-    gnu_environment: bool,
+    // eval and shell can define variables during an expansion. Keep borrows
+    // short, and hold a copy of the definition being expanded across callbacks.
+    definitions: RefCell<Bindings>,
+    target_variables: RefCell<HashMap<String, Bindings>>,
+    environment: HashMap<String, String>,
+    exports: RefCell<HashMap<String, bool>>,
+    export_all: Cell<bool>,
+    gnu_environment: Cell<bool>,
     environment_overrides: bool,
+    pub(crate) include_dirs: Vec<PathBuf>,
+    locals: RefCell<Vec<LocalScope>>,
+    exporting: RefCell<HashSet<String>>,
+    pending_eval: RefCell<Makefile>,
+    eval_depth: Cell<usize>,
+    reading: Cell<bool>,
+}
+
+#[derive(Clone, Default)]
+struct LocalScope {
+    variables: Bindings,
+    call: bool,
 }
 
 #[derive(Default)]
@@ -178,11 +197,14 @@ impl<'a> Automatic<'a> {
 impl Macros {
     pub(crate) fn new(
         environment_overrides: bool,
+        builtin_variables: bool,
         directory: String,
+        include_dirs: Vec<PathBuf>,
         environment: impl IntoIterator<Item = (String, String)>,
     ) -> Self {
         let mut macros = Self {
             environment_overrides,
+            include_dirs,
             ..Self::default()
         };
         let location = Location {
@@ -220,7 +242,7 @@ impl Macros {
             ("LEX", "lex"),
             ("LFLAGS", ""),
             ("LDFLAGS", ""),
-        ] {
+        ].into_iter().filter(|_| builtin_variables) {
             macros.define(
                 name,
                 value.into(),
@@ -235,7 +257,7 @@ impl Macros {
             {
                 continue;
             }
-            macros.environment_names.insert(name.clone());
+            macros.environment.insert(name.clone(), value.clone());
             macros.define(
                 &name,
                 value,
@@ -247,9 +269,10 @@ impl Macros {
         macros
     }
 
-    pub(crate) fn use_posix_compiler_defaults(&mut self) {
+    pub(crate) fn use_posix_compiler_defaults(&self) {
+        let mut definitions = self.definitions.borrow_mut();
         for (name, value) in [("CC", "c17"), ("CFLAGS", "-O 1")] {
-            if let Some(definition) = self.definitions.get_mut(name) {
+            if let Some(definition) = definitions.get_mut(name) {
                 if definition.origin == Origin::Default {
                     definition.value = value.into();
                 }
@@ -257,9 +280,9 @@ impl Macros {
         }
     }
 
-    pub(crate) fn set_make_defaults(&mut self, make: String, flags: String) {
+    pub(crate) fn set_make_defaults(&mut self, make: String, flags: String, goals: &[String]) {
         let location = MacroSource::Makeflags.location();
-        if !self.definitions.contains_key("MAKE") {
+        if !self.definitions.get_mut().contains_key("MAKE") {
             self.define("MAKE", make, Flavor::Immediate, &location, Origin::Default);
         }
         self.define(
@@ -269,6 +292,15 @@ impl Macros {
             &location,
             Origin::Default,
         );
+        if !goals.is_empty() {
+            self.define(
+                "MAKECMDGOALS",
+                goals.join(" "),
+                Flavor::Immediate,
+                &location,
+                Origin::Default,
+            );
+        }
     }
 
     pub(crate) fn assign_operand(
@@ -288,13 +320,13 @@ impl Macros {
         if let Some(definition) =
             values.assigned(&name, assignment, &location, origin, Modifiers::default())?
         {
-            self.definitions.insert(name, definition);
+            self.definitions.get_mut().insert(name, definition);
         }
         Ok(())
     }
 
     pub(crate) fn assign_makefile(
-        &mut self,
+        &self,
         assignment: &str,
         location: &Location,
     ) -> Result<(), Error> {
@@ -304,23 +336,24 @@ impl Macros {
     }
 
     pub(crate) fn assign_directive(
-        &mut self,
+        &self,
         target: Option<&str>,
         assignment: Assignment<'_>,
         modifiers: Modifiers,
         location: &Location,
     ) -> Result<(), Error> {
-        self.gnu_environment |=
-            target.is_some() || modifiers.export.is_some() || modifiers.overriding;
+        if target.is_some() || modifiers.export.is_some() || modifiers.overriding {
+            self.gnu_environment.set(true);
+        }
         let origin = if modifiers.overriding {
             Origin::Override
         } else {
             Origin::Makefile
         };
-        let scope = target.and_then(|target| self.target_variables.get(target));
+        let scope = target.and_then(|target| self.target_variables.borrow().get(target).cloned());
         let values = Values {
             macros: self,
-            scope,
+            scope: scope.as_ref(),
             target_assignment: target.is_some(),
         };
         let name = values.assignment_name(assignment.name, location)?;
@@ -328,16 +361,18 @@ impl Macros {
         if let Some(target) = target {
             if let Some(definition) = definition {
                 self.target_variables
+                    .borrow_mut()
                     .entry(target.to_owned())
                     .or_default()
                     .insert(name, definition);
             } else if let Some(export) = modifiers.export {
                 // A command-line or -e value can win while this target
                 // still sets its export policy.
-                if let Some(mut definition) = values.get(&name).cloned() {
+                if let Some(mut definition) = values.get(&name) {
                     definition.export = Some(export);
                     definition.private = modifiers.private;
                     self.target_variables
+                        .borrow_mut()
                         .entry(target.to_owned())
                         .or_default()
                         .insert(name, definition);
@@ -345,24 +380,24 @@ impl Macros {
             }
         } else {
             if let Some(export) = modifiers.export {
-                self.exports.insert(name.clone(), export);
+                self.exports.borrow_mut().insert(name.clone(), export);
             }
             if let Some(definition) = definition {
-                self.definitions.insert(name, definition);
+                self.definitions.borrow_mut().insert(name, definition);
             }
         }
         Ok(())
     }
 
     pub(crate) fn set_export(
-        &mut self,
+        &self,
         names: &str,
         export: bool,
         location: &Location,
     ) -> Result<(), Error> {
-        self.gnu_environment = true;
+        self.gnu_environment.set(true);
         if names.is_empty() {
-            self.export_all = export;
+            self.export_all.set(export);
         } else {
             let names = self.expand(names, location, &Automatic::default())?;
             for name in separate_words(&names) {
@@ -372,14 +407,14 @@ impl Macros {
                         format!("invalid export name '{name}'"),
                     ));
                 }
-                self.exports.insert(name.to_owned(), export);
+                self.exports.borrow_mut().insert(name.to_owned(), export);
             }
         }
         Ok(())
     }
 
     pub(crate) fn has_value(&self, name: &str) -> bool {
-        self.definitions
+        self.view(None)
             .get(name)
             .is_some_and(|definition| !definition.value.is_empty())
     }
@@ -389,7 +424,8 @@ impl Macros {
         target: &str,
         inherited: Option<&Rc<Bindings>>,
     ) -> (Option<Rc<Bindings>>, Option<Rc<Bindings>>) {
-        let Some(local) = self.target_variables.get(target) else {
+        let target_variables = self.target_variables.borrow();
+        let Some(local) = target_variables.get(target) else {
             return (inherited.cloned(), inherited.cloned());
         };
         let mut recipe = inherited.map_or_else(Bindings::new, |scope| (**scope).clone());
@@ -425,14 +461,14 @@ impl Macros {
     }
 
     fn define(
-        &mut self,
+        &self,
         name: &str,
         value: String,
         flavor: Flavor,
         location: &Location,
         origin: Origin,
     ) {
-        self.definitions.insert(
+        self.definitions.borrow_mut().insert(
             name.to_owned(),
             Definition {
                 value,
@@ -463,6 +499,48 @@ impl Macros {
     ) -> Result<String, Error> {
         self.view(None).expand(text, location, automatic)
     }
+
+    pub(crate) fn set_reading(&self, reading: bool) {
+        self.reading.set(reading);
+    }
+
+    pub(crate) fn take_eval(&self) -> Makefile {
+        self.pending_eval.take()
+    }
+
+    fn eval(&self, text: &str, location: &Location) -> Result<(), Error> {
+        let depth = self.eval_depth.get();
+        if depth >= MAX_EXPANSION_DEPTH {
+            return Err(Error::new(location, "eval nesting is too deep"));
+        }
+        let mut pending = self.take_eval();
+        let mut generated = Makefile::default();
+        let text = if text.is_empty() || text.ends_with('\n') {
+            Cow::Borrowed(text)
+        } else {
+            Cow::Owned(format!("{text}\n"))
+        };
+        self.eval_depth.set(depth + 1);
+        let result = generated.read_entries(location, text.as_bytes(), self, depth + 1);
+        self.eval_depth.set(depth);
+        if !self.reading.get() && (!generated.entries.is_empty() || !generated.includes.is_empty())
+        {
+            return Err(Error::new(
+                location,
+                "eval cannot define rules or includes during a recipe",
+            ));
+        }
+        pending.append(generated);
+        self.pending_eval.replace(pending);
+        result
+    }
+
+    fn with_locals<T>(&self, scope: LocalScope, expand: impl FnOnce() -> T) -> T {
+        self.locals.borrow_mut().push(scope);
+        let result = expand();
+        self.locals.borrow_mut().pop();
+        result
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -473,14 +551,19 @@ pub(crate) struct Values<'a> {
 }
 
 impl<'a> Values<'a> {
-    fn get(self, name: &str) -> Option<&'a Definition> {
-        self.entry(name).map(|(_, definition)| definition)
-    }
-
-    fn entry(self, name: &str) -> Option<(&'a String, &'a Definition)> {
+    fn get(self, name: &str) -> Option<Definition> {
+        for scope in self.macros.locals.borrow().iter().rev() {
+            if let Some(definition) = scope.variables.get(name) {
+                return Some(definition.clone());
+            }
+            if scope.call && name.bytes().all(|byte| byte.is_ascii_digit()) {
+                return None;
+            }
+        }
         self.scope
-            .and_then(|scope| scope.get_key_value(name))
-            .or_else(|| self.macros.definitions.get_key_value(name))
+            .and_then(|scope| scope.get(name))
+            .cloned()
+            .or_else(|| self.macros.definitions.borrow().get(name).cloned())
     }
 
     fn assignment_name(self, raw_name: &str, location: &Location) -> Result<String, Error> {
@@ -513,7 +596,7 @@ impl<'a> Values<'a> {
         } = assignment;
         let previous = self.get(name);
         let local = self.scope.and_then(|scope| scope.get(name));
-        if previous.is_some_and(|previous| {
+        if previous.as_ref().is_some_and(|previous| {
             operator == "?"
                 || (origin == Origin::Makefile
                     && (matches!(previous.origin, Origin::CommandLine | Origin::Makeflags)
@@ -533,7 +616,7 @@ impl<'a> Values<'a> {
         let previous = if self.target_assignment && operator == "+" {
             local
         } else {
-            previous
+            previous.as_ref()
         };
         let automatic = Automatic::default();
         let (value, flavor) = match (operator, previous) {
@@ -571,13 +654,9 @@ impl<'a> Values<'a> {
 
     fn shell_assignment(self, command: &str, location: &Location) -> Result<String, Error> {
         let mut shell = Command::new("/bin/sh");
+        shell.arg("-c");
         self.set_recipe_environment(&mut shell, location, &Automatic::default())?;
-        let output = shell
-            .args(["-c", command])
-            .stdin(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .output()
-            .map_err(|error| Error::new(location, format!("could not run /bin/sh: {error}")))?;
+        let output = self.run_shell(shell, command, location)?;
         // POSIX keeps the captured output even when the command exits nonzero.
         if !output.status.success() {
             let reason = match output.status.code() {
@@ -602,12 +681,23 @@ impl<'a> Values<'a> {
         location: &Location,
         automatic: &Automatic<'_>,
     ) -> Result<(), Error> {
-        if !self.macros.gnu_environment {
+        self.set_environment(command, location, automatic, &[])
+    }
+
+    fn set_environment(
+        self,
+        command: &mut Command,
+        location: &Location,
+        automatic: &Automatic<'_>,
+        active: &[String],
+    ) -> Result<(), Error> {
+        if !self.macros.gnu_environment.get() {
             let flags = self.expand("$(MAKEFLAGS)", location, automatic)?;
             command.env("MAKEFLAGS", flags);
             command.envs(
                 self.macros
                     .definitions
+                    .borrow()
                     .iter()
                     .filter_map(|(name, definition)| {
                         (definition.origin == Origin::CommandLine
@@ -618,22 +708,32 @@ impl<'a> Values<'a> {
             return Ok(());
         }
 
-        for (name, export) in &self.macros.exports {
+        let exports = self.macros.exports.borrow().clone();
+        for (name, export) in &exports {
             if !export {
                 command.env_remove(name);
             }
         }
-        let names = self.macros.definitions.keys().chain(
-            self.scope
-                .into_iter()
-                .flat_map(|scope| scope.keys())
-                .filter(|name| !self.macros.definitions.contains_key(*name)),
-        );
-        for name in names {
-            let definition = self.get(name).expect("known variable");
+        let names = {
+            let definitions = self.macros.definitions.borrow();
+            definitions
+                .keys()
+                .chain(
+                    self.scope
+                        .into_iter()
+                        .flat_map(|scope| scope.keys())
+                        .filter(|name| !definitions.contains_key(*name)),
+                )
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        for name in &names {
+            let Some(definition) = self.get(name) else {
+                continue;
+            };
             let policy = definition
                 .export
-                .or_else(|| self.macros.exports.get(name).copied());
+                .or_else(|| exports.get(name).copied());
             if policy == Some(false) {
                 command.env_remove(name);
                 continue;
@@ -643,18 +743,61 @@ impl<'a> Values<'a> {
                     && name
                         .bytes()
                         .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-                    && (self.macros.environment_names.contains(name)
+                    && (self.macros.environment.contains_key(name)
                         || matches!(
                             definition.origin,
                             Origin::Environment | Origin::Makeflags | Origin::CommandLine
                         )
-                        || (self.macros.export_all && definition.origin != Origin::Default)));
+                        || (self.macros.export_all.get() && definition.origin != Origin::Default)));
             if policy == Some(true) || by_default {
-                let value = Expansion::new(self, automatic, false).value(name, location, 0)?;
+                let value = if active.contains(name)
+                    || !self.macros.exporting.borrow_mut().insert(name.clone())
+                {
+                    self.macros.environment.get(name).cloned().unwrap_or_default()
+                } else {
+                    let result = Expansion::new(self, automatic, false).value(name, location, 0);
+                    self.macros.exporting.borrow_mut().remove(name);
+                    result?
+                };
                 command.env(name, value);
             }
         }
         Ok(())
+    }
+
+    fn run_shell(
+        self,
+        mut shell: Command,
+        command: &str,
+        location: &Location,
+    ) -> Result<std::process::Output, Error> {
+        let output = shell
+            .arg(command)
+            .stdin(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .output()
+            .map_err(|error| {
+                Error::new(
+                    location,
+                    format!(
+                        "could not run {}: {error}",
+                        shell.get_program().to_string_lossy()
+                    ),
+                )
+            })?;
+        let status = output
+            .status
+            .code()
+            .or_else(|| output.status.signal().map(|signal| 128 + signal))
+            .unwrap_or(127);
+        self.macros.define(
+            ".SHELLSTATUS",
+            status.to_string(),
+            Flavor::Immediate,
+            location,
+            Origin::Override,
+        );
+        Ok(output)
     }
 
     fn expand(
@@ -683,7 +826,7 @@ struct Expansion<'a, 'b> {
     values: Values<'a>,
     automatic: &'a Automatic<'b>,
     preserve_dollar_pairs: bool,
-    active: Vec<&'a str>,
+    active: Vec<String>,
     expanded_make: bool,
 }
 
@@ -749,30 +892,24 @@ impl<'a, 'b> Expansion<'a, 'b> {
         depth: usize,
     ) -> Result<String, Error> {
         if let Some((name, arguments)) = reference.split_once([' ', '\t']) {
-            if let Some(arity) = make_functions::arity(name) {
+            if let Some((_, max)) = function_arity(name) {
                 let arguments = arguments.trim_start_matches([' ', '\t']);
                 let mut start = 0;
-                let mut values = Vec::with_capacity(arity);
+                let mut args = Vec::new();
                 for (end, _) in reference_level(arguments, Some(close))
                     .filter(|&(_, ch)| ch == ',')
-                    .take(arity - 1)
+                    .take(max - 1)
                 {
-                    values.push(self.text(&arguments[start..end], location, depth)?);
+                    args.push(&arguments[start..end]);
                     start = end + 1;
                 }
-                if values.len() != arity - 1 {
-                    return Err(Error::new(
-                        location,
-                        format!("too few arguments to '{name}'"),
-                    ));
-                }
-                values.push(self.text(&arguments[start..], location, depth)?);
-                return make_functions::evaluate(name, &values, location);
+                args.push(&arguments[start..]);
+                return self.function(name, &args, location, depth, false);
             }
             if crate::inventory::FUNCTIONS.contains(&name) {
                 return Err(Error::new(
                     location,
-                    format!("GNU make function '{name}' is deferred to the 25.11c function units"),
+                    format!("unsupported GNU make function '{name}'"),
                 ));
             }
         }
@@ -792,25 +929,224 @@ impl<'a, 'b> Expansion<'a, 'b> {
         }
     }
 
+    fn function(
+        &mut self,
+        name: &str,
+        args: &[&str],
+        location: &Location,
+        depth: usize,
+        expanded: bool,
+    ) -> Result<String, Error> {
+        let (min, max) = function_arity(name).ok_or_else(|| {
+            Error::new(location, format!("unsupported GNU make function '{name}'"))
+        })?;
+        if args.len() < min {
+            return Err(Error::new(
+                location,
+                format!("too few arguments to '{name}'"),
+            ));
+        }
+        let args = &args[..args.len().min(max)];
+        let expand = |this: &mut Self, arg: &str| {
+            if expanded {
+                Ok(arg.to_owned())
+            } else {
+                this.text(arg, location, depth)
+            }
+        };
+        match name {
+            "if" => {
+                let condition = expand(self, args[0].trim())?;
+                let branch = if condition.is_empty() {
+                    args.get(2)
+                } else {
+                    args.get(1)
+                };
+                branch.map_or_else(|| Ok(String::new()), |arg| expand(self, arg))
+            }
+            "and" | "or" => {
+                let mut value = String::new();
+                for arg in args {
+                    value = expand(self, arg)?;
+                    if value.is_empty() == (name == "and") {
+                        break;
+                    }
+                }
+                Ok(value)
+            }
+            "foreach" => {
+                let variable = expand(self, args[0])?;
+                let variable = separate_words(&variable).next().unwrap_or_default();
+                let list = expand(self, args[1])?;
+                let mut results = Vec::new();
+                for word in separate_words(&list) {
+                    let mut scope = LocalScope::default();
+                    scope.bind(variable.into(), word.into(), location);
+                    results.push(
+                        self.values
+                            .macros
+                            .with_locals(scope, || expand(self, args[2]))?,
+                    );
+                }
+                Ok(results.join(" "))
+            }
+            "call" => {
+                let args = args
+                    .iter()
+                    .map(|arg| expand(self, arg))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let function = separate_words(&args[0]).next().unwrap_or_default();
+                if function.is_empty() {
+                    return Ok(String::new());
+                }
+                if function_arity(function).is_some()
+                    || crate::inventory::FUNCTIONS.contains(&function)
+                {
+                    let args = args[1..].iter().map(String::as_str).collect::<Vec<_>>();
+                    return self.function(function, &args, location, depth + 1, true);
+                }
+                let mut scope = LocalScope {
+                    call: true,
+                    ..LocalScope::default()
+                };
+                scope.bind("0".into(), function.into(), location);
+                for (index, arg) in args[1..].iter().enumerate() {
+                    scope.bind((index + 1).to_string(), arg.clone(), location);
+                }
+                self.values.macros.with_locals(scope, || {
+                    self.expand_variable(function, location, depth + 1, true)
+                })
+            }
+            "eval" => {
+                let text = expand(self, args[0])?;
+                self.values.macros.eval(&text, location)?;
+                Ok(String::new())
+            }
+            "value" | "origin" | "flavor" => {
+                let variable = expand(self, args[0])?;
+                Ok(self.describe(name, &variable))
+            }
+            "error" | "warning" | "info" => {
+                let text = expand(self, args[0])?;
+                match name {
+                    "error" => return Err(Error::new(location, text)),
+                    "warning" => writeln!(io::stderr().lock(), "{location}: {text}"),
+                    _ => writeln!(io::stdout().lock(), "{text}"),
+                }
+                .map_err(|error| Error::new(location, format!("{name}: {error}")))?;
+                Ok(String::new())
+            }
+            "shell" => {
+                let command = expand(self, args[0])?;
+                self.shell(&command, location, depth)
+            }
+            "file" => {
+                let operand = expand(self, args[0])?;
+                let text = args.get(1).map(|arg| expand(self, arg)).transpose()?;
+                make_file(&operand, text.as_deref(), location)
+            }
+            _ => {
+                let values = args
+                    .iter()
+                    .map(|arg| expand(self, arg))
+                    .collect::<Result<Vec<_>, _>>()?;
+                make_functions::evaluate(name, &values, location)
+            }
+        }
+    }
+
+    fn describe(&self, function: &str, name: &str) -> String {
+        if !self.automatic.target.is_empty() {
+            if let Some(value) = self.automatic.get(name) {
+                return match function {
+                    "value" => value,
+                    "origin" => "automatic".into(),
+                    _ => "simple".into(),
+                };
+            }
+        }
+        let Some(definition) = self.values.get(name) else {
+            return if function == "value" { "" } else { "undefined" }.into();
+        };
+        match function {
+            "value" => return definition.value,
+            "flavor" => match definition.flavor {
+                Flavor::Immediate => "simple",
+                Flavor::Delayed => "recursive",
+            },
+            _ => match definition.origin {
+                Origin::Default => "default",
+                Origin::Environment if self.values.macros.environment_overrides => {
+                    "environment override"
+                }
+                Origin::Environment => "environment",
+                Origin::Makefile => "file",
+                Origin::Makeflags | Origin::CommandLine => "command line",
+                Origin::Override => "override",
+                Origin::Automatic => "automatic",
+            },
+        }
+        .into()
+    }
+
+    fn shell(&mut self, command: &str, location: &Location, depth: usize) -> Result<String, Error> {
+        if command.trim().is_empty() {
+            return Ok(String::new());
+        }
+        let executable = self.value("SHELL", location, depth + 1)?;
+        let flags = self.value(".SHELLFLAGS", location, depth + 1)?;
+        let mut shell = Command::new(executable);
+        if self.values.get(".SHELLFLAGS").is_some() {
+            shell.args(separate_words(&flags));
+        } else {
+            shell.arg("-c");
+        }
+        self.values
+            .set_environment(&mut shell, location, self.automatic, &self.active)?;
+        let output = self.values.run_shell(shell, command, location)?;
+        let stdout = String::from_utf8(output.stdout)
+            .map_err(|error| Error::new(location, format!("shell output is not UTF-8: {error}")))?;
+        let mut text = stdout.as_str();
+        while let Some(prefix) = text
+            .strip_suffix("\r\n")
+            .or_else(|| text.strip_suffix('\n'))
+        {
+            text = prefix;
+        }
+        Ok(text.replace("\r\n", " ").replace('\n', " "))
+    }
+
     fn value(&mut self, name: &str, location: &Location, depth: usize) -> Result<String, Error> {
+        self.expand_variable(name, location, depth, false)
+    }
+
+    fn expand_variable(
+        &mut self,
+        name: &str,
+        location: &Location,
+        depth: usize,
+        via_call: bool,
+    ) -> Result<String, Error> {
         self.expanded_make |= name == "MAKE";
         if let Some(value) = self.automatic.get(name) {
             return Ok(value);
         }
-        let Some((name, definition)) = self.values.entry(name) else {
+        let Some(definition) = self.values.get(name) else {
             return Ok(String::new());
         };
-        if let Some(start) = self.active.iter().position(|&active| active == name) {
-            let mut cycle = self.active[start..].to_vec();
-            cycle.push(name);
-            return Err(Error::new(
-                location,
-                format!("recursive macro reference: {}", cycle.join(" -> ")),
-            ));
+        if !via_call {
+            if let Some(start) = self.active.iter().position(|active| active == name) {
+                let mut cycle = self.active[start..].to_vec();
+                cycle.push(name.to_owned());
+                return Err(Error::new(
+                    location,
+                    format!("recursive macro reference: {}", cycle.join(" -> ")),
+                ));
+            }
         }
-        self.active.push(name);
+        self.active.push(name.to_owned());
         let mut value = String::new();
-        let result = self.expand_definition(name, definition, &mut value, depth);
+        let result = self.expand_definition(name, &definition, &mut value, depth);
         self.active.pop();
         result.map(|()| value)
     }
@@ -822,6 +1158,10 @@ impl<'a, 'b> Expansion<'a, 'b> {
         result: &mut String,
         depth: usize,
     ) -> Result<(), Error> {
+        if !definition.append {
+            return self.expand_fragment(definition, result, depth);
+        }
+        let global = self.values.macros.definitions.borrow().get(name).cloned();
         let mut appends = Vec::new();
         let mut current = Some(definition);
         while let Some(definition) = current {
@@ -832,20 +1172,113 @@ impl<'a, 'b> Expansion<'a, 'b> {
             current = definition
                 .parent
                 .as_deref()
-                .or_else(|| self.values.macros.definitions.get(name));
+                .or(global.as_ref());
         }
         for definition in appends.into_iter().rev() {
             if !result.is_empty() && !definition.value.is_empty() {
                 result.push(' ');
             }
-            if definition.flavor == Flavor::Immediate {
-                result.push_str(&definition.value);
-            } else {
-                result.push_str(&self.text(&definition.value, &definition.location, depth)?);
-            }
+            self.expand_fragment(definition, result, depth)?;
         }
         Ok(())
     }
+
+    fn expand_fragment(
+        &mut self,
+        definition: &Definition,
+        result: &mut String,
+        depth: usize,
+    ) -> Result<(), Error> {
+        if definition.flavor == Flavor::Immediate {
+            result.push_str(&definition.value);
+        } else {
+            result.push_str(&self.text(&definition.value, &definition.location, depth)?);
+        }
+        Ok(())
+    }
+}
+
+impl LocalScope {
+    fn bind(&mut self, name: String, value: String, location: &Location) {
+        self.variables.insert(
+            name,
+            Definition {
+                value,
+                flavor: Flavor::Immediate,
+                location: location.clone(),
+                origin: Origin::Automatic,
+                export: None,
+                private: false,
+                append: false,
+                parent: None,
+            },
+        );
+    }
+}
+
+fn function_arity(name: &str) -> Option<(usize, usize)> {
+    Some(match name {
+        "if" => (2, 3),
+        "foreach" => (3, 3),
+        "file" => (1, 2),
+        "and" | "or" | "call" => (1, usize::MAX),
+        "eval" | "value" | "origin" | "flavor" | "shell" | "error" | "warning" | "info" => (1, 1),
+        _ => {
+            let arity = make_functions::arity(name)?;
+            (arity, arity)
+        }
+    })
+}
+
+// GNU make 4.4.1 §8.7. A missing input reads as empty; other I/O errors are fatal.
+fn make_file(operand: &str, text: Option<&str>, location: &Location) -> Result<String, Error> {
+    let operand = operand.trim();
+    let error = |error| Error::new(location, format!("file '{operand}': {error}"));
+    if let Some(path) = operand.strip_prefix('<') {
+        if text.is_some() {
+            return Err(Error::new(
+                location,
+                "file read does not take a text argument",
+            ));
+        }
+        return match fs::read_to_string(path.trim()) {
+            Ok(mut contents) => {
+                if contents.ends_with('\n') {
+                    contents.pop();
+                    if contents.ends_with('\r') {
+                        contents.pop();
+                    }
+                }
+                Ok(contents)
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(String::new()),
+            Err(reason) => Err(error(reason)),
+        };
+    }
+    let (path, append) = if let Some(path) = operand.strip_prefix(">>") {
+        (path, true)
+    } else if let Some(path) = operand.strip_prefix('>') {
+        (path, false)
+    } else {
+        return Err(Error::new(
+            location,
+            format!("invalid file operation '{operand}'"),
+        ));
+    };
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .append(append)
+        .truncate(!append)
+        .open(path.trim())
+        .map_err(error)?;
+    if let Some(text) = text {
+        file.write_all(text.as_bytes()).map_err(error)?;
+        if !text.ends_with('\n') {
+            file.write_all(b"\n").map_err(error)?;
+        }
+    }
+    Ok(String::new())
 }
 
 pub(crate) fn separate_words(text: &str) -> impl Iterator<Item = &str> {

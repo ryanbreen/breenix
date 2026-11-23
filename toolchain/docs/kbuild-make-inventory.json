@@ -6,7 +6,7 @@
     "The scan visits both conditional arms and records each construct once per physical line.",
     "Recipe recognition uses the default tab prefix and the inline semicolon form.",
     "Constructs created by expansion, including eval, are outside the source inventory.",
-    "The dry run stages the checked config fragment as .config and probes applets/built-in.o."
+    "The dry run stages the verified Mac Clang build's configuration and generated headers, then checks the allnoconfig and applets/built-in.o goals for each recorded object recipe."
   ],
   "input_pins": "toolchain/docs/busybox-c-inventory.json",
   "inputs": {
@@ -89,8 +89,25 @@
       "ARCH=x86_64",
       "applets/built-in.o"
     ],
-    "status": 2,
-    "first_failure": "Makefile:133: GNU make function 'if' is deferred to the 25.11c function units"
+    "configure_argv": [
+      "<tools>/bmake",
+      "-n",
+      "-f",
+      "Makefile",
+      "CC=<tools>/bcc",
+      "HOSTCC=<tools>/bcc",
+      "LD=<tools>/bld",
+      "AR=<tools>/bar",
+      "NM=<tools>/bnm",
+      "ARCH=x86_64",
+      "allnoconfig"
+    ],
+    "status": 0,
+    "first_failure": null,
+    "clang_objects": 227,
+    "clang_host_objects": 4,
+    "clang_target_objects": 223,
+    "clang_objects_with_printed_recipe": 227
   },
   "chapters": {
     "3 Writing Makefiles": [
@@ -2209,6 +2226,7 @@
         "kind": "function",
         "construct": "call",
         "unit": "control",
+        "supported": true,
         "locations": [
           "Makefile:281",
           "Makefile:629",
@@ -2341,6 +2359,7 @@
         "kind": "function",
         "construct": "error",
         "unit": "control",
+        "supported": true,
         "locations": [
           "Makefile:107",
           "Makefile:1247",
@@ -2351,6 +2370,7 @@
         "kind": "function",
         "construct": "eval",
         "unit": "control",
+        "supported": true,
         "locations": [
           "Makefile.flags:182"
         ]
@@ -2442,6 +2462,7 @@
         "kind": "function",
         "construct": "foreach",
         "unit": "control",
+        "supported": true,
         "locations": [
           "Makefile:760",
           "Makefile:1308",
@@ -2472,6 +2493,7 @@
         "kind": "function",
         "construct": "if",
         "unit": "control",
+        "supported": true,
         "locations": [
           "Makefile:106",
           "Makefile:112",
@@ -2568,6 +2590,7 @@
         "kind": "function",
         "construct": "origin",
         "unit": "control",
+        "supported": true,
         "locations": [
           "Makefile:36",
           "Makefile:48",
@@ -2641,6 +2664,7 @@
         "kind": "function",
         "construct": "shell",
         "unit": "control",
+        "supported": true,
         "locations": [
           "Makefile:105",
           "Makefile:168",
@@ -2796,6 +2820,7 @@
         "kind": "function",
         "construct": "warning",
         "unit": "control",
+        "supported": true,
         "locations": [
           "scripts/Makefile.build:28",
           "scripts/Makefile.build:49",

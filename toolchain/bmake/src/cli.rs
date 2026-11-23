@@ -18,10 +18,13 @@ use std::{
 struct Options {
     inventory: bool,
     environment_overrides: bool,
+    no_builtin_rules: bool,
+    no_builtin_variables: bool,
     execution: run::Options,
     stop_on_error: bool,
     job_pool: Option<String>,
     makefiles: Vec<PathBuf>,
+    include_dirs: Vec<PathBuf>,
     assignments: Vec<String>,
     targets: Vec<String>,
 }
@@ -48,6 +51,29 @@ impl Options {
                     parse_options = false;
                     continue;
                 }
+                match text {
+                    // bmake already runs without entering/leaving directory messages.
+                    "--no-print-directory" => continue,
+                    "--no-builtin-rules" => {
+                        self.no_builtin_rules = true;
+                        continue;
+                    }
+                    "--no-builtin-variables" => {
+                        self.no_builtin_variables = true;
+                        continue;
+                    }
+                    "--include-dir" => {
+                        let directory = arguments.next()
+                            .ok_or_else(|| format!("{location}: {text} requires a path"))?;
+                        self.include_dirs.push(directory.into());
+                        continue;
+                    }
+                    _ => (),
+                }
+                if let Some(directory) = text.strip_prefix("--include-dir=") {
+                    self.include_dirs.push(directory.into());
+                    continue;
+                }
                 if let Some(flags) = text.strip_prefix('-').filter(|flags| !flags.is_empty()) {
                     for (index, flag) in flags.char_indices() {
                         match flag {
@@ -59,6 +85,8 @@ impl Options {
                             }
                             's' => self.execution.silent = true,
                             'i' => self.execution.ignore = true,
+                            'r' => self.no_builtin_rules = true,
+                            'R' => self.no_builtin_variables = true,
                             'j' => {
                                 let tail = &flags[index + 1..];
                                 let jobs = if tail.is_empty() {
@@ -79,7 +107,9 @@ impl Options {
                                 }
                                 break;
                             }
-                            'f' | 'C' if source == MacroSource::CommandLine => {
+                            'I' | 'f' | 'C'
+                                if flag == 'I' || source == MacroSource::CommandLine =>
+                            {
                                 let tail = &flags[index + 1..];
                                 let path = if tail.is_empty() {
                                     arguments
@@ -88,12 +118,12 @@ impl Options {
                                 } else {
                                     OsString::from(tail)
                                 };
-                                if flag == 'C' {
-                                    env::set_current_dir(&path).map_err(|error| {
+                                match flag {
+                                    'I' => self.include_dirs.push(path.into()),
+                                    'C' => env::set_current_dir(&path).map_err(|error| {
                                         format!("{}: {error}", Path::new(&path).display())
-                                    })?;
-                                } else {
-                                    self.makefiles.push(path.into());
+                                    })?,
+                                    _ => self.makefiles.push(path.into()),
                                 }
                                 break;
                             }
@@ -131,6 +161,8 @@ impl Options {
             (self.execution.dry_run, "-n"),
             (self.execution.silent, "-s"),
             (self.stop_on_error, "-S"),
+            (self.no_builtin_rules, "-r"),
+            (self.no_builtin_variables, "-R"),
         ]
         .into_iter()
         .filter(|&(enabled, _)| enabled)
@@ -141,6 +173,12 @@ impl Options {
         }
         if let Some(pool) = pool {
             words.push(quote_makeflags_word(&pool.makeflags_word()));
+        }
+        for directory in &self.include_dirs {
+            words.push(quote_makeflags_word(&format!(
+                "--include-dir={}",
+                directory.display()
+            )));
         }
         for assignment in inherited.iter().chain(&self.assignments) {
             if !assignment.starts_with("MAKEFLAGS=") {
@@ -285,8 +323,18 @@ pub fn execute(arguments: impl IntoIterator<Item = OsString>) -> Result<(), Stri
     let directory = directory.to_string_lossy().into_owned();
     let environment = env::vars_os()
         .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)));
-    let mut initial = Macros::new(options.environment_overrides, directory, environment);
-    initial.set_make_defaults(make, options.makeflags(&inherited, pool.as_ref()));
+    let mut initial = Macros::new(
+        options.environment_overrides,
+        !options.no_builtin_variables,
+        directory,
+        options.include_dirs.clone(),
+        environment,
+    );
+    initial.set_make_defaults(
+        make,
+        options.makeflags(&inherited, pool.as_ref()),
+        &options.targets,
+    );
     for (assignments, source) in [
         (&inherited, MacroSource::Makeflags),
         (&options.assignments, MacroSource::CommandLine),
@@ -307,7 +355,10 @@ pub fn execute(arguments: impl IntoIterator<Item = OsString>) -> Result<(), Stri
         let mut makefile = reader::reload(&options.makefiles, &mut macros, &mut streams)
             .map_err(|error| error.to_string())?;
         let specials = Specials::take(&mut makefile).map_err(|error| error.to_string())?;
-        let suffixes = Suffixes::resolve(&mut makefile, &options.targets, &specials)
+        let suffixes = Suffixes::resolve(
+            &mut makefile, &options.targets, &specials,
+            !options.no_builtin_rules && !options.no_builtin_variables,
+        )
             .map_err(|error| error.to_string())?;
         if let Some(include) = run::remake_includes(
             &makefile,

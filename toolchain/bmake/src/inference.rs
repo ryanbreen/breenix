@@ -55,10 +55,12 @@ impl Suffixes {
         makefile: &mut Makefile,
         goals: &[String],
         specials: &Specials,
+        use_builtins: bool,
     ) -> Result<Self, Error> {
         let mut suffixes = Self(
             DEFAULT_SUFFIXES
                 .iter()
+                .filter(|_| use_builtins)
                 .map(|suffix| (*suffix).into())
                 .collect(),
         );
@@ -93,7 +95,11 @@ impl Suffixes {
             explicit.push(entry);
         }
 
-        let mut suffix_rules = builtin_rules();
+        let mut suffix_rules = if use_builtins {
+            builtin_rules()
+        } else {
+            HashMap::new()
+        };
         let mut explicit_suffixes = HashSet::new();
         let mut pattern_rules: Vec<PatternRule> = Vec::new();
         let mut fallback = None;

@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 import re
+import runpy
+import shlex
 import shutil
 import subprocess
 import tarfile
@@ -52,6 +54,9 @@ CONSTRUCTS = {
     for chapter, kind, unit, spellings in CLASSIFICATIONS
     for spelling in spellings.split()
 }
+CONTROL_FUNCTIONS = set(
+    "if and or foreach call value eval origin flavor shell error warning info file".split()
+)
 TOOL_BINDINGS = {"CC": "bcc", "HOSTCC": "bcc", "LD": "bld", "AR": "bar", "NM": "bnm"}
 ENV = {"PATH": os.defpath, "LC_ALL": "C"}
 
@@ -131,29 +136,88 @@ def inventory(source, files, bmake):
     for (kind, name), locations in sorted(occurrences.items()):
         chapter, unit = CONSTRUCTS.get((kind, name), ("Unclassified", "unassigned"))
         construct = {"kind": kind, "construct": name, "unit": unit}
-        if unit in ("directives", "patterns-text"):
-            construct["supported"] = True
+        construct["supported"] = (
+            unit in ("directives", "patterns-text")
+            or (kind == "function" and name in CONTROL_FUNCTIONS)
+        )
         construct["locations"] = locations
         chapters.setdefault(chapter, []).append(construct)
     return dict(sorted(chapters.items(), key=lambda item: int(item[0].split()[0])
                        if item[0] != "Unclassified" else float("inf")))
 
 
-def dry_run(source, tools):
+def compile_outputs(stdout, compiler):
+    outputs = set()
+    for line in stdout.splitlines():
+        if str(compiler) not in line:
+            continue
+        # Match the command, rather than the same text quoted in fixdep's
+        # command receipt. A compile has both a -c and its own -o operand.
+        words = shlex.shlex(line, posix=True, punctuation_chars=True)
+        words.whitespace_split = True
+        words.commenters = ""
+        command = []
+        for word in [*words, ";"]:
+            if word and all(ch in "();<>|&" for ch in word):
+                if command and command[0] == str(compiler) and "-c" in command and "-o" in command:
+                    outputs.add(Path(command[command.index("-o") + 1]))
+                command.clear()
+            else:
+                command.append(word)
+    return outputs
+
+
+def dry_run(source, tools, pins):
+    reference = runpy.run_path(str(ROOT / "scripts/toolchain-busybox-c-inventory.py"))
+    clang, reference_pins = reference["verify_inputs"]()
+    if pins != reference_pins:
+        raise ValueError("Kbuild and the Mac Clang build have different input pins")
+    commands = reference["compile_commands"](clang)  # Also checks the target object receipts.
+    target_objects = {
+        Path(name) for name in (reference["WORK"] / "objects.txt").read_text().splitlines()
+    }
+    host_objects = {
+        Path(command.output) for command in commands
+        if command.kind == "host" and Path(command.output).suffix == ".o"
+    }
+    # A recursive dry run cannot produce headers for another sub-make.
+    # Stage those inputs from the verified build, leaving its objects behind.
+    for name in (
+        ".config", ".kconfig.d", "include/autoconf.h", "include/applet_tables.h",
+        "include/usage_compressed.h",
+    ):
+        shutil.copyfile(reference["SRC"] / name, source / name)
+
     args = ["-n", "-f", "Makefile"]
     bindings = [f"{key}={tools / name}" for key, name in TOOL_BINDINGS.items()]
-    target = ["ARCH=x86_64", "applets/built-in.o"]
-    result = subprocess.run([str(tools / "bmake"), *args, *bindings, *target], cwd=source,
-                            env=ENV, capture_output=True, text=True, timeout=60)
-    diagnostic = next((line for line in result.stderr.splitlines() if line.strip()), None)
-    if result.returncode and diagnostic is None:
-        raise ValueError(f"bmake -n exited {result.returncode} without a diagnostic")
+    report_args = [
+        "<tools>/bmake", *args,
+        *(f"{key}=<tools>/{name}" for key, name in TOOL_BINDINGS.items()), "ARCH=x86_64",
+    ]
+    printed = set()
+    for goal in ("allnoconfig", "applets/built-in.o"):
+        result = subprocess.run(
+            [str(tools / "bmake"), *args, *bindings, "ARCH=x86_64", goal], cwd=source,
+            env=ENV, capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode:
+            raise ValueError(
+                f"bmake -n {goal} exited {result.returncode}\n{result.stderr.rstrip()}"
+            )
+        printed.update(compile_outputs(result.stdout, tools / "bcc"))
+    expected = target_objects | host_objects
+    missing = expected - printed
+    if missing:
+        raise ValueError("bmake -n omitted Clang objects: " + ", ".join(map(str, sorted(missing))))
     return {
-        "argv": ["<tools>/bmake", *args,
-                 *(f"{key}=<tools>/{name}" for key, name in TOOL_BINDINGS.items()), *target],
+        "argv": [*report_args, "applets/built-in.o"],
+        "configure_argv": [*report_args, "allnoconfig"],
         "status": result.returncode,
-        "first_failure": diagnostic.replace(str(tools), "<tools>").replace(str(source), ".")
-        if result.returncode else None,
+        "first_failure": None,
+        "clang_objects": len(expected),
+        "clang_host_objects": len(host_objects),
+        "clang_target_objects": len(target_objects),
+        "clang_objects_with_printed_recipe": len(expected & printed),
     }
 
 
@@ -173,6 +237,12 @@ def main():
             source, pins = prepare_workload(Path(temp))
             files = makefiles(source)
             chapters = inventory(source, files, tools / "bmake")
+            unsupported = [
+                f"{item['kind']} {item['construct']}"
+                for constructs in chapters.values() for item in constructs if not item["supported"]
+            ]
+            if unsupported:
+                raise ValueError("unsupported Kbuild constructs: " + ", ".join(unsupported))
             report = {
                 "workload": WORKLOAD,
                 "manual": "GNU make 4.4.1, edition 0.77",
@@ -181,12 +251,13 @@ def main():
                     "The scan visits both conditional arms and records each construct once per physical line.",
                     "Recipe recognition uses the default tab prefix and the inline semicolon form.",
                     "Constructs created by expansion, including eval, are outside the source inventory.",
-                    "The dry run stages the checked config fragment as .config and probes applets/built-in.o.",
+                    "The dry run stages the verified Mac Clang build's configuration and generated headers, "
+                    "then checks the allnoconfig and applets/built-in.o goals for each recorded object recipe.",
                 ],
                 "input_pins": INPUT_PINS.relative_to(ROOT).as_posix(),
                 "inputs": pins,
                 "files": files,
-                "dry_run": dry_run(source, tools),
+                "dry_run": dry_run(source, tools, pins),
                 "chapters": chapters,
             }
         result = json.dumps(report, indent=2) + "\n"

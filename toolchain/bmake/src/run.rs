@@ -328,6 +328,7 @@ impl<'a> Build<'_, 'a> {
         let mut errors = Vec::new();
         let mut interrupted = None;
         let mut stopped = false;
+        let mut fatal = false;
 
         loop {
             if let Some(number) = signals::pending() {
@@ -355,9 +356,11 @@ impl<'a> Build<'_, 'a> {
                 let mut work = active.swap_remove(i);
                 let node = &self.graph.nodes()[work.index];
                 let result = match work.recipe.finish(status) {
-                    Ok(()) => self.advance(node, &mut work.job),
+                    Ok(()) if !fatal => self.advance(node, &mut work.job),
+                    Ok(()) => Ok(None),
                     Err(failure) => Err(failure),
                 };
+                fatal |= result.as_ref().is_err_and(|failure| failure.fatal);
                 match result {
                     Ok(Some(recipe)) => {
                         work.recipe = recipe;
@@ -368,7 +371,7 @@ impl<'a> Build<'_, 'a> {
                     }
                     finished => {
                         let result = self.finish(node, work.job, finished.map(|_| ()));
-                        stopped |= result.is_err() && !self.options.keep_going;
+                        stopped |= fatal || (result.is_err() && !self.options.keep_going);
                         self.record(&mut ready, &mut mtimes, &mut errors, work.index, result);
                     }
                 }
@@ -408,12 +411,15 @@ impl<'a> Build<'_, 'a> {
                             });
                             continue;
                         }
-                        finished => self.finish(node, job, finished.map(|_| ())),
+                        finished => {
+                            fatal |= finished.as_ref().is_err_and(|failure| failure.fatal);
+                            self.finish(node, job, finished.map(|_| ()))
+                        }
                     },
                     Ok(Update::Current(modified)) => Ok(modified),
                     Err(error) => Err(error),
                 };
-                stopped |= result.is_err() && !self.options.keep_going;
+                stopped |= fatal || (result.is_err() && !self.options.keep_going);
                 self.record(&mut ready, &mut mtimes, &mut errors, index, result);
             }
 
@@ -427,7 +433,7 @@ impl<'a> Build<'_, 'a> {
         }
 
         if errors.is_empty()
-            || (interrupted.is_none()
+            || (!fatal && interrupted.is_none()
                 && required_includes.is_some_and(|required| {
                     self.graph.roots.iter().all(|&index| {
                         let name = self.graph.nodes()[index].name;
@@ -611,6 +617,7 @@ struct RecipeMode {
 struct RecipeFailure {
     message: String,
     interrupted: bool,
+    fatal: bool,
 }
 
 enum Recipe {
@@ -664,6 +671,7 @@ impl RunningRecipe {
             Err(RecipeFailure {
                 message,
                 interrupted,
+                fatal: false,
             })
         }
     }
@@ -682,6 +690,7 @@ fn start_recipe(
         .map_err(|error| RecipeFailure {
             message: error.to_string(),
             interrupted: false,
+            fatal: true,
         })?;
     let line = expanded.trim_start_matches([' ', '\t', '-', '@', '+']);
     let prefixes = &expanded[..expanded.len() - line.len()];
@@ -698,6 +707,7 @@ fn start_recipe(
             .map_err(|error| RecipeFailure {
                 message: diagnostic(format!("could not echo recipe: {error}")),
                 interrupted: false,
+                fatal: false,
             })?;
     }
     if skip {
@@ -712,6 +722,7 @@ fn start_recipe(
         .map_err(|error| RecipeFailure {
             message: error.to_string(),
             interrupted: false,
+            fatal: true,
         })?;
     if own_group {
         shell.process_group(0);
@@ -727,6 +738,7 @@ fn start_recipe(
             return Err(RecipeFailure {
                 message,
                 interrupted: false,
+                fatal: false,
             });
         }
     };
