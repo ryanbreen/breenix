@@ -182,3 +182,41 @@ fn enumerators_use_integer_constant_expressions() {
 fn nostdinc_uses_only_explicit_header_paths() {
     check("nostdinc_uses_only_explicit_header_paths");
 }
+
+fn check_on_both_targets(name: &str) {
+    check(name);
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../tests/bcc/gnu")
+        .join(format!("{name}.c"));
+    let source = std::fs::read_to_string(source).unwrap();
+    for cc_flags in ["--cc-flag=-O0", "--cc-flag=-O2"] {
+        support::aarch64_check_exit(&["--cc-flag=-std=gnu11", cc_flags, &source]);
+    }
+}
+
+mod support;
+
+#[test]
+fn basic_asm_and_memory_clobber_barrier() {
+    check_on_both_targets("basic_asm_and_memory_clobber_barrier");
+}
+
+#[test]
+fn extended_asm_operands_execute() {
+    check_on_both_targets("extended_asm_operands_execute");
+}
+
+#[test]
+fn variable_arrays_evaluate_bounds_and_release_stack() {
+    check_on_both_targets("variable_arrays_evaluate_bounds_and_release_stack");
+}
+
+#[test]
+fn gnu_wide_enum_and_pointer_assignment() {
+    check_on_both_targets("gnu_wide_enum_and_pointer_assignment");
+}
+
+#[test]
+fn gnu_static_null_record_offset() {
+    check_on_both_targets("gnu_static_null_record_offset");
+}
