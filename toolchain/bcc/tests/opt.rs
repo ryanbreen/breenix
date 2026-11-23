@@ -80,6 +80,24 @@ int volatile_read(void) {
 }
 
 #[test]
+fn constant_conditional_discards_unselected_call() {
+    // N1570 6.5.15p4. The unselected operand is never evaluated.
+    let source = Source::new(
+        "constant-conditional",
+        r"
+extern int unavailable(void);
+int disabled(int flags) { return 0 && flags ? unavailable() : 42; }
+int enabled(void) { return 1 ? 42 : unavailable(); }
+",
+    );
+    let assembly = source.assembly("--target=x86_64", &["-O2"]);
+    for name in ["disabled", "enabled"] {
+        let body = function(&assembly, name);
+        assert!(!body.contains("unavailable") && body.contains("0x2a"), "{body}");
+    }
+}
+
+#[test]
 fn rounding_math_blocks_fp_fold() {
     // N1570 7.6.1 and F.8.2. The flag protects runtime arithmetic even
     // without a pragma, and FENV_ACCESS ON also works on its own.
