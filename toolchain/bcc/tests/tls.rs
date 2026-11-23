@@ -108,11 +108,9 @@ int main(void) {
             assert!(symbol_offset + size <= tls.file_size);
             let start = usize::try_from(tls.offset + symbol_offset).unwrap();
             assert_eq!(&exe_bytes[start..start + 4], &7_i32.to_le_bytes());
-            assert!(
-                exe_bytes[start + 4..start + 32]
-                    .iter()
-                    .all(|&byte| byte == 0)
-            );
+            assert!(exe_bytes[start + 4..start + 32]
+                .iter()
+                .all(|&byte| byte == 0));
         } else {
             assert!(symbol_offset >= tls.file_size && symbol_offset + size <= tls.memory_size);
             assert_eq!(output.kind, SHT_NOBITS);
@@ -129,25 +127,24 @@ int main(void) {
         );
         // AMD64 psABI Tables 10.7 and 10.10. The four-byte displacement
         // follows either an absolute FS:SIB operand or a TP-based LEA.
-        let operand = &input_text[..field];
-        let access = if operand.ends_with(&[0x48, 0x8d, 0x80]) {
-            assert!(
-                operand.ends_with(&[0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0, 0x48, 0x8d, 0x80])
-            );
-            "address"
+        let operand = &text[..field];
+        let encoding: &[u8] = if operand.ends_with(&[0x48, 0x8d, 0x80]) {
+            &[0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0, 0x48, 0x8d, 0x80]
         } else {
-            assert_eq!(&operand[field - 2..], &[0x04, 0x25]);
-            match operand[field - 4] {
-                0x63 => {
-                    assert!(operand.ends_with(&[0x64, 0x48, 0x63, 0x04, 0x25]));
-                    "load"
-                }
-                opcode @ (0x8b | 0x89) => {
-                    assert_eq!(operand[field - 5], 0x64);
-                    if opcode == 0x8b { "load" } else { "store" }
-                }
+            match operand[field - 3] {
+                0x63 => &[0x64, 0x48, 0x63, 0x04, 0x25],
+                opcode @ (0x8b | 0x89) => &[0x64, opcode, 0x04, 0x25],
                 opcode => panic!("unexpected TLS opcode {opcode:#x}"),
             }
+        };
+        assert!(operand.ends_with(encoding));
+        assert!(input_text[..field].ends_with(encoding));
+        let access = if encoding.ends_with(&[0x48, 0x8d, 0x80]) {
+            "address"
+        } else if operand[field - 3] == 0x89 {
+            "store"
+        } else {
+            "load"
         };
         accesses.push((size, access));
     }
