@@ -25,7 +25,7 @@ fn profile_macros_truthful() {
         assert!(result.stderr.is_empty(), "{target}: {result:?}");
         let source = String::from_utf8(result.stdout).unwrap();
         assert!(
-            source.lines().any(|line| line == "int profile_macros_verified;"),
+            source.lines().any(|line| line == "int profile_macros_verified ;"),
             "{target}: {source}"
         );
     }
