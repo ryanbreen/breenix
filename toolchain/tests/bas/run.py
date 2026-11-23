@@ -403,6 +403,22 @@ def check_aarch64_relocations(bas, elfcheck, path):
         bas, elfcheck, path, source,
         {b".text": [(0, 283, "CALL26", b"external", 4)]}, (0x94000000,),
     )
+    # AAELF64 §§5.6.5, 5.7.6: code in a separate executable section
+    # has its own mapping symbols and a cross-section call relocation.
+    source.write_text(".global answer\nbl answer\n.section .text.answer\nanswer: ret\n")
+    sections, contents, symtab, _ = read_object(bas, elfcheck, path, source, machine="aarch64")
+    answer_index, answer = sections[b".text.answer"]
+    require(answer[2] == 6 and contents(answer) == struct.pack("<I", 0xd65f03c0),
+            "executable subsection has wrong flags or instruction")
+    strings = contents(sections[b".strtab"][1])
+    symbols = list(struct.iter_unpack("<IBBHQQ", contents(symtab)))
+    names = [strings[row[0]:strings.index(0, row[0])] for row in symbols]
+    require(any(name == b"$x" and row[3] == answer_index and row[4] == 0
+                for name, row in zip(names, symbols)), "missing subsection code mapping")
+    rela = list(struct.iter_unpack("<QQq", contents(sections[b".rela.text"][1])))
+    require(len(rela) == 1 and (rela[0][0], rela[0][1] & 0xffffffff,
+            names[rela[0][1] >> 32], rela[0][2]) == (0, 283, b"answer", 0),
+            "cross-section BL must carry R_AARCH64_CALL26 answer + 0")
     # E25 rulings 31–32 replace the three cross-section refusals with exact
     # positive rows. AAELF64 §5.7.6 defines the relocation for each field.
     for instruction, symbol, kind, name, word in (
