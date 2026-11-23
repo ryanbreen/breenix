@@ -440,9 +440,6 @@ impl Drop for Scratch {
 }
 
 fn c_core() -> Result<PathBuf, String> {
-    if std::env::consts::ARCH != "x86_64" {
-        return Err("AArch64 scalar C code generation is scheduled for A3".into());
-    }
     Ok(Path::new("/").join(CORPUS).join("c-core"))
 }
 
@@ -597,9 +594,6 @@ fn make_corpus() -> PathBuf {
 }
 
 fn make_fixture(name: &str) -> Result<Scratch, String> {
-    if std::env::consts::ARCH != "x86_64" {
-        return Err("The ARM64 make bundle and project evidence are scheduled for A3".into());
-    }
     let scratch = Scratch::new(name)?;
     let source = make_corpus().join(format!("{name}.mk"));
     io_at(&source, fs::copy(&source, scratch.join("Makefile")))?;
@@ -762,9 +756,6 @@ fn project_make(scratch: &Scratch, recipes: &[&str]) -> CaseResult {
 }
 
 fn project_clean_build(case: &str) -> Result<Scratch, CaseError> {
-    if std::env::consts::ARCH != "x86_64" {
-        return Err("The ARM64 make bundle and project evidence are scheduled for A3".into());
-    }
     let scratch = Scratch::new(case)?;
     let fixture = Path::new("/").join(CORPUS).join("project");
     for name in PROJECT_INPUTS {

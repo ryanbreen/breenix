@@ -167,9 +167,9 @@ for the 25.5 units.
 | Variadic calls | N1570 §6.5.2.2 and AMD64 psABI §3.2.3. Trailing arguments use default promotions. The caller puts the vector-register count in `%al`. |
 | Static library search | GNU ld 2.45 §2.1 for `-L` and `-l`. bcc resolves archive names for bld and preserves their order among the link inputs. |
 
-bcc emits AMD64 assembly for the 25.5 scalar subset. Variadic function
-definitions and `va_list` operations follow in 25.7b2, x87 `long double`
-lowering in 25.7b3, and AArch64 scalar code generation in A3.
+bcc emits AMD64 and AArch64 assembly for the 25.5 scalar subset. Variadic function
+definitions and `va_list` operations follow in 25.7b2, and x87 `long double`
+lowering in 25.7b3. AArch64 aggregates, variadics, binary128 and C TLS follow in A4.
 
 ## bmake 25.6a2
 

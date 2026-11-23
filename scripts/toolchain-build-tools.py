@@ -94,13 +94,13 @@ def build_guest_tools(arch, work, dev, clang, cargo, env, rustc_record):
     ]
     guest_env = dict(env, __CARGO_TESTS_ONLY_SRC_ROOT=str(library),
                      CARGO_ENCODED_RUSTFLAGS="\x1f".join(flags))
-    packages = (*TOOLS, "bcc", *(('bmake',) if arch == 'x86_64' else ()))
+    packages = (*TOOLS, "bcc", "bmake")
     binaries = cargo_tools(cargo, guest_env, target_json, ROOT / "target/toolchain-bundle/guest", packages,
                           ("-Z", "build-std=std,panic_abort", "-Z", "build-std-features=compiler-builtins-mem"))
     dev_bin = dev / "bin"
     dev_bin.mkdir()
     tools = {}
-    for name in (packages if arch == "x86_64" else TOOLS):
+    for name in packages:
         executable = dev_bin / {"bcc": "cc", "bmake": "make"}.get(name, name)
         shutil.copy2(binaries / name, executable)
         tools[name] = {
@@ -121,35 +121,37 @@ def build(arch, work, dev, corpus):
     cargo, env, host, rustc_record = cargo_environment()
     tools = build_guest_tools(arch, work, dev, clang, cargo, env, rustc_record)
 
+    for tool, alias in (("bas", "as"), ("bld", "ld")):
+        shutil.copy2(dev / "bin" / tool, dev / "bin" / alias)
+    for category in ("c-core", "make", "project"):
+        shutil.copytree(WORKSPACE / "corpus" / category, corpus / category)
+    if arch == "aarch64":
+        shutil.copy2(WORKSPACE / "corpus/project-aarch64/value.s", corpus / "project/value.s")
+    host_env = dict(env, CARGO_ENCODED_RUSTFLAGS="\x1f".join(remap_flags(env)))
+    host_bins = cargo_tools(cargo, host_env, host, ROOT / "target/toolchain-bundle/host", ("bas", "bld", "bcc"))
+    host_dev = work / "host-dev"
+    shutil.copytree(dev, host_dev)
+    for package, name in (("bas", "as"), ("bld", "ld"), ("bcc", "cc")):
+        shutil.copy2(host_bins / package, host_dev / "bin" / name)
+    candidates = corpus / "c-core/mac"
+    candidates.mkdir(parents=True)
+    deferred = {"aggregate-copy", "bitfield-values", "varargs", "alignment", "atomics",
+                "compound-literal", "designated-init", "generic"}
+    names = (ROOT / "toolchain/corpus/cases").read_text().splitlines()
+    if len(names) != 30 or not deferred.issubset(names):
+        raise ValueError("unexpected C corpus")
+    for name in names:
+        if name not in deferred:
+            reference.run([str(host_dev / "bin/cc"), *(["--target=aarch64"] if arch == "aarch64" else []),
+                           "-o", str(candidates / (name + ".elf")), str(corpus / (name + ".c"))], work)
+
     if arch == "x86_64":
-        for tool, alias in (("bas", "as"), ("bld", "ld")):
-            shutil.copy2(dev / "bin" / tool, dev / "bin" / alias)
-        shutil.copytree(WORKSPACE / "corpus/c-core", corpus / "c-core")
-        shutil.copytree(WORKSPACE / "corpus/make", corpus / "make")
-        shutil.copytree(WORKSPACE / "corpus/project", corpus / "project")
         lld, _ = reference.pinned_tool(
             Path(os.environ["BREENIX_TOOLCHAIN_LLD"]),
             os.environ["BREENIX_TOOLCHAIN_LLD_SHA256"], work,
         )
         link = [*lld, "--fatal-warnings", "-static", "--gc-sections", "-T", str(dev / "linker.ld")]
         # Use relative object names so the lld map names no build directory.
-        host_env = dict(env, CARGO_ENCODED_RUSTFLAGS="\x1f".join(remap_flags(env)))
-        host_bins = cargo_tools(cargo, host_env, host, ROOT / "target/toolchain-bundle/host", ("bas", "bld", "bcc"))
-        host_dev = work / "host-dev"
-        shutil.copytree(dev, host_dev)
-        for package, name in (("bas", "as"), ("bld", "ld"), ("bcc", "cc")):
-            shutil.copy2(host_bins / package, host_dev / "bin" / name)
-        candidates = corpus / "c-core/mac"
-        candidates.mkdir(parents=True)
-        deferred = {"aggregate-copy", "bitfield-values", "varargs", "alignment", "atomics",
-                    "compound-literal", "designated-init", "generic"}
-        names = (ROOT / "toolchain/corpus/cases").read_text().splitlines()
-        if len(names) != 30 or not deferred.issubset(names):
-            raise ValueError("unexpected C corpus")
-        for name in names:
-            if name not in deferred:
-                reference.run([str(host_dev / "bin/cc"), "-o", str(candidates / (name + ".elf")),
-                               str(corpus / (name + ".c"))], work)
         host_bas = host_bins / "bas"
         producer = {"cargoPackage": "bas", "target": host, "sha256": digest(host_bas)}
         destination = corpus / "assembler"

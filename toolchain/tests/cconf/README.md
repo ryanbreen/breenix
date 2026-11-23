@@ -164,5 +164,4 @@ not from clang's output.
 ## ARM64
 
 Each target selects 64 E-mode fixtures. 63 are shared, and 1 (`if-char-sign`)
-differs because plain char is unsigned under AAPCS64. Further ARM64
-expectations come with bcc's ARM64 backend (A3).
+differs because plain char is unsigned under AAPCS64. The ARM64 backend uses these target-specific expectations.
