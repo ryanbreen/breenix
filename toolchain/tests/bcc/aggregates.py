@@ -321,15 +321,19 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     for tool in ("bcc", "bas", "bld"):
         parser.add_argument(tool, type=Path)
-    parser.add_argument("--libc", type=Path, help="Breenix AMD64 C ABI archive for Clang's memset")
-    parser.add_argument("cases", nargs="*", metavar="CASE", default=list(CASES))
+    parser.add_argument(
+        "--libc", type=Path,
+        default=HERE.parents[2] / "libs/libbreenix-libc/target/x86_64-breenix-c/release/libc.a",
+        help="Breenix AMD64 C ABI archive for Clang's memset",
+    )
+    parser.add_argument("cases", nargs="*", metavar="CASE", default=["aggregates"])
     args = parser.parse_intermixed_args()
     if platform.machine() != "x86_64":
         parser.error("run with x86-64 Python")
     if any(case not in CASES for case in args.cases):
         parser.error(f"expected case names from {', '.join(CASES)}")
-    if "bitfields" in args.cases and args.libc is None:
-        parser.error("bitfields requires --libc")
+    if "bitfields" in args.cases and not args.libc.is_file():
+        parser.error(f"build the test input {args.libc} or pass its path with --libc")
     try:
         with TemporaryDirectory() as temp:
             check(args, Path(temp).resolve())

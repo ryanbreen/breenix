@@ -3,15 +3,20 @@ use std::process::Command;
 
 #[test]
 fn record_members_and_copy() {
-    run_harness("records.py");
+    run_harness("records.py", &[]);
 }
 
 #[test]
 fn struct_int_double_by_value_bcc_to_clang() {
-    run_harness("aggregates.py");
+    run_harness("aggregates.py", &[]);
 }
 
-fn run_harness(script: &str) {
+#[test]
+fn bitfields_and_packed_bcc_to_clang() {
+    run_harness("aggregates.py", &["bitfields", "packed"]);
+}
+
+fn run_harness(script: &str, args: &[&str]) {
     let toolchain = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let bcc = Path::new(env!("CARGO_BIN_EXE_bcc"));
     let mut python = if cfg!(target_os = "macos") {
@@ -26,6 +31,7 @@ fn run_harness(script: &str) {
         .arg(bcc)
         .arg(bcc.with_file_name("bas"))
         .arg(bcc.with_file_name("bld"))
+        .args(args)
         .output()
         .expect("run the record ABI harness with x86-64 Python");
     assert!(
