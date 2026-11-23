@@ -19,12 +19,12 @@ mod float;
 mod flow;
 mod record;
 
-use abi::ArgumentSlots;
+use abi::{ArgumentLocation, ArgumentSlots, CallObject};
 use flow::Slot;
 
 const ARGUMENT_REGISTERS: usize = 8;
 const FRAME_RECORD: usize = 16;
-const DEFERRED_A4: &str = "AArch64 aggregate, variadic and C TLS support is deferred to A4";
+const DEFERRED_A4: &str = "AArch64 variadic functions and C TLS are deferred to A4";
 
 pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
     let mut functions = HashMap::new();
@@ -89,9 +89,15 @@ impl<'src> Emitter<'_, 'src> {
         let Kind::Function { result, .. } = &function.ty.kind else {
             unreachable!()
         };
-        let record_result = self.call_record(result, function.site)?;
-        self.layout(function)?;
-        let indirect_result = if record_result.is_some_and(abi::indirect_record) {
+        let object_result = self.call_object(result, function.site)?;
+        let mut slots = ArgumentSlots::default();
+        let mut parameters = Vec::with_capacity(function.params.len());
+        for param in &function.params {
+            let object = self.call_object(&param.ty, param.name.unwrap().1)?;
+            parameters.push((object, slots.next(&param.ty, object)));
+        }
+        self.layout(function, &parameters)?;
+        let indirect_result = if object_result.is_some_and(CallObject::indirect) {
             Some(self.frame_slot(Layout { size: 8, align: 8 }, function.site)?)
         } else {
             None
@@ -111,11 +117,16 @@ impl<'src> Emitter<'_, 'src> {
             self.text.push_str("    str x8, [x9]\n");
         }
 
-        let mut slots = ArgumentSlots::default();
-        for (index, param) in function.params.iter().enumerate() {
-            let site = param.name.unwrap().1;
-            let record = self.call_record(&param.ty, site)?;
-            self.receive_parameter(index, &param.ty, record, slots.next(&param.ty, record));
+        // A stack argument can precede a register argument from the other
+        // bank. Save incoming registers before the stack copies use x0 or v0.
+        for on_stack in [false, true] {
+            for (index, (&(object, location), param)) in
+                parameters.iter().zip(&function.params).enumerate()
+            {
+                if matches!(location, ArgumentLocation::Stack(_)) == on_stack {
+                    self.receive_parameter(index, &param.ty, object, location);
+                }
+            }
         }
         self.statements(body, result, &epilogue)?;
         // Record-valued calls in the body reserve fixed frame slots.
@@ -129,10 +140,10 @@ impl<'src> Emitter<'_, 'src> {
         {
             self.text.push_str("    mov w0, #0\n");
         }
-        if let Some(layout) = record_result {
+        if let Some(object) = object_result {
             let leave = self.label();
             writeln!(self.text, "    b {leave}\n{epilogue}:").unwrap();
-            self.return_record(layout, indirect_result);
+            self.return_object(object, indirect_result);
             writeln!(self.text, "{leave}:").unwrap();
         } else {
             writeln!(self.text, "{epilogue}:").unwrap();
@@ -145,7 +156,7 @@ impl<'src> Emitter<'_, 'src> {
         Ok(())
     }
 
-    // Values use s0/d0 for float/double and x0 for addresses, record
+    // Values use s0/d0 for float/double and x0 for addresses, aggregate/vector
     // representations in memory and integers extended to their C type.
     fn value(&mut self, expr: &Expression<'src>) -> Result<(), Diagnostic> {
         match expr.ty.kind {
@@ -415,7 +426,7 @@ impl<'src> Emitter<'_, 'src> {
             Kind::Float(precision) => ("ldr", float::prefix(precision)),
             Kind::Pointer(_) => ("ldr", 'x'),
             Kind::Array(..) | Kind::Function { .. } => return,
-            Kind::Record(_) => {
+            Kind::Record(_) | Kind::ShortVector { .. } => {
                 if address != "x0" {
                     writeln!(self.text, "    mov x0, {address}").unwrap();
                 }
@@ -542,7 +553,7 @@ fn check_symbol(name: &str, site: &Position) -> Result<(), Diagnostic> {
 fn require_value(ty: &Type, site: &Position) -> Result<(), Diagnostic> {
     if matches!(
         ty.kind,
-        Kind::Integer(_) | Kind::Pointer(_) | Kind::Float(_)
+        Kind::Integer(_) | Kind::Pointer(_) | Kind::Float(_) | Kind::ShortVector { .. }
     ) || matches!(ty.kind, Kind::Record(record) if record.layout.is_some()) {
         Ok(())
     } else {

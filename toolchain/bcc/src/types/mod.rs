@@ -221,6 +221,7 @@ pub struct Type {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Kind {
     Float(Float),
+    ShortVector { element: Float, bytes: usize },
     LongDouble,
     Record(RecordType),
     Void,
@@ -291,6 +292,10 @@ impl Type {
         match &self.kind {
             Kind::Integer(integer) => Some(integer.layout()),
             Kind::Float(float) => Some(float.layout()),
+            Kind::ShortVector { bytes, .. } => Some(Layout {
+                size: *bytes,
+                align: *bytes,
+            }),
             Kind::LongDouble => Some(Layout {
                 size: 16,
                 align: 16,
@@ -312,11 +317,19 @@ impl Type {
     // N1570 6.7.7: render a type name as a specifier and abstract declarator.
     fn declarator(&self, out: &mut fmt::Formatter<'_>, decl: &str) -> fmt::Result {
         match &self.kind {
-            Kind::Void | Kind::Integer(_) | Kind::Float(_) | Kind::LongDouble | Kind::Record(_) => {
+            Kind::Void
+            | Kind::Integer(_)
+            | Kind::Float(_)
+            | Kind::ShortVector { .. }
+            | Kind::LongDouble
+            | Kind::Record(_) => {
                 write!(out, "{}", self.qualifiers)?;
                 match self.kind {
                     Kind::Integer(integer) => write!(out, "{integer}")?,
                     Kind::Float(float) => write!(out, "{float}")?,
+                    Kind::ShortVector { element, bytes } => {
+                        write!(out, "{element} __attribute__((vector_size({bytes})))")?
+                    }
                     Kind::LongDouble => out.write_str("long double")?,
                     Kind::Record(ref record) => write!(out, "record {}", record.id)?,
                     _ => out.write_str("void")?,

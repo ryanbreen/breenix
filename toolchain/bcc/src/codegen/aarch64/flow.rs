@@ -9,12 +9,16 @@ pub(super) enum Slot {
 }
 
 impl<'src> Emitter<'_, 'src> {
-    pub(super) fn layout(&mut self, function: &Function<'src>) -> Result<(), Diagnostic> {
+    pub(super) fn layout(
+        &mut self,
+        function: &Function<'src>,
+        parameters: &[(Option<CallObject>, ArgumentLocation)],
+    ) -> Result<(), Diagnostic> {
         self.locals.clear();
         self.frame = 0;
         for (index, local) in function.locals.iter().enumerate() {
             let object = &local.object;
-            let mut layout = object.ty.layout().unwrap();
+            let layout = object.ty.layout().unwrap();
             if matches!(local.storage, LocalStorage::Thread(_) | LocalStorage::ThreadExtern(_)) {
                 return Err(Diagnostic::new(object.site, "AArch64 C TLS is deferred to A4"));
             }
@@ -28,12 +32,12 @@ impl<'src> Emitter<'_, 'src> {
                 .unwrap();
                 Slot::Static(label)
             } else {
-                if index < function.params.len()
-                    && matches!(object.ty.kind, Kind::Record(_))
-                    && !abi::indirect_record(layout)
-                {
-                    layout = abi::register_record_slot(layout);
-                }
+                let layout = match parameters.get(index) {
+                    Some((Some(value), ArgumentLocation::Register(_))) if !value.indirect() => {
+                        value.slot()
+                    }
+                    _ => layout,
+                };
                 Slot::Frame(self.frame_slot(layout, object.site)?)
             };
             self.locals.push(slot);

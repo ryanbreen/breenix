@@ -142,11 +142,14 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         let mut variables = Vec::new();
         loop {
             let name = declarator.name.unwrap();
-            let ty = declarator.ty(base.clone(), name)?;
+            let mut ty = declarator.ty(base.clone(), name)?;
             if storage.thread_local && matches!(ty.kind, TypeKind::Function { .. }) {
                 return Err(name.error("a function cannot be _Thread_local"));
             }
             if storage.class == Storage::Typedef {
+                if self.target == Target::Aarch64 {
+                    self.short_vector_typedef(&mut ty)?;
+                }
                 if let Some(previous) = self.names.last().unwrap().get(name.text.as_ref()) {
                     if !matches!(previous, Name::Typedef(previous, _) if *previous == ty) {
                         return Err(name.error("conflicting typedef declaration"));
@@ -174,6 +177,31 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             }
             declarator = self.declarator(false, 0)?;
         }
+    }
+
+    // GNU C 15.2 §7.8 supplies the typedef spelling. AAPCS64 §5.5
+    // supplies the short-vector sizes and alignment.
+    fn short_vector_typedef(&mut self, ty: &mut Type) -> Result<(), Diagnostic> {
+        let Some(site) = self.eat("__attribute__") else {
+            return Ok(());
+        };
+        self.expect("(", "expected '(' after __attribute__")?;
+        self.expect("(", "expected '(' before the typedef attribute")?;
+        self.expect("vector_size", "expected the vector_size typedef attribute")?;
+        self.expect("(", "expected '(' after vector_size")?;
+        let bytes = match self.literal_integer()?.0 {
+            8 => 8,
+            16 => 16,
+            _ => return Err(site.error("AArch64 short vectors must occupy 8 or 16 bytes")),
+        };
+        self.expect(")", "expected ')' after the vector size")?;
+        self.expect(")", "expected ')' after the vector_size attribute")?;
+        self.expect(")", "expected ')' after the attribute list")?;
+        let TypeKind::Float(element) = ty.kind else {
+            return Err(site.error("AArch64 short vectors require float or double elements"));
+        };
+        ty.kind = TypeKind::ShortVector { element, bytes };
+        Ok(())
     }
 
     fn initializer(&mut self, depth: usize) -> Result<Initializer<'a>, Diagnostic> {

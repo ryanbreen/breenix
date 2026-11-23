@@ -36,8 +36,8 @@ impl Emitter<'_, '_> {
     pub(super) fn store_value(&mut self, ty: &Type, field: Option<BitField>) {
         if let Some(field) = field {
             self.store_bit_field(ty, field);
-        } else if let Kind::Record(record) = ty.kind {
-            self.copy_record(record.layout.unwrap().size);
+        } else if matches!(ty.kind, Kind::Record(_) | Kind::ShortVector { .. }) {
+            self.copy_record(ty.layout().unwrap().size);
         } else {
             self.store_object(ty, 0, "x9");
         }
