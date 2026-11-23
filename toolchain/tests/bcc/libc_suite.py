@@ -1,5 +1,6 @@
 """Compile the unchanged libc recipe inputs with bcc and link with bld."""
 
+import os
 import re
 import subprocess
 import sys
@@ -21,7 +22,7 @@ def run(*args):
 
 def require(result):
     assert result.returncode == 0 and not result.stderr, (
-        f"{result.args}: {result.returncode}\n{result.stdout}{result.stderr}"
+        f"{result.args[0]}: {result.returncode}\n{result.stdout}{result.stderr}"
     )
     return result.stdout
 
@@ -79,6 +80,16 @@ def link_suite(bcc, recipe):
     nm = bcc.with_name("bnm")
     elfcheck = bcc.with_name("elfcheck")
     libc_defined, _ = symbols(nm, libc)
+    # bcc's normal link supplies brt before libc for compiler-generated
+    # atomics, including pthread.c's load through an atomic pointer.
+    brt = Path(os.environ.get(
+        "BREENIX_LIBC_SUITE_BRT",
+        bcc.parent.parent / "x86_64-breenix/release/libbrt.a",
+    ))
+    brt_defined, _ = symbols(nm, brt)
+    atomic_helpers = {
+        "__atomic_load", "__atomic_store", "__atomic_exchange", "__atomic_compare_exchange",
+    }
     harness = objects / "harness.o"
     harness_defined, harness_undefined = symbols(nm, harness)
     require(run(elfcheck, objects / "abi-check.o", harness))
@@ -86,7 +97,13 @@ def link_suite(bcc, recipe):
         assert mode in ([], ["complete"]), (category, mode)
         obj = objects / f"{category}.o"
         defined, undefined = symbols(nm, obj)
+        if category == "string-stdlib":
+            ordinary_calls = {"memset", "memcmp", "strlen", "malloc", "free"}
+            assert ordinary_calls <= undefined & libc_defined, (
+                f"-fno-builtin lost calls: {ordinary_calls - (undefined & libc_defined)}"
+            )
         missing = (undefined | harness_undefined) - (defined | harness_defined | libc_defined)
+        missing -= brt_defined & atomic_helpers
         assert not missing & DATA, f"{category} missing data: {missing & DATA}"
         assert not (mode and missing), f"{category} missing functions: {missing}"
         assert not any(name.startswith("__builtin_") for name in missing), missing
@@ -103,7 +120,7 @@ def link_suite(bcc, recipe):
             inputs.append(shim)
         elf = objects / f"{category}.elf"
         require(run(bcc.with_name("bld"), "-T", LINKER_SCRIPT, "--gc-sections",
-                    "-o", elf, *inputs, libc))
+                    "-o", elf, *inputs, brt, libc))
         require(run(elfcheck, "--exec", elf))
         print(f"{category}: ELF valid, stand-ins {', '.join(sorted(missing)) or 'none'}")
 
