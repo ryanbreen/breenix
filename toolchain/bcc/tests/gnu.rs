@@ -26,6 +26,46 @@ fn statement_expression_value() {
     check("statement_expression_value");
 }
 
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn aarch64_statement_expression_value_and_jump() {
+    let value = include_str!("../../tests/bcc/gnu/statement_expression_value.c");
+    let jump = r#"
+        static unsigned long stack(void) {
+            unsigned long sp;
+            __asm__ __volatile__("mov %0, sp" : "=r"(sp));
+            return sp;
+        }
+        static int check(int n) {
+            char *keep = __builtin_alloca(16);
+            keep[0] = 42;
+            unsigned long before = stack();
+            int total = n;
+            int result = ({
+                total += ({
+                    int local = 1;
+                    if (n) goto outer;
+                    local;
+                });
+            outer: ;
+                total + keep[0];
+            });
+            if (n) {
+                total += ({ if (n) goto done; 0; });
+                return 1;
+            }
+        done:
+            return stack() == before ? result : 2;
+        }
+        int main(void) { return check(0) == 43 && check(1) == 43 ? 42 : 1; }
+    "#;
+    for level in ["--cc-flag=-O0", "--cc-flag=-O2"] {
+        for source in [value, jump] {
+            support::aarch64_check_exit(&["--cc-flag=-std=gnu11", level, source]);
+        }
+    }
+}
+
 #[test]
 fn typeof_preserves_type_without_evaluation() {
     check("typeof_preserves_type_without_evaluation");
