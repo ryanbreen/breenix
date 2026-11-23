@@ -15,10 +15,33 @@ fn constraint_paragraphs_located() {
 #[test]
 fn profile_macros_truthful() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../corpus/c11/profile-macros.c");
+    let scratch = Scratch(std::env::temp_dir().join(format!(
+        "breenix-bcc-c11-{}-profile",
+        std::process::id()
+    )));
+    fs::create_dir(&scratch.0).unwrap();
+    let arm_fixture = scratch.0.join("arm-profile.c");
+    // Check the ARM exception, then reuse every check in the guest fixture.
+    fs::write(
+        &arm_fixture,
+        r#"#if !defined(__STDC_NO_ATOMICS__) || __STDC_NO_ATOMICS__ != 1
+#error expected __STDC_NO_ATOMICS__ to be defined as 1 on ARM
+#endif
+#undef __STDC_NO_ATOMICS__
+#include "profile-macros.c"
+"#,
+    )
+    .unwrap();
     for target in ["--target=x86_64", "--target=aarch64"] {
         let result = Command::new(env!("CARGO_BIN_EXE_bcc"))
             .args([target, "-E"])
-            .arg(&fixture)
+            .arg("-I")
+            .arg(fixture.parent().unwrap())
+            .arg(if target == "--target=aarch64" {
+                &arm_fixture
+            } else {
+                &fixture
+            })
             .output()
             .unwrap();
         assert!(result.status.success(), "{target}: {result:?}");
@@ -29,6 +52,48 @@ fn profile_macros_truthful() {
             "{target}: {source}"
         );
     }
+}
+
+#[test]
+fn aarch64_defers_atomic_accesses() {
+    use bcc::{codegen, pp, sema};
+
+    let path = Path::new("atomic-arm.c");
+    let options = pp::Options {
+        target: pp::Target::Aarch64,
+        ..pp::Options::default()
+    };
+    let mut mismatches = Vec::new();
+    for source in [
+        "_Atomic int object;\nint f(void) { return object; }",
+        "_Atomic int object;\nvoid f(void) { object = 4; }",
+        "_Atomic int object;\nint f(void) { return object++; }",
+        "int f(_Atomic(int) *p) {\n return *p; }",
+        "void f(_Atomic(int) *p) {\n *p = 4; }",
+        "void f(_Atomic(int) *p) {\n *p += 4; }",
+        "void f(_Atomic(int) *p) {\n ++*p; }",
+        "int f(_Atomic(int) *p) {\n return __c11_atomic_load(p, 5); }",
+        "int f(void) {\n _Atomic int local = 4; return 0; }",
+        "extern _Atomic int object;\n_Atomic int object = 4;",
+    ] {
+        let input = pp::preprocess_source(path, source.as_bytes(), &options).unwrap();
+        let unit = sema::analyze(&input, path, options.target).unwrap();
+        let diagnostic = codegen::emit_assembly(&unit, path, options.target)
+            .err()
+            .map(|error| error.to_string());
+        let located = diagnostic.as_deref().is_some_and(|message| {
+            message
+                .strip_prefix("atomic-arm.c:2:")
+                .and_then(|rest| rest.split_once(": error: "))
+                .is_some_and(|(column, reason)| {
+                    column.parse::<usize>().is_ok() && reason.contains("ARM 25.9d")
+                })
+        });
+        if !located {
+            mismatches.push(format!("{source}: {diagnostic:?}"));
+        }
+    }
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
 }
 
 // N1570 6.5.2.4, 6.5.16.2 and 7.17; Intel SDM Vol. 3, memory ordering.
