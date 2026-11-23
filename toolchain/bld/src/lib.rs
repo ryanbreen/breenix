@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-//! Static AMD64 ELF64 links from relocatable objects and common archives.
+//! Static AMD64 and AArch64 ELF64 links from relocatable objects and common archives.
 
 mod input;
 mod layout;
@@ -12,6 +12,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use bobj::elf::{aarch64::EM_AARCH64, EM_X86_64};
 use input::{FileSource, ReadSource};
 use object::Link;
 use script::Script;
@@ -20,6 +21,36 @@ type Result<T> = std::result::Result<T, String>;
 
 const IMAGE_BASE: u64 = 0x4000_0000;
 const PAGE_SIZE: u64 = 4096;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Machine {
+    Amd64,
+    Aarch64,
+}
+
+impl Machine {
+    fn from_elf(machine: u16) -> Option<Self> {
+        match machine {
+            EM_X86_64 => Some(Self::Amd64),
+            EM_AARCH64 => Some(Self::Aarch64),
+            _ => None,
+        }
+    }
+
+    fn elf(self) -> u16 {
+        match self {
+            Self::Amd64 => EM_X86_64,
+            Self::Aarch64 => EM_AARCH64,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Amd64 => "AMD64",
+            Self::Aarch64 => "AArch64",
+        }
+    }
+}
 
 const USAGE: &str = "usage: bld -o OUTPUT [-T SCRIPT] [--gc-sections]\n\
        \x20      [--whole-archive | --no-whole-archive | --start-group |\n\

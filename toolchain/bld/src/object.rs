@@ -6,14 +6,14 @@ use std::rc::Rc;
 
 use bobj::ar;
 use bobj::elf::{
-    Elf, Rela, SectionHeader, Symbol, EM_X86_64, ET_REL, SHF_ALLOC, SHF_GROUP, SHF_WRITE,
-    SHN_COMMON, SHN_LORESERVE, SHN_UNDEF, SHT_GROUP, SHT_NOBITS, SHT_REL, SHT_RELA, SHT_SYMTAB,
-    STB_GLOBAL, STB_LOCAL, STB_WEAK,
+    Elf, Rela, SectionHeader, Symbol, ET_REL, SHF_ALLOC, SHF_GROUP, SHF_WRITE, SHN_COMMON,
+    SHN_LORESERVE, SHN_UNDEF, SHT_GROUP, SHT_NOBITS, SHT_REL, SHT_RELA, SHT_SYMTAB, STB_GLOBAL,
+    STB_LOCAL, STB_WEAK,
 };
 
 use crate::input::{read_file, ReadSource};
 use crate::script::Script;
-use crate::{align_up, display, Input, Result};
+use crate::{align_up, display, Input, Machine, Result};
 
 #[derive(Default)]
 pub(crate) struct Section {
@@ -68,6 +68,7 @@ struct Group {
 
 pub(crate) struct Object {
     pub(crate) path: String,
+    pub(crate) machine: Machine,
     pub(crate) sections: Vec<Section>,
     pub(crate) symbols: Vec<ObjectSymbol>,
     pub(crate) relocations: Vec<RelocationTable>,
@@ -81,13 +82,12 @@ impl Object {
         // Both direct input and archive member ranges come from bobj or the file length.
         let elf = Elf::parse(&backing[start..start + size]).map_err(located)?;
         let header = elf.header();
-        if header.file_type != ET_REL
-            || header.machine != EM_X86_64
-            || header.flags != 0
-            || elf.program_count() != 0
-        {
+        let machine = Machine::from_elf(header.machine)
+            .ok_or_else(|| format!("{path}: unsupported ELF machine {}", header.machine))?;
+        if header.file_type != ET_REL || header.flags != 0 || elf.program_count() != 0 {
             return Err(format!(
-                "{path}: expected a little-endian AMD64 ELF64 relocatable object"
+                "{path}: expected a little-endian {} ELF64 relocatable object",
+                machine.name()
             ));
         }
         if header.section_names == 0 || elf.section_count() >= usize::from(SHN_LORESERVE) {
@@ -115,6 +115,7 @@ impl Object {
             .collect::<Result<_>>()?;
         let mut object = Self {
             path,
+            machine,
             sections,
             symbols,
             relocations: Vec::new(),
@@ -402,6 +403,13 @@ impl Link {
         }
     }
 
+    pub(crate) fn machine(&self) -> Machine {
+        // An empty input set can reach layout, but cannot supply an entry point.
+        self.objects
+            .first()
+            .map_or(Machine::Amd64, |object| object.machine)
+    }
+
     pub(crate) fn include_group(
         &mut self,
         inputs: &[Input],
@@ -433,6 +441,19 @@ impl Link {
     }
 
     fn include_object(&mut self, mut object: Object, indexed_name: Option<&[u8]>) -> Result<()> {
+        if let Some(first) = self
+            .objects
+            .first()
+            .filter(|first| first.machine != object.machine)
+        {
+            return Err(format!(
+                "{}: ELF machine {} does not match {} from {}",
+                object.path,
+                object.machine.name(),
+                first.machine.name(),
+                first.path
+            ));
+        }
         object.select_groups(&mut self.signatures);
         let object_id = self.objects.len();
         self.objects.push(object);
@@ -591,7 +612,10 @@ impl Link {
                 let table = self.objects[object].sections[section].relocation_tables[index];
                 for index in 0..self.objects[object].relocations[table].entries.len() {
                     let rela = self.objects[object].relocations[table].entries[index];
-                    if rela.kind != bobj::elf::amd64::R_NONE {
+                    // AAELF64 §5.7.4: even ARM's null relocation is a GC edge.
+                    if self.objects[object].machine == Machine::Aarch64
+                        || rela.kind != bobj::elf::amd64::R_NONE
+                    {
                         self.mark_symbol(object, rela.symbol as usize, &mut pending);
                     }
                 }
@@ -615,6 +639,7 @@ impl Link {
         };
         self.objects.push(Object {
             path: path.into(),
+            machine: self.machine(),
             sections: vec![Section::default(), section],
             symbols: Vec::new(),
             relocations: Vec::new(),
