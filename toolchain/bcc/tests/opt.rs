@@ -125,3 +125,105 @@ double result(void) { return d + grouped + product; }
         }
     }
 }
+
+#[test]
+fn constant_propagation_folds_local() {
+    // N1570 6.3.1.3 and 6.5.5. The converted local value is 6.
+    let source = Source::new(
+        "propagate-local",
+        r"
+int folded(void) { unsigned char a = 262; int b = a * 7; return b + 1; }
+int escaped(void) { int a = 6; int *p = &a; *p = 9; return a * 7; }
+int changed(int p) { int a = 6; if (p) a = 9; return a * 7; }
+double runtime(void) { double a = 1.0; return a / 3.0; }
+",
+    );
+    let target = "--target=x86_64";
+    let o0 = source.assembly(target, &["-O0", "-frounding-math"]);
+    assert!(function(&o0, "folded").contains("imul "));
+    let o2 = source.assembly(target, &["-O2", "-frounding-math"]);
+    let folded = function(&o2, "folded");
+    assert!(folded.contains("mov rax, 0x2b\n"), "{folded}");
+    assert!(!folded.contains("imul "), "{folded}");
+    for (name, operation) in [
+        ("escaped", "imul "),
+        ("changed", "imul "),
+        ("runtime", "divsd "),
+    ] {
+        assert!(function(&o0, name).contains(operation), "{o0}");
+        assert!(function(&o2, name).contains(operation), "{o2}");
+    }
+    assert_eq!(source.assembly(target, &["-O1", "-frounding-math"]), o0);
+    assert_eq!(
+        source.assembly(target, &["-O2", "-O0", "-frounding-math"]),
+        o0
+    );
+    let invalid = Command::new(env!("CARGO_BIN_EXE_bcc"))
+        .args(["-S", target, "-O3"])
+        .arg(&source.0)
+        .output()
+        .unwrap();
+    assert!(!invalid.status.success());
+    assert!(invalid.stdout.is_empty());
+    assert!(String::from_utf8(invalid.stderr)
+        .unwrap()
+        .contains("unknown option '-O3'"));
+}
+
+#[test]
+fn unreachable_block_removed() {
+    // N1570 6.8.4.1 and 6.8.6.1. A goto may enter the unselected arm.
+    let source = Source::new(
+        "unreachable-block",
+        r"
+extern void dead(void);
+extern void live(void);
+void unreachable(void) { int zero = 0; if (zero) dead(); live(); return; dead(); }
+void jumped(void) { goto entry; if (0) { entry: live(); } }
+",
+    );
+    let target = "--target=x86_64";
+    let o0 = source.assembly(target, &["-O0"]);
+    assert_eq!(
+        function(&o0, "unreachable")
+            .matches("call dead@plt")
+            .count(),
+        2
+    );
+    let o2 = source.assembly(target, &["-O2"]);
+    let reachable = function(&o2, "unreachable");
+    assert!(!reachable.contains("call dead@plt"), "{reachable}");
+    for assembly in [&o0, &o2] {
+        for name in ["unreachable", "jumped"] {
+            assert_eq!(function(assembly, name).matches("call live@plt").count(), 1);
+        }
+    }
+}
+
+#[test]
+fn cse_keeps_volatile() {
+    // N1570 5.1.2.3p6 and 6.7.3p7. The two volatile reads are observable.
+    let source = Source::new(
+        "local-cse",
+        r"
+volatile int observed;
+int repeated(int x) { int first = x * 7; int second = x * 7; return first + second; }
+int nested(int x) { return (x * 9 + 2) * (x * 9 + 2); }
+int changed(int x) { int first = x * 7; x += observed; return first + x * 7; }
+int read_twice(void) { return observed * 7 + observed * 7; }
+",
+    );
+    let target = "--target=x86_64";
+    let o0 = source.assembly(target, &["-O0"]);
+    assert_eq!(function(&o0, "repeated").matches("imul ").count(), 2);
+    assert_eq!(function(&o0, "nested").matches("imul ").count(), 3);
+    let o2 = source.assembly(target, &["-O2"]);
+    assert_eq!(function(&o2, "repeated").matches("imul ").count(), 1);
+    assert_eq!(function(&o2, "nested").matches("imul ").count(), 2);
+    for assembly in [&o0, &o2] {
+        assert_eq!(function(assembly, "changed").matches("imul ").count(), 2);
+        let volatile = function(assembly, "read_twice");
+        assert_eq!(volatile.matches("[rip + observed]").count(), 2);
+        assert_eq!(volatile.matches("imul ").count(), 2);
+    }
+}
