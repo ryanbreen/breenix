@@ -163,6 +163,10 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         let mut specs = Specifiers::default();
         let mut typedef_signed = false;
         while let Some(token) = self.peek() {
+            // N1570 6.7.2p3 and 6.10.8.3 exclude complex types from this profile.
+            if token.is("_Complex") {
+                return Err(token.error("_Complex is not supported by bcc"));
+            }
             // N1570 6.7.2.4p4: a following '(' selects the specifier.
             if token.is("_Atomic") {
                 self.take();

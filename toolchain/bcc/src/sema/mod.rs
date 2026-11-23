@@ -1019,7 +1019,12 @@ impl<'a> FunctionBody<'a, '_> {
                 let operation = if let Some(op) = op {
                     let (a, b, result) = binary_types(op, &left, &right, self.target)
                         .ok_or_else(|| site.error("invalid compound assignment operands"))?;
-                    if matches!(left.ty.kind, Kind::Pointer(_)) && left.ty.kind != result.kind {
+                    // N1570 6.5.16.2p1 allows pointer arithmetic here only
+                    // when the left operand is the pointer and the right is an integer.
+                    if (matches!(left.ty.kind, Kind::Pointer(_))
+                        || matches!(result.kind, Kind::Pointer(_)))
+                        && left.ty.kind != result.kind
+                    {
                         return Err(site.error("invalid compound pointer assignment"));
                     }
                     Some((op, a, b))

@@ -427,6 +427,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 | "unsigned"
                 | "float"
                 | "double"
+                | "_Complex"
                 | "const"
                 | "volatile"
                 | "restrict"
