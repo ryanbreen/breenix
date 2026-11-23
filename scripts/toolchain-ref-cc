@@ -23,6 +23,10 @@ sys.dont_write_bytecode = True
 inventory = importlib.import_module("toolchain-sysroot")
 ROOT = Path(__file__).resolve().parents[1]
 ARCH_FLAGS = {"x86_64": "-mno-red-zone", "aarch64": "-mno-outline-atomics"}
+# The default (c11, no -O flag) is the sealed 25.2 invocation. The C17 corpus
+# and the libc suite's recipe ask for c17, -O0 or -O2, and -frounding-math.
+STANDARDS = ("c11", "c17")
+OPTIMIZATIONS = ("O0", "O2")
 TOOL_ENV = {"LC_ALL": "C", "PATH": ""}
 
 
@@ -76,7 +80,18 @@ def write_include_overlay(path, roots):
     }), encoding="utf-8")
 
 
-def compile_c(arch, clang, source, staged, work, *, position_independent=False):
+def language_flags(std, optimize, rounding_math):
+    if std not in STANDARDS:
+        raise ValueError(f"unsupported C standard: {std}")
+    if optimize is not None and optimize not in OPTIMIZATIONS:
+        raise ValueError(f"unsupported optimization level: {optimize}")
+    return [f"-std={std}", *((f"-{optimize}",) if optimize else ()),
+            *(("-frounding-math",) if rounding_math else ())]
+
+
+def compile_c(arch, clang, source, staged, work, *, position_independent=False,
+              std="c11", optimize=None, rounding_math=False):
+    language = language_flags(std, optimize, rounding_math)
     headers = tuple(
         inventory.input_path(ROOT / path, (ROOT,))
         for path in ("libs/libbreenix-libc/include", "toolchain/include")
@@ -89,7 +104,7 @@ def compile_c(arch, clang, source, staged, work, *, position_independent=False):
     clang_flags = [
         "--no-default-config", f"--target={arch}-unknown-linux-gnu",
         "-Ulinux", "-U__linux", "-U__linux__", "-U__gnu_linux__", "-D__breenix__=1",
-        "-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic",
+        *language, "-Wall", "-Wextra", "-Werror", "-pedantic",
         "-nostdinc", "-ivfsoverlay", str(overlay),
         "-isystem", str(headers[0]), "-isystem", str(headers[1]),
         "-fno-stack-protector", *(
@@ -121,7 +136,10 @@ def build(args, work):
     clang, clang_record = pinned_tool(args.clang, args.clang_sha256, work)
     lld, lld_record = pinned_tool(args.lld, args.lld_sha256, work)
 
-    object_file, includes, clang_flags = compile_c(args.arch, clang, source, staged, work)
+    object_file, includes, clang_flags = compile_c(
+        args.arch, clang, source, staged, work,
+        std=args.std, optimize=args.optimize, rounding_math=args.rounding_math,
+    )
 
     elf = work / "reference.elf"
     link_deps, link_map = work / "link.d", work / "link.map"
@@ -148,6 +166,9 @@ def main():
         parser.add_argument(f"--{tool}", type=Path, required=True)
         parser.add_argument(f"--{tool}-sha256", required=True)
     parser.add_argument("--archive", type=Path, action="append", default=[])
+    parser.add_argument("--std", choices=STANDARDS, default="c11")
+    parser.add_argument("--optimize", choices=OPTIMIZATIONS)
+    parser.add_argument("--rounding-math", action="store_true")
     parser.add_argument("-o", type=Path, required=True)
     parser.add_argument("--object-output", type=Path)
     parser.add_argument("--inventory", type=Path, required=True)
