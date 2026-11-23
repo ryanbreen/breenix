@@ -101,6 +101,25 @@ fn return_42_exit_status() {
     );
 }
 
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn aarch64_return_42_exit_status() {
+    let toolchain = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let bcc = Path::new(env!("CARGO_BIN_EXE_bcc"));
+    let result = Command::new("python3")
+        .arg(toolchain.join("tests/bcc/aarch64_return_42_exit_status.py"))
+        .args([bcc, &bcc.with_file_name("bas"), &bcc.with_file_name("bld")])
+        .output()
+        .expect("run the ARM64 codegen harness with native Python");
+    assert!(
+        result.status.success(),
+        "{}\n{}{}",
+        result.status,
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+}
+
 #[test]
 fn sysv_scalar_calls() {
     let toolchain = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
