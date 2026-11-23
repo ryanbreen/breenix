@@ -618,6 +618,108 @@ fn precious_preserves_an_interrupted_output() {
 }
 
 #[test]
+fn recursive_makeflags_passes_options_and_macros() {
+    let project = Project::new(concat!(
+        "MAKEFLAGS += -s FROM_FILE='file value'\n",
+        "all:\n",
+        "\t@test \"$(MAKEFLAGS)\" = \"$$MAKEFLAGS\"\n",
+        "\t@$(MAKE) -f child.mk\n",
+    ));
+    project.fixture(
+        "child.mk",
+        concat!(
+            "TOKEN = wrong\n",
+            "all: broken independent\n",
+            "broken:\n",
+            "\t@exit 17\n",
+            "independent:\n",
+            "\tprintf '%s\\n' \"$(TOKEN)|$(FROM_FILE)|$$TOKEN\"\n",
+        ),
+        0,
+    );
+    let output = project
+        .command()
+        .env("MAKEFLAGS", "-k TOKEN=environment")
+        .args(["-f", "project.mk", "TOKEN=two words 'quoted'"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains("child.mk:4: target 'broken': recipe exited with status 17"),
+        "{stderr}"
+    );
+    assert_eq!(
+        output.stdout,
+        b"two words 'quoted'|file value|two words 'quoted'\n"
+    );
+
+    project.fixture(
+        "project.mk",
+        "all:\n\t@printf wrong > parent-ordinary\n\t@printf started > parent-recursive; $(MAKE) -f child.mk\n",
+        0,
+    );
+    project.fixture("child.mk", "all:\n\t@printf wrong > child-ordinary\n", 0);
+    let output = project
+        .command()
+        .env("MAKEFLAGS", "ks")
+        .args(["-n", "-f", "project.mk"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        fs::read_to_string(project.0.join("parent-recursive")).unwrap(),
+        "started"
+    );
+    for name in ["parent-ordinary", "child-ordinary"] {
+        assert!(!project.0.join(name).exists(), "{name}");
+    }
+}
+
+#[test]
+fn include_remade_then_reread() {
+    let project = Project::new(concat!(
+        "include generated.mk\n",
+        "$(GOAL):\n\t@printf '%s|%s' '$(VALUE)' '$(STALE)' > $@\n",
+        "generated.mk: source\n\t@cp -p source $@\n",
+    ));
+    project.fixture("generated.mk", "GOAL = old\nSTALE = wrong\n", 0);
+    project.fixture("source", "GOAL = fresh\nVALUE = updated\n", 10);
+    let output = project.build();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        fs::read_to_string(project.0.join("fresh")).unwrap(),
+        "updated|"
+    );
+    assert!(!project.0.join("old").exists());
+    assert_eq!(
+        fs::read_to_string(project.0.join("generated.mk")).unwrap(),
+        "GOAL = fresh\nVALUE = updated\n"
+    );
+
+    let project = Project::new(concat!(
+        "all:\n\t@printf '%s' '$(VALUE)' > all\n",
+        "include generated.mk\n",
+        "generated.mk:\n\t@cp source $@\n",
+    ));
+    project.fixture("source", "VALUE = created\n", 0);
+    let output = project
+        .command()
+        .args(["-n", "-f", "project.mk"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8(output.stdout)
+        .unwrap()
+        .contains("printf '%s' 'created' > all"));
+    assert_eq!(
+        fs::read_to_string(project.0.join("generated.mk")).unwrap(),
+        "VALUE = created\n"
+    );
+    assert!(!project.0.join("all").exists());
+}
+
+#[test]
 fn unsupported_25_6c_construct_is_located_error() {
     for (makefile, line, construct) in [
         ("all: lib.a(member.o)\n", 1, "lib.a(member.o)"),
@@ -625,13 +727,6 @@ fn unsupported_25_6c_construct_is_located_error() {
         ("all: .WAIT\n", 1, ".WAIT"),
         (".WAIT:\nall:\n", 1, ".WAIT"),
         ("all:\n.NOTPARALLEL:\n", 2, ".NOTPARALLEL"),
-        ("MAKEFLAGS = -s\nall:\n", 1, "MAKEFLAGS"),
-        ("all:\n\t@printf '%s' '$(MAKEFLAGS)'\n", 2, "MAKEFLAGS"),
-        (
-            "all:\n\t@printf wrong > ran\n-include generated.mk\ngenerated.mk:\n\t@printf wrong > generated.mk\n",
-            3,
-            "generated.mk",
-        ),
     ] {
         let project = Project::new(makefile);
         let output = project.build();
@@ -646,14 +741,13 @@ fn unsupported_25_6c_construct_is_located_error() {
 
     let project = Project::new("all:\n\t@printf wrong > ran\n");
     for (arguments, variable, location, construct) in [
-        (&["-j2"][..], None, "<command line>:1:", "-j"),
+        (&["-j2"][..], None::<&str>, "<command line>:1:", "-j"),
         (
             &["lib.a(member.o)"][..],
             None,
             "<command line>:1:",
             "lib.a(member.o)",
         ),
-        (&[][..], Some("-k"), "<environment>:1:", "MAKEFLAGS"),
     ] {
         let mut command = project.command();
         command.args(["-f", "project.mk"]).args(arguments);
