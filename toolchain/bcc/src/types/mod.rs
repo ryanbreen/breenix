@@ -91,6 +91,35 @@ pub struct Member<'a> {
     pub name: &'a str,
     pub ty: Type,
     pub offset: usize,
+    pub bit_field: Option<BitField>,
+}
+
+/// The first bit within the member's starting byte and the number of value
+/// bits, in little-endian order. Unnamed padding is consumed during layout.
+#[derive(Clone, Copy, Debug)]
+pub struct BitField {
+    pub shift: u8,
+    pub width: u8,
+}
+
+impl BitField {
+    // Describe the bits of the field carried by each byte, including a ninth
+    // byte for a packed 64-bit field that does not start on a byte boundary.
+    pub(crate) fn bytes(self) -> impl Iterator<Item = (u8, u8, u8)> {
+        let mut shift = self.shift;
+        let mut used = 0;
+        std::iter::from_fn(move || {
+            if used == self.width {
+                return None;
+            }
+            let width = (8 - shift).min(self.width - used);
+            let mask = ((1u16 << width) - 1) as u8;
+            let part = (shift, used, mask);
+            used += width;
+            shift = 0;
+            Some(part)
+        })
+    }
 }
 
 impl Integer {

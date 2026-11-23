@@ -88,7 +88,12 @@ impl<'src> Emitter<'_, 'src> {
                 for init in values {
                     self.converted(&init.value, &init.ty)?;
                     let memory = self.locals[*local].memory(init.offset);
-                    self.store_object(&init.ty, &memory);
+                    if let Some(field) = init.bit_field {
+                        writeln!(self.text, "    lea r11, {memory}").unwrap();
+                        self.store_bit_field(field, &init.ty);
+                    } else {
+                        self.store_object(&init.ty, &memory);
+                    }
                 }
             }
             Statement::Expression(expr) => self.value(expr)?,
@@ -204,7 +209,7 @@ impl<'src> Emitter<'_, 'src> {
             ExpressionKind::Local(id) => self.locals[*id].memory(0),
             ExpressionKind::String(bytes) => format!("[rip + {}]", self.emit_string(bytes)),
             ExpressionKind::Unary(Unary::Dereference, operand) => return self.value(operand),
-            ExpressionKind::Member { base, offset } => {
+            ExpressionKind::Member { base, offset, .. } => {
                 self.value(base)?;
                 if *offset != 0 {
                     // A legal member offset can exceed a signed immediate for
@@ -233,7 +238,7 @@ impl<'src> Emitter<'_, 'src> {
         self.adjust_stack("sub", 16);
         self.text.push_str("    mov qword [rsp], rax\n");
         if let Some((op, a, b)) = operation {
-            self.load(&left.ty, "[rax]");
+            self.load_lvalue(left);
             self.convert(&left.ty, a);
             self.adjust_stack("sub", 16);
             self.store(a, "[rsp]");
@@ -244,7 +249,7 @@ impl<'src> Emitter<'_, 'src> {
             self.converted(right, &left.ty)?;
         }
         self.text.push_str("    mov r11, qword [rsp]\n");
-        self.store_object(&left.ty, "[r11]");
+        self.store_lvalue(left);
         self.adjust_stack("add", 16);
         Ok(())
     }
@@ -259,7 +264,7 @@ impl<'src> Emitter<'_, 'src> {
         self.adjust_stack("sub", 16);
         self.text.push_str("    mov qword [rsp], rax\n");
         let ty = &operand.ty;
-        self.load(ty, "[rax]");
+        self.load_lvalue(operand);
         if postfix {
             self.store(ty, "[rsp + 8]");
         }
@@ -288,7 +293,7 @@ impl<'src> Emitter<'_, 'src> {
             _ => unreachable!(),
         }
         self.text.push_str("    mov r11, qword [rsp]\n");
-        self.store_object(ty, "[r11]");
+        self.store_lvalue(operand);
         if postfix {
             self.load(ty, "[rsp + 8]");
         }

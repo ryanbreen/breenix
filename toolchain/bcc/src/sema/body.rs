@@ -169,7 +169,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
                 let Kind::Integer(integer) = value.ty.kind else {
                     return Err(value.site.error("switch requires an integer expression"));
                 };
-                let ty = Type::new(Kind::Integer(promote(integer)));
+                let ty = Type::new(Kind::Integer(value.promoted_integer(integer)));
                 let break_to = self.next_label();
                 let previous_exit = self.exit.replace(break_to);
                 self.switches.push(Switch {
@@ -192,7 +192,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
                 let value = expr
                     .map(|expr| {
                         let expr = self.expression(expr)?;
-                        constant_integer(&expr).ok_or_else(|| {
+                        constant_integer(&expr, self.target).ok_or_else(|| {
                             expr.site.error("expected an integer constant case value")
                         })
                     })
@@ -201,7 +201,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
                 let Some(switch) = self.switches.last_mut() else {
                     return Err(site.error("case label is outside a switch"));
                 };
-                let value = value.map(|value| canonical(value, &switch.ty));
+                let value = value.map(|value| canonical(value, &switch.ty, self.target));
                 if !switch.values.insert(value) {
                     return Err(site.error("duplicate case value or default"));
                 }
@@ -278,7 +278,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
             let mut values = Vec::new();
             let input = self.initializer_input(initializer)?;
             let braced = matches!(input, InitializerInput::List(..));
-            self.initialize(input, &ty, 0, &mut values)?;
+            self.initialize(input, &ty, (0, None), &mut values)?;
             let zero_bytes = if matches!(ty.kind, Kind::Array(..))
                 || braced && matches!(ty.kind, Kind::Record(_))
             {
@@ -301,7 +301,9 @@ impl<'a, 's> FunctionBody<'a, 's> {
         initializer: parse::Initializer<'a>,
     ) -> Result<InitializerInput<'a>, Diagnostic> {
         Ok(match initializer {
-            parse::Initializer::Expression(expr) => InitializerInput::Expression(self.expression(expr)?),
+            parse::Initializer::Expression(expr) => {
+                InitializerInput::Expression(self.expression(expr)?)
+            }
             parse::Initializer::List(site, list) => InitializerInput::List(
                 site,
                 list.into_iter()
@@ -315,9 +317,10 @@ impl<'a, 's> FunctionBody<'a, 's> {
         &self,
         input: InitializerInput<'a>,
         ty: &Type,
-        offset: usize,
+        destination: (usize, Option<BitField>),
         values: &mut Vec<Initializer<'a>>,
     ) -> Result<(), Diagnostic> {
+        let (offset, bit_field) = destination;
         match input {
             InitializerInput::List(site, list) => {
                 let mut list = list.into_iter().peekable();
@@ -332,7 +335,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
                         return Err(site.error(message));
                     }
                 } else if list.len() == 1 {
-                    self.initialize(list.next().unwrap(), ty, offset, values)?;
+                    self.initialize(list.next().unwrap(), ty, destination, values)?;
                 } else {
                     return Err(site.error("scalar initializer requires one value"));
                 }
@@ -345,6 +348,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
                 }
                 values.push(Initializer {
                     offset,
+                    bit_field,
                     value,
                     ty: ty.clone(),
                 });
@@ -370,14 +374,20 @@ impl<'a, 's> FunctionBody<'a, 's> {
                     if list.peek().is_none() {
                         break;
                     }
-                    self.initialize_next(list, element, offset + index * size, values, depth)?;
+                    self.initialize_next(
+                        list,
+                        element,
+                        (offset + index * size, None),
+                        values,
+                        depth,
+                    )?;
                 }
             }
             Kind::Record(record) => {
                 let record = &self.records.records[record.id];
                 let members = &record.definition.as_ref().unwrap().members;
                 let count = if record.kind == RecordKind::Union {
-                    1
+                    members.len().min(1)
                 } else {
                     members.len()
                 };
@@ -385,7 +395,13 @@ impl<'a, 's> FunctionBody<'a, 's> {
                     if list.peek().is_none() {
                         break;
                     }
-                    self.initialize_next(list, &member.ty, offset + member.offset, values, depth)?;
+                    self.initialize_next(
+                        list,
+                        &member.ty,
+                        (offset + member.offset, member.bit_field),
+                        values,
+                        depth,
+                    )?;
                 }
             }
             _ => unreachable!(),
@@ -397,7 +413,7 @@ impl<'a, 's> FunctionBody<'a, 's> {
         &self,
         list: &mut InitializerList<'a>,
         ty: &Type,
-        offset: usize,
+        destination: (usize, Option<BitField>),
         values: &mut Vec<Initializer<'a>>,
         depth: usize,
     ) -> Result<(), Diagnostic> {
@@ -406,10 +422,10 @@ impl<'a, 's> FunctionBody<'a, 's> {
                 if depth == parse::MAX_NESTING {
                     return Err(value.site.error("initializer nesting limit exceeded"));
                 }
-                return self.initialize_subobjects(list, ty, offset, values, depth + 1);
+                return self.initialize_subobjects(list, ty, destination.0, values, depth + 1);
             }
         }
-        self.initialize(list.next().unwrap(), ty, offset, values)
+        self.initialize(list.next().unwrap(), ty, destination, values)
     }
 }
 
@@ -434,30 +450,30 @@ fn supported_object(ty: &Type) -> bool {
 
 // Use the target's integer width when comparing case values or evaluating an
 // integer constant expression. These ELF targets both use two's complement.
-fn canonical(value: u64, ty: &Type) -> u64 {
+fn canonical(value: u64, ty: &Type, target: Target) -> u64 {
     let Kind::Integer(integer) = ty.kind else {
         return value;
     };
     let shift = 64 - integer.layout().size * 8;
     if integer == Integer::Bool {
         u64::from(value != 0)
-    } else if integer.is_signed(Target::X86_64) {
+    } else if integer.is_signed(target) {
         (((value << shift) as i64) >> shift) as u64
     } else {
         (value << shift) >> shift
     }
 }
 
-pub(super) fn constant_integer(expr: &Expression<'_>) -> Option<u64> {
+pub(super) fn constant_integer(expr: &Expression<'_>, target: Target) -> Option<u64> {
     use Binary::*;
     if !matches!(expr.ty.kind, Kind::Integer(_)) {
         return None;
     }
     let value = match &expr.kind {
         ExpressionKind::Integer(value) => *value,
-        ExpressionKind::Cast(operand) => constant_integer(operand)?,
+        ExpressionKind::Cast(operand) => constant_integer(operand, target)?,
         ExpressionKind::Unary(op, operand) => {
-            let value = constant_integer(operand)?;
+            let value = constant_integer(operand, target)?;
             match op {
                 Unary::Plus => value,
                 Unary::Minus => value.wrapping_neg(),
@@ -473,12 +489,13 @@ pub(super) fn constant_integer(expr: &Expression<'_>) -> Option<u64> {
             left_type,
             right_type,
         } => {
-            let a = canonical(constant_integer(left)?, left_type);
-            let signed = matches!(left_type.kind, Kind::Integer(integer) if integer.is_signed(Target::X86_64));
+            let a = canonical(constant_integer(left, target)?, left_type, target);
+            let signed =
+                matches!(left_type.kind, Kind::Integer(integer) if integer.is_signed(target));
             if (*op == LogicalAnd && a == 0) || (*op == LogicalOr && a != 0) {
                 return Some(u64::from(a != 0));
             }
-            let b = canonical(constant_integer(right)?, right_type);
+            let b = canonical(constant_integer(right, target)?, right_type, target);
             let order = if signed {
                 (a as i64).cmp(&(b as i64))
             } else {
@@ -507,14 +524,15 @@ pub(super) fn constant_integer(expr: &Expression<'_>) -> Option<u64> {
                 LogicalAnd | LogicalOr => u64::from(b != 0),
             }
         }
-        ExpressionKind::Conditional { condition, yes, no } => {
-            constant_integer(if constant_integer(condition)? != 0 {
+        ExpressionKind::Conditional { condition, yes, no } => constant_integer(
+            if constant_integer(condition, target)? != 0 {
                 yes
             } else {
                 no
-            })?
-        }
+            },
+            target,
+        )?,
         _ => return None,
     };
-    Some(canonical(value, &expr.ty))
+    Some(canonical(value, &expr.ty, target))
 }

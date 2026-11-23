@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::parse::{self, Storage};
 use crate::pp::{self, Diagnostic, Lexeme, Position, Preprocessed, Target};
-use crate::types::{Float, Integer, Kind, Record, Type};
+use crate::types::{BitField, Float, Integer, Kind, Record, Type};
 pub use parse::{Binary, Unary};
 
 mod body;
@@ -57,6 +57,7 @@ pub struct Local<'a> {
 #[derive(Debug)]
 pub struct Initializer<'a> {
     pub offset: usize,
+    pub bit_field: Option<BitField>,
     pub value: Expression<'a>,
     pub ty: Type,
 }
@@ -136,6 +137,7 @@ pub enum ExpressionKind<'a> {
     Member {
         base: Box<Expression<'a>>,
         offset: usize,
+        bit_field: Option<BitField>,
     },
     String(Vec<u8>),
     Call {
@@ -166,6 +168,32 @@ impl Expression<'_> {
                 Some(self.ty.unqualified())
             }
             _ => None,
+        }
+    }
+
+    pub fn bit_field(&self) -> Option<BitField> {
+        match &self.kind {
+            ExpressionKind::Member { bit_field, .. } => *bit_field,
+            _ => None,
+        }
+    }
+
+    // N1570 §6.3.1.1p2: an int represents the range of an unsigned
+    // int bit-field narrower than 32 bits.
+    fn promoted_integer(&self, integer: Integer) -> Integer {
+        let field = match &self.kind {
+            ExpressionKind::Assignment { left, .. } => left.bit_field(),
+            ExpressionKind::Update {
+                operand,
+                postfix: false,
+                ..
+            } => operand.bit_field(),
+            _ => self.bit_field(),
+        };
+        if integer == Integer::UnsignedInt && field.is_some_and(|field| field.width < 32) {
+            Integer::Int
+        } else {
+            promote(integer)
         }
     }
 
@@ -203,7 +231,7 @@ pub fn analyze<'a>(
     let mut symbols = HashMap::new();
     let mut functions = Vec::new();
     let mut objects = Vec::new();
-    let mut declarations = parse::translation_unit(source, path)?;
+    let mut declarations = parse::translation_unit(source, path, target)?;
     let records_begin = declarations
         .iter()
         .position(|declaration| matches!(declaration, parse::Declaration::Record(_)))
@@ -228,7 +256,7 @@ pub fn analyze<'a>(
     };
     let record_scope = RecordScope {
         records: &records,
-        token_order,
+        token_order: Some(&token_order),
     };
     for declaration in declarations {
         match declaration {
@@ -278,7 +306,7 @@ pub fn analyze<'a>(
 
 struct RecordScope<'a, 'r> {
     records: &'r [Record<'a>],
-    token_order: HashMap<*const Lexeme, usize>,
+    token_order: Option<&'r HashMap<*const Lexeme, usize>>,
 }
 
 impl RecordScope<'_, '_> {
@@ -287,9 +315,14 @@ impl RecordScope<'_, '_> {
     fn resolve(&self, ty: &mut Type, site: &Lexeme) {
         ty.resolve_records(&|id| {
             let def = self.records.get(id)?.definition.as_ref()?;
-            let end = self.token_order[&std::ptr::from_ref(def.end)];
-            let use_at = self.token_order[&std::ptr::from_ref(site)];
-            (end < use_at).then_some(def.layout)
+            if let Some(order) = self.token_order {
+                let end = order[&std::ptr::from_ref(def.end)];
+                let use_at = order[&std::ptr::from_ref(site)];
+                if end >= use_at {
+                    return None;
+                }
+            }
+            Some(def.layout)
         });
     }
 }
@@ -298,6 +331,40 @@ struct Symbol {
     ty: Type,
     linkage: Linkage,
     defined: bool,
+}
+
+/// Evaluate a layout constant while parsing a record. The parser's record
+/// table already reflects which tags are complete at this point.
+pub(super) fn layout_constant<'a, 't>(
+    expression: parse::Expression<'a>,
+    target: Target,
+    records: &[Record<'a>],
+    names: impl Iterator<Item = (&'a str, Option<&'t Type>)>,
+) -> Result<u64, Diagnostic> {
+    let mut symbols = HashMap::new();
+    for (name, ty) in names {
+        if let Some(ty) = ty {
+            symbols.insert(
+                name,
+                Symbol {
+                    ty: ty.clone(),
+                    linkage: Linkage::External,
+                    defined: false,
+                },
+            );
+        } else {
+            symbols.remove(name);
+        }
+    }
+    let record_scope = RecordScope {
+        records,
+        token_order: None,
+    };
+    let result = Type::new(Kind::Void);
+    let context = FunctionBody::new(&symbols, &result, target, &[], &record_scope);
+    let expr = context.expression(expression)?;
+    body::constant_integer(&expr, target)
+        .ok_or_else(|| expr.site.error("expected an integer constant expression"))
 }
 
 fn function<'a>(
@@ -481,9 +548,12 @@ impl<'a> FunctionBody<'a, '_> {
                 let ty = expr.value_type();
                 let result = match (op, &ty.kind) {
                     (Unary::Plus | Unary::Minus | Unary::Complement, Kind::Integer(integer)) => {
-                        Type::new(Kind::Integer(promote(*integer)))
+                        Type::new(Kind::Integer(expr.promoted_integer(*integer)))
                     }
                     (Unary::Plus | Unary::Minus, Kind::Float(_)) => ty,
+                    (Unary::Address, _) if expr.bit_field().is_some() => {
+                        return Err(site.error("cannot take the address of a bit-field"));
+                    }
                     (Unary::Address, _)
                         if expr.lvalue() || matches!(expr.ty.kind, Kind::Function { .. }) =>
                     {
@@ -534,7 +604,13 @@ impl<'a> FunctionBody<'a, '_> {
                 (ExpressionKind::Cast(Box::new(expr)), ty)
             }
             Syntax::SizeofType(ty) => sizeof(site, &ty)?,
-            Syntax::Sizeof(expr) => sizeof(site, &self.expression(*expr)?.ty)?,
+            Syntax::Sizeof(expr) => {
+                let expr = self.expression(*expr)?;
+                if expr.bit_field().is_some() {
+                    return Err(site.error("sizeof cannot be applied to a bit-field"));
+                }
+                sizeof(site, &expr.ty)?
+            }
             Syntax::Conditional(condition, yes, no) => {
                 let condition = self.condition(*condition)?;
                 let yes = self.expression(*yes)?;
@@ -589,6 +665,7 @@ impl<'a> FunctionBody<'a, '_> {
                     ExpressionKind::Member {
                         base: Box::new(base),
                         offset: member.offset,
+                        bit_field: member.bit_field,
                     },
                     ty,
                 )
@@ -713,7 +790,9 @@ impl<'a> FunctionBody<'a, '_> {
                 let ty = expr.value_type();
                 // N1570 6.5.2.2p6–7: trailing arguments undergo the default promotions.
                 match ty.kind {
-                    Kind::Integer(integer) => Type::new(Kind::Integer(promote(integer))),
+                    Kind::Integer(integer) => {
+                        Type::new(Kind::Integer(expr.promoted_integer(integer)))
+                    }
                     Kind::Float(Float::Single) => Type::new(Kind::Float(Float::Double)),
                     _ if is_scalar(&ty) => ty,
                     Kind::Record(record) if record.layout.is_some() => ty,
@@ -765,8 +844,6 @@ fn common_integer(left: Integer, right: Integer, target: Target) -> Integer {
             _ => 0,
         }
     }
-    let left = promote(left);
-    let right = promote(right);
     let (higher, lower) = if rank(left) >= rank(right) {
         (left, right)
     } else {
@@ -809,13 +886,15 @@ fn binary_types(
     }
     let common = match (&left.kind, &right.kind) {
         (Kind::Integer(a), Kind::Integer(b)) if matches!(op, ShiftLeft | ShiftRight) => {
-            let left = Type::new(Kind::Integer(promote(*a)));
-            let right = Type::new(Kind::Integer(promote(*b)));
+            let left = Type::new(Kind::Integer(left_value.promoted_integer(*a)));
+            let right = Type::new(Kind::Integer(right_value.promoted_integer(*b)));
             return Some((left.clone(), right, left));
         }
-        (Kind::Integer(a), Kind::Integer(b)) => {
-            Type::new(Kind::Integer(common_integer(*a, *b, target)))
-        }
+        (Kind::Integer(a), Kind::Integer(b)) => Type::new(Kind::Integer(common_integer(
+            left_value.promoted_integer(*a),
+            right_value.promoted_integer(*b),
+            target,
+        ))),
         (Kind::Integer(_) | Kind::Float(_), Kind::Integer(_) | Kind::Float(_))
             if compare || matches!(op, Add | Subtract | Multiply | Divide) =>
         {
@@ -935,7 +1014,8 @@ fn conditional_type(yes: &Expression<'_>, no: &Expression<'_>, target: Target) -
 }
 
 fn is_null(expr: &Expression<'_>) -> bool {
-    matches!(expr.ty.kind, Kind::Integer(_)) && body::constant_integer(expr) == Some(0)
+    matches!(expr.ty.kind, Kind::Integer(_))
+        && body::constant_integer(expr, Target::X86_64) == Some(0)
 }
 
 // N1570 6.5.16.1p1 and 6.3.2.3p3 for assignment and null pointers.

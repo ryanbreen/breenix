@@ -181,8 +181,19 @@ lowering in 25.7b3, and AArch64 scalar code generation in A3.
 | Member access, addresses, record assignment and initialization | N1570 §§6.5.2.3, 6.5.3.2, 6.5.16.1 and 6.7.9. The AMD64 backend copies the record's object representation. |
 | By-value record arguments and results | AMD64 psABI §3.2.3 and N1570 §§6.5.2.2 and 6.8.6.4. Classify record, union and array fields recursively, allocate INTEGER and SSE registers together, and pass MEMORY records in source order. MEMORY results use a hidden first argument returned in RAX. |
 
-Packed records and bit-fields follow in 25.7b1. AArch64 bcc code
-generation follows in A3 and A4.
+For AMD64 bit-fields, N1570 §§6.3.1.1, 6.5.3, 6.5.16 and 6.7.2.1 govern
+promotions, non-addressability, stores and width constraints. The AMD64
+psABI §3.1.2 places the low-order bits first, keeps ordinary fields within
+a unit of their declared type and excludes unnamed fields from the record's
+alignment. Bit-field stores preserve adjacent bits.
+
+The GCC 16.2 Common Type Attributes pin defines `packed` on a record
+definition. Packing preserves nested types' internal layouts and the
+zero-width separator's alignment rule. The AMD64 psABI §3.2.3 classifies
+a packed aggregate with an unaligned field as MEMORY.
+
+AArch64 bcc code emission is scheduled for A3. AAPCS64 record layout for
+bit-fields and aggregate calling conventions are scheduled for A4.
 
 ## bmake 25.6a2
 

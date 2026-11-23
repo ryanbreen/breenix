@@ -73,7 +73,15 @@ fn classify_fields(
         Kind::Record(record) => {
             let definition = records[record.id].definition.as_ref().unwrap();
             for member in &definition.members {
-                if !classify_fields(&member.ty, offset + member.offset, records, classes, site)? {
+                let start = offset + member.offset;
+                if let Some(field) = member.bit_field {
+                    // A bit-field contributes INTEGER to each eightbyte it
+                    // occupies. Its offset is measured in bits, not aligned as
+                    // if a separate scalar object lived at its first byte.
+                    let first_bit = start * 8 + usize::from(field.shift);
+                    let last_bit = first_bit + usize::from(field.width) - 1;
+                    classes[first_bit / 64..=last_bit / 64].fill(Class::Integer);
+                } else if !classify_fields(&member.ty, start, records, classes, site)? {
                     return Ok(false);
                 }
             }

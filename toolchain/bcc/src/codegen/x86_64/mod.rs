@@ -8,9 +8,10 @@ use crate::sema::{
     Argument, Binary, Expression, ExpressionKind, Function, Linkage, Statement, TranslationUnit,
     Unary,
 };
-use crate::types::{Float, Integer, Kind, Layout, Record, Type};
+use crate::types::{BitField, Float, Integer, Kind, Layout, Record, Type};
 
 mod abi;
+mod bit_field;
 mod flow;
 
 use abi::{CallLayout, Place, RecordAbi, RecordRegisters, Register};
@@ -230,7 +231,7 @@ impl<'src> Emitter<'_, 'src> {
             | ExpressionKind::Local(_)
             | ExpressionKind::Member { .. } => {
                 self.address(expr)?;
-                self.load(&expr.ty, "[rax]");
+                self.load_lvalue(expr);
             }
             ExpressionKind::Unary(op, operand) => self.unary(*op, operand, &expr.ty)?,
             ExpressionKind::Binary {

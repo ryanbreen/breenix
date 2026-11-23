@@ -131,17 +131,19 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         allow_storage: bool,
     ) -> Result<(Type, Storage), Diagnostic> {
         self.specifiers_at_depth(allow_storage, 0)
+            .map(|(ty, storage, _)| (ty, storage))
     }
 
     pub(super) fn specifiers_at_depth(
         &mut self,
         allow_storage: bool,
         depth: usize,
-    ) -> Result<(Type, Storage), Diagnostic> {
+    ) -> Result<(Type, Storage, bool), Diagnostic> {
         let start = self
             .peek()
             .ok_or_else(|| self.error("expected a type specifier"))?;
         let mut specs = Specifiers::default();
+        let mut typedef_signed = false;
         while let Some(token) = self.peek() {
             if self.qualifier(&mut specs.qualifiers) {
                 continue;
@@ -169,7 +171,8 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                         )
                     }
                     name => match self.lookup(name) {
-                        Some(Name::Typedef(ty)) => {
+                        Some(Name::Typedef(ty, signed)) => {
+                            typedef_signed = *signed;
                             let ty = ty.clone();
                             self.take();
                             Some(ty)
@@ -197,9 +200,22 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 start.error(message)
             }
         })?;
-        let mut ty = Type { kind, qualifiers: specs.qualifiers };
-        ty.resolve_records(&|id| self.records.get(id)?.definition.as_ref().map(|def| def.layout));
-        Ok((ty, specs.storage))
+        let mut ty = Type {
+            kind,
+            qualifiers: specs.qualifiers,
+        };
+        ty.resolve_records(&|id| {
+            self.records
+                .get(id)?
+                .definition
+                .as_ref()
+                .map(|def| def.layout)
+        });
+        Ok((
+            ty,
+            specs.storage,
+            specs.unsigned == Some(false) || typedef_signed,
+        ))
     }
 
     pub(super) fn qualifier(&mut self, qualifiers: &mut Qualifiers) -> bool {

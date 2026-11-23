@@ -1,7 +1,7 @@
 //! N1570 6.7.6: declarator modifiers are ordered outward from the name.
 
 use super::*;
-use crate::types::{Layout, Member, RecordDefinition, RecordKind, RecordType};
+use crate::types::{BitField, Layout, Member, RecordDefinition, RecordKind, RecordType};
 
 enum Modifier<'a> {
     Pointer(Qualifiers),
@@ -18,6 +18,13 @@ struct Parameters<'a> {
 struct Declarator<'a> {
     name: Option<&'a Lexeme>,
     modifiers: Vec<Modifier<'a>>,
+}
+
+struct Field<'a> {
+    name: Option<&'a Lexeme>,
+    site: &'a Lexeme,
+    ty: Type,
+    width: Option<u8>,
 }
 
 impl<'a> Declarator<'a> {
@@ -60,7 +67,7 @@ impl<'a> Declarator<'a> {
 
 impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
     pub(super) fn external(&mut self) -> Result<Vec<Declaration<'a>>, Diagnostic> {
-        let (base, storage) = self.specifiers(true)?;
+        let (base, storage, signed) = self.specifiers_at_depth(true, 0)?;
         if self.eat(";").is_some() {
             return Ok(Vec::new());
         }
@@ -69,13 +76,13 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             if storage != Storage::Typedef {
                 let name = first.name.unwrap();
                 let ty = first.ty(base, name)?;
-                let TypeKind::Function { result, .. } = ty.kind else {
+                let TypeKind::Function { result, .. } = &ty.kind else {
                     unreachable!()
                 };
                 let Some(Modifier::Function(params)) = first.modifiers.into_iter().next() else {
                     unreachable!()
                 };
-                self.name(name, Name::Ordinary);
+                self.name(name, Name::Ordinary(ty.clone()));
                 let body = if self.eat(";").is_some() {
                     None
                 } else {
@@ -84,7 +91,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                         *parser.tags.last_mut().unwrap() = params.tags;
                         for param in &params.items {
                             if let Some(name) = param.name {
-                                parser.name(name, Name::Ordinary);
+                                parser.name(name, Name::Ordinary(param.ty.clone()));
                             }
                         }
                         parser.block_items(0)
@@ -92,7 +99,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 };
                 return Ok(vec![Declaration::Function(Function {
                     name,
-                    result: *result,
+                    result: result.as_ref().clone(),
                     params: params.items,
                     variadic: params.variadic,
                     storage,
@@ -100,23 +107,24 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 })]);
             }
         }
-        self.variables(base, storage, first)
+        self.variables(base, storage, signed, first)
             .map(|vars| vars.into_iter().map(Declaration::Object).collect())
     }
 
     pub(super) fn declaration(&mut self) -> Result<Vec<Variable<'a>>, Diagnostic> {
-        let (base, storage) = self.specifiers(true)?;
+        let (base, storage, signed) = self.specifiers_at_depth(true, 0)?;
         if self.eat(";").is_some() {
             return Ok(Vec::new());
         }
         let first = self.declarator(false, 0)?;
-        self.variables(base, storage, first)
+        self.variables(base, storage, signed, first)
     }
 
     fn variables(
         &mut self,
         base: Type,
         storage: Storage,
+        signed: bool,
         mut declarator: Declarator<'a>,
     ) -> Result<Vec<Variable<'a>>, Diagnostic> {
         let mut variables = Vec::new();
@@ -125,13 +133,13 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             let ty = declarator.ty(base.clone(), name)?;
             if storage == Storage::Typedef {
                 if let Some(previous) = self.names.last().unwrap().get(name.text.as_ref()) {
-                    if !matches!(previous, Name::Typedef(previous) if *previous == ty) {
+                    if !matches!(previous, Name::Typedef(previous, _) if *previous == ty) {
                         return Err(name.error("conflicting typedef declaration"));
                     }
                 }
-                self.name(name, Name::Typedef(ty));
+                self.name(name, Name::Typedef(ty, signed));
             } else {
-                self.name(name, Name::Ordinary);
+                self.name(name, Name::Ordinary(ty.clone()));
                 let initializer = if self.eat("=").is_some() {
                     Some(self.initializer(0)?)
                 } else {
@@ -263,7 +271,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 _ => ty,
             };
             if let Some(name) = name {
-                self.name(name, Name::Ordinary);
+                self.name(name, Name::Ordinary(ty.clone()));
             }
             params.push(Parameter { start, name, ty });
             if self.eat(",").is_none() {
@@ -349,8 +357,12 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         } else {
             RecordKind::Union
         };
+        let packed = self.packed_attribute()?;
         let tag = self.identifier();
         let open = self.eat("{");
+        if packed && open.is_none() {
+            return Err(keyword.error("packed requires a record definition"));
+        }
         if tag.is_none() && open.is_none() {
             return Err(keyword.error("expected a record tag or definition"));
         }
@@ -391,7 +403,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             if self.records[id].definition.is_some() {
                 return Err(keyword.error("record type is already defined"));
             }
-            let definition = self.record_definition(kind, open, depth)?;
+            let definition = self.record_definition(kind, packed, open, depth)?;
             // Specifiers inside the member list share its surrounding tag
             // scope. A nested definition of this same tag is a redefinition.
             if self.records[id].definition.is_some() {
@@ -403,57 +415,81 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         Ok(Type::new(TypeKind::Record(RecordType { id, layout })))
     }
 
+    fn packed_attribute(&mut self) -> Result<bool, Diagnostic> {
+        if self.eat("__attribute__").is_none() {
+            return Ok(false);
+        }
+        self.expect("(", "expected '(' after __attribute__")?;
+        self.expect("(", "expected '(' before the record type attribute")?;
+        let attribute = self
+            .identifier()
+            .ok_or_else(|| self.error("expected a record type attribute"))?;
+        if !matches!(attribute.text.as_ref(), "packed" | "__packed__") {
+            return Err(attribute.error("unsupported record type attribute"));
+        }
+        self.expect(")", "expected ')' after the packed attribute")?;
+        self.expect(")", "expected ')' after the attribute list")?;
+        Ok(true)
+    }
+
     fn record_definition(
         &mut self,
         kind: RecordKind,
+        packed: bool,
         open: &'a Lexeme,
         depth: usize,
     ) -> Result<RecordDefinition<'a>, Diagnostic> {
-        let mut layout = Layout { size: 0, align: 1 };
-        let mut members = Vec::new();
+        let mut fields = Vec::new();
         let mut names = std::collections::HashSet::new();
-        let mut has_const_member = false;
         let end = loop {
-            let (base, _) = self.specifiers_at_depth(false, depth + 1)?;
+            let (base, _, signed) = self.specifiers_at_depth(false, depth + 1)?;
             loop {
-                if let Some(colon) = self.eat(":") {
-                    return Err(colon.error("bit-fields are deferred to 25.7b1"));
-                }
-                let member = self.declarator(false, depth + 1)?;
-                let site = member.name.unwrap();
-                if let Some(colon) = self.eat(":") {
-                    return Err(colon.error("bit-fields are deferred to 25.7b1"));
-                }
-                if !names.insert(site.text.as_ref()) {
-                    return Err(site.error("duplicate record member"));
-                }
-                let ty = member.ty(base.clone(), site)?;
-                let field = ty
-                    .layout()
-                    .filter(|field| field.size != 0)
-                    .ok_or_else(|| site.error("record member type is incomplete"))?;
-
-                // AMD64 psABI §3.1.2 and AAPCS64 §5.10: each member
-                // has its natural alignment and the record has the maximum.
-                layout.align = layout.align.max(field.align);
-                let offset = if kind == RecordKind::Union {
-                    layout.size = layout.size.max(field.size);
-                    0
+                let (name, mut ty, colon) = if let Some(colon) = self.eat(":") {
+                    (None, base.clone(), Some(colon))
                 } else {
-                    let aligned = layout.size.checked_next_multiple_of(field.align);
-                    let Some((offset, size)) =
-                        aligned.and_then(|offset| Some((offset, offset.checked_add(field.size)?)))
-                    else {
-                        return Err(site.error("record size exceeds the target address space"));
-                    };
-                    layout.size = size;
-                    offset
+                    let declarator = self.declarator(false, depth + 1)?;
+                    let name = declarator.name.unwrap();
+                    (
+                        Some(name),
+                        declarator.ty(base.clone(), name)?,
+                        self.eat(":"),
+                    )
                 };
-                has_const_member |= ty.contains_const(&self.records);
-                members.push(Member {
-                    name: &site.text,
+                let site = name.or(colon).unwrap();
+                let width = if let Some(colon) = colon {
+                    let TypeKind::Integer(integer) = &mut ty.kind else {
+                        return Err(colon.error("bit-fields require an integer type"));
+                    };
+                    // AMD64 psABI §3.1.2 Figure 3.2 makes a field without
+                    // an explicit signed specifier nonnegative.
+                    if !signed {
+                        *integer = match *integer {
+                            Integer::Char => Integer::UnsignedChar,
+                            Integer::Short => Integer::UnsignedShort,
+                            Integer::Int => Integer::UnsignedInt,
+                            Integer::Long => Integer::UnsignedLong,
+                            Integer::LongLong => Integer::UnsignedLongLong,
+                            other => other,
+                        };
+                    }
+                    let width = self.bit_field_width(*integer, colon, depth + 1)?;
+                    if width == 0 && name.is_some() {
+                        return Err(site.error("a zero-width bit-field must be unnamed"));
+                    }
+                    Some(width)
+                } else {
+                    None
+                };
+                if let Some(name) = name {
+                    if !names.insert(name.text.as_ref()) {
+                        return Err(name.error("duplicate record member"));
+                    }
+                }
+                fields.push(Field {
+                    name,
+                    site,
                     ty,
-                    offset,
+                    width,
                 });
                 if self.eat(",").is_none() {
                     break;
@@ -464,15 +500,114 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 break end;
             }
         };
-        layout.size = layout
-            .size
-            .checked_next_multiple_of(layout.align)
+        let packed = packed | self.packed_attribute()?;
+        self.layout_record(kind, packed, fields, open, end)
+    }
+
+    fn layout_record(
+        &self,
+        kind: RecordKind,
+        packed: bool,
+        fields: Vec<Field<'a>>,
+        open: &'a Lexeme,
+        end: &'a Lexeme,
+    ) -> Result<RecordDefinition<'a>, Diagnostic> {
+        // A cursor in bits represents both sub-byte fields and byte objects.
+        // The wider cursor keeps the full range of byte sizes on LP64.
+        let mut size_bits = 0u128;
+        let mut align = 1;
+        let mut members = Vec::new();
+        let mut has_const_member = false;
+        for Field {
+            name,
+            site,
+            ty,
+            width,
+        } in fields
+        {
+            let field = ty
+                .layout()
+                .filter(|field| field.size != 0)
+                .ok_or_else(|| site.error("record member type is incomplete"))?;
+            let start = if kind == RecordKind::Struct {
+                size_bits
+            } else {
+                0
+            };
+            let (start, width, bit_field) = if let Some(width) = width {
+                let unit = (field.size * 8) as u128;
+                // psABI §3.1.2: ordinary fields must fit in an aligned
+                // unit of their declared type. Packed fields can straddle
+                // that boundary, but the zero-width separator still aligns.
+                let start = if width == 0 || !packed && start % unit + u128::from(width) > unit {
+                    start.next_multiple_of(unit)
+                } else {
+                    start
+                };
+                let bit_field = BitField {
+                    shift: (start % 8) as u8,
+                    width,
+                };
+                (start, u128::from(width), Some(bit_field))
+            } else {
+                let alignment = if packed { 1 } else { field.align };
+                (
+                    start.next_multiple_of((alignment * 8) as u128),
+                    field.size as u128 * 8,
+                    None,
+                )
+            };
+            size_bits = size_bits.max(start + width);
+            if let Some(name) = name {
+                if !packed {
+                    align = align.max(field.align);
+                }
+                let offset = usize::try_from(start / 8)
+                    .map_err(|_| site.error("record size exceeds the target address space"))?;
+                has_const_member |= ty.contains_const(&self.records);
+                members.push(Member {
+                    name: &name.text,
+                    ty,
+                    offset,
+                    bit_field,
+                });
+            }
+        }
+        let size = usize::try_from(size_bits.div_ceil(8))
+            .ok()
+            .and_then(|size| size.checked_next_multiple_of(align))
             .ok_or_else(|| open.error("record size exceeds the target address space"))?;
         Ok(RecordDefinition {
-            layout,
+            layout: Layout { size, align },
             members,
             end,
             has_const_member,
         })
+    }
+
+    fn bit_field_width(
+        &mut self,
+        integer: Integer,
+        colon: &'a Lexeme,
+        depth: usize,
+    ) -> Result<u8, Diagnostic> {
+        let expr = self.conditional(depth)?;
+        let names = self.names.iter().flatten().map(|(&name, entry)| {
+            let ty = match entry {
+                Name::Ordinary(ty) => Some(ty),
+                _ => None,
+            };
+            (name, ty)
+        });
+        let limit = if integer == Integer::Bool {
+            1
+        } else {
+            integer.layout().size * 8
+        };
+        let width = crate::sema::layout_constant(expr, self.target, &self.records, names)?;
+        u8::try_from(width)
+            .ok()
+            .filter(|width| usize::from(*width) <= limit)
+            .ok_or_else(|| colon.error("bit-field width is outside the range of its type"))
     }
 }
