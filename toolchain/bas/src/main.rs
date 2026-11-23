@@ -9,6 +9,8 @@ use std::process::ExitCode;
 
 use bas::Target;
 
+mod default_target;
+
 const USAGE: &str = "usage: bas [--target x86_64|aarch64] -o OBJECT SOURCE";
 
 fn assemble_file(target: Target, args: &[OsString]) -> Result<(), String> {
@@ -35,7 +37,13 @@ fn main() -> ExitCode {
             Some("x86_64") => assemble_file(Target::X86_64, rest),
             _ => Err(USAGE.into()),
         },
-        _ => assemble_file(Target::X86_64, &args),
+        _ => {
+            let target = match default_target::default_target(env::consts::OS, env::consts::ARCH) {
+                "aarch64" => Target::Aarch64,
+                _ => Target::X86_64,
+            };
+            assemble_file(target, &args)
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

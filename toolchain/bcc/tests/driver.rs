@@ -62,24 +62,82 @@ fn aarch64_stages_agree_bytewise() {
     fs::copy(bcc.with_file_name("bas"), root.join("bin/as")).unwrap();
     fs::copy(bcc.with_file_name("bld"), root.join("bin/ld")).unwrap();
     fs::copy(&libc, root.join("lib/libc.a")).expect("build the ARM libc archive");
-    fs::copy(toolchain.join("../userspace/programs/linker.ld"), root.join("linker.ld")).unwrap();
+    fs::copy(
+        toolchain.join("../userspace/programs/linker.ld"),
+        root.join("linker.ld"),
+    )
+    .unwrap();
     fs::write(root.join("main.c"), "int main(void) { return 19 + 23; }\n").unwrap();
     let run = |program: &Path, args: &[&str]| {
-        let out = Command::new(program).args(args).current_dir(&root).output().unwrap();
-        assert!(out.status.success(), "{}: {}", program.display(), String::from_utf8_lossy(&out.stderr));
+        let out = Command::new(program)
+            .args(args)
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}: {}",
+            program.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
     };
     let cc = root.join("bin/bcc");
     let as_ = root.join("bin/as");
     let ld = root.join("bin/ld");
     let bindir = root.join("bin");
     let bindir = bindir.to_str().unwrap();
-    run(&cc, &["--target=aarch64", "-B", bindir, "-S", "-o", "split.s", "main.c"]);
+    run(
+        &cc,
+        &[
+            "--target=aarch64",
+            "-B",
+            bindir,
+            "-S",
+            "-o",
+            "split.s",
+            "main.c",
+        ],
+    );
     run(&as_, &["--target", "aarch64", "-o", "split.o", "split.s"]);
-    run(&cc, &["--target=aarch64", "-B", bindir, "-c", "-o", "direct.o", "main.c"]);
-    assert_eq!(fs::read(root.join("direct.o")).unwrap(), fs::read(root.join("split.o")).unwrap());
-    run(&ld, &["-T", "linker.ld", "--gc-sections", "-o", "split", "split.o", "lib/libc.a"]);
-    run(&cc, &["--target=aarch64", "-B", bindir, "-o", "direct", "main.c"]);
-    assert_eq!(fs::read(root.join("direct")).unwrap(), fs::read(root.join("split")).unwrap());
-    run(&bcc.with_file_name("elfcheck"), &["--machine", "aarch64", "--exec", "direct"]);
+    run(
+        &cc,
+        &[
+            "--target=aarch64",
+            "-B",
+            bindir,
+            "-c",
+            "-o",
+            "direct.o",
+            "main.c",
+        ],
+    );
+    assert_eq!(
+        fs::read(root.join("direct.o")).unwrap(),
+        fs::read(root.join("split.o")).unwrap()
+    );
+    run(
+        &ld,
+        &[
+            "-T",
+            "linker.ld",
+            "--gc-sections",
+            "-o",
+            "split",
+            "split.o",
+            "lib/libc.a",
+        ],
+    );
+    run(
+        &cc,
+        &["--target=aarch64", "-B", bindir, "-o", "direct", "main.c"],
+    );
+    assert_eq!(
+        fs::read(root.join("direct")).unwrap(),
+        fs::read(root.join("split")).unwrap()
+    );
+    run(
+        &bcc.with_file_name("elfcheck"),
+        &["--machine", "aarch64", "--exec", "direct"],
+    );
     fs::remove_dir_all(root).unwrap();
 }
