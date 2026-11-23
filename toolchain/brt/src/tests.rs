@@ -10,7 +10,7 @@ use std::time::Duration;
 
 #[test]
 fn lock_bucket_covers_object_span() {
-    // The object starts in the last bucket and crosses into bucket zero.
+    // The object starts in the last bucket and wraps into the first bucket.
     // The lower-addressed lock in the table must be acquired first.
     let boundary = BUCKET_BYTES * LOCK_COUNT;
     assert_eq!(
@@ -36,8 +36,8 @@ const SEQ_CST: i32 = 5;
 #[repr(align(64))]
 struct Storage(UnsafeCell<[u8; 2 * BUCKET_BYTES]>);
 
-// SAFETY: The test only touches the shared bytes via the brt entry points,
-// which synchronize every access to the object at this address.
+// SAFETY: The test accesses the shared bytes through brt entry points,
+// under the locks for the same object address and size.
 unsafe impl Sync for Storage {}
 
 impl Storage {

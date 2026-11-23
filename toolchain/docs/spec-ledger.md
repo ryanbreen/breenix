@@ -32,6 +32,7 @@ edition pin whose full publication has no digest recorded here.
 | [GNU ld manual](https://sourceware.org/binutils/docs-2.45/ld.html) | GNU Binutils 2.45, command-line options and linker script syntax | `f219c3b05e197308c5b60fc2d4dbfc302617389ca5c21501de58a90b3d052e06` |
 | [Oracle Solaris `ar(3HEAD)`](https://docs.oracle.com/cd/E86824_01/html/E54772/ar.h-3head.html) | Oracle Solaris 11.3, archive file format | — |
 | [Clang Language Extensions](https://releases.llvm.org/22.1.0/tools/clang/docs/LanguageExtensions.html) | Clang 22.1 release manual, builtin varargs, C11 atomics, `offsetof` and floating rounding | `66bb3c0e28f15608750483506cb079d421f9cfb5e01d25b838d921f7efabf860` |
+| [LLVM Atomic Instructions and Concurrency Guide](https://releases.llvm.org/22.1.0/docs/Atomics.html#libcalls-atomic) | LLVM 22.1.0, “Libcalls: `__atomic_*`”, generic size-first runtime signatures (E25 ruling 43) | `b41cc8044842f85aeaa59feff9377a271fae5a80110c1f06ad8082183bb31bd7` |
 
 ## AArch64 assembler dialect
 
