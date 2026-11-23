@@ -177,9 +177,10 @@ lowering in 25.7b3, and AArch64 scalar code generation in A3.
 | Recipe options | POSIX.1-2024 make, “Options”, “Makefile Execution” and “Exit Status”. `-n` prints pending recipes, with the `+` prefix still forcing execution. `-k` skips dependents of failures and attempts independent work before returning 2. `-i` continues after command errors and `-s` suppresses recipe echo. |
 
 The serial runner can observe a signal reported in a recipe's wait status.
-Handling signals delivered directly to bmake, as described in “Asynchronous
-Events”, requires a signal API beyond the toolchain's safe Rust standard
-library interface.
+Under E25 ruling 31, 25.6 defers cleanup when a signal stops bmake itself, as
+described in “Asynchronous Events”. A partly written non-precious target can
+be left with a fresh modification time, so a later invocation can treat it as
+up to date.
 
 Ordinary makefiles default to `CC=cc` and empty `CFLAGS` so the built-in C
 rules use the compiler shipped in the bundle. A leading `.POSIX:` selects
@@ -188,5 +189,6 @@ declare `.POSIX:` can set `CC=cc` and `CFLAGS=` to use the bundled compiler's
 current language and optimization subset.
 
 25.6c covers archive members and their timestamps, remaking include files,
-recursive `MAKEFLAGS` and `$(MAKE)`, immediate assignment operators `::=`
-and `:::=`, the `.WAIT` barrier, `.NOTPARALLEL` and the `-j` job pool.
+recursive `MAKEFLAGS` and `$(MAKE)`, assignment operators `::=`, `:::=`, `+=`,
+`?=` and `!=`, the `.WAIT` barrier, `.NOTPARALLEL`, the `-j` job pool, and
+target cleanup when a signal stops bmake itself.

@@ -162,7 +162,7 @@ impl Macros {
             return Err(Error::new(location, "missing '=' in macro definition"));
         };
         let raw_name = &assignment[..equals];
-        for operator in [":::", "::"] {
+        for operator in [":::", "::", "+", "?", "!"] {
             if raw_name.ends_with(operator) {
                 return Err(Error::deferred(location, &format!("{operator}=")));
             }
