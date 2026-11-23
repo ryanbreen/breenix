@@ -10,3 +10,6 @@ doctest = false
 
 [features]
 exports = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("breenix"))'] }

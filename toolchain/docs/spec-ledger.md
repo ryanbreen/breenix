@@ -21,6 +21,7 @@ edition pin whose full publication has no digest recorded here.
 | [Linux Standard Base Core Specification](https://refspecs.linuxfoundation.org/LSB_5.0.0/LSB-Core-generic/LSB-Core-generic.pdf) | 5.0, Generic Part, chapter 11 (E25 ruling 8) | — |
 | [Intel SDM](https://cdrdv2-public.intel.com/812392/325462-sdm-vol-1-2abcd-3abcd-4.pdf) | Combined volumes 1–4, 325462-082US, December 2023 | `3b2551f01b4c91dc80e7f9cfb1e9790feeefe503cff15d2922ace049f4d8730f` |
 | [AMD APM](https://kib.kiev.ua/x86docs/AMD/AMD64/40332-r4.09.pdf) | AMD publication 40332, combined volumes 1–5, revision 4.09, March 2026, archived PDF | `ae18704f924bb80bc9bbfe9d3c33b97c16cdeaa9c7afccb033d136e86fd88a08` |
+| [IEEE Std 754](https://standards.ieee.org/ieee/754/6210/) | IEEE 754-2019, 2019-07-22 (E25 ruling 44) | — |
 | [AAPCS64](https://github.com/ARM-software/abi-aa/releases/download/2025Q1/aapcs64.pdf) | 2025Q1, 2025-04-07 | `11e6b27bb994b23e6a28b7ac27b1437591cfc13c2bf77262fb8f7ea2a0f254b8` |
 | [ELF for the Arm 64-bit Architecture (AArch64)](https://github.com/ARM-software/abi-aa/releases/download/2025Q1/aaelf64.pdf) | 2025Q1, 2025-04-07 (E25 ruling 29) | `bb30810c55b8fe80badf897c9dc82bb2de1d042b14d35190669cd021cc1240f2` |
 | [Arm Architecture Reference Manual](https://documentation-service.arm.com/static/69d7cbfc3fb3b839f93e5b1e?token=) | Arm A-profile, DDI 0487, revision M.b (E25 ruling 31) | `0df13f5972e76226f19c1105934172e71008debd73ecff566da93ccea10cbcbf` |
@@ -259,6 +260,21 @@ value encoding. The instruction forms come from Vol. 2. Integer
 conversion truncates with a temporary x87 control word and restores
 the saved control word. AAPCS64 binary128 `long double` lowering is
 scheduled for A4.
+
+### AArch64 binary128 arithmetic (A4)
+
+IEEE 754-2019 §3.4 and Table 3.5 define the binary128 encoding. Sections
+4.3, 5.11, 6 and 7 govern rounding, comparison and special results. The
+runtime uses roundTiesToEven and returns the positive quiet NaN with
+its payload bits clear for invalid results and NaN inputs. It does not update
+floating-point exception flags.
+
+With the `exports` feature, `libbrt.a` provides `__brt_tf_add`,
+`__brt_tf_sub`, `__brt_tf_mul`, `__brt_tf_div` and `__brt_tf_cmp`. Each
+takes two unsigned 128-bit integers and returns one. AAPCS64 2025Q1
+§§5.1, 6.8.2 (C.10–C.11) and 6.9 place the inputs in x0–x1 and x2–x3,
+and the result in x0–x1. Compare returns the unsigned encodings of −1,
+0, 1 and 2 for less, equal, greater and unordered, respectively.
 
 ### AMD64 local-exec thread storage (25.7c)
 
