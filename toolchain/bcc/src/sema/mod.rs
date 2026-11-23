@@ -110,7 +110,7 @@ pub enum ExpressionKind<'a> {
     Identifier(&'a str),
     Local(usize),
     Integer(u64),
-    Float(u64),
+    Float(u128),
     Unary(Unary, Box<Expression<'a>>),
     Binary {
         op: Binary,
@@ -532,7 +532,10 @@ impl<'a> FunctionBody<'a, '_> {
             ),
             Syntax::Number => {
                 if let Some((bits, ty)) = float::literal(&site.text) {
-                    (ExpressionKind::Float(bits), Type::new(Kind::Float(ty)))
+                    if ty == Kind::LongDouble && self.target != Target::X86_64 {
+                        return Err(site.error("binary128 literals require the AArch64 backend"));
+                    }
+                    (ExpressionKind::Float(bits), Type::new(ty))
                 } else {
                     let (value, integer) = integer_literal(site, self.target)?;
                     (
@@ -559,7 +562,7 @@ impl<'a> FunctionBody<'a, '_> {
                     (Unary::Plus | Unary::Minus | Unary::Complement, Kind::Integer(integer)) => {
                         Type::new(Kind::Integer(expr.promoted_integer(*integer)))
                     }
-                    (Unary::Plus | Unary::Minus, Kind::Float(_)) => ty,
+                    (Unary::Plus | Unary::Minus, Kind::Float(_) | Kind::LongDouble) => ty,
                     (Unary::Address, _) if expr.bit_field().is_some() => {
                         return Err(site.error("cannot take the address of a bit-field"));
                     }
@@ -605,7 +608,8 @@ impl<'a> FunctionBody<'a, '_> {
                         || !is_scalar(&source)
                         || matches!(
                             (&ty.kind, &source.kind),
-                            (Kind::Pointer(_), Kind::Float(_)) | (Kind::Float(_), Kind::Pointer(_))
+                            (Kind::Pointer(_), Kind::Float(_) | Kind::LongDouble)
+                                | (Kind::Float(_) | Kind::LongDouble, Kind::Pointer(_))
                         ))
                 {
                     return Err(site.error(format!("cannot cast {source} to {ty}")));
@@ -838,9 +842,13 @@ impl<'a> FunctionBody<'a, '_> {
 }
 
 fn is_scalar(ty: &Type) -> bool {
+    is_arithmetic(ty) || matches!(ty.kind, Kind::Pointer(_))
+}
+
+fn is_arithmetic(ty: &Type) -> bool {
     matches!(
         ty.kind,
-        Kind::Integer(_) | Kind::Float(_) | Kind::Pointer(_)
+        Kind::Integer(_) | Kind::Float(_) | Kind::LongDouble
     )
 }
 
@@ -913,17 +921,20 @@ fn binary_types(
             right_value.promoted_integer(*b),
             target,
         ))),
-        (Kind::Integer(_) | Kind::Float(_), Kind::Integer(_) | Kind::Float(_))
-            if compare || matches!(op, Add | Subtract | Multiply | Divide) =>
+        _ if is_arithmetic(&left)
+            && is_arithmetic(&right)
+            && (compare || matches!(op, Add | Subtract | Multiply | Divide)) =>
         {
-            let float = if left.kind == Kind::Float(Float::Double)
+            let kind = if left.kind == Kind::LongDouble || right.kind == Kind::LongDouble {
+                Kind::LongDouble
+            } else if left.kind == Kind::Float(Float::Double)
                 || right.kind == Kind::Float(Float::Double)
             {
-                Float::Double
+                Kind::Float(Float::Double)
             } else {
-                Float::Single
+                Kind::Float(Float::Single)
             };
-            Type::new(Kind::Float(float))
+            Type::new(kind)
         }
         _ => return None,
     };
@@ -1021,9 +1032,7 @@ fn conditional_type(yes: &Expression<'_>, no: &Expression<'_>, target: Target) -
         return Some(yes.ty.unqualified());
     }
     compatible_pointer(yes, no).or_else(|| {
-        if matches!(yes.ty.kind, Kind::Integer(_) | Kind::Float(_))
-            && matches!(no.ty.kind, Kind::Integer(_) | Kind::Float(_))
-        {
+        if is_arithmetic(&yes.ty) && is_arithmetic(&no.ty) {
             binary_types(Binary::Add, yes, no, target).map(|(_, _, result)| result)
         } else {
             None
@@ -1041,8 +1050,8 @@ fn assignable(destination: &Type, expr: &Expression<'_>) -> bool {
     let converted = expr.converted_type();
     let source = converted.as_ref().unwrap_or(&expr.ty);
     match (&destination.kind, &source.kind) {
-        (Kind::Integer(_) | Kind::Float(_), Kind::Integer(_) | Kind::Float(_))
-        | (Kind::Integer(Integer::Bool), Kind::Pointer(_)) => true,
+        _ if is_arithmetic(destination) && is_arithmetic(source) => true,
+        (Kind::Integer(Integer::Bool), Kind::Pointer(_)) => true,
         (Kind::Record(to), Kind::Record(from)) => to == from && to.layout.is_some(),
         (Kind::Pointer(_), Kind::Integer(_)) => is_null(expr),
         (Kind::Pointer(to), Kind::Pointer(from)) => {

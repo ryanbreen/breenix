@@ -1,15 +1,19 @@
-//! N1570 6.4.4.2. Convert the literal's exact ratio to IEEE binary32 or
-//! binary64, rounding once to nearest with ties to even.
+//! N1570 6.4.4.2. Round the literal's exact ratio once, to nearest/even.
+//! The Intel SDM Vol. 1 Table 4-3 and Fig. 8-13 specify the x87 encoding.
 
 use std::cmp::Ordering;
 
-use crate::types::Float;
+use crate::types::{Float, Kind};
 
-pub(super) fn literal(text: &str) -> Option<(u64, Float)> {
-    let (text, ty) = match text.strip_suffix(['f', 'F']) {
-        Some(text) => (text, Float::Single),
-        None => (text, Float::Double),
+pub(super) fn literal(text: &str) -> Option<(u128, Kind)> {
+    let (text, ty) = if let Some(text) = text.strip_suffix(['f', 'F']) {
+        (text, Kind::Float(Float::Single))
+    } else if let Some(text) = text.strip_suffix(['l', 'L']) {
+        (text, Kind::LongDouble)
+    } else {
+        (text, Kind::Float(Float::Double))
     };
+    let format = Format::of(&ty);
     let hex = text.starts_with("0x") || text.starts_with("0X");
     let (mantissa, exponent) = if hex {
         let (mantissa, exponent) = text[2..].split_once(['p', 'P'])?;
@@ -41,10 +45,10 @@ pub(super) fn literal(text: &str) -> Option<(u64, Float)> {
     } else {
         let exponent = exponent - fraction.len() as i32;
         let decimal_order = digits.trim_start_matches('0').len() as i32 + exponent;
-        if decimal_order > 310 {
-            return Some((format(ty).infinity(), ty));
+        if decimal_order > format.decimal_max {
+            return Some((format.infinity(), ty));
         }
-        if decimal_order < -325 {
+        if decimal_order < format.decimal_min {
             return Some((0, ty));
         }
         let scaled = if exponent < 0 {
@@ -57,7 +61,7 @@ pub(super) fn literal(text: &str) -> Option<(u64, Float)> {
         }
         exponent
     };
-    Some((format(ty).round(numerator, denominator, bits), ty))
+    Some((format.round(numerator, denominator, bits), ty))
 }
 
 fn parse_exponent(text: &str) -> Option<i32> {
@@ -79,27 +83,50 @@ fn parse_exponent(text: &str) -> Option<i32> {
 struct Format {
     fraction: u32,
     bias: i32,
-}
-
-fn format(ty: Float) -> Format {
-    match ty {
-        Float::Single => Format {
-            fraction: 23,
-            bias: 127,
-        },
-        Float::Double => Format {
-            fraction: 52,
-            bias: 1023,
-        },
-    }
+    explicit_integer: bool,
+    // Conservative decimal-order bounds before constructing powers of five.
+    decimal_min: i32,
+    decimal_max: i32,
 }
 
 impl Format {
-    fn infinity(&self) -> u64 {
-        ((2 * self.bias + 1) as u64) << self.fraction
+    fn of(ty: &Kind) -> Self {
+        match ty {
+            Kind::Float(Float::Single) => Self {
+                fraction: 23,
+                bias: 127,
+                explicit_integer: false,
+                decimal_min: -46,
+                decimal_max: 39,
+            },
+            Kind::Float(Float::Double) => Self {
+                fraction: 52,
+                bias: 1023,
+                explicit_integer: false,
+                decimal_min: -325,
+                decimal_max: 310,
+            },
+            Kind::LongDouble => Self {
+                fraction: 63,
+                bias: 16383,
+                explicit_integer: true,
+                decimal_min: -4952,
+                decimal_max: 4934,
+            },
+            _ => unreachable!(),
+        }
     }
 
-    fn round(&self, mut numerator: Big, mut denominator: Big, bits: i32) -> u64 {
+    fn pack(&self, exponent: i32, significand: u128) -> u128 {
+        let width = self.fraction + u32::from(self.explicit_integer);
+        (exponent as u128) << width | (significand & ((1 << width) - 1))
+    }
+
+    fn infinity(&self) -> u128 {
+        self.pack(2 * self.bias + 1, 1 << self.fraction)
+    }
+
+    fn round(&self, mut numerator: Big, mut denominator: Big, bits: i32) -> u128 {
         let ratio = numerator.bits() - denominator.bits();
         let below_power = if ratio >= 0 {
             numerator.compare(&denominator.shift(ratio)) == Ordering::Less
@@ -135,16 +162,17 @@ impl Format {
             _ => {}
         }
 
-        let implicit = 1 << self.fraction;
+        let integer_bit = 1 << self.fraction;
         if exponent < minimum {
-            // A subnormal rounded up to the first normal shares its encoding.
-            return significand;
+            // Rounded subnormals can carry into the smallest normal. The
+            // extended format stores both the new exponent and integer bit.
+            return self.pack(i32::from(significand == integer_bit), significand);
         }
-        if significand == implicit << 1 {
-            significand = implicit;
+        if significand == integer_bit << 1 {
+            significand = integer_bit;
             exponent += 1;
         }
-        ((exponent + self.bias) as u64) << self.fraction | (significand - implicit)
+        self.pack(exponent + self.bias, significand)
     }
 }
 

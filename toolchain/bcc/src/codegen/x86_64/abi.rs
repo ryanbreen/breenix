@@ -7,17 +7,33 @@ pub(super) const INTEGER_REGS: [&str; 6] = ["rdi", "rsi", "rdx", "rcx", "r8", "r
 pub(super) const VECTOR_ARG_REGS: usize = 8;
 const INTEGER_RESULTS: [&str; 2] = ["rax", "rdx"];
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Class {
     Empty,
     Sse,
     Integer,
+    X87,
+    X87Up,
+}
+
+impl Class {
+    // AMD64 psABI §3.2.3, aggregate merging rules 4(a)–(f).
+    fn merge(self, other: Self) -> Option<Self> {
+        match (self, other) {
+            (a, b) if a == b => Some(a),
+            (Self::Empty, b) => Some(b),
+            (a, Self::Empty) => Some(a),
+            (Self::Integer, _) | (_, Self::Integer) => Some(Self::Integer),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
 pub(super) enum Register {
     Integer(&'static str),
     Sse(usize),
+    X87,
 }
 
 pub(super) type RecordRegisters = [Option<Register>; 2];
@@ -29,22 +45,20 @@ pub(super) enum RecordAbi {
 }
 
 impl RecordAbi {
-    pub(super) fn classify(
-        ty: &Type,
-        records: &[Record<'_>],
-        site: &Position,
-    ) -> Result<Self, Diagnostic> {
+    pub(super) fn classify(ty: &Type, records: &[Record<'_>]) -> Self {
         let layout = ty.layout().unwrap();
         // After post-merger cleanup, only SSEUP can extend a register
         // aggregate beyond two eightbytes. SSEUP is outside the supported types.
         if layout.size > 16 {
-            return Ok(Self::Memory);
+            return Self::Memory;
         }
         let mut classes = [Class::Empty; 2];
-        if classify_fields(ty, 0, records, &mut classes, site)? {
-            Ok(Self::Registers(classes))
+        if !classify_fields(ty, 0, records, &mut classes)
+            || (classes[1] == Class::X87Up && classes[0] != Class::X87)
+        {
+            Self::Memory
         } else {
-            Ok(Self::Memory)
+            Self::Registers(classes)
         }
     }
 
@@ -52,7 +66,7 @@ impl RecordAbi {
         match self {
             Self::Registers(classes) => {
                 let mut layout = CallLayout::default();
-                layout.allocate(classes, &INTEGER_RESULTS, 2)
+                layout.allocate(classes, &INTEGER_RESULTS, 2, true)
             }
             Self::Memory => None,
         }
@@ -64,11 +78,10 @@ fn classify_fields(
     offset: usize,
     records: &[Record<'_>],
     classes: &mut [Class; 2],
-    site: &Position,
-) -> Result<bool, Diagnostic> {
+) -> bool {
     let layout = ty.layout().unwrap();
     if !offset.is_multiple_of(layout.align) {
-        return Ok(false);
+        return false;
     }
     let class = match &ty.kind {
         Kind::Record(record) => {
@@ -82,35 +95,38 @@ fn classify_fields(
                     let first_bit = start * 8 + usize::from(field.shift);
                     let last_bit = first_bit + usize::from(field.width) - 1;
                     classes[first_bit / 64..=last_bit / 64].fill(Class::Integer);
-                } else if !classify_fields(&member.ty, start, records, classes, site)? {
-                    return Ok(false);
+                } else if !classify_fields(&member.ty, start, records, classes) {
+                    return false;
                 }
             }
-            return Ok(true);
+            return true;
         }
         Kind::Array(element, count) => {
             let stride = element.layout().unwrap().size;
             for index in 0..*count {
-                if !classify_fields(element, offset + index * stride, records, classes, site)? {
-                    return Ok(false);
+                if !classify_fields(element, offset + index * stride, records, classes) {
+                    return false;
                 }
             }
-            return Ok(true);
+            return true;
         }
         Kind::Integer(_) | Kind::Pointer(_) => Class::Integer,
         Kind::Float(_) => Class::Sse,
         Kind::LongDouble => {
-            return Err(Diagnostic::new(
-                site,
-                "x87 aggregate ABI is deferred to 25.7b3",
-            ));
+            return merge_class(&mut classes[offset / 8], Class::X87)
+                && merge_class(&mut classes[offset / 8 + 1], Class::X87Up);
         }
         Kind::Void | Kind::Function { .. } => unreachable!(),
     };
-    // NO_CLASS gives way to either leaf class, and INTEGER dominates SSE
-    // when fields share an eightbyte (including overlapping union members).
-    classes[offset / 8] = classes[offset / 8].max(class);
-    Ok(true)
+    merge_class(&mut classes[offset / 8], class)
+}
+
+fn merge_class(dest: &mut Class, source: Class) -> bool {
+    let Some(merged) = dest.merge(source) else {
+        return false;
+    };
+    *dest = merged;
+    true
 }
 
 #[derive(Clone, Copy)]
@@ -137,8 +153,10 @@ impl CallLayout {
     ) -> Result<Place, Diagnostic> {
         match ty.kind {
             Kind::Record(_) => {
-                if let RecordAbi::Registers(classes) = RecordAbi::classify(ty, records, site)? {
-                    if let Some(registers) = self.allocate(classes, &INTEGER_REGS, VECTOR_ARG_REGS) {
+                if let RecordAbi::Registers(classes) = RecordAbi::classify(ty, records) {
+                    if let Some(registers) =
+                        self.allocate(classes, &INTEGER_REGS, VECTOR_ARG_REGS, false)
+                    {
                         return Ok(Place::Record(registers));
                     }
                 }
@@ -169,6 +187,7 @@ impl CallLayout {
         classes: [Class; 2],
         integer_regs: &[&'static str],
         vector_limit: usize,
+        returning: bool,
     ) -> Option<RecordRegisters> {
         let (mut integers, mut vectors) = (self.integers, self.vectors);
         let mut registers = [None; 2];
@@ -185,7 +204,9 @@ impl CallLayout {
                     vectors += 1;
                     Some(Register::Sse(index))
                 }
-                Class::Sse => return None,
+                Class::X87 if returning => Some(Register::X87),
+                Class::X87Up if returning => None,
+                Class::Sse | Class::X87 | Class::X87Up => return None,
             };
         }
         // Commit both banks together. A failed allocation leaves both free

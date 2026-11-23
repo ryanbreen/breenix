@@ -40,9 +40,8 @@ impl<'a> FunctionBody<'a, '_> {
         let list = self.va_operand(list, true)?;
         match ty.kind {
             Kind::Integer(integer) if integer == promote(integer) => {}
-            Kind::Pointer(_) | Kind::Float(Float::Double) => {}
+            Kind::Pointer(_) | Kind::Float(Float::Double) | Kind::LongDouble => {}
             Kind::Record(record) if record.layout.is_some() => {}
-            Kind::LongDouble => return Err(site.error("x87 varargs are deferred to 25.7b3")),
             _ => return Err(site.error("va_arg requires a complete argument type after promotion")),
         }
         Ok((ExpressionKind::VaArg(list), ty.unqualified()))

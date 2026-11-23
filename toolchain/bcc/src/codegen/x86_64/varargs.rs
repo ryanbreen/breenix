@@ -91,10 +91,18 @@ impl<'src> Emitter<'_, 'src> {
         self.text.push_str("    mov r11, rax\n");
 
         let layout = ty.layout().unwrap();
-        let classes = match self.record_abi(ty, site)? {
+        let classes = match self.record_abi(ty) {
             Some(RecordAbi::Memory) => None,
-            Some(RecordAbi::Registers(classes)) => Some(classes),
+            Some(RecordAbi::Registers(classes))
+                if classes
+                    .iter()
+                    .all(|class| matches!(class, Class::Integer | Class::Sse | Class::Empty)) =>
+            {
+                Some(classes)
+            }
+            Some(RecordAbi::Registers(_)) => None,
             None if matches!(ty.kind, Kind::Float(_)) => Some([Class::Sse, Class::Empty]),
+            None if ty.kind == Kind::LongDouble => None,
             None => Some([Class::Integer, Class::Empty]),
         };
         let done = if let Some(classes) = classes {
@@ -169,6 +177,7 @@ impl<'src> Emitter<'_, 'src> {
             Class::Integer => (GP_OFFSET, GP_STRIDE),
             Class::Sse => (FP_OFFSET, FP_STRIDE),
             Class::Empty => return false,
+            Class::X87 | Class::X87Up => unreachable!("x87 arguments use the overflow area"),
         };
         writeln!(self.text, "    mov ecx, dword [r11 + {offset}]").unwrap();
         writeln!(

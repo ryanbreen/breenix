@@ -96,7 +96,7 @@ impl<'src> Emitter<'_, 'src> {
                     }
                 }
             }
-            Statement::Expression(expr) => self.value(expr)?,
+            Statement::Expression(expr) => self.discard(expr)?,
             Statement::Return(expr) => {
                 if let Some(expr) = expr {
                     self.converted(expr, result)?;
@@ -134,7 +134,7 @@ impl<'src> Emitter<'_, 'src> {
                 self.statement(body, result, epilogue)?;
                 writeln!(self.text, "{next}:").unwrap();
                 if let Some(increment) = increment {
-                    self.value(increment)?;
+                    self.discard(increment)?;
                 }
                 if let Some(test) = condition.as_ref().filter(|_| *post_test) {
                     self.jump_if(test, "jz", &end)?;
@@ -248,6 +248,9 @@ impl<'src> Emitter<'_, 'src> {
         } else {
             self.converted(right, &left.ty)?;
         }
+        if left.ty.kind == Kind::LongDouble {
+            self.text.push_str("    fld st(0)\n");
+        }
         self.text.push_str("    mov r11, qword [rsp]\n");
         self.store_lvalue(left);
         self.adjust_stack("add", 16);
@@ -260,16 +263,29 @@ impl<'src> Emitter<'_, 'src> {
         increment: bool,
         postfix: bool,
     ) -> Result<(), Diagnostic> {
-        self.address(operand)?;
-        self.adjust_stack("sub", 16);
-        self.text.push_str("    mov qword [rsp], rax\n");
         let ty = &operand.ty;
+        let extended = ty.kind == Kind::LongDouble;
+        let reserve = if postfix && extended { 32 } else { 16 };
+        self.address(operand)?;
+        self.adjust_stack("sub", reserve);
+        self.text.push_str("    mov qword [rsp], rax\n");
         self.load_lvalue(operand);
         if postfix {
+            if extended {
+                self.text.push_str("    fld st(0)\n");
+            }
             self.store(ty, "[rsp + 8]");
         }
         let op = if increment { "add" } else { "sub" };
         match &ty.kind {
+            Kind::LongDouble => {
+                self.text.push_str("    fld1\n");
+                let op = if increment { "faddp" } else { "fsubp" };
+                writeln!(self.text, "    {op} st(1), st(0)").unwrap();
+                if !postfix {
+                    self.text.push_str("    fld st(0)\n");
+                }
+            }
             Kind::Float(float) => {
                 let one = match float {
                     Float::Single => 0x3f80_0000,
@@ -297,7 +313,7 @@ impl<'src> Emitter<'_, 'src> {
         if postfix {
             self.load(ty, "[rsp + 8]");
         }
-        self.adjust_stack("add", 16);
+        self.adjust_stack("add", reserve);
         Ok(())
     }
 
@@ -311,6 +327,10 @@ impl<'src> Emitter<'_, 'src> {
             },
             Kind::Float(float) => {
                 writeln!(self.text, "    {} {address}, xmm0", float_move(float)).unwrap();
+                return;
+            }
+            Kind::LongDouble => {
+                self.store(ty, address);
                 return;
             }
             Kind::Pointer(_) => ("qword", "rax"),

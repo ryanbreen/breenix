@@ -14,6 +14,7 @@ mod abi;
 mod bit_field;
 mod flow;
 mod varargs;
+mod x87;
 
 use abi::{CallLayout, Place, RecordAbi, RecordRegisters, Register};
 use flow::Slot;
@@ -86,7 +87,8 @@ impl<'src> Emitter<'_, 'src> {
         self.check_symbol(name, function.site)?;
         let Kind::Function {
             result, variadic, ..
-        } = &function.ty.kind else {
+        } = &function.ty.kind
+        else {
             unreachable!()
         };
         if result.kind != Kind::Void && !supported_abi_type(result) {
@@ -104,7 +106,7 @@ impl<'src> Emitter<'_, 'src> {
             }
         }
         self.layout(function)?;
-        let record_result = self.record_abi(result, function.site)?;
+        let record_result = self.record_abi(result);
         let sret = if matches!(record_result, Some(RecordAbi::Memory)) {
             Some(self.frame_slot(Layout { size: 8, align: 8 }, function.site)?)
         } else {
@@ -153,6 +155,14 @@ impl<'src> Emitter<'_, 'src> {
                 Place::Stack(offset) if matches!(param.ty.kind, Kind::Record(_)) => {
                     stack_records.push((index, offset, param.ty.layout().unwrap().size));
                 }
+                Place::Stack(offset) if param.ty.kind == Kind::LongDouble => {
+                    let source = offset + 16;
+                    writeln!(
+                        self.text,
+                        "    fld tbyte [rbp + {source}]\n    fstp tbyte {memory}"
+                    )
+                    .unwrap();
+                }
                 Place::Stack(offset) => {
                     // The saved RBP and return address precede the input area.
                     let source = offset + 16;
@@ -164,7 +174,10 @@ impl<'src> Emitter<'_, 'src> {
                 }
             }
         }
-        self.variadic = save.map(|save| VariadicFrame { save, named: layout });
+        self.variadic = save.map(|save| VariadicFrame {
+            save,
+            named: layout,
+        });
         // Spill register inputs before rep movsb reuses argument registers.
         for (index, offset, size) in stack_records {
             let source = offset + 16;
@@ -219,25 +232,20 @@ impl<'src> Emitter<'_, 'src> {
     }
 
     // Canonical value locations: a normalized integer or pointer in RAX,
-    // a float of its declared width in XMM0, or a record's address in RAX.
+    // float/double in XMM0, a record's address in RAX, or one x87 stack
+    // entry in ST(0). Spill or consume that entry before evaluating another
+    // expression so no x87 temporaries are live across calls.
     fn value(&mut self, expr: &Expression<'src>) -> Result<(), Diagnostic> {
-        if matches!(expr.ty.kind, Kind::LongDouble) {
-            return Err(Diagnostic::new(
-                expr.position(),
-                "value is outside the scalar code generation subset",
-            ));
-        }
         match &expr.kind {
             ExpressionKind::Integer(value) => {
                 writeln!(self.text, "    mov rax, 0x{value:x}").unwrap();
                 self.normalize_integer(&expr.ty);
             }
-            ExpressionKind::Float(bits) => {
-                let Kind::Float(float) = expr.ty.kind else {
-                    unreachable!()
-                };
-                self.float_constant(*bits, float, 0);
-            }
+            ExpressionKind::Float(bits) => match expr.ty.kind {
+                Kind::Float(float) => self.float_constant(*bits as u64, float, 0),
+                Kind::LongDouble => self.long_double_constant(*bits),
+                _ => unreachable!(),
+            },
             ExpressionKind::String(_)
             | ExpressionKind::Identifier(_)
             | ExpressionKind::Local(_)
@@ -292,6 +300,10 @@ impl<'src> Emitter<'_, 'src> {
         Ok(())
     }
 
+    fn discard(&mut self, expr: &Expression<'src>) -> Result<(), Diagnostic> {
+        self.converted(expr, &Type::new(Kind::Void))
+    }
+
     fn converted(&mut self, expr: &Expression<'src>, dest: &Type) -> Result<(), Diagnostic> {
         self.value(expr)?;
         self.convert(&expr.ty, dest);
@@ -327,6 +339,7 @@ impl<'src> Emitter<'_, 'src> {
                         };
                         writeln!(self.text, "    {xor} xmm0, xmm1").unwrap();
                     }
+                    (Unary::Minus, Kind::LongDouble) => self.text.push_str("    fchs\n"),
                     (Unary::Minus, _) => self.text.push_str("    neg rax\n"),
                     (Unary::Complement, _) => self.text.push_str("    not rax\n"),
                     _ => {}
@@ -350,6 +363,8 @@ impl<'src> Emitter<'_, 'src> {
             // NaN compares unordered, so PF also makes the Boolean result true.
             self.text
                 .push_str("    setne al\n    setp dl\n    or al, dl\n");
+        } else if source.kind == Kind::LongDouble {
+            self.x87_boolean();
         } else {
             self.text.push_str("    test rax, rax\n    setne al\n");
         }
@@ -386,8 +401,15 @@ impl<'src> Emitter<'_, 'src> {
     }
 
     // The left operand is saved in an aligned slot above the right operand's
-    // expression stack. Consume that slot and leave the result in RAX/XMM0.
+    // expression stack. Consume that slot and leave the result in its
+    // canonical location.
     fn combine(&mut self, op: Binary, left: &Type, right: &Type, result: &Type) {
+        if left.kind == Kind::LongDouble {
+            self.load(left, "[rsp]");
+            self.adjust_stack("add", 16);
+            self.x87_binary(op);
+            return;
+        }
         if let Kind::Float(float) = left.kind {
             let mov = float_move(float);
             writeln!(self.text, "    {mov} xmm1, xmm0\n    {mov} xmm0, [rsp]").unwrap();
@@ -526,7 +548,7 @@ impl<'src> Emitter<'_, 'src> {
             self.use_symbol(name, callee.position())?;
         }
         let site = callee.position();
-        let record_result = self.record_abi(result, site)?;
+        let record_result = self.record_abi(result);
         let result_slot = if record_result.is_some() {
             let mut layout = result.layout().unwrap();
             layout.size = abi::eightbyte_size(layout.size, site)?;
@@ -547,7 +569,7 @@ impl<'src> Emitter<'_, 'src> {
         let mut staged = Vec::with_capacity(arguments.len());
         for (arg, place) in arguments.iter().zip(places) {
             let offset = match place {
-                Place::Stack(slot) if matches!(arg.ty.kind, Kind::Record(_)) => slot,
+                Place::Stack(slot) if direct_stack_argument(&arg.ty) => slot,
                 _ => {
                     let offset = callee_slot;
                     let bytes = arg.ty.layout().map_or(8, |layout| layout.size);
@@ -594,7 +616,7 @@ impl<'src> Emitter<'_, 'src> {
                         format!("[rsp + {}]", offset + piece)
                     });
                 }
-                Place::Stack(_) if matches!(arg.ty.kind, Kind::Record(_)) => {}
+                Place::Stack(_) if direct_stack_argument(&arg.ty) => {}
                 Place::Stack(slot) => {
                     let (reg, size) = match arg.ty.kind {
                         Kind::Float(Float::Single) => ("eax", "dword"),
@@ -626,12 +648,8 @@ impl<'src> Emitter<'_, 'src> {
         Ok(())
     }
 
-    fn record_abi(&self, ty: &Type, site: &Position) -> Result<Option<RecordAbi>, Diagnostic> {
-        if matches!(ty.kind, Kind::Record(_)) {
-            Ok(Some(RecordAbi::classify(ty, self.records, site)?))
-        } else {
-            Ok(None)
-        }
+    fn record_abi(&self, ty: &Type) -> Option<RecordAbi> {
+        matches!(ty.kind, Kind::Record(_)).then(|| RecordAbi::classify(ty, self.records))
     }
 
     // The receiving frame slots are rounded up to full eightbytes.
@@ -646,6 +664,7 @@ impl<'src> Emitter<'_, 'src> {
             match reg {
                 Register::Integer(reg) => writeln!(text, "    mov qword {dest}, {reg}").unwrap(),
                 Register::Sse(reg) => writeln!(text, "    movsd {dest}, xmm{reg}").unwrap(),
+                Register::X87 => writeln!(text, "    fstp tbyte {dest}").unwrap(),
             }
         }
     }
@@ -672,6 +691,7 @@ impl<'src> Emitter<'_, 'src> {
                     let instruction = if bytes == 4 { "movss" } else { "movsd" };
                     writeln!(self.text, "    {instruction} xmm{reg}, {source}").unwrap();
                 }
+                Register::X87 => writeln!(self.text, "    fld tbyte {source}").unwrap(),
             }
         }
     }
@@ -711,7 +731,8 @@ impl<'src> Emitter<'_, 'src> {
             Kind::Float(Float::Single) => "movss xmm0,",
             Kind::Float(Float::Double) => "movsd xmm0,",
             Kind::Function { .. } | Kind::Array(..) | Kind::Record(_) => return,
-            Kind::Void | Kind::LongDouble => unreachable!(),
+            Kind::LongDouble => "fld tbyte",
+            Kind::Void => unreachable!(),
         };
         writeln!(self.text, "    {instruction} {address}").unwrap();
     }
@@ -719,6 +740,8 @@ impl<'src> Emitter<'_, 'src> {
     fn store(&mut self, ty: &Type, address: &str) {
         if let Kind::Float(float) = ty.kind {
             writeln!(self.text, "    {} {address}, xmm0", float_move(float)).unwrap();
+        } else if ty.kind == Kind::LongDouble {
+            writeln!(self.text, "    fstp tbyte {address}").unwrap();
         } else {
             writeln!(self.text, "    mov qword {address}, rax").unwrap();
         }
@@ -747,6 +770,11 @@ impl<'src> Emitter<'_, 'src> {
         }
         match (&source.kind, &dest.kind) {
             (_, Kind::Integer(Integer::Bool)) => self.boolean(source),
+            (Kind::LongDouble, Kind::Void) => self.text.push_str("    fstp st(0)\n"),
+            (Kind::Integer(integer), Kind::LongDouble) => self.integer_to_x87(*integer),
+            (Kind::LongDouble, Kind::Integer(integer)) => self.x87_to_integer(*integer, dest),
+            (Kind::Float(float), Kind::LongDouble) => self.sse_to_x87(*float),
+            (Kind::LongDouble, Kind::Float(float)) => self.x87_to_sse(*float),
             (Kind::Float(src), Kind::Float(dst)) => {
                 writeln!(
                     self.text,
@@ -869,8 +897,12 @@ impl<'src> Emitter<'_, 'src> {
 fn supported_abi_type(ty: &Type) -> bool {
     matches!(
         ty.kind,
-        Kind::Integer(_) | Kind::Float(_) | Kind::Pointer(_) | Kind::Record(_)
+        Kind::Integer(_) | Kind::Float(_) | Kind::LongDouble | Kind::Pointer(_) | Kind::Record(_)
     )
+}
+
+fn direct_stack_argument(ty: &Type) -> bool {
+    matches!(ty.kind, Kind::Record(_) | Kind::LongDouble)
 }
 
 fn suffix(float: Float) -> &'static str {

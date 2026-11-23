@@ -232,3 +232,19 @@ The prologue uses the save offsets in Figure 3.33 and guards XMM spills
 with AL. The usable SSE bank ends at offset 176 because §3.2.3 assigns
 only XMM0–7 to arguments. Register-class selection and whole-record
 overflow follow §3.2.3. AAPCS64 varargs are scheduled for A4.
+
+### AMD64 extended precision (25.7b3)
+
+AMD64 psABI §§3.1.2 and 3.2.3 assign `long double` 16-byte size and
+alignment, X87/X87UP stack arguments and an ST(0) result. Section 3.5.7
+aligns variadic arguments in the overflow area. Only the ten value bytes
+are significant. An aggregate follows the same eightbyte merging rules.
+
+N1570 §§6.3.1, 6.4.4.2 and 6.5 govern conversions, constants and the
+usual arithmetic conversions. The literal parser rounds the exact ratio
+to nearest with ties to even, including the 64th significand bit and the
+subnormal range. Intel SDM Vol. 1 Table 4-3 and Figure 8-13 define the
+value encoding. The instruction forms come from Vol. 2. Integer
+conversion truncates with a temporary x87 control word and restores
+the saved control word. AArch64 code emission is scheduled for A3 and
+AAPCS64 binary128 `long double` lowering for A4.
