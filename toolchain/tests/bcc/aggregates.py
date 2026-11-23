@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Cross-call pinned Clang and bcc objects using the AMD64 psABI §3.2.3."""
 
+import argparse
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
 import os
@@ -193,12 +194,14 @@ int main(void)
         return 1;
 
     unsigned int first = 5;
-    struct Bits init = {first, -7, 4, 6};
+    struct Bits init = {first, -7, 4, 6, 0};
+    struct Bits zero = {0};
     struct Bits *ptr = &init;
     unsigned int wide = 11;
     if (ptr++->mode++ != 4 || ptr != &init + 1 || init.mode != 5 ||
         (init.mode = wide) != 3 || init.delta != -7 || init.tail != 6 ||
-        init.head != 5 || init.marker != 0)
+        init.head != 5 || init.marker != 0 || zero.head || zero.delta ||
+        zero.mode || zero.tail || zero.marker)
         return 2;
     return 42;
 }
@@ -260,7 +263,7 @@ CASES = {
 }
 
 
-def check(bcc, bas, bld, work, cases):
+def check(args, work):
     scripts = HERE.parents[2] / "scripts"
     sys.path.insert(0, str(scripts))
     loader = SourceFileLoader("toolchain_ref_cc", str(scripts / "toolchain-ref-cc"))
@@ -273,17 +276,18 @@ def check(bcc, bas, bld, work, cases):
     script = work / "main.ld"
     script.write_text(LINKER_SCRIPT.read_text().replace("ENTRY(_start)", "ENTRY(main)"))
 
-    for name in cases:
+    for name in args.cases:
         case = work / name
         case.mkdir()
-        cross_call(reference, clang, bcc, bas, bld, script, case, CASES[name])
+        libc = (args.libc,) if name == "bitfields" else ()
+        cross_call(reference, clang, args, script, case, CASES[name], libc)
         if name == "packed":
             print("abi::bitfields_and_packed_bcc_to_clang packed PASS")
         elif name == "bitfields":
             print("abi::bitfields_and_packed_bcc_to_clang bitfields PASS")
 
 
-def cross_call(reference, clang, bcc, bas, bld, script, work, fixture):
+def cross_call(reference, clang, args, script, work, fixture, libc):
     types, caller, callee, failures = fixture
     for direction, clang_half, bcc_half in (
         ("bcc-to-clang", ("callee", callee), ("caller", caller)),
@@ -297,11 +301,11 @@ def cross_call(reference, clang, bcc, bas, bld, script, work, fixture):
         source = case / (bcc_half[0] + ".c")
         source.write_text(types + bcc_half[1])
         assembly = source.with_suffix(".s")
-        assembly.write_bytes(checked(bcc, "-S", source))
+        assembly.write_bytes(checked(args.bcc, "-S", source))
         obj = source.with_suffix(".o")
-        checked(bas, "-o", obj, assembly)
+        checked(args.bas, "-o", obj, assembly)
         executable = case / "aggregates"
-        checked(bld, "-T", script, "--gc-sections", "-o", executable, obj, clang_obj)
+        checked(args.bld, "-T", script, "--gc-sections", "-o", executable, obj, clang_obj, *libc)
         result = run(sys.executable, HERE / "return_42_exit_status.py", "--call-entry", executable)
         if (result.returncode, result.stdout, result.stderr) != (42, b"", b""):
             status = result.returncode
@@ -312,14 +316,20 @@ def cross_call(reference, clang, bcc, bas, bld, script, work, fixture):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    for tool in ("bcc", "bas", "bld"):
+        parser.add_argument(tool, type=Path)
+    parser.add_argument("--libc", type=Path, help="Breenix AMD64 C ABI archive for Clang's memset")
+    parser.add_argument("cases", nargs="*", metavar="CASE", default=list(CASES))
+    args = parser.parse_intermixed_args()
     if platform.machine() != "x86_64":
-        sys.exit("run with x86-64 Python")
-    args = sys.argv[1:]
-    cases = args[3:] or CASES
-    if any(case not in CASES for case in cases):
-        sys.exit(f"expected case names from {', '.join(CASES)}")
+        parser.error("run with x86-64 Python")
+    if any(case not in CASES for case in args.cases):
+        parser.error(f"expected case names from {', '.join(CASES)}")
+    if "bitfields" in args.cases and args.libc is None:
+        parser.error("bitfields requires --libc")
     try:
         with TemporaryDirectory() as temp:
-            check(*map(Path, args[:3]), Path(temp).resolve(), cases)
+            check(args, Path(temp).resolve())
     except (KeyError, OSError, ValueError, subprocess.SubprocessError) as error:
         sys.exit(str(error))
