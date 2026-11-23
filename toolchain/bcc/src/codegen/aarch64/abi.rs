@@ -347,16 +347,11 @@ impl<'src> Emitter<'_, 'src> {
         }
 
         // Stage values above SP while nested calls can clobber registers.
-        for (arg, (location, object, offset)) in arguments.iter().zip(&staged) {
+        for (arg, (_, object, offset)) in arguments.iter().zip(&staged) {
             self.converted(&arg.expr, &arg.ty)?;
             if let Some(object) = object {
                 self.offset_address("x9", "sp", *offset as i64);
                 self.copy_record(object.layout.size);
-                if let ArgumentLocation::Stack(outgoing) = location {
-                    if object.indirect() {
-                        self.transfer_call_slot("str", 'x', 0, *outgoing);
-                    }
-                }
             } else {
                 self.transfer_call_slot("str", value_prefix(&arg.ty), 0, *offset);
             }
@@ -367,8 +362,17 @@ impl<'src> Emitter<'_, 'src> {
             self.offset_address("x8", "x29", -(distance as i64));
         }
         for (arg, (location, object, offset)) in arguments.iter().zip(staged) {
-            let ArgumentLocation::Register(index) = location else {
-                continue;
+            let index = match location {
+                ArgumentLocation::Register(index) => index,
+                ArgumentLocation::Stack(outgoing) => {
+                    // Form pointers to staged copies after evaluating the
+                    // arguments, since a nested alloca can move the copies.
+                    if object.is_some_and(CallObject::indirect) {
+                        self.offset_address("x11", "sp", offset as i64);
+                        self.transfer_call_slot("str", 'x', 11, outgoing);
+                    }
+                    continue;
+                }
             };
             if let Some(object) = object {
                 if object.indirect() {
