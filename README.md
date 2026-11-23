@@ -1,239 +1,179 @@
 # Breenix
 
-As of 2026-10-18 (S23), x86-64 requires evidence from x86-metal using the metal boot loop.
-The main path measures ARM64 QEMU, Parallels and VMware. Earlier x86 QEMU gate
-and landing requirements below are superseded by [the execution policy](docs/x86-execution-policy.md);
-legacy QEMU commands require the operator's `BREENIX_ALLOW_X86_QEMU=1`.
+Breenix is a POSIX-oriented operating system with a kernel written in Rust. It
+runs on ARM64 in QEMU, Parallels Desktop, and VMware Fusion, and on x86-64 only
+on bare metal. It has a clean-room C library, a port of the Rust standard
+library, the Breenish shell, and POSIX utilities.
 
-Breenix is a POSIX operating system kernel written from scratch in Rust for ARM64 and x86-64.
-On top of the kernel sit its own clean-room C library, a port of the Rust standard library, a
-shell with POSIX utilities (BusyBox built against Breenix's C library), and a Developer SDK for
-building C and Rust programs outside this tree. It boots on QEMU, Parallels Desktop and VMware
-Fusion on ARM64, and through the x86-metal boot loop on x86-64.
+BreenFS is Breenix's copy-on-write B-tree filesystem. It supports atomic commits,
+data and metadata checksums, and snapshots. The desktop uses BreenGL for 2D
+graphics and `bwm` to compose windows and route input. Apps include the
+`bterm` terminal, the `blauncher` app launcher, and the Gus Kit drawing app.
+[BreenFS format](docs/fs/breenfs-format.md) · [BreenGL](docs/gui/breengel.md) ·
+[Window manager](docs/gui/bwm.md)
 
-POSIX suites gate the main path on ARM64 QEMU, Parallels and VMware. x86-64 evidence
-belongs to the independent metal path.
+## Progress
 
-| | |
-|---|---|
-| ![The boot path on ARM64 QEMU: every milestone from arch bring-up to the first userspace process is green](docs/images/boot-path-arm64-qemu.png) | ![The same boot path on Parallels Desktop](docs/images/boot-path-parallels.png) |
-| The boot path on ARM64 QEMU | The boot path on Parallels Desktop |
-| ![The desktop on Parallels: bterm running uname, cat, head, wc and echo in bsh](docs/images/bterm-utilities-parallels.png) | ![The Shell & POSIX utilities suite mid-run on ARM64 QEMU: 153 of 194 cases passed, one running](docs/images/suite-utilities-arm64-qemu.png) |
-| The shell running utilities in the desktop's terminal, on Parallels | The Shell & POSIX utilities suite running on ARM64 QEMU |
+As of November 23, 2026, the project tracking board shows E0–E24 complete on
+both architectures. E25 is in progress. Counts are completed milestones over
+total milestones on each board tab.
 
-## Where it stands
+| Effort | ARM64 | x86-64 bare metal |
+| --- | ---: | ---: |
+| E0 Kernel bring-up | 6/6 | 6/6 |
+| E1 Files & I/O | 11/11 | 11/11 |
+| E2 Directories & links | 10/10 | 10/10 |
+| E3 Processes | 9/9 | 9/9 |
+| E4 Signals | 10/10 | 10/10 |
+| E5 Time & timers | 5/5 | 5/5 |
+| E6 Memory | 6/6 | 6/6 |
+| E7 Threads | 8/8 | 8/8 |
+| E8 IPC | 6/6 | 6/6 |
+| E9 Terminals & job control | 6/6 | 6/6 |
+| E10 Networking & sockets | 8/8 | 8/8 |
+| E11 C library | 8/8 | 8/8 |
+| E12 Rust std | 6/6 | 6/6 |
+| E13 Shell & POSIX utilities | 5/5 | 5/5 |
+| E14 Developer SDK | 5/5 | 5/5 |
+| E15 Users and permissions | 6/6 | 6/6 |
+| E16 Unattended server | 7/7 | 8/8 |
+| E17 Screen console & virtual terminals | 6/6 | 6/6 |
+| E18 GPU driver bring-up | 5/5 | 5/5 |
+| E19 GPU rendering | 9/9 | 7/7 (GT 710) |
+| E20 BreenGL graphics library | 14/14 | 4/4 |
+| E21 Window manager | 13/13 | 13/13 |
+| E22 UI test framework | 10/10 | 10/10 |
+| E23 GUI applications | 11/11 | 11/11 |
+| E24 Copy-on-write filesystem | 11/11 | 11/11 |
+| E25 Building on the box | 8/12 in progress | 8/12 in progress |
 
-Breenix is built along an ordered effort path ([`docs/efforts/path.json`](docs/efforts/path.json)).
-Each effort has an outcome and milestones, and each milestone is measured by a boot or a suite,
-never by a rating someone sets. The table shows the effort path on `main` at `793810cb`
-(2026-10-15). The counts are the suite cases passing on every one of the four targets.
+On the ARM tab, E0–E14 and E17–E20 cover ARM64 QEMU, Parallels, and VMware.
+E15, E16, and E21–E24 cover ARM64 QEMU only. The separate x86 bare-metal
+bring-up track is complete. It shows bring-up 4/4, userspace 5/5,
+networking 9/9, storage 3/3, and local console 4/4.
+[Effort definitions and measurement](docs/efforts/README.md) ·
+[Main effort plan](docs/efforts/path.json) · [Bare-metal plan](docs/efforts/metal.json)
 
-| # | Effort | Suite | Passing on three main-path targets | Status |
-|---|---|---|---|---|
-| 0 | Kernel bring-up | [boot path](docs/boot-path.md) | 6 boot-path milestones; x86 hardware profiles retained, unmeasured on this path | done |
-| 1 | Files & I/O | [`files-io`](docs/suites/files-io.json) | 219 of 219 | done |
-| 2 | Directories & links | [`directories`](docs/suites/directories.json) | 117 of 117 | done |
-| 3 | Processes | [`processes`](docs/suites/processes.json) | 153 of 153 | done |
-| 4 | Signals | [`signals`](docs/suites/signals.json) | 125 of 125 | done |
-| 5 | Time & timers | [`time`](docs/suites/time.json) | 92 of 92 | done |
-| 6 | Memory | [`memory`](docs/suites/memory.json) | 120 of 120 | done |
-| 7 | Threads | [`threads`](docs/suites/threads.json) | 142 of 142 | done |
-| 8 | IPC | [`ipc`](docs/suites/ipc.json) | 140 of 140 | done |
-| 9 | Terminals & job control | [`terminals`](docs/suites/terminals.json) | 151 of 151 | done |
-| 10 | Networking & sockets | [`networking`](docs/suites/networking.json) | 194 of 194 | done |
-| 11 | C library | [`libc`](docs/suites/libc.json) | 258 of 258 | done |
-| 12 | Rust std | [`rust-std`](docs/suites/rust-std.json) | 173 of 174 | ahead: one `std::net` read-timeout case on x86-64 |
-| 13 | Shell & POSIX utilities | [`utilities`](docs/suites/utilities.json) | 194 of 194 | done |
-| 14 | Developer SDK | [`sdk`](docs/suites/sdk.json) | 108 of 108 | done |
-| 15 | BreenGL graphics library | `breengel` | suite not written yet | next |
-| 16 | Window manager | `window-manager` | suite not written yet | next |
-| 17 | UI test framework | `ui-testing` | suite not written yet | next |
-| 18 | GUI applications | `gui-apps` | suite not written yet | next |
+E25 is a C toolchain written in Rust that is built for and runs on Breenix.
+It includes `bcc` (C compiler), `bas` (assembler), `bld` (static linker),
+`bar` (archiver), `bnm` (symbol listing), `bmake` (build tool), and `brt`
+(compiler runtime). Recent changes added native builds of small C projects
+on both architectures; C11 coverage (25.9) is under way.
+[Toolchain workspace](toolchain/Cargo.toml) · [C11 coverage](toolchain/docs/c11-coverage.md)
 
-That is 2,186 of 2,187 suite cases on every target and 14 of 19 efforts done. The four GUI
-efforts come next: a graphics library, the window manager, a UI test framework and the desktop
-applications, each held to the same four-target bar. Their plan is [`docs/gui/plan.md`](docs/gui/plan.md),
-with a short version in [`docs/gui/summary.md`](docs/gui/summary.md).
+## Build and boot ARM64
 
-## Build and boot
+Run the commands below from the repository root. Use rustup with the pinned
+`nightly-2025-06-24` toolchain and its components, Python 3.11 or newer,
+clang/LLVM, and e2fsprogs. Start Docker Desktop for disk image creation on
+macOS. On Linux, export `BREENIX_REPRODUCIBLE_EXT2=1` to build the disk image
+without root privileges. For QEMU boots, install `qemu-system-aarch64`.
+[Rust toolchain pin](rust-toolchain.toml) · [Disk image script](scripts/create_ext2_disk.sh)
 
-Breenix is developed on Apple Silicon Macs, where ARM64 boots natively under QEMU with HVF,
-Parallels Desktop and VMware Fusion. x86-64 boots through x86-metal using the metal boot loop.
+The guest standard library is built from a separate Rust fork pinned in
+`rust-fork.toml`. From a fresh checkout, clone the fork and let the sync
+script prepare the pinned library in this tree. If you already have a clone,
+point `BREENIX_RUST_FORK_SOURCE` to it.
+[Rust fork pin](rust-fork.toml) · [Sync script](scripts/rust-fork.sh)
 
-You need:
-
-- `rustup`. [`rust-toolchain.toml`](rust-toolchain.toml) pins the nightly toolchain and its components.
-- LLVM: clang 18 or newer with `llvm-nm`, `llvm-ar` and `llvm-objcopy` beside it. The C library,
-  BusyBox and C userspace programs build with it. On macOS install Homebrew's `llvm`
-  (`brew install llvm`); the build finds it without a `PATH` change, and Apple's
-  `/usr/bin/clang` does not ship those tools.
-- QEMU (`qemu-system-aarch64`) for ARM64 boots.
-- Docker, which builds the ext2 disk image on macOS.
-- Python 3.11 or newer (`scripts/rust-fork.sh` uses `tomllib`; macOS's system Python 3.9 is too old).
-- The forked Rust standard library, described below.
-
-### The forked Rust standard library
-
-Userspace programs are built against a fork of the Rust standard library that
-knows `target_os = "breenix"`. [`rust-fork.toml`](rust-fork.toml) pins the fork's
-repository and commit. Given a clone of that repository, `scripts/rust-fork.sh sync` checks
-the pinned commit out as an untracked `rust-fork` worktree inside this checkout:
-
-```bash
-git clone https://github.com/ryanbreen/rust.git ../rust
-BREENIX_RUST_FORK_SOURCE=../rust scripts/rust-fork.sh sync
+```sh
+git clone --no-checkout "$(awk -F '"' '/^repo = / {print $2}' rust-fork.toml)" ../breenix-rust
+BREENIX_RUST_FORK_SOURCE=../breenix-rust scripts/rust-fork.sh sync
 ```
 
-Builds that compile userspace can also be pointed at a fork somewhere else:
+### QEMU
 
-```bash
-export BREENIX_RUST_FORK_LIBRARY=/path/to/rust-fork/library
+Build the production kernel and userspace image without starting a VM, then
+boot those artifacts to the serial shell.
+
+```sh
+scripts/boot-interactive.sh --mode shell --build-only
+scripts/boot-interactive.sh --mode shell --no-build --no-display
 ```
 
-Both builders honour it — `userspace/programs/build.sh` and `xtask`. Without it
-they fall back to `<repo>/rust-fork/library`, so a local (untracked) `rust-fork`
-directory inside the checkout is the simplest layout.
+On macOS, the desktop needs the GL-enabled QEMU build. Building it requires
+access to the pinned QEMU fork. Quit the serial shell boot before starting
+the desktop. [GL QEMU setup](docs/gui/qemu-gl.md)
 
-The fallback layout is not merely a convenience. The fork's
-`library/Cargo.toml` patches `libc` to `../../libs/libc`, which resolves
-relative to the fork's own parent directory — so the fork has to sit beside a
-`libs/libc`, as it does when it lives inside this checkout. Pointing
-`BREENIX_RUST_FORK_LIBRARY` at a fork laid out anywhere else gets past the
-"forked Rust library not found" check and then fails on that patch instead.
-
-`rust-fork` is deliberately git-ignored rather than committed: it was once
-tracked as a symlink to one developer's absolute home path, which dangled in
-every other checkout and failed the userspace build with no usable diagnostic
-(#678, #679).
-
-### Boot ARM64 on QEMU
-
-[`scripts/boot-interactive.sh`](scripts/boot-interactive.sh) builds userspace, the ext2 disk and
-the kernel, then boots once with the serial console on your terminal (Ctrl-A X quits):
-
-```bash
-scripts/boot-interactive.sh                          # testing kernel: the boot-path gate
-scripts/boot-interactive.sh --mode shell             # bsh on the serial console
-scripts/boot-interactive.sh --mode probe             # one check per subsystem, ends with PROBE DONE
-scripts/boot-interactive.sh --mode suite --suite files-io   # an effort suite as PID 1
+```sh
+scripts/build-qemu-gl.sh
+scripts/boot-interactive.sh --mode desktop --gpu-gl
 ```
 
-`./run.sh` boots in a QEMU window; `./run.sh --headless` keeps it to the serial console.
+### Parallels and VMware
 
-The desktop (the window manager and its windows) composes through the GPU core,
-syscall 416, on ARM64 QEMU with `--gpu-gl`, Parallels and VMware: bwm uploads its
-decorations and each client's frames as textures, draws them into a scanout target and
-presents it. bwm reads its first frame, and its first frame that shows a client's
-pixels, back from the device and compares them with the frame it composed; the desktop
-boot's boot-path stages require both. ARM64 QEMU launches without `--gpu-gl` have no
-GPU-core device, so bwm reports `GPU compositing required` and exits there.
+On Apple Silicon, install the hypervisor you plan to use. Parallels needs
+`prlctl` and `prl_disk_tool`. VMware Fusion needs `mtools` for its boot disk.
+Add the ARM64 UEFI Rust target once, then run the launcher for your hypervisor.
+It builds the loader, kernel, and userspace disk. [VM launcher](run.sh)
 
-![The boot probe on ARM64 QEMU: 16 subsystem checks, all OK](docs/images/probe-arm64-qemu.png)
-
-The builds it runs, if you want them on their own:
-
-```bash
-userspace/programs/build.sh --arch aarch64
-scripts/create_ext2_disk.sh --arch aarch64
-cargo build --release --target aarch64-breenix-kernel.json \
-    -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem \
-    -p kernel --bin kernel-aarch64          # add --features testing for the testing kernel
-```
-
-### Boot on Parallels Desktop and VMware Fusion
-
-Both boot through a UEFI loader, which needs one more Rust target:
-
-```bash
+```sh
 rustup target add aarch64-unknown-uefi
+./run.sh --parallels
+# Or use VMware Fusion
+./run.sh --vmware
 ```
 
-```bash
-./run.sh --parallels                     # build, create a fresh VM and boot to the desktop
-./run.sh --parallels --suite files-io    # run a suite, stop the VM at its DONE line
-./run.sh --vmware --probe                # the boot probe on VMware
-./run.sh --vmware --suite directories
+## x86-64 bare metal
+
+The x86-64 target is a Dell PowerEdge R240 with a GeForce GT 710 GPU. The
+`metal-run` boot loop stages the kernel and boot image for UEFI HTTP boot,
+captures serial output, and powers the machine off when the run ends. The
+project uses this machine for build and test runs.
+[Bare-metal boot loop](docs/metal/README.md) · [GT 710](docs/metal/gt710.md) ·
+[x86 execution policy](docs/x86-execution-policy.md)
+
+## Tests
+
+Host checks cover Rust and Python code, including image tooling, suite
+manifests, and verdict processing. The host test guide lists prerequisites
+and commands for the root integration tests and standalone host test crates.
+[Host tests](docs/host-tests.md)
+
+```sh
+python3 tests/suite_verdict_test.py
 ```
 
-### Boot x86-64
+Guest boot gates check initialization stages. Effort suites run in the guest
+as PID 1 and report individual case results over serial, with a scored
+panel on screen. To watch one case on ARM64 QEMU, use the suite launcher.
+[Boot path](docs/boot-path.md) · [Suite contract](docs/suites/README.md)
 
-Use `scripts/metal/metal-run` and the [metal boot loop guide](docs/metal/README.md)
-for x86-metal. x86 QEMU launchers refuse by default under S23; an exceptional
-invocation requires the operator's `BREENIX_ALLOW_X86_QEMU=1`.
-
-### Host tests
-
-```bash
-scripts/run-structure-tests.sh           # every tests/*_structure.rs suite
+```sh
+scripts/boot-interactive.sh --mode suite --suite smoke --case process/getpid
 ```
-
-Breenix runs no builds or tests in hosted CI. Every check runs locally, and a pull request
-lands with its own evidence.
-[`docs/boot-path.md`](docs/boot-path.md) describes the boot path, its modes and the gates.
 
 ## Developer SDK
 
-The SDK packages C and Rust toolchains for both architectures, so a program can be written,
-built and installed onto a Breenix disk without this source tree.
-[Build the SDK](docs/sdk/reference.md#host-prerequisites-and-sdk-build) into a directory of
-your choice; that section also lists its host prerequisites. Installing onto a disk image
-needs e2fsprogs' `debugfs` on the host (`brew install e2fsprogs` on macOS; Docker does not
-stand in for it). Then create, build and install a program:
-
-```bash
-export BREENIX_SDK="$HOME/breenix-sdk" BREENIX_ARCH=aarch64
-export BREENIX_IMAGE=/absolute/path/to/a/copy/of/ext2-aarch64.img
-export PATH="$BREENIX_SDK/bin:$PATH"
-breenix-new c hello-breenix            # or rust, or rust-no-std
-cd hello-breenix
-breenix-build --arch "$BREENIX_ARCH"
-breenix-image install --image "$BREENIX_IMAGE" "build/$BREENIX_ARCH/hello-breenix"
-```
-
-[Boot that disk](docs/sdk/reference.md#run-an-installed-program) and run `hello-breenix` at the
-shell. The SDK's documentation is in
-[`docs/sdk/`](docs/sdk/): the [quick start](docs/sdk/quick-start.md), the
-[reference](docs/sdk/reference.md) and [disk images](docs/sdk/disk-image.md).
+The host SDK cross-builds C, Rust std, and Rust no_std applications for
+ARM64 and x86-64. It includes Breenix C headers and libraries, the prebuilt
+Rust standard library, project templates, and tools to install programs into
+an ext2 image. An application can build outside the Breenix source tree.
+[SDK quick start](docs/sdk/quick-start.md) · [SDK reference](docs/sdk/reference.md)
 
 ## Repository layout
 
-| Path | What it holds |
-|---|---|
-| [`kernel/`](kernel/) | The kernel: ARM64 and x86-64 architecture code, memory, scheduler, filesystems, drivers, networking |
-| [`libs/`](libs/) | libbreenix, the clean-room C library (`libbreenix-libc`), graphics, font and GUI libraries |
-| [`userspace/`](userspace/) | init, the shell, utilities, GUI programs and the guest side of every suite |
-| [`sdk/`](sdk/) | The Developer SDK builder, compiler wrappers, project templates and tests |
-| [`parallels-loader/`](parallels-loader/) | The ARM64 UEFI loader used on Parallels and VMware |
-| [`xtask/`](xtask/), [`src/`](src/) | Build orchestration, the boot-stage catalog and the host-side QEMU launchers |
-| [`scripts/`](scripts/), [`docker/qemu/`](docker/qemu/) | Build, disk-image, boot and gate scripts |
-| [`tools/`](tools/) | Run Inspector, gdb-chat, the MCP server, host-test crates and Linux comparison probes |
-| [`tests/`](tests/) | Host tests, structural checks and fixtures |
-| [`vendor/`](vendor/), [`fonts/`](fonts/) | Pinned BusyBox and Unicode sources; fonts installed into guest images |
-| [`docs/`](docs/) | The boot path, effort path, suites, GUI plan, SDK and user guide |
-
-## Documentation
-
-- [`docs/boot-path.md`](docs/boot-path.md): how Breenix boots, milestone by milestone, the boot modes and the gates.
-- [`docs/efforts/`](docs/efforts/): the effort path and how each milestone is measured.
-- [`docs/suites/`](docs/suites/): the suite manifests and how a suite run is scored.
-- [`docs/gui/`](docs/gui/): the plan for graphics, the window manager, UI testing and GUI applications.
-- [`docs/sdk/`](docs/sdk/): the Developer SDK.
-- [`docs/user-guide/bsh-shell-guide.md`](docs/user-guide/bsh-shell-guide.md): the bsh shell.
-- [`docs/planning/`](docs/planning/): historical investigations and design records.
+| Path | Contents |
+| --- | --- |
+| `kernel/` | ARM64 and x86-64 kernel, drivers, and filesystem code |
+| `libs/` | Syscall wrappers, C library, graphics, and UI libraries |
+| `userspace/` | Shell, utilities, desktop apps, and guest suites |
+| `toolchain/` | Native C toolchain and its test corpus |
+| `sdk/` | SDK builder, drivers, templates, and tests |
+| `parallels-loader/` | ARM64 UEFI loader for Parallels and VMware |
+| `scripts/`, `xtask/` | Build, image, boot, and test tooling |
+| `tests/`, `tools/` | Host tests, run inspector, and other development tools |
+| `docs/` | Boot contracts, effort plans, suite manifests, and subsystem guides |
 
 ## Contributing
 
-Work is tracked in GitHub Issues. [`AGENTS.md`](AGENTS.md) and [`CLAUDE.md`](CLAUDE.md) hold the
-development rules, including the constraints on interrupt and syscall paths and the
-zero-warnings build policy. Agent skills live in [`.agents/skills/`](.agents/skills/).
+Use GitHub Issues for bug reports and work tracking. Open pull requests from
+a topic branch and include the checks relevant to your change. See the project
+instructions for target rules, debugging, and test evidence.
+[Repository instructions](AGENTS.md) · [Development workflow](CLAUDE.md)
 
 ## License
 
-The root license for Breenix material offered by its author is
-[PolyForm Noncommercial 1.0.0](LICENSE), permitting personal, research,
-educational, hobby and other noncommercial use. Commercial use of material
-under that license needs a separate license from the author.
-
-Using Breenix? I'd love to hear about it: ryan@ryanbreen.com
-
-Third-party material retains its own licenses; see [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).
+Breenix is available under the PolyForm Noncommercial License 1.0.0.
+Third-party components have their own terms.
+[License](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES)
