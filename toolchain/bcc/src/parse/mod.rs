@@ -188,6 +188,7 @@ pub(super) enum ExpressionKind<'a> {
     Offsetof(Type, Vec<Designator<'a>>),
     Sizeof(Box<Expression<'a>>),
     VaArg(Box<Expression<'a>>, Type),
+    FltRounds,
     Conditional(
         Box<Expression<'a>>,
         Box<Expression<'a>>,
@@ -916,6 +917,12 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 self.expect(")", "expected ')' after the va_arg type")?;
                 ExpressionKind::VaArg(Box::new(list), ty)
             }
+            Kind::Identifier if site.is("__builtin_flt_rounds") => {
+                self.take();
+                self.expect("(", "expected '(' after __builtin_flt_rounds")?;
+                self.expect(")", "__builtin_flt_rounds takes no arguments")?;
+                ExpressionKind::FltRounds
+            }
             Kind::Identifier if is_identifier(site) => {
                 self.take();
                 match self.lookup(&site.text) {
@@ -999,6 +1006,7 @@ fn is_identifier(token: &Lexeme) -> bool {
                 | amd64_va_list::NAME
                 | "__builtin_va_arg"
                 | "__builtin_offsetof"
+                | "__builtin_flt_rounds"
         )
 }
 

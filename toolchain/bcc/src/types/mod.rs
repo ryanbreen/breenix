@@ -3,6 +3,9 @@ use std::fmt;
 
 use crate::pp::{Lexeme, Target};
 
+mod float;
+pub(crate) use float::{floor_log10_pow2, FloatFormat};
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Qualifiers {
     pub constant: bool,

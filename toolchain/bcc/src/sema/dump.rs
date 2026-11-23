@@ -175,6 +175,7 @@ fn expression(out: &mut impl Write, expr: &Expression<'_>) -> io::Result<()> {
         ExpressionKind::StaticLiteral(_) => ("compound-literal", "lvalue"),
         ExpressionKind::Integer(_) => ("integer-constant", "rvalue"),
         ExpressionKind::Float(_) => ("floating-constant", "rvalue"),
+        ExpressionKind::FltRounds => ("__builtin_flt_rounds", "rvalue"),
         ExpressionKind::Unary(op, operand) => {
             expression(out, operand)?;
             let value = if *op == super::Unary::Dereference {

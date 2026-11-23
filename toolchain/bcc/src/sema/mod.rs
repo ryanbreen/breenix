@@ -207,6 +207,7 @@ pub enum ExpressionKind<'a> {
         source: Box<Expression<'a>>,
     },
     VaEnd(Box<Expression<'a>>),
+    FltRounds,
     Call {
         callee: Box<Expression<'a>>,
         arguments: Vec<Argument<'a>>,
@@ -851,10 +852,7 @@ impl<'a> FunctionBody<'a, '_> {
                 Type::new(Kind::Integer(Integer::Int)),
             ),
             Syntax::Number => {
-                if let Some((bits, ty)) = float::literal(&site.text) {
-                    if ty == Kind::LongDouble && self.target != Target::X86_64 {
-                        return Err(site.error("binary128 literals require the AArch64 backend"));
-                    }
+                if let Some((bits, ty)) = float::literal(&site.text, self.target) {
                     (ExpressionKind::Float(bits), Type::new(ty))
                 } else {
                     let (value, integer) = integer_literal(site, self.target)?;
@@ -864,6 +862,10 @@ impl<'a> FunctionBody<'a, '_> {
                     )
                 }
             }
+            Syntax::FltRounds => (
+                ExpressionKind::FltRounds,
+                Type::new(Kind::Integer(Integer::Int)),
+            ),
             Syntax::Character => {
                 let value = pp::character_bits(&site.text, self.target)
                     .ok_or_else(|| site.error("invalid character constant"))?;

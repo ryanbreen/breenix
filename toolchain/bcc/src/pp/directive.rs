@@ -83,6 +83,9 @@ pub struct Preprocessed(Vec<Output>);
 
 impl Preprocessed {
     pub(crate) fn tokens(&self) -> impl Iterator<Item = &Lexeme> {
+        // Keep pragmas in serialized preprocessing output. For STDC
+        // FENV_ACCESS, bcc uses the conservative ON behavior throughout:
+        // runtime FP operations stay in execution order under the live mode.
         self.0.iter().filter_map(|item| match item {
             Output::Token(token) if token.kind != Kind::Newline => Some(token),
             _ => None,

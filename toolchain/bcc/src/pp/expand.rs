@@ -4,6 +4,8 @@ use std::fmt;
 use std::path::Path;
 use std::rc::Rc;
 
+use crate::types::{Float, FloatFormat, Kind as TypeKind};
+
 use super::directive::{Diagnostic, Target};
 use super::literal;
 use super::token::{token_prefix, LexContext};
@@ -224,7 +226,7 @@ impl Expander {
     }
 
     pub(super) fn is_defined(&self, name: &str) -> bool {
-        builtin(name, self.target).is_some() || self.definitions.contains_key(name)
+        is_builtin(name, self.target) || self.definitions.contains_key(name)
     }
 
     pub(super) fn define(&mut self, directive: &Lexeme, args: &[Lexeme]) -> Result<(), Diagnostic> {
@@ -295,8 +297,7 @@ impl Expander {
                 result.push(token);
                 continue;
             }
-            if let Some(token) = expand_builtin(&token, self.target) {
-                result.push(token);
+            if expand_builtin(&token, self.target, &mut result) {
                 continue;
             }
             let Some(mac) = self.definitions.get(&token.text) else {
@@ -483,17 +484,81 @@ fn builtin(name: &str, target: Target) -> Option<(&str, Kind)> {
     Some(entry)
 }
 
-fn expand_builtin(token: &Lexeme, target: Target) -> Option<Lexeme> {
-    let (text, kind) = builtin(&token.text, target)?;
-    Some(match token.text.as_ref() {
-        "__FILE__" => token.respell(literal::quote(&token.site.file), kind),
-        "__LINE__" => token.respell(token.site.loc.line.to_string(), kind),
-        _ => token.respell(text, kind),
-    })
+// N1570 5.2.4.2.2. The floating limits are exact hexadecimal constants
+// with the type suffix required by the header.
+fn float_builtin(name: &str, target: Target) -> Option<String> {
+    let (prefix, property) = name
+        .strip_prefix("__")?
+        .strip_suffix("__")?
+        .split_once('_')?;
+    let (ty, suffix) = match prefix {
+        "FLT" => (TypeKind::Float(Float::Single), "F"),
+        "DBL" => (TypeKind::Float(Float::Double), ""),
+        "LDBL" => (TypeKind::LongDouble, "L"),
+        _ => return None,
+    };
+    let format = FloatFormat::of(&ty, target);
+    let fraction = format.fraction as i32;
+    let min = format.min_exponent();
+    let max = format.bias;
+    let value = match property {
+        "RADIX" if prefix == "FLT" => 2,
+        "MANT_DIG" => fraction + 1,
+        "DIG" => format.decimal_digits(),
+        "DECIMAL_DIG" => format.roundtrip_digits(),
+        "MIN_EXP" => min + 1,
+        "MAX_EXP" => max + 1,
+        "MIN_10_EXP" => format.min_decimal_exponent(),
+        "MAX_10_EXP" => format.max_decimal_exponent(),
+        "HAS_DENORM" => 1,
+        "MIN" => return Some(format!("0x1p{min}{suffix}")),
+        "MAX" => {
+            let significand = (1_u128 << (fraction + 1)) - 1;
+            return Some(format!("0x{significand:x}p{}{suffix}", max - fraction));
+        }
+        "EPSILON" => return Some(format!("0x1p-{fraction}{suffix}")),
+        "DENORM_MIN" => {
+            return Some(format!("0x1p{}{suffix}", format.min_subnormal_exponent()));
+        }
+        _ => return None,
+    };
+    Some(value.to_string())
+}
+
+fn is_builtin(name: &str, target: Target) -> bool {
+    builtin(name, target).is_some() || float_builtin(name, target).is_some()
+}
+
+fn expand_builtin(token: &Lexeme, target: Target, result: &mut Vec<Lexeme>) -> bool {
+    if let Some((text, kind)) = builtin(&token.text, target) {
+        result.push(match token.text.as_ref() {
+            "__FILE__" => token.respell(literal::quote(&token.site.file), kind),
+            "__LINE__" => token.respell(token.site.loc.line.to_string(), kind),
+            _ => token.respell(text, kind),
+        });
+    } else if let Some(text) = float_builtin(&token.text, target) {
+        if let Some(magnitude) = text.strip_prefix('-') {
+            result.push(token.respell("(", Kind::Punctuator));
+            for (text, kind) in [
+                ("-", Kind::Punctuator),
+                (magnitude, Kind::Number),
+                (")", Kind::Punctuator),
+            ] {
+                let mut part = token.respell(text, kind);
+                part.space_before = false;
+                result.push(part);
+            }
+        } else {
+            result.push(token.respell(text, Kind::Number));
+        }
+    } else {
+        return false;
+    }
+    true
 }
 
 fn check_macro_name(name: &Lexeme, target: Target) -> Result<(), Diagnostic> {
-    if builtin(&name.text, target).is_some()
+    if is_builtin(&name.text, target)
         || matches!(name.text.as_ref(), "defined" | "__VA_ARGS__" | "_Pragma")
     {
         return Err(name.error("reserved preprocessing identifier"));

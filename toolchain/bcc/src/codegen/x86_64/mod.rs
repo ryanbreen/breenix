@@ -460,6 +460,7 @@ impl<'src> Emitter<'_, 'src> {
             ExpressionKind::VaCopy { dest, source } => self.va_copy(dest, source)?,
             // AMD64 va_end has no resources to release. Evaluate the operand.
             ExpressionKind::VaEnd(list) => self.value(list)?,
+            ExpressionKind::FltRounds => self.flt_rounds(),
             ExpressionKind::Call { callee, arguments } => {
                 self.call(callee, arguments, &expr.ty)?;
                 self.normalize_integer(&expr.ty);
@@ -1030,6 +1031,22 @@ impl<'src> Emitter<'_, 'src> {
         writeln!(
             self.text,
             "    mov {gp}, 0x{bits:x}\n    {mov} xmm{register}, {gp}"
+        )
+        .unwrap();
+    }
+
+    fn flt_rounds(&mut self) {
+        // Intel SDM Vol. 1 §§4.8.4 and 10.2.3.2: MXCSR.RC bits 14:13
+        // encode nearest, down, up, and truncation. N1570 5.2.4.2.2 encodes
+        // those as 1, 3, 2, 0, packed here as two bits per RC value.
+        const C_ROUNDS: u8 = 1 | (3 << 2) | (2 << 4);
+        self.adjust_stack("sub", 16);
+        self.text
+            .push_str("    stmxcsr dword [rsp]\n    mov ecx, dword [rsp]\n");
+        self.adjust_stack("add", 16);
+        writeln!(
+            self.text,
+            "    shr ecx, 13\n    and ecx, 3\n    add ecx, ecx\n    mov eax, {C_ROUNDS}\n    shr eax, cl\n    and eax, 3"
         )
         .unwrap();
     }

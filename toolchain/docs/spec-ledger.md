@@ -249,6 +249,24 @@ conversion truncates with a temporary x87 control word and restores
 the saved control word. AArch64 code emission is scheduled for A3 and
 AAPCS64 binary128 `long double` lowering for A4.
 
+### Floating limits and environment (25.9b)
+
+N1570 §§5.2.4.2.2, 6.3.1.4–5 and 6.4.4.2 define the limits,
+conversions and literals. The preprocessor and constant evaluator use the
+same target format. They compute the limits and round literals using
+integer arithmetic, with x87 extended precision on AMD64 and binary128
+on AArch64. `FLT_EVAL_METHOD` is 0.
+
+N1570 §7.6 and Annex F describe floating-state access. bcc accepts
+`#pragma STDC FENV_ACCESS` and uses conservative ON behavior throughout
+the translation unit. Arithmetic and conversions in executable code use
+the live environment, including expressions with only literal operands.
+The pinned Clang Language Extensions document the spelling and return
+values of `__builtin_flt_rounds()`. On AMD64 the builtin uses
+`STMXCSR` and maps RC bits 14:13 to the C values. Intel SDM Vol. 1
+§§4.8.4, 8.1.5 and 10.2.3.2 specify the x87 and SSE rounding controls.
+The AArch64 backend still needs to lower the rounding query to FPCR.
+
 ### AMD64 local-exec thread storage (25.7c)
 
 N1570 §§6.2.2, 6.2.4, 6.7.1, 6.7.9 and 6.9.2 govern linkage, storage
