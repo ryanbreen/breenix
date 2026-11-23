@@ -161,7 +161,7 @@ class ProgressTest(unittest.TestCase):
             self.assertGreater(limit, 10_000)
             self.assertLess(limit, monitor['STALL_SECONDS'] * 1000)
 
-    def test_toolchain_reference_links_and_dirent_glob_have_named_allowances(self):
+    def test_toolchain_reference_links_and_libc_have_named_allowances(self):
         runner = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
         self.assertIn('pub const DEFAULT_CASE_LIMIT_MS: u64 = 10_000;', runner)
         table = runner.split('pub const NAMED_CASE_ALLOWANCES:', 1)[1].split(';', 1)[0]
@@ -171,7 +171,9 @@ class ProgressTest(unittest.TestCase):
         names = {f"{category['id']}/{item['id']}" for category in manifest['categories']
                  for item in category['cases']}
         monitor = runpy.run_path(str(ROOT / 'scripts/boot_progress.py'))
-        for case in ('linker/links-reference-objects', 'libc-suite/dirent-glob'):
+        for case in ('linker/links-reference-objects', 'libc-suite/dirent-glob',
+                     'libc-suite/getopt-env', 'libc-suite/locale-wchar', 'libc-suite/math',
+                     'libc-suite/pthread', 'libc-suite/stdio', 'libc-suite/string-stdlib'):
             with self.subTest(case=case):
                 limits = [int(limit.replace('_', '')) for suite, name, limit in entries
                           if (suite, name) == ('toolchain', case)]
