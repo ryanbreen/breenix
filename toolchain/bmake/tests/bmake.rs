@@ -805,34 +805,173 @@ fn member_archive(seconds: u64) -> String {
     format!("!<arch>\n{:<16}{date:<12}{:<6}{:<6}{:<8}{:<10}`\nxx", "member.o/", 0, 0, 644, 2)
 }
 
-#[test]
-fn unsupported_25_6c_construct_is_located_error() {
-    for (makefile, line, construct) in [
-        ("all: .WAIT\n", 1, ".WAIT"),
-        (".WAIT:\nall:\n", 1, ".WAIT"),
-        ("all:\n.NOTPARALLEL:\n", 2, ".NOTPARALLEL"),
-    ] {
-        let project = Project::new(makefile);
-        let output = project.build();
-        assert_eq!(output.status.code(), Some(2), "{output:?}");
-        let stderr = String::from_utf8(output.stderr).unwrap();
-        assert!(stderr.contains(&format!("project.mk:{line}:")), "{stderr}");
-        assert!(stderr.contains(construct), "{stderr}");
-        assert!(stderr.contains("not supported until 25.6c"), "{stderr}");
-        assert!(!project.0.join("ran").exists());
-        assert!(!project.0.join("generated.mk").exists());
-    }
+// Each append is one short record. Files gate the recipes; the clock only
+// bounds a fixture whose peer never starts.
+const RECORD_JOB: &str = r#"
+set -eu
+printf '+ %s\n' "$1" >> jobs.log
+: > "$1.entered"
+deadline=$(($(date +%s) + 5))
+for marker in "$@"; do
+    while [ ! -f "$marker.entered" ]; do
+        [ "$(date +%s)" -lt "$deadline" ] || exit 44
+    done
+done
+printf -- '- %s\n' "$1" >> jobs.log
+: > "$1.done"
+"#;
 
-    let project = Project::new("all:\n\t@printf wrong > ran\n");
-    let output = project
-        .command()
-        .args(["-f", "project.mk", "-j2"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("<command line>:1:"), "{stderr}");
-    assert!(stderr.contains("-j"), "{stderr}");
-    assert!(stderr.contains("not supported until 25.6c"), "{stderr}");
-    assert!(!project.0.join("ran").exists());
+fn check_jobs(project: &Project, jobs: &[&str], expected_peak: usize) {
+    use std::collections::HashSet;
+
+    let log = fs::read_to_string(project.0.join("jobs.log")).unwrap();
+    let mut active = HashSet::new();
+    let mut seen = HashSet::new();
+    let mut peak = 0;
+    for event in log.lines() {
+        let (kind, job) = event.split_once(' ').unwrap();
+        match kind {
+            "+" => {
+                assert!(seen.insert(job) && active.insert(job), "{log}");
+                peak = peak.max(active.len());
+            }
+            "-" => assert!(active.remove(job), "{log}"),
+            _ => panic!("invalid job event {event}"),
+        }
+    }
+    assert_eq!(seen, jobs.iter().copied().collect(), "{log}");
+    assert!(active.is_empty(), "{log}");
+    assert_eq!(peak, expected_peak, "{log}");
+}
+
+#[test]
+fn j_never_exceeds_tokens_across_submake() {
+    let project = Project::new(concat!(
+        "all: outer recurse\n",
+        "outer:\n\t@/bin/sh record outer nested last\n",
+        "recurse:\n\t@$(MAKE) -f child.mk\n",
+    ));
+    project.fixture("record", RECORD_JOB, 0);
+    project.fixture(
+        "child.mk",
+        concat!(
+            "all: nested more last\n",
+            "nested:\n\t@/bin/sh record nested outer\n",
+            "more:\n\t@/bin/sh record more\n",
+            "last:\n\t@/bin/sh record last\n",
+        ),
+        0,
+    );
+    expect_stdout(
+        project
+            .command()
+            .args(["-j", "2", "-f", "project.mk"])
+            .output()
+            .unwrap(),
+        "",
+    );
+    check_jobs(&project, &["outer", "nested", "more", "last"], 2);
+}
+
+#[test]
+fn wait_orders_prerequisites() {
+    let project = Project::new(concat!(
+        ".WAIT:\n",
+        "all: a b .WAIT right\n",
+        "a:\n\t@/bin/sh record a b\n",
+        "b:\n\t@/bin/sh record b a\n",
+        "right: right-input\n",
+        "right-input:\n\t@test -f a.done && test -f b.done && touch right-input\n",
+    ));
+    project.fixture("record", RECORD_JOB, 0);
+    expect_stdout(
+        project
+            .command()
+            .args(["-j4", "-f", "project.mk"])
+            .output()
+            .unwrap(),
+        "",
+    );
+    assert!(project.0.join("right-input").is_file());
+    check_jobs(&project, &["a", "b"], 2);
+
+    fs::remove_file(project.0.join("a.done")).unwrap();
+    fs::remove_file(project.0.join("b.done")).unwrap();
+    fs::remove_file(project.0.join("jobs.log")).unwrap();
+    // Asking for the right-hand target alone does not select the left-hand group.
+    expect_stdout(
+        project
+            .command()
+            .args(["-j4", "-f", "project.mk", "right"])
+            .output()
+            .unwrap(),
+        "",
+    );
+    assert!(!project.0.join("jobs.log").exists());
+}
+
+#[test]
+fn notparallel_serializes() {
+    let project = Project::new(concat!(
+        ".NOTPARALLEL:\n",
+        "all: first second recurse\n",
+        "first:\n\t@/bin/sh record first\n",
+        "second:\n\t@test -f first.done && /bin/sh record second\n",
+        "recurse:\n\t@test -f second.done && $(MAKE) -f child.mk\n",
+    ));
+    project.fixture("record", RECORD_JOB, 0);
+    project.fixture(
+        "child.mk",
+        concat!(
+            "all: child-a child-b\n",
+            "child-a:\n\t@/bin/sh record child-a child-b\n",
+            "child-b:\n\t@/bin/sh record child-b child-a\n",
+        ),
+        0,
+    );
+    expect_stdout(
+        project
+            .command()
+            .args(["-j2", "-f", "project.mk"])
+            .output()
+            .unwrap(),
+        "",
+    );
+    check_jobs(&project, &["first", "second", "child-a", "child-b"], 2);
+}
+
+#[test]
+fn signal_removes_partial_target() {
+    let project = Project::new(concat!(
+        ".PRECIOUS: keep\n",
+        "partial keep:\n\t@exec /bin/sh interrupt '$@'\n",
+    ));
+    project.fixture(
+        "interrupt",
+        "printf partial > \"$1\"\nkill -TERM \"$PPID\"\n",
+        0,
+    );
+
+    for (target, removed) in [("partial", true), ("keep", false)] {
+        let output = project
+            .command()
+            .args(["-f", "project.mk", target])
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(!output.status.success(), "{target}: {stderr}");
+        assert!(stderr.contains("signal 15"), "{target}: {stderr}");
+        assert_eq!(
+            stderr.contains(&format!("removed interrupted target '{target}'")),
+            removed,
+            "{stderr}",
+        );
+        assert_eq!(project.0.join(target).exists(), !removed);
+        if !removed {
+            assert_eq!(
+                fs::read_to_string(project.0.join(target)).unwrap(),
+                "partial"
+            );
+        }
+    }
 }
