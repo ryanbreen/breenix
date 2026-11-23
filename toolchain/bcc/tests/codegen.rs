@@ -175,6 +175,26 @@ int main(void) {
 
 #[cfg(target_arch = "aarch64")]
 #[test]
+fn aarch64_normalizes_promoted_identifier_list_bool() {
+    // N1570 6.3.1.2p1, 6.5.2.2p6 and 6.9.1p10. Neither the register
+    // nor the stack argument can be converted by truncating its low byte.
+    aarch64_check_exit(&[r"
+static int old(a, b, c, d, e, f, g, h, i)
+    _Bool a, i;
+    int b, c, d, e, f, g, h;
+{
+    if (a != 1) return 1;
+    if (i != 1) return 2;
+    return 42;
+}
+int main(void) {
+    return old(2, 0, 0, 0, 0, 0, 0, 0, 256);
+}
+"]);
+}
+
+#[cfg(target_arch = "aarch64")]
+#[test]
 fn aarch64_links_and_runs_initialized_file_scope_objects() {
     // N1570 6.7.9 and 6.9.2. Cross a translation-unit boundary for
     // external data and read a privately bound array in its defining file.

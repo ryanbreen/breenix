@@ -106,6 +106,49 @@ fn aarch64_defers_atomic_accesses() {
     assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
 }
 
+#[test]
+fn aarch64_diagnoses_unused_atomic_types() {
+    let scratch = Scratch(std::env::temp_dir().join(format!(
+        "breenix-bcc-c11-{}-atomic-types",
+        std::process::id()
+    )));
+    fs::create_dir(&scratch.0).unwrap();
+    let source = scratch.0.join("atomic-type.c");
+    let assembly = scratch.0.join("atomic-type.s");
+    let mut mismatches = Vec::new();
+    for declaration in [
+        "_Atomic int counter;",
+        "int f(_Atomic(int) *);",
+        "typedef _Atomic(int) Counter;",
+    ] {
+        fs::write(&source, declaration).unwrap();
+        let column = declaration.find("_Atomic").unwrap() + 1;
+        let expected = format!(
+            "{}:1:{column}: error: atomic types are deferred to ARM 25.9d\n",
+            source.display()
+        );
+        for stage in ["-S", "-fsyntax-only", "--dump-types"] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_bcc"));
+            command.args(["--target=aarch64", stage]).arg(&source);
+            if stage == "-S" {
+                command.arg("-o").arg(&assembly);
+            }
+            let output = command.output().unwrap();
+            if output.status.code() != Some(1)
+                || !output.stdout.is_empty()
+                || output.stderr != expected.as_bytes()
+                || assembly.exists()
+            {
+                mismatches.push(format!("{stage} {declaration}: {output:?}"));
+            }
+            if assembly.exists() {
+                fs::remove_file(&assembly).unwrap();
+            }
+        }
+    }
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+}
+
 // N1570 6.5.2.4, 6.5.16.2 and 7.17; Intel SDM Vol. 3, memory ordering.
 #[test]
 fn atomic_fetch_add_seq_cst() {
