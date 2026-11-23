@@ -44,8 +44,8 @@ fn aarch64_reads_tpidr_el0() {
 
 #[test]
 fn aarch64_mrs_fpcr_fpsr_encodings() {
-    // DDI 0487 M.b C6.2.286 (MRS), D24.2.76 (FPCR) and
-    // D24.2.77 (FPSR): op0=3, op1=3, CRn=4, CRm=4, op2=0/1.
+    // DDI 0487 M.b C6.2.286 (MRS), C5.2.8 (FPCR) and
+    // C5.2.10 (FPSR): op0=3, op1=3, CRn=4, CRm=4, op2=0/1.
     let text = aarch64_text("mrs x0, fpcr\nmrs x19, FPSR\nmrs xzr, fpcr");
     assert_eq!(text, [0xd53b_4400u32, 0xd53b_4433, 0xd53b_441f].map(u32::to_le_bytes).concat());
 }
