@@ -317,8 +317,8 @@ fn r_output_links_like_its_parts() {
         SHT_RELA
     );
 
-    // The same script controls both links; all PT_LOAD bytes include the
-    // ELF and program headers, per userspace/programs/linker.ld (FILEHDR).
+    // Both links use FILEHDR in userspace/programs/linker.ld, so comparing
+    // PT_LOAD bytes also compares the ELF and program headers.
     let script = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../userspace/programs/linker.ld"

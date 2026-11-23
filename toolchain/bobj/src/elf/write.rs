@@ -238,8 +238,8 @@ pub fn write_rel(
 }
 
 /// Emit ET_REL with caller-laid-out sections, relocations and groups.
-/// Section and symbol index zero are implicit; the caller orders locals
-/// before non-locals. The symbol table immediately follows the sections.
+/// The null section and undefined symbol are implicit. The caller orders
+/// locals before non-locals. The symbol table follows the sections.
 pub fn write_rel_object(
     machine: u16,
     sections: &[RelocatableSection<'_>],

@@ -65,7 +65,7 @@ impl<'a> Partial<'a> {
     }
 
     fn push(&mut self, name: &'a [u8], header: SectionHeader) -> Option<u16> {
-        // Section zero and the three generated tables are implicit.
+        // The null section and the three generated tables are implicit.
         let index = u16::try_from(self.sections.len() + 1).ok()?;
         if index >= SHN_LORESERVE - 3 {
             return None;
@@ -83,7 +83,7 @@ impl<'a> Partial<'a> {
     }
 
     fn collect_sections(&mut self, objects: &'a [Object]) -> Result<()> {
-        // The group headers must precede all their members (gABI §3.9).
+        // Write group headers before their member headers, as required by gABI §3.9.
         for (object_id, object) in objects.iter().enumerate() {
             for group in &object.groups {
                 let section = &object.sections[group.section];
