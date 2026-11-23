@@ -154,9 +154,20 @@ impl<'src> Emitter<'_, 'src> {
                 let mut default = end.clone();
                 for (value, id) in cases {
                     let label = self.flow_label(*id);
-                    if let Some(value) = value {
-                        constant(&mut self.text, "x9", *value);
-                        writeln!(self.text, "    cmp x0, x9\n    b.eq {label}").unwrap();
+                    if let Some(crate::sema::CaseRange { low, high }) = value {
+                        constant(&mut self.text, "x9", *low);
+                        if low == high {
+                            writeln!(self.text, "    cmp x0, x9\n    b.eq {label}").unwrap();
+                        } else {
+                            let next = self.label();
+                            let signed = matches!(ty.kind, Kind::Integer(integer)
+                                if integer.is_signed(Target::Aarch64));
+                            let (below, within) = if signed { ("lt", "le") } else { ("lo", "ls") };
+                            writeln!(self.text, "    cmp x0, x9\n    b.{below} {next}").unwrap();
+                            constant(&mut self.text, "x9", *high);
+                            writeln!(self.text, "    cmp x0, x9\n    b.{within} {label}\n{next}:")
+                                .unwrap();
+                        }
                     } else {
                         default = label;
                     }

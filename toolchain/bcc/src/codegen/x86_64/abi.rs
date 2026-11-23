@@ -79,8 +79,8 @@ fn classify_fields(
     records: &[Record<'_>],
     classes: &mut [Class; 2],
 ) -> bool {
-    // N1570 §6.7.2.1p18: the flexible member contributes no data.
-    if matches!(ty.kind, Kind::Array(_, 0)) {
+    // Flexible and GNU zero-length array members contribute no data.
+    if matches!(ty.kind, Kind::Array(_, None | Some(0))) {
         return true;
     }
     let layout = ty.layout().unwrap();
@@ -107,7 +107,7 @@ fn classify_fields(
         }
         Kind::Array(element, count) => {
             let stride = element.layout().unwrap().size;
-            for index in 0..*count {
+            for index in 0..count.unwrap() {
                 if !classify_fields(element, offset + index * stride, records, classes) {
                     return false;
                 }

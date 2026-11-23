@@ -3,8 +3,7 @@
 use super::*;
 
 pub(crate) fn type_alignment(ty: &Type, site: &Lexeme) -> Result<usize, Diagnostic> {
-    ty.layout()
-        .filter(|layout| layout.size != 0)
+    ty.complete_layout()
         .map(|layout| layout.align)
         .ok_or_else(|| site.error("_Alignof requires a complete object type"))
 }
@@ -37,10 +36,12 @@ impl<'a> FunctionBody<'a, '_> {
     ) -> Result<Expression<'a>, Diagnostic> {
         let locals = self.locals.len();
         let has_alloca = self.has_alloca;
+        let has_statement_expressions = self.has_statement_expressions;
         let literals = self.static_literals.as_ref().map(|(_, saved)| saved.len());
         let result = self.expression(expr);
         self.locals.truncate(locals);
         self.has_alloca = has_alloca;
+        self.has_statement_expressions = has_statement_expressions;
         if let Some((_, saved)) = &mut self.static_literals {
             saved.truncate(literals.unwrap());
         }
@@ -59,7 +60,7 @@ impl<'a> FunctionBody<'a, '_> {
         let mut default = None;
         for (index, association) in associations.iter().enumerate() {
             if let Some(ty) = &association.ty {
-                if ty.layout().is_none_or(|layout| layout.size == 0) {
+                if ty.complete_layout().is_none() {
                     return Err(association
                         .site
                         .error("generic association requires a complete object type"));
@@ -150,6 +151,9 @@ impl<'a> FunctionBody<'a, '_> {
                         return Err(name.error("offsetof cannot designate a bit-field"));
                     }
                     (part, ty)
+                }
+                parse::Designator::Range(..) => {
+                    unreachable!("offsetof disallows range designators")
                 }
                 parse::Designator::Index(index) => {
                     let index = self.unevaluated(index)?;

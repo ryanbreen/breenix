@@ -288,7 +288,7 @@ pub enum Kind {
     Void,
     Integer(Integer),
     Pointer(Box<Type>),
-    Array(Box<Type>, usize),
+    Array(Box<Type>, Option<usize>),
     Function {
         result: Box<Type>,
         params: Vec<Type>,
@@ -337,7 +337,7 @@ impl Type {
         match (&self.kind, &other.kind) {
             (Kind::Pointer(a), Kind::Pointer(b)) => a.compatible(b),
             (Kind::Array(a, m), Kind::Array(b, n)) => {
-                (*m == 0 || *n == 0 || m == n) && a.compatible(b)
+                (m.is_none() || n.is_none() || m == n) && a.compatible(b)
             }
             (
                 Kind::Function {
@@ -447,12 +447,19 @@ impl Type {
             Kind::Array(element, count) => {
                 let element = element.layout()?;
                 Some(Layout {
-                    size: element.size.checked_mul(*count)?,
+                    size: element.size.checked_mul(count.unwrap_or(0))?,
                     align: element.align,
                 })
             }
             Kind::Void | Kind::Function { .. } => None,
         }
+    }
+
+    pub(crate) fn complete_layout(&self) -> Option<Layout> {
+        if matches!(self.kind, Kind::Array(_, None)) {
+            return None;
+        }
+        self.layout()
     }
 
     // N1570 6.7.7: render a type name as a specifier and abstract declarator.
@@ -489,7 +496,9 @@ impl Type {
                     pointee.declarator(out, pointer)
                 }
             }
-            Kind::Array(element, len) => element.declarator(out, &format!("{decl}[{len}]")),
+            Kind::Array(element, len) => {
+                element.declarator(out, &format!("{decl}[{}]", len.unwrap_or(0)))
+            }
             Kind::Function {
                 result,
                 params,

@@ -254,7 +254,7 @@ impl<'a> FunctionBody<'a, '_> {
         }
     }
 
-    fn temporary(&mut self, site: &'a Lexeme, ty: &Type) -> usize {
+    pub(super) fn temporary(&mut self, site: &'a Lexeme, ty: &Type) -> usize {
         let local = self.locals.len();
         self.locals.push(Local {
             object: Object {

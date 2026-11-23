@@ -210,8 +210,7 @@ fn check_type(name: &Lexeme, ty: &Type) -> Result<(), Diagnostic> {
 
 pub(super) fn check_layout(ty: &Type, site: &Position) -> Result<(), Diagnostic> {
     let size = ty
-        .layout()
-        .filter(|layout| layout.size != 0)
+        .complete_layout()
         .ok_or_else(|| {
             Diagnostic::new(
                 site,
@@ -240,7 +239,7 @@ pub(super) fn merge_types(ty: &mut Type, previous: &Type) -> Option<()> {
         if let (Kind::Array(element, count), Kind::Array(prior_element, prior_count)) =
             (&mut ty.kind, &previous.kind)
         {
-            if element == prior_element && (*count == 0 || *prior_count == 0) {
+            if element == prior_element && (count.is_none() || prior_count.is_none()) {
                 *count = (*count).max(*prior_count);
                 return Some(());
             }
@@ -337,10 +336,19 @@ pub(super) fn encode_initializer<'a>(
 }
 
 fn null_address(expr: &Expression<'_>, target: Target) -> bool {
-    if let (Kind::Pointer(_), ExpressionKind::Cast(operand)) = (&expr.ty.kind, &expr.kind) {
-        null_address(operand, target)
-    } else {
-        body::constant_integer(expr, target) == Some(0)
+    match (&expr.ty.kind, &expr.kind) {
+        (Kind::Pointer(_), ExpressionKind::Cast(operand)) => null_address(operand, target),
+        (
+            Kind::Pointer(_),
+            ExpressionKind::OmittedConditional {
+                value, fallback, ..
+            },
+        ) => {
+            let use_fallback = float::constant_truth(value, target)
+                .map_or_else(|| null_address(value, target), |truth| !truth);
+            use_fallback && null_address(fallback, target)
+        }
+        _ => body::constant_integer(expr, target) == Some(0),
     }
 }
 
@@ -353,6 +361,19 @@ fn address_constant<'a>(
     match &expr.kind {
         ExpressionKind::Unary(Unary::Address, operand) => object_address(operand, target, locals),
         ExpressionKind::Cast(operand) => address_constant(operand, target, locals),
+        ExpressionKind::OmittedConditional {
+            value, fallback, ..
+        } => {
+            if let Some(truth) = float::constant_truth(value, target) {
+                address_constant(if truth { value } else { fallback }, target, locals)
+            } else if let Some(address) = address_constant(value, target, locals) {
+                Some(address)
+            } else {
+                null_address(value, target)
+                    .then(|| address_constant(fallback, target, locals))
+                    .flatten()
+            }
+        }
         ExpressionKind::Binary {
             op: op @ (Binary::Add | Binary::Subtract),
             left,

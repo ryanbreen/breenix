@@ -200,12 +200,24 @@ impl<'src> Emitter<'_, 'src> {
                 let mut default = end.clone();
                 for (value, id) in cases {
                     let label = self.flow_label(*id);
-                    if let Some(value) = value {
-                        writeln!(
-                            self.text,
-                            "    mov rcx, 0x{value:x}\n    cmp rax, rcx\n    je {label}"
-                        )
-                        .unwrap();
+                    if let Some(crate::sema::CaseRange { low, high }) = value {
+                        if low == high {
+                            writeln!(
+                                self.text,
+                                "    mov rcx, 0x{low:x}\n    cmp rax, rcx\n    je {label}"
+                            )
+                            .unwrap();
+                        } else {
+                            let next = self.label();
+                            let signed = matches!(ty.kind, Kind::Integer(integer)
+                                if integer.is_signed(Target::X86_64));
+                            let (below, within) =
+                                if signed { ("jl", "jle") } else { ("jb", "jbe") };
+                            writeln!(
+                                self.text,
+                                "    mov rcx, 0x{low:x}\n    cmp rax, rcx\n    {below} {next}\n    mov rcx, 0x{high:x}\n    cmp rax, rcx\n    {within} {label}\n{next}:"
+                            ).unwrap();
+                        }
                     } else {
                         default = label;
                     }
@@ -223,6 +235,7 @@ impl<'src> Emitter<'_, 'src> {
                 self.statement(body, result, epilogue)?;
             }
             Statement::Jump(id) => {
+                self.restore_statement_stack(*id);
                 if self.optimize {
                     self.scan.jump(*id);
                 }
@@ -231,6 +244,70 @@ impl<'src> Emitter<'_, 'src> {
             }
         }
         Ok(())
+    }
+
+    pub(super) fn statement_expression(
+        &mut self,
+        region: usize,
+        statements: &[Statement<'src>],
+        value: Option<&Expression<'src>>,
+        expr: &Expression<'src>,
+    ) -> Result<(), Diagnostic> {
+        let (function, epilogue) = self.return_context.as_ref().unwrap();
+        let (function, epilogue) = (*function, epilogue.clone());
+        let Kind::Function { result, .. } = &function.ty.kind else {
+            unreachable!()
+        };
+        let slot = self.frame_slot(Layout { size: 8, align: 8 }, expr.position())?;
+        if let Some(base) = &self.alloca_base {
+            // alloca can move the dynamic stack between entry and a goto.
+            writeln!(
+                self.text,
+                "    mov r11, rsp\n    sub r11, qword {}\n    mov qword {}, r11",
+                base.memory(0),
+                slot.memory(0)
+            )
+            .unwrap();
+        } else {
+            writeln!(self.text, "    mov qword {}, rsp", slot.memory(0)).unwrap();
+        }
+        self.statement_stack.push((region, slot));
+        self.statements(statements, result, &epilogue)?;
+        if let Some(value) = value {
+            self.converted(value, &expr.ty)?;
+        }
+        self.statement_stack.pop();
+        Ok(())
+    }
+
+    fn restore_statement_stack(&mut self, id: usize) {
+        let Some((current, _)) = self.statement_stack.last() else {
+            return;
+        };
+        let (function, _) = self.return_context.as_ref().unwrap();
+        let target = function.jump_regions.get(&id);
+        if target == Some(current) {
+            return;
+        }
+        // A jump out discards the parent expression's temporary spills
+        // while retaining any stack allocation made by alloca.
+        let target_entry = target.map(|target| {
+            &self
+                .statement_stack
+                .iter()
+                .find(|(region, _)| region == target)
+                .unwrap()
+                .1
+        });
+        if let Some(base) = &self.alloca_base {
+            writeln!(self.text, "    mov rsp, qword {}", base.memory(0)).unwrap();
+            if let Some(entry) = target_entry {
+                writeln!(self.text, "    add rsp, qword {}", entry.memory(0)).unwrap();
+            }
+        } else {
+            let entry = target_entry.or(self.statement_base.as_ref()).unwrap();
+            writeln!(self.text, "    mov rsp, qword {}", entry.memory(0)).unwrap();
+        }
     }
 
     fn flow_label(&mut self, id: usize) -> String {

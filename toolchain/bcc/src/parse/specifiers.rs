@@ -228,6 +228,18 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                         specs.storage.anonymous_record = self.records[record.id].tag.is_none();
                         Some(ty)
                     }
+                    _ if self.is_typeof(token) => {
+                        self.take();
+                        self.expect("(", "expected '(' after typeof")?;
+                        let ty = if self.peek().is_some_and(|token| self.starts_type(token)) {
+                            self.type_name(depth + 1)?
+                        } else {
+                            let expression = self.expression(depth + 1)?;
+                            crate::sema::typeof_expression(expression, self.expression_scope())?
+                        };
+                        self.expect(")", "expected ')' after the typeof operand")?;
+                        Some(ty)
+                    }
                     "enum" => {
                         self.take();
                         Some(self.enumeration(token)?)
@@ -350,7 +362,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         }));
         match self.target {
             Target::Aarch64 => record,
-            Target::X86_64 => Type::new(TypeKind::Array(Box::new(record), 1)),
+            Target::X86_64 => Type::new(TypeKind::Array(Box::new(record), Some(1))),
         }
     }
 

@@ -6,7 +6,7 @@ use crate::types::{BitField, BitFieldContainer, Layout, Member, RecordDefinition
 
 enum Modifier<'a> {
     Pointer(Qualifiers),
-    Array(usize),
+    Array(Option<usize>),
     Function(Parameters<'a>),
 }
 
@@ -43,7 +43,7 @@ impl<'a> Declarator<'a> {
                     qualifiers: *qualifiers,
                 },
                 Modifier::Array(size) => {
-                    if ty.layout().is_none_or(|layout| layout.size == 0) {
+                    if ty.complete_layout().is_none() {
                         return Err(site.error("array element type is incomplete"));
                     }
                     if contains_flexible_member(&ty, records) {
@@ -155,7 +155,10 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                         params.items
                     };
                     parser.expect("{", "expected ';' or a function body")?;
-                    let body = parser.block_items(0)?;
+                    parser.in_function = true;
+                    let body = parser.block_items(0);
+                    parser.in_function = false;
+                    let body = body?;
                     Ok((items, body))
                 })?;
                 (items, Some(body))
@@ -234,11 +237,11 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 };
                 if let Some(initializer) = &initializer {
                     let mut complete = ty.clone();
-                    if let TypeKind::Array(element, count @ 0) = &mut complete.kind {
+                    if let TypeKind::Array(element, count @ None) = &mut complete.kind {
                         if let Some(tokens) = string_initializer(initializer) {
                             let (literal, _, length) = crate::sema::string_literal(tokens, self.target)?;
                             if crate::sema::string_initializes(element, literal) {
-                                *count = length;
+                                *count = Some(length);
                                 self.name(name, Name::Ordinary(complete));
                             }
                         }
@@ -280,9 +283,12 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             return Err(site.error("initializer nesting limit exceeded"));
         }
         let mut entries = Vec::new();
+        if self.standard.is_gnu() && self.eat("}").is_some() {
+            return Ok(Initializer::List(site, entries));
+        }
         loop {
             let mut designators = Vec::new();
-            self.designators(&mut designators, site, depth + 1)?;
+            self.designators(&mut designators, site, depth + 1, true)?;
             if !designators.is_empty() {
                 self.expect("=", "expected '=' after the designation")?;
             }
@@ -306,12 +312,18 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         designators: &mut Vec<Designator<'a>>,
         site: &'a Lexeme,
         depth: usize,
+        allow_ranges: bool,
     ) -> Result<(), Diagnostic> {
         loop {
             let designator = if self.eat("[").is_some() {
                 let index = self.conditional(depth)?;
+                let designator = if allow_ranges && self.eat("...").is_some() {
+                    Designator::Range(index, self.conditional(depth)?)
+                } else {
+                    Designator::Index(index)
+                };
                 self.expect("]", "expected ']' after the array designator")?;
-                Designator::Index(index)
+                designator
             } else if self.eat(".").is_some() {
                 Designator::Member(
                     self.identifier()
@@ -385,7 +397,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             }
             if self.eat("[").is_some() {
                 let size = if self.eat("]").is_some() {
-                    0
+                    None
                 } else {
                     // N1570 6.7.6.2 and 6.6: evaluate an integer constant
                     // expression with the current types, without array decay
@@ -393,10 +405,14 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     let bound = self.conditional(depth + 1)?;
                     let size = self.layout_constant(bound)?;
                     self.expect("]", "expected ']' after the array bound")?;
-                    usize::try_from(size)
-                        .ok()
-                        .filter(|&size| (1..=isize::MAX as usize).contains(&size))
-                        .ok_or_else(|| self.error("array bound must be positive"))?
+                    Some(
+                        usize::try_from(size)
+                            .ok()
+                            .filter(|&size| {
+                                size <= isize::MAX as usize && (size != 0 || self.standard.is_gnu())
+                            })
+                            .ok_or_else(|| self.error("array bound must be positive"))?,
+                    )
                 };
                 declarator.modifiers.push(Modifier::Array(size));
             } else if self.eat("(").is_some() {
@@ -587,6 +603,10 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
     }
 
     pub(super) fn layout_constant(&self, expression: Expression<'a>) -> Result<u64, Diagnostic> {
+        crate::sema::layout_constant(expression, self.expression_scope())
+    }
+
+    pub(super) fn expression_scope(&self) -> crate::sema::ParserExpressionScope<'a, '_> {
         let names = self.names.iter().flatten().map(|(&name, entry)| {
             let ty = match entry {
                 Name::Ordinary(ty) => Some(ty),
@@ -594,7 +614,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             };
             (name, ty)
         });
-        crate::sema::layout_constant(expression, self.target, self.standard, &self.records, names)
+        crate::sema::ParserExpressionScope::new(self.target, self.standard, &self.records, names)
     }
 
     fn literal_integer(&mut self) -> Result<(i128, &'a Lexeme), Diagnostic> {
@@ -911,7 +931,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             let packed = packed || member_packed;
             // N1570 §6.7.2.1p3,18: retain the aligned offset but allocate
             // no elements for the flexible tail.
-            let flexible = matches!(ty.kind, TypeKind::Array(_, 0));
+            let flexible = matches!(ty.kind, TypeKind::Array(_, None));
             if flexible
                 && (kind != RecordKind::Struct || members.is_empty() || fields.peek().is_some())
             {
@@ -926,7 +946,6 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             }
             let field = ty
                 .layout()
-                .filter(|field| flexible || field.size != 0)
                 .ok_or_else(|| site.error("record member type is incomplete"))?;
             let start = if kind == RecordKind::Struct {
                 size_bits
@@ -1145,7 +1164,7 @@ fn contains_flexible_member(ty: &Type, records: &[Record<'_>]) -> bool {
             if def
                 .members
                 .last()
-                .is_some_and(|last| matches!(last.ty.kind, TypeKind::Array(_, 0)))
+                .is_some_and(|last| matches!(last.ty.kind, TypeKind::Array(_, None)))
             {
                 return true;
             }

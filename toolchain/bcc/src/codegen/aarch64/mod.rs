@@ -311,6 +311,12 @@ impl<'src> Emitter<'_, 'src> {
                 self.binary(*op, (left, left_type), (right, right_type), &expr.ty)?;
             }
             ExpressionKind::Cast(operand) => self.converted(operand, &expr.ty)?,
+            ExpressionKind::StatementExpression { .. } => {
+                return Err(Diagnostic::new(
+                    expr.position(),
+                    "statement expression lowering is deferred to ARM 25.11d2",
+                ));
+            }
             ExpressionKind::Assignment {
                 left,
                 right,
@@ -322,13 +328,15 @@ impl<'src> Emitter<'_, 'src> {
                 postfix,
             } => self.update(operand, *increment, *postfix)?,
             ExpressionKind::Conditional { condition, yes, no } => {
-                let otherwise = self.label();
-                let end = self.label();
-                self.jump_if(condition, false, &otherwise)?;
-                self.converted(yes, &expr.ty)?;
-                writeln!(self.text, "    b {end}\n{otherwise}:").unwrap();
-                self.converted(no, &expr.ty)?;
-                writeln!(self.text, "{end}:").unwrap();
+                self.conditional(condition, yes, no, &expr.ty)?;
+            }
+            ExpressionKind::OmittedConditional {
+                value,
+                fallback,
+                saved,
+            } => {
+                self.assignment(saved, value, None)?;
+                self.conditional(saved, saved, fallback, &expr.ty)?;
             }
             ExpressionKind::Comma(left, right) => {
                 self.value(left)?;
@@ -355,6 +363,23 @@ impl<'src> Emitter<'_, 'src> {
                 self.normalize(&expr.ty);
             }
         }
+        Ok(())
+    }
+
+    fn conditional(
+        &mut self,
+        condition: &Expression<'src>,
+        yes: &Expression<'src>,
+        no: &Expression<'src>,
+        ty: &Type,
+    ) -> Result<(), Diagnostic> {
+        let otherwise = self.label();
+        let end = self.label();
+        self.jump_if(condition, false, &otherwise)?;
+        self.converted(yes, ty)?;
+        writeln!(self.text, "    b {end}\n{otherwise}:").unwrap();
+        self.converted(no, ty)?;
+        writeln!(self.text, "{end}:").unwrap();
         Ok(())
     }
 

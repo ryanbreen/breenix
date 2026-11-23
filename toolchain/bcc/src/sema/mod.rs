@@ -63,6 +63,8 @@ pub struct Function<'a> {
     pub noreturn: bool,
     pub returns_twice: bool,
     pub has_alloca: bool,
+    pub(crate) has_statement_expressions: bool,
+    pub(crate) jump_regions: HashMap<usize, usize>,
     pub body: Option<Vec<Statement<'a>>>,
     pub locals: Vec<Local<'a>>,
 }
@@ -118,7 +120,7 @@ pub enum LocalStorage<'a> {
     ThreadExtern(Linkage),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Initializer<'a> {
     pub offset: usize,
     pub bit_field: Option<BitField>,
@@ -126,19 +128,19 @@ pub struct Initializer<'a> {
     pub ty: Type,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum InitValue<'a> {
     Expression(Expression<'a>),
     Zero,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ObjectInitializer<'a> {
     pub values: Vec<Initializer<'a>>,
     pub zero_bytes: usize,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Statement<'a> {
     Block(Vec<Self>),
     Empty,
@@ -164,7 +166,7 @@ pub enum Statement<'a> {
     Switch {
         value: Expression<'a>,
         ty: Type,
-        cases: Vec<(Option<u64>, usize)>,
+        cases: Vec<(Option<CaseRange>, usize)>,
         body: Box<Self>,
         break_to: usize,
     },
@@ -172,14 +174,20 @@ pub enum Statement<'a> {
     Jump(usize),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
+pub struct CaseRange {
+    pub low: u64,
+    pub high: u64,
+}
+
+#[derive(Clone, Debug)]
 pub struct Expression<'a> {
     pub(crate) site: &'a Lexeme,
     pub kind: ExpressionKind<'a>,
     pub ty: Type,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum ExpressionKind<'a> {
     Identifier(&'a str),
     ThreadLocal(&'a str),
@@ -201,10 +209,20 @@ pub enum ExpressionKind<'a> {
     },
     Comma(Box<Expression<'a>>, Box<Expression<'a>>),
     Cast(Box<Expression<'a>>),
+    StatementExpression {
+        region: usize,
+        statements: Vec<Statement<'a>>,
+        value: Option<Box<Expression<'a>>>,
+    },
     Conditional {
         condition: Box<Expression<'a>>,
         yes: Box<Expression<'a>>,
         no: Box<Expression<'a>>,
+    },
+    OmittedConditional {
+        value: Box<Expression<'a>>,
+        fallback: Box<Expression<'a>>,
+        saved: Box<Expression<'a>>,
     },
     Assignment {
         left: Box<Expression<'a>>,
@@ -248,7 +266,7 @@ pub enum ExpressionKind<'a> {
     },
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Argument<'a> {
     pub expr: Expression<'a>,
     /// Type passed after assignment conversion or default argument promotion.
@@ -554,8 +572,8 @@ pub(crate) fn analyze_with_rounding_math<'a>(
             continue;
         }
         let mut ty = symbol.ty.clone();
-        if let Kind::Array(_, count @ 0) = &mut ty.kind {
-            *count = 1;
+        if let Kind::Array(_, count @ None) = &mut ty.kind {
+            *count = Some(1);
         }
         ty.resolve_records(&|id| records[id].definition.as_ref().map(|d| d.layout));
         thread::check_layout(&ty, &site.site)?;
@@ -579,8 +597,8 @@ pub(crate) fn analyze_with_rounding_math<'a>(
     for thread in &mut thread_objects.definitions {
         // N1570 6.9.2: a remaining external tentative array with no bound
         // is completed as a one-element array at the end of the unit.
-        if let Kind::Array(_, count @ 0) = &mut thread.object.ty.kind {
-            *count = 1;
+        if let Kind::Array(_, count @ None) = &mut thread.object.ty.kind {
+            *count = Some(1);
         }
         thread
             .object
@@ -634,50 +652,85 @@ struct Symbol {
 
 /// Evaluate a layout constant while parsing a record. The parser's record
 /// table already reflects which tags are complete at this point.
-pub(super) fn layout_constant<'a, 't>(
-    expression: parse::Expression<'a>,
+pub(super) struct ParserExpressionScope<'a, 'r> {
     target: Target,
     standard: Standard,
-    records: &[Record<'a>],
-    names: impl Iterator<Item = (&'a str, Option<&'t Type>)>,
-) -> Result<u64, Diagnostic> {
-    let mut symbols = HashMap::new();
-    for (name, ty) in names {
-        if let Some(ty) = ty {
-            symbols.insert(
-                name,
-                Symbol {
-                    ty: ty.clone(),
-                    linkage: Linkage::External,
-                    defined: false,
-                    thread_local: false,
-                    alignment: None,
-                    noreturn: false,
-                    returns_twice: false,
-                },
-            );
-        } else {
-            symbols.remove(name);
+    records: &'r [Record<'a>],
+    symbols: HashMap<&'a str, Symbol>,
+}
+
+impl<'a, 'r> ParserExpressionScope<'a, 'r> {
+    pub(super) fn new<'t>(
+        target: Target,
+        standard: Standard,
+        records: &'r [Record<'a>],
+        names: impl Iterator<Item = (&'a str, Option<&'t Type>)>,
+    ) -> Self {
+        let mut symbols = HashMap::new();
+        for (name, ty) in names {
+            if let Some(ty) = ty {
+                symbols.insert(
+                    name,
+                    Symbol {
+                        ty: ty.clone(),
+                        linkage: Linkage::External,
+                        defined: false,
+                        thread_local: false,
+                        alignment: None,
+                        noreturn: false,
+                        returns_twice: false,
+                    },
+                );
+            } else {
+                symbols.remove(name);
+            }
+        }
+        Self {
+            target,
+            standard,
+            records,
+            symbols,
         }
     }
-    let record_scope = RecordScope {
-        records,
-        token_order: None,
-    };
-    let result = Type::new(Kind::Void);
-    let mut block_externs = HashMap::new();
-    let mut context = FunctionBody::new(
-        &symbols,
-        &result,
-        target,
-        standard,
-        &[],
-        &record_scope,
-        &mut block_externs,
-    );
-    let expr = context.expression(expression)?;
-    body::constant_integer(&expr, target)
+
+    fn expression(&self, expression: parse::Expression<'a>) -> Result<Expression<'a>, Diagnostic> {
+        let record_scope = RecordScope {
+            records: self.records,
+            token_order: None,
+        };
+        let result = Type::new(Kind::Void);
+        let mut block_externs = HashMap::new();
+        let mut context = FunctionBody::new(
+            &self.symbols,
+            &result,
+            self.target,
+            self.standard,
+            &[],
+            &record_scope,
+            &mut block_externs,
+        );
+        context.expression(expression)
+    }
+}
+
+pub(super) fn layout_constant<'a>(
+    expression: parse::Expression<'a>,
+    scope: ParserExpressionScope<'a, '_>,
+) -> Result<u64, Diagnostic> {
+    let expr = scope.expression(expression)?;
+    body::constant_integer(&expr, scope.target)
         .ok_or_else(|| expr.site.error("expected an integer constant expression"))
+}
+
+pub(super) fn typeof_expression<'a>(
+    expression: parse::Expression<'a>,
+    scope: ParserExpressionScope<'a, '_>,
+) -> Result<Type, Diagnostic> {
+    let expr = scope.expression(expression)?;
+    if expr.bit_field().is_some() {
+        return Err(expr.site.error("typeof cannot be applied to a bit-field"));
+    }
+    Ok(expr.ty)
 }
 
 fn function<'a>(
@@ -783,25 +836,32 @@ fn function<'a>(
             returns_twice,
         },
     );
-    let (body, locals, has_alloca) = if let Some(statements) = body {
-        let mut context = FunctionBody::new(
-            symbols,
-            &result,
-            target,
-            standard,
-            &params,
-            records,
-            block_externs,
-        );
-        if variadic {
-            context.last_named_parameter = params.len().checked_sub(1);
-        }
-        let body = context.statements(statements)?;
-        context.validate_labels()?;
-        (Some(body), context.locals, context.has_alloca)
-    } else {
-        (None, Vec::new(), false)
-    };
+    let (body, locals, has_alloca, has_statement_expressions, jump_regions) =
+        if let Some(statements) = body {
+            let mut context = FunctionBody::new(
+                symbols,
+                &result,
+                target,
+                standard,
+                &params,
+                records,
+                block_externs,
+            );
+            if variadic {
+                context.last_named_parameter = params.len().checked_sub(1);
+            }
+            let body = context.statements(statements)?;
+            context.validate_labels()?;
+            (
+                Some(body),
+                context.locals,
+                context.has_alloca,
+                context.has_statement_expressions,
+                context.jump_regions,
+            )
+        } else {
+            (None, Vec::new(), false, false, HashMap::new())
+        };
     Ok(Function {
         name: &name.text,
         site: &name.site,
@@ -811,6 +871,8 @@ fn function<'a>(
         noreturn,
         returns_twice,
         has_alloca,
+        has_statement_expressions,
+        jump_regions,
         body,
         locals,
     })
@@ -859,6 +921,9 @@ struct FunctionBody<'a, 's> {
     exit: Option<usize>,
     repeat: Option<usize>,
     switches: Vec<body::Switch>,
+    statement_regions: Vec<usize>,
+    has_statement_expressions: bool,
+    jump_regions: HashMap<usize, usize>,
     result: &'s Type,
     last_named_parameter: Option<usize>,
     target: Target,
@@ -1038,6 +1103,12 @@ impl<'a> FunctionBody<'a, '_> {
                 }
                 sizeof(site, &expr.ty)?
             }
+            Syntax::StatementExpression(statements) => {
+                return self.statement_expression(site, statements);
+            }
+            Syntax::OmittedConditional(value, fallback) => {
+                return self.omitted_conditional(site, *value, *fallback);
+            }
             Syntax::Conditional(condition, yes, no) => {
                 let condition = self.condition(*condition)?;
                 let yes = self.expression(*yes)?;
@@ -1143,7 +1214,10 @@ impl<'a> FunctionBody<'a, '_> {
             }
             Syntax::String(tokens) => {
                 let (element, bytes, count) = string_literal(&tokens, self.target)?;
-                let ty = Type::new(Kind::Array(Box::new(Type::new(Kind::Integer(element))), count));
+                let ty = Type::new(Kind::Array(
+                    Box::new(Type::new(Kind::Integer(element))),
+                    Some(count),
+                ));
                 (ExpressionKind::String(bytes), ty)
             }
             Syntax::VaArg(list, ty) => self.va_arg(site, *list, ty)?,
@@ -1345,8 +1419,7 @@ fn binary_types(
 
 fn sizeof<'a>(site: &Lexeme, ty: &Type) -> Result<(ExpressionKind<'a>, Type), Diagnostic> {
     let size = ty
-        .layout()
-        .filter(|layout| layout.size != 0)
+        .complete_layout()
         .ok_or_else(|| site.error("sizeof requires a complete object type"))?
         .size;
     Ok(size_constant(size))

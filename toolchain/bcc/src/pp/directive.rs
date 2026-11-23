@@ -54,7 +54,7 @@ impl Standard {
         }
     }
 
-    pub(super) fn is_gnu(self) -> bool {
+    pub(crate) fn is_gnu(self) -> bool {
         matches!(self, Self::Gnu99 | Self::Gnu11)
     }
 }

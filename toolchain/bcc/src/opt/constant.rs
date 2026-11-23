@@ -135,6 +135,7 @@ fn has_write(expr: &mut Expression<'_>) -> bool {
         ExpressionKind::Assignment { .. }
             | ExpressionKind::Update { .. }
             | ExpressionKind::CompoundLiteral { .. }
+            | ExpressionKind::StatementExpression { .. }
     ) {
         return true;
     }

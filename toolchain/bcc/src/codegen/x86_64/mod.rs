@@ -50,6 +50,9 @@ pub(super) fn emit(unit: &TranslationUnit<'_>, optimize: bool) -> Result<String,
         locals: Vec::new(),
         variadic: None,
         flow_labels: HashMap::new(),
+        return_context: None,
+        statement_base: None,
+        statement_stack: Vec::new(),
         data: String::new(),
         initialized_data: String::new(),
         object_definitions: unit
@@ -155,6 +158,9 @@ struct Emitter<'unit, 'src> {
     locals: Vec<Slot>,
     variadic: Option<VariadicFrame>,
     flow_labels: HashMap<usize, String>,
+    return_context: Option<(&'unit Function<'src>, String)>,
+    statement_base: Option<Slot>,
+    statement_stack: Vec<(usize, Slot)>,
     data: String,
     initialized_data: String,
     object_definitions: BTreeSet<&'src str>,
@@ -169,10 +175,10 @@ struct Emitter<'unit, 'src> {
     next_label: usize,
 }
 
-impl<'src> Emitter<'_, 'src> {
+impl<'unit, 'src> Emitter<'unit, 'src> {
     fn function(
         &mut self,
-        function: &Function<'src>,
+        function: &'unit Function<'src>,
         body: &[Statement<'src>],
     ) -> Result<(), Diagnostic> {
         let name = function.name;
@@ -212,6 +218,11 @@ impl<'src> Emitter<'_, 'src> {
         } else {
             None
         };
+        self.statement_base = if function.has_statement_expressions && !function.has_alloca {
+            Some(self.frame_slot(Layout { size: 8, align: 8 }, function.site)?)
+        } else {
+            None
+        };
         self.flow_labels.clear();
         let epilogue = self.label();
         self.text.push('\n');
@@ -224,7 +235,7 @@ impl<'src> Emitter<'_, 'src> {
         // keep spills above RSP.
         self.text.push_str("    push rbp\n    mov rbp, rsp\n");
         let stack_adjustment = self.text.len();
-        if let Some(base) = &self.alloca_base {
+        if let Some(base) = self.alloca_base.as_ref().or(self.statement_base.as_ref()) {
             writeln!(self.text, "    mov qword {}, rsp", base.memory(0)).unwrap();
         }
 
@@ -338,7 +349,11 @@ impl<'src> Emitter<'_, 'src> {
         for (id, slot) in scalar_parameters {
             self.scan.parameter(self.text.len(), id, slot);
         }
+        if function.has_statement_expressions {
+            self.return_context = Some((function, epilogue.clone()));
+        }
         self.statements(body, result, &epilogue)?;
+        self.return_context = None;
         let callee_saves = if self.optimize {
             std::mem::take(&mut self.scan).render(self, stack_adjustment, function.site)?
         } else {
@@ -497,6 +512,13 @@ impl<'src> Emitter<'_, 'src> {
                 self.converted(right, &expr.ty)?;
             }
             ExpressionKind::Cast(operand) => self.converted(operand, &expr.ty)?,
+            ExpressionKind::StatementExpression {
+                region,
+                statements,
+                value,
+            } => {
+                self.statement_expression(*region, statements, value.as_deref(), expr)?;
+            }
             ExpressionKind::Assignment {
                 left,
                 right,
@@ -512,13 +534,16 @@ impl<'src> Emitter<'_, 'src> {
                 self.update(operand, *increment, *postfix)?;
             }
             ExpressionKind::Conditional { condition, yes, no } => {
-                let otherwise = self.label();
-                let end = self.label();
-                self.jump_if(condition, "jz", &otherwise)?;
-                self.converted(yes, &expr.ty)?;
-                writeln!(self.text, "    jmp {end}\n{otherwise}:").unwrap();
-                self.converted(no, &expr.ty)?;
-                writeln!(self.text, "{end}:").unwrap();
+                self.conditional(condition, yes, no, &expr.ty)?;
+            }
+            ExpressionKind::OmittedConditional {
+                value,
+                fallback,
+                saved,
+            } => {
+                self.assignment(saved, value, None)?;
+                self.convert(&saved.ty, &Type::new(Kind::Void));
+                self.conditional(saved, saved, fallback, &expr.ty)?;
             }
             ExpressionKind::VaStart(list) => self.va_start(list)?,
             ExpressionKind::VaArg(list) => self.va_arg(list, &expr.ty, expr.position())?,
@@ -540,6 +565,23 @@ impl<'src> Emitter<'_, 'src> {
 
     fn discard(&mut self, expr: &Expression<'src>) -> Result<(), Diagnostic> {
         self.converted(expr, &Type::new(Kind::Void))
+    }
+
+    fn conditional(
+        &mut self,
+        condition: &Expression<'src>,
+        yes: &Expression<'src>,
+        no: &Expression<'src>,
+        ty: &Type,
+    ) -> Result<(), Diagnostic> {
+        let otherwise = self.label();
+        let end = self.label();
+        self.jump_if(condition, "jz", &otherwise)?;
+        self.converted(yes, ty)?;
+        writeln!(self.text, "    jmp {end}\n{otherwise}:").unwrap();
+        self.converted(no, ty)?;
+        writeln!(self.text, "{end}:").unwrap();
+        Ok(())
     }
 
     fn converted(&mut self, expr: &Expression<'src>, dest: &Type) -> Result<(), Diagnostic> {

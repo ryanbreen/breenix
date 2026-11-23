@@ -12,6 +12,17 @@ use crate::types::{floor_log10_pow2, Float, FloatFormat, Integer, Kind, Type};
 
 // Static initialization uses default rounding at each operation (N1570
 // F.8.2, F.8.4 and F.8.5). Runtime expressions use the typed tree instead.
+pub(super) fn constant_truth(expr: &Expression<'_>, target: Target) -> Option<bool> {
+    match &expr.ty.kind {
+        Kind::Integer(_) => constant_integer(expr, target).map(|bits| bits != 0),
+        kind @ (Kind::Float(_) | Kind::LongDouble) => {
+            let format = FloatFormat::of(kind, target);
+            constant_bits(expr, kind, target).map(|bits| bits & !format.sign_bit() != 0)
+        }
+        _ => None,
+    }
+}
+
 pub(super) fn constant_bits(expr: &Expression<'_>, dest: &Kind, target: Target) -> Option<u128> {
     let format = FloatFormat::of(dest, target);
     let (negative, significand, exponent) = match &expr.ty.kind {
@@ -54,6 +65,16 @@ pub(super) fn constant_bits(expr: &Expression<'_>, dest: &Kind, target: Target) 
                     constant_bits(left, &left_type.kind, target)?,
                     constant_bits(right, &right_type.kind, target)?,
                 ),
+                ExpressionKind::OmittedConditional {
+                    value, fallback, ..
+                } => {
+                    let selected = if constant_truth(value, target)? {
+                        value
+                    } else {
+                        fallback
+                    };
+                    constant_bits(selected, source, target)?
+                }
                 ExpressionKind::Conditional { condition, yes, no } => {
                     let value = if constant_integer(condition, target)? != 0 {
                         yes

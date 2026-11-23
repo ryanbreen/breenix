@@ -172,6 +172,17 @@ fn expression(out: &mut impl Write, expr: &Expression<'_>) -> io::Result<()> {
             expressions(out, initializer)?;
             ("compound-literal", "lvalue")
         }
+        ExpressionKind::StatementExpression {
+            statements: body,
+            value,
+            ..
+        } => {
+            statements(out, body)?;
+            if let Some(value) = value {
+                expression(out, value)?;
+            }
+            ("statement-expression", "rvalue")
+        }
         ExpressionKind::StaticLiteral(_) => ("compound-literal", "lvalue"),
         ExpressionKind::Integer(_) => ("integer-constant", "rvalue"),
         ExpressionKind::Float(_) => ("floating-constant", "rvalue"),
@@ -216,6 +227,13 @@ fn expression(out: &mut impl Write, expr: &Expression<'_>) -> io::Result<()> {
             expression(out, yes)?;
             expression(out, no)?;
             ("conditional", "rvalue")
+        }
+        ExpressionKind::OmittedConditional {
+            value, fallback, ..
+        } => {
+            expression(out, value)?;
+            expression(out, fallback)?;
+            ("omitted-conditional", "rvalue")
         }
         ExpressionKind::Assignment { left, right, .. } => {
             expression(out, left)?;
