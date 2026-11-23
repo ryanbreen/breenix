@@ -1,7 +1,12 @@
-//! Delayed expansion and internal macros from POSIX.1-2024 make.
+//! Assignment, expansion and internal macros from POSIX.1-2024 make.
 
 use crate::{reader::outside_macro_references, Error, Location};
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::HashMap,
+    io::{self, Write},
+    path::Path,
+    process::{Command, Stdio},
+};
 
 const MAX_EXPANSION_DEPTH: usize = 128;
 
@@ -13,8 +18,15 @@ enum Origin {
     CommandLine,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Flavor {
+    Delayed,
+    Immediate,
+}
+
 struct Definition {
     value: String,
+    flavor: Flavor,
     location: Location,
     origin: Origin,
 }
@@ -92,8 +104,20 @@ impl Macros {
             path: Path::new("<environment>").into(),
             line: 1,
         };
-        macros.define("SHELL", "/bin/sh".into(), &location, Origin::Default);
-        macros.define("CURDIR", directory, &location, Origin::Default);
+        macros.define(
+            "SHELL",
+            "/bin/sh".into(),
+            Flavor::Delayed,
+            &location,
+            Origin::Default,
+        );
+        macros.define(
+            "CURDIR",
+            directory,
+            Flavor::Delayed,
+            &location,
+            Origin::Default,
+        );
         let defaults = Location {
             path: Path::new("<default rules>").into(),
             line: 1,
@@ -112,7 +136,13 @@ impl Macros {
             ("LFLAGS", ""),
             ("LDFLAGS", ""),
         ] {
-            macros.define(name, value.into(), &defaults, Origin::Default);
+            macros.define(
+                name,
+                value.into(),
+                Flavor::Delayed,
+                &defaults,
+                Origin::Default,
+            );
         }
         for (name, value) in environment {
             if matches!(name.as_str(), "SHELL" | "MAKEFLAGS")
@@ -120,7 +150,13 @@ impl Macros {
             {
                 continue;
             }
-            macros.define(&name, value, &location, Origin::Environment);
+            macros.define(
+                &name,
+                value,
+                Flavor::Delayed,
+                &location,
+                Origin::Environment,
+            );
         }
         macros
     }
@@ -162,12 +198,12 @@ impl Macros {
             return Err(Error::new(location, "missing '=' in macro definition"));
         };
         let raw_name = &assignment[..equals];
-        for operator in [":::", "::", "+", "?", "!"] {
-            if raw_name.ends_with(operator) {
-                return Err(Error::deferred(location, &format!("{operator}=")));
-            }
-        }
-        let name = self.expand(raw_name, location, &Automatic::default())?;
+        let (raw_name, operator) = [":::", "::", "+", "?", "!"]
+            .into_iter()
+            .find_map(|operator| raw_name.strip_suffix(operator).map(|name| (name, operator)))
+            .unwrap_or((raw_name, ""));
+        let automatic = Automatic::default();
+        let name = self.expand(raw_name, location, &automatic)?;
         let name = name.trim_matches([' ', '\t']);
         if name == "MAKEFLAGS" {
             return Err(Error::deferred(location, name));
@@ -183,24 +219,78 @@ impl Macros {
                 "unsupported macro assignment operator",
             ));
         }
+        let previous = self.definitions.get(name);
+        if previous.is_some_and(|previous| {
+            operator == "?"
+                || (origin == Origin::Makefile
+                    && (previous.origin == Origin::CommandLine
+                        || (previous.origin == Origin::Environment && self.environment_overrides)))
+        }) {
+            return Ok(());
+        }
         let value = assignment[equals + 1..].trim_start_matches([' ', '\t']);
-        self.define(name, value.to_owned(), location, origin);
+        let (value, flavor) = match (operator, previous) {
+            ("::", _) => (self.expand(value, location, &automatic)?, Flavor::Immediate),
+            (":::", _) => (
+                self.expand_with_dollar_pairs(value, location, &automatic, true)?,
+                Flavor::Delayed,
+            ),
+            ("!", _) => {
+                let command = self.expand(value, location, &automatic)?;
+                (self.shell_assignment(&command, location)?, Flavor::Delayed)
+            }
+            ("+", Some(previous)) => {
+                let appended = match previous.flavor {
+                    Flavor::Immediate => self.expand(value, location, &automatic)?,
+                    Flavor::Delayed => value.to_owned(),
+                };
+                (format!("{} {appended}", previous.value), previous.flavor)
+            }
+            _ => (value.to_owned(), Flavor::Delayed),
+        };
+        self.define(name, value, flavor, location, origin);
         Ok(())
     }
 
-    fn define(&mut self, name: &str, value: String, location: &Location, origin: Origin) {
-        if origin == Origin::Makefile
-            && self.definitions.get(name).is_some_and(|previous| {
-                previous.origin == Origin::CommandLine
-                    || (previous.origin == Origin::Environment && self.environment_overrides)
-            })
-        {
-            return;
+    fn shell_assignment(&self, command: &str, location: &Location) -> Result<String, Error> {
+        let output = Command::new("/bin/sh")
+            .args(["-c", command])
+            .envs(self.recipe_environment())
+            .stdin(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .output()
+            .map_err(|error| Error::new(location, format!("could not run /bin/sh: {error}")))?;
+        // POSIX keeps the captured output even when the command exits nonzero.
+        if !output.status.success() {
+            let reason = match output.status.code() {
+                Some(code) => format!("exited with status {code}"),
+                None => output.status.to_string(),
+            };
+            let _ = writeln!(io::stderr().lock(), "{location}: != command {reason}");
         }
+        let stdout = String::from_utf8(output.stdout).map_err(|error| {
+            Error::new(location, format!("!= command output is not UTF-8: {error}"))
+        })?;
+        let stdout = stdout.trim_start_matches([' ', '\t', '\n', '\r', '\x0b', '\x0c']);
+        Ok(stdout
+            .strip_suffix('\n')
+            .unwrap_or(stdout)
+            .replace('\n', " "))
+    }
+
+    fn define(
+        &mut self,
+        name: &str,
+        value: String,
+        flavor: Flavor,
+        location: &Location,
+        origin: Origin,
+    ) {
         self.definitions.insert(
             name.to_owned(),
             Definition {
                 value,
+                flavor,
                 location: location.clone(),
                 origin,
             },
@@ -221,9 +311,20 @@ impl Macros {
         location: &Location,
         automatic: &Automatic<'_>,
     ) -> Result<String, Error> {
+        self.expand_with_dollar_pairs(text, location, automatic, false)
+    }
+
+    fn expand_with_dollar_pairs(
+        &self,
+        text: &str,
+        location: &Location,
+        automatic: &Automatic<'_>,
+        preserve_dollar_pairs: bool,
+    ) -> Result<String, Error> {
         Expansion {
             macros: self,
             automatic,
+            preserve_dollar_pairs,
             active: Vec::new(),
         }
         .text(text, location, 0)
@@ -233,6 +334,7 @@ impl Macros {
 struct Expansion<'a, 'b> {
     macros: &'a Macros,
     automatic: &'a Automatic<'b>,
+    preserve_dollar_pairs: bool,
     active: Vec<&'a str>,
 }
 
@@ -250,6 +352,9 @@ impl Expansion<'_, '_> {
             };
             text = &text[next.len_utf8()..];
             if next == '$' {
+                if self.preserve_dollar_pairs {
+                    expanded.push('$');
+                }
                 expanded.push('$');
                 continue;
             }
@@ -308,6 +413,9 @@ impl Expansion<'_, '_> {
         let Some((name, definition)) = self.macros.definitions.get_key_value(name) else {
             return Ok(String::new());
         };
+        if definition.flavor == Flavor::Immediate {
+            return Ok(definition.value.clone());
+        }
         if let Some(start) = self.active.iter().position(|&active| active == name) {
             let mut cycle = self.active[start..].to_vec();
             cycle.push(name);

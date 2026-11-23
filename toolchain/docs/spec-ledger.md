@@ -238,10 +238,19 @@ the standard compiler defaults (`c17` and `-O 1`). On Breenix, makefiles that
 declare `.POSIX:` can set `CC=cc` and `CFLAGS=` to use the bundled compiler's
 current language and optimization subset.
 
-25.6c covers archive members and their timestamps, remaking include files,
-recursive `MAKEFLAGS` and `$(MAKE)`, assignment operators `::=`, `:::=`, `+=`,
-`?=` and `!=`, the `.WAIT` barrier, `.NOTPARALLEL`, the `-j` job pool, and
-target cleanup when a signal stops bmake itself.
+25.6c assignment operators follow [POSIX.1-2024 make, “Macros”](https://pubs.opengroup.org/onlinepubs/9799919799.2024edition/utilities/make.html#tag_20_76_13_05).
+`::=` stores an immediately expanded value without rescanning it on use.
+`:::=` expands at assignment time while preserving `$$` and stores a delayed
+macro. `+=` follows the existing macro's flavor or creates a delayed macro when
+the name is undefined. `?=` creates a delayed macro only if the name is undefined.
+`!=` expands the command at assignment time and runs it through `/bin/sh -c`.
+It removes leading whitespace and one trailing newline from stdout, then replaces
+remaining newlines with spaces before storing a delayed macro. A nonzero command
+status produces a located diagnostic while retaining the captured value.
+
+25.6c also covers archive members and their timestamps, remaking include files,
+recursive `MAKEFLAGS` and `$(MAKE)`, the `.WAIT` barrier, `.NOTPARALLEL`, the
+`-j` job pool, and target cleanup when a signal stops bmake itself.
 
 ### AMD64 variadic definitions (25.7b2)
 
