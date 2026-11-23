@@ -61,3 +61,124 @@ fn inventory_respects_make_syntax_context() {
     .map(|(line, kind, name)| format!("fixture.mk:{line}\t{kind}\t{name}"));
     assert_eq!(actual.lines().collect::<Vec<_>>(), expected);
 }
+
+fn run_make(makefile: &str, args: &[&str], files: &[(&str, &str)]) -> std::process::Output {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let dir = loop {
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("bmake-gnu-{}-{id}", std::process::id()));
+        match fs::create_dir(&dir) {
+            Ok(()) => break dir,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => panic!("create {}: {error}", dir.display()),
+        }
+    };
+    fs::write(dir.join("fixture.mk"), makefile).unwrap();
+    for (name, contents) in files {
+        fs::write(dir.join(name), contents).unwrap();
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_bmake"))
+        .current_dir(&dir)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HIDDEN", "from environment")
+        .args(["-f", "fixture.mk"])
+        .args(args)
+        .output()
+        .unwrap();
+    fs::remove_dir_all(dir).unwrap();
+    output
+}
+
+#[test]
+fn conditional_directives_nest() {
+    let output = run_make(
+        r#"MODE = active
+EMPTY_REF = $(ABSENT)
+NAME = EMPTY_REF
+ifeq ($(MODE), broken)
+not makefile syntax
+ifdef EMPTY_REF
+include also-absent.mk
+endif
+else ifneq "$(MODE)" 'disabled'
+  ifdef $(NAME)
+    ifndef ABSENT
+      -include absent.mk present.mk
+      sinclude also-absent.mk
+    else
+      include must-not-open.mk
+    endif
+  endif
+else
+include must-not-open.mk
+endif
+.PHONY: visit
+all: | visit
+ifeq ($(MODE),active)
+	@printf '%s\n' 'rebuilt'
+endif
+visit:
+	@printf '%s\n' '$(PRESENT)'
+"#,
+        &["all"],
+        &[
+            ("all", "existing"),
+            ("visit", "existing"),
+            ("present.mk", "PRESENT = included\n"),
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"included\n");
+    assert!(output.stderr.is_empty(), "{output:?}");
+
+    let output = run_make("ifdef ENABLED\nall: ; @:\n", &["all"], &[]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("fixture.mk:1: missing endif"),
+        "{output:?}"
+    );
+}
+
+#[test]
+fn define_export_override() {
+    let output = run_make(
+        r#"PHASE = early
+export NOW := $(PHASE)
+override define TEXT =
+# keep this text
+$(PHASE)
+define INNER
+literal
+endef
+endef
+export TEXT
+PHASE = late
+TEXT = ignored
+override FLAGS += forced
+export FLAGS
+unexport HIDDEN
+VAR = global
+all: parent sibling
+parent: VAR := $(VAR)-parent
+parent: export PRIVATE = parent-only
+parent: child
+	@printf '%s:%s\n' '$(VAR)' "$$PRIVATE"
+child:
+	@printf '%s:%s\n' '$(VAR)' "$$PRIVATE"
+sibling:
+	@printf '%s:%s:%s\n' '$(VAR)' "$$NOW" "$${HIDDEN-unset}"
+	@printf '%s\n' "$$FLAGS" "$$TEXT"
+"#,
+        &["all", "FLAGS=command", "TEXT=command"],
+        &[],
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        output.stdout,
+        b"global-parent:parent-only\nglobal-parent:parent-only\nglobal:early:unset\ncommand forced\n# keep this text\nlate\ndefine INNER\nliteral\nendef\n"
+    );
+    assert!(output.stderr.is_empty(), "{output:?}");
+}
