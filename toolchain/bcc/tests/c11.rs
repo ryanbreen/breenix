@@ -38,6 +38,80 @@ fn aarch64_atomic_fetch_add_seq_cst() {
     aarch64_atomic_check(&[SCALAR_ATOMICS]);
 }
 
+#[test]
+fn aarch64_atomic_memory_order_instructions() {
+    use bcc::{codegen, pp, sema};
+    use std::fmt::Write;
+
+    let mut source = String::from("static _Atomic int value;\n");
+    let mut checks = Vec::new();
+    // N1570 §7.17.3. bcc implements consume as acquire.
+    let orders: [(_, Option<&[_]>, Option<&[_]>, &[_], _, &[_]); 6] = [
+        ("relaxed", Some(&["ldr"]), Some(&["str"]), &["ldxr", "stxr"], "relaxed", &[]),
+        ("consume", Some(&["ldar"]), None, &["ldaxr", "stxr"], "consume", &["dmb ishld"]),
+        ("acquire", Some(&["ldar"]), None, &["ldaxr", "stxr"], "acquire", &["dmb ishld"]),
+        ("release", None, Some(&["stlr"]), &["ldxr", "stlxr"], "relaxed", &["dmb ish"]),
+        ("acq_rel", None, None, &["ldaxr", "stlxr"], "relaxed", &["dmb ish"]),
+        (
+            "seq_cst",
+            Some(&["ldar"]),
+            Some(&["stlr", "dmb ish"]),
+            &["ldaxr", "stlxr"],
+            "seq_cst",
+            &["dmb ish"],
+        ),
+    ];
+    for (order, load, store, rmw, failure, fence) in orders {
+        let success_order = format!("__ATOMIC_{}", order.to_ascii_uppercase());
+        let failure_order = format!("__ATOMIC_{}", failure.to_ascii_uppercase());
+        let mut check = |op: &str, args: &str, expected| {
+            let name = format!("{op}_{order}");
+            writeln!(source, "void {name}(int *expected) {{ __c11_atomic_{op}({args}); }}").unwrap();
+            checks.push((name, expected));
+        };
+        if let Some(expected) = load {
+            check("load", &format!("&value, {success_order}"), expected);
+        }
+        if let Some(expected) = store {
+            check("store", &format!("&value, 1, {success_order}"), expected);
+        }
+        for op in ["fetch_add", "exchange"] {
+            check(op, &format!("&value, 1, {success_order}"), rmw);
+        }
+        for op in ["compare_exchange_strong", "compare_exchange_weak"] {
+            check(op, &format!("&value, expected, 1, {success_order}, {failure_order}"), rmw);
+        }
+        check("thread_fence", &success_order, fence);
+        check("signal_fence", &success_order, &[]);
+    }
+
+    let path = Path::new("atomic-memory-orders.c");
+    let options = pp::Options { target: pp::Target::Aarch64, ..pp::Options::default() };
+    let input = pp::preprocess_source(path, source.as_bytes(), &options).unwrap();
+    let unit = sema::analyze(&input, path, options.target).unwrap();
+    let assembly = codegen::emit_assembly(&unit, path, options.target).unwrap();
+
+    for (name, expected) in checks {
+        let (_, body) = assembly.split_once(&format!("\n{name}:\n")).expect(&name);
+        let (body, _) = body.split_once(&format!("\n.size {name},")).expect(&name);
+        // x11 addresses the atomic object. Exclude stack and value-buffer accesses.
+        let instructions: Vec<_> = body
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                let (op, operands) = line.split_once(' ')?;
+                if matches!(op, "dmb" | "dsb" | "isb") {
+                    Some(line)
+                } else {
+                    operands.ends_with("[x11]").then_some(op)
+                }
+            })
+            .collect();
+        assert_eq!(instructions, expected, "{name}:\n{body}");
+        assert!(!body.contains("__atomic_"), "{name}:\n{body}");
+    }
+}
+
 #[cfg(target_arch = "aarch64")]
 #[test]
 fn aarch64_atomic_rmw_contended() {
