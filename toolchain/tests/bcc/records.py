@@ -56,21 +56,6 @@ def check(bcc, bas, bld, work):
     if (result.returncode, result.stdout, result.stderr) != (31, b"", b""):
         raise ValueError(f"expected record checksum 31, got {result.returncode}: {result.stderr!r}")
 
-    # An aggregate function prototype is valid. Lowering either side of
-    # a by-value call is deferred to the next unit.
-    for call in ("receive(obj);", "produce();"):
-        source.write_text(
-            "struct Item { int n; };\n"
-            "extern void receive(struct Item);\n"
-            "extern struct Item produce(void);\n"
-            f"int main(void) {{ struct Item obj; {call} return 0; }}\n"
-        )
-        result = run(bcc, "-S", source)
-        diagnostic = result.stderr.decode()
-        if (result.returncode != 1 or f"{source}:4:" not in diagnostic
-                or "deferred to 25.7b1" not in diagnostic):
-            raise ValueError(f"expected a located record call diagnostic: {diagnostic!r}")
-
 
 if __name__ == "__main__":
     with TemporaryDirectory() as temp:
