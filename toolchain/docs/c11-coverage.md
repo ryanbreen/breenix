@@ -44,7 +44,8 @@ compile-fail inputs selected for the planned guest diagnostic case in its
 `__STDC_NO_VLA__`, `__STDC_NO_COMPLEX__` and `__STDC_NO_THREADS__` expand to
 `1`. The x86 profile leaves `__STDC_NO_ATOMICS__` undefined because 25.9c
 implements scalar and aggregate atomics with [stdatomic.h](../include/stdatomic.h).
-The ARM profile defines it as `1` and diagnoses atomic accesses until ARM 25.9d.
+The ARM profile defines it as `1` and diagnoses atomic types and accesses
+until ARM 25.9d.
 The profile also leaves `__STDC_IEC_559_COMPLEX__` undefined.
 
 ## Host constraints and open coverage

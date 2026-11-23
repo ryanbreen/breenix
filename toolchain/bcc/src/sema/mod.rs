@@ -29,6 +29,16 @@ pub struct TranslationUnit<'a> {
     pub static_literals: Vec<StaticLiteral<'a>>,
     pub thread_objects: Vec<ThreadObject<'a>>,
     pub records: Vec<Record<'a>>,
+    deferred_atomic_type: Option<&'a Lexeme>,
+}
+
+impl TranslationUnit<'_> {
+    pub(crate) fn check_target_types(&self) -> Result<(), Diagnostic> {
+        match self.deferred_atomic_type {
+            Some(token) => Err(token.error("atomic types are deferred to ARM 25.9d")),
+            None => Ok(()),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -544,6 +554,14 @@ pub fn analyze<'a>(
             .resolve_records(&|id| records[id].definition.as_ref().map(|d| d.layout));
         thread::check_layout(&thread.object.ty, thread.object.site)?;
     }
+    // N1570 6.7.2.4p2 and 6.10.8.3: the ARM profile lacks atomic
+    // types. Preserve ordinary constraint diagnostics and let the backend
+    // name the access site before falling back to the keyword location.
+    let deferred_atomic_type = if target == Target::Aarch64 {
+        source.tokens().find(|token| token.text.as_ref() == "_Atomic")
+    } else {
+        None
+    };
     Ok(TranslationUnit {
         functions,
         objects,
@@ -551,6 +569,7 @@ pub fn analyze<'a>(
         static_literals,
         thread_objects: thread_objects.definitions,
         records,
+        deferred_atomic_type,
     })
 }
 

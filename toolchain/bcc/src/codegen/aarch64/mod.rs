@@ -134,13 +134,21 @@ impl<'src> Emitter<'_, 'src> {
                     0
                 }
             };
-            // N1570 6.5.2.2p6 and 6.9.1p10: the caller promotes an
-            // identifier-list float to double, then the callee assigns it
-            // to the declared float parameter. Integer stores narrow by width.
-            if incoming.kind == Kind::Float(Float::Double)
-                && param.ty.kind == Kind::Float(Float::Single)
-            {
-                writeln!(self.text, "    fcvt s{register}, d{register}").unwrap();
+            // N1570 6.5.2.2p6 and 6.9.1p10: assign the promoted value to
+            // the declared parameter type. _Bool compares the full int
+            // with 0 (6.3.1.2p1) before its one-byte store.
+            match (&incoming.kind, &param.ty.kind) {
+                (Kind::Float(Float::Double), Kind::Float(Float::Single)) => {
+                    writeln!(self.text, "    fcvt s{register}, d{register}").unwrap();
+                }
+                (Kind::Integer(Integer::Int), Kind::Integer(Integer::Bool)) => {
+                    writeln!(
+                        self.text,
+                        "    cmp w{register}, #0\n    cset w{register}, ne"
+                    )
+                    .unwrap();
+                }
+                _ => {}
             }
             self.store_object(&param.ty, register, "x10");
         }
