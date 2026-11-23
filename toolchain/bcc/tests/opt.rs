@@ -2,6 +2,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+#[cfg(target_arch = "aarch64")]
+mod support;
+
 struct Source(PathBuf);
 
 impl Source {
@@ -27,6 +30,18 @@ impl Source {
         );
         assert!(output.stderr.is_empty(), "{output:?}");
         String::from_utf8(output.stdout).unwrap()
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn aarch64_check_at_both_levels(&self, flags: &[&str], inputs: &[&str]) {
+        let source = fs::read_to_string(&self.0).unwrap();
+        for level in ["--cc-flag=-O0", "--cc-flag=-O2"] {
+            let mut args = vec![level];
+            args.extend_from_slice(flags);
+            args.extend_from_slice(inputs);
+            args.push(&source);
+            support::aarch64_check_exit(&args);
+        }
     }
 }
 
@@ -60,6 +75,41 @@ double pragma_third(void) { return 1.0 / 3.0; }
         assert!(
             function(&default, "pragma_third").contains(division),
             "{default}"
+        );
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // DDI 0487 M.b FPCR.RMode [23:22] = 01 rounds toward +infinity.
+        // Preserve the caller's FPCR and the integer callee-saved registers.
+        let assembly = r"
+.section .text
+.global round_up
+round_up:
+    stp x19, x30, [sp, #-16]!
+    mrs x19, fpcr
+    bic x9, x19, #0xc00000
+    orr x9, x9, #0x400000
+    .long 0xd51b4409
+    blr x0
+    .long 0xd51b4413
+    ldp x19, x30, [sp], #16
+    ret
+";
+        source.aarch64_check_at_both_levels(
+            &["--cc-flag=-frounding-math"],
+            &[
+                "--asm",
+                assembly,
+                r"
+double third(void);
+double pragma_third(void);
+double round_up(double (*value)(void));
+int main(void) {
+    return round_up(third) == 0x1.5555555555556p-2 &&
+           round_up(pragma_third) == 0x1.5555555555556p-2 ? 42 : 1;
+}
+",
+            ],
         );
     }
 }
@@ -168,6 +218,20 @@ double runtime(void) { double a = 1.0; return a / 3.0; }
     assert!(String::from_utf8(invalid.stderr)
         .unwrap()
         .contains("unknown option '-O3'"));
+    #[cfg(target_arch = "aarch64")]
+    source.aarch64_check_at_both_levels(
+        &["--cc-flag=-frounding-math"],
+        &[r"
+int folded(void);
+int escaped(void);
+int changed(int p);
+double runtime(void);
+int main(void) {
+    return folded() == 43 && escaped() == 63 && changed(0) == 42 &&
+           changed(1) == 63 && runtime() == 0x1.5555555555555p-2 ? 42 : 1;
+}
+"],
+    );
 }
 
 #[test]
@@ -198,6 +262,22 @@ void jumped(void) { goto entry; if (0) { entry: live(); } }
             assert_eq!(function(assembly, name).matches("call live@plt").count(), 1);
         }
     }
+    #[cfg(target_arch = "aarch64")]
+    source.aarch64_check_at_both_levels(
+        &[],
+        &[r"
+static int calls;
+void unreachable(void);
+void jumped(void);
+void dead(void) { calls += 100; }
+void live(void) { ++calls; }
+int main(void) {
+    unreachable();
+    jumped();
+    return calls == 2 ? 42 : 1;
+}
+"],
+    );
 }
 
 #[test]
@@ -225,5 +305,28 @@ int read_twice(void) { return observed * 7 + observed * 7; }
         let volatile = function(assembly, "read_twice");
         assert_eq!(volatile.matches("[rip + observed]").count(), 2);
         assert_eq!(volatile.matches("imul ").count(), 2);
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        for level in ["-O0", "-O2"] {
+            let arm = source.assembly("--target=aarch64", &[level]);
+            let volatile = function(&arm, "read_twice");
+            assert_eq!(volatile.matches(":lo12:observed").count(), 2, "{volatile}");
+        }
+        source.aarch64_check_at_both_levels(
+            &[],
+            &[r"
+extern volatile int observed;
+int repeated(int x);
+int nested(int x);
+int changed(int x);
+int read_twice(void);
+int main(void) {
+    observed = 5;
+    return repeated(3) == 42 && nested(3) == 841 && changed(3) == 77 &&
+           read_twice() == 70 ? 42 : 1;
+}
+"],
+        );
     }
 }

@@ -177,3 +177,60 @@ _Static_assert(_Generic(function(), int: 1, default: 0), "unevaluated");
     let unit = bcc::sema::analyze(&source, path, options.target).unwrap();
     assert!(unit.functions.iter().all(|function| function.body.is_none()));
 }
+
+#[test]
+fn aarch64_corpus_links_at_o0_and_o2() {
+    let scratch = Source::new("aarch64-c17");
+    let toolchain = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let root = toolchain.join("..");
+    let libc = root.join("libs/libbreenix-libc/target/aarch64-breenix/release/libc.a");
+    let runtime =
+        Path::new(env!("CARGO_TARGET_TMPDIR")).join("../aarch64-breenix/release/libbrt.a");
+    assert!(libc.is_file(), "build the AArch64 libc archive at {libc:?}");
+    assert!(
+        runtime.is_file(),
+        "build AArch64 brt with exports at {runtime:?}"
+    );
+    let bcc = Path::new(env!("CARGO_BIN_EXE_bcc"));
+    for name in ["corrections", "o2-expect", "rounding-math"] {
+        let input = toolchain.join(format!("corpus/c17/{name}.c"));
+        for (level, flags) in [("-O0", &[][..]), ("-O2", &["-frounding-math"][..])] {
+            let output = scratch.0.with_file_name(format!("{name}{level}"));
+            let assembly = output.with_extension("s");
+            let object = output.with_extension("o");
+            let elf = output.with_extension("elf");
+            let run = |command: &mut Command| {
+                let result = command.output().unwrap();
+                assert!(result.status.success(), "{command:?}: {result:?}");
+                assert!(result.stderr.is_empty(), "{command:?}: {result:?}");
+                result.stdout
+            };
+            fs::write(
+                &assembly,
+                run(Command::new(bcc)
+                    .args(["--target=aarch64", "-std=c17", level])
+                    .args(flags)
+                    .arg("-I")
+                    .arg(toolchain.join("include"))
+                    .arg("-I")
+                    .arg(root.join("libs/libbreenix-libc/include"))
+                    .arg("-S")
+                    .arg(&input)),
+            )
+            .unwrap();
+            run(Command::new(bcc.with_file_name("bas"))
+                .args(["--target", "aarch64", "-o"])
+                .arg(&object)
+                .arg(&assembly));
+            run(Command::new(bcc.with_file_name("bld"))
+                .arg("-T")
+                .arg(root.join("userspace/programs/linker.ld"))
+                .args(["--gc-sections", "-o"])
+                .arg(&elf)
+                .args([&object, &runtime, &libc]));
+            run(Command::new(bcc.with_file_name("elfcheck"))
+                .args(["--machine", "aarch64", "--exec"])
+                .arg(&elf));
+        }
+    }
+}
