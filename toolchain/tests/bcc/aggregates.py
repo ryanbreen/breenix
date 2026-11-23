@@ -151,7 +151,7 @@ FAILURES = ("mixed", "two SSE eightbytes", "sret", "three-byte array",
 # The zero-width field starts a new unit without being an initializer slot.
 BITFIELD_TYPES = """\
 struct Bits {
-    unsigned int head : 28;
+    unsigned int head : sizeof(unsigned int) * 7;
     signed int delta : 7;
     unsigned int mode : 3;
     unsigned int : 0;
@@ -202,6 +202,8 @@ int main(void)
         (init.mode = wide) != 3 || init.delta != -7 || init.tail != 6 ||
         init.head != 5 || init.marker != 0 || zero.head || zero.delta ||
         zero.mode || zero.tail || zero.marker)
+        return 2;
+    if ((init.mode = wide) - 4 >= 0 || ++init.mode - 5 >= 0)
         return 2;
     return 42;
 }
