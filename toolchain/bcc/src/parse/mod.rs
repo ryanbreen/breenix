@@ -28,6 +28,7 @@ struct DeclStorage {
     thread_local: bool,
     alignment: Option<usize>,
     noreturn: bool,
+    inline: bool,
     anonymous_record: bool,
 }
 
@@ -137,7 +138,7 @@ impl<'a> Expression<'a> {
             | VaArg(expr, _)
             | Update { operand: expr, .. }
             | Member { base: expr, .. } => expr.height,
-            Binary(_, a, b) | Assignment(_, a, b) => a.height.max(b.height),
+            Binary(_, a, b) | Assignment(_, a, b) | Comma(a, b) => a.height.max(b.height),
             Conditional(a, b, c) => a.height.max(b.height).max(c.height),
             Generic(control, associations) => associations
                 .iter()
@@ -180,6 +181,7 @@ pub(super) enum ExpressionKind<'a> {
     Character,
     Unary(Unary, Box<Expression<'a>>),
     Binary(Binary, Box<Expression<'a>>, Box<Expression<'a>>),
+    Comma(Box<Expression<'a>>, Box<Expression<'a>>),
     Cast(Type, Box<Expression<'a>>),
     CompoundLiteral(Type, Box<Initializer<'a>>),
     SizeofType(Type),
@@ -428,6 +430,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 | "const"
                 | "volatile"
                 | "restrict"
+                | "_Atomic"
                 | "struct"
                 | "union"
                 | "enum"
@@ -444,6 +447,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     | "typedef"
                     | "auto"
                     | "register"
+                    | "inline"
                     | "_Thread_local"
                     | "_Alignas"
                     | "_Noreturn"
@@ -625,6 +629,17 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
     }
 
     fn expression(&mut self, depth: usize) -> Result<Expression<'a>, Diagnostic> {
+        // N1570 6.5.17: comma sequences assignment expressions. A comma
+        // separating arguments, initializers or associations is not an operator.
+        let mut left = self.assignment(depth)?;
+        while let Some(comma) = self.eat(",") {
+            let right = self.assignment(depth)?;
+            left = Expression::new(comma, ExpressionKind::Comma(Box::new(left), Box::new(right)))?;
+        }
+        Ok(left)
+    }
+
+    fn assignment(&mut self, depth: usize) -> Result<Expression<'a>, Diagnostic> {
         let left = self.conditional(depth)?;
         let Some(token) = self.peek() else {
             return Ok(left);
@@ -644,7 +659,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             _ => return Ok(left),
         };
         self.take();
-        let right = self.expression(depth + 1)?;
+        let right = self.assignment(depth + 1)?;
         Expression::new(
             token,
             ExpressionKind::Assignment(op, Box::new(left), Box::new(right)),
@@ -844,7 +859,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 close
             } else {
                 loop {
-                    arguments.push(self.expression(depth + count)?);
+                    arguments.push(self.assignment(depth + count)?);
                     if self.eat(",").is_none() {
                         break self.expect(")", "expected ',' or ')' after the argument")?;
                     }
@@ -870,7 +885,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             Kind::Identifier if site.is("_Generic") => {
                 self.take();
                 self.expect("(", "expected '(' after _Generic")?;
-                let control = self.expression(depth + 1)?;
+                let control = self.assignment(depth + 1)?;
                 self.expect(",", "expected ',' before generic associations")?;
                 let mut associations = Vec::new();
                 loop {
@@ -886,7 +901,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     associations.push(Association {
                         site,
                         ty,
-                        expression: self.expression(depth + 1)?,
+                        expression: self.assignment(depth + 1)?,
                     });
                     if self.eat(",").is_none() {
                         break;
@@ -911,7 +926,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             Kind::Identifier if site.is("__builtin_va_arg") => {
                 self.take();
                 self.expect("(", "expected '(' after __builtin_va_arg")?;
-                let list = self.expression(depth + 1)?;
+                let list = self.assignment(depth + 1)?;
                 self.expect(",", "expected ',' before the va_arg type")?;
                 let ty = self.type_name(depth + 1)?;
                 self.expect(")", "expected ')' after the va_arg type")?;

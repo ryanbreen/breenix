@@ -154,12 +154,34 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         allow_storage: bool,
         depth: usize,
     ) -> Result<(Type, DeclStorage, bool), Diagnostic> {
+        if depth >= MAX_NESTING {
+            return Err(self.error("type specifier nesting limit exceeded"));
+        }
         let start = self
             .peek()
             .ok_or_else(|| self.error("expected a type specifier"))?;
         let mut specs = Specifiers::default();
         let mut typedef_signed = false;
         while let Some(token) = self.peek() {
+            // N1570 6.7.2.4p4: a following '(' selects the specifier.
+            if token.is("_Atomic") {
+                self.take();
+                if self.eat("(").is_some() {
+                    if !specs.can_take_type_name() {
+                        return Err(token.error("conflicting declaration specifiers"));
+                    }
+                    let mut ty = self.type_name(depth + 1)?;
+                    self.expect(")", "expected ')' after the atomic type name")?;
+                    if ty.qualifiers != Qualifiers::default() {
+                        return Err(token.error("_Atomic type specifier requires an unqualified type"));
+                    }
+                    ty.qualifiers.atomic = true;
+                    ty.check_atomic(token)?;
+                    specs.named = Some(ty);
+                }
+                specs.qualifiers.atomic = true;
+                continue;
+            }
             if self.qualifier(&mut specs.qualifiers) {
                 continue;
             }
@@ -175,6 +197,14 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     return Err(token.error("_Noreturn requires a function declaration"));
                 }
                 specs.storage.noreturn = true;
+                continue;
+            }
+            if token.is("inline") {
+                self.take();
+                if !allow_storage {
+                    return Err(token.error("inline requires a function declaration"));
+                }
+                specs.storage.inline = true;
                 continue;
             }
             if specs.can_take_type_name() {
@@ -209,6 +239,8 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 if let Some(ty) = ty {
                     specs.qualifiers.constant |= ty.qualifiers.constant;
                     specs.qualifiers.volatile |= ty.qualifiers.volatile;
+                    specs.qualifiers.atomic |= ty.qualifiers.atomic;
+                    specs.qualifiers.restricted |= ty.qualifiers.restricted;
                     specs.named = Some(ty);
                     continue;
                 }
@@ -237,6 +269,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 .as_ref()
                 .map(|def| def.layout)
         });
+        ty.check_atomic(start)?;
         Ok((
             ty,
             specs.storage,
@@ -284,6 +317,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     members,
                     end: None,
                     has_const_member: false,
+                    atomic_alignment: 1,
                 }),
             });
             self.va_list_record = Some(id);
@@ -304,8 +338,11 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         } else if self.eat("volatile").is_some() {
             qualifiers.volatile = true;
             true
+        } else if self.eat("restrict").is_some() {
+            qualifiers.restricted = true;
+            true
         } else {
-            self.eat("restrict").is_some()
+            false
         }
     }
 }

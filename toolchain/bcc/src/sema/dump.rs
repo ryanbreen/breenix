@@ -176,6 +176,12 @@ fn expression(out: &mut impl Write, expr: &Expression<'_>) -> io::Result<()> {
         ExpressionKind::Integer(_) => ("integer-constant", "rvalue"),
         ExpressionKind::Float(_) => ("floating-constant", "rvalue"),
         ExpressionKind::FltRounds => ("__builtin_flt_rounds", "rvalue"),
+        ExpressionKind::Atomic { arguments, .. } => {
+            for argument in arguments {
+                expression(out, &argument.expr)?;
+            }
+            (expr.site.text.as_ref(), "rvalue")
+        }
         ExpressionKind::Unary(op, operand) => {
             expression(out, operand)?;
             let value = if *op == super::Unary::Dereference {
@@ -189,6 +195,11 @@ fn expression(out: &mut impl Write, expr: &Expression<'_>) -> io::Result<()> {
             expression(out, left)?;
             expression(out, right)?;
             ("binary", "rvalue")
+        }
+        ExpressionKind::Comma(left, right) => {
+            expression(out, left)?;
+            expression(out, right)?;
+            ("comma", "rvalue")
         }
         ExpressionKind::Cast(operand) => {
             expression(out, operand)?;

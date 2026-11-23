@@ -472,6 +472,12 @@ fn builtin(name: &str, target: Target) -> Option<(&str, Kind)> {
         "__WCHAR_MAX__" | "__WINT_MAX__" => ("4294967295U", Kind::Number),
         "__WCHAR_UNSIGNED__" if target == Target::Aarch64 => ("1", Kind::Number),
         "__WINT_UNSIGNED__" => ("1", Kind::Number),
+        "__ATOMIC_RELAXED" => ("0", Kind::Number),
+        "__ATOMIC_CONSUME" => ("1", Kind::Number),
+        "__ATOMIC_ACQUIRE" => ("2", Kind::Number),
+        "__ATOMIC_RELEASE" => ("3", Kind::Number),
+        "__ATOMIC_ACQ_REL" => ("4", Kind::Number),
+        "__ATOMIC_SEQ_CST" => ("5", Kind::Number),
         "__STDC_NO_ATOMICS__"
         | "__STDC_NO_COMPLEX__"
         | "__STDC_NO_THREADS__"

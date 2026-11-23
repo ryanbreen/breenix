@@ -317,6 +317,19 @@ impl<'src> Emitter<'_, 'src> {
         right: &Expression<'src>,
         operation: Option<&(Binary, Type, Type)>,
     ) -> Result<(), Diagnostic> {
+        if left.ty.qualifiers.atomic {
+            if let Some((op, a, b)) = operation {
+                return self.atomic_rmw(left, Some(right), *op, (a, b), false);
+            }
+            self.address(left)?;
+            self.adjust_stack("sub", 16);
+            self.text.push_str("    mov qword [rsp], rax\n");
+            self.converted(right, &left.ty)?;
+            self.text.push_str("    mov r11, qword [rsp]\n");
+            self.atomic_assign(&left.ty);
+            self.adjust_stack("add", 16);
+            return Ok(());
+        }
         let place = self.thread_scalar_place(left)?;
         if place.is_none() {
             self.address(left)?;
@@ -354,6 +367,19 @@ impl<'src> Emitter<'_, 'src> {
         postfix: bool,
     ) -> Result<(), Diagnostic> {
         let ty = &operand.ty;
+        if ty.qualifiers.atomic {
+            let left = match ty.kind {
+                Kind::Integer(integer) => Type::new(Kind::Integer(integer.promoted())),
+                _ => ty.unqualified(),
+            };
+            let right = if matches!(ty.kind, Kind::Pointer(_)) {
+                Type::new(Kind::Integer(Integer::Long))
+            } else {
+                left.clone()
+            };
+            let op = if increment { Binary::Add } else { Binary::Subtract };
+            return self.atomic_rmw(operand, None, op, (&left, &right), postfix);
+        }
         let extended = ty.kind == Kind::LongDouble;
         let reserve = if postfix && extended { 32 } else { 16 };
         let place = self.thread_scalar_place(operand)?;

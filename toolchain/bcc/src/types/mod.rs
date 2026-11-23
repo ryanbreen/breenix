@@ -10,6 +10,8 @@ pub(crate) use float::{floor_log10_pow2, FloatFormat};
 pub struct Qualifiers {
     pub constant: bool,
     pub volatile: bool,
+    pub atomic: bool,
+    pub restricted: bool,
 }
 
 impl Qualifiers {
@@ -25,6 +27,9 @@ impl fmt::Display for Qualifiers {
         }
         if self.volatile {
             out.write_str("volatile ")?;
+        }
+        if self.atomic {
+            out.write_str("_Atomic ")?;
         }
         Ok(())
     }
@@ -99,6 +104,7 @@ pub struct RecordDefinition<'a> {
     pub members: Vec<Member<'a>>,
     pub(crate) end: Option<&'a Lexeme>,
     pub(crate) has_const_member: bool,
+    pub(crate) atomic_alignment: usize,
 }
 
 impl RecordDefinition<'_> {
@@ -277,6 +283,32 @@ impl Type {
         Self::new(self.kind.clone())
     }
 
+    // Atomic and ordinary objects have distinct types (N1570 6.2.6.1p9).
+    // Strip the other qualifiers when checking pointed-to compatibility.
+    pub(crate) fn unqualified_except_atomic(&self) -> Self {
+        let mut ty = self.unqualified();
+        ty.qualifiers.atomic = self.qualifiers.atomic;
+        ty
+    }
+
+    pub(crate) fn check_atomic(&self, site: &Lexeme) -> Result<(), crate::pp::Diagnostic> {
+        if !self.qualifiers.atomic {
+            return Ok(());
+        }
+        match self.kind {
+            Kind::Integer(_) | Kind::Float(_) | Kind::Pointer(_) => Ok(()),
+            Kind::Array(..) | Kind::Function { .. } | Kind::Void => {
+                Err(site.error("_Atomic requires a non-array object type"))
+            }
+            Kind::LongDouble => {
+                Err(site.error("atomic objects wider than 8 bytes are scheduled for 25.9c2"))
+            }
+            Kind::Record(_) => {
+                Err(site.error("atomic aggregate objects are scheduled for 25.9c2"))
+            }
+        }
+    }
+
     // N1570 6.2.7, 6.7.3p10, 6.7.6.2p6, and 6.7.6.3p15.
     pub(crate) fn compatible(&self, other: &Self) -> bool {
         if self.qualifiers != other.qualifiers {
@@ -364,6 +396,20 @@ impl Type {
                     .is_some_and(|definition| definition.has_const_member),
                 _ => false,
             }
+    }
+
+    pub(crate) fn atomic_alignment(&self, records: &[Record<'_>]) -> usize {
+        if self.qualifiers.atomic {
+            return self.layout().unwrap().align;
+        }
+        match &self.kind {
+            Kind::Array(element, _) => element.atomic_alignment(records),
+            Kind::Record(record) => records
+                .get(record.id)
+                .and_then(|entry| entry.definition.as_ref())
+                .map_or(1, |def| def.atomic_alignment),
+            _ => 1,
+        }
     }
 
     /// Natural alignment of the type. Extra placement rules for individual

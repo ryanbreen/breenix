@@ -226,7 +226,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         if let Some(site) = self.eat("{") {
             self.initializer_list(site, depth)
         } else {
-            Ok(Initializer::Expression(self.expression(depth)?))
+            Ok(Initializer::Expression(self.assignment(depth)?))
         }
     }
 
@@ -317,7 +317,13 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 return Err(star.error("pointer declarator nesting limit exceeded"));
             }
             let mut qualifiers = Qualifiers::default();
-            while self.qualifier(&mut qualifiers) {}
+            loop {
+                if self.eat("_Atomic").is_some() {
+                    qualifiers.atomic = true;
+                } else if !self.qualifier(&mut qualifiers) {
+                    break;
+                }
+            }
             pointers.push(Modifier::Pointer(qualifiers));
         }
         let mut declarator = if self.eat("(").is_some() {
@@ -750,6 +756,9 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 };
                 let site = name.or(colon).unwrap();
                 let width = if let Some(colon) = colon {
+                    if ty.qualifiers.atomic {
+                        return Err(colon.error("atomic bit-fields are not supported"));
+                    }
                     if storage.alignment.is_some() {
                         return Err(colon.error("_Alignas cannot apply to a bit-field"));
                     }
@@ -833,6 +842,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         let mut align = 1;
         let mut members = Vec::new();
         let mut has_const_member = false;
+        let mut atomic_alignment = 1;
         let mut fields = fields.into_iter().peekable();
         while let Some(Field {
             name,
@@ -871,6 +881,11 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 check_alignment(site, requested, natural)?;
             }
             let alignment = natural.max(alignment.unwrap_or(0));
+            let member_atomic_alignment = ty.atomic_alignment(&self.records);
+            if alignment < member_atomic_alignment {
+                return Err(site.error("unaligned atomic members are scheduled for 25.9c2"));
+            }
+            atomic_alignment = atomic_alignment.max(member_atomic_alignment);
             let (start, width, bit_field) = if let Some(width) = width {
                 let unit = (field.size * 8) as u128;
                 // psABI §3.1.2: ordinary fields must fit in an aligned
@@ -916,6 +931,7 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             members,
             end: Some(end),
             has_const_member,
+            atomic_alignment,
         })
     }
 
@@ -944,7 +960,7 @@ impl DeclStorage {
         if self.thread_local {
             return Err(site.error("_Thread_local requires an object declarator"));
         }
-        if self.alignment.is_some() || self.noreturn {
+        if self.alignment.is_some() || self.noreturn || self.inline {
             return Err(site.error("declaration specifier requires a declarator"));
         }
         Ok(())
@@ -957,6 +973,11 @@ impl DeclStorage {
         }
         if self.noreturn && (!function || self.class == Storage::Typedef) {
             return Err(site.error("_Noreturn requires a function declaration"));
+        }
+        // N1570 6.7.4p6–7: inline is a suggestion for internal linkage.
+        // External inline definitions have a separate linkage contract.
+        if self.inline && (!function || self.class != Storage::Static) {
+            return Err(site.error("bcc currently supports inline only on static functions"));
         }
         if let Some(alignment) = self.alignment {
             if function || matches!(self.class, Storage::Typedef | Storage::Register) {
@@ -978,6 +999,7 @@ impl DeclStorage {
         if !matches!(self.class, Storage::Unspecified | Storage::Register)
             || self.alignment.is_some()
             || self.noreturn
+            || self.inline
         {
             return Err(site.error("invalid declaration specifier for a parameter"));
         }

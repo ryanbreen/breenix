@@ -267,6 +267,28 @@ values of `__builtin_flt_rounds()`. On AMD64 the builtin uses
 §§4.8.4, 8.1.5 and 10.2.3.2 specify the x87 and SSE rounding controls.
 The AArch64 backend still needs to lower the rounding query to FPCR.
 
+### AMD64 scalar atomics (25.9c1)
+
+N1570 §§6.2.6.1p9, 6.3.2.1, 6.5.2.4, 6.5.16, 6.7.2.4, 6.7.3
+and 7.17 define atomic types, value conversion and operations. The pinned
+Clang Language Extensions define the `__c11_atomic_*` interface.
+N1570 §§6.5.17 and 6.7.4 cover the comma expression and internal-linkage
+inline functions that the existing `stdatomic.h` uses.
+
+Intel SDM Vol. 3A §§9.1.1–9.1.2 and 9.2.2–9.2.3 in the pinned
+December 2023 edition specify aligned scalar access and memory ordering.
+bcc uses MOV for atomic loads and relaxed or release stores, memory
+XCHG for sequentially consistent stores and exchanges, LOCK XADD or
+LOCK CMPXCHG for read-modify-writes, and MFENCE for sequentially
+consistent thread fences. Signal fences and other thread fences rely
+on bcc preserving the order of emitted accesses. Floating compound
+operations use Breenix's `fenv.h` functions to retain the floating-point
+exceptions of the successful compare-exchange attempt.
+
+Aggregate atomics and wider scalar objects are scheduled for 25.9c2.
+AArch64 atomic instruction selection and ordering await the AArch64
+backend.
+
 ### AMD64 local-exec thread storage (25.7c)
 
 N1570 §§6.2.2, 6.2.4, 6.7.1, 6.7.9 and 6.9.2 govern linkage, storage

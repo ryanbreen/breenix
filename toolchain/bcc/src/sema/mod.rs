@@ -7,6 +7,7 @@ use crate::pp::{self, Diagnostic, Lexeme, Position, Preprocessed, Target};
 use crate::types::{BitField, Float, Integer, Kind, Record, Type};
 pub use parse::{Binary, Unary};
 
+mod atomic;
 mod body;
 mod c11;
 mod dump;
@@ -16,6 +17,8 @@ mod varargs;
 
 pub(super) use c11::{check_static_assertion, type_alignment};
 
+pub use atomic::AtomicOp;
+pub(crate) use atomic::SEQ_CST;
 pub use thread::{StaticAddress, ThreadData, ThreadInitializer, ThreadObject};
 
 #[derive(Debug)]
@@ -178,6 +181,7 @@ pub enum ExpressionKind<'a> {
         left_type: Type,
         right_type: Type,
     },
+    Comma(Box<Expression<'a>>, Box<Expression<'a>>),
     Cast(Box<Expression<'a>>),
     Conditional {
         condition: Box<Expression<'a>>,
@@ -208,6 +212,10 @@ pub enum ExpressionKind<'a> {
     },
     VaEnd(Box<Expression<'a>>),
     FltRounds,
+    Atomic {
+        op: AtomicOp,
+        arguments: Vec<Argument<'a>>,
+    },
     Call {
         callee: Box<Expression<'a>>,
         arguments: Vec<Argument<'a>>,
@@ -922,6 +930,12 @@ impl<'a> FunctionBody<'a, '_> {
                     result,
                 )
             }
+            Syntax::Comma(left, right) => {
+                let left = self.expression(*left)?;
+                let right = self.expression(*right)?;
+                let ty = right.value_type();
+                (ExpressionKind::Comma(Box::new(left), Box::new(right)), ty)
+            }
             Syntax::Cast(ty, expr) => {
                 let expr = self.expression(*expr)?;
                 let source = expr.converted_type().unwrap_or_else(|| expr.ty.clone());
@@ -1080,6 +1094,11 @@ impl<'a> FunctionBody<'a, '_> {
         arguments: Vec<parse::Expression<'a>>,
         close: &Lexeme,
     ) -> Result<(ExpressionKind<'a>, Type), Diagnostic> {
+        if matches!(callee.kind, parse::ExpressionKind::Identifier) {
+            if let Some(op) = AtomicOp::from_name(&callee.site.text) {
+                return self.atomic_builtin(callee.site, op, arguments);
+            }
+        }
         if matches!(callee.kind, parse::ExpressionKind::Identifier)
             && matches!(
                 callee.site.text.as_ref(),
@@ -1286,12 +1305,17 @@ fn pointer_binary(
             Some((index(), right.clone(), right.clone()))
         }
         (Kind::Pointer(a), Kind::Pointer(b))
-            if op == Subtract && a.kind == b.kind && sized(left) =>
+            if op == Subtract
+                && a.kind == b.kind
+                && a.qualifiers.atomic == b.qualifiers.atomic
+                && sized(left) =>
         {
             Some((left.clone(), right.clone(), index()))
         }
         (Kind::Pointer(a), Kind::Pointer(b))
-            if matches!(op, Less | LessEqual | Greater | GreaterEqual) && a.kind == b.kind =>
+            if matches!(op, Less | LessEqual | Greater | GreaterEqual)
+                && a.kind == b.kind
+                && a.qualifiers.atomic == b.qualifiers.atomic =>
         {
             Some((left.clone(), right.clone(), int()))
         }
@@ -1308,7 +1332,10 @@ fn compatible_pointer(left: &Expression<'_>, right: &Expression<'_>) -> Option<T
     let b = right.value_type();
     match (&a.kind, &b.kind) {
         (Kind::Pointer(a), Kind::Pointer(b)) => {
-            let kind = if a.unqualified().compatible(&b.unqualified()) {
+            let kind = if a
+                .unqualified_except_atomic()
+                .compatible(&b.unqualified_except_atomic())
+            {
                 if has_prototype(b) {
                     b.kind.clone()
                 } else {
@@ -1327,6 +1354,8 @@ fn compatible_pointer(left: &Expression<'_>, right: &Expression<'_>) -> Option<T
                     qualifiers: crate::types::Qualifiers {
                         constant: a.qualifiers.constant || b.qualifiers.constant,
                         volatile: a.qualifiers.volatile || b.qualifiers.volatile,
+                        atomic: a.qualifiers.atomic && b.qualifiers.atomic,
+                        restricted: a.qualifiers.restricted || b.qualifiers.restricted,
                     },
                 }
                 .pointer_to(),
@@ -1372,7 +1401,8 @@ fn assignable(destination: &Type, expr: &Expression<'_>) -> bool {
             if !to.qualifiers.contains(from.qualifiers) {
                 return false;
             }
-            to.unqualified().compatible(&from.unqualified())
+            to.unqualified_except_atomic()
+                .compatible(&from.unqualified_except_atomic())
                 || (to.kind == Kind::Void && !matches!(from.kind, Kind::Function { .. }))
                 || (from.kind == Kind::Void && !matches!(to.kind, Kind::Function { .. }))
         }

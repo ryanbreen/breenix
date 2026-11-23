@@ -5,13 +5,14 @@ use std::fmt::Write;
 
 use crate::pp::{Diagnostic, Position, Target};
 use crate::sema::{
-    Argument, Binary, Expression, ExpressionKind, Function, InitValue, Linkage, LocalStorage,
+    Argument, AtomicOp, Binary, Expression, ExpressionKind, Function, InitValue, Linkage, LocalStorage,
     Object, ObjectInitializer, Statement, StaticAddress, ThreadData, ThreadInitializer,
     TranslationUnit, Unary,
 };
 use crate::types::{BitField, Float, Integer, Kind, Layout, Record, Type};
 
 mod abi;
+mod atomic;
 mod bit_field;
 mod flow;
 mod thread;
@@ -431,6 +432,10 @@ impl<'src> Emitter<'_, 'src> {
             } => {
                 self.binary(*op, (left, left_type), (right, right_type), &expr.ty)?;
             }
+            ExpressionKind::Comma(left, right) => {
+                self.discard(left)?;
+                self.converted(right, &expr.ty)?;
+            }
             ExpressionKind::Cast(operand) => self.converted(operand, &expr.ty)?,
             ExpressionKind::Assignment {
                 left,
@@ -461,6 +466,7 @@ impl<'src> Emitter<'_, 'src> {
             // AMD64 va_end has no resources to release. Evaluate the operand.
             ExpressionKind::VaEnd(list) => self.value(list)?,
             ExpressionKind::FltRounds => self.flt_rounds(),
+            ExpressionKind::Atomic { op, arguments } => self.atomic_builtin(*op, arguments)?,
             ExpressionKind::Call { callee, arguments } => {
                 self.call(callee, arguments, &expr.ty)?;
                 self.normalize_integer(&expr.ty);
