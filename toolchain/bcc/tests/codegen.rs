@@ -4,6 +4,11 @@ use std::process::Command;
 
 use bcc::{codegen, pp, sema};
 
+#[cfg(target_arch = "aarch64")]
+mod support;
+#[cfg(target_arch = "aarch64")]
+use support::aarch64_check_exit;
+
 #[test]
 fn double_literal_bits() {
     // N1570 6.4.4.2 and Annex F.5. These binary64 encodings follow from
@@ -299,25 +304,6 @@ fn aarch64_flt_rounds_tracks_fpcr() {
         .output().expect("run native FPCR harness");
     assert!(result.status.success(), "{}\n{}{}", result.status,
         String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
-}
-
-#[cfg(target_arch = "aarch64")]
-fn aarch64_check_exit(sources: &[&str]) {
-    let toolchain = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    let bcc = Path::new(env!("CARGO_BIN_EXE_bcc"));
-    let result = Command::new("python3")
-        .arg(toolchain.join("tests/bcc/aarch64_return_42_exit_status.py"))
-        .args([bcc, &bcc.with_file_name("bas"), &bcc.with_file_name("bld")])
-        .args(sources)
-        .output()
-        .expect("run the ARM64 codegen harness with native Python");
-    assert!(
-        result.status.success(),
-        "{}\n{}{}",
-        result.status,
-        String::from_utf8_lossy(&result.stdout),
-        String::from_utf8_lossy(&result.stderr),
-    );
 }
 
 #[test]

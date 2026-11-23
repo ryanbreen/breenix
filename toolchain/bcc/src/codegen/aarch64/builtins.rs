@@ -1,4 +1,4 @@
-//! Floating representation queries for AArch64.
+//! Floating representation queries and stack allocation for AArch64.
 
 use super::*;
 use crate::types::FloatFormat;
@@ -64,5 +64,25 @@ impl<'src> Emitter<'_, 'src> {
         constant(&mut self.text, "x1", with_fraction as i64 as u64);
         self.text
             .push_str("    cmp x2, #0\n    csel x0, x0, x1, eq\n");
+    }
+
+    pub(super) fn alloca(&mut self, size: &Expression<'src>) -> Result<(), Diagnostic> {
+        self.converted(size, &Type::new(Kind::Integer(Integer::UnsignedLong)))?;
+        let distance = self.alloca_base.unwrap();
+        self.offset_address("x9", "x29", -(distance as i64));
+        let copy = self.label();
+        let done = self.label();
+        // AAPCS64 §6.4.5: move SP before writing to the new stack area,
+        // and keep it 16-byte aligned. Copy the live spills and outgoing
+        // arguments forward to handle overlap. Existing allocations stay
+        // above the old boundary, with the new one immediately below it.
+        let align_mask = !((STACK_ALIGNMENT - 1) as u64);
+        writeln!(
+            self.text,
+            "    add x0, x0, #{}\n    and x0, x0, #{align_mask:#x}\n    mov x10, sp\n    sub sp, sp, x0\n    mov x11, sp\n    ldr x12, [x9]\n    cmp x10, x12\n    b.eq {done}\n{copy}:\n    ldp x13, x14, [x10], #16\n    stp x13, x14, [x11], #16\n    cmp x10, x12\n    b.ne {copy}\n{done}:\n    sub x0, x12, x0\n    str x0, [x9]",
+            STACK_ALIGNMENT - 1,
+        )
+        .unwrap();
+        Ok(())
     }
 }

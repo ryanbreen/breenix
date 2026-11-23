@@ -154,5 +154,11 @@ fn suite_recipe(target: &str) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+    if target == "aarch64" {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for category in ["dirent-glob", "getopt-env", "locale-wchar", "math", "pthread", "stdio", "string-stdlib"] {
+            assert!(stdout.contains(&format!("{category}: ELF valid, stand-ins none")), "{stdout}");
+        }
+    }
     print!("{}", String::from_utf8_lossy(&output.stdout));
 }

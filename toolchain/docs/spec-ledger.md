@@ -507,9 +507,13 @@ for classification. The comparison macros check for NaNs before comparing
 the saved operands. Infinity and quiet NaN initializers use target-format
 bits, including the x87 explicit integer bit and AArch64 binary128.
 
-On AMD64, `__builtin_alloca` uses the aligned stack in the caller, with
-allocation lifetime through function return (GCC Stack Allocation and AMD64
-psABI §3.2.2). AArch64 stack allocation is deferred to ARM 25.10b.
+`__builtin_alloca` uses the aligned stack in the caller, with allocation
+lifetime through function return (GCC Stack Allocation, AMD64 psABI §3.2.2
+and AAPCS64 §§6.4.5–6.4.6). On AArch64, SP stays 16-byte aligned while live
+temporaries and outgoing arguments move below the allocation. The fixed
+frame and the x19-based over-aligned area stay in place. The stack
+adjustment and copy use the A64 forms in Arm DDI 0487 M.b §§C6.2.5,
+C6.2.14, C6.2.213, C6.2.413 and C6.2.455.
 
 ### Rounding mode and expression grouping (25.10a2)
 

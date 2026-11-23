@@ -45,6 +45,7 @@ def make(config, suite, category, build, libc, functions, check=True):
         config.tools / "bmake", "-f", MAKEFILE,
         f"SUITE={suite}", f"CATEGORY={category}", f"BUILD={build}",
         f"LIBC={libc}", f"BRT={config.brt}", f"FUNCTIONS={functions}",
+        *( [f"ARCH={config.arch}"] if hasattr(config, "arch") else [] ),
         f"INCLUDE={INCLUDE}", f"CC_INCLUDE={SUPPORT}", f"LINKER_SCRIPT={LINKER_SCRIPT}",
         *(f"{var}={config.tools / name}" for var, name in
           (("CC", "bcc"), ("AS", "bas"), ("LD", "bld"), ("AR", "bar"), ("NM", "bnm"))),
@@ -64,7 +65,8 @@ def fixture(config, work, source, functions, mode="", members=None):
     declarations.write_text("".join(f"{name}\n" for name in sorted(functions)))
     libc = work / "libs/libbreenix-libc/target/x86_64-breenix-c/release/libc.a"
     libc.parent.mkdir(parents=True)
-    start = ".global _start\n_start:\n    call main\n    ret\n"
+    arch = getattr(config, "arch", "x86_64")
+    start = ".global _start\n_start:\n    " + ("bl main" if arch == "aarch64" else "call main") + "\n    ret\n"
     if members is None:
         members = {"breenix": start}
     objects = []
@@ -72,7 +74,7 @@ def fixture(config, work, source, functions, mode="", members=None):
         src = work / f"{member}.s"
         obj = src.with_suffix(".o")
         src.write_text(".section .text\n" + assembly)
-        run(os.environ["BREENIX_CC_CLANG"], "--target=x86_64-unknown-none", "-c", src, "-o", obj)
+        run(os.environ["BREENIX_CC_CLANG"], f"--target={arch}-unknown-none", "-c", src, "-o", obj)
         objects.append(obj)
     run(config.tools / "bar", "rcs", libc, *objects)
     return suite, libc, declarations
@@ -171,14 +173,14 @@ def bnm_audit_matches_llvm_nm(config, _work):
                    for sym, weak, member in actual), name
 
 
-def public_functions():
+def public_functions(arch="x86_64"):
     # Discover declarations on the host. The guest recipe reads the staged
     # inventory as a plain text input.
     script = ROOT / "scripts/libc-symbol-audit.py"
     spec = importlib.util.spec_from_file_location("libc_symbol_audit", script)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    names = module.declared_functions("x86_64", module.public_headers())
+    names = module.declared_functions(arch, module.public_headers())
     assert names
     return names
 
@@ -186,7 +188,8 @@ def public_functions():
 def linked_functions_come_from_breenix(config, work):
     strong = ".global selected\nselected:\n    ret\n"
     weak = ".weak selected\nselected:\n    ret\n"
-    start = ".global _start\n_start:\n    call main\n    ret\n"
+    arch = getattr(config, "arch", "x86_64")
+    start = ".global _start\n_start:\n    " + ("bl main" if arch == "aarch64" else "call main") + "\n    ret\n"
     source = "void selected(void); int main(void) { selected(); return 0; }\n"
 
     for label, members in (
@@ -206,7 +209,7 @@ def linked_functions_come_from_breenix(config, work):
             assert "selected: no strong Breenix libc definition" in result.stderr, result.stderr
         assert not (out / "libc-math_test.elf").exists()
 
-    names = public_functions()
+    names = public_functions(arch)
     declarations = work / "functions.txt"
     declarations.write_text("".join(f"{name}\n" for name in sorted(names)))
     categories = [line.split()[0] for line in (SUITE / "categories").read_text().splitlines()
@@ -216,7 +219,7 @@ def linked_functions_come_from_breenix(config, work):
     out = work / "real"
     for category in categories:
         make(config, SUITE, category, out, config.libc, declarations)
-        run(config.tools / "elfcheck", "--exec", out / f"libc-{category}_test.elf")
+        run(config.tools / "elfcheck", *( ["--machine", "aarch64"] if arch == "aarch64" else [] ), "--exec", out / f"libc-{category}_test.elf")
         assert (out / f"{category}.map").stat().st_size
         assert (out / f"{category}-missing.txt").read_text() == "", category
         # Category-local symbol work should scale with its own objects. The
@@ -227,16 +230,43 @@ def linked_functions_come_from_breenix(config, work):
                 continue
             rows = path.read_bytes().count(b"\n")
             assert rows <= object_rows, f"{path.name}: {rows} rows for {object_rows} object symbols"
-    run(config.tools / "elfcheck", out / "abi_check.o", out / "harness.o")
+    run(config.tools / "elfcheck", *( ["--machine", "aarch64"] if arch == "aarch64" else [] ),
+        out / "abi_check.o", out / "harness.o")
+
+
+def aarch64_bnm_audit_matches_llvm_nm(config, work):
+    config.arch = "aarch64"
+    config.libc = config.arm_libc
+    declarations = public_functions("aarch64")
+    actual = archive_functions(config.tools / "bnm", config.libc, declarations)
+    expected = archive_functions(config.llvm_nm, config.libc, declarations, llvm=True)
+    assert expected and actual == expected, (expected - actual, actual - expected)
+    for name in ("memcmp", "memcpy", "memmove", "memset", "strlen"):
+        assert any(sym == name and weak and member.startswith("compiler_builtins")
+                   for sym, weak, member in actual), name
+        assert any(sym == name and not weak and not member.startswith("compiler_builtins")
+                   for sym, weak, member in actual), name
+
+
+def aarch64_linked_functions_come_from_breenix(config, work):
+    config.arch = "aarch64"
+    config.libc = config.arm_libc
+    config.brt = config.arm_brt
+    linked_functions_come_from_breenix(config, work)
 
 
 if __name__ == "__main__":
     checks = (missing_functions_match_build_sh, bnm_audit_matches_llvm_nm,
-              missing_data_is_hard_error, linked_functions_come_from_breenix)
+              missing_data_is_hard_error, linked_functions_come_from_breenix,
+              aarch64_bnm_audit_matches_llvm_nm, aarch64_linked_functions_come_from_breenix)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tools", required=True, type=lambda value: Path(value).resolve())
     parser.add_argument("--libc", required=True, type=lambda value: Path(value).resolve())
     parser.add_argument("--brt", required=True, type=lambda value: Path(value).resolve())
+    parser.add_argument("--arm-libc", type=lambda value: Path(value).resolve(),
+                        default=ROOT / "libs/libbreenix-libc/target/aarch64-breenix/release/libc.a")
+    parser.add_argument("--arm-brt", type=lambda value: Path(value).resolve(),
+                        default=ROOT / "toolchain/target/aarch64-breenix/release/libbrt.a")
     parser.add_argument("--llvm-nm", required=True, type=lambda value: Path(value).resolve())
     parser.add_argument("--check", choices=[check.__name__ for check in checks])
     config = parser.parse_args()
