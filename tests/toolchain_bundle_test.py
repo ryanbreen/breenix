@@ -115,6 +115,67 @@ class ToolchainBundleTest(unittest.TestCase):
         self.assertEqual({path.name for path in (self.dev / "bin").iterdir()},
                          {"bas", "bld", "bar", "bnm"})
 
+    def bootstrap_abi_tls_inputs_staged(self):
+        root = self.bundle / "root"
+        corpus = Path("usr/share/breenix/toolchain")
+        source = WORKSPACE / "corpus"
+        manifest = set((self.dev / "manifest.sha256").read_text().splitlines())
+
+        def staged(relative):
+            path = root / relative
+            self.assertTrue(path.is_file(), f"fixture is missing {relative}")
+            self.assertIn(f"{digest(path)}  {relative}", manifest)
+            return path
+
+        abi = ("aggregates-exhaustion", "varargs", "sse-float", "x87-long-double")
+        tls = ("template-init-zero-fill-aligned", "errno-per-thread", "tls-across-fork-exec")
+        interop = ("c-calls-rust", "rust-calls-c")
+        for category, names in (("abi", abi), ("tls", tls), ("interop", interop)):
+            for name in names:
+                with self.subTest(category=category, program=name):
+                    stems = (f"{name}-caller", f"{name}-callee") if category == "abi" else (name,)
+                    for stem in stems:
+                        relative = Path(category) / f"{stem}.c"
+                        code = staged(corpus / relative).read_bytes()
+                        self.assertEqual(code, (source / relative).read_bytes())
+                        if category == "abi":
+                            header = staged(corpus / category / f"{stem}.o").read_bytes()[:20]
+                            self.assertEqual(header[:6], b"\x7fELF\x02\x01")
+                            self.assertEqual(struct.unpack_from("<HH", header, 16), (1, 62))
+                        if category == "tls":
+                            self.assertNotIn(b"_Alignas", code)
+                    relative = Path(category) / f"{name}.expect"
+                    expectation = staged(corpus / relative).read_bytes()
+                    self.assertEqual(expectation, (source / relative).read_bytes())
+                    status, newline, _ = expectation.partition(b"\n")
+                    self.assertTrue(newline and status.isdigit() and 0 <= int(status) <= 255)
+
+        archive_path = "lib/libinterop.a"
+        archive = staged(Path("opt/breenix-dev/25.2") / archive_path)
+        self.assertEqual(archive.read_bytes()[:8], b"!<arch>\n")
+        self.assertEqual(self.record.get("interop"), {
+            "cargoPackage": "interop",
+            "path": archive_path,
+            "rustForkCommit": tomllib.loads((ROOT / "rust-fork.toml").read_text())["commit"],
+            "rustc": {"version": subprocess.check_output([self.rustc, "--version"], text=True).strip(),
+                      "sha256": digest(self.rustc)},
+            "target": "x86_64-breenix-c",
+            "sha256": digest(archive),
+        })
+        self.assertEqual(self.record, json.loads((self.dev / "build.json").read_text()))
+
+        names = (source / "cases").read_text().splitlines()
+        deferred = {"alignment", "atomics", "compound-literal", "designated-init", "generic"}
+        expected = [name for name in names if name not in deferred]
+        self.assertEqual(len(expected), 25)
+        case_list = ROOT / "userspace/programs/src/fixture/toolchain-cc-cases"
+        self.assertEqual(case_list.read_text().splitlines(), expected)
+        mac = corpus / "c-core/mac"
+        candidates = {f"{name}.elf" for name in expected}
+        self.assertEqual({path.name for path in (root / mac).iterdir()}, candidates)
+        for name in sorted(candidates):
+            staged(mac / name)
+
     def arm_encoding_inputs_are_staged(self):
         relative = Path("usr/share/breenix/toolchain/assembler")
         manifest = (self.dev / "manifest.sha256").read_text().splitlines()
@@ -245,7 +306,8 @@ if __name__ == "__main__":
               "ToolchainBundleTest.receipts_from_cargo_host_bas"]
     if json.loads((args.bundle / "build.json").read_text())["arch"] == "x86_64":
         checks.extend(["ToolchainBundleTest.cc_built_by_rustc",
-                       "ToolchainBundleTest.make_built_by_rustc"])
+                       "ToolchainBundleTest.make_built_by_rustc",
+                       "ToolchainBundleTest.bootstrap_abi_tls_inputs_staged"])
     else:
         checks.extend(["ToolchainBundleTest.arm_bundle_unchanged_until_a3",
                        "ToolchainBundleTest.arm_encoding_inputs_are_staged",

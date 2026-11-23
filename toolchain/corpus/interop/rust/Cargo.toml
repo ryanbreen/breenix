@@ -1,0 +1,20 @@
+[package]
+name = "interop"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["staticlib"]
+test = false
+doctest = false
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+incremental = false

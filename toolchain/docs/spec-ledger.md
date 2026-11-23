@@ -27,6 +27,7 @@ edition pin whose full publication has no digest recorded here.
 | [POSIX make](https://pubs.opengroup.org/onlinepubs/9799919799.2024edition/utilities/make.html) | POSIX.1-2024, Issue 8, `make` utility | `86663126116573d3b62d89a86807e205030bd2e161beeeddfbdab7c7d25d52b4` |
 | [GNU make manual](https://www.gnu.org/software/make//manual/make.pdf) | Edition 0.77, GNU make 4.4.1, 2023-02-26 | `a4bc06026984382815e392159e60a4bc356cac6c5b81e5ae84fa4f58f621f4d3` |
 | [GNU C extensions](https://gcc.gnu.org/onlinedocs/gcc-15.2.0/gcc/C-Extensions.html) | GCC 15.2.0 manual, GNU C extensions chapter | `4965dab10bf21e0147e86aa80fca2a92da2c099393f34d0325c913aa3be871f2` |
+| [GCC Common Type Attributes](https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Common-Attributes.html#Common-Type-Attributes) | GCC 16.2.0 manual, 2026-08-07, 209636 bytes. E25 ruling 37 pins only the meaning of the record type attribute `__attribute__((packed))`. | `ab4a0dcc40060e309f2d126d3bbd8a10b2d596084d32371b8642d76b33e0d33f` |
 | [NASM manual](https://www.nasm.us/xdoc/3.02/nasmdoc.pdf) | NASM 3.02, reserved for 25.12 | `a4d1766c9d640663569bcf93feac0657732fe52017002f1dbc797353f6aed34f` |
 | [GNU ld manual](https://sourceware.org/binutils/docs-2.45/ld.html) | GNU Binutils 2.45, command-line options and linker script syntax | `f219c3b05e197308c5b60fc2d4dbfc302617389ca5c21501de58a90b3d052e06` |
 | [Oracle Solaris `ar(3HEAD)`](https://docs.oracle.com/cd/E86824_01/html/E54772/ar.h-3head.html) | Oracle Solaris 11.3, archive file format | — |
@@ -171,6 +172,29 @@ bcc emits AMD64 assembly for the 25.5 scalar subset. Variadic function
 definitions and `va_list` operations follow in 25.7b2, x87 `long double`
 lowering in 25.7b3, and AArch64 scalar code generation in A3.
 
+## bcc 25.7 record objects
+
+| Feature | Specification |
+| --- | --- |
+| Record identity, tag scope and completion | N1570 §§6.2.1, 6.2.3 and 6.7.2.3. |
+| Member offsets, alignment and tail padding | AMD64 psABI §3.1.2 and AAPCS64 §§5.10.1–5.10.2. |
+| Member access, addresses, record assignment and initialization | N1570 §§6.5.2.3, 6.5.3.2, 6.5.16.1 and 6.7.9. The AMD64 backend copies the record's object representation. |
+| By-value record arguments and results | AMD64 psABI §3.2.3 and N1570 §§6.5.2.2 and 6.8.6.4. Classify record, union and array fields recursively, allocate INTEGER and SSE registers together, and pass MEMORY records in source order. MEMORY results use a hidden first argument returned in RAX. |
+
+For AMD64 bit-fields, N1570 §§6.3.1.1, 6.5.3, 6.5.16 and 6.7.2.1 govern
+promotions, non-addressability, stores and width constraints. The AMD64
+psABI §3.1.2 places the low-order bits first, keeps ordinary fields within
+a unit of their declared type and excludes unnamed fields from the record's
+alignment. Bit-field stores preserve adjacent bits.
+
+The GCC 16.2 Common Type Attributes pin defines `packed` on a record
+definition. Packing preserves nested types' internal layouts and the
+zero-width separator's alignment rule. The AMD64 psABI §3.2.3 classifies
+a packed aggregate with an unaligned field as MEMORY.
+
+AArch64 bcc code emission is scheduled for A3. AAPCS64 record layout for
+bit-fields and aggregate calling conventions are scheduled for A4.
+
 ## bmake 25.6a2
 
 | Feature | Specification |
@@ -199,3 +223,38 @@ current language and optimization subset.
 recursive `MAKEFLAGS` and `$(MAKE)`, assignment operators `::=`, `:::=`, `+=`,
 `?=` and `!=`, the `.WAIT` barrier, `.NOTPARALLEL`, the `-j` job pool, and
 target cleanup when a signal stops bmake itself.
+
+### AMD64 variadic definitions (25.7b2)
+
+N1570 §7.16.1 governs the four `stdarg.h` builtins. AMD64 psABI §3.5.7
+Figure 3.34 gives the one-element array type and its 24-byte record.
+The prologue uses the save offsets in Figure 3.33 and guards XMM spills
+with AL. The usable SSE bank ends at offset 176 because §3.2.3 assigns
+only XMM0–7 to arguments. Register-class selection and whole-record
+overflow follow §3.2.3. AAPCS64 varargs are scheduled for A4.
+
+### AMD64 extended precision (25.7b3)
+
+AMD64 psABI §§3.1.2 and 3.2.3 assign `long double` 16-byte size and
+alignment, X87/X87UP stack arguments and an ST(0) result. Section 3.5.7
+aligns variadic arguments in the overflow area. Only the ten value bytes
+are significant. An aggregate follows the same eightbyte merging rules.
+
+N1570 §§6.3.1, 6.4.4.2 and 6.5 govern conversions, constants and the
+usual arithmetic conversions. The literal parser rounds the exact ratio
+to nearest with ties to even, including the 64th significand bit and the
+subnormal range. Intel SDM Vol. 1 Table 4-3 and Figure 8-13 define the
+value encoding. The instruction forms come from Vol. 2. Integer
+conversion truncates with a temporary x87 control word and restores
+the saved control word. AArch64 code emission is scheduled for A3 and
+AAPCS64 binary128 `long double` lowering for A4.
+
+### AMD64 local-exec thread storage (25.7c)
+
+N1570 §§6.2.2, 6.2.4, 6.7.1, 6.7.9 and 6.9.2 govern linkage, storage
+duration, declarations, initialization and tentative definitions. ELF
+gABI §§3.10, 5.2 and 7.7 describe `SHF_TLS`, `STT_TLS` and the
+`PT_TLS` template. AMD64 psABI §10.3.2 Tables 10.7 and 10.10 give the
+local-exec address and value sequences, using Breenix's self-pointer at
+`FS:0` and `R_X86_64_TPOFF32` relocations. AArch64 TLS lowering is
+scheduled for A4.

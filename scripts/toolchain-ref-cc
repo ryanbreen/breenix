@@ -76,7 +76,7 @@ def write_include_overlay(path, roots):
     }), encoding="utf-8")
 
 
-def compile_c(arch, clang, source, staged, work):
+def compile_c(arch, clang, source, staged, work, *, position_independent=False):
     headers = tuple(
         inventory.input_path(ROOT / path, (ROOT,))
         for path in ("libs/libbreenix-libc/include", "toolchain/include")
@@ -92,7 +92,9 @@ def compile_c(arch, clang, source, staged, work):
         "-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic",
         "-nostdinc", "-ivfsoverlay", str(overlay),
         "-isystem", str(headers[0]), "-isystem", str(headers[1]),
-        "-fno-stack-protector", "-fno-pic", "-fno-pie", "-fintegrated-as",
+        "-fno-stack-protector", *(
+            ("-fPIC",) if position_independent else ("-fno-pic", "-fno-pie")
+        ), "-fintegrated-as",
         # Assembler .incbin inputs do not appear in the C dependency file.
         "-fno-gnu-inline-asm", ARCH_FLAGS[arch],
         "-MD", "-MF", str(compile_deps), "-MT", "reference.o",

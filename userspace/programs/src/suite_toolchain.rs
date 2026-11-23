@@ -197,6 +197,33 @@ static SUITE: Suite = suite(
                 ),
             ],
         ),
+        category(
+            "bootstrap",
+            "C and Rust in one program",
+            &[
+                case("c-calls-rust", "C calls Rust with scalars, an aggregate and a callback", c_calls_rust),
+                case("rust-calls-c", "Rust calls C with scalars, an aggregate and a callback", rust_calls_c),
+            ],
+        ),
+        category(
+            "abi",
+            "System V x86-64 calling convention: aggregates, varargs, SSE and x87",
+            &[
+                case("aggregates-exhaustion", "Aggregate arguments and returns survive register exhaustion in both directions", aggregates_exhaustion),
+                case("varargs", "Variadic calls pass arguments correctly in both directions", varargs),
+                case("sse-float", "SSE floating-point arguments and returns work in both directions", sse_float),
+                case("x87-long-double", "x87 long double arguments and returns work in both directions", x87_long_double),
+            ],
+        ),
+        category(
+            "tls",
+            "Thread-local storage and per-thread errno",
+            &[
+                case("template-init-zero-fill-aligned", "TLS initializes aligned templates and zero-filled storage per thread", template_init_zero_fill_aligned),
+                case("errno-per-thread", "Errno has independent storage in each thread", errno_per_thread),
+                case("tls-across-fork-exec", "TLS survives fork and is reinitialized on exec", tls_across_fork_exec),
+            ],
+        ),
     ],
 );
 
@@ -1258,3 +1285,48 @@ fn duplicate_located() -> CaseResult {
     let archive = case.make_archive("deduplicated.a")?;
     case.run_got(&archive)
 }
+
+fn language_case(category: &str) -> Result<(LinkerCase, PathBuf), String> {
+    if std::env::consts::ARCH != "x86_64" {
+        return Err("AArch64 aggregate, variadic and TLS C code generation is scheduled for A4".into());
+    }
+    let case = LinkerCase::start()?;
+    let fixtures = case.corpus.join(category);
+    Ok((case, fixtures))
+}
+
+fn interop_case(name: &str) -> CaseResult {
+    let (case, fixtures) = language_case("interop")?;
+    let object = case.scratch.join("interop.o");
+    cc_stage(&case.scratch, &fixtures.join(format!("{name}.c")), &["-c", "-o", "interop.o"])?;
+    case.link_and_run(name, &fixtures.join(format!("{name}.expect")),
+        &[&object, &case.dev.join("lib/libinterop.a")])
+}
+
+fn abi_case(name: &str) -> CaseResult {
+    let (case, fixtures) = language_case("abi")?;
+    for (compiled, staged) in [("caller", "callee"), ("callee", "caller")] {
+        let object = case.scratch.join("compiled.o");
+        cc_stage(&case.scratch, &fixtures.join(format!("{name}-{compiled}.c")), &["-c", "-o", "compiled.o"])?;
+        case.link_and_run(name, &fixtures.join(format!("{name}.expect")),
+            &[&object, &fixtures.join(format!("{name}-{staged}.o"))])?;
+    }
+    Ok(())
+}
+
+fn tls_case(name: &str) -> CaseResult {
+    let (case, fixtures) = language_case("tls")?;
+    let object = case.scratch.join("tls.o");
+    cc_stage(&case.scratch, &fixtures.join(format!("{name}.c")), &["-c", "-o", "tls.o"])?;
+    case.link_and_run(name, &fixtures.join(format!("{name}.expect")), &[&object])
+}
+
+fn c_calls_rust() -> CaseResult { interop_case("c-calls-rust") }
+fn rust_calls_c() -> CaseResult { interop_case("rust-calls-c") }
+fn aggregates_exhaustion() -> CaseResult { abi_case("aggregates-exhaustion") }
+fn varargs() -> CaseResult { abi_case("varargs") }
+fn sse_float() -> CaseResult { abi_case("sse-float") }
+fn x87_long_double() -> CaseResult { abi_case("x87-long-double") }
+fn template_init_zero_fill_aligned() -> CaseResult { tls_case("template-init-zero-fill-aligned") }
+fn errno_per_thread() -> CaseResult { tls_case("errno-per-thread") }
+fn tls_across_fork_exec() -> CaseResult { tls_case("tls-across-fork-exec") }

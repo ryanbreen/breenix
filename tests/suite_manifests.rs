@@ -2040,3 +2040,22 @@ fn guskit_step_selects_smb_save_cases() {
         assert!(cases.iter().any(|c| c == id), "missing {id}");
     }
 }
+
+#[test]
+fn toolchain_manifest_registers_bootstrap_abi_tls_cases() {
+    let path = repo_root().join("docs/suites/toolchain.json");
+    let mut errors = Vec::new();
+    let manifest = read_manifest(&path, &mut errors).expect("toolchain manifest");
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+    let (_, files) = suite_files(&repo_root(), "toolchain").expect("toolchain source");
+    let (_, guest) = source_suite_files(&files).expect("toolchain guest table");
+    for (id, expected) in [
+        ("bootstrap", & ["c-calls-rust", "rust-calls-c"][..]),
+        ("abi", & ["aggregates-exhaustion", "varargs", "sse-float", "x87-long-double"][..]),
+        ("tls", & ["template-init-zero-fill-aligned", "errno-per-thread", "tls-across-fork-exec"][..]),
+    ] {
+        let category = manifest.categories.iter().find(|category| category.entry.id == id).unwrap();
+        assert_eq!(category.cases.iter().map(|case| case.id.as_str()).collect::<Vec<_>>(), expected);
+        assert_eq!(guest.iter().find(|category| category.entry.id == id), Some(category));
+    }
+}

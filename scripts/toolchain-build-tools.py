@@ -97,9 +97,31 @@ def build_guest_tools(arch, work, dev, clang, cargo, env, rustc_record):
     packages = (*TOOLS, "bcc", *(('bmake',) if arch == 'x86_64' else ()))
     binaries = cargo_tools(cargo, guest_env, target_json, ROOT / "target/toolchain-bundle/guest", packages,
                           ("-Z", "build-std=std,panic_abort", "-Z", "build-std-features=compiler-builtins-mem"))
+    tools = {}
+    if arch == "x86_64":
+        # The interop fixture crosses the C ABI, including SSE float registers.
+        interop_target = ROOT / "x86_64-breenix-c.json"
+        interop_dir = ROOT / "target/toolchain-bundle/interop"
+        manifest = WORKSPACE / "corpus/interop/rust/Cargo.toml"
+        interop_flags = [*remap, "-C", f"metadata=breenix_std_{fork}"]
+        subprocess.run([
+            *cargo, "--manifest-path", str(manifest),
+            "--target", str(interop_target), "--target-dir", str(interop_dir),
+            "-Z", "build-std=core",
+        ], cwd=WORKSPACE, env=dict(env, __CARGO_TESTS_ONLY_SRC_ROOT=str(library),
+                                  CARGO_ENCODED_RUSTFLAGS="\x1f".join(interop_flags)), check=True)
+        destination = dev / "lib" / "libinterop.a"
+        shutil.copy2(interop_dir / interop_target.stem / "release/libinterop.a", destination)
+        tools["interop"] = {
+            "cargoPackage": tomllib.loads(manifest.read_text())["package"]["name"],
+            "path": destination.relative_to(dev).as_posix(),
+            "target": interop_target.stem,
+            "rustForkCommit": fork,
+            "rustc": rustc_record,
+            "sha256": digest(destination),
+        }
     dev_bin = dev / "bin"
     dev_bin.mkdir()
-    tools = {}
     for name in (packages if arch == "x86_64" else TOOLS):
         executable = dev_bin / {"bcc": "cc", "bmake": "make"}.get(name, name)
         shutil.copy2(binaries / name, executable)
@@ -127,6 +149,7 @@ def build(arch, work, dev, corpus):
         shutil.copytree(WORKSPACE / "corpus/c-core", corpus / "c-core")
         shutil.copytree(WORKSPACE / "corpus/make", corpus / "make")
         shutil.copytree(WORKSPACE / "corpus/project", corpus / "project")
+        stage_bootstrap_abi_tls(arch, clang, work, corpus)
         lld, _ = reference.pinned_tool(
             Path(os.environ["BREENIX_TOOLCHAIN_LLD"]),
             os.environ["BREENIX_TOOLCHAIN_LLD_SHA256"], work,
@@ -141,8 +164,7 @@ def build(arch, work, dev, corpus):
             shutil.copy2(host_bins / package, host_dev / "bin" / name)
         candidates = corpus / "c-core/mac"
         candidates.mkdir(parents=True)
-        deferred = {"aggregate-copy", "bitfield-values", "varargs", "alignment", "atomics",
-                    "compound-literal", "designated-init", "generic"}
+        deferred = {"alignment", "atomics", "compound-literal", "designated-init", "generic"}
         names = (ROOT / "toolchain/corpus/cases").read_text().splitlines()
         if len(names) != 30 or not deferred.issubset(names):
             raise ValueError("unexpected C corpus")
@@ -207,6 +229,21 @@ def build(arch, work, dev, corpus):
         build_linker_objects(arch, clang, work, corpus)
 
     (work / "tools.json").write_text(json.dumps(tools) + "\n", encoding="utf-8")
+
+
+def stage_bootstrap_abi_tls(arch, clang, work, corpus):
+    for category in ("abi", "tls", "interop"):
+        source_dir = WORKSPACE / "corpus" / category
+        destination = corpus / category
+        destination.mkdir()
+        for source in sorted(source_dir.iterdir()):
+            if not source.is_file() or source.suffix not in {".c", ".expect", ".h"}:
+                continue
+            staged = destination / source.name
+            shutil.copy2(source, staged)
+            if category == "abi" and source.suffix == ".c":
+                compiled, _, _ = reference.compile_c(arch, clang, staged, (destination,), work)
+                compiled.rename(staged.with_suffix(".o"))
 
 
 def build_linker_objects(arch, clang, work, corpus):

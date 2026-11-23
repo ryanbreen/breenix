@@ -1,5 +1,6 @@
 //! N1570 6.7.1–6.7.3: specifier order is independent of type identity.
 use super::*;
+use crate::types::{amd64_va_list, Member, RecordDefinition, RecordKind, RecordType};
 
 #[derive(Default)]
 struct Specifiers {
@@ -9,7 +10,7 @@ struct Specifiers {
     unsigned: Option<bool>,
     longs: usize,
     qualifiers: Qualifiers,
-    storage: Storage,
+    storage: DeclStorage,
 }
 
 impl Specifiers {
@@ -21,16 +22,34 @@ impl Specifiers {
             }
             "signed" | "unsigned" => self.unsigned.replace(token.is("unsigned")).is_none(),
             "extern" | "static" | "typedef" => {
-                if !allow_storage || self.storage != Storage::Unspecified {
+                if self.storage.thread_local && token.is("typedef") {
+                    return Err(
+                        token.error("_Thread_local may only be combined with static or extern")
+                    );
+                }
+                if !allow_storage || self.storage.class != Storage::Unspecified {
                     false
                 } else {
-                    self.storage = match token.text.as_ref() {
+                    self.storage.class = match token.text.as_ref() {
                         "extern" => Storage::Extern,
                         "static" => Storage::Static,
                         _ => Storage::Typedef,
                     };
                     true
                 }
+            }
+            "_Thread_local" => {
+                if !allow_storage {
+                    return Err(token.error("_Thread_local requires an object declaration"));
+                }
+                if self.storage.thread_local || self.storage.class == Storage::Typedef {
+                    return Err(token.error("conflicting _Thread_local storage specifiers"));
+                }
+                self.storage.thread_local = true;
+                true
+            }
+            "auto" | "register" if self.storage.thread_local => {
+                return Err(token.error("_Thread_local may only be combined with static or extern"));
             }
             "void" => self.base.replace("void").is_none(),
             "float" => self.base.replace("float").is_none(),
@@ -128,19 +147,21 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
     pub(super) fn specifiers(
         &mut self,
         allow_storage: bool,
-    ) -> Result<(Type, Storage), Diagnostic> {
+    ) -> Result<(Type, DeclStorage), Diagnostic> {
         self.specifiers_at_depth(allow_storage, 0)
+            .map(|(ty, storage, _)| (ty, storage))
     }
 
     pub(super) fn specifiers_at_depth(
         &mut self,
         allow_storage: bool,
         depth: usize,
-    ) -> Result<(Type, Storage), Diagnostic> {
+    ) -> Result<(Type, DeclStorage, bool), Diagnostic> {
         let start = self
             .peek()
             .ok_or_else(|| self.error("expected a type specifier"))?;
         let mut specs = Specifiers::default();
+        let mut typedef_signed = false;
         while let Some(token) = self.peek() {
             if self.qualifier(&mut specs.qualifiers) {
                 continue;
@@ -155,20 +176,13 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                         self.take();
                         Some(self.enumeration(token)?)
                     }
-                    "__builtin_va_list" => {
+                    amd64_va_list::NAME => {
                         self.take();
-                        // Declaration-only representation pending the target va_list
-                        // implementation in 25.7b2.
-                        Some(
-                            Type::new(TypeKind::Record {
-                                id: usize::MAX,
-                                layout: None,
-                            })
-                            .pointer_to(),
-                        )
+                        Some(self.va_list_type())
                     }
                     name => match self.lookup(name) {
-                        Some(Name::Typedef(ty)) => {
+                        Some(Name::Typedef(ty, signed)) => {
+                            typedef_signed = *signed;
                             let ty = ty.clone();
                             self.take();
                             Some(ty)
@@ -196,13 +210,75 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 start.error(message)
             }
         })?;
+        let mut ty = Type {
+            kind,
+            qualifiers: specs.qualifiers,
+        };
+        ty.resolve_records(&|id| {
+            self.records
+                .get(id)?
+                .definition
+                .as_ref()
+                .map(|def| def.layout)
+        });
         Ok((
-            Type {
-                kind,
-                qualifiers: specs.qualifiers,
-            },
+            ty,
             specs.storage,
+            specs.unsigned == Some(false) || typedef_signed,
         ))
+    }
+
+    fn va_list_type(&mut self) -> Type {
+        use amd64_va_list as abi;
+        if self.target == Target::Aarch64 {
+            // A4 supplies the AAPCS64 representation. Declarations can
+            // still refer to an opaque list on that target.
+            return Type::new(TypeKind::Record(RecordType {
+                id: usize::MAX,
+                layout: None,
+            }))
+            .pointer_to();
+        }
+
+        let id = if let Some(id) = self.va_list_record {
+            id
+        } else {
+            let id = self.records.len();
+            let unsigned = Type::new(TypeKind::Integer(Integer::UnsignedInt));
+            let pointer = Type::new(TypeKind::Void).pointer_to();
+            let members = [
+                ("gp_offset", unsigned.clone(), abi::GP_OFFSET),
+                ("fp_offset", unsigned, abi::FP_OFFSET),
+                ("overflow_arg_area", pointer.clone(), abi::OVERFLOW_ARG_AREA),
+                ("reg_save_area", pointer, abi::REG_SAVE_AREA),
+            ]
+            .into_iter()
+            .map(|(name, ty, offset)| Member {
+                name,
+                ty,
+                offset,
+                bit_field: None,
+            })
+            .collect();
+            self.records.push(Record {
+                kind: RecordKind::Struct,
+                tag: Some(abi::NAME),
+                definition: Some(RecordDefinition {
+                    layout: abi::LAYOUT,
+                    members,
+                    end: None,
+                    has_const_member: false,
+                }),
+            });
+            self.va_list_record = Some(id);
+            id
+        };
+
+        let record = Type::new(TypeKind::Record(RecordType {
+            id,
+            layout: Some(abi::LAYOUT),
+        }));
+        Type::new(TypeKind::Array(Box::new(record), 1))
     }
 
     pub(super) fn qualifier(&mut self, qualifiers: &mut Qualifiers) -> bool {

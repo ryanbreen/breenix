@@ -5,53 +5,22 @@ use std::fmt::Write;
 
 use crate::pp::{Diagnostic, Position, Target};
 use crate::sema::{
-    Argument, Binary, Expression, ExpressionKind, Function, Linkage, Statement, TranslationUnit,
-    Unary,
+    Argument, Binary, Expression, ExpressionKind, Function, Linkage, LocalStorage, Object,
+    Statement, StaticAddress, ThreadData, ThreadInitializer, TranslationUnit, Unary,
 };
-use crate::types::{Float, Integer, Kind, Type};
+use crate::types::{BitField, Float, Integer, Kind, Layout, Record, Type};
 
+mod abi;
+mod bit_field;
 mod flow;
+mod thread;
+mod varargs;
+mod x87;
 
+use abi::{CallLayout, Place, RecordAbi, RecordRegisters, Register};
 use flow::Slot;
-
-const INTEGER_REGS: [&str; 6] = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
-
-#[derive(Clone, Copy)]
-enum Place {
-    Integer(&'static str),
-    Vector(usize, Float),
-    Stack(usize),
-}
-
-#[derive(Default)]
-struct CallLayout {
-    integers: usize,
-    vectors: usize,
-    stack: usize,
-}
-
-impl CallLayout {
-    // AMD64 psABI §3.2.3. Scalar INTEGER and SSE arguments consume
-    // registers independently and fall back to ordered stack eightbytes.
-    fn place(&mut self, ty: &Type) -> Place {
-        match ty.kind {
-            Kind::Float(float) if self.vectors < 8 => {
-                let index = self.vectors;
-                self.vectors += 1;
-                return Place::Vector(index, float);
-            }
-            Kind::Integer(_) | Kind::Pointer(_) if self.integers < INTEGER_REGS.len() => {
-                let reg = INTEGER_REGS[self.integers];
-                self.integers += 1;
-                return Place::Integer(reg);
-            }
-            _ => {}
-        }
-        let offset = self.stack;
-        self.stack += 8;
-        Place::Stack(offset)
-    }
-}
+use thread::ThreadPlace;
+use varargs::VariadicFrame;
 
 pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
     let mut functions = HashMap::new();
@@ -64,15 +33,34 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
 
     let mut emitter = Emitter {
         functions,
+        records: &unit.records,
+        frame: 0,
         locals: Vec::new(),
+        variadic: None,
         flow_labels: HashMap::new(),
         data: String::new(),
+        tdata: String::new(),
+        tbss: String::new(),
         externs: BTreeSet::new(),
+        thread_externs: BTreeSet::new(),
+        thread_definitions: unit
+            .thread_objects
+            .iter()
+            .map(|thread| thread.object.name)
+            .collect(),
         text: String::from("section .text\n"),
         rodata: String::new(),
         string_count: 0,
         next_label: 0,
     };
+    for thread in &unit.thread_objects {
+        emitter.thread_definition(
+            &thread.object,
+            thread.object.name,
+            thread.linkage,
+            thread.initializer.as_ref(),
+        )?;
+    }
     for function in &unit.functions {
         if let Some(body) = &function.body {
             emitter.function(function, body)?;
@@ -80,6 +68,9 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
     }
     for name in emitter.externs {
         writeln!(emitter.text, "extern {name}").unwrap();
+    }
+    for name in emitter.thread_externs {
+        writeln!(emitter.text, "extern {name}\n.type {name}, @tls").unwrap();
     }
     if !emitter.rodata.is_empty() {
         emitter.text.push_str("\nsection .rodata\n");
@@ -89,15 +80,28 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
         emitter.text.push_str("\nsection .bss\n");
         emitter.text.push_str(&emitter.data);
     }
+    for (section, data) in [(".tdata", emitter.tdata), (".tbss", emitter.tbss)] {
+        if !data.is_empty() {
+            writeln!(emitter.text, "\nsection {section}").unwrap();
+            emitter.text.push_str(&data);
+        }
+    }
     Ok(emitter.text)
 }
 
 struct Emitter<'unit, 'src> {
     functions: HashMap<&'src str, &'unit Function<'src>>,
+    records: &'unit [Record<'src>],
+    frame: usize,
     locals: Vec<Slot>,
+    variadic: Option<VariadicFrame>,
     flow_labels: HashMap<usize, String>,
     data: String,
+    tdata: String,
+    tbss: String,
     externs: BTreeSet<&'src str>,
+    thread_externs: BTreeSet<&'src str>,
+    thread_definitions: BTreeSet<&'src str>,
     text: String,
     rodata: String,
     string_count: usize,
@@ -112,24 +116,33 @@ impl<'src> Emitter<'_, 'src> {
     ) -> Result<(), Diagnostic> {
         let name = function.name;
         self.check_symbol(name, function.site)?;
-        let Kind::Function { result, .. } = &function.ty.kind else {
+        let Kind::Function {
+            result, variadic, ..
+        } = &function.ty.kind
+        else {
             unreachable!()
         };
-        if result.kind != Kind::Void && !abi_scalar(result) {
+        if result.kind != Kind::Void && !supported_abi_type(result) {
             return Err(Diagnostic::new(
                 function.site,
-                "function result is outside the scalar ABI subset",
+                "function result is outside the supported AMD64 ABI subset",
             ));
         }
         for param in &function.params {
-            if !abi_scalar(&param.ty) {
+            if !supported_abi_type(&param.ty) {
                 return Err(Diagnostic::new(
                     param.name.unwrap().1,
-                    "parameter is outside the scalar ABI subset",
+                    "parameter is outside the supported AMD64 ABI subset",
                 ));
             }
         }
-        let frame = self.layout(function)?;
+        self.layout(function)?;
+        let record_result = self.record_abi(result);
+        let sret = if matches!(record_result, Some(RecordAbi::Memory)) {
+            Some(self.frame_slot(Layout { size: 8, align: 8 }, function.site)?)
+        } else {
+            None
+        };
         self.flow_labels.clear();
         let epilogue = self.label();
         self.text.push('\n');
@@ -141,18 +154,45 @@ impl<'src> Emitter<'_, 'src> {
         // aligns RSP for calls. Round stack allocations to 16 bytes and
         // keep spills above RSP.
         self.text.push_str("    push rbp\n    mov rbp, rsp\n");
-        self.adjust_stack("sub", frame);
+        let stack_adjustment = self.text.len();
 
+        let save = if *variadic {
+            Some(self.save_variadic_registers(function.site)?)
+        } else {
+            None
+        };
         let mut layout = CallLayout::default();
+        if let Some(slot) = &sret {
+            writeln!(self.text, "    mov qword {}, rdi", slot.memory(0)).unwrap();
+            layout.integers = 1;
+        }
+        let mut stack_records = Vec::new();
         for (index, param) in function.params.iter().enumerate() {
             let memory = self.locals[index].memory(0);
-            match layout.place(&param.ty) {
+            match layout.place(&param.ty, self.records, param.name.unwrap().1)? {
                 Place::Integer(reg) => {
                     writeln!(self.text, "    mov qword {memory}, {reg}").unwrap()
                 }
                 Place::Vector(reg, float) => {
                     let instruction = float_move(float);
                     writeln!(self.text, "    {instruction} {memory}, xmm{reg}").unwrap();
+                }
+                Place::Record(registers) => {
+                    let slot = &self.locals[index];
+                    Self::save_record_registers(&mut self.text, registers, |piece| {
+                        slot.memory(piece)
+                    });
+                }
+                Place::Stack(offset) if matches!(param.ty.kind, Kind::Record(_)) => {
+                    stack_records.push((index, offset, param.ty.layout().unwrap().size));
+                }
+                Place::Stack(offset) if param.ty.kind == Kind::LongDouble => {
+                    let source = offset + 16;
+                    writeln!(
+                        self.text,
+                        "    fld tbyte [rbp + {source}]\n    fstp tbyte {memory}"
+                    )
+                    .unwrap();
                 }
                 Place::Stack(offset) => {
                     // The saved RBP and return address precede the input area.
@@ -165,7 +205,28 @@ impl<'src> Emitter<'_, 'src> {
                 }
             }
         }
+        self.variadic = save.map(|save| VariadicFrame {
+            save,
+            named: layout,
+        });
+        // Spill register inputs before rep movsb reuses argument registers.
+        for (index, offset, size) in stack_records {
+            let source = offset + 16;
+            let dest = self.locals[index].memory(0);
+            writeln!(
+                self.text,
+                "    lea rsi, [rbp + {source}]\n    lea rdi, {dest}"
+            )
+            .unwrap();
+            self.copy_record(size);
+        }
         self.statements(body, result, &epilogue)?;
+        // Calls in the body allocate result temporaries in the fixed frame.
+        let frame = self.frame.next_multiple_of(16);
+        if frame != 0 {
+            self.text
+                .insert_str(stack_adjustment, &format!("    sub rsp, {frame}\n"));
+        }
         if name == "main"
             && function.linkage == Linkage::External
             && result.kind == Kind::Integer(Integer::Int)
@@ -173,39 +234,59 @@ impl<'src> Emitter<'_, 'src> {
             // N1570 §5.1.2.2.3 specifies the result when int main falls through.
             self.text.push_str("    mov eax, 0\n");
         }
-        writeln!(
-            self.text,
-            "{epilogue}:\n    leave\n    ret\n.size {name}, . - {name}"
-        )
-        .unwrap();
+        if let Some(abi) = record_result {
+            // Only explicit returns have a record address in RAX.
+            let leave = self.label();
+            writeln!(self.text, "    jmp {leave}\n{epilogue}:").unwrap();
+            if let Some(slot) = sret {
+                writeln!(
+                    self.text,
+                    "    mov rsi, rax\n    mov rdi, qword {}",
+                    slot.memory(0)
+                )
+                .unwrap();
+                self.copy_record(result.layout().unwrap().size);
+            } else {
+                self.text.push_str("    mov r11, rax\n");
+                self.load_record_registers(
+                    abi.result_registers().unwrap(),
+                    result.layout().unwrap().size,
+                    |piece| format!("[r11 + {piece}]"),
+                );
+            }
+            writeln!(self.text, "{leave}:").unwrap();
+        } else {
+            writeln!(self.text, "{epilogue}:").unwrap();
+        }
+        writeln!(self.text, "    leave\n    ret\n.size {name}, . - {name}").unwrap();
         Ok(())
     }
 
     // Canonical value locations: a normalized integer or pointer in RAX,
-    // or a float of its declared width in XMM0.
+    // float/double in XMM0, a record's address in RAX, or one x87 stack
+    // entry in ST(0). Spill or consume that entry before evaluating another
+    // expression so no x87 temporaries are live across calls.
     fn value(&mut self, expr: &Expression<'src>) -> Result<(), Diagnostic> {
-        if matches!(expr.ty.kind, Kind::Record { .. } | Kind::LongDouble) {
-            return Err(Diagnostic::new(
-                expr.position(),
-                "value is outside the scalar code generation subset",
-            ));
-        }
         match &expr.kind {
             ExpressionKind::Integer(value) => {
                 writeln!(self.text, "    mov rax, 0x{value:x}").unwrap();
                 self.normalize_integer(&expr.ty);
             }
-            ExpressionKind::Float(bits) => {
-                let Kind::Float(float) = expr.ty.kind else {
-                    unreachable!()
-                };
-                self.float_constant(*bits, float, 0);
-            }
+            ExpressionKind::Float(bits) => match expr.ty.kind {
+                Kind::Float(float) => self.float_constant(*bits as u64, float, 0),
+                Kind::LongDouble => self.long_double_constant(*bits),
+                _ => unreachable!(),
+            },
             ExpressionKind::String(_)
             | ExpressionKind::Identifier(_)
-            | ExpressionKind::Local(_) => {
-                self.address(expr)?;
-                self.load(&expr.ty, "[rax]");
+            | ExpressionKind::ThreadLocal(_)
+            | ExpressionKind::Local(_)
+            | ExpressionKind::Member { .. } => {
+                let place = self.thread_scalar_place(expr)?;
+                if place.is_none() {
+                    self.address(expr)?;
+                }
+                self.load_lvalue(expr, place.as_ref());
             }
             ExpressionKind::Unary(op, operand) => self.unary(*op, operand, &expr.ty)?,
             ExpressionKind::Binary {
@@ -241,12 +322,21 @@ impl<'src> Emitter<'_, 'src> {
                 self.converted(no, &expr.ty)?;
                 writeln!(self.text, "{end}:").unwrap();
             }
+            ExpressionKind::VaStart(list) => self.va_start(list)?,
+            ExpressionKind::VaArg(list) => self.va_arg(list, &expr.ty, expr.position())?,
+            ExpressionKind::VaCopy { dest, source } => self.va_copy(dest, source)?,
+            // AMD64 va_end has no resources to release. Evaluate the operand.
+            ExpressionKind::VaEnd(list) => self.value(list)?,
             ExpressionKind::Call { callee, arguments } => {
-                self.call(callee, arguments)?;
+                self.call(callee, arguments, &expr.ty)?;
                 self.normalize_integer(&expr.ty);
             }
         }
         Ok(())
+    }
+
+    fn discard(&mut self, expr: &Expression<'src>) -> Result<(), Diagnostic> {
+        self.converted(expr, &Type::new(Kind::Void))
     }
 
     fn converted(&mut self, expr: &Expression<'src>, dest: &Type) -> Result<(), Diagnostic> {
@@ -284,6 +374,7 @@ impl<'src> Emitter<'_, 'src> {
                         };
                         writeln!(self.text, "    {xor} xmm0, xmm1").unwrap();
                     }
+                    (Unary::Minus, Kind::LongDouble) => self.text.push_str("    fchs\n"),
                     (Unary::Minus, _) => self.text.push_str("    neg rax\n"),
                     (Unary::Complement, _) => self.text.push_str("    not rax\n"),
                     _ => {}
@@ -307,6 +398,8 @@ impl<'src> Emitter<'_, 'src> {
             // NaN compares unordered, so PF also makes the Boolean result true.
             self.text
                 .push_str("    setne al\n    setp dl\n    or al, dl\n");
+        } else if source.kind == Kind::LongDouble {
+            self.x87_boolean();
         } else {
             self.text.push_str("    test rax, rax\n    setne al\n");
         }
@@ -343,8 +436,15 @@ impl<'src> Emitter<'_, 'src> {
     }
 
     // The left operand is saved in an aligned slot above the right operand's
-    // expression stack. Consume that slot and leave the result in RAX/XMM0.
+    // expression stack. Consume that slot and leave the result in its
+    // canonical location.
     fn combine(&mut self, op: Binary, left: &Type, right: &Type, result: &Type) {
+        if left.kind == Kind::LongDouble {
+            self.load(left, "[rsp]");
+            self.adjust_stack("add", 16);
+            self.x87_binary(op);
+            return;
+        }
         if let Kind::Float(float) = left.kind {
             let mov = float_move(float);
             writeln!(self.text, "    {mov} xmm1, xmm0\n    {mov} xmm0, [rsp]").unwrap();
@@ -463,6 +563,7 @@ impl<'src> Emitter<'_, 'src> {
         &mut self,
         callee: &Expression<'src>,
         arguments: &[Argument<'src>],
+        result: &Type,
     ) -> Result<(), Diagnostic> {
         let (function, direct) = match &callee.ty.kind {
             Kind::Function { .. } => {
@@ -481,24 +582,62 @@ impl<'src> Emitter<'_, 'src> {
         if let Some(name) = direct {
             self.use_symbol(name, callee.position())?;
         }
-        let mut layout = CallLayout::default();
-        let places: Vec<_> = arguments.iter().map(|arg| layout.place(&arg.ty)).collect();
-        let callee_slot = layout.stack + arguments.len() * 8;
-        let reserve = (callee_slot + usize::from(direct.is_none()) * 8).next_multiple_of(16);
+        let site = callee.position();
+        let record_result = self.record_abi(result);
+        let result_slot = if record_result.is_some() {
+            let mut layout = result.layout().unwrap();
+            layout.size = abi::eightbyte_size(layout.size, site)?;
+            Some(self.frame_slot(layout, site)?)
+        } else {
+            None
+        };
+        let sret = matches!(record_result, Some(RecordAbi::Memory));
+        let mut layout = CallLayout {
+            integers: usize::from(sret),
+            ..CallLayout::default()
+        };
+        let places = arguments
+            .iter()
+            .map(|arg| layout.place(&arg.ty, self.records, arg.expr.position()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut callee_slot = layout.stack;
+        let mut staged = Vec::with_capacity(arguments.len());
+        for (arg, place) in arguments.iter().zip(places) {
+            let offset = match place {
+                Place::Stack(slot) if direct_stack_argument(&arg.ty) => slot,
+                _ => {
+                    let offset = callee_slot;
+                    let bytes = arg.ty.layout().map_or(8, |layout| layout.size);
+                    callee_slot =
+                        abi::checked_stack_end(offset, abi::eightbyte_size(bytes, site)?, site)?;
+                    offset
+                }
+            };
+            staged.push((place, offset));
+        }
+        let reserve = abi::checked_stack_end(callee_slot, usize::from(direct.is_none()) * 8, site)?
+            .next_multiple_of(16);
         self.adjust_stack("sub", reserve);
         if direct.is_none() {
             self.value(callee)?;
             writeln!(self.text, "    mov qword [rsp + {callee_slot}], rax").unwrap();
         }
-        // Stage the values after the outgoing stack area, where nested
-        // calls cannot clobber them or the final argument registers.
-        for (index, arg) in arguments.iter().enumerate() {
+        // Stage values before loading any registers. Nested calls use the
+        // stack below RSP, leaving both the outgoing area and spills intact.
+        for (arg, &(_, offset)) in arguments.iter().zip(&staged) {
             self.converted(&arg.expr, &arg.ty)?;
-            let offset = layout.stack + index * 8;
-            self.store(&arg.ty, &format!("[rsp + {offset}]"));
+            let dest = format!("[rsp + {offset}]");
+            if matches!(arg.ty.kind, Kind::Record(_)) {
+                self.store_object(&arg.ty, &dest);
+            } else {
+                self.store(&arg.ty, &dest);
+            }
         }
-        for (index, place) in places.into_iter().enumerate() {
-            let offset = layout.stack + index * 8;
+        if sret {
+            let address = result_slot.as_ref().unwrap().memory(0);
+            writeln!(self.text, "    lea rdi, {address}").unwrap();
+        }
+        for (arg, (place, offset)) in arguments.iter().zip(staged) {
             match place {
                 Place::Integer(reg) => {
                     writeln!(self.text, "    mov {reg}, qword [rsp + {offset}]").unwrap();
@@ -507,8 +646,14 @@ impl<'src> Emitter<'_, 'src> {
                     let instruction = float_move(float);
                     writeln!(self.text, "    {instruction} xmm{reg}, [rsp + {offset}]").unwrap();
                 }
+                Place::Record(registers) => {
+                    self.load_record_registers(registers, arg.ty.layout().unwrap().size, |piece| {
+                        format!("[rsp + {}]", offset + piece)
+                    });
+                }
+                Place::Stack(_) if direct_stack_argument(&arg.ty) => {}
                 Place::Stack(slot) => {
-                    let (reg, size) = match arguments[index].ty.kind {
+                    let (reg, size) = match arg.ty.kind {
                         Kind::Float(Float::Single) => ("eax", "dword"),
                         _ => ("rax", "qword"),
                     };
@@ -527,7 +672,83 @@ impl<'src> Emitter<'_, 'src> {
             writeln!(self.text, "    call qword [rsp + {callee_slot}]").unwrap();
         }
         self.adjust_stack("add", reserve);
+        if let Some((registers, slot)) = record_result
+            .and_then(RecordAbi::result_registers)
+            .zip(result_slot)
+        {
+            Self::save_record_registers(&mut self.text, registers, |piece| slot.memory(piece));
+            writeln!(self.text, "    lea rax, {}", slot.memory(0)).unwrap();
+        }
+        // A MEMORY callee already leaves its return buffer address in RAX.
         Ok(())
+    }
+
+    fn record_abi(&self, ty: &Type) -> Option<RecordAbi> {
+        matches!(ty.kind, Kind::Record(_)).then(|| RecordAbi::classify(ty, self.records))
+    }
+
+    // The receiving frame slots are rounded up to full eightbytes.
+    fn save_record_registers(
+        text: &mut String,
+        registers: RecordRegisters,
+        address: impl Fn(usize) -> String,
+    ) {
+        for (index, reg) in registers.into_iter().enumerate() {
+            let Some(reg) = reg else { continue };
+            let dest = address(index * 8);
+            match reg {
+                Register::Integer(reg) => writeln!(text, "    mov qword {dest}, {reg}").unwrap(),
+                Register::Sse(reg) => writeln!(text, "    movsd {dest}, xmm{reg}").unwrap(),
+                Register::X87 => writeln!(text, "    fstp tbyte {dest}").unwrap(),
+            }
+        }
+    }
+
+    fn load_record_registers(
+        &mut self,
+        registers: RecordRegisters,
+        size: usize,
+        address: impl Fn(usize) -> String,
+    ) {
+        for (index, reg) in registers.into_iter().enumerate() {
+            let Some(reg) = reg else { continue };
+            let offset = index * 8;
+            let bytes = (size - offset).min(8);
+            let source = address(offset);
+            match reg {
+                Register::Integer(reg) if bytes == 8 => {
+                    writeln!(self.text, "    mov {reg}, qword {source}").unwrap();
+                }
+                Register::Integer(reg) => {
+                    self.load_integer_tail(reg, bytes, |tail| address(offset + tail))
+                }
+                Register::Sse(reg) => {
+                    let instruction = if bytes == 4 { "movss" } else { "movsd" };
+                    writeln!(self.text, "    {instruction} xmm{reg}, {source}").unwrap();
+                }
+                Register::X87 => writeln!(self.text, "    fld tbyte {source}").unwrap(),
+            }
+        }
+    }
+
+    fn load_integer_tail(&mut self, reg: &str, bytes: usize, address: impl Fn(usize) -> String) {
+        // Load only the object bytes, even if the source ends at a page boundary.
+        writeln!(self.text, "    xor {reg}, {reg}").unwrap();
+        let mut consumed = 0;
+        for (width, load) in [
+            (4, "mov r10d, dword"),
+            (2, "movzx r10d, word"),
+            (1, "movzx r10d, byte"),
+        ] {
+            if bytes - consumed >= width {
+                writeln!(self.text, "    {load} {}", address(consumed)).unwrap();
+                if consumed != 0 {
+                    writeln!(self.text, "    shl r10, {}", consumed * 8).unwrap();
+                }
+                writeln!(self.text, "    or {reg}, r10").unwrap();
+                consumed += width;
+            }
+        }
     }
 
     fn load(&mut self, ty: &Type, address: &str) {
@@ -544,8 +765,9 @@ impl<'src> Emitter<'_, 'src> {
             Kind::Pointer(_) => "mov rax, qword",
             Kind::Float(Float::Single) => "movss xmm0,",
             Kind::Float(Float::Double) => "movsd xmm0,",
-            Kind::Function { .. } | Kind::Array(..) => return,
-            Kind::Void | Kind::LongDouble | Kind::Record { .. } => unreachable!(),
+            Kind::Function { .. } | Kind::Array(..) | Kind::Record(_) => return,
+            Kind::LongDouble => "fld tbyte",
+            Kind::Void => unreachable!(),
         };
         writeln!(self.text, "    {instruction} {address}").unwrap();
     }
@@ -553,6 +775,8 @@ impl<'src> Emitter<'_, 'src> {
     fn store(&mut self, ty: &Type, address: &str) {
         if let Kind::Float(float) = ty.kind {
             writeln!(self.text, "    {} {address}, xmm0", float_move(float)).unwrap();
+        } else if ty.kind == Kind::LongDouble {
+            writeln!(self.text, "    fstp tbyte {address}").unwrap();
         } else {
             writeln!(self.text, "    mov qword {address}, rax").unwrap();
         }
@@ -581,6 +805,11 @@ impl<'src> Emitter<'_, 'src> {
         }
         match (&source.kind, &dest.kind) {
             (_, Kind::Integer(Integer::Bool)) => self.boolean(source),
+            (Kind::LongDouble, Kind::Void) => self.text.push_str("    fstp st(0)\n"),
+            (Kind::Integer(integer), Kind::LongDouble) => self.integer_to_x87(*integer),
+            (Kind::LongDouble, Kind::Integer(integer)) => self.x87_to_integer(*integer, dest),
+            (Kind::Float(float), Kind::LongDouble) => self.sse_to_x87(*float),
+            (Kind::LongDouble, Kind::Float(float)) => self.x87_to_sse(*float),
             (Kind::Float(src), Kind::Float(dst)) => {
                 writeln!(
                     self.text,
@@ -700,11 +929,15 @@ impl<'src> Emitter<'_, 'src> {
     }
 }
 
-fn abi_scalar(ty: &Type) -> bool {
+fn supported_abi_type(ty: &Type) -> bool {
     matches!(
         ty.kind,
-        Kind::Integer(_) | Kind::Float(_) | Kind::Pointer(_)
+        Kind::Integer(_) | Kind::Float(_) | Kind::LongDouble | Kind::Pointer(_) | Kind::Record(_)
     )
+}
+
+fn direct_stack_argument(ty: &Type) -> bool {
+    matches!(ty.kind, Kind::Record(_) | Kind::LongDouble)
 }
 
 fn suffix(float: Float) -> &'static str {
