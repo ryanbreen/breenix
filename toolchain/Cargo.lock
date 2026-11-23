@@ -28,6 +28,7 @@ name = "bld"
 version = "0.1.0"
 dependencies = [
  "bobj",
+ "elfcheck",
 ]
 
 [[package]]

@@ -11,6 +11,9 @@ workspace = true
 [dependencies]
 bobj = { path = "../bobj" }
 
+[dev-dependencies]
+elfcheck = { path = "../elfcheck" }
+
 [features]
 read-fault-probe = []
 
