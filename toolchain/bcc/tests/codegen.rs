@@ -58,7 +58,10 @@ fn long_double_literal_bits() {
         let unit = sema::analyze(&input, path, options.target).unwrap();
         let assembly = codegen::emit_assembly(&unit, path, options.target).unwrap();
         let words = format!("    .quad 0x{significand:x}\n    .word 0x{sign_exponent:x}\n");
-        assert!(assembly.contains(&words), "{literal} expected {words}\n{assembly}");
+        assert!(
+            assembly.contains(&words),
+            "{literal} expected {words}\n{assembly}"
+        );
     }
 }
 

@@ -20,6 +20,8 @@ TYPES = """\
 long double transform(int, int, int, int, int, int, int, long double, int,
                       long double, float, double);
 long double next(int, ...);
+struct Wrapped { long double value; };
+struct Wrapped negate(struct Wrapped);
 
 static int bytes(const long double *value, unsigned long significand, unsigned int exponent)
 {
@@ -57,6 +59,12 @@ int main(void)
     result = next(1, 2L, 3L, 4L, 5L, 6L, 7L, a, 11, b);
     if (!bytes(&result, 0x8000000000000001UL, 0xbfff))
         return 4;
+
+    struct Wrapped wrapped;
+    wrapped.value = b;
+    wrapped = negate(wrapped);
+    if (!bytes(&wrapped.value, 0x8000000000000002UL, 0x3fff))
+        return 5;
     return 42;
 }
 """
@@ -113,10 +121,17 @@ long double next(int marker, ...)
         return 17;
     return -a;
 }
+
+struct Wrapped negate(struct Wrapped input)
+{
+    input.value = -input.value;
+    return input;
+}
 """
 
 FAILURES = ("size and alignment", "fixed arguments, operations and return bytes",
-            "variadic arguments and return bytes", "discarded x87 results")
+            "variadic arguments and return bytes", "discarded x87 results",
+            "x87 record argument and return")
 
 
 def check(args, work):
@@ -138,8 +153,9 @@ def check(args, work):
 int main(void)
 {
     volatile long double input = 0x1.0000000000000002p0L;
-    long double output = input;
-    return bytes(&output, 0x8000000000000001UL, 0x3fff) ? 42 : 1;
+    volatile long double delta = 0x1p-63L;
+    long double output = input + delta;
+    return bytes(&output, 0x8000000000000002UL, 0x3fff) ? 42 : 1;
 }
 """)
         obj, _, _ = reference.compile_c("x86_64", clang, source, (work,), work)
@@ -151,7 +167,9 @@ int main(void)
                              f"stdout={result.stdout!r}, stderr={result.stderr!r}")
         print("Clang-only x87 precision probe PASS")
         return
-    cross_call(reference, clang, args, script, work, (TYPES, CALLER, CALLEE, FAILURES), ())
+    # The host runner maps the linked ELF at a different base address.
+    cross_call(reference, clang, args, script, work, (TYPES, CALLER, CALLEE, FAILURES), (),
+               position_independent=True)
     print("abi::x87_return_roundtrip PASS")
 
 

@@ -289,7 +289,8 @@ def check(args, work):
             print("abi::bitfields_and_packed_bcc_to_clang bitfields PASS")
 
 
-def cross_call(reference, clang, args, script, work, fixture, libc):
+def cross_call(reference, clang, args, script, work, fixture, libc,
+               *, position_independent=False):
     types, caller, callee, failures = fixture
     for direction, clang_half, bcc_half in (
         ("bcc-to-clang", ("callee", callee), ("caller", caller)),
@@ -299,7 +300,8 @@ def cross_call(reference, clang, args, script, work, fixture, libc):
         case.mkdir()
         clang_source = case / (clang_half[0] + ".c")
         clang_source.write_text(types + clang_half[1])
-        clang_obj, _, _ = reference.compile_c("x86_64", clang, clang_source, (case,), case)
+        clang_obj, _, _ = reference.compile_c("x86_64", clang, clang_source, (case,), case,
+                                               position_independent=position_independent)
         source = case / (bcc_half[0] + ".c")
         source.write_text(types + bcc_half[1])
         assembly = source.with_suffix(".s")
