@@ -1,0 +1,136 @@
+{
+  "inputs": {
+    "archive": "3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4",
+    "series": "5d0e09b0c8dc1da1f1a1f1877d56971dba00f5636995bd54809d8270f5856da4",
+    "config": "c7761f177c6c5b83e54e9050dcdbc1caea41aa6bcefa0a038fcdbdd0d3674d04",
+    "patches": {
+      "diff-normal-format.patch": "29cfd1ddc368de2c2a61bf4ccf2901f69a39189bc92b1a16e6477aa155f991ef",
+      "find-exec-plus-status.patch": "e236ee2e655db034d7cc87d2425607580c92c59ad8d3e8f2e928014c0a0c51e8",
+      "ps-pid-list.patch": "993fe8e971853627ee204708385e0d60814e408a88317906544d011eaf0b2819",
+      "timeout-status.patch": "f902bc7f5dee913ee598f5b063572f9b24622ea4764a2669444f7941a49c2478",
+      "time-posix.patch": "9c41902a8d44cf5d79440cfad4d891f302876f6b424868a99f721c0b1ee16154",
+      "getopt32-dead-usage-flag.patch": "92c7f4d4687bce06de5e31d1464d163c9c9a7a82507d05d8fb222ba522b9f4c0",
+      "sha-drop-sha512-rotate.patch": "d993c4f4847c86107675554245f0f6d2ad0a7c7c5bb46db99a8ba683763f06ad",
+      "list-drop-installer-paths.patch": "656b5604783b43ca795b763ddc7a90d170853eec1c00f1888dadd852840e4f7c",
+      "host-drop-docproc.patch": "0ae2b34beda59f0e1f0d27461d5ab457fa729b9d3ae2a032ddf5094e995341a8",
+      "free-breenix-sysinfo.patch": "ab72c7350a18cfb74db90a7ffc3f7eed6d389c627f4fbc5347bcc9f429f1541a"
+    }
+  },
+  "commands": 227,
+  "passed": 0,
+  "by_kind": {
+    "host": {
+      "commands": 9,
+      "passed": 0
+    },
+    "target": {
+      "commands": 218,
+      "passed": 0
+    }
+  },
+  "classes": {
+    "statement expression": {
+      "count": 0,
+      "examples": [],
+      "assignment": "25.11b statement expressions"
+    },
+    "typeof": {
+      "count": 0,
+      "examples": [],
+      "assignment": "25.11b typeof"
+    },
+    "attribute": {
+      "count": 0,
+      "examples": [],
+      "assignment": "25.11b attributes"
+    },
+    "builtin": {
+      "count": 0,
+      "examples": [],
+      "assignment": "25.11b builtins"
+    },
+    "GNU preprocessor": {
+      "count": 0,
+      "examples": [],
+      "assignment": "25.11b GNU preprocessing"
+    },
+    "inline asm": {
+      "count": 0,
+      "examples": [],
+      "assignment": "25.11b inline assembly"
+    },
+    "unknown option": {
+      "count": 218,
+      "examples": [
+        {
+          "translation_unit": "applets/applets.c",
+          "kind": "target",
+          "location": "<command-line>:1",
+          "diagnostic": "<command-line>:1:5: error: unknown option '-include'"
+        },
+        {
+          "translation_unit": "archival/bbunzip.c",
+          "kind": "target",
+          "location": "<command-line>:1",
+          "diagnostic": "<command-line>:1:5: error: unknown option '-include'"
+        },
+        {
+          "translation_unit": "archival/chksum_and_xwrite_tar_header.c",
+          "kind": "target",
+          "location": "<command-line>:1",
+          "diagnostic": "<command-line>:1:5: error: unknown option '-include'"
+        },
+        {
+          "translation_unit": "archival/libarchive/common.c",
+          "kind": "target",
+          "location": "<command-line>:1",
+          "diagnostic": "<command-line>:1:5: error: unknown option '-include'"
+        },
+        {
+          "translation_unit": "archival/libarchive/data_align.c",
+          "kind": "target",
+          "location": "<command-line>:1",
+          "diagnostic": "<command-line>:1:5: error: unknown option '-include'"
+        }
+      ],
+      "assignment": "25.11b Kbuild driver options"
+    },
+    "other": {
+      "count": 9,
+      "examples": [
+        {
+          "translation_unit": "applets/applet_tables.c",
+          "kind": "host",
+          "location": "applets/applet_tables.c:10",
+          "diagnostic": "applets/applet_tables.c:10:10: error: header sys/types.h not found"
+        },
+        {
+          "translation_unit": "applets/usage.c",
+          "kind": "host",
+          "location": "applets/usage.c:7",
+          "diagnostic": "applets/usage.c:7:10: error: header unistd.h not found"
+        },
+        {
+          "translation_unit": "applets/usage_pod.c",
+          "kind": "host",
+          "location": "applets/usage_pod.c:7",
+          "diagnostic": "applets/usage_pod.c:7:10: error: header unistd.h not found"
+        },
+        {
+          "translation_unit": "scripts/basic/fixdep.c",
+          "kind": "host",
+          "location": "scripts/basic/fixdep.c:105",
+          "diagnostic": "scripts/basic/fixdep.c:105:10: error: header sys/types.h not found"
+        },
+        {
+          "translation_unit": "scripts/basic/split-include.c",
+          "kind": "host",
+          "location": "scripts/basic/split-include.c:22",
+          "diagnostic": "scripts/basic/split-include.c:22:10: error: header sys/stat.h not found"
+        }
+      ],
+      "assignment": "unassigned"
+    }
+  },
+  "scope": "First located bcc diagnostic per failed clang command replay. Replay preserves recorded -I, -D and -include flags and adds no Mac SDK headers. An earlier driver or header failure can mask constructs in the same translation unit. Zero counts mean no first diagnostic of that class was observed."
+}
