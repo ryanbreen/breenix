@@ -6,17 +6,33 @@ use bobj::elf::aarch64::{self, *};
 use bobj::elf::amd64::*;
 use bobj::elf::{
     Rela, SectionHeader, SHF_ALLOC, SHF_EXECINSTR, SHF_TLS, SHF_WRITE, SHN_ABS, SHN_UNDEF,
-    SHT_NOBITS, SHT_PROGBITS, STB_LOCAL, STB_WEAK, STT_TLS,
+    SHT_NOBITS, SHT_PROGBITS, STB_LOCAL, STB_WEAK, STT_FUNC, STT_TLS,
 };
 
-use crate::layout::Image;
-use crate::object::{Definition, Link, Object, ObjectSymbol, Section, SymbolKey};
+use crate::layout::{Image, Veneers};
+use crate::object::{Definition, Link, Object, ObjectSymbol, Section, SectionId, SymbolKey};
 use crate::{display, Machine, Result};
 
 const GOT_ENTRY_SIZE: u64 = 8;
+// AAELF64 2025Q1 §5.7.6, GOT-relative instruction relocations.
+const R_AARCH64_ADR_GOT_PAGE: u32 = 311;
+const R_AARCH64_LD64_GOT_LO12_NC: u32 = 312;
+
+pub(crate) const VENEER_SIZE: u64 = 12;
+const ADR_MASK: u32 = 0x60ff_ffe0;
+const BRANCH_MASK: u32 = 0x03ff_ffff;
+const LO12_MASK: u32 = 0x003f_fc00;
 
 fn gotpcrel(kind: u32) -> bool {
     matches!(kind, R_GOTPCREL | R_GOTPCRELX | R_REX_GOTPCRELX)
+}
+
+fn aarch64_got(kind: u32) -> bool {
+    matches!(kind, R_AARCH64_ADR_GOT_PAGE | R_AARCH64_LD64_GOT_LO12_NC)
+}
+
+fn aarch64_long_branch(kind: u32) -> bool {
+    matches!(kind, R_AARCH64_CALL26 | R_AARCH64_JUMP26)
 }
 
 fn symbol_key(object: usize, index: u32, symbol: &ObjectSymbol) -> SymbolKey {
@@ -134,16 +150,32 @@ fn signed_immediate(value: i128, bits: u32, shift: u32) -> std::result::Result<u
     Ok(((value >> shift) as u32) & ((1 << bits) - 1))
 }
 
+fn adrp_bits(address: i128, place: i128) -> std::result::Result<u32, &'static str> {
+    let page = |address: i128| address & !0xfff;
+    let immediate = signed_immediate(page(address) - page(place), 21, 12)?;
+    Ok(adr_bits(immediate))
+}
+
+fn adr_bits(immediate: u32) -> u32 {
+    ((immediate & 3) << 29) | ((immediate >> 2) << 5)
+}
+
+pub(crate) fn veneer_skip(displacement: u64) -> std::result::Result<[u8; 4], &'static str> {
+    let immediate = signed_immediate(i128::from(displacement), 26, 2)?;
+    Ok((0x1400_0000 | immediate).to_le_bytes()) // B
+}
+
 impl Link {
     pub(crate) fn allocate_got(&mut self) -> Result<()> {
-        if self.machine() != Machine::Amd64 {
-            return Ok(());
-        }
+        let uses_got = match self.machine() {
+            Machine::Amd64 => gotpcrel,
+            Machine::Aarch64 => aarch64_got,
+        };
         for (object_id, object) in self.objects.iter().enumerate() {
             for target in object.sections.iter().filter(|section| section.live) {
                 for &table in &target.relocation_tables {
                     for &rela in &object.relocations[table].entries {
-                        if !gotpcrel(rela.kind) {
+                        if !uses_got(rela.kind) {
                             continue;
                         }
                         if rela.symbol == 0 {
@@ -152,6 +184,14 @@ impl Link {
                                 target,
                                 rela,
                                 "GOT relocation requires a symbol",
+                            ));
+                        }
+                        if object.machine == Machine::Aarch64 && rela.addend != 0 {
+                            return Err(relocation_error(
+                                object,
+                                target,
+                                rela,
+                                "GOT relocation requires a zero addend",
                             ));
                         }
                         let symbol = &object.symbols[rela.symbol as usize];
@@ -184,6 +224,95 @@ impl Link {
             ));
         }
         Ok(())
+    }
+
+    fn write_got_slot(
+        &self,
+        image: &mut Image,
+        object: usize,
+        symbol: u32,
+        address: u64,
+    ) -> std::result::Result<u64, &'static str> {
+        let key = symbol_key(
+            object,
+            symbol,
+            &self.objects[object].symbols[symbol as usize],
+        );
+        let slot = self.got_slots[&key] as u64;
+        let offset =
+            self.section(self.got.ok_or("missing GOT")?).output_offset + slot * GOT_ENTRY_SIZE;
+        image.bytes[offset as usize..(offset + GOT_ENTRY_SIZE) as usize]
+            .copy_from_slice(&address.to_le_bytes());
+        Ok(offset)
+    }
+
+    pub(crate) fn reserve_aarch64_veneers(&self, veneers: &mut Veneers) -> bool {
+        let mut changed = false;
+        for (object_id, object) in self.objects.iter().enumerate() {
+            for table in &object.relocations {
+                let target = &object.sections[table.target];
+                if !target.live || target.header.flags & SHF_EXECINSTR == 0 {
+                    continue;
+                }
+                let input = (object_id, table.target);
+                for &rela in &table.entries {
+                    if !aarch64_long_branch(rela.kind) {
+                        continue;
+                    }
+                    let Ok(offset) = field_offset(target, rela, 4) else {
+                        continue; // The relocation pass reports the bad field.
+                    };
+                    let Ok(Some(address)) = self.symbol_address(object_id, rela.symbol, false)
+                    else {
+                        continue;
+                    };
+                    let place = self.script.base + offset;
+                    let displacement =
+                        i128::from(address) + i128::from(rela.addend) - i128::from(place);
+                    if place & 3 != 0
+                        || displacement & 3 != 0
+                        || signed_immediate(displacement, 26, 2).is_ok()
+                        || !self.aarch64_veneer_allowed(input, rela.symbol)
+                    {
+                        continue;
+                    }
+                    if let std::collections::btree_map::Entry::Vacant(entry) = veneers
+                        .entry(input)
+                        .or_default()
+                        .entry((rela.symbol, rela.addend))
+                    {
+                        entry.insert(0); // Assigned when layout places the pool.
+                        changed = true;
+                    }
+                }
+            }
+        }
+        changed
+    }
+
+    fn aarch64_veneer_allowed(&self, input: SectionId, index: u32) -> bool {
+        // AAELF64 §5.7.7 permits veneers for function symbols, definitions
+        // in another input section, or references undefined in the link unit.
+        if index == 0 {
+            return false;
+        }
+        let reference = &self.objects[input.0].symbols[index as usize];
+        let (object, symbol) = if reference.binding == STB_LOCAL {
+            (input.0, reference)
+        } else {
+            let Some(global) = self.globals.get(reference.name.as_ref()) else {
+                return true;
+            };
+            match global.definition {
+                Definition::Undefined | Definition::Common => return true,
+                _ => {
+                    let (object, symbol) = global.origin;
+                    (object, &self.objects[object].symbols[symbol])
+                }
+            }
+        };
+        symbol.kind == STT_FUNC
+            || (symbol.section != SHN_ABS && (object, usize::from(symbol.section)) != input)
     }
 
     pub(crate) fn entry_address(&self) -> Result<u64> {
@@ -292,9 +421,12 @@ impl Link {
                         Machine::Amd64 => {
                             self.apply_amd64_relocation(image, object_id, target, rela)
                         }
-                        Machine::Aarch64 => {
-                            self.apply_aarch64_relocation(image, object_id, target, rela)
-                        }
+                        Machine::Aarch64 => self.apply_aarch64_relocation(
+                            image,
+                            (object_id, table.target),
+                            target,
+                            rela,
+                        ),
                     };
                     result.map_err(|reason| relocation_error(object, target, rela, reason))?;
                 }
@@ -323,14 +455,8 @@ impl Link {
         let tls = matches!(rela.kind, R_TPOFF32 | R_TPOFF64);
         let symbol_address = self.symbol_address(object, rela.symbol, tls)?.unwrap_or(0);
         let value = if gotpcrel(rela.kind) {
-            let symbol = &self.objects[object].symbols[rela.symbol as usize];
-            let slot = self.got_slots[&symbol_key(object, rela.symbol, symbol)] as u64;
-            let got =
-                self.section(self.got.ok_or("missing GOT")?).output_offset + slot * GOT_ENTRY_SIZE;
-            let got_end = got + GOT_ENTRY_SIZE;
-            image.bytes[got as usize..got_end as usize]
-                .copy_from_slice(&symbol_address.to_le_bytes());
-            got.wrapping_sub(field)
+            self.write_got_slot(image, object, rela.symbol, symbol_address)?
+                .wrapping_sub(field)
         } else if tls {
             symbol_address.wrapping_sub(image.thread_pointer().ok_or("missing TLS template")?)
         } else if matches!(rela.kind, R_PC32 | R_PLT32 | R_PC64) {
@@ -353,7 +479,7 @@ impl Link {
     fn apply_aarch64_relocation(
         &self,
         image: &mut Image,
-        object: usize,
+        input: SectionId,
         target: &Section,
         rela: Rela,
     ) -> std::result::Result<(), &'static str> {
@@ -368,7 +494,9 @@ impl Link {
             | R_AARCH64_LDST16_ABS_LO12_NC
             | R_AARCH64_LDST32_ABS_LO12_NC
             | R_AARCH64_LDST64_ABS_LO12_NC
-            | R_AARCH64_LDST128_ABS_LO12_NC => (4, true, false),
+            | R_AARCH64_LDST128_ABS_LO12_NC
+            | R_AARCH64_ADR_GOT_PAGE
+            | R_AARCH64_LD64_GOT_LO12_NC => (4, true, false),
             R_AARCH64_ADR_PREL_PG_HI21
             | R_AARCH64_ADR_PREL_LO21
             | R_AARCH64_CALL26
@@ -383,17 +511,28 @@ impl Link {
         if instruction && place & 3 != 0 {
             return Err("relocation instruction is not 4-byte aligned");
         }
-        let field = &mut image.bytes[offset as usize..(offset + width) as usize];
-        let symbol = self.symbol_address(object, rela.symbol, false)?;
+        let range = offset as usize..(offset + width) as usize;
+        let symbol = self.symbol_address(input.0, rela.symbol, false)?;
         if symbol.is_none() && kind == R_AARCH64_CALL26 {
             // AAELF64 §5.7.7: an unresolved weak call falls through.
-            field.copy_from_slice(&0xd503_201fu32.to_le_bytes()); // NOP
+            image.bytes[range].copy_from_slice(&0xd503_201fu32.to_le_bytes()); // NOP
             return Ok(());
         }
         // AAELF64 §5.6.1 defines S for unresolved weak references.
         let address = symbol.unwrap_or(if pc_relative { place } else { 0 });
         let place = i128::from(place);
-        let sum = i128::from(address) + i128::from(rela.addend);
+        let sum = if aarch64_got(kind) {
+            let slot = self.write_got_slot(image, input.0, rela.symbol, address)?;
+            i128::from(self.script.base + slot)
+        } else {
+            i128::from(address) + i128::from(rela.addend)
+        };
+        if aarch64_long_branch(kind) {
+            let immediate = self.aarch64_branch_bits(image, input, rela, sum, place)?;
+            write_immediate(&mut image.bytes[range], BRANCH_MASK, immediate);
+            return Ok(());
+        }
+        let field = &mut image.bytes[range];
 
         // AAELF64 §§5.7.3.3, 5.7.5–5.7.6. Check X before extracting
         // bits, then insert them in the fields from Arm ARM DDI 0487 M.b.
@@ -406,18 +545,12 @@ impl Link {
                 }
                 field.copy_from_slice(&(value as u32).to_le_bytes());
             }
-            R_AARCH64_ADR_PREL_PG_HI21 | R_AARCH64_ADR_PREL_LO21 => {
-                let page = |address: i128| address & !0xfff;
-                let imm = if kind == R_AARCH64_ADR_PREL_PG_HI21 {
-                    signed_immediate(page(sum) - page(place), 21, 12)?
-                } else {
-                    signed_immediate(sum - place, 21, 0)?
-                };
-                write_immediate(field, 0x60ff_ffe0, ((imm & 3) << 29) | ((imm >> 2) << 5));
+            R_AARCH64_ADR_PREL_PG_HI21 | R_AARCH64_ADR_GOT_PAGE => {
+                write_immediate(field, ADR_MASK, adrp_bits(sum, place)?);
             }
-            R_AARCH64_CALL26 | R_AARCH64_JUMP26 => {
-                let imm = signed_immediate(sum - place, 26, 2)?;
-                write_immediate(field, 0x03ff_ffff, imm);
+            R_AARCH64_ADR_PREL_LO21 => {
+                let immediate = signed_immediate(sum - place, 21, 0)?;
+                write_immediate(field, ADR_MASK, adr_bits(immediate));
             }
             R_AARCH64_LD_PREL_LO19 | R_AARCH64_CONDBR19 => {
                 let imm = signed_immediate(sum - place, 19, 2)?;
@@ -431,7 +564,7 @@ impl Link {
                 let shift = match kind {
                     R_AARCH64_LDST16_ABS_LO12_NC => 1,
                     R_AARCH64_LDST32_ABS_LO12_NC => 2,
-                    R_AARCH64_LDST64_ABS_LO12_NC => 3,
+                    R_AARCH64_LDST64_ABS_LO12_NC | R_AARCH64_LD64_GOT_LO12_NC => 3,
                     R_AARCH64_LDST128_ABS_LO12_NC => 4,
                     _ => 0,
                 };
@@ -439,9 +572,44 @@ impl Link {
                     return Err("relocation address is not aligned to the access size");
                 }
                 let imm = ((sum as u32) & 0xfff) >> shift;
-                write_immediate(field, 0x003f_fc00, imm << 10);
+                write_immediate(field, LO12_MASK, imm << 10);
             }
         }
         Ok(())
+    }
+
+    fn aarch64_branch_bits(
+        &self,
+        image: &mut Image,
+        input: SectionId,
+        rela: Rela,
+        target: i128,
+        place: i128,
+    ) -> std::result::Result<u32, &'static str> {
+        let reason = match signed_immediate(target - place, 26, 2) {
+            Ok(immediate) => return Ok(immediate),
+            Err(reason) => reason,
+        };
+        let offset = image.veneer_offset(input, rela).ok_or(reason)?;
+        let veneer = i128::from(self.script.base + offset);
+        let branch = signed_immediate(veneer - place, 26, 2)
+            .map_err(|_| "relocation overflow (branch cannot reach veneer)")?;
+        let page = adrp_bits(target, veneer)
+            .map_err(|_| "relocation overflow (veneer ADRP cannot reach target)")?;
+        // AAPCS64 §6.5.1 permits clobbering IP0. BR preserves the caller's
+        // link register for BL and leaves it untouched for B.
+        // Arm ARM DDI 0487 M.b C6.2.13, C6.2.5 and C6.2.46.
+        let words = [
+            0x9000_0010 | page,                              // ADRP x16, target page
+            0x9100_0210 | (((target as u32) & 0xfff) << 10), // ADD x16, x16, #lo12
+            0xd61f_0200,                                     // BR x16
+        ];
+        for (field, word) in image.bytes[offset as usize..(offset + VENEER_SIZE) as usize]
+            .chunks_exact_mut(4)
+            .zip(words)
+        {
+            field.copy_from_slice(&word.to_le_bytes());
+        }
+        Ok(branch)
     }
 }

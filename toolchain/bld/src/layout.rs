@@ -1,19 +1,26 @@
 //! ELF gABI §§2, 3 and 7: static executable sections and program headers.
 
+use std::collections::BTreeMap;
+
 use bobj::elf::{
-    Header, ProgramHeader, SectionHeader, ET_EXEC, PF_R, PF_W, PF_X, PT_GNU_STACK, PT_LOAD, PT_TLS,
-    SHF_ALLOC, SHF_EXECINSTR, SHF_GROUP, SHF_TLS, SHF_WRITE, SHN_LORESERVE, SHT_NOBITS,
+    Header, ProgramHeader, Rela, SectionHeader, ET_EXEC, PF_R, PF_W, PF_X, PT_GNU_STACK, PT_LOAD,
+    PT_TLS, SHF_ALLOC, SHF_EXECINSTR, SHF_GROUP, SHF_TLS, SHF_WRITE, SHN_LORESERVE, SHT_NOBITS,
     SHT_PROGBITS, SHT_STRTAB,
 };
 
 use crate::object::{Link, Section, SectionId};
+use crate::relocate::{veneer_skip, VENEER_SIZE};
 use crate::script::LoadRole;
-use crate::{align_up, Result, IMAGE_BASE, PAGE_SIZE};
+use crate::{align_up, Machine, Result, IMAGE_BASE, PAGE_SIZE};
 
 const SHF_MERGE: u64 = 0x10;
 const SHF_STRINGS: u64 = 0x20;
 const SHT_X86_64_UNWIND: u32 = 0x7000_0001; // AMD64 psABI §4.2.2, Table 4.2.
 const LOAD_COUNT: usize = 3;
+
+// One pool per caller input section, keyed by symbol and addend so a B and
+// a BL to the same destination can share the same IP0 veneer.
+pub(crate) type Veneers = BTreeMap<SectionId, BTreeMap<(u32, i64), u64>>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Phase {
@@ -66,6 +73,7 @@ struct Layout {
     strings: Vec<u8>,
     section_count: u16,
     tls_align: u64,
+    veneers: Veneers,
 }
 
 impl Layout {
@@ -76,6 +84,7 @@ impl Layout {
             strings: b"\0.shstrtab\0".to_vec(),
             section_count: 2,
             tls_align: 0,
+            veneers: Veneers::new(),
         };
         for (object_id, object) in link.objects.iter_mut().enumerate() {
             for (section_id, section) in object.sections.iter_mut().enumerate().skip(1) {
@@ -209,14 +218,14 @@ impl Layout {
                 object.section_error(link.section(output.origin), "section layout overflow")
             })?;
             for &id in output.members.iter().flatten() {
-                place_input(link, id, cursor)?;
+                place_input(link, id, cursor, &mut self.veneers)?;
             }
             output.header.offset = offset;
             output.header.address = base + offset;
             output.header.size = *cursor - offset;
         }
         for &id in &self.orphans[phase as usize] {
-            place_input(link, id, cursor)?;
+            place_input(link, id, cursor, &mut self.veneers)?;
         }
         Ok(())
     }
@@ -253,6 +262,49 @@ impl Layout {
             thread_pointer,
         }))
     }
+
+    fn place_loads(&mut self, link: &mut Link) -> Result<([Load; LOAD_COUNT], Option<Tls>)> {
+        let base = link.script.base;
+        let overflow = "bld: cannot lay out executable";
+        let programs = LOAD_COUNT + 1 + usize::from(self.tls_align != 0);
+        let mut position = (Header::SIZE + programs * ProgramHeader::SIZE) as u64;
+        if !link.script.explicit {
+            position = align_up(position, PAGE_SIZE).ok_or(overflow)?;
+        }
+        self.place_phase(link, Phase::Text, &mut position)?;
+        let text = Load {
+            offset: 0,
+            file_end: position,
+            memory_end: position,
+        };
+
+        let page = |offset| {
+            align_up(offset, PAGE_SIZE)
+                .filter(|&offset| offset <= u64::MAX - base)
+                .ok_or(overflow)
+        };
+        position = page(position)?;
+        let rodata_offset = position;
+        self.place_phase(link, Phase::Rodata, &mut position)?;
+        let rodata = Load {
+            offset: rodata_offset,
+            file_end: position,
+            memory_end: position,
+        };
+
+        position = page(position)?;
+        let data_offset = position;
+        self.place_phase(link, Phase::Data, &mut position)?;
+        let tls = self.place_tls(link, &mut position)?;
+        let file_end = position;
+        self.place_phase(link, Phase::Bss, &mut position)?;
+        let data = Load {
+            offset: data_offset,
+            file_end,
+            memory_end: position,
+        };
+        Ok(([text, rodata, data], tls))
+    }
 }
 
 fn place(base: u64, cursor: &mut u64, alignment: u64, size: u64) -> Option<u64> {
@@ -264,7 +316,13 @@ fn place(base: u64, cursor: &mut u64, alignment: u64, size: u64) -> Option<u64> 
     Some(address - base)
 }
 
-fn place_input(link: &mut Link, (object, index): SectionId, cursor: &mut u64) -> Result<()> {
+fn place_input(
+    link: &mut Link,
+    id: SectionId,
+    cursor: &mut u64,
+    veneers: &mut Veneers,
+) -> Result<()> {
+    let (object, index) = id;
     let object = &mut link.objects[object];
     let section = &mut object.sections[index];
     if let Some(offset) = place(
@@ -274,10 +332,19 @@ fn place_input(link: &mut Link, (object, index): SectionId, cursor: &mut u64) ->
         section.header.size,
     ) {
         section.output_offset = offset;
-        Ok(())
     } else {
-        Err(object.section_error(&object.sections[index], "section layout overflow"))
+        return Err(object.section_error(&object.sections[index], "section layout overflow"));
     }
+    if let Some(pool) = veneers.get_mut(&id) {
+        let overflow = || object.section_error(&object.sections[index], "veneer layout overflow");
+        // An ordinary fallthrough skips the pool. Branch relocations target
+        // individual entries following that instruction.
+        place(link.script.base, cursor, 4, 4).ok_or_else(overflow)?;
+        for offset in pool.values_mut() {
+            *offset = place(link.script.base, cursor, 4, VENEER_SIZE).ok_or_else(overflow)?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Default)]
@@ -320,46 +387,18 @@ pub(crate) struct Image {
 impl Image {
     pub(crate) fn new(link: &mut Link) -> Result<Self> {
         let mut layout = Layout::prepare(link)?;
-        let base = link.script.base;
         let overflow = "bld: cannot lay out executable";
-        let programs = LOAD_COUNT + 1 + usize::from(layout.tls_align != 0);
-        let mut position = (Header::SIZE + programs * ProgramHeader::SIZE) as u64;
-        if !link.script.explicit {
-            position = align_up(position, PAGE_SIZE).ok_or(overflow)?;
-        }
-        layout.place_phase(link, Phase::Text, &mut position)?;
-        let text = Load {
-            offset: 0,
-            file_end: position,
-            memory_end: position,
+        let (loads, tls) = loop {
+            let placed = layout.place_loads(link)?;
+            // Adding a pool can move a later source or destination across
+            // the branch limit. Each pass reserves only newly needed entries.
+            if link.machine() != Machine::Aarch64
+                || !link.reserve_aarch64_veneers(&mut layout.veneers)
+            {
+                break placed;
+            }
         };
-
-        let page = |offset| {
-            align_up(offset, PAGE_SIZE)
-                .filter(|&offset| offset <= u64::MAX - base)
-                .ok_or(overflow)
-        };
-        position = page(position)?;
-        let rodata_offset = position;
-        layout.place_phase(link, Phase::Rodata, &mut position)?;
-        let rodata = Load {
-            offset: rodata_offset,
-            file_end: position,
-            memory_end: position,
-        };
-
-        position = page(position)?;
-        let data_offset = position;
-        layout.place_phase(link, Phase::Data, &mut position)?;
-        let tls = layout.place_tls(link, &mut position)?;
-        let file_end = position;
-        layout.place_phase(link, Phase::Bss, &mut position)?;
-        let data = Load {
-            offset: data_offset,
-            file_end,
-            memory_end: position,
-        };
-
+        let file_end = loads[2].file_end;
         let strings = usize::try_from(file_end).map_err(|_| overflow)?;
         let headers = file_end
             .checked_add(layout.strings.len() as u64)
@@ -384,9 +423,16 @@ impl Image {
                 }
             }
         }
+        for (&id, pool) in &layout.veneers {
+            let start = *pool.first_key_value().expect("nonempty veneer pool").1 - 4;
+            let used = 4 + pool.len() as u64 * VENEER_SIZE;
+            let skip = veneer_skip(used)
+                .map_err(|reason| link.objects[id.0].section_error(link.section(id), reason))?;
+            bytes[start as usize..start as usize + 4].copy_from_slice(&skip);
+        }
         Ok(Self {
             layout,
-            loads: [text, rodata, data],
+            loads,
             tls,
             strings,
             headers,
@@ -396,6 +442,14 @@ impl Image {
 
     pub(crate) fn thread_pointer(&self) -> Option<u64> {
         self.tls.as_ref().map(|tls| tls.thread_pointer)
+    }
+
+    pub(crate) fn veneer_offset(&self, id: SectionId, relocation: Rela) -> Option<u64> {
+        self.layout
+            .veneers
+            .get(&id)?
+            .get(&(relocation.symbol, relocation.addend))
+            .copied()
     }
 
     pub(crate) fn write_headers(&mut self, link: &Link, entry: u64) {
@@ -446,14 +500,32 @@ impl Image {
         let orphans = link
             .objects
             .iter()
-            .flat_map(|object| &object.sections)
-            .filter(|section| section.output_name != 0)
-            .map(|section| SectionHeader {
-                name: section.output_name,
-                flags: section.header.flags & !SHF_GROUP,
-                address: base + section.output_offset,
-                offset: section.output_offset,
-                ..section.header
+            .enumerate()
+            .flat_map(|(object_id, object)| {
+                object
+                    .sections
+                    .iter()
+                    .enumerate()
+                    .map(move |(index, section)| ((object_id, index), section))
+            })
+            .filter(|(_, section)| section.output_name != 0)
+            .map(|(id, section)| {
+                let size = self
+                    .layout
+                    .veneers
+                    .get(&id)
+                    .and_then(|pool| pool.last_key_value())
+                    .map_or(section.header.size, |(_, end)| {
+                        end + VENEER_SIZE - section.output_offset
+                    });
+                SectionHeader {
+                    name: section.output_name,
+                    flags: section.header.flags & !SHF_GROUP,
+                    address: base + section.output_offset,
+                    offset: section.output_offset,
+                    size,
+                    ..section.header
+                }
             });
         let names = SectionHeader {
             name: 1,
