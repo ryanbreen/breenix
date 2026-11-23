@@ -26,6 +26,84 @@ def digest(path):
         return hashlib.file_digest(file, "sha256").hexdigest()
 
 
+class BusyBoxStagingTest(unittest.TestCase):
+    milestone = "toolchain/busybox-on-box"
+    prefix = Path("usr/share/breenix/toolchain/busybox")
+
+    def setUp(self):
+        script = ROOT / "scripts/toolchain-image.py"
+        spec = importlib.util.spec_from_file_location("toolchain_image", script)
+        image = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(image)
+        self.mkfs, self.debugfs = image.require_e2fsprogs("mke2fs", "debugfs")
+        self.directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.seed = self.directory / "seed.img"
+        subprocess.run([self.mkfs, "-q", "-F", "-t", "ext2", self.seed, "96M"],
+                       check=True, capture_output=True)
+
+    def stage(self, bundle, suites, milestone=None):
+        record = json.loads((bundle / "build.json").read_text())
+        output = self.directory / "staged.img"
+        command = [sys.executable, ROOT / "scripts/toolchain-image.py", "stage",
+                   self.seed, output, "--suite", suites, "--arch", record["arch"],
+                   "--toolchain-bundle", bundle]
+        if milestone is not None:
+            command.extend(["--milestone", milestone])
+        return output, subprocess.run(command, text=True, capture_output=True)
+
+    def busybox_inputs_staged_with_digests(self):
+        record = json.loads((self.bundle / "build.json").read_text())
+        vendor = ROOT / "vendor/busybox"
+        sources = {
+            Path("busybox.sh"): WORKSPACE / "corpus/busybox.sh",
+            Path("vendor/busybox/busybox-1.37.0.tar.bz2"): vendor / "busybox-1.37.0.tar.bz2",
+            Path("vendor/busybox/breenix-libc.config"): vendor / "breenix-libc.config",
+            **{Path("vendor/busybox/patches") / path.name: path
+               for path in (vendor / "patches").iterdir()},
+            Path("mac-applets.txt"): ROOT / "userspace/programs/libc-busybox.links",
+        }
+        expected = {str(self.prefix / name): digest(source) for name, source in sources.items()}
+        self.assertEqual(record.get("busyboxInputs"), expected)
+        tree = self.bundle / "root"
+        manifest = dict(line.split("  ", 1)[::-1] for line in
+                        (tree / "opt/breenix-dev/25.2/manifest.sha256").read_text().splitlines())
+        self.assertEqual({str(p.relative_to(tree)) for p in (tree / self.prefix).rglob("*")
+                          if p.is_file()}, expected.keys())
+        for path, sha256 in expected.items():
+            self.assertEqual(digest(tree / path), sha256, path)
+            self.assertEqual(manifest.get(path), sha256, path)
+        scratch = self.bundle / "toolchain-scratch.img"
+        self.assertEqual(scratch.stat().st_size, 64 << 20)
+        self.assertEqual(record.get("busyboxScratch"),
+                         {"size": 64 << 20, "sha256": digest(scratch)})
+        _, result = self.stage(self.bundle, "toolchain,libc,utilities", self.milestone)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def busybox_inputs_absent_unless_selected(self):
+        record = json.loads((self.baseline / "build.json").read_text())
+        self.assertNotIn("busyboxInputs", record)
+        self.assertNotIn("busyboxScratch", record)
+        self.assertFalse((self.baseline / "root" / self.prefix).exists())
+        self.assertFalse((self.baseline / "toolchain-scratch.img").exists())
+        output, result = self.stage(self.baseline, "toolchain", "toolchain/c17-libc-suite")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with self.subTest(selection="earlier toolchain milestone"):
+            output.unlink()
+            _, result = self.stage(self.bundle, "toolchain", "toolchain/c17-libc-suite")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("BusyBox fixture requires toolchain/busybox-on-box", result.stderr)
+            self.assertFalse(output.exists())
+        with self.subTest(selection="toolchain suite without milestone"):
+            _, result = self.stage(self.bundle, "toolchain")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("BusyBox fixture requires toolchain/busybox-on-box", result.stderr)
+            self.assertFalse(output.exists())
+        with self.subTest(selection="unrelated suite"):
+            output, result = self.stage(self.bundle, "libc,utilities")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(digest(output), digest(self.seed))
+
+
 class ToolchainGuestBuildTest(unittest.TestCase):
     def test_arm_guest_link_inputs_are_keyed_by_content(self):
         script = ROOT / "scripts/toolchain-build-tools.py"
@@ -551,6 +629,8 @@ if __name__ == "__main__":
     ToolchainBundleTest.bundle = args.bundle
     ToolchainBundleTest.probe = args.probe
     ToolchainBundleTest.baseline = args.baseline
+    BusyBoxStagingTest.bundle = args.bundle
+    BusyBoxStagingTest.baseline = args.baseline
     checks = ["ToolchainBundleTest.tools_built_by_rustc",
               "ToolchainBundleTest.receipts_from_cargo_host_bas",
               "ToolchainBundleTest.c11_inputs_staged",
