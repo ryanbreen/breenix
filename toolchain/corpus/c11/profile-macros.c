@@ -15,3 +15,12 @@
 #error expected __STDC_NO_THREADS__ to be defined as 1
 #endif
 int profile_macros_verified;
+
+/* N1570 7.1.4p2 and 7.21.7.9. Keep the preprocessing probe header-free. */
+int puts(const char *);
+
+int main(void)
+{
+    puts("C11 profile macros verified");
+    return 0;
+}

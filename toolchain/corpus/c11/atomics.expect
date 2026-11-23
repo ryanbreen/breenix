@@ -1,0 +1,4 @@
+0
+release/acquire 256
+seq_cst 256, forbidden 0
+aggregate CAS 512, sum 768

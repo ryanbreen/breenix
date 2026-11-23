@@ -200,7 +200,32 @@
     {
       "id": "c11",
       "title": "The declared C11 feature profile and its diagnostics",
-      "cases": []
+      "cases": [
+        {
+          "id": "declarations-initializers",
+          "title": "Designated initialization, compound literals and flexible array members"
+        },
+        {
+          "id": "generic-static-assert-alignment",
+          "title": "Generic selection, static assertions and aligned anonymous members"
+        },
+        {
+          "id": "floating",
+          "title": "Rounding modes affect arithmetic and conversions and raise the expected flags"
+        },
+        {
+          "id": "atomics",
+          "title": "Threads exercise release/acquire, sequential consistency and aggregate CAS"
+        },
+        {
+          "id": "constraint-diagnostics",
+          "title": "The guest constraint subset fails with the expected located diagnostics"
+        },
+        {
+          "id": "profile-macros",
+          "title": "The compiler advertises its implemented C11 feature profile"
+        }
+      ]
     },
     {
       "id": "c17",

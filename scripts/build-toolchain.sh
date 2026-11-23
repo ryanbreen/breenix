@@ -78,6 +78,9 @@ while IFS= read -r name; do
 done < "$root/toolchain/corpus/cases"
 
 python3 "$root/scripts/toolchain-build-tools.py" "$arch" "$work/tools" "$dev" "$corpus"
+if [ "$arch" = x86_64 ]; then
+    python3 "$root/scripts/toolchain-image.py" stage-c11 "$corpus"
+fi
 
 python3 "$root/scripts/toolchain-image.py" seal "$work/bundle" "$commit" "$arch" --tool-record "$work/tools/tools.json"
 mv "$work/bundle" "$output"

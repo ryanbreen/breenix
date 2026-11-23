@@ -49,6 +49,23 @@ def check_corpus(corpus):
     return names
 
 
+def c11_inputs():
+    source = ROOT / "toolchain/corpus/c11"
+    constraints = json.loads((source / "constraints.json").read_text())
+    programs = ("declarations-initializers", "generic-static-assert-alignment",
+                "floating", "atomics", "profile-macros")
+    names = ["constraints.json", "constraint-diagnostics.expect", *constraints["guest"].values(),
+             *(f"{name}.{suffix}" for name in programs for suffix in ("c", "expect"))]
+    return {Path("c11") / name: source / name for name in names}
+
+
+def stage_c11(corpus):
+    for path, source in c11_inputs().items():
+        destination = corpus / path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+
+
 def payload(tree):
     files = []
     for path in sorted(tree.rglob("*")):
@@ -136,6 +153,7 @@ def seal(bundle, commit, arch, tool_record):
                     path = Path(category) / (name + suffix)
                     sources[CORPUS / path] = corpus / path
         sources[CORPUS / "tls/threads.h"] = corpus / "tls/threads.h"
+        sources.update({CORPUS / path: source for path, source in c11_inputs().items()})
 
         fixtures = corpus / "assembler"
         for source in fixtures.iterdir():
@@ -282,6 +300,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("check-corpus").add_argument("corpus", type=Path)
+    commands.add_parser("stage-c11").add_argument("corpus", type=Path)
     finalize = commands.add_parser("seal")
     finalize.add_argument("bundle", type=Path)
     finalize.add_argument("commit")
@@ -297,6 +316,8 @@ def main():
     try:
         if args.command == "check-corpus":
             check_corpus(args.corpus)
+        elif args.command == "stage-c11":
+            stage_c11(args.corpus)
         elif args.command == "seal":
             seal(args.bundle, args.commit, args.arch, args.tool_record)
         else:

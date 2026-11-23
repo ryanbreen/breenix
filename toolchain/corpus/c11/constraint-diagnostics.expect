@@ -1,0 +1,11 @@
+1
+constraints/universal-character-name.c:1:12: error: invalid universal character name
+constraints/generic-duplicate-compatible.c:1:42: error: duplicate compatible generic association
+constraints/compound-add-pointer-to-int.c:1:29: error: invalid compound pointer assignment
+constraints/flexible-not-last.c:1:27: error: a flexible array member must follow another named member and end a struct
+constraints/atomic-qualified-type.c:1:1: error: _Atomic type specifier requires an unqualified type
+constraints/weak-alignment.c:1:17: error: specified alignment is weaker than the required alignment
+constraints/initializer-out-of-bounds.c:1:20: error: array designator is outside the object bounds
+constraints/static-assertion-failed.c:1:1: error: static assertion failed: expected nonzero
+constraints/duplicate-case-value.c:4:2: error: duplicate case value or default
+constraints/macro-duplicate-parameter.c:1:17: error: duplicate macro parameter
