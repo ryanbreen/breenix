@@ -1,6 +1,7 @@
 //! Frame slots, lvalues and statement lowering.
 
 use super::*;
+use crate::types::Layout;
 
 pub(super) enum Slot {
     Frame(usize),
@@ -8,12 +9,12 @@ pub(super) enum Slot {
 }
 
 impl<'src> Emitter<'_, 'src> {
-    pub(super) fn layout(&mut self, function: &Function<'src>) -> Result<usize, Diagnostic> {
+    pub(super) fn layout(&mut self, function: &Function<'src>) -> Result<(), Diagnostic> {
         self.locals.clear();
-        let mut frame = 0usize;
-        for local in &function.locals {
+        self.frame = 0;
+        for (index, local) in function.locals.iter().enumerate() {
             let object = &local.object;
-            let layout = object.ty.layout().unwrap();
+            let mut layout = object.ty.layout().unwrap();
             if matches!(local.storage, LocalStorage::Thread(_) | LocalStorage::ThreadExtern(_)) {
                 return Err(Diagnostic::new(object.site, "AArch64 C TLS is deferred to A4"));
             }
@@ -27,18 +28,27 @@ impl<'src> Emitter<'_, 'src> {
                 .unwrap();
                 Slot::Static(label)
             } else {
-                frame = frame
-                    .checked_add(layout.size)
-                    .and_then(|end| end.checked_next_multiple_of(layout.align))
-                    .filter(|&end| end <= i32::MAX as usize - 15)
-                    .ok_or_else(|| {
-                        Diagnostic::new(object.site, "stack frame exceeds the addressable range")
-                    })?;
-                Slot::Frame(frame)
+                if index < function.params.len()
+                    && matches!(object.ty.kind, Kind::Record(_))
+                    && !abi::indirect_record(layout)
+                {
+                    layout = abi::register_record_slot(layout);
+                }
+                Slot::Frame(self.frame_slot(layout, object.site)?)
             };
             self.locals.push(slot);
         }
-        Ok(frame.next_multiple_of(16))
+        Ok(())
+    }
+
+    pub(super) fn frame_slot(&mut self, layout: Layout, site: &Position) -> Result<usize, Diagnostic> {
+        self.frame = self
+            .frame
+            .checked_add(layout.size)
+            .and_then(|end| end.checked_next_multiple_of(layout.align))
+            .filter(|&end| end <= i32::MAX as usize - 15)
+            .ok_or_else(|| Diagnostic::new(site, "stack frame exceeds the addressable range"))?;
+        Ok(self.frame)
     }
 
     pub(super) fn statements(
@@ -80,7 +90,7 @@ impl<'src> Emitter<'_, 'src> {
                 for init in values {
                     self.converted(&init.value, &init.ty)?;
                     self.local_address(*local, init.offset, "x9");
-                    self.store_object(&init.ty, 0, "x9");
+                    self.store_value(&init.ty, init.bit_field);
                 }
             }
             Statement::Expression(expr) => self.value(expr)?,
@@ -205,7 +215,11 @@ impl<'src> Emitter<'_, 'src> {
                 symbol_address(&mut self.text, "x0", &label);
             }
             ExpressionKind::Unary(Unary::Dereference, operand) => self.value(operand)?,
-            ExpressionKind::ThreadLocal(_) | ExpressionKind::Member { .. } => {
+            ExpressionKind::Member { base, offset, .. } => {
+                self.value(base)?;
+                self.add_sub_offset("add", "x0", "x0", *offset as u64);
+            }
+            ExpressionKind::ThreadLocal(_) => {
                 return Err(Diagnostic::new(expr.position(), DEFERRED_A4));
             }
             _ => unreachable!("sema must supply an addressable expression"),
@@ -236,8 +250,9 @@ impl<'src> Emitter<'_, 'src> {
     ) -> Result<(), Diagnostic> {
         self.address(left)?;
         self.push_value('x');
+        let field = left.bit_field();
         if let Some((op, a, b)) = operation {
-            self.load(&left.ty, "x0");
+            self.load_value(&left.ty, field, "x0");
             self.convert(&left.ty, a);
             self.push_value(value_prefix(a));
             self.converted(right, b)?;
@@ -247,7 +262,7 @@ impl<'src> Emitter<'_, 'src> {
             self.converted(right, &left.ty)?;
         }
         self.text.push_str("    ldr x9, [sp], #16\n");
-        self.store_object(&left.ty, 0, "x9");
+        self.store_value(&left.ty, field);
         Ok(())
     }
 
@@ -260,7 +275,8 @@ impl<'src> Emitter<'_, 'src> {
         self.address(operand)?;
         self.text.push_str("    mov x9, x0\n");
         let ty = &operand.ty;
-        self.load(ty, "x9");
+        let field = operand.bit_field();
+        self.load_value(ty, field, "x9");
         if let Kind::Float(precision) = ty.kind {
             self.float_update(precision, increment, postfix);
             return Ok(());
@@ -279,7 +295,7 @@ impl<'src> Emitter<'_, 'src> {
         } else {
             self.normalize(ty);
         }
-        self.store_object(ty, 0, "x9");
+        self.store_value(ty, field);
         if postfix {
             self.text.push_str("    mov x0, x10\n");
         }

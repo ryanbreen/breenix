@@ -112,6 +112,13 @@ pub struct Member<'a> {
 pub struct BitField {
     pub shift: u8,
     pub width: u8,
+    pub(crate) container: Option<BitFieldContainer>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BitFieldContainer {
+    pub(crate) back: u8,
+    pub(crate) bytes: u8,
 }
 
 impl BitField {

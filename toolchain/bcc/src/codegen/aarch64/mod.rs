@@ -1,4 +1,4 @@
-//! Unoptimized AArch64 scalar assembly for bas.
+//! Unoptimized AArch64 assembly for bas.
 //!
 //! AAPCS64 2025Q1 §§6.1, 6.4.5–6.4.6, 6.8–6.9 and §10.1.1 Table 3
 //! define the register, stack and C type conventions. A64 instructions
@@ -12,13 +12,14 @@ use crate::sema::{
     Argument, Binary, Expression, ExpressionKind, Function, Linkage, LocalStorage, Statement, TranslationUnit,
     Unary,
 };
-use crate::types::{Float, Integer, Kind, Type};
+use crate::types::{Float, Integer, Kind, Layout, Record, Type};
 
 mod abi;
 mod float;
 mod flow;
+mod record;
 
-use abi::{ArgumentLocation, ArgumentSlots};
+use abi::ArgumentSlots;
 use flow::Slot;
 
 const ARGUMENT_REGISTERS: usize = 8;
@@ -35,7 +36,9 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
     }
     let mut emitter = Emitter {
         functions,
+        records: &unit.records,
         locals: Vec::new(),
+        frame: 0,
         flow_labels: HashMap::new(),
         externs: BTreeSet::new(),
         text: String::from(".section .text\n"),
@@ -64,7 +67,9 @@ pub(super) fn emit(unit: &TranslationUnit<'_>) -> Result<String, Diagnostic> {
 
 struct Emitter<'unit, 'src> {
     functions: HashMap<&'src str, &'unit Function<'src>>,
+    records: &'unit [Record<'src>],
     locals: Vec<Slot>,
+    frame: usize,
     flow_labels: HashMap<usize, String>,
     externs: BTreeSet<&'src str>,
     text: String,
@@ -84,13 +89,13 @@ impl<'src> Emitter<'_, 'src> {
         let Kind::Function { result, .. } = &function.ty.kind else {
             unreachable!()
         };
-        if result.kind != Kind::Void {
-            require_scalar(result, function.site)?;
-        }
-        for param in &function.params {
-            require_scalar(&param.ty, param.name.unwrap().1)?;
-        }
-        let frame = self.layout(function)?;
+        let record_result = self.call_record(result, function.site)?;
+        self.layout(function)?;
+        let indirect_result = if record_result.is_some_and(abi::indirect_record) {
+            Some(self.frame_slot(Layout { size: 8, align: 8 }, function.site)?)
+        } else {
+            None
+        };
         self.flow_labels.clear();
         let epilogue = self.label();
         self.text.push('\n');
@@ -100,42 +105,52 @@ impl<'src> Emitter<'_, 'src> {
         writeln!(self.text, ".type {name}, @function\n{name}:").unwrap();
         self.text
             .push_str("    stp x29, x30, [sp, #-16]!\n    mov x29, sp\n");
-        self.adjust_stack("sub", frame);
+        let stack_adjustment = self.text.len();
+        if let Some(distance) = indirect_result {
+            self.offset_address("x9", "x29", -(distance as i64));
+            self.text.push_str("    str x8, [x9]\n");
+        }
 
         let mut slots = ArgumentSlots::default();
         for (index, param) in function.params.iter().enumerate() {
-            self.local_address(index, 0, "x10");
-            let register = match slots.next(&param.ty) {
-                ArgumentLocation::Register { index, .. } => index,
-                ArgumentLocation::Stack(offset) => {
-                    self.offset_address("x9", "x29", (FRAME_RECORD + offset) as i64);
-                    self.load(&param.ty, "x9");
-                    0
-                }
-            };
-            self.store_object(&param.ty, register, "x10");
+            let site = param.name.unwrap().1;
+            let record = self.call_record(&param.ty, site)?;
+            self.receive_parameter(index, &param.ty, record, slots.next(&param.ty, record));
         }
         self.statements(body, result, &epilogue)?;
+        // Record-valued calls in the body reserve fixed frame slots.
+        let tail = self.text.len();
+        self.adjust_stack("sub", self.frame.next_multiple_of(16));
+        let adjustment = self.text.split_off(tail);
+        self.text.insert_str(stack_adjustment, &adjustment);
         if function.linkage == Linkage::External
             && name == "main"
             && result.kind == Kind::Integer(Integer::Int)
         {
             self.text.push_str("    mov w0, #0\n");
         }
+        if let Some(layout) = record_result {
+            let leave = self.label();
+            writeln!(self.text, "    b {leave}\n{epilogue}:").unwrap();
+            self.return_record(layout, indirect_result);
+            writeln!(self.text, "{leave}:").unwrap();
+        } else {
+            writeln!(self.text, "{epilogue}:").unwrap();
+        }
         writeln!(
             self.text,
-            "{epilogue}:\n    mov sp, x29\n    ldp x29, x30, [sp], #16\n    ret\n.size {name}, . - {name}"
+            "    mov sp, x29\n    ldp x29, x30, [sp], #16\n    ret\n.size {name}, . - {name}"
         )
         .unwrap();
         Ok(())
     }
 
-    // Values use s0/d0 for float/double and x0 for addresses and integers
-    // extended according to their C type. Spill across recursive evaluation.
+    // Values use s0/d0 for float/double and x0 for addresses, record
+    // representations in memory and integers extended to their C type.
     fn value(&mut self, expr: &Expression<'src>) -> Result<(), Diagnostic> {
         match expr.ty.kind {
             Kind::Void | Kind::Array(..) | Kind::Function { .. } => {}
-            _ => require_scalar(&expr.ty, expr.position())?,
+            _ => require_value(&expr.ty, expr.position())?,
         }
         match &expr.kind {
             ExpressionKind::Integer(bits) => {
@@ -145,9 +160,10 @@ impl<'src> Emitter<'_, 'src> {
             ExpressionKind::Float(bits) => self.float_constant(&expr.ty, *bits as u64),
             ExpressionKind::String(_)
             | ExpressionKind::Identifier(_)
-            | ExpressionKind::Local(_) => {
+            | ExpressionKind::Local(_)
+            | ExpressionKind::Member { .. } => {
                 self.address(expr)?;
-                self.load(&expr.ty, "x0");
+                self.load_value(&expr.ty, expr.bit_field(), "x0");
             }
             ExpressionKind::Unary(op, operand) => self.unary(*op, operand, &expr.ty)?,
             ExpressionKind::Binary {
@@ -180,7 +196,6 @@ impl<'src> Emitter<'_, 'src> {
                 writeln!(self.text, "{end}:").unwrap();
             }
             ExpressionKind::ThreadLocal(_)
-            | ExpressionKind::Member { .. }
             | ExpressionKind::VaStart(_)
             | ExpressionKind::VaArg(_)
             | ExpressionKind::VaCopy { .. }
@@ -188,7 +203,7 @@ impl<'src> Emitter<'_, 'src> {
                 return Err(Diagnostic::new(expr.position(), DEFERRED_A4));
             }
             ExpressionKind::Call { callee, arguments } => {
-                self.call(callee, arguments)?;
+                self.call(callee, arguments, &expr.ty)?;
                 self.normalize(&expr.ty);
             }
         }
@@ -197,7 +212,7 @@ impl<'src> Emitter<'_, 'src> {
 
     fn converted(&mut self, expr: &Expression<'src>, dest: &Type) -> Result<(), Diagnostic> {
         if dest.kind != Kind::Void {
-            require_scalar(dest, expr.position())?;
+            require_value(dest, expr.position())?;
         }
         self.value(expr)?;
         self.convert(&expr.ty, dest);
@@ -400,6 +415,12 @@ impl<'src> Emitter<'_, 'src> {
             Kind::Float(precision) => ("ldr", float::prefix(precision)),
             Kind::Pointer(_) => ("ldr", 'x'),
             Kind::Array(..) | Kind::Function { .. } => return,
+            Kind::Record(_) => {
+                if address != "x0" {
+                    writeln!(self.text, "    mov x0, {address}").unwrap();
+                }
+                return;
+            }
             _ => unreachable!(),
         };
         writeln!(self.text, "    {op} {width}0, [{address}]").unwrap();
@@ -518,16 +539,16 @@ fn check_symbol(name: &str, site: &Position) -> Result<(), Diagnostic> {
     Ok(())
 }
 
-fn require_scalar(ty: &Type, site: &Position) -> Result<(), Diagnostic> {
+fn require_value(ty: &Type, site: &Position) -> Result<(), Diagnostic> {
     if matches!(
         ty.kind,
         Kind::Integer(_) | Kind::Pointer(_) | Kind::Float(_)
-    ) {
+    ) || matches!(ty.kind, Kind::Record(record) if record.layout.is_some()) {
         Ok(())
     } else {
         Err(Diagnostic::new(
             site,
-            "value is outside the AArch64 scalar subset",
+            "value is outside the supported AArch64 subset",
         ))
     }
 }

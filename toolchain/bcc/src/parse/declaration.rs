@@ -1,7 +1,7 @@
 //! N1570 6.7.6: declarator modifiers are ordered outward from the name.
 
 use super::*;
-use crate::types::{BitField, Layout, Member, RecordDefinition, RecordKind, RecordType};
+use crate::types::{BitField, BitFieldContainer, Layout, Member, RecordDefinition, RecordKind, RecordType};
 
 enum Modifier<'a> {
     Pointer(Qualifiers),
@@ -546,6 +546,8 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
         let mut align = 1;
         let mut members = Vec::new();
         let mut has_const_member = false;
+        let arm_containers = self.target == Target::Aarch64 && !packed;
+        let mut separate_locations = Vec::new();
         for Field {
             name,
             site,
@@ -564,9 +566,9 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
             };
             let (start, width, bit_field) = if let Some(width) = width {
                 let unit = (field.size * 8) as u128;
-                // psABI §3.1.2: ordinary fields must fit in an aligned
-                // unit of their declared type. Packed fields can straddle
-                // that boundary, but the zero-width separator still aligns.
+                // AMD64 psABI §3.1.2 and AAPCS64 §10.1.8.1 place ordinary
+                // fields within a container of their declared type. Our
+                // packed layout allows straddling and aligns zero-width fields.
                 let start = if width == 0 || !packed && start % unit + u128::from(width) > unit {
                     start.next_multiple_of(unit)
                 } else {
@@ -575,6 +577,10 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 let bit_field = BitField {
                     shift: (start % 8) as u8,
                     width,
+                    container: arm_containers.then_some(BitFieldContainer {
+                        back: (start % unit / 8) as u8,
+                        bytes: field.size as u8,
+                    }),
                 };
                 (start, u128::from(width), Some(bit_field))
             } else {
@@ -586,10 +592,15 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                 )
             };
             size_bits = size_bits.max(start + width);
+            if arm_containers && (bit_field.is_none() || width == 0) {
+                separate_locations.push((start, start + width));
+            }
+            // AAPCS64 §10.1.8 includes anonymous and zero-width fields in
+            // natural alignment. AMD64 uses only named members.
+            if !packed && (name.is_some() || arm_containers) {
+                align = align.max(field.align);
+            }
             if let Some(name) = name {
-                if !packed {
-                    align = align.max(field.align);
-                }
                 let offset = usize::try_from(start / 8)
                     .map_err(|_| site.error("record size exceeds the target address space"))?;
                 has_const_member |= ty.contains_const(&self.records);
@@ -599,6 +610,25 @@ impl<'a, I: Iterator<Item = &'a Lexeme>> Parser<'a, '_, I> {
                     offset,
                     bit_field,
                 });
+            }
+        }
+        // AAPCS64 §10.1.8.5 permits narrower accesses when the container
+        // crosses another C memory location. Preserve only usable containers.
+        for member in &mut members {
+            if let Some(bit_field) = &mut member.bit_field {
+                if let Some(container) = bit_field.container {
+                    let low = (member.offset - usize::from(container.back)) as u128 * 8;
+                    let high = low + u128::from(container.bytes) * 8;
+                    if separate_locations.iter().any(|&(start, end)| {
+                        if start == end {
+                            low < start && start < high
+                        } else {
+                            start < high && low < end
+                        }
+                    }) {
+                        bit_field.container = None;
+                    }
+                }
             }
         }
         let size = usize::try_from(size_bits.div_ceil(8))
