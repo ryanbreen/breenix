@@ -16,6 +16,11 @@ fn bitfields_and_packed_bcc_to_clang() {
     run_harness("aggregates.py", &["bitfields", "packed"]);
 }
 
+#[test]
+fn va_arg_after_gp_exhaustion() {
+    run_harness("varargs.py", &[]);
+}
+
 fn run_harness(script: &str, args: &[&str]) {
     let toolchain = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let bcc = Path::new(env!("CARGO_BIN_EXE_bcc"));
