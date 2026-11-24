@@ -115,6 +115,24 @@ class CxxRuntimeTest(unittest.TestCase):
         self.assertTrue(sources)
         self.assertEqual('\n'.join(failures), '')
 
+    def test_runtime_diagnostics_match_record(self):
+        import cxx_runtime
+
+        llvm = cxx_runtime.default_llvm().resolve()
+        runs = Path(os.environ.get('BREENIX_CXX_RUNTIME_BUILDS', ROOT / 'build/cxx-runtime'))
+        for arch in ('x86_64', 'aarch64'):
+            with self.subTest(arch=arch):
+                expected = json.loads((ROOT / f'toolchain/rust-host/k3/{arch}.json').read_text())
+                run = (runs / arch).resolve()
+                observed = json.loads((run / 'record.json').read_text())
+                self.assertEqual(observed['clang++'], expected['clang++'])
+                for stage in ('configure', 'build'):
+                    warnings = cxx_runtime.diagnostics_from_log(run / f'{stage}.log', run, llvm)
+                    for warning in warnings:
+                        self.assertTrue(cxx_runtime.is_upstream_warning(warning), warning)
+                    self.assertEqual(warnings, expected[stage]['warnings'], f'{arch} {stage}')
+                    self.assertEqual(warnings, observed[stage]['warnings'], f'{arch} {stage}')
+
     def test_configure_follows_ruling_86(self):
         import json
         import cxx_runtime
