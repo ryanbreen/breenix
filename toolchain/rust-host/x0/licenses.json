@@ -1,0 +1,43 @@
+{
+  "rustc": {
+    "spdx": "MIT OR Apache-2.0",
+    "license_file": [
+      "https://github.com/rust-lang/rust/blob/666252fd61839b9e9b1bc9e777a0c84c5cf3dc6d/LICENSE-MIT",
+      "https://github.com/rust-lang/rust/blob/666252fd61839b9e9b1bc9e777a0c84c5cf3dc6d/LICENSE-APACHE"
+    ],
+    "recorded_at": "2026-11-24T04:34:43.553404+00:00"
+  },
+  "cargo": {
+    "spdx": "MIT OR Apache-2.0",
+    "license_file": [
+      "https://github.com/rust-lang/cargo/blob/84709f085062cbf3c51fa507527c1b2334015178/LICENSE-MIT",
+      "https://github.com/rust-lang/cargo/blob/84709f085062cbf3c51fa507527c1b2334015178/LICENSE-APACHE"
+    ],
+    "recorded_at": "2026-11-24T04:34:43.553404+00:00"
+  },
+  "LLVM": {
+    "spdx": "Apache-2.0 WITH LLVM-exception",
+    "license_file": "https://github.com/llvm/llvm-project/blob/ed6566573eb21b00a3f87815e14ff766fd56ef42/llvm/LICENSE.TXT",
+    "recorded_at": "2026-11-24T04:34:43.553404+00:00"
+  },
+  "libc++": {
+    "spdx": "Apache-2.0 WITH LLVM-exception",
+    "license_file": "https://github.com/llvm/llvm-project/blob/ed6566573eb21b00a3f87815e14ff766fd56ef42/libcxx/LICENSE.TXT",
+    "recorded_at": "2026-11-24T04:34:43.553404+00:00"
+  },
+  "libc++abi": {
+    "spdx": "Apache-2.0 WITH LLVM-exception",
+    "license_file": "https://github.com/llvm/llvm-project/blob/ed6566573eb21b00a3f87815e14ff766fd56ef42/libcxxabi/LICENSE.TXT",
+    "recorded_at": "2026-11-24T04:34:43.553404+00:00"
+  },
+  "libunwind": {
+    "spdx": "Apache-2.0 WITH LLVM-exception",
+    "license_file": "https://github.com/llvm/llvm-project/blob/ed6566573eb21b00a3f87815e14ff766fd56ef42/libunwind/LICENSE.TXT",
+    "recorded_at": "2026-11-24T04:34:43.553404+00:00"
+  },
+  "compiler-rt": {
+    "spdx": "Apache-2.0 WITH LLVM-exception",
+    "license_file": "https://github.com/llvm/llvm-project/blob/ed6566573eb21b00a3f87815e14ff766fd56ef42/compiler-rt/LICENSE.TXT",
+    "recorded_at": "2026-11-24T04:34:43.553404+00:00"
+  }
+}
