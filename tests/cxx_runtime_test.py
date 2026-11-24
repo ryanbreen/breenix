@@ -1,6 +1,7 @@
 """K3 runtime archive checks (the symbol closure remains a milestone gate)."""
 import json
 import os
+import re
 import sys
 import subprocess
 import tempfile
@@ -10,6 +11,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts/rust-host'))
 from x0_runtime import llvm_tool, symbols
+
+HEADER_TREE = Path('libs/libbreenix-libc/include')
+HEADER_BASE = '5f7bff4e8b48178b0f4b84e57a567a2f8e4d3171'
 
 
 class CxxRuntimeTest(unittest.TestCase):
@@ -45,6 +49,71 @@ class CxxRuntimeTest(unittest.TestCase):
                     self.assertEqual(cxx_runtime.digest(notice), record['archives'][name]['notice_sha256'])
                 self.assertFalse(list((run / 'build').rglob('*.so')))
         self.assertEqual(cxx_runtime.verify_llvm(ROOT, llvm), pin)
+
+    def test_header_changes_keep_c_objects_identical(self):
+        paths = subprocess.check_output(
+            ['git', 'ls-files', '-z', '--', 'toolchain/corpus/*.c', 'userspace/*.c'],
+            cwd=ROOT, text=True,
+        ).split('\0')
+        # Constraint inputs have their own diagnostics and cannot emit objects.
+        sources = [Path(path) for path in paths if path and '/constraints/' not in path
+                   and path != 'toolchain/corpus/c-core/diagnostic.c']
+        clang = os.environ.get('BREENIX_TOOLCHAIN_CLANG', '/opt/homebrew/opt/llvm/bin/clang')
+        resource = subprocess.check_output([clang, '-print-resource-dir'], text=True).strip()
+        env = dict(os.environ)
+        for name in ('CPATH', 'C_INCLUDE_PATH'):
+            env.pop(name, None)
+
+        failures = []
+        with tempfile.TemporaryDirectory(prefix='breenix-k3-headers-') as temp:
+            scratch = Path(temp)
+            tar = scratch / 'base.tar'
+            subprocess.run(['git', 'archive', '-o', tar, HEADER_BASE, HEADER_TREE],
+                           cwd=ROOT, check=True)
+            subprocess.run(['tar', '-xf', tar, '-C', scratch], check=True)
+            for arch, arch_flag in (('x86_64', '-mno-red-zone'),
+                                   ('aarch64', '-mno-outline-atomics')):
+                for source in sources:
+                    objects = []
+                    diagnostics = []
+                    flags = []
+                    if source == Path('toolchain/corpus/c11/atomics.c'):
+                        flags.append('-D_POSIX_C_SOURCE=200809L')
+                    if source == Path('toolchain/corpus/c11/profile-macros.c'):
+                        # This header-free fixture checks bcc's advertised C11 profile.
+                        flags.extend(['-D__STDC_NO_VLA__=1', '-D__STDC_NO_COMPLEX__=1',
+                                      '-D__STDC_NO_THREADS__=1', '-U__STDC_IEC_559_COMPLEX__'])
+                    for label, headers in (('base', scratch / HEADER_TREE),
+                                           ('candidate', ROOT / HEADER_TREE)):
+                        obj = scratch / f'{label}.o'
+                        obj.unlink(missing_ok=True)
+                        support = (ROOT / 'toolchain/include' if source.parts[0] == 'toolchain'
+                                   else Path(resource) / 'include')
+                        result = subprocess.run(
+                            ['taskpolicy', '-b', clang, '--no-default-config',
+                             f'--target={arch}-unknown-linux-gnu', arch_flag,
+                             '-Ulinux', '-U__linux', '-U__linux__', '-U__gnu_linux__', '-D__breenix__=1',
+                             '-std=c17', '-O2', '-fno-builtin', '-frounding-math', *flags,
+                             '-fno-stack-protector', '-fno-pic', '-fno-pie',
+                             '-nostdinc', '-isystem', headers, '-isystem', support,
+                             f'-ffile-prefix-map={headers}=/breenix-include',
+                             '-c', source, '-o', obj],
+                            cwd=ROOT, env=env, capture_output=True, text=True, timeout=10,
+                        )
+                        if result.returncode:
+                            failures.append(f'{arch} {source} ({label}): {result.stderr.strip()}')
+                        else:
+                            objects.append(obj.read_bytes())
+                        diagnostics.append(result.stderr.replace(str(headers), '<headers>'))
+                        if re.search(r'^<headers>/.*: warning:', diagnostics[-1], re.M):
+                            failures.append(f'{arch} {source} ({label}): {diagnostics[-1].strip()}')
+                    if len(objects) == 2 and objects[0] != objects[1]:
+                        failures.append(f'{arch} {source}: object bytes differ')
+                    if diagnostics[0] != diagnostics[1]:
+                        failures.append(f'{arch} {source}: diagnostics differ\n'
+                                        f'base: {diagnostics[0]}candidate: {diagnostics[1]}')
+        self.assertTrue(sources)
+        self.assertEqual('\n'.join(failures), '')
 
     def test_configure_follows_ruling_86(self):
         import json
