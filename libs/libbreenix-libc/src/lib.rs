@@ -32,6 +32,7 @@
 
 mod crypt;
 mod crt;
+mod lifecycle;
 mod setjmp;
 mod grp;
 mod libgen;

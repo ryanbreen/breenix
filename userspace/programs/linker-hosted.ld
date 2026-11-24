@@ -53,25 +53,32 @@ SECTIONS {
 
     /* ELF gABI Table 3.8. KEEP preserves startup entries through GC,
      * and PROVIDE_HIDDEN exposes their bounds only to the static link
-     * (GNU ld §§3.6.4.4 and 3.5.4). */
+     * (GNU ld §§3.6.4.4 and 3.5.4). The CRT references private aliases
+     * so bounds synthesized by the linker do not opt ordinary links in. */
     .preinit_array : {
         PROVIDE_HIDDEN(__preinit_array_start = .);
+        PROVIDE_HIDDEN(__breenix_preinit_array_start = __preinit_array_start);
         KEEP(*(.preinit_array .preinit_array.*))
         PROVIDE_HIDDEN(__preinit_array_end = .);
+        PROVIDE_HIDDEN(__breenix_preinit_array_end = __preinit_array_end);
     } :data
 
     .init_array : {
         PROVIDE_HIDDEN(__init_array_start = .);
+        PROVIDE_HIDDEN(__breenix_init_array_start = __init_array_start);
         KEEP(*(SORT_BY_INIT_PRIORITY(.init_array.*)))
         KEEP(*(.init_array))
         PROVIDE_HIDDEN(__init_array_end = .);
+        PROVIDE_HIDDEN(__breenix_init_array_end = __init_array_end);
     } :data
 
     .fini_array : {
         PROVIDE_HIDDEN(__fini_array_start = .);
+        PROVIDE_HIDDEN(__breenix_fini_array_start = __fini_array_start);
         KEEP(*(SORT_BY_INIT_PRIORITY(.fini_array.*)))
         KEEP(*(.fini_array))
         PROVIDE_HIDDEN(__fini_array_end = .);
+        PROVIDE_HIDDEN(__breenix_fini_array_end = __fini_array_end);
     } :data
 
     /* Thread-local storage template, ahead of .bss so .bss stays out of the

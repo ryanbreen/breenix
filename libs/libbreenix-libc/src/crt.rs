@@ -1,10 +1,59 @@
 //! Process entry: `_start` takes argc, argv and envp from the initial stack, sets
-//! `environ`, records the auxiliary vector, starts the thread runtime and calls
-//! `main(argc, argv, envp)`.
+//! `environ`, records the auxiliary vector, starts the thread runtime, runs the
+//! ELF initialization arrays and calls `main(argc, argv, envp)`.
 
 use crate::env::environ;
+use crate::lifecycle::{run_main, ArrayEntry};
 use crate::{exit, pthread};
 use core::sync::atomic::{AtomicPtr, Ordering};
+
+// Only linker-hosted.ld provides these private aliases. LLD can synthesize
+// the conventional names for ordinary links, too. These weak references
+// leave ordinary programs' arrays empty even if the ELF has orphan sections.
+core::arch::global_asm!(
+    ".pushsection .rodata.breenix_array_bounds,\"a\"",
+    ".p2align 3",
+    ".globl __breenix_array_bounds",
+    ".hidden __breenix_array_bounds",
+    "__breenix_array_bounds:",
+    ".weak __breenix_preinit_array_start",
+    ".weak __breenix_preinit_array_end",
+    ".weak __breenix_init_array_start",
+    ".weak __breenix_init_array_end",
+    ".weak __breenix_fini_array_start",
+    ".weak __breenix_fini_array_end",
+    ".quad __breenix_preinit_array_start, __breenix_preinit_array_end",
+    ".quad __breenix_init_array_start, __breenix_init_array_end",
+    ".quad __breenix_fini_array_start, __breenix_fini_array_end",
+    ".popsection",
+);
+
+#[repr(C)]
+struct ArrayBounds {
+    start: *const ArrayEntry,
+    end: *const ArrayEntry,
+}
+
+extern "C" {
+    static __breenix_array_bounds: [ArrayBounds; 3];
+}
+
+impl ArrayBounds {
+    fn entries(&self) -> &'static [ArrayEntry] {
+        if self.start.is_null() || self.end.addr() <= self.start.addr() {
+            return &[];
+        }
+        let count = (self.end.addr() - self.start.addr()) / core::mem::size_of::<ArrayEntry>();
+        // SAFETY: the linker places these symbols around a contiguous and
+        // aligned array of function pointers in the loaded image.
+        unsafe { core::slice::from_raw_parts(self.start, count) }
+    }
+}
+
+pub(crate) fn fini_array() -> &'static [ArrayEntry] {
+    // SAFETY: the static declaration describes the three pairs in the table.
+    unsafe { __breenix_array_bounds[2].entries() }
+}
 
 /// The auxiliary vector the kernel placed after the environment's NULL: pairs of
 /// (type, value) ending with type 0 (AT_NULL). Null before `_start` has run.
@@ -116,7 +165,10 @@ extern "C" fn _start_rust(sp: *const u64) -> ! {
         extern "C" {
             fn main(argc: i32, argv: *const *const u8, envp: *const *const u8) -> i32;
         }
-        let ret = main(argc as i32, argv, envp);
+        let [preinit, init, _] = &__breenix_array_bounds;
+        let ret = run_main(preinit.entries(), init.entries(), || {
+            main(argc as i32, argv, envp)
+        });
         exit(ret);
     }
 }
