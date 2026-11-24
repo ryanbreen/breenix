@@ -38,11 +38,25 @@ The C object check compares the corpus and userspace inputs against the
 pre-unit headers. Constraint diagnostics have their own corpus fixtures.
 
 Use the matching build's generated headers to compile a C++ workload object.
-Staging the hosted probes and running them in the guest are later K3 units.
 
 ```sh
 scripts/workload-cxx --arch x86_64 --runtime-build "$BREENIX_CXX_RUNTIME_BUILDS/x86_64/build" -- -std=c++23 probe.cpp -o probe.o
 ```
+
+Build and inspect the three hosted C++ probes with those same runtime builds.
+The executables and link maps go to `userspace/programs/target/cxx-runtime/<arch>/`.
+The build uses the pinned Rust toolchain's `ld.lld` and freshly selects the
+C-ABI libc build's `compiler_builtins` artifact from Cargo's output.
+
+```sh
+taskpolicy -b userspace/programs/build.sh --arch x86_64 --cxx-runtime
+taskpolicy -b userspace/programs/build.sh --arch aarch64 --cxx-runtime
+python3 tests/cxx_runtime_probe_test.py
+```
+
+Each probe takes the pipe's write descriptor as its sole argument. The reader
+expects the exact byte stream in `userspace/programs/cxx/expect.json` and exit
+status 0. The build leaves guest staging and execution to the later K3 units.
 
 Run the hosted link check with `BREENIX_CXX_RUNTIME_BUILDS` set as above and
 `BREENIX_CXX_RUNTIME_ROOT` pointing to one subdirectory per architecture,
@@ -66,5 +80,5 @@ likewise claimed `libc++.a`. The Breenix platform module gives the shared
 targets distinct `.so` names. The script requests only static targets and
 stages only the two named archives.
 
-The AArch64 runtime build is host-only. ARM guest linking and the
-`cxx-runtime` cases still need guest evidence.
+The AArch64 runtime and probe links are cross-builds. ARM image staging
+and execution of the three `cxx-runtime` cases remain pending.
