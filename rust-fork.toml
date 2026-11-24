@@ -7,5 +7,5 @@ rust = "1.90.0"
 
 # Hosted targets opt in to bunwind. Ordinary targets retain the same std source bytes.
 [hosted]
-branch = "rust-std/e25-k2"
+branch = "breenix-target"
 commit = "a763a7dd70cc6bc97736aca5eabaf867b36477bf"
