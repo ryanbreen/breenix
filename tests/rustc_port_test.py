@@ -25,7 +25,7 @@ class RustcPort(unittest.TestCase):
         base = json.loads((RECORDS / '2.json').read_text())
         config = tomllib.loads(record['bootstrap_toml'])
         self.assertEqual(config['build'], tomllib.loads(base['bootstrap_toml'])['build'])
-        self.assertEqual(record['command'][4:9], ['python3', 'x.py', 'build', '--stage', '1'])
+        self.assertEqual(record['command'][5:10], ['python3', 'x.py', 'build', '--stage', '1'])
         target = Path(config['build']['host'][0]).stem
         llvm = record['llvm_config']
         self.assertEqual(config['target'][target]['llvm-config'], llvm['path'])
@@ -47,9 +47,9 @@ class RustcPort(unittest.TestCase):
         config = tomllib.loads(record['bootstrap_toml'])
         self.assertEqual(config['build'], tomllib.loads(base['bootstrap_toml'])['build'])
         rustc, cargo = record['runs']
-        self.assertEqual(rustc['command'][4:7], ['python3', 'x.py', 'check'])
+        self.assertEqual(rustc['command'][5:8], ['python3', 'x.py', 'check'])
         self.assertIn('compiler/rustc', rustc['command'])
-        self.assertEqual(cargo['command'][5:10],
+        self.assertEqual(cargo['command'][6:11],
                          ['check', '-Z', 'build-std', '--target', config['build']['host'][0]])
         self.assertTrue(cargo['working_directory'].endswith('/src/tools/cargo'))
         self.assertEqual(record['time'], rustc['started'])
