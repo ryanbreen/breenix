@@ -6,6 +6,8 @@ import os
 import re
 import shlex
 import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 from cxx_runtime import (ARCHES, BACKGROUND, CLANGXX, LLVM_BIN, POSIX_FLAG,
@@ -13,11 +15,47 @@ from cxx_runtime import (ARCHES, BACKGROUND, CLANGXX, LLVM_BIN, POSIX_FLAG,
 
 ROOT = Path(__file__).resolve().parents[2]
 RECORDS = ROOT / 'toolchain/rust-host/k4'
+SUPPORT_PATCH = RECORDS / 'patches/llvm-support-breenix.patch'
+PLATFORM_MACRO = '__breenix__'
+LOCALITY_LIMITATION = (
+    'statvfs f_flag has no locality flag and procfs lists daemon mounts as ufs; '
+    'LLVM reports these filesystems as local.'
+)
 
 
 def bootstrap_targets(root):
     text = (root / 'rust-fork/bootstrap.example.toml').read_text()
     return re.search(r'^#llvm\.targets = "([^"]+)"$', text, re.MULTILINE).group(1)
+
+
+def prepare_support_source(llvm, run):
+    source = run / 'source'
+    patch_digest = digest(SUPPORT_PATCH)
+    stamp = source / '.breenix-patch-sha256'
+    if stamp.is_file() and stamp.read_text().strip() == patch_digest:
+        return source
+    with tempfile.TemporaryDirectory(dir=run) as temp:
+        pending = Path(temp) / 'source'
+        pending.mkdir()
+        for entry in llvm.iterdir():
+            if entry.name == 'llvm':
+                subprocess.run(['cp', '-cR', entry, pending / entry.name], check=True)
+            elif not entry.name.startswith('.'):
+                (pending / entry.name).symlink_to(entry)
+        subprocess.run(['git', 'apply', '--no-index', '--unidiff-zero', SUPPORT_PATCH],
+                       cwd=pending, check=True)
+        (pending / stamp.name).write_text(patch_digest + '\n')
+        if source.exists():
+            source.rename(Path(temp) / 'previous')
+        pending.rename(source)
+    return source
+
+
+def pinned_status(llvm):
+    status = output('git', '-C', llvm, 'status', '--porcelain', '-uall')
+    if status:
+        raise ValueError(f'pinned LLVM source became dirty:\n{status}')
+    return status
 
 
 def compile_targets(directory):
@@ -49,6 +87,12 @@ def compile_llvm(arch, run, llvm, pin, targets):
     if (configure['exit_status'] or configure['first_error'] is not None
             or digest(run / 'configure.log') != configure['log_sha256']):
         raise ValueError('u1 cross configuration did not pass or its log changed')
+    patch_digest = digest(SUPPORT_PATCH)
+    if record.get('support_patch', {}).get('sha256') != patch_digest:
+        raise ValueError('cross configuration must use the current LLVM Support patch')
+    stamp = run / 'source/.breenix-patch-sha256'
+    if stamp.read_text().strip() != patch_digest:
+        raise ValueError('build-local LLVM sources must match the configured patch')
 
     directory = run / 'build'
     archives, objects = compile_targets(directory)
@@ -56,7 +100,11 @@ def compile_llvm(arch, run, llvm, pin, targets):
     allowlist = expected.get('build', {}).get('allowlist', {})
     command = (*BACKGROUND, 'cmake', '--build', str(directory), '--parallel', '4',
                '--target', *archives, *objects)
-    stage = run_stage('build', command, run, llvm, timeout=10800, allowlist=allowlist)
+    record['pinned_llvm_status'] = {'before': pinned_status(llvm)}
+    try:
+        stage = run_stage('build', command, run, llvm, timeout=10800, allowlist=allowlist)
+    finally:
+        record['pinned_llvm_status']['after'] = pinned_status(llvm)
     stage['allowlist'] = allowlist
     record['build'] = stage
     record.pop('archives', None)
@@ -102,7 +150,12 @@ def main():
               'clang++': {'path': CLANGXX, 'version': output(CLANGXX, '--version').splitlines()[0]},
               'native_allowlist': allowed}
     def stage(name, command, timeout=55, allowlist=None):
-        result = run_stage(name, command, run, llvm, timeout=timeout, allowlist=allowlist)
+        before = pinned_status(llvm)
+        try:
+            result = run_stage(name, command, run, llvm, timeout=timeout, allowlist=allowlist)
+        finally:
+            after = pinned_status(llvm)
+        result['pinned_llvm_status'] = {'before': before, 'after': after}
         result['allowlist'] = allowlist or {}
         record[name] = result
         (run / 'record.json').write_text(json.dumps(record, indent=2) + '\n')
@@ -132,11 +185,16 @@ def main():
     if not (headers / '__config_site').is_file():
         raise ValueError(f'missing K3 configured C++ headers: {headers}')
     flags = shlex.join(('-nostdlibinc', '-isystem', str(ROOT / 'libs/libbreenix-libc/include'), POSIX_FLAG))
+    # wait4 and usleep are already available under Breenix's extension visibility.
     cxxflags = shlex.join(('-nostdlibinc', '-nostdinc++', '-isystem', str(headers),
                             '-isystem', str(ROOT / 'libs/libbreenix-libc/include'), POSIX_FLAG,
-                            '-D__breenix__=1'))
+                            f'-D{PLATFORM_MACRO}=1', '-D_DEFAULT_SOURCE'))
     triple = f'{args.arch}-unknown-none'
-    command = (*BACKGROUND, 'cmake', '-G', 'Ninja', '-S', str(llvm / 'llvm'), '-B', str(run / 'build'),
+    source = prepare_support_source(llvm, run)
+    record['support_patch'] = {'sha256': digest(SUPPORT_PATCH), 'text': SUPPORT_PATCH.read_text(),
+                               'target_macro': PLATFORM_MACRO, 'locality_limitation': LOCALITY_LIMITATION}
+    build_dir = run / 'build'
+    command = (*BACKGROUND, 'cmake', '-G', 'Ninja', '-S', str(source / 'llvm'), '-B', str(build_dir),
                '-DCMAKE_SYSTEM_NAME=Breenix', f'-DCMAKE_MODULE_PATH={ROOT / "toolchain/cmake"}',
                f'-DCMAKE_SYSTEM_PROCESSOR={args.arch}', '-DCMAKE_BUILD_TYPE=Release',
                '-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY', '-DCMAKE_C_COMPILER=/usr/bin/clang',
@@ -148,10 +206,18 @@ def main():
                f'-DLLVM_NATIVE_TOOL_DIR={native / "bin"}', '-DLLVM_ENABLE_THREADS=ON',
                '-DBUILD_SHARED_LIBS=OFF', '-DLLVM_BUILD_LLVM_DYLIB=OFF',
                '-DLLVM_LINK_LLVM_DYLIB=OFF', *common)
+    cache = build_dir / 'CMakeCache.txt'
+    if cache.exists() and f'CMAKE_HOME_DIRECTORY:INTERNAL={source / "llvm"}\n' not in cache.read_text():
+        # Reconfigure the u1 build directory once when its source moves to the private copy.
+        command += ('--fresh',)
     if args.resume:
         # Re-run the cached header probe after a Breenix sysroot update.
         command += ('-U', 'HAVE_SYSEXITS_H')
-    stage('configure', command, allowlist=allowed['upstream cmake'])
+    cross_cmake_allowlist = {
+        warning.replace('<llvm-project>', '<scratch>/source'): count
+        for warning, count in allowed['upstream cmake'].items()
+    }
+    stage('configure', command, timeout=1800, allowlist=cross_cmake_allowlist)
     verify_llvm(ROOT, llvm)
 
 

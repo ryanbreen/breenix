@@ -17,9 +17,14 @@ its native tools. The per-stage diagnostics and exact allowlists include the
 host linker probe, host archiver warning, and CMake warnings; they remain in the
 original logs. The default timeout for earlier callers remains 55 seconds.
 
-The x86-64 build record stops at LLVM's `GetMainExecutable` platform error.
-A targeted compile reproduces it on ARM64, whose record covers configuration.
-The archive inventory, executable links, and guest cases remain pending.
+The cross builds apply ruling 96's Support patch to a private copy of the LLVM
+source. It uses the u1 C++ configuration's existing `__breenix__` define.
+`getMainExecutable` reads `/proc/self/exe` through POSIX `readlink`.
+The locality check reports local because POSIX `statvfs.f_flag` has no locality
+bit and Breenix's mount listing identifies daemon mounts as `ufs`.
+The build record includes the full patch, its digest, and the pinned checkout
+status before and after compilation. The C++ flags enable Breenix's existing
+`wait4` and `usleep` declarations with `_DEFAULT_SOURCE`.
 
 ## Ordinary userspace parity
 
