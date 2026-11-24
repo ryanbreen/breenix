@@ -8,6 +8,7 @@ typedef __breenix_wctrans_t wctrans_t;
 #ifndef WEOF
 #define WEOF ((wint_t)-1)
 #endif
+__BREENIX_BEGIN_DECLS
 int iswalnum(wint_t);
 int iswalpha(wint_t);
 int iswblank(wint_t);
@@ -47,4 +48,5 @@ int iswctype_l(wint_t, wctype_t, locale_t);
 wctrans_t wctrans_l(const char *, locale_t);
 wint_t towctrans_l(wint_t, wctrans_t, locale_t);
 #endif
+__BREENIX_END_DECLS
 #endif

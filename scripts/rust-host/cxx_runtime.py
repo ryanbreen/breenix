@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Configure and build the pinned, unmodified K3 C++ runtime workloads."""
+"""Configure and build the pinned K3 C++ runtimes with the Breenix locale adapter."""
 import argparse
 import json
 import os
 import re
 import shlex
 import shutil
+import subprocess
 import tomllib
 import time
 from datetime import datetime, timezone
@@ -19,6 +20,8 @@ ARCHES = ('x86_64', 'aarch64')
 CLANGXX = '/usr/bin/clang++'
 LLVM_BIN = Path('/opt/homebrew/opt/llvm/bin')
 POSIX_FLAG = '-D_POSIX_C_SOURCE=200809L'  # POSIX.1-2024 section 2.2.1.
+LOCALE_PATCH = ROOT / 'toolchain/rust-host/k3/patches/libcxx-breenix-locale.patch'
+LOCALE_HEADER = Path('__locale_dir/locale_base_api/breenix.h')
 CMAKE_WARNING = re.compile(r'^CMake (?:Deprecation )?Warning\b')
 COMPILER_WARNING = re.compile(r'^.*\bwarning:')
 
@@ -35,11 +38,23 @@ def verify_llvm(root, llvm):
     return pin
 
 
+def prepare_runtime_source(llvm, scratch):
+    source = scratch / 'source'
+    source.mkdir()
+    for entry in llvm.iterdir():
+        if entry.name in ('libcxx', 'runtimes'):
+            shutil.copytree(entry, source / entry.name, symlinks=True)
+        elif not entry.name.startswith('.'):
+            (source / entry.name).symlink_to(entry)
+    subprocess.run(['git', 'apply', '--no-index', LOCALE_PATCH], cwd=source, check=True)
+    return source
+
+
 def configure_command(root, llvm, directory, arch):
     if arch not in ARCHES:
         raise ValueError(f'unsupported architecture: {arch}')
     flags = shlex.join(('-nostdlibinc', '-isystem', str(root / 'libs/libbreenix-libc/include'),
-                        POSIX_FLAG))
+                        POSIX_FLAG, '-D__breenix__=1'))
     triple = f'{arch}-unknown-none'
     return (*BACKGROUND, 'cmake', '-G', 'Ninja', '-S', str(llvm / 'runtimes'), '-B', str(directory),
             '-DCMAKE_SYSTEM_NAME=Breenix', f'-DCMAKE_MODULE_PATH={root / "toolchain/cmake"}',
@@ -51,7 +66,7 @@ def configure_command(root, llvm, directory, arch):
             f'-DCMAKE_CXX_COMPILER_TARGET={triple}', f'-DCMAKE_ASM_COMPILER_TARGET={triple}',
             f'-DCMAKE_C_FLAGS={flags}', f'-DCMAKE_CXX_FLAGS={flags}',
             '-DLLVM_ENABLE_RUNTIMES=libcxx;libcxxabi', '-DLLVM_INCLUDE_TESTS=OFF',
-            '-DLIBCXX_CXX_ABI=libcxxabi', '-DLIBCXX_ENABLE_LOCALIZATION=OFF',
+            '-DLIBCXX_CXX_ABI=libcxxabi', '-DLIBCXX_ENABLE_LOCALIZATION=ON',
             '-DLIBCXX_ENABLE_FILESYSTEM=OFF',
             '-DLIBCXX_ENABLE_THREADS=ON', '-DTHREADS_PREFER_PTHREAD_FLAG=ON',
             '-DLIBCXX_HAS_PTHREAD_API=ON', '-DLIBCXXABI_HAS_PTHREAD_API=ON',
@@ -88,10 +103,27 @@ def diagnostics_from_log(log, scratch, llvm):
 
 def is_upstream_warning(warning):
     location = warning.splitlines()[0]
+    if str(LOCALE_HEADER) in location:
+        return False
     if CMAKE_WARNING.match(location):
         return '<repo>' not in location
     return location.startswith(('<llvm-project>/libcxx/', '<llvm-project>/libcxxabi/',
+                                '<scratch>/source/libcxx/', '<scratch>/source/libcxxabi/',
                                 '<scratch>/build/include/c++/v1/'))
+
+
+def use_explicit_link_inputs(archive):
+    # The workload emits ELF directives for separate pthread and rt libraries.
+    # Both APIs come from the explicit Breenix libc.a link input.
+    dump = subprocess.run([LLVM_BIN / 'llvm-readelf', '--string-dump=.deplibs', archive],
+                          check=True, capture_output=True, text=True).stdout
+    names = sorted(set(re.findall(r'^\[\s*\d+\] (.*)$', dump, re.MULTILINE)))
+    if set(names) - {'pthread', 'rt'}:
+        raise ValueError(f'{archive.name}: unexpected implicit link inputs: {names}')
+    if names:
+        subprocess.run([*BACKGROUND, LLVM_BIN / 'llvm-objcopy', '--remove-section=.deplibs',
+                        archive], check=True)
+    return names
 
 
 def run_stage(name, command, scratch, llvm, *, timeout=55, allowlist=None):
@@ -145,27 +177,36 @@ def main():
     pin = verify_llvm(ROOT, llvm)
     scratch = args.scratch.resolve()
     scratch.mkdir(parents=True, exist_ok=False)
+    source = prepare_runtime_source(llvm, scratch)
     directory = scratch / 'build'
     clangxx = {'path': CLANGXX, 'version': output(CLANGXX, '--version').splitlines()[0]}
     expected = json.loads((ROOT / f'toolchain/rust-host/k3/{args.arch}.json').read_text())
-    configure = run_stage('configure', configure_command(ROOT, llvm, directory, args.arch), scratch, llvm,
+    configure = run_stage('configure', configure_command(ROOT, source, directory, args.arch), scratch, llvm,
                           allowlist=expected['configure']['warnings'])
     built = None
     archives = {}
     if configure['exit_status'] == 0:
+        # The pinned generated-header list does not know about this local overlay.
+        header = directory / 'include/c++/v1' / LOCALE_HEADER
+        header.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source / 'libcxx/include' / LOCALE_HEADER, header)
         built = run_stage('build', (*BACKGROUND, 'cmake', '--build', str(directory), '--parallel', '4',
                                     '--target', 'cxx_static', 'cxxabi_static'), scratch, llvm,
-                          allowlist=expected['build']['warnings'])
+                          timeout=1800, allowlist=expected['build']['warnings'])
         if built['exit_status'] == 0:
             for name, component in (('libc++.a', 'libcxx'), ('libc++abi.a', 'libcxxabi')):
                 archive, = directory.rglob(name)
+                input_sha256 = digest(archive)
+                redirected = use_explicit_link_inputs(archive)
                 notices = archive.parent / (name + '.LICENSE.TXT')
                 shutil.copyfile(llvm / component / 'LICENSE.TXT', notices)
-                archives[name] = {'sha256': digest(archive), 'notice_sha256': digest(notices)}
+                archives[name] = {'sha256': digest(archive), 'notice_sha256': digest(notices),
+                                  'input_sha256': input_sha256, 'provided_by_libc': redirected}
     verify_llvm(ROOT, llvm)
     record = {'claim-lint:ok': 'claim-lint:ok: compiler target triples, see toolchain/rust-host/k3/README.md',
               'arch': args.arch, 'llvm_project': pin, 'clang++': clangxx, 'configure': configure,
               'build': built, 'archives': archives,
+              'locale_patch': {'sha256': digest(LOCALE_PATCH), 'text': LOCALE_PATCH.read_text()},
               'generic_collision_targets': ['cxxabi_shared', 'cxxabi_static']}
     args.record.parent.mkdir(parents=True, exist_ok=True)
     args.record.write_text(json.dumps(record, indent=2) + '\n')

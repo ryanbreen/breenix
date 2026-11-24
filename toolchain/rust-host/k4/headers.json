@@ -11,5 +11,34 @@
     "specification": "LSB Core Generic 5.0",
     "section": "14.4.96, sysexits.h",
     "step": "25.8d K4 u2"
+  },
+  {
+    "header": "libs/libbreenix-libc/include/time.h",
+    "declaration": "strftime_l",
+    "specification": "POSIX.1-2024",
+    "section": "System Interfaces, strftime; Base Definitions, <time.h>",
+    "step": "25.8d K4 u2"
+  },
+  {
+    "header": "libs/libbreenix-libc/include/locale.h",
+    "specification": "C17 and POSIX.1-2024",
+    "section": "C17 7.11; POSIX Base Definitions, <locale.h>",
+    "step": "25.8d K4 u2",
+    "note": "Give the existing declarations C linkage in C++ workloads."
+  },
+  {
+    "header": "libs/libbreenix-libc/include/wctype.h",
+    "specification": "C17 and POSIX.1-2024",
+    "section": "C17 7.30; POSIX Base Definitions, <wctype.h>",
+    "step": "25.8d K4 u2",
+    "note": "Give the existing declarations C linkage in C++ workloads."
+  },
+  {
+    "header": "libs/libbreenix-libc/include/spawn.h",
+    "declaration": "posix_spawn and posix_spawnp",
+    "specification": "POSIX.1-2024 and C17",
+    "section": "POSIX System Interfaces, posix_spawn; C17 6.7.6.3 paragraph 7",
+    "step": "25.8d K4 u2",
+    "note": "Spell the adjusted pointer parameters directly for C and C++."
   }
 ]

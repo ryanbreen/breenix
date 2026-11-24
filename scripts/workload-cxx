@@ -27,7 +27,7 @@ def main():
     command = (*BACKGROUND, CLANGXX, '--no-default-config',
                f'--target={args.arch}-unknown-none', '-nostdlibinc', '-nostdinc++',
                '-isystem', str(headers), '-isystem', str(ROOT / 'libs/libbreenix-libc/include'),
-               POSIX_FLAG, '-fno-exceptions', '-c', *args.flags[1:])
+               POSIX_FLAG, '-D__breenix__=1', '-fno-exceptions', '-c', *args.flags[1:])
     os.execvpe(command[0], command, env)
 
 

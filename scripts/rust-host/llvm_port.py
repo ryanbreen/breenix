@@ -133,7 +133,8 @@ def main():
         raise ValueError(f'missing K3 configured C++ headers: {headers}')
     flags = shlex.join(('-nostdlibinc', '-isystem', str(ROOT / 'libs/libbreenix-libc/include'), POSIX_FLAG))
     cxxflags = shlex.join(('-nostdlibinc', '-nostdinc++', '-isystem', str(headers),
-                            '-isystem', str(ROOT / 'libs/libbreenix-libc/include'), POSIX_FLAG))
+                            '-isystem', str(ROOT / 'libs/libbreenix-libc/include'), POSIX_FLAG,
+                            '-D__breenix__=1'))
     triple = f'{args.arch}-unknown-none'
     command = (*BACKGROUND, 'cmake', '-G', 'Ninja', '-S', str(llvm / 'llvm'), '-B', str(run / 'build'),
                '-DCMAKE_SYSTEM_NAME=Breenix', f'-DCMAKE_MODULE_PATH={ROOT / "toolchain/cmake"}',

@@ -10,13 +10,19 @@ conversions also declared in `<stdlib.h>`. The guards in `<ctype.h>` and
 `<time.h>` bind calls to the C ABI symbols declared by C17 sections 7.4 and
 7.27 and POSIX.1-2024.
 
-K3 disables localization and filesystem support. The build with filesystem
-support enabled reported an undeclared `copy_file_impl_fstream`.
+K3 enables localization for LLVM's streams (E25 ruling 93). The scoped libc++
+locale patch applies to a build-local source copy and uses Breenix's POSIX
+locale functions for C and C.UTF-8. Both locales use a dot radix and no numeric
+grouping, so libc++ can use its existing numeric conversion fallback (ruling 94).
+Filesystem support remains disabled under ruling 89.
 [libc++ vendor options](https://libcxx.llvm.org/VendorDocumentation.html#vendor-configuration-options)
 
-CMake uses Homebrew LLVM's archive tools to index the ELF members. Archives
-retain their respective `LICENSE.TXT` notices beside them. On the Mac, point
-the script at a clean pinned LLVM checkout and use a fresh build directory.
+CMake uses Homebrew LLVM's archive tools to index the ELF members. When packaging
+the archives, the build removes the ELF directives that request separate
+`pthread` and `rt` libraries. The hosted link supplies those APIs from Breenix
+`libc.a`, and the symbol inventory checks their resolution there. Archives retain
+their respective `LICENSE.TXT` notices beside them. Point the script at a clean
+pinned LLVM checkout on the Mac and use a fresh build directory.
 
 ```sh
 export BREENIX_LLVM_PROJECT=/path/to/llvm-project CARGO_BUILD_JOBS=4
@@ -32,8 +38,9 @@ python3 tests/cxx_runtime_test.py \
 ```
 
 The tracked records give the compiler identity, configure and build results,
-archive and notice digests, and the exact warning text and counts with build
-paths normalized. The diagnostic check compares the new logs to those records.
+archive and notice digests, the locale patch text and digest, and the exact
+warning text and counts with build paths normalized. The diagnostic check
+compares the new logs to those records.
 The C object check compares the corpus and userspace inputs against the
 pre-unit headers. Constraint diagnostics have their own corpus fixtures.
 

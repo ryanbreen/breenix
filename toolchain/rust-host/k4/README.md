@@ -1,10 +1,11 @@
-# K4 LLVM cross configure
+# K4 LLVM cross build
 
 The records in this directory describe the pinned rust-fork gitlink and the native
 TableGen build followed by each Breenix cross configure. The target list comes from
 `bootstrap.example.toml`'s documented `llvm.targets`. LLVM and its C++ headers are
-opaque workload inputs. The cross compiler uses the configured K3 libc++ headers.
-No target LLVM library or executable is built in this unit.
+opaque workload inputs. The cross compiler uses the localized K3 libc++ headers.
+`llvm_port.py --compile` reuses the configured architecture directory and
+selects the static LLVM archives and the `llc` and `llvm-mc` object targets.
 
 `<llvm-project>` names the fork's `src/llvm-project` checkout, `<repo>` this
 checkout, `<scratch>` the corresponding architecture directory under
@@ -16,5 +17,6 @@ its native tools. The per-stage diagnostics and exact allowlists include the
 host linker probe, host archiver warning, and CMake warnings; they remain in the
 original logs. The default timeout for earlier callers remains 55 seconds.
 
-ARM64 has a cross-configured build graph here; its LLVM libraries, executables,
-and guest cases remain for later K4 units and the ARM catch-up.
+The x86-64 build record stops at LLVM's `GetMainExecutable` platform error.
+A targeted compile reproduces it on ARM64, whose record covers configuration.
+The archive inventory, executable links, and guest cases remain pending.

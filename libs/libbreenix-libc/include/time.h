@@ -31,6 +31,7 @@ char *ctime(const time_t *);
 int timespec_get(struct timespec *, int);
 #if defined(__BREENIX_POSIX)
 typedef __breenix_clockid_t clockid_t;
+typedef __breenix_locale_t locale_t;
 #define CLOCK_REALTIME 0
 #define CLOCK_MONOTONIC 1
 #define CLOCK_PROCESS_CPUTIME_ID 2
@@ -43,6 +44,8 @@ struct tm *gmtime_r(const time_t *, struct tm *);
 struct tm *localtime_r(const time_t *, struct tm *);
 char *asctime_r(const struct tm *, char *);
 char *ctime_r(const time_t *, char *);
+size_t strftime_l(char *__BREENIX_RESTRICT, size_t, const char *__BREENIX_RESTRICT,
+                  const struct tm *__BREENIX_RESTRICT, locale_t);
 void tzset(void);
 extern long timezone;
 extern int daylight;
