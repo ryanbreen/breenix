@@ -505,6 +505,17 @@ run_link() {
     receipts busybox.elf applets.json
 }
 
+# ARM64 QEMU 20261124T035533Z-qemu-55077 measured 32.101 s for
+# build-libbb-4 and 32.289 s for build-applets-1. Move the ARM boundaries
+# along the same ordered goals and keep the existing receipt chain.
+if [ "$arch" = aarch64 ]; then
+    libbb_first_end=34 libbb_second_end=70 libbb_third_end=100
+    applets_first_end=26 applets_second_end=55 applets_third_end=76
+else
+    libbb_first_end=32 libbb_second_end=64 libbb_third_end=96
+    applets_first_end=32 applets_second_end=64 applets_third_end=79
+fi
+
 run_phase() {
     case "$1" in
         unpack) run_unpack ;;
@@ -514,19 +525,19 @@ run_phase() {
         inventory) run_inventory ;;
         unpack-configure) run_unpack; run_patch; run_generators; run_configure; run_inventory ;;
         build-libbb) build_objects "$1" libbb 1 128 inventory ;;
-        build-libbb-1) build_objects "$1" libbb 1 32 inventory ;;
-        build-libbb-2) build_objects "$1" libbb 33 64 build-libbb-1 ;;
-        build-libbb-3) build_objects "$1" libbb 65 96 build-libbb-2 ;;
-        build-libbb-4) build_objects "$1" libbb 97 128 build-libbb-3 ;;
+        build-libbb-1) build_objects "$1" libbb 1 "$libbb_first_end" inventory ;;
+        build-libbb-2) build_objects "$1" libbb "$((libbb_first_end + 1))" "$libbb_second_end" build-libbb-1 ;;
+        build-libbb-3) build_objects "$1" libbb "$((libbb_second_end + 1))" "$libbb_third_end" build-libbb-2 ;;
+        build-libbb-4) build_objects "$1" libbb "$((libbb_third_end + 1))" 128 build-libbb-3 ;;
         build-applets)
             if [ -f "$output/build-libbb-4.sha256" ]; then last_libbb=build-libbb-4
             else last_libbb=build-libbb
             fi
             build_objects "$1" applets 1 94 "$last_libbb" ;;
-        build-applets-1) build_objects "$1" applets 1 32 build-libbb-4 ;;
-        build-applets-2) build_objects "$1" applets 33 64 build-applets-1 ;;
-        build-applets-3) build_objects "$1" applets 65 79 build-applets-2 ;;
-        build-applets-4) build_objects "$1" applets 80 94 build-applets-3 ;;
+        build-applets-1) build_objects "$1" applets 1 "$applets_first_end" build-libbb-4 ;;
+        build-applets-2) build_objects "$1" applets "$((applets_first_end + 1))" "$applets_second_end" build-applets-1 ;;
+        build-applets-3) build_objects "$1" applets "$((applets_second_end + 1))" "$applets_third_end" build-applets-2 ;;
+        build-applets-4) build_objects "$1" applets "$((applets_third_end + 1))" 94 build-applets-3 ;;
         link-and-list) run_link ;;
         *) fail "unknown phase: $1" ;;
     esac

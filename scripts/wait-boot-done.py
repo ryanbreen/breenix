@@ -74,6 +74,7 @@ def main():
     parser.add_argument("mode", choices=("probe", "suite", "tests", "program"))
     parser.add_argument("--suite", default="")
     parser.add_argument("--case", default="", dest="only")
+    parser.add_argument("--arch", choices=("aarch64", "x86_64"), default="x86_64")
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--started", type=float, help="host epoch immediately before VM launch")
     parser.add_argument("--post-stop-ui-verdict", action="store_true",
@@ -127,7 +128,7 @@ def main():
                 # Match the x86 gate's manifest, case order and tally checks.
                 manifest = json.loads((ROOT / f"docs/suites/{args.suite}.json").read_text())
                 verdict = runpy.run_path(str(ROOT / "scripts/suite-verdict.py"))["verdict"]
-                ok, reason = verdict(manifest, args.serial, [args.serial], only=args.only)
+                ok, reason = verdict(manifest, args.serial, [args.serial], only=args.only, arch=args.arch)
             clock_ok, clock_reason = clock.verdict()
             print(clock_reason)
             state = 'DONE' if ok and args.post_stop_ui_verdict else 'PASS' if ok else 'FAIL'

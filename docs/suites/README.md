@@ -35,6 +35,11 @@ parses the suite's source, `userspace/programs/src/suite_<id>.rs` with `-` in th
 as `_`, and reads the `static` that `main` calls `.run()` on, so comments, disabled code and
 calls outside that table do not count.
 
+A case may declare a `targets` list of guest architectures (`aarch64` and
+`x86_64`). The guest registration uses a matching `cfg(target_arch = "...")`.
+Scorers and the deadline helper count only cases registered for the guest's
+architecture. Cases without `targets` run on both architectures.
+
 A case may also have optional `expect` and `expectEnd` strings: non-empty visual
 guidance of at most 300 characters each. `expect` describes only the judged picture;
 `expectEnd` overrides it for an `end` checkpoint whose displayed content differs.

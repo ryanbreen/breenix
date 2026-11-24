@@ -66,6 +66,7 @@ struct Entry {
     id: String,
     title: String,
     checks: Vec<String>,
+    targets: Vec<String>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -323,7 +324,20 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
                                     errors.push(format!("{case_at}: collects is true when present"));
                                 }
                             }
+                            if case_value.get("targets").is_some() {
+                                extra.push("targets");
+                            }
                             if let Some(mut case) = entry(case_value, &case_at, &extra, errors) {
+                                if let Some(targets) = case_value.get("targets") {
+                                    match targets.as_array() {
+                                        Some(list) if !list.is_empty() && list.iter().enumerate().all(|(index, target)|
+                                            matches!(target.as_str(), Some("aarch64" | "x86_64"))
+                                                && !list[..index].contains(target)) => {
+                                            case.targets = list.iter().map(|target| target.as_str().unwrap().to_string()).collect();
+                                        }
+                                        _ => errors.push(format!("{case_at}: targets must list unique supported architectures")),
+                                    }
+                                }
                                 let key = format!("{}/{}", category.id, case.id);
                                 case.checks = frame_checks.iter().filter(|(c, _)| *c == key)
                                     .map(|(_, check)| check.clone()).collect();
@@ -350,7 +364,7 @@ fn table_error(what: &str) -> String {
         "{what}; a suite's source must run its table from main as `NAME.run()` and declare it as \
          `static NAME: Suite = suite(\"id\", \"Title\", &[category(\"id\", \"Title\", &[case(\"id\", \"Title\", function), ...]), ...])`, \
          optionally followed by `.case_limit_ms(N)`, `.gui()` or `.defer_display()`, each category optionally \
-         followed by `.idle_before(N)`, with no attributes inside it"
+         followed by `.idle_before(N)` or gated by a target_arch cfg"
     )
 }
 
@@ -361,16 +375,26 @@ fn has_attributes(attrs: &[syn::Attribute]) -> bool {
 
 /// The call `name(args...)` that `expr` is, with its arguments.
 fn call<'a>(expr: &'a syn::Expr, name: &str) -> Result<Vec<&'a syn::Expr>, String> {
+    let (args, attrs) = call_with_attrs(expr, name)?;
+    if !attrs.is_empty() {
+        return Err(table_error(&format!("expected a call to {name}(...) without attributes")));
+    }
+    Ok(args)
+}
+
+fn call_with_attrs<'a>(expr: &'a syn::Expr, name: &str)
+    -> Result<(Vec<&'a syn::Expr>, &'a [syn::Attribute]), String>
+{
     let syn::Expr::Call(call) = expr else {
         return Err(table_error(&format!("expected a call to {name}(...)")));
     };
     let syn::Expr::Path(path) = &*call.func else {
         return Err(table_error(&format!("expected a call to {name}(...)")));
     };
-    if !call.attrs.is_empty() || path.path.segments.last().map(|segment| segment.ident.to_string()) != Some(name.to_string()) {
+    if path.path.segments.last().map(|segment| segment.ident.to_string()) != Some(name.to_string()) {
         return Err(table_error(&format!("expected a call to {name}(...)")));
     }
-    Ok(call.args.iter().collect())
+    Ok((call.args.iter().collect(), &call.attrs))
 }
 
 /// The string literal `expr` is.
@@ -588,9 +612,23 @@ fn source_suite_files(files: &[(String, String)]) -> Result<(Entry, Vec<Category
             }
             category_expr = &method.receiver;
         }
-        let args = call(category_expr, "category")?;
+        let (args, attrs) = call_with_attrs(category_expr, "category")?;
         let entry = id_and_title(&args, "category", 3)?;
-        let cases = case_table(args[2], "", &parsed, 0)?;
+        let mut cases = case_table(args[2], "", &parsed, 0)?;
+        match attrs {
+            [] => {}
+            [attr] if attr.path().is_ident("cfg") => {
+                let arch = attr.parse_args::<syn::MetaNameValue>().ok()
+                    .filter(|meta| meta.path.is_ident("target_arch"))
+                    .and_then(|meta| string(&meta.value).ok())
+                    .filter(|arch| matches!(arch.as_str(), "aarch64" | "x86_64"))
+                    .ok_or_else(|| table_error("expected cfg(target_arch = \"...\") on category"))?;
+                for case in &mut cases {
+                    case.targets.push(arch.clone());
+                }
+            }
+            _ => return Err(table_error("unexpected attributes on category")),
+        }
         categories.push(Category { entry, cases });
     }
     Ok((suite, categories))
@@ -2168,4 +2206,52 @@ fn toolchain_runner_registers_kernel_asm_cases() {
     let category = categories.iter().find(|category| category.entry.id == "kernel-asm").unwrap();
     assert_eq!(category.cases.iter().map(|case| case.id.as_str()).collect::<Vec<_>>(),
         ["four-objects-match-record", "breakpoint-roundtrip", "privileged-encodings"]);
+}
+
+#[test]
+fn toolchain_registry_matches_accepted_cases_per_target() {
+    let root = repo_root();
+    let (_, files) = suite_files(&root, "toolchain").unwrap();
+    let (_, guest) = source_suite_files(&files).unwrap();
+    let mut errors = Vec::new();
+    let manifest = read_manifest(&root.join("docs/suites/toolchain.json"), &mut errors).unwrap();
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+
+    // Case order from the accepted ARM64 head 5b5f8a35.
+    let accepted_arm: Vec<_> = [
+        "inputs sysroot-manifest reference-corpus-runs",
+        "assembler encodings-match object-runs bad-input-located",
+        "linker links-reference-objects got-and-archives tls-template archive-tools undefined-located duplicate-located",
+        "c-core hello hello-over-ssh corpus-three-producers stages-agree diagnostic-located",
+        "make graph-order noop-when-current suffix-inference macro-precedence failure-status archive-members include-remake recursive-makeflags",
+        "project builds-and-runs noop-rebuild header-rebuild",
+        "bootstrap c-calls-rust rust-calls-c",
+        "abi aggregates-exhaustion varargs sse-float x87-long-double",
+        "tls template-init-zero-fill-aligned errno-per-thread tls-across-fork-exec",
+        "c11 declarations-initializers generic-static-assert-alignment floating atomics constraint-diagnostics profile-macros",
+        "c17 corrections o2-expect rounding-math",
+        "libc-suite dirent-glob getopt-env locale-wchar math pthread stdio string-stdlib",
+        "busybox unpack patch generators configure inventory build-libbb-1 build-libbb-2 build-libbb-3 build-libbb-4 build-applets-1 build-applets-2 build-applets-3 build-applets-4 link-and-list required-usage",
+        "gnu-workloads gnu-c-extensions gnu-make-features kbuild-host-programs",
+    ].iter().flat_map(|row| {
+        let (category, cases) = row.split_once(' ').unwrap();
+        cases.split_whitespace().map(move |case| format!("{category}/{case}"))
+    }).collect();
+    let mut accepted_x86 = accepted_arm.clone();
+    accepted_x86.extend([
+        "kernel-asm/four-objects-match-record",
+        "kernel-asm/breakpoint-roundtrip",
+        "kernel-asm/privileged-encodings",
+    ].map(String::from));
+
+    for (arch, expected) in [("aarch64", accepted_arm), ("x86_64", accepted_x86)] {
+        for (name, categories) in [("guest", &guest), ("manifest", &manifest.categories)] {
+            let cases: Vec<_> = categories.iter().flat_map(|category| {
+                category.cases.iter()
+                    .filter(|case| case.targets.is_empty() || case.targets.iter().any(|target| target == arch))
+                    .map(|case| format!("{}/{}", category.entry.id, case.id))
+            }).collect();
+            assert_eq!(cases, expected, "{name} case registry for {arch}");
+        }
+    }
 }
