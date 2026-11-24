@@ -138,7 +138,7 @@ pub type StopFn<const N: usize> =
 pub struct Exception<const N: usize> {
     class: u64,
     cleanup: Option<ExceptionCleanup<N>>,
-    continuation: Option<Continuation<N>>,
+    pub(crate) continuation: Option<Continuation<N>>,
 }
 
 impl<const N: usize> Exception<N> {
@@ -156,8 +156,8 @@ impl<const N: usize> Exception<N> {
 }
 
 #[derive(Clone, Copy)]
-enum Continuation<const N: usize> {
-    Handler { ip: u64, cfa: u64 },
+pub(crate) enum Continuation<const N: usize> {
+    Handler { ip: Option<u64>, cfa: u64 },
     Forced { stop: StopFn<N>, parameter: usize },
 }
 
@@ -342,7 +342,7 @@ pub fn raise_exception<const N: usize>(
             ) {
                 ReasonCode::HandlerFound => {
                     let handler = Continuation::Handler {
-                        ip: context.ip,
+                        ip: Some(context.ip),
                         cfa: context.cfa,
                     };
                     return cleanup(source, start, exception, handler);
@@ -404,7 +404,7 @@ fn cleanup<const N: usize>(
     while context.ip != 0 {
         let frame = frame_at(source, &mut context).ok_or(ReasonCode::FatalPhase2Error)?;
         let handler = matches!(continuation, Continuation::Handler { ip, cfa }
-            if (ip, cfa) == (context.ip, context.cfa));
+            if cfa == context.cfa && ip.is_none_or(|ip| ip == context.ip));
         let actions = match continuation {
             Continuation::Forced { stop, parameter } => {
                 if stop(VERSION, forced, exception, &context, parameter) != ReasonCode::NoReason {

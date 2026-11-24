@@ -35,7 +35,7 @@ pub trait Memory {
 }
 
 /// Supplies the sections for the image containing a PC. The guest source can
-/// locate the header through PT_GNU_EH_FRAME (LSB Core 5.0, Table 10-1).
+/// locate the header through PT_GNU_EH_FRAME (LSB Core 5.0, Table 11-1).
 pub trait FrameSource: Memory {
     fn sections_for_pc(&self, pc: u64) -> Option<Sections<'_>>;
 }
@@ -46,6 +46,18 @@ pub fn find_fde(source: &(impl FrameSource + ?Sized), pc: u64) -> Result<Option<
         Some(sections) => sections.find_fde(source, pc),
         None => Ok(None),
     }
+}
+
+/// Decode the index's .eh_frame pointer before the loader knows its bounds.
+#[cfg(target_os = "breenix")]
+pub(crate) fn frame_address(
+    header: Section<'_>,
+    memory: &impl Memory,
+    address_size: usize,
+    endian: Endian,
+) -> Result<u64, Error> {
+    let mut reader = Reader::new(header, SectionKind::Header, endian);
+    Ok(header_prefix(&mut reader, memory, address_size)?.frame_address)
 }
 
 impl<'a> Sections<'a> {
@@ -135,34 +147,22 @@ impl<'a> Sections<'a> {
         mut reader: Reader<'h>,
         memory: &(impl Memory + ?Sized),
     ) -> Result<Option<Table<'h>>, Error> {
-        let version_field = reader;
-        let version = reader.byte()?;
-        if version != 1 {
-            return Err(version_field.error(ErrorKind::UnsupportedVersion(version)));
-        }
-        let frame_field = reader;
-        let frame_encoding =
-            Encoding::read(&mut reader)?.ok_or(frame_field.error(ErrorKind::InvalidHeader))?;
-        let count_field = reader;
-        let count_encoding = Encoding::read(&mut reader)?;
-        let table_encoding = Encoding::read(&mut reader)?;
-        let frame_pointer_field = reader;
-        let frame_address = self.pointer(&mut reader, frame_encoding, memory, false)?;
-        if frame_address != self.frame.address {
-            return Err(frame_pointer_field.error(ErrorKind::InvalidHeader));
+        let prefix = header_prefix(&mut reader, memory, self.address_size.into())?;
+        if prefix.frame_address != self.frame.address {
+            return Err(prefix.frame_field.error(ErrorKind::InvalidHeader));
         }
 
-        let Some(count_encoding) = count_encoding else {
+        let Some(count_encoding) = prefix.count_encoding else {
             return Ok(None);
         };
         if count_encoding.base != Base::Absolute || count_encoding.indirect {
-            return Err(count_field.error(ErrorKind::InvalidHeader));
+            return Err(prefix.count_field.error(ErrorKind::InvalidHeader));
         }
         let count_field = reader;
         let count = count_encoding.number(&mut reader, self.address_size.into())?;
         let count =
             usize::try_from(count).map_err(|_| count_field.error(ErrorKind::InvalidTable))?;
-        let Some(encoding) = table_encoding else {
+        let Some(encoding) = prefix.table_encoding else {
             return Ok(None);
         };
         let entry_size = encoding
@@ -311,34 +311,71 @@ impl<'a> Sections<'a> {
         memory: &(impl Memory + ?Sized),
         nullable: bool,
     ) -> Result<u64, Error> {
-        let field = *reader;
-        let width = self.address_size.into();
-        let value = encoding.number(reader, width)?;
-        if nullable && value == 0 {
-            return Ok(0);
-        }
-        let base = match encoding.base {
-            Base::Absolute => 0,
-            Base::Pc => field
-                .address
-                .checked_add(field.offset as u64)
-                .ok_or(field.error(ErrorKind::Overflow))?,
-            Base::Data => match field.section {
-                SectionKind::Header => field.address,
-                SectionKind::Frame => self
-                    .data_base
-                    .ok_or(field.error(ErrorKind::MissingDataBase))?,
-            },
-        };
-        let address = u64::try_from(i128::from(base) + value)
-            .map_err(|_| field.error(ErrorKind::Overflow))?;
-        if !encoding.indirect {
-            return Ok(address);
-        }
-        let error = field.error(ErrorKind::UnreadablePointer(address));
-        let mut bytes = memory.read(address, width).ok_or(error)?;
-        cfi::uint(&mut bytes, width, self.endian).map_err(|_| error)
+        decode_pointer(reader, encoding, memory, nullable, self.address_size.into(), self.data_base)
     }
+}
+
+struct HeaderPrefix<'a> {
+    frame_address: u64,
+    frame_field: Reader<'a>,
+    count_field: Reader<'a>,
+    count_encoding: Option<Encoding>,
+    table_encoding: Option<Encoding>,
+}
+
+fn header_prefix<'a>(
+    reader: &mut Reader<'a>,
+    memory: &(impl Memory + ?Sized),
+    address_size: usize,
+) -> Result<HeaderPrefix<'a>, Error> {
+    let version_field = *reader;
+    let version = reader.byte()?;
+    if version != 1 {
+        return Err(version_field.error(ErrorKind::UnsupportedVersion(version)));
+    }
+    let encoding_field = *reader;
+    let frame_encoding =
+        Encoding::read(reader)?.ok_or(encoding_field.error(ErrorKind::InvalidHeader))?;
+    let count_field = *reader;
+    let count_encoding = Encoding::read(reader)?;
+    let table_encoding = Encoding::read(reader)?;
+    let frame_field = *reader;
+    let frame_address = decode_pointer(reader, frame_encoding, memory, false, address_size, None)?;
+    Ok(HeaderPrefix { frame_address, frame_field, count_field, count_encoding, table_encoding })
+}
+
+fn decode_pointer(
+    reader: &mut Reader<'_>,
+    encoding: Encoding,
+    memory: &(impl Memory + ?Sized),
+    nullable: bool,
+    width: usize,
+    data_base: Option<u64>,
+) -> Result<u64, Error> {
+    let field = *reader;
+    let value = encoding.number(reader, width)?;
+    if nullable && value == 0 {
+        return Ok(0);
+    }
+    let base = match encoding.base {
+        Base::Absolute => 0,
+        Base::Pc => field
+            .address
+            .checked_add(field.offset as u64)
+            .ok_or(field.error(ErrorKind::Overflow))?,
+        Base::Data => match field.section {
+            SectionKind::Header => field.address,
+            SectionKind::Frame => data_base.ok_or(field.error(ErrorKind::MissingDataBase))?,
+        },
+    };
+    let address = u64::try_from(i128::from(base) + value)
+        .map_err(|_| field.error(ErrorKind::Overflow))?;
+    if !encoding.indirect {
+        return Ok(address);
+    }
+    let error = field.error(ErrorKind::UnreadablePointer(address));
+    let mut bytes = memory.read(address, width).ok_or(error)?;
+    cfi::uint(&mut bytes, width, field.endian).map_err(|_| error)
 }
 
 /// Fields shared by the frame description entries referencing this CIE.

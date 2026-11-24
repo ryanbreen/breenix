@@ -1,6 +1,13 @@
 #![no_std]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+#[cfg(target_os = "breenix")]
+mod abi;
+#[cfg(any(test, target_os = "breenix"))]
+mod arch;
+#[cfg(target_os = "breenix")]
+mod loaded;
+
 pub mod cfi;
 pub mod ehframe;
 pub mod level1;
@@ -16,10 +23,16 @@ mod bunwind;
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
+    abort()
+}
+
+#[cfg(not(test))]
+fn abort() -> ! {
     extern "C" {
-        fn abort() -> !;
+        #[link_name = "abort"]
+        fn platform_abort() -> !;
     }
 
     // SAFETY: The platform C ABI's abort takes no arguments and terminates.
-    unsafe { abort() }
+    unsafe { platform_abort() }
 }

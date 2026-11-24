@@ -19,6 +19,8 @@
 #     Build a single bin into target/hosted for the selected architecture.
 #   ./userspace/programs/build.sh --rust-host
 #     Build the opt-in suite and its probes into target/hosted.
+#   ./userspace/programs/build.sh --arch x86_64|aarch64 --bunwind
+#     Build libbunwind.a into target/hosted/bunwind/<target>/release.
 
 set -e
 
@@ -26,7 +28,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 usage() {
-    echo "Usage: $0 [--arch x86_64|aarch64] [--hosted-bin NAME [--features FEATURES] | --rust-host]" >&2
+    echo "Usage: $0 [--arch x86_64|aarch64] [--hosted-bin NAME [--features FEATURES] | --rust-host | --bunwind]" >&2
     exit 2
 }
 
@@ -34,6 +36,7 @@ ARCH="x86_64"
 HOSTED_BIN=""
 HOSTED_FEATURES=()
 RUST_HOST=0
+BUNWIND=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --arch)
@@ -49,6 +52,10 @@ while [[ $# -gt 0 ]]; do
             RUST_HOST=1
             shift
             ;;
+        --bunwind)
+            BUNWIND=1
+            shift
+            ;;
         --features)
             [[ -n "${2:-}" && "$2" != -* ]] || usage
             HOSTED_FEATURES+=(--features "$2")
@@ -59,6 +66,10 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+if [[ "$BUNWIND" == 1 ]]; then
+    [[ "$ARCH" == x86_64 || "$ARCH" == aarch64 ]] || usage
+    [[ "$RUST_HOST" == 0 && -z "$HOSTED_BIN" && ${#HOSTED_FEATURES[@]} -eq 0 ]] || usage
+fi
 if [[ "$RUST_HOST" == 1 ]]; then
     [[ -z "$HOSTED_BIN" && ${#HOSTED_FEATURES[@]} -eq 0 ]] || usage
     HOSTED_BIN="suite-rust-host"
@@ -90,6 +101,21 @@ unset CARGO_TARGET_DIR CARGO_BUILD_TARGET_DIR
 REMAP_FLAGS=""
 if [ "${BREENIX_USERSPACE_REMAP:-0}" = 1 ]; then
     REMAP_FLAGS="--remap-path-prefix=$PROJECT_ROOT=/breenix --remap-path-prefix=$CARGO_HOME=/cargo"
+fi
+
+# The unwinder is built independently of libc and the std fork. Use a
+# dedicated target directory before entering any ordinary build or staging.
+if [[ "$BUNWIND" == 1 ]]; then
+    echo "  Building libbunwind.a ($ARCH)..."
+    (
+        cd "$PROJECT_ROOT/libs/bunwind"
+        unset CARGO_ENCODED_RUSTFLAGS __CARGO_TESTS_ONLY_SRC_ROOT
+        export RUSTFLAGS="$REMAP_FLAGS -D warnings"
+        cargo build --locked --release --lib -Z build-std=core \
+            --target "$PROJECT_ROOT/$TARGET_DIR.json" \
+            --target-dir "$SCRIPT_DIR/target/hosted/bunwind"
+    )
+    exit 0
 fi
 
 # Rustflags for linking against libbreenix-libc
