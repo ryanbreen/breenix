@@ -785,6 +785,7 @@ fn deliver_current_lockless(
     };
     if thread.id != thread_id
         || thread.cached_ttbr0 == 0
+        || thread.signals.breakpoint.is_pending()
         || thread.kill_pending()
         || thread
             .resource_limits
@@ -2089,6 +2090,10 @@ fn notify_parent_of_termination(process: &Process) -> Option<ParentNotification>
 #[inline]
 pub fn collect_itimer_signals(process: &mut Process) {
     process.signals.collect_timer_signals(&process.itimers);
+    #[cfg(target_arch = "x86_64")]
+    if let Some((sig, code, address)) = process.signals.thread.breakpoint.take() {
+        raise_fault_signal(process, sig, SigInfo::fault(code, address));
+    }
 }
 
 /// Consume resource-limit signals at a user-return boundary.
