@@ -1,6 +1,8 @@
 """K3 runtime archive checks (the symbol closure remains a milestone gate)."""
 import os
 import sys
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -40,6 +42,26 @@ class CxxRuntimeTest(unittest.TestCase):
             self.assertNotIn('LIBCXXABI_ENABLE_RTTI', options)
             self.assertIn(str(ROOT / 'libs/libbreenix-libc/include'), options['CMAKE_CXX_FLAGS'])
         cxx_runtime.verify_llvm(ROOT, cxx_runtime.default_llvm())
+
+    def test_platform_module_static_only(self):
+        import cxx_runtime
+
+        llvm = cxx_runtime.default_llvm()
+        cxx_runtime.verify_llvm(ROOT, llvm)
+        for arch in ('x86_64', 'aarch64'):
+            with self.subTest(arch=arch), tempfile.TemporaryDirectory() as temp:
+                build = Path(temp) / 'build'
+                command = cxx_runtime.configure_command(ROOT, llvm, build, arch)
+                self.assertIn('-DCMAKE_SYSTEM_NAME=Breenix', command)
+                self.assertIn(f'-DCMAKE_MODULE_PATH={ROOT / "toolchain/cmake"}', command)
+                subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               text=True, timeout=55)
+                ninja = (build / 'build.ninja').read_text().splitlines()
+                for archive in ('libc++.a', 'libc++abi.a'):
+                    rules = [line for line in ninja if line.startswith(f'build lib/{archive}:')]
+                    self.assertEqual(len(rules), 1, rules)
+                self.assertFalse(list(build.rglob('*.so')))
+        cxx_runtime.verify_llvm(ROOT, llvm)
 
     def test_cxx_runtime_undefined_set_is_defined(self):
         nm = llvm_tool(ROOT, 'llvm-nm')
