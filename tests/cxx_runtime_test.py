@@ -1,4 +1,5 @@
 """K3 runtime archive checks (the symbol closure remains a milestone gate)."""
+import json
 import os
 import sys
 import subprocess
@@ -12,6 +13,39 @@ from x0_runtime import llvm_tool, symbols
 
 
 class CxxRuntimeTest(unittest.TestCase):
+    def test_archives_build_both_arches(self):
+        import cxx_runtime
+
+        llvm = cxx_runtime.default_llvm()
+        pin = cxx_runtime.verify_llvm(ROOT, llvm)
+        runs = Path(os.environ.get('BREENIX_CXX_RUNTIME_BUILDS', ROOT / 'build/cxx-runtime'))
+        for arch in ('x86_64', 'aarch64'):
+            with self.subTest(arch=arch):
+                run = runs / arch
+                record = json.loads((run / 'record.json').read_text())
+                self.assertEqual(record['arch'], arch)
+                self.assertEqual(record['llvm_project'], pin)
+                for stage in ('configure', 'build'):
+                    result = record[stage]
+                    self.assertIsNotNone(result, f'{stage} did not run')
+                    self.assertEqual(result['exit_status'], 0, result['first_error'])
+                    self.assertIsNone(result['first_error'])
+                    log = run / f'{stage}.log'
+                    self.assertEqual(cxx_runtime.digest(log), result['log_sha256'])
+                    errors = [line for line in log.read_text().splitlines()
+                              if cxx_runtime.FIRST_ERROR.search(line)]
+                    self.assertEqual(errors, [])
+                for name, component in (('libc++.a', 'libcxx'), ('libc++abi.a', 'libcxxabi')):
+                    archive = run / 'build/lib' / name
+                    self.assertTrue(archive.is_file(), f'missing {archive}')
+                    self.assertEqual(archive.read_bytes()[:8], b'!<arch>\n')
+                    self.assertEqual(cxx_runtime.digest(archive), record['archives'][name]['sha256'])
+                    notice = archive.with_name(name + '.LICENSE.TXT')
+                    self.assertEqual(notice.read_bytes(), (llvm / component / 'LICENSE.TXT').read_bytes())
+                    self.assertEqual(cxx_runtime.digest(notice), record['archives'][name]['notice_sha256'])
+                self.assertFalse(list((run / 'build').rglob('*.so')))
+        self.assertEqual(cxx_runtime.verify_llvm(ROOT, llvm), pin)
+
     def test_configure_follows_ruling_86(self):
         import json
         import cxx_runtime
