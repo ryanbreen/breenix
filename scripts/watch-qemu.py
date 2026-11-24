@@ -256,7 +256,8 @@ def main():
     if args.mode == "suite" and "," in args.suite:
         # Each suite's result, whether the sequence finished or the boot was stopped part way.
         milestones = {scoped: args.milestone} if scoped else None
-        ok, rows = SEQUENCE["score"](suites, args.serial, [args.serial], args.disk, milestones=milestones)
+        ok, rows = SEQUENCE["score"](suites, args.serial, [args.serial], args.disk,
+                                    milestones=milestones, arch="aarch64")
         for suite, status, detail in rows:
             print(f"{status} {suite}: {detail}", flush=True)
         passed = sum(status == "PASS" for _, status, _ in rows)
@@ -286,7 +287,7 @@ def main():
         manifest = json.loads((ROOT / f"docs/suites/{args.suite}.json").read_text())
         uploads = Path(str(args.serial) + ".evidence") if args.suite == "ui-testing" else None
         ok, detail = VERDICT["verdict"](manifest, args.serial, [args.serial], only=args.only,
-                                        categories=categories, disk=args.disk, uploads=uploads)
+                                        categories=categories, disk=args.disk, uploads=uploads, arch="aarch64")
         if ok and not args.only:
             ok, disk_detail = VERDICT["disk_verdict"](manifest.get("diskChecks", []), args.disk)
             if disk_detail:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Score one effort-suite boot against its manifest (docs/suites/README.md).
 
-    scripts/suite-verdict.py MANIFEST RECORDS_LOG [OTHER_LOG ...] [--disk IMAGE] [--milestone EFFORT/ID]
+    scripts/suite-verdict.py MANIFEST RECORDS_LOG [OTHER_LOG ...] [--arch ARCH] [--disk IMAGE] [--milestone EFFORT/ID]
 
 RECORDS_LOG is the serial the suite's stdout went to; every log given is also
 searched for fatal kernel output. The boot passes when the suite's records, each
@@ -27,6 +27,9 @@ directly and its persisted bytes compared, bypassing the guest cache.
 
 A category marked "hostRunner" is scored by its host tool. The guest suite's
 records leave it out, and this scorer refuses milestones that measure it.
+
+Case targets are matched against the guest architecture given by --arch,
+which defaults to x86_64.
 
 With --milestone, the commit's effort path supplies the required category set.
 Missing or planned measured categories block acceptance. The full boot's records,
@@ -366,7 +369,7 @@ def bwm_case_problem(lines):
     return None
 
 
-def verdict(manifest, records_log, logs, only=None, categories=None, disk=None, uploads=None):
+def verdict(manifest, records_log, logs, only=None, categories=None, disk=None, uploads=None, *, arch="x86_64"):
     suite = manifest["id"]
     root = None
     if suite == "filesystem":
@@ -399,7 +402,12 @@ def verdict(manifest, records_log, logs, only=None, categories=None, disk=None, 
                                       for category in manifest["categories"] if category["id"] in categories):
         return False, "measured category requires a different root"
     cases = [f"{category['id']}/{case['id']}" for category in manifest["categories"]
-             if category["id"] not in hosted and category.get("root") in (None, root) for case in category["cases"]]
+             if category["id"] not in hosted and category.get("root") in (None, root)
+             for case in category["cases"] if "targets" not in case or arch in case["targets"]]
+    if categories is not None:
+        unavailable = set(categories) - {case.split("/", 1)[0] for case in cases}
+        if unavailable:
+            return False, f"measured categories have no cases on {arch}: {', '.join(sorted(unavailable))}"
     if only:
         selected = [case for case in cases if case == only or case.split("/", 1)[0] == only]
         if not selected:
@@ -758,6 +766,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest")
     parser.add_argument("logs", nargs="+")
+    parser.add_argument("--arch", choices=("aarch64", "x86_64"), default="x86_64")
     parser.add_argument("--disk", help="stopped VM's raw image for diskChecks and disk-only UI bundles")
     parser.add_argument("--disk-report", action="store_true", help="emit independent disk check results on stderr")
     parser.add_argument("--disk-root-fs", choices=("ext2", "breenfs"), help="filesystem staged for the disk report")
@@ -772,7 +781,8 @@ def main():
         parser.error(str(error))
     checks = manifest.get("diskChecks", [])
     disk_result = emit_disk_report(checks, args.disk, args.disk_root_fs) if args.disk_report else None
-    ok, reason = verdict(manifest, args.logs[0], args.logs, categories=categories, disk=args.disk, uploads=args.uploads)
+    ok, reason = verdict(manifest, args.logs[0], args.logs, categories=categories, disk=args.disk,
+                         uploads=args.uploads, arch=args.arch)
     if ok:
         ok, disk_reason = disk_result if disk_result is not None else disk_verdict(checks, args.disk)
         if disk_reason:

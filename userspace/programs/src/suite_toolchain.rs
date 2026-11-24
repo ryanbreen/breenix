@@ -326,6 +326,8 @@ static SUITE: Suite = suite(
                 case("kbuild-host-programs", "Run the newly built Kbuild host generators", kbuild_host_programs),
             ],
         ),
+        // A6 supplies the ARM64 kernel assembly cases.
+        #[cfg(target_arch = "x86_64")]
         category(
             "kernel-asm",
             "The kernel's assembly dialect through our assembler",
@@ -2051,6 +2053,7 @@ fn kbuild_host_programs() -> CaseResult {
     Ok(())
 }
 
+#[cfg(target_arch = "x86_64")]
 fn four_objects_match_record() -> CaseResult {
     const OBJECTS: [(&str, &str); 4] = [
         ("src/syscall/entry.asm", "syscall_entry.o"),
@@ -2059,9 +2062,6 @@ fn four_objects_match_record() -> CaseResult {
         ("src/arch_impl/x86_64/ap_trampoline.asm", "ap_trampoline.o"),
     ];
 
-    if !cfg!(target_arch = "x86_64") {
-        return Err("kernel assembly record requires the x86 target".into());
-    }
     let case = AssemblyCase::start_at("kernel-asm")?;
     let path = case.corpus.join("kernel-assembly.record");
     let record = io_at(&path, fs::read_to_string(&path))?;
@@ -2092,10 +2092,8 @@ fn four_objects_match_record() -> CaseResult {
     Ok(())
 }
 
+#[cfg(target_arch = "x86_64")]
 fn privileged_encodings() -> CaseResult {
-    if !cfg!(target_arch = "x86_64") {
-        return Err("kernel instruction corpus requires the x86 target".into());
-    }
     let case = AssemblyCase::start_at("kernel-asm")?;
     let object = case.assemble("privileged")?;
     let bytes = io_at(&object, fs::read(&object))?;
@@ -2173,9 +2171,7 @@ mod breakpoint {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 fn breakpoint_roundtrip() -> CaseResult {
-    #[cfg(target_arch = "x86_64")]
-    return breakpoint::roundtrip();
-    #[cfg(not(target_arch = "x86_64"))]
-    Err("x86 kernel assembly requires the x86 target".into())
+    breakpoint::roundtrip()
 }

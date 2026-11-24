@@ -26,7 +26,8 @@ def suite_deadlines(suites, arch):
     for suite in suites:
         manifest = json.loads((ROOT / "docs/suites" / f"{suite}.json").read_text())
         total = sum(allowances.get((suite, f'{category["id"]}/{case["id"]}'), default)
-                    for category in manifest["categories"] for case in category["cases"])
+                    for category in manifest["categories"] for case in category["cases"]
+                    if "targets" not in case or arch in case["targets"])
         result[suite] = (total * 5 + 3999) // 4000
     return result
 

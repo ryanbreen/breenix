@@ -61,11 +61,16 @@ class ToolchainTargetVerdictTests(unittest.TestCase):
                     f"SUITE toolchain DONE passed={count} failed=0 skipped=0 total={count}",
                     *after,
                 ]) + "\n")
-                for scorer, args in (("suite-verdict.py", [str(path)]), ("suite-sequence.py", ["score", "toolchain"])):
+                # self-host is still planned. A milestone scores the complete guest
+                # case order and counts while requiring its own categories to pass.
+                for scorer, args, milestone in (
+                    ("suite-verdict.py", [str(path)], "toolchain/busybox-on-box"),
+                    ("suite-sequence.py", ["score", "toolchain"], "toolchain=toolchain/busybox-on-box"),
+                ):
                     for arch in ("aarch64", "x86_64"):
                         with self.subTest(recorded_arch=recorded_arch, scorer=scorer, arch=arch):
                             result = subprocess.run([sys.executable, str(ROOT / "scripts" / scorer),
-                                                     *args, str(serial), "--arch", arch],
+                                                     *args, str(serial), "--arch", arch, "--milestone", milestone],
                                                     capture_output=True, text=True)
                             if arch == recorded_arch:
                                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

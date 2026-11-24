@@ -611,7 +611,7 @@ wait_boot_done() {
         post_stop=(--post-stop-ui-verdict)
     fi
     python3 "$BREENIX_ROOT/scripts/wait-boot-done.py" "$SERIAL_LOG" "$BOOT_MODE" \
-        --suite "$SUITE" --case "$ONLY" --timeout "$GATE_TIMEOUT" --started "$CLOCK_STARTED" ${post_stop[@]+"${post_stop[@]}"}
+        --suite "$SUITE" --case "$ONLY" --timeout "$GATE_TIMEOUT" --started "$CLOCK_STARTED" --arch aarch64 ${post_stop[@]+"${post_stop[@]}"}
 }
 
 # Install before starting a VM. Ignore further signals during cleanup so Vigil
@@ -673,7 +673,7 @@ score_vm_suite_disk() {
         checks=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("diskChecks", [])))' "$manifest") || exit $?
         if [ "$checks" = 0 ] && [[ ",$SUITE," != *",ui-testing,"* ]]; then
             [[ "$SUITE" == *,* ]] || exit 0
-            python3 "$BREENIX_ROOT/scripts/suite-sequence.py" score "$SUITE" "$SERIAL_LOG"
+            python3 "$BREENIX_ROOT/scripts/suite-sequence.py" score "$SUITE" "$SERIAL_LOG" --arch aarch64
             exit $?
         fi
         if [ "$PARALLELS" = true ]; then
@@ -689,9 +689,9 @@ score_vm_suite_disk() {
             bounded_vm_command qemu-img convert -f vmdk -O raw "$EXT2_VMDK_ARG" "$disk" || exit $?
         fi
         if [[ "$SUITE" == *,* ]]; then
-            python3 "$BREENIX_ROOT/scripts/suite-sequence.py" score "$SUITE" "$SERIAL_LOG" --disk "$disk"
+            python3 "$BREENIX_ROOT/scripts/suite-sequence.py" score "$SUITE" "$SERIAL_LOG" --disk "$disk" --arch aarch64
         else
-            python3 "$BREENIX_ROOT/scripts/suite-verdict.py" "$manifest" "$SERIAL_LOG" --disk "$disk"
+            python3 "$BREENIX_ROOT/scripts/suite-verdict.py" "$manifest" "$SERIAL_LOG" --disk "$disk" --arch aarch64
         fi
     )
 }
