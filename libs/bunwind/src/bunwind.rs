@@ -1,5 +1,13 @@
 use crate::cfi::{CfaRule, Endian, Program, RegisterRule, Rules};
+use core::cell::{Cell, RefCell};
 use std::vec::Vec;
+
+use crate::ehframe::{self, Memory, Section, Sections};
+use crate::level1::{
+    backtrace, delete_exception, forced_unwind, raise_exception, resume, Actions, Context,
+    Exception, Frame, FrameSource, LookupError, ReasonCode,
+};
+use std::thread_local;
 
 #[test]
 fn cfa_rules_from_dwarf5_table_6_3() {
@@ -143,4 +151,281 @@ fn fde_found_through_eh_frame_hdr() {
             assert!(sections.find_fde(&ProbeMemory, pc).unwrap().is_none());
         }
     }
+}
+
+const STACK: u64 = 0x8000;
+const PERSONALITY: u64 = 0x9000;
+const EXCEPTION_CLASS: u64 = 0x4252_4545_5445_5354;
+const REGIONS: [u64; 4] = [0x1000, 0x1100, 0x1200, 0x1300];
+const CLEANUP_PAD: u64 = 0x1120;
+const HANDLER_PAD: u64 = 0x1220;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Event {
+    Personality(u64, Actions),
+    Stop(u64, Actions),
+}
+
+struct Chain {
+    eh_frame: Vec<u8>,
+    stack: [u8; 32],
+    handler: bool,
+}
+
+thread_local! {
+    static EVENTS: RefCell<Vec<Event>> = const { RefCell::new(Vec::new()) };
+    static DELETED: Cell<Option<ReasonCode>> = const { Cell::new(None) };
+}
+
+impl Chain {
+    fn new(handler: bool) -> Self {
+        // DWARF 5 Table 7.29 and LSB Core 5.0 §10.6. A single CIE
+        // describes a frame with CFA = R1 + 8 and the return PC at CFA - 8.
+        fn record(section: &mut Vec<u8>, body: &[u8]) {
+            section.extend((body.len() as u32).to_le_bytes());
+            section.extend(body);
+        }
+        let mut cie = Vec::from([0, 0, 0, 0, 1, b'z', b'P', b'L', b'R', 0, 1, 0x78, 2]);
+        cie.extend([11, 0]); // augmentation size and absolute personality encoding
+        cie.extend(PERSONALITY.to_le_bytes());
+        cie.extend([0, 0]); // absolute LSDA and code addresses
+        cie.extend([0x0c, 1, 8, 0x82, 1, 0x08, 0]); // CFA, R2 offset, R0 same_value
+
+        let mut eh_frame = Vec::new();
+        record(&mut eh_frame, &cie);
+        for region in REGIONS {
+            let mut fde = Vec::from(((eh_frame.len() + 4) as u32).to_le_bytes());
+            fde.extend(region.to_le_bytes());
+            fde.extend(0x100u64.to_le_bytes());
+            fde.push(8);
+            fde.extend((region + 0x4000).to_le_bytes());
+            record(&mut eh_frame, &fde);
+        }
+
+        let mut stack = [0; 32];
+        // Each saved IP lies at the end of its caller's region.
+        for (slot, pc) in stack
+            .chunks_exact_mut(8)
+            .zip([0x1200u64, 0x1300, 0x1400, 0])
+        {
+            slot.copy_from_slice(&pc.to_le_bytes());
+        }
+        Self {
+            eh_frame,
+            stack,
+            handler,
+        }
+    }
+
+    fn start() -> Context<3> {
+        Context::new([Some(42), Some(STACK), None], 0x1010, true)
+    }
+}
+
+impl Memory for Chain {
+    fn read(&self, address: u64, size: usize) -> Option<&[u8]> {
+        let offset = usize::try_from(address.checked_sub(STACK)?).ok()?;
+        self.stack.get(offset..offset.checked_add(size)?)
+    }
+}
+
+impl ehframe::FrameSource for Chain {
+    fn sections_for_pc(&self, pc: u64) -> Option<Sections<'_>> {
+        (0x1000..0x1400).contains(&pc).then_some(Sections {
+            frame: Section {
+                address: 0xa000,
+                bytes: &self.eh_frame,
+            },
+            header: None,
+            data_base: None,
+            address_size: 8,
+            endian: Endian::Little,
+        })
+    }
+}
+
+impl FrameSource<3> for Chain {
+    type Error = LookupError;
+
+    fn find_frame(&self, pc: u64) -> Result<Option<Frame<'_, 3>>, Self::Error> {
+        let mut defaults = Rules::default();
+        defaults.registers[1] = RegisterRule::ValOffset(0);
+        Frame::lookup(self, pc, defaults, &mut [])
+    }
+
+    fn stack_pointer_register(&self) -> u64 {
+        1
+    }
+
+    fn read_saved_register(&self, _register: u64, address: u64) -> Option<u64> {
+        Some(u64::from_le_bytes(self.read(address, 8)?.try_into().ok()?))
+    }
+
+    fn evaluate_expression(&self, _: &[u8], _: &Context<3>, _: Option<u64>) -> Option<u64> {
+        panic!("fixture has no DWARF expressions");
+    }
+
+    fn personality(
+        &self,
+        address: u64,
+        version: u32,
+        actions: Actions,
+        exception: &mut Exception<3>,
+        context: &mut Context<3>,
+    ) -> ReasonCode {
+        assert_eq!(address, PERSONALITY);
+        assert_eq!(version, 1);
+        assert_eq!(exception.class(), EXCEPTION_CLASS);
+        let region = context.get_region_start();
+        EVENTS.with_borrow_mut(|events| events.push(Event::Personality(region, actions)));
+        assert_eq!(context.get_language_specific_data(), Some(region + 0x4000));
+        assert_eq!(context.get_gr(0), Some(42));
+        assert_eq!(
+            context.get_gr(1),
+            Some(STACK + (region - 0x1000) / 0x100 * 8)
+        );
+        assert_eq!(context.get_cfa(), context.get_gr(1).unwrap() + 8);
+        if region == REGIONS[0] {
+            assert_eq!(context.get_ip_info(), (0x1010, true));
+        } else {
+            assert_eq!(context.get_ip_info(), (region + 0x100, false));
+        }
+
+        if actions == Actions::SEARCH_PHASE {
+            if self.handler && region == REGIONS[2] {
+                return ReasonCode::HandlerFound;
+            }
+        } else if actions.contains(Actions::HANDLER_FRAME) {
+            assert_eq!(region, REGIONS[2]);
+            assert!(context.set_gr(0, 77));
+            context.set_ip(HANDLER_PAD);
+            return ReasonCode::InstallContext;
+        } else if self.handler && region == REGIONS[1] {
+            context.set_ip(CLEANUP_PAD);
+            return ReasonCode::InstallContext;
+        }
+        ReasonCode::ContinueUnwind
+    }
+}
+
+fn take_events() -> Vec<Event> {
+    EVENTS.with_borrow_mut(core::mem::take)
+}
+
+#[test]
+fn two_phase_search_then_cleanup_stops_at_handler() {
+    use Actions as A;
+    use Event::Personality;
+
+    let chain = Chain::new(true);
+    let mut exception = Exception::new(EXCEPTION_CLASS, None);
+    let cleanup = raise_exception(&chain, Chain::start(), &mut exception).unwrap();
+    assert_eq!(cleanup.get_ip(), CLEANUP_PAD);
+    assert_eq!(cleanup.get_gr(1), Some(STACK + 8));
+    assert_eq!(
+        take_events(),
+        [
+            Personality(REGIONS[0], A::SEARCH_PHASE),
+            Personality(REGIONS[1], A::SEARCH_PHASE),
+            Personality(REGIONS[2], A::SEARCH_PHASE),
+            Personality(REGIONS[0], A::CLEANUP_PHASE),
+            Personality(REGIONS[1], A::CLEANUP_PHASE),
+        ]
+    );
+
+    let handler = resume(&chain, cleanup, &mut exception).unwrap();
+    assert_eq!(handler.get_ip(), HANDLER_PAD);
+    assert_eq!(handler.get_gr(0), Some(77));
+    assert_eq!(handler.get_gr(1), Some(STACK + 16));
+    assert_eq!(
+        take_events(),
+        [Personality(REGIONS[2], A::CLEANUP_PHASE | A::HANDLER_FRAME)]
+    );
+}
+
+#[test]
+fn no_handler_returns_end_of_stack_and_backtrace_visits_each_frame() {
+    let chain = Chain::new(false);
+    let mut exception = Exception::new(
+        EXCEPTION_CLASS,
+        Some(|reason, exception| {
+            assert_eq!(exception.class(), EXCEPTION_CLASS);
+            DELETED.set(Some(reason));
+        }),
+    );
+    assert_eq!(
+        raise_exception(&chain, Chain::start(), &mut exception),
+        Err(ReasonCode::EndOfStack)
+    );
+    assert_eq!(
+        take_events(),
+        REGIONS.map(|region| Event::Personality(region, Actions::SEARCH_PHASE))
+    );
+
+    let mut regions = Vec::new();
+    assert_eq!(
+        backtrace(&chain, Chain::start(), |context| {
+            regions.push(context.get_region_start());
+            ReasonCode::NoReason
+        }),
+        ReasonCode::EndOfStack
+    );
+    assert_eq!(regions, REGIONS);
+    assert!(take_events().is_empty());
+    delete_exception(&mut exception);
+    assert_eq!(DELETED.take(), Some(ReasonCode::ForeignExceptionCaught));
+}
+
+#[test]
+fn forced_unwind_calls_stop_before_personality_and_at_end() {
+    use Actions as A;
+    use Event::{Personality, Stop};
+
+    fn stop(
+        version: u32,
+        actions: Actions,
+        exception: &mut Exception<3>,
+        context: &Context<3>,
+        stop_parameter: usize,
+    ) -> ReasonCode {
+        assert_eq!(version, 1);
+        assert_eq!(exception.class(), EXCEPTION_CLASS);
+        assert_eq!(stop_parameter, 99);
+        EVENTS.with_borrow_mut(|events| events.push(Stop(context.get_region_start(), actions)));
+        if context.get_gr(1) == Some(0) {
+            assert_eq!(context.get_ip(), 0);
+            return ReasonCode::EndOfStack;
+        }
+        ReasonCode::NoReason
+    }
+
+    let chain = Chain::new(true);
+    let mut exception = Exception::new(EXCEPTION_CLASS, None);
+    let cleanup = forced_unwind(&chain, Chain::start(), &mut exception, stop, 99).unwrap();
+    assert_eq!(cleanup.get_ip(), CLEANUP_PAD);
+    let forced = A::CLEANUP_PHASE | A::FORCE_UNWIND;
+    assert_eq!(
+        take_events(),
+        [
+            Stop(REGIONS[0], forced),
+            Personality(REGIONS[0], forced),
+            Stop(REGIONS[1], forced),
+            Personality(REGIONS[1], forced),
+        ]
+    );
+
+    assert_eq!(
+        resume(&chain, cleanup, &mut exception),
+        Err(ReasonCode::FatalPhase2Error)
+    );
+    assert_eq!(
+        take_events(),
+        [
+            Stop(REGIONS[2], forced),
+            Personality(REGIONS[2], forced),
+            Stop(REGIONS[3], forced),
+            Personality(REGIONS[3], forced),
+            Stop(0, forced | A::END_OF_STACK),
+        ]
+    );
 }
