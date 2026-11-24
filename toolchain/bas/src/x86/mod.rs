@@ -194,9 +194,18 @@ impl<'a> Address<'a> {
     }
 
     fn term(&mut self, p: &mut Parser<'a, '_>, negative: bool) -> Result<()> {
+        if p.take(b'(') {
+            self.term(p, negative)?;
+            return p.expect(b')', "expected ')' in address expression");
+        }
         if p.peek().is_ascii_digit() {
             let column = p.column;
-            self.displacement = signed_value(p.magnitude()?, negative)
+            let mut magnitude = p.magnitude()?;
+            while p.take(b'*') {
+                magnitude = magnitude.checked_mul(p.magnitude()?)
+                    .ok_or_else(|| p.error(column, "address displacement out of range"))?;
+            }
+            self.displacement = signed_value(magnitude, negative)
                 .and_then(|offset| self.displacement.checked_add(offset))
                 .ok_or_else(|| p.error(column, "address displacement out of range"))?;
             return Ok(());
@@ -250,6 +259,16 @@ impl<'a> Address<'a> {
             p.expect(b':', "expected ':' after segment override")?;
         }
         p.expect(b'[', "expected '[' before memory address")?;
+        let (inside, next, _) = p.lookahead();
+        if next == b':' {
+            let inner_segment = segment(inside.text);
+            if inner_segment == 0 || address.segment != 0 {
+                return Err(p.error(inside.column, "invalid or duplicate segment override"));
+            }
+            p.word();
+            p.expect(b':', "expected ':' after segment override")?;
+            address.segment = inner_segment;
+        }
         let mut negative = p.take(b'-');
         if !negative {
             p.take(b'+');
@@ -501,6 +520,13 @@ impl<'src> Encoder<'_, 'src, '_> {
 pub(crate) fn instruction<'a>(p: &mut Parser<'a, '_>, mut op: Token<'a>) -> Result<()> {
     if !p.object.in_text() {
         return Err(p.error(op.column, "instructions require .text"));
+    }
+    if op.text == "o64" {
+        let next = p.word();
+        if next.text != "sysret" {
+            return Err(p.error(next.column, "o64 requires sysret"));
+        }
+        return p.emit(op.column, &[0x48, 0x0f, 0x07]);
     }
     let locked = op.text == "lock";
     if locked {

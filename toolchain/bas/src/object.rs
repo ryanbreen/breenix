@@ -133,8 +133,7 @@ impl Object {
                 .map(|(kind, flags)| (name, kind, flags))
                 .or_else(|| SECTIONS.iter().find(|entry| entry.0 == name).copied())
                 .or_else(|| {
-                    (self.target == Target::Aarch64
-                        && name.starts_with(".text.")
+                    (name.starts_with(".text.")
                         && name.len() > ".text.".len())
                     .then_some((name, SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR))
                 })

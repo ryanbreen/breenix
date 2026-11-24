@@ -9,7 +9,7 @@ ELF64 relocatable object. The default target is `x86_64` on either host.
 Use lower-case instructions and registers. The x86-64 backend uses Intel
 syntax. A semicolon outside a string starts a comment, and AArch64 also
 accepts `//`. The initial section is `.text`, where instructions go.
-`section NAME` selects `.text`, `.data`, `.rodata`, `.bss`, `.tdata` or `.tbss`.
+`section NAME` selects `.text`, `.data`, `.rodata`, `.bss`, `.tdata`, `.tbss` or an executable `.text.*` subsection.
 
 - `NAME:` defines a label at the current section offset. Labels are local
   by default and can have names like `.Lloop`. Use `global NAME` anywhere to
@@ -33,9 +33,10 @@ accepts `//`. The initial section is `.text`, where instructions go.
   otherwise. A 64-bit immediate store requires a value that fits the
   sign-extended imm32 form.
 - Write addresses as `[BASE + INDEX*SCALE + DISP]`, with any of those terms
-  omitted. Scales are 1, 2, 4 or 8. Address registers are uniformly 64-bit or
+  omitted. Numeric displacement terms may be parenthesized products. Scales are 1, 2, 4 or 8. Address registers are uniformly 64-bit or
   uniformly 32-bit within an address. Write `fs:[...]` or `gs:[...]` for a
-  segment base. The other four segment prefixes encode but have no effect
+  segment base; NASM-style `[gs:...]` and `[fs:...]` are also accepted.
+  The other four segment prefixes encode but have no effect
   on ordinary memory addresses in 64-bit mode.
 - `[rip + DISP]` uses a literal displacement. `[rip + LABEL + ADDEND]`
   computes the displacement from the end of the instruction to the label.
@@ -108,9 +109,12 @@ The source for these NASM forms is the pinned manual in the
   source. They use the same flag condition suffixes as `jcc`.
 - `push` and `pop` accept 16- or 64-bit registers and memory operands.
   Memory defaults to 64 bits. `push IMM` pushes a sign-extended 8- or
-  32-bit immediate as a 64-bit value. `lea` computes a memory address into
+  32-bit immediate as a 64-bit value; `push qword IMM` is also accepted. `lea` computes a memory address into
   a 16-, 32- or 64-bit register. `leave`, `nop`, `cld`, `std` and
-  `syscall` take no operands.
+  `syscall` take no operands. `swapgs`, `iretq`, `sysret`, `wrmsr`,
+  `rdmsr`, `hlt` and `cli` also take no operands; `o64 sysret` selects
+  the 64-bit return form. `mov` supports 64-bit GPR transfers to and from
+  `cr0`, `cr3` and `cr4`. `out dx, al` emits the byte port output form.
 
 ## Floating point, synchronization and strings
 

@@ -36,10 +36,22 @@ impl Encoder<'_, '_, '_> {
     }
 
     fn mov(&mut self) -> Result<()> {
+        let (first, _, _) = self.p.lookahead();
+        if first.text.starts_with("cr") {
+            let control = self.p.word();
+            self.p.expect(b',', "expected ',' between mov operands")?;
+            let reg = self.operand()?;
+            return self.control_move(control, reg, false);
+        }
         let dest = self.operand()?;
         self.p.expect(b',', "expected ',' between mov operands")?;
         if starts_number(self.p.peek()) {
             return self.mov_immediate(dest);
+        }
+        let (next, _, _) = self.p.lookahead();
+        if next.text.starts_with("cr") {
+            let control = self.p.word();
+            return self.control_move(control, dest, true);
         }
         let src = self.operand()?;
         let (opcode, reg, rm) = if src.is_memory() {
@@ -52,6 +64,35 @@ impl Encoder<'_, '_, '_> {
         }
         rm.match_width(self.p, reg.width)?;
         self.modrm(opcode + u32::from(reg.width != 1), reg, rm, 0)
+    }
+
+    // SDM Vol. 2B MOV to/from control registers: 0F 20/22 /r.
+    fn control_move(
+        &mut self,
+        control: crate::parser::Token<'_>,
+        reg: Operand<'_>,
+        read: bool,
+    ) -> Result<()> {
+        let number = match control.text {
+            "cr0" => 0,
+            "cr3" => 3,
+            "cr4" => 4,
+            _ => return Err(self.p.error(control.column, "unsupported control register")),
+        };
+        if reg.reg.width != 8 {
+            return Err(self.p.error(
+                reg.column,
+                "control register move requires a 64-bit register",
+            ));
+        }
+        if reg.reg.number >= 8 {
+            self.emit(&[0x41])?;
+        }
+        self.emit(&[
+            0x0f,
+            if read { 0x20 } else { 0x22 },
+            0xc0 | (number << 3) | (reg.reg.number & 7),
+        ])
     }
 
     // MOVZX/MOVSX: 0F B6/B7 and 0F BE/BF. MOVSXD: REX.W + 63.
@@ -240,6 +281,10 @@ impl Encoder<'_, '_, '_> {
 
     // PUSH/POP: 50/58+rd, FF /6, 8F /0 and PUSH 6A ib or 68 id.
     fn stack(&mut self, push: bool) -> Result<()> {
+        let (first, next, _) = self.p.lookahead();
+        if push && first.text == "qword" && starts_number(next) {
+            self.p.word();
+        }
         if push && starts_number(self.p.peek()) {
             let value = self.p.integer(4, true)?;
             let immediate = if fits_sign_extended(value, 1, 4) {
@@ -482,6 +527,15 @@ impl Encoder<'_, '_, '_> {
     pub(super) fn integer(&mut self) -> Result<bool> {
         match self.op.text {
             "mov" => self.mov()?,
+            "out" => {
+                let port = self.p.word();
+                self.p.expect(b',', "expected ',' between out operands")?;
+                let value = self.p.word();
+                if port.text != "dx" || value.text != "al" {
+                    return Err(self.p.error(port.column, "out requires dx, al"));
+                }
+                self.emit(&[0xee])?;
+            }
             "movsx" | "movzx" | "movsxd" => self.extend()?,
             "test" => self.binary(0, true)?,
             "imul" => self.imul()?,
@@ -509,6 +563,13 @@ impl Encoder<'_, '_, '_> {
                     "std" => 0xfd,
                     "nop" => 0x90,
                     "syscall" => 0x0f05,
+                    "swapgs" => 0x0f01f8,
+                    "iretq" => 0x48cf,
+                    "sysret" => 0x0f07,
+                    "wrmsr" => 0x0f30,
+                    "rdmsr" => 0x0f32,
+                    "hlt" => 0xf4,
+                    "cli" => 0xfa,
                     "lfence" => 0x0faee8,
                     "mfence" => 0x0faef0,
                     "sfence" => 0x0faef8,
