@@ -19,8 +19,8 @@ ARCHIVE = "busybox-1.37.0.tar.bz2"
 REFERENCE = ROOT / "target/libc-busybox-reference/x86_64/applets.json"
 
 
-def run_driver(fixture, output, env, phase=None):
-    args = ["/bin/sh", str(DRIVER), str(fixture), str(output), "x86_64"]
+def run_driver(fixture, output, env, phase=None, arch="x86_64"):
+    args = ["/bin/sh", str(DRIVER), str(fixture), str(output), arch]
     if phase is not None:
         args.insert(2, phase)
     return run_phase_command(args, output, env)
@@ -96,7 +96,7 @@ def refuses_failed_patch(directory):
     assert not (output / "patch.sha256").exists(), "failed patch published a receipt"
 
 
-def mac_fixture(directory):
+def mac_fixture(directory, arch="x86_64"):
     pin = os.environ["BREENIX_TOOLCHAIN_CLANG_SHA256"]
     compiler = Path(os.environ["BREENIX_TOOLCHAIN_CLANG"])
     assert compiler.is_absolute() and hashlib.sha256(compiler.read_bytes()).hexdigest() == pin
@@ -118,17 +118,16 @@ def mac_fixture(directory):
     shutil.copytree(ROOT / "libs/libbreenix-libc/include", bundle / "include")
     shutil.copy2(ROOT / "userspace/programs/linker.ld", bundle / "linker.ld")
     (bundle / "lib").mkdir()
-    shutil.copy2(
-        ROOT / "libs/libbreenix-libc/target/x86_64-breenix-c/release/libc.a",
-        bundle / "lib/libc.a",
-    )
+    libc_target = {"x86_64": "x86_64-breenix-c", "aarch64": "aarch64-breenix"}[arch]
+    shutil.copy2(ROOT / f"libs/libbreenix-libc/target/{libc_target}/release/libc.a",
+                 bundle / "lib/libc.a")
     env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LC_ALL": "C",
            "HOSTCC": str(clang), "BUSYBOX_JOBS": "8"}
     return fixture, env, expected
 
 
-def pass_phase(fixture, output, env, phase=None):
-    result = run_driver(fixture, output, env, phase)
+def pass_phase(fixture, output, env, phase=None, arch="x86_64"):
+    result = run_driver(fixture, output, env, phase, arch)
     print(result.stdout, end="")
     assert result.returncode == 0, result.stderr
 
@@ -180,41 +179,48 @@ def phase_refuses_missing_or_altered_predecessor(directory):
     assert not (output / "patch.log").exists()
 
 
-def object_group_chain_equals_directory_goal(directory):
-    fixture, env, _ = mac_fixture(directory)
+def object_group_chain_equals_directory_goal(directory, arch="x86_64"):
+    fixture, env, _ = mac_fixture(directory, arch)
     output = directory / "build"
     for phase in ("unpack", "patch", "generators", "configure"):
-        pass_phase(fixture, output, env, phase)
+        pass_phase(fixture, output, env, phase, arch)
     assert not (output / "applets.goals").exists(), "configure already ran the inventory"
     header = output / "busybox-1.37.0/include/applet_tables.h"
     stat = header.stat()
     original = header.read_bytes()
     header.write_bytes(original + b"\n/* changed after configure */\n")
-    altered = run_driver(fixture, output, env, "inventory")
+    altered = run_driver(fixture, output, env, "inventory", arch)
     assert altered.returncode == 1 and "predecessor configure" in altered.stderr, altered.stderr
     header.write_bytes(original)
     os.utime(header, ns=(stat.st_atime_ns, stat.st_mtime_ns))
-    pass_phase(fixture, output, env, "inventory")
+    pass_phase(fixture, output, env, "inventory", arch)
     baseline = directory / "configured"
     shutil.copytree(output, baseline, symlinks=True)
-    for phase in ("build-libbb-1", "build-libbb-2", "build-libbb-3", "build-libbb-4"):
-        pass_phase(fixture, output, env, phase)
-    for phase in ("build-applets-1", "build-applets-2", "build-applets-3"):
-        pass_phase(fixture, output, env, phase)
     source = output / "busybox-1.37.0"
-    goals = (output / "applets.goals").read_text().splitlines()
-    assert len(goals) == 94
-    assert all((source / goal).is_file() for goal in goals[:79])
-    assert not any((source / goal).exists() for goal in goals[79:])
-    early_link = run_driver(fixture, output, env, "link-and-list")
-    assert early_link.returncode == 1 and "predecessor build-applets-4" in early_link.stderr, early_link.stderr
-    pass_phase(fixture, output, env, "build-applets-4")
+    boundaries = {
+        "x86_64": {"libbb": (32, 64, 96, 128), "applets": (32, 64, 79, 94)},
+        "aarch64": {"libbb": (34, 70, 100, 128), "applets": (26, 55, 76, 94)},
+    }[arch]
+    for kind, ends in boundaries.items():
+        goals = (output / f"{kind}.goals").read_text().splitlines()
+        assert len(goals) == ends[-1]
+        for index, expected_end in enumerate(ends, start=1):
+            if kind == "applets" and index == 4:
+                early_link = run_driver(fixture, output, env, "link-and-list", arch)
+                assert early_link.returncode == 1 and "predecessor build-applets-4" in early_link.stderr, early_link.stderr
+            phase = f"build-{kind}-{index}"
+            pass_phase(fixture, output, env, phase, arch)
+            produced = [goal for goal in goals if (source / goal).is_file()]
+            assert produced == goals[:expected_end], (phase, len(produced), expected_end)
 
     def directory_outputs():
-        libbb = (output / "libbb.goals").read_text().splitlines()
-        assert len(libbb) == 128
-        directories = {Path(goal).parent for goal in libbb + goals}
-        paths = {source / goal for goal in libbb + goals}
+        goals = []
+        for kind, ends in boundaries.items():
+            kind_goals = (output / f"{kind}.goals").read_text().splitlines()
+            assert len(kind_goals) == ends[-1]
+            goals.extend(kind_goals)
+        directories = {Path(goal).parent for goal in goals}
+        paths = {source / goal for goal in goals}
         paths.update(source / subdir / "built-in.o" for subdir in directories)
         paths.update(path for subdir in directories if (path := source / subdir / "lib.a").is_file())
         return {str(path.relative_to(source)): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
@@ -224,8 +230,8 @@ def object_group_chain_equals_directory_goal(directory):
     # recorded build options stay fixed.
     output.rename(directory / "split")
     baseline.rename(output)
-    pass_phase(fixture, output, env, "build-libbb")
-    pass_phase(fixture, output, env, "build-applets")
+    pass_phase(fixture, output, env, "build-libbb", arch)
+    pass_phase(fixture, output, env, "build-applets", arch)
     actual = directory_outputs()
     assert actual == expected, sorted(name for name, digest in expected.items() if actual.get(name) != digest)
 
@@ -250,4 +256,4 @@ def audit_phases_equal_driver_phases(directory):
 if __name__ == "__main__":
     BMAKE = Path(sys.argv[2]).resolve()
     with tempfile.TemporaryDirectory(prefix="breenix-busybox-check-") as temporary:
-        globals()[sys.argv[1]](Path(temporary))
+        globals()[sys.argv[1]](Path(temporary), *sys.argv[3:])

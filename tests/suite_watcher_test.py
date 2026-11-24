@@ -83,7 +83,7 @@ class SuiteWatcherTest(unittest.TestCase):
                         for case in cases)
             self.assertGreaterEqual(deadlines[suite], (total * 5 + 3999) // 4000, suite)
         self.assertEqual(old_deadline, 1800)  # Previous per-suite gate.
-        self.assertEqual([deadlines[suite] for suite in suites], [2119, 3250, 2425])
+        self.assertEqual([deadlines[suite] for suite in suites], [1757, 3250, 2425])
         watcher = runpy.run_path(str(ROOT / "scripts/watch-qemu.py"))
         for index, suite in enumerate(suites):
             self.assertEqual(watcher["deadline_for_suite"](1800, deadlines, suites, index), deadlines[suite])

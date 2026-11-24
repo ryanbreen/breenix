@@ -2151,7 +2151,7 @@ class DriverTest(StateTest):
             self.assertGreaterEqual(boot.mode_deadline_seconds(args, suite), minimum_s, suite)
         self.assertGreaterEqual(boot.ceiling_seconds(args), (sequence_ms * 5 + 3999) // 4000)
 
-    def test_arm_busybox_allowances_are_provisional_ceiling(self):
+    def test_arm_busybox_allowances_match_acceptance(self):
         root = TOOLS.parents[1]
         runner = (root / 'libs/libbreenix/src/suite.rs').read_text()
         shared = runner.split('pub const NAMED_CASE_ALLOWANCES', 1)[1].split('];', 1)[0]
@@ -2164,13 +2164,27 @@ class DriverTest(StateTest):
                  if category['id'] == 'busybox' for case in category['cases']}
         self.assertEqual(len(cases), 15)
         self.assertEqual(len(entries), 15)
+        # ARM64 QEMU 20261124T035533Z-qemu-55077. The regrouped
+        # build cases use the observed per-goal costs for their new ranges.
+        measured_limits = {
+            'unpack': 10_000, 'patch': 10_000, 'generators': 40_000,
+            'configure': 40_000, 'inventory': 20_000,
+            'build-libbb-1': 60_000, 'build-libbb-2': 60_000,
+            'build-libbb-3': 60_000, 'build-libbb-4': 60_000,
+            'build-applets-1': 60_000, 'build-applets-2': 60_000,
+            'build-applets-3': 50_000, 'build-applets-4': 50_000,
+            'link-and-list': 20_000, 'required-usage': 10_000,
+        }
+        self.assertEqual({f'busybox/{phase}' for phase in measured_limits}, cases)
         self.assertEqual({(suite, case, int(ms.replace('_', ''))) for suite, case, ms in entries},
-                         {('toolchain', case, 60_000) for case in cases})
+                         {('toolchain', f'busybox/{phase}', ms) for phase, ms in measured_limits.items()})
         spec = importlib.util.spec_from_file_location('boot_progress', root / 'scripts/boot_progress.py')
         progress = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(progress)
         for _, _, ms in entries:
-            self.assertLess(int(ms.replace('_', '')), progress.STALL_SECONDS * 1000)
+            limit = int(ms.replace('_', ''))
+            self.assertLessEqual(limit, 60_000)
+            self.assertLess(limit, progress.STALL_SECONDS * 1000)
 
     def test_ui_testing_deadline_ceiling_and_start(self):
         d = self.driver
