@@ -3,6 +3,7 @@
 
 pub mod cfi;
 pub mod ehframe;
+pub mod level1;
 
 #[cfg(test)]
 extern crate std;
