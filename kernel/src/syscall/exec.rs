@@ -4,8 +4,8 @@ use super::errno::{E2BIG, EACCES, EFAULT, EISDIR, ELOOP, ENOENT, ENOEXEC, ENOMEM
 use alloc::{boxed::Box, string::String, vec::Vec};
 use core::ops::Range;
 
-// Reserve runtime stack below the arguments within the demand-growth cap.
-pub(crate) const DEFAULT_STACK_LIMIT: u64 = crate::memory::layout::MAX_USER_STACK_SIZE;
+// Reserve runtime stack below the arguments within the default soft limit.
+pub(crate) const DEFAULT_STACK_LIMIT: u64 = crate::memory::layout::DEFAULT_USER_STACK_LIMIT;
 pub(crate) const ARG_MAX: usize = DEFAULT_STACK_LIMIT as usize / 4;
 
 pub(crate) fn manager_errno(error: &str) -> u64 {

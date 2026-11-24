@@ -30,7 +30,7 @@ fn defaults() -> [Rlimit; COUNT] {
         soft: INFINITY,
         hard: INFINITY,
     }; COUNT];
-    limits[STACK].soft = crate::memory::layout::MAX_USER_STACK_SIZE;
+    limits[STACK].soft = crate::memory::layout::DEFAULT_USER_STACK_LIMIT;
     limits[NOFILE] = Rlimit {
         soft: crate::ipc::fd::INITIAL_FDS as u64,
         hard: crate::ipc::MAX_FDS as u64,
@@ -73,12 +73,10 @@ pub fn fork_allowed(manager: &ProcessManager, pid: ProcessId) -> bool {
 }
 
 impl Process {
-    /// Grow the user stack down to the page holding `addr`, as an access
-    /// there grows it on Linux: every page from the current bottom down is
-    /// mapped, within MAX_USER_STACK_SIZE, RLIMIT_STACK and RLIMIT_AS, without
-    /// crossing another live VMA. The bottom moves with each page, so growth
-    /// that stops part way leaves it
-    /// at the lowest page mapped. Stack pages are never executable. An
+    /// Grow the user stack down to the page holding `addr`. Growth respects
+    /// the soft stack and address-space limits, the stack reservation, and
+    /// live VMAs. The bottom moves with each page, so partial growth leaves
+    /// it at the lowest page mapped. Stack pages are non-executable. An
     /// address at or above the bottom needs no growth; another thread may
     /// have grown the stack past it first. Returns whether `addr`'s page is
     /// mapped now. PROCESS_MANAGER held.
@@ -86,7 +84,7 @@ impl Process {
         #[cfg(target_arch = "aarch64")]
         use crate::memory::arch_stub::{Page, PageTableFlags, Size4KiB, VirtAddr};
         use crate::memory::frame_allocator::{allocate_frame, deallocate_leaf_frame};
-        use crate::memory::layout::MAX_USER_STACK_SIZE;
+        use crate::memory::stack_growth::permits_stack_growth;
         #[cfg(target_arch = "x86_64")]
         use x86_64::{
             structures::paging::{Page, PageTableFlags, Size4KiB},
@@ -96,25 +94,14 @@ impl Process {
         let stack_top = self.user_stack_top;
         let stack_bottom = self.user_stack_bottom;
         let page_aligned = addr & !0xFFF;
-        if stack_top == 0
-            || page_aligned >= stack_top
-            || stack_top - page_aligned > MAX_USER_STACK_SIZE
-            || stack_top - page_aligned > self.limits.get(STACK).soft
-            || (page_aligned < stack_bottom
-                && self
-                    .mapped_bytes()
-                    .saturating_add(stack_bottom - page_aligned)
-                    > self.limits.get(AS).soft)
-        {
-            return false;
-        }
-        // Growth must not overwrite another live mapping on the way down.
-        if page_aligned < stack_bottom
-            && self
-                .vmas
-                .iter()
-                .any(|v| v.start.as_u64() < stack_bottom && v.end.as_u64() > page_aligned)
-        {
+        if !permits_stack_growth(
+            stack_bottom..stack_top,
+            page_aligned,
+            self.limits.get(STACK).soft,
+            self.limits.get(AS).soft,
+            || self.mapped_bytes(),
+            self.vmas.iter().map(|v| v.start.as_u64()..v.end.as_u64()),
+        ) {
             return false;
         }
         if page_aligned < stack_bottom

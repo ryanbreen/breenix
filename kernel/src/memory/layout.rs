@@ -11,6 +11,8 @@ use crate::memory::arch_stub::VirtAddr;
 #[cfg(target_arch = "x86_64")]
 use x86_64::VirtAddr;
 
+pub use super::stack_growth::MAX_USER_STACK_SIZE;
+
 // Virtual address layout constants
 #[cfg(target_arch = "x86_64")]
 pub const KERNEL_LOW_BASE: u64 = 0x100000; // Current low-half kernel base (1MB)
@@ -138,18 +140,11 @@ pub const MMAP_REGION_START: u64 = 0x7000_0000_0000;
 /// against one of these two named constants, not an independently
 /// hardcoded literal.
 ///
-/// That is a source-level fact backed by a structural ratchet
-/// (`tests/mmap_floor_structure.rs`), not a mathematical proof that no
-/// future producer could ever drift again (PR #744 review B2 -- the prior
-/// wording here claimed "there is nowhere left for either bound ... to
-/// drift apart again", which nothing enforced). The ratchet census-pins
-/// every currently known producer/seed site by (file, enclosing function,
-/// occurrence count) and fails the build the moment one of them stops
-/// naming these constants -- but a brand-new producer written tomorrow in
-/// some other shape entirely (never mentioning `MMAP_REGION_START`/`_END`
-/// by name) would not be walked into that census automatically; extending
-/// the pinned anchor list is how a legitimately new producer joins the law.
-pub const MMAP_REGION_END: u64 = 0x7FFF_FE00_0000;
+/// `tests/mmap_floor_structure.rs` checks the known producer and seed sites
+/// by file, enclosing function, and occurrence count. Its anchor list needs
+/// an entry when a new producer is added.
+/// The shared ceiling leaves a 16 MiB gap below the x86_64 stack reservation.
+pub const MMAP_REGION_END: u64 = 0x7FFF_FA00_0000;
 
 /// User stack allocation region start (high canonical space)
 /// User stacks are allocated in this high canonical range for better compatibility
@@ -172,9 +167,10 @@ pub const USER_STACK_REGION_END: u64 = aarch64_const::USER_STACK_REGION_END;
 #[allow(dead_code)]
 pub const USER_STACK_SIZE: usize = 64 * 1024;
 
-/// Maximum user stack size (2 MiB)
-/// Demand-paged stack growth will not exceed this limit
-pub const MAX_USER_STACK_SIZE: u64 = 2 * 1024 * 1024;
+/// Initial soft RLIMIT_STACK for a new process.
+pub const DEFAULT_USER_STACK_LIMIT: u64 = 2 * 1024 * 1024;
+
+const USER_STACK_GROWTH_BOTTOM: u64 = USER_STACK_REGION_START - MAX_USER_STACK_SIZE;
 
 // PML4 indices for different regions
 #[allow(dead_code)]
@@ -417,9 +413,8 @@ pub fn is_user_code_data_address(addr: u64) -> bool {
 
 /// Check if an address is in userspace stack region
 ///
-/// The stack region is in high canonical space, from USER_STACK_REGION_START to
-/// USER_STACK_REGION_END. This region is separate from code/data to allow for
-/// better compatibility and to avoid conflicts.
+/// The stack region includes the space reserved below USER_STACK_REGION_START
+/// for demand growth.
 ///
 /// Delegates to [`is_valid_user_stack_range`] (a single-address range of
 /// length 1) rather than repeating the bound logic here, so this and the
@@ -511,61 +506,23 @@ pub const fn is_valid_user_range(addr: u64, len: usize) -> bool {
     in_code_data || in_mmap || is_valid_user_stack_range(addr, last)
 }
 
-// x86_64: `kernel/src/memory/stack.rs`'s `find_free_virtual_space` hands out
-// successive per-thread stack TOPS ascending from USER_STACK_REGION_START
-// toward USER_STACK_REGION_END (so the real occupied range's upper bound is
-// genuinely USER_STACK_REGION_END -- unchanged from before). Each stack's
-// demand-paged growth is governed by `kernel/src/interrupts.rs`'s
-// `handle_stack_growth`, which will map pages down to, and refuses to grow
-// past, `USER_STACK_REGION_START.saturating_sub(MAX_USER_STACK_SIZE)` --
-// the exact same constant used here, so this predicate can never be
-// tighter than what the growth handler will actually map. It is
-// conservative in the accepting direction rather than exact: the bound
-// here is the theoretical worst case (a stack top pinned at
-// USER_STACK_REGION_START itself), while the shipped `exec` paths actually
-// pin `USER_STACK_TOP` at `USER_STACK_REGION_START + 0x10000` (64 KiB;
-// `process/manager.rs:3300,3632`, `syscall/handlers.rs:2153`) and
-// `stack.rs`'s allocator only ascends from USER_STACK_REGION_START. Every
-// real `stack_top` is therefore >= USER_STACK_REGION_START, so every
-// process's actual growth cap is >= this predicate's floor -- the
-// predicate is never tighter than reality, just not pinned to the exact
-// placement `exec` uses.
+// x86_64 stack tops are at or above USER_STACK_REGION_START, and the
+// ascending stack allocator can place them up to USER_STACK_REGION_END.
 #[cfg(target_arch = "x86_64")]
-#[inline]
-const fn is_valid_user_stack_range(addr: u64, last: u64) -> bool {
-    let region_bottom = USER_STACK_REGION_START.saturating_sub(MAX_USER_STACK_SIZE);
-    addr >= region_bottom
-        && addr < USER_STACK_REGION_END
-        && last >= region_bottom
-        && last < USER_STACK_REGION_END
-}
+const USER_STACK_ADDRESS_END: u64 = USER_STACK_REGION_END;
 
-// aarch64: `kernel/src/process/manager.rs`'s ARM64 process-creation and
-// exec paths map a single, fully-backed `USER_STACK_SIZE` (64 KiB) stack per
-// process, with its top *always* pinned at the fixed address
-// USER_STACK_REGION_START (never ascending the way x86_64's does). This
-// pin does NOT rest on "no two stacks are ever co-resident in one address
-// space" -- a CLONE_VM thread genuinely does share its parent's address
-// space and page table. It rests on `sys_clone` taking a caller-supplied
-// `child_stack` (`syscall/clone.rs:59,155,164`), which comes from the
-// mmap region and is covered by that arm instead -- every *non-CLONE_VM*
-// process still gets its own page table with its own single window at
-// this fixed address. That window grows on demand, as x86_64's does:
-// `arch_impl::aarch64::exception`'s `handle_stack_growth_arm64` maps
-// pages down to, and refuses to grow past,
-// `USER_STACK_REGION_START - MAX_USER_STACK_SIZE`, so that is this
-// predicate's floor too -- a syscall buffer in a grown stack must be
-// accepted. (Before the growth handler existed the floor was
-// `USER_STACK_SIZE`, the fixed window's exact extent; before that, a
-// hardcoded "1 MiB for multiple stacks" literal, #729 B4-a.)
+// ARM64 process creation and exec fix the main stack top at
+// USER_STACK_REGION_START. CLONE_VM threads use caller-supplied stacks,
+// which are covered by the mmap range.
 #[cfg(target_arch = "aarch64")]
+const USER_STACK_ADDRESS_END: u64 = USER_STACK_REGION_START;
+
 #[inline]
 const fn is_valid_user_stack_range(addr: u64, last: u64) -> bool {
-    let region_bottom = USER_STACK_REGION_START.saturating_sub(MAX_USER_STACK_SIZE);
-    addr >= region_bottom
-        && addr < USER_STACK_REGION_START
-        && last >= region_bottom
-        && last < USER_STACK_REGION_START
+    addr >= USER_STACK_GROWTH_BOTTOM
+        && addr < USER_STACK_ADDRESS_END
+        && last >= USER_STACK_GROWTH_BOTTOM
+        && last < USER_STACK_ADDRESS_END
 }
 
 // === B4 (#729 review) compile-time proof ===
@@ -650,10 +607,9 @@ const _: () = assert!(
 // to fail *alone*, the START-accept assert just above it must keep passing
 // too, which only happens if `MMAP_REGION_START` still lands inside the
 // *stack* arm's window once the mmap arm is gone. That window's bottom
-// edge is `is_valid_user_stack_range`'s own `region_bottom` (defined
-// above), which is a different value on each arch: x86_64 subtracts
+// edge in those builds was a different value on each arch: x86_64 subtracted
 // `MAX_USER_STACK_SIZE` from its own `USER_STACK_REGION_START`; aarch64
-// subtracts the different `USER_STACK_SIZE` from a different
+// subtracted the different `USER_STACK_SIZE` from a different
 // `USER_STACK_REGION_START`. Both pairs below were run through `cargo
 // check` on BOTH targets, not modelled or assumed from one arch's result:
 //   - x86_64's own edge: `MMAP_REGION_START = 0x7FFF_FEE0_0000`
@@ -673,8 +629,7 @@ const _: () = assert!(
 // re-run it against the aarch64 target -- PR #744 review C1. It does not:
 // see the second bullet above.) Both pairs were measured while aarch64's
 // window bottom was `USER_STACK_SIZE` deep; since aarch64 stacks grow on
-// demand its bottom is `USER_STACK_REGION_START - MAX_USER_STACK_SIZE`,
-// so its own edge today is that address. The x86 stack and code/data acceptance
+// demand its bottom is `USER_STACK_GROWTH_BOTTOM`. The x86 stack and code/data acceptance
 // asserts remain sound by the same const-eval mechanism and the same
 // reasoning, but as of this commit no mutation has been run against them
 // specifically -- they are unverified by direct falsification, not yet
@@ -708,18 +663,9 @@ const _: () = assert!(
     is_valid_user_range(crate::memory::vma::MMAP_REGION_START, 1),
     "the mmap region's lower bound (MMAP_REGION_START, now the allocators' real floor -- #742) must be accepted"
 );
-// One byte below the real producer floor must be refused -- proves the
-// boundary asserted above is tight, not merely "somewhere inside is
-// accepted". At `MMAP_REGION_START - 1` (0x6FFF_FFFF_FFFF) on both arches
-// this falls *above* `USERSPACE_CODE_DATA_END` (0x8000_0000, 2GiB) -- not
-// below it, contrary to what this comment used to say (PR #744 review
-// F4) -- so it cannot be admitted by the code/data arm's own upper bound
-// either. It is also below `USER_STACK_REGION_START`
-// (0x7FFF_FF00_0000) by a wide margin on both arches, so the stack arm's
-// lower bound can't absorb it either. With all three windows' own bounds
-// ruling it out, the only way this assert can pass is if the mmap arm's
-// lower bound is exactly `MMAP_REGION_START`, which is exactly what #742
-// made the allocators' own floor.
+// The byte below MMAP_REGION_START lies above the code/data window and
+// below the stack window on both arches. The two mmap floor assertions
+// check acceptance at the floor and refusal immediately below it.
 const _: () = assert!(
     !is_valid_user_range(crate::memory::vma::MMAP_REGION_START - 1, 1),
     "one byte below the mmap region's real floor (MMAP_REGION_START, #742) must be refused"
@@ -747,41 +693,13 @@ const _: () = assert!(
     "the top of the userspace code/data region -- where sys_brk caps heap growth -- must be accepted"
 );
 
-// user stack: both ends of the real per-arch extent. x86_64's demand-paged
-// growth handler (`kernel/src/interrupts.rs::handle_stack_growth`) will
-// map down to exactly `USER_STACK_REGION_START - MAX_USER_STACK_SIZE`, and
-// the ascending allocator (`kernel/src/memory/stack.rs`) can hand out a
-// stack top up to `USER_STACK_REGION_END`. aarch64's stack is pinned at
-// `USER_STACK_REGION_START` (`kernel/src/process/manager.rs`) and its
-// growth handler maps down to the same `MAX_USER_STACK_SIZE` floor.
-// This is the exact address class whose bottom end was too narrow and
-// refused every aarch64 process's first stack-adjacent access once this
-// predicate became load-bearing on the copy_from_user hot path.
-#[cfg(target_arch = "x86_64")]
-const _: () = assert!(
-    is_valid_user_range(USER_STACK_REGION_END - 1, 1),
-    "the top of the real x86_64 user stack extent must be accepted"
-);
-#[cfg(target_arch = "x86_64")]
+// User pointers can refer to either end of the stack window on both arches.
 const _: () = assert!(
     is_valid_user_range(
-        USER_STACK_REGION_START.saturating_sub(MAX_USER_STACK_SIZE),
-        1
+        USER_STACK_GROWTH_BOTTOM,
+        (USER_STACK_ADDRESS_END - USER_STACK_GROWTH_BOTTOM) as usize,
     ),
-    "the deepest address handle_stack_growth will ever map must be accepted"
-);
-#[cfg(target_arch = "aarch64")]
-const _: () = assert!(
-    is_valid_user_range(USER_STACK_REGION_START - 1, 1),
-    "the top of the real aarch64 user stack extent must be accepted"
-);
-#[cfg(target_arch = "aarch64")]
-const _: () = assert!(
-    is_valid_user_range(
-        USER_STACK_REGION_START - MAX_USER_STACK_SIZE,
-        1
-    ),
-    "the deepest address the aarch64 stack growth handler will ever map must be accepted"
+    "the reserved user stack range must be accepted"
 );
 
 // === Compile-time Layout Assertions ===
@@ -794,6 +712,6 @@ const _: () = assert!(
 );
 
 const _: () = assert!(
-    MMAP_REGION_END <= USER_STACK_REGION_START,
-    "Mmap region overlaps with stack region!"
+    MMAP_REGION_END < USER_STACK_GROWTH_BOTTOM,
+    "Mmap region must end below the reserved stack window"
 );
