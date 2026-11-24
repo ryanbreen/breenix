@@ -176,10 +176,15 @@ build_rust_programs() (
         export RUSTFLAGS="$HOSTED_RUSTFLAGS -C metadata=breenix_std_$FORK_COMMIT"
         extra_link_flags=()
         case "$HOSTED_BIN" in
-            suite-rust-host|rust-host-startup-probe|rust-host-process-probe)
+            suite-rust-host|rust-host-startup-probe|rust-host-process-probe|rust-host-unwind-probe)
                 extra_link_flags=(-Cforce-unwind-tables=yes) ;;
         esac
         mkdir -p "$SCRIPT_DIR/target/hosted/$TARGET_DIR-hosted/release"
+        if [[ "$HOSTED_BIN" == rust-host-unwind-probe ]]; then
+            c_object="$SCRIPT_DIR/target/hosted/$TARGET_DIR-hosted/release/rust_host_unwind_frame.o"
+            clang --target="${ARCH}-unknown-none-elf" -O2 -funwind-tables -c "$SCRIPT_DIR/src/rust_host_unwind_frame.c" -o "$c_object"
+            extra_link_flags+=("-Clink-arg=$c_object")
+        fi
         link_map="$SCRIPT_DIR/target/hosted/$TARGET_DIR-hosted/release/$HOSTED_BIN.map"
         # Keep hosted ELFs out of the ordinary install pool. cargo rustc
         # passes the arguments after -- to this bin's rustc invocation only.
@@ -261,6 +266,9 @@ if [[ -n "$HOSTED_BIN" ]]; then
         echo "  Building hosted userspace binary $HOSTED_BIN ($ARCH)..."
         build_rust_programs
         HOSTED_BIN="rust-host-process-probe"
+        echo "  Building hosted userspace binary $HOSTED_BIN ($ARCH)..."
+        build_rust_programs
+        HOSTED_BIN="rust-host-unwind-probe"
         echo "  Building hosted userspace binary $HOSTED_BIN ($ARCH)..."
         build_rust_programs
     fi

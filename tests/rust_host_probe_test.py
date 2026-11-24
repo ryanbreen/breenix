@@ -59,7 +59,7 @@ class StartupProbeTest(unittest.TestCase):
     def test_built_elf_and_staged_image(self):
         for arch, machine in [('x86_64', 62), ('aarch64', 183)]:
             with self.subTest(arch=arch):
-                release = HOSTED / f'{arch}-breenix/release'
+                release = HOSTED / f'{arch}-breenix-hosted/release'
                 suite = release / 'suite-rust-host'
                 probe = release / 'rust-host-startup-probe'
                 process_probe = release / 'rust-host-process-probe'
