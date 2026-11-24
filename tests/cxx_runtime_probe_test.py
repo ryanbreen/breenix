@@ -6,6 +6,7 @@ import tempfile
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import unittest
 
@@ -17,6 +18,33 @@ MACHINES = {'x86_64': 'EM_X86_64', 'aarch64': 'EM_AARCH64'}
 
 
 class CxxRuntimeProbeTest(unittest.TestCase):
+    def test_containers_probe_rejects_no_op_mutex(self):
+        source = PROGRAMS / 'cxx/containers-threads.cpp'
+        expected = json.loads((source.parent / 'expect.json').read_text())['containers-threads']
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            mutant = root / source.name
+            shim = '''struct NoOpMutex {
+    void lock() {}
+    bool try_lock() { return true; }
+    void unlock() {}
+};
+'''
+            original = source.read_text()
+            self.assertIn('std::mutex mutex;', original)
+            mutant.write_text(shim + original.replace('std::mutex mutex;', 'NoOpMutex mutex;'))
+            compiler = shlex.split(os.environ.get('CXX', 'c++'))
+            for implementation in (source, mutant):
+                binary = root / 'probe'
+                subprocess.run(
+                    [*compiler, '-std=c++23', '-O2', '-pthread', '-Wall', '-Wextra', '-Werror',
+                     '-I', source.parent, implementation, '-o', binary], check=True, timeout=30)
+                result = subprocess.run([binary, '1'], capture_output=True, text=True, timeout=5)
+                if implementation == source:
+                    self.assertEqual((result.returncode, result.stdout), (0, expected))
+                else:
+                    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+
     def test_probes_staged_only_under_cxx_runtime(self):
         spec = importlib.util.spec_from_file_location('rust_host_stage', ROOT / 'scripts/rust_host_stage.py')
         stage = importlib.util.module_from_spec(spec)
