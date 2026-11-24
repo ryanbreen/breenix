@@ -30,6 +30,7 @@ class LlvmPortTest(unittest.TestCase):
             self.assertIsNotNone(current)
             inside = False
             found_branch = False
+            wraps_fallback = False
             count += 1
             for line in block.splitlines():
                 if line.startswith('diff --git '):
@@ -39,14 +40,20 @@ class LlvmPortTest(unittest.TestCase):
                     self.assertFalse(inside, f'{current}: {line}')
                     inside = True
                     found_branch = True
+                    wraps_fallback = line.startswith('+#if ')
+                elif line == '+#endif':
+                    self.assertTrue(wraps_fallback, f'{current}: {line}')
+                    wraps_fallback = inside = False
                 elif re.match(r'^[ +]#(?:elif|else|endif)\b', line):
                     if line.startswith('+'):
                         self.assertTrue(inside, f'{current}: {line}')
+                        self.assertEqual(line, '+#else')
                     inside = False
                 elif line.startswith('+'):
                     self.assertTrue(inside, f'{current}: {line}')
                     self.assertFalse(line.startswith('+#'), f'{current}: {line}')
             self.assertTrue(found_branch, current)
+            self.assertFalse(wraps_fallback, current)
         self.assertGreater(count, 0)
 
     def test_support_patch_leaves_pinned_llvm_clean(self):
@@ -57,7 +64,7 @@ class LlvmPortTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='breenix-llvm-support-') as temp:
             source = llvm_port.prepare_support_source(llvm, Path(temp))
             self.assertFalse((source / 'llvm').is_symlink())
-            subprocess.run(['git', 'apply', '--no-index', '--reverse', '--check',
+            subprocess.run(['git', 'apply', '--no-index', '--unidiff-zero', '--reverse', '--check',
                             llvm_port.SUPPORT_PATCH], cwd=source, check=True)
         self.assertEqual(llvm_port.verify_llvm(ROOT, llvm), pin)
 
