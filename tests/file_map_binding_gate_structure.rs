@@ -52,6 +52,10 @@ fn bodies_containing<'a>(source: &'a str, needle: &str) -> Vec<(&'a str, &'a str
     found
 }
 
+fn compact(source: &str) -> String {
+    source.split_whitespace().collect()
+}
+
 #[test]
 fn binding_gate_waiters_sleep_until_release() {
     let file_map = fs::read_to_string(root().join("kernel/src/memory/file_map.rs")).unwrap();
@@ -68,8 +72,20 @@ fn binding_gate_waiters_sleep_until_release() {
         );
     }
     let releases = bodies_containing(&file_map, "binding_waiters.wake_up()");
+    let release_then_wake = compact(
+        "{
+            match self.held.take() {
+                Some(GateHold::Exclusive(guard)) => drop(guard),
+                Some(GateHold::Shared(guard)) => drop(guard),
+                None => {}
+            }
+            self.binding_waiters.wake_up();
+        }",
+    );
     assert!(
-        releases.iter().any(|(name, body)| *name == "drop" && body.contains("held.take()")),
+        releases.iter().any(|(name, body)| {
+            *name == "drop" && compact(&body[body.find('{').unwrap()..]) == release_then_wake
+        }),
         "dropping the gate guard must release the gate, then wake its waiters"
     );
 }
@@ -77,9 +93,34 @@ fn binding_gate_waiters_sleep_until_release() {
 #[test]
 fn gate_waits_end_only_for_a_fatal_signal() {
     let blocking = fs::read_to_string(root().join("kernel/src/syscall/blocking_io.rs")).unwrap();
-    let killable = bodies_containing(&blocking, "fatal_signal_pending");
+    let killable = bodies_containing(&blocking, "fn wait_prepared_killable(");
+    let [(_, body)] = killable.as_slice() else {
+        panic!("expected a single killable wait helper");
+    };
+    let body = compact(body);
+    let publish_failed = compact(
+        "PrepareOutcome::PublishFailed => {
+            queue.finish_wait();
+            return Err(if crate::syscall::fatal_signal_pending() {
+                errno::EINTR
+            } else {
+                errno::ESRCH
+            });
+        }",
+    );
+    let queued_result = compact(
+        "queue.finish_wait();
+        if crate::syscall::fatal_signal_pending() {
+            return Err(errno::EINTR);
+        }
+        Ok(())
+    }",
+    );
     assert!(
-        killable.iter().any(|(name, _)| *name == "wait_prepared_killable"),
+        body.contains(&publish_failed)
+            && body.ends_with(&queued_result)
+            && body.matches("errno::EINTR").count() == 2
+            && !body.contains("check_signals_for_eintr("),
         "exec must not fail with EINTR for a handled signal while it waits for the gate"
     );
 }
