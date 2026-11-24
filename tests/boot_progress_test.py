@@ -182,6 +182,28 @@ class ProgressTest(unittest.TestCase):
                 self.assertGreater(limits[0], 10_000)
                 self.assertLess(limits[0], monitor['STALL_SECONDS'] * 1000)
 
+    def test_rust_host_case_allowances(self):
+        runner = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
+        manifest = json.loads((ROOT / 'docs/suites/rust-host.json').read_text())
+        default = int(re.search(r'pub const DEFAULT_CASE_LIMIT_MS: u64 = ([\d_]+);', runner)[1])
+        table = runner.split('pub const NAMED_CASE_ALLOWANCES:', 1)[1].split(';', 1)[0]
+        entries = re.findall(r'\(\s*"rust-host"\s*,\s*"([^"]+)"\s*,\s*([\d_]+)\s*,?\s*\)', table)
+        named = {case: int(limit) for case, limit in entries}
+        cases = {f"{category['id']}/{item['id']}" for category in manifest['categories']
+                 for item in category['cases']}
+        self.assertEqual(len(named), len(entries))
+        self.assertLessEqual(named.keys(), cases)
+        self.assertEqual({case: named.get(case, default) for case in cases}, {
+            'libc-surface/startup-order': 10_000,
+            'libc-surface/memory-limits': 10_000,
+            'libc-surface/file-mmap': 60_000,
+            'libc-surface/process-pipes-locks': 10_000,
+        })
+        stall = runpy.run_path(str(ROOT / 'scripts/boot_progress.py'))['STALL_SECONDS']
+        for limit in named.values():
+            self.assertLessEqual(limit, 60_000)
+            self.assertLess(limit, stall * 1000)
+
     def test_unknown_unlabelled_kernel_print_is_not_progress(self):
         self.feed('SUITE smoke START cases=5\n', 0)
         self.feed('new periodic scheduler status\n', 119, 'mixed')
