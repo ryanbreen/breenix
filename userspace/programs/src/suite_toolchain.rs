@@ -594,6 +594,8 @@ fn bundle_command(scratch: &Scratch, tool: &str) -> Command {
         .current_dir(&scratch.0)
         .env_clear()
         .env("PATH", format!("{}:/bin", bin.display()))
+        // The suite supervises the process group that owns the build.
+        .env("BMAKE_INHERIT_PROCESS_GROUP", "1")
         .stdin(Stdio::null());
     command
 }

@@ -7,6 +7,14 @@ use std::{fs, path::Path};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 #[test]
+fn bundle_make_inherits_the_suite_process_group() {
+    let source = include_str!("../userspace/programs/src/suite_toolchain.rs");
+    let (_, after_signature) = source.split_once("fn bundle_command(").unwrap();
+    let (body, _) = after_signature.split_once("\n}\n").unwrap();
+    assert!(body.contains(r#".env("BMAKE_INHERIT_PROCESS_GROUP", "1")"#));
+}
+
+#[test]
 fn busybox_chain_writes_under_test_record() {
     let root = std::env::temp_dir().join(format!("suite-toolchain-record-{}", std::process::id()));
     fs::create_dir(&root).unwrap();
