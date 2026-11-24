@@ -158,7 +158,7 @@ fn lsda_relative_bases_and_missing_got() {
     // LSB Core 5.0 table 10-6: the LSDA is textrel or datarel.
     let frame = [
         16, 0, 0, 0, 0, 0, 0, 0, 1, b'z', b'L', b'R', 0, 1, 0x78, 16,
-        2, 0x2b, 0x1b, 0, 16, 0, 0, 0, 24, 0, 0, 0,
+        2, 0x2b, 0x1b, 0, 17, 0, 0, 0, 24, 0, 0, 0,
         0xe4, 0, 0, 0, 4, 0, 0, 0, 4, 0x10, 0, 0, 0,
     ];
     let decode = |bytes: &[u8], data_base| {
