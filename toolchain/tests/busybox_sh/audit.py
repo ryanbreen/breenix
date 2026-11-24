@@ -16,9 +16,9 @@ from run import DRIVER, ROOT, VENDOR, run_phase_command
 
 ARCHES = ("x86_64", "aarch64")
 PHASES = (
-    "unpack", "patch", "generators", "configure",
+    "unpack", "patch", "generators", "configure", "inventory",
     *(f"build-libbb-{n}" for n in range(1, 5)),
-    *(f"build-applets-{n}" for n in range(1, 4)),
+    *(f"build-applets-{n}" for n in range(1, 5)),
     "link-and-list",
 )
 DEV = Path("opt/breenix-dev/25.2")
