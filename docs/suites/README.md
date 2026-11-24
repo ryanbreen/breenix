@@ -2307,3 +2307,15 @@ reporting categories, screen/font read-back and E16's complete 88-case `console`
 suite, including its memory reclamation record.
 
 Filesystem categories may declare `"root": "breenfs"`. The guest emits `SUITE filesystem ROOT <fs>` before its cases; the verdict requires exactly one valid declaration and scores that category only on the named root. The default ext2 run omits the category.
+
+### C++ runtime suite
+
+`cxx-runtime` is opt-in: select it explicitly with `--suite cxx-runtime`. It runs
+three hosted C++ probes for static initialization order, guarded initialization
+across eight threads, and containers with threads. The suite and probes are staged
+only for a selected test image. Each case has a provisional named 60-second
+allowance for its first R240 measurement (E25 ruling 86); its measured duration
+will set the subsequent allowance under ruling 81. ARM guest execution remains
+pending the E25 ARM catch-up. For x86 metal, use the Mac prebuilt image path
+and set `BREENIX_CXX_RUNTIME_BUILDS` to the directory holding the per-architecture
+K3 runtime builds; the ordinary Linux metal builder cannot run the Mac toolchain.

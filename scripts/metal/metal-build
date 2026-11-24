@@ -199,6 +199,9 @@ def inner(args):
     transfer = transfer_fixture.selected(args.suite)
     toolchain = 'toolchain' in suites
     rust_host = 'rust-host' in suites
+    cxx_runtime = 'cxx-runtime' in suites
+    if cxx_runtime and sys.platform != 'darwin':
+        raise ValueError('cxx-runtime requires a Mac prebuilt image and BREENIX_CXX_RUNTIME_BUILDS')
     milestone = getattr(args, 'milestone', None)
     kernel_assembly = milestone == KERNEL_ASSEMBLY_MILESTONE
     busybox = kernel_assembly or milestone == 'toolchain/busybox-on-box'
@@ -207,7 +210,7 @@ def inner(args):
     toolchain_build = None
     kernel_image = None
     build_companions = build_fixtures or busybox
-    root = tmp / 'ext2-staged.img' if 'sdk' in suites or build_fixtures or transfer or rust_host else seed
+    root = tmp / 'ext2-staged.img' if 'sdk' in suites or build_fixtures or transfer or rust_host or cxx_runtime else seed
     try:
         started = time.time()
         if not local:
@@ -316,9 +319,24 @@ def inner(args):
                 if not clean_build(status, log, 'hosted Rust suite and probes', logs, out):
                     return 1
                 subprocess.run([sys.executable, str(clone / 'scripts/rust_host_stage.py'),
-                                '--arch', 'x86_64', '--image', str(root), '--suite', args.suite],
+                                '--arch', 'x86_64', '--image', str(root), '--suite', 'rust-host'],
                                cwd=clone, check=True)
                 timings['rust_host_suite'] = round(time.time() - started)
+            if cxx_runtime:
+                started = time.time()
+                log = logs / 'cxx-runtime-build.log'
+                with log.open('w') as output:
+                    status = subprocess.call([str(clone / 'userspace/programs/build.sh'), '--arch', 'x86_64',
+                                              '--hosted-bin', 'suite-cxx-runtime', '--features', 'cxx-runtime'],
+                                             cwd=clone, stdout=output, stderr=subprocess.STDOUT)
+                    if status == 0:
+                        status = subprocess.call([str(clone / 'userspace/programs/build.sh'), '--arch', 'x86_64',
+                                                  '--cxx-runtime'], cwd=clone, stdout=output, stderr=subprocess.STDOUT)
+                if not clean_build(status, log, 'C++ runtime suite and probes', logs, out):
+                    return 1
+                subprocess.run([sys.executable, str(clone / 'scripts/rust_host_stage.py'), '--arch', 'x86_64',
+                                '--image', str(root), '--suite', 'cxx-runtime'], cwd=clone, check=True)
+                timings['cxx_runtime_suite'] = round(time.time() - started)
             if 'sdk' in suites:
                 started = time.time()
                 log = logs / 'sdk-suite.log'

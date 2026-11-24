@@ -12,6 +12,7 @@ description = "Userspace programs and utilities for Breenix"
 framebuffer-v1 = []
 hosted-link-probe = []
 rust-host = []
+cxx-runtime = []
 
 [dependencies]
 libcollab = { path = "../../libs/libcollab", features = ["net"] }
@@ -1016,3 +1017,8 @@ required-features = ["rust-host"]
 name = "rust-host-unwind-probe"
 path = "src/rust_host_unwind_probe.rs"
 required-features = ["rust-host"]
+
+[[bin]]
+name = "suite-cxx-runtime"
+path = "src/suite_cxx_runtime.rs"
+required-features = ["cxx-runtime"]

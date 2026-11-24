@@ -71,8 +71,8 @@ def resolve(spec, target, has_3d=False, read=read_repo):
             suite = effort.get("suite")
             if not suite:
                 continue
-            if suite == "rust-host":
-                skipped.append((suite, "opt-in only; run --suite rust-host explicitly"))
+            if suite in ("rust-host", "cxx-runtime"):
+                skipped.append((suite, f"opt-in only; run --suite {suite} explicitly"))
             elif target != "x86-metal" and target not in effort.get("targets", []):
                 skipped.append((suite, f"not an effort target of {target}"))
             elif manifest(suite) is None:
