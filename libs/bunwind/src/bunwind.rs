@@ -79,3 +79,68 @@ fn cfa_rules_from_dwarf5_table_6_3() {
         ]
     );
 }
+
+#[test]
+fn fde_found_through_eh_frame_hdr() {
+    use crate::ehframe::{Memory, Section, Sections};
+
+    struct ProbeMemory;
+    impl Memory for ProbeMemory {
+        fn read(&self, _: u64, _: usize) -> Option<&[u8]> {
+            None
+        }
+    }
+
+    // The ranges, return columns and instructions are from the saved
+    // llvm-dwarfdump output. DWARF 5 Table 7.29 gives the instruction bytes.
+    let probes = [
+        (
+            &include_bytes!("../tests/fixtures/k1-hosted/x86_64.eh_frame")[..],
+            include_bytes!("../tests/fixtures/k1-hosted/x86_64.eh_frame_hdr"),
+            0x4001_d248,
+            0x4001_d230,
+            0x4000_4dcc..0x4000_4dcd,
+            16,
+            -8,
+            &[0x0c, 7, 8, 0x90, 1, 0, 0][..], // CFA = RSP + 8, RIP at CFA - 8
+        ),
+        (
+            &include_bytes!("../tests/fixtures/k1-hosted/aarch64.eh_frame")[..],
+            include_bytes!("../tests/fixtures/k1-hosted/aarch64.eh_frame_hdr"),
+            0x4001_e190,
+            0x4001_e17c,
+            0x4000_4f34..0x4000_4f38,
+            30,
+            -4,
+            &[0x0c, 31, 0][..], // CFA = SP
+        ),
+    ];
+    for (frame, header, frame_address, header_address, range, register, alignment, initial) in
+        probes
+    {
+        let sections = Sections {
+            frame: Section {
+                address: frame_address,
+                bytes: frame,
+            },
+            header: Some(Section {
+                address: header_address,
+                bytes: header,
+            }),
+            data_base: None,
+            address_size: 8,
+            endian: Endian::Little,
+        };
+        for pc in [range.start, range.end - 1] {
+            let fde = sections.find_fde(&ProbeMemory, pc).unwrap().unwrap();
+            assert_eq!(fde.pc_range, range);
+            assert_eq!(fde.cie.return_address_register, register);
+            assert_eq!(fde.cie.code_alignment, 1);
+            assert_eq!(fde.cie.data_alignment, alignment);
+            assert_eq!(fde.cie.initial_instructions, initial);
+        }
+        for pc in [range.start - 1, range.end] {
+            assert!(sections.find_fde(&ProbeMemory, pc).unwrap().is_none());
+        }
+    }
+}

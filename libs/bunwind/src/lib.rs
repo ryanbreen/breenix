@@ -21,3 +21,6 @@ fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
     // SAFETY: The platform C ABI's abort takes no arguments and terminates.
     unsafe { abort() }
 }
+
+#[cfg(test)]
+mod ehframe_test;
