@@ -50,7 +50,7 @@ fn corrupt_or_truncated_is_error_not_panic() {
         ErrorKind::InvalidCiePointer
     );
 
-    bad_frame = *frame;
+    let mut bad_frame = *frame;
     bad_frame[16] = 0x1f; // unsupported format in the CIE's R encoding
     assert_eq!(
         lookup(&bad_frame, header).unwrap_err().kind,
