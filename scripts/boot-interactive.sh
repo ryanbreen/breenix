@@ -419,7 +419,6 @@ if [ "$BUILD" -eq 1 ]; then
     if [ "$MODE" = suite ] && [[ ",$SUITE," == *,cxx-runtime,* ]]; then
         run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --hosted-bin suite-cxx-runtime --features cxx-runtime
         run_build "$ROOT/userspace/programs/build.sh" --arch aarch64 --cxx-runtime
-        cp "$ROOT/userspace/programs/target/hosted/aarch64-breenix-hosted/release/suite-cxx-runtime" "$ROOT/userspace/programs/aarch64/suite-cxx-runtime.elf"
     fi
     echo "==> Building the ext2 disk"
     run_build "$ROOT/scripts/create_ext2_disk.sh" --arch aarch64
@@ -565,7 +564,8 @@ if [ "$MODE" = suite ]; then
         python3 "$ROOT/scripts/rust_host_stage.py" --arch aarch64 --image "$WRITABLE" --suite "$SUITE"
     fi
     "$ROOT/scripts/write-boot-target.sh" "$WRITABLE" "${SUITE%%,*}" \
-        "$ROOT/userspace/programs/aarch64/suite-${SUITE%%,*}.elf" "$SEQUENCE" "$ONLY" "$PACE" "$ROOT_FS"
+        "$ROOT/userspace/programs/aarch64/suite-${SUITE%%,*}.elf" "$SEQUENCE" "$ONLY" "$PACE" "$ROOT_FS" \
+        "$ROOT/userspace/programs/target/hosted/aarch64-breenix-hosted/release/suite-cxx-runtime"
 fi
 SMB_INSTANCE=
 if [ "$MODE" = suite ] && { [[ ",$SUITE," == *,gui-apps,* ]] || [[ ",$SUITE," == *,network-shares,* ]]; }; then

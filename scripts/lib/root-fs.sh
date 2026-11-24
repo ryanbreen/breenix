@@ -23,7 +23,7 @@ root_fs_scratch() {
     elif [ "$MODE" = suite ] && [[ ",$SUITE," == *,filesystem,* ]]; then
         scratch="${WRITABLE%/*}/breenfs-scratch.img"
     else
-        return
+        return 0
     fi
     if [ -n "$scratch" ]; then
         # QEMU allocates MMIO downward, so discovery finds scratch after the other fixtures.

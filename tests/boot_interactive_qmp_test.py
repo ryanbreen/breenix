@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import unittest
 import uuid
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -86,7 +87,7 @@ class BootInteractiveQmpTest(unittest.TestCase):
         path.chmod(0o755)
 
     def launch(self, *args, boot_id=BOOT_ID, vigil_home="default", boot_home="default",
-               mode=("--mode", "probe"), expected_code=0):
+               mode=("--mode", "probe"), expected_code=0, build=False):
         """Boots with HOME and Vigil's home in different folders; vigil_home=None leaves VIGIL_TEST_HOME unset."""
         vigil_home = self.vigil_home if vigil_home == "default" else vigil_home
         boot_home = vigil_home if boot_home == "default" else boot_home
@@ -99,13 +100,68 @@ class BootInteractiveQmpTest(unittest.TestCase):
             env["VIGIL_TEST_HOME"] = str(vigil_home)
         self.calls.unlink(missing_ok=True)
         result = subprocess.run(
-            ["bash", str(self.root / "scripts/boot-interactive.sh"), "--no-build",
+            ["bash", str(self.root / "scripts/boot-interactive.sh"), *([] if build else ["--no-build"]),
              *mode, "--serial-log", str(self.root / "serial.txt"), *args],
             cwd=self.root, env=env, capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, expected_code, result.stdout + result.stderr)
         if expected_code:
             return [], result.stderr
         return json.loads((self.root / "args.json").read_text()), result.stdout
+
+    def test_cxx_runtime_build_keeps_manifest_and_verifies_scratch_image(self):
+        scripts = self.root / "scripts"
+        for name in ("userspace-manifest.py", "write-boot-target.sh", "rust_host_stage.py",
+                     "lib/root-fs.sh", "metal/metal_root.py", "metal/metal_probe.py",
+                     "metal/transfer_fixture.py"):
+            destination = scripts / name
+            destination.parent.mkdir(exist_ok=True)
+            shutil.copy2(ROOT / "scripts" / name, destination)
+        programs = self.root / "userspace/programs"
+        (programs / "aarch64").mkdir(parents=True)
+        (programs / "aarch64/suite-smoke.elf").write_bytes(b"smoke suite")
+        (self.root / ".gitignore").write_text("/userspace/programs/target/\n")
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        self.executable(programs / "build.sh", '''#!/bin/bash
+set -eu
+cd "$(dirname "$0")"
+case "${3:-}" in
+    '')
+        rm -f aarch64/suite-cxx-runtime.elf
+        python3 ../../scripts/userspace-manifest.py write --arch "$2" ;;
+    --hosted-bin)
+        out=target/hosted/aarch64-breenix-hosted/release
+        mkdir -p "$out"
+        printf '\\177ELFcxx suite' > "$out/suite-cxx-runtime" ;;
+    --cxx-runtime)
+        out=target/cxx-runtime/aarch64
+        mkdir -p "$out"
+        for name in static-init-order guarded-static containers-threads; do
+            printf '\\177ELF%s' "$name" > "$out/$name"
+        done ;;
+    *) exit 2 ;;
+esac
+''')
+        self.executable(scripts / "create_ext2_disk.sh", '''#!/bin/bash
+set -eu
+python3 scripts/userspace-manifest.py check "$@"
+mkdir -p disk-root/etc disk-root/sbin
+cp userspace/programs/aarch64/suite-smoke.elf disk-root/sbin/suite-smoke
+mke2fs -q -t ext2 -F -d disk-root target/ext2-aarch64.img 8M
+''')
+        for name, script in (("cargo", "exit 0"), ("check-kernel-no-neon.sh", "exit 0"),
+                             ("build-background.sh", 'exec "$@"')):
+            self.executable(scripts / name, f"#!/bin/sh\n{script}\n")
+        path = os.pathsep.join((str(scripts), "/opt/homebrew/opt/e2fsprogs/sbin", os.environ["PATH"]))
+        with patch.dict(os.environ, PATH=path):
+            for suites in ("cxx-runtime", "smoke,cxx-runtime", "cxx-runtime,smoke"):
+                with self.subTest(suites=suites):
+                    self.launch("--no-display", mode=("--mode", "suite", "--suite", suites), build=True)
+                    for image, expected in (("target/ext2-aarch64.img", b""),
+                                            ("ext2-writable.img", b"\x7fELFcxx suite")):
+                        result = subprocess.check_output(
+                            ["debugfs", "-R", "cat /sbin/suite-cxx-runtime", self.root / image],
+                            stderr=subprocess.DEVNULL)
+                        self.assertEqual(result, expected)
 
     def test_ui_testing_receiver_and_route_are_limited_to_standalone_suite(self):
         for suite, case in (("ui-testing", None), ("ui-testing", "proof"),
