@@ -596,6 +596,8 @@ pub const NAMED_CASE_ALLOWANCES: &[(&str, &str, u64)] = &[
     ("toolchain", "busybox/build-applets-4", 50_000),
     ("toolchain", "busybox/link-and-list", 20_000),
     ("toolchain", "busybox/required-usage", 10_000),
+    // E25 ruling 81: measure the staged fixture comparison on the R240.
+    ("rust-host", "libc-surface/file-mmap", 60_000),
     // E25 gives the restricted SSH listener 45 s plus setup and cleanup time.
     ("transfer-fixture", "fixture/listener-lease", 60_000),
     ("breengel", "font-parser/corpus", 20_000),
