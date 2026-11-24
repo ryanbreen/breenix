@@ -202,13 +202,14 @@ class ProgressTest(unittest.TestCase):
         }
         expected = {case: min(60_000, ((2 * ms + 9_999) // 10_000) * 10_000)
                     for case, ms in measured_ms.items()}
-        expected.update({f'unwind/{case}': 10_000 for case in (
+        # E25 rulings 66, 81 and 82 give the new cases 60 s for the sizing boot.
+        expected.update({f'unwind/{case}': 60_000 for case in (
             'catch-unwind-nested', 'unwind-through-c-frame', 'float-ffi-psabi')})
         self.assertEqual({case: named.get(case, default) for case in cases}, expected)
-        # The default gate covers the seven case deadlines plus 25%.
-        shell = (ROOT / 'scripts/boot-interactive.sh').read_text()
-        gate = int(re.search(r'GATE_TIMEOUT=(\d+)', shell)[1])
-        self.assertGreaterEqual(gate * 1000 * 4, sum(expected.values()) * 5)
+        # The R240 suite-mode DONE deadline covers the seven allowances plus 25%.
+        driver = (ROOT / 'scripts/metal/metal-boot').read_text()
+        deadline = int(re.search(r"MODE_DEADLINE_SECONDS = \{[^\n]*'suite': (\d+)", driver)[1])
+        self.assertGreaterEqual(deadline * 1000 * 4, sum(expected.values()) * 5)
         stall = runpy.run_path(str(ROOT / 'scripts/boot_progress.py'))['STALL_SECONDS']
         for limit in named.values():
             self.assertLessEqual(limit, 60_000)
