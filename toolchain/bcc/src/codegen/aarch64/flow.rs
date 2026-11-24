@@ -404,8 +404,24 @@ impl<'src> Emitter<'_, 'src> {
             return self.atomic_assignment(left, right, operation);
         }
         self.address(left)?;
-        self.push_value('x');
         let field = left.bit_field();
+        if operation.is_none() && matches!(&right.kind, ExpressionKind::Call { callee, .. }
+            if matches!(&callee.kind, ExpressionKind::Identifier(name)
+                if self.functions.get(name).is_some_and(|function| function.returns_twice)))
+        {
+            // A later call can overwrite an SP-relative expression spill
+            // before the returns-twice call resumes. Keep the destination
+            // address within the live frame until either return stores it.
+            let slot = self.frame_slot(Layout { size: 8, align: 8 }, left.position())?;
+            self.offset_address("x9", "x29", -(slot as i64));
+            self.text.push_str("    str x0, [x9]\n");
+            self.converted(right, &left.ty)?;
+            self.offset_address("x9", "x29", -(slot as i64));
+            self.text.push_str("    ldr x9, [x9]\n");
+            self.store_value(&left.ty, field);
+            return Ok(());
+        }
+        self.push_value('x');
         if let Some((op, a, b)) = operation {
             self.load_value(&left.ty, field, "x0");
             self.convert(&left.ty, a);
