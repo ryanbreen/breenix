@@ -17,6 +17,38 @@ HEADER_BASE = '5f7bff4e8b48178b0f4b84e57a567a2f8e4d3171'
 
 
 class CxxRuntimeTest(unittest.TestCase):
+    def test_ostream_compiles_and_links_both_arches(self):
+        lld = llvm_tool(ROOT, 'rust-lld')
+        nm = llvm_tool(ROOT, 'llvm-nm')
+        inputs = Path(os.environ.get('BREENIX_CXX_RUNTIME_ROOT', ROOT / 'build/cxx-runtime'))
+        builds = Path(os.environ.get('BREENIX_CXX_RUNTIME_BUILDS', ROOT / 'build/cxx-runtime'))
+        for arch in ('x86_64', 'aarch64'):
+            with self.subTest(arch=arch), tempfile.TemporaryDirectory(prefix='breenix-k3-ostream-') as temp:
+                obj = Path(temp) / 'ostream.o'
+                elf = Path(temp) / 'ostream.elf'
+                subprocess.run(
+                    [ROOT / 'scripts/workload-cxx', '--arch', arch,
+                     '--runtime-build', builds / arch / 'build', '--',
+                     '-std=c++23', '-Werror', '-x', 'c++', '-', '-o', obj],
+                    input=('#include <ostream>\n'
+                           'static_assert(sizeof(std::ostream) > 0);\n'
+                           'int main() {\n'
+                           '    std::ostream stream(nullptr);\n'
+                           '    return stream.bad() ? 0 : 1;\n'
+                           '}\n'),
+                    text=True, check=True, timeout=10,
+                )
+                lib = inputs / arch / 'lib'
+                providers = [lib / name for name in
+                             ('libc++.a', 'libc++abi.a', 'libc.a', 'compiler_builtins.rlib')]
+                subprocess.run(
+                    ['taskpolicy', '-b', lld, '-flavor', 'gnu', '-static', '--gc-sections',
+                     '--eh-frame-hdr', '--fatal-warnings', '-T', ROOT / 'userspace/programs/linker-hosted.ld',
+                     '-o', elf, obj, '--start-group', *providers, '--end-group'],
+                    check=True, timeout=10,
+                )
+                self.assertEqual(subprocess.check_output([nm, '--undefined-only', elf], text=True), '')
+
     def test_archives_build_both_arches(self):
         import cxx_runtime
 
@@ -149,7 +181,7 @@ class CxxRuntimeTest(unittest.TestCase):
                 'LIBCXX_ENABLE_EXCEPTIONS': 'OFF',
                 'LIBCXXABI_ENABLE_EXCEPTIONS': 'OFF',
                 'LIBCXXABI_USE_LLVM_UNWINDER': 'OFF',
-                'LIBCXX_ENABLE_LOCALIZATION': 'OFF',
+                'LIBCXX_ENABLE_LOCALIZATION': 'ON',  # E25 ruling 93 requires streams.
                 'LIBCXX_ENABLE_THREADS': 'ON',
                 'LIBCXX_HAS_PTHREAD_API': 'ON',
                 'LIBCXXABI_HAS_PTHREAD_API': 'ON',
