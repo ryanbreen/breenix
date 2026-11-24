@@ -96,6 +96,19 @@ class ResolveTests(unittest.TestCase):
         files["docs/efforts/path.json"] = json.dumps(dict(efforts=[dict(id=e, suite=e, targets=["arm64-qemu"]) for e in efforts]))
         return files.get
 
+    def test_rust_host_excluded_from_all(self):
+        files = {f"docs/suites/{name}.json": manifest(name) for name in ("plain", "rust-host")}
+        files["docs/efforts/path.json"] = json.dumps({"efforts": [
+            {"id": name, "suite": name, "targets": list(SEQUENCE["TARGETS"])}
+            for name in ("plain", "rust-host")
+        ]})
+        read = files.get
+        for target in SEQUENCE["TARGETS"]:
+            with self.subTest(target=target):
+                ids, _ = SEQUENCE["resolve"]("all", target, True, read)
+                self.assertEqual(ids, ["plain"])
+                self.assertEqual(SEQUENCE["resolve"]("rust-host", target, True, read)[0], ["rust-host"])
+
     def test_host_runners_need_their_persistent_host_path(self):
         read = self.reader({"remote": manifest("remote", hostRunner=True, binary="scripts/metal/server-suite"),
                             "local": manifest("local")}, efforts=("remote", "local"))
