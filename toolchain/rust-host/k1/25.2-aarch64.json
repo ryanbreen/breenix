@@ -1,0 +1,40 @@
+{
+  "sourceCommit": "a6d8cd84ee3ef605628783c1a0447436b497aa8e",
+  "sourceManifestSha256": "9a4256ef173a93ddeddff637887844f3e91bff9f4dc72b25a1db9d3e0e3d8f09",
+  "producerSha256": {
+    "clang": "5ff8c034eab4eef825e353dbb0d602b5422236e1e2db77fd45933a42c5ccffad",
+    "lld": "95a00d9f2b018d6f579b2479fea5391d875331a73d16a42b746f64a9b0b26b0e"
+  },
+  "objects": {
+    "aggregate-copy": ["3c6c21f46b568ab640c6f01c515fd306a897bf5d93322db36a2a7453d9c2dc9c", ["printf"]],
+    "alignment": ["f9d4412a2dbff936b6a171d2c163e27284264b89e1e0085db7a205c159480dcb", []],
+    "array-index": ["34ea7f42471eceeb8637239b415731263891f150fd7cf4314b2587eae5b3a95a", ["printf"]],
+    "atomics": ["8d9fb8f7d3eea55826ace21e7992080c7932920a64dc604c70e5351914c425c7", ["printf"]],
+    "bitfield-values": ["0c17ac61db944e96ff856317d02685ef9d2cf2e4a4814a37c86944b564ee33f8", ["printf"]],
+    "bitwise-shifts": ["e65402cc90ef1dbc955149e0a6a0b0dd3ccbda1a48e9cb1959870678ba61f9b7", ["printf"]],
+    "boolean-tokens": ["8ff500778e2b6ca0bc8f17c94887233c99aab2b0a2a081e4051010621b608487", ["printf"]],
+    "byte-output": ["a936df6cb86cc8021b129bd0696f5c64805b832dfe2e977e2fe86c4274681b36", ["fwrite", "stdout"]],
+    "compound-literal": ["83ebedaed39aeabd9fe218e1b8220d7bbfea6dc33b82ae17a2769228d83c5393", ["printf"]],
+    "conditional": ["92f37ec5ba4dab5b30d803e6b7390542b09421cd0154e59f5321cdf97503b36c", ["printf"]],
+    "designated-init": ["07752c6fbb381cb1c82fa6f5b5938ea2baf2210fb539cb20651be3a4fe915f4b", ["printf"]],
+    "floating-conversion": ["d0d6baf697a41c66d26f6c363c76fd04480a78a61d2cfceba1bc09122d3db443", ["printf"]],
+    "function-pointer": ["d722dc3877a08783f6ce2606248725250c6c23074eaf579524e4cc561d7cc97f", ["printf"]],
+    "generic": ["ba8622a9d7ab8561f2756db6b8ba3688d759f2fc718c5470c286bb613e60641a", ["printf"]],
+    "goto": ["530380c65cf8a3ad1b388172170a7c4afe07ee671b2339b3729f33157419c8ee", ["printf"]],
+    "integer-arithmetic": ["126c28dbf80f603424c711e7ba11bf42b91339a37abcec91cc3a613fb6a4dd0b", ["printf"]],
+    "integer-promotions": ["bd9550cc25bef91f0903e609174928b02df0aba0c4d9f6738cbcbdc53a19f9a7", ["printf"]],
+    "literal-output": ["75c4a31db0fb1352dce1e7c4f2f57506f817e348776e95ec9f34e9e279927d89", ["puts"]],
+    "loops": ["095e416e61ae28fd7b4fff04a6a0f1a890469585430916b4bdb58ec14b841068", ["printf"]],
+    "macros": ["a5a78b7fc3a58fe5f537b94c8644881d29aa072585080bac115748741ead5256", ["printf"]],
+    "pointer-distance": ["fd14d85f78bd2038bfe3c83621a4d7eb051ab7b15ca62db831b4af4f25177ee6", ["printf"]],
+    "recursion": ["f1cfa06235a126bef437ec6e16b38a81f6599c2bfbe984856b11821fa61a9334", ["printf"]],
+    "return-status": ["9e90a61130204218faae151f9e7193a1ee71a6270ef8e5b3306dab033ecd6a7b", []],
+    "scope-shadow": ["1b67530082982409c4d089425ef9d31de78f5a75666db5a40f3a8516cf8e7837", ["printf"]],
+    "short-circuit": ["eb4b2036588dea8f4556fb1867b25b4d2f8283e63ab2faf251166c4333f6d68c", ["printf"]],
+    "static-duration": ["5aebfaed6efce91ba7a073e4125a025e66e7edfdc6eabd5a40d6f8b61ad40934", ["printf"]],
+    "switch-enum": ["a0fa7afb788fe28a39cba9e23afe001725e5ac875108cb4aff9edcbc035be033", ["printf"]],
+    "unsigned-wrap": ["ce0cd2462c184db66eded541ac9ac4ff3f01d98bba0497c7cb4e98a846e35be1", []],
+    "usual-conversions": ["ba8ce1168be3a9ef30084084ed4d64b10ffc89e178966eefa828cd76b17d4db7", []],
+    "varargs": ["661075ddc1ef6380640ff4a6dc1d871a9f3e93584a8588afefec423b05dfb81e", ["printf"]]
+  }
+}
