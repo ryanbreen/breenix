@@ -139,8 +139,13 @@ echo "========================================"
 echo "  Architecture: $ARCH"
 echo ""
 
-# Reject mixed or uncommitted std inputs before any compilation.
-"$PROJECT_ROOT/scripts/rust-fork.sh" verify
+# Validate the library for each build before compiling. The ordinary build also
+# links the opt-in suite in its separate hosted target directory.
+RUST_FORK_TOOL="$PROJECT_ROOT/scripts/rust-fork.sh"
+if [[ -z "$HOSTED_BIN" ]]; then
+    "$RUST_FORK_TOOL" verify
+fi
+RUST_HOSTED_LIBRARY="$("$RUST_FORK_TOOL" hosted-library)"
 
 # B42 keeps the v1 stress subject only on x86-64.
 LEGACY_GRAPHICS_FEATURES=()
@@ -149,29 +154,25 @@ if [[ "$ARCH" == "x86_64" ]]; then
 fi
 
 RUST_FORK_LIBRARY="${BREENIX_RUST_FORK_LIBRARY:-$PROJECT_ROOT/rust-fork/library}"
-if [ ! -d "$RUST_FORK_LIBRARY" ]; then
-    echo "  ERROR: forked Rust library not found at $RUST_FORK_LIBRARY"
-    echo "  Set BREENIX_RUST_FORK_LIBRARY to the forked Rust library path"
-    echo "  The forked Rust compiler is required for std support"
-    exit 1
-fi
 
 # Cargo's build-std freshness checks can miss edits in an external sysroot.
 # Include its verified commit in compiler metadata so a pin change rebuilds std.
-if [ -f "$RUST_FORK_LIBRARY/../.rust-fork-snapshot.json" ]; then
-    FORK_COMMIT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["commit"])' "$RUST_FORK_LIBRARY/../.rust-fork-snapshot.json")"
-else
-    FORK_COMMIT="$(git -C "$RUST_FORK_LIBRARY/.." rev-parse HEAD)"
-fi
+fork_commit() {
+    if [ -f "$1/../.rust-fork-snapshot.json" ]; then
+        python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["commit"])' "$1/../.rust-fork-snapshot.json"
+    else
+        git -C "$1/.." rev-parse HEAD
+    fi
+}
 
 build_rust_programs() (
     set -o pipefail
     cd "$SCRIPT_DIR" || exit 1
     unset CARGO_ENCODED_RUSTFLAGS
-    export __CARGO_TESTS_ONLY_SRC_ROOT="$RUST_FORK_LIBRARY"
-    export RUSTFLAGS="$STD_RUSTFLAGS -C metadata=breenix_std_${BREENIX_STD_METADATA_SEED:-$FORK_COMMIT}"
 
     if [[ -n "$HOSTED_BIN" ]]; then
+        FORK_COMMIT="$(fork_commit "$RUST_HOSTED_LIBRARY")" || exit 1
+        export __CARGO_TESTS_ONLY_SRC_ROOT="$RUST_HOSTED_LIBRARY"
         export RUSTFLAGS="$HOSTED_RUSTFLAGS -C metadata=breenix_std_$FORK_COMMIT"
         extra_link_flags=()
         case "$HOSTED_BIN" in
@@ -184,11 +185,15 @@ build_rust_programs() (
         # passes the arguments after -- to this bin's rustc invocation only.
         CARGO_PROFILE_RELEASE_PANIC=unwind cargo rustc --release -Z build-std=std,panic_unwind --target "$HOSTED_TARGET_JSON" --target-dir "$SCRIPT_DIR/target/hosted" \
             "${LEGACY_GRAPHICS_FEATURES[@]}" "${HOSTED_FEATURES[@]}" --bin "$HOSTED_BIN" -- \
-            "-Clink-arg=-T$SCRIPT_DIR/linker-hosted.ld" -Clink-arg=--eh-frame-hdr "-Clink-arg=-Map=$link_map" "${extra_link_flags[@]}"
+            "-Clink-arg=-T$SCRIPT_DIR/linker-hosted.ld" -Clink-arg=--eh-frame-hdr "-Clink-arg=-Map=$link_map" "${extra_link_flags[@]}" || exit 1
         shasum -a 256 "$HOSTED_LIBC_RELEASE_DIR/libc.a" >> "$link_map"
     else
-        cargo build --release --target "$TARGET_JSON" "${LEGACY_GRAPHICS_FEATURES[@]}"
-        printf "%s\n" "${BREENIX_STD_METADATA_SEED:-$FORK_COMMIT}" > "$SCRIPT_DIR/target/$TARGET_DIR/release/std-metadata-seed"
+        FORK_COMMIT="$(fork_commit "$RUST_FORK_LIBRARY")" || exit 1
+        STD_METADATA_SEED="${BREENIX_STD_METADATA_SEED:-$FORK_COMMIT}"
+        export __CARGO_TESTS_ONLY_SRC_ROOT="$RUST_FORK_LIBRARY"
+        export RUSTFLAGS="$STD_RUSTFLAGS -C metadata=breenix_std_$STD_METADATA_SEED"
+        cargo build --release --target "$TARGET_JSON" "${LEGACY_GRAPHICS_FEATURES[@]}" || exit 1
+        printf "%s\n" "$STD_METADATA_SEED" > "$SCRIPT_DIR/target/$TARGET_DIR/release/std-metadata-seed"
     fi 2>&1 | sed 's/^/  /'
 )
 

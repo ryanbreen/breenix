@@ -16,6 +16,7 @@ import tomllib
 root = Path(sys.argv[1])
 RELEASE_BRANCH = 'breenix-target'
 pin = tomllib.loads((root / 'rust-fork.toml').read_text())
+hosted = {**pin, **pin['hosted']} if 'hosted' in pin else None
 
 def git(where, *args):
     return subprocess.check_output(['git', '-C', str(where), *args], text=True).strip()
@@ -44,7 +45,7 @@ def archive(source, commit, destination, *paths, prefix=''):
 def present(where, commit):
     return subprocess.run(['git', '-C', str(where), 'cat-file', '-e', commit + '^{commit}'], capture_output=True).returncode == 0
 
-def fetch_pin(source):
+def fetch_pin(source, pin):
     # Fetch the pinned commit itself, and only when the clone lacks it: a lane pin need not be
     # a branch tip, a gate with the commit at hand needs no network, and concurrent gates
     # sharing the clone write no refs.
@@ -53,7 +54,7 @@ def fetch_pin(source):
     if not present(source, pin['commit']):
         raise RuntimeError('fork pin ' + pin['commit'] + ' is not in ' + pin['repo'])
 
-def check_reachable(source):
+def check_reachable(source, pin):
     # Fetch the named branch into a private ref so the answer reflects the published fork.
     ref = 'refs/rust-fork-check/' + str(os.getpid())
     run(source, 'fetch', '--quiet', '--no-write-fetch-head', pin['repo'], '+refs/heads/' + pin['branch'] + ':' + ref)
@@ -65,8 +66,25 @@ def check_reachable(source):
         raise RuntimeError('fork pin ' + pin['commit'] + ' is not reachable from ' + pin['branch'] + ' in ' + pin['repo'])
     print('Rust fork pin is reachable from ' + pin['branch'])
 
+def hosted_checkout(checkout):
+    return checkout.with_name(checkout.name + '-hosted')
+
+def snapshot(source, destination, pin):
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True)
+    archive(source, pin['commit'], destination, 'library')
+    for row in git(source, 'ls-tree', '-r', pin['commit'], 'library').splitlines():
+        entry, path = row.split('\t', 1)
+        if entry.startswith('160000 '):
+            archive(source / path, entry.split()[2], destination, prefix=path + '/')
+    metadata = dict(commit=pin['commit'], rust=git(source, 'show', pin['commit'] + ':src/version'), digest=fingerprint(destination))
+    (destination / '.rust-fork-snapshot.json').write_text(json.dumps(metadata) + '\n')
+    print('Archived Breenix Rust fork ' + pin['commit'])
+
 try:
-    if not re.fullmatch(r'[0-9a-f]{40}', pin['commit']):
+    pins = [pin, hosted] if hosted else [pin]
+    if any(not re.fullmatch(r'[0-9a-f]{40}', item['commit']) for item in pins):
         raise RuntimeError('fork pin must be a full commit SHA')
     command = sys.argv[2] if len(sys.argv) > 2 else 'verify'
     checkout = root / 'rust-fork'
@@ -74,18 +92,11 @@ try:
         if len(sys.argv) != 5:
             raise RuntimeError('usage: rust-fork.sh snapshot SOURCE DESTINATION')
         source, destination = map(Path, sys.argv[3:])
-        fetch_pin(source)
-        if destination.exists():
-            shutil.rmtree(destination)
-        destination.mkdir(parents=True)
-        archive(source, pin['commit'], destination, 'library')
-        for row in git(source, 'ls-tree', '-r', pin['commit'], 'library').splitlines():
-            entry, path = row.split('\t', 1)
-            if entry.startswith('160000 '):
-                archive(source / path, entry.split()[2], destination, prefix=path + '/')
-        metadata = dict(commit=pin['commit'], rust=git(source, 'show', pin['commit'] + ':src/version'), digest=fingerprint(destination))
-        (destination / '.rust-fork-snapshot.json').write_text(json.dumps(metadata) + '\n')
-        print('Archived Breenix Rust fork ' + pin['commit'])
+        for item in pins:
+            fetch_pin(source, item)
+        snapshot(source, destination, pin)
+        if hosted:
+            snapshot(source, hosted_checkout(destination), hosted)
         sys.exit(0)
     if command == 'sync':
         # Resolve a pre-existing shared link before replacing it. Never change its target.
@@ -102,7 +113,8 @@ try:
         if source is None:
             raise RuntimeError('set BREENIX_RUST_FORK_SOURCE to the canonical Rust clone')
         source = Path(source).resolve()
-        fetch_pin(source)
+        for item in pins:
+            fetch_pin(source, item)
         if checkout.is_symlink():
             checkout.unlink()
         if not checkout.exists():
@@ -121,22 +133,31 @@ try:
         modules = [row.split('\t', 1)[1] for row in git(checkout, 'ls-tree', '-r', 'HEAD', 'library').splitlines() if row.startswith('160000 ')]
         if modules:
             run(checkout, 'submodule', 'update', '--init', '--depth', '1', *modules)
+        if hosted:
+            snapshot(checkout, hosted_checkout(checkout), hosted)
     elif command in ('check-reachable', 'check-release'):
         # Main may only name a fork commit on the fork's integration branch; lanes name their own.
-        if command == 'check-release' and pin['branch'] != RELEASE_BRANCH:
-            raise RuntimeError('main may only pin a commit on ' + RELEASE_BRANCH + '; rust-fork.toml names ' + pin['branch'])
-        check_reachable(Path(os.environ.get('BREENIX_RUST_FORK_SOURCE', str(checkout))))
+        for item in pins:
+            if command == 'check-release' and item['branch'] != RELEASE_BRANCH:
+                raise RuntimeError('main may only pin a commit on ' + RELEASE_BRANCH + '; rust-fork.toml names ' + item['branch'])
+        for item in pins:
+            check_reachable(Path(os.environ.get('BREENIX_RUST_FORK_SOURCE', str(checkout))), item)
         sys.exit(0)
-    elif command != 'verify':
-        raise RuntimeError('usage: rust-fork.sh sync|verify|check-reachable|check-release')
+    elif command not in ('verify', 'hosted-library'):
+        raise RuntimeError('usage: rust-fork.sh sync|verify|hosted-library|check-reachable|check-release')
 
     library = Path(os.environ.get('BREENIX_RUST_FORK_LIBRARY', str(checkout / 'library'))).resolve()
+    if command == 'hosted-library':
+        if not hosted:
+            raise RuntimeError('rust-fork.toml has no hosted pin')
+        pin = hosted
+        library = hosted_checkout(library.parent) / 'library'
     fork = library.parent
     if not (library / 'std/Cargo.toml').is_file():
         raise RuntimeError('Breenix Rust library is missing; run scripts/rust-fork.sh sync')
-    snapshot = fork / '.rust-fork-snapshot.json'
-    if snapshot.exists():
-        metadata = json.loads(snapshot.read_text())
+    receipt = fork / '.rust-fork-snapshot.json'
+    if receipt.exists():
+        metadata = json.loads(receipt.read_text())
         head = metadata['commit']
         version = metadata['rust']
         if fingerprint(fork) != metadata['digest']:
@@ -158,7 +179,7 @@ try:
     # Sparse worktrees omit src/version, so read the committed version through git.
     if version != pin['rust']:
         raise RuntimeError('Rust library version does not match rust-fork.toml')
-    print('Breenix Rust fork ' + head)
+    print(library if command == 'hosted-library' else 'Breenix Rust fork ' + head)
 except (RuntimeError, OSError, KeyError, subprocess.CalledProcessError) as error:
     print('rust-fork: ' + str(error), file=sys.stderr)
     sys.exit(1)

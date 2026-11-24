@@ -9,19 +9,29 @@ fn main() {
     println!("cargo:rerun-if-changed=linker-hosted.ld");
     println!("cargo:rerun-if-env-changed=BREENIX_RUST_FORK_LIBRARY");
     println!("cargo:rerun-if-env-changed=BREENIX_RUST_FORK_DEV");
+    let target = env::var("TARGET").expect("Cargo target");
+    let hosted = target.ends_with("-breenix-hosted");
     let status = std::process::Command::new(root.join("scripts/rust-fork.sh"))
-        .arg("verify")
+        .arg(if hosted { "hosted-library" } else { "verify" })
         .status()
         .expect("validate the pinned Rust library");
     assert!(status.success(), "Rust library pin validation failed");
     // libc is built separately by build.sh and linked as a native archive.
     // Cargo otherwise considers these binaries fresh when only libc changes.
     let arch = env::var("CARGO_CFG_TARGET_ARCH").expect("target architecture");
+    let libc_target = if hosted && arch == "x86_64" {
+        "x86_64-breenix-c".to_string()
+    } else {
+        format!("{arch}-breenix")
+    };
     let archive = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("manifest directory"))
         .join(format!(
-            "../../libs/libbreenix-libc/target/{arch}-breenix/release/libc.a"
+            "../../libs/libbreenix-libc/target/{libc_target}/release/libc.a"
         ));
     println!("cargo:rerun-if-changed={}", archive.display());
+    if hosted {
+        println!("cargo:rerun-if-changed=target/hosted/bunwind/{target}/release/libbunwind.a");
+    }
 
     // Discover C-library functions used by the thread, IPC, terminal, networking and
     // Rust std suites so each can call the functions present, or report those it lacks.
