@@ -74,9 +74,15 @@ def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest='action', required=True)
     rec = sub.add_parser('record')
-    rec.add_argument('number', type=int, choices=[1, 9])
+    rec.add_argument('number', type=int, choices=[1, 5, 8, 9])
     rec.add_argument('--capture', type=Path)
     rec.add_argument('--release-parity', type=Path)
+    rec.add_argument('--prediction-file', type=Path)
+    rec.add_argument('--llvm-project', type=Path)
+    rec.add_argument('--scratch', type=Path)
+    rec.add_argument('--libc-archive', type=Path)
+    rec.add_argument('--compiler-builtins', type=Path)
+    sub.add_parser('measure-float')
     profile = sub.add_parser('profile-linux')
     profile.add_argument('--scratch', type=Path, required=True)
     profile.add_argument('--workspace-commit', required=True)
@@ -92,8 +98,35 @@ def main():
                 or datetime.datetime.fromisoformat(prediction['prediction_time']) >= started):
             parser.error('the prediction must precede the X0.9 run')
         capture(args.scratch, args.workspace_commit, prediction, started)
+    elif args.action == 'measure-float':
+        from x0_runtime import measure_float
+
+        print(json.dumps(measure_float(ROOT)))
     elif args.number == 1:
         record_one()
+    elif args.number in (5, 8):
+        from x0_runtime import measure_float, measure_runtime
+
+        if not args.prediction_file:
+            parser.error('record 5 and record 8 require --prediction-file')
+        now = datetime.datetime.now(datetime.timezone.utc)
+        check_licenses(now)
+        prediction = json.loads(args.prediction_file.read_text())[str(args.number)]
+        if (not prediction['prediction'].strip()
+                or datetime.datetime.fromisoformat(prediction['prediction_time']) >= now):
+            parser.error('the prediction must precede the probe')
+        destination = new_record(args.number)
+        record = {**prediction, 'time': now.isoformat(), 'probe_tree_commit': PIN}
+        if args.number == 5:
+            if not args.llvm_project or not args.scratch:
+                parser.error('record 5 requires --llvm-project and --scratch')
+            llvm_pin = git('ls-tree', PIN, 'src/llvm-project').stdout.split()[2]
+            record.update(measure_runtime(ROOT, args.llvm_project.resolve(), llvm_pin,
+                                          args.scratch.resolve(), args.libc_archive,
+                                          args.compiler_builtins))
+        else:
+            record['measurement'] = measure_float(ROOT)
+        destination.write_text(json.dumps(record, indent=2) + '\n', encoding='utf-8')
     else:
         if not args.capture or not args.release_parity:
             parser.error('record 9 requires --capture and --release-parity')

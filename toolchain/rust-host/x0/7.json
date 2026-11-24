@@ -1,0 +1,39 @@
+{
+  "prediction": "X0.7: I expect panic=abort compiler host to be undocumented.",
+  "prediction_time": "2026-11-24T06:22:54.631400+00:00",
+  "time": "2026-11-24T06:31:37.628951+00:00",
+  "probe_tree_commit": "666252fd61839b9e9b1bc9e777a0c84c5cf3dc6d",
+  "question": "panic-abort-host",
+  "verdict": "undocumented",
+  "citations": [
+    {
+      "location": "bootstrap.example.toml:816",
+      "text": "# Configure `std` features used during bootstrap."
+    },
+    {
+      "location": "bootstrap.example.toml:828",
+      "text": "#rust.std-features = [\"panic_unwind\"]"
+    },
+    {
+      "location": "src/doc/rustc/src/codegen-options/index.md:420",
+      "text": "This option lets you control what happens when the code panics."
+    },
+    {
+      "location": "src/doc/rustc/src/codegen-options/index.md:422",
+      "text": "* `abort`: terminate the process upon panic"
+    },
+    {
+      "location": "src/doc/rustc/src/codegen-options/index.md:425",
+      "text": "If not specified, the default depends on the target."
+    },
+    {
+      "location": "src/doc/rustc/src/codegen-options/index.md:427",
+      "text": "If any crate in the crate graph uses `abort`, the final binary (`bin`, `dylib`, `cdylib`, `staticlib`) must also use `abort`."
+    },
+    {
+      "location": "src/doc/rustc/src/codegen-options/index.md:428",
+      "text": "If `std` is used as a `dylib` with `unwind`, the final binary must also use `unwind`."
+    }
+  ],
+  "assessment": "The bootstrap example documents std features and defaults to panic_unwind. The rustc codegen manual documents abort for a crate graph, including the rule for an unwinding std dylib. Neither documents building the compiler host with panic=abort, so the unwind requirement stays with K2."
+}
