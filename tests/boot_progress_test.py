@@ -193,12 +193,16 @@ class ProgressTest(unittest.TestCase):
                  for item in category['cases']}
         self.assertEqual(len(named), len(entries))
         self.assertLessEqual(named.keys(), cases)
-        self.assertEqual({case: named.get(case, default) for case in cases}, {
-            'libc-surface/startup-order': 10_000,
-            'libc-surface/memory-limits': 10_000,
-            'libc-surface/file-mmap': 60_000,
-            'libc-surface/process-pipes-locks': 10_000,
-        })
+        # CASE durations from R240 boot 20261124T103128Z-metal, in milliseconds.
+        measured_ms = {
+            'libc-surface/startup-order': 34,
+            'libc-surface/memory-limits': 5,
+            'libc-surface/file-mmap': 27_279,
+            'libc-surface/process-pipes-locks': 92,
+        }
+        expected = {case: min(60_000, ((2 * ms + 9_999) // 10_000) * 10_000)
+                    for case, ms in measured_ms.items()}
+        self.assertEqual({case: named.get(case, default) for case in cases}, expected)
         stall = runpy.run_path(str(ROOT / 'scripts/boot_progress.py'))['STALL_SECONDS']
         for limit in named.values():
             self.assertLessEqual(limit, 60_000)

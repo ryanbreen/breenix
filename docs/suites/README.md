@@ -1972,6 +1972,9 @@ the case's main thread. Seven pthreads with 8 MiB stacks touch one byte per
 read-only private mapping of the deterministic 163,067,344-byte fixture with
 sequential reads. The sizes and thread count come from
 [`toolchain/rust-host/x0/9.json`](../../toolchain/rust-host/x0/9.json).
+The comparison took 27.279 seconds in R240 boot `20261124T103128Z-metal`.
+Doubling that time gives 54.558 seconds, which rounds up to the named 60-second
+watchdog. The other three cases use the 10-second default.
 
 `process-pipes-locks` uses a standalone probe that calls `posix_spawn` on
 itself. It checks close-on-exec pipe descriptors, wait statuses for exit 3
