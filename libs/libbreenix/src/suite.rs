@@ -1373,13 +1373,12 @@ impl Suite {
                 feed.start(&name);
                 screen.draw(self, &title, &subtitle, &states, Verdict::Running(&progress), &feed, only);
 
+                let shared_allowances = NAMED_CASE_ALLOWANCES.iter();
                 #[cfg(target_arch = "aarch64")]
-                let limit_ms = ARM_BUSYBOX_CASE_ALLOWANCES.iter()
-                    .chain(NAMED_CASE_ALLOWANCES.iter())
-                    .find(|&&(suite, case, _)| suite == self.id && case == name)
-                    .map_or(self.case_limit_ms, |&(_, _, limit)| limit);
+                let mut allowances = ARM_BUSYBOX_CASE_ALLOWANCES.iter().chain(shared_allowances);
                 #[cfg(not(target_arch = "aarch64"))]
-                let limit_ms = NAMED_CASE_ALLOWANCES.iter()
+                let mut allowances = shared_allowances;
+                let limit_ms = allowances
                     .find(|&&(suite, case, _)| suite == self.id && case == name)
                     .map_or(self.case_limit_ms, |&(_, _, limit)| limit);
                 let mut outcome = run_case(case, limit_ms, self.id, &name, self.gui, &mut screen, &mut feed);
