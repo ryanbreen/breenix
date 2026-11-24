@@ -11,6 +11,8 @@ pub mod attrs;
 pub mod devfs;
 pub mod devptsfs;
 pub mod errno;
+pub(crate) mod flock;
+mod flock_table;
 macro_rules! filesystems {
     ($($backend:ident),+ $(,)?) => {
         $(pub mod $backend;)+

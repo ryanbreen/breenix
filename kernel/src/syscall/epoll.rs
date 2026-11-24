@@ -16,13 +16,12 @@
 
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::sync::atomic::AtomicU32;
 use spin::Mutex;
 
 use super::errno;
 use super::multiplex::{with_mask, WaitSet};
 use super::SyscallResult;
-use crate::ipc::fd::{flags, FdKind, FileDescriptor};
+use crate::ipc::fd::{flags, FdKind, FileDescriptor, OpenFileDescription};
 use crate::ipc::poll;
 use crate::task::waitqueue::WaitQueueHead;
 
@@ -75,7 +74,7 @@ pub struct EpollEvent {
 #[derive(Clone)]
 struct Interest {
     fd: i32,
-    file: Weak<AtomicU32>,
+    file: Weak<OpenFileDescription>,
     events: u32,
     data: u64,
     /// EPOLLET: the file's receive-side and send-side change counts when this

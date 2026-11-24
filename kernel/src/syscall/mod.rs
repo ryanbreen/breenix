@@ -961,6 +961,11 @@ pub const PRCTL_SYSCALL_NUMBER: u64 = 157;
 #[cfg(target_arch = "aarch64")]
 pub const PRCTL_SYSCALL_NUMBER: u64 = 167;
 
+#[cfg(target_arch = "x86_64")]
+const FLOCK_SYSCALL_NUMBER: u64 = 73;
+#[cfg(target_arch = "aarch64")]
+const FLOCK_SYSCALL_NUMBER: u64 = 32;
+
 pub fn dispatch_numbered(number: u64, a: [u64; 6]) -> Option<SyscallResult> {
     if let Some(r) = ipc::dispatch(number, a) {
         return Some(r);
@@ -972,6 +977,7 @@ pub fn dispatch_numbered(number: u64, a: [u64; 6]) -> Option<SyscallResult> {
     Some(match number {
         436 => close_range::sys_close_range(a[0] as u32, a[1] as u32, a[2] as u32),
         PRCTL_SYSCALL_NUMBER => prctl::sys_prctl(a[0], a[1]),
+        FLOCK_SYSCALL_NUMBER => crate::fs::flock::sys_flock(a[0] as i32, a[1] as i32),
         REBOOT_SYSCALL_NUMBER => reboot::sys_reboot(a[0], a[1], a[2]),
         ADJTIMEX_SYSCALL_NUMBER => clocks::sys_adjtimex(a[0]),
         #[cfg(target_arch = "aarch64")]
