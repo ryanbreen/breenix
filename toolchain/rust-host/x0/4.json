@@ -1,0 +1,243 @@
+{
+  "time": "2026-11-24T06:01:28.737249+00:00",
+  "bootstrap_toml": "[build]\nhost = [\"/tmp/breenix-x0-2.um7PQyMd/x86_64-breenix-hosted.probe.json\"]\ntarget = [\"/tmp/breenix-x0-2.um7PQyMd/x86_64-breenix-hosted.probe.json\"]\nbuild-dir = \"/tmp/breenix-x0-2.um7PQyMd/build\"\njobs = 4\ndocs = false\nsubmodules = false\nlocked-deps = true\n\n[llvm]\ndownload-ci-llvm = false\n\n[rust]\ndeny-warnings = true\n\n[target.aarch64-apple-darwin]\nllvm-config = \"/opt/homebrew/opt/llvm@20/bin/llvm-config\"\n",
+  "runs": [
+    {
+      "command": [
+        "taskpolicy",
+        "-b",
+        "nice",
+        "-n",
+        "15",
+        "python3",
+        "x.py",
+        "check",
+        "library/std",
+        "compiler/rustc",
+        "--stage",
+        "1",
+        "--config",
+        "/tmp/<x0-u3>/bootstrap-stage1-check.toml",
+        "--json-output"
+      ],
+      "working_directory": "/tmp/breenix-x0-2.um7PQyMd/rust",
+      "prediction": "Stage 1 and explicit library selection should check hosted std metadata with the Mac compiler built during X0.3. I expect the first hosted library diagnostic to be compiler_builtins unused-macros, unless a dependency or PAL error appears first.",
+      "prediction_time": "2026-11-24T06:01:28.737134+00:00",
+      "started": "2026-11-24T06:01:28.737249+00:00",
+      "timeout_seconds": 2400,
+      "timed_out": false,
+      "exit_status": 1,
+      "elapsed_seconds": 12.418,
+      "log_sha256": "3199a12abac16ea711162fa9c76be52d9e7badd2a0bfaab4751e3fbf85a447f5",
+      "probe_tree_commit": "666252fd61839b9e9b1bc9e777a0c84c5cf3dc6d",
+      "probe_tree_status_before": "",
+      "probe_tree_status": "",
+      "failed_crates": [
+        "compiler_builtins@0.1.160"
+      ],
+      "failures": [
+        {
+          "crate": "compiler_builtins@0.1.160",
+          "text": "error: unused macro definition: `items`\nerror: unused macro definition: `select_implementation`",
+          "class": "dependency-change",
+          "stand_in_crate": "compiler_builtins (Breenix stand-in for the required intrinsics)",
+          "published_api_url": "https://docs.rs/crate/compiler_builtins/0.1.160",
+          "assessment": "The stage-1 hosted std dependency hits unused-macros under the unchanged deny-warnings policy. Bootstrap documents --warnings warn for diagnostic builds. The strict run retained warning denial. A replacement would need an intrinsic inventory and O5 approval."
+        }
+      ],
+      "assessment": "The stage-1 compiler check reached the hosted std prerequisites. compiler_builtins failed before the hosted compiler dependency check."
+    },
+    {
+      "command": [
+        "taskpolicy",
+        "-b",
+        "nice",
+        "-n",
+        "15",
+        "<home>/.rustup/toolchains/nightly-2025-06-24-aarch64-apple-darwin/bin/cargo",
+        "check",
+        "-Z",
+        "build-std",
+        "--target",
+        "/tmp/breenix-x0-2.um7PQyMd/x86_64-breenix-hosted.probe.json",
+        "--offline",
+        "--locked",
+        "--keep-going",
+        "--message-format=json",
+        "--target-dir",
+        "/tmp/<x0-u3>/cargo-out"
+      ],
+      "working_directory": "/tmp/breenix-x0-2.um7PQyMd/rust/src/tools/cargo",
+      "prediction": "I expect the hosted std build or Cargo dependencies to expose missing Breenix platform support. Cargo runs offline against the staged cache. A cache, lockfile or toolchain setup error before compilation leaves the Cargo inventory incomplete.",
+      "prediction_time": "2026-11-24T05:45:13.787890+00:00",
+      "started": "2026-11-24T05:45:13.788175+00:00",
+      "timeout_seconds": 2400,
+      "timed_out": false,
+      "exit_status": 101,
+      "elapsed_seconds": 118.712,
+      "log_sha256": "62065578a1c268d619086a9d395257f53567434afa26e5b95100686cde6521f1",
+      "probe_tree_commit": "666252fd61839b9e9b1bc9e777a0c84c5cf3dc6d",
+      "probe_tree_status_before": "",
+      "probe_tree_status": "",
+      "failed_crates": [
+        "getrandom@0.3.3",
+        "libc@0.2.172",
+        "openssl-sys@0.9.109",
+        "libz-sys@1.1.22",
+        "libnghttp2-sys@0.1.11+1.64.0",
+        "libsqlite3-sys@0.32.0"
+      ],
+      "failures": [
+        {
+          "crate": "getrandom@0.3.3",
+          "text": "error: target is not supported. You may need to define a custom backend see: https://docs.rs/getrandom/0.3.3/#custom-backend\nerror[E0425]: cannot find function `fill_inner` in module `backends`\nerror[E0425]: cannot find function `inner_u32` in module `backends`\nerror[E0425]: cannot find function `inner_u64` in module `backends`",
+          "diagnostic_count": 4,
+          "class": "dependency-change",
+          "stand_in_crate": "getrandom (Breenix stand-in for the 0.3 API)",
+          "published_api_url": "https://docs.rs/getrandom/0.3.3/getrandom/",
+          "assessment": "The default backend refuses the probe target. The documented custom backend can select a supplied __getrandom_v03_custom symbol. Its final linkage into unmodified Cargo remains to be tested before considering an O5 replacement.",
+          "backend_configuration_url": "https://docs.rs/crate/getrandom/0.3.3#custom-backend"
+        },
+        {
+          "crate": "libc@0.2.172",
+          "text": "error[E0412]: cannot find type `time_t` in this scope\nerror[E0412]: cannot find type `suseconds_t` in this scope\nerror[E0412]: cannot find type `rlim_t` in this scope\nerror[E0412]: cannot find type `clock_t` in the crate root\nerror[E0412]: cannot find type `mode_t` in the crate root\nerror[E0412]: cannot find type `wchar_t` in this scope\nerror[E0412]: cannot find type `passwd` in this scope\nerror[E0412]: cannot find type `sockaddr` in this scope\nerror[E0412]: cannot find type `socklen_t` in this scope\nerror[E0412]: cannot find type `mode_t` in this scope\nerror[E0573]: expected type, found function `stat`\nerror[E0412]: cannot find type `dirent` in the crate root\nerror[E0412]: cannot find type `off_t` in this scope\nerror[E0412]: cannot find type `pthread_t` in the crate root\nerror[E0412]: cannot find type `pthread_attr_t` in the crate root\nerror[E0412]: cannot find type `pthread_key_t` in this scope\nerror[E0412]: cannot find type `pthread_mutex_t` in this scope\nerror[E0412]: cannot find type `pthread_mutexattr_t` in this scope\nerror[E0412]: cannot find type `pthread_cond_t` in this scope\nerror[E0412]: cannot find type `pthread_condattr_t` in this scope\nerror[E0412]: cannot find type `pthread_rwlock_t` in this scope\nerror[E0412]: cannot find type `pthread_rwlockattr_t` in this scope\nerror[E0412]: cannot find type `socklen_t` in the crate root\nerror[E0412]: cannot find type `addrinfo` in this scope\nerror[E0412]: cannot find type `tm` in this scope\nerror[E0412]: cannot find type `tm` in the crate root\nerror[E0412]: cannot find type `dev_t` in the crate root\nerror[E0412]: cannot find type `nfds_t` in this scope\nerror[E0412]: cannot find type `fd_set` in this scope\nerror[E0412]: cannot find type `lconv` in this scope\nerror[E0412]: cannot find type `sem_t` in this scope\nerror[E0573]: expected type, found function `statvfs`\nerror[E0412]: cannot find type `sigset_t` in this scope\nerror[E0412]: cannot find type `termios` in the crate root\nerror[E0412]: cannot find type `speed_t` in the crate root\nerror[E0412]: cannot find type `Dl_info` in this scope\nerror[E0573]: expected type, found function `sigaction`",
+          "diagnostic_count": 171,
+          "class": "dependency-change",
+          "stand_in_crate": "libc from Breenix libs/libc",
+          "published_api_url": "https://docs.rs/libc/0.2.172/libc/",
+          "assessment": "The registry crate lacks Breenix bindings. The existing Breenix libc crate is the candidate for an out-of-tree Cargo patch. Its version differs from the locked registry crate, so resolution would need a separately staged lockfile."
+        },
+        {
+          "crate": "openssl-sys@0.9.109",
+          "text": "error: failed to run custom build command for `openssl-sys v0.9.109`\nCould not find directory of OpenSSL installation, and this `-sys` crate cannot proceed without this knowledge. If OpenSSL is installed and this crate had trouble finding it,  you can set the `OPENSSL_DIR` environment variable for the compilation process. See stderr section below for further information.",
+          "class": "breenix-side",
+          "item": "Breenix-target OpenSSL headers and libssl/libcrypto via OPENSSL_DIR",
+          "assessment": "The target OpenSSL input was absent. The build script names OPENSSL_DIR."
+        },
+        {
+          "crate": "libz-sys@1.1.22",
+          "text": "error: failed to run custom build command for `libz-sys v1.1.22`\nCould not find zlib include paths via pkg-config: pkg-config has not been configured to support cross-compilation.\nsrc/zlib/zconf.h:446:14: fatal error: 'sys/types.h' file not found\nsrc/zlib/gzguts.h:20:10: fatal error: 'stdio.h' file not found",
+          "class": "breenix-side",
+          "item": "Breenix C sysroot headers sys/types.h and stdio.h",
+          "assessment": "The baseline check did not supply a Breenix C sysroot. The named libc headers exist in the project."
+        },
+        {
+          "crate": "libnghttp2-sys@0.1.11+1.64.0",
+          "text": "error: failed to run custom build command for `libnghttp2-sys v0.1.11+1.64.0`\n/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/21/include/inttypes.h:24:15: fatal error: 'inttypes.h' file not found\nnghttp2/lib/includes/nghttp2/nghttp2.h:43:10: fatal error: 'stdlib.h' file not found\nnghttp2/lib/nghttp2_helper.h:32:10: fatal error: 'string.h' file not found",
+          "class": "breenix-side",
+          "item": "Breenix C sysroot headers inttypes.h, stdlib.h and string.h",
+          "assessment": "The baseline check did not supply a Breenix C sysroot. The named libc headers exist in the project."
+        },
+        {
+          "crate": "libsqlite3-sys@0.32.0",
+          "text": "error: failed to run custom build command for `libsqlite3-sys v0.32.0`\nsqlite3/sqlite3.c:14980:10: fatal error: 'stdio.h' file not found",
+          "class": "breenix-side",
+          "item": "Breenix C sysroot header stdio.h",
+          "assessment": "The baseline check did not supply a Breenix C sysroot. The named libc headers exist in the project."
+        }
+      ],
+      "assessment": "The hosted-target check reached target dependencies and stopped before completing the Cargo crate. The receipt includes the Rust compile failures and the native build-script failures.",
+      "tool_version": "cargo 1.90.0-nightly (84709f085 2025-06-22)",
+      "sysroot": "The nightly-2025-06-24 host compiler uses an out-of-tree sysroot with its host libraries and the pinned fork library for -Z build-std.",
+      "cargo_submodule_commit": "84709f085062cbf3c51fa507527c1b2334015178"
+    }
+  ],
+  "earlier_compiler_runs": [
+    {
+      "command": [
+        "taskpolicy",
+        "-b",
+        "nice",
+        "-n",
+        "15",
+        "python3",
+        "x.py",
+        "check",
+        "compiler/rustc",
+        "--config",
+        "/tmp/breenix-x0-2.um7PQyMd/bootstrap.toml",
+        "--json-output"
+      ],
+      "working_directory": "/tmp/breenix-x0-2.um7PQyMd/rust",
+      "prediction": "I expect bootstrap to accept the custom host as in X0.2 and fail compiling hosted std or another Rust crate before rustc completes. A setup or tool error before checking those crates leaves the compiler dependency inventory incomplete.",
+      "prediction_time": "2026-11-24T05:58:35.564150+00:00",
+      "started": "2026-11-24T05:58:35.564431+00:00",
+      "timeout_seconds": 2400,
+      "timed_out": false,
+      "exit_status": 1,
+      "elapsed_seconds": 1.678,
+      "log_sha256": "3af134f913786df8974e87c7a3b4528025ea8c810f2c5c6de7cf405282bbf22f",
+      "probe_tree_commit": "666252fd61839b9e9b1bc9e777a0c84c5cf3dc6d",
+      "probe_tree_status_before": "",
+      "probe_tree_status": "",
+      "failed_crates": [
+        "cfg-if@1.0.1",
+        "libc@0.2.174",
+        "memchr@2.7.5",
+        "stable_deref_trait@1.2.0"
+      ],
+      "failures": [
+        {
+          "crate": "cfg-if@1.0.1",
+          "text": "error[E0463]: can't find crate for `core`",
+          "class": "breenix-side",
+          "item": "core metadata for the hosted probe target in the stage-0 sysroot"
+        },
+        {
+          "crate": "libc@0.2.174",
+          "text": "error[E0463]: can't find crate for `core`",
+          "class": "breenix-side",
+          "item": "core metadata for the hosted probe target in the stage-0 sysroot"
+        },
+        {
+          "crate": "memchr@2.7.5",
+          "text": "error[E0463]: can't find crate for `core`",
+          "class": "breenix-side",
+          "item": "core metadata for the hosted probe target in the stage-0 sysroot"
+        },
+        {
+          "crate": "stable_deref_trait@1.2.0",
+          "text": "error[E0463]: can't find crate for `std`",
+          "class": "breenix-side",
+          "item": "std metadata for the hosted probe target in the stage-0 sysroot"
+        }
+      ],
+      "assessment": "The bootstrap compiler check selected the hosted target. Its stage-0 sysroot lacked core and std for that target. These diagnostics identify missing sysroot artifacts."
+    },
+    {
+      "command": [
+        "taskpolicy",
+        "-b",
+        "nice",
+        "-n",
+        "15",
+        "python3",
+        "x.py",
+        "check",
+        "library/std",
+        "compiler/rustc",
+        "--config",
+        "/tmp/breenix-x0-2.um7PQyMd/bootstrap.toml",
+        "--json-output"
+      ],
+      "working_directory": "/tmp/breenix-x0-2.um7PQyMd/rust",
+      "prediction": "With library/std selected alongside the compiler, bootstrap should check hosted library artifacts before the compiler so E0463 can be distinguished from an actual hosted library or dependency error. The unchanged warning policy may expose the compiler_builtins unused-macro diagnostics seen in X0.3.",
+      "prediction_time": "2026-11-24T06:00:22.329333+00:00",
+      "started": "2026-11-24T06:00:22.329478+00:00",
+      "timeout_seconds": 2400,
+      "timed_out": false,
+      "exit_status": -15,
+      "elapsed_seconds": 40.334,
+      "log_sha256": "b19ec34c704328f9d2cfa0b258187ab069e42e23b5a081fc3f5a71359ec9b6c8",
+      "probe_tree_commit": "666252fd61839b9e9b1bc9e777a0c84c5cf3dc6d",
+      "probe_tree_status_before": "",
+      "probe_tree_status": "",
+      "failed_crates": [],
+      "failures": [],
+      "blocking_diagnostic": "WARNING: stage 0 std is precompiled and does nothing during `x check`.",
+      "assessment": "Stopped the probe-owned process group when the original stage-0 config began building native LLVM."
+    }
+  ],
+  "scope": "The inventory covers the diagnostics emitted before each check stopped. Dependencies behind these failures remain unchecked.",
+  "path_redaction": "Local paths outside the u2 scratch directory are shown as /tmp/<x0-u3> and <home>. Digests cover the original local transcripts."
+}
