@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Build both arches with build.sh --rust-host before running this check."""
+import hashlib
 import importlib.util
 import json
 import os
@@ -17,6 +18,30 @@ READELF = os.environ.get('LLVM_READELF', 'llvm-readelf')
 
 
 class StartupProbeTest(unittest.TestCase):
+    def test_file_mmap_fixture_is_staged_read_only(self):
+        SPEC.loader.exec_module(STAGE)
+        debugfs, mke2fs = STAGE.require_e2fsprogs('debugfs', 'mke2fs')
+        path = '/usr/libexec/breenix/rust-host/mmap-fixture'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image = root / 'root.img'
+            elf = root / 'probe'
+            elf.write_bytes(b'\x7fELF')
+            subprocess.run([mke2fs, '-q', '-t', 'ext2', '-F', image, '16M'], check=True, capture_output=True)
+            STAGE.stage(image, 'rust-host', elf, elf, elf)
+
+            stat = subprocess.check_output([debugfs, '-R', f'stat {path}', image], stderr=subprocess.DEVNULL)
+            self.assertIn(b'Mode:  0444', stat)
+            dump = root / 'fixture'
+            subprocess.run([debugfs, '-R', f'dump {path} {dump}', image], check=True, capture_output=True)
+            self.assertEqual(dump.stat().st_size, 163_067_344)
+            # The original guest pattern encodes each word's file offset as little-endian u64.
+            with dump.open('rb') as stream:
+                self.assertEqual(
+                    hashlib.file_digest(stream, 'sha256').hexdigest(),
+                    '641a09f91a4a48c8fad03a45411ab8e714f1612914175abae70e74d09b92427f',
+                )
+
     def test_selection_and_hosted_layout(self):
         SPEC.loader.exec_module(STAGE)
         with tempfile.TemporaryDirectory() as directory:
