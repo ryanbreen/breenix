@@ -70,3 +70,36 @@ fn unterminated_macro_is_error_not_panic() {
     let error = assemble(b"; comment\n  %macro ENTRY 1\n%1: ret\n").unwrap_err();
     assert_eq!(error.to_string(), "2:3: unterminated %macro");
 }
+
+#[test]
+fn privileged_64_encodings() {
+    // Intel SDM 325462-082US, instruction tables and addressing tables.
+    let rows: &[(&str, &[u8])] = &[
+        ("swapgs", &[0x0f, 0x01, 0xf8]), // Vol. 2B, SWAPGS, 4-685
+        ("iretq", &[0x48, 0xcf]), // Vol. 2A, IRETQ, 3-539
+        ("o64 sysret", &[0x48, 0x0f, 0x07]), // Vol. 2B, SYSRET, 4-697
+        ("mov rax, cr0", &[0x0f, 0x20, 0xc0]), // Vol. 2B, MOV control registers, 4-39
+        ("mov rdx, cr3", &[0x0f, 0x20, 0xda]), // Vol. 2B, MOV control registers, 4-39
+        ("mov r8, cr4", &[0x41, 0x0f, 0x20, 0xe0]), // Vol. 2B, MOV control registers, 4-39
+        ("mov cr0, rax", &[0x0f, 0x22, 0xc0]), // Vol. 2B, MOV control registers, 4-39
+        ("mov cr3, rdx", &[0x0f, 0x22, 0xda]), // Vol. 2B, MOV control registers, 4-39
+        ("mov cr4, r8", &[0x41, 0x0f, 0x22, 0xe0]), // Vol. 2B, MOV control registers, 4-39
+        ("wrmsr", &[0x0f, 0x30]), // Vol. 2D, WRMSR, 6-9
+        ("rdmsr", &[0x0f, 0x32]), // Vol. 2B, RDMSR, 4-537
+        ("out dx, al", &[0xee]), // Vol. 2B, OUT, 4-177
+        ("hlt", &[0xf4]), // Vol. 2A, HLT, 3-489
+        ("cli", &[0xfa]), // Vol. 2A, CLI, 3-167
+        ("cld", &[0xfc]), // Vol. 2A, CLD, 3-159
+        ("sete al", &[0x0f, 0x94, 0xc0]), // Vol. 2B, SETcc, 4-611
+        ("sete dil", &[0x40, 0x0f, 0x94, 0xc7]), // Vol. 2B, SETcc, 4-611
+        ("sete r8b", &[0x41, 0x0f, 0x94, 0xc0]), // Vol. 2B, SETcc, 4-611
+        ("mov [gs:40], rsp", &[0x65, 0x48, 0x89, 0x24, 0x25, 40, 0, 0, 0]), // Vol. 2A, MOV and Tables 2-2, 2-3
+        ("mov rax, qword [gs:80]", &[0x65, 0x48, 0x8b, 0x04, 0x25, 80, 0, 0, 0]), // Vol. 2A, MOV and Tables 2-2, 2-3
+    ];
+    for &(source, expected) in rows {
+        let object = assemble(source.as_bytes()).unwrap_or_else(|e| panic!("{source}: {e}"));
+        let elf = bobj::elf::Elf::parse(&object).unwrap();
+        let section = (0..elf.section_count()).find(|&i| elf.section_name(i).unwrap() == b".text").unwrap();
+        assert_eq!(elf.section_data(section).unwrap().unwrap(), expected, "{source}");
+    }
+}
