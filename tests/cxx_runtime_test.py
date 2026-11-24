@@ -10,6 +10,37 @@ from x0_runtime import llvm_tool, symbols
 
 
 class CxxRuntimeTest(unittest.TestCase):
+    def test_configure_follows_ruling_86(self):
+        import json
+        import cxx_runtime
+
+        licenses = json.loads((ROOT / 'toolchain/rust-host/x0/licenses.json').read_text())
+        self.assertIn('libc++', licenses)
+        self.assertIn('libc++abi', licenses)
+        for arch in ('x86_64', 'aarch64'):
+            command = cxx_runtime.configure_command(ROOT, Path('/llvm'), Path('/build'), arch)
+            options = dict(arg[2:].split('=', 1) for arg in command if arg.startswith('-D'))
+            for key, value in {
+                'LLVM_ENABLE_RUNTIMES': 'libcxx;libcxxabi',
+                'LIBCXX_CXX_ABI': 'libcxxabi',
+                'LIBCXX_ENABLE_EXCEPTIONS': 'OFF',
+                'LIBCXXABI_ENABLE_EXCEPTIONS': 'OFF',
+                'LIBCXXABI_USE_LLVM_UNWINDER': 'OFF',
+                'LIBCXX_ENABLE_LOCALIZATION': 'OFF',
+                'LIBCXX_ENABLE_THREADS': 'ON',
+                'LIBCXX_HAS_PTHREAD_API': 'ON',
+                'LIBCXXABI_HAS_PTHREAD_API': 'ON',
+                'LIBCXX_ENABLE_SHARED': 'OFF',
+                'LIBCXXABI_ENABLE_SHARED': 'OFF',
+                'LIBCXX_ENABLE_STATIC': 'ON',
+                'LIBCXXABI_ENABLE_STATIC': 'ON',
+            }.items():
+                self.assertEqual(options[key], value, key)
+            self.assertNotIn('LIBCXX_ENABLE_RTTI', options)
+            self.assertNotIn('LIBCXXABI_ENABLE_RTTI', options)
+            self.assertIn(str(ROOT / 'libs/libbreenix-libc/include'), options['CMAKE_CXX_FLAGS'])
+        cxx_runtime.verify_llvm(ROOT, cxx_runtime.default_llvm())
+
     def test_cxx_runtime_undefined_set_is_defined(self):
         nm = llvm_tool(ROOT, 'llvm-nm')
         for arch in ('x86_64', 'aarch64'):
