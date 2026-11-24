@@ -29,6 +29,9 @@ typedef __breenix_mbstate_t mbstate_t;
 #endif
 struct __breenix_file;
 struct tm;
+/* C17 7.29 declares C library functions, including conversions shared with <stdlib.h>. */
+__BREENIX_BEGIN_DECLS
+
 int mbsinit(const mbstate_t *);
 size_t mbrtowc(wchar_t *, const char *, size_t, mbstate_t *);
 size_t mbrlen(const char *, size_t, mbstate_t *);
@@ -116,4 +119,6 @@ size_t wcsxfrm_l(wchar_t *, const wchar_t *, size_t, locale_t);
 int wcwidth(wchar_t);
 int wcswidth(const wchar_t *, size_t);
 #endif
+
+__BREENIX_END_DECLS
 #endif

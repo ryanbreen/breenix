@@ -11,6 +11,8 @@
 # Environment:
 #   BREENIX_RUST_FORK_LIBRARY  Override the forked Rust library path
 #                              (default: <repo>/rust-fork/library)
+#   BREENIX_CXX_RUNTIME_BUILDS  Parent of the per-arch K3 runtime builds
+#                              (default: <repo>/build/cxx-runtime)
 #
 # Usage:
 #   ./userspace/programs/build.sh                  # x86_64 (default)
@@ -21,6 +23,8 @@
 #     Build the opt-in suite and its probes into target/hosted.
 #   ./userspace/programs/build.sh --arch x86_64|aarch64 --bunwind
 #     Build libbunwind.a into target/hosted/bunwind/<target>/release.
+#   ./userspace/programs/build.sh --arch x86_64|aarch64 --cxx-runtime
+#     Link C++ probes into target/cxx-runtime/<arch>.
 
 set -e
 
@@ -28,7 +32,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 usage() {
-    echo "Usage: $0 [--arch x86_64|aarch64] [--hosted-bin NAME [--features FEATURES] | --rust-host | --bunwind]" >&2
+    echo "Usage: $0 [--arch x86_64|aarch64] [--hosted-bin NAME [--features FEATURES] | --rust-host | --bunwind | --cxx-runtime]" >&2
     exit 2
 }
 
@@ -37,6 +41,7 @@ HOSTED_BIN=""
 HOSTED_FEATURES=()
 RUST_HOST=0
 BUNWIND=0
+CXX_RUNTIME=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --arch)
@@ -56,6 +61,10 @@ while [[ $# -gt 0 ]]; do
             BUNWIND=1
             shift
             ;;
+        --cxx-runtime)
+            CXX_RUNTIME=1
+            shift
+            ;;
         --features)
             [[ -n "${2:-}" && "$2" != -* ]] || usage
             HOSTED_FEATURES+=(--features "$2")
@@ -66,6 +75,10 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+if [[ "$CXX_RUNTIME" == 1 ]]; then
+    [[ "$ARCH" == x86_64 || "$ARCH" == aarch64 ]] || usage
+    [[ "$BUNWIND" == 0 && "$RUST_HOST" == 0 && -z "$HOSTED_BIN" && ${#HOSTED_FEATURES[@]} -eq 0 ]] || usage
+fi
 if [[ "$BUNWIND" == 1 ]]; then
     [[ "$ARCH" == x86_64 || "$ARCH" == aarch64 ]] || usage
     [[ "$RUST_HOST" == 0 && -z "$HOSTED_BIN" && ${#HOSTED_FEATURES[@]} -eq 0 ]] || usage
@@ -123,6 +136,90 @@ HOSTED_LIBC_RELEASE_DIR="$LIBC_RELEASE_DIR"
 if [[ "$ARCH" == x86_64 ]]; then
     HOSTED_LIBC_RELEASE_DIR="$PROJECT_ROOT/libs/libbreenix-libc/target/x86_64-breenix-c/release"
 fi
+
+if [[ "$CXX_RUNTIME" == 1 ]]; then
+    runtime_build="${BREENIX_CXX_RUNTIME_BUILDS:-$PROJECT_ROOT/build/cxx-runtime}/$ARCH/build"
+    if [[ ! -f "$runtime_build/lib/libc++.a" || ! -f "$runtime_build/lib/libc++abi.a" ]]; then
+        echo "Missing K3 archives in $runtime_build/lib; see toolchain/rust-host/k3/README.md" >&2
+        exit 1
+    fi
+    runtime_build="$(cd "$runtime_build" && pwd)"
+
+    cd "$PROJECT_ROOT"
+    sysroot="$(rustc --print sysroot)"
+    host="$(rustc -vV | sed -n 's/^host: //p')"
+    lld="$sysroot/lib/rustlib/$host/bin/gcc-ld/ld.lld"
+    [[ -x "$lld" ]] || { echo "Missing stage-0 ld.lld at $lld" >&2; exit 1; }
+
+    probe_dir="$SCRIPT_DIR/target/cxx-runtime/$ARCH"
+    mkdir -p "$probe_dir"
+    scratch="$(mktemp -d "$probe_dir/.build.XXXXXX")"
+    trap 'rm -f "$scratch"/*; rmdir "$scratch"' EXIT
+    libc_target="$PROJECT_ROOT/$TARGET_DIR.json"
+    arch_flags=(-mno-outline-atomics)
+    if [[ "$ARCH" == x86_64 ]]; then
+        libc_target="$PROJECT_ROOT/x86_64-breenix-c.json"
+        arch_flags=(-mno-red-zone)
+    fi
+
+    echo "Building C-ABI libc and compiler_builtins for C++ probes ($ARCH)"
+    (
+        cd "$PROJECT_ROOT/libs/libbreenix-libc"
+        unset CARGO_ENCODED_RUSTFLAGS __CARGO_TESTS_ONLY_SRC_ROOT
+        RUSTFLAGS="$REMAP_FLAGS -D warnings" cargo build --release --target "$libc_target" \
+            --message-format=json-render-diagnostics > "$scratch/cargo.jsonl"
+    )
+    # Use the artifact Cargo selected for this build, even with older rlibs in deps/.
+    builtins="$(python3 - "$scratch/cargo.jsonl" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1]) as messages:
+    (artifact,) = (
+        path
+        for message in map(json.loads, messages)
+        if message['reason'] == 'compiler-artifact'
+        and message['target']['name'] == 'compiler_builtins'
+        for path in message['filenames']
+        if path.endswith('.rlib')
+    )
+print(artifact)
+PY
+)"
+    libc="$HOSTED_LIBC_RELEASE_DIR/libc.a"
+    libc_tools="$("$PROJECT_ROOT/scripts/breenix-cc" --arch "$ARCH" --tool-dir)"
+    python3 "$PROJECT_ROOT/scripts/libc-clean-archive.py" --archive "$libc" --tool-dir "$libc_tools"
+
+    linker_script=userspace/programs/linker-hosted.ld
+    workload="$PROJECT_ROOT/scripts/workload-cxx"
+    sources="$SCRIPT_DIR/cxx"
+    probes=(static-init-order guarded-static containers-threads)
+    for unit in "${probes[@]}" static-init-order-first; do
+        "$workload" --arch "$ARCH" --runtime-build "$runtime_build" -- \
+            -std=c++23 -O2 -Wall -Wextra -Werror -fuse-cxa-atexit -funwind-tables \
+            -fno-stack-protector -fno-pic -fno-pie -ffunction-sections -fdata-sections \
+            "${arch_flags[@]}" "$sources/$unit.cpp" -o "$scratch/$unit.o"
+    done
+    for probe in "${probes[@]}"; do
+        objects=("$scratch/$probe.o")
+        if [[ "$probe" == static-init-order ]]; then
+            objects+=("$scratch/static-init-order-first.o")
+        fi
+        map="$scratch/$probe.map"
+        # The runtime archives request libpthread via .deplibs.
+        # Breenix supplies pthreads in the explicit libc.a input.
+        "$lld" -static --no-dependent-libraries --gc-sections --eh-frame-hdr --fatal-warnings -T "$linker_script" \
+            -Map="$map" -o "$scratch/$probe" "${objects[@]}" --start-group \
+            "$runtime_build/lib/libc++.a" "$runtime_build/lib/libc++abi.a" "$libc" "$builtins" --end-group
+        # The LLD map lists sections and members but omits the -T argument.
+        printf '\nLinker script: %s\n' "$linker_script" >> "$map"
+    done
+    for probe in "${probes[@]}"; do
+        mv "$scratch/$probe" "$scratch/$probe.map" "$probe_dir/"
+    done
+    exit 0
+fi
+
 BUNWIND_RELEASE_DIR="$SCRIPT_DIR/target/hosted/bunwind/$TARGET_DIR-hosted/release"
 
 # Rustflags for linking against libbreenix-libc

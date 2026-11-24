@@ -1,0 +1,17 @@
+{
+  "id": "cxx-runtime",
+  "title": "C++ runtime",
+  "area": "Toolchain",
+  "summary": "Checks hosted C++ initialization and threaded containers.",
+  "binary": "/sbin/suite-cxx-runtime",
+  "timingSensitive": true,
+  "categories": [{
+    "id": "cxx-runtime",
+    "title": "C++ runtime",
+    "cases": [
+      {"id": "static-init-order", "title": "Static initialization and destruction order"},
+      {"id": "guarded-static-8-threads", "title": "Guarded static initialization with eight threads"},
+      {"id": "containers-and-threads", "title": "Containers and threads"}
+    ]
+  }]
+}

@@ -1,0 +1,5 @@
+{
+  "static-init-order": "construct-first\nconstruct-second\nmain\ndestroy-second\ndestroy-first\n",
+  "guarded-static": "construct\nworkers=8\n",
+  "containers-threads": "threads-joined\nvector-verified\nmap-verified\n"
+}

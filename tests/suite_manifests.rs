@@ -2276,3 +2276,19 @@ fn rust_host_manifest_matches_table() {
         ["catch-unwind-nested", "unwind-through-c-frame", "float-ffi-psabi"]);
     assert_eq!(guest, manifest.categories);
 }
+
+#[test]
+fn cxx_runtime_manifest_matches_table() {
+    let root = repo_root();
+    let mut errors = Vec::new();
+    let manifest = read_manifest(&root.join("docs/suites/cxx-runtime.json"), &mut errors).expect("cxx-runtime manifest");
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+    let (_, files) = suite_files(&root, "cxx_runtime").expect("cxx-runtime source");
+    let (suite, guest) = source_suite_files(&files).expect("cxx-runtime guest table");
+    assert_eq!(suite.id, manifest.id);
+    assert_eq!(manifest.categories.len(), 1);
+    assert_eq!(manifest.categories[0].entry.id, "cxx-runtime");
+    assert_eq!(manifest.categories[0].cases.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+        ["static-init-order", "guarded-static-8-threads", "containers-and-threads"]);
+    assert_eq!(guest, manifest.categories);
+}
