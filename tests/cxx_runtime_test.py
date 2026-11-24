@@ -1,4 +1,4 @@
-"""K3 runtime archive checks (the symbol closure remains a milestone gate)."""
+"""K3 runtime archive and hosted link checks."""
 import json
 import os
 import re
@@ -184,21 +184,70 @@ class CxxRuntimeTest(unittest.TestCase):
                 self.assertFalse(list(build.rglob('*.so')))
         cxx_runtime.verify_llvm(ROOT, llvm)
 
-    def test_cxx_runtime_undefined_set_is_defined(self):
+    def test_cxx_runtime_symbols_resolve(self):
+        from cxx_runtime import LLVM_BIN
+
         nm = llvm_tool(ROOT, 'llvm-nm')
+        readelf = os.environ.get('LLVM_READELF', str(LLVM_BIN / 'llvm-readelf'))
+        lld = llvm_tool(ROOT, 'rust-lld')
+        inputs = Path(os.environ.get('BREENIX_CXX_RUNTIME_ROOT', ROOT / 'build/cxx-runtime'))
+        builds = Path(os.environ.get('BREENIX_CXX_RUNTIME_BUILDS', ROOT / 'build/cxx-runtime'))
+        section_name = '__lcxx_override'
+        start = '__start___lcxx_override'
+        stop = '__stop___lcxx_override'
         for arch in ('x86_64', 'aarch64'):
-            with self.subTest(arch=arch):
-                base = Path(os.environ.get('BREENIX_CXX_RUNTIME_ROOT', ROOT / 'build/cxx-runtime')) / arch
-                archives = [base / 'lib/libc++.a', base / 'lib/libc++abi.a']
-                providers = archives + [base / 'lib/libc.a', base / 'lib/compiler_builtins.rlib']
+            with self.subTest(arch=arch), tempfile.TemporaryDirectory(prefix='breenix-k3-link-') as temp:
+                lib = inputs / arch / 'lib'
+                archives = [lib / 'libc++.a', lib / 'libc++abi.a']
+                providers = archives + [lib / 'libc.a', lib / 'compiler_builtins.rlib']
                 for path in providers:
                     self.assertTrue(path.is_file(), f'missing required archive: {path}')
                 undefined = set().union(*(symbols(nm, path, '--undefined-only') for path in archives))
                 defined = set().union(*(symbols(nm, path, '--defined-only') for path in providers))
-                remaining = undefined - defined
-                self.assertFalse({s for s in undefined if s.startswith('_Unwind_') or s == '__gxx_personality_v0'},
-                                 f'{arch}: unexpected unwinder references: {sorted(remaining)}')
-                self.assertFalse(remaining, f'{arch}: undefined symbols: {sorted(remaining)}')
+                forbidden = {name for name in undefined if name.startswith('_Unwind_')
+                             or name in {'__gxx_personality_v0', '__cxa_throw'}}
+                self.assertEqual(forbidden, set(), f'{arch}: exception or unwinder references')
+                self.assertEqual(undefined - defined, {start, stop}, f'{arch}: unresolved archive symbols')
+
+                # Reserve storage through libc++ and its new/delete ABI so the
+                # hosted link reaches libc++abi's section-bound references.
+                obj = Path(temp) / 'probe.o'
+                elf = Path(temp) / 'probe.elf'
+                subprocess.run(
+                    [ROOT / 'scripts/workload-cxx', '--arch', arch,
+                     '--runtime-build', builds / arch / 'build', '--',
+                     '-std=c++23', '-Werror', '-x', 'c++', '-', '-o', obj],
+                    input=('#include <string>\n'
+                           'int main() {\n'
+                           '    std::string text;\n'
+                           '    text.reserve(128);\n'
+                           '    return text.capacity() < 128;\n'
+                           '}\n'),
+                    text=True, check=True, timeout=10,
+                )
+                subprocess.run(
+                    ['taskpolicy', '-b', lld, '-flavor', 'gnu', '-static', '--gc-sections',
+                     '--eh-frame-hdr', '--fatal-warnings', '-T', ROOT / 'userspace/programs/linker-hosted.ld',
+                     '-o', elf, obj, '--start-group', *providers, '--end-group'],
+                    check=True, timeout=10,
+                )
+                self.assertEqual(subprocess.check_output([nm, '--undefined-only', elf], text=True), '')
+
+                # GNU ld manual §3.6.4.5 places synthesized bounds at the
+                # output section's first byte and one past its last byte.
+                [report] = json.loads(subprocess.check_output(
+                    [readelf, '--elf-output-style=JSON', '--sections', '--symbols', elf],
+                ))
+                [section] = [row['Section'] for row in report['Sections']
+                             if row['Section']['Name']['Name'] == section_name]
+                self.assertGreater(section['Size'], 0)
+                bounds = {row['Symbol']['Name']['Name']: row['Symbol'] for row in report['Symbols']
+                          if row['Symbol']['Name']['Name'] in {start, stop}}
+                self.assertEqual(bounds.keys(), {start, stop})
+                for name, value in ((start, section['Address']),
+                                    (stop, section['Address'] + section['Size'])):
+                    self.assertEqual(bounds[name]['Section']['Value'], section['Index'], name)
+                    self.assertEqual(bounds[name]['Value'], value, name)
 
 
 if __name__ == '__main__':
