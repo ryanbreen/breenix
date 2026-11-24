@@ -168,7 +168,29 @@ def build_guest_tools(arch, work, dev, clang, cargo, env, rustc_record):
     return tools
 
 
-def build(arch, work, dev, corpus, milestone=None):
+def stage_kernel_assembly(image, arch, corpus, milestone, record):
+    if milestone != image.KERNEL_ASSEMBLY_MILESTONE:
+        if record is not None:
+            raise ValueError(f"--kernel-assembly-record requires {image.KERNEL_ASSEMBLY_MILESTONE}")
+        return
+    if arch != "x86_64" or record is None:
+        raise ValueError(f"{image.KERNEL_ASSEMBLY_MILESTONE} requires x86_64 and --kernel-assembly-record")
+    fields = image.read_kernel_assembly_record(record)
+    if fields["bas_sha256"] != digest(record.parent / "bas"):
+        raise ValueError("kernel assembly record differs from the build host's bas")
+    destination = corpus / image.KERNEL_ASSEMBLY.name
+    for names, directory in ((image.KERNEL_ASM_SOURCES, ROOT / "kernel"),
+                             (image.KERNEL_ASM_OBJECTS, record.parent)):
+        for name in names:
+            staged = destination / name
+            staged.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(directory / name, staged)
+    shutil.copyfile(record, destination / image.KERNEL_ASSEMBLY_RECORD)
+
+
+def build(arch, work, dev, corpus, milestone=None, assembly_record=None):
+    image = import_module("toolchain-image")
+    stage_kernel_assembly(image, arch, corpus, milestone, assembly_record)
     work.mkdir()
     clang, _ = reference.pinned_tool(
         Path(os.environ["BREENIX_TOOLCHAIN_CLANG"]),
@@ -177,7 +199,6 @@ def build(arch, work, dev, corpus, milestone=None):
     cargo, env, host, rustc_record = cargo_environment()
     tools = build_guest_tools(arch, work, dev, clang, cargo, env, rustc_record)
 
-    image = import_module("toolchain-image")
     for tool, alias in image.DRIVER_TOOL_ALIASES:
         shutil.copy2(dev / "bin" / tool, dev / "bin" / alias)
     for category in ("c-core", "make", "project"):
@@ -316,8 +337,9 @@ if __name__ == "__main__":
     parser.add_argument("dev", type=Path)
     parser.add_argument("corpus", type=Path)
     parser.add_argument("--milestone")
+    parser.add_argument("--kernel-assembly-record", type=Path)
     args = parser.parse_args()
     try:
-        build(args.arch, args.work, args.dev, args.corpus, args.milestone)
+        build(args.arch, args.work, args.dev, args.corpus, args.milestone, args.kernel_assembly_record)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         sys.exit(f"toolchain-build-tools: {error}")

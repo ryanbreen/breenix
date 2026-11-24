@@ -9,6 +9,7 @@ arch=
 output=
 archive=
 selection=()
+receipt=()
 while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; }
     case "$1" in
@@ -16,6 +17,7 @@ while [ "$#" -gt 0 ]; do
         --output) output=$2 ;;
         --libc) archive=$2 ;;
         --milestone) selection=(--milestone "$2") ;;
+        --kernel-assembly-record) receipt=(--kernel-assembly-record "$2") ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
     shift 2
@@ -80,7 +82,7 @@ while IFS= read -r name; do
 done < "$root/toolchain/corpus/cases"
 
 python3 "$root/scripts/toolchain-build-tools.py" "$arch" "$work/tools" "$dev" "$corpus" \
-    ${selection[@]+"${selection[@]}"}
+    ${selection[@]+"${selection[@]}"} ${receipt[@]+"${receipt[@]}"}
 python3 "$root/scripts/toolchain-image.py" stage-c11 "$corpus" "$arch"
 python3 "$root/scripts/toolchain-image.py" stage-c17-libc "$guest" "$binaries" "$arch" "$clang"
 

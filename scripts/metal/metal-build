@@ -43,6 +43,7 @@ import transfer_fixture
 
 STUB_TARGET = 'x86_64-unknown-uefi'
 STUB_RELEASE = Path(STUB_TARGET) / 'release'
+KERNEL_ASSEMBLY_MILESTONE = 'toolchain/kernel-assembly'
 # The kernel profile each --features value builds.
 PROFILES = {'watchdog_fault_inject': 'fault-test', '': 'production', 'xhci_fault_inject': 'fault-test', 'block_fence_inject': 'fault-test',
             'breenfs_commit_window': 'fault-test', 'breenfs_corrupt_inject': 'fault-test',
@@ -156,6 +157,29 @@ def keep_logs(logs, out):
         print('\n'.join(log.read_text(errors='replace').splitlines()[-40:]), flush=True)
 
 
+def kernel_assembly_artifacts(messages, clone):
+    """Locate the kernel and its receipt from this Cargo invocation."""
+    clone = clone.resolve()
+    targets = {('kernel', clone / 'kernel/Cargo.toml'), ('qemu-uefi', clone / 'Cargo.toml')}
+    artifacts, outputs = {}, {}
+    with messages.open() as stream:
+        for line in stream:
+            message = json.loads(line)
+            if message['reason'] == 'compiler-artifact' and message.get('executable'):
+                target = message['target']['name'], Path(message['manifest_path']).resolve()
+                if target in targets:
+                    artifacts[target[0]] = (message['package_id'], Path(message['executable']))
+            elif message['reason'] == 'build-script-executed':
+                outputs[message['package_id']] = Path(message['out_dir'])
+    try:
+        kernel_package, elf = artifacts['kernel']
+        image_package, _ = artifacts['qemu-uefi']
+        return (elf, outputs[kernel_package] / 'kernel-assembly.record',
+                outputs[image_package] / 'breenix-uefi.img')
+    except KeyError as error:
+        raise ValueError('Cargo did not report the kernel assembly build artifacts') from error
+
+
 def inner(args):
     clone, out, tmp = paths(args)
     logs = tmp / 'logs'
@@ -174,10 +198,13 @@ def inner(args):
     build_fixtures = 'filesystem' in suites and fixture_builder.is_file()
     transfer = transfer_fixture.selected(args.suite)
     toolchain = 'toolchain' in suites
-    busybox = getattr(args, 'milestone', None) == 'toolchain/busybox-on-box'
-    if busybox and not toolchain:
-        raise ValueError('toolchain/busybox-on-box requires the toolchain suite')
+    milestone = getattr(args, 'milestone', None)
+    busybox = milestone == 'toolchain/busybox-on-box'
+    kernel_assembly = milestone == KERNEL_ASSEMBLY_MILESTONE
+    if (busybox or kernel_assembly) and not toolchain:
+        raise ValueError(f'{milestone} requires the toolchain suite')
     toolchain_build = None
+    kernel_image = None
     build_companions = build_fixtures or busybox
     root = tmp / 'ext2-staged.img' if 'sdk' in suites or build_fixtures or transfer else seed
     try:
@@ -244,12 +271,23 @@ def inner(args):
             started = time.time()
             log = logs / 'kernel-build.log'
             features = ['--features', args.features] if args.features else []
+            command = ['cargo', 'build', '--release', '--bin', 'qemu-uefi', *features]
             with log.open('w') as output:
-                status = subprocess.call(['cargo', 'build', '--release', '--bin', 'qemu-uefi'] + features, cwd=clone,
-                                         stdout=output, stderr=subprocess.STDOUT)
+                if kernel_assembly:
+                    messages = logs / 'kernel-artifacts.jsonl'
+                    env = dict(os.environ, BREENIX_KERNEL_ASSEMBLER='bas',
+                               RUSTC_WORKSPACE_WRAPPER=str(clone.resolve() / 'scripts/kernel-artifact-rustc.sh'))
+                    with messages.open('w') as artifacts:
+                        status = subprocess.call([*command, '--message-format=json-render-diagnostics'],
+                                                 cwd=clone, env=env,
+                                                 stdout=artifacts, stderr=output)
+                else:
+                    status = subprocess.call(command, cwd=clone, stdout=output, stderr=subprocess.STDOUT)
             timings['kernel'] = round(time.time() - started)
             if not clean_build(status, log, 'kernel', logs, out):
                 return 1
+            if kernel_assembly:
+                kernel_elf, assembly_record, kernel_image = kernel_assembly_artifacts(messages, clone)
             started = time.time()
             log = logs / 'stub-build.log'
             with log.open('w') as output:
@@ -309,19 +347,23 @@ def inner(args):
                 log = logs / 'toolchain-build.log'
                 # Other milestones use the existing bundle contract, including
                 # when deployed host tools build a commit before this fixture.
-                selection = ['--milestone', args.milestone] if busybox else []
+                selection = ['--milestone', milestone] if busybox or kernel_assembly else []
+                receipt = ['--kernel-assembly-record', str(assembly_record)] if kernel_assembly else []
                 with log.open('w') as output:
                     status = subprocess.call([str(script / 'build-toolchain.sh'), '--arch', 'x86_64',
-                                              '--output', str(bundle), *selection], cwd=clone,
+                                              '--output', str(bundle), *selection, *receipt], cwd=clone,
                                              stdout=output, stderr=subprocess.STDOUT)
                 if not clean_build(status, log, 'reference toolchain bundle', logs, out):
                     return 1
-                subprocess.run([str(script / 'create_ext2_disk.sh'), '--stage-from', str(root),
-                                '--output', str(fixture), '--suite', args.suite,
-                                '--toolchain-bundle', str(bundle), *selection], cwd=clone, check=True)
                 toolchain_build = json.loads((bundle / 'build.json').read_text())
                 if toolchain_build['commit'] != args.sha:
                     raise ValueError('toolchain build record differs from the image commit')
+                if kernel_assembly:
+                    if toolchain_build.get('kernelAssembly', {}).get('kernel_elf_sha256') != sha256(kernel_elf):
+                        raise ValueError('kernel assembly record differs from the linked kernel ELF')
+                subprocess.run([str(script / 'create_ext2_disk.sh'), '--stage-from', str(root),
+                                '--output', str(fixture), '--suite', args.suite,
+                                '--toolchain-bundle', str(bundle), *selection], cwd=clone, check=True)
                 toolchain_build['root'] = {'size': fixture.stat().st_size, 'sha256': sha256(fixture)}
                 if busybox:
                     scratch = bundle / 'toolchain-scratch.img'
@@ -332,12 +374,14 @@ def inner(args):
                 subprocess.run([sys.executable, str(HELPER), 'release', 'metal-build'], check=True)
         shutil.copyfile(tmp / 'stub-target' / STUB_RELEASE / 'metal-efi-stub.efi', out / 'stub.efi')
         shutil.copyfile(tmp / 'stub-target' / STUB_RELEASE / 'metal-boot-manager.efi', out / 'manager.efi')
-        images = sorted(glob.glob(str(clone / 'target/release/build/breenix-*/out/breenix-uefi.img')),
-                        key=os.path.getmtime)
-        if not images:
-            print('[metal-build] no UEFI image was produced', flush=True)
-            return 1
-        shutil.copyfile(images[-1], out / 'uefi.img')
+        if kernel_image is None:
+            images = sorted(glob.glob(str(clone / 'target/release/build/breenix-*/out/breenix-uefi.img')),
+                            key=os.path.getmtime)
+            if not images:
+                print('[metal-build] no UEFI image was produced', flush=True)
+                return 1
+            kernel_image = images[-1]
+        shutil.copyfile(kernel_image, out / 'uefi.img')
         shutil.copyfile(root, out / 'ext2.img')
         if args.features == 'testing':
             shutil.copyfile(clone / TEST_BINARIES, out / 'test-binaries.img')
@@ -374,6 +418,8 @@ def inner(args):
                  'ext2': {'size': (out / 'ext2.img').stat().st_size, 'sha256': sha256(out / 'ext2.img')}}
         if toolchain_build is not None:
             build['toolchain'] = toolchain_build
+        if kernel_assembly:
+            build['kernelAssembly'] = toolchain_build['kernelAssembly']
         if (out / 'test-binaries.img').is_file():
             build['testBinaries'] = {'size': (out / 'test-binaries.img').stat().st_size,
                                      'sha256': sha256(out / 'test-binaries.img')}
