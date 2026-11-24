@@ -38,6 +38,7 @@
 #   --until-desktop-ready  stop with a verdict when desktop stages complete (desktop mode only)
 #   --idle-exit SECONDS  stop the VM after this many seconds without new serial output (default 300; 0 turns it off)
 #   --gate-timeout SECONDS  per-suite DONE deadline (default 1800), even with --idle-exit 0
+#                        busybox-on-box defaults to each suite's allowances plus 25%
 #   BREENIX_SUITE_HOLD    suite panel hold after a 2 s render delay (default 5 s)
 #   --display            open QEMU's display window (the default on a Mac desktop session; BREENIX_QEMU_NOGUI=1 turns it off)
 #   --no-display         serial only, even for desktop
@@ -72,6 +73,7 @@ SERIAL_REQUESTED=0
 BREENFS_FAULT_ARGS=()
 IDLE_EXIT=300
 GATE_TIMEOUT=1800
+GATE_TIMEOUT_EXPLICIT=0
 DISPLAY_MODE=
 BUILD=1
 BUILD_ONLY=0
@@ -128,7 +130,7 @@ while [ "$#" -gt 0 ]; do
             [ "${#BREENFS_FAULT_ARGS[@]}" -eq 0 ] || { echo "select one BreenFS diagnostic" >&2; exit 2; }
             BREENFS_FAULT_ARGS=("$1"); shift ;;
         --idle-exit) IDLE_EXIT="$2"; shift 2 ;;
-        --gate-timeout) GATE_TIMEOUT="$2"; shift 2 ;;
+        --gate-timeout) GATE_TIMEOUT="$2"; GATE_TIMEOUT_EXPLICIT=1; shift 2 ;;
         --display) DISPLAY_MODE=cocoa; shift ;;
         --no-display) DISPLAY_MODE=none; shift ;;
         --no-build) BUILD=0; shift ;;
@@ -787,7 +789,11 @@ if [ "$MODE" = program ] && [ -n "$TERMINAL_PROFILE" ]; then
     WATCH_MODE=default
 fi
 WATCH_READY_ARGS=()
-[ "$UNTIL_DESKTOP_READY" -eq 0 ] || WATCH_READY_ARGS=(--until-desktop-ready)
+if [ "$MILESTONE" = toolchain/busybox-on-box ] && [ "$GATE_TIMEOUT_EXPLICIT" -eq 0 ]; then
+    SUITE_DEADLINES=$(python3 "$ROOT/scripts/suite-deadlines.py" --arch aarch64 "$SUITE")
+    WATCH_READY_ARGS+=(--suite-deadlines "$SUITE_DEADLINES")
+fi
+[ "$UNTIL_DESKTOP_READY" -eq 0 ] || WATCH_READY_ARGS+=(--until-desktop-ready)
 [ -z "$MILESTONE" ] || WATCH_READY_ARGS+=(--milestone "$MILESTONE" --commit "${COMMIT_IDENTITY%% *}")
 if [ -n "$TOOLCHAIN_RECORD" ] && [ -z "$ONLY" ]; then
     WATCH_READY_ARGS+=(--toolchain-build "$TOOLCHAIN_RECORD")

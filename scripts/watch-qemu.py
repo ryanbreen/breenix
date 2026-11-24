@@ -43,8 +43,14 @@ def label(mode, suite):
     return f"Suite {suite}" if mode == "suite" else "Boot probe" if mode == "probe" else "Testing boot"
 
 
+def deadline_for_suite(default, deadlines, suites, index):
+    return deadlines.get(suites[min(index, len(suites) - 1)], default)
+
+
 def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clock, only=None,
-          until_desktop_ready=False):
+          until_desktop_ready=False, suite_deadlines=None):
+    suite_deadlines = suite_deadlines or {}
+    suites = suite.split(",")
     progress = BootProgress(serial)
     desktop_stages = []
     if until_desktop_ready:
@@ -108,9 +114,11 @@ def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clo
         elif mode in COMPLETING_MODES and progress.stalled():
             progress.record()
             return "stalled"
-        elif (mode == "suite" or until_desktop_ready) and gate_timeout > 0 and now - started >= gate_timeout:
+        elif (mode == "suite" or until_desktop_ready) and gate_timeout > 0 and now - started >= deadline_for_suite(
+                gate_timeout, suite_deadlines, suites, max(0, boundaries - 1)):
+            gate_timeout_current = deadline_for_suite(gate_timeout, suite_deadlines, suites, max(0, boundaries - 1))
             expected = "desktop-ready" if until_desktop_ready else "suite DONE"
-            print(f"==> No {expected} within {gate_timeout:g}s; stopping the VM", flush=True)
+            print(f"==> No {expected} within {gate_timeout_current:g}s; stopping the VM", flush=True)
             return "deadline"
         elif not until_desktop_ready and idle_exit > 0 and now - last_output >= idle_exit:
             print(f"==> No serial output for {idle_exit:g}s; stopping the VM", flush=True)
@@ -163,6 +171,7 @@ def main():
     parser.add_argument("--case", default="", dest="only")
     parser.add_argument("--idle-exit", type=float, default=300)
     parser.add_argument("--gate-timeout", type=float, default=1800)
+    parser.add_argument("--suite-deadlines", type=json.loads, default={})
     parser.add_argument("--suite-hold", type=float, default=float(os.environ.get("BREENIX_SUITE_HOLD", "5")))
     parser.add_argument("--until-desktop-ready", action="store_true")
     parser.add_argument("--disk")
@@ -176,6 +185,10 @@ def main():
     if args.until_desktop_ready and args.mode != "desktop":
         parser.error("--until-desktop-ready requires desktop mode")
     suites = args.suite.split(",")
+    if (not isinstance(args.suite_deadlines, dict) or
+            any(name not in suites or isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0
+                for name, value in args.suite_deadlines.items())):
+        parser.error("suite deadlines must map selected suites to positive seconds")
     scoped, categories, toolchain_build = None, None, None
     if args.milestone and (args.mode != "suite" or args.only or not args.commit):
         parser.error("--milestone needs a full suite boot and its commit")
@@ -207,7 +220,8 @@ def main():
     process = subprocess.Popen(command)
     try:
         reason = watch(process, args.serial, args.mode, args.suite, args.idle_exit,
-                       args.gate_timeout, args.suite_hold, clock, args.only, args.until_desktop_ready)
+                       args.gate_timeout, args.suite_hold, clock, args.only, args.until_desktop_ready,
+                       args.suite_deadlines)
     finally:
         stop(process)
     if args.until_desktop_ready:

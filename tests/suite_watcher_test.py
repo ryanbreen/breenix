@@ -88,10 +88,41 @@ class SuiteWatcherTest(unittest.TestCase):
         for index, suite in enumerate(suites):
             self.assertEqual(watcher["deadline_for_suite"](1800, deadlines, suites, index), deadlines[suite])
         self.assertEqual(watcher["deadline_for_suite"](123, {}, suites, 1), 123)
+        with tempfile.TemporaryDirectory() as tmp:
+            serial = Path(tmp) / "serial"
+            serial.write_text("SUITE toolchain START cases=70\n")
+            ticks = iter((0, 0, 2000, 4001, 5250))
+            fake_time = Mock(monotonic=lambda: next(ticks))
+            def advance(_):
+                if serial.read_text().count(" START ") == 1:
+                    with serial.open("a") as output:
+                        output.write("SUITE libc START cases=260\n")
+            fake_time.sleep.side_effect = advance
+            watch = watcher["watch"]
+            with patch.dict(watch.__globals__, {"time": fake_time, "BootProgress": Mock(return_value=Mock(stalled=lambda: False))}):
+                self.assertEqual(watch(Mock(poll=lambda: None), serial, "suite", ",".join(suites),
+                                       0, 1800, 0, Mock(), suite_deadlines=deadlines), "deadline")
+            self.assertEqual(fake_time.sleep.call_count, 3)
         launcher = (ROOT / "scripts/boot-interactive.sh").read_text()
         self.assertIn('GATE_TIMEOUT_EXPLICIT=1', launcher)
         self.assertIn('scripts/suite-deadlines.py', launcher)
         self.assertIn('--suite-deadlines', launcher)
+        selection = launcher.split('WATCH_READY_ARGS=()', 1)[1].split(
+            '[ "$UNTIL_DESKTOP_READY"', 1)[0]
+        for milestone, explicit, expected in (("toolchain/busybox-on-box", "0", True),
+                                              ("toolchain/busybox-on-box", "1", False),
+                                              ("toolchain/c17-libc-suite", "0", False)):
+            result = subprocess.run(
+                ["bash", "-c", 'ROOT="$1"; MILESTONE="$2"; GATE_TIMEOUT_EXPLICIT="$3"; '
+                 'SUITE="toolchain,libc,utilities"; WATCH_READY_ARGS=(); ' + selection +
+                 'printf "%s\\n" "${WATCH_READY_ARGS[@]}"', "test", str(ROOT), milestone, explicit],
+                check=True, capture_output=True, text=True)
+            lines = result.stdout.splitlines()
+            if expected:
+                self.assertEqual(lines[0], "--suite-deadlines")
+                self.assertEqual(json.loads(lines[1]), deadlines)
+            else:
+                self.assertNotIn("--suite-deadlines", lines)
 
     def test_poweroff_scores_completed_recording_and_partial_exit_cancels(self):
         # Replay the standalone DONE -> MEMORY -> READY shutdown shape from
