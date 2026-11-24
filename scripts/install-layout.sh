@@ -39,7 +39,7 @@ for elf in "$binaries"/*.elf; do
     [ -f "$elf" ] || continue
     name=${elf##*/}; name=${name%.elf}
     case "$name" in
-        libc-busybox|suite-transfer-fixture|suite-toolchain) continue ;;
+        libc-busybox|suite-transfer-fixture|suite-toolchain|suite-rust-host) continue ;;
     esac
     while read -r kind pattern destination mode gid; do
         [ "$kind" = bin ] || continue

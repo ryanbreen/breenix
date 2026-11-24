@@ -102,6 +102,7 @@ pub mod nr {
     pub const WAIT4: u64 = 61;
     pub const KILL: u64 = 62;
     pub const FCNTL: u64 = 72;
+    pub const FLOCK: u64 = 73;
     pub const FSYNC: u64 = 74;
     pub const SYNC: u64 = 162;
     pub const FDATASYNC: u64 = 75;
@@ -243,6 +244,7 @@ pub mod nr {
     pub const DUP: u64 = 23;
     pub const DUP3: u64 = 24;
     pub const FCNTL: u64 = 25;
+    pub const FLOCK: u64 = 32;
     pub const IOCTL: u64 = 29;
 
     // Filesystem *at variants

@@ -10,6 +10,8 @@ mod spin;
 pub(crate) use atfork::{atfork_child, atfork_parent, atfork_prepare};
 pub(crate) use cancel::{cancel_syscall, reserved_block};
 
+use crate::lifecycle::{run_handlers, run_thread_exit, Handler, HandlerList};
+use crate::stdlib::exit::{alloc_handler, release_handler};
 use super::{EBUSY, EINVAL, ENOMEM, EPERM};
 use core::ptr::{null, null_mut};
 use core::sync::atomic::{
@@ -169,6 +171,7 @@ struct Thread {
     // The inaccessible bytes at the bottom of the mapping.
     mapping_guard: usize,
     tp: usize,
+    static_tls_data: *mut u8,
     errno: i32,
     h_errno: i32,
     locale: *mut core::ffi::c_void,
@@ -177,6 +180,7 @@ struct Thread {
     robust: *mut Mutex,
     // How many PTHREAD_PRIO_PROTECT mutexes with each ceiling it holds.
     ceilings: [u32; CEILINGS],
+    cxa_destructors: HandlerList,
     values: [(*mut u8, u32); KEYS],
     extra_values: *mut Values,
     reads: *mut ReadBlock,
@@ -296,6 +300,7 @@ unsafe fn alloc_thread(guard: usize, stack: usize) -> *mut Thread {
             mapping_len: len,
             mapping_guard: guard,
             tp: 0,
+            static_tls_data: null_mut(),
             errno: 0,
             h_errno: 0,
             locale: null_mut(),
@@ -303,6 +308,7 @@ unsafe fn alloc_thread(guard: usize, stack: usize) -> *mut Thread {
             cleanup: null_mut(),
             robust: null_mut(),
             ceilings: [0; CEILINGS],
+            cxa_destructors: HandlerList::new(),
             values: [(null_mut(), 0); KEYS],
             extra_values: null_mut(),
             reads: null_mut(),
@@ -340,6 +346,7 @@ unsafe fn alloc_thread(guard: usize, stack: usize) -> *mut Thread {
         *((tp + 8) as *mut usize) = p as usize;
     }
     (*p).tp = tp;
+    (*p).static_tls_data = data as *mut u8;
     p
 }
 unsafe fn free_thread(p: *mut Thread) {
@@ -510,6 +517,7 @@ pub unsafe extern "C" fn __breenix_after_fork() {
     REGISTRY.0.store(0, Relaxed);
     KEY_LOCK.0.store(0, Relaxed);
     STACK_CACHE_LOCK.0.store(0, Relaxed);
+    crate::stdlib::exit::after_fork();
     HEAD = survivor;
     if !survivor.is_null() {
         let id = tid();
@@ -607,6 +615,34 @@ unsafe fn descriptor_from_tp() -> *mut Thread {
         core::arch::asm!("mov {}, fs:[8]", out(reg) p, options(readonly, nostack));
         p
     }
+}
+
+/// The TLS block installed for the calling thread by startup or pthread_create.
+pub(crate) fn static_tls_data() -> *mut core::ffi::c_void {
+    if !RUNTIME_READY.load(Acquire) {
+        return null_mut();
+    }
+    // CLONE_SETTLS can leave FS unset. Check before reading fs:8.
+    #[cfg(target_arch = "x86_64")]
+    {
+        const ARCH_GET_FS: u64 = 0x1003;
+        let mut base = 0u64;
+        // SAFETY: ARCH_GET_FS writes one word into this local.
+        let result =
+            unsafe { raw::syscall2(nr::ARCH_PRCTL, ARCH_GET_FS, &mut base as *mut u64 as u64) };
+        if result != 0 || base == 0 {
+            return null_mut();
+        }
+    }
+    // SAFETY: the thread pointer in a libc-managed thread names its live TCB.
+    let p = unsafe { descriptor_from_tp() };
+    // A raw clone can also inherit its creator's TP without its own TLS block.
+    // Startup, pthread entry and the libc fork path set the descriptor's ID.
+    if p.is_null() || unsafe { (*p).id.load(Relaxed) } != tid() {
+        return null_mut();
+    }
+    // SAFETY: the live descriptor belongs to this thread.
+    unsafe { (*p).static_tls_data.cast() }
 }
 
 #[no_mangle]
@@ -1001,11 +1037,55 @@ pub unsafe extern "C" fn pthread_detach(handle: usize) -> i32 {
     0
 }
 #[no_mangle]
+pub unsafe extern "C" fn __cxa_thread_atexit_impl(
+    function: unsafe extern "C" fn(*mut u8),
+    argument: *mut u8,
+    dso: *mut u8,
+) -> i32 {
+    // SAFETY: current returns this thread's descriptor, if available.
+    let p = unsafe { current() };
+    if p.is_null() {
+        return -1;
+    }
+    let Some(node) = alloc_handler(Handler::Cxa {
+        function,
+        argument,
+        dso,
+    }) else {
+        return -1;
+    };
+    // SAFETY: only the owning thread accesses its cxa_destructors list.
+    unsafe { (*p).cxa_destructors.push(node) };
+    0
+}
+
+unsafe fn take_cxa_destructor(p: *mut Thread) -> Option<Handler> {
+    // SAFETY: p is the current thread's descriptor. The borrow ends before the
+    // callback so it can register another destructor on the same thread.
+    unsafe {
+        (*p).cxa_destructors.take(null_mut()).map(|node| release_handler(node))
+    }
+}
+
+pub(crate) unsafe fn run_current_cxa_destructors() {
+    if RUNTIME_READY.load(Acquire) {
+        // SAFETY: startup has installed the pthread runtime.
+        let p = unsafe { current() };
+        if !p.is_null() {
+            // SAFETY: the callbacks belong to the calling thread.
+            unsafe { run_handlers(|| take_cxa_destructor(p)) };
+        }
+    }
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn pthread_exit(value: *mut u8) -> ! {
     let p = current();
     if !p.is_null() {
         cancel::finish(p);
-        destructors(p);
+        // SAFETY: this thread owns both its C++ and pthread key registrations.
+        // Rust TLS destructors that use pthread keys run in the second phase.
+        unsafe { run_thread_exit(|| take_cxa_destructor(p), || destructors(p)) };
         while !(*p).robust.is_null() {
             let m = (*p).robust;
             (*p).robust = (*m).next;

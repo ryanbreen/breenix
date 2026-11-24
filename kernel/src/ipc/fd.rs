@@ -68,7 +68,7 @@ pub mod fcntl_cmd {
 /// Regular file descriptor
 ///
 /// The access mode and status flags (O_APPEND) of the open file description
-/// live on the `FileDescriptor`'s shared description word, not here.
+/// live on the `FileDescriptor`'s shared open file description.
 pub struct RegularFile {
     pub open: crate::fs::vfs::file::OpenFile,
     pub inode_num: u64,
@@ -186,6 +186,29 @@ impl core::fmt::Debug for FdKind {
 /// A device node's inode and the options of the mount it was opened through.
 pub type MountedNode = (Arc<crate::fs::vfs::VNode>, crate::fs::attrs::MountFlags);
 
+/// State shared by descriptors created by dup, fork and descriptor passing.
+pub(crate) struct OpenFileDescription {
+    status: AtomicU32,
+    pub(crate) flock: spin::Once<Arc<crate::fs::flock::FileLocks>>,
+}
+
+impl OpenFileDescription {
+    fn new(status: u32) -> Self {
+        Self {
+            status: AtomicU32::new(status),
+            flock: spin::Once::new(),
+        }
+    }
+}
+
+impl Drop for OpenFileDescription {
+    fn drop(&mut self) {
+        if let Some(file) = self.flock.get() {
+            file.close(self as *const Self);
+        }
+    }
+}
+
 /// A file descriptor entry in the per-process table
 #[derive(Clone)]
 pub struct FileDescriptor {
@@ -193,11 +216,9 @@ pub struct FileDescriptor {
     pub kind: FdKind,
     /// File descriptor flags (FD_CLOEXEC) - per-fd, not inherited on dup
     pub flags: u32,
-    /// The open file description's flags word: the access mode (O_ACCMODE
-    /// bits) and the file status flags (O_APPEND, O_NONBLOCK). Cloning the
-    /// entry (dup, dup2, dup3, F_DUPFD, fork) shares the word, so F_SETFL on
-    /// one descriptor is seen through every descriptor for the description.
-    description: Arc<AtomicU32>,
+    /// The open file description, including access mode, file status flags,
+    /// and flock ownership. Cloning the entry shares this state.
+    description: Arc<OpenFileDescription>,
     /// Mounted inode metadata retained when the stream is served by a driver.
     pub(crate) namespace_node: Option<Arc<crate::fs::vfs::VNode>>,
     /// The options of the mount the file was opened through (fstatvfs `f_flag`).
@@ -252,7 +273,7 @@ impl FileDescriptor {
         FileDescriptor {
             kind,
             flags,
-            description: Arc::new(AtomicU32::new(word)),
+            description: Arc::new(OpenFileDescription::new(word)),
             namespace_node: None,
             mount_flags: Default::default(),
             opened: crate::tty::revoke::now(),
@@ -266,21 +287,25 @@ impl FileDescriptor {
         Ok(FileDescriptor {
             kind,
             flags,
-            description: Arc::try_new(AtomicU32::new(word)).map_err(|_| 12)?,
+            description: Arc::try_new(OpenFileDescription::new(word)).map_err(|_| 12)?,
             namespace_node: None,
             mount_flags: Default::default(),
             opened: crate::tty::revoke::now(),
         })
     }
 
+    pub(crate) fn open_description(&self) -> Arc<OpenFileDescription> {
+        self.description.clone()
+    }
+
     /// The open file description this descriptor refers to, as a reference
     /// that does not keep it open: epoll watches descriptions this way.
-    pub(crate) fn description_ref(&self) -> Weak<AtomicU32> {
+    pub(crate) fn description_ref(&self) -> Weak<OpenFileDescription> {
         Arc::downgrade(&self.description)
     }
 
     /// Whether this descriptor refers to the open file description `of`.
-    pub(crate) fn refers_to(&self, of: &Weak<AtomicU32>) -> bool {
+    pub(crate) fn refers_to(&self, of: &Weak<OpenFileDescription>) -> bool {
         core::ptr::eq(Arc::as_ptr(&self.description), of.as_ptr())
     }
 
@@ -291,7 +316,14 @@ impl FileDescriptor {
     pub fn try_opened(kind: FdKind, open_flags: u32) -> Result<Self, u64> {
         let flags = if open_flags & status_flags::O_CLOEXEC != 0 { flags::FD_CLOEXEC } else { 0 };
         let word = (open_flags & status_flags::O_ACCMODE) | (open_flags & SETTABLE_STATUS_FLAGS);
-        Ok(Self { kind, flags, description: Arc::try_new(AtomicU32::new(word)).map_err(|_| 12u64)?, namespace_node: None, mount_flags: Default::default(), opened: crate::tty::revoke::now() })
+        Ok(Self {
+            kind,
+            flags,
+            description: Arc::try_new(OpenFileDescription::new(word)).map_err(|_| 12u64)?,
+            namespace_node: None,
+            mount_flags: Default::default(),
+            opened: crate::tty::revoke::now(),
+        })
     }
 
     /// The open clock when the description was created.
@@ -330,7 +362,7 @@ impl FileDescriptor {
     /// The open file description's flags word (F_GETFL): access mode and
     /// status flags.
     pub fn status_flags(&self) -> u32 {
-        self.description.load(Ordering::Acquire)
+        self.description.status.load(Ordering::Acquire)
     }
 
     /// Whether the open file description was opened for reading.
@@ -354,18 +386,19 @@ impl FileDescriptor {
     /// ignored.
     /// Atomically replace mutable status flags and return the previous word.
     pub fn replace_status_flags(&self, flags: u32) -> u32 {
-        super::fd_flags::replace(&self.description, flags, SETTABLE_STATUS_FLAGS)
+        super::fd_flags::replace(&self.description.status, flags, SETTABLE_STATUS_FLAGS)
     }
 
     /// Atomically replace only the settable status flags in `mask` and
     /// return the previous word.
     pub fn update_status_flags(&self, mask: u32, flags: u32) -> u32 {
-        super::fd_flags::replace(&self.description, flags, mask & SETTABLE_STATUS_FLAGS)
+        super::fd_flags::replace(&self.description.status, flags, mask & SETTABLE_STATUS_FLAGS)
     }
 
     pub fn set_status_flags(&self, flags: u32) {
         let _ = self
             .description
+            .status
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |word| {
                 Some((word & !SETTABLE_STATUS_FLAGS) | (flags & SETTABLE_STATUS_FLAGS))
             });
@@ -828,7 +861,10 @@ impl FdTableInner {
 
     /// The lowest descriptor number that refers to the open file description
     /// `of`.
-    pub(crate) fn find_description(&self, of: &Weak<AtomicU32>) -> Option<(i32, &FileDescriptor)> {
+    pub(crate) fn find_description(
+        &self,
+        of: &Weak<OpenFileDescription>,
+    ) -> Option<(i32, &FileDescriptor)> {
         self.fds
             .iter()
             .enumerate()

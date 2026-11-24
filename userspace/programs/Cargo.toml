@@ -10,6 +10,8 @@ description = "Userspace programs and utilities for Breenix"
 [features]
 # B42: the remaining v1 framebuffer stress subject is built only for x86-64.
 framebuffer-v1 = []
+hosted-link-probe = []
+rust-host = []
 
 [dependencies]
 libcollab = { path = "../../libs/libcollab", features = ["net"] }
@@ -989,3 +991,23 @@ path = "src/suite_filesystem.rs"
 [[bin]]
 name = "breenfs"
 path = "src/breenfs.rs"
+
+[[bin]]
+name = "hosted_link_probe"
+path = "../../tests/fixtures/rust-host-link/probe.rs"
+required-features = ["hosted-link-probe"]
+
+[[bin]]
+name = "suite-rust-host"
+path = "src/suite_rust_host.rs"
+required-features = ["rust-host"]
+
+[[bin]]
+name = "rust-host-startup-probe"
+path = "src/rust_host_startup_probe.rs"
+required-features = ["rust-host"]
+
+[[bin]]
+name = "rust-host-process-probe"
+path = "src/rust_host_process_probe.rs"
+required-features = ["rust-host"]

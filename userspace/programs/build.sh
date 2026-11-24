@@ -15,26 +15,58 @@
 # Usage:
 #   ./userspace/programs/build.sh                  # x86_64 (default)
 #   ./userspace/programs/build.sh --arch aarch64   # aarch64
+#   ./userspace/programs/build.sh --hosted-bin NAME [--features FEATURES]
+#     Build a single bin into target/hosted for the selected architecture.
+#   ./userspace/programs/build.sh --rust-host
+#     Build the opt-in suite and its probes into target/hosted.
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-# Default architecture
+usage() {
+    echo "Usage: $0 [--arch x86_64|aarch64] [--hosted-bin NAME [--features FEATURES] | --rust-host]" >&2
+    exit 2
+}
+
 ARCH="x86_64"
+HOSTED_BIN=""
+HOSTED_FEATURES=()
+RUST_HOST=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --arch)
             ARCH="$2"
             shift 2
             ;;
+        --hosted-bin)
+            [[ -n "${2:-}" && "$2" != -* ]] || usage
+            HOSTED_BIN="$2"
+            shift 2
+            ;;
+        --rust-host)
+            RUST_HOST=1
+            shift
+            ;;
+        --features)
+            [[ -n "${2:-}" && "$2" != -* ]] || usage
+            HOSTED_FEATURES+=(--features "$2")
+            shift 2
+            ;;
         *)
-            echo "Usage: $0 [--arch x86_64|aarch64]"
-            exit 1
+            usage
             ;;
     esac
 done
+if [[ "$RUST_HOST" == 1 ]]; then
+    [[ -z "$HOSTED_BIN" && ${#HOSTED_FEATURES[@]} -eq 0 ]] || usage
+    HOSTED_BIN="suite-rust-host"
+    HOSTED_FEATURES=(--features rust-host)
+fi
+if [[ -z "$HOSTED_BIN" && ${#HOSTED_FEATURES[@]} -gt 0 ]]; then
+    usage
+fi
 
 # Set architecture-specific variables
 if [[ "$ARCH" == "aarch64" ]]; then
@@ -64,7 +96,9 @@ fi
 # These are passed explicitly because cargo's [target.xxx] config sections
 # don't match reliably when --target is a relative path (the path prefix
 # prevents matching against the normalized target name).
-STD_RUSTFLAGS="$REMAP_FLAGS -L native=$LIBC_RELEASE_DIR -C link-arg=-T$SCRIPT_DIR/linker.ld -C link-arg=--allow-multiple-definition -C default-linker-libraries=no"
+LINK_RUSTFLAGS="$REMAP_FLAGS -L native=$LIBC_RELEASE_DIR"
+STD_RUSTFLAGS="$LINK_RUSTFLAGS -C link-arg=-T$SCRIPT_DIR/linker.ld -C link-arg=--allow-multiple-definition -C default-linker-libraries=no"
+HOSTED_RUSTFLAGS="$LINK_RUSTFLAGS -C link-arg=--allow-multiple-definition -C default-linker-libraries=no"
 
 echo "========================================"
 echo "  STD USERSPACE BUILD (Rust std library)"
@@ -74,6 +108,52 @@ echo ""
 
 # Reject mixed or uncommitted std inputs before any compilation.
 "$PROJECT_ROOT/scripts/rust-fork.sh" verify
+
+# B42 keeps the v1 stress subject only on x86-64.
+LEGACY_GRAPHICS_FEATURES=()
+if [[ "$ARCH" == "x86_64" ]]; then
+    LEGACY_GRAPHICS_FEATURES=(--features framebuffer-v1)
+fi
+
+RUST_FORK_LIBRARY="${BREENIX_RUST_FORK_LIBRARY:-$PROJECT_ROOT/rust-fork/library}"
+if [ ! -d "$RUST_FORK_LIBRARY" ]; then
+    echo "  ERROR: forked Rust library not found at $RUST_FORK_LIBRARY"
+    echo "  Set BREENIX_RUST_FORK_LIBRARY to the forked Rust library path"
+    echo "  The forked Rust compiler is required for std support"
+    exit 1
+fi
+
+# Cargo's build-std freshness checks can miss edits in an external sysroot.
+# Include its verified commit in compiler metadata so a pin change rebuilds std.
+if [ -f "$RUST_FORK_LIBRARY/../.rust-fork-snapshot.json" ]; then
+    FORK_COMMIT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["commit"])' "$RUST_FORK_LIBRARY/../.rust-fork-snapshot.json")"
+else
+    FORK_COMMIT="$(git -C "$RUST_FORK_LIBRARY/.." rev-parse HEAD)"
+fi
+
+build_rust_programs() (
+    set -o pipefail
+    cd "$SCRIPT_DIR" || exit 1
+    unset CARGO_ENCODED_RUSTFLAGS
+    export __CARGO_TESTS_ONLY_SRC_ROOT="$RUST_FORK_LIBRARY"
+    export RUSTFLAGS="$STD_RUSTFLAGS -C metadata=breenix_std_$FORK_COMMIT"
+
+    if [[ -n "$HOSTED_BIN" ]]; then
+        export RUSTFLAGS="$HOSTED_RUSTFLAGS -C metadata=breenix_std_$FORK_COMMIT"
+        extra_link_flags=()
+        case "$HOSTED_BIN" in
+            suite-rust-host|rust-host-startup-probe|rust-host-process-probe)
+                extra_link_flags=(-Cforce-unwind-tables=yes) ;;
+        esac
+        # Keep hosted ELFs out of the ordinary install pool. cargo rustc
+        # passes the arguments after -- to this bin's rustc invocation only.
+        cargo rustc --release --target "$TARGET_JSON" --target-dir "$SCRIPT_DIR/target/hosted" \
+            "${LEGACY_GRAPHICS_FEATURES[@]}" "${HOSTED_FEATURES[@]}" --bin "$HOSTED_BIN" -- \
+            "-Clink-arg=-T$SCRIPT_DIR/linker-hosted.ld" -Clink-arg=--eh-frame-hdr "${extra_link_flags[@]}"
+    else
+        cargo build --release --target "$TARGET_JSON" "${LEGACY_GRAPHICS_FEATURES[@]}"
+    fi 2>&1 | sed 's/^/  /'
+)
 
 # Step 1: Build libbreenix-libc (produces libc.a)
 echo "[1/3] Building libbreenix-libc ($ARCH)..."
@@ -107,6 +187,20 @@ LIBC_TOOLS="$("$PROJECT_ROOT/scripts/breenix-cc" --arch "$ARCH" --tool-dir)"
 python3 "$PROJECT_ROOT/scripts/libc-clean-archive.py" \
     --archive "$LIBC_RELEASE_DIR/libc.a" --tool-dir "$LIBC_TOOLS"
 echo "  libbreenix-libc built successfully"
+
+if [[ -n "$HOSTED_BIN" ]]; then
+    echo "  Building hosted userspace binary $HOSTED_BIN ($ARCH)..."
+    build_rust_programs
+    if [[ "$RUST_HOST" == 1 ]]; then
+        HOSTED_BIN="rust-host-startup-probe"
+        echo "  Building hosted userspace binary $HOSTED_BIN ($ARCH)..."
+        build_rust_programs
+        HOSTED_BIN="rust-host-process-probe"
+        echo "  Building hosted userspace binary $HOSTED_BIN ($ARCH)..."
+        build_rust_programs
+    fi
+    exit 0
+fi
 
 # C programs link libc.a. aarch64's serves C as it is; x86_64's Rust build is
 # soft-float, so C gets a second build of the same crate with the SysV float ABI.
@@ -168,42 +262,9 @@ for source in "$PROJECT_ROOT/userspace/utilities"/*.c; do
     UTILITY_NAMES+="$name "
 done
 
-# B42 keeps the v1 stress subject only on x86-64.
-LEGACY_GRAPHICS_FEATURES=()
-if [[ "$ARCH" == "x86_64" ]]; then
-    LEGACY_GRAPHICS_FEATURES=(--features framebuffer-v1)
-fi
-
 # Step 2: Build all userspace binaries
 echo "[2/3] Building userspace ($ARCH)..."
-
-RUST_FORK_LIBRARY="${BREENIX_RUST_FORK_LIBRARY:-$PROJECT_ROOT/rust-fork/library}"
-if [ ! -d "$RUST_FORK_LIBRARY" ]; then
-    echo "  ERROR: forked Rust library not found at $RUST_FORK_LIBRARY"
-    echo "  Set BREENIX_RUST_FORK_LIBRARY to the forked Rust library path"
-    echo "  The forked Rust compiler is required for std support"
-    exit 1
-fi
-
-# Cargo's build-std freshness checks can miss edits in an external sysroot.
-# Include its verified commit in compiler metadata so a pin change rebuilds std.
-if [ -f "$RUST_FORK_LIBRARY/../.rust-fork-snapshot.json" ]; then
-    FORK_COMMIT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["commit"])' "$RUST_FORK_LIBRARY/../.rust-fork-snapshot.json")"
-else
-    FORK_COMMIT="$(git -C "$RUST_FORK_LIBRARY/.." rev-parse HEAD)"
-fi
-STD_RUSTFLAGS+=" -C metadata=breenix_std_$FORK_COMMIT"
-
-if ! (
-    set -o pipefail
-    cd "$SCRIPT_DIR" && \
-    unset CARGO_ENCODED_RUSTFLAGS && \
-    __CARGO_TESTS_ONLY_SRC_ROOT="$RUST_FORK_LIBRARY" \
-    RUSTFLAGS="$STD_RUSTFLAGS" \
-    cargo build --release --target "$TARGET_JSON" ${LEGACY_GRAPHICS_FEATURES[@]+"${LEGACY_GRAPHICS_FEATURES[@]}"} 2>&1 | while read line; do
-        echo "  $line"
-    done
-); then
+if ! build_rust_programs; then
     echo "  ERROR: userspace build FAILED"
     exit 1
 fi
@@ -472,6 +533,7 @@ STD_BINARIES=(
     "suite-users"
     "suite-transfer-fixture"
     "suite-toolchain"
+    "suite-rust-host"
     "bput"
     "users-exec_test"
     "users-login-probe_test"
@@ -557,6 +619,13 @@ for name in $UTILITY_NAMES; do
 done
 
 RELEASE_DIR="$SCRIPT_DIR/target/$TARGET_DIR/release"
+HOSTED_RELEASE_DIR="$SCRIPT_DIR/target/hosted/$TARGET_DIR/release"
+echo "  Building hosted userspace binary suite-rust-host ($ARCH)..."
+(
+    HOSTED_BIN="suite-rust-host"
+    HOSTED_FEATURES=(--features rust-host)
+    build_rust_programs
+)
 INSTALLED=0
 FAILED=0
 
@@ -595,6 +664,9 @@ if [ -d "$TESTS_DIR" ]; then
         fi
 
         SRC="$RELEASE_DIR/$BIN_NAME"
+        if [[ "$BIN_NAME" == suite-rust-host ]]; then
+            SRC="$HOSTED_RELEASE_DIR/$BIN_NAME"
+        fi
         DST="$TESTS_DIR/${ELF_NAME}.elf"
 
         if [ -f "$SRC" ]; then

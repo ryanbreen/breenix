@@ -32,6 +32,8 @@
 
 mod crypt;
 mod crt;
+mod lifecycle;
+mod link;
 mod setjmp;
 mod grp;
 mod libgen;
@@ -968,6 +970,13 @@ pub unsafe extern "C" fn fcntl(fd: i32, cmd: i32, arg: u64) -> i32 {
     }
     let result = libbreenix::io::fcntl(Fd::from_raw(fd as u64), cmd, arg as i64);
     result_i64_to_c_int(result)
+}
+
+/// Apply or remove an advisory whole-file lock (LSB Core 5.0).
+#[no_mangle]
+pub unsafe extern "C" fn flock(fd: i32, operation: i32) -> i32 {
+    let result = libbreenix::raw::syscall2(libbreenix::syscall::nr::FLOCK, fd as u64, operation as u64);
+    syscall_result_to_c_int(result as i64)
 }
 
 // =============================================================================

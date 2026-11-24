@@ -1291,6 +1291,12 @@ class ModeApplicabilityTest(StateTest):
         self.assertTrue(boot.marker_matches((marker, 'contains'),
             'SUITE ui-testing DONE passed=18 failed=188 skipped=0 total=206'))
 
+    def test_rust_host_done_satisfies_suite_finished_stage(self):
+        stage = next(item for item in self.definition['milestones'] if item['id'] == 'suite-finished')
+        marker = stage['stages']['suite'][0]['marker']
+        self.assertTrue(boot.marker_matches((marker, 'contains'),
+            'SUITE rust-host DONE passed=4 failed=0 skipped=0 total=4'))
+
     def test_definition_and_driver_measure_fbcon_only_when_console_keeps_screen(self):
         import metal_score
         fb_markers = [(stage['marker'], 'contains') for stage in self.fbcon['stages']['x86_64']]

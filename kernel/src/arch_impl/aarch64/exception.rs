@@ -2797,22 +2797,18 @@ fn file_mapping_fault(
 
 /// Grow the faulting process's user stack down to `far`.
 ///
-/// A process starts with a fully mapped `USER_STACK_SIZE` window below
-/// `USER_STACK_REGION_START`. A translation fault anywhere between that
-/// window's current bottom and the stack's maximum extent
-/// (`MAX_USER_STACK_SIZE`) maps the missing pages, as x86_64's
-/// `handle_stack_growth` does and as Linux grows a stack VMA: a function
-/// whose frame is larger than the room left touches its first page far
-/// below the current bottom. The mmap region ends below this growth window;
-/// sys_mmap also confines MAP_FIXED to that region. grow_user_stack still
-/// refuses to cross any live VMA if another mapping producer places one here.
+/// Process startup maps `USER_STACK_SIZE` bytes below
+/// `USER_STACK_REGION_START`. A translation fault in the reserved stack
+/// window can grow the stack across multiple pages, such as when a function
+/// first touches a large local array. `grow_user_stack` applies the same
+/// resource limits and VMA overlap check as on x86_64.
 ///
 /// The caller must not hold PROCESS_MANAGER on this CPU. Returns true if
 /// the page is now mapped.
 fn handle_stack_growth_arm64(far: u64, iss: u32) -> bool {
     // Translation fault, level 0 to 3: nothing is mapped at `far`.
     if !(0x04..=0x07).contains(&(iss & 0x3F))
-        || far >= crate::memory::layout::USER_STACK_REGION_START
+        || !crate::memory::layout::is_user_stack_address(far)
     {
         return false;
     }

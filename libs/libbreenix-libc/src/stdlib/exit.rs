@@ -1,11 +1,27 @@
 //! Program termination: atexit, exit, _Exit, at_quick_exit, quick_exit and abort
 //! (ISO C17 7.22.4, POSIX.1-2024).
 //!
-//! exit runs the atexit handlers in the reverse order of their registration (a handler
-//! may register more, which then run next), flushes every stdio stream, and ends the
-//! process with _Exit.
+//! exit drains one list of atexit and C++ destructors, runs the ELF fini array,
+//! flushes stdio and ends the process with _Exit.
 
+use super::malloc::{free, malloc};
+use crate::lifecycle::{run_exit, run_handlers, Handler, HandlerNode, ProcessHandlers};
+use core::ptr::null_mut;
 use core::sync::atomic::{AtomicBool, Ordering};
+
+// The address identifies the main executable to the Itanium C++ ABI. A future
+// shared object supplies its own hidden handle.
+core::arch::global_asm!(
+    ".pushsection .rodata.breenix_dso_handle,\"a\"",
+    ".p2align 3",
+    ".globl __dso_handle",
+    ".hidden __dso_handle",
+    ".type __dso_handle, %object",
+    "__dso_handle:",
+    ".quad __dso_handle",
+    ".size __dso_handle, .-__dso_handle",
+    ".popsection",
+);
 
 /// ISO C requires room for at least 32 handlers in each list.
 const SLOTS: usize = 64;
@@ -23,7 +39,7 @@ struct Handlers {
 // The atomic lock protects every access to data; callbacks run after unlocking.
 unsafe impl Sync for Handlers {}
 
-static AT_EXIT: Handlers = Handlers::new();
+static AT_EXIT: ProcessHandlers = ProcessHandlers::new();
 static AT_QUICK_EXIT: Handlers = Handlers::new();
 
 impl Handlers {
@@ -65,9 +81,63 @@ impl Handlers {
     }
 }
 
+pub(crate) fn alloc_handler(handler: Handler) -> Option<&'static mut HandlerNode> {
+    // SAFETY: malloc returns storage aligned for the node, or null on failure.
+    let pointer = unsafe { malloc(core::mem::size_of::<HandlerNode>()) }.cast::<HandlerNode>();
+    if pointer.is_null() {
+        return None;
+    }
+    // SAFETY: the pointer names fresh writable storage that lasts until free.
+    unsafe {
+        pointer.write(HandlerNode::new(handler));
+        Some(&mut *pointer)
+    }
+}
+
+/// The node must be an unlinked allocation from `alloc_handler`.
+pub(crate) unsafe fn release_handler(node: &'static mut HandlerNode) -> Handler {
+    let handler = node.handler();
+    // SAFETY: the caller transfers ownership of an unlinked malloc-backed node.
+    unsafe { free(core::ptr::from_mut(node).cast()) };
+    handler
+}
+
+fn register(handler: Handler) -> i32 {
+    let Some(node) = alloc_handler(handler) else {
+        return -1;
+    };
+    AT_EXIT.push(node);
+    0
+}
+
+pub(crate) unsafe fn after_fork() {
+    // SAFETY: the single-threaded child inherited a complete link chain.
+    unsafe { AT_EXIT.unlock() };
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn atexit(f: extern "C" fn()) -> i32 {
-    AT_EXIT.push(f)
+    register(Handler::C(f))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn __cxa_atexit(
+    function: unsafe extern "C" fn(*mut u8),
+    argument: *mut u8,
+    dso: *mut u8,
+) -> i32 {
+    register(Handler::Cxa {
+        function,
+        argument,
+        dso,
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn __cxa_finalize(dso: *mut u8) {
+    // SAFETY: entries were registered for this purpose and are removed under
+    // the lock before invocation, even for nested calls to __cxa_finalize.
+    unsafe { run_handlers(|| AT_EXIT.take(dso).map(|node| release_handler(node))) };
 }
 
 #[no_mangle]
@@ -78,8 +148,16 @@ pub unsafe extern "C" fn at_quick_exit(f: extern "C" fn()) -> i32 {
 #[no_mangle]
 pub extern "C" fn exit(status: i32) -> ! {
     unsafe {
-        AT_EXIT.run();
-        crate::stdio::flush_all();
+        // C++ [basic.start.term] destroys the calling thread's C++ TLS before
+        // static objects. POSIX key destructors belong to pthread_exit.
+        crate::pthread::run_current_cxa_destructors();
+        run_exit(
+            || AT_EXIT.take(null_mut()).map(|node| release_handler(node)),
+            crate::crt::fini_array(),
+            || {
+                crate::stdio::flush_all();
+            },
+        );
     }
     _Exit(status)
 }

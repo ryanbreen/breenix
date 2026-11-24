@@ -554,6 +554,13 @@ stage_boot_ext2_disk() {
         fi
         local sequence=
         [[ "$SUITE" != *,* ]] || sequence=$SUITE
+        if [[ ",$SUITE," == *,rust-host,* ]]; then
+            if [ "$NO_BUILD" = false ]; then
+                run_build "$BREENIX_ROOT/userspace/programs/build.sh" --arch aarch64 --rust-host || exit 1
+            fi
+            python3 "$BREENIX_ROOT/scripts/rust_host_stage.py" --arch aarch64 --image "$BOOT_EXT2_DISK" \
+                --suite "$SUITE" || exit 1
+        fi
         BREENIX_HOSTKEYS="$(python3 "$BREENIX_ROOT/scripts/hostkeys.py" declare --backend "$hostkeys_backend")" \
         "$BREENIX_ROOT/scripts/write-boot-target.sh" "$BOOT_EXT2_DISK" "${SUITE%%,*}" \
             "$BREENIX_ROOT/userspace/programs/aarch64/suite-${SUITE%%,*}.elf" "$sequence" "$ONLY" "$PACE" || exit 1

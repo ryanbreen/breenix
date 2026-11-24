@@ -1,0 +1,32 @@
+{
+  "id": "rust-host",
+  "title": "Rust host runtime",
+  "area": "Toolchain",
+  "summary": "Checks the runtime surface needed by hosted Rust tools.",
+  "binary": "/sbin/suite-rust-host",
+  "timingSensitive": true,
+  "categories": [
+    {
+      "id": "libc-surface",
+      "title": "Hosted libc surface",
+      "cases": [
+        {
+          "id": "startup-order",
+          "title": "Startup, exit, thread destructors and program headers"
+        },
+        {
+          "id": "memory-limits",
+          "title": "Main stack growth and sparse mapping access from seven pthreads"
+        },
+        {
+          "id": "file-mmap",
+          "title": "Large private file mapping matches read"
+        },
+        {
+          "id": "process-pipes-locks",
+          "title": "Self-spawn, close-on-exec pipes, wait statuses and file locks"
+        }
+      ]
+    }
+  ]
+}

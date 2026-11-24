@@ -1953,6 +1953,35 @@ watchdog. ARM64 guest acceptance remains pending.
 scripts/boot-interactive.sh --mode suite --suite toolchain --milestone toolchain/sysroot-oracle
 ```
 
+## Hosted Rust runtime
+
+`rust-host` is an opt-in suite. Name it explicitly in `--suite` to select it.
+`userspace/programs/build.sh --arch ARCH --rust-host`
+links the suite and its probes with `linker-hosted.ld`. The launcher stages them
+and the read-only mmap fixture on the selected image's work copy.
+
+`libc-surface/startup-order` spawns `/usr/libexec/breenix/rust-host/startup-probe`.
+The probe returns from main through libc and reports the constructor, thread
+destructor and process exit order over a pipe. The case requires the expected
+sequence and exit status `0`. The probe also checks that `dl_iterate_phdr`
+finds the load, TLS and unwind-index program headers of its executable.
+
+`memory-limits` raises the soft stack limit to 8 MiB and recurses to 7 MiB on
+the case's main thread. Seven pthreads with 8 MiB stacks touch one byte per
+64 KiB across the 165,164,496-byte anonymous mapping. The 8 MiB stack sizes and
+7 MiB recursion depth are stress-test inputs. `file-mmap` compares a read-only
+private mapping of the deterministic 163,067,344-byte fixture with sequential
+reads. The mapping sizes and thread count come from
+[`toolchain/rust-host/x0/9.json`](../../toolchain/rust-host/x0/9.json).
+The comparison took 27.279 seconds in R240 boot `20261124T103128Z-metal`.
+Doubling that time gives 54.558 seconds, which rounds up to the named 60-second
+watchdog. The other three cases use the 10-second default.
+
+`process-pipes-locks` uses a standalone probe that calls `posix_spawn` on
+itself. It checks close-on-exec pipe descriptors, wait statuses for exit 3
+and SIGTERM, and lock contention and acquisition after release for both
+`flock` and `fcntl(F_SETLK)`. Pipe events order the two processes.
+
 ## Developer SDK
 
 `sdk` measures the Developer SDK effort in `docs/efforts/path.json`: our own applications

@@ -198,6 +198,7 @@ def inner(args):
     build_fixtures = 'filesystem' in suites and fixture_builder.is_file()
     transfer = transfer_fixture.selected(args.suite)
     toolchain = 'toolchain' in suites
+    rust_host = 'rust-host' in suites
     milestone = getattr(args, 'milestone', None)
     kernel_assembly = milestone == KERNEL_ASSEMBLY_MILESTONE
     busybox = kernel_assembly or milestone == 'toolchain/busybox-on-box'
@@ -206,7 +207,7 @@ def inner(args):
     toolchain_build = None
     kernel_image = None
     build_companions = build_fixtures or busybox
-    root = tmp / 'ext2-staged.img' if 'sdk' in suites or build_fixtures or transfer else seed
+    root = tmp / 'ext2-staged.img' if 'sdk' in suites or build_fixtures or transfer or rust_host else seed
     try:
         started = time.time()
         if not local:
@@ -305,6 +306,19 @@ def inner(args):
             if transfer:
                 debugfs, = require_e2fsprogs('debugfs')
                 transfer_fixture.stage(root, debugfs, binary=clone / 'userspace/programs/suite-transfer-fixture.elf')
+            if rust_host:
+                started = time.time()
+                log = logs / 'rust-host-build.log'
+                with log.open('w') as output:
+                    status = subprocess.call([str(clone / 'userspace/programs/build.sh'),
+                                              '--arch', 'x86_64', '--rust-host'],
+                                             cwd=clone, stdout=output, stderr=subprocess.STDOUT)
+                if not clean_build(status, log, 'hosted Rust suite and probes', logs, out):
+                    return 1
+                subprocess.run([sys.executable, str(clone / 'scripts/rust_host_stage.py'),
+                                '--arch', 'x86_64', '--image', str(root), '--suite', args.suite],
+                               cwd=clone, check=True)
+                timings['rust_host_suite'] = round(time.time() - started)
             if 'sdk' in suites:
                 started = time.time()
                 log = logs / 'sdk-suite.log'

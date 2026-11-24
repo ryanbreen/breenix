@@ -2255,3 +2255,21 @@ fn toolchain_registry_matches_accepted_cases_per_target() {
         }
     }
 }
+
+#[test]
+fn rust_host_manifest_matches_table() {
+    let root = repo_root();
+    let mut errors = Vec::new();
+    let manifest = read_manifest(&root.join("docs/suites/rust-host.json"), &mut errors).expect("rust-host manifest");
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+    let (_, files) = suite_files(&root, "rust_host").expect("rust-host source");
+    let (suite, guest) = source_suite_files(&files).expect("rust-host guest table");
+    assert_eq!(suite.id, manifest.id);
+    assert_eq!(manifest.categories.len(), 1);
+    assert_eq!(manifest.categories[0].entry.id, "libc-surface");
+    assert_eq!(
+        manifest.categories[0].cases.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+        ["startup-order", "memory-limits", "file-mmap", "process-pipes-locks"],
+    );
+    assert_eq!(guest, manifest.categories);
+}
