@@ -1,4 +1,4 @@
-"""Check the K1 symbol inventory against sealed reference and runtime artifacts."""
+"""Check the 25.2 corpus imports against sealed reference and runtime artifacts."""
 
 import argparse
 import hashlib
@@ -26,7 +26,7 @@ def symbols(nm, path, *selection):
     })
 
 
-def compiler_builtins_cover_x_inventory(arch, bundle, libc, builtins, nm):
+def check_runtime_inventory(arch, bundle, libc, builtins, nm):
     inventory = json.loads((HERE / f"25.2-{arch}.json").read_text())
     inputs = (ROOT / "toolchain/corpus/cases").read_text().splitlines()
     objects = inventory["objects"]
@@ -62,9 +62,11 @@ def compiler_builtins_cover_x_inventory(arch, bundle, libc, builtins, nm):
     needs_builtins = required.difference(libc_exports)
     missing = needs_builtins.difference(builtins_exports)
     assert not missing, f"{arch}: missing runtime symbols: {', '.join(sorted(missing))}"
-    print(f"libc_host::compiler_builtins_cover_x_inventory {arch}: "
+    print(f"libc_host::check_runtime_inventory {arch}: "
           f"{len(objects)} objects, {len(required)} undefined symbols, "
           f"{len(needs_builtins)} supplied by compiler_builtins")
+    if not needs_builtins:
+        print("Compiler-helper coverage deferred to X1 (Cargo) and X2 (rustc)")
 
 
 if __name__ == "__main__":
@@ -75,6 +77,6 @@ if __name__ == "__main__":
     parser.add_argument("builtins", type=Path)
     parser.add_argument("--llvm-nm", type=Path, required=True)
     args = parser.parse_args()
-    compiler_builtins_cover_x_inventory(
+    check_runtime_inventory(
         args.arch, args.bundle, args.libc, args.builtins, args.llvm_nm
     )

@@ -1,4 +1,4 @@
-# K1 compiler helper inventory
+# K1 runtime symbol inventory
 
 The records cover the 30 C objects named by `toolchain/corpus/cases`.
 They come from the sealed 25.2 reference invocation retained in the
@@ -20,5 +20,11 @@ Use the C-ABI `libc.a` from the checkout under test and the target's
 in `userspace/programs/build.sh`. Use the pinned Rust toolchain's `llvm-nm`
 so it can read the rlib's bitcode. The check verifies the bundle manifest
 and per-object receipts, reruns the undefined-symbol scan, then subtracts
-external definitions in `libc.a` and the rlib. X1 and X2 can add their own
-records once their respective cross-links exist.
+external definitions in `libc.a` and the rlib.
+
+On both architectures the 25.2 objects import only `fwrite`, `printf`,
+`puts`, and `stdout`, which are supplied by `libc.a`. This audit covers
+those imports. Compiler-helper coverage is deferred to the X1 Cargo and
+X2 rustc cross-link inventories. When a workload needs a helper, check
+its export in the pinned sysroot and verify that withholding that export
+makes the check fail.
