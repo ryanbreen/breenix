@@ -179,11 +179,11 @@ run_patch() {
     check_settings
     verify_inputs
     (
-        cd "$source"
+        cd "$source" || exit 1
         while IFS= read -r name || [ -n "$name" ]; do
             case "$name" in ''|'#'*) continue ;; esac
             mark "patch $name" >&3
-            patch -p1 < "$vendor/patches/$name"
+            patch -p1 < "$vendor/patches/$name" || exit 1
         done < "$vendor/patches/series"
     ) > "$output/patch.log" 2>&1 || { cat "$output/patch.log" >&2; fail 'patch failed'; }
 

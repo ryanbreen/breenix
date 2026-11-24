@@ -65,6 +65,36 @@ def refuses_digest_mismatch(directory):
         path.write_bytes(original)
 
 
+def refuses_failed_patch(directory):
+    fixture = directory / "fixture"
+    shutil.copytree(ROOT / VENDOR, fixture / VENDOR)
+    tools = fixture / "bundle/bin"
+    tools.mkdir(parents=True)
+    for tool in ("cc", "as", "ld", "ar", "nm", "make"):
+        (tools / tool).symlink_to("/bin/sh")
+    image_bin = fixture / "bin"
+    image_bin.mkdir()
+    patch = image_bin / "patch"
+    patch.write_text(
+        "#!/bin/sh\n"
+        "if [ ! -e ../first-patch-failed ]; then\n"
+        "    touch ../first-patch-failed\n"
+        "    echo 'injected first patch failure' >&2\n"
+        "    exit 1\n"
+        "fi\n"
+        "exec /usr/bin/patch \"$@\"\n"
+    )
+    patch.chmod(0o755)
+    output = directory / "build"
+    env = {"PATH": os.defpath, "LC_ALL": "C"}
+    pass_phase(fixture, output, env, "unpack")
+    result = run_driver(fixture, output, env, "patch")
+    assert (output / "first-patch-failed").is_file()
+    assert result.returncode == 1, result
+    assert "injected first patch failure" in result.stderr, result.stderr
+    assert not (output / "patch.sha256").exists(), "failed patch published a receipt"
+
+
 def mac_fixture(directory):
     pin = os.environ["BREENIX_TOOLCHAIN_CLANG_SHA256"]
     compiler = Path(os.environ["BREENIX_TOOLCHAIN_CLANG"])

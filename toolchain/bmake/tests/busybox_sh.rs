@@ -22,6 +22,11 @@ fn refuses_digest_mismatch() {
     run("refuses_digest_mismatch");
 }
 
+#[test]
+fn refuses_failed_patch() {
+    run("refuses_failed_patch");
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn mac_hosted_build_lists_same_applets() {
