@@ -2749,6 +2749,8 @@ class BuildSlotTest(unittest.TestCase):
                     if '--kernel-assembly-record' in command:
                         path = Path(command[command.index('--kernel-assembly-record') + 1])
                         record['kernelAssembly'] = dict(line.split('=', 1) for line in path.read_text().splitlines())
+                    if any(isinstance(call, list) and '--toolchain-companions' in call for call in order):
+                        (bundle / 'toolchain-scratch.img').write_bytes(b'BusyBox scratch fixture')
                     (bundle / 'build.json').write_text(json.dumps(record))
                 if command[1:2] == [str(clone / 'scripts/sdk-suite.py')]:
                     Path(command[-1]).write_bytes(b'staged')
@@ -2766,6 +2768,8 @@ class BuildSlotTest(unittest.TestCase):
             built['clone'] = str(clone)
             if milestone == self.KERNEL_ASSEMBLY:
                 built['expectedKernelAssembly'] = assembly
+                scratch = out / 'toolchain-scratch.img'
+                built['scratch'] = scratch.read_bytes() if scratch.is_file() else None
             return build, clone, tmp, order, (out / 'ext2.img').read_bytes(), built
 
     def test_one_metal_build_lease_covers_a_single_userspace_build_and_the_kernel(self):
@@ -2798,6 +2802,27 @@ class BuildSlotTest(unittest.TestCase):
         self.assertEqual(built.get('kernelAssembly'), built['toolchain'].get('kernelAssembly'))
         with self.assertRaisesRegex(ValueError, 'kernel ELF'):
             self.build_inner('toolchain', self.KERNEL_ASSEMBLY, bad_kernel_digest=True)
+
+    def test_kernel_assembly_sequence_has_busybox_scratch_and_time_to_run(self):
+        suite = 'toolchain,processes,signals,time'
+        _, _, _, _, _, built = self.build_inner(suite, self.KERNEL_ASSEMBLY)
+        self.assertEqual(built['scratch'], b'BusyBox scratch fixture')
+        root = TOOLS.parents[1]
+        allowances = (root / 'libs/libbreenix/src/suite.rs').read_text()
+        default = int(re.search(r'DEFAULT_CASE_LIMIT_MS: u64 = ([\d_]+);', allowances)[1])
+        named = {(name, case): int(ms) for name, case, ms in
+                 re.findall(r'\("([^"]+)", "([^"]+)", ([\d_]+)\)', allowances)}
+        args = SimpleNamespace(mode='suite', suite=suite, milestone=self.KERNEL_ASSEMBLY, payload='image')
+        budget = 0
+        for name in boot.suites(args):
+            manifest = json.loads((root / f'docs/suites/{name}.json').read_text())
+            limits = [named.get((name, f'{category["id"]}/{case["id"]}'), default)
+                      for category in manifest['categories'] for case in category['cases']]
+            self.assertLessEqual(max(limits), 60000, name)
+            minimum = (sum(limits) * 5 + 3999) // 4000
+            self.assertGreaterEqual(boot.mode_deadline_seconds(args, name), minimum, name)
+            budget += minimum
+        self.assertGreaterEqual(boot.ceiling_seconds(args), budget)
 
     def test_the_sdk_suite_stages_its_root_under_the_build_lease(self):
         _, clone, _, order, root, built = self.build_inner('sdk')
