@@ -26,3 +26,6 @@ panic = "abort"
 overflow-checks = true
 codegen-units = 1
 incremental = false
+
+[profile.selfhost]
+inherits = "release"

@@ -23,15 +23,24 @@ def git(*args, check=True):
     return run('git', '-C', str(TREE), *args, check=check)
 
 
-def record_one():
-    destination = RECORDS / '1.json'
+def new_record(number):
+    destination = RECORDS / f'{number}.json'
     if destination.exists():
         raise SystemExit('probe record already exists')
+    return destination
+
+
+def check_licenses(now):
     licenses = json.loads((RECORDS / 'licenses.json').read_text())
-    now = datetime.datetime.now(datetime.timezone.utc)
     if not licenses or any(datetime.datetime.fromisoformat(v['recorded_at']) >= now
                            for v in licenses.values()):
         raise SystemExit('licenses must be recorded before the probe')
+
+
+def record_one():
+    destination = new_record(1)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    check_licenses(now)
     if git('rev-parse', 'HEAD').stdout.strip() != PIN:
         raise SystemExit('probe tree is not at the fork pin')
     status = git('status', '--porcelain', '--', 'compiler', 'src/llvm-project').stdout
@@ -65,9 +74,32 @@ def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest='action', required=True)
     rec = sub.add_parser('record')
-    rec.add_argument('number', type=int, choices=[1])
-    parser.parse_args()
-    record_one()
+    rec.add_argument('number', type=int, choices=[1, 9])
+    rec.add_argument('--capture', type=Path)
+    rec.add_argument('--release-parity', type=Path)
+    profile = sub.add_parser('profile-linux')
+    profile.add_argument('--scratch', type=Path, required=True)
+    profile.add_argument('--workspace-commit', required=True)
+    profile.add_argument('--prediction-file', type=Path, required=True)
+    args = parser.parse_args()
+    if args.action == 'profile-linux':
+        from x0_profile import capture
+
+        started = datetime.datetime.now(datetime.timezone.utc)
+        check_licenses(started)
+        prediction = json.loads(args.prediction_file.read_text())
+        if (not prediction['prediction'].strip()
+                or datetime.datetime.fromisoformat(prediction['prediction_time']) >= started):
+            parser.error('the prediction must precede the X0.9 run')
+        capture(args.scratch, args.workspace_commit, prediction, started)
+    elif args.number == 1:
+        record_one()
+    else:
+        if not args.capture or not args.release_parity:
+            parser.error('record 9 requires --capture and --release-parity')
+        record = json.loads(args.capture.read_text())
+        record['release_parity'] = json.loads(args.release_parity.read_text())
+        new_record(9).write_text(json.dumps(record, indent=2, sort_keys=True) + '\n')
 
 
 if __name__ == '__main__':

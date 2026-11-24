@@ -1,0 +1,3404 @@
+{
+  "cargo_version": "cargo 1.90.0-nightly (84709f085 2025-06-22)",
+  "command": [
+    "cargo",
+    "+nightly-2025-06-24",
+    "build",
+    "--offline",
+    "--locked",
+    "--profile",
+    "selfhost",
+    "--target",
+    "/breenix/x86_64-breenix.json",
+    "--target-dir",
+    "/probe/target",
+    "-Z",
+    "build-std=std,panic_abort",
+    "-Z",
+    "build-std-features=compiler-builtins-mem",
+    "-p",
+    "bobj",
+    "-p",
+    "bas",
+    "-p",
+    "bld",
+    "-p",
+    "bar",
+    "-p",
+    "bnm",
+    "-p",
+    "bcc",
+    "-p",
+    "bmake"
+  ],
+  "crates": {
+    "bar": [
+      {
+        "detail_trace_sha256": "bcb382c758d6f78599239f9e01636291e0ebe321eeca346f52b3ea8b16b6ebcc",
+        "kind": "bin",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "min_stack_kib": 64,
+        "peak_rss_kib": 85072,
+        "peak_threads": 7,
+        "scratch_bytes": 279464,
+        "stack_exit_status": {
+          "64": 0,
+          "65536": 0
+        },
+        "syscall_families": {
+          "file_metadata": {
+            "access": 9,
+            "fstat": 58,
+            "getdents64": 14,
+            "lstat": 1,
+            "newfstatat": 43,
+            "readlink": 513,
+            "readlinkat": 2,
+            "stat": 2,
+            "statx": 92
+          },
+          "limits": {
+            "prlimit64": 9
+          },
+          "locks": {
+            "fcntl": 9
+          },
+          "memory": {
+            "brk": 20,
+            "madvise": 70,
+            "mmap": 208,
+            "mprotect": 280,
+            "munmap": 76
+          },
+          "pipes": {
+            "pipe2": 3
+          },
+          "process_and_threads": {
+            "clone3": 24,
+            "execve": 3
+          },
+          "wait": {
+            "wait4": 1
+          }
+        },
+        "syscall_summary_sha256": "8f73fec085e1d8f953af3a087ca8a2b61b0349a6ce5a671795d59ca3ead6bb94",
+        "syscalls": {
+          "access": 9,
+          "arch_prctl": 3,
+          "brk": 20,
+          "clone3": 24,
+          "close": 102,
+          "dup2": 2,
+          "execve": 3,
+          "fcntl": 9,
+          "fstat": 58,
+          "ftruncate": 2,
+          "futex": 2052,
+          "getcwd": 3,
+          "getdents64": 14,
+          "getegid": 1,
+          "geteuid": 2,
+          "getgid": 1,
+          "getpid": 3,
+          "getppid": 1,
+          "getrandom": 4,
+          "getuid": 1,
+          "ioctl": 11,
+          "lseek": 20,
+          "lstat": 1,
+          "madvise": 70,
+          "mkdir": 4,
+          "mmap": 208,
+          "mprotect": 280,
+          "munmap": 76,
+          "newfstatat": 43,
+          "open": 2,
+          "openat": 194,
+          "pipe2": 3,
+          "poll": 2,
+          "prctl": 5,
+          "pread64": 20,
+          "prlimit64": 9,
+          "read": 59,
+          "readlink": 513,
+          "readlinkat": 2,
+          "rename": 1,
+          "rseq": 26,
+          "rt_sigaction": 35,
+          "rt_sigprocmask": 126,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 13,
+          "sched_yield": 1,
+          "set_robust_list": 26,
+          "set_tid_address": 3,
+          "sigaltstack": 25,
+          "stat": 2,
+          "statx": 92,
+          "tgkill": 1,
+          "unlink": 3,
+          "unlinkat": 5,
+          "wait4": 1,
+          "write": 6
+        },
+        "time_sha256": "f9f33e9555d43809ad1bc7639857c798750fb3e2cfbcdbc3a4d8b4efd55144a2",
+        "wall_seconds": 0.26
+      },
+      {
+        "detail_trace_sha256": "a43f2f88b12821cdad3e863687df0430622e574a81ac1dfbfb5882dae36079bd",
+        "kind": "lib",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "min_stack_kib": 64,
+        "peak_rss_kib": 121280,
+        "peak_threads": 7,
+        "scratch_bytes": 121584,
+        "stack_exit_status": {
+          "64": 0,
+          "65536": 0
+        },
+        "syscall_families": {
+          "file_metadata": {
+            "access": 1,
+            "fstat": 23,
+            "getdents64": 14,
+            "newfstatat": 14,
+            "readlink": 284,
+            "readlinkat": 1,
+            "statx": 68
+          },
+          "limits": {
+            "prlimit64": 2
+          },
+          "locks": {
+            "fcntl": 7
+          },
+          "memory": {
+            "brk": 2,
+            "madvise": 123,
+            "mmap": 102,
+            "mprotect": 26,
+            "munmap": 28
+          },
+          "pipes": {
+            "pipe2": 1
+          },
+          "process_and_threads": {
+            "clone3": 6,
+            "execve": 1
+          },
+          "wait": {}
+        },
+        "syscall_summary_sha256": "08063fbfc320c7ab053e704efd20588422cf8ecb246a272ef0246345ca29a80d",
+        "syscalls": {
+          "access": 1,
+          "arch_prctl": 1,
+          "brk": 2,
+          "clone3": 6,
+          "close": 45,
+          "execve": 1,
+          "fcntl": 7,
+          "fstat": 23,
+          "futex": 506,
+          "getcwd": 3,
+          "getdents64": 14,
+          "getpid": 2,
+          "getrandom": 2,
+          "ioctl": 7,
+          "lseek": 7,
+          "madvise": 123,
+          "mkdir": 4,
+          "mmap": 102,
+          "mprotect": 26,
+          "munmap": 28,
+          "newfstatat": 14,
+          "open": 2,
+          "openat": 86,
+          "pipe2": 1,
+          "poll": 1,
+          "prctl": 4,
+          "pread64": 6,
+          "prlimit64": 2,
+          "read": 27,
+          "readlink": 284,
+          "readlinkat": 1,
+          "rename": 2,
+          "rseq": 7,
+          "rt_sigaction": 11,
+          "rt_sigprocmask": 27,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 9,
+          "sched_yield": 1,
+          "set_robust_list": 7,
+          "set_tid_address": 1,
+          "sigaltstack": 20,
+          "statx": 68,
+          "tgkill": 1,
+          "unlink": 2,
+          "unlinkat": 4,
+          "write": 13
+        },
+        "time_sha256": "eb55d541cabe14c8fd7e9873c1d81012ad54bb41fe1e4bc07a40eb15dc99bfa3",
+        "wall_seconds": 0.43
+      }
+    ],
+    "bas": [
+      {
+        "detail_trace_sha256": "c5bc5fb9b5942b1c1b1d43f92e15ce7cc14785c812291aa0bc7c03789b70c208",
+        "kind": "bin",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "min_stack_kib": 64,
+        "peak_rss_kib": 83672,
+        "peak_threads": 7,
+        "scratch_bytes": 458367,
+        "stack_exit_status": {
+          "64": 0,
+          "65536": 0
+        },
+        "syscall_families": {
+          "file_metadata": {
+            "access": 9,
+            "fstat": 58,
+            "getdents64": 14,
+            "lstat": 1,
+            "newfstatat": 43,
+            "readlink": 513,
+            "readlinkat": 2,
+            "stat": 2,
+            "statx": 96
+          },
+          "limits": {
+            "prlimit64": 9
+          },
+          "locks": {
+            "fcntl": 9
+          },
+          "memory": {
+            "brk": 21,
+            "madvise": 82,
+            "mmap": 212,
+            "mprotect": 335,
+            "munmap": 73
+          },
+          "pipes": {
+            "pipe2": 3
+          },
+          "process_and_threads": {
+            "clone3": 24,
+            "execve": 3
+          },
+          "wait": {
+            "wait4": 1
+          }
+        },
+        "syscall_summary_sha256": "5fc3c88d68dec43658c163412e5159293f49968a7427a5fa073edae573c83587",
+        "syscalls": {
+          "access": 9,
+          "arch_prctl": 3,
+          "brk": 21,
+          "clone3": 24,
+          "close": 103,
+          "dup2": 2,
+          "execve": 3,
+          "fcntl": 9,
+          "fstat": 58,
+          "ftruncate": 2,
+          "futex": 2034,
+          "getcwd": 3,
+          "getdents64": 14,
+          "getegid": 1,
+          "geteuid": 2,
+          "getgid": 1,
+          "getpid": 3,
+          "getppid": 1,
+          "getrandom": 4,
+          "getuid": 1,
+          "ioctl": 11,
+          "lseek": 20,
+          "lstat": 1,
+          "madvise": 82,
+          "mkdir": 4,
+          "mmap": 212,
+          "mprotect": 335,
+          "munmap": 73,
+          "newfstatat": 43,
+          "open": 2,
+          "openat": 195,
+          "pipe2": 3,
+          "poll": 2,
+          "prctl": 5,
+          "pread64": 20,
+          "prlimit64": 9,
+          "read": 62,
+          "readlink": 513,
+          "readlinkat": 2,
+          "rename": 1,
+          "rseq": 26,
+          "rt_sigaction": 35,
+          "rt_sigprocmask": 126,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 13,
+          "sched_yield": 1,
+          "set_robust_list": 26,
+          "set_tid_address": 3,
+          "sigaltstack": 25,
+          "stat": 2,
+          "statx": 96,
+          "tgkill": 1,
+          "unlink": 3,
+          "unlinkat": 5,
+          "wait4": 1,
+          "write": 8
+        },
+        "time_sha256": "c10cdc17b85ad830e644372512b9b72fdc336ec29f596326bbafaa711488f829",
+        "wall_seconds": 0.28
+      },
+      {
+        "detail_trace_sha256": "615b823ef1d5247b5b54eae74dd959121d03d036975d474aa142038a746cc6c6",
+        "kind": "lib",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "min_stack_kib": 64,
+        "peak_rss_kib": 197868,
+        "peak_threads": 7,
+        "scratch_bytes": 1694686,
+        "stack_exit_status": {
+          "64": 0,
+          "65536": 0
+        },
+        "syscall_families": {
+          "file_metadata": {
+            "access": 1,
+            "fstat": 23,
+            "getdents64": 14,
+            "newfstatat": 14,
+            "readlink": 284,
+            "readlinkat": 1,
+            "statx": 136
+          },
+          "limits": {
+            "prlimit64": 2
+          },
+          "locks": {
+            "fcntl": 7
+          },
+          "memory": {
+            "brk": 2,
+            "madvise": 345,
+            "mmap": 112,
+            "mprotect": 26,
+            "munmap": 28
+          },
+          "pipes": {
+            "pipe2": 1
+          },
+          "process_and_threads": {
+            "clone3": 6,
+            "execve": 1
+          },
+          "wait": {}
+        },
+        "syscall_summary_sha256": "7baf0ee5f3b4f78036119d6f1c0ac6fbf92512805a1d4fa50d28612cba15966f",
+        "syscalls": {
+          "access": 1,
+          "arch_prctl": 1,
+          "brk": 2,
+          "clone3": 6,
+          "close": 57,
+          "execve": 1,
+          "fcntl": 7,
+          "fstat": 23,
+          "futex": 509,
+          "getcwd": 3,
+          "getdents64": 14,
+          "getpid": 2,
+          "getrandom": 2,
+          "ioctl": 7,
+          "lseek": 7,
+          "madvise": 345,
+          "mkdir": 4,
+          "mmap": 112,
+          "mprotect": 26,
+          "munmap": 28,
+          "newfstatat": 14,
+          "open": 2,
+          "openat": 98,
+          "pipe2": 1,
+          "poll": 1,
+          "prctl": 4,
+          "pread64": 6,
+          "prlimit64": 2,
+          "read": 51,
+          "readlink": 284,
+          "readlinkat": 1,
+          "rename": 2,
+          "rseq": 7,
+          "rt_sigaction": 11,
+          "rt_sigprocmask": 27,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 9,
+          "sched_yield": 1,
+          "set_robust_list": 7,
+          "set_tid_address": 1,
+          "sigaltstack": 20,
+          "statx": 136,
+          "tgkill": 1,
+          "unlink": 2,
+          "unlinkat": 4,
+          "write": 18
+        },
+        "time_sha256": "eb45172833fe9e59212f8895e6706232f9eefa249ccba93055e2eb5cede463ce",
+        "wall_seconds": 4.51
+      }
+    ],
+    "bcc": [
+      {
+        "detail_trace_sha256": "86c7dd1239b4559dc9347ead3750320888b35126414c6f4abcfb05c26c0cf462",
+        "kind": "bin",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "min_stack_kib": 64,
+        "peak_rss_kib": 81976,
+        "peak_threads": 7,
+        "scratch_bytes": 1518432,
+        "stack_exit_status": {
+          "64": 0,
+          "65536": 0
+        },
+        "syscall_families": {
+          "file_metadata": {
+            "access": 9,
+            "fstat": 57,
+            "getdents64": 14,
+            "lstat": 1,
+            "newfstatat": 43,
+            "readlink": 475,
+            "readlinkat": 2,
+            "stat": 2,
+            "statx": 87
+          },
+          "limits": {
+            "prlimit64": 9
+          },
+          "locks": {
+            "fcntl": 9
+          },
+          "memory": {
+            "brk": 23,
+            "madvise": 86,
+            "mmap": 212,
+            "mprotect": 554,
+            "munmap": 67
+          },
+          "pipes": {
+            "pipe2": 3
+          },
+          "process_and_threads": {
+            "clone3": 24,
+            "execve": 3
+          },
+          "wait": {
+            "wait4": 1
+          }
+        },
+        "syscall_summary_sha256": "5c83dbf692f4e59451ee6aac093f7c282dab60413d448c20ed637ad3a60b04c5",
+        "syscalls": {
+          "access": 9,
+          "arch_prctl": 3,
+          "brk": 23,
+          "clone3": 24,
+          "close": 98,
+          "dup2": 2,
+          "execve": 3,
+          "fcntl": 9,
+          "fstat": 57,
+          "ftruncate": 2,
+          "futex": 2084,
+          "getcwd": 3,
+          "getdents64": 14,
+          "getegid": 1,
+          "geteuid": 2,
+          "getgid": 1,
+          "getpid": 3,
+          "getppid": 1,
+          "getrandom": 4,
+          "getuid": 1,
+          "ioctl": 11,
+          "lseek": 20,
+          "lstat": 1,
+          "madvise": 86,
+          "mkdir": 4,
+          "mmap": 212,
+          "mprotect": 554,
+          "munmap": 67,
+          "newfstatat": 43,
+          "open": 2,
+          "openat": 190,
+          "pipe2": 3,
+          "poll": 2,
+          "prctl": 5,
+          "pread64": 19,
+          "prlimit64": 9,
+          "read": 59,
+          "readlink": 475,
+          "readlinkat": 2,
+          "rename": 1,
+          "rseq": 26,
+          "rt_sigaction": 35,
+          "rt_sigprocmask": 124,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 13,
+          "sched_yield": 1,
+          "set_robust_list": 26,
+          "set_tid_address": 3,
+          "sigaltstack": 25,
+          "stat": 2,
+          "statx": 87,
+          "tgkill": 1,
+          "unlink": 3,
+          "unlinkat": 5,
+          "wait4": 1,
+          "write": 8
+        },
+        "time_sha256": "cc83603337a10456b2881585a7cd066aac2b694e4ff1dcbcec33e09005cb0634",
+        "wall_seconds": 0.55
+      },
+      {
+        "detail_trace_sha256": "d40a49f34e001f81f27806d6dbb06b952d9e96aad6d4d1b2f1befffc17d8732b",
+        "kind": "lib",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "min_stack_kib": 64,
+        "peak_rss_kib": 439240,
+        "peak_threads": 7,
+        "scratch_bytes": 10155220,
+        "stack_exit_status": {
+          "64": 0,
+          "65536": 0
+        },
+        "syscall_families": {
+          "file_metadata": {
+            "access": 1,
+            "fstat": 23,
+            "getdents64": 14,
+            "newfstatat": 14,
+            "readlink": 276,
+            "readlinkat": 1,
+            "statx": 379
+          },
+          "limits": {
+            "prlimit64": 2
+          },
+          "locks": {
+            "fcntl": 7
+          },
+          "memory": {
+            "brk": 2,
+            "madvise": 5299,
+            "mmap": 127,
+            "mprotect": 26,
+            "munmap": 27
+          },
+          "pipes": {
+            "pipe2": 1
+          },
+          "process_and_threads": {
+            "clone3": 6,
+            "execve": 1
+          },
+          "wait": {}
+        },
+        "syscall_summary_sha256": "1af1dcfcdc36e1697aa95e801a7736d49efb165f9028dd537f4f27f53b6f80f2",
+        "syscalls": {
+          "access": 1,
+          "arch_prctl": 1,
+          "brk": 2,
+          "clone3": 6,
+          "close": 98,
+          "execve": 1,
+          "fcntl": 7,
+          "fstat": 23,
+          "futex": 516,
+          "getcwd": 3,
+          "getdents64": 14,
+          "getpid": 2,
+          "getrandom": 2,
+          "ioctl": 7,
+          "lseek": 7,
+          "madvise": 5299,
+          "mkdir": 4,
+          "mmap": 127,
+          "mprotect": 26,
+          "munmap": 27,
+          "newfstatat": 14,
+          "open": 2,
+          "openat": 139,
+          "pipe2": 1,
+          "poll": 1,
+          "prctl": 4,
+          "pread64": 6,
+          "prlimit64": 2,
+          "read": 135,
+          "readlink": 276,
+          "readlinkat": 1,
+          "rename": 2,
+          "rseq": 7,
+          "rt_sigaction": 11,
+          "rt_sigprocmask": 27,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 9,
+          "sched_yield": 1,
+          "set_robust_list": 7,
+          "set_tid_address": 1,
+          "sigaltstack": 20,
+          "statx": 379,
+          "tgkill": 1,
+          "unlink": 2,
+          "unlinkat": 4,
+          "write": 42
+        },
+        "time_sha256": "9040e175192b6739060fb7f8a4029218d9cacdef92c2c929cd497fec86914084",
+        "wall_seconds": 24.14
+      }
+    ],
+    "bld": [
+      {
+        "detail_trace_sha256": "759c407fd45426aeec919fb8afefc9dfe793840561432ff94945c2f2f7f0e1b3",
+        "kind": "bin",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "min_stack_kib": 64,
+        "peak_rss_kib": 87312,
+        "peak_threads": 7,
+        "scratch_bytes": 465832,
+        "stack_exit_status": {
+          "64": 0,
+          "65536": 0
+        },
+        "syscall_families": {
+          "file_metadata": {
+            "access": 9,
+            "fstat": 58,
+            "getdents64": 14,
+            "lstat": 1,
+            "newfstatat": 43,
+            "readlink": 513,
+            "readlinkat": 2,
+            "stat": 2,
+            "statx": 92
+          },
+          "limits": {
+            "prlimit64": 9
+          },
+          "locks": {
+            "fcntl": 9
+          },
+          "memory": {
+            "brk": 21,
+            "madvise": 83,
+            "mmap": 211,
+            "mprotect": 288,
+            "munmap": 73
+          },
+          "pipes": {
+            "pipe2": 3
+          },
+          "process_and_threads": {
+            "clone3": 24,
+            "execve": 3
+          },
+          "wait": {
+            "wait4": 1
+          }
+        },
+        "syscall_summary_sha256": "fad595ac0f403f8cb359c59bc4113620c99e47fa300babb1dd1901050aab597f",
+        "syscalls": {
+          "access": 9,
+          "arch_prctl": 3,
+          "brk": 21,
+          "clone3": 24,
+          "close": 99,
+          "dup2": 2,
+          "execve": 3,
+          "fcntl": 9,
+          "fstat": 58,
+          "ftruncate": 2,
+          "futex": 2125,
+          "getcwd": 3,
+          "getdents64": 14,
+          "getegid": 1,
+          "geteuid": 2,
+          "getgid": 1,
+          "getpid": 3,
+          "getppid": 1,
+          "getrandom": 4,
+          "getuid": 1,
+          "ioctl": 11,
+          "lseek": 20,
+          "lstat": 1,
+          "madvise": 83,
+          "mkdir": 4,
+          "mmap": 211,
+          "mprotect": 288,
+          "munmap": 73,
+          "newfstatat": 43,
+          "open": 2,
+          "openat": 191,
+          "pipe2": 3,
+          "poll": 2,
+          "prctl": 5,
+          "pread64": 19,
+          "prlimit64": 9,
+          "read": 56,
+          "readlink": 513,
+          "readlinkat": 2,
+          "rename": 1,
+          "rseq": 26,
+          "rt_sigaction": 35,
+          "rt_sigprocmask": 126,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 13,
+          "sched_yield": 1,
+          "set_robust_list": 26,
+          "set_tid_address": 3,
+          "sigaltstack": 25,
+          "stat": 2,
+          "statx": 92,
+          "tgkill": 1,
+          "unlink": 3,
+          "unlinkat": 5,
+          "wait4": 1,
+          "write": 6
+        },
+        "time_sha256": "28ed132625a8319147a6c2a758ec0b5bb413818fd69a99bd1556c3a5d0401560",
+        "wall_seconds": 0.47
+      },
+      {
+        "detail_trace_sha256": "121de17fbfe09361da4ea2884bc5dc50eae6abef7d49bc3177b02d4cdb915db6",
+        "kind": "lib",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "min_stack_kib": 64,
+        "peak_rss_kib": 208600,
+        "peak_threads": 7,
+        "scratch_bytes": 1464159,
+        "stack_exit_status": {
+          "64": 0,
+          "65536": 0
+        },
+        "syscall_families": {
+          "file_metadata": {
+            "access": 1,
+            "fstat": 23,
+            "getdents64": 14,
+            "newfstatat": 14,
+            "readlink": 284,
+            "readlinkat": 1,
+            "statx": 102
+          },
+          "limits": {
+            "prlimit64": 2
+          },
+          "locks": {
+            "fcntl": 7
+          },
+          "memory": {
+            "brk": 2,
+            "madvise": 273,
+            "mmap": 114,
+            "mprotect": 26,
+            "munmap": 28
+          },
+          "pipes": {
+            "pipe2": 1
+          },
+          "process_and_threads": {
+            "clone3": 6,
+            "execve": 1
+          },
+          "wait": {}
+        },
+        "syscall_summary_sha256": "f5133a9df2bc4080cc00056c52d4c3110757696470d9a11692bd72e6406787c9",
+        "syscalls": {
+          "access": 1,
+          "arch_prctl": 1,
+          "brk": 2,
+          "clone3": 6,
+          "close": 51,
+          "execve": 1,
+          "fcntl": 7,
+          "fstat": 23,
+          "futex": 506,
+          "getcwd": 3,
+          "getdents64": 14,
+          "getpid": 2,
+          "getrandom": 2,
+          "ioctl": 7,
+          "lseek": 7,
+          "madvise": 273,
+          "mkdir": 4,
+          "mmap": 114,
+          "mprotect": 26,
+          "munmap": 28,
+          "newfstatat": 14,
+          "open": 2,
+          "openat": 92,
+          "pipe2": 1,
+          "poll": 1,
+          "prctl": 4,
+          "pread64": 6,
+          "prlimit64": 2,
+          "read": 39,
+          "readlink": 284,
+          "readlinkat": 1,
+          "rename": 2,
+          "rseq": 7,
+          "rt_sigaction": 11,
+          "rt_sigprocmask": 27,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 9,
+          "sched_yield": 1,
+          "set_robust_list": 7,
+          "set_tid_address": 1,
+          "sigaltstack": 20,
+          "statx": 102,
+          "tgkill": 1,
+          "unlink": 2,
+          "unlinkat": 4,
+          "write": 17
+        },
+        "time_sha256": "a6606f5057c6a446e2c45f626b3081e6f85ec9d9be1de50d8b66fa1873c1e915",
+        "wall_seconds": 4.84
+      }
+    ],
+    "bmake": [
+      {
+        "detail_trace_sha256": "78be8758b728aa326f5580a10db695be6dea27cc3b416500b7c6f25c1f52a06f",
+        "kind": "bin",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "min_stack_kib": 64,
+        "peak_rss_kib": 95144,
+        "peak_threads": 7,
+        "scratch_bytes": 842694,
+        "stack_exit_status": {
+          "64": 0,
+          "65536": 0
+        },
+        "syscall_families": {
+          "file_metadata": {
+            "access": 9,
+            "fstat": 58,
+            "getdents64": 14,
+            "lstat": 1,
+            "newfstatat": 43,
+            "readlink": 513,
+            "readlinkat": 2,
+            "stat": 2,
+            "statx": 92
+          },
+          "limits": {
+            "prlimit64": 9
+          },
+          "locks": {
+            "fcntl": 9
+          },
+          "memory": {
+            "brk": 21,
+            "madvise": 117,
+            "mmap": 216,
+            "mprotect": 348,
+            "munmap": 70
+          },
+          "pipes": {
+            "pipe2": 3
+          },
+          "process_and_threads": {
+            "clone3": 24,
+            "execve": 3
+          },
+          "wait": {
+            "wait4": 1
+          }
+        },
+        "syscall_summary_sha256": "ff6c87c22a1d8cca09ae29a64df837ed634b5be09e4752445aacabbfc82042d7",
+        "syscalls": {
+          "access": 9,
+          "arch_prctl": 3,
+          "brk": 21,
+          "clone3": 24,
+          "close": 104,
+          "dup2": 2,
+          "execve": 3,
+          "fcntl": 9,
+          "fstat": 58,
+          "ftruncate": 2,
+          "futex": 2063,
+          "getcwd": 3,
+          "getdents64": 14,
+          "getegid": 1,
+          "geteuid": 2,
+          "getgid": 1,
+          "getpid": 3,
+          "getppid": 1,
+          "getrandom": 4,
+          "getuid": 1,
+          "ioctl": 11,
+          "lseek": 20,
+          "lstat": 1,
+          "madvise": 117,
+          "mkdir": 4,
+          "mmap": 216,
+          "mprotect": 348,
+          "munmap": 70,
+          "newfstatat": 43,
+          "open": 2,
+          "openat": 196,
+          "pipe2": 3,
+          "poll": 2,
+          "prctl": 5,
+          "pread64": 19,
+          "prlimit64": 9,
+          "read": 62,
+          "readlink": 513,
+          "readlinkat": 2,
+          "rename": 1,
+          "rseq": 26,
+          "rt_sigaction": 35,
+          "rt_sigprocmask": 126,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 13,
+          "sched_yield": 1,
+          "set_robust_list": 26,
+          "set_tid_address": 3,
+          "sigaltstack": 25,
+          "stat": 2,
+          "statx": 92,
+          "tgkill": 1,
+          "unlink": 3,
+          "unlinkat": 5,
+          "wait4": 1,
+          "write": 8
+        },
+        "time_sha256": "e7a04171fef4d19e64939f6a5c58b0a57520b1007a70edd242f0d471ebbcaa7a",
+        "wall_seconds": 1.26
+      },
+      {
+        "detail_trace_sha256": "9ed0db7855b89c12a7efefe40119662bb6ec76c2f4ea393ad454e262b8748e9c",
+        "kind": "lib",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "min_stack_kib": 64,
+        "peak_rss_kib": 253004,
+        "peak_threads": 7,
+        "scratch_bytes": 3108736,
+        "stack_exit_status": {
+          "64": 0,
+          "65536": 0
+        },
+        "syscall_families": {
+          "file_metadata": {
+            "access": 1,
+            "fstat": 23,
+            "getdents64": 14,
+            "newfstatat": 14,
+            "readlink": 284,
+            "readlinkat": 1,
+            "statx": 140
+          },
+          "limits": {
+            "prlimit64": 2
+          },
+          "locks": {
+            "fcntl": 7
+          },
+          "memory": {
+            "brk": 2,
+            "madvise": 648,
+            "mmap": 116,
+            "mprotect": 26,
+            "munmap": 28
+          },
+          "pipes": {
+            "pipe2": 1
+          },
+          "process_and_threads": {
+            "clone3": 6,
+            "execve": 1
+          },
+          "wait": {}
+        },
+        "syscall_summary_sha256": "8424def9779de6f48745e7f0c204cb2f144edf99061426d682ee3e4cad48ce11",
+        "syscalls": {
+          "access": 1,
+          "arch_prctl": 1,
+          "brk": 2,
+          "clone3": 6,
+          "close": 58,
+          "execve": 1,
+          "fcntl": 7,
+          "fstat": 23,
+          "futex": 509,
+          "getcwd": 3,
+          "getdents64": 14,
+          "getpid": 2,
+          "getrandom": 2,
+          "ioctl": 7,
+          "lseek": 7,
+          "madvise": 648,
+          "mkdir": 4,
+          "mmap": 116,
+          "mprotect": 26,
+          "munmap": 28,
+          "newfstatat": 14,
+          "open": 2,
+          "openat": 99,
+          "pipe2": 1,
+          "poll": 1,
+          "prctl": 4,
+          "pread64": 6,
+          "prlimit64": 2,
+          "read": 53,
+          "readlink": 284,
+          "readlinkat": 1,
+          "rename": 2,
+          "rseq": 7,
+          "rt_sigaction": 11,
+          "rt_sigprocmask": 27,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 9,
+          "sched_yield": 1,
+          "set_robust_list": 7,
+          "set_tid_address": 1,
+          "sigaltstack": 20,
+          "statx": 140,
+          "tgkill": 1,
+          "unlink": 2,
+          "unlinkat": 4,
+          "write": 22
+        },
+        "time_sha256": "7a3aa2a45b95facc063eb125d31e650eaf87d7e21d997e2461dd1f994baf38cc",
+        "wall_seconds": 9.59
+      }
+    ],
+    "bnm": [
+      {
+        "detail_trace_sha256": "bdd673a88212f579844c6dc0e117e92020a9d41cf177aa1b036f5bf934cdb043",
+        "kind": "bin",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "min_stack_kib": 64,
+        "peak_rss_kib": 93272,
+        "peak_threads": 7,
+        "scratch_bytes": 329400,
+        "stack_exit_status": {
+          "64": 0,
+          "65536": 0
+        },
+        "syscall_families": {
+          "file_metadata": {
+            "access": 9,
+            "fstat": 58,
+            "getdents64": 14,
+            "lstat": 1,
+            "newfstatat": 43,
+            "readlink": 513,
+            "readlinkat": 2,
+            "stat": 2,
+            "statx": 92
+          },
+          "limits": {
+            "prlimit64": 9
+          },
+          "locks": {
+            "fcntl": 9
+          },
+          "memory": {
+            "brk": 22,
+            "madvise": 85,
+            "mmap": 211,
+            "mprotect": 289,
+            "munmap": 67
+          },
+          "pipes": {
+            "pipe2": 3
+          },
+          "process_and_threads": {
+            "clone3": 24,
+            "execve": 3
+          },
+          "wait": {
+            "wait4": 1
+          }
+        },
+        "syscall_summary_sha256": "d3ae6a9a3f2404fae38315cf405f43d89d141c1f6fc48b344357b8969273bfdf",
+        "syscalls": {
+          "access": 9,
+          "arch_prctl": 3,
+          "brk": 22,
+          "clone3": 24,
+          "close": 101,
+          "dup2": 2,
+          "execve": 3,
+          "fcntl": 9,
+          "fstat": 58,
+          "ftruncate": 2,
+          "futex": 2073,
+          "getcwd": 3,
+          "getdents64": 14,
+          "getegid": 1,
+          "geteuid": 2,
+          "getgid": 1,
+          "getpid": 3,
+          "getppid": 1,
+          "getrandom": 4,
+          "getuid": 1,
+          "ioctl": 11,
+          "lseek": 20,
+          "lstat": 1,
+          "madvise": 85,
+          "mkdir": 4,
+          "mmap": 211,
+          "mprotect": 289,
+          "munmap": 67,
+          "newfstatat": 43,
+          "open": 2,
+          "openat": 193,
+          "pipe2": 3,
+          "poll": 2,
+          "prctl": 5,
+          "pread64": 19,
+          "prlimit64": 9,
+          "read": 58,
+          "readlink": 513,
+          "readlinkat": 2,
+          "rename": 1,
+          "rseq": 26,
+          "rt_sigaction": 35,
+          "rt_sigprocmask": 126,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 13,
+          "sched_yield": 1,
+          "set_robust_list": 26,
+          "set_tid_address": 3,
+          "sigaltstack": 25,
+          "stat": 2,
+          "statx": 92,
+          "tgkill": 1,
+          "unlink": 3,
+          "unlinkat": 5,
+          "wait4": 1,
+          "write": 6
+        },
+        "time_sha256": "704fcb01a01adf41d0cd79ed5848998623d1ace99aba97fc2c3af94130aa9609",
+        "wall_seconds": 0.63
+      },
+      {
+        "detail_trace_sha256": "b910f536ac06fed395189fee08cea5987b731aee8cdeef1cae63b3c423de0c6b",
+        "kind": "lib",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "min_stack_kib": 64,
+        "peak_rss_kib": 111040,
+        "peak_threads": 7,
+        "scratch_bytes": 192465,
+        "stack_exit_status": {
+          "64": 0,
+          "65536": 0
+        },
+        "syscall_families": {
+          "file_metadata": {
+            "access": 1,
+            "fstat": 23,
+            "getdents64": 14,
+            "newfstatat": 14,
+            "readlink": 284,
+            "readlinkat": 1,
+            "statx": 70
+          },
+          "limits": {
+            "prlimit64": 2
+          },
+          "locks": {
+            "fcntl": 7
+          },
+          "memory": {
+            "brk": 2,
+            "madvise": 92,
+            "mmap": 101,
+            "mprotect": 26,
+            "munmap": 28
+          },
+          "pipes": {
+            "pipe2": 1
+          },
+          "process_and_threads": {
+            "clone3": 6,
+            "execve": 1
+          },
+          "wait": {}
+        },
+        "syscall_summary_sha256": "73823e6378835a6fac967468a2beeb05a29f4eac6f6ef742fe55de1cadaacf36",
+        "syscalls": {
+          "access": 1,
+          "arch_prctl": 1,
+          "brk": 2,
+          "clone3": 6,
+          "close": 46,
+          "execve": 1,
+          "fcntl": 7,
+          "fstat": 23,
+          "futex": 509,
+          "getcwd": 3,
+          "getdents64": 14,
+          "getpid": 2,
+          "getrandom": 2,
+          "ioctl": 7,
+          "lseek": 7,
+          "madvise": 92,
+          "mkdir": 4,
+          "mmap": 101,
+          "mprotect": 26,
+          "munmap": 28,
+          "newfstatat": 14,
+          "open": 2,
+          "openat": 87,
+          "pipe2": 1,
+          "poll": 1,
+          "prctl": 4,
+          "pread64": 6,
+          "prlimit64": 2,
+          "read": 29,
+          "readlink": 284,
+          "readlinkat": 1,
+          "rename": 2,
+          "rseq": 7,
+          "rt_sigaction": 11,
+          "rt_sigprocmask": 27,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 9,
+          "sched_yield": 1,
+          "set_robust_list": 7,
+          "set_tid_address": 1,
+          "sigaltstack": 20,
+          "statx": 70,
+          "tgkill": 1,
+          "unlink": 2,
+          "unlinkat": 4,
+          "write": 12
+        },
+        "time_sha256": "0c74e56d25ff1694266d0b98aa976c632a3890b607ebbd2960aa1340928bdaf0",
+        "wall_seconds": 0.18
+      }
+    ],
+    "bobj": [
+      {
+        "detail_trace_sha256": "565b7061ea5aa8e96def3d023d2e57dd1b892a7dd054016f588954ce8e7fdda0",
+        "kind": "lib",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "min_stack_kib": 64,
+        "peak_rss_kib": 141440,
+        "peak_threads": 7,
+        "scratch_bytes": 850633,
+        "stack_exit_status": {
+          "64": 0,
+          "65536": 0
+        },
+        "syscall_families": {
+          "file_metadata": {
+            "access": 1,
+            "fstat": 23,
+            "getdents64": 14,
+            "newfstatat": 14,
+            "readlink": 276,
+            "readlinkat": 1,
+            "statx": 79
+          },
+          "limits": {
+            "prlimit64": 2
+          },
+          "locks": {
+            "fcntl": 7
+          },
+          "memory": {
+            "brk": 2,
+            "madvise": 131,
+            "mmap": 104,
+            "mprotect": 26,
+            "munmap": 27
+          },
+          "pipes": {
+            "pipe2": 1
+          },
+          "process_and_threads": {
+            "clone3": 6,
+            "execve": 1
+          },
+          "wait": {}
+        },
+        "syscall_summary_sha256": "12021f264df4d69c4d4b5a23bb061684d353c0142c42cdd641b3e734ed411008",
+        "syscalls": {
+          "access": 1,
+          "arch_prctl": 1,
+          "brk": 2,
+          "clone3": 6,
+          "close": 47,
+          "execve": 1,
+          "fcntl": 7,
+          "fstat": 23,
+          "futex": 506,
+          "getcwd": 3,
+          "getdents64": 14,
+          "getpid": 2,
+          "getrandom": 2,
+          "ioctl": 7,
+          "lseek": 7,
+          "madvise": 131,
+          "mkdir": 4,
+          "mmap": 104,
+          "mprotect": 26,
+          "munmap": 27,
+          "newfstatat": 14,
+          "open": 2,
+          "openat": 88,
+          "pipe2": 1,
+          "poll": 1,
+          "prctl": 4,
+          "pread64": 6,
+          "prlimit64": 2,
+          "read": 33,
+          "readlink": 276,
+          "readlinkat": 1,
+          "rename": 2,
+          "rseq": 7,
+          "rt_sigaction": 11,
+          "rt_sigprocmask": 27,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 9,
+          "sched_yield": 1,
+          "set_robust_list": 7,
+          "set_tid_address": 1,
+          "sigaltstack": 20,
+          "statx": 79,
+          "tgkill": 1,
+          "unlink": 2,
+          "unlinkat": 4,
+          "write": 16
+        },
+        "time_sha256": "c2d52a0124233ed3303fb7f0a5218107b6f75d7fa389e3c1429b881b943f657c",
+        "wall_seconds": 1.17
+      }
+    ]
+  },
+  "executor": "linux-build-container",
+  "manifest_sha256": "91a02f7310fb17ec30ad5b026d5b6e0be9c74a1638ecc3d7e48112863da28b3b",
+  "measurement": {
+    "mappings": "Largest successful mmap requests in rustc and descendants in the detail replay",
+    "scratch": "Successful write-family bytes plus writable shared mmap lengths for the replay's private output and temporary files",
+    "stack": "Lowest passing soft RLIMIT_STACK within 64\u201365536 KiB at 1 KiB resolution; 64 is the search floor",
+    "threads": "Peak thread count in rustc from clone/clone3 and exit events in the detail replay",
+    "time": "GNU time -v around strace -f -c and rustc, with tracing overhead"
+  },
+  "prediction": "With nightly-2025-06-24 in the Linux build container, the X0.9 x86_64-breenix selfhost cross-build will compile all seven requested crates. I expect the bcc library to have the highest workspace peak RSS and scratch writes, each workspace rustc invocation to compile with a soft RLIMIT_STACK of 2 MiB or less, and rustc to use file-backed and anonymous mappings and create worker threads. These are Linux host measurements for 25.8a sizing; D1 separately measures the R240.",
+  "prediction_time": "2026-11-24T06:10:42.535741+00:00",
+  "profile": "selfhost",
+  "release_parity": {
+    "aarch64-breenix": {
+      "parent_commit": "209718bc56d3d994293c813486d62d86e9fbeea5",
+      "parent_sha256": {
+        "bar": "18f33bdd1bdffafbb0e559d71e276890230b167e1fe44468d46570f6eead9a99",
+        "bas": "2d3edfa9b3678d04139fe4c73e94e5ef2c98a339635b413228cfc8bbcca97b77",
+        "bcc": "3bf271b938e140f38ad094c4459b5bf6a63eaf4fc411db338f239fae8e8fbf39",
+        "bld": "6e626146b1547476506ebb233b58098458e4ad4c4798d23b738df654f9fe2153",
+        "bmake": "7cbb9812741a98e0575d1f8d421a0753a2fa06754f091813c9fedbbdf31d9fda",
+        "bnm": "f30ec055901b4015a8db31f9c0b1718f718f46b7b873048c9b0fbb3e61a64043",
+        "bobj": "6ddbeebe8132b24a082c5e06dbc7ae3ab76db0038b65c5c62cac86a5b0124b1b"
+      },
+      "profile_sha256": {
+        "bar": "18f33bdd1bdffafbb0e559d71e276890230b167e1fe44468d46570f6eead9a99",
+        "bas": "2d3edfa9b3678d04139fe4c73e94e5ef2c98a339635b413228cfc8bbcca97b77",
+        "bcc": "3bf271b938e140f38ad094c4459b5bf6a63eaf4fc411db338f239fae8e8fbf39",
+        "bld": "6e626146b1547476506ebb233b58098458e4ad4c4798d23b738df654f9fe2153",
+        "bmake": "7cbb9812741a98e0575d1f8d421a0753a2fa06754f091813c9fedbbdf31d9fda",
+        "bnm": "f30ec055901b4015a8db31f9c0b1718f718f46b7b873048c9b0fbb3e61a64043",
+        "bobj": "6ddbeebe8132b24a082c5e06dbc7ae3ab76db0038b65c5c62cac86a5b0124b1b"
+      }
+    },
+    "x86_64-breenix": {
+      "parent_commit": "209718bc56d3d994293c813486d62d86e9fbeea5",
+      "parent_sha256": {
+        "bar": "4f3358f44bcf7d9ccc4140d69aaab4ddef2eba0745ad1875f0312eea492a7f18",
+        "bas": "395735607f5f742db5ae6d90e0cee530a0d6a589698d0fa1d074616996764f36",
+        "bcc": "3674af48bf493f4615246a48dff947887ed945760e8f7612fa4151515d3b3e20",
+        "bld": "3f8afc1d38bb0bd14c4b92d61a644aab2ba8bde9a84b9f90e9e2d0163026bbac",
+        "bmake": "28d302c7e62c86ac85bbf2bcdcb3a30d3fdee432d9d1a4f5faf349e5dc913408",
+        "bnm": "9cb7e0d33ed934738f4dd67053813eb384d151609c463093691305d246f28221",
+        "bobj": "ef0ae2e49ceb2fd258ae2ea9fca5af0b124cc5380e5914aaf58e436dc328fcd4"
+      },
+      "profile_sha256": {
+        "bar": "4f3358f44bcf7d9ccc4140d69aaab4ddef2eba0745ad1875f0312eea492a7f18",
+        "bas": "395735607f5f742db5ae6d90e0cee530a0d6a589698d0fa1d074616996764f36",
+        "bcc": "3674af48bf493f4615246a48dff947887ed945760e8f7612fa4151515d3b3e20",
+        "bld": "3f8afc1d38bb0bd14c4b92d61a644aab2ba8bde9a84b9f90e9e2d0163026bbac",
+        "bmake": "28d302c7e62c86ac85bbf2bcdcb3a30d3fdee432d9d1a4f5faf349e5dc913408",
+        "bnm": "9cb7e0d33ed934738f4dd67053813eb384d151609c463093691305d246f28221",
+        "bobj": "ef0ae2e49ceb2fd258ae2ea9fca5af0b124cc5380e5914aaf58e436dc328fcd4"
+      }
+    }
+  },
+  "rust_library_commit": "666252fd61839b9e9b1bc9e777a0c84c5cf3dc6d",
+  "rustc_sha256": "e44e1b0c934fe36470bc092d1751712dda0e9a7f5a5452159653f361e556b575",
+  "rustc_version": [
+    "rustc 1.90.0-nightly (706f244db 2025-06-23)",
+    "binary: rustc",
+    "commit-hash: 706f244db581212cabf2e619e0113d70999b2bbe",
+    "commit-date: 2025-06-23",
+    "host: x86_64-unknown-linux-gnu",
+    "release: 1.90.0-nightly",
+    "LLVM version: 20.1.7"
+  ],
+  "rustc_wrapper": "/breenix/scripts/rust-host/x0-rustc-probe.sh",
+  "rustflags": [
+    "--remap-path-prefix=/breenix=/breenix",
+    "--remap-path-prefix=/cargo=/cargo",
+    "-L",
+    "native=/probe/libc/x86_64-breenix/release",
+    "-C",
+    "link-arg=-T/breenix/userspace/programs/linker.ld",
+    "-C",
+    "link-arg=--allow-multiple-definition",
+    "-C",
+    "default-linker-libraries=no",
+    "-C",
+    "metadata=breenix_std_666252fd61839b9e9b1bc9e777a0c84c5cf3dc6d"
+  ],
+  "std_information_only": {
+    "alloc": [
+      {
+        "detail_trace_sha256": "f416d270218bce937c62832ec70a3eae571229bd5b4a6ecd9764f8ec4ad2a2f3",
+        "kind": "lib",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "peak_rss_kib": 253176,
+        "peak_threads": 7,
+        "scratch_bytes": 18675078,
+        "syscall_families": {
+          "file_metadata": {
+            "access": 1,
+            "fstat": 23,
+            "getdents64": 14,
+            "newfstatat": 14,
+            "readlink": 65,
+            "readlinkat": 1,
+            "statx": 327
+          },
+          "limits": {
+            "prlimit64": 2
+          },
+          "locks": {
+            "fcntl": 7
+          },
+          "memory": {
+            "brk": 2,
+            "madvise": 505,
+            "mmap": 102,
+            "mprotect": 26,
+            "munmap": 17
+          },
+          "pipes": {
+            "pipe2": 1
+          },
+          "process_and_threads": {
+            "clone3": 6,
+            "execve": 1
+          },
+          "wait": {}
+        },
+        "syscall_summary_sha256": "345d601ebea3314564336f2afe432ca63a3807bb1343fe084a3b8d53da89bcbf",
+        "syscalls": {
+          "access": 1,
+          "arch_prctl": 1,
+          "brk": 2,
+          "clone3": 6,
+          "close": 97,
+          "execve": 1,
+          "fcntl": 7,
+          "fstat": 23,
+          "futex": 509,
+          "getcwd": 2,
+          "getdents64": 14,
+          "getpid": 2,
+          "getrandom": 2,
+          "ioctl": 11,
+          "lseek": 7,
+          "madvise": 505,
+          "mkdir": 4,
+          "mmap": 102,
+          "mprotect": 26,
+          "munmap": 17,
+          "newfstatat": 14,
+          "open": 2,
+          "openat": 138,
+          "pipe2": 1,
+          "poll": 1,
+          "prctl": 4,
+          "pread64": 6,
+          "prlimit64": 2,
+          "read": 153,
+          "readlink": 65,
+          "readlinkat": 1,
+          "rename": 2,
+          "rseq": 7,
+          "rt_sigaction": 11,
+          "rt_sigprocmask": 27,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 9,
+          "sched_yield": 1,
+          "set_robust_list": 7,
+          "set_tid_address": 1,
+          "sigaltstack": 20,
+          "statx": 327,
+          "tgkill": 1,
+          "unlink": 2,
+          "unlinkat": 4,
+          "write": 109
+        },
+        "time_sha256": "0decf1bf52e02f4878fffec7f6cd5b242f7ef7dc1fa4ce4d4aa38c1c2aaf61bd",
+        "wall_seconds": 3.8
+      }
+    ],
+    "build_script_build": [
+      {
+        "detail_trace_sha256": "d9faaae908829c5cdea96092d7d828578d8302b602f7fa209248667b322f7caa",
+        "kind": "bin",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "peak_rss_kib": 106560,
+        "peak_threads": 8,
+        "scratch_bytes": 914310,
+        "syscall_families": {
+          "file_metadata": {
+            "access": 157,
+            "fstat": 90,
+            "getdents64": 10,
+            "lstat": 1,
+            "newfstatat": 213,
+            "readlink": 961,
+            "readlinkat": 3,
+            "stat": 2,
+            "statx": 64
+          },
+          "limits": {
+            "prlimit64": 9
+          },
+          "locks": {
+            "fcntl": 7
+          },
+          "memory": {
+            "brk": 35,
+            "madvise": 100,
+            "mmap": 246,
+            "mprotect": 282,
+            "munmap": 64
+          },
+          "pipes": {
+            "pipe2": 5
+          },
+          "process_and_threads": {
+            "clone": 1,
+            "clone3": 25,
+            "execve": 11,
+            "vfork": 2
+          },
+          "wait": {
+            "wait4": 3
+          }
+        },
+        "syscall_summary_sha256": "7130cd4d027dfa281f85fa34f3a302a2e13d7d6b93d57ad1ad4ceaac9903c168",
+        "syscalls": {
+          "access": 157,
+          "arch_prctl": 5,
+          "brk": 35,
+          "clone": 1,
+          "clone3": 25,
+          "close": 135,
+          "dup2": 2,
+          "execve": 11,
+          "fcntl": 7,
+          "fstat": 90,
+          "ftruncate": 2,
+          "futex": 1765,
+          "getcwd": 2,
+          "getdents64": 10,
+          "getpid": 2,
+          "getrandom": 7,
+          "ioctl": 17,
+          "lseek": 45,
+          "lstat": 1,
+          "madvise": 100,
+          "mkdir": 4,
+          "mmap": 246,
+          "mprotect": 282,
+          "munmap": 64,
+          "newfstatat": 213,
+          "open": 2,
+          "openat": 244,
+          "pipe2": 5,
+          "poll": 3,
+          "prctl": 7,
+          "pread64": 34,
+          "prlimit64": 9,
+          "read": 88,
+          "readlink": 961,
+          "readlinkat": 3,
+          "recvfrom": 1,
+          "rename": 1,
+          "rseq": 30,
+          "rt_sigaction": 59,
+          "rt_sigprocmask": 180,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 16,
+          "sched_yield": 1,
+          "set_robust_list": 31,
+          "set_tid_address": 5,
+          "sigaltstack": 33,
+          "socketpair": 1,
+          "stat": 2,
+          "statx": 64,
+          "tgkill": 1,
+          "unlink": 8,
+          "unlinkat": 5,
+          "vfork": 2,
+          "wait4": 3,
+          "write": 9
+        },
+        "time_sha256": "604c45dbe5d1cdc39254f109173805fb7ca89debcb0c50a519d2463fa8c91388",
+        "wall_seconds": 0.36
+      },
+      {
+        "detail_trace_sha256": "c8421713e3ffe4850bf2b8623118cf7b32d6bbda9bbb4728477f8762969666c7",
+        "kind": "bin",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "peak_rss_kib": 88436,
+        "peak_threads": 7,
+        "scratch_bytes": 514714,
+        "syscall_families": {
+          "file_metadata": {
+            "access": 157,
+            "fstat": 84,
+            "getdents64": 10,
+            "lstat": 1,
+            "newfstatat": 213,
+            "readlink": 926,
+            "readlinkat": 3,
+            "stat": 2,
+            "statx": 62
+          },
+          "limits": {
+            "prlimit64": 9
+          },
+          "locks": {
+            "fcntl": 7
+          },
+          "memory": {
+            "brk": 34,
+            "madvise": 74,
+            "mmap": 240,
+            "mprotect": 310,
+            "munmap": 63
+          },
+          "pipes": {
+            "pipe2": 5
+          },
+          "process_and_threads": {
+            "clone": 1,
+            "clone3": 23,
+            "execve": 11,
+            "vfork": 2
+          },
+          "wait": {
+            "wait4": 3
+          }
+        },
+        "syscall_summary_sha256": "1fa7d42fb756dd51628a7bd10c0c7c1e00a125dd2e949e70983d66310f9a9753",
+        "syscalls": {
+          "access": 157,
+          "arch_prctl": 5,
+          "brk": 34,
+          "clone": 1,
+          "clone3": 23,
+          "close": 134,
+          "dup2": 2,
+          "execve": 11,
+          "fcntl": 7,
+          "fstat": 84,
+          "ftruncate": 2,
+          "futex": 1718,
+          "getcwd": 2,
+          "getdents64": 10,
+          "getpid": 2,
+          "getrandom": 6,
+          "ioctl": 22,
+          "lseek": 43,
+          "lstat": 1,
+          "madvise": 74,
+          "mkdir": 4,
+          "mmap": 240,
+          "mprotect": 310,
+          "munmap": 63,
+          "newfstatat": 213,
+          "open": 2,
+          "openat": 243,
+          "pipe2": 5,
+          "poll": 3,
+          "prctl": 5,
+          "pread64": 34,
+          "prlimit64": 9,
+          "read": 91,
+          "readlink": 926,
+          "readlinkat": 3,
+          "recvfrom": 1,
+          "rename": 1,
+          "rseq": 28,
+          "rt_sigaction": 59,
+          "rt_sigprocmask": 164,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 14,
+          "sched_yield": 1,
+          "set_robust_list": 29,
+          "set_tid_address": 5,
+          "sigaltstack": 27,
+          "socketpair": 1,
+          "stat": 2,
+          "statx": 62,
+          "tgkill": 1,
+          "unlink": 6,
+          "unlinkat": 5,
+          "vfork": 2,
+          "wait4": 3,
+          "write": 6
+        },
+        "time_sha256": "0aad7fa0971e9ad5fd833342224838a0efd3b51fd38c0544f98fc4a1b35efc15",
+        "wall_seconds": 0.21
+      },
+      {
+        "detail_trace_sha256": "51a2638508ab8c2465469560cab645b7f2b6a13944eabf11300d8a445f448c67",
+        "kind": "bin",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "peak_rss_kib": 107104,
+        "peak_threads": 8,
+        "scratch_bytes": 899853,
+        "syscall_families": {
+          "file_metadata": {
+            "access": 157,
+            "fstat": 90,
+            "getdents64": 10,
+            "lstat": 1,
+            "newfstatat": 213,
+            "readlink": 963,
+            "readlinkat": 3,
+            "stat": 2,
+            "statx": 68
+          },
+          "limits": {
+            "prlimit64": 9
+          },
+          "locks": {
+            "fcntl": 7
+          },
+          "memory": {
+            "brk": 35,
+            "madvise": 111,
+            "mmap": 246,
+            "mprotect": 303,
+            "munmap": 64
+          },
+          "pipes": {
+            "pipe2": 5
+          },
+          "process_and_threads": {
+            "clone": 1,
+            "clone3": 25,
+            "execve": 11,
+            "vfork": 2
+          },
+          "wait": {
+            "wait4": 3
+          }
+        },
+        "syscall_summary_sha256": "9ab4dfad2682b41975363a6af8c32bbe1e09761b49412e836d9fd02f436636f5",
+        "syscalls": {
+          "access": 157,
+          "arch_prctl": 5,
+          "brk": 35,
+          "clone": 1,
+          "clone3": 25,
+          "close": 136,
+          "dup2": 2,
+          "execve": 11,
+          "fcntl": 7,
+          "fstat": 90,
+          "ftruncate": 2,
+          "futex": 1743,
+          "getcwd": 2,
+          "getdents64": 10,
+          "getpid": 2,
+          "getrandom": 6,
+          "ioctl": 19,
+          "lseek": 45,
+          "lstat": 1,
+          "madvise": 111,
+          "mkdir": 4,
+          "mmap": 246,
+          "mprotect": 303,
+          "munmap": 64,
+          "newfstatat": 213,
+          "open": 2,
+          "openat": 245,
+          "pipe2": 5,
+          "poll": 3,
+          "prctl": 7,
+          "pread64": 34,
+          "prlimit64": 9,
+          "read": 90,
+          "readlink": 963,
+          "readlinkat": 3,
+          "recvfrom": 1,
+          "rename": 1,
+          "rseq": 30,
+          "rt_sigaction": 59,
+          "rt_sigprocmask": 180,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 16,
+          "sched_yield": 1,
+          "set_robust_list": 31,
+          "set_tid_address": 5,
+          "sigaltstack": 33,
+          "socketpair": 1,
+          "stat": 2,
+          "statx": 68,
+          "tgkill": 1,
+          "unlink": 8,
+          "unlinkat": 5,
+          "vfork": 2,
+          "wait4": 3,
+          "write": 9
+        },
+        "time_sha256": "9bc9307f83a98bac97eddb2422cd398fa7931b3889054f6ff607239503a9d561",
+        "wall_seconds": 0.35
+      }
+    ],
+    "cfg_if": [
+      {
+        "detail_trace_sha256": "aa1cf9ecaef4fa757c330f0d410deae4e0a74579ba444e66ececd92653ba7a07",
+        "kind": "lib",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "peak_rss_kib": 51840,
+        "peak_threads": 7,
+        "scratch_bytes": 21288,
+        "syscall_families": {
+          "file_metadata": {
+            "access": 1,
+            "fstat": 23,
+            "getdents64": 14,
+            "newfstatat": 14,
+            "readlink": 73,
+            "readlinkat": 1,
+            "statx": 36
+          },
+          "limits": {
+            "prlimit64": 2
+          },
+          "locks": {
+            "fcntl": 7
+          },
+          "memory": {
+            "brk": 2,
+            "madvise": 57,
+            "mmap": 87,
+            "mprotect": 26,
+            "munmap": 18
+          },
+          "pipes": {
+            "pipe2": 1
+          },
+          "process_and_threads": {
+            "clone3": 6,
+            "execve": 1
+          },
+          "wait": {}
+        },
+        "syscall_summary_sha256": "a2794a3c3ee5f7d7115a57924040a23c453661db1922a75e23b614ea8b9fca29",
+        "syscalls": {
+          "access": 1,
+          "arch_prctl": 1,
+          "brk": 2,
+          "clone3": 6,
+          "close": 35,
+          "execve": 1,
+          "fcntl": 7,
+          "fstat": 23,
+          "futex": 509,
+          "getcwd": 2,
+          "getdents64": 14,
+          "getpid": 2,
+          "getrandom": 2,
+          "ioctl": 9,
+          "lseek": 7,
+          "madvise": 57,
+          "mkdir": 4,
+          "mmap": 87,
+          "mprotect": 26,
+          "munmap": 18,
+          "newfstatat": 14,
+          "open": 2,
+          "openat": 76,
+          "pipe2": 1,
+          "poll": 1,
+          "prctl": 4,
+          "pread64": 6,
+          "prlimit64": 2,
+          "read": 27,
+          "readlink": 73,
+          "readlinkat": 1,
+          "rename": 2,
+          "rseq": 7,
+          "rt_sigaction": 11,
+          "rt_sigprocmask": 27,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 9,
+          "sched_yield": 1,
+          "set_robust_list": 7,
+          "set_tid_address": 1,
+          "sigaltstack": 20,
+          "statx": 36,
+          "tgkill": 1,
+          "unlink": 2,
+          "unlinkat": 4,
+          "write": 10
+        },
+        "time_sha256": "f1402be083acf942ab69d23107e08e1a4c98feb5139fd724df3e8a3ea7729b30",
+        "wall_seconds": 0.06
+      }
+    ],
+    "compiler_builtins": [
+      {
+        "detail_trace_sha256": "c8c467022befcd43765aab25f2ea97ee979561d0ea7359163914b1ee45cdd33a",
+        "kind": "lib",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "peak_rss_kib": 140404,
+        "peak_threads": 7,
+        "scratch_bytes": 3524578,
+        "syscall_families": {
+          "file_metadata": {
+            "access": 1,
+            "fstat": 23,
+            "getdents64": 14,
+            "newfstatat": 14,
+            "readlink": 58,
+            "readlinkat": 1,
+            "statx": 218
+          },
+          "limits": {
+            "prlimit64": 2
+          },
+          "locks": {
+            "fcntl": 7
+          },
+          "memory": {
+            "brk": 2,
+            "madvise": 203,
+            "mmap": 96,
+            "mprotect": 26,
+            "munmap": 16
+          },
+          "pipes": {
+            "pipe2": 1
+          },
+          "process_and_threads": {
+            "clone3": 6,
+            "execve": 1
+          },
+          "wait": {}
+        },
+        "syscall_summary_sha256": "269faa8eee2a5dff961ae795dd4d20966942fa0afa244f485aef6c3b458c8e29",
+        "syscalls": {
+          "access": 1,
+          "arch_prctl": 1,
+          "brk": 2,
+          "clone3": 6,
+          "close": 75,
+          "execve": 1,
+          "fcntl": 7,
+          "fstat": 23,
+          "futex": 509,
+          "getcwd": 2,
+          "getdents64": 14,
+          "getpid": 2,
+          "getrandom": 2,
+          "ioctl": 157,
+          "lseek": 7,
+          "madvise": 203,
+          "mkdir": 4,
+          "mmap": 96,
+          "mprotect": 26,
+          "munmap": 16,
+          "newfstatat": 14,
+          "open": 2,
+          "openat": 116,
+          "pipe2": 1,
+          "poll": 1,
+          "prctl": 4,
+          "pread64": 6,
+          "prlimit64": 2,
+          "read": 111,
+          "readlink": 58,
+          "readlinkat": 1,
+          "rename": 2,
+          "rseq": 7,
+          "rt_sigaction": 11,
+          "rt_sigprocmask": 27,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 9,
+          "sched_yield": 1,
+          "set_robust_list": 7,
+          "set_tid_address": 1,
+          "sigaltstack": 20,
+          "statx": 218,
+          "tgkill": 1,
+          "unlink": 2,
+          "unlinkat": 4,
+          "write": 35
+        },
+        "time_sha256": "9de9ca8aa856deaeb7dd8f1551a427fd3794fc67dbfa28261f2739370d983a26",
+        "wall_seconds": 1.97
+      }
+    ],
+    "core": [
+      {
+        "detail_trace_sha256": "6594b50b476767bf7b21eebcc2fdfb5e8b90e8a328555648ed3169e5821aff0b",
+        "kind": "lib",
+        "largest_anonymous_mapping_bytes": 167772160,
+        "largest_file_mapping_bytes": 163067344,
+        "peak_rss_kib": 931008,
+        "peak_threads": 7,
+        "scratch_bytes": 167809794,
+        "syscall_families": {
+          "file_metadata": {
+            "access": 1,
+            "fstat": 23,
+            "getdents64": 14,
+            "newfstatat": 14,
+            "readlink": 49,
+            "readlinkat": 1,
+            "statx": 1842
+          },
+          "limits": {
+            "prlimit64": 2
+          },
+          "locks": {
+            "fcntl": 7
+          },
+          "memory": {
+            "brk": 2,
+            "madvise": 5002,
+            "mmap": 120,
+            "mprotect": 26,
+            "munmap": 15
+          },
+          "pipes": {
+            "pipe2": 1
+          },
+          "process_and_threads": {
+            "clone3": 6,
+            "execve": 1
+          },
+          "wait": {}
+        },
+        "syscall_summary_sha256": "ec49b8a87aabc3270c735d919354a632b00a1de86a3263eb3f71579fd7fdfcd3",
+        "syscalls": {
+          "access": 1,
+          "arch_prctl": 1,
+          "brk": 2,
+          "clone3": 6,
+          "close": 429,
+          "execve": 1,
+          "fcntl": 7,
+          "fstat": 23,
+          "futex": 521,
+          "getcwd": 2,
+          "getdents64": 14,
+          "getpid": 2,
+          "getrandom": 2,
+          "ioctl": 14,
+          "lseek": 7,
+          "madvise": 5002,
+          "mkdir": 4,
+          "mmap": 120,
+          "mprotect": 26,
+          "munmap": 15,
+          "newfstatat": 14,
+          "open": 2,
+          "openat": 470,
+          "pipe2": 1,
+          "poll": 1,
+          "prctl": 4,
+          "pread64": 6,
+          "prlimit64": 2,
+          "read": 821,
+          "readlink": 49,
+          "readlinkat": 1,
+          "rename": 2,
+          "rseq": 7,
+          "rt_sigaction": 11,
+          "rt_sigprocmask": 27,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 9,
+          "sched_yield": 1,
+          "set_robust_list": 7,
+          "set_tid_address": 1,
+          "sigaltstack": 20,
+          "statx": 1842,
+          "tgkill": 1,
+          "unlink": 2,
+          "unlinkat": 4,
+          "write": 847
+        },
+        "time_sha256": "e64eb955f9bd5821a20c6a90c7c46ad920ec22a2f627fb18256bee11d4fc5a44",
+        "wall_seconds": 20.95
+      }
+    ],
+    "hashbrown": [
+      {
+        "detail_trace_sha256": "14e9dbdf5d7a5c59fe82e5a94bc52d15a722771dac951c6e8c31ab9d17a23d5f",
+        "kind": "lib",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "peak_rss_kib": 145792,
+        "peak_threads": 7,
+        "scratch_bytes": 4131748,
+        "syscall_families": {
+          "file_metadata": {
+            "access": 1,
+            "fstat": 23,
+            "getdents64": 14,
+            "newfstatat": 14,
+            "readlink": 105,
+            "readlinkat": 1,
+            "statx": 374
+          },
+          "limits": {
+            "prlimit64": 2
+          },
+          "locks": {
+            "fcntl": 7
+          },
+          "memory": {
+            "brk": 2,
+            "madvise": 180,
+            "mmap": 151,
+            "mprotect": 26,
+            "munmap": 74
+          },
+          "pipes": {
+            "pipe2": 1
+          },
+          "process_and_threads": {
+            "clone3": 6,
+            "execve": 1
+          },
+          "wait": {}
+        },
+        "syscall_summary_sha256": "6bfc4869139eaf6c1e560767ed1736a64d55866f44411a23cbd36f94816c785a",
+        "syscalls": {
+          "access": 1,
+          "arch_prctl": 1,
+          "brk": 2,
+          "clone3": 6,
+          "close": 106,
+          "execve": 1,
+          "fcntl": 7,
+          "fstat": 23,
+          "futex": 509,
+          "getcwd": 2,
+          "getdents64": 14,
+          "getpid": 2,
+          "getrandom": 2,
+          "ioctl": 12,
+          "lseek": 7,
+          "madvise": 180,
+          "mkdir": 4,
+          "mmap": 151,
+          "mprotect": 26,
+          "munmap": 74,
+          "newfstatat": 14,
+          "open": 2,
+          "openat": 147,
+          "pipe2": 1,
+          "poll": 1,
+          "prctl": 4,
+          "pread64": 6,
+          "prlimit64": 2,
+          "read": 57,
+          "readlink": 105,
+          "readlinkat": 1,
+          "rename": 2,
+          "rseq": 7,
+          "rt_sigaction": 11,
+          "rt_sigprocmask": 27,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 9,
+          "sched_yield": 1,
+          "set_robust_list": 7,
+          "set_tid_address": 1,
+          "sigaltstack": 20,
+          "statx": 374,
+          "tgkill": 1,
+          "unlink": 2,
+          "unlinkat": 4,
+          "write": 33
+        },
+        "time_sha256": "99d0fcc1b06c01745103940c46bc608a30f90c2c8a996dd20cac0fd27183ee40",
+        "wall_seconds": 0.8
+      }
+    ],
+    "libc": [
+      {
+        "detail_trace_sha256": "abf6583c92a50133e3a93a616596df12b41529b19db60870eb1c8938a85898c5",
+        "kind": "lib",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "peak_rss_kib": 105576,
+        "peak_threads": 7,
+        "scratch_bytes": 2683559,
+        "syscall_families": {
+          "file_metadata": {
+            "access": 1,
+            "fstat": 23,
+            "getdents64": 14,
+            "newfstatat": 14,
+            "readlink": 72,
+            "readlinkat": 1,
+            "statx": 94
+          },
+          "limits": {
+            "prlimit64": 2
+          },
+          "locks": {
+            "fcntl": 7
+          },
+          "memory": {
+            "brk": 2,
+            "madvise": 145,
+            "mmap": 93,
+            "mprotect": 26,
+            "munmap": 18
+          },
+          "pipes": {
+            "pipe2": 1
+          },
+          "process_and_threads": {
+            "clone3": 6,
+            "execve": 1
+          },
+          "wait": {}
+        },
+        "syscall_summary_sha256": "993061040f4a966bcb18c60556c2e4eff2f7274cecaa1b29890feae22179c3b6",
+        "syscalls": {
+          "access": 1,
+          "arch_prctl": 1,
+          "brk": 2,
+          "clone3": 6,
+          "close": 45,
+          "execve": 1,
+          "fcntl": 7,
+          "fstat": 23,
+          "futex": 509,
+          "getcwd": 2,
+          "getdents64": 14,
+          "getpid": 2,
+          "getrandom": 2,
+          "ioctl": 28,
+          "lseek": 7,
+          "madvise": 145,
+          "mkdir": 4,
+          "mmap": 93,
+          "mprotect": 26,
+          "munmap": 18,
+          "newfstatat": 14,
+          "open": 2,
+          "openat": 86,
+          "pipe2": 1,
+          "poll": 1,
+          "prctl": 4,
+          "pread64": 6,
+          "prlimit64": 2,
+          "read": 47,
+          "readlink": 72,
+          "readlinkat": 1,
+          "rename": 2,
+          "rseq": 7,
+          "rt_sigaction": 11,
+          "rt_sigprocmask": 27,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 9,
+          "sched_yield": 1,
+          "set_robust_list": 7,
+          "set_tid_address": 1,
+          "sigaltstack": 20,
+          "statx": 94,
+          "tgkill": 1,
+          "unlink": 2,
+          "unlinkat": 4,
+          "write": 25
+        },
+        "time_sha256": "46d5ee76397db8c0ecc095d5780aa18e28d39ec212ece5b6d34c774591d5a75b",
+        "wall_seconds": 0.36
+      }
+    ],
+    "panic_abort": [
+      {
+        "detail_trace_sha256": "f222d427fe05d20c863dc3a4a188f32d9b1c410b18fef4618588cf77c11b0368",
+        "kind": "lib",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "peak_rss_kib": 75200,
+        "peak_threads": 7,
+        "scratch_bytes": 15767,
+        "syscall_families": {
+          "file_metadata": {
+            "access": 1,
+            "fstat": 23,
+            "getdents64": 14,
+            "newfstatat": 14,
+            "readlink": 65,
+            "readlinkat": 1,
+            "statx": 35
+          },
+          "limits": {
+            "prlimit64": 2
+          },
+          "locks": {
+            "fcntl": 7
+          },
+          "memory": {
+            "brk": 2,
+            "madvise": 60,
+            "mmap": 88,
+            "mprotect": 26,
+            "munmap": 17
+          },
+          "pipes": {
+            "pipe2": 1
+          },
+          "process_and_threads": {
+            "clone3": 6,
+            "execve": 1
+          },
+          "wait": {}
+        },
+        "syscall_summary_sha256": "816f1d06bfe83988ea36ccfcd14ea35fec7b9c19402a045f077ae6126a2804ed",
+        "syscalls": {
+          "access": 1,
+          "arch_prctl": 1,
+          "brk": 2,
+          "clone3": 6,
+          "close": 34,
+          "execve": 1,
+          "fcntl": 7,
+          "fstat": 23,
+          "futex": 507,
+          "getcwd": 2,
+          "getdents64": 14,
+          "getpid": 2,
+          "getrandom": 2,
+          "ioctl": 7,
+          "lseek": 7,
+          "madvise": 60,
+          "mkdir": 4,
+          "mmap": 88,
+          "mprotect": 26,
+          "munmap": 17,
+          "newfstatat": 14,
+          "open": 2,
+          "openat": 75,
+          "pipe2": 1,
+          "poll": 1,
+          "prctl": 4,
+          "pread64": 6,
+          "prlimit64": 2,
+          "read": 27,
+          "readlink": 65,
+          "readlinkat": 1,
+          "rename": 2,
+          "rseq": 7,
+          "rt_sigaction": 11,
+          "rt_sigprocmask": 27,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 9,
+          "sched_yield": 1,
+          "set_robust_list": 7,
+          "set_tid_address": 1,
+          "sigaltstack": 20,
+          "statx": 35,
+          "tgkill": 1,
+          "unlink": 2,
+          "unlinkat": 4,
+          "write": 10
+        },
+        "time_sha256": "85dd42b30c19ab5f662aa946ace08799a1cd523a4323468202922386c0c754be",
+        "wall_seconds": 0.06
+      }
+    ],
+    "panic_unwind": [
+      {
+        "detail_trace_sha256": "f44a714e1c943264b2155eaa528f8887748737890247567610531a5b16a2d087",
+        "kind": "lib",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "peak_rss_kib": 93440,
+        "peak_threads": 7,
+        "scratch_bytes": 33088,
+        "syscall_families": {
+          "file_metadata": {
+            "access": 1,
+            "fstat": 23,
+            "getdents64": 14,
+            "newfstatat": 14,
+            "readlink": 145,
+            "readlinkat": 1,
+            "statx": 56
+          },
+          "limits": {
+            "prlimit64": 2
+          },
+          "locks": {
+            "fcntl": 7
+          },
+          "memory": {
+            "brk": 2,
+            "madvise": 70,
+            "mmap": 93,
+            "mprotect": 26,
+            "munmap": 22
+          },
+          "pipes": {
+            "pipe2": 1
+          },
+          "process_and_threads": {
+            "clone3": 6,
+            "execve": 1
+          },
+          "wait": {}
+        },
+        "syscall_summary_sha256": "ce56cb377a97dd5f0cb53bd2057201983adac92f2991fa4eca4b80b027345fd6",
+        "syscalls": {
+          "access": 1,
+          "arch_prctl": 1,
+          "brk": 2,
+          "clone3": 6,
+          "close": 40,
+          "execve": 1,
+          "fcntl": 7,
+          "fstat": 23,
+          "futex": 506,
+          "getcwd": 2,
+          "getdents64": 14,
+          "getpid": 2,
+          "getrandom": 2,
+          "ioctl": 8,
+          "lseek": 7,
+          "madvise": 70,
+          "mkdir": 4,
+          "mmap": 93,
+          "mprotect": 26,
+          "munmap": 22,
+          "newfstatat": 14,
+          "open": 2,
+          "openat": 81,
+          "pipe2": 1,
+          "poll": 1,
+          "prctl": 4,
+          "pread64": 6,
+          "prlimit64": 2,
+          "read": 29,
+          "readlink": 145,
+          "readlinkat": 1,
+          "rename": 2,
+          "rseq": 7,
+          "rt_sigaction": 11,
+          "rt_sigprocmask": 27,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 9,
+          "sched_yield": 1,
+          "set_robust_list": 7,
+          "set_tid_address": 1,
+          "sigaltstack": 20,
+          "statx": 56,
+          "tgkill": 1,
+          "unlink": 2,
+          "unlinkat": 4,
+          "write": 12
+        },
+        "time_sha256": "1bce3c6ba8db48471e48d06df6c2f0b3b42fc4e7e3d2be392ef625cc2e9d86fd",
+        "wall_seconds": 0.09
+      }
+    ],
+    "proc_macro": [
+      {
+        "detail_trace_sha256": "bd49af9f77eab9037b806b9feb947e1e9809fc03cf888a66182988263ba3414c",
+        "kind": "lib",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "peak_rss_kib": 244976,
+        "peak_threads": 7,
+        "scratch_bytes": 4613487,
+        "syscall_families": {
+          "file_metadata": {
+            "access": 1,
+            "fstat": 23,
+            "getdents64": 14,
+            "newfstatat": 14,
+            "readlink": 265,
+            "readlinkat": 1,
+            "statx": 155
+          },
+          "limits": {
+            "prlimit64": 2
+          },
+          "locks": {
+            "fcntl": 7
+          },
+          "memory": {
+            "brk": 2,
+            "madvise": 459,
+            "mmap": 117,
+            "mprotect": 26,
+            "munmap": 29
+          },
+          "pipes": {
+            "pipe2": 1
+          },
+          "process_and_threads": {
+            "clone3": 6,
+            "execve": 1
+          },
+          "wait": {}
+        },
+        "syscall_summary_sha256": "02795d173b632a145952472e0efd1b89d1512b1af2ca4a5f9f46b93dc90b5242",
+        "syscalls": {
+          "access": 1,
+          "arch_prctl": 1,
+          "brk": 2,
+          "clone3": 6,
+          "close": 61,
+          "execve": 1,
+          "fcntl": 7,
+          "fstat": 23,
+          "futex": 509,
+          "getcwd": 2,
+          "getdents64": 14,
+          "getpid": 2,
+          "getrandom": 2,
+          "ioctl": 9,
+          "lseek": 7,
+          "madvise": 459,
+          "mkdir": 4,
+          "mmap": 117,
+          "mprotect": 26,
+          "munmap": 29,
+          "newfstatat": 14,
+          "open": 2,
+          "openat": 102,
+          "pipe2": 1,
+          "poll": 1,
+          "prctl": 4,
+          "pread64": 6,
+          "prlimit64": 2,
+          "read": 57,
+          "readlink": 265,
+          "readlinkat": 1,
+          "rename": 2,
+          "rseq": 7,
+          "rt_sigaction": 11,
+          "rt_sigprocmask": 27,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 9,
+          "sched_yield": 1,
+          "set_robust_list": 7,
+          "set_tid_address": 1,
+          "sigaltstack": 20,
+          "statx": 155,
+          "tgkill": 1,
+          "unlink": 2,
+          "unlinkat": 4,
+          "write": 35
+        },
+        "time_sha256": "2fcf7fad61e133b4255e41b30b3910112c2c33b5646a34f9e2469c907b420e26",
+        "wall_seconds": 5.84
+      }
+    ],
+    "rustc_demangle": [
+      {
+        "detail_trace_sha256": "028d9a4558241034bd17a3e08ebf772cc9be2bfdf5a80755de674ffed5314feb",
+        "kind": "lib",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "peak_rss_kib": 113912,
+        "peak_threads": 7,
+        "scratch_bytes": 477559,
+        "syscall_families": {
+          "file_metadata": {
+            "access": 1,
+            "fstat": 23,
+            "getdents64": 14,
+            "newfstatat": 14,
+            "readlink": 81,
+            "readlinkat": 1,
+            "statx": 46
+          },
+          "limits": {
+            "prlimit64": 2
+          },
+          "locks": {
+            "fcntl": 7
+          },
+          "memory": {
+            "brk": 2,
+            "madvise": 153,
+            "mmap": 94,
+            "mprotect": 26,
+            "munmap": 18
+          },
+          "pipes": {
+            "pipe2": 1
+          },
+          "process_and_threads": {
+            "clone3": 6,
+            "execve": 1
+          },
+          "wait": {}
+        },
+        "syscall_summary_sha256": "1854fa2e4fc977e1550c734f5880f4122cb29e2b25e64c3e0f2d7aad02a6eff1",
+        "syscalls": {
+          "access": 1,
+          "arch_prctl": 1,
+          "brk": 2,
+          "clone3": 6,
+          "close": 38,
+          "execve": 1,
+          "fcntl": 7,
+          "fstat": 23,
+          "futex": 509,
+          "getcwd": 2,
+          "getdents64": 14,
+          "getpid": 2,
+          "getrandom": 2,
+          "ioctl": 9,
+          "lseek": 7,
+          "madvise": 153,
+          "mkdir": 4,
+          "mmap": 94,
+          "mprotect": 26,
+          "munmap": 18,
+          "newfstatat": 14,
+          "open": 2,
+          "openat": 79,
+          "pipe2": 1,
+          "poll": 1,
+          "prctl": 4,
+          "pread64": 6,
+          "prlimit64": 2,
+          "read": 33,
+          "readlink": 81,
+          "readlinkat": 1,
+          "rename": 2,
+          "rseq": 7,
+          "rt_sigaction": 11,
+          "rt_sigprocmask": 27,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 9,
+          "sched_yield": 1,
+          "set_robust_list": 7,
+          "set_tid_address": 1,
+          "sigaltstack": 20,
+          "statx": 46,
+          "tgkill": 1,
+          "unlink": 2,
+          "unlinkat": 4,
+          "write": 14
+        },
+        "time_sha256": "3fb7a943b00771a05eb823262e14e454445b8eb3c22eb2a7b6ef208912bb0d48",
+        "wall_seconds": 1.07
+      }
+    ],
+    "rustc_literal_escaper": [
+      {
+        "detail_trace_sha256": "d4808ecaa6c97b1c2256c3218ea19cb6cb0faeb27d106f673085195bca797d15",
+        "kind": "lib",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "peak_rss_kib": 102720,
+        "peak_threads": 7,
+        "scratch_bytes": 215819,
+        "syscall_families": {
+          "file_metadata": {
+            "access": 1,
+            "fstat": 23,
+            "getdents64": 14,
+            "newfstatat": 14,
+            "readlink": 241,
+            "readlinkat": 1,
+            "statx": 86
+          },
+          "limits": {
+            "prlimit64": 2
+          },
+          "locks": {
+            "fcntl": 7
+          },
+          "memory": {
+            "brk": 2,
+            "madvise": 98,
+            "mmap": 105,
+            "mprotect": 26,
+            "munmap": 32
+          },
+          "pipes": {
+            "pipe2": 1
+          },
+          "process_and_threads": {
+            "clone3": 6,
+            "execve": 1
+          },
+          "wait": {}
+        },
+        "syscall_summary_sha256": "907674d6e2d7e5d3c932e189b8384cb0575078692b32430d07d688219245c1b8",
+        "syscalls": {
+          "access": 1,
+          "arch_prctl": 1,
+          "brk": 2,
+          "clone3": 6,
+          "close": 49,
+          "execve": 1,
+          "fcntl": 7,
+          "fstat": 23,
+          "futex": 506,
+          "getcwd": 2,
+          "getdents64": 14,
+          "getpid": 2,
+          "getrandom": 2,
+          "ioctl": 8,
+          "lseek": 7,
+          "madvise": 98,
+          "mkdir": 4,
+          "mmap": 105,
+          "mprotect": 26,
+          "munmap": 32,
+          "newfstatat": 14,
+          "open": 2,
+          "openat": 90,
+          "pipe2": 1,
+          "poll": 1,
+          "prctl": 4,
+          "pread64": 6,
+          "prlimit64": 2,
+          "read": 27,
+          "readlink": 241,
+          "readlinkat": 1,
+          "rename": 2,
+          "rseq": 7,
+          "rt_sigaction": 11,
+          "rt_sigprocmask": 27,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 9,
+          "sched_yield": 1,
+          "set_robust_list": 7,
+          "set_tid_address": 1,
+          "sigaltstack": 20,
+          "statx": 86,
+          "tgkill": 1,
+          "unlink": 2,
+          "unlinkat": 4,
+          "write": 13
+        },
+        "time_sha256": "5f77a723e96ff9a87219221ba14ab0c2136a156d2ee0b368bbf468b30c2d3e59",
+        "wall_seconds": 0.16
+      }
+    ],
+    "rustc_std_workspace_alloc": [
+      {
+        "detail_trace_sha256": "f03400ab67a046d61abefdd0e6ffe6e9d0deb39de1bca56812fcf59d7c56ac43",
+        "kind": "lib",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "peak_rss_kib": 49280,
+        "peak_threads": 7,
+        "scratch_bytes": 10329,
+        "syscall_families": {
+          "file_metadata": {
+            "access": 1,
+            "fstat": 23,
+            "getdents64": 14,
+            "newfstatat": 14,
+            "readlink": 88,
+            "readlinkat": 1,
+            "statx": 36
+          },
+          "limits": {
+            "prlimit64": 2
+          },
+          "locks": {
+            "fcntl": 7
+          },
+          "memory": {
+            "brk": 2,
+            "madvise": 53,
+            "mmap": 87,
+            "mprotect": 26,
+            "munmap": 18
+          },
+          "pipes": {
+            "pipe2": 1
+          },
+          "process_and_threads": {
+            "clone3": 6,
+            "execve": 1
+          },
+          "wait": {}
+        },
+        "syscall_summary_sha256": "676529a97c9195ae4eefca8eb278acfd90bf3f199490dd6a0ae30870b5701876",
+        "syscalls": {
+          "access": 1,
+          "arch_prctl": 1,
+          "brk": 2,
+          "clone3": 6,
+          "close": 35,
+          "execve": 1,
+          "fcntl": 7,
+          "fstat": 23,
+          "futex": 512,
+          "getcwd": 2,
+          "getdents64": 14,
+          "getpid": 2,
+          "getrandom": 2,
+          "ioctl": 7,
+          "lseek": 7,
+          "madvise": 53,
+          "mkdir": 4,
+          "mmap": 87,
+          "mprotect": 26,
+          "munmap": 18,
+          "newfstatat": 14,
+          "open": 2,
+          "openat": 76,
+          "pipe2": 1,
+          "poll": 1,
+          "prctl": 4,
+          "pread64": 6,
+          "prlimit64": 2,
+          "read": 27,
+          "readlink": 88,
+          "readlinkat": 1,
+          "rename": 2,
+          "rseq": 7,
+          "rt_sigaction": 11,
+          "rt_sigprocmask": 27,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 9,
+          "sched_yield": 1,
+          "set_robust_list": 7,
+          "set_tid_address": 1,
+          "sigaltstack": 20,
+          "statx": 36,
+          "tgkill": 1,
+          "unlink": 2,
+          "unlinkat": 4,
+          "write": 10
+        },
+        "time_sha256": "9bfaa68ad8276a5721499ff9cb11c4a560ca0d80dc417af25f7ac92463f66176",
+        "wall_seconds": 0.05
+      }
+    ],
+    "rustc_std_workspace_core": [
+      {
+        "detail_trace_sha256": "4576d905b8f16332ebf89845b6a979c8897d69b1d6e726473e6cb8054c077428",
+        "kind": "lib",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "peak_rss_kib": 49600,
+        "peak_threads": 7,
+        "scratch_bytes": 20526,
+        "syscall_families": {
+          "file_metadata": {
+            "access": 1,
+            "fstat": 23,
+            "getdents64": 14,
+            "newfstatat": 14,
+            "readlink": 64,
+            "readlinkat": 1,
+            "statx": 35
+          },
+          "limits": {
+            "prlimit64": 2
+          },
+          "locks": {
+            "fcntl": 7
+          },
+          "memory": {
+            "brk": 2,
+            "madvise": 55,
+            "mmap": 86,
+            "mprotect": 26,
+            "munmap": 17
+          },
+          "pipes": {
+            "pipe2": 1
+          },
+          "process_and_threads": {
+            "clone3": 6,
+            "execve": 1
+          },
+          "wait": {}
+        },
+        "syscall_summary_sha256": "a2ae8d3f59f4221bbc251ecb2566629a1551a3cfeb7347ac86922a250b3c16ff",
+        "syscalls": {
+          "access": 1,
+          "arch_prctl": 1,
+          "brk": 2,
+          "clone3": 6,
+          "close": 34,
+          "execve": 1,
+          "fcntl": 7,
+          "fstat": 23,
+          "futex": 512,
+          "getcwd": 2,
+          "getdents64": 14,
+          "getpid": 2,
+          "getrandom": 2,
+          "ioctl": 7,
+          "lseek": 7,
+          "madvise": 55,
+          "mkdir": 4,
+          "mmap": 86,
+          "mprotect": 26,
+          "munmap": 17,
+          "newfstatat": 14,
+          "open": 2,
+          "openat": 75,
+          "pipe2": 1,
+          "poll": 1,
+          "prctl": 4,
+          "pread64": 6,
+          "prlimit64": 2,
+          "read": 27,
+          "readlink": 64,
+          "readlinkat": 1,
+          "rename": 2,
+          "rseq": 7,
+          "rt_sigaction": 11,
+          "rt_sigprocmask": 27,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 9,
+          "sched_yield": 1,
+          "set_robust_list": 7,
+          "set_tid_address": 1,
+          "sigaltstack": 20,
+          "statx": 35,
+          "tgkill": 1,
+          "unlink": 2,
+          "unlinkat": 4,
+          "write": 10
+        },
+        "time_sha256": "d2f8db932e9e23ed171b7a88f64a76281236b85bc04f178d0cdf6313e6434357",
+        "wall_seconds": 0.08
+      }
+    ],
+    "rustc_std_workspace_std": [
+      {
+        "detail_trace_sha256": "3341756930002a46d5ff841bfa31237a489ece5cfb99bb7be65d6c2c55c30a54",
+        "kind": "lib",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "peak_rss_kib": 55680,
+        "peak_threads": 7,
+        "scratch_bytes": 23395,
+        "syscall_families": {
+          "file_metadata": {
+            "access": 1,
+            "fstat": 23,
+            "getdents64": 14,
+            "newfstatat": 14,
+            "readlink": 232,
+            "readlinkat": 1,
+            "statx": 63
+          },
+          "limits": {
+            "prlimit64": 2
+          },
+          "locks": {
+            "fcntl": 7
+          },
+          "memory": {
+            "brk": 2,
+            "madvise": 51,
+            "mmap": 96,
+            "mprotect": 26,
+            "munmap": 27
+          },
+          "pipes": {
+            "pipe2": 1
+          },
+          "process_and_threads": {
+            "clone3": 6,
+            "execve": 1
+          },
+          "wait": {}
+        },
+        "syscall_summary_sha256": "5acf451f3d9af504f3cfc604537947f75a6ab8b9b1df6a0b68816309da14ec29",
+        "syscalls": {
+          "access": 1,
+          "arch_prctl": 1,
+          "brk": 2,
+          "clone3": 6,
+          "close": 44,
+          "execve": 1,
+          "fcntl": 7,
+          "fstat": 23,
+          "futex": 510,
+          "getcwd": 2,
+          "getdents64": 14,
+          "getpid": 2,
+          "getrandom": 2,
+          "ioctl": 7,
+          "lseek": 7,
+          "madvise": 51,
+          "mkdir": 4,
+          "mmap": 96,
+          "mprotect": 26,
+          "munmap": 27,
+          "newfstatat": 14,
+          "open": 2,
+          "openat": 85,
+          "pipe2": 1,
+          "poll": 1,
+          "prctl": 4,
+          "pread64": 6,
+          "prlimit64": 2,
+          "read": 27,
+          "readlink": 232,
+          "readlinkat": 1,
+          "rename": 2,
+          "rseq": 7,
+          "rt_sigaction": 11,
+          "rt_sigprocmask": 27,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 9,
+          "sched_yield": 1,
+          "set_robust_list": 7,
+          "set_tid_address": 1,
+          "sigaltstack": 20,
+          "statx": 63,
+          "tgkill": 1,
+          "unlink": 2,
+          "unlinkat": 4,
+          "write": 11
+        },
+        "time_sha256": "719345f4de2e4a70561a5dacad2764141a14ec6a0d001eff8720f2d8addcdf01",
+        "wall_seconds": 0.08
+      }
+    ],
+    "std": [
+      {
+        "detail_trace_sha256": "29f6d64f4b1b60655f05a951b1f1167cdd3bf71e79715161de384c1b10a8c588",
+        "kind": "rlib",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "peak_rss_kib": 337848,
+        "peak_threads": 7,
+        "scratch_bytes": 23890658,
+        "syscall_families": {
+          "file_metadata": {
+            "access": 1,
+            "fstat": 23,
+            "getdents64": 14,
+            "newfstatat": 14,
+            "readlink": 193,
+            "readlinkat": 1,
+            "statx": 1052
+          },
+          "limits": {
+            "prlimit64": 2
+          },
+          "locks": {
+            "fcntl": 7
+          },
+          "memory": {
+            "brk": 2,
+            "madvise": 1930,
+            "mmap": 117,
+            "mprotect": 26,
+            "munmap": 26
+          },
+          "pipes": {
+            "pipe2": 1
+          },
+          "process_and_threads": {
+            "clone3": 6,
+            "execve": 1
+          },
+          "wait": {}
+        },
+        "syscall_summary_sha256": "8a492b1022c86cabb1edf346d3a5b594eef0a309ca55159d047aecd8fd3a8b9b",
+        "syscalls": {
+          "access": 1,
+          "arch_prctl": 1,
+          "brk": 2,
+          "clone3": 6,
+          "close": 253,
+          "execve": 1,
+          "fcntl": 7,
+          "fstat": 23,
+          "futex": 520,
+          "getcwd": 2,
+          "getdents64": 14,
+          "getpid": 2,
+          "getrandom": 2,
+          "ioctl": 18,
+          "lseek": 7,
+          "madvise": 1930,
+          "mkdir": 4,
+          "mmap": 117,
+          "mprotect": 26,
+          "munmap": 26,
+          "newfstatat": 14,
+          "open": 2,
+          "openat": 294,
+          "pipe2": 1,
+          "poll": 1,
+          "prctl": 4,
+          "pread64": 6,
+          "prlimit64": 2,
+          "read": 447,
+          "readlink": 193,
+          "readlinkat": 1,
+          "rename": 2,
+          "rseq": 7,
+          "rt_sigaction": 11,
+          "rt_sigprocmask": 27,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 9,
+          "sched_yield": 1,
+          "set_robust_list": 7,
+          "set_tid_address": 1,
+          "sigaltstack": 20,
+          "statx": 1052,
+          "tgkill": 1,
+          "unlink": 2,
+          "unlinkat": 4,
+          "write": 131
+        },
+        "time_sha256": "3ca4df110b72c042d1856fac06cf3aca0072bc56a33fa3e23fefb777b2249f8f",
+        "wall_seconds": 8.73
+      }
+    ],
+    "std_detect": [
+      {
+        "detail_trace_sha256": "201650389a5f0d9a66121a1e29fa7c00ea45964b662022f9107e192e880a80d6",
+        "kind": "lib",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "peak_rss_kib": 108712,
+        "peak_threads": 7,
+        "scratch_bytes": 1550590,
+        "syscall_families": {
+          "file_metadata": {
+            "access": 1,
+            "fstat": 23,
+            "getdents64": 14,
+            "newfstatat": 14,
+            "readlink": 107,
+            "readlinkat": 1,
+            "statx": 166
+          },
+          "limits": {
+            "prlimit64": 2
+          },
+          "locks": {
+            "fcntl": 7
+          },
+          "memory": {
+            "brk": 2,
+            "madvise": 215,
+            "mmap": 100,
+            "mprotect": 26,
+            "munmap": 26
+          },
+          "pipes": {
+            "pipe2": 1
+          },
+          "process_and_threads": {
+            "clone3": 6,
+            "execve": 1
+          },
+          "wait": {}
+        },
+        "syscall_summary_sha256": "520ca9fd90d1b3f9b42811d8c14ff5b3711d00514600eaeefabf2ee060b7f191",
+        "syscalls": {
+          "access": 1,
+          "arch_prctl": 1,
+          "brk": 2,
+          "clone3": 6,
+          "close": 59,
+          "execve": 1,
+          "fcntl": 7,
+          "fstat": 23,
+          "futex": 506,
+          "getcwd": 2,
+          "getdents64": 14,
+          "getpid": 2,
+          "getrandom": 2,
+          "ioctl": 10,
+          "lseek": 7,
+          "madvise": 215,
+          "mkdir": 4,
+          "mmap": 100,
+          "mprotect": 26,
+          "munmap": 26,
+          "newfstatat": 14,
+          "open": 2,
+          "openat": 100,
+          "pipe2": 1,
+          "poll": 1,
+          "prctl": 4,
+          "pread64": 6,
+          "prlimit64": 2,
+          "read": 59,
+          "readlink": 107,
+          "readlinkat": 1,
+          "rename": 2,
+          "rseq": 7,
+          "rt_sigaction": 11,
+          "rt_sigprocmask": 27,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 9,
+          "sched_yield": 1,
+          "set_robust_list": 7,
+          "set_tid_address": 1,
+          "sigaltstack": 20,
+          "statx": 166,
+          "tgkill": 1,
+          "unlink": 2,
+          "unlinkat": 4,
+          "write": 20
+        },
+        "time_sha256": "5f2cf270f7079dce5fffe29a8f5cace405740b0d3e9a43bd9b9b41235227f074",
+        "wall_seconds": 0.22
+      }
+    ],
+    "unwind": [
+      {
+        "detail_trace_sha256": "a886af6a5ad81df03652be9487aba80e42097aa01dc0d02990d8d96f6c70c944",
+        "kind": "lib",
+        "largest_anonymous_mapping_bytes": 165164496,
+        "largest_file_mapping_bytes": 163067344,
+        "peak_rss_kib": 71040,
+        "peak_threads": 7,
+        "scratch_bytes": 73229,
+        "syscall_families": {
+          "file_metadata": {
+            "access": 1,
+            "fstat": 23,
+            "getdents64": 14,
+            "newfstatat": 14,
+            "readlink": 113,
+            "readlinkat": 1,
+            "statx": 52
+          },
+          "limits": {
+            "prlimit64": 2
+          },
+          "locks": {
+            "fcntl": 7
+          },
+          "memory": {
+            "brk": 2,
+            "madvise": 68,
+            "mmap": 91,
+            "mprotect": 26,
+            "munmap": 20
+          },
+          "pipes": {
+            "pipe2": 1
+          },
+          "process_and_threads": {
+            "clone3": 6,
+            "execve": 1
+          },
+          "wait": {}
+        },
+        "syscall_summary_sha256": "dc92349de93d45fd4775c9a976bb68bb739061eece7395afb24bba6765602757",
+        "syscalls": {
+          "access": 1,
+          "arch_prctl": 1,
+          "brk": 2,
+          "clone3": 6,
+          "close": 38,
+          "execve": 1,
+          "fcntl": 7,
+          "fstat": 23,
+          "futex": 506,
+          "getcwd": 2,
+          "getdents64": 14,
+          "getpid": 2,
+          "getrandom": 2,
+          "ioctl": 9,
+          "lseek": 7,
+          "madvise": 68,
+          "mkdir": 4,
+          "mmap": 91,
+          "mprotect": 26,
+          "munmap": 20,
+          "newfstatat": 14,
+          "open": 2,
+          "openat": 79,
+          "pipe2": 1,
+          "poll": 1,
+          "prctl": 4,
+          "pread64": 6,
+          "prlimit64": 2,
+          "read": 29,
+          "readlink": 113,
+          "readlinkat": 1,
+          "rename": 2,
+          "rseq": 7,
+          "rt_sigaction": 11,
+          "rt_sigprocmask": 27,
+          "rt_sigreturn": 1,
+          "sched_getaffinity": 9,
+          "sched_yield": 1,
+          "set_robust_list": 7,
+          "set_tid_address": 1,
+          "sigaltstack": 20,
+          "statx": 52,
+          "tgkill": 1,
+          "unlink": 2,
+          "unlinkat": 4,
+          "write": 12
+        },
+        "time_sha256": "43eb8d3874f7191e6c5e5adca9a4597a6b51cc2a7e7938a0ee80a99e98f05b14",
+        "wall_seconds": 0.07
+      }
+    ]
+  },
+  "target": "x86_64-breenix",
+  "time": "2026-11-24T06:17:00.605743+00:00",
+  "toolchain": "nightly-2025-06-24",
+  "workspace_commit": "209718bc56d3d994293c813486d62d86e9fbeea5"
+}
