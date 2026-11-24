@@ -2706,14 +2706,19 @@ class BuildPolicyTest(unittest.TestCase):
 
 
 class BuildSlotTest(unittest.TestCase):
-    def build_inner(self, suite):
+    KERNEL_ASSEMBLY = 'toolchain/kernel-assembly'
+    ASM_SOURCES = ('src/syscall/entry.asm', 'src/interrupts/timer_entry.asm',
+                   'src/interrupts/breakpoint_entry.asm', 'src/arch_impl/x86_64/ap_trampoline.asm')
+    ASM_OBJECTS = ('syscall_entry.o', 'timer_entry.o', 'breakpoint_entry.o', 'ap_trampoline.o')
+
+    def build_inner(self, suite, milestone=None, *, bad_kernel_digest=False):
         """Run metal-build's inner build with every subprocess faked; returns the helper and build calls."""
         build = load_script('metal-build')
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             args = SimpleNamespace(id='20261017T000012Z-metal', root=str(root), repo=str(root / 'repo'), sha='a' * 40,
                                    rust_fork=str(root / 'rust'), cache=str(root / 'cache'), stub=str(root / 'stub'),
-                                   guard_target='x86-metal', features='', suite=suite)
+                                   guard_target='x86-metal', features='', suite=suite, milestone=milestone)
             clone, out, tmp = build.paths(args)
             out.mkdir(parents=True)
             image = clone / 'target/release/build/breenix-0/out/breenix-uefi.img'
@@ -2727,12 +2732,61 @@ class BuildSlotTest(unittest.TestCase):
             oracle = clone / 'docs/gui/provenance/gt710-contexts.json'
             oracle.parent.mkdir(parents=True, exist_ok=True)
             oracle.write_text('context oracle fixture')
+            kernel_out = clone / 'target/x86_64-unknown-none/release/build/kernel-current/out'
+            elf = kernel_out.parents[2] / 'deps/kernel-current'
+            assembly = {'cargo_package': 'bas', 'build_host': 'x86_64-unknown-linux-gnu',
+                        'rustc': 'rustc (fixture)'}
+            if milestone == self.KERNEL_ASSEMBLY:
+                inputs = {name: clone / 'kernel' / name for name in self.ASM_SOURCES}
+                inputs.update({name: kernel_out / name for name in self.ASM_OBJECTS})
+                inputs.update(bas_sha256=kernel_out / 'bas', kernel_elf_sha256=elf)
+                for key, path in inputs.items():
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(key.encode())
+                    assembly[key] = build.sha256(path)
+                if bad_kernel_digest:
+                    assembly['kernel_elf_sha256'] = '0' * 64
+                (kernel_out / 'kernel-assembly.record').write_text(
+                    ''.join(f'{key}={value}\n' for key, value in assembly.items()))
+                # A newer unrelated image and receipt must not become the selected payload.
+                stale = image.parents[2] / 'breenix-stale/out/breenix-uefi.img'
+                stale.parent.mkdir(parents=True)
+                stale.write_bytes(b'stale')
             order = []
             def run(command, **options):
-                order.append(command[2:])
+                if str(clone / 'scripts/create_ext2_disk.sh') == command[0]:
+                    order.append(command)
+                    Path(command[command.index('--output') + 1]).write_bytes(b'toolchain fixture')
+                else:
+                    order.append(command[2:])
                 return SimpleNamespace(returncode=0, stdout=str(root / 'cargo-home') + '\n')
             def call(command, **options):
                 order.append(command)
+                if command[:4] == ['cargo', 'build', '--release', '--bin'] and command[4] == 'qemu-uefi':
+                    options_env = options.get('env', build.os.environ)
+                    order.append(('assembler', options_env.get('BREENIX_KERNEL_ASSEMBLER')))
+                    if '--message-format=json-render-diagnostics' in command:
+                        pair = [('kernel', clone / 'kernel/Cargo.toml', elf, kernel_out),
+                                ('qemu-uefi', clone / 'Cargo.toml', clone / 'target/release/qemu-uefi', image.parent)]
+                        for name, manifest, executable, out_dir in pair:
+                            package = str(manifest.parent)
+                            for message in (
+                                dict(reason='compiler-artifact', package_id=package,
+                                     target={'name': name, 'kind': ['bin']}, manifest_path=str(manifest),
+                                     executable=str(executable)),
+                                dict(reason='build-script-executed', package_id=package, out_dir=str(out_dir)),
+                            ):
+                                print(json.dumps(message), file=options['stdout'])
+                if command[0] == str(clone / 'scripts/build-toolchain.sh'):
+                    bundle = Path(command[command.index('--output') + 1])
+                    bundle.mkdir()
+                    record = {'commit': args.sha}
+                    if '--kernel-assembly-record' in command:
+                        path = Path(command[command.index('--kernel-assembly-record') + 1])
+                        record['kernelAssembly'] = dict(line.split('=', 1) for line in path.read_text().splitlines())
+                    if any(isinstance(call, list) and '--toolchain-companions' in call for call in order):
+                        (bundle / 'toolchain-scratch.img').write_bytes(b'BusyBox scratch fixture')
+                    (bundle / 'build.json').write_text(json.dumps(record))
                 if command[1:2] == [str(clone / 'scripts/sdk-suite.py')]:
                     Path(command[-1]).write_bytes(b'staged')
                     work = options['env']['TMPDIR']
@@ -2747,12 +2801,16 @@ class BuildSlotTest(unittest.TestCase):
             self.assertEqual((out / 'definition/docs/gui/provenance/gt710-contexts.json').read_text(), 'context oracle fixture')
             built['builtRoot'] = (clone / 'testdata/ext2.img').read_bytes()
             built['clone'] = str(clone)
+            if milestone == self.KERNEL_ASSEMBLY:
+                built['expectedKernelAssembly'] = assembly
+                scratch = out / 'toolchain-scratch.img'
+                built['scratch'] = scratch.read_bytes() if scratch.is_file() else None
             return build, clone, tmp, order, (out / 'ext2.img').read_bytes(), built
 
     def test_one_metal_build_lease_covers_a_single_userspace_build_and_the_kernel(self):
         build, clone, tmp, order, root, built = self.build_inner('')
         helper = [call for call in order if isinstance(call, list) and call[:1] not in ([sys.executable], ['cargo'])]
-        calls = [call for call in order if call not in helper]
+        calls = [call for call in order if isinstance(call, list) and call not in helper]
         self.assertEqual(helper, [['cargo-home', str(Path.home() / '.cargo'), str(clone / 'target')],
                                   ['acquire', 'metal-build'], ['release', 'metal-build']])
         # The deployed helpers beside metal-build, not the commit's copies.
@@ -2761,6 +2819,45 @@ class BuildSlotTest(unittest.TestCase):
         self.assertEqual(calls[1][:3], ['cargo', 'build', '--release'])
         self.assertEqual(len(calls), 3)
         self.assertEqual((root, built['suite']), (b'bytes', None))
+
+    def test_kernel_assembly_selection_passed_explicitly(self):
+        with patch.dict(os.environ, BREENIX_KERNEL_ASSEMBLER='nasm'):
+            _, clone, _, order, _, built = self.build_inner('toolchain,processes,signals,time', self.KERNEL_ASSEMBLY)
+            self.assertEqual(os.environ['BREENIX_KERNEL_ASSEMBLER'], 'nasm')
+        self.assertIn(('assembler', 'bas'), order)
+        for script in ('build-toolchain.sh', 'create_ext2_disk.sh'):
+            command = next(call for call in order if isinstance(call, list)
+                           and str(clone / 'scripts' / script) in call)
+            self.assertEqual(command[command.index('--milestone') + 1], self.KERNEL_ASSEMBLY)
+        self.assertEqual(built['uefi']['sha256'], hashlib.sha256(b'bytes').hexdigest())
+
+    def test_kernel_assembly_record_in_build_json(self):
+        _, _, _, _, _, built = self.build_inner('toolchain,processes,signals,time', self.KERNEL_ASSEMBLY)
+        self.assertEqual(built.get('kernelAssembly'), built['expectedKernelAssembly'])
+        self.assertEqual(built.get('kernelAssembly'), built['toolchain'].get('kernelAssembly'))
+        with self.assertRaisesRegex(ValueError, 'kernel ELF'):
+            self.build_inner('toolchain', self.KERNEL_ASSEMBLY, bad_kernel_digest=True)
+
+    def test_kernel_assembly_sequence_has_busybox_scratch_and_time_to_run(self):
+        suite = 'toolchain,processes,signals,time'
+        _, _, _, _, _, built = self.build_inner(suite, self.KERNEL_ASSEMBLY)
+        self.assertEqual(built['scratch'], b'BusyBox scratch fixture')
+        root = TOOLS.parents[1]
+        allowances = (root / 'libs/libbreenix/src/suite.rs').read_text()
+        default = int(re.search(r'DEFAULT_CASE_LIMIT_MS: u64 = ([\d_]+);', allowances)[1])
+        named = {(name, case): int(ms) for name, case, ms in
+                 re.findall(r'\("([^"]+)", "([^"]+)", ([\d_]+)\)', allowances)}
+        args = SimpleNamespace(mode='suite', suite=suite, milestone=self.KERNEL_ASSEMBLY, payload='image')
+        budget = 0
+        for name in boot.suites(args):
+            manifest = json.loads((root / f'docs/suites/{name}.json').read_text())
+            limits = [named.get((name, f'{category["id"]}/{case["id"]}'), default)
+                      for category in manifest['categories'] for case in category['cases']]
+            self.assertLessEqual(max(limits), 60000, name)
+            minimum = (sum(limits) * 5 + 3999) // 4000
+            self.assertGreaterEqual(boot.mode_deadline_seconds(args, name), minimum, name)
+            budget += minimum
+        self.assertGreaterEqual(boot.ceiling_seconds(args), budget)
 
     def test_the_sdk_suite_stages_its_root_under_the_build_lease(self):
         _, clone, _, order, root, built = self.build_inner('sdk')

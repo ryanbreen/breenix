@@ -202,6 +202,58 @@ class ToolchainBundleTest(unittest.TestCase):
             ["rustup", "which", "--toolchain", CHANNEL, "rustc"], text=True,
         ).strip())
 
+    def every_kernel_asm_input_is_in_the_sealed_bundle(self):
+        tree = self.bundle / "root"
+        prefix = Path("usr/share/breenix/toolchain/kernel-asm")
+        bas = self.dev / "bin/bas"
+        sources = ("src/syscall/entry.asm", "src/interrupts/timer_entry.asm",
+                   "src/interrupts/breakpoint_entry.asm", "src/arch_impl/x86_64/ap_trampoline.asm")
+        objects = ("syscall_entry.o", "timer_entry.o", "breakpoint_entry.o", "ap_trampoline.o")
+        receipt = prefix / "kernel-assembly.record"
+        privileged = ("privileged.s", "privileged.hex")
+        expected = {prefix / name for name in (*sources, *objects, *privileged)} | {receipt}
+        self.assertEqual({path.relative_to(tree) for path in (tree / prefix).rglob("*") if path.is_file()},
+                         expected)
+        fields = dict(line.split("=", 1) for line in (tree / receipt).read_text().splitlines())
+        self.assertEqual(fields, self.record["kernelAssembly"])
+        self.assertEqual(self.record, json.loads((self.dev / "build.json").read_text()))
+        manifest = dict(line.split("  ", 1)[::-1] for line in
+                        (self.dev / "manifest.sha256").read_text().splitlines())
+        self.assertEqual(digest(self.dev / "manifest.sha256"), self.record["manifestSha256"])
+        self.assertEqual(digest(bas), self.record["tools"]["bas"]["sha256"])
+        self.assertTrue(os.access(bas, os.X_OK))
+        for name in (*sources, *objects):
+            self.assertEqual(digest(tree / prefix / name), fields[name], name)
+        for name in sources:
+            self.assertEqual((tree / prefix / name).read_bytes(), (ROOT / "kernel" / name).read_bytes())
+        for name in privileged:
+            self.assertEqual((tree / prefix / name).read_bytes(),
+                             (WORKSPACE / "corpus/kernel-asm" / name).read_bytes())
+        for path in expected | {bas.relative_to(tree)}:
+            self.assertEqual(manifest[str(path)], digest(tree / path), path)
+
+        # Exercise the real ext2 writer, including its byte and mode readback.
+        with tempfile.TemporaryDirectory() as temporary:
+            script = ROOT / "scripts/toolchain-image.py"
+            spec = importlib.util.spec_from_file_location("toolchain_image", script)
+            image = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(image)
+            mkfs, = image.require_e2fsprogs("mke2fs")
+            base = Path(temporary) / "seed.img"
+            output = Path(temporary) / "staged.img"
+            subprocess.run([mkfs, "-q", "-F", "-t", "ext2", base, "96M"], check=True)
+            command = [ROOT / "scripts/create_ext2_disk.sh", "--stage-from", base,
+                       "--output", output, "--suite", "toolchain,processes,signals,time",
+                       "--toolchain-bundle", self.bundle]
+            rejected = subprocess.run(command, capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("kernel-assembly", rejected.stderr)
+            self.assertFalse(output.exists())
+            staged = subprocess.run([*command, "--milestone", "toolchain/kernel-assembly"],
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(staged.returncode, 0, staged.stderr)
+            self.assertTrue(output.is_file())
+
     def tools_built_by_rustc(self):
         tools = self.record.get("tools")
         self.assertIsInstance(tools, dict, "bundle build record has no Cargo tool provenance")

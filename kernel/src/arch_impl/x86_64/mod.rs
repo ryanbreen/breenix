@@ -16,6 +16,7 @@
 pub mod acpi;
 pub mod ap_start;
 pub mod apic;
+pub(crate) mod breakpoint;
 #[allow(unused_imports)]
 pub mod constants;
 pub mod cpu;

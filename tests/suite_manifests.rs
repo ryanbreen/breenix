@@ -2148,3 +2148,24 @@ fn toolchain_manifest_registers_busybox_chain() {
     );
     assert_eq!(guest.iter().find(|category| category.entry.id == "make"), Some(make));
 }
+
+#[test]
+fn toolchain_manifest_registers_kernel_asm_cases() {
+    let root = repo_root();
+    let mut errors = Vec::new();
+    let manifest = read_manifest(&root.join("docs/suites/toolchain.json"), &mut errors).unwrap();
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+    let category = manifest.categories.iter().find(|category| category.entry.id == "kernel-asm").unwrap();
+    assert_eq!(category.cases.iter().map(|case| case.id.as_str()).collect::<Vec<_>>(),
+        ["four-objects-match-record", "breakpoint-roundtrip", "privileged-encodings"]);
+}
+
+#[test]
+fn toolchain_runner_registers_kernel_asm_cases() {
+    let root = repo_root();
+    let (_, files) = suite_files(&root, "toolchain").unwrap();
+    let (_, categories) = source_suite_files(&files).unwrap();
+    let category = categories.iter().find(|category| category.entry.id == "kernel-asm").unwrap();
+    assert_eq!(category.cases.iter().map(|case| case.id.as_str()).collect::<Vec<_>>(),
+        ["four-objects-match-record", "breakpoint-roundtrip", "privileged-encodings"]);
+}

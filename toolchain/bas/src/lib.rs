@@ -3,6 +3,7 @@
 //! Breenix's assembler for x86-64 and AArch64 ELF64 relocatable objects.
 
 mod aarch64;
+mod nasm;
 mod object;
 mod parser;
 mod x86;
@@ -53,7 +54,10 @@ pub fn assemble(source: &[u8]) -> Result<Vec<u8>> {
 /// Assemble for the selected target or return the first diagnostic.
 pub fn assemble_for(target: Target, source: &[u8]) -> Result<Vec<u8>> {
     let mut object = object::Object::new(target);
-    for (index, line) in source.split(|&byte| byte == b'\n').enumerate() {
+    let lines = || source.split(|&byte| byte == b'\n');
+    let mut nasm = (target == Target::X86_64 && lines().any(nasm::is_marker))
+        .then(nasm::Preprocessor::new);
+    for (index, line) in lines().enumerate() {
         let line_number = index + 1;
         if let Some(index) = line.iter().position(|&byte| byte == 0) {
             return Err(Location {
@@ -62,7 +66,14 @@ pub fn assemble_for(target: Target, source: &[u8]) -> Result<Vec<u8>> {
             }
             .error("NUL in source"));
         }
-        parser::Parser::new(line, line_number, &mut object).assemble_line()?;
+        if let Some(preprocessor) = &mut nasm {
+            preprocessor.line(line, line_number, &mut object)?;
+        } else {
+            parser::Parser::new(line, line_number, &mut object).assemble_line()?;
+        }
+    }
+    if let Some(preprocessor) = nasm {
+        preprocessor.finish()?;
     }
     object.finish()
 }
