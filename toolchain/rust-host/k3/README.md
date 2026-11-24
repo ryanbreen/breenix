@@ -38,18 +38,27 @@ The C object check compares the corpus and userspace inputs against the
 pre-unit headers. Constraint diagnostics have their own corpus fixtures.
 
 Use the matching build's generated headers to compile a C++ workload object.
-Guest linking and execution are later K3 units.
+Staging the hosted probes and running them in the guest are later K3 units.
 
 ```sh
 scripts/workload-cxx --arch x86_64 --runtime-build "$BREENIX_CXX_RUNTIME_BUILDS/x86_64/build" -- -std=c++23 probe.cpp -o probe.o
 ```
 
-The symbol-closure check is an intentionally unresolved K3 gate. Set
-`BREENIX_CXX_RUNTIME_ROOT` to a directory with one subdirectory per architecture,
+Run the hosted link check with `BREENIX_CXX_RUNTIME_BUILDS` set as above and
+`BREENIX_CXX_RUNTIME_ROOT` pointing to one subdirectory per architecture,
 each containing `lib/libc++.a`, `lib/libc++abi.a`, the hosted C-ABI `lib/libc.a`
-and the pinned build's `lib/compiler_builtins.rlib`. It uses the pinned Rust
-LLVM's `llvm-nm`, checks both architectures and rejects unwinder references.
-A failed build does not claim that its missing archives pass that check.
+and the pinned build's `lib/compiler_builtins.rlib`.
+
+```sh
+python3 tests/cxx_runtime_test.py CxxRuntimeTest.test_cxx_runtime_symbols_resolve
+```
+
+On both architectures, the archive inventory leaves exactly the two
+`__lcxx_override` boundary references and rejects exception and unwinder
+references. The probe links with `linker-hosted.ld` and `--gc-sections`.
+`llvm-nm` must report an empty undefined set. The check uses `llvm-readelf`
+to verify that `__start___lcxx_override` equals the section address and
+`__stop___lcxx_override` equals the address plus its size (ruling 89).
 
 The Generic build generated duplicate archive rules: `cxxabi_shared` and
 `cxxabi_static` both claimed `libc++abi.a`; `cxx_shared` and `cxx_static`
