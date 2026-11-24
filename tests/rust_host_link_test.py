@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 PROGRAMS = ROOT / "userspace/programs"
@@ -104,6 +105,30 @@ def hosted_link_layout(arch, readelf, elf=None):
     print(f"hosted_link_layout ({arch}): PASS")
 
 
+def hosted_targets():
+    for arch in ARCHES:
+        source = ROOT / ("x86_64-breenix-c.json" if arch == "x86_64" else "aarch64-breenix.json")
+        expected = json.loads(source.read_text())
+        expected["panic-strategy"] = "unwind"
+        expected["eh-frame-header"] = True
+        target = ROOT / f"{arch}-breenix-hosted.json"
+        require(target.exists(), f"missing hosted target {target}")
+        require(json.loads(target.read_text()) == expected, f"{target}: hosted target fields differ")
+    print("hosted_targets: PASS")
+
+
+def hosted_unwind_link(arch, readelf, nm, elf, link_map, archive):
+    hosted_link_layout(arch, readelf, elf)
+    undefined = subprocess.check_output([nm, "--undefined-only", str(elf)], text=True)
+    require(not any("_Unwind_" in line for line in undefined.splitlines()),
+            f"{elf}: undefined unwind symbols: {undefined}")
+    map_text = link_map.read_text()
+    require(str(archive.resolve()) in map_text, f"{link_map}: expected archive {archive}")
+    digest = hashlib.file_digest(archive.open("rb"), "sha256").hexdigest()
+    require(digest in map_text, f"{link_map}: missing selected libc digest {digest}")
+    print(f"hosted_unwind_link ({arch}): PASS")
+
+
 def normal_digests(arch):
     metadata = json.loads(subprocess.check_output(
         ["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=PROGRAMS,
@@ -126,6 +151,8 @@ def normal_digests(arch):
 def existing_links_unchanged(arch, baseline):
     receipt = json.loads(baseline.read_text())
     require(receipt["arch"] == arch, f"{baseline}: expected a baseline for {arch}")
+    require(os.environ.get("BREENIX_STD_METADATA_SEED") == receipt["std_metadata_seed"],
+            "ordinary builds must use the base pin as the std metadata seed")
     expected = receipt["sha256"]
     actual = normal_digests(arch)
     require(
@@ -140,14 +167,25 @@ def existing_links_unchanged(arch, baseline):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("check", choices=["hosted_link_layout", "existing_links_unchanged", "record_baseline"])
+    parser.add_argument("check", choices=["hosted_targets", "hosted_unwind_link", "hosted_link_layout", "existing_links_unchanged", "record_baseline"])
     parser.add_argument("--arch", choices=ARCHES, required=True)
     parser.add_argument("--readelf", default=os.environ.get("LLVM_READELF", "llvm-readelf"))
     parser.add_argument("--elf", type=Path, help="inspect an already linked probe, such as the parent control")
     parser.add_argument("--baseline", type=Path, help="path to digests captured after building the parent")
     parser.add_argument("--base-ref", default="HEAD", help="source revision for record_baseline")
+    parser.add_argument("--nm", default=os.environ.get("LLVM_NM", "llvm-nm"))
+    parser.add_argument("--link-map", type=Path)
+    parser.add_argument("--archive", type=Path)
     args = parser.parse_args()
-    if args.check == "hosted_link_layout":
+    if args.check == "hosted_targets":
+        hosted_targets()
+    elif args.check == "hosted_unwind_link":
+        if not all((args.elf, args.link_map, args.archive)):
+            parser.error("--elf, --link-map and --archive are required")
+        expected = ROOT / "libs/libbreenix-libc/target" / ("x86_64-breenix-c" if args.arch == "x86_64" else "aarch64-breenix") / "release/libc.a"
+        require(args.archive.resolve() == expected.resolve(), "incorrect libc archive")
+        hosted_unwind_link(args.arch, args.readelf, args.nm, args.elf, args.link_map, args.archive)
+    elif args.check == "hosted_link_layout":
         hosted_link_layout(args.arch, args.readelf, args.elf)
     else:
         if args.baseline is None:
@@ -161,7 +199,7 @@ def main():
                 ["git", "diff", "--quiet", rev, "--", ".", ":(exclude)tests"], cwd=ROOT, check=True,
             )
             digests = normal_digests(args.arch)
-            receipt = {"commit": rev, "arch": args.arch, "sha256": digests}
+            receipt = {"commit": rev, "arch": args.arch, "std_metadata_seed": tomllib.loads((ROOT / "rust-fork.toml").read_text())["commit"], "sha256": digests}
             args.baseline.write_text(json.dumps(receipt, indent=2) + "\n")
             print(f"Recorded {len(digests)} {args.arch} bins at {rev}")
         else:
