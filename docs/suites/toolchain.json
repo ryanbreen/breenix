@@ -381,15 +381,18 @@
       "cases": [
         {
           "id": "four-objects-match-record",
-          "title": "Native bas reproduces the four recorded kernel assembly objects"
+          "title": "Native bas reproduces the four recorded kernel assembly objects",
+          "targets": ["x86_64"]
         },
         {
           "id": "breakpoint-roundtrip",
-          "title": "A user breakpoint delivers SIGTRAP and resumes after INT3"
+          "title": "A user breakpoint delivers SIGTRAP and resumes after INT3",
+          "targets": ["x86_64"]
         },
         {
           "id": "privileged-encodings",
-          "title": "Native bas matches the SDM bytes for the kernel instruction corpus"
+          "title": "Native bas matches the SDM bytes for the kernel instruction corpus",
+          "targets": ["x86_64"]
         }
       ]
     }

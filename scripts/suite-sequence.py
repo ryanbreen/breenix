@@ -2,7 +2,7 @@
 """Resolve and score boots that run several effort suites (docs/suites/README.md, "Several suites in one boot").
 
     scripts/suite-sequence.py resolve SPEC --target TARGET [--gpu-3d]
-    scripts/suite-sequence.py score SUITES RECORDS_LOG [OTHER_LOG ...] [--disk IMAGE]
+    scripts/suite-sequence.py score SUITES RECORDS_LOG [OTHER_LOG ...] [--arch ARCH] [--disk IMAGE]
     scripts/suite-sequence.py run SUITES SERIAL LAUNCHER [ARG ...]
 
 `resolve` prints the suite ids a boot runs, comma-separated, in order. SPEC is a suite id, ids joined by commas, or
@@ -245,7 +245,8 @@ def windows(ids, records):
     return [records[start:max(start, end)] for start, end in zip(starts, ends)]
 
 
-def score(ids, records_log, logs, disk=None, repo=REPO, milestones=None, *, report_disk=False, disk_root_fs=None):
+def score(ids, records_log, logs, disk=None, repo=REPO, milestones=None, *, report_disk=False,
+          disk_root_fs=None, arch="x86_64"):
     """(ok, rows): each row is (suite, status, detail)."""
     scorer = runpy.run_path(str(repo / "scripts/suite-verdict.py"))
     milestones = milestones or {}
@@ -266,12 +267,13 @@ def score(ids, records_log, logs, disk=None, repo=REPO, milestones=None, *, repo
             window.write_text("\n".join(records) + "\n")
             rows.append(score_one(scorer, repo, suite, suite == ids[-1], records, window,
                                   [window] + [Path(log) for log in logs[1:]], disk, index > 0,
-                                  Path(str(records_log) + ".evidence"), milestones.get(suite), disk_result=disk_result))
+                                  Path(str(records_log) + ".evidence"), milestones.get(suite),
+                                  disk_result=disk_result, arch=arch))
     return all(status == "PASS" for _, status, _ in rows), rows
 
 
 def score_one(scorer, repo, suite, last, records, window, logs, disk, needs_reset=False, uploads=None, milestone=None,
-              *, disk_result=None):
+              *, disk_result=None, arch="x86_64"):
     manifest = json.loads((repo / "docs/suites" / f"{suite}.json").read_text())
     started = any(re.fullmatch(rf"SUITE {suite} START cases=\d+", line) for line in records)
     done = any(line.startswith(f"SUITE {suite} DONE ") for line in records)
@@ -306,7 +308,7 @@ def score_one(scorer, repo, suite, last, records, window, logs, disk, needs_rese
     if milestone:
         path = json.loads((repo / "docs/efforts/path.json").read_text())
         bundle_disk["categories"] = scorer["milestone_categories"](path, milestone, suite)
-    ok, detail = scorer["verdict"](manifest, window, logs, **bundle_disk)
+    ok, detail = scorer["verdict"](manifest, window, logs, arch=arch, **bundle_disk)
     if stalled:
         status, detail = "STALLED", f"the runner's watchdog stopped it after {stalled[1]} of {stalled[2]} cases"
     elif not done and not detail.startswith("fatal kernel output"):
@@ -334,6 +336,7 @@ def main():
     p = sub.add_parser("score")
     p.add_argument("suites")
     p.add_argument("logs", nargs="+")
+    p.add_argument("--arch", choices=("aarch64", "x86_64"), default="x86_64")
     p.add_argument("--disk")
     p.add_argument("--disk-report", action="store_true")
     p.add_argument("--disk-root-fs", choices=("ext2", "breenfs"))
@@ -364,7 +367,7 @@ def main():
                 raise ValueError(f"invalid or duplicate milestone selector: {selector}")
             milestones[suite] = milestone
         ok, rows = score(ids, args.logs[0], args.logs, args.disk, milestones=milestones,
-                         report_disk=args.disk_report, disk_root_fs=args.disk_root_fs)
+                         report_disk=args.disk_report, disk_root_fs=args.disk_root_fs, arch=args.arch)
     except ValueError as error:
         print(f"suite-sequence: {error}", file=sys.stderr)
         return 2

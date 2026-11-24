@@ -172,3 +172,35 @@ pub(crate) fn read_terminal(
         wait_prepared(&input.readers, outcome)?;
     }
 }
+
+/// Complete a checked publication for a short exclusion wait that only a
+/// fatal signal ends early: exec and mmap waiting for a file's binding gate
+/// (`MapState::take_binding_gate`), which must not fail for a handled signal.
+/// The sleep is the wait queue's own `schedule_current_wait`, which releases
+/// and restores the system call's preemption level. A wake for a handled
+/// signal returns `Ok`, and the caller retries before sleeping again. A
+/// caller holding no preemption level only retries.
+pub(crate) fn wait_prepared_killable(queue: &WaitQueueHead, outcome: PrepareOutcome) -> Result<(), i32> {
+    match outcome {
+        PrepareOutcome::Mismatch => {
+            queue.finish_wait();
+            return Ok(());
+        }
+        PrepareOutcome::PublishFailed => {
+            queue.finish_wait();
+            return Err(if crate::syscall::fatal_signal_pending() { errno::EINTR } else { errno::ESRCH });
+        }
+        PrepareOutcome::OutOfMemory => return Err(errno::ENOMEM),
+        PrepareOutcome::Queued => {}
+    }
+    let syscall_level =
+        crate::per_cpu::preempt_count() & crate::arch_impl::current::constants::PREEMPT_MASK != 0;
+    if syscall_level && !crate::syscall::fatal_signal_pending() {
+        crate::task::waitqueue::schedule_current_wait();
+    }
+    queue.finish_wait();
+    if crate::syscall::fatal_signal_pending() {
+        return Err(errno::EINTR);
+    }
+    Ok(())
+}

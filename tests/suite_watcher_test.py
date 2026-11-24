@@ -61,6 +61,98 @@ while True:
 
 
 class SuiteWatcherTest(unittest.TestCase):
+    def test_arm_busybox_sequence_gate_covers_case_allowances(self):
+        runner = (ROOT / "libs/libbreenix/src/suite.rs").read_text()
+        default = int(re.search(r"DEFAULT_CASE_LIMIT_MS: u64 = ([\d_]+);", runner)[1].replace("_", ""))
+        tables = []
+        for name in ("NAMED_CASE_ALLOWANCES", "ARM_BUSYBOX_CASE_ALLOWANCES"):
+            table = runner.split("pub const " + name, 1)[1].split("];", 1)[0]
+            tables.append({(suite, case): int(ms.replace("_", "")) for suite, case, ms in
+                           re.findall(r'\("([^"]+)", "([^"]+)", ([\d_]+)\)', table)})
+        suites = ["toolchain", "libc", "utilities"]
+        helper_path = ROOT / "scripts/suite-deadlines.py"
+        launcher = (ROOT / "scripts/boot-interactive.sh").read_text()
+        old_deadline = int(re.search(r"^GATE_TIMEOUT=(\d+)$", launcher, re.MULTILINE)[1])
+        sequence_deadlines = runpy.run_path(str(helper_path))["suite_deadlines"]
+        deadlines = sequence_deadlines(suites, "aarch64")
+        for arch, by_suite, expected in (
+            ("aarch64", deadlines, [1757, 3250, 2425]),
+            ("x86_64", sequence_deadlines(suites, "x86_64"), [1769, 3250, 2425]),
+        ):
+            with self.subTest(arch=arch):
+                allowances = tables[0] | tables[1] if arch == "aarch64" else tables[0]
+                for suite in suites:
+                    manifest = json.loads((ROOT / f"docs/suites/{suite}.json").read_text())
+                    cases = [f'{category["id"]}/{case["id"]}' for category in manifest["categories"]
+                             for case in category["cases"] if "targets" not in case or arch in case["targets"]]
+                    total = sum(allowances.get((suite, case), default) for case in cases)
+                    if arch == "aarch64" and suite == "toolchain":
+                        self.assertEqual(total, 1_405_000)
+                    self.assertGreaterEqual(by_suite[suite], (total * 5 + 3999) // 4000, suite)
+                self.assertEqual([by_suite[suite] for suite in suites], expected)
+        self.assertEqual(old_deadline, 1800)  # Previous per-suite gate.
+        watcher = runpy.run_path(str(ROOT / "scripts/watch-qemu.py"))
+        for index, suite in enumerate(suites):
+            self.assertEqual(watcher["deadline_for_suite"](1800, deadlines, suites, index), deadlines[suite])
+        self.assertEqual(watcher["deadline_for_suite"](123, {}, suites, 1), 123)
+        with tempfile.TemporaryDirectory() as tmp:
+            serial = Path(tmp) / "serial"
+            serial.write_text("SUITE toolchain START cases=70\n")
+            ticks = iter((0, 0, 2000, 4001, 5250))
+            fake_time = Mock(monotonic=lambda: next(ticks))
+            def advance(_):
+                if serial.read_text().count(" START ") == 1:
+                    with serial.open("a") as output:
+                        output.write("SUITE libc START cases=260\n")
+            fake_time.sleep.side_effect = advance
+            watch = watcher["watch"]
+            with patch.dict(watch.__globals__, {"time": fake_time, "BootProgress": Mock(return_value=Mock(stalled=lambda: False))}):
+                self.assertEqual(watch(Mock(poll=lambda: None), serial, "suite", ",".join(suites),
+                                       0, 1800, 0, Mock(), suite_deadlines=deadlines), "deadline")
+            self.assertEqual(fake_time.sleep.call_count, 3)
+        launcher = (ROOT / "scripts/boot-interactive.sh").read_text()
+        self.assertIn('GATE_TIMEOUT_EXPLICIT=1', launcher)
+        self.assertIn('scripts/suite-deadlines.py', launcher)
+        self.assertIn('--suite-deadlines', launcher)
+        selection = launcher.split('WATCH_READY_ARGS=()', 1)[1].split(
+            '[ "$UNTIL_DESKTOP_READY"', 1)[0]
+        for milestone, explicit, expected in (("toolchain/busybox-on-box", "0", True),
+                                              ("toolchain/busybox-on-box", "1", False),
+                                              ("toolchain/c17-libc-suite", "0", False)):
+            result = subprocess.run(
+                ["bash", "-c", 'ROOT="$1"; MILESTONE="$2"; GATE_TIMEOUT_EXPLICIT="$3"; '
+                 'SUITE="toolchain,libc,utilities"; WATCH_READY_ARGS=(); ' + selection +
+                 'printf "%s\\n" "${WATCH_READY_ARGS[@]}"', "test", str(ROOT), milestone, explicit],
+                check=True, capture_output=True, text=True)
+            lines = result.stdout.splitlines()
+            if expected:
+                self.assertEqual(lines[0], "--suite-deadlines")
+                self.assertEqual(json.loads(lines[1]), deadlines)
+            else:
+                self.assertNotIn("--suite-deadlines", lines)
+
+    def test_stalled_suite_does_not_shift_the_next_suite_deadline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            serial = Path(tmp) / "serial"
+            serial.write_text("SUITE toolchain START cases=70\n")
+            ticks = iter((0, 0, 100, 3000, 3400))
+            fake_time = Mock(monotonic=lambda: next(ticks))
+
+            def advance(_):
+                if fake_time.sleep.call_count == 1:
+                    with serial.open("a") as output:
+                        output.write("SUITE_SEQUENCE STALLED toolchain cases=1/70\n"
+                                     "SUITE libc START cases=260\n")
+
+            fake_time.sleep.side_effect = advance
+            watch = runpy.run_path(str(ROOT / "scripts/watch-qemu.py"))["watch"]
+            progress = Mock(return_value=Mock(stalled=lambda: False))
+            with patch.dict(watch.__globals__, {"time": fake_time, "BootProgress": progress}):
+                self.assertEqual(watch(Mock(poll=lambda: None), serial, "suite", "toolchain,libc,utilities",
+                                       0, 1800, 0, Mock(), suite_deadlines={"toolchain": 2119, "libc": 3250,
+                                                                          "utilities": 2425}), "deadline")
+            self.assertEqual(fake_time.sleep.call_count, 3)
+
     def test_poweroff_scores_completed_recording_and_partial_exit_cancels(self):
         # Replay the standalone DONE -> MEMORY -> READY shutdown shape from
         # the gui-apps baseline, with directories records usable by the scorer.
