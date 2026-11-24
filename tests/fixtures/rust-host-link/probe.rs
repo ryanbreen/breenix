@@ -9,6 +9,11 @@ extern "C" {
 }
 
 fn main() {
+    let _ = std::panic::catch_unwind(|| {
+        if black_box(false) {
+            panic!("hosted unwind probe");
+        }
+    });
     // SAFETY: The fixture defines the function and both static objects.
     unsafe {
         hosted_probe_fn();

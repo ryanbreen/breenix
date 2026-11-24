@@ -66,6 +66,8 @@ pub struct Context<const N: usize> {
     cfa: u64,
     region_start: u64,
     lsda: Option<u64>,
+    text_base: Option<u64>,
+    data_base: Option<u64>,
 }
 
 impl<const N: usize> Context<N> {
@@ -79,6 +81,8 @@ impl<const N: usize> Context<N> {
             cfa: 0,
             region_start: 0,
             lsda: None,
+            text_base: None,
+            data_base: None,
         }
     }
 
@@ -125,6 +129,14 @@ impl<const N: usize> Context<N> {
         self.lsda
     }
 
+    pub fn get_text_base(&self) -> u64 {
+        self.text_base.unwrap_or(0)
+    }
+
+    pub fn get_data_base(&self) -> u64 {
+        self.data_base.unwrap_or(0)
+    }
+
     pub fn get_region_start(&self) -> u64 {
         self.region_start
     }
@@ -165,6 +177,8 @@ pub(crate) enum Continuation<const N: usize> {
 pub struct Frame<'a, const N: usize> {
     pub rules: Rules<'a, N>,
     pub region_start: u64,
+    pub text_base: Option<u64>,
+    pub data_base: Option<u64>,
     pub lsda: Option<u64>,
     pub personality: Option<u64>,
     pub return_address_register: u64,
@@ -214,6 +228,8 @@ impl<'a, const N: usize> Frame<'a, N> {
         Ok(Some(Self {
             rules: rules.ok_or(LookupError::MissingRow)?,
             region_start: fde.pc_range.start,
+            text_base: sections.text_base,
+            data_base: sections.data_base,
             lsda: fde.lsda,
             personality: fde.cie.personality,
             return_address_register: fde.cie.return_address_register,
@@ -269,6 +285,8 @@ fn frame_at<'a, const N: usize>(
         CfaRule::Expression(expression) => source.evaluate_expression(expression, context, None)?,
     };
     context.region_start = frame.region_start;
+    context.text_base = frame.text_base;
+    context.data_base = frame.data_base;
     context.lsda = frame.lsda;
     Some(frame)
 }

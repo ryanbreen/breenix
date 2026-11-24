@@ -444,3 +444,17 @@ pub(crate) unsafe extern "C" fn _Unwind_GetRegionStart(context: *const c_void) -
     let context = unsafe { &*context.cast::<NativeContext>() };
     context.get_region_start()
 }
+
+#[no_mangle]
+pub(crate) unsafe extern "C" fn _Unwind_GetTextRelBase(context: *const c_void) -> u64 {
+    // SAFETY: the callback supplies a live unwind context.
+    let context = unsafe { &*context.cast::<NativeContext>() };
+    context.get_text_base()
+}
+
+#[no_mangle]
+pub(crate) unsafe extern "C" fn _Unwind_GetDataRelBase(context: *const c_void) -> u64 {
+    // SAFETY: the callback supplies a live unwind context.
+    let context = unsafe { &*context.cast::<NativeContext>() };
+    context.get_data_base()
+}

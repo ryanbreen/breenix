@@ -40,6 +40,8 @@ struct PhdrInfo {
 type Visit = unsafe extern "C" fn(*mut PhdrInfo, usize, *mut c_void) -> c_int;
 
 extern "C" {
+    static __breenix_text_start: u8;
+    static __breenix_got_start: u8;
     fn dl_iterate_phdr(visit: Visit, data: *mut c_void) -> c_int;
 }
 
@@ -141,7 +143,11 @@ impl FrameSource for LoadedImage {
                 bytes,
             },
             header: Some(header),
-            data_base: None,
+            text_base: Some(ptr::addr_of!(__breenix_text_start).expose_provenance() as u64),
+            data_base: match ptr::addr_of!(__breenix_got_start).expose_provenance() as u64 {
+                0 => None,
+                value => Some(value),
+            },
             address_size: ADDRESS_SIZE as u8,
             endian: Endian::Little,
         })

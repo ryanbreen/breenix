@@ -31,7 +31,7 @@ def require(condition, message):
 
 def hosted_link_layout(arch, readelf, elf=None):
     if elf is None:
-        elf = PROGRAMS / "target/hosted" / f"{arch}-breenix/release" / PROBE
+        elf = PROGRAMS / "target/hosted" / f"{arch}-breenix-hosted/release" / PROBE
 
     [report] = json.loads(subprocess.check_output([
         readelf, "--elf-output-style=JSON", "--file-header", "--sections", "--program-headers",
@@ -153,6 +153,9 @@ def existing_links_unchanged(arch, baseline):
     require(receipt["arch"] == arch, f"{baseline}: expected a baseline for {arch}")
     require(os.environ.get("BREENIX_STD_METADATA_SEED") == receipt["std_metadata_seed"],
             "ordinary builds must use the base pin as the std metadata seed")
+    seed_file = PROGRAMS / "target" / f"{arch}-breenix/release/std-metadata-seed"
+    require(seed_file.read_text().strip() == receipt["std_metadata_seed"],
+            "ordinary build used a different std metadata seed")
     expected = receipt["sha256"]
     actual = normal_digests(arch)
     require(

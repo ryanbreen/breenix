@@ -21,6 +21,8 @@ pub struct Section<'a> {
 pub struct Sections<'a> {
     pub frame: Section<'a>,
     pub header: Option<Section<'a>>,
+    /// The image's text base for text-relative pointers in `.eh_frame`.
+    pub text_base: Option<u64>,
     /// The image's GOT base for data-relative pointers in `.eh_frame`.
     pub data_base: Option<u64>,
     /// Target pointer width in bytes (4 or 8).
@@ -311,7 +313,15 @@ impl<'a> Sections<'a> {
         memory: &(impl Memory + ?Sized),
         nullable: bool,
     ) -> Result<u64, Error> {
-        decode_pointer(reader, encoding, memory, nullable, self.address_size.into(), self.data_base)
+        decode_pointer(
+            reader,
+            encoding,
+            memory,
+            nullable,
+            self.address_size.into(),
+            self.text_base,
+            self.data_base,
+        )
     }
 }
 
@@ -340,8 +350,22 @@ fn header_prefix<'a>(
     let count_encoding = Encoding::read(reader)?;
     let table_encoding = Encoding::read(reader)?;
     let frame_field = *reader;
-    let frame_address = decode_pointer(reader, frame_encoding, memory, false, address_size, None)?;
-    Ok(HeaderPrefix { frame_address, frame_field, count_field, count_encoding, table_encoding })
+    let frame_address = decode_pointer(
+        reader,
+        frame_encoding,
+        memory,
+        false,
+        address_size,
+        None,
+        None,
+    )?;
+    Ok(HeaderPrefix {
+        frame_address,
+        frame_field,
+        count_field,
+        count_encoding,
+        table_encoding,
+    })
 }
 
 fn decode_pointer(
@@ -350,6 +374,7 @@ fn decode_pointer(
     memory: &(impl Memory + ?Sized),
     nullable: bool,
     width: usize,
+    text_base: Option<u64>,
     data_base: Option<u64>,
 ) -> Result<u64, Error> {
     let field = *reader;
@@ -363,13 +388,14 @@ fn decode_pointer(
             .address
             .checked_add(field.offset as u64)
             .ok_or(field.error(ErrorKind::Overflow))?,
+        Base::Text => text_base.ok_or(field.error(ErrorKind::MissingTextBase))?,
         Base::Data => match field.section {
             SectionKind::Header => field.address,
             SectionKind::Frame => data_base.ok_or(field.error(ErrorKind::MissingDataBase))?,
         },
     };
-    let address = u64::try_from(i128::from(base) + value)
-        .map_err(|_| field.error(ErrorKind::Overflow))?;
+    let address =
+        u64::try_from(i128::from(base) + value).map_err(|_| field.error(ErrorKind::Overflow))?;
     if !encoding.indirect {
         return Ok(address);
     }
@@ -418,6 +444,7 @@ pub enum ErrorKind {
     InvalidRecord,
     InvalidCiePointer,
     InvalidRange,
+    MissingTextBase,
     MissingDataBase,
     UnreadablePointer(u64),
 }
@@ -521,6 +548,7 @@ impl<'a> Table<'a> {
 enum Base {
     Absolute,
     Pc,
+    Text,
     Data,
 }
 
@@ -569,6 +597,7 @@ impl Encoding {
         let base = match byte & 0x70 {
             0x00 => Base::Absolute,
             0x10 => Base::Pc,
+            0x20 => Base::Text,
             0x30 => Base::Data,
             _ => return Err(error),
         };

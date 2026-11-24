@@ -19,6 +19,7 @@ SECTIONS {
     . = 0x40000000 + SIZEOF_HEADERS; /* Start at 1GB (userspace area) */
 
     .text : ALIGN(4K) {
+        HIDDEN(__breenix_text_start = .);
         *(.text .text.*)
     } :text
 
@@ -50,6 +51,9 @@ SECTIONS {
     .data : ALIGN(4K) {
         *(.data .data.*)
     } :data
+
+    .got : { *(.got .got.*) } :data
+    HIDDEN(__breenix_got_start = SIZEOF(.got) ? ADDR(.got) : 0);
 
     /* ELF gABI Table 3.8. KEEP preserves startup entries through GC,
      * and PROVIDE_HIDDEN exposes their bounds only to the static link
