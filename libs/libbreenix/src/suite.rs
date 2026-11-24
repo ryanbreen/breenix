@@ -532,24 +532,25 @@ impl Category {
 /// A named allowance overrides both this default and the suite's own limit.
 pub const DEFAULT_CASE_LIMIT_MS: u64 = 10_000;
 
-// E25 ruling 71: provisional ARM64 QEMU allowances pending target measurements.
+// ARM64 QEMU 20261124T035533Z-qemu-55077: twice the case time, rounded up
+// to 10 seconds and capped at 60. New groups use averages from the measured groups.
 #[cfg(target_arch = "aarch64")]
 pub const ARM_BUSYBOX_CASE_ALLOWANCES: &[(&str, &str, u64)] = &[
-    ("toolchain", "busybox/unpack", 60_000),
-    ("toolchain", "busybox/patch", 60_000),
-    ("toolchain", "busybox/generators", 60_000),
-    ("toolchain", "busybox/configure", 60_000),
-    ("toolchain", "busybox/inventory", 60_000),
+    ("toolchain", "busybox/unpack", 10_000),
+    ("toolchain", "busybox/patch", 10_000),
+    ("toolchain", "busybox/generators", 40_000),
+    ("toolchain", "busybox/configure", 40_000),
+    ("toolchain", "busybox/inventory", 20_000),
     ("toolchain", "busybox/build-libbb-1", 60_000),
     ("toolchain", "busybox/build-libbb-2", 60_000),
     ("toolchain", "busybox/build-libbb-3", 60_000),
     ("toolchain", "busybox/build-libbb-4", 60_000),
     ("toolchain", "busybox/build-applets-1", 60_000),
     ("toolchain", "busybox/build-applets-2", 60_000),
-    ("toolchain", "busybox/build-applets-3", 60_000),
-    ("toolchain", "busybox/build-applets-4", 60_000),
-    ("toolchain", "busybox/link-and-list", 60_000),
-    ("toolchain", "busybox/required-usage", 60_000),
+    ("toolchain", "busybox/build-applets-3", 50_000),
+    ("toolchain", "busybox/build-applets-4", 50_000),
+    ("toolchain", "busybox/link-and-list", 20_000),
+    ("toolchain", "busybox/required-usage", 10_000),
 ];
 
 /// Named exceptions to case limits, checked by host tests against the stall deadline.

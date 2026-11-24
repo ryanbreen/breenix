@@ -2165,7 +2165,7 @@ class DriverTest(StateTest):
         self.assertEqual(len(cases), 15)
         self.assertEqual(len(entries), 15)
         # ARM64 QEMU 20261124T035533Z-qemu-55077. The regrouped
-        # build cases use the observed per-goal costs for their new ranges.
+        # build cases use per-goal averages from the observed group times.
         measured_limits = {
             'unpack': 10_000, 'patch': 10_000, 'generators': 40_000,
             'configure': 40_000, 'inventory': 20_000,

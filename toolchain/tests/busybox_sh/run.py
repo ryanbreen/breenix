@@ -121,9 +121,13 @@ def mac_fixture(directory, arch="x86_64"):
     libc_target = {"x86_64": "x86_64-breenix-c", "aarch64": "aarch64-breenix"}[arch]
     shutil.copy2(ROOT / f"libs/libbreenix-libc/target/{libc_target}/release/libc.a",
                  bundle / "lib/libc.a")
-    env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LC_ALL": "C",
-           "HOSTCC": str(clang), "BUSYBOX_JOBS": "8"}
-    return fixture, env, expected
+    return fixture, mac_environment(), expected
+
+
+def mac_environment():
+    return {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LC_ALL": "C",
+            "HOSTCC": str(Path(os.environ["BREENIX_TOOLCHAIN_CLANG"]).with_name("clang")),
+            "BUSYBOX_JOBS": "8"}
 
 
 def pass_phase(fixture, output, env, phase=None, arch="x86_64"):
@@ -179,7 +183,7 @@ def phase_refuses_missing_or_altered_predecessor(directory):
     assert not (output / "patch.log").exists()
 
 
-def object_group_chain_equals_directory_goal(directory, arch="x86_64"):
+def prepare_object_group_fixture(directory, arch):
     fixture, env, _ = mac_fixture(directory, arch)
     output = directory / "build"
     for phase in ("unpack", "patch", "generators", "configure"):
@@ -196,6 +200,13 @@ def object_group_chain_equals_directory_goal(directory, arch="x86_64"):
     pass_phase(fixture, output, env, "inventory", arch)
     baseline = directory / "configured"
     shutil.copytree(output, baseline, symlinks=True)
+
+
+def compare_object_group_chain(directory, arch):
+    fixture = directory / "fixture"
+    output = directory / "build"
+    baseline = directory / "configured"
+    env = mac_environment()
     source = output / "busybox-1.37.0"
     boundaries = {
         "x86_64": {"libbb": (32, 64, 96, 128), "applets": (32, 64, 79, 94)},
@@ -236,6 +247,11 @@ def object_group_chain_equals_directory_goal(directory, arch="x86_64"):
     assert actual == expected, sorted(name for name, digest in expected.items() if actual.get(name) != digest)
 
 
+def object_group_chain_equals_directory_goal(directory):
+    prepare_object_group_fixture(directory, "x86_64")
+    compare_object_group_chain(directory, "x86_64")
+
+
 def audit_phases_equal_driver_phases(directory):
     arms = []
     body = DRIVER.read_text().split("run_phase() {", 1)[1].split("\n}\n", 1)[0]
@@ -255,5 +271,9 @@ def audit_phases_equal_driver_phases(directory):
 
 if __name__ == "__main__":
     BMAKE = Path(sys.argv[2]).resolve()
-    with tempfile.TemporaryDirectory(prefix="breenix-busybox-check-") as temporary:
-        globals()[sys.argv[1]](Path(temporary), *sys.argv[3:])
+    if sys.argv[1] in {"prepare_object_group_fixture", "compare_object_group_chain"}:
+        # Keep one absolute build path across the split and unsplit compiles.
+        globals()[sys.argv[1]](Path(sys.argv[4]).resolve(strict=True), sys.argv[3])
+    else:
+        with tempfile.TemporaryDirectory(prefix="breenix-busybox-check-") as temporary:
+            globals()[sys.argv[1]](Path(temporary))
