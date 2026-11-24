@@ -149,3 +149,67 @@ fn kernel_entry_sources_assemble() {
         assemble(source).unwrap_or_else(|error| panic!("{name}: {error}"));
     }
 }
+
+#[test]
+fn ap_trampoline_assembles() {
+    let source = include_bytes!("../../../kernel/src/arch_impl/x86_64/ap_trampoline.asm");
+    let object = assemble(source).unwrap();
+    let elf = bobj::elf::Elf::parse(&object).unwrap();
+    let section = (0..elf.section_count())
+        .find(|&i| elf.section_name(i).unwrap() == b".rodata")
+        .unwrap();
+    let bytes = elf.section_data(section).unwrap().unwrap();
+    // Intel SDM Vol. 2A Table 2-1, LGDT and JMP, and Vol. 2B MOV (Sreg, CRn).
+    assert_eq!(
+        &bytes[..0x24],
+        &[
+            0xfa, 0xfc, 0x8c, 0xc8, 0x8e, 0xd8, 0x66, 0x31, 0xdb, 0x89, 0xc3, 0x66,
+            0xc1, 0xe3, 0x04, 0x66, 0x0f, 0x01, 0x16, 0xb0, 0, 0x0f, 0x20, 0xc0,
+            0x66, 0x83, 0xc8, 1, 0x0f, 0x22, 0xc0, 0x66, 0xff, 0x2e, 0xb6, 0,
+        ]
+    );
+    assert_eq!(&bytes[0x5e..0x64], &[0xff, 0xab, 0xbc, 0, 0, 0]);
+    assert_eq!(&bytes[0xb0..0xb2], &[31, 0]);
+
+    let source = b"bits 16\nmov ax, [ebx]\nmov eax, [bp + si - 2]\no32 mov eax, ebx\n\
+                   bits 32\nmov ax, [bx + di]\nmov eax, [esp]\n";
+    let object = assemble(source).unwrap();
+    let elf = bobj::elf::Elf::parse(&object).unwrap();
+    assert_eq!(
+        elf.section_data(1).unwrap().unwrap(),
+        &[0x67, 0x8b, 0x03, 0x66, 0x8b, 0x42, 0xfe, 0x66, 0x89, 0xd8,
+          0x66, 0x67, 0x8b, 0x01, 0x8b, 0x04, 0x24]
+    );
+
+    for source in [
+        "bits 16\nmov eax, [rax]",
+        "bits 32\nmov spl, al",
+        "bits 16\njmp dword far eax",
+        "bits 32\nmov cs, ax",
+        "bits 16\no32 mov ax, bx",
+        "bits 16\no32 lgdt [0x10000]",
+        "bits 16\nstart: dw end - start\nsection .data\nend: db 0",
+        "bits 16\nstart: dw missing - start",
+        "bits 16\nstart: dw end - start + 65536\nend:",
+    ] {
+        let error = assemble(source.as_bytes()).unwrap_err().to_string();
+        assert!(error.starts_with("2:"), "{source}: {error}");
+    }
+}
+
+#[test]
+fn four_sources_match_nasm() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let output = std::process::Command::new("python3")
+        .current_dir(&root)
+        .arg("toolchain/tests/bas_kernel/compare.py")
+        .arg(env!("CARGO_BIN_EXE_bas"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
