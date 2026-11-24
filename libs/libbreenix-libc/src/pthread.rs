@@ -171,6 +171,7 @@ struct Thread {
     // The inaccessible bytes at the bottom of the mapping.
     mapping_guard: usize,
     tp: usize,
+    static_tls_data: *mut u8,
     errno: i32,
     h_errno: i32,
     locale: *mut core::ffi::c_void,
@@ -299,6 +300,7 @@ unsafe fn alloc_thread(guard: usize, stack: usize) -> *mut Thread {
             mapping_len: len,
             mapping_guard: guard,
             tp: 0,
+            static_tls_data: null_mut(),
             errno: 0,
             h_errno: 0,
             locale: null_mut(),
@@ -344,6 +346,7 @@ unsafe fn alloc_thread(guard: usize, stack: usize) -> *mut Thread {
         *((tp + 8) as *mut usize) = p as usize;
     }
     (*p).tp = tp;
+    (*p).static_tls_data = data as *mut u8;
     p
 }
 unsafe fn free_thread(p: *mut Thread) {
@@ -612,6 +615,34 @@ unsafe fn descriptor_from_tp() -> *mut Thread {
         core::arch::asm!("mov {}, fs:[8]", out(reg) p, options(readonly, nostack));
         p
     }
+}
+
+/// The TLS block installed for the calling thread by startup or pthread_create.
+pub(crate) fn static_tls_data() -> *mut core::ffi::c_void {
+    if !RUNTIME_READY.load(Acquire) {
+        return null_mut();
+    }
+    // CLONE_SETTLS can leave FS unset. Check before reading fs:8.
+    #[cfg(target_arch = "x86_64")]
+    {
+        const ARCH_GET_FS: u64 = 0x1003;
+        let mut base = 0u64;
+        // SAFETY: ARCH_GET_FS writes one word into this local.
+        let result =
+            unsafe { raw::syscall2(nr::ARCH_PRCTL, ARCH_GET_FS, &mut base as *mut u64 as u64) };
+        if result != 0 || base == 0 {
+            return null_mut();
+        }
+    }
+    // SAFETY: the thread pointer in a libc-managed thread names its live TCB.
+    let p = unsafe { descriptor_from_tp() };
+    // A raw clone can also inherit its creator's TP without its own TLS block.
+    // Startup, pthread entry and the libc fork path set the descriptor's ID.
+    if p.is_null() || unsafe { (*p).id.load(Relaxed) } != tid() {
+        return null_mut();
+    }
+    // SAFETY: the live descriptor belongs to this thread.
+    unsafe { (*p).static_tls_data.cast() }
 }
 
 #[no_mangle]
