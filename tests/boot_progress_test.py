@@ -184,14 +184,28 @@ class ProgressTest(unittest.TestCase):
 
     def test_cxx_runtime_case_allowances(self):
         runner = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
+        manifest = json.loads((ROOT / 'docs/suites/cxx-runtime.json').read_text())
+        default = int(re.search(r'pub const DEFAULT_CASE_LIMIT_MS: u64 = ([\d_]+);', runner)[1])
         table = runner.split('pub const NAMED_CASE_ALLOWANCES:', 1)[1].split(';', 1)[0]
         entries = re.findall(r'\(\s*"cxx-runtime"\s*,\s*"([^"]+)"\s*,\s*([\d_]+)\s*,?\s*\)', table)
-        self.assertEqual(dict((case, int(limit.replace('_', ''))) for case, limit in entries), {
-            'cxx-runtime/static-init-order': 60_000,
-            'cxx-runtime/guarded-static-8-threads': 60_000,
-            'cxx-runtime/containers-and-threads': 60_000,
-        })
-        self.assertEqual(len(entries), 3)
+        named = {case: int(limit) for case, limit in entries}
+        cases = {f"{category['id']}/{case['id']}" for category in manifest['categories']
+                 for case in category['cases']}
+        # CASE durations from R240 boot 20261124T191342Z-metal, in milliseconds.
+        measured_ms = {
+            'cxx-runtime/static-init-order': 12,
+            'cxx-runtime/guarded-static-8-threads': 20,
+            'cxx-runtime/containers-and-threads': 20,
+        }
+        self.assertEqual(cases, measured_ms.keys())
+        self.assertEqual(len(named), len(entries))
+        self.assertLessEqual(named.keys(), cases)
+        expected = {case: min(60_000, ((2 * ms + 9_999) // 10_000) * 10_000)
+                    for case, ms in measured_ms.items()}
+        self.assertEqual({case: named.get(case, default) for case in cases}, expected)
+        driver = (ROOT / 'scripts/metal/metal-boot').read_text()
+        deadline = int(re.search(r"MODE_DEADLINE_SECONDS = \{[^\n]*'suite': (\d+)", driver)[1])
+        self.assertGreaterEqual(deadline * 1000 * 4, sum(expected.values()) * 5)
 
     def test_rust_host_case_allowances(self):
         runner = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
