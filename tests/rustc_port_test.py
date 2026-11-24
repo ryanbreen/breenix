@@ -1,6 +1,7 @@
 import datetime
 import json
 import subprocess
+import sys
 import tomllib
 import unittest
 from pathlib import Path
@@ -18,6 +19,84 @@ def git(*args):
 
 
 class RustcPort(unittest.TestCase):
+    def test_libcxx_runtime_inventory_recorded(self):
+        record = self.x0_record(5)
+        self.assertRegex(record['llvm_project'], r'^[0-9a-f]{40}$')
+        llvm_project = git('ls-tree', PIN, 'src/llvm-project').split()[2]
+        self.assertEqual(record['llvm_project'], llvm_project)
+        configure = record['configure']
+        for arg in (
+            '<llvm-project>/runtimes', '-DLLVM_ENABLE_RUNTIMES=libcxx;libcxxabi;libunwind',
+            '-DLIBCXX_CXX_ABI=libcxxabi', '-DLIBCXX_ENABLE_LOCALIZATION=OFF',
+            '-DLIBCXX_ENABLE_THREADS=ON', '-DTHREADS_PREFER_PTHREAD_FLAG=ON',
+            '-DCMAKE_CXX_FLAGS=-nostdlibinc -isystem <repo>/toolchain/include',
+        ):
+            self.assertIn(arg, configure['command'])
+        build = record['build']
+        for stage in (configure, build) if build is not None else (configure,):
+            self.assertRegex(stage['log_sha256'], r'^[0-9a-f]{64}$')
+            self.assertIs(type(stage['exit_status']), int)
+        if configure['exit_status'] != 0:
+            self.assertTrue(configure['first_error'].strip())
+            self.assertIsNone(build)
+        else:
+            self.assertIsNone(configure['first_error'])
+            self.assertIn('--build', build['command'])
+            if build['exit_status'] != 0:
+                self.assertTrue(build['first_error'].strip())
+            else:
+                self.assertIsNone(build['first_error'])
+                inventory = record['inventory']
+                undefined = inventory['undefined_by_archive']
+                self.assertEqual(set(undefined), {'libc++.a', 'libc++abi.a', 'libunwind.a'})
+                definitions = inventory['defined_by_provider']
+                self.assertEqual(set(definitions), {'libc.a', 'compiler_builtins'})
+                self.assertTrue(all(definitions.values()))
+                for symbols in (*undefined.values(), *definitions.values()):
+                    self.assertEqual(symbols, sorted(set(symbols)))
+                self.assertEqual(inventory['remaining_undefined'], sorted(
+                    set().union(*undefined.values()) - set().union(*definitions.values())))
+                return
+        self.assertIsNone(record['inventory'])
+
+    def test_static_and_panic_answers_cited(self):
+        for number, question in ((6, 'static-rustc'), (7, 'panic-abort-host')):
+            with self.subTest(probe=number):
+                record = self.x0_record(number)
+                self.assertEqual(record['question'], question)
+                self.assertIn(record['verdict'], ('documented-yes', 'documented-no', 'undocumented'))
+                self.assertTrue(record['assessment'].strip())
+                self.assertTrue(record['citations'])
+                for citation in record['citations']:
+                    path, line = citation['location'].rsplit(':', 1)
+                    self.assertTrue(path == 'bootstrap.example.toml' or path.startswith('src/doc/'))
+                    self.assertGreater(int(line), 0)
+                    documented = git('show', f'{PIN}:{path}').splitlines()[int(line) - 1]
+                    self.assertTrue(citation['text'].strip())
+                    self.assertEqual(citation['text'], documented.strip())
+
+    def test_aarch64_float_passing_recorded(self):
+        record = self.x0_record(8)
+        measured = subprocess.run(
+            [sys.executable, str(ROOT / 'scripts/rust-host/x0.py'), 'measure-float'],
+            cwd=ROOT, capture_output=True, text=True, timeout=60,
+        )
+        self.assertEqual(measured.returncode, 0, measured.stderr)
+        measurement = json.loads(measured.stdout)
+        self.assertEqual(record['measurement'], measurement)
+        self.assertIn(measurement['verdict'], {'vector-registers', 'integer-registers'})
+        self.assertTrue(measurement['instructions'])
+
+    def x0_record(self, number):
+        path = RECORDS / f'{number}.json'
+        self.assertTrue(path.is_file(), f'X0.{number} result has not been recorded')
+        record = json.loads(path.read_text())
+        self.assertEqual(record['probe_tree_commit'], PIN)
+        self.assertTrue(record['prediction'].strip())
+        self.assertLess(datetime.datetime.fromisoformat(record['prediction_time']),
+                        datetime.datetime.fromisoformat(record['time']))
+        return record
+
     def test_linux_profile_per_crate(self):
         path = RECORDS / '9.json'
         self.assertTrue(path.is_file(), 'X0.9 Linux rustc profile has not been recorded')
