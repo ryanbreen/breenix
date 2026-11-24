@@ -2151,6 +2151,27 @@ class DriverTest(StateTest):
             self.assertGreaterEqual(boot.mode_deadline_seconds(args, suite), minimum_s, suite)
         self.assertGreaterEqual(boot.ceiling_seconds(args), (sequence_ms * 5 + 3999) // 4000)
 
+    def test_arm_busybox_allowances_are_provisional_ceiling(self):
+        root = TOOLS.parents[1]
+        runner = (root / 'libs/libbreenix/src/suite.rs').read_text()
+        shared = runner.split('pub const NAMED_CASE_ALLOWANCES', 1)[1].split('];', 1)[0]
+        self.assertEqual(hashlib.sha256(shared.encode()).hexdigest(),
+                         'ce78728d038e3e6db31c79155e19454ff403b8e6ff4e1d4976f0c57ffced15e2')
+        table = runner.split('pub const ARM_BUSYBOX_CASE_ALLOWANCES', 1)[1].split('];', 1)[0]
+        entries = re.findall(r'\("([^"]+)", "([^"]+)", ([\d_]+)\)', table)
+        manifest = json.loads((root / 'docs/suites/toolchain.json').read_text())
+        cases = {f'{category["id"]}/{case["id"]}' for category in manifest['categories']
+                 if category['id'] == 'busybox' for case in category['cases']}
+        self.assertEqual(len(cases), 15)
+        self.assertEqual(len(entries), 15)
+        self.assertEqual({(suite, case, int(ms.replace('_', ''))) for suite, case, ms in entries},
+                         {('toolchain', case, 60_000) for case in cases})
+        spec = importlib.util.spec_from_file_location('boot_progress', root / 'scripts/boot_progress.py')
+        progress = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(progress)
+        for _, _, ms in entries:
+            self.assertLess(int(ms.replace('_', '')), progress.STALL_SECONDS * 1000)
+
     def test_ui_testing_deadline_ceiling_and_start(self):
         d = self.driver
         d.args.mode, d.args.suite = 'suite', 'ui-testing'
