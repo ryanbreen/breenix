@@ -532,6 +532,26 @@ impl Category {
 /// A named allowance overrides both this default and the suite's own limit.
 pub const DEFAULT_CASE_LIMIT_MS: u64 = 10_000;
 
+// E25 ruling 71: provisional ARM64 QEMU allowances pending target measurements.
+#[cfg(target_arch = "aarch64")]
+pub const ARM_BUSYBOX_CASE_ALLOWANCES: &[(&str, &str, u64)] = &[
+    ("toolchain", "busybox/unpack", 60_000),
+    ("toolchain", "busybox/patch", 60_000),
+    ("toolchain", "busybox/generators", 60_000),
+    ("toolchain", "busybox/configure", 60_000),
+    ("toolchain", "busybox/inventory", 60_000),
+    ("toolchain", "busybox/build-libbb-1", 60_000),
+    ("toolchain", "busybox/build-libbb-2", 60_000),
+    ("toolchain", "busybox/build-libbb-3", 60_000),
+    ("toolchain", "busybox/build-libbb-4", 60_000),
+    ("toolchain", "busybox/build-applets-1", 60_000),
+    ("toolchain", "busybox/build-applets-2", 60_000),
+    ("toolchain", "busybox/build-applets-3", 60_000),
+    ("toolchain", "busybox/build-applets-4", 60_000),
+    ("toolchain", "busybox/link-and-list", 60_000),
+    ("toolchain", "busybox/required-usage", 60_000),
+];
+
 /// Named exceptions to case limits, checked by host tests against the stall deadline.
 /// RTC edge selection can span sixteen seconds plus three starting edges;
 /// allow reporter headroom without extending any other time-suite case.
@@ -1353,6 +1373,12 @@ impl Suite {
                 feed.start(&name);
                 screen.draw(self, &title, &subtitle, &states, Verdict::Running(&progress), &feed, only);
 
+                #[cfg(target_arch = "aarch64")]
+                let limit_ms = ARM_BUSYBOX_CASE_ALLOWANCES.iter()
+                    .chain(NAMED_CASE_ALLOWANCES.iter())
+                    .find(|&&(suite, case, _)| suite == self.id && case == name)
+                    .map_or(self.case_limit_ms, |&(_, _, limit)| limit);
+                #[cfg(not(target_arch = "aarch64"))]
                 let limit_ms = NAMED_CASE_ALLOWANCES.iter()
                     .find(|&&(suite, case, _)| suite == self.id && case == name)
                     .map_or(self.case_limit_ms, |&(_, _, limit)| limit);
