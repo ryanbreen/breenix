@@ -240,7 +240,7 @@ def audit_phases_equal_driver_phases(directory):
     names = [name for name, _ in arms]
     chain = [
         name for name, rest in arms
-        if ";" not in rest.strip().removesuffix(";;") and not any(other.startswith(name + "-") for other in names)
+        if ";" not in rest.strip().removesuffix(";;") and not any(re.fullmatch(re.escape(name) + r"-\d+", other) for other in names)
     ]
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     audit = runpy.run_path(str(Path(__file__).resolve().parent / "audit.py"), run_name="audit_phases")
