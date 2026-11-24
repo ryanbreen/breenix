@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+"""Compile a C++ workload to a Breenix object with the built K3 headers."""
+import argparse
+import os
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'scripts/rust-host'))
+from cxx_runtime import ARCHES, BACKGROUND, CLANGXX, POSIX_FLAG
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--arch', choices=ARCHES, required=True)
+    parser.add_argument('--runtime-build', type=Path, required=True)
+    parser.add_argument('flags', nargs=argparse.REMAINDER, help='Clang arguments after --')
+    args = parser.parse_args()
+    if len(args.flags) < 2 or args.flags[0] != '--':
+        parser.error('pass the Clang arguments after --')
+    headers = args.runtime_build.resolve() / 'include/c++/v1'
+    if not (headers / '__config_site').is_file():
+        parser.error(f'missing configured libc++ headers at {headers}')
+    env = dict(os.environ)
+    for name in ('CPATH', 'CPLUS_INCLUDE_PATH'):
+        env.pop(name, None)
+    command = (*BACKGROUND, CLANGXX, '--no-default-config',
+               f'--target={args.arch}-unknown-none', '-nostdlibinc', '-nostdinc++',
+               '-isystem', str(headers), '-isystem', str(ROOT / 'libs/libbreenix-libc/include'),
+               POSIX_FLAG, '-fno-exceptions', '-c', *args.flags[1:])
+    os.execvpe(command[0], command, env)
+
+
+if __name__ == '__main__':
+    main()

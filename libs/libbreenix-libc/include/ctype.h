@@ -2,6 +2,10 @@
 #define __BREENIX_CTYPE_H
 #include <__breenix/types.h>
 #include <__breenix/features.h>
+
+/* C17 7.4 and POSIX.1-2024 <ctype.h>. */
+__BREENIX_BEGIN_DECLS
+
 int isalnum(int);
 int isalpha(int);
 int isblank(int);
@@ -37,4 +41,6 @@ int isascii(int);
 int toascii(int);
 #endif
 #endif
+
+__BREENIX_END_DECLS
 #endif

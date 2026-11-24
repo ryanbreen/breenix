@@ -15,6 +15,10 @@ struct tm {
 };
 #define CLOCKS_PER_SEC 1000000L
 #define TIME_UTC 1
+
+/* C17 7.27 and POSIX.1-2024 <time.h>. */
+__BREENIX_BEGIN_DECLS
+
 time_t time(time_t *);
 double difftime(time_t, time_t);
 clock_t clock(void);
@@ -46,4 +50,6 @@ extern char *tzname[2];
 time_t timegm(struct tm *);
 char *strptime(const char *, const char *, struct tm *);
 #endif
+
+__BREENIX_END_DECLS
 #endif

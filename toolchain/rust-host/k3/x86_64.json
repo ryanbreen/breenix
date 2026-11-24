@@ -2,6 +2,10 @@
   "claim-lint:ok": "claim-lint:ok: compiler target triples, see toolchain/rust-host/k3/README.md",
   "arch": "x86_64",
   "llvm_project": "ed6566573eb21b00a3f87815e14ff766fd56ef42",
+  "clang++": {
+    "path": "/usr/bin/clang++",
+    "version": "Apple clang version 21.0.0 (clang-2100.4.1.1)"
+  },
   "configure": {
     "command": [
       "taskpolicy",
@@ -20,16 +24,19 @@
       "-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY",
       "-DCMAKE_C_COMPILER=/usr/bin/clang",
       "-DCMAKE_CXX_COMPILER=/usr/bin/clang++",
+      "-DCMAKE_AR=/opt/homebrew/opt/llvm/bin/llvm-ar",
+      "-DCMAKE_RANLIB=/opt/homebrew/opt/llvm/bin/llvm-ranlib",
       "-DCMAKE_ASM_COMPILER=/usr/bin/clang",
       "-DCMAKE_C_COMPILER_TARGET=x86_64-unknown-none",
       "-DCMAKE_CXX_COMPILER_TARGET=x86_64-unknown-none",
       "-DCMAKE_ASM_COMPILER_TARGET=x86_64-unknown-none",
-      "-DCMAKE_C_FLAGS=-nostdlibinc -isystem <repo>/libs/libbreenix-libc/include",
-      "-DCMAKE_CXX_FLAGS=-nostdlibinc -isystem <repo>/libs/libbreenix-libc/include",
+      "-DCMAKE_C_FLAGS=-nostdlibinc -isystem <repo>/libs/libbreenix-libc/include -D_POSIX_C_SOURCE=200809L",
+      "-DCMAKE_CXX_FLAGS=-nostdlibinc -isystem <repo>/libs/libbreenix-libc/include -D_POSIX_C_SOURCE=200809L",
       "-DLLVM_ENABLE_RUNTIMES=libcxx;libcxxabi",
       "-DLLVM_INCLUDE_TESTS=OFF",
       "-DLIBCXX_CXX_ABI=libcxxabi",
       "-DLIBCXX_ENABLE_LOCALIZATION=OFF",
+      "-DLIBCXX_ENABLE_FILESYSTEM=OFF",
       "-DLIBCXX_ENABLE_THREADS=ON",
       "-DTHREADS_PREFER_PTHREAD_FLAG=ON",
       "-DLIBCXX_HAS_PTHREAD_API=ON",
@@ -45,13 +52,12 @@
     ],
     "exit_status": 0,
     "first_error": null,
-    "warnings": [
-      "CMake Warning (deprecated) at <llvm-project>/cmake/Modules/CMakePolicy.cmake:6 (cmake_policy):",
-      "CMake Warning (author) at /opt/homebrew/share/cmake/Modules/GNUInstallDirs.cmake:448 (message):",
-      "CMake Warning (policy) at <llvm-project>/llvm/cmake/modules/HandleLLVMOptions.cmake:905 (CHECK_C_SOURCE_COMPILES):",
-      "CMake Warning (unused-cli):"
-    ],
-    "log_sha256": "a7cd62499a3a912eaaf9d6450bae7a95fc61a34dbcf45cc616d698978af6eb07"
+    "warnings": {
+      "CMake Warning (deprecated) at <llvm-project>/cmake/Modules/CMakePolicy.cmake:6 (cmake_policy):\n  The OLD behavior for policy CMP0116 will be removed from a future version\n  of CMake.\n\n  The cmake-policies(7) manual explains that the OLD behaviors of all\n  policies are deprecated and that a policy should be set to OLD only under\n  specific short-term circumstances.  Projects should be ported to the NEW\n  behavior and not rely on setting a policy to OLD.\nCall Stack (most recent call first):\n  CMakeLists.txt:18 (include)\nThis warning is for project developers.  Use -Wno-author or -Wno-deprecated\nto suppress it.": 1,
+      "CMake Warning (policy) at <llvm-project>/llvm/cmake/modules/HandleLLVMOptions.cmake:905 (CHECK_C_SOURCE_COMPILES):\n  Policy CMP0219 is not set: Macro invocations preserve backslashes in\n  arguments.  Run \"cmake --help-policy CMP0219\" for policy details.  Use the\n  cmake_policy command to set the policy and suppress this warning.\n\n  Command \"CHECK_C_SOURCE_COMPILES\" called with arguments containing\n  backslashes.\n\n  Since the policy is not set, backslashes in the arguments:\n\n   \"// \\\\\\n//\\nint main(void) {return 0;}\"\n\n  will be interpreted as escape sequences for compatibility.\n\n  Set the policy to NEW to instead pass\n\n   \"// \\\\\\\\\\\\n//\\\\nint main(void) {return 0;}\"\n\n  so that argument parsing will preserve the original values.\nCall Stack (most recent call first):\n  CMakeLists.txt:175 (include)\nThis warning is for project developers.  Use -Wno-author or -Wno-policy to\nsuppress it.": 1,
+      "CMake Warning (unused-cli):\n  Manually-specified variables were not used by the project:\n\n    THREADS_PREFER_PTHREAD_FLAG": 1
+    },
+    "log_sha256": "627a2e68df9fc5be76aee8631572ac58f5239accee69013ff926a6c654945bc4"
   },
   "build": {
     "command": [
@@ -66,16 +72,25 @@
       "cxx_static",
       "cxxabi_static"
     ],
-    "exit_status": 1,
-    "first_error": "<scratch>/build/include/c++/v1/__thread/support/pthread.h:47:9: error: unknown type name 'pthread_mutex_t'",
-    "warnings": [
-      "<scratch>/build/include/c++/v1/tuple:313:13: warning: builtin __reference_binds_to_temporary is deprecated; use __reference_constructs_from_temporary instead [-Wdeprecated-builtins]",
-      "<scratch>/build/include/c++/v1/tuple:313:13: warning: builtin __reference_binds_to_temporary is deprecated; use __reference_constructs_from_temporary instead [-Wdeprecated-builtins]",
-      "<scratch>/build/include/c++/v1/tuple:313:13: warning: builtin __reference_binds_to_temporary is deprecated; use __reference_constructs_from_temporary instead [-Wdeprecated-builtins]"
-    ],
-    "log_sha256": "6722ccaac877284060fa57a2bdf433794da5d6d7e497642e4f539d34a2ea4a34"
+    "exit_status": 0,
+    "first_error": null,
+    "warnings": {
+      "<llvm-project>/libcxx/src/include/config_elast.h:48:4: warning: ELAST for this platform not yet implemented [-W#warnings]": 1,
+      "<scratch>/build/include/c++/v1/__memory/allocator_traits.h:143:1: warning: 'is_always_equal' is deprecated [-Wdeprecated-declarations]": 106,
+      "<scratch>/build/include/c++/v1/tuple:313:13: warning: builtin __reference_binds_to_temporary is deprecated; use __reference_constructs_from_temporary instead [-Wdeprecated-builtins]": 32
+    },
+    "log_sha256": "81cd22d7c2c6f35f5f77425d7323b8414cbaae9c7dbb786310626b81daaf9da7"
   },
-  "archives": {},
+  "archives": {
+    "libc++.a": {
+      "sha256": "e8e607c6ca10c4e8d25b04f7f53a7e94bd91f87370ec88c3404d21f05b20f6ab",
+      "notice_sha256": "539dd7aed86e8a4f12cbdd0e6c50c189c7d74847e4fecc64ce2c6ee3a01da38b"
+    },
+    "libc++abi.a": {
+      "sha256": "af36e6660853d5e1f34c2922b8e40a070e71f6686f21982b1bc0bc8772d5d7d3",
+      "notice_sha256": "e2b35be49f7284a45b7baca8fc7b3ab7440e7902392b2528a457816b5bb2a15c"
+    }
+  },
   "generic_collision_targets": [
     "cxxabi_shared",
     "cxxabi_static"
