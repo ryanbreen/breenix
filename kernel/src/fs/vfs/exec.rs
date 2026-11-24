@@ -48,7 +48,7 @@ pub fn load_image(
     // Existing bindings retain their authority, checked before copying below.
     // The page-map lock is not held across I/O.
     let _image = fs.mapping_io(&node)?;
-    let _bindings = node.map.block_mapping_bindings();
+    let _bindings = node.map.block_mapping_bindings().map_err(Errno)?;
     let flags = super::mount::flags_at(&resolved.path);
     let (bytes, identity) = read_image(fs.as_ref(), &node, flags, cred, killed)?;
     Ok((bytes, identity, resolved.path))

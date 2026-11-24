@@ -40,6 +40,8 @@ use crate::memory::{
     vma::{MmapFlags, Protection, Vma},
 };
 use crate::process::{Process, ProcessId, ProcessManager};
+use crate::task::thread::ThreadState;
+use crate::task::waitqueue::WaitQueueHead;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
@@ -172,6 +174,8 @@ struct MapShared {
     inner: Mutex<MapInner>,
     /// Exec copies exclude new mmap publication without holding the page-map lock.
     binding_gate: spin::RwLock<()>,
+    /// Threads sleeping until `binding_gate` is released.
+    binding_waiters: WaitQueueHead,
     eviction_pending: AtomicBool,
     resident: AtomicBool,
     dirty: AtomicBool,
@@ -180,6 +184,30 @@ struct MapShared {
     disk_epoch: AtomicU64,
     disk_write_seq: AtomicU64,
     syncers: AtomicUsize,
+}
+
+enum GateHold<'a> {
+    Exclusive(spin::RwLockWriteGuard<'a, ()>),
+    Shared(spin::RwLockReadGuard<'a, ()>),
+}
+
+/// A held binding gate (`MapState::block_mapping_bindings` and
+/// `allow_mapping_binding`). Dropping it releases the gate, then wakes the
+/// threads sleeping for it.
+pub(crate) struct MapBindingGate<'a> {
+    held: Option<GateHold<'a>>,
+    binding_waiters: &'a WaitQueueHead,
+}
+
+impl Drop for MapBindingGate<'_> {
+    fn drop(&mut self) {
+        match self.held.take() {
+            Some(GateHold::Exclusive(guard)) => drop(guard),
+            Some(GateHold::Shared(guard)) => drop(guard),
+            None => {}
+        }
+        self.binding_waiters.wake_up();
+    }
 }
 
 #[derive(Debug)]
@@ -607,6 +635,7 @@ impl MapState {
                     writeback_epoch: 0,
                 }),
                 binding_gate: spin::RwLock::new(()),
+                binding_waiters: WaitQueueHead::new(),
                 eviction_pending: AtomicBool::new(false),
                 resident: AtomicBool::new(false),
                 dirty: AtomicBool::new(false),
@@ -685,26 +714,52 @@ impl MapState {
 
     /// Acquire only outside filesystem and PROCESS_MANAGER guards. The caller
     /// retains its transfer lease for mutation exclusion while waiting/copying.
-    pub(crate) fn block_mapping_bindings(&self) -> spin::RwLockWriteGuard<'_, ()> {
-        loop {
-            if let Some(guard) = self.state.binding_gate.try_write() {
-                return guard;
-            }
-            crate::task::scheduler::yield_current();
-            core::hint::spin_loop();
-        }
+    pub(crate) fn block_mapping_bindings(&self) -> Result<MapBindingGate<'_>, i32> {
+        self.take_binding_gate(true)
     }
 
     /// Population retains its transfer lease, then joins the gate before taking
     /// the filesystem/PROCESS_MANAGER guards that publish the new binding.
-    pub(crate) fn allow_mapping_binding(&self) -> spin::RwLockReadGuard<'_, ()> {
-        loop {
-            if let Some(guard) = self.state.binding_gate.try_read() {
-                return guard;
+    pub(crate) fn allow_mapping_binding(&self) -> Result<MapBindingGate<'_>, i32> {
+        self.take_binding_gate(false)
+    }
+
+    /// Exec holds the gate as its writer while it copies an image, and can block
+    /// on disk reads while holding it; mmap holds it shared while it publishes
+    /// a binding. Both take it inside system calls, which run with preemption
+    /// disabled, so a retry loop there keeps its CPU from the holder that has
+    /// to release the gate. A taker that finds the gate held sleeps on
+    /// `binding_waiters` until the release wakes it. The gate is tried again
+    /// under the queue's lock before the sleep is published, so a release
+    /// between the two attempts still wakes this taker. Only a fatal signal
+    /// ends the wait early (EINTR). An uncontended take uses no wait queue, as
+    /// boot-time image loads require.
+    fn take_binding_gate(&self, exclusive: bool) -> Result<MapBindingGate<'_>, i32> {
+        let shared = &*self.state;
+        let try_hold = || {
+            if exclusive {
+                shared.binding_gate.try_write().map(GateHold::Exclusive)
+            } else {
+                shared.binding_gate.try_read().map(GateHold::Shared)
             }
-            crate::task::scheduler::yield_current();
-            core::hint::spin_loop();
+        };
+        let mut held = try_hold();
+        while held.is_none() {
+            let outcome = shared.binding_waiters.prepare_to_wait_checked(
+                ThreadState::BlockedOnIO,
+                None,
+                || {
+                    held = try_hold();
+                    held.is_none()
+                },
+            );
+            let waited =
+                crate::syscall::blocking_io::wait_prepared_killable(&shared.binding_waiters, outcome);
+            if held.is_none() {
+                waited?;
+            }
         }
+        Ok(MapBindingGate { held, binding_waiters: &shared.binding_waiters })
     }
 
     /// Exec retains a per-inode transfer lease through its image copy. A shared
