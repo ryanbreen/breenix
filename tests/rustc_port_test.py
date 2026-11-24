@@ -18,6 +18,67 @@ def git(*args):
 
 
 class RustcPort(unittest.TestCase):
+    def test_llvm_config_route_recorded(self):
+        path = RECORDS / '3.json'
+        self.assertTrue(path.is_file(), 'X0.3 LLVM configuration result has not been recorded')
+        record = json.loads(path.read_text())
+        base = json.loads((RECORDS / '2.json').read_text())
+        config = tomllib.loads(record['bootstrap_toml'])
+        self.assertEqual(config['build'], tomllib.loads(base['bootstrap_toml'])['build'])
+        self.assertEqual(record['command'][4:9], ['python3', 'x.py', 'build', '--stage', '1'])
+        target = Path(config['build']['host'][0]).stem
+        llvm = record['llvm_config']
+        self.assertEqual(config['target'][target]['llvm-config'], llvm['path'])
+        self.assertTrue(llvm['version'])
+        self.assertTrue(Path(llvm['libdir']).is_absolute())
+        self.assertEqual(llvm['libdir_entries_before'], [])
+        self.assertIsInstance(record['configuration_accepted'], bool)
+        self.assertTrue(record['configuration_evidence'].strip())
+        self.assertTrue(record['first_failing_step'].strip())
+        self.assertTrue(record['first_error'].strip())
+        self.assertEqual(record['time'], record['run']['started'])
+        self.assert_probe_run(record['run'])
+
+    def test_dependency_failures_classed(self):
+        path = RECORDS / '4.json'
+        self.assertTrue(path.is_file(), 'X0.4 dependency results have not been recorded')
+        record = json.loads(path.read_text())
+        base = json.loads((RECORDS / '2.json').read_text())
+        config = tomllib.loads(record['bootstrap_toml'])
+        self.assertEqual(config['build'], tomllib.loads(base['bootstrap_toml'])['build'])
+        rustc, cargo = record['runs']
+        self.assertEqual(rustc['command'][4:7], ['python3', 'x.py', 'check'])
+        self.assertIn('compiler/rustc', rustc['command'])
+        self.assertEqual(cargo['command'][5:10],
+                         ['check', '-Z', 'build-std', '--target', config['build']['host'][0]])
+        self.assertTrue(cargo['working_directory'].endswith('/src/tools/cargo'))
+        self.assertEqual(record['time'], rustc['started'])
+        for run in (rustc, cargo):
+            self.assert_probe_run(run)
+            failures = run['failures']
+            self.assertCountEqual([f['crate'] for f in failures], run['failed_crates'])
+            if run['exit_status'] != 0 and not failures:
+                self.assertTrue(run['blocking_diagnostic'].strip())
+            for failure in failures:
+                self.assertTrue(failure['crate'].strip())
+                self.assertTrue(failure['text'].strip())
+                self.assertIn(failure['class'], {'breenix-side', 'dependency-change'})
+                if failure['class'] == 'breenix-side':
+                    self.assertTrue(failure['item'].strip())
+                else:
+                    self.assertTrue(failure['stand_in_crate'].strip())
+                    self.assertTrue(failure['published_api_url'].startswith('https://'))
+
+    def assert_probe_run(self, run):
+        self.assertEqual(run['timeout_seconds'], 40 * 60)
+        self.assertEqual(run['probe_tree_commit'], PIN)
+        self.assertEqual(run['probe_tree_status_before'], '')
+        self.assertEqual(run['probe_tree_status'], '')
+        self.assertTrue(run['prediction'].strip())
+        self.assertLess(datetime.datetime.fromisoformat(run['prediction_time']),
+                        datetime.datetime.fromisoformat(run['started']))
+        self.assertRegex(run['log_sha256'], r'^[0-9a-f]{64}$')
+
     def test_bootstrap_hosted_host_recorded(self):
         record_path = RECORDS / '2.json'
         self.assertTrue(record_path.is_file(), 'X0.2 bootstrap result has not been recorded')
