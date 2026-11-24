@@ -357,8 +357,7 @@ pub extern "C" fn rust_breakpoint_handler(frame_ptr: *mut u64) {
         // CRITICAL: Do NOT advance RIP manually - CPU already advanced past INT3
         // The saved RIP already points to the instruction after the breakpoint
 
-        // Check if we came from userspace
-        let from_userspace = (cs & 3) == 3;
+        let from_userspace = crate::arch_impl::x86_64::breakpoint::from_userspace(cs);
 
         crate::serial_println!("BP from_userspace={}, CS={:#x}", from_userspace, cs);
 
@@ -367,6 +366,10 @@ pub extern "C" fn rust_breakpoint_handler(frame_ptr: *mut u64) {
             crate::serial_println!("🎉 BREAKPOINT from USERSPACE - Ring 3 SUCCESS!");
             crate::serial_println!("  RIP: {:#x}, CS: {:#x} (RPL={})", rip, cs, cs & 3);
             crate::serial_println!("  RSP: {:#x}", rsp);
+            if let Some(signals) = crate::task::thread::current_thread_signals() {
+                signals.breakpoint.record(rip);
+                crate::task::scheduler::retry_after_interrupts_x86();
+            }
         } else {
             log::debug!("Breakpoint from kernel at RIP: {:#x}", rip);
         }

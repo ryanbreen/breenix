@@ -21,6 +21,18 @@ CORPUS = Path("usr/share/breenix/toolchain")
 BUSYBOX = CORPUS / "busybox"
 BUSYBOX_MILESTONE = "toolchain/busybox-on-box"
 BUSYBOX_SCRATCH = "toolchain-scratch.img"
+KERNEL_ASSEMBLY_MILESTONE = "toolchain/kernel-assembly"
+BUSYBOX_MILESTONES = (BUSYBOX_MILESTONE, KERNEL_ASSEMBLY_MILESTONE)
+KERNEL_ASSEMBLY = CORPUS / "kernel-asm"
+KERNEL_ASSEMBLY_RECORD = "kernel-assembly.record"
+KERNEL_ASM_CORPUS = ("privileged.s", "privileged.hex")
+KERNEL_ASM_SOURCES = (
+    "src/syscall/entry.asm",
+    "src/interrupts/timer_entry.asm",
+    "src/interrupts/breakpoint_entry.asm",
+    "src/arch_impl/x86_64/ap_trampoline.asm",
+)
+KERNEL_ASM_OBJECTS = ("syscall_entry.o", "timer_entry.o", "breakpoint_entry.o", "ap_trampoline.o")
 # 25.11d2-driver measured 39,576 KiB. E24's 64 MiB scratch geometry
 # leaves 25,960 KiB for filesystem overhead and guest allocation differences.
 BUSYBOX_SCRATCH_BYTES = 64 << 20
@@ -177,11 +189,49 @@ def busybox_scratch_record(path):
     return {"size": BUSYBOX_SCRATCH_BYTES, "sha256": digest(path)}
 
 
+def read_kernel_assembly_record(path):
+    fields = {}
+    for line in path.read_text().splitlines():
+        name, separator, value = line.partition("=")
+        if not separator or name in fields or not value:
+            raise ValueError("invalid kernel assembly record field")
+        fields[name] = value
+    digests = (*KERNEL_ASM_SOURCES, *KERNEL_ASM_OBJECTS, "bas_sha256", "kernel_elf_sha256")
+    if (fields.keys() != {*digests, "cargo_package", "build_host", "rustc"}
+            or fields["cargo_package"] != "bas"
+            or any(not SHA256.fullmatch(fields[name]) for name in digests)):
+        raise ValueError("invalid kernel assembly record")
+    return fields
+
+
+def kernel_assembly_record(tree, files, arch, milestone):
+    staged = {path for path in files if path.is_relative_to(KERNEL_ASSEMBLY)}
+    if milestone != KERNEL_ASSEMBLY_MILESTONE:
+        if staged:
+            raise ValueError(f"kernel assembly fixture requires {KERNEL_ASSEMBLY_MILESTONE}")
+        return None
+    if arch != "x86_64":
+        raise ValueError(f"{KERNEL_ASSEMBLY_MILESTONE} requires x86_64")
+    inputs = (*KERNEL_ASM_SOURCES, *KERNEL_ASM_OBJECTS)
+    if staged != {KERNEL_ASSEMBLY / name for name in (*inputs, KERNEL_ASSEMBLY_RECORD, *KERNEL_ASM_CORPUS)}:
+        raise ValueError("kernel assembly fixture differs from the required file set")
+    directory = tree / KERNEL_ASSEMBLY
+    fields = read_kernel_assembly_record(directory / KERNEL_ASSEMBLY_RECORD)
+    for name in inputs:
+        if digest(directory / name) != fields[name]:
+            raise ValueError(f"staged kernel assembly bytes differ from the record for {name}")
+    for name in KERNEL_ASM_CORPUS:
+        if digest(directory / name) != digest(ROOT / "toolchain/corpus/kernel-asm" / name):
+            raise ValueError(f"staged kernel assembly corpus differs for {name}")
+    return fields
+
+
 def seal(bundle, commit, arch, tool_record, milestone=None):
     if not COMMIT.fullmatch(commit):
         raise ValueError("invalid toolchain build commit")
     tree = bundle / "root"
     files = payload(tree)
+    assembly = kernel_assembly_record(tree, files, arch, milestone)
     # Check both header roots independently of the copy into the guest root.
     sources = {}
     for directory, headers in (("include", ROOT / "libs/libbreenix-libc/include"),
@@ -245,7 +295,7 @@ def seal(bundle, commit, arch, tool_record, milestone=None):
     sources.update({CORPUS / path: source for path, source in c17_libc_inputs().items()})
     required.update((*libc_references(), CORPUS / "libc-functions.txt"))
 
-    busybox = busybox_inputs() if milestone == BUSYBOX_MILESTONE else {}
+    busybox = busybox_inputs() if milestone in BUSYBOX_MILESTONES else {}
     if {path for path in files if path.is_relative_to(BUSYBOX)} != busybox.keys():
         raise ValueError("BusyBox inputs differ from the selected fixture file set")
     sources.update(busybox)
@@ -315,6 +365,8 @@ def seal(bundle, commit, arch, tool_record, milestone=None):
         scratch = bundle / BUSYBOX_SCRATCH
         format_busybox_scratch(scratch)
         record_data["busyboxScratch"] = busybox_scratch_record(scratch)
+    if assembly is not None:
+        record_data["kernelAssembly"] = assembly
     record = json.dumps(record_data, indent=2) + "\n"
     (tree / RECORD).write_text(record)
     (bundle / "build.json").write_text(record)
@@ -340,13 +392,17 @@ def install(debugfs, image, bundle, arch, scratch, milestone=None):
     record = json.loads((bundle / "build.json").read_text())
     busybox = {path for path in files if path.is_relative_to(BUSYBOX)}
     disk = bundle / BUSYBOX_SCRATCH
-    if milestone == BUSYBOX_MILESTONE:
+    assembly = kernel_assembly_record(tree, files, arch, milestone)
+    if milestone in BUSYBOX_MILESTONES:
         if (busybox != busybox_inputs().keys()
                 or record.get("busyboxInputs") != {str(path): digest(tree / path) for path in busybox}
                 or record.get("busyboxScratch") != busybox_scratch_record(disk)):
             raise ValueError("BusyBox fixture differs from its build record")
     elif busybox or "busyboxInputs" in record or "busyboxScratch" in record or disk.exists() or disk.is_symlink():
-        raise ValueError("BusyBox fixture requires toolchain/busybox-on-box")
+        raise ValueError("BusyBox fixture requires toolchain/busybox-on-box or toolchain/kernel-assembly")
+    if ((assembly is None and "kernelAssembly" in record)
+            or (assembly is not None and record.get("kernelAssembly") != assembly)):
+        raise ValueError("kernel assembly fixture differs from its build record")
     if (not COMMIT.fullmatch(record.get("commit", "")) or record.get("arch") != arch
             or not SHA256.fullmatch(record.get("manifestSha256", ""))
             or (tree / RECORD).read_bytes() != (bundle / "build.json").read_bytes()
@@ -397,8 +453,8 @@ def stage(base, output, suites, bundle, arch, milestone=None):
             or output.resolve() in {seed.resolve() for seed in seeds}):
         raise ValueError("suite staging requires a separate output image")
     toolchain = "toolchain" in suites.split(",")
-    if milestone == BUSYBOX_MILESTONE and not toolchain:
-        raise ValueError("toolchain/busybox-on-box requires the toolchain suite")
+    if milestone in BUSYBOX_MILESTONES and not toolchain:
+        raise ValueError(f"{milestone} requires the toolchain suite")
     debugfs, = require_e2fsprogs("debugfs")
     for path in (*PREFIXES, SUITE):
         if stat_path(debugfs, base, path) is not None:

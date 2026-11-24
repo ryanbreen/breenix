@@ -316,6 +316,8 @@ pub struct ThreadSignals {
     /// Conservative notification for PM-owned pending signals and job stops.
     /// Generation sets it before releasing PM; only a quiet return check clears it.
     pub return_work: AtomicBool,
+    #[cfg(target_arch = "x86_64")]
+    pub(crate) breakpoint: crate::arch_impl::x86_64::breakpoint::PendingBreakpoint,
     pub blocked: AtomicU64,
     saved_mask: AtomicU64,
     saved_mask_valid: AtomicBool,
@@ -665,11 +667,14 @@ impl ThreadSignals {
     }
 
     pub fn needs_return_check(&self) -> bool {
-        self.return_work.load(Ordering::Acquire)
+        let pending = self.return_work.load(Ordering::Acquire)
             || self.timer_pending.load(Ordering::Acquire) != 0
             || self.sent.load(Ordering::Acquire) != 0
             || self.posix_pending.load(Ordering::Acquire) != 0
-            || self.posix_retry.load(Ordering::Acquire)
+            || self.posix_retry.load(Ordering::Acquire);
+        #[cfg(target_arch = "x86_64")]
+        let pending = pending || self.breakpoint.is_pending();
+        pending
     }
 
     pub fn with_mask(mask: u64) -> Self {

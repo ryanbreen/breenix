@@ -67,6 +67,8 @@ PAYLOADS = ('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux', 'disk-read
             metal_export.PAYLOAD, metal_persist.RECLAIM_PAYLOAD)
 CEILING_SECONDS = {'default': 900, 'shell': 900, 'probe': 900, 'suite': 1320, 'console': 900, 'tests': 1500,
                    'persistent-install': 2400, 'persistent': 900}
+KERNEL_ASSEMBLY_MILESTONE = 'toolchain/kernel-assembly'
+BUSYBOX_MILESTONES = ('toolchain/busybox-on-box', KERNEL_ASSEMBLY_MILESTONE)
 # The install boot's stub writes the layout and the test root before the bootloader starts (README, "Install and
 # upgrade"); it reports progress every 64 MiB.
 INSTALL_STUB_SECONDS = 1500
@@ -203,7 +205,14 @@ def mode_deadline_seconds(args, suite=None):
     """Give long-running suites their own DONE deadlines."""
     name = suite or (suites(args)[0] if args.mode == 'suite' else None)
     if args.mode == 'suite':
-        if getattr(args, 'milestone', None) == 'toolchain/busybox-on-box':
+        milestone = getattr(args, 'milestone', None)
+        if milestone == KERNEL_ASSEMBLY_MILESTONE:
+            # Case budgets (seconds): toolchain 1415, processes 1540, signals 1260,
+            # time 935. Keep the existing toolchain deadline and at least 25% reserve per suite.
+            deadlines = {'toolchain': 1969, 'processes': 1925, 'signals': 1575, 'time': 1169}
+            if name in deadlines:
+                return deadlines[name]
+        if milestone == 'toolchain/busybox-on-box':
             # E25 ruling 65: add a 25% reserve to each suite's case budgets.
             # Toolchain: 735 existing + 6*10 + 13*60 = 1575. Libc: 260*10.
             # Utilities: 194*10. Keep the reserve on each stage's DONE timer.
@@ -714,7 +723,7 @@ class Driver:
                 toolchain_evidence.build_identity(record, self.args.commit, 'x86_64')
                 if record.get('root') != metal_prebuilt.facts(fixture):
                     raise ValueError('fixture root differs from its toolchain build record')
-                if getattr(self.args, 'milestone', None) == 'toolchain/busybox-on-box':
+                if getattr(self.args, 'milestone', None) in BUSYBOX_MILESTONES:
                     if not record.get('busyboxInputs') or record.get('busyboxScratch') != metal_prebuilt.facts(scratch):
                         raise ValueError('BusyBox fixture differs from its toolchain build record')
                     # The E24 transport exposes four contiguous fixture slots.
@@ -727,7 +736,7 @@ class Driver:
                     scratch.replace(inputs / 'breenfs-scratch.img')
                     companions['breenfs-scratch.img'] = record['busyboxScratch']
                 elif 'busyboxInputs' in record or 'busyboxScratch' in record or scratch.exists():
-                    raise ValueError('BusyBox fixture requires toolchain/busybox-on-box')
+                    raise ValueError('BusyBox fixture requires toolchain/busybox-on-box or toolchain/kernel-assembly')
             except (OSError, ValueError) as error:
                 raise Finish(m.EXIT_CANCELLED, str(error)) from None
             # ext2.img is the ordinary/persistent input. Only a toolchain

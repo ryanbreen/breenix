@@ -9,7 +9,7 @@ ELF64 relocatable object. The default target is `x86_64` on either host.
 Use lower-case instructions and registers. The x86-64 backend uses Intel
 syntax. A semicolon outside a string starts a comment, and AArch64 also
 accepts `//`. The initial section is `.text`, where instructions go.
-`section NAME` selects `.text`, `.data`, `.rodata`, `.bss`, `.tdata` or `.tbss`.
+`section NAME` selects `.text`, `.data`, `.rodata`, `.bss`, `.tdata`, `.tbss` or an executable `.text.*` subsection.
 
 - `NAME:` defines a label at the current section offset. Labels are local
   by default and can have names like `.Lloop`. Use `global NAME` anywhere to
@@ -33,9 +33,10 @@ accepts `//`. The initial section is `.text`, where instructions go.
   otherwise. A 64-bit immediate store requires a value that fits the
   sign-extended imm32 form.
 - Write addresses as `[BASE + INDEX*SCALE + DISP]`, with any of those terms
-  omitted. Scales are 1, 2, 4 or 8. Address registers are uniformly 64-bit or
+  omitted. Numeric displacement terms may be parenthesized products. Scales are 1, 2, 4 or 8. Address registers are uniformly 64-bit or
   uniformly 32-bit within an address. Write `fs:[...]` or `gs:[...]` for a
-  segment base. The other four segment prefixes encode but have no effect
+  segment base; NASM-style `[gs:...]` and `[fs:...]` are also accepted.
+  The other four segment prefixes encode but have no effect
   on ordinary memory addresses in 64-bit mode.
 - `[rip + DISP]` uses a literal displacement. `[rip + LABEL + ADDEND]`
   computes the displacement from the end of the instruction to the label.
@@ -61,6 +62,50 @@ accepts `//`. The initial section is `.text`, where instructions go.
   offsets in one section, such as `. - NAME`. A dot in that expression
   denotes the directive's offset.
 
+## NASM syntax for x86 kernel assembly
+
+An x86 source file containing a preprocessor directive, `bits`, `times`,
+`o32` or `o64`
+uses NASM local-label syntax throughout the file. A colon-terminated label
+with a single leading dot and references to that name belong to the preceding
+non-local label. For example, `.loop` below `entry:` defines `entry.loop`.
+
+`%define NAME replacement` substitutes whole tokens. `%define NAME(a,b)
+replacement` substitutes the named arguments into the body. `%macro NAME N`
+through `%endmacro` defines a fixed-arity statement macro. Invoke it as
+`NAME arg1, arg2` and use `%1` through `%N` in the body. Macro names are
+case-sensitive. Quotes and semicolon comments are protected from substitution.
+The dialect uses a single definition per name and does not implement NASM
+macro overloading, `%%` labels, conditional directives or includes.
+
+`times N` repeats a data declaration (`db`, `dw`, `dd`, `dq`) or instruction.
+Use a nonnegative integer literal or a macro that expands to one. `bits 16`
+and `bits 32` set the default operand and address sizes to 16 and 32 bits
+respectively. `bits 64` is the initial mode, with 32-bit integer operands
+and 64-bit addresses by default. Register widths select the override when
+the instruction permits it. The legacy modes accept the 16-bit ModR/M
+address forms and the 32-bit ModR/M and SIB forms.
+
+`o32` selects the 32-bit operand size without changing address size.
+For example, `bits 16` with `o32 lgdt [0x100]` loads a six-byte descriptor
+using a 16-bit direct address. Use `jmp dword far [address]` for an
+m16:32 pointer in 16-bit mode, or `jmp far [address]` in 32-bit mode.
+MOV transfers segment selectors and uses EAX-class registers for control
+register moves in either legacy mode and RAX-class registers in 64-bit mode.
+
+Data and address fields can use `end - start + addend`. The two labels
+must be in the same section. Forward references use a fixed-width field
+filled after layout, and a 16-bit displacement requires a constant.
+Parentheses may group the labels or the difference in this dialect.
+Integer immediates also accept a literal left shift, such as `1 << 5`.
+
+The kernel sources use NASM's default non-executable flags for `.text.entry`
+and emit the trampoline in `.rodata` for copying at startup. NASM-style
+`align` in file-backed sections defaults to NOP padding.
+
+The pinned NASM manual and Intel SDM are in the
+[specification ledger](../docs/spec-ledger.md#edition-pins).
+
 ## Integer instructions
 
 - `movsx` and `movzx` extend a byte or word into a wider register. `movsxd`
@@ -83,9 +128,12 @@ accepts `//`. The initial section is `.text`, where instructions go.
   source. They use the same flag condition suffixes as `jcc`.
 - `push` and `pop` accept 16- or 64-bit registers and memory operands.
   Memory defaults to 64 bits. `push IMM` pushes a sign-extended 8- or
-  32-bit immediate as a 64-bit value. `lea` computes a memory address into
+  32-bit immediate as a 64-bit value; `push qword IMM` is also accepted. `lea` computes a memory address into
   a 16-, 32- or 64-bit register. `leave`, `nop`, `cld`, `std` and
-  `syscall` take no operands.
+  `syscall` take no operands. `swapgs`, `iretq`, `sysret`, `wrmsr`,
+  `rdmsr`, `hlt` and `cli` also take no operands; `o64 sysret` selects
+  the 64-bit return form. `mov` supports 64-bit GPR transfers to and from
+  `cr0`, `cr3` and `cr4`. `out dx, al` emits the byte port output form.
 
 ## Floating point, synchronization and strings
 
@@ -175,5 +223,8 @@ cargo test --locked -p bas
 
 The runner checks the x86-64 fixtures and the AArch64 branch corpus with
 the independent elfcheck. The byte expectations cite the pinned ISA tables
-in `toolchain/tests/bas/` and `toolchain/corpus/assembler-aarch64/`. The Rust
-test exercises malformed source on both targets.
+in `toolchain/tests/bas/` and `toolchain/corpus/assembler-aarch64/`.
+The Cargo tests include the
+[kernel object comparison](../tests/bas_kernel/differences.md). It uses
+`python3`, `nasm`, `llvm-objdump` and `llvm-readelf` from PATH. Set
+`LLVM_OBJDUMP` and `LLVM_READELF` to override the LLVM executable paths.

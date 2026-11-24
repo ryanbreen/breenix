@@ -7,7 +7,8 @@ use bobj::elf::{
 };
 
 use crate::aarch64::Relocation;
-use crate::object::{Endpoint, Object};
+use crate::nasm::Syntax;
+use crate::object::{Endpoint, LabelDifference, Object};
 use crate::{Diagnostic, Location, Result, Target};
 
 #[derive(Clone, Copy)]
@@ -47,6 +48,8 @@ pub(crate) struct Parser<'src, 'obj> {
     line_number: usize,
     pub(crate) column: usize,
     pub(crate) object: &'obj mut Object,
+    nasm: Option<&'obj mut Syntax>,
+    origin: Option<Location>,
 }
 
 impl<'src, 'obj> Parser<'src, 'obj> {
@@ -56,14 +59,22 @@ impl<'src, 'obj> Parser<'src, 'obj> {
             line_number,
             column: 0,
             object,
+            nasm: None,
+            origin: None,
         }
     }
 
+    pub(crate) fn with_nasm(mut self, syntax: &'obj mut Syntax, origin: Option<Location>) -> Self {
+        self.nasm = Some(syntax);
+        self.origin = origin;
+        self
+    }
+
     fn location(&self, column: usize) -> Location {
-        Location {
+        self.origin.unwrap_or(Location {
             line: self.line_number,
             column: column + 1,
-        }
+        })
     }
 
     pub(crate) fn error(&self, column: usize, message: &'static str) -> Diagnostic {
@@ -163,7 +174,15 @@ impl<'src, 'obj> Parser<'src, 'obj> {
         if !negative {
             self.take(b'+');
         }
-        let magnitude = self.magnitude()?;
+        let mut magnitude = self.magnitude()?;
+        if self.uses_nasm() && self.take(b'<') {
+            self.expect(b'<', "expected '<<' in integer expression")?;
+            magnitude = u32::try_from(self.magnitude()?)
+                .ok()
+                .filter(|&shift| shift < 64 && magnitude <= u64::MAX >> shift)
+                .map(|shift| magnitude << shift)
+                .ok_or_else(|| self.error(start, "integer shift out of range"))?;
+        }
         let sign_bit = 1u64 << (width * 8 - 1);
         let maximum = if negative {
             sign_bit
@@ -216,7 +235,16 @@ impl<'src, 'obj> Parser<'src, 'obj> {
         if !name.is_name() {
             return Err(self.error(name.column, "expected a symbol name"));
         }
-        Ok(self.object.symbol(name.text, self.location(name.column)))
+        let at = self.location(name.column);
+        if let Some(syntax) = &self.nasm {
+            if name.text.starts_with('.') && !name.text.starts_with("..") {
+                let scope = syntax.scope.as_deref().ok_or_else(|| {
+                    at.error("local label has no preceding non-local label")
+                })?;
+                return Ok(self.object.symbol(&format!("{scope}{}", name.text), at));
+            }
+        }
+        Ok(self.object.symbol(name.text, at))
     }
 
     pub(crate) fn reference(
@@ -229,6 +257,72 @@ impl<'src, 'obj> Parser<'src, 'obj> {
         let symbol = self.symbol(label)?;
         self.object
             .reference(symbol, kind, addend, trailing, self.location(label.column))
+    }
+
+    pub(crate) fn label_difference(&mut self) -> Result<Option<LabelDifference>> {
+        let saved = self.column;
+        let mut groups = self.size_groups();
+        let end = self.word();
+        while groups > 0 && self.take(b')') {
+            groups -= 1;
+        }
+        if !end.is_name() || !self.take(b'-') {
+            self.column = saved;
+            return Ok(None);
+        }
+        groups += self.size_groups();
+        let start = self.word();
+        if !start.is_name() {
+            self.column = saved;
+            return Ok(None);
+        }
+        let mut addend = 0i64;
+        loop {
+            if groups > 0 && self.take(b')') {
+                groups -= 1;
+                continue;
+            }
+            let before_addend = self.column;
+            if (self.take(b'+') || self.take(b'-')) && self.peek().is_ascii_digit() {
+                self.column = before_addend;
+                addend = addend
+                    .checked_add(self.addend()?)
+                    .ok_or_else(|| self.error(end.column, "symbol addend out of range"))?;
+            } else {
+                self.column = before_addend;
+                break;
+            }
+        }
+        if groups != 0 {
+            return Err(self.error(self.column, "expected ')' in label difference"));
+        }
+        Ok(Some(LabelDifference {
+            end: Endpoint::Symbol(self.symbol(end)?),
+            start: Endpoint::Symbol(self.symbol(start)?),
+            addend,
+        }))
+    }
+
+    pub(crate) fn constant_field(
+        &mut self,
+        column: usize,
+        difference: LabelDifference,
+        width: usize,
+        signed: bool,
+    ) -> Result<()> {
+        self.object
+            .constant_field(difference, width, signed, self.location(column))
+    }
+
+    pub(crate) fn rel16(&mut self, label: Token<'_>, addend: i64) -> Result<()> {
+        let difference = LabelDifference {
+            end: Endpoint::Symbol(self.symbol(label)?),
+            start: Endpoint::Here,
+            addend: addend
+                .checked_sub(2)
+                .ok_or_else(|| self.error(label.column, "relative displacement out of range"))?,
+        };
+        self.constant_field(label.column, difference, 2, true)
     }
 
     pub(crate) fn emit(&mut self, column: usize, bytes: &[u8]) -> Result<()> {
@@ -342,6 +436,9 @@ impl<'src, 'obj> Parser<'src, 'obj> {
                 _ => return Err(self.error(kind.column, "unsupported section type")),
             };
             Some((kind, flags))
+        } else if self.uses_nasm() && name.starts_with(".text.") {
+            // NASM 3.02 §9.10.2: .text.* falls under "section other".
+            Some((SHT_PROGBITS, SHF_ALLOC))
         } else {
             None
         };
@@ -350,14 +447,17 @@ impl<'src, 'obj> Parser<'src, 'obj> {
 
     fn emit_data_list(&mut self, width: usize) -> Result<()> {
         loop {
+            self.peek();
+            let column = self.column;
             if self.peek() == b'"' && width == 1 {
                 self.emit_string(false)?;
             } else if starts_number(self.peek()) {
-                let column = self.column;
                 let value = self.integer(width, false)?;
                 self.emit_word(column, value, width)?;
             } else if self.object.target == Target::Aarch64 {
                 self.emit_aarch64_data_reference(width)?;
+            } else if let Some(difference) = self.label_difference()? {
+                self.constant_field(column, difference, width, false)?;
             } else {
                 let label = self.word();
                 let kind = match (width, self.relocation_modifier()?) {
@@ -414,6 +514,9 @@ impl<'src, 'obj> Parser<'src, 'obj> {
         }
         let fill = if self.take(b',') {
             self.integer(1, false)? as u8
+        } else if self.uses_nasm() && self.object.in_progbits() {
+            // NASM ALIGN defaults to NOP padding (manual §6.15.1).
+            0x90
         } else {
             self.object.default_fill()
         };
@@ -457,12 +560,29 @@ impl<'src, 'obj> Parser<'src, 'obj> {
         if starts_number(self.peek()) {
             self.object.symbols[index].size = self.count()?;
         } else {
+            // NASM macro bodies can wrap either term or the full difference.
+            let mut groups = self.size_groups();
             let end = self.size_term()?;
+            while groups > 0 && self.take(b')') {
+                groups -= 1;
+            }
             self.expect(b'-', "expected 'END - START' after symbol name")?;
+            groups += self.size_groups();
             let start = self.size_term()?;
+            for _ in 0..groups {
+                self.expect(b')', "expected ')' in symbol size")?;
+            }
             self.object.size_expression(index, end, start, at);
         }
         Ok(())
+    }
+
+    fn size_groups(&mut self) -> usize {
+        let mut groups = 0;
+        while self.nasm.is_some() && self.take(b'(') {
+            groups += 1;
+        }
+        groups
     }
 
     fn directive(&mut self, op: Token<'_>) -> Result<bool> {
@@ -530,13 +650,19 @@ impl<'src, 'obj> Parser<'src, 'obj> {
             if self.take(b':') {
                 let index = self.symbol(op)?;
                 self.object.define_label(index, self.location(op.column))?;
+                if let Some(syntax) = &mut self.nasm {
+                    if !op.text.starts_with('.') {
+                        syntax.scope = Some(op.text.to_owned());
+                    }
+                }
                 continue;
             }
-            if !self.directive(op)? {
-                match self.object.target {
-                    Target::X86_64 => crate::x86::instruction(self, op)?,
-                    Target::Aarch64 => crate::aarch64::instruction(self, op)?,
-                }
+            if self.nasm.is_some() && op.text.eq_ignore_ascii_case("bits") {
+                self.set_bits()?;
+            } else if self.nasm.is_some() && op.text.eq_ignore_ascii_case("times") {
+                self.repeat()?;
+            } else if !self.directive(op)? {
+                self.instruction(op)?;
             }
             if !self.at_end() {
                 return Err(self.error(self.column, "unexpected input after operands"));
@@ -544,5 +670,68 @@ impl<'src, 'obj> Parser<'src, 'obj> {
             break;
         }
         Ok(())
+    }
+
+    fn set_bits(&mut self) -> Result<()> {
+        let mode = self.word();
+        let bits = match mode.text {
+            "16" => 16,
+            "32" => 32,
+            "64" => 64,
+            _ => return Err(self.error(mode.column, "expected BITS 16, 32 or 64")),
+        };
+        if let Some(syntax) = &mut self.nasm {
+            syntax.bits = bits;
+        }
+        Ok(())
+    }
+
+    fn repeat(&mut self) -> Result<()> {
+        self.peek();
+        let count_at = self.column;
+        let count = self.count()?;
+        if count > 1_048_576 {
+            return Err(self.error(count_at, "TIMES count exceeds the supported limit"));
+        }
+        if !self.byte().is_ascii_whitespace() {
+            return Err(self.error(self.column, "expected whitespace after TIMES count"));
+        }
+        let op = self.word();
+        if op.text.is_empty() || self.peek() == b':' {
+            return Err(self.error(op.column, "expected data or an instruction after TIMES"));
+        }
+        let operands = self.column;
+        for _ in 0..count {
+            self.column = operands;
+            match op.text {
+                "db" => self.emit_data_list(1)?,
+                "dw" => self.emit_data_list(2)?,
+                "dd" => self.emit_data_list(4)?,
+                "dq" => self.emit_data_list(8)?,
+                _ => self.instruction(op)?,
+            }
+            if !self.at_end() {
+                return Err(self.error(self.column, "unexpected input after operands"));
+            }
+        }
+        if count == 0 {
+            self.column = self.line.len();
+        }
+        Ok(())
+    }
+
+    fn instruction(&mut self, op: Token<'src>) -> Result<()> {
+        match self.object.target {
+            Target::X86_64 => crate::x86::instruction(self, op),
+            Target::Aarch64 => crate::aarch64::instruction(self, op),
+        }
+    }
+
+    pub(crate) fn uses_nasm(&self) -> bool {
+        self.nasm.is_some()
+    }
+
+    pub(crate) fn x86_bits(&self) -> u8 {
+        self.nasm.as_ref().map_or(64, |syntax| syntax.bits)
     }
 }
