@@ -253,7 +253,8 @@ def elf_differences(reference, candidate, readelf):
         for index in range(max(len(base_sections), len(sections))):
             left = base_sections[index:index + 1]
             right = sections[index:index + 1]
-            if left and right and not (left[0]["Flags"]["Value"] | right[0]["Flags"]["Value"]) & 2:
+            if (left and right and right[0]["Type"]["Value"] not in (0, 8)
+                    and not (left[0]["Flags"]["Value"] | right[0]["Flags"]["Value"]) & 2):
                 omitted = {"Offset"}
                 if left[0]["Name"]["Name"] == right[0]["Name"]["Name"] == ".strtab":
                     omitted.add("Size")
