@@ -104,6 +104,7 @@ def hosted_link_layout(arch, readelf, elf=None):
                 f"GNU ld §3.5.4: {symbol_name} must be hidden and at the array {suffix}",
             )
     print(f"hosted_link_layout ({arch}): PASS")
+    return symbols
 
 
 def hosted_targets():
@@ -119,7 +120,7 @@ def hosted_targets():
 
 
 def hosted_unwind_link(arch, readelf, nm, elf, link_map, archive):
-    hosted_link_layout(arch, readelf, elf)
+    symbols = hosted_link_layout(arch, readelf, elf)
     undefined = subprocess.check_output([nm, "--undefined-only", str(elf)], text=True)
     require(not any("_Unwind_" in line for line in undefined.splitlines()),
             f"{elf}: undefined unwind symbols: {undefined}")
@@ -127,6 +128,32 @@ def hosted_unwind_link(arch, readelf, nm, elf, link_map, archive):
     require(str(archive.resolve()) in map_text, f"{link_map}: expected archive {archive}")
     digest = hashlib.file_digest(archive.open("rb"), "sha256").hexdigest()
     require(digest in map_text, f"{link_map}: missing selected libc digest {digest}")
+
+    expected = {
+        (name, symbol["Value"]) for name, symbol in symbols.items()
+        if name.startswith("_Unwind_") and symbol["Section"]["Value"] != 0
+    }
+    require(expected, f"{elf}: no defined unwind symbols")
+    bunwind = PROGRAMS / f"target/hosted/bunwind/{arch}-breenix-hosted/release/libbunwind.a"
+    found = set()
+    input_section = ""
+    for line in map_text.splitlines():
+        # LLD -Map nests input sections and symbols under each output section.
+        row = re.fullmatch(r"\s*([0-9a-f]+)\s+[0-9a-f]+\s+[0-9a-f]+\s+\d+( +)(\S.*)", line)
+        if row is None:
+            continue
+        address, padding, entry = row.groups()
+        if len(padding) == 1:
+            input_section = ""
+        elif len(padding) == 9:
+            input_section = entry
+        elif len(padding) == 17 and entry.startswith("_Unwind_"):
+            require(input_section.startswith(f"{bunwind}("),
+                    f"{link_map}: {entry} is defined by {input_section or 'no input section'}, expected {bunwind}")
+            found.add((entry, int(address, 16)))
+    require(found == expected,
+            f"{link_map}: ELF unwind definitions differ from map "
+            f"(missing {sorted(expected - found)}, unexpected {sorted(found - expected)})")
     print(f"hosted_unwind_link ({arch}): PASS")
 
 
