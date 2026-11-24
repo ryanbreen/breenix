@@ -331,9 +331,19 @@ static SUITE: Suite = suite(
             "The kernel's assembly dialect through our assembler",
             &[
                 case(
+                    "four-objects-match-record",
+                    "Native bas reproduces the four recorded kernel assembly objects",
+                    four_objects_match_record,
+                ),
+                case(
                     "breakpoint-roundtrip",
                     "A user breakpoint delivers SIGTRAP and resumes after INT3",
                     breakpoint_roundtrip,
+                ),
+                case(
+                    "privileged-encodings",
+                    "Native bas matches the SDM bytes for the kernel instruction corpus",
+                    privileged_encodings,
                 ),
             ],
         ),
@@ -990,9 +1000,13 @@ struct AssemblyCase {
 
 impl AssemblyCase {
     fn start() -> Result<Self, String> {
+        Self::start_at("assembler")
+    }
+
+    fn start_at(category: &str) -> Result<Self, String> {
         Ok(Self {
-            corpus: Path::new("/").join(CORPUS).join("assembler"),
-            scratch: Scratch::new("assembler")?,
+            corpus: Path::new("/").join(CORPUS).join(category),
+            scratch: Scratch::new(category)?,
         })
     }
 
@@ -1070,6 +1084,14 @@ fn object_text(object: &[u8]) -> Option<&[u8]> {
     text
 }
 
+fn x86_encoding_bytes(path: &Path, table: &str) -> Result<Vec<u8>, String> {
+    table
+        .split_ascii_whitespace()
+        .map(|byte| u8::from_str_radix(byte, 16))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("{}: {error}", path.display()))
+}
+
 fn assembler_encodings_match() -> CaseResult {
     let case = AssemblyCase::start()?;
     let object = case.assemble("encodings")?;
@@ -1095,11 +1117,7 @@ fn assembler_encodings_match() -> CaseResult {
         }
         bytes
     } else {
-        hex_table
-            .split_ascii_whitespace()
-            .map(|byte| u8::from_str_radix(byte, 16))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| format!("{}: {error}", path.display()))?
+        x86_encoding_bytes(&path, &hex_table)?
     };
     if actual != expected || expected.is_empty() {
         let spec = if cfg!(target_arch = "aarch64") {
@@ -2029,6 +2047,66 @@ fn kbuild_host_programs() -> CaseResult {
     }
     if !receipt.is_file() {
         return Err("native Kbuild generator receipt missing".into());
+    }
+    Ok(())
+}
+
+fn four_objects_match_record() -> CaseResult {
+    const OBJECTS: [(&str, &str); 4] = [
+        ("src/syscall/entry.asm", "syscall_entry.o"),
+        ("src/interrupts/timer_entry.asm", "timer_entry.o"),
+        ("src/interrupts/breakpoint_entry.asm", "breakpoint_entry.o"),
+        ("src/arch_impl/x86_64/ap_trampoline.asm", "ap_trampoline.o"),
+    ];
+
+    if !cfg!(target_arch = "x86_64") {
+        return Err("kernel assembly record requires the x86 target".into());
+    }
+    let case = AssemblyCase::start_at("kernel-asm")?;
+    let path = case.corpus.join("kernel-assembly.record");
+    let record = io_at(&path, fs::read_to_string(&path))?;
+    let mut fields = BTreeMap::new();
+    for row in record.lines() {
+        let (name, value) = row.split_once('=').ok_or("malformed kernel assembly record")?;
+        if name.is_empty() || value.is_empty() || fields.insert(name, value).is_some() {
+            return Err(format!("invalid kernel assembly record field {name:?}").into());
+        }
+    }
+
+    for (source, object) in OBJECTS {
+        let input = case.corpus.join(source);
+        if fields.get(source).copied() != Some(file_sha256(&input)?.as_str()) {
+            return Err(format!("{source} does not match the kernel assembly record").into());
+        }
+        let staged = case.corpus.join(object);
+        let expected = io_at(&staged, fs::read(&staged))?;
+        if fields.get(object).copied() != Some(hex(&sha256(&expected)).as_str()) {
+            return Err(format!("{object} does not match the kernel assembly record").into());
+        }
+        let fresh = case.scratch.join(object);
+        require_success(source, case.run(&input, &fresh)?)?;
+        if io_at(&fresh, fs::read(&fresh))? != expected {
+            return Err(format!("fresh {object} differs from the recorded object").into());
+        }
+    }
+    Ok(())
+}
+
+fn privileged_encodings() -> CaseResult {
+    if !cfg!(target_arch = "x86_64") {
+        return Err("kernel instruction corpus requires the x86 target".into());
+    }
+    let case = AssemblyCase::start_at("kernel-asm")?;
+    let object = case.assemble("privileged")?;
+    let bytes = io_at(&object, fs::read(&object))?;
+    let actual = object_text(&bytes).ok_or("privileged object has no valid .text section")?;
+    let path = case.corpus.join("privileged.hex");
+    let expected = x86_encoding_bytes(&path, &io_at(&path, fs::read_to_string(&path))?)?;
+    if expected.is_empty() || actual != expected {
+        return Err(format!(
+            "privileged .text differs from the SDM table (expected {}, got {})",
+            hex(&expected), hex(actual),
+        ).into());
     }
     Ok(())
 }

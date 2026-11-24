@@ -380,8 +380,16 @@
       "title": "The kernel's assembly dialect through our assembler",
       "cases": [
         {
+          "id": "four-objects-match-record",
+          "title": "Native bas reproduces the four recorded kernel assembly objects"
+        },
+        {
           "id": "breakpoint-roundtrip",
           "title": "A user breakpoint delivers SIGTRAP and resumes after INT3"
+        },
+        {
+          "id": "privileged-encodings",
+          "title": "Native bas matches the SDM bytes for the kernel instruction corpus"
         }
       ]
     }

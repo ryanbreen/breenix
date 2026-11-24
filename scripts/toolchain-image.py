@@ -24,6 +24,7 @@ BUSYBOX_SCRATCH = "toolchain-scratch.img"
 KERNEL_ASSEMBLY_MILESTONE = "toolchain/kernel-assembly"
 KERNEL_ASSEMBLY = CORPUS / "kernel-asm"
 KERNEL_ASSEMBLY_RECORD = "kernel-assembly.record"
+KERNEL_ASM_CORPUS = ("privileged.s", "privileged.hex")
 KERNEL_ASM_SOURCES = (
     "src/syscall/entry.asm",
     "src/interrupts/timer_entry.asm",
@@ -211,13 +212,16 @@ def kernel_assembly_record(tree, files, arch, milestone):
     if arch != "x86_64":
         raise ValueError(f"{KERNEL_ASSEMBLY_MILESTONE} requires x86_64")
     inputs = (*KERNEL_ASM_SOURCES, *KERNEL_ASM_OBJECTS)
-    if staged != {KERNEL_ASSEMBLY / name for name in (*inputs, KERNEL_ASSEMBLY_RECORD)}:
+    if staged != {KERNEL_ASSEMBLY / name for name in (*inputs, KERNEL_ASSEMBLY_RECORD, *KERNEL_ASM_CORPUS)}:
         raise ValueError("kernel assembly fixture differs from the required file set")
     directory = tree / KERNEL_ASSEMBLY
     fields = read_kernel_assembly_record(directory / KERNEL_ASSEMBLY_RECORD)
     for name in inputs:
         if digest(directory / name) != fields[name]:
             raise ValueError(f"staged kernel assembly bytes differ from the record for {name}")
+    for name in KERNEL_ASM_CORPUS:
+        if digest(directory / name) != digest(ROOT / "toolchain/corpus/kernel-asm" / name):
+            raise ValueError(f"staged kernel assembly corpus differs for {name}")
     return fields
 
 

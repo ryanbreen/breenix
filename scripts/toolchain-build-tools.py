@@ -186,6 +186,8 @@ def stage_kernel_assembly(image, arch, corpus, milestone, record):
             staged.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(directory / name, staged)
     shutil.copyfile(record, destination / image.KERNEL_ASSEMBLY_RECORD)
+    for name in image.KERNEL_ASM_CORPUS:
+        shutil.copyfile(WORKSPACE / "corpus/kernel-asm" / name, destination / name)
 
 
 def build(arch, work, dev, corpus, milestone=None, assembly_record=None):
