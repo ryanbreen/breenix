@@ -14,8 +14,8 @@ Homebrew LLVM 20.1.8 commands, run for each `arch` in the directory with the ELF
 llvm-objcopy --dump-section ".eh_frame=$arch.eh_frame" \
   --dump-section ".eh_frame_hdr=$arch.eh_frame_hdr" "hosted-$arch.elf" /dev/null
 llvm-readelf -WS "hosted-$arch.elf"
-llvm-dwarfdump --eh-frame "hosted-$arch.elf" > "$arch.dwarfdump.txt"
+llvm-dwarfdump --eh-frame "hosted-$arch.elf" > "$arch.dwarfdump"
 ```
 
-The `dwarfdump.txt` files record the expected half-open FDE ranges and the CIE
+The `.dwarfdump` files record the expected half-open FDE ranges and the CIE
 initial instructions. DWARF 5 Table 7.29 supplies the instruction byte encodings.

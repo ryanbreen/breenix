@@ -35,7 +35,7 @@ fn corrupt_or_truncated_is_error_not_panic() {
             ErrorKind::Truncated
         );
     }
-    // The first FDE ends at byte 48, before the zero terminator.
+    // The first FDE ends at byte 48, at the start of the terminator.
     for len in 0..48 {
         assert_eq!(
             lookup(&frame[..len], header).unwrap_err().kind,

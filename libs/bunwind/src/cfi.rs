@@ -311,7 +311,7 @@ fn take<'a>(input: &mut &'a [u8], len: usize) -> Result<&'a [u8], ErrorKind> {
     Ok(value)
 }
 
-fn uint(input: &mut &[u8], width: usize, endian: Endian) -> Result<u64, ErrorKind> {
+pub(crate) fn uint(input: &mut &[u8], width: usize, endian: Endian) -> Result<u64, ErrorKind> {
     let bytes = take(input, width)?;
     let shift_in = |value, &byte| (value << 8) | u64::from(byte);
     Ok(match endian {

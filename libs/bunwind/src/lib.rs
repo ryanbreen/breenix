@@ -2,6 +2,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod cfi;
+pub mod ehframe;
 
 #[cfg(test)]
 extern crate std;
@@ -21,6 +22,3 @@ fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
     // SAFETY: The platform C ABI's abort takes no arguments and terminates.
     unsafe { abort() }
 }
-
-#[cfg(test)]
-mod ehframe_test;
