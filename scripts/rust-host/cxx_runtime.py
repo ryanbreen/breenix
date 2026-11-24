@@ -7,6 +7,8 @@ import re
 import shlex
 import shutil
 import tomllib
+import time
+from datetime import datetime, timezone
 from collections import Counter
 from pathlib import Path
 
@@ -92,16 +94,44 @@ def is_upstream_warning(warning):
                                 '<scratch>/build/include/c++/v1/'))
 
 
-def run_stage(name, command, scratch, llvm):
+def run_stage(name, command, scratch, llvm, *, timeout=55, allowlist=None):
     log = scratch / f'{name}.log'
-    status = build(command, log, env=dict(os.environ, CARGO_BUILD_JOBS='4'))
+    started = datetime.now(timezone.utc)
+    clock = time.monotonic()
+    status = build(command, log, env=dict(os.environ, CARGO_BUILD_JOBS='4'), timeout=timeout)
+    elapsed = time.monotonic() - clock
+    ended = datetime.now(timezone.utc)
     lines = log.read_text(errors='replace').splitlines()
-    error = next((normalize(line, scratch, llvm) for line in lines if FIRST_ERROR.search(line)), None)
-    if status and not error:
-        error = 'Process exceeded 55 seconds' if status == 124 else f'Process exited {status}'
     warnings = diagnostics_from_log(log, scratch, llvm)
-    return {'command': [normalize(str(arg), scratch, llvm) for arg in command],
-            'exit_status': status, 'first_error': error, 'warnings': warnings, 'log_sha256': digest(log)}
+    pending = Counter(warnings)
+    diagnostics = []
+    for line in lines:
+        normalized = normalize(line, scratch, llvm)
+        if FIRST_ERROR.search(line):
+            diagnostics.append(normalized)
+        else:
+            warning = next((entry for entry in pending
+                            if pending[entry] and entry.splitlines()[0] == normalized), None)
+            if warning is not None:
+                diagnostics.append(warning)
+                pending[warning] -= 1
+    remaining = Counter(allowlist or {})
+    error = None
+    for diagnostic in diagnostics:
+        if remaining[diagnostic] > 0:
+            remaining[diagnostic] -= 1
+        elif error is None:
+            error = diagnostic
+    if status == 124:
+        last_step = next((line for line in reversed(lines) if re.match(r'^\[\d+/\d+\]', line)),
+                         'no ninja step recorded')
+        error = f'Process exceeded {timeout} seconds after {elapsed:.2f}s; last step: {last_step}'
+    elif status and not error:
+        error = f'Process exited {status}'
+    return {'started': started.isoformat(), 'ended': ended.isoformat(), 'elapsed_seconds': elapsed,
+            'command': [normalize(str(arg), scratch, llvm) for arg in command],
+            'exit_status': status, 'first_error': error, 'diagnostics': dict(Counter(diagnostics)),
+            'warnings': warnings, 'log_sha256': digest(log)}
 
 
 def main():
@@ -117,12 +147,15 @@ def main():
     scratch.mkdir(parents=True, exist_ok=False)
     directory = scratch / 'build'
     clangxx = {'path': CLANGXX, 'version': output(CLANGXX, '--version').splitlines()[0]}
-    configure = run_stage('configure', configure_command(ROOT, llvm, directory, args.arch), scratch, llvm)
+    expected = json.loads((ROOT / f'toolchain/rust-host/k3/{args.arch}.json').read_text())
+    configure = run_stage('configure', configure_command(ROOT, llvm, directory, args.arch), scratch, llvm,
+                          allowlist=expected['configure']['warnings'])
     built = None
     archives = {}
     if configure['exit_status'] == 0:
         built = run_stage('build', (*BACKGROUND, 'cmake', '--build', str(directory), '--parallel', '4',
-                                    '--target', 'cxx_static', 'cxxabi_static'), scratch, llvm)
+                                    '--target', 'cxx_static', 'cxxabi_static'), scratch, llvm,
+                          allowlist=expected['build']['warnings'])
         if built['exit_status'] == 0:
             for name, component in (('libc++.a', 'libcxx'), ('libc++abi.a', 'libcxxabi')):
                 archive, = directory.rglob(name)
