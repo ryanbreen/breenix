@@ -18,6 +18,28 @@ READELF = os.environ.get('LLVM_READELF', 'llvm-readelf')
 
 
 class StartupProbeTest(unittest.TestCase):
+    def test_unwind_personality_slot_is_readable_by_bunwind(self):
+        for arch in ('x86_64', 'aarch64'):
+            with self.subTest(arch=arch):
+                elf = HOSTED / f'{arch}-breenix-hosted/release/rust-host-unwind-probe'
+                [report] = json.loads(subprocess.check_output([
+                    READELF, '--elf-output-style=JSON', '--program-headers', '--symbols', elf,
+                ]))
+                symbols = {row['Symbol']['Name']['Name']: row['Symbol'] for row in report['Symbols']}
+                slot = symbols['DW.ref.rust_eh_personality']
+                self.assertEqual(slot['Size'], 8)
+                loads = [row['ProgramHeader'] for row in report['ProgramHeaders']
+                         if row['ProgramHeader']['Type']['Value'] == 1]
+                # LSB Core 5.0 §10.3.1.2: the indirect encoding reads an
+                # address from the slot. Bunwind reads file-backed R loads.
+                readable = [load for load in loads if load['Flags']['Value'] == 4
+                            and 0 <= slot['Value'] - load['VirtualAddress'] <= load['FileSize'] - slot['Size']]
+                self.assertEqual(len(readable), 1, 'personality slot must be in a read-only load')
+                load = readable[0]
+                offset = load['Offset'] + slot['Value'] - load['VirtualAddress']
+                pointer = elf.read_bytes()[offset:offset + slot['Size']]
+                self.assertEqual(int.from_bytes(pointer, 'little'), symbols['rust_eh_personality']['Value'])
+
     def test_file_mmap_fixture_is_staged_read_only(self):
         SPEC.loader.exec_module(STAGE)
         debugfs, mke2fs = STAGE.require_e2fsprogs('debugfs', 'mke2fs')
