@@ -124,6 +124,28 @@ class SuiteWatcherTest(unittest.TestCase):
             else:
                 self.assertNotIn("--suite-deadlines", lines)
 
+    def test_stalled_suite_does_not_shift_the_next_suite_deadline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            serial = Path(tmp) / "serial"
+            serial.write_text("SUITE toolchain START cases=70\n")
+            ticks = iter((0, 0, 100, 3000, 3400))
+            fake_time = Mock(monotonic=lambda: next(ticks))
+
+            def advance(_):
+                if fake_time.sleep.call_count == 1:
+                    with serial.open("a") as output:
+                        output.write("SUITE_SEQUENCE STALLED toolchain cases=1/70\n"
+                                     "SUITE libc START cases=260\n")
+
+            fake_time.sleep.side_effect = advance
+            watch = runpy.run_path(str(ROOT / "scripts/watch-qemu.py"))["watch"]
+            progress = Mock(return_value=Mock(stalled=lambda: False))
+            with patch.dict(watch.__globals__, {"time": fake_time, "BootProgress": progress}):
+                self.assertEqual(watch(Mock(poll=lambda: None), serial, "suite", "toolchain,libc,utilities",
+                                       0, 1800, 0, Mock(), suite_deadlines={"toolchain": 2119, "libc": 3250,
+                                                                          "utilities": 2425}), "deadline")
+            self.assertEqual(fake_time.sleep.call_count, 3)
+
     def test_poweroff_scores_completed_recording_and_partial_exit_cancels(self):
         # Replay the standalone DONE -> MEMORY -> READY shutdown shape from
         # the gui-apps baseline, with directories records usable by the scorer.
