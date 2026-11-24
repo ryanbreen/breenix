@@ -53,6 +53,14 @@ static SUITE: Suite = suite(
                 process_pipes_locks,
             ),
         ],
+    ), category(
+        "unwind",
+        "Unwinding and floating-point ABI",
+        &[
+            case("catch-unwind-nested", "Nested catches and destructor order", catch_unwind_nested),
+            case("unwind-through-c-frame", "Unwind through a C frame", unwind_through_c_frame),
+            case("float-ffi-psabi", "Floating-point C ABI round trip", float_ffi_psabi),
+        ],
     )],
 );
 
@@ -364,6 +372,19 @@ fn process_pipes_locks() -> CaseResult {
     }
     Ok(())
 }
+
+fn unwind_probe(case_name: &str) -> CaseResult {
+    let output = std::process::Command::new("/usr/libexec/breenix/rust-host/unwind-probe")
+        .arg(case_name).output().map_err(|err| format!("spawn {case_name}: {err}"))?;
+    if !output.status.success() || output.stdout != b"ok\n" {
+        return Err(format!("{case_name}: status {}, stdout {:?}, stderr {:?}", output.status,
+            String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)).into());
+    }
+    Ok(())
+}
+fn catch_unwind_nested() -> CaseResult { unwind_probe("catch-unwind-nested") }
+fn unwind_through_c_frame() -> CaseResult { unwind_probe("unwind-through-c-frame") }
+fn float_ffi_psabi() -> CaseResult { unwind_probe("float-ffi-psabi") }
 
 fn main() {
     SUITE.run()

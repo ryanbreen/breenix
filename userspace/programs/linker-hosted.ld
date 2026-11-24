@@ -19,6 +19,7 @@ SECTIONS {
     . = 0x40000000 + SIZEOF_HEADERS; /* Start at 1GB (userspace area) */
 
     .text : ALIGN(4K) {
+        HIDDEN(__breenix_text_start = .);
         *(.text .text.*)
     } :text
 
@@ -30,6 +31,9 @@ SECTIONS {
         /* Static references have relocations resolved by this fixed-address link.
          * Their descriptors must remain read-only, like the tables they name. */
         *(.data.rel.ro .data.rel.ro.*)
+        /* The CIE's indirect personality encoding reads this pointer from
+         * the same read-only load as the unwind tables. */
+        *(.data.DW.ref.rust_eh_personality)
     } :rodata
 
     /* LSB Core 5.0 Table 10-4 and §10.6. Only the index is described
@@ -50,6 +54,9 @@ SECTIONS {
     .data : ALIGN(4K) {
         *(.data .data.*)
     } :data
+
+    .got : { *(.got .got.*) } :data
+    HIDDEN(__breenix_got_start = SIZEOF(.got) ? ADDR(.got) : 0);
 
     /* ELF gABI Table 3.8. KEEP preserves startup entries through GC,
      * and PROVIDE_HIDDEN exposes their bounds only to the static link

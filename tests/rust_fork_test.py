@@ -141,6 +141,25 @@ class ForkPinTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('main may only pin a commit on breenix-target', result.stderr)
 
+    def test_snapshot_keeps_ordinary_and_hosted_pins_separate(self):
+        ordinary_sha = self.sha
+        remote = self.publish_lane_commit()
+        with (self.root / 'rust-fork.toml').open('a') as pin:
+            pin.write(f'\n[hosted]\nrepo="{remote}"\nbranch="rust-std/lane"\ncommit="{self.sha}"\n')
+
+        result = self.snapshot()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        ordinary = self.root / 'gate-rust-fork/library'
+        hosted = self.root / 'gate-rust-fork-hosted/library'
+        self.env['BREENIX_RUST_FORK_LIBRARY'] = str(ordinary)
+        self.assertIn(ordinary_sha, self.verify().stdout)
+        self.assertFalse((ordinary / 'lane.rs').exists())
+        self.assertEqual((hosted / 'lane.rs').read_text(), 'lane')
+        result = self.verify('hosted-library')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(Path(result.stdout.strip()), hosted.resolve())
+        self.assertNotEqual(self.verify('check-release').returncode, 0)
+
     def test_present_pin_needs_no_fetch(self):
         self.pin(repo=Path(self.temp.name) / 'unreachable')
         result = self.snapshot()

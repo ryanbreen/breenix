@@ -19,6 +19,8 @@
 #     Build a single bin into target/hosted for the selected architecture.
 #   ./userspace/programs/build.sh --rust-host
 #     Build the opt-in suite and its probes into target/hosted.
+#   ./userspace/programs/build.sh --arch x86_64|aarch64 --bunwind
+#     Build libbunwind.a into target/hosted/bunwind/<target>/release.
 
 set -e
 
@@ -26,7 +28,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 usage() {
-    echo "Usage: $0 [--arch x86_64|aarch64] [--hosted-bin NAME [--features FEATURES] | --rust-host]" >&2
+    echo "Usage: $0 [--arch x86_64|aarch64] [--hosted-bin NAME [--features FEATURES] | --rust-host | --bunwind]" >&2
     exit 2
 }
 
@@ -34,6 +36,7 @@ ARCH="x86_64"
 HOSTED_BIN=""
 HOSTED_FEATURES=()
 RUST_HOST=0
+BUNWIND=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --arch)
@@ -49,6 +52,10 @@ while [[ $# -gt 0 ]]; do
             RUST_HOST=1
             shift
             ;;
+        --bunwind)
+            BUNWIND=1
+            shift
+            ;;
         --features)
             [[ -n "${2:-}" && "$2" != -* ]] || usage
             HOSTED_FEATURES+=(--features "$2")
@@ -59,6 +66,10 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+if [[ "$BUNWIND" == 1 ]]; then
+    [[ "$ARCH" == x86_64 || "$ARCH" == aarch64 ]] || usage
+    [[ "$RUST_HOST" == 0 && -z "$HOSTED_BIN" && ${#HOSTED_FEATURES[@]} -eq 0 ]] || usage
+fi
 if [[ "$RUST_HOST" == 1 ]]; then
     [[ -z "$HOSTED_BIN" && ${#HOSTED_FEATURES[@]} -eq 0 ]] || usage
     HOSTED_BIN="suite-rust-host"
@@ -92,13 +103,35 @@ if [ "${BREENIX_USERSPACE_REMAP:-0}" = 1 ]; then
     REMAP_FLAGS="--remap-path-prefix=$PROJECT_ROOT=/breenix --remap-path-prefix=$CARGO_HOME=/cargo"
 fi
 
+# The unwinder is built independently of libc and the std fork. Use a
+# dedicated target directory before entering any ordinary build or staging.
+if [[ "$BUNWIND" == 1 ]]; then
+    echo "  Building libbunwind.a ($ARCH)..."
+    (
+        cd "$PROJECT_ROOT/libs/bunwind"
+        unset CARGO_ENCODED_RUSTFLAGS __CARGO_TESTS_ONLY_SRC_ROOT
+        export RUSTFLAGS="$REMAP_FLAGS -D warnings"
+        cargo build --locked --release --lib -Z build-std=core \
+            --target "$PROJECT_ROOT/$TARGET_DIR-hosted.json" \
+            --target-dir "$SCRIPT_DIR/target/hosted/bunwind"
+    )
+    exit 0
+fi
+
+HOSTED_TARGET_JSON="$PROJECT_ROOT/$TARGET_DIR-hosted.json"
+HOSTED_LIBC_RELEASE_DIR="$LIBC_RELEASE_DIR"
+if [[ "$ARCH" == x86_64 ]]; then
+    HOSTED_LIBC_RELEASE_DIR="$PROJECT_ROOT/libs/libbreenix-libc/target/x86_64-breenix-c/release"
+fi
+BUNWIND_RELEASE_DIR="$SCRIPT_DIR/target/hosted/bunwind/$TARGET_DIR-hosted/release"
+
 # Rustflags for linking against libbreenix-libc
 # These are passed explicitly because cargo's [target.xxx] config sections
 # don't match reliably when --target is a relative path (the path prefix
 # prevents matching against the normalized target name).
 LINK_RUSTFLAGS="$REMAP_FLAGS -L native=$LIBC_RELEASE_DIR"
 STD_RUSTFLAGS="$LINK_RUSTFLAGS -C link-arg=-T$SCRIPT_DIR/linker.ld -C link-arg=--allow-multiple-definition -C default-linker-libraries=no"
-HOSTED_RUSTFLAGS="$LINK_RUSTFLAGS -C link-arg=--allow-multiple-definition -C default-linker-libraries=no"
+HOSTED_RUSTFLAGS="$REMAP_FLAGS -L native=$HOSTED_LIBC_RELEASE_DIR -L native=$BUNWIND_RELEASE_DIR -C link-arg=--allow-multiple-definition -C default-linker-libraries=no"
 
 echo "========================================"
 echo "  STD USERSPACE BUILD (Rust std library)"
@@ -106,8 +139,13 @@ echo "========================================"
 echo "  Architecture: $ARCH"
 echo ""
 
-# Reject mixed or uncommitted std inputs before any compilation.
-"$PROJECT_ROOT/scripts/rust-fork.sh" verify
+# Validate the library for each build before compiling. The ordinary build also
+# links the opt-in suite in its separate hosted target directory.
+RUST_FORK_TOOL="$PROJECT_ROOT/scripts/rust-fork.sh"
+if [[ -z "$HOSTED_BIN" ]]; then
+    "$RUST_FORK_TOOL" verify
+fi
+RUST_HOSTED_LIBRARY="$("$RUST_FORK_TOOL" hosted-library)"
 
 # B42 keeps the v1 stress subject only on x86-64.
 LEGACY_GRAPHICS_FEATURES=()
@@ -116,42 +154,51 @@ if [[ "$ARCH" == "x86_64" ]]; then
 fi
 
 RUST_FORK_LIBRARY="${BREENIX_RUST_FORK_LIBRARY:-$PROJECT_ROOT/rust-fork/library}"
-if [ ! -d "$RUST_FORK_LIBRARY" ]; then
-    echo "  ERROR: forked Rust library not found at $RUST_FORK_LIBRARY"
-    echo "  Set BREENIX_RUST_FORK_LIBRARY to the forked Rust library path"
-    echo "  The forked Rust compiler is required for std support"
-    exit 1
-fi
 
 # Cargo's build-std freshness checks can miss edits in an external sysroot.
 # Include its verified commit in compiler metadata so a pin change rebuilds std.
-if [ -f "$RUST_FORK_LIBRARY/../.rust-fork-snapshot.json" ]; then
-    FORK_COMMIT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["commit"])' "$RUST_FORK_LIBRARY/../.rust-fork-snapshot.json")"
-else
-    FORK_COMMIT="$(git -C "$RUST_FORK_LIBRARY/.." rev-parse HEAD)"
-fi
+fork_commit() {
+    if [ -f "$1/../.rust-fork-snapshot.json" ]; then
+        python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["commit"])' "$1/../.rust-fork-snapshot.json"
+    else
+        git -C "$1/.." rev-parse HEAD
+    fi
+}
 
 build_rust_programs() (
     set -o pipefail
     cd "$SCRIPT_DIR" || exit 1
     unset CARGO_ENCODED_RUSTFLAGS
-    export __CARGO_TESTS_ONLY_SRC_ROOT="$RUST_FORK_LIBRARY"
-    export RUSTFLAGS="$STD_RUSTFLAGS -C metadata=breenix_std_$FORK_COMMIT"
 
     if [[ -n "$HOSTED_BIN" ]]; then
+        FORK_COMMIT="$(fork_commit "$RUST_HOSTED_LIBRARY")" || exit 1
+        export __CARGO_TESTS_ONLY_SRC_ROOT="$RUST_HOSTED_LIBRARY"
         export RUSTFLAGS="$HOSTED_RUSTFLAGS -C metadata=breenix_std_$FORK_COMMIT"
         extra_link_flags=()
         case "$HOSTED_BIN" in
-            suite-rust-host|rust-host-startup-probe|rust-host-process-probe)
+            suite-rust-host|rust-host-startup-probe|rust-host-process-probe|rust-host-unwind-probe)
                 extra_link_flags=(-Cforce-unwind-tables=yes) ;;
         esac
+        mkdir -p "$SCRIPT_DIR/target/hosted/$TARGET_DIR-hosted/release"
+        if [[ "$HOSTED_BIN" == rust-host-unwind-probe ]]; then
+            c_object="$SCRIPT_DIR/target/hosted/$TARGET_DIR-hosted/release/rust_host_unwind_frame.o"
+            clang --target="${ARCH}-unknown-none-elf" -O2 -funwind-tables -c "$SCRIPT_DIR/src/rust_host_unwind_frame.c" -o "$c_object"
+            extra_link_flags+=("-Clink-arg=$c_object")
+        fi
+        link_map="$SCRIPT_DIR/target/hosted/$TARGET_DIR-hosted/release/$HOSTED_BIN.map"
         # Keep hosted ELFs out of the ordinary install pool. cargo rustc
         # passes the arguments after -- to this bin's rustc invocation only.
-        cargo rustc --release --target "$TARGET_JSON" --target-dir "$SCRIPT_DIR/target/hosted" \
+        CARGO_PROFILE_RELEASE_PANIC=unwind cargo rustc --release -Z build-std=std,panic_unwind --target "$HOSTED_TARGET_JSON" --target-dir "$SCRIPT_DIR/target/hosted" \
             "${LEGACY_GRAPHICS_FEATURES[@]}" "${HOSTED_FEATURES[@]}" --bin "$HOSTED_BIN" -- \
-            "-Clink-arg=-T$SCRIPT_DIR/linker-hosted.ld" -Clink-arg=--eh-frame-hdr "${extra_link_flags[@]}"
+            "-Clink-arg=-T$SCRIPT_DIR/linker-hosted.ld" -Clink-arg=--eh-frame-hdr "-Clink-arg=-Map=$link_map" "${extra_link_flags[@]}" || exit 1
+        shasum -a 256 "$HOSTED_LIBC_RELEASE_DIR/libc.a" >> "$link_map"
     else
-        cargo build --release --target "$TARGET_JSON" "${LEGACY_GRAPHICS_FEATURES[@]}"
+        FORK_COMMIT="$(fork_commit "$RUST_FORK_LIBRARY")" || exit 1
+        STD_METADATA_SEED="${BREENIX_STD_METADATA_SEED:-$FORK_COMMIT}"
+        export __CARGO_TESTS_ONLY_SRC_ROOT="$RUST_FORK_LIBRARY"
+        export RUSTFLAGS="$STD_RUSTFLAGS -C metadata=breenix_std_$STD_METADATA_SEED"
+        cargo build --release --target "$TARGET_JSON" "${LEGACY_GRAPHICS_FEATURES[@]}" || exit 1
+        printf "%s\n" "$STD_METADATA_SEED" > "$SCRIPT_DIR/target/$TARGET_DIR/release/std-metadata-seed"
     fi 2>&1 | sed 's/^/  /'
 )
 
@@ -188,20 +235,6 @@ python3 "$PROJECT_ROOT/scripts/libc-clean-archive.py" \
     --archive "$LIBC_RELEASE_DIR/libc.a" --tool-dir "$LIBC_TOOLS"
 echo "  libbreenix-libc built successfully"
 
-if [[ -n "$HOSTED_BIN" ]]; then
-    echo "  Building hosted userspace binary $HOSTED_BIN ($ARCH)..."
-    build_rust_programs
-    if [[ "$RUST_HOST" == 1 ]]; then
-        HOSTED_BIN="rust-host-startup-probe"
-        echo "  Building hosted userspace binary $HOSTED_BIN ($ARCH)..."
-        build_rust_programs
-        HOSTED_BIN="rust-host-process-probe"
-        echo "  Building hosted userspace binary $HOSTED_BIN ($ARCH)..."
-        build_rust_programs
-    fi
-    exit 0
-fi
-
 # C programs link libc.a. aarch64's serves C as it is; x86_64's Rust build is
 # soft-float, so C gets a second build of the same crate with the SysV float ABI.
 if [[ "$ARCH" == "x86_64" ]]; then
@@ -221,6 +254,27 @@ if [[ "$ARCH" == "x86_64" ]]; then
         --archive "$LIBC_DIR/target/x86_64-breenix-c/release/libc.a" --tool-dir "$LIBC_TOOLS"
     echo "  libbreenix-libc C-ABI build (x86_64-breenix-c) built successfully"
 fi
+# Hosted links need the matching C ABI archive and the independent unwinder.
+if [[ -n "$HOSTED_BIN" || "$RUST_HOST" == 1 ]]; then
+    "$SCRIPT_DIR/build.sh" --arch "$ARCH" --bunwind
+fi
+if [[ -n "$HOSTED_BIN" ]]; then
+    echo "  Building hosted userspace binary $HOSTED_BIN ($ARCH)..."
+    build_rust_programs
+    if [[ "$RUST_HOST" == 1 ]]; then
+        HOSTED_BIN="rust-host-startup-probe"
+        echo "  Building hosted userspace binary $HOSTED_BIN ($ARCH)..."
+        build_rust_programs
+        HOSTED_BIN="rust-host-process-probe"
+        echo "  Building hosted userspace binary $HOSTED_BIN ($ARCH)..."
+        build_rust_programs
+        HOSTED_BIN="rust-host-unwind-probe"
+        echo "  Building hosted userspace binary $HOSTED_BIN ($ARCH)..."
+        build_rust_programs
+    fi
+    exit 0
+fi
+
 python3 "$PROJECT_ROOT/scripts/libc-symbol-audit.py" --arch "$ARCH"
 # The std link takes the first of two definitions (--allow-multiple-definition), so
 # refuse a libc.a that defines a symbol twice.
@@ -619,7 +673,8 @@ for name in $UTILITY_NAMES; do
 done
 
 RELEASE_DIR="$SCRIPT_DIR/target/$TARGET_DIR/release"
-HOSTED_RELEASE_DIR="$SCRIPT_DIR/target/hosted/$TARGET_DIR/release"
+HOSTED_RELEASE_DIR="$SCRIPT_DIR/target/hosted/$TARGET_DIR-hosted/release"
+"$SCRIPT_DIR/build.sh" --arch "$ARCH" --bunwind
 echo "  Building hosted userspace binary suite-rust-host ($ARCH)..."
 (
     HOSTED_BIN="suite-rust-host"

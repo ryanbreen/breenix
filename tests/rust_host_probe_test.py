@@ -18,6 +18,28 @@ READELF = os.environ.get('LLVM_READELF', 'llvm-readelf')
 
 
 class StartupProbeTest(unittest.TestCase):
+    def test_unwind_personality_slot_is_readable_by_bunwind(self):
+        for arch in ('x86_64', 'aarch64'):
+            with self.subTest(arch=arch):
+                elf = HOSTED / f'{arch}-breenix-hosted/release/rust-host-unwind-probe'
+                [report] = json.loads(subprocess.check_output([
+                    READELF, '--elf-output-style=JSON', '--program-headers', '--symbols', elf,
+                ]))
+                symbols = {row['Symbol']['Name']['Name']: row['Symbol'] for row in report['Symbols']}
+                slot = symbols['DW.ref.rust_eh_personality']
+                self.assertEqual(slot['Size'], 8)
+                loads = [row['ProgramHeader'] for row in report['ProgramHeaders']
+                         if row['ProgramHeader']['Type']['Value'] == 1]
+                # LSB Core 5.0 §10.3.1.2: the indirect encoding reads an
+                # address from the slot. Bunwind reads file-backed R loads.
+                readable = [load for load in loads if load['Flags']['Value'] == 4
+                            and 0 <= slot['Value'] - load['VirtualAddress'] <= load['FileSize'] - slot['Size']]
+                self.assertEqual(len(readable), 1, 'personality slot must be in a read-only load')
+                load = readable[0]
+                offset = load['Offset'] + slot['Value'] - load['VirtualAddress']
+                pointer = elf.read_bytes()[offset:offset + slot['Size']]
+                self.assertEqual(int.from_bytes(pointer, 'little'), symbols['rust_eh_personality']['Value'])
+
     def test_file_mmap_fixture_is_staged_read_only(self):
         SPEC.loader.exec_module(STAGE)
         debugfs, mke2fs = STAGE.require_e2fsprogs('debugfs', 'mke2fs')
@@ -28,7 +50,7 @@ class StartupProbeTest(unittest.TestCase):
             elf = root / 'probe'
             elf.write_bytes(b'\x7fELF')
             subprocess.run([mke2fs, '-q', '-t', 'ext2', '-F', image, '16M'], check=True, capture_output=True)
-            STAGE.stage(image, 'rust-host', elf, elf, elf)
+            STAGE.stage(image, 'rust-host', elf, elf, elf, elf)
 
             stat = subprocess.check_output([debugfs, '-R', f'stat {path}', image], stderr=subprocess.DEVNULL)
             self.assertIn(b'Mode:  0444', stat)
@@ -52,17 +74,19 @@ class StartupProbeTest(unittest.TestCase):
                 self.assertEqual(STAGE.probe_for_suite(selection, probe), probe if expected else None)
         build = (ROOT / 'userspace/programs/build.sh').read_text()
         self.assertIn('HOSTED_BIN="rust-host-startup-probe"', build)
+        self.assertIn('HOSTED_BIN="rust-host-unwind-probe"', build)
         self.assertIn('linker-hosted.ld', build)
         self.assertIn('--eh-frame-hdr', build)
 
     def test_built_elf_and_staged_image(self):
         for arch, machine in [('x86_64', 62), ('aarch64', 183)]:
             with self.subTest(arch=arch):
-                release = HOSTED / f'{arch}-breenix/release'
+                release = HOSTED / f'{arch}-breenix-hosted/release'
                 suite = release / 'suite-rust-host'
                 probe = release / 'rust-host-startup-probe'
                 process_probe = release / 'rust-host-process-probe'
-                for elf in (probe, suite, process_probe):
+                unwind_probe = release / 'rust-host-unwind-probe'
+                for elf in (probe, suite, process_probe, unwind_probe):
                     self.assertTrue(elf.is_file(), f'missing hosted build output: {elf}')
                     [report] = json.loads(subprocess.check_output([
                         READELF, '--elf-output-style=JSON', '--file-header', '--program-headers',
@@ -89,12 +113,13 @@ class StartupProbeTest(unittest.TestCase):
                     subprocess.run([mke2fs, '-q', '-t', 'ext2', '-F', image, '16M'], check=True, capture_output=True)
                     original = image.read_bytes()
                     for selection in ('', 'time', 'all', 'rust-host-other'):
-                        STAGE.stage(image, selection, suite, probe, process_probe)
+                        STAGE.stage(image, selection, suite, probe, process_probe, unwind_probe)
                         self.assertEqual(image.read_bytes(), original)
-                    STAGE.stage(image, 'time,rust-host', suite, probe, process_probe)
+                    STAGE.stage(image, 'time,rust-host', suite, probe, process_probe, unwind_probe)
                     for path, elf in [('/sbin/suite-rust-host', suite),
                                       ('/usr/libexec/breenix/rust-host/startup-probe', probe),
-                                      ('/usr/libexec/breenix/rust-host/process-probe', process_probe)]:
+                                      ('/usr/libexec/breenix/rust-host/process-probe', process_probe),
+                                      ('/usr/libexec/breenix/rust-host/unwind-probe', unwind_probe)]:
                         self.assertEqual(subprocess.check_output(
                             [debugfs, '-R', f'cat {path}', image], stderr=subprocess.DEVNULL,
                         ), elf.read_bytes())

@@ -16,6 +16,7 @@ from metal_root import require_e2fsprogs
 PROGRAMS = Path(__file__).resolve().parents[1] / 'userspace/programs'
 SUITE_PATH = '/sbin/suite-rust-host'
 PROBE_PATH = '/usr/libexec/breenix/rust-host/startup-probe'
+UNWIND_PROBE_PATH = '/usr/libexec/breenix/rust-host/unwind-probe'
 PROCESS_PROBE_PATH = '/usr/libexec/breenix/rust-host/process-probe'
 MMAP_FIXTURE_PATH = '/usr/libexec/breenix/rust-host/mmap-fixture'
 MMAP_FIXTURE_BYTES = 163_067_344  # Largest file mapping in the X0.9 profile.
@@ -38,11 +39,11 @@ def write_mmap_fixture(path):
             words.tofile(output)
 
 
-def stage(image, selection, suite, probe, process_probe):
+def stage(image, selection, suite, probe, process_probe, unwind_probe):
     probe = probe_for_suite(selection, probe)
     if probe is None:
         return
-    entries = ((SUITE_PATH, suite), (PROBE_PATH, probe), (PROCESS_PROBE_PATH, process_probe))
+    entries = ((SUITE_PATH, suite), (PROBE_PATH, probe), (PROCESS_PROBE_PATH, process_probe), (UNWIND_PROBE_PATH, unwind_probe))
     for _, elf in entries:
         with elf.open('rb') as source:
             if source.read(4) != b'\x7fELF':
@@ -98,9 +99,10 @@ def main():
     parser.add_argument('--suite', required=True)
     parser.add_argument('--image', type=Path, required=True)
     args = parser.parse_args()
-    release = PROGRAMS / f'target/hosted/{args.arch}-breenix/release'
+    release = PROGRAMS / f'target/hosted/{args.arch}-breenix-hosted/release'
     stage(args.image, args.suite, release / 'suite-rust-host',
-          release / 'rust-host-startup-probe', release / 'rust-host-process-probe')
+          release / 'rust-host-startup-probe', release / 'rust-host-process-probe',
+          release / 'rust-host-unwind-probe')
 
 
 if __name__ == '__main__':

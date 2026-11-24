@@ -1011,3 +1011,8 @@ required-features = ["rust-host"]
 name = "rust-host-process-probe"
 path = "src/rust_host_process_probe.rs"
 required-features = ["rust-host"]
+
+[[bin]]
+name = "rust-host-unwind-probe"
+path = "src/rust_host_unwind_probe.rs"
+required-features = ["rust-host"]

@@ -6,8 +6,8 @@ Before hosted_link_layout, build the probe for the same architecture with:
         --features hosted-link-probe
 
 Run build.sh for each architecture at the base and use record_baseline to
-save its digests. Run the same ordinary build at the candidate before
-calling existing_links_unchanged with the corresponding digest file.
+save its digests. Retain the base release directories. Compare the ordinary
+candidate builds with existing_links_load_identical.
 """
 
 import argparse
@@ -15,7 +15,9 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 PROGRAMS = ROOT / "userspace/programs"
@@ -30,7 +32,7 @@ def require(condition, message):
 
 def hosted_link_layout(arch, readelf, elf=None):
     if elf is None:
-        elf = PROGRAMS / "target/hosted" / f"{arch}-breenix/release" / PROBE
+        elf = PROGRAMS / "target/hosted" / f"{arch}-breenix-hosted/release" / PROBE
 
     [report] = json.loads(subprocess.check_output([
         readelf, "--elf-output-style=JSON", "--file-header", "--sections", "--program-headers",
@@ -102,9 +104,60 @@ def hosted_link_layout(arch, readelf, elf=None):
                 f"GNU ld §3.5.4: {symbol_name} must be hidden and at the array {suffix}",
             )
     print(f"hosted_link_layout ({arch}): PASS")
+    return symbols
 
 
-def normal_digests(arch):
+def hosted_targets():
+    for arch in ARCHES:
+        source = ROOT / ("x86_64-breenix-c.json" if arch == "x86_64" else "aarch64-breenix.json")
+        expected = json.loads(source.read_text())
+        expected["panic-strategy"] = "unwind"
+        expected["eh-frame-header"] = True
+        target = ROOT / f"{arch}-breenix-hosted.json"
+        require(target.exists(), f"missing hosted target {target}")
+        require(json.loads(target.read_text()) == expected, f"{target}: hosted target fields differ")
+    print("hosted_targets: PASS")
+
+
+def hosted_unwind_link(arch, readelf, nm, elf, link_map, archive):
+    symbols = hosted_link_layout(arch, readelf, elf)
+    undefined = subprocess.check_output([nm, "--undefined-only", str(elf)], text=True)
+    require(not any("_Unwind_" in line for line in undefined.splitlines()),
+            f"{elf}: undefined unwind symbols: {undefined}")
+    map_text = link_map.read_text()
+    require(str(archive.resolve()) in map_text, f"{link_map}: expected archive {archive}")
+    digest = hashlib.file_digest(archive.open("rb"), "sha256").hexdigest()
+    require(digest in map_text, f"{link_map}: missing selected libc digest {digest}")
+
+    expected = {
+        (name, symbol["Value"]) for name, symbol in symbols.items()
+        if name.startswith("_Unwind_") and symbol["Section"]["Value"] != 0
+    }
+    require(expected, f"{elf}: no defined unwind symbols")
+    bunwind = PROGRAMS / f"target/hosted/bunwind/{arch}-breenix-hosted/release/libbunwind.a"
+    found = set()
+    input_section = ""
+    for line in map_text.splitlines():
+        # LLD -Map nests input sections and symbols under each output section.
+        row = re.fullmatch(r"\s*([0-9a-f]+)\s+[0-9a-f]+\s+[0-9a-f]+\s+\d+( +)(\S.*)", line)
+        if row is None:
+            continue
+        address, padding, entry = row.groups()
+        if len(padding) == 1:
+            input_section = ""
+        elif len(padding) == 9:
+            input_section = entry
+        elif len(padding) == 17 and entry.startswith("_Unwind_"):
+            require(input_section.startswith(f"{bunwind}("),
+                    f"{link_map}: {entry} is defined by {input_section or 'no input section'}, expected {bunwind}")
+            found.add((entry, int(address, 16)))
+    require(found == expected,
+            f"{link_map}: ELF unwind definitions differ from map "
+            f"(missing {sorted(expected - found)}, unexpected {sorted(found - expected)})")
+    print(f"hosted_unwind_link ({arch}): PASS")
+
+
+def normal_digests(arch, release=None):
     metadata = json.loads(subprocess.check_output(
         ["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=PROGRAMS,
     ))
@@ -115,7 +168,8 @@ def normal_digests(arch):
         if "bin" in target["kind"] and features.issuperset(target.get("required-features", []))
     )
     require(names, "Cargo reported no ordinary bin targets")
-    release = PROGRAMS / "target" / f"{arch}-breenix/release"
+    if release is None:
+        release = PROGRAMS / "target" / f"{arch}-breenix/release"
     result = {}
     for name in names:
         with (release / name).open("rb") as binary:
@@ -123,31 +177,133 @@ def normal_digests(arch):
     return result
 
 
-def existing_links_unchanged(arch, baseline):
+def normalized_symbol_strings(data):
+    # Rust v0 Symbol Format, crate-root disambiguator and vendor-specific
+    # suffix. Legacy mangling terminates its path with a 17-byte hash item.
+    def normalized(name):
+        name = re.sub(rb'(?<=\.llvm\.)[0-9]+\Z', lambda m: b'0' * len(m[0]), name)
+        if name.startswith(b'_ZN'):
+            return re.sub(rb'(?<=17h)[0-9a-f]{16}(?=E(?:\.llvm\.[0-9]+)?\Z)',
+                          b'0' * 16, name)
+        if name.startswith(b'_R'):
+            return re.sub(rb'(?<=Cs)[0-9a-zA-Z]+(?=_u?[0-9])',
+                          lambda m: b'0' * len(m[0]), name)
+        return name
+
+    return b'\0'.join(normalized(name) for name in data.split(b'\0'))
+
+
+def elf_differences(reference, candidate, readelf):
+    def layout(path):
+        [elf] = json.loads(subprocess.check_output([
+            readelf, "--elf-output-style=JSON", "--file-header", "--program-headers", "--sections", path,
+        ]))
+        return elf["ElfHeader"], elf["ProgramHeaders"], [row["Section"] for row in elf["Sections"]]
+
+    before, after = reference.read_bytes(), candidate.read_bytes()
+    base_header, base_segments, base_sections = layout(reference)
+    header, segments, sections = layout(candidate)
+    differences = []
+    if base_header != header:
+        differences.append("ELF header or entry point")
+    if base_segments != segments:
+        differences.append("segment layout")
+    if base_sections != sections:
+        for index in range(max(len(base_sections), len(sections))):
+            left = base_sections[index:index + 1]
+            right = sections[index:index + 1]
+            if left != right:
+                names = sorted({section["Name"]["Name"] for section in left + right})
+                differences.append(f"section layout [{index}] {', '.join(names)}")
+
+    # The section-header comparison covers the size and address of NOBITS,
+    # which has no file payload (gABI §3.2). Hash exceptions apply only to
+    # non-allocatable string data.
+    outside_before, outside_after = bytearray(before), bytearray(after)
+    for left, right in zip(base_sections, sections):
+        name = right["Name"]["Name"]
+        if left["Name"]["Name"] != name or left["Type"] != right["Type"]:
+            continue
+        if right["Type"]["Value"] in (0, 8):  # SHT_NULL and SHT_NOBITS.
+            continue
+        offset, end = left["Offset"], left["Offset"] + left["Size"]
+        new_offset, new_end = right["Offset"], right["Offset"] + right["Size"]
+        old_data, new_data = before[offset:end], after[new_offset:new_end]
+        allowed_strings = (
+            not (left["Flags"]["Value"] | right["Flags"]["Value"]) & 2
+            and name in (".strtab", ".comment", ".debug_str", ".debug_line_str")
+        )
+        if old_data != new_data and not (
+            allowed_strings and normalized_symbol_strings(old_data) == normalized_symbol_strings(new_data)
+        ):
+            differences.append(name)
+        outside_before[offset:end] = bytes(len(old_data))
+        outside_after[new_offset:new_end] = bytes(len(new_data))
+    if not differences and outside_before != outside_after:
+        differences.append("bytes outside sections")
+    return differences
+
+
+def existing_links_load_identical(arch, baseline, baseline_release, readelf, candidate_release):
     receipt = json.loads(baseline.read_text())
     require(receipt["arch"] == arch, f"{baseline}: expected a baseline for {arch}")
+    require(os.environ.get("BREENIX_STD_METADATA_SEED") == receipt["std_metadata_seed"],
+            "ordinary builds must use the base pin as the std metadata seed")
+    if candidate_release is None:
+        candidate_release = PROGRAMS / "target" / f"{arch}-breenix/release"
+    seed_file = candidate_release / "std-metadata-seed"
+    require(seed_file.read_text().strip() == receipt["std_metadata_seed"],
+            "ordinary build used a different std metadata seed")
     expected = receipt["sha256"]
-    actual = normal_digests(arch)
+    actual = normal_digests(arch, candidate_release)
     require(
         expected.keys() == actual.keys(),
         f"{arch}: ordinary target set changed: missing {sorted(expected.keys() - actual.keys())}, "
         f"extra {sorted(actual.keys() - expected.keys())}",
     )
-    changed = [name for name in expected if expected[name] != actual[name]]
-    require(not changed, f"{arch}: existing links changed: {', '.join(changed)}")
-    print(f"existing_links_unchanged ({arch}): PASS ({len(expected)} bins at {receipt['commit']})")
+    exact = 0
+    failures = []
+    for name, digest in expected.items():
+        if digest == actual[name]:
+            exact += 1
+            continue
+        require(baseline_release is not None, f"{arch}/{name}: supply --baseline-release to inspect changed bytes")
+        reference = baseline_release / name
+        with reference.open("rb") as binary:
+            require(hashlib.file_digest(binary, "sha256").hexdigest() == digest,
+                    f"{reference}: does not match the original-pin receipt")
+        candidate = seed_file.parent / name
+        differences = elf_differences(reference, candidate, readelf)
+        if differences:
+            failures.append(f"{name}: {', '.join(differences)}")
+    require(not failures, f"{arch}: ordinary ELF differences:\n" + "\n".join(failures))
+    print(f"existing_links_load_identical ({arch}): PASS "
+          f"({len(expected)} bins, {exact} byte-identical, baseline {receipt['commit']})")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("check", choices=["hosted_link_layout", "existing_links_unchanged", "record_baseline"])
+    parser.add_argument("check", choices=["hosted_targets", "hosted_unwind_link", "hosted_link_layout", "existing_links_load_identical", "record_baseline"])
     parser.add_argument("--arch", choices=ARCHES, required=True)
     parser.add_argument("--readelf", default=os.environ.get("LLVM_READELF", "llvm-readelf"))
     parser.add_argument("--elf", type=Path, help="inspect an already linked probe, such as the parent control")
     parser.add_argument("--baseline", type=Path, help="path to digests captured after building the parent")
+    parser.add_argument("--baseline-release", type=Path, help="original release directory for nonidentical ELFs")
+    parser.add_argument("--candidate-release", type=Path, help="retained ordinary release directory")
     parser.add_argument("--base-ref", default="HEAD", help="source revision for record_baseline")
+    parser.add_argument("--nm", default=os.environ.get("LLVM_NM", "llvm-nm"))
+    parser.add_argument("--link-map", type=Path)
+    parser.add_argument("--archive", type=Path)
     args = parser.parse_args()
-    if args.check == "hosted_link_layout":
+    if args.check == "hosted_targets":
+        hosted_targets()
+    elif args.check == "hosted_unwind_link":
+        if not all((args.elf, args.link_map, args.archive)):
+            parser.error("--elf, --link-map and --archive are required")
+        expected = ROOT / "libs/libbreenix-libc/target" / ("x86_64-breenix-c" if args.arch == "x86_64" else "aarch64-breenix") / "release/libc.a"
+        require(args.archive.resolve() == expected.resolve(), "incorrect libc archive")
+        hosted_unwind_link(args.arch, args.readelf, args.nm, args.elf, args.link_map, args.archive)
+    elif args.check == "hosted_link_layout":
         hosted_link_layout(args.arch, args.readelf, args.elf)
     else:
         if args.baseline is None:
@@ -161,11 +317,12 @@ def main():
                 ["git", "diff", "--quiet", rev, "--", ".", ":(exclude)tests"], cwd=ROOT, check=True,
             )
             digests = normal_digests(args.arch)
-            receipt = {"commit": rev, "arch": args.arch, "sha256": digests}
+            receipt = {"commit": rev, "arch": args.arch, "std_metadata_seed": tomllib.loads((ROOT / "rust-fork.toml").read_text())["commit"], "sha256": digests}
             args.baseline.write_text(json.dumps(receipt, indent=2) + "\n")
             print(f"Recorded {len(digests)} {args.arch} bins at {rev}")
         else:
-            existing_links_unchanged(args.arch, args.baseline)
+            existing_links_load_identical(args.arch, args.baseline, args.baseline_release, args.readelf,
+                                          args.candidate_release)
 
 
 if __name__ == "__main__":

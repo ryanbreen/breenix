@@ -199,10 +199,18 @@ class ProgressTest(unittest.TestCase):
             'libc-surface/memory-limits': 5,
             'libc-surface/file-mmap': 27_279,
             'libc-surface/process-pipes-locks': 92,
+            # CASE durations from R240 boot 20261124T160035Z-metal.
+            'unwind/catch-unwind-nested': 50,
+            'unwind/unwind-through-c-frame': 1,
+            'unwind/float-ffi-psabi': 1,
         }
         expected = {case: min(60_000, ((2 * ms + 9_999) // 10_000) * 10_000)
                     for case, ms in measured_ms.items()}
         self.assertEqual({case: named.get(case, default) for case in cases}, expected)
+        # The R240 suite-mode DONE deadline covers the seven allowances plus 25%.
+        driver = (ROOT / 'scripts/metal/metal-boot').read_text()
+        deadline = int(re.search(r"MODE_DEADLINE_SECONDS = \{[^\n]*'suite': (\d+)", driver)[1])
+        self.assertGreaterEqual(deadline * 1000 * 4, sum(expected.values()) * 5)
         stall = runpy.run_path(str(ROOT / 'scripts/boot_progress.py'))['STALL_SECONDS']
         for limit in named.values():
             self.assertLessEqual(limit, 60_000)

@@ -1,7 +1,11 @@
-# The ryanbreen/rust library this checkout builds std from. `branch` names the fork branch the
-# commit is published on: rust-std/<lane> on a lane branch, breenix-target on main. Builds fetch
-# the commit itself; `scripts/rust-fork.sh check-release` refuses any pin main may not carry.
+# The ryanbreen/rust library pins for ordinary and hosted std. Each `branch` publishes its
+# commit: rust-std/<lane> on a lane branch, breenix-target on main. `check-release` checks both.
 repo = "https://github.com/ryanbreen/rust.git"
 branch = "breenix-target"
 commit = "666252fd61839b9e9b1bc9e777a0c84c5cf3dc6d"
 rust = "1.90.0"
+
+# Hosted targets opt in to bunwind. Ordinary targets retain the same std source bytes.
+[hosted]
+branch = "breenix-target"
+commit = "a763a7dd70cc6bc97736aca5eabaf867b36477bf"

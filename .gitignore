@@ -30,6 +30,9 @@ rust-os-gdb
 
 # Ignore most of libs directory (except libraries we maintain)
 libs/*
+!libs/bunwind/
+!libs/bunwind/Cargo.lock
+/libs/bunwind/target/
 !libs/libuitest/
 !libs/libuitest/**
 !libs/input-abi/
@@ -148,6 +151,7 @@ logs/
 # machine's home directory, which dangled in every other checkout (#678). Point
 # BREENIX_RUST_FORK_LIBRARY at <fork>/library, or create this symlink locally.
 /rust-fork
+/rust-fork-hosted
 
 # Run Inspector (tools/breenix-runs): SwiftPM build products and the bundled app.
 tools/breenix-runs/.build/
