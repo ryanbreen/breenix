@@ -199,10 +199,17 @@ class ProgressTest(unittest.TestCase):
             'libc-surface/memory-limits': 5,
             'libc-surface/file-mmap': 27_279,
             'libc-surface/process-pipes-locks': 92,
+            'unwind/catch-unwind-nested': 1,
+            'unwind/unwind-through-c-frame': 1,
+            'unwind/float-ffi-psabi': 1,
         }
         expected = {case: min(60_000, ((2 * ms + 9_999) // 10_000) * 10_000)
                     for case, ms in measured_ms.items()}
         self.assertEqual({case: named.get(case, default) for case in cases}, expected)
+        # The documented default gate must cover all case deadlines plus 25%.
+        shell = (ROOT / 'scripts/boot-interactive.sh').read_text()
+        gate = int(re.search(r'GATE_TIMEOUT=(\d+)', shell)[1])
+        self.assertGreaterEqual(gate * 1000 * 4, sum(expected.values()) * 5)
         stall = runpy.run_path(str(ROOT / 'scripts/boot_progress.py'))['STALL_SECONDS']
         for limit in named.values():
             self.assertLessEqual(limit, 60_000)
